@@ -26,6 +26,8 @@ gcp/research/magnitude_engine/
 ├── mag_config.py                tickers, TFs, label buckets, ATR
 │                                thresholds, PHASE_FEATURES, the
 │                                PRE-SET success bar (immutable)
+├── evaluation_windows.py        immutable America/New_York development,
+│                                validation and one-time final-test periods
 ├── mag_dataset.py               wraps strat_engine loader, computes
 │                                magnitude target, attaches phase-
 │                                specific features
@@ -79,6 +81,85 @@ gcloud run jobs execute magnitude-engine --region=us-east1 \
   --args="-m,gcp.research.magnitude_engine.mag_leakage_audit,--ticker=IWM,--tf=15m"
 ```
 
+## Evaluation isolation
+
+Every run selects `--evaluation-window development`, `validation`, or
+`final_test`. Boundaries and the criteria/final-test versions live in
+`evaluation_windows.py` and are half-open Eastern-session ranges. Walk-forward
+folds keep an entire trading session together and purge one observed session
+(the prediction horizon) before evaluation. The final-test marker is created
+atomically in GCS; reusing the same final-test version for the same cell is
+rejected rather than silently re-reading the holdout, and the claim is
+refused while the window is still open on the market date, so a partial
+year can never consume the one-time version. The claim is taken after an
+unlabelled preflight and before the labelled load, so a rerun after the
+marker exists, or the loser of a concurrent claim, never constructs a
+final-test label. The preflight compares the WHOLE window against the NYSE
+schedule (`evaluation_windows.expected_session_bars`): every session
+present, each holding at least its regular-hours bar count for the
+timeframe (an early close expects fewer), no rows on a non-session date.
+The marker is one per (version, ticker, timeframe), not per phase, and
+only the serving phase (`phase0`) under the frozen serving configuration
+may take it: the serving label contract, the baseline feature set,
+`DEFAULT_CALIBRATION` / `DEFAULT_CV`, and no `MAG_CLASS_WEIGHT_POWER` or
+`MAG_SEED` override (`mag_walk_forward.final_test_config_refusal`).
+`dispatch_magnitude_phase.sh` refuses `--evaluation-window=final_test` for
+any plan but `phase0`.
+
+The claim is a state machine. It is written as `claimed`; once the run's
+summary is durable it moves to `evaluated` and the cell can never be
+reclaimed. Two recoveries exist, neither of which re-evaluates a holdout
+that has a recorded verdict:
+
+- **Staging failed after the verdict** (`production_model_staging_failed`
+  in the summary): `--resume-staging=<run id> --ticker --tf` stages the
+  candidate from that run's recorded gates 1-4 verdict. It refuses unless
+  the current dataset fingerprint, code commit, seed, class-weight power and
+  feature columns equal the ones the run recorded, so the staged model is
+  the candidate that was judged, and it scores no fold and writes no
+  prediction.
+- **The holder died before ANY durable output** (state still `claimed`, no
+  summary, no predictions): `--reclaim-incomplete=<run id> --ticker --tf`
+  moves the claim to a new run and runs the final test. Each transition
+  writes an immutable audit blob per holder and appends to the marker's
+  `history`; at most `FINAL_RECLAIM_LIMIT` (2) reclaims per cell.
+
+The final-test folds are fixed at `[window.start]`; custom `--cutoffs` are
+refused there, and the one-time version is the `FINAL_TEST_VERSION` constant,
+not a flag. Only a `final_test` run may publish a production model:
+`--persist-production-model` under development or validation logs a refusal
+and records it as `production_model_refused` in the summary, since the
+deployed job's default window is development. A final-test run that clears
+gates 1-4 STAGES its candidate (artifacts plus a `PROMOTION_STAGED` marker
+under the run prefix, recorded as `production_model_staged`) and leaves
+`LATEST` untouched, because gates 5-7 (bootstrap, mechanism,
+implied-vs-realized) are scored afterwards on the run's predictions.
+A phase-0 final run stages whether or not the flag was passed, since it
+has consumed the one-time version. Promotion is the operator writing the
+run id to `LATEST` once gates 5-7 pass; `mag_inference` reads a staged-only
+prefix as never promoted. Gate 7's requirements scale like gates 1-4
+(`mag_config.gate7_requirements`: 8 -> 6 passing of 4 covered, 5 -> 4/3,
+2 -> 2/1, 1 -> 1/1) over the folds the run's summary scheduled, and every
+post-hoc script reads the dataset only through its window's end.
+`scripts/naive_calendar_lookup_baseline.py` refuses the final window
+outright and builds its masks with the harness's session purge.
+
+A run reads the dataset only through its window's end (`until`), so a
+development or validation run never labels, class-balances or fingerprints
+final-test rows. Gates 1-4 keep the 6-of-8 bar as a fraction of the folds
+the run holds (`mag_config.min_folds_required`: 8 -> 6, 5 -> 4, 2 -> 2,
+1 -> 1); the bar and the fold count are recorded in the summary's `gates`.
+
+Validation and final-test artifacts are written under their own
+`research/magnitude_engine/_windows/<name>/` root (development keeps the
+historical path), and every reader (`assemble_magnitude_results`, the
+analysis scripts' `--evaluation-window`) selects a window and checks the
+summary's `split_name` against it. Provenance records the image digest the
+job was deployed with (`CONTAINER_IMAGE_DIGEST`, set by
+`deploy_magnitude_engine`) and the source commit baked into the image
+(`gcp/build_info.json`, written by `deploy.sh _stamp_build_info`); either is
+NULL, never a placeholder, when unavailable.
+
 ## Target
 
 `magnitude_bucket` = bisect of `|next_close - next_open| / atr_20`:
@@ -113,11 +194,16 @@ Per the spec's hard guardrail: "Document the success bar in the PR
 description BEFORE running the experiments." Re-read both before
 proposing any tweak to the gate.
 
-Per-cell:
-1. log-loss beat positive in ≥ 6/8 folds
-2. ECE within ceiling (0.05 for 5m + 15m; 0.075 for 30m) in ≥ 6/8 folds
-3. decisive-call hit rate rises monotonically across thresholds 0.40 → 0.70 in ≥ 6/8 folds
-4. EXPLOSIVE-bucket lift over base ≥ 1.5 in ≥ 6/8 folds — since
+Per-cell. The original eight-fold schedule requires 6/8 folds; an
+evaluation window holds fewer yearly folds, so the evaluator applies the
+same bar as a ceiling-rounded fraction of the folds the run ATTEMPTED
+(`mag_config.min_folds_required`: 8 -> 6, 5 -> 4, 2 -> 2, 1 -> 1). A thin or
+errored fold still counts in the denominator; it can never lower the bar.
+
+1. log-loss beat positive in ≥ 6/8 of attempted folds
+2. ECE within ceiling (0.05 for 5m + 15m; 0.075 for 30m) in ≥ 6/8 of attempted folds
+3. decisive-call hit rate rises monotonically across thresholds 0.40 → 0.70 in ≥ 6/8 of attempted folds
+4. EXPLOSIVE-bucket lift over base ≥ 1.5 in ≥ 6/8 of attempted folds — since
    2026-09-14 measured on the bars the decision rule names EXPLOSIVE,
    not argmax (metric and threshold unchanged; see the results doc §0
    amendment)

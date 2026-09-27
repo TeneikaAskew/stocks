@@ -19,10 +19,12 @@ Run:
 """
 from __future__ import annotations
 import argparse
+import hashlib
 import json
 from fractions import Fraction
 import logging
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -36,7 +38,7 @@ from gcp.database import get_engine, execute_sql
 from gcp.research.magnitude_engine.mag_config import (
     TICKERS, TIMEFRAMES, PHASES, LABEL_MODES, DEFAULT_LABEL_MODE,
     LABEL_COL, LABEL_CLASSES, LABEL_TO_IDX,
-    DEFAULT_CUTOFFS, MIN_TEST_BARS,
+    DEFAULT_CUTOFFS, MIN_TEST_BARS, TF_MINUTES,
     MAGNITUDE_THRESHOLDS, resolve_magnitude_thresholds,
     DEFAULT_CALIBRATION, DEFAULT_CV,
     PROMOTION_COLLAPSE_MODAL_SHARE, PROMOTION_MIN_TAIL_CALL_SHARE,
@@ -44,13 +46,20 @@ from gcp.research.magnitude_engine.mag_config import (
     ECE_CEILING_BY_TF, SUCCESS_BAR_EXPLOSIVE_LIFT_MIN,
     SUCCESS_BAR_CONFIDENCE_THRESHOLDS,
     SUCCESS_BAR_MIN_FOLDS_LOGLOSS, SUCCESS_BAR_MIN_FOLDS_ECE,
-    SUCCESS_BAR_MIN_FOLDS_LIFT,
+    SUCCESS_BAR_MIN_FOLDS_LIFT, min_folds_required,
     GCS_BUCKET_DEFAULT, gcs_run_prefix, research_namespace,
     CONTRACT_BLOB, contract_payload,
     PRODUCTION_READINESS_VERSION,
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
+from gcp.research.magnitude_engine.evaluation_windows import (
+    CRITERIA_VERSION, FINAL_TEST_VERSION, PREDICTION_HORIZON_SESSIONS,
+    WINDOWS, assert_disjoint, assert_final_window_complete, assert_window_complete, assert_window_covered,
+    expected_session_bars,
+    eastern_sessions, purged_session_masks, utc_instants, window_cutoffs,
+)
 from gcp.research.magnitude_engine.mag_pred_train import (
+    MAG_CLASS_WEIGHT_POWER_DEFAULT,
     featurize, make_lgbm, resolve_class_weight, class_weight_power,
     decide_bucket, expected_calibration_error,
     decisive_call_hit_rate, explosive_lift,
@@ -60,6 +69,7 @@ from gcp.research.direction_program.phase2_features import (
 )
 from gcp.research.direction_program.phase2_prune_sets import NEAR_DEAD
 from google.cloud import storage as gcs
+from lib.eastern_time import market_today, utc_now
 from lib.logging_config import setup_logging
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import log_loss
@@ -102,12 +112,37 @@ CREATE TABLE IF NOT EXISTS magnitude_walk_forward_results (
     fold_seconds    INTEGER,
     computed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     run_id          VARCHAR(64),
+    split_name      VARCHAR(32),
+    split_start     DATE,
+    split_end       DATE,
+    criteria_version VARCHAR(64),
+    train_data_max_ts TIMESTAMPTZ,
+    evaluation_data_min_ts TIMESTAMPTZ,
+    evaluation_data_max_ts TIMESTAMPTZ,
+    purge_embargo_sessions INTEGER,
+    dataset_fingerprint VARCHAR(64),
+    code_commit VARCHAR(64),
+    container_digest TEXT,
     UNIQUE (phase, ticker, tf, fold, run_id)
 )
 """
 RESULTS_DDL_INDEX = """
 CREATE INDEX IF NOT EXISTS ix_mwfr_cell ON
     magnitude_walk_forward_results (phase, ticker, tf, computed_at DESC)
+"""
+RESULTS_DDL_PROVENANCE = """
+ALTER TABLE magnitude_walk_forward_results
+    ADD COLUMN IF NOT EXISTS split_name VARCHAR(32),
+    ADD COLUMN IF NOT EXISTS split_start DATE,
+    ADD COLUMN IF NOT EXISTS split_end DATE,
+    ADD COLUMN IF NOT EXISTS criteria_version VARCHAR(64),
+    ADD COLUMN IF NOT EXISTS train_data_max_ts TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS evaluation_data_min_ts TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS evaluation_data_max_ts TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS purge_embargo_sessions INTEGER,
+    ADD COLUMN IF NOT EXISTS dataset_fingerprint VARCHAR(64),
+    ADD COLUMN IF NOT EXISTS code_commit VARCHAR(64),
+    ADD COLUMN IF NOT EXISTS container_digest TEXT
 """
 
 # Per-bar predictions table — added 2026-06-02. Written by the live
@@ -179,6 +214,420 @@ def _gcs_upload(content: bytes, blob_path: str, ctype: str = "application/json")
     return f"gs://{bucket_name}/{blob_path}"
 
 
+# Written into the build context by deploy.sh _stamp_build_info, so it ships
+# inside the image: the container copies lib/ gcp/ scripts/ and no .git, and
+# a runtime `git rev-parse` there cannot answer (Codex P1 on #1193).
+# Module-level so a test can point it elsewhere.
+BUILD_INFO_PATH = Path(__file__).resolve().parents[2] / "build_info.json"
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _source_commit() -> str | None:
+    """The revision this code came from, or None when nothing can say.
+
+    The image stamp is the truth for a container and wins; GIT_COMMIT serves
+    a local or ad-hoc run; `git rev-parse` covers a plain checkout. None is
+    an explicit unknown recorded as NULL, never a raise: provenance must not
+    be able to fail the run whose provenance it records.
+    """
+    try:
+        info = json.loads(BUILD_INFO_PATH.read_text())
+        stamped = info.get("git_commit") if isinstance(info, dict) else None
+        if stamped:
+            # The build copied the working tree, so a dirty tree's code is
+            # not reproducible from the bare commit; say so, the way
+            # `git describe --dirty` does (Codex P2 on #1193).
+            return str(stamped) + ("-dirty" if info.get("git_dirty") else "")
+    except (OSError, ValueError):
+        pass
+    env = os.environ.get("GIT_COMMIT")
+    if env:
+        return env
+    try:
+        out = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
+                             text=True, check=True, cwd=_REPO_ROOT)
+        head = out.stdout.strip()
+        if not head:
+            return None
+        dirty = subprocess.run(["git", "status", "--porcelain", "--", "lib", "gcp",
+                                "scripts"], capture_output=True, text=True,
+                               check=True, cwd=_REPO_ROOT).stdout.strip()
+        return head + ("-dirty" if dirty else "")
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _execution_provenance(X: np.ndarray, y: np.ndarray,
+                          timestamps: np.ndarray) -> dict:
+    digest = hashlib.sha256()
+    digest.update(np.ascontiguousarray(X).view(np.uint8))
+    digest.update(np.ascontiguousarray(y).view(np.uint8))
+    digest.update(np.ascontiguousarray(timestamps).view(np.uint8))
+    commit = _source_commit()
+    if commit is None:
+        log.warning("provenance: source commit unknown (no build stamp at %s, "
+                    "no GIT_COMMIT, no git checkout); code_commit is NULL",
+                    BUILD_INFO_PATH)
+    # deploy_magnitude_engine deploys the digest :research resolves to and
+    # hands the job that same string. K_REVISION is a Cloud Run revision
+    # name, not an image identity, and is not set for jobs at all; it is not
+    # a substitute (Codex P2 on #1193).
+    image = os.environ.get("CONTAINER_IMAGE_DIGEST") or None
+    if image is None:
+        log.warning("provenance: CONTAINER_IMAGE_DIGEST unset; "
+                    "container_digest is NULL")
+    return {
+        "criteria_version": CRITERIA_VERSION,
+        "dataset_fingerprint": digest.hexdigest(),
+        "code_commit": commit,
+        "container_digest": image,
+    }
+
+
+def production_persist_refusal(window) -> str | None:
+    """Why a run under `window` may not publish a production model, or None.
+
+    The deployed job defaults to the development window with
+    MAG_PERSIST_PRODUCTION_MODEL=true, so without this a routine passing run
+    would flip LATEST to a model trained only on data before window.end,
+    dropping every later session the served model holds today (Codex P1 on
+    #1193). The window definitions reserve the production decision for
+    final_test.
+    """
+    if window.final:
+        return None
+    return (f"production promotion is reserved for the final_test window; "
+            f"this {window.name} run trains on data before "
+            f"{window.end.isoformat()}")
+
+
+# The phase whose candidate serves (the only one _persist_production_model
+# publishes) and therefore the only one allowed to read the final holdout.
+SERVING_PHASE = "phase0"
+# The seed the serving model is trained with (mag_pred_train.make_lgbm).
+LOCKED_SEED = 42
+# A final-test claim may be re-taken at most this many times, each only for
+# a holder that died before any durable evaluation output, each recorded
+# immutably (see reclaim_incomplete_final_test).
+FINAL_RECLAIM_LIMIT = 2
+
+
+def _session_bar_counts(engine, ticker: str, tf: str, since: str, until: str) -> dict:
+    """Per-session bar counts the source table holds for bar_date in
+    [since, until), read WITHOUT labels, features or OHLC.
+
+    The final-test preflight compares this against the exchange calendar for
+    the WHOLE window, so the one-time claim is taken before any final-test
+    label is constructed or logged and only when every session is present
+    and whole (Codex P1 x3 on #1193). Returns {} when no row exists.
+    """
+    from sqlalchemy import text
+    from gcp.research.strat_engine.strat_config import strat_features_table
+    sql = text(f"SELECT bar_date, COUNT(*) AS n FROM {strat_features_table(tf)} "
+               f"WHERE ticker = :t AND bar_date >= :since AND bar_date < :until "
+               f"GROUP BY bar_date")
+    with engine.connect() as conn:
+        rows = conn.execute(sql, {"t": ticker, "since": since, "until": until}).fetchall()
+    return {pd.Timestamp(r[0]).date(): int(r[1]) for r in rows}
+
+
+def final_test_config_refusal(calibration: str, cv: int) -> str | None:
+    """Why this invocation is not the frozen serving configuration, or None.
+
+    The marker path encodes none of these, so a final run under another
+    calibration, class-weight power or seed would consume the cell's sole
+    holdout for a configuration validation never selected (Codex P1 on
+    #1193). The frozen configuration is the code's defaults: DEFAULT_CALIBRATION,
+    DEFAULT_CV, MAG_CLASS_WEIGHT_POWER_DEFAULT and LOCKED_SEED, with no env
+    override present.
+    """
+    problems = []
+    if calibration != DEFAULT_CALIBRATION:
+        problems.append(f"calibration={calibration!r} (frozen: {DEFAULT_CALIBRATION!r})")
+    if cv != DEFAULT_CV:
+        problems.append(f"cv={cv} (frozen: {DEFAULT_CV})")
+    if os.environ.get("MAG_CLASS_WEIGHT_POWER", "").strip():
+        problems.append(f"MAG_CLASS_WEIGHT_POWER={os.environ['MAG_CLASS_WEIGHT_POWER']!r} "
+                        f"(frozen: {MAG_CLASS_WEIGHT_POWER_DEFAULT}, unset)")
+    if os.environ.get("MAG_SEED", "").strip():
+        problems.append(f"MAG_SEED={os.environ['MAG_SEED']!r} (frozen: {LOCKED_SEED}, unset)")
+    return "; ".join(problems) or None
+
+
+def _execution_id() -> str:
+    return (os.environ.get("CLOUD_RUN_EXECUTION")
+            or os.environ.get("MAG_RUN_ID")
+            or f"run_{int(time.time())}")
+
+
+def _require_closed_window(window) -> None:
+    """The final test may be claimed only once every session in its window
+    is over, judged on the market date (see assert_window_complete)."""
+    assert_window_complete(window, market_today())
+
+
+def _claim_final_test(version: str, phase: str, ticker: str, tf: str,
+                      run_id: str) -> None:
+    """Atomically consume a final-test version for one evaluation cell.
+
+    `version` is always evaluation_windows.FINAL_TEST_VERSION: a code-reviewed
+    constant that changes only with the criteria or window definitions. It
+    was once a CLI flag, which defeated the guard: after consuming v1 an
+    operator could pass v2 and re-read the identical holdout under a fresh
+    marker path (Codex P1 on #1193).
+    """
+    bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
+    path = _final_claim_path(version, ticker, tf)
+    # state: "claimed" until the run's summary is durable, then "evaluated"
+    # (_mark_final_test_evaluated). A holder that dies in "claimed" with no
+    # durable output can be reclaimed once, audited (Codex P1 on #1193).
+    payload = json.dumps({"version": version, "phase": phase, "ticker": ticker,
+                          "tf": tf, "run_id": run_id, "state": "claimed",
+                          "consumed_at": utc_now().isoformat(), "history": []})
+    blob = gcs.Client().bucket(bucket_name).blob(path)
+    try:
+        blob.upload_from_string(
+            payload, content_type="application/json", if_generation_match=0)
+    except Exception as exc:
+        # A generation-0 conditional write fails when the marker exists. Do
+        # not weaken this to exists()+write: concurrent final runs could race.
+        # No run, the holder included, may re-evaluate the holdout: a failed
+        # staging is recovered by resume_final_staging from the claimed
+        # run's durable summary, never by another walk-forward (Codex P1 on
+        # #1193).
+        if getattr(exc, "code", None) in (409, 412) or type(exc).__name__ in {
+                "Conflict", "PreconditionFailed"}:
+            marker = json.loads(blob.download_as_text())
+            holder = marker.get("run_id")
+            raise RuntimeError(
+                f"final-test version {version!r} has already been consumed "
+                f"for {ticker}/{tf} by run {holder!r} (state "
+                f"{marker.get('state', 'claimed')!r}); a failed staging is "
+                f"recovered with --resume-staging={holder} --ticker={ticker} "
+                f"--tf={tf}, and a holder that died before any durable output "
+                f"with --reclaim-incomplete={holder}") from exc
+        raise
+
+
+def _read_final_marker(version: str, ticker: str, tf: str):
+    """(marker dict, blob generation) for the cell, or (None, None)."""
+    bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
+    blob = gcs.Client().bucket(bucket_name).blob(_final_claim_path(version, ticker, tf))
+    if not blob.exists():
+        return None, None
+    blob.reload()
+    return json.loads(blob.download_as_text()), blob.generation
+
+
+def _mark_final_test_evaluated(version: str, ticker: str, tf: str, run_id: str,
+                               summary_blob: str) -> None:
+    """Checkpoint: the holder's summary is durable, the claim is 'evaluated'.
+
+    Written with the marker's generation, so a concurrent reclaim cannot be
+    silently overwritten. From here the cell can never be reclaimed; a
+    failed staging is recovered from the summary (resume_final_staging).
+    """
+    marker, generation = _read_final_marker(version, ticker, tf)
+    if marker is None or marker.get("run_id") != run_id:
+        raise RuntimeError(f"final-test marker for {ticker}/{tf} is not held by "
+                           f"{run_id!r}: {marker!r}")
+    marker.update({"state": "evaluated", "summary": summary_blob,
+                   "evaluated_at": utc_now().isoformat()})
+    bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
+    gcs.Client().bucket(bucket_name).blob(_final_claim_path(version, ticker, tf)) \
+        .upload_from_string(json.dumps(marker), content_type="application/json",
+                            if_generation_match=generation)
+
+
+def _final_run_outputs_exist(ticker: str, tf: str, run_id: str) -> bool:
+    """Whether the run left ANY durable output under the final-test prefix
+    (summary, predictions CSV, anything else keyed by its run id)."""
+    bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
+    prefix = gcs_run_prefix(SERVING_PHASE, ticker, tf, label_mode=DEFAULT_LABEL_MODE,
+                            thresholds=MAGNITUDE_THRESHOLDS,
+                            evaluation_window="final_test")
+    return any(run_id in b.name for b in
+               gcs.Client().list_blobs(bucket_name, prefix=f"{prefix}/"))
+
+
+def reclaim_incomplete_final_test(ticker: str, tf: str, holder: str,
+                                  new_run_id: str) -> None:
+    """Move the cell's claim from a holder that died before ANY durable
+    output to `new_run_id`, once, audited.
+
+    The marker is consumed before the load, the folds and the summary, so a
+    worker dying in between left the cell's one-time test permanently lost
+    (Codex P1 on #1193). Conditions, every one refused loudly: the marker is
+    held by `holder` in state "claimed"; `holder` left no summary, no
+    predictions, nothing under the final prefix; fewer than
+    FINAL_RECLAIM_LIMIT reclaims so far. The transition writes an immutable
+    audit blob per holder (generation 0, so a holder can be reclaimed exactly
+    once) and rewrites the marker against its read generation, appending the
+    holder to `history`. What a died run may have logged before dying is the
+    residual; the audit trail bounds how often it can happen.
+    """
+    marker, generation = _read_final_marker(FINAL_TEST_VERSION, ticker, tf)
+    if marker is None:
+        raise RuntimeError(f"{ticker}/{tf} holds no final-test claim to reclaim")
+    if marker.get("run_id") != holder:
+        raise RuntimeError(f"final-test claim for {ticker}/{tf} is held by "
+                           f"{marker.get('run_id')!r}, not {holder!r}")
+    if marker.get("state", "claimed") != "claimed":
+        raise RuntimeError(f"run {holder} reached state {marker.get('state')!r}; "
+                           f"its verdict is durable and the cell cannot be reclaimed "
+                           f"(recover staging with --resume-staging={holder})")
+    if _final_run_outputs_exist(ticker, tf, holder):
+        raise RuntimeError(f"run {holder} left durable output under the final-test "
+                           f"prefix; it is not an incomplete run and cannot be reclaimed")
+    history = list(marker.get("history", []))
+    if len(history) >= FINAL_RECLAIM_LIMIT:
+        raise RuntimeError(f"final-test claim for {ticker}/{tf} was already reclaimed "
+                           f"{len(history)} time(s) ({history}); the limit is "
+                           f"{FINAL_RECLAIM_LIMIT}")
+    bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
+    bucket = gcs.Client().bucket(bucket_name)
+    audit = {"version": FINAL_TEST_VERSION, "ticker": ticker, "tf": tf,
+             "from_run_id": holder, "to_run_id": new_run_id,
+             "reclaimed_at": utc_now().isoformat(), "prior_history": history}
+    # Immutable: written once per holder. If it already exists while the
+    # marker still names `holder`, an earlier reclaim died between this
+    # write and the marker CAS below; the retry reconciles against the
+    # existing record (same holder, same prior history) and completes the
+    # transition instead of being stranded (Codex P1 on #1193). A second
+    # reclaim of a holder the marker no longer names is refused above.
+    audit_blob = bucket.blob(f"{_final_claim_path(FINAL_TEST_VERSION, ticker, tf)}"
+                             f".reclaims/{holder}.json")
+    try:
+        audit_blob.upload_from_string(
+            json.dumps(audit), content_type="application/json", if_generation_match=0)
+    except Exception as exc:
+        if not (getattr(exc, "code", None) in (409, 412) or type(exc).__name__ in {
+                "Conflict", "PreconditionFailed"}):
+            raise
+        existing = json.loads(audit_blob.download_as_text())
+        if existing.get("from_run_id") != holder or \
+                existing.get("prior_history") != history:
+            raise RuntimeError(
+                f"reclaim audit for {ticker}/{tf} holder {holder} records a "
+                f"different transition ({existing}); refusing to reconcile") from exc
+        log.warning("reclaim of %s:%s from %s was interrupted after its audit "
+                    "record (to %s); reconciling and completing the transition "
+                    "to %s", ticker, tf, holder, existing.get("to_run_id"), new_run_id)
+        audit = {**existing, "to_run_id": new_run_id,
+                 "reconciled_from": existing.get("to_run_id")}
+    marker.update({"run_id": new_run_id, "state": "claimed",
+                   "consumed_at": utc_now().isoformat(),
+                   "history": history + [{"run_id": holder,
+                                          "reclaimed_at": audit["reclaimed_at"],
+                                          **({"reconciled_from": audit["reconciled_from"]}
+                                             if "reconciled_from" in audit else {})}]})
+    bucket.blob(_final_claim_path(FINAL_TEST_VERSION, ticker, tf)).upload_from_string(
+        json.dumps(marker), content_type="application/json",
+        if_generation_match=generation)
+    log.warning("final-test claim for %s:%s reclaimed from dead run %s by %s "
+                "(reclaim %d of %d)", ticker, tf, holder, new_run_id,
+                len(history) + 1, FINAL_RECLAIM_LIMIT)
+
+
+def _final_claim_path(version: str, ticker: str, tf: str) -> str:
+    """The marker is keyed by (version, ticker, tf), NOT by phase: the
+    holdout is one dataset per cell, and a per-phase marker let the
+    no_backfill plan score it three times and pick a model family after the
+    nominal one-time test (Codex P1 on #1193)."""
+    return f"research/magnitude_engine/final-test-consumed/{version}/{ticker}_{tf}.json"
+
+
+def _final_claim_holder(version: str, ticker: str, tf: str) -> str | None:
+    """run_id recorded in the cell's final-test marker, or None if unclaimed."""
+    bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
+    blob = gcs.Client().bucket(bucket_name).blob(_final_claim_path(version, ticker, tf))
+    if not blob.exists():
+        return None
+    return json.loads(blob.download_as_text()).get("run_id")
+
+
+def _final_run_summary(ticker: str, tf: str, run_id: str) -> dict | None:
+    """The durable walk_forward_<run_id>.json a phase0 final-test run wrote
+    under the serving contract, or None."""
+    bucket_name = os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT)
+    prefix = gcs_run_prefix("phase0", ticker, tf, label_mode=DEFAULT_LABEL_MODE,
+                            thresholds=MAGNITUDE_THRESHOLDS,
+                            evaluation_window="final_test")
+    blob = gcs.Client().bucket(bucket_name).blob(f"{prefix}/walk_forward_{run_id}.json")
+    if not blob.exists():
+        return None
+    return json.loads(blob.download_as_text())
+
+
+def resume_final_staging(engine, ticker: str, tf: str, run_id: str) -> str:
+    """Stage the production candidate of an already-claimed final-test run.
+
+    Recovery for a staging failure (model fit, GCS upload) after the one-time
+    claim. It stages FROM the claimed run's durable outputs: the run must
+    hold the cell's marker and have written its summary, and the gates 1-4
+    verdict is the one that summary recorded. Nothing is re-evaluated: no
+    fold is scored, no prediction or result row is written, so nothing here
+    can be tuned against the holdout (Codex P1 on #1193). The full-data fit
+    reads the dataset through the window's end exactly as the run did, under
+    the serving contract only.
+    """
+    window = WINDOWS["final_test"]
+    holder = _final_claim_holder(FINAL_TEST_VERSION, ticker, tf)
+    if holder != run_id:
+        raise RuntimeError(
+            f"final-test version {FINAL_TEST_VERSION!r} for {ticker}/{tf} is "
+            f"held by run {holder!r}, not {run_id!r}; only the claimed run "
+            f"can be staged")
+    summary = _final_run_summary(ticker, tf, run_id)
+    if summary is None or "gates" not in summary:
+        raise RuntimeError(
+            f"run {run_id} left no final-test summary for {ticker}/{tf}; "
+            f"there is no recorded verdict to stage from")
+    if summary.get("split_name") != window.name:
+        raise RuntimeError(f"run {run_id} summary records split_name="
+                           f"{summary.get('split_name')!r}, not {window.name!r}")
+    thresholds = tuple(summary["thresholds"])
+    label_mode = summary["label_mode"]
+    contract_reason = serving_contract_reason(label_mode, thresholds)
+    if contract_reason:
+        raise RuntimeError(f"run {run_id} is not a serving-contract run: {contract_reason}")
+    df = load_magnitude_dataset(engine, ticker, tf, "phase0",
+                                until=window.end.isoformat(), label_mode=label_mode)
+    if df.empty:
+        raise ValueError(f"dataset has no rows before {window.end.isoformat()}")
+    X_df, feature_cols = featurize(df)
+    X_full = X_df.values.astype(np.float32, copy=False)
+    y_full = df[LABEL_COL].map(LABEL_TO_IDX).values.astype(np.int64)
+    ts_arr = utc_instants(df["ts"]).values.astype("datetime64[ns]")
+    # The staged model must be THE candidate whose gates were recorded: the
+    # same rows, code, seed, class weighting and columns. Anything the run
+    # recorded that this environment does not reproduce refuses the resume
+    # (Codex P1 on #1193).
+    provenance = _execution_provenance(X_full, y_full, ts_arr)
+    current = {"dataset_fingerprint": provenance["dataset_fingerprint"],
+               "code_commit": provenance["code_commit"],
+               "random_seed": int(os.environ.get("MAG_SEED", str(LOCKED_SEED))),
+               "class_weight_power": class_weight_power(),
+               "feature_cols": list(feature_cols)}
+    drift = [f"{k}: run={summary.get(k)!r} now={v!r}"
+             for k, v in current.items() if summary.get(k) != v]
+    if drift:
+        raise RuntimeError(f"run {run_id} cannot be reproduced here, refusing to "
+                           f"stage a different candidate: " + "; ".join(drift))
+    log.info("resuming final-test staging for %s:%s from run %s (gates 1-4 %s)",
+             ticker, tf, run_id,
+             "PASS" if summary["gates"].get("cell_pass_gates_1_to_4") else "FAIL")
+    uri = _persist_production_model_artifact(
+        ticker, tf, run_id, X_full, y_full, feature_cols,
+        gates=summary["gates"], label_mode=label_mode, thresholds=thresholds,
+        calibration=summary.get("calibration", DEFAULT_CALIBRATION),
+        cv=summary.get("cv", DEFAULT_CV), stage_only=True)
+    if not uri:
+        raise RuntimeError(f"staging produced no candidate for {ticker}:{tf} run "
+                           f"{run_id}; see PROMOTION_BLOCKED or the log")
+    return uri
+
+
 def _base_rate_logloss(y_train_idx: np.ndarray, y_test_idx: np.ndarray) -> float:
     prior = np.bincount(y_train_idx, minlength=len(LABEL_CLASSES)) / len(y_train_idx)
     proba = np.tile(prior, (len(y_test_idx), 1))
@@ -193,18 +642,33 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
                              tf: str,
                              lgbm_n_jobs: int,
                              calibration: str = DEFAULT_CALIBRATION,
-                             cv: int = DEFAULT_CV) -> dict:
-    train_end_dt = np.datetime64(train_end)
-    test_end_dt = np.datetime64(test_end)
-    train_mask = bar_dates < train_end_dt
-    test_mask = (bar_dates >= train_end_dt) & (bar_dates < test_end_dt)
+                             cv: int = DEFAULT_CV,
+                             embargo_sessions: int = PREDICTION_HORIZON_SESSIONS,
+                             provenance: dict | None = None) -> dict:
+    # ``bar_dates`` are Eastern session labels (the historical argument name
+    # is retained for callers). Splitting bars independently would leak the
+    # strong within-session dependence across the partition boundary.
+    train_mask, test_mask = purged_session_masks(
+        bar_dates, train_end, test_end, embargo_sessions)
+    assert_disjoint(bar_dates[train_mask], bar_dates[test_mask])
     n_train = int(train_mask.sum())
     n_test = int(test_mask.sum())
+    timestamps = utc_instants(ts_arr)
+    audit = {
+        **(provenance or {}),
+        "train_data_max_ts": (timestamps[train_mask].max().isoformat()
+                              if n_train else None),
+        "evaluation_data_min_ts": (timestamps[test_mask].min().isoformat()
+                                   if n_test else None),
+        "evaluation_data_max_ts": (timestamps[test_mask].max().isoformat()
+                                   if n_test else None),
+        "purge_embargo_sessions": embargo_sessions,
+    }
     if n_test < MIN_TEST_BARS:
         return {"fold": f"{train_end}..{test_end}",
                 "train_end": train_end, "test_end": test_end,
                 "n_test": n_test, "n_train": n_train,
-                "status": "SKIP_THIN"}
+                "status": "SKIP_THIN", **audit}
 
     X_tr = X_full[train_mask]; X_te = X_full[test_mask]
     y_tr = y_full[train_mask]; y_te = y_full[test_mask]
@@ -267,6 +731,7 @@ def train_and_evaluate_fold(X_full: np.ndarray, y_full: np.ndarray,
             *(f"p_{c}" for c in LABEL_CLASSES),
         ],
         "train_end": train_end, "test_end": test_end,
+        **audit,
         "n_train": n_train, "n_test": n_test,
         "logloss": ll, "base_logloss": base_ll, "beat": base_ll - ll,
         "accuracy": acc, "base_accuracy": base_acc,
@@ -326,10 +791,29 @@ def _results_dataframe(phase: str, ticker: str, tf: str,
             "decisive_hit_json": json.dumps(f.get("decisive_hit", {})),
             "fold_seconds": f.get("fold_seconds"),
             "run_id": run_id,
+            "split_name": f.get("split_name"),
+            "split_start": _to_date(f.get("split_start")),
+            "split_end": _to_date(f.get("split_end")),
+            "criteria_version": f.get("criteria_version"),
+            "train_data_max_ts": f.get("train_data_max_ts"),
+            "evaluation_data_min_ts": f.get("evaluation_data_min_ts"),
+            "evaluation_data_max_ts": f.get("evaluation_data_max_ts"),
+            "purge_embargo_sessions": f.get("purge_embargo_sessions"),
+            "dataset_fingerprint": f.get("dataset_fingerprint"),
+            "code_commit": f.get("code_commit"),
+            "container_digest": f.get("container_digest"),
         })
     df = pd.DataFrame(rows)
     if df.empty:
         return df
+    # ISO-8601 text from an aware UTC index landed as object dtype and to_sql
+    # bound it as text, which PostgreSQL refuses for a TIMESTAMPTZ column;
+    # the caught persist error then dropped every fold row (Codex P2 on
+    # #1193). The strings carry their +00:00 offset; utc=True only fixes the
+    # dtype.
+    for col in ("train_data_max_ts", "evaluation_data_min_ts",
+                "evaluation_data_max_ts"):
+        df[col] = pd.to_datetime(df[col], utc=True)  # tz-ok: offset-carrying ISO from an aware UTC index
     for _c in _RESULTS_FLOAT_COLS:
         if _c in df.columns:
             df[_c] = pd.to_numeric(df[_c], errors="coerce")
@@ -522,9 +1006,18 @@ def _persist_production_model_artifact(
     thresholds: tuple[float, ...],
     calibration: str = DEFAULT_CALIBRATION,
     cv: int = DEFAULT_CV,
+    stage_only: bool = False,
 ) -> str | None:
     """Train a 'production' model on the ENTIRE dataset (no held-out test)
     and upload it to gs://<bucket>/magnitude-models/production/{ticker}/{tf}/.
+
+    `stage_only` uploads the candidate and a PROMOTION_STAGED marker in place
+    of flipping LATEST. The walk-forward verdict is gates 1-4 only, which
+    _evaluate_phase_gate marks preliminary: gates 5-7 (bootstrap, mechanism,
+    implied-vs-realized) run afterwards on the run's predictions, so a
+    final-test run stages and an operator promotes once those pass (Codex
+    P1 on #1193). mag_inference reads a staged-only prefix as never
+    promoted, like a blocked one.
 
     Prerequisite for `gcp.research.magnitude_engine.mag_inference` which
     loads model.joblib + feature_cols.txt + VERSION from this exact GCS
@@ -670,6 +1163,17 @@ def _persist_production_model_artifact(
                 "gs://%s/%s/ for diagnosis.",
                 ticker, tf, run_id, verdict["reason"], bucket_name, run_prefix)
             return None
+        if stage_only:
+            bucket.blob(f"{run_prefix}/PROMOTION_STAGED").upload_from_string(
+                json.dumps({"verdict": verdict, "gates_1_4": gates,
+                            "promote": f"gs://{bucket_name}/{base_prefix}/LATEST "
+                                       f"<- {run_id}, after gates 5-7 pass"},
+                           indent=2, default=str),
+                content_type="application/json")
+            uri = f"gs://{bucket_name}/{run_prefix}/"
+            log.info("production candidate STAGED (run=%s, LATEST untouched; "
+                     "promote after gates 5-7) -> %s", run_id, uri)
+            return uri
         # Atomic flip: LATEST is a single-blob write. Its presence/
         # contents is what mag_inference reads to choose which run to
         # load.
@@ -689,6 +1193,10 @@ def _evaluate_phase_gate(folds: list[dict], tf: str) -> dict:
     """Apply the pre-set success bar to a phase's folds and return a verdict."""
     ok = [f for f in folds if f.get("status") == "OK"]
     n_ok = len(ok)
+    # Every attempted fold counts toward the bar; only OK folds can pass it.
+    n_folds = len(folds)
+    required = (min_folds_required(n_folds) if n_folds
+                else SUCCESS_BAR_MIN_FOLDS_LOGLOSS)
     n_beat = sum(1 for f in ok if f["beat"] > 0)
     n_ece_pass = sum(1 for f in ok if f["ece_pass"])
     n_lift_pass = sum(
@@ -710,18 +1218,20 @@ def _evaluate_phase_gate(folds: list[dict], tf: str) -> dict:
     n_mono = sum(1 for f in ok if _monotone(f))
 
     gates = {
+        "n_folds": n_folds,
+        "min_folds_required": required,
         "n_ok_folds": n_ok,
         "g1_logloss_beat_folds": n_beat,
-        "g1_pass": n_beat >= SUCCESS_BAR_MIN_FOLDS_LOGLOSS,
+        "g1_pass": n_beat >= required,
         "g2_ece_pass_folds": n_ece_pass,
-        "g2_pass": n_ece_pass >= SUCCESS_BAR_MIN_FOLDS_ECE,
+        "g2_pass": n_ece_pass >= required,
         "g3_monotone_folds": n_mono,
         # Spec gate 3 is described as "rises monotonically" — interpret
         # as "monotonic in at least the majority of folds"; gating
         # threshold mirrors the same 6/8 strictness as the others.
-        "g3_pass": n_mono >= SUCCESS_BAR_MIN_FOLDS_LOGLOSS,
+        "g3_pass": n_mono >= required,
         "g4_lift_pass_folds": n_lift_pass,
-        "g4_pass": n_lift_pass >= SUCCESS_BAR_MIN_FOLDS_LIFT,
+        "g4_pass": n_lift_pass >= required,
     }
     # Gates 1-4 only — gates 5 (bootstrap), 6 (mechanism), 7 (implied-vs-realized)
     # are computed by external scripts and are NOT reflected here. A cell with
@@ -744,16 +1254,92 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                   cv: int = DEFAULT_CV,
                   label_mode: str = DEFAULT_LABEL_MODE,
                   persist_production_model: bool = False,
-                  features: str = "") -> dict:
-    cutoffs = cutoffs or list(DEFAULT_CUTOFFS)
+                  features: str = "",
+                  evaluation_window: str = "development",
+                  claim_held: bool = False) -> dict:
+    window = WINDOWS[evaluation_window]
+    cutoffs = window_cutoffs(window, cutoffs)
     thresholds = resolve_magnitude_thresholds()
+    execution_id = _execution_id()
+    if window.final:
+        _require_closed_window(window)
+        # The final test exists to stage the SERVING candidate. A run under a
+        # research label or custom thresholds would consume the cell's sole
+        # final-test version (the marker path carries neither) and then be
+        # refused staging by serving_contract_reason, leaving the body-label
+        # decision unrunnable (Codex P1 on #1193). Refuse before the claim.
+        contract_reason = serving_contract_reason(label_mode, thresholds)
+        if contract_reason:
+            raise ValueError(
+                f"the {window.name} window is reserved for the serving "
+                f"contract and would consume the one-time version: "
+                f"{contract_reason}")
+        # One holdout, one model family: only the serving phase may read it.
+        # The marker is keyed per cell, so a phase1/phase3 task of the
+        # no_backfill plan would otherwise consume the version and stage
+        # nothing (Codex P1 on #1193).
+        if phase != SERVING_PHASE:
+            raise ValueError(
+                f"the {window.name} window is reserved for the serving phase "
+                f"{SERVING_PHASE!r}; {phase!r} would consume the one-time "
+                f"version for {ticker}/{tf} and stage no candidate")
+        # mag_inference constructs the baseline feature set only. A phase2
+        # family here would stage a model whose columns serving never builds
+        # (Codex P1 on #1193): refuse before the claim.
+        if features.strip():
+            raise ValueError(
+                f"the {window.name} window is reserved for the serving feature "
+                f"set (baseline); --features={features!r} would stage a model "
+                f"mag_inference cannot serve")
+        # The complete frozen configuration, not only labels and features
+        # (Codex P1 on #1193).
+        config_reason = final_test_config_refusal(calibration, cv)
+        if config_reason:
+            raise ValueError(
+                f"the {window.name} window is reserved for the frozen serving "
+                f"configuration and would consume the one-time version: "
+                f"{config_reason}")
+        # Unlabelled preflight, then the one-time claim, and only then the
+        # labelled load below: the holdout's labels are never constructed,
+        # logged or fingerprinted by a run that does not hold the claim
+        # (Codex P1 on #1193). The preflight proves EVERY session of the
+        # window is present and whole against the exchange calendar, so a
+        # load failure after the claim is an infrastructure fault, not a
+        # data gap; and a rerun after the marker exists is refused before it
+        # reads a single holdout row.
+        observed = _session_bar_counts(engine, ticker, tf,
+                                       window.start.isoformat(), window.end.isoformat())
+        assert_window_covered(window, list(observed))
+        assert_final_window_complete(window, expected_session_bars(window, TF_MINUTES[tf]),
+                                     observed)
+        if claim_held:
+            # reclaim_incomplete_final_test moved the claim to this run id.
+            holder = _final_claim_holder(FINAL_TEST_VERSION, ticker, tf)
+            if holder != execution_id:
+                raise RuntimeError(f"final-test claim for {ticker}/{tf} is held by "
+                                   f"{holder!r}, not this run {execution_id!r}")
+        else:
+            _claim_final_test(FINAL_TEST_VERSION, phase, ticker, tf, execution_id)
     log.info("=" * 70)
     log.info("MAGNITUDE WALK-FORWARD  phase=%s  ticker=%s  tf=%s  cutoffs=%d  "
              "label_mode=%s  thresholds=%s",
              phase, ticker, tf, len(cutoffs), label_mode, thresholds)
     log.info("=" * 70)
 
-    df = load_magnitude_dataset(engine, ticker, tf, phase, label_mode=label_mode)
+    # Read only through the window's end. History before it stays, since the
+    # anchored folds train on it; rows after it are another window's
+    # evidence and must not be labelled, class-balanced or fingerprinted by
+    # this run (Codex P1 on #1193). `until` bounds `s.bar_date < :until`, and
+    # bar_date is the bar's Eastern session date (strat_data_builder writes
+    # index.tz_convert(ET).date), so the cut falls exactly on the window's
+    # session boundary.
+    df = load_magnitude_dataset(engine, ticker, tf, phase,
+                                until=window.end.isoformat(),
+                                label_mode=label_mode)
+    if df.empty:
+        raise ValueError(
+            f"dataset has no rows before the {window.name} window end "
+            f"{window.end.isoformat()}")
     df["bar_date"] = pd.to_datetime(df["bar_date"]).dt.date
     log.info("loaded: %d rows  (%s..%s)",
              len(df), df["bar_date"].min(), df["bar_date"].max())
@@ -785,11 +1371,24 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
 
     X_full = X_df.values.astype(np.float32, copy=False)
     y_full = df[LABEL_COL].map(LABEL_TO_IDX).values.astype(np.int64)
-    bar_dates_arr = pd.DatetimeIndex(df["bar_date"]).values.astype("datetime64[D]")
     # Full-precision timestamps for per-bar prediction persistence (check 3
     # event-window analysis). ns precision; downstream parses as UTC.
     ts_arr = pd.to_datetime(df["ts"], utc=True).values.astype("datetime64[ns]")
+    # Session labels come from timestamps, not a potentially UTC-derived date
+    # column. This keeps every bar from one Eastern trading day together.
+    bar_dates_arr = eastern_sessions(ts_arr).values.astype("datetime64[D]")
+    provenance = _execution_provenance(X_full, y_full, ts_arr)
+    provenance.update({
+        "split_name": window.name,
+        "split_start": window.start.isoformat(),
+        "split_end": window.end.isoformat(),
+    })
     log.info("featurize-once: %d × %d in %.1fs", X_full.shape[0], X_full.shape[1], time.time() - t0)
+    if window.final:
+        # The claim was taken above on an unlabelled preflight; this confirms
+        # the labelled rows the run will actually evaluate reach the same
+        # last session (rows dropped for a missing label or ATR could not).
+        assert_window_covered(window, bar_dates_arr)
 
     cores = max(1, os.cpu_count() or 1)
     lgbm_n_jobs = max(1, cores // cv) if calibration != "none" else -1
@@ -799,7 +1398,7 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         if i + 1 < len(cutoffs):
             test_end = cutoffs[i + 1]
         else:
-            test_end = str(pd.Timestamp(df["bar_date"].max()) + pd.Timedelta(days=1))[:10]
+            test_end = window.end.isoformat()
         log.info("─" * 70)
         log.info("fold %d/%d  train<%s  test=[%s..%s)",
                  i + 1, len(cutoffs), cut, cut, test_end)
@@ -809,6 +1408,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
                 X_full, y_full, bar_dates_arr, ts_arr,
                 cut, test_end, tf, lgbm_n_jobs,
                 calibration=calibration, cv=cv,
+                embargo_sessions=PREDICTION_HORIZON_SESSIONS,
+                provenance=provenance,
             )
             r["fold_seconds"] = int(round(time.time() - fold_t0))
             folds.append(r)
@@ -836,24 +1437,28 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
             log.exception("fold %s FAILED: %s", cut, e)
             folds.append({"fold": f"{cut}..{test_end}",
                           "train_end": cut, "test_end": test_end,
-                          "status": "ERROR", "error": str(e)})
+                          "status": "ERROR", "error": str(e), **provenance,
+                          "purge_embargo_sessions": PREDICTION_HORIZON_SESSIONS})
 
     gates = _evaluate_phase_gate(folds, tf)
     log.info("=" * 70)
     log.info("CELL VERDICT (gates 1-4 only — gates 5-7 are post-hoc)  "
               "phase=%s  ticker=%s  tf=%s  →  %s",
              phase, ticker, tf, "PASS" if gates["cell_pass_gates_1_to_4"] else "FAIL")
-    log.info("  g1 log-loss beat ≥ %d/8 folds: %d  →  %s",
-             SUCCESS_BAR_MIN_FOLDS_LOGLOSS, gates["g1_logloss_beat_folds"],
+    log.info("  g1 log-loss beat ≥ %d/%d folds: %d  →  %s",
+             gates["min_folds_required"], gates["n_folds"],
+             gates["g1_logloss_beat_folds"],
              "PASS" if gates["g1_pass"] else "FAIL")
-    log.info("  g2 ECE ≤ %.3f in ≥ %d/8 folds: %d  →  %s",
-             ECE_CEILING_BY_TF[tf], SUCCESS_BAR_MIN_FOLDS_ECE,
-             gates["g2_ece_pass_folds"], "PASS" if gates["g2_pass"] else "FAIL")
+    log.info("  g2 ECE ≤ %.3f in ≥ %d/%d folds: %d  →  %s",
+             ECE_CEILING_BY_TF[tf], gates["min_folds_required"],
+             gates["n_folds"], gates["g2_ece_pass_folds"],
+             "PASS" if gates["g2_pass"] else "FAIL")
     log.info("  g3 monotone decisive-hit folds: %d  →  %s",
              gates["g3_monotone_folds"], "PASS" if gates["g3_pass"] else "FAIL")
-    log.info("  g4 EXPLOSIVE lift ≥ %.1f in ≥ %d/8 folds: %d  →  %s",
-             SUCCESS_BAR_EXPLOSIVE_LIFT_MIN, SUCCESS_BAR_MIN_FOLDS_LIFT,
-             gates["g4_lift_pass_folds"], "PASS" if gates["g4_pass"] else "FAIL")
+    log.info("  g4 EXPLOSIVE lift ≥ %.1f in ≥ %d/%d folds: %d  →  %s",
+             SUCCESS_BAR_EXPLOSIVE_LIFT_MIN, gates["min_folds_required"],
+             gates["n_folds"], gates["g4_lift_pass_folds"],
+             "PASS" if gates["g4_pass"] else "FAIL")
     log.info("=" * 70)
 
     # Harvest predictions for the per-cell CSV, the one durable home of the
@@ -869,6 +1474,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
     summary = {
         "production_readiness_version": PRODUCTION_READINESS_VERSION,
         "phase": phase, "ticker": ticker, "tf": tf,
+        **provenance,
+        "final_test_version": FINAL_TEST_VERSION if window.final else None,
         "cutoffs": cutoffs,
         "min_test_bars": MIN_TEST_BARS,
         "calibration": calibration, "cv": cv,
@@ -889,9 +1496,7 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         "gates": gates,
         "computed_at": pd.Timestamp.utcnow().isoformat(),
     }
-    run_id = (os.environ.get("CLOUD_RUN_EXECUTION")
-              or os.environ.get("MAG_RUN_ID")
-              or f"run_{int(time.time())}")
+    run_id = (execution_id)
     summary["run_id"] = run_id
 
     # Per-bar predictions CSV.
@@ -902,7 +1507,8 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
         w.writerow(pred_columns)
         w.writerows(pred_rows)
         prefix = gcs_run_prefix(phase, ticker, tf,
-                label_mode=label_mode, thresholds=thresholds)
+                label_mode=label_mode, thresholds=thresholds,
+                evaluation_window=window.name)
         pred_blob = f"{prefix}/predictions_{run_id}.csv"
         _gcs_upload(buf.getvalue().encode(), pred_blob, "text/csv")
         log.info("predictions: wrote %d rows to gs://%s/%s",
@@ -914,6 +1520,7 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
     # persist try/except so a DDL race doesn't drop the per-fold rows.
     try:
         execute_sql(RESULTS_DDL_CREATE)
+        execute_sql(RESULTS_DDL_PROVENANCE)
         execute_sql(RESULTS_DDL_INDEX)
     except Exception as e:
         # Race on CREATE/INDEX — fine, table will already exist by the
@@ -960,22 +1567,60 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
     # aborted it and silently left the production model un-persisted.)
     # Only emit from phase0 — phase1+ share the same backbone features and we
     # want exactly one canonical artifact per (ticker, tf).
-    if persist_production_model and phase == "phase0":
+    persist_refusal = (production_persist_refusal(window)
+                       if persist_production_model and phase == "phase0" else None)
+    if persist_refusal:
+        log.warning("production model NOT persisted for %s:%s: %s",
+                    ticker, tf, persist_refusal)
+        summary["production_model_refused"] = persist_refusal
+    # A phase-0 final-test run stages its candidate whether or not the flag
+    # was passed: the run has consumed the one-time version, and without the
+    # artifact there is nothing for gates 5-7 to promote and no second run to
+    # produce it (Codex P1 on #1193).
+    stage_final = window.final and phase == "phase0"
+    if stage_final and not persist_production_model:
+        log.info("final-test run: staging the phase0 candidate although "
+                 "--persist-production-model was not passed; the one-time "
+                 "version is consumed by this run")
+    if (persist_production_model and phase == "phase0" and not persist_refusal) \
+            or stage_final:
         try:
+            # The final-test candidate is STAGED, never promoted here: gates
+            # 5-7 are scored after this run, on its predictions.
             uri = _persist_production_model_artifact(
                 ticker, tf, run_id, X_full, y_full, feature_cols,
                 gates=gates, label_mode=label_mode, thresholds=thresholds,
-                calibration=calibration, cv=cv,
+                calibration=calibration, cv=cv, stage_only=window.final,
             )
-            if uri:
+            if uri and window.final:
+                summary["production_model_staged"] = uri
+            elif uri:
                 summary["production_model_uri"] = uri
+            elif window.final:
+                # The version is consumed; without the artifact gates 5-7
+                # have nothing to promote. Say so in the summary with the
+                # recovery path (the claim resumes for this run id).
+                summary["production_model_staging_failed"] = (
+                    f"no candidate staged (see PROMOTION_BLOCKED or the log); "
+                    f"recover with --resume-staging={run_id} --ticker={ticker} "
+                    f"--tf={tf}, which stages from this summary's verdict "
+                    f"without re-evaluating the holdout")
+                log.error("final-test staging produced no candidate for %s:%s; %s",
+                          ticker, tf, summary["production_model_staging_failed"])
         except Exception as e:
             log.error("Production-model persist FAILED (%s): %s",
                       type(e).__name__, e)
+            if window.final:
+                summary["production_model_staging_failed"] = (
+                    f"{type(e).__name__}: {e}; recover with "
+                    f"--resume-staging={run_id} --ticker={ticker} --tf={tf}, "
+                    f"which stages from this summary's verdict without "
+                    f"re-evaluating the holdout")
 
     # Always persist to GCS.
     prefix = gcs_run_prefix(phase, ticker, tf,
-            label_mode=label_mode, thresholds=thresholds)
+            label_mode=label_mode, thresholds=thresholds,
+            evaluation_window=window.name)
     # Only now that the CSV harvest above has read them do the per-bar rows
     # come off the folds -- they would otherwise bloat the summary JSON by
     # orders of magnitude.
@@ -987,6 +1632,10 @@ def walk_forward(engine, phase: str, ticker: str, tf: str,
     _gcs_upload(json.dumps(summary, indent=2, default=str).encode(), blob)
     log.info("saved gs://%s/%s",
              os.environ.get("GCS_BUCKET", GCS_BUCKET_DEFAULT), blob)
+    if window.final:
+        # The verdict is durable: the claim moves to "evaluated" and the cell
+        # can never be reclaimed; staging failures recover from this summary.
+        _mark_final_test_evaluated(FINAL_TEST_VERSION, ticker, tf, run_id, blob)
     return summary
 
 
@@ -995,7 +1644,8 @@ def run_all_cells(engine, phase: str,
                    calibration: str = DEFAULT_CALIBRATION,
                    label_mode: str = DEFAULT_LABEL_MODE,
                    persist_production_model: bool = False,
-                   features: str = "") -> dict:
+                   features: str = "",
+                   evaluation_window: str = "development") -> dict:
     """Dispatch all 9 (ticker × tf) cells for one phase sequentially in-process."""
     all_summaries = []
     for ticker in TICKERS:
@@ -1005,7 +1655,8 @@ def run_all_cells(engine, phase: str,
                                  cutoffs=cutoffs, calibration=calibration,
                                  label_mode=label_mode,
                                  persist_production_model=persist_production_model,
-                                 features=features)
+                                 features=features,
+                                 evaluation_window=evaluation_window)
                 all_summaries.append(s)
             except Exception as e:
                 log.exception("cell %s %s FAILED: %s", ticker, tf, e)
@@ -1152,6 +1803,9 @@ def main():
                         "this is auto-resolved from CLOUD_RUN_TASK_INDEX.")
     p.add_argument("--cutoffs", default=None,
                    help="Comma-separated YYYY-MM-DD (default: regime-spanning)")
+    p.add_argument("--evaluation-window", choices=tuple(WINDOWS),
+                   default="development",
+                   help="Immutable Eastern-session evaluation period")
     p.add_argument("--calibration", default=DEFAULT_CALIBRATION,
                    choices=["none", "isotonic", "sigmoid"])
     p.add_argument("--label-mode", default=DEFAULT_LABEL_MODE, choices=list(LABEL_MODES),
@@ -1165,7 +1819,36 @@ def main():
                    help="Comma-separated phase2 family names (prune, "
                         "options_iv, positioning, cross_asset, calendar). "
                         "Default empty = baseline (no phase2 change).")
+    p.add_argument("--resume-staging", default=None, metavar="RUN_ID",
+                   help="Recovery for a final-test run whose staging failed "
+                        "after the one-time claim: stage the production "
+                        "candidate from that run's recorded verdict, with "
+                        "--ticker --tf. Nothing is re-evaluated.")
+    p.add_argument("--reclaim-incomplete", default=None, metavar="RUN_ID",
+                   help="Recovery for a final-test run that died after the "
+                        "one-time claim and before ANY durable output: move "
+                        "the claim to this run (audited, at most "
+                        f"{FINAL_RECLAIM_LIMIT} times per cell) and run the "
+                        "final test, with --ticker --tf.")
     args = p.parse_args()
+    if args.resume_staging:
+        if not args.ticker or not args.tf:
+            raise SystemExit("--resume-staging needs --ticker and --tf")
+        uri = resume_final_staging(get_engine(), args.ticker, args.tf,
+                                   args.resume_staging)
+        log.info("staged -> %s", uri)
+        return
+    if args.reclaim_incomplete:
+        if not args.ticker or not args.tf:
+            raise SystemExit("--reclaim-incomplete needs --ticker and --tf")
+        reclaim_incomplete_final_test(args.ticker, args.tf, args.reclaim_incomplete,
+                                      _execution_id())
+        walk_forward(get_engine(), SERVING_PHASE, args.ticker, args.tf,
+                      calibration=args.calibration, label_mode=args.label_mode,
+                      persist_production_model=args.persist_production_model,
+                      features=args.features, evaluation_window="final_test",
+                      claim_held=True)
+        return
     # Validate the threshold override BEFORE any fan-out. run_all_cells
     # catches every per-cell exception and main() does not act on its FAIL
     # verdict, so a malformed MAG_THRESHOLDS reaching that path would error
@@ -1192,7 +1875,8 @@ def main():
                       cutoffs=cutoffs, calibration=args.calibration,
                       label_mode=args.label_mode,
                       persist_production_model=args.persist_production_model,
-                      features=args.features)
+                      features=args.features,
+                      evaluation_window=args.evaluation_window)
         return
 
     if args.plan and args.task_index is not None:
@@ -1205,7 +1889,8 @@ def main():
                       cutoffs=cutoffs, calibration=args.calibration,
                       label_mode=args.label_mode,
                       persist_production_model=args.persist_production_model,
-                      features=args.features)
+                      features=args.features,
+                      evaluation_window=args.evaluation_window)
         return
 
     if args.all_cells:
@@ -1215,7 +1900,8 @@ def main():
                        calibration=args.calibration,
                        label_mode=args.label_mode,
                        persist_production_model=args.persist_production_model,
-                       features=args.features)
+                       features=args.features,
+                       evaluation_window=args.evaluation_window)
         return
 
     if not args.phase or not args.ticker or not args.tf:
@@ -1229,7 +1915,8 @@ def main():
                   cutoffs=cutoffs, calibration=args.calibration,
                   label_mode=args.label_mode,
                   persist_production_model=args.persist_production_model,
-                  features=args.features)
+                  features=args.features,
+                  evaluation_window=args.evaluation_window)
 
 
 if __name__ == "__main__":

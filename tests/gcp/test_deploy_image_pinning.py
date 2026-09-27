@@ -239,7 +239,8 @@ def _calls(tmp_path) -> list[str]:
 
 
 _BUILD_FNS = ("_split_tsv", "_pkgdev_path", "_resolve_image_ref", "_submit_build",
-              "build_image", "build_research_image", "_research_image_ref")
+              "_stamp_build_info", "build_image", "build_research_image",
+              "_research_image_ref")
 
 
 def test_build_image_exports_the_digest_its_own_build_pushed(tmp_path):

@@ -474,7 +474,7 @@ class TestAnalysisScriptsUseTheDecisionRule:
             y = rng.choice(4, size=120, p=[0.64, 0.27, 0.07, 0.02])
             proba = np.tile(_PRIORS, (120, 1))
             rows.append(pd.DataFrame({
-                "fold": fold, "ts": "t", "true_bucket_idx": y,
+                "fold": fold, "ts": "2025-01-02T15:00:00Z", "true_bucket_idx": y,
                 "pred_bucket_idx": 0, "max_proba": 0.64,
                 "p_TIGHT": proba[:, 0], "p_NORMAL": proba[:, 1],
                 "p_EXPANDED": proba[:, 2], "p_EXPLOSIVE": proba[:, 3],

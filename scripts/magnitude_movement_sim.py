@@ -65,6 +65,7 @@ from gcp.research.magnitude_engine.mag_config import (
     TICKERS, TIMEFRAMES, LABEL_TO_IDX, DEFAULT_CUTOFFS, GCS_BUCKET_DEFAULT,
 )
 from gcp.research.magnitude_engine.mag_dataset import load_magnitude_dataset
+from gcp.research.magnitude_engine.evaluation_windows import WINDOWS
 from lib.eastern_time import utc_now
 from scripts._magnitude_analysis_helpers import (
     add_research_arg, apply_research_contract, load_predictions,
@@ -153,10 +154,12 @@ def main():
     args.label_mode, _thresholds = apply_research_contract(
         args.research, args.label_mode)
     preds = load_predictions(args.phase, args.ticker, args.tf, args.bucket, args.run_id,
-                                 research=args.research)
+                                 research=args.research,
+        evaluation_window=args.evaluation_window)
     readiness_version = load_run_readiness_version(
         args.phase, args.ticker, args.tf, args.bucket, args.run_id,
-        research=args.research)
+        research=args.research,
+        evaluation_window=args.evaluation_window)
     preds["ts"] = pd.to_datetime(preds["ts"], utc=True)
     expl = LABEL_TO_IDX["EXPLOSIVE"]
     pe = preds[preds["pred_bucket_idx"] == expl].copy()
@@ -167,7 +170,10 @@ def main():
 
     # 2. Dataset OHLC (entry = next_open; path = next_high/low/close; atr_20).
     engine = get_engine()
+    # Read only through the selected window's end: a validation analysis
+    # must not construct final-test labels (Codex P1 on #1193).
     df = load_magnitude_dataset(engine, args.ticker, args.tf, phase=args.phase,
+                                until=WINDOWS[args.evaluation_window].end.isoformat(),
                                 label_mode=args.label_mode)
     df["ts"] = pd.to_datetime(df["ts"], utc=True)
     cols = ["ts", "next_open", "next_high", "next_low", "next_close", "atr_20"]
@@ -261,7 +267,8 @@ def main():
         # The summary belongs beside the run it describes: reading from the
         # research namespace and writing back to the canonical one would file
         # a call/put/excursion result among body-contract artifacts.
-        blob = (research_prefix(args.phase, args.ticker, args.tf, args.research)
+        blob = (research_prefix(args.phase, args.ticker, args.tf, args.research,
+                                evaluation_window=args.evaluation_window)
                 + f"movement_sim_{args.position}_{args.direction}_{int(time.time())}.json")
         gcs.Client().bucket(args.bucket).blob(blob).upload_from_string(
             json.dumps(summary, indent=2, default=str), content_type="application/json")

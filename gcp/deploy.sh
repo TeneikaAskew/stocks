@@ -77,6 +77,27 @@ migrate() {
 }
 
 # ── Image build ───────────────────────────────────────────────────────────────
+_stamp_build_info() {
+    # _stamp_build_info <build-context-dir>
+    # Bake the source revision into the image as gcp/build_info.json. The
+    # container copies lib/ gcp/ scripts/ and no .git, so a runtime
+    # `git rev-parse` there cannot answer; mag_walk_forward reads this file
+    # for the provenance every walk-forward records (Codex P1 on #1193).
+    local dir=$1 commit dirty
+    commit=$(git rev-parse HEAD) || { echo "ERROR: cannot read HEAD for the build stamp" >&2; return 1; }
+    # `git status --porcelain`, not `git diff HEAD`: an untracked file under
+    # lib/ gcp/ scripts/ ships in the image too (Codex P2 on #1193). The path
+    # list is EVERY build input build_image / build_research_image copy:
+    # the root requirements files, the lock and alert_config.json change the
+    # image's behaviour as surely as a source file (Codex P2 on #1193).
+    dirty=false
+    [ -z "$(git status --porcelain -- lib gcp scripts \
+            requirements-gcp.txt requirements-research.txt requirements-gcp.lock \
+            alert_config.json 2>/dev/null)" ] || dirty=true
+    printf '{"git_commit": "%s", "git_dirty": %s, "built_at": "%s"}\n' \
+        "${commit}" "${dirty}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${dir}/gcp/build_info.json"
+}
+
 build_image() {
     echo "Building Docker image..."
     # Use a minimal build context — only the files gcp/Dockerfile actually COPYs.
@@ -89,6 +110,7 @@ build_image() {
     cp -r lib/                 "$tmpdir/lib/"
     cp -r gcp/                 "$tmpdir/gcp/"
     cp -r scripts/             "$tmpdir/scripts/"
+    _stamp_build_info "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
     # Re-pin before the tag moves: every build re-points :latest, which
     # untags the digest the currently deployed jobs still run on. The
     # cleanup policy only deletes UNTAGGED versions, so pinning first keeps
@@ -1658,6 +1680,7 @@ build_research_image() {
     cp -r lib/    "$tmpdir/lib/"
     cp -r gcp/    "$tmpdir/gcp/"
     cp -r scripts/ "$tmpdir/scripts/"
+    _stamp_build_info "$tmpdir" || { rm -rf "$tmpdir"; return 1; }
     # Same guard as build_image: this build moves :research, which the
     # research jobs pin by digest (Codex, PR #1004).
     pin_image_tags || { echo "ERROR: pinning failed; not building (the build would move :research off an unpinned digest)." >&2; rm -rf "$tmpdir"; return 1; }
@@ -1902,7 +1925,13 @@ deploy_magnitude_engine() {
     # depends on belongs in this list.
     local plan_default=no_backfill
     local plan_size=27
-    local mag_env="MAG_PLAN=${plan_default},MAG_PERSIST_PRODUCTION_MODEL=true,MAG_CLASS_WEIGHT_POWER=0.75"
+    # ${research_image} is already a digest (_research_image_ref, #1189). Hand
+    # the job that same string as CONTAINER_IMAGE_DIGEST, so the provenance
+    # every walk-forward records names the image it actually ran, not a tag
+    # that moves under it (Codex P2 on #1193). The source revision travels
+    # inside the image (_stamp_build_info); nothing shells out to git at run
+    # time.
+    local mag_env="MAG_PLAN=${plan_default},MAG_PERSIST_PRODUCTION_MODEL=true,MAG_CLASS_WEIGHT_POWER=0.75,CONTAINER_IMAGE_DIGEST=${research_image}"
     gcloud run jobs create magnitude-engine \
         --image "${research_image}" --region "${REGION}" \
         --tasks ${plan_size} --parallelism ${plan_size} \
