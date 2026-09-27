@@ -1902,7 +1902,9 @@ deploy_magnitude_engine() {
     # depends on belongs in this list.
     local plan_default=no_backfill
     local plan_size=27
-    local mag_env="MAG_PLAN=${plan_default},MAG_PERSIST_PRODUCTION_MODEL=true,MAG_CLASS_WEIGHT_POWER=0.75"
+    # Phase-0 5m is the active promotion track and is deliberately unweighted.
+    # Higher timeframes remain research-only without separate post-hoc evidence.
+    local mag_env="MAG_PLAN=${plan_default},MAG_PERSIST_PRODUCTION_MODEL=true,MAG_CLASS_WEIGHT_POWER=0"
     gcloud run jobs create magnitude-engine \
         --image "${research_image}" --region "${REGION}" \
         --tasks ${plan_size} --parallelism ${plan_size} \
