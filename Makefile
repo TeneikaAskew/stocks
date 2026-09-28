@@ -1,10 +1,10 @@
-.PHONY: install install-unpinned lock test test-e2e test-scripts install-playwright pipeline pipeline-fast report sweep backtest dev api web stop clean setup-notifier notifier help
+.PHONY: install install-unpinned lock test test-e2e test-scripts install-playwright pipeline pipeline-fast report sweep backtest dev api web stop clean setup-notifier notifier help hooks
 
 PYTHON ?= python
 TICKERS ?= IWM SPY QQQ
 
-## Install dependencies (uses lock file for reproducibility)
-install:
+## Install dependencies (uses lock file for reproducibility) and the git hooks
+install: hooks
 	$(PYTHON) -m pip install -r requirements.lock
 
 ## Install dependencies (unpinned, for upgrading)
@@ -119,7 +119,8 @@ help:
 	@echo "  make stop                Kill any running dev servers"
 	@echo ""
 	@echo "Pipeline & backtests:"
-	@echo "  make install             Install Python dependencies"
+	@echo "  make install             Install Python dependencies and the git hooks"
+	@echo "  make hooks               Install the git hooks (spec gate on every commit)"
 	@echo "  make install-playwright  Install Playwright browser binaries"
 	@echo "  make test                Run unit/integration test suite"
 	@echo "  make test-e2e            Run Playwright E2E tests for web apps"
@@ -135,6 +136,8 @@ help:
 	@echo "  make setup-notifier      One-time: store GitHub PAT + repo in Secret Manager"
 	@echo "  make notifier            Build + deploy failure-notifier service + log sink"
 
+## Point git at the committed hooks: .githooks/pre-commit runs the spec gate on every commit
 hooks:
-	git config core.hooksPath .githooks
-	chmod +x .githooks/pre-commit
+	@if git rev-parse --git-dir >/dev/null 2>&1; then \
+		git config core.hooksPath .githooks && chmod +x .githooks/pre-commit && echo "hooks: core.hooksPath=.githooks"; \
+	else echo "hooks: not a git checkout; skipped"; fi
