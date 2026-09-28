@@ -111,7 +111,7 @@ git push -u origin feature/short-description
 - `fix/<description>` — bug fixes
 - `docs/<description>` — doc-only changes
 - `chore/<description>` — refactors, deps, build tooling
-- `fix/workflow-{name}-{run-number}` — auto-created failure-handler branches
+- `fix/feat-cicd-001-workflow-{name}-{run-number}` — auto-created failure-handler branches
 
 Use kebab-case, keep under ~40 chars, no emoji, no PR/issue numbers.
 
@@ -1774,7 +1774,7 @@ When any GitHub Actions workflow fails:
    - Link to the workflow logs for full details
 
 2. **Pull Request Creation**: A draft PR is automatically created with:
-   - Branch named `fix/workflow-{workflow-name}-{run-number}`
+   - Branch named `fix/feat-cicd-001-workflow-{workflow-name}-{run-number}`
    - Link to the related issue
    - Error summary and diagnostic information
    - Checklist for fixing the issue
@@ -1830,7 +1830,7 @@ All major workflows in this project use automated failure handling:
    ```bash
    # Checkout the auto-created branch
    git fetch origin
-   git checkout fix/workflow-{name}-{run-number}
+   git checkout fix/feat-cicd-001-workflow-{name}-{run-number}
 
    # Make your fixes
    # Test locally
@@ -1838,7 +1838,7 @@ All major workflows in this project use automated failure handling:
    # Push your fixes
    git add .
    git commit -m "fix: resolve workflow failure"
-   git push origin fix/workflow-{name}-{run-number}
+   git push origin fix/feat-cicd-001-workflow-{name}-{run-number}
    ```
 
 4. **Mark as Ready**: Once fixed:

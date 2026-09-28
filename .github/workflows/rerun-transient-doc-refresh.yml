@@ -116,7 +116,7 @@ jobs:
           esac
 
   # The refresh workflow's handle-failure job runs with create_pr: true, so a
-  # transient stall leaves a draft `fix/workflow-refresh-architecture-docs-<run>`
+  # transient stall leaves a draft `fix/feat-cicd-001-workflow-refresh-architecture-docs-<run>`
   # PR (or a comment on an older one) saying a fix is required. This job says
   # on that PR that the re-run succeeded and no fix is needed. It does NOT
   # close it: the only evidence it has is the same textual classifier over the
@@ -147,9 +147,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.event.workflow_run.id }}
-          # scripts/handle_workflow_failure.py:584 builds the branch as
-          # fix/workflow-{workflow_file without .yml}-{run_number}.
-          BRANCH: fix/workflow-refresh-architecture-docs-${{ github.event.workflow_run.run_number }}
+          # scripts/handle_workflow_failure.py builds the branch as
+          # fix/feat-cicd-001-workflow-{workflow_file without .yml}-{run_number}.
+          BRANCH: fix/feat-cicd-001-workflow-refresh-architecture-docs-${{ github.event.workflow_run.run_number }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: |
           set -euo pipefail
@@ -170,7 +170,7 @@ jobs:
           PR=$(gh api "repos/${REPO}/pulls?state=open&head=${REPO%%/*}:${BRANCH}" --jq '.[0].number // empty')
           if [ -z "$PR" ]; then
             # scripts/handle_workflow_failure.py:find_existing_pr creates the
-            # per-run branch only when no `fix/workflow-refresh-architecture-docs-*`
+            # per-run branch only when no `fix/feat-cicd-001-workflow-refresh-architecture-docs-*`
             # PR is open. Otherwise it comments "Please review this additional
             # failure and update the fix in this PR" on the one that is -- a PR
             # about some EARLIER, possibly real, failure. That PR must not be

@@ -283,7 +283,7 @@
                 <mxCell id="gha_dep" value="Cloud Build: deploy-solyra-api-prod&#10;manual: promote the digest&#10;staging serves → solyra-api-prod" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;" parent="1" vertex="1">
                     <mxGeometry x="1040" y="1055" width="240" height="55" as="geometry" />
                 </mxCell>
-                <mxCell id="gha_hf" value="handle-workflow-failure.yml&#10;auto-creates issue + draft PR&#10;(fix/workflow-{name}-{run})" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;" parent="1" vertex="1">
+                <mxCell id="gha_hf" value="handle-workflow-failure.yml&#10;auto-creates issue + draft PR&#10;(fix/feat-cicd-001-workflow-{name}-{run})" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;" parent="1" vertex="1">
                     <mxGeometry x="1300" y="1055" width="240" height="55" as="geometry" />
                 </mxCell>
                 <mxCell id="gha_audit" value="Audit / type-check / test workflows&#10;security-review, audit-review,&#10;pre-deploy-check" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d6b656;fontSize=10;" parent="1" vertex="1">

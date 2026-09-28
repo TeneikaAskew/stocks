@@ -247,9 +247,9 @@ class WorkflowFailureHandler:
         Returns:
             PR number if found, None otherwise
         """
-        # Look for PRs with branch pattern fix/workflow-{workflow_file}-*
+        # Look for PRs with branch pattern fix/feat-cicd-001-workflow-{workflow_file}-*
         workflow_base = workflow_file.replace('.yml', '')
-        head_pattern = f"{self.owner}:fix/workflow-{workflow_base}-"
+        head_pattern = f"{self.owner}:fix/feat-cicd-001-workflow-{workflow_base}-"
 
         try:
             # Search for open PRs
@@ -581,7 +581,8 @@ Based on the workflow, these files may need attention:
                 pr_number = existing_pr
             else:
                 # Create branch and PR
-                branch_name = f"fix/workflow-{workflow_file.replace('.yml', '')}-{run_number}"
+                # fix/<feat-id>-<slug>: the spec gate reads FEAT-CICD-001 from this shape.
+                branch_name = f"fix/feat-cicd-001-workflow-{workflow_file.replace('.yml', '')}-{run_number}"
                 print(f"Creating branch: {branch_name}")
 
                 try:

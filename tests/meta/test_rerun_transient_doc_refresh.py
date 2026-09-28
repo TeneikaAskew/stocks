@@ -315,7 +315,7 @@ def test_a_failed_recovery_is_not_silent():
 
 def test_a_successful_rerun_annotates_the_obsolete_failure_pr():
     """The refresh workflow's handler runs with create_pr: true, so a transient
-    stall leaves a draft `fix/workflow-...` PR saying a fix is required. The
+    stall leaves a draft `fix/feat-cicd-001-workflow-...` PR saying a fix is required. The
     issue is the incident record; the PR gets told the re-run succeeded."""
     job = DOC["jobs"]["annotate-obsolete-failure-pr"]
     cond = " ".join(job["if"].split())
@@ -324,9 +324,9 @@ def test_a_successful_rerun_annotates_the_obsolete_failure_pr():
     step = next(st for st in job["steps"] if "run" in st)
     # The branch name must match what the failure handler actually builds.
     src = (REPO / "scripts/handle_workflow_failure.py").read_text()
-    assert 'f"fix/workflow-{workflow_file.replace(\'.yml\', \'\')}-{run_number}"' in src, \
+    assert 'f"fix/feat-cicd-001-workflow-{workflow_file.replace(\'.yml\', \'\')}-{run_number}"' in src, \
         "the failure handler's branch pattern changed; this job's BRANCH must follow"
-    assert step["env"]["BRANCH"].startswith("fix/workflow-refresh-architecture-docs-")
+    assert step["env"]["BRANCH"].startswith("fix/feat-cicd-001-workflow-refresh-architecture-docs-")
     assert "run_number" in step["env"]["BRANCH"]
     assert "gh pr comment" in step["run"]
     assert 'is_transient_gemini_failure.sh "$RUN_ID" 1' in step["run"], \
@@ -499,7 +499,7 @@ def _run_cleanup(tmp_path, *, log_text, per_run_pr="", older_pr="", fail_on="", 
     env = dict(os.environ)
     env.update(PATH=f"{bin_dir}:{env['PATH']}", GH_TOKEN="stub",
                REPO="TeneikaAskew/stocks", RUN_ID="777",
-               BRANCH="fix/workflow-refresh-architecture-docs-25",
+               BRANCH="fix/feat-cicd-001-workflow-refresh-architecture-docs-25",
                RUN_URL="https://example.invalid/run/777",
                LOG_FIXTURE=str(d / "log.txt"), WINDOW_FIXTURE=str(d / "windows.txt"),
                GH_OUT=str(out), GH_CALLS=str(out / "calls.txt"),
@@ -551,10 +551,10 @@ def test_cleanup_is_quiet_when_no_failure_pr_exists(tmp_path):
 
 
 def test_the_older_pr_lookup_matches_the_handlers_own_prefix():
-    """`find_existing_pr` matches `OWNER:fix/workflow-<file>-`; the lookup
+    """`find_existing_pr` matches `OWNER:fix/feat-cicd-001-workflow-<file>-`; the lookup
     here strips the run number off BRANCH to rebuild exactly that prefix."""
     src = (REPO / "scripts/handle_workflow_failure.py").read_text()
-    assert 'head_pattern = f"{self.owner}:fix/workflow-{workflow_base}-"' in src
+    assert 'head_pattern = f"{self.owner}:fix/feat-cicd-001-workflow-{workflow_base}-"' in src
     run = CLEANUP_STEP["run"]
     assert 'startswith(\\"${REPO%%/*}:${BRANCH%-*}-\\")' in run
 

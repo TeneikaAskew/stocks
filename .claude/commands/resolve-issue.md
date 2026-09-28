@@ -158,7 +158,7 @@ survey_existing_work() {
   # on the remote and was never fetched here is invisible. The narrowing that
   # made round 63's fetch honest is what makes this listing lie: measured on a
   # `--single-branch` clone (refspec `+refs/heads/main:refs/remotes/origin/main`)
-  # with `fix/workflow-refresh-architecture-docs-14` pushed upstream,
+  # with `fix/feat-cicd-001-workflow-refresh-architecture-docs-14` pushed upstream,
   # `survey_existing_work` returned 0 with NO output — "no existing work" —
   # while `git ls-remote --heads origin` listed the branch. The resolver would
   # then open a second branch for work already in flight, and the PR search
@@ -170,7 +170,7 @@ survey_existing_work() {
   _b=$(git ls-remote --heads origin) \
     || { echo "could not list the remote's branches — NOT reporting 'no"
          echo "existing work' from a listing that did not run"; return 1; }
-  if grep -iE "fix/workflow-|<issue-keyword>" <<<"$_b"; then _g=0; else _g=$?; fi
+  if grep -iE "fix/(feat-cicd-001-)?workflow-|<issue-keyword>" <<<"$_b"; then _g=0; else _g=$?; fi
   test "$_g" -le 1 \
     || { echo "branch survey errored (grep rc=$_g) — not treating this as"
          echo "'no existing work'; re-run before creating a branch"; return 1; }
@@ -299,7 +299,7 @@ git rev-parse --abbrev-ref HEAD
 # them, BARE.
 
 # CASE A — a PR already exists for this issue (including an auto-created
-# fix/workflow-* draft). Work on ITS head. Do not open a second PR.
+# fix/feat-cicd-001-workflow-* draft). Work on ITS head. Do not open a second PR.
 # First: is the head in THIS repo? A PR from a fork has no
 # origin/<headRefName>, so both paths below fail, and Phase 7 would push to
 # origin rather than the fork. Read headRepositoryOwner from the PR; if it is
@@ -588,7 +588,7 @@ CASE A there is an open or draft PR attached to this issue, and closing only the
 issue leaves it live: it keeps drawing review rounds and CI minutes, and it can
 still be merged later by someone who never reads the close comment. Close it as
 superseded, naming the evidence, or say explicitly on the PR why it stays open.
-The auto-created `fix/workflow-*` drafts are the common case here — a workflow
+The auto-created `fix/feat-cicd-001-workflow-*` drafts are the common case here — a workflow
 that has since gone green leaves both an issue and a draft behind.
 
 Two traps this repo has already hit:
@@ -3983,7 +3983,7 @@ inside that window.** An empty review list at 60 seconds means "wait", not
 "clean". In order:
 
 0. **If the PR is a draft, mark it ready — before any check below.** CASE A can
-   land you on an auto-created `fix/workflow-*` draft, and pushing to a draft
+   land you on an auto-created `fix/feat-cicd-001-workflow-*` draft, and pushing to a draft
    does not un-draft it; GitHub refuses the merge. CLAUDE.md's failure-handler
    procedure requires converting it once fixed.
 
@@ -3998,7 +3998,7 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    not" means a PR **outside this run** — someone else's work, or one nobody
    asked you to drive. It does not mean CASE A's own PR: that one is attached
    to the issue you were asked to resolve, and the auto-created
-   `fix/workflow-*` drafts are named above as the common case for taking CASE
+   `fix/feat-cicd-001-workflow-*` drafts are named above as the common case for taking CASE
    A at all. Reading the stop as "this session did not open it" makes the
    command's own primary route terminate one step from the end, which is the
    same condition step 7 states correctly for merging.
