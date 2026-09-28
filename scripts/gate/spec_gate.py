@@ -66,7 +66,7 @@ FEAT_IDS = re.compile(r"\bFEAT-[A-Z]+-\d{3}\b")
 BRANCH = re.compile(r"^(feature|fix)/(feat-[a-z]+-\d{3})(-[a-z0-9]+)+$")   # lowercase kebab-case: git refs are case-sensitive
 REQ_SHAPE = re.compile(r"^REQ-[A-Z]+-\d{3}$")
 REQ_DEFINITION = re.compile(r"\*\*(REQ-[A-Z]+-\d{3}):\*\*")
-CHECKBOX = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\[([ xX])\]\s+(.*\S)\s*$")   # (round seven: `+` and `1.` render boxes too)
+CHECKBOX = re.compile(r"^\s*(?:[-*+]|\d{1,9}[.)])\s+\[([ xX])\]\s+(.*\S)\s*$")   # (round seven: `+` and `1.` render boxes too; a marker over nine digits is text, stocks#1205 r4127577559)
 HEADING = re.compile(r"^ {0,3}(#{1,6})\s")   # up to three leading spaces still render as a heading (stocks#1205 r4127396415); the level is the hash run
 ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 PR_REF = re.compile(r"^#?(\d+)$")
@@ -115,12 +115,14 @@ def lockfile_sources(name: str, text: str) -> list[str]:
             value = m.group(2).strip()
             found.append(value if m.group(1) == "resolved" or "@npm:" not in value else "https://registry.yarnpkg.com/")
     elif name == "pnpm-lock.yaml":
-        for m in re.finditer(r"(?m)^\s+(tarball|directory|repo|commit|path|type)\s*:\s*(.+)$|resolution:\s*\{([^}]*)\}", text):
+        # (stocks#1205 r4127577544: a quoted key `"tarball":` is the same key to YAML)
+        unq = lambda v: v.strip().strip("'\"")
+        for m in re.finditer(r"(?m)^\s+['\"]?(tarball|directory|repo|commit|path|type)['\"]?\s*:\s*(.+)$|['\"]?resolution['\"]?\s*:\s*\{([^}]*)\}", text):
             if m.group(3) is not None:
-                for key, value in re.findall(r"([\w-]+)\s*:\s*([^,}]+)", m.group(3)):
-                    found.append(value.strip() if key == "tarball" else ("https://registry.npmjs.org/" if key == "integrity" else "source:" + key))
+                for key, value in re.findall(r"['\"]?([\w-]+)['\"]?\s*:\s*([^,}]+)", m.group(3)):
+                    found.append(unq(value) if key == "tarball" else ("https://registry.npmjs.org/" if key == "integrity" else "source:" + key))
             else:
-                found.append(m.group(2).strip() if m.group(1) == "tarball" else "source:" + m.group(1))
+                found.append(unq(m.group(2)) if m.group(1) == "tarball" else "source:" + m.group(1))
     else:   # bun.lock: JSON with trailing commas
         walk_text = re.sub(r",\s*([}\]])", r"\1", text)
         found += [m.group(0) for m in re.finditer(r"(?i)\b(?:https?:|file:|link:|git\+|workspace:)[^\s\"']*", walk_text)]
@@ -1348,7 +1350,7 @@ def plan_stays_bound(name: str, fm: dict, base_fm: dict, branch: str) -> list[st
     return errs
 
 
-TASK_HEADING = re.compile(r"^#{2,3}\s+Task\b.*$", re.M)
+TASK_HEADING = re.compile(r"^ {0,3}#{2,3}\s+Task\b.*$", re.M)   # up to three leading spaces still render (stocks#1205 r4127577524)
 
 
 def validate_plan_body(text: str | None, name: str) -> list[str]:
@@ -1898,6 +1900,20 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
             for job in jobs:
                 if not any(invokes(st, m) for m in required for st in job["statements"]):
                     continue
+                # stocks#1205 r4127577568: only the handoff's own actions run in a job that runs a contract command;
+                # a checkout is the job's first steps, before any `run:`, so no action can change the files afterwards
+                ran = False
+                for ln in job["lines"]:
+                    if re.match(r"^\s*(-\s+)?run:\s*\S", ln):   # a step's `run:` carries its value; `defaults: run:` does not
+                        ran = True
+                    if (um := re.match(r"^\s*(-\s+)?uses:\s*(.*)$", ln)):
+                        action = shell_value(um.group(2))
+                        if not action.startswith(("actions/checkout@", "actions/upload-artifact@", "actions/download-artifact@")):
+                            return [f"{path}: `{action}` runs in job {job['name']}; the gate's jobs use only actions/checkout, "
+                                    "actions/upload-artifact and actions/download-artifact"], None
+                        if action.startswith("actions/checkout@") and ran:
+                            return [f"{path}: actions/checkout runs after a `run:` step in job {job['name']}; a checkout is the job's "
+                                    "first step, so nothing replaces the files the gate's commands read"], None
                 # (red-team, this PR): a job `name:` or a matrix renames the check context GitHub
                 # publishes; a container runs every step inside an image the PR names
                 level = indent(job["lines"][0]) + 2
@@ -2213,8 +2229,8 @@ def checklist(body: str) -> list[tuple[bool, str]]:
                 items.append(box)
                 depth.append(indent(line))
         elif items and items[-1] is not None and line.strip() and not any(line.strip().startswith(mk) for mk in CANVAS_MARKERS.values()) and (
-                not re.match(r"^\s*([-*+]\s|\d+[.)]\s|>|#{1,6}\s|\|)", line)
-                or (re.match(r"^\s*([-*+]\s|\d+[.)]\s)", line) and indent(line) > depth[-1])):
+                not re.match(r"^\s*([-*+]\s|\d{1,9}[.)]\s|>|#{1,6}\s|\|)", line)
+                or (re.match(r"^\s*([-*+]\s|\d{1,9}[.)]\s)", line) and indent(line) > depth[-1])):
             # an indented line, an unindented one that starts no other block (lazy continuation: red-team
             # round three) or a nested bullet (round four) renders inside the item
             ticked, text = items[-1]
@@ -2333,7 +2349,7 @@ def section(body: str, title: str) -> str | None:
         if h := HEADING.match(lines[k]):
             return len(h.group(1))
         if k + 1 < len(lines) and lines[k].strip() and re.match(r"^ {0,3}(=+|-+)\s*$", lines[k + 1]) and (k == 0 or not lines[k - 1].strip()) \
-                and not re.match(r"^ {0,3}([-*+]\s|\d+[.)]\s|>|\||```|~~~|    )", lines[k]):
+                and not re.match(r"^ {0,3}([-*+]\s|\d{1,9}[.)]\s|>|\||```|~~~|    )", lines[k]):
             return 1 if lines[k + 1].strip().startswith("=") else 2
         return None
     for i, line in enumerate(lines):

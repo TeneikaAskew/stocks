@@ -1063,3 +1063,22 @@ def test_same_job_union_complement_adjacency_and_backticked_ids_render_as_gfm_re
     write(repo, REGISTRY, reg.replace("| DOC-09 (#1118) | Fixed |", "| DOC-09a | Fixed |", 1))
     r = export(repo)
     assert r.returncode != 0, r.stdout + r.stderr
+
+
+def test_derived_paths_and_issues_come_from_what_the_page_shows(repo):
+    """stocks#1205 r4127577538 (export_model_registry.py:442): `<!-- `old.py` --> `new.py`` exported both
+    paths and `<!-- #123 -->` entered issue_numbers; the metadata now comes from the comment-stripped cell."""
+    row = "| `lib/gamma.py` | Production | Keep | DOC-01 | [#942](https://github.com/TeneikaAskew/stocks/issues/942) |"
+    assert row in REGISTRY_TEXT
+    write(repo, REGISTRY, REGISTRY_TEXT.replace(row, "| <!-- was lib/old.py --> `lib/gamma.py` | Production | Keep | DOC-01 | <!-- #111 --> [#942](https://github.com/TeneikaAskew/stocks/issues/942) |", 1))
+    rec = exported(repo)["models"]["MODEL-GAMMA-001"]
+    assert rec["code_paths"] == ["lib/gamma.py"] and rec["issue_numbers"] == [942], rec
+    # a backticked path inside a comment never reaches the record: the row is refused as an unclosed comment (round seven)
+    write(repo, REGISTRY, REGISTRY_TEXT.replace(row, "| <!-- `lib/old.py` --> `lib/gamma.py` | Production | Keep | DOC-01 | [#942](https://github.com/TeneikaAskew/stocks/issues/942) |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "unclosed" in r.stdout + r.stderr, r.stdout + r.stderr
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("export_model_registry", EXPORTER)
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    assert mod.row_to_record(["ID", "Code", "Evidence"], ["MODEL-X-001", "<!-- `old.py` --> `new.py`", "<!-- #123 --> #456"]) \
+        == {"id": "MODEL-X-001", "code": "`new.py`", "code_paths": ["new.py"], "evidence": "#456", "issue_numbers": [456]}

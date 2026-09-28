@@ -301,6 +301,22 @@ def rendered(text: str) -> str:
     return "\n".join(out)
 
 
+def _hidden_removed(cell: str) -> str:
+    """The cell with every HTML comment that opens outside a code span removed, whatever the
+    comment wraps: what a reader sees of it, for the metadata derived from it."""
+    out, at = [], 0
+    while (start := cell.find("<!--", at)) >= 0:
+        if any(span.start() <= start < span.end() for span in CODE_SPAN.finditer(cell)):
+            out.append(cell[at:start + 4]); at = start + 4
+            continue
+        end = cell.find("-->", start + 4)
+        if end < 0:
+            break
+        out.append(cell[at:start]); at = end + 3
+    out.append(cell[at:])
+    return "".join(out)
+
+
 def _strip_comments(line: str) -> str:
     """Complete comments removed from the prose of a line, code spans kept as written."""
     out, at = [], 0
@@ -435,11 +451,12 @@ def row_to_record(header: list[str], raw: list[str]) -> dict:
     rec: dict = {}
     for key, cell in zip(header_keys(header), raw):
         rec[key] = clean(cell)
+        shown = _hidden_removed(cell)   # stocks#1205 r4127577538: a path or issue inside `<!-- -->` is not on the page
         if key in ("code", "code_artifact", "primary_code"):
-            rec[key + "_paths"] = CODE.findall(cell)
+            rec[key + "_paths"] = CODE.findall(shown)
         if key in ("blocking_issues", "evidence", "recorded_verdict", "note"):
             # stocks#1205 r4121413706: Evidence and Blocking issues both carry references; union them
-            rec["issue_numbers"] = sorted(set(rec.get("issue_numbers", [])) | {int(n) for n in ISSUE.findall(cell)})
+            rec["issue_numbers"] = sorted(set(rec.get("issue_numbers", [])) | {int(n) for n in ISSUE.findall(shown)})
     return rec
 
 
