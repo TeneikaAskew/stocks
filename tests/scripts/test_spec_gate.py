@@ -684,10 +684,11 @@ def test_a_rename_is_seen_from_both_ends(repo):
     _git(repo, "checkout", "-q", "-B", "tidy-up", "base")
     _git(repo, "mv", "lib/model.py", "docs/model.py")
     r = gate(repo, "--commit")
-    assert r.returncode == 1 and "(lib/model.py)" in r.stdout, r.stdout
+    # (red-team round four: a .py under docs/ is code too, so both ends of the rename are gated)
+    assert r.returncode == 1 and "docs/model.py, lib/model.py" in r.stdout, r.stdout
     _git(repo, "commit", "-q", "-m", "move")
     r = gate(repo, "--pr", "base", "HEAD", PR_HEAD_REF="tidy-up")
-    assert r.returncode == 1 and "(lib/model.py)" in r.stdout, r.stdout
+    assert r.returncode == 1 and "docs/model.py, lib/model.py" in r.stdout, r.stdout
 
 
 def test_only_catalog_rows_define_feat_ids(repo):
@@ -2709,3 +2710,68 @@ def test_pr_bodies_manifests_and_ownership_read_as_github_renders_them(repo):
     assert r.returncode == 1 and "changes the row(s) of MODEL-GAMMA-001" in r.stdout, r.stdout
     on_base(repo, {SPEC: spec() + "\nThis spec retires MODEL-GAMMA-001.\n"})
     assert pr(repo, BRANCH, {**CODE, registry: "# Registry\n\n| ID | Status |\n|---|---|\n| MODEL-GAMMA-001 | RETIRED |\n| MODEL-MAG-001 | Production |\n"}, **title, PR_BODY=body()).returncode == 0
+
+
+def test_folded_scalars_docs_payloads_and_dependency_values_are_refused(repo):
+    """Red-team round four (spec_gate.py: valid_yaml, is_documentation, non_dependency_edit, visible,
+    checklist, frontmatter).
+
+    A plain YAML scalar continued on a deeper line folds to one value for GitHub while the gate read
+    line one: `run:` gained `|| true`, `shell:` became `true {0}`, `ref:` became the head sha and
+    PR_DRAFT gained junk; a workflow-level `defaults:` went unread. docs/ carried setup.py, wheels
+    and nested `.claude/` skills, and a requirements path line installed them; chore/ pointed a
+    dependency at a URL, a git ref or a path; `follow&#8209;up`, `non-<b></b>blocking`, a U+2011 and
+    a nested plain bullet hid a deferral; a multi-line done_when item was read as its first line.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/spec-gate.yml"
+    typed = gate_workflow()
+    for folded in (typed.replace("        run: " + VERDICT_CMD + "\n", "        run: " + VERDICT_CMD + "\n          || true\n", 1),
+                   typed.replace("      - env:\n", "      - shell:\n          true {0}\n        env:\n", 1),
+                   typed.replace("          ref: ${{ github.event.pull_request.base.sha }}\n", "          ref:\n            ${{ github.event.pull_request.head.sha }}\n", 1),
+                   typed.replace("          PR_DRAFT: ${{ github.event.pull_request.draft }}\n", "          PR_DRAFT: ${{ github.event.pull_request.draft }}\n            x\n", 1)):
+        assert folded != typed
+        r = pr(repo, "chore/gate-workflow", {wf: folded}, **cap)
+        assert r.returncode == 1 and "continues a plain scalar" in r.stdout, r.stdout
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("permissions:\n", "defaults:\n  run:\n    working-directory: sub\npermissions:\n", 1)}, **cap)
+    assert r.returncode == 1 and "`working-directory` under a top-level `defaults:`" in r.stdout, r.stdout
+    assert pr(repo, "chore/gate-workflow", {wf: typed}, **cap).returncode == 0
+    for path in ("docs/pkg/setup.py", "docs/pkg/pyproject.toml", "docs/evil-1.0-py3-none-any.whl", "docs/index.html", "docs/diagram.svg", "docs/tools/run.py",
+                 "docs/conftest.py", "lib/.claude/skills/deploy/SKILL.md", "docs/.claude/settings.json", ".github/copilot-instructions.md",
+                 ".github/instructions/all.instructions.md", ".github/agents/fixer.md", ".github/PULL_REQUEST_TEMPLATE.md"):
+        r = pr(repo, "docs/payload", {path: "x\n"})
+        assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, (path, r.stdout)
+    assert pr(repo, "docs/notes", {"docs/notes.md": "# Notes\n", "docs/data.csv": "a,b\n", ".github/workflows/README.md": "# Workflows\n"}).returncode == 0
+    on_base(repo, {"requirements.txt": "requests==2.32.2\n"})
+    for line in ("docs/pkg\n", "docs/evil-1.0-py3-none-any.whl\n", "docs/pkg[extra] ; python_version >= '3'\n", "evil@file:docs/x.whl\n"):
+        r = pr(repo, "chore/bump", {"requirements.txt": "requests==2.32.3\n" + line})
+        assert r.returncode == 1 and "an option, URL or path line" in r.stdout, (line, r.stdout)
+    assert pr(repo, "chore/bump", {"requirements.txt": "requests==2.32.3 \\\n    --hash=sha256:" + "ab" * 32 + "\npandas[perf]>=2.2,<3 ; python_version >= '3.10'\n"}).returncode == 0
+    on_base(repo, {"requirements.txt": None})
+    package = {"name": "x", "version": "1.0.0", "dependencies": {"react": "^19.1.0"}, "overrides": {"react": "^19.1.0"}}
+    on_base(repo, {"package.json": json.dumps(package, indent=2) + "\n"})
+    for value in ("git+https://github.com/evil/react.git#main", "https://evil.example/react-19.tgz", "file:docs/pkg", "github:evil/react", "npm:evil-pkg@1.0.0"):
+        r = pr(repo, "chore/bump", {"package.json": json.dumps({**package, "dependencies": {"react": value}}, indent=2) + "\n"})
+        assert r.returncode == 1 and "not a version range" in r.stdout, (value, r.stdout)
+    r = pr(repo, "chore/bump", {"package.json": json.dumps({**package, "overrides": {"react": "https://evil.example/react-19.tgz"}}, indent=2) + "\n"})
+    assert r.returncode == 1 and "not a version range" in r.stdout, r.stdout
+    assert pr(repo, "chore/bump", {"package.json": json.dumps({**package, "dependencies": {"react": ">=19.1.0 <20"}}, indent=2) + "\n"}).returncode == 0
+    on_base(repo, {"package.json": None})
+    pyproject = '[project]\nname = "x"\nversion = "1.0.0"\ndependencies = ["pandas==2.2.0"]\n\n[tool.uv.sources]\npandas = { index = "pypi" }\n'
+    on_base(repo, {"pyproject.toml": pyproject})
+    r = pr(repo, "chore/bump", {"pyproject.toml": pyproject.replace('"pandas==2.2.0"', '"pandas @ https://evil.example/pandas.whl"')})
+    assert r.returncode == 1 and "a URL, path or git reference" in r.stdout, r.stdout
+    r = pr(repo, "chore/bump", {"pyproject.toml": pyproject.replace('pandas = { index = "pypi" }', 'pandas = { git = "https://evil.example/pandas" }')})
+    assert r.returncode == 1 and "a chore/ branch pins versions and nothing else" in r.stdout, r.stdout
+    assert pr(repo, "chore/bump", {"pyproject.toml": pyproject.replace("2.2.0", "2.2.3")}).returncode == 0
+    on_base(repo, {"pyproject.toml": None})
+    title = {"PR_TITLE": "FEAT-MODEL-001: x"}
+    head = f"Spec: {SPEC}\nPlan: {PLAN}\n\n- [x] {DONE[0]}\n"
+    for suffix in (" — non‑blocking, see #1300", " — follow&#8209;up in #1300", " — fol&#108;ow-up in #1300", " — non-<b></b>blocking", "\n  - non-blocking: the registry test is a follow-up"):
+        r = pr(repo, BRANCH, CODE, **title, PR_BODY=head + f"- [x] {DONE[1]}{suffix}\n")
+        assert r.returncode == 1 and "defers its work" in r.stdout, (suffix, r.stdout)
+    on_base(repo, {SPEC: spec(done_when=[DONE[0], "the registry test passes\n    and the canvas is refreshed"])})
+    r = pr(repo, BRANCH, CODE, **title, PR_BODY=head + f"- [x] {DONE[1]}\n")
+    assert r.returncode == 1 and "missing:" in r.stdout, r.stdout
+    assert pr(repo, BRANCH, CODE, **title, PR_BODY=head + f"- [x] {DONE[1]} and the canvas is refreshed\n").returncode == 0
+    on_base(repo, {SPEC: spec()})

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import datetime
 import html
+import unicodedata
 import json
 import pathlib
 import re
@@ -98,7 +99,21 @@ MODEL_TIERS = ("Deterministic and heuristic systems", "Learned models", "LLM nod
 # Line endings GFM does not recognise: str.splitlines() would split on them and read a
 # second row GFM renders as excess cells of the first (red-team round three)
 ODD_BREAKS = re.compile("[\u2028\u2029\x0b\x0c\x1c\x1d\x1e\x85]")
-UNICODE_DASH = re.compile("\\b(MODEL|DOC|E)[\u2010-\u2015\u2212]")
+UNICODE_DASH = re.compile("\\b(MODEL|DOC|E)[\u2010-\u2015\u2212\ufe58\ufe63\uff0d]")
+INVISIBLE = re.compile("[\u200b-\u200f\u00ad\u2060\ufeff]")
+# letters outside ASCII that read as an ID's letters on the page (round four: `МODEL-GAMMA-001` with a Cyrillic М)
+CONFUSABLE = str.maketrans("АВСЕНКМОРТХаеорсхＭＯＤＥＬＣ", "ABCEHKMOPTXaeopcxMODELC")
+
+
+def lookalike_id(text: str) -> str | None:
+    """A token that spells MODEL-, DOC- or E-nn with a letter or dash that is not the ASCII one."""
+    for token in re.findall(r"[^\s|()`*_,;]+", text):
+        if token.isascii():
+            continue
+        folded = unicodedata.normalize("NFKC", token.translate(CONFUSABLE))
+        if (m := re.match(r"(?i)(?:MODEL|DOC|E)-\w+", folded)) and token[:m.end()] != m.group(0):
+            return token   # the ID itself changed under folding; a `…` after it is punctuation
+    return None
 
 
 def split_lines(text: str) -> list[str]:
@@ -160,32 +175,62 @@ def doc_ids(cell: str) -> list[str]:
     return expand_ids(cell, DOC_ID, DOC_RANGE, "DOC-{:02d}", drop_parentheticals=True)
 
 
+HTML_BLOCK_TAGS = (
+    "address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt"
+    "|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu"
+    "|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul")
+CODE_SPAN = re.compile(r"(`+)(?:(?!\1)[\s\S])*?\1")
+
+
+def html_block(line: str, can_interrupt: bool) -> tuple[str, str] | None:
+    """(kind, end-pattern) when `line` opens one of GFM's seven HTML block kinds (red-team round
+    four: `<pre>`, `<?`, `<![CDATA[` and `<!-->` each hid or exposed rows differently from the page)."""
+    head = line[:3].lstrip() if line.startswith("   ") else line.lstrip(" ")
+    if not line[: len(line) - len(line.lstrip(" "))].__len__() <= 3:
+        return None
+    t = line.lstrip(" ")
+    if re.match(r"(?i)<(pre|script|style|textarea)(\s|>|$)", t):
+        return "1", r"(?i)</(pre|script|style|textarea)>"
+    if t.startswith("<!--"):
+        return "2", r"-->"
+    if t.startswith("<?"):
+        return "3", r"\?>"
+    if re.match(r"<![A-Za-z]", t):
+        return "4", r">"
+    if t.startswith("<![CDATA["):
+        return "5", r"\]\]>"
+    if re.match(r"(?i)</?(" + HTML_BLOCK_TAGS + r")(\s|/?>|$)", t):
+        return "6", ""
+    if can_interrupt is False and re.match(r"^(<[a-zA-Z][a-zA-Z0-9-]*(\s+[^<>]*?)?\s*/?>|</[a-zA-Z][a-zA-Z0-9-]*\s*>)\s*$", t):
+        return "7", ""
+    return None
+
+
 def rendered(text: str) -> str:
-    """The document as it renders: HTML comments and fenced code removed, so a table
-    retired inside either is not exported and published on a card. One pass in document
-    order: a `<!--` inside a fence is code, not a comment that hides what follows the fence,
-    and a fence opener inside a comment is commentary (red-team round two)."""
+    """The document as it renders: HTML blocks, HTML comments, fenced and indented code removed,
+    so a table retired inside any of them is not exported and published on a card. One pass in
+    document order, as a Markdown parser reads it (red-team rounds two to four)."""
     out: list[str] = []
     fence: str | None = None
-    in_comment = in_code = in_html = False
+    block_end: str | None = None   # the end pattern of the open HTML block; "" ends at a blank line
+    in_code = False
     prev_blank, last_kept = True, ""
     for line in split_lines(text):
-        if in_comment:
-            if "-->" not in line:
+        if block_end is not None:
+            if block_end == "" and not line.strip():
+                block_end = None   # kinds 6 and 7 end at the blank line, which stays blank
+            elif block_end and re.search(block_end, line):
+                block_end = None   # kinds 1 to 5 end on the line carrying the closer, which is theirs
                 continue
-            line = line.split("-->", 1)[1]
-            in_comment = False
+            else:
+                continue
         if fence is not None:
             if re.match(r"^ {0,3}" + re.escape(fence) + fence[0] + r"*[ \t]*$", line):
                 fence = None
             continue
-        if in_html:
-            if line.strip():
-                continue
-            in_html = False
-        # red-team round three: a fence opens and closes only within three spaces of indentation; four
-        # or a tab after a blank line is an indented code block, which GFM renders as code
-        indented = line.startswith(("    ", "\t"))
+        # a fence opens and closes only within three spaces of indentation; four columns (spaces or a
+        # tab, expanded to its stop) after a blank line is an indented code block (rounds three, four)
+        indented = line.expandtabs(4).startswith("    ")
         if in_code and (indented or not line.strip()):
             continue
         # (under a list item an indented block is the item's continuation, not code: kept, so a table
@@ -199,18 +244,33 @@ def rendered(text: str) -> str:
         if (opener := re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)) and not (opener.group(1)[0] == "`" and "`" in opener.group(2)):
             fence = opener.group(1)
             continue
-        if re.match(r"^ {0,3}<!--", line) and "-->" not in line:
-            in_comment = True   # an HTML comment block: to the line carrying `-->`
+        if (kind := html_block(line, can_interrupt=not was_blank)) is not None:
+            _, block_end = kind
+            if block_end and re.search(block_end, line.lstrip(" ")[2:]):
+                block_end = None   # opened and closed on one line: that line is the block (`<!-->` too)
             continue
-        if was_blank and re.match(r"^ {0,3}</?(div|details|summary|p|table|pre|section|article|ul|ol|li|blockquote|h[1-6]|hr|dl|dd|dt|center)\b", line):
-            in_html = True   # an HTML block: a heading or table inside it is not rendered as one
-            continue
-        line = re.sub(r"<!--.*?-->", "", line)
-        if "<!--" in line and "|" not in line:
-            line, in_comment = line.split("<!--", 1)[0], True   # a comment opened in prose runs on
-        # (an unclosed `<!--` on a table row is cell text, and refused below as a row cell)
-        out.append(line)
+        # a comment closed on the line is audit markup; one holding a pipe would split the row for GFM
+        prose = CODE_SPAN.sub(lambda m: "`" * len(m.group(0)), line)
+        for m in re.finditer(r"<!--.*?-->", prose):
+            if "|" in m.group(0) and "|" in prose:
+                raise SystemExit(f"{REGISTRY}: a comment on a table row holds a pipe ({m.group(0)[:40]!r}); GFM splits the row at it")
+        stripped = re.sub(r"<!--.*?-->", "", prose)
+        if "<!--" in stripped and "|" not in stripped:
+            # round four: an unclosed `<!--` in prose is text for GFM, never a comment that hides what follows
+            raise SystemExit(f"{REGISTRY}: {line.strip()[:60]!r} opens a `<!--` it does not close; GFM renders it as text, so close or remove it")
+        keep = re.sub(r"<!--.*?-->", "", CODE_SPAN.sub(lambda m: m.group(0), line)) if "<!--" not in prose else _strip_comments(line)
+        out.append(keep)
     return "\n".join(out)
+
+
+def _strip_comments(line: str) -> str:
+    """Complete comments removed from the prose of a line, code spans kept as written."""
+    out, at = [], 0
+    for span in CODE_SPAN.finditer(line):
+        out += [re.sub(r"<!--.*?-->", "", line[at:span.start()]), span.group(0)]
+        at = span.end()
+    out.append(re.sub(r"<!--.*?-->", "", line[at:]))
+    return "".join(out)
 
 
 def last_reviewed(text: str) -> str:
@@ -240,17 +300,28 @@ def tables_with_headings(text: str):
     heading: list[str] = []
     # stocks#1205 r4121216904: GFM renders a row indented by up to three spaces as part of
     # the table, so such a row is a row here too, not the end of the table
-    raw_lines = split_lines(rendered(text))
+    raw_lines = [ln.expandtabs(4) for ln in split_lines(rendered(text))]   # a tab is its column stop (round four)
     lines = [re.sub(r"^ {1,3}(?=[|#])", "", ln).rstrip() for ln in raw_lines]   # trailing blanks are not content
     consumed: set[int] = set()
     i = 0
     while i < len(lines):
         line = lines[i]
-        hm = re.match(r"^(#{1,6})(?:\s+(.*))?$", line)
+        if re.match(r"^\s*(>|[-*+]\s|\d+[.)]\s)\s*#{1,6}\s", line):
+            # round four: a heading inside a blockquote or list item renders there, and the table under
+            # it would be keyed to the tier above
+            raise SystemExit(f"{REGISTRY}: {line.strip()[:60]!r} is a heading inside a blockquote or list item; headings sit at the top level")
+        hm = re.match(r"^(#{1,6})(?:\s+(.*?))?\s*(?:(?<=\s)#+)?\s*$", line)
         if hm:
             level = len(hm.group(1))
             heading = heading[: level - 1] + [clean(hm.group(2) or "")]
             i += 1
+            continue
+        # a setext heading: text underlined with === or --- (round four; the ledger reader knew them already)
+        if line.strip() and "|" not in line and i + 1 < len(lines) and re.match(r"^ {0,3}(=+|-+)\s*$", lines[i + 1]) \
+                and (i == 0 or not lines[i - 1].strip()) and not re.match(r"^ {0,3}([-*+]\s|\d+[.)]\s|>|#|```|~~~|    )", line):
+            level = 1 if lines[i + 1].strip().startswith("=") else 2
+            heading = heading[: level - 1] + [clean(line.strip())]
+            i += 2
             continue
         # stocks#1205 r4121777339: every delimiter cell carries a hyphen, or GFM renders no table
         if "|" in line and i + 1 < len(lines) and DELIMITER.match(lines[i + 1]) and "-" in lines[i + 1]:
@@ -275,7 +346,7 @@ def tables_with_headings(text: str):
                 if "|" not in lines[i]:
                     raise SystemExit(f"{REGISTRY}: {lines[i].strip()!r} directly under the table in '{' / '.join(heading)}' has no "
                                      "pipe; GFM renders it as a row of that table. Put a blank line before it or make it a row")
-                if raw_lines[i].startswith(("    ", "\t")):
+                if raw_lines[i].startswith("    "):
                     raise SystemExit(f"{REGISTRY}: {lines[i].strip()[:60]!r} under the table in '{' / '.join(heading)}' is indented "
                                      "four spaces; GFM ends the table there and renders it as code")
                 if "<!--" in lines[i]:
@@ -369,6 +440,7 @@ def experiment_ids(text: str) -> list[str]:
 
 
 LLM_GROUP = re.compile(r"\bLLM nodes\b")
+COMPLEMENT = re.compile(r"\b(except|excluding|but not|other than|without|formerly|no longer|now none|previously|used to)\b", re.I)
 LOWER_ID = re.compile(r"\b(?=[a-zA-Z0-9-]*[a-z])[mM][oO][dD][eE][lL](?:-[a-zA-Z0-9]+)*-\d+\b")   # `model-gamma-001`: an ID in the wrong case, not prose
 
 
@@ -410,8 +482,12 @@ def build(src: Source) -> dict:
     for path, doc in ((REGISTRY, text), (EXPERIMENTS, etext)):
         if m := ODD_BREAKS.search(doc):
             raise SystemExit(f"{path}: carries U+{ord(m.group(0)):04X}, which is not a line ending GFM recognises; remove it")
-        if m := UNICODE_DASH.search(doc):
+        if m := INVISIBLE.search(doc):
+            raise SystemExit(f"{path}: carries an invisible character (U+{ord(m.group(0)):04X}); remove it")
+        if m := UNICODE_DASH.search(html.unescape(doc)):   # an entity renders as the character (round four)
             raise SystemExit(f"{path}: {m.group(0)!r} uses a look-alike dash; IDs are written with the ASCII hyphen")
+        if token := lookalike_id(html.unescape(doc)):
+            raise SystemExit(f"{path}: {token!r} spells an ID with a look-alike letter; IDs are ASCII")
     out: dict = {
         "generated_from": [REGISTRY, EXPERIMENTS],
         # The exporter is a source too: a changed exporter is a changed output, so a base
@@ -452,7 +528,7 @@ def build(src: Source) -> dict:
                 # red-team round three: a renamed Status column exported every card's status as null
                 malformed.append(f"the model table under '{section}' has no Status column; the cards read it")
                 continue
-            if routable and (taken := derived_collisions(header, h0 == "scheduler" and "serves" in " ".join(header).lower())):
+            if routable and (taken := derived_collisions(header, h0 == "scheduler" and any(h.strip().lower() == "serves" for h in header))):
                 malformed.append(f"table under '{section}' has a column keyed {taken[0]}, a field the exporter derives")
                 continue
             # stocks#1205 r4121777330: a row in a model or concern table whose ID is not shaped
@@ -517,11 +593,15 @@ def build(src: Source) -> dict:
                 target = out["dispositions"] if len(ids) == 1 else grouped
                 for fid in ids:
                     target.setdefault(fid, rec)
-            elif h0 == "scheduler" and "serves" in " ".join(header).lower():
+            elif h0 == "scheduler" and any(h.strip().lower() == "serves" for h in header):
                 # From the Serves column itself, not the last cell: a column added after it
                 # would otherwise silently empty every scheduler's model list.
-                serves = next(cell for h, cell in zip(header, raw) if "serves" in h.lower())
+                serves = next(cell for h, cell in zip(header, raw) if h.strip().lower() == "serves")   # not `Observes` (round four)
                 rec["models"] = sorted(set(re.findall(r"MODEL-[A-Z0-9-]+", clean(serves))))
+                if rec["models"] and (LLM_GROUP.search(clean(serves)) or COMPLEMENT.search(clean(serves))):
+                    # round four: "all LLM nodes except MODEL-X" and "formerly MODEL-X, now none" exported MODEL-X
+                    malformed.append(f"scheduler {first} Serves reads {clean(serves)[:60]!r}; name the models it serves, without exceptions or history")
+                    continue
                 if lower := LOWER_ID.findall(clean(serves)):
                     malformed.append(f"scheduler {first} Serves names {lower[0]} in lower case; IDs are upper-case")
                     continue

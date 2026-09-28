@@ -893,3 +893,63 @@ def test_line_breaks_comments_escapes_and_lazy_blocks_render_as_gfm_renders_them
     write(repo, REGISTRY, reg.replace("| ID | Name | Type | Decision produced | Code / artifact | Status |", "| ID | Name | Type | Decision produced | Code / artifact | State |", 1))
     r = export(repo)
     assert r.returncode != 0 and "no Status column" in r.stdout + r.stderr, r.stdout + r.stderr
+
+
+def test_html_blocks_tabs_complements_and_lookalikes_render_as_gfm_renders_them(repo):
+    """Red-team round four (export_model_registry.py: rendered, tables_with_headings, build): `<!-->` and a
+    `<!--` in a code span opened a comment that hid the next table; `<pre>`, `<?`, `<![CDATA[` and
+    `<script>` blocks ended at a blank line, exporting rows the page hides; a space and a tab was not a
+    four-column indent; a comment line carrying a row was a row; a pipe inside a cell's comment shifted
+    the page's columns; "all LLM nodes except MODEL-X" exported MODEL-X; a heading inside a blockquote
+    or list, or a setext heading, keyed the table to the wrong tier; a Cyrillic М or a fullwidth hyphen
+    spelt an ID the regexes missed; `Observes` was read as Serves. Each is exported faithfully or refused."""
+    assert export(repo).returncode == 0
+    reg = REGISTRY_TEXT
+    extra = "### Delivery nodes\n\n| ID | Nodes | Count | Code | Numeric authority | Status |\n|---|---|---|---|---|---|\n| MODEL-NEW-001 | new node | 1 | `lib/agents/new.py` | none | Production |\n\n"
+    for above in ("<!-->\n\n", "<!--->\n\n", "Rows wrapped in `<!--` markers are retired.\n\n", "</pre> see the retired nodes:\n\n", "<p.s. retired nodes:\n\n"):
+        write(repo, REGISTRY, reg.replace("## Scheduled surfaces\n", above + extra + "later prose -->\n\n## Scheduled surfaces\n", 1))
+        r = export(repo)
+        assert r.returncode == 0 and "MODEL-NEW-001" in exported(repo)["models"], (above, r.stdout + r.stderr)
+    write(repo, REGISTRY, reg.replace("## Scheduled surfaces\n", "prose that opens <!-- and never closes\n\n" + extra + "## Scheduled surfaces\n", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "opens a `<!--` it does not close" in r.stdout + r.stderr, r.stdout + r.stderr
+    for opener, closer in (("<pre>", "</pre>"), ("<?retired", "?>"), ("<![CDATA[", "]]>"), ("<script>", "</script>"), ("<style>", "</style>")):
+        write(repo, REGISTRY, reg.replace("## Scheduled surfaces\n", opener + "\nretired 2026-09-01\n\n" + extra + closer + "\n\n## Scheduled surfaces\n", 1))
+        r = export(repo)
+        assert r.returncode == 0 and "MODEL-NEW-001" not in exported(repo)["models"], (opener, r.stdout + r.stderr)
+    llm = "| MODEL-SUM-001 | summarizers | — | `lib/agents/summarizers.py` | preserve supplied values | Experimental |\n"
+    write(repo, REGISTRY, reg.replace(llm, llm + " \t| MODEL-NEW-001 | new | 1 | `x.py` | none | Production |\n", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "indented four spaces" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, reg.replace(llm, llm + "<!-- re-measured --> | MODEL-NEW-001 | new | 1 | `x.py` | none | Production |\n", 1))
+    assert export(repo).returncode == 0 and "MODEL-NEW-001" not in exported(repo)["models"], "a comment line is an HTML block, not a row"
+    write(repo, REGISTRY, reg.replace("| preserve supplied values | Experimental |", "| preserve <!-- | --> Retired | Experimental |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "holds a pipe" in r.stdout + r.stderr, r.stdout + r.stderr
+    for serves in ("all 4 LLM nodes except MODEL-SUM-001 — `run_insight_pipeline`", "formerly MODEL-GAMMA-001, now none"):
+        write(repo, REGISTRY, reg.replace("**all 4 LLM nodes** — `run_insight_pipeline`", serves, 1))
+        r = export(repo)
+        assert r.returncode != 0 and "without exceptions or history" in r.stdout + r.stderr, (serves, r.stdout + r.stderr)
+    for heading in ("> ## Retired nodes", "- ## Retired nodes", "1. ## Retired nodes"):
+        write(repo, REGISTRY, reg.replace("## Scheduled surfaces\n", heading + "\n\n" + extra.split("\n", 2)[2] + "## Scheduled surfaces\n", 1))
+        r = export(repo)
+        assert r.returncode != 0 and "inside a blockquote or list item" in r.stdout + r.stderr, (heading, r.stdout + r.stderr)
+    write(repo, REGISTRY, reg.replace("## Scheduled surfaces\n", "Retired nodes\n-------------\n\n" + extra.split("\n", 2)[2] + "## Scheduled surfaces\n", 1))
+    assert export(repo).returncode == 0 and exported(repo)["models"]["MODEL-NEW-001"]["tier"] == "Retired nodes"
+    write(repo, REGISTRY, reg.replace("## LLM nodes\n", "## LLM nodes ##\n", 1))
+    assert export(repo).returncode == 0 and exported(repo)["models"]["MODEL-LLM-001"]["tier"] == "LLM nodes", "closing hashes are not part of a heading"
+    for bad in ("| `p2-build-gamma-levels` | МODEL-GAMMA-001 |", "| `p2-build-gamma-levels` | MODEL－GAMMA－001 |"):
+        write(repo, REGISTRY, reg.replace("| `p2-build-gamma-levels` | MODEL-GAMMA-001 |", bad, 1))
+        r = export(repo)
+        assert r.returncode != 0 and "look-alike" in r.stdout + r.stderr, (bad, r.stdout + r.stderr)
+    row = next(ln for ln in reg.splitlines() if ln.startswith("| MODEL-MAG-001 | E-01 |"))
+    for bad in ("E-01, E－99", "E-01, E&#8208;99", "E-01, E-​99"):
+        write(repo, REGISTRY, reg.replace(row, row.replace("E-01", bad, 1), 1))
+        r = export(repo)
+        assert r.returncode != 0, (bad, r.stdout + r.stderr)
+    write(repo, REGISTRY, reg.replace("| Scheduler | Cron (`America/New_York`) | Job | Serves |\n|---|---|---|---|\n| `gamma-levels-daily` | `30 22 * * 1-5` | `p2-build-gamma-levels` | MODEL-GAMMA-001 |",
+                                      "| Scheduler | Cron (`America/New_York`) | Job | Observes | Serves |\n|---|---|---|---|---|\n| `gamma-levels-daily` | `30 22 * * 1-5` | `p2-build-gamma-levels` | MODEL-MAG-001 | MODEL-GAMMA-001 |", 1)
+                       .replace("| `gamma-levels-sunday` | `0 21 * * 0` | `p2-build-gamma-levels` | the same job, weekend refresh |", "| `gamma-levels-sunday` | `0 21 * * 0` | `p2-build-gamma-levels` | — | the same job, weekend refresh |")
+                       .replace("| `insight-pipeline-daily` | `45 8 * * 1-5` | `insight-pipeline` | **all 4 LLM nodes** — `run_insight_pipeline` |", "| `insight-pipeline-daily` | `45 8 * * 1-5` | `insight-pipeline` | — | **all 4 LLM nodes** — `run_insight_pipeline` |")
+                       .replace("| `regime-combo-weekly` | `0 5 * * 0` | `regime-combo` | combo mining (E-22) — owned by the ledger, not by a `MODEL-*` row |", "| `regime-combo-weekly` | `0 5 * * 0` | `regime-combo` | — | combo mining (E-22) — owned by the ledger, not by a `MODEL-*` row |"))
+    assert export(repo).returncode == 0 and exported(repo)["schedulers"][0]["models"] == ["MODEL-GAMMA-001"], "Serves is the Serves column, not Observes"

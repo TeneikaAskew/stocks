@@ -35,6 +35,7 @@ checks, and PR_BASE_REF must be main. Any harness (Claude Code, Codex, a human) 
 from __future__ import annotations
 
 import ast
+import html
 import json
 import datetime
 import os
@@ -698,6 +699,35 @@ def valid_yaml(text: str) -> str | None:
         return f"uses a YAML anchor, alias, merge key or tag ({m.group(0).strip()}); the gate's workflows use none"
     if "\t" in stripped or "\r" in text:
         return "contains a tab or a carriage return; the gate's workflows use spaces and LF line endings"
+    if where := continued_plain_scalar(stripped):
+        # red-team round four: a plain scalar continued on a deeper line folds to one value for GitHub
+        # (`run: cmd\n  || true`, `ref:\n  <head sha>`, `shell:\n  true {0}`) while the gate read line one
+        return f"continues a plain scalar onto the next line ({where}); the gate's workflows keep each value on its line or in a `|` block"
+    lines = split_lines(stripped)
+    for i, ln in enumerate(lines):
+        if re.match(r"^defaults:\s*$", ln) and any(re.match(r"^\s+working-directory:", lines[k]) for k in range(i + 1, block_end(lines, i, 0))):
+            # (round four: the job-level form was refused, the workflow-level one was not read)
+            return "sets `working-directory` under a top-level `defaults:`; the gate's workflows run every step from the workspace root"
+    return None
+
+
+def continued_plain_scalar(text: str) -> str | None:
+    """The first `key: value` whose plain value continues on a deeper-indented line."""
+    lines = split_lines(text)
+    is_entry = lambda ln: bool(re.match(r"^(-(\s+|$)|['\"]?[\w.-]+['\"]?\s*:(\s|$))", ln.strip()))
+    for i, line in enumerate(lines):
+        m = re.match(r"^(\s*)(-\s+)?['\"]?[\w.-]+['\"]?:\s*(.*)$", line)
+        if not m:
+            continue
+        value = m.group(3).strip()
+        if value and value[0] in "|>{[&*!'\"":
+            continue   # a block scalar, a flow collection or a quoted value: read whole by both sides
+        # (an empty value followed by a deeper non-entry line is a scalar that starts on the next line)
+        j = i + 1
+        while j < len(lines) and not lines[j].strip():
+            j += 1
+        if j < len(lines) and indent(lines[j]) > len(m.group(1)) + len(m.group(2) or "") and not is_entry(lines[j]):
+            return f"`{line.strip()[:40]}` runs on to line {j + 1}"
     return None
 
 
@@ -936,14 +966,28 @@ LICENSE_FILE = re.compile(r"^(LICENSE|LICENCE|COPYING)(-[A-Za-z0-9]+)*(\.(md|txt
 WORKFLOWS = ".github/workflows/"
 
 
+# Under docs/ these are code or archives an installer or a browser would run, not prose (red-team round four:
+# `docs/pkg/setup.py` reached `pip install -r` through a requirements path line)
+NOT_PROSE = re.compile(r"\.(py|pyc|pyw|sh|bash|zsh|ps1|bat|cmd|js|mjs|cjs|ts|tsx|jsx|html?|xhtml|svg|whl|egg|zip|tar|tgz|tar\.gz|tar\.xz|7z|rar"
+                       r"|toml|cfg|ini|rb|pl|php|exe|dll|so|dylib|jar|class|wasm|ipynb)$", re.I)
+NOT_PROSE_NAMES = frozenset(("setup.py", "setup.cfg", "pyproject.toml", "conftest.py", "package.json", "Makefile", "makefile", "Dockerfile"))
+AGENT_DIRS = frozenset((".claude", ".codex", ".cursor", ".windsurf", ".aider"))
+AGENT_FILES = frozenset(("AGENTS.md", "CLAUDE.md", "CLAUDE.local.md", "copilot-instructions.md", ".cursorrules"))
+
+
 def is_documentation(path: str) -> bool:
     name = path.rsplit("/", 1)[-1]
-    if path.startswith(".github/") and (not name.endswith(".md") or path.startswith(".github/prompts/")):
+    parts = path.split("/")
+    if path.startswith(".github/") and (not name.endswith(".md") or parts[1] in ("prompts", "instructions", "agents")
+                                        or name.lower() == "pull_request_template.md"):
         # a workflow is executable configuration whatever its name, and so is a prompt a workflow
-        # feeds to a model (red-team round three: .github/prompts/); a README or template there is prose
+        # feeds to a model (red-team round three: .github/prompts/), an instruction file an agent loads,
+        # or the template that seeds every PR body the gate reads; a README there is prose
         return False
-    if path.startswith(".claude/") or name in ("AGENTS.md", "CLAUDE.md", "CLAUDE.local.md"):   # at any depth: Claude Code loads them all
+    if any(d in AGENT_DIRS for d in parts[:-1]) or name in AGENT_FILES:   # at any depth: agents load them all
         return False   # skills, agents and the root instructions are the process agents execute, not its description
+    if NOT_PROSE.search(name) or name in NOT_PROSE_NAMES:
+        return False
     return path.startswith("docs/") or path.endswith((".md", ".drawio")) or bool(LICENSE_FILE.match(name))
 
 
@@ -998,6 +1042,9 @@ def frontmatter(text: str | None) -> dict:
                 fm.setdefault(current, [])
                 if isinstance(fm[current], list):
                     fm[current].append(item[2:].strip().strip('"'))
+            elif current and isinstance(fm.get(current), list) and fm[current]:
+                # red-team round four: a list item continued on a deeper line is one value for YAML
+                fm[current][-1] = (fm[current][-1] + " " + item.strip('"')).strip()
             continue
         if ":" in line:
             k, v = line.split(":", 1)
@@ -1165,6 +1212,12 @@ class Traced:
     plan_fm: dict
 
 
+def _at(d, path: tuple[str, ...]):
+    for key in path:
+        d = d.get(key) if isinstance(d, dict) else None
+    return d
+
+
 def _without(d: dict, path: tuple[str, ...]) -> dict:
     """`d` with the nested key `path` removed, when present."""
     if len(path) == 1:
@@ -1173,6 +1226,44 @@ def _without(d: dict, path: tuple[str, ...]) -> dict:
     if not isinstance(inner, dict):
         return d
     return {**d, path[0]: _without(inner, path[1:])}
+
+
+# A requirements line chore/ may carry: a distribution name, optional extras, a version specifier, an
+# environment marker, or a `--hash=` continuation. Anything else (options, URLs, paths, `name @ url`)
+# is something pip fetches or executes.
+REQUIREMENT_LINE = re.compile(
+    r"^([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?(?:\[[A-Za-z0-9._,\s-]*\])?\s*"
+    r"(?:(?:===?|~=|!=|<=|>=|<|>)\s*[A-Za-z0-9._*+!-]+(?:\s*,\s*(?:===?|~=|!=|<=|>=|<|>)\s*[A-Za-z0-9._*+!-]+)*)?\s*(?:;[^/@:]*)?"
+    r"|--hash=sha(?:256|384|512):[0-9a-fA-F]+)$")
+NPM_RANGE = re.compile(r"^(?:(?:\^|~|>=?|<=?|=)?\d[\w.+-]*(?:\s*(?:\|\||-|\s)\s*(?:\^|~|>=?|<=?|=)?\d[\w.+-]*)*|latest|\*|)$")
+
+
+def dependency_values(path: str, before, after) -> str | None:
+    """Why a changed dependency value is more than a version: a URL, a git ref, a path, an alias or a
+    source table sends the installer elsewhere (red-team round four)."""
+    def leaves(obj, prefix=()):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                yield from leaves(v, prefix + (str(k),))
+        elif isinstance(obj, list):
+            for n, v in enumerate(obj):
+                yield from leaves(v, prefix + (str(n),))
+        else:
+            yield prefix, obj
+    was = dict(leaves(before))
+    for key, value in leaves(after):
+        if was.get(key) == value:
+            continue
+        shown = "/".join(key)
+        if path.endswith("package.json"):
+            if not isinstance(value, str) or not NPM_RANGE.match(value.strip()):
+                return f"{path}: {shown} is {value!r}, not a version range; a chore/ branch pins versions and nothing else"
+        else:
+            if isinstance(value, str) and (re.search(r"\s@\s|@\s*(https?|file|git)|://|file:|git\+", value) or value.strip().startswith(("-", ".", "/"))):
+                return f"{path}: {shown} is {value!r}, a URL, path or git reference; a chore/ branch pins versions and nothing else"
+            if key[-1] in ("git", "url", "path", "index", "rev", "branch", "tag", "subdirectory", "develop"):
+                return f"{path}: {shown} names a source; a chore/ branch pins versions and nothing else"
+    return None
 
 
 def non_dependency_edit(path: str, before: str | None, after: str | None) -> str | None:
@@ -1188,8 +1279,9 @@ def non_dependency_edit(path: str, before: str | None, after: str | None) -> str
         if after is None:
             return f"{path}: removing a requirements file is not a dependency update"
         for ln in split_lines(after):
-            ln = ln.split("#", 1)[0].strip()
-            if ln and (ln.startswith("-") or re.search(r"://|git\+|\s@\s|^\.{0,2}/", ln)):
+            ln = ln.split("#", 1)[0].strip().rstrip("\\").strip()
+            if ln and not REQUIREMENT_LINE.match(ln):
+                # (round four: a bare path such as `docs/pkg` or a wheel name is an install target too)
                 return f"{path}: carries {ln[:60]!r}, an option, URL or path line; a chore/ branch pins versions and nothing else"
         return None
     if name not in ("package.json", "pyproject.toml"):
@@ -1203,12 +1295,20 @@ def non_dependency_edit(path: str, before: str | None, after: str | None) -> str
             b, a = json.loads(before), json.loads(after)
             if not isinstance(b, dict) or not isinstance(a, dict):
                 return f"{path}: is not a JSON object on both sides; that is not a dependency update"
+            if bad := dependency_values(path, {k: v for k, v in b.items() if k in NPM_DEPENDENCY_KEYS},
+                                        {k: v for k, v in a.items() if k in NPM_DEPENDENCY_KEYS}):
+                return bad
             b = {k: v for k, v in b.items() if k not in NPM_DEPENDENCY_KEYS}
             a = {k: v for k, v in a.items() if k not in NPM_DEPENDENCY_KEYS}
         else:
             b, a = tomllib.loads(before), tomllib.loads(after)
+            kept_b, kept_a = {}, {}
             for dep_path in PYPROJECT_DEPENDENCY_PATHS:
+                kept_b[dep_path] = _at(b, dep_path)
+                kept_a[dep_path] = _at(a, dep_path)
                 b, a = _without(b, dep_path), _without(a, dep_path)
+            if bad := dependency_values(path, kept_b, kept_a):
+                return bad
     except (ValueError, tomllib.TOMLDecodeError) as e:
         return f"{path}: cannot be parsed ({e}); the gate does not guess what changed"
     changed = sorted(k for k in set(b) | set(a) if b.get(k) != a.get(k))
@@ -1723,6 +1823,9 @@ def visible(body: str) -> str:
     """The PR body as it renders: HTML comments and fenced code blocks removed, so a
     checkbox inside the template's comments or a code example is not a checkbox."""
     body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
+    # red-team round four: `follow&#8209;up`, `non-<b></b>blocking` and a U+2011 render as the plain words
+    body = re.sub(r"</?(b|i|em|strong|s|del|u|span|sub|sup|small|code|br|kbd|mark|abbr)(\s[^<>]*)?/?>", "", html.unescape(body), flags=re.I)
+    body = re.sub("[\u2010-\u2015\u2212\ufe58\ufe63\uff0d]", "-", body)
     body = re.sub(r"<!--.*\Z", "", body, flags=re.S)   # an unclosed comment runs to the end, as GitHub renders it
     # A fence opens with 3+ backticks or tildes after up to three spaces and closes with a
     # fence of the same character at least as long; an unclosed fence runs to the end.
@@ -1765,9 +1868,11 @@ def checklist(body: str) -> list[tuple[bool, str]]:
             else:
                 items.append(box)
                 depth.append(indent(line))
-        elif items and items[-1] is not None and line.strip() and not re.match(r"^\s*([-*+]\s|\d+[.)]\s|>|#{1,6}\s|\|)", line):
-            # an indented line, or an unindented one that starts no other block, renders inside the item
-            # (lazy continuation: red-team round three)
+        elif items and items[-1] is not None and line.strip() and (
+                not re.match(r"^\s*([-*+]\s|\d+[.)]\s|>|#{1,6}\s|\|)", line)
+                or (re.match(r"^\s*([-*+]\s|\d+[.)]\s)", line) and indent(line) > depth[-1])):
+            # an indented line, an unindented one that starts no other block (lazy continuation: red-team
+            # round three) or a nested bullet (round four) renders inside the item
             ticked, text = items[-1]
             items[-1] = (ticked, norm(f"{text} {line}"))
         else:
