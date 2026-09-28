@@ -2364,3 +2364,38 @@ def test_traps_execs_secrets_repositories_quoted_keys_and_the_exporter_suite_are
     assert pr(repo, "chore/gate-hook", {".githooks/pre-commit": "#!/bin/sh\nset -e\npython3 \"$(git rev-parse --show-toplevel)/scripts/gate/spec_gate.py\" --commit\n"}, **cap).returncode == 0
     r = pr(repo, "chore/gate-hook", {".githooks/pre-commit": "#!/bin/sh\nset -e\ntrap 'exit 0' ERR\npython3 scripts/gate/spec_gate.py --commit\n"}, **cap)
     assert r.returncode == 1 and "no longer runs" in r.stdout, r.stdout
+
+
+def test_trigger_filters_yaml_validity_catalog_columns_and_quoted_permissions(repo):
+    """solyra#72 r4121753959 (P1), r4121753972 (P1), r4121753989 (P1), r4121753981, r4121753996
+    (spec_gate.py:1268, :1209, :697, :1775; plan-template.md:28).
+
+    A `paths:` filter under the trigger stopped the workflow from starting; a head that is not
+    YAML passed the line scan and would have unloaded the gate on main; `"permissions": write-all`
+    escaped the write-grant check; a catalog without a Status column failed every later
+    close-out; the plan template's close task had no Spec line. Each is refused or corrected.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/spec-gate.yml"
+    typed = gate_workflow()
+    for filt in ("    paths: [never/**]\n", "    paths-ignore:\n      - '**'\n", "    branches: [nothing]\n"):
+        r = pr(repo, "chore/gate-workflow", {wf: typed.replace("    types: [opened, synchronize, reopened, edited, ready_for_review]\n",
+                                                             "    types: [opened, synchronize, reopened, edited, ready_for_review]\n" + filt, 1)}, **cap)
+        assert r.returncode == 1 and "filter; the gate's workflows run for every pull request" in r.stdout, (filt, r.stdout)
+    r = pr(repo, "chore/gate-workflow", {wf: typed + "broken: [\n"}, **cap)
+    assert r.returncode == 1 and "is not valid YAML" in r.stdout, r.stdout
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  base-suite:\n", "  base-suite:\n    \"permissions\": write-all\n", 1)}, **cap)
+    assert r.returncode == 1 and "grants a write permission" in r.stdout, r.stdout
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  base-suite:\n    needs: gate\n    permissions:\n      contents: read\n",
+                                                         "  base-suite:\n    needs: gate\n    permissions:\n      'contents': write\n", 1)}, **cap)
+    assert r.returncode == 1 and "grants a write permission" in r.stdout, r.stdout
+    r = pr(repo, "docs/catalog", {CATALOG: CATALOG_TEXT.replace("| Status |", "| State |", 1)})
+    assert r.returncode == 1 and "no longer carries the Status field(s) the close-out reads" in r.stdout, r.stdout
+    assert pr(repo, "docs/catalog", {CATALOG: CATALOG_TEXT + "\nA note.\n"}).returncode == 0
+    template = (REPO / ".claude/skills/product-delivery/references/plan-template.md").read_text(encoding="utf-8")
+    close = template[template.index("## Task N: close"):].split("```")[0]
+    data_spec, new_plan = "docs/superpowers/specs/2026-09-28-data-t.md", "docs/superpowers/plans/2026-09-28-data-t.md"
+    on_base(repo, {data_spec: spec(feat_id="FEAT-DATA-001")})
+    from_template = plan(feat_id="FEAT-DATA-001", spec=data_spec, branch="fix/feat-data-001-t").replace(TASKS, "\n" + close)
+    r = pr(repo, "docs/plan-t", {new_plan: from_template})
+    assert r.returncode == 0, r.stdout   # the template's close task cites its spec section

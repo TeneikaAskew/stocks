@@ -65,6 +65,7 @@ jobs:
             echo "::error::.githooks/pre-commit at the head no longer runs scripts/gate/spec_gate.py --commit" >&2
             exit 1
           fi
+          python3 -m pip install --quiet pyyaml
           python3 -m py_compile "$gate"
           # `A && B || C` keeps errexit on while capturing the status; `set +e` would let a later
           # `true` hide any failure, which the base gate refuses

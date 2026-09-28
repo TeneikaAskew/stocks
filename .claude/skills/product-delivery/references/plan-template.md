@@ -25,6 +25,7 @@ Spec: § Design, "shared fixtures". Advances done_when[0].
 - [ ] Commit: `fix(signals): share golden fixtures between live and replay`
 
 ## Task N: close
+Spec: § Done when. Closes the last done_when item.
 - [ ] Update the 02-FEATURE-CATALOG row or record (Status, Last reviewed)
 - [ ] Add this PR to 12-PR-ISSUE-TRACEABILITY (solyra: the catalog row's PRs column)
 - [ ] Docs audit reports nothing new over origin/main (`python3 scripts/maintenance/docs_audit.py` in stocks, `node scripts/docs-audit.mjs` in solyra)

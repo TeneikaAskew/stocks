@@ -593,6 +593,36 @@ def invokes(statement: str, command: str) -> bool:
     return True
 
 
+def trigger_filters(body: str, event: str) -> list[str]:
+    """The `paths`, `paths-ignore`, `branches` or `branches-ignore` filters declared under
+    `on: <event>:` (solyra#72 r4121753959: a filter keeps the workflow from starting at all)."""
+    lines, found = body.splitlines(), []
+    for i, line in enumerate(lines):
+        if not re.match(r"^(on|True|true):\s*$", line):
+            continue
+        for j in range(i + 1, block_end(lines, i, 0)):
+            if re.match(rf"^\s+{re.escape(event)}:\s*$", lines[j]):
+                level = indent(lines[j])
+                for k in range(j + 1, block_end(lines, j, level)):
+                    if (m := re.match(r"^\s+['\"]?(paths|paths-ignore|branches|branches-ignore|tags|tags-ignore)['\"]?:", lines[k])) and indent(lines[k]) == level + 2:
+                        found.append(m.group(1))
+    return found
+
+
+def valid_yaml(text: str) -> str | None:
+    """Why the text is not YAML, or None. PyYAML is required to judge a workflow change
+    (solyra#72 r4121753972: a head that GitHub cannot load must not merge)."""
+    try:
+        import yaml
+    except ImportError:
+        return "PyYAML is not installed, so the workflow cannot be parsed; pip install pyyaml"
+    try:
+        loaded = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        return f"is not valid YAML ({str(exc).splitlines()[0]})"
+    return None if isinstance(loaded, dict) else "is not a YAML mapping"
+
+
 def workflow_trigger_types(body: str, event: str) -> set[str]:
     """The activity types declared under `on: <event>:` (`types: [...]` inline or as a list),
     or GitHub's defaults when the event declares none."""
@@ -669,7 +699,7 @@ def top_permissions(body: str) -> dict[str, str]:
     as {scope: level}; {} when the workflow declares none."""
     lines = body.splitlines()
     for i, line in enumerate(lines):
-        m = re.match(r"^permissions:\s*(.*)$", line)
+        m = re.match(r"^['\"]?permissions['\"]?:\s*(.*)$", line)
         if not m:
             continue
         value = shell_value(m.group(1))
@@ -682,7 +712,7 @@ def top_permissions(body: str) -> dict[str, str]:
         if value:
             return {"*": value}   # read-all / write-all
         return {km.group(1): shell_value(km.group(2)) for j in range(i + 1, block_end(lines, i, 0))
-                if (km := re.match(r"^\s+([\w-]+):\s*(.*)$", lines[j]))}
+                if (km := re.match(r"^\s+['\"]?([\w-]+)['\"]?:\s*(.*)$", lines[j]))}
     return {}
 
 
@@ -692,7 +722,7 @@ def workflow_write_grant(body: str) -> str | None:
     marker sees (solyra#72 r4119837212)."""
     lines = body.splitlines()
     for i, line in enumerate(lines):
-        m = re.match(r"^\s*(-\s+)?permissions:\s*(.*)$", line)
+        m = re.match(r"^\s*(-\s+)?['\"]?permissions['\"]?:\s*(.*)$", line)   # solyra#72 r4121753989: keys may be quoted
         if not m:
             continue
         value = re.sub(r"\s+#.*$", "", m.group(2)).strip()   # `write-all  # why` is still write-all
@@ -708,7 +738,7 @@ def workflow_write_grant(body: str) -> str | None:
             continue
         level = indent(line)
         for j in range(i + 1, block_end(lines, i, level)):
-            if re.match(r"^\s*[\w-]+:\s*['\"]?write['\"]?\s*$", re.sub(r"\s+#.*$", "", lines[j])):   # `contents: write # why`
+            if re.match(r"^\s*['\"]?[\w-]+['\"]?:\s*['\"]?write['\"]?\s*$", re.sub(r"\s+#.*$", "", lines[j])):   # `contents: write # why`
                 return lines[j].strip()
     return None
 
@@ -1205,6 +1235,8 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                 "Re-cut the work on a feature/ or fix/ branch with a plan, or a docs/ branch for its write-up."], None
     for path, contract in WORKFLOW_CONTRACTS.items():
         if path in ch.changed and (text := ch.tree.read(path)) is not None:
+            if why := valid_yaml(text):
+                return [f"{path}: {why}; GitHub would not load the workflow and every later PR would lose the gate"], None
             runs, body = workflow_executes(text)
             statements = shell_statements(runs)
             # (solyra#72 r4120775932: the PR that introduces the script is the first the
@@ -1270,6 +1302,9 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                 # survives the switch to ready and a title edit; the activity types are the contract
                 return [f"{path}: `on: {contract['trigger']}` no longer fires on {', '.join(sorted(contract['types'] - declared))}; "
                         "the gate's workflows keep their activity types"], None
+            if filters := trigger_filters(body, contract["trigger"]):
+                return [f"{path}: `on: {contract['trigger']}` carries a `{filters[0]}` filter; the gate's workflows "
+                        "run for every pull request"], None
             if contract["trigger"] not in workflow_triggers(body):
                 return [f"{path}: no longer runs on {contract['trigger']} (its `on:` names "
                         f"{', '.join(sorted(workflow_triggers(body))) or 'nothing'}); the gate's workflows keep their trigger"], None
@@ -1748,6 +1783,15 @@ def check_policy_structure(ch: Change) -> list[str]:
     errs: list[str] = []
     if CANVASES in ch.changed and (canvases := ch.tree.read(CANVASES)) is not None:
         errs += validate_canvases(canvases)
+    if CATALOG in ch.changed and (catalog := ch.tree.read(CATALOG)) is not None and (base_catalog := ch.base.read(CATALOG)):
+        # solyra#72 r4121753981: the close-out reads Status and Last reviewed by name, from the
+        # row or the record; a renamed header would fail every later feature PR
+        for feat in sorted(catalog_ids(base_catalog)):
+            before, after = feat_fields(base_catalog, feat), feat_fields(catalog, feat)
+            if missing := [k for k in CLOSE_OUT_FIELDS if k in before and k not in after]:
+                errs.append(f"{CATALOG}: {feat} no longer carries the {', '.join(missing)} field(s) the close-out reads; "
+                            "the catalog's columns and record fields keep their names")
+                break
     if REQUIREMENTS in ch.changed and ch.base.read(REQUIREMENTS) is None and (reqs := ch.tree.read(REQUIREMENTS)) is not None:
         # solyra#72 r4120633485: a repository without a registry checks req_ids for shape; a new
         # registry that omits an ID the specs cite would refuse every spec citing it

@@ -53,7 +53,10 @@ jobs:
           PR_DRAFT: ${{ github.event.pull_request.draft }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: python3 scripts/gate/spec_gate.py --pr "$BASE_SHA" "$HEAD_SHA"
+        run: |
+          # the gate parses a changed workflow as YAML; the runner image carries PyYAML, this keeps it so
+          python3 -m pip install --quiet pyyaml
+          python3 scripts/gate/spec_gate.py --pr "$BASE_SHA" "$HEAD_SHA"
 
       # The proposed gate and exporter leave this job as data: the base-suite job below runs
       # them, without this job's checkout credentials. Exported only after the verdict above.
