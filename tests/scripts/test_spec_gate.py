@@ -2567,6 +2567,19 @@ def test_dash_line_steps_indirect_writes_and_early_returns_are_refused(repo):
         r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
         assert r.returncode == 1 and "runs inline code" in r.stdout, (pre, r.stdout)
     assert pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          python3 -m pip install --quiet pyyaml\n          " + VERDICT_CMD)}, **cap).returncode == 0
+    # red-team round four: a writer anywhere on the line, and `set -n`, which executes nothing after it
+    for pre in ("command cp lib/model.py scripts/gate/spec_gate.py", "env cp lib/model.py scripts/gate/spec_gate.py",
+                "timeout 5 cp lib/model.py scripts/gate/spec_gate.py", "find lib -name model.py -exec cp {} scripts/gate/spec_gate.py \\;",
+                "printf -v gate '%s' scripts/gate/spec_gate.py; cp lib/model.py \"$gate\"",
+                "((1)) && cp lib/model.py scripts/gate/spec_gate.py", "coproc { cp lib/model.py scripts/gate/spec_gate.py; }"):
+        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        assert r.returncode == 1 and "writes to or replaces a gate file" in r.stdout, (pre, r.stdout)
+    for pre in ("{cp,lib/model.py,scripts/gate/spec_gate.py}", "$'cp' lib/model.py scripts/gate/spec_gate.py", "echo lib/model.py scripts/gate/spec_gate.py | xargs cp"):
+        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        assert r.returncode == 1 and ("runs inline code" in r.stdout or "writes to or replaces" in r.stdout), (pre, r.stdout)
+    for pre in ("set -n", "set -o noexec", "set -en", "if true; then set -n; fi"):
+        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        assert r.returncode == 1 and "no longer executes" in r.stdout, (pre, r.stdout)
     suite_text = "def test_a():\n    assert 1\n"
     on_base(repo, {"tests/scripts/test_spec_gate.py": suite_text})
     for escape in ("def test_a():\n    return\n    assert 1\n", "def test_a():\n    raise SystemExit(0)\n    assert 1\n"):

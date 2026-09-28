@@ -471,6 +471,11 @@ def shell_statements(runs: str, errexit: bool = True) -> list[str]:
                 # `{ set +e; }` and `if true; then set +e; fi` act on this shell too, so the depth does
                 # not matter for turning it off, while turning it back on counts only at the top level
                 flags = sm.group(1)
+                if re.search(r"(^|\s)-\w*n\w*(\s|$)|-o\s+noexec", flags):
+                    # red-team round four: `set -n` parses the rest of the step and executes none of it,
+                    # with exit 0; whatever follows never runs, at any depth
+                    ended = True
+                    break
                 if re.search(r"(^|\s)\+\w*e|\+o\s+errexit", flags):
                     errexit = False
                 elif depth == 0 and not chained and not condition and re.search(r"(^|\s)-\w*e|-o\s+errexit", flags):
@@ -782,7 +787,9 @@ INDIRECT = r"['\"]?\$(?!(RUNNER_TEMP\b|\{RUNNER_TEMP\}|\{\{\s*runner\.temp\s*\}\
 # and a file named like a contract executable anywhere (`ln -s /bin/true /usr/local/bin/python3` shadows the
 # interpreter ahead of /usr/bin on the runner's PATH: red-team round two)
 EXECUTABLE_NAME = r"[^\s'\"]*/(python3?|python3\.\d+|git|pytest)\b"
-WRITES_GATE = re.compile(r"(?m)^\s*(?:\S+=\S*\s+)*" + WRITERS + r"\b[^\n]*(" + GATE_PATHS + "|" + INDIRECT + "|" + EXECUTABLE_NAME + r")|[>]{1,2}\|?\s*(['\"]?[^\s'\"]*" + GATE_PATHS + "|" + INDIRECT + "|['\"]?" + EXECUTABLE_NAME + ")")
+# red-team round four: the writer sits anywhere on the line (`command cp`, `timeout 5 cp`, `find -exec cp`,
+# `echo a b | xargs cp`, `((1)) && cp`), not only at its start after assignments
+WRITES_GATE = re.compile(r"(?m)(?<![\w/.-])" + WRITERS + r"\b[^\n]*(" + GATE_PATHS + "|" + INDIRECT + "|" + EXECUTABLE_NAME + r")|[>]{1,2}\|?\s*(['\"]?[^\s'\"]*" + GATE_PATHS + "|" + INDIRECT + "|['\"]?" + EXECUTABLE_NAME + ")")
 
 
 def writes_gate_file(runs: str) -> str | None:
@@ -1488,13 +1495,15 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                 return [f"{path}: `{wrote}` writes to or replaces a gate file; the workflows read the gate's files, "
                         "never write them"], None
             if inline := re.search(r"(?m)^\s*(python3?|node|perl|ruby|sh|bash)\s+(-c|-e|-)\s|(^|[;&|{(]\s*)(eval|source|\.|shopt)\s"
-                                   r"|(^|[;&|{(]\s*)(tar|bsdtar|unzip|zip|7za?|unrar|cpio|pax)\s|python3?\s+-m\s+(?!pip\b|pytest\b|py_compile\b)\S+", runs):
+                                   r"|(^|[;&|{(]\s*)(tar|bsdtar|unzip|zip|7za?|unrar|cpio|pax|xargs)\s|python3?\s+-m\s+(?!pip\b|pytest\b|py_compile\b)\S+"
+                                   # (round four: `{cp,a,b}` expands to a command; `$'cp'` spells one the model does not read)
+                                   r"|\{[^\s{}$]*,[^\s{}]*\}|\$['\"]", runs):
                 # (red-team round two: `eval "set +e"` and `shopt -uo errexit` turn errexit off out of the
                 # model's sight; `source` runs a file the tree may carry; round three: an archive extractor
                 # or a `python3 -m zipfile` replaces a gate file without naming it)
                 return [f"{path}: runs inline code (`{inline.group(0).strip()}`); the gate's workflows run scripts "
                         "from the tree only, never eval, source or shopt, never extract archives, and run no "
-                        "module but pip, pytest and py_compile"], None
+                        "module but pip, pytest and py_compile; xargs builds a command from its input"], None
             if shadow := shadowed_executable(body):
                 return [f"{path}: defines `{shadow}` as a shell function or alias; the gate's commands run the "
                         "real executables"], None
