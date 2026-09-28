@@ -127,7 +127,7 @@ def git_out(*args: str) -> str:
 def catalog_ids(text: str | None) -> set[str]:
     """FEAT-IDs from the first cell of the catalog's table rows. A FEAT-ID mentioned
     anywhere else (prose, a link, a comment) is not a catalog entry."""
-    return set(FEAT_ROW.findall(text or ""))
+    return set(FEAT_ROW.findall(visible(text or "")))
 
 
 def is_documentation(path: str) -> bool:
@@ -197,7 +197,9 @@ def frontmatter(text: str | None) -> dict:
 
 def validate_spec(fm: dict, name: str, catalog: set[str], req_defs: set[str]) -> list[str]:
     errs = [f"{name}: missing frontmatter key '{k}'" for k in REQUIRED_SPEC_KEYS if k not in fm]
-    if fm.get("feat_id") and fm["feat_id"] not in catalog:
+    if "feat_id" in fm and not isinstance(fm["feat_id"], str):
+        errs.append(f"{name}: feat_id must be one FEAT-ID, not a list")
+    elif fm.get("feat_id") and fm["feat_id"] not in catalog:
         errs.append(f"{name}: feat_id {fm['feat_id']} is not in {CATALOG}")
     if fm.get("status") not in SPEC_STATUSES:
         errs.append(f"{name}: status must be draft | approved | superseded")
@@ -224,7 +226,9 @@ def validate_spec(fm: dict, name: str, catalog: set[str], req_defs: set[str]) ->
 
 def validate_plan(fm: dict, name: str, feat_id: str, tree: Tree) -> list[str]:
     errs = [f"{name}: missing frontmatter key '{k}'" for k in REQUIRED_PLAN_KEYS if k not in fm]
-    if fm.get("feat_id") and fm["feat_id"] != feat_id:
+    if "feat_id" in fm and not isinstance(fm["feat_id"], str):
+        errs.append(f"{name}: feat_id must be one FEAT-ID, not a list")
+    elif fm.get("feat_id") and fm["feat_id"] != feat_id:
         errs.append(f"{name}: feat_id is {fm['feat_id']} but the branch serves {feat_id}")
     status = fm.get("status")
     if status not in PLAN_STATUSES:
@@ -388,6 +392,10 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
     if other_specs:
         errs.append(f"spec(s) change alongside code ({summarize(other_specs)}); a spec lands alone on a docs/ branch, "
                     "never with an implementation")
+    other_plans = [f for f in ch.changed if f.startswith(PLANS + "/") and f != plan_path]
+    if other_plans:
+        errs.append(f"other plan(s) change alongside code ({summarize(other_plans)}); a change edits only the plan "
+                    "that names its branch")
     spec_fm = frontmatter(spec_text)
     if spec_fm.get("feat_id") != feat_id:
         errs.append(f"{spec_path}: the plan's spec serves {spec_fm.get('feat_id')}, not {feat_id}")

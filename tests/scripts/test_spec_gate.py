@@ -1063,3 +1063,41 @@ def test_a_pull_request_targets_main_only(repo):
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     step = next(s for s in workflow["jobs"]["gate"]["steps"] if "spec_gate.py --pr" in s.get("run", ""))
     assert step["env"]["PR_BASE_REF"] == "${{ github.event.pull_request.base.ref }}"
+
+
+def test_frontmatter_shapes_the_gate_did_not_expect_fail_cleanly(repo):
+    """solyra#72 r4118587869 (spec_gate.py:201) and r4118587840 (:60).
+
+    `feat_id: [FEAT-MODEL-001]` parsed as a list and crashed the set lookup
+    with a TypeError; a catalog row inside an HTML comment or a fence counted
+    as a capability. Both are now plain gate errors, and catalog rows are the
+    rendered ones.
+    """
+    on_base(repo, {SPEC: spec(feat_id="[FEAT-MODEL-001]")})
+    r = pr(repo, BRANCH, CODE)
+    assert r.returncode == 1 and "feat_id must be one FEAT-ID, not a list" in r.stdout, r.stdout + r.stderr
+    assert "Traceback" not in r.stderr, r.stderr
+    on_base(repo, {SPEC: spec(), PLAN: plan(feat_id="[FEAT-MODEL-001]")})
+    r = pr(repo, BRANCH, CODE)
+    assert r.returncode == 1 and "feat_id must be one FEAT-ID, not a list" in r.stdout and "Traceback" not in r.stderr
+    hidden_row = CATALOG_TEXT + "\n<!--\n| [FEAT-FAKE-001](#x) | Fake | Production | unknown | none |\n-->\n"
+    fake_spec, fake_plan = "docs/superpowers/specs/2026-09-28-fake.md", "docs/superpowers/plans/2026-09-28-fake.md"
+    on_base(repo, {PLAN: plan(), CATALOG: hidden_row, fake_spec: spec(feat_id="FEAT-FAKE-001", req_ids="[REQ-MODEL-001]"),
+                   fake_plan: plan(feat_id="FEAT-FAKE-001", spec=fake_spec, branch="feature/feat-fake-001-x")})
+    r = pr(repo, "feature/feat-fake-001-x", CODE)
+    assert r.returncode == 1 and "FEAT-FAKE-001 is not a row in" in r.stdout, r.stdout
+
+
+def test_other_plans_do_not_change_with_code(repo):
+    """solyra#72 r4118587858 (spec_gate.py:390).
+
+    Other specs were refused alongside code, but another branch's plan was
+    still documentation, so feature A could rewrite feature B's plan (its
+    branch, status or spec binding) unvalidated. Only the plan naming this
+    branch may change with code.
+    """
+    other = "docs/superpowers/plans/2026-09-05-other.md"
+    on_base(repo, {other: plan(branch="feature/feat-model-001-other")})
+    r = pr(repo, BRANCH, {**CODE, other: plan(branch="feature/feat-model-001-other", status="done")})
+    assert r.returncode == 1 and f"other plan(s) change alongside code ({other})" in r.stdout, r.stdout
+    assert pr(repo, BRANCH, {**CODE, PLAN: plan(pr=7)}).returncode == 0
