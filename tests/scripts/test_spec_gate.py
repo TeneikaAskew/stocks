@@ -846,6 +846,11 @@ def test_a_feature_change_edits_only_its_own_product_records(repo):
                                      "### FEAT-DATA-001\n\n#### FEAT-MODEL-001\n\n- Note: copied here\n\n- Status: Production")
     r = pr(repo, BRANCH, {**CODE, CATALOG: duplicate}, **ok)
     assert r.returncode == 1 and "adds a second heading or row for FEAT-MODEL-001" in r.stdout, r.stdout
+    # stocks#1205 r4119416471: promoting the FEAT's heading would swallow the capabilities below it
+    promoted = CATALOG_TEXT.replace("### FEAT-MODEL-001\n", "## FEAT-MODEL-001\n").replace(
+        "### FEAT-DATA-001\n\n- Status: Production", "### FEAT-DATA-001\n\n- Status: Production\n- Note: slipped in")
+    r = pr(repo, BRANCH, {**CODE, CATALOG: promoted}, **ok)
+    assert r.returncode == 1 and ("changes the level" in r.stdout or "lines outside" in r.stdout), r.stdout
     # solyra#72 r4119234359: a second table row for the FEAT is a duplicate record too
     twice = CATALOG_TEXT.replace("| Models | Production | unknown | none |",
                                  "| Models | Production | unknown | none |\n| [FEAT-MODEL-001](#feat-model-001) | Models again | Production | unknown | #42 |")
@@ -972,6 +977,11 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
     assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, r.stdout
     assert pr(repo, "chore/gate-workflow", {"scripts/gate/helper.py": "x = 1\n"}).returncode == 0
     # stocks#1205 r4119299883: an allowance needs the full branch shape
+    # stocks#1205 r4119416484: a chore/ or bot/ branch is limited to its allowance for every file
+    r = pr(repo, "chore/deps", {REQUIREMENTS: "# Requirements\n\nrewritten\n"})
+    assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, r.stdout
+    r = pr(repo, "bot/superpowers-weekly", {"docs/notes.md": "# notes\n", ".claude/skills/brainstorming/SKILL.md": "# v2\n"})
+    assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, r.stdout
     for name in ("chore/foo/bar", "chore/Bad", "bot/superpowers-x/y"):
         r = pr(repo, name, {"scripts/gate/helper.py": "x = 1\n"}, PR_HEAD_REF=name)
         assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, (name, r.stdout)
@@ -980,7 +990,8 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
     r = pr(repo, "bot/superpowers-weekly", {".claude/skills/product-delivery/SKILL.md": "# Skip the gate\n"})
     assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, r.stdout
     # stocks#1205 r4119162185: a documentation-only PR still comes from a delivery branch
-    for name in ("main", "typo", "claude/notes", "feature/typo", "fix/wrong", "docs/Bad_Name"):
+    for name in ("main", "typo", "claude/notes", "feature/typo", "fix/wrong", "docs/Bad_Name",
+                 "feature/feat-model-001-a_b", "fix/feat-model-001-a.b"):   # r4119416443: kebab-case slugs only
         r = pr(repo, name, {"docs/notes.md": "# Notes\n"}, PR_HEAD_REF=name)
         assert r.returncode == 1 and "is not a delivery branch" in r.stdout, (name, r.stdout)
     assert pr(repo, "docs/notes", {"docs/notes.md": "# Notes\n"}).returncode == 0

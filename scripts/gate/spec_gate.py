@@ -60,7 +60,7 @@ REGISTRY_DOCS = ("docs/product/07-MODEL-REGISTRY.md", "docs/product/generated/mo
 
 FEAT_ROW = re.compile(r"^\|\s*\[?(FEAT-[A-Z]+-\d{3})\b", re.M)
 FEAT_IDS = re.compile(r"\bFEAT-[A-Z]+-\d{3}\b")
-BRANCH = re.compile(r"^(feature|fix)/(feat-[a-z]+-\d{3})-[a-z0-9][a-z0-9._-]*$")   # lowercase: git refs are case-sensitive
+BRANCH = re.compile(r"^(feature|fix)/(feat-[a-z]+-\d{3})(-[a-z0-9]+)+$")   # lowercase kebab-case: git refs are case-sensitive
 REQ_SHAPE = re.compile(r"^REQ-[A-Z]+-\d{3}$")
 REQ_DEFINITION = re.compile(r"\*\*(REQ-[A-Z]+-\d{3}):\*\*")
 CHECKBOX = re.compile(r"^\s*[-*]\s+\[([ xX])\]\s+(.*\S)\s*$")
@@ -431,7 +431,10 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
     # and requirements; a malformed spec must not land and then block or mislead the
     # implementation that cites it.
     errs_specs = check_changed_specs(ch)
-    gated = [f for f in ch.changed if not is_documentation(f)]
+    # A chore/ or bot/ branch is limited to its allowance for every file it touches, so
+    # documentation is not exempt there: `chore/deps` cannot rewrite the requirements.
+    allowance_branch = ch.branch.startswith(tuple(prefix for prefix, _ in ALLOWANCES))
+    gated = [f for f in ch.changed if allowance_branch or not is_documentation(f)]
     if not gated:
         if errs_specs:
             return errs_specs, None
@@ -726,13 +729,18 @@ def feat_span(text: str, feat_id: str) -> set[int]:
     for n, line in enumerate(lines, 1):
         h = HEADING.match(line)
         if h:
-            if level is not None and len(h.group(1)) <= level:
-                level = None
+            if level is not None and (len(h.group(1)) <= level or any(f != feat_id for f in FEAT_IDS.findall(line))):
+                level = None   # a sibling capability's heading ends the span whatever its level
             if feat_id in line:
                 level = len(h.group(1))
         if level is not None or (FEAT_ROW.match(line) and FEAT_ROW.match(line).group(1) == feat_id):
             span.add(n)
     return span
+
+
+def heading_levels(text: str, feat_id: str) -> list[int]:
+    """The levels of the headings naming the FEAT, in order."""
+    return [len(h.group(1)) for line in text.splitlines() if (h := HEADING.match(line)) and feat_id in line]
 
 
 def feat_headings(text: str, feat_id: str) -> tuple[int, int]:
@@ -757,6 +765,10 @@ def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) ->
             if any(before and after > before for before, after in zip(had, has)):
                 errs.append(f"{path}: adds a second heading or row for {feat_id}; a capability has one record, "
                             "so extend the existing one rather than opening another")
+                continue
+            if heading_levels(before_text, feat_id) and heading_levels(before_text, feat_id) != heading_levels(after_text, feat_id):
+                errs.append(f"{path}: changes the level of the {feat_id} heading; a promoted heading would swallow the "
+                            "capabilities below it, so the record keeps its level")
                 continue
             spans = {"-": feat_span(before_text, feat_id), "+": feat_span(after_text, feat_id)}
             # A line is outside the FEAT's scope when it sits outside its span, or names

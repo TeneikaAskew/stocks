@@ -187,10 +187,12 @@ def test_a_registry_without_model_rows_fails_closed(repo):
     before = (repo / OUT).read_text(encoding="utf-8")
     write(repo, REGISTRY, REGISTRY_TEXT.replace("| ID | Name | Type |", "| Identifier | Name | Type |"))
     r = export(repo)
-    assert r.returncode != 0 and "MODEL-GAMMA-001 under" in r.stdout + r.stderr, r.stdout + r.stderr
+    out = r.stdout + r.stderr
+    assert r.returncode != 0 and ("MODEL-GAMMA-001 under" in out or "no model rows under" in out), out
     assert (repo / OUT).read_text(encoding="utf-8") == before
     r = export(repo, "--check")
-    assert r.returncode != 0 and "does not recognize" in r.stdout + r.stderr, r.stdout + r.stderr
+    out = r.stdout + r.stderr
+    assert r.returncode != 0 and ("does not recognize" in out or "no model rows under" in out), out
 
 
 def test_scheduler_models_come_from_the_serves_column(repo):
@@ -264,6 +266,33 @@ def test_a_malformed_row_fails_the_export(repo):
     r = export(repo)
     assert r.returncode != 0 and "appears twice" in r.stdout + r.stderr, r.stdout + r.stderr
     assert (repo / OUT).read_text(encoding="utf-8") == before
+
+
+def test_a_deleted_tier_table_fails_the_export(repo):
+    """stocks#1205 r4119416452 (export_model_registry.py:304).
+
+    Deleting the whole LLM-nodes table left models elsewhere, so the export
+    succeeded and --check called the loss current. Each tier keeps a table.
+    """
+    start, end = REGISTRY_TEXT.index("## LLM nodes"), REGISTRY_TEXT.index("## Scheduled surfaces")
+    write(repo, REGISTRY, REGISTRY_TEXT[:start] + REGISTRY_TEXT[end:])
+    r = export(repo)
+    assert r.returncode != 0 and "LLM nodes" in r.stdout + r.stderr, r.stdout + r.stderr
+
+
+def test_schedulers_and_traceability_name_registered_models_once(repo):
+    """stocks#1205 r4119416479, r4119416461 (export_model_registry.py:280, :261).
+
+    A misspelled ID in a Serves cell exported a scheduler that matched no card,
+    and a second traceability row for a model overwrote the first; both passed
+    --check. Both fail generation now.
+    """
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("| `p2-build-gamma-levels` | MODEL-GAMMA-001 |", "| `p2-build-gamma-levels` | MODEL-NOTREAL-999 |"))
+    r = export(repo)
+    assert r.returncode != 0 and "MODEL-NOTREAL-999" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, REGISTRY_TEXT + "\n## Experiment traceability\n\n| Model | Experiment |\n|---|---|\n| MODEL-MAG-001 | E-01 |\n| MODEL-MAG-001 | E-02 |\n")
+    r = export(repo)
+    assert r.returncode != 0 and "two experiment-traceability rows" in r.stdout + r.stderr, r.stdout + r.stderr
 
 
 def test_hidden_comments_do_not_reach_exported_cells(repo):

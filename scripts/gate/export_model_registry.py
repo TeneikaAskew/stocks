@@ -88,6 +88,11 @@ class Source:
         return r.stdout.strip() if r.returncode == 0 else None
 
 
+# The tiers the registry is organized in (its `## ` sections holding model tables); each keeps
+# at least one row, so a table deleted whole is refused rather than exported as an empty tier.
+MODEL_TIERS = ("Deterministic and heuristic systems", "Learned models", "LLM nodes")
+
+
 def clean(cell: str) -> str:
     # An HTML comment is audit markup, not content: canvases.yml maps cells straight
     # onto card text, so a hidden directive would be published on a card.
@@ -258,6 +263,9 @@ def build(src: Source) -> dict:
                 rec["tier"] = heading[-1] if heading else ""
                 out["models"][first] = canonical(rec)
             elif first.startswith("MODEL-") and h0 == "model":
+                if first in out["experiment_traceability"]:
+                    malformed.append(f"{first} has two experiment-traceability rows (second under '{section}')")
+                    continue
                 out["experiment_traceability"][first] = rec
             elif first.startswith("DOC-") and h0 == "id" and "concern" in " ".join(header).lower() or (
                 first.startswith("DOC-") and "claim" in " ".join(header).lower()
@@ -289,6 +297,17 @@ def build(src: Source) -> dict:
         raise SystemExit(f"{REGISTRY}: {len(malformed)} malformed row(s): {'; '.join(malformed[:3])}. "
                          "A row has exactly its header's cells and a model ID names one row; fix the table "
                          "rather than exporting a shifted or overwritten record")
+    tiers = {m["tier"] for m in out["models"].values()}
+    missing_tiers = [t for t in MODEL_TIERS if t not in tiers]
+    if missing_tiers:
+        # Every tier the registry is organized in still carries models: a deleted table
+        # would otherwise drop every card in it and --check would call the result current.
+        raise SystemExit(f"{REGISTRY}: no model rows under {', '.join(missing_tiers)}; the registry keeps a table "
+                         "for each of its tiers, so a missing one is a deleted table, not an empty tier")
+    unknown = sorted({m for sched in out["schedulers"] for m in sched["models"] if m not in out["models"]})
+    if unknown:
+        raise SystemExit(f"{REGISTRY}: scheduler Serves cells name model(s) not in the registry: {', '.join(unknown)}; "
+                         "a misspelled ID would silently drop the model from its scheduled surface")
     orphans = sorted(set(out["experiment_traceability"]) - set(out["models"]))
     if orphans:
         # canvases.yml looks experiment fields up under the model's ID, so a misspelled
