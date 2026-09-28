@@ -493,6 +493,7 @@ async def _run_one(
     allow_update: bool = False,
     run_kind: str = 'scheduled',
     triggered_by: Optional[str] = None,
+    universe=None,
 ) -> bool:
     """Execute one pipeline run and persist transitions. Returns True
     on success.
@@ -524,7 +525,8 @@ async def _run_one(
         return True
     try:
         snapshot = load_routes_snapshot()
-        report = await run_insight_pipeline(ticker, as_of=as_of, snapshot=snapshot)
+        report = await run_insight_pipeline(
+            ticker, as_of=as_of, snapshot=snapshot, universe=universe)
         # Always append to history first; current-table write is conditional.
         _insert_report_history(report, run_id, run_kind, triggered_by)
         report_id = _upsert_report(report, allow_update=allow_update)
@@ -588,6 +590,7 @@ def _dispatch_fanout(
     as_of: Optional[Union[date, datetime]],
     force_update: bool,
     triggered_by: Optional[str],
+    universe_json: Optional[str] = None,
 ) -> list[tuple[str, str]]:
     """Enqueue one Cloud Tasks message per ticker.
 
@@ -619,6 +622,7 @@ def _dispatch_fanout(
             as_of_iso=as_of_iso,
             triggered_by=triggered_by,
             force_update=force_update,
+            universe_json=universe_json,
         )
         if outcome == EnqueueOutcome.ENQUEUED:
             logger.info("[run_id=%s] enqueued %s for parallel execution", run_id, ticker)
@@ -641,6 +645,57 @@ def _dispatch_fanout(
     return failed
 
 
+def _universe_current_for(current, as_of):
+    """The frozen universe, unless the UTC day has rolled over since.
+
+    With no `INSIGHT_AS_OF`, a ticker's cutoff is `today` computed when it
+    runs, so a universe frozen before UTC midnight is one
+    `summarize_backtest_metrics` rightly refuses afterwards -- costing the
+    report its backtest section. The scheduled run cannot hit this
+    (`insight-pipeline-daily` fires 08:45 America/New_York against an
+    1800 s timeout), but the ad-hoc `INSIGHT_TICKERS` path runs whenever a
+    person runs it, including just before midnight UTC (Codex P2 on
+    `c9637d3`).
+
+    Re-resolving is the correct answer rather than a concession: a new
+    calendar day genuinely has a new cutoff, so a new universe is what
+    that cutoff means. Pinning `as_of` instead would look tidier and is
+    unavailable -- it is a REPLAY cutoff, and switches on the option
+    summarizers' `snapshot_date < :as_of` filters (see `_run_scheduled`).
+
+    Batch loop ONLY. It can age the universe because it holds one object
+    for every remaining ticker, so the refresh is itself shared. A fan-out
+    child must not call this: siblings are separate executions that cannot
+    share a refreshed object, so each would re-resolve on its own and race
+    every watchlist edit between child starts. They keep the inherited
+    universe instead (see `_run_on_demand`, Codex P2 on `adbd259`).
+    """
+    if current is None or as_of is not None:
+        return current
+    today = datetime.now(timezone.utc).date()
+    if current.as_of == today:
+        return current
+    try:
+        from gcp.fetchers._watchlist import resolve_membership_at
+
+        refreshed = resolve_membership_at(today)
+        logger.info(
+            "UTC day rolled over since the universe was frozen (%s -> %s); "
+            "re-resolved the analog universe for the new cutoff",
+            current.as_of, today,
+        )
+        return refreshed
+    except Exception as exc:
+        logger.warning(
+            "day rolled over since the freeze and re-resolution failed (%s); "
+            "resolving per ticker instead", exc,
+        )
+        # None is cached by the batch caller, so this is not retried per
+        # ticker: the failure is logged once and every ticker then degrades
+        # the same way it did before any freeze existed.
+        return None
+
+
 async def _run_on_demand(allow_update_arg: bool = False) -> int:
     run_id = os.environ["INSIGHT_RUN_ID"]
     ticker = os.environ["INSIGHT_TICKER"]
@@ -649,12 +704,43 @@ async def _run_on_demand(allow_update_arg: bool = False) -> int:
     except ValueError as exc:
         logger.error("INSIGHT_AS_OF invalid: %s", exc)
         return 1
+    # The batch's frozen analog universe, if a parent handed one down.
+    # Malformed is a bug in the parent (the only writer is `to_json`), so
+    # it fails this child loudly rather than resolving a different universe
+    # and reporting it as the batch's (CLAUDE.md Rule 3.7, INTERNAL).
+    #
+    # Used AS-IS, deliberately not aged through `_universe_current_for`
+    # (Codex P2 on `adbd259`). Siblings of one batch dispatched just before
+    # UTC midnight all start with the same previous-day payload; if each
+    # re-resolved `today` on its own, a watchlist edit between two child
+    # starts would give them different peer sets -- the race the freeze
+    # exists to remove, reintroduced one hop later. Keeping the inherited
+    # universe is safe because `summarize_backtest_metrics` takes its cutoff
+    # from `universe.as_of` when `as_of` is None, so bars and peers stay on
+    # the batch's date together. The sequential loop can age its universe
+    # because it holds ONE object for every remaining ticker; separate
+    # executions cannot share a refreshed one, so they share the original.
+    universe = None
+    raw_universe = os.environ.get("INSIGHT_UNIVERSE")
+    if raw_universe:
+        try:
+            from gcp.fetchers._watchlist import WatchlistMembership
+
+            universe = WatchlistMembership.from_json(raw_universe)
+        except ValueError as exc:
+            logger.error("INSIGHT_UNIVERSE invalid: %s", exc)
+            return 1
+        logger.info(
+            "analog universe inherited from %s: as_of=%s resolution=%s tickers=%d",
+            universe.inherited_from, universe.as_of, universe.resolution,
+            len(universe.tickers),
+        )
     allow_update, run_kind = _resolve_run_kind_and_update(allow_update_arg)
     triggered_by = os.environ.get('INSIGHT_TRIGGERED_BY')
     ok = await _run_one(
         run_id, ticker, as_of=as_of,
         allow_update=allow_update, run_kind=run_kind,
-        triggered_by=triggered_by,
+        triggered_by=triggered_by, universe=universe,
     )
     return 0 if ok else 1
 
@@ -732,6 +818,53 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
     allow_update, run_kind = _resolve_run_kind_and_update(allow_update_arg)
     triggered_by = os.environ.get('INSIGHT_TRIGGERED_BY')
 
+    # One universe for the whole batch, resolved BEFORE dispatch so the
+    # fan-out children inherit it too (Codex P2 on `e3463b3`, and again on
+    # `af82694` when the first fix stopped at the in-process loop).
+    # `WatchlistMembership` is frozen precisely so one ticker's processing
+    # cannot change the next ticker's analog set; a child that resolved its
+    # own raced every watchlist edit made between two children of one
+    # batch. It is serialized with THIS execution named as `inherited_from`,
+    # so a child's report attributes the universe instead of claiming to
+    # have computed it -- which is what made handing it down acceptable.
+    #
+    # Agreeing with the per-backtest cutoff guard is not luck:
+    # `insight-pipeline-daily` fires at 08:45 America/New_York (12:45/13:45
+    # UTC, read from Cloud Scheduler, not from a doc) against an 1800 s
+    # task-timeout, and `_universe_current_for` re-resolves in the batch and
+    # in every child if the UTC day rolls over anyway.
+    #
+    # A failure here is logged and left as None rather than aborting the
+    # batch: each ticker and each child then resolves on its own as before,
+    # and a resolver that cannot run at all still surfaces through
+    # `build_context_bundle`'s per-section guard as `available: False`.
+    batch_universe = None
+    batch_universe_json = None
+    try:
+        from gcp.fetchers._watchlist import resolve_membership_at
+
+        _cutoff = as_of.date() if isinstance(as_of, datetime) else as_of
+        batch_universe = resolve_membership_at(
+            _cutoff or datetime.now(timezone.utc).date()
+        )
+        batch_universe_json = batch_universe.to_json(
+            inherited_from="%s@%s" % (
+                os.environ.get("CLOUD_RUN_EXECUTION") or "insight-pipeline batch",
+                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            ),
+        )
+        logger.info(
+            "analog universe frozen for this batch: as_of=%s resolution=%s "
+            "tickers=%d",
+            batch_universe.as_of, batch_universe.resolution,
+            len(batch_universe.tickers),
+        )
+    except Exception as exc:
+        logger.warning(
+            "could not freeze one analog universe for this batch (%s); "
+            "each ticker and each child will resolve its own", exc,
+        )
+
     # Fan out unless disabled, unless there is only one ticker (a lone
     # ticker would pay a container start to save nothing), or unless the
     # batch is larger than FANOUT_MAX_TICKERS.
@@ -747,7 +880,7 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
         pending = _dispatch_fanout(
             tickers, trigger=trigger, as_of=as_of,
             force_update=_update_explicitly_requested(allow_update_arg),
-            triggered_by=triggered_by,
+            triggered_by=triggered_by, universe_json=batch_universe_json,
         )
         if pending:
             logger.warning(
@@ -756,26 +889,68 @@ async def _run_scheduled(allow_update_arg: bool = False) -> int:
                 len(pending), len(tickers), ",".join(t for _, t in pending),
             )
 
+    # There is deliberately no per-ticker `as_of` computed here, and the
+    # reasoning is load-bearing enough to keep after the code went away.
+    #
+    # `d01ed78` was reviewed as leaving the report split across dates: the
+    # backtest pinned to the frozen universe while every other consumer read
+    # its own clock. `2d06c20` answered that by handing the frozen date down
+    # as `as_of`, which is wrong, because `as_of` is not "which day is this
+    # report about" -- it is a REPLAY cutoff. `build_context_bundle` defaults
+    # to `inclusive_today=False`, so supplying it switches both option
+    # summarizers from "no snapshot bound" to `snapshot_date < :as_of`.
+    #
+    # Measured against production 2026-09-26: `etf_options_snapshots` REALTIME
+    # rows carry their own session's `snapshot_date` (latest
+    # `2026-09-25 19:55:32+00`, `snapshot_date = 2026-09-25`). A live intraday
+    # run pinned to today therefore matched none of them and fell back to the
+    # prior day's EOD chain, while a fan-out child -- still receiving
+    # `as_of=None` -- read them. Same pipeline, same minute, different data,
+    # no disclosure (Codex P2 on `af82694`).
+    #
+    # The freeze survives without the pin: with `as_of=None` and the universe
+    # injected, `summarize_backtest_metrics` takes its cutoff from
+    # `universe.as_of` (`lib/agents/summarizers.py:1006`), so peers and bars
+    # agree by construction, and `_universe_current_for` keeps that date
+    # current per ticker. What is NOT restored is the whole-report pin: across UTC
+    # midnight mid-ticker the backtest stays on the frozen date while the live
+    # sections move on. That residue is bounded to one ticker's runtime, the
+    # 08:45 ET scheduler never approaches 00:00 UTC, and the date the peers
+    # came from is disclosed on `cross_ticker.universe`. Dropping a session's
+    # options data silently is the worse of the two.
+    #
+    # It also removed the need for the report-timestamp override added in
+    # `af82694`: with the cutoff back to None the orchestrator already stamps
+    # the report at execution time, which is what keeps a live row off a
+    # date-only replay's `(ticker, as_of)` key.
+
     any_failures = False
     if pending is None:
         # Sequential mode: insert each run row immediately before
         # executing it, as this job did before fan-out existed.
         for ticker in tickers:
             run_id = _insert_run(ticker, trigger=trigger)
+            # Assigned back, not called inline: the refreshed universe has to
+            # become the batch's universe for every ticker after it, or the
+            # rollover re-resolves once PER TICKER and the freeze is gone for
+            # the rest of the run -- the very guarantee it exists to keep
+            # (Codex P2 on `24ccbd7`).
+            batch_universe = _universe_current_for(batch_universe, as_of)
             ok = await _run_one(
                 run_id, ticker, as_of=as_of,
                 allow_update=allow_update, run_kind=run_kind,
-                triggered_by=triggered_by,
+                triggered_by=triggered_by, universe=batch_universe,
             )
             if not ok:
                 any_failures = True
     else:
         # Enqueue-failure fallback: rows already exist, reuse their ids.
         for run_id, ticker in pending:
+            batch_universe = _universe_current_for(batch_universe, as_of)
             ok = await _run_one(
                 run_id, ticker, as_of=as_of,
                 allow_update=allow_update, run_kind=run_kind,
-                triggered_by=triggered_by,
+                triggered_by=triggered_by, universe=batch_universe,
             )
             if not ok:
                 any_failures = True

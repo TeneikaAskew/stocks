@@ -218,3 +218,194 @@ def test_fallback_alert_posts_to_webhook_when_configured(monkeypatch):
     _post_fallback_alert("test reason")
     assert len(posted) == 1
     assert "test reason" in posted[0]["json"]["content"]
+
+
+# ---------------------------------------------------------------------------
+# As-of membership resolution (watchlist_history)
+#
+# The resolver's ANSWER is tested against a real Postgres in
+# tests/integration/test_watchlist_history.py — it reads a table maintained
+# by a database trigger, and a mocked connection would only prove the mock
+# fired. What belongs here are the properties that are checkable without a
+# database and that a local/CI run would otherwise pass over.
+# ---------------------------------------------------------------------------
+
+
+def test_membership_sql_uses_positional_placeholders():
+    """Named placeholders would pass every local and CI test and fail only
+    in production.
+
+    `lib.agents.model_routing.connect()` returns psycopg2 locally and under
+    CLOUD_SQL_URL, but pg8000 through the Cloud SQL Connector in production
+    — and pg8000's paramstyle is `format`, not `pyformat`. `%(owner)s`
+    raises there while working everywhere a test can reach. Measured
+    2026-09-18: pg8000 1.31.5, `paramstyle == 'format'`.
+    """
+    from gcp.fetchers import _watchlist
+
+    for name in ("_MEMBERSHIP_AT_SQL", "_HORIZON_SQL"):
+        sql = getattr(_watchlist, name)
+        assert "%(" not in sql, (
+            f"{name} uses named placeholders; pg8000 cannot bind them and "
+            "this is only reachable in production"
+        )
+
+
+def test_membership_resolution_does_not_swallow_database_errors():
+    """`_load_from_cloud_sql` above returns [] on any error so callers can
+    fall through to file/env. The as-of resolver must NOT copy that: a
+    caller that cannot tell "nobody was watchlisted on that date" from "the
+    query failed" computes analog statistics over the wrong universe and
+    reports them as fact (CLAUDE.md Rule 3.7).
+    """
+    import datetime
+
+    from gcp.fetchers import _watchlist
+
+    class _Boom:
+        def cursor(self):
+            raise RuntimeError("connection reset by peer")
+
+        def close(self):
+            return None
+
+    import lib.agents.model_routing as mr
+
+    original = mr.connect
+    mr.connect = lambda: _Boom()
+    try:
+        with pytest.raises(RuntimeError, match="connection reset"):
+            _watchlist.resolve_membership_at(datetime.date(2026, 9, 15))
+    finally:
+        mr.connect = original
+
+
+def test_an_aware_datetime_cutoff_resolves_instead_of_raising():
+    """`parse_as_of` returns `Union[date, datetime]` — an aware datetime for
+    the `YYYY-MM-DDTHH:MM:SSZ` form — and `summarize_backtest_metrics` passes
+    its `cutoff` straight through. `datetime` is a subclass of `date`, so it
+    satisfies the annotation and reaches the horizon comparison, where
+    `aware_datetime < horizon.date()` raises
+    `TypeError: can't compare datetime.datetime to datetime.date`.
+
+    Production has seed rows and therefore a non-null horizon, so every
+    timestamp-cutoff replay that needs cross-ticker expansion lost the whole
+    backtest section (Codex P2 on `775a29f`). The resolver normalizes to the
+    calendar date its own SQL already reads off the input.
+    """
+    import datetime as _dt
+
+    from gcp.fetchers import _watchlist
+
+    class _Cur:
+        def __init__(self):
+            self.n = 0
+
+        def execute(self, sql, params=None):
+            self.n += 1
+
+        def fetchall(self):
+            return [("AMD",), ("NVDA",)]
+
+        def fetchone(self):
+            return (_dt.datetime(2026, 4, 27, tzinfo=_dt.timezone.utc),)
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+        def close(self):
+            return None
+
+    import lib.agents.model_routing as mr
+
+    original = mr.connect
+    mr.connect = lambda: _Conn()
+    try:
+        aware = _dt.datetime(2026, 9, 15, 14, 30, tzinfo=_dt.timezone.utc)
+        resolved = _watchlist.resolve_membership_at(aware)
+    finally:
+        mr.connect = original
+
+    assert resolved.tickers == ("AMD", "NVDA")
+    # Normalized, not carried through as a datetime: the dataclass is what
+    # the report records and a caller comparing it to a date must not blow up
+    # for the same reason the horizon comparison did.
+    assert resolved.as_of == _dt.date(2026, 9, 15)
+    assert not isinstance(resolved.as_of, _dt.datetime)
+    assert resolved.resolution == "exact"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# WatchlistMembership transport to fan-out children
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _membership(**over):
+    from datetime import date, datetime, timezone
+    from gcp.fetchers._watchlist import WatchlistMembership
+
+    base = dict(tickers=("IWM", "SPY"), as_of=date(2026, 9, 26), owner="default",
+                resolution="approximate",
+                horizon=datetime(2026, 9, 26, 22, 55, 1, tzinfo=timezone.utc))
+    base.update(over)
+    return WatchlistMembership(**base)
+
+
+def test_a_universe_round_trips_through_the_child_env_with_its_provenance():
+    """Codex P2 on `e3463b3` / `af82694`. The child gets the batch's
+    universe verbatim AND a record of who resolved it, so its report
+    attributes the universe rather than claiming to have computed it."""
+    from gcp.fetchers._watchlist import WatchlistMembership
+
+    u = _membership()
+    back = WatchlistMembership.from_json(u.to_json(inherited_from="exec-1@2026-09-26T12:45:00+00:00"))
+    assert back.tickers == u.tickers
+    assert back.as_of == u.as_of
+    assert back.owner == u.owner
+    assert back.resolution == u.resolution
+    assert back.horizon == u.horizon
+    assert back.inherited_from == "exec-1@2026-09-26T12:45:00+00:00"
+    assert back.describe()["inherited_from"] == "exec-1@2026-09-26T12:45:00+00:00"
+
+
+def test_a_universe_resolved_here_describes_itself_as_not_inherited():
+    assert _membership().describe()["inherited_from"] is None
+
+
+def test_a_universe_with_no_horizon_round_trips():
+    from gcp.fetchers._watchlist import WatchlistMembership
+
+    back = WatchlistMembership.from_json(
+        _membership(horizon=None, resolution="exact").to_json(inherited_from="p"))
+    assert back.horizon is None and back.resolution == "exact"
+
+
+@pytest.mark.parametrize("raw", [
+    "not json",
+    '{"tickers":["SPY"]}',
+    # Codex P2 on `adbd259`: a JSON string is iterable, so without a type
+    # check "SPY" deserialized to ("S", "P", "Y") and the child backtested
+    # against three fabricated one-letter peers under valid provenance.
+    '{"tickers":"SPY","as_of":"2026-09-26","owner":"d","resolution":"exact",'
+    '"horizon":null,"inherited_from":"p"}',
+    '{"tickers":[1,2],"as_of":"2026-09-26","owner":"d","resolution":"exact",'
+    '"horizon":null,"inherited_from":"p"}',
+    '{"tickers":["SPY",""],"as_of":"2026-09-26","owner":"d","resolution":"exact",'
+    '"horizon":null,"inherited_from":"p"}',
+    '{"tickers":["SPY"],"as_of":"2026-13-45","owner":"d","resolution":"exact",'
+    '"horizon":null,"inherited_from":"p"}',
+    '{"tickers":["SPY"],"as_of":"2026-09-26","owner":"d","resolution":"guess",'
+    '"horizon":null,"inherited_from":"p"}',
+    '{"tickers":["SPY"],"as_of":"2026-09-26","owner":"d","resolution":"exact",'
+    '"horizon":null,"inherited_from":""}',
+])
+def test_a_malformed_child_universe_is_refused_not_repaired(raw):
+    """The only writer is `to_json` in the parent, so a bad payload is a
+    bug in code we own (CLAUDE.md Rule 3.7, INTERNAL). Resolving a
+    different universe instead and reporting it as the batch's would hide
+    the bug and misattribute the result."""
+    from gcp.fetchers._watchlist import WatchlistMembership
+
+    with pytest.raises(ValueError):
+        WatchlistMembership.from_json(raw)

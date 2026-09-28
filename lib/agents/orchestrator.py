@@ -51,7 +51,7 @@ import logging
 import re
 import time
 from datetime import date as date_type, datetime, timezone
-from typing import Any, Callable, Literal, Optional, Type
+from typing import Any, Callable, Literal, Optional, Type, TYPE_CHECKING
 
 from pydantic import BaseModel
 
@@ -76,6 +76,9 @@ from .schema import (
     TraderOutput,
 )
 from .summarizers import build_context_bundle, retrieve_similar_journal
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from gcp.fetchers._watchlist import WatchlistMembership
 
 logger = logging.getLogger(__name__)
 
@@ -272,6 +275,7 @@ async def run_insight_pipeline(
     as_of: Optional[date_type] = None,
     *,
     snapshot: Optional[RouteSnapshot] = None,
+    universe: Optional["WatchlistMembership"] = None,
     llm_factory: LLMFactory = _default_factory,
     query_embedding: Optional[list[float]] = None,
 ) -> InsightReport:
@@ -284,6 +288,12 @@ async def run_insight_pipeline(
     snapshot :
         Optional pre-loaded route snapshot. Tests inject a stub; the
         Cloud Run job loads from Cloud SQL via load_routes_snapshot().
+    universe :
+        Optional pre-resolved WatchlistMembership for the cross-ticker
+        analog set. Same shape as `snapshot`: frozen for the run when
+        supplied, resolved on demand when not. Supplying it pins the
+        analog universe for a replay and lets a test drive the sparse
+        path without a database.
     llm_factory :
         Function (provider:str) -> LLMClient instance. Tests inject
         a mock so no provider SDK is called.
@@ -298,7 +308,7 @@ async def run_insight_pipeline(
     tracker = _Tracker()
 
     # 1. Build the grounded context bundle (no LLM yet)
-    bundle = build_context_bundle(ticker, as_of)
+    bundle = build_context_bundle(ticker, as_of, universe=universe)
 
     # 2. Resolve route snapshot (frozen for the whole run)
     if snapshot is None:
@@ -631,7 +641,24 @@ async def run_insight_pipeline(
 
     report = InsightReport(
         ticker=ticker.upper(),
-        as_of=datetime.now(timezone.utc) if as_of is None else _as_datetime(as_of),
+        # `as_of` is TWO things: the data cutoff, and the persisted
+        # timestamp -- which is half of `insight_reports`' upsert key
+        # `ON CONFLICT (ticker, as_of)`. A LIVE run must therefore stamp
+        # execution time: a midnight stamp collides with a date-only
+        # `INSIGHT_AS_OF` replay of the same day, that replay runs with
+        # allow_update and rewrites `run_kind`, and the live-only reader
+        # (`platform/api/routers/insights.py:228`,
+        # `WHERE run_kind = 'live' ORDER BY as_of DESC`) is left with a stale
+        # report or a 404. A midnight row also sorts behind an
+        # exact-timestamp fan-out row for the same day and is never served as
+        # latest (Codex P2 on `2d06c20`).
+        #
+        # Which is why `as_of=None` MUST reach here for a live run, and why
+        # `gcp/insight_pipeline_job.py` no longer invents a date for one. An
+        # override parameter existed briefly to undo that invented pin;
+        # removing the pin removed the need for it (Codex P2 on `af82694`).
+        as_of=(datetime.now(timezone.utc) if as_of is None
+               else _as_datetime(as_of)),
         direction=direction,
         conviction=conviction,  # deterministic calibration (#349)
         thesis=pm.thesis,
@@ -653,6 +680,12 @@ async def run_insight_pipeline(
         confidence_score=pm.confidence_score,
         failed_sections=failed_sections,
         failed_section_reasons=failed_reasons,
+        # The backtest section is not persisted and returns available=True
+        # even when cross-ticker expansion found nothing, so it never
+        # reaches failed_section_reasons above. Carry its provenance
+        # explicitly or the resolved universe and the empty-cause die with
+        # this bundle (Codex P2 on `28162e4`).
+        analog_universe=(bundle.get("backtest") or {}).get("cross_ticker"),
         model_versions=snapshot.model_versions(),
         run_cost_usd=round(tracker.total_cost, 6),
         run_latency_ms=int((time.monotonic() - start) * 1000),

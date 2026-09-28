@@ -1,0 +1,186 @@
+name: Update vendored Superpowers skills
+
+# The Superpowers skills (https://github.com/obra/superpowers) are committed
+# under .claude/skills/ because cloud sessions do not install plugins from
+# enabledPlugins and multi-repo sessions skip repo SessionStart hooks. This
+# workflow keeps that copy current: every Monday it runs
+# scripts/maintenance/update_superpowers.sh and, when upstream has published
+# a newer release tag, opens a PR with the new skills and the upstream
+# release notes. The skills are instructions Claude follows, so updates land
+# through review rather than automatically.
+#
+# One branch per version transition (bot/superpowers-<from>-to-<to>), never
+# force-pushed. While a PR for that transition is open, or was closed without
+# merging, the run exits clean: closing an update PR skips that transition
+# until the next release. A merged PR does not block a later repeat of the
+# same transition (after a downgrade), which gets a -r<N> branch. A branch
+# left without a PR by a failed run gets its PR on the next run.
+#
+# Secrets:
+#   - PR_WORKFLOW_TOKEN   opens the PR. The default GITHUB_TOKEN cannot when
+#                         "Allow GitHub Actions to create and approve pull
+#                         requests" is off; see refresh-architecture-docs.yml.
+
+on:
+  schedule:
+    - cron: '23 14 * * 1'   # 14:23 UTC every Monday
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Upstream release tag to vendor (default: newest)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write       # push the bot branch
+  pull-requests: write  # open the PR
+
+concurrency:
+  group: update-superpowers
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # The update is always built on, and proposed against, the default
+      # branch. A manual run dispatched from another ref would otherwise check
+      # that ref out and carry its unrelated commits into the bot branch.
+      # Scheduled runs carry no github.event.repository, but they always run
+      # on the default branch, so github.ref_name is it there.
+      BASE: ${{ github.event.repository.default_branch || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BASE }}
+
+      - name: Refresh vendored skills
+        id: refresh
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          scripts/maintenance/update_superpowers.sh ${TAG:+"$TAG"} > "$RUNNER_TEMP/release-notes.md"
+          if [ -z "$(git status --porcelain -- .claude/skills)" ]; then
+            echo "::notice::Vendored Superpowers skills are already current"
+            echo "changed=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          VERSION=$(sed -n 's/^- Version: //p' .claude/skills/SUPERPOWERS.md)
+          FROM=$(git show HEAD:.claude/skills/SUPERPOWERS.md | sed -n 's/^- Version: //p')
+          {
+            echo "changed=1"
+            echo "version=$VERSION"
+            echo "from=$FROM"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open update PR
+        if: steps.refresh.outputs.changed == '1'
+        env:
+          GH_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
+          VERSION: ${{ steps.refresh.outputs.version }}
+          FROM: ${{ steps.refresh.outputs.from }}
+        run: |
+          [ -n "$GH_TOKEN" ] || { echo "::error::PR_WORKFLOW_TOKEN secret is not set"; exit 1; }
+          pulls() {
+            gh api "repos/${GITHUB_REPOSITORY}/pulls?state=all&head=${GITHUB_REPOSITORY_OWNER}:$1" --jq "$2"
+          }
+          # One branch per transition, so a downgrade and a later re-upgrade
+          # are distinct proposals rather than repeats of an old version. A
+          # transition repeated after its PR merged takes the next -r<N>
+          # suffix; every earlier candidate is checked, so an open or rejected
+          # PR on any of them is found. An open PR, or one closed without
+          # merging (a rejection), means this transition is already proposed:
+          # skip it until the next release. PRs are checked before branches,
+          # so a rejected PR whose branch was deleted still skips.
+          STEM="bot/superpowers-${FROM}-to-${VERSION}"
+          BRANCH=$STEM
+          N=1
+          while :; do
+            PR_URL=$(pulls "$BRANCH" '[.[] | select(.merged_at == null)][0].html_url // empty')
+            if [ -n "$PR_URL" ]; then
+              echo "::notice::$FROM -> $VERSION was already proposed in $PR_URL"
+              exit 0
+            fi
+            [ -n "$(pulls "$BRANCH" '.[0].html_url // empty')" ] || break
+            N=$((N + 1))
+            BRANCH="${STEM}-r${N}"
+          done
+          if git ls-remote --exit-code --heads origin "$BRANCH" > /dev/null; then
+            # An earlier run pushed the branch and then failed to open the PR.
+            echo "::warning::$BRANCH exists without a PR; opening it now"
+          else
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+            git checkout -b "$BRANCH"
+            # -f: an upstream file matching this repo's .gitignore (*.csv, data/)
+            # must not be silently left out of the vendored copy.
+            git add -A -f -- .claude/skills
+            git commit -q -m "chore(claude): update Superpowers skills to ${VERSION}"
+            git push -u origin "$BRANCH"
+          fi
+          # Files changed as the PR will show them: GitHub's compare counts from
+          # the merge base, so commits that reached the base after the branch
+          # was pushed are not reported as reverted.
+          STAT=$(gh api "repos/${GITHUB_REPOSITORY}/compare/${BASE}...${BRANCH}" \
+            --jq '.files[] | "\(.status)\t+\(.additions)/-\(.deletions)\t\(.filename)"')
+          # A PR body is capped at 65,536 characters; several skipped releases
+          # could exceed it. Upstream headings drop one level to nest under
+          # this body's "Upstream release notes".
+          NOTES=$(head -c 40000 "$RUNNER_TEMP/release-notes.md" | sed 's/^#/##/')
+          BODY=$(cat <<EOF
+          ## Summary
+
+          Updates the Superpowers skills vendored in \`.claude/skills/\` to
+          upstream release ${VERSION}. The files are copied unmodified by
+          \`scripts/maintenance/update_superpowers.sh\`.
+
+          ## Review
+
+          These skills are instructions Claude follows in every session. Read
+          the release notes and skim the SKILL.md diffs before merging.
+
+          ## Files changed
+
+          \`\`\`
+          ${STAT}
+          \`\`\`
+
+          ## Upstream release notes
+
+          ${NOTES}
+
+          Generated by \`.github/workflows/update-superpowers.yml\`
+          EOF
+          )
+
+          # REST rather than `gh pr create`, which goes through GraphQL and
+          # needs read:org; see refresh-architecture-docs.yml (Run 35).
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/pulls" \
+            -f base="$BASE" -f head="$BRANCH" \
+            -f title="chore(claude): update Superpowers skills from ${FROM} to ${VERSION}" \
+            -f body="$BODY" --jq '.html_url'
+
+  handle-failure:
+    needs: update
+    if: failure()
+    uses: ./.github/workflows/handle-workflow-failure.yml
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      actions: read
+    secrets:
+      PR_WORKFLOW_TOKEN: ${{ secrets.PR_WORKFLOW_TOKEN }}
+    with:
+      workflow_name: "Update vendored Superpowers skills"
+      failure_title: "❌ Superpowers skills update failed"
+      issue_labels: "workflow-failure,superpowers-update,automated"
+      workflow_file: "update-superpowers.yml"
+      run_id: ${{ github.run_id }}
+      run_number: ${{ github.run_number }}
+      run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      event_name: ${{ github.event_name }}
+      branch: ${{ github.ref }}
+      commit_sha: ${{ github.sha }}
+      create_pr: false

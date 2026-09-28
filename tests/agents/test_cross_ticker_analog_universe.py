@@ -1,4 +1,4 @@
-"""The cross-ticker analog pull must be bounded by the watchlist.
+"""The cross-ticker analog pull must be bounded by a resolved universe.
 
 Added 2026-09-16, after `insight-pipeline` OOM-killed NVDA and AMD on
 2026-09-15 (PR #1116 raised the job to 4Gi; this is the actual cause).
@@ -15,18 +15,17 @@ table had grown to 2,609 tickers. Measured against production on
     job memory limit     2 GiB       -> signal 9
 
 The branch is reached only when the ticker's own history yields fewer
-than 10 analogs (summarizers.py:1118). Verified with the production
-matcher against real bars at the production as_of of 2026-09-15:
-NVDA 6, AMD 6 (both expand, both OOM'd); AVGO 29, SPY 194 (neither
-expands, both completed). Four for four, and day-dependent rather than
-ticker-dependent: NVDA had 41 same-ticker analogs on 09-12 and 32 on
-09-16.
+than 10 analogs. Verified with the production matcher against real bars
+at the production as_of of 2026-09-15: NVDA 6, AMD 6 (both expand, both
+OOM'd); AVGO 29, SPY 194 (neither expands, both completed). Four for
+four, and day-dependent rather than ticker-dependent.
 
-Bounded to the 15 other watchlist names the same production code gives
-NVDA 65 analogs from 38,850 rows at a measured 9.1 MB peak, sourced from
-AMD/AVGO/MRVL. So the fix makes the analysis cheaper AND better: the
-unbounded universe was matching an equity's gap-and-volume setup against
-`^VIX`, `^VIX3M` and `^VVIX`.
+The universe is now RESOLVED by `gcp.fetchers._watchlist.
+resolve_membership_at` and passed in, rather than expressed as a
+sub-select inside the bar query. These tests pin the properties of that
+arrangement; the membership rule itself is real-SQL tested in
+`tests/integration/test_watchlist_history.py`, because it is a database
+trigger and a mocked connection would only prove the mock fired.
 """
 from __future__ import annotations
 
@@ -37,6 +36,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from gcp.fetchers._watchlist import WatchlistMembership
 from lib.agents import summarizers
 
 
@@ -55,34 +55,75 @@ def _bars(n: int, seed: int, start: float = 100.0) -> pd.DataFrame:
     })
 
 
+def _universe(*tickers: str, as_of=None,
+              resolution: str = "exact") -> WatchlistMembership:
+    """A resolved universe, defaulting to TODAY's date.
+
+    This used to hardcode 2026-09-15, which was "today" the day it was
+    written. `summarize_backtest_metrics` defaults its cutoff to today, so
+    the literal drifted out of agreement with it as soon as the date rolled
+    over, and three tests were silently injecting a universe resolved for a
+    different date than the bars they queried -- the defect Codex filed on
+    `e3463b3`, live in the suite meant to cover this code. Tests that want a
+    mismatch now have to ask for one.
+    """
+    if as_of is None:
+        as_of = datetime.date.today()
+    return WatchlistMembership(
+        tickers=tuple(tickers), as_of=as_of, owner="default",
+        resolution=resolution, horizon=None,
+    )
+
+
+PEERS = ("PEER1", "PEER2", "PEER3")
+
+
 @pytest.fixture
 def capture(monkeypatch):
-    """Install a fake _query that records every SQL it is handed."""
-    seen: list[tuple[str, dict]] = []
+    """Record every SQL handed to the strict and non-strict query paths.
+
+    Also stubs the membership resolver so these stay hermetic: what the
+    resolver returns is tested against a real Postgres elsewhere, and
+    what matters here is that whatever it returns is what bounds the
+    pull.
+    """
+    class _Seen(list):
+        """A list of (sql, params) that also carries the resolver calls."""
+        resolved: list
+
+    seen = _Seen()
+    resolved: list[tuple] = []
 
     def fake_query(sql: str, params=None):
         params = params or {}
         seen.append((sql, params))
-        if "JOIN watchlists" in sql or "ticker <> :ticker" in sql:
+        if "= ANY(:tickers)" in sql:
             frames = []
-            for i, tk in enumerate(("PEER1", "PEER2", "PEER3")):
+            for i, tk in enumerate(params.get("tickers") or ()):
                 f = _bars(260, seed=100 + i)
                 f.insert(0, "ticker", tk)
                 frames.append(f)
-            return pd.concat(frames, ignore_index=True)
+            return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
         return _bars(230, seed=7)
 
+    def fake_resolve(as_of, user_id="default"):
+        resolved.append((as_of, user_id))
+        return _universe(*PEERS, as_of=as_of)
+
     monkeypatch.setattr(summarizers, "_query", fake_query)
-    # The universe mirrors INSIGHT_TICKERS when the DB list is empty; pin
-    # the env so a stray value in the runner cannot change what is seen.
-    monkeypatch.delenv("INSIGHT_TICKERS", raising=False)
+    monkeypatch.setattr(summarizers, "_query_strict", fake_query)
+    monkeypatch.setattr(
+        "gcp.fetchers._watchlist.resolve_membership_at", fake_resolve)
+    seen.resolved = resolved
     return seen
 
 
 def _cross_call(seen) -> tuple[str, dict]:
-    matches = [(s, p) for s, p in seen
-               if "watchlists" in s or "ticker <> :ticker" in s]
-    assert matches, "the cross-ticker pull never ran; the test data no longer forces expansion"
+    matches = [(s, p) for s, p in seen if "= ANY(:tickers)" in s]
+    assert matches, (
+        "the cross-ticker pull never ran; the test data no longer forces "
+        "expansion"
+    )
     return matches[-1]
 
 
@@ -90,146 +131,39 @@ def _cross_sql(seen) -> str:
     return _cross_call(seen)[0]
 
 
-def test_the_cross_ticker_pull_is_bounded_by_the_watchlist(capture):
+# ---------------------------------------------------------------------------
+# The bound
+# ---------------------------------------------------------------------------
+
+
+def test_the_cross_ticker_pull_is_bounded_by_the_resolved_universe(capture):
     """Red before the fix: the query named no universe at all.
 
     This is the whole fix. Without a universe the query's cost scales with
     how many tickers happen to exist in market_data_daily, which is the
-    shape CLAUDE.md Rule 3.8 forbids.
+    shape CLAUDE.md Rule 3.8 forbids. The bound is now an explicit list,
+    so the test can assert the exact set rather than the presence of a
+    join clause.
     """
-    summarizers.summarize_backtest_metrics("TGT")
-    sql = _cross_sql(capture)
-    assert "watchlists" in sql, (
-        "the cross-ticker analog pull does not bound its universe by "
-        "`watchlists`, so it is every ticker in market_data_daily (2,609 on "
-        "2026-09-16, 5,597,928 rows, 2.93 GiB in pandas)."
-    )
-    assert "w.removed_at IS NULL" in sql, (
-        "the universe does not filter removed_at, so tickers removed from "
-        "the watchlist stay in the analog universe forever."
-    )
-
-
-def test_the_universe_cannot_fan_out_when_two_users_watch_one_ticker(capture):
-    """Codex P1 on `c75c22c`. Verified against the schema before fixing.
-
-    `watchlists` is `PRIMARY KEY (user_id, ticker)`, and its own schema
-    comment says 'default' is the shared list driving the brief/insight/
-    signal jobs while "a signed-in user's rows are owned by their verified
-    email". So one ticker can hold one row per user, and a plain
-    `JOIN watchlists` returns every market-data bar once per subscriber.
-
-    That is silent corruption, not an error: `_engineer` below groups by
-    ticker and calls `.diff()`, `.rolling()`, `.ewm()` and `.shift(-n)` on
-    the group, so duplicated dates are consumed as consecutive sessions.
-    Every feature and every forward return is computed over a doubled
-    series, and the analog statistics get weighted by subscriber count.
-
-    Measured on production 2026-09-17: 16 active rows, 16 distinct tickers,
-    1 distinct user. The defect is latent, which is exactly why it would
-    have shipped. It fires the first time any signed-in user watches a
-    ticker `default` already watches.
-
-    A semi-join cannot multiply rows whatever the owner scoping later
-    becomes, so that is what is pinned here rather than the scoping alone.
-    """
-    summarizers.summarize_backtest_metrics("TGT")
-    sql = _cross_sql(capture)
-    assert "EXISTS" in sql, (
-        "the cross-ticker universe is not a semi-join, so a ticker watched "
-        "by N users multiplies that ticker's bars N times."
-    )
-    assert "JOIN watchlists" not in sql, (
-        "a row-multiplying `JOIN watchlists` is back; use EXISTS so the "
-        "universe filters rather than joins."
-    )
-
-
-def test_the_universe_is_scoped_to_one_watchlist_owner(capture):
-    """The analog set must not change when a stranger adds a ticker.
-
-    `watchlists` holds every signed-in user's list alongside the shared
-    `default` one. Reading all owners would let any user silently alter the
-    forward-return statistics the insight reports are built on. The
-    canonical read (`gcp/fetchers/_watchlist.py:91`) is owner-scoped and
-    defaults to DEFAULT_USER_ID; this matches it.
-    """
-    from gcp.fetchers._watchlist import DEFAULT_USER_ID
-
     summarizers.summarize_backtest_metrics("TGT")
     sql, params = _cross_call(capture)
-    assert "w.user_id = :watchlist_owner" in sql, (
-        "the cross-ticker universe is not scoped to a single watchlist "
-        "owner, so it is the union of every user's list."
+    assert sorted(params["tickers"]) == sorted(PEERS), (
+        f"the pull was bounded by {params['tickers']!r}, not the resolved "
+        "universe"
     )
-    assert params.get("watchlist_owner") == DEFAULT_USER_ID, (
-        f"owner bound to {params.get('watchlist_owner')!r}, expected "
-        f"DEFAULT_USER_ID ({DEFAULT_USER_ID!r})"
+    assert "market_data_daily" in sql and "watchlists" not in sql, (
+        "the bar query still reads the watchlist table; membership is "
+        "resolved separately so this query cannot fan out or drift from it"
     )
-
-
-def test_peers_match_the_targets_asset_class(capture):
-    """Codex P2 on `1069e50`. An unconditional caret exclusion is wrong
-    in one direction.
-
-    ^VIX, ^VIX3M and ^VVIX were all in the unbounded universe, and a
-    volatility index is not an analog for an equity's gap-and-volume
-    setup. But excluding carets *unconditionally* means that when the
-    target is itself an index with sparse same-ticker matches, every
-    index peer is dropped and only equities remain -- the same cross-asset
-    comparison, inverted. Match the target's class instead.
-
-    Reachability, measured 2026-09-17: the `default` watchlist holds no
-    caret ticker, so this predicate is a no-op today and the defect is
-    latent. `SPX` was watchlisted (and removed 2026-04-30), so index-like
-    symbols do get added.
-    """
-    summarizers.summarize_backtest_metrics("TGT")
-    sql = _cross_sql(capture)
-    assert "(left(m.ticker, 1) = '^') = (left(:ticker, 1) = '^')" in sql, (
-        "the asset-class predicate is not relative to the target, so an "
-        "index target would be compared against equities only."
-    )
-
-
-def test_the_universe_resolves_membership_at_the_cutoff(capture):
-    """Codex P2 on `1069e50`. Future config must not leak into a replay.
-
-    The bar predicate is cutoff-relative but `removed_at IS NULL` asked
-    whether a row is active NOW, so an `INSIGHT_AS_OF` replay resolved its
-    analog universe from today's watchlist. A ticker added after the
-    cutoff leaked in; one removed after it vanished. Re-running the same
-    historical date could therefore return different analog statistics
-    purely because someone edited the watchlist in between -- the #822
-    look-ahead class, reintroduced through a config table rather than
-    through bars.
-
-    Demonstrable on the live table, which has real mutation history:
-    MSFT removed 2026-04-28, SPX removed 2026-04-30, MCK added 2026-05-04.
-    A replay of 2026-04-29 should see SPX and must not see MCK.
-    """
-    summarizers.summarize_backtest_metrics(
-        "TGT", as_of=datetime.date(2024, 9, 1))
-    sql = _cross_sql(capture)
-    assert "w.added_at" in sql, (
-        "the universe does not bound `added_at` by the cutoff, so tickers "
-        "watchlisted after the replay date leak into it."
-    )
-    assert "w.removed_at IS NULL OR w.removed_at" in sql, (
-        "the universe still asks whether a row is active now rather than "
-        "whether it was active at the cutoff."
-    )
-    assert "w.removed_at IS NULL AND" not in sql
 
 
 def test_the_unbounded_form_is_gone(capture):
     """Guards the exact string that shipped the OOM."""
     summarizers.summarize_backtest_metrics("TGT")
     sql = _cross_sql(capture)
-    assert "FROM market_data_daily \nWHERE" not in sql
-    assert "FROM market_data_daily WHERE ticker <> :ticker" not in sql, (
-        "the cross-ticker pull reverted to selecting from market_data_daily "
-        "with no join."
+    assert "ticker <> :ticker" not in sql, (
+        "the cross-ticker pull reverted to `<>` against every other ticker "
+        "in market_data_daily"
     )
 
 
@@ -242,11 +176,113 @@ def test_no_limit_truncates_the_analog_sample(capture):
     watchlist are not the statistics they claim to be.
     """
     summarizers.summarize_backtest_metrics("TGT")
-    sql = _cross_sql(capture)
-    assert "LIMIT" not in sql.upper(), (
+    assert "LIMIT" not in _cross_sql(capture).upper(), (
         "a LIMIT was added to the cross-ticker analog pull; it truncates "
         "the sample in ticker order rather than bounding the universe."
     )
+
+
+def test_the_universe_cannot_fan_out(capture):
+    """Codex P1 on `c75c22c`, now structurally impossible.
+
+    `watchlists` is `PRIMARY KEY (user_id, ticker)`, so one ticker holds
+    one row per user and a plain `JOIN watchlists` returned every bar once
+    per subscriber. That is silent corruption, not an error: `_engineer`
+    groups by ticker and calls `.diff()`, `.rolling()`, `.ewm()` and
+    `.shift(-n)` on the group, so duplicated dates are consumed as
+    consecutive sessions and analog statistics get weighted by subscriber
+    count.
+
+    A resolved list of distinct tickers cannot multiply rows however the
+    owner scoping later changes, which is a stronger guarantee than the
+    EXISTS semi-join that replaced the join.
+    """
+    summarizers.summarize_backtest_metrics("TGT")
+    _, params = _cross_call(capture)
+    bound = params["tickers"]
+    assert len(bound) == len(set(bound)), (
+        f"the bound universe contains duplicates ({bound!r}); each would "
+        "multiply that ticker's bars"
+    )
+    assert "JOIN watchlists" not in _cross_sql(capture)
+
+
+def test_the_target_is_never_its_own_peer(capture):
+    summarizers.summarize_backtest_metrics("PEER2")
+    _, params = _cross_call(capture)
+    assert "PEER2" not in params["tickers"], (
+        "the target is in its own analog universe, so its own history is "
+        "matched against itself and counted twice"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Asset class — now Python, still relative to the target
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "target,expected",
+    [
+        ("TGT", ["AMD", "AVGO"]),
+        ("^VIX", ["^VIX3M", "^VVIX"]),
+    ],
+)
+def test_peers_match_the_targets_asset_class(monkeypatch, target, expected):
+    """Codex P2 on `1069e50`. An unconditional caret exclusion is wrong
+    in one direction.
+
+    ^VIX, ^VIX3M and ^VVIX were all in the unbounded universe, and a
+    volatility index is not an analog for an equity's gap-and-volume
+    setup. But excluding carets *unconditionally* means that when the
+    target is itself an index with sparse same-ticker matches, every
+    index peer is dropped and only equities remain -- the same cross-asset
+    comparison, inverted.
+
+    Reachability, measured 2026-09-17: the `default` watchlist holds no
+    caret ticker, so this is latent today. `SPX` was watchlisted (and
+    removed 2026-04-30), so index-like symbols do get added.
+    """
+    seen: list[dict] = []
+
+    def fake_query(sql: str, params=None):
+        seen.append(params or {})
+        return pd.DataFrame()
+
+    monkeypatch.setattr(summarizers, "_query_strict", fake_query)
+    summarizers._build_cross_ticker_history(
+        target, "2026-09-15",
+        universe=_universe("AMD", "AVGO", "^VIX3M", "^VVIX", "^VIX", "TGT"),
+    )
+    assert seen, "no query was issued"
+    assert sorted(seen[-1]["tickers"]) == expected
+
+
+# ---------------------------------------------------------------------------
+# As-of
+# ---------------------------------------------------------------------------
+
+
+def test_membership_is_resolved_at_the_cutoff_not_now(capture):
+    """Codex P2 on `1069e50`. Future config must not leak into a replay.
+
+    The bar predicate was cutoff-relative while `removed_at IS NULL` asked
+    whether a row is active NOW, so an `INSIGHT_AS_OF` replay resolved its
+    analog universe from today's watchlist: a ticker added after the
+    cutoff leaked in, one removed after it vanished, and re-running the
+    same historical date could return different statistics because
+    someone edited the watchlist in between -- the #822 look-ahead class
+    arriving through a config table rather than through bars.
+    """
+    as_of = datetime.date(2024, 9, 1)
+    summarizers.summarize_backtest_metrics("TGT", as_of=as_of)
+    assert capture.resolved, "membership was never resolved"
+    resolved_at, owner = capture.resolved[-1]
+    assert resolved_at == as_of, (
+        f"membership resolved at {resolved_at}, not the cutoff {as_of}; "
+        "a replay would take its universe from today's watchlist"
+    )
+    assert owner == "default"
 
 
 @pytest.mark.parametrize("inclusive_today,expected_op", [(False, "<"), (True, "<=")])
@@ -268,13 +304,50 @@ def test_the_as_of_operator_still_reaches_the_cross_ticker_pull(
     )
 
 
-def test_analogs_are_still_found_and_attributed_to_their_source(capture):
-    """The fix must not break the thing the expansion exists to do.
+# ---------------------------------------------------------------------------
+# Threading
+# ---------------------------------------------------------------------------
 
-    Bounding the universe changes which analogs are found, by design. It
-    must not stop analogs being found, and each one must still name the
-    ticker it came from.
-    """
+
+def test_an_injected_universe_is_used_and_not_re_resolved(capture):
+    """The injection point exists so a replay can pin the analog set and a
+    test can drive this path without a database."""
+    summarizers.summarize_backtest_metrics(
+        "TGT", universe=_universe("AMD", "AVGO"))
+    _, params = _cross_call(capture)
+    assert sorted(params["tickers"]) == ["AMD", "AVGO"]
+    assert not capture.resolved, (
+        "a universe was supplied and the resolver ran anyway; that is two "
+        "resolutions that can disagree"
+    )
+
+
+def test_the_bundle_forwards_the_universe_to_the_backtest_section(monkeypatch):
+    got: dict = {}
+
+    def fake_backtest(ticker, **kw):
+        got.update(kw)
+        return {"available": True}
+
+    monkeypatch.setattr(summarizers, "summarize_backtest_metrics", fake_backtest)
+    for name in ("summarize_market_context", "summarize_strat_status",
+                 "summarize_options_flow", "summarize_gamma_levels",
+                 "summarize_catalysts", "summarize_news_sentiment"):
+        monkeypatch.setattr(summarizers, name,
+                            lambda *a, **k: {"available": True})
+
+    u = _universe("AMD")
+    summarizers.build_context_bundle("SPY", universe=u)
+    assert got.get("universe") is u
+
+
+# ---------------------------------------------------------------------------
+# Disclosure — CLAUDE.md Rules 3.7 and 3.7.1
+# ---------------------------------------------------------------------------
+
+
+def test_analogs_are_still_found_and_attributed_to_their_source(capture):
+    """The fix must not break the thing the expansion exists to do."""
     out = summarizers.summarize_backtest_metrics("TGT")
     assert out["available"] is True
     assert out["cross_ticker_used"] is True, (
@@ -284,126 +357,321 @@ def test_analogs_are_still_found_and_attributed_to_their_source(capture):
     assert out["analog_count"] >= 3, out.get("note")
     sources = {a["ticker"] for a in out["top_analogs"]}
     assert sources - {"TGT"}, "no analog was attributed to a peer ticker"
-    assert sources <= {"TGT", "PEER1", "PEER2", "PEER3"}, (
-        f"analogs came from outside the universe the query returned: {sources}"
+    assert sources <= {"TGT", *PEERS}, (
+        f"analogs came from outside the resolved universe: {sources}"
     )
 
 
-def test_an_empty_universe_is_logged_not_silent(monkeypatch, caplog):
-    """An empty watchlist must not read as 'this ticker has no analogs'.
-
-    CLAUDE.md Rule 3.7: returning None here is correct (the caller reports
-    cross_ticker_used=False), but doing it without a word makes an empty
-    watchlist indistinguishable from a genuinely narrow market.
+def test_the_report_carries_the_universe_and_its_resolution_quality(capture):
+    """CLAUDE.md Rule 3.7.1: an undisclosed quality difference is a silent
+    fallback. `approximate` means the cutoff predates the history horizon,
+    where membership was seeded from `watchlists` and inherits its blind
+    spot. A reader must be able to see that without reading the logs.
     """
-    def fake_query(sql: str, params=None):
-        if "watchlists" in sql:
+    out = summarizers.summarize_backtest_metrics(
+        "TGT", universe=_universe(*PEERS, resolution="approximate"))
+    detail = out["cross_ticker"]
+    assert detail["attempted"] is True
+    assert detail["used"] is True
+    assert detail["universe"]["resolution"] == "approximate"
+    assert detail["universe"]["ticker_count"] == len(PEERS)
+
+
+def test_not_used_says_which_of_the_three_reasons_it_was(monkeypatch):
+    """`cross_ticker_used=False` meant three different things and a reader
+    could not tell which: expansion not needed, universe empty, or peers
+    present but nothing matched the band. That is a value the caller
+    cannot distinguish from a legitimate result (CLAUDE.md Rule 3.7).
+    """
+    def only_own_bars(sql: str, params=None):
+        if "= ANY(:tickers)" in sql:
             return pd.DataFrame()
         return _bars(230, seed=7)
 
-    monkeypatch.setattr(summarizers, "_query", fake_query)
-    monkeypatch.delenv("INSIGHT_TICKERS", raising=False)
+    monkeypatch.setattr(summarizers, "_query", only_own_bars)
+    monkeypatch.setattr(summarizers, "_query_strict", only_own_bars)
+
+    empty = summarizers.summarize_backtest_metrics("TGT", universe=_universe())
+    assert empty["cross_ticker_used"] is False
+    assert empty["cross_ticker"]["attempted"] is True
+    # Names the cause, not a pointer to Cloud Logging: an empty watchlist
+    # resolves zero same-class peers, which is cause 1.
+    assert "asset class" in empty["cross_ticker"]["reason"]
+
+    off = summarizers.summarize_backtest_metrics("TGT", cross_ticker=False)
+    assert off["cross_ticker"]["attempted"] is False
+    assert "not needed" in off["cross_ticker"]["reason"]
+
+
+def test_an_empty_universe_is_logged_not_silent(caplog):
+    """An empty watchlist must not read as 'this ticker has no analogs'."""
     with caplog.at_level(logging.WARNING, logger="lib.agents.summarizers"):
-        result, source = summarizers._build_cross_ticker_history("TGT", "2026-09-15")
+        result, reason = summarizers._build_cross_ticker_history(
+            "TGT", "2026-09-15", universe=_universe())
     assert result is None
-    assert source is None
+    assert reason and "asset class" in reason
     assert any("universe empty" in r.getMessage() for r in caplog.records), (
         "an empty analog universe produced no log line"
     )
 
 
-# ---------------------------------------------------------------------------
-# Codex P2 on `1069e50`, "Honor the resolved fallback universe". Verified
-# against gcp/insight_pipeline_job.py:674-695 and _watchlist.load_watchlist
-# before fixing: the job resolves INSIGHT_TICKERS env, else the DB list,
-# else DEFAULT_TICKERS; load_watchlist resolves DB rows, else
-# INSIGHT_TICKERS, else []. The universe consulted only the DB.
-# ---------------------------------------------------------------------------
+def test_a_database_failure_is_not_reported_as_no_analogs(monkeypatch):
+    """`_query` returns an empty frame on error, which lands on the same
+    branch as 'this universe has no bars'. The strict sibling raises, so
+    build_context_bundle records the section as failed with the reason
+    instead of publishing 'no analogs exist' (CLAUDE.md Rule 3.7).
+    """
+    def boom(sql: str, params=None):
+        raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(summarizers, "_query_strict", boom)
+    with pytest.raises(RuntimeError, match="connection reset"):
+        summarizers._build_cross_ticker_history(
+            "TGT", "2026-09-15", universe=_universe("AMD"))
 
 
-def _env_mirror_query(monkeypatch, seen):
-    """A fake `_query` where the DB watchlist is empty at the cutoff and
-    only the INSIGHT_TICKERS mirror returns bars."""
+def test_a_caretless_index_symbol_is_not_filed_as_an_equity(monkeypatch):
+    """The caret is a naming convention, not an asset class.
+
+    `^VIX` is self-describing; `SPX`, `NDX`, `RUT` and `XSP` are not, and
+    this repo carries them un-careted — `lib/options_greeks.py` keeps exactly
+    that set as the cash-settled index roots whose Greeks it computes, and
+    SPX is on the production watchlist (the history tests have it active on
+    2026-04-29). Under `startswith("^")` an equity target pulls SPX index
+    bars into its analog statistics and an SPX target pulls equities into
+    its own, which is the cross-asset contamination this filter exists to
+    stop (Codex P2 on `775a29f`).
+    """
+    seen: list[dict] = []
+
     def fake_query(sql: str, params=None):
-        params = params or {}
-        seen.append((sql, params))
-        if "EXISTS" in sql:
-            return pd.DataFrame()
-        if "= ANY(:universe)" in sql:
-            frames = []
-            for i, tk in enumerate(params["universe"]):
-                f = _bars(260, seed=300 + i)
-                f.insert(0, "ticker", tk)
-                frames.append(f)
-            return pd.concat(frames, ignore_index=True)
-        return _bars(230, seed=7)
+        seen.append(params or {})
+        return pd.DataFrame()
 
-    monkeypatch.setattr(summarizers, "_query", fake_query)
+    monkeypatch.setattr(summarizers, "_query_strict", fake_query)
 
-
-def test_the_env_override_is_the_universe_when_the_db_list_is_empty(
-    monkeypatch, caplog
-):
-    """Mirror `load_watchlist`: DB rows, else INSIGHT_TICKERS.
-
-    An env-driven run against a DB list that is empty at the cutoff lost
-    the expansion entirely. That is every replay dated before the table
-    was seeded on 2026-04-27, now that membership resolves at the cutoff.
-    The fallback is loud and disclosed: WARNING log plus
-    `cross_ticker_source` on the section the researcher payload dumps
-    whole (CLAUDE.md Rule 3.7.1). The #822 cutoff operator and the
-    asset-class predicate must survive on this path too.
-    """
-    seen: list[tuple[str, dict]] = []
-    _env_mirror_query(monkeypatch, seen)
-    monkeypatch.setenv("INSIGHT_TICKERS", "tgt, PEER1,PEER2,peer1")
-    with caplog.at_level(logging.WARNING, logger="lib.agents.summarizers"):
-        out = summarizers.summarize_backtest_metrics("TGT")
-
-    env_calls = [(s, p) for s, p in seen if "= ANY(:universe)" in s]
-    assert env_calls, "the INSIGHT_TICKERS universe was never queried"
-    sql, params = env_calls[-1]
-    assert params["universe"] == ["PEER1", "PEER2"], (
-        "the env universe must be deduped, uppercased and exclude the target"
+    summarizers._build_cross_ticker_history(
+        "TGT", "2026-09-15",
+        universe=_universe("AMD", "SPX", "NDX", "^VIX"),
     )
-    assert "m.ticker <> :ticker" in sql
-    assert "(left(m.ticker, 1) = '^') = (left(:ticker, 1) = '^')" in sql
-    assert "m.date < CAST(:cutoff AS date)" in sql, "the #822 guard was lost on the env path"
-    assert out["cross_ticker_used"] is True
-    assert out["cross_ticker_source"] == "INSIGHT_TICKERS"
-    assert any("sourced from INSIGHT_TICKERS" in r.getMessage() for r in caplog.records)
-
-
-def test_the_env_override_is_not_consulted_when_the_db_list_answers(
-    capture, monkeypatch
-):
-    """Layer order matters: the DB is the source of truth when it has rows.
-
-    This is what keeps the common `INSIGHT_TICKERS=NVDA` replay on the
-    curated peer set: the env list never narrows a universe the DB
-    already answered.
-    """
-    monkeypatch.setenv("INSIGHT_TICKERS", "TGT,ZZZ1,ZZZ2")
-    out = summarizers.summarize_backtest_metrics("TGT")
-    assert not [s for s, _ in capture if "= ANY(:universe)" in s], (
-        "INSIGHT_TICKERS was consulted although the DB watchlist answered"
+    assert sorted(seen[-1]["tickers"]) == ["AMD"], (
+        "an equity target pulled index bars into its analog universe"
     )
-    assert out["cross_ticker_source"] == "watchlists"
+
+    seen.clear()
+    summarizers._build_cross_ticker_history(
+        "SPX", "2026-09-15",
+        universe=_universe("AMD", "NDX", "^VIX", "SPX"),
+    )
+    assert sorted(seen[-1]["tickers"]) == ["NDX", "^VIX"], (
+        "an index target pulled equity bars into its analog universe"
+    )
 
 
-def test_default_tickers_are_not_a_universe(monkeypatch, caplog):
-    """No env and no DB rows means no universe, said out loud.
+def test_each_empty_universe_cause_is_persisted_not_just_logged(monkeypatch):
+    """`cross_ticker.reason` must name WHICH cause, not point at Cloud Logs.
 
-    The job's DEFAULT_TICKERS is its own last resort for *targets*. Using a
-    hardcoded list as the analog universe is the Rule 3.7 shape, so the
-    empty path stays loud rather than fabricating peers.
+    Before this, all three `return None` paths collapsed into one literal
+    string telling the reader to go read the warning in Cloud Logging. That
+    is the same indistinguishable-value defect `cross_ticker_used=False`
+    had, one layer up: a report consumer cannot tell "this watchlist has no
+    same-class peers" (a curation fact) from "the peers have no bars" (an
+    ingestion gap) from "the peers are too new" (a timing fact), and the
+    three want different responses (Codex P2 on `775a29f`).
     """
-    seen: list[tuple[str, dict]] = []
-    _env_mirror_query(monkeypatch, seen)
-    monkeypatch.delenv("INSIGHT_TICKERS", raising=False)
-    with caplog.at_level(logging.WARNING, logger="lib.agents.summarizers"):
-        out = summarizers.summarize_backtest_metrics("TGT")
-    assert not [s for s, _ in seen if "= ANY(:universe)" in s]
-    assert out["cross_ticker_used"] is False
-    assert out["cross_ticker_source"] is None
-    assert any("universe empty" in r.getMessage() for r in caplog.records)
+    # Cause 1 — no same-class peers.
+    frame, reason = summarizers._build_cross_ticker_history(
+        "TGT", "2026-09-15", universe=_universe("^VIX", "^VVIX"))
+    assert frame is None
+    assert "asset class" in reason
+
+    # Cause 2 — peers exist, no bars.
+    monkeypatch.setattr(
+        summarizers, "_query_strict", lambda sql, params=None: pd.DataFrame())
+    frame, no_bars = summarizers._build_cross_ticker_history(
+        "TGT", "2026-09-15", universe=_universe("AMD", "AVGO"))
+    assert frame is None
+    assert "none has daily bars" in no_bars
+
+    # Cause 3 — peers have bars, but under the 60-bar feature minimum.
+    short = pd.DataFrame({
+        "ticker": ["AMD"] * 10,
+        "date": pd.date_range("2026-08-01", periods=10).date,
+        "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0,
+    })
+    monkeypatch.setattr(
+        summarizers, "_query_strict", lambda sql, params=None: short)
+    frame, too_short = summarizers._build_cross_ticker_history(
+        "TGT", "2026-09-15", universe=_universe("AMD"))
+    assert frame is None
+    assert "enough history" in too_short
+
+    assert len({reason, no_bars, too_short}) == 3, (
+        "the three causes must be distinguishable by a report consumer"
+    )
+
+
+def test_the_index_set_covers_the_repos_cash_settled_index_roots():
+    """`_CARETLESS_INDEX_SYMBOLS` is kept local so a Greeks-side edit cannot
+    silently reclassify an asset class. That independence is only safe if
+    the two cannot drift in the dangerous direction: anything
+    `lib.options_greeks` treats as a cash-settled index root must still
+    classify as an index here.
+    """
+    from lib.options_greeks import COMPUTE_GREEKS_TICKERS
+
+    missing = sorted(
+        t for t in COMPUTE_GREEKS_TICKERS
+        if not summarizers._is_index_symbol(t)
+    )
+    assert not missing, (
+        f"{missing} are index roots to the Greeks pipeline but would be "
+        f"matched against equities as analogs"
+    )
+
+
+def test_the_analog_universe_reaches_the_persisted_report():
+    """`cross_ticker.reason` on the bundle is not disclosure on its own.
+
+    `build_context_bundle`'s output is transient. The persisted artifact is
+    `InsightReport`, written to `insight_reports.report` (JSONB) via
+    `model_dump_json()`, and it carries no backtest section. The sparse
+    cross-ticker path still returns `available: True`, so the section never
+    lands in `failed_sections` either — meaning the cause reached no report
+    consumer and no API response. That is the unread-field shape Rule 3.7.1
+    names, one layer further out than the thread that prompted it (Codex P2
+    on `28162e4`).
+
+    `InsightReport` sets `extra="forbid"`, so this is red until the field
+    exists rather than silently accepted and dropped.
+    """
+    import json
+
+    from lib.agents.schema import InsightReport
+
+    detail = {
+        "attempted": True,
+        "used": False,
+        "reason": "3 peer(s) had bars but none had enough history",
+        "universe": {"owner": "default", "tickers": 16,
+                     "resolution": "exact"},
+    }
+    fields = InsightReport.model_fields
+    assert "analog_universe" in fields, (
+        "the persisted report has no field for the cross-ticker provenance, "
+        "so the cause dies with the transient bundle"
+    )
+
+    # And it must survive the exact serialization the DB write uses.
+    assert json.loads(
+        InsightReport.model_construct(analog_universe=detail)
+        .model_dump_json()
+    )["analog_universe"]["reason"] == detail["reason"]
+
+
+def test_the_orchestrator_actually_populates_it():
+    """A field nothing writes is the same unread disclosure in a new place.
+
+    Checked by AST rather than regex: the `InsightReport(...)` call spans
+    ~28 lines, so a line-anchored pattern cannot see its keywords.
+    """
+    import ast
+    import pathlib
+
+    src = pathlib.Path("lib/agents/orchestrator.py").read_text()
+    calls = [
+        n for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "InsightReport"
+    ]
+    assert calls, "no InsightReport(...) construction found"
+    supplied = {kw.arg for c in calls for kw in c.keywords}
+    assert "analog_universe" in supplied, (
+        "InsightReport is built without analog_universe, so the resolved "
+        "universe and the empty-cause never reach the persisted report"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The injected universe has to belong to THIS cutoff
+# ---------------------------------------------------------------------------
+
+
+def test_a_universe_resolved_for_another_date_is_refused(capture):
+    """Codex P2 on `e3463b3`.
+
+    The injection point trusted whatever it was handed. A universe resolved
+    for a different day selects peers from one date while the bars are
+    queried at another, and `describe()` then persists that universe's
+    `as_of` as this report's provenance -- a fabricated account of how the
+    analog set was chosen, which is the exact failure this change exists to
+    prevent, arriving through the parameter the change added.
+
+    Reachable from precisely the usage the parameter invites: replay code
+    that resolves once and reuses the object across dates. It was also live
+    in this file -- `_universe` hardcoded 2026-09-15 while the default
+    cutoff is today, so three tests here were injecting a mismatch.
+
+    Refused rather than silently re-resolved: re-resolving would discard
+    the caller's frozen universe, which is the one thing the parameter
+    exists to guarantee.
+    """
+    named = datetime.date(2026, 9, 15)
+    with pytest.raises(ValueError) as excinfo:
+        summarizers.summarize_backtest_metrics(
+            "TGT", as_of=named,
+            universe=_universe("AMD", "AVGO", as_of=datetime.date(2020, 1, 2)),
+        )
+    message = str(excinfo.value)
+    assert "2020-01-02" in message and str(named) in message
+    assert not capture.resolved, (
+        "the mismatch was papered over by re-resolving, which throws away "
+        "the caller's frozen universe"
+    )
+
+
+def test_an_aware_datetime_cutoff_still_matches_its_own_calendar_date(capture):
+    """The guard must normalize both sides or it rejects agreeing pairs.
+
+    `datetime` subclasses `date`, so `cutoff` here can be an aware datetime
+    while `WatchlistMembership.as_of` is always a plain date -- the same
+    trap `28162e4` fixed one layer down in the resolver. A guard comparing
+    them raw would raise on a universe that matches perfectly.
+    """
+    summarizers.summarize_backtest_metrics(
+        "TGT",
+        as_of=datetime.datetime(2026, 9, 15, 14, 30, tzinfo=datetime.timezone.utc),
+        universe=_universe("AMD", "AVGO", as_of=datetime.date(2026, 9, 15)),
+    )
+    _, params = _cross_call(capture)
+    assert sorted(params["tickers"]) == ["AMD", "AVGO"]
+
+
+def test_an_injected_universe_pins_the_cutoff_when_no_as_of_is_named(capture):
+    """Codex P2 on `8de8e82` -- the second clock read had to go, not shrink.
+
+    A caller that freezes a universe and names no `as_of` has pinned the
+    date; reading the clock again here re-decides it. Those two reads are
+    separated by a route-snapshot load and four analyst sections, so a
+    batch begun near UTC midnight freezes on one date and arrives here on
+    the next, and the guard above then correctly refuses its own caller's
+    universe -- costing the report its backtest section. Narrowing that
+    window cannot close it; removing the second read can.
+
+    The universe's date must therefore reach the BAR query too, not only
+    the peer list, or peers and bars come from different days -- which is
+    the thing the guard exists to prevent, arriving by another route.
+    """
+    frozen = datetime.date(2026, 9, 15)
+    summarizers.summarize_backtest_metrics(
+        "TGT", universe=_universe("AMD", "AVGO", as_of=frozen))
+
+    sql, params = _cross_call(capture)
+    assert sorted(params["tickers"]) == ["AMD", "AVGO"]
+    named = [v for v in params.values() if str(v).startswith(str(frozen))]
+    assert named, (
+        f"the bar query was not bounded by the frozen date {frozen}; "
+        f"params were {params}"
+    )
+    assert not capture.resolved, "it re-resolved instead of honouring the pin"

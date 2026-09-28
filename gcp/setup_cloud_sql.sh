@@ -167,10 +167,32 @@ $PROXY_BIN --port 5432 "$CONNECTION_NAME" &
 PROXY_PID=$!
 sleep 5
 
-PGPASSWORD="$DB_PASS" psql \
-    -h 127.0.0.1 -p 5432 \
-    -U "$DB_USER" -d "$DB_NAME" \
-    -f "$(dirname "$0")/schema.sql"
+# Applied through gcp/apply_schema.py, NOT `psql -f`. The
+# `-- ATOMIC-BEGIN` / `-- ATOMIC-END` markers in gcp/schema.sql are the
+# applier's contract: it runs each marked group in ONE transaction, while
+# psql treats the markers as ordinary comments and commits every statement
+# on its own. The watchlist_history group creates its table, installs the
+# trigger that captures membership transitions, and seeds from current
+# state -- under psql the lock is released with its own DO statement, so a
+# remove/re-add landing in that triggerless window is seeded as continuous
+# membership and the log is wrong from birth, unrepairably.
+#
+# This script provisions a NEW instance, but every step is re-runnable
+# ("already exists"), so it CAN be pointed at the live one. An earlier
+# version of this comment argued the grouping did not matter here because
+# the run rotates the database password first. That argument is wrong, and
+# measured wrong: `ALTER USER ... PASSWORD` does not terminate
+# already-authenticated sessions or their connection pools -- a session
+# opened before the rotation keeps working -- so concurrent writers are
+# still live in the window (Codex P2 on `f94ce61`).
+python3 -m pip install --quiet --disable-pip-version-check -r requirements.txt
+
+DB_HOST=127.0.0.1 DB_PORT=5432 \
+DB_USER="$DB_USER" DB_PASS="$DB_PASS" DB_NAME="$DB_NAME" \
+python3 -m gcp.apply_schema \
+    --revision="$(git rev-parse HEAD)" \
+    --revision-time="$(git log -1 --format=%ct HEAD)" \
+    --revision-ancestors="$(git rev-list --max-count=100 HEAD | tr '\n' ' ')"
 
 kill $PROXY_PID 2>/dev/null || true
 echo "  ✓ Schema applied"

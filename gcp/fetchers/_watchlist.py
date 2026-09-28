@@ -31,11 +31,292 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
+from datetime import date as date_type, datetime, timedelta
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_USER_ID = "default"
+
+
+# ---------------------------------------------------------------------------
+# As-of membership resolution (watchlist_history)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class WatchlistMembership:
+    """Who was on ``owner``'s watchlist on ``as_of``, and how well we know.
+
+    Frozen so a batch can resolve ONE universe and thread it down: a
+    mutable one would let one ticker's processing change the next
+    ticker's analog set. ``gcp/insight_pipeline_job.py`` does that for
+    every ticker it runs in-process.
+
+    It reaches fan-out children too (``INSIGHT_FANOUT=1``, the default).
+    Each child is its own Cloud Run execution launched from container env
+    vars, so the batch serializes this object into ``INSIGHT_UNIVERSE``
+    (``to_json`` / ``from_json``) and the child uses it verbatim. That was
+    resisted for eight review rounds as "fabricated provenance": a child
+    reporting ``resolution: exact`` on a string it did not compute. The
+    objection was to the claim, not the transport, and it is answered by
+    making the claim true -- ``inherited_from`` names the batch that
+    resolved it and ``describe()`` renders it, so the report says exactly
+    where the universe came from (Codex P2 on ``e3463b3`` and
+    ``af82694``). A child that resolved its own instead raced every
+    watchlist edit made between two children of one batch.
+
+    ``resolution`` is the honest part and callers are expected to render
+    it (CLAUDE.md Rule 3.7.1 — an undisclosed quality difference is a
+    silent fallback):
+
+    * ``exact`` — every membership transition on or after ``as_of`` is in
+      ``watchlist_history``, so this is the membership, not an estimate.
+    * ``approximate`` — ``as_of`` predates ``horizon``, the point where
+      history recording began. ``watchlists`` holds current state under
+      ``PRIMARY KEY (user_id, ticker)``, so a removal that a later re-add
+      cleared left no trace to seed from. Adds after ``as_of`` and
+      removals never followed by a re-add are still resolved correctly;
+      an interval erased before ``horizon`` is not, and cannot be.
+    """
+
+    tickers: tuple[str, ...]
+    as_of: date_type
+    owner: str
+    resolution: str
+    horizon: Optional[datetime]
+    # Set only on a copy handed to a fan-out child: who resolved this and
+    # when, so the child's report attributes the universe rather than
+    # claiming to have computed it. None means "this process resolved it".
+    inherited_from: Optional[str] = None
+
+    def describe(self) -> dict:
+        """Render for the context bundle / insight report."""
+        return {
+            "tickers": list(self.tickers),
+            "ticker_count": len(self.tickers),
+            "as_of": str(self.as_of),
+            "owner": self.owner,
+            "resolution": self.resolution,
+            "horizon": str(self.horizon) if self.horizon else None,
+            "inherited_from": self.inherited_from,
+        }
+
+    def to_json(self, *, inherited_from: str) -> str:
+        """Serialize for a fan-out child's ``INSIGHT_UNIVERSE`` env var.
+
+        ``inherited_from`` is required, not optional: a serialized universe
+        exists only to be handed to another process, and that process must
+        be able to say where it came from.
+        """
+        import json
+
+        return json.dumps({
+            "tickers": list(self.tickers),
+            "as_of": self.as_of.isoformat(),
+            "owner": self.owner,
+            "resolution": self.resolution,
+            "horizon": self.horizon.isoformat() if self.horizon else None,
+            "inherited_from": inherited_from,
+        }, separators=(",", ":"))
+
+    @classmethod
+    def from_json(cls, raw: str) -> "WatchlistMembership":
+        """Inverse of ``to_json``.
+
+        Raises ``ValueError`` on anything malformed. The only writer is
+        ``to_json`` in the parent, so a bad payload is a bug in code we own
+        (CLAUDE.md Rule 3.7, INTERNAL); silently resolving a different
+        universe instead would hide it and misattribute the result.
+        """
+        import json
+
+        try:
+            d = json.loads(raw)
+            raw_tickers = d["tickers"]
+            # A JSON string is iterable, so without this check "SPY" would
+            # deserialize to ("S", "P", "Y") and the child would backtest
+            # against three fabricated one-letter peers under valid
+            # provenance (Codex P2 on `adbd259`). A list of non-empty
+            # strings, or nothing.
+            if not isinstance(raw_tickers, list) or not all(
+                isinstance(t, str) and t.strip() for t in raw_tickers
+            ):
+                raise ValueError(
+                    f"tickers must be a list of non-empty strings, got "
+                    f"{raw_tickers!r}"
+                )
+            tickers = tuple(raw_tickers)
+            as_of = date_type.fromisoformat(d["as_of"])
+            horizon = (datetime.fromisoformat(d["horizon"])
+                       if d.get("horizon") else None)
+            resolution = d["resolution"]
+            owner = d["owner"]
+            inherited = d["inherited_from"]
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"INSIGHT_UNIVERSE is not a serialized WatchlistMembership: {exc}"
+            ) from exc
+        if resolution not in ("exact", "approximate"):
+            raise ValueError(
+                f"INSIGHT_UNIVERSE resolution {resolution!r} is neither exact "
+                "nor approximate"
+            )
+        if not inherited:
+            raise ValueError(
+                "INSIGHT_UNIVERSE carries no inherited_from; a child may not "
+                "present an inherited universe as its own"
+            )
+        return cls(tickers=tickers, as_of=as_of, owner=owner,
+                   resolution=resolution, horizon=horizon,
+                   inherited_from=inherited)
+
+
+# Membership at any point during the as-of DAY, which is exactly the
+# predicate the inline semi-join in lib/agents/summarizers.py used before
+# this table existed. Preserved deliberately: this change is about the
+# accuracy of the answer (intervals a re-add used to erase), not about the
+# boundary. Changing both at once would make any behaviour difference
+# impossible to attribute to either.
+#
+# Residual, stated rather than quietly fixed: "any point during the day"
+# still admits an edit made LATER in the as-of day than the moment a run
+# represents (a brief runs 08:30 ET; a ticker added at noon counts). That
+# is a smaller leak than the one being closed and needs a run-instant
+# concept the pipeline does not currently carry.
+# `action IN ('add', 'remove')` INSIDE the DISTINCT ON, not outside it: a
+# surface-flag transition is recorded as its own `flags` event (see the
+# trigger in gcp/schema.sql), and without the filter the newest such row
+# would WIN the DISTINCT ON for an active ticker, be neither add nor remove,
+# and the ticker would silently vanish from every universe resolved after
+# its flags changed. Filtering after the DISTINCT ON would be the same bug.
+# Placeholders are POSITIONAL %s, not %(name)s. `connect()` returns
+# psycopg2 locally and under CLOUD_SQL_URL, but pg8000 through the Cloud SQL
+# Connector in production, and pg8000's paramstyle is `format` — named
+# placeholders raise there while passing every local and CI test. Every other
+# cur.execute() in this module and in model_routing.py is positional for the
+# same reason; test_membership_sql_uses_positional_placeholders pins it.
+_MEMBERSHIP_AT_SQL = """
+    SELECT ticker FROM (
+        SELECT DISTINCT ON (ticker) ticker, action
+          FROM watchlist_history
+         WHERE user_id = %s
+           AND effective_at < %s
+           AND action IN ('add', 'remove')
+         ORDER BY ticker, effective_at DESC, id DESC
+    ) carried
+     WHERE carried.action = 'add'
+    UNION
+    SELECT DISTINCT ticker
+      FROM watchlist_history
+     WHERE user_id = %s
+       AND action = 'add'
+       AND effective_at >= %s
+       AND effective_at <  %s
+"""
+
+# The point before which resolution is reported `approximate`.
+#
+# GREATEST of two things, because either alone is wrong. The newest seed row
+# carries `watchlists`' blind spot forward -- intervals a re-add erased were
+# never representable there. The install time carries the OTHER blind spot:
+# nothing was observing before it, so rows deleted earlier left no trace in
+# either table. Reading only the seed rows reported every pre-install cutoff
+# `exact` whenever the seed found nothing to write (Codex P2 on `fab26ec`).
+#
+# GREATEST ignores NULLs in Postgres -- verified, not assumed:
+#   GREATEST(NULL::timestamptz, '2026-01-01') -> 2026-01-01
+# so a database with no seed rows still gets its install horizon, and the
+# result is NULL only if both are, which cannot happen once the migration has
+# run.
+_HORIZON_SQL = """
+    SELECT GREATEST(
+               (SELECT max(recorded_at) FROM watchlist_history
+                 WHERE origin = 'seed'),
+               (SELECT installed_at FROM watchlist_history_origin)
+           ) AS horizon
+"""
+
+
+def resolve_membership_at(
+    as_of: date_type,
+    user_id: str = DEFAULT_USER_ID,
+) -> WatchlistMembership:
+    """Resolve ``user_id``'s watchlist membership as it stood on ``as_of``.
+
+    Raises on any database failure. That is deliberate and is the whole
+    point of the function: a caller that cannot tell "nobody was on the
+    watchlist" from "the query failed" will quietly compute analog
+    statistics over the wrong universe, which is the failure class
+    CLAUDE.md Rule 3.7 exists to prevent. An empty watchlist is a
+    legitimate answer and returns empty ``tickers``; an unreachable
+    database is not an answer and raises.
+    """
+    from lib.agents.model_routing import connect
+
+    # `parse_as_of` returns `Union[date, datetime]` and `datetime` is a
+    # subclass of `date`, so an aware datetime satisfies the annotation and
+    # arrives here intact. Normalize once, at the boundary: the horizon
+    # comparison below would raise `TypeError: can't compare
+    # datetime.datetime to datetime.date`, and the dataclass would carry a
+    # datetime into the report for every other reader to trip over.
+    # `.date()` is the same calendar date the SQL below already reads off
+    # the Y/M/D components, so this changes no query result — converting to
+    # Eastern here instead would (Rule 3.9 belongs at the writer, not in a
+    # resolver that has always read the input's own date).
+    if isinstance(as_of, datetime):
+        as_of = as_of.date()
+
+    day_start = datetime(as_of.year, as_of.month, as_of.day)
+    day_end = day_start + timedelta(days=1)
+
+    conn = connect()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _MEMBERSHIP_AT_SQL,
+            (user_id, day_start, user_id, day_start, day_end),
+        )
+        tickers = _dedupe_upper(r[0] for r in cur.fetchall())
+        cur.execute(_HORIZON_SQL)
+        row = cur.fetchone()
+        horizon = row[0] if row else None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            # cleanup — original error already propagated
+            pass
+
+    resolution = "exact"
+    if horizon is not None:
+        # `horizon` is tz-aware (TIMESTAMPTZ); day_start is naive local.
+        # Compare on the calendar date, which is the granularity the
+        # caller reasons in and avoids inventing a timezone here.
+        #
+        # `<=`, not `<`: the horizon is an INSTANT and `as_of` is a DAY. The
+        # query above spans that whole day (`day_start` 00:00 to `day_end`
+        # next 00:00) while observation began partway through it, so the
+        # install day is partly unobserved -- a ticker hard-deleted at 09:00
+        # on a day that started recording at 22:30 is in neither the seed nor
+        # the log. Reporting it `exact` omits a member and calls the answer
+        # precise (Codex P2 on `d8b0332`). The horizon's own day is the LAST
+        # approximate one, not the first exact one.
+        if as_of <= horizon.date():
+            resolution = "approximate"
+
+    logger.info(
+        "watchlist membership owner=%s as_of=%s tickers=%d resolution=%s",
+        user_id, as_of, len(tickers), resolution,
+    )
+    return WatchlistMembership(
+        tickers=tuple(sorted(tickers)),
+        as_of=as_of,
+        owner=user_id,
+        resolution=resolution,
+        horizon=horizon,
+    )
 
 
 _VALID_SURFACES = ("all", "brief", "insight", "signals")
