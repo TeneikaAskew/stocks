@@ -68,9 +68,9 @@ FETCH_NO_API_KEY = 'no_api_key'
 def av_listed_symbol(ticker: str) -> str:
     """The symbol AlphaVantage lists `ticker` under. A share class is dashed
     there and dotted in the Earnings Whispers rows: BF.B is BF-B and MOG.A is
-    MOG-A (SYMBOL_SEARCH, 2026-09-26). evaluate-ew-strikes sends this. The
-    daily fetcher still sends AV_SYMBOL_MAP's value, which AlphaVantage
-    refuses for a dotted share class (#1181)."""
+    MOG-A (SYMBOL_SEARCH, 2026-09-26). Every price call in this module sends
+    it, and rows stay keyed by the dotted ticker (#1181, #1188). BF-B has
+    daily bars but no minute bars on AlphaVantage (2026-09-28)."""
     return AV_SYMBOL_MAP.get(ticker, ticker).replace('.', '-')
 
 
@@ -85,7 +85,7 @@ def fetch_minute_bars(ticker: str, fetch_date: str, api_key: str, *,
     symbol from a rate limit from a transport error (#1181). A failure in this
     code rather than in the vendor's reply is raised, not named.
     """
-    av_symbol = AV_SYMBOL_MAP.get(ticker, ticker)
+    av_symbol = av_listed_symbol(ticker)
     if not api_key:
         log.warning("    No AV API key — cannot fetch intraday for %s", ticker)
         return pd.DataFrame(), FETCH_NO_API_KEY
@@ -185,7 +185,7 @@ def fetch_daily_from_av(ticker: str, fetch_date: str, api_key: str,
     holiday from a trading day locally, and the prior-day fallback would
     write a holiday-dated row carrying the previous session's prices.
     """
-    av_symbol = AV_SYMBOL_MAP.get(ticker, ticker)
+    av_symbol = av_listed_symbol(ticker)
     if not av_symbol or not api_key:
         return {}
 
@@ -853,7 +853,7 @@ def _av_get_full_daily_series(ticker: str, api_key: str,
     or empty on any error. The caller is responsible for filtering
     to the lookback cap and upserting to market_data_daily.
     """
-    av_symbol = AV_SYMBOL_MAP.get(ticker, ticker)
+    av_symbol = av_listed_symbol(ticker)
     if not av_symbol or not api_key:
         return pd.DataFrame()
     try:
@@ -911,12 +911,16 @@ def _exclude_partial_today(df: pd.DataFrame, today_et: date,
     return df[df['date'] < today_et]
 
 
-def _run_backfill() -> None:
+def _run_backfill(tickers: list | None = None) -> None:
     """--backfill mode: pull historical daily bars for every ticker in
     earnings_history that the brief would render but lacks depth.
 
     Skip + smart-switch keep this idempotent and cheap on re-runs:
-    already-current tickers do zero AV calls."""
+    already-current tickers do zero AV calls.
+
+    `tickers` (from --tickers) pulls exactly those, each in full, for a
+    ticker the default targets cannot reach: BF.B and MOG.A have no
+    earnings_history row (#1188)."""
     now_et = datetime.now(ET)
     today_et = now_et.date()
     av_api_key = os.environ.get('ALPHA_VANTAGE_API_KEY', '')
@@ -926,7 +930,7 @@ def _run_backfill() -> None:
     if not av_api_key:
         raise RuntimeError("ALPHA_VANTAGE_API_KEY not set — backfill cannot proceed")
 
-    targets = _backfill_targets()
+    targets = [(t, 0, None) for t in tickers] if tickers else _backfill_targets()
     plan = [(t, n, mx, _pick_backfill_outputsize(n, mx, today_et))
             for (t, n, mx) in targets]
     pending = [(t, n, mx, sz) for (t, n, mx, sz) in plan if sz is not None]
@@ -1114,7 +1118,8 @@ def build_parser() -> argparse.ArgumentParser:
                               'volume but lacks depth in market_data_daily. Smart-switch '
                               'between AV outputsize=full (bootstrap) and compact (catch-up) '
                               'so we do not waste bandwidth on already-current tickers. '
-                              'Skips the intraday + indicator path; only writes daily bars.'))
+                              'Skips the intraday + indicator path; only writes daily bars. '
+                              'With --tickers, pulls exactly those in full (#1188).'))
     parser.add_argument('--allow-stale-date', action='store_true', default=False,
                         help=('Bypass the fetch-date freshness guard for DELIBERATE '
                               'historical backfills of specific --tickers; never set '
@@ -1127,7 +1132,7 @@ def main():
     args = parser.parse_args()
 
     if args.backfill:
-        return _run_backfill()
+        return _run_backfill(None if args.tickers == 'ALL' else args.tickers.upper().split())
 
     # Use ET (market timezone), not the container's UTC. The 23:00 ET cron
     # fires at 03:00–04:00 UTC the NEXT calendar day, so a UTC-based
