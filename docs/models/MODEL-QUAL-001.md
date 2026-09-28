@@ -153,7 +153,7 @@ predicts the *opposite* outcome) scored the same as a healthy +0.894. `score_dis
 At row level, Spearman(`total_score`, `exit_return_pct`) is **-0.004, p = 0.91**. The score has no
 measurable edge, so a four-point rank correlation of it swings on noise. An exit 1 would open a
 GitHub issue in about one fortnight in three. That is an alarm people learn to ignore, measuring a
-fact already filed as [#905](https://github.com/TeneikaAskew/stocks/issues/905). The WARNING
+fact already filed as [#905](https://github.com/TeneikaAskew/stocks/issues/905) (superseded by [#1206](https://github.com/TeneikaAskew/stocks/issues/1206)). The WARNING
 and the embed keep it visible. A statistic with a noise model (an effect size with its
 uncertainty) is what should replace the quartile rho, and that belongs to #905.
 
