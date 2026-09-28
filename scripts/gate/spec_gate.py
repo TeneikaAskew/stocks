@@ -488,6 +488,26 @@ def workflow_triggers(body: str) -> set[str]:
     return set()
 
 
+SKIP_NAMES = {"skip", "skipif", "xfail", "importorskip", "pytestmark", "exit", "_exit"}
+
+
+def suite_escape(source: str) -> str | None:
+    """A skip marker, collection hook or exit in a suite: it leaves every test name and
+    assertion in place while running none of them (stocks#1205 r4121777310)."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in SKIP_NAMES:
+            return node.attr
+        if isinstance(node, ast.Name) and node.id in SKIP_NAMES:
+            return node.id
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("pytest_"):
+            return node.name
+    return None
+
+
 def test_assertions(source: str) -> dict[str, int]:
     """{test function: number of assert statements in it}, or {} for a file that does not
     parse (which the registry check then fails on its own)."""
@@ -686,6 +706,18 @@ def checkout_violation(body: str, side: str) -> str | None:
 EXECUTABLES = r"(python3?|python3\.\d+|git|pytest)"
 SHADOW = re.compile(r"(?:^|[;&|{}(]\s*|\bfunction\s+)" + EXECUTABLES + r"\s*\(\s*\)|\bfunction\s+" + EXECUTABLES
                     + r"\b|\balias\s+" + EXECUTABLES + r"=|\bhash\s+-p\s+\S+\s+" + EXECUTABLES + r"\b", re.M)
+
+
+GATE_PATHS = r"(scripts/gate\b|tests/scripts\b|\.githooks\b|\.github/workflows\b)"
+WRITERS = r"(cp|mv|install|ln|tee|rm|truncate|chmod|patch|dd|curl|wget|sed|perl|git\s+(checkout|restore|apply|reset|clean|stash))"
+WRITES_GATE = re.compile(r"(?m)^\s*(?:\S+=\S*\s+)*" + WRITERS + r"\b[^\n]*" + GATE_PATHS + r"|[>]{1,2}\s*['\"]?[^\s'\"]*" + GATE_PATHS)
+
+
+def writes_gate_file(runs: str) -> str | None:
+    """The first executed run line that copies, moves, edits, deletes or redirects into a gate
+    file's path (stocks#1205 r4121777299)."""
+    m = WRITES_GATE.search(runs)
+    return runs[runs.rfind("\n", 0, m.start()) + 1:].split("\n")[0].strip() if m else None
 
 
 def shadowed_executable(text: str) -> str | None:
@@ -940,6 +972,19 @@ def validate_spec(fm: dict, name: str, catalog: set[str], req_defs: set[str] | N
     return errs
 
 
+def check_supersedes(fm: dict, name: str, base: "Tree") -> list[str]:
+    """`supersedes` is null or a spec on the base for the same FEAT (stocks#1205 r4121777354:
+    a typo there leaves the old spec live and the lineage dangling)."""
+    target = fm.get("supersedes")
+    if target is None:
+        return []
+    if not isinstance(target, str) or (old := base.read(target)) is None:
+        return [f"{name}: supersedes {target!r}, which is not a spec on the base; name the spec it replaces or leave it null"]
+    if frontmatter(old).get("feat_id") != fm.get("feat_id"):
+        return [f"{name}: supersedes {target}, a spec for {frontmatter(old).get('feat_id')}, not {fm.get('feat_id')}"]
+    return []
+
+
 def plan_stays_bound(name: str, fm: dict, base_fm: dict, branch: str) -> list[str]:
     """A plan already on the base binds one branch and one PR for good: a change cannot
     re-point it at its own branch, swap its PR number, or reopen it once it is done."""
@@ -1120,7 +1165,7 @@ def check_changed_specs(ch: Change) -> list[str]:
             continue
         if catalog is None:
             catalog, req_defs = catalog_ids(ch.base.read(CATALOG)), requirement_defs(ch.base)
-        errs += validate_spec(frontmatter(text), path, catalog, req_defs)
+        errs += validate_spec(frontmatter(text), path, catalog, req_defs) + check_supersedes(frontmatter(text), path, ch.base)
         # solyra#72 r4119957736: a canvas the spec names exists in the registry the head
         # carries, so the implementation's handoff is not the first place a typo shows
         modes = canvas_modes(ch.tree.read(CANVASES))
@@ -1323,9 +1368,32 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                         f"`{contract['name']} / <job>` and keeps its name"], None
             # stocks#1205 r4121413657: `python3() { echo ok; }` or `alias git=true` makes every
             # later invocation a no-op with the contract's text intact
+            # stocks#1205 r4121777299: a step that rewrites a gate file, or runs inline code
+            # that could, before the contract command leaves the command intact and the gate gone
+            if wrote := writes_gate_file(runs):
+                return [f"{path}: `{wrote}` writes to or replaces a gate file; the workflows read the gate's files, "
+                        "never write them"], None
+            if inline := re.search(r"(?m)^\s*(python3?|node|perl|ruby|sh|bash)\s+(-c|-e|-)\s", runs):
+                return [f"{path}: runs inline code (`{inline.group(0).strip()}`); the gate's workflows run scripts "
+                        "from the tree only"], None
             if shadow := shadowed_executable(body):
                 return [f"{path}: defines `{shadow}` as a shell function or alias; the gate's commands run the "
                         "real executables"], None
+            for job in jobs:
+                if not any(invokes(st, m) for m in required for st in job["statements"]):
+                    continue
+                runner = next((shell_value(rm.group(1)) for ln in job["lines"] if (rm := re.match(r"^\s+runs-on:\s*(.*)$", ln))), "")
+                if not runner.startswith("ubuntu-"):
+                    # stocks#1205 r4121777320: another runner's default shell is not bash
+                    return [f"{path}: job {job['name']} runs on {runner or 'no declared runner'}; the gate's jobs run "
+                            "on ubuntu-*, whose default shell is bash"], None
+            jv, _ = job_of(jobs, contract["run"][0])
+            if jv >= 0:
+                verdict_at = next((i for i, ln in enumerate(jobs[jv]["lines"]) if contract["run"][0] in ln), len(jobs[jv]["lines"]))
+                for i, ln in enumerate(jobs[jv]["lines"][:verdict_at]):
+                    if (um := re.match(r"^\s*(-\s+)?uses:\s*(.*)$", ln)) and not shell_value(um.group(2)).startswith("actions/checkout@"):
+                        return [f"{path}: `{shell_value(um.group(2))}` runs before the verdict in job {jobs[jv]['name']}; only "
+                                "actions/checkout precedes the gate there"], None
             for command, job_name in contract.get("jobs", {}).items():
                 j, _ = job_of(jobs, command)
                 if j >= 0 and jobs[j]["name"] != job_name:
@@ -1336,6 +1404,8 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
           # solyra#72 r4119957711: the head-run registry check executes the suite the PR ships,
           # so a suite reduced to one passing test would certify any gate; every test the base
           # has stays, by name, and a PR may only add to or amend them
+          if escape := suite_escape(head_suite):
+              return [f"{SUITE}: uses `{escape}`; the gate's suites carry no skip markers, collection hooks or exits"], None
           base_tests, head_tests = test_assertions(base_suite), test_assertions(head_suite)
           if dropped := sorted(set(base_tests) - set(head_tests)):
               return [f"{SUITE}: drops {len(dropped)} test(s) the base has ({dropped[0]}"

@@ -697,3 +697,22 @@ def test_indented_experiment_headings_are_entries(repo):
     assert exp is not None
     write(repo, EXPERIMENTS, re.sub(r"(?m)^(## E-)", r"  \1", exp, count=1))
     assert export(repo).returncode == 0, export(repo).stdout + export(repo).stderr
+
+
+def test_typo_rows_bare_delimiters_and_duplicate_experiments_are_refused(repo):
+    """stocks#1205 r4121777330, r4121777339, r4121777347 (export_model_registry.py:292, :178, :227):
+    `MODLE-OPT-001` in a model table vanished as prose, a delimiter of bare spaces still routed
+    the rows GFM no longer renders, and two headings for one experiment ID collapsed into one.
+    Each fails generation."""
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("| MODEL-MAG-001 |", "| MODLE-MAG-001 |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "is not a MODEL- or DOC- ID" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("|---|---|---|---|---|---|---|---|---|\n", "| | | | | | | | | |\n", 1))
+    r = export(repo)
+    assert r.returncode != 0, r.stdout + r.stderr
+    exp = (repo / EXPERIMENTS).read_text(encoding="utf-8")
+    first = re.search(r"(?m)^## (E-\d+)", exp).group(1)
+    write(repo, REGISTRY, REGISTRY_TEXT)
+    write(repo, EXPERIMENTS, exp + f"\n## {first} again\n\ntext\n")
+    r = export(repo)
+    assert r.returncode != 0 and "is defined by more than one heading" in r.stdout + r.stderr, r.stdout + r.stderr

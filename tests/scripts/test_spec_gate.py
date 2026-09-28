@@ -92,12 +92,12 @@ def plan(**over) -> str:
                     "status": "ready", **over}) + TASKS
 
 
-GATE_WF = ("name: spec-gate\non:\n  pull_request_target:\n    types: [opened, synchronize, reopened, edited, ready_for_review]\npermissions:\n  contents: read\njobs:\n  gate:\n    steps:\n"
+GATE_WF = ("name: spec-gate\non:\n  pull_request_target:\n    types: [opened, synchronize, reopened, edited, ready_for_review]\npermissions:\n  contents: read\njobs:\n  gate:\n    runs-on: ubuntu-latest\n    steps:\n"
            "      - uses: actions/checkout@v4\n        with:\n          ref: {REF}\n"
            "      - run: git fetch --no-tags origin \"$HEAD_SHA\"\n"
            "      - env:\n{ENV}        run: {A}\n      - run: {B}\n"
            "      - uses: actions/upload-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: ${{ runner.temp }}/proposed/\n"
-           "  base-suite:\n    needs: gate\n    permissions:\n      contents: read\n    steps:\n"
+           "  base-suite:\n    needs: gate\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n    steps:\n"
            "      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.base.sha }}\n          persist-credentials: false\n"
            "      - uses: actions/download-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: scripts/gate\n      - run: {C}\n")
 VERDICT_ENV = {"BASE_SHA": "base.sha", "HEAD_SHA": "head.sha", "PR_HEAD_REF": "head.ref", "PR_BASE_REF": "base.ref",
@@ -2386,8 +2386,8 @@ def test_trigger_filters_yaml_validity_catalog_columns_and_quoted_permissions(re
     assert r.returncode == 1 and "is not valid YAML" in r.stdout, r.stdout
     r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  base-suite:\n", "  base-suite:\n    \"permissions\": write-all\n", 1)}, **cap)
     assert r.returncode == 1 and "grants a write permission" in r.stdout, r.stdout
-    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  base-suite:\n    needs: gate\n    permissions:\n      contents: read\n",
-                                                         "  base-suite:\n    needs: gate\n    permissions:\n      'contents': write\n", 1)}, **cap)
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  base-suite:\n    needs: gate\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n",
+                                                         "  base-suite:\n    needs: gate\n    runs-on: ubuntu-latest\n    permissions:\n      'contents': write\n", 1)}, **cap)
     assert r.returncode == 1 and "grants a write permission" in r.stdout, r.stdout
     r = pr(repo, "docs/catalog", {CATALOG: CATALOG_TEXT.replace("| Status |", "| State |", 1)})
     assert r.returncode == 1 and "no longer carries the Status field(s) the close-out reads" in r.stdout, r.stdout
@@ -2399,3 +2399,41 @@ def test_trigger_filters_yaml_validity_catalog_columns_and_quoted_permissions(re
     from_template = plan(feat_id="FEAT-DATA-001", spec=data_spec, branch="fix/feat-data-001-t").replace(TASKS, "\n" + close)
     r = pr(repo, "docs/plan-t", {new_plan: from_template})
     assert r.returncode == 0, r.stdout   # the template's close task cites its spec section
+
+
+def test_gate_files_stay_read_only_runners_suites_and_supersedes_are_the_contract(repo):
+    """stocks#1205 r4121777299 (P1), r4121777320 (P1), r4121777310 (P1), r4121777354
+    (spec_gate.py:1216, :329, :1310, :909).
+
+    A step could overwrite scripts/gate/spec_gate.py before the verdict, or run inline code
+    that would; `runs-on: windows-latest` made every run block PowerShell; `pytestmark =
+    pytest.mark.skip` kept every name and assertion while running nothing; `supersedes` could
+    name a spec that does not exist. Each is refused.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/spec-gate.yml"
+    typed = gate_workflow()
+    assert pr(repo, "chore/gate-workflow", {wf: typed}, **cap).returncode == 0
+    for pre in ("printf 'print(\"spec gate ok\")' > scripts/gate/spec_gate.py", "cp /tmp/x scripts/gate/spec_gate.py",
+                "sed -i 's/x/y/' tests/scripts/test_spec_gate.py", "git checkout origin/x -- scripts/gate", "python3 -c 'open(\"scripts/gate/spec_gate.py\",\"w\")'"):
+        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        assert r.returncode == 1 and ("writes to or replaces a gate file" in r.stdout or "runs inline code" in r.stdout), (pre, r.stdout)
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("      - run: git fetch", "      - uses: some/action@v1\n      - run: git fetch", 1)}, **cap)
+    assert r.returncode == 1 and "runs before the verdict" in r.stdout, r.stdout
+    for runner in ("windows-latest", "macos-latest"):
+        r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  gate:\n    runs-on: ubuntu-latest\n", f"  gate:\n    runs-on: {runner}\n", 1)}, **cap)
+        assert r.returncode == 1 and "run on ubuntu-*" in r.stdout, (runner, r.stdout)
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  gate:\n    runs-on: ubuntu-latest\n", "  gate:\n", 1)}, **cap)
+    assert r.returncode == 1 and "no declared runner" in r.stdout, r.stdout
+    suite_text = "def test_a():\n    assert 1\n"
+    on_base(repo, {"tests/scripts/test_spec_gate.py": suite_text})
+    for escape in ("import pytest\npytestmark = pytest.mark.skip(reason='x')\n", "import pytest\n@pytest.mark.skipif(True, reason='x')\ndef test_z():\n    assert 1\n",
+                   "def pytest_collection_modifyitems(items):\n    items.clear()\n", "import sys\nsys.exit(0)\n"):
+        r = pr(repo, "chore/gate-suite", {"tests/scripts/test_spec_gate.py": suite_text + "\n" + escape}, **cap)
+        assert r.returncode == 1 and "no skip markers, collection hooks or exits" in r.stdout, (escape, r.stdout)
+    r = pr(repo, "docs/spec-two", {"docs/superpowers/specs/2026-09-28-model-two.md": spec(supersedes="docs/superpowers/specs/does-not-exist.md")})
+    assert r.returncode == 1 and "is not a spec on the base" in r.stdout, r.stdout
+    on_base(repo, {"docs/superpowers/specs/2026-09-28-data-s.md": spec(feat_id="FEAT-DATA-001")})
+    r = pr(repo, "docs/spec-two", {"docs/superpowers/specs/2026-09-28-model-two.md": spec(supersedes="docs/superpowers/specs/2026-09-28-data-s.md")})
+    assert r.returncode == 1 and "a spec for FEAT-DATA-001, not FEAT-MODEL-001" in r.stdout, r.stdout
+    assert pr(repo, "docs/spec-two", {"docs/superpowers/specs/2026-09-28-model-two.md": spec(supersedes=SPEC)}).returncode == 0

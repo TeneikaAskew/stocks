@@ -175,7 +175,8 @@ def tables_with_headings(text: str):
             heading = heading[: level - 1] + [clean(hm.group(2))]
             i += 1
             continue
-        if line.startswith("|") and i + 1 < len(lines) and re.match(r"^\|[\s:|-]+\|$", lines[i + 1]):
+        # stocks#1205 r4121777339: every delimiter cell carries a hyphen, or GFM renders no table
+        if line.startswith("|") and i + 1 < len(lines) and re.match(r"^\|(\s*:?-+:?\s*\|)+$", lines[i + 1]):
             header = [clean(c) for c in split_row(line)]
             rows = []
             i += 2
@@ -222,9 +223,15 @@ def canonical(rec: dict) -> dict:
 def experiment_ids(text: str) -> list[str]:
     """IDs from experiment headings only: prose such as "Next free ID is E-36" is not an experiment."""
     ids: set[str] = set()
+    leads: list[str] = []   # the ID a heading starts with: its own entry, not a mention or a session's range
     for line in rendered(text).splitlines():   # a heading inside a fence is an example, not an entry (r4120660287)
         if re.match(r"^ {0,3}#{1,6}\s", line):   # stocks#1205 r4121602828: up to three spaces still render a heading
             ids.update(expand_ids(line, EXP_ID, EXP_RANGE, "E-{:02d}"))
+            if (lead := re.match(r"^ {0,3}#{1,6}\s+(" + EXP_ID.pattern + r")\b", line)):
+                leads.append(lead.group(1))
+    if dup := sorted({i for i in leads if leads.count(i) > 1}):
+        # stocks#1205 r4121777347: two entries for one ID are two records a citation cannot tell apart
+        raise SystemExit(f"experiment {dup[0]} is defined by more than one heading in the ledger; one entry per ID")
     return sorted(ids)
 
 
@@ -289,6 +296,12 @@ def build(src: Source) -> dict:
             # Width is checked on the rows that route (models, findings, dispositions,
             # schedulers): a prose table elsewhere in the document is not a record.
             routable = first.startswith(("MODEL-", "DOC-")) or h0 == "scheduler"
+            # stocks#1205 r4121777330: a row in a model or concern table whose ID is not shaped
+            # like the table's is a typo, not prose; it would vanish from the cards
+            record_table = h0 in ("id", "model") and any(k in " ".join(header).lower() for k in ("decision", "claim", "concern", "disposition", "experiments"))
+            if record_table and not routable:
+                malformed.append(f"row {first!r} under '{section}' sits in a record table but is not a MODEL- or DOC- ID")
+                continue
             if routable and len(raw) != len(header):
                 malformed.append(f"{first} under '{section}' has {len(raw)} cell(s), header has {len(header)}")
                 continue
