@@ -176,6 +176,21 @@ def test_grouped_and_decorated_disposition_ids_reach_their_findings(repo):
                            "DOC-15": "Won't fix", "DOC-16": "Won't fix", "DOC-17": "Won't fix"}
 
 
+def test_hidden_comments_do_not_reach_exported_cells(repo):
+    """stocks#1205 r4118890024 (export_model_registry.py:94).
+
+    clean() kept HTML comments, so DOC-66's `<!-- verify-docs-ok ... -->` audit
+    directive sat in dispositions.DOC-66.why, which canvases.yml maps straight onto
+    a Concerns card. Comments are stripped before the cell is normalized.
+    """
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("| MODEL-GAMMA-001 | Gamma levels |",
+                                                "| MODEL-GAMMA-001 | Gamma levels <!-- verify-docs-ok: audit note --> |"))
+    data = exported(repo)
+    gamma = data["models"]["MODEL-GAMMA-001"]
+    assert gamma["name"] == "Gamma levels"
+    assert "verify-docs-ok" not in json.dumps(data)
+
+
 def test_every_model_card_path_resolves_on_every_tier(repo):
     """stocks#1205 r4116983568 (canvases.yml:29).
 

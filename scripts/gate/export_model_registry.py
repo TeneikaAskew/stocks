@@ -89,6 +89,9 @@ class Source:
 
 
 def clean(cell: str) -> str:
+    # An HTML comment is audit markup, not content: canvases.yml maps cells straight
+    # onto card text, so a hidden directive would be published on a card.
+    cell = re.sub(r"<!--.*?-->", "", cell, flags=re.S)
     cell = LINK.sub(r"\1", cell)
     cell = cell.replace("**", "").replace("~~", "")
     return re.sub(r"\s+", " ", cell).strip()

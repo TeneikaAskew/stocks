@@ -582,7 +582,9 @@ def section(body: str, title: str) -> str | None:
 def check_capacity(body: str | None, changed: list[str]) -> list[str]:
     """CI only: a change under gcp/ or the workflows is a workload change, and CLAUDE.md
     rule 0 wants its three numbers and cost in the PR body, or an `n/a` with the reason."""
-    workloads = [f for f in changed if f.startswith(WORKLOAD_PREFIXES)]
+    # Documentation under a workload prefix (a README beside the workflows or a job)
+    # runs nothing, so a docs/ branch editing it needs no numbers.
+    workloads = [f for f in changed if f.startswith(WORKLOAD_PREFIXES) and not is_documentation(f)]
     if body is None or not workloads:
         return []
     text = section(visible(body), "capacity")

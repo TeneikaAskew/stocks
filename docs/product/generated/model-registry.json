@@ -394,7 +394,7 @@
    "disposition": "FIXED HERE — a gate PROTOTYPED and REJECTED",
    "id": "DOC-66",
    "label": "DOC-66",
-   "why": "Corrected to 66, with the declared-vs-live distinction written down so the next sweep does not \"fix\" the correct 65s. A count gate was built and measured across `docs/`: it produced four flags, all four false positives (a \"1 scheduler block\", a PR-rename row, and two correct live-fleet counts) and missed this defect entirely, because MODEL-QUAL-001 says *\"the real count is 63\"* and never the string \"63 schedulers\". Green on the defect it existed to catch and red on four correct statements — DOC-54's shape exactly. Recorded rather than dropped quietly, because \"no gate\" and \"a gate that passes\" look identical six months from now. <!-- verify-docs-ok: quotes \"63 schedulers\" as the string that does NOT appear in MODEL-QUAL-001, not a live-fleet count claim; verify_docs_against_live.py's own bare-number regex matched it as one, the same false-positive shape this paragraph describes -->"
+   "why": "Corrected to 66, with the declared-vs-live distinction written down so the next sweep does not \"fix\" the correct 65s. A count gate was built and measured across `docs/`: it produced four flags, all four false positives (a \"1 scheduler block\", a PR-rename row, and two correct live-fleet counts) and missed this defect entirely, because MODEL-QUAL-001 says *\"the real count is 63\"* and never the string \"63 schedulers\". Green on the defect it existed to catch and red on four correct statements — DOC-54's shape exactly. Recorded rather than dropped quietly, because \"no gate\" and \"a gate that passes\" look identical six months from now."
   },
   "DOC-67": {
    "disposition": "FIXED HERE",
