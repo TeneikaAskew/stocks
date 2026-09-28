@@ -258,9 +258,11 @@ the PR or issue comment holding the command and its output, with the date.
 **Te, Tested.** Automated tests cover the element and each of its states at every layer the
 chain crosses, they pass, and the suite they belong to runs on pull requests in its repo.
 Today: stocks pytest runs in the Backtest Pipeline workflow on pull requests to `main`;
-solyra Vitest runs in solyra CI; solyra Playwright does not run in CI (solyra#28 is open).
-A Playwright-only element therefore cannot tick Te until that closes. The gate shows the
-blocker instead of hiding it. Evidence: test file links and a CI run link.
+solyra Vitest runs in solyra CI; solyra Playwright runs in solyra CI too, in the `e2e
+(chromium, mocked)` job (green on run 36361217691). A Playwright-only element ticks Te by
+citing a CI run that executed its test; a row whose test was added on a branch waits for a
+run that includes it. The gate shows the blocker instead of hiding it. Evidence: test file
+links and a CI run link.
 
 Rules:
 
@@ -465,9 +467,10 @@ Phase 0 is right when all of these hold and their output is in the PR:
 
 ## 14. Risks and open items
 
-- **Te is blocked for Playwright-only rows** until solyra#28 lands Playwright in CI. Closing it
-  is the first candidate item of Phase 1, since the entry path is where most browser-only
-  behaviour lives.
+- **Te for Playwright-only rows cites a CI run that executed the test.** solyra CI
+  (`.github/workflows/ci.yml`) runs the `checks` and `e2e (chromium, mocked)` jobs on pull
+  requests and pushes to `main` (green on run 36361217691). A row whose test was added on this
+  branch still waits for a run that includes it.
 - **Cross-repo anchors are not machine-checked.** Item 7 in section 12 is manual until a script
   exists.
 - **UI-SCREENS.md grows four to five times.** Anchors keep it navigable; if it becomes
