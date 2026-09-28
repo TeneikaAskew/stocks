@@ -224,6 +224,7 @@ def build(src: Source) -> dict:
         "tables": [],
     }
     grouped: dict = {}
+    unrouted: list[str] = []   # MODEL-/DOC- rows no table shape claimed: a malformed registry
     for heading, header, rows in tables_with_headings(text):
         h0 = header[0].lower() if header else ""
         section = " / ".join(heading)
@@ -257,8 +258,17 @@ def build(src: Source) -> dict:
                 out["schedulers"].append(rec)
             elif h0 == "scheduler":
                 out["excluded_schedulers"].append(rec)
+            elif first.startswith(("MODEL-", "DOC-")):
+                unrouted.append(f"{first} under '{section}' (columns: {', '.join(header)})")
     for fid, rec in grouped.items():
         out["dispositions"].setdefault(fid, rec)
+    if unrouted or not out["models"]:
+        # A renamed `ID` header or a dropped section would otherwise export a partial or
+        # empty models object, --check would call it current, and the canvas would
+        # silently lose its cards. Zero recognized rows is a malformed source, not data.
+        raise SystemExit(f"{REGISTRY}: {len(unrouted)} MODEL-/DOC- row(s) sit in a table shape the exporter does not "
+                         f"recognize ({'; '.join(unrouted[:3])}) and {len(out['models'])} model(s) parsed; a model table "
+                         "starts with an `ID` column. The registry is malformed; fix it rather than exporting it")
     resolve_scheduler_models(out["schedulers"], out["models"])
     out["experiment_ids"] = experiment_ids(etext)
     return out

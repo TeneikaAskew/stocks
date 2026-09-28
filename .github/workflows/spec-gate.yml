@@ -5,6 +5,13 @@ name: spec-gate
 # after merge. The PR head is fetched as git objects and read with `git show`;
 # nothing from the PR is checked out or executed, and the token is read-only.
 #
+# A verdict is attached to the PR head at the time it ran, against the base of
+# that moment. Nothing here re-runs when main advances, so a PR that passed
+# before main superseded its spec keeps its green check. Pair this workflow with
+# branch protection "Require branches to be up to date before merging" (strict
+# status checks): a stale PR must then merge main first, which is a synchronize
+# event, and the gate re-reads the new base before the merge button works.
+#
 # The model-registry check lives in registry-check.yml, on plain pull_request:
 # it must run the exporter the PR ships. One workflow per trust level, so a run
 # never creates a skipped twin of the other's job that branch protection could

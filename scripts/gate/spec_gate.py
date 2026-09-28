@@ -59,6 +59,7 @@ PRODUCT_DOCS = "docs/product/"
 REGISTRY_DOCS = ("docs/product/07-MODEL-REGISTRY.md", "docs/product/generated/model-registry.json")
 
 FEAT_ROW = re.compile(r"^\|\s*\[?(FEAT-[A-Z]+-\d{3})\b", re.M)
+FEAT_IDS = re.compile(r"\bFEAT-[A-Z]+-\d{3}\b")
 BRANCH = re.compile(r"^(feature|fix)/(feat-[a-z]+-\d{3})-[a-z0-9][a-z0-9._-]*$")   # lowercase: git refs are case-sensitive
 REQ_SHAPE = re.compile(r"^REQ-[A-Z]+-\d{3}$")
 REQ_DEFINITION = re.compile(r"\*\*(REQ-[A-Z]+-\d{3}):\*\*")
@@ -104,7 +105,10 @@ PYPROJECT_DEPENDENCY_PATHS = (
 )
 CANVAS_MARKERS = {"refresh": "Canvas refresh pending:", "report-only": "Canvas check pending (report-only):"}
 # A ticked done_when line that defers the work is not done (CLAUDE.md rule 0 names these phrases).
-DEFERRAL = re.compile(r"\b(future[- ]work|follow[- ]?up|non[- ]?blocking|for now|deferred|later PR|next PR|separate PR|TODO|TBD)\b", re.I)
+DEFERRAL = re.compile(
+    r"\b(future[- ]work|follow[- ]?up|non[- ]?blocking|for now|deferred|later PR|next PR|separate PR|TODO|TBD"
+    r"|not (?:yet )?(?:run|done|implemented|verified|tested|complete|completed|finished|started|applied|merged|shipped)"
+    r"|unfinished|incomplete|untested|unverified|outstanding|pending|skipped|still open|to be done)\b", re.I)
 # Changing these is changing a workload; the PR body must then carry the rule 0 capacity numbers.
 WORKLOAD_PREFIXES = ("gcp/", ".github/workflows/")
 CAPACITY_LABELS = ("Volume", "Velocity", "Wall-clock", "30")
@@ -148,6 +152,8 @@ def is_documentation(path: str) -> bool:
     name = path.rsplit("/", 1)[-1]
     if path.startswith(WORKFLOWS) and not name.endswith(".md"):
         return False   # a workflow is executable configuration whatever its name
+    if path.startswith(".claude/"):
+        return False   # skills and agents are the process agents execute, not its description
     return (path.startswith("docs/") or path.endswith((".md", ".drawio"))
             or bool(LICENSE_FILE.match(name))
             or path == ".gitignore")
@@ -484,7 +490,10 @@ def visible(body: str) -> str:
     body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
     # A fence opens with 3+ backticks or tildes after up to three spaces and closes with a
     # fence of the same character at least as long; an unclosed fence runs to the end.
-    body = re.sub(r"^ {0,3}(`{3,}|~{3,}).*?^ {0,3}\1[`~]*[ \t]*$", "", body, flags=re.S | re.M)
+    # (`{3,} and ~{3,} separately: a closer mixing the two characters does not close a
+    # fence for Markdown, so it must not close one here either)
+    body = re.sub(r"^ {0,3}(`{3,}).*?^ {0,3}\1`*[ \t]*$", "", body, flags=re.S | re.M)
+    body = re.sub(r"^ {0,3}(~{3,}).*?^ {0,3}\1~*[ \t]*$", "", body, flags=re.S | re.M)
     body = re.sub(r"^ {0,3}(`{3,}|~{3,}).*\Z", "", body, flags=re.S | re.M)
     # An indented code block: lines indented four spaces or a tab after a blank line, until
     # the next unindented text. Those render as code, not as links or checkboxes.
@@ -677,8 +686,11 @@ def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) ->
                         "before the work that cites them")
         elif path in (CATALOG, TRACEABILITY):
             spans = {"-": feat_span(Tree(merge_base).read(path) or "", feat_id), "+": feat_span(ch.tree.read(path) or "", feat_id)}
+            # A line is outside the FEAT's scope when it sits outside its span, or names
+            # another FEAT-ID: an added heading naming this FEAT cannot widen the span
+            # over another capability's row or record.
             outside = [f"{side}{n}" for side, n, text in changed_lines(merge_base, head, path)
-                       if text.strip() and n not in spans[side]]
+                       if text.strip() and (n not in spans[side] or any(f != feat_id for f in FEAT_IDS.findall(text)))]
             if outside:
                 errs.append(f"{path}: lines outside {feat_id}'s row and record change ({summarize(outside)}); "
                             "a feature change edits only its own record")

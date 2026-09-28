@@ -176,6 +176,23 @@ def test_grouped_and_decorated_disposition_ids_reach_their_findings(repo):
                            "DOC-15": "Won't fix", "DOC-16": "Won't fix", "DOC-17": "Won't fix"}
 
 
+def test_a_registry_without_model_rows_fails_closed(repo):
+    """stocks#1205 r4119048059 (export_model_registry.py:240).
+
+    A registry whose model tables no longer parse (an `ID` header renamed, a
+    section dropped) exported an empty models object and --check called it
+    current. Zero parsed models is a malformed source and fails both.
+    """
+    exported(repo)
+    before = (repo / OUT).read_text(encoding="utf-8")
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("| ID | Name | Type |", "| Identifier | Name | Type |"))
+    r = export(repo)
+    assert r.returncode != 0 and "MODEL-GAMMA-001 under" in r.stdout + r.stderr, r.stdout + r.stderr
+    assert (repo / OUT).read_text(encoding="utf-8") == before
+    r = export(repo, "--check")
+    assert r.returncode != 0 and "does not recognize" in r.stdout + r.stderr, r.stdout + r.stderr
+
+
 def test_hidden_comments_do_not_reach_exported_cells(repo):
     """stocks#1205 r4118890024 (export_model_registry.py:94).
 

@@ -177,12 +177,15 @@ class TestHandleWorkflowFailure:
         opened before the rename still carries fix/workflow-<name>-<run>. The
         lookup must find either, or the next failure opens a duplicate draft.
         """
-        from scripts.handle_workflow_failure import is_failure_branch
+        from scripts.handle_workflow_failure import is_failure_branch, is_legacy_failure_branch
         base = "refresh-architecture-docs"
         assert is_failure_branch("TeneikaAskew:fix/feat-cicd-001-workflow-refresh-architecture-docs-25", "TeneikaAskew", base)
-        assert is_failure_branch("TeneikaAskew:fix/workflow-refresh-architecture-docs-19", "TeneikaAskew", base)
-        assert not is_failure_branch("someone:fix/workflow-refresh-architecture-docs-19", "TeneikaAskew", base)
-        assert not is_failure_branch("TeneikaAskew:fix/workflow-fetch-news-sentiment-3", "TeneikaAskew", base)
+        # stocks#1205 r4119048054: a legacy draft is found to be superseded, never reused, because
+        # the spec gate rejects a fix pushed to its branch shape
+        assert not is_failure_branch("TeneikaAskew:fix/workflow-refresh-architecture-docs-19", "TeneikaAskew", base)
+        assert is_legacy_failure_branch("TeneikaAskew:fix/workflow-refresh-architecture-docs-19", "TeneikaAskew", base)
+        assert not is_legacy_failure_branch("someone:fix/workflow-refresh-architecture-docs-19", "TeneikaAskew", base)
+        assert not is_legacy_failure_branch("TeneikaAskew:fix/workflow-fetch-news-sentiment-3", "TeneikaAskew", base)
 
     def test_the_failure_pr_title_carries_the_feat_id(self):
         """stocks#1205 r4118661314 (handle_workflow_failure.py:604).

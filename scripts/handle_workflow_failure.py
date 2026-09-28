@@ -18,7 +18,9 @@ import requests
 # Failure branches are fix/<feat-id>-<slug> so the spec gate can read FEAT-CICD-001
 # from them. Drafts opened before that rename still carry fix/workflow-<name>-<run>,
 # and the lookup must keep finding them, or the next failure opens a duplicate.
-FAILURE_BRANCH_PREFIXES = ("fix/feat-cicd-001-workflow-", "fix/workflow-")
+FAILURE_BRANCH_PREFIX = "fix/feat-cicd-001-workflow-"
+LEGACY_FAILURE_BRANCH_PREFIX = "fix/workflow-"
+FAILURE_BRANCH_PREFIXES = (FAILURE_BRANCH_PREFIX, LEGACY_FAILURE_BRANCH_PREFIX)
 FAILURE_FEAT_ID = "FEAT-CICD-001"
 
 
@@ -32,8 +34,15 @@ def failure_pr_title(failure_title: str) -> str:
 
 
 def is_failure_branch(head_label: str, owner: str, workflow_base: str) -> bool:
-    """True when a PR head label is this workflow's failure branch, under either name."""
-    return any(head_label.startswith(f"{owner}:{prefix}{workflow_base}-") for prefix in FAILURE_BRANCH_PREFIXES)
+    """True when a PR head label is this workflow's failure branch under the current name:
+    the only branch shape the spec gate lets a fix merge from."""
+    return head_label.startswith(f"{owner}:{FAILURE_BRANCH_PREFIX}{workflow_base}-")
+
+
+def is_legacy_failure_branch(head_label: str, owner: str, workflow_base: str) -> bool:
+    """True for a draft opened before the rename: a fix pushed there cannot pass the spec
+    gate, so it is superseded by a new PR rather than reused."""
+    return head_label.startswith(f"{owner}:{LEGACY_FAILURE_BRANCH_PREFIX}{workflow_base}-")
 
 
 class GitHubAPIError(Exception):
@@ -267,15 +276,12 @@ class WorkflowFailureHandler:
         Returns:
             PR number if found, None otherwise
         """
-        # Look for PRs on this workflow's failure branch, current or legacy name
+        # Only a PR on the current branch shape is reused: the spec gate rejects a fix
+        # pushed to a legacy fix/workflow-* branch, so such a draft is superseded instead.
         workflow_base = workflow_file.replace('.yml', '')
 
         try:
-            # Search for open PRs
-            endpoint = f"/repos/{self.owner}/{self.repo}/pulls?state=open&per_page=100"
-            response = self._make_request("GET", endpoint)
-
-            for pr in response:
+            for pr in self._open_prs():
                 pr_head = pr.get('head', {}).get('label', '')
                 if is_failure_branch(pr_head, self.owner, workflow_base):
                     return pr['number']
@@ -284,6 +290,19 @@ class WorkflowFailureHandler:
             pass
 
         return None
+
+    def _open_prs(self) -> list:
+        endpoint = f"/repos/{self.owner}/{self.repo}/pulls?state=open&per_page=100"
+        return self._make_request("GET", endpoint)
+
+    def find_legacy_prs(self, workflow_file: str) -> List[int]:
+        """Open drafts on the pre-rename fix/workflow-<name>-<run> branch for this workflow."""
+        workflow_base = workflow_file.replace('.yml', '')
+        try:
+            return [pr['number'] for pr in self._open_prs()
+                    if is_legacy_failure_branch(pr.get('head', {}).get('label', ''), self.owner, workflow_base)]
+        except GitHubAPIError:
+            return []
 
     def add_pr_comment(self, pr_number: int, body: str) -> None:
         """Add a comment to an existing PR (same endpoint as issues)."""
@@ -622,6 +641,11 @@ Based on the workflow, these files may need attention:
                     print("Creating draft pull request...")
                     pr_number = self.create_pull_request(pr_title, pr_body, branch_name, "main", draft=True)
                     print(f"Created PR #{pr_number}")
+                    for legacy in self.find_legacy_prs(workflow_file):
+                        self.add_pr_comment(legacy, (
+                            f"Superseded by #{pr_number}. This draft's branch predates the spec gate's "
+                            f"`fix/feat-cicd-001-workflow-*` shape, so a fix pushed here cannot merge; "
+                            f"carry it to #{pr_number} and close this one."))
 
                     # Update issue with PR link if this is a new issue
                     if not existing_issue:

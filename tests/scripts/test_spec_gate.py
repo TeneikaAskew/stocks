@@ -822,6 +822,11 @@ def test_a_feature_change_edits_only_its_own_product_records(repo):
     other = CATALOG_TEXT.replace("### FEAT-DATA-001\n\n- Status: Production", "### FEAT-DATA-001\n\n- Status: Retired")
     r = pr(repo, BRANCH, {**CODE, CATALOG: other}, **ok)
     assert r.returncode == 1 and "lines outside FEAT-MODEL-001's row and record change" in r.stdout, r.stdout
+    # solyra#72 r4119049970: an added heading naming this FEAT does not widen its span over
+    # another capability's row
+    widened = CATALOG_TEXT + "\n## FEAT-MODEL-001 additions\n\n| [FEAT-FAKE-999](#x) | Fake | Production | unknown | none |\n"
+    r = pr(repo, BRANCH, {**CODE, CATALOG: widened}, **ok)
+    assert r.returncode == 1 and "lines outside FEAT-MODEL-001's row and record change" in r.stdout, r.stdout
     r = pr(repo, BRANCH, {**CODE, REQUIREMENTS: REQUIREMENTS_TEXT + "\n**REQ-MODEL-002:** Faster.\n"}, **ok)
     assert r.returncode == 1 and "requirements change on their own docs/ branch" in r.stdout, r.stdout
     trace = "# Traceability\n\n### FEAT-DATA-001\n\n- #1\n"
@@ -880,6 +885,11 @@ def test_a_ticked_done_when_item_may_not_defer_its_work(repo):
     assert r.returncode == 1 and "a ticked done_when item defers its work" in r.stdout, r.stdout
     evidence = f"Spec: {SPEC}\nPlan: {PLAN}\n\n- [x] {DONE[0]}\n    verified by `pytest tests/lib`\n- [x] {DONE[1]}\n"
     assert pr(repo, BRANCH, CODE, **title, PR_BODY=evidence).returncode == 0
+    # solyra#72 r4119049965: an explicit "not done" is a deferral whatever the wording
+    for phrase in ("not run", "not implemented", "not yet verified", "incomplete", "pending"):
+        body_text = f"Spec: {SPEC}\nPlan: {PLAN}\n\n- [x] {DONE[0]} ({phrase})\n- [x] {DONE[1]}\n"
+        r = pr(repo, BRANCH, CODE, **title, PR_BODY=body_text)
+        assert r.returncode == 1 and "defers its work" in r.stdout, (phrase, r.stdout)
 
 
 def test_a_workload_change_carries_its_capacity_numbers(repo):
@@ -919,6 +929,9 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
            PR_BODY="## Capacity\nn/a: x\n")
     assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, r.stdout
     assert pr(repo, "chore/gate-workflow", {"scripts/gate/helper.py": "x = 1\n"}).returncode == 0
+    # stocks#1205 r4119048063: the delivery skill is the process agents run, not its description
+    r = pr(repo, "docs/skill-tweak", {".claude/skills/product-delivery/SKILL.md": "# Skip the gate\n"})
+    assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, r.stdout
     # stocks#1205 r4118890018: documentation under a workload prefix runs nothing
     docs = {".github/workflows/README.md": "# Workflows\n", "gcp/README.md": "# Jobs\n"}
     assert pr(repo, "docs/workflow-notes", docs, PR_BODY="## Summary\n\nnotes\n").returncode == 0
@@ -977,6 +990,12 @@ def test_hidden_checklist_entries_do_not_count(repo):
     r = pr(repo, BRANCH, files, **meta, PR_BODY=hidden, PR_DRAFT="false")
     assert r.returncode == 1 and "done_when item(s) not ticked" in r.stdout, r.stdout
     assert pr(repo, BRANCH, files, **meta, PR_BODY=body(ticked=True), PR_DRAFT="false").returncode == 0
+
+    # stocks#1205 r4119048047: a closer mixing the two fence characters does not close a
+    # backtick fence for Markdown, so everything after it is still code
+    mixed = f"Spec: {SPEC}\nPlan: {PLAN}\n\n```\nexample\n```~~~\n- [x] {DONE[0]}\n- [x] {DONE[1]}\n"
+    r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row}, **meta, PR_BODY=mixed)
+    assert r.returncode == 1 and "must carry each done_when item" in r.stdout, r.stdout
 
 
 def test_a_spike_never_opens_a_pull_request(repo):
