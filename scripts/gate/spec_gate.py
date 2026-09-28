@@ -35,6 +35,7 @@ checks, and PR_BASE_REF must be main. Any harness (Claude Code, Codex, a human) 
 from __future__ import annotations
 
 import json
+import datetime
 import os
 import pathlib
 import re
@@ -273,7 +274,8 @@ class Change:
     branch: str
     changed: list[str]
     tree: Tree
-    base: Tree              # what the change is measured against: HEAD, or the merge base
+    base: Tree              # policy: the catalog, specs and requirements are read here
+    before: Tree            # the files as they were before the change: HEAD, or the merge base
     trusted: bool = True    # False for a PR from a fork: no prefix allowances
 
 
@@ -332,7 +334,9 @@ def chore_allows(path: str, ch: "Change") -> str | None:
         return None
     if not MANIFEST.search(path):
         return ""
-    return non_dependency_edit(path, ch.base.read(path), ch.tree.read(path))
+    # Against the merge base, not the current base: a scripts edit main made after the
+    # fork is main's, not this PR's, and must not fail an otherwise permitted bump.
+    return non_dependency_edit(path, ch.before.read(path), ch.tree.read(path))
 
 
 ALLOWANCES = (
@@ -722,6 +726,17 @@ def lineage_refs(text: str, feat_id: str) -> set[str]:
             if ln <= len(lines) and re.match(r"^\s*(\*\*PR lineage:\*\*|[-*]\s)", (line := lines[ln - 1]))}
 
 
+def calendar_date(value: str) -> bool:
+    """True for a real YYYY-MM-DD date: 2026-99-99 is shaped like one and is not one."""
+    if not ISO_DATE.match(value):
+        return False
+    try:
+        datetime.date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
 def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict) -> list[str]:
     """CI only, once the PR is ready for review: the Phase 5 records exist in this PR."""
     n = env["PR_NUMBER"]
@@ -736,7 +751,7 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
     reviewed, status = now.get("Last reviewed", ""), now.get("Status", "").strip("* ")
     head_day = git_out("show", "-s", "--format=%cs", head).strip()
     # Changed from the base, or already today's date (a second PR for this FEAT the same day).
-    if not ISO_DATE.match(reviewed) or (reviewed == before.get("Last reviewed") and reviewed != head_day):
+    if not calendar_date(reviewed) or (reviewed == before.get("Last reviewed") and reviewed != head_day):
         errs.append(f"{CATALOG}: set the {t.feat_id} Last reviewed to this PR's review date in its row or "
                     f"record (it reads '{reviewed or 'nothing'}')")
     if status.lower() in ("", "unknown", "tbd"):
@@ -818,7 +833,8 @@ def run(argv: list[str]) -> int:
             if merges_main():
                 against = ["MERGE_HEAD"]
         staged = git_out("diff", "--cached", "--name-only", "--no-renames", *against).splitlines()
-        ch = Change("commit", branch, staged, Tree(None), Tree(against[0] if against else "HEAD"))
+        before = Tree(against[0] if against else "HEAD")
+        ch = Change("commit", branch, staged, Tree(None), before, before)
         errs, _ = check(ch)
     elif mode == "--pr":
         base_arg = argv[2] if len(argv) > 2 else "origin/main"
@@ -844,7 +860,7 @@ def run(argv: list[str]) -> int:
         if base_ref and base_ref != MAIN:
             return fail([f"this PR targets '{base_ref}'; pull requests here target {MAIN} only. Re-target it, "
                          "or wait for the branch it stacks on to merge."])
-        ch = Change("pr", branch, changed, Tree(head), Tree(base), trusted)
+        ch = Change("pr", branch, changed, Tree(head), Tree(base), Tree(merge_base), trusted)
         errs, traced = check(ch)
         if (m := BRANCH.match(branch)):
             errs += check_product_scope(m.group(2).upper(), ch, merge_base, head)

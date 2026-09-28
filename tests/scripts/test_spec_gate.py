@@ -504,6 +504,9 @@ def test_close_out_checks_the_status_and_last_reviewed_fields(repo):
         catalog = stocks_catalog[:section_end] + "\n" + hidden + "\n" + stocks_catalog[section_end:]
         r = pr(repo, BRANCH, {**base, CATALOG: catalog}, **meta)
         assert r.returncode == 1 and "Last reviewed" in r.stdout, (hidden, r.stdout)
+    # stocks#1205 r4118788497: shaped like a date is not a date
+    r = pr(repo, BRANCH, {**base, CATALOG: stocks_catalog.replace("2026-08-30", "2026-99-99")}, **meta)
+    assert r.returncode == 1 and "Last reviewed" in r.stdout, r.stdout
 
 
 def test_the_plan_records_its_pr(repo):
@@ -626,6 +629,19 @@ def test_a_chore_branch_changes_only_dependency_fields(repo):
     r = gate(repo, "--commit")
     assert r.returncode == 1 and "package.json: changes scripts" in r.stdout, r.stdout
 
+
+    # stocks#1205 r4118788504: main rewires scripts after the chore branch forked; the
+    # manifest is classified against the merge base, so the bump is still only a bump
+    _git(repo, "checkout", "-q", "-B", "chore/bump-deps", "base")
+    write(repo, "package.json", json.dumps(bumped, indent=2) + "\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "bump on the chore branch")
+    _git(repo, "checkout", "-q", "main")
+    write(repo, "package.json", json.dumps(rewired, indent=2) + "\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "main rewires scripts after the fork")
+    r = gate(repo, "--pr", "main", "chore/bump-deps", PR_HEAD_REF="chore/bump-deps")
+    assert r.returncode == 0, r.stdout
 
 def test_the_canvas_handoff_is_in_the_pr_body(repo):
     """solyra#72 r4118278197 (spec_gate.py:308, P2).
