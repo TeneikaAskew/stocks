@@ -130,10 +130,17 @@ def catalog_ids(text: str | None) -> set[str]:
     return set(FEAT_ROW.findall(visible(text or "")))
 
 
+LICENSE_FILE = re.compile(r"^(LICENSE|LICENCE|COPYING)([-.][A-Za-z0-9.-]*)?(\.(md|txt|rst))?$")
+WORKFLOWS = ".github/workflows/"
+
+
 def is_documentation(path: str) -> bool:
     name = path.rsplit("/", 1)[-1]
+    if path.startswith(WORKFLOWS) and not name.endswith(".md"):
+        return False   # a workflow is executable configuration whatever its name
     return (path.startswith("docs/") or path.endswith((".md", ".drawio"))
-            or name.startswith("LICENSE") or path == ".gitignore")
+            or bool(LICENSE_FILE.match(name) and not name.endswith((".yml", ".yaml", ".json", ".py", ".sh")))
+            or path == ".gitignore")
 
 
 class Tree:
@@ -240,7 +247,9 @@ def validate_plan(fm: dict, name: str, feat_id: str, tree: Tree) -> list[str]:
     if pr is not None and not PR_REF.match(str(pr)):
         errs.append(f"{name}: pr must be null or a PR number, not '{pr}'")
     spec = fm.get("spec")
-    if spec and not (str(spec).startswith(SPECS + "/") and str(spec).endswith(".md")):
+    if "spec" in fm and (not isinstance(spec, str) or not spec.strip()):
+        errs.append(f"{name}: spec must name the approved spec's path, not '{spec}'")
+    elif spec and not (spec.startswith(SPECS + "/") and spec.endswith(".md")):
         errs.append(f"{name}: spec must be a file under {SPECS}/, not {spec}")
     elif spec and tree.read(spec) is None:
         errs.append(f"{name}: spec path does not exist: {spec}")
@@ -378,7 +387,7 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
     plan_path = plans[0]
     plan_fm = frontmatter(ch.tree.read(plan_path))
     errs += validate_plan(plan_fm, plan_path, feat_id, ch.tree)
-    spec_path = plan_fm.get("spec")
+    spec_path = plan_fm.get("spec") if isinstance(plan_fm.get("spec"), str) else None
     spec_text = ch.base.read(spec_path) if spec_path else None
     if spec_text is None:
         if spec_path and ch.tree.read(spec_path) is not None:
@@ -428,7 +437,19 @@ def visible(body: str) -> str:
     # A fence opens with 3+ backticks or tildes after up to three spaces and closes with a
     # fence of the same character at least as long; an unclosed fence runs to the end.
     body = re.sub(r"^ {0,3}(`{3,}|~{3,}).*?^ {0,3}\1[`~]*[ \t]*$", "", body, flags=re.S | re.M)
-    return re.sub(r"^ {0,3}(`{3,}|~{3,}).*\Z", "", body, flags=re.S | re.M)
+    body = re.sub(r"^ {0,3}(`{3,}|~{3,}).*\Z", "", body, flags=re.S | re.M)
+    # An indented code block: lines indented four spaces or a tab after a blank line, until
+    # the next unindented text. Those render as code, not as links or checkboxes.
+    kept, in_code, prev_blank = [], False, True
+    for line in body.splitlines():
+        indented = line.startswith(("    ", "\t"))
+        if in_code and (indented or not line.strip()):
+            continue
+        in_code = indented and prev_blank
+        if not in_code:
+            kept.append(line)
+        prev_blank = not line.strip()
+    return "\n".join(kept)
 
 
 def checklist(body: str) -> list[tuple[bool, str]]:

@@ -1102,3 +1102,51 @@ def test_other_plans_do_not_change_with_code(repo):
     r = pr(repo, BRANCH, {**CODE, other: plan(branch="feature/feat-model-001-other", status="done")})
     assert r.returncode == 1 and f"other plan(s) change alongside code ({other})" in r.stdout, r.stdout
     assert pr(repo, BRANCH, {**CODE, PLAN: plan(pr=7)}).returncode == 0
+
+
+def test_a_plan_without_a_spec_authorizes_nothing(repo):
+    """solyra#72 r4118650492 (spec_gate.py:246, P1).
+
+    `spec: null` or a blank `spec:` satisfied the required-key check and the
+    truthiness guards, so check() returned no errors and no trace, and code
+    passed with every PR check skipped. A plan's spec must be a path.
+    """
+    for value in ("null", '""'):
+        r = pr(repo, BRANCH, {**CODE, PLAN: plan(spec=value)})
+        assert r.returncode == 1 and "spec must name the approved spec's path" in r.stdout, (value, r.stdout)
+    _git(repo, "checkout", "-q", "-B", BRANCH, "base")
+    write(repo, PLAN, plan(spec="null"))
+    write(repo, "lib/model.py", CODE["lib/model.py"])
+    _git(repo, "add", "-A")
+    assert gate(repo, "--commit").returncode == 1
+
+
+def test_a_workflow_is_never_documentation(repo):
+    """solyra#72 r4118650497 (spec_gate.py:136, P1).
+
+    `LICENSE*` was documentation by basename, so `.github/workflows/LICENSE-
+    release.yml` slipped through as documentation and a docs/ branch could ship
+    a workflow. Anything under .github/workflows/ that is not Markdown is gated,
+    and the license exemption names license documents only.
+    """
+    r = pr(repo, "docs/license", {".github/workflows/LICENSE-release.yml": "on: push\n"})
+    assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, r.stdout
+    assert pr(repo, "docs/license", {"LICENSE": "MIT\n", "LICENSE-THIRD-PARTY.txt": "x\n", "COPYING": "x\n",
+                                       ".github/workflows/README.md": "# Workflows\n"}).returncode == 0
+    assert pr(repo, "docs/license", {"LICENSE.py": "print(1)\n"}).returncode == 1
+
+
+def test_indented_code_blocks_do_not_count(repo):
+    """solyra#72 r4118650481 (spec_gate.py:431).
+
+    A four-space-indented block renders as code, but only fences and comments
+    were stripped, so the spec and plan paths and every ticked box could sit
+    in one. Indented code blocks are removed with the rest.
+    """
+    meta = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_NUMBER": "42", "PR_DRAFT": "false"}
+    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", "| Models | Production | 2026-09-28 | #42 |")
+    indented = f"Notes\n\n    Spec: {SPEC}\n    Plan: {PLAN}\n    - [x] {DONE[0]}\n    - [x] {DONE[1]}\n"
+    r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row}, **meta, PR_BODY=indented)
+    assert r.returncode == 1 and "must link the spec" in r.stdout and "missing:" in r.stdout, r.stdout
+    nested = f"Spec: {SPEC}\nPlan: {PLAN}\n\n- work\n    - [x] {DONE[0]}\n    - [x] {DONE[1]}\n"
+    assert pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row}, **meta, PR_BODY=nested).returncode == 0
