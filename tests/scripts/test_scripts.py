@@ -170,6 +170,20 @@ class TestHandleWorkflowFailure:
         except SystemExit:
             pass  # acceptable — script may call sys.exit when run directly
 
+    def test_legacy_failure_branches_are_still_found(self):
+        """stocks#1205 r4117897784 (handle_workflow_failure.py:252).
+
+        The handler now opens fix/feat-cicd-001-workflow-<name>-<run>, but a draft
+        opened before the rename still carries fix/workflow-<name>-<run>. The
+        lookup must find either, or the next failure opens a duplicate draft.
+        """
+        from scripts.handle_workflow_failure import is_failure_branch
+        base = "refresh-architecture-docs"
+        assert is_failure_branch("TeneikaAskew:fix/feat-cicd-001-workflow-refresh-architecture-docs-25", "TeneikaAskew", base)
+        assert is_failure_branch("TeneikaAskew:fix/workflow-refresh-architecture-docs-19", "TeneikaAskew", base)
+        assert not is_failure_branch("someone:fix/workflow-refresh-architecture-docs-19", "TeneikaAskew", base)
+        assert not is_failure_branch("TeneikaAskew:fix/workflow-fetch-news-sentiment-3", "TeneikaAskew", base)
+
 
 # ---------------------------------------------------------------------------
 # fetch_market_data.py

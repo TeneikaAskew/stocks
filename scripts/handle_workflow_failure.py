@@ -15,6 +15,16 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 import requests
 
+# Failure branches are fix/<feat-id>-<slug> so the spec gate can read FEAT-CICD-001
+# from them. Drafts opened before that rename still carry fix/workflow-<name>-<run>,
+# and the lookup must keep finding them, or the next failure opens a duplicate.
+FAILURE_BRANCH_PREFIXES = ("fix/feat-cicd-001-workflow-", "fix/workflow-")
+
+
+def is_failure_branch(head_label: str, owner: str, workflow_base: str) -> bool:
+    """True when a PR head label is this workflow's failure branch, under either name."""
+    return any(head_label.startswith(f"{owner}:{prefix}{workflow_base}-") for prefix in FAILURE_BRANCH_PREFIXES)
+
 
 class GitHubAPIError(Exception):
     """Custom exception for GitHub API errors."""
@@ -247,9 +257,8 @@ class WorkflowFailureHandler:
         Returns:
             PR number if found, None otherwise
         """
-        # Look for PRs with branch pattern fix/feat-cicd-001-workflow-{workflow_file}-*
+        # Look for PRs on this workflow's failure branch, current or legacy name
         workflow_base = workflow_file.replace('.yml', '')
-        head_pattern = f"{self.owner}:fix/feat-cicd-001-workflow-{workflow_base}-"
 
         try:
             # Search for open PRs
@@ -258,8 +267,7 @@ class WorkflowFailureHandler:
 
             for pr in response:
                 pr_head = pr.get('head', {}).get('label', '')
-                # Check if PR head matches the pattern
-                if pr_head.startswith(head_pattern):
+                if is_failure_branch(pr_head, self.owner, workflow_base):
                     return pr['number']
 
         except GitHubAPIError:

@@ -551,12 +551,15 @@ def test_cleanup_is_quiet_when_no_failure_pr_exists(tmp_path):
 
 
 def test_the_older_pr_lookup_matches_the_handlers_own_prefix():
-    """`find_existing_pr` matches `OWNER:fix/feat-cicd-001-workflow-<file>-`; the lookup
-    here strips the run number off BRANCH to rebuild exactly that prefix."""
-    src = (REPO / "scripts/handle_workflow_failure.py").read_text()
-    assert 'head_pattern = f"{self.owner}:fix/feat-cicd-001-workflow-{workflow_base}-"' in src
+    """`find_existing_pr` matches `OWNER:<prefix><file>-` for each prefix in
+    FAILURE_BRANCH_PREFIXES, the current name and the legacy one. The lookup here
+    strips the run number off BRANCH to rebuild the first, and derives the second."""
+    from scripts.handle_workflow_failure import FAILURE_BRANCH_PREFIXES
+    assert FAILURE_BRANCH_PREFIXES == ("fix/feat-cicd-001-workflow-", "fix/workflow-")
     run = CLEANUP_STEP["run"]
     assert 'startswith(\\"${REPO%%/*}:${BRANCH%-*}-\\")' in run
+    assert 'LEGACY="fix/workflow-${BRANCH#fix/feat-cicd-001-workflow-}"' in run
+    assert 'startswith(\\"${REPO%%/*}:${LEGACY%-*}-\\")' in run
 
 
 # ── the exit-code contract, executed ────────────────────────────────────────
@@ -667,3 +670,23 @@ def test_a_quota_word_outside_the_cli_record_is_not_enough():
         "2026-09-07T23:20:02.0Z ##[error]Process completed with exit code 1.\n"
     )
     assert _classify_rc(echoed) == 1
+
+
+def test_the_older_pr_lookup_finds_legacy_failure_branches(tmp_path):
+    """stocks#1205 r4117897784, the same class in this workflow. The handler
+    comments on an open legacy fix/workflow-<name>-<run> draft, so this lookup
+    must find it too, or the request it now carries is never answered. Runs
+    the filter the step actually sends, expanded, through real jq."""
+    proc, _, _ = _run_cleanup(tmp_path, log_text=REAL_STALL, older_pr="1021")
+    assert proc.returncode == 0, proc.stderr
+    call = next(c for c in (tmp_path / "out" / "calls.txt").read_text().splitlines()
+                if "pulls?state=open&per_page=" in c)
+    filt = call.split("--jq ", 1)[1]
+    def first(label):
+        payload = [{"number": 7, "head": {"label": label}}]
+        out = subprocess.run(["jq", "-r", filt], input=json.dumps(payload), capture_output=True, text=True)
+        assert out.returncode == 0, out.stderr
+        return out.stdout.strip()
+    assert first("TeneikaAskew:fix/feat-cicd-001-workflow-refresh-architecture-docs-24") == "7"
+    assert first("TeneikaAskew:fix/workflow-refresh-architecture-docs-19") == "7"
+    assert first("TeneikaAskew:fix/workflow-fetch-news-sentiment-3") == ""
