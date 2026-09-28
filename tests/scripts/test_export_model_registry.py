@@ -254,6 +254,11 @@ def test_ci_checks_the_pr_head_commit(repo):
     proposed = next(s for s in steps if "py_compile" in s.get("run", ""))
     assert steps.index(proposed) < steps.index(check)
     assert 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"' in proposed["run"]
+    # solyra#72 r4118997592 (P1): the workflows and the hook are gate files a chore/ PR may
+    # touch, so their presence at the head is checked too, or a PR could delete the gate's
+    # own workflow and merge green
+    for required in (".github/workflows/spec-gate.yml", ".github/workflows/registry-check.yml", ".githooks/pre-commit"):
+        assert required in proposed["run"], required
     assert "spec gate ok|SPEC GATE FAILED" in proposed["run"] and "exit 1" in proposed["run"]
     assert {"PR_HEAD_REF", "PR_BASE_REF", "PR_HEAD_REPO", "PR_BASE_REPO"} <= set(proposed["env"])
 

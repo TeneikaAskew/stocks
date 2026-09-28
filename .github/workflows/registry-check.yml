@@ -44,10 +44,12 @@ jobs:
           PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
         run: |
           gate=scripts/gate/spec_gate.py
-          if ! git cat-file -e "$HEAD_SHA:$gate" 2>/dev/null; then
-            echo "::error::$gate is missing from this PR's head; the gate cannot be removed by a PR" >&2
-            exit 1
-          fi
+          for required in "$gate" .github/workflows/spec-gate.yml .github/workflows/registry-check.yml .githooks/pre-commit; do
+            if ! git cat-file -e "$HEAD_SHA:$required" 2>/dev/null; then
+              echo "::error::$required is missing from this PR's head; the gate and its workflows cannot be removed by a PR" >&2
+              exit 1
+            fi
+          done
           python3 -m py_compile "$gate"
           set +e
           out=$(python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA" 2>&1); rc=$?

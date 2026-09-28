@@ -216,8 +216,8 @@ def validate_spec(fm: dict, name: str, catalog: set[str], req_defs: set[str] | N
     errs = [f"{name}: missing frontmatter key '{k}'" for k in REQUIRED_SPEC_KEYS if k not in fm]
     if "feat_id" in fm and not isinstance(fm["feat_id"], str):
         errs.append(f"{name}: feat_id must be one FEAT-ID, not a list")
-    elif fm.get("feat_id") and fm["feat_id"] not in catalog:
-        errs.append(f"{name}: feat_id {fm['feat_id']} is not in {CATALOG}")
+    elif "feat_id" in fm and fm["feat_id"] not in catalog:
+        errs.append(f"{name}: feat_id {fm['feat_id']!r} is not in {CATALOG}")
     if fm.get("status") not in SPEC_STATUSES:
         errs.append(f"{name}: status must be draft | approved | superseded")
     done = fm.get("done_when")
@@ -780,9 +780,11 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
                     f"its row or record (it reads '{reviewed or 'nothing'}')")
     if status.lower() in ("", "unknown", "tbd"):
         errs.append(f"{CATALOG}: set the {t.feat_id} Status in its row or record (it reads '{status or 'nothing'}')")
-    trace_text = ch.tree.read(TRACEABILITY)
-    if trace_text is not None:
-        now_lineage = lineage_refs(trace_text, t.feat_id)
+    # Which record carries the lineage is policy, read at the base: a repository that
+    # keeps it in the catalog row (solyra) cannot be moved off that check by a PR that
+    # brings its own traceability document.
+    if ch.base.read(TRACEABILITY) is not None:
+        now_lineage = lineage_refs(ch.tree.read(TRACEABILITY) or "", t.feat_id)
         before_lineage = lineage_refs(Tree(merge_base).read(TRACEABILITY) or "", t.feat_id)
         if not any(pr_ref.search(entry) for entry in now_lineage - before_lineage):
             errs.append(f"{TRACEABILITY}: add this PR (#{n}) to the {t.feat_id} section's PR lineage "

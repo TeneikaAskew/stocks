@@ -442,6 +442,12 @@ def test_close_out_records_are_required_once_the_pr_is_ready(repo):
 
     row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", f"| Models | Production | {TODAY} | #42 |")
     assert pr(repo, BRANCH, {**recorded, CATALOG: row}, **meta, PR_DRAFT="false").returncode == 0
+    # solyra#72 r4118997596: a PR cannot bring its own traceability document to move the
+    # lineage check off the catalog row; which record carries it is read at the base
+    stamped_only = CATALOG_TEXT.replace("| Models | Production | unknown | none |", f"| Models | Production | {TODAY} | none |")
+    own_trace = "# Traceability\n\n## FEAT-MODEL-001\n\n- #42 state each model's decision\n"
+    r = pr(repo, BRANCH, {**recorded, CATALOG: stamped_only, TRACEABILITY: own_trace}, **meta, PR_DRAFT="false")
+    assert r.returncode == 1 and "row's PRs column" in r.stdout, r.stdout
     r = pr(repo, BRANCH, {**recorded, CATALOG: row}, **{**meta, "PR_BODY": body()}, PR_DRAFT="false")
     assert r.returncode == 1 and "done_when item(s) not ticked" in r.stdout, r.stdout
 
@@ -1176,6 +1182,13 @@ def test_frontmatter_shapes_the_gate_did_not_expect_fail_cleanly(repo):
     r = pr(repo, BRANCH, CODE)
     assert r.returncode == 1 and "feat_id must be one FEAT-ID, not a list" in r.stdout, r.stdout + r.stderr
     assert "Traceback" not in r.stderr, r.stderr
+    # solyra#72 r4118997587: an empty feat_id skipped the catalog check and --check-spec said ok
+    on_base(repo, {SPEC: spec(feat_id='""')})
+    r = pr(repo, BRANCH, CODE)
+    assert r.returncode == 1 and "feat_id '' is not in" in r.stdout, r.stdout
+    write(repo, SPEC, spec(feat_id='""'))
+    r = gate(repo, "--check-spec", SPEC)
+    assert r.returncode == 1 and "is not in" in r.stdout, r.stdout
     on_base(repo, {SPEC: spec(), PLAN: plan(feat_id="[FEAT-MODEL-001]")})
     r = pr(repo, BRANCH, CODE)
     assert r.returncode == 1 and "but the branch serves FEAT-MODEL-001" in r.stdout and "Traceback" not in r.stderr
