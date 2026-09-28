@@ -1034,7 +1034,7 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
     # solyra#72 r4119610902: a feature branch touching only its own row is still traced
     r = pr(repo, BRANCH, {CATALOG: CATALOG_TEXT.replace("| Models | Production | unknown | none |", f"| Models | Production | {TODAY} | #42 |")},
            PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body(ticked=True), PR_NUMBER="42", PR_DRAFT="false")
-    assert r.returncode == 1 and "no plan in" not in r.stdout or r.returncode == 1, r.stdout
+    assert r.returncode == 1 and "Traceback" not in r.stderr and "no plan in" not in r.stdout, r.stdout + r.stderr
     on_base(repo, {PLAN: None})
     r = pr(repo, BRANCH, {CATALOG: CATALOG_TEXT.replace("| Models | Production | unknown | none |", f"| Models | Production | {TODAY} | #42 |")})
     assert r.returncode == 1 and "no plan in" in r.stdout, r.stdout

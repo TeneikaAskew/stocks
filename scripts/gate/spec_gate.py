@@ -557,8 +557,8 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                if ch.trusted and OTHER_BRANCH.match(ch.branch) else None)
     refused = {f: (allowed(f, ch) if allowed else "") for f in gated}
     remaining = [f for f, why in refused.items() if why is not None]
-    if not remaining:
-        return [], None
+    if gated and not remaining:
+        return [], None   # every gated file is covered by the branch's allowance
     m = BRANCH.match(ch.branch)
     if not m:
         why = " A pull request from a fork gets no prefix allowance." if not ch.trusted else ""
