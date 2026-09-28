@@ -219,3 +219,33 @@ def test_retag_writes_only_the_rows_that_change(monkeypatch):
     assert rc == 0
     written = pd.concat(writes)
     assert sorted(written["ticker"]) == ["IWM", "SPY"]
+
+
+def test_a_staged_retag_reaches_every_stale_row(monkeypatch):
+    """Codex on #1207: with --retag, --limit went to the SQL before the
+    unchanged rows were filtered out. Once the first rows were current, every
+    staged run selected them again and never reached the stale rows after
+    them. The limit bounds the rows a run writes instead."""
+    table = _rows_with_old_tags()
+    # The earliest row is already current; the stale ones come after it.
+    table.loc[table["ticker"] == "QQQ", "entry_time"] = pd.Timestamp("2026-05-01 13:55", tz="UTC")
+    written = []
+
+    def fetch(engine, tickers=None, limit=None, retag=False):
+        rows = (table if retag else table[table["old_tag"].isna()]).sort_values("entry_time")
+        return (rows.head(limit) if limit else rows).reset_index(drop=True)
+
+    def upsert(engine, chunk):
+        for _, r in chunk.iterrows():
+            hit = (table["ticker"] == r["ticker"]) & (table["entry_time"] == r["entry_time"])
+            table.loc[hit, ["old_tag", "old_hold"]] = [r["timeframe_tag"], r["expected_hold_min"]]
+        written.append(len(chunk))
+        return len(chunk)
+
+    monkeypatch.setattr("gcp.database.get_engine", lambda: object())
+    monkeypatch.setattr(backfill, "fetch_rows_to_backfill", fetch)
+    monkeypatch.setattr(backfill, "upsert_chunk", upsert)
+    for _ in range(3):
+        assert backfill.main(["--retag", "--limit", "1"]) == 0
+    assert backfill.changed_rows(apply_tags(table)).empty
+    assert written == [1, 1]

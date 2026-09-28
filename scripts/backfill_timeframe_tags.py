@@ -211,7 +211,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p.add_argument("--tickers", default="",
                    help="Comma-separated ticker filter (default: all)")
     p.add_argument("--limit", type=int, default=None,
-                   help="Limit rows for staged rollout / dev")
+                   help="Limit rows for staged rollout / dev (with --retag: rows written, "
+                        "counted after unchanged rows are filtered out)")
     p.add_argument("--chunk-size", type=int, default=1000,
                    help="Rows per UPDATE batch (default 1000)")
     p.add_argument("--dry-run", action="store_true",
@@ -236,7 +237,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     logger.info("loading rows to backfill (tickers=%s limit=%s retag=%s)",
                 tickers, args.limit, args.retag)
-    df = fetch_rows_to_backfill(engine, tickers=tickers, limit=args.limit, retag=args.retag)
+    # With --retag the limit bounds the rows a run writes, applied after the
+    # unchanged ones are filtered out: a SQL LIMIT would select the same
+    # already-current rows on every staged run (Codex on #1207).
+    df = fetch_rows_to_backfill(engine, tickers=tickers,
+                                limit=None if args.retag else args.limit, retag=args.retag)
     logger.info("loaded %d rows", len(df))
     if df.empty:
         logger.info("nothing to backfill")
@@ -253,6 +258,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         if df.empty:
             logger.info("nothing to retag")
             return 0
+        if args.limit:
+            df = df.head(args.limit)
+            logger.info("retag: --limit %d, writing the first %d changed rows", args.limit, len(df))
 
     if args.dry_run:
         logger.info("--dry-run set — skipping UPDATE (%d rows ready)", len(df))
