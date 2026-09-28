@@ -431,7 +431,10 @@ Phase 0 is right when all of these hold and their output is in the PR:
 
 1. `03-SITE-TRACEABILITY.md` has seventeen `## NN ·` sections in the order of 4.8.
 2. Every Checklist ID matches `^[A-Z]+-[0-9]{2}$` and is unique across the document:
-   `grep -oE '^\| [A-Z]+-[0-9]{2} ' docs/product/03-SITE-TRACEABILITY.md | sort | uniq -d` prints nothing.
+   Checklist rows are the ones whose fourth cell is a gate box, which keeps the Chain rows
+   (same IDs) out of the count:
+   `awk -F'|' '$4 ~ /\[[ x]\]/ {gsub(/ /,"",$2); print $2}' docs/product/03-SITE-TRACEABILITY.md | sort | uniq -d`
+   prints nothing.
 3. The recipe in 4.7 prints `N 0 0 0 0` with N the row total, and N matches the Progress table.
 4. No table cell contains `TBD`, `TODO`, `to confirm` or `?`:
    `grep -nE '^\|.*(TBD|TODO|to confirm|\?)' docs/product/03-SITE-TRACEABILITY.md` prints nothing.
