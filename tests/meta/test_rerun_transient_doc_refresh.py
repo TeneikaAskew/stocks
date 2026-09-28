@@ -322,11 +322,13 @@ def test_a_successful_rerun_annotates_the_obsolete_failure_pr():
     assert "conclusion == 'success'" in cond
     assert "run_attempt > 1" in cond, "it would annotate on a first-attempt success too"
     step = next(st for st in job["steps"] if "run" in st)
-    # The branch name must match what the failure handler actually builds.
-    src = (REPO / "scripts/handle_workflow_failure.py").read_text()
-    assert 'f"fix/feat-cicd-001-workflow-{workflow_file.replace(\'.yml\', \'\')}-{run_number}"' in src, \
+    # The branch name must match what the failure handler actually builds: its prefix
+    # constant plus the kebab-case slug of this workflow's filename, then the run number.
+    from scripts.handle_workflow_failure import FAILURE_BRANCH_PREFIX, workflow_slug
+    expected_prefix = f"{FAILURE_BRANCH_PREFIX}{workflow_slug('refresh-architecture-docs.yml')}-"
+    assert expected_prefix == "fix/feat-cicd-001-workflow-refresh-architecture-docs-"
+    assert step["env"]["BRANCH"].startswith(expected_prefix), \
         "the failure handler's branch pattern changed; this job's BRANCH must follow"
-    assert step["env"]["BRANCH"].startswith("fix/feat-cicd-001-workflow-refresh-architecture-docs-")
     assert "run_number" in step["env"]["BRANCH"]
     assert "gh pr comment" in step["run"]
     assert 'is_transient_gemini_failure.sh "$RUN_ID" 1' in step["run"], \
