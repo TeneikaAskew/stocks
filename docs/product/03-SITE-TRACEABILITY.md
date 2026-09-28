@@ -40,7 +40,7 @@ defined in this document's Gates section. The element ID is the join to the UI s
 |---|---|---|---|---|---|
 | 00 · Shared, under every page | 8 | 8 | 8 | 6 | 7 |
 | 01 · Landing | 13 | 13 | 13 | 11 | 9 |
-| 02 · AuthGate and sign-in | 10 | 10 | 10 | 3 | 7 |
+| 02 · AuthGate and sign-in | 10 | 10 | 10 | 3 | 6 |
 | 03 · AppShell | 16 | 16 | 16 | 3 | 8 |
 | 04 · Dashboard | 21 | 0 | 0 | 0 | 0 |
 | 05 · Live Market | 13 | 0 | 0 | 0 | 0 |
@@ -55,7 +55,7 @@ defined in this document's Gates section. The element ID is the join to the UI s
 | 14 · Admin | 13 | 0 | 0 | 0 | 0 |
 | 15 · Settings | 13 | 0 | 0 | 0 | 0 |
 | 16 · Help and Glossary | 8 | 0 | 0 | 0 | 0 |
-| Total | 222 | 47 | 47 | 23 | 31 |
+| Total | 222 | 47 | 47 | 23 | 30 |
 
 ```bash
 # whole document; run between two "## NN ·" headings for one area
@@ -197,12 +197,12 @@ UI spec: [UI-SCREENS.md § SCREEN-AUTH](https://github.com/TeneikaAskew/solyra/b
 |---|---|---|---|---|---|---|
 | AUTH-01 | Auth-mode bootstrap (firebase, iap, open) | [x] | [x] | [x] | [x] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#auth-01--auth-mode-bootstrap-firebase-iap-open) · T 2026-09-28 cc1174d · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5876652365) · Te 2026-09-28 [run](https://github.com/TeneikaAskew/solyra/actions/runs/36361217691/job/108738662184) |
 | AUTH-02 | State: loading spinner while the session resolves | [x] | [x] | [ ] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#auth-02--state-loading-spinner-while-the-session-resolves) · T 2026-09-28 cc1174d |
-| AUTH-03 | Google sign-in, with the new-tab variant when framed | [x] | [x] | [ ] | [x] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#auth-03--google-sign-in-with-the-new-tab-variant-when-framed) · T 2026-09-28 cc1174d · Te 2026-09-28 [run](https://github.com/TeneikaAskew/solyra/actions/runs/36361217691/job/108738662184) |
+| AUTH-03 | Google sign-in, with the new-tab variant when framed | [x] | [x] | [ ] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#auth-03--google-sign-in-with-the-new-tab-variant-when-framed) · T 2026-09-28 cc1174d |
 | AUTH-04 | Email and password sign-in with inline error | [x] | [x] | [ ] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#auth-04--email-and-password-sign-in-with-inline-error) · T 2026-09-28 cc1174d |
 | AUTH-05 | Sign-up mode | [x] | [x] | [ ] | [x] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#auth-05--sign-up-mode) · T 2026-09-28 cc1174d · Te 2026-09-28 [run](https://github.com/TeneikaAskew/solyra/actions/runs/36361217691/job/108738662184) |
 | AUTH-06 | Forgot password: reset email, then /auth/action | [x] | [x] | [ ] | [x] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#auth-06--forgot-password-reset-email-then-authaction) · T 2026-09-28 cc1174d · Te 2026-09-28 [stocks run](https://github.com/TeneikaAskew/stocks/actions/runs/35347427630) and solyra [run](https://github.com/TeneikaAskew/solyra/actions/runs/36361217691) and solyra e2e [job](https://github.com/TeneikaAskew/solyra/actions/runs/36361217691/job/108738662184) |
 | AUTH-07 | Identity and role read (email, admin, dev) | [x] | [x] | [x] | [x] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#auth-07--identity-and-role-read-email-admin-dev) · T 2026-09-28 cc1174d · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5876652365) · Te 2026-09-28 [stocks run](https://github.com/TeneikaAskew/stocks/actions/runs/35347427630) and solyra e2e [job](https://github.com/TeneikaAskew/solyra/actions/runs/36361217691/job/108738662184) |
-| AUTH-08 | State: permission, 401 on a gated call shows "Sign in to load data" | [x] | [x] | [x] | [x] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#auth-08--state-permission-401-on-a-gated-call-shows-sign-in-to-load-data) · T 2026-09-28 cc1174d · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5876652365) · Te 2026-09-28 [stocks run](https://github.com/TeneikaAskew/stocks/actions/runs/35347427630) and solyra [run](https://github.com/TeneikaAskew/solyra/actions/runs/36361217691) and solyra e2e [job](https://github.com/TeneikaAskew/solyra/actions/runs/36361217691/job/108738662184) |
+| AUTH-08 | State: permission, 401 on a gated call shows "Sign in to load data" | [x] | [x] | [x] | [x] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#auth-08--state-permission-401-on-a-gated-call-shows-sign-in-to-load-data) · T 2026-09-28 cc1174d · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5876652365) · Te 2026-09-28 [stocks run](https://github.com/TeneikaAskew/stocks/actions/runs/35347427630) and solyra [run](https://github.com/TeneikaAskew/solyra/actions/runs/36361217691) |
 | AUTH-09 | Sign out | [x] | [x] | [ ] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#auth-09--sign-out) · T 2026-09-28 cc1174d |
 | AUTH-10 | State: error, config fetch failure shows the config-error screen | [x] | [x] | [ ] | [x] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#auth-10--state-error-config-fetch-failure-shows-the-config-error-screen) · T 2026-09-28 cc1174d · Te 2026-09-28 [run](https://github.com/TeneikaAskew/solyra/actions/runs/36361217691/job/108738662184) |
 
@@ -228,7 +228,7 @@ UI spec: [UI-SCREENS.md § SCREEN-AUTH](https://github.com/TeneikaAskew/solyra/b
 
 ### Gaps
 - The design's backend diagram labels the dashboard "no per-user auth" and the platform service "FastAPI + React"; both predate the #957 split (see SHARED, area 00).
-- AUTH-04 and AUTH-09 stay unticked at Te: the only Playwright test that genuinely asserts either row's own behavior, the inline sign-in error for AUTH-04 and the sign-out action for AUTH-09, is one this branch added to solyra [tests/shared/auth-gate.spec.ts](https://github.com/TeneikaAskew/solyra/blob/main/tests/shared/auth-gate.spec.ts) (`email sign-in shows the inline error when the identity call fails`, `sign out returns to the sign-in screen`). The e2e run this task cites ran on commit eca7078, this branch's base, so it predates both tests; both rows wait for a CI run on a head that includes them.
+- AUTH-03, AUTH-04 and AUTH-09 stay unticked at Te: the only Playwright test that genuinely asserts each row's own behavior, the framed new-tab variant for AUTH-03 (its not-framed branch is covered by a pre-existing test, but the row's own title names the framed variant), the inline sign-in error for AUTH-04, and the sign-out action for AUTH-09, is one this branch added to solyra [tests/shared/auth-gate.spec.ts](https://github.com/TeneikaAskew/solyra/blob/main/tests/shared/auth-gate.spec.ts) (`framed preview: the Google button opens a new tab instead of a popup`, `email sign-in shows the inline error when the identity call fails`, `sign out returns to the sign-in screen`). The e2e run this task cites ran on commit eca7078, this branch's base, so it predates all three tests; all three rows wait for a CI run on a head that includes them.
 - AUTH-02 (the loading spinner) has no test of any kind, in either repo: every hermetic mock in solyra [tests/shared/auth-gate.spec.ts](https://github.com/TeneikaAskew/solyra/blob/main/tests/shared/auth-gate.spec.ts) fulfills the config and identity fetches synchronously, so the state is never observably in flight.
 
 ## 03 · AppShell
