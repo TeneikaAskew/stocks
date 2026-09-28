@@ -69,7 +69,8 @@ jobs:
         run: |
           if [ -f tests/scripts/test_spec_gate.py ]; then
             python3 -m pip install --quiet pytest pyyaml
-            python3 -m pytest tests/scripts/test_spec_gate.py -q -p no:cacheprovider
+            # --noconftest: the suite is hermetic; a repository conftest may import packages this job does not install
+            python3 -m pytest tests/scripts/test_spec_gate.py -q -p no:cacheprovider --noconftest
           else
             echo "::notice::no tests/scripts/test_spec_gate.py in this repository; the verdict step above is the check"
           fi
