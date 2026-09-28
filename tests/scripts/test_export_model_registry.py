@@ -216,7 +216,13 @@ def test_ci_checks_the_pr_head_commit(repo):
     assert r.returncode == 1 and "is stale" in r.stdout, r.stdout
     assert export(repo, "--check", "--rev", fresh).returncode == 0
 
-    steps = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["gate"]["steps"]
+    jobs = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]
+    # The exporter the PR ships judges the JSON it ships, so this runs in an
+    # unprivileged pull_request job checked out at the head, not in the gate job.
+    assert jobs["registry"]["if"] == "github.event_name == 'pull_request'"
+    checkout = next(s for s in jobs["registry"]["steps"] if s.get("uses", "").startswith("actions/checkout"))
+    assert "ref" not in checkout.get("with", {})
+    steps = jobs["registry"]["steps"]
     assert any('export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"' in s.get("run", "")
                for s in steps)
 

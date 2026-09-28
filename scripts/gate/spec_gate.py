@@ -316,6 +316,9 @@ def summarize(paths: list[str]) -> str:
 
 
 def check(ch: Change) -> tuple[list[str], Traced | None]:
+    if ch.mode == "pr" and ch.branch.startswith("spike/"):
+        return [f"branch '{ch.branch}' is a spike: local investigation commits only, never a pull request. "
+                "Re-cut the work on a feature/ or fix/ branch with a plan, or a docs/ branch for its write-up."], None
     gated = [f for f in ch.changed if not is_documentation(f)]
     if not gated:
         return [], None
@@ -394,8 +397,15 @@ def norm(text: str) -> str:
     return " ".join(text.split())
 
 
+def visible(body: str) -> str:
+    """The PR body as it renders: HTML comments and fenced code blocks removed, so a
+    checkbox inside the template's comments or a code example is not a checkbox."""
+    body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
+    return re.sub(r"^(`{3,}|~{3,}).*?^\1[ \t]*$", "", body, flags=re.S | re.M)
+
+
 def checklist(body: str) -> list[tuple[bool, str]]:
-    return [(m.group(1) in "xX", norm(m.group(2))) for line in body.splitlines() if (m := CHECKBOX.match(line))]
+    return [(m.group(1) in "xX", norm(m.group(2))) for line in visible(body).splitlines() if (m := CHECKBOX.match(line))]
 
 
 def done_items(t: Traced) -> list[str]:
@@ -427,7 +437,7 @@ def check_canvas_handoff(t: Traced, body: str, tree: Tree) -> list[str]:
     if not isinstance(urls, list) or not urls:
         return []
     modes = canvas_modes(tree.read(CANVASES))
-    lines = body.splitlines()
+    lines = visible(body).splitlines()
     errs: list[str] = []
     for url in urls:
         mode = modes.get(url)
@@ -474,7 +484,7 @@ def section(body: str, title: str) -> str | None:
                 if HEADING.match(later):
                     break
                 out.append(later)
-            return re.sub(r"<!--.*?-->", "", "\n".join(out), flags=re.S)
+            return "\n".join(out)
     return None
 
 
@@ -484,7 +494,7 @@ def check_capacity(body: str | None, changed: list[str]) -> list[str]:
     workloads = [f for f in changed if f.startswith(WORKLOAD_PREFIXES)]
     if body is None or not workloads:
         return []
-    text = section(body, "capacity")
+    text = section(visible(body), "capacity")
     if text is None:
         return [f"PR body needs a Capacity section: the change touches a workload ({summarize(workloads)})"]
     if re.search(r"\bn/a\b\s*[\u2014:-]\s*\w", text, re.I):
@@ -649,6 +659,14 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
     return errs
 
 
+def merges_main() -> bool:
+    """During a merge: is MERGE_HEAD a commit of main (origin/main, else main)?"""
+    for main in ("origin/main", "main"):
+        if resolve(main):
+            return git("merge-base", "--is-ancestor", "MERGE_HEAD", main).returncode == 0
+    return False
+
+
 def resolve(rev: str) -> str | None:
     r = git("rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}")
     return r.stdout.strip() if r.returncode == 0 else None
@@ -692,9 +710,18 @@ def run(argv: list[str]) -> int:
         branch = override if real == "HEAD" and override else real
         # --no-renames: a rename is listed as its deleted source and its added destination,
         # so moving code out to a documentation path is still seen as a change to that code.
-        # A merge in progress (MERGE_HEAD exists) stages everything main brings in; the
-        # branch's own contribution is the index measured against the side being merged.
-        against = ["MERGE_HEAD"] if resolve("MERGE_HEAD") else []
+        # A merge in progress (MERGE_HEAD exists): merging main into the branch stages
+        # everything main brings in, so the branch's own contribution is the index measured
+        # against main's side. Merging anything else (another branch into this one) IS this
+        # branch taking on that code, and is measured against HEAD like any commit. Nothing
+        # merges into main locally: main takes pull requests.
+        against = []
+        if resolve("MERGE_HEAD"):
+            if branch == "main":
+                return fail(["a merge into main is committed locally; main takes pull requests, "
+                             "not local merges. Abort it (git merge --abort) and open a PR."])
+            if merges_main():
+                against = ["MERGE_HEAD"]
         staged = git_out("diff", "--cached", "--name-only", "--no-renames", *against).splitlines()
         ch = Change("commit", branch, staged, Tree(None), Tree(against[0] if against else "HEAD"))
         errs, _ = check(ch)

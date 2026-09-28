@@ -176,9 +176,11 @@ def test_the_gate_cannot_be_edited_outside_chore_and_ci_runs_the_base_copy(repo)
     assert pr(repo, "chore/gate-fix", edit).returncode == 0
 
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    assert list(workflow.get("on", workflow.get(True))) == ["pull_request_target"]
-    checkout = next(s for s in workflow["jobs"]["gate"]["steps"] if s.get("uses", "").startswith("actions/checkout"))
+    gate_job = workflow["jobs"]["gate"]
+    assert gate_job["if"] == "github.event_name == 'pull_request_target'"
+    checkout = next(s for s in gate_job["steps"] if s.get("uses", "").startswith("actions/checkout"))
     assert checkout["with"]["ref"] == "${{ github.event.pull_request.base.sha }}"
+    assert not any("export_model_registry" in s.get("run", "") for s in gate_job["steps"])
 
 
 def test_deploy_and_config_files_are_gated(repo):
@@ -811,3 +813,75 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
     na = body() + "\n\n## Capacity\nn/a: the job's log line changes, no query or schedule does\n"
     assert pr(repo, BRANCH, job, **title, PR_BODY=na).returncode == 0
     assert pr(repo, BRANCH, CODE, **title, PR_BODY=body()).returncode == 0
+
+
+def test_hidden_checklist_entries_do_not_count(repo):
+    """stocks#1205 r4118374587 (spec_gate.py:398).
+
+    The checklist parser read every line, so a ticked done_when item inside an
+    HTML comment (the PR template's) or a fenced code example counted as done
+    while the rendered body showed nothing. Comments and fences are removed
+    before the body is parsed, for the checklist, the canvas markers and the
+    Capacity section alike.
+    """
+    meta = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_NUMBER": "42"}
+    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", "| Models | Production | 2026-09-28 | #42 |")
+    files = {**CODE, PLAN: plan(pr=42), CATALOG: row}
+    hidden = (f"Spec: {SPEC}\nPlan: {PLAN}\n\n<!--\n- [x] {DONE[0]}\n-->\n```\n- [x] {DONE[1]}\n```\n"
+              f"\n- [ ] {DONE[0]}\n- [ ] {DONE[1]}\n")
+    r = pr(repo, BRANCH, files, **meta, PR_BODY=hidden, PR_DRAFT="false")
+    assert r.returncode == 1 and "done_when item(s) not ticked" in r.stdout, r.stdout
+    assert pr(repo, BRANCH, files, **meta, PR_BODY=body(ticked=True), PR_DRAFT="false").returncode == 0
+
+
+def test_a_spike_never_opens_a_pull_request(repo):
+    """stocks#1205 r4118374586 (spec_gate.py:315).
+
+    A spike/ PR carrying only its investigation note had no gated file, so the
+    gate passed it, although a spike is local commits only. In PR mode a spike/
+    branch fails whatever it changes; in commit mode it still passes anything.
+    """
+    r = pr(repo, "spike/try", {"docs/spikes/try.md": "# Notes\n"})
+    assert r.returncode == 1 and "is a spike: local investigation commits only" in r.stdout, r.stdout
+    assert pr(repo, "spike/try", CODE).returncode == 1
+    _git(repo, "checkout", "-q", "-B", "spike/try", "base")
+    write(repo, "lib/model.py", CODE["lib/model.py"])
+    _git(repo, "add", "lib/model.py")
+    assert gate(repo, "--commit").returncode == 0
+
+
+def test_only_a_merge_of_main_is_measured_against_merge_head(repo):
+    """stocks#1205 r4118374592 (spec_gate.py:699).
+
+    Every merge in progress was measured against MERGE_HEAD, so a merge into
+    main saw an empty diff and passed, and a feature branch merging another
+    feature's commits was judged only on its own side. Now: a local merge into
+    main is refused; a branch merging main is measured against main's side; a
+    branch merging anything else is measured against HEAD, as its own change.
+    """
+    _git(repo, "checkout", "-q", "-B", "feature/feat-data-001-other", "base")
+    write(repo, "lib/other.py", "x = 1\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "other feature's code")
+    _git(repo, "checkout", "-q", "main")
+    _git(repo, "merge", "-q", "--no-commit", "--no-ff", "feature/feat-data-001-other")
+    r = gate(repo, "--commit")
+    assert r.returncode == 1 and "a merge into main is committed locally" in r.stdout, r.stdout
+    _git(repo, "merge", "--abort")
+
+    _git(repo, "checkout", "-q", "-B", "docs/typo", "base")
+    write(repo, "docs/notes.md", "# Notes\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "docs")
+    _git(repo, "merge", "-q", "--no-commit", "--no-ff", "feature/feat-data-001-other")
+    r = gate(repo, "--commit")
+    assert r.returncode == 1 and "lib/other.py" in r.stdout, r.stdout
+    _git(repo, "merge", "--abort")
+
+    _git(repo, "checkout", "-q", "main")
+    write(repo, "lib/model.py", CODE["lib/model.py"])
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "code on main")
+    _git(repo, "checkout", "-q", "docs/typo")
+    _git(repo, "merge", "-q", "--no-commit", "--no-ff", "main")
+    assert gate(repo, "--commit").returncode == 0, "merging main into a docs branch"
