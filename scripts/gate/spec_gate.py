@@ -74,9 +74,10 @@ MANIFEST = re.compile(
     r"(^|/)(package(-lock)?\.json|requirements[^/]*\.(txt|lock)|pyproject\.toml|poetry\.lock"
     r"|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$"
 )
+HOOK = ".githooks/pre-commit"
 GATE_FILES = (
     "scripts/gate/",
-    ".githooks/",
+    HOOK,   # the one hook, not the directory: any other executable there runs on every clone with core.hooksPath set
     ".github/workflows/spec-gate.yml",
     ".github/workflows/registry-check.yml",
     "tests/scripts/test_spec_gate.py",
@@ -123,9 +124,17 @@ def block_end(lines: list[str], start: int, level: int) -> int:
 
 
 def conditional(lines: list[str], start: int, end: int, level: int) -> bool:
-    """Whether a block carries an `if:` among its keys at `level`: GitHub may then skip it,
-    so a command inside proves nothing (solyra#72 r4119837190)."""
-    return any(indent(lines[j]) == level and re.match(r"^\s*(-\s+)?if:", lines[j]) for j in range(start, end))
+    """Whether a block carries an `if:` or a `continue-on-error:` (other than false) among its
+    keys at `level`: GitHub may then skip it or ignore its failure, so a command inside
+    proves nothing (solyra#72 r4119837190, r4119957700)."""
+    for j in range(start, end):
+        if indent(lines[j]) != level:
+            continue
+        if re.match(r"^\s*(-\s+)?if:", lines[j]):
+            return True
+        if (m := re.match(r"^\s*(-\s+)?continue-on-error:\s*(.*)$", lines[j])) and m.group(2).split("#")[0].strip().strip("'\"") != "false":
+            return True
+    return False
 
 
 def workflow_executes(text: str) -> tuple[str, str]:
@@ -172,9 +181,9 @@ def workflow_write_grant(body: str) -> str | None:
         m = re.match(r"^\s*(-\s+)?permissions:\s*(.*)$", line)
         if not m:
             continue
-        value = m.group(2).strip()
+        value = re.sub(r"\s+#.*$", "", m.group(2)).strip()   # `write-all  # why` is still write-all
         if value:
-            if value.strip("'\"") == "write-all":
+            if value.strip("'\"") == "write-all" or (value.startswith("{") and re.search(r":\s*['\"]?write", value)):
                 return line.strip()
             continue
         level = indent(line)
@@ -190,13 +199,13 @@ POLICY_DOCS = (CATALOG, REQUIREMENTS, TRACEABILITY, CANVASES)
 WORKFLOW_FEAT = "FEAT-CICD-001"
 # The files the gate runs from: no change may delete one, whatever its branch, or the
 # base's copy judges the deletion green and every later PR runs without a gate.
-HOOK = ".githooks/pre-commit"
+SUITE = "tests/scripts/test_spec_gate.py"
 GATE_ENTRYPOINTS = (
     "scripts/gate/spec_gate.py",
     HOOK,
     ".github/workflows/spec-gate.yml",
     ".github/workflows/registry-check.yml",
-    "tests/scripts/test_spec_gate.py",   # the suite CI runs on a proposed gate
+    SUITE,   # the suite CI runs on a proposed gate
 )
 # The manifest fields a chore/ branch may change. Anything else in package.json or
 # pyproject.toml (scripts, build config, tool tables) is executable configuration that
@@ -520,6 +529,12 @@ def check_changed_specs(ch: Change) -> list[str]:
         if catalog is None:
             catalog, req_defs = catalog_ids(ch.base.read(CATALOG)), requirement_defs(ch.base)
         errs += validate_spec(frontmatter(text), path, catalog, req_defs)
+        # solyra#72 r4119957736: a canvas the spec names exists in the registry the head
+        # carries, so the implementation's handoff is not the first place a typo shows
+        modes = canvas_modes(ch.tree.read(CANVASES))
+        for url in frontmatter(text).get("canvases") or []:
+            if isinstance(url, str) and url not in modes:
+                errs.append(f"{path}: lists canvas {url}, which is not in {CANVASES}; register it or fix the URL")
         base_text = ch.base.read(path)
         if base_text is not None and frontmatter(base_text).get("status") == "approved" and text != base_text:
             # The one edit an approved spec takes is its status moving to superseded when the
@@ -528,6 +543,12 @@ def check_changed_specs(ch: Change) -> list[str]:
             if not (frontmatter(text).get("status") == "superseded" and strip(text) == strip(base_text)):
                 errs.append(f"{path}: an approved spec does not change in place; write a new spec that names it in "
                             "`supersedes` and get that one approved, then mark this one superseded")
+            elif not any((nfm := frontmatter(ch.tree.read(s))).get("supersedes") == path and nfm.get("status") == "approved"
+                         and nfm.get("feat_id") == frontmatter(text).get("feat_id") for s in ch.tree.list(SPECS) if s != path):
+                # solyra#72 r4119957714: superseded means replaced; without an approved spec
+                # naming this one in `supersedes`, the plans that cite it have no contract left
+                errs.append(f"{path}: marked superseded, but no approved spec for its FEAT names it in `supersedes`; "
+                            "land and approve the replacement first")
         elif base_text is not None and frontmatter(base_text).get("status") == "superseded" and text != base_text:
             # solyra#72 r4119837230: a superseded spec is history the done plans and its
             # replacement point at; it changes as little as it is deleted.
@@ -570,6 +591,15 @@ def check_changed_plans(ch: Change) -> list[str]:
             # solyra#72 r4119837259: a plan lands ready; only an existing plan closes to done,
             # after its PR is in the base's record
             errs += validate_plan(fm, path, feat, ch.tree)
+            # solyra#72 r4119957722: the plan binds to an approved spec for its FEAT, and the
+            # FEAT is in the catalog, while the plan lands rather than when the work starts
+            spec_fm = frontmatter(ch.tree.read(fm.get("spec"))) if isinstance(fm.get("spec"), str) else {}
+            if spec_fm and spec_fm.get("status") != "approved":
+                errs.append(f"{path}: its spec {fm.get('spec')} is status: {spec_fm.get('status')}, not approved")
+            if spec_fm and spec_fm.get("feat_id") != feat:
+                errs.append(f"{path}: its spec {fm.get('spec')} serves {spec_fm.get('feat_id')}, not {feat}")
+            if feat and feat not in catalog_ids(ch.base.read(CATALOG)):
+                errs.append(f"{path}: feat_id {feat} is not in {CATALOG}")
             continue
         strip = lambda t: re.sub(r"^status:.*$", "", t, flags=re.M)
         if not (frontmatter(base_text).get("status") == "ready" and fm.get("status") == "done" and strip(text) == strip(base_text)):
@@ -596,6 +626,14 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
             if grant := workflow_write_grant(body):
                 return [f"{path}: grants a write permission ({grant}); the gate's workflows run head-controlled code "
                         "on a read-only token, at the top level and in every job"], None
+    if SUITE in ch.changed and (head_suite := ch.tree.read(SUITE)) is not None and (base_suite := ch.base.read(SUITE)):
+        # solyra#72 r4119957711: the head-run registry check executes the suite the PR ships,
+        # so a suite reduced to one passing test would certify any gate; every test the base
+        # has stays, by name, and a PR may only add to or amend them
+        names = lambda t: set(re.findall(r"^def (test_\w+)", t, re.M))
+        if dropped := sorted(names(base_suite) - names(head_suite)):
+            return [f"{SUITE}: drops {len(dropped)} test(s) the base has ({dropped[0]}"
+                    f"{' and more' if len(dropped) > 1 else ''}); the gate's suite only grows"], None
     if HOOK in ch.changed and (hook := ch.tree.read(HOOK)) is not None:
         # solyra#72 r4119837242: an executable hook that no longer runs the gate is the gate
         # switched off for every clone with core.hooksPath set
