@@ -440,7 +440,10 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
         ], None
     if ch.mode == "commit" and ch.branch.startswith("spike/"):
         return [], None
-    allowed = next((ok for prefix, ok in ALLOWANCES if ch.branch.startswith(prefix)), None) if ch.trusted else None
+    # An allowance needs the full branch shape (OTHER_BRANCH): `chore/` or `chore/a/b`
+    # gets none, so a malformed name cannot carry a gate file through.
+    allowed = (next((ok for prefix, ok in ALLOWANCES if ch.branch.startswith(prefix)), None)
+               if ch.trusted and OTHER_BRANCH.match(ch.branch) else None)
     refused = {f: (allowed(f, ch) if allowed else "") for f in gated}
     remaining = [f for f, why in refused.items() if why is not None]
     if not remaining:
@@ -618,6 +621,12 @@ def check_canvas_handoff(t: Traced, body: str, tree: Tree) -> list[str]:
     return errs
 
 
+def links_path(shown: str, path: str) -> bool:
+    """The path appears as a whole token: `expected.md.old` or `expected.md-v2` names another
+    file. A preceding `/` is allowed so a link to the file on the forge still counts."""
+    return re.search(rf"(?<![\w.-]){re.escape(path)}(?![\w.-])", shown) is not None
+
+
 def check_pr_metadata(t: Traced, env: dict, tree: Tree) -> list[str]:
     """CI only: the PR title and body must name what the gate validated."""
     title, body = env.get("PR_TITLE"), env.get("PR_BODY")
@@ -626,9 +635,9 @@ def check_pr_metadata(t: Traced, env: dict, tree: Tree) -> list[str]:
         errs.append(f"PR title must start with '{t.feat_id}:', the branch's FEAT-ID, e.g. '{t.feat_id}: <what changed>'")
     if body is not None:
         shown = visible(body)   # what the reviewer reads: no HTML comments, no code examples
-        if t.spec_path not in shown:
+        if not links_path(shown, t.spec_path):
             errs.append(f"PR body must link the spec the plan names: {t.spec_path}")
-        if t.plan_path not in shown:
+        if not links_path(shown, t.plan_path):
             errs.append(f"PR body must link the plan: {t.plan_path}")
         matched = matched_boxes(done_items(t), checklist(shown))
         missing = [i for i, box in matched.items() if box is None]

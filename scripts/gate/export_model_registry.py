@@ -122,10 +122,20 @@ def doc_ids(cell: str) -> list[str]:
     return expand_ids(cell, DOC_ID, DOC_RANGE, "DOC-{:02d}", drop_parentheticals=True)
 
 
+def rendered(text: str) -> str:
+    """The document as it renders: HTML comments and fenced code removed, so a table
+    retired inside either is not exported and published on a card."""
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    text = re.sub(r"<!--.*\Z", "", text, flags=re.S)
+    text = re.sub(r"^[ \t]*(`{3,}).*?^[ \t]*\1`*[ \t]*$", "", text, flags=re.S | re.M)
+    text = re.sub(r"^[ \t]*(~{3,}).*?^[ \t]*\1~*[ \t]*$", "", text, flags=re.S | re.M)
+    return re.sub(r"^[ \t]*(`{3,}|~{3,}).*\Z", "", text, flags=re.S | re.M)
+
+
 def tables_with_headings(text: str):
-    """Yield (heading_path, header_cells, rows) for every markdown table."""
+    """Yield (heading_path, header_cells, rows) for every markdown table that renders."""
     heading: list[str] = []
-    lines = text.splitlines()
+    lines = rendered(text).splitlines()
     i = 0
     while i < len(lines):
         line = lines[i]
@@ -225,6 +235,7 @@ def build(src: Source) -> dict:
     }
     grouped: dict = {}
     unrouted: list[str] = []   # MODEL-/DOC- rows no table shape claimed: a malformed registry
+    malformed: list[str] = []  # rows narrower or wider than their header, duplicate model IDs
     for heading, header, rows in tables_with_headings(text):
         h0 = header[0].lower() if header else ""
         section = " / ".join(heading)
@@ -232,9 +243,18 @@ def build(src: Source) -> dict:
         for raw in rows:
             if not raw:
                 continue
-            rec = row_to_record(header, raw)
             first = clean(raw[0])
+            # Width is checked on the rows that route (models, findings, dispositions,
+            # schedulers): a prose table elsewhere in the document is not a record.
+            routable = first.startswith(("MODEL-", "DOC-")) or h0 == "scheduler"
+            if routable and len(raw) != len(header):
+                malformed.append(f"{first} under '{section}' has {len(raw)} cell(s), header has {len(header)}")
+                continue
+            rec = row_to_record(header, raw)
             if first.startswith("MODEL-") and h0 == "id":
+                if first in out["models"]:
+                    malformed.append(f"{first} appears twice (second under '{section}')")
+                    continue
                 rec["tier"] = heading[-1] if heading else ""
                 out["models"][first] = canonical(rec)
             elif first.startswith("MODEL-") and h0 == "model":
@@ -265,6 +285,10 @@ def build(src: Source) -> dict:
                 unrouted.append(f"{first} under '{section}' (columns: {', '.join(header)})")
     for fid, rec in grouped.items():
         out["dispositions"].setdefault(fid, rec)
+    if malformed:
+        raise SystemExit(f"{REGISTRY}: {len(malformed)} malformed row(s): {'; '.join(malformed[:3])}. "
+                         "A row has exactly its header's cells and a model ID names one row; fix the table "
+                         "rather than exporting a shifted or overwritten record")
     orphans = sorted(set(out["experiment_traceability"]) - set(out["models"]))
     if orphans:
         # canvases.yml looks experiment fields up under the model's ID, so a misspelled

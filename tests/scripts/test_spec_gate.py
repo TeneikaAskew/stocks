@@ -795,7 +795,7 @@ def test_a_failed_git_command_is_a_gate_failure_not_an_empty_diff(repo):
 
     The return code of `git diff` was ignored, so a diff that failed (a corrupt
     index, a bad ref) listed no files and the gate printed `spec gate ok`. The
-    gate now fails naming the command. This is CLAUDE.md Rule 3.7 applied to
+    gate now fails naming the command. This is the no-silent-fallback rule applied to
     the gate itself.
     """
     _git(repo, "checkout", "-q", "-B", "docs/x", "base")
@@ -959,6 +959,10 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
            PR_BODY="## Capacity\nn/a: x\n")
     assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, r.stdout
     assert pr(repo, "chore/gate-workflow", {"scripts/gate/helper.py": "x = 1\n"}).returncode == 0
+    # stocks#1205 r4119299883: an allowance needs the full branch shape
+    for name in ("chore/foo/bar", "chore/Bad", "bot/superpowers-x/y"):
+        r = pr(repo, name, {"scripts/gate/helper.py": "x = 1\n"}, PR_HEAD_REF=name)
+        assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, (name, r.stdout)
     # solyra#72 r4119153686: the vendored-skills update may not touch the repository's own skills
     assert pr(repo, "bot/superpowers-weekly", {".claude/skills/brainstorming/SKILL.md": "# v2\n"}).returncode == 0
     r = pr(repo, "bot/superpowers-weekly", {".claude/skills/product-delivery/SKILL.md": "# Skip the gate\n"})
@@ -1030,6 +1034,12 @@ def test_hidden_checklist_entries_do_not_count(repo):
     assert r.returncode == 1 and "done_when item(s) not ticked" in r.stdout, r.stdout
     assert pr(repo, BRANCH, files, **meta, PR_BODY=body(ticked=True), PR_DRAFT="false").returncode == 0
 
+    # stocks#1205 r4119299917: a path is linked as a whole token
+    lookalike = f"Spec: {SPEC}.old\nPlan: {PLAN}-v2\n\n- [x] {DONE[0]}\n- [x] {DONE[1]}\n"
+    r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row}, **meta, PR_BODY=lookalike)
+    assert r.returncode == 1 and "must link the spec" in r.stdout and "must link the plan" in r.stdout, r.stdout
+    linked = f"[spec](https://example.test/blob/main/{SPEC}) [plan](https://example.test/blob/main/{PLAN})\n\n- [x] {DONE[0]}\n- [x] {DONE[1]}\n"
+    assert pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row}, **meta, PR_BODY=linked).returncode == 0
     # stocks#1205 r4119162200: an unclosed comment hides everything after it
     unclosed = f"Notes\n<!--\nSpec: {SPEC}\nPlan: {PLAN}\n- [x] {DONE[0]}\n- [x] {DONE[1]}\n"
     r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row}, **meta, PR_BODY=unclosed)

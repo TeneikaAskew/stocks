@@ -232,6 +232,40 @@ def test_a_traceability_row_names_a_registered_model(repo):
     assert (repo / OUT).read_text(encoding="utf-8") == before
 
 
+def test_hidden_tables_are_not_exported(repo):
+    """stocks#1205 r4119299894 (export_model_registry.py:145).
+
+    A table retired inside an HTML comment or a fence was still parsed and its
+    models exported, so the canvas kept publishing records the rendered registry
+    no longer shows. Tables are discovered in the rendered document only.
+    """
+    plain = exported(repo)
+    hidden = REGISTRY_TEXT + ("\n<!--\n## Retired\n\n| ID | Name | Type |\n|---|---|---|\n| MODEL-OLD-001 | Old | x |\n-->\n"
+                              "\n```\n| ID | Name | Type |\n|---|---|---|\n| MODEL-OLD-002 | Older | x |\n```\n")
+    write(repo, REGISTRY, hidden)
+    assert set(exported(repo)["models"]) == set(plain["models"])
+
+
+def test_a_malformed_row_fails_the_export(repo):
+    """stocks#1205 r4119299907, r4119299901 (export_model_registry.py:154, :239).
+
+    A row narrower than its header shifted later cells into the wrong fields and
+    a duplicate model ID silently overwrote the earlier record; --check called
+    both current. Either now fails generation with the row named.
+    """
+    exported(repo)
+    before = (repo / OUT).read_text(encoding="utf-8")
+    narrow = REGISTRY_TEXT.replace("| MODEL-GAMMA-001 | Gamma levels | Deterministic |", "| MODEL-GAMMA-001 | Gamma levels |")
+    write(repo, REGISTRY, narrow)
+    r = export(repo)
+    assert r.returncode != 0 and "MODEL-GAMMA-001" in r.stdout + r.stderr and "cell(s)" in r.stdout + r.stderr, r.stdout + r.stderr
+    twice = REGISTRY_TEXT.replace("| MODEL-MAG-001 | Magnitude |", "| MODEL-GAMMA-001 | Magnitude |")
+    write(repo, REGISTRY, twice)
+    r = export(repo)
+    assert r.returncode != 0 and "appears twice" in r.stdout + r.stderr, r.stdout + r.stderr
+    assert (repo / OUT).read_text(encoding="utf-8") == before
+
+
 def test_hidden_comments_do_not_reach_exported_cells(repo):
     """stocks#1205 r4118890024 (export_model_registry.py:94).
 
