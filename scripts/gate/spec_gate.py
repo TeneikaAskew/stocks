@@ -30,7 +30,7 @@ capability or approve its own spec, and CI runs this script from the base
 branch without checking the PR out. In CI the branch
 comes from PR_HEAD_REF, fork detection from PR_HEAD_REPO and PR_BASE_REPO, and
 PR_TITLE, PR_BODY, PR_NUMBER and PR_DRAFT drive the metadata and close-out
-checks. Any harness (Claude Code, Codex, a human) hits the same check.
+checks, and PR_BASE_REF must be main. Any harness (Claude Code, Codex, a human) hits the same check.
 """
 from __future__ import annotations
 
@@ -50,6 +50,7 @@ CATALOG = "docs/product/02-FEATURE-CATALOG.md"
 REQUIREMENTS = "docs/product/01-PRODUCT-REQUIREMENTS.md"
 TRACEABILITY = "docs/product/12-PR-ISSUE-TRACEABILITY.md"
 CANVASES = "docs/product/canvases.yml"
+MAIN = "main"
 # The product documents a feature change may touch, besides its own catalog row and record
 # and its own traceability section: the machine-owned registry the exporter reads, and what
 # it generates. Everything else under docs/product/ changes on its own docs/ branch.
@@ -798,13 +799,21 @@ def run(argv: list[str]) -> int:
         # Policy (the catalog row, the approved spec, the requirements) is read at the PR's
         # CURRENT base, so a spec superseded on main after the branch forked is seen; the
         # diff is still measured from the merge base.
+        # A PR targets the integration branch only: a stacked PR onto another branch would
+        # be judged against that branch's catalog and specs as if they were policy.
+        base_ref = env.get("PR_BASE_REF")
+        if base_ref and base_ref != MAIN:
+            return fail([f"this PR targets '{base_ref}'; pull requests here target {MAIN} only. Re-target it, "
+                         "or wait for the branch it stacks on to merge."])
         ch = Change("pr", branch, changed, Tree(head), Tree(base), trusted)
         errs, traced = check(ch)
+        if (m := BRANCH.match(branch)):
+            errs += check_product_scope(m.group(2).upper(), ch, merge_base, head)
+        # The checks below read the traced plan and spec; without them the errors from
+        # check() already say what is missing.
         if traced:
             errs += check_pr_metadata(traced, env, ch.tree)
             errs += check_capacity(env.get("PR_BODY"), ch.changed)
-        if (m := BRANCH.match(branch)):
-            errs += check_product_scope(m.group(2).upper(), ch, merge_base, head)
             ready = env.get("PR_DRAFT") == "false"
             errs += check_plan_pr(traced, env, ready)
             if env.get("PR_NUMBER") and ready:

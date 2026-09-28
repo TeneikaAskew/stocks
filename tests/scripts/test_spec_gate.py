@@ -1033,3 +1033,33 @@ def test_the_lineage_entry_is_visible(repo):
     assert r.returncode == 1 and "PR lineage" in r.stdout, r.stdout
     entry = base_trace.replace("*origin*\n", "*origin* \u00b7 [#42](y) *close-out*\n")
     assert pr(repo, BRANCH, {**files, TRACEABILITY: entry}, **meta).returncode == 0
+
+
+def test_a_feature_pr_without_a_plan_fails_cleanly_when_ready(repo):
+    """solyra#72 r4118525514 (spec_gate.py:809).
+
+    After the docs-only scope fix, the plan and close-out checks ran whenever
+    the branch shape matched, so a ready feature PR with no traced plan
+    crashed on `None.plan_fm` in CI instead of printing what was missing.
+    """
+    r = pr(repo, "feature/feat-model-001-no-plan", CODE, PR_NUMBER="42", PR_DRAFT="false",
+           PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body(ticked=True))
+    assert r.returncode == 1 and "no plan in docs/superpowers/plans names branch" in r.stdout, r.stdout + r.stderr
+    assert "Traceback" not in r.stderr, r.stderr
+    r = pr(repo, "feature/feat-model-001-no-plan", {"docs/notes.md": "# n\n"}, PR_NUMBER="42", PR_DRAFT="false")
+    assert r.returncode == 0 and "Traceback" not in r.stderr, r.stdout + r.stderr
+
+
+def test_a_pull_request_targets_main_only(repo):
+    """solyra#72 r4118525521 (spec-gate.yml:41).
+
+    Only the base SHA reached the gate, so a PR stacked onto another branch
+    was judged against that branch's catalog and specs as policy. CI passes
+    PR_BASE_REF and the gate refuses any base but main.
+    """
+    r = pr(repo, BRANCH, CODE, PR_BASE_REF="feature/feat-model-001-parent")
+    assert r.returncode == 1 and "targets 'feature/feat-model-001-parent'; pull requests here target main only" in r.stdout, r.stdout
+    assert pr(repo, BRANCH, CODE, PR_BASE_REF="main").returncode == 0
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    step = next(s for s in workflow["jobs"]["gate"]["steps"] if "spec_gate.py --pr" in s.get("run", ""))
+    assert step["env"]["PR_BASE_REF"] == "${{ github.event.pull_request.base.ref }}"
