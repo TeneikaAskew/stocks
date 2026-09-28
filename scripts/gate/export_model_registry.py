@@ -44,7 +44,7 @@ EXPERIMENTS = "docs/EXPERIMENT_REGISTRY.md"
 OUT = "docs/product/generated/model-registry.json"
 SELF = "scripts/gate/export_model_registry.py"
 
-LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+LINK = re.compile(r"\[([^\]]+)\]\((?:[^()\s]|\([^()\s]*\))*\)")
 ISSUE = re.compile(r"#(\d+)\b")
 CODE = re.compile(r"`([^`]+)`")
 DOC_ID = re.compile(r"DOC-(\d+)")
@@ -463,6 +463,7 @@ def experiment_ids(text: str) -> list[str]:
                 and (n == 0 or not lines[n - 1].strip()) and not re.match(r"^ {0,3}([-*+]\s|\d+[.)]\s|>|#|\||```|~~~|    )", line):
             line = "# " + line.strip()
         if re.match(r"^ {0,3}#{1,6}\s", line):   # stocks#1205 r4121602828: up to three spaces still render a heading
+            line = re.sub(r"^( {0,3}#{1,6}\s+)(.*)$", lambda m: m.group(1) + clean(m.group(2)), line)   # `## **E-36**` (round eight)
             if (lead := re.match(r"^ {0,3}#{1,6}\s+(" + EXP_ID.pattern + r")\b", line)):
                 leads.append(lead.group(1))
                 ids.update(expand_ids(lead.group(0), EXP_ID, EXP_RANGE, "E-{:02d}"))
@@ -471,7 +472,7 @@ def experiment_ids(text: str) -> list[str]:
                 # one in prose defines nothing (red-team, this PR)
                 for group in re.findall(r"\(([^)]*)\)", line):
                     # (round six: "(compare E-07 next quarter)" is a mention; a session list holds IDs, ranges and P-items only)
-                    if re.fullmatch(r"\s*(?:E-\d{2}(?:\s*" + RANGE_SEP + r"\s*E-\d{2})?|P\d(?:\.\d+)?)(?:[\s,+]+(?:E-\d{2}(?:\s*" + RANGE_SEP + r"\s*E-\d{2})?|P\d(?:\.\d+)?))*[\s,+]*", group):
+                    if re.fullmatch(r"\s*(?:E-\d{2}(?:\s*" + RANGE_SEP + r"\s*E-\d{2})?|P\d(?:\.\d+)?)(?:(?:[\s,+;&]|\band\b)+(?:E-\d{2}(?:\s*" + RANGE_SEP + r"\s*E-\d{2})?|P\d(?:\.\d+)?))*[\s,+;&]*", group):
                         ids.update(expand_ids(group, EXP_ID, EXP_RANGE, "E-{:02d}"))
     if dup := sorted({i for i in leads if leads.count(i) > 1}):
         # stocks#1205 r4121777347: two entries for one ID are two records a citation cannot tell apart
@@ -480,7 +481,7 @@ def experiment_ids(text: str) -> list[str]:
 
 
 LLM_GROUP = re.compile(r"\bLLM nodes\b")
-COMPLEMENT = re.compile(r"\b(except|excluding|but not|other than|without|formerly|no longer|now none|previously|used to)\b", re.I)
+COMPLEMENT = re.compile(r"\b(except|excluding|but not|other than|formerly|no longer|now none|used to)\b[^|]{0,24}?(MODEL-|LLM nodes)", re.I)
 LOWER_ID = re.compile(r"\b(?=[a-zA-Z0-9-]*[a-z])[mM][oO][dD][eE][lL](?:-[a-zA-Z0-9]+)*-\d+\b")   # `model-gamma-001`: an ID in the wrong case, not prose
 
 
@@ -501,9 +502,11 @@ def resolve_scheduler_models(schedulers: list[dict], models: dict) -> None:
         if rec["models"]:
             by_job.setdefault(rec.get("job", ""), set()).update(rec["models"])
     for rec in schedulers:
-        if rec["models"]:
-            continue
         serves = rec.get("serves", "")
+        if rec["models"]:
+            if "same job" in serves.lower() and by_job.get(rec.get("job", "")):
+                rec["models"] = sorted(set(rec["models"]) | by_job[rec["job"]])   # (round eight: "the same job" names the job's models too)
+            continue
         if re.search(r"\b(no|not|never|none)\b", serves, re.I) and (LLM_GROUP.search(serves) or "same job" in serves.lower()):
             # red-team round three: "not the LLM nodes any more" expanded to the LLM nodes
             raise SystemExit(f"{REGISTRY}: scheduler {rec.get('scheduler', '')} Serves reads {serves!r}, a negation the exporter "
@@ -554,7 +557,10 @@ def build(src: Source) -> dict:
         for raw in rows:
             if not raw:
                 continue
-            first = clean(raw[0])
+            first = clean(raw[0]).strip("`")   # (round eight: `` `MODEL-X` `` renders as the ID)
+            if re.match(r"DOC-\d+[A-Za-z]", first):
+                malformed.append(f"{first!r} under '{section}' is not a bare finding ID; a suffix re-keys the card (round eight)")
+                continue
             # Width is checked on the rows that route (models, findings, dispositions,
             # schedulers): a prose table elsewhere in the document is not a record.
             routable = first.startswith(("MODEL-", "DOC-")) or h0 == "scheduler"
@@ -644,7 +650,7 @@ def build(src: Source) -> dict:
                     # round four: "all LLM nodes except MODEL-X" and "formerly MODEL-X, now none" exported MODEL-X
                     malformed.append(f"scheduler {first} Serves reads {clean(serves)[:60]!r}; name the models it serves, without exceptions or history")
                     continue
-                if lower := LOWER_ID.findall(clean(serves)):
+                if lower := [t for t in LOWER_ID.findall(CODE_SPAN.sub("", clean(serves))) if not re.search(rf"[/.]{re.escape(t)}|{re.escape(t)}\.[a-z]{{1,4}}\b", clean(serves))]:
                     malformed.append(f"scheduler {first} Serves names {lower[0]} in lower case; IDs are upper-case")
                     continue
                 out["schedulers"].append(rec)
@@ -672,7 +678,7 @@ def build(src: Source) -> dict:
         cited = set(expand_ids(clean(" ".join(str(v) for v in rec.values())), EXP_ID, EXP_RANGE, "E-{:02d}"))
         # stocks#1205 r4121888814: `E-3S` cites nothing and would be published verbatim
         mentioned = clean(" ".join(str(v) for v in rec.values()))
-        if bad := sorted({t for t in re.findall(r"\bE-\w+", mentioned) if not re.fullmatch(r"E-\d{2}|E-(nn|NN|xx|XX)", t)}):
+        if bad := sorted({t for t in re.findall(r"\bE-\w+", mentioned) if not re.fullmatch(r"E-\d{2}|E-(nn|NN|xx|XX|n|N|series)", t)}):
             malformed.append(f"{mid} traceability cites {', '.join(bad)}, not shaped E-NN (the placeholder `E-nn` is prose)")
         unknown_exp = sorted(cited - ledger)
         if unknown_exp:

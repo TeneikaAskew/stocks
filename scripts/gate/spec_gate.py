@@ -705,7 +705,8 @@ def artifact_steps(block: str) -> list[dict]:
                 name = shell_value(km.group(1))
             if (km := re.match(r"^\s*path:\s*(.*)$", lines[j])):
                 path = shell_value(km.group(1))
-        found.append({"kind": m.group(2), "name": name, "path": path, "line": item})
+        found.append({"kind": m.group(2), "name": name, "path": path, "line": item,
+                      "overwrite": any(re.match(r"^\s*overwrite:", lines[j]) for j in range(item + 1, end))})
     return found
 
 
@@ -718,6 +719,28 @@ def line_of(job: dict, command: str) -> int:
 # (solyra#72 r4120633474: `--collect-only` starts with the marker and executes nothing).
 PYTEST_ARGS = {"-q", "-v", "-x", "-p", "no:cacheprovider", "--noconftest", "-rA", "-ra"}
 DEFAULT_TYPES = {"opened", "synchronize", "reopened"}   # GitHub's default activity types for pull_request events
+
+
+PIP_FLAGS = frozenset(("--quiet", "-q", "--disable-pip-version-check", "--no-deps", "--no-index", "--user", "--upgrade", "-U", "--no-cache-dir"))
+PYTEST_CONTRACTS = tuple(m for c in WORKFLOW_CONTRACTS.values() for m in c["run"] + tuple(x for ms in c.get("run_if_present", {}).values() for x in ms)
+                         if "pytest" in m)
+
+
+def tool_offence(runs: str) -> str | None:
+    """The first executed line whose pip or pytest is more than the gate's workflows need (red-team
+    round eight: a blocklist of pip flags missed `--index`, a URL, `git+`, `-r <url>`, `./`, `pip config`;
+    a pytest write option overwrote a gate file). pip may only install named packages from the
+    default index; pytest may only be a contract command with its permitted tail."""
+    for line in runs.split("\n"):
+        for stmt in re.split(r"\s*(?:;|&&|\|\||\|)\s*", line.strip()):
+            stmt = re.sub(r"^((command|builtin|env|time|nice|nohup|sudo|timeout|exec)\s+(-\S+\s+|[A-Za-z_]\w*=\S*\s+)*)+", "", stmt)
+            if m := re.match(r"^(?:python3?\s+-m\s+)?pip3?\s+(.*)$", stmt):
+                words = m.group(1).split()
+                if not words or words[0] != "install" or any(w not in PIP_FLAGS and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9,._-]*\])?(==[A-Za-z0-9.*+!-]+)?", w) for w in words[1:]):
+                    return line.strip()
+            if re.match(r"^(?:python3?\s+-m\s+)?pytest\b", stmt) and not any(invokes(stmt, c) for c in PYTEST_CONTRACTS):
+                return line.strip()
+    return None
 
 
 def invokes(statement: str, command: str) -> bool:
@@ -1064,12 +1087,12 @@ CANVAS_MARKERS = {"refresh": "Canvas refresh pending:", "report-only": "Canvas c
 DEFERRAL = re.compile(
     r"\b(future[- ]work|follow[- ]?up|non[- ]?blocking|for now|deferred|later PR|next PR|separate PR|TODO|TBD"
     r"|not (?:yet )?(?:run|done|implemented|verified|tested|complete|completed|finished|started|applied|merged|shipped)"
-    r"|unfinished|incomplete|untested|unverified|outstanding|pending|skipped|still open|to be done"
+    r"|unfinished|incomplete|untested|unverified|outstanding|pending|(?<!\d )(?<!\d)skipped|still open|to be done"
     # red-team round three: ordinary deferral phrasing the list missed
     r"|postpone\w*|parked|park it|out of scope|descope\w*|tracked in|will be (?:addressed|done|fixed|added|run)"
     r"|after (?:the )?merge|phase \d|not in this PR|next (?:sprint|release|iteration)|to follow|later (?:change|release)|punt\w*"
     r"|follow[- ]?ups|defer\w*|backlog|(?:future|another|subsequent|follow[- ]on) PR"
-    r"|partial(?:ly)?|in progress|WIP|except|not fully|mostly|half|remaining|later|future (?:version|release)|tracked separately)\b", re.I)
+    r"|partial(?:ly)?|in progress|WIP|not fully|future (?:version|release)|tracked separately|later (?:in a|on))\b", re.I)
 # Changing these is changing a workload; the PR body must then carry the rule 0 capacity numbers.
 WORKLOAD_PREFIXES = ("gcp/", ".github/workflows/")
 CAPACITY_LABELS = ("Volume", "Velocity", "Wall-clock", "30")
@@ -1253,6 +1276,8 @@ def validate_spec(fm: dict, name: str, catalog: set[str], req_defs: set[str] | N
     if "done_when" in fm and (not isinstance(done, list) or not done or not all(str(x).strip() for x in done)):
         errs.append(f"{name}: done_when must be a non-empty list of non-empty items; "
                     "a spec without verifiable done_when items cannot be closed")
+    elif isinstance(done, list) and len({norm(str(x)) for x in done}) != len(done):
+        errs.append(f"{name}: done_when repeats an item; no PR body could tick it twice (round eight)")
     reqs = fm.get("req_ids")
     if "req_ids" in fm:
         if not isinstance(reqs, list) or not reqs:
@@ -1286,6 +1311,8 @@ def check_supersedes(fm: dict, name: str, base: "Tree") -> list[str]:
                 "name the spec it replaces or leave it null"]
     if frontmatter(old).get("feat_id") != fm.get("feat_id"):
         return [f"{name}: supersedes {target}, a spec for {frontmatter(old).get('feat_id')}, not {fm.get('feat_id')}"]
+    if frontmatter(old).get("status") == "superseded":
+        return [f"{name}: supersedes {target}, which is already superseded; name the spec that replaced it (round eight)"]
     return []
 
 
@@ -1548,6 +1575,9 @@ def check_changed_specs(ch: Change) -> list[str]:
         if not (path.startswith(SPECS + "/") and path.endswith(".md")):
             continue
         text = ch.tree.read(path)
+        legacy = ch.base.read(path) is not None and not frontmatter(ch.base.read(path)) and text is not None and not frontmatter(text)
+        if legacy:
+            continue   # (round eight: a spec written before the gate carries no frontmatter; a wording fix in it is documentation)
         if text is None:
             status = frontmatter(ch.base.read(path)).get("status")
             if status == "approved":
@@ -1639,7 +1669,7 @@ def check_changed_plans(ch: Change) -> list[str]:
                 errs.append(f"{path}: its spec {fm.get('spec')} is not on the base; the approved spec lands first, "
                             "the plan in a later change")
             spec_fm = frontmatter(spec_on_base) if spec_on_base is not None else {}
-            if spec_fm and spec_fm.get("status") != "approved":
+            if spec_on_base is not None and spec_fm.get("status") != "approved":
                 errs.append(f"{path}: its spec {fm.get('spec')} is status: {spec_fm.get('status')}, not approved")
             if spec_fm and spec_fm.get("feat_id") != feat:
                 errs.append(f"{path}: its spec {fm.get('spec')} serves {spec_fm.get('feat_id')}, not {feat}")
@@ -1665,6 +1695,8 @@ def check_changed_plans(ch: Change) -> list[str]:
                 errs.append(f"{path}: branch {fm.get('branch')} is already the branch of {taken[0]}; a branch has one plan")
             continue
         strip = lambda t: re.sub(r"^status:.*$", "", t, flags=re.M)
+        if not frontmatter(base_text) and (not fm or fm.get("status") == "done"):
+            continue   # (round eight: a plan written before the gate is documentation until it closes as done)
         if not (frontmatter(base_text).get("status") == "ready" and fm.get("status") == "done" and strip(text) == strip(base_text)):
             errs.append(f"{path}: only the plan's own branch edits it, except the close after merge, which sets "
                         "status: done and changes nothing else")
@@ -1742,6 +1774,14 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                            and norm(a["path"]) == handoff["upload_path"]] if je >= 0 else []
                 downloads = [a for a in jobs[js]["artifacts"] if a["kind"] == "download" and a["line"] < line_of(jobs[js], handoff["suite"])
                              and a["path"] == handoff["download_path"]] if js >= 0 else []
+                handoff_name = next((u["name"] for u in uploads if u["name"]), "")
+                # round eight: a second upload of the handoff name with `overwrite: true` replaced the proposed gate
+                # with the base's, and the base suite tested nothing; the name is uploaded once, downloaded once
+                same_name = [a for a in jobs[je]["artifacts"] if a["kind"] == "upload" and a["name"] == handoff_name] if je >= 0 else []
+                into_path = [a for a in jobs[js]["artifacts"] if a["kind"] == "download" and a["path"] == handoff["download_path"]] if js >= 0 else []
+                if handoff_name and (len(same_name) != 1 or any(a["overwrite"] for a in same_name) or len(into_path) != 1):
+                    return [f"{path}: the handoff artifact {handoff_name!r} is uploaded or downloaded more than once, or with overwrite; "
+                            "the base's suite receives exactly the proposed gate"], None
                 if not any(u["name"] and u["name"] == d["name"] for u in uploads for d in downloads):
                     return [f"{path}: the proposed gate no longer reaches the suite's job (actions/upload-artifact of "
                             f"`{handoff['upload_path']}/` after the export, actions/download-artifact of the same name into "
@@ -1807,13 +1847,16 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
             # stocks#1205 r4121777299: a step that rewrites a gate file, or runs inline code
             # that could, before the contract command leaves the command intact and the gate gone
             everything = every_run_text(text)
+            if tool := tool_offence(everything):
+                return [f"{path}: `{tool}` runs pip or pytest beyond what the gate needs; pip installs named packages from the "
+                        "default index and pytest is the contract command with its permitted arguments"], None
             if wrote := writes_gate_file(everything):
                 return [f"{path}: `{wrote}` writes to or replaces a gate file; the workflows read the gate's files, "
                         "never write them"], None
             if inline := re.search(r"(?m)^\s*(python3?|node|perl|ruby|sh|bash)\s+(-c\b|-e\b|-(?=\s|$|<)|/dev/stdin\b)|^\s*(python3?|node|perl|ruby|sh|bash)\b(\s+-\S*)*\s*<"
                                    # (round seven: an interpreter fed from stdin (`python3 <<EOF`, `python3 -<<EOF`, `/dev/stdin`) runs inline code;
                                    # `git --output=` truncates the file it names; pip installs the tree or from an index given as an argument)
-                                   r"|\bgit\s+[^\n|;&]*--output[=\s]|\bpip3?\s+install\b[^\n|;&]*(\s-e\s|\s\.\s|\s\.$|--index-url|--extra-index-url|--find-links|-f\s|-i\s)"
+                                   r"|\bgit\s+[^\n|;&]*--output[=\s]"
                                    r"|(^|[;&|{(]\s*)(eval|source|\.|shopt)\s"
                                    r"|(^|[;&|{(]\s*)(tar|bsdtar|unzip|zip|7za?|unrar|cpio|pax|xargs)\s|python3?\s+-m\s+(?!pip\b|pytest\b|py_compile\b)\S+"
                                    # (round four: `{cp,a,b}` expands to a command; `$'cp'` spells one the model does not read)
@@ -2133,7 +2176,7 @@ def checklist(body: str) -> list[tuple[bool, str]]:
     items: list[tuple[bool, str] | None] = []
     depth: list[int] = []
     # a link renders its text and emphasis its word: `[follow](url)-up`, `*follow*-up` (round five)
-    lines = [re.sub(r"(?<!\w)[*_]{1,3}(?=\S)|(?<=\S)[*_]{1,3}(?!\w)", "", re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", ln))
+    lines = [re.sub(r"(?<!\w)[*_]{1,3}(?=\S)|(?<=\S)[*_]{1,3}(?!\w)", "", re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", ln)).replace("`", "")
              for ln in split_lines(visible(body))]
     for n, line in enumerate(lines):
         if (m := CHECKBOX.match(line)):
@@ -2295,13 +2338,14 @@ def check_capacity(body: str | None, changed: list[str]) -> list[str]:
     text = section(visible(body), "capacity")
     if text is None:
         return [f"PR body needs a Capacity section: the change touches a workload ({summarize(workloads)})"]
-    labelled = [label for label in CAPACITY_LABELS if re.search(r"\b" + re.escape(label) + r"\**:", text)]
-    if re.search(r"\bn/a\b[ \t]*[\u2014:-][ \t]*\w", text, re.I) and not labelled:
-        return []   # (red-team, this PR: an `n/a` beside filled labels waived the unfilled ones)
+    # (round eight: the template's own checkbox and the canvas marker sit in this section; neither is a value)
+    text = "\n".join(ln for ln in split_lines(text) if not CHECKBOX.match(ln) and not any(ln.strip().startswith(mk) for mk in CANVAS_MARKERS.values()))
     # [ \t]*, not \s*: a value is on the label's own line, so a blank `Volume:` followed by
     # `Velocity: 2/day` on the next line does not borrow the next label as its value.
     blank = [label for label in CAPACITY_LABELS
              if not re.search(r"\b" + re.escape(label) + r"\**:\**[ \t]*[^\s\u00b7|]", text)]
+    if re.search(r"\bn/a\b[ \t]*[\u2014:-][ \t]*\w", text, re.I) and len(blank) == len(CAPACITY_LABELS):
+        return []   # (red-team, this PR: an `n/a` beside filled labels waived the unfilled ones; beside blank ones it is the waiver)
     if blank:
         return ["PR body's Capacity section leaves " + ", ".join(blank) + " blank; give the numbers, "
                 "or write 'n/a: <why no workload runs differently>'"]
@@ -2310,15 +2354,17 @@ def check_capacity(body: str | None, changed: list[str]) -> list[str]:
     marks = list(re.finditer(r"\b(" + "|".join(map(re.escape, CAPACITY_LABELS)) + r")\**:\**", text))
     # The value itself is the quantity (`3 tickers`, `~2 s`, `$0.01`, `<1 GB`), not prose
     # that happens to carry a digit (`unknown; see #1205`, `TBD for phase 2`).
-    unnumbered = sorted({m.group(1) for k, m in enumerate(marks)
-                         if not re.match(r"\s*[~\u2248<>\u2264\u2265]?\s*[$\u20ac\u00a3]?\s*\d",
-                                         text[m.end():marks[k + 1].start() if k + 1 < len(marks) else len(text)])},
-                        key=CAPACITY_LABELS.index)
+    def value_of(k: int, m) -> str:   # from the label to the next label or the end of its line (round eight)
+        line_end = text.find("\n", m.end())
+        stop = min(line_end if line_end >= 0 else len(text), marks[k + 1].start() if k + 1 < len(marks) else len(text))
+        return text[m.end():stop]
+    # a figure anywhere on the line, or a number word; `#1205` is a reference, not a measure (round eight)
+    figure = re.compile(r"(?<![#\w])(?!(?:19|20)\d{2}\b)\d|\b(one|two|three|four|five|six|seven|eight|nine|ten|dozen|hundred|thousand|million)\b", re.I)   # a bare year is a date, not a measure
+    unnumbered = sorted({m.group(1) for k, m in enumerate(marks) if not figure.search(value_of(k, m))}, key=CAPACITY_LABELS.index)
     if unnumbered:
         return ["PR body's Capacity section gives no number for " + ", ".join(unnumbered) + "; each value starts "
                 "with its figure (rows, calls, seconds, dollars), or the section says 'n/a: <why no workload runs differently>'"]
-    if deferred := [m.group(1) for k, m in enumerate(marks)
-                    if DEFERRAL.search(text[m.end():marks[k + 1].start() if k + 1 < len(marks) else len(text)])]:
+    if deferred := [m.group(1) for k, m in enumerate(marks) if DEFERRAL.search(value_of(k, m))]:
         # round six: CLAUDE.md rule 0 forbids exactly these words in a perf context
         return ["PR body's Capacity section defers " + ", ".join(deferred) + " (rule 0: no 'future work', 'TBD' or "
                 "'follow-up' on a workload's numbers); measure it or write 'n/a: <why>'"]
@@ -2569,7 +2615,9 @@ def check_registry_rows(t: Traced, ch: Change, merge_base: str, head: str) -> li
                 "change edits only the registry rows of the models its spec covers"]
     if any(re.match(r"^\s*\|?\s*(ID|Scheduler|Model)\s*\||^\s*\|?\s*:?-+:?\s*\|", text) for text in changed):
         return [f"{path}: changes a table header or delimiter; a feature change edits rows, it does not reshape a registry table"]
-    if stray := [text for text in changed if text.strip() and not re.findall(r"\bMODEL-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", text)]:
+    own_docs = {m for text in changed if any(n in text for n in named) for m in re.findall(r"\bDOC-\d+\b", text)}   # findings for the spec's models (round eight)
+    if stray := [text for text in changed if text.strip() and not re.findall(r"\bMODEL-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", text)
+                 and not (own_docs and (m := re.match(r"^\s*\|\s*(DOC-\d+)", text)) and m.group(1) in own_docs)]:
         # round seven: a disposition row, the stamp or prose names no model of the spec, so it is not this change's
         return [f"{path}: changes {stray[0].strip()[:50]!r}, a line naming none of {t.spec_path}'s models; a feature change edits "
                 "only the registry rows of the models its spec covers"]

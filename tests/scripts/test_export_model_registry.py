@@ -1037,3 +1037,28 @@ def test_fences_between_rows_long_markers_and_single_tildes_render_as_gfm_render
     assert r.returncode != 0 and "struck-through" in r.stdout + r.stderr, r.stdout + r.stderr
     write(repo, REGISTRY, reg.replace("| Expected move size |", "| sigma**2 of the move |", 1))
     assert export(repo).returncode == 0 and exported(repo)["models"]["MODEL-MAG-001"]["decision_produced"] == "sigma**2 of the move"
+
+
+def test_same_job_union_complement_adjacency_and_backticked_ids_render_as_gfm_renders_them(repo):
+    """Red-team round eight (export_model_registry.py: resolve_scheduler_models, COMPLEMENT, first cell):
+    a "same job" row that also named one model dropped the job's other models; a Serves cell whose
+    prose said "except" far from any id was refused although it named its models plainly; an ID cell
+    written as `MODEL-X` in backticks was not routed; DOC-01a read as a finding id."""
+    assert export(repo).returncode == 0
+    reg = REGISTRY_TEXT
+    sunday = "| `gamma-levels-sunday` | `0 21 * * 0` | `p2-build-gamma-levels` | the same job, weekend refresh |"
+    write(repo, REGISTRY, reg.replace(sunday, sunday.replace("weekend refresh", "weekend refresh, also MODEL-MAG-001"), 1))
+    data = exported(repo)
+    by = {s["scheduler"].strip("`"): s["models"] for s in data["schedulers"]}
+    assert by["gamma-levels-sunday"] == ["MODEL-GAMMA-001", "MODEL-MAG-001"], by
+    daily = "| `gamma-levels-daily` | `30 22 * * 1-5` | `p2-build-gamma-levels` | MODEL-GAMMA-001 |"
+    write(repo, REGISTRY, reg.replace(daily, daily.replace("| MODEL-GAMMA-001 |", "| MODEL-GAMMA-001; runs on every session day except holidays |"), 1))
+    assert exported(repo)["schedulers"][0]["models"] == ["MODEL-GAMMA-001"]
+    write(repo, REGISTRY, reg.replace(daily, daily.replace("| MODEL-GAMMA-001 |", "| all LLM nodes except MODEL-LLM-001 |"), 1))
+    r = export(repo)
+    assert r.returncode != 0 and "without exceptions or history" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, reg.replace("| MODEL-GAMMA-001 | Gamma levels", "| `MODEL-GAMMA-001` | Gamma levels", 1))
+    assert "MODEL-GAMMA-001" in exported(repo)["models"]
+    write(repo, REGISTRY, reg.replace("| DOC-09 (#1118) | Fixed |", "| DOC-09a | Fixed |", 1))
+    r = export(repo)
+    assert r.returncode != 0, r.stdout + r.stderr
