@@ -223,7 +223,9 @@ def shell_statements(runs: str) -> list[str]:
             line = line[:m.start()] + "__SUB__" + line[m.end():]
         if inner:
             lines[i:i] = inner
-        parts = re.split(r"(\|\||&&|;;|;|\||\(|\)|\bthen\b|\bdo\b|\belse\b|\belif\b|\bfi\b|\bdone\b|\besac\b|\bcase\b)", line)
+        # Parentheses are not separators: `(exit $rc)` inside an echo is text, and a subshell
+        # `( cmd )` reads as a statement starting with `(`, which no contract prefix matches
+        parts = re.split(r"(\|\||&&|;;|;|\||\bthen\b|\bdo\b|\belse\b|\belif\b|\bfi\b|\bdone\b|\besac\b|\bcase\b)", line)
         chained = False    # after && or ||: runs only on the previous statement's outcome
         for k in range(0, len(parts), 2):
             stmt, op = parts[k].strip(), parts[k + 1] if k + 1 < len(parts) else ""
@@ -232,6 +234,8 @@ def shell_statements(runs: str) -> list[str]:
             # `command echo ...`, `env FOO=1 echo ...`, `time ...`: the wrapper runs its argument,
             # so the word after it is the command judged (solyra#72 r4120167264)
             stmt = re.sub(r"^((command|builtin|exec|env|time|nice|nohup|sudo|xargs)\s+(-\S+\s+|[A-Za-z_]\w*=\S*\s+)*)+", "", stmt)
+            if stmt and depth == 0 and not chained and re.match(r"^(exit|return)\b", stmt):
+                return out   # stocks#1205 r4120381459: nothing after an unconditional exit runs
             executed = (stmt and not re.match(r"^[A-Za-z_]\w*=", stmt)   # `x="..."`: a value, not a command
                         and stmt.split()[0] not in NON_EXECUTING and depth == 0 and not chained and op != "||")
             if executed:
@@ -1219,6 +1223,13 @@ def check_policy_structure(ch: Change) -> list[str]:
             errs.append(f"{path}: no longer defines {len(dropped)} ID(s) the base has ({dropped[0]}"
                         f"{' and more' if len(dropped) > 1 else ''}); a policy document is extended in a branch, "
                         "never emptied or pruned")
+        if path == TRACEABILITY:
+            # stocks#1205 r4120381513: the PR lineage only grows, whatever branch edits the document
+            for feat_id in sorted(policy_ids(path, base)):
+                mentions = lambda text: set(PR_MENTION.findall(" ".join(lineage_refs(text, feat_id))))
+                if lost := sorted(mentions(base) - mentions(head), key=int):
+                    errs.append(f"{path}: the {feat_id} lineage no longer names PR #{lost[0]}"
+                                f"{' and more' if len(lost) > 1 else ''}; lineage is a record and only grows")
     return errs
 
 
@@ -1323,6 +1334,19 @@ def feat_record(text: str | None, feat_id: str) -> str:
     return "\n".join(section + rows)
 
 
+def repeated_fields(text: str | None, feat_id: str) -> list[str]:
+    """Close-out fields that appear more than once in the FEAT's record table: the record
+    would carry two values and the gate would read the last (stocks#1205 r4120381488)."""
+    text = visible(text or "")
+    lines = text.splitlines()
+    seen: list[str] = []
+    for ln in section_of(text, feat_id):
+        row = cells(lines[ln - 1]) if lines[ln - 1].startswith("|") else []
+        if len(row) == 2 and row[0] in CLOSE_OUT_FIELDS:
+            seen.append(row[0])
+    return sorted({f for f in seen if seen.count(f) > 1})
+
+
 def feat_fields(text: str | None, feat_id: str) -> dict[str, str]:
     """The FEAT's Status and Last reviewed: from its record's field table where the
     record has one (stocks), otherwise from its catalog row's columns (solyra).
@@ -1396,6 +1420,9 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
         errs.append("ready for review with done_when item(s) not ticked: " + "; ".join(unticked))
     now = feat_fields(ch.tree.read(CATALOG), t.feat_id)
     before = feat_fields(Tree(merge_base).read(CATALOG), t.feat_id)
+    if twice := repeated_fields(ch.tree.read(CATALOG), t.feat_id):
+        errs.append(f"{CATALOG}: the {t.feat_id} record carries {', '.join(twice)} more than once; each close-out "
+                    "field has one row")
     reviewed, status = now.get("Last reviewed", ""), now.get("Status", "").strip("* ")
     head_day = git_out("show", "-s", "--format=%cs", head).strip()
     # The head commit's date, exactly: any other date, past or future, is a false freshness record.

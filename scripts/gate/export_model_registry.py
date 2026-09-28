@@ -29,6 +29,7 @@ names main and the check passes.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import pathlib
 import re
@@ -137,6 +138,28 @@ def rendered(text: str) -> str:
     return re.sub(r"^[ \t]*(`{3,}|~{3,}).*\Z", "", text, flags=re.S | re.M)
 
 
+def last_reviewed(text: str) -> str:
+    """The visible `**Last reviewed:**` stamp, a calendar date or `unknown`: read from the
+    rendered text so a commented-out earlier stamp cannot supply it (stocks#1205 r4120381528)."""
+    m = re.search(r"\*\*Last reviewed:\*\*\s*(\S+)", rendered(text))
+    value = m.group(1) if m else None
+    if value != "unknown":
+        try:
+            datetime.date.fromisoformat(value or "")
+        except ValueError:
+            raise SystemExit(f"{REGISTRY}: the visible **Last reviewed:** stamp reads {value!r}; it is a YYYY-MM-DD date or `unknown`")
+    return value
+
+
+REQUIRED_KEYS = {
+    # the fields canvases.yml routes onto a card: a dropped column would leave every record
+    # without the path the refresh writes (stocks#1205 r4120381495)
+    "finding": ("id", "doc", "kind", "sev", "models"),
+    "disposition": ("id", "disposition", "why"),
+    "traceability": ("model", "experiments", "primary_code", "deep_doc", "recorded_verdict"),
+}
+
+
 def tables_with_headings(text: str):
     """Yield (heading_path, header_cells, rows) for every markdown table that renders."""
     heading: list[str] = []
@@ -241,7 +264,7 @@ def build(src: Source) -> dict:
         # The exporter is a source too: a changed exporter is a changed output, so a base
         # that changed it without regenerating reads stale rather than fresh.
         "sources": {path: src.blob(path) for path in (REGISTRY, EXPERIMENTS, SELF)},
-        "registry_last_reviewed": (re.search(r"Last reviewed:\*\*\s*([0-9-]+|unknown)", text) or [None, None])[1],
+        "registry_last_reviewed": last_reviewed(text),
         "models": {},
         "experiment_traceability": {},
         "findings": [],
@@ -271,6 +294,12 @@ def build(src: Source) -> dict:
                 malformed.append(f"table under '{section}' has two columns keyed {dup[0]}; one cell would overwrite the other")
                 continue
             rec = row_to_record(header, raw)
+            kind = ("traceability" if first.startswith("MODEL-") and h0 == "model"
+                    else "finding" if first.startswith("DOC-") and ("concern" in " ".join(header).lower() or "claim" in " ".join(header).lower())
+                    else "disposition" if first.startswith("DOC-") and "disposition" in " ".join(header).lower() else None)
+            if kind and (missing := [k for k in REQUIRED_KEYS[kind] if k not in header_keys(header)]):
+                malformed.append(f"the {kind} table under '{section}' lacks the {', '.join(missing)} column(s) the cards route")
+                continue
             if first.startswith("MODEL-") and h0 == "id":
                 if first in out["models"]:
                     malformed.append(f"{first} appears twice (second under '{section}')")
@@ -297,6 +326,10 @@ def build(src: Source) -> dict:
                     # stocks#1205 r4119966278: two verdicts for one finding is a conflict, not a
                     # fallback; only a grouped row yields to a specific one
                     malformed.append(f"{ids[0]} has two disposition rows (second under '{section}')")
+                    continue
+                if len(ids) > 1 and (shared := sorted(set(ids) & set(grouped))):
+                    # stocks#1205 r4120381475: two grouped rows naming one finding is the same conflict
+                    malformed.append(f"{shared[0]} is named by two grouped disposition rows (second under '{section}')")
                     continue
                 target = out["dispositions"] if len(ids) == 1 else grouped
                 for fid in ids:

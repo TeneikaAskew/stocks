@@ -1878,3 +1878,39 @@ def test_the_invoked_command_is_the_contract_and_policy_files_keep_their_schema(
         r = pr(repo, "docs/canvases", {"docs/product/canvases.yml": bad})
         assert r.returncode == 1 and msg in r.stdout, (bad, r.stdout)
     assert pr(repo, "docs/canvases", {"docs/product/canvases.yml": good + "    mode: report-only\n"}).returncode == 0
+
+
+def test_unreachable_commands_duplicate_fields_and_pruned_lineage_are_refused(repo):
+    """stocks#1205 r4120381459 (P1), r4120381488, r4120381513 (spec_gate.py:183, :1274, :1159).
+
+    An `exit 0` ahead of the contract commands left them counted although the shell never
+    reached them; a second `Status` or `Last reviewed` row in a FEAT record let the last
+    one win; a docs/ PR could drop PR numbers from a capability's lineage. Each is refused.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/registry-check.yml"
+    head = ("name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n"
+            "    runs-on: ubuntu-latest\n    steps:\n      - run: |\n{BODY}")
+    cmds = ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"', "python3 -m pytest tests/scripts/test_spec_gate.py",
+            'git ls-tree "$HEAD_SHA" .githooks/pre-commit', 'python3 scripts/gate/export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"')
+    plain = "".join(f"          {c}\n" for c in cmds)
+    for prefix in ("          exit 0\n", "          return 0\n", "          true; exit 0\n"):
+        r = pr(repo, "chore/gate-workflow", {wf: head.replace("{BODY}", prefix + plain)}, **cap)
+        assert r.returncode == 1 and "no longer executes" in r.stdout, (prefix, r.stdout)
+    # an exit inside a conditional body, and an echo mentioning `(exit $rc)`, do not end the script
+    guarded = ("          if [ -z \"$gate\" ]; then exit 1; fi\n" + plain +
+               "          echo \"proposed gate reached a verdict (exit $rc); the base gate's verdict is the one that counts\"\n          exit \"$rc\"\n")
+    assert pr(repo, "chore/gate-workflow", {wf: head.replace("{BODY}", guarded)}, **cap).returncode == 0
+    meta = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body(ticked=True), "PR_NUMBER": "42", "PR_DRAFT": "false"}
+    trace = "# Traceability\n\n## FEAT-MODEL-001\n\n**PR lineage:** #12 first cut\n"
+    record = CATALOG_TEXT.replace("### FEAT-MODEL-001\n\n- Status: Production\n", RECORD.lstrip("\n"))
+    on_base(repo, {CATALOG: record, TRACEABILITY: trace, PLAN: plan(pr=42)})
+    stamped, grown = record.replace("2026-08-30", TODAY), trace + "\n- #42 second cut\n"
+    r = pr(repo, BRANCH, {**CODE, CATALOG: stamped, TRACEABILITY: grown}, **meta)
+    assert r.returncode == 0, r.stdout
+    twice = stamped.replace("| Last reviewed | " + TODAY + " |\n", "| Last reviewed | " + TODAY + " |\n| Status | Retired |\n")
+    r = pr(repo, BRANCH, {**CODE, CATALOG: twice, TRACEABILITY: grown}, **meta)
+    assert r.returncode == 1 and "record carries Status more than once" in r.stdout, r.stdout
+    r = pr(repo, "docs/trace", {TRACEABILITY: trace.replace("**PR lineage:** #12 first cut\n", "- none yet\n")})
+    assert r.returncode == 1 and "lineage no longer names PR #12; lineage is a record and only grows" in r.stdout, r.stdout
+    assert pr(repo, "docs/trace", {TRACEABILITY: trace + "- #77 third cut\n"}).returncode == 0

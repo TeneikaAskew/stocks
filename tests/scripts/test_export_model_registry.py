@@ -229,7 +229,7 @@ def test_a_traceability_row_names_a_registered_model(repo):
     """
     exported(repo)
     before = (repo / OUT).read_text(encoding="utf-8")
-    write(repo, REGISTRY, REGISTRY_TEXT + "\n## Experiment traceability\n\n| Model | Experiment |\n|---|---|\n| MODEL-MAG-010 | E-01 |\n")
+    write(repo, REGISTRY, REGISTRY_TEXT + "\n## Experiment traceability\n\n| Model | Experiments | Primary code | Deep doc | Recorded verdict |\n|---|---|---|---|---|\n| MODEL-MAG-010 | E-01 | `x.py` | d | ok |\n")
     r = export(repo)
     assert r.returncode != 0 and "MODEL-MAG-010" in r.stdout + r.stderr, r.stdout + r.stderr
     assert (repo / OUT).read_text(encoding="utf-8") == before
@@ -291,7 +291,7 @@ def test_schedulers_and_traceability_name_registered_models_once(repo):
     write(repo, REGISTRY, REGISTRY_TEXT.replace("| `p2-build-gamma-levels` | MODEL-GAMMA-001 |", "| `p2-build-gamma-levels` | MODEL-NOTREAL-999 |"))
     r = export(repo)
     assert r.returncode != 0 and "MODEL-NOTREAL-999" in r.stdout + r.stderr, r.stdout + r.stderr
-    write(repo, REGISTRY, REGISTRY_TEXT + "\n## Experiment traceability\n\n| Model | Experiment |\n|---|---|\n| MODEL-MAG-001 | E-01 |\n| MODEL-MAG-001 | E-02 |\n")
+    write(repo, REGISTRY, REGISTRY_TEXT + "\n## Experiment traceability\n\n| Model | Experiments | Primary code | Deep doc | Recorded verdict |\n|---|---|---|---|---|\n| MODEL-MAG-001 | E-01 | `x.py` | d | ok |\n| MODEL-MAG-001 | E-02 | `x.py` | d | ok |\n")
     r = export(repo)
     assert r.returncode != 0 and "two experiment-traceability rows" in r.stdout + r.stderr, r.stdout + r.stderr
 
@@ -553,10 +553,10 @@ def test_traceability_experiments_exist_in_the_ledger(repo):
     IDs were computed separately, so a card could claim evidence from an
     experiment that does not exist. An E-nn the ledger lacks fails generation.
     """
-    write(repo, REGISTRY, REGISTRY_TEXT + "\n## Experiment traceability\n\n| Model | Experiments |\n|---|---|\n| MODEL-MAG-001 | E-01, E-99 |\n")
+    write(repo, REGISTRY, REGISTRY_TEXT + "\n## Experiment traceability\n\n| Model | Experiments | Primary code | Deep doc | Recorded verdict |\n|---|---|---|---|---|\n| MODEL-MAG-001 | E-01, E-99 | `x.py` | d | ok |\n")
     r = export(repo)
     assert r.returncode != 0 and "MODEL-MAG-001 traceability cites experiment(s) not in the ledger: E-99" in r.stdout + r.stderr, r.stdout + r.stderr
-    write(repo, REGISTRY, REGISTRY_TEXT + "\n## Experiment traceability\n\n| Model | Experiments |\n|---|---|\n| MODEL-MAG-001 | E-01, E-02 |\n")
+    write(repo, REGISTRY, REGISTRY_TEXT + "\n## Experiment traceability\n\n| Model | Experiments | Primary code | Deep doc | Recorded verdict |\n|---|---|---|---|---|\n| MODEL-MAG-001 | E-01, E-02 | `x.py` | d | ok |\n")
     assert export(repo).returncode == 0
     assert exported(repo)["experiment_traceability"]["MODEL-MAG-001"]["experiments"] == "E-01, E-02"
 
@@ -602,3 +602,31 @@ def test_a_registry_without_concern_tables_fails_closed(repo):
     write(repo, REGISTRY, REGISTRY_TEXT[:start])
     r = export(repo)
     assert r.returncode != 0 and "no finding rows parsed" in r.stdout + r.stderr, r.stdout + r.stderr
+
+
+def test_cards_keep_their_columns_stamp_and_single_verdicts(repo):
+    """stocks#1205 r4120381495, r4120381528, r4120381475 (export_model_registry.py:291, :244, :303).
+
+    A Findings table without its Sev column exported cards with no sev path; a commented
+    earlier `**Last reviewed:**` supplied the registry stamp; two grouped disposition rows
+    naming one finding kept the first verdict silently. Each fails generation.
+    """
+    narrow = REGISTRY_TEXT.replace("| ID | Doc | Claim → actual | Kind | Sev | Models |\n|---|---|---|---|---|---|",
+                                   "| ID | Doc | Claim → actual | Kind | Models |\n|---|---|---|---|---|")
+    for sev in (" | P2 |", " | P1 |", " | P3 |"):
+        narrow = narrow.replace(sev, " |")
+    r = export(repo)
+    assert r.returncode == 0, r.stdout + r.stderr
+    write(repo, REGISTRY, narrow)
+    r = export(repo)
+    assert r.returncode != 0 and "lacks the sev column(s)" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("# Model and Algorithm Registry\n", "# Model and Algorithm Registry\n\n<!-- **Last reviewed:** 2025-01-01 -->\n"))
+    assert export(repo).returncode == 0
+    assert exported(repo)["registry_last_reviewed"] == "2026-09-20"
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("**Last reviewed:** 2026-09-20", "**Last reviewed:** soon"))
+    r = export(repo)
+    assert r.returncode != 0 and "stamp reads 'soon'" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("| DOC-15, DOC-16, DOC-17 | Won't fix | the pages are retired |\n",
+                                                "| DOC-15, DOC-16, DOC-17 | Won't fix | the pages are retired |\n| DOC-16, DOC-17 | Fixed | rewritten |\n"))
+    r = export(repo)
+    assert r.returncode != 0 and "DOC-16 is named by two grouped disposition rows" in r.stdout + r.stderr, r.stdout + r.stderr
