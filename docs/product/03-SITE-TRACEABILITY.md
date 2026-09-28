@@ -41,7 +41,7 @@ defined in this document's Gates section. The element ID is the join to the UI s
 | 00 · Shared, under every page | 8 | 8 | 8 | 6 | 7 |
 | 01 · Landing | 13 | 13 | 13 | 11 | 3 |
 | 02 · AuthGate and sign-in | 10 | 10 | 10 | 3 | 3 |
-| 03 · AppShell | 16 | 0 | 0 | 0 | 0 |
+| 03 · AppShell | 16 | 16 | 16 | 3 | 1 |
 | 04 · Dashboard | 21 | 0 | 0 | 0 | 0 |
 | 05 · Live Market | 13 | 0 | 0 | 0 | 0 |
 | 06 · Charts | 17 | 0 | 0 | 0 | 0 |
@@ -55,7 +55,7 @@ defined in this document's Gates section. The element ID is the join to the UI s
 | 14 · Admin | 13 | 0 | 0 | 0 | 0 |
 | 15 · Settings | 13 | 0 | 0 | 0 | 0 |
 | 16 · Help and Glossary | 8 | 0 | 0 | 0 | 0 |
-| Total | 222 | 31 | 31 | 20 | 13 |
+| Total | 222 | 47 | 47 | 23 | 14 |
 
 ```bash
 # whole document; run between two "## NN ·" headings for one area
@@ -238,22 +238,22 @@ UI spec: [UI-SCREENS.md § SCREEN-SHELL](https://github.com/TeneikaAskew/solyra/
 ### Checklist
 | ID | Element | S | T | V | Te | Evidence |
 |---|---|---|---|---|---|---|
-| SHELL-01 | Sidebar or TopTabs navigation | [ ] | [ ] | [ ] | [ ] | |
-| SHELL-02 | Header in sidebar mode (auth status, sign out, replay control, theme toggle) | [ ] | [ ] | [ ] | [ ] | |
-| SHELL-03 | MockModeBanner | [ ] | [ ] | [ ] | [ ] | |
-| SHELL-04 | AuthStatusBanner and EmailVerificationBanner | [ ] | [ ] | [ ] | [ ] | |
-| SHELL-05 | MostActiveBar marquee | [ ] | [ ] | [ ] | [ ] | |
-| SHELL-06 | RouteErrorBoundary | [ ] | [ ] | [ ] | [ ] | |
-| SHELL-07 | Market session badge (LIVE, PRE, AH, CLOSED) | [ ] | [ ] | [ ] | [ ] | |
-| SHELL-08 | Command palette (Cmd-K, Ctrl-K) | [ ] | [ ] | [ ] | [ ] | |
-| SHELL-09 | Replay control (historical review) | [ ] | [ ] | [ ] | [ ] | |
-| SHELL-10 | Theme toggle | [ ] | [ ] | [ ] | [ ] | |
-| SHELL-11 | Sign out | [ ] | [ ] | [ ] | [ ] | |
-| SHELL-12 | State: loading (marquee before the first response) | [ ] | [ ] | [ ] | [ ] | |
-| SHELL-13 | State: empty (marquee renders nothing on an empty list) | [ ] | [ ] | [ ] | [ ] | |
-| SHELL-14 | State: error (marquee absent on 500, page renders) | [ ] | [ ] | [ ] | [ ] | |
-| SHELL-15 | State: stale (session badge truthful when closed) | [ ] | [ ] | [ ] | [ ] | |
-| SHELL-16 | State: permission (auth status banner when signed out or blocked) | [ ] | [ ] | [ ] | [ ] | |
+| SHELL-01 | Sidebar or TopTabs navigation | [x] | [x] | [ ] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shell-01--sidebar-or-toptabs-navigation) · T 2026-09-28 06a9105 |
+| SHELL-02 | Header in sidebar mode (auth status, sign out, replay control, theme toggle) | [x] | [x] | [ ] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shell-02--header-in-sidebar-mode-auth-status-sign-out-replay-control-theme-toggle) · T 2026-09-28 06a9105 |
+| SHELL-03 | MockModeBanner | [x] | [x] | [ ] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shell-03--mockmodebanner) · T 2026-09-28 06a9105 |
+| SHELL-04 | AuthStatusBanner and EmailVerificationBanner | [x] | [x] | [x] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shell-04--authstatusbanner-and-emailverificationbanner) · T 2026-09-28 06a9105 · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5877699692) |
+| SHELL-05 | MostActiveBar marquee | [x] | [x] | [x] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shell-05--mostactivebar-marquee) · T 2026-09-28 06a9105 · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5877699692) |
+| SHELL-06 | RouteErrorBoundary | [x] | [x] | [ ] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shell-06--routeerrorboundary) · T 2026-09-28 06a9105 |
+| SHELL-07 | Market session badge (LIVE, PRE, AH, CLOSED) | [x] | [x] | [ ] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shell-07--market-session-badge-live-pre-ah-closed) · T 2026-09-28 06a9105 |
+| SHELL-08 | Command palette (Cmd-K, Ctrl-K) | [x] | [x] | [ ] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shell-08--command-palette-cmd-k-ctrl-k) · T 2026-09-28 06a9105 |
+| SHELL-09 | Replay control (historical review) | [x] | [x] | [ ] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shell-09--replay-control-historical-review) · T 2026-09-28 06a9105 |
+| SHELL-10 | Theme toggle | [x] | [x] | [ ] | [x] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shell-10--theme-toggle) · T 2026-09-28 06a9105 · Te 2026-09-28 [stocks run](https://github.com/TeneikaAskew/stocks/actions/runs/35347427630) and solyra [run](https://github.com/TeneikaAskew/solyra/actions/runs/36361217691) |
+| SHELL-11 | Sign out | [x] | [x] | [ ] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shell-11--sign-out) · T 2026-09-28 06a9105 |
+| SHELL-12 | State: loading (marquee before the first response) | [x] | [x] | [ ] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shell-12--state-loading-marquee-before-the-first-response) · T 2026-09-28 06a9105 |
+| SHELL-13 | State: empty (marquee renders nothing on an empty list) | [x] | [x] | [ ] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shell-13--state-empty-marquee-renders-nothing-on-an-empty-list) · T 2026-09-28 06a9105 |
+| SHELL-14 | State: error (marquee absent on 500, page renders) | [x] | [x] | [ ] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shell-14--state-error-marquee-absent-on-500-page-renders) · T 2026-09-28 06a9105 |
+| SHELL-15 | State: stale (session badge truthful when closed) | [x] | [x] | [ ] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shell-15--state-stale-session-badge-truthful-when-closed) · T 2026-09-28 06a9105 |
+| SHELL-16 | State: permission (auth status banner when signed out or blocked) | [x] | [x] | [x] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shell-16--state-permission-auth-status-banner-when-signed-out-or-blocked) · T 2026-09-28 06a9105 · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5877699692) |
 
 ### Chain
 | ID | API | Backend | Data | GCP | External | Tests |
