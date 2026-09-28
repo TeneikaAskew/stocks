@@ -549,8 +549,12 @@ def shell_statements(runs: str, errexit: bool = True) -> list[str]:
                 # solyra#72 r4121572544: `trap 'exit 0' ERR` turns every later failure into success;
                 # inside `{ }` or a `then` body it still runs in this shell (red-team, this PR)
                 errexit = False
-            if stmt and depth == 0 and not chained and not condition and re.match(r"^(exit|return)\b", stmt):
-                ended = True   # stocks#1205 r4120381459: nothing after an unconditional exit runs
+            if stmt and depth == 0 and not condition and re.match(r"^(exit|return)\b", stmt) \
+                    and (not chained or re.match(r"^(exit|return)(\s+0+)?\s*$", stmt)):
+                # stocks#1205 r4120381459: nothing after an unconditional exit runs; solyra#72 r4127814345:
+                # `true && exit 0` is as unconditional, since the gate cannot tell a chain that never fires
+                # from one that always does, and nothing after the exit is proven to run
+                ended = True
                 break
             if stmt and (sm := re.match(r"^set\s+(.*)$", stmt)):
                 # solyra#72 r4120633462: with errexit off a failing command does not fail the step;
@@ -1277,7 +1281,10 @@ def frontmatter(text: str | None) -> dict:
             elif v.startswith("[") and v.endswith("]"):
                 fm[k] = [x.strip().strip('"') for x in re.split(r",(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)", v[1:-1]) if x.strip()]   # commas inside quotes stay (round five)
             else:
-                fm[k] = re.sub(r"\s+#.*$", "", v).strip().strip("'\"") if not v.startswith(("'", '"')) else re.sub(r"\s+#.*$", "", v).strip().strip("'\"")   # (round seven)
+                if v[:1] in ("'", '"') and len(v) > 1 and v.find(v[0], 1) > 0:
+                    fm[k] = v[1:v.find(v[0], 1)]   # solyra#72 r4127814350: a `#` inside the quotes is the value, not a comment
+                else:
+                    fm[k] = re.sub(r"\s+#.*$", "", v).strip().strip("'\"")   # (round seven)
     return fm
 
 
@@ -2664,7 +2671,9 @@ def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) ->
         elif path in (CATALOG, TRACEABILITY):
             before_text, after_text = Tree(merge_base).read(path) or "", ch.tree.read(path) or ""
             had, has = feat_headings(before_text, feat_id), feat_headings(after_text, feat_id)
-            if any(before and after > before for before, after in zip(had, has)):
+            if any(before and after > before for before, after in zip(had, has)) or (any(had) and has[0] > had[0]):
+                # solyra#72 r4127814359: a heading added beside an existing row would carry the Status and
+                # Last reviewed the close-out prefers while the row keeps saying unknown
                 errs.append(f"{path}: adds a second heading or row for {feat_id}; a capability has one record, "
                             "so extend the existing one rather than opening another")
                 continue

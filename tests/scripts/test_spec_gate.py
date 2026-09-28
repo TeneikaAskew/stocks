@@ -3194,3 +3194,28 @@ def test_truthy_calls_decorators_yaml_skill_names_canvas_fields_manifest_scripts
     sys.path.insert(0, str(REPO / "scripts/gate"))
     import spec_gate
     assert spec_gate.plain_text("_unknown_") == "unknown" and spec_gate.plain_text("[unknown](https://x)") == "unknown"
+
+
+def test_chained_exits_quoted_hashes_and_headings_beside_rows_are_the_contract(repo):
+    """solyra#72 r4127814345 (P1), r4127814350 (P2), r4127814359 (P2) (spec_gate.py:553, :1280, :2669).
+
+    `true && exit 0` before the contract commands left them counted; `status: "approved # x"` read as
+    approved; a feature PR could add a `### FEAT` heading beside its row-only record and close out on
+    the heading's fields. Each is refused.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/spec-gate.yml"
+    typed = gate_workflow()
+    r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          true && exit 0\n          " + VERDICT_CMD)}, **cap)
+    assert r.returncode == 1 and "no longer executes" in r.stdout, r.stdout
+    assert pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          test -d scripts || exit 1\n          " + VERDICT_CMD)}, **cap).returncode == 0
+    r = pr(repo, "docs/spec", {SPEC: spec().replace("status: approved", 'status: "approved # awaiting review"', 1)})
+    assert r.returncode == 1 and "status" in r.stdout, r.stdout
+    title = {"PR_TITLE": "FEAT-MODEL-001: x"}
+    job = {**CODE, "gcp/model_job.py": "print('run')\n"}
+    row_only = CATALOG_TEXT.replace("### FEAT-MODEL-001\n\n- Status: Production\n\n", "", 1)
+    assert row_only != CATALOG_TEXT
+    on_base(repo, {CATALOG: row_only})
+    with_heading = row_only + f"\n### FEAT-MODEL-001\n\n- Status: Production\n- Last reviewed: {TODAY}\n- PRs: #42\n"
+    r = pr(repo, BRANCH, {**job, CATALOG: with_heading}, **title, PR_BODY=body(ticked=True) + "\n\n## Capacity\nn/a: x\n")
+    assert r.returncode == 1 and "adds a second heading or row" in r.stdout, r.stdout
