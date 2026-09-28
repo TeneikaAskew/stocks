@@ -4,13 +4,19 @@
 Machine-owned (DOC_REGISTRY class A). Regenerate whenever
 docs/product/07-MODEL-REGISTRY.md or docs/EXPERIMENT_REGISTRY.md changes:
 
-    python3 scripts/gate/export_model_registry.py            # write the JSON
-    python3 scripts/gate/export_model_registry.py --check    # exit 1 if the committed JSON is stale
+    python3 scripts/gate/export_model_registry.py                     # write the JSON
+    python3 scripts/gate/export_model_registry.py --check             # exit 1 if the committed JSON is stale
+    python3 scripts/gate/export_model_registry.py --check --rev SHA   # the same, read from a commit (CI)
 
 The refresh-canvas skill reads this file from main and merges it into the
 "Stocks models diagram" canvas field by field. Nothing here is re-measured;
 it is a parse of the markdown tables, with markdown links reduced to text
 and issue/PR numbers extracted.
+
+Provenance is `sources`: the git blob id of each source document, which is
+the same on every commit that carries that content. --check compares it too,
+so a JSON exported from different source text is stale even when the parsed
+tables happen to match.
 """
 from __future__ import annotations
 
@@ -21,17 +27,47 @@ import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-REGISTRY = ROOT / "docs" / "product" / "07-MODEL-REGISTRY.md"
-EXPERIMENTS = ROOT / "docs" / "EXPERIMENT_REGISTRY.md"
-OUT = ROOT / "docs" / "product" / "generated" / "model-registry.json"
+REGISTRY = "docs/product/07-MODEL-REGISTRY.md"
+EXPERIMENTS = "docs/EXPERIMENT_REGISTRY.md"
+OUT = "docs/product/generated/model-registry.json"
 
 LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 ISSUE = re.compile(r"#(\d{2,5})")
 CODE = re.compile(r"`([^`]+)`")
+DOC_ID = re.compile(r"DOC-(\d+)")
+DOC_RANGE = re.compile(r"DOC-(\d+)\s*(?:…|\.\.\.?|–|—|\bto\b)\s*DOC-(\d+)")
+EXP_ID = re.compile(r"\bE-(\d{2})\b")
+EXP_RANGE = re.compile(r"\bE-(\d{2})\s*(?:…|\.\.\.?|–|—|\bto\b)\s*E-(\d{2})\b")
+
+# Every model card reads these keys. A tier whose table has no column for one
+# gets an explicit null: "the registry does not say", never a missing key.
+CANONICAL = ("name", "type", "decision_produced", "code_paths", "status", "rec", "doc", "blocking_issues")
+ALIASES = {"code_artifact": "code", "code_artifact_paths": "code_paths"}
 
 
-def sh(cmd: str) -> str:
-    return subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=ROOT).stdout.strip()
+def git(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], capture_output=True, text=True, cwd=ROOT)
+
+
+class Source:
+    """Reads the registry documents from the working tree, or from one commit."""
+
+    def __init__(self, rev: str | None = None):
+        self.rev = rev
+
+    def read(self, path: str) -> str | None:
+        if self.rev is None:
+            p = ROOT / path
+            return p.read_text(encoding="utf-8", errors="replace") if p.is_file() else None
+        r = git("show", f"{self.rev}:{path}")
+        return r.stdout if r.returncode == 0 else None
+
+    def blob(self, path: str) -> str | None:
+        if self.rev is None:
+            r = git("hash-object", "--", path)
+        else:
+            r = git("rev-parse", f"{self.rev}:{path}")
+        return r.stdout.strip() if r.returncode == 0 else None
 
 
 def clean(cell: str) -> str:
@@ -44,6 +80,25 @@ def split_row(line: str) -> list[str]:
     # split on unescaped pipes
     parts = re.split(r"(?<!\\)\|", line.strip())
     return [p.replace("\\|", "|").strip() for p in parts[1:-1]]
+
+
+def expand_ids(cell: str, id_re: re.Pattern, range_re: re.Pattern, fmt: str,
+               drop_parentheticals: bool = False) -> list[str]:
+    """Every ID a cell names: ranges (`DOC-01…DOC-05`) expanded, lists split, and,
+    where asked, parenthetical decorations such as `(#1118)` dropped."""
+    text = clean(cell)
+    ids: list[str] = []
+    for a, b in range_re.findall(text):
+        ids += [fmt.format(n) for n in range(int(a), int(b) + 1)]
+    text = range_re.sub(" ", text)
+    if drop_parentheticals:
+        text = re.sub(r"\([^)]*\)", " ", text)
+    ids += [fmt.format(int(n)) for n in id_re.findall(text)]
+    return list(dict.fromkeys(ids))
+
+
+def doc_ids(cell: str) -> list[str]:
+    return expand_ids(cell, DOC_ID, DOC_RANGE, "DOC-{:02d}", drop_parentheticals=True)
 
 
 def tables_with_headings(text: str):
@@ -84,11 +139,31 @@ def row_to_record(header: list[str], raw: list[str]) -> dict:
     return rec
 
 
-def build() -> dict:
-    text = REGISTRY.read_text(encoding="utf-8", errors="replace")
+def canonical(rec: dict) -> dict:
+    for src, dst in ALIASES.items():
+        if src in rec and dst not in rec:
+            rec[dst] = rec[src]
+    for key in CANONICAL:
+        rec.setdefault(key, None)
+    return rec
+
+
+def experiment_ids(text: str) -> list[str]:
+    """IDs from experiment headings only: prose such as "Next free ID is E-36" is not an experiment."""
+    ids: set[str] = set()
+    for line in text.splitlines():
+        if re.match(r"^#{1,6}\s", line):
+            ids.update(expand_ids(line, EXP_ID, EXP_RANGE, "E-{:02d}"))
+    return sorted(ids)
+
+
+def build(src: Source) -> dict:
+    text = src.read(REGISTRY)
+    if text is None:
+        raise SystemExit(f"{REGISTRY} not found")
     out: dict = {
-        "generated_from": [str(REGISTRY.relative_to(ROOT)), str(EXPERIMENTS.relative_to(ROOT))],
-        "source_sha": sh("git rev-parse --short HEAD"),
+        "generated_from": [REGISTRY, EXPERIMENTS],
+        "sources": {path: src.blob(path) for path in (REGISTRY, EXPERIMENTS)},
         "registry_last_reviewed": (re.search(r"Last reviewed:\*\*\s*([0-9-]+|unknown)", text) or [None, None])[1],
         "models": {},
         "experiment_traceability": {},
@@ -98,6 +173,7 @@ def build() -> dict:
         "excluded_schedulers": [],
         "tables": [],
     }
+    grouped: dict = {}
     for heading, header, rows in tables_with_headings(text):
         h0 = header[0].lower() if header else ""
         section = " / ".join(heading)
@@ -108,47 +184,62 @@ def build() -> dict:
             rec = row_to_record(header, raw)
             first = clean(raw[0])
             if first.startswith("MODEL-") and h0 == "id":
-                tier = heading[-1] if heading else ""
-                rec["tier"] = tier
-                out["models"][first] = rec
+                rec["tier"] = heading[-1] if heading else ""
+                out["models"][first] = canonical(rec)
             elif first.startswith("MODEL-") and h0 == "model":
                 out["experiment_traceability"][first] = rec
             elif first.startswith("DOC-") and h0 == "id" and "concern" in " ".join(header).lower() or (
                 first.startswith("DOC-") and "claim" in " ".join(header).lower()
             ):
-                rec["id"] = first
+                ids = doc_ids(raw[0])
+                rec["id"] = ids[0] if ids else first
+                rec["label"] = first
                 out["findings"].append(rec)
             elif first.startswith("DOC-") and "disposition" in " ".join(header).lower():
-                out["dispositions"][first] = rec
+                ids = doc_ids(raw[0])
+                rec["label"] = first
+                # A row naming one finding wins over a row that names it in a group.
+                target = out["dispositions"] if len(ids) == 1 else grouped
+                for fid in ids:
+                    target.setdefault(fid, rec)
             elif h0 == "scheduler" and "serves" in " ".join(header).lower():
                 rec["models"] = sorted(set(re.findall(r"MODEL-[A-Z0-9-]+", clean(raw[-1]))))
                 out["schedulers"].append(rec)
             elif h0 == "scheduler":
                 out["excluded_schedulers"].append(rec)
-    if EXPERIMENTS.exists():
-        etext = EXPERIMENTS.read_text(encoding="utf-8", errors="replace")
-        out["experiment_ids"] = sorted(set(re.findall(r"\bE-\d{2}\b", etext)))
+    for fid, rec in grouped.items():
+        out["dispositions"].setdefault(fid, rec)
+    etext = src.read(EXPERIMENTS)
+    if etext is not None:
+        out["experiment_ids"] = experiment_ids(etext)
     return out
 
 
 def main(argv: list[str]) -> int:
-    data = build()
+    rev = argv[argv.index("--rev") + 1] if "--rev" in argv and argv.index("--rev") + 1 < len(argv) else None
+    if "--rev" in argv and rev is None:
+        print("--rev needs a commit")
+        return 2
+    src = Source(rev)
+    data = build(src)
     payload = json.dumps(data, indent=1, ensure_ascii=False, sort_keys=True) + "\n"
     if "--check" in argv:
-        if not OUT.exists():
-            print(f"missing {OUT.relative_to(ROOT)}; run export_model_registry.py")
+        committed = src.read(OUT)
+        if committed is None:
+            print(f"missing {OUT}; run export_model_registry.py")
             return 1
-        current = json.loads(OUT.read_text(encoding="utf-8"))
-        fresh = json.loads(payload)
-        current.pop("source_sha", None); fresh.pop("source_sha", None)
-        if current != fresh:
-            print(f"{OUT.relative_to(ROOT)} is stale; run export_model_registry.py and commit")
+        if json.loads(committed) != json.loads(payload):
+            print(f"{OUT} is stale; run export_model_registry.py and commit")
             return 1
         print("model-registry.json is current")
         return 0
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(payload, encoding="utf-8")
-    print(f"wrote {OUT.relative_to(ROOT)}: {len(data['models'])} models, "
+    if rev is not None:
+        print("--rev is read-only; use it with --check")
+        return 2
+    out = ROOT / OUT
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(payload, encoding="utf-8")
+    print(f"wrote {OUT}: {len(data['models'])} models, "
           f"{len(data['experiment_traceability'])} traceability rows, {len(data['findings'])} findings, "
           f"{len(data['dispositions'])} dispositions, {len(data['schedulers'])} schedulers")
     return 0

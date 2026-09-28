@@ -25,13 +25,14 @@ Spec: § Design, "shared fixtures". Advances done_when[0].
 - [ ] Commit: `fix(signals): share golden fixtures between live and replay`
 
 ## Task N: close
-- [ ] Update 02-FEATURE-CATALOG row
-- [ ] Add PR to 12-PR-ISSUE-TRACEABILITY
-- [ ] `python3 scripts/maintenance/docs_audit.py`
+- [ ] Update the 02-FEATURE-CATALOG row or record (Status, Last reviewed)
+- [ ] Add this PR to 12-PR-ISSUE-TRACEABILITY (solyra: the catalog row's PRs column)
+- [ ] Docs audit reports nothing new over origin/main (`python3 scripts/maintenance/docs_audit.py` in stocks, `node scripts/docs-audit.mjs` in solyra)
 - [ ] `python3 scripts/gate/spec_gate.py --pr origin/main`
 ```
 
 Rules:
-- The `branch` here must be the branch you create. The gate reads the FEAT-ID from it.
-- Set `pr` once the PR is opened. Set `status: done` when merged.
+- The `branch` here must be the branch you create. The gate finds this plan by that value and reads the FEAT-ID from it, so no two plans may name the same branch.
+- `status` is `ready` until the PR merges, then `done`. The gate authorizes code only while it is `ready`.
+- Set `pr` once the PR is opened.
 - More than ~15 tasks means the spec is too big; split the spec.

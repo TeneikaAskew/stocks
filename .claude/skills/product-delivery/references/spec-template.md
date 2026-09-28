@@ -39,5 +39,7 @@ What could regress and how done_when catches it.
 Rules:
 - `status` is `draft` until the user says approved, then `approved`. A replaced spec becomes `superseded` and the new one names it in `supersedes`.
 - `feat_id` must exist in `docs/product/02-FEATURE-CATALOG.md`.
-- `done_when` items must each be checkable by a reviewer without asking the author.
-- `canvases` may be empty. Include only canvases that depict this area.
+- `req_ids` is a non-empty list of IDs from the stocks `docs/product/01-PRODUCT-REQUIREMENTS.md`. The gate checks each one against that file's definitions where the repo holds it, and by shape (`REQ-XXX-000`) elsewhere.
+- `done_when` is a non-empty list, and its items must each be checkable by a reviewer without asking the author. Each item is copied into the PR body as a `- [ ]` line that starts with the item's text.
+- `supersedes` names the spec path this one replaces. The gate refuses a plan that points at a superseded spec.
+- `issues` and `canvases` are lists and may be empty. Include only canvases that depict this area.

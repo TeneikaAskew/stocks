@@ -14,8 +14,8 @@ Read `references/spec-template.md` and `references/plan-template.md` before writ
 
 State exactly one, in one line, before doing anything else:
 
-- **TRIVIAL**: typo, comment, wording in a doc, dependency bump, a one-line config value. Branch `docs/<slug>` or `chore/<slug>`. No spec. Stop here.
-- **SPIKE**: investigation, no code will merge. One session budget. Output is one note at `docs/superpowers/spikes/YYYY-MM-DD-<slug>.md`. Branch `spike/<slug>`. No PR. Stop here.
+- **TRIVIAL**: typo, comment or wording in a doc (branch `docs/<slug>`), or a dependency bump that touches only manifests and lockfiles (branch `chore/<slug>`). No spec. Stop here. A config or workflow change is not trivial: it is a CHANGE under FEAT-CICD-001 (or, in stocks, FEAT-DEPLOY-001).
+- **SPIKE**: investigation, no code will merge. One session budget. Output is one note at `docs/superpowers/spikes/YYYY-MM-DD-<slug>.md`. Branch `spike/<slug>`. No PR: the gate lets `spike/` commit code locally and gives it no allowance in CI. Stop here.
 - **CHANGE**: everything else. Continue.
 
 If unsure, it is a CHANGE. "Just fix it quickly" is a CHANGE.
@@ -24,7 +24,7 @@ If unsure, it is a CHANGE. "Just fix it quickly" is a CHANGE.
 
 1. Open `docs/product/02-FEATURE-CATALOG.md`. Name the FEAT-ID this change serves. Quote the row.
    No matching row: stop and ask the user whether to add one to 02 first. Never invent an ID.
-2. From `docs/product/01-PRODUCT-REQUIREMENTS.md`, list the REQ-IDs involved.
+2. From `docs/product/01-PRODUCT-REQUIREMENTS.md` in the stocks repo, which is canonical for both repos, list the REQ-IDs involved. The gate checks every `req_ids` entry: against the requirement definitions in that file where the repo holds them (stocks), by shape (`REQ-XXX-000`) where it does not (solyra).
 3. List open GitHub issues the change closes or touches.
 4. Check `docs/superpowers/specs/` for an existing spec with this `feat_id`. If one is `status: approved` and covers the change, skip to Phase 3. If it exists but does not cover it, write a new spec; do not silently widen the old one.
 5. Check `docs/product/canvases.yml` for canvases that depict this area. Record their URLs; they go in the spec frontmatter.
@@ -37,7 +37,7 @@ Invoke `superpowers:brainstorming`. It asks the questions and proposes approache
 
 with the frontmatter in `references/spec-template.md`. `done_when` is the contract: each item must be verifiable by a test, a query, or a file the reviewer can open.
 
-Present the spec in sections. Stop after each section for feedback. Do not proceed until the user says approved. Then set `status: approved` and commit the spec alone (branch `docs/spec-<feat-id>` is fine; the gate exempts `docs/`).
+Present the spec in sections. Stop after each section for feedback. Do not proceed until the user says approved. Then set `status: approved` and commit the spec alone (branch `docs/spec-<feat-id>` is fine; the gate never gates documentation).
 
 ## Phase 3: plan
 
@@ -45,9 +45,9 @@ Invoke `superpowers:writing-plans`. Write:
 
     docs/superpowers/plans/YYYY-MM-DD-<feat-id-lowercase>-<slug>.md
 
-with the frontmatter in `references/plan-template.md`, including `spec:` pointing at the approved spec. Every task names the spec section it implements and which `done_when` item it moves.
+with the frontmatter in `references/plan-template.md`, including `spec:` pointing at the approved spec. Every task names the spec section it implements and which `done_when` item it moves. The gate finds the plan by its `branch:`, so exactly one plan names each branch, and it authorizes code only while `status: ready`.
 
-One plan = one branch = one PR. Branch name: `feature/<feat-id-lowercase>-<slug>` or `fix/<feat-id-lowercase>-<slug>`. The gate reads the FEAT-ID from the branch name.
+One plan = one branch = one PR. Branch name: `feature/<feat-id-lowercase>-<slug>` or `fix/<feat-id-lowercase>-<slug>`, exactly; the gate reads the FEAT-ID from that position and rejects any other shape.
 
 If the plan exceeds roughly 15 tasks, split it into two specs, not one long plan.
 
@@ -56,26 +56,27 @@ If the plan exceeds roughly 15 tasks, split it into two specs, not one long plan
 Invoke `superpowers:using-git-worktrees`, then `superpowers:subagent-driven-development` (or `superpowers:executing-plans` when subagents are unavailable).
 
 PR rules:
-- Title: `<FEAT-ID>: <what changed>`. CI rejects titles without a FEAT-ID.
-- Body: link the spec and plan, paste `done_when` as a `- [ ]` checklist, then the capacity numbers CLAUDE.md requires.
+- Title: `<FEAT-ID>: <what changed>`, starting with the branch's FEAT-ID. CI rejects any other title.
+- Body: link the spec and the plan by their exact paths, paste each `done_when` item as a `- [ ]` line that starts with the item's text, then the capacity numbers CLAUDE.md requires.
+- Open the PR as a draft. Once it is marked ready for review, CI also requires the Phase 5 records.
 - Review cap: TWO rounds. After the second round of review comments, do not keep fixing in place. Invoke `superpowers:finishing-a-development-branch` and present: split into smaller PRs, re-cut from the spec, or discard. A PR that is not mergeable after two rounds is a spec problem, not a code problem.
 - Never open a follow-up PR from an unmerged PR. Never stack.
-- Before every commit, run `python3 scripts/gate/spec_gate.py --commit`. The hook runs it anyway; running it first avoids surprises.
+- Before every commit, run `python3 scripts/gate/spec_gate.py --commit`. The hook runs it anyway; running it first avoids surprises. A commit from a detached HEAD that stages code is blocked; name its branch with `SPEC_GATE_BRANCH=<branch> git commit`.
 
 ## Phase 5: close (this is what "done" means)
 
 In the SAME PR, before requesting final review:
 
-1. `docs/product/02-FEATURE-CATALOG.md`: update the FEAT-ID row (Status, Last reviewed, evidence PR number). Touch only that row.
-2. `docs/product/12-PR-ISSUE-TRACEABILITY.md`: add this PR under the FEAT-ID.
-3. If the spec lists canvases, add to the PR body: `Canvas refresh pending: <urls>`. The refresh is run from chat with the refresh-canvas skill after merge, never from this PR.
+1. `docs/product/02-FEATURE-CATALOG.md`: update the FEAT-ID's Status and Last reviewed (stocks: in its capability record under the table; solyra: in the row's columns). Touch only that row or record.
+2. `docs/product/12-PR-ISSUE-TRACEABILITY.md`: add this PR's number under the FEAT-ID. A repo without that file (solyra) records it in the catalog row's PRs column instead.
+3. If the spec lists canvases, add to the PR body: `Canvas refresh pending: <urls>`, or for a canvas marked `mode: report-only` in `docs/product/canvases.yml`, `Canvas check pending (report-only): <urls>`. The refresh is run from chat with the refresh-canvas skill after merge, never from this PR.
 4. Run `python3 scripts/gate/export_model_registry.py` if the PR touched `docs/product/07-MODEL-REGISTRY.md` or `docs/EXPERIMENT_REGISTRY.md`, and commit the regenerated JSON.
-5. Run `python3 scripts/maintenance/docs_audit.py` and `python3 scripts/gate/spec_gate.py --pr origin/main`. Both clean, or the PR is not done.
-6. Tick every `done_when` box in the PR body with the evidence (test name, query, file) next to it.
+5. Run the repo's docs audit on this branch and on `origin/main` (stocks: `python3 scripts/maintenance/docs_audit.py`; solyra: `node scripts/docs-audit.mjs`): the branch reports no finding that `main` does not. Then run `python3 scripts/gate/spec_gate.py --pr origin/main`. Both clean, or the PR is not done.
+6. Tick every `done_when` box in the PR body with the evidence (test name, query, file) next to it, then mark the PR ready for review. From then on CI requires the catalog update, the PR number from step 2, and every box ticked.
 
 ## Never
 
 - Never write implementation code before a spec has `status: approved`.
 - Never mark a `done_when` item "future-work", "non-blocking", or "follow-up". Either finish it or remove it from the spec with the user's explicit consent, and say so in the PR.
-- Never edit `docs/product/` from a feature branch except the one FEAT row and the traceability entry this PR owns.
+- Never edit `docs/product/` from a feature branch except the one FEAT row or record and the traceability entry this PR owns, the `07-MODEL-REGISTRY.md` rows for models this spec changes, and the `generated/model-registry.json` that step 4 regenerates.
 - Never let a second agent (Codex, Lovable, a webhook-triggered session) push to a branch this plan owns. One plan, one author.

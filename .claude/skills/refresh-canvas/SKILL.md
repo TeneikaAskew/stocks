@@ -14,10 +14,11 @@ the JSON that feeds it, which board file and JS constant hold the data, and whic
 ## Steps
 
 1. **Confirm the source is main.** Fetch `source_json` from
-   `https://raw.githubusercontent.com/<repo>/main/<source_json>`. Record `source_sha` from the file.
+   `https://raw.githubusercontent.com/<repo>/main/<source_json>`. Record `sources` from the file: the git
+   blob id of each source document the JSON was exported from.
    If the user points at a branch or an open PR, refuse: "Canvases track main. Merge first."
-   If `source_json` is null for that canvas, stop and say the exporter does not exist yet; offer to compare
-   the canvas against `source_docs` by hand and report differences without writing.
+   If the canvas is `mode: report-only` (its `source_json` is null), no exporter exists: compare the
+   canvas against `source_docs` by hand and report the differences. Never write a report-only canvas.
 
 2. **Read the canvas.** Artifact tool, action `read`, with the canvas `url`. Open each board file listed
    under `boards`. Locate the `var <constant> = [...]` line. Parse the JSON array that follows it.
@@ -30,14 +31,20 @@ the JSON that feeds it, which board file and JS constant hold the data, and whic
    - present in both: for each field in `repo_fields`, compare; list changed fields old -> new.
    Never compare or touch anything in `canvas_fields`.
    Where a repo field is a list (code paths, schedulers), compare as sets.
+   A repo field whose JSON value is null is **not sourced** for that card: the registry has no column
+   for it in that tier. Never overwrite the canvas value with it; list it under `not sourced`.
+   A field declared with `merge: ordered_set` (`sched`) is repo-owned for membership and canvas-owned
+   for order: keep the canvas's existing entries in their order, drop entries the JSON no longer has,
+   and append new ones at the end.
 
 4. **Show the diff in chat before writing anything.** Format:
 
-       Stocks models diagram <- main @ <sha> (registry last reviewed <date>)
+       Stocks models diagram <- main (07 blob <id>, registry last reviewed <date>)
        ADD     MODEL-NEW-001 (status Experimental)
        CHANGE  MODEL-EXIT-001.status  "Broken" -> "Production but needs remediation"
        CHANGE  MODEL-MAG-001.verdict  "..." -> "..."
        REMOVE? MODEL-OLD-001 (not in registry; left in place, say "remove" to drop it)
+       not sourced: MODEL-LLM-001.name, MODEL-LLM-001.doc (null in the registry; canvas kept)
        unchanged: 31 cards
 
    If the diff is empty, say so and stop. Do not write.
@@ -51,16 +58,19 @@ the JSON that feeds it, which board file and JS constant hold the data, and whic
    Artifact tool: action `publish`, `url` = the canvas url, `file_path` = the edited board file
    (and `files` for additional boards). This is a save, not a public share; the canvas stays private.
 
-7. **Report.** One line per board: what changed, the source sha, and that layout was not touched.
+7. **Report.** One line per board: what changed, the source blob ids, and that layout was not touched.
 
 ## Guardrails
 
 - One canvas per run. If the user asks for all three, run them one after another with a diff and an
   approval each.
 - Never regenerate the whole data array from the JSON. The canvas-owned fields (`sched` ordering, `ratText`,
-  `bucket`, `flow`, `stage`, `short`, `alert`) are curation; a regeneration destroys them.
+  `bucket`, `flow`, `stage`, `short`, `alert`) are curation; a regeneration destroys them. `sched` membership
+  comes from the repo and is merged as an ordered set, so its order survives.
 - Never edit `index.html`, `canvas.json`, `artifact-type/`, or any CSS/HTML outside the data line.
 - Provenance is the URL: fetch only from `raw.githubusercontent.com/<repo>/main/...`, never a local file,
-  never a branch URL. Compare the JSON's `source_sha` with `git ls-remote origin main` if in doubt.
+  never a branch URL. If in doubt, compare each blob id in the JSON's `sources` with the same file on main
+  (`git ls-tree origin/main <path>`, or the blob `sha` the GitHub contents API returns); a mismatch means
+  the exporter was not re-run for the registry now on main. CI's `--check` step makes that rare.
   If the JSON's `registry_last_reviewed` is older than the registry on main, the exporter needs a re-run first.
 - Do not chain this into a PR, a webhook, or a scheduled task. It runs when a person asks.

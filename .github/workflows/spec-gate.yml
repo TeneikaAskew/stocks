@@ -1,7 +1,12 @@
 name: spec-gate
+# pull_request_target, not pull_request: GitHub takes this workflow file and the
+# checked-out scripts/gate/ from the BASE branch, so a pull request cannot edit
+# the check that judges it. Its own changes to the gate apply only after merge.
+# The PR head is fetched as git objects and read with `git show`; nothing from
+# the PR is checked out or executed, and the token is read-only.
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, edited]
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
 
 permissions:
   contents: read
@@ -10,19 +15,35 @@ permissions:
 jobs:
   gate:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Spec gate (spec, plan, branch name, PR title and body; code PRs only)
+      - name: Fetch the PR head as data
         env:
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git fetch --no-tags origin "$HEAD_SHA"
+
+      - name: Spec gate (branch, plan, approved spec, PR title and body, close-out records)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_BASE_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: |
-          git fetch --no-tags origin "$BASE_REF"
-          git checkout -q -B "$HEAD_REF" HEAD
-          python3 scripts/gate/spec_gate.py --pr "origin/$BASE_REF"
+        run: python3 scripts/gate/spec_gate.py --pr "$BASE_SHA" "$HEAD_SHA"
+
+      # Only where the exporter exists (stocks): a PR that edits the model
+      # registry without regenerating its JSON fails here.
+      - name: Model registry JSON matches its sources
+        if: hashFiles('scripts/gate/export_model_registry.py') != ''
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/gate/export_model_registry.py --check --rev "$HEAD_SHA"
