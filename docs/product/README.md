@@ -14,6 +14,7 @@ The maintained index from product intent through implementation, evidence, risk 
 | [01 Product Requirements](01-PRODUCT-REQUIREMENTS.md) | What shall it do, and when is it done? |
 | [02 Feature Catalog](02-FEATURE-CATALOG.md) | What capabilities exist and what is their trust state? |
 | [UI Screens](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md) | What does each of the 15 screens do? |
+| [03 Site Traceability](03-SITE-TRACEABILITY.md) | Which elements of each screen are specified, traced, validated and tested, and what runs each one? |
 | [04 Backend Api](04-BACKEND-API.md) | Which of the 92 platform endpoints support it, and how is each authenticated? |
 | [05 Infrastructure](05-INFRASTRUCTURE.md) | What runs and deploys it — 76 jobs, 65 schedulers? |
 | [05 Infrastructure references](05-INFRASTRUCTURE.md#reference-documents) | Where are the long-form architecture, ERD, API, cost and pipeline documents? (`docs/product/infrastructure/`) |
@@ -178,3 +179,4 @@ deliberately does not answer, and the three are reconciled in
 | PRs mapped | 151 significant, #184–#932 |
 | Tests | 230 python (29 Playwright + 27 Vitest moved to solyra in #957) |
 | Capabilities at Production (unqualified) | **2 of 25** (Landing, Help) |
+| Site elements traced | 0 of 222 ([03](03-SITE-TRACEABILITY.md)) |

@@ -7,6 +7,8 @@
 <!-- What changed and why. Link the issue (or auto-created workflow-failure
      issue) if one exists. -->
 
+- Matrix rows touched and gates changed: <!-- IDs from docs/product/03-SITE-TRACEABILITY.md, or "none" -->
+
 ## Capacity calculation (CLAUDE.md Rule 0)
 
 <!-- REQUIRED for any change touching a Cloud Run Job, fetcher, or scheduled
