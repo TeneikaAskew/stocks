@@ -13,7 +13,8 @@ LICENSE* and .gitignore. A gated file needs a feature/<feat-id>-<slug> or
 fix/<feat-id>-<slug> branch whose plan and approved spec validate, unless the
 branch prefix allows that path:
 
-  chore/             dependency manifests, lockfiles, and the gate's own files
+  chore/             dependency manifests, lockfiles, and the gate's own files; in a
+                     manifest only the dependency fields, never scripts or tool config
   bot/superpowers-   the vendored skills under .claude/skills/
   spike/             anything, for local commits only: a spike opens no PR
 
@@ -21,20 +22,25 @@ No branch is exempt by name. A pull request from a fork gets no prefix
 allowance. A detached HEAD that stages gated files is blocked: name the branch
 with SPEC_GATE_BRANCH=<branch> git commit ...
 
---commit reads the catalog, specs and plans from the index, so it validates
-what is being committed. --pr reads them from HEAD's git objects, so CI runs
-this script from the base branch without checking the PR out. In CI the branch
+--commit reads the plan from the index, so it validates what is being
+committed; the catalog row and the approved spec are read from HEAD (during a
+merge, from MERGE_HEAD). --pr reads the plan from the PR head's git objects and
+the catalog row and spec from the merge base, so a PR cannot add its own
+capability or approve its own spec, and CI runs this script from the base
+branch without checking the PR out. In CI the branch
 comes from PR_HEAD_REF, fork detection from PR_HEAD_REPO and PR_BASE_REPO, and
 PR_TITLE, PR_BODY, PR_NUMBER and PR_DRAFT drive the metadata and close-out
 checks. Any harness (Claude Code, Codex, a human) hits the same check.
 """
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import re
 import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -43,6 +49,7 @@ PLANS = "docs/superpowers/plans"
 CATALOG = "docs/product/02-FEATURE-CATALOG.md"
 REQUIREMENTS = "docs/product/01-PRODUCT-REQUIREMENTS.md"
 TRACEABILITY = "docs/product/12-PR-ISSUE-TRACEABILITY.md"
+CANVASES = "docs/product/canvases.yml"
 
 FEAT_ROW = re.compile(r"^\|\s*\[?(FEAT-[A-Z]+-\d{3})\b", re.M)
 BRANCH = re.compile(r"^(feature|fix)/(feat-[a-z]+-\d{3})-[a-z0-9][a-z0-9._-]*$", re.I)
@@ -65,10 +72,25 @@ GATE_FILES = (
     "tests/scripts/test_spec_gate.py",
     "tests/scripts/test_export_model_registry.py",
 )
-ALLOWANCES = (
-    ("chore/", lambda p: bool(MANIFEST.search(p)) or p.startswith(GATE_FILES)),
-    ("bot/superpowers-", lambda p: p.startswith(".claude/skills/")),
+# The manifest fields a chore/ branch may change. Anything else in package.json or
+# pyproject.toml (scripts, build config, tool tables) is executable configuration that
+# CI runs from the checkout, so it is a CHANGE.
+NPM_DEPENDENCY_KEYS = frozenset((
+    "dependencies", "devDependencies", "peerDependencies", "peerDependenciesMeta",
+    "optionalDependencies", "bundledDependencies", "bundleDependencies", "overrides",
+    "resolutions", "engines", "packageManager",
+))
+PYPROJECT_DEPENDENCY_PATHS = (
+    ("project", "dependencies"), ("project", "optional-dependencies"), ("dependency-groups",),
+    ("build-system", "requires"), ("tool", "poetry", "dependencies"), ("tool", "poetry", "group"),
+    ("tool", "uv", "sources"), ("tool", "uv", "dev-dependencies"),
 )
+CANVAS_MARKERS = {"refresh": "Canvas refresh pending:", "report-only": "Canvas check pending (report-only):"}
+# A ticked done_when line that defers the work is not done (CLAUDE.md rule 0 names these phrases).
+DEFERRAL = re.compile(r"\b(future[- ]work|follow[- ]?up|non[- ]?blocking|for now|deferred|later PR|next PR|separate PR|TODO|TBD)\b", re.I)
+# Changing these is changing a workload; the PR body must then carry the rule 0 capacity numbers.
+WORKLOAD_PREFIXES = ("gcp/", ".github/workflows/")
+CAPACITY_LABELS = ("Volume", "Velocity", "Wall-clock", "30")
 REQUIRED_SPEC_KEYS = ("feat_id", "req_ids", "done_when", "status")
 REQUIRED_PLAN_KEYS = ("feat_id", "spec", "branch", "status")
 SPEC_STATUSES = ("draft", "approved", "superseded")
@@ -76,8 +98,23 @@ PLAN_STATUSES = ("ready", "done")
 WORKTREE = "worktree"
 
 
+class GitFailed(Exception):
+    """A git command the gate depends on failed. Never treated as an empty result."""
+
+
 def git(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], capture_output=True, text=True, cwd=ROOT)
+    # utf-8 regardless of locale: the specs carry curly quotes and emoji, and cp1252
+    # (Windows) would raise on them and block every commit.
+    return subprocess.run(["git", *args], capture_output=True, encoding="utf-8", errors="replace", cwd=ROOT)
+
+
+def git_out(*args: str) -> str:
+    """stdout of a git command that must succeed: a failed diff or listing is not an empty one."""
+    r = git(*args)
+    if r.returncode != 0:
+        raise GitFailed(f"git {' '.join(args[:2])} failed ({r.returncode}): {r.stderr.strip() or 'no output'}; "
+                        "refusing to pass on a diff the gate could not compute")
+    return r.stdout
 
 
 def catalog_ids(text: str | None) -> set[str]:
@@ -110,9 +147,10 @@ class Tree:
             base = ROOT / folder
             found = [str(p.relative_to(ROOT)) for p in base.glob("*.md")] if base.is_dir() else []
         elif self.rev is None:
-            found = git("ls-files", "--", folder).stdout.splitlines()
+            found = git_out("ls-files", "--", folder).splitlines()
         else:
-            found = git("ls-tree", "-r", "--name-only", self.rev, "--", folder).stdout.splitlines()
+            r = git("ls-tree", "-r", "--name-only", self.rev, "--", folder)
+            found = r.stdout.splitlines() if r.returncode == 0 else []   # a rev without the folder
         return sorted(p for p in found if p.endswith(".md"))
 
 
@@ -191,7 +229,9 @@ def validate_plan(fm: dict, name: str, feat_id: str, tree: Tree) -> list[str]:
     if pr is not None and not PR_REF.match(str(pr)):
         errs.append(f"{name}: pr must be null or a PR number, not '{pr}'")
     spec = fm.get("spec")
-    if spec and tree.read(spec) is None:
+    if spec and not (str(spec).startswith(SPECS + "/") and str(spec).endswith(".md")):
+        errs.append(f"{name}: spec must be a file under {SPECS}/, not {spec}")
+    elif spec and tree.read(spec) is None:
         errs.append(f"{name}: spec path does not exist: {spec}")
     return errs
 
@@ -202,6 +242,7 @@ class Change:
     branch: str
     changed: list[str]
     tree: Tree
+    base: Tree              # what the change is measured against: HEAD, or the merge base
     trusted: bool = True    # False for a PR from a fork: no prefix allowances
 
 
@@ -212,6 +253,61 @@ class Traced:
     spec_fm: dict
     plan_path: str
     plan_fm: dict
+
+
+def _without(d: dict, path: tuple[str, ...]) -> dict:
+    """`d` with the nested key `path` removed, when present."""
+    if len(path) == 1:
+        return {k: v for k, v in d.items() if k != path[0]}
+    inner = d.get(path[0])
+    if not isinstance(inner, dict):
+        return d
+    return {**d, path[0]: _without(inner, path[1:])}
+
+
+def non_dependency_edit(path: str, before: str | None, after: str | None) -> str | None:
+    """Why this manifest edit is more than a dependency update, or None when it is not.
+    Lockfiles and requirements files hold nothing but dependencies; package.json and
+    pyproject.toml also carry scripts and tool configuration, which CI executes."""
+    name = path.rsplit("/", 1)[-1]
+    if name not in ("package.json", "pyproject.toml"):
+        return None
+    if before is None:
+        return f"{path}: a new manifest is a new project, not a dependency update"
+    if after is None:
+        return f"{path}: removing the manifest is not a dependency update"
+    try:
+        if name == "package.json":
+            b, a = json.loads(before), json.loads(after)
+            b = {k: v for k, v in b.items() if k not in NPM_DEPENDENCY_KEYS}
+            a = {k: v for k, v in a.items() if k not in NPM_DEPENDENCY_KEYS}
+        else:
+            b, a = tomllib.loads(before), tomllib.loads(after)
+            for dep_path in PYPROJECT_DEPENDENCY_PATHS:
+                b, a = _without(b, dep_path), _without(a, dep_path)
+    except (ValueError, tomllib.TOMLDecodeError) as e:
+        return f"{path}: cannot be parsed ({e}); the gate does not guess what changed"
+    changed = sorted(k for k in set(b) | set(a) if b.get(k) != a.get(k))
+    if changed:
+        return f"{path}: changes {', '.join(changed)}, not only dependencies; a scripts or config edit is a CHANGE"
+    return None
+
+
+def chore_allows(path: str, ch: "Change") -> str | None:
+    """None when chore/ may carry this file; otherwise why not ("" when it is simply not a
+    manifest or gate file, a reason naming the file when it is a manifest edited beyond
+    its dependency fields)."""
+    if path.startswith(GATE_FILES):
+        return None
+    if not MANIFEST.search(path):
+        return ""
+    return non_dependency_edit(path, ch.base.read(path), ch.tree.read(path))
+
+
+ALLOWANCES = (
+    ("chore/", chore_allows),
+    ("bot/superpowers-", lambda p, ch: None if p.startswith(".claude/skills/") else ""),
+)
 
 
 def summarize(paths: list[str]) -> str:
@@ -232,7 +328,8 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
     if ch.mode == "commit" and ch.branch.startswith("spike/"):
         return [], None
     allowed = next((ok for prefix, ok in ALLOWANCES if ch.branch.startswith(prefix)), None) if ch.trusted else None
-    remaining = [f for f in gated if not (allowed and allowed(f))]
+    refused = {f: (allowed(f, ch) if allowed else "") for f in gated}
+    remaining = [f for f, why in refused.items() if why is not None]
     if not remaining:
         return [], None
     m = BRANCH.match(ch.branch)
@@ -241,17 +338,22 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
         return [
             f"branch '{ch.branch}' changes {len(remaining)} gated file(s) ({summarize(remaining)}) "
             "but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>." + why,
-            "docs/ carries documentation only; chore/ covers dependency manifests, lockfiles and the "
-            "gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.",
+            *[reason for reason in refused.values() if reason],
+            "docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), "
+            "lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.",
         ], None
     feat_id = m.group(2).upper()
     errs: list[str] = []
-    catalog_text = ch.tree.read(CATALOG)
+    # The catalog row and the approved spec are read from the BASE (HEAD for a commit, the
+    # merge base for a PR): a change cannot add its own capability or approve its own spec
+    # in the same diff. Phase 2 commits the approved spec alone, before any code.
+    where = "HEAD" if ch.mode == "commit" else "the merge base"
+    catalog_text = ch.base.read(CATALOG)
     catalog = catalog_ids(catalog_text)
     if catalog_text is None:
-        errs.append(f"{CATALOG} is missing")
+        errs.append(f"{CATALOG} is missing at {where}")
     elif feat_id not in catalog:
-        errs.append(f"{feat_id} is not a row in {CATALOG}")
+        errs.append(f"{feat_id} is not a row in {CATALOG} at {where}; a capability is added before the work that uses it")
     plans = [p for p in ch.tree.list(PLANS) if frontmatter(ch.tree.read(p)).get("branch") == ch.branch]
     if not plans:
         errs.append(f"no plan in {PLANS} names branch '{ch.branch}'")
@@ -263,9 +365,15 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
     plan_fm = frontmatter(ch.tree.read(plan_path))
     errs += validate_plan(plan_fm, plan_path, feat_id, ch.tree)
     spec_path = plan_fm.get("spec")
-    spec_text = ch.tree.read(spec_path) if spec_path else None
+    spec_text = ch.base.read(spec_path) if spec_path else None
     if spec_text is None:
+        if spec_path and ch.tree.read(spec_path) is not None:
+            errs.append(f"{spec_path} is new in this change; an approved spec lands alone first (Phase 2), "
+                        f"then the code that implements it")
         return errs, None
+    if ch.tree.read(spec_path) != spec_text:
+        errs.append(f"{spec_path} is edited in this change; a spec is approved before the code, "
+                    f"so edit it on its own docs/ branch")
     spec_fm = frontmatter(spec_text)
     if spec_fm.get("feat_id") != feat_id:
         errs.append(f"{spec_path}: the plan's spec serves {spec_fm.get('feat_id')}, not {feat_id}")
@@ -277,7 +385,7 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
              and frontmatter(ch.tree.read(s)).get("supersedes") == spec_path]
     if newer:
         errs.append(f"{spec_path} is superseded by {', '.join(newer)}; point the plan at the current spec")
-    req_defs = set(REQ_DEFINITION.findall(ch.tree.read(REQUIREMENTS) or ""))
+    req_defs = set(REQ_DEFINITION.findall(ch.base.read(REQUIREMENTS) or ""))
     errs += validate_spec(spec_fm, spec_path, catalog, req_defs)
     return errs, Traced(feat_id, spec_path, spec_fm, plan_path, plan_fm)
 
@@ -295,7 +403,44 @@ def done_items(t: Traced) -> list[str]:
     return [norm(str(i)) for i in items] if isinstance(items, list) else []
 
 
-def check_pr_metadata(t: Traced, env: dict) -> list[str]:
+def canvas_modes(text: str | None) -> dict[str, str]:
+    """canvases.yml as {url: "refresh" | "report-only"}. Read line by line: the gate has
+    no YAML dependency, and the file is a list of `- name:` entries with flat fields."""
+    modes: dict[str, str] = {}
+    url = mode = None
+    for line in (text or "").splitlines() + ["- name:"]:
+        if re.match(r"^\s*-\s+name:", line):
+            if url:
+                modes[url] = mode or "refresh"
+            url = mode = None
+        elif (m := re.match(r"^\s+url:\s*(\S+)", line)):
+            url = m.group(1)
+        elif (m := re.match(r"^\s+mode:\s*(\S+)", line)):
+            mode = m.group(1)
+    return modes
+
+
+def check_canvas_handoff(t: Traced, body: str, tree: Tree) -> list[str]:
+    """A spec that lists canvases hands their refresh to Phase 5: the PR body carries
+    `Canvas refresh pending: <url>`, or the report-only marker for a report-only canvas."""
+    urls = t.spec_fm.get("canvases")
+    if not isinstance(urls, list) or not urls:
+        return []
+    modes = canvas_modes(tree.read(CANVASES))
+    lines = body.splitlines()
+    errs: list[str] = []
+    for url in urls:
+        mode = modes.get(url)
+        if mode is None:
+            errs.append(f"{t.spec_path} lists canvas {url}, which is not in {CANVASES}")
+            continue
+        marker = CANVAS_MARKERS.get(mode, CANVAS_MARKERS["refresh"])
+        if not any(line.strip().startswith(marker) and url in line for line in lines):
+            errs.append(f"PR body must carry '{marker} {url}': the spec lists that canvas, so its Phase 5 handoff is due")
+    return errs
+
+
+def check_pr_metadata(t: Traced, env: dict, tree: Tree) -> list[str]:
     """CI only: the PR title and body must name what the gate validated."""
     title, body = env.get("PR_TITLE"), env.get("PR_BODY")
     errs: list[str] = []
@@ -311,6 +456,97 @@ def check_pr_metadata(t: Traced, env: dict) -> list[str]:
         if missing:
             errs.append("PR body must carry each done_when item as a '- [ ]' line starting with its text; "
                         "missing: " + "; ".join(missing))
+        deferred = [text for ticked, text in boxes if ticked and DEFERRAL.search(text)
+                    and any(text.startswith(i) for i in done_items(t))]
+        if deferred:
+            errs.append("a ticked done_when item defers its work, so it is not done: " + "; ".join(deferred))
+        errs += check_canvas_handoff(t, body, tree)
+    return errs
+
+
+def section(body: str, title: str) -> str | None:
+    """The text under the first heading containing `title` (case-insensitive), HTML comments removed."""
+    lines = body.splitlines()
+    for i, line in enumerate(lines):
+        if HEADING.match(line) and title.lower() in line.lower():
+            out = []
+            for later in lines[i + 1:]:
+                if HEADING.match(later):
+                    break
+                out.append(later)
+            return re.sub(r"<!--.*?-->", "", "\n".join(out), flags=re.S)
+    return None
+
+
+def check_capacity(body: str | None, changed: list[str]) -> list[str]:
+    """CI only: a change under gcp/ or the workflows is a workload change, and CLAUDE.md
+    rule 0 wants its three numbers and cost in the PR body, or an `n/a` with the reason."""
+    workloads = [f for f in changed if f.startswith(WORKLOAD_PREFIXES)]
+    if body is None or not workloads:
+        return []
+    text = section(body, "capacity")
+    if text is None:
+        return [f"PR body needs a Capacity section: the change touches a workload ({summarize(workloads)})"]
+    if re.search(r"\bn/a\b\s*[\u2014:-]\s*\w", text, re.I):
+        return []
+    blank = [label for label in CAPACITY_LABELS
+             if not re.search(r"\b" + re.escape(label) + r"\**:\**\s*[^\s\u00b7|]", text)]
+    if blank:
+        return ["PR body's Capacity section leaves " + ", ".join(blank) + " blank; give the numbers, "
+                "or write 'n/a: <why no workload runs differently>'"]
+    return []
+
+
+def changed_lines(merge_base: str, head: str, path: str) -> list[tuple[str, int, str]]:
+    """("-", line in base, text) for every line the change removes from path and
+    ("+", line in head, text) for every line it adds."""
+    out, old, new = [], 0, 0
+    for line in git_out("diff", "-U0", merge_base, head, "--", path).splitlines():
+        hunk = re.match(r"^@@ -(\d+)(?:,\d+)? \+(\d+)", line)
+        if hunk:
+            old, new = int(hunk.group(1)), int(hunk.group(2))
+        elif line.startswith("-") and not line.startswith("---"):
+            out.append(("-", old, line[1:]))
+            old += 1
+        elif line.startswith("+") and not line.startswith("+++"):
+            out.append(("+", new, line[1:]))
+            new += 1
+    return out
+
+
+def feat_span(text: str, feat_id: str) -> set[int]:
+    """1-based line numbers that belong to feat_id in a product document: its table rows,
+    and every section whose heading names it, up to the next heading of that level or higher."""
+    lines = text.splitlines()
+    span: set[int] = set()
+    level = None
+    for n, line in enumerate(lines, 1):
+        h = HEADING.match(line)
+        if h:
+            if level is not None and len(h.group(1)) <= level:
+                level = None
+            if feat_id in line:
+                level = len(h.group(1))
+        if level is not None or (FEAT_ROW.match(line) and FEAT_ROW.match(line).group(1) == feat_id):
+            span.add(n)
+    return span
+
+
+def check_product_scope(t: Traced, ch: Change, merge_base: str, head: str) -> list[str]:
+    """CI only: a feature change edits its own catalog record and traceability section, and
+    nothing else's. The requirements document changes on its own docs/ branch."""
+    errs: list[str] = []
+    for path in ch.changed:
+        if path == REQUIREMENTS:
+            errs.append(f"{path} changes in this feature change; requirements change on their own docs/ branch, "
+                        "before the work that cites them")
+        elif path in (CATALOG, TRACEABILITY):
+            spans = {"-": feat_span(ch.base.read(path) or "", t.feat_id), "+": feat_span(ch.tree.read(path) or "", t.feat_id)}
+            outside = [f"{side}{n}" for side, n, text in changed_lines(merge_base, head, path)
+                       if text.strip() and n not in spans[side]]
+            if outside:
+                errs.append(f"{path}: lines outside {t.feat_id}'s row and record change ({summarize(outside)}); "
+                            "a feature change edits only its own record")
     return errs
 
 
@@ -360,7 +596,7 @@ def feat_fields(text: str | None, feat_id: str) -> dict[str, str]:
 def added_lines(merge_base: str, head: str, path: str) -> list[tuple[int, str]]:
     """(line number in head, text) for every line the PR adds to path."""
     out, lineno = [], 0
-    for line in git("diff", "-U0", merge_base, head, "--", path).stdout.splitlines():
+    for line in git_out("diff", "-U0", merge_base, head, "--", path).splitlines():
         hunk = re.match(r"^@@ -\S+ \+(\d+)", line)
         if hunk:
             lineno = int(hunk.group(1))
@@ -396,7 +632,7 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
     now = feat_fields(ch.tree.read(CATALOG), t.feat_id)
     before = feat_fields(Tree(merge_base).read(CATALOG), t.feat_id)
     reviewed, status = now.get("Last reviewed", ""), now.get("Status", "").strip("* ")
-    head_day = git("show", "-s", "--format=%cs", head).stdout.strip()
+    head_day = git_out("show", "-s", "--format=%cs", head).strip()
     # Changed from the base, or already today's date (a second PR for this FEAT the same day).
     if not ISO_DATE.match(reviewed) or (reviewed == before.get("Last reviewed") and reviewed != head_day):
         errs.append(f"{CATALOG}: set the {t.feat_id} Last reviewed to this PR's review date in its row or "
@@ -427,6 +663,13 @@ def fail(errs: list[str]) -> int:
 
 
 def main(argv: list[str]) -> int:
+    try:
+        return run(argv)
+    except GitFailed as e:
+        return fail([str(e)])
+
+
+def run(argv: list[str]) -> int:
     mode = argv[1] if len(argv) > 1 else "--commit"
     env = os.environ
     if mode == "--check-spec":
@@ -441,11 +684,19 @@ def main(argv: list[str]) -> int:
         print("\n".join(errs) if errs else "spec ok")
         return 1 if errs else 0
     if mode == "--commit":
-        branch = env.get("SPEC_GATE_BRANCH") or git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        real = git_out("rev-parse", "--abbrev-ref", "HEAD").strip()
+        override = env.get("SPEC_GATE_BRANCH")
+        if override and real != "HEAD":
+            return fail([f"SPEC_GATE_BRANCH={override} is set, but HEAD is on branch '{real}'; "
+                         "the override names a detached commit only. Unset it, or check the branch out."])
+        branch = override if real == "HEAD" and override else real
         # --no-renames: a rename is listed as its deleted source and its added destination,
         # so moving code out to a documentation path is still seen as a change to that code.
-        staged = git("diff", "--cached", "--name-only", "--no-renames").stdout.splitlines()
-        ch = Change("commit", branch, staged, Tree(None))
+        # A merge in progress (MERGE_HEAD exists) stages everything main brings in; the
+        # branch's own contribution is the index measured against the side being merged.
+        against = ["MERGE_HEAD"] if resolve("MERGE_HEAD") else []
+        staged = git_out("diff", "--cached", "--name-only", "--no-renames", *against).splitlines()
+        ch = Change("commit", branch, staged, Tree(None), Tree(against[0] if against else "HEAD"))
         errs, _ = check(ch)
     elif mode == "--pr":
         base_arg = argv[2] if len(argv) > 2 else "origin/main"
@@ -461,11 +712,13 @@ def main(argv: list[str]) -> int:
         branch = env.get("PR_HEAD_REF") or git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
         head_repo, base_repo = env.get("PR_HEAD_REPO"), env.get("PR_BASE_REPO")
         trusted = not (base_repo and head_repo != base_repo)
-        changed = git("diff", "--name-only", "--no-renames", merge_base, head).stdout.splitlines()
-        ch = Change("pr", branch, changed, Tree(head), trusted)
+        changed = git_out("diff", "--name-only", "--no-renames", merge_base, head).splitlines()
+        ch = Change("pr", branch, changed, Tree(head), Tree(merge_base), trusted)
         errs, traced = check(ch)
         if traced:
-            errs += check_pr_metadata(traced, env)
+            errs += check_pr_metadata(traced, env, ch.tree)
+            errs += check_capacity(env.get("PR_BODY"), ch.changed)
+            errs += check_product_scope(traced, ch, merge_base, head)
             ready = env.get("PR_DRAFT") == "false"
             errs += check_plan_pr(traced, env, ready)
             if env.get("PR_NUMBER") and ready:

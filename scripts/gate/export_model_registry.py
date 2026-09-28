@@ -7,6 +7,7 @@ docs/product/07-MODEL-REGISTRY.md or docs/EXPERIMENT_REGISTRY.md changes:
     python3 scripts/gate/export_model_registry.py                     # write the JSON
     python3 scripts/gate/export_model_registry.py --check             # exit 1 if the committed JSON is stale
     python3 scripts/gate/export_model_registry.py --check --rev SHA   # the same, read from a commit (CI)
+    python3 scripts/gate/export_model_registry.py --check --rev SHA --base SHA  # stale only if this PR did it
 
 The refresh-canvas skill reads this file from main and merges it into the
 "Stocks models diagram" canvas field by field. Nothing here is re-measured;
@@ -17,6 +18,12 @@ Provenance is `sources`: the git blob id of each source document, which is
 the same on every commit that carries that content. --check compares it too,
 so a JSON exported from different source text is stale even when the parsed
 tables happen to match.
+
+A PR head contains main, so one registry edit that reaches main without its
+JSON would fail every later PR. With --base, a stale head fails only when the
+PR itself touches a source or the JSON, or when the base was fresh and the
+head made it stale (a merge of a stale main it carries); otherwise the notice
+names main and the check passes.
 """
 from __future__ import annotations
 
@@ -157,6 +164,36 @@ def experiment_ids(text: str) -> list[str]:
     return sorted(ids)
 
 
+LLM_GROUP = re.compile(r"\bLLM nodes\b")
+
+
+def resolve_scheduler_models(schedulers: list[dict], models: dict) -> None:
+    """Fill `models` for a scheduler whose Serves cell names no MODEL-* id.
+
+    Two forms are expanded, both deterministic: a phrase naming the LLM node
+    group ("all 14 LLM nodes", "the LLM nodes' delivery half") becomes every
+    id in the `LLM nodes` tier, and a row that runs another row's Job (the
+    Sunday refresh of a job whose weekday row lists its models, whether or not
+    it says "the same job") inherits the ids those rows name literally. Any
+    other prose is not guessed at: `models` stays empty and `models_note`
+    carries the Serves text, so the canvas shows the gap instead of hiding it.
+    """
+    llm_ids = sorted(mid for mid, rec in models.items() if rec.get("tier") == "LLM nodes")
+    by_job: dict[str, set[str]] = {}
+    for rec in schedulers:
+        if rec["models"]:
+            by_job.setdefault(rec.get("job", ""), set()).update(rec["models"])
+    for rec in schedulers:
+        if rec["models"]:
+            continue
+        if LLM_GROUP.search(rec.get("serves", "")):
+            rec["models"] = llm_ids
+        elif by_job.get(rec.get("job", "")):
+            rec["models"] = sorted(by_job[rec["job"]])
+        else:
+            rec["models_note"] = f"no registered model named in Serves: {rec.get('serves', '')}"
+
+
 def build(src: Source) -> dict:
     text = src.read(REGISTRY)
     if text is None:
@@ -209,16 +246,42 @@ def build(src: Source) -> dict:
                 out["excluded_schedulers"].append(rec)
     for fid, rec in grouped.items():
         out["dispositions"].setdefault(fid, rec)
+    resolve_scheduler_models(out["schedulers"], out["models"])
     etext = src.read(EXPERIMENTS)
     if etext is not None:
         out["experiment_ids"] = experiment_ids(etext)
     return out
 
 
+def fresh_at(rev: str) -> bool:
+    """Whether the JSON at `rev` was exported from the sources at `rev`: its recorded blob ids match theirs."""
+    src = Source(rev)
+    committed = src.read(OUT)
+    if committed is None:
+        return False
+    return json.loads(committed).get("sources") == {path: src.blob(path) for path in (REGISTRY, EXPERIMENTS)}
+
+
+def touched_since(base: str, rev: str) -> list[str]:
+    """The registry sources and the JSON that `rev` changed since it forked from `base` (the PR's own edits)."""
+    r = git("diff", "--name-only", f"{base}...{rev}", "--", REGISTRY, EXPERIMENTS, OUT)
+    if r.returncode != 0:
+        raise SystemExit(r.stderr.strip() or f"git diff {base}...{rev} failed")
+    return r.stdout.split()
+
+
+def option(argv: list[str], flag: str) -> str | None:
+    return argv[argv.index(flag) + 1] if flag in argv and argv.index(flag) + 1 < len(argv) else None
+
+
 def main(argv: list[str]) -> int:
-    rev = argv[argv.index("--rev") + 1] if "--rev" in argv and argv.index("--rev") + 1 < len(argv) else None
+    rev = option(argv, "--rev")
     if "--rev" in argv and rev is None:
         print("--rev needs a commit")
+        return 2
+    base = option(argv, "--base")
+    if "--base" in argv and (base is None or rev is None or "--check" not in argv):
+        print("--base needs a commit, and --check --rev")
         return 2
     src = Source(rev)
     data = build(src)
@@ -229,6 +292,11 @@ def main(argv: list[str]) -> int:
             print(f"missing {OUT}; run export_model_registry.py")
             return 1
         if json.loads(committed) != json.loads(payload):
+            if base is not None and not touched_since(base, rev) and not fresh_at(base):
+                print(f"{OUT} is already stale on the base branch (main at {base[:12]}), not in this PR; "
+                      f"whoever last edited {REGISTRY} or {EXPERIMENTS} on main should regenerate it there: "
+                      "run export_model_registry.py and commit the JSON")
+                return 0
             print(f"{OUT} is stale; run export_model_registry.py and commit")
             return 1
         print("model-registry.json is current")

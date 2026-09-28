@@ -13,6 +13,7 @@ finding gives.
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -130,6 +131,22 @@ def gate(repo: Path, *args: str, **env: str) -> subprocess.CompletedProcess:
                           env={**inherited, **env}, capture_output=True, text=True)
 
 
+def on_base(repo: Path, files: dict[str, str | None]) -> None:
+    """Commit `files` on main and move the `base` tag there: what a change is measured against.
+    The catalog row and the approved spec are read from the base, never from the change."""
+    _git(repo, "reset", "-q", "--hard")
+    _git(repo, "clean", "-qfd")
+    _git(repo, "checkout", "-q", "main")
+    for path, text in files.items():
+        if text is None:
+            (repo / path).unlink()
+        else:
+            write(repo, path, text)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "on base")
+    _git(repo, "tag", "-f", "base")
+
+
 def pr(repo: Path, branch: str, files: dict[str, str | None], **env: str) -> subprocess.CompletedProcess:
     """A pull request from `branch`, cut from base, that writes `files` (None deletes one),
     judged the way the spec-gate workflow judges it."""
@@ -208,7 +225,7 @@ def test_branch_names_exempt_no_code(repo):
             for name, env in (("main", fork), ("docs/typo", {}), ("chore/bypass", {}), ("spike/try", {}))}
     assert all(r.returncode == 1 for r in runs.values()), {n: r.stdout for n, r in runs.items()}
     assert "A pull request from a fork gets no prefix allowance." in runs["main"].stdout
-    manifest = {"package.json": "{}\n"}
+    manifest = {"package-lock.json": "{}\n"}   # a new package.json is a new project, see the dependency-fields test
     assert pr(repo, "chore/deps", manifest).returncode == 0
     assert pr(repo, "chore/deps", manifest, **fork).returncode == 1
 
@@ -236,7 +253,8 @@ def test_a_superseded_spec_authorizes_nothing(repo):
     newer = "docs/superpowers/specs/2026-09-20-model-decisions-v2.md"
     r = pr(repo, BRANCH, {**CODE, newer: spec(status="draft", supersedes=SPEC)})
     assert r.returncode == 1 and f"{SPEC} is superseded by {newer}" in r.stdout, r.stdout
-    r = pr(repo, BRANCH, {**CODE, SPEC: spec(status="superseded")})
+    on_base(repo, {SPEC: spec(status="superseded")})
+    r = pr(repo, BRANCH, CODE)
     assert r.returncode == 1 and "is status: superseded" in r.stdout, r.stdout
 
 
@@ -248,11 +266,11 @@ def test_the_plan_names_the_spec_that_is_enforced(repo):
     feature's spec, or at a newer draft, and still pass.
     """
     other = "docs/superpowers/specs/2026-09-02-data-nulls.md"
-    r = pr(repo, BRANCH, {**CODE, other: spec(feat_id="FEAT-DATA-001", req_ids="[REQ-DATA-001]"),
-                          PLAN: plan(spec=other)})
-    assert r.returncode == 1 and "the plan's spec serves FEAT-DATA-001, not FEAT-MODEL-001" in r.stdout, r.stdout
     draft = "docs/superpowers/specs/2026-09-20-model-decisions-v2.md"
-    r = pr(repo, BRANCH, {**CODE, draft: spec(status="draft"), PLAN: plan(spec=draft)})
+    on_base(repo, {other: spec(feat_id="FEAT-DATA-001", req_ids="[REQ-DATA-001]"), draft: spec(status="draft")})
+    r = pr(repo, BRANCH, {**CODE, PLAN: plan(spec=other)})
+    assert r.returncode == 1 and "the plan's spec serves FEAT-DATA-001, not FEAT-MODEL-001" in r.stdout, r.stdout
+    r = pr(repo, BRANCH, {**CODE, PLAN: plan(spec=draft)})
     assert r.returncode == 1 and f"{draft} is still status: draft" in r.stdout, r.stdout
 
 
@@ -290,9 +308,11 @@ def test_done_when_and_the_other_list_fields_must_be_lists(repo):
     verify. issues and canvases get the same type check.
     """
     for value in ("TBD", '""'):
-        r = pr(repo, BRANCH, {**CODE, SPEC: spec(done_when=value)})
+        on_base(repo, {SPEC: spec(done_when=value)})
+        r = pr(repo, BRANCH, CODE)
         assert r.returncode == 1 and "done_when must be a non-empty list" in r.stdout, (value, r.stdout)
-    r = pr(repo, BRANCH, {**CODE, SPEC: spec(issues="#12")})
+    on_base(repo, {SPEC: spec(issues="#12")})
+    r = pr(repo, BRANCH, CODE)
     assert r.returncode == 1 and "issues must be a list" in r.stdout, r.stdout
 
 
@@ -303,31 +323,34 @@ def test_req_ids_name_defined_requirements(repo):
     the requirements doc defines IDs (stocks), be one of them. Solyra has no
     requirements doc, so there the check is shape only.
     """
-    r = pr(repo, BRANCH, {**CODE, SPEC: spec(req_ids="[REQ-FAKE-999]")})
+    on_base(repo, {SPEC: spec(req_ids="[REQ-FAKE-999]")})
+    r = pr(repo, BRANCH, CODE)
     assert r.returncode == 1 and "req_ids not defined in" in r.stdout, r.stdout
-    r = pr(repo, BRANCH, {**CODE, SPEC: spec(req_ids="[REQ-DOES-NOT-EXIST-999]")})
+    on_base(repo, {SPEC: spec(req_ids="[REQ-DOES-NOT-EXIST-999]")})
+    r = pr(repo, BRANCH, CODE)
     assert r.returncode == 1 and "not shaped REQ-XXX-000" in r.stdout, r.stdout
-    r = pr(repo, BRANCH, {**CODE, SPEC: spec(req_ids="[]")})
+    on_base(repo, {SPEC: spec(req_ids="[]")})
+    r = pr(repo, BRANCH, CODE)
     assert r.returncode == 1 and "req_ids must be a non-empty list" in r.stdout, r.stdout
-    r = pr(repo, BRANCH, {**CODE, SPEC: spec(req_ids="[REQ-FAKE-999]"), REQUIREMENTS: None})
-    assert r.returncode == 0, r.stdout
+    on_base(repo, {SPEC: spec(req_ids="[REQ-FAKE-999]"), REQUIREMENTS: None})
+    assert pr(repo, BRANCH, CODE).returncode == 0
 
 
 def test_commit_mode_reads_what_is_staged(repo):
     """stocks#1205 r4117017699 (spec_gate.py:85); solyra#72 r4117710096 (:179).
 
     The old gate listed the staged files but read specs and plans from the
-    working tree, so a spec staged as draft and flipped to approved on disk
-    passed, although the commit carries the draft.
+    working tree, so a plan staged as done and flipped to ready on disk
+    passed, although the commit carries the done one.
     """
     _git(repo, "checkout", "-q", "-B", BRANCH, "base")
-    write(repo, SPEC, spec(status="draft"))
+    write(repo, PLAN, plan(status="done"))
     write(repo, "lib/model.py", CODE["lib/model.py"])
-    _git(repo, "add", SPEC, "lib/model.py")
-    write(repo, SPEC, spec())
+    _git(repo, "add", PLAN, "lib/model.py")
+    write(repo, PLAN, plan())
     r = gate(repo, "--commit")
-    assert r.returncode == 1 and "is still status: draft" in r.stdout, r.stdout
-    _git(repo, "add", SPEC)
+    assert r.returncode == 1 and "authorizes implementation only while status: ready" in r.stdout, r.stdout
+    _git(repo, "add", PLAN)
     assert gate(repo, "--commit").returncode == 0
 
 
@@ -403,6 +426,7 @@ def test_close_out_records_are_required_once_the_pr_is_ready(repo):
     assert r.returncode == 1 and "done_when item(s) not ticked" in r.stdout, r.stdout
 
     trace = "# Traceability\n\n## FEAT-MODEL-001\n\n- none\n\n## FEAT-DATA-001\n\n- #42 state each model's decision\n"
+    on_base(repo, {TRACEABILITY: trace})   # the other capability's section is not this change's to add
     r = pr(repo, BRANCH, {**recorded, CATALOG: row, TRACEABILITY: trace}, **meta, PR_DRAFT="false")
     assert r.returncode == 1 and "add this PR (#42) under the FEAT-MODEL-001 section" in r.stdout, r.stdout
     trace = trace.replace("- none\n", "- #42 state each model's decision\n")
@@ -530,3 +554,260 @@ def test_only_catalog_rows_define_feat_ids(repo):
                         "docs/superpowers/plans/2026-09-03-fake.md":
                             plan(feat_id="FEAT-FAKE-001", spec=fake_spec, branch=name)})
     assert r.returncode == 1 and "FEAT-FAKE-001 is not a row in" in r.stdout, r.stdout
+
+
+def test_a_chore_branch_changes_only_dependency_fields(repo):
+    """solyra#72 r4118278194 (spec_gate.py:69, P1).
+
+    The chore/ allowance accepted any edit to package.json, so a chore PR could
+    rewrite `scripts.test` or `scripts.build` and CI would run the new scripts
+    from the checkout without a FEAT-ID, spec or plan. The gate now parses the
+    manifest at the merge base and at the head and allows only the dependency
+    fields to differ; pyproject.toml gets the same treatment. Lockfiles and
+    requirements files hold nothing but dependencies, so they stay allowed.
+    """
+    package = {"name": "app", "scripts": {"test": "vitest run"}, "dependencies": {"react": "^19.0.0"}}
+    pyproject = '[project]\nname = "app"\ndependencies = ["pandas==2.2.0"]\n\n[tool.pytest.ini_options]\naddopts = "-q"\n'
+    _git(repo, "checkout", "-q", "main")
+    write(repo, "package.json", json.dumps(package, indent=2) + "\n")
+    write(repo, "pyproject.toml", pyproject)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "manifests")
+    _git(repo, "tag", "-f", "base")
+
+    bumped = {**package, "dependencies": {"react": "^19.1.0"}, "devDependencies": {"vitest": "^3.0.0"}}
+    assert pr(repo, "chore/bump-deps", {"package.json": json.dumps(bumped, indent=2) + "\n"}).returncode == 0
+    assert pr(repo, "chore/bump-deps", {"pyproject.toml": pyproject.replace("2.2.0", "2.2.3")}).returncode == 0
+    assert pr(repo, "chore/bump-deps", {"package-lock.json": "{}\n", "requirements.txt": "pandas==2.2.3\n"}).returncode == 0
+
+    rewired = {**package, "scripts": {"test": "true"}}
+    r = pr(repo, "chore/bump-deps", {"package.json": json.dumps(rewired, indent=2) + "\n"})
+    assert r.returncode == 1, r.stdout
+    assert "package.json: changes scripts, not only dependencies" in r.stdout, r.stdout
+    r = pr(repo, "chore/bump-deps", {"pyproject.toml": pyproject.replace('"-q"', '"-q -p no:cacheprovider"')})
+    assert r.returncode == 1 and "pyproject.toml: changes tool, not only dependencies" in r.stdout, r.stdout
+    r = pr(repo, "chore/bump-deps", {"package.json": "{not json\n"})
+    assert r.returncode == 1 and "package.json: cannot be parsed" in r.stdout, r.stdout
+    r = pr(repo, "chore/new-app", {"web/package.json": json.dumps(package) + "\n"})
+    assert r.returncode == 1 and "web/package.json: a new manifest is a new project" in r.stdout, r.stdout
+
+    _git(repo, "checkout", "-q", "-B", "chore/bump-deps", "base")
+    write(repo, "package.json", json.dumps(rewired, indent=2) + "\n")
+    _git(repo, "add", "package.json")
+    r = gate(repo, "--commit")
+    assert r.returncode == 1 and "package.json: changes scripts" in r.stdout, r.stdout
+
+
+def test_the_canvas_handoff_is_in_the_pr_body(repo):
+    """solyra#72 r4118278197 (spec_gate.py:308, P2).
+
+    A spec with a non-empty `canvases` list passed the body check with only the
+    spec path, plan path and checkboxes, so the Phase 5 handoff (`Canvas
+    refresh pending: <url>`, or the report-only marker for a report-only
+    canvas) could be left out and the gate still reported success. The body
+    must now name every canvas the spec lists, under the marker its mode calls
+    for, and a canvas the spec names must exist in canvases.yml.
+    """
+    refresh, report = "https://claude.ai/artifact/AAAA", "https://claude.ai/artifact/BBBB"
+    canvases = ("canvases:\n"
+                f"  - name: Models\n    url: {refresh}\n    repo: t/t\n    source_json: x.json\n"
+                f"  - name: Architecture\n    url: {report}\n    repo: t/t\n    mode: report-only\n    source_json: null\n")
+    on_base(repo, {SPEC: spec(canvases=[refresh, report])})
+    files = {**CODE, "docs/product/canvases.yml": canvases}
+    title = {"PR_TITLE": "FEAT-MODEL-001: x"}
+
+    r = pr(repo, BRANCH, files, **title, PR_BODY=body())
+    assert r.returncode == 1, r.stdout
+    assert f"PR body must carry 'Canvas refresh pending: {refresh}'" in r.stdout, r.stdout
+    assert f"PR body must carry 'Canvas check pending (report-only): {report}'" in r.stdout, r.stdout
+
+    wrong_marker = body() + f"\n\nCanvas refresh pending: {refresh}, {report}\n"
+    r = pr(repo, BRANCH, files, **title, PR_BODY=wrong_marker)
+    assert r.returncode == 1 and f"Canvas check pending (report-only): {report}" in r.stdout, r.stdout
+
+    handed_off = body() + f"\n\nCanvas refresh pending: {refresh}\nCanvas check pending (report-only): {report}\n"
+    assert pr(repo, BRANCH, files, **title, PR_BODY=handed_off).returncode == 0
+
+    on_base(repo, {SPEC: spec(canvases=["https://claude.ai/artifact/ZZZZ"])})
+    r = pr(repo, BRANCH, files, **title, PR_BODY=handed_off)
+    assert r.returncode == 1 and "ZZZZ, which is not in docs/product/canvases.yml" in r.stdout, r.stdout
+
+    on_base(repo, {SPEC: spec(canvases=[])})
+    assert pr(repo, BRANCH, CODE, **title, PR_BODY=body()).returncode == 0
+
+
+def test_a_change_cannot_add_its_own_capability_or_approve_its_own_spec(repo):
+    """Adversarial review of #1205 and #72, B2 (spec_gate.py:249-275).
+
+    The catalog and the spec's `status: approved` were read from the PR head,
+    so one PR could add a FEAT-FAKE-001 row, a spec that calls itself approved,
+    a plan and the code, and pass. Phase 2 commits the approved spec alone
+    first; the gate now reads the catalog row and the spec from the merge base
+    (HEAD in commit mode) and refuses a spec that is new or edited in the change.
+    """
+    fake_spec = "docs/superpowers/specs/2026-09-28-fake.md"
+    fake_plan = "docs/superpowers/plans/2026-09-28-fake.md"
+    fake_branch = "feature/feat-fake-001-anything"
+    catalog = CATALOG_TEXT.replace("| [FEAT-DATA-001]", "| [FEAT-FAKE-001](#feat-fake-001) | Fake | Production | unknown | none |\n| [FEAT-DATA-001]")
+    r = pr(repo, fake_branch, {**CODE, CATALOG: catalog,
+                               fake_spec: spec(feat_id="FEAT-FAKE-001", req_ids="[REQ-MODEL-001]"),
+                               fake_plan: plan(feat_id="FEAT-FAKE-001", spec=fake_spec, branch=fake_branch)})
+    assert r.returncode == 1, r.stdout
+    assert "FEAT-FAKE-001 is not a row in docs/product/02-FEATURE-CATALOG.md at the merge base" in r.stdout, r.stdout
+    assert f"{fake_spec} is new in this change; an approved spec lands alone first" in r.stdout, r.stdout
+
+    r = pr(repo, BRANCH, {**CODE, SPEC: spec(done_when=DONE + ["one more"])})
+    assert r.returncode == 1 and f"{SPEC} is edited in this change" in r.stdout, r.stdout
+
+    on_base(repo, {SPEC: spec(status="draft")})
+    _git(repo, "checkout", "-q", "-B", BRANCH, "base")
+    write(repo, SPEC, spec())
+    write(repo, "lib/model.py", CODE["lib/model.py"])
+    _git(repo, "add", "-A")
+    r = gate(repo, "--commit")
+    assert r.returncode == 1 and "is still status: draft" in r.stdout and "is edited in this change" in r.stdout, r.stdout
+
+
+def test_a_merge_into_a_docs_branch_is_measured_against_what_it_merges(repo):
+    """Adversarial review of #1205 and #72, B4 (spec_gate.py --commit).
+
+    Merging main into a docs/ branch stages main's code, and the hook read the
+    whole index as the branch's change, so a conflicted merge could not be
+    committed. During a merge (MERGE_HEAD exists) the index is measured against
+    the side being merged in, which leaves the branch's own files.
+    """
+    _git(repo, "checkout", "-q", "-B", "docs/typo", "base")
+    write(repo, "docs/notes.md", "# Notes\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "docs")
+    _git(repo, "checkout", "-q", "main")
+    write(repo, "lib/model.py", CODE["lib/model.py"])
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "code on main")
+    _git(repo, "checkout", "-q", "docs/typo")
+    _git(repo, "merge", "-q", "--no-commit", "--no-ff", "main")
+    assert _git(repo, "rev-parse", "--verify", "MERGE_HEAD")
+    r = gate(repo, "--commit")
+    assert r.returncode == 0, r.stdout
+    write(repo, "lib/other.py", "x = 1\n")
+    _git(repo, "add", "lib/other.py")
+    assert gate(repo, "--commit").returncode == 1
+
+
+def test_a_failed_git_command_is_a_gate_failure_not_an_empty_diff(repo):
+    """Adversarial review of #1205 and #72, finding 5 (spec_gate.py:447,464).
+
+    The return code of `git diff` was ignored, so a diff that failed (a corrupt
+    index, a bad ref) listed no files and the gate printed `spec gate ok`. The
+    gate now fails naming the command. This is CLAUDE.md Rule 3.7 applied to
+    the gate itself.
+    """
+    _git(repo, "checkout", "-q", "-B", "docs/x", "base")
+    write(repo, "docs/x.md", "# x\n")
+    _git(repo, "add", "-A")
+    bad_index = repo / ".git" / "broken-index"
+    bad_index.write_bytes(b"not an index")
+    r = gate(repo, "--commit", GIT_INDEX_FILE=str(bad_index))
+    assert r.returncode == 1 and "git diff --cached failed" in r.stdout, r.stdout
+
+
+def test_the_gate_reads_git_as_utf8_whatever_the_locale(repo):
+    """Adversarial review of #1205 and #72, B3 (spec_gate.py:79).
+
+    `git()` decoded with the locale encoding, so on Windows (cp1252) a spec
+    holding a curly quote or an emoji raised UnicodeDecodeError and the hook
+    blocked every commit with a traceback. Decoding is utf-8 with replacement.
+    """
+    on_base(repo, {SPEC: spec() + "\nThe reviewer said \u201cship it\u201d \u274c\n"})
+    r = pr(repo, BRANCH, CODE, PYTHONUTF8="0", LC_ALL="C", LANG="C")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_a_feature_change_edits_only_its_own_product_records(repo):
+    """stocks#1205 r4118289642 (spec_gate.py:225).
+
+    Documentation was dropped before any check, so a feature PR could rewrite
+    another capability's catalog record, or the requirements, with no
+    traceability. Under docs/product/ the catalog and traceability may change
+    only on the FEAT-ID's own row and record, and the requirements not at all;
+    the model registry, canvases and generated files are not restricted.
+    """
+    ok = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body()}
+    own = CATALOG_TEXT.replace("### FEAT-MODEL-001\n\n- Status: Production", "### FEAT-MODEL-001\n\n- Status: Production\n- Note: decisions named")
+    assert pr(repo, BRANCH, {**CODE, CATALOG: own}, **ok).returncode == 0
+    other = CATALOG_TEXT.replace("### FEAT-DATA-001\n\n- Status: Production", "### FEAT-DATA-001\n\n- Status: Retired")
+    r = pr(repo, BRANCH, {**CODE, CATALOG: other}, **ok)
+    assert r.returncode == 1 and "lines outside FEAT-MODEL-001's row and record change" in r.stdout, r.stdout
+    r = pr(repo, BRANCH, {**CODE, REQUIREMENTS: REQUIREMENTS_TEXT + "\n**REQ-MODEL-002:** Faster.\n"}, **ok)
+    assert r.returncode == 1 and "requirements change on their own docs/ branch" in r.stdout, r.stdout
+    trace = "# Traceability\n\n### FEAT-DATA-001\n\n- #1\n"
+    on_base(repo, {TRACEABILITY: trace})
+    assert pr(repo, BRANCH, {**CODE, TRACEABILITY: trace + "\n### FEAT-MODEL-001\n\n- #7\n"}, **ok).returncode == 0
+    r = pr(repo, BRANCH, {**CODE, TRACEABILITY: trace.replace("#1", "#1, #7")}, **ok)
+    assert r.returncode == 1 and "docs/product/12-PR-ISSUE-TRACEABILITY.md: lines outside" in r.stdout, r.stdout
+    assert pr(repo, BRANCH, {**CODE, "docs/product/07-MODEL-REGISTRY.md": "# Registry\n"}, **ok).returncode == 0
+
+
+def test_the_plan_names_a_spec_under_the_spec_directory(repo):
+    """stocks#1205 r4118289647 (spec_gate.py:195).
+
+    validate_plan only required the spec path to resolve to some file, so a
+    plan could name an approved-looking file outside docs/superpowers/specs/,
+    which the supersession scan never sees.
+    """
+    stray = "docs/notes/approved.md"
+    on_base(repo, {stray: spec()})
+    r = pr(repo, BRANCH, {**CODE, PLAN: plan(spec=stray)})
+    assert r.returncode == 1 and f"spec must be a file under docs/superpowers/specs/, not {stray}" in r.stdout, r.stdout
+
+
+def test_the_branch_override_names_a_detached_commit_only(repo):
+    """stocks#1205 r4118289655 (spec_gate.py:444).
+
+    SPEC_GATE_BRANCH was read before the real branch, so a commit on main or
+    docs/x could export a feature branch's name and be judged by that branch's
+    plan. The override is honoured only when HEAD is detached.
+    """
+    _git(repo, "checkout", "-q", "-B", "docs/typo", "base")
+    write(repo, "lib/model.py", CODE["lib/model.py"])
+    _git(repo, "add", "lib/model.py")
+    r = gate(repo, "--commit", SPEC_GATE_BRANCH=BRANCH)
+    assert r.returncode == 1 and "HEAD is on branch 'docs/typo'" in r.stdout, r.stdout
+    _git(repo, "checkout", "-q", "--detach")
+    assert gate(repo, "--commit", SPEC_GATE_BRANCH=BRANCH).returncode == 0
+
+
+def test_a_ticked_done_when_item_may_not_defer_its_work(repo):
+    """stocks#1205 r4118289657 (spec_gate.py:392).
+
+    A ticked line only had to start with the done_when text, so
+    `- [x] <item> (follow-up)` counted as done. The phrases CLAUDE.md rule 0
+    forbids in a perf context are refused on a ticked done_when line.
+    """
+    title = {"PR_TITLE": "FEAT-MODEL-001: x"}
+    deferred = f"Spec: {SPEC}\nPlan: {PLAN}\n\n- [x] {DONE[0]} (non-blocking, future-work)\n- [x] {DONE[1]}\n"
+    r = pr(repo, BRANCH, CODE, **title, PR_BODY=deferred)
+    assert r.returncode == 1 and "a ticked done_when item defers its work" in r.stdout, r.stdout
+    assert pr(repo, BRANCH, CODE, **title, PR_BODY=body(ticked=True)).returncode == 0
+
+
+def test_a_workload_change_carries_its_capacity_numbers(repo):
+    """stocks#1205 r4118289674 (spec_gate.py:313).
+
+    A PR changing a Cloud Run job or a workflow could leave the template's
+    Capacity line blank and pass, although CLAUDE.md rule 0 makes the three
+    numbers and the cost mandatory. With a change under gcp/ or
+    .github/workflows/ the body must give them, or an `n/a: <why>`.
+    """
+    title = {"PR_TITLE": "FEAT-MODEL-001: x"}
+    job = {**CODE, "gcp/model_job.py": "print('run')\n"}
+    blank = body() + "\n\n## Capacity (CLAUDE.md rule 0)\nVolume: \u00b7 Velocity: \u00b7 Wall-clock: \u00b7 $/run \u00d7 runs/day \u00d7 30:\n"
+    r = pr(repo, BRANCH, job, **title, PR_BODY=blank)
+    assert r.returncode == 1 and "Capacity section leaves Volume, Velocity, Wall-clock, 30 blank" in r.stdout, r.stdout
+    r = pr(repo, BRANCH, job, **title, PR_BODY=body())
+    assert r.returncode == 1 and "PR body needs a Capacity section" in r.stdout, r.stdout
+    filled = body() + "\n\n## Capacity\nVolume: 3 tickers \u00d7 400 B \u00b7 Velocity: 1 query \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01\n"
+    assert pr(repo, BRANCH, job, **title, PR_BODY=filled).returncode == 0
+    na = body() + "\n\n## Capacity\nn/a: the job's log line changes, no query or schedule does\n"
+    assert pr(repo, BRANCH, job, **title, PR_BODY=na).returncode == 0
+    assert pr(repo, BRANCH, CODE, **title, PR_BODY=body()).returncode == 0

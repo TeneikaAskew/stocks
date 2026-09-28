@@ -14,7 +14,7 @@ Read `references/spec-template.md` and `references/plan-template.md` before writ
 
 State exactly one, in one line, before doing anything else:
 
-- **TRIVIAL**: typo, comment or wording in a doc (branch `docs/<slug>`), or a dependency bump that touches only manifests and lockfiles (branch `chore/<slug>`). No spec. Stop here. A config or workflow change is not trivial: it is a CHANGE under the capability that owns the file: workflows and CI configuration under FEAT-CICD-001 (both repos), deploy scripts and Cloud Build triggers under FEAT-DEPLOY-001 (stocks), anything else under the capability whose catalog row or record covers it.
+- **TRIVIAL**: typo, comment or wording in a doc (branch `docs/<slug>`), or a dependency bump that touches only manifests and lockfiles (branch `chore/<slug>`; in `package.json` or `pyproject.toml` only the dependency fields, since a `scripts` or tool-config edit is code CI runs). No spec. Stop here. A config or workflow change is not trivial: it is a CHANGE under the capability that owns the file: workflows and CI configuration under FEAT-CICD-001 (both repos), deploy scripts and Cloud Build triggers under FEAT-DEPLOY-001 (stocks), anything else under the capability whose catalog row or record covers it.
 - **SPIKE**: investigation, no code will merge. One session budget. Output is one note at `docs/superpowers/spikes/YYYY-MM-DD-<slug>.md`. Branch `spike/<slug>`. No PR: the gate lets `spike/` commit code locally and gives it no allowance in CI. Stop here.
 - **CHANGE**: everything else. Continue.
 
@@ -37,7 +37,7 @@ Invoke `superpowers:brainstorming`. It asks the questions and proposes approache
 
 with the frontmatter in `references/spec-template.md`. `done_when` is the contract: each item must be verifiable by a test, a query, or a file the reviewer can open.
 
-Present the spec in sections. Stop after each section for feedback. Do not proceed until the user says approved. Then set `status: approved` and commit the spec alone (branch `docs/spec-<feat-id>` is fine; the gate never gates documentation).
+Present the spec in sections. Stop after each section for feedback. Do not proceed until the user says approved. Then set `status: approved` and commit the spec alone (branch `docs/spec-<feat-id>` is fine; the gate never gates documentation), and merge it before the implementation branch opens: the gate reads the catalog row and the approved spec from the merge base (HEAD for a local commit), so a change that adds or edits its own spec, or its own catalog row, is refused.
 
 ## Phase 3: plan
 
@@ -57,7 +57,7 @@ Invoke `superpowers:using-git-worktrees`, then `superpowers:subagent-driven-deve
 
 PR rules:
 - Title: `<FEAT-ID>: <what changed>`, starting with the branch's FEAT-ID. CI rejects any other title.
-- Body: link the spec and the plan by their exact paths, paste each `done_when` item as a `- [ ]` line that starts with the item's text, then the capacity numbers CLAUDE.md requires.
+- Body: link the spec and the plan by their exact paths, paste each `done_when` item as a `- [ ]` line that starts with the item's text, then the capacity numbers CLAUDE.md requires. CI refuses a ticked item whose line defers the work (`follow-up`, `non-blocking`, `future-work`, `TODO`, and the like), and when the PR touches `gcp/` or `.github/workflows/` it requires the Capacity section's Volume, Velocity, Wall-clock and cost to be filled, or an `n/a: <why>`.
 - Open the PR as a draft, then set the plan's `pr` to its number in the next commit. A draft may still say `null`; a number that is not this PR fails the gate, and once the PR is marked ready for review CI requires the number and the Phase 5 records.
 - Review cap: TWO rounds. After the second round of review comments, do not keep fixing in place. Invoke `superpowers:finishing-a-development-branch` and present: split into smaller PRs, re-cut from the spec, or discard. A PR that is not mergeable after two rounds is a spec problem, not a code problem.
 - Never open a follow-up PR from an unmerged PR. Never stack.
@@ -67,9 +67,9 @@ PR rules:
 
 In the SAME PR, before requesting final review:
 
-1. `docs/product/02-FEATURE-CATALOG.md`: update the FEAT-ID's Status and Last reviewed (stocks: in its capability record under the table; solyra: in the row's columns). Touch only that row or record. CI checks that Last reviewed has moved to a date and that Status is set; a blank or unrelated edit in the section does not count.
+1. `docs/product/02-FEATURE-CATALOG.md`: update the FEAT-ID's Status and Last reviewed (stocks: in its capability record under the table; solyra: in the row's columns). Touch only that row or record: CI refuses a change to any other capability's row or record in the catalog or the traceability doc, and any change to `01-PRODUCT-REQUIREMENTS.md` on a feature branch (requirements change on their own `docs/` branch first). CI also checks that Last reviewed has moved to a date and that Status is set; a blank or unrelated edit in the section does not count.
 2. `docs/product/12-PR-ISSUE-TRACEABILITY.md`: add this PR's number under the FEAT-ID. A repo without that file (solyra) records it in the catalog row's PRs column instead.
-3. If the spec lists canvases, add to the PR body: `Canvas refresh pending: <urls>`, or for a canvas marked `mode: report-only` in `docs/product/canvases.yml`, `Canvas check pending (report-only): <urls>`. The refresh is run from chat with the refresh-canvas skill after merge, never from this PR.
+3. If the spec lists canvases, add to the PR body: `Canvas refresh pending: <urls>`, or for a canvas marked `mode: report-only` in `docs/product/canvases.yml`, `Canvas check pending (report-only): <urls>`. CI checks that every canvas the spec lists appears under the marker its mode calls for, and that each is an entry in `canvases.yml`. The refresh is run from chat with the refresh-canvas skill after merge, never from this PR.
 4. Run `python3 scripts/gate/export_model_registry.py` if the PR touched `docs/product/07-MODEL-REGISTRY.md` or `docs/EXPERIMENT_REGISTRY.md`, and commit the regenerated JSON.
 5. Run the repo's docs audit on this branch and on `origin/main` (stocks: `python3 scripts/maintenance/docs_audit.py`; solyra: `node scripts/docs-audit.mjs`): the branch reports no finding that `main` does not. Then run `python3 scripts/gate/spec_gate.py --pr origin/main`. Both clean, or the PR is not done.
 6. Tick every `done_when` box in the PR body with the evidence (test name, query, file) next to it, then mark the PR ready for review. From then on CI requires the catalog update, the PR number from step 2, and every box ticked.

@@ -52,6 +52,16 @@ Every row names the decision its model produces.
 | ID | Nodes | Count | Code | Numeric authority | Status |
 |---|---|---|---|---|---|
 | MODEL-LLM-001 | Insight writer | 3 | `lib/agents/insight.py` | none | Experimental |
+| MODEL-SUM-001 | summarizers | — | `lib/agents/summarizers.py` | preserve supplied values | Experimental |
+
+## Scheduled surfaces
+
+| Scheduler | Cron (`America/New_York`) | Job | Serves |
+|---|---|---|---|
+| `gamma-levels-daily` | `30 22 * * 1-5` | `p2-build-gamma-levels` | MODEL-GAMMA-001 |
+| `gamma-levels-sunday` | `0 21 * * 0` | `p2-build-gamma-levels` | the same job, weekend refresh |
+| `insight-pipeline-daily` | `45 8 * * 1-5` | `insight-pipeline` | **all 4 LLM nodes** — `run_insight_pipeline` |
+| `regime-combo-weekly` | `0 5 * * 0` | `regime-combo` | combo mining (E-22) — owned by the ledger, not by a `MODEL-*` row |
 
 ## Documentation coverage and freshness
 
@@ -207,7 +217,52 @@ def test_ci_checks_the_pr_head_commit(repo):
     assert export(repo, "--check", "--rev", fresh).returncode == 0
 
     steps = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]["gate"]["steps"]
-    assert any('export_model_registry.py --check --rev "$HEAD_SHA"' in s.get("run", "") for s in steps)
+    assert any('export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"' in s.get("run", "")
+               for s in steps)
+
+
+def test_a_stale_main_fails_only_the_pr_that_made_it_stale(repo):
+    """Adversarial review of #1205, B1 (spec-gate.yml:45, export_model_registry.py:226).
+
+    The PR head contains main, so one registry edit that reaches main without
+    its JSON (a direct-to-main typo fix, which CLAUDE.md allows) turned every
+    later PR red, docs-only PRs included. With --base, a stale head fails only
+    when the PR itself touches a source or the JSON, or when the base was
+    fresh and the head made it stale; otherwise it names main and passes.
+    """
+    exported(repo)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "regenerate")
+    fresh_main = _git(repo, "rev-parse", "HEAD")
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("Every row names", "Each row names"))
+    _git(repo, "commit", "-qam", "typo fix straight to main, JSON not regenerated")
+    stale_main = _git(repo, "rev-parse", "HEAD")
+
+    # An unrelated docs PR cut from the stale main: not this PR's fault.
+    _git(repo, "checkout", "-qb", "docs/unrelated")
+    write(repo, "docs/README.md", "unrelated\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "docs")
+    r = export(repo, "--check", "--rev", "HEAD", "--base", stale_main)
+    assert r.returncode == 0 and "main" in r.stdout and "regenerate" in r.stdout, r.stdout
+    assert export(repo, "--check", "--rev", "HEAD").returncode == 1
+
+    # A PR from the same stale main that edits the registry owns the staleness.
+    _git(repo, "checkout", "-qb", "docs/edits-registry", stale_main)
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("| Production | Keep |", "| Retired | Drop |"))
+    _git(repo, "commit", "-qam", "edit the registry, forget the JSON")
+    r = export(repo, "--check", "--rev", "HEAD", "--base", stale_main)
+    assert r.returncode == 1 and "is stale" in r.stdout, r.stdout
+
+    # A PR from a FRESH main that makes it stale fails, and passes once regenerated.
+    _git(repo, "checkout", "-qb", "docs/from-fresh", fresh_main)
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("| Production | Keep |", "| Retired | Drop |"))
+    _git(repo, "commit", "-qam", "edit the registry, forget the JSON")
+    r = export(repo, "--check", "--rev", "HEAD", "--base", fresh_main)
+    assert r.returncode == 1 and "is stale" in r.stdout, r.stdout
+    exported(repo)
+    _git(repo, "commit", "-qam", "regenerate")
+    assert export(repo, "--check", "--rev", "HEAD", "--base", fresh_main).returncode == 0
 
 
 def test_experiment_ids_come_from_entry_headings(repo):
@@ -219,3 +274,23 @@ def test_experiment_ids_come_from_entry_headings(repo):
     """
     assert exported(repo)["experiment_ids"] == [
         "E-01", "E-02", "E-26", "E-27", "E-28", "E-29", "E-30", "E-31", "E-33"]
+
+
+def test_scheduler_models_expand_llm_group_and_same_job_rows(repo):
+    """stocks#1205 r4118289666 (export_model_registry.py:206).
+
+    Scheduler membership came only from literal MODEL-* tokens in Serves, so
+    `insight-pipeline-daily` ("all 14 LLM nodes") and `premarket-brief-sunday`
+    ("the same job") exported empty `models` and fell off every LLM card. A
+    row naming the LLM node group now expands to every id in the LLM nodes
+    tier, a row running another row's Job inherits its models, and prose that
+    matches neither keeps `models` empty with a `models_note` carrying the
+    Serves text.
+    """
+    by_name = {s["scheduler"]: s for s in exported(repo)["schedulers"]}
+    assert by_name["`gamma-levels-daily`"]["models"] == ["MODEL-GAMMA-001"]
+    assert by_name["`gamma-levels-sunday`"]["models"] == ["MODEL-GAMMA-001"]
+    assert by_name["`insight-pipeline-daily`"]["models"] == ["MODEL-LLM-001", "MODEL-SUM-001"]
+    assert by_name["`regime-combo-weekly`"]["models"] == []
+    assert "owned by the ledger" in by_name["`regime-combo-weekly`"]["models_note"]
+    assert not any("models_note" in s for n, s in by_name.items() if n != "`regime-combo-weekly`")

@@ -2123,6 +2123,7 @@
    "cron_america_new_york": "`0 5 * * 0`",
    "job": "`regime-combo`",
    "models": [],
+   "models_note": "no registered model named in Serves: combo mining (E-22) — writes `regime_combo_results`, and nothing in this repo reads that table. Owned by the ledger, not by a `MODEL-*` row, because it feeds no decision. Listed so the weekly spend is visible, not because anything consumes it",
    "scheduler": "`regime-combo-weekly`",
    "serves": "combo mining (E-22) — writes `regime_combo_results`, and nothing in this repo reads that table. Owned by the ledger, not by a `MODEL-*` row, because it feeds no decision. Listed so the weekly spend is visible, not because anything consumes it"
   },
@@ -2249,7 +2250,13 @@
   {
    "cron_america_new_york": "`0 21 * * 0`",
    "job": "`premarket-brief`",
-   "models": [],
+   "models": [
+    "MODEL-BRIEF-001",
+    "MODEL-EARN-001",
+    "MODEL-IND-001",
+    "MODEL-LEVEL-001",
+    "MODEL-STRAT-001"
+   ],
    "scheduler": "`premarket-brief-sunday`",
    "serves": "the same job, weekend refresh"
   },
@@ -2395,14 +2402,30 @@
   {
    "cron_america_new_york": "`45 8 * * 1-5`",
    "job": "`insight-pipeline`",
-   "models": [],
+   "models": [
+    "MODEL-LLM-ANALYST",
+    "MODEL-LLM-DEBATE",
+    "MODEL-LLM-JUDGE",
+    "MODEL-LLM-PM",
+    "MODEL-LLM-RISK",
+    "MODEL-LLM-TRADER",
+    "MODEL-SUM-001"
+   ],
    "scheduler": "`insight-pipeline-daily`",
    "serves": "all 14 LLM nodes — `lib.agents.orchestrator.run_insight_pipeline`, imported at `gcp/insight_pipeline_job.py:69` and called at `:526`"
   },
   {
    "cron_america_new_york": "`15 9 * * 1-5`",
    "job": "`insight-discord-push`",
-   "models": [],
+   "models": [
+    "MODEL-LLM-ANALYST",
+    "MODEL-LLM-DEBATE",
+    "MODEL-LLM-JUDGE",
+    "MODEL-LLM-PM",
+    "MODEL-LLM-RISK",
+    "MODEL-LLM-TRADER",
+    "MODEL-SUM-001"
+   ],
    "scheduler": "`insight-discord-push-daily`",
    "serves": "the LLM nodes' delivery half — `lib.agents.model_routing` (`gcp/insight_discord_push.py:36`)"
   }

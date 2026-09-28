@@ -112,7 +112,7 @@ The spec gate (`scripts/gate/spec_gate.py`) accepts only these shapes:
 - `feature/<feat-id>-<slug>`: new features; any code change needs this or `fix/`
 - `fix/<feat-id>-<slug>`: bug fixes
 - `docs/<description>`: documentation only
-- `chore/<description>`: dependency manifests, lockfiles and the gate's own files only; a refactor is a CHANGE
+- `chore/<description>`: dependency manifests, lockfiles and the gate's own files only; in `package.json` or `pyproject.toml` only the dependency fields, since a `scripts` or tool-config edit is code CI runs; a refactor is a CHANGE
 - `spike/<description>`: local investigation commits, never a PR
 - `bot/superpowers-<tag>`: the weekly vendored-skills update
 - `fix/feat-cicd-001-workflow-{name}-{run-number}`: auto-created failure-handler branches

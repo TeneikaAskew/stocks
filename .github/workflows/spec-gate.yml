@@ -41,9 +41,13 @@ jobs:
         run: python3 scripts/gate/spec_gate.py --pr "$BASE_SHA" "$HEAD_SHA"
 
       # Only where the exporter exists (stocks): a PR that edits the model
-      # registry without regenerating its JSON fails here.
+      # registry without regenerating its JSON fails here. --base keeps a
+      # registry edit that reached main without its JSON from failing every
+      # later PR: only the PR that touched the registry, or made a fresh
+      # base stale, fails; the rest pass with a notice naming main.
       - name: Model registry JSON matches its sources
         if: hashFiles('scripts/gate/export_model_registry.py') != ''
         env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 scripts/gate/export_model_registry.py --check --rev "$HEAD_SHA"
+        run: python3 scripts/gate/export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"
