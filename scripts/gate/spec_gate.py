@@ -945,6 +945,7 @@ GATE_ENTRYPOINTS = (
     ".github/workflows/spec-gate.yml",
     ".github/workflows/registry-check.yml",
     SUITE,   # the suite CI runs on a proposed gate
+    "scripts/gate/export_model_registry.py", "tests/scripts/test_export_model_registry.py",   # where they exist (round five)
     *PINNED.values(),   # the pinned copies: without one, the file it pins is judged by the models alone
 )
 # The manifest fields a chore/ branch may change. Anything else in package.json or
@@ -968,7 +969,8 @@ DEFERRAL = re.compile(
     r"|unfinished|incomplete|untested|unverified|outstanding|pending|skipped|still open|to be done"
     # red-team round three: ordinary deferral phrasing the list missed
     r"|postpone\w*|parked|park it|out of scope|descope\w*|tracked in|will be (?:addressed|done|fixed|added|run)"
-    r"|after (?:the )?merge|phase \d|not in this PR|next (?:sprint|release|iteration)|to follow|later (?:change|release)|punt\w*)\b", re.I)
+    r"|after (?:the )?merge|phase \d|not in this PR|next (?:sprint|release|iteration)|to follow|later (?:change|release)|punt\w*"
+    r"|follow[- ]?ups|defer\w*|backlog|(?:future|another|subsequent|follow[- ]on) PR)\b", re.I)
 # Changing these is changing a workload; the PR body must then carry the rule 0 capacity numbers.
 WORKLOAD_PREFIXES = ("gcp/", ".github/workflows/")
 CAPACITY_LABELS = ("Volume", "Velocity", "Wall-clock", "30")
@@ -1015,14 +1017,14 @@ WORKFLOWS = ".github/workflows/"
 NOT_PROSE = re.compile(r"\.(py|pyc|pyw|sh|bash|zsh|ps1|bat|cmd|js|mjs|cjs|ts|tsx|jsx|html?|xhtml|svg|whl|egg|zip|tar|tgz|tar\.gz|tar\.xz|7z|rar"
                        r"|toml|cfg|ini|rb|pl|php|exe|dll|so|dylib|jar|class|wasm|ipynb)$", re.I)
 NOT_PROSE_NAMES = frozenset(("setup.py", "setup.cfg", "pyproject.toml", "conftest.py", "package.json", "Makefile", "makefile", "Dockerfile"))
-AGENT_DIRS = frozenset((".claude", ".codex", ".cursor", ".windsurf", ".aider"))
-AGENT_FILES = frozenset(("AGENTS.md", "CLAUDE.md", "CLAUDE.local.md", "copilot-instructions.md", ".cursorrules"))
+AGENT_DIRS = frozenset((".claude", ".codex", ".cursor", ".windsurf", ".aider", ".gemini", ".kiro", ".roo", ".clinerules", ".junie", ".trae", ".continue"))
+AGENT_FILES = frozenset(("AGENTS.md", "CLAUDE.md", "CLAUDE.local.md", "GEMINI.md", "copilot-instructions.md", ".cursorrules", ".clinerules", ".windsurfrules"))
 
 
 def is_documentation(path: str) -> bool:
     name = path.rsplit("/", 1)[-1]
     parts = path.split("/")
-    if path.startswith(".github/") and (not name.endswith(".md") or parts[1] in ("prompts", "instructions", "agents")
+    if path.startswith(".github/") and (not name.endswith(".md") or parts[1] in ("prompts", "instructions", "agents", "ISSUE_TEMPLATE")
                                         or name.lower() == "pull_request_template.md"):
         # a workflow is executable configuration whatever its name, and so is a prompt a workflow
         # feeds to a model (red-team round three: .github/prompts/), an instruction file an agent loads,
@@ -1080,6 +1082,10 @@ def frontmatter(text: str | None) -> dict:
     for line in m.group(1).splitlines():
         if not line.strip():
             continue
+        if line.startswith("\t"):
+            # round five: YAML refuses a tab-indented line; reading past it would read a document YAML does not
+            fm["_tab_indented"] = True
+            continue
         if line.startswith((" ", "\t")):
             item = line.strip()
             if item.startswith("- ") and current:
@@ -1101,7 +1107,7 @@ def frontmatter(text: str | None) -> dict:
             elif v in ("null", "~"):
                 fm[k] = None
             elif v.startswith("[") and v.endswith("]"):
-                fm[k] = [x.strip().strip('"') for x in v[1:-1].split(",") if x.strip()]
+                fm[k] = [x.strip().strip('"') for x in re.split(r",(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)", v[1:-1]) if x.strip()]   # commas inside quotes stay (round five)
             else:
                 fm[k] = v.strip('"')
     return fm
@@ -1183,6 +1189,9 @@ def plan_stays_bound(name: str, fm: dict, base_fm: dict, branch: str) -> list[st
                     f"so '{branch}' needs its own plan")
     if base_fm.get("pr") is not None and str(fm.get("pr")) != str(base_fm.get("pr")):
         errs.append(f"{name}: records PR #{base_fm.get('pr')} on the base; a plan binds one PR")
+    if base_fm.get("spec") is not None and fm.get("spec") != base_fm.get("spec"):
+        # round five: re-pointing the plan at a weaker approved spec of the same FEAT swapped its contract
+        errs.append(f"{name}: names spec {base_fm.get('spec')} on the base; a plan binds one spec")
     if base_fm.get("status") == "done":
         errs.append(f"{name}: is status: done on the base (its PR merged); further work needs a new plan")
     return errs
@@ -1534,6 +1543,11 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
     if ch.mode == "pr" and ch.branch.startswith("spike/"):
         return [f"branch '{ch.branch}' is a spike: local investigation commits only, never a pull request. "
                 "Re-cut the work on a feature/ or fix/ branch with a plan, or a docs/ branch for its write-up."], None
+    for path in ch.changed:
+        if ch.tree.read(path) is not None and (mode := ch.tree.mode(path)) in ("120000", "160000"):
+            # red-team round five: a requirements file replaced by a symlink to a file docs/ may edit, a
+            # gitlink under docs/: the gate reads text, so a link or a submodule is refused outright
+            return [f"{path}: is a {'symlink' if mode == '120000' else 'submodule'} (mode {mode}); the gate reads files only"], None
     for path, pin in PINNED.items():
         if path in ch.changed and (text := ch.tree.read(path)) is not None and (expected := ch.base.read(pin)) is not None and text != expected:
             return [f"{path}: differs from its pinned copy {pin} on the base; change the pinned copy in its own PR first, "
@@ -1867,17 +1881,33 @@ def split_lines(text: str) -> list[str]:
     return text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
 
 
-INVISIBLE = re.compile("[\u200b-\u200f\u2028\u2029\u00ad\ufeff\x0b\x0c\x1c\x1d\x1e\x85]")
+INVISIBLE = re.compile("[\u200b-\u200f\u2028\u2029\u00ad\ufeff\x0b\x0c\x1c\x1d\x1e\x85\u2060-\u2064\u034f\u180e\u061c\u202a-\u202e\u2066-\u2069]")
+CODE_SPAN = re.compile(r"(`+)(?:(?!\1)[\s\S])*?\1")
+CONFUSABLE = str.maketrans("АВСЕНКМОРТХаеорсухΑΒΕΖΗΙΚΜΝΟΡΤΥΧ", "ABCEHKMOPTXaeopcyxABEZHIKMNOPTYX")
+
+
+def fold_text(text: str) -> str:
+    """Text as a reader sees it: entities decoded, invisible characters and variation selectors
+    dropped, look-alike Cyrillic and Greek letters and non-ASCII spaces read as the ASCII ones
+    (red-team round five: `fоllow-up` with a Cyrillic о, `foll\u2060ow-up`)."""
+    text = html.unescape(text)
+    text = INVISIBLE.sub("", re.sub("[\ufe00-\ufe0f]", "", text))
+    text = re.sub("[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]", " ", text)
+    return text.translate(CONFUSABLE)
 
 
 def visible(body: str) -> str:
     """The PR body as it renders: HTML comments and fenced code blocks removed, so a
     checkbox inside the template's comments or a code example is not a checkbox."""
-    body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
+    # round five: a `<!--` inside a code span is code, `<!-->` is not a comment, a link or emphasis renders
+    # its text, and a look-alike letter, an invisible character or a no-break space is the plain word
+    body = fold_text(body)
+    masked = CODE_SPAN.sub(lambda m: "`" * len(m.group(0)), body)   # a `<!--` inside a code span is code
+    for m in reversed(list(re.finditer(r"<!--(?!>|->).*?-->|<!--(?!>|->).*\Z", masked, flags=re.S))):   # an unclosed comment runs to the end
+        body = body[:m.start()] + body[m.end():]
     # red-team round four: `follow&#8209;up`, `non-<b></b>blocking` and a U+2011 render as the plain words
-    body = re.sub(r"</?(b|i|em|strong|s|del|u|span|sub|sup|small|code|br|kbd|mark|abbr)(\s[^<>]*)?/?>", "", html.unescape(body), flags=re.I)
+    body = re.sub(r"</?(b|i|em|strong|s|del|u|span|sub|sup|small|code|br|kbd|mark|abbr)(\s[^<>]*)?/?>", "", body, flags=re.I)
     body = re.sub("[\u2010-\u2015\u2212\ufe58\ufe63\uff0d]", "-", body)
-    body = re.sub(r"<!--.*\Z", "", body, flags=re.S)   # an unclosed comment runs to the end, as GitHub renders it
     # A fence opens with 3+ backticks or tildes after up to three spaces and closes with a
     # fence of the same character at least as long; an unclosed fence runs to the end.
     # (`{3,} and ~{3,} separately: a closer mixing the two characters does not close a
@@ -1886,9 +1916,9 @@ def visible(body: str) -> str:
     # item's content offset and still renders as code)
     # (red-team round three: a closer indented four spaces or more past its opener is content, not a
     # closer, so the fence runs on and the boxes inside it stay code)
-    body = re.sub(r"^([ \t]*)(`{3,}).*?^\1 {0,3}\2`*[ \t]*$", "", body, flags=re.S | re.M)
+    body = re.sub(r"^([ \t]*)(`{3,})(?![^\n]*`).*?^\1 {0,3}\2`*[ \t]*$", "", body, flags=re.S | re.M)   # a backtick in the info string is not a fence (round five)
     body = re.sub(r"^([ \t]*)(~{3,}).*?^\1 {0,3}\2~*[ \t]*$", "", body, flags=re.S | re.M)
-    body = re.sub(r"^[ \t]*(`{3,}|~{3,}).*\Z", "", body, flags=re.S | re.M)
+    body = re.sub(r"^[ \t]*(`{3,}(?![^\n]*`)|~{3,}).*\Z", "", body, flags=re.S | re.M)
     # An indented code block: lines indented four spaces or a tab after a blank line, until
     # the next unindented text. Those render as code, not as links or checkboxes.
     kept, in_code, prev_blank = [], False, True
@@ -1908,7 +1938,10 @@ def checklist(body: str) -> list[tuple[bool, str]]:
     lines that render as part of it, so a deferral written under the box still counts."""
     items: list[tuple[bool, str] | None] = []
     depth: list[int] = []
-    for line in split_lines(visible(body)):
+    # a link renders its text and emphasis its word: `[follow](url)-up`, `*follow*-up` (round five)
+    lines = [re.sub(r"(?<!\w)[*_]{1,3}(?=\S)|(?<=\S)[*_]{1,3}(?!\w)", "", re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", ln))
+             for ln in split_lines(visible(body))]
+    for n, line in enumerate(lines):
         if (m := CHECKBOX.match(line)):
             box = (m.group(1) in "xX", norm(m.group(2)))
             if items and items[-1] is not None and indent(line) > depth[-1]:
@@ -1926,10 +1959,17 @@ def checklist(body: str) -> list[tuple[bool, str]]:
             # round three) or a nested bullet (round four) renders inside the item
             ticked, text = items[-1]
             items[-1] = (ticked, norm(f"{text} {line}"))
+        elif not line.strip() and items and items[-1] is not None and next_indented_past(lines, n, depth[-1]):
+            continue   # a loose item: the blank line does not end it while what follows is indented past its marker (round five)
         else:
             items.append(None)   # a blank line or another block ends the item
             depth.append(0)
     return [i for i in items if i is not None]
+
+
+def next_indented_past(lines: list[str], n: int, marker: int) -> bool:
+    later = next((ln for ln in lines[n + 1:] if ln.strip()), None)
+    return later is not None and indent(later) > marker
 
 
 def done_items(t: Traced) -> list[str]:
@@ -2450,7 +2490,7 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
     if twice := repeated_fields(ch.tree.read(CATALOG), t.feat_id):
         errs.append(f"{CATALOG}: the {t.feat_id} record carries {', '.join(twice)} more than once; each close-out "
                     "field has one row")
-    reviewed, status = now.get("Last reviewed", ""), now.get("Status", "").strip("* ")
+    reviewed, status = now.get("Last reviewed", ""), fold_text(now.get("Status", "")).strip("* ")
     head_day = git_out("show", "-s", "--format=%cs", head).strip()
     # The head commit's date, exactly: any other date, past or future, is a false freshness record.
     if not calendar_date(reviewed) or reviewed != head_day:

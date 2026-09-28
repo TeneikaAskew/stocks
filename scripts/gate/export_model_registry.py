@@ -48,9 +48,10 @@ LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 ISSUE = re.compile(r"#(\d+)\b")
 CODE = re.compile(r"`([^`]+)`")
 DOC_ID = re.compile(r"DOC-(\d+)")
-DOC_RANGE = re.compile(r"DOC-(\d+)\s*(?:…|\.\.\.?|–|—|\bto\b)\s*DOC-(\d+)")
+RANGE_SEP = r"(?:…|\.\.\.?|[\u2010-\u2015\u2212]|→|->|\bto\b)"   # (round five: a figure dash or an arrow is a range too)
+DOC_RANGE = re.compile(r"DOC-(\d+)\s*" + RANGE_SEP + r"\s*DOC-(\d+)")
 EXP_ID = re.compile(r"\bE-(\d{2})\b")
-EXP_RANGE = re.compile(r"\bE-(\d{2})\s*(?:…|\.\.\.?|–|—|\bto\b)\s*E-(\d{2})\b")
+EXP_RANGE = re.compile(r"\bE-(\d{2})\s*" + RANGE_SEP + r"\s*E-(\d{2})\b")
 
 # Every model card reads these keys. A tier whose table has no column for one
 # gets an explicit null: "the registry does not say", never a missing key.
@@ -100,7 +101,11 @@ MODEL_TIERS = ("Deterministic and heuristic systems", "Learned models", "LLM nod
 # second row GFM renders as excess cells of the first (red-team round three)
 ODD_BREAKS = re.compile("[\u2028\u2029\x0b\x0c\x1c\x1d\x1e\x85]")
 UNICODE_DASH = re.compile("\\b(MODEL|DOC|E)[\u2010-\u2015\u2212\ufe58\ufe63\uff0d]")
-INVISIBLE = re.compile("[\u200b-\u200f\u00ad\u2060\ufeff]")
+INVISIBLE = re.compile("[\u200b-\u200f\u00ad\u2060-\u2064\ufeff\u034f\u180e\u061c\u202a-\u202e\u2066-\u2069]"
+                       "|[\ufe00-\ufe0f](?=[A-Za-z0-9-])|(?<=[A-Za-z0-9-])[\ufe00-\ufe0f]")   # a variation selector inside a word
+# GFM's whitespace is ASCII: a no-break or em space is content, so a line of them is a row and one
+# before a pipe is a cell (red-team round five)
+ODD_SPACE = re.compile("[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]")
 # letters outside ASCII that read as an ID's letters on the page (round four: `МODEL-GAMMA-001` with a Cyrillic М)
 CONFUSABLE = str.maketrans("АВСЕНКМОРТХаеорсхＭＯＤＥＬＣ", "ABCEHKMOPTXaeopcxMODELC")
 
@@ -113,6 +118,11 @@ def lookalike_id(text: str) -> str | None:
         folded = unicodedata.normalize("NFKC", token.translate(CONFUSABLE))
         if (m := re.match(r"(?i)(?:MODEL|DOC|E)-\w+", folded)) and token[:m.end()] != m.group(0):
             return token   # the ID itself changed under folding; a `…` after it is punctuation
+        # round five: a Greek, Lisu or Cherokee letter folds to nothing, so judge the shape: an ID-shaped
+        # token with a non-ASCII letter where an ASCII one would be
+        shape = "".join("X" if not c.isascii() and c.isalpha() else c for c in token)
+        if shape != token and re.fullmatch(r"(?:X?[A-Z]*X?)+-[A-Z0-9X]+(?:-[A-Z0-9X]+)*|X-\d{2}", shape) and re.match(r"[A-Z]*X|X", shape):
+            return token
     return None
 
 
@@ -137,8 +147,15 @@ def clean(cell: str) -> str:
     return re.sub(r"\s+", " ", "".join(out)).strip()
 
 
+# GFM's inline HTML: an open tag with well-formed attributes, a closing tag, a comment, a processing
+# instruction, a declaration or CDATA. `<MODEL-X =x>` is none of these and renders as text (round five)
+INLINE_HTML = re.compile(
+    r"""<[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z_:][\w.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*\s*/?>"""
+    r"|</[A-Za-z][A-Za-z0-9-]*\s*>|<\?.*?\?>|<![A-Za-z][^>]*>|<!\[CDATA\[.*?\]\]>")
+
+
 def prose(text: str) -> str:
-    text = re.sub(r"</?[a-zA-Z][a-zA-Z0-9-]*(\s[^<>]*)?/?>", "", html.unescape(text))
+    text = INLINE_HTML.sub("", html.unescape(text))
     return re.sub(r"\\([!-/:-@\[-`{-~])", r"\1", text)
 
 
@@ -245,6 +262,9 @@ def rendered(text: str) -> str:
             fence = opener.group(1)
             continue
         if (kind := html_block(line, can_interrupt=not was_blank)) is not None:
+            if re.match(r"(?i)^ {0,3}<h[1-6][\s>]", line):
+                # round five: `<h3>Retired nodes</h3>` is a heading on the page the tier logic never sees
+                raise SystemExit(f"{REGISTRY}: {line.strip()[:60]!r} is an HTML heading; headings are written as `## `")
             _, block_end = kind
             if block_end and re.search(block_end, line.lstrip(" ")[2:]):
                 block_end = None   # opened and closed on one line: that line is the block (`<!-->` too)
@@ -276,7 +296,7 @@ def _strip_comments(line: str) -> str:
 def last_reviewed(text: str) -> str:
     """The visible `**Last reviewed:**` stamp, a calendar date or `unknown`: read from the
     rendered text so a commented-out earlier stamp cannot supply it (stocks#1205 r4120381528)."""
-    m = re.search(r"\*\*Last reviewed:\*\*\s*(\S+)", rendered(text).split("\n## ", 1)[0])   # the document's stamp, not a section's
+    m = re.search(r"(?m)^\*\*Last reviewed:\*\*[ \t]*(\S+)", rendered(text).split("\n## ", 1)[0])   # the document's stamp, on its own line, not a section's or a cell's (round five)
     value = m.group(1) if m else None
     if value != "unknown":
         try:
@@ -482,8 +502,10 @@ def build(src: Source) -> dict:
     for path, doc in ((REGISTRY, text), (EXPERIMENTS, etext)):
         if m := ODD_BREAKS.search(doc):
             raise SystemExit(f"{path}: carries U+{ord(m.group(0)):04X}, which is not a line ending GFM recognises; remove it")
-        if m := INVISIBLE.search(doc):
+        if m := INVISIBLE.search(html.unescape(doc)):   # `&#8203;` renders as the character (round five)
             raise SystemExit(f"{path}: carries an invisible character (U+{ord(m.group(0)):04X}); remove it")
+        if m := ODD_SPACE.search(html.unescape(doc)):
+            raise SystemExit(f"{path}: carries U+{ord(m.group(0)):04X}, a space GFM reads as content; use an ASCII space")
         if m := UNICODE_DASH.search(html.unescape(doc)):   # an entity renders as the character (round four)
             raise SystemExit(f"{path}: {m.group(0)!r} uses a look-alike dash; IDs are written with the ASCII hyphen")
         if token := lookalike_id(html.unescape(doc)):
@@ -520,7 +542,7 @@ def build(src: Source) -> dict:
                 # red-team round two: `model-gamma-001` neither routed nor failed; it vanished as prose
                 malformed.append(f"{first!r} under '{section}' is a lower-case ID; IDs are upper-case MODEL-/DOC-")
                 continue
-            if routable and any("~~" in cell or re.search(r"<(s|del|strike)\b", cell) for cell in raw):
+            if routable and any("~~" in cell or re.search(r"(?i)<(s|del|strike)\b", cell) for cell in raw):
                 # red-team round two: `~~MODEL-X~~` renders struck through and exported as a live card
                 malformed.append(f"{first} under '{section}' carries struck-through text; delete the row or restore it")
                 continue

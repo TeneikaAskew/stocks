@@ -953,3 +953,45 @@ def test_html_blocks_tabs_complements_and_lookalikes_render_as_gfm_renders_them(
                        .replace("| `insight-pipeline-daily` | `45 8 * * 1-5` | `insight-pipeline` | **all 4 LLM nodes** — `run_insight_pipeline` |", "| `insight-pipeline-daily` | `45 8 * * 1-5` | `insight-pipeline` | — | **all 4 LLM nodes** — `run_insight_pipeline` |")
                        .replace("| `regime-combo-weekly` | `0 5 * * 0` | `regime-combo` | combo mining (E-22) — owned by the ledger, not by a `MODEL-*` row |", "| `regime-combo-weekly` | `0 5 * * 0` | `regime-combo` | — | combo mining (E-22) — owned by the ledger, not by a `MODEL-*` row |"))
     assert export(repo).returncode == 0 and exported(repo)["schedulers"][0]["models"] == ["MODEL-GAMMA-001"], "Serves is the Serves column, not Observes"
+
+
+def test_ascii_whitespace_inline_html_and_confusables_render_as_gfm_renders_them(repo):
+    """Red-team round five (export_model_registry.py: ODD_SPACE, INVISIBLE, lookalike_id, prose, RANGE_SEP,
+    last_reviewed, html_block): a no-break space is content to GFM, so a line of them was a row and one
+    before a pipe a cell; `&#8203;` and U+2063 split words the guards read; a Greek Μ spelt an ID no
+    fold reached; `<S>` in upper case exported live; `<MODEL-X =x>` is text, not a tag; inline CDATA
+    hid an ID; `<h3>` was a heading; a figure dash was not a range; the stamp was read from a cell."""
+    assert export(repo).returncode == 0
+    reg = REGISTRY_TEXT
+    llm = "| MODEL-SUM-001 | summarizers | — | `lib/agents/summarizers.py` | preserve supplied values | Experimental |\n"
+    for bad in (llm + " \n| MODEL-NEW-001 | new | 1 | `x.py` | none | Production |\n", llm + " | MODEL-NEW-001 | new | 1 | `x.py` | none | Production |\n"):
+        write(repo, REGISTRY, reg.replace(llm, bad, 1))
+        r = export(repo)
+        assert r.returncode != 0 and "a space GFM reads as content" in r.stdout + r.stderr, r.stdout + r.stderr
+    for serves in ("all 4 LL⁣M nodes exc⁣ept MODEL-SUM-001", "all 4 LL&#8203;M nodes exc&#8203;ept MODEL-SUM-001", "‮100-AMMAG-LEDOM", "ΜODEL-GAMMA-001", "ꓟODEL-GAMMA-001"):
+        write(repo, REGISTRY, reg.replace("**all 4 LLM nodes** — `run_insight_pipeline`", serves, 1))
+        r = export(repo)
+        assert r.returncode != 0, (serves, r.stdout + r.stderr)
+    row = next(ln for ln in reg.splitlines() if ln.startswith("| MODEL-MAG-001 | E-01 |"))
+    for bad in ("E-01, E&#8203;-99", "E-01, Ε-99"):
+        write(repo, REGISTRY, reg.replace(row, row.replace("E-01", bad, 1), 1))
+        r = export(repo)
+        assert r.returncode != 0, (bad, r.stdout + r.stderr)
+    write(repo, REGISTRY, reg.replace("| MODEL-SUM-001 |", "| <S>MODEL-SUM-001</S> |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "struck-through" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, reg.replace("| `p2-build-gamma-levels` | MODEL-GAMMA-001 |", "| `p2-build-gamma-levels` | <MODEL-GAMMA-001 =x> |", 1))
+    assert export(repo).returncode == 0 and exported(repo)["schedulers"][0]["models"] == ["MODEL-GAMMA-001"], "a malformed tag is text"
+    write(repo, REGISTRY, reg.replace("| `p2-build-gamma-levels` | MODEL-GAMMA-001 |", "| `p2-build-gamma-levels` | MODEL-GAMMA-001 <![CDATA[MODEL-MAG-001]]> |", 1))
+    assert export(repo).returncode == 0 and exported(repo)["schedulers"][0]["models"] == ["MODEL-GAMMA-001"], "inline CDATA is not shown"
+    extra = "| ID | Nodes | Count | Code | Numeric authority | Status |\n|---|---|---|---|---|---|\n| MODEL-NEW-001 | new node | 1 | `lib/agents/new.py` | none | Production |\n\n"
+    write(repo, REGISTRY, reg.replace("## Scheduled surfaces\n", "<h3>Retired nodes</h3>\n\n" + extra + "## Scheduled surfaces\n", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "HTML heading" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, reg)
+    exp = (repo / EXPERIMENTS).read_text(encoding="utf-8")
+    write(repo, EXPERIMENTS, exp + "\n# 2026-09-28 SESSION (E-40 ‒ E-43)\n\ntext\n")
+    assert export(repo).returncode == 0 and {"E-40", "E-41", "E-42", "E-43"} <= set(exported(repo)["experiment_ids"])
+    write(repo, EXPERIMENTS, exp)
+    write(repo, REGISTRY, reg.replace("**Last reviewed:** 2026-09-20 · **Owner:** TBD", "| a | b |\n|---|---|\n| **Last reviewed:** 2020-01-01 | old |\n\n**Last reviewed:** unknown · **Owner:** TBD", 1))
+    assert export(repo).returncode == 0 and exported(repo)["registry_last_reviewed"] == "unknown"
