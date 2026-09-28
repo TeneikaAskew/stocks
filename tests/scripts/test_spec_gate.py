@@ -92,7 +92,7 @@ def plan(**over) -> str:
                     "status": "ready", **over}) + TASKS
 
 
-GATE_WF = ("on:\n  pull_request_target:\n    types: [opened, synchronize, reopened, edited, ready_for_review]\npermissions:\n  contents: read\njobs:\n  gate:\n    steps:\n"
+GATE_WF = ("name: spec-gate\non:\n  pull_request_target:\n    types: [opened, synchronize, reopened, edited, ready_for_review]\npermissions:\n  contents: read\njobs:\n  gate:\n    steps:\n"
            "      - uses: actions/checkout@v4\n        with:\n          ref: {REF}\n"
            "      - run: git fetch --no-tags origin \"$HEAD_SHA\"\n"
            "      - env:\n{ENV}        run: {A}\n      - run: {B}\n"
@@ -1053,7 +1053,8 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
     r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml-backdoor.yaml": "on: push\n"},
            PR_BODY="## Capacity\nn/a: x\n")
     assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, r.stdout
-    assert pr(repo, "chore/gate-workflow", {"scripts/gate/helper.py": "x = 1\n"}).returncode == 0
+    r = pr(repo, "chore/gate-workflow", {"scripts/gate/helper.py": "x = 1\n"})
+    assert r.returncode == 1 and "scripts/gate/ holds" in r.stdout, r.stdout   # stocks#1205 r4121413687: no third module there
     # stocks#1205 r4119299883: an allowance needs the full branch shape
     # stocks#1205 r4119416484: a chore/ or bot/ branch is limited to its allowance for every file
     r = pr(repo, "chore/deps", {REQUIREMENTS: "# Requirements\n\nrewritten\n"})
@@ -1738,10 +1739,10 @@ def test_contract_commands_run_unconditionally_under_the_declared_trigger(repo):
     # the first command of a chain runs unconditionally and its failure fails the step
     guarded = "".join(f"          {c} && echo ok\n" for c in cmds)
     assert pr(repo, "chore/gate-workflow", {wf: head.replace("{BODY}", guarded)}, **cap).returncode == 0
-    decoy = head.replace("on:\n  pull_request:\n", "on:\n  workflow_dispatch:\n").replace("    runs-on:", "    pull_request:\n    runs-on:")
+    decoy = head.replace("name: registry-check\non:\n  pull_request:\n", "on:\n  workflow_dispatch:\n").replace("    runs-on:", "    pull_request:\n    runs-on:")
     r = pr(repo, "chore/gate-workflow", {wf: decoy.replace("{BODY}", plain)}, **cap)
     assert r.returncode == 1 and "no longer runs on pull_request" in r.stdout and "workflow_dispatch" in r.stdout, r.stdout
-    inline = head.replace("on:\n  pull_request:\n", "on: [pull_request, workflow_dispatch]\n")
+    inline = head.replace("name: registry-check\non:\n  pull_request:\n", "name: registry-check\non: [pull_request, workflow_dispatch]\n")
     assert pr(repo, "chore/gate-workflow", {wf: inline.replace("{BODY}", plain)}, **cap).returncode == 0
     gate_wf = gate_workflow().replace("on:\n  pull_request_target:\n", "on:\n  {ON}:\n")
     r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_wf.replace("{ON}", "pull_request") + "# pull_request_target:\n"}, **cap)
@@ -2275,3 +2276,42 @@ def test_startup_environment_substitutions_nested_runs_paths_and_checkouts_are_t
                                  "      - run: git fetch --no-tags origin \"$HEAD_SHA\"\n" + checkout, 1)):
         r = pr(repo, "chore/gate-workflow", {wf: broken}, **cap)
         assert r.returncode == 1 and "without an actions/checkout step that is unconditional and before them" in r.stdout, (broken, r.stdout)
+
+
+def test_workflow_identity_shadowed_executables_stray_modules_and_parsed_permissions(repo):
+    """stocks#1205 r4121413674 (P1), r4121413657 (P1), r4121413687 (P1), r4121413700 (P1)
+    (spec_gate.py:97, :401, :1113; spec-gate.yml:66).
+
+    A renamed workflow or job left branch protection waiting on a check that never reports;
+    `python3() { echo ok; }` made every contract command a no-op; a `scripts/gate/subprocess.py`
+    shadowed an import the base's suite never saw; `permissions:` matched as text inside a
+    scalar. Each is refused.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/spec-gate.yml"
+    typed = gate_workflow()
+    assert pr(repo, "chore/gate-workflow", {wf: typed}, **cap).returncode == 0
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("name: spec-gate\n", "name: gate-v2\n", 1)}, **cap)
+    assert r.returncode == 1 and "no longer named `spec-gate`" in r.stdout, r.stdout
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("name: spec-gate\n", "", 1)}, **cap)
+    assert r.returncode == 1 and "no longer named `spec-gate`" in r.stdout, r.stdout
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  gate:\n", "  verdict:\n", 1).replace("needs: gate", "needs: verdict")}, **cap)
+    assert r.returncode == 1 and "keeps its job name" in r.stdout, r.stdout
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  base-suite:\n", "  suite:\n", 1)}, **cap)
+    assert r.returncode == 1 and "keeps its job name" in r.stdout, r.stdout
+    for shadow in ("python3() { echo \"spec gate ok\"; }\n          " + VERDICT_CMD, "function git { :; }\n          " + VERDICT_CMD,
+                   "alias python3=true\n          " + VERDICT_CMD):
+        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + shadow)}, **cap)
+        assert r.returncode == 1 and "as a shell function or alias" in r.stdout, (shadow, r.stdout)
+    on_base(repo, {".githooks/pre-commit": "#!/bin/sh\nset -e\npython3 scripts/gate/spec_gate.py --commit\n"})
+    r = pr(repo, "chore/gate-hook", {".githooks/pre-commit": "#!/bin/sh\nset -e\npython3() { :; }\npython3 scripts/gate/spec_gate.py --commit\n"}, **cap)
+    assert r.returncode == 1 and "as a shell function or alias" in r.stdout, r.stdout
+    r = pr(repo, "chore/gate-shim", {"scripts/gate/helpers.py": "raise SystemExit(0)\n"}, **cap)
+    assert r.returncode == 1 and "scripts/gate/ holds" in r.stdout, r.stdout
+    assert pr(repo, "chore/gate-exporter", {"scripts/gate/export_model_registry.py": "print('x')\n"}, **cap).returncode == 0   # the exporter is not stray
+    scalar = typed.replace("permissions:\n  contents: read\n", "run-name: |\n  permissions:\n    contents: read\n", 1)
+    r = pr(repo, "chore/gate-workflow", {wf: scalar}, **cap)
+    assert r.returncode == 1 and "no top-level `permissions:` mapping" in r.stdout, r.stdout
+    assert pr(repo, "chore/gate-workflow", {wf: typed.replace("permissions:\n  contents: read\n", "permissions: { contents: read }\n", 1)}, **cap).returncode == 0
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("permissions:\n  contents: read\n", "permissions: read-all\n", 1)}, **cap)
+    assert r.returncode == 1 and "no top-level `permissions:` mapping" in r.stdout, r.stdout

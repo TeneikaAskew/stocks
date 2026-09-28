@@ -205,8 +205,8 @@ def row_to_record(header: list[str], raw: list[str]) -> dict:
         if key in ("code", "code_artifact", "primary_code"):
             rec[key + "_paths"] = CODE.findall(cell)
         if key in ("blocking_issues", "evidence", "recorded_verdict", "note"):
-            rec.setdefault("issue_numbers", [])
-            rec["issue_numbers"] = sorted({int(n) for n in ISSUE.findall(cell)})
+            # stocks#1205 r4121413706: Evidence and Blocking issues both carry references; union them
+            rec["issue_numbers"] = sorted(set(rec.get("issue_numbers", [])) | {int(n) for n in ISSUE.findall(cell)})
     return rec
 
 

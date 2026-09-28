@@ -675,3 +675,14 @@ def test_indented_table_rows_are_rows(repo):
     r = export(repo)
     assert r.returncode == 0, r.stdout + r.stderr
     assert "MODEL-MAG-001" in exported(repo)["models"]
+
+
+def test_issue_numbers_accumulate_across_columns(repo):
+    """stocks#1205 r4121413706 (export_model_registry.py:209): a row with `#123` under Evidence
+    and `#456` under Blocking issues exported only the last column's numbers. They are unioned."""
+    write(repo, REGISTRY, REGISTRY_TEXT.replace(
+        "| ID | Name | Type | Decision produced | Code | Status | Rec | Doc | Blocking issues |\n|---|---|---|---|---|---|---|---|---|\n",
+        "| ID | Name | Type | Decision produced | Code | Status | Rec | Doc | Blocking issues | Evidence |\n|---|---|---|---|---|---|---|---|---|---|\n", 1)
+        .replace("| DOC-01 | [#942](https://github.com/TeneikaAskew/stocks/issues/942) |", "| DOC-01 | [#942](https://github.com/TeneikaAskew/stocks/issues/942) | #123 |", 1))
+    assert export(repo).returncode == 0
+    assert exported(repo)["models"]["MODEL-GAMMA-001"]["issue_numbers"] == [123, 942]

@@ -76,6 +76,7 @@ MANIFEST = re.compile(
     r"|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$"
 )
 HOOK = ".githooks/pre-commit"
+GATE_SCRIPTS = ("scripts/gate/spec_gate.py", "scripts/gate/export_model_registry.py")
 GATE_FILES = (
     "scripts/gate/",
     HOOK,   # the one hook, not the directory: any other executable there runs on every clone with core.hooksPath set
@@ -92,6 +93,10 @@ OTHER_BRANCH = re.compile(r"^((docs|chore)/[a-z0-9]+(-[a-z0-9]+)*|bot/superpower
 # be replaced by a no-op that keeps its job name green.
 WORKFLOW_CONTRACTS = {
     ".github/workflows/registry-check.yml": {
+        # The required check is `<workflow name> / <job name>`: both are the contract
+        # (stocks#1205 r4121413674)
+        "name": "registry-check",
+        "jobs": {'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"': "registry"},
         "checkout": "head",   # runs the PR's files: a checkout pinned to the base would verify main instead
         "trigger": "pull_request",
         "types": {"opened", "synchronize", "reopened"},
@@ -105,9 +110,11 @@ WORKFLOW_CONTRACTS = {
         "run_if_present": {
             "scripts/gate/export_model_registry.py": ('python3 scripts/gate/export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"',),
         },
-        "structure": ("permissions:\n  contents: read",),
     },
     ".github/workflows/spec-gate.yml": {
+        "name": "spec-gate",
+        "jobs": {'python3 scripts/gate/spec_gate.py --pr "$BASE_SHA" "$HEAD_SHA"': "gate",
+                 "python3 -m pytest tests/scripts/test_spec_gate.py": "base-suite"},
         "checkout": "base",   # pull_request_target: a head checkout would run PR-controlled code with its token
         "trigger": "pull_request_target",
         "types": {"opened", "synchronize", "reopened", "edited", "ready_for_review"},
@@ -157,7 +164,6 @@ WORKFLOW_CONTRACTS = {
             "PR_TITLE": "${{ github.event.pull_request.title }}",
             "PR_BODY": "${{ github.event.pull_request.body }}",
         },
-        "structure": ("permissions:\n  contents: read",),
     },
 }
 
@@ -630,6 +636,39 @@ def checkout_violation(body: str, side: str) -> str | None:
     return None
 
 
+EXECUTABLES = r"(python3?|python3\.\d+|git|pytest)"
+SHADOW = re.compile(r"(?:^|[;&|{}(]\s*|\bfunction\s+)" + EXECUTABLES + r"\s*\(\s*\)|\bfunction\s+" + EXECUTABLES
+                    + r"\b|\balias\s+" + EXECUTABLES + r"=|\bhash\s+-p\s+\S+\s+" + EXECUTABLES + r"\b", re.M)
+
+
+def shadowed_executable(text: str) -> str | None:
+    """The first contract executable a comment-stripped text redefines as a function or alias."""
+    m = SHADOW.search(text)
+    return next((g for g in m.groups() if g), None) if m else None
+
+
+def top_permissions(body: str) -> dict[str, str]:
+    """The top-level `permissions:` mapping of a comment-stripped workflow, block or flow form,
+    as {scope: level}; {} when the workflow declares none."""
+    lines = body.splitlines()
+    for i, line in enumerate(lines):
+        m = re.match(r"^permissions:\s*(.*)$", line)
+        if not m:
+            continue
+        value = shell_value(m.group(1))
+        if value.startswith("{"):
+            j = i
+            while "}" not in value and j + 1 < len(lines):
+                j += 1
+                value += " " + lines[j].strip()
+            return dict(re.findall(r"([\w-]+)\s*:\s*['\"]?([\w-]+)", value))
+        if value:
+            return {"*": value}   # read-all / write-all
+        return {km.group(1): shell_value(km.group(2)) for j in range(i + 1, block_end(lines, i, 0))
+                if (km := re.match(r"^\s+([\w-]+):\s*(.*)$", lines[j]))}
+    return {}
+
+
 def workflow_write_grant(body: str) -> str | None:
     """The first line of a comment-stripped workflow that grants a write permission, at any
     level: a job-level `permissions:` overrides the read-only top-level block a contract
@@ -982,6 +1021,10 @@ def chore_allows(path: str, ch: "Change") -> str | None:
     """None when chore/ may carry this file; otherwise why not ("" when it is simply not a
     manifest or gate file, a reason naming the file when it is a manifest edited beyond
     its dependency fields)."""
+    if path.startswith("scripts/gate/") and path not in GATE_SCRIPTS and ch.tree.read(path) is not None:
+        # stocks#1205 r4121413687: a third module there (`subprocess.py`) would shadow an import of
+        # the scripts that run from that directory, and the base's suite tests only the two it copies
+        return f"{path}: scripts/gate/ holds {' and '.join(GATE_SCRIPTS)} and nothing else; a module beside them would shadow an import of the gate"
     if is_gate_file(path):
         return None
     if path == REGISTRY_DOCS[1] and "scripts/gate/export_model_registry.py" in ch.changed:
@@ -1151,8 +1194,7 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                                                  if ch.base.read(script) is not None or ch.tree.read(script) is not None for m in ms]
             # solyra#72 r4120337725: the command is what the statement invokes, so the contract
             # text is the statement's prefix, never a later argument
-            lost = [m for m in required if not any(invokes(st, m) for st in statements)] + \
-                   [m for m in contract["structure"] if m not in body]
+            lost = [m for m in required if not any(invokes(st, m) for st in statements)]
             if lost:
                 return [f"{path}: no longer executes {len(lost)} step(s) the gate depends on ({lost[0]!r}"
                         f"{' and more' if len(lost) > 1 else ''}); a command in a comment, an echo, an unused scalar "
@@ -1213,6 +1255,24 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
             if grant := workflow_write_grant(body):
                 return [f"{path}: grants a write permission ({grant}); the gate's workflows run head-controlled code "
                         "on a read-only token, at the top level and in every job"], None
+            # stocks#1205 r4121413700: the read-only grant is a top-level mapping the workflow
+            # declares, not text somewhere in the file
+            if top_permissions(body).get("contents") != "read":
+                return [f"{path}: has no top-level `permissions:` mapping granting `contents: read`; the gate's "
+                        "workflows declare their read-only token at the top level"], None
+            if (m := re.search(r"^name:\s*(.*)$", body, re.M)) is None or shell_value(m.group(1)) != contract["name"]:
+                return [f"{path}: is no longer named `{contract['name']}`; the required check is "
+                        f"`{contract['name']} / <job>` and keeps its name"], None
+            # stocks#1205 r4121413657: `python3() { echo ok; }` or `alias git=true` makes every
+            # later invocation a no-op with the contract's text intact
+            if shadow := shadowed_executable(body):
+                return [f"{path}: defines `{shadow}` as a shell function or alias; the gate's commands run the "
+                        "real executables"], None
+            for command, job_name in contract.get("jobs", {}).items():
+                j, _ = job_of(jobs, command)
+                if j >= 0 and jobs[j]["name"] != job_name:
+                    return [f"{path}: {command!r} runs in job `{jobs[j]['name']}`, not `{job_name}`; the required check "
+                            f"`{contract['name']} / {job_name}` keeps its job name"], None
     if SUITE in ch.changed and (head_suite := ch.tree.read(SUITE)) is not None and (base_suite := ch.base.read(SUITE)):
         # solyra#72 r4119957711: the head-run registry check executes the suite the PR ships,
         # so a suite reduced to one passing test would certify any gate; every test the base
@@ -1243,6 +1303,8 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
         if not re.match(r"^#!\s*(/usr/bin/env\s+(bash|sh)|/bin/(bash|sh)|/usr/bin/(bash|sh))\s*$", first):
             return [f"{HOOK}: its interpreter line is {first!r}; the hook runs under bash or sh (`#!/usr/bin/env bash`) "
                     "so the gate call on the lines below executes"], None
+        if shadow := shadowed_executable("\n".join(ln for ln in hook.splitlines() if not ln.lstrip().startswith("#"))):
+            return [f"{HOOK}: defines `{shadow}` as a shell function or alias; the hook runs the real executables"], None
         if overridden := input_overrides("\n".join(ln for ln in hook.splitlines() if not ln.lstrip().startswith("#"))):
             return [f"{HOOK}: assigns or unsets {overridden[0]}, an input the gate reads; the hook never sets the gate's inputs"], None
         if not any(re.match(r"python3?\s+['\"]?[^\s'\"]*spec_gate\.py['\"]?\s+--commit(\s|$)", st) for st in shell_statements(hook, errexit=False)):
