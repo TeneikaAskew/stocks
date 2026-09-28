@@ -305,9 +305,10 @@ def test_the_plan_is_the_one_naming_this_branch(repo):
     plan is the one whose `branch:` is this branch, and it must be the only one.
     """
     second = "docs/superpowers/plans/2026-09-05-model-decisions-docs.md"
-    r = pr(repo, BRANCH, {**CODE, second: plan(branch="feature/feat-model-001-other")})
-    assert r.returncode == 0, r.stdout
-    r = pr(repo, BRANCH, {**CODE, second: plan()})
+    on_base(repo, {second: plan(branch="feature/feat-model-001-other")})   # another branch's plan, on the base
+    assert pr(repo, BRANCH, CODE).returncode == 0
+    on_base(repo, {second: plan()})
+    r = pr(repo, BRANCH, CODE)
     assert r.returncode == 1 and "one plan = one branch" in r.stdout, r.stdout
 
 
