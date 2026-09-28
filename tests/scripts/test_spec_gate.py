@@ -2193,4 +2193,4 @@ def test_negations_conditions_handoffs_and_the_hook_mode_are_the_contract(repo):
     _git(repo, "commit", "-q", "-m", "mode")
     r = gate(repo, "--pr", "base", "HEAD", PR_HEAD_REF="chore/gate-hook", **cap)
     assert r.returncode == 1 and "has mode 100644 in this change; the hook stays executable" in r.stdout, r.stdout
-    assert pr(repo, "chore/gate-hook", {".githooks/pre-commit": "#!/bin/sh\nset -e\npython3 scripts/gate/spec_gate.py --commit\n"}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-hook", {".githooks/pre-commit": "#!/bin/sh\n# executable again\nset -e\npython3 scripts/gate/spec_gate.py --commit\n"}, **cap).returncode == 0
