@@ -15,8 +15,6 @@ import subprocess
 import textwrap
 from pathlib import Path
 
-import pytest
-
 REPO = Path(__file__).resolve().parents[2]
 CODE = "\n".join(l for l in (REPO / "gcp/deploy.sh").read_text().splitlines()
                  if not l.lstrip().startswith("#"))
