@@ -14,7 +14,7 @@ Read `references/spec-template.md` and `references/plan-template.md` before writ
 
 State exactly one, in one line, before doing anything else:
 
-- **TRIVIAL**: typo, comment or wording in a doc (branch `docs/<slug>`), or a dependency bump that touches only manifests and lockfiles (branch `chore/<slug>`). No spec. Stop here. A config or workflow change is not trivial: it is a CHANGE under FEAT-CICD-001 (or, in stocks, FEAT-DEPLOY-001).
+- **TRIVIAL**: typo, comment or wording in a doc (branch `docs/<slug>`), or a dependency bump that touches only manifests and lockfiles (branch `chore/<slug>`). No spec. Stop here. A config or workflow change is not trivial: it is a CHANGE under the capability that owns the file: workflows and CI configuration under FEAT-CICD-001 (both repos), deploy scripts and Cloud Build triggers under FEAT-DEPLOY-001 (stocks), anything else under the capability whose catalog row or record covers it.
 - **SPIKE**: investigation, no code will merge. One session budget. Output is one note at `docs/superpowers/spikes/YYYY-MM-DD-<slug>.md`. Branch `spike/<slug>`. No PR: the gate lets `spike/` commit code locally and gives it no allowance in CI. Stop here.
 - **CHANGE**: everything else. Continue.
 
@@ -58,7 +58,7 @@ Invoke `superpowers:using-git-worktrees`, then `superpowers:subagent-driven-deve
 PR rules:
 - Title: `<FEAT-ID>: <what changed>`, starting with the branch's FEAT-ID. CI rejects any other title.
 - Body: link the spec and the plan by their exact paths, paste each `done_when` item as a `- [ ]` line that starts with the item's text, then the capacity numbers CLAUDE.md requires.
-- Open the PR as a draft. Once it is marked ready for review, CI also requires the Phase 5 records.
+- Open the PR as a draft, then set the plan's `pr` to its number in the next commit. A draft may still say `null`; a number that is not this PR fails the gate, and once the PR is marked ready for review CI requires the number and the Phase 5 records.
 - Review cap: TWO rounds. After the second round of review comments, do not keep fixing in place. Invoke `superpowers:finishing-a-development-branch` and present: split into smaller PRs, re-cut from the spec, or discard. A PR that is not mergeable after two rounds is a spec problem, not a code problem.
 - Never open a follow-up PR from an unmerged PR. Never stack.
 - Before every commit, run `python3 scripts/gate/spec_gate.py --commit`. The hook runs it anyway; running it first avoids surprises. A commit from a detached HEAD that stages code is blocked; name its branch with `SPEC_GATE_BRANCH=<branch> git commit`.
@@ -67,7 +67,7 @@ PR rules:
 
 In the SAME PR, before requesting final review:
 
-1. `docs/product/02-FEATURE-CATALOG.md`: update the FEAT-ID's Status and Last reviewed (stocks: in its capability record under the table; solyra: in the row's columns). Touch only that row or record.
+1. `docs/product/02-FEATURE-CATALOG.md`: update the FEAT-ID's Status and Last reviewed (stocks: in its capability record under the table; solyra: in the row's columns). Touch only that row or record. CI checks that Last reviewed has moved to a date and that Status is set; a blank or unrelated edit in the section does not count.
 2. `docs/product/12-PR-ISSUE-TRACEABILITY.md`: add this PR's number under the FEAT-ID. A repo without that file (solyra) records it in the catalog row's PRs column instead.
 3. If the spec lists canvases, add to the PR body: `Canvas refresh pending: <urls>`, or for a canvas marked `mode: report-only` in `docs/product/canvases.yml`, `Canvas check pending (report-only): <urls>`. The refresh is run from chat with the refresh-canvas skill after merge, never from this PR.
 4. Run `python3 scripts/gate/export_model_registry.py` if the PR touched `docs/product/07-MODEL-REGISTRY.md` or `docs/EXPERIMENT_REGISTRY.md`, and commit the regenerated JSON.

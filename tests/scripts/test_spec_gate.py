@@ -38,10 +38,10 @@ NOT_A_FEAT_BRANCH = "is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>"
 CATALOG_TEXT = """\
 # Feature Catalog
 
-| ID | Area | Status | PRs |
-|---|---|---|---|
-| [FEAT-MODEL-001](#feat-model-001) | Models | Production | none |
-| [FEAT-DATA-001](#feat-data-001) | Data | Production | none |
+| ID | Area | Status | Last reviewed | PRs |
+|---|---|---|---|---|
+| [FEAT-MODEL-001](#feat-model-001) | Models | Production | unknown | none |
+| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |
 
 ## Capability records
 
@@ -391,21 +391,112 @@ def test_close_out_records_are_required_once_the_pr_is_ready(repo):
     row's PRs column where a repository has no such doc (solyra).
     """
     meta = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body(ticked=True), "PR_NUMBER": "42"}
-    assert pr(repo, BRANCH, CODE, **meta, PR_DRAFT="true").returncode == 0
-    r = pr(repo, BRANCH, CODE, **meta, PR_DRAFT="false")
+    recorded = {**CODE, PLAN: plan(pr=42)}
+    assert pr(repo, BRANCH, recorded, **meta, PR_DRAFT="true").returncode == 0
+    r = pr(repo, BRANCH, recorded, **meta, PR_DRAFT="false")
     assert r.returncode == 1, r.stdout
-    assert "update the FEAT-MODEL-001 row or record" in r.stdout and "add this PR (#42)" in r.stdout
+    assert "Last reviewed" in r.stdout and "add this PR (#42)" in r.stdout
 
-    row = CATALOG_TEXT.replace("| Models | Production | none |", "| Models | Production | #42 |")
-    assert pr(repo, BRANCH, {**CODE, CATALOG: row}, **meta, PR_DRAFT="false").returncode == 0
-    r = pr(repo, BRANCH, {**CODE, CATALOG: row}, **{**meta, "PR_BODY": body()}, PR_DRAFT="false")
+    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", "| Models | Production | 2026-09-28 | #42 |")
+    assert pr(repo, BRANCH, {**recorded, CATALOG: row}, **meta, PR_DRAFT="false").returncode == 0
+    r = pr(repo, BRANCH, {**recorded, CATALOG: row}, **{**meta, "PR_BODY": body()}, PR_DRAFT="false")
     assert r.returncode == 1 and "done_when item(s) not ticked" in r.stdout, r.stdout
 
     trace = "# Traceability\n\n## FEAT-MODEL-001\n\n- none\n\n## FEAT-DATA-001\n\n- #42 state each model's decision\n"
-    r = pr(repo, BRANCH, {**CODE, CATALOG: row, TRACEABILITY: trace}, **meta, PR_DRAFT="false")
+    r = pr(repo, BRANCH, {**recorded, CATALOG: row, TRACEABILITY: trace}, **meta, PR_DRAFT="false")
     assert r.returncode == 1 and "add this PR (#42) under the FEAT-MODEL-001 section" in r.stdout, r.stdout
     trace = trace.replace("- none\n", "- #42 state each model's decision\n")
-    assert pr(repo, BRANCH, {**CODE, CATALOG: row, TRACEABILITY: trace}, **meta, PR_DRAFT="false").returncode == 0
+    assert pr(repo, BRANCH, {**recorded, CATALOG: row, TRACEABILITY: trace}, **meta, PR_DRAFT="false").returncode == 0
+
+
+RECORD = """
+### FEAT-MODEL-001
+
+| Field | Value |
+|---|---|
+| Status | Production |
+| Last reviewed | 2026-08-30 |
+"""
+
+
+def test_close_out_checks_the_status_and_last_reviewed_fields(repo):
+    """stocks#1205 r4117897774 (spec_gate.py:348); solyra#72 r4117890531 (:348).
+
+    The close-out passed on any added catalog line that mentioned the FEAT-ID
+    or sat in its section: a blank line in the stocks record, or the solyra
+    row's PRs cell alone. It now reads the FEAT's Last reviewed and Status,
+    from the record's field table (stocks) or the row's columns (solyra):
+    Last reviewed must move to a date, and Status must be set.
+    """
+    meta = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body(ticked=True), "PR_NUMBER": "42", "PR_DRAFT": "false"}
+    trace = "# Traceability\n\n## FEAT-MODEL-001\n\n- #42 state each model's decision\n"
+    base = {**CODE, PLAN: plan(pr=42), TRACEABILITY: trace}
+
+    # solyra shape: the PRs cell alone, Last reviewed left at unknown
+    only_prs = CATALOG_TEXT.replace("| Production | unknown | none |", "| Production | unknown | #42 |", 1)
+    r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: only_prs}, **meta)
+    assert r.returncode == 1 and "Last reviewed" in r.stdout, r.stdout
+
+    # stocks shape: the record carries the fields; base it, then touch it without changing them
+    stocks_catalog = CATALOG_TEXT.replace("### FEAT-MODEL-001\n\n- Status: Production\n", RECORD.lstrip("\n"))
+    _git(repo, "checkout", "-q", "main")
+    write(repo, CATALOG, stocks_catalog)
+    write(repo, TRACEABILITY, "# Traceability\n\n## FEAT-MODEL-001\n\n- none\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "stocks-shaped catalog and traceability record")
+    _git(repo, "tag", "-f", "base")
+    blank = stocks_catalog.replace("| Last reviewed | 2026-08-30 |\n", "| Last reviewed | 2026-08-30 |\n\n")
+    mention = stocks_catalog + "\nFEAT-MODEL-001 was touched.\n"
+    for catalog in (blank, mention):
+        r = pr(repo, BRANCH, {**base, CATALOG: catalog}, **meta)
+        assert r.returncode == 1 and "Last reviewed" in r.stdout, r.stdout
+    unset = stocks_catalog.replace("| Status | Production |", "| Status | TBD |").replace("2026-08-30", "2026-09-28")
+    r = pr(repo, BRANCH, {**base, CATALOG: unset}, **meta)
+    assert r.returncode == 1 and "Status" in r.stdout, r.stdout
+    stamped = stocks_catalog.replace("2026-08-30", "2026-09-28")
+    r = pr(repo, BRANCH, {**base, CATALOG: stamped}, **meta)
+    assert r.returncode == 0, r.stdout
+
+
+def test_the_plan_records_its_pr(repo):
+    """solyra#72 r4117890536 (spec_gate.py:70).
+
+    Nothing read the plan's `pr:` field, so it could stay null or name another
+    PR. It must be null or a PR number; a number that is not this PR fails in
+    any PR run, and once the PR is ready it must be this PR.
+    """
+    meta = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body(ticked=True), "PR_NUMBER": "42"}
+    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", "| Models | Production | 2026-09-28 | #42 |")
+    assert pr(repo, BRANCH, {**CODE, PLAN: plan(pr="null")}, **meta, PR_DRAFT="true").returncode == 0
+    r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=41)}, **meta, PR_DRAFT="true")
+    assert r.returncode == 1 and "names PR #41" in r.stdout, r.stdout
+    r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr="soon")}, **meta, PR_DRAFT="true")
+    assert r.returncode == 1 and "pr must be null or a PR number" in r.stdout, r.stdout
+    r = pr(repo, BRANCH, {**CODE, CATALOG: row, PLAN: plan(pr="null")}, **meta, PR_DRAFT="false")
+    assert r.returncode == 1 and "set the plan's pr to 42" in r.stdout, r.stdout
+    assert pr(repo, BRANCH, {**CODE, CATALOG: row, PLAN: plan(pr="#42")}, **meta, PR_DRAFT="false").returncode == 0
+
+
+def test_every_branch_shape_the_rules_name_passes_only_its_own_work(repo):
+    """stocks#1205 r4117897779 (SKILL.md:17, P1).
+
+    AGENTS.md said every branch must be feature/ or fix/<feat-id>-<slug>, while
+    the skill sends documentation to docs/, manifests to chore/, investigations
+    to spike/ and the vendored skills to bot/superpowers-. AGENTS.md and
+    CLAUDE.md now name all six shapes; this pins what the gate lets each carry.
+    """
+    skill_file = {".claude/skills/demo/helper.sh": "echo hi\n"}
+    assert pr(repo, "docs/fix-typo", {"docs/notes.md": "# Notes\n"}).returncode == 0
+    assert pr(repo, "docs/spec-feat-model-001", {"docs/superpowers/specs/2026-09-28-x.md": spec()}).returncode == 0
+    assert pr(repo, "chore/bump-deps", {"package-lock.json": "{}\n"}).returncode == 0
+    assert pr(repo, "bot/superpowers-v5", skill_file).returncode == 0
+    assert pr(repo, "bot/superpowers-v5", {**skill_file, **CODE}).returncode == 1
+    assert pr(repo, "chore/refactor", CODE).returncode == 1
+    assert pr(repo, "test/more-cases", {"tests/test_x.py": "def test(): pass\n"}).returncode == 1
+    _git(repo, "checkout", "-q", "-B", "spike/try", "base")
+    write(repo, "lib/model.py", CODE["lib/model.py"])
+    _git(repo, "add", "lib/model.py")
+    assert gate(repo, "--commit").returncode == 0
 
 
 def test_a_rename_is_seen_from_both_ends(repo):

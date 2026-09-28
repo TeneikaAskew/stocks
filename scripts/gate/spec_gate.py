@@ -50,6 +50,9 @@ REQ_SHAPE = re.compile(r"^REQ-[A-Z]+-\d{3}$")
 REQ_DEFINITION = re.compile(r"\*\*(REQ-[A-Z]+-\d{3}):\*\*")
 CHECKBOX = re.compile(r"^\s*[-*]\s+\[([ xX])\]\s+(.*\S)\s*$")
 HEADING = re.compile(r"^(#{1,6})\s")
+ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+PR_REF = re.compile(r"^#?(\d+)$")
+CLOSE_OUT_FIELDS = ("Status", "Last reviewed")
 
 MANIFEST = re.compile(
     r"(^|/)(package(-lock)?\.json|requirements[^/]*\.(txt|lock)|pyproject\.toml|poetry\.lock"
@@ -184,6 +187,9 @@ def validate_plan(fm: dict, name: str, feat_id: str, tree: Tree) -> list[str]:
     elif status != "ready":
         errs.append(f"{name}: status is '{status}'; a plan authorizes implementation only while "
                     "status: ready (done means its PR merged)")
+    pr = fm.get("pr")
+    if pr is not None and not PR_REF.match(str(pr)):
+        errs.append(f"{name}: pr must be null or a PR number, not '{pr}'")
     spec = fm.get("spec")
     if spec and tree.read(spec) is None:
         errs.append(f"{name}: spec path does not exist: {spec}")
@@ -205,6 +211,7 @@ class Traced:
     spec_path: str
     spec_fm: dict
     plan_path: str
+    plan_fm: dict
 
 
 def summarize(paths: list[str]) -> str:
@@ -272,7 +279,7 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
         errs.append(f"{spec_path} is superseded by {', '.join(newer)}; point the plan at the current spec")
     req_defs = set(REQ_DEFINITION.findall(ch.tree.read(REQUIREMENTS) or ""))
     errs += validate_spec(spec_fm, spec_path, catalog, req_defs)
-    return errs, Traced(feat_id, spec_path, spec_fm, plan_path)
+    return errs, Traced(feat_id, spec_path, spec_fm, plan_path, plan_fm)
 
 
 def norm(text: str) -> str:
@@ -305,6 +312,49 @@ def check_pr_metadata(t: Traced, env: dict) -> list[str]:
             errs.append("PR body must carry each done_when item as a '- [ ]' line starting with its text; "
                         "missing: " + "; ".join(missing))
     return errs
+
+
+def check_plan_pr(t: Traced, env: dict, ready: bool) -> list[str]:
+    """CI only: the plan records the PR it belongs to. A draft may still say null,
+    because the number exists only once the PR is open; a ready PR may not."""
+    n = env.get("PR_NUMBER")
+    if not n:
+        return []
+    m = PR_REF.match(str(t.plan_fm.get("pr"))) if t.plan_fm.get("pr") is not None else None
+    if m and m.group(1) != n:
+        return [f"{t.plan_path}: names PR #{m.group(1)}, but this is PR #{n}"]
+    if ready and not m:
+        return [f"{t.plan_path}: set the plan's pr to {n} before marking the PR ready"]
+    return []
+
+
+def cells(line: str) -> list[str]:
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
+def feat_fields(text: str | None, feat_id: str) -> dict[str, str]:
+    """The FEAT's Status and Last reviewed: from its record's field table where the
+    record has one (stocks), otherwise from its catalog row's columns (solyra)."""
+    text = text or ""
+    lines = text.splitlines()
+    fields = {}
+    for ln in section_of(text, feat_id):
+        row = cells(lines[ln - 1]) if lines[ln - 1].startswith("|") else []
+        if len(row) == 2 and row[0] in CLOSE_OUT_FIELDS:
+            fields[row[0]] = row[1]
+    if fields:
+        return fields
+    header = None
+    for line in lines:
+        if not line.startswith("|"):
+            header = None
+            continue
+        row = cells(line)
+        if header is None:
+            header = row
+        elif (m := FEAT_ROW.match(line)) and m.group(1) == feat_id:
+            return {h: v for h, v in zip(header, row) if h in CLOSE_OUT_FIELDS}
+    return {}
 
 
 def added_lines(merge_base: str, head: str, path: str) -> list[tuple[int, str]]:
@@ -342,11 +392,17 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
     unticked = [i for i in done_items(t) if not any(ticked and text.startswith(i) for ticked, text in boxes)]
     if unticked:
         errs.append("ready for review with done_when item(s) not ticked: " + "; ".join(unticked))
-    catalog_text = ch.tree.read(CATALOG) or ""
-    record = section_of(catalog_text, t.feat_id)
     cat_added = added_lines(merge_base, head, CATALOG)
-    if not any(t.feat_id in text or ln in record for ln, text in cat_added):
-        errs.append(f"{CATALOG}: update the {t.feat_id} row or record (Status, Last reviewed) in this PR")
+    now = feat_fields(ch.tree.read(CATALOG), t.feat_id)
+    before = feat_fields(Tree(merge_base).read(CATALOG), t.feat_id)
+    reviewed, status = now.get("Last reviewed", ""), now.get("Status", "").strip("* ")
+    head_day = git("show", "-s", "--format=%cs", head).stdout.strip()
+    # Changed from the base, or already today's date (a second PR for this FEAT the same day).
+    if not ISO_DATE.match(reviewed) or (reviewed == before.get("Last reviewed") and reviewed != head_day):
+        errs.append(f"{CATALOG}: set the {t.feat_id} Last reviewed to this PR's review date in its row or "
+                    f"record (it reads '{reviewed or 'nothing'}')")
+    if status.lower() in ("", "unknown", "tbd"):
+        errs.append(f"{CATALOG}: set the {t.feat_id} Status in its row or record (it reads '{status or 'nothing'}')")
     trace_text = ch.tree.read(TRACEABILITY)
     if trace_text is not None:
         section = section_of(trace_text, t.feat_id)
@@ -410,7 +466,9 @@ def main(argv: list[str]) -> int:
         errs, traced = check(ch)
         if traced:
             errs += check_pr_metadata(traced, env)
-            if env.get("PR_NUMBER") and env.get("PR_DRAFT") == "false":
+            ready = env.get("PR_DRAFT") == "false"
+            errs += check_plan_pr(traced, env, ready)
+            if env.get("PR_NUMBER") and ready:
                 errs += check_close_out(traced, ch, merge_base, head, env)
     else:
         print(__doc__)

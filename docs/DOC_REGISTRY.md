@@ -292,4 +292,5 @@ point: somebody decides its class rather than inheriting a directory's.
 | D | tradingview-pine-scripts/*.md | tradingview-pine-scripts |  |
 | X | .claude/agents/*.md | |  |
 | X | .claude/commands/*.md | |  |
+| X | .claude/skills/**/*.md | |  |
 | X | .github/pull_request_template.md | |  |

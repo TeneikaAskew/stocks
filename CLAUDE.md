@@ -95,23 +95,27 @@ git rev-parse --abbrev-ref HEAD
 
 If the result is `main`, STOP and create a feature branch first:
 ```bash
-git checkout -b feature/short-description    # for new features
-git checkout -b fix/short-description        # for bug fixes
-git checkout -b docs/short-description       # for doc-only changes
+git checkout -b feature/<feat-id>-<slug>    # a CHANGE: approved spec and ready plan
+git checkout -b fix/<feat-id>-<slug>        # a bug fix, filed under its FEAT-ID
+git checkout -b docs/short-description      # documentation only
 ```
 
 Then push with upstream tracking on the first push:
 ```bash
-git push -u origin feature/short-description
+git push -u origin feature/<feat-id>-<slug>
 ```
 
 #### Naming convention
 
-- `feature/<description>` — new features
-- `fix/<description>` — bug fixes
-- `docs/<description>` — doc-only changes
-- `chore/<description>` — refactors, deps, build tooling
-- `fix/feat-cicd-001-workflow-{name}-{run-number}` — auto-created failure-handler branches
+The spec gate (`scripts/gate/spec_gate.py`) accepts only these shapes:
+
+- `feature/<feat-id>-<slug>`: new features; any code change needs this or `fix/`
+- `fix/<feat-id>-<slug>`: bug fixes
+- `docs/<description>`: documentation only
+- `chore/<description>`: dependency manifests, lockfiles and the gate's own files only; a refactor is a CHANGE
+- `spike/<description>`: local investigation commits, never a PR
+- `bot/superpowers-<tag>`: the weekly vendored-skills update
+- `fix/feat-cicd-001-workflow-{name}-{run-number}`: auto-created failure-handler branches
 
 Use kebab-case, keep under ~40 chars, no emoji, no PR/issue numbers.
 
@@ -138,11 +142,11 @@ edits, dependency bumps — goes through a feature branch + PR.
 
 If you've already committed to `main` locally (haven't pushed):
 ```bash
-git branch feature/short-description    # save the work
+git branch feature/<feat-id>-<slug>    # save the work
 git reset --hard origin/main             # rewind main locally
-git checkout feature/short-description   # switch to the saved branch
-git push -u origin feature/short-description
-gh pr create --base main --head feature/short-description ...
+git checkout feature/<feat-id>-<slug>   # switch to the saved branch
+git push -u origin feature/<feat-id>-<slug>
+gh pr create --base main --head feature/<feat-id>-<slug> ...
 ```
 
 Never `git push origin main` to "just publish what I already did" — that
