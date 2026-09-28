@@ -851,6 +851,9 @@ def workflow_write_grant(body: str) -> str | None:
 POLICY_DOCS = (CATALOG, REQUIREMENTS, TRACEABILITY, CANVASES)
 # The capability that owns CI configuration; enforced where the catalog defines it.
 WORKFLOW_FEAT = "FEAT-CICD-001"
+# The capability that owns the deploy surface (red-team round three); enforced where the catalog defines it.
+DEPLOY_FEAT = "FEAT-DEPLOY-001"
+DEPLOY_FILE = re.compile(r"^(gcp/deploy\.sh|cloudbuild[^/]*\.ya?ml|Dockerfile[^/]*|\.gcloudignore)$")
 # The files the gate runs from: no change may delete one, whatever its branch, or the
 # base's copy judges the deletion green and every later PR runs without a gate.
 SUITE = "tests/scripts/test_spec_gate.py"
@@ -881,7 +884,10 @@ CANVAS_MARKERS = {"refresh": "Canvas refresh pending:", "report-only": "Canvas c
 DEFERRAL = re.compile(
     r"\b(future[- ]work|follow[- ]?up|non[- ]?blocking|for now|deferred|later PR|next PR|separate PR|TODO|TBD"
     r"|not (?:yet )?(?:run|done|implemented|verified|tested|complete|completed|finished|started|applied|merged|shipped)"
-    r"|unfinished|incomplete|untested|unverified|outstanding|pending|skipped|still open|to be done)\b", re.I)
+    r"|unfinished|incomplete|untested|unverified|outstanding|pending|skipped|still open|to be done"
+    # red-team round three: ordinary deferral phrasing the list missed
+    r"|postpone\w*|parked|park it|out of scope|descope\w*|tracked in|will be (?:addressed|done|fixed|added|run)"
+    r"|after (?:the )?merge|phase \d|not in this PR|next (?:sprint|release|iteration)|to follow|later (?:change|release)|punt\w*)\b", re.I)
 # Changing these is changing a workload; the PR body must then carry the rule 0 capacity numbers.
 WORKLOAD_PREFIXES = ("gcp/", ".github/workflows/")
 CAPACITY_LABELS = ("Volume", "Velocity", "Wall-clock", "30")
@@ -925,8 +931,10 @@ WORKFLOWS = ".github/workflows/"
 
 def is_documentation(path: str) -> bool:
     name = path.rsplit("/", 1)[-1]
-    if path.startswith(WORKFLOWS) and not name.endswith(".md"):
-        return False   # a workflow is executable configuration whatever its name
+    if path.startswith(".github/") and (not name.endswith(".md") or path.startswith(".github/prompts/")):
+        # a workflow is executable configuration whatever its name, and so is a prompt a workflow
+        # feeds to a model (red-team round three: .github/prompts/); a README or template there is prose
+        return False
     if path.startswith(".claude/") or name in ("AGENTS.md", "CLAUDE.md", "CLAUDE.local.md"):   # at any depth: Claude Code loads them all
         return False   # skills, agents and the root instructions are the process agents execute, not its description
     return path.startswith("docs/") or path.endswith((".md", ".drawio")) or bool(LICENSE_FILE.match(name))
@@ -1165,6 +1173,18 @@ def non_dependency_edit(path: str, before: str | None, after: str | None) -> str
     Lockfiles and requirements files hold nothing but dependencies; package.json and
     pyproject.toml also carry scripts and tool configuration, which CI executes."""
     name = path.rsplit("/", 1)[-1]
+    if re.match(r"requirements[^/]*\.(txt|lock)$", name):
+        # red-team round three: a requirements file is executed by `pip install -r`, so an option line
+        # (`--index-url`, `-e git+…`, `-r other`), a URL or a path is code CI runs, not a version bump
+        if before is None:
+            return f"{path}: a new requirements file is a new install surface, not a dependency update"
+        if after is None:
+            return f"{path}: removing a requirements file is not a dependency update"
+        for ln in split_lines(after):
+            ln = ln.split("#", 1)[0].strip()
+            if ln and (ln.startswith("-") or re.search(r"://|git\+|\s@\s|^\.{0,2}/", ln)):
+                return f"{path}: carries {ln[:60]!r}, an option, URL or path line; a chore/ branch pins versions and nothing else"
+        return None
     if name not in ("package.json", "pyproject.toml"):
         return None
     if before is None:
@@ -1681,6 +1701,15 @@ def norm(text: str) -> str:
     return " ".join(text.split())
 
 
+def split_lines(text: str) -> list[str]:
+    """Lines as GitHub renders them: LF, CRLF or CR, nothing else (str.splitlines() would also
+    split on U+2028 and friends, which a page shows as one line: red-team round three)."""
+    return text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+
+INVISIBLE = re.compile("[\u200b-\u200f\u2028\u2029\u00ad\ufeff\x0b\x0c\x1c\x1d\x1e\x85]")
+
+
 def visible(body: str) -> str:
     """The PR body as it renders: HTML comments and fenced code blocks removed, so a
     checkbox inside the template's comments or a code example is not a checkbox."""
@@ -1692,13 +1721,15 @@ def visible(body: str) -> str:
     # fence for Markdown, so it must not close one here either)
     # ([ \t]*, not up to three spaces: a fence nested under a list item is indented by the
     # item's content offset and still renders as code)
-    body = re.sub(r"^[ \t]*(`{3,}).*?^[ \t]*\1`*[ \t]*$", "", body, flags=re.S | re.M)
-    body = re.sub(r"^[ \t]*(~{3,}).*?^[ \t]*\1~*[ \t]*$", "", body, flags=re.S | re.M)
+    # (red-team round three: a closer indented four spaces or more past its opener is content, not a
+    # closer, so the fence runs on and the boxes inside it stay code)
+    body = re.sub(r"^([ \t]*)(`{3,}).*?^\1 {0,3}\2`*[ \t]*$", "", body, flags=re.S | re.M)
+    body = re.sub(r"^([ \t]*)(~{3,}).*?^\1 {0,3}\2~*[ \t]*$", "", body, flags=re.S | re.M)
     body = re.sub(r"^[ \t]*(`{3,}|~{3,}).*\Z", "", body, flags=re.S | re.M)
     # An indented code block: lines indented four spaces or a tab after a blank line, until
     # the next unindented text. Those render as code, not as links or checkboxes.
     kept, in_code, prev_blank = [], False, True
-    for line in body.splitlines():
+    for line in split_lines(body):
         indented = line.startswith(("    ", "\t"))
         if in_code and (indented or not line.strip()):
             continue
@@ -1712,15 +1743,27 @@ def visible(body: str) -> str:
 def checklist(body: str) -> list[tuple[bool, str]]:
     """Each rendered task-list item: its checkbox line plus the indented continuation
     lines that render as part of it, so a deferral written under the box still counts."""
-    items: list[tuple[bool, str]] = []
-    for line in visible(body).splitlines():
+    items: list[tuple[bool, str] | None] = []
+    depth: list[int] = []
+    for line in split_lines(visible(body)):
         if (m := CHECKBOX.match(line)):
-            items.append((m.group(1) in "xX", norm(m.group(2))))
-        elif items and items[-1] is not None and line.strip() and line[0] in " \t":
+            box = (m.group(1) in "xX", norm(m.group(2)))
+            if items and items[-1] is not None and indent(line) > depth[-1]:
+                # red-team round three: an unticked or deferring child renders under its parent, so the
+                # parent is not done; its words reach the parent's text
+                ticked, text = items[-1]
+                items[-1] = (ticked and box[0], norm(f"{text} {box[1]}"))
+            else:
+                items.append(box)
+                depth.append(indent(line))
+        elif items and items[-1] is not None and line.strip() and not re.match(r"^\s*([-*+]\s|\d+[.)]\s|>|#{1,6}\s|\|)", line):
+            # an indented line, or an unindented one that starts no other block, renders inside the item
+            # (lazy continuation: red-team round three)
             ticked, text = items[-1]
             items[-1] = (ticked, norm(f"{text} {line}"))
         else:
-            items.append(None)   # a blank or unindented line ends the item
+            items.append(None)   # a blank line or another block ends the item
+            depth.append(0)
     return [i for i in items if i is not None]
 
 
@@ -1766,7 +1809,7 @@ def check_canvas_handoff(t: Traced, body: str, tree: Tree) -> list[str]:
     if not isinstance(urls, list) or not urls:
         return []
     modes = canvas_modes(tree.read(CANVASES))
-    lines = visible(body).splitlines()
+    lines = split_lines(visible(body))
     errs: list[str] = []
     for url in urls:
         mode = modes.get(url)
@@ -1797,8 +1840,14 @@ def check_pr_metadata(t: Traced, env: dict, tree: Tree) -> list[str]:
             errs.append(f"PR body must link the spec the plan names: {t.spec_path}")
         if not links_path(shown, t.plan_path):
             errs.append(f"PR body must link the plan: {t.plan_path}")
-        matched = matched_boxes(done_items(t), checklist(shown))
+        boxes = checklist(shown)
+        matched = matched_boxes(done_items(t), boxes)
         missing = [i for i, box in matched.items() if box is None]
+        items = done_items(t)
+        own = lambda i: [b for b in boxes if b[1].startswith(i) and not any(len(j) > len(i) and b[1].startswith(j) for j in items)]
+        if twice := [i for i in items if len(own(i)) > 1]:
+            # red-team round three: a ticked copy above an honest unticked line claimed the item
+            errs.append("PR body carries more than one checkbox line for: " + "; ".join(twice) + "; one line per item")
         if missing:
             errs.append("PR body must carry each done_when item as its own '- [ ]' line starting with its text; "
                         "missing: " + "; ".join(missing))
@@ -1813,7 +1862,7 @@ def check_pr_metadata(t: Traced, env: dict, tree: Tree) -> list[str]:
 
 def section(body: str, title: str) -> str | None:
     """The text under the first heading containing `title` (case-insensitive), HTML comments removed."""
-    lines = body.splitlines()
+    lines = split_lines(body)
     for i, line in enumerate(lines):
         if (h := HEADING.match(line)) and title.lower() in line.lower():
             level = len(h.group(1))
@@ -2087,6 +2136,22 @@ def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) ->
     return errs
 
 
+def check_registry_rows(t: Traced, ch: Change, merge_base: str, head: str) -> list[str]:
+    """CI only: a feature change edits the registry rows of the models its spec names, and no
+    other's (red-team round three; product-delivery SKILL "Never" 3)."""
+    path = REGISTRY_DOCS[0]
+    if path not in ch.changed:
+        return []
+    spec_text = ch.base.read(t.spec_path) or ch.tree.read(t.spec_path) or ""
+    named = set(re.findall(r"\bMODEL-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", spec_text))
+    touched = {m.group(1) for _, _, text in changed_lines(merge_base, head, path)
+               if (m := re.match(r"^\s*\|?\s*\[?\s*(MODEL-[A-Z0-9]+(?:-[A-Z0-9]+)*)\b", text))}
+    if outside := sorted(touched - named):
+        return [f"{path}: changes the row(s) of {', '.join(outside[:3])}, which {t.spec_path} never names; a feature "
+                "change edits only the registry rows of the models its spec covers"]
+    return []
+
+
 def check_plan_pr(t: Traced, env: dict, ready: bool) -> list[str]:
     """CI only: the plan records the PR it belongs to. A draft may still say null,
     because the number exists only once the PR is open; a ready PR may not."""
@@ -2229,7 +2294,7 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
     elif feat_record(ch.tree.read(CATALOG), t.feat_id) == feat_record(Tree(merge_base).read(CATALOG), t.feat_id):
         errs.append(f"{CATALOG}: the {t.feat_id} record is unchanged from the base although it already reads "
                     f"{head_day}; a second PR the same day still updates its record (its PRs, Status or notes)")
-    if status.lower() in ("", "unknown", "tbd"):
+    if status.lower() in ("", "unknown", "tbd", "tbc", "n/a", "none", "pending", "-", "—", "–") or set(status) <= set("?"):
         errs.append(f"{CATALOG}: set the {t.feat_id} Status in its row or record (it reads '{status or 'nothing'}')")
     # Which record carries the lineage is policy, read at the base: a repository that
     # keeps it in the catalog row (solyra) cannot be moved off that check by a PR that
@@ -2326,6 +2391,13 @@ def run(argv: list[str]) -> int:
         ch = Change("commit", branch, staged, Tree(None), before, before)
         errs, _ = check(ch)
     elif mode == "--pr":
+        env = dict(os.environ)
+        if body := env.get("PR_BODY"):
+            # GitHub delivers a web-authored body with CRLF; the checks read LF (red-team round three)
+            env["PR_BODY"] = body.replace("\r\n", "\n").replace("\r", "\n")
+            if m := INVISIBLE.search(env["PR_BODY"]):
+                return fail([f"PR body carries an invisible character (U+{ord(m.group(0)):04X}); the gate reads the body as "
+                             "the page shows it, so remove it"])
         base_arg = argv[2] if len(argv) > 2 else "origin/main"
         head_arg = argv[3] if len(argv) > 3 else "HEAD"
         base, head = resolve(base_arg), resolve(head_arg)
@@ -2359,6 +2431,12 @@ def run(argv: list[str]) -> int:
                 and traced.feat_id != WORKFLOW_FEAT and WORKFLOW_FEAT in catalog_ids(ch.base.read(CATALOG)):
             errs.append(f"workflow change(s) under {WORKFLOWS} belong to {WORKFLOW_FEAT}, not {traced.feat_id}; "
                         "CI configuration is that capability's work")
+        if traced and any(DEPLOY_FILE.match(f) for f in ch.changed) \
+                and traced.feat_id != DEPLOY_FEAT and DEPLOY_FEAT in catalog_ids(ch.base.read(CATALOG)):
+            errs.append(f"deploy change(s) ({summarize([f for f in ch.changed if DEPLOY_FILE.match(f)])}) belong to {DEPLOY_FEAT}, "
+                        f"not {traced.feat_id}; the deploy surface is that capability's work")
+        if traced:
+            errs += check_registry_rows(traced, ch, merge_base, head)
         # A workload change wants its numbers whatever the branch: a chore/ PR editing
         # the gate's workflows is untraced and still changes what CI runs.
         errs += check_capacity(env.get("PR_BODY"), ch.changed)

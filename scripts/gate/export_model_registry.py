@@ -30,6 +30,7 @@ names main and the check passes.
 from __future__ import annotations
 
 import datetime
+import html
 import json
 import pathlib
 import re
@@ -94,13 +95,36 @@ class Source:
 MODEL_TIERS = ("Deterministic and heuristic systems", "Learned models", "LLM nodes")
 
 
+# Line endings GFM does not recognise: str.splitlines() would split on them and read a
+# second row GFM renders as excess cells of the first (red-team round three)
+ODD_BREAKS = re.compile("[\u2028\u2029\x0b\x0c\x1c\x1d\x1e\x85]")
+UNICODE_DASH = re.compile("\\b(MODEL|DOC|E)[\u2010-\u2015\u2212]")
+
+
+def split_lines(text: str) -> list[str]:
+    """Lines as GFM reads them: LF, CRLF or CR, nothing else."""
+    return text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+
 def clean(cell: str) -> str:
     # An HTML comment is audit markup, not content: canvases.yml maps cells straight
     # onto card text, so a hidden directive would be published on a card.
     cell = re.sub(r"<!--.*?-->", "", cell, flags=re.S)
     cell = LINK.sub(r"\1", cell)
     cell = cell.replace("**", "").replace("~~", "")
-    return re.sub(r"\s+", " ", cell).strip()
+    # red-team round three: `E\-99`, `E&#45;99` and `<s>x</s>` render as the plain text; inside a
+    # code span a backslash, an entity and a tag are literal, so only the prose between spans changes
+    out, at = [], 0
+    for span in re.finditer(r"(`+)(?:(?!\1)[\s\S])*?\1", cell):   # a span opens and closes with the same run of backticks
+        out += [prose(cell[at:span.start()]), span.group(0)]
+        at = span.end()
+    out.append(prose(cell[at:]))
+    return re.sub(r"\s+", " ", "".join(out)).strip()
+
+
+def prose(text: str) -> str:
+    text = re.sub(r"</?[a-zA-Z][a-zA-Z0-9-]*(\s[^<>]*)?/?>", "", html.unescape(text))
+    return re.sub(r"\\([!-/:-@\[-`{-~])", r"\1", text)
 
 
 def split_row(line: str) -> list[str]:
@@ -143,23 +167,48 @@ def rendered(text: str) -> str:
     and a fence opener inside a comment is commentary (red-team round two)."""
     out: list[str] = []
     fence: str | None = None
-    in_comment = False
-    for line in text.splitlines():
+    in_comment = in_code = in_html = False
+    prev_blank, last_kept = True, ""
+    for line in split_lines(text):
         if in_comment:
             if "-->" not in line:
                 continue
             line = line.split("-->", 1)[1]
             in_comment = False
         if fence is not None:
-            if re.match(r"^[ \t]*" + re.escape(fence) + fence[0] + r"*[ \t]*$", line):
+            if re.match(r"^ {0,3}" + re.escape(fence) + fence[0] + r"*[ \t]*$", line):
                 fence = None
             continue
-        if opener := re.match(r"^[ \t]*(`{3,}|~{3,})", line):
+        if in_html:
+            if line.strip():
+                continue
+            in_html = False
+        # red-team round three: a fence opens and closes only within three spaces of indentation; four
+        # or a tab after a blank line is an indented code block, which GFM renders as code
+        indented = line.startswith(("    ", "\t"))
+        if in_code and (indented or not line.strip()):
+            continue
+        # (under a list item an indented block is the item's continuation, not code: kept, so a table
+        # there is refused as nested rather than dropped)
+        in_code = indented and prev_blank and not re.match(r"^\s*([-*+]|\d+[.)])\s", last_kept)
+        was_blank, prev_blank = prev_blank, not line.strip()
+        if in_code:
+            continue
+        if line.strip():
+            last_kept = line
+        if (opener := re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)) and not (opener.group(1)[0] == "`" and "`" in opener.group(2)):
             fence = opener.group(1)
             continue
+        if re.match(r"^ {0,3}<!--", line) and "-->" not in line:
+            in_comment = True   # an HTML comment block: to the line carrying `-->`
+            continue
+        if was_blank and re.match(r"^ {0,3}</?(div|details|summary|p|table|pre|section|article|ul|ol|li|blockquote|h[1-6]|hr|dl|dd|dt|center)\b", line):
+            in_html = True   # an HTML block: a heading or table inside it is not rendered as one
+            continue
         line = re.sub(r"<!--.*?-->", "", line)
-        if "<!--" in line:
-            line, in_comment = line.split("<!--", 1)[0], True
+        if "<!--" in line and "|" not in line:
+            line, in_comment = line.split("<!--", 1)[0], True   # a comment opened in prose runs on
+        # (an unclosed `<!--` on a table row is cell text, and refused below as a row cell)
         out.append(line)
     return "\n".join(out)
 
@@ -191,19 +240,25 @@ def tables_with_headings(text: str):
     heading: list[str] = []
     # stocks#1205 r4121216904: GFM renders a row indented by up to three spaces as part of
     # the table, so such a row is a row here too, not the end of the table
-    lines = [re.sub(r"^ {1,3}(?=[|#])", "", ln).rstrip() for ln in rendered(text).splitlines()]   # trailing blanks are not content
+    raw_lines = split_lines(rendered(text))
+    lines = [re.sub(r"^ {1,3}(?=[|#])", "", ln).rstrip() for ln in raw_lines]   # trailing blanks are not content
     consumed: set[int] = set()
     i = 0
     while i < len(lines):
         line = lines[i]
-        hm = re.match(r"^(#{1,6})\s+(.*)$", line)
+        hm = re.match(r"^(#{1,6})(?:\s+(.*))?$", line)
         if hm:
             level = len(hm.group(1))
-            heading = heading[: level - 1] + [clean(hm.group(2))]
+            heading = heading[: level - 1] + [clean(hm.group(2) or "")]
             i += 1
             continue
         # stocks#1205 r4121777339: every delimiter cell carries a hyphen, or GFM renders no table
         if "|" in line and i + 1 < len(lines) and DELIMITER.match(lines[i + 1]) and "-" in lines[i + 1]:
+            # red-team round three: a blockquote, list item or paragraph directly above swallows the header
+            # row into itself (lazy continuation), so GFM renders no table at all
+            if i and lines[i - 1].strip() and not re.match(r"^#{1,6}(\s|$)", lines[i - 1]):
+                raise SystemExit(f"{REGISTRY}: the table at {line.strip()[:60]!r} follows {lines[i - 1].strip()[:40]!r} without a blank "
+                                 "line, so GFM renders it as part of that block, not as a table")
             header = [clean(c) for c in split_row(line)]
             if len(split_row(lines[i + 1])) != len(header):
                 # red-team, this PR: GFM renders no table when the delimiter row's width differs
@@ -215,10 +270,17 @@ def tables_with_headings(text: str):
             # a row is any following non-blank line up to a heading, fence, list item or blockquote: GFM
             # does not need the leading pipe (red-team, this PR), and a line without any pipe renders
             # as a one-cell row of the table, not as prose (red-team round two)
-            while i < len(lines) and lines[i].strip() and not re.match(r"^(#|```|~~~)", lines[i]) and not BLOCK_START.match(lines[i]):
+            # (a heading needs a space after its hashes and a fence sits within three spaces: `#| x |` is a row)
+            while i < len(lines) and lines[i].strip() and not re.match(r"^(#{1,6}(\s|$)|```|~~~)", lines[i]) and not BLOCK_START.match(lines[i]):
                 if "|" not in lines[i]:
                     raise SystemExit(f"{REGISTRY}: {lines[i].strip()!r} directly under the table in '{' / '.join(heading)}' has no "
                                      "pipe; GFM renders it as a row of that table. Put a blank line before it or make it a row")
+                if raw_lines[i].startswith(("    ", "\t")):
+                    raise SystemExit(f"{REGISTRY}: {lines[i].strip()[:60]!r} under the table in '{' / '.join(heading)}' is indented "
+                                     "four spaces; GFM ends the table there and renders it as code")
+                if "<!--" in lines[i]:
+                    raise SystemExit(f"{REGISTRY}: a row under '{' / '.join(heading)}' carries an unclosed `<!--`; GFM renders it as "
+                                     "text, so close the comment on the same line or remove it")
                 rows.append(split_row(lines[i]))
                 consumed.add(i)
                 i += 1
@@ -285,7 +347,7 @@ def experiment_ids(text: str) -> list[str]:
     """IDs from experiment headings only: prose such as "Next free ID is E-36" is not an experiment."""
     ids: set[str] = set()
     leads: list[str] = []   # the ID a heading starts with: its own entry, not a mention or a session's range
-    lines = rendered(text).splitlines()   # a heading inside a fence is an example, not an entry (r4120660287)
+    lines = split_lines(rendered(text))   # a heading inside a fence is an example, not an entry (r4120660287)
     for n, line in enumerate(lines):
         # red-team round two: a setext heading (text underlined with === or ---) is a heading too
         if n + 1 < len(lines) and re.match(r"^ {0,3}(=+|-+)\s*$", lines[n + 1]) and line.strip() \
@@ -329,17 +391,27 @@ def resolve_scheduler_models(schedulers: list[dict], models: dict) -> None:
     for rec in schedulers:
         if rec["models"]:
             continue
-        if LLM_GROUP.search(rec.get("serves", "")):
+        serves = rec.get("serves", "")
+        if re.search(r"\b(no|not|never|none)\b", serves, re.I) and (LLM_GROUP.search(serves) or "same job" in serves.lower()):
+            # red-team round three: "not the LLM nodes any more" expanded to the LLM nodes
+            raise SystemExit(f"{REGISTRY}: scheduler {rec.get('scheduler', '')} Serves reads {serves!r}, a negation the exporter "
+                             "does not resolve; name the models or say what it serves")
+        if LLM_GROUP.search(serves):
             rec["models"] = llm_ids
-        elif by_job.get(rec.get("job", "")):
+        elif "same job" in serves.lower() and by_job.get(rec.get("job", "")):
             rec["models"] = sorted(by_job[rec["job"]])
         else:
-            rec["models_note"] = f"no registered model named in Serves: {rec.get('serves', '')}"
+            rec["models_note"] = f"no registered model named in Serves: {serves}"
 
 
 def build(src: Source) -> dict:
     text = src.require(REGISTRY)
     etext = src.require(EXPERIMENTS)
+    for path, doc in ((REGISTRY, text), (EXPERIMENTS, etext)):
+        if m := ODD_BREAKS.search(doc):
+            raise SystemExit(f"{path}: carries U+{ord(m.group(0)):04X}, which is not a line ending GFM recognises; remove it")
+        if m := UNICODE_DASH.search(doc):
+            raise SystemExit(f"{path}: {m.group(0)!r} uses a look-alike dash; IDs are written with the ASCII hyphen")
     out: dict = {
         "generated_from": [REGISTRY, EXPERIMENTS],
         # The exporter is a source too: a changed exporter is a changed output, so a base
@@ -372,9 +444,13 @@ def build(src: Source) -> dict:
                 # red-team round two: `model-gamma-001` neither routed nor failed; it vanished as prose
                 malformed.append(f"{first!r} under '{section}' is a lower-case ID; IDs are upper-case MODEL-/DOC-")
                 continue
-            if routable and any("~~" in cell for cell in raw):
+            if routable and any("~~" in cell or re.search(r"<(s|del|strike)\b", cell) for cell in raw):
                 # red-team round two: `~~MODEL-X~~` renders struck through and exported as a live card
                 malformed.append(f"{first} under '{section}' carries struck-through text; delete the row or restore it")
+                continue
+            if first.startswith("MODEL-") and h0 == "id" and "status" not in header_keys(header):
+                # red-team round three: a renamed Status column exported every card's status as null
+                malformed.append(f"the model table under '{section}' has no Status column; the cards read it")
                 continue
             if routable and (taken := derived_collisions(header, h0 == "scheduler" and "serves" in " ".join(header).lower())):
                 malformed.append(f"table under '{section}' has a column keyed {taken[0]}, a field the exporter derives")
@@ -406,7 +482,7 @@ def build(src: Source) -> dict:
                 if first in out["models"]:
                     malformed.append(f"{first} appears twice (second under '{section}')")
                     continue
-                rec["tier"] = heading[-1] if heading else ""
+                rec["tier"] = heading[1] if len(heading) > 1 else (heading[0] if heading else "")   # the `## ` tier, not a `### ` subsection
                 out["models"][first] = canonical(rec)
             elif first.startswith("MODEL-") and h0 == "model":
                 if first in out["experiment_traceability"]:

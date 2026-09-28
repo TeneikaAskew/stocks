@@ -830,3 +830,66 @@ def test_nested_and_ragged_tables_render_as_gfm_renders_them(repo):
                                       "| ID | Nodes | Tier | Code | Numeric authority | Status |\n|---|---|---|---|---|---|\n| MODEL-LLM-001 | Insight writer | 3 |", 1))
     r = export(repo)
     assert r.returncode != 0 and "a field the exporter derives" in r.stdout + r.stderr, r.stdout + r.stderr
+
+
+def test_line_breaks_comments_escapes_and_lazy_blocks_render_as_gfm_renders_them(repo):
+    """Red-team round three (export_model_registry.py:106, :136, :194, :97, :319, :257): a U+2028 inside a
+    row read as a second row GFM never renders; an unclosed `<!--` in a cell hid every later line; a
+    blockquote directly above a header swallowed the table; `E\\-99` and `E&#45;99` render as IDs the
+    regexes missed; a row indented four spaces, a fence opened at four spaces and a `#|` row moved rows
+    across the rendered/exported boundary; a `<div>` hid a ledger heading; a `### ` subsection keyed
+    the tier; a negated Serves still expanded; `<s>` exported live; a renamed Status column exported
+    null. Each is exported faithfully or refused."""
+    assert export(repo).returncode == 0
+    reg, exp = REGISTRY_TEXT, EXPERIMENTS_TEXT
+    mag = "| MODEL-MAG-001 | Magnitude | Gradient boosting | Expected move size | `lib/magnitude.py` | Invalidated | Retrain | DOC-02 | [#813](https://github.com/TeneikaAskew/stocks/issues/813) |"
+    assert mag in reg
+    for sep in (" ", "\x0c", "\x85"):
+        write(repo, REGISTRY, reg.replace(mag, mag + sep + "| MODEL-HIDDEN-001 | Hidden | ML | phantom | `lib/x.py` | Production | Keep | DOC-02 | — |", 1))
+        r = export(repo)
+        assert r.returncode != 0 and "not a line ending GFM recognises" in r.stdout + r.stderr, (repr(sep), r.stdout + r.stderr)
+    write(repo, REGISTRY, reg.replace(mag, mag[:-2] + " see the `<!--` marker |\n| MODEL-NEW-001 | New | ML | phantom | `lib/new.py` | Production | Keep | DOC-02 | — |\n\nRows re-measured on 2026-09-20 -->", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "unclosed `<!--`" in r.stdout + r.stderr, r.stdout + r.stderr
+    for above in ("> Note: the learned tier is under review.", "- Note: under review", "<div>"):
+        write(repo, REGISTRY, reg.replace("## Learned models\n\n", "## Learned models\n\n" + above + "\n", 1))
+        r = export(repo)
+        assert r.returncode != 0, (above, r.stdout + r.stderr)
+    row = next(ln for ln in reg.splitlines() if ln.startswith("| MODEL-MAG-001 | E-01 |"))
+    for bad in ("E-01, E\\-99", "E-01, E&#45;99"):
+        write(repo, REGISTRY, reg.replace(row, row.replace("E-01", bad, 1), 1))
+        r = export(repo)
+        assert r.returncode != 0 and "not in the ledger" in r.stdout + r.stderr, (bad, r.stdout + r.stderr)
+    write(repo, REGISTRY, reg.replace(row, row.replace("E-01", "E‑99", 1), 1))
+    r = export(repo)
+    assert r.returncode != 0 and "look-alike dash" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, reg.replace("| `p2-build-gamma-levels` | MODEL-GAMMA-001 |", "| `p2-build-gamma-levels` | MODEL\\-GAMMA\\-001 |", 1))
+    assert export(repo).returncode == 0 and exported(repo)["schedulers"][0]["models"] == ["MODEL-GAMMA-001"], "an escaped hyphen renders as the ID"
+    write(repo, REGISTRY, reg.replace(mag, mag + "\n    | MODEL-CODE-001 | In a code block | ML | none | `x.py` | Production | Keep | DOC-02 | — |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "indented four spaces" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, reg.replace("## LLM nodes\n\n", "## LLM nodes\n\n    ```\n", 1))
+    assert export(repo).returncode == 0 and "MODEL-LLM-001" in exported(repo)["models"], "a fence at four spaces is code, not a fence"
+    write(repo, REGISTRY, reg.replace("| MODEL-SUM-001 |", "#| MODEL-SUM-001 |", 1))
+    r = export(repo)
+    assert r.returncode != 0, r.stdout + r.stderr
+    write(repo, REGISTRY, reg)
+    write(repo, EXPERIMENTS, exp + "\n<div>\n## E-98 · inside html block\n</div>\n")
+    assert export(repo).returncode == 0 and "E-98" not in exported(repo)["experiment_ids"]
+    write(repo, EXPERIMENTS, exp)
+    llm = "| MODEL-SUM-001 | summarizers | — | `lib/agents/summarizers.py` | preserve supplied values | Experimental |\n"
+    write(repo, REGISTRY, reg.replace(llm, "").replace("## Scheduled surfaces\n", "### Delivery nodes\n\n| ID | Nodes | Count | Code | Numeric authority | Status |\n|---|---|---|---|---|---|\n" + llm + "\n## Scheduled surfaces\n", 1))
+    assert export(repo).returncode == 0 and exported(repo)["models"]["MODEL-SUM-001"]["tier"] == "LLM nodes"
+    assert "MODEL-SUM-001" in next(s for s in exported(repo)["schedulers"] if "insight-pipeline-daily" in s["scheduler"])["models"]
+    write(repo, REGISTRY, reg.replace("**all 4 LLM nodes** — `run_insight_pipeline`", "not the LLM nodes any more — deterministic summary only", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "a negation the exporter does not resolve" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, reg.replace("the same job, weekend refresh", "a weekend refresh"))
+    assert export(repo).returncode == 0 and next(s for s in exported(repo)["schedulers"] if "gamma-levels-sunday" in s["scheduler"])["models"] == []
+    write(repo, REGISTRY, reg.replace("| MODEL-SUM-001 | summarizers | — | `lib/agents/summarizers.py` | preserve supplied values | Experimental |",
+                                      "| MODEL-SUM-001 | summarizers | — | `lib/agents/summarizers.py` | preserve supplied values | <s>Experimental</s> Retired &amp; archived |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "struck-through" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, reg.replace("| ID | Name | Type | Decision produced | Code / artifact | Status |", "| ID | Name | Type | Decision produced | Code / artifact | State |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "no Status column" in r.stdout + r.stderr, r.stdout + r.stderr
