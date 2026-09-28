@@ -110,11 +110,16 @@ WORKFLOW_CONTRACTS = {
         # The base's verdict first; then the base's own suite judges the proposed gate, which
         # replaces the base's copy only after the verdict (solyra#72 r4120337733)
         "run": ('python3 scripts/gate/spec_gate.py --pr "$BASE_SHA" "$HEAD_SHA"',
-                'git show "$HEAD_SHA:scripts/gate/spec_gate.py" > scripts/gate/spec_gate.py',
+                'git show "$HEAD_SHA:scripts/gate/spec_gate.py" > "$RUNNER_TEMP/proposed/spec_gate.py"',
                 "python3 -m pytest tests/scripts/test_spec_gate.py"),
+        # In this order: within one job by statement order, across jobs by `needs`
+        # (solyra#72 r4120515772). GitHub runs jobs without `needs` concurrently.
         "order": ('python3 scripts/gate/spec_gate.py --pr "$BASE_SHA" "$HEAD_SHA"',
-                  'git show "$HEAD_SHA:scripts/gate/spec_gate.py" > scripts/gate/spec_gate.py',
+                  'git show "$HEAD_SHA:scripts/gate/spec_gate.py" > "$RUNNER_TEMP/proposed/spec_gate.py"',
                   "python3 -m pytest tests/scripts/test_spec_gate.py"),
+        # The suite runs PR-controlled Python: its job holds no checkout credentials and
+        # never holds the verdict (stocks#1205 r4120528961)
+        "isolated": ("python3 -m pytest tests/scripts/test_spec_gate.py",),
         "structure": ("permissions:\n  contents: read",),
     },
 }
@@ -225,7 +230,8 @@ def shell_statements(runs: str) -> list[str]:
             lines[i:i] = inner
         # Parentheses are not separators: `(exit $rc)` inside an echo is text, and a subshell
         # `( cmd )` reads as a statement starting with `(`, which no contract prefix matches
-        parts = re.split(r"(\|\||&&|;;|;|\||\bthen\b|\bdo\b|\belse\b|\belif\b|\bfi\b|\bdone\b|\besac\b|\bcase\b)", line)
+        # `cmd &` backgrounds cmd and drops its exit status (stocks#1205 r4120528946); `2>&1` is a redirection
+        parts = re.split(r"(\|\||&&|(?<![<>&])&(?![&>])|;;|;|\||\bthen\b|\bdo\b|\belse\b|\belif\b|\bfi\b|\bdone\b|\besac\b|\bcase\b)", line)
         chained = False    # after && or ||: runs only on the previous statement's outcome
         for k in range(0, len(parts), 2):
             stmt, op = parts[k].strip(), parts[k + 1] if k + 1 < len(parts) else ""
@@ -237,7 +243,7 @@ def shell_statements(runs: str) -> list[str]:
             if stmt and depth == 0 and not chained and re.match(r"^(exit|return)\b", stmt):
                 return out   # stocks#1205 r4120381459: nothing after an unconditional exit runs
             executed = (stmt and not re.match(r"^[A-Za-z_]\w*=", stmt)   # `x="..."`: a value, not a command
-                        and stmt.split()[0] not in NON_EXECUTING and depth == 0 and not chained and op != "||")
+                        and stmt.split()[0] not in NON_EXECUTING and depth == 0 and not chained and op not in ("||", "&"))
             if executed:
                 out.append(stmt)
             if op in ("then", "do", "case"):   # `else` continues the block `then` opened
@@ -278,21 +284,72 @@ def test_assertions(source: str) -> dict[str, int]:
             for node in tree.body if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")}
 
 
-def checkout_refs(body: str) -> list[str]:
-    """The `ref:` of every actions/checkout step in a comment-stripped workflow ("" for a
-    step that takes the event's default)."""
-    lines, refs = body.splitlines(), []
+def checkout_steps(body: str) -> list[tuple[str, bool]]:
+    """(ref, persists credentials) for every actions/checkout step in a comment-stripped
+    workflow: "" for a step that takes the event's default ref, True unless the step says
+    `persist-credentials: false`."""
+    lines, found = body.splitlines(), []
     for i, line in enumerate(lines):
         if not re.match(r"^\s*(-\s+)?uses:\s*['\"]?actions/checkout", line):
             continue
         item = next((j for j in range(i, -1, -1) if lines[j].lstrip().startswith("-")), i)
         level = indent(lines[item])
-        ref = ""
+        ref, persists = "", True
         for j in range(item, block_end(lines, item, level)):
             if (m := re.match(r"^\s*ref:\s*(.*)$", lines[j])):
                 ref = re.sub(r"\s+#.*$", "", m.group(1)).strip().strip("'\"")
-        refs.append(ref)
-    return refs
+            if (m := re.match(r"^\s*persist-credentials:\s*(.*)$", lines[j])):
+                persists = re.sub(r"\s+#.*$", "", m.group(1)).strip().strip("'\"").lower() != "false"
+        found.append((ref, persists))
+    return found
+
+
+def checkout_refs(body: str) -> list[str]:
+    return [ref for ref, _ in checkout_steps(body)]
+
+
+def workflow_jobs(body: str) -> list[dict]:
+    """The jobs of a comment-stripped workflow: {name, needs, statements, checkouts}, each
+    from its own block, so a contract can tell one job's steps from another's."""
+    lines = body.splitlines()
+    jobs_at = next((i for i, ln in enumerate(lines) if re.match(r"^jobs:\s*$", ln)), None)
+    if jobs_at is None:
+        return []
+    out, end = [], block_end(lines, jobs_at, 0)
+    keys = [i for i in range(jobs_at + 1, end) if lines[i].strip() and indent(lines[i]) == indent(lines[jobs_at + 1])
+            and re.match(r"^\s*[\w.-]+:\s*$", lines[i])]
+    for n, start in enumerate(keys):
+        stop = keys[n + 1] if n + 1 < len(keys) else end
+        block = "\n".join(lines[start:stop])
+        needs: set[str] = set()
+        for ln in lines[start + 1:stop]:
+            if indent(ln) == indent(lines[start]) + 2 and (m := re.match(r"^\s*needs:\s*(.*)$", ln)):
+                needs = set(re.findall(r"[\w.-]+", re.sub(r"\s+#.*$", "", m.group(1))))
+        out.append({"name": lines[start].strip().rstrip(":"), "needs": needs,
+                    "statements": shell_statements(workflow_executes(block)[0]), "checkouts": checkout_steps(block)})
+    return out
+
+
+def job_of(jobs: list[dict], command: str) -> tuple[int, int]:
+    """(job index, statement index) of the first statement starting with `command`, or (-1, -1)."""
+    for j, job in enumerate(jobs):
+        for k, st in enumerate(job["statements"]):
+            if st.startswith(command):
+                return j, k
+    return -1, -1
+
+
+def needs_transitively(jobs: list[dict], later: int, earlier: int) -> bool:
+    seen, frontier = set(), {jobs[later]["name"]}
+    while frontier:
+        name = frontier.pop()
+        if name == jobs[earlier]["name"]:
+            return True
+        if name in seen:
+            continue
+        seen.add(name)
+        frontier |= next((j["needs"] for j in jobs if j["name"] == name), set())
+    return False
 
 
 def checkout_violation(body: str, side: str) -> str | None:
@@ -741,6 +798,11 @@ def check_changed_plans(ch: Change) -> list[str]:
                 errs.append(f"{path}: its spec {fm.get('spec')} serves {spec_fm.get('feat_id')}, not {feat}")
             if feat and feat not in catalog_ids(ch.base.read(CATALOG)):
                 errs.append(f"{path}: feat_id {feat} is not in {CATALOG}")
+            if fm.get("pr") is not None:
+                # solyra#72 r4120515785: the number is the implementation PR's to record once it
+                # opens; a landing plan that carries one blocks that PR for good
+                errs.append(f"{path}: pr is {fm.get('pr')} on a plan landing before its implementation; leave pr: null "
+                            "for the implementation branch to record")
             # solyra#72 r4120167313: the branch is one an implementation can use, and it names
             # the plan's FEAT
             bm = BRANCH.match(str(fm.get("branch")))
@@ -783,10 +845,23 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                 return [f"{path}: no longer executes {len(lost)} step(s) the gate depends on ({lost[0]!r}"
                         f"{' and more' if len(lost) > 1 else ''}); a command in a comment, an echo, an unused scalar "
                         "or a step an `if:` may skip does not count. The gate's workflows keep their checks"], None
-            positions = [next((k for k, st in enumerate(statements) if st.startswith(m)), -1) for m in contract.get("order", ())]
-            if positions != sorted(positions):
-                return [f"{path}: runs its steps out of order ({', '.join(repr(m) for m in contract['order'])} is the order); "
-                        "the base's verdict comes before the proposed gate replaces the base's copy"], None
+            jobs = workflow_jobs(body)
+            order = contract.get("order", ())
+            for earlier, later in zip(order, order[1:]):
+                (ja, ka), (jb, kb) = job_of(jobs, earlier), job_of(jobs, later)
+                if not (ja == jb and ka < kb) and not (ja != jb and needs_transitively(jobs, jb, ja)):
+                    return [f"{path}: {later!r} does not follow {earlier!r} (same job, later step, or a job that "
+                            "`needs` it); the base's verdict comes before the proposed gate runs"], None
+            for command in contract.get("isolated", ()):
+                j, _ = job_of(jobs, command)
+                if j >= 0 and (job_of(jobs, contract["run"][0])[0] == j or any(persists for _, persists in jobs[j]["checkouts"])):
+                    return [f"{path}: {command!r} runs PR-controlled code, so its job holds no checkout credentials "
+                            "(persist-credentials: false) and never the base's verdict"], None
+            for job in jobs:
+                # stocks#1205 r4120528978: a job that runs a contract command has the repository
+                if any(st.startswith(m) for m in required for st in job["statements"]) and not job["checkouts"]:
+                    return [f"{path}: job {job['name']} runs the gate's commands without an actions/checkout step; "
+                            "it would run in an empty workspace"], None
             if contract["trigger"] not in workflow_triggers(body):
                 return [f"{path}: no longer runs on {contract['trigger']} (its `on:` names "
                         f"{', '.join(sorted(workflow_triggers(body))) or 'nothing'}); the gate's workflows keep their trigger"], None
@@ -1199,9 +1274,11 @@ def validate_canvases(text: str) -> list[str]:
     for ln in entries:
         if not re.match(r"^\s*-\s+name:", ln):
             errs.append(f"{CANVASES}: an entry starts with `- name:`, not {ln.strip()!r}")
-    urls = len(re.findall(r"^\s+url:\s*\S+", text, re.M))
-    if urls != len(entries):
-        errs.append(f"{CANVASES}: {len(entries)} entries but {urls} url fields; every canvas names its url")
+    urls = re.findall(r"^\s+url:\s*(\S+)", text, re.M)
+    if len(urls) != len(entries):
+        errs.append(f"{CANVASES}: {len(entries)} entries but {len(urls)} url fields; every canvas names its url")
+    for url in sorted({u for u in urls if urls.count(u) > 1}):
+        errs.append(f"{CANVASES}: {url} is listed twice; one entry per canvas (stocks#1205 r4120528971)")
     for m in re.finditer(r"^\s+mode:\s*(\S+)", text, re.M):
         if m.group(1) not in CANVAS_MODES:
             errs.append(f"{CANVASES}: mode {m.group(1)!r} is not one of {' | '.join(CANVAS_MODES)}")
@@ -1223,6 +1300,13 @@ def check_policy_structure(ch: Change) -> list[str]:
             errs.append(f"{path}: no longer defines {len(dropped)} ID(s) the base has ({dropped[0]}"
                         f"{' and more' if len(dropped) > 1 else ''}); a policy document is extended in a branch, "
                         "never emptied or pruned")
+        if path == CATALOG:
+            # solyra#72 r4120515790: the row's PRs cell is lineage too, and only grows
+            for feat_id in sorted(policy_ids(path, base)):
+                numbers = lambda text: set(PR_MENTION.findall(row_fields(visible(text), feat_id).get("PRs", "")))
+                if lost := sorted(numbers(base) - numbers(head), key=int):
+                    errs.append(f"{path}: the {feat_id} row no longer names PR #{lost[0]}"
+                                f"{' and more' if len(lost) > 1 else ''} in its PRs; lineage is a record and only grows")
         if path == TRACEABILITY:
             # stocks#1205 r4120381513: the PR lineage only grows, whatever branch edits the document
             for feat_id in sorted(policy_ids(path, base)):

@@ -53,18 +53,42 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: python3 scripts/gate/spec_gate.py --pr "$BASE_SHA" "$HEAD_SHA"
 
-      # The BASE's suite judges the proposed gate: a PR cannot certify its gate with tests it
-      # also controls (registry-check.yml runs the PR's own suite; this runs main's). The
-      # proposed gate replaces the base's copy only here, after the verdict above used the
-      # base's. It runs PR-controlled Python, in temporary repositories, on this workflow's
-      # read-only token with no secrets. A gate change that alters a tested message lands
-      # in two steps: first a test that accepts both messages, then the change.
-      - name: Base suite against the proposed gate
+      # The proposed gate leaves this job as data: the base-suite job below runs it, without
+      # this job's checkout credentials. Exported only after the verdict above.
+      - name: Export the proposed gate for the base-suite job
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          git show "$HEAD_SHA:scripts/gate/spec_gate.py" > scripts/gate/spec_gate.py
+          mkdir -p "$RUNNER_TEMP/proposed"
+          git show "$HEAD_SHA:scripts/gate/spec_gate.py" > "$RUNNER_TEMP/proposed/spec_gate.py"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proposed-spec-gate
+          path: ${{ runner.temp }}/proposed/spec_gate.py
+
+  # The BASE's suite judges the proposed gate: a PR cannot certify its gate with tests it
+  # also controls (registry-check.yml runs the PR's own suite; this runs main's). It runs
+  # PR-controlled Python, so it is its own job, after the verdict, with a checkout that
+  # keeps no credentials and no secrets; the token is not in its environment. A gate
+  # change that alters a tested message lands in two steps: first a test that accepts
+  # both messages, then the change.
+  base-suite:
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: proposed-spec-gate
+          path: scripts/gate
+      - name: Base suite against the proposed gate
+        run: |
           python3 -m pip install --quiet pytest pyyaml
           # --noconftest: the suite is hermetic; a repository conftest may import packages this job does not install
           python3 -m pytest tests/scripts/test_spec_gate.py -q -p no:cacheprovider --noconftest
-
