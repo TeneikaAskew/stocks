@@ -761,7 +761,7 @@ def test_rows_render_as_gfm_renders_them(repo):
     assert r.returncode != 0 and "finding DOC-01 names model(s) not in the registry" in r.stdout + r.stderr, r.stdout + r.stderr
     write(repo, REGISTRY, REGISTRY_TEXT.replace(row, row + "\n| `gamma-levels-daily` | `0 1 * * *` | `other` | MODEL-MAG-001 |", 1))
     r = export(repo)
-    assert r.returncode != 0 and "scheduler `gamma-levels-daily` appears twice" in r.stdout + r.stderr, r.stdout + r.stderr
+    assert r.returncode != 0 and "scheduler gamma-levels-daily appears twice" in r.stdout + r.stderr, r.stdout + r.stderr
     write(repo, REGISTRY, REGISTRY_TEXT)
     exp = (repo / EXPERIMENTS).read_text(encoding="utf-8")
     write(repo, EXPERIMENTS, exp + "\n## Why E-99 was never run\n\ntext\n")
@@ -771,3 +771,62 @@ def test_rows_render_as_gfm_renders_them(repo):
     write(repo, EXPERIMENTS, exp)
     write(repo, REGISTRY, REGISTRY_TEXT.replace("[#942](https://github.com/TeneikaAskew/stocks/issues/942)", "#123456", 1))
     assert export(repo).returncode == 0 and exported(repo)["models"]["MODEL-GAMMA-001"]["issue_numbers"] == [123456]
+
+
+def test_nested_and_ragged_tables_render_as_gfm_renders_them(repo):
+    """Red-team round two (export_model_registry.py:194, :168, :136, :123, :389, :319, :381, :213): a
+    pipe-less line under a table is a row of it in GFM and ended the table here; a table inside a
+    blockquote or list item rendered but was never parsed; `<!--` inside a fence hid everything
+    after the fence; `E-99…E-01` cited nothing; `x` and x were two schedulers; `~~MODEL-X~~`
+    exported as live; `model-gamma-001` vanished as prose; a `Tier` column collided with the
+    derived key. Each is exported faithfully or refused."""
+    assert export(repo).returncode == 0
+    reg = REGISTRY_TEXT
+    write(repo, REGISTRY, reg.replace("| MODEL-SUM-001 |", "see note\n| MODEL-SUM-001 |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "has no pipe; GFM renders it as a row" in r.stdout + r.stderr, r.stdout + r.stderr
+    bullet = reg.replace("| MODEL-SUM-001 | summarizers | — | `lib/agents/summarizers.py` | preserve supplied values | Experimental |\n",
+                         "| MODEL-SUM-001 | summarizers | — | `lib/agents/summarizers.py` | preserve supplied values | Experimental |\n- a note | with a pipe\n", 1)
+    write(repo, REGISTRY, bullet)
+    assert export(repo).returncode == 0 and "MODEL-SUM-001" in exported(repo)["models"], "a list item ends the table, it is not a row"
+    quoted = "> | ID | Nodes | Count | Code | Numeric authority | Status |\n> |---|---|---|---|---|---|\n> | MODEL-HID-001 | hidden | 1 | `x.py` | none | Experimental |\n\n"
+    write(repo, REGISTRY, reg.replace("## Scheduled surfaces\n", quoted + "## Scheduled surfaces\n", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "inside a blockquote, list item or indented block" in r.stdout + r.stderr, r.stdout + r.stderr
+    listed = "- note\n\n    | ID | Nodes | Count | Code | Numeric authority | Status |\n    |---|---|---|---|---|---|\n    | MODEL-HID-002 | hidden | 1 | `x.py` | none | Experimental |\n\n"
+    write(repo, REGISTRY, reg.replace("## Scheduled surfaces\n", listed + "## Scheduled surfaces\n", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "inside a blockquote, list item or indented block" in r.stdout + r.stderr, r.stdout + r.stderr
+    fenced = reg.replace("## Learned models\n", "```\n<!--\n```\n\n## Learned models\n", 1)
+    write(repo, REGISTRY, fenced)
+    assert export(repo).returncode == 0 and "MODEL-MAG-001" in exported(repo)["models"], "a `<!--` inside a fence is code"
+    write(repo, REGISTRY, reg.replace("## Learned models\n", "<!-- ``` -->\n\n## Learned models\n", 1))
+    assert export(repo).returncode == 0 and "MODEL-MAG-001" in exported(repo)["models"], "a fence opener inside a comment is commentary"
+    write(repo, REGISTRY, reg.replace("| DOC-01…DOC-03 | Fixed |", "| DOC-03…DOC-01 | Fixed |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "runs backwards" in r.stdout + r.stderr, r.stdout + r.stderr
+    row = "| `gamma-levels-sunday` | `0 21 * * 0` | `p2-build-gamma-levels` | the same job, weekend refresh |"
+    write(repo, REGISTRY, reg.replace(row, row + "\n| gamma-levels-sunday | `0 1 * * *` | `other` | MODEL-MAG-001 |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "scheduler gamma-levels-sunday appears twice" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, reg)
+    exp = (repo / EXPERIMENTS).read_text(encoding="utf-8")
+    write(repo, EXPERIMENTS, exp + "\nE-97 · setext entry\n-------------------\n\ntext\n")
+    assert export(repo).returncode == 0 and "E-97" in exported(repo)["experiment_ids"], "a setext heading defines an experiment"
+    write(repo, EXPERIMENTS, exp)
+    write(repo, REGISTRY, reg.replace("| MODEL-SUM-001 |", "| ~~MODEL-SUM-001~~ |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "struck-through" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, reg.replace("| MODEL-SUM-001 |", "| model-sum-001 |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "lower-case ID" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, reg.replace("| `p2-build-gamma-levels` | MODEL-GAMMA-001 |", "| `p2-build-gamma-levels` | model-gamma-001 |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "in lower case" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, reg.replace("| DOC-01 | a.md | 3 levels → 4 | stale | P2 | MODEL-GAMMA-001 |", "| DOC-01 | a.md | 3 levels → 4 | stale | P2 | model-gamma-001 |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "in lower case" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, reg.replace("| ID | Nodes | Count | Code | Numeric authority | Status |\n|---|---|---|---|---|---|\n| MODEL-LLM-001 | Insight writer | 3 |",
+                                      "| ID | Nodes | Tier | Code | Numeric authority | Status |\n|---|---|---|---|---|---|\n| MODEL-LLM-001 | Insight writer | 3 |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "a field the exporter derives" in r.stdout + r.stderr, r.stdout + r.stderr

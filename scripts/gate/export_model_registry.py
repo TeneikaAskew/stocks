@@ -121,6 +121,9 @@ def expand_ids(cell: str, id_re: re.Pattern, range_re: re.Pattern, fmt: str,
     text = clean(cell)
     ids: list[str] = []
     for a, b in range_re.findall(text):
+        if int(a) > int(b):
+            # red-team round two: `E-99…E-01` expanded to nothing and cited no experiment at all
+            raise SystemExit(f"{REGISTRY}: the range {fmt.format(int(a))}…{fmt.format(int(b))} runs backwards and names nothing")
         ids += [fmt.format(n) for n in range(int(a), int(b) + 1)]
     text = range_re.sub(" ", text)
     if drop_parentheticals:
@@ -135,12 +138,30 @@ def doc_ids(cell: str) -> list[str]:
 
 def rendered(text: str) -> str:
     """The document as it renders: HTML comments and fenced code removed, so a table
-    retired inside either is not exported and published on a card."""
-    text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
-    text = re.sub(r"<!--.*\Z", "", text, flags=re.S)
-    text = re.sub(r"^[ \t]*(`{3,}).*?^[ \t]*\1`*[ \t]*$", "", text, flags=re.S | re.M)
-    text = re.sub(r"^[ \t]*(~{3,}).*?^[ \t]*\1~*[ \t]*$", "", text, flags=re.S | re.M)
-    return re.sub(r"^[ \t]*(`{3,}|~{3,}).*\Z", "", text, flags=re.S | re.M)
+    retired inside either is not exported and published on a card. One pass in document
+    order: a `<!--` inside a fence is code, not a comment that hides what follows the fence,
+    and a fence opener inside a comment is commentary (red-team round two)."""
+    out: list[str] = []
+    fence: str | None = None
+    in_comment = False
+    for line in text.splitlines():
+        if in_comment:
+            if "-->" not in line:
+                continue
+            line = line.split("-->", 1)[1]
+            in_comment = False
+        if fence is not None:
+            if re.match(r"^[ \t]*" + re.escape(fence) + fence[0] + r"*[ \t]*$", line):
+                fence = None
+            continue
+        if opener := re.match(r"^[ \t]*(`{3,}|~{3,})", line):
+            fence = opener.group(1)
+            continue
+        line = re.sub(r"<!--.*?-->", "", line)
+        if "<!--" in line:
+            line, in_comment = line.split("<!--", 1)[0], True
+        out.append(line)
+    return "\n".join(out)
 
 
 def last_reviewed(text: str) -> str:
@@ -171,6 +192,7 @@ def tables_with_headings(text: str):
     # stocks#1205 r4121216904: GFM renders a row indented by up to three spaces as part of
     # the table, so such a row is a row here too, not the end of the table
     lines = [re.sub(r"^ {1,3}(?=[|#])", "", ln).rstrip() for ln in rendered(text).splitlines()]   # trailing blanks are not content
+    consumed: set[int] = set()
     i = 0
     while i < len(lines):
         line = lines[i]
@@ -181,22 +203,40 @@ def tables_with_headings(text: str):
             i += 1
             continue
         # stocks#1205 r4121777339: every delimiter cell carries a hyphen, or GFM renders no table
-        if "|" in line and i + 1 < len(lines) and re.match(r"^\|?(\s*:?-+:?\s*\|)*\s*:?-+:?\s*\|?$", lines[i + 1]) and "-" in lines[i + 1]:
+        if "|" in line and i + 1 < len(lines) and DELIMITER.match(lines[i + 1]) and "-" in lines[i + 1]:
             header = [clean(c) for c in split_row(line)]
             if len(split_row(lines[i + 1])) != len(header):
                 # red-team, this PR: GFM renders no table when the delimiter row's width differs
                 raise SystemExit(f"{REGISTRY}: the table under '{' / '.join(heading)}' has a header of {len(header)} cells and a "
                                  f"delimiter row of {len(split_row(lines[i + 1]))}; GFM renders no table, so nothing here exports")
             rows = []
+            consumed.update((i, i + 1))
             i += 2
-            # a row is any following non-blank line with a pipe that is not a heading or fence: GFM does
-            # not need the leading pipe (red-team, this PR)
-            while i < len(lines) and lines[i].strip() and "|" in lines[i] and not re.match(r"^(#|```|~~~)", lines[i]):
+            # a row is any following non-blank line up to a heading, fence, list item or blockquote: GFM
+            # does not need the leading pipe (red-team, this PR), and a line without any pipe renders
+            # as a one-cell row of the table, not as prose (red-team round two)
+            while i < len(lines) and lines[i].strip() and not re.match(r"^(#|```|~~~)", lines[i]) and not BLOCK_START.match(lines[i]):
+                if "|" not in lines[i]:
+                    raise SystemExit(f"{REGISTRY}: {lines[i].strip()!r} directly under the table in '{' / '.join(heading)}' has no "
+                                     "pipe; GFM renders it as a row of that table. Put a blank line before it or make it a row")
                 rows.append(split_row(lines[i]))
+                consumed.add(i)
                 i += 1
             yield list(heading), header, rows
             continue
         i += 1
+    for j in range(1, len(lines)):
+        # red-team round two: a table inside a blockquote, a list item or an indented block renders
+        # (cmark-gfm) but no shape above reads it, so its rows would be published and never exported
+        if j not in consumed and (bare := NESTING.sub("", lines[j])) and DELIMITER.match(bare) and "-" in bare \
+                and "|" in NESTING.sub("", lines[j - 1]):
+            raise SystemExit(f"{REGISTRY}: the table at {lines[j - 1].strip()!r} sits inside a blockquote, list item or indented "
+                             "block; it renders but is not exported. Move it to the top level")
+
+
+BLOCK_START = re.compile(r"^\s*(>|[-*+]\s|\d+[.)]\s)")            # another block begins: the table ends
+NESTING = re.compile(r"^(\s|>|[-*+]\s|\d+[.)]\s)*")                 # blockquote and list prefixes
+DELIMITER = re.compile(r"^\|?(\s*:?-+:?\s*\|)*\s*:?-+:?\s*\|?$")
 
 
 def header_keys(header: list[str]) -> list[str]:
@@ -208,6 +248,16 @@ def duplicate_keys(header: list[str]) -> list[str]:
     silently overwrite the earlier field (stocks#1205 r4119966296)."""
     keys = header_keys(header)
     return sorted({k for k in keys if keys.count(k) > 1})
+
+
+# Keys the exporter derives from a row: a header cell normalizing to one would be overwritten
+# by, or overwrite, the derived value, and the card would read the wrong field (red-team round two)
+DERIVED_KEYS = {"code_paths", "code_artifact_paths", "primary_code_paths", "issue_numbers", "unsourced", "tier", "label", "models_note"}
+
+
+def derived_collisions(header: list[str], scheduler: bool) -> list[str]:
+    taken = DERIVED_KEYS | ({"models"} if scheduler else set())
+    return sorted(k for k in header_keys(header) if k in taken)
 
 
 def row_to_record(header: list[str], raw: list[str]) -> dict:
@@ -235,7 +285,12 @@ def experiment_ids(text: str) -> list[str]:
     """IDs from experiment headings only: prose such as "Next free ID is E-36" is not an experiment."""
     ids: set[str] = set()
     leads: list[str] = []   # the ID a heading starts with: its own entry, not a mention or a session's range
-    for line in rendered(text).splitlines():   # a heading inside a fence is an example, not an entry (r4120660287)
+    lines = rendered(text).splitlines()   # a heading inside a fence is an example, not an entry (r4120660287)
+    for n, line in enumerate(lines):
+        # red-team round two: a setext heading (text underlined with === or ---) is a heading too
+        if n + 1 < len(lines) and re.match(r"^ {0,3}(=+|-+)\s*$", lines[n + 1]) and line.strip() \
+                and (n == 0 or not lines[n - 1].strip()) and not re.match(r"^ {0,3}([-*+]\s|\d+[.)]\s|>|#|\||```|~~~|    )", line):
+            line = "# " + line.strip()
         if re.match(r"^ {0,3}#{1,6}\s", line):   # stocks#1205 r4121602828: up to three spaces still render a heading
             if (lead := re.match(r"^ {0,3}#{1,6}\s+(" + EXP_ID.pattern + r")\b", line)):
                 leads.append(lead.group(1))
@@ -252,6 +307,7 @@ def experiment_ids(text: str) -> list[str]:
 
 
 LLM_GROUP = re.compile(r"\bLLM nodes\b")
+LOWER_ID = re.compile(r"\b(?=[a-zA-Z0-9-]*[a-z])[mM][oO][dD][eE][lL](?:-[a-zA-Z0-9]+)*-\d+\b")   # `model-gamma-001`: an ID in the wrong case, not prose
 
 
 def resolve_scheduler_models(schedulers: list[dict], models: dict) -> None:
@@ -312,6 +368,17 @@ def build(src: Source) -> dict:
             # Width is checked on the rows that route (models, findings, dispositions,
             # schedulers): a prose table elsewhere in the document is not a record.
             routable = first.startswith(("MODEL-", "DOC-")) or h0 == "scheduler"
+            if (LOWER_ID.match(first) or re.match(r"(?i)doc-\d", first)) and not first.startswith(("MODEL-", "DOC-")):
+                # red-team round two: `model-gamma-001` neither routed nor failed; it vanished as prose
+                malformed.append(f"{first!r} under '{section}' is a lower-case ID; IDs are upper-case MODEL-/DOC-")
+                continue
+            if routable and any("~~" in cell for cell in raw):
+                # red-team round two: `~~MODEL-X~~` renders struck through and exported as a live card
+                malformed.append(f"{first} under '{section}' carries struck-through text; delete the row or restore it")
+                continue
+            if routable and (taken := derived_collisions(header, h0 == "scheduler" and "serves" in " ".join(header).lower())):
+                malformed.append(f"table under '{section}' has a column keyed {taken[0]}, a field the exporter derives")
+                continue
             # stocks#1205 r4121777330: a row in a model or concern table whose ID is not shaped
             # like the table's is a typo, not prose; it would vanish from the cards
             record_table = (h0 in ("id", "model") and any(k in " ".join(header).lower() for k in ("decision", "claim", "concern", "disposition", "experiments"))) \
@@ -379,6 +446,9 @@ def build(src: Source) -> dict:
                 # would otherwise silently empty every scheduler's model list.
                 serves = next(cell for h, cell in zip(header, raw) if "serves" in h.lower())
                 rec["models"] = sorted(set(re.findall(r"MODEL-[A-Z0-9-]+", clean(serves))))
+                if lower := LOWER_ID.findall(clean(serves)):
+                    malformed.append(f"scheduler {first} Serves names {lower[0]} in lower case; IDs are upper-case")
+                    continue
                 out["schedulers"].append(rec)
             elif h0 == "scheduler":
                 out["excluded_schedulers"].append(rec)
@@ -386,7 +456,8 @@ def build(src: Source) -> dict:
                 unrouted.append(f"{first} under '{section}' (columns: {', '.join(header)})")
     for fid, rec in grouped.items():
         out["dispositions"].setdefault(fid, rec)
-    names = [clean(str(rec.get(header_keys(["Scheduler"])[0], rec.get("scheduler", "")))) for rec in out["schedulers"]]
+    # red-team round two: `x` and x are one scheduler; compare the name, not its markup
+    names = [re.sub(r"^[*_]+|[*_]+$", "", clean(str(rec.get("scheduler", ""))).replace("`", "")) for rec in out["schedulers"]]
     for dup in sorted({n for n in names if n and names.count(n) > 1}):
         malformed.append(f"scheduler {dup} appears twice; one row per scheduler")
     seen_findings: set[str] = set()
@@ -462,6 +533,8 @@ def build(src: Source) -> dict:
         # checks, so a broken model table reports as itself)
         if named := [m for m in re.findall(r"MODEL-[A-Z0-9-]+", str(rec.get("models", ""))) if m not in out["models"]]:
             raise SystemExit(f"{REGISTRY}: finding {rec['id']} names model(s) not in the registry: {', '.join(named)}; fix the ID")
+        if lower := LOWER_ID.findall(str(rec.get("models", ""))):
+            raise SystemExit(f"{REGISTRY}: finding {rec['id']} names {lower[0]} in lower case; IDs are upper-case")
     resolve_scheduler_models(out["schedulers"], out["models"])
     out["experiment_ids"] = experiment_ids(etext)
     # stocks#1205 r4121888831: the refresh skill protects a repo-owned field only when its JSON

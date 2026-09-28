@@ -175,7 +175,10 @@ GATE_INPUT = r"(PR_[A-Z_]+|BASE_SHA|HEAD_SHA|SPEC_GATE_[A-Z_]+)"
 # What the shell and Python read before the gate runs: a fake python3 on PATH, a BASH_ENV
 # that exits, PYTEST_ADDOPTS=--collect-only or a PYTHONPATH shadowing pytest turn the
 # contract commands into no-ops while their text stays (solyra#72 r4121374618, r4121374639)
-RUNTIME_ENV = r"(PATH|HOME|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|IFS|PYTHON\w*|PYTEST\w*|PIP_\w+|UV_\w+|VIRTUAL_ENV|CONDA\w*|NODE_OPTIONS|NPM_\w+|GIT_\w+|LD_\w+)"
+RUNTIME_ENV = (r"(PATH|HOME|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|IFS|TMPDIR|PYTHON\w*|PYTEST\w*|PIP_\w+|UV_\w+|VIRTUAL_ENV|CONDA\w*"
+               r"|NODE_OPTIONS|NODE_PATH|NPM_\w+|GIT_\w+|LD_\w+|RUNNER_TEMP|GITHUB_ENV|GITHUB_WORKSPACE"
+               # red-team round two: a proxy or CA bundle would route the verdict step's `pip install` elsewhere
+               r"|HTTPS?_PROXY|https?_proxy|ALL_PROXY|all_proxy|NO_PROXY|no_proxy|SSL_CERT_\w+|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE)")
 PROTECTED = rf"(?:{GATE_INPUT}|{RUNTIME_ENV})"
 INPUT_OVERRIDE = re.compile(r"(?<![\w$.{-])" + PROTECTED + r"=|\b(export|unset|declare|typeset|local|readonly|read)\b[^;|&\n]*?(?<![\w$.{-])" + PROTECTED + r"\b|(?<![\w])(GITHUB_PATH)\b")
 ENV_KEY = re.compile(r"^\s*(" + GATE_INPUT[1:-1] + "|" + RUNTIME_ENV[1:-1] + r"):", re.M)
@@ -467,7 +470,7 @@ def shell_statements(runs: str, errexit: bool = True) -> list[str]:
             executed = (stmt and not re.match(r"^[A-Za-z_]\w*=", stmt)   # `x="..."`: a value, not a command
                         and stmt.split()[0] not in NON_EXECUTING and depth == 0 and not chained and errexit
                         and not negated and not condition
-                        and op not in ("||", "&", "|"))   # `cmd | true`: without pipefail the pipe's status is true's
+                        and op not in ("||", "&&", "&", "|"))   # `cmd | true`: the pipe's status is true's; `cmd &&:` is exempt from errexit like `cmd || true` (red-team round two)
             if executed:
                 out.append(stmt)
             if replaces and depth == 0 and not chained and not condition:
@@ -765,7 +768,10 @@ WRITERS = r"(cp|mv|install|ln|tee|rm|truncate|chmod|patch|dd|curl|wget|sed|perl|
 # stocks#1205 r4122021088: `gate=scripts/gate/spec_gate.py` then `> "$gate"` is the same write; a
 # destination held in a variable is refused unless it is under the runner's temp directory
 INDIRECT = r"['\"]?\$(?!RUNNER_TEMP\b|\{RUNNER_TEMP\}|\{\{\s*runner\.temp)"
-WRITES_GATE = re.compile(r"(?m)^\s*(?:\S+=\S*\s+)*" + WRITERS + r"\b[^\n]*(" + GATE_PATHS + "|" + INDIRECT + r")|[>]{1,2}\s*(['\"]?[^\s'\"]*" + GATE_PATHS + "|" + INDIRECT + ")")
+# and a file named like a contract executable anywhere (`ln -s /bin/true /usr/local/bin/python3` shadows the
+# interpreter ahead of /usr/bin on the runner's PATH: red-team round two)
+EXECUTABLE_NAME = r"[^\s'\"]*/(python3?|python3\.\d+|git|pytest)\b"
+WRITES_GATE = re.compile(r"(?m)^\s*(?:\S+=\S*\s+)*" + WRITERS + r"\b[^\n]*(" + GATE_PATHS + "|" + INDIRECT + "|" + EXECUTABLE_NAME + r")|[>]{1,2}\s*(['\"]?[^\s'\"]*" + GATE_PATHS + "|" + INDIRECT + "|['\"]?" + EXECUTABLE_NAME + ")")
 
 
 def writes_gate_file(runs: str) -> str | None:
@@ -1425,6 +1431,11 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
             if contract["trigger"] not in workflow_triggers(body):
                 return [f"{path}: no longer runs on {contract['trigger']} (its `on:` names "
                         f"{', '.join(sorted(workflow_triggers(body))) or 'nothing'}); the gate's workflows keep their trigger"], None
+            if extra := sorted(workflow_triggers(body) - {contract["trigger"]}):
+                # red-team round two: a second event (`push`, `workflow_dispatch`) runs the same head-controlled
+                # steps outside the pull-request context the verdict step binds, with a required check's name
+                return [f"{path}: declares triggers other than {contract['trigger']} ({', '.join(extra)}); a gate workflow "
+                        "runs on exactly one event"], None
             if bad := checkout_violation(body, contract["checkout"]):
                 return [f"{path}: {bad}; the gate's workflows check out the side the contract names"], None
             if grant := workflow_write_grant(body):
@@ -1445,9 +1456,11 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
             if wrote := writes_gate_file(runs):
                 return [f"{path}: `{wrote}` writes to or replaces a gate file; the workflows read the gate's files, "
                         "never write them"], None
-            if inline := re.search(r"(?m)^\s*(python3?|node|perl|ruby|sh|bash)\s+(-c|-e|-)\s", runs):
+            if inline := re.search(r"(?m)^\s*(python3?|node|perl|ruby|sh|bash)\s+(-c|-e|-)\s|(^|[;&|{(]\s*)(eval|source|\.|shopt)\s", runs):
+                # (red-team round two: `eval "set +e"` and `shopt -uo errexit` turn errexit off out of the
+                # model's sight; `source` runs a file the tree may carry)
                 return [f"{path}: runs inline code (`{inline.group(0).strip()}`); the gate's workflows run scripts "
-                        "from the tree only"], None
+                        "from the tree only, and never eval, source or shopt"], None
             if shadow := shadowed_executable(body):
                 return [f"{path}: defines `{shadow}` as a shell function or alias; the gate's commands run the "
                         "real executables"], None

