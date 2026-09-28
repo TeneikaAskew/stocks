@@ -2591,7 +2591,34 @@ deploy_audit_infra_drift() {
     )
 
     gcloud run jobs create audit-infra-drift "${common_flags[@]}" 2>/dev/null || \
-    gcloud run jobs update audit-infra-drift "${common_flags[@]}"
+    gcloud run jobs update audit-infra-drift "${common_flags[@]}" || return 1
+    _ensure_audit_scheduler_viewer
+}
+
+_ensure_audit_scheduler_viewer() {
+    # The audit's orphan and paused-scheduler checks list Cloud Scheduler
+    # jobs as ${SA_EMAIL}, which 403s without roles/cloudscheduler.viewer
+    # (#1201). Only a project owner can grant it, so check, try once, and
+    # otherwise print the owner's command. Never fail the deploy over it:
+    # the audit's other checks still run, and its post names the 403.
+    local held
+    held=$(gcloud projects get-iam-policy "${PROJECT_ID}" \
+        --flatten="bindings[].members" \
+        --filter="bindings.role=roles/cloudscheduler.viewer AND bindings.members=serviceAccount:${SA_EMAIL}" \
+        --format="value(bindings.role)" 2>/dev/null) \
+        || { echo "  WARNING: cannot read the IAM policy of ${PROJECT_ID}; the audit's scheduler role is unchecked (#1201)" >&2; return 0; }
+    [ -z "${held}" ] || return 0
+    if gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+            --member="serviceAccount:${SA_EMAIL}" --role="roles/cloudscheduler.viewer" \
+            --condition=None --quiet >/dev/null 2>&1; then
+        echo "  granted roles/cloudscheduler.viewer to ${SA_EMAIL} (#1201)"
+        return 0
+    fi
+    echo "  WARNING: ${SA_EMAIL} lacks roles/cloudscheduler.viewer, so audit-infra-drift's" >&2
+    echo "           scheduler checks will 403 (#1201). A project owner must run once:" >&2
+    echo "           gcloud projects add-iam-policy-binding ${PROJECT_ID} \\" >&2
+    echo "             --member=serviceAccount:${SA_EMAIL} --role=roles/cloudscheduler.viewer --condition=None" >&2
+    return 0
 }
 
 deploy_audit_magnitude_drift() {
