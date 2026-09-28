@@ -390,7 +390,11 @@ def test_a_detached_head_commit_must_name_its_branch(repo):
     _git(repo, "checkout", "-q", "--detach", "base")
     write(repo, "docs/notes.md", "# Notes\n")
     _git(repo, "add", "docs/notes.md")
-    assert gate(repo, "--commit").returncode == 0
+    # stocks#1205 r4120166762: documentation too commits from a delivery branch, so a
+    # detached HEAD names one with the override
+    r = gate(repo, "--commit")
+    assert r.returncode == 1 and "is not a delivery branch" in r.stdout, r.stdout
+    assert gate(repo, "--commit", SPEC_GATE_BRANCH="docs/notes").returncode == 0
     write(repo, "lib/model.py", CODE["lib/model.py"])
     _git(repo, "add", "lib/model.py")
     r = gate(repo, "--commit")
@@ -1683,3 +1687,65 @@ def test_a_gate_workflow_checks_out_its_own_side_and_plans_stay_bound(repo):
     r = pr(repo, "docs/plan-again", {other: plan()})
     assert r.returncode == 1 and f"branch {BRANCH} is already the branch of {PLAN}; a branch has one plan" in r.stdout, r.stdout
     assert pr(repo, "docs/plan-again", {other: plan(branch="feature/feat-model-001-again")}).returncode == 0
+
+
+def test_contract_commands_run_unconditionally_under_the_declared_trigger(repo):
+    """stocks#1205 r4120166743 (P1), r4120166751 (P1) (spec_gate.py:202, :103).
+
+    `cmd || true`, `if false; then cmd; fi` and `false && cmd` left a statement matching
+    the contract, and a decoy `pull_request_target:` key anywhere satisfied the trigger
+    marker. A command counts only when it runs unconditionally with its failure
+    propagated, and the trigger is read from the top-level `on:`.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/registry-check.yml"
+    head = ("name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n"
+            "    runs-on: ubuntu-latest\n    steps:\n      - run: |\n{BODY}")
+    cmds = ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"', "pytest tests/scripts/test_spec_gate.py",
+            'git ls-tree "$HEAD_SHA" .githooks/pre-commit', 'export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"')
+    plain = "".join(f"          {c}\n" for c in cmds)
+    assert pr(repo, "chore/gate-workflow", {wf: head.replace("{BODY}", plain)}, **cap).returncode == 0
+    for shape in ("          {c} || true\n", "          if false; then {c}; fi\n", "          false && {c}\n",
+                  "          if true; then\n            {c}\n          fi\n", "          case x in x) {c};; esac\n",
+                  "          test -f y || {c}\n"):
+        r = pr(repo, "chore/gate-workflow", {wf: head.replace("{BODY}", "".join(shape.replace("{c}", c) for c in cmds))}, **cap)
+        assert r.returncode == 1 and "no longer executes" in r.stdout, (shape, r.stdout)
+    # the condition of an if runs unconditionally, as does the first command of a chain
+    guarded = "".join(f"          if ! {c}; then exit 1; fi\n" for c in cmds[:2]) + "".join(f"          {c} && echo ok\n" for c in cmds[2:])
+    assert pr(repo, "chore/gate-workflow", {wf: head.replace("{BODY}", guarded)}, **cap).returncode == 0
+    decoy = head.replace("on:\n  pull_request:\n", "on:\n  workflow_dispatch:\n").replace("    runs-on:", "    pull_request:\n    runs-on:")
+    r = pr(repo, "chore/gate-workflow", {wf: decoy.replace("{BODY}", plain)}, **cap)
+    assert r.returncode == 1 and "no longer runs on pull_request" in r.stdout and "workflow_dispatch" in r.stdout, r.stdout
+    inline = head.replace("on:\n  pull_request:\n", "on: [pull_request, workflow_dispatch]\n")
+    assert pr(repo, "chore/gate-workflow", {wf: inline.replace("{BODY}", plain)}, **cap).returncode == 0
+    gate_wf = "on:\n  {ON}:\npermissions:\n  contents: read\njobs:\n  gate:\n    steps:\n      - run: python3 scripts/gate/spec_gate.py --pr a b\n"
+    r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_wf.replace("{ON}", "pull_request") + "# pull_request_target:\n"}, **cap)
+    assert r.returncode == 1 and "no longer runs on pull_request_target" in r.stdout, r.stdout
+    assert pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_wf.replace("{ON}", "pull_request_target")}, **cap).returncode == 0
+
+
+def test_documentation_branches_carry_documentation_from_delivery_branches(repo):
+    """stocks#1205 r4120166757, r4120166762, r4120166765 (spec_gate.py:341, :743, :1095).
+
+    `.gitignore` passed as documentation; a documentation commit on main, `typo` or a
+    detached HEAD passed because the branch rule ran only for PRs; a second definition
+    of a REQ-ID landed from a docs/ branch. Each is refused.
+    """
+    r = pr(repo, "docs/ignore", {".gitignore": "*.log\n"})
+    assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, r.stdout
+    for name in ("main", "typo"):
+        _git(repo, "checkout", "-q", "-B", name, "base")
+        write(repo, "docs/notes.md", f"# {name}\n")
+        _git(repo, "add", "docs/notes.md")
+        r = gate(repo, "--commit")
+        assert r.returncode == 1 and "is not a delivery branch" in r.stdout, (name, r.stdout)
+    for name in ("docs/notes", "spike/notes", BRANCH):
+        _git(repo, "checkout", "-q", "-B", name, "base")
+        write(repo, "docs/notes.md", f"# {name}\n")
+        _git(repo, "add", "docs/notes.md")
+        assert gate(repo, "--commit").returncode == 0, (name, gate(repo, "--commit").stdout)
+    _git(repo, "checkout", "-q", "main")
+    twice = REQUIREMENTS_TEXT + "\n**REQ-DATA-001:** A missing value is a null.\n"
+    r = pr(repo, "docs/reqs", {REQUIREMENTS: twice})
+    assert r.returncode == 1 and "REQ-DATA-001 is defined 2 times; a requirement has one definition" in r.stdout, r.stdout
+    assert pr(repo, "docs/reqs", {REQUIREMENTS: REQUIREMENTS_TEXT + "\n**REQ-DATA-002:** Dates are Eastern.\n"}).returncode == 0

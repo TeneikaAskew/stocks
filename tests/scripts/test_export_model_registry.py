@@ -373,13 +373,11 @@ def test_ci_checks_the_pr_head_commit(repo):
     assert "ref" not in checkout.get("with", {})
     steps = jobs["registry"]["steps"]
     check = next(s for s in steps if 'export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"' in s.get("run", ""))
-    # stocks#1205 r4118661311: not `if: hashFiles(...)`, which reads the head
-    # checkout and would skip the only check when a PR deletes the exporter.
-    # The step itself decides: run it from the head, fail when the base has an
-    # exporter the head lacks, and skip only when neither side has one.
+    # stocks#1205 r4118661311, r4120166743: not `if: hashFiles(...)`, which reads the head
+    # checkout and would skip the only check when a PR deletes the exporter, and not a
+    # presence test either: the command runs unconditionally, so a deleted exporter fails here
     assert "if" not in check
-    assert 'git cat-file -e "$HEAD_SHA:$exporter"' in check["run"]
-    assert 'git cat-file -e "$BASE_SHA:$exporter"' in check["run"] and "exit 1" in check["run"]
+    assert check["run"].strip() == 'python3 scripts/gate/export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"'
     # solyra#72 r4118878759 (spec-gate.yml:28, P1): spec-gate.yml judges with the BASE's gate,
     # so nothing executed the gate a PR proposes; a syntax error would merge and break every
     # later PR. The head checkout compiles it and runs it to a verdict first.
@@ -398,6 +396,7 @@ def test_ci_checks_the_pr_head_commit(repo):
     # solyra#72 r4119408310 (P1), r4119408312: the suite cannot be deleted by a PR, and the hook
     # must stay executable or git silently stops running it
     assert 'git cat-file -e "$BASE_SHA:$suite"' in suite["run"] and "exit 1" in suite["run"]
+    assert "if [ -f" not in suite["run"], "the suite runs unconditionally; it is a gate entrypoint the PR cannot remove"
     assert 'git ls-tree "$HEAD_SHA" .githooks/pre-commit' in proposed["run"] and "100755" in proposed["run"]
     # solyra#72 r4119837242: and still call the gate; an executable `exit 0` is not a hook
     assert 'git show "$HEAD_SHA:.githooks/pre-commit"' in proposed["run"] and "spec_gate.py.*--commit" in proposed["run"]
@@ -590,3 +589,16 @@ def test_duplicate_headers_and_disposition_rows_fail_the_export(repo):
                                                 "| DOC-02 | Deferred | waits for the retrain |\n| DOC-02 | Fixed | retrained |\n"))
     r = export(repo)
     assert r.returncode != 0 and "DOC-02 has two disposition rows" in r.stdout + r.stderr, r.stdout + r.stderr
+
+
+def test_a_registry_without_concern_tables_fails_closed(repo):
+    """stocks#1205 r4120166753 (export_model_registry.py:336).
+
+    With both concern tables deleted the finding and disposition ID sets were equal
+    (empty), so the export published an empty Concerns board as current. Zero findings
+    is a deleted table.
+    """
+    start = REGISTRY_TEXT.index("### Findings")
+    write(repo, REGISTRY, REGISTRY_TEXT[:start])
+    r = export(repo)
+    assert r.returncode != 0 and "no finding rows parsed" in r.stdout + r.stderr, r.stdout + r.stderr

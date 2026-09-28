@@ -9,7 +9,7 @@ Usage:
 Exit 0 = ok, 1 = blocked, 2 = usage. Prints what to do next.
 
 Every changed file is gated except documentation: docs/**, *.md, *.drawio,
-LICENSE* and .gitignore. A gated file needs a feature/<feat-id>-<slug> or
+LICENSE*. A gated file needs a feature/<feat-id>-<slug> or
 fix/<feat-id>-<slug> branch whose plan and approved spec validate, unless the
 branch prefix allows that path:
 
@@ -92,15 +92,18 @@ OTHER_BRANCH = re.compile(r"^((docs|chore)/[a-z0-9]+(-[a-z0-9]+)*|bot/superpower
 WORKFLOW_CONTRACTS = {
     ".github/workflows/registry-check.yml": {
         "checkout": "head",   # runs the PR's files: a checkout pinned to the base would verify main instead
+        "trigger": "pull_request",
         "run": ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"',
-                "pytest tests/scripts/test_spec_gate.py", 'git ls-tree "$HEAD_SHA" .githooks/pre-commit',
-                'export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"'),
+                "pytest tests/scripts/test_spec_gate.py", 'git ls-tree "$HEAD_SHA" .githooks/pre-commit'),
+        # required where the base carries the script: solyra has no model registry to export
+        "run_if_present": {"scripts/gate/export_model_registry.py": 'export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"'},
         "structure": ("permissions:\n  contents: read",),
     },
     ".github/workflows/spec-gate.yml": {
         "checkout": "base",   # pull_request_target: a head checkout would run PR-controlled code with its token
+        "trigger": "pull_request_target",
         "run": ("scripts/gate/spec_gate.py --pr",),
-        "structure": ("pull_request_target:", "permissions:\n  contents: read"),
+        "structure": ("permissions:\n  contents: read",),
     },
 }
 
@@ -180,11 +183,13 @@ NON_EXECUTING = {"echo", "printf", "cat", "tee", ":", "true", "false", "test", "
 
 
 def shell_statements(runs: str) -> list[str]:
-    """The statements of the collected run text that execute a command: heredoc bodies,
-    single-quoted text, comments, and statements led by a non-executing word (echo, printf,
-    cat, test ...) or by an assignment of a literal are dropped, so a contract command
-    counts only where the shell would run it (stocks#1205 r4119966265)."""
+    """The statements of the collected run text that the shell executes unconditionally and
+    whose failure propagates: heredoc bodies, single-quoted text, comments, statements led
+    by a non-executing word (echo, printf, cat, test ...) or by an assignment of a literal,
+    the body of an `if`/`while`/`case` construct, a statement after `&&` or `||`, and a
+    statement followed by `||` are all dropped (stocks#1205 r4119966265, r4120166743)."""
     lines, out, i = runs.splitlines(), [], 0
+    depth = 0          # inside then/do/else ... fi/done: GitHub may never reach it
     while i < len(lines):
         line = lines[i]
         while line.rstrip().endswith("\\") and i + 1 < len(lines):   # continuation
@@ -197,16 +202,41 @@ def shell_statements(runs: str) -> list[str]:
             i += 1
         line = re.sub(r"'[^']*'", "''", line)
         line = re.sub(r"(^|\s)#.*$", "", line)
-        for stmt in re.split(r"\|\||&&|;|\||\$\(|`|\(|\)|\bthen\b|\bdo\b|\belse\b", line):
-            stmt = stmt.strip()
+        parts = re.split(r"(\|\||&&|;;|;|\||\$\(|`|\(|\)|\bthen\b|\bdo\b|\belse\b|\belif\b|\bfi\b|\bdone\b|\besac\b|\bcase\b)", line)
+        chained = False    # after && or ||: runs only on the previous statement's outcome
+        for k in range(0, len(parts), 2):
+            stmt, op = parts[k].strip(), parts[k + 1] if k + 1 < len(parts) else ""
             stmt = re.sub(r"^((if|elif|while|until|!)\s+)+", "", stmt)
             stmt = re.sub(r"^[A-Za-z_]\w*=(?!['\"$])\S*\s*", "", stmt)   # `x=1 cmd` prefix assignment
-            if not stmt or re.match(r"^[A-Za-z_]\w*=", stmt):   # `x="..."`: a value, not a command
-                continue
-            if stmt.split()[0] in NON_EXECUTING:
-                continue
-            out.append(stmt)
+            executed = (stmt and not re.match(r"^[A-Za-z_]\w*=", stmt)   # `x="..."`: a value, not a command
+                        and stmt.split()[0] not in NON_EXECUTING and depth == 0 and not chained and op != "||")
+            if executed:
+                out.append(stmt)
+            if op in ("then", "do", "else", "case"):
+                depth += 1
+            elif op in ("fi", "done", "esac"):
+                depth = max(0, depth - 1)
+            chained = op in ("&&", "||")
     return out
+
+
+def workflow_triggers(body: str) -> set[str]:
+    """The events under the top-level `on:` of a comment-stripped workflow: an inline scalar,
+    an inline list, or the keys of the block below it (stocks#1205 r4120166751)."""
+    lines = body.splitlines()
+    for i, line in enumerate(lines):
+        m = re.match(r"^(on|True|true):\s*(.*)$", line)
+        if not m:
+            continue
+        value = re.sub(r"\s+#.*$", "", m.group(2)).strip()
+        if value:
+            return set(re.findall(r"[A-Za-z_]+", value))
+        triggers: set[str] = set()
+        for j in range(i + 1, block_end(lines, i, 0)):
+            if (k := re.match(r"^\s+(?:-\s+)?([A-Za-z_]+):?\s*$", lines[j])) and indent(lines[j]) == indent(lines[i + 1]):
+                triggers.add(k.group(1))
+        return triggers
+    return set()
 
 
 def checkout_refs(body: str) -> list[str]:
@@ -336,9 +366,7 @@ def is_documentation(path: str) -> bool:
         return False   # a workflow is executable configuration whatever its name
     if path.startswith(".claude/") or path in ("AGENTS.md", "CLAUDE.md"):
         return False   # skills, agents and the root instructions are the process agents execute, not its description
-    return (path.startswith("docs/") or path.endswith((".md", ".drawio"))
-            or bool(LICENSE_FILE.match(name))
-            or path == ".gitignore")
+    return path.startswith("docs/") or path.endswith((".md", ".drawio")) or bool(LICENSE_FILE.match(name))
 
 
 class Tree:
@@ -691,12 +719,17 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
         if path in ch.changed and (text := ch.tree.read(path)) is not None:
             runs, body = workflow_executes(text)
             statements = shell_statements(runs)
-            lost = [m for m in contract["run"] if not any(m in st for st in statements)] + \
+            required = list(contract["run"]) + [m for script, m in contract.get("run_if_present", {}).items()
+                                                 if ch.base.read(script) is not None]
+            lost = [m for m in required if not any(m in st for st in statements)] + \
                    [m for m in contract["structure"] if m not in body]
             if lost:
                 return [f"{path}: no longer executes {len(lost)} step(s) the gate depends on ({lost[0]!r}"
                         f"{' and more' if len(lost) > 1 else ''}); a command in a comment, an echo, an unused scalar "
                         "or a step an `if:` may skip does not count. The gate's workflows keep their checks"], None
+            if contract["trigger"] not in workflow_triggers(body):
+                return [f"{path}: no longer runs on {contract['trigger']} (its `on:` names "
+                        f"{', '.join(sorted(workflow_triggers(body))) or 'nothing'}); the gate's workflows keep their trigger"], None
             if bad := checkout_violation(body, contract["checkout"]):
                 return [f"{path}: {bad}; the gate's workflows check out the side the contract names"], None
             if grant := workflow_write_grant(body):
@@ -740,6 +773,11 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
         if ch.mode == "pr" and not (BRANCH.match(ch.branch) or OTHER_BRANCH.match(ch.branch)):
             return [f"branch '{ch.branch}' is not a delivery branch; a pull request comes from feature/<feat-id>-<slug>, "
                     "fix/<feat-id>-<slug>, docs/<slug>, chore/<slug> or bot/superpowers-<tag>, documentation included"], None
+        if ch.mode == "commit" and not (BRANCH.match(ch.branch) or OTHER_BRANCH.match(ch.branch) or ch.branch.startswith("spike/")):
+            # stocks#1205 r4120166762: a commit on main, `typo` or a detached HEAD is the commit
+            # the branch convention exists to prevent, documentation included
+            return [f"branch '{ch.branch}' is not a delivery branch; commit documentation on docs/<slug> (or a feature/, "
+                    "fix/, chore/, spike/ or bot/superpowers- branch), never on main, an unnamed branch or a detached HEAD"], None
         return [], None
     if ch.mode == "commit" and ch.branch == "HEAD":
         return [
@@ -1092,6 +1130,11 @@ def check_record_uniqueness(ch: Change) -> list[str]:
     whatever branch edits them: the close-out reads the first record, so a second one
     written from a docs/ branch would be silently ignored (solyra#72 r4119837221)."""
     errs: list[str] = []
+    if REQUIREMENTS in ch.changed and (text := ch.tree.read(REQUIREMENTS)) is not None:
+        # stocks#1205 r4120166765: one definition per REQ-ID, or a spec validates against two
+        defs, base_defs = REQ_DEFINITION.findall(visible(text)), REQ_DEFINITION.findall(visible(ch.base.read(REQUIREMENTS) or ""))
+        for req in sorted({r for r in defs if defs.count(r) > 1 and defs.count(r) > base_defs.count(r)}):
+            errs.append(f"{REQUIREMENTS}: {req} is defined {defs.count(req)} times; a requirement has one definition")
     for path in (CATALOG, TRACEABILITY):
         if path not in ch.changed or (text := ch.tree.read(path)) is None:
             continue

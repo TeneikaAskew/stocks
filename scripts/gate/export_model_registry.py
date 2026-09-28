@@ -333,6 +333,11 @@ def build(src: Source) -> dict:
                          "A row has exactly its header's cells and a model ID names one row; fix the table "
                          "rather than exporting a shifted or overwritten record")
     finding_ids, disposition_ids = {f["id"] for f in out["findings"]}, set(out["dispositions"])
+    if not finding_ids:
+        # stocks#1205 r4120166753: two empty sets are equal, so a registry that lost both
+        # concern tables would otherwise export an empty Concerns board as current
+        raise SystemExit(f"{REGISTRY}: no finding rows parsed; the Findings and Disposition tables are part of the "
+                         "registry, so their absence is a deleted table, not an empty board")
     if finding_ids != disposition_ids:
         raise SystemExit(f"{REGISTRY}: findings and dispositions name different IDs; without a disposition: "
                          f"{', '.join(sorted(finding_ids - disposition_ids)) or 'none'}; without a finding: "
