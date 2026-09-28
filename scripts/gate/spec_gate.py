@@ -94,16 +94,23 @@ WORKFLOW_CONTRACTS = {
     ".github/workflows/registry-check.yml": {
         "checkout": "head",   # runs the PR's files: a checkout pinned to the base would verify main instead
         "trigger": "pull_request",
+        # A statement counts when it STARTS with the command (after wrappers), so a word that
+        # merely carries the text as an argument (`python3 -c '' python3 "$gate" ...`) does not.
         "run": ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"',
-                "pytest tests/scripts/test_spec_gate.py", 'git ls-tree "$HEAD_SHA" .githooks/pre-commit'),
-        # required where the base carries the script: solyra has no model registry to export
-        "run_if_present": {"scripts/gate/export_model_registry.py": 'export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"'},
+                "python3 -m pytest tests/scripts/test_spec_gate.py tests/scripts/test_spec_gate_base.py",
+                'git ls-tree "$HEAD_SHA" .githooks/pre-commit'),
+        # required where the base carries the file: solyra has no model registry to export, and
+        # a first landing has no base suite to run against the proposed gate
+        "run_if_present": {
+            "scripts/gate/export_model_registry.py": 'python3 scripts/gate/export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"',
+            "tests/scripts/test_spec_gate.py": 'git show "$BASE_SHA:tests/scripts/test_spec_gate.py" > tests/scripts/test_spec_gate_base.py',
+        },
         "structure": ("permissions:\n  contents: read",),
     },
     ".github/workflows/spec-gate.yml": {
         "checkout": "base",   # pull_request_target: a head checkout would run PR-controlled code with its token
         "trigger": "pull_request_target",
-        "run": ("scripts/gate/spec_gate.py --pr",),
+        "run": ('python3 scripts/gate/spec_gate.py --pr "$BASE_SHA" "$HEAD_SHA"',),
         "structure": ("permissions:\n  contents: read",),
     },
 }
@@ -203,7 +210,16 @@ def shell_statements(runs: str) -> list[str]:
             i += 1
         line = re.sub(r"'[^']*'", "''", line)
         line = re.sub(r"(^|\s)#.*$", "", line)
-        parts = re.split(r"(\|\||&&|;;|;|\||\$\(|`|\(|\)|\bthen\b|\bdo\b|\belse\b|\belif\b|\bfi\b|\bdone\b|\besac\b|\bcase\b)", line)
+        # `out=$(cmd ...)` runs cmd: the substitution is a statement of its own, and the outer
+        # statement keeps its shape (`python3 "__SUB__/scripts/gate/spec_gate.py" --commit`)
+        # so the word the shell invokes is still the one judged
+        inner: list[str] = []
+        while (m := re.search(r"\$\(([^()]*)\)|`([^`]*)`", line)):
+            inner.append(m.group(1) if m.group(1) is not None else m.group(2))
+            line = line[:m.start()] + "__SUB__" + line[m.end():]
+        if inner:
+            lines[i:i] = inner
+        parts = re.split(r"(\|\||&&|;;|;|\||\(|\)|\bthen\b|\bdo\b|\belse\b|\belif\b|\bfi\b|\bdone\b|\besac\b|\bcase\b)", line)
         chained = False    # after && or ||: runs only on the previous statement's outcome
         for k in range(0, len(parts), 2):
             stmt, op = parts[k].strip(), parts[k + 1] if k + 1 < len(parts) else ""
@@ -216,7 +232,7 @@ def shell_statements(runs: str) -> list[str]:
                         and stmt.split()[0] not in NON_EXECUTING and depth == 0 and not chained and op != "||")
             if executed:
                 out.append(stmt)
-            if op in ("then", "do", "else", "case"):
+            if op in ("then", "do", "case"):   # `else` continues the block `then` opened
                 depth += 1
             elif op in ("fi", "done", "esac"):
                 depth = max(0, depth - 1)
@@ -293,6 +309,12 @@ def workflow_write_grant(body: str) -> str | None:
         if not m:
             continue
         value = re.sub(r"\s+#.*$", "", m.group(2)).strip()   # `write-all  # why` is still write-all
+        if value.startswith("{") and "}" not in value:
+            # solyra#72 r4120337740: `permissions: {` ... `}` over several lines is one flow mapping
+            for j in range(i + 1, len(lines)):
+                value += " " + re.sub(r"\s+#.*$", "", lines[j]).strip()
+                if "}" in lines[j]:
+                    break
         if value:
             if value.strip("'\"") == "write-all" or (value.startswith("{") and re.search(r":\s*['\"]?write", value)):
                 return line.strip()
@@ -745,7 +767,9 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
             statements = shell_statements(runs)
             required = list(contract["run"]) + [m for script, m in contract.get("run_if_present", {}).items()
                                                  if ch.base.read(script) is not None]
-            lost = [m for m in required if not any(m in st for st in statements)] + \
+            # solyra#72 r4120337725: the command is what the statement invokes, so the contract
+            # text is the statement's prefix, never a later argument
+            lost = [m for m in required if not any(st.startswith(m) for st in statements)] + \
                    [m for m in contract["structure"] if m not in body]
             if lost:
                 return [f"{path}: no longer executes {len(lost)} step(s) the gate depends on ({lost[0]!r}"
@@ -778,7 +802,7 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
         # switched off for every clone with core.hooksPath set
         # (solyra#72 r4120167299: an `echo` of the command is not an invocation; the same statement
         # rules as the workflow contracts apply)
-        if not any(re.search(r"spec_gate\.py['\"]?\s+--commit", st) for st in shell_statements(hook)):
+        if not any(re.match(r"python3?\s+['\"]?[^\s'\"]*spec_gate\.py['\"]?\s+--commit(\s|$)", st) for st in shell_statements(hook)):
             return [f"{HOOK}: no longer runs `scripts/gate/spec_gate.py --commit`; the hook keeps the commit-time gate"], None
     # P1b: the policy inputs the gate reads are not deleted either
     removed = [f for f in ch.changed if f in GATE_ENTRYPOINTS + POLICY_DOCS
@@ -1144,12 +1168,42 @@ def policy_ids(path: str, text: str) -> set[str]:
     return {f for f in set(FEAT_IDS.findall(shown)) if any(feat_headings(shown, f))}
 
 
+CANVAS_MODES = ("refresh", "report-only")
+
+
+def validate_canvases(text: str) -> list[str]:
+    """The shape the refresh skill and the gate read: one top-level `canvases:` list whose
+    entries carry a `url` and, when present, a `mode` of refresh | report-only
+    (solyra#72 r4120337747). Line-oriented like canvas_modes(): the gate has no YAML dependency."""
+    errs: list[str] = []
+    lines = [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    top = [ln for ln in lines if indent(ln) == 0]
+    if [ln.rstrip() for ln in top] != ["canvases:"]:
+        errs.append(f"{CANVASES}: the document is one top-level `canvases:` list, found "
+                    f"{', '.join(repr(ln.rstrip()) for ln in top) or 'no top-level key'}")
+    entries = [ln for ln in lines if re.match(r"^\s*-\s+\w", ln) and indent(ln) == 2]
+    if lines and not entries:
+        errs.append(f"{CANVASES}: no `- name:` entries under canvases")
+    for ln in entries:
+        if not re.match(r"^\s*-\s+name:", ln):
+            errs.append(f"{CANVASES}: an entry starts with `- name:`, not {ln.strip()!r}")
+    urls = len(re.findall(r"^\s+url:\s*\S+", text, re.M))
+    if urls != len(entries):
+        errs.append(f"{CANVASES}: {len(entries)} entries but {urls} url fields; every canvas names its url")
+    for m in re.finditer(r"^\s+mode:\s*(\S+)", text, re.M):
+        if m.group(1) not in CANVAS_MODES:
+            errs.append(f"{CANVASES}: mode {m.group(1)!r} is not one of {' | '.join(CANVAS_MODES)}")
+    return errs
+
+
 def check_policy_structure(ch: Change) -> list[str]:
     """A policy document is not emptied or pruned by a change: every ID it defines on the
     base is still defined at the head (stocks#1205 r4119966286). Retiring a capability, a
     requirement or a canvas is a decision taken on main; a blanked catalog would otherwise
     pass as documentation and then refuse every feature branch."""
     errs: list[str] = []
+    if CANVASES in ch.changed and (canvases := ch.tree.read(CANVASES)) is not None:
+        errs += validate_canvases(canvases)
     for path in POLICY_DOCS:
         if path not in ch.changed or (head := ch.tree.read(path)) is None or (base := ch.base.read(path)) is None:
             continue

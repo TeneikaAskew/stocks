@@ -997,7 +997,7 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
     # solyra#72 r4118831965: a chore/ PR editing the gate's own workflow is untraced and
     # still changes what CI runs, so the Capacity check does not hide behind the trace
     workflow = {".github/workflows/spec-gate.yml": "on:\n  pull_request_target:\npermissions:\n  contents: read\njobs:\n  gate:\n"
-                                                  "    steps:\n      - run: python3 scripts/gate/spec_gate.py --pr a b\n"}
+                                                  "    steps:\n      - run: python3 scripts/gate/spec_gate.py --pr \"$BASE_SHA\" \"$HEAD_SHA\"\n"}
     r = pr(repo, "chore/gate-workflow", workflow, PR_BODY="## Summary\n\nretune the gate\n")
     assert r.returncode == 1 and "PR body needs a Capacity section" in r.stdout, r.stdout
     assert pr(repo, "chore/gate-workflow", workflow, PR_BODY="## Capacity\nn/a: one PR-triggered job, seconds\n").returncode == 0
@@ -1016,11 +1016,11 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
     assert r.returncode == 1 and "no longer executes" in r.stdout, r.stdout
     # solyra#72 r4119610895 (P1): the commands must be executed, not mentioned in a comment
     commented = gutted + "".join(f"      # {m}\n" for m in ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"',
-                                                         "pytest tests/scripts/test_spec_gate.py", 'git ls-tree "$HEAD_SHA" .githooks/pre-commit',
-                                                         'export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"'))
+                                                         "python3 -m pytest tests/scripts/test_spec_gate.py tests/scripts/test_spec_gate_base.py", 'git ls-tree "$HEAD_SHA" .githooks/pre-commit',
+                                                         'python3 scripts/gate/export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"'))
     r = pr(repo, "chore/gate-workflow", {".github/workflows/registry-check.yml": commented}, PR_BODY="## Capacity\nn/a: x\n")
     assert r.returncode == 1 and "no longer executes" in r.stdout, r.stdout
-    kept = gutted.replace("      - run: echo ok\n", "      - run: |\n          python3 -m py_compile \"$gate\"\n          python3 \"$gate\" --pr \"$BASE_SHA\" \"$HEAD_SHA\"\n          pytest tests/scripts/test_spec_gate.py\n          git ls-tree \"$HEAD_SHA\" .githooks/pre-commit\n          export_model_registry.py --check --rev \"$HEAD_SHA\" --base \"$BASE_SHA\"\n")
+    kept = gutted.replace("      - run: echo ok\n", "      - run: |\n          python3 -m py_compile \"$gate\"\n          python3 \"$gate\" --pr \"$BASE_SHA\" \"$HEAD_SHA\"\n          python3 -m pytest tests/scripts/test_spec_gate.py tests/scripts/test_spec_gate_base.py\n          git ls-tree \"$HEAD_SHA\" .githooks/pre-commit\n          python3 scripts/gate/export_model_registry.py --check --rev \"$HEAD_SHA\" --base \"$BASE_SHA\"\n")
     assert pr(repo, "chore/gate-workflow", {".github/workflows/registry-check.yml": kept}, PR_BODY="## Capacity\nn/a: x\n").returncode == 0
     # solyra#72 r4118957767 (P1): a gate file entry is exact, so a workflow named after
     # one is still a workflow a chore/ branch cannot add
@@ -1486,8 +1486,8 @@ def test_a_gate_workflow_keeps_its_steps_active_and_its_token_read_only(repo):
     head = ("name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n"
             "    runs-on: ubuntu-latest\n    steps:\n      - name: gate\n{IF}        run: |\n"
             "          python3 -m py_compile \"$gate\"\n          python3 \"$gate\" --pr \"$BASE_SHA\" \"$HEAD_SHA\"\n"
-            "          pytest tests/scripts/test_spec_gate.py\n          git ls-tree \"$HEAD_SHA\" .githooks/pre-commit\n"
-            "          export_model_registry.py --check --rev \"$HEAD_SHA\" --base \"$BASE_SHA\"\n")
+            "          python3 -m pytest tests/scripts/test_spec_gate.py tests/scripts/test_spec_gate_base.py\n          git ls-tree \"$HEAD_SHA\" .githooks/pre-commit\n"
+            "          python3 scripts/gate/export_model_registry.py --check --rev \"$HEAD_SHA\" --base \"$BASE_SHA\"\n")
     assert pr(repo, "chore/gate-workflow", {".github/workflows/registry-check.yml": head.replace("{IF}", "")}, **cap).returncode == 0
     r = pr(repo, "chore/gate-workflow", {".github/workflows/registry-check.yml": head.replace("{IF}", "        if: ${{ false }}\n")}, **cap)
     assert r.returncode == 1 and "no longer executes" in r.stdout and "`if:` may skip" in r.stdout, r.stdout
@@ -1563,8 +1563,8 @@ def test_the_gate_workflows_and_suite_cannot_be_hollowed_out(repo):
     head = ("name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n"
             "{JOB}    runs-on: ubuntu-latest\n    steps:\n      - name: gate\n{STEP}        run: |\n"
             "          python3 -m py_compile \"$gate\"\n          python3 \"$gate\" --pr \"$BASE_SHA\" \"$HEAD_SHA\"\n"
-            "          pytest tests/scripts/test_spec_gate.py\n          git ls-tree \"$HEAD_SHA\" .githooks/pre-commit\n"
-            "          export_model_registry.py --check --rev \"$HEAD_SHA\" --base \"$BASE_SHA\"\n")
+            "          python3 -m pytest tests/scripts/test_spec_gate.py tests/scripts/test_spec_gate_base.py\n          git ls-tree \"$HEAD_SHA\" .githooks/pre-commit\n"
+            "          python3 scripts/gate/export_model_registry.py --check --rev \"$HEAD_SHA\" --base \"$BASE_SHA\"\n")
     wf = ".github/workflows/registry-check.yml"
     assert pr(repo, "chore/gate-workflow", {wf: head.replace("{JOB}", "").replace("{STEP}", "")}, **cap).returncode == 0
     for step, job in (("        continue-on-error: true\n", ""), ("", "    continue-on-error: ${{ true }}\n")):
@@ -1625,8 +1625,8 @@ def test_contract_commands_run_and_policy_documents_keep_their_ids(repo):
     wf = ".github/workflows/registry-check.yml"
     head = ("name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n"
             "    runs-on: ubuntu-latest\n    steps:\n      - run: |\n{BODY}")
-    cmds = ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"', "pytest tests/scripts/test_spec_gate.py",
-            'git ls-tree "$HEAD_SHA" .githooks/pre-commit', 'export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"')
+    cmds = ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"', "python3 -m pytest tests/scripts/test_spec_gate.py tests/scripts/test_spec_gate_base.py",
+            'git ls-tree "$HEAD_SHA" .githooks/pre-commit', 'python3 scripts/gate/export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"')
     for shape in ("          echo '{c}'\n", "          printf '%s\\n' \"{c}\"\n", "          x=\"{c}\"\n",
                   "          cat <<EOF\n          {c}\n          EOF\n", "          true # {c}\n"):
         run_block = "".join(shape.replace("{c}", c) for c in cmds)
@@ -1634,7 +1634,7 @@ def test_contract_commands_run_and_policy_documents_keep_their_ids(repo):
         assert r.returncode == 1 and "no longer executes" in r.stdout, (shape, r.stdout)
     real = ("          set +e\n          out=$(python3 \"$gate\" --pr \"$BASE_SHA\" \"$HEAD_SHA\" 2>&1); rc=$?\n"
             "          if ! python3 -m py_compile \"$gate\"; then exit 1; fi\n"
-            "          python3 -m pytest tests/scripts/test_spec_gate.py -q && \\\n            mode=$(git ls-tree \"$HEAD_SHA\" .githooks/pre-commit | cut -d' ' -f1)\n"
+            "          python3 -m pytest tests/scripts/test_spec_gate.py tests/scripts/test_spec_gate_base.py -q && \\\n            mode=$(git ls-tree \"$HEAD_SHA\" .githooks/pre-commit | cut -d' ' -f1)\n"
             "          python3 scripts/gate/export_model_registry.py --check --rev \"$HEAD_SHA\" --base \"$BASE_SHA\"\n")
     assert pr(repo, "chore/gate-workflow", {wf: head.replace("{BODY}", real)}, **cap).returncode == 0
     for path, blank in ((CATALOG, ""), (CATALOG, "# Feature Catalog\n"), (REQUIREMENTS, "# Requirements\n\nprose only\n")):
@@ -1665,15 +1665,15 @@ def test_a_gate_workflow_checks_out_its_own_side_and_plans_stay_bound(repo):
     head = ("name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n"
             "    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n        with:\n{REF}          fetch-depth: 0\n"
             "      - run: |\n          python3 -m py_compile \"$gate\"\n          python3 \"$gate\" --pr \"$BASE_SHA\" \"$HEAD_SHA\"\n"
-            "          pytest tests/scripts/test_spec_gate.py\n          git ls-tree \"$HEAD_SHA\" .githooks/pre-commit\n"
-            "          export_model_registry.py --check --rev \"$HEAD_SHA\" --base \"$BASE_SHA\"\n")
+            "          python3 -m pytest tests/scripts/test_spec_gate.py tests/scripts/test_spec_gate_base.py\n          git ls-tree \"$HEAD_SHA\" .githooks/pre-commit\n"
+            "          python3 scripts/gate/export_model_registry.py --check --rev \"$HEAD_SHA\" --base \"$BASE_SHA\"\n")
     assert pr(repo, "chore/gate-workflow", {wf: head.replace("{REF}", "")}, **cap).returncode == 0
     assert pr(repo, "chore/gate-workflow", {wf: head.replace("{REF}", "          ref: ${{ github.event.pull_request.head.sha }}\n")}, **cap).returncode == 0
     for ref in ("${{ github.event.pull_request.base.sha }}", "main"):
         r = pr(repo, "chore/gate-workflow", {wf: head.replace("{REF}", f"          ref: {ref}\n")}, **cap)
         assert r.returncode == 1 and "instead of the PR head" in r.stdout, (ref, r.stdout)
     gate_wf = ("on:\n  pull_request_target:\npermissions:\n  contents: read\njobs:\n  gate:\n    steps:\n"
-               "      - uses: actions/checkout@v4\n        with:\n          ref: {REF}\n      - run: python3 scripts/gate/spec_gate.py --pr a b\n")
+               "      - uses: actions/checkout@v4\n        with:\n          ref: {REF}\n      - run: python3 scripts/gate/spec_gate.py --pr \"$BASE_SHA\" \"$HEAD_SHA\"\n")
     assert pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_wf.replace("{REF}", "${{ github.event.pull_request.base.sha }}")}, **cap).returncode == 0
     r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_wf.replace("{REF}", "${{ github.event.pull_request.head.sha }}")}, **cap)
     assert r.returncode == 1 and "under pull_request_target" in r.stdout, r.stdout
@@ -1701,8 +1701,8 @@ def test_contract_commands_run_unconditionally_under_the_declared_trigger(repo):
     wf = ".github/workflows/registry-check.yml"
     head = ("name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n"
             "    runs-on: ubuntu-latest\n    steps:\n      - run: |\n{BODY}")
-    cmds = ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"', "pytest tests/scripts/test_spec_gate.py",
-            'git ls-tree "$HEAD_SHA" .githooks/pre-commit', 'export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"')
+    cmds = ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"', "python3 -m pytest tests/scripts/test_spec_gate.py tests/scripts/test_spec_gate_base.py",
+            'git ls-tree "$HEAD_SHA" .githooks/pre-commit', 'python3 scripts/gate/export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"')
     plain = "".join(f"          {c}\n" for c in cmds)
     assert pr(repo, "chore/gate-workflow", {wf: head.replace("{BODY}", plain)}, **cap).returncode == 0
     for shape in ("          {c} || true\n", "          if false; then {c}; fi\n", "          false && {c}\n",
@@ -1718,7 +1718,7 @@ def test_contract_commands_run_unconditionally_under_the_declared_trigger(repo):
     assert r.returncode == 1 and "no longer runs on pull_request" in r.stdout and "workflow_dispatch" in r.stdout, r.stdout
     inline = head.replace("on:\n  pull_request:\n", "on: [pull_request, workflow_dispatch]\n")
     assert pr(repo, "chore/gate-workflow", {wf: inline.replace("{BODY}", plain)}, **cap).returncode == 0
-    gate_wf = "on:\n  {ON}:\npermissions:\n  contents: read\njobs:\n  gate:\n    steps:\n      - run: python3 scripts/gate/spec_gate.py --pr a b\n"
+    gate_wf = "on:\n  {ON}:\npermissions:\n  contents: read\njobs:\n  gate:\n    steps:\n      - run: python3 scripts/gate/spec_gate.py --pr \"$BASE_SHA\" \"$HEAD_SHA\"\n"
     r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_wf.replace("{ON}", "pull_request") + "# pull_request_target:\n"}, **cap)
     assert r.returncode == 1 and "no longer runs on pull_request_target" in r.stdout, r.stdout
     assert pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_wf.replace("{ON}", "pull_request_target")}, **cap).returncode == 0
@@ -1764,8 +1764,8 @@ def test_wrappers_comments_and_hollow_bodies_do_not_satisfy_the_gate_files(repo)
     wf = ".github/workflows/registry-check.yml"
     head = ("name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n"
             "{JOB}    runs-on: ubuntu-latest\n    steps:\n      - run: |\n{BODY}")
-    cmds = ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"', "pytest tests/scripts/test_spec_gate.py",
-            'git ls-tree "$HEAD_SHA" .githooks/pre-commit', 'export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"')
+    cmds = ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"', "python3 -m pytest tests/scripts/test_spec_gate.py tests/scripts/test_spec_gate_base.py",
+            'git ls-tree "$HEAD_SHA" .githooks/pre-commit', 'python3 scripts/gate/export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"')
     for shape in ('          command echo "{c}"\n', '          builtin echo "{c}"\n', '          env -i printf "%s" "{c}"\n'):
         body_text = "".join(shape.replace("{c}", c) for c in cmds)
         r = pr(repo, "chore/gate-workflow", {wf: head.replace("{JOB}", "").replace("{BODY}", body_text)}, **cap)
@@ -1776,7 +1776,7 @@ def test_wrappers_comments_and_hollow_bodies_do_not_satisfy_the_gate_files(repo)
     r = pr(repo, "chore/gate-workflow", {wf: head.replace("{JOB}", "    permissions:\n      contents: write # required\n").replace("{BODY}", plain)}, **cap)
     assert r.returncode == 1 and "grants a write permission" in r.stdout, r.stdout
     gate_wf = ("on:\n  pull_request_target:\npermissions:\n  contents: read\njobs:\n  gate:\n    steps:\n"
-               "      - uses: actions/checkout@v4\n        with:\n          ref: {REF}\n      - run: python3 scripts/gate/spec_gate.py --pr a b\n")
+               "      - uses: actions/checkout@v4\n        with:\n          ref: {REF}\n      - run: python3 scripts/gate/spec_gate.py --pr \"$BASE_SHA\" \"$HEAD_SHA\"\n")
     for ref in ("${{ github.event.pull_request.merge_commit_sha }}", "refs/pull/${{ github.event.number }}/merge", "main"):
         r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_wf.replace("{REF}", ref)}, **cap)
         assert r.returncode == 1 and "instead of the event's base sha" in r.stdout, (ref, r.stdout)
@@ -1815,3 +1815,47 @@ def test_records_and_plans_land_in_the_shape_the_gate_reads(repo):
     r = pr(repo, "docs/plan-data", {new_plan: plan(feat_id="FEAT-DATA-001", spec=data_spec, branch="feature/feat-model-001-x")})
     assert r.returncode == 1 and "serves FEAT-MODEL-001, not the plan's FEAT-DATA-001" in r.stdout, r.stdout
     assert pr(repo, "docs/plan-data", {new_plan: plan(feat_id="FEAT-DATA-001", spec=data_spec, branch="fix/feat-data-001-x")}).returncode == 0
+
+
+def test_the_invoked_command_is_the_contract_and_policy_files_keep_their_schema(repo):
+    """solyra#72 r4120337725 (P1), r4120337740 (P1), r4120337747, r4120337733 (P1)
+    (spec_gate.py:749, :299, :979, :254).
+
+    `python3 -c 'pass' python3 "$gate" ...` carried the contract text as an argument; a
+    `permissions: {` mapping spanning lines hid a write grant; canvases.yml without its
+    top-level key or with an unknown mode passed; and the head suite alone certified the
+    proposed gate. The contract is the statement's prefix, the mapping is read whole, the
+    registry keeps its schema, and CI runs the base's suite against the proposed gate.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/registry-check.yml"
+    head = ("name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n"
+            "{JOB}    runs-on: ubuntu-latest\n    steps:\n      - run: |\n{BODY}")
+    cmds = ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"',
+            "python3 -m pytest tests/scripts/test_spec_gate.py tests/scripts/test_spec_gate_base.py",
+            'git ls-tree "$HEAD_SHA" .githooks/pre-commit', 'python3 scripts/gate/export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"')
+    plain = "".join(f"          {c}\n" for c in cmds)
+    assert pr(repo, "chore/gate-workflow", {wf: head.replace("{JOB}", "").replace("{BODY}", plain)}, **cap).returncode == 0
+    for shape in ("          python3 -c 'pass' {c}\n", "          true {c}\n", "          x={c}\n", "          echo {c} | sh\n"):
+        r = pr(repo, "chore/gate-workflow", {wf: head.replace("{JOB}", "").replace("{BODY}", "".join(shape.replace("{c}", c) for c in cmds))}, **cap)
+        assert r.returncode == 1 and "no longer executes" in r.stdout, (shape, r.stdout)
+    # a command substitution runs its command: `out=$(cmd)` counts, and the outer statement
+    # keeps its shape around the substitution
+    subst = "".join(f"          out=$({c} 2>&1); rc=$?\n" for c in cmds)
+    assert pr(repo, "chore/gate-workflow", {wf: head.replace("{JOB}", "").replace("{BODY}", subst)}, **cap).returncode == 0
+    r = pr(repo, "chore/gate-workflow", {wf: head.replace("{JOB}", "    permissions: {\n      contents: write\n    }\n").replace("{BODY}", plain)}, **cap)
+    assert r.returncode == 1 and "grants a write permission" in r.stdout, r.stdout
+    assert pr(repo, "chore/gate-workflow", {wf: head.replace("{JOB}", "    permissions: {\n      contents: read\n    }\n").replace("{BODY}", plain)}, **cap).returncode == 0
+    on_base(repo, {".githooks/pre-commit": "#!/bin/sh\npython3 scripts/gate/spec_gate.py --commit\n"})
+    r = pr(repo, "chore/gate-hook", {".githooks/pre-commit": "#!/bin/sh\npython3 -c 'pass' python3 scripts/gate/spec_gate.py --commit\n"}, **cap)
+    assert r.returncode == 1 and "no longer runs `scripts/gate/spec_gate.py --commit`" in r.stdout, r.stdout
+    url = "https://claude.ai/artifact/DDDD"
+    good = f"canvases:\n  - name: Data\n    url: {url}\n    repo: t/t\n    source_json: x.json\n"
+    on_base(repo, {"docs/product/canvases.yml": good})
+    for bad, msg in ((good.replace("canvases:\n", ""), "one top-level `canvases:` list"),
+                     (good + "    mode: maybe\n", "mode 'maybe' is not one of refresh | report-only"),
+                     (good.replace(f"    url: {url}\n", ""), "every canvas names its url"),
+                     (good + "boards: []\n", "one top-level `canvases:` list")):
+        r = pr(repo, "docs/canvases", {"docs/product/canvases.yml": bad})
+        assert r.returncode == 1 and msg in r.stdout, (bad, r.stdout)
+    assert pr(repo, "docs/canvases", {"docs/product/canvases.yml": good + "    mode: report-only\n"}).returncode == 0

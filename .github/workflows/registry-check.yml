@@ -88,11 +88,21 @@ jobs:
             echo "::error::$suite exists on the base but this PR removes it; the proposed gate cannot be accepted untested" >&2
             exit 1
           fi
+          # The BASE's suite runs against the proposed gate too: the head's suite is the PR's
+          # own and could be hollowed out with the gate. A gate change that alters a tested
+          # message therefore lands in two steps: first a test that accepts both, then the
+          # change. Once the base carries the suite, the `git show` below must be unconditional;
+          # the base gate requires it then.
+          if git cat-file -e "$BASE_SHA:$suite" 2>/dev/null; then
+            git show "$BASE_SHA:$suite" > tests/scripts/test_spec_gate_base.py
+          else
+            cp "$suite" tests/scripts/test_spec_gate_base.py   # first landing: no base suite yet
+          fi
           python3 -m pip install --quiet pytest pyyaml
           # Unconditional: the suite is a gate entrypoint the PR cannot remove, and the base
           # gate accepts a contract command only in a statement that always runs.
           # --noconftest: the suite is hermetic; a repository conftest may import packages this job does not install
-          python3 -m pytest tests/scripts/test_spec_gate.py -q -p no:cacheprovider --noconftest
+          python3 -m pytest tests/scripts/test_spec_gate.py tests/scripts/test_spec_gate_base.py -q -p no:cacheprovider --noconftest
 
       # Unconditional, not `if: hashFiles(...)` or a presence test: a PR that deletes the
       # exporter fails here instead of skipping its only check, and the base gate accepts
