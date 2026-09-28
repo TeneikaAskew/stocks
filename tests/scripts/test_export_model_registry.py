@@ -225,8 +225,14 @@ def test_ci_checks_the_pr_head_commit(repo):
     checkout = next(s for s in jobs["registry"]["steps"] if s.get("uses", "").startswith("actions/checkout"))
     assert "ref" not in checkout.get("with", {})
     steps = jobs["registry"]["steps"]
-    assert any('export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"' in s.get("run", "")
-               for s in steps)
+    check = next(s for s in steps if 'export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"' in s.get("run", ""))
+    # stocks#1205 r4118661311: not `if: hashFiles(...)`, which reads the head
+    # checkout and would skip the only check when a PR deletes the exporter.
+    # The step itself decides: run it from the head, fail when the base has an
+    # exporter the head lacks, and skip only when neither side has one.
+    assert "if" not in check
+    assert 'git cat-file -e "$HEAD_SHA:$exporter"' in check["run"]
+    assert 'git cat-file -e "$BASE_SHA:$exporter"' in check["run"] and "exit 1" in check["run"]
 
 
 def test_a_stale_main_fails_only_the_pr_that_made_it_stale(repo):

@@ -184,6 +184,19 @@ class TestHandleWorkflowFailure:
         assert not is_failure_branch("someone:fix/workflow-refresh-architecture-docs-19", "TeneikaAskew", base)
         assert not is_failure_branch("TeneikaAskew:fix/workflow-fetch-news-sentiment-3", "TeneikaAskew", base)
 
+    def test_the_failure_pr_title_carries_the_feat_id(self):
+        """stocks#1205 r4118661314 (handle_workflow_failure.py:604).
+
+        The branch is fix/feat-cicd-001-..., so check_pr_metadata() requires a title
+        starting with 'FEAT-CICD-001:'. A 'Fix: ...' title would fail the gate on
+        every auto-created failure PR once its fix is pushed.
+        """
+        import re
+        from scripts.handle_workflow_failure import failure_pr_title
+        title = failure_pr_title("❌ Monthly architecture doc refresh failed")
+        assert title == "FEAT-CICD-001: Monthly architecture doc refresh failed"
+        assert re.match(r"^FEAT-CICD-001:", title)
+
 
 # ---------------------------------------------------------------------------
 # fetch_market_data.py

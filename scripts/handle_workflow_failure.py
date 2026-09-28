@@ -19,6 +19,16 @@ import requests
 # from them. Drafts opened before that rename still carry fix/workflow-<name>-<run>,
 # and the lookup must keep finding them, or the next failure opens a duplicate.
 FAILURE_BRANCH_PREFIXES = ("fix/feat-cicd-001-workflow-", "fix/workflow-")
+FAILURE_FEAT_ID = "FEAT-CICD-001"
+
+
+def failure_pr_title(failure_title: str) -> str:
+    """The draft PR's title: '<FEAT-ID>: <failure>', the shape the spec gate requires.
+
+    check_pr_metadata() demands a title starting with the branch's FEAT-ID, so a
+    'Fix: ...' title would turn every failure PR red the moment its fix lands.
+    """
+    return f"{FAILURE_FEAT_ID}: {failure_title.replace('❌', '').strip()}"
 
 
 def is_failure_branch(head_label: str, owner: str, workflow_base: str) -> bool:
@@ -601,7 +611,7 @@ Based on the workflow, these files may need attention:
                         branch_head_sha = self.create_placeholder_commit(branch_name, branch_head_sha)
 
                     # Create PR
-                    pr_title = f"Fix: {failure_title.replace('❌', '').strip()}"
+                    pr_title = failure_pr_title(failure_title)
                     error_summary = error_logs[:500] + "..." if len(error_logs) > 500 else error_logs
 
                     pr_body = self.format_pr_body(

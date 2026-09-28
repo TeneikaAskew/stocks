@@ -26,9 +26,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Not `if: hashFiles(...)`: that reads the head checkout, so a PR that
+      # deletes the exporter would skip its only check and pass. The exporter
+      # is inapplicable only when neither side of the PR has it (solyra).
       - name: Model registry JSON matches its sources
-        if: hashFiles('scripts/gate/export_model_registry.py') != ''
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 scripts/gate/export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"
+        run: |
+          exporter=scripts/gate/export_model_registry.py
+          if git cat-file -e "$HEAD_SHA:$exporter" 2>/dev/null; then
+            python3 scripts/gate/export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"
+          elif git cat-file -e "$BASE_SHA:$exporter" 2>/dev/null; then
+            echo "::error::$exporter exists on the base but this PR removes it; the registry check cannot run" >&2
+            exit 1
+          else
+            echo "::notice::no $exporter in this repository; nothing to check"
+          fi
