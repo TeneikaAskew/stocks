@@ -2533,6 +2533,18 @@ def test_dash_line_steps_indirect_writes_and_early_returns_are_refused(repo):
         r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
         assert r.returncode == 1 and "writes to or replaces a gate file" in r.stdout, (pre, r.stdout)
     assert pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          echo x > \"$RUNNER_TEMP/note\"\n          " + VERDICT_CMD)}, **cap).returncode == 0
+    # red-team round three: `>|` clobbers, `rsync` copies without a redirect, `${RUNNER_TEMP}/../..` climbs out of
+    # the temp directory, an archive extractor or `python3 -m zipfile` replaces a gate file without naming it
+    for pre in ("printf 'x' >| scripts/gate/spec_gate.py", "gate=scripts/gate/spec_gate.py; printf 'x' >| \"$gate\"",
+                "printf 'x' >|/usr/local/bin/python3", "rsync \"$RUNNER_TEMP/ng.py\" scripts/gate/spec_gate.py",
+                "rsync \"$RUNNER_TEMP/ng.py\" /usr/local/bin/python3", "D=scripts/gate; printf 'x' > \"${RUNNER_TEMP}/../../${D}/spec_gate.py\"",
+                "python3 -m pip install --target scripts/gate yaml"):
+        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        assert r.returncode == 1 and "writes to or replaces a gate file" in r.stdout, (pre, r.stdout)
+    for pre in ("tar -xf \"$RUNNER_TEMP/a.tar\"", "unzip -o \"$RUNNER_TEMP/a.zip\"", "python3 -m zipfile -e \"$RUNNER_TEMP/a.zip\" .", "python3 -m tarfile -e a.tar"):
+        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        assert r.returncode == 1 and "runs inline code" in r.stdout, (pre, r.stdout)
+    assert pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          python3 -m pip install --quiet pyyaml\n          " + VERDICT_CMD)}, **cap).returncode == 0
     suite_text = "def test_a():\n    assert 1\n"
     on_base(repo, {"tests/scripts/test_spec_gate.py": suite_text})
     for escape in ("def test_a():\n    return\n    assert 1\n", "def test_a():\n    raise SystemExit(0)\n    assert 1\n"):

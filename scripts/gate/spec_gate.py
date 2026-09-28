@@ -764,14 +764,16 @@ HOOK_LINES = (
     r"python3 (\./)?scripts/gate/spec_gate\.py --commit",
 )
 GATE_PATHS = r"(scripts/gate\b|tests/scripts\b|\.githooks\b|\.github/workflows\b)"
-WRITERS = r"(cp|mv|install|ln|tee|rm|truncate|chmod|patch|dd|curl|wget|sed|perl|git\s+(checkout|restore|apply|reset|clean|stash))"
+# red-team round three: `rsync` copies without a redirect; `pip install --target` writes a directory
+WRITERS = r"(cp|mv|install|ln|tee|rm|truncate|chmod|patch|dd|rsync|curl|wget|sed|perl|pip3?|python3?\s+-m\s+pip|git\s+(checkout|restore|apply|reset|clean|stash))"
 # stocks#1205 r4122021088: `gate=scripts/gate/spec_gate.py` then `> "$gate"` is the same write; a
 # destination held in a variable is refused unless it is under the runner's temp directory
-INDIRECT = r"['\"]?\$(?!RUNNER_TEMP\b|\{RUNNER_TEMP\}|\{\{\s*runner\.temp)"
+# (red-team round three: `${RUNNER_TEMP}/../..` climbs out of it, so a temp path holding `/..` is not excused)
+INDIRECT = r"['\"]?\$(?!(RUNNER_TEMP\b|\{RUNNER_TEMP\}|\{\{\s*runner\.temp\s*\}\})(?![^\s'\"]*/\.\.))"
 # and a file named like a contract executable anywhere (`ln -s /bin/true /usr/local/bin/python3` shadows the
 # interpreter ahead of /usr/bin on the runner's PATH: red-team round two)
 EXECUTABLE_NAME = r"[^\s'\"]*/(python3?|python3\.\d+|git|pytest)\b"
-WRITES_GATE = re.compile(r"(?m)^\s*(?:\S+=\S*\s+)*" + WRITERS + r"\b[^\n]*(" + GATE_PATHS + "|" + INDIRECT + "|" + EXECUTABLE_NAME + r")|[>]{1,2}\s*(['\"]?[^\s'\"]*" + GATE_PATHS + "|" + INDIRECT + "|['\"]?" + EXECUTABLE_NAME + ")")
+WRITES_GATE = re.compile(r"(?m)^\s*(?:\S+=\S*\s+)*" + WRITERS + r"\b[^\n]*(" + GATE_PATHS + "|" + INDIRECT + "|" + EXECUTABLE_NAME + r")|[>]{1,2}\|?\s*(['\"]?[^\s'\"]*" + GATE_PATHS + "|" + INDIRECT + "|['\"]?" + EXECUTABLE_NAME + ")")
 
 
 def writes_gate_file(runs: str) -> str | None:
@@ -1456,11 +1458,14 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
             if wrote := writes_gate_file(runs):
                 return [f"{path}: `{wrote}` writes to or replaces a gate file; the workflows read the gate's files, "
                         "never write them"], None
-            if inline := re.search(r"(?m)^\s*(python3?|node|perl|ruby|sh|bash)\s+(-c|-e|-)\s|(^|[;&|{(]\s*)(eval|source|\.|shopt)\s", runs):
+            if inline := re.search(r"(?m)^\s*(python3?|node|perl|ruby|sh|bash)\s+(-c|-e|-)\s|(^|[;&|{(]\s*)(eval|source|\.|shopt)\s"
+                                   r"|(^|[;&|{(]\s*)(tar|bsdtar|unzip|zip|7za?|unrar|cpio|pax)\s|python3?\s+-m\s+(?!pip\b|pytest\b|py_compile\b)\S+", runs):
                 # (red-team round two: `eval "set +e"` and `shopt -uo errexit` turn errexit off out of the
-                # model's sight; `source` runs a file the tree may carry)
+                # model's sight; `source` runs a file the tree may carry; round three: an archive extractor
+                # or a `python3 -m zipfile` replaces a gate file without naming it)
                 return [f"{path}: runs inline code (`{inline.group(0).strip()}`); the gate's workflows run scripts "
-                        "from the tree only, and never eval, source or shopt"], None
+                        "from the tree only, never eval, source or shopt, never extract archives, and run no "
+                        "module but pip, pytest and py_compile"], None
             if shadow := shadowed_executable(body):
                 return [f"{path}: defines `{shadow}` as a shell function or alias; the gate's commands run the "
                         "real executables"], None
