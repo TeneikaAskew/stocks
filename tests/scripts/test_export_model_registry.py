@@ -573,3 +573,20 @@ def test_a_registry_without_routed_schedulers_fails_closed(repo):
                                                 "| Scheduler | Cron (`America/New_York`) | Job | Models |"))
     r = export(repo)
     assert r.returncode != 0 and "no scheduler row routes to a model" in r.stdout + r.stderr, r.stdout + r.stderr
+
+
+def test_duplicate_headers_and_disposition_rows_fail_the_export(repo):
+    """stocks#1205 r4119966296, r4119966278 (export_model_registry.py:169, :285).
+
+    Two header cells normalizing to one key let the later cell overwrite the earlier
+    field, and a second single-ID disposition row for a finding was silently dropped;
+    both exported and passed --check. Both are malformed rows now.
+    """
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("| ID | Name | Type | Decision produced | Code | Status | Rec | Doc | Blocking issues |",
+                                                "| ID | Name | Type | Decision produced | Code | Status | Status | Doc | Blocking issues |"))
+    r = export(repo)
+    assert r.returncode != 0 and "two columns keyed status" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("| DOC-02 | Deferred | waits for the retrain |\n",
+                                                "| DOC-02 | Deferred | waits for the retrain |\n| DOC-02 | Fixed | retrained |\n"))
+    r = export(repo)
+    assert r.returncode != 0 and "DOC-02 has two disposition rows" in r.stdout + r.stderr, r.stdout + r.stderr

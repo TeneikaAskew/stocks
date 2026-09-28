@@ -162,10 +162,20 @@ def tables_with_headings(text: str):
         i += 1
 
 
+def header_keys(header: list[str]) -> list[str]:
+    return [re.sub(r"[^a-z0-9]+", "_", h.lower()).strip("_") or "col" for h in header]
+
+
+def duplicate_keys(header: list[str]) -> list[str]:
+    """Header cells that normalize to a key another cell already took: the later cell would
+    silently overwrite the earlier field (stocks#1205 r4119966296)."""
+    keys = header_keys(header)
+    return sorted({k for k in keys if keys.count(k) > 1})
+
+
 def row_to_record(header: list[str], raw: list[str]) -> dict:
     rec: dict = {}
-    for h, cell in zip(header, raw):
-        key = re.sub(r"[^a-z0-9]+", "_", h.lower()).strip("_") or "col"
+    for key, cell in zip(header_keys(header), raw):
         rec[key] = clean(cell)
         if key in ("code", "code_artifact", "primary_code"):
             rec[key + "_paths"] = CODE.findall(cell)
@@ -257,6 +267,9 @@ def build(src: Source) -> dict:
             if routable and len(raw) != len(header):
                 malformed.append(f"{first} under '{section}' has {len(raw)} cell(s), header has {len(header)}")
                 continue
+            if routable and (dup := duplicate_keys(header)):
+                malformed.append(f"table under '{section}' has two columns keyed {dup[0]}; one cell would overwrite the other")
+                continue
             rec = row_to_record(header, raw)
             if first.startswith("MODEL-") and h0 == "id":
                 if first in out["models"]:
@@ -280,6 +293,11 @@ def build(src: Source) -> dict:
                 ids = doc_ids(raw[0])
                 rec["label"] = first
                 # A row naming one finding wins over a row that names it in a group.
+                if len(ids) == 1 and ids[0] in out["dispositions"]:
+                    # stocks#1205 r4119966278: two verdicts for one finding is a conflict, not a
+                    # fallback; only a grouped row yields to a specific one
+                    malformed.append(f"{ids[0]} has two disposition rows (second under '{section}')")
+                    continue
                 target = out["dispositions"] if len(ids) == 1 else grouped
                 for fid in ids:
                     target.setdefault(fid, rec)

@@ -1608,3 +1608,42 @@ def test_a_landing_plan_or_spec_is_bound_before_it_is_policy(repo):
     r = pr(repo, "docs/spec-feat-data-001", {draft: spec(feat_id="FEAT-DATA-001", canvases=[url + "-typo"])})
     assert r.returncode == 1 and f"lists canvas {url}-typo, which is not in docs/product/canvases.yml" in r.stdout, r.stdout
     assert pr(repo, "docs/spec-feat-data-001", {draft: spec(feat_id="FEAT-DATA-001", canvases=[url])}).returncode == 0
+
+
+def test_contract_commands_run_and_policy_documents_keep_their_ids(repo):
+    """stocks#1205 r4119966265 (P1), r4119966286 (P1), r4119966316 (spec_gate.py:592, :609, :890).
+
+    An `echo '<command>'` satisfied a workflow contract, a catalog blanked to an empty
+    file passed the deletion guard and the documentation path, and a Capacity value like
+    `unknown; see issue #1205` counted as numeric. Each is refused.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/registry-check.yml"
+    head = ("name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n"
+            "    runs-on: ubuntu-latest\n    steps:\n      - run: |\n{BODY}")
+    cmds = ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"', "pytest tests/scripts/test_spec_gate.py",
+            'git ls-tree "$HEAD_SHA" .githooks/pre-commit', 'export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"')
+    for shape in ("          echo '{c}'\n", "          printf '%s\\n' \"{c}\"\n", "          x=\"{c}\"\n",
+                  "          cat <<EOF\n          {c}\n          EOF\n", "          true # {c}\n"):
+        run_block = "".join(shape.replace("{c}", c) for c in cmds)
+        r = pr(repo, "chore/gate-workflow", {wf: head.replace("{BODY}", run_block)}, **cap)
+        assert r.returncode == 1 and "no longer executes" in r.stdout, (shape, r.stdout)
+    real = ("          set +e\n          out=$(python3 \"$gate\" --pr \"$BASE_SHA\" \"$HEAD_SHA\" 2>&1); rc=$?\n"
+            "          if ! python3 -m py_compile \"$gate\"; then exit 1; fi\n"
+            "          python3 -m pytest tests/scripts/test_spec_gate.py -q && \\\n            mode=$(git ls-tree \"$HEAD_SHA\" .githooks/pre-commit | cut -d' ' -f1)\n"
+            "          python3 scripts/gate/export_model_registry.py --check --rev \"$HEAD_SHA\" --base \"$BASE_SHA\"\n")
+    assert pr(repo, "chore/gate-workflow", {wf: head.replace("{BODY}", real)}, **cap).returncode == 0
+    for path, blank in ((CATALOG, ""), (CATALOG, "# Feature Catalog\n"), (REQUIREMENTS, "# Requirements\n\nprose only\n")):
+        r = pr(repo, "docs/cleanup", {path: blank})
+        assert r.returncode == 1 and "never emptied or pruned" in r.stdout, (path, r.stdout)
+    pruned = CATALOG_TEXT.replace("| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |\n", "")
+    r = pr(repo, "docs/cleanup", {CATALOG: pruned})
+    assert r.returncode == 1 and "no longer defines 1 ID(s) the base has (FEAT-DATA-001)" in r.stdout, r.stdout
+    assert pr(repo, "docs/cleanup", {CATALOG: CATALOG_TEXT + "\nA closing note.\n"}).returncode == 0
+    title = {"PR_TITLE": "FEAT-MODEL-001: x"}
+    job = {**CODE, "gcp/model_job.py": "print('run')\n"}
+    prose = body() + "\n\n## Capacity\nVolume: unknown; see issue #1205 \u00b7 Velocity: TBD for phase 2 \u00b7 Wall-clock: unknown in 2026 \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01\n"
+    r = pr(repo, BRANCH, job, **title, PR_BODY=prose)
+    assert r.returncode == 1 and "gives no number for Volume, Velocity, Wall-clock;" in r.stdout, r.stdout
+    figures = body() + "\n\n## Capacity\nVolume: ~3 tickers \u00d7 400 B \u00b7 Velocity: <1 query/min \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01\n"
+    assert pr(repo, BRANCH, job, **title, PR_BODY=figures).returncode == 0

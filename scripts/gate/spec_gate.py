@@ -172,6 +172,41 @@ def workflow_executes(text: str) -> tuple[str, str]:
     return "\n".join(runs), "\n".join(lines)
 
 
+# First words that consume their arguments as text rather than running them.
+NON_EXECUTING = {"echo", "printf", "cat", "tee", ":", "true", "false", "test", "[", "[[", "read", "export", "local",
+                 "declare", "readonly", "grep", "sed", "awk", "exit", "return", "shift", "trap"}
+
+
+def shell_statements(runs: str) -> list[str]:
+    """The statements of the collected run text that execute a command: heredoc bodies,
+    single-quoted text, comments, and statements led by a non-executing word (echo, printf,
+    cat, test ...) or by an assignment of a literal are dropped, so a contract command
+    counts only where the shell would run it (stocks#1205 r4119966265)."""
+    lines, out, i = runs.splitlines(), [], 0
+    while i < len(lines):
+        line = lines[i]
+        while line.rstrip().endswith("\\") and i + 1 < len(lines):   # continuation
+            i += 1
+            line = line.rstrip()[:-1] + " " + lines[i].lstrip()
+        i += 1
+        if (m := re.search(r"<<-?\s*['\"]?(\w+)['\"]?", line)):   # heredoc: skip its body
+            while i < len(lines) and lines[i].strip() != m.group(1):
+                i += 1
+            i += 1
+        line = re.sub(r"'[^']*'", "''", line)
+        line = re.sub(r"(^|\s)#.*$", "", line)
+        for stmt in re.split(r"\|\||&&|;|\||\$\(|`|\(|\)|\bthen\b|\bdo\b|\belse\b", line):
+            stmt = stmt.strip()
+            stmt = re.sub(r"^((if|elif|while|until|!)\s+)+", "", stmt)
+            stmt = re.sub(r"^[A-Za-z_]\w*=(?!['\"$])\S*\s*", "", stmt)   # `x=1 cmd` prefix assignment
+            if not stmt or re.match(r"^[A-Za-z_]\w*=", stmt):   # `x="..."`: a value, not a command
+                continue
+            if stmt.split()[0] in NON_EXECUTING:
+                continue
+            out.append(stmt)
+    return out
+
+
 def workflow_write_grant(body: str) -> str | None:
     """The first line of a comment-stripped workflow that grants a write permission, at any
     level: a job-level `permissions:` overrides the read-only top-level block a contract
@@ -618,11 +653,13 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
     for path, contract in WORKFLOW_CONTRACTS.items():
         if path in ch.changed and (text := ch.tree.read(path)) is not None:
             runs, body = workflow_executes(text)
-            lost = [m for m in contract["run"] if m not in runs] + [m for m in contract["structure"] if m not in body]
+            statements = shell_statements(runs)
+            lost = [m for m in contract["run"] if not any(m in st for st in statements)] + \
+                   [m for m in contract["structure"] if m not in body]
             if lost:
                 return [f"{path}: no longer executes {len(lost)} step(s) the gate depends on ({lost[0]!r}"
-                        f"{' and more' if len(lost) > 1 else ''}); a command in a comment, an unused scalar or a "
-                        "step an `if:` may skip does not count. The gate's workflows keep their checks"], None
+                        f"{' and more' if len(lost) > 1 else ''}); a command in a comment, an echo, an unused scalar "
+                        "or a step an `if:` may skip does not count. The gate's workflows keep their checks"], None
             if grant := workflow_write_grant(body):
                 return [f"{path}: grants a write permission ({grant}); the gate's workflows run head-controlled code "
                         "on a read-only token, at the top level and in every job"], None
@@ -649,7 +686,7 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
     # validated here, before the documentation-only return, against the base's catalog
     # and requirements; a malformed spec must not land and then block or mislead the
     # implementation that cites it.
-    errs_specs = check_changed_specs(ch) + check_changed_plans(ch) + check_record_uniqueness(ch)
+    errs_specs = check_changed_specs(ch) + check_changed_plans(ch) + check_record_uniqueness(ch) + check_policy_structure(ch)
     # A chore/ or bot/ branch is limited to its allowance for every file it touches, so
     # documentation is not exempt there: `chore/deps` cannot rewrite the requirements.
     allowance_branch = ch.branch.startswith(tuple(prefix for prefix, _ in ALLOWANCES))
@@ -924,12 +961,15 @@ def check_capacity(body: str | None, changed: list[str]) -> list[str]:
     # solyra#72 r4119837253: a value is a number, not `unknown`, `fast` or `TBD`. Each
     # label's value runs from its colon to the next label.
     marks = list(re.finditer(r"\b(" + "|".join(map(re.escape, CAPACITY_LABELS)) + r")\**:\**", text))
+    # The value itself is the quantity (`3 tickers`, `~2 s`, `$0.01`, `<1 GB`), not prose
+    # that happens to carry a digit (`unknown; see #1205`, `TBD for phase 2`).
     unnumbered = sorted({m.group(1) for k, m in enumerate(marks)
-                         if not re.search(r"\d", text[m.end():marks[k + 1].start() if k + 1 < len(marks) else len(text)])},
+                         if not re.match(r"\s*[~\u2248<>\u2264\u2265]?\s*[$\u20ac\u00a3]?\s*\d",
+                                         text[m.end():marks[k + 1].start() if k + 1 < len(marks) else len(text)])},
                         key=CAPACITY_LABELS.index)
     if unnumbered:
-        return ["PR body's Capacity section gives no number for " + ", ".join(unnumbered) + "; rule 0 wants "
-                "the figures (rows, calls, seconds, dollars), or 'n/a: <why no workload runs differently>'"]
+        return ["PR body's Capacity section gives no number for " + ", ".join(unnumbered) + "; each value starts "
+                "with its figure (rows, calls, seconds, dollars), or the section says 'n/a: <why no workload runs differently>'"]
     return []
 
 
@@ -978,6 +1018,34 @@ def feat_headings(text: str, feat_id: str) -> tuple[int, int]:
     lines = text.splitlines()
     return (sum(1 for line in lines if HEADING.match(line) and feat_id in FEAT_IDS.findall(line)),
             sum(1 for line in lines if (m := FEAT_ROW.match(line)) and m.group(1) == feat_id))
+
+
+def policy_ids(path: str, text: str) -> set[str]:
+    """The IDs a policy document defines: FEAT rows in the catalog, REQ definitions in the
+    requirements, FEAT-IDs in the traceability document, canvas URLs in the registry."""
+    if path == CATALOG:
+        return catalog_ids(text)
+    if path == REQUIREMENTS:
+        return set(REQ_DEFINITION.findall(visible(text)))
+    if path == CANVASES:
+        return set(canvas_modes(text))
+    return set(FEAT_IDS.findall(visible(text)))
+
+
+def check_policy_structure(ch: Change) -> list[str]:
+    """A policy document is not emptied or pruned by a change: every ID it defines on the
+    base is still defined at the head (stocks#1205 r4119966286). Retiring a capability, a
+    requirement or a canvas is a decision taken on main; a blanked catalog would otherwise
+    pass as documentation and then refuse every feature branch."""
+    errs: list[str] = []
+    for path in POLICY_DOCS:
+        if path not in ch.changed or (head := ch.tree.read(path)) is None or (base := ch.base.read(path)) is None:
+            continue
+        if dropped := sorted(policy_ids(path, base) - policy_ids(path, head)):
+            errs.append(f"{path}: no longer defines {len(dropped)} ID(s) the base has ({dropped[0]}"
+                        f"{' and more' if len(dropped) > 1 else ''}); a policy document is extended in a branch, "
+                        "never emptied or pruned")
+    return errs
 
 
 def check_record_uniqueness(ch: Change) -> list[str]:

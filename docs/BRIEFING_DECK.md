@@ -1427,8 +1427,9 @@ Per CLAUDE.md and memory:
 
 ### 18.5 Branch naming
 
-- `feature/short-description` for new features
-- `fix/short-description` for bug fixes
+- `feature/<feat-id>-<slug>` for new features (e.g. `feature/feat-model-001-model-decisions`); the spec gate reads the FEAT-ID from the branch
+- `fix/<feat-id>-<slug>` for bug fixes, filed under the capability's FEAT-ID
+- `docs/<slug>` for documentation only, `chore/<slug>` for dependency manifests, lockfiles and the gate's own files
 - `fix/feat-cicd-001-workflow-{name}-{run-number}` for auto-created failure-handler branches
 - Never commit non-trivial changes directly to `main`
 
