@@ -143,6 +143,16 @@ def test_discord_target_deploys_service_and_backing_jobs_together():
     assert {"discord-interactions", "backfill-ticker", "validate-brief", "backtest"} <= created
 
 
+def test_market_data_target_deploys_only_the_two_price_fetchers():
+    """#1188 changes the symbol every AlphaVantage price call sends. Its two
+    jobs were reachable only through `fetchers`, which deploys about thirty
+    jobs, or through `all`."""
+    arms = _dispatch_arms()
+    assert "market-data" in arms, "market-data) dispatcher target missing"
+    created = _created_by(_closure(_called_from(arms["market-data"])))
+    assert created == {"fetch-market-data", "fetch-premarket-refresh"}, created
+
+
 def test_historical_signals_target_deploys_only_the_nightly_writer():
     """#1167 changes the tags `run_historical_signals` writes, and its job was
     reachable only through `insights`, which also deploys the insight pipeline
