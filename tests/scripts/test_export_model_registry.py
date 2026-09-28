@@ -531,3 +531,43 @@ def test_an_exporter_change_counts_as_touching_the_registry(repo):
     _git(repo, "commit", "-q", "-m", "change the exporter only")
     r = export(repo, "--check", "--rev", "HEAD", "--base", stale_main)
     assert r.returncode == 1 and "is stale" in r.stdout, r.stdout
+
+
+def test_duplicate_finding_ids_fail_the_export(repo):
+    """stocks#1205 r4119634446 (export_model_registry.py:278).
+
+    Two concern rows sharing a DOC-* ID both exported; the ID-set comparison
+    collapsed them, so --check passed while the Concerns board, keyed by id,
+    could show only one. A repeated finding ID fails generation.
+    """
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("| DOC-03 | c.md |", "| DOC-01 | c.md |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "finding DOC-01 appears twice" in r.stdout + r.stderr, r.stdout + r.stderr
+
+
+def test_traceability_experiments_exist_in_the_ledger(repo):
+    """stocks#1205 r4119634454 (export_model_registry.py:332).
+
+    A traceability row citing E-99 exported its text unchanged while the ledger
+    IDs were computed separately, so a card could claim evidence from an
+    experiment that does not exist. An E-nn the ledger lacks fails generation.
+    """
+    write(repo, REGISTRY, REGISTRY_TEXT + "\n## Experiment traceability\n\n| Model | Experiments |\n|---|---|\n| MODEL-MAG-001 | E-01, E-99 |\n")
+    r = export(repo)
+    assert r.returncode != 0 and "MODEL-MAG-001 traceability cites experiment(s) not in the ledger: E-99" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, REGISTRY_TEXT + "\n## Experiment traceability\n\n| Model | Experiments |\n|---|---|\n| MODEL-MAG-001 | E-01, E-02 |\n")
+    assert export(repo).returncode == 0
+    assert exported(repo)["experiment_traceability"]["MODEL-MAG-001"]["experiments"] == "E-01, E-02"
+
+
+def test_a_registry_without_routed_schedulers_fails_closed(repo):
+    """stocks#1205 r4119634461 (export_model_registry.py:293).
+
+    A renamed Serves header sent every scheduler row to excluded_schedulers,
+    so the export carried no scheduled surface for any card and --check called
+    it current. Zero routed scheduler rows is a malformed source.
+    """
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("| Scheduler | Cron (`America/New_York`) | Job | Serves |",
+                                                "| Scheduler | Cron (`America/New_York`) | Job | Models |"))
+    r = export(repo)
+    assert r.returncode != 0 and "no scheduler row routes to a model" in r.stdout + r.stderr, r.stdout + r.stderr

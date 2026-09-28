@@ -187,6 +187,23 @@ class TestHandleWorkflowFailure:
         assert not is_legacy_failure_branch("someone:fix/workflow-refresh-architecture-docs-19", "TeneikaAskew", base)
         assert not is_legacy_failure_branch("TeneikaAskew:fix/workflow-fetch-news-sentiment-3", "TeneikaAskew", base)
 
+    def test_the_failure_branch_slug_is_kebab_case(self):
+        """stocks#1205 r4119634442 (handle_workflow_failure.py:622).
+
+        The branch kept the workflow stem verbatim, so `fetch_etf_options.yml`
+        produced an underscore the spec gate's branch pattern rejects; a fix pushed
+        to that draft could never merge. The stem is normalized, and the lookup
+        matches the normalized branch.
+        """
+        import re
+        from scripts.handle_workflow_failure import FAILURE_BRANCH_PREFIX, is_failure_branch, workflow_slug
+        assert workflow_slug("fetch_etf_options.yml") == "fetch-etf-options"
+        assert workflow_slug("Refresh Architecture.Docs.yaml") == "refresh-architecture-docs"
+        assert workflow_slug("fetch-news-sentiment.yml") == "fetch-news-sentiment"
+        branch = f"{FAILURE_BRANCH_PREFIX}{workflow_slug('fetch_etf_options.yml')}-7"
+        assert re.match(r"^(feature|fix)/(feat-[a-z]+-\d{3})(-[a-z0-9]+)+$", branch), branch
+        assert is_failure_branch(f"TeneikaAskew:{branch}", "TeneikaAskew", workflow_slug("fetch_etf_options.yml"))
+
     def test_the_failure_pr_title_carries_the_feat_id(self):
         """stocks#1205 r4118661314 (handle_workflow_failure.py:604).
 

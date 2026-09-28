@@ -612,6 +612,12 @@ def test_every_branch_shape_the_rules_name_passes_only_its_own_work(repo):
     assert pr(repo, "docs/spec-feat-model-001", {SPEC: spec(status="superseded")}).returncode == 0
     r = pr(repo, "docs/spec-feat-model-001", {SPEC: spec(status="superseded", done_when=["something easier"])})
     assert r.returncode == 1 and "does not change in place" in r.stdout, r.stdout
+    # stocks#1205 r4119634437: nor is a superseded spec deleted; the done plans and the
+    # replacing spec's `supersedes` still point at it
+    on_base(repo, {SPEC: spec(status="superseded")})
+    r = pr(repo, "docs/spec-feat-model-001", {SPEC: None})
+    assert r.returncode == 1 and "a superseded spec is not deleted" in r.stdout, r.stdout
+    on_base(repo, {SPEC: spec()})
     assert pr(repo, "chore/bump-deps", {"package-lock.json": "{}\n"}).returncode == 0
     assert pr(repo, "bot/superpowers-v5", skill_file).returncode == 0
     assert pr(repo, "bot/superpowers-v5", {**skill_file, **CODE}).returncode == 1

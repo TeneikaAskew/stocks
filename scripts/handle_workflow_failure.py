@@ -8,6 +8,7 @@ and creates or updates issues and draft PRs for tracking fixes.
 """
 
 import os
+import re
 import sys
 import json
 import argparse
@@ -31,6 +32,13 @@ def failure_pr_title(failure_title: str) -> str:
     'Fix: ...' title would turn every failure PR red the moment its fix lands.
     """
     return f"{FAILURE_FEAT_ID}: {failure_title.replace('❌', '').strip()}"
+
+
+def workflow_slug(workflow_file: str) -> str:
+    """The workflow's stem as a lowercase kebab-case slug: `fetch_etf_options.yml` becomes
+    `fetch-etf-options`, the only shape the spec gate's branch pattern accepts."""
+    stem = re.sub(r"\.ya?ml$", "", workflow_file.rsplit("/", 1)[-1])
+    return re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-")
 
 
 def is_failure_branch(head_label: str, owner: str, workflow_base: str) -> bool:
@@ -278,7 +286,7 @@ class WorkflowFailureHandler:
         """
         # Only a PR on the current branch shape is reused: the spec gate rejects a fix
         # pushed to a legacy fix/workflow-* branch, so such a draft is superseded instead.
-        workflow_base = workflow_file.replace('.yml', '')
+        workflow_base = workflow_slug(workflow_file)
 
         try:
             for pr in self._open_prs():
@@ -619,7 +627,7 @@ Based on the workflow, these files may need attention:
             else:
                 # Create branch and PR
                 # fix/<feat-id>-<slug>: the spec gate reads FEAT-CICD-001 from this shape.
-                branch_name = f"fix/feat-cicd-001-workflow-{workflow_file.replace('.yml', '')}-{run_number}"
+                branch_name = f"{FAILURE_BRANCH_PREFIX}{workflow_slug(workflow_file)}-{run_number}"
                 print(f"Creating branch: {branch_name}")
 
                 try:

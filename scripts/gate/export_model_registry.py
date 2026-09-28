@@ -295,6 +295,21 @@ def build(src: Source) -> dict:
                 unrouted.append(f"{first} under '{section}' (columns: {', '.join(header)})")
     for fid, rec in grouped.items():
         out["dispositions"].setdefault(fid, rec)
+    seen_findings: set[str] = set()
+    for rec in out["findings"]:
+        # stocks#1205 r4119634446: the Concerns board is keyed by id, so two rows with one
+        # ID would leave one finding overwritten on refresh while the ID-set check passed.
+        if rec["id"] in seen_findings:
+            malformed.append(f"finding {rec['id']} appears twice")
+        seen_findings.add(rec["id"])
+    ledger = set(experiment_ids(etext))
+    for mid, rec in out["experiment_traceability"].items():
+        # stocks#1205 r4119634454: a misspelled E-nn in a traceability row would let a card
+        # claim evidence from an experiment the ledger never recorded.
+        cited = set(expand_ids(clean(" ".join(str(v) for v in rec.values())), EXP_ID, EXP_RANGE, "E-{:02d}"))
+        unknown_exp = sorted(cited - ledger)
+        if unknown_exp:
+            malformed.append(f"{mid} traceability cites experiment(s) not in the ledger: {', '.join(unknown_exp)}")
     if malformed:
         raise SystemExit(f"{REGISTRY}: {len(malformed)} malformed row(s): {'; '.join(malformed[:3])}. "
                          "A row has exactly its header's cells and a model ID names one row; fix the table "
@@ -311,6 +326,13 @@ def build(src: Source) -> dict:
         # would otherwise drop every card in it and --check would call the result current.
         raise SystemExit(f"{REGISTRY}: no model rows under {', '.join(missing_tiers)}; the registry keeps a table "
                          "for each of its tiers, so a missing one is a deleted table, not an empty tier")
+    if not out["schedulers"]:
+        # stocks#1205 r4119634461: a deleted model-bearing scheduler table, or a renamed
+        # Serves header, would otherwise route every row to excluded_schedulers and export
+        # every card without a scheduled surface, and --check would call that current.
+        raise SystemExit(f"{REGISTRY}: no scheduler row routes to a model; the scheduled-surfaces table starts with "
+                         "a `Scheduler` column and carries a `Serves` column. The registry is malformed; fix it "
+                         "rather than exporting it")
     unknown = sorted({m for sched in out["schedulers"] for m in sched["models"] if m not in out["models"]})
     if unknown:
         raise SystemExit(f"{REGISTRY}: scheduler Serves cells name model(s) not in the registry: {', '.join(unknown)}; "

@@ -2433,7 +2433,7 @@
  "sources": {
   "docs/EXPERIMENT_REGISTRY.md": "cfbcca257edc74928cc0af69d275a02f2fd78c0c",
   "docs/product/07-MODEL-REGISTRY.md": "1e70bf96a3e8ab49e714745d2571b662001ceb39",
-  "scripts/gate/export_model_registry.py": "98b8dcb914619209dbedfd8056c4e91173834c13"
+  "scripts/gate/export_model_registry.py": "b6649c4e6e95b5256d30b3a4946e7b2a70410957"
  },
  "tables": [
   {

@@ -444,9 +444,15 @@ def check_changed_specs(ch: Change) -> list[str]:
             continue
         text = ch.tree.read(path)
         if text is None:
-            if frontmatter(ch.base.read(path)).get("status") == "approved":
+            status = frontmatter(ch.base.read(path)).get("status")
+            if status == "approved":
                 errs.append(f"{path}: an approved spec is not deleted; supersede it with a new spec and mark this one "
                             "superseded, so the plans that cite it keep a contract to point at")
+            elif status == "superseded":
+                # stocks#1205 r4119634437: a superseded spec is the record the done plans and the
+                # replacing spec's `supersedes` point at; deleting it breaks that history.
+                errs.append(f"{path}: a superseded spec is not deleted; it is the contract the plans that cite it "
+                            "and the spec that replaced it still point at")
             continue
         if catalog is None:
             catalog, req_defs = catalog_ids(ch.base.read(CATALOG)), requirement_defs(ch.base)
