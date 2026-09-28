@@ -80,7 +80,62 @@ MANIFEST = re.compile(
 # A lockfile names where each package is fetched from; CI installs exactly that (round six: an attacker
 # tarball with its own integrity hash passed as "a lockfile"). Only the public registries.
 REGISTRY_HOSTS = ("registry.npmjs.org", "registry.yarnpkg.com", "files.pythonhosted.org", "pypi.org")
-LOCK_URL = re.compile(r"https?://([^/\s\"']+)")
+
+
+def lockfile_sources(name: str, text: str) -> list[str]:
+    """Every location a lockfile fetches a package from, parsed as its installer parses it
+    (round seven: `HTTPS://`, `https:\/\/` and `file:` slipped a text scan). Raises ValueError
+    when the file cannot be parsed."""
+    found: list[str] = []
+    if name == "package-lock.json":
+        def walk(obj):
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if k in ("resolved", "link") and isinstance(v, (str, bool)):
+                        found.append(str(v))
+                    walk(v)
+            elif isinstance(obj, list):
+                for v in obj:
+                    walk(v)
+        walk(json.loads(text))
+    elif name in ("poetry.lock", "uv.lock"):
+        for pkg in tomllib.loads(text).get("package", []):
+            src = pkg.get("source")
+            if isinstance(src, dict):
+                if name == "uv.lock" and set(src) <= {"registry"}:
+                    found.append(str(src.get("registry", "")))
+                elif name == "uv.lock" and set(src) <= {"virtual", "workspace"}:
+                    continue   # the project itself
+                elif name == "poetry.lock" and src.get("type") == "legacy":
+                    found.append(str(src.get("url", "")))
+                else:
+                    found.append("source:" + ",".join(sorted(src)))
+    elif name == "yarn.lock":
+        for m in re.finditer(r'(?m)^\s+(resolved|resolution)\s*:?\s*"?([^"\n]+)"?', text):
+            value = m.group(2).strip()
+            found.append(value if m.group(1) == "resolved" or "@npm:" not in value else "https://registry.yarnpkg.com/")
+    elif name == "pnpm-lock.yaml":
+        for m in re.finditer(r"(?m)^\s+(tarball|directory|repo|commit|path|type)\s*:\s*(.+)$|resolution:\s*\{([^}]*)\}", text):
+            if m.group(3) is not None:
+                for key, value in re.findall(r"([\w-]+)\s*:\s*([^,}]+)", m.group(3)):
+                    found.append(value.strip() if key == "tarball" else ("https://registry.npmjs.org/" if key == "integrity" else "source:" + key))
+            else:
+                found.append(m.group(2).strip() if m.group(1) == "tarball" else "source:" + m.group(1))
+    else:   # bun.lock: JSON with trailing commas
+        walk_text = re.sub(r",\s*([}\]])", r"\1", text)
+        found += [m.group(0) for m in re.finditer(r"(?i)\b(?:https?:|file:|link:|git\+|workspace:)[^\s\"']*", walk_text)]
+    return found
+
+
+def lockfile_offence(name: str, text: str) -> str | None:
+    try:
+        sources = lockfile_sources(name, text)
+    except (ValueError, tomllib.TOMLDecodeError) as e:
+        return f"cannot be parsed ({str(e)[:60]}); the gate does not guess what an installer would fetch"
+    for src in sources:
+        if src.startswith("source:") or not (m := re.match(r"(?i)https://([^/\s\"']+)", src)) or m.group(1).lower() not in REGISTRY_HOSTS:
+            return f"resolves a package from {src[:60]!r}; a chore/ branch installs from the public registries over https only"
+    return None
 HOOK = ".githooks/pre-commit"
 GATE_SCRIPTS = ("scripts/gate/spec_gate.py", "scripts/gate/export_model_registry.py")
 GATE_FILES = (
@@ -1379,11 +1434,8 @@ def non_dependency_edit(path: str, before: str | None, after: str | None) -> str
     if name in ("package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "uv.lock", "bun.lock"):
         if after is None:
             return None   # removing a lockfile installs nothing
-        for host in sorted(set(LOCK_URL.findall(after))):
-            if host not in REGISTRY_HOSTS:
-                return f"{path}: resolves a package from {host}; a chore/ branch installs from the public registries only"
-        if re.search(r"(?m)^\s*(resolution|source)\s*[:=]\s*\{?[^\n]*\b(git|path|directory|file|url)\b\s*[:=]", after) or "git+" in after:
-            return f"{path}: names a git, path or file source; a chore/ branch installs from the public registries only"
+        if why := lockfile_offence(name, after):
+            return f"{path}: {why}"
         return None
     if re.match(r"requirements[^/]*\.(txt|lock)$", name):
         # red-team round three: a requirements file is executed by `pip install -r`, so an option line
@@ -1747,7 +1799,11 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
             if wrote := writes_gate_file(everything):
                 return [f"{path}: `{wrote}` writes to or replaces a gate file; the workflows read the gate's files, "
                         "never write them"], None
-            if inline := re.search(r"(?m)^\s*(python3?|node|perl|ruby|sh|bash)\s+(-c|-e|-)\s|(^|[;&|{(]\s*)(eval|source|\.|shopt)\s"
+            if inline := re.search(r"(?m)^\s*(python3?|node|perl|ruby|sh|bash)\s+(-c\b|-e\b|-(?=\s|$|<)|/dev/stdin\b)|^\s*(python3?|node|perl|ruby|sh|bash)\b(\s+-\S*)*\s*<"
+                                   # (round seven: an interpreter fed from stdin (`python3 <<EOF`, `python3 -<<EOF`, `/dev/stdin`) runs inline code;
+                                   # `git --output=` truncates the file it names; pip installs the tree or from an index given as an argument)
+                                   r"|\bgit\s+[^\n|;&]*--output[=\s]|\bpip3?\s+install\b[^\n|;&]*(\s-e\s|\s\.\s|\s\.$|--index-url|--extra-index-url|--find-links|-f\s|-i\s)"
+                                   r"|(^|[;&|{(]\s*)(eval|source|\.|shopt)\s"
                                    r"|(^|[;&|{(]\s*)(tar|bsdtar|unzip|zip|7za?|unrar|cpio|pax|xargs)\s|python3?\s+-m\s+(?!pip\b|pytest\b|py_compile\b)\S+"
                                    # (round four: `{cp,a,b}` expands to a command; `$'cp'` spells one the model does not read)
                                    r"|\{[^\s{}$]*,[^\s{}]*\}|\$['\"]"
@@ -1758,7 +1814,8 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                 # or a `python3 -m zipfile` replaces a gate file without naming it)
                 return [f"{path}: runs inline code (`{inline.group(0).strip()}`); the gate's workflows run scripts "
                         "from the tree only, never eval, source or shopt, never extract archives, and run no "
-                        "module but pip, pytest and py_compile; xargs builds a command from its input; git only reads"], None
+                        "module but pip, pytest and py_compile; xargs builds a command from its input; git only reads, never "
+                        "with --output; an interpreter never reads its program from stdin; pip installs named packages from the default index"], None
             if shadow := shadowed_executable(body):
                 return [f"{path}: defines `{shadow}` as a shell function or alias; the gate's commands run the "
                         "real executables"], None
