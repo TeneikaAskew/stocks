@@ -337,10 +337,13 @@ use_existing_pr_head() {
 # Name the base explicitly: without it the branch forks from whatever is
 # checked out, so an unrelated feature branch's commits ride into the PR, or
 # the branch starts behind main. `git fetch` above does not move HEAD.
+# fix/<feat-id>-<slug>: the spec gate reads the FEAT-ID from the branch name and
+# refuses anything else, so the capability this issue belongs to (from
+# docs/product/02-FEATURE-CATALOG.md, chosen during intake) is part of the name.
 start_new_branch() {
   clean_worktree || return 1     # same gate as CASE A; both checkouts, not one
   sync_refs || return 1
-  git checkout -b fix/<short-description> origin/main \
+  git checkout -b fix/<feat-id>-<slug> origin/main \
     || { echo "CANNOT CREATE the branch — stop, do not edit"; return 1; }
 }
 

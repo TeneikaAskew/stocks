@@ -82,6 +82,8 @@ GATE_FILES = (
     "tests/scripts/test_spec_gate.py",
     "tests/scripts/test_export_model_registry.py",
 )
+# Every branch a pull request may come from; spike/ is refused before this in PR mode.
+PR_BRANCH_PREFIXES = ("feature/", "fix/", "docs/", "chore/", "bot/superpowers-")
 # The files the gate runs from: no change may delete one, whatever its branch, or the
 # base's copy judges the deletion green and every later PR runs without a gate.
 GATE_ENTRYPOINTS = (
@@ -398,6 +400,11 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                 "retiring the gate is a decision taken on main, not in a branch"], None
     gated = [f for f in ch.changed if not is_documentation(f)]
     if not gated:
+        # Documentation alone is exempt from the trace, not from the branch rule: a PR
+        # still comes from a delivery branch, so `main` or `typo` is not a way in.
+        if ch.mode == "pr" and not ch.branch.startswith(PR_BRANCH_PREFIXES):
+            return [f"branch '{ch.branch}' is not a delivery branch; a pull request comes from feature/<feat-id>-<slug>, "
+                    "fix/<feat-id>-<slug>, docs/<slug>, chore/<slug> or bot/superpowers-<tag>, documentation included"], None
         return [], None
     if ch.mode == "commit" and ch.branch == "HEAD":
         return [
@@ -491,6 +498,7 @@ def visible(body: str) -> str:
     """The PR body as it renders: HTML comments and fenced code blocks removed, so a
     checkbox inside the template's comments or a code example is not a checkbox."""
     body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
+    body = re.sub(r"<!--.*\Z", "", body, flags=re.S)   # an unclosed comment runs to the end, as GitHub renders it
     # A fence opens with 3+ backticks or tildes after up to three spaces and closes with a
     # fence of the same character at least as long; an unclosed fence runs to the end.
     # (`{3,} and ~{3,} separately: a closer mixing the two characters does not close a
@@ -682,6 +690,11 @@ def feat_span(text: str, feat_id: str) -> set[int]:
     return span
 
 
+def feat_headings(text: str, feat_id: str) -> int:
+    """How many headings name the FEAT: one record, one heading."""
+    return sum(1 for line in text.splitlines() if HEADING.match(line) and feat_id in line)
+
+
 def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) -> list[str]:
     """CI only: a feature change edits its own catalog record and traceability section, and
     nothing else's. The requirements document changes on its own docs/ branch. Runs on a
@@ -692,7 +705,13 @@ def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) ->
             errs.append(f"{path} changes in this feature change; requirements change on their own docs/ branch, "
                         "before the work that cites them")
         elif path in (CATALOG, TRACEABILITY):
-            spans = {"-": feat_span(Tree(merge_base).read(path) or "", feat_id), "+": feat_span(ch.tree.read(path) or "", feat_id)}
+            before_text, after_text = Tree(merge_base).read(path) or "", ch.tree.read(path) or ""
+            had, has = feat_headings(before_text, feat_id), feat_headings(after_text, feat_id)
+            if had and has > had:
+                errs.append(f"{path}: adds a second heading for {feat_id}; a capability has one record, "
+                            "so extend the existing section rather than opening another")
+                continue
+            spans = {"-": feat_span(before_text, feat_id), "+": feat_span(after_text, feat_id)}
             # A line is outside the FEAT's scope when it sits outside its span, or names
             # another FEAT-ID: an added heading naming this FEAT cannot widen the span
             # over another capability's row or record.

@@ -193,6 +193,45 @@ def test_a_registry_without_model_rows_fails_closed(repo):
     assert r.returncode != 0 and "does not recognize" in r.stdout + r.stderr, r.stdout + r.stderr
 
 
+def test_scheduler_models_come_from_the_serves_column(repo):
+    """stocks#1205 r4119162194 (export_model_registry.py:258).
+
+    Model IDs were read from the last cell, so a column added after Serves would
+    empty every scheduler's model list and --check would call the result current.
+    """
+    plain = exported(repo)["schedulers"]
+    lines, in_schedulers = [], False
+    for line in REGISTRY_TEXT.splitlines():
+        if line.startswith("## "):
+            in_schedulers = line.startswith("## Scheduled surfaces")
+        if in_schedulers and line.startswith("| Scheduler |"):
+            line += " Notes |"
+        elif in_schedulers and line.startswith("|---|"):
+            line += "---|"
+        elif in_schedulers and line.startswith("| `"):
+            line += " a note |"
+        lines.append(line)
+    write(repo, REGISTRY, "\n".join(lines) + "\n")
+    with_notes = exported(repo)["schedulers"]
+    assert [s["models"] for s in with_notes] == [s["models"] for s in plain], with_notes
+    assert any(s["models"] for s in with_notes)
+
+
+def test_a_traceability_row_names_a_registered_model(repo):
+    """stocks#1205 r4119162216 (export_model_registry.py:241).
+
+    A misspelled model ID in the experiment-traceability table exported as an
+    orphan row that canvases.yml never looks up, so the real model's card lost
+    its experiment data silently. Generation and --check fail on it.
+    """
+    exported(repo)
+    before = (repo / OUT).read_text(encoding="utf-8")
+    write(repo, REGISTRY, REGISTRY_TEXT + "\n## Experiment traceability\n\n| Model | Experiment |\n|---|---|\n| MODEL-MAG-010 | E-01 |\n")
+    r = export(repo)
+    assert r.returncode != 0 and "MODEL-MAG-010" in r.stdout + r.stderr, r.stdout + r.stderr
+    assert (repo / OUT).read_text(encoding="utf-8") == before
+
+
 def test_hidden_comments_do_not_reach_exported_cells(repo):
     """stocks#1205 r4118890024 (export_model_registry.py:94).
 

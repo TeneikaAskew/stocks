@@ -254,7 +254,10 @@ def build(src: Source) -> dict:
                 for fid in ids:
                     target.setdefault(fid, rec)
             elif h0 == "scheduler" and "serves" in " ".join(header).lower():
-                rec["models"] = sorted(set(re.findall(r"MODEL-[A-Z0-9-]+", clean(raw[-1]))))
+                # From the Serves column itself, not the last cell: a column added after it
+                # would otherwise silently empty every scheduler's model list.
+                serves = next(cell for h, cell in zip(header, raw) if "serves" in h.lower())
+                rec["models"] = sorted(set(re.findall(r"MODEL-[A-Z0-9-]+", clean(serves))))
                 out["schedulers"].append(rec)
             elif h0 == "scheduler":
                 out["excluded_schedulers"].append(rec)
@@ -262,6 +265,12 @@ def build(src: Source) -> dict:
                 unrouted.append(f"{first} under '{section}' (columns: {', '.join(header)})")
     for fid, rec in grouped.items():
         out["dispositions"].setdefault(fid, rec)
+    orphans = sorted(set(out["experiment_traceability"]) - set(out["models"]))
+    if orphans:
+        # canvases.yml looks experiment fields up under the model's ID, so a misspelled
+        # traceability key drops that card's experiment data without any other symptom.
+        raise SystemExit(f"{REGISTRY}: experiment traceability names model(s) not in the registry: "
+                         f"{', '.join(orphans)}; fix the ID rather than exporting an orphan row")
     if unrouted or not out["models"]:
         # A renamed `ID` header or a dropped section would otherwise export a partial or
         # empty models object, --check would call it current, and the canvas would

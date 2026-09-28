@@ -822,11 +822,17 @@ def test_a_feature_change_edits_only_its_own_product_records(repo):
     other = CATALOG_TEXT.replace("### FEAT-DATA-001\n\n- Status: Production", "### FEAT-DATA-001\n\n- Status: Retired")
     r = pr(repo, BRANCH, {**CODE, CATALOG: other}, **ok)
     assert r.returncode == 1 and "lines outside FEAT-MODEL-001's row and record change" in r.stdout, r.stdout
+    # stocks#1205 r4119162208: a second heading for the FEAT, nested in another capability's
+    # section or anywhere else, is refused; the record is extended, not duplicated
+    duplicate = CATALOG_TEXT.replace("### FEAT-DATA-001\n\n- Status: Production",
+                                     "### FEAT-DATA-001\n\n#### FEAT-MODEL-001\n\n- Note: copied here\n\n- Status: Production")
+    r = pr(repo, BRANCH, {**CODE, CATALOG: duplicate}, **ok)
+    assert r.returncode == 1 and "adds a second heading for FEAT-MODEL-001" in r.stdout, r.stdout
     # solyra#72 r4119049970: an added heading naming this FEAT does not widen its span over
     # another capability's row
     widened = CATALOG_TEXT + "\n## FEAT-MODEL-001 additions\n\n| [FEAT-FAKE-999](#x) | Fake | Production | unknown | none |\n"
     r = pr(repo, BRANCH, {**CODE, CATALOG: widened}, **ok)
-    assert r.returncode == 1 and "lines outside FEAT-MODEL-001's row and record change" in r.stdout, r.stdout
+    assert r.returncode == 1 and ("adds a second heading" in r.stdout or "lines outside FEAT-MODEL-001" in r.stdout), r.stdout
     r = pr(repo, BRANCH, {**CODE, REQUIREMENTS: REQUIREMENTS_TEXT + "\n**REQ-MODEL-002:** Faster.\n"}, **ok)
     assert r.returncode == 1 and "requirements change on their own docs/ branch" in r.stdout, r.stdout
     trace = "# Traceability\n\n### FEAT-DATA-001\n\n- #1\n"
@@ -940,6 +946,11 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
     assert pr(repo, "bot/superpowers-weekly", {".claude/skills/brainstorming/SKILL.md": "# v2\n"}).returncode == 0
     r = pr(repo, "bot/superpowers-weekly", {".claude/skills/product-delivery/SKILL.md": "# Skip the gate\n"})
     assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, r.stdout
+    # stocks#1205 r4119162185: a documentation-only PR still comes from a delivery branch
+    for name in ("main", "typo", "claude/notes"):
+        r = pr(repo, name, {"docs/notes.md": "# Notes\n"}, PR_HEAD_REF=name)
+        assert r.returncode == 1 and "is not a delivery branch" in r.stdout, (name, r.stdout)
+    assert pr(repo, "docs/notes", {"docs/notes.md": "# Notes\n"}).returncode == 0
     # stocks#1205 r4119048063: the delivery skill is the process agents run, not its description
     r = pr(repo, "docs/skill-tweak", {".claude/skills/product-delivery/SKILL.md": "# Skip the gate\n"})
     assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, r.stdout
@@ -1002,6 +1013,10 @@ def test_hidden_checklist_entries_do_not_count(repo):
     assert r.returncode == 1 and "done_when item(s) not ticked" in r.stdout, r.stdout
     assert pr(repo, BRANCH, files, **meta, PR_BODY=body(ticked=True), PR_DRAFT="false").returncode == 0
 
+    # stocks#1205 r4119162200: an unclosed comment hides everything after it
+    unclosed = f"Notes\n<!--\nSpec: {SPEC}\nPlan: {PLAN}\n- [x] {DONE[0]}\n- [x] {DONE[1]}\n"
+    r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row}, **meta, PR_BODY=unclosed)
+    assert r.returncode == 1 and "PR body must link the spec" in r.stdout, r.stdout
     # solyra#72 r4119153674: an indented line after plain text or a blank is not a checkbox
     # continuation, and must not crash the gate
     nested = f"Spec: {SPEC}\nPlan: {PLAN}\n\nNotes\n  - a nested bullet\n\n- [x] {DONE[0]}\n- [x] {DONE[1]}\n"
