@@ -1935,7 +1935,7 @@ def test_the_invoked_command_is_the_contract_and_policy_files_keep_their_schema(
     r = pr(repo, "chore/gate-hook", {".githooks/pre-commit": "#!/bin/sh\npython3 -c 'pass' python3 scripts/gate/spec_gate.py --commit\n"}, **cap)
     assert r.returncode == 1 and ("no longer runs `scripts/gate/spec_gate.py --commit`" in r.stdout or "is not one the hook may carry" in r.stdout), r.stdout
     url = "https://claude.ai/artifact/DDDD"
-    good = f"canvases:\n  - name: Data\n    url: {url}\n    repo: t/t\n    source_json: x.json\n"
+    good = f"canvases:\n  - name: Data\n    url: {url}\n    repo: t/t\n    source_json: x.json\n    boards: []\n"
     on_base(repo, {"docs/product/canvases.yml": good})
     for bad, msg in ((good.replace("canvases:\n", ""), "one top-level `canvases:` list"),
                      (good + "    mode: maybe\n", "mode 'maybe' is not one of refresh | report-only"),
@@ -1943,7 +1943,7 @@ def test_the_invoked_command_is_the_contract_and_policy_files_keep_their_schema(
                      (good + "boards: []\n", "one top-level `canvases:` list")):
         r = pr(repo, "docs/canvases", {"docs/product/canvases.yml": bad})
         assert r.returncode == 1 and msg in r.stdout, (bad, r.stdout)
-    assert pr(repo, "docs/canvases", {"docs/product/canvases.yml": good + "    mode: report-only\n"}).returncode == 0
+    assert pr(repo, "docs/canvases", {"docs/product/canvases.yml": good + "    mode: report-only\n    source_docs:\n      - a.md\n"}).returncode == 0
 
 
 def test_unreachable_commands_duplicate_fields_and_pruned_lineage_are_refused(repo):
@@ -2001,7 +2001,7 @@ def test_backgrounded_commands_prs_on_landing_plans_and_pruned_rows_are_refused(
     assert r.returncode == 1 and "no longer executes" in r.stdout, r.stdout
     assert pr(repo, "chore/gate-workflow", {wf: head.replace("{BODY}", "".join(f"          {c} 2>&1\n" for c in cmds))}, **cap).returncode == 0
     url = "https://claude.ai/artifact/EEEE"
-    entry = f"  - name: {{N}}\n    url: {url}\n    repo: t/t\n    source_json: x.json\n"
+    entry = f"  - name: {{N}}\n    url: {url}\n    repo: t/t\n    source_json: x.json\n    boards: []\n"
     on_base(repo, {"docs/product/canvases.yml": "canvases:\n" + entry.replace("{N}", "One")})
     r = pr(repo, "docs/canvases", {"docs/product/canvases.yml": "canvases:\n" + entry.replace("{N}", "One") + entry.replace("{N}", "Two")})
     assert r.returncode == 1 and f"{url} is listed twice" in r.stdout, r.stdout
@@ -2164,7 +2164,8 @@ def test_gate_inputs_shells_hooks_and_canvases_are_judged_where_they_act(repo):
                  f"canvases:\n  - name: A\n    url: {url_a}\n    mode: manual\n"):
         r = pr(repo, "docs/canvases", {canvases: text})
         assert r.returncode == 1 and ("names 2 url field(s)" in r.stdout or "names 0 url field(s)" in r.stdout or "not one of" in r.stdout), (text, r.stdout)
-    good = f"canvases:\n  - name: A\n    url: {url_a}\n    boards:\n      - file: x.html\n        key: id\n  - name: B\n    url: {url_b}\n    mode: report-only\n"
+    good = (f"canvases:\n  - name: A\n    url: {url_a}\n    repo: t/t\n    source_json: x.json\n    boards:\n      - file: x.html\n        key: id\n"
+            f"  - name: B\n    url: {url_b}\n    repo: t/t\n    mode: report-only\n    source_docs:\n      - a.md\n")
     assert pr(repo, "docs/canvases", {canvases: good}).returncode == 0
 
 
@@ -2624,8 +2625,8 @@ def test_hook_grammar_supersedes_paths_catalog_shape_and_documentation_edges(rep
     r = pr(repo, "docs/catalog", {CATALOG: CATALOG_TEXT.replace("### FEAT-MODEL-001", "## FEAT-MODEL-001", 1)})
     assert r.returncode == 1 and "changes the level of the FEAT-MODEL-001 heading" in r.stdout, r.stdout
     url = "https://claude.ai/artifact/AAAA"
-    on_base(repo, {"docs/product/canvases.yml": f"canvases:\n  - name: A\n    url: {url}\n    boards:\n      - file: x.html\n"})
-    nested = f"canvases:\n  - name: A\n    url: {url}\n    boards:\n      - file: x.html\n        mode: report-only\n"
+    on_base(repo, {"docs/product/canvases.yml": f"canvases:\n  - name: A\n    url: {url}\n    repo: t/t\n    source_json: x.json\n    boards:\n      - file: x.html\n"})
+    nested = f"canvases:\n  - name: A\n    url: {url}\n    repo: t/t\n    source_json: x.json\n    boards:\n      - file: x.html\n        mode: report-only\n"
     assert pr(repo, "docs/canvases", {"docs/product/canvases.yml": nested}).returncode == 0
     r = gate(repo, "--pr", _git(repo, "rev-parse", "base"), _git(repo, "rev-parse", "HEAD"), PR_HEAD_REF="docs/canvases")
     assert r.returncode == 0   # and the mode read for the canvas stays the entry's default
@@ -3152,3 +3153,44 @@ def test_backslash_parity_unknown_needs_and_grouped_dispositions_are_the_contrac
     assert r.returncode == 1 and "is not a job of the workflow" in r.stdout, r.stdout
     r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  gate:\n    runs-on: ubuntu-latest\n", "  gate:\n    needs: base-suite\n    runs-on: ubuntu-latest\n", 1)}, **cap)
     assert r.returncode == 1 and "no cycle" in r.stdout, r.stdout
+
+
+def test_truthy_calls_decorators_yaml_skill_names_canvas_fields_manifest_scripts_and_rendered_status(repo):
+    """solyra#72 r4127652787 (P1), r4127734204 (P1), r4127652792 (P1), r4127652810 (P2), r4127652804 (P1),
+    r4127734236 (P2), r4127734225 (P2) (spec_gate.py:636, :626, :1568, :2491, :1058, :2402, :2809).
+
+    `assert object()` was a meaningful call; a decorator could hand pytest an empty function; `name: >-`
+    hid the local skill name; a canvas entry could lose its refresh inputs; a `package.json` script edit
+    needed no FEAT-CICD-001; `Volume: see issue 42` carried a number; `_unknown_` was not `unknown`.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    suite = "tests/scripts/test_spec_gate.py"
+    on_base(repo, {suite: "def test_a():\n    r = run()\n    assert r.returncode == 0\n"})
+    for bad in ("def test_a():\n    assert object()\n", "def neutralize(f):\n    return lambda: None\n\n\n@neutralize\ndef test_a():\n    r = run()\n    assert r.returncode == 0\n",
+                "def test_a():\n    r = run()\n    assert r.returncode == 0\n\n\ntest_a = lambda: None\n"):
+        r = pr(repo, "chore/gate-suite", {suite: bad}, **cap)
+        assert r.returncode == 1 and ("cannot fail" in r.stdout or "decorated" in r.stdout or "rebound" in r.stdout), (bad, r.stdout)
+    for name in ("name: >-\n  product-delivery\n", 'name: "product-\\u0064elivery"\n'):
+        r = pr(repo, "bot/superpowers-x", {".claude/skills/vendored/SKILL.md": f"---\n{name}---\n# x\n"})
+        assert r.returncode == 1, (name, r.stdout)
+    assert pr(repo, "bot/superpowers-x", {".claude/skills/vendored/SKILL.md": "---\nname: >-\n  vendored-skill\n---\n# x\n"}).returncode == 0
+    full = ("canvases:\n  - name: Models\n    url: https://claude.ai/artifact/AAAA\n    repo: t/t\n    source_json: x.json\n    boards: []\n"
+            "  - name: Architecture\n    url: https://claude.ai/artifact/BBBB\n    repo: t/t\n    mode: report-only\n    source_json: null\n    source_docs:\n      - a.md\n")
+    on_base(repo, {"docs/product/canvases.yml": full})
+    for cut in ("    source_json: x.json\n", "    boards: []\n", "    source_docs:\n      - a.md\n"):
+        r = pr(repo, "docs/canvases", {"docs/product/canvases.yml": full.replace(cut, "", 1)})
+        assert r.returncode == 1 and "lacks" in r.stdout, (cut, r.stdout)
+    assert pr(repo, "docs/canvases", {"docs/product/canvases.yml": full + "  - name: Third\n    url: https://claude.ai/artifact/CCCC\n    repo: t/t\n    source_json: y.json\n    boards: []\n"}).returncode == 0
+    title = {"PR_TITLE": "FEAT-MODEL-001: x"}
+    job = {**CODE, "gcp/model_job.py": "print('run')\n"}
+    cicd_row = CATALOG_TEXT.replace("| [FEAT-DATA-001]", "| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]", 1)
+    on_base(repo, {CATALOG: cicd_row, "package.json": '{"name": "x", "scripts": {"test": "vitest"}, "dependencies": {"a": "^1.0.0"}}\n'})
+    r = pr(repo, BRANCH, {**job, "package.json": '{"name": "x", "scripts": {"test": "true"}, "dependencies": {"a": "^1.0.0"}}\n'}, **title,
+           PR_BODY=body() + "\n\n## Capacity\nn/a: x\n")
+    assert r.returncode == 1 and "belong to FEAT-CICD-001" in r.stdout, r.stdout
+    prose = body() + "\n\n## Capacity\nVolume: see issue 42 · Velocity: see issue 42 · Wall-clock: see issue 42 · $/run × runs/day × 30: see issue 42\n"
+    r = pr(repo, BRANCH, job, **title, PR_BODY=prose)
+    assert r.returncode == 1 and "gives no number for Volume, Velocity, Wall-clock, 30" in r.stdout, r.stdout
+    sys.path.insert(0, str(REPO / "scripts/gate"))
+    import spec_gate
+    assert spec_gate.plain_text("_unknown_") == "unknown" and spec_gate.plain_text("[unknown](https://x)") == "unknown"

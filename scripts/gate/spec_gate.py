@@ -629,7 +629,17 @@ def suite_escape(source: str) -> str | None:
             # assertion tests something the test computed, never a constant or `... or True`
             if any(vacuous(n.test) for n in ast.walk(node) if isinstance(n, ast.Assert)):
                 return f"{node.name}: an assertion that cannot fail"
+            # solyra#72 r4127734204: a decorator can hand pytest an empty function under the retained name
+            if node.decorator_list:
+                return f"{node.name}: decorated"
+        if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(t, ast.Name) and t.id.startswith("test_") for t in targets):
+                return "a test name rebound"
     return None
+
+
+TRUTHY_CALLS = frozenset(("object", "type", "id", "repr", "hex", "oct", "bin", "ascii", "format", "str", "chr", "hash", "iter"))
 
 
 def vacuous(test: ast.expr) -> bool:
@@ -637,8 +647,16 @@ def vacuous(test: ast.expr) -> bool:
     or an `or` with a constant operand (`assert x or True`): it passes whatever the gate does."""
     if not any(isinstance(n, (ast.Name, ast.Attribute, ast.Call, ast.Subscript)) for n in ast.walk(test)):
         return True
-    return any(isinstance(n, ast.BoolOp) and isinstance(n.op, ast.Or) and any(isinstance(v, ast.Constant) and v.value for v in n.values)
-               for n in ast.walk(test))
+    def truthy(e: ast.expr) -> bool:
+        # solyra#72 r4127652787: `assert object()` is a call and never false; nor a lambda or a non-empty display
+        if isinstance(e, ast.Call) and isinstance(e.func, ast.Name) and e.func.id in TRUTHY_CALLS:
+            return True
+        if isinstance(e, ast.Lambda) or (isinstance(e, (ast.List, ast.Tuple, ast.Set)) and e.elts) or (isinstance(e, ast.Dict) and e.keys):
+            return True
+        return isinstance(e, ast.Constant) and bool(e.value)
+    if truthy(test):
+        return True
+    return any(isinstance(n, ast.BoolOp) and isinstance(n.op, ast.Or) and any(truthy(v) for v in n.values) for n in ast.walk(test))
 
 
 def test_assertions(source: str) -> dict[str, int]:
@@ -1568,7 +1586,19 @@ def shadows_local_skill(path: str, ch: "Change") -> bool:
     if not path.endswith("SKILL.md") or not (m := re.search(r"(?m)^name:\s*(.*)$", text)):
         return False
     value = re.sub(r"^(!!\w+\s*|&\w+\s*)+", "", re.sub(r"\s+#.*$", "", m.group(1)).strip()).strip("'\"").lower()   # (round seven: as YAML reads it)
-    return value in local
+    if value in local:
+        return True
+    # solyra#72 r4127652792: `name: >-` with the name on the next line, or `"product-\u0064elivery"`, is the
+    # local name to YAML; read the frontmatter as YAML, and refuse a name that cannot be read
+    if (fm := re.match(r"^---\n(.*?)\n---", text, re.S)) and re.search(r"(?m)^name:\s*(['\"].*\\|[>|]|\S+\s*$)", text):
+        try:
+            import yaml
+            data = yaml.safe_load(fm.group(1))
+            yaml_name = str(data.get("name", "")).strip().lower() if isinstance(data, dict) else ""
+        except Exception:
+            return True
+        return yaml_name in local or ("\n" in str(data.get("name", "")) if isinstance(data, dict) else False)
+    return False
 
 
 ALLOWANCES = (
@@ -2406,8 +2436,11 @@ def check_capacity(body: str | None, changed: list[str]) -> list[str]:
         stop = min(line_end if line_end >= 0 else len(text), marks[k + 1].start() if k + 1 < len(marks) else len(text))
         return text[m.end():stop]
     # a figure anywhere on the line, or a number word; `#1205` is a reference, not a measure (round eight)
-    figure = re.compile(r"(?<![#\w])(?!(?:19|20)\d{2}\b)\d|\b(one|two|three|four|five|six|seven|eight|nine|ten|dozen|hundred|thousand|million)\b", re.I)   # a bare year is a date, not a measure
-    unnumbered = sorted({m.group(1) for k, m in enumerate(marks) if not figure.search(value_of(k, m))}, key=CAPACITY_LABELS.index)
+    # solyra#72 r4127734236: the value BEGINS with its measure (`3 tickers`, `~2 s`, `$0.01`, `<1 GB`, `one query`),
+    # so `see issue 42` gives no number; a bare year is a date, not a measure
+    figure = re.compile(r"^\s*(?:about|approx\.?|roughly|up to|under|over|at most|at least)?\s*[~≈<>≤≥$€£+-]*\s*"
+                        r"(?:(?!(?:19|20)\d{2}\b)\d|(one|two|three|four|five|six|seven|eight|nine|ten|dozen|hundred|thousand|million)\b)", re.I)
+    unnumbered = sorted({m.group(1) for k, m in enumerate(marks) if not figure.match(value_of(k, m))}, key=CAPACITY_LABELS.index)
     if unnumbered:
         return ["PR body's Capacity section gives no number for " + ", ".join(unnumbered) + "; each value starts "
                 "with its figure (rows, calls, seconds, dollars), or the section says 'n/a: <why no workload runs differently>'"]
@@ -2514,6 +2547,13 @@ def validate_canvases(text: str) -> list[str]:
             errs.append(f"{CANVASES}: canvas {label!r} names {len(entry_urls)} url field(s) at its own level; "
                         "every canvas names its url, exactly one")
         urls += entry_urls
+        # solyra#72 r4127652810: the refresh skill reads repo, source_json and boards for a refresh canvas,
+        # and repo and source_docs for a report-only one; an entry missing them cannot be refreshed
+        keys = {m.group(1): m.group(2).split("#")[0].strip() for ln in fields if (m := re.match(r"^\s{0,4}([\w-]+):\s*(.*)$", ln))}
+        mode = keys.get("mode", "refresh").strip("'\"")
+        needed = ("repo", "source_docs") if mode == "report-only" else ("repo", "source_json", "boards")
+        if missing := [k for k in needed if k not in keys or (k == "source_json" and keys[k] in ("null", "~", ""))]:
+            errs.append(f"{CANVASES}: canvas {label!r} ({mode}) lacks {', '.join(missing)}; the refresh skill reads them")
         for ln in fields:
             if (m := re.match(r"^\s{4}mode:\s*(\S+)", ln)) and m.group(1) not in CANVAS_MODES:
                 errs.append(f"{CANVASES}: canvas {label!r}: mode {m.group(1)!r} is not one of {' | '.join(CANVAS_MODES)}")
@@ -2694,6 +2734,13 @@ def check_plan_pr(t: Traced, env: dict, ready: bool) -> list[str]:
     return []
 
 
+def plain_text(cell: str) -> str:
+    """A cell as GitHub shows it: links to their text, emphasis, code and strike markers removed."""
+    out = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", cell)
+    out = re.sub(r"<[^>]+>", "", out)
+    return out.strip().strip("*_`~ ").strip()
+
+
 def cells(line: str) -> list[str]:
     """The cells of a table row: a pipe after an odd number of backslashes is content, after an
     even number a delimiter, as GitHub renders it (solyra#72 r4127523253, stocks#1205 r4127686872)."""
@@ -2833,7 +2880,7 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
     if twice := repeated_fields(ch.tree.read(CATALOG), t.feat_id):
         errs.append(f"{CATALOG}: the {t.feat_id} record carries {', '.join(twice)} more than once; each close-out "
                     "field has one row")
-    reviewed, status = now.get("Last reviewed", ""), fold_text(now.get("Status", "")).strip("* ")
+    reviewed, status = now.get("Last reviewed", ""), plain_text(fold_text(now.get("Status", "")))   # solyra#72 r4127734225: `_unknown_`, `[unknown](x)` read as the word
     if re.search(r"~~|<(s|del|strike)\b", now.get("Status", ""), re.I):
         # round six: `~~Production~~` renders struck through and read as the plain word
         errs.append(f"{CATALOG}: the {t.feat_id} Status is struck through; set it or remove it")
@@ -2979,7 +3026,11 @@ def run(argv: list[str]) -> int:
             errs += check_product_scope(m.group(2).upper(), ch, merge_base, head)
         # The checks below read the traced plan and spec; without them the errors from
         # check() already say what is missing.
-        if traced and (owned := [f for f in ch.changed if is_process_file(f)]) \
+        # solyra#72 r4127652804: the scripts CI runs from package.json or pyproject.toml are delivery process too
+        manifest_edit = lambda f: f.rsplit("/", 1)[-1] in ("package.json", "pyproject.toml", "Makefile") and \
+            (f.endswith("Makefile") or (ch.base.read(f) is not None and ch.tree.read(f) is not None
+                                        and non_dependency_edit(f, ch.base.read(f), ch.tree.read(f)) is not None))
+        if traced and (owned := [f for f in ch.changed if is_process_file(f) or manifest_edit(f)]) \
                 and traced.feat_id != WORKFLOW_FEAT and WORKFLOW_FEAT in catalog_ids(ch.base.read(CATALOG)):
             errs.append(f"process change(s) ({summarize(owned)}) belong to {WORKFLOW_FEAT}, not {traced.feat_id}; "
                         "CI configuration, the gate and the agent instructions are that capability's work")
