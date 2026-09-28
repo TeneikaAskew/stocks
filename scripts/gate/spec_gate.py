@@ -130,7 +130,7 @@ def catalog_ids(text: str | None) -> set[str]:
     return set(FEAT_ROW.findall(visible(text or "")))
 
 
-LICENSE_FILE = re.compile(r"^(LICENSE|LICENCE|COPYING)([-.][A-Za-z0-9.-]*)?(\.(md|txt|rst))?$")
+LICENSE_FILE = re.compile(r"^(LICENSE|LICENCE|COPYING)(-[A-Za-z0-9]+)*(\.(md|txt|rst))?$")
 WORKFLOWS = ".github/workflows/"
 
 
@@ -139,7 +139,7 @@ def is_documentation(path: str) -> bool:
     if path.startswith(WORKFLOWS) and not name.endswith(".md"):
         return False   # a workflow is executable configuration whatever its name
     return (path.startswith("docs/") or path.endswith((".md", ".drawio"))
-            or bool(LICENSE_FILE.match(name) and not name.endswith((".yml", ".yaml", ".json", ".py", ".sh")))
+            or bool(LICENSE_FILE.match(name))
             or path == ".gitignore")
 
 
@@ -202,7 +202,15 @@ def frontmatter(text: str | None) -> dict:
     return fm
 
 
-def validate_spec(fm: dict, name: str, catalog: set[str], req_defs: set[str]) -> list[str]:
+def requirement_defs(tree: "Tree") -> set[str] | None:
+    """The REQ-IDs the requirements registry defines; None where the repository has
+    no registry (solyra), so req_ids are checked for shape only. A registry that
+    exists but defines nothing fails closed rather than passing every ID."""
+    text = tree.read(REQUIREMENTS)
+    return None if text is None else set(REQ_DEFINITION.findall(text))
+
+
+def validate_spec(fm: dict, name: str, catalog: set[str], req_defs: set[str] | None) -> list[str]:
     errs = [f"{name}: missing frontmatter key '{k}'" for k in REQUIRED_SPEC_KEYS if k not in fm]
     if "feat_id" in fm and not isinstance(fm["feat_id"], str):
         errs.append(f"{name}: feat_id must be one FEAT-ID, not a list")
@@ -220,10 +228,13 @@ def validate_spec(fm: dict, name: str, catalog: set[str], req_defs: set[str]) ->
             errs.append(f"{name}: req_ids must be a non-empty list of REQ-IDs")
         else:
             bad = [r for r in reqs if not REQ_SHAPE.match(r)]
-            unknown = [r for r in reqs if REQ_SHAPE.match(r) and req_defs and r not in req_defs]
+            unknown = [r for r in reqs if REQ_SHAPE.match(r) and req_defs is not None and r not in req_defs]
             if bad:
                 errs.append(f"{name}: req_ids not shaped REQ-XXX-000: {', '.join(bad)}")
-            if unknown:
+            if req_defs is not None and not req_defs:
+                errs.append(f"{name}: {REQUIREMENTS} defines no REQ-IDs (**REQ-XXX-000:** lines), "
+                            "so req_ids cannot be checked; restore the registry")
+            elif unknown:
                 errs.append(f"{name}: req_ids not defined in {REQUIREMENTS}: {', '.join(unknown)}")
     for key in ("issues", "canvases"):
         if key in fm and fm[key] is not None and not isinstance(fm[key], list):
@@ -421,8 +432,7 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
              and nfm.get("status") == "approved" and nfm.get("feat_id") == feat_id]
     if newer:
         errs.append(f"{spec_path} is superseded by {', '.join(newer)}; point the plan at the current spec")
-    req_defs = set(REQ_DEFINITION.findall(ch.base.read(REQUIREMENTS) or ""))
-    errs += validate_spec(spec_fm, spec_path, catalog, req_defs)
+    errs += validate_spec(spec_fm, spec_path, catalog, requirement_defs(ch.base))
     return errs, Traced(feat_id, spec_path, spec_fm, plan_path, plan_fm)
 
 
@@ -663,8 +673,9 @@ def row_fields(text: str, feat_id: str) -> dict[str, str]:
 
 def feat_fields(text: str | None, feat_id: str) -> dict[str, str]:
     """The FEAT's Status and Last reviewed: from its record's field table where the
-    record has one (stocks), otherwise from its catalog row's columns (solyra)."""
-    text = text or ""
+    record has one (stocks), otherwise from its catalog row's columns (solyra).
+    Read as rendered: a row inside an HTML comment or a code block is not a field."""
+    text = visible(text or "")
     lines = text.splitlines()
     fields = {}
     for ln in section_of(text, feat_id):
@@ -738,7 +749,7 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
             errs.append(f"{TRACEABILITY}: add this PR (#{n}) to the {t.feat_id} section's PR lineage "
                         "(a `**PR lineage:**` line or a list item; a comment or prose mention does not count)")
     else:
-        prs = row_fields(ch.tree.read(CATALOG) or "", t.feat_id).get("PRs", "")
+        prs = row_fields(visible(ch.tree.read(CATALOG) or ""), t.feat_id).get("PRs", "")
         if not pr_ref.search(prs):
             errs.append(f"{CATALOG}: add this PR (#{n}) to the {t.feat_id} row's PRs column (it reads '{prs or 'nothing'}')")
     return errs
@@ -782,8 +793,7 @@ def run(argv: list[str]) -> int:
         tree = Tree(WORKTREE)
         path = pathlib.Path(argv[2])
         fm = frontmatter(path.read_text(encoding="utf-8", errors="replace") if path.is_file() else None)
-        errs = validate_spec(fm, path.name, catalog_ids(tree.read(CATALOG)),
-                             set(REQ_DEFINITION.findall(tree.read(REQUIREMENTS) or "")))
+        errs = validate_spec(fm, path.name, catalog_ids(tree.read(CATALOG)), requirement_defs(tree))
         print("\n".join(errs) if errs else "spec ok")
         return 1 if errs else 0
     if mode == "--commit":

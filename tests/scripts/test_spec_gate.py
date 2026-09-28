@@ -346,6 +346,11 @@ def test_req_ids_name_defined_requirements(repo):
     assert r.returncode == 1 and "req_ids must be a non-empty list" in r.stdout, r.stdout
     on_base(repo, {SPEC: spec(req_ids="[REQ-FAKE-999]"), REQUIREMENTS: None})
     assert pr(repo, BRANCH, CODE).returncode == 0
+    # stocks#1205 r4118721673: a registry that exists but defines no IDs fails closed,
+    # instead of silently accepting every shaped ID
+    on_base(repo, {REQUIREMENTS: "# Requirements\n\nrewritten as prose, no bold REQ definitions\n\n"})
+    r = pr(repo, BRANCH, CODE)
+    assert r.returncode == 1 and "defines no REQ-IDs" in r.stdout, r.stdout
 
 
 def test_commit_mode_reads_what_is_staged(repo):
@@ -492,6 +497,13 @@ def test_close_out_checks_the_status_and_last_reviewed_fields(repo):
     stamped = stocks_catalog.replace("2026-08-30", "2026-09-28")
     r = pr(repo, BRANCH, {**base, CATALOG: stamped}, **meta)
     assert r.returncode == 0, r.stdout
+    # stocks#1205 r4118721669: the fields were read from the raw document, so a
+    # commented-out or fenced row after the table overrode the visible one
+    for hidden in ("<!-- | Last reviewed | 2026-09-28 | -->", "```\n| Last reviewed | 2026-09-28 |\n```"):
+        section_end = stocks_catalog.index("| Last reviewed | 2026-08-30 |\n") + len("| Last reviewed | 2026-08-30 |\n")
+        catalog = stocks_catalog[:section_end] + "\n" + hidden + "\n" + stocks_catalog[section_end:]
+        r = pr(repo, BRANCH, {**base, CATALOG: catalog}, **meta)
+        assert r.returncode == 1 and "Last reviewed" in r.stdout, (hidden, r.stdout)
 
 
 def test_the_plan_records_its_pr(repo):
@@ -1134,6 +1146,10 @@ def test_a_workflow_is_never_documentation(repo):
     assert pr(repo, "docs/license", {"LICENSE": "MIT\n", "LICENSE-THIRD-PARTY.txt": "x\n", "COPYING": "x\n",
                                        ".github/workflows/README.md": "# Workflows\n"}).returncode == 0
     assert pr(repo, "docs/license", {"LICENSE.py": "print(1)\n"}).returncode == 1
+    # stocks#1205 r4118721651: the middle group took any extension, so LICENSE.ps1 was a document
+    for name in ("LICENSE.ps1", "LICENSE.exe", "COPYING.bat", "LICENSE-MIT.sh"):
+        assert pr(repo, "docs/license", {name: "x\n"}).returncode == 1, name
+    assert pr(repo, "docs/license", {"LICENSE-MIT.md": "x\n", "LICENCE-APACHE-2": "x\n"}).returncode == 0
 
 
 def test_indented_code_blocks_do_not_count(repo):
