@@ -1,10 +1,12 @@
 name: registry-check
 # Plain pull_request, checked out at the PR HEAD: this job EXECUTES the PR's
 # scripts/gate/export_model_registry.py, because a PR that changes the
-# exporter and regenerates its JSON must be judged by the exporter it ships.
-# That is why it runs apart from spec-gate.yml (pull_request_target, base
-# checkout, nothing from the PR executed) and why it holds only the read-only
-# token: never give this workflow secrets or write permissions.
+# exporter and regenerates its JSON must be judged by the exporter it ships,
+# and the PR's scripts/gate/spec_gate.py, to prove the gate a PR proposes
+# still starts and reports before it becomes the gate that judges every
+# later PR. That is why it runs apart from spec-gate.yml (pull_request_target,
+# base checkout, nothing from the PR executed) and why it holds only the
+# read-only token: never give this workflow secrets or write permissions.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -25,6 +27,37 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # spec-gate.yml judges the PR with the BASE's gate, so a PR that breaks the
+      # gate script (a syntax error, an import, a crash on startup) would merge
+      # green and then fail every later PR. The head's gate must compile and,
+      # run over this PR, reach a verdict: "spec gate ok" or "SPEC GATE FAILED".
+      # The verdict itself is the base gate's business; only a gate that cannot
+      # reach one fails here.
+      - name: Proposed gate compiles and reaches a verdict
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
+        run: |
+          gate=scripts/gate/spec_gate.py
+          if ! git cat-file -e "$HEAD_SHA:$gate" 2>/dev/null; then
+            echo "::error::$gate is missing from this PR's head; the gate cannot be removed by a PR" >&2
+            exit 1
+          fi
+          python3 -m py_compile "$gate"
+          set +e
+          out=$(python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA" 2>&1); rc=$?
+          set -e
+          printf '%s\n' "$out"
+          if [ "$rc" -gt 1 ] || ! printf '%s\n' "$out" | grep -qE '^(spec gate ok|SPEC GATE FAILED)'; then
+            echo "::error::the proposed $gate exited $rc without a verdict; it would break the gate for every later PR" >&2
+            exit 1
+          fi
+          echo "proposed gate reached a verdict (exit $rc); the base gate's verdict is the one that counts"
 
       # Not `if: hashFiles(...)`: that reads the head checkout, so a PR that
       # deletes the exporter would skip its only check and pass. The exporter

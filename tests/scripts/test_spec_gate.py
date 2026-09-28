@@ -510,6 +510,18 @@ def test_close_out_checks_the_status_and_last_reviewed_fields(repo):
     # stocks#1205 r4118788497: shaped like a date is not a date
     r = pr(repo, BRANCH, {**base, CATALOG: stocks_catalog.replace("2026-08-30", "2026-99-99")}, **meta)
     assert r.returncode == 1 and "Last reviewed" in r.stdout, r.stdout
+    # solyra#72 r4118878756: the PRs cell and the lineage only grow; a ready PR cannot
+    # replace the accumulated history with its own number
+    prior = CATALOG_TEXT.replace("| Production | unknown | none |", "| Production | unknown | #7, #9 |", 1)
+    on_base(repo, {CATALOG: prior, PLAN: plan(pr=42), TRACEABILITY: None})
+    erased = prior.replace("| unknown | #7, #9 |", f"| {TODAY} | #42 |")
+    r = pr(repo, BRANCH, {**CODE, CATALOG: erased}, **meta)
+    assert r.returncode == 1 and "loses earlier PR(s) #7, #9" in r.stdout, r.stdout
+    kept = prior.replace("| unknown | #7, #9 |", f"| {TODAY} | #7, #9, #42 |")
+    assert pr(repo, BRANCH, {**CODE, CATALOG: kept}, **meta).returncode == 0
+    on_base(repo, {CATALOG: stocks_catalog, TRACEABILITY: "# Traceability\n\n## FEAT-MODEL-001\n\n- #7 first cut\n"})
+    r = pr(repo, BRANCH, {**base, CATALOG: stamped, TRACEABILITY: "# Traceability\n\n## FEAT-MODEL-001\n\n- #42 second cut\n"}, **meta)
+    assert r.returncode == 1 and "PR lineage loses earlier PR(s) #7" in r.stdout, r.stdout
     # solyra#72 r4118831958: a real date that is not the head commit's is a false record
     for other in ("2000-01-01", "2099-01-01"):
         r = pr(repo, BRANCH, {**base, CATALOG: stocks_catalog.replace("2026-08-30", other)}, **meta)
@@ -895,6 +907,18 @@ def test_a_plan_on_the_base_stays_bound_to_its_branch_and_pr(repo):
     assert r.returncode == 1 and "records PR #42" in r.stdout, r.stdout
 
 
+def test_a_plan_names_its_feat_id(repo):
+    """solyra#72 r4118878750 (spec_gate.py:267).
+
+    `feat_id: ""` passed the type check and skipped the mismatch check because the
+    value was falsy, so a plan with no FEAT-ID authorized code. The key must hold
+    the branch's FEAT-ID, nothing less.
+    """
+    for value in ('""', "null", "[FEAT-MODEL-001]"):
+        r = pr(repo, BRANCH, {**CODE, PLAN: plan(feat_id=value)})
+        assert r.returncode == 1 and "but the branch serves FEAT-MODEL-001" in r.stdout, (value, r.stdout)
+
+
 def test_hidden_checklist_entries_do_not_count(repo):
     """stocks#1205 r4118374587 (spec_gate.py:398).
 
@@ -1145,7 +1169,7 @@ def test_frontmatter_shapes_the_gate_did_not_expect_fail_cleanly(repo):
     assert "Traceback" not in r.stderr, r.stderr
     on_base(repo, {SPEC: spec(), PLAN: plan(feat_id="[FEAT-MODEL-001]")})
     r = pr(repo, BRANCH, CODE)
-    assert r.returncode == 1 and "feat_id must be one FEAT-ID, not a list" in r.stdout and "Traceback" not in r.stderr
+    assert r.returncode == 1 and "but the branch serves FEAT-MODEL-001" in r.stdout and "Traceback" not in r.stderr
     hidden_row = CATALOG_TEXT + "\n<!--\n| [FEAT-FAKE-001](#x) | Fake | Production | unknown | none |\n-->\n"
     fake_spec, fake_plan = "docs/superpowers/specs/2026-09-28-fake.md", "docs/superpowers/plans/2026-09-28-fake.md"
     on_base(repo, {PLAN: plan(), CATALOG: hidden_row, fake_spec: spec(feat_id="FEAT-FAKE-001", req_ids="[REQ-MODEL-001]"),

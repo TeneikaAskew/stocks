@@ -66,6 +66,7 @@ CHECKBOX = re.compile(r"^\s*[-*]\s+\[([ xX])\]\s+(.*\S)\s*$")
 HEADING = re.compile(r"^(#{1,6})\s")
 ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 PR_REF = re.compile(r"^#?(\d+)$")
+PR_MENTION = re.compile(r"#(\d+)(?!\d)")
 CLOSE_OUT_FIELDS = ("Status", "Last reviewed")
 
 MANIFEST = re.compile(
@@ -261,10 +262,8 @@ def plan_stays_bound(name: str, fm: dict, base_fm: dict, branch: str) -> list[st
 
 def validate_plan(fm: dict, name: str, feat_id: str, tree: Tree) -> list[str]:
     errs = [f"{name}: missing frontmatter key '{k}'" for k in REQUIRED_PLAN_KEYS if k not in fm]
-    if "feat_id" in fm and not isinstance(fm["feat_id"], str):
-        errs.append(f"{name}: feat_id must be one FEAT-ID, not a list")
-    elif fm.get("feat_id") and fm["feat_id"] != feat_id:
-        errs.append(f"{name}: feat_id is {fm['feat_id']} but the branch serves {feat_id}")
+    if "feat_id" in fm and fm["feat_id"] != feat_id:
+        errs.append(f"{name}: feat_id is {fm['feat_id']!r} but the branch serves {feat_id}")
     status = fm.get("status")
     if status not in PLAN_STATUSES:
         errs.append(f"{name}: status must be ready | done")
@@ -780,10 +779,22 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
         if not any(pr_ref.search(entry) for entry in now_lineage - before_lineage):
             errs.append(f"{TRACEABILITY}: add this PR (#{n}) to the {t.feat_id} section's PR lineage "
                         "(a `**PR lineage:**` line or a list item; a comment or prose mention does not count)")
+        # Every PR the lineage named before is still named: a `**PR lineage:**` line grows
+        # in place, so entries are compared by the PRs they mention, not by their text.
+        mentioned = lambda entries: {m for e in entries for m in PR_MENTION.findall(e)}
+        lost = sorted(mentioned(before_lineage) - mentioned(now_lineage), key=int)
+        if lost:
+            errs.append(f"{TRACEABILITY}: the {t.feat_id} PR lineage loses earlier PR(s) "
+                        f"#{', #'.join(lost)}; lineage only grows")
     else:
         prs = row_fields(visible(ch.tree.read(CATALOG) or ""), t.feat_id).get("PRs", "")
         if not pr_ref.search(prs):
             errs.append(f"{CATALOG}: add this PR (#{n}) to the {t.feat_id} row's PRs column (it reads '{prs or 'nothing'}')")
+        before_prs = set(PR_MENTION.findall(row_fields(visible(Tree(merge_base).read(CATALOG) or ""), t.feat_id).get("PRs", "")))
+        lost = sorted(before_prs - set(PR_MENTION.findall(prs)), key=int)
+        if lost:
+            errs.append(f"{CATALOG}: the {t.feat_id} row's PRs column loses earlier PR(s) "
+                        f"#{', #'.join(lost)}; the column only grows")
     return errs
 
 

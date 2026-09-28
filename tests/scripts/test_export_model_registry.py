@@ -233,6 +233,14 @@ def test_ci_checks_the_pr_head_commit(repo):
     assert "if" not in check
     assert 'git cat-file -e "$HEAD_SHA:$exporter"' in check["run"]
     assert 'git cat-file -e "$BASE_SHA:$exporter"' in check["run"] and "exit 1" in check["run"]
+    # solyra#72 r4118878759 (spec-gate.yml:28, P1): spec-gate.yml judges with the BASE's gate,
+    # so nothing executed the gate a PR proposes; a syntax error would merge and break every
+    # later PR. The head checkout compiles it and runs it to a verdict first.
+    proposed = next(s for s in steps if "py_compile" in s.get("run", ""))
+    assert steps.index(proposed) < steps.index(check)
+    assert 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"' in proposed["run"]
+    assert "spec gate ok|SPEC GATE FAILED" in proposed["run"] and "exit 1" in proposed["run"]
+    assert {"PR_HEAD_REF", "PR_BASE_REF", "PR_HEAD_REPO", "PR_BASE_REPO"} <= set(proposed["env"])
 
 
 def test_a_stale_main_fails_only_the_pr_that_made_it_stale(repo):
