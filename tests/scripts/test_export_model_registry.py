@@ -1014,3 +1014,26 @@ def test_raw_html_tables_mentions_in_headings_and_markup_render_as_gfm_renders_t
     assert export(repo).returncode == 0
     rec = exported(repo)["models"]["MODEL-GAMMA-001"]
     assert rec["name"] == "Gamma levels" and rec["type"] == "Deterministic", rec
+
+
+def test_fences_between_rows_long_markers_and_single_tildes_render_as_gfm_renders_them(repo):
+    """Red-team round seven (export_model_registry.py: rendered, BLOCK_START, clean, the struck-row guard):
+    a fence or a one-line HTML block between rows ended the table on the page while the exporter read
+    on; a ten-digit list marker ended the table for the exporter but not for GFM; `~x~` struck a row
+    with one tilde; `sigma**2` lost its asterisks."""
+    assert export(repo).returncode == 0
+    reg = REGISTRY_TEXT
+    mag = next(ln for ln in reg.splitlines() if ln.startswith("| MODEL-MAG-001 | Magnitude"))
+    row2 = "| MODEL-MAG-002 | Magnitude 2 | GB | move | `lib/m2.py` | Experimental | Keep | DOC-02 | — |"
+    for between in ("```\n```", "<!-- x -->", "<?x?>", "<![CDATA[x]]>"):
+        write(repo, REGISTRY, reg.replace(mag, mag + "\n" + between + "\n" + row2, 1))
+        r = export(repo)
+        assert r.returncode != 0 or "MODEL-MAG-002" not in exported(repo)["models"], (between, r.stdout + r.stderr)
+    write(repo, REGISTRY, reg.replace(mag, mag + "\n1234567890. see note\n" + row2, 1))
+    r = export(repo)
+    assert r.returncode != 0 or "MODEL-MAG-002" in exported(repo)["models"], r.stdout + r.stderr
+    write(repo, REGISTRY, reg.replace("| Invalidated | Retrain |", "| ~Invalidated~ | Retrain |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "struck-through" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, reg.replace("| Expected move size |", "| sigma**2 of the move |", 1))
+    assert export(repo).returncode == 0 and exported(repo)["models"]["MODEL-MAG-001"]["decision_produced"] == "sigma**2 of the move"

@@ -141,8 +141,8 @@ def clean(cell: str) -> str:
     cell = re.sub(r"<((?:https?|mailto):[^>\s]+)>", r"\1", cell)   # an autolink renders its URL
     if re.search(r"\[[^\]]*\[", re.sub(r"<!\[CDATA\[.*?\]\]>", "", cell)):
         raise SystemExit(f"{REGISTRY}: a cell holds a nested link ({cell.strip()[:40]!r}); write links one at a time")
-    cell = cell.replace("**", "").replace("~~", "")
-    cell = re.sub(r"(?<![\w`])[*_]{1,3}(?=\S)|(?<=\S)[*_]{1,3}(?![\w`])", "", cell)   # emphasis renders its word
+    cell = re.sub(r"\*\*(?=\S)(.+?)(?<=\S)\*\*", r"\1", cell).replace("~~", "")   # (round seven: `sigma**2` is not emphasis)
+    cell = re.sub(r"(?<![\w`*_])[*_]{1,3}(?=[^\s*_])|(?<=[^\s*_])[*_]{1,3}(?![\w`*_])", "", cell)   # emphasis renders its word; `sigma**2` keeps its stars
     # red-team round three: `E\-99`, `E&#45;99` and `<s>x</s>` render as the plain text; inside a
     # code span a backslash, an entity and a tag are literal, so only the prose between spans changes
     out, at = [], 0
@@ -248,12 +248,15 @@ def rendered(text: str) -> str:
                 block_end = None   # kinds 6 and 7 end at the blank line, which stays blank
             elif block_end and re.search(block_end, line):
                 block_end = None   # kinds 1 to 5 end on the line carrying the closer, which is theirs
+                out.append("")
                 continue
             else:
+                out.append("")
                 continue
         if fence is not None:
             if re.match(r"^ {0,3}" + re.escape(fence) + fence[0] + r"*[ \t]*$", line):
                 fence = None
+            out.append("")   # (round seven: a fence between rows ends the table on the page)
             continue
         # a fence opens and closes only within three spaces of indentation; four columns (spaces or a
         # tab, expanded to its stop) after a blank line is an indented code block (rounds three, four)
@@ -270,6 +273,7 @@ def rendered(text: str) -> str:
             last_kept = line
         if (opener := re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)) and not (opener.group(1)[0] == "`" and "`" in opener.group(2)):
             fence = opener.group(1)
+            out.append("")
             continue
         if (kind := html_block(line, can_interrupt=not was_blank)) is not None:
             if re.match(r"(?i)^ {0,3}<h[1-6][\s>]", line):
@@ -281,6 +285,7 @@ def rendered(text: str) -> str:
             block_kind, block_end = kind
             if block_end and re.search(block_end, line.lstrip(" ")[2:]):
                 block_end = None   # opened and closed on one line: that line is the block (`<!-->` too)
+            out.append("")
             continue
         # a comment closed on the line is audit markup; one holding a pipe would split the row for GFM
         prose = CODE_SPAN.sub(lambda m: "`" * len(m.group(0)), line)
@@ -339,7 +344,7 @@ def tables_with_headings(text: str):
     i = 0
     while i < len(lines):
         line = lines[i]
-        if re.match(r"^\s*(>|[-*+]\s|\d+[.)]\s)\s*#{1,6}\s", line):
+        if re.match(r"^\s*(>|[-*+]\s|\d{1,9}[.)]\s)\s*#{1,6}\s", line):
             # round four: a heading inside a blockquote or list item renders there, and the table under
             # it would be keyed to the tier above
             raise SystemExit(f"{REGISTRY}: {line.strip()[:60]!r} is a heading inside a blockquote or list item; headings sit at the top level")
@@ -400,8 +405,8 @@ def tables_with_headings(text: str):
                              "block; it renders but is not exported. Move it to the top level")
 
 
-BLOCK_START = re.compile(r"^\s*(>|[-*+]\s|\d+[.)]\s)")            # another block begins: the table ends
-NESTING = re.compile(r"^(\s|>|[-*+]\s|\d+[.)]\s)*")                 # blockquote and list prefixes
+BLOCK_START = re.compile(r"^\s*(>|[-*+]\s|\d{1,9}[.)]\s)")        # another block begins: the table ends (a marker has at most nine digits: round seven)
+NESTING = re.compile(r"^(\s|>|[-*+]\s|\d{1,9}[.)]\s)*")             # blockquote and list prefixes
 DELIMITER = re.compile(r"^\|?(\s*:?-+:?\s*\|)*\s*:?-+:?\s*\|?$")
 
 
@@ -557,7 +562,7 @@ def build(src: Source) -> dict:
                 # red-team round two: `model-gamma-001` neither routed nor failed; it vanished as prose
                 malformed.append(f"{first!r} under '{section}' is a lower-case ID; IDs are upper-case MODEL-/DOC-")
                 continue
-            if routable and any("~~" in cell or re.search(r"(?i)<(s|del|strike)\b", cell) for cell in raw):
+            if routable and any(re.search(r"(?<!~)~(?!~)\S.*?\S~|~~", cell) or re.search(r"(?i)<(s|del|strike)\b", cell) for cell in raw):
                 # red-team round two: `~~MODEL-X~~` renders struck through and exported as a live card
                 malformed.append(f"{first} under '{section}' carries struck-through text; delete the row or restore it")
                 continue

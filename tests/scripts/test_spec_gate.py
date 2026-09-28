@@ -939,7 +939,10 @@ def test_a_feature_change_edits_only_its_own_product_records(repo):
     assert pr(repo, BRANCH, {**CODE, TRACEABILITY: trace + "\n### FEAT-MODEL-001\n\n- #7\n"}, **ok).returncode == 0
     r = pr(repo, BRANCH, {**CODE, TRACEABILITY: trace.replace("#1", "#1, #7")}, **ok)
     assert r.returncode == 1 and "docs/product/12-PR-ISSUE-TRACEABILITY.md: lines outside" in r.stdout, r.stdout
-    assert pr(repo, BRANCH, {**CODE, "docs/product/07-MODEL-REGISTRY.md": "# Registry\n"}, **ok).returncode == 0
+    # (round seven: a feature change edits the registry rows of the models its spec names, and nothing else there)
+    on_base(repo, {SPEC: spec() + "\nThis spec changes MODEL-X-001.\n", "docs/product/07-MODEL-REGISTRY.md": "# Registry\n\n| ID | Status |\n|---|---|\n| MODEL-X-001 | Draft |\n"})
+    assert pr(repo, BRANCH, {**CODE, "docs/product/07-MODEL-REGISTRY.md": "# Registry\n\n| ID | Status |\n|---|---|\n| MODEL-X-001 | Production |\n"}, **ok).returncode == 0
+    on_base(repo, {SPEC: spec(), "docs/product/07-MODEL-REGISTRY.md": None})
 
 
 def test_the_plan_names_a_spec_under_the_spec_directory(repo):
@@ -1310,8 +1313,10 @@ def test_other_product_documents_and_specs_do_not_change_with_code(repo):
     assert r.returncode == 1 and "docs/product/canvases.yml changes in this feature change" in r.stdout, r.stdout
     r = pr(repo, BRANCH, {**CODE, "docs/product/13-ROADMAP.md": "# Roadmap\n"}, **ok)
     assert r.returncode == 1 and "13-ROADMAP.md changes in this feature change" in r.stdout, r.stdout
-    assert pr(repo, BRANCH, {**CODE, "docs/product/07-MODEL-REGISTRY.md": "# Registry\n",
+    on_base(repo, {SPEC: spec() + "\nThis spec changes MODEL-X-001.\n", "docs/product/07-MODEL-REGISTRY.md": "# Registry\n\n| ID | Status |\n|---|---|\n| MODEL-X-001 | Draft |\n"})
+    assert pr(repo, BRANCH, {**CODE, "docs/product/07-MODEL-REGISTRY.md": "# Registry\n\n| ID | Status |\n|---|---|\n| MODEL-X-001 | Production |\n",
                              "docs/product/generated/model-registry.json": "{}\n"}, **ok).returncode == 0
+    on_base(repo, {SPEC: spec(), "docs/product/07-MODEL-REGISTRY.md": None})
     # solyra#72 r4118481048: the registry allowance is two exact paths, not two prefixes
     r = pr(repo, BRANCH, {**CODE, "docs/product/07-MODEL-REGISTRY.md.backup": "x\n"}, **ok)
     assert r.returncode == 1 and "07-MODEL-REGISTRY.md.backup changes in this feature change" in r.stdout, r.stdout
@@ -2978,3 +2983,49 @@ def test_lockfiles_twin_workflows_pins_at_step_one_and_ownership_are_the_contrac
     r = pr(repo, BRANCH, {**CODE, registry: "# Registry\n\n| Scheduler | Serves |\n|---|---|\n| `a-daily` | MODEL-MAG-001 |\n"}, PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body())
     assert r.returncode == 1 and "naming MODEL-GAMMA-001" in r.stdout, r.stdout
     on_base(repo, {registry: None})
+
+
+def test_html_blocks_in_bodies_registry_prose_and_catalog_columns_are_the_contract(repo):
+    """Red-team round seven (spec_gate.py: without_html_blocks, CHECKBOX, section, check_registry_rows,
+    check_policy_structure, shadows_local_skill, DEFERRAL, catalog_ids, check_changed_specs, frontmatter).
+
+    A checklist, the spec links and a Capacity section inside `<pre>` or `<script>` were read as Markdown
+    the page never renders; `+ [x]` and `1. [x]` were not boxes; `Capacity\\n---` was not a heading and
+    `## Incapacity` was; a feature PR edited registry dispositions and the stamp; a docs/ PR dropped the
+    PRs column; `name: product-delivery # vendored` shadowed a skill; `partially`, `WIP`, `remaining`
+    passed; a FEAT row in a prose table registered a capability; a new spec landed superseded; a spec
+    path with spaces was accepted.
+    """
+    title = {"PR_TITLE": "FEAT-MODEL-001: x"}
+    for tag in ("<pre>", "<script>", "<div>"):
+        closer = {"<pre>": "</pre>", "<script>": "</script>", "<div>": "</div>"}[tag]
+        r = pr(repo, BRANCH, CODE, **title, PR_BODY=f"{tag}\n{body(ticked=True)}\n{closer}\n")
+        assert r.returncode == 1 and "must link the spec" in r.stdout, (tag, r.stdout)
+    assert pr(repo, BRANCH, CODE, **title, PR_BODY=f"Spec: {SPEC}\nPlan: {PLAN}\n\n+ [x] {DONE[0]}\n1. [x] {DONE[1]}\n").returncode == 0
+    r = pr(repo, BRANCH, {**CODE, "gcp/job.py": "x = 1\n"}, **title, PR_BODY=body() + "\n\nCapacity\n---\nVolume: 1 row\nVelocity: 1 call\nWall-clock: 1 s\n30: $0\n")
+    assert r.returncode == 0, r.stdout
+    r = pr(repo, BRANCH, {**CODE, "gcp/job.py": "x = 1\n"}, **title, PR_BODY=body() + "\n\n## Incapacity notes\n\nnone\n\n## Capacity\nVolume: 1 row\nVelocity: 1 call\nWall-clock: 1 s\n30: $0\n")
+    assert r.returncode == 0, r.stdout
+    registry = "docs/product/07-MODEL-REGISTRY.md"
+    on_base(repo, {SPEC: spec() + "\nThis spec changes MODEL-MAG-001.\n", registry: "# Registry\n\n**Last reviewed:** 2026-09-20\n\n| ID | Disposition |\n|---|---|\n| DOC-02 | Deferred |\n"})
+    r = pr(repo, BRANCH, {**CODE, registry: "# Registry\n\n**Last reviewed:** 2026-09-20\n\n| ID | Disposition |\n|---|---|\n| DOC-02 | Fixed |\n"}, **title, PR_BODY=body())
+    assert r.returncode == 1 and "naming none of" in r.stdout, r.stdout
+    on_base(repo, {SPEC: spec(), registry: None})
+    r = pr(repo, "docs/drop-prs", {CATALOG: CATALOG_TEXT.replace("| ID | Area | Status | Last reviewed | PRs |", "| ID | Area | Status | Last reviewed |").replace("|---|---|---|---|---|", "|---|---|---|---|").replace(" | unknown | none |", " | unknown |")})
+    assert r.returncode == 1 and "no longer carries the PRs column" in r.stdout, r.stdout
+    for name in ("product-delivery # vendored", "!!str product-delivery", "&n product-delivery", "'product-delivery'"):
+        r = pr(repo, "bot/superpowers-weekly", {".claude/skills/superpowers/vendored-x/SKILL.md": f"---\nname: {name}\n---\n"})
+        assert r.returncode == 1, (name, r.stdout)
+    head = f"Spec: {SPEC}\nPlan: {PLAN}\n\n- [x] {DONE[0]}\n"
+    for word in ("partially", "in progress", "WIP", "except the replay case", "not fully", "remaining items tracked separately", "later"):
+        r = pr(repo, BRANCH, CODE, **title, PR_BODY=head + f"- [x] {DONE[1]} — {word}\n")
+        assert r.returncode == 1 and "defers its work" in r.stdout, (word, r.stdout)
+    on_base(repo, {CATALOG: CATALOG_TEXT + "\n## Notes\n\n| Field | Value |\n|---|---|\n| FEAT-NEW-001 | see 13 |\n"})
+    r = pr(repo, "feature/feat-new-001-x", {**CODE, "docs/superpowers/plans/2026-09-01-new.md": plan(feat_id="FEAT-NEW-001", branch="feature/feat-new-001-x", spec="docs/superpowers/specs/2026-09-01-new.md")}, PR_TITLE="FEAT-NEW-001: x", PR_BODY="x")
+    assert r.returncode == 1 and "FEAT-NEW-001 is not a row in" in r.stdout, r.stdout
+    on_base(repo, {CATALOG: CATALOG_TEXT})
+    r = pr(repo, "docs/new-spec", {"docs/superpowers/specs/2026-09-07-model-later.md": spec(status="superseded")})
+    assert r.returncode == 1 and "superseded is what an approved spec becomes" in r.stdout, r.stdout
+    r = pr(repo, "docs/new-spec", {"docs/superpowers/specs/2026-09-07-FEAT-MODEL-001 Big Feature.md": spec(status="draft")})
+    assert r.returncode == 1 and "named YYYY-MM-DD-<kebab-slug>.md" in r.stdout, r.stdout
+    assert pr(repo, "docs/new-spec", {"docs/superpowers/specs/2026-09-07-model-later.md": spec(status="draft") .replace("status: draft", "status: 'draft' # first cut")}).returncode == 0

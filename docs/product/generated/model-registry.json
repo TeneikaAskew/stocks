@@ -407,7 +407,7 @@
   {
    "job": "`strat-engine` (overridden to `gcp.research.strat_engine.strat_enrich_levels`)",
    "scheduler": "`strat-enrich-daily`",
-   "why_it_is_not_model_bearing": "Inputs only — backfills `strat_features_levels{tf}` with ORB windows, historical levels and order blocks. It imports `lib.indicators` (cited by MODEL-IND-001), which is why the tripwire flags it, and the justification is checkable: the module contains no classifier call, no threshold and no label — `grep -n \"StratClassifier|strat_setup|ftfc_score\" gcp/research/strat_engine/strat_enrich_levels.py` returns nothing. Every reader of `strat_features_levels*` is under `gcp/research/strat_engine/` or is tooling (`audit_data_freshness`, `doc_inventory`); no router, no Discord, no served surface. Note this scheduler overrides the job's entrypoint: the `strat-engine` job defaults to `strat_data_builder`, so classifying it on the job's own module would judge the wrong code"
+   "why_it_is_not_model_bearing": "Inputs only — backfills `strat_features_levels{tf}` with ORB windows, historical levels and order blocks. It imports `lib.indicators` (cited by MODEL-IND-001), which is why the tripwire flags it, and the justification is checkable: the module contains no classifier call, no threshold and no label — `grep -n \"StratClassifier|strat_setup|ftfc_score\" gcp/research/strat_engine/strat_enrich_levels.py` returns nothing. Every reader of `strat_features_levels_*` is under `gcp/research/strat_engine/` or is tooling (`audit_data_freshness`, `doc_inventory`); no router, no Discord, no served surface. Note this scheduler overrides the job's entrypoint: the `strat-engine` job defaults to `strat_data_builder`, so classifying it on the job's own module would judge the wrong code"
   },
   {
    "job": "`failure-notifier` (Cloud Run service, `${service_url}/reconcile`)",
@@ -2625,7 +2625,7 @@
  "sources": {
   "docs/EXPERIMENT_REGISTRY.md": "cfbcca257edc74928cc0af69d275a02f2fd78c0c",
   "docs/product/07-MODEL-REGISTRY.md": "1e70bf96a3e8ab49e714745d2571b662001ceb39",
-  "scripts/gate/export_model_registry.py": "f400a4c3468f144e3178cd9d5dd5b4209ca3ed61"
+  "scripts/gate/export_model_registry.py": "238dc21a231f7f51af7fd019193e7e9cafb6cca7"
  },
  "tables": [
   {

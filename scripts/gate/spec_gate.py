@@ -66,7 +66,7 @@ FEAT_IDS = re.compile(r"\bFEAT-[A-Z]+-\d{3}\b")
 BRANCH = re.compile(r"^(feature|fix)/(feat-[a-z]+-\d{3})(-[a-z0-9]+)+$")   # lowercase kebab-case: git refs are case-sensitive
 REQ_SHAPE = re.compile(r"^REQ-[A-Z]+-\d{3}$")
 REQ_DEFINITION = re.compile(r"\*\*(REQ-[A-Z]+-\d{3}):\*\*")
-CHECKBOX = re.compile(r"^\s*[-*]\s+\[([ xX])\]\s+(.*\S)\s*$")
+CHECKBOX = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\[([ xX])\]\s+(.*\S)\s*$")   # (round seven: `+` and `1.` render boxes too)
 HEADING = re.compile(r"^(#{1,6})\s")
 ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 PR_REF = re.compile(r"^#?(\d+)$")
@@ -1068,7 +1068,8 @@ DEFERRAL = re.compile(
     # red-team round three: ordinary deferral phrasing the list missed
     r"|postpone\w*|parked|park it|out of scope|descope\w*|tracked in|will be (?:addressed|done|fixed|added|run)"
     r"|after (?:the )?merge|phase \d|not in this PR|next (?:sprint|release|iteration)|to follow|later (?:change|release)|punt\w*"
-    r"|follow[- ]?ups|defer\w*|backlog|(?:future|another|subsequent|follow[- ]on) PR)\b", re.I)
+    r"|follow[- ]?ups|defer\w*|backlog|(?:future|another|subsequent|follow[- ]on) PR"
+    r"|partial(?:ly)?|in progress|WIP|except|not fully|mostly|half|remaining|later|future (?:version|release)|tracked separately)\b", re.I)
 # Changing these is changing a workload; the PR body must then carry the rule 0 capacity numbers.
 WORKLOAD_PREFIXES = ("gcp/", ".github/workflows/")
 CAPACITY_LABELS = ("Volume", "Velocity", "Wall-clock", "30")
@@ -1103,7 +1104,10 @@ def git_out(*args: str) -> str:
 def catalog_ids(text: str | None) -> set[str]:
     """FEAT-IDs from the first cell of the catalog's table rows. A FEAT-ID mentioned
     anywhere else (prose, a link, a comment) is not a catalog entry."""
-    return set(FEAT_ROW.findall(visible(text or "")))
+    shown = visible(text or "")
+    # (round seven: the catalog table is the one whose header starts with `ID`; a `| FEAT-X | note |` in any other table is prose)
+    m = re.search(r"(?m)^\|\s*ID\s*\|.*\n\|?\s*:?-+.*\n((?:\|.*\n?)*)", shown)
+    return set(FEAT_ROW.findall(m.group(1) if m else ""))
 
 
 LICENSE_FILE = re.compile(r"^(LICENSE|LICENCE|COPYING)(-[A-Za-z0-9]+)*(\.(md|txt|rst))?$")
@@ -1216,7 +1220,7 @@ def frontmatter(text: str | None) -> dict:
             elif v.startswith("[") and v.endswith("]"):
                 fm[k] = [x.strip().strip('"') for x in re.split(r",(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)", v[1:-1]) if x.strip()]   # commas inside quotes stay (round five)
             else:
-                fm[k] = v.strip('"')
+                fm[k] = re.sub(r"\s+#.*$", "", v).strip().strip("'\"") if not v.startswith(("'", '"')) else re.sub(r"\s+#.*$", "", v).strip().strip("'\"")   # (round seven)
     return fm
 
 
@@ -1518,7 +1522,10 @@ def shadows_local_skill(path: str, ch: "Change") -> bool:
     if any(part.startswith(local) for part in parts[2:-1]):
         return True
     text = ch.tree.read(path) or ""
-    return path.endswith("SKILL.md") and any(re.search(rf"(?m)^name:\s*['\"]?{re.escape(n)}['\"]?\s*$", text, re.I) for n in local)
+    if not path.endswith("SKILL.md") or not (m := re.search(r"(?m)^name:\s*(.*)$", text)):
+        return False
+    value = re.sub(r"^(!!\w+\s*|&\w+\s*)+", "", re.sub(r"\s+#.*$", "", m.group(1)).strip()).strip("'\"").lower()   # (round seven: as YAML reads it)
+    return value in local
 
 
 ALLOWANCES = (
@@ -1554,6 +1561,10 @@ def check_changed_specs(ch: Change) -> list[str]:
             continue
         if catalog is None:
             catalog, req_defs = catalog_ids(ch.base.read(CATALOG)), requirement_defs(ch.base)
+        if ch.base.read(path) is None and frontmatter(text).get("status") == "superseded":
+            errs.append(f"{path}: a new spec is draft or approved; superseded is what an approved spec becomes")   # (round seven)
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}-[a-z0-9]+(-[a-z0-9]+)*\.md", path.rsplit("/", 1)[-1]):
+            errs.append(f"{path}: a spec is named YYYY-MM-DD-<kebab-slug>.md")   # (round seven: the skill's shape, enforced)
         errs += validate_spec(frontmatter(text), path, catalog, req_defs) + check_supersedes(frontmatter(text), path, ch.base)
         # solyra#72 r4119957736: a canvas the spec names exists in the registry the head
         # carries, so the implementation's handoff is not the first place a typo shows
@@ -2045,6 +2056,39 @@ def fold_text(text: str) -> str:
     return text.translate(CONFUSABLE)
 
 
+HTML_BLOCK_TAGS = (
+    "address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt"
+    "|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu"
+    "|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul")
+
+
+def without_html_blocks(body: str) -> str:
+    """The body with GFM's HTML blocks blanked: a checklist, a link or a Capacity section inside `<pre>`,
+    `<script>`, `<?..?>`, CDATA, a declaration or a `<div>` without a blank line renders as raw HTML or
+    not at all, never as Markdown (red-team round seven). Each dropped line becomes a blank line so
+    the lines around it keep their positions."""
+    out, end, prev_blank = [], None, True
+    for line in split_lines(body):
+        if end is not None:
+            out.append("")
+            if end == "" and not line.strip() or (end and re.search(end, line)):
+                end = None
+            continue
+        t = line.lstrip(" ") if len(line) - len(line.lstrip(" ")) <= 3 else ""
+        kind = (r"(?i)</(pre|script|style|textarea)>" if re.match(r"(?i)<(pre|script|style|textarea)(\s|>|$)", t)
+                else r"\?>" if t.startswith("<?") else r">" if re.match(r"<![A-Za-z]", t) else r"\]\]>" if t.startswith("<![CDATA[")
+                else "" if re.match(r"(?i)</?(" + HTML_BLOCK_TAGS + r")(\s|/?>|$)", t)
+                else "" if prev_blank and re.match(r"^(<[a-zA-Z][a-zA-Z0-9-]*(\s+[^<>]*?)?\s*/?>|</[a-zA-Z][a-zA-Z0-9-]*\s*>)\s*$", t) else None)
+        prev_blank = not line.strip()
+        if kind is None:
+            out.append(line)
+            continue
+        out.append("")
+        if not (kind and re.search(kind, t[2:])):   # opened and closed on one line: that line alone
+            end = kind
+    return "\n".join(out)
+
+
 def visible(body: str) -> str:
     """The PR body as it renders: HTML comments and fenced code blocks removed, so a
     checkbox inside the template's comments or a code example is not a checkbox."""
@@ -2054,6 +2098,7 @@ def visible(body: str) -> str:
     masked = CODE_SPAN.sub(lambda m: "`" * len(m.group(0)), body)   # a `<!--` inside a code span is code
     for m in reversed(list(re.finditer(r"<!--(?!>|->).*?-->|<!--(?!>|->).*\Z", masked, flags=re.S))):   # an unclosed comment runs to the end
         body = body[:m.start()] + body[m.end():]
+    body = without_html_blocks(body)
     # red-team round four: `follow&#8209;up`, `non-<b></b>blocking` and a U+2011 render as the plain words
     body = re.sub(r"</?(b|i|em|strong|s|del|u|span|sub|sup|small|code|br|kbd|mark|abbr)(\s[^<>]*)?/?>", "", body, flags=re.I)
     body = re.sub("[\u2010-\u2015\u2212\ufe58\ufe63\uff0d]", "-", body)
@@ -2101,7 +2146,7 @@ def checklist(body: str) -> list[tuple[bool, str]]:
             else:
                 items.append(box)
                 depth.append(indent(line))
-        elif items and items[-1] is not None and line.strip() and (
+        elif items and items[-1] is not None and line.strip() and not any(line.strip().startswith(mk) for mk in CANVAS_MARKERS.values()) and (
                 not re.match(r"^\s*([-*+]\s|\d+[.)]\s|>|#{1,6}\s|\|)", line)
                 or (re.match(r"^\s*([-*+]\s|\d+[.)]\s)", line) and indent(line) > depth[-1])):
             # an indented line, an unindented one that starts no other block (lazy continuation: red-team
@@ -2217,14 +2262,24 @@ def check_pr_metadata(t: Traced, env: dict, tree: Tree) -> list[str]:
 def section(body: str, title: str) -> str | None:
     """The text under the first heading containing `title` (case-insensitive), HTML comments removed."""
     lines = split_lines(body)
+    # (round seven: a setext heading `Capacity\n---` is a heading, and `## Incapacity notes` is not this one)
+    def heading_level(k: int) -> int | None:
+        if h := HEADING.match(lines[k]):
+            return len(h.group(1))
+        if k + 1 < len(lines) and lines[k].strip() and re.match(r"^ {0,3}(=+|-+)\s*$", lines[k + 1]) and (k == 0 or not lines[k - 1].strip()) \
+                and not re.match(r"^ {0,3}([-*+]\s|\d+[.)]\s|>|\||```|~~~|    )", lines[k]):
+            return 1 if lines[k + 1].strip().startswith("=") else 2
+        return None
     for i, line in enumerate(lines):
-        if (h := HEADING.match(line)) and title.lower() in line.lower():
-            level = len(h.group(1))
+        level = heading_level(i)
+        if level is not None and re.search(r"(?i)(?<![a-z])" + re.escape(title) + r"(?![a-z])", line):
+            start = i + 1 if HEADING.match(line) else i + 2
             out = []
-            for later in lines[i + 1:]:
-                if (hh := HEADING.match(later)) and len(hh.group(1)) <= level:
+            for k in range(start, len(lines)):
+                later_level = heading_level(k)
+                if later_level is not None and later_level <= level:
                     break   # a nested heading (### Volume under ## Capacity) is part of the section
-                out.append(later)
+                out.append(lines[k])
             return "\n".join(out)
     return None
 
@@ -2385,6 +2440,10 @@ def check_policy_structure(ch: Change) -> list[str]:
     if CATALOG in ch.changed and (catalog := ch.tree.read(CATALOG)) is not None and (base_catalog := ch.base.read(CATALOG)):
         # solyra#72 r4121753981: the close-out reads Status and Last reviewed by name, from the
         # row or the record; a renamed header would fail every later feature PR
+        header = lambda text: re.search(r"(?m)^\|\s*ID\s*\|.*$", visible(text))
+        if (hb := header(base_catalog)) and "PRs" in hb.group(0) and not ((ha := header(catalog)) and "PRs" in ha.group(0)):
+            # round seven: without the PRs column every later close-out fails and cannot restore it
+            errs.append(f"{CATALOG}: the table no longer carries the PRs column the close-out reads; the catalog's columns keep their names")
         for feat in sorted(catalog_ids(base_catalog)):
             before, after = feat_fields(base_catalog, feat), feat_fields(catalog, feat)
             if missing := [k for k in CLOSE_OUT_FIELDS if k in before and k not in after]:
@@ -2510,6 +2569,10 @@ def check_registry_rows(t: Traced, ch: Change, merge_base: str, head: str) -> li
                 "change edits only the registry rows of the models its spec covers"]
     if any(re.match(r"^\s*\|?\s*(ID|Scheduler|Model)\s*\||^\s*\|?\s*:?-+:?\s*\|", text) for text in changed):
         return [f"{path}: changes a table header or delimiter; a feature change edits rows, it does not reshape a registry table"]
+    if stray := [text for text in changed if text.strip() and not re.findall(r"\bMODEL-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", text)]:
+        # round seven: a disposition row, the stamp or prose names no model of the spec, so it is not this change's
+        return [f"{path}: changes {stray[0].strip()[:50]!r}, a line naming none of {t.spec_path}'s models; a feature change edits "
+                "only the registry rows of the models its spec covers"]
     return []
 
 
