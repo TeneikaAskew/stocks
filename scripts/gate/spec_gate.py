@@ -223,7 +223,8 @@ def step_envs(body: str, command: str) -> list[dict[str, str]]:
         m = re.match(r"^(\s*)-(\s+\S|\s*$)", line)   # `- key:` or a dash on a line of its own (stocks#1205 r4122021105)
         if not m or (k := enclosing_key(lines, i, indent(line))) is None or lines[k].strip() != "steps:":
             continue
-        key_indent, end = (len(m.group(1)) + 2 if m.group(2).strip() else indent(lines[i + 1]) if i + 1 < end_of(lines, i) else len(m.group(1)) + 2), block_end(lines, i, indent(line))
+        end = block_end(lines, i, indent(line))
+        key_indent = len(m.group(1)) + 2 if m.group(2).strip() else indent(lines[first_below(lines, i, end_of(lines, i))]) if i + 1 < end_of(lines, i) else len(m.group(1)) + 2
         item = [re.sub(r"^(\s*)-\s*", r"\1  ", lines[i])] + lines[i + 1:end]
         run, env, j = [], {}, 0
         while j < len(item):
@@ -258,6 +259,13 @@ def enclosing_key(lines: list[str], i: int, below: int) -> int | None:
         if lines[j].strip() and indent(lines[j]) < below and re.match(r"^\s*(-\s+)?[\w.-]+:", lines[j]):
             return j
     return None
+
+
+def first_below(lines: list[str], start: int, end: int) -> int:
+    """Index of the first non-blank line after `start` and before `end`, or `start + 1`: a blank
+    line under a key is insignificant to YAML, so the block's indent comes from its first entry
+    (red-team round three: a blank line after `jobs:` emptied the job list)."""
+    return next((k for k in range(start + 1, end) if lines[k].strip()), start + 1)
 
 
 def block_end(lines: list[str], start: int, level: int) -> int:
@@ -497,8 +505,9 @@ def workflow_triggers(body: str) -> set[str]:
         if value:
             return set(re.findall(r"[A-Za-z_]+", value))
         triggers: set[str] = set()
-        for j in range(i + 1, block_end(lines, i, 0)):
-            if (k := re.match(r"^\s+(?:-\s+)?([A-Za-z_]+):?\s*$", lines[j])) and indent(lines[j]) == indent(lines[i + 1]):
+        end = block_end(lines, i, 0)
+        for j in range(i + 1, end):
+            if (k := re.match(r"^\s+(?:-\s+)?([A-Za-z_]+):?\s*$", lines[j])) and indent(lines[j]) == indent(lines[first_below(lines, i, end)]):
                 triggers.add(k.group(1))
         return triggers
     return set()
@@ -573,7 +582,7 @@ def workflow_jobs(body: str) -> list[dict]:
     if jobs_at is None:
         return []
     out, end = [], block_end(lines, jobs_at, 0)
-    keys = [i for i in range(jobs_at + 1, end) if lines[i].strip() and indent(lines[i]) == indent(lines[jobs_at + 1])
+    keys = [i for i in range(jobs_at + 1, end) if lines[i].strip() and indent(lines[i]) == indent(lines[first_below(lines, jobs_at, end)])
             and re.match(r"^\s*[\w.-]+:\s*$", lines[i])]
     for n, start in enumerate(keys):
         stop = keys[n + 1] if n + 1 < len(keys) else end
@@ -1469,6 +1478,10 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
             if shadow := shadowed_executable(body):
                 return [f"{path}: defines `{shadow}` as a shell function or alias; the gate's commands run the "
                         "real executables"], None
+            if not any(invokes(st, m) for job in jobs for m in required for st in job["statements"]):
+                # red-team round three: a job list the parser could not read skipped every job-level check
+                return [f"{path}: no job of it carries the gate's commands as the parser reads the file; the gate's "
+                        "workflows keep their commands in a job's steps"], None
             for job in jobs:
                 if not any(invokes(st, m) for m in required for st in job["statements"]):
                     continue
@@ -1476,9 +1489,12 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                 # publishes; a container runs every step inside an image the PR names
                 level = indent(job["lines"][0]) + 2
                 for ln in job["lines"][1:]:
-                    if indent(ln) == level and (km := re.match(r"^\s+(name|strategy|container|services|environment|uses|concurrency):", ln)):
+                    if indent(ln) == level and (km := re.match(r"^\s+(name|strategy|container|services|environment|uses|concurrency|defaults):", ln)):
                         return [f"{path}: job {job['name']} declares `{km.group(1)}`; a contract job keeps its key as its check "
-                                "context and runs its steps directly on the runner"], None
+                                "context and runs its steps directly on the runner, from the workspace root"], None
+                if any(re.match(r"^\s*(-\s+)?working-directory:", ln) for ln in job["lines"]):
+                    # (red-team round three): a step run elsewhere finds other files under the contract's paths
+                    return [f"{path}: job {job['name']} sets `working-directory`; the gate's steps run from the workspace root"], None
                 runner = next((shell_value(rm.group(1)) for ln in job["lines"] if (rm := re.match(r"^\s+runs-on:\s*(.*)$", ln))), "")
                 if not runner.startswith("ubuntu-"):
                     # stocks#1205 r4121777320: another runner's default shell is not bash

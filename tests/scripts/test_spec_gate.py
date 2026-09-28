@@ -2511,6 +2511,21 @@ def test_contract_jobs_keep_their_context_and_runner(repo):
         r = pr(repo, "chore/gate-workflow", {wf: typed.replace("permissions:\n", f"env:\n  {env_name}: https://attacker.example/simple/\npermissions:\n", 1)}, **cap)
         assert r.returncode == 1 and "in an `env:` block" in r.stdout, (env_name, r.stdout)
     assert pr(repo, "chore/gate-workflow", {wf: typed}, **cap).returncode == 0
+    # red-team round three: a blank or whitespace-only line after `jobs:` emptied the job list, so `container:`,
+    # the runner and every other job-level check were skipped; YAML reads the file exactly as without it
+    for gap in ("\n", "   \n"):
+        spaced = typed.replace("jobs:\n", "jobs:\n" + gap, 1)
+        assert pr(repo, "chore/gate-workflow", {wf: spaced}, **cap).returncode == 0, "a blank line under jobs: is the same file"
+        r = pr(repo, "chore/gate-workflow", {wf: spaced.replace("  gate:\n    runs-on: ubuntu-latest\n", "  gate:\n    runs-on: ubuntu-latest\n    container: ghcr.io/attacker/img:latest\n", 1)}, **cap)
+        assert r.returncode == 1 and "declares `container`" in r.stdout, r.stdout
+        r = pr(repo, "chore/gate-workflow", {wf: spaced.replace("  gate:\n    runs-on: ubuntu-latest\n", "  gate:\n    runs-on: self-hosted\n", 1)}, **cap)
+        assert r.returncode == 1 and "runs on self-hosted" in r.stdout, r.stdout
+    assert pr(repo, "chore/gate-workflow", {wf: typed.replace("on:\n  pull_request_target:\n", "on:\n\n  pull_request_target:\n", 1)}, **cap).returncode == 0
+    for extra in ("    defaults:\n      run:\n        working-directory: sub\n",):
+        r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  gate:\n    runs-on: ubuntu-latest\n", "  gate:\n    runs-on: ubuntu-latest\n" + extra, 1)}, **cap)
+        assert r.returncode == 1 and "declares `defaults`" in r.stdout, r.stdout
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("      - env:\n", "      - working-directory: sub\n        env:\n", 1)}, **cap)
+    assert r.returncode == 1 and "sets `working-directory`" in r.stdout, r.stdout
 
 
 def test_dash_line_steps_indirect_writes_and_early_returns_are_refused(repo):
