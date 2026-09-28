@@ -85,6 +85,24 @@ GATE_FILES = (
 # Every branch a pull request may come from, in full: feature/ and fix/ carry a FEAT-ID
 # (BRANCH), the rest a kebab-case slug. spike/ is refused before this in PR mode.
 OTHER_BRANCH = re.compile(r"^((docs|chore)/[a-z0-9]+(-[a-z0-9]+)*|bot/superpowers-[a-z0-9]+(-[a-z0-9]+)*)$")
+# What each gate workflow must still do after a change to it. The base's gate checks the
+# head's copy for these, because registry-check.yml runs from the head and could otherwise
+# be replaced by a no-op that keeps its job name green.
+WORKFLOW_CONTRACTS = {
+    ".github/workflows/registry-check.yml": (
+        'python3 -m py_compile "$gate"',
+        'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"',
+        "pytest tests/scripts/test_spec_gate.py",
+        'git ls-tree "$HEAD_SHA" .githooks/pre-commit',
+        'export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"',
+        "permissions:\n  contents: read",
+    ),
+    ".github/workflows/spec-gate.yml": (
+        "pull_request_target:",
+        "scripts/gate/spec_gate.py --pr",
+        "permissions:\n  contents: read",
+    ),
+}
 # The files the gate runs from: no change may delete one, whatever its branch, or the
 # base's copy judges the deletion green and every later PR runs without a gate.
 GATE_ENTRYPOINTS = (
@@ -403,6 +421,9 @@ def check_changed_specs(ch: Change) -> list[str]:
             continue
         text = ch.tree.read(path)
         if text is None:
+            if frontmatter(ch.base.read(path)).get("status") == "approved":
+                errs.append(f"{path}: an approved spec is not deleted; supersede it with a new spec and mark this one "
+                            "superseded, so the plans that cite it keep a contract to point at")
             continue
         if catalog is None:
             catalog, req_defs = catalog_ids(ch.base.read(CATALOG)), requirement_defs(ch.base)
@@ -422,6 +443,12 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
     if ch.mode == "pr" and ch.branch.startswith("spike/"):
         return [f"branch '{ch.branch}' is a spike: local investigation commits only, never a pull request. "
                 "Re-cut the work on a feature/ or fix/ branch with a plan, or a docs/ branch for its write-up."], None
+    for path, markers in WORKFLOW_CONTRACTS.items():
+        if path in ch.changed and (text := ch.tree.read(path)) is not None:
+            lost = [m for m in markers if m not in text]
+            if lost:
+                return [f"{path}: no longer carries {len(lost)} step(s) the gate depends on ({lost[0]!r}"
+                        f"{' and more' if len(lost) > 1 else ''}); the gate's workflows keep their checks"], None
     removed = [f for f in ch.changed if f in GATE_ENTRYPOINTS and ch.tree.read(f) is None]
     if removed:
         return [f"{summarize(removed)}: the gate's own entrypoints cannot be removed by a change; "
@@ -731,7 +758,7 @@ def feat_span(text: str, feat_id: str) -> set[int]:
         if h:
             if level is not None and (len(h.group(1)) <= level or any(f != feat_id for f in FEAT_IDS.findall(line))):
                 level = None   # a sibling capability's heading ends the span whatever its level
-            if feat_id in line:
+            if feat_id in FEAT_IDS.findall(line):
                 level = len(h.group(1))
         if level is not None or (FEAT_ROW.match(line) and FEAT_ROW.match(line).group(1) == feat_id):
             span.add(n)
@@ -740,13 +767,13 @@ def feat_span(text: str, feat_id: str) -> set[int]:
 
 def heading_levels(text: str, feat_id: str) -> list[int]:
     """The levels of the headings naming the FEAT, in order."""
-    return [len(h.group(1)) for line in text.splitlines() if (h := HEADING.match(line)) and feat_id in line]
+    return [len(h.group(1)) for line in text.splitlines() if (h := HEADING.match(line)) and feat_id in FEAT_IDS.findall(line)]
 
 
 def feat_headings(text: str, feat_id: str) -> tuple[int, int]:
     """(headings naming the FEAT, table rows keyed by it): one record, one of each."""
     lines = text.splitlines()
-    return (sum(1 for line in lines if HEADING.match(line) and feat_id in line),
+    return (sum(1 for line in lines if HEADING.match(line) and feat_id in FEAT_IDS.findall(line)),
             sum(1 for line in lines if (m := FEAT_ROW.match(line)) and m.group(1) == feat_id))
 
 
@@ -825,7 +852,7 @@ def feat_record(text: str | None, feat_id: str) -> str:
     shown = visible(text or "")
     lines = shown.splitlines()
     section = [lines[ln - 1] for ln in section_of(shown, feat_id) if ln <= len(lines)]
-    rows = [line for line in lines if line.startswith("|") and feat_id in line]
+    rows = [line for line in lines if line.startswith("|") and feat_id in FEAT_IDS.findall(line)]
     return "\n".join(section + rows)
 
 
@@ -863,7 +890,7 @@ def section_of(text: str, feat_id: str) -> range:
     lines = text.splitlines()
     for i, line in enumerate(lines):
         h = HEADING.match(line)
-        if h and feat_id in line:
+        if h and feat_id in FEAT_IDS.findall(line):
             level = len(h.group(1))
             end = next((j for j in range(i + 1, len(lines))
                         if (hh := HEADING.match(lines[j])) and len(hh.group(1)) <= level), len(lines))

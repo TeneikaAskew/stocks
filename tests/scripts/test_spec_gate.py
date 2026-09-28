@@ -518,6 +518,10 @@ def test_close_out_checks_the_status_and_last_reviewed_fields(repo):
         catalog = stocks_catalog[:section_end] + "\n" + hidden + "\n" + stocks_catalog[section_end:]
         r = pr(repo, BRANCH, {**base, CATALOG: catalog}, **meta)
         assert r.returncode == 1 and "Last reviewed" in r.stdout, (hidden, r.stdout)
+    # solyra#72 r4119505526: FEAT-MODEL-0010 is not FEAT-MODEL-001's heading
+    lookalike_trace = "# Traceability\n\n## FEAT-MODEL-0010\n\n- #42 second cut\n"
+    r = pr(repo, BRANCH, {**base, CATALOG: stamped, TRACEABILITY: lookalike_trace}, **meta)
+    assert r.returncode == 1 and "add this PR (#42)" in r.stdout, r.stdout
     # solyra#72 r4119234373: #42abc is not a reference to PR #42
     glued = stocks_catalog.replace("2026-08-30", TODAY)
     trace_glued = "# Traceability\n\n## FEAT-MODEL-001\n\n- #42abc second cut\n"   # base: stocks_catalog, lineage `- none`
@@ -587,6 +591,9 @@ def test_every_branch_shape_the_rules_name_passes_only_its_own_work(repo):
     for bad in (spec(req_ids="[REQ-FAKE-999]"), spec(feat_id="FEAT-NOPE-001"), spec(done_when=[])):
         r = pr(repo, "docs/spec-feat-model-001", {"docs/superpowers/specs/2026-09-28-x.md": bad})
         assert r.returncode == 1 and "2026-09-28-x.md:" in r.stdout, r.stdout
+    # solyra#72 r4119505520: nor is an approved spec deleted
+    r = pr(repo, "docs/spec-feat-model-001", {SPEC: None})
+    assert r.returncode == 1 and "is not deleted" in r.stdout, r.stdout
     # solyra#72 r4119408318: an approved spec does not change in place; it is superseded
     r = pr(repo, "docs/spec-feat-model-001", {SPEC: spec(done_when=["something easier"])})
     assert r.returncode == 1 and "does not change in place" in r.stdout, r.stdout
@@ -961,7 +968,8 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
     assert pr(repo, BRANCH, CODE, **title, PR_BODY=body()).returncode == 0
     # solyra#72 r4118831965: a chore/ PR editing the gate's own workflow is untraced and
     # still changes what CI runs, so the Capacity check does not hide behind the trace
-    workflow = {".github/workflows/spec-gate.yml": "on: pull_request_target\n"}
+    workflow = {".github/workflows/spec-gate.yml": "on:\n  pull_request_target:\npermissions:\n  contents: read\njobs:\n  gate:\n"
+                                                  "    steps:\n      - run: python3 scripts/gate/spec_gate.py --pr a b\n"}
     r = pr(repo, "chore/gate-workflow", workflow, PR_BODY="## Summary\n\nretune the gate\n")
     assert r.returncode == 1 and "PR body needs a Capacity section" in r.stdout, r.stdout
     assert pr(repo, "chore/gate-workflow", workflow, PR_BODY="## Capacity\nn/a: one PR-triggered job, seconds\n").returncode == 0
@@ -970,6 +978,13 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
     for entry in (".github/workflows/spec-gate.yml", ".githooks/pre-commit"):   # the script itself runs these tests
         r = pr(repo, "chore/gate-workflow", {entry: None}, PR_BODY="## Capacity\nn/a: x\n")
         assert r.returncode == 1 and "entrypoints cannot be removed" in r.stdout, (entry, r.stdout)
+    # solyra#72 r4119505510 (P1): the head-run verifier cannot be gutted by the PR it verifies;
+    # the base's gate holds it to its steps
+    gutted = "name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ok\n"
+    r = pr(repo, "chore/gate-workflow", {".github/workflows/registry-check.yml": gutted}, PR_BODY="## Capacity\nn/a: x\n")
+    assert r.returncode == 1 and "no longer carries" in r.stdout, r.stdout
+    kept = gutted.replace("      - run: echo ok\n", "      - run: |\n          python3 -m py_compile \"$gate\"\n          python3 \"$gate\" --pr \"$BASE_SHA\" \"$HEAD_SHA\"\n          pytest tests/scripts/test_spec_gate.py\n          git ls-tree \"$HEAD_SHA\" .githooks/pre-commit\n          export_model_registry.py --check --rev \"$HEAD_SHA\" --base \"$BASE_SHA\"\n")
+    assert pr(repo, "chore/gate-workflow", {".github/workflows/registry-check.yml": kept}, PR_BODY="## Capacity\nn/a: x\n").returncode == 0
     # solyra#72 r4118957767 (P1): a gate file entry is exact, so a workflow named after
     # one is still a workflow a chore/ branch cannot add
     r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml-backdoor.yaml": "on: push\n"},
