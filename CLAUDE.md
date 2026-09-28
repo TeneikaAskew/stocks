@@ -12,6 +12,8 @@ Gate files (`scripts/gate/`, `.githooks/pre-commit`, `.github/workflows/spec-gat
 get a red-team pass before every push: one reviewer per attack surface (shell, YAML/Actions, exporter and policy docs),
 each bypass proven by running the gate against a concrete snippet, everything found fixed in one batch, repeated until a
 pass comes back empty, then one push. Never push a gate change one finding at a time.
+The two gate workflows and the hook are pinned byte for byte to copies under `scripts/gate/pinned/`, read from main:
+change the copy in one PR, then make the file equal to it in the next. One PR changing both is refused.
 
 ## Project Overview
 This is a stocks/trading application project that includes Google Apps Script components for market data fetching, historical data backfilling, and continuation systems for long-running operations.
