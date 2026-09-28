@@ -2194,3 +2194,45 @@ def test_negations_conditions_handoffs_and_the_hook_mode_are_the_contract(repo):
     r = gate(repo, "--pr", "base", "HEAD", PR_HEAD_REF="chore/gate-hook", **cap)
     assert r.returncode == 1 and "has mode 100644 in this change; the hook stays executable" in r.stdout, r.stdout
     assert pr(repo, "chore/gate-hook", {".githooks/pre-commit": "#!/bin/sh\n# executable again\nset -e\npython3 scripts/gate/spec_gate.py --commit\n"}, **cap).returncode == 0
+
+
+def test_requirement_definitions_are_rendered_text_and_a_new_registry_covers_head_specs(repo):
+    """solyra#72 r4121100680, r4121100668 (spec_gate.py:66, :1513).
+
+    `` `**REQ-MODEL-001:**` `` in prose counted as a definition, so the real one could be
+    pruned; a new registry was checked against the base's specs alone, so a spec landing
+    with it could cite an ID it omits and refuse its own implementation later. Both refused.
+    """
+    example = REQUIREMENTS_TEXT.replace("**REQ-MODEL-001:** Every model states the decision it produces.",
+                                        "Definitions look like `**REQ-MODEL-001:** text`.")
+    r = pr(repo, "docs/reqs", {REQUIREMENTS: example})
+    assert r.returncode == 1 and "no longer defines 1 ID(s) the base has (REQ-MODEL-001" in r.stdout, r.stdout
+    fenced = REQUIREMENTS_TEXT + "\n```\n**REQ-FAKE-001:** in a fence\n```\n"
+    assert pr(repo, "docs/reqs", {REQUIREMENTS: fenced}).returncode == 0
+    on_base(repo, {REQUIREMENTS: None})
+    new_spec = "docs/superpowers/specs/2026-09-28-data-e.md"
+    r = pr(repo, "docs/reqs", {REQUIREMENTS: REQUIREMENTS_TEXT, new_spec: spec(feat_id="FEAT-DATA-001", req_ids=["REQ-DATA-009"])})
+    assert r.returncode == 1 and "omits 1 requirement(s) the specs cite (REQ-DATA-009)" in r.stdout, r.stdout
+    assert pr(repo, "docs/reqs", {REQUIREMENTS: REQUIREMENTS_TEXT, new_spec: spec(feat_id="FEAT-DATA-001", req_ids=["REQ-DATA-001"])}).returncode == 0
+    # the generated registry rides a chore/ change only with the exporter that writes it
+    generated = "docs/product/generated/model-registry.json"
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    r = pr(repo, "chore/exporter", {generated: "{}\n"}, **cap)
+    assert r.returncode == 1 and "changes 1 gated file(s)" in r.stdout, r.stdout
+    assert pr(repo, "chore/exporter", {generated: "{}\n", "scripts/gate/export_model_registry.py": "print('x')\n"}, **cap).returncode == 0
+
+
+def test_quoted_text_is_text_across_lines(repo):
+    """stocks#1205 r4121216898 (spec_gate.py:343): quote state was per line, so an `echo "x;`
+    opened on one line and closed after the verdict command on the next made the command a
+    statement of its own. A quoted span is text however many lines it spans."""
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/spec-gate.yml"
+    for decoy in ('|\n          echo "disabled;\n          ' + VERDICT_CMD + '\n          "',
+                  '|\n          echo "disabled; ' + VERDICT_CMD + '"',
+                  "|\n          echo 'disabled;\n          " + VERDICT_CMD + "\n          '",
+                  '|\n          x="\n          ' + VERDICT_CMD + '\n          "'):
+        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a=decoy)}, **cap)
+        assert r.returncode == 1 and "no longer executes" in r.stdout, (decoy, r.stdout)
+    quoted_args = gate_workflow(a='|\n          echo "note: $HEAD_SHA"\n          ' + VERDICT_CMD + '\n          echo "done"')
+    assert pr(repo, "chore/gate-workflow", {wf: quoted_args}, **cap).returncode == 0

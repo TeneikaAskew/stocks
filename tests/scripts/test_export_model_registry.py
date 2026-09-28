@@ -665,3 +665,13 @@ def test_a_finding_row_names_exactly_one_id(repo):
     assert r.returncode != 0 and "names 2 IDs; one finding per row" in r.stdout + r.stderr, r.stdout + r.stderr
     write(repo, REGISTRY, REGISTRY_TEXT)
     assert export(repo).returncode == 0, export(repo).stdout
+
+
+def test_indented_table_rows_are_rows(repo):
+    """stocks#1205 r4121216904 (export_model_registry.py:181): a row indented by one space
+    still renders in the table, but ended it here, so a model card vanished from the JSON
+    and `--check` passed on the truncated output. Up to three leading spaces are a row."""
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("\n| MODEL-MAG-001 |", "\n | MODEL-MAG-001 |", 1))
+    r = export(repo)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "MODEL-MAG-001" in exported(repo)["models"]

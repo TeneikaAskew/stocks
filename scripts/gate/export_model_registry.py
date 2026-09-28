@@ -163,7 +163,9 @@ REQUIRED_KEYS = {
 def tables_with_headings(text: str):
     """Yield (heading_path, header_cells, rows) for every markdown table that renders."""
     heading: list[str] = []
-    lines = rendered(text).splitlines()
+    # stocks#1205 r4121216904: GFM renders a row indented by up to three spaces as part of
+    # the table, so such a row is a row here too, not the end of the table
+    lines = [re.sub(r"^ {1,3}(?=\|)", "", ln) for ln in rendered(text).splitlines()]
     i = 0
     while i < len(lines):
         line = lines[i]
