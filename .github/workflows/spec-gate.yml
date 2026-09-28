@@ -53,3 +53,18 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: python3 scripts/gate/spec_gate.py --pr "$BASE_SHA" "$HEAD_SHA"
 
+      # The BASE's suite judges the proposed gate: a PR cannot certify its gate with tests it
+      # also controls (registry-check.yml runs the PR's own suite; this runs main's). The
+      # proposed gate replaces the base's copy only here, after the verdict above used the
+      # base's. It runs PR-controlled Python, in temporary repositories, on this workflow's
+      # read-only token with no secrets. A gate change that alters a tested message lands
+      # in two steps: first a test that accepts both messages, then the change.
+      - name: Base suite against the proposed gate
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git show "$HEAD_SHA:scripts/gate/spec_gate.py" > scripts/gate/spec_gate.py
+          python3 -m pip install --quiet pytest pyyaml
+          # --noconftest: the suite is hermetic; a repository conftest may import packages this job does not install
+          python3 -m pytest tests/scripts/test_spec_gate.py -q -p no:cacheprovider --noconftest
+

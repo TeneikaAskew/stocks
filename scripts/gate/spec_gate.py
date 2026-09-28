@@ -97,20 +97,24 @@ WORKFLOW_CONTRACTS = {
         # A statement counts when it STARTS with the command (after wrappers), so a word that
         # merely carries the text as an argument (`python3 -c '' python3 "$gate" ...`) does not.
         "run": ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"',
-                "python3 -m pytest tests/scripts/test_spec_gate.py tests/scripts/test_spec_gate_base.py",
-                'git ls-tree "$HEAD_SHA" .githooks/pre-commit'),
-        # required where the base carries the file: solyra has no model registry to export, and
-        # a first landing has no base suite to run against the proposed gate
+                "python3 -m pytest tests/scripts/test_spec_gate.py", 'git ls-tree "$HEAD_SHA" .githooks/pre-commit'),
+        # required where the base carries the script: solyra has no model registry to export
         "run_if_present": {
             "scripts/gate/export_model_registry.py": 'python3 scripts/gate/export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"',
-            "tests/scripts/test_spec_gate.py": 'git show "$BASE_SHA:tests/scripts/test_spec_gate.py" > tests/scripts/test_spec_gate_base.py',
         },
         "structure": ("permissions:\n  contents: read",),
     },
     ".github/workflows/spec-gate.yml": {
         "checkout": "base",   # pull_request_target: a head checkout would run PR-controlled code with its token
         "trigger": "pull_request_target",
-        "run": ('python3 scripts/gate/spec_gate.py --pr "$BASE_SHA" "$HEAD_SHA"',),
+        # The base's verdict first; then the base's own suite judges the proposed gate, which
+        # replaces the base's copy only after the verdict (solyra#72 r4120337733)
+        "run": ('python3 scripts/gate/spec_gate.py --pr "$BASE_SHA" "$HEAD_SHA"',
+                'git show "$HEAD_SHA:scripts/gate/spec_gate.py" > scripts/gate/spec_gate.py',
+                "python3 -m pytest tests/scripts/test_spec_gate.py"),
+        "order": ('python3 scripts/gate/spec_gate.py --pr "$BASE_SHA" "$HEAD_SHA"',
+                  'git show "$HEAD_SHA:scripts/gate/spec_gate.py" > scripts/gate/spec_gate.py',
+                  "python3 -m pytest tests/scripts/test_spec_gate.py"),
         "structure": ("permissions:\n  contents: read",),
     },
 }
@@ -775,6 +779,10 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                 return [f"{path}: no longer executes {len(lost)} step(s) the gate depends on ({lost[0]!r}"
                         f"{' and more' if len(lost) > 1 else ''}); a command in a comment, an echo, an unused scalar "
                         "or a step an `if:` may skip does not count. The gate's workflows keep their checks"], None
+            positions = [next((k for k, st in enumerate(statements) if st.startswith(m)), -1) for m in contract.get("order", ())]
+            if positions != sorted(positions):
+                return [f"{path}: runs its steps out of order ({', '.join(repr(m) for m in contract['order'])} is the order); "
+                        "the base's verdict comes before the proposed gate replaces the base's copy"], None
             if contract["trigger"] not in workflow_triggers(body):
                 return [f"{path}: no longer runs on {contract['trigger']} (its `on:` names "
                         f"{', '.join(sorted(workflow_triggers(body))) or 'nothing'}); the gate's workflows keep their trigger"], None

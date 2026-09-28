@@ -391,10 +391,7 @@ def test_ci_checks_the_pr_head_commit(repo):
         assert required in proposed["run"], required
     # solyra#72 r4119296005 (P1): a verdict on a chore PR never reaches the traced paths, so the
     # head's gate must also pass its own suite before it can become the gate
-    suite = next(s for s in steps if "python3 -m pytest tests/scripts/test_spec_gate.py tests/scripts/test_spec_gate_base.py" in s.get("run", ""))
-    # solyra#72 r4120337733 (P1): the BASE's suite runs against the proposed gate too, so a
-    # head suite hollowed out with the gate certifies nothing
-    assert 'git show "$BASE_SHA:$suite" > tests/scripts/test_spec_gate_base.py' in suite["run"]
+    suite = next(s for s in steps if "python3 -m pytest tests/scripts/test_spec_gate.py" in s.get("run", ""))
     assert steps.index(proposed) < steps.index(suite) < steps.index(check)
     # solyra#72 r4119408310 (P1), r4119408312: the suite cannot be deleted by a PR, and the hook
     # must stay executable or git silently stops running it
