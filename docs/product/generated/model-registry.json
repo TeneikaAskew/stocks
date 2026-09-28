@@ -34,7 +34,7 @@
    "disposition": "FLAGGED — needs measurement, re-stated 2026-09-21",
    "id": "DOC-06",
    "label": "DOC-06",
-   "why": "#1117 landed as `164b262`; this row's previous text said to re-read the finding against it, so that was done against the merged document rather than the PR's commit message. Gate 7 was not overturned. `MAGNITUDE_ENGINE_RESULTS.md:3` still opens `PROJECT VERDICT: FAIL (closed 2026-05-29 by gate 7)` and `:519` still reads *\"Gate 7 verdict: FAIL on every cell\"* — 0 of 23 IV-covered folds, aggregate 0.67-0.73 over 24 folds in §12. What changed is the other half: `pred_bucket` is now `P(bucket) ≥ 2× prior` instead of argmax, and `magnitude-engine-6hp7l` is promoted on SPY/QQQ/IWM 5m, so the engine is no longer serving constants on three of four cells. The contradiction therefore narrows and survives: it was \"the doc reads closed, the system is collapsed and serving nothing\"; it is now \"the doc reads closed, and the system serves real per-bar decisions whose edge over the option chain is still measured at 0.67-0.73\". Resolving it still means re-running gate 7"
+   "why": "#1117 landed as `164b262`; this row's previous text said to re-read the finding against it, so that was done against the merged document rather than the PR's commit message. Gate 7 was not overturned. `MAGNITUDE_ENGINE_RESULTS.md:3` still opens `PROJECT VERDICT: FAIL (closed 2026-05-29 by gate 7)` and `:519` still reads \"Gate 7 verdict: FAIL on every cell\" — 0 of 23 IV-covered folds, aggregate 0.67-0.73 over 24 folds in §12. What changed is the other half: `pred_bucket` is now `P(bucket) ≥ 2× prior` instead of argmax, and `magnitude-engine-6hp7l` is promoted on SPY/QQQ/IWM 5m, so the engine is no longer serving constants on three of four cells. The contradiction therefore narrows and survives: it was \"the doc reads closed, the system is collapsed and serving nothing\"; it is now \"the doc reads closed, and the system serves real per-bar decisions whose edge over the option chain is still measured at 0.67-0.73\". Resolving it still means re-running gate 7"
   },
   "DOC-07": {
    "disposition": "FIXED HERE",
@@ -52,7 +52,7 @@
    "disposition": "FILED as #1118",
    "id": "DOC-09",
    "label": "DOC-09",
-   "why": "The swallow at `refresh-architecture-docs.yml:895` is a real Rule 3.7 defect and is now tracked. Whether the block is *actually* stale still needs a live `ticker_calibration` read — the issue says so and gives the query rather than assuming"
+   "why": "The swallow at `refresh-architecture-docs.yml:895` is a real Rule 3.7 defect and is now tracked. Whether the block is actually stale still needs a live `ticker_calibration` read — the issue says so and gives the query rather than assuming"
   },
   "DOC-10": {
    "disposition": "FIXED HERE",
@@ -148,7 +148,7 @@
    "disposition": "FIXED HERE",
    "id": "DOC-25",
    "label": "DOC-25",
-   "why": "The duplicate row is deleted, DOC-20's disposition records that the count was deleted rather than corrected a third time, and a new invariant gates the half of the register the old one skipped. Repeating an id across rows stays legal — DOC-13 genuinely has a registry half and a path half — what is gated is two rows disagreeing about what was *done*"
+   "why": "The duplicate row is deleted, DOC-20's disposition records that the count was deleted rather than corrected a third time, and a new invariant gates the half of the register the old one skipped. Repeating an id across rows stays legal — DOC-13 genuinely has a registry half and a path half — what is gated is two rows disagreeing about what was done"
   },
   "DOC-26": {
    "disposition": "FIXED HERE",
@@ -178,7 +178,7 @@
    "disposition": "FIXED HERE",
    "id": "DOC-30",
    "label": "DOC-30",
-   "why": "Reclassified *dead-generator* → *unsynchronized artifact*, in the register and in `BACKTEST_RESULTS.md`'s own header, which repeated the inference. The sharper fact is that `run_pipeline.py` has no commit or upload step: the job renders into an ephemeral container filesystem and the canonical output is the `backtest_reports` row, so the checked-in copy cannot be refreshed by running the pipeline"
+   "why": "Reclassified dead-generator → unsynchronized artifact, in the register and in `BACKTEST_RESULTS.md`'s own header, which repeated the inference. The sharper fact is that `run_pipeline.py` has no commit or upload step: the job renders into an ephemeral container filesystem and the canonical output is the `backtest_reports` row, so the checked-in copy cannot be refreshed by running the pipeline"
   },
   "DOC-31": {
    "disposition": "FIXED HERE",
@@ -190,7 +190,7 @@
    "disposition": "FIXED HERE",
    "id": "DOC-32",
    "label": "DOC-32",
-   "why": "Registered as MODEL-FLOW-001 — `Failed` / `PAUSE`, with the ledger's B5 (E5) verdict (*falsified; null and dilutive*, IWM +0.053/z2.85 → −0.008/z−0.49). Only then added to `MODEL_BEARING` and the scheduler table, so the gate is satisfied rather than bypassed. The governance point is recorded, not decided: a daily cron has been materializing a falsified feature set whose only reader is a research probe"
+   "why": "Registered as MODEL-FLOW-001 — `Failed` / `PAUSE`, with the ledger's B5 (E5) verdict (falsified; null and dilutive, IWM +0.053/z2.85 → −0.008/z−0.49). Only then added to `MODEL_BEARING` and the scheduler table, so the gate is satisfied rather than bypassed. The governance point is recorded, not decided: a daily cron has been materializing a falsified feature set whose only reader is a research probe"
   },
   "DOC-33": {
    "disposition": "FIXED HERE",
@@ -208,19 +208,19 @@
    "disposition": "FIXED HERE",
    "id": "DOC-35",
    "label": "DOC-35",
-   "why": "The inclusion rule is rewritten and published: *a scheduled job is model-bearing when it produces a decision, a label or a verdict about a trade, a signal or a position that reaches a person or a served surface — wherever its thresholds live.* Imports become one sufficient signal, not the definition. `phase6-playbook-daily` is registered as MODEL-PLAY-001, and every live scheduler now appears in the scheduler table or in a new deliberate-exclusion table with its reason, gated by `test_every_live_scheduler_is_classified`. *The count said 63 until 2026-09-22; it is 66, and the three the parsers could not see were the ones that mattered — DOC-48.*"
+   "why": "The inclusion rule is rewritten and published: a scheduled job is model-bearing when it produces a decision, a label or a verdict about a trade, a signal or a position that reaches a person or a served surface — wherever its thresholds live. Imports become one sufficient signal, not the definition. `phase6-playbook-daily` is registered as MODEL-PLAY-001, and every live scheduler now appears in the scheduler table or in a new deliberate-exclusion table with its reason, gated by `test_every_live_scheduler_is_classified`. The count said 63 until 2026-09-22; it is 66, and the three the parsers could not see were the ones that mattered — DOC-48."
   },
   "DOC-36": {
    "disposition": "FIXED HERE",
    "id": "DOC-36",
    "label": "DOC-36",
-   "why": "The docstring is rewritten (`gcp/weekend_review.py:1-21`) to describe what the module does, naming DOC-36 and #1137 so the correction is greppable from the code. *This row previously read \"RECORDED — and its issue may close without it\", warning that #1139 says `Closes #1137` while fixing three other docstrings. That risk is now closed from this side: the file was already being edited for DOC-62, and a one-sentence correction cost nothing next to the chance of the issue closing over it.* #1137 stays open for the docstrings it also covers"
+   "why": "The docstring is rewritten (`gcp/weekend_review.py:1-21`) to describe what the module does, naming DOC-36 and #1137 so the correction is greppable from the code. This row previously read \"RECORDED — and its issue may close without it\", warning that #1139 says `Closes #1137` while fixing three other docstrings. That risk is now closed from this side: the file was already being edited for DOC-62, and a one-sentence correction cost nothing next to the chance of the issue closing over it. #1137 stays open for the docstrings it also covers"
   },
   "DOC-37": {
    "disposition": "FIXED HERE",
    "id": "DOC-37",
    "label": "DOC-37",
-   "why": "The parser joins backslash continuations before matching, and the module docstring records the failure in the terms that matter — *an assertion that every item resolves says nothing about items the enumeration missed.* Both schedulers it had hidden — `signal-quality-report-nightly` and `signal-quality-alarm-daily` — are registered as MODEL-QUAL-001. The durable lesson is that the second parser is what found it: `test_every_live_scheduler_is_classified` enumerates independently and disagreed by two"
+   "why": "The parser joins backslash continuations before matching, and the module docstring records the failure in the terms that matter — an assertion that every item resolves says nothing about items the enumeration missed. Both schedulers it had hidden — `signal-quality-report-nightly` and `signal-quality-alarm-daily` — are registered as MODEL-QUAL-001. The durable lesson is that the second parser is what found it: `test_every_live_scheduler_is_classified` enumerates independently and disagreed by two"
   },
   "DOC-38": {
    "disposition": "FILED — #1151",
@@ -244,31 +244,31 @@
    "disposition": "FIXED HERE",
    "id": "DOC-41",
    "label": "DOC-41",
-   "why": "All 12 cells regenerated from `deploy.sh` by script rather than retyped, with the `news-sentiment` row now naming its three jobs. Gated by `test_exclusion_table_job_cells_match_deploy_sh` and mutation-tested both ways — a single wrong name, and the subtler case of three jobs collapsed to one. *This cell also said the gate was \"mirrored in `scripts/audit_scheduler_coverage.py`\". It was not, and that claim is what DOC-61 is: the script used a subset test where the pytest asserts equality, so the two disagreed on any EXTRA name and only the pytest was ever mutation-tested. Corrected 2026-09-22; the mirror is now real and mutation-tested on both surfaces.* This is the second consecutive round whose defect was \"the other direction, or the other column, was never checked\" (DOC-37 was the scheduler set; this is the job column). The pattern is worth naming: a parser written for one purpose gets reused as though it validated everything it touched"
+   "why": "All 12 cells regenerated from `deploy.sh` by script rather than retyped, with the `news-sentiment` row now naming its three jobs. Gated by `test_exclusion_table_job_cells_match_deploy_sh` and mutation-tested both ways — a single wrong name, and the subtler case of three jobs collapsed to one. This cell also said the gate was \"mirrored in `scripts/audit_scheduler_coverage.py`\". It was not, and that claim is what DOC-61 is: the script used a subset test where the pytest asserts equality, so the two disagreed on any EXTRA name and only the pytest was ever mutation-tested. Corrected 2026-09-22; the mirror is now real and mutation-tested on both surfaces. This is the second consecutive round whose defect was \"the other direction, or the other column, was never checked\" (DOC-37 was the scheduler set; this is the job column). The pattern is worth naming: a parser written for one purpose gets reused as though it validated everything it touched"
   },
   "DOC-42": {
    "disposition": "FIXED HERE",
    "id": "DOC-42",
    "label": "DOC-42",
-   "why": "Replaced with the measured rate, quoted from `schema.sql` and the track-D audit rather than re-derived, and the solo-fire distinction the old text erased is now stated: ~98% of fires are mean reversion alone, so the agreement bonus touches roughly 1 fire in 45. Cross-linked both ways with MODEL-MOM-001. *The second half of this cell used to read that the same measurement \"explains why `enable_standalone_momentum = False` costs so little — … it is not eligible on 765 of 782 bars\". Retracted 2026-09-22 (DOC-53): the 782 are rows in `signal_alerts`, i.e. emitted alerts, not bars, and the sample excludes the discarded population by construction. DOC-51 declared this \"RETRACTED in both documents\" while it survived nine rows above, in the same table — DOC-22's class, committed inside the commit that retracted it.* Not filed: a documentation error, not a code defect"
+   "why": "Replaced with the measured rate, quoted from `schema.sql` and the track-D audit rather than re-derived, and the solo-fire distinction the old text erased is now stated: ~98% of fires are mean reversion alone, so the agreement bonus touches roughly 1 fire in 45. Cross-linked both ways with MODEL-MOM-001. The second half of this cell used to read that the same measurement \"explains why `enable_standalone_momentum = False` costs so little — … it is not eligible on 765 of 782 bars\". Retracted 2026-09-22 (DOC-53): the 782 are rows in `signal_alerts`, i.e. emitted alerts, not bars, and the sample excludes the discarded population by construction. DOC-51 declared this \"RETRACTED in both documents\" while it survived nine rows above, in the same table — DOC-22's class, committed inside the commit that retracted it. Not filed: a documentation error, not a code defect"
   },
   "DOC-43": {
    "disposition": "FIXED HERE",
    "id": "DOC-43",
    "label": "DOC-43",
-   "why": "Both rows moved into the scheduler table, each with what it actually emits and at what strength — the live writer on the rule's decision clause, the backfill on its label clause, since `backfill_daily_indicators.py:137-138` records that `ftfc_score` / `strat_setup` are *\"populated only by the live writer's per-day pass\"*. Gated by `test_excluded_jobs_importing_model_code_justify_it`, which demotes the old proxy from a failed inclusion rule to an exclusion tripwire: an excluded job importing MODEL-cited code must carry an explicit `Inputs only —` justification. Exactly one row trips it today, `premarket-refresh-daily`, whose justification is a grep a reader can re-run. Mutation-tested both ways, including restoring the original defect. Not filed: the jobs are correctly built and were wrongly classified"
+   "why": "Both rows moved into the scheduler table, each with what it actually emits and at what strength — the live writer on the rule's decision clause, the backfill on its label clause, since `backfill_daily_indicators.py:137-138` records that `ftfc_score` / `strat_setup` are \"populated only by the live writer's per-day pass\". Gated by `test_excluded_jobs_importing_model_code_justify_it`, which demotes the old proxy from a failed inclusion rule to an exclusion tripwire: an excluded job importing MODEL-cited code must carry an explicit `Inputs only —` justification. Exactly one row trips it today, `premarket-refresh-daily`, whose justification is a grep a reader can re-run. Mutation-tested both ways, including restoring the original defect. Not filed: the jobs are correctly built and were wrongly classified"
   },
   "DOC-44": {
    "disposition": "FIXED HERE",
    "id": "DOC-44",
    "label": "DOC-44",
-   "why": "All five sections rewritten against the suites, with counts taken from `pytest --collect-only` rather than read off. Each carries a blockquote quoting the wrong claim it replaces. Three gates added, because the three modes fail differently: `test_cited_test_files_cover_the_model` (cited file must reference the model), `test_no_test_claims_are_true` (a \"no test\" claim must survive an import search — import, not mention, so MODEL-EWV-001's correct section stays green), and `test_every_model_doc_states_its_test_surface` (a section may not stay silent). This PR's own description claimed the suite *cannot* check prose against code; that is true of behaviour and false of coverage claims, which are three mechanical questions"
+   "why": "All five sections rewritten against the suites, with counts taken from `pytest --collect-only` rather than read off. Each carries a blockquote quoting the wrong claim it replaces. Three gates added, because the three modes fail differently: `test_cited_test_files_cover_the_model` (cited file must reference the model), `test_no_test_claims_are_true` (a \"no test\" claim must survive an import search — import, not mention, so MODEL-EWV-001's correct section stays green), and `test_every_model_doc_states_its_test_surface` (a section may not stay silent). This PR's own description claimed the suite cannot check prose against code; that is true of behaviour and false of coverage claims, which are three mechanical questions"
   },
   "DOC-45": {
    "disposition": "FIXED HERE",
    "id": "DOC-45",
    "label": "DOC-45",
-   "why": "`_cited_paths` rewritten: the character class is now open, braces and globs are expanded and every file they name checked, `::`/`:Symbol`/comma-range suffixes are stripped, and anything still unresolvable raises rather than returning empty — `test_doc_pointers_are_all_validatable`. The 36 exposed pointers were repointed at the real `tests/<area>/` locations and `gcp/failure_notifier.py`; `scripts/analysis/phase1…phase7` became `phase[1-7]_*.py`. Mutation: renaming `strat_walk_forward_adaptive.py` is now red and was green before. Separately, `KNOWN_BACKLOG` became an exceptions table rather than the list of documents that get checked — it named 7 of 16, leaving 9 product docs with no dead-path gate at all"
+   "why": "`_cited_paths` rewritten: the character class is now open, braces and globs are expanded and every file they name checked, `::`/`:Symbol`/comma-range suffixes are stripped, and anything still unresolvable raises rather than returning empty — `test_doc_pointers_are_all_validatable`. The 36 exposed pointers were repointed at the real `tests/<area>/` locations and `gcp/failure_notifier.py`; `scripts/analysis/phase1…phase7` became `phase[1-7].py`. Mutation: renaming `strat_walk_forward_adaptive.py` is now red and was green before. Separately, `KNOWN_BACKLOG` became an exceptions table rather than the list of documents that get checked — it named 7 of 16, leaving 9 product docs with no dead-path gate at all"
   },
   "DOC-46": {
    "disposition": "FIXED HERE",
@@ -292,7 +292,7 @@
    "disposition": "FIXED HERE",
    "id": "DOC-49",
    "label": "DOC-49",
-   "why": "Rewritten as a named visibility-only exception covering both rows, with what each writes and who reads it, since a live cron whose output reaches nobody is the row an operator most needs to see. Explicitly not presented as a swept set: only these two were checked, and a naive \"writes no served table\" scan over-reports — `calibrate-thresholds-quarterly` reaches the live fire path through `lib/strategies/calibration.py`'s RSI-range resolvers, read at `gcp/signal_monitor.py:1084-1085` — so no count is published. *This cell said `exit_config_overrides` until 2026-09-22: the wrong table, in the disposition of the correction it describes. DOC-52*"
+   "why": "Rewritten as a named visibility-only exception covering both rows, with what each writes and who reads it, since a live cron whose output reaches nobody is the row an operator most needs to see. Explicitly not presented as a swept set: only these two were checked, and a naive \"writes no served table\" scan over-reports — `calibrate-thresholds-quarterly` reaches the live fire path through `lib/strategies/calibration.py`'s RSI-range resolvers, read at `gcp/signal_monitor.py:1084-1085` — so no count is published. This cell said `exit_config_overrides` until 2026-09-22: the wrong table, in the disposition of the correction it describes. DOC-52"
   },
   "DOC-50": {
    "disposition": "FIXED HERE",
@@ -322,7 +322,7 @@
    "disposition": "FIXED HERE — and deliberately NOT gated",
    "id": "DOC-54",
    "label": "DOC-54",
-   "why": "One word deleted. The paragraph needed only that the two systems are unrelated, and *\"an entirely separate, never-evaluated production threshold calibrator\"* lands its actual conclusion — that MODEL-CALIB-001 carries no experiment at all — more strongly than the wrong status did. A gate was prototyped and rejected. Comparing a status word in prose against the model's row requires attributing the word to a subject, and the block carrying this very defect names FOUR model ids, so the prototype skipped it: green on the defect it existed to catch. Shipping it would have added a vacuous gate in the round that fixes three of them (DOC-45, DOC-48, DOC-50). Recorded rather than dropped quietly, because \"no gate\" and \"a gate that passes\" look identical six months from now"
+   "why": "One word deleted. The paragraph needed only that the two systems are unrelated, and \"an entirely separate, never-evaluated production threshold calibrator\" lands its actual conclusion — that MODEL-CALIB-001 carries no experiment at all — more strongly than the wrong status did. A gate was prototyped and rejected. Comparing a status word in prose against the model's row requires attributing the word to a subject, and the block carrying this very defect names FOUR model ids, so the prototype skipped it: green on the defect it existed to catch. Shipping it would have added a vacuous gate in the round that fixes three of them (DOC-45, DOC-48, DOC-50). Recorded rather than dropped quietly, because \"no gate\" and \"a gate that passes\" look identical six months from now"
   },
   "DOC-55": {
    "disposition": "FIXED HERE, boundary claim FILED",
@@ -334,7 +334,7 @@
    "disposition": "FIXED HERE — behaviour change, and it introduced DOC-62",
    "id": "DOC-56",
    "label": "DOC-56",
-   "why": "Grouped by label from the unrounded score, one rung per row with its observed span, `NaN` counted and surfaced rather than labelled. `tests/gcp/test_weekend_review_score_labels.py`, now 23 cases, mutation-tested eight ways. Weekly reports before 2026-09-22 used the truncated labels, so their per-rung win rates are not comparable with later ones. *Giving each rung its own `(s > 0).mean()` added a fifth fabricated zero to a module that already had four — see DOC-62. The fix removed one §3.7 violation and added another, and I did not re-read the document describing the module I had just changed, which is how DOC-58 and DOC-59 happened in the same commit*"
+   "why": "Grouped by label from the unrounded score, one rung per row with its observed span, `NaN` counted and surfaced rather than labelled. `tests/gcp/test_weekend_review_score_labels.py`, now 23 cases, mutation-tested eight ways. Weekly reports before 2026-09-22 used the truncated labels, so their per-rung win rates are not comparable with later ones. Giving each rung its own `(s > 0).mean()` added a fifth fabricated zero to a module that already had four — see DOC-62. The fix removed one §3.7 violation and added another, and I did not re-read the document describing the module I had just changed, which is how DOC-58 and DOC-59 happened in the same commit"
   },
   "DOC-57": {
    "disposition": "FIXED HERE",
@@ -346,19 +346,19 @@
    "disposition": "FIXED HERE",
    "id": "DOC-58",
    "label": "DOC-58",
-   "why": "The Tests section is rewritten against `pytest --collect-only` and narrowed rather than deleted: it now names what the 23 cases cover and what is still untested — overall win rate / total P&L / average return executed but never asserted, `by_ticker` and `by_exit_reason` untouched — which is what `RESTRUCTURE` rests on. Not gated. DOC-44's gate keys on the phrase *\"no test\"* and this sentence never contained it; a gate matching any prose that could be a coverage claim is the DOC-54 prototype again. What is gated is the adjacent, mechanical half: DOC-59's pointer check"
+   "why": "The Tests section is rewritten against `pytest --collect-only` and narrowed rather than deleted: it now names what the 23 cases cover and what is still untested — overall win rate / total P&L / average return executed but never asserted, `by_ticker` and `by_exit_reason` untouched — which is what `RESTRUCTURE` rests on. Not gated. DOC-44's gate keys on the phrase \"no test\" and this sentence never contained it; a gate matching any prose that could be a coverage claim is the DOC-54 prototype again. What is gated is the adjacent, mechanical half: DOC-59's pointer check"
   },
   "DOC-59": {
    "disposition": "FIXED HERE — and gated",
    "id": "DOC-59",
    "label": "DOC-59",
-   "why": "All eight stale references in MODEL-WEEK-001 repointed, plus MODEL-EARN-002's `:152` → `:143`, which no review filed. `test_symbol_anchored_line_pointers_resolve` resolves every `` `sym` (`:N`) `` in `docs/models/` against the nearest cited source that defines that symbol and fails if the symbol is not within 3 lines. Three prototypes, two of them wrong, and the count would not have told me which: *any file the doc names* reported 2 stale and was green on the real drift, answered by the test file the doc cites; *header files only* reported 4 and false-positived on a correct pointer in a file the header does not name; *nearest-preceding + mentions* was still green on the drift, for the same reason as the first. Reading which file answered each pointer is what separated them. Mutation-tested six ways; scope stated in the docstring — 30 of 33 pointers, sensitivity exactly the 3-line window, and the 93 bare `` `:A-B` `` ranges deliberately uncovered because resolving them by proximity produces false positives rather than findings"
+   "why": "All eight stale references in MODEL-WEEK-001 repointed, plus MODEL-EARN-002's `:152` → `:143`, which no review filed. `test_symbol_anchored_line_pointers_resolve` resolves every `` `sym` (`:N`) `` in `docs/models/` against the nearest cited source that defines that symbol and fails if the symbol is not within 3 lines. Three prototypes, two of them wrong, and the count would not have told me which: any file the doc names reported 2 stale and was green on the real drift, answered by the test file the doc cites; header files only reported 4 and false-positived on a correct pointer in a file the header does not name; nearest-preceding + mentions was still green on the drift, for the same reason as the first. Reading which file answered each pointer is what separated them. Mutation-tested six ways; scope stated in the docstring — 30 of 33 pointers, sensitivity exactly the 3-line window, and the 93 bare `` `:A-B` `` ranges deliberately uncovered because resolving them by proximity produces false positives rather than findings"
   },
   "DOC-60": {
    "disposition": "FIXED HERE",
    "id": "DOC-60",
    "label": "DOC-60",
-   "why": "Token regex extended to `path.py:Symbol`, comparison moved from unsuffixed basename-as-substring to the full path, and `found >= 8` replaced with a per-document assertion — a corpus count cannot notice a single skipped token. The disagreement it was hiding is fixed: MODEL-MR-001's row now names `lib/config.py:SignalConfig` with its definition, import and use sites. Mutation-tested four ways, one of which *passed* and was a faulty mutation rather than a gap: the row names `lib/signals.py` three times and I replaced one. Reading why it passed is the only thing that separates the two"
+   "why": "Token regex extended to `path.py:Symbol`, comparison moved from unsuffixed basename-as-substring to the full path, and `found >= 8` replaced with a per-document assertion — a corpus count cannot notice a single skipped token. The disagreement it was hiding is fixed: MODEL-MR-001's row now names `lib/config.py:SignalConfig` with its definition, import and use sites. Mutation-tested four ways, one of which passed and was a faulty mutation rather than a gap: the row names `lib/signals.py` three times and I replaced one. Reading why it passed is the only thing that separates the two"
   },
   "DOC-61": {
    "disposition": "FIXED HERE",
@@ -382,19 +382,19 @@
    "disposition": "FIXED HERE",
    "id": "DOC-64",
    "label": "DOC-64",
-   "why": "The docstring now says the embed carries three of the five groupings and names the two that reach only stdout, with what it used to say. Not gated: checking a docstring's prose against `format_discord_message`'s field names needs the same subject attribution DOC-54's rejected prototype needed. What *is* gated is the MODEL-WEEK-001 side, where the same fact is stated against a line range the pointer gate checks"
+   "why": "The docstring now says the embed carries three of the five groupings and names the two that reach only stdout, with what it used to say. Not gated: checking a docstring's prose against `format_discord_message`'s field names needs the same subject attribution DOC-54's rejected prototype needed. What is gated is the MODEL-WEEK-001 side, where the same fact is stated against a line range the pointer gate checks"
   },
   "DOC-65": {
    "disposition": "FIXED HERE — and gated, reversing a call I made one round ago",
    "id": "DOC-65",
    "label": "DOC-65",
-   "why": "The claim is now three items, each checked against the assertions: `avg_return` (asserted nowhere), `by_exit_reason` (no test), the 7-day window boundary. `test_untested_claims_name_nothing_the_suite_asserts` parses the cited suite and fails if an \"untested\" sentence names a key it exercises. In the DOC-58 reply I argued this gate would repeat DOC-54's vacuous prototype. That was wrong. DOC-54 needed subject attribution across four model ids in one block; this needs none — the subject is the module, the claim names backticked identifiers, and the suite is cited by path in the same section. Four mutations; the one that *passes* is the load-bearing result: restricting extraction to subscripts lexically inside `assert` misses `by_ticker`, because the test loops `for row in review[\"by_ticker\"]` and asserts on `row[...]` — that narrower gate would have been green on this very finding"
+   "why": "The claim is now three items, each checked against the assertions: `avg_return` (asserted nowhere), `by_exit_reason` (no test), the 7-day window boundary. `test_untested_claims_name_nothing_the_suite_asserts` parses the cited suite and fails if an \"untested\" sentence names a key it exercises. In the DOC-58 reply I argued this gate would repeat DOC-54's vacuous prototype. That was wrong. DOC-54 needed subject attribution across four model ids in one block; this needs none — the subject is the module, the claim names backticked identifiers, and the suite is cited by path in the same section. Four mutations; the one that passes is the load-bearing result: restricting extraction to subscripts lexically inside `assert` misses `by_ticker`, because the test loops `for row in review[\"by_ticker\"]` and asserts on `row[...]` — that narrower gate would have been green on this very finding"
   },
   "DOC-66": {
    "disposition": "FIXED HERE — a gate PROTOTYPED and REJECTED",
    "id": "DOC-66",
    "label": "DOC-66",
-   "why": "Corrected to 66, with the declared-vs-live distinction written down so the next sweep does not \"fix\" the correct 65s. A count gate was built and measured across `docs/`: it produced four flags, all four false positives (a \"1 scheduler block\", a PR-rename row, and two correct live-fleet counts) and missed this defect entirely, because MODEL-QUAL-001 says *\"the real count is 63\"* and never the string \"63 schedulers\". Green on the defect it existed to catch and red on four correct statements — DOC-54's shape exactly. Recorded rather than dropped quietly, because \"no gate\" and \"a gate that passes\" look identical six months from now."
+   "why": "Corrected to 66, with the declared-vs-live distinction written down so the next sweep does not \"fix\" the correct 65s. A count gate was built and measured across `docs/`: it produced four flags, all four false positives (a \"1 scheduler block\", a PR-rename row, and two correct live-fleet counts) and missed this defect entirely, because MODEL-QUAL-001 says \"the real count is 63\" and never the string \"63 schedulers\". Green on the defect it existed to catch and red on four correct statements — DOC-54's shape exactly. Recorded rather than dropped quietly, because \"no gate\" and \"a gate that passes\" look identical six months from now."
   },
   "DOC-67": {
    "disposition": "FIXED HERE",
@@ -407,17 +407,17 @@
   {
    "job": "`strat-engine` (overridden to `gcp.research.strat_engine.strat_enrich_levels`)",
    "scheduler": "`strat-enrich-daily`",
-   "why_it_is_not_model_bearing": "Inputs only — backfills `strat_features_levels_{tf}` with ORB windows, historical levels and order blocks. It imports `lib.indicators` (cited by MODEL-IND-001), which is why the tripwire flags it, and the justification is checkable: the module contains no classifier call, no threshold and no label — `grep -n \"StratClassifier|strat_setup|ftfc_score\" gcp/research/strat_engine/strat_enrich_levels.py` returns nothing. Every reader of `strat_features_levels_*` is under `gcp/research/strat_engine/` or is tooling (`audit_data_freshness`, `doc_inventory`); no router, no Discord, no served surface. Note this scheduler overrides the job's entrypoint: the `strat-engine` job defaults to `strat_data_builder`, so classifying it on the job's own module would judge the wrong code"
+   "why_it_is_not_model_bearing": "Inputs only — backfills `strat_features_levels{tf}` with ORB windows, historical levels and order blocks. It imports `lib.indicators` (cited by MODEL-IND-001), which is why the tripwire flags it, and the justification is checkable: the module contains no classifier call, no threshold and no label — `grep -n \"StratClassifier|strat_setup|ftfc_score\" gcp/research/strat_engine/strat_enrich_levels.py` returns nothing. Every reader of `strat_features_levels*` is under `gcp/research/strat_engine/` or is tooling (`audit_data_freshness`, `doc_inventory`); no router, no Discord, no served surface. Note this scheduler overrides the job's entrypoint: the `strat-engine` job defaults to `strat_data_builder`, so classifying it on the job's own module would judge the wrong code"
   },
   {
    "job": "`failure-notifier` (Cloud Run service, `${service_url}/reconcile`)",
    "scheduler": "`reconcile-failure-notifier-hourly`",
-   "why_it_is_not_model_bearing": "Ops only — hourly reconciliation of the workflow-failure notifier. It decides nothing about a trade, a signal or a position, and runs no entrypoint of its own. Same shape as the `discord-warm-*` service pings already excluded here"
+   "why_it_is_not_model_bearing": "Ops only — hourly reconciliation of the workflow-failure notifier. It decides nothing about a trade, a signal or a position, and runs no entrypoint of its own. Same shape as the `discord-warm-` service pings already excluded here"
   },
   {
    "job": "`fetch-premarket-refresh`",
    "scheduler": "`premarket-refresh-daily`",
-   "why_it_is_not_model_bearing": "Inputs only — refreshes the current session's `market_data_daily` row before the brief reads it. It imports `lib.indicators` (cited by MODEL-IND-001), which is why the tripwire below flags it, and the justification is checkable: `grep -n \"StratClassifier|strat_setup|ftfc_score\" gcp/fetchers/fetch_premarket_refresh.py` returns nothing. It writes indicator columns and no classification, label or threshold. The two jobs that *did* emit one — `fetch-market-data-daily` and `backfill-indicators-daily` — were excluded from this table on the same wording until 2026-09-22 (DOC-43)"
+   "why_it_is_not_model_bearing": "Inputs only — refreshes the current session's `market_data_daily` row before the brief reads it. It imports `lib.indicators` (cited by MODEL-IND-001), which is why the tripwire below flags it, and the justification is checkable: `grep -n \"StratClassifier|strat_setup|ftfc_score\" gcp/fetchers/fetch_premarket_refresh.py` returns nothing. It writes indicator columns and no classification, label or threshold. The two jobs that did emit one — `fetch-market-data-daily` and `backfill-indicators-daily` — were excluded from this table on the same wording until 2026-09-22 (DOC-43)"
   },
   {
    "job": "`fetch-alphavantage-intraday`",
@@ -586,7 +586,7 @@
    "experiments": "E-07, E-08, E-17, E-34",
    "issue_numbers": [],
    "model": "MODEL-DIR-001",
-   "primary_code": "`gcp/research/strat_engine/strat_dir_walk_forward{,_extended}.py`, `strat_dir_probes.py`, `dir_regime_walk_forward.py`, `gcp/research/direction_program/`",
+   "primary_code": "`gcp/research/strat_engine/strat_dir_walk_forward{,extended}.py`, `strat_dir_probes.py`, `dir_regime_walk_forward.py`, `gcp/research/direction_program/`",
    "primary_code_paths": [
     "gcp/research/strat_engine/strat_dir_walk_forward{,_extended}.py",
     "strat_dir_probes.py",
@@ -773,7 +773,7 @@
    "experiments": "E-25",
    "issue_numbers": [],
    "model": "MODEL-NEXTBAR-001",
-   "primary_code": "`scripts/strat_forward_walk{,_oos}.py`, `strat_oos_{clv_ablation,multi_tf}.py`, `strat_clv_demech.py`, `strat_struct_backtest.py`, `strat_next_candle_analysis.py`",
+   "primary_code": "`scripts/strat_forward_walk{,oos}.py`, `strat_oos{clv_ablation,multi_tf}.py`, `strat_clv_demech.py`, `strat_struct_backtest.py`, `strat_next_candle_analysis.py`",
    "primary_code_paths": [
     "scripts/strat_forward_walk{,_oos}.py",
     "strat_oos_{clv_ablation,multi_tf}.py",
@@ -869,7 +869,7 @@
    "experiments": "E-01, E-02, E-03, E-04, E-05, E-06, E-19 (STRAT half), E-20 (probability calibration), E-23 (execution test)",
    "issue_numbers": [],
    "model": "MODEL-TYPE-001",
-   "primary_code": "`gcp/research/strat_engine/strat_walk_forward{,_adaptive}.py`, `strat_pred_train.py`, `strat_pred_per_class.py`",
+   "primary_code": "`gcp/research/strat_engine/strat_walk_forward{,adaptive}.py`, `strat_pred_train.py`, `strat_pred_per_class.py`",
    "primary_code_paths": [
     "gcp/research/strat_engine/strat_walk_forward{,_adaptive}.py",
     "strat_pred_train.py",
@@ -923,7 +923,7 @@
    "sev": "M"
   },
   {
-   "claim_actual": "E-20 mapped to MODEL-CALIB-001 → E-20 is LightGBM *probability* calibration; MODEL-CALIB-001 is the per-ticker *threshold* writer. Unrelated systems sharing a word",
+   "claim_actual": "E-20 mapped to MODEL-CALIB-001 → E-20 is LightGBM probability calibration; MODEL-CALIB-001 is the per-ticker threshold writer. Unrelated systems sharing a word",
    "doc": "`07` (this file)",
    "id": "DOC-04",
    "kind": "contradiction",
@@ -959,7 +959,7 @@
    "sev": "M"
   },
   {
-   "claim_actual": "Self-labelled \"Auto-generated by `generate_backtest_report.py` — 2026-04-12\" while the content is a frozen April snapshot. *This row first called the generator dead, on the evidence that `grep -rn generate_backtest_report .github/` is empty. The grep is correct and the inference was wrong: the `report` job was migrated to the on-demand `backtest-pipeline` Cloud Run Job (`gcp/deploy.sh:3013-3037`), which runs `scripts.run_pipeline`, invokes the generator as a subprocess (`scripts/run_pipeline.py:233-243`) and writes `backtest_reports` — executions on 2026-05-24, 2026-08-26 and 2026-08-27. `.github/workflows/backtest-pipeline.yml:3` says so itself. I searched the one directory the workload had been moved out of, under a convention this repo documents*",
+   "claim_actual": "Self-labelled \"Auto-generated by `generate_backtest_report.py` — 2026-04-12\" while the content is a frozen April snapshot. This row first called the generator dead, on the evidence that `grep -rn generate_backtest_report .github/` is empty. The grep is correct and the inference was wrong: the `report` job was migrated to the on-demand `backtest-pipeline` Cloud Run Job (`gcp/deploy.sh:3013-3037`), which runs `scripts.run_pipeline`, invokes the generator as a subprocess (`scripts/run_pipeline.py:233-243`) and writes `backtest_reports` — executions on 2026-05-24, 2026-08-26 and 2026-08-27. `.github/workflows/backtest-pipeline.yml:3` says so itself. I searched the one directory the workload had been moved out of, under a convention this repo documents",
    "doc": "`BACKTEST_RESULTS.md` (repo root)",
    "id": "DOC-08",
    "kind": "unsynchronized artifact",
@@ -986,7 +986,7 @@
    "sev": "H"
   },
   {
-   "claim_actual": "Lists 15 of the 29 models in the two registry tables. Absent: MODEL-BREAK-001, MODEL-DIR-001, MODEL-EARN-002, MODEL-EWV-001, MODEL-FEAT-X, MODEL-FLOW-001, MODEL-MAG-001, MODEL-NEXTBAR-001, MODEL-PLAY-001, MODEL-QUAL-001, MODEL-RANK-001, MODEL-TYPE-001, MODEL-WATCH-001, MODEL-WEEK-001. *Recomputed 2026-09-18 after the scheduler sweep added five rows; the README was not updated, so the absentee count went 9 → 14 while the fraction's numerator stayed put.* *An earlier revision of this row said \"every learned model is absent\" and listed MODEL-SUM-001 — both wrong: MODEL-CALIB-001 and MODEL-STYLE-001 are learned and are present at README:138, MODEL-RANK-001 is heuristic not learned, and the actually-absent MODEL-FEAT-X was missing from the list. Recomputed from the tables rather than restated*",
+   "claim_actual": "Lists 15 of the 29 models in the two registry tables. Absent: MODEL-BREAK-001, MODEL-DIR-001, MODEL-EARN-002, MODEL-EWV-001, MODEL-FEAT-X, MODEL-FLOW-001, MODEL-MAG-001, MODEL-NEXTBAR-001, MODEL-PLAY-001, MODEL-QUAL-001, MODEL-RANK-001, MODEL-TYPE-001, MODEL-WATCH-001, MODEL-WEEK-001. Recomputed 2026-09-18 after the scheduler sweep added five rows; the README was not updated, so the absentee count went 9 → 14 while the fraction's numerator stayed put. An earlier revision of this row said \"every learned model is absent\" and listed MODEL-SUM-001 — both wrong: MODEL-CALIB-001 and MODEL-STYLE-001 are learned and are present at README:138, MODEL-RANK-001 is heuristic not learned, and the actually-absent MODEL-FEAT-X was missing from the list. Recomputed from the tables rather than restated",
    "doc": "README master matrix",
    "id": "DOC-11",
    "kind": "omission",
@@ -1004,8 +1004,8 @@
    "sev": "M"
   },
   {
-   "claim_actual": "A first pass counted 57 dead repo-rooted paths across the product plan. Re-measured: 27 distinct, and 22 of those are not debt — they are `platform/src/` and frontend `*.spec.ts` paths the #957 split moved to `TeneikaAskew/solyra`, cited deliberately and explained by a header note in 11. Genuinely dead: 2 (`scripts/backfill_signals.py`, `scripts/validate_track2_live.py`). Relocatable and now fixed: 2 (`gcp/freshness_watchdog.py` → `scripts/audit_data_freshness.py`, which is what `gcp/deploy.sh:2471` actually runs; `lib/data_loader` → `lib/data_loader.py`)",
-   "doc": "`docs/product/*.md`",
+   "claim_actual": "A first pass counted 57 dead repo-rooted paths across the product plan. Re-measured: 27 distinct, and 22 of those are not debt — they are `platform/src/` and frontend `.spec.ts` paths the #957 split moved to `TeneikaAskew/solyra`, cited deliberately and explained by a header note in 11. Genuinely dead: 2 (`scripts/backfill_signals.py`, `scripts/validate_track2_live.py`). Relocatable and now fixed: 2 (`gcp/freshness_watchdog.py` → `scripts/audit_data_freshness.py`, which is what `gcp/deploy.sh:2471` actually runs; `lib/data_loader` → `lib/data_loader.py`)",
+   "doc": "`docs/product/.md`",
    "id": "DOC-13",
    "kind": "dead-path",
    "label": "DOC-13",
@@ -1013,7 +1013,7 @@
    "sev": "M"
   },
   {
-   "claim_actual": "Module docstrings describe behaviour the code no longer has. momentum's lists `StochRSI < 80` (dropped in Phase 0.7.1) and omits `rvol_above_recent` / `atr_expansion` / `rsi_thrust` (added since); mean_reversion's lists an EMA-proximity condition that does not exist. momentum's *function* docstring also says `min_conditions=3` while `config.py:108` sets `MIN_CONDITIONS_MOMENTUM = 5`, and says `consecutive_up` was \"relaxed ... to 3-of-5\" (`:57`) while the body reads the 3-of-3 column (`:78`) and `config.py:101-103` records the reversion. `lib/movement_statement.py:1-7` still says \"PHASE 2 (feature-flagged, NOT user-facing) ... Nothing here renders to users\" while `platform/deploy.sh:177` sets the flag `true` and `dashboard.py:530-545` serves the card",
+   "claim_actual": "Module docstrings describe behaviour the code no longer has. momentum's lists `StochRSI < 80` (dropped in Phase 0.7.1) and omits `rvol_above_recent` / `atr_expansion` / `rsi_thrust` (added since); mean_reversion's lists an EMA-proximity condition that does not exist. momentum's function docstring also says `min_conditions=3` while `config.py:108` sets `MIN_CONDITIONS_MOMENTUM = 5`, and says `consecutive_up` was \"relaxed ... to 3-of-5\" (`:57`) while the body reads the 3-of-3 column (`:78`) and `config.py:101-103` records the reversion. `lib/movement_statement.py:1-7` still says \"PHASE 2 (feature-flagged, NOT user-facing) ... Nothing here renders to users\" while `platform/deploy.sh:177` sets the flag `true` and `dashboard.py:530-545` serves the card",
    "doc": "`lib/strategies/momentum.py`, `lib/strategies/mean_reversion.py`",
    "id": "DOC-18",
    "kind": "contradiction",
@@ -1023,7 +1023,7 @@
   },
   {
    "claim_actual": "Six of the seven new reference docs misdescribed production, because they were assembled from module docstrings rather than the scoring functions: MOM and MR described a conjunction where the code scores a gate, EARN called recorded archetype thresholds `UNKNOWN`, BRIEF said a flag was `false` that is `true`, AGREE claimed a ranking that does not exist, STYLE listed 5 of 8 conditions",
-   "doc": "`docs/models/*` (this PR's own first revision)",
+   "doc": "`docs/models/` (this PR's own first revision)",
    "id": "DOC-19",
    "kind": "contradiction",
    "label": "DOC-19",
@@ -1049,7 +1049,7 @@
    "sev": "M"
   },
   {
-   "claim_actual": "E-26 / E-31 / E-33 listed beside committed modules → the ledger records their results as from a scratch harness, *“not committed to the repo”* (`EXPERIMENT_REGISTRY.md:1260`); `phase2_features.py` belongs to E-34. The table implied code that reproduces them",
+   "claim_actual": "E-26 / E-31 / E-33 listed beside committed modules → the ledger records their results as from a scratch harness, “not committed to the repo” (`EXPERIMENT_REGISTRY.md:1260`); `phase2_features.py` belongs to E-34. The table implied code that reproduces them",
    "doc": "`07` (this file)",
    "id": "DOC-17",
    "kind": "dead-path",
@@ -1067,7 +1067,7 @@
    "sev": "M"
   },
   {
-   "claim_actual": "The scheduler table claimed eight model-bearing cron jobs and omitted `signal-monitor-daily` — the live fire path running MODEL-MOM/MR/AGREE/EXIT/BRIEF every trading morning, plus the two ORB triggers, the EOD resolver, `realtime-gex-daily` and `refresh-earnings-views-weekly`. *This row first said the real count was fourteen; applied literally the stated rule also catches jobs that merely import model code, so fourteen was wrong too and the table now publishes no count at all — see DOC-22*",
+   "claim_actual": "The scheduler table claimed eight model-bearing cron jobs and omitted `signal-monitor-daily` — the live fire path running MODEL-MOM/MR/AGREE/EXIT/BRIEF every trading morning, plus the two ORB triggers, the EOD resolver, `realtime-gex-daily` and `refresh-earnings-views-weekly`. This row first said the real count was fourteen; applied literally the stated rule also catches jobs that merely import model code, so fourteen was wrong too and the table now publishes no count at all — see DOC-22",
    "doc": "`07` (this file)",
    "id": "DOC-20",
    "kind": "omission",
@@ -1077,7 +1077,7 @@
   },
   {
    "claim_actual": "Eleven further errors in the reference docs, same class as DOC-19: thresholds labelled UNKNOWN that the source records (STYLE's sample floors, BRIEF's actionable threshold), a \"canonical\" implementation production does not call (`MeanReversionStrategy` vs `lib.signals.evaluate_signal`), a delegating wrapper that is a second implementation (`MarketAnalyzer.generate_technical_signals`), a reverted relaxation described as current (momentum 3-of-5), a tie-break that only applies on ties, two independent systems merged into one model record (MODEL-CALIB-001), and three EARN claims contradicted by source",
-   "doc": "`docs/models/*` (second round)",
+   "doc": "`docs/models/` (second round)",
    "id": "DOC-21",
    "kind": "contradiction",
    "label": "DOC-21",
@@ -1086,7 +1086,7 @@
   },
   {
    "claim_actual": "Four corrections applied to one document and left standing in another: the MR registry row still named the non-production class after its doc was fixed; DOC-10's disposition still claimed MODEL-EARN-001 was the only model with a recorded derivation; the MODEL-CALIB-001 row still carried one `Invalidated` status after its doc documented the two-system split; and the scheduler count was corrected to a number that was still wrong. Fixing the instance is not fixing the claim",
-   "doc": "`07` (this file) + `docs/models/*`",
+   "doc": "`07` (this file) + `docs/models/`",
    "id": "DOC-22",
    "kind": "contradiction",
    "label": "DOC-22",
@@ -1112,7 +1112,7 @@
    "sev": "H"
   },
   {
-   "claim_actual": "Six gates reported green while checking less than the invariants table claimed. A parenthetical suppressed a family mismatch without its contents ever being read, and a `cross-cutting` ledger scope passed on *any* model; the status vocabulary skipped `## LLM nodes`, a third of the inventory; the dead-path regex had no `:` in its character class, so every `file.py:NN` pointer matched nothing — and `docs/models/*.md` was not checked at all; ledger coverage asserted `ledger - owned` but never `owned - ledger`, so `E-99` was citable as evidence; `DOC-01…DOC-05` was not expanded in the disposition gate; and `re.findall(r\"E-\\d+\")` parsed a phantom `E-001` out of `MODEL-AGREE-001`",
+   "claim_actual": "Six gates reported green while checking less than the invariants table claimed. A parenthetical suppressed a family mismatch without its contents ever being read, and a `cross-cutting` ledger scope passed on any model; the status vocabulary skipped `## LLM nodes`, a third of the inventory; the dead-path regex had no `:` in its character class, so every `file.py:NN` pointer matched nothing — and `docs/models/.md` was not checked at all; ledger coverage asserted `ledger - owned` but never `owned - ledger`, so `E-99` was citable as evidence; `DOC-01…DOC-05` was not expanded in the disposition gate; and `re.findall(r\"E-\\d+\")` parsed a phantom `E-001` out of `MODEL-AGREE-001`",
    "doc": "`tests/meta/test_model_registry_consistency.py`",
    "id": "DOC-26",
    "kind": "contradiction",
@@ -1158,7 +1158,7 @@
   },
   {
    "claim_actual": "Four issues were filed (#1135, #1136, #1137, #1138) and the register's dispositions repointed at them — and not one of the eight model docs was. Two still read “No issue tracks this” and MODEL-BRIEF-001's `Known issues` still said “None open.” while #1137 named its stale header. DOC-22's class, committed in the commit recording DOC-22 closed",
-   "doc": "`docs/models/*.md`",
+   "doc": "`docs/models/.md`",
    "id": "DOC-31",
    "kind": "contradiction",
    "label": "DOC-31",
@@ -1166,7 +1166,7 @@
    "sev": "M"
   },
   {
-   "claim_actual": "A 587-line module computing dealer DEX / vanna / charm, writing `etf_options_daily_greeks` on a live weekday cron (`options-daily-greeks`, `15 23 * * 1-5`, ENABLED), cited across `EXPERIMENT_REGISTRY`, `RESEARCH_COMPENDIUM` and `06-DATA-ARCHITECTURE` — and named by no `MODEL-*` row. The completeness gate could not see its job, correctly: its rule is “executes code cited in a `MODEL-*` row”. The registry was short a model, not the whitelist an entry",
+   "claim_actual": "A 587-line module computing dealer DEX / vanna / charm, writing `etf_options_daily_greeks` on a live weekday cron (`options-daily-greeks`, `15 23 * * 1-5`, ENABLED), cited across `EXPERIMENT_REGISTRY`, `RESEARCH_COMPENDIUM` and `06-DATA-ARCHITECTURE` — and named by no `MODEL-` row. The completeness gate could not see its job, correctly: its rule is “executes code cited in a `MODEL-` row”. The registry was short a model, not the whitelist an entry",
    "doc": "`lib/features/flow_direction.py`",
    "id": "DOC-32",
    "kind": "omission",
@@ -1184,7 +1184,7 @@
    "sev": "H"
   },
   {
-   "claim_actual": "The `## LLM nodes` table was the only `MODEL-*` table with no `Code` column, so the scheduler-completeness gate — whose rule is “executes code cited in a `MODEL-*` row” — could not see `insight-pipeline`, the job that runs all 14 registered LLM nodes on a weekday cron. Its one code pointer, `orchestrator.py:490-492`, sat in the *Numeric authority* prose and named no directory. `insight-discord-push-daily` was missing for the same reason, and `premarket-brief-daily`'s row never mentioned the second live LLM path it also runs",
+   "claim_actual": "The `## LLM nodes` table was the only `MODEL-` table with no `Code` column, so the scheduler-completeness gate — whose rule is “executes code cited in a `MODEL-` row” — could not see `insight-pipeline`, the job that runs all 14 registered LLM nodes on a weekday cron. Its one code pointer, `orchestrator.py:490-492`, sat in the Numeric authority prose and named no directory. `insight-discord-push-daily` was missing for the same reason, and `premarket-brief-daily`'s row never mentioned the second live LLM path it also runs",
    "doc": "`07` (this file)",
    "id": "DOC-34",
    "kind": "omission",
@@ -1202,7 +1202,7 @@
    "sev": "M"
   },
   {
-   "claim_actual": "The deliberate-exclusion paragraph excluded `phase6-playbook-daily` because it *\"has no `from lib.` import of its own and writes markdown decision cards from earlier phases' output\"* — a sentence arguing a job is not a decision system, containing the phrase \"decision cards\". It passes `--write-db` (`gcp/deploy.sh:4430`) and upserts `playbook_cards` (`scripts/analysis/phase6_playbook.py:942-993`), which `/api/playbook` serves. The exclusion was written to make near-misses visible; the first one written down was false",
+   "claim_actual": "The deliberate-exclusion paragraph excluded `phase6-playbook-daily` because it \"has no `from lib.` import of its own and writes markdown decision cards from earlier phases' output\" — a sentence arguing a job is not a decision system, containing the phrase \"decision cards\". It passes `--write-db` (`gcp/deploy.sh:4430`) and upserts `playbook_cards` (`scripts/analysis/phase6_playbook.py:942-993`), which `/api/playbook` serves. The exclusion was written to make near-misses visible; the first one written down was false",
    "doc": "`07` (this file)",
    "id": "DOC-35",
    "kind": "wrong-claim",
@@ -1211,7 +1211,7 @@
    "sev": "H"
   },
   {
-   "claim_actual": "Module docstring (then `:3-7`, now `:1-14`) said the job *\"compares actual performance to backtest expectations\"*. It does not — there is no backtest, expectation or prior referenced anywhere in the file; every number is a realized statistic over `trades`. Tracked under #1137 with the other stale module docstrings",
+   "claim_actual": "Module docstring (then `:3-7`, now `:1-14`) said the job \"compares actual performance to backtest expectations\". It does not — there is no backtest, expectation or prior referenced anywhere in the file; every number is a realized statistic over `trades`. Tracked under #1137 with the other stale module docstrings",
    "doc": "`gcp/weekend_review.py`",
    "id": "DOC-36",
    "kind": "wrong-claim",
@@ -1220,7 +1220,7 @@
    "sev": "M"
   },
   {
-   "claim_actual": "The sweep written to end the missed-scheduler pattern enumerated 61 of 63 schedulers and reported \"61 declared, 61 resolved\". Its parser matched line by line, so two `_schedule` calls split across a backslash continuation were never seen — and an entry a parser never sees cannot fail the assertion that every entry resolves. Caught by a *second* parser (the registry gate's `_declared_schedulers`) disagreeing by two, not by the check designed for it",
+   "claim_actual": "The sweep written to end the missed-scheduler pattern enumerated 61 of 63 schedulers and reported \"61 declared, 61 resolved\". Its parser matched line by line, so two `_schedule` calls split across a backslash continuation were never seen — and an entry a parser never sees cannot fail the assertion that every entry resolves. Caught by a second parser (the registry gate's `_declared_schedulers`) disagreeing by two, not by the check designed for it",
    "doc": "`scripts/audit_scheduler_coverage.py`",
    "id": "DOC-37",
    "kind": "wrong-claim",
@@ -1229,7 +1229,7 @@
    "sev": "H"
   },
   {
-   "claim_actual": "Called the session handling *\"right, and non-obviously so\"* and used that to justify `Production` / `KEEP`. `evaluate_ew_strikes.py` never read `earnings_time`: it selected by `earnings_date` and fetched bars for that same date, so every after-close reporter was scored against the session *before* the announcement. Measured 2026-09-22: 1,261 of 2,372 scored rows, 53.2%. *(Line pointers into the pre-fix code are dropped rather than maintained; #1151 replaced it.)* The timezone of the window was verified; which day the window was on was never asked",
+   "claim_actual": "Called the session handling \"right, and non-obviously so\" and used that to justify `Production` / `KEEP`. `evaluate_ew_strikes.py` never read `earnings_time`: it selected by `earnings_date` and fetched bars for that same date, so every after-close reporter was scored against the session before the announcement. Measured 2026-09-22: 1,261 of 2,372 scored rows, 53.2%. (Line pointers into the pre-fix code are dropped rather than maintained; #1151 replaced it.) The timezone of the window was verified; which day the window was on was never asked",
    "doc": "MODEL-EWV-001",
    "id": "DOC-38",
    "kind": "wrong-claim",
@@ -1265,7 +1265,7 @@
    "sev": "H"
   },
   {
-   "claim_actual": "Republished *\"same-direction agreement is ~21% of overlapping fires — the other ~79% are the opposing-direction case\"*. Both halves wrong, and the correction was already in this repository: `gcp/schema.sql:1133-1138` names `docs/plans/SIGNAL_QUALITY_TEST_PLAN.md`'s 21% stale and gives the measured 17 of 782 = 2.2% (per-ticker 1.4-3.2%), while `docs/audit/2026-05-08/track-D.md:308-315` shows the remainder is not disagreement at all — on 765 of 782 only mean reversion fired and momentum returned `None`",
+   "claim_actual": "Republished \"same-direction agreement is ~21% of overlapping fires — the other ~79% are the opposing-direction case\". Both halves wrong, and the correction was already in this repository: `gcp/schema.sql:1133-1138` names `docs/plans/SIGNAL_QUALITY_TEST_PLAN.md`'s 21% stale and gives the measured 17 of 782 = 2.2% (per-ticker 1.4-3.2%), while `docs/audit/2026-05-08/track-D.md:308-315` shows the remainder is not disagreement at all — on 765 of 782 only mean reversion fired and momentum returned `None`",
    "doc": "MODEL-AGREE-001",
    "id": "DOC-42",
    "kind": "wrong-claim",
@@ -1274,7 +1274,7 @@
    "sev": "H"
   },
   {
-   "claim_actual": "The exclusion table excluded `fetch-market-data-daily` and `backfill-indicators-daily` on the words *\"those are model inputs, materialised for later readers. No decision is emitted\"*. One is emitted: `strat_setup = last_combo and abs(ftfc_score) >= 0.3` (`gcp/fetchers/fetch_market_data.py:370-379`), served by `/api/dashboard` (`platform/api/routers/dashboard.py:146-149`) and scored by the ranker (`lib/agents/ranker/signals.py:55`). The shape is new: the rule was replaced and the evidence for it was not re-derived. DOC-28 fixed this same paragraph by verifying its examples' *imports* — then round 10 changed the rule from \"imports `lib/` code\" to \"emits a decision\", and the examples were never re-checked against the new question",
+   "claim_actual": "The exclusion table excluded `fetch-market-data-daily` and `backfill-indicators-daily` on the words \"those are model inputs, materialised for later readers. No decision is emitted\". One is emitted: `strat_setup = last_combo and abs(ftfc_score) >= 0.3` (`gcp/fetchers/fetch_market_data.py:370-379`), served by `/api/dashboard` (`platform/api/routers/dashboard.py:146-149`) and scored by the ranker (`lib/agents/ranker/signals.py:55`). The shape is new: the rule was replaced and the evidence for it was not re-derived. DOC-28 fixed this same paragraph by verifying its examples' imports — then round 10 changed the rule from \"imports `lib/` code\" to \"emits a decision\", and the examples were never re-checked against the new question",
    "doc": "`07` (this file)",
    "id": "DOC-43",
    "kind": "wrong-claim",
@@ -1283,8 +1283,8 @@
    "sev": "H"
   },
   {
-   "claim_actual": "Five of the fifteen model docs stated test coverage that was wrong, in three modes. *Wrong file* — MODEL-CALIB-001 and MODEL-PLAY-001 both carried the identical sentence *\"`tests/scripts/test_scripts.py` covers the CLI surface\"*; that file references neither model, while `test_calibrate_thresholds.py` (28 tests) and `test_phase6_playbook.py` + `test_phase6_playbook_scheduler.py` (23) do. *Falsely claims none* — MODEL-WEEK-001 and MODEL-WATCH-001 both said *\"No test file targets this module\"*; both modules are imported outright, by `test_trade_logger_reads.py` and `test_earnings_long_watchlist_freshness.py`. MODEL-WATCH-001 added that a test *\"would need a real or fixture database; none exists\"* — the suite that exists monkeypatches `get_engine`. *Silent omission* — MODEL-QUAL-001 named no file at all while 70 tests across two suites target it. Each was asserted without searching for the tests, and in both \"no test\" cases the real file's NAME does not contain the module's, so a filename search misses what a content search finds instantly",
-   "doc": "`docs/models/*.md`",
+   "claim_actual": "Five of the fifteen model docs stated test coverage that was wrong, in three modes. Wrong file — MODEL-CALIB-001 and MODEL-PLAY-001 both carried the identical sentence \"`tests/scripts/test_scripts.py` covers the CLI surface\"; that file references neither model, while `test_calibrate_thresholds.py` (28 tests) and `test_phase6_playbook.py` + `test_phase6_playbook_scheduler.py` (23) do. Falsely claims none — MODEL-WEEK-001 and MODEL-WATCH-001 both said \"No test file targets this module\"; both modules are imported outright, by `test_trade_logger_reads.py` and `test_earnings_long_watchlist_freshness.py`. MODEL-WATCH-001 added that a test \"would need a real or fixture database; none exists\" — the suite that exists monkeypatches `get_engine`. Silent omission — MODEL-QUAL-001 named no file at all while 70 tests across two suites target it. Each was asserted without searching for the tests, and in both \"no test\" cases the real file's NAME does not contain the module's, so a filename search misses what a content search finds instantly",
+   "doc": "`docs/models/.md`",
    "id": "DOC-44",
    "kind": "wrong-claim",
    "label": "DOC-44",
@@ -1292,7 +1292,7 @@
    "sev": "H"
   },
   {
-   "claim_actual": "The dead-path invariant silently collected nothing for five pointer forms while publishing *\"every repo-rooted path cited here exists\"*: brace expansion (`strat_walk_forward{,_adaptive}.py`), globs (`p7*.py`, 9 files), `::symbol` qualifiers, non-numeric `:` suffixes and comma line-ranges. `lib/gamma.py` and `lib/walk_forward.py` were checked by nothing at all. Enabling glob expansion then exposed 36 genuinely dead pointers across 8 documents, left over from the `tests/<area>/` reorganisation. The section describing the invariant (`:540`) used two forms the invariant could not parse. Rule 3.7's forbidden pattern in a test: on input it cannot handle, return empty and report success",
+   "claim_actual": "The dead-path invariant silently collected nothing for five pointer forms while publishing \"every repo-rooted path cited here exists\": brace expansion (`strat_walk_forward{,adaptive}.py`), globs (`p7.py`, 9 files), `::symbol` qualifiers, non-numeric `:` suffixes and comma line-ranges. `lib/gamma.py` and `lib/walk_forward.py` were checked by nothing at all. Enabling glob expansion then exposed 36 genuinely dead pointers across 8 documents, left over from the `tests/<area>/` reorganisation. The section describing the invariant (`:540`) used two forms the invariant could not parse. Rule 3.7's forbidden pattern in a test: on input it cannot handle, return empty and report success",
    "doc": "`tests/meta/test_model_registry_consistency.py`",
    "id": "DOC-45",
    "kind": "vacuous-gate",
@@ -1301,7 +1301,7 @@
    "sev": "H"
   },
   {
-   "claim_actual": "`test_product_docs_have_no_dead_relative_links` globbed `docs/product/*.md` only, so `docs/models/` — the directory the `Doc` column sends every reader to — had no link gate. MODEL-WEEK-001 linked to `MODEL-IND-001.md`, which has never existed; MODEL-IND-001 is a registry row. The gate was named for the directory it happened to check rather than the invariant it claimed",
+   "claim_actual": "`test_product_docs_have_no_dead_relative_links` globbed `docs/product/.md` only, so `docs/models/` — the directory the `Doc` column sends every reader to — had no link gate. MODEL-WEEK-001 linked to `MODEL-IND-001.md`, which has never existed; MODEL-IND-001 is a registry row. The gate was named for the directory it happened to check rather than the invariant it claimed",
    "doc": "`tests/meta/test_model_registry_consistency.py`",
    "id": "DOC-46",
    "kind": "vacuous-gate",
@@ -1310,7 +1310,7 @@
    "sev": "M"
   },
   {
-   "claim_actual": "The model-documentation decision row was wrong in four ways at once: it claimed *\"a reference doc per model\"* against 29 models and 15 files; it said seven models were absent from the master matrix while linking to DOC-11, which lists fourteen and records the 9 → 14 recomputation; it called MODEL-EARN-001 the exception to the `UNKNOWN` rationale although that document records its `window_days + 5` as *\"not recorded anywhere\"*; and *\"among the seven\"* was stale at fifteen. All of it beside a disclaimer reading *\"No bare count is published here\"*, added after DOC-28 for this exact reason, in the same sentence as two bare counts",
+   "claim_actual": "The model-documentation decision row was wrong in four ways at once: it claimed \"a reference doc per model\" against 29 models and 15 files; it said seven models were absent from the master matrix while linking to DOC-11, which lists fourteen and records the 9 → 14 recomputation; it called MODEL-EARN-001 the exception to the `UNKNOWN` rationale although that document records its `window_days + 5` as \"not recorded anywhere\"; and \"among the seven\" was stale at fifteen. All of it beside a disclaimer reading \"No bare count is published here\", added after DOC-28 for this exact reason, in the same sentence as two bare counts",
    "doc": "15-OPEN-DECISIONS",
    "id": "DOC-47",
    "kind": "wrong-claim",
@@ -1319,7 +1319,7 @@
    "sev": "M"
   },
   {
-   "claim_actual": "Three live schedulers were in neither registry table while both completeness gates reported full coverage. `reconcile-failure-notifier-hourly`, `strat-enrich-daily` and `backfill-indicators-weekly` are declared with a raw `gcloud scheduler jobs create http`; both parsers recognised only `_schedule*` helpers, so all three were invisible and could not be counted as unclassified. Two invoke model-producing jobs. The canonical `scripts/maintenance/doc_inventory.py` already parsed both forms and reported 66 where these reported 63 — and the two that agreed were agreeing about the same blind spot, which reads exactly like corroboration. A completeness check over an incomplete enumeration is a check over nothing, which is DOC-37's shape one level up: that round fixed the parser's *continuations*, this one its *declaration forms*",
+   "claim_actual": "Three live schedulers were in neither registry table while both completeness gates reported full coverage. `reconcile-failure-notifier-hourly`, `strat-enrich-daily` and `backfill-indicators-weekly` are declared with a raw `gcloud scheduler jobs create http`; both parsers recognised only `_schedule*` helpers, so all three were invisible and could not be counted as unclassified. Two invoke model-producing jobs. The canonical `scripts/maintenance/doc_inventory.py` already parsed both forms and reported 66 where these reported 63 — and the two that agreed were agreeing about the same blind spot, which reads exactly like corroboration. A completeness check over an incomplete enumeration is a check over nothing, which is DOC-37's shape one level up: that round fixed the parser's continuations, this one its declaration forms",
    "doc": "`scripts/audit_scheduler_coverage.py`, `tests/meta/test_model_registry_consistency.py`",
    "id": "DOC-48",
    "kind": "vacuous-gate",
@@ -1328,7 +1328,7 @@
    "sev": "H"
   },
   {
-   "claim_actual": "The inclusion-rule section said `regime-combo-weekly` *\"is the one row whose output reaches nobody\"*. `options-daily-greeks` is a second: `etf_options_daily_greeks` is read only by `lib/features/flow_direction.py`, whose own comment at `:485` says *\"Experiments read the materialized…\"*. The counter-example was already written in MODEL-FLOW-001's own document while this sentence claimed uniqueness",
+   "claim_actual": "The inclusion-rule section said `regime-combo-weekly` \"is the one row whose output reaches nobody\". `options-daily-greeks` is a second: `etf_options_daily_greeks` is read only by `lib/features/flow_direction.py`, whose own comment at `:485` says \"Experiments read the materialized…\". The counter-example was already written in MODEL-FLOW-001's own document while this sentence claimed uniqueness",
    "doc": "`07` (this file)",
    "id": "DOC-49",
    "kind": "wrong-claim",
@@ -1337,7 +1337,7 @@
    "sev": "M"
   },
   {
-   "claim_actual": "Classification was a precedence chain — `\"listed\" if s in listed else \"excluded\" if s in excluded` — so a scheduler appearing in both tables silently reported as `listed` and the script exited 0, while its own stated contract is that every scheduler appears in *exactly one*. The pytest suite had an overlap assertion; this script is the one the registry tells reviewers to run",
+   "claim_actual": "Classification was a precedence chain — `\"listed\" if s in listed else \"excluded\" if s in excluded` — so a scheduler appearing in both tables silently reported as `listed` and the script exited 0, while its own stated contract is that every scheduler appears in exactly one. The pytest suite had an overlap assertion; this script is the one the registry tells reviewers to run",
    "doc": "`scripts/audit_scheduler_coverage.py`",
    "id": "DOC-50",
    "kind": "vacuous-gate",
@@ -1346,7 +1346,7 @@
    "sev": "M"
   },
   {
-   "claim_actual": "Both concluded that `enable_standalone_momentum = False` *\"costs little because there is little to discard\"*, from the Track D finding that momentum returned `None` on 765 of 782 alerts. The sample cannot support it. `signal_alerts` holds only alerts that were emitted, and with the flag off a momentum-eligible bar on which mean reversion misses emits nothing (`gcp/signal_monitor.py:1139`, fall-through at `:1181-1183`) — so the discarded population is exactly the one excluded from the 782. A low *overlap* rate was quoted as a low *eligibility* rate: CLAUDE.md §3.11's \"an aggregate cannot characterise a population\", committed twice and defended once in review",
+   "claim_actual": "Both concluded that `enable_standalone_momentum = False` \"costs little because there is little to discard\", from the Track D finding that momentum returned `None` on 765 of 782 alerts. The sample cannot support it. `signal_alerts` holds only alerts that were emitted, and with the flag off a momentum-eligible bar on which mean reversion misses emits nothing (`gcp/signal_monitor.py:1139`, fall-through at `:1181-1183`) — so the discarded population is exactly the one excluded from the 782. A low overlap rate was quoted as a low eligibility rate: CLAUDE.md §3.11's \"an aggregate cannot characterise a population\", committed twice and defended once in review",
    "doc": "MODEL-MOM-001, MODEL-AGREE-001",
    "id": "DOC-51",
    "kind": "wrong-claim",
@@ -1364,7 +1364,7 @@
    "sev": "H"
   },
   {
-   "claim_actual": "DOC-42's disposition still concluded that `enable_standalone_momentum = False` *\"costs so little — … it is not eligible on 765 of 782 bars\"* — the inference DOC-51 marks `wrong-claim`/H and declares *\"RETRACTED in both documents\"*, surviving nine rows above it in the same table. \"bars\" is the load-bearing word: the 782 are rows in `signal_alerts`, i.e. emitted alerts, and `MODEL-AGREE-001.md:46-47` now says *\"not the same as 98% of bars\"* — so the register contradicted the document it points at. DOC-22's class (*corrections applied to one document and left standing in another*), committed inside the commit that made the correction",
+   "claim_actual": "DOC-42's disposition still concluded that `enable_standalone_momentum = False` \"costs so little — … it is not eligible on 765 of 782 bars\" — the inference DOC-51 marks `wrong-claim`/H and declares \"RETRACTED in both documents\", surviving nine rows above it in the same table. \"bars\" is the load-bearing word: the 782 are rows in `signal_alerts`, i.e. emitted alerts, and `MODEL-AGREE-001.md:46-47` now says \"not the same as 98% of bars\" — so the register contradicted the document it points at. DOC-22's class (corrections applied to one document and left standing in another), committed inside the commit that made the correction",
    "doc": "`07` (this file)",
    "id": "DOC-53",
    "kind": "wrong-claim",
@@ -1373,7 +1373,7 @@
    "sev": "H"
   },
   {
-   "claim_actual": "Called MODEL-CALIB-001 *\"a separately invalidated production threshold calibrator\"*. Its row says Retest Required, its issues cell says *\"no open issue names this system\"*, the status tally has exactly one `Invalidated` model (MODEL-SWEEP-001), and its reference doc opens *\"This model is not Invalidated, and until 2026-09-18 this document said it was.\"* Third surviving instance of a claim DOC-21 and DOC-22 both book as fixed — and DOC-22 is the entry whose own text reads *\"Fixing the instance is not fixing the claim\"*",
+   "claim_actual": "Called MODEL-CALIB-001 \"a separately invalidated production threshold calibrator\". Its row says Retest Required, its issues cell says \"no open issue names this system\", the status tally has exactly one `Invalidated` model (MODEL-SWEEP-001), and its reference doc opens \"This model is not Invalidated, and until 2026-09-18 this document said it was.\" Third surviving instance of a claim DOC-21 and DOC-22 both book as fixed — and DOC-22 is the entry whose own text reads \"Fixing the instance is not fixing the claim\"",
    "doc": "`07` (this file)",
    "id": "DOC-54",
    "kind": "wrong-claim",
@@ -1409,7 +1409,7 @@
    "sev": "H"
   },
   {
-   "claim_actual": "Its Tests section said *\"The statistics themselves are untested. Nothing exercises win rate, total P&L, average return, the score-bucket grouping, or the all-NULL week\"* — written in the same commit that added `tests/gcp/test_weekend_review_score_labels.py`, which covers the score grouping, and left standing while that suite grew. DOC-44's gate cannot see it: `test_no_test_claims_are_true` keys on the phrase *\"no test\"*, and this sentence does not contain it. A gate built one round earlier for exactly this class, scoped to the wording of the instance that prompted it",
+   "claim_actual": "Its Tests section said \"The statistics themselves are untested. Nothing exercises win rate, total P&L, average return, the score-bucket grouping, or the all-NULL week\" — written in the same commit that added `tests/gcp/test_weekend_review_score_labels.py`, which covers the score grouping, and left standing while that suite grew. DOC-44's gate cannot see it: `test_no_test_claims_are_true` keys on the phrase \"no test\", and this sentence does not contain it. A gate built one round earlier for exactly this class, scoped to the wording of the instance that prompted it",
    "doc": "MODEL-WEEK-001",
    "id": "DOC-58",
    "kind": "wrong-claim",
@@ -1419,7 +1419,7 @@
   },
   {
    "claim_actual": "Line-pointer drift. The DOC-56 fix inserted 38 lines into `gcp/weekend_review.py` and updated none of the references below the insertion, so MODEL-WEEK-001 cited `main` at `:163` (really `:294`) and `format_discord_message` at `:103` (really `:214`), plus five stale ranges and a worked example of a row shape that no longer renders. A repo-wide sweep found a third, never filed: MODEL-EARN-002 cited `has_sufficient_history` at `:152`; it is at `:143`. Every pointer below an insertion goes stale silently, and prose review is the slowest way to find it",
-   "doc": "`docs/models/*.md`",
+   "doc": "`docs/models/.md`",
    "id": "DOC-59",
    "kind": "wrong-claim",
    "label": "DOC-59",
@@ -1427,7 +1427,7 @@
    "sev": "H"
   },
   {
-   "claim_actual": "`test_registry_code_column_names_the_live_implementation` was vacuous twice over, and fixing either half alone left it green. (1) its token class `` `[A-Za-z0-9_./]+\\.py` `` has no `:`, so `` `lib/config.py:SignalConfig` `` did not match at all and was skipped in silence — 25 of 26 header tokens matched and the single miss was the only one that disagreed. (2) it compared an unsuffixed basename as a substring, so `config.py` was satisfied by the cell's different `lib/strategies/config.py`. The `found >= 8` tripwire is what made it feel safe: a corpus-wide count satisfied by 25 unrelated paths. Underneath sat a real disagreement — `lib/config.py:424` defines `SignalConfig`, `lib/signals.py:15` imports it, `evaluate_signal` takes it at `:185`, MODEL-MR-001's header names it, and the registry row listed a different `config.py`",
+   "claim_actual": "`test_registry_code_column_names_the_live_implementation` was vacuous twice over, and fixing either half alone left it green. (1) its token class `` `[A-Za-z0-9./]+\\.py` `` has no `:`, so `` `lib/config.py:SignalConfig` `` did not match at all and was skipped in silence — 25 of 26 header tokens matched and the single miss was the only one that disagreed. (2) it compared an unsuffixed basename as a substring, so `config.py` was satisfied by the cell's different `lib/strategies/config.py`. The `found >= 8` tripwire is what made it feel safe: a corpus-wide count satisfied by 25 unrelated paths. Underneath sat a real disagreement — `lib/config.py:424` defines `SignalConfig`, `lib/signals.py:15` imports it, `evaluate_signal` takes it at `:185`, MODEL-MR-001's header names it, and the registry row listed a different `config.py`",
    "doc": "`tests/meta/test_model_registry_consistency.py`",
    "id": "DOC-60",
    "kind": "vacuous-gate",
@@ -1436,7 +1436,7 @@
    "sev": "H"
   },
   {
-   "claim_actual": "The Job-cell check was `if not real <= claimed` — a subset test, where the pytest mirror asserts equality. It catches a MISSING job and never an EXTRA one: a bogus `fred-rates` beside the real `fetch-fred-rates` left the script at exit 0 while `test_exclusion_table_job_cells_match_deploy_sh` failed on the same text. DOC-50's shape one column over, and again on the permissive surface the registry tells reviewers to run. The obvious in-place fix is wrong: `excluded_job_cells()` flattened rows to `scheduler -> claimed`, discarding the grouping, so `real` was always a singleton and `!=` would false-positive on the legitimate three-scheduler `news-sentiment-*` row. `07:560` meanwhile claimed this gate was *\"mirrored … and mutation-tested both ways\"*",
+   "claim_actual": "The Job-cell check was `if not real <= claimed` — a subset test, where the pytest mirror asserts equality. It catches a MISSING job and never an EXTRA one: a bogus `fred-rates` beside the real `fetch-fred-rates` left the script at exit 0 while `test_exclusion_table_job_cells_match_deploy_sh` failed on the same text. DOC-50's shape one column over, and again on the permissive surface the registry tells reviewers to run. The obvious in-place fix is wrong: `excluded_job_cells()` flattened rows to `scheduler -> claimed`, discarding the grouping, so `real` was always a singleton and `!=` would false-positive on the legitimate three-scheduler `news-sentiment-` row. `07:560` meanwhile claimed this gate was \"mirrored … and mutation-tested both ways\"",
    "doc": "`scripts/audit_scheduler_coverage.py`",
    "id": "DOC-61",
    "kind": "vacuous-gate",
@@ -1445,7 +1445,7 @@
    "sev": "H"
   },
   {
-   "claim_actual": "On a week whose `return_pct` is entirely NULL the embed published `0.0%` in seven places, from FIVE code sites — overall `win_rate` and `total_pnl`, both per-direction rates, both per-ticker figures, and one per rung. `avg_return` alone reported `nan`. Four predate this PR; the per-rung one was introduced by DOC-56's fix, in the commit that removed a different fabricated value. MODEL-WEEK-001 said the violation *\"is two values, not seven\"* — understated when written, and counted from the two sites the sentence before it happened to name rather than from a run. §3.7 forbidden pattern 2, on the surface a person reads to judge the score ladder",
+   "claim_actual": "On a week whose `return_pct` is entirely NULL the embed published `0.0%` in seven places, from FIVE code sites — overall `win_rate` and `total_pnl`, both per-direction rates, both per-ticker figures, and one per rung. `avg_return` alone reported `nan`. Four predate this PR; the per-rung one was introduced by DOC-56's fix, in the commit that removed a different fabricated value. MODEL-WEEK-001 said the violation \"is two values, not seven\" — understated when written, and counted from the two sites the sentence before it happened to name rather than from a run. §3.7 forbidden pattern 2, on the surface a person reads to judge the score ladder",
    "doc": "`gcp/weekend_review.py`",
    "id": "DOC-62",
    "kind": "code-defect",
@@ -1463,7 +1463,7 @@
    "sev": "H"
   },
   {
-   "claim_actual": "The module docstring, rewritten in `e9de5e0`, said the Discord summary is *\"broken down by direction, by signal-strength rung, by ticker and by exit reason\"*. `format_discord_message` emits three fields — `Overall`, the per-direction pair, `By Signal Strength` — so `by_ticker` and `by_exit_reason` reach only stdout. The same commit established that fact in MODEL-WEEK-001 and then contradicted it one file over. DOC-36's own fix, carrying DOC-36's defect",
+   "claim_actual": "The module docstring, rewritten in `e9de5e0`, said the Discord summary is \"broken down by direction, by signal-strength rung, by ticker and by exit reason\". `format_discord_message` emits three fields — `Overall`, the per-direction pair, `By Signal Strength` — so `by_ticker` and `by_exit_reason` reach only stdout. The same commit established that fact in MODEL-WEEK-001 and then contradicted it one file over. DOC-36's own fix, carrying DOC-36's defect",
    "doc": "`gcp/weekend_review.py`",
    "id": "DOC-64",
    "kind": "wrong-claim",
@@ -1472,7 +1472,7 @@
    "sev": "M"
   },
   {
-   "claim_actual": "The same sentence wrong a third time, each version narrower than the last. DOC-44: *\"no test file targets this module\"*. DOC-58: *\"nothing exercises the score-bucket grouping\"*, in the commit adding the suite that does. DOC-65: after being \"narrowed\", *\"overall win rate, total P&L and average return are executed but never asserted\"* and *\"`by_ticker` has no test at all\"* — both false. `test_partial_returns_compute_what_is_known_and_dash_what_is_not` and `test_a_real_zero_is_still_a_zero` assert `review[\"win_rate\"]` and `review[\"total_pnl\"]`; `test_all_null_week_publishes_no_per_ticker_zero` asserts both per-ticker figures. Narrowing a claim by eye is not checking it",
+   "claim_actual": "The same sentence wrong a third time, each version narrower than the last. DOC-44: \"no test file targets this module\". DOC-58: \"nothing exercises the score-bucket grouping\", in the commit adding the suite that does. DOC-65: after being \"narrowed\", \"overall win rate, total P&L and average return are executed but never asserted\" and \"`by_ticker` has no test at all\" — both false. `test_partial_returns_compute_what_is_known_and_dash_what_is_not` and `test_a_real_zero_is_still_a_zero` assert `review[\"win_rate\"]` and `review[\"total_pnl\"]`; `test_all_null_week_publishes_no_per_ticker_zero` asserts both per-ticker figures. Narrowing a claim by eye is not checking it",
    "doc": "MODEL-WEEK-001",
    "id": "DOC-65",
    "kind": "wrong-claim",
@@ -1481,7 +1481,7 @@
    "sev": "H"
   },
   {
-   "claim_actual": "Stated *\"the real count is 63\"* schedulers. DOC-48 corrected that to 66 one round earlier and the sweep reached the registry but not this document — the identical shape to the defect the paragraph itself narrates, one document over. Also worth pinning, because it is what makes this look like a contradiction elsewhere: 66 is declared in `deploy.sh`, 65 is live in GCP (read 2026-09-22), and the several documents saying 65 about the live fleet are correct",
+   "claim_actual": "Stated \"the real count is 63\" schedulers. DOC-48 corrected that to 66 one round earlier and the sweep reached the registry but not this document — the identical shape to the defect the paragraph itself narrates, one document over. Also worth pinning, because it is what makes this look like a contradiction elsewhere: 66 is declared in `deploy.sh`, 65 is live in GCP (read 2026-09-22), and the several documents saying 65 about the live fleet are correct",
    "doc": "MODEL-QUAL-001",
    "id": "DOC-66",
    "kind": "wrong-claim",
@@ -1490,7 +1490,7 @@
    "sev": "M"
   },
   {
-   "claim_actual": "The entry-point table called `composite_score` *\"the ranking score\"* two lines above the paragraph headed *\"The composite score does not rank anything\"*, and the rationale thirty lines below called it *\"a ranking heuristic\"*. Nothing in the repository sorts, filters or gates on it; it is persisted and displayed. Describing an unvalidated value by the use it does not have also buried the one that matters: `AGREEMENT_BONUS` is consumed, moving `total_score`, position size and the strength label",
+   "claim_actual": "The entry-point table called `composite_score` \"the ranking score\" two lines above the paragraph headed \"The composite score does not rank anything\", and the rationale thirty lines below called it \"a ranking heuristic\". Nothing in the repository sorts, filters or gates on it; it is persisted and displayed. Describing an unvalidated value by the use it does not have also buried the one that matters: `AGREEMENT_BONUS` is consumed, moving `total_score`, position size and the strength label",
    "doc": "MODEL-AGREE-001",
    "id": "DOC-67",
    "kind": "wrong-claim",
@@ -1730,7 +1730,7 @@
    ],
    "decision_produced": "directional dealer positioning — DEX / vanna / charm",
    "doc": "CURRENT · doc",
-   "evidence": "None filed. Falsified by ledger B5 (E5) — *“slow daily positioning adds nothing, dilutes the lone edge”* — yet `options-daily-greeks` still materializes it every weekday and no production path reads the table",
+   "evidence": "None filed. Falsified by ledger B5 (E5) — “slow daily positioning adds nothing, dilutes the lone edge” — yet `options-daily-greeks` still materializes it every weekday and no production path reads the table",
    "id": "MODEL-FLOW-001",
    "issue_numbers": [],
    "name": "Dealer flow-direction features",
@@ -2254,7 +2254,7 @@
    "type": "Heuristic"
   },
   "MODEL-WEEK-001": {
-   "blocking_issues": "#1137 the module docstring claims a backtest comparison the code does not perform · §3.7 — fixed 2026-09-22 (DOC-62): a week whose `return_pct` was entirely NULL published `0.0` to Discord from five code sites, not the two this cell used to name — overall `win_rate` and `total_pnl`, both per-direction rates, both per-ticker figures, and one per strength rung, the last of them introduced by DOC-56's own fix. All five now carry `NaN` end to end and render as an em-dash; a measured 0% still reads `0.0%`. A `trades` frame missing the column still raises, now a `ValueError` naming it rather than pandas' `IndexingError`. Measured through `generate_weekly_review`, not inferred. *The line pointers this cell carried described the pre-fix code and were briefly bumped mechanically on 2026-09-22, which pointed them at unrelated lines; historical pointers are dropped rather than maintained.*",
+   "blocking_issues": "#1137 the module docstring claims a backtest comparison the code does not perform · §3.7 — fixed 2026-09-22 (DOC-62): a week whose `return_pct` was entirely NULL published `0.0` to Discord from five code sites, not the two this cell used to name — overall `win_rate` and `total_pnl`, both per-direction rates, both per-ticker figures, and one per strength rung, the last of them introduced by DOC-56's own fix. All five now carry `NaN` end to end and render as an em-dash; a measured 0% still reads `0.0%`. A `trades` frame missing the column still raises, now a `ValueError` naming it rather than pandas' `IndexingError`. Measured through `generate_weekly_review`, not inferred. The line pointers this cell carried described the pre-fix code and were briefly bumped mechanically on 2026-09-22, which pointed them at unrelated lines; historical pointers are dropped rather than maintained.",
    "code": "`gcp/weekend_review.py`",
    "code_paths": [
     "gcp/weekend_review.py"
@@ -2315,12 +2315,12 @@
    "cron_america_new_york": "`0 5 * * 0`",
    "job": "`regime-combo`",
    "models": [],
-   "models_note": "no registered model named in Serves: combo mining (E-22) — writes `regime_combo_results`, and nothing in this repo reads that table. Owned by the ledger, not by a `MODEL-*` row, because it feeds no decision. Listed so the weekly spend is visible, not because anything consumes it",
+   "models_note": "no registered model named in Serves: combo mining (E-22) — writes `regime_combo_results`, and nothing in this repo reads that table. Owned by the ledger, not by a `MODEL-` row, because it feeds no decision. Listed so the weekly spend is visible, not because anything consumes it",
    "scheduler": "`regime-combo-weekly`",
-   "serves": "combo mining (E-22) — writes `regime_combo_results`, and nothing in this repo reads that table. Owned by the ledger, not by a `MODEL-*` row, because it feeds no decision. Listed so the weekly spend is visible, not because anything consumes it"
+   "serves": "combo mining (E-22) — writes `regime_combo_results`, and nothing in this repo reads that table. Owned by the ledger, not by a `MODEL-` row, because it feeds no decision. Listed so the weekly spend is visible, not because anything consumes it"
   },
   {
-   "cron_america_new_york": "`0 2 1 1,4,7,10 *`",
+   "cron_america_new_york": "`0 2 1 1,4,7,10 `",
    "job": "`calibrate-thresholds`",
    "models": [
     "MODEL-CALIB-001"
@@ -2580,7 +2580,7 @@
     "MODEL-STRAT-001"
    ],
    "scheduler": "`backfill-indicators-daily`",
-   "serves": "MODEL-STRAT-001 — the label clause, not the decision one: it writes `strat_candle` and `strat_combo` over history (`gcp/fetchers/backfill_daily_indicators.py:320-341`) and its own comment at `:137-138` records that `ftfc_score` / `strat_setup` are *\"populated only by the live writer's per-day pass\"*. The candle classification is MODEL-STRAT-001's output and the dashboard serves it"
+   "serves": "MODEL-STRAT-001 — the label clause, not the decision one: it writes `strat_candle` and `strat_combo` over history (`gcp/fetchers/backfill_daily_indicators.py:320-341`) and its own comment at `:137-138` records that `ftfc_score` / `strat_setup` are \"populated only by the live writer's per-day pass\". The candle classification is MODEL-STRAT-001's output and the dashboard serves it"
   },
   {
    "cron_america_new_york": "`0 3 * * 0`",
@@ -2625,7 +2625,7 @@
  "sources": {
   "docs/EXPERIMENT_REGISTRY.md": "cfbcca257edc74928cc0af69d275a02f2fd78c0c",
   "docs/product/07-MODEL-REGISTRY.md": "1e70bf96a3e8ab49e714745d2571b662001ceb39",
-  "scripts/gate/export_model_registry.py": "3e68474dbadaba33b5f0e15366b4a6f4f1985a59"
+  "scripts/gate/export_model_registry.py": "f400a4c3468f144e3178cd9d5dd5b4209ca3ed61"
  },
  "tables": [
   {
@@ -2706,7 +2706,7 @@
     "Verdict"
    ],
    "rows": 6,
-   "section": "Model and Algorithm Registry / Experiment traceability / Experiments with no `MODEL-*` owner"
+   "section": "Model and Algorithm Registry / Experiment traceability / Experiments with no `MODEL-` owner"
   },
   {
    "columns": [

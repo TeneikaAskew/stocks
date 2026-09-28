@@ -995,3 +995,22 @@ def test_ascii_whitespace_inline_html_and_confusables_render_as_gfm_renders_them
     write(repo, EXPERIMENTS, exp)
     write(repo, REGISTRY, reg.replace("**Last reviewed:** 2026-09-20 · **Owner:** TBD", "| a | b |\n|---|---|\n| **Last reviewed:** 2020-01-01 | old |\n\n**Last reviewed:** unknown · **Owner:** TBD", 1))
     assert export(repo).returncode == 0 and exported(repo)["registry_last_reviewed"] == "unknown"
+
+
+def test_raw_html_tables_mentions_in_headings_and_markup_render_as_gfm_renders_them(repo):
+    """Red-team round six (export_model_registry.py: rendered, experiment_ids, clean): a raw `<table>` put a
+    model on the page the JSON never carried; a parenthetical mention in a ledger heading defined an
+    experiment; `*Deterministic*`, `[text][ref]` and `![alt](src)` exported their markup."""
+    assert export(repo).returncode == 0
+    reg, exp = REGISTRY_TEXT, EXPERIMENTS_TEXT
+    write(repo, REGISTRY, reg.replace("## Scheduled surfaces\n", "<table><tr><th>ID</th></tr><tr><td>MODEL-NEW-001</td></tr></table>\n\n## Scheduled surfaces\n", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "raw HTML table" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, reg)
+    write(repo, EXPERIMENTS, exp + "\n## Notes on the failure (compare E-07 next quarter)\n")
+    assert export(repo).returncode == 0 and "E-07" not in exported(repo)["experiment_ids"]
+    write(repo, EXPERIMENTS, exp)
+    write(repo, REGISTRY, reg.replace("| MODEL-GAMMA-001 | Gamma levels | Deterministic |", "| MODEL-GAMMA-001 | [Gamma levels][gl] | *Deterministic* |", 1) + "\n[gl]: https://example.com\n")
+    assert export(repo).returncode == 0
+    rec = exported(repo)["models"]["MODEL-GAMMA-001"]
+    assert rec["name"] == "Gamma levels" and rec["type"] == "Deterministic", rec

@@ -74,9 +74,13 @@ PR_MENTION = re.compile(r"#(\d+)(?![\w])")   # #123abc names nothing
 CLOSE_OUT_FIELDS = ("Status", "Last reviewed")
 
 MANIFEST = re.compile(
-    r"(^|/)(package(-lock)?\.json|requirements[^/]*\.(txt|lock)|pyproject\.toml|poetry\.lock"
-    r"|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$"
+    r"(^|/)(package(-lock)?\.json|requirements[^/]*\.(txt|lock)|pyproject\.toml|poetry\.lock|uv\.lock"
+    r"|yarn\.lock|pnpm-lock\.yaml|bun\.lock)$"
 )
+# A lockfile names where each package is fetched from; CI installs exactly that (round six: an attacker
+# tarball with its own integrity hash passed as "a lockfile"). Only the public registries.
+REGISTRY_HOSTS = ("registry.npmjs.org", "registry.yarnpkg.com", "files.pythonhosted.org", "pypi.org")
+LOCK_URL = re.compile(r"https?://([^/\s\"']+)")
 HOOK = ".githooks/pre-commit"
 GATE_SCRIPTS = ("scripts/gate/spec_gate.py", "scripts/gate/export_model_registry.py")
 GATE_FILES = (
@@ -528,10 +532,10 @@ def workflow_triggers(body: str) -> set[str]:
     an inline list, or the keys of the block below it (stocks#1205 r4120166751)."""
     lines = body.splitlines()
     for i, line in enumerate(lines):
-        m = re.match(r"^(on|True|true):\s*(.*)$", line)
+        m = re.match(r"^on:\s*(.*)$", line)
         if not m:
             continue
-        value = re.sub(r"\s+#.*$", "", m.group(2)).strip()
+        value = re.sub(r"\s+#.*$", "", m.group(1)).strip()
         if value:
             return set(re.findall(r"[A-Za-z_]+", value))
         triggers: set[str] = set()
@@ -727,6 +731,15 @@ def valid_yaml(text: str) -> str | None:
         # red-team round four: a plain scalar continued on a deeper line folds to one value for GitHub
         # (`run: cmd\n  || true`, `ref:\n  <head sha>`, `shell:\n  true {0}`) while the gate read line one
         return f"continues a plain scalar onto the next line ({where}); the gate's workflows keep each value on its line or in a `|` block"
+    if (m := re.search(r"^\s*(-\s+)?[\w.-]+:[ \t]+#", stripped, re.M)):
+        # round six: `permissions: # note` read as an inline value, so the block below it was never read
+        return f"puts a comment where a value goes ({m.group(0).strip()}); the gate's workflows write the value or nothing"
+    if (m := re.search(r"^\s*(-\s+)?\?(\s|$)|^\s*:(\s|$)", stripped, re.M)):
+        return "uses YAML's explicit-key syntax (`? key`); the gate's workflows write `key:`"
+    if re.search(r"^(True|true|On|ON):", stripped, re.M):
+        return "spells the trigger key as a boolean; the gate's workflows write `on:`"
+    if (m := re.search("[\u2028\u2029\x85\x0b\x0c\x1c\x1d\x1e\u200b-\u200f\u00ad\ufeff\u2060-\u2064\u202a-\u202e\u2066-\u2069]", text)):
+        return f"carries U+{ord(m.group(0)):04X}, a line break or invisible character YAML parsers disagree on"
     if (m := re.search(r"^\s*(-\s+)?[\w.-]+[ \t]+:(\s|$)", stripped, re.M)):
         # round five: `run :` is the key `run` to YAML and no key at all to the line readers
         return f"puts whitespace before a key's colon ({m.group(0).strip()}); the gate's workflows write `key:`"
@@ -808,6 +821,14 @@ def needs_transitively(jobs: list[dict], later: int, earlier: int) -> bool:
 def checkout_violation(body: str, side: str) -> str | None:
     """A checkout the contract forbids: for a head-run workflow, a ref that is not the PR head;
     for a base-run one, any ref naming the PR head (solyra#72 r4120071803)."""
+    # round six: `github-server-url:` sends the token elsewhere; a checkout takes only the keys the contract knows
+    for m in re.finditer(r"^\s*(-\s+)?uses:\s*['\"]?actions/checkout@", body, re.M):
+        lines = body[m.start():].split("\n")
+        for ln in lines[1:]:
+            if not ln.strip() or re.match(r"^\s*-\s", ln) or indent(ln) < indent(lines[0].replace("- ", "  ", 1)):
+                break   # the next step, or the end of this one
+            if (km := re.match(r"^\s+([\w-]+):", ln)) and km.group(1) not in ("with", "ref", "fetch-depth", "persist-credentials", "repository", "name", "id"):
+                return f"checkout step sets `{km.group(1)}`; the gate's checkouts set ref, fetch-depth and persist-credentials only"
     # stocks#1205 r4121602804: a `repository:` other than the event's runs another tree
     for m in re.finditer(r"^\s*repository:\s*(.*)$", body, re.M):
         if re.sub(r"\s+", "", shell_value(m.group(1))) != "${{github.repository}}":
@@ -853,11 +874,27 @@ EXECUTABLE_NAME = r"[^\s'\"]*/(python3?|python3\.\d+|git|pytest)\b"
 WRITES_GATE = re.compile(r"(?m)(?<![\w/.-])" + WRITERS + r"\b[^\n]*(" + GATE_PATHS + "|" + INDIRECT + "|" + EXECUTABLE_NAME + r")|[>]{1,2}\|?\s*(['\"]?[^\s'\"]*" + GATE_PATHS + "|" + INDIRECT + "|['\"]?" + EXECUTABLE_NAME + ")")
 
 
+# Commands that only read what they are given: any other command handed a gate path may write it
+# (round six: `ed`, `sponge`, `sort -o` were not on the writer list; the durable shape is an allow-list)
+READ_ONLY = frozenset(("python3", "python", "git", "cat", "ls", "test", "[", "[[", "echo", "printf", "diff", "cmp", "sha256sum",
+                       "sha1sum", "md5sum", "head", "tail", "wc", "grep", "stat", "file", "readlink", "realpath", "true", ":",
+                       "for", "do", "done", "if", "then", "else", "elif", "fi", "while", "case", "esac", "!", "in"))
+
+
 def writes_gate_file(runs: str) -> str | None:
     """The first executed run line that copies, moves, edits, deletes or redirects into a gate
-    file's path (stocks#1205 r4121777299)."""
+    file's path (stocks#1205 r4121777299), or hands one to a command that is not known to only read."""
     m = WRITES_GATE.search(runs)
-    return runs[runs.rfind("\n", 0, m.start()) + 1:].split("\n")[0].strip() if m else None
+    if m:
+        return runs[runs.rfind("\n", 0, m.start()) + 1:].split("\n")[0].strip()
+    for line in runs.split("\n"):
+        if re.search(GATE_PATHS, line):
+            for stmt in re.split(r"\s*(?:;|&&|\|\||\|)\s*", line.strip()):
+                stmt = re.sub(r"^((command|builtin|env|time|nice|nohup|sudo|timeout|exec)\s+(-\S+\s+|[A-Za-z_]\w*=\S*\s+)*)+|^[A-Za-z_]\w*=\$\(", "", stmt)
+                stmt = re.sub(r"^([A-Za-z_]\w*=\S*\s+)+", "", stmt)
+                if re.search(GATE_PATHS, stmt) and stmt.split() and stmt.split()[0] not in READ_ONLY and not re.match(r"^[A-Za-z_]\w*=", stmt):
+                    return line.strip()
+    return None
 
 
 def shadowed_executable(text: str) -> str | None:
@@ -921,7 +958,13 @@ POLICY_DOCS = (CATALOG, REQUIREMENTS, TRACEABILITY, CANVASES)
 WORKFLOW_FEAT = "FEAT-CICD-001"
 # The capability that owns the deploy surface (red-team round three); enforced where the catalog defines it.
 DEPLOY_FEAT = "FEAT-DEPLOY-001"
-DEPLOY_FILE = re.compile(r"^(gcp/deploy\.sh|cloudbuild[^/]*\.ya?ml|Dockerfile[^/]*|\.gcloudignore)$")
+DEPLOY_FILE = re.compile(r"^((gcp|platform)/deploy\.sh|gcp/cloudbuild/[^/]+|cloudbuild[^/]*\.ya?ml|Dockerfile[^/]*|\.gcloudignore|\.dockerignore)$")
+# The files that are the delivery process itself: CI configuration at any path under .github/, the gate's
+# files and pinned copies, the hook, the agent instructions and the local skills (round six)
+def is_process_file(path: str) -> bool:
+    return ((path.startswith(".github/") and not is_documentation(path)) or is_gate_file(path) or path in PINNED.values()
+            or path.startswith(LOCAL_SKILLS) or path.startswith((".claude/", ".githooks/"))
+            or path.rsplit("/", 1)[-1] in ("CLAUDE.md", "AGENTS.md", "CLAUDE.local.md"))
 # The files the gate runs from: no change may delete one, whatever its branch, or the
 # base's copy judges the deletion green and every later PR runs without a gate.
 SUITE = "tests/scripts/test_spec_gate.py"
@@ -1048,6 +1091,15 @@ class Tree:
             p = ROOT / path
             return p.read_text(encoding="utf-8", errors="replace") if p.is_file() else None
         r = git("show", f":{path}" if self.rev is None else f"{self.rev}:{path}")
+        return r.stdout if r.returncode == 0 else None
+
+    def raw(self, path: str) -> bytes | None:
+        """The file's bytes, untranslated (round six: text mode folds CRLF, so the pin compares bytes)."""
+        if self.rev == WORKTREE:
+            p = ROOT / path
+            return p.read_bytes() if p.is_file() else None
+        r = subprocess.run(["git", "-c", "core.quotePath=false", "show", f":{path}" if self.rev is None else f"{self.rev}:{path}"],
+                           capture_output=True, cwd=ROOT)
         return r.stdout if r.returncode == 0 else None
 
     def mode(self, path: str) -> str | None:
@@ -1324,6 +1376,15 @@ def non_dependency_edit(path: str, before: str | None, after: str | None) -> str
     Lockfiles and requirements files hold nothing but dependencies; package.json and
     pyproject.toml also carry scripts and tool configuration, which CI executes."""
     name = path.rsplit("/", 1)[-1]
+    if name in ("package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "uv.lock", "bun.lock"):
+        if after is None:
+            return None   # removing a lockfile installs nothing
+        for host in sorted(set(LOCK_URL.findall(after))):
+            if host not in REGISTRY_HOSTS:
+                return f"{path}: resolves a package from {host}; a chore/ branch installs from the public registries only"
+        if re.search(r"(?m)^\s*(resolution|source)\s*[:=]\s*\{?[^\n]*\b(git|path|directory|file|url)\b\s*[:=]", after) or "git+" in after:
+            return f"{path}: names a git, path or file source; a chore/ branch installs from the public registries only"
+        return None
     if re.match(r"requirements[^/]*\.(txt|lock)$", name):
         # red-team round three: a requirements file is executed by `pip install -r`, so an option line
         # (`--index-url`, `-e git+…`, `-r other`), a URL or a path is code CI runs, not a version bump
@@ -1398,9 +1459,20 @@ def chore_allows(path: str, ch: "Change") -> str | None:
 # Skills this repository owns: the weekly vendored-skills update never touches them.
 LOCAL_SKILLS = (".claude/skills/product-delivery/", ".claude/skills/refresh-canvas/")
 
+def shadows_local_skill(path: str, ch: "Change") -> bool:
+    """A vendored skill directory or frontmatter name that reads as one of the local skills (round six)."""
+    local = tuple(d.rstrip("/").rsplit("/", 1)[-1] for d in LOCAL_SKILLS)
+    parts = path.lower().split("/")
+    if any(part.startswith(local) for part in parts[2:-1]):
+        return True
+    text = ch.tree.read(path) or ""
+    return path.endswith("SKILL.md") and any(re.search(rf"(?m)^name:\s*['\"]?{re.escape(n)}['\"]?\s*$", text, re.I) for n in local)
+
+
 ALLOWANCES = (
     ("chore/", chore_allows),
-    ("bot/superpowers-", lambda p, ch: None if p.startswith(".claude/skills/") and not p.startswith(LOCAL_SKILLS) else ""),
+    ("bot/superpowers-", lambda p, ch: None if p.startswith(".claude/skills/") and not p.startswith(LOCAL_SKILLS)
+     and not shadows_local_skill(p, ch) else ""),
 )
 
 
@@ -1549,11 +1621,29 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
             # gitlink under docs/: the gate reads text, so a link or a submodule is refused outright
             return [f"{path}: is a {'symlink' if mode == '120000' else 'submodule'} (mode {mode}); the gate reads files only"], None
     for path, pin in PINNED.items():
-        if path in ch.changed and (text := ch.tree.read(path)) is not None and (expected := ch.base.read(pin)) is not None and text != expected:
+        if path in ch.changed and ch.tree.raw(path) is not None and (expected := ch.base.raw(pin)) is not None and ch.tree.raw(path) != expected:
+            # (bytes, not text: a CRLF file would otherwise equal its LF copy: round six)
             return [f"{path}: differs from its pinned copy {pin} on the base; change the pinned copy in its own PR first, "
                     "then make the file equal to it. A gate workflow or hook is never edited freely"], None
+        if pin in ch.changed and (raw := ch.tree.raw(pin)) is not None and b"\r" in raw:
+            return [f"{pin}: carries a carriage return; the pinned copies use LF line endings"], None
+    for path in ch.changed:
+        if path.startswith(WORKFLOWS) and path not in WORKFLOW_CONTRACTS and (text := ch.tree.read(path)) is not None:
+            # round six: a second workflow with a contract's `name:` or job key publishes a green check under
+            # the required check's name
+            stem = path.rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()
+            for cpath, contract in WORKFLOW_CONTRACTS.items():
+                declared = re.search(r"^name:\s*['\"]?([^'\"\n#]+)", text, re.M)
+                if stem == cpath.rsplit("/", 1)[-1].rsplit(".", 1)[0] or (declared and declared.group(1).strip().lower() == contract["name"]) \
+                        or any(re.search(rf"^  {re.escape(job)}:\s*$", text, re.M) for job in contract["jobs"].values()):
+                    return [f"{path}: takes the name or a job key of {cpath} ({contract['name']}); a required check's name belongs to "
+                            "the gate's workflow alone"], None
     for path, contract in WORKFLOW_CONTRACTS.items():
-        if path in ch.changed and (text := ch.tree.read(path)) is not None:
+        # (round six: the pinned copy is the future workflow, so a changed copy is judged as that workflow at step one)
+        for shown, text in ((p, ch.tree.read(p)) for p in (path, PINNED[path]) if p in ch.changed):
+            if text is None:
+                continue
+            path = shown   # messages name the file judged: the workflow, or its pinned copy at step one
             if why := valid_yaml(text):
                 return [f"{path}: {why}; GitHub would not load the workflow and every later PR would lose the gate"], None
             runs, body = workflow_executes(text)
@@ -1723,36 +1813,38 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
               n = weakened[0]
               return [f"{SUITE}: weakens {len(weakened)} test(s) the base has ({n}: {base_tests[n]} assertion(s), now "
                       f"{head_tests[n]}{'; and more' if len(weakened) > 1 else ''}); the gate's suite only grows"], None
-    if HOOK in ch.changed and (hook := ch.tree.read(HOOK)) is not None:
+    for hook_path in (HOOK, PINNED[HOOK]):   # (round six: the pinned copy is the future hook, judged at step one)
+        if hook_path not in ch.changed or (hook := ch.tree.read(hook_path)) is None:
+            continue
         # solyra#72 r4119837242: an executable hook that no longer runs the gate is the gate
         # switched off for every clone with core.hooksPath set
         # (solyra#72 r4120167299: an `echo` of the command is not an invocation; the same statement
         # rules as the workflow contracts apply)
         # (stocks#1205 r4120828221: git hands the file to its interpreter line, so `#!/bin/true`
         # never reaches the call below it; and without `set -e` a later line decides the status)
-        if (mode := ch.tree.mode(HOOK)) != "100755":
+        if hook_path == HOOK and (mode := ch.tree.mode(HOOK)) != "100755":
             # solyra#72 r4120913613: git runs a configured hook only when it is executable, so a
             # mode change is the hook switched off; read from the tree, not from a workflow's echo
-            return [f"{HOOK}: has mode {mode} in this change; the hook stays executable (100755): "
+            return [f"{hook_path}: has mode {mode} in this change; the hook stays executable (100755): "
                     "git update-index --chmod=+x .githooks/pre-commit"], None
         first = hook.splitlines()[0] if hook.strip() else ""
         if not re.match(r"^#!\s*(/usr/bin/env\s+(bash|sh)|/bin/(bash|sh)|/usr/bin/(bash|sh))\s*$", first):
-            return [f"{HOOK}: its interpreter line is {first!r}; the hook runs under bash or sh (`#!/usr/bin/env bash`) "
+            return [f"{hook_path}: its interpreter line is {first!r}; the hook runs under bash or sh (`#!/usr/bin/env bash`) "
                     "so the gate call on the lines below executes"], None
         if shadow := shadowed_executable("\n".join(ln for ln in hook.splitlines() if not ln.lstrip().startswith("#"))):
-            return [f"{HOOK}: defines `{shadow}` as a shell function or alias; the hook runs the real executables"], None
+            return [f"{hook_path}: defines `{shadow}` as a shell function or alias; the hook runs the real executables"], None
         if overridden := input_overrides("\n".join(ln for ln in hook.splitlines() if not ln.lstrip().startswith("#"))):
-            return [f"{HOOK}: assigns or unsets {overridden[0]}, an input the gate reads; the hook never sets the gate's inputs"], None
+            return [f"{hook_path}: assigns or unsets {overridden[0]}, an input the gate reads; the hook never sets the gate's inputs"], None
         # stocks#1205 r4121602841: the canonical path, from the repository root or `git rev-parse --show-toplevel`
         # red-team, this PR: `git reset -q` before the call emptied the index the gate inspects, and a
         # `python3 docs/tools/prep.py` or `. docs/hooks/x.sh` before it ran anything a docs/ PR ships;
         # the hook is a fixed grammar, and any other line is refused
         for ln in hook.splitlines()[1:]:
             if ln.strip() and not any(re.fullmatch(shape, ln.strip()) for shape in HOOK_LINES):
-                return [f"{HOOK}: line {ln.strip()!r} is not one the hook may carry; the hook checks the Python version, "
+                return [f"{hook_path}: line {ln.strip()!r} is not one the hook may carry; the hook checks the Python version, "
                         "refuses unstaged gate edits and calls the gate, nothing else"], None
         if not any(re.match(r"python3?\s+['\"]?(__SUB__/|\./)?scripts/gate/spec_gate\.py['\"]?\s+--commit(\s|$)", st) for st in shell_statements(hook, errexit=False)):
-            return [f"{HOOK}: no longer runs `scripts/gate/spec_gate.py --commit` after `set -e`; the hook keeps the commit-time gate"], None
+            return [f"{hook_path}: no longer runs `scripts/gate/spec_gate.py --commit` after `set -e`; the hook keeps the commit-time gate"], None
     # P1b: the policy inputs the gate reads are not deleted either
     removed = [f for f in ch.changed if f in GATE_ENTRYPOINTS + POLICY_DOCS
                and ch.tree.read(f) is None and (f in GATE_ENTRYPOINTS or ch.base.read(f) is not None)]
@@ -2113,6 +2205,11 @@ def check_capacity(body: str | None, changed: list[str]) -> list[str]:
     if unnumbered:
         return ["PR body's Capacity section gives no number for " + ", ".join(unnumbered) + "; each value starts "
                 "with its figure (rows, calls, seconds, dollars), or the section says 'n/a: <why no workload runs differently>'"]
+    if deferred := [m.group(1) for k, m in enumerate(marks)
+                    if DEFERRAL.search(text[m.end():marks[k + 1].start() if k + 1 < len(marks) else len(text)])]:
+        # round six: CLAUDE.md rule 0 forbids exactly these words in a perf context
+        return ["PR body's Capacity section defers " + ", ".join(deferred) + " (rule 0: no 'future work', 'TBD' or "
+                "'follow-up' on a workload's numbers); measure it or write 'n/a: <why>'"]
     return []
 
 
@@ -2349,11 +2446,13 @@ def check_registry_rows(t: Traced, ch: Change, merge_base: str, head: str) -> li
         return []
     spec_text = ch.base.read(t.spec_path) or ch.tree.read(t.spec_path) or ""
     named = set(re.findall(r"\bMODEL-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", spec_text))
-    touched = {m.group(1) for _, _, text in changed_lines(merge_base, head, path)
-               if (m := re.match(r"^\s*\|?\s*\[?\s*(MODEL-[A-Z0-9]+(?:-[A-Z0-9]+)*)\b", text))}
+    changed = [text for _, _, text in changed_lines(merge_base, head, path)]
+    touched = {m for text in changed for m in re.findall(r"\bMODEL-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", text)}   # (round six: any cell, not the first)
     if outside := sorted(touched - named):
-        return [f"{path}: changes the row(s) of {', '.join(outside[:3])}, which {t.spec_path} never names; a feature "
+        return [f"{path}: changes line(s) naming {', '.join(outside[:3])}, which {t.spec_path} never names; a feature "
                 "change edits only the registry rows of the models its spec covers"]
+    if any(re.match(r"^\s*\|?\s*(ID|Scheduler|Model)\s*\||^\s*\|?\s*:?-+:?\s*\|", text) for text in changed):
+        return [f"{path}: changes a table header or delimiter; a feature change edits rows, it does not reshape a registry table"]
     return []
 
 
@@ -2389,6 +2488,11 @@ def row_fields(text: str, feat_id: str) -> dict[str, str]:
         elif (m := FEAT_ROW.match(line)) and m.group(1) == feat_id:
             return dict(zip(header, row))
     return {}
+
+
+def squeeze(text: str) -> str:
+    """Blank lines and trailing spaces are not a change to a record (round six)."""
+    return "\n".join(ln.rstrip() for ln in text.split("\n") if ln.strip())
 
 
 def feat_record(text: str | None, feat_id: str) -> str:
@@ -2491,12 +2595,16 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
         errs.append(f"{CATALOG}: the {t.feat_id} record carries {', '.join(twice)} more than once; each close-out "
                     "field has one row")
     reviewed, status = now.get("Last reviewed", ""), fold_text(now.get("Status", "")).strip("* ")
+    if re.search(r"~~|<(s|del|strike)\b", now.get("Status", ""), re.I):
+        # round six: `~~Production~~` renders struck through and read as the plain word
+        errs.append(f"{CATALOG}: the {t.feat_id} Status is struck through; set it or remove it")
     head_day = git_out("show", "-s", "--format=%cs", head).strip()
+    author_day = git_out("show", "-s", "--format=%as", head).strip()   # (round six: GitHub shows the author date)
     # The head commit's date, exactly: any other date, past or future, is a false freshness record.
-    if not calendar_date(reviewed) or reviewed != head_day:
+    if not calendar_date(reviewed) or reviewed not in (head_day, author_day):
         errs.append(f"{CATALOG}: set the {t.feat_id} Last reviewed to this PR's head commit date {head_day} in "
                     f"its row or record (it reads '{reviewed or 'nothing'}')")
-    elif feat_record(ch.tree.read(CATALOG), t.feat_id) == feat_record(Tree(merge_base).read(CATALOG), t.feat_id):
+    elif squeeze(feat_record(ch.tree.read(CATALOG), t.feat_id)) == squeeze(feat_record(Tree(merge_base).read(CATALOG), t.feat_id)):
         errs.append(f"{CATALOG}: the {t.feat_id} record is unchanged from the base although it already reads "
                     f"{head_day}; a second PR the same day still updates its record (its PRs, Status or notes)")
     if status.lower() in ("", "unknown", "tbd", "tbc", "n/a", "none", "pending", "-", "—", "–") or set(status) <= set("?"):
@@ -2632,10 +2740,10 @@ def run(argv: list[str]) -> int:
             errs += check_product_scope(m.group(2).upper(), ch, merge_base, head)
         # The checks below read the traced plan and spec; without them the errors from
         # check() already say what is missing.
-        if traced and any(f.startswith(WORKFLOWS) and not is_documentation(f) for f in ch.changed) \
+        if traced and (owned := [f for f in ch.changed if is_process_file(f)]) \
                 and traced.feat_id != WORKFLOW_FEAT and WORKFLOW_FEAT in catalog_ids(ch.base.read(CATALOG)):
-            errs.append(f"workflow change(s) under {WORKFLOWS} belong to {WORKFLOW_FEAT}, not {traced.feat_id}; "
-                        "CI configuration is that capability's work")
+            errs.append(f"process change(s) ({summarize(owned)}) belong to {WORKFLOW_FEAT}, not {traced.feat_id}; "
+                        "CI configuration, the gate and the agent instructions are that capability's work")
         if traced and any(DEPLOY_FILE.match(f) for f in ch.changed) \
                 and traced.feat_id != DEPLOY_FEAT and DEPLOY_FEAT in catalog_ids(ch.base.read(CATALOG)):
             errs.append(f"deploy change(s) ({summarize([f for f in ch.changed if DEPLOY_FILE.match(f)])}) belong to {DEPLOY_FEAT}, "

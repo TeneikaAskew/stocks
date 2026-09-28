@@ -135,8 +135,14 @@ def clean(cell: str) -> str:
     # An HTML comment is audit markup, not content: canvases.yml maps cells straight
     # onto card text, so a hidden directive would be published on a card.
     cell = re.sub(r"<!--.*?-->", "", cell, flags=re.S)
+    cell = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", cell)   # an image renders its alt text (round six)
     cell = LINK.sub(r"\1", cell)
+    cell = re.sub(r"\[([^\]]+)\]\[[^\]]*\]", r"\1", cell)   # a reference link renders its text
+    cell = re.sub(r"<((?:https?|mailto):[^>\s]+)>", r"\1", cell)   # an autolink renders its URL
+    if re.search(r"\[[^\]]*\[", re.sub(r"<!\[CDATA\[.*?\]\]>", "", cell)):
+        raise SystemExit(f"{REGISTRY}: a cell holds a nested link ({cell.strip()[:40]!r}); write links one at a time")
     cell = cell.replace("**", "").replace("~~", "")
+    cell = re.sub(r"(?<![\w`])[*_]{1,3}(?=\S)|(?<=\S)[*_]{1,3}(?![\w`])", "", cell)   # emphasis renders its word
     # red-team round three: `E\-99`, `E&#45;99` and `<s>x</s>` render as the plain text; inside a
     # code span a backslash, an entity and a tag are literal, so only the prose between spans changes
     out, at = [], 0
@@ -230,10 +236,14 @@ def rendered(text: str) -> str:
     out: list[str] = []
     fence: str | None = None
     block_end: str | None = None   # the end pattern of the open HTML block; "" ends at a blank line
+    block_kind = ""
     in_code = False
     prev_blank, last_kept = True, ""
     for line in split_lines(text):
         if block_end is not None:
+            if block_kind in ("6", "7") and re.search(r"(?i)<(table|tr|td|th)\b", line):
+                # round six: a raw `<table>` renders as a table the exporter never reads
+                raise SystemExit(f"{REGISTRY}: {line.strip()[:60]!r} is a raw HTML table the page renders; write tables in Markdown")
             if block_end == "" and not line.strip():
                 block_end = None   # kinds 6 and 7 end at the blank line, which stays blank
             elif block_end and re.search(block_end, line):
@@ -265,7 +275,10 @@ def rendered(text: str) -> str:
             if re.match(r"(?i)^ {0,3}<h[1-6][\s>]", line):
                 # round five: `<h3>Retired nodes</h3>` is a heading on the page the tier logic never sees
                 raise SystemExit(f"{REGISTRY}: {line.strip()[:60]!r} is an HTML heading; headings are written as `## `")
-            _, block_end = kind
+            if re.search(r"(?i)<(table|tr|td|th)\b", line):
+                # round six: a raw `<table>` renders as a table the exporter never reads
+                raise SystemExit(f"{REGISTRY}: {line.strip()[:60]!r} is a raw HTML table the page renders; write tables in Markdown")
+            block_kind, block_end = kind
             if block_end and re.search(block_end, line.lstrip(" ")[2:]):
                 block_end = None   # opened and closed on one line: that line is the block (`<!-->` too)
             continue
@@ -452,7 +465,9 @@ def experiment_ids(text: str) -> list[str]:
                 # a session heading lists its experiments in parentheses; a heading that merely mentions
                 # one in prose defines nothing (red-team, this PR)
                 for group in re.findall(r"\(([^)]*)\)", line):
-                    ids.update(expand_ids(group, EXP_ID, EXP_RANGE, "E-{:02d}"))
+                    # (round six: "(compare E-07 next quarter)" is a mention; a session list holds IDs, ranges and P-items only)
+                    if re.fullmatch(r"\s*(?:E-\d{2}(?:\s*" + RANGE_SEP + r"\s*E-\d{2})?|P\d(?:\.\d+)?)(?:[\s,+]+(?:E-\d{2}(?:\s*" + RANGE_SEP + r"\s*E-\d{2})?|P\d(?:\.\d+)?))*[\s,+]*", group):
+                        ids.update(expand_ids(group, EXP_ID, EXP_RANGE, "E-{:02d}"))
     if dup := sorted({i for i in leads if leads.count(i) > 1}):
         # stocks#1205 r4121777347: two entries for one ID are two records a citation cannot tell apart
         raise SystemExit(f"experiment {dup[0]} is defined by more than one heading in the ledger; one entry per ID")
