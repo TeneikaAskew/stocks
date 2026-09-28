@@ -142,7 +142,7 @@ WORKFLOW_CONTRACTS = {
         # (solyra#72 r4120913592: without the handoff the base's suite tests the base's gate)
         "handoff": {"export": 'git show "$HEAD_SHA:scripts/gate/spec_gate.py" > "$RUNNER_TEMP/proposed/spec_gate.py"',
                     "suite": "python3 -m pytest tests/scripts/test_spec_gate.py",
-                    "upload_path": "proposed", "download_path": "scripts/gate"},
+                    "upload_path": "$RUNNER_TEMP/proposed", "download_path": "scripts/gate"},
         # The verdict reads its inputs from the event, bound on its own step: a rebound
         # PR_NUMBER skips the close-out for every later PR (solyra#72 r4120775915)
         "env": {
@@ -165,14 +165,37 @@ WORKFLOW_CONTRACTS = {
 # unsets or reads into one of them (a prefix assignment, a line of its own, a write to
 # $GITHUB_ENV) runs the gate on inputs the PR chose (solyra#72 r4120775915).
 GATE_INPUT = r"(PR_[A-Z_]+|BASE_SHA|HEAD_SHA|SPEC_GATE_[A-Z_]+)"
-INPUT_OVERRIDE = re.compile(r"(?<![\w$.{-])" + GATE_INPUT + r"=|\b(export|unset|declare|typeset|local|readonly|read)\b[^;|&\n]*?(?<![\w$.{-])" + GATE_INPUT + r"\b")
+# What the shell and Python read before the gate runs: a fake python3 on PATH, a BASH_ENV
+# that exits, PYTEST_ADDOPTS=--collect-only or a PYTHONPATH shadowing pytest turn the
+# contract commands into no-ops while their text stays (solyra#72 r4121374618, r4121374639)
+RUNTIME_ENV = r"(PATH|HOME|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|IFS|PYTHON\w*|PYTEST\w*|GIT_\w+|LD_\w+)"
+PROTECTED = rf"(?:{GATE_INPUT}|{RUNTIME_ENV})"
+INPUT_OVERRIDE = re.compile(r"(?<![\w$.{-])" + PROTECTED + r"=|\b(export|unset|declare|typeset|local|readonly|read)\b[^;|&\n]*?(?<![\w$.{-])" + PROTECTED + r"\b|(?<![\w])(GITHUB_PATH)\b")
+ENV_KEY = re.compile(r"^\s*(" + GATE_INPUT[1:-1] + "|" + RUNTIME_ENV[1:-1] + r"):", re.M)
+
+
+def runtime_env_keys(body: str) -> list[str]:
+    """The names of RUNTIME_ENV that any `env:` mapping of the workflow sets, at the workflow,
+    a job or a step, in block or flow form."""
+    lines, found = body.splitlines(), []
+    for i, line in enumerate(lines):
+        m = re.match(r"^(\s*)(-\s+)?env:\s*(.*)$", line)
+        if not m:
+            continue
+        level = len(m.group(1)) + len(m.group(2) or "")
+        inline = m.group(3).strip()
+        text = inline if inline else "\n".join(lines[i + 1:block_end(lines, i, level)])
+        for name in re.findall(r"(?:^|[{,\n])\s*([A-Za-z_]\w*)\s*:", text):
+            if re.fullmatch(RUNTIME_ENV, name) and name not in found:
+                found.append(name)
+    return found
 
 
 def input_overrides(text: str) -> list[str]:
     """The gate inputs a comment-stripped text assigns or unsets, in order of appearance."""
     found: list[str] = []
     for m in INPUT_OVERRIDE.finditer(text):
-        name = m.group(1) or m.group(3)
+        name = next(g for g in m.groups() if g and g not in ("export", "unset", "declare", "typeset", "local", "readonly", "read"))
         if name not in found:
             found.append(name)
     return found
@@ -274,6 +297,11 @@ def workflow_executes(text: str) -> tuple[str, str]:
         # The step is the list item holding this key; the job is the mapping holding `steps:`.
         item = next((j for j in range(start, -1, -1) if indent(lines[j]) <= key_indent and lines[j].lstrip().startswith("-")), start)
         item_level = indent(lines[item])
+        # solyra#72 r4121374653: `env: {run: ...}` is a variable named run; a step's command is
+        # the `run:` at the step's own key level, in an item of a `steps:` list
+        steps_key = enclosing_key(lines, item, item_level)
+        if key_indent != item_level + 2 or steps_key is None or lines[steps_key].strip() != "steps:":
+            continue
         skipped = conditional(lines, item, block_end(lines, item, item_level), key_indent)
         # a step with its own `shell:` (`bash {0}` drops -e, `sh` is not bash) is not judged
         # (stocks#1205 r4120828215: `shell: echo {0}` prints the script's path and succeeds;
@@ -294,8 +322,11 @@ def workflow_executes(text: str) -> tuple[str, str]:
             shell = default_shell(lines, 0, len(lines), 0)
         skipped = skipped or (shell or "bash") != "bash"
         if not skipped:
-            runs.extend(step)
+            runs.extend(step + [STEP_BOUNDARY])   # each step is its own script: an exit ends only it
     return "\n".join(runs), "\n".join(lines)
+
+
+STEP_BOUNDARY = "__STEP__"
 
 
 def shell_value(raw: str) -> str:
@@ -345,8 +376,15 @@ def shell_statements(runs: str, errexit: bool = True) -> list[str]:
     # GitHub runs bash -e, so `errexit` starts True there; a hook starts without it, and a
     # failure before its last line is lost until `set -e`. After `set +e` a failure no longer
     # fails the step either way.
+    ended = False       # after an unconditional exit nothing else in this script runs
     while i < len(lines):
         line = lines[i]
+        if line.strip() == STEP_BOUNDARY:
+            depth, errexit, ended, i = 0, True, False, i + 1
+            continue
+        if ended:
+            i += 1
+            continue
         while line.rstrip().endswith("\\") and i + 1 < len(lines):   # continuation
             i += 1
             line = line.rstrip()[:-1] + " " + lines[i].lstrip()
@@ -365,7 +403,8 @@ def shell_statements(runs: str, errexit: bool = True) -> list[str]:
         while (m := re.search(r"\$\(([^()]*)\)|`([^`]*)`", line)):
             inner.append(m.group(1) if m.group(1) is not None else m.group(2))
             line = line[:m.start()] + "__SUB__" + line[m.end():]
-        if inner:
+        # solyra#72 r4121374631: `echo "$(cmd)"` has echo's status; only `x=$(cmd)` has cmd's
+        if inner and re.match(r"^\s*[A-Za-z_]\w*=['\"]?__SUB__", line):
             lines[i:i] = inner
         # Parentheses are not separators: `(exit $rc)` inside an echo is text, and a subshell
         # `( cmd )` reads as a statement starting with `(`, which no contract prefix matches
@@ -386,8 +425,9 @@ def shell_statements(runs: str, errexit: bool = True) -> list[str]:
             # `command echo ...`, `env FOO=1 echo ...`, `time ...`: the wrapper runs its argument,
             # so the word after it is the command judged (solyra#72 r4120167264)
             stmt = re.sub(r"^((command|builtin|exec|env|time|nice|nohup|sudo|xargs)\s+(-\S+\s+|[A-Za-z_]\w*=\S*\s+)*)+", "", stmt)
-            if stmt and depth == 0 and not chained and re.match(r"^(exit|return)\b", stmt):
-                return out   # stocks#1205 r4120381459: nothing after an unconditional exit runs
+            if stmt and depth == 0 and not chained and not condition and re.match(r"^(exit|return)\b", stmt):
+                ended = True   # stocks#1205 r4120381459: nothing after an unconditional exit runs
+                break
             if stmt and depth == 0 and (sm := re.match(r"^set\s+(.*)$", stmt)):
                 # solyra#72 r4120633462: with errexit off a failing command does not fail the step
                 flags = sm.group(1)
@@ -450,18 +490,20 @@ def checkout_steps(body: str) -> list[tuple[str, bool]]:
             continue
         item = next((j for j in range(i, -1, -1) if lines[j].lstrip().startswith("-")), i)
         level = indent(lines[item])
+        if conditional(lines, item, block_end(lines, item, level), level + 2):
+            continue   # solyra#72 r4121374610: a checkout an `if:` may skip is no checkout
         ref, persists = "", True
         for j in range(item, block_end(lines, item, level)):
             if (m := re.match(r"^\s*ref:\s*(.*)$", lines[j])):
                 ref = re.sub(r"\s+#.*$", "", m.group(1)).strip().strip("'\"")
             if (m := re.match(r"^\s*persist-credentials:\s*(.*)$", lines[j])):
                 persists = re.sub(r"\s+#.*$", "", m.group(1)).strip().strip("'\"").lower() != "false"
-        found.append((ref, persists))
+        found.append((ref, persists, item))
     return found
 
 
 def checkout_refs(body: str) -> list[str]:
-    return [ref for ref, _ in checkout_steps(body)]
+    return [ref for ref, _, _ in checkout_steps(body)]
 
 
 def workflow_jobs(body: str) -> list[dict]:
@@ -1124,18 +1166,20 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                             "`needs` it); the base's verdict comes before the proposed gate runs"], None
             for command in (m for m in contract.get("isolated", ()) if m in required):
                 j, _ = job_of(jobs, command)
-                if j >= 0 and (job_of(jobs, contract["run"][0])[0] == j or any(persists for _, persists in jobs[j]["checkouts"])):
+                if j >= 0 and (job_of(jobs, contract["run"][0])[0] == j or any(persists for _, persists, _ in jobs[j]["checkouts"])):
                     return [f"{path}: {command!r} runs PR-controlled code, so its job holds no checkout credentials "
                             "(persist-credentials: false) and never the base's verdict"], None
             if handoff := contract.get("handoff"):
                 (je, _), (js, _) = job_of(jobs, handoff["export"]), job_of(jobs, handoff["suite"])
+                # solyra#72 r4121374648: the exact directory the export writes, not a path containing it
+                norm = lambda p: re.sub(r"\$\{\{\s*runner\.temp\s*\}\}|\$\{RUNNER_TEMP\}", "$RUNNER_TEMP", p.replace(" ", "")).rstrip("/")
                 uploads = [a for a in jobs[je]["artifacts"] if a["kind"] == "upload" and a["line"] > line_of(jobs[je], handoff["export"])
-                           and handoff["upload_path"] in a["path"]] if je >= 0 else []
+                           and norm(a["path"]) == handoff["upload_path"]] if je >= 0 else []
                 downloads = [a for a in jobs[js]["artifacts"] if a["kind"] == "download" and a["line"] < line_of(jobs[js], handoff["suite"])
                              and a["path"] == handoff["download_path"]] if js >= 0 else []
                 if not any(u["name"] and u["name"] == d["name"] for u in uploads for d in downloads):
                     return [f"{path}: the proposed gate no longer reaches the suite's job (actions/upload-artifact of "
-                            f"`{handoff['upload_path']}` after the export, actions/download-artifact of the same name into "
+                            f"`{handoff['upload_path']}/` after the export, actions/download-artifact of the same name into "
                             f"`{handoff['download_path']}` before the suite, both unconditional); the base's suite must test the proposed gate"], None
             if overridden := input_overrides(body):
                 return [f"{path}: assigns or unsets {overridden[0]}, an input the gate reads from the event; the "
@@ -1146,10 +1190,15 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                         return [f"{path}: the step running {contract['run'][0]!r} no longer binds {name} to "
                                 f"`{expression}` in its own `env:`; the gate reads its inputs from the event"], None
             for job in jobs:
-                # stocks#1205 r4120528978: a job that runs a contract command has the repository
-                if any(invokes(st, m) for m in required for st in job["statements"]) and not job["checkouts"]:
-                    return [f"{path}: job {job['name']} runs the gate's commands without an actions/checkout step; "
-                            "it would run in an empty workspace"], None
+                # stocks#1205 r4120528978: a job that runs a contract command has the repository,
+                # from an unconditional checkout before its first contract command
+                first = min((line_of(job, m) for m in required if line_of(job, m) >= 0), default=-1)
+                if first >= 0 and not any(line < first for _, _, line in job["checkouts"]):
+                    return [f"{path}: job {job['name']} runs the gate's commands without an actions/checkout step that is unconditional and "
+                            "before them; it would run in an empty workspace"], None
+            if names := runtime_env_keys(body):
+                return [f"{path}: sets {names[0]} in an `env:` block; the gate's workflows leave the shell's and "
+                        "Python's startup environment alone"], None
             declared = workflow_trigger_types(body, contract["trigger"])
             if contract["trigger"] in workflow_triggers(body) and not contract["types"] <= declared:
                 # solyra#72 r4120633503: without `edited` and `ready_for_review` a draft's green run

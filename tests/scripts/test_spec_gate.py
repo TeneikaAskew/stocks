@@ -2236,3 +2236,42 @@ def test_quoted_text_is_text_across_lines(repo):
         assert r.returncode == 1 and "no longer executes" in r.stdout, (decoy, r.stdout)
     quoted_args = gate_workflow(a='|\n          echo "note: $HEAD_SHA"\n          ' + VERDICT_CMD + '\n          echo "done"')
     assert pr(repo, "chore/gate-workflow", {wf: quoted_args}, **cap).returncode == 0
+
+
+def test_startup_environment_substitutions_nested_runs_paths_and_checkouts_are_the_contract(repo):
+    """solyra#72 r4121374618 (P1), r4121374631 (P1), r4121374639 (P1), r4121374653 (P1),
+    r4121374648 (P1), r4121374610 (P1) (spec_gate.py:531, :369, :1147, :260, :1135, :451).
+
+    `PYTEST_ADDOPTS: --collect-only` or `BASH_ENV` on a step kept the command text and ran
+    nothing; `echo "$(cmd)"` counted cmd; `env: {run: cmd}` read as a step; an upload path
+    merely containing `proposed` passed; a checkout under `if: false` or after the commands
+    counted. Each is refused.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/spec-gate.yml"
+    typed = gate_workflow()
+    assert pr(repo, "chore/gate-workflow", {wf: typed}, **cap).returncode == 0
+    for env_block in (typed.replace("      - env:\n", "      - env:\n          PYTEST_ADDOPTS: --collect-only\n", 1),
+                      typed.replace("      - env:\n", "      - env:\n          BASH_ENV: scripts/gate/skip.sh\n", 1),
+                      typed.replace("permissions:\n", "env:\n  PYTHONPATH: scripts/gate/shim\npermissions:\n", 1),
+                      typed.replace("  gate:\n", "  gate:\n    env: { PATH: 'scripts/gate/bin:/usr/bin' }\n", 1),
+                      typed.replace("      - run: git fetch", "      - run: echo \"scripts/gate/bin\" >> \"$GITHUB_PATH\"\n      - run: git fetch", 1)):
+        r = pr(repo, "chore/gate-workflow", {wf: env_block}, **cap)
+        assert r.returncode == 1 and ("in an `env:` block" in r.stdout or "assigns or unsets" in r.stdout), (env_block, r.stdout)
+    for subst in ('echo "$(' + VERDICT_CMD + ')"', 'printf "%s" "$(' + VERDICT_CMD + ')"', 'true $(' + VERDICT_CMD + ')'):
+        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a=subst)}, **cap)
+        assert r.returncode == 1 and "no longer executes" in r.stdout, (subst, r.stdout)
+    assert pr(repo, "chore/gate-workflow", {wf: gate_workflow(a='|\n          out=$(' + VERDICT_CMD + ' 2>&1) && rc=0 || rc=$?\n          printf "%s\\n" "$out"\n          exit "$rc"')}, **cap).returncode == 0
+    nested = typed.replace("        run: " + VERDICT_CMD + "\n", "          run: " + VERDICT_CMD + "\n        run: 'true'\n")
+    r = pr(repo, "chore/gate-workflow", {wf: nested}, **cap)
+    assert r.returncode == 1 and "no longer executes" in r.stdout, r.stdout
+    other_dir = typed.replace("          path: ${{ runner.temp }}/proposed/\n", "          path: ${{ runner.temp }}/not-proposed/\n")
+    r = pr(repo, "chore/gate-workflow", {wf: other_dir}, **cap)
+    assert r.returncode == 1 and "no longer reaches the suite's job" in r.stdout, r.stdout
+    assert pr(repo, "chore/gate-workflow", {wf: typed.replace("          path: ${{ runner.temp }}/proposed/\n", "          path: $RUNNER_TEMP/proposed\n")}, **cap).returncode == 0
+    checkout = "      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.base.sha }}\n"
+    for broken in (typed.replace(checkout, "      - if: false\n        uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.base.sha }}\n", 1),
+                   typed.replace(checkout + "      - run: git fetch --no-tags origin \"$HEAD_SHA\"\n",
+                                 "      - run: git fetch --no-tags origin \"$HEAD_SHA\"\n" + checkout, 1)):
+        r = pr(repo, "chore/gate-workflow", {wf: broken}, **cap)
+        assert r.returncode == 1 and "without an actions/checkout step that is unconditional and before them" in r.stdout, (broken, r.stdout)
