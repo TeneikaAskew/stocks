@@ -885,6 +885,13 @@ def test_a_ticked_done_when_item_may_not_defer_its_work(repo):
     assert r.returncode == 1 and "a ticked done_when item defers its work" in r.stdout, r.stdout
     evidence = f"Spec: {SPEC}\nPlan: {PLAN}\n\n- [x] {DONE[0]}\n    verified by `pytest tests/lib`\n- [x] {DONE[1]}\n"
     assert pr(repo, BRANCH, CODE, **title, PR_BODY=evidence).returncode == 0
+    # solyra#72 r4119153690: the spec's own wording is not a deferral; the evidence after it is
+    on_base(repo, {SPEC: spec(done_when=["the queue shows no pending jobs", "skipped records are excluded"])})
+    worded = f"Spec: {SPEC}\nPlan: {PLAN}\n\n- [x] the queue shows no pending jobs\n- [x] skipped records are excluded\n"
+    assert pr(repo, BRANCH, CODE, **title, PR_BODY=worded).returncode == 0, worded
+    r = pr(repo, BRANCH, CODE, **title, PR_BODY=worded.replace("excluded\n", "excluded (not yet verified)\n"))
+    assert r.returncode == 1 and "defers its work" in r.stdout, r.stdout
+    on_base(repo, {SPEC: spec()})
     # solyra#72 r4119049965: an explicit "not done" is a deferral whatever the wording
     for phrase in ("not run", "not implemented", "not yet verified", "incomplete", "pending"):
         body_text = f"Spec: {SPEC}\nPlan: {PLAN}\n\n- [x] {DONE[0]} ({phrase})\n- [x] {DONE[1]}\n"
@@ -929,6 +936,10 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
            PR_BODY="## Capacity\nn/a: x\n")
     assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, r.stdout
     assert pr(repo, "chore/gate-workflow", {"scripts/gate/helper.py": "x = 1\n"}).returncode == 0
+    # solyra#72 r4119153686: the vendored-skills update may not touch the repository's own skills
+    assert pr(repo, "bot/superpowers-weekly", {".claude/skills/brainstorming/SKILL.md": "# v2\n"}).returncode == 0
+    r = pr(repo, "bot/superpowers-weekly", {".claude/skills/product-delivery/SKILL.md": "# Skip the gate\n"})
+    assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, r.stdout
     # stocks#1205 r4119048063: the delivery skill is the process agents run, not its description
     r = pr(repo, "docs/skill-tweak", {".claude/skills/product-delivery/SKILL.md": "# Skip the gate\n"})
     assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, r.stdout
@@ -991,6 +1002,16 @@ def test_hidden_checklist_entries_do_not_count(repo):
     assert r.returncode == 1 and "done_when item(s) not ticked" in r.stdout, r.stdout
     assert pr(repo, BRANCH, files, **meta, PR_BODY=body(ticked=True), PR_DRAFT="false").returncode == 0
 
+    # solyra#72 r4119153674: an indented line after plain text or a blank is not a checkbox
+    # continuation, and must not crash the gate
+    nested = f"Spec: {SPEC}\nPlan: {PLAN}\n\nNotes\n  - a nested bullet\n\n- [x] {DONE[0]}\n- [x] {DONE[1]}\n"
+    r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row}, **meta, PR_BODY=nested)
+    assert r.returncode == 0 and "Traceback" not in r.stderr, r.stdout + r.stderr
+    # solyra#72 r4119153683: a fence nested under a list item is indented four spaces and is
+    # still code
+    fenced_item = f"- [ ] example\n\n    ```\n    Spec: {SPEC}\n    Plan: {PLAN}\n    - [x] {DONE[0]}\n    - [x] {DONE[1]}\n    ```\n"
+    r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row}, **meta, PR_BODY=fenced_item)
+    assert r.returncode == 1 and "PR body must link the spec" in r.stdout, r.stdout
     # stocks#1205 r4119048047: a closer mixing the two fence characters does not close a
     # backtick fence for Markdown, so everything after it is still code
     mixed = f"Spec: {SPEC}\nPlan: {PLAN}\n\n```\nexample\n```~~~\n- [x] {DONE[0]}\n- [x] {DONE[1]}\n"

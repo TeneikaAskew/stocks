@@ -374,9 +374,12 @@ def chore_allows(path: str, ch: "Change") -> str | None:
     return non_dependency_edit(path, ch.before.read(path), ch.tree.read(path))
 
 
+# Skills this repository owns: the weekly vendored-skills update never touches them.
+LOCAL_SKILLS = (".claude/skills/product-delivery/", ".claude/skills/refresh-canvas/")
+
 ALLOWANCES = (
     ("chore/", chore_allows),
-    ("bot/superpowers-", lambda p, ch: None if p.startswith(".claude/skills/") else ""),
+    ("bot/superpowers-", lambda p, ch: None if p.startswith(".claude/skills/") and not p.startswith(LOCAL_SKILLS) else ""),
 )
 
 
@@ -492,9 +495,11 @@ def visible(body: str) -> str:
     # fence of the same character at least as long; an unclosed fence runs to the end.
     # (`{3,} and ~{3,} separately: a closer mixing the two characters does not close a
     # fence for Markdown, so it must not close one here either)
-    body = re.sub(r"^ {0,3}(`{3,}).*?^ {0,3}\1`*[ \t]*$", "", body, flags=re.S | re.M)
-    body = re.sub(r"^ {0,3}(~{3,}).*?^ {0,3}\1~*[ \t]*$", "", body, flags=re.S | re.M)
-    body = re.sub(r"^ {0,3}(`{3,}|~{3,}).*\Z", "", body, flags=re.S | re.M)
+    # ([ \t]*, not up to three spaces: a fence nested under a list item is indented by the
+    # item's content offset and still renders as code)
+    body = re.sub(r"^[ \t]*(`{3,}).*?^[ \t]*\1`*[ \t]*$", "", body, flags=re.S | re.M)
+    body = re.sub(r"^[ \t]*(~{3,}).*?^[ \t]*\1~*[ \t]*$", "", body, flags=re.S | re.M)
+    body = re.sub(r"^[ \t]*(`{3,}|~{3,}).*\Z", "", body, flags=re.S | re.M)
     # An indented code block: lines indented four spaces or a tab after a blank line, until
     # the next unindented text. Those render as code, not as links or checkboxes.
     kept, in_code, prev_blank = [], False, True
@@ -516,7 +521,7 @@ def checklist(body: str) -> list[tuple[bool, str]]:
     for line in visible(body).splitlines():
         if (m := CHECKBOX.match(line)):
             items.append((m.group(1) in "xX", norm(m.group(2))))
-        elif items and line.strip() and line[0] in " \t":
+        elif items and items[-1] is not None and line.strip() and line[0] in " \t":
             ticked, text = items[-1]
             items[-1] = (ticked, norm(f"{text} {line}"))
         else:
@@ -596,7 +601,9 @@ def check_pr_metadata(t: Traced, env: dict, tree: Tree) -> list[str]:
         if missing:
             errs.append("PR body must carry each done_when item as its own '- [ ]' line starting with its text; "
                         "missing: " + "; ".join(missing))
-        deferred = [box[1] for box in matched.values() if box and box[0] and DEFERRAL.search(box[1])]
+        # Scanned past the item's own words: a done_when that says "no pending jobs" is the
+        # spec's wording, not a deferral; what the author wrote after it is.
+        deferred = [box[1] for item, box in matched.items() if box and box[0] and DEFERRAL.search(box[1][len(item):])]
         if deferred:
             errs.append("a ticked done_when item defers its work, so it is not done: " + "; ".join(deferred))
         errs += check_canvas_handoff(t, body, tree)
