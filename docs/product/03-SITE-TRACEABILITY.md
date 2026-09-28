@@ -39,7 +39,7 @@ defined in this document's Gates section. The element ID is the join to the UI s
 | Area | Rows | S | T | V | Te |
 |---|---|---|---|---|---|
 | 00 · Shared, under every page | 8 | 8 | 8 | 6 | 7 |
-| 01 · Landing | 13 | 0 | 0 | 0 | 0 |
+| 01 · Landing | 13 | 13 | 13 | 11 | 3 |
 | 02 · AuthGate and sign-in | 10 | 0 | 0 | 0 | 0 |
 | 03 · AppShell | 16 | 0 | 0 | 0 | 0 |
 | 04 · Dashboard | 21 | 0 | 0 | 0 | 0 |
@@ -55,7 +55,7 @@ defined in this document's Gates section. The element ID is the join to the UI s
 | 14 · Admin | 13 | 0 | 0 | 0 | 0 |
 | 15 · Settings | 13 | 0 | 0 | 0 | 0 |
 | 16 · Help and Glossary | 8 | 0 | 0 | 0 | 0 |
-| Total | 222 | 8 | 8 | 6 | 7 |
+| Total | 222 | 21 | 21 | 17 | 10 |
 
 ```bash
 # whole document; run between two "## NN ·" headings for one area
@@ -144,19 +144,19 @@ UI spec: [UI-SCREENS.md § SCREEN-LANDING](https://github.com/TeneikaAskew/solyr
 ### Checklist
 | ID | Element | S | T | V | Te | Evidence |
 |---|---|---|---|---|---|---|
-| LANDING-01 | LandingNav | [ ] | [ ] | [ ] | [ ] | |
-| LANDING-02 | Hero with the agent terminal | [ ] | [ ] | [ ] | [ ] | |
-| LANDING-03 | BentoGrid | [ ] | [ ] | [ ] | [ ] | |
-| LANDING-04 | ChartShowcase | [ ] | [ ] | [ ] | [ ] | |
-| LANDING-05 | ModuleDives | [ ] | [ ] | [ ] | [ ] | |
-| LANDING-06 | DailyRhythm | [ ] | [ ] | [ ] | [ ] | |
-| LANDING-07 | WaitlistSection | [ ] | [ ] | [ ] | [ ] | |
-| LANDING-08 | FAQ (#faq) | [ ] | [ ] | [ ] | [ ] | |
-| LANDING-09 | Sign in (to /dashboard) | [ ] | [ ] | [ ] | [ ] | |
-| LANDING-10 | Request access, join the waitlist | [ ] | [ ] | [ ] | [ ] | |
-| LANDING-11 | See a live day (scroll to #learn) | [ ] | [ ] | [ ] | [ ] | |
-| LANDING-12 | State: loading (waitlist submit in flight) | [ ] | [ ] | [ ] | [ ] | |
-| LANDING-13 | State: error (waitlist failure shown inline) | [ ] | [ ] | [ ] | [ ] | |
+| LANDING-01 | LandingNav | [x] | [x] | [x] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#landing-01--landingnav) · T 2026-09-28 6ae2e99 · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5875903196) |
+| LANDING-02 | Hero with the agent terminal | [x] | [x] | [x] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#landing-02--hero-with-the-agent-terminal) · T 2026-09-28 6ae2e99 · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5875903196) |
+| LANDING-03 | BentoGrid | [x] | [x] | [x] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#landing-03--bentogrid) · T 2026-09-28 6ae2e99 · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5875903196) |
+| LANDING-04 | ChartShowcase | [x] | [x] | [x] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#landing-04--chartshowcase) · T 2026-09-28 6ae2e99 · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5875903196) |
+| LANDING-05 | ModuleDives | [x] | [x] | [x] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#landing-05--moduledives) · T 2026-09-28 6ae2e99 · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5875903196) |
+| LANDING-06 | DailyRhythm | [x] | [x] | [x] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#landing-06--dailyrhythm) · T 2026-09-28 6ae2e99 · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5875903196) |
+| LANDING-07 | WaitlistSection | [x] | [x] | [x] | [x] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#landing-07--waitlistsection) · T 2026-09-28 6ae2e99 · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5875903196) · Te 2026-09-28 [stocks run](https://github.com/TeneikaAskew/stocks/actions/runs/35347427630) and solyra [run](https://github.com/TeneikaAskew/solyra/actions/runs/36361217691) |
+| LANDING-08 | FAQ (#faq) | [x] | [x] | [x] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#landing-08--faq-faq) · T 2026-09-28 6ae2e99 · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5875903196) |
+| LANDING-09 | Sign in (to /dashboard) | [x] | [x] | [x] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#landing-09--sign-in-to-dashboard) · T 2026-09-28 6ae2e99 · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5875903196) |
+| LANDING-10 | Request access, join the waitlist | [x] | [x] | [x] | [x] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#landing-10--request-access-join-the-waitlist) · T 2026-09-28 6ae2e99 · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5875903196) · Te 2026-09-28 [stocks run](https://github.com/TeneikaAskew/stocks/actions/runs/35347427630) and solyra [run](https://github.com/TeneikaAskew/solyra/actions/runs/36361217691) |
+| LANDING-11 | See a live day (scroll to #learn) | [x] | [x] | [x] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#landing-11--see-a-live-day-scroll-to-learn) · T 2026-09-28 6ae2e99 · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5875903196) |
+| LANDING-12 | State: loading (waitlist submit in flight) | [x] | [x] | [ ] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#landing-12--state-loading-waitlist-submit-in-flight) · T 2026-09-28 6ae2e99 |
+| LANDING-13 | State: error (waitlist failure shown inline) | [x] | [x] | [ ] | [x] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#landing-13--state-error-waitlist-failure-shown-inline) · T 2026-09-28 6ae2e99 · Te 2026-09-28 [stocks run](https://github.com/TeneikaAskew/stocks/actions/runs/35347427630) and solyra [run](https://github.com/TeneikaAskew/solyra/actions/runs/36361217691) |
 
 ### Chain
 | ID | API | Backend | Data | GCP | External | Tests |
@@ -182,7 +182,7 @@ UI spec: [UI-SCREENS.md § SCREEN-LANDING](https://github.com/TeneikaAskew/solyr
 
 ### Gaps
 - Corrected in this task, 2026-09-28: the External cell for LANDING-07 and LANDING-10, the two elements that actually issue `POST /api/waitlist`, now names Lovable as the SPA host whose static hosting triggers `authedFetch`'s origin rewrite onto `solyra-api-staging` (`src/main.tsx:14-25`, its own comment: "the landing page's own waitlist POST needs that rewrite too"; `src/lib/apiTargets.ts`), the same pattern SHARED-03 already uses. This replaces the previous version of this bullet, which argued no row's External cell had anything truthful to hold: that is still true for the eleven rows that make no request at all (their External cell stays `none`), but not for the two that call the network.
-- LANDING-12 (the waitlist form's submitting/loading presentation) genuinely exists in `WaitlistSection.tsx`: the submit button is disabled and its text changes to "Joining…" while `status === 'submitting'` (`:19-23,77-79`). It has zero test coverage: neither a Vitest render test nor a `tests/landing/landing.spec.ts` assertion exercises it. The one Playwright test that submits the form (`waitlist form rejects an invalid email with a visible error`) fills an invalid email, which fails client-side `validateEmail` and returns before `status` ever becomes `'submitting'`. UI-SCREENS.md's States table previously marked both LANDING-12 and LANDING-13 "absent" in source; reading `WaitlistSection.tsx` directly shows both presentations exist, so both cells are corrected in this task. The real, code-verified gap is test coverage, not presence: Te is unticked for LANDING-12 only, since LANDING-13 (the error state) is exercised by `waitlist.test.ts`, `tests/api/test_waitlist_router.py` and `landing.spec.ts` together.
+- LANDING-12 (the waitlist form's submitting/loading presentation) genuinely exists in `WaitlistSection.tsx`: the submit button is disabled and its text changes to "Joining…" while `status === 'submitting'` (`:19-23,77-79`). It has zero test coverage: neither a Vitest render test nor a solyra [tests/landing/landing.spec.ts](https://github.com/TeneikaAskew/solyra/blob/main/tests/landing/landing.spec.ts) assertion exercises it. The one Playwright test that submits the form (`waitlist form rejects an invalid email with a visible error`) fills an invalid email, which fails client-side `validateEmail` and returns before `status` ever becomes `'submitting'`. UI-SCREENS.md's States table previously marked both LANDING-12 and LANDING-13 "absent" in source; reading `WaitlistSection.tsx` directly shows both presentations exist, so both cells are corrected in this task. The real, code-verified gap is test coverage, not presence: Te is unticked for LANDING-12 only, since LANDING-13 (the error state) is exercised by `waitlist.test.ts`, `tests/api/test_waitlist_router.py` and `landing.spec.ts` together.
 - LANDING-11 ("See a live day", `Hero.tsx:41`, scrolling to `DailyRhythm`'s `id="learn"`) has no test in either repo, confirmed by searching `src/` and `tests/` for `#learn` and "See a live day"; its Chain Tests cell is `none` with this reason rather than left blank.
 
 ## 02 · AuthGate and sign-in
