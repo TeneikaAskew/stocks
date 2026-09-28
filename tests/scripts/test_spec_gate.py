@@ -2775,3 +2775,48 @@ def test_folded_scalars_docs_payloads_and_dependency_values_are_refused(repo):
     assert r.returncode == 1 and "missing:" in r.stdout, r.stdout
     assert pr(repo, BRANCH, CODE, **title, PR_BODY=head + f"- [x] {DONE[1]} and the canvas is refreshed\n").returncode == 0
     on_base(repo, {SPEC: spec()})
+
+
+def test_gate_workflows_and_hook_are_pinned_and_hidden_steps_are_scanned(repo):
+    """Red-team round five (spec_gate.py: PINNED, every_run_text, valid_yaml, GATE_PATHS, the git rule).
+
+    A step under `if: ${{ always() }}` or `shell: sh`, a `run :` key, a `run: |2` block and a
+    single-quoted value running on to the next line each executed on the runner while the write
+    and inline-code scans never read them; `git read-tree` and `git checkout-index` rebuilt the head
+    over the base without naming a path; `scripts//gate` and `scripts/./gate` are `scripts/gate` to
+    bash. Each is refused. And structurally: the two workflows and the hook are pinned byte for byte
+    to copies under scripts/gate/pinned/ read from the base, so a change to one must equal the copy
+    already reviewed, in a PR of its own.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/spec-gate.yml"
+    typed = gate_workflow()
+    fetch = "      - run: git fetch --no-tags origin \"$HEAD_SHA\"\n"
+    for step in ("      - if: ${{ always() }}\n        run: git show \"$HEAD_SHA:x.py\" > scripts/gate/spec_gate.py\n",
+                 "      - if: true\n        run: python3 -c \"import os\"\n",
+                 "      - shell: sh\n        run: git show \"$HEAD_SHA:x.py\" > scripts/gate/spec_gate.py\n",
+                 "      - run: |2\n          cp x scripts/gate/spec_gate.py\n",
+                 "      - run: git read-tree \"$HEAD_SHA\"\n", "      - run: git checkout-index -f -a\n",
+                 "      - run: git switch --discard-changes --detach \"$HEAD_SHA\"\n", "      - run: git merge --no-edit -X theirs \"$HEAD_SHA\"\n",
+                 "      - run: git show \"$HEAD_SHA:x.py\" > scripts//gate/spec_gate.py\n", "      - run: git show \"$HEAD_SHA:x.py\" > scripts/./gate/spec_gate.py\n"):
+        r = pr(repo, "chore/gate-workflow", {wf: typed.replace(fetch, fetch + step, 1)}, **cap)
+        assert r.returncode == 1 and ("writes to or replaces a gate file" in r.stdout or "runs inline code" in r.stdout), (step, r.stdout)
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace(fetch, "      - run : git show \"$HEAD_SHA:x.py\" > scripts/gate/spec_gate.py\n" + fetch, 1)}, **cap)
+    assert r.returncode == 1 and "whitespace before a key's colon" in r.stdout, r.stdout
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace(fetch, "      - run: 'true\n          ; git show \"$HEAD_SHA:x.py\" > scripts/gate/spec_gate.py'\n" + fetch, 1)}, **cap)
+    assert r.returncode == 1 and "quoted value it does not close" in r.stdout, r.stdout
+    assert pr(repo, "chore/gate-workflow", {wf: typed}, **cap).returncode == 0
+    # the pin: with copies on the base, the file must equal its copy
+    pin = "scripts/gate/pinned/spec-gate.yml"
+    on_base(repo, {pin: typed})
+    edited = typed.replace("name: spec-gate\n", "name: spec-gate\n# reviewed change\n", 1)
+    r = pr(repo, "chore/gate-workflow", {wf: edited}, **cap)
+    assert r.returncode == 1 and "differs from its pinned copy" in r.stdout, r.stdout
+    r = pr(repo, "chore/gate-workflow", {wf: edited, pin: edited}, **cap)
+    assert r.returncode == 1 and "differs from its pinned copy" in r.stdout, "changing both in one PR is measured against the base's copy"
+    assert pr(repo, "chore/gate-workflow", {pin: edited}, **cap).returncode == 0, "step one: the copy alone"
+    r = pr(repo, "chore/gate-workflow", {pin: None}, **cap)
+    assert r.returncode == 1 and "cannot be removed" in r.stdout, r.stdout
+    on_base(repo, {pin: edited})
+    assert pr(repo, "chore/gate-workflow", {wf: edited}, **cap).returncode == 0, "step two: the file equals the reviewed copy"
+    on_base(repo, {pin: None})

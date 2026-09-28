@@ -293,6 +293,30 @@ def conditional(lines: list[str], start: int, end: int, level: int) -> bool:
     return False
 
 
+def every_run_text(text: str) -> str:
+    """The text of every `run:` value in a workflow, whatever its `if:`, `shell:`, block indicator or
+    quoting: the scans for writes and inline code read this, since a step the contract may not count
+    still executes (red-team round five)."""
+    lines = [ln for ln in text.replace("\x00", "").splitlines() if not ln.lstrip().startswith("#")]
+    out, i = [], 0
+    while i < len(lines):
+        m = re.match(r"^(\s*)(-\s+)?run\s*:\s*(.*)$", lines[i])
+        if not m:
+            i += 1
+            continue
+        key_indent = len(m.group(1)) + len(m.group(2) or "")
+        value = re.sub(r"\s+#.*$", "", m.group(3)).strip()
+        i += 1
+        block = re.match(r"^[|>][+-]?\d?[+-]?$", value)
+        parts = [] if block else [value]
+        while i < len(lines) and (not lines[i].strip() or indent(lines[i]) > key_indent) \
+                and (block or not re.match(r"^(-(\s+|$)|[\w.-]+\s*:(\s|$))", lines[i].strip())):
+            parts.append(lines[i].strip())
+            i += 1
+        out.append("\n".join(p for p in parts if p))
+    return "\n".join(out)
+
+
 def workflow_executes(text: str) -> tuple[str, str]:
     """(the text of every unconditional `run:` step, the whole file), both with comment lines
     removed, so a contract command counts only where the workflow executes it: not in a
@@ -308,7 +332,7 @@ def workflow_executes(text: str) -> tuple[str, str]:
         value = m.group(3).strip()
         start = i
         i += 1
-        step = [value] if value and value not in ("|", ">", "|-", ">-", "|+", ">+") else []
+        step = [value] if value and not re.match(r"^[|>][+-]?\d?[+-]?$", value) else []   # `|2` is a block too (round five)
         if not step:
             while i < len(lines) and (not lines[i].strip() or indent(lines[i]) > key_indent):
                 step.append(lines[i].strip())
@@ -703,6 +727,12 @@ def valid_yaml(text: str) -> str | None:
         # red-team round four: a plain scalar continued on a deeper line folds to one value for GitHub
         # (`run: cmd\n  || true`, `ref:\n  <head sha>`, `shell:\n  true {0}`) while the gate read line one
         return f"continues a plain scalar onto the next line ({where}); the gate's workflows keep each value on its line or in a `|` block"
+    if (m := re.search(r"^\s*(-\s+)?[\w.-]+[ \t]+:(\s|$)", stripped, re.M)):
+        # round five: `run :` is the key `run` to YAML and no key at all to the line readers
+        return f"puts whitespace before a key's colon ({m.group(0).strip()}); the gate's workflows write `key:`"
+    if (m := re.search(r"""^\s*(-\s+)?[\w.-]+:\s+(?:'(?:[^']|'')*$|"(?:[^"\\]|\\.)*$)""", stripped, re.M)):
+        # round five: a quoted scalar that runs on to later lines folds for YAML while the readers keep line one
+        return f"opens a quoted value it does not close on the line ({m.group(0).strip()[:40]}); the gate's workflows keep each value on its line"
     lines = split_lines(stripped)
     for i, ln in enumerate(lines):
         if re.match(r"^defaults:\s*$", ln) and any(re.match(r"^\s+working-directory:", lines[k]) for k in range(i + 1, block_end(lines, i, 0))):
@@ -807,7 +837,8 @@ HOOK_LINES = (
     r"python3 \"\$\(git rev-parse --show-toplevel\)/scripts/gate/spec_gate\.py\" --commit",
     r"python3 (\./)?scripts/gate/spec_gate\.py --commit",
 )
-GATE_PATHS = r"(scripts/gate\b|tests/scripts\b|\.githooks\b|\.github/workflows\b)"
+# (round five: bash reads `scripts//gate` and `scripts/./gate` as `scripts/gate`)
+GATE_PATHS = r"(scripts/+(?:\./+)*gate\b|tests/+(?:\./+)*scripts\b|\.githooks\b|\.github/+(?:\./+)*workflows\b)"
 # red-team round three: `rsync` copies without a redirect; `pip install --target` writes a directory
 WRITERS = r"(cp|mv|install|ln|tee|rm|truncate|chmod|patch|dd|rsync|curl|wget|sed|perl|pip3?|python3?\s+-m\s+pip|git\s+(checkout|restore|apply|reset|clean|stash))"
 # stocks#1205 r4122021088: `gate=scripts/gate/spec_gate.py` then `> "$gate"` is the same write; a
@@ -896,12 +927,25 @@ DEPLOY_FILE = re.compile(r"^(gcp/deploy\.sh|cloudbuild[^/]*\.ya?ml|Dockerfile[^/
 SUITE = "tests/scripts/test_spec_gate.py"
 # stocks#1205 r4121602817: the exporter's suite judges proposed exporters the same way
 SUITES = (SUITE, "tests/scripts/test_export_model_registry.py")
+# Red-team round five: after five rounds the shell and YAML models still leaked (`if: always()`
+# steps hidden from the write scan, `run :`, `|2`, quoted continuations, git subcommands, `scripts//gate`).
+# The workflows and the hook are therefore pinned byte for byte to copies under scripts/gate/pinned/,
+# read from the BASE: a change to one of these files must equal the copy already on main. Changing
+# the copy is its own reviewed PR (step one), the file follows in the next (step two); one PR
+# changing both is refused, because the base's copy is what the head is measured against. The
+# models below stay as a second line.
+PINNED = {
+    ".github/workflows/spec-gate.yml": "scripts/gate/pinned/spec-gate.yml",
+    ".github/workflows/registry-check.yml": "scripts/gate/pinned/registry-check.yml",
+    ".githooks/pre-commit": "scripts/gate/pinned/pre-commit",
+}
 GATE_ENTRYPOINTS = (
     "scripts/gate/spec_gate.py",
     HOOK,
     ".github/workflows/spec-gate.yml",
     ".github/workflows/registry-check.yml",
     SUITE,   # the suite CI runs on a proposed gate
+    *PINNED.values(),   # the pinned copies: without one, the file it pins is judged by the models alone
 )
 # The manifest fields a chore/ branch may change. Anything else in package.json or
 # pyproject.toml (scripts, build config, tool tables) is executable configuration that
@@ -1327,7 +1371,7 @@ def chore_allows(path: str, ch: "Change") -> str | None:
     """None when chore/ may carry this file; otherwise why not ("" when it is simply not a
     manifest or gate file, a reason naming the file when it is a manifest edited beyond
     its dependency fields)."""
-    if path.startswith("scripts/gate/") and path not in GATE_SCRIPTS and ch.tree.read(path) is not None:
+    if path.startswith("scripts/gate/") and path not in GATE_SCRIPTS and path not in PINNED.values() and ch.tree.read(path) is not None:
         # stocks#1205 r4121413687: a third module there (`subprocess.py`) would shadow an import of
         # the scripts that run from that directory, and the base's suite tests only the two it copies
         return f"{path}: scripts/gate/ holds {' and '.join(GATE_SCRIPTS)} and nothing else; a module beside them would shadow an import of the gate"
@@ -1490,6 +1534,10 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
     if ch.mode == "pr" and ch.branch.startswith("spike/"):
         return [f"branch '{ch.branch}' is a spike: local investigation commits only, never a pull request. "
                 "Re-cut the work on a feature/ or fix/ branch with a plan, or a docs/ branch for its write-up."], None
+    for path, pin in PINNED.items():
+        if path in ch.changed and (text := ch.tree.read(path)) is not None and (expected := ch.base.read(pin)) is not None and text != expected:
+            return [f"{path}: differs from its pinned copy {pin} on the base; change the pinned copy in its own PR first, "
+                    "then make the file equal to it. A gate workflow or hook is never edited freely"], None
     for path, contract in WORKFLOW_CONTRACTS.items():
         if path in ch.changed and (text := ch.tree.read(path)) is not None:
             if why := valid_yaml(text):
@@ -1591,19 +1639,22 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
             # later invocation a no-op with the contract's text intact
             # stocks#1205 r4121777299: a step that rewrites a gate file, or runs inline code
             # that could, before the contract command leaves the command intact and the gate gone
-            if wrote := writes_gate_file(runs):
+            everything = every_run_text(text)
+            if wrote := writes_gate_file(everything):
                 return [f"{path}: `{wrote}` writes to or replaces a gate file; the workflows read the gate's files, "
                         "never write them"], None
             if inline := re.search(r"(?m)^\s*(python3?|node|perl|ruby|sh|bash)\s+(-c|-e|-)\s|(^|[;&|{(]\s*)(eval|source|\.|shopt)\s"
                                    r"|(^|[;&|{(]\s*)(tar|bsdtar|unzip|zip|7za?|unrar|cpio|pax|xargs)\s|python3?\s+-m\s+(?!pip\b|pytest\b|py_compile\b)\S+"
                                    # (round four: `{cp,a,b}` expands to a command; `$'cp'` spells one the model does not read)
-                                   r"|\{[^\s{}$]*,[^\s{}]*\}|\$['\"]", runs):
+                                   r"|\{[^\s{}$]*,[^\s{}]*\}|\$['\"]"
+                                   # (round five: a git subcommand that writes the tree or the index rebuilds the head over the base)
+                                   r"|(^|[;&|{(]\s*)git\s+(?:-c\s+\S+\s+)*(?!(?:fetch|show|ls-tree|rev-parse|diff|log|cat-file|merge-base|ls-files|rev-list|hash-object|describe)\b)[a-z-]+", everything):
                 # (red-team round two: `eval "set +e"` and `shopt -uo errexit` turn errexit off out of the
                 # model's sight; `source` runs a file the tree may carry; round three: an archive extractor
                 # or a `python3 -m zipfile` replaces a gate file without naming it)
                 return [f"{path}: runs inline code (`{inline.group(0).strip()}`); the gate's workflows run scripts "
                         "from the tree only, never eval, source or shopt, never extract archives, and run no "
-                        "module but pip, pytest and py_compile; xargs builds a command from its input"], None
+                        "module but pip, pytest and py_compile; xargs builds a command from its input; git only reads"], None
             if shadow := shadowed_executable(body):
                 return [f"{path}: defines `{shadow}` as a shell function or alias; the gate's commands run the "
                         "real executables"], None
