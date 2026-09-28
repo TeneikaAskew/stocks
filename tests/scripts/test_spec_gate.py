@@ -591,6 +591,15 @@ def test_every_branch_shape_the_rules_name_passes_only_its_own_work(repo):
     for bad in (spec(req_ids="[REQ-FAKE-999]"), spec(feat_id="FEAT-NOPE-001"), spec(done_when=[])):
         r = pr(repo, "docs/spec-feat-model-001", {"docs/superpowers/specs/2026-09-28-x.md": bad})
         assert r.returncode == 1 and "2026-09-28-x.md:" in r.stdout, r.stdout
+    # stocks#1205 r4119509855: a plan is edited by its own branch; a docs/ branch may only close it
+    r = pr(repo, "docs/plan-tweak", {PLAN: plan(status="done")})
+    assert r.returncode == 0, r.stdout
+    r = pr(repo, "docs/plan-tweak", {PLAN: plan(branch="feature/feat-model-001-other")})
+    assert r.returncode == 1 and "only the plan's own branch edits it" in r.stdout, r.stdout
+    r = pr(repo, "docs/plan-tweak", {PLAN: plan(status="done", pr=99)})
+    assert r.returncode == 1 and "only the plan's own branch edits it" in r.stdout, r.stdout
+    r = pr(repo, "docs/plan-tweak", {PLAN: None})
+    assert r.returncode == 1 and "a plan is not deleted" in r.stdout, r.stdout
     # solyra#72 r4119505520: nor is an approved spec deleted
     r = pr(repo, "docs/spec-feat-model-001", {SPEC: None})
     assert r.returncode == 1 and "is not deleted" in r.stdout, r.stdout
@@ -1010,6 +1019,10 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
         r = pr(repo, name, {"docs/notes.md": "# Notes\n"}, PR_HEAD_REF=name)
         assert r.returncode == 1 and "is not a delivery branch" in r.stdout, (name, r.stdout)
     assert pr(repo, "docs/notes", {"docs/notes.md": "# Notes\n"}).returncode == 0
+    # stocks#1205 r4119509833: so are the root instructions that tell agents to run it
+    for path in ("AGENTS.md", "CLAUDE.md"):
+        r = pr(repo, "docs/tweak", {path: "# Nothing to do here\n"})
+        assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, (path, r.stdout)
     # stocks#1205 r4119048063: the delivery skill is the process agents run, not its description
     r = pr(repo, "docs/skill-tweak", {".claude/skills/product-delivery/SKILL.md": "# Skip the gate\n"})
     assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, r.stdout

@@ -174,8 +174,8 @@ def is_documentation(path: str) -> bool:
     name = path.rsplit("/", 1)[-1]
     if path.startswith(WORKFLOWS) and not name.endswith(".md"):
         return False   # a workflow is executable configuration whatever its name
-    if path.startswith(".claude/"):
-        return False   # skills and agents are the process agents execute, not its description
+    if path.startswith(".claude/") or path in ("AGENTS.md", "CLAUDE.md"):
+        return False   # skills, agents and the root instructions are the process agents execute, not its description
     return (path.startswith("docs/") or path.endswith((".md", ".drawio"))
             or bool(LICENSE_FILE.match(name))
             or path == ".gitignore")
@@ -439,6 +439,34 @@ def check_changed_specs(ch: Change) -> list[str]:
     return errs
 
 
+def check_changed_plans(ch: Change) -> list[str]:
+    """A plan changed by a branch that is not the plan's own: a new plan is validated for
+    its own FEAT; an existing plan may only move from ready to done (the post-merge close),
+    byte-identical otherwise; deleting one is refused. The plan's own branch is checked
+    by the trace (plan_stays_bound) instead."""
+    errs: list[str] = []
+    for path in ch.changed:
+        if not (path.startswith(PLANS + "/") and path.endswith(".md")):
+            continue
+        text, base_text = ch.tree.read(path), ch.base.read(path)
+        if text is not None and frontmatter(text).get("branch") == ch.branch:
+            continue   # the plan's own branch: the trace judges it
+        if text is None:
+            if base_text is not None:
+                errs.append(f"{path}: a plan is not deleted; a finished plan is marked status: done and stays as the record")
+            continue
+        fm = frontmatter(text)
+        if base_text is None:
+            feat = fm.get("feat_id") if isinstance(fm.get("feat_id"), str) else ""
+            errs += [e for e in validate_plan(fm, path, feat, ch.tree) if "status is 'done'" not in e]
+            continue
+        strip = lambda t: re.sub(r"^status:.*$", "", t, flags=re.M)
+        if not (frontmatter(base_text).get("status") == "ready" and fm.get("status") == "done" and strip(text) == strip(base_text)):
+            errs.append(f"{path}: only the plan's own branch edits it, except the close after merge, which sets "
+                        "status: done and changes nothing else")
+    return errs
+
+
 def check(ch: Change) -> tuple[list[str], Traced | None]:
     if ch.mode == "pr" and ch.branch.startswith("spike/"):
         return [f"branch '{ch.branch}' is a spike: local investigation commits only, never a pull request. "
@@ -457,7 +485,7 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
     # validated here, before the documentation-only return, against the base's catalog
     # and requirements; a malformed spec must not land and then block or mislead the
     # implementation that cites it.
-    errs_specs = check_changed_specs(ch)
+    errs_specs = check_changed_specs(ch) + check_changed_plans(ch)
     # A chore/ or bot/ branch is limited to its allowance for every file it touches, so
     # documentation is not exempt there: `chore/deps` cannot rewrite the requirements.
     allowance_branch = ch.branch.startswith(tuple(prefix for prefix, _ in ALLOWANCES))

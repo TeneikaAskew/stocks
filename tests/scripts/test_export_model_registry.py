@@ -154,7 +154,8 @@ def test_provenance_is_the_blob_id_of_each_source(repo):
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "edit the registry and regenerate its JSON")
     assert data["sources"] == {REGISTRY: _git(repo, "rev-parse", f"HEAD:{REGISTRY}"),
-                               EXPERIMENTS: _git(repo, "rev-parse", f"HEAD:{EXPERIMENTS}")}
+                               EXPERIMENTS: _git(repo, "rev-parse", f"HEAD:{EXPERIMENTS}"),
+                               "scripts/gate/export_model_registry.py": _git(repo, "rev-parse", "HEAD:scripts/gate/export_model_registry.py")}
     assert export(repo, "--check").returncode == 0
     write(repo, REGISTRY, REGISTRY_TEXT + "\nA note that changes no table.\n")
     r = export(repo, "--check")
@@ -293,6 +294,18 @@ def test_schedulers_and_traceability_name_registered_models_once(repo):
     write(repo, REGISTRY, REGISTRY_TEXT + "\n## Experiment traceability\n\n| Model | Experiment |\n|---|---|\n| MODEL-MAG-001 | E-01 |\n| MODEL-MAG-001 | E-02 |\n")
     r = export(repo)
     assert r.returncode != 0 and "two experiment-traceability rows" in r.stdout + r.stderr, r.stdout + r.stderr
+
+
+def test_findings_and_dispositions_cover_the_same_ids(repo):
+    """stocks#1205 r4119509860 (export_model_registry.py:295).
+
+    A finding without a disposition, or a disposition whose finding was removed,
+    exported and passed --check; the Concerns board then showed a card with no
+    verdict or dropped the orphan. Either mismatch fails generation.
+    """
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("| DOC-03 | c.md |", "| DOC-04 | c.md |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "DOC-04" in r.stdout + r.stderr and "DOC-03" in r.stdout + r.stderr, r.stdout + r.stderr
 
 
 def test_hidden_comments_do_not_reach_exported_cells(repo):

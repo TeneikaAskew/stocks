@@ -228,7 +228,9 @@ def build(src: Source) -> dict:
     etext = src.require(EXPERIMENTS)
     out: dict = {
         "generated_from": [REGISTRY, EXPERIMENTS],
-        "sources": {path: src.blob(path) for path in (REGISTRY, EXPERIMENTS)},
+        # The exporter is a source too: a changed exporter is a changed output, so a base
+        # that changed it without regenerating reads stale rather than fresh.
+        "sources": {path: src.blob(path) for path in (REGISTRY, EXPERIMENTS, SELF)},
         "registry_last_reviewed": (re.search(r"Last reviewed:\*\*\s*([0-9-]+|unknown)", text) or [None, None])[1],
         "models": {},
         "experiment_traceability": {},
@@ -297,6 +299,11 @@ def build(src: Source) -> dict:
         raise SystemExit(f"{REGISTRY}: {len(malformed)} malformed row(s): {'; '.join(malformed[:3])}. "
                          "A row has exactly its header's cells and a model ID names one row; fix the table "
                          "rather than exporting a shifted or overwritten record")
+    finding_ids, disposition_ids = {f["id"] for f in out["findings"]}, set(out["dispositions"])
+    if finding_ids != disposition_ids:
+        raise SystemExit(f"{REGISTRY}: findings and dispositions name different IDs; without a disposition: "
+                         f"{', '.join(sorted(finding_ids - disposition_ids)) or 'none'}; without a finding: "
+                         f"{', '.join(sorted(disposition_ids - finding_ids)) or 'none'}. Every finding carries its verdict")
     tiers = {m["tier"] for m in out["models"].values()}
     missing_tiers = [t for t in MODEL_TIERS if t not in tiers]
     if missing_tiers:
@@ -332,7 +339,7 @@ def fresh_at(rev: str) -> bool:
     committed = src.read(OUT)
     if committed is None:
         return False
-    return json.loads(committed).get("sources") == {path: src.blob(path) for path in (REGISTRY, EXPERIMENTS)}
+    return json.loads(committed).get("sources") == {path: src.blob(path) for path in (REGISTRY, EXPERIMENTS, SELF)}
 
 
 def touched_since(base: str, rev: str) -> list[str]:
