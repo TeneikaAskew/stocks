@@ -315,7 +315,12 @@ def build(src: Source) -> dict:
                 first.startswith("DOC-") and "claim" in " ".join(header).lower()
             ):
                 ids = doc_ids(raw[0])
-                rec["id"] = ids[0] if ids else first
+                if len(ids) != 1:
+                    # stocks#1205 r4120913740: a cell naming two concerns is two rows, not one
+                    # card that drops the second; only disposition rows group findings
+                    malformed.append(f"finding row {first!r} under '{section}' names {len(ids)} IDs; one finding per row")
+                    continue
+                rec["id"] = ids[0]
                 rec["label"] = first
                 out["findings"].append(rec)
             elif first.startswith("DOC-") and "disposition" in " ".join(header).lower():

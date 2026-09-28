@@ -94,10 +94,12 @@ def plan(**over) -> str:
 
 GATE_WF = ("on:\n  pull_request_target:\n    types: [opened, synchronize, reopened, edited, ready_for_review]\npermissions:\n  contents: read\njobs:\n  gate:\n    steps:\n"
            "      - uses: actions/checkout@v4\n        with:\n          ref: {REF}\n"
+           "      - run: git fetch --no-tags origin \"$HEAD_SHA\"\n"
            "      - env:\n{ENV}        run: {A}\n      - run: {B}\n"
+           "      - uses: actions/upload-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: ${{ runner.temp }}/proposed/\n"
            "  base-suite:\n    needs: gate\n    permissions:\n      contents: read\n    steps:\n"
            "      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.base.sha }}\n          persist-credentials: false\n"
-           "      - uses: actions/download-artifact@v4\n      - run: {C}\n")
+           "      - uses: actions/download-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: scripts/gate\n      - run: {C}\n")
 VERDICT_ENV = {"BASE_SHA": "base.sha", "HEAD_SHA": "head.sha", "PR_HEAD_REF": "head.ref", "PR_BASE_REF": "base.ref",
                "PR_HEAD_REPO": "head.repo.full_name", "PR_NUMBER": "number", "PR_DRAFT": "draft", "PR_TITLE": "title", "PR_BODY": "body"}
 GATE_WF = GATE_WF.replace("{ENV}", "".join(f"          {k}: ${{{{ github.event.pull_request.{v} }}}}\n" for k, v in VERDICT_ENV.items())
@@ -126,6 +128,8 @@ def write(repo: Path, path: str, text: str) -> None:
     p = repo / path
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(text, encoding="utf-8")
+    if path.startswith(".githooks/"):
+        p.chmod(0o755)   # a hook is executable unless a test takes that away
 
 
 @pytest.fixture
@@ -209,7 +213,7 @@ def test_the_gate_cannot_be_edited_outside_chore_and_ci_runs_the_base_copy(repo)
     for job in workflow["jobs"].values():
         checkout = next(s for s in job["steps"] if s.get("uses", "").startswith("actions/checkout"))
         assert checkout["with"]["ref"] == "${{ github.event.pull_request.base.sha }}"
-        assert not any("export_model_registry" in s.get("run", "") for s in job["steps"])
+        assert not any("python3 scripts/gate/export_model_registry.py" in s.get("run", "") for s in job["steps"])
 
 
 def test_deploy_and_config_files_are_gated(repo):
@@ -1655,7 +1659,7 @@ def test_contract_commands_run_and_policy_documents_keep_their_ids(repo):
         r = pr(repo, "chore/gate-workflow", {wf: head.replace("{BODY}", run_block)}, **cap)
         assert r.returncode == 1 and "no longer executes" in r.stdout, (shape, r.stdout)
     real = ("          out=$(python3 \"$gate\" --pr \"$BASE_SHA\" \"$HEAD_SHA\" 2>&1) && rc=0 || rc=$?\n"
-            "          if ! python3 -m py_compile \"$gate\"; then exit 1; fi\n"
+            "          python3 -m py_compile \"$gate\"\n"
             "          python3 -m pytest tests/scripts/test_spec_gate.py -q && \\\n            mode=$(git ls-tree \"$HEAD_SHA\" .githooks/pre-commit)\n"
             "          python3 scripts/gate/export_model_registry.py --check --rev \"$HEAD_SHA\" --base \"$BASE_SHA\"\n")
     assert pr(repo, "chore/gate-workflow", {wf: head.replace("{BODY}", real)}, **cap).returncode == 0
@@ -1731,8 +1735,8 @@ def test_contract_commands_run_unconditionally_under_the_declared_trigger(repo):
                   "          test -f y || {c}\n"):
         r = pr(repo, "chore/gate-workflow", {wf: head.replace("{BODY}", "".join(shape.replace("{c}", c) for c in cmds))}, **cap)
         assert r.returncode == 1 and "no longer executes" in r.stdout, (shape, r.stdout)
-    # the condition of an if runs unconditionally, as does the first command of a chain
-    guarded = "".join(f"          if ! {c}; then exit 1; fi\n" for c in cmds[:2]) + "".join(f"          {c} && echo ok\n" for c in cmds[2:])
+    # the first command of a chain runs unconditionally and its failure fails the step
+    guarded = "".join(f"          {c} && echo ok\n" for c in cmds)
     assert pr(repo, "chore/gate-workflow", {wf: head.replace("{BODY}", guarded)}, **cap).returncode == 0
     decoy = head.replace("on:\n  pull_request:\n", "on:\n  workflow_dispatch:\n").replace("    runs-on:", "    pull_request:\n    runs-on:")
     r = pr(repo, "chore/gate-workflow", {wf: decoy.replace("{BODY}", plain)}, **cap)
@@ -1893,7 +1897,7 @@ def test_the_invoked_command_is_the_contract_and_policy_files_keep_their_schema(
     r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_workflow().replace("          persist-credentials: false\n", "")}, **cap)
     assert r.returncode == 1 and "holds no checkout credentials" in r.stdout, r.stdout
     # stocks#1205 r4120528978 (P1): a job running the gate's commands has a checkout
-    no_checkout = gate_workflow().replace("      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.base.sha }}\n      - env:", "      - env:")
+    no_checkout = gate_workflow().replace("      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.base.sha }}\n      - run: git fetch", "      - run: git fetch")
     r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": no_checkout}, **cap)
     assert r.returncode == 1 and "without an actions/checkout step" in r.stdout, r.stdout
     r = pr(repo, "chore/gate-workflow", {wf: head.replace("{JOB}", "    permissions: {\n      contents: write\n    }\n").replace("{BODY}", plain)}, **cap)
@@ -2134,3 +2138,59 @@ def test_gate_inputs_shells_hooks_and_canvases_are_judged_where_they_act(repo):
         assert r.returncode == 1 and ("names 2 url field(s)" in r.stdout or "names 0 url field(s)" in r.stdout or "not one of" in r.stdout), (text, r.stdout)
     good = f"canvases:\n  - name: A\n    url: {url_a}\n    boards:\n      - file: x.html\n        key: id\n  - name: B\n    url: {url_b}\n    mode: report-only\n"
     assert pr(repo, "docs/canvases", {canvases: good}).returncode == 0
+
+
+def test_negations_conditions_handoffs_and_the_hook_mode_are_the_contract(repo):
+    """stocks#1205 r4120913720 (P1), r4120913731 (P1); solyra#72 r4120913592 (P1), r4120913602,
+    r4120913613 (spec_gate.py:252, :116, :101; registry-check.yml:106).
+
+    `! cmd; true` and `if cmd; then :; fi` ran the command with its status ignored; a workflow
+    without the artifact handoff let the base's suite test the base's gate; the head fetch and,
+    where the exporter exists, the base's exporter suite were not required; a listed `git
+    ls-tree` proved nothing about the hook's mode. Each is refused; the mode is read from the tree.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/spec-gate.yml"
+    typed = gate_workflow()
+    assert pr(repo, "chore/gate-workflow", {wf: typed}, **cap).returncode == 0
+    for shape in ("! " + VERDICT_CMD + "; true", "if " + VERDICT_CMD + "; then :; fi", "if ! " + VERDICT_CMD + "; then exit 1; fi",
+                  "while " + VERDICT_CMD + "; do break; done"):
+        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a=shape)}, **cap)
+        assert r.returncode == 1 and "no longer executes" in r.stdout, (shape, r.stdout)
+    # an `if:` on the step's dash line skips the step like one under a `name:`
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("      - env:\n", "      - if: false\n        env:\n", 1)}, **cap)
+    assert r.returncode == 1 and "no longer executes" in r.stdout, r.stdout
+    # the head fetch is a contract command, before the verdict
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("      - run: git fetch --no-tags origin \"$HEAD_SHA\"\n", "")}, **cap)
+    assert r.returncode == 1 and "no longer executes" in r.stdout and "git fetch" in r.stdout, r.stdout
+    # the handoff: upload after the export, download of the same name into scripts/gate before the suite
+    for broken in (typed.replace("      - uses: actions/upload-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: ${{ runner.temp }}/proposed/\n", ""),
+                   typed.replace("      - uses: actions/download-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: scripts/gate\n", ""),
+                   typed.replace("          name: proposed-spec-gate\n          path: scripts/gate\n", "          name: other\n          path: scripts/gate\n"),
+                   typed.replace("          name: proposed-spec-gate\n          path: scripts/gate\n", "          name: proposed-spec-gate\n          path: elsewhere\n"),
+                   typed.replace("      - uses: actions/upload-artifact@v4\n", "      - if: false\n        uses: actions/upload-artifact@v4\n"),
+                   typed.replace("      - env:\n", "      - uses: actions/upload-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: ${{ runner.temp }}/proposed/\n      - env:\n", 1)
+                        .replace("      - run: " + EXPORT_CMD + "\n      - uses: actions/upload-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: ${{ runner.temp }}/proposed/\n",
+                                 "      - run: " + EXPORT_CMD + "\n")):
+        r = pr(repo, "chore/gate-workflow", {wf: broken}, **cap)
+        assert r.returncode == 1 and "no longer reaches the suite's job" in r.stdout, (broken, r.stdout)
+    # where the exporter exists, its proposed copy is exported and the base's exporter suite runs, isolated
+    exporter = {"scripts/gate/export_model_registry.py": "print('x')\n"}
+    r = pr(repo, "chore/gate-workflow", {wf: typed, **exporter}, **cap)
+    assert r.returncode == 1 and "no longer executes" in r.stdout and "export_model_registry" in r.stdout, r.stdout
+    export_both = EXPORT_CMD + "\n          git show \"$HEAD_SHA:scripts/gate/export_model_registry.py\" > \"$RUNNER_TEMP/proposed/export_model_registry.py\""
+    both_suites = SUITE_CMD + "\n          python3 -m pytest tests/scripts/test_export_model_registry.py -q"
+    with_exporter = gate_workflow(b="|\n          " + export_both, c="|\n          " + both_suites)
+    assert pr(repo, "chore/gate-workflow", {wf: with_exporter, **exporter}, **cap).returncode == 0
+    misplaced = gate_workflow(b="|\n          " + export_both + "\n          python3 -m pytest tests/scripts/test_export_model_registry.py -q")
+    r = pr(repo, "chore/gate-workflow", {wf: misplaced, **exporter}, **cap)
+    assert r.returncode == 1 and ("does not follow" in r.stdout or "holds no checkout credentials" in r.stdout), r.stdout
+    # the hook's mode is read from the head tree
+    on_base(repo, {".githooks/pre-commit": "#!/bin/sh\nset -e\npython3 scripts/gate/spec_gate.py --commit\n"})
+    _git(repo, "checkout", "-q", "-B", "chore/gate-hook", "base")
+    (repo / ".githooks/pre-commit").chmod(0o644)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "mode")
+    r = gate(repo, "--pr", "base", "HEAD", PR_HEAD_REF="chore/gate-hook", **cap)
+    assert r.returncode == 1 and "has mode 100644 in this change; the hook stays executable" in r.stdout, r.stdout
+    assert pr(repo, "chore/gate-hook", {".githooks/pre-commit": "#!/bin/sh\nset -e\npython3 scripts/gate/spec_gate.py --commit\n"}, **cap).returncode == 0

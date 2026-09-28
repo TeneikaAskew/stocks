@@ -654,3 +654,14 @@ def test_fenced_experiment_headings_and_a_missing_traceability_table_are_refused
     write(repo, REGISTRY, REGISTRY_TEXT[:start] + REGISTRY_TEXT[end:])
     r = export(repo)
     assert r.returncode != 0 and "no experiment-traceability rows parsed" in r.stdout + r.stderr, r.stdout + r.stderr
+
+
+def test_a_finding_row_names_exactly_one_id(repo):
+    """stocks#1205 r4120913740 (export_model_registry.py:318): a finding cell `DOC-01, DOC-99`
+    kept DOC-01, dropped DOC-99 and passed the parity check, so a concern vanished from the
+    cards without a word. The row is refused; grouping belongs to disposition rows alone."""
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("| DOC-03 | c.md |", "| DOC-03, DOC-99 | c.md |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "names 2 IDs; one finding per row" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, REGISTRY_TEXT)
+    assert export(repo).returncode == 0, export(repo).stdout

@@ -97,11 +97,13 @@ WORKFLOW_CONTRACTS = {
         "types": {"opened", "synchronize", "reopened"},
         # A statement counts when it STARTS with the command (after wrappers), so a word that
         # merely carries the text as an argument (`python3 -c '' python3 "$gate" ...`) does not.
+        # (the hook's mode is read by the gate itself from the head tree, not from a listed
+        # `git ls-tree`: solyra#72 r4120913613)
         "run": ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"',
-                "python3 -m pytest tests/scripts/test_spec_gate.py", 'git ls-tree "$HEAD_SHA" .githooks/pre-commit'),
-        # required where the base carries the script: solyra has no model registry to export
+                "python3 -m pytest tests/scripts/test_spec_gate.py"),
+        # required where the base or the head carries the script: solyra has no model registry to export
         "run_if_present": {
-            "scripts/gate/export_model_registry.py": 'python3 scripts/gate/export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"',
+            "scripts/gate/export_model_registry.py": ('python3 scripts/gate/export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"',),
         },
         "structure": ("permissions:\n  contents: read",),
     },
@@ -111,17 +113,36 @@ WORKFLOW_CONTRACTS = {
         "types": {"opened", "synchronize", "reopened", "edited", "ready_for_review"},
         # The base's verdict first; then the base's own suite judges the proposed gate, which
         # replaces the base's copy only after the verdict (solyra#72 r4120337733)
+        # (solyra#72 r4120913602: the fetch is what makes a fork's head sha reachable from
+        # the base checkout; without it the verdict never runs)
         "run": ('python3 scripts/gate/spec_gate.py --pr "$BASE_SHA" "$HEAD_SHA"',
                 'git show "$HEAD_SHA:scripts/gate/spec_gate.py" > "$RUNNER_TEMP/proposed/spec_gate.py"',
-                "python3 -m pytest tests/scripts/test_spec_gate.py"),
+                "python3 -m pytest tests/scripts/test_spec_gate.py", 'git fetch --no-tags origin "$HEAD_SHA"'),
+        # Where the exporter exists, the base's exporter suite judges the proposed exporter the
+        # same way (stocks#1205 r4120913731: registry-check runs only the PR's --check)
+        "run_if_present": {
+            "scripts/gate/export_model_registry.py": (
+                'git show "$HEAD_SHA:scripts/gate/export_model_registry.py" > "$RUNNER_TEMP/proposed/export_model_registry.py"',
+                "python3 -m pytest tests/scripts/test_export_model_registry.py"),
+        },
         # In this order: within one job by statement order, across jobs by `needs`
-        # (solyra#72 r4120515772). GitHub runs jobs without `needs` concurrently.
-        "order": ('python3 scripts/gate/spec_gate.py --pr "$BASE_SHA" "$HEAD_SHA"',
+        # (solyra#72 r4120515772). GitHub runs jobs without `needs` concurrently. A command
+        # the contract does not require here (run_if_present) is skipped.
+        "order": ('git fetch --no-tags origin "$HEAD_SHA"',
+                  'python3 scripts/gate/spec_gate.py --pr "$BASE_SHA" "$HEAD_SHA"',
                   'git show "$HEAD_SHA:scripts/gate/spec_gate.py" > "$RUNNER_TEMP/proposed/spec_gate.py"',
-                  "python3 -m pytest tests/scripts/test_spec_gate.py"),
-        # The suite runs PR-controlled Python: its job holds no checkout credentials and
+                  'git show "$HEAD_SHA:scripts/gate/export_model_registry.py" > "$RUNNER_TEMP/proposed/export_model_registry.py"',
+                  "python3 -m pytest tests/scripts/test_spec_gate.py",
+                  "python3 -m pytest tests/scripts/test_export_model_registry.py"),
+        # The suites run PR-controlled Python: their job holds no checkout credentials and
         # never holds the verdict (stocks#1205 r4120528961)
-        "isolated": ("python3 -m pytest tests/scripts/test_spec_gate.py",),
+        "isolated": ("python3 -m pytest tests/scripts/test_spec_gate.py", "python3 -m pytest tests/scripts/test_export_model_registry.py"),
+        # The proposed files reach the suite's job as an artifact: uploaded after the export in
+        # its job, downloaded into scripts/gate before the suite in its job, under one name
+        # (solyra#72 r4120913592: without the handoff the base's suite tests the base's gate)
+        "handoff": {"export": 'git show "$HEAD_SHA:scripts/gate/spec_gate.py" > "$RUNNER_TEMP/proposed/spec_gate.py"',
+                    "suite": "python3 -m pytest tests/scripts/test_spec_gate.py",
+                    "upload_path": "proposed", "download_path": "scripts/gate"},
         # The verdict reads its inputs from the event, bound on its own step: a rebound
         # PR_NUMBER skips the close-out for every later PR (solyra#72 r4120775915)
         "env": {
@@ -215,7 +236,9 @@ def conditional(lines: list[str], start: int, end: int, level: int) -> bool:
     keys at `level`: GitHub may then skip it or ignore its failure, so a command inside
     proves nothing (solyra#72 r4119837190, r4119957700)."""
     for j in range(start, end):
-        if indent(lines[j]) != level:
+        # `- if: false` carries the key on the item's dash line (stocks#1205, this round)
+        dash = re.match(r"^(\s*)(-\s+)", lines[j])
+        if (len(dash.group(1)) + len(dash.group(2)) if dash else indent(lines[j])) != level:
             continue
         if re.match(r"^\s*(-\s+)?if:", lines[j]):
             return True
@@ -335,8 +358,14 @@ def shell_statements(runs: str, errexit: bool = True) -> list[str]:
         # `f() { ... }` and `|| { ... }` bodies are conditional like then/fi (stocks#1205 r4120660276)
         parts = re.split(r"(\|\||&&|(?<![<>&])&(?![&>])|;;|;|\||\{|\}|\bthen\b|\bdo\b|\belse\b|\belif\b|\bfi\b|\bdone\b|\besac\b|\bcase\b)", line)
         chained = False    # after && or ||: runs only on the previous statement's outcome
+        condition = False  # an if/while condition: its failure is a branch, never the step's
         for k in range(0, len(parts), 2):
             stmt, op = parts[k].strip(), parts[k + 1] if k + 1 < len(parts) else ""
+            # stocks#1205 r4120913720: `! cmd` is exempt from errexit, and a condition is judged,
+            # not obeyed; neither statement's failure fails the step
+            if re.match(r"^(if|elif|while|until)\s", stmt):
+                condition = True
+            negated = bool(re.match(r"^((if|elif|while|until)\s+)*!\s", stmt))
             stmt = re.sub(r"^((if|elif|while|until|!)\s+)+", "", stmt)
             stmt = re.sub(r"^[A-Za-z_]\w*=(?!['\"$])\S*\s*", "", stmt)   # `x=1 cmd` prefix assignment
             # `command echo ...`, `env FOO=1 echo ...`, `time ...`: the wrapper runs its argument,
@@ -353,11 +382,13 @@ def shell_statements(runs: str, errexit: bool = True) -> list[str]:
                     errexit = True
             executed = (stmt and not re.match(r"^[A-Za-z_]\w*=", stmt)   # `x="..."`: a value, not a command
                         and stmt.split()[0] not in NON_EXECUTING and depth == 0 and not chained and errexit
+                        and not negated and not condition
                         and op not in ("||", "&", "|"))   # `cmd | true`: without pipefail the pipe's status is true's
             if executed:
                 out.append(stmt)
             if op in ("then", "do", "case", "{"):   # `else` continues the block `then` opened
                 depth += 1
+                condition = False
             elif op in ("fi", "done", "esac", "}"):
                 depth = max(0, depth - 1)
             chained = op in ("&&", "||")
@@ -435,9 +466,38 @@ def workflow_jobs(body: str) -> list[dict]:
         for ln in lines[start + 1:stop]:
             if indent(ln) == indent(lines[start]) + 2 and (m := re.match(r"^\s*needs:\s*(.*)$", ln)):
                 needs = set(re.findall(r"[\w.-]+", re.sub(r"\s+#.*$", "", m.group(1))))
-        out.append({"name": lines[start].strip().rstrip(":"), "needs": needs,
-                    "statements": shell_statements(workflow_executes(block)[0]), "checkouts": checkout_steps(block)})
+        runs = workflow_executes(block)[0]
+        out.append({"name": lines[start].strip().rstrip(":"), "needs": needs, "runs": runs,
+                    "statements": shell_statements(runs), "checkouts": checkout_steps(block),
+                    "artifacts": artifact_steps(block), "lines": lines[start:stop]})
     return out
+
+
+def artifact_steps(block: str) -> list[dict]:
+    """Every unconditional actions/upload-artifact or download-artifact step of a job block:
+    {kind, name, path, line} with `line` the step's offset in the block."""
+    lines, found = block.splitlines(), []
+    for i, line in enumerate(lines):
+        m = re.match(r"^\s*(-\s+)?uses:\s*['\"]?actions/(upload|download)-artifact", line)
+        if not m:
+            continue
+        item = next((j for j in range(i, -1, -1) if lines[j].lstrip().startswith("-")), i)
+        level, end = indent(lines[item]), block_end(lines, item, indent(lines[item]))
+        if conditional(lines, item, end, level + 2):
+            continue
+        name = path = ""
+        for j in range(item, end):
+            if (km := re.match(r"^\s*name:\s*(.*)$", lines[j])):
+                name = shell_value(km.group(1))
+            if (km := re.match(r"^\s*path:\s*(.*)$", lines[j])):
+                path = shell_value(km.group(1))
+        found.append({"kind": m.group(2), "name": name, "path": path, "line": item})
+    return found
+
+
+def line_of(job: dict, command: str) -> int:
+    """Offset in the job block of the first line whose text starts with `command`, or -1."""
+    return next((i for i, ln in enumerate(job["lines"]) if re.sub(r"^(-\s+)?run:\s*", "", ln.strip()).startswith(command)), -1)
 
 
 # What may follow the suite command: nothing that keeps pytest from running the tests
@@ -633,6 +693,14 @@ class Tree:
             return p.read_text(encoding="utf-8", errors="replace") if p.is_file() else None
         r = git("show", f":{path}" if self.rev is None else f"{self.rev}:{path}")
         return r.stdout if r.returncode == 0 else None
+
+    def mode(self, path: str) -> str | None:
+        """The file's git mode ("100755" for an executable) at this revision or in the index."""
+        if self.rev == WORKTREE:
+            p = ROOT / path
+            return None if not p.is_file() else ("100755" if p.stat().st_mode & 0o111 else "100644")
+        r = git("ls-files", "-s", "--", path) if self.rev is None else git("ls-tree", self.rev, "--", path)
+        return r.stdout.split()[0] if r.returncode == 0 and r.stdout.strip() else None
 
     def list(self, folder: str) -> list[str]:
         if self.rev == WORKTREE:
@@ -1013,8 +1081,8 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
             statements = shell_statements(runs)
             # (solyra#72 r4120775932: the PR that introduces the script is the first the
             # command must judge, so the head's tree counts as well as the base's)
-            required = list(contract["run"]) + [m for script, m in contract.get("run_if_present", {}).items()
-                                                 if ch.base.read(script) is not None or ch.tree.read(script) is not None]
+            required = list(contract["run"]) + [m for script, ms in contract.get("run_if_present", {}).items()
+                                                 if ch.base.read(script) is not None or ch.tree.read(script) is not None for m in ms]
             # solyra#72 r4120337725: the command is what the statement invokes, so the contract
             # text is the statement's prefix, never a later argument
             lost = [m for m in required if not any(invokes(st, m) for st in statements)] + \
@@ -1024,17 +1092,27 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                         f"{' and more' if len(lost) > 1 else ''}); a command in a comment, an echo, an unused scalar "
                         "or a step an `if:` may skip does not count. The gate's workflows keep their checks"], None
             jobs = workflow_jobs(body)
-            order = contract.get("order", ())
+            order = tuple(m for m in contract.get("order", ()) if m in required)
             for earlier, later in zip(order, order[1:]):
                 (ja, ka), (jb, kb) = job_of(jobs, earlier), job_of(jobs, later)
                 if not (ja == jb and ka < kb) and not (ja != jb and needs_transitively(jobs, jb, ja)):
                     return [f"{path}: {later!r} does not follow {earlier!r} (same job, later step, or a job that "
                             "`needs` it); the base's verdict comes before the proposed gate runs"], None
-            for command in contract.get("isolated", ()):
+            for command in (m for m in contract.get("isolated", ()) if m in required):
                 j, _ = job_of(jobs, command)
                 if j >= 0 and (job_of(jobs, contract["run"][0])[0] == j or any(persists for _, persists in jobs[j]["checkouts"])):
                     return [f"{path}: {command!r} runs PR-controlled code, so its job holds no checkout credentials "
                             "(persist-credentials: false) and never the base's verdict"], None
+            if handoff := contract.get("handoff"):
+                (je, _), (js, _) = job_of(jobs, handoff["export"]), job_of(jobs, handoff["suite"])
+                uploads = [a for a in jobs[je]["artifacts"] if a["kind"] == "upload" and a["line"] > line_of(jobs[je], handoff["export"])
+                           and handoff["upload_path"] in a["path"]] if je >= 0 else []
+                downloads = [a for a in jobs[js]["artifacts"] if a["kind"] == "download" and a["line"] < line_of(jobs[js], handoff["suite"])
+                             and a["path"] == handoff["download_path"]] if js >= 0 else []
+                if not any(u["name"] and u["name"] == d["name"] for u in uploads for d in downloads):
+                    return [f"{path}: the proposed gate no longer reaches the suite's job (actions/upload-artifact of "
+                            f"`{handoff['upload_path']}` after the export, actions/download-artifact of the same name into "
+                            f"`{handoff['download_path']}` before the suite, both unconditional); the base's suite must test the proposed gate"], None
             if overridden := input_overrides(body):
                 return [f"{path}: assigns or unsets {overridden[0]}, an input the gate reads from the event; the "
                         "gate's workflows never set the gate's inputs from the shell"], None
@@ -1083,6 +1161,11 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
         # rules as the workflow contracts apply)
         # (stocks#1205 r4120828221: git hands the file to its interpreter line, so `#!/bin/true`
         # never reaches the call below it; and without `set -e` a later line decides the status)
+        if (mode := ch.tree.mode(HOOK)) != "100755":
+            # solyra#72 r4120913613: git runs a configured hook only when it is executable, so a
+            # mode change is the hook switched off; read from the tree, not from a workflow's echo
+            return [f"{HOOK}: has mode {mode} in this change; the hook stays executable (100755): "
+                    "git update-index --chmod=+x .githooks/pre-commit"], None
         first = hook.splitlines()[0] if hook.strip() else ""
         if not re.match(r"^#!\s*(/usr/bin/env\s+(bash|sh)|/bin/(bash|sh)|/usr/bin/(bash|sh))\s*$", first):
             return [f"{HOOK}: its interpreter line is {first!r}; the hook runs under bash or sh (`#!/usr/bin/env bash`) "
