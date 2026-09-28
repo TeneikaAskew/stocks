@@ -881,6 +881,12 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
     r = pr(repo, "chore/gate-workflow", workflow, PR_BODY="## Summary\n\nretune the gate\n")
     assert r.returncode == 1 and "PR body needs a Capacity section" in r.stdout, r.stdout
     assert pr(repo, "chore/gate-workflow", workflow, PR_BODY="## Capacity\nn/a: one PR-triggered job, seconds\n").returncode == 0
+    # solyra#72 r4118957767 (P1): a gate file entry is exact, so a workflow named after
+    # one is still a workflow a chore/ branch cannot add
+    r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml-backdoor.yaml": "on: push\n"},
+           PR_BODY="## Capacity\nn/a: x\n")
+    assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, r.stdout
+    assert pr(repo, "chore/gate-workflow", {"scripts/gate/helper.py": "x = 1\n"}).returncode == 0
     # stocks#1205 r4118890018: documentation under a workload prefix runs nothing
     docs = {".github/workflows/README.md": "# Workflows\n", "gcp/README.md": "# Jobs\n"}
     assert pr(repo, "docs/workflow-notes", docs, PR_BODY="## Summary\n\nnotes\n").returncode == 0

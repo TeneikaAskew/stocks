@@ -341,11 +341,17 @@ def non_dependency_edit(path: str, before: str | None, after: str | None) -> str
     return None
 
 
+def is_gate_file(path: str) -> bool:
+    """A directory entry in GATE_FILES covers its contents; a file entry is that file
+    exactly, so `.github/workflows/spec-gate.yml-else.yaml` is not the gate's workflow."""
+    return any(path.startswith(g) if g.endswith("/") else path == g for g in GATE_FILES)
+
+
 def chore_allows(path: str, ch: "Change") -> str | None:
     """None when chore/ may carry this file; otherwise why not ("" when it is simply not a
     manifest or gate file, a reason naming the file when it is a manifest edited beyond
     its dependency fields)."""
-    if path.startswith(GATE_FILES):
+    if is_gate_file(path):
         return None
     if not MANIFEST.search(path):
         return ""
