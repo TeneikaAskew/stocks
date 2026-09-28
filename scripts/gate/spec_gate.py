@@ -89,20 +89,43 @@ OTHER_BRANCH = re.compile(r"^((docs|chore)/[a-z0-9]+(-[a-z0-9]+)*|bot/superpower
 # head's copy for these, because registry-check.yml runs from the head and could otherwise
 # be replaced by a no-op that keeps its job name green.
 WORKFLOW_CONTRACTS = {
-    ".github/workflows/registry-check.yml": (
-        'python3 -m py_compile "$gate"',
-        'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"',
-        "pytest tests/scripts/test_spec_gate.py",
-        'git ls-tree "$HEAD_SHA" .githooks/pre-commit',
-        'export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"',
-        "permissions:\n  contents: read",
-    ),
-    ".github/workflows/spec-gate.yml": (
-        "pull_request_target:",
-        "scripts/gate/spec_gate.py --pr",
-        "permissions:\n  contents: read",
-    ),
+    ".github/workflows/registry-check.yml": {
+        "run": ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"',
+                "pytest tests/scripts/test_spec_gate.py", 'git ls-tree "$HEAD_SHA" .githooks/pre-commit',
+                'export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"'),
+        "structure": ("permissions:\n  contents: read",),
+    },
+    ".github/workflows/spec-gate.yml": {
+        "run": ("scripts/gate/spec_gate.py --pr",),
+        "structure": ("pull_request_target:", "permissions:\n  contents: read"),
+    },
 }
+
+
+def workflow_executes(text: str) -> tuple[str, str]:
+    """(the text of every `run:` step, the whole file), both with comment lines removed, so a
+    contract command counts only where the workflow executes it, not where it mentions it."""
+    lines = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
+    runs, i = [], 0
+    while i < len(lines):
+        m = re.match(r"^(\s*)(-\s+)?run:\s*(.*)$", lines[i])
+        if not m:
+            i += 1
+            continue
+        key_indent = len(m.group(1)) + len(m.group(2) or "")
+        value = m.group(3).strip()
+        i += 1
+        if value and value not in ("|", ">", "|-", ">-", "|+", ">+"):
+            runs.append(value)
+            continue
+        while i < len(lines) and (not lines[i].strip() or len(lines[i]) - len(lines[i].lstrip()) > key_indent):
+            runs.append(lines[i].strip())
+            i += 1
+    return "\n".join(runs), "\n".join(lines)
+# The documents the gate reads as policy: deleting one leaves every later change unjudgeable.
+POLICY_DOCS = (CATALOG, REQUIREMENTS, TRACEABILITY)
+# The capability that owns CI configuration; enforced where the catalog defines it.
+WORKFLOW_FEAT = "FEAT-CICD-001"
 # The files the gate runs from: no change may delete one, whatever its branch, or the
 # base's copy judges the deletion green and every later PR runs without a gate.
 GATE_ENTRYPOINTS = (
@@ -439,6 +462,18 @@ def check_changed_specs(ch: Change) -> list[str]:
     return errs
 
 
+def pr_recorded_on_base(ch: Change, fm: dict) -> bool:
+    """Whether the base's traceability lineage or catalog row for the plan's FEAT names its PR."""
+    m = PR_REF.match(str(fm.get("pr"))) if fm.get("pr") is not None else None
+    feat = fm.get("feat_id") if isinstance(fm.get("feat_id"), str) else ""
+    if not m or not feat:
+        return False
+    trace = ch.base.read(TRACEABILITY)
+    mentioned = {n for e in lineage_refs(trace or "", feat) for n in PR_MENTION.findall(e)} if trace is not None else set()
+    mentioned |= set(PR_MENTION.findall(row_fields(visible(ch.base.read(CATALOG) or ""), feat).get("PRs", "")))
+    return m.group(1) in mentioned
+
+
 def check_changed_plans(ch: Change) -> list[str]:
     """A plan changed by a branch that is not the plan's own: a new plan is validated for
     its own FEAT; an existing plan may only move from ready to done (the post-merge close),
@@ -464,6 +499,9 @@ def check_changed_plans(ch: Change) -> list[str]:
         if not (frontmatter(base_text).get("status") == "ready" and fm.get("status") == "done" and strip(text) == strip(base_text)):
             errs.append(f"{path}: only the plan's own branch edits it, except the close after merge, which sets "
                         "status: done and changes nothing else")
+        elif not pr_recorded_on_base(ch, fm):
+            errs.append(f"{path}: closes a plan whose PR #{fm.get('pr')} is not yet in the base's record for "
+                        f"{fm.get('feat_id')}; the close follows the merge, so the lineage or the row names the PR first")
     return errs
 
 
@@ -471,15 +509,19 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
     if ch.mode == "pr" and ch.branch.startswith("spike/"):
         return [f"branch '{ch.branch}' is a spike: local investigation commits only, never a pull request. "
                 "Re-cut the work on a feature/ or fix/ branch with a plan, or a docs/ branch for its write-up."], None
-    for path, markers in WORKFLOW_CONTRACTS.items():
+    for path, contract in WORKFLOW_CONTRACTS.items():
         if path in ch.changed and (text := ch.tree.read(path)) is not None:
-            lost = [m for m in markers if m not in text]
+            runs, body = workflow_executes(text)
+            lost = [m for m in contract["run"] if m not in runs] + [m for m in contract["structure"] if m not in body]
             if lost:
-                return [f"{path}: no longer carries {len(lost)} step(s) the gate depends on ({lost[0]!r}"
-                        f"{' and more' if len(lost) > 1 else ''}); the gate's workflows keep their checks"], None
-    removed = [f for f in ch.changed if f in GATE_ENTRYPOINTS and ch.tree.read(f) is None]
+                return [f"{path}: no longer executes {len(lost)} step(s) the gate depends on ({lost[0]!r}"
+                        f"{' and more' if len(lost) > 1 else ''}); a command in a comment or an unused scalar "
+                        "does not count. The gate's workflows keep their checks"], None
+    # P1b: the policy inputs the gate reads are not deleted either
+    removed = [f for f in ch.changed if f in GATE_ENTRYPOINTS + POLICY_DOCS
+               and ch.tree.read(f) is None and (f in GATE_ENTRYPOINTS or ch.base.read(f) is not None)]
     if removed:
-        return [f"{summarize(removed)}: the gate's own entrypoints cannot be removed by a change; "
+        return [f"{summarize(removed)}: the gate's entrypoints and policy documents cannot be removed by a change; "
                 "retiring the gate is a decision taken on main, not in a branch"], None
     # A spec is documentation that becomes policy once merged, so every changed spec is
     # validated here, before the documentation-only return, against the base's catalog
@@ -490,7 +532,9 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
     # documentation is not exempt there: `chore/deps` cannot rewrite the requirements.
     allowance_branch = ch.branch.startswith(tuple(prefix for prefix, _ in ALLOWANCES))
     gated = [f for f in ch.changed if allowance_branch or not is_documentation(f)]
-    if not gated:
+    if not gated and not BRANCH.match(ch.branch):
+        # (a feature/ or fix/ branch falls through: its catalog row and records are its
+        # work, and that work needs the spec, the plan and the close-out like any other)
         if errs_specs:
             return errs_specs, None
         # Documentation alone is exempt from the trace, not from the branch rule: a PR
@@ -1092,6 +1136,10 @@ def run(argv: list[str]) -> int:
             errs += check_product_scope(m.group(2).upper(), ch, merge_base, head)
         # The checks below read the traced plan and spec; without them the errors from
         # check() already say what is missing.
+        if traced and any(f.startswith(WORKFLOWS) and not is_documentation(f) for f in ch.changed) \
+                and traced.feat_id != WORKFLOW_FEAT and WORKFLOW_FEAT in catalog_ids(ch.base.read(CATALOG)):
+            errs.append(f"workflow change(s) under {WORKFLOWS} belong to {WORKFLOW_FEAT}, not {traced.feat_id}; "
+                        "CI configuration is that capability's work")
         # A workload change wants its numbers whatever the branch: a chore/ PR editing
         # the gate's workflows is untraced and still changes what CI runs.
         errs += check_capacity(env.get("PR_BODY"), ch.changed)

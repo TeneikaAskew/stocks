@@ -593,7 +593,10 @@ def test_every_branch_shape_the_rules_name_passes_only_its_own_work(repo):
         assert r.returncode == 1 and "2026-09-28-x.md:" in r.stdout, r.stdout
     # stocks#1205 r4119509855: a plan is edited by its own branch; a docs/ branch may only close it
     r = pr(repo, "docs/plan-tweak", {PLAN: plan(status="done")})
-    assert r.returncode == 0, r.stdout
+    assert r.returncode == 1 and "not yet in the base's record" in r.stdout, r.stdout   # r4119610907: no PR recorded yet
+    on_base(repo, {PLAN: plan(pr=42), CATALOG: CATALOG_TEXT.replace("| Production | unknown | none |", f"| Production | {TODAY} | #42 |", 1)})
+    assert pr(repo, "docs/plan-tweak", {PLAN: plan(pr=42, status="done")}).returncode == 0
+    on_base(repo, {PLAN: plan(), CATALOG: CATALOG_TEXT})
     r = pr(repo, "docs/plan-tweak", {PLAN: plan(branch="feature/feat-model-001-other")})
     assert r.returncode == 1 and "only the plan's own branch edits it" in r.stdout, r.stdout
     r = pr(repo, "docs/plan-tweak", {PLAN: plan(status="done", pr=99)})
@@ -983,15 +986,24 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
     assert r.returncode == 1 and "PR body needs a Capacity section" in r.stdout, r.stdout
     assert pr(repo, "chore/gate-workflow", workflow, PR_BODY="## Capacity\nn/a: one PR-triggered job, seconds\n").returncode == 0
     # stocks#1205 r4119001303 (P1): the gate's entrypoints cannot be deleted, chore/ or not
+    # solyra#72 r4119610915 (P1): nor the catalog the gate reads FEAT-IDs from
+    r = pr(repo, "docs/cleanup", {CATALOG: None})
+    assert r.returncode == 1 and "policy documents cannot be removed" in r.stdout, r.stdout
     on_base(repo, {".github/workflows/spec-gate.yml": "on: pull_request_target\n", ".githooks/pre-commit": "#!/bin/sh\n"})
     for entry in (".github/workflows/spec-gate.yml", ".githooks/pre-commit"):   # the script itself runs these tests
         r = pr(repo, "chore/gate-workflow", {entry: None}, PR_BODY="## Capacity\nn/a: x\n")
-        assert r.returncode == 1 and "entrypoints cannot be removed" in r.stdout, (entry, r.stdout)
+        assert r.returncode == 1 and "cannot be removed by a change" in r.stdout, (entry, r.stdout)
     # solyra#72 r4119505510 (P1): the head-run verifier cannot be gutted by the PR it verifies;
     # the base's gate holds it to its steps
     gutted = "name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ok\n"
     r = pr(repo, "chore/gate-workflow", {".github/workflows/registry-check.yml": gutted}, PR_BODY="## Capacity\nn/a: x\n")
-    assert r.returncode == 1 and "no longer carries" in r.stdout, r.stdout
+    assert r.returncode == 1 and "no longer executes" in r.stdout, r.stdout
+    # solyra#72 r4119610895 (P1): the commands must be executed, not mentioned in a comment
+    commented = gutted + "".join(f"      # {m}\n" for m in ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"',
+                                                         "pytest tests/scripts/test_spec_gate.py", 'git ls-tree "$HEAD_SHA" .githooks/pre-commit',
+                                                         'export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"'))
+    r = pr(repo, "chore/gate-workflow", {".github/workflows/registry-check.yml": commented}, PR_BODY="## Capacity\nn/a: x\n")
+    assert r.returncode == 1 and "no longer executes" in r.stdout, r.stdout
     kept = gutted.replace("      - run: echo ok\n", "      - run: |\n          python3 -m py_compile \"$gate\"\n          python3 \"$gate\" --pr \"$BASE_SHA\" \"$HEAD_SHA\"\n          pytest tests/scripts/test_spec_gate.py\n          git ls-tree \"$HEAD_SHA\" .githooks/pre-commit\n          export_model_registry.py --check --rev \"$HEAD_SHA\" --base \"$BASE_SHA\"\n")
     assert pr(repo, "chore/gate-workflow", {".github/workflows/registry-check.yml": kept}, PR_BODY="## Capacity\nn/a: x\n").returncode == 0
     # solyra#72 r4118957767 (P1): a gate file entry is exact, so a workflow named after
@@ -1019,6 +1031,23 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
         r = pr(repo, name, {"docs/notes.md": "# Notes\n"}, PR_HEAD_REF=name)
         assert r.returncode == 1 and "is not a delivery branch" in r.stdout, (name, r.stdout)
     assert pr(repo, "docs/notes", {"docs/notes.md": "# Notes\n"}).returncode == 0
+    # solyra#72 r4119610902: a feature branch touching only its own row is still traced
+    r = pr(repo, BRANCH, {CATALOG: CATALOG_TEXT.replace("| Models | Production | unknown | none |", f"| Models | Production | {TODAY} | #42 |")},
+           PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body(ticked=True), PR_NUMBER="42", PR_DRAFT="false")
+    assert r.returncode == 1 and "no plan in" not in r.stdout or r.returncode == 1, r.stdout
+    on_base(repo, {PLAN: None})
+    r = pr(repo, BRANCH, {CATALOG: CATALOG_TEXT.replace("| Models | Production | unknown | none |", f"| Models | Production | {TODAY} | #42 |")})
+    assert r.returncode == 1 and "no plan in" in r.stdout, r.stdout
+    on_base(repo, {PLAN: plan()})
+    # solyra#72 r4119610921: CI configuration is FEAT-CICD-001's work where the catalog has it
+    cicd_row = CATALOG_TEXT.replace("| [FEAT-DATA-001]", "| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]", 1)
+    on_base(repo, {CATALOG: cicd_row})
+    r = pr(repo, BRANCH, {**CODE, ".github/workflows/ci.yml": "on: push\n"}, PR_TITLE="FEAT-MODEL-001: x",
+           PR_BODY=body() + "\n\n## Capacity\nn/a: x\n")
+    assert r.returncode == 1 and "belong to FEAT-CICD-001" in r.stdout, r.stdout
+    on_base(repo, {CATALOG: CATALOG_TEXT})
+    assert pr(repo, BRANCH, {**CODE, ".github/workflows/ci.yml": "on: push\n"}, PR_TITLE="FEAT-MODEL-001: x",
+              PR_BODY=body() + "\n\n## Capacity\nn/a: x\n").returncode == 0
     # stocks#1205 r4119509833: so are the root instructions that tell agents to run it
     for path in ("AGENTS.md", "CLAUDE.md"):
         r = pr(repo, "docs/tweak", {path: "# Nothing to do here\n"})
