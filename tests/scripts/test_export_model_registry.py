@@ -136,7 +136,8 @@ def repo(tmp_path):
 
 
 def export(repo: Path, *args: str) -> subprocess.CompletedProcess:
-    inherited = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    # (stocks#1205 r4127396391: PYTEST_CURRENT_TEST would tell an exporter it is under test)
+    inherited = {k: v for k, v in os.environ.items() if not k.startswith(("GIT_", "PYTEST_"))}
     return subprocess.run([sys.executable, "scripts/gate/export_model_registry.py", *args], cwd=repo,
                           env=inherited, capture_output=True, text=True)
 

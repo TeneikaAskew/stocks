@@ -3044,3 +3044,23 @@ def test_html_blocks_in_bodies_registry_prose_and_catalog_columns_are_the_contra
     r = pr(repo, "docs/new-spec", {"docs/superpowers/specs/2026-09-07-FEAT-MODEL-001 Big Feature.md": spec(status="draft")})
     assert r.returncode == 1 and "named YYYY-MM-DD-<kebab-slug>.md" in r.stdout, r.stdout
     assert pr(repo, "docs/new-spec", {"docs/superpowers/specs/2026-09-07-model-later.md": spec(status="draft") .replace("status: draft", "status: 'draft' # first cut")}).returncode == 0
+
+
+def test_indented_headings_and_less_indented_fence_closers_render_as_gfm_renders_them(repo):
+    """stocks#1205 r4127396415 (P2), r4127396407 (P2) (spec_gate.py:70, :2158).
+
+    `  ## Capacity` was not a heading for `section()` although GitHub renders it as one, and a
+    top-level fence opened with two leading spaces and closed at column one swallowed the rest
+    of the body. Both now read as GitHub renders them; a four-space heading is still code and a
+    closer four past its opener is still content.
+    """
+    title = {"PR_TITLE": "FEAT-MODEL-001: x"}
+    job = {**CODE, "gcp/model_job.py": "print('run')\n"}
+    cap = "Volume: 30 rows · Velocity: 1 query · Wall-clock: 2 s · $/run × runs/day × 30: $0.01\n"
+    assert pr(repo, BRANCH, job, **title, PR_BODY=body() + "\n\n  ## Capacity\n" + cap).returncode == 0
+    r = pr(repo, BRANCH, job, **title, PR_BODY=body() + "\n\n    ## Capacity\n" + cap)
+    assert r.returncode == 1 and "Capacity" in r.stdout, r.stdout
+    fenced = "  ```\nnotes\n```\n\n" + body() + "\n\n## Capacity\n" + cap
+    assert pr(repo, BRANCH, job, **title, PR_BODY=fenced).returncode == 0
+    swallowed = "```\nnotes\n    ```\n\n" + body() + "\n\n## Capacity\n" + cap
+    assert pr(repo, BRANCH, job, **title, PR_BODY=swallowed).returncode == 1

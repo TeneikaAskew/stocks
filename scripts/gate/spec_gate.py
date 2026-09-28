@@ -67,7 +67,7 @@ BRANCH = re.compile(r"^(feature|fix)/(feat-[a-z]+-\d{3})(-[a-z0-9]+)+$")   # low
 REQ_SHAPE = re.compile(r"^REQ-[A-Z]+-\d{3}$")
 REQ_DEFINITION = re.compile(r"\*\*(REQ-[A-Z]+-\d{3}):\*\*")
 CHECKBOX = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\[([ xX])\]\s+(.*\S)\s*$")   # (round seven: `+` and `1.` render boxes too)
-HEADING = re.compile(r"^(#{1,6})\s")
+HEADING = re.compile(r"^ {0,3}(#{1,6})\s")   # up to three leading spaces still render as a heading (stocks#1205 r4127396415); the level is the hash run
 ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 PR_REF = re.compile(r"^#?(\d+)$")
 PR_MENTION = re.compile(r"#(\d+)(?![\w])")   # #123abc names nothing
@@ -2153,6 +2153,11 @@ def visible(body: str) -> str:
     # item's content offset and still renders as code)
     # (red-team round three: a closer indented four spaces or more past its opener is content, not a
     # closer, so the fence runs on and the boxes inside it stay code)
+    # (stocks#1205 r4127396407: a top-level opener indented one to three spaces closes on any closer
+    # indented zero to three, whatever the opener's indent; only a fence nested under a list item
+    # ties its closer to the opener's offset)
+    body = re.sub(r"^ {0,3}(`{3,})(?![^\n]*`).*?^ {0,3}\1`*[ \t]*$", "", body, flags=re.S | re.M)
+    body = re.sub(r"^ {0,3}(~{3,}).*?^ {0,3}\1~*[ \t]*$", "", body, flags=re.S | re.M)
     body = re.sub(r"^([ \t]*)(`{3,})(?![^\n]*`).*?^\1 {0,3}\2`*[ \t]*$", "", body, flags=re.S | re.M)   # a backtick in the info string is not a fence (round five)
     body = re.sub(r"^([ \t]*)(~{3,}).*?^\1 {0,3}\2~*[ \t]*$", "", body, flags=re.S | re.M)
     body = re.sub(r"^[ \t]*(`{3,}(?![^\n]*`)|~{3,}).*\Z", "", body, flags=re.S | re.M)
