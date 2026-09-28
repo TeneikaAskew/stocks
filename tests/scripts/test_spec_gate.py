@@ -1461,3 +1461,80 @@ def test_indented_code_blocks_do_not_count(repo):
     assert r.returncode == 1 and "must link the spec" in r.stdout and "missing:" in r.stdout, r.stdout
     nested = f"Spec: {SPEC}\nPlan: {PLAN}\n\n- work\n    - [x] {DONE[0]}\n    - [x] {DONE[1]}\n"
     assert pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row}, **meta, PR_BODY=nested).returncode == 0
+
+
+def test_a_gate_workflow_keeps_its_steps_active_and_its_token_read_only(repo):
+    """solyra#72 r4119837190 (P1), r4119837212 (P1), r4119837242 (spec_gate.py:521, :96;
+    registry-check.yml:59).
+
+    The contract accepted a command inside a step carrying `if: ${{ false }}`, a job-level
+    `permissions: write-all` beside the read-only top-level block, and an executable hook
+    reduced to `exit 0`. A skipped step or job counts as absent, any write grant fails, and
+    the hook must still run `spec_gate.py --commit`.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    head = ("name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n"
+            "    runs-on: ubuntu-latest\n    steps:\n      - name: gate\n{IF}        run: |\n"
+            "          python3 -m py_compile \"$gate\"\n          python3 \"$gate\" --pr \"$BASE_SHA\" \"$HEAD_SHA\"\n"
+            "          pytest tests/scripts/test_spec_gate.py\n          git ls-tree \"$HEAD_SHA\" .githooks/pre-commit\n"
+            "          export_model_registry.py --check --rev \"$HEAD_SHA\" --base \"$BASE_SHA\"\n")
+    assert pr(repo, "chore/gate-workflow", {".github/workflows/registry-check.yml": head.replace("{IF}", "")}, **cap).returncode == 0
+    r = pr(repo, "chore/gate-workflow", {".github/workflows/registry-check.yml": head.replace("{IF}", "        if: ${{ false }}\n")}, **cap)
+    assert r.returncode == 1 and "no longer executes" in r.stdout and "`if:` may skip" in r.stdout, r.stdout
+    job_if = head.replace("{IF}", "").replace("    runs-on: ubuntu-latest\n", "    if: github.actor == 'nobody'\n    runs-on: ubuntu-latest\n")
+    r = pr(repo, "chore/gate-workflow", {".github/workflows/registry-check.yml": job_if}, **cap)
+    assert r.returncode == 1 and "no longer executes" in r.stdout, r.stdout
+    for grant in ("    permissions: write-all\n", "    permissions:\n      contents: write\n"):
+        widened = head.replace("{IF}", "").replace("    runs-on: ubuntu-latest\n", grant + "    runs-on: ubuntu-latest\n")
+        r = pr(repo, "chore/gate-workflow", {".github/workflows/registry-check.yml": widened}, **cap)
+        assert r.returncode == 1 and "grants a write permission" in r.stdout, (grant, r.stdout)
+    on_base(repo, {".githooks/pre-commit": "#!/bin/sh\npython3 scripts/gate/spec_gate.py --commit\n"})
+    r = pr(repo, "chore/gate-hook", {".githooks/pre-commit": "#!/bin/sh\n# python3 scripts/gate/spec_gate.py --commit\nexit 0\n"}, **cap)
+    assert r.returncode == 1 and "no longer runs `scripts/gate/spec_gate.py --commit`" in r.stdout, r.stdout
+    assert pr(repo, "chore/gate-hook", {".githooks/pre-commit": "#!/bin/sh\nset -e\npython3 scripts/gate/spec_gate.py --commit\n"}, **cap).returncode == 0
+
+
+def test_records_stay_unique_and_frozen_on_documentation_branches(repo):
+    """solyra#72 r4119837221, r4119837230, r4119837265, r4119837259 (spec_gate.py:551, :461,
+    :126, :502).
+
+    A docs/ PR could append a second catalog row for a FEAT, rewrite a superseded spec's
+    body, delete canvases.yml, or add a brand-new plan already marked done; each received
+    `spec gate ok`. All four are refused before the documentation-only return.
+    """
+    twice = CATALOG_TEXT.replace("| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |\n",
+                                 "| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |\n"
+                                 "| [FEAT-MODEL-001](#feat-model-001) | Models | Retired | unknown | none |\n")
+    r = pr(repo, "docs/catalog", {CATALOG: twice})
+    assert r.returncode == 1 and "FEAT-MODEL-001 has more than one heading or row" in r.stdout, r.stdout
+    assert pr(repo, "docs/catalog", {CATALOG: CATALOG_TEXT.replace("| Models | Production |", "| Models | Beta |")}).returncode == 0
+    on_base(repo, {SPEC: spec(status="superseded")})
+    r = pr(repo, "docs/spec-feat-model-001", {SPEC: spec(status="superseded", done_when=["something easier"])})
+    assert r.returncode == 1 and "a superseded spec does not change" in r.stdout, r.stdout
+    on_base(repo, {SPEC: spec(), "docs/product/canvases.yml": "canvases: []\n"})
+    r = pr(repo, "docs/cleanup", {"docs/product/canvases.yml": None})
+    assert r.returncode == 1 and "policy documents cannot be removed" in r.stdout, r.stdout
+    new_plan = "docs/superpowers/plans/2026-09-28-data.md"
+    done = plan(feat_id="FEAT-DATA-001", branch="feature/feat-data-001-later", status="done", pr=77)
+    r = pr(repo, "docs/plan-data", {new_plan: done})
+    assert r.returncode == 1 and "status is 'done'" in r.stdout, r.stdout
+    assert pr(repo, "docs/plan-data", {new_plan: plan(feat_id="FEAT-DATA-001", branch="feature/feat-data-001-later")}).returncode == 0
+
+
+def test_capacity_values_are_numbers(repo):
+    """solyra#72 r4119837253 (spec_gate.py:804).
+
+    `Volume: unknown · Velocity: fast · Wall-clock: later · 30: TBD` passed, because each
+    label needed only a non-blank value. Every value now carries a number, or the section
+    says `n/a: <why>`.
+    """
+    title = {"PR_TITLE": "FEAT-MODEL-001: x"}
+    job = {**CODE, "gcp/model_job.py": "print('run')\n"}
+    vague = body() + "\n\n## Capacity\nVolume: unknown \u00b7 Velocity: fast \u00b7 Wall-clock: later \u00b7 $/run \u00d7 runs/day \u00d7 30: TBD\n"
+    r = pr(repo, BRANCH, job, **title, PR_BODY=vague)
+    assert r.returncode == 1 and "gives no number for Volume, Velocity, Wall-clock, 30" in r.stdout, r.stdout
+    partial = body() + "\n\n## Capacity\nVolume: 3 tickers \u00d7 400 B \u00b7 Velocity: one query \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01\n"
+    r = pr(repo, BRANCH, job, **title, PR_BODY=partial)
+    assert r.returncode == 1 and "gives no number for Velocity;" in r.stdout, r.stdout
+    filled = body() + "\n\n## Capacity\nVolume: 30 rows \u00b7 Velocity: 1 query \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01\n"
+    assert pr(repo, BRANCH, job, **title, PR_BODY=filled).returncode == 0

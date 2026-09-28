@@ -102,9 +102,36 @@ WORKFLOW_CONTRACTS = {
 }
 
 
+def indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def enclosing_key(lines: list[str], i: int, below: int) -> int | None:
+    """Index of the nearest line above `i` that is a mapping key indented less than `below`."""
+    for j in range(i - 1, -1, -1):
+        if lines[j].strip() and indent(lines[j]) < below and re.match(r"^\s*(-\s+)?[\w.-]+:", lines[j]):
+            return j
+    return None
+
+
+def block_end(lines: list[str], start: int, level: int) -> int:
+    """First line after `start` whose indentation is at most `level` (blank lines skipped)."""
+    j = start + 1
+    while j < len(lines) and (not lines[j].strip() or indent(lines[j]) > level):
+        j += 1
+    return j
+
+
+def conditional(lines: list[str], start: int, end: int, level: int) -> bool:
+    """Whether a block carries an `if:` among its keys at `level`: GitHub may then skip it,
+    so a command inside proves nothing (solyra#72 r4119837190)."""
+    return any(indent(lines[j]) == level and re.match(r"^\s*(-\s+)?if:", lines[j]) for j in range(start, end))
+
+
 def workflow_executes(text: str) -> tuple[str, str]:
-    """(the text of every `run:` step, the whole file), both with comment lines removed, so a
-    contract command counts only where the workflow executes it, not where it mentions it."""
+    """(the text of every unconditional `run:` step, the whole file), both with comment lines
+    removed, so a contract command counts only where the workflow executes it: not in a
+    comment, not in an unused scalar, and not in a step or job an `if:` may skip."""
     lines = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
     runs, i = [], 0
     while i < len(lines):
@@ -114,23 +141,59 @@ def workflow_executes(text: str) -> tuple[str, str]:
             continue
         key_indent = len(m.group(1)) + len(m.group(2) or "")
         value = m.group(3).strip()
+        start = i
         i += 1
-        if value and value not in ("|", ">", "|-", ">-", "|+", ">+"):
-            runs.append(value)
-            continue
-        while i < len(lines) and (not lines[i].strip() or len(lines[i]) - len(lines[i].lstrip()) > key_indent):
-            runs.append(lines[i].strip())
-            i += 1
+        step = [value] if value and value not in ("|", ">", "|-", ">-", "|+", ">+") else []
+        if not step:
+            while i < len(lines) and (not lines[i].strip() or indent(lines[i]) > key_indent):
+                step.append(lines[i].strip())
+                i += 1
+        # The step is the list item holding this key; the job is the mapping holding `steps:`.
+        item = next((j for j in range(start, -1, -1) if indent(lines[j]) <= key_indent and lines[j].lstrip().startswith("-")), start)
+        item_level = indent(lines[item])
+        skipped = conditional(lines, item, block_end(lines, item, item_level), key_indent)
+        steps_key = enclosing_key(lines, item, item_level)
+        if steps_key is not None:
+            job_level = indent(lines[steps_key])
+            job_key = enclosing_key(lines, steps_key, job_level)
+            if job_key is not None:
+                skipped = skipped or conditional(lines, job_key, block_end(lines, job_key, indent(lines[job_key])), job_level)
+        if not skipped:
+            runs.extend(step)
     return "\n".join(runs), "\n".join(lines)
+
+
+def workflow_write_grant(body: str) -> str | None:
+    """The first line of a comment-stripped workflow that grants a write permission, at any
+    level: a job-level `permissions:` overrides the read-only top-level block a contract
+    marker sees (solyra#72 r4119837212)."""
+    lines = body.splitlines()
+    for i, line in enumerate(lines):
+        m = re.match(r"^\s*(-\s+)?permissions:\s*(.*)$", line)
+        if not m:
+            continue
+        value = m.group(2).strip()
+        if value:
+            if value.strip("'\"") == "write-all":
+                return line.strip()
+            continue
+        level = indent(line)
+        for j in range(i + 1, block_end(lines, i, level)):
+            if re.match(r"^\s*[\w-]+:\s*['\"]?write['\"]?\s*$", lines[j]):
+                return lines[j].strip()
+    return None
+
+
 # The documents the gate reads as policy: deleting one leaves every later change unjudgeable.
-POLICY_DOCS = (CATALOG, REQUIREMENTS, TRACEABILITY)
+POLICY_DOCS = (CATALOG, REQUIREMENTS, TRACEABILITY, CANVASES)
 # The capability that owns CI configuration; enforced where the catalog defines it.
 WORKFLOW_FEAT = "FEAT-CICD-001"
 # The files the gate runs from: no change may delete one, whatever its branch, or the
 # base's copy judges the deletion green and every later PR runs without a gate.
+HOOK = ".githooks/pre-commit"
 GATE_ENTRYPOINTS = (
     "scripts/gate/spec_gate.py",
-    ".githooks/pre-commit",
+    HOOK,
     ".github/workflows/spec-gate.yml",
     ".github/workflows/registry-check.yml",
     "tests/scripts/test_spec_gate.py",   # the suite CI runs on a proposed gate
@@ -465,6 +528,11 @@ def check_changed_specs(ch: Change) -> list[str]:
             if not (frontmatter(text).get("status") == "superseded" and strip(text) == strip(base_text)):
                 errs.append(f"{path}: an approved spec does not change in place; write a new spec that names it in "
                             "`supersedes` and get that one approved, then mark this one superseded")
+        elif base_text is not None and frontmatter(base_text).get("status") == "superseded" and text != base_text:
+            # solyra#72 r4119837230: a superseded spec is history the done plans and its
+            # replacement point at; it changes as little as it is deleted.
+            errs.append(f"{path}: a superseded spec does not change; it is the record the plans that cite it and "
+                        "the spec that replaced it point at")
     return errs
 
 
@@ -499,7 +567,9 @@ def check_changed_plans(ch: Change) -> list[str]:
         fm = frontmatter(text)
         if base_text is None:
             feat = fm.get("feat_id") if isinstance(fm.get("feat_id"), str) else ""
-            errs += [e for e in validate_plan(fm, path, feat, ch.tree) if "status is 'done'" not in e]
+            # solyra#72 r4119837259: a plan lands ready; only an existing plan closes to done,
+            # after its PR is in the base's record
+            errs += validate_plan(fm, path, feat, ch.tree)
             continue
         strip = lambda t: re.sub(r"^status:.*$", "", t, flags=re.M)
         if not (frontmatter(base_text).get("status") == "ready" and fm.get("status") == "done" and strip(text) == strip(base_text)):
@@ -521,8 +591,16 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
             lost = [m for m in contract["run"] if m not in runs] + [m for m in contract["structure"] if m not in body]
             if lost:
                 return [f"{path}: no longer executes {len(lost)} step(s) the gate depends on ({lost[0]!r}"
-                        f"{' and more' if len(lost) > 1 else ''}); a command in a comment or an unused scalar "
-                        "does not count. The gate's workflows keep their checks"], None
+                        f"{' and more' if len(lost) > 1 else ''}); a command in a comment, an unused scalar or a "
+                        "step an `if:` may skip does not count. The gate's workflows keep their checks"], None
+            if grant := workflow_write_grant(body):
+                return [f"{path}: grants a write permission ({grant}); the gate's workflows run head-controlled code "
+                        "on a read-only token, at the top level and in every job"], None
+    if HOOK in ch.changed and (hook := ch.tree.read(HOOK)) is not None:
+        # solyra#72 r4119837242: an executable hook that no longer runs the gate is the gate
+        # switched off for every clone with core.hooksPath set
+        if not any(not ln.lstrip().startswith("#") and "spec_gate.py" in ln and "--commit" in ln for ln in hook.splitlines()):
+            return [f"{HOOK}: no longer runs `scripts/gate/spec_gate.py --commit`; the hook keeps the commit-time gate"], None
     # P1b: the policy inputs the gate reads are not deleted either
     removed = [f for f in ch.changed if f in GATE_ENTRYPOINTS + POLICY_DOCS
                and ch.tree.read(f) is None and (f in GATE_ENTRYPOINTS or ch.base.read(f) is not None)]
@@ -533,7 +611,7 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
     # validated here, before the documentation-only return, against the base's catalog
     # and requirements; a malformed spec must not land and then block or mislead the
     # implementation that cites it.
-    errs_specs = check_changed_specs(ch) + check_changed_plans(ch)
+    errs_specs = check_changed_specs(ch) + check_changed_plans(ch) + check_record_uniqueness(ch)
     # A chore/ or bot/ branch is limited to its allowance for every file it touches, so
     # documentation is not exempt there: `chore/deps` cannot rewrite the requirements.
     allowance_branch = ch.branch.startswith(tuple(prefix for prefix, _ in ALLOWANCES))
@@ -805,6 +883,15 @@ def check_capacity(body: str | None, changed: list[str]) -> list[str]:
     if blank:
         return ["PR body's Capacity section leaves " + ", ".join(blank) + " blank; give the numbers, "
                 "or write 'n/a: <why no workload runs differently>'"]
+    # solyra#72 r4119837253: a value is a number, not `unknown`, `fast` or `TBD`. Each
+    # label's value runs from its colon to the next label.
+    marks = list(re.finditer(r"\b(" + "|".join(map(re.escape, CAPACITY_LABELS)) + r")\**:\**", text))
+    unnumbered = sorted({m.group(1) for k, m in enumerate(marks)
+                         if not re.search(r"\d", text[m.end():marks[k + 1].start() if k + 1 < len(marks) else len(text)])},
+                        key=CAPACITY_LABELS.index)
+    if unnumbered:
+        return ["PR body's Capacity section gives no number for " + ", ".join(unnumbered) + "; rule 0 wants "
+                "the figures (rows, calls, seconds, dollars), or 'n/a: <why no workload runs differently>'"]
     return []
 
 
@@ -853,6 +940,23 @@ def feat_headings(text: str, feat_id: str) -> tuple[int, int]:
     lines = text.splitlines()
     return (sum(1 for line in lines if HEADING.match(line) and feat_id in FEAT_IDS.findall(line)),
             sum(1 for line in lines if (m := FEAT_ROW.match(line)) and m.group(1) == feat_id))
+
+
+def check_record_uniqueness(ch: Change) -> list[str]:
+    """A FEAT-ID keeps one row and one heading in the catalog and the traceability document,
+    whatever branch edits them: the close-out reads the first record, so a second one
+    written from a docs/ branch would be silently ignored (solyra#72 r4119837221)."""
+    errs: list[str] = []
+    for path in (CATALOG, TRACEABILITY):
+        if path not in ch.changed or (text := ch.tree.read(path)) is None:
+            continue
+        base_text = ch.base.read(path) or ""
+        for feat_id in sorted(set(FEAT_IDS.findall(text))):
+            had, has = feat_headings(base_text, feat_id), feat_headings(text, feat_id)
+            if any(after > 1 and after > before for before, after in zip(had, has)):
+                errs.append(f"{path}: {feat_id} has more than one heading or row; a capability has one record, "
+                            "so extend the existing one rather than opening another")
+    return errs
 
 
 def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) -> list[str]:
