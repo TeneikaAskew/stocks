@@ -155,7 +155,8 @@ def repo(tmp_path):
 
 def gate(repo: Path, *args: str, **env: str) -> subprocess.CompletedProcess:
     # Only what the hook and the workflow pass in: nothing leaks from the shell running pytest.
-    inherited = {k: v for k, v in os.environ.items() if not k.startswith(("PR_", "SPEC_GATE_", "GIT_"))}
+    # (stocks#1205 r4122021112: PYTEST_CURRENT_TEST would tell a gate it is under test)
+    inherited = {k: v for k, v in os.environ.items() if not k.startswith(("PR_", "SPEC_GATE_", "GIT_", "PYTEST_"))}
     return subprocess.run([sys.executable, "scripts/gate/spec_gate.py", *args], cwd=repo,
                           env={**inherited, **env}, capture_output=True, text=True)
 
@@ -2342,7 +2343,7 @@ def test_traps_execs_secrets_repositories_quoted_keys_and_the_exporter_suite_are
         r = pr(repo, "chore/gate-workflow", {wf: secret}, **cap)
         assert r.returncode == 1 and "reads a secret or the token" in r.stdout, r.stdout
     r = pr(repo, "chore/gate-workflow", {wf: typed.replace("      - env:\n", "      - env:\n          \"PYTEST_ADDOPTS\": --collect-only\n", 1)}, **cap)
-    assert r.returncode == 1 and "in an `env:` block" in r.stdout, r.stdout
+    assert r.returncode == 1 and ("in an `env:` block" in r.stdout or "quotes a mapping key" in r.stdout), r.stdout
     rc = ".github/workflows/registry-check.yml"
     head = ("name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n"
             "    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n{WITH}      - run: |\n{BODY}")
@@ -2385,10 +2386,10 @@ def test_trigger_filters_yaml_validity_catalog_columns_and_quoted_permissions(re
     r = pr(repo, "chore/gate-workflow", {wf: typed + "broken: [\n"}, **cap)
     assert r.returncode == 1 and "is not valid YAML" in r.stdout, r.stdout
     r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  base-suite:\n", "  base-suite:\n    \"permissions\": write-all\n", 1)}, **cap)
-    assert r.returncode == 1 and "grants a write permission" in r.stdout, r.stdout
+    assert r.returncode == 1 and ("grants a write permission" in r.stdout or "duplicate key" in r.stdout or "quotes a mapping key" in r.stdout), r.stdout
     r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  base-suite:\n    needs: gate\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n",
                                                          "  base-suite:\n    needs: gate\n    runs-on: ubuntu-latest\n    permissions:\n      'contents': write\n", 1)}, **cap)
-    assert r.returncode == 1 and "grants a write permission" in r.stdout, r.stdout
+    assert r.returncode == 1 and ("grants a write permission" in r.stdout or "quotes a mapping key" in r.stdout), r.stdout
     r = pr(repo, "docs/catalog", {CATALOG: CATALOG_TEXT.replace("| Status |", "| State |", 1)})
     assert r.returncode == 1 and "no longer carries the Status field(s) the close-out reads" in r.stdout, r.stdout
     assert pr(repo, "docs/catalog", {CATALOG: CATALOG_TEXT + "\nA note.\n"}).returncode == 0
@@ -2437,3 +2438,96 @@ def test_gate_files_stay_read_only_runners_suites_and_supersedes_are_the_contrac
     r = pr(repo, "docs/spec-two", {"docs/superpowers/specs/2026-09-28-model-two.md": spec(supersedes="docs/superpowers/specs/2026-09-28-data-s.md")})
     assert r.returncode == 1 and "a spec for FEAT-DATA-001, not FEAT-MODEL-001" in r.stdout, r.stdout
     assert pr(repo, "docs/spec-two", {"docs/superpowers/specs/2026-09-28-model-two.md": spec(supersedes=SPEC)}).returncode == 0
+
+
+def test_workflows_are_plain_block_yaml_without_duplicate_keys(repo):
+    """stocks#1205 r4121888791 (P1), r4121888805 (P1), r4121888782 (P1) (spec_gate.py:674, :274, :620).
+
+    `"repository":`, `"if": false` and other quoted keys escaped every bare-key regex; a second
+    top-level `jobs:` was kept by PyYAML and ignored by the line scan. The gate now refuses
+    quoted keys, anchors, aliases, merge keys, tags, tabs and duplicate keys outright, so what
+    GitHub reads is what the line scan reads.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/spec-gate.yml"
+    typed = gate_workflow()
+    for bad, why in ((typed.replace("      - env:\n", "      - \"if\": false\n        env:\n", 1), "quotes a mapping key"),
+                     (typed.replace("        with:\n          ref: ${{ github.event.pull_request.base.sha }}\n",
+                                    "        with:\n          'repository': attacker/static\n          ref: ${{ github.event.pull_request.base.sha }}\n", 1), "quotes a mapping key"),
+                     (typed + "jobs: {}\n", "duplicate key"),
+                     (typed.replace("permissions:\n  contents: read\n", "permissions: &p\n  contents: read\n", 1), "anchor, alias, merge key or tag"),
+                     (typed.replace("  gate:\n", "  gate:\n\truns-on: ubuntu-latest\n", 1), "is not valid YAML")):
+        r = pr(repo, "chore/gate-workflow", {wf: bad}, **cap)
+        assert r.returncode == 1 and why in r.stdout, (bad[:80], r.stdout)
+    assert pr(repo, "chore/gate-workflow", {wf: typed}, **cap).returncode == 0
+
+
+def test_sentinels_and_grouped_set_or_trap_do_not_hide_a_failure(repo):
+    """Red-team of this PR (spec_gate.py:335, :382, :396): a literal `__STEP__` line reset the
+    model's errexit, and `{ set +e; }` or `{ trap 'exit 0' ERR; }` escaped the depth-0 checks
+    while acting on the current shell. Each is refused, in the workflows and the hook.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/spec-gate.yml"
+    for shape in ("|\n          set +e\n          __STEP__\n          " + VERDICT_CMD + "\n          true",
+                  "|\n          __SUB__\n          " + VERDICT_CMD,
+                  "|\n          { set +e; }\n          " + VERDICT_CMD + "\n          true",
+                  "|\n          if true; then set +e; fi\n          " + VERDICT_CMD + "\n          true",
+                  "|\n          { trap 'exit 0' ERR; }\n          " + VERDICT_CMD,
+                  "|\n          true && set +e\n          " + VERDICT_CMD + "\n          true",
+                  "|\n          if true; then set -e; fi\n          set +e\n          " + VERDICT_CMD + "\n          true"):
+        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a=shape)}, **cap)
+        assert r.returncode == 1 and "no longer executes" in r.stdout, (shape, r.stdout)
+    on_base(repo, {".githooks/pre-commit": "#!/bin/sh\nset -e\npython3 scripts/gate/spec_gate.py --commit\n"})
+    r = pr(repo, "chore/gate-hook", {".githooks/pre-commit": "#!/usr/bin/env bash\nset -e\n{ trap 'exit 0' ERR; }\npython3 scripts/gate/spec_gate.py --commit\n"}, **cap)
+    assert r.returncode == 1 and "no longer runs" in r.stdout, r.stdout
+
+
+def test_contract_jobs_keep_their_context_and_runner(repo):
+    """Red-team of this PR (spec_gate.py:548, :1385, :177): a job `name:` or a `strategy.matrix`
+    renamed the check context so the required `spec-gate / gate` was never produced, `container:`
+    ran the verdict inside an image the PR named, and `PIP_INDEX_URL` was outside the protected
+    names although the verdict step installs PyYAML first. Each is refused.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/spec-gate.yml"
+    typed = gate_workflow()
+    for extra in ("    name: gate-x\n", "    strategy:\n      matrix:\n        shard: [1, 2]\n", "    container: ghcr.io/attacker/img:latest\n",
+                  "    services:\n      db:\n        image: postgres\n", "    environment: production\n"):
+        r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  gate:\n    runs-on: ubuntu-latest\n", "  gate:\n    runs-on: ubuntu-latest\n" + extra, 1)}, **cap)
+        assert r.returncode == 1 and "keeps its key as its check context" in r.stdout, (extra, r.stdout)
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  base-suite:\n", "  base-suite:\n    name: bs-x\n", 1)}, **cap)
+    assert r.returncode == 1 and "keeps its key as its check context" in r.stdout, r.stdout
+    for env_name in ("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "NODE_OPTIONS", "UV_INDEX_URL"):
+        r = pr(repo, "chore/gate-workflow", {wf: typed.replace("permissions:\n", f"env:\n  {env_name}: https://attacker.example/simple/\npermissions:\n", 1)}, **cap)
+        assert r.returncode == 1 and "in an `env:` block" in r.stdout, (env_name, r.stdout)
+    assert pr(repo, "chore/gate-workflow", {wf: typed}, **cap).returncode == 0
+
+
+def test_dash_line_steps_indirect_writes_and_early_returns_are_refused(repo):
+    """stocks#1205 r4122021105 (P1), r4122021088 (P1), r4122021098 (P1), r4122021112 (P1)
+    (spec_gate.py:216, :713, :519; test_spec_gate.py:160).
+
+    A step written with its dash on a line of its own escaped the env-binding check; `gate=...`
+    then `> "$gate"` rewrote the gate through a variable; a `return` first thing in every test
+    kept the assertion counts; PYTEST_CURRENT_TEST reached the gate under test. Each is refused
+    or removed.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/spec-gate.yml"
+    typed = gate_workflow()
+    dashed = typed.replace("      - env:\n", "      -\n        env:\n", 1)
+    assert pr(repo, "chore/gate-workflow", {wf: dashed}, **cap).returncode == 0, "a dash on its own line is the same step"
+    r = pr(repo, "chore/gate-workflow", {wf: dashed.replace("          PR_NUMBER: ${{ github.event.pull_request.number }}\n", "          PR_NUMBER: ''\n", 1)}, **cap)
+    assert r.returncode == 1 and "no longer binds PR_NUMBER" in r.stdout, r.stdout
+    for pre in ("gate=scripts/gate/spec_gate.py\n          printf 'x' > \"$gate\"", "d=scripts/gate\n          cp /tmp/x \"$d/spec_gate.py\"", "t=tests/scripts/test_spec_gate.py; echo > $t"):
+        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        assert r.returncode == 1 and "writes to or replaces a gate file" in r.stdout, (pre, r.stdout)
+    assert pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          echo x > \"$RUNNER_TEMP/note\"\n          " + VERDICT_CMD)}, **cap).returncode == 0
+    suite_text = "def test_a():\n    assert 1\n"
+    on_base(repo, {"tests/scripts/test_spec_gate.py": suite_text})
+    for escape in ("def test_a():\n    return\n    assert 1\n", "def test_a():\n    raise SystemExit(0)\n    assert 1\n"):
+        r = pr(repo, "chore/gate-suite", {"tests/scripts/test_spec_gate.py": escape}, **cap)
+        assert r.returncode == 1 and "no skip markers, collection hooks or exits" in r.stdout, (escape, r.stdout)
+    import inspect
+    assert '"PYTEST_"' in inspect.getsource(gate)   # the helper strips pytest's own variables from the gate's environment

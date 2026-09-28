@@ -174,7 +174,7 @@ GATE_INPUT = r"(PR_[A-Z_]+|BASE_SHA|HEAD_SHA|SPEC_GATE_[A-Z_]+)"
 # What the shell and Python read before the gate runs: a fake python3 on PATH, a BASH_ENV
 # that exits, PYTEST_ADDOPTS=--collect-only or a PYTHONPATH shadowing pytest turn the
 # contract commands into no-ops while their text stays (solyra#72 r4121374618, r4121374639)
-RUNTIME_ENV = r"(PATH|HOME|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|IFS|PYTHON\w*|PYTEST\w*|GIT_\w+|LD_\w+)"
+RUNTIME_ENV = r"(PATH|HOME|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|IFS|PYTHON\w*|PYTEST\w*|PIP_\w+|UV_\w+|VIRTUAL_ENV|CONDA\w*|NODE_OPTIONS|NPM_\w+|GIT_\w+|LD_\w+)"
 PROTECTED = rf"(?:{GATE_INPUT}|{RUNTIME_ENV})"
 INPUT_OVERRIDE = re.compile(r"(?<![\w$.{-])" + PROTECTED + r"=|\b(export|unset|declare|typeset|local|readonly|read)\b[^;|&\n]*?(?<![\w$.{-])" + PROTECTED + r"\b|(?<![\w])(GITHUB_PATH)\b")
 ENV_KEY = re.compile(r"^\s*(" + GATE_INPUT[1:-1] + "|" + RUNTIME_ENV[1:-1] + r"):", re.M)
@@ -207,16 +207,20 @@ def input_overrides(text: str) -> list[str]:
     return found
 
 
+def end_of(lines: list[str], i: int) -> int:
+    return block_end(lines, i, indent(lines[i]))
+
+
 def step_envs(body: str, command: str) -> list[dict[str, str]]:
     """The `env:` mapping of every step whose run text invokes `command`, values with their
     whitespace removed so `${{ github.event.pull_request.number }}` compares by content."""
     lines, out = body.splitlines(), []
     for i, line in enumerate(lines):
-        m = re.match(r"^(\s*)-\s+\S", line)
+        m = re.match(r"^(\s*)-(\s+\S|\s*$)", line)   # `- key:` or a dash on a line of its own (stocks#1205 r4122021105)
         if not m or (k := enclosing_key(lines, i, indent(line))) is None or lines[k].strip() != "steps:":
             continue
-        key_indent, end = len(m.group(1)) + 2, block_end(lines, i, indent(line))
-        item = [re.sub(r"^(\s*)-\s+", r"\1  ", lines[i])] + lines[i + 1:end]
+        key_indent, end = (len(m.group(1)) + 2 if m.group(2).strip() else indent(lines[i + 1]) if i + 1 < end_of(lines, i) else len(m.group(1)) + 2), block_end(lines, i, indent(line))
+        item = [re.sub(r"^(\s*)-\s*", r"\1  ", lines[i])] + lines[i + 1:end]
         run, env, j = [], {}, 0
         while j < len(item):
             if (rm := re.match(r"^(\s*)run:\s*(.*)$", item[j])) and len(rm.group(1)) == key_indent:
@@ -280,7 +284,7 @@ def workflow_executes(text: str) -> tuple[str, str]:
     """(the text of every unconditional `run:` step, the whole file), both with comment lines
     removed, so a contract command counts only where the workflow executes it: not in a
     comment, not in an unused scalar, and not in a step or job an `if:` may skip."""
-    lines = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
+    lines = [ln for ln in text.replace("\x00", "").splitlines() if not ln.lstrip().startswith("#")]
     runs, i = [], 0
     while i < len(lines):
         m = re.match(r"^(\s*)(-\s+)?run:\s*(.*)$", lines[i])
@@ -332,7 +336,8 @@ def workflow_executes(text: str) -> tuple[str, str]:
     return "\n".join(runs), "\n".join(lines)
 
 
-STEP_BOUNDARY = "__STEP__"
+STEP_BOUNDARY = "\x00STEP\x00"   # a NUL cannot be typed into YAML or a hook, so no run text collides with it
+PLACEHOLDERS = re.compile(r"__SUB__|__VAR__|__STEP__|\x00")
 
 
 def shell_value(raw: str) -> str:
@@ -375,6 +380,10 @@ def shell_statements(runs: str, errexit: bool = True) -> list[str]:
     # stocks#1205 r4121216898: a quoted span is text to the shell however many lines it
     # covers, so the separators and newlines inside `"..."` or '...' are neutralised first,
     # keeping the words a contract quotes (`"$BASE_SHA"`) intact
+    # (red-team, this PR): the parser's own placeholders typed into a run block would be read as
+    # structure, so a text carrying one satisfies nothing
+    if PLACEHOLDERS.search(runs.replace(STEP_BOUNDARY, "")):
+        return []
     runs = re.sub(r"\$\{\{.*?\}\}", "__VAR__", runs, flags=re.S)
     runs = re.sub(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"", quoted_text, runs, flags=re.S)
     lines, out, i = runs.splitlines(), [], 0
@@ -438,18 +447,21 @@ def shell_statements(runs: str, errexit: bool = True) -> list[str]:
                 stmt = re.sub(r"^exec\s+", "", stmt)
             elif re.match(r"^exec\b", stmt):
                 stmt = ""
-            if stmt and depth == 0 and re.match(r"^trap\b", stmt):
-                # solyra#72 r4121572544: `trap 'exit 0' ERR` turns every later failure into success
+            if stmt and re.match(r"^trap\b", stmt):
+                # solyra#72 r4121572544: `trap 'exit 0' ERR` turns every later failure into success;
+                # inside `{ }` or a `then` body it still runs in this shell (red-team, this PR)
                 errexit = False
             if stmt and depth == 0 and not chained and not condition and re.match(r"^(exit|return)\b", stmt):
                 ended = True   # stocks#1205 r4120381459: nothing after an unconditional exit runs
                 break
-            if stmt and depth == 0 and (sm := re.match(r"^set\s+(.*)$", stmt)):
-                # solyra#72 r4120633462: with errexit off a failing command does not fail the step
+            if stmt and (sm := re.match(r"^set\s+(.*)$", stmt)):
+                # solyra#72 r4120633462: with errexit off a failing command does not fail the step;
+                # `{ set +e; }` and `if true; then set +e; fi` act on this shell too, so the depth does
+                # not matter for turning it off, while turning it back on counts only at the top level
                 flags = sm.group(1)
                 if re.search(r"(^|\s)\+\w*e|\+o\s+errexit", flags):
                     errexit = False
-                elif re.search(r"(^|\s)-\w*e|-o\s+errexit", flags):
+                elif depth == 0 and not chained and not condition and re.search(r"(^|\s)-\w*e|-o\s+errexit", flags):
                     errexit = True
             executed = (stmt and not re.match(r"^[A-Za-z_]\w*=", stmt)   # `x="..."`: a value, not a command
                         and stmt.split()[0] not in NON_EXECUTING and depth == 0 and not chained and errexit
@@ -505,6 +517,10 @@ def suite_escape(source: str) -> str | None:
             return node.id
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("pytest_"):
             return node.name
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
+            # stocks#1205 r4122021098: a `return` first thing leaves every assertion counted and unreached
+            if any(isinstance(n, (ast.Return, ast.Raise)) for n in ast.walk(node)):
+                return f"{node.name}: return or raise"
     return None
 
 
@@ -636,11 +652,35 @@ def valid_yaml(text: str) -> str | None:
         import yaml
     except ImportError:
         return "PyYAML is not installed, so the workflow cannot be parsed; pip install pyyaml"
+
+    class Strict(yaml.SafeLoader):
+        """Duplicate keys are an error, as GitHub treats them (stocks#1205 r4121888782)."""
+
+        def construct_mapping(self, node, deep=False):
+            seen = set()
+            for key_node, _ in node.value:
+                key = self.construct_object(key_node, deep=deep)
+                if key in seen:
+                    raise yaml.YAMLError(f"duplicate key {key!r} at line {key_node.start_mark.line + 1}")
+                seen.add(key)
+            return super().construct_mapping(node, deep)
+
     try:
-        loaded = yaml.safe_load(text)
+        loaded = yaml.load(text, Loader=Strict)
     except yaml.YAMLError as exc:
         return f"is not valid YAML ({str(exc).splitlines()[0]})"
-    return None if isinstance(loaded, dict) else "is not a YAML mapping"
+    if not isinstance(loaded, dict):
+        return "is not a YAML mapping"
+    # The gate reads the file line by line; YAML written any other way than plain block keys
+    # would be read one way by GitHub and another here (stocks#1205 r4121888791, r4121888805)
+    stripped = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+    if (m := re.search(r"^\s*(-\s+)?['\"][^'\"]*['\"]\s*:", stripped, re.M)):
+        return f"quotes a mapping key ({m.group(0).strip()}); the gate's workflows use plain keys"
+    if (m := re.search(r"(^|[\s:])[&*][A-Za-z_]|^\s*<<\s*:|(^|\s)!\w", stripped, re.M)):
+        return f"uses a YAML anchor, alias, merge key or tag ({m.group(0).strip()}); the gate's workflows use none"
+    if "\t" in stripped or "\r" in text:
+        return "contains a tab or a carriage return; the gate's workflows use spaces and LF line endings"
+    return None
 
 
 def workflow_trigger_types(body: str, event: str) -> set[str]:
@@ -710,7 +750,10 @@ SHADOW = re.compile(r"(?:^|[;&|{}(]\s*|\bfunction\s+)" + EXECUTABLES + r"\s*\(\s
 
 GATE_PATHS = r"(scripts/gate\b|tests/scripts\b|\.githooks\b|\.github/workflows\b)"
 WRITERS = r"(cp|mv|install|ln|tee|rm|truncate|chmod|patch|dd|curl|wget|sed|perl|git\s+(checkout|restore|apply|reset|clean|stash))"
-WRITES_GATE = re.compile(r"(?m)^\s*(?:\S+=\S*\s+)*" + WRITERS + r"\b[^\n]*" + GATE_PATHS + r"|[>]{1,2}\s*['\"]?[^\s'\"]*" + GATE_PATHS)
+# stocks#1205 r4122021088: `gate=scripts/gate/spec_gate.py` then `> "$gate"` is the same write; a
+# destination held in a variable is refused unless it is under the runner's temp directory
+INDIRECT = r"['\"]?\$(?!RUNNER_TEMP\b|\{RUNNER_TEMP\}|\{\{\s*runner\.temp)"
+WRITES_GATE = re.compile(r"(?m)^\s*(?:\S+=\S*\s+)*" + WRITERS + r"\b[^\n]*(" + GATE_PATHS + "|" + INDIRECT + r")|[>]{1,2}\s*(['\"]?[^\s'\"]*" + GATE_PATHS + "|" + INDIRECT + ")")
 
 
 def writes_gate_file(runs: str) -> str | None:
@@ -1322,7 +1365,11 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
             if overridden := input_overrides(body):
                 return [f"{path}: assigns or unsets {overridden[0]}, an input the gate reads from the event; the "
                         "gate's workflows never set the gate's inputs from the shell"], None
-            for env in step_envs(body, contract["run"][0]):
+            envs = step_envs(body, contract["run"][0])
+            if contract.get("env") and any(invokes(st, contract["run"][0]) for st in statements) and not envs:
+                return [f"{path}: the step running {contract['run'][0]!r} has no `env:` record the gate can read; "
+                        "the verdict step binds its inputs in its own `env:`"], None
+            for env in envs:
                 for name, expression in contract.get("env", {}).items():
                     if env.get(name) != re.sub(r"\s+", "", expression):
                         return [f"{path}: the step running {contract['run'][0]!r} no longer binds {name} to "
@@ -1382,6 +1429,13 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
             for job in jobs:
                 if not any(invokes(st, m) for m in required for st in job["statements"]):
                     continue
+                # (red-team, this PR): a job `name:` or a matrix renames the check context GitHub
+                # publishes; a container runs every step inside an image the PR names
+                level = indent(job["lines"][0]) + 2
+                for ln in job["lines"][1:]:
+                    if indent(ln) == level and (km := re.match(r"^\s+(name|strategy|container|services|environment|uses|concurrency):", ln)):
+                        return [f"{path}: job {job['name']} declares `{km.group(1)}`; a contract job keeps its key as its check "
+                                "context and runs its steps directly on the runner"], None
                 runner = next((shell_value(rm.group(1)) for ln in job["lines"] if (rm := re.match(r"^\s+runs-on:\s*(.*)$", ln))), "")
                 if not runner.startswith("ubuntu-"):
                     # stocks#1205 r4121777320: another runner's default shell is not bash

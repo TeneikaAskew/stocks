@@ -61,6 +61,7 @@ PR rules:
 - Open the PR as a draft, then set the plan's `pr` to its number in the next commit. A draft may still say `null`; a number that is not this PR fails the gate, and once the PR is marked ready for review CI requires the number and the Phase 5 records.
 - Review cap: TWO rounds. After the second round of review comments, do not keep fixing in place. Invoke `superpowers:finishing-a-development-branch` and present: split into smaller PRs, re-cut from the spec, or discard. A PR that is not mergeable after two rounds is a spec problem, not a code problem.
 - Never open a follow-up PR from an unmerged PR. Never stack.
+- A change to a gate file (`scripts/gate/`, `.githooks/pre-commit`, the two gate workflows, their suites) is pushed only after a red-team pass on the head: three parallel reviewers, one each for shell semantics, YAML/Actions structure, and the exporter and policy documents, each required to prove a bypass by executing the gate against a concrete snippet. Fix every confirmed finding in one batch, run the pass again, and push once when it comes back empty. Fixing findings one push at a time draws a fresh review per push and never converges.
 - Before every commit, run `python3 scripts/gate/spec_gate.py --commit`. The hook runs it anyway; running it first avoids surprises. A commit from a detached HEAD that stages code is blocked; name its branch with `SPEC_GATE_BRANCH=<branch> git commit`.
 
 ## Phase 5: close (this is what "done" means)

@@ -543,6 +543,14 @@
   "E-35"
  ],
  "experiment_traceability": {
+  "MODEL-AGREE-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-AGREE-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
   "MODEL-BREAK-001": {
    "deep_doc": "MODEL_RETHINK_PLANS §RESULTS · EXPERIMENT_REGISTRY §E-18",
    "experiments": "E-18 ★, E-32",
@@ -553,6 +561,14 @@
     "gcp/research/strat_engine/breakout_meta_walk_forward.py"
    ],
    "recorded_verdict": "Gross 24/24. Net fragile — 2026-06-09 reconfirm: only IWM 5m clean net-positive (+0.110 R, 8/8); SPY/QQQ NET_FAIL"
+  },
+  "MODEL-BRIEF-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-BRIEF-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
   },
   "MODEL-CALIB-001": {
    "deep_doc": "none — no experiment in the ledger evaluates this system",
@@ -579,6 +595,38 @@
    ],
    "recorded_verdict": "No generalizable directional edge; baseline 0/72 folds; one unresolved IWM-only flicker"
   },
+  "MODEL-EARN-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-EARN-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-EARN-002": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-EARN-002",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-EWV-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-EWV-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-EXIT-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-EXIT-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
   "MODEL-FEAT-X": {
    "deep_doc": "DIRECTION_FEATURES_R&D",
    "experiments": "E-08 (C-news / C-xasset / C-vol / C-options) — committed; E-34 (Phase 2 feature-family ablation, five families in isolation and full stack via `--features`); E-26, E-31, E-33 — scratch harness, artifacts unavailable",
@@ -603,6 +651,14 @@
    ],
    "recorded_verdict": "failed (null + dilutive) — IWM +0.053/z2.85 → −0.008/z−0.49; fires 726→881 while precision falls"
   },
+  "MODEL-FTFC-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-FTFC-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
   "MODEL-GAMMA-001": {
    "deep_doc": "docs/research/2026-05-23/P2_gamma_outcomes.md · gamma_levels.md · GAMMA_BALANCE_AUDIT",
    "experiments": "E-22 (P2), E-24",
@@ -616,6 +672,70 @@
     "lib/features/intraday_gex.py"
    ],
    "recorded_verdict": "VOL signal confirmed, direction null; E-24 fixed a `gamma_regime` sign inversion at source"
+  },
+  "MODEL-IND-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-IND-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-LEVEL-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-LEVEL-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-LLM-ANALYST": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-LLM-ANALYST",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-LLM-DEBATE": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-LLM-DEBATE",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-LLM-JUDGE": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-LLM-JUDGE",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-LLM-PM": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-LLM-PM",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-LLM-RISK": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-LLM-RISK",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-LLM-TRADER": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-LLM-TRADER",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
   },
   "MODEL-MAG-001": {
    "deep_doc": "MAGNITUDE_ENGINE_RESULTS · MAGNITUDE_DIRECTIONAL_SESSION_HANDOFF",
@@ -632,6 +752,22 @@
    ],
    "recorded_verdict": "PROJECT VERDICT FAIL — closed by gate 7, 2026-05-29. Size is learnable; nothing beats option IV"
   },
+  "MODEL-MOM-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-MOM-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-MR-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-MR-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
   "MODEL-NEXTBAR-001": {
    "deep_doc": "EXPERIMENT_REGISTRY §E-25 · MODEL_REGISTRY §CAT-A8",
    "experiments": "E-25",
@@ -647,6 +783,30 @@
    ],
    "recorded_verdict": "Held-out OOS edge confirmed; CLV ablation shows it is largely gap-mechanical (CLV_LAG1 ≈ 0)"
   },
+  "MODEL-OPT-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-OPT-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-PLAY-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-PLAY-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-QUAL-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-QUAL-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
   "MODEL-RANK-001": {
    "deep_doc": "08",
    "experiments": "— (no `E-` id)",
@@ -657,6 +817,14 @@
     "lib/agents/ranker/"
    ],
    "recorded_verdict": "Experimental; no promotion evidence"
+  },
+  "MODEL-STRAT-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-STRAT-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
   },
   "MODEL-STYLE-001": {
    "deep_doc": "#707",
@@ -669,6 +837,14 @@
     "platform/api/routers/backtest.py"
    ],
    "recorded_verdict": "Walk-forward validated into the playbook seam"
+  },
+  "MODEL-SUM-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-SUM-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
   },
   "MODEL-SWEEP-001": {
    "deep_doc": "none — no experiment in the ledger evaluates this system",
@@ -700,6 +876,22 @@
     "strat_pred_per_class.py"
    ],
    "recorded_verdict": "Two verdicts, both true. Prediction: VALIDATED 8/8 folds, ECE ≤ 0.05 (5m/15m), 30m PARTIAL, leakage audit CLEAN (E-19). Execution: FAIL — E-23 tested this model's 0.55-confidence 2U/2D calls and got 0/8 positive-expectancy folds in every cell, net expectancy negative after friction (EXEC_BACKTEST_RESULTS). Ops doc says \"ON THE SHELF\""
+  },
+  "MODEL-WATCH-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-WATCH-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-WEEK-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-WEEK-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
   }
  },
  "findings": [
@@ -2433,7 +2625,7 @@
  "sources": {
   "docs/EXPERIMENT_REGISTRY.md": "cfbcca257edc74928cc0af69d275a02f2fd78c0c",
   "docs/product/07-MODEL-REGISTRY.md": "1e70bf96a3e8ab49e714745d2571b662001ceb39",
-  "scripts/gate/export_model_registry.py": "90092d87cedb8f67cd23373b43133f46ab43faf6"
+  "scripts/gate/export_model_registry.py": "0d158fef60cc4adc31d0d6bcf5e2f889bb46e23f"
  },
  "tables": [
   {
@@ -2599,5 +2791,6 @@
    "rows": 5,
    "section": "Model and Algorithm Registry / Traceability"
   }
- ]
+ ],
+ "traceability_rows": 12
 }

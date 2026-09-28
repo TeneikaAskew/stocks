@@ -716,3 +716,20 @@ def test_typo_rows_bare_delimiters_and_duplicate_experiments_are_refused(repo):
     write(repo, EXPERIMENTS, exp + f"\n## {first} again\n\ntext\n")
     r = export(repo)
     assert r.returncode != 0 and "is defined by more than one heading" in r.stdout + r.stderr, r.stdout + r.stderr
+
+
+def test_every_model_has_a_traceability_entry_and_malformed_refs_are_refused(repo):
+    """stocks#1205 r4121888831, r4121888814 (export_model_registry.py:370; canvases.yml:34): a
+    model without a traceability row had no entry, so the canvas paths under it resolved to
+    nothing rather than to null; `E-3S` cited nothing and was published verbatim."""
+    assert export(repo).returncode == 0
+    data = exported(repo)
+    assert set(data["experiment_traceability"]) == set(data["models"])
+    unsourced = [m for m, rec in data["experiment_traceability"].items() if rec.get("unsourced")]
+    assert unsourced and all(data["experiment_traceability"][m]["experiments"] is None for m in unsourced)
+    assert data["traceability_rows"] == len(data["models"]) - len(unsourced)
+    reg = REGISTRY_TEXT
+    row = next(ln for ln in reg.splitlines() if ln.startswith("| MODEL-MAG-001 | E-01 |"))
+    write(repo, REGISTRY, reg.replace(row, row.replace("E-01", "E-0S", 1), 1))
+    r = export(repo)
+    assert r.returncode != 0 and "not shaped E-NN" in r.stdout + r.stderr, r.stdout + r.stderr

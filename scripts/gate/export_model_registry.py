@@ -378,6 +378,10 @@ def build(src: Source) -> dict:
         # stocks#1205 r4119634454: a misspelled E-nn in a traceability row would let a card
         # claim evidence from an experiment the ledger never recorded.
         cited = set(expand_ids(clean(" ".join(str(v) for v in rec.values())), EXP_ID, EXP_RANGE, "E-{:02d}"))
+        # stocks#1205 r4121888814: `E-3S` cites nothing and would be published verbatim
+        mentioned = clean(" ".join(str(v) for v in rec.values()))
+        if bad := sorted({t for t in re.findall(r"\bE-\w+", mentioned) if not re.fullmatch(r"E-\d{2}|E-(nn|NN|xx|XX)", t)}):
+            malformed.append(f"{mid} traceability cites {', '.join(bad)}, not shaped E-NN (the placeholder `E-nn` is prose)")
         unknown_exp = sorted(cited - ledger)
         if unknown_exp:
             malformed.append(f"{mid} traceability cites experiment(s) not in the ledger: {', '.join(unknown_exp)}")
@@ -432,6 +436,11 @@ def build(src: Source) -> dict:
                          "starts with an `ID` column. The registry is malformed; fix it rather than exporting it")
     resolve_scheduler_models(out["schedulers"], out["models"])
     out["experiment_ids"] = experiment_ids(etext)
+    # stocks#1205 r4121888831: the refresh skill protects a repo-owned field only when its JSON
+    # value is null; a model without a traceability row gets every field as null, not no entry
+    out["traceability_rows"] = len(out["experiment_traceability"])
+    for mid in out["models"]:
+        out["experiment_traceability"].setdefault(mid, {"model": mid, "unsourced": True, **{k: None for k in REQUIRED_KEYS["traceability"] if k != "model"}})
     return out
 
 
@@ -491,7 +500,7 @@ def main(argv: list[str]) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(payload, encoding="utf-8")
     print(f"wrote {OUT}: {len(data['models'])} models, "
-          f"{len(data['experiment_traceability'])} traceability rows, {len(data['findings'])} findings, "
+          f"{data['traceability_rows']} traceability rows, {len(data['findings'])} findings, "
           f"{len(data['dispositions'])} dispositions, {len(data['schedulers'])} schedulers")
     return 0
 
