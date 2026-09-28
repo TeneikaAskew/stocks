@@ -300,3 +300,35 @@ def test_scheduler_models_expand_llm_group_and_same_job_rows(repo):
     assert by_name["`regime-combo-weekly`"]["models"] == []
     assert "owned by the ledger" in by_name["`regime-combo-weekly`"]["models_note"]
     assert not any("models_note" in s for n, s in by_name.items() if n != "`regime-combo-weekly`")
+
+
+def test_a_missing_source_fails_generation_and_the_check(repo):
+    """stocks#1205 r4118420401 (export_model_registry.py:252).
+
+    The ledger was optional: with docs/EXPERIMENT_REGISTRY.md deleted the
+    exporter exited 0, wrote a null blob for it under `sources`, left out
+    `experiment_ids`, and once that JSON was committed --check passed. Both
+    canonical sources must exist at the rev being read; a missing one fails
+    generation and --check alike, naming the path, and the JSON on disk is
+    left as it was rather than rewritten with a null source blob.
+    """
+    before = json.dumps(exported(repo), sort_keys=True)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "regenerate")
+    fresh = _git(repo, "rev-parse", "HEAD")
+
+    _git(repo, "rm", "-q", EXPERIMENTS)
+    r = export(repo)
+    assert r.returncode != 0 and EXPERIMENTS in r.stdout + r.stderr, r.stdout + r.stderr
+    assert json.dumps(json.loads((repo / OUT).read_text(encoding="utf-8")), sort_keys=True) == before
+    r = export(repo, "--check")
+    assert r.returncode != 0 and EXPERIMENTS in r.stdout + r.stderr, r.stdout + r.stderr
+    _git(repo, "commit", "-qm", "delete the ledger, keep the JSON")
+    r = export(repo, "--check", "--rev", "HEAD")
+    assert r.returncode != 0 and EXPERIMENTS in r.stdout + r.stderr, r.stdout + r.stderr
+    assert export(repo, "--check", "--rev", fresh).returncode == 0
+
+    _git(repo, "checkout", "-q", fresh)
+    _git(repo, "rm", "-q", REGISTRY)
+    r = export(repo)
+    assert r.returncode != 0 and REGISTRY in r.stdout + r.stderr, r.stdout + r.stderr

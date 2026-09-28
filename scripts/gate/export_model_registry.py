@@ -17,7 +17,9 @@ and issue/PR numbers extracted.
 Provenance is `sources`: the git blob id of each source document, which is
 the same on every commit that carries that content. --check compares it too,
 so a JSON exported from different source text is stale even when the parsed
-tables happen to match.
+tables happen to match. Both documents are canonical inputs: if either is
+missing at the rev being read, generation and --check fail naming the path,
+so the JSON never carries a null source blob (CLAUDE.md §3.7).
 
 A PR head contains main, so one registry edit that reaches main without its
 JSON would fail every later PR. With --base, a stale head fails only when the
@@ -68,6 +70,14 @@ class Source:
             return p.read_text(encoding="utf-8", errors="replace") if p.is_file() else None
         r = git("show", f"{self.rev}:{path}")
         return r.stdout if r.returncode == 0 else None
+
+    def require(self, path: str) -> str:
+        """The document's text; a canonical source that is missing fails the run rather than exporting a null blob."""
+        text = self.read(path)
+        if text is None:
+            where = f"at {self.rev}" if self.rev is not None else "in the working tree"
+            raise SystemExit(f"{path} not found {where}; both registry sources must exist to export or check")
+        return text
 
     def blob(self, path: str) -> str | None:
         if self.rev is None:
@@ -195,9 +205,8 @@ def resolve_scheduler_models(schedulers: list[dict], models: dict) -> None:
 
 
 def build(src: Source) -> dict:
-    text = src.read(REGISTRY)
-    if text is None:
-        raise SystemExit(f"{REGISTRY} not found")
+    text = src.require(REGISTRY)
+    etext = src.require(EXPERIMENTS)
     out: dict = {
         "generated_from": [REGISTRY, EXPERIMENTS],
         "sources": {path: src.blob(path) for path in (REGISTRY, EXPERIMENTS)},
@@ -247,9 +256,7 @@ def build(src: Source) -> dict:
     for fid, rec in grouped.items():
         out["dispositions"].setdefault(fid, rec)
     resolve_scheduler_models(out["schedulers"], out["models"])
-    etext = src.read(EXPERIMENTS)
-    if etext is not None:
-        out["experiment_ids"] = experiment_ids(etext)
+    out["experiment_ids"] = experiment_ids(etext)
     return out
 
 

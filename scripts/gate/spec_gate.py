@@ -50,6 +50,11 @@ CATALOG = "docs/product/02-FEATURE-CATALOG.md"
 REQUIREMENTS = "docs/product/01-PRODUCT-REQUIREMENTS.md"
 TRACEABILITY = "docs/product/12-PR-ISSUE-TRACEABILITY.md"
 CANVASES = "docs/product/canvases.yml"
+# The product documents a feature change may touch, besides its own catalog row and record
+# and its own traceability section: the machine-owned registry the exporter reads, and what
+# it generates. Everything else under docs/product/ changes on its own docs/ branch.
+PRODUCT_DOCS = "docs/product/"
+REGISTRY_DOCS = ("docs/product/07-MODEL-REGISTRY.md", "docs/product/generated/")
 
 FEAT_ROW = re.compile(r"^\|\s*\[?(FEAT-[A-Z]+-\d{3})\b", re.M)
 BRANCH = re.compile(r"^(feature|fix)/(feat-[a-z]+-\d{3})-[a-z0-9][a-z0-9._-]*$", re.I)
@@ -78,7 +83,7 @@ GATE_FILES = (
 NPM_DEPENDENCY_KEYS = frozenset((
     "dependencies", "devDependencies", "peerDependencies", "peerDependenciesMeta",
     "optionalDependencies", "bundledDependencies", "bundleDependencies", "overrides",
-    "resolutions", "engines", "packageManager",
+    "resolutions",
 ))
 PYPROJECT_DEPENDENCY_PATHS = (
     ("project", "dependencies"), ("project", "optional-dependencies"), ("dependency-groups",),
@@ -350,7 +355,7 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
     # The catalog row and the approved spec are read from the BASE (HEAD for a commit, the
     # merge base for a PR): a change cannot add its own capability or approve its own spec
     # in the same diff. Phase 2 commits the approved spec alone, before any code.
-    where = "HEAD" if ch.mode == "commit" else "the merge base"
+    where = "HEAD" if ch.mode == "commit" else "the base branch"
     catalog_text = ch.base.read(CATALOG)
     catalog = catalog_ids(catalog_text)
     if catalog_text is None:
@@ -375,8 +380,12 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                         f"then the code that implements it")
         return errs, None
     if ch.tree.read(spec_path) != spec_text:
-        errs.append(f"{spec_path} is edited in this change; a spec is approved before the code, "
-                    f"so edit it on its own docs/ branch")
+        errs.append(f"{spec_path} at this change differs from the base's copy; a spec changes on its own docs/ "
+                    f"branch, so merge the base or drop the edit")
+    other_specs = [f for f in ch.changed if f.startswith(SPECS + "/") and f != spec_path]
+    if other_specs:
+        errs.append(f"spec(s) change alongside code ({summarize(other_specs)}); a spec lands alone on a docs/ branch, "
+                    "never with an implementation")
     spec_fm = frontmatter(spec_text)
     if spec_fm.get("feat_id") != feat_id:
         errs.append(f"{spec_path}: the plan's spec serves {spec_fm.get('feat_id')}, not {feat_id}")
@@ -384,8 +393,10 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
         errs.append(f"{spec_path} is still status: draft; get it approved first")
     elif spec_fm.get("status") == "superseded":
         errs.append(f"{spec_path} is status: superseded; point the plan at the spec that replaced it")
-    newer = [s for s in ch.tree.list(SPECS) if s != spec_path
-             and frontmatter(ch.tree.read(s)).get("supersedes") == spec_path]
+    # Supersession is policy too: a spec that replaced this one on the base branch after the
+    # fork is what the change must be judged against, so the base's spec list is scanned.
+    newer = [s for s in ch.base.list(SPECS) if s != spec_path
+             and frontmatter(ch.base.read(s)).get("supersedes") == spec_path]
     if newer:
         errs.append(f"{spec_path} is superseded by {', '.join(newer)}; point the plan at the current spec")
     req_defs = set(REQ_DEFINITION.findall(ch.base.read(REQUIREMENTS) or ""))
@@ -401,7 +412,10 @@ def visible(body: str) -> str:
     """The PR body as it renders: HTML comments and fenced code blocks removed, so a
     checkbox inside the template's comments or a code example is not a checkbox."""
     body = re.sub(r"<!--.*?-->", "", body, flags=re.S)
-    return re.sub(r"^(`{3,}|~{3,}).*?^\1[ \t]*$", "", body, flags=re.S | re.M)
+    # A fence opens with 3+ backticks or tildes after up to three spaces and closes with a
+    # fence of the same character at least as long; an unclosed fence runs to the end.
+    body = re.sub(r"^ {0,3}(`{3,}|~{3,}).*?^ {0,3}\1[`~]*[ \t]*$", "", body, flags=re.S | re.M)
+    return re.sub(r"^ {0,3}(`{3,}|~{3,}).*\Z", "", body, flags=re.S | re.M)
 
 
 def checklist(body: str) -> list[tuple[bool, str]]:
@@ -411,6 +425,19 @@ def checklist(body: str) -> list[tuple[bool, str]]:
 def done_items(t: Traced) -> list[str]:
     items = t.spec_fm.get("done_when")
     return [norm(str(i)) for i in items] if isinstance(items, list) else []
+
+
+def matched_boxes(items: list[str], boxes: list[tuple[bool, str]]) -> dict[str, tuple[bool, str] | None]:
+    """Each done_when item's own checkbox line, or None. A line serves one item, and the
+    longest item claims first, so `run the tests` cannot also tick `run the tests on 3.12`."""
+    free = list(boxes)
+    out: dict[str, tuple[bool, str] | None] = {i: None for i in items}
+    for item in sorted(items, key=len, reverse=True):
+        hit = next((b for b in free if b[1].startswith(item)), None)
+        if hit is not None:
+            free.remove(hit)
+        out[item] = hit
+    return out
 
 
 def canvas_modes(text: str | None) -> dict[str, str]:
@@ -457,17 +484,17 @@ def check_pr_metadata(t: Traced, env: dict, tree: Tree) -> list[str]:
     if title is not None and not title.startswith(f"{t.feat_id}:"):
         errs.append(f"PR title must start with '{t.feat_id}:', the branch's FEAT-ID, e.g. '{t.feat_id}: <what changed>'")
     if body is not None:
-        if t.spec_path not in body:
+        shown = visible(body)   # what the reviewer reads: no HTML comments, no code examples
+        if t.spec_path not in shown:
             errs.append(f"PR body must link the spec the plan names: {t.spec_path}")
-        if t.plan_path not in body:
+        if t.plan_path not in shown:
             errs.append(f"PR body must link the plan: {t.plan_path}")
-        boxes = checklist(body)
-        missing = [i for i in done_items(t) if not any(text.startswith(i) for _, text in boxes)]
+        matched = matched_boxes(done_items(t), checklist(shown))
+        missing = [i for i, box in matched.items() if box is None]
         if missing:
-            errs.append("PR body must carry each done_when item as a '- [ ]' line starting with its text; "
+            errs.append("PR body must carry each done_when item as its own '- [ ]' line starting with its text; "
                         "missing: " + "; ".join(missing))
-        deferred = [text for ticked, text in boxes if ticked and DEFERRAL.search(text)
-                    and any(text.startswith(i) for i in done_items(t))]
+        deferred = [box[1] for box in matched.values() if box and box[0] and DEFERRAL.search(box[1])]
         if deferred:
             errs.append("a ticked done_when item defers its work, so it is not done: " + "; ".join(deferred))
         errs += check_canvas_handoff(t, body, tree)
@@ -497,10 +524,12 @@ def check_capacity(body: str | None, changed: list[str]) -> list[str]:
     text = section(visible(body), "capacity")
     if text is None:
         return [f"PR body needs a Capacity section: the change touches a workload ({summarize(workloads)})"]
-    if re.search(r"\bn/a\b\s*[\u2014:-]\s*\w", text, re.I):
+    if re.search(r"\bn/a\b[ \t]*[\u2014:-][ \t]*\w", text, re.I):
         return []
+    # [ \t]*, not \s*: a value is on the label's own line, so a blank `Volume:` followed by
+    # `Velocity: 2/day` on the next line does not borrow the next label as its value.
     blank = [label for label in CAPACITY_LABELS
-             if not re.search(r"\b" + re.escape(label) + r"\**:\**\s*[^\s\u00b7|]", text)]
+             if not re.search(r"\b" + re.escape(label) + r"\**:\**[ \t]*[^\s\u00b7|]", text)]
     if blank:
         return ["PR body's Capacity section leaves " + ", ".join(blank) + " blank; give the numbers, "
                 "or write 'n/a: <why no workload runs differently>'"]
@@ -551,12 +580,15 @@ def check_product_scope(t: Traced, ch: Change, merge_base: str, head: str) -> li
             errs.append(f"{path} changes in this feature change; requirements change on their own docs/ branch, "
                         "before the work that cites them")
         elif path in (CATALOG, TRACEABILITY):
-            spans = {"-": feat_span(ch.base.read(path) or "", t.feat_id), "+": feat_span(ch.tree.read(path) or "", t.feat_id)}
+            spans = {"-": feat_span(Tree(merge_base).read(path) or "", t.feat_id), "+": feat_span(ch.tree.read(path) or "", t.feat_id)}
             outside = [f"{side}{n}" for side, n, text in changed_lines(merge_base, head, path)
                        if text.strip() and n not in spans[side]]
             if outside:
                 errs.append(f"{path}: lines outside {t.feat_id}'s row and record change ({summarize(outside)}); "
                             "a feature change edits only its own record")
+        elif path.startswith(PRODUCT_DOCS) and not path.startswith(REGISTRY_DOCS):
+            errs.append(f"{path} changes in this feature change; under {PRODUCT_DOCS} only the FEAT's own catalog "
+                        "and traceability records, the model registry and its generated files may change here")
     return errs
 
 
@@ -578,6 +610,22 @@ def cells(line: str) -> list[str]:
     return [c.strip() for c in line.strip().strip("|").split("|")]
 
 
+def row_fields(text: str, feat_id: str) -> dict[str, str]:
+    """The FEAT's catalog row as {column header: cell}."""
+    lines = text.splitlines()
+    header = None
+    for line in lines:
+        if not line.startswith("|"):
+            header = None
+            continue
+        row = cells(line)
+        if header is None:
+            header = row
+        elif (m := FEAT_ROW.match(line)) and m.group(1) == feat_id:
+            return dict(zip(header, row))
+    return {}
+
+
 def feat_fields(text: str | None, feat_id: str) -> dict[str, str]:
     """The FEAT's Status and Last reviewed: from its record's field table where the
     record has one (stocks), otherwise from its catalog row's columns (solyra)."""
@@ -590,17 +638,7 @@ def feat_fields(text: str | None, feat_id: str) -> dict[str, str]:
             fields[row[0]] = row[1]
     if fields:
         return fields
-    header = None
-    for line in lines:
-        if not line.startswith("|"):
-            header = None
-            continue
-        row = cells(line)
-        if header is None:
-            header = row
-        elif (m := FEAT_ROW.match(line)) and m.group(1) == feat_id:
-            return {h: v for h, v in zip(header, row) if h in CLOSE_OUT_FIELDS}
-    return {}
+    return {h: v for h, v in row_fields(text, feat_id).items() if h in CLOSE_OUT_FIELDS}
 
 
 def added_lines(merge_base: str, head: str, path: str) -> list[tuple[int, str]]:
@@ -634,11 +672,10 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
     n = env["PR_NUMBER"]
     pr_ref = re.compile(rf"#{re.escape(n)}(?!\d)")
     errs: list[str] = []
-    boxes = checklist(env.get("PR_BODY") or "")
-    unticked = [i for i in done_items(t) if not any(ticked and text.startswith(i) for ticked, text in boxes)]
+    matched = matched_boxes(done_items(t), checklist(env.get("PR_BODY") or ""))
+    unticked = [i for i, box in matched.items() if not (box and box[0])]
     if unticked:
         errs.append("ready for review with done_when item(s) not ticked: " + "; ".join(unticked))
-    cat_added = added_lines(merge_base, head, CATALOG)
     now = feat_fields(ch.tree.read(CATALOG), t.feat_id)
     before = feat_fields(Tree(merge_base).read(CATALOG), t.feat_id)
     reviewed, status = now.get("Last reviewed", ""), now.get("Status", "").strip("* ")
@@ -654,8 +691,10 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
         section = section_of(trace_text, t.feat_id)
         if not any(ln in section and pr_ref.search(text) for ln, text in added_lines(merge_base, head, TRACEABILITY)):
             errs.append(f"{TRACEABILITY}: add this PR (#{n}) under the {t.feat_id} section")
-    elif not any(t.feat_id in text and pr_ref.search(text) for _, text in cat_added):
-        errs.append(f"{CATALOG}: add this PR (#{n}) to the {t.feat_id} row's PRs column")
+    else:
+        prs = row_fields(ch.tree.read(CATALOG) or "", t.feat_id).get("PRs", "")
+        if not pr_ref.search(prs):
+            errs.append(f"{CATALOG}: add this PR (#{n}) to the {t.feat_id} row's PRs column (it reads '{prs or 'nothing'}')")
     return errs
 
 
@@ -740,7 +779,10 @@ def run(argv: list[str]) -> int:
         head_repo, base_repo = env.get("PR_HEAD_REPO"), env.get("PR_BASE_REPO")
         trusted = not (base_repo and head_repo != base_repo)
         changed = git_out("diff", "--name-only", "--no-renames", merge_base, head).splitlines()
-        ch = Change("pr", branch, changed, Tree(head), Tree(merge_base), trusted)
+        # Policy (the catalog row, the approved spec, the requirements) is read at the PR's
+        # CURRENT base, so a spec superseded on main after the branch forked is seen; the
+        # diff is still measured from the merge base.
+        ch = Change("pr", branch, changed, Tree(head), Tree(base), trusted)
         errs, traced = check(ch)
         if traced:
             errs += check_pr_metadata(traced, env, ch.tree)

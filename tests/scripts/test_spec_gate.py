@@ -253,7 +253,8 @@ def test_a_superseded_spec_authorizes_nothing(repo):
     it or it is marked superseded.
     """
     newer = "docs/superpowers/specs/2026-09-20-model-decisions-v2.md"
-    r = pr(repo, BRANCH, {**CODE, newer: spec(status="draft", supersedes=SPEC)})
+    on_base(repo, {newer: spec(status="draft", supersedes=SPEC)})
+    r = pr(repo, BRANCH, CODE)
     assert r.returncode == 1 and f"{SPEC} is superseded by {newer}" in r.stdout, r.stdout
     on_base(repo, {SPEC: spec(status="superseded")})
     r = pr(repo, BRANCH, CODE)
@@ -393,7 +394,7 @@ def test_pr_title_and_body_name_what_the_gate_validated(repo):
     r = pr(repo, BRANCH, CODE, **{**ok, "PR_BODY": placeholder})
     assert r.returncode == 1, r.stdout
     assert f"PR body must link the spec the plan names: {SPEC}" in r.stdout
-    assert "each done_when item as a '- [ ]' line" in r.stdout
+    assert "each done_when item as its own '- [ ]' line" in r.stdout
 
 
 def test_pr_body_links_the_plan(repo):
@@ -588,6 +589,9 @@ def test_a_chore_branch_changes_only_dependency_fields(repo):
     assert "package.json: changes scripts, not only dependencies" in r.stdout, r.stdout
     r = pr(repo, "chore/bump-deps", {"pyproject.toml": pyproject.replace('"-q"', '"-q -p no:cacheprovider"')})
     assert r.returncode == 1 and "pyproject.toml: changes tool, not only dependencies" in r.stdout, r.stdout
+    toolchain = {**package, "engines": {"node": ">=22"}, "packageManager": "pnpm@9"}
+    r = pr(repo, "chore/bump-deps", {"package.json": json.dumps(toolchain, indent=2) + "\n"})
+    assert r.returncode == 1 and "changes engines, packageManager, not only dependencies" in r.stdout, r.stdout
     r = pr(repo, "chore/bump-deps", {"package.json": "{not json\n"})
     assert r.returncode == 1 and "package.json: cannot be parsed" in r.stdout, r.stdout
     r = pr(repo, "chore/new-app", {"web/package.json": json.dumps(package) + "\n"})
@@ -614,8 +618,8 @@ def test_the_canvas_handoff_is_in_the_pr_body(repo):
     canvases = ("canvases:\n"
                 f"  - name: Models\n    url: {refresh}\n    repo: t/t\n    source_json: x.json\n"
                 f"  - name: Architecture\n    url: {report}\n    repo: t/t\n    mode: report-only\n    source_json: null\n")
-    on_base(repo, {SPEC: spec(canvases=[refresh, report])})
-    files = {**CODE, "docs/product/canvases.yml": canvases}
+    on_base(repo, {SPEC: spec(canvases=[refresh, report]), "docs/product/canvases.yml": canvases})
+    files = CODE
     title = {"PR_TITLE": "FEAT-MODEL-001: x"}
 
     r = pr(repo, BRANCH, files, **title, PR_BODY=body())
@@ -655,11 +659,11 @@ def test_a_change_cannot_add_its_own_capability_or_approve_its_own_spec(repo):
                                fake_spec: spec(feat_id="FEAT-FAKE-001", req_ids="[REQ-MODEL-001]"),
                                fake_plan: plan(feat_id="FEAT-FAKE-001", spec=fake_spec, branch=fake_branch)})
     assert r.returncode == 1, r.stdout
-    assert "FEAT-FAKE-001 is not a row in docs/product/02-FEATURE-CATALOG.md at the merge base" in r.stdout, r.stdout
+    assert "FEAT-FAKE-001 is not a row in docs/product/02-FEATURE-CATALOG.md at the base branch" in r.stdout, r.stdout
     assert f"{fake_spec} is new in this change; an approved spec lands alone first" in r.stdout, r.stdout
 
     r = pr(repo, BRANCH, {**CODE, SPEC: spec(done_when=DONE + ["one more"])})
-    assert r.returncode == 1 and f"{SPEC} is edited in this change" in r.stdout, r.stdout
+    assert r.returncode == 1 and f"{SPEC} at this change differs from the base's copy" in r.stdout, r.stdout
 
     on_base(repo, {SPEC: spec(status="draft")})
     _git(repo, "checkout", "-q", "-B", BRANCH, "base")
@@ -667,7 +671,7 @@ def test_a_change_cannot_add_its_own_capability_or_approve_its_own_spec(repo):
     write(repo, "lib/model.py", CODE["lib/model.py"])
     _git(repo, "add", "-A")
     r = gate(repo, "--commit")
-    assert r.returncode == 1 and "is still status: draft" in r.stdout and "is edited in this change" in r.stdout, r.stdout
+    assert r.returncode == 1 and "is still status: draft" in r.stdout and "differs from the base's copy" in r.stdout, r.stdout
 
 
 def test_a_merge_into_a_docs_branch_is_measured_against_what_it_merges(repo):
@@ -885,3 +889,94 @@ def test_only_a_merge_of_main_is_measured_against_merge_head(repo):
     _git(repo, "checkout", "-q", "docs/typo")
     _git(repo, "merge", "-q", "--no-commit", "--no-ff", "main")
     assert gate(repo, "--commit").returncode == 0, "merging main into a docs branch"
+
+
+def test_the_pr_body_contract_is_read_as_rendered_in_every_form(repo):
+    """solyra#72 r4118418388 and stocks#1205 r4118420392 (spec_gate.py:463): the spec
+    and plan paths hidden in a comment passed the substring check. stocks#1205
+    r4118420390 (:404): a fence indented up to three spaces, or closed by a longer
+    fence, was not stripped. solyra#72 r4118418411 (:503): `Volume:` followed by a
+    newline borrowed the next label as its value.
+    """
+    title = {"PR_TITLE": "FEAT-MODEL-001: x"}
+    hidden_links = f"<!-- Spec: {SPEC} Plan: {PLAN} -->\n\n- [ ] {DONE[0]}\n- [ ] {DONE[1]}\n"
+    r = pr(repo, BRANCH, CODE, **title, PR_BODY=hidden_links)
+    assert r.returncode == 1 and "must link the spec" in r.stdout and "must link the plan" in r.stdout, r.stdout
+    fenced = (f"Spec: {SPEC}\nPlan: {PLAN}\n\n   ```\n- [x] {DONE[0]}\n````\n\n~~~text\n- [x] {DONE[1]}\n~~~\n"
+              f"- [ ] {DONE[0]}\n- [ ] {DONE[1]}\n")
+    meta = {**title, "PR_NUMBER": "42", "PR_DRAFT": "false"}
+    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", "| Models | Production | 2026-09-28 | #42 |")
+    r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row}, **meta, PR_BODY=fenced)
+    assert r.returncode == 1 and "done_when item(s) not ticked" in r.stdout, r.stdout
+    job = {**CODE, "gcp/model_job.py": "print('run')\n"}
+    split = body() + "\n\n## Capacity\nVolume:\nVelocity: 1 query \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01\n"
+    r = pr(repo, BRANCH, job, **title, PR_BODY=split)
+    assert r.returncode == 1 and "leaves Volume blank" in r.stdout, r.stdout
+
+
+def test_each_done_when_item_needs_its_own_checkbox(repo):
+    """stocks#1205 r4118420395 (spec_gate.py:465).
+
+    `run the tests` and `run the tests on 3.12` were both satisfied by one
+    checkbox carrying the longer text. Each item now claims its own line,
+    longest first, in the body check and the close-out check alike.
+    """
+    on_base(repo, {SPEC: spec(done_when=["run the tests", "run the tests on 3.12"])})
+    title = {"PR_TITLE": "FEAT-MODEL-001: x"}
+    one_box = f"Spec: {SPEC}\nPlan: {PLAN}\n\n- [ ] run the tests on 3.12\n"
+    r = pr(repo, BRANCH, CODE, **title, PR_BODY=one_box)
+    assert r.returncode == 1 and "missing: run the tests" in r.stdout, r.stdout
+    two = f"Spec: {SPEC}\nPlan: {PLAN}\n\n- [ ] run the tests on 3.12\n- [ ] run the tests (make test)\n"
+    assert pr(repo, BRANCH, CODE, **title, PR_BODY=two).returncode == 0
+
+
+def test_the_pr_number_goes_in_the_prs_cell(repo):
+    """solyra#72 r4118418395 (spec_gate.py:658).
+
+    Any added row text holding the FEAT-ID and `#N` satisfied the solyra
+    close-out, so the number could sit in Top blockers while PRs stayed `none`.
+    The PRs cell of the FEAT's row must carry the number.
+    """
+    meta = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body(ticked=True), "PR_NUMBER": "42", "PR_DRAFT": "false"}
+    wrong_cell = CATALOG_TEXT.replace("| [FEAT-MODEL-001](#feat-model-001) | Models | Production | unknown | none |",
+                                      "| [FEAT-MODEL-001](#feat-model-001) | Models (#42) | Production | 2026-09-28 | none |")
+    r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: wrong_cell}, **meta)
+    assert r.returncode == 1 and "row's PRs column (it reads 'none')" in r.stdout, r.stdout
+
+
+def test_other_product_documents_and_specs_do_not_change_with_code(repo):
+    """solyra#72 r4118418393 and stocks#1205 r4118420386 (spec_gate.py:554): canvases.yml
+    and every other docs/product/ file except the FEAT's own records, the model
+    registry and its generated files are refused on a feature change. solyra#72
+    r4118418403 (:379): so is any spec other than the plan's, added or edited.
+    """
+    ok = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body()}
+    r = pr(repo, BRANCH, {**CODE, "docs/product/canvases.yml": "canvases: []\n"}, **ok)
+    assert r.returncode == 1 and "docs/product/canvases.yml changes in this feature change" in r.stdout, r.stdout
+    r = pr(repo, BRANCH, {**CODE, "docs/product/13-ROADMAP.md": "# Roadmap\n"}, **ok)
+    assert r.returncode == 1 and "13-ROADMAP.md changes in this feature change" in r.stdout, r.stdout
+    assert pr(repo, BRANCH, {**CODE, "docs/product/07-MODEL-REGISTRY.md": "# Registry\n",
+                             "docs/product/generated/model-registry.json": "{}\n"}, **ok).returncode == 0
+    other = "docs/superpowers/specs/2026-09-28-other.md"
+    r = pr(repo, BRANCH, {**CODE, other: spec(feat_id="FEAT-DATA-001", req_ids="[REQ-DATA-001]")}, **ok)
+    assert r.returncode == 1 and f"spec(s) change alongside code ({other})" in r.stdout, r.stdout
+
+
+def test_policy_documents_are_read_at_the_current_base(repo):
+    """solyra#72 r4118418406 (spec_gate.py:743, P1).
+
+    The catalog and the approved spec were read at the merge base, so a spec
+    superseded on main after the branch forked was still honoured. They are
+    read at the PR's current base; the diff is still taken from the merge base.
+    """
+    _git(repo, "checkout", "-q", "-B", BRANCH, "base")
+    write(repo, "lib/model.py", CODE["lib/model.py"])
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "implementation on the old spec")
+    newer = "docs/superpowers/specs/2026-09-20-model-decisions-v2.md"
+    _git(repo, "checkout", "-q", "main")
+    write(repo, newer, spec(supersedes=SPEC))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "main supersedes the spec after the fork")
+    r = gate(repo, "--pr", "main", BRANCH, PR_HEAD_REF=BRANCH, PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body())
+    assert r.returncode == 1 and f"{SPEC} is superseded by {newer}" in r.stdout, r.stdout
