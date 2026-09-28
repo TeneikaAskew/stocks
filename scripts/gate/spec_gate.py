@@ -91,12 +91,14 @@ OTHER_BRANCH = re.compile(r"^((docs|chore)/[a-z0-9]+(-[a-z0-9]+)*|bot/superpower
 # be replaced by a no-op that keeps its job name green.
 WORKFLOW_CONTRACTS = {
     ".github/workflows/registry-check.yml": {
+        "checkout": "head",   # runs the PR's files: a checkout pinned to the base would verify main instead
         "run": ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"',
                 "pytest tests/scripts/test_spec_gate.py", 'git ls-tree "$HEAD_SHA" .githooks/pre-commit',
                 'export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"'),
         "structure": ("permissions:\n  contents: read",),
     },
     ".github/workflows/spec-gate.yml": {
+        "checkout": "base",   # pull_request_target: a head checkout would run PR-controlled code with its token
         "run": ("scripts/gate/spec_gate.py --pr",),
         "structure": ("pull_request_target:", "permissions:\n  contents: read"),
     },
@@ -205,6 +207,34 @@ def shell_statements(runs: str) -> list[str]:
                 continue
             out.append(stmt)
     return out
+
+
+def checkout_refs(body: str) -> list[str]:
+    """The `ref:` of every actions/checkout step in a comment-stripped workflow ("" for a
+    step that takes the event's default)."""
+    lines, refs = body.splitlines(), []
+    for i, line in enumerate(lines):
+        if not re.match(r"^\s*(-\s+)?uses:\s*['\"]?actions/checkout", line):
+            continue
+        item = next((j for j in range(i, -1, -1) if lines[j].lstrip().startswith("-")), i)
+        level = indent(lines[item])
+        ref = ""
+        for j in range(item, block_end(lines, item, level)):
+            if (m := re.match(r"^\s*ref:\s*(.*)$", lines[j])):
+                ref = re.sub(r"\s+#.*$", "", m.group(1)).strip().strip("'\"")
+        refs.append(ref)
+    return refs
+
+
+def checkout_violation(body: str, side: str) -> str | None:
+    """A checkout the contract forbids: for a head-run workflow, a ref that is not the PR head;
+    for a base-run one, any ref naming the PR head (solyra#72 r4120071803)."""
+    for ref in checkout_refs(body):
+        if side == "head" and ref and "pull_request.head" not in ref:
+            return f"checks out {ref!r} instead of the PR head"
+        if side == "base" and "head" in ref:
+            return f"checks out {ref!r}, the PR's own code, under pull_request_target"
+    return None
 
 
 def workflow_write_grant(body: str) -> str | None:
@@ -614,8 +644,10 @@ def check_changed_plans(ch: Change) -> list[str]:
         if not (path.startswith(PLANS + "/") and path.endswith(".md")):
             continue
         text, base_text = ch.tree.read(path), ch.base.read(path)
-        if text is not None and frontmatter(text).get("branch") == ch.branch:
-            continue   # the plan's own branch: the trace judges it
+        if text is not None and frontmatter(text).get("branch") == ch.branch and BRANCH.match(ch.branch) \
+                and (base_text is None or frontmatter(base_text).get("branch") == ch.branch):
+            continue   # the plan's own branch, as the base already binds it: the trace judges it
+            # (solyra#72 r4120071816: a plan rebound to the current branch is not its own)
         if text is None:
             if base_text is not None:
                 errs.append(f"{path}: a plan is not deleted; a finished plan is marked status: done and stays as the record")
@@ -635,6 +667,11 @@ def check_changed_plans(ch: Change) -> list[str]:
                 errs.append(f"{path}: its spec {fm.get('spec')} serves {spec_fm.get('feat_id')}, not {feat}")
             if feat and feat not in catalog_ids(ch.base.read(CATALOG)):
                 errs.append(f"{path}: feat_id {feat} is not in {CATALOG}")
+            # solyra#72 r4120071823: one plan per branch, or the trace finds two and refuses
+            # every commit for that branch while neither plan may be deleted
+            taken = [p for p in ch.tree.list(PLANS) if p != path and frontmatter(ch.tree.read(p)).get("branch") == fm.get("branch")]
+            if taken:
+                errs.append(f"{path}: branch {fm.get('branch')} is already the branch of {taken[0]}; a branch has one plan")
             continue
         strip = lambda t: re.sub(r"^status:.*$", "", t, flags=re.M)
         if not (frontmatter(base_text).get("status") == "ready" and fm.get("status") == "done" and strip(text) == strip(base_text)):
@@ -660,6 +697,8 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                 return [f"{path}: no longer executes {len(lost)} step(s) the gate depends on ({lost[0]!r}"
                         f"{' and more' if len(lost) > 1 else ''}); a command in a comment, an echo, an unused scalar "
                         "or a step an `if:` may skip does not count. The gate's workflows keep their checks"], None
+            if bad := checkout_violation(body, contract["checkout"]):
+                return [f"{path}: {bad}; the gate's workflows check out the side the contract names"], None
             if grant := workflow_write_grant(body):
                 return [f"{path}: grants a write permission ({grant}); the gate's workflows run head-controlled code "
                         "on a read-only token, at the top level and in every job"], None

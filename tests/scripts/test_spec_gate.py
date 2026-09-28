@@ -1647,3 +1647,39 @@ def test_contract_commands_run_and_policy_documents_keep_their_ids(repo):
     assert r.returncode == 1 and "gives no number for Volume, Velocity, Wall-clock;" in r.stdout, r.stdout
     figures = body() + "\n\n## Capacity\nVolume: ~3 tickers \u00d7 400 B \u00b7 Velocity: <1 query/min \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01\n"
     assert pr(repo, BRANCH, job, **title, PR_BODY=figures).returncode == 0
+
+
+def test_a_gate_workflow_checks_out_its_own_side_and_plans_stay_bound(repo):
+    """solyra#72 r4120071803 (P1), r4120071816, r4120071823 (spec_gate.py:97, :583, :593).
+
+    A registry-check pinned to the base sha verified main instead of the PR while every
+    marker stayed; a docs/ PR could rebind an existing plan to itself and rewrite it; a new
+    plan could take a branch another plan already names. Each is refused.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/registry-check.yml"
+    head = ("name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n"
+            "    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n        with:\n{REF}          fetch-depth: 0\n"
+            "      - run: |\n          python3 -m py_compile \"$gate\"\n          python3 \"$gate\" --pr \"$BASE_SHA\" \"$HEAD_SHA\"\n"
+            "          pytest tests/scripts/test_spec_gate.py\n          git ls-tree \"$HEAD_SHA\" .githooks/pre-commit\n"
+            "          export_model_registry.py --check --rev \"$HEAD_SHA\" --base \"$BASE_SHA\"\n")
+    assert pr(repo, "chore/gate-workflow", {wf: head.replace("{REF}", "")}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {wf: head.replace("{REF}", "          ref: ${{ github.event.pull_request.head.sha }}\n")}, **cap).returncode == 0
+    for ref in ("${{ github.event.pull_request.base.sha }}", "main"):
+        r = pr(repo, "chore/gate-workflow", {wf: head.replace("{REF}", f"          ref: {ref}\n")}, **cap)
+        assert r.returncode == 1 and "instead of the PR head" in r.stdout, (ref, r.stdout)
+    gate_wf = ("on:\n  pull_request_target:\npermissions:\n  contents: read\njobs:\n  gate:\n    steps:\n"
+               "      - uses: actions/checkout@v4\n        with:\n          ref: {REF}\n      - run: python3 scripts/gate/spec_gate.py --pr a b\n")
+    assert pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_wf.replace("{REF}", "${{ github.event.pull_request.base.sha }}")}, **cap).returncode == 0
+    r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_wf.replace("{REF}", "${{ github.event.pull_request.head.sha }}")}, **cap)
+    assert r.returncode == 1 and "under pull_request_target" in r.stdout, r.stdout
+    on_base(repo, {PLAN: plan(status="done", pr=42)})
+    r = pr(repo, "docs/foo", {PLAN: "---\nbranch: docs/foo\n---\n"})
+    assert r.returncode == 1 and "only the plan's own branch edits it" in r.stdout, r.stdout
+    r = pr(repo, "docs/foo", {PLAN: plan(status="done", pr=42, branch="docs/foo")})
+    assert r.returncode == 1 and "only the plan's own branch edits it" in r.stdout, r.stdout
+    on_base(repo, {PLAN: plan()})
+    other = "docs/superpowers/plans/2026-09-28-model-again.md"
+    r = pr(repo, "docs/plan-again", {other: plan()})
+    assert r.returncode == 1 and f"branch {BRANCH} is already the branch of {PLAN}; a branch has one plan" in r.stdout, r.stdout
+    assert pr(repo, "docs/plan-again", {other: plan(branch="feature/feat-model-001-again")}).returncode == 0
