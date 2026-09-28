@@ -623,7 +623,20 @@ def suite_escape(source: str) -> str | None:
             # stocks#1205 r4122021098: a `return` first thing leaves every assertion counted and unreached
             if any(isinstance(n, (ast.Return, ast.Raise)) for n in ast.walk(node)):
                 return f"{node.name}: return or raise"
+            # solyra#72 r4127523227: `assert True` in place of every assertion keeps the count; an
+            # assertion tests something the test computed, never a constant or `... or True`
+            if any(vacuous(n.test) for n in ast.walk(node) if isinstance(n, ast.Assert)):
+                return f"{node.name}: an assertion that cannot fail"
     return None
+
+
+def vacuous(test: ast.expr) -> bool:
+    """An assertion test with no name, call or subscript in it (`assert True`, `assert 1 == 1`),
+    or an `or` with a constant operand (`assert x or True`): it passes whatever the gate does."""
+    if not any(isinstance(n, (ast.Name, ast.Attribute, ast.Call, ast.Subscript)) for n in ast.walk(test)):
+        return True
+    return any(isinstance(n, ast.BoolOp) and isinstance(n.op, ast.Or) and any(isinstance(v, ast.Constant) and v.value for v in n.values)
+               for n in ast.walk(test))
 
 
 def test_assertions(source: str) -> dict[str, int]:
@@ -1782,6 +1795,11 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                 if handoff_name and (len(same_name) != 1 or any(a["overwrite"] for a in same_name) or len(into_path) != 1):
                     return [f"{path}: the handoff artifact {handoff_name!r} is uploaded or downloaded more than once, or with overwrite; "
                             "the base's suite receives exactly the proposed gate"], None
+                # solyra#72 r4127523239: a second checkout (or any action) after the download put the base's
+                # gate back over the proposed one; the download is the last action before the suite runs
+                if downloads and any(re.match(r"^\s*(-\s+)?uses:", ln) for ln in jobs[js]["lines"][max(d["line"] for d in downloads) + 1:]):
+                    return [f"{path}: an action runs after the handoff download in the suite's job; the download of "
+                            "the proposed gate is the last action before the suite, so nothing puts the base's gate back"], None
                 if not any(u["name"] and u["name"] == d["name"] for u in uploads for d in downloads):
                     return [f"{path}: the proposed gate no longer reaches the suite's job (actions/upload-artifact of "
                             f"`{handoff['upload_path']}/` after the export, actions/download-artifact of the same name into "
@@ -2644,7 +2662,12 @@ def check_plan_pr(t: Traced, env: dict, ready: bool) -> list[str]:
 
 
 def cells(line: str) -> list[str]:
-    return [c.strip() for c in line.strip().strip("|").split("|")]
+    """The cells of a table row: `\\|` is content, as GitHub renders it (solyra#72 r4127523253)."""
+    text = line.strip()
+    text = re.sub(r"^\|", "", text)
+    if text.endswith("|") and not text.endswith("\\|"):
+        text = text[:-1]
+    return [c.replace("\\|", "|").strip() for c in re.split(r"(?<!\\)\|", text)]
 
 
 def row_fields(text: str, feat_id: str) -> dict[str, str]:
