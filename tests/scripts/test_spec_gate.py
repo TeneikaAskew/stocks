@@ -2315,3 +2315,52 @@ def test_workflow_identity_shadowed_executables_stray_modules_and_parsed_permiss
     assert pr(repo, "chore/gate-workflow", {wf: typed.replace("permissions:\n  contents: read\n", "permissions: { contents: read }\n", 1)}, **cap).returncode == 0
     r = pr(repo, "chore/gate-workflow", {wf: typed.replace("permissions:\n  contents: read\n", "permissions: read-all\n", 1)}, **cap)
     assert r.returncode == 1 and "no top-level `permissions:` mapping" in r.stdout, r.stdout
+
+
+def test_traps_execs_secrets_repositories_quoted_keys_and_the_exporter_suite_are_the_contract(repo):
+    """solyra#72 r4121572544 (P1), r4121572517 (P1); stocks#1205 r4121602767 (P1), r4121602804 (P1),
+    r4121602788 (P1), r4121602817 (P1), r4121602841 (spec_gate.py:350, :1171, :427, :626, :188,
+    :1216, :1249).
+
+    `trap 'exit 0' ERR` and `exec true` made the commands below them no-ops; a secret on the
+    suite job would reach a fork's Python; a checkout of another `repository:` or of a ref
+    merely mentioning the head ran another tree; `"PYTEST_ADDOPTS":` escaped the key check;
+    the exporter suite could be hollowed; `tests/scripts/test_spec_gate.py --commit` passed
+    as the hook's gate call. Each is refused.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/spec-gate.yml"
+    typed = gate_workflow()
+    for shape in ("|\n          trap 'exit 0' ERR\n          " + VERDICT_CMD, "|\n          exec true\n          " + VERDICT_CMD,
+                  "|\n          exec echo done\n          " + VERDICT_CMD):
+        r = pr(repo, "chore/gate-workflow", {wf: gate_workflow(a=shape)}, **cap)
+        assert r.returncode == 1 and "no longer executes" in r.stdout, (shape, r.stdout)
+    assert pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="|\n          exec 2>&1\n          " + VERDICT_CMD)}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {wf: gate_workflow(a="exec " + VERDICT_CMD)}, **cap).returncode == 0
+    for secret in (typed.replace("  base-suite:\n", "  base-suite:\n    env:\n      DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}\n", 1),
+                   typed.replace("      - env:\n", "      - env:\n          TOKEN: ${{ github.token }}\n", 1)):
+        r = pr(repo, "chore/gate-workflow", {wf: secret}, **cap)
+        assert r.returncode == 1 and "reads a secret or the token" in r.stdout, r.stdout
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("      - env:\n", "      - env:\n          \"PYTEST_ADDOPTS\": --collect-only\n", 1)}, **cap)
+    assert r.returncode == 1 and "in an `env:` block" in r.stdout, r.stdout
+    rc = ".github/workflows/registry-check.yml"
+    head = ("name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n"
+            "    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n{WITH}      - run: |\n{BODY}")
+    cmds = ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"', "python3 -m pytest tests/scripts/test_spec_gate.py")
+    plain = "".join(f"          {c}\n" for c in cmds)
+    assert pr(repo, "chore/gate-workflow", {rc: head.replace("{WITH}", "").replace("{BODY}", plain)}, **cap).returncode == 0
+    assert pr(repo, "chore/gate-workflow", {rc: head.replace("{WITH}", "        with:\n          repository: ${{ github.repository }}\n          ref: ${{ github.event.pull_request.head.sha }}\n").replace("{BODY}", plain)}, **cap).returncode == 0
+    for with_block in ("        with:\n          repository: other/repo\n          ref: ${{ github.event.pull_request.head.sha }}\n",
+                       "        with:\n          ref: ${{ github.event.pull_request.head.repo.default_branch }}\n"):
+        r = pr(repo, "chore/gate-workflow", {rc: head.replace("{WITH}", with_block).replace("{BODY}", plain)}, **cap)
+        assert r.returncode == 1 and "checks out" in r.stdout, (with_block, r.stdout)
+    suite = "tests/scripts/test_export_model_registry.py"
+    on_base(repo, {suite: "def test_a():\n    assert 1\n\ndef test_b():\n    assert 2\n"})
+    r = pr(repo, "chore/gate-suite", {suite: "def test_a():\n    assert 1\n"}, **cap)
+    assert r.returncode == 1 and "drops 1 test(s) the base has (test_b)" in r.stdout, r.stdout
+    on_base(repo, {".githooks/pre-commit": "#!/bin/sh\nset -e\npython3 scripts/gate/spec_gate.py --commit\n"})
+    r = pr(repo, "chore/gate-hook", {".githooks/pre-commit": "#!/bin/sh\nset -e\npython3 tests/scripts/test_spec_gate.py --commit\n"}, **cap)
+    assert r.returncode == 1 and "no longer runs `scripts/gate/spec_gate.py --commit`" in r.stdout, r.stdout
+    assert pr(repo, "chore/gate-hook", {".githooks/pre-commit": "#!/bin/sh\nset -e\npython3 \"$(git rev-parse --show-toplevel)/scripts/gate/spec_gate.py\" --commit\n"}, **cap).returncode == 0
+    r = pr(repo, "chore/gate-hook", {".githooks/pre-commit": "#!/bin/sh\nset -e\ntrap 'exit 0' ERR\npython3 scripts/gate/spec_gate.py --commit\n"}, **cap)
+    assert r.returncode == 1 and "no longer runs" in r.stdout, r.stdout

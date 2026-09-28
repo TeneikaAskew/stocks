@@ -165,7 +165,7 @@ def tables_with_headings(text: str):
     heading: list[str] = []
     # stocks#1205 r4121216904: GFM renders a row indented by up to three spaces as part of
     # the table, so such a row is a row here too, not the end of the table
-    lines = [re.sub(r"^ {1,3}(?=\|)", "", ln) for ln in rendered(text).splitlines()]
+    lines = [re.sub(r"^ {1,3}(?=[|#])", "", ln) for ln in rendered(text).splitlines()]
     i = 0
     while i < len(lines):
         line = lines[i]
@@ -223,7 +223,7 @@ def experiment_ids(text: str) -> list[str]:
     """IDs from experiment headings only: prose such as "Next free ID is E-36" is not an experiment."""
     ids: set[str] = set()
     for line in rendered(text).splitlines():   # a heading inside a fence is an example, not an entry (r4120660287)
-        if re.match(r"^#{1,6}\s", line):
+        if re.match(r"^ {0,3}#{1,6}\s", line):   # stocks#1205 r4121602828: up to three spaces still render a heading
             ids.update(expand_ids(line, EXP_ID, EXP_RANGE, "E-{:02d}"))
     return sorted(ids)
 

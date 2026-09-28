@@ -191,7 +191,7 @@ def runtime_env_keys(body: str) -> list[str]:
         level = len(m.group(1)) + len(m.group(2) or "")
         inline = m.group(3).strip()
         text = inline if inline else "\n".join(lines[i + 1:block_end(lines, i, level)])
-        for name in re.findall(r"(?:^|[{,\n])\s*([A-Za-z_]\w*)\s*:", text):
+        for name in re.findall(r"(?:^|[{,\n])\s*['\"]?([A-Za-z_]\w*)['\"]?\s*:", text):   # stocks#1205 r4121602788: keys may be quoted
             if re.fullmatch(RUNTIME_ENV, name) and name not in found:
                 found.append(name)
     return found
@@ -230,7 +230,7 @@ def step_envs(body: str, command: str) -> list[dict[str, str]]:
             if (em := re.match(r"^(\s*)env:\s*$", item[j])) and len(em.group(1)) == key_indent:
                 j += 1
                 while j < len(item) and (not item[j].strip() or indent(item[j]) > key_indent):
-                    if (vm := re.match(r"^\s*([\w-]+):\s*(.*)$", item[j])):
+                    if (vm := re.match(r"^\s*['\"]?([\w-]+)['\"]?:\s*(.*)$", item[j])):
                         env[vm.group(1)] = re.sub(r"\s+", "", re.sub(r"\s+#.*$", "", vm.group(2)).strip().strip("'\""))
                     j += 1
                 continue
@@ -430,7 +430,17 @@ def shell_statements(runs: str, errexit: bool = True) -> list[str]:
             stmt = re.sub(r"^[A-Za-z_]\w*=(?!['\"$])\S*\s*", "", stmt)   # `x=1 cmd` prefix assignment
             # `command echo ...`, `env FOO=1 echo ...`, `time ...`: the wrapper runs its argument,
             # so the word after it is the command judged (solyra#72 r4120167264)
-            stmt = re.sub(r"^((command|builtin|exec|env|time|nice|nohup|sudo|xargs)\s+(-\S+\s+|[A-Za-z_]\w*=\S*\s+)*)+", "", stmt)
+            stmt = re.sub(r"^((command|builtin|env|time|nice|nohup|sudo|xargs)\s+(-\S+\s+|[A-Za-z_]\w*=\S*\s+)*)+", "", stmt)
+            # stocks#1205 r4121602767: `exec cmd` replaces the shell, so cmd's status is the
+            # step's and nothing after it runs; a bare `exec 2>&1` only redirects
+            replaces = bool(re.match(r"^exec\s+(?!(\d*[<>]\S*\s*)+$)", stmt))
+            if replaces:
+                stmt = re.sub(r"^exec\s+", "", stmt)
+            elif re.match(r"^exec\b", stmt):
+                stmt = ""
+            if stmt and depth == 0 and re.match(r"^trap\b", stmt):
+                # solyra#72 r4121572544: `trap 'exit 0' ERR` turns every later failure into success
+                errexit = False
             if stmt and depth == 0 and not chained and not condition and re.match(r"^(exit|return)\b", stmt):
                 ended = True   # stocks#1205 r4120381459: nothing after an unconditional exit runs
                 break
@@ -447,6 +457,9 @@ def shell_statements(runs: str, errexit: bool = True) -> list[str]:
                         and op not in ("||", "&", "|"))   # `cmd | true`: without pipefail the pipe's status is true's
             if executed:
                 out.append(stmt)
+            if replaces and depth == 0 and not chained and not condition:
+                ended = True
+                break
             if op in ("then", "do", "case", "{"):   # `else` continues the block `then` opened
                 depth += 1
                 condition = False
@@ -627,9 +640,13 @@ def needs_transitively(jobs: list[dict], later: int, earlier: int) -> bool:
 def checkout_violation(body: str, side: str) -> str | None:
     """A checkout the contract forbids: for a head-run workflow, a ref that is not the PR head;
     for a base-run one, any ref naming the PR head (solyra#72 r4120071803)."""
+    # stocks#1205 r4121602804: a `repository:` other than the event's runs another tree
+    for m in re.finditer(r"^\s*repository:\s*(.*)$", body, re.M):
+        if re.sub(r"\s+", "", shell_value(m.group(1))) != "${{github.repository}}":
+            return f"checks out repository {shell_value(m.group(1))!r} instead of the event's own"
     for ref in checkout_refs(body):
-        if side == "head" and ref and "pull_request.head" not in ref:
-            return f"checks out {ref!r} instead of the PR head"
+        if side == "head" and ref and re.sub(r"\s+", "", ref) != "${{github.event.pull_request.head.sha}}":
+            return f"checks out {ref!r} instead of the PR head sha"
         if side == "base" and ref and re.sub(r"\s+", "", ref) != "${{github.event.pull_request.base.sha}}":
             # solyra#72 r4120167273: the merge ref and merge_commit_sha carry the PR's code too
             return f"checks out {ref!r} instead of the event's base sha under pull_request_target"
@@ -703,6 +720,8 @@ WORKFLOW_FEAT = "FEAT-CICD-001"
 # The files the gate runs from: no change may delete one, whatever its branch, or the
 # base's copy judges the deletion green and every later PR runs without a gate.
 SUITE = "tests/scripts/test_spec_gate.py"
+# stocks#1205 r4121602817: the exporter's suite judges proposed exporters the same way
+SUITES = (SUITE, "tests/scripts/test_export_model_registry.py")
 GATE_ENTRYPOINTS = (
     "scripts/gate/spec_gate.py",
     HOOK,
@@ -1238,6 +1257,10 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                 if first >= 0 and not any(line < first for _, _, line in job["checkouts"]):
                     return [f"{path}: job {job['name']} runs the gate's commands without an actions/checkout step that is unconditional and "
                             "before them; it would run in an empty workspace"], None
+            if re.search(r"\$\{\{[^}]*\b(secrets\.|github\.token)", body):
+                # solyra#72 r4121572517: the gate's workflows hold no secret; a job running
+                # head-controlled Python with one would hand it to a fork
+                return [f"{path}: reads a secret or the token in an expression; the gate's workflows use none"], None
             if names := runtime_env_keys(body):
                 return [f"{path}: sets {names[0]} in an `env:` block; the gate's workflows leave the shell's and "
                         "Python's startup environment alone"], None
@@ -1273,20 +1296,21 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                 if j >= 0 and jobs[j]["name"] != job_name:
                     return [f"{path}: {command!r} runs in job `{jobs[j]['name']}`, not `{job_name}`; the required check "
                             f"`{contract['name']} / {job_name}` keeps its job name"], None
-    if SUITE in ch.changed and (head_suite := ch.tree.read(SUITE)) is not None and (base_suite := ch.base.read(SUITE)):
-        # solyra#72 r4119957711: the head-run registry check executes the suite the PR ships,
-        # so a suite reduced to one passing test would certify any gate; every test the base
-        # has stays, by name, and a PR may only add to or amend them
-        base_tests, head_tests = test_assertions(base_suite), test_assertions(head_suite)
-        if dropped := sorted(set(base_tests) - set(head_tests)):
-            return [f"{SUITE}: drops {len(dropped)} test(s) the base has ({dropped[0]}"
-                    f"{' and more' if len(dropped) > 1 else ''}); the gate's suite only grows"], None
-        # solyra#72 r4120167289: a kept name with an emptied body is a dropped test; each test
-        # keeps at least the assertions the base gives it
-        if weakened := sorted(n for n, count in base_tests.items() if head_tests[n] < count):
-            n = weakened[0]
-            return [f"{SUITE}: weakens {len(weakened)} test(s) the base has ({n}: {base_tests[n]} assertion(s), now "
-                    f"{head_tests[n]}{'; and more' if len(weakened) > 1 else ''}); the gate's suite only grows"], None
+    for SUITE in SUITES:
+      if SUITE in ch.changed and (head_suite := ch.tree.read(SUITE)) is not None and (base_suite := ch.base.read(SUITE)):
+          # solyra#72 r4119957711: the head-run registry check executes the suite the PR ships,
+          # so a suite reduced to one passing test would certify any gate; every test the base
+          # has stays, by name, and a PR may only add to or amend them
+          base_tests, head_tests = test_assertions(base_suite), test_assertions(head_suite)
+          if dropped := sorted(set(base_tests) - set(head_tests)):
+              return [f"{SUITE}: drops {len(dropped)} test(s) the base has ({dropped[0]}"
+                      f"{' and more' if len(dropped) > 1 else ''}); the gate's suite only grows"], None
+          # solyra#72 r4120167289: a kept name with an emptied body is a dropped test; each test
+          # keeps at least the assertions the base gives it
+          if weakened := sorted(n for n, count in base_tests.items() if head_tests[n] < count):
+              n = weakened[0]
+              return [f"{SUITE}: weakens {len(weakened)} test(s) the base has ({n}: {base_tests[n]} assertion(s), now "
+                      f"{head_tests[n]}{'; and more' if len(weakened) > 1 else ''}); the gate's suite only grows"], None
     if HOOK in ch.changed and (hook := ch.tree.read(HOOK)) is not None:
         # solyra#72 r4119837242: an executable hook that no longer runs the gate is the gate
         # switched off for every clone with core.hooksPath set
@@ -1307,7 +1331,8 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
             return [f"{HOOK}: defines `{shadow}` as a shell function or alias; the hook runs the real executables"], None
         if overridden := input_overrides("\n".join(ln for ln in hook.splitlines() if not ln.lstrip().startswith("#"))):
             return [f"{HOOK}: assigns or unsets {overridden[0]}, an input the gate reads; the hook never sets the gate's inputs"], None
-        if not any(re.match(r"python3?\s+['\"]?[^\s'\"]*spec_gate\.py['\"]?\s+--commit(\s|$)", st) for st in shell_statements(hook, errexit=False)):
+        # stocks#1205 r4121602841: the canonical path, from the repository root or `git rev-parse --show-toplevel`
+        if not any(re.match(r"python3?\s+['\"]?(__SUB__/|\./)?scripts/gate/spec_gate\.py['\"]?\s+--commit(\s|$)", st) for st in shell_statements(hook, errexit=False)):
             return [f"{HOOK}: no longer runs `scripts/gate/spec_gate.py --commit` after `set -e`; the hook keeps the commit-time gate"], None
     # P1b: the policy inputs the gate reads are not deleted either
     removed = [f for f in ch.changed if f in GATE_ENTRYPOINTS + POLICY_DOCS

@@ -12,6 +12,7 @@ its finding gives.
 from __future__ import annotations
 
 import json
+import re
 import os
 import subprocess
 import sys
@@ -686,3 +687,13 @@ def test_issue_numbers_accumulate_across_columns(repo):
         .replace("| DOC-01 | [#942](https://github.com/TeneikaAskew/stocks/issues/942) |", "| DOC-01 | [#942](https://github.com/TeneikaAskew/stocks/issues/942) | #123 |", 1))
     assert export(repo).returncode == 0
     assert exported(repo)["models"]["MODEL-GAMMA-001"]["issue_numbers"] == [123, 942]
+
+
+def test_indented_experiment_headings_are_entries(repo):
+    """stocks#1205 r4121602828 (export_model_registry.py:227): an experiment heading indented by
+    one to three spaces still renders as a heading, but its ID left the ledger and every
+    traceability row citing it failed. Up to three spaces are a heading."""
+    exp = (repo / EXPERIMENTS).read_text(encoding="utf-8") if (repo / EXPERIMENTS).exists() else None
+    assert exp is not None
+    write(repo, EXPERIMENTS, re.sub(r"(?m)^(## E-)", r"  \1", exp, count=1))
+    assert export(repo).returncode == 0, export(repo).stdout + export(repo).stderr
