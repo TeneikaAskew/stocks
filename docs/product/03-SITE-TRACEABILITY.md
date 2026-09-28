@@ -38,7 +38,7 @@ defined in this document's Gates section. The element ID is the join to the UI s
 
 | Area | Rows | S | T | V | Te |
 |---|---|---|---|---|---|
-| 00 · Shared, under every page | 8 | 0 | 0 | 0 | 0 |
+| 00 · Shared, under every page | 8 | 8 | 8 | 6 | 7 |
 | 01 · Landing | 13 | 0 | 0 | 0 | 0 |
 | 02 · AuthGate and sign-in | 10 | 0 | 0 | 0 | 0 |
 | 03 · AppShell | 16 | 0 | 0 | 0 | 0 |
@@ -55,7 +55,7 @@ defined in this document's Gates section. The element ID is the join to the UI s
 | 14 · Admin | 13 | 0 | 0 | 0 | 0 |
 | 15 · Settings | 13 | 0 | 0 | 0 | 0 |
 | 16 · Help and Glossary | 8 | 0 | 0 | 0 | 0 |
-| Total | 222 | 0 | 0 | 0 | 0 |
+| Total | 222 | 8 | 8 | 6 | 7 |
 
 ```bash
 # whole document; run between two "## NN ·" headings for one area
@@ -103,14 +103,14 @@ UI spec: [UI-SCREENS.md § Cross-cutting specs](https://github.com/TeneikaAskew/
 ### Checklist
 | ID | Element | S | T | V | Te | Evidence |
 |---|---|---|---|---|---|---|
-| SHARED-01 | API service and auth middleware (solyra-api-staging, solyra-api-prod, AUTH_MODE) | [ ] | [ ] | [ ] | [ ] | |
-| SHARED-02 | Open prefixes kept in sync (api/auth.py and authedFetch OPEN_PREFIXES) | [ ] | [ ] | [ ] | [ ] | |
-| SHARED-03 | Data path: authedFetch, apiTargets, Vite proxy, staging fallback | [ ] | [ ] | [ ] | [ ] | |
-| SHARED-04 | Mock mode and demo-data banners | [ ] | [ ] | [ ] | [ ] | |
-| SHARED-05 | React Query defaults (five-minute staleness, one retry) | [ ] | [ ] | [ ] | [ ] | |
-| SHARED-06 | Failure lane: job log, Cloud Logging sink, Pub/Sub, failure-notifier, GitHub issue | [ ] | [ ] | [ ] | [ ] | |
-| SHARED-07 | Freshness watchdog and /api/health/freshness | [ ] | [ ] | [ ] | [ ] | |
-| SHARED-08 | Liveness: /api/health | [ ] | [ ] | [ ] | [ ] | |
+| SHARED-01 | API service and auth middleware (solyra-api-staging, solyra-api-prod, AUTH_MODE) | [x] | [x] | [x] | [x] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shared-01--api-service-and-auth-middleware-solyra-api-staging-solyra-api-prod-auth_mode) · T 2026-09-28 af478ca · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5875016538) · Te 2026-09-28 [run](https://github.com/TeneikaAskew/stocks/actions/runs/35347427630) |
+| SHARED-02 | Open prefixes kept in sync (api/auth.py and authedFetch OPEN_PREFIXES) | [x] | [x] | [x] | [x] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shared-02--open-prefixes-kept-in-sync-apiauthpy-and-authedfetch-open_prefixes) · T 2026-09-28 518bc93 · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5875016538) · Te 2026-09-28 [stocks run](https://github.com/TeneikaAskew/stocks/actions/runs/35347427630) and solyra [run](https://github.com/TeneikaAskew/solyra/actions/runs/36361217691) |
+| SHARED-03 | Data path: authedFetch, apiTargets, Vite proxy, staging fallback | [x] | [x] | [x] | [x] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shared-03--data-path-authedfetch-apitargets-vite-proxy-staging-fallback) · T 2026-09-28 af478ca · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5875016538) · Te 2026-09-28 [run](https://github.com/TeneikaAskew/solyra/actions/runs/36361217691) |
+| SHARED-04 | Mock mode and demo-data banners | [x] | [x] | [ ] | [x] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shared-04--mock-mode-and-demo-data-banners) · T 2026-09-28 518bc93 · Te 2026-09-28 [run](https://github.com/TeneikaAskew/solyra/actions/runs/36361217691) |
+| SHARED-05 | React Query defaults (five-minute staleness, one retry) | [x] | [x] | [ ] | [ ] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shared-05--react-query-defaults-five-minute-staleness-one-retry) · T 2026-09-28 518bc93 |
+| SHARED-06 | Failure lane: job log, Cloud Logging sink, Pub/Sub, failure-notifier, GitHub issue | [x] | [x] | [x] | [x] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shared-06--failure-lane-job-log-cloud-logging-sink-pubsub-failure-notifier-github-issue) · T 2026-09-28 518bc93 · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5875016538) · Te 2026-09-28 [run](https://github.com/TeneikaAskew/stocks/actions/runs/35347427630) |
+| SHARED-07 | Freshness watchdog and /api/health/freshness | [x] | [x] | [x] | [x] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shared-07--freshness-watchdog-and-apihealthfreshness) · T 2026-09-28 518bc93 · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5875016538) · Te 2026-09-28 [run](https://github.com/TeneikaAskew/stocks/actions/runs/35347427630) |
+| SHARED-08 | Liveness: /api/health | [x] | [x] | [x] | [x] | S 2026-09-28 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#shared-08--liveness-apihealth) · T 2026-09-28 518bc93 · V 2026-09-28 [evidence](https://github.com/TeneikaAskew/stocks/issues/1209#issuecomment-5875016538) · Te 2026-09-28 [run](https://github.com/TeneikaAskew/stocks/actions/runs/35347427630) |
 
 ### Chain
 | ID | API | Backend | Data | GCP | External | Tests |
@@ -127,12 +127,13 @@ UI spec: [UI-SCREENS.md § Cross-cutting specs](https://github.com/TeneikaAskew/
 ### Backend notes
 - Inherited by every row below (not repeated per row): project `adept-mountain-474619-d4`, region `us-east1`, service account `trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com` for every Cloud Run job, image `us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system` (the `IMAGE_REF` every `deploy_*` function in [gcp/deploy.sh](../../gcp/deploy.sh) references), the Cloud SQL connection path `gcp/database.py:93` `get_engine()` (Cloud SQL Python Connector, `CLOUD_SQL_CONNECTION_NAME` + `DB_USER`/`DB_PASS`/`DB_NAME`), and Lovable as the SPA host serving every solyra route (SHARED-03's data path exists specifically to re-point `/api/*` off Lovable's static hosting). The API service itself runs as a separate account, `trading-platform-svc@`, set by `--service-account` in [platform/deploy.sh](../../platform/deploy.sh); jobs and the API service are not the same identity.
 - Auth is global ASGI middleware, not a per-router dependency (`auth_middleware` wraps every request; `_path_requires_auth` decides per-path). It only verifies a bearer token when `AUTH_MODE=firebase`; `iap` and `open` call through unconditionally.
-- Freshness has two independent paths that must be read separately: the standalone `freshness-watchdog` Cloud Run job (hourly during RTH, once after close) that exits non-zero into the failure lane on a stale table, and the on-demand `/api/health/freshness` endpoint the Dashboard widget polls, which wraps the same `scripts/audit_data_freshness.py` module behind a 5-minute in-process cache.
+- Freshness has two independent paths that must be read separately: the standalone `freshness-watchdog` Cloud Run job (hourly during RTH, once after close) that exits non-zero into the failure lane on a stale table, and the on-demand `/api/health/freshness` endpoint, which wraps the same `scripts/audit_data_freshness.py` module behind a 5-minute in-process cache. No solyra component calls `/api/health/freshness` directly today (see the SHARED-07 gap below); the same cached report reaches the UI through the sibling `GET /api/admin/data-sources` endpoint (`platform/api/routers/admin.py:1391-1402`), which imports and shares `freshness_report_dict()`.
 - Design drift carried from the pre-#957 architecture diagrams, per spec §4.5: the dashboard was labelled "no per-user auth" and the platform service "FastAPI + React" in the Claude Design docs. Both predate the #957 split (the SPA moved to this solyra repo; `platform/` now serves the API only, and every `/api/*` route is subject to the `AUTH_MODE` posture described in SHARED-01) and are stale as design labels, not as a statement about the current code.
 
 ### Gaps
 - 05-INFRASTRUCTURE.md's Cloud Run job inventory table marks the Secrets column absent (its em-dash placeholder) for `fetch-market-data`, `backfill-daily-indicators`, `fetch-premarket-refresh`, `premarket-brief` and `fetch-top-movers` (cited from Dashboard's Data column, area 04). Reading the `deploy_*` functions directly shows each references `${DB_SECRET_FLAG}`, which expands (`_build_secret_flag`, [gcp/deploy.sh:1038](../../gcp/deploy.sh)) to `DB_PASS=db-trading-pass:latest,AV_API_KEY=av-api-key:latest,ALPHA_VANTAGE_API_KEY=av-api-key:latest,DISCORD_WEBHOOK_URL=discord-webhook-insights:latest` plus optional Discord/FRED/Benzinga pairs. The generated table's parser evidently does not resolve the `${DB_SECRET_FLAG}` variable reference to a literal `--set-secrets`, so it undercounts secrets for every job that uses the shared helper rather than an inline flag. Not fixed here: 05-INFRASTRUCTURE.md is a generated doc (see its own Maintenance column).
 - No `AUDIT-2026-05-13` markers were found in any handler this task's areas cite (`platform/api/auth.py`, `platform/api/main.py`, `platform/api/routers/dashboard.py`, `platform/api/routers/config.py`, `platform/api/routers/health.py`, `platform/api/routers/live.py`, `platform/api/routers/catalysts.py`, `platform/api/routers/signals.py`, `platform/api/routers/playbook.py`, `platform/api/routers/waitlist.py`), and every endpoint cited from these five areas carries a `response_model`. The "66 of 98 validated trivially" untyped-response gap (spec §4.5) does not land on any row in SHARED, Landing, AuthGate, AppShell or Dashboard.
+- SHARED-07: the design seed for these Backend notes stated the on-demand `/api/health/freshness` endpoint is polled by a Dashboard widget, echoing the same claim in `platform/api/routers/health.py`'s own module docstring ("shared by the CLI and the Dashboard widget"). No such widget exists in solyra today: a grep of `src/` for `health/freshness` finds no caller, and solyra [tests/dashboard/data-pipeline-widget.spec.ts](https://github.com/TeneikaAskew/solyra/blob/main/tests/dashboard/data-pipeline-widget.spec.ts) is a regression test proving the old `DataPipelineStatus` widget's absence since the stocks/solyra split (`stocks#957`). The freshness data that does reach the UI arrives through the sibling `GET /api/admin/data-sources` endpoint on the Admin page (area 14), which shares the same `freshness_report_dict()` cache. Corrected in this task, 2026-09-28.
 
 ## 01 · Landing
 
