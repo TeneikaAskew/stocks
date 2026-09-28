@@ -57,7 +57,7 @@ Invoke `superpowers:using-git-worktrees`, then `superpowers:subagent-driven-deve
 
 PR rules:
 - Title: `<FEAT-ID>: <what changed>`, starting with the branch's FEAT-ID. CI rejects any other title.
-- Body: link the spec and the plan by their exact paths, paste each `done_when` item as a `- [ ]` line that starts with the item's text, then the capacity numbers CLAUDE.md requires. CI reads the body as it renders (HTML comments and fenced code removed), refuses a ticked item whose line defers the work (`follow-up`, `non-blocking`, `future-work`, `TODO`, and the like), and when the PR touches `gcp/` or `.github/workflows/` it requires the Capacity section's Volume, Velocity, Wall-clock and cost to be filled, or an `n/a: <why>`.
+- Body: link the spec and the plan by their exact paths, paste each `done_when` item as a `- [ ]` line that starts with the item's text, then the Capacity section: in stocks the three numbers and cost CLAUDE.md rule 0 requires; in solyra, which runs no workload, `n/a: <why>`. CI reads the body as it renders (HTML comments and fenced code removed), refuses a ticked item whose line defers the work (`follow-up`, `non-blocking`, `future-work`, `TODO`, and the like), and when the PR touches `gcp/` or `.github/workflows/` it requires the Capacity section's Volume, Velocity, Wall-clock and cost to be filled, or an `n/a: <why>`.
 - Open the PR as a draft, then set the plan's `pr` to its number in the next commit. A draft may still say `null`; a number that is not this PR fails the gate, and once the PR is marked ready for review CI requires the number and the Phase 5 records.
 - Review cap: TWO rounds. After the second round of review comments, do not keep fixing in place. Invoke `superpowers:finishing-a-development-branch` and present: split into smaller PRs, re-cut from the spec, or discard. A PR that is not mergeable after two rounds is a spec problem, not a code problem.
 - Never open a follow-up PR from an unmerged PR. Never stack.
@@ -73,6 +73,7 @@ In the SAME PR, before requesting final review:
 4. Run `python3 scripts/gate/export_model_registry.py` if the PR touched `docs/product/07-MODEL-REGISTRY.md` or `docs/EXPERIMENT_REGISTRY.md`, and commit the regenerated JSON.
 5. Run the repo's docs audit on this branch and on `origin/main` (stocks: `python3 scripts/maintenance/docs_audit.py`; solyra: `node scripts/docs-audit.mjs`): the branch reports no finding that `main` does not. Then run `python3 scripts/gate/spec_gate.py --pr origin/main`. Both clean, or the PR is not done.
 6. Tick every `done_when` box in the PR body with the evidence (test name, query, file) next to it, then mark the PR ready for review. From then on CI requires the catalog update, the PR number from step 2, and every box ticked.
+7. After the merge, on a `docs/<slug>` branch: set the plan's `status: done` (a plan is documentation, so the gate does not block it), and stamp any document this PR left unreviewed. The gate refuses `done` while the PR is open, so this is the one step that follows the merge.
 
 ## Never
 

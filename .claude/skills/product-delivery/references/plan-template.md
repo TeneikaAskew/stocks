@@ -33,6 +33,6 @@ Spec: § Design, "shared fixtures". Advances done_when[0].
 
 Rules:
 - The `branch` here must be the branch you create. The gate finds this plan by that value and reads the FEAT-ID from it, so no two plans may name the same branch.
-- `status` is `ready` until the PR merges, then `done`. The gate authorizes code only while it is `ready`.
+- `status` is `ready` until the PR merges, then `done`, set in a `docs/<slug>` commit after the merge (Phase 5 step 7). The gate authorizes code only while it is `ready` and refuses `done` on an open PR.
 - Set `pr` to the PR's number once it is opened. The gate accepts `null` only while the PR is a draft, and fails a number that is not this PR.
 - More than ~15 tasks means the spec is too big; split the spec.

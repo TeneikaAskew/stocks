@@ -256,9 +256,14 @@ def test_a_superseded_spec_authorizes_nothing(repo):
     it or it is marked superseded.
     """
     newer = "docs/superpowers/specs/2026-09-20-model-decisions-v2.md"
-    on_base(repo, {newer: spec(status="draft", supersedes=SPEC)})
+    on_base(repo, {newer: spec(supersedes=SPEC)})
     r = pr(repo, BRANCH, CODE)
     assert r.returncode == 1 and f"{SPEC} is superseded by {newer}" in r.stdout, r.stdout
+    # solyra#72 r4118481058: a draft, or another feature's spec, naming this one does not replace it
+    on_base(repo, {newer: spec(status="draft", supersedes=SPEC)})
+    assert pr(repo, BRANCH, CODE).returncode == 0
+    on_base(repo, {newer: spec(feat_id="FEAT-DATA-001", req_ids="[REQ-DATA-001]", supersedes=SPEC)})
+    assert pr(repo, BRANCH, CODE).returncode == 0
     on_base(repo, {SPEC: spec(status="superseded")})
     r = pr(repo, BRANCH, CODE)
     assert r.returncode == 1 and "is status: superseded" in r.stdout, r.stdout
@@ -962,6 +967,11 @@ def test_other_product_documents_and_specs_do_not_change_with_code(repo):
     assert r.returncode == 1 and "13-ROADMAP.md changes in this feature change" in r.stdout, r.stdout
     assert pr(repo, BRANCH, {**CODE, "docs/product/07-MODEL-REGISTRY.md": "# Registry\n",
                              "docs/product/generated/model-registry.json": "{}\n"}, **ok).returncode == 0
+    # solyra#72 r4118481048: the registry allowance is two exact paths, not two prefixes
+    r = pr(repo, BRANCH, {**CODE, "docs/product/07-MODEL-REGISTRY.md.backup": "x\n"}, **ok)
+    assert r.returncode == 1 and "07-MODEL-REGISTRY.md.backup changes in this feature change" in r.stdout, r.stdout
+    r = pr(repo, BRANCH, {**CODE, "docs/product/generated/extra.json": "{}\n"}, **ok)
+    assert r.returncode == 1 and "generated/extra.json changes in this feature change" in r.stdout, r.stdout
     other = "docs/superpowers/specs/2026-09-28-other.md"
     r = pr(repo, BRANCH, {**CODE, other: spec(feat_id="FEAT-DATA-001", req_ids="[REQ-DATA-001]")}, **ok)
     assert r.returncode == 1 and f"spec(s) change alongside code ({other})" in r.stdout, r.stdout

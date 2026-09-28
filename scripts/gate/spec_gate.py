@@ -54,7 +54,7 @@ CANVASES = "docs/product/canvases.yml"
 # and its own traceability section: the machine-owned registry the exporter reads, and what
 # it generates. Everything else under docs/product/ changes on its own docs/ branch.
 PRODUCT_DOCS = "docs/product/"
-REGISTRY_DOCS = ("docs/product/07-MODEL-REGISTRY.md", "docs/product/generated/")
+REGISTRY_DOCS = ("docs/product/07-MODEL-REGISTRY.md", "docs/product/generated/model-registry.json")
 
 FEAT_ROW = re.compile(r"^\|\s*\[?(FEAT-[A-Z]+-\d{3})\b", re.M)
 BRANCH = re.compile(r"^(feature|fix)/(feat-[a-z]+-\d{3})-[a-z0-9][a-z0-9._-]*$")   # lowercase: git refs are case-sensitive
@@ -396,8 +396,11 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
         errs.append(f"{spec_path} is status: superseded; point the plan at the spec that replaced it")
     # Supersession is policy too: a spec that replaced this one on the base branch after the
     # fork is what the change must be judged against, so the base's spec list is scanned.
+    # Only an APPROVED spec for the SAME FEAT replaces this one: a draft, or another
+    # feature's spec that names it by mistake, cannot block the capability.
     newer = [s for s in ch.base.list(SPECS) if s != spec_path
-             and frontmatter(ch.base.read(s)).get("supersedes") == spec_path]
+             and (nfm := frontmatter(ch.base.read(s))).get("supersedes") == spec_path
+             and nfm.get("status") == "approved" and nfm.get("feat_id") == feat_id]
     if newer:
         errs.append(f"{spec_path} is superseded by {', '.join(newer)}; point the plan at the current spec")
     req_defs = set(REQ_DEFINITION.findall(ch.base.read(REQUIREMENTS) or ""))
@@ -588,7 +591,7 @@ def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) ->
             if outside:
                 errs.append(f"{path}: lines outside {feat_id}'s row and record change ({summarize(outside)}); "
                             "a feature change edits only its own record")
-        elif path.startswith(PRODUCT_DOCS) and not path.startswith(REGISTRY_DOCS):
+        elif path.startswith(PRODUCT_DOCS) and path not in REGISTRY_DOCS:
             errs.append(f"{path} changes in this feature change; under {PRODUCT_DOCS} only the FEAT's own catalog "
                         "and traceability records, the model registry and its generated files may change here")
     return errs
