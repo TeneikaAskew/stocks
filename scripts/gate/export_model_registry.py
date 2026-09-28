@@ -168,12 +168,26 @@ def prose(text: str) -> str:
 def split_row(line: str) -> list[str]:
     """Cells of a GFM row: the leading and trailing pipes are optional (red-team, this PR: a row
     written without its leading pipe renders, and used to end the table here)."""
+    return split_cells(line)
+
+
+def split_cells(line: str) -> list[str]:
+    """A pipe preceded by an even number of backslashes (none, or `\\\\`) is a delimiter; by an odd
+    number it is content, as GFM reads it (stocks#1205 r4127686872). Shared with spec_gate.cells."""
     text = line.strip()
     if text.startswith("|"):
         text = text[1:]
-    if text.endswith("|") and not text.endswith("\\|"):
-        text = text[:-1]
-    return [p.replace("\\|", "|").strip() for p in re.split(r"(?<!\\)\|", text)]
+    parts, cell, run = [], [], 0
+    for ch in text:
+        if ch == "|" and run % 2 == 0:
+            parts.append("".join(cell)); cell = []
+        else:
+            cell.append(ch)
+        run = run + 1 if ch == "\\" else 0
+    parts.append("".join(cell))
+    if len(parts) > 1 and not parts[-1].strip():
+        parts.pop()   # the trailing pipe
+    return [re.sub(r"(?<!\\)((?:\\\\)*)\\\|", r"\1|", p).strip() for p in parts]
 
 
 def expand_ids(cell: str, id_re: re.Pattern, range_re: re.Pattern, fmt: str,
@@ -327,10 +341,22 @@ def _strip_comments(line: str) -> str:
     return "".join(out)
 
 
+def before_first_section(shown: str) -> str:
+    """The rendered text above its first section heading: an ATX heading of level two or more
+    with up to three leading spaces, or a setext heading (stocks#1205 r4127686877)."""
+    lines = shown.split("\n")
+    for k, line in enumerate(lines):
+        if re.match(r"^ {0,3}#{2,6}\s", line):
+            return "\n".join(lines[:k])
+        if k > 0 and lines[k - 1].strip() and re.match(r"^ {0,3}(=+|-+)\s*$", line) and not lines[k - 1].lstrip().startswith(("|", "-", "*", "+", ">")):
+            return "\n".join(lines[:k - 1])
+    return shown
+
+
 def last_reviewed(text: str) -> str:
     """The visible `**Last reviewed:**` stamp, a calendar date or `unknown`: read from the
     rendered text so a commented-out earlier stamp cannot supply it (stocks#1205 r4120381528)."""
-    m = re.search(r"(?m)^\*\*Last reviewed:\*\*[ \t]*(\S+)", rendered(text).split("\n## ", 1)[0])   # the document's stamp, on its own line, not a section's or a cell's (round five)
+    m = re.search(r"(?m)^\*\*Last reviewed:\*\*[ \t]*(\S+)", before_first_section(rendered(text)))   # the document's stamp, on its own line, not a section's or a cell's (round five)
     value = m.group(1) if m else None
     if value != "unknown":
         try:
@@ -498,7 +524,8 @@ def experiment_ids(text: str) -> list[str]:
 
 
 LLM_GROUP = re.compile(r"\bLLM nodes\b")
-COMPLEMENT = re.compile(r"\b(except|excluding|but not|other than|formerly|no longer|now none|used to)\b[^|]{0,24}?(MODEL-|LLM nodes)", re.I)
+COMPLEMENT = re.compile(r"\b(except|excluding|but not|other than|formerly|no longer|now none|used to)\b[^|]{0,24}?(MODEL-|LLM nodes)"
+                        r"|(MODEL-[A-Z0-9-]+|LLM nodes)[^|]{0,24}?\b(except|excluding|but not|other than|formerly|no longer|now none|used to|retired|removed)\b", re.I)   # stocks#1205 r4127686893: history after the ID too
 LOWER_ID = re.compile(r"\b(?=[a-zA-Z0-9-]*[a-z])[mM][oO][dD][eE][lL](?:-[a-zA-Z0-9]+)*-\d+\b")   # `model-gamma-001`: an ID in the wrong case, not prose
 
 
@@ -577,6 +604,10 @@ def build(src: Source) -> dict:
             first = clean(raw[0]).strip("`")   # (round eight: `` `MODEL-X` `` renders as the ID)
             if re.match(r"DOC-\d+[A-Za-z]", first):
                 malformed.append(f"{first!r} under '{section}' is not a bare finding ID; a suffix re-keys the card (round eight)")
+                continue
+            if first.startswith("DOC-") and any(not re.fullmatch(r"\d{2}", n) for n in re.findall(r"DOC-(\d+)", first)):
+                # stocks#1205 r4127686886: `DOC-1` or `DOC-001` would be re-keyed to DOC-01 and the typo hidden
+                malformed.append(f"{first!r} under '{section}' is not in the DOC-NN form; finding IDs are two digits")
                 continue
             # Width is checked on the rows that route (models, findings, dispositions,
             # schedulers): a prose table elsewhere in the document is not a record.

@@ -1082,3 +1082,27 @@ def test_derived_paths_and_issues_come_from_what_the_page_shows(repo):
     mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
     assert mod.row_to_record(["ID", "Code", "Evidence"], ["MODEL-X-001", "<!-- `old.py` --> `new.py`", "<!-- #123 --> #456"]) \
         == {"id": "MODEL-X-001", "code": "`new.py`", "code_paths": ["new.py"], "evidence": "#456", "issue_numbers": [456]}
+
+
+def test_backslash_parity_review_stamp_bounds_doc_widths_and_history_after_ids_render_as_gfm_renders_them(repo):
+    """stocks#1205 r4127686872, r4127686877, r4127686886, r4127686893 (export_model_registry.py:176, :333, :579, :668):
+    `\\\\|` was read as an escaped pipe; the stamp lookup ran past an indented or setext section heading;
+    `DOC-1` and `DOC-001` were re-keyed to DOC-01; `MODEL-X (no longer served)` exported the model."""
+    assert export(repo).returncode == 0
+    reg = REGISTRY_TEXT
+    write(repo, REGISTRY, reg.replace("| Expected move size |", "| a path\\\\| Expected move size |", 1))
+    r = export(repo)
+    assert r.returncode != 0, r.stdout + r.stderr   # the row is one cell wider than its header, as GitHub renders it
+    stamp = "**Last reviewed:** 2026-09-20 · **Owner:** TBD\n"
+    assert stamp in reg
+    for heading in ("  ## Deterministic and heuristic systems\n", "Deterministic and heuristic systems\n---\n"):
+        moved = reg.replace(stamp, "", 1).replace("## Deterministic and heuristic systems\n", heading + "\n" + stamp, 1)
+        r = export(repo) if write(repo, REGISTRY, moved) else export(repo)
+        assert r.returncode != 0 and "Last reviewed" in r.stdout + r.stderr, (heading, r.stdout + r.stderr)
+    for bad in ("DOC-1", "DOC-001"):
+        write(repo, REGISTRY, reg.replace("| DOC-01 | a.md |", f"| {bad} | a.md |", 1))
+        r = export(repo)
+        assert r.returncode != 0 and "two digits" in r.stdout + r.stderr, (bad, r.stdout + r.stderr)
+    write(repo, REGISTRY, reg.replace("| `p2-build-gamma-levels` | MODEL-GAMMA-001 |", "| `p2-build-gamma-levels` | MODEL-GAMMA-001 (no longer served) |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "without exceptions or history" in r.stdout + r.stderr, r.stdout + r.stderr

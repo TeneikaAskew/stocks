@@ -3132,3 +3132,23 @@ def test_long_markers_indented_tasks_quoted_pnpm_keys_and_extra_actions_are_the_
     assert r.returncode == 1 and "use only actions/checkout" in r.stdout, r.stdout
     r = pr(repo, "chore/gate-workflow", {wf: typed.replace(upload, "      - uses: actions/checkout@v4\n" + upload, 1)}, **cap)
     assert r.returncode == 1 and "runs after a `run:` step" in r.stdout, r.stdout
+
+
+def test_backslash_parity_unknown_needs_and_grouped_dispositions_are_the_contract(repo):
+    """stocks#1205 r4127686872 (P2), r4127686881 (P1), r4127686899 (P2) (spec_gate.py:2647, :695, :2659).
+
+    A pipe after `\\\\` was read as escaped although GitHub renders it as a delimiter; `needs: missing`
+    named no job and GitHub would refuse the workflow; a grouped disposition row `DOC-01…DOC-67` was
+    owned when its first ID was. Each is refused or read as GitHub renders it.
+    """
+    sys.path.insert(0, str(REPO / "scripts/gate"))
+    import spec_gate
+    assert spec_gate.cells("| a \\| b | c\\\\| d |") == ["a \\| b".replace("\\|", "|"), "c\\\\", "d"]
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/spec-gate.yml"
+    typed = gate_workflow()
+    assert "    needs: gate\n" in typed
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("    needs: gate\n", "    needs: [gate, missing]\n", 1)}, **cap)
+    assert r.returncode == 1 and "is not a job of the workflow" in r.stdout, r.stdout
+    r = pr(repo, "chore/gate-workflow", {wf: typed.replace("  gate:\n    runs-on: ubuntu-latest\n", "  gate:\n    needs: base-suite\n    runs-on: ubuntu-latest\n", 1)}, **cap)
+    assert r.returncode == 1 and "no cycle" in r.stdout, r.stdout

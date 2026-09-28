@@ -899,7 +899,8 @@ def job_of(jobs: list[dict], command: str) -> tuple[int, int]:
 
 
 def needs_transitively(jobs: list[dict], later: int, earlier: int) -> bool:
-    seen, frontier = set(), {jobs[later]["name"]}
+    """Whether `later` runs after `earlier` through `needs:`; with later == earlier, whether the job is in a cycle."""
+    seen, frontier = set(), set(jobs[later]["needs"])
     while frontier:
         name = frontier.pop()
         if name == jobs[earlier]["name"]:
@@ -1770,6 +1771,13 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                         f"{' and more' if len(lost) > 1 else ''}); a command in a comment, an echo, an unused scalar "
                         "or a step an `if:` may skip does not count. The gate's workflows keep their checks"], None
             jobs = workflow_jobs(body)
+            # stocks#1205 r4127686881: a `needs:` naming no job, or a cycle, is a workflow GitHub refuses to run
+            job_names = {j["name"] for j in jobs}
+            for j in jobs:
+                if unknown := sorted(j["needs"] - job_names):
+                    return [f"{path}: job {j['name']} needs `{unknown[0]}`, which is not a job of the workflow"], None
+                if needs_transitively(jobs, jobs.index(j), jobs.index(j)) and j["needs"]:
+                    return [f"{path}: job {j['name']} needs itself through its `needs:` chain; the gate's jobs form no cycle"], None
             order = tuple(m for m in contract.get("order", ()) if m in required)
             for earlier, later in zip(order, order[1:]):
                 (ja, ka), (jb, kb) = job_of(jobs, earlier), job_of(jobs, later)
@@ -2655,8 +2663,17 @@ def check_registry_rows(t: Traced, ch: Change, merge_base: str, head: str) -> li
     if any(re.match(r"^\s*\|?\s*(ID|Scheduler|Model)\s*\||^\s*\|?\s*:?-+:?\s*\|", text) for text in changed):
         return [f"{path}: changes a table header or delimiter; a feature change edits rows, it does not reshape a registry table"]
     own_docs = {m for text in changed if any(n in text for n in named) for m in re.findall(r"\bDOC-\d+\b", text)}   # findings for the spec's models (round eight)
+    def disposition_ids(text: str) -> set[str] | None:
+        """Every finding a disposition row's first cell names, ranges expanded (stocks#1205 r4127686899), or None when it is not one."""
+        m = re.match(r"^\s*\|([^|]*)", text)
+        if not m or not re.match(r"\s*DOC-\d+", m.group(1)):
+            return None
+        found: set[str] = set()
+        for a, b in re.findall(r"DOC-(\d+)\s*(?:\.\.\.|…|[-\u2013\u2014]|to|through)\s*DOC-(\d+)", m.group(1)):
+            found |= {f"DOC-{n:02d}" for n in range(int(a), int(b) + 1)}
+        return found | {f"DOC-{int(n):02d}" for n in re.findall(r"DOC-(\d+)", m.group(1))}
     if stray := [text for text in changed if text.strip() and not re.findall(r"\bMODEL-[A-Z0-9]+(?:-[A-Z0-9]+)*\b", text)
-                 and not (own_docs and (m := re.match(r"^\s*\|\s*(DOC-\d+)", text)) and m.group(1) in own_docs)]:
+                 and not (own_docs and (ids := disposition_ids(text)) and ids <= {f"DOC-{int(d[4:]):02d}" for d in own_docs})]:
         # round seven: a disposition row, the stamp or prose names no model of the spec, so it is not this change's
         return [f"{path}: changes {stray[0].strip()[:50]!r}, a line naming none of {t.spec_path}'s models; a feature change edits "
                 "only the registry rows of the models its spec covers"]
@@ -2678,12 +2695,22 @@ def check_plan_pr(t: Traced, env: dict, ready: bool) -> list[str]:
 
 
 def cells(line: str) -> list[str]:
-    """The cells of a table row: `\\|` is content, as GitHub renders it (solyra#72 r4127523253)."""
+    """The cells of a table row: a pipe after an odd number of backslashes is content, after an
+    even number a delimiter, as GitHub renders it (solyra#72 r4127523253, stocks#1205 r4127686872)."""
     text = line.strip()
-    text = re.sub(r"^\|", "", text)
-    if text.endswith("|") and not text.endswith("\\|"):
-        text = text[:-1]
-    return [c.replace("\\|", "|").strip() for c in re.split(r"(?<!\\)\|", text)]
+    if text.startswith("|"):
+        text = text[1:]
+    parts, cell, run = [], [], 0
+    for ch in text:
+        if ch == "|" and run % 2 == 0:
+            parts.append("".join(cell)); cell = []
+        else:
+            cell.append(ch)
+        run = run + 1 if ch == "\\" else 0
+    parts.append("".join(cell))
+    if len(parts) > 1 and not parts[-1].strip():
+        parts.pop()
+    return [re.sub(r"(?<!\\)((?:\\\\)*)\\\|", r"\1|", c).strip() for c in parts]
 
 
 def row_fields(text: str, feat_id: str) -> dict[str, str]:
