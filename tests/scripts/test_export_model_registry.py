@@ -733,3 +733,41 @@ def test_every_model_has_a_traceability_entry_and_malformed_refs_are_refused(rep
     write(repo, REGISTRY, reg.replace(row, row.replace("E-01", "E-0S", 1), 1))
     r = export(repo)
     assert r.returncode != 0 and "not shaped E-NN" in r.stdout + r.stderr, r.stdout + r.stderr
+
+
+def test_rows_render_as_gfm_renders_them(repo):
+    """Red-team of this PR (export_model_registry.py:106, :178, :292, :141, :229, :46): a row without its
+    leading pipe ended the table and vanished; a delimiter with trailing spaces was not a table; a
+    header wider than its delimiter exported a table GFM does not render; a decorated ID keyed the
+    card under `MODEL-X (legacy)`; the LLM tier's typo guard never fired; a finding could name a
+    model that does not exist; a scheduler could appear twice; a heading mentioning an experiment
+    defined it; `#123456` was truncated. Each is exported faithfully or refused."""
+    assert export(repo).returncode == 0
+    row = "| `gamma-levels-sunday` | `0 21 * * 0` | `p2-build-gamma-levels` | the same job, weekend refresh |"
+    write(repo, REGISTRY, REGISTRY_TEXT.replace(row, row[2:], 1))   # no leading pipe: still a row
+    assert export(repo).returncode == 0 and len(exported(repo)["schedulers"]) == len(exported(repo)["schedulers"]) and any("gamma-levels-sunday" in str(r) for r in exported(repo)["schedulers"])
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("|---|---|---|---|\n| `gamma-levels-daily`", "|---|---|---|---| \n| `gamma-levels-daily`", 1))
+    assert export(repo).returncode == 0 and any("gamma-levels-daily" in str(r) for r in exported(repo)["schedulers"])
+    r = export(repo) if not write(repo, REGISTRY, REGISTRY_TEXT.replace("|---|---|---|---|---|---|\n| MODEL-LLM-001", "|---|---|---|---|---|\n| MODEL-LLM-001", 1)) else None
+    assert r.returncode != 0 and "delimiter row of 5" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("| MODEL-SUM-001 |", "| MODEL-SUM-001 (legacy) |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "not a bare model ID" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("| MODEL-SUM-001 |", "| MODLE-SUM-001 |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "is not a MODEL- or DOC- ID" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("| DOC-01 | a.md | 3 levels → 4 | stale | P2 | MODEL-GAMMA-001 |", "| DOC-01 | a.md | 3 levels → 4 | stale | P2 | MODEL-GAMA-001 |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "finding DOC-01 names model(s) not in the registry" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, REGISTRY_TEXT.replace(row, row + "\n| `gamma-levels-daily` | `0 1 * * *` | `other` | MODEL-MAG-001 |", 1))
+    r = export(repo)
+    assert r.returncode != 0 and "scheduler `gamma-levels-daily` appears twice" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, REGISTRY_TEXT)
+    exp = (repo / EXPERIMENTS).read_text(encoding="utf-8")
+    write(repo, EXPERIMENTS, exp + "\n## Why E-99 was never run\n\ntext\n")
+    assert export(repo).returncode == 0 and "E-99" not in exported(repo)["experiment_ids"]
+    write(repo, EXPERIMENTS, exp + "\n# 2026-09-28 SESSION (E-98 … E-99)\n\ntext\n")
+    assert export(repo).returncode == 0 and "E-99" in exported(repo)["experiment_ids"]
+    write(repo, EXPERIMENTS, exp)
+    write(repo, REGISTRY, REGISTRY_TEXT.replace("[#942](https://github.com/TeneikaAskew/stocks/issues/942)", "#123456", 1))
+    assert export(repo).returncode == 0 and exported(repo)["models"]["MODEL-GAMMA-001"]["issue_numbers"] == [123456]

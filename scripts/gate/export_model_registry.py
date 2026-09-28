@@ -43,7 +43,7 @@ OUT = "docs/product/generated/model-registry.json"
 SELF = "scripts/gate/export_model_registry.py"
 
 LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
-ISSUE = re.compile(r"#(\d{2,5})")
+ISSUE = re.compile(r"#(\d+)\b")
 CODE = re.compile(r"`([^`]+)`")
 DOC_ID = re.compile(r"DOC-(\d+)")
 DOC_RANGE = re.compile(r"DOC-(\d+)\s*(?:…|\.\.\.?|–|—|\bto\b)\s*DOC-(\d+)")
@@ -104,9 +104,14 @@ def clean(cell: str) -> str:
 
 
 def split_row(line: str) -> list[str]:
-    # split on unescaped pipes
-    parts = re.split(r"(?<!\\)\|", line.strip())
-    return [p.replace("\\|", "|").strip() for p in parts[1:-1]]
+    """Cells of a GFM row: the leading and trailing pipes are optional (red-team, this PR: a row
+    written without its leading pipe renders, and used to end the table here)."""
+    text = line.strip()
+    if text.startswith("|"):
+        text = text[1:]
+    if text.endswith("|") and not text.endswith("\\|"):
+        text = text[:-1]
+    return [p.replace("\\|", "|").strip() for p in re.split(r"(?<!\\)\|", text)]
 
 
 def expand_ids(cell: str, id_re: re.Pattern, range_re: re.Pattern, fmt: str,
@@ -141,7 +146,7 @@ def rendered(text: str) -> str:
 def last_reviewed(text: str) -> str:
     """The visible `**Last reviewed:**` stamp, a calendar date or `unknown`: read from the
     rendered text so a commented-out earlier stamp cannot supply it (stocks#1205 r4120381528)."""
-    m = re.search(r"\*\*Last reviewed:\*\*\s*(\S+)", rendered(text))
+    m = re.search(r"\*\*Last reviewed:\*\*\s*(\S+)", rendered(text).split("\n## ", 1)[0])   # the document's stamp, not a section's
     value = m.group(1) if m else None
     if value != "unknown":
         try:
@@ -165,7 +170,7 @@ def tables_with_headings(text: str):
     heading: list[str] = []
     # stocks#1205 r4121216904: GFM renders a row indented by up to three spaces as part of
     # the table, so such a row is a row here too, not the end of the table
-    lines = [re.sub(r"^ {1,3}(?=[|#])", "", ln) for ln in rendered(text).splitlines()]
+    lines = [re.sub(r"^ {1,3}(?=[|#])", "", ln).rstrip() for ln in rendered(text).splitlines()]   # trailing blanks are not content
     i = 0
     while i < len(lines):
         line = lines[i]
@@ -176,11 +181,17 @@ def tables_with_headings(text: str):
             i += 1
             continue
         # stocks#1205 r4121777339: every delimiter cell carries a hyphen, or GFM renders no table
-        if line.startswith("|") and i + 1 < len(lines) and re.match(r"^\|(\s*:?-+:?\s*\|)+$", lines[i + 1]):
+        if "|" in line and i + 1 < len(lines) and re.match(r"^\|?(\s*:?-+:?\s*\|)*\s*:?-+:?\s*\|?$", lines[i + 1]) and "-" in lines[i + 1]:
             header = [clean(c) for c in split_row(line)]
+            if len(split_row(lines[i + 1])) != len(header):
+                # red-team, this PR: GFM renders no table when the delimiter row's width differs
+                raise SystemExit(f"{REGISTRY}: the table under '{' / '.join(heading)}' has a header of {len(header)} cells and a "
+                                 f"delimiter row of {len(split_row(lines[i + 1]))}; GFM renders no table, so nothing here exports")
             rows = []
             i += 2
-            while i < len(lines) and lines[i].startswith("|"):
+            # a row is any following non-blank line with a pipe that is not a heading or fence: GFM does
+            # not need the leading pipe (red-team, this PR)
+            while i < len(lines) and lines[i].strip() and "|" in lines[i] and not re.match(r"^(#|```|~~~)", lines[i]):
                 rows.append(split_row(lines[i]))
                 i += 1
             yield list(heading), header, rows
@@ -226,9 +237,14 @@ def experiment_ids(text: str) -> list[str]:
     leads: list[str] = []   # the ID a heading starts with: its own entry, not a mention or a session's range
     for line in rendered(text).splitlines():   # a heading inside a fence is an example, not an entry (r4120660287)
         if re.match(r"^ {0,3}#{1,6}\s", line):   # stocks#1205 r4121602828: up to three spaces still render a heading
-            ids.update(expand_ids(line, EXP_ID, EXP_RANGE, "E-{:02d}"))
             if (lead := re.match(r"^ {0,3}#{1,6}\s+(" + EXP_ID.pattern + r")\b", line)):
                 leads.append(lead.group(1))
+                ids.update(expand_ids(lead.group(0), EXP_ID, EXP_RANGE, "E-{:02d}"))
+            else:
+                # a session heading lists its experiments in parentheses; a heading that merely mentions
+                # one in prose defines nothing (red-team, this PR)
+                for group in re.findall(r"\(([^)]*)\)", line):
+                    ids.update(expand_ids(group, EXP_ID, EXP_RANGE, "E-{:02d}"))
     if dup := sorted({i for i in leads if leads.count(i) > 1}):
         # stocks#1205 r4121777347: two entries for one ID are two records a citation cannot tell apart
         raise SystemExit(f"experiment {dup[0]} is defined by more than one heading in the ledger; one entry per ID")
@@ -298,7 +314,11 @@ def build(src: Source) -> dict:
             routable = first.startswith(("MODEL-", "DOC-")) or h0 == "scheduler"
             # stocks#1205 r4121777330: a row in a model or concern table whose ID is not shaped
             # like the table's is a typo, not prose; it would vanish from the cards
-            record_table = h0 in ("id", "model") and any(k in " ".join(header).lower() for k in ("decision", "claim", "concern", "disposition", "experiments"))
+            record_table = (h0 in ("id", "model") and any(k in " ".join(header).lower() for k in ("decision", "claim", "concern", "disposition", "experiments"))) \
+                or (h0 == "id" and any(clean(r[0]).startswith(("MODEL-", "DOC-")) for r in rows if r))   # the LLM tier too (red-team, this PR)
+            if first.startswith("MODEL-") and not re.fullmatch(r"MODEL-[A-Z0-9]+(-[A-Z0-9]+)*", first):
+                malformed.append(f"{first!r} under '{section}' is not a bare model ID; the cards are keyed by the exact ID")
+                continue
             if record_table and not routable:
                 malformed.append(f"row {first!r} under '{section}' sits in a record table but is not a MODEL- or DOC- ID")
                 continue
@@ -366,6 +386,9 @@ def build(src: Source) -> dict:
                 unrouted.append(f"{first} under '{section}' (columns: {', '.join(header)})")
     for fid, rec in grouped.items():
         out["dispositions"].setdefault(fid, rec)
+    names = [clean(str(rec.get(header_keys(["Scheduler"])[0], rec.get("scheduler", "")))) for rec in out["schedulers"]]
+    for dup in sorted({n for n in names if n and names.count(n) > 1}):
+        malformed.append(f"scheduler {dup} appears twice; one row per scheduler")
     seen_findings: set[str] = set()
     for rec in out["findings"]:
         # stocks#1205 r4119634446: the Concerns board is keyed by id, so two rows with one
@@ -434,6 +457,11 @@ def build(src: Source) -> dict:
         raise SystemExit(f"{REGISTRY}: {len(unrouted)} MODEL-/DOC- row(s) sit in a table shape the exporter does not "
                          f"recognize ({'; '.join(unrouted[:3])}) and {len(out['models'])} model(s) parsed; a model table "
                          "starts with an `ID` column. The registry is malformed; fix it rather than exporting it")
+    for rec in out["findings"]:
+        # red-team, this PR: a Concerns card naming a model that does not exist (after the tier
+        # checks, so a broken model table reports as itself)
+        if named := [m for m in re.findall(r"MODEL-[A-Z0-9-]+", str(rec.get("models", ""))) if m not in out["models"]]:
+            raise SystemExit(f"{REGISTRY}: finding {rec['id']} names model(s) not in the registry: {', '.join(named)}; fix the ID")
     resolve_scheduler_models(out["schedulers"], out["models"])
     out["experiment_ids"] = experiment_ids(etext)
     # stocks#1205 r4121888831: the refresh skill protects a repo-owned field only when its JSON

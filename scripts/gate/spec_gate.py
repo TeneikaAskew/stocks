@@ -39,6 +39,7 @@ import json
 import datetime
 import os
 import pathlib
+import posixpath
 import re
 import subprocess
 import sys
@@ -748,6 +749,17 @@ SHADOW = re.compile(r"(?:^|[;&|{}(]\s*|\bfunction\s+)" + EXECUTABLES + r"\s*\(\s
                     + r"\b|\balias\s+" + EXECUTABLES + r"=|\bhash\s+-p\s+\S+\s+" + EXECUTABLES + r"\b", re.M)
 
 
+# Every line the hook may contain, after its interpreter line: comments, `set -e`, the Python
+# version check, the unstaged-gate check, their diagnostics, and the gate call.
+HOOK_LINES = (
+    r"#.*", r"set -e(u|o pipefail|uo pipefail)?",
+    r"if ! python3 -c 'import sys; sys\.exit\(0 if sys\.version_info >= \(3, 11\) else 1\)' 2>/dev/null; then",
+    r"if ! git diff --quiet -- scripts/gate/spec_gate\.py; then",
+    r"echo \"spec gate: [^\"`$]*(\$\(python3 --version 2>&1 \|\| echo none\))?[^\"`$]*\" >&2",
+    r"exit 1", r"fi",
+    r"python3 \"\$\(git rev-parse --show-toplevel\)/scripts/gate/spec_gate\.py\" --commit",
+    r"python3 (\./)?scripts/gate/spec_gate\.py --commit",
+)
 GATE_PATHS = r"(scripts/gate\b|tests/scripts\b|\.githooks\b|\.github/workflows\b)"
 WRITERS = r"(cp|mv|install|ln|tee|rm|truncate|chmod|patch|dd|curl|wget|sed|perl|git\s+(checkout|restore|apply|reset|clean|stash))"
 # stocks#1205 r4122021088: `gate=scripts/gate/spec_gate.py` then `> "$gate"` is the same write; a
@@ -870,7 +882,9 @@ class GitFailed(Exception):
 def git(*args: str) -> subprocess.CompletedProcess:
     # utf-8 regardless of locale: the specs carry curly quotes and emoji, and cp1252
     # (Windows) would raise on them and block every commit.
-    return subprocess.run(["git", *args], capture_output=True, encoding="utf-8", errors="replace", cwd=ROOT)
+    # core.quotePath=false: a path with a non-ASCII byte is otherwise returned quoted and escaped, and
+    # `"docs/r\303\251sum\303\251.md"` does not start with docs/ (red-team, this PR)
+    return subprocess.run(["git", "-c", "core.quotePath=false", *args], capture_output=True, encoding="utf-8", errors="replace", cwd=ROOT)
 
 
 def git_out(*args: str) -> str:
@@ -896,7 +910,7 @@ def is_documentation(path: str) -> bool:
     name = path.rsplit("/", 1)[-1]
     if path.startswith(WORKFLOWS) and not name.endswith(".md"):
         return False   # a workflow is executable configuration whatever its name
-    if path.startswith(".claude/") or path in ("AGENTS.md", "CLAUDE.md"):
+    if path.startswith(".claude/") or name in ("AGENTS.md", "CLAUDE.md", "CLAUDE.local.md"):   # at any depth: Claude Code loads them all
         return False   # skills, agents and the root instructions are the process agents execute, not its description
     return path.startswith("docs/") or path.endswith((".md", ".drawio")) or bool(LICENSE_FILE.match(name))
 
@@ -956,6 +970,8 @@ def frontmatter(text: str | None) -> dict:
         if ":" in line:
             k, v = line.split(":", 1)
             k, v = k.strip(), v.strip()
+            if k in fm:   # red-team, this PR: `status: draft` then `status: approved` read as approved
+                fm.setdefault("_duplicate_keys", []).append(k) if isinstance(fm.get("_duplicate_keys"), list) else fm.__setitem__("_duplicate_keys", [k])
             current = k
             if v == "":
                 fm[k] = []
@@ -985,6 +1001,8 @@ def requirement_defs(tree: "Tree") -> set[str] | None:
 
 def validate_spec(fm: dict, name: str, catalog: set[str], req_defs: set[str] | None) -> list[str]:
     errs = [f"{name}: missing frontmatter key '{k}'" for k in REQUIRED_SPEC_KEYS if k not in fm]
+    if fm.get("_duplicate_keys"):
+        errs.append(f"{name}: frontmatter defines {', '.join(fm['_duplicate_keys'])} more than once; one value per key")
     if "feat_id" in fm and not isinstance(fm["feat_id"], str):
         errs.append(f"{name}: feat_id must be one FEAT-ID, not a list")
     elif "feat_id" in fm and fm["feat_id"] not in catalog:
@@ -1021,8 +1039,11 @@ def check_supersedes(fm: dict, name: str, base: "Tree") -> list[str]:
     target = fm.get("supersedes")
     if target is None:
         return []
-    if not isinstance(target, str) or (old := base.read(target)) is None:
-        return [f"{name}: supersedes {target!r}, which is not a spec on the base; name the spec it replaces or leave it null"]
+    if not isinstance(target, str) or target != posixpath.normpath(target) or not target.startswith(SPECS + "/") or (old := base.read(target)) is None:
+        # (red-team, this PR: `./docs/...` resolves for git but never equals the path the plans and the
+        # supersession scan compare as strings)
+        return [f"{name}: supersedes {target!r}, which is not a spec on the base written as {SPECS}/<file>.md; "
+                "name the spec it replaces or leave it null"]
     if frontmatter(old).get("feat_id") != fm.get("feat_id"):
         return [f"{name}: supersedes {target}, a spec for {frontmatter(old).get('feat_id')}, not {fm.get('feat_id')}"]
     return []
@@ -1067,6 +1088,10 @@ def validate_plan_body(text: str | None, name: str) -> list[str]:
 
 def validate_plan(fm: dict, name: str, feat_id: str, tree: Tree) -> list[str]:
     errs = [f"{name}: missing frontmatter key '{k}'" for k in REQUIRED_PLAN_KEYS if k not in fm]
+    if fm.get("_duplicate_keys"):
+        errs.append(f"{name}: frontmatter defines {', '.join(fm['_duplicate_keys'])} more than once; one value per key")
+    if isinstance(fm.get("spec"), str) and (fm["spec"] != posixpath.normpath(fm["spec"]) or not fm["spec"].startswith(SPECS + "/")):
+        errs.append(f"{name}: spec {fm['spec']!r} is not a normalized path under {SPECS}/")
     if "feat_id" in fm and fm["feat_id"] != feat_id:
         errs.append(f"{name}: feat_id is {fm['feat_id']!r} but the branch serves {feat_id}")
     status = fm.get("status")
@@ -1491,6 +1516,13 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
         if overridden := input_overrides("\n".join(ln for ln in hook.splitlines() if not ln.lstrip().startswith("#"))):
             return [f"{HOOK}: assigns or unsets {overridden[0]}, an input the gate reads; the hook never sets the gate's inputs"], None
         # stocks#1205 r4121602841: the canonical path, from the repository root or `git rev-parse --show-toplevel`
+        # red-team, this PR: `git reset -q` before the call emptied the index the gate inspects, and a
+        # `python3 docs/tools/prep.py` or `. docs/hooks/x.sh` before it ran anything a docs/ PR ships;
+        # the hook is a fixed grammar, and any other line is refused
+        for ln in hook.splitlines()[1:]:
+            if ln.strip() and not any(re.fullmatch(shape, ln.strip()) for shape in HOOK_LINES):
+                return [f"{HOOK}: line {ln.strip()!r} is not one the hook may carry; the hook checks the Python version, "
+                        "refuses unstaged gate edits and calls the gate, nothing else"], None
         if not any(re.match(r"python3?\s+['\"]?(__SUB__/|\./)?scripts/gate/spec_gate\.py['\"]?\s+--commit(\s|$)", st) for st in shell_statements(hook, errexit=False)):
             return [f"{HOOK}: no longer runs `scripts/gate/spec_gate.py --commit` after `set -e`; the hook keeps the commit-time gate"], None
     # P1b: the policy inputs the gate reads are not deleted either
@@ -1688,7 +1720,7 @@ def canvas_modes(text: str | None) -> dict[str, str]:
             url = mode = None
         elif (m := re.match(r"^\s+url:\s*(\S+)", line)):
             url = m.group(1)
-        elif (m := re.match(r"^\s+mode:\s*(\S+)", line)):
+        elif (m := re.match(r"^\s{4}mode:\s*(\S+)", line)):   # the entry's own field, not a board's (red-team, this PR)
             mode = m.group(1)
     return modes
 
@@ -1771,8 +1803,9 @@ def check_capacity(body: str | None, changed: list[str]) -> list[str]:
     text = section(visible(body), "capacity")
     if text is None:
         return [f"PR body needs a Capacity section: the change touches a workload ({summarize(workloads)})"]
-    if re.search(r"\bn/a\b[ \t]*[\u2014:-][ \t]*\w", text, re.I):
-        return []
+    labelled = [label for label in CAPACITY_LABELS if re.search(r"\b" + re.escape(label) + r"\**:", text)]
+    if re.search(r"\bn/a\b[ \t]*[\u2014:-][ \t]*\w", text, re.I) and not labelled:
+        return []   # (red-team, this PR: an `n/a` beside filled labels waived the unfilled ones)
     # [ \t]*, not \s*: a value is on the label's own line, so a blank `Volume:` followed by
     # `Velocity: 2/day` on the next line does not borrow the next label as its value.
     blank = [label for label in CAPACITY_LABELS
@@ -1915,6 +1948,14 @@ def check_policy_structure(ch: Change) -> list[str]:
             if missing := [k for k in CLOSE_OUT_FIELDS if k in before and k not in after]:
                 errs.append(f"{CATALOG}: {feat} no longer carries the {', '.join(missing)} field(s) the close-out reads; "
                             "the catalog's columns and record fields keep their names")
+                break
+            # red-team, this PR: promoting `### FEAT-X` to `##` swallows the next record into its section
+            # and every later PR for FEAT-X reads two values and cannot demote it back
+            if heading_levels(base_catalog, feat) and heading_levels(base_catalog, feat) != heading_levels(catalog, feat):
+                errs.append(f"{CATALOG}: changes the level of the {feat} heading; a record's heading level is part of its shape")
+                break
+            if repeated := repeated_fields(catalog, feat):
+                errs.append(f"{CATALOG}: the {feat} record would carry {', '.join(repeated)} more than once; each close-out field once")
                 break
     if REQUIREMENTS in ch.changed and ch.base.read(REQUIREMENTS) is None and (reqs := ch.tree.read(REQUIREMENTS)) is not None:
         # solyra#72 r4120633485: a repository without a registry checks req_ids for shape; a new
