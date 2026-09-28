@@ -168,15 +168,15 @@ git commit -m "docs: add the site traceability matrix skeleton"
 
 **Interfaces:**
 - Consumes: Task 1's headers.
-- Produces: the 221 IDs in Appendix A of this plan. Every later task and every UI-SCREENS.md heading uses these IDs and never renumbers them.
+- Produces: the 222 IDs in Appendix A of this plan. Every later task and every UI-SCREENS.md heading uses these IDs and never renumbers them.
 
 - [ ] **Step 1: Run R2 and R3.** Expected: R2 prints nothing and `0`; R3 prints `0 0 0 0 0`.
 
 - [ ] **Step 2: Add the rows** from Appendix A, one per line, in ID order, with `[ ]` in all four gate cells and an empty Evidence cell. Element text is the Appendix A label; a state row's label is `State: loading` and so on.
 
-- [ ] **Step 3: Update the Progress table** so each area's `Rows` equals its Appendix A count and `Total` equals 221.
+- [ ] **Step 3: Update the Progress table** so each area's `Rows` equals its Appendix A count and `Total` equals 222.
 
-- [ ] **Step 4: Run R2, R3, R4.** Expected: R2 prints nothing and `0`; R3 prints `221 0 0 0 0`; R4 prints nothing. Compare each area with the per-area form of R3.
+- [ ] **Step 4: Run R2, R3, R4.** Expected: R2 prints nothing and `0`; R3 prints `222 0 0 0 0`; R4 prints nothing. Compare each area with the per-area form of R3.
 
 - [ ] **Step 5: Commit.** `git commit -am "docs: add every element row to the site traceability matrix"`
 
@@ -223,7 +223,7 @@ Same files, steps and recipes as Task 3 for these four areas.
 ### Task 6: Chain rows from inventories, areas 13 to 16 (Journal, Admin, Settings, Help)
 
 - [ ] **Steps 1 to 8 as Task 3.** Settings rows record the code as it is today: `GET/PUT /api/me/preferences` and `GET/PUT /api/me/profile` through `src/hooks/usePreferences.ts` and `src/hooks/useProfile.ts`, and the Gaps list records that UI-SCREENS.md still says the screen is localStorage-only (spec §14).
-- [ ] **Step 9: Run R3, R4, R5, R6, R7.** Expected: R3 `221 0 0 0 0`; the rest as before.
+- [ ] **Step 9: Run R3, R4, R5, R6, R7.** Expected: R3 `222 0 0 0 0`; the rest as before.
 - [ ] **Step 10: Commit.** `git commit -am "docs: trace the support group chains from the inventories"`
 
 ### Task 7: Register, index and gate the matrix
@@ -237,7 +237,7 @@ Same files, steps and recipes as Task 3 for these four areas.
 
 - [ ] **Step 2: Registry row.** Insert `| D | docs/product/03-SITE-TRACEABILITY.md | platform/api, gcp/deploy.sh, gcp/schema.sql, lib |  |`.
 
-- [ ] **Step 3: README rows.** Navigation: `| [03 Site Traceability](03-SITE-TRACEABILITY.md) | Which elements of each screen are specified, traced, validated and tested, and what runs each one? |`. Snapshot: `| Site elements traced | 0 of 221 ([03](03-SITE-TRACEABILITY.md)) |`.
+- [ ] **Step 3: README rows.** Navigation: `| [03 Site Traceability](03-SITE-TRACEABILITY.md) | Which elements of each screen are specified, traced, validated and tested, and what runs each one? |`. Snapshot: `| Site elements traced | 0 of 222 ([03](03-SITE-TRACEABILITY.md)) |`.
 
 - [ ] **Step 4: PR template line.** Under `## Summary`, after the existing comment, add `- Matrix rows touched and gates changed: <!-- IDs from docs/product/03-SITE-TRACEABILITY.md, or "none" -->`.
 
@@ -420,14 +420,14 @@ test('theme toggle flips the document theme attribute', ...)
 ### Task 16: Close out Phase 1
 
 - [ ] **Step 1: Run every recipe R1 to R10 in both repos**, plus `npm test` and `npm run contract:check` in solyra and `python -m pytest tests/api -q` in stocks (spec §12 item 5), and paste the outputs into the stocks PR description or the branch's final commit body.
-- [ ] **Step 2: Update the README snapshot metric** to the R3 totals (`<traced> of 221`, where traced counts rows with T ticked) and commit: `docs: update the site traceability snapshot after phase 1`.
+- [ ] **Step 2: Update the README snapshot metric** to the R3 totals (`<traced> of 222`, where traced counts rows with T ticked) and commit: `docs: update the site traceability snapshot after phase 1`.
 - [ ] **Step 3: Push both repos** and report to the user: the two branches, the recipe outputs, the rows still blocked on a manual browser check (AUTH-03, 05, 06) and on Task 15's job. Remind the user that the two Claude Design documents can now be regenerated from the docs (spec §10).
 
 ---
 
 ## Appendix A. The rows, by area and ID
 
-Displayed elements first, then actions, then states. Labels are the Element cell text. 221 rows.
+Displayed elements first, then actions, then states. Labels are the Element cell text. 222 rows. DASHBOARD-21 was appended after Task 3 found the Movement Read card wired to `/api/movement-statement` with no row (ledger ruling); IDs never renumber, so it takes the next number.
 
 **00 SHARED (8)**
 SHARED-01 API service and auth middleware (solyra-api-staging, solyra-api-prod, AUTH_MODE) · SHARED-02 Open prefixes kept in sync (api/auth.py and authedFetch OPEN_PREFIXES) · SHARED-03 Data path: authedFetch, apiTargets, Vite proxy, staging fallback · SHARED-04 Mock mode and demo-data banners · SHARED-05 React Query defaults (five-minute staleness, one retry) · SHARED-06 Failure lane: job log, Cloud Logging sink, Pub/Sub, failure-notifier, GitHub issue · SHARED-07 Freshness watchdog and /api/health/freshness · SHARED-08 Liveness: /api/health
@@ -441,8 +441,8 @@ AUTH-01 Auth-mode bootstrap (firebase, iap, open) · AUTH-02 State: loading spin
 **03 SHELL (16)**
 SHELL-01 Sidebar or TopTabs navigation · SHELL-02 Header in sidebar mode (auth status, sign out, replay control, theme toggle) · SHELL-03 MockModeBanner · SHELL-04 AuthStatusBanner and EmailVerificationBanner · SHELL-05 MostActiveBar marquee · SHELL-06 RouteErrorBoundary · SHELL-07 Market session badge (LIVE, PRE, AH, CLOSED) · SHELL-08 Command palette (Cmd-K, Ctrl-K) · SHELL-09 Replay control (historical review) · SHELL-10 Theme toggle · SHELL-11 Sign out · SHELL-12 State: loading (marquee before the first response) · SHELL-13 State: empty (marquee renders nothing on an empty list) · SHELL-14 State: error (marquee absent on 500, page renders) · SHELL-15 State: stale (session badge truthful when closed) · SHELL-16 State: permission (auth status banner when signed out or blocked)
 
-**04 DASHBOARD (20)**
-DASHBOARD-01 Briefing strip · DASHBOARD-02 Top setup · DASHBOARD-03 Daily KPIs · DASHBOARD-04 Intraday chart · DASHBOARD-05 Live signals table · DASHBOARD-06 Catalysts list · DASHBOARD-07 Sector rotation · DASHBOARD-08 AI take · DASHBOARD-09 News · DASHBOARD-10 Switch ticker · DASHBOARD-11 Refresh · DASHBOARD-12 Candles or Area toggle · DASHBOARD-13 1D or 5D sector period · DASHBOARD-14 Click a card (signals, catalysts, news, AI take) · DASHBOARD-15 Review mode · DASHBOARD-16 State: loading · DASHBOARD-17 State: empty · DASHBOARD-18 State: error · DASHBOARD-19 State: stale · DASHBOARD-20 State: permission
+**04 DASHBOARD (21)**
+DASHBOARD-01 Briefing strip · DASHBOARD-02 Top setup · DASHBOARD-03 Daily KPIs · DASHBOARD-04 Intraday chart · DASHBOARD-05 Live signals table · DASHBOARD-06 Catalysts list · DASHBOARD-07 Sector rotation · DASHBOARD-08 AI take · DASHBOARD-09 News · DASHBOARD-10 Switch ticker · DASHBOARD-11 Refresh · DASHBOARD-12 Candles or Area toggle · DASHBOARD-13 1D or 5D sector period · DASHBOARD-14 Click a card (signals, catalysts, news, AI take) · DASHBOARD-15 Review mode · DASHBOARD-16 State: loading · DASHBOARD-17 State: empty · DASHBOARD-18 State: error · DASHBOARD-19 State: stale · DASHBOARD-20 State: permission · DASHBOARD-21 Movement Read card (feature-flagged)
 
 **05 LIVE (13)**
 LIVE-01 Session bar · LIVE-02 Quote card · LIVE-03 Six indicator tiles · LIVE-04 CALL and PUT setup cards · LIVE-05 Live (15s) or Paused toggle · LIVE-06 Sound alert · LIVE-07 Switch ticker · LIVE-08 Review mode · LIVE-09 State: loading · LIVE-10 State: empty · LIVE-11 State: error · LIVE-12 State: stale · LIVE-13 State: permission
