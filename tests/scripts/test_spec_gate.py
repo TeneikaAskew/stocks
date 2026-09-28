@@ -1339,8 +1339,10 @@ def test_a_feature_pr_without_a_plan_fails_cleanly_when_ready(repo):
            PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body(ticked=True))
     assert r.returncode == 1 and "no plan in docs/superpowers/plans names branch" in r.stdout, r.stdout + r.stderr
     assert "Traceback" not in r.stderr, r.stderr
+    # since solyra#72 r4119610902 a feature branch is traced even with documentation only
     r = pr(repo, "feature/feat-model-001-no-plan", {"docs/notes.md": "# n\n"}, PR_NUMBER="42", PR_DRAFT="false")
-    assert r.returncode == 0 and "Traceback" not in r.stderr, r.stdout + r.stderr
+    assert r.returncode == 1 and "no plan in docs/superpowers/plans names branch" in r.stdout, r.stdout + r.stderr
+    assert "Traceback" not in r.stderr, r.stderr
 
 
 def test_a_pull_request_targets_main_only(repo):
