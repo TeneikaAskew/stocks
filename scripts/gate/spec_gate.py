@@ -81,6 +81,14 @@ GATE_FILES = (
     "tests/scripts/test_spec_gate.py",
     "tests/scripts/test_export_model_registry.py",
 )
+# The files the gate runs from: no change may delete one, whatever its branch, or the
+# base's copy judges the deletion green and every later PR runs without a gate.
+GATE_ENTRYPOINTS = (
+    "scripts/gate/spec_gate.py",
+    ".githooks/pre-commit",
+    ".github/workflows/spec-gate.yml",
+    ".github/workflows/registry-check.yml",
+)
 # The manifest fields a chore/ branch may change. Anything else in package.json or
 # pyproject.toml (scripts, build config, tool tables) is executable configuration that
 # CI runs from the checkout, so it is a CHANGE.
@@ -209,7 +217,7 @@ def requirement_defs(tree: "Tree") -> set[str] | None:
     no registry (solyra), so req_ids are checked for shape only. A registry that
     exists but defines nothing fails closed rather than passing every ID."""
     text = tree.read(REQUIREMENTS)
-    return None if text is None else set(REQ_DEFINITION.findall(text))
+    return None if text is None else set(REQ_DEFINITION.findall(visible(text)))
 
 
 def validate_spec(fm: dict, name: str, catalog: set[str], req_defs: set[str] | None) -> list[str]:
@@ -375,6 +383,10 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
     if ch.mode == "pr" and ch.branch.startswith("spike/"):
         return [f"branch '{ch.branch}' is a spike: local investigation commits only, never a pull request. "
                 "Re-cut the work on a feature/ or fix/ branch with a plan, or a docs/ branch for its write-up."], None
+    removed = [f for f in ch.changed if f in GATE_ENTRYPOINTS and ch.tree.read(f) is None]
+    if removed:
+        return [f"{summarize(removed)}: the gate's own entrypoints cannot be removed by a change; "
+                "retiring the gate is a decision taken on main, not in a branch"], None
     gated = [f for f in ch.changed if not is_documentation(f)]
     if not gated:
         return [], None
@@ -489,7 +501,18 @@ def visible(body: str) -> str:
 
 
 def checklist(body: str) -> list[tuple[bool, str]]:
-    return [(m.group(1) in "xX", norm(m.group(2))) for line in visible(body).splitlines() if (m := CHECKBOX.match(line))]
+    """Each rendered task-list item: its checkbox line plus the indented continuation
+    lines that render as part of it, so a deferral written under the box still counts."""
+    items: list[tuple[bool, str]] = []
+    for line in visible(body).splitlines():
+        if (m := CHECKBOX.match(line)):
+            items.append((m.group(1) in "xX", norm(m.group(2))))
+        elif items and line.strip() and line[0] in " \t":
+            ticked, text = items[-1]
+            items[-1] = (ticked, norm(f"{text} {line}"))
+        else:
+            items.append(None)   # a blank or unindented line ends the item
+    return [i for i in items if i is not None]
 
 
 def done_items(t: Traced) -> list[str]:
@@ -699,6 +722,16 @@ def row_fields(text: str, feat_id: str) -> dict[str, str]:
     return {}
 
 
+def feat_record(text: str | None, feat_id: str) -> str:
+    """The FEAT's catalog record as rendered: its section where the catalog has one
+    (stocks) and its table rows (solyra); what a close-out must change."""
+    shown = visible(text or "")
+    lines = shown.splitlines()
+    section = [lines[ln - 1] for ln in section_of(shown, feat_id) if ln <= len(lines)]
+    rows = [line for line in lines if line.startswith("|") and feat_id in line]
+    return "\n".join(section + rows)
+
+
 def feat_fields(text: str | None, feat_id: str) -> dict[str, str]:
     """The FEAT's Status and Last reviewed: from its record's field table where the
     record has one (stocks), otherwise from its catalog row's columns (solyra).
@@ -778,6 +811,9 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
     if not calendar_date(reviewed) or reviewed != head_day:
         errs.append(f"{CATALOG}: set the {t.feat_id} Last reviewed to this PR's head commit date {head_day} in "
                     f"its row or record (it reads '{reviewed or 'nothing'}')")
+    elif feat_record(ch.tree.read(CATALOG), t.feat_id) == feat_record(Tree(merge_base).read(CATALOG), t.feat_id):
+        errs.append(f"{CATALOG}: the {t.feat_id} record is unchanged from the base although it already reads "
+                    f"{head_day}; a second PR the same day still updates its record (its PRs, Status or notes)")
     if status.lower() in ("", "unknown", "tbd"):
         errs.append(f"{CATALOG}: set the {t.feat_id} Status in its row or record (it reads '{status or 'nothing'}')")
     # Which record carries the lineage is policy, read at the base: a repository that

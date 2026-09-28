@@ -347,6 +347,11 @@ def test_req_ids_name_defined_requirements(repo):
     on_base(repo, {SPEC: spec(req_ids="[]")})
     r = pr(repo, BRANCH, CODE)
     assert r.returncode == 1 and "req_ids must be a non-empty list" in r.stdout, r.stdout
+    # stocks#1205 r4119001312: a definition inside a comment or a fence is retired, not live
+    hidden = REQUIREMENTS_TEXT + "\n<!-- **REQ-FAKE-999:** retired -->\n\n```\n**REQ-FAKE-998:** example\n```\n"
+    on_base(repo, {SPEC: spec(req_ids="[REQ-FAKE-999]"), REQUIREMENTS: hidden})
+    r = pr(repo, BRANCH, CODE)
+    assert r.returncode == 1 and "req_ids not defined in" in r.stdout, r.stdout
     on_base(repo, {SPEC: spec(req_ids="[REQ-FAKE-999]"), REQUIREMENTS: None})
     assert pr(repo, BRANCH, CODE).returncode == 0
     # stocks#1205 r4118721673: a registry that exists but defines no IDs fails closed,
@@ -528,6 +533,15 @@ def test_close_out_checks_the_status_and_last_reviewed_fields(repo):
     on_base(repo, {CATALOG: stocks_catalog, TRACEABILITY: "# Traceability\n\n## FEAT-MODEL-001\n\n- #7 first cut\n"})
     r = pr(repo, BRANCH, {**base, CATALOG: stamped, TRACEABILITY: "# Traceability\n\n## FEAT-MODEL-001\n\n- #42 second cut\n"}, **meta)
     assert r.returncode == 1 and "PR lineage loses earlier PR(s) #7" in r.stdout, r.stdout
+    # stocks#1205 r4119001308: a second PR the same day cannot leave the record untouched
+    same_day = stocks_catalog.replace("2026-08-30", TODAY)
+    on_base(repo, {CATALOG: same_day, TRACEABILITY: "# Traceability\n\n## FEAT-MODEL-001\n\n- #7 first cut\n"})
+    r = pr(repo, BRANCH, {**base, TRACEABILITY: "# Traceability\n\n## FEAT-MODEL-001\n\n- #7 first cut\n- #42 second cut\n"}, **meta)
+    assert r.returncode == 1 and "record is unchanged from the base" in r.stdout, r.stdout
+    touched = same_day.replace("| Status | Production |", "| Status | Production |\n| Notes | second cut, #42 |")
+    r = pr(repo, BRANCH, {**base, CATALOG: touched, TRACEABILITY: "# Traceability\n\n## FEAT-MODEL-001\n\n- #7 first cut\n- #42 second cut\n"}, **meta)
+    assert r.returncode == 0, r.stdout
+    on_base(repo, {CATALOG: stocks_catalog, TRACEABILITY: "# Traceability\n\n## FEAT-MODEL-001\n\n- none\n"})
     # solyra#72 r4118831958: a real date that is not the head commit's is a false record
     for other in ("2000-01-01", "2099-01-01"):
         r = pr(repo, BRANCH, {**base, CATALOG: stocks_catalog.replace("2026-08-30", other)}, **meta)
@@ -859,6 +873,13 @@ def test_a_ticked_done_when_item_may_not_defer_its_work(repo):
     r = pr(repo, BRANCH, CODE, **title, PR_BODY=deferred)
     assert r.returncode == 1 and "a ticked done_when item defers its work" in r.stdout, r.stdout
     assert pr(repo, BRANCH, CODE, **title, PR_BODY=body(ticked=True)).returncode == 0
+    # stocks#1205 r4119001317: a deferral on the item's indented continuation line renders as
+    # part of the same task-list item
+    continued = f"Spec: {SPEC}\nPlan: {PLAN}\n\n- [x] {DONE[0]}\n    TODO: run this in a follow-up PR\n- [x] {DONE[1]}\n"
+    r = pr(repo, BRANCH, CODE, **title, PR_BODY=continued)
+    assert r.returncode == 1 and "a ticked done_when item defers its work" in r.stdout, r.stdout
+    evidence = f"Spec: {SPEC}\nPlan: {PLAN}\n\n- [x] {DONE[0]}\n    verified by `pytest tests/lib`\n- [x] {DONE[1]}\n"
+    assert pr(repo, BRANCH, CODE, **title, PR_BODY=evidence).returncode == 0
 
 
 def test_a_workload_change_carries_its_capacity_numbers(repo):
@@ -887,6 +908,11 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
     r = pr(repo, "chore/gate-workflow", workflow, PR_BODY="## Summary\n\nretune the gate\n")
     assert r.returncode == 1 and "PR body needs a Capacity section" in r.stdout, r.stdout
     assert pr(repo, "chore/gate-workflow", workflow, PR_BODY="## Capacity\nn/a: one PR-triggered job, seconds\n").returncode == 0
+    # stocks#1205 r4119001303 (P1): the gate's entrypoints cannot be deleted, chore/ or not
+    on_base(repo, {".github/workflows/spec-gate.yml": "on: pull_request_target\n", ".githooks/pre-commit": "#!/bin/sh\n"})
+    for entry in (".github/workflows/spec-gate.yml", ".githooks/pre-commit"):   # the script itself runs these tests
+        r = pr(repo, "chore/gate-workflow", {entry: None}, PR_BODY="## Capacity\nn/a: x\n")
+        assert r.returncode == 1 and "entrypoints cannot be removed" in r.stdout, (entry, r.stdout)
     # solyra#72 r4118957767 (P1): a gate file entry is exact, so a workflow named after
     # one is still a workflow a chore/ branch cannot add
     r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml-backdoor.yaml": "on: push\n"},
