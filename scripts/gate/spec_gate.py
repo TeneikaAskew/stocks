@@ -243,6 +243,22 @@ def validate_spec(fm: dict, name: str, catalog: set[str], req_defs: set[str] | N
     return errs
 
 
+def plan_stays_bound(name: str, fm: dict, base_fm: dict, branch: str) -> list[str]:
+    """A plan already on the base binds one branch and one PR for good: a change cannot
+    re-point it at its own branch, swap its PR number, or reopen it once it is done."""
+    if not base_fm:
+        return []
+    errs = []
+    if base_fm.get("branch") != branch:
+        errs.append(f"{name}: names branch '{base_fm.get('branch')}' on the base; a plan binds one branch, "
+                    f"so '{branch}' needs its own plan")
+    if base_fm.get("pr") is not None and str(fm.get("pr")) != str(base_fm.get("pr")):
+        errs.append(f"{name}: records PR #{base_fm.get('pr')} on the base; a plan binds one PR")
+    if base_fm.get("status") == "done":
+        errs.append(f"{name}: is status: done on the base (its PR merged); further work needs a new plan")
+    return errs
+
+
 def validate_plan(fm: dict, name: str, feat_id: str, tree: Tree) -> list[str]:
     errs = [f"{name}: missing frontmatter key '{k}'" for k in REQUIRED_PLAN_KEYS if k not in fm]
     if "feat_id" in fm and not isinstance(fm["feat_id"], str):
@@ -402,6 +418,7 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
     plan_path = plans[0]
     plan_fm = frontmatter(ch.tree.read(plan_path))
     errs += validate_plan(plan_fm, plan_path, feat_id, ch.tree)
+    errs += plan_stays_bound(plan_path, plan_fm, frontmatter(ch.base.read(plan_path)), ch.branch)
     spec_path = plan_fm.get("spec") if isinstance(plan_fm.get("spec"), str) else None
     spec_text = ch.base.read(spec_path) if spec_path else None
     if spec_text is None:
@@ -750,10 +767,10 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
     before = feat_fields(Tree(merge_base).read(CATALOG), t.feat_id)
     reviewed, status = now.get("Last reviewed", ""), now.get("Status", "").strip("* ")
     head_day = git_out("show", "-s", "--format=%cs", head).strip()
-    # Changed from the base, or already today's date (a second PR for this FEAT the same day).
-    if not calendar_date(reviewed) or (reviewed == before.get("Last reviewed") and reviewed != head_day):
-        errs.append(f"{CATALOG}: set the {t.feat_id} Last reviewed to this PR's review date in its row or "
-                    f"record (it reads '{reviewed or 'nothing'}')")
+    # The head commit's date, exactly: any other date, past or future, is a false freshness record.
+    if not calendar_date(reviewed) or reviewed != head_day:
+        errs.append(f"{CATALOG}: set the {t.feat_id} Last reviewed to this PR's head commit date {head_day} in "
+                    f"its row or record (it reads '{reviewed or 'nothing'}')")
     if status.lower() in ("", "unknown", "tbd"):
         errs.append(f"{CATALOG}: set the {t.feat_id} Status in its row or record (it reads '{status or 'nothing'}')")
     trace_text = ch.tree.read(TRACEABILITY)
@@ -866,9 +883,11 @@ def run(argv: list[str]) -> int:
             errs += check_product_scope(m.group(2).upper(), ch, merge_base, head)
         # The checks below read the traced plan and spec; without them the errors from
         # check() already say what is missing.
+        # A workload change wants its numbers whatever the branch: a chore/ PR editing
+        # the gate's workflows is untraced and still changes what CI runs.
+        errs += check_capacity(env.get("PR_BODY"), ch.changed)
         if traced:
             errs += check_pr_metadata(traced, env, ch.tree)
-            errs += check_capacity(env.get("PR_BODY"), ch.changed)
             ready = env.get("PR_DRAFT") == "false"
             errs += check_plan_pr(traced, env, ready)
             if env.get("PR_NUMBER") and ready:

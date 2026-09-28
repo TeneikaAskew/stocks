@@ -13,6 +13,7 @@ finding gives.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import subprocess
@@ -21,6 +22,8 @@ from pathlib import Path
 
 import pytest
 import yaml
+
+TODAY = datetime.date.today().isoformat()   # the head commit's date, which Last reviewed must equal
 
 REPO = Path(__file__).resolve().parents[2]
 GATE = REPO / "scripts/gate/spec_gate.py"
@@ -437,7 +440,7 @@ def test_close_out_records_are_required_once_the_pr_is_ready(repo):
     assert r.returncode == 1, r.stdout
     assert "Last reviewed" in r.stdout and "add this PR (#42)" in r.stdout
 
-    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", "| Models | Production | 2026-09-28 | #42 |")
+    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", f"| Models | Production | {TODAY} | #42 |")
     assert pr(repo, BRANCH, {**recorded, CATALOG: row}, **meta, PR_DRAFT="false").returncode == 0
     r = pr(repo, BRANCH, {**recorded, CATALOG: row}, **{**meta, "PR_BODY": body()}, PR_DRAFT="false")
     assert r.returncode == 1 and "done_when item(s) not ticked" in r.stdout, r.stdout
@@ -491,15 +494,15 @@ def test_close_out_checks_the_status_and_last_reviewed_fields(repo):
     for catalog in (blank, mention):
         r = pr(repo, BRANCH, {**base, CATALOG: catalog}, **meta)
         assert r.returncode == 1 and "Last reviewed" in r.stdout, r.stdout
-    unset = stocks_catalog.replace("| Status | Production |", "| Status | TBD |").replace("2026-08-30", "2026-09-28")
+    unset = stocks_catalog.replace("| Status | Production |", "| Status | TBD |").replace("2026-08-30", TODAY)
     r = pr(repo, BRANCH, {**base, CATALOG: unset}, **meta)
     assert r.returncode == 1 and "Status" in r.stdout, r.stdout
-    stamped = stocks_catalog.replace("2026-08-30", "2026-09-28")
+    stamped = stocks_catalog.replace("2026-08-30", TODAY)
     r = pr(repo, BRANCH, {**base, CATALOG: stamped}, **meta)
     assert r.returncode == 0, r.stdout
     # stocks#1205 r4118721669: the fields were read from the raw document, so a
     # commented-out or fenced row after the table overrode the visible one
-    for hidden in ("<!-- | Last reviewed | 2026-09-28 | -->", "```\n| Last reviewed | 2026-09-28 |\n```"):
+    for hidden in (f"<!-- | Last reviewed | {TODAY} | -->", f"```\n| Last reviewed | {TODAY} |\n```"):
         section_end = stocks_catalog.index("| Last reviewed | 2026-08-30 |\n") + len("| Last reviewed | 2026-08-30 |\n")
         catalog = stocks_catalog[:section_end] + "\n" + hidden + "\n" + stocks_catalog[section_end:]
         r = pr(repo, BRANCH, {**base, CATALOG: catalog}, **meta)
@@ -507,6 +510,10 @@ def test_close_out_checks_the_status_and_last_reviewed_fields(repo):
     # stocks#1205 r4118788497: shaped like a date is not a date
     r = pr(repo, BRANCH, {**base, CATALOG: stocks_catalog.replace("2026-08-30", "2026-99-99")}, **meta)
     assert r.returncode == 1 and "Last reviewed" in r.stdout, r.stdout
+    # solyra#72 r4118831958: a real date that is not the head commit's is a false record
+    for other in ("2000-01-01", "2099-01-01"):
+        r = pr(repo, BRANCH, {**base, CATALOG: stocks_catalog.replace("2026-08-30", other)}, **meta)
+        assert r.returncode == 1 and TODAY in r.stdout, r.stdout
 
 
 def test_the_plan_records_its_pr(repo):
@@ -517,7 +524,7 @@ def test_the_plan_records_its_pr(repo):
     any PR run, and once the PR is ready it must be this PR.
     """
     meta = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body(ticked=True), "PR_NUMBER": "42"}
-    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", "| Models | Production | 2026-09-28 | #42 |")
+    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", f"| Models | Production | {TODAY} | #42 |")
     assert pr(repo, BRANCH, {**CODE, PLAN: plan(pr="null")}, **meta, PR_DRAFT="true").returncode == 0
     r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=41)}, **meta, PR_DRAFT="true")
     assert r.returncode == 1 and "names PR #41" in r.stdout, r.stdout
@@ -856,6 +863,36 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
     na = body() + "\n\n## Capacity\nn/a: the job's log line changes, no query or schedule does\n"
     assert pr(repo, BRANCH, job, **title, PR_BODY=na).returncode == 0
     assert pr(repo, BRANCH, CODE, **title, PR_BODY=body()).returncode == 0
+    # solyra#72 r4118831965: a chore/ PR editing the gate's own workflow is untraced and
+    # still changes what CI runs, so the Capacity check does not hide behind the trace
+    workflow = {".github/workflows/spec-gate.yml": "on: pull_request_target\n"}
+    r = pr(repo, "chore/gate-workflow", workflow, PR_BODY="## Summary\n\nretune the gate\n")
+    assert r.returncode == 1 and "PR body needs a Capacity section" in r.stdout, r.stdout
+    assert pr(repo, "chore/gate-workflow", workflow, PR_BODY="## Capacity\nn/a: one PR-triggered job, seconds\n").returncode == 0
+
+
+def test_a_plan_on_the_base_stays_bound_to_its_branch_and_pr(repo):
+    """solyra#72 r4118831949 (spec_gate.py:395).
+
+    The plan was picked by the branch it names at the head, so another branch
+    could edit a plan already on the base (even one marked done after its PR
+    merged) to name itself, swap the PR number and restore status: ready. A plan
+    on the base keeps its branch and PR, and a done plan authorizes nothing more.
+    """
+    other = "feature/feat-model-001-second-try"
+    on_base(repo, {PLAN: plan(pr=12, status="done")})
+    rebound = plan(branch=other, pr=13)
+    r = pr(repo, other, {**CODE, PLAN: rebound}, PR_HEAD_REF=other)
+    assert r.returncode == 1, r.stdout
+    assert f"names branch '{BRANCH}' on the base" in r.stdout and "records PR #12" in r.stdout, r.stdout
+    assert "status: done on the base" in r.stdout, r.stdout
+    # the plan's own branch may fill in a PR number it never had, and keep the one it has
+    on_base(repo, {PLAN: plan()})
+    assert pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42)}).returncode == 0
+    on_base(repo, {PLAN: plan(pr=42)})
+    assert pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42)}).returncode == 0
+    r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=43)})
+    assert r.returncode == 1 and "records PR #42" in r.stdout, r.stdout
 
 
 def test_hidden_checklist_entries_do_not_count(repo):
@@ -868,7 +905,7 @@ def test_hidden_checklist_entries_do_not_count(repo):
     Capacity section alike.
     """
     meta = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_NUMBER": "42"}
-    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", "| Models | Production | 2026-09-28 | #42 |")
+    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", f"| Models | Production | {TODAY} | #42 |")
     files = {**CODE, PLAN: plan(pr=42), CATALOG: row}
     hidden = (f"Spec: {SPEC}\nPlan: {PLAN}\n\n<!--\n- [x] {DONE[0]}\n-->\n```\n- [x] {DONE[1]}\n```\n"
               f"\n- [ ] {DONE[0]}\n- [ ] {DONE[1]}\n")
@@ -944,7 +981,7 @@ def test_the_pr_body_contract_is_read_as_rendered_in_every_form(repo):
     fenced = (f"Spec: {SPEC}\nPlan: {PLAN}\n\n   ```\n- [x] {DONE[0]}\n````\n\n~~~text\n- [x] {DONE[1]}\n~~~\n"
               f"- [ ] {DONE[0]}\n- [ ] {DONE[1]}\n")
     meta = {**title, "PR_NUMBER": "42", "PR_DRAFT": "false"}
-    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", "| Models | Production | 2026-09-28 | #42 |")
+    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", f"| Models | Production | {TODAY} | #42 |")
     r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row}, **meta, PR_BODY=fenced)
     assert r.returncode == 1 and "done_when item(s) not ticked" in r.stdout, r.stdout
     job = {**CODE, "gcp/model_job.py": "print('run')\n"}
@@ -978,7 +1015,7 @@ def test_the_pr_number_goes_in_the_prs_cell(repo):
     """
     meta = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body(ticked=True), "PR_NUMBER": "42", "PR_DRAFT": "false"}
     wrong_cell = CATALOG_TEXT.replace("| [FEAT-MODEL-001](#feat-model-001) | Models | Production | unknown | none |",
-                                      "| [FEAT-MODEL-001](#feat-model-001) | Models (#42) | Production | 2026-09-28 | none |")
+                                      f"| [FEAT-MODEL-001](#feat-model-001) | Models (#42) | Production | {TODAY} | none |")
     r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: wrong_cell}, **meta)
     assert r.returncode == 1 and "row's PRs column (it reads 'none')" in r.stdout, r.stdout
 
@@ -1050,7 +1087,7 @@ def test_the_lineage_entry_is_visible(repo):
     be on a rendered `**PR lineage:**` line or a list item of that section.
     """
     meta = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body(ticked=True), "PR_NUMBER": "42", "PR_DRAFT": "false"}
-    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", "| Models | Production | 2026-09-28 | #42 |")
+    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", f"| Models | Production | {TODAY} | #42 |")
     base_trace = "# Traceability\n\n### FEAT-MODEL-001\n\n**PR lineage:** [#7](x) *origin*\n\n### FEAT-DATA-001\n\n- #1\n"
     on_base(repo, {TRACEABILITY: base_trace})
     files = {**CODE, PLAN: plan(pr=42), CATALOG: row}
@@ -1176,7 +1213,7 @@ def test_indented_code_blocks_do_not_count(repo):
     in one. Indented code blocks are removed with the rest.
     """
     meta = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_NUMBER": "42", "PR_DRAFT": "false"}
-    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", "| Models | Production | 2026-09-28 | #42 |")
+    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", f"| Models | Production | {TODAY} | #42 |")
     indented = f"Notes\n\n    Spec: {SPEC}\n    Plan: {PLAN}\n    - [x] {DONE[0]}\n    - [x] {DONE[1]}\n"
     r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row}, **meta, PR_BODY=indented)
     assert r.returncode == 1 and "must link the spec" in r.stdout and "missing:" in r.stdout, r.stdout
