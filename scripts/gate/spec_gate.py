@@ -393,6 +393,22 @@ def summarize(paths: list[str]) -> str:
     return shown + (f" and {len(paths) - 3} more" if len(paths) > 3 else "")
 
 
+def check_changed_specs(ch: Change) -> list[str]:
+    """validate_spec over every spec the change adds or edits, read at the head."""
+    errs: list[str] = []
+    catalog, req_defs = None, None
+    for path in ch.changed:
+        if not (path.startswith(SPECS + "/") and path.endswith(".md")):
+            continue
+        text = ch.tree.read(path)
+        if text is None:
+            continue
+        if catalog is None:
+            catalog, req_defs = catalog_ids(ch.base.read(CATALOG)), requirement_defs(ch.base)
+        errs += validate_spec(frontmatter(text), path, catalog, req_defs)
+    return errs
+
+
 def check(ch: Change) -> tuple[list[str], Traced | None]:
     if ch.mode == "pr" and ch.branch.startswith("spike/"):
         return [f"branch '{ch.branch}' is a spike: local investigation commits only, never a pull request. "
@@ -401,8 +417,15 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
     if removed:
         return [f"{summarize(removed)}: the gate's own entrypoints cannot be removed by a change; "
                 "retiring the gate is a decision taken on main, not in a branch"], None
+    # A spec is documentation that becomes policy once merged, so every changed spec is
+    # validated here, before the documentation-only return, against the base's catalog
+    # and requirements; a malformed spec must not land and then block or mislead the
+    # implementation that cites it.
+    errs_specs = check_changed_specs(ch)
     gated = [f for f in ch.changed if not is_documentation(f)]
     if not gated:
+        if errs_specs:
+            return errs_specs, None
         # Documentation alone is exempt from the trace, not from the branch rule: a PR
         # still comes from a delivery branch, so `main` or `typo` is not a way in.
         if ch.mode == "pr" and not (BRANCH.match(ch.branch) or OTHER_BRANCH.match(ch.branch)):
@@ -433,7 +456,7 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
             "lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.",
         ], None
     feat_id = m.group(2).upper()
-    errs: list[str] = []
+    errs: list[str] = list(errs_specs)
     # The catalog row and the approved spec are read from the BASE (HEAD for a commit, the
     # merge base for a PR): a change cannot add its own capability or approve its own spec
     # in the same diff. Phase 2 commits the approved spec alone, before any code.

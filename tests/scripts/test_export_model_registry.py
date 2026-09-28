@@ -315,6 +315,10 @@ def test_ci_checks_the_pr_head_commit(repo):
     # own workflow and merge green
     for required in (".github/workflows/spec-gate.yml", ".github/workflows/registry-check.yml", ".githooks/pre-commit"):
         assert required in proposed["run"], required
+    # solyra#72 r4119296005 (P1): a verdict on a chore PR never reaches the traced paths, so the
+    # head's gate must also pass its own suite before it can become the gate
+    suite = next(s for s in steps if "pytest tests/scripts/test_spec_gate.py" in s.get("run", ""))
+    assert steps.index(proposed) < steps.index(suite) < steps.index(check)
     assert "spec gate ok|SPEC GATE FAILED" in proposed["run"] and "exit 1" in proposed["run"]
     assert {"PR_HEAD_REF", "PR_BASE_REF", "PR_HEAD_REPO", "PR_BASE_REPO"} <= set(proposed["env"])
 

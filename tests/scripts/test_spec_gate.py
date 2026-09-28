@@ -583,6 +583,10 @@ def test_every_branch_shape_the_rules_name_passes_only_its_own_work(repo):
     skill_file = {".claude/skills/demo/helper.sh": "echo hi\n"}
     assert pr(repo, "docs/fix-typo", {"docs/notes.md": "# Notes\n"}).returncode == 0
     assert pr(repo, "docs/spec-feat-model-001", {"docs/superpowers/specs/2026-09-28-x.md": spec()}).returncode == 0
+    # solyra#72 r4119296014: a spec landing alone is validated before the documentation return
+    for bad in (spec(req_ids="[REQ-FAKE-999]"), spec(feat_id="FEAT-NOPE-001"), spec(done_when=[])):
+        r = pr(repo, "docs/spec-feat-model-001", {"docs/superpowers/specs/2026-09-28-x.md": bad})
+        assert r.returncode == 1 and "2026-09-28-x.md:" in r.stdout, r.stdout
     assert pr(repo, "chore/bump-deps", {"package-lock.json": "{}\n"}).returncode == 0
     assert pr(repo, "bot/superpowers-v5", skill_file).returncode == 0
     assert pr(repo, "bot/superpowers-v5", {**skill_file, **CODE}).returncode == 1

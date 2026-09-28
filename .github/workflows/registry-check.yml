@@ -61,6 +61,19 @@ jobs:
           fi
           echo "proposed gate reached a verdict (exit $rc); the base gate's verdict is the one that counts"
 
+      # A verdict on this PR exercises one path through the gate. The gate's own suite
+      # (hermetic: temporary repositories, no network) exercises the traced and
+      # ready-for-review paths too, so a runtime error in check_close_out cannot
+      # merge behind a chore PR that never reaches it.
+      - name: Proposed gate passes its own suite
+        run: |
+          if [ -f tests/scripts/test_spec_gate.py ]; then
+            python3 -m pip install --quiet pytest pyyaml
+            python3 -m pytest tests/scripts/test_spec_gate.py -q -p no:cacheprovider
+          else
+            echo "::notice::no tests/scripts/test_spec_gate.py in this repository; the verdict step above is the check"
+          fi
+
       # Not `if: hashFiles(...)`: that reads the head checkout, so a PR that
       # deletes the exporter would skip its only check and pass. The exporter
       # is inapplicable only when neither side of the PR has it (solyra).
