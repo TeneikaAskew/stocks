@@ -1749,3 +1749,69 @@ def test_documentation_branches_carry_documentation_from_delivery_branches(repo)
     r = pr(repo, "docs/reqs", {REQUIREMENTS: twice})
     assert r.returncode == 1 and "REQ-DATA-001 is defined 2 times; a requirement has one definition" in r.stdout, r.stdout
     assert pr(repo, "docs/reqs", {REQUIREMENTS: REQUIREMENTS_TEXT + "\n**REQ-DATA-002:** Dates are Eastern.\n"}).returncode == 0
+
+
+def test_wrappers_comments_and_hollow_bodies_do_not_satisfy_the_gate_files(repo):
+    """solyra#72 r4120167264 (P1), r4120167282 (P1), r4120167289 (P1), r4120167299,
+    r4120167273 (P1) (spec_gate.py:208, :257, :712, :717, :236).
+
+    `command echo "<cmd>"` counted as executing the command; `contents: write # required`
+    hid a job-level grant behind a trailing comment; a suite with every body replaced by
+    `pass` kept its names; a hook that echoed the gate command counted as running it; and
+    spec-gate.yml could check out the merge ref. Each is refused.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/registry-check.yml"
+    head = ("name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n"
+            "{JOB}    runs-on: ubuntu-latest\n    steps:\n      - run: |\n{BODY}")
+    cmds = ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"', "pytest tests/scripts/test_spec_gate.py",
+            'git ls-tree "$HEAD_SHA" .githooks/pre-commit', 'export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"')
+    for shape in ('          command echo "{c}"\n', '          builtin echo "{c}"\n', '          env -i printf "%s" "{c}"\n'):
+        body_text = "".join(shape.replace("{c}", c) for c in cmds)
+        r = pr(repo, "chore/gate-workflow", {wf: head.replace("{JOB}", "").replace("{BODY}", body_text)}, **cap)
+        assert r.returncode == 1 and "no longer executes" in r.stdout, (shape, r.stdout)
+    wrapped = "".join(f"          command {c}\n" for c in cmds[:2]) + "".join(f"          env FOO=1 {c}\n" for c in cmds[2:])
+    assert pr(repo, "chore/gate-workflow", {wf: head.replace("{JOB}", "").replace("{BODY}", wrapped)}, **cap).returncode == 0
+    plain = "".join(f"          {c}\n" for c in cmds)
+    r = pr(repo, "chore/gate-workflow", {wf: head.replace("{JOB}", "    permissions:\n      contents: write # required\n").replace("{BODY}", plain)}, **cap)
+    assert r.returncode == 1 and "grants a write permission" in r.stdout, r.stdout
+    gate_wf = ("on:\n  pull_request_target:\npermissions:\n  contents: read\njobs:\n  gate:\n    steps:\n"
+               "      - uses: actions/checkout@v4\n        with:\n          ref: {REF}\n      - run: python3 scripts/gate/spec_gate.py --pr a b\n")
+    for ref in ("${{ github.event.pull_request.merge_commit_sha }}", "refs/pull/${{ github.event.number }}/merge", "main"):
+        r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_wf.replace("{REF}", ref)}, **cap)
+        assert r.returncode == 1 and "instead of the event's base sha" in r.stdout, (ref, r.stdout)
+    assert pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_wf.replace("{REF}", "${{github.event.pull_request.base.sha}}")}, **cap).returncode == 0
+    suite = "tests/scripts/test_spec_gate.py"
+    on_base(repo, {suite: "def test_a():\n    assert 1\n    assert 2\n\n\ndef test_b():\n    assert 3\n"})
+    r = pr(repo, "chore/gate-suite", {suite: "def test_a():\n    pass\n\n\ndef test_b():\n    assert 3\n"}, **cap)
+    assert r.returncode == 1 and "weakens 1 test(s) the base has (test_a: 2 assertion(s), now 0)" in r.stdout, r.stdout
+    assert pr(repo, "chore/gate-suite", {suite: "def test_a():\n    assert 1\n    assert 2 and 3\n\n\ndef test_b():\n    assert 3\n    assert 4\n"}, **cap).returncode == 0
+    on_base(repo, {".githooks/pre-commit": "#!/bin/sh\npython3 scripts/gate/spec_gate.py --commit\n"})
+    for hook in ("#!/bin/sh\necho scripts/gate/spec_gate.py --commit\n", "#!/bin/sh\ncommand echo 'python3 scripts/gate/spec_gate.py --commit'\n",
+                 "#!/bin/sh\ntrue || python3 scripts/gate/spec_gate.py --commit\n"):
+        r = pr(repo, "chore/gate-hook", {".githooks/pre-commit": hook}, **cap)
+        assert r.returncode == 1 and "no longer runs `scripts/gate/spec_gate.py --commit`" in r.stdout, (hook, r.stdout)
+    real_hook = "#!/usr/bin/env bash\nset -e\npython3 \"$(git rev-parse --show-toplevel)/scripts/gate/spec_gate.py\" --commit\n"
+    assert pr(repo, "chore/gate-hook", {".githooks/pre-commit": real_hook}, **cap).returncode == 0
+
+
+def test_records_and_plans_land_in_the_shape_the_gate_reads(repo):
+    """solyra#72 r4120167327, r4120167313 (spec_gate.py:1071, :659).
+
+    A docs/ PR could erase a capability's traceability heading and rows while a prose
+    mention kept its ID "defined", and a landing plan could name `docs/foo` or another
+    FEAT's branch. Both are refused.
+    """
+    trace = "# Traceability\n\n## FEAT-MODEL-001\n\n- #12 first cut\n\n## FEAT-DATA-001\n\n- #13 loader\n"
+    on_base(repo, {TRACEABILITY: trace})
+    erased = "# Traceability\n\nFEAT-MODEL-001 used to live here.\n\n## FEAT-DATA-001\n\n- #13 loader\n"
+    r = pr(repo, "docs/trace", {TRACEABILITY: erased})
+    assert r.returncode == 1 and "no longer defines 1 ID(s) the base has (FEAT-MODEL-001)" in r.stdout, r.stdout
+    assert pr(repo, "docs/trace", {TRACEABILITY: trace + "\nA closing note.\n"}).returncode == 0
+    new_plan, data_spec = "docs/superpowers/plans/2026-09-28-data-b.md", "docs/superpowers/specs/2026-09-28-data-b.md"
+    on_base(repo, {data_spec: spec(feat_id="FEAT-DATA-001")})
+    r = pr(repo, "docs/plan-data", {new_plan: plan(feat_id="FEAT-DATA-001", spec=data_spec, branch="docs/foo")})
+    assert r.returncode == 1 and "branch 'docs/foo' is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>" in r.stdout, r.stdout
+    r = pr(repo, "docs/plan-data", {new_plan: plan(feat_id="FEAT-DATA-001", spec=data_spec, branch="feature/feat-model-001-x")})
+    assert r.returncode == 1 and "serves FEAT-MODEL-001, not the plan's FEAT-DATA-001" in r.stdout, r.stdout
+    assert pr(repo, "docs/plan-data", {new_plan: plan(feat_id="FEAT-DATA-001", spec=data_spec, branch="fix/feat-data-001-x")}).returncode == 0

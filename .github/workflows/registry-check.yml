@@ -59,7 +59,7 @@ jobs:
           fi
           # An executable hook that no longer calls the gate is the gate switched off for
           # every clone with core.hooksPath set; the call must be live, not a comment.
-          if ! git show "$HEAD_SHA:.githooks/pre-commit" | grep -v '^[[:space:]]*#' | grep -q 'spec_gate.py.*--commit'; then
+          if ! git show "$HEAD_SHA:.githooks/pre-commit" | grep -Ev '^[[:space:]]*(#|echo |printf |: )' | grep -Eq 'spec_gate\.py"?[[:space:]]+--commit'; then
             echo "::error::.githooks/pre-commit at the head no longer runs scripts/gate/spec_gate.py --commit" >&2
             exit 1
           fi

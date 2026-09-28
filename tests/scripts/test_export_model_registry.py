@@ -399,7 +399,7 @@ def test_ci_checks_the_pr_head_commit(repo):
     assert "if [ -f" not in suite["run"], "the suite runs unconditionally; it is a gate entrypoint the PR cannot remove"
     assert 'git ls-tree "$HEAD_SHA" .githooks/pre-commit' in proposed["run"] and "100755" in proposed["run"]
     # solyra#72 r4119837242: and still call the gate; an executable `exit 0` is not a hook
-    assert 'git show "$HEAD_SHA:.githooks/pre-commit"' in proposed["run"] and "spec_gate.py.*--commit" in proposed["run"]
+    assert 'git show "$HEAD_SHA:.githooks/pre-commit"' in proposed["run"] and 'spec_gate\\.py"?[[:space:]]+--commit' in proposed["run"] and "(#|echo |printf |: )" in proposed["run"]
     assert "spec gate ok|SPEC GATE FAILED" in proposed["run"] and "exit 1" in proposed["run"]
     assert {"PR_HEAD_REF", "PR_BASE_REF", "PR_HEAD_REPO", "PR_BASE_REPO"} <= set(proposed["env"])
 

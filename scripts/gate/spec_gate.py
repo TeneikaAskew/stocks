@@ -34,6 +34,7 @@ checks, and PR_BASE_REF must be main. Any harness (Claude Code, Codex, a human) 
 """
 from __future__ import annotations
 
+import ast
 import json
 import datetime
 import os
@@ -208,6 +209,9 @@ def shell_statements(runs: str) -> list[str]:
             stmt, op = parts[k].strip(), parts[k + 1] if k + 1 < len(parts) else ""
             stmt = re.sub(r"^((if|elif|while|until|!)\s+)+", "", stmt)
             stmt = re.sub(r"^[A-Za-z_]\w*=(?!['\"$])\S*\s*", "", stmt)   # `x=1 cmd` prefix assignment
+            # `command echo ...`, `env FOO=1 echo ...`, `time ...`: the wrapper runs its argument,
+            # so the word after it is the command judged (solyra#72 r4120167264)
+            stmt = re.sub(r"^((command|builtin|exec|env|time|nice|nohup|sudo|xargs)\s+(-\S+\s+|[A-Za-z_]\w*=\S*\s+)*)+", "", stmt)
             executed = (stmt and not re.match(r"^[A-Za-z_]\w*=", stmt)   # `x="..."`: a value, not a command
                         and stmt.split()[0] not in NON_EXECUTING and depth == 0 and not chained and op != "||")
             if executed:
@@ -239,6 +243,17 @@ def workflow_triggers(body: str) -> set[str]:
     return set()
 
 
+def test_assertions(source: str) -> dict[str, int]:
+    """{test function: number of assert statements in it}, or {} for a file that does not
+    parse (which the registry check then fails on its own)."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return {}
+    return {node.name: sum(isinstance(n, ast.Assert) for n in ast.walk(node))
+            for node in tree.body if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")}
+
+
 def checkout_refs(body: str) -> list[str]:
     """The `ref:` of every actions/checkout step in a comment-stripped workflow ("" for a
     step that takes the event's default)."""
@@ -262,8 +277,9 @@ def checkout_violation(body: str, side: str) -> str | None:
     for ref in checkout_refs(body):
         if side == "head" and ref and "pull_request.head" not in ref:
             return f"checks out {ref!r} instead of the PR head"
-        if side == "base" and "head" in ref:
-            return f"checks out {ref!r}, the PR's own code, under pull_request_target"
+        if side == "base" and ref and re.sub(r"\s+", "", ref) != "${{github.event.pull_request.base.sha}}":
+            # solyra#72 r4120167273: the merge ref and merge_commit_sha carry the PR's code too
+            return f"checks out {ref!r} instead of the event's base sha under pull_request_target"
     return None
 
 
@@ -283,7 +299,7 @@ def workflow_write_grant(body: str) -> str | None:
             continue
         level = indent(line)
         for j in range(i + 1, block_end(lines, i, level)):
-            if re.match(r"^\s*[\w-]+:\s*['\"]?write['\"]?\s*$", lines[j]):
+            if re.match(r"^\s*[\w-]+:\s*['\"]?write['\"]?\s*$", re.sub(r"\s+#.*$", "", lines[j])):   # `contents: write # why`
                 return lines[j].strip()
     return None
 
@@ -695,6 +711,14 @@ def check_changed_plans(ch: Change) -> list[str]:
                 errs.append(f"{path}: its spec {fm.get('spec')} serves {spec_fm.get('feat_id')}, not {feat}")
             if feat and feat not in catalog_ids(ch.base.read(CATALOG)):
                 errs.append(f"{path}: feat_id {feat} is not in {CATALOG}")
+            # solyra#72 r4120167313: the branch is one an implementation can use, and it names
+            # the plan's FEAT
+            bm = BRANCH.match(str(fm.get("branch")))
+            if not bm:
+                errs.append(f"{path}: branch {fm.get('branch')!r} is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>; "
+                            "no implementation branch could use this plan")
+            elif feat and bm.group(2).upper() != feat:
+                errs.append(f"{path}: branch {fm.get('branch')} serves {bm.group(2).upper()}, not the plan's {feat}")
             # solyra#72 r4120071823: one plan per branch, or the trace finds two and refuses
             # every commit for that branch while neither plan may be deleted
             taken = [p for p in ch.tree.list(PLANS) if p != path and frontmatter(ch.tree.read(p)).get("branch") == fm.get("branch")]
@@ -739,14 +763,22 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
         # solyra#72 r4119957711: the head-run registry check executes the suite the PR ships,
         # so a suite reduced to one passing test would certify any gate; every test the base
         # has stays, by name, and a PR may only add to or amend them
-        names = lambda t: set(re.findall(r"^def (test_\w+)", t, re.M))
-        if dropped := sorted(names(base_suite) - names(head_suite)):
+        base_tests, head_tests = test_assertions(base_suite), test_assertions(head_suite)
+        if dropped := sorted(set(base_tests) - set(head_tests)):
             return [f"{SUITE}: drops {len(dropped)} test(s) the base has ({dropped[0]}"
                     f"{' and more' if len(dropped) > 1 else ''}); the gate's suite only grows"], None
+        # solyra#72 r4120167289: a kept name with an emptied body is a dropped test; each test
+        # keeps at least the assertions the base gives it
+        if weakened := sorted(n for n, count in base_tests.items() if head_tests[n] < count):
+            n = weakened[0]
+            return [f"{SUITE}: weakens {len(weakened)} test(s) the base has ({n}: {base_tests[n]} assertion(s), now "
+                    f"{head_tests[n]}{'; and more' if len(weakened) > 1 else ''}); the gate's suite only grows"], None
     if HOOK in ch.changed and (hook := ch.tree.read(HOOK)) is not None:
         # solyra#72 r4119837242: an executable hook that no longer runs the gate is the gate
         # switched off for every clone with core.hooksPath set
-        if not any(not ln.lstrip().startswith("#") and "spec_gate.py" in ln and "--commit" in ln for ln in hook.splitlines()):
+        # (solyra#72 r4120167299: an `echo` of the command is not an invocation; the same statement
+        # rules as the workflow contracts apply)
+        if not any(re.search(r"spec_gate\.py['\"]?\s+--commit", st) for st in shell_statements(hook)):
             return [f"{HOOK}: no longer runs `scripts/gate/spec_gate.py --commit`; the hook keeps the commit-time gate"], None
     # P1b: the policy inputs the gate reads are not deleted either
     removed = [f for f in ch.changed if f in GATE_ENTRYPOINTS + POLICY_DOCS
@@ -1106,7 +1138,10 @@ def policy_ids(path: str, text: str) -> set[str]:
         return set(REQ_DEFINITION.findall(visible(text)))
     if path == CANVASES:
         return set(canvas_modes(text))
-    return set(FEAT_IDS.findall(visible(text)))
+    # the traceability document: a FEAT with a heading or a row, not one merely mentioned
+    # (solyra#72 r4120167327)
+    shown = visible(text)
+    return {f for f in set(FEAT_IDS.findall(shown)) if any(feat_headings(shown, f))}
 
 
 def check_policy_structure(ch: Change) -> list[str]:
