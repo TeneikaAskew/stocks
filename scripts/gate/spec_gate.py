@@ -92,6 +92,7 @@ GATE_ENTRYPOINTS = (
     ".githooks/pre-commit",
     ".github/workflows/spec-gate.yml",
     ".github/workflows/registry-check.yml",
+    "tests/scripts/test_spec_gate.py",   # the suite CI runs on a proposed gate
 )
 # The manifest fields a chore/ branch may change. Anything else in package.json or
 # pyproject.toml (scripts, build config, tool tables) is executable configuration that
@@ -406,6 +407,14 @@ def check_changed_specs(ch: Change) -> list[str]:
         if catalog is None:
             catalog, req_defs = catalog_ids(ch.base.read(CATALOG)), requirement_defs(ch.base)
         errs += validate_spec(frontmatter(text), path, catalog, req_defs)
+        base_text = ch.base.read(path)
+        if base_text is not None and frontmatter(base_text).get("status") == "approved" and text != base_text:
+            # The one edit an approved spec takes is its status moving to superseded when the
+            # spec that replaces it lands; anything else is a new contract nobody approved.
+            strip = lambda t: re.sub(r"^status:.*$", "", t, flags=re.M)
+            if not (frontmatter(text).get("status") == "superseded" and strip(text) == strip(base_text)):
+                errs.append(f"{path}: an approved spec does not change in place; write a new spec that names it in "
+                            "`supersedes` and get that one approved, then mark this one superseded")
     return errs
 
 
@@ -657,11 +666,12 @@ def section(body: str, title: str) -> str | None:
     """The text under the first heading containing `title` (case-insensitive), HTML comments removed."""
     lines = body.splitlines()
     for i, line in enumerate(lines):
-        if HEADING.match(line) and title.lower() in line.lower():
+        if (h := HEADING.match(line)) and title.lower() in line.lower():
+            level = len(h.group(1))
             out = []
             for later in lines[i + 1:]:
-                if HEADING.match(later):
-                    break
+                if (hh := HEADING.match(later)) and len(hh.group(1)) <= level:
+                    break   # a nested heading (### Volume under ## Capacity) is part of the section
                 out.append(later)
             return "\n".join(out)
     return None

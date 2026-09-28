@@ -50,6 +50,13 @@ jobs:
               exit 1
             fi
           done
+          # git runs a configured hook only when it is executable; a mode change to 100644
+          # would silently switch the commit-time gate off.
+          mode=$(git ls-tree "$HEAD_SHA" .githooks/pre-commit | cut -d' ' -f1)
+          if [ "$mode" != "100755" ]; then
+            echo "::error::.githooks/pre-commit has mode $mode at the head; the hook must stay executable (100755)" >&2
+            exit 1
+          fi
           python3 -m py_compile "$gate"
           set +e
           out=$(python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA" 2>&1); rc=$?
@@ -66,7 +73,15 @@ jobs:
       # ready-for-review paths too, so a runtime error in check_close_out cannot
       # merge behind a chore PR that never reaches it.
       - name: Proposed gate passes its own suite
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          suite=tests/scripts/test_spec_gate.py
+          if git cat-file -e "$BASE_SHA:$suite" 2>/dev/null && ! git cat-file -e "$HEAD_SHA:$suite" 2>/dev/null; then
+            echo "::error::$suite exists on the base but this PR removes it; the proposed gate cannot be accepted untested" >&2
+            exit 1
+          fi
           if [ -f tests/scripts/test_spec_gate.py ]; then
             python3 -m pip install --quiet pytest pyyaml
             # --noconftest: the suite is hermetic; a repository conftest may import packages this job does not install

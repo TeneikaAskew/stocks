@@ -587,6 +587,12 @@ def test_every_branch_shape_the_rules_name_passes_only_its_own_work(repo):
     for bad in (spec(req_ids="[REQ-FAKE-999]"), spec(feat_id="FEAT-NOPE-001"), spec(done_when=[])):
         r = pr(repo, "docs/spec-feat-model-001", {"docs/superpowers/specs/2026-09-28-x.md": bad})
         assert r.returncode == 1 and "2026-09-28-x.md:" in r.stdout, r.stdout
+    # solyra#72 r4119408318: an approved spec does not change in place; it is superseded
+    r = pr(repo, "docs/spec-feat-model-001", {SPEC: spec(done_when=["something easier"])})
+    assert r.returncode == 1 and "does not change in place" in r.stdout, r.stdout
+    assert pr(repo, "docs/spec-feat-model-001", {SPEC: spec(status="superseded")}).returncode == 0
+    r = pr(repo, "docs/spec-feat-model-001", {SPEC: spec(status="superseded", done_when=["something easier"])})
+    assert r.returncode == 1 and "does not change in place" in r.stdout, r.stdout
     assert pr(repo, "chore/bump-deps", {"package-lock.json": "{}\n"}).returncode == 0
     assert pr(repo, "bot/superpowers-v5", skill_file).returncode == 0
     assert pr(repo, "bot/superpowers-v5", {**skill_file, **CODE}).returncode == 1
@@ -941,6 +947,12 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
     assert pr(repo, BRANCH, job, **title, PR_BODY=filled).returncode == 0
     na = body() + "\n\n## Capacity\nn/a: the job's log line changes, no query or schedule does\n"
     assert pr(repo, BRANCH, job, **title, PR_BODY=na).returncode == 0
+    # solyra#72 r4119408320: nested headings inside the section belong to it
+    nested = (body() + "\n\n## Capacity\n\n### Volume\n3 tickers \u00d7 400 B\n\n### Velocity\n1 query\n\n### Wall-clock\n2 s\n\n"
+              "### $/run \u00d7 runs/day \u00d7 30\n$0.01\n\n## Summary\nx\n")
+    nested = nested.replace("### Volume\n3", "### Volume\nVolume: 3").replace("### Velocity\n1", "### Velocity\nVelocity: 1") \
+                   .replace("### Wall-clock\n2", "### Wall-clock\nWall-clock: 2").replace("30\n$0.01", "30\n30: $0.01")
+    assert pr(repo, BRANCH, job, **title, PR_BODY=nested).returncode == 0, nested
     assert pr(repo, BRANCH, CODE, **title, PR_BODY=body()).returncode == 0
     # solyra#72 r4118831965: a chore/ PR editing the gate's own workflow is untraced and
     # still changes what CI runs, so the Capacity check does not hide behind the trace
