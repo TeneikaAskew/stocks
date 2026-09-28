@@ -5,15 +5,13 @@ name: spec-gate
 # after merge. The PR head is fetched as git objects and read with `git show`;
 # nothing from the PR is checked out or executed, and the token is read-only.
 #
-# The model-registry check is the opposite case: it must run the exporter the PR
-# ships, so a PR that changes the exporter and regenerates its JSON is judged by
-# its own generator. That job runs on plain pull_request, checked out at the head,
-# with the read-only token and no secrets: nothing there is worth stealing.
+# The model-registry check lives in registry-check.yml, on plain pull_request:
+# it must run the exporter the PR ships. One workflow per trust level, so a run
+# never creates a skipped twin of the other's job that branch protection could
+# mistake for a passing check.
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, edited, ready_for_review]
-  pull_request:
-    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
@@ -21,7 +19,6 @@ permissions:
 
 jobs:
   gate:
-    if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -48,23 +45,3 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: python3 scripts/gate/spec_gate.py --pr "$BASE_SHA" "$HEAD_SHA"
 
-  # Only where the exporter exists (stocks): a PR that edits the model registry
-  # without regenerating its JSON fails here, judged by the exporter at the PR
-  # head. --base keeps a registry edit that reached main without its JSON from
-  # failing every later PR: only the PR that touched the registry, or made a
-  # fresh base stale, fails; the rest pass with a notice naming main.
-  registry:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Model registry JSON matches its sources
-        if: hashFiles('scripts/gate/export_model_registry.py') != ''
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 scripts/gate/export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"

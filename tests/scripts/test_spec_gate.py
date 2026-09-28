@@ -176,8 +176,11 @@ def test_the_gate_cannot_be_edited_outside_chore_and_ci_runs_the_base_copy(repo)
     assert pr(repo, "chore/gate-fix", edit).returncode == 0
 
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    # One trigger and one job: the head-executing registry check is its own workflow, so a
+    # run never creates a skipped twin of the other's job (stocks#1205 r4118475509, P1).
+    assert list(workflow.get("on", workflow.get(True))) == ["pull_request_target"]
+    assert list(workflow["jobs"]) == ["gate"]
     gate_job = workflow["jobs"]["gate"]
-    assert gate_job["if"] == "github.event_name == 'pull_request_target'"
     checkout = next(s for s in gate_job["steps"] if s.get("uses", "").startswith("actions/checkout"))
     assert checkout["with"]["ref"] == "${{ github.event.pull_request.base.sha }}"
     assert not any("export_model_registry" in s.get("run", "") for s in gate_job["steps"])
@@ -431,7 +434,7 @@ def test_close_out_records_are_required_once_the_pr_is_ready(repo):
     trace = "# Traceability\n\n## FEAT-MODEL-001\n\n- none\n\n## FEAT-DATA-001\n\n- #42 state each model's decision\n"
     on_base(repo, {TRACEABILITY: trace})   # the other capability's section is not this change's to add
     r = pr(repo, BRANCH, {**recorded, CATALOG: row, TRACEABILITY: trace}, **meta, PR_DRAFT="false")
-    assert r.returncode == 1 and "add this PR (#42) under the FEAT-MODEL-001 section" in r.stdout, r.stdout
+    assert r.returncode == 1 and "add this PR (#42) to the FEAT-MODEL-001 section's PR lineage" in r.stdout, r.stdout
     trace = trace.replace("- none\n", "- #42 state each model's decision\n")
     assert pr(repo, BRANCH, {**recorded, CATALOG: row, TRACEABILITY: trace}, **meta, PR_DRAFT="false").returncode == 0
 
@@ -520,6 +523,8 @@ def test_every_branch_shape_the_rules_name_passes_only_its_own_work(repo):
     assert pr(repo, "bot/superpowers-v5", {**skill_file, **CODE}).returncode == 1
     assert pr(repo, "chore/refactor", CODE).returncode == 1
     assert pr(repo, "test/more-cases", {"tests/test_x.py": "def test(): pass\n"}).returncode == 1
+    # stocks#1205 r4118475516: git refs are case-sensitive, so the shape is lowercase only
+    assert pr(repo, BRANCH.upper(), CODE).returncode == 1
     _git(repo, "checkout", "-q", "-B", "spike/try", "base")
     write(repo, "lib/model.py", CODE["lib/model.py"])
     _git(repo, "add", "lib/model.py")
@@ -980,3 +985,41 @@ def test_policy_documents_are_read_at_the_current_base(repo):
     _git(repo, "commit", "-q", "-m", "main supersedes the spec after the fork")
     r = gate(repo, "--pr", "main", BRANCH, PR_HEAD_REF=BRANCH, PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body())
     assert r.returncode == 1 and f"{SPEC} is superseded by {newer}" in r.stdout, r.stdout
+
+
+def test_a_docs_only_feature_pr_is_still_scoped(repo):
+    """stocks#1205 r4118475503 (spec_gate.py:329).
+
+    A feature/ PR with no gated file returned before the product-scope check,
+    so it could rewrite the requirements or another capability's record with
+    no plan. The scope rules run on every feature/ or fix/ PR from its branch
+    name alone.
+    """
+    r = pr(repo, BRANCH, {REQUIREMENTS: REQUIREMENTS_TEXT + "\n**REQ-MODEL-002:** Faster.\n"})
+    assert r.returncode == 1 and "requirements change on their own docs/ branch" in r.stdout, r.stdout
+    other = CATALOG_TEXT.replace("### FEAT-DATA-001\n\n- Status: Production", "### FEAT-DATA-001\n\n- Status: Retired")
+    r = pr(repo, BRANCH, {CATALOG: other})
+    assert r.returncode == 1 and "lines outside FEAT-MODEL-001's row and record change" in r.stdout, r.stdout
+    assert pr(repo, BRANCH, {"docs/notes.md": "# Notes\n"}).returncode == 0
+
+
+def test_the_lineage_entry_is_visible(repo):
+    """stocks#1205 r4118475512 (spec_gate.py:693).
+
+    Any added line in the FEAT's traceability section holding `#N` satisfied
+    the close-out, so `<!-- #42 -->` or a prose mention passed. The number must
+    be on a rendered `**PR lineage:**` line or a list item of that section.
+    """
+    meta = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body(ticked=True), "PR_NUMBER": "42", "PR_DRAFT": "false"}
+    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", "| Models | Production | 2026-09-28 | #42 |")
+    base_trace = "# Traceability\n\n### FEAT-MODEL-001\n\n**PR lineage:** [#7](x) *origin*\n\n### FEAT-DATA-001\n\n- #1\n"
+    on_base(repo, {TRACEABILITY: base_trace})
+    files = {**CODE, PLAN: plan(pr=42), CATALOG: row}
+    hidden = base_trace.replace("*origin*\n", "*origin*\n<!-- #42 -->\n")
+    r = pr(repo, BRANCH, {**files, TRACEABILITY: hidden}, **meta)
+    assert r.returncode == 1 and "PR lineage" in r.stdout, r.stdout
+    prose = base_trace.replace("*origin*\n", "*origin*\n\nSee also #42 for context.\n")
+    r = pr(repo, BRANCH, {**files, TRACEABILITY: prose}, **meta)
+    assert r.returncode == 1 and "PR lineage" in r.stdout, r.stdout
+    entry = base_trace.replace("*origin*\n", "*origin* \u00b7 [#42](y) *close-out*\n")
+    assert pr(repo, BRANCH, {**files, TRACEABILITY: entry}, **meta).returncode == 0

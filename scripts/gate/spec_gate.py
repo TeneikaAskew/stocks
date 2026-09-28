@@ -57,7 +57,7 @@ PRODUCT_DOCS = "docs/product/"
 REGISTRY_DOCS = ("docs/product/07-MODEL-REGISTRY.md", "docs/product/generated/")
 
 FEAT_ROW = re.compile(r"^\|\s*\[?(FEAT-[A-Z]+-\d{3})\b", re.M)
-BRANCH = re.compile(r"^(feature|fix)/(feat-[a-z]+-\d{3})-[a-z0-9][a-z0-9._-]*$", re.I)
+BRANCH = re.compile(r"^(feature|fix)/(feat-[a-z]+-\d{3})-[a-z0-9][a-z0-9._-]*$")   # lowercase: git refs are case-sensitive
 REQ_SHAPE = re.compile(r"^REQ-[A-Z]+-\d{3}$")
 REQ_DEFINITION = re.compile(r"\*\*(REQ-[A-Z]+-\d{3}):\*\*")
 CHECKBOX = re.compile(r"^\s*[-*]\s+\[([ xX])\]\s+(.*\S)\s*$")
@@ -74,6 +74,7 @@ GATE_FILES = (
     "scripts/gate/",
     ".githooks/",
     ".github/workflows/spec-gate.yml",
+    ".github/workflows/registry-check.yml",
     "tests/scripts/test_spec_gate.py",
     "tests/scripts/test_export_model_registry.py",
 )
@@ -571,20 +572,21 @@ def feat_span(text: str, feat_id: str) -> set[int]:
     return span
 
 
-def check_product_scope(t: Traced, ch: Change, merge_base: str, head: str) -> list[str]:
+def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) -> list[str]:
     """CI only: a feature change edits its own catalog record and traceability section, and
-    nothing else's. The requirements document changes on its own docs/ branch."""
+    nothing else's. The requirements document changes on its own docs/ branch. Runs on a
+    feature/ or fix/ PR whether or not it carries code, so a docs-only one is scoped too."""
     errs: list[str] = []
     for path in ch.changed:
         if path == REQUIREMENTS:
             errs.append(f"{path} changes in this feature change; requirements change on their own docs/ branch, "
                         "before the work that cites them")
         elif path in (CATALOG, TRACEABILITY):
-            spans = {"-": feat_span(Tree(merge_base).read(path) or "", t.feat_id), "+": feat_span(ch.tree.read(path) or "", t.feat_id)}
+            spans = {"-": feat_span(Tree(merge_base).read(path) or "", feat_id), "+": feat_span(ch.tree.read(path) or "", feat_id)}
             outside = [f"{side}{n}" for side, n, text in changed_lines(merge_base, head, path)
                        if text.strip() and n not in spans[side]]
             if outside:
-                errs.append(f"{path}: lines outside {t.feat_id}'s row and record change ({summarize(outside)}); "
+                errs.append(f"{path}: lines outside {feat_id}'s row and record change ({summarize(outside)}); "
                             "a feature change edits only its own record")
         elif path.startswith(PRODUCT_DOCS) and not path.startswith(REGISTRY_DOCS):
             errs.append(f"{path} changes in this feature change; under {PRODUCT_DOCS} only the FEAT's own catalog "
@@ -667,6 +669,15 @@ def section_of(text: str, feat_id: str) -> range:
     return range(0)
 
 
+def lineage_refs(text: str, feat_id: str) -> set[str]:
+    """The PR entries in the FEAT's traceability section as rendered: each `**PR lineage:**`
+    line or list item in the visible section, so a `<!-- #N -->` is not an entry."""
+    shown = visible(text)
+    lines = shown.splitlines()
+    return {line.strip() for ln in section_of(shown, feat_id)
+            if ln <= len(lines) and re.match(r"^\s*(\*\*PR lineage:\*\*|[-*]\s)", (line := lines[ln - 1]))}
+
+
 def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict) -> list[str]:
     """CI only, once the PR is ready for review: the Phase 5 records exist in this PR."""
     n = env["PR_NUMBER"]
@@ -688,9 +699,11 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
         errs.append(f"{CATALOG}: set the {t.feat_id} Status in its row or record (it reads '{status or 'nothing'}')")
     trace_text = ch.tree.read(TRACEABILITY)
     if trace_text is not None:
-        section = section_of(trace_text, t.feat_id)
-        if not any(ln in section and pr_ref.search(text) for ln, text in added_lines(merge_base, head, TRACEABILITY)):
-            errs.append(f"{TRACEABILITY}: add this PR (#{n}) under the {t.feat_id} section")
+        now_lineage = lineage_refs(trace_text, t.feat_id)
+        before_lineage = lineage_refs(Tree(merge_base).read(TRACEABILITY) or "", t.feat_id)
+        if not any(pr_ref.search(entry) for entry in now_lineage - before_lineage):
+            errs.append(f"{TRACEABILITY}: add this PR (#{n}) to the {t.feat_id} section's PR lineage "
+                        "(a `**PR lineage:**` line or a list item; a comment or prose mention does not count)")
     else:
         prs = row_fields(ch.tree.read(CATALOG) or "", t.feat_id).get("PRs", "")
         if not pr_ref.search(prs):
@@ -787,7 +800,8 @@ def run(argv: list[str]) -> int:
         if traced:
             errs += check_pr_metadata(traced, env, ch.tree)
             errs += check_capacity(env.get("PR_BODY"), ch.changed)
-            errs += check_product_scope(traced, ch, merge_base, head)
+        if (m := BRANCH.match(branch)):
+            errs += check_product_scope(m.group(2).upper(), ch, merge_base, head)
             ready = env.get("PR_DRAFT") == "false"
             errs += check_plan_pr(traced, env, ready)
             if env.get("PR_NUMBER") and ready:

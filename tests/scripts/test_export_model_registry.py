@@ -22,7 +22,7 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 EXPORTER = REPO / "scripts/gate/export_model_registry.py"
-WORKFLOW = REPO / ".github/workflows/spec-gate.yml"
+WORKFLOW = REPO / ".github/workflows/registry-check.yml"
 CANVASES = REPO / "docs/product/canvases.yml"
 REGISTRY = "docs/product/07-MODEL-REGISTRY.md"
 EXPERIMENTS = "docs/EXPERIMENT_REGISTRY.md"
@@ -216,10 +216,12 @@ def test_ci_checks_the_pr_head_commit(repo):
     assert r.returncode == 1 and "is stale" in r.stdout, r.stdout
     assert export(repo, "--check", "--rev", fresh).returncode == 0
 
-    jobs = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]
-    # The exporter the PR ships judges the JSON it ships, so this runs in an
-    # unprivileged pull_request job checked out at the head, not in the gate job.
-    assert jobs["registry"]["if"] == "github.event_name == 'pull_request'"
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    jobs = workflow["jobs"]
+    # The exporter the PR ships judges the JSON it ships, so this runs in its own
+    # unprivileged pull_request workflow checked out at the head, not in the gate job.
+    assert list(workflow.get("on", workflow.get(True))) == ["pull_request"]
+    assert list(jobs) == ["registry"]
     checkout = next(s for s in jobs["registry"]["steps"] if s.get("uses", "").startswith("actions/checkout"))
     assert "ref" not in checkout.get("with", {})
     steps = jobs["registry"]["steps"]
@@ -332,3 +334,26 @@ def test_a_missing_source_fails_generation_and_the_check(repo):
     _git(repo, "rm", "-q", REGISTRY)
     r = export(repo)
     assert r.returncode != 0 and REGISTRY in r.stdout + r.stderr, r.stdout + r.stderr
+
+
+def test_an_exporter_change_counts_as_touching_the_registry(repo):
+    """stocks#1205 r4118475506 (export_model_registry.py:274).
+
+    With a stale base, a PR that changed only the exporter reported no touched
+    registry path, so the stale-base waiver let a behaviour change merge with
+    the old JSON. The exporter is one of the paths the waiver looks at.
+    """
+    exported(repo)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "regenerate")
+    write(repo, REGISTRY, REGISTRY_TEXT + "\nA prose edit, JSON not regenerated.\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "stale main")
+    stale_main = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "-b", "chore/exporter", stale_main)
+    exporter = repo / "scripts/gate/export_model_registry.py"
+    exporter.write_text(exporter.read_text(encoding="utf-8") + "\n# a behaviour change\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "change the exporter only")
+    r = export(repo, "--check", "--rev", "HEAD", "--base", stale_main)
+    assert r.returncode == 1 and "is stale" in r.stdout, r.stdout

@@ -39,6 +39,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 REGISTRY = "docs/product/07-MODEL-REGISTRY.md"
 EXPERIMENTS = "docs/EXPERIMENT_REGISTRY.md"
 OUT = "docs/product/generated/model-registry.json"
+SELF = "scripts/gate/export_model_registry.py"
 
 LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 ISSUE = re.compile(r"#(\d{2,5})")
@@ -270,8 +271,9 @@ def fresh_at(rev: str) -> bool:
 
 
 def touched_since(base: str, rev: str) -> list[str]:
-    """The registry sources and the JSON that `rev` changed since it forked from `base` (the PR's own edits)."""
-    r = git("diff", "--name-only", f"{base}...{rev}", "--", REGISTRY, EXPERIMENTS, OUT)
+    """The registry sources, the JSON and this exporter that `rev` changed since it forked
+    from `base` (the PR's own edits): a changed exporter is a changed output."""
+    r = git("diff", "--name-only", f"{base}...{rev}", "--", REGISTRY, EXPERIMENTS, OUT, SELF)
     if r.returncode != 0:
         raise SystemExit(r.stderr.strip() or f"git diff {base}...{rev} failed")
     return r.stdout.split()

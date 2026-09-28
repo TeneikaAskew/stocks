@@ -1,0 +1,34 @@
+name: registry-check
+# Plain pull_request, checked out at the PR HEAD: this job EXECUTES the PR's
+# scripts/gate/export_model_registry.py, because a PR that changes the
+# exporter and regenerates its JSON must be judged by the exporter it ships.
+# That is why it runs apart from spec-gate.yml (pull_request_target, base
+# checkout, nothing from the PR executed) and why it holds only the read-only
+# token: never give this workflow secrets or write permissions.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  # Only where the exporter exists (stocks): a PR that edits the model registry
+  # without regenerating its JSON fails here. --base keeps a registry edit that
+  # reached main without its JSON from failing every later PR: only the PR that
+  # touched the registry or the exporter, or made a fresh base stale, fails; the
+  # rest pass with a notice naming main.
+  registry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Model registry JSON matches its sources
+        if: hashFiles('scripts/gate/export_model_registry.py') != ''
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/gate/export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"
