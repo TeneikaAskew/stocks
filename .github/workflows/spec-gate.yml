@@ -11,6 +11,8 @@ name: spec-gate
 # branch protection "Require branches to be up to date before merging" (strict
 # status checks): a stale PR must then merge main first, which is a synchronize
 # event, and the gate re-reads the new base before the merge button works.
+# Both jobs here are required checks (`spec-gate / gate` AND `spec-gate / base-suite`):
+# a proposed gate the base's suite rejects must not merge behind a green verdict.
 #
 # The model-registry check lives in registry-check.yml, on plain pull_request:
 # it must run the exporter the PR ships. One workflow per trust level, so a run

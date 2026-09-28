@@ -122,9 +122,72 @@ WORKFLOW_CONTRACTS = {
         # The suite runs PR-controlled Python: its job holds no checkout credentials and
         # never holds the verdict (stocks#1205 r4120528961)
         "isolated": ("python3 -m pytest tests/scripts/test_spec_gate.py",),
+        # The verdict reads its inputs from the event, bound on its own step: a rebound
+        # PR_NUMBER skips the close-out for every later PR (solyra#72 r4120775915)
+        "env": {
+            "BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+            "HEAD_SHA": "${{ github.event.pull_request.head.sha }}",
+            "PR_HEAD_REF": "${{ github.event.pull_request.head.ref }}",
+            "PR_BASE_REF": "${{ github.event.pull_request.base.ref }}",
+            "PR_HEAD_REPO": "${{ github.event.pull_request.head.repo.full_name }}",
+            "PR_BASE_REPO": "${{ github.repository }}",
+            "PR_NUMBER": "${{ github.event.pull_request.number }}",
+            "PR_DRAFT": "${{ github.event.pull_request.draft }}",
+            "PR_TITLE": "${{ github.event.pull_request.title }}",
+            "PR_BODY": "${{ github.event.pull_request.body }}",
+        },
         "structure": ("permissions:\n  contents: read",),
     },
 }
+
+# The names the gate reads from its environment. A workflow or hook that assigns, exports,
+# unsets or reads into one of them (a prefix assignment, a line of its own, a write to
+# $GITHUB_ENV) runs the gate on inputs the PR chose (solyra#72 r4120775915).
+GATE_INPUT = r"(PR_[A-Z_]+|BASE_SHA|HEAD_SHA|SPEC_GATE_[A-Z_]+)"
+INPUT_OVERRIDE = re.compile(r"(?<![\w$.{-])" + GATE_INPUT + r"=|\b(export|unset|declare|typeset|local|readonly|read)\b[^;|&\n]*?(?<![\w$.{-])" + GATE_INPUT + r"\b")
+
+
+def input_overrides(text: str) -> list[str]:
+    """The gate inputs a comment-stripped text assigns or unsets, in order of appearance."""
+    found: list[str] = []
+    for m in INPUT_OVERRIDE.finditer(text):
+        name = m.group(1) or m.group(3)
+        if name not in found:
+            found.append(name)
+    return found
+
+
+def step_envs(body: str, command: str) -> list[dict[str, str]]:
+    """The `env:` mapping of every step whose run text invokes `command`, values with their
+    whitespace removed so `${{ github.event.pull_request.number }}` compares by content."""
+    lines, out = body.splitlines(), []
+    for i, line in enumerate(lines):
+        m = re.match(r"^(\s*)-\s+\S", line)
+        if not m or (k := enclosing_key(lines, i, indent(line))) is None or lines[k].strip() != "steps:":
+            continue
+        key_indent, end = len(m.group(1)) + 2, block_end(lines, i, indent(line))
+        item = [re.sub(r"^(\s*)-\s+", r"\1  ", lines[i])] + lines[i + 1:end]
+        run, env, j = [], {}, 0
+        while j < len(item):
+            if (rm := re.match(r"^(\s*)run:\s*(.*)$", item[j])) and len(rm.group(1)) == key_indent:
+                value = rm.group(2).strip()
+                run = [value] if value and not value.startswith(("|", ">")) else []
+                j += 1
+                while j < len(item) and (not item[j].strip() or indent(item[j]) > key_indent):
+                    run.append(item[j].strip())
+                    j += 1
+                continue
+            if (em := re.match(r"^(\s*)env:\s*$", item[j])) and len(em.group(1)) == key_indent:
+                j += 1
+                while j < len(item) and (not item[j].strip() or indent(item[j]) > key_indent):
+                    if (vm := re.match(r"^\s*([\w-]+):\s*(.*)$", item[j])):
+                        env[vm.group(1)] = re.sub(r"\s+", "", re.sub(r"\s+#.*$", "", vm.group(2)).strip().strip("'\""))
+                    j += 1
+                continue
+            j += 1
+        if any(invokes(st, command) for st in shell_statements("\n".join(run))):
+            out.append(env)
+    return out
 
 
 def indent(line: str) -> int:
@@ -190,19 +253,42 @@ def workflow_executes(text: str) -> tuple[str, str]:
         item_level = indent(lines[item])
         skipped = conditional(lines, item, block_end(lines, item, item_level), key_indent)
         # a step with its own `shell:` (`bash {0}` drops -e, `sh` is not bash) is not judged
-        skipped = skipped or any((sm := re.match(r"^(\s*)(-\s+)?shell:\s*(.*)$", lines[j]))
-                                 and len(sm.group(1)) + len(sm.group(2) or "") == key_indent
-                                 and re.sub(r"\s+#.*$", "", sm.group(3)).strip().strip("'\"") != "bash"
-                                 for j in range(item, block_end(lines, item, item_level)))
+        # (stocks#1205 r4120828215: `shell: echo {0}` prints the script's path and succeeds;
+        # a `defaults: run: shell:` on the job or the workflow does the same for every step)
+        shell = next((shell_value(sm.group(3)) for j in range(item, block_end(lines, item, item_level))
+                      if (sm := re.match(r"^(\s*)(-\s+)?shell:\s*(.*)$", lines[j]))
+                      and len(sm.group(1)) + len(sm.group(2) or "") == key_indent), None)
         steps_key = enclosing_key(lines, item, item_level)
         if steps_key is not None:
             job_level = indent(lines[steps_key])
             job_key = enclosing_key(lines, steps_key, job_level)
             if job_key is not None:
-                skipped = skipped or conditional(lines, job_key, block_end(lines, job_key, indent(lines[job_key])), job_level)
+                job_end = block_end(lines, job_key, indent(lines[job_key]))
+                skipped = skipped or conditional(lines, job_key, job_end, job_level)
+                if shell is None:
+                    shell = default_shell(lines, job_key + 1, job_end, job_level)
+        if shell is None:
+            shell = default_shell(lines, 0, len(lines), 0)
+        skipped = skipped or (shell or "bash") != "bash"
         if not skipped:
             runs.extend(step)
     return "\n".join(runs), "\n".join(lines)
+
+
+def shell_value(raw: str) -> str:
+    return re.sub(r"\s+#.*$", "", raw).strip().strip("'\"")
+
+
+def default_shell(lines: list[str], start: int, end: int, level: int) -> str | None:
+    """The `defaults: run: shell:` declared at `level` within lines[start:end], if any."""
+    for j in range(start, end):
+        if indent(lines[j]) == level and re.match(r"^\s*defaults:\s*$", lines[j]):
+            for k in range(j + 1, block_end(lines, j, level)):
+                if indent(lines[k]) == level + 2 and re.match(r"^\s*run:\s*$", lines[k]):
+                    for n in range(k + 1, block_end(lines, k, level + 2)):
+                        if (m := re.match(r"^\s*shell:\s*(.*)$", lines[n])):
+                            return shell_value(m.group(1))
+    return None
 
 
 # First words that consume their arguments as text rather than running them.
@@ -210,7 +296,7 @@ NON_EXECUTING = {"echo", "printf", "cat", "tee", ":", "true", "false", "test", "
                  "declare", "readonly", "grep", "sed", "awk", "exit", "return", "shift", "trap"}
 
 
-def shell_statements(runs: str) -> list[str]:
+def shell_statements(runs: str, errexit: bool = True) -> list[str]:
     """The statements of the collected run text that the shell executes unconditionally and
     whose failure propagates: heredoc bodies, single-quoted text, comments, statements led
     by a non-executing word (echo, printf, cat, test ...) or by an assignment of a literal,
@@ -218,7 +304,9 @@ def shell_statements(runs: str) -> list[str]:
     statement followed by `||` are all dropped (stocks#1205 r4119966265, r4120166743)."""
     lines, out, i = runs.splitlines(), [], 0
     depth = 0          # inside then/do/else ... fi/done, or a { } body: GitHub may never reach it
-    errexit = True     # GitHub runs bash -e; after `set +e` a failure no longer fails the step
+    # GitHub runs bash -e, so `errexit` starts True there; a hook starts without it, and a
+    # failure before its last line is lost until `set -e`. After `set +e` a failure no longer
+    # fails the step either way.
     while i < len(lines):
         line = lines[i]
         while line.rstrip().endswith("\\") and i + 1 < len(lines):   # continuation
@@ -265,7 +353,7 @@ def shell_statements(runs: str) -> list[str]:
                     errexit = True
             executed = (stmt and not re.match(r"^[A-Za-z_]\w*=", stmt)   # `x="..."`: a value, not a command
                         and stmt.split()[0] not in NON_EXECUTING and depth == 0 and not chained and errexit
-                        and op not in ("||", "&"))
+                        and op not in ("||", "&", "|"))   # `cmd | true`: without pipefail the pipe's status is true's
             if executed:
                 out.append(stmt)
             if op in ("then", "do", "case", "{"):   # `else` continues the block `then` opened
@@ -923,8 +1011,10 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
         if path in ch.changed and (text := ch.tree.read(path)) is not None:
             runs, body = workflow_executes(text)
             statements = shell_statements(runs)
+            # (solyra#72 r4120775932: the PR that introduces the script is the first the
+            # command must judge, so the head's tree counts as well as the base's)
             required = list(contract["run"]) + [m for script, m in contract.get("run_if_present", {}).items()
-                                                 if ch.base.read(script) is not None]
+                                                 if ch.base.read(script) is not None or ch.tree.read(script) is not None]
             # solyra#72 r4120337725: the command is what the statement invokes, so the contract
             # text is the statement's prefix, never a later argument
             lost = [m for m in required if not any(invokes(st, m) for st in statements)] + \
@@ -945,6 +1035,14 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                 if j >= 0 and (job_of(jobs, contract["run"][0])[0] == j or any(persists for _, persists in jobs[j]["checkouts"])):
                     return [f"{path}: {command!r} runs PR-controlled code, so its job holds no checkout credentials "
                             "(persist-credentials: false) and never the base's verdict"], None
+            if overridden := input_overrides(body):
+                return [f"{path}: assigns or unsets {overridden[0]}, an input the gate reads from the event; the "
+                        "gate's workflows never set the gate's inputs from the shell"], None
+            for env in step_envs(body, contract["run"][0]):
+                for name, expression in contract.get("env", {}).items():
+                    if env.get(name) != re.sub(r"\s+", "", expression):
+                        return [f"{path}: the step running {contract['run'][0]!r} no longer binds {name} to "
+                                f"`{expression}` in its own `env:`; the gate reads its inputs from the event"], None
             for job in jobs:
                 # stocks#1205 r4120528978: a job that runs a contract command has the repository
                 if any(invokes(st, m) for m in required for st in job["statements"]) and not job["checkouts"]:
@@ -983,8 +1081,16 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
         # switched off for every clone with core.hooksPath set
         # (solyra#72 r4120167299: an `echo` of the command is not an invocation; the same statement
         # rules as the workflow contracts apply)
-        if not any(re.match(r"python3?\s+['\"]?[^\s'\"]*spec_gate\.py['\"]?\s+--commit(\s|$)", st) for st in shell_statements(hook)):
-            return [f"{HOOK}: no longer runs `scripts/gate/spec_gate.py --commit`; the hook keeps the commit-time gate"], None
+        # (stocks#1205 r4120828221: git hands the file to its interpreter line, so `#!/bin/true`
+        # never reaches the call below it; and without `set -e` a later line decides the status)
+        first = hook.splitlines()[0] if hook.strip() else ""
+        if not re.match(r"^#!\s*(/usr/bin/env\s+(bash|sh)|/bin/(bash|sh)|/usr/bin/(bash|sh))\s*$", first):
+            return [f"{HOOK}: its interpreter line is {first!r}; the hook runs under bash or sh (`#!/usr/bin/env bash`) "
+                    "so the gate call on the lines below executes"], None
+        if overridden := input_overrides("\n".join(ln for ln in hook.splitlines() if not ln.lstrip().startswith("#"))):
+            return [f"{HOOK}: assigns or unsets {overridden[0]}, an input the gate reads; the hook never sets the gate's inputs"], None
+        if not any(re.match(r"python3?\s+['\"]?[^\s'\"]*spec_gate\.py['\"]?\s+--commit(\s|$)", st) for st in shell_statements(hook, errexit=False)):
+            return [f"{HOOK}: no longer runs `scripts/gate/spec_gate.py --commit` after `set -e`; the hook keeps the commit-time gate"], None
     # P1b: the policy inputs the gate reads are not deleted either
     removed = [f for f in ch.changed if f in GATE_ENTRYPOINTS + POLICY_DOCS
                and ch.tree.read(f) is None and (f in GATE_ENTRYPOINTS or ch.base.read(f) is not None)]
@@ -1354,28 +1460,40 @@ CANVAS_MODES = ("refresh", "report-only")
 
 def validate_canvases(text: str) -> list[str]:
     """The shape the refresh skill and the gate read: one top-level `canvases:` list whose
-    entries carry a `url` and, when present, a `mode` of refresh | report-only
-    (solyra#72 r4120337747). Line-oriented like canvas_modes(): the gate has no YAML dependency."""
+    entries each carry exactly one `url` at the entry's level and, when present, a `mode`
+    of refresh | report-only (solyra#72 r4120337747; stocks#1205 r4120828232: judged per
+    entry, since canvas_modes() keeps one url per entry). Line-oriented like canvas_modes():
+    the gate has no YAML dependency."""
     errs: list[str] = []
     lines = [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
     top = [ln for ln in lines if indent(ln) == 0]
     if [ln.rstrip() for ln in top] != ["canvases:"]:
         errs.append(f"{CANVASES}: the document is one top-level `canvases:` list, found "
                     f"{', '.join(repr(ln.rstrip()) for ln in top) or 'no top-level key'}")
-    entries = [ln for ln in lines if re.match(r"^\s*-\s+\w", ln) and indent(ln) == 2]
-    if lines and not entries:
+    starts = [i for i, ln in enumerate(lines) if re.match(r"^\s*-\s+\w", ln) and indent(ln) == 2]
+    if lines and not starts:
         errs.append(f"{CANVASES}: no `- name:` entries under canvases")
-    for ln in entries:
-        if not re.match(r"^\s*-\s+name:", ln):
-            errs.append(f"{CANVASES}: an entry starts with `- name:`, not {ln.strip()!r}")
-    urls = re.findall(r"^\s+url:\s*(\S+)", text, re.M)
-    if len(urls) != len(entries):
-        errs.append(f"{CANVASES}: {len(entries)} entries but {len(urls)} url fields; every canvas names its url")
+    for i, ln in enumerate(lines):
+        if indent(ln) > 0 and i < (starts[0] if starts else len(lines)):
+            errs.append(f"{CANVASES}: {ln.strip()!r} sits under canvases before its first `- name:` entry")
+    urls: list[str] = []
+    for n, start in enumerate(starts):
+        entry = lines[start:starts[n + 1] if n + 1 < len(starts) else len(lines)]
+        head = entry[0]
+        if not re.match(r"^\s*-\s+name:", head):
+            errs.append(f"{CANVASES}: an entry starts with `- name:`, not {head.strip()!r}")
+        label = head.split(":", 1)[1].strip() or f"entry {n + 1}"
+        fields = [re.sub(r"^\s*-\s+", "", head)] + entry[1:]
+        entry_urls = [m.group(1) for ln in fields if (m := re.match(r"^\s{4}url:\s*(\S+)", ln))]
+        if len(entry_urls) != 1 or sum("url:" in ln.split("#")[0] for ln in fields) != 1:
+            errs.append(f"{CANVASES}: canvas {label!r} names {len(entry_urls)} url field(s) at its own level; "
+                        "every canvas names its url, exactly one")
+        urls += entry_urls
+        for ln in fields:
+            if (m := re.match(r"^\s{4}mode:\s*(\S+)", ln)) and m.group(1) not in CANVAS_MODES:
+                errs.append(f"{CANVASES}: canvas {label!r}: mode {m.group(1)!r} is not one of {' | '.join(CANVAS_MODES)}")
     for url in sorted({u for u in urls if urls.count(u) > 1}):
         errs.append(f"{CANVASES}: {url} is listed twice; one entry per canvas (stocks#1205 r4120528971)")
-    for m in re.finditer(r"^\s+mode:\s*(\S+)", text, re.M):
-        if m.group(1) not in CANVAS_MODES:
-            errs.append(f"{CANVASES}: mode {m.group(1)!r} is not one of {' | '.join(CANVAS_MODES)}")
     return errs
 
 

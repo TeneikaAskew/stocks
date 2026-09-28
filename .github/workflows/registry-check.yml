@@ -52,7 +52,9 @@ jobs:
           done
           # git runs a configured hook only when it is executable; a mode change to 100644
           # would silently switch the commit-time gate off.
-          mode=$(git ls-tree "$HEAD_SHA" .githooks/pre-commit | cut -d' ' -f1)
+          # no pipe: the base gate counts a command only where its status is the statement's
+          mode=$(git ls-tree "$HEAD_SHA" .githooks/pre-commit)
+          mode=${mode%% *}
           if [ "$mode" != "100755" ]; then
             echo "::error::.githooks/pre-commit has mode $mode at the head; the hook must stay executable (100755)" >&2
             exit 1
