@@ -2,6 +2,19 @@
 
 **Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
 
+## Before any change (read this first)
+Any edit, fix, refactor, or feature, however small: invoke the `product-delivery` skill before touching code.
+It classifies the work (TRIVIAL / SPIKE / CHANGE), requires a FEAT-ID from docs/product/02-FEATURE-CATALOG.md,
+and runs the Superpowers brainstorming -> writing-plans -> subagent-driven-development chain.
+Commits and PRs that skip it are rejected by `scripts/gate/spec_gate.py` (pre-commit hook and CI).
+Review cap on every PR: two rounds, then split, re-cut, or discard. Never a third round, never a stacked follow-up.
+Gate files (`scripts/gate/`, `.githooks/pre-commit`, `.github/workflows/spec-gate.yml`, `registry-check.yml`, their suites)
+get a red-team pass before every push: one reviewer per attack surface (shell, YAML/Actions, exporter and policy docs),
+each bypass proven by running the gate against a concrete snippet, everything found fixed in one batch, repeated until a
+pass comes back empty, then one push. Never push a gate change one finding at a time.
+The two gate workflows and the hook are pinned byte for byte to copies under `scripts/gate/pinned/`, read from main:
+change the copy in one PR, then make the file equal to it in the next. One PR changing both is refused.
+
 ## Project Overview
 This is a stocks/trading application project that includes Google Apps Script components for market data fetching, historical data backfilling, and continuation systems for long-running operations.
 
@@ -88,23 +101,27 @@ git rev-parse --abbrev-ref HEAD
 
 If the result is `main`, STOP and create a feature branch first:
 ```bash
-git checkout -b feature/short-description    # for new features
-git checkout -b fix/short-description        # for bug fixes
-git checkout -b docs/short-description       # for doc-only changes
+git checkout -b feature/<feat-id>-<slug>    # a CHANGE: approved spec and ready plan
+git checkout -b fix/<feat-id>-<slug>        # a bug fix, filed under its FEAT-ID
+git checkout -b docs/short-description      # documentation only
 ```
 
 Then push with upstream tracking on the first push:
 ```bash
-git push -u origin feature/short-description
+git push -u origin feature/<feat-id>-<slug>
 ```
 
 #### Naming convention
 
-- `feature/<description>` — new features
-- `fix/<description>` — bug fixes
-- `docs/<description>` — doc-only changes
-- `chore/<description>` — refactors, deps, build tooling
-- `fix/workflow-{name}-{run-number}` — auto-created failure-handler branches
+The spec gate (`scripts/gate/spec_gate.py`) accepts only these shapes:
+
+- `feature/<feat-id>-<slug>`: new features; any code change needs this or `fix/`
+- `fix/<feat-id>-<slug>`: bug fixes
+- `docs/<description>`: documentation only
+- `chore/<description>`: dependency manifests, lockfiles and the gate's own files only; in `package.json` or `pyproject.toml` only the dependency fields, since a `scripts` or tool-config edit is code CI runs; a refactor is a CHANGE
+- `spike/<description>`: local investigation commits, never a PR
+- `bot/superpowers-<tag>`: the weekly vendored-skills update
+- `fix/feat-cicd-001-workflow-{name}-{run-number}`: auto-created failure-handler branches
 
 Use kebab-case, keep under ~40 chars, no emoji, no PR/issue numbers.
 
@@ -131,11 +148,11 @@ edits, dependency bumps — goes through a feature branch + PR.
 
 If you've already committed to `main` locally (haven't pushed):
 ```bash
-git branch feature/short-description    # save the work
+git branch feature/<feat-id>-<slug>    # save the work
 git reset --hard origin/main             # rewind main locally
-git checkout feature/short-description   # switch to the saved branch
-git push -u origin feature/short-description
-gh pr create --base main --head feature/short-description ...
+git checkout feature/<feat-id>-<slug>   # switch to the saved branch
+git push -u origin feature/<feat-id>-<slug>
+gh pr create --base main --head feature/<feat-id>-<slug> ...
 ```
 
 Never `git push origin main` to "just publish what I already did" — that
@@ -1767,7 +1784,7 @@ When any GitHub Actions workflow fails:
    - Link to the workflow logs for full details
 
 2. **Pull Request Creation**: A draft PR is automatically created with:
-   - Branch named `fix/workflow-{workflow-name}-{run-number}`
+   - Branch named `fix/feat-cicd-001-workflow-{workflow-name}-{run-number}`
    - Link to the related issue
    - Error summary and diagnostic information
    - Checklist for fixing the issue
@@ -1823,7 +1840,7 @@ All major workflows in this project use automated failure handling:
    ```bash
    # Checkout the auto-created branch
    git fetch origin
-   git checkout fix/workflow-{name}-{run-number}
+   git checkout fix/feat-cicd-001-workflow-{name}-{run-number}
 
    # Make your fixes
    # Test locally
@@ -1831,7 +1848,7 @@ All major workflows in this project use automated failure handling:
    # Push your fixes
    git add .
    git commit -m "fix: resolve workflow failure"
-   git push origin fix/workflow-{name}-{run-number}
+   git push origin fix/feat-cicd-001-workflow-{name}-{run-number}
    ```
 
 4. **Mark as Ready**: Once fixed:

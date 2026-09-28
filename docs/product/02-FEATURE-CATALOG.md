@@ -587,7 +587,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Backend | — |
 | Data | — |
 | Models | — |
-| Code | `.github/workflows/`, `gcp/cloudbuild/` |
+| Code | `.github/workflows/` |
 | Tests | 230 python tests (29 e2e + 27 vitest moved to solyra in the #957 split) |
 | Open issues | 9 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-cicd-001--ci--testing-9-open) |
 | Blocking issues | [#848](https://github.com/TeneikaAskew/stocks/issues/848) [#846](https://github.com/TeneikaAskew/stocks/issues/846) [#845](https://github.com/TeneikaAskew/stocks/issues/845) [#844](https://github.com/TeneikaAskew/stocks/issues/844) [#847](https://github.com/TeneikaAskew/stocks/issues/847) [#849](https://github.com/TeneikaAskew/stocks/issues/849) |

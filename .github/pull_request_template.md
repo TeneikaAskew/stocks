@@ -1,3 +1,29 @@
+**FEAT-ID:** FEAT-XXX-000
+**Spec:** docs/superpowers/specs/....md
+**Plan:** docs/superpowers/plans/....md
+
+## Done when (copied from the spec)
+- [ ]
+- [ ]
+
+## Capacity (CLAUDE.md rule 0)
+
+<!-- REQUIRED when the PR touches gcp/ or .github/workflows/: the spec gate
+     reads the four labels below and fails on a blank one. Give the numbers
+     before merge, not as future work; otherwise write one line
+     "n/a: <why no workload runs differently>". -->
+
+- Volume: <!-- input rows × bytes/row -->
+- Velocity: <!-- SQL queries / API calls / round-trips per input row × total -->
+- Wall-clock: <!-- queries × per-query latency (pg8000 + connector ≈ 0.5–2 s);
+     task-timeout must be ≥ 4× this -->
+- $/run × runs/day × 30: <!-- new scheduled jobs -->
+- [ ] Every workload this PR's runbook tells the user to run is handled by
+      the code in this PR — no "future-work, non-blocking" perf flags on a
+      runbook workload (Rule 0.1)
+
+Canvas refresh pending: none
+
 <!-- Keep the sections; replace the comments. Write "n/a — <why>" rather than
      deleting a section, so reviewers can tell "considered and not applicable"
      from "skipped". -->
@@ -6,22 +32,6 @@
 
 <!-- What changed and why. Link the issue (or auto-created workflow-failure
      issue) if one exists. -->
-
-## Capacity calculation (CLAUDE.md Rule 0)
-
-<!-- REQUIRED for any change touching a Cloud Run Job, fetcher, or scheduled
-     workload — the three numbers, before merge, not as future work.
-     Otherwise: "n/a — no job/fetcher/scheduled workload touched". -->
-
-- **Volume**: <!-- input rows × bytes/row -->
-- **Velocity**: <!-- SQL queries / API calls / round-trips per input row × total -->
-- **Wall-clock**: <!-- queries × per-query latency (pg8000 + connector ≈ 0.5–2 s);
-     task-timeout must be ≥ 4× this -->
-- **Cost** (new scheduled jobs): <!-- $/run × runs/day × 30 -->
-
-- [ ] Every workload this PR's runbook tells the user to run is handled by
-      the code in this PR — no "future-work, non-blocking" perf flags on a
-      runbook workload (Rule 0.1)
 
 ## No Silent Fallbacks (Rule 3.7)
 

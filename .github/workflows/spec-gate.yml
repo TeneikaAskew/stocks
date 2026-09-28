@@ -1,0 +1,101 @@
+name: spec-gate
+# pull_request_target, not pull_request, for the gate: GitHub takes this workflow
+# file and the checked-out scripts/gate/ from the BASE branch, so a pull request
+# cannot edit the check that judges it. Its own changes to the gate apply only
+# after merge. The PR head is fetched as git objects and read with `git show`;
+# nothing from the PR is checked out or executed, and the token is read-only.
+#
+# A verdict is attached to the PR head at the time it ran, against the base of
+# that moment. Nothing here re-runs when main advances, so a PR that passed
+# before main superseded its spec keeps its green check. Pair this workflow with
+# branch protection "Require branches to be up to date before merging" (strict
+# status checks): a stale PR must then merge main first, which is a synchronize
+# event, and the gate re-reads the new base before the merge button works.
+# Both jobs here are required checks (`spec-gate / gate` AND `spec-gate / base-suite`):
+# a proposed gate the base's suite rejects must not merge behind a green verdict.
+#
+# The model-registry check lives in registry-check.yml, on plain pull_request:
+# it must run the exporter the PR ships. One workflow per trust level, so a run
+# never creates a skipped twin of the other's job that branch protection could
+# mistake for a passing check.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+
+      - name: Fetch the PR head as data
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git fetch --no-tags origin "$HEAD_SHA"
+
+      - name: Spec gate (branch, plan, approved spec, PR title and body, close-out records)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_BASE_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          # the gate parses a changed workflow as YAML; the runner image carries PyYAML, this keeps it so
+          python3 -m pip install --quiet pyyaml
+          python3 scripts/gate/spec_gate.py --pr "$BASE_SHA" "$HEAD_SHA"
+
+      # The proposed gate and exporter leave this job as data: the base-suite job below runs
+      # them, without this job's checkout credentials. Exported only after the verdict above.
+      - name: Export the proposed gate and exporter for the base-suite job
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/proposed"
+          git show "$HEAD_SHA:scripts/gate/spec_gate.py" > "$RUNNER_TEMP/proposed/spec_gate.py"
+          git show "$HEAD_SHA:scripts/gate/export_model_registry.py" > "$RUNNER_TEMP/proposed/export_model_registry.py"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proposed-spec-gate
+          path: ${{ runner.temp }}/proposed/
+
+  # The BASE's suites judge the proposed gate and exporter: a PR cannot certify its gate with
+  # tests it also controls (registry-check.yml runs the PR's own suites; this runs main's). It runs
+  # PR-controlled Python, so it is its own job, after the verdict, with a checkout that
+  # keeps no credentials and no secrets; the token is not in its environment. A gate
+  # change that alters a tested message lands in two steps: first a test that accepts
+  # both messages, then the change.
+  base-suite:
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: proposed-spec-gate
+          path: scripts/gate
+      - name: Base suites against the proposed gate and exporter
+        run: |
+          python3 -m pip install --quiet pytest pyyaml
+          # --noconftest: the suites are hermetic; a repository conftest may import packages this job does not install
+          python3 -m pytest tests/scripts/test_spec_gate.py -q -p no:cacheprovider --noconftest
+          python3 -m pytest tests/scripts/test_export_model_registry.py -q -p no:cacheprovider --noconftest
