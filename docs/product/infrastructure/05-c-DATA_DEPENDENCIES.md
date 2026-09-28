@@ -283,7 +283,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 
 ### `historical_signals`
 - [`gcp/historical_signals.py`](../../../gcp/historical_signals.py) — line [121](../../../gcp/historical_signals.py#L121), [124](../../../gcp/historical_signals.py#L124), [235](../../../gcp/historical_signals.py#L235)
-- [`scripts/backfill_timeframe_tags.py`](../../../scripts/backfill_timeframe_tags.py) — line [172](../../../scripts/backfill_timeframe_tags.py#L172)
+- [`scripts/backfill_timeframe_tags.py`](../../../scripts/backfill_timeframe_tags.py) — line [194](../../../scripts/backfill_timeframe_tags.py#L194)
 
 ### `indicator_correlation`
 - [`gcp/indicator_correlation_job.py`](../../../gcp/indicator_correlation_job.py) — line [734](../../../gcp/indicator_correlation_job.py#L734)
@@ -322,7 +322,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 ### `market_data_daily`
 - [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [415](../../../gcp/backfill_ticker.py#L415), [526](../../../gcp/backfill_ticker.py#L526), [595](../../../gcp/backfill_ticker.py#L595)
 - [`gcp/fetchers/backfill_daily_indicators.py`](../../../gcp/fetchers/backfill_daily_indicators.py) — line [415](../../../gcp/fetchers/backfill_daily_indicators.py#L415)
-- [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [487](../../../gcp/fetchers/fetch_market_data.py#L487), [562](../../../gcp/fetchers/fetch_market_data.py#L562), [611](../../../gcp/fetchers/fetch_market_data.py#L611), [987](../../../gcp/fetchers/fetch_market_data.py#L987)
+- [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [487](../../../gcp/fetchers/fetch_market_data.py#L487), [562](../../../gcp/fetchers/fetch_market_data.py#L562), [611](../../../gcp/fetchers/fetch_market_data.py#L611), [991](../../../gcp/fetchers/fetch_market_data.py#L991)
 - [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) — line [251](../../../gcp/fetchers/fetch_premarket_refresh.py#L251), [256](../../../gcp/fetchers/fetch_premarket_refresh.py#L256), [257](../../../gcp/fetchers/fetch_premarket_refresh.py#L257), [258](../../../gcp/fetchers/fetch_premarket_refresh.py#L258)
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [187](../../../gcp/migrate_to_gcp.py#L187), [676](../../../gcp/migrate_to_gcp.py#L676)
 - [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [257](../../../gcp/premarket_brief.py#L257)
@@ -606,9 +606,9 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 ### `historical_signals`
 - [`gcp/historical_signals.py`](../../../gcp/historical_signals.py) — line [102](../../../gcp/historical_signals.py#L102), [105](../../../gcp/historical_signals.py#L105)
 - [`platform/api/routers/signals.py`](../../../platform/api/routers/signals.py) — line [180](../../../platform/api/routers/signals.py#L180), [204](../../../platform/api/routers/signals.py#L204), [380](../../../platform/api/routers/signals.py#L380), [423](../../../platform/api/routers/signals.py#L423)
-- [`scripts/analyze_timeframe_heuristic.py`](../../../scripts/analyze_timeframe_heuristic.py) — line [316](../../../scripts/analyze_timeframe_heuristic.py#L316)
+- [`scripts/analyze_timeframe_heuristic.py`](../../../scripts/analyze_timeframe_heuristic.py) — line [322](../../../scripts/analyze_timeframe_heuristic.py#L322)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [552](../../../scripts/audit_data_freshness.py#L552), [553](../../../scripts/audit_data_freshness.py#L553), [712](../../../scripts/audit_data_freshness.py#L712)
-- [`scripts/backfill_timeframe_tags.py`](../../../scripts/backfill_timeframe_tags.py) — line [73](../../../scripts/backfill_timeframe_tags.py#L73)
+- [`scripts/backfill_timeframe_tags.py`](../../../scripts/backfill_timeframe_tags.py) — line [84](../../../scripts/backfill_timeframe_tags.py#L84)
 - [`scripts/signal_quality_report.py`](../../../scripts/signal_quality_report.py) — line [418](../../../scripts/signal_quality_report.py#L418), [425](../../../scripts/signal_quality_report.py#L425), [445](../../../scripts/signal_quality_report.py#L445)
 
 ### `indicator_correlation`
@@ -663,7 +663,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [332](../../../gcp/discord_interactions/main.py#L332)
 - [`gcp/fetchers/backfill_daily_indicators.py`](../../../gcp/fetchers/backfill_daily_indicators.py) — line [117](../../../gcp/fetchers/backfill_daily_indicators.py#L117), [216](../../../gcp/fetchers/backfill_daily_indicators.py#L216), [222](../../../gcp/fetchers/backfill_daily_indicators.py#L222), [252](../../../gcp/fetchers/backfill_daily_indicators.py#L252)
 - [`gcp/fetchers/compute_earnings_reactions.py`](../../../gcp/fetchers/compute_earnings_reactions.py) — line [600](../../../gcp/fetchers/compute_earnings_reactions.py#L600), [659](../../../gcp/fetchers/compute_earnings_reactions.py#L659)
-- [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [341](../../../gcp/fetchers/fetch_market_data.py#L341), [767](../../../gcp/fetchers/fetch_market_data.py#L767), [775](../../../gcp/fetchers/fetch_market_data.py#L775), [800](../../../gcp/fetchers/fetch_market_data.py#L800), [1059](../../../gcp/fetchers/fetch_market_data.py#L1059)
+- [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [341](../../../gcp/fetchers/fetch_market_data.py#L341), [767](../../../gcp/fetchers/fetch_market_data.py#L767), [775](../../../gcp/fetchers/fetch_market_data.py#L775), [800](../../../gcp/fetchers/fetch_market_data.py#L800), [1063](../../../gcp/fetchers/fetch_market_data.py#L1063)
 - [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) — line [146](../../../gcp/fetchers/fetch_premarket_refresh.py#L146)
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [148](../../../gcp/migrate_to_gcp.py#L148)
 - [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [363](../../../gcp/premarket_brief.py#L363), [368](../../../gcp/premarket_brief.py#L368), [830](../../../gcp/premarket_brief.py#L830)
@@ -811,8 +811,8 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `signal_metrics`
 - [`gcp/signal_quality_alarm.py`](../../../gcp/signal_quality_alarm.py) — line [180](../../../gcp/signal_quality_alarm.py#L180)
-- [`scripts/analyze_timeframe_heuristic.py`](../../../scripts/analyze_timeframe_heuristic.py) — line [317](../../../scripts/analyze_timeframe_heuristic.py#L317)
-- [`scripts/backfill_timeframe_tags.py`](../../../scripts/backfill_timeframe_tags.py) — line [74](../../../scripts/backfill_timeframe_tags.py#L74)
+- [`scripts/analyze_timeframe_heuristic.py`](../../../scripts/analyze_timeframe_heuristic.py) — line [323](../../../scripts/analyze_timeframe_heuristic.py#L323)
+- [`scripts/backfill_timeframe_tags.py`](../../../scripts/backfill_timeframe_tags.py) — line [85](../../../scripts/backfill_timeframe_tags.py#L85)
 - [`scripts/signal_quality_report.py`](../../../scripts/signal_quality_report.py) — line [383](../../../scripts/signal_quality_report.py#L383)
 
 ### `strat_combo_results`

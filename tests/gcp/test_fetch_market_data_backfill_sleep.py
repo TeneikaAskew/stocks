@@ -103,6 +103,42 @@ def test_negative_env_clamped_to_zero(mock_av, mock_targets, mock_cfg, monkeypat
     sleep_mock.assert_not_called()
 
 
+class TestBackfillNamedTickers:
+    """#1188: BF.B and MOG.A have no earnings_history row, so the default
+    targets never include them, and their daily history could not be filled
+    after the fetcher learned AlphaVantage's dashed form. `--tickers` names
+    exactly what `--backfill` pulls."""
+
+    def test_named_tickers_are_pulled_in_full_and_nothing_else(self, monkeypatch):
+        monkeypatch.setenv('AV_BACKFILL_SLEEP_SECS', '0')
+        from gcp.fetchers import fetch_market_data as fmd
+        pulled = []
+
+        def series(ticker, api_key, outputsize):
+            pulled.append((ticker, outputsize))
+            return _stub_av_df().assign(ticker=ticker)
+
+        with patch.object(fmd, 'is_cloud_sql_configured', return_value=True), \
+             patch.object(fmd, '_backfill_targets',
+                          side_effect=AssertionError('default targets read')), \
+             patch.object(fmd, '_av_get_full_daily_series', side_effect=series), \
+             patch('gcp.database.upsert_dataframe') as ups:
+            fmd._run_backfill(['BF.B', 'MOG.A'])
+        assert pulled == [('BF.B', 'full'), ('MOG.A', 'full')]
+        assert [set(c[0][0]['ticker']) for c in ups.call_args_list] == [{'BF.B'}, {'MOG.A'}]
+
+    @pytest.mark.parametrize('argv, named', [
+        (['--backfill'], None),
+        (['--backfill', '--tickers', 'bf.b MOG.A'], ['BF.B', 'MOG.A']),
+    ])
+    def test_main_hands_the_named_tickers_to_the_backfill(self, argv, named, monkeypatch):
+        from gcp.fetchers import fetch_market_data as fmd
+        monkeypatch.setattr('sys.argv', ['fetch_market_data', *argv])
+        with patch.object(fmd, '_run_backfill') as run:
+            fmd.main()
+        run.assert_called_once_with(named)
+
+
 class TestPickBackfillOutputsize:
     """Staleness-decision regression guards (issue #751 follow-up).
 

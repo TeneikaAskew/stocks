@@ -114,8 +114,8 @@ source unit where the constants live, and `_source_return_fraction` (`:369-372`)
 
 The clean-rate alarm windows on `evaluated_at`, which the re-run reset. Its prior window is
 therefore empty until 2026-10-02, so it reports insufficient data and exits 0 rather than
-comparing the new scale with the old. The table the timeframe heuristic was fitted on changed,
-and that refit is #1167.
+comparing the new scale with the old. The table the timeframe heuristic was fitted on changed.
+Re-derived on it, the lookup was degenerate, and #1167 retired it (below).
 
 ### Score discrimination: fixed pairing, report-only (#1152, closed 2026-09-25)
 
@@ -153,7 +153,7 @@ predicts the *opposite* outcome) scored the same as a healthy +0.894. `score_dis
 At row level, Spearman(`total_score`, `exit_return_pct`) is **-0.004, p = 0.91**. The score has no
 measurable edge, so a four-point rank correlation of it swings on noise. An exit 1 would open a
 GitHub issue in about one fortnight in three. That is an alarm people learn to ignore, measuring a
-fact already filed as [#905](https://github.com/TeneikaAskew/stocks/issues/905). The WARNING
+fact already filed as [#905](https://github.com/TeneikaAskew/stocks/issues/905) (superseded by [#1206](https://github.com/TeneikaAskew/stocks/issues/1206)). The WARNING
 and the embed keep it visible. A statistic with a noise model (an effect size with its
 uncertainty) is what should replace the quartile rho, and that belongs to #905.
 
@@ -323,8 +323,10 @@ are right.
 [#905](https://github.com/TeneikaAskew/stocks/issues/905) owns the finding the #1152 fix surfaced: the
 live score has no measurable edge.
 
-[#1167](https://github.com/TeneikaAskew/stocks/issues/1167) `EMPIRICAL_LOOKUP` was fitted on the 100x-lenient 5 to 60m
-classes and needs re-deriving on the re-classified table.
+[#1167](https://github.com/TeneikaAskew/stocks/issues/1167) retired `EMPIRICAL_LOOKUP`. Re-derived on the re-classified
+table, its max-clean-rate method picked 240m for 50 of 52 buckets, because the clean-hit rate
+rises with the window by construction. Backfill tags use the placeholder tiers
+([TIMEFRAME_HEURISTIC_2026-09-26](../analysis/TIMEFRAME_HEURISTIC_2026-09-26.md)).
 
 One further finding recorded here rather than filed: the unread `ticker_calibration`
 thresholds (also on [MODEL-CALIB-001](MODEL-CALIB-001.md)). Measured, not inferred. The

@@ -562,6 +562,38 @@ def test_av_listed_symbol(ticker, sent):
     assert fmd.av_listed_symbol(ticker) == sent
 
 
+def _daily(day: str) -> dict:
+    """A TIME_SERIES_DAILY_ADJUSTED reply holding one day."""
+    return {"Meta Data": {}, "Time Series (Daily)": {day: {
+        "1. open": "26.03", "2. high": "26.305", "3. low": "25.895", "4. close": "26.16",
+        "5. adjusted close": "26.16", "6. volume": "1504871",
+        "7. dividend amount": "0.0000", "8. split coefficient": "1.0"}}}
+
+
+@pytest.mark.parametrize("call", ["minute", "daily", "daily_series"])
+def test_every_price_call_sends_the_listed_share_class(call):
+    """#1188: the daily fetcher and the premarket refresh sent BF.B and MOG.A
+    dotted, which AlphaVantage refuses, so market_data_daily held no row for
+    either. Every price call sends the listed form now, and what comes back
+    stays keyed by the dotted ticker the rest of the system uses."""
+    sent = []
+
+    def get(url, params=None, timeout=None):
+        sent.append(params["symbol"])
+        return _Resp(_month("2026-09-25") if call == "minute" else _daily("2026-09-25"))
+
+    with patch.object(fmd.requests, "get", side_effect=get):
+        if call == "minute":
+            bars, reason = fmd.fetch_minute_bars("BF.B", "2026-09-25", "key")
+            assert reason == "success" and set(bars["ticker"]) == {"BF.B"}
+        elif call == "daily":
+            assert fmd.fetch_daily_from_av("BF.B", "2026-09-25", "key")["close"] == 26.16
+        else:
+            df = fmd._av_get_full_daily_series("BF.B", "key", "compact")
+            assert set(df["ticker"]) == {"BF.B"}
+    assert sent == ["BF-B"]
+
+
 def test_writes_are_one_transaction_per_session_date():
     rows = _rows(
         (1, "AAA", date(2026, 9, 23), "postmarket", "Long Calls", 105.0, None),

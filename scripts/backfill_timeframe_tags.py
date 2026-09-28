@@ -17,17 +17,24 @@ Approach:
 Idempotent: re-runs only touch rows where timeframe_tag IS NULL.
 Re-running on already-tagged rows is a no-op.
 
+--retag rewrites existing tags too, after the tagging rule changes (#1167
+retired EMPIRICAL_LOOKUP). It selects every row, computes the current rule's
+tag and writes only the rows whose (timeframe_tag, expected_hold_min) changes.
+
 Capacity (per CLAUDE.md Rule 0):
   * Volume:   one SELECT (joined), 1000-row UPDATE batches
-  * Velocity: ~92 batches for the current 91k-row backlog
-  * Wall-clock: <60s for the full table on Cloud Run
-  * Memory:   <50MB
+  * Velocity: ~92 batches for the original 91k-row backlog; a --retag of
+              the ~245k-row table (2026-09) is at most ~245, fewer when tags
+              are unchanged
+  * Wall-clock: 0.5-2 s per batch round trip, so under 10 minutes
+  * Memory:   <100MB
   * Cost:     $0 (DB-only, no API calls)
 
 Usage:
     python -m scripts.backfill_timeframe_tags
     python -m scripts.backfill_timeframe_tags --tickers SPY,QQQ
     python -m scripts.backfill_timeframe_tags --dry-run
+    python -m scripts.backfill_timeframe_tags --retag --dry-run
 """
 from __future__ import annotations
 
@@ -50,14 +57,16 @@ logger = logging.getLogger(__name__)
 
 def fetch_rows_to_backfill(
     engine, tickers: Optional[list[str]] = None, limit: Optional[int] = None,
+    retag: bool = False,
 ) -> pd.DataFrame:
-    """Pull historical_signals rows missing timeframe_tag, joined with
-    signal_metrics for ATR context. signal_metrics may be missing for
+    """Pull historical_signals rows missing timeframe_tag (or, with
+    `retag`, every row, with its current tag as old_tag/old_hold), joined
+    with signal_metrics for ATR context. signal_metrics may be missing for
     some rows (older or status='pending') — those get NULL atr_5m_pct
     and the backfill helper falls through to the strategy default."""
     from sqlalchemy import text
 
-    where = ["h.timeframe_tag IS NULL"]
+    where = [] if retag else ["h.timeframe_tag IS NULL"]
     params: dict = {}
     if tickers:
         where.append("h.ticker = ANY(:tickers)")
@@ -69,13 +78,15 @@ def fetch_rows_to_backfill(
                h.strategy,
                h.signal_strength,
                h.entry_rsi,
-               m.atr_5m_pct
+               m.atr_5m_pct,
+               h.timeframe_tag AS old_tag,
+               h.expected_hold_min AS old_hold
           FROM historical_signals h
           LEFT JOIN signal_metrics m
             ON m.ticker = h.ticker
            AND m.entry_time = h.entry_time
            AND m.strategy = h.strategy
-         WHERE {' AND '.join(where)}
+         {('WHERE ' + ' AND '.join(where)) if where else ''}
          ORDER BY h.entry_time
          {'LIMIT :limit' if limit else ''}
     """)
@@ -113,6 +124,17 @@ def apply_tags(df: pd.DataFrame) -> pd.DataFrame:
     df["timeframe_tag"] = tags
     df["expected_hold_min"] = holds
     return df
+
+
+def changed_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """The rows whose computed (timeframe_tag, expected_hold_min) differs
+    from what is stored (old_tag, old_hold). An untagged row counts as
+    changed. Pure; no DB."""
+    if df.empty:
+        return df
+    old_hold = pd.to_numeric(df["old_hold"], errors="coerce")
+    same = (df["old_tag"] == df["timeframe_tag"]) & (old_hold == df["expected_hold_min"])
+    return df[~same.fillna(False)]
 
 
 def upsert_chunk(engine, chunk: pd.DataFrame) -> int:
@@ -189,11 +211,15 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p.add_argument("--tickers", default="",
                    help="Comma-separated ticker filter (default: all)")
     p.add_argument("--limit", type=int, default=None,
-                   help="Limit rows for staged rollout / dev")
+                   help="Limit rows for staged rollout / dev (with --retag: rows written, "
+                        "counted after unchanged rows are filtered out)")
     p.add_argument("--chunk-size", type=int, default=1000,
                    help="Rows per UPDATE batch (default 1000)")
     p.add_argument("--dry-run", action="store_true",
                    help="Compute tags but skip the UPDATE")
+    p.add_argument("--retag", action="store_true",
+                   help="Rewrite existing tags too, writing only rows whose tag changes "
+                        "(after a change to the tagging rule, #1167)")
     return p.parse_args(argv)
 
 
@@ -209,8 +235,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     from gcp.database import get_engine
     engine = get_engine()
 
-    logger.info("loading rows to backfill (tickers=%s limit=%s)", tickers, args.limit)
-    df = fetch_rows_to_backfill(engine, tickers=tickers, limit=args.limit)
+    logger.info("loading rows to backfill (tickers=%s limit=%s retag=%s)",
+                tickers, args.limit, args.retag)
+    # With --retag the limit bounds the rows a run writes, applied after the
+    # unchanged ones are filtered out: a SQL LIMIT would select the same
+    # already-current rows on every staged run (Codex on #1207).
+    df = fetch_rows_to_backfill(engine, tickers=tickers,
+                                limit=None if args.retag else args.limit, retag=args.retag)
     logger.info("loaded %d rows", len(df))
     if df.empty:
         logger.info("nothing to backfill")
@@ -219,6 +250,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     df = apply_tags(df)
     distribution = df["timeframe_tag"].value_counts().to_dict()
     logger.info("timeframe distribution: %s", distribution)
+    if args.retag:
+        selected = len(df)
+        df = changed_rows(df)
+        transitions = (df["old_tag"].fillna("NULL") + " -> " + df["timeframe_tag"]).value_counts().to_dict()
+        logger.info("retag: %d rows selected, %d change: %s", selected, len(df), transitions)
+        if df.empty:
+            logger.info("nothing to retag")
+            return 0
+        if args.limit:
+            df = df.head(args.limit)
+            logger.info("retag: --limit %d, writing the first %d changed rows", args.limit, len(df))
 
     if args.dry_run:
         logger.info("--dry-run set — skipping UPDATE (%d rows ready)", len(df))

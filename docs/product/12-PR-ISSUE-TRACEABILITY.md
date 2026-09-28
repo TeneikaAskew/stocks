@@ -80,8 +80,8 @@ Three conventions were also made explicit, because each had been applied inconsi
   The one prior exception, #868, was a cross-repo move and is now represented by its solyra
   record.
 
-The current ledger is **129 rows**: the 2026-09-22 reconciliation's 128 (126 open in stocks + 2 in
-solyra), less #1154 and #1152 (closed 2026-09-25) and #1151 (closed 2026-09-26), plus #1167 and #1168 (filed 2026-09-25), #1188 (filed 2026-09-26) and #1201 (filed 2026-09-27). #1166 (filed 2026-09-25, closed 2026-09-26), #1171 (filed 2026-09-25, closed 2026-09-27) and #1181 (filed 2026-09-26, closed 2026-09-27) are in neither count. It has not been re-reconciled against `list_issues` since. Counts derived from
+The current ledger is **128 rows**: the 2026-09-22 reconciliation's 128 (126 open in stocks + 2 in
+solyra), less #1154 and #1152 (closed 2026-09-25), #1151 (closed 2026-09-26) and #905 (closed 2026-09-28, superseded by #1206), plus #1167 (filed 2026-09-25), #1188 (filed 2026-09-26) and #1201 and #1206 (filed 2026-09-27). #1166 (filed 2026-09-25, closed 2026-09-26), #1171 (filed 2026-09-25, closed 2026-09-27), #1181 (filed 2026-09-26, closed 2026-09-27) and #1168 (filed 2026-09-25, closed 2026-09-28) are in neither count. It has not been re-reconciled against `list_issues` since. Counts derived from
 GitHub are a snapshot: #1157 closed between two calls made minutes apart while this was being
 written, which is why the gate checks the documents against each other and leaves the refresh
 against GitHub to the maintenance procedure at the end of this file.
@@ -212,7 +212,7 @@ unmeasured claims in this repository.
 
 ## Severity distribution (open)
 
-As of 2026-09-27 (MEDIUM −1: #1171 closed, every job pinned by digest and a narrow deploy verified in production; MEDIUM +1: #1201, filed from #1171's production run; LOW −1: #1181 closed, the failed fill re-ran to exit 0 with every empty call named). As of 2026-09-26 (P1 −1: #1151 closed after its stored verdicts were re-scored; LOW +1: #1181, filed from that re-score; MEDIUM −1: #1166 closed, its unscored sessions healed to zero; LOW +1: #1188, filed while fixing #1181). As of 2026-09-25 (P1 −2: #1154 and #1152 closed; MEDIUM +2: #1166/#1171 and LOW +2: #1167/#1168, all four filed while resolving them). As of 2026-09-18 (P1 +2: #1135/#1136; P2 +2: #1137/#1138 — all four filed from the #1111 registry audit). Prior, as of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to solyra; ops −2: #930/#944 resolved; DEBT +1: #971 opened):
+As of 2026-09-28 (P0 unchanged: #905 closed as superseded by #1206, which tracks the same question in plain terms; LOW −1: #1168 closed after the deploy and a replay showed the recap). As of 2026-09-27 (MEDIUM −1: #1171 closed, every job pinned by digest and a narrow deploy verified in production; MEDIUM +1: #1201, filed from #1171's production run; LOW −1: #1181 closed, the failed fill re-ran to exit 0 with every empty call named). As of 2026-09-26 (P1 −1: #1151 closed after its stored verdicts were re-scored; LOW +1: #1181, filed from that re-score; MEDIUM −1: #1166 closed, its unscored sessions healed to zero; LOW +1: #1188, filed while fixing #1181). As of 2026-09-25 (P1 −2: #1154 and #1152 closed; MEDIUM +2: #1166/#1171 and LOW +2: #1167/#1168, all four filed while resolving them). As of 2026-09-18 (P1 +2: #1135/#1136; P2 +2: #1137/#1138 — all four filed from the #1111 registry audit). Prior, as of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to solyra; ops −2: #930/#944 resolved; DEBT +1: #971 opened):
 
 | Severity | Count |
 |---|---|
@@ -222,14 +222,14 @@ As of 2026-09-27 (MEDIUM −1: #1171 closed, every job pinned by digest and a na
 | P1 | 29 |
 | MEDIUM | 10 |
 | P2 | 15 |
-| LOW | 6 |
+| LOW | 5 |
 | P3 | 2 |
 | DEBT | 11 |
 | ENH | 5 |
 | ops | 4 |
 | DECISION | 1 |
 | UNTRIAGED | 2 |
-| **Total** | **129** |
+| **Total** | **128** |
 
 ## Full open-issue map by capability
 
@@ -364,7 +364,7 @@ As of 2026-09-27 (MEDIUM −1: #1171 closed, every job pinned by digest and a na
 | [#816](https://github.com/TeneikaAskew/stocks/issues/816) | CRITICAL | [audit] T5 — max_daily_trades interacts badly with sizing; daily loss limit is structurally unenforceable |
 | [#815](https://github.com/TeneikaAskew/stocks/issues/815) | CRITICAL | [audit] T4 — Live has no stop-loss; the validating backtest does (proposed resolution: do NOT add one) |
 | [#928](https://github.com/TeneikaAskew/stocks/issues/928) | P0 | [P0][Signals] Fail visibly when live condition overrides cannot be resolved |
-| [#905](https://github.com/TeneikaAskew/stocks/issues/905) | P0 | [P0][Signals] Freeze and prospectively validate live alert expectancy and scoring |
+| [#1206](https://github.com/TeneikaAskew/stocks/issues/1206) | P0 | Track: what the alerts called vs what the stock actually did, by buy/sell and month |
 | [#915](https://github.com/TeneikaAskew/stocks/issues/915) | P1 | [P1][Execution] Bound same-minute trigger, target, and stop ordering ambiguity |
 | [#1136](https://github.com/TeneikaAskew/stocks/issues/1136) | P1 | [P1][Signals] Two mean-reversion implementations; only `lib.signals.evaluate_signal` applies the runtime gates |
 | [#1167](https://github.com/TeneikaAskew/stocks/issues/1167) | LOW | Re-derive EMPIRICAL_LOOKUP after the #1154 re-run: it was fitted on 100x-lenient classifications |
@@ -484,11 +484,10 @@ As of 2026-09-27 (MEDIUM −1: #1171 closed, every job pinned by digest and a na
 
 **PR lineage:** [#546](https://github.com/TeneikaAskew/stocks/pull/546) *origin* · [#611](https://github.com/TeneikaAskew/stocks/pull/611) *structural* · [#643](https://github.com/TeneikaAskew/stocks/pull/643) *evolution* · [#684](https://github.com/TeneikaAskew/stocks/pull/684) *origin* · [#687](https://github.com/TeneikaAskew/stocks/pull/687) *evolution* · [#690](https://github.com/TeneikaAskew/stocks/pull/690) *evolution* · [#692](https://github.com/TeneikaAskew/stocks/pull/692) *evolution* · [#700](https://github.com/TeneikaAskew/stocks/pull/700) *remediation* · [#703](https://github.com/TeneikaAskew/stocks/pull/703) *evolution* · [#715](https://github.com/TeneikaAskew/stocks/pull/715) *evolution*
 
-### FEAT-PLAYBOOK-001 — Premarket / playbook (1 open)
+### FEAT-PLAYBOOK-001 — Premarket / playbook (0 open)
 
 | Issue | Sev | Title |
 |---|---|---|
-| [#1168](https://github.com/TeneikaAskew/stocks/issues/1168) | LOW | The EW strike verdict never reaches the live premarket brief; it renders only in `BRIEF_AS_OF` replays |
 
 **PR lineage:** [#293](https://github.com/TeneikaAskew/stocks/pull/293) *audit* · [#335](https://github.com/TeneikaAskew/stocks/pull/335) *evolution* · [#336](https://github.com/TeneikaAskew/stocks/pull/336) *evolution* · [#444](https://github.com/TeneikaAskew/stocks/pull/444) *origin* · [#620](https://github.com/TeneikaAskew/stocks/pull/620) *evolution* · [#774](https://github.com/TeneikaAskew/stocks/pull/774) *remediation*
 
