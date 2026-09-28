@@ -220,7 +220,7 @@ def canonical(rec: dict) -> dict:
 def experiment_ids(text: str) -> list[str]:
     """IDs from experiment headings only: prose such as "Next free ID is E-36" is not an experiment."""
     ids: set[str] = set()
-    for line in text.splitlines():
+    for line in rendered(text).splitlines():   # a heading inside a fence is an example, not an entry (r4120660287)
         if re.match(r"^#{1,6}\s", line):
             ids.update(expand_ids(line, EXP_ID, EXP_RANGE, "E-{:02d}"))
     return sorted(ids)
@@ -393,6 +393,10 @@ def build(src: Source) -> dict:
     if unknown:
         raise SystemExit(f"{REGISTRY}: scheduler Serves cells name model(s) not in the registry: {', '.join(unknown)}; "
                          "a misspelled ID would silently drop the model from its scheduled surface")
+    if not out["experiment_traceability"]:
+        # stocks#1205 r4120660295: no rows is a deleted table; every card would lose its experiments
+        raise SystemExit(f"{REGISTRY}: no experiment-traceability rows parsed; the table is part of the registry, so its "
+                         "absence is a deleted table, not an empty one")
     orphans = sorted(set(out["experiment_traceability"]) - set(out["models"]))
     if orphans:
         # canvases.yml looks experiment fields up under the model's ID, so a misspelled

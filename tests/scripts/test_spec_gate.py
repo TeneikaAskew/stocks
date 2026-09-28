@@ -84,12 +84,15 @@ def spec(**over) -> str:
                     "done_when": DONE, "status": "approved", **over})
 
 
+TASKS = "\n## Task 1: state every decision\nSpec: § Design. Advances done_when[0].\n- [ ] write the failing test\n- [ ] implement\n"
+
+
 def plan(**over) -> str:
     return front(**{"feat_id": "FEAT-MODEL-001", "spec": SPEC, "branch": BRANCH,
-                    "status": "ready", **over})
+                    "status": "ready", **over}) + TASKS
 
 
-GATE_WF = ("on:\n  pull_request_target:\npermissions:\n  contents: read\njobs:\n  gate:\n    steps:\n"
+GATE_WF = ("on:\n  pull_request_target:\n    types: [opened, synchronize, reopened, edited, ready_for_review]\npermissions:\n  contents: read\njobs:\n  gate:\n    steps:\n"
            "      - uses: actions/checkout@v4\n        with:\n          ref: {REF}\n"
            "      - run: {A}\n      - run: {B}\n"
            "  base-suite:\n    needs: gate\n    permissions:\n      contents: read\n    steps:\n"
@@ -1647,7 +1650,7 @@ def test_contract_commands_run_and_policy_documents_keep_their_ids(repo):
         run_block = "".join(shape.replace("{c}", c) for c in cmds)
         r = pr(repo, "chore/gate-workflow", {wf: head.replace("{BODY}", run_block)}, **cap)
         assert r.returncode == 1 and "no longer executes" in r.stdout, (shape, r.stdout)
-    real = ("          set +e\n          out=$(python3 \"$gate\" --pr \"$BASE_SHA\" \"$HEAD_SHA\" 2>&1); rc=$?\n"
+    real = ("          out=$(python3 \"$gate\" --pr \"$BASE_SHA\" \"$HEAD_SHA\" 2>&1) && rc=0 || rc=$?\n"
             "          if ! python3 -m py_compile \"$gate\"; then exit 1; fi\n"
             "          python3 -m pytest tests/scripts/test_spec_gate.py -q && \\\n            mode=$(git ls-tree \"$HEAD_SHA\" .githooks/pre-commit | cut -d' ' -f1)\n"
             "          python3 scripts/gate/export_model_registry.py --check --rev \"$HEAD_SHA\" --base \"$BASE_SHA\"\n")
@@ -1977,3 +1980,78 @@ def test_backgrounded_commands_prs_on_landing_plans_and_pruned_rows_are_refused(
     r = pr(repo, "docs/catalog", {CATALOG: with_prs.replace("| #7 #9 |", "| #9 |")})
     assert r.returncode == 1 and "the FEAT-DATA-001 row no longer names PR #7 in its PRs; lineage is a record and only grows" in r.stdout, r.stdout
     assert pr(repo, "docs/catalog", {CATALOG: with_prs.replace("| #7 #9 |", "| #7 #9 #11 |")}).returncode == 0
+
+
+def test_shell_semantics_the_contract_must_read(repo):
+    """stocks#1205 r4120660269 (P1), r4120660276 (P1); solyra#72 r4120633462 (P1), r4120633474 (P1)
+    (spec_gate.py:175, :229, :240, :780).
+
+    A folded `run: >` block is one command to the shell; a `checks() { ... }` body runs
+    only when invoked; `set +e; cmd; true` hides cmd's failure; `pytest --collect-only`
+    runs nothing. Each shape passed the contract and is refused; a step with its own
+    non-bash `shell:` is not judged at all.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    wf = ".github/workflows/registry-check.yml"
+    head = ("name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n"
+            "    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n{STEP}")
+    cmds = ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"', "python3 -m pytest tests/scripts/test_spec_gate.py",
+            'git ls-tree "$HEAD_SHA" .githooks/pre-commit', 'python3 scripts/gate/export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"')
+    lines = "".join(f"          {c}\n" for c in cmds)
+    assert pr(repo, "chore/gate-workflow", {wf: head.replace("{STEP}", "      - run: |\n" + lines)}, **cap).returncode == 0
+    for step in ("      - run: >\n          echo harmless\n" + lines,
+                 "      - run: |\n          checks() {\n" + lines + "          }\n          true\n",
+                 "      - run: |\n          set +e\n" + lines + "          true\n",
+                 "      - run: |\n          set +eu\n" + lines,
+                 "      - shell: bash {0}\n        run: |\n" + lines,
+                 "      - run: |\n" + lines.replace("python3 -m pytest tests/scripts/test_spec_gate.py\n",
+                                                     "python3 -m pytest tests/scripts/test_spec_gate.py --collect-only\n")):
+        r = pr(repo, "chore/gate-workflow", {wf: head.replace("{STEP}", step)}, **cap)
+        assert r.returncode == 1 and "no longer executes" in r.stdout, (step, r.stdout)
+    invoked = "      - run: |\n          checks() {\n" + lines + "          }\n          checks\n"
+    # a defined function that is invoked still hides whether it ran: the body is conditional
+    r = pr(repo, "chore/gate-workflow", {wf: head.replace("{STEP}", invoked)}, **cap)
+    assert r.returncode == 1 and "no longer executes" in r.stdout, r.stdout
+    restored = "      - run: |\n          set +e\n          true\n          set -e\n" + lines
+    assert pr(repo, "chore/gate-workflow", {wf: head.replace("{STEP}", restored)}, **cap).returncode == 0
+    guarded = ("      - run: |\n          test -d x || { echo no; exit 1; }\n" + lines
+               + "          python3 -m pytest tests/scripts/test_spec_gate.py -q -p no:cacheprovider --noconftest\n")
+    assert pr(repo, "chore/gate-workflow", {wf: head.replace("{STEP}", guarded)}, **cap).returncode == 0
+
+
+def test_activity_types_landing_order_and_registries_are_policy(repo):
+    """solyra#72 r4120633503 (P1), r4120633495, r4120633514, r4120633485 (P1) (spec_gate.py:790,
+    :737, :534, :1220).
+
+    Dropping `edited` and `ready_for_review` kept the event name; a plan could land with its
+    approved spec in the same change; a ready plan could be frontmatter alone; a new partial
+    requirements registry would have refused every spec citing an omitted ID. Each is refused.
+    """
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    typed = gate_workflow()
+    assert pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": typed}, **cap).returncode == 0
+    for types in ("[opened, synchronize, reopened]", "[opened, synchronize, reopened, edited]", "[opened, synchronize, reopened, ready_for_review]"):
+        r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": typed.replace("[opened, synchronize, reopened, edited, ready_for_review]", types)}, **cap)
+        assert r.returncode == 1 and "no longer fires on" in r.stdout, (types, r.stdout)
+    # no `types:` at all means GitHub's defaults, which lack the two the gate depends on
+    untyped = typed.replace("    types: [opened, synchronize, reopened, edited, ready_for_review]\n", "")
+    r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": untyped}, **cap)
+    assert r.returncode == 1 and "no longer fires on edited, ready_for_review" in r.stdout, r.stdout
+    new_plan, data_spec = "docs/superpowers/plans/2026-09-28-data-d.md", "docs/superpowers/specs/2026-09-28-data-d.md"
+    r = pr(repo, "docs/plan-data", {data_spec: spec(feat_id="FEAT-DATA-001"), new_plan: plan(feat_id="FEAT-DATA-001", spec=data_spec, branch="fix/feat-data-001-d")})
+    assert r.returncode == 1 and f"its spec {data_spec} is not on the base; the approved spec lands first" in r.stdout, r.stdout
+    on_base(repo, {data_spec: spec(feat_id="FEAT-DATA-001")})
+    hollow = plan(feat_id="FEAT-DATA-001", spec=data_spec, branch="fix/feat-data-001-d").replace(TASKS, "")
+    r = pr(repo, "docs/plan-data", {new_plan: hollow})
+    assert r.returncode == 1 and "no `## Task N:` section" in r.stdout, r.stdout
+    r = pr(repo, "docs/plan-data", {new_plan: hollow + "\n## Task 1: something\n- [ ] do it\n"})
+    assert r.returncode == 1 and "cites no spec section" in r.stdout, r.stdout
+    r = pr(repo, "docs/plan-data", {new_plan: hollow + "\n## Task 1: something\nSpec: § Design.\nJust do it.\n"})
+    assert r.returncode == 1 and "has no checklist item" in r.stdout, r.stdout
+    assert pr(repo, "docs/plan-data", {new_plan: plan(feat_id="FEAT-DATA-001", spec=data_spec, branch="fix/feat-data-001-d")}).returncode == 0
+    on_base(repo, {REQUIREMENTS: None})
+    r = pr(repo, "docs/reqs", {REQUIREMENTS: "# Requirements\n\nprose only\n"})
+    assert r.returncode == 1 and "a new requirements registry defines no" in r.stdout, r.stdout
+    r = pr(repo, "docs/reqs", {REQUIREMENTS: "# Requirements\n\n**REQ-DATA-001:** A missing value is never a zero.\n"})
+    assert r.returncode == 1 and "omits 1 requirement(s) the specs cite (REQ-MODEL-001)" in r.stdout, r.stdout
+    assert pr(repo, "docs/reqs", {REQUIREMENTS: REQUIREMENTS_TEXT}).returncode == 0

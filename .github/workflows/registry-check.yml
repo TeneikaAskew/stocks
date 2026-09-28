@@ -64,9 +64,9 @@ jobs:
             exit 1
           fi
           python3 -m py_compile "$gate"
-          set +e
-          out=$(python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA" 2>&1); rc=$?
-          set -e
+          # `A && B || C` keeps errexit on while capturing the status; `set +e` would let a later
+          # `true` hide any failure, which the base gate refuses
+          out=$(python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA" 2>&1) && rc=0 || rc=$?
           printf '%s\n' "$out"
           if [ "$rc" -gt 1 ] || ! printf '%s\n' "$out" | grep -qE '^(spec gate ok|SPEC GATE FAILED)'; then
             echo "::error::the proposed $gate exited $rc without a verdict; it would break the gate for every later PR" >&2

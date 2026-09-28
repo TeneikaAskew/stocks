@@ -63,6 +63,12 @@ Every row names the decision its model produces.
 | `insight-pipeline-daily` | `45 8 * * 1-5` | `insight-pipeline` | **all 4 LLM nodes** — `run_insight_pipeline` |
 | `regime-combo-weekly` | `0 5 * * 0` | `regime-combo` | combo mining (E-22) — owned by the ledger, not by a `MODEL-*` row |
 
+## Experiment traceability
+
+| Model | Experiments | Primary code | Deep doc | Recorded verdict |
+|---|---|---|---|---|
+| MODEL-MAG-001 | E-01 | `lib/magnitude.py` | MODEL_RETHINK_PLANS §RESULTS | PARTIAL |
+
 ## Documentation coverage and freshness
 
 ### Findings
@@ -553,12 +559,12 @@ def test_traceability_experiments_exist_in_the_ledger(repo):
     IDs were computed separately, so a card could claim evidence from an
     experiment that does not exist. An E-nn the ledger lacks fails generation.
     """
-    write(repo, REGISTRY, REGISTRY_TEXT + "\n## Experiment traceability\n\n| Model | Experiments | Primary code | Deep doc | Recorded verdict |\n|---|---|---|---|---|\n| MODEL-MAG-001 | E-01, E-99 | `x.py` | d | ok |\n")
+    write(repo, REGISTRY, REGISTRY_TEXT + "\n## Experiment traceability\n\n| Model | Experiments | Primary code | Deep doc | Recorded verdict |\n|---|---|---|---|---|\n| MODEL-GAMMA-001 | E-01, E-99 | `x.py` | d | ok |\n")
     r = export(repo)
-    assert r.returncode != 0 and "MODEL-MAG-001 traceability cites experiment(s) not in the ledger: E-99" in r.stdout + r.stderr, r.stdout + r.stderr
-    write(repo, REGISTRY, REGISTRY_TEXT + "\n## Experiment traceability\n\n| Model | Experiments | Primary code | Deep doc | Recorded verdict |\n|---|---|---|---|---|\n| MODEL-MAG-001 | E-01, E-02 | `x.py` | d | ok |\n")
+    assert r.returncode != 0 and "MODEL-GAMMA-001 traceability cites experiment(s) not in the ledger: E-99" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, REGISTRY, REGISTRY_TEXT + "\n## Experiment traceability\n\n| Model | Experiments | Primary code | Deep doc | Recorded verdict |\n|---|---|---|---|---|\n| MODEL-GAMMA-001 | E-01, E-02 | `x.py` | d | ok |\n")
     assert export(repo).returncode == 0
-    assert exported(repo)["experiment_traceability"]["MODEL-MAG-001"]["experiments"] == "E-01, E-02"
+    assert exported(repo)["experiment_traceability"]["MODEL-GAMMA-001"]["experiments"] == "E-01, E-02"
 
 
 def test_a_registry_without_routed_schedulers_fails_closed(repo):
@@ -630,3 +636,21 @@ def test_cards_keep_their_columns_stamp_and_single_verdicts(repo):
                                                 "| DOC-15, DOC-16, DOC-17 | Won't fix | the pages are retired |\n| DOC-16, DOC-17 | Fixed | rewritten |\n"))
     r = export(repo)
     assert r.returncode != 0 and "DOC-16 is named by two grouped disposition rows" in r.stdout + r.stderr, r.stdout + r.stderr
+
+
+def test_fenced_experiment_headings_and_a_missing_traceability_table_are_refused(repo):
+    """stocks#1205 r4120660287, r4120660295 (export_model_registry.py:225, :397).
+
+    A `## E-99` inside a fenced example joined the ledger, so a traceability row citing
+    E-99 exported; a deleted traceability table left every card without experiments while
+    --check passed. Both fail now.
+    """
+    write(repo, EXPERIMENTS, EXPERIMENTS_TEXT + "\n```\n## E-99 · an example heading\n```\n")
+    write(repo, REGISTRY, REGISTRY_TEXT + "\n## Experiment traceability\n\n| Model | Experiments | Primary code | Deep doc | Recorded verdict |\n|---|---|---|---|---|\n| MODEL-GAMMA-001 | E-99 | `x.py` | d | ok |\n")
+    r = export(repo)
+    assert r.returncode != 0 and "not in the ledger: E-99" in r.stdout + r.stderr, r.stdout + r.stderr
+    write(repo, EXPERIMENTS, EXPERIMENTS_TEXT)
+    start, end = REGISTRY_TEXT.index("## Experiment traceability"), REGISTRY_TEXT.index("## Documentation coverage")
+    write(repo, REGISTRY, REGISTRY_TEXT[:start] + REGISTRY_TEXT[end:])
+    r = export(repo)
+    assert r.returncode != 0 and "no experiment-traceability rows parsed" in r.stdout + r.stderr, r.stdout + r.stderr

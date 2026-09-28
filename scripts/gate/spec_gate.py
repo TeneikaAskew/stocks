@@ -94,6 +94,7 @@ WORKFLOW_CONTRACTS = {
     ".github/workflows/registry-check.yml": {
         "checkout": "head",   # runs the PR's files: a checkout pinned to the base would verify main instead
         "trigger": "pull_request",
+        "types": {"opened", "synchronize", "reopened"},
         # A statement counts when it STARTS with the command (after wrappers), so a word that
         # merely carries the text as an argument (`python3 -c '' python3 "$gate" ...`) does not.
         "run": ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"',
@@ -107,6 +108,7 @@ WORKFLOW_CONTRACTS = {
     ".github/workflows/spec-gate.yml": {
         "checkout": "base",   # pull_request_target: a head checkout would run PR-controlled code with its token
         "trigger": "pull_request_target",
+        "types": {"opened", "synchronize", "reopened", "edited", "ready_for_review"},
         # The base's verdict first; then the base's own suite judges the proposed gate, which
         # replaces the base's copy only after the verdict (solyra#72 r4120337733)
         "run": ('python3 scripts/gate/spec_gate.py --pr "$BASE_SHA" "$HEAD_SHA"',
@@ -179,10 +181,19 @@ def workflow_executes(text: str) -> tuple[str, str]:
             while i < len(lines) and (not lines[i].strip() or indent(lines[i]) > key_indent):
                 step.append(lines[i].strip())
                 i += 1
+            if value.startswith(">"):
+                # a folded scalar is ONE line to the shell: `echo x` followed by the commands
+                # runs an echo with arguments (stocks#1205 r4120660269)
+                step = [" ".join(ln for ln in step if ln)]
         # The step is the list item holding this key; the job is the mapping holding `steps:`.
         item = next((j for j in range(start, -1, -1) if indent(lines[j]) <= key_indent and lines[j].lstrip().startswith("-")), start)
         item_level = indent(lines[item])
         skipped = conditional(lines, item, block_end(lines, item, item_level), key_indent)
+        # a step with its own `shell:` (`bash {0}` drops -e, `sh` is not bash) is not judged
+        skipped = skipped or any((sm := re.match(r"^(\s*)(-\s+)?shell:\s*(.*)$", lines[j]))
+                                 and len(sm.group(1)) + len(sm.group(2) or "") == key_indent
+                                 and re.sub(r"\s+#.*$", "", sm.group(3)).strip().strip("'\"") != "bash"
+                                 for j in range(item, block_end(lines, item, item_level)))
         steps_key = enclosing_key(lines, item, item_level)
         if steps_key is not None:
             job_level = indent(lines[steps_key])
@@ -206,7 +217,8 @@ def shell_statements(runs: str) -> list[str]:
     the body of an `if`/`while`/`case` construct, a statement after `&&` or `||`, and a
     statement followed by `||` are all dropped (stocks#1205 r4119966265, r4120166743)."""
     lines, out, i = runs.splitlines(), [], 0
-    depth = 0          # inside then/do/else ... fi/done: GitHub may never reach it
+    depth = 0          # inside then/do/else ... fi/done, or a { } body: GitHub may never reach it
+    errexit = True     # GitHub runs bash -e; after `set +e` a failure no longer fails the step
     while i < len(lines):
         line = lines[i]
         while line.rstrip().endswith("\\") and i + 1 < len(lines):   # continuation
@@ -219,6 +231,7 @@ def shell_statements(runs: str) -> list[str]:
             i += 1
         line = re.sub(r"'[^']*'", "''", line)
         line = re.sub(r"(^|\s)#.*$", "", line)
+        line = re.sub(r"\$\{\{.*?\}\}|\$\{[^}]*\}", "__VAR__", line)   # so the braces left are bodies
         # `out=$(cmd ...)` runs cmd: the substitution is a statement of its own, and the outer
         # statement keeps its shape (`python3 "__SUB__/scripts/gate/spec_gate.py" --commit`)
         # so the word the shell invokes is still the one judged
@@ -231,7 +244,8 @@ def shell_statements(runs: str) -> list[str]:
         # Parentheses are not separators: `(exit $rc)` inside an echo is text, and a subshell
         # `( cmd )` reads as a statement starting with `(`, which no contract prefix matches
         # `cmd &` backgrounds cmd and drops its exit status (stocks#1205 r4120528946); `2>&1` is a redirection
-        parts = re.split(r"(\|\||&&|(?<![<>&])&(?![&>])|;;|;|\||\bthen\b|\bdo\b|\belse\b|\belif\b|\bfi\b|\bdone\b|\besac\b|\bcase\b)", line)
+        # `f() { ... }` and `|| { ... }` bodies are conditional like then/fi (stocks#1205 r4120660276)
+        parts = re.split(r"(\|\||&&|(?<![<>&])&(?![&>])|;;|;|\||\{|\}|\bthen\b|\bdo\b|\belse\b|\belif\b|\bfi\b|\bdone\b|\besac\b|\bcase\b)", line)
         chained = False    # after && or ||: runs only on the previous statement's outcome
         for k in range(0, len(parts), 2):
             stmt, op = parts[k].strip(), parts[k + 1] if k + 1 < len(parts) else ""
@@ -242,13 +256,21 @@ def shell_statements(runs: str) -> list[str]:
             stmt = re.sub(r"^((command|builtin|exec|env|time|nice|nohup|sudo|xargs)\s+(-\S+\s+|[A-Za-z_]\w*=\S*\s+)*)+", "", stmt)
             if stmt and depth == 0 and not chained and re.match(r"^(exit|return)\b", stmt):
                 return out   # stocks#1205 r4120381459: nothing after an unconditional exit runs
+            if stmt and depth == 0 and (sm := re.match(r"^set\s+(.*)$", stmt)):
+                # solyra#72 r4120633462: with errexit off a failing command does not fail the step
+                flags = sm.group(1)
+                if re.search(r"(^|\s)\+\w*e|\+o\s+errexit", flags):
+                    errexit = False
+                elif re.search(r"(^|\s)-\w*e|-o\s+errexit", flags):
+                    errexit = True
             executed = (stmt and not re.match(r"^[A-Za-z_]\w*=", stmt)   # `x="..."`: a value, not a command
-                        and stmt.split()[0] not in NON_EXECUTING and depth == 0 and not chained and op not in ("||", "&"))
+                        and stmt.split()[0] not in NON_EXECUTING and depth == 0 and not chained and errexit
+                        and op not in ("||", "&"))
             if executed:
                 out.append(stmt)
-            if op in ("then", "do", "case"):   # `else` continues the block `then` opened
+            if op in ("then", "do", "case", "{"):   # `else` continues the block `then` opened
                 depth += 1
-            elif op in ("fi", "done", "esac"):
+            elif op in ("fi", "done", "esac", "}"):
                 depth = max(0, depth - 1)
             chained = op in ("&&", "||")
     return out
@@ -330,11 +352,50 @@ def workflow_jobs(body: str) -> list[dict]:
     return out
 
 
+# What may follow the suite command: nothing that keeps pytest from running the tests
+# (solyra#72 r4120633474: `--collect-only` starts with the marker and executes nothing).
+PYTEST_ARGS = {"-q", "-v", "-x", "-p", "no:cacheprovider", "--noconftest", "-rA", "-ra"}
+DEFAULT_TYPES = {"opened", "synchronize", "reopened"}   # GitHub's default activity types for pull_request events
+
+
+def invokes(statement: str, command: str) -> bool:
+    """The statement invokes the contract command: it starts with it, and a pytest command
+    carries only arguments that still run the tests."""
+    if not statement.startswith(command):
+        return False
+    if command.startswith("python3 -m pytest"):
+        tail = re.sub(r"\s\d*[<>]&?\S*", "", statement[len(command):])   # redirections do not change what runs
+        return set(tail.split()) <= PYTEST_ARGS
+    return True
+
+
+def workflow_trigger_types(body: str, event: str) -> set[str]:
+    """The activity types declared under `on: <event>:` (`types: [...]` inline or as a list),
+    or GitHub's defaults when the event declares none."""
+    lines = body.splitlines()
+    for i, line in enumerate(lines):
+        if not re.match(r"^(on|True|true):\s*$", line):
+            continue
+        for j in range(i + 1, block_end(lines, i, 0)):
+            if re.match(rf"^\s+{re.escape(event)}:\s*$", lines[j]):
+                level = indent(lines[j])
+                for k in range(j + 1, block_end(lines, j, level)):
+                    if (m := re.match(r"^\s+types:\s*(.*)$", lines[k])):
+                        value = re.sub(r"\s+#.*$", "", m.group(1)).strip()
+                        if value:
+                            return set(re.findall(r"[a-z_]+", value))
+                        return {t for l in lines[k + 1:block_end(lines, k, indent(lines[k]))]
+                                for t in re.findall(r"^\s*-\s*([a-z_]+)", l)}
+                return set(DEFAULT_TYPES)
+        return set(DEFAULT_TYPES)
+    return set(DEFAULT_TYPES)
+
+
 def job_of(jobs: list[dict], command: str) -> tuple[int, int]:
-    """(job index, statement index) of the first statement starting with `command`, or (-1, -1)."""
+    """(job index, statement index) of the first statement invoking `command`, or (-1, -1)."""
     for j, job in enumerate(jobs):
         for k, st in enumerate(job["statements"]):
-            if st.startswith(command):
+            if invokes(st, command):
                 return j, k
     return -1, -1
 
@@ -587,6 +648,27 @@ def plan_stays_bound(name: str, fm: dict, base_fm: dict, branch: str) -> list[st
     return errs
 
 
+TASK_HEADING = re.compile(r"^#{2,3}\s+Task\b.*$", re.M)
+
+
+def validate_plan_body(text: str | None, name: str) -> list[str]:
+    """A plan has at least one task, and every task cites its spec section and carries a
+    checklist item: frontmatter alone authorizes nothing (solyra#72 r4120633514)."""
+    body = visible(text or "")
+    starts = [m.start() for m in TASK_HEADING.finditer(body)]
+    if not starts:
+        return [f"{name}: no `## Task N:` section; a plan is its tasks, each citing the spec section it advances"]
+    errs: list[str] = []
+    for n, start in enumerate(starts):
+        task = body[start:starts[n + 1] if n + 1 < len(starts) else len(body)]
+        title = task.splitlines()[0].strip()
+        if not re.search(r"^\s*Spec:", task, re.M):
+            errs.append(f"{name}: {title!r} cites no spec section (a `Spec:` line)")
+        if not re.search(r"^\s*[-*]\s+\[[ xX]\]", task, re.M):
+            errs.append(f"{name}: {title!r} has no checklist item")
+    return errs
+
+
 def validate_plan(fm: dict, name: str, feat_id: str, tree: Tree) -> list[str]:
     errs = [f"{name}: missing frontmatter key '{k}'" for k in REQUIRED_PLAN_KEYS if k not in fm]
     if "feat_id" in fm and fm["feat_id"] != feat_id:
@@ -788,10 +870,16 @@ def check_changed_plans(ch: Change) -> list[str]:
             feat = fm.get("feat_id") if isinstance(fm.get("feat_id"), str) else ""
             # solyra#72 r4119837259: a plan lands ready; only an existing plan closes to done,
             # after its PR is in the base's record
-            errs += validate_plan(fm, path, feat, ch.tree)
+            errs += validate_plan(fm, path, feat, ch.tree) + validate_plan_body(text, path)
             # solyra#72 r4119957722: the plan binds to an approved spec for its FEAT, and the
             # FEAT is in the catalog, while the plan lands rather than when the work starts
-            spec_fm = frontmatter(ch.tree.read(fm.get("spec"))) if isinstance(fm.get("spec"), str) else {}
+            spec_on_base = ch.base.read(fm.get("spec")) if isinstance(fm.get("spec"), str) else None
+            if isinstance(fm.get("spec"), str) and spec_on_base is None:
+                # solyra#72 r4120633495: the approved spec lands and is reviewed first; a plan
+                # arriving with its spec skips that review
+                errs.append(f"{path}: its spec {fm.get('spec')} is not on the base; the approved spec lands first, "
+                            "the plan in a later change")
+            spec_fm = frontmatter(spec_on_base) if spec_on_base is not None else {}
             if spec_fm and spec_fm.get("status") != "approved":
                 errs.append(f"{path}: its spec {fm.get('spec')} is status: {spec_fm.get('status')}, not approved")
             if spec_fm and spec_fm.get("feat_id") != feat:
@@ -839,7 +927,7 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                                                  if ch.base.read(script) is not None]
             # solyra#72 r4120337725: the command is what the statement invokes, so the contract
             # text is the statement's prefix, never a later argument
-            lost = [m for m in required if not any(st.startswith(m) for st in statements)] + \
+            lost = [m for m in required if not any(invokes(st, m) for st in statements)] + \
                    [m for m in contract["structure"] if m not in body]
             if lost:
                 return [f"{path}: no longer executes {len(lost)} step(s) the gate depends on ({lost[0]!r}"
@@ -859,9 +947,15 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
                             "(persist-credentials: false) and never the base's verdict"], None
             for job in jobs:
                 # stocks#1205 r4120528978: a job that runs a contract command has the repository
-                if any(st.startswith(m) for m in required for st in job["statements"]) and not job["checkouts"]:
+                if any(invokes(st, m) for m in required for st in job["statements"]) and not job["checkouts"]:
                     return [f"{path}: job {job['name']} runs the gate's commands without an actions/checkout step; "
                             "it would run in an empty workspace"], None
+            declared = workflow_trigger_types(body, contract["trigger"])
+            if contract["trigger"] in workflow_triggers(body) and not contract["types"] <= declared:
+                # solyra#72 r4120633503: without `edited` and `ready_for_review` a draft's green run
+                # survives the switch to ready and a title edit; the activity types are the contract
+                return [f"{path}: `on: {contract['trigger']}` no longer fires on {', '.join(sorted(contract['types'] - declared))}; "
+                        "the gate's workflows keep their activity types"], None
             if contract["trigger"] not in workflow_triggers(body):
                 return [f"{path}: no longer runs on {contract['trigger']} (its `on:` names "
                         f"{', '.join(sorted(workflow_triggers(body))) or 'nothing'}); the gate's workflows keep their trigger"], None
@@ -969,7 +1063,7 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
         return errs, None
     plan_path = plans[0]
     plan_fm = frontmatter(ch.tree.read(plan_path))
-    errs += validate_plan(plan_fm, plan_path, feat_id, ch.tree)
+    errs += validate_plan(plan_fm, plan_path, feat_id, ch.tree) + validate_plan_body(ch.tree.read(plan_path), plan_path)
     errs += plan_stays_bound(plan_path, plan_fm, frontmatter(ch.base.read(plan_path)), ch.branch)
     spec_path = plan_fm.get("spec") if isinstance(plan_fm.get("spec"), str) else None
     spec_text = ch.base.read(spec_path) if spec_path else None
@@ -1293,6 +1387,18 @@ def check_policy_structure(ch: Change) -> list[str]:
     errs: list[str] = []
     if CANVASES in ch.changed and (canvases := ch.tree.read(CANVASES)) is not None:
         errs += validate_canvases(canvases)
+    if REQUIREMENTS in ch.changed and ch.base.read(REQUIREMENTS) is None and (reqs := ch.tree.read(REQUIREMENTS)) is not None:
+        # solyra#72 r4120633485: a repository without a registry checks req_ids for shape; a new
+        # registry that omits an ID the specs cite would refuse every spec citing it
+        defined = set(REQ_DEFINITION.findall(visible(reqs)))
+        cited = {r for path in ch.base.list(SPECS) for r in (frontmatter(ch.base.read(path)).get("req_ids") or [])
+                 if isinstance(r, str)}
+        if not defined:
+            errs.append(f"{REQUIREMENTS}: a new requirements registry defines no `**REQ-XXX-000:**`; a registry that "
+                        "exists but is empty fails every spec")
+        elif missing := sorted(cited - defined):
+            errs.append(f"{REQUIREMENTS}: a new requirements registry omits {len(missing)} requirement(s) the specs "
+                        f"cite ({missing[0]}{' and more' if len(missing) > 1 else ''}); define them all or land none")
     for path in POLICY_DOCS:
         if path not in ch.changed or (head := ch.tree.read(path)) is None or (base := ch.base.read(path)) is None:
             continue
