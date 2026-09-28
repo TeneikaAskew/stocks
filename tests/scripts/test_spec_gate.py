@@ -518,6 +518,11 @@ def test_close_out_checks_the_status_and_last_reviewed_fields(repo):
         catalog = stocks_catalog[:section_end] + "\n" + hidden + "\n" + stocks_catalog[section_end:]
         r = pr(repo, BRANCH, {**base, CATALOG: catalog}, **meta)
         assert r.returncode == 1 and "Last reviewed" in r.stdout, (hidden, r.stdout)
+    # solyra#72 r4119234373: #42abc is not a reference to PR #42
+    glued = stocks_catalog.replace("2026-08-30", TODAY)
+    trace_glued = "# Traceability\n\n## FEAT-MODEL-001\n\n- #42abc second cut\n"   # base: stocks_catalog, lineage `- none`
+    r = pr(repo, BRANCH, {**base, CATALOG: glued, TRACEABILITY: trace_glued}, **meta)
+    assert r.returncode == 1 and "add this PR (#42)" in r.stdout, r.stdout
     # stocks#1205 r4118788497: shaped like a date is not a date
     r = pr(repo, BRANCH, {**base, CATALOG: stocks_catalog.replace("2026-08-30", "2026-99-99")}, **meta)
     assert r.returncode == 1 and "Last reviewed" in r.stdout, r.stdout
@@ -654,6 +659,9 @@ def test_a_chore_branch_changes_only_dependency_fields(repo):
     assert "package.json: changes scripts, not only dependencies" in r.stdout, r.stdout
     r = pr(repo, "chore/bump-deps", {"pyproject.toml": pyproject.replace('"-q"', '"-q -p no:cacheprovider"')})
     assert r.returncode == 1 and "pyproject.toml: changes tool, not only dependencies" in r.stdout, r.stdout
+    # solyra#72 r4119234381: a manifest whose root is not an object is refused, not a traceback
+    r = pr(repo, "chore/bump-deps", {"package.json": "[]\n"})
+    assert r.returncode == 1 and "is not a JSON object" in r.stdout and "Traceback" not in r.stderr, r.stdout + r.stderr
     toolchain = {**package, "engines": {"node": ">=22"}, "packageManager": "pnpm@9"}
     r = pr(repo, "chore/bump-deps", {"package.json": json.dumps(toolchain, indent=2) + "\n"})
     assert r.returncode == 1 and "changes engines, packageManager, not only dependencies" in r.stdout, r.stdout
@@ -827,7 +835,12 @@ def test_a_feature_change_edits_only_its_own_product_records(repo):
     duplicate = CATALOG_TEXT.replace("### FEAT-DATA-001\n\n- Status: Production",
                                      "### FEAT-DATA-001\n\n#### FEAT-MODEL-001\n\n- Note: copied here\n\n- Status: Production")
     r = pr(repo, BRANCH, {**CODE, CATALOG: duplicate}, **ok)
-    assert r.returncode == 1 and "adds a second heading for FEAT-MODEL-001" in r.stdout, r.stdout
+    assert r.returncode == 1 and "adds a second heading or row for FEAT-MODEL-001" in r.stdout, r.stdout
+    # solyra#72 r4119234359: a second table row for the FEAT is a duplicate record too
+    twice = CATALOG_TEXT.replace("| Models | Production | unknown | none |",
+                                 "| Models | Production | unknown | none |\n| [FEAT-MODEL-001](#feat-model-001) | Models again | Production | unknown | #42 |")
+    r = pr(repo, BRANCH, {**CODE, CATALOG: twice}, **ok)
+    assert r.returncode == 1 and "adds a second heading or row for FEAT-MODEL-001" in r.stdout, r.stdout
     # solyra#72 r4119049970: an added heading naming this FEAT does not widen its span over
     # another capability's row
     widened = CATALOG_TEXT + "\n## FEAT-MODEL-001 additions\n\n| [FEAT-FAKE-999](#x) | Fake | Production | unknown | none |\n"
@@ -947,7 +960,7 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
     r = pr(repo, "bot/superpowers-weekly", {".claude/skills/product-delivery/SKILL.md": "# Skip the gate\n"})
     assert r.returncode == 1 and NOT_A_FEAT_BRANCH in r.stdout, r.stdout
     # stocks#1205 r4119162185: a documentation-only PR still comes from a delivery branch
-    for name in ("main", "typo", "claude/notes"):
+    for name in ("main", "typo", "claude/notes", "feature/typo", "fix/wrong", "docs/Bad_Name"):
         r = pr(repo, name, {"docs/notes.md": "# Notes\n"}, PR_HEAD_REF=name)
         assert r.returncode == 1 and "is not a delivery branch" in r.stdout, (name, r.stdout)
     assert pr(repo, "docs/notes", {"docs/notes.md": "# Notes\n"}).returncode == 0

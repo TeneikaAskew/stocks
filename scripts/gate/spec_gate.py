@@ -67,7 +67,7 @@ CHECKBOX = re.compile(r"^\s*[-*]\s+\[([ xX])\]\s+(.*\S)\s*$")
 HEADING = re.compile(r"^(#{1,6})\s")
 ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 PR_REF = re.compile(r"^#?(\d+)$")
-PR_MENTION = re.compile(r"#(\d+)(?!\d)")
+PR_MENTION = re.compile(r"#(\d+)(?![\w])")   # #123abc names nothing
 CLOSE_OUT_FIELDS = ("Status", "Last reviewed")
 
 MANIFEST = re.compile(
@@ -82,8 +82,9 @@ GATE_FILES = (
     "tests/scripts/test_spec_gate.py",
     "tests/scripts/test_export_model_registry.py",
 )
-# Every branch a pull request may come from; spike/ is refused before this in PR mode.
-PR_BRANCH_PREFIXES = ("feature/", "fix/", "docs/", "chore/", "bot/superpowers-")
+# Every branch a pull request may come from, in full: feature/ and fix/ carry a FEAT-ID
+# (BRANCH), the rest a kebab-case slug. spike/ is refused before this in PR mode.
+OTHER_BRANCH = re.compile(r"^((docs|chore)/[a-z0-9]+(-[a-z0-9]+)*|bot/superpowers-[a-z0-9]+(-[a-z0-9]+)*)$")
 # The files the gate runs from: no change may delete one, whatever its branch, or the
 # base's copy judges the deletion green and every later PR runs without a gate.
 GATE_ENTRYPOINTS = (
@@ -343,6 +344,8 @@ def non_dependency_edit(path: str, before: str | None, after: str | None) -> str
     try:
         if name == "package.json":
             b, a = json.loads(before), json.loads(after)
+            if not isinstance(b, dict) or not isinstance(a, dict):
+                return f"{path}: is not a JSON object on both sides; that is not a dependency update"
             b = {k: v for k, v in b.items() if k not in NPM_DEPENDENCY_KEYS}
             a = {k: v for k, v in a.items() if k not in NPM_DEPENDENCY_KEYS}
         else:
@@ -402,7 +405,7 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
     if not gated:
         # Documentation alone is exempt from the trace, not from the branch rule: a PR
         # still comes from a delivery branch, so `main` or `typo` is not a way in.
-        if ch.mode == "pr" and not ch.branch.startswith(PR_BRANCH_PREFIXES):
+        if ch.mode == "pr" and not (BRANCH.match(ch.branch) or OTHER_BRANCH.match(ch.branch)):
             return [f"branch '{ch.branch}' is not a delivery branch; a pull request comes from feature/<feat-id>-<slug>, "
                     "fix/<feat-id>-<slug>, docs/<slug>, chore/<slug> or bot/superpowers-<tag>, documentation included"], None
         return [], None
@@ -690,9 +693,11 @@ def feat_span(text: str, feat_id: str) -> set[int]:
     return span
 
 
-def feat_headings(text: str, feat_id: str) -> int:
-    """How many headings name the FEAT: one record, one heading."""
-    return sum(1 for line in text.splitlines() if HEADING.match(line) and feat_id in line)
+def feat_headings(text: str, feat_id: str) -> tuple[int, int]:
+    """(headings naming the FEAT, table rows keyed by it): one record, one of each."""
+    lines = text.splitlines()
+    return (sum(1 for line in lines if HEADING.match(line) and feat_id in line),
+            sum(1 for line in lines if (m := FEAT_ROW.match(line)) and m.group(1) == feat_id))
 
 
 def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) -> list[str]:
@@ -707,9 +712,9 @@ def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) ->
         elif path in (CATALOG, TRACEABILITY):
             before_text, after_text = Tree(merge_base).read(path) or "", ch.tree.read(path) or ""
             had, has = feat_headings(before_text, feat_id), feat_headings(after_text, feat_id)
-            if had and has > had:
-                errs.append(f"{path}: adds a second heading for {feat_id}; a capability has one record, "
-                            "so extend the existing section rather than opening another")
+            if any(before and after > before for before, after in zip(had, has)):
+                errs.append(f"{path}: adds a second heading or row for {feat_id}; a capability has one record, "
+                            "so extend the existing one rather than opening another")
                 continue
             spans = {"-": feat_span(before_text, feat_id), "+": feat_span(after_text, feat_id)}
             # A line is outside the FEAT's scope when it sits outside its span, or names
@@ -835,7 +840,7 @@ def calendar_date(value: str) -> bool:
 def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict) -> list[str]:
     """CI only, once the PR is ready for review: the Phase 5 records exist in this PR."""
     n = env["PR_NUMBER"]
-    pr_ref = re.compile(rf"#{re.escape(n)}(?!\d)")
+    pr_ref = re.compile(rf"#{re.escape(n)}(?![\w])")
     errs: list[str] = []
     matched = matched_boxes(done_items(t), checklist(env.get("PR_BODY") or ""))
     unticked = [i for i, box in matched.items() if not (box and box[0])]
