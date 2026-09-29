@@ -2624,7 +2624,7 @@
  ],
  "sources": {
   "docs/EXPERIMENT_REGISTRY.md": "928c447f336fc10a2a08d2e69b5e1ec5c1eddb7c",
-  "docs/product/07-MODEL-REGISTRY.md": "d13f52a89e17037062f4c025d71389f525100acb",
+  "docs/product/07-MODEL-REGISTRY.md": "d8f23bc5a258f5b6408e3f70816f8139dce9a25e",
   "scripts/gate/export_model_registry.py": "74e5fdc5bb2e7bf11894b3de2601c4dc8428122d"
  },
  "tables": [
@@ -2772,7 +2772,7 @@
     "Scope",
     "Bearing on this registry"
    ],
-   "rows": 5,
+   "rows": 4,
    "section": "Model and Algorithm Registry / Documentation coverage and freshness / Open pull requests touching this surface"
   },
   {
