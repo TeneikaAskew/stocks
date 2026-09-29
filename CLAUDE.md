@@ -1,6 +1,6 @@
 # Project Instructions for Claude Code
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
 
 ## Before any change (read this first)
 Any edit, fix, refactor, or feature, however small: invoke the `product-delivery` skill before touching code.
