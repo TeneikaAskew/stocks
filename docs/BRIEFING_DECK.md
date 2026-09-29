@@ -1,6 +1,6 @@
 # Trading Application — Briefing Deck
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
 
 **Compiled:** 2026-04-26 (refreshed post-PR-#99)
 **Scope:** Full-system reference covering architecture, data pipeline, infrastructure, plans executed, and operational runbook.

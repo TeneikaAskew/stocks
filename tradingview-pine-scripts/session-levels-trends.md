@@ -1,6 +1,6 @@
 # Session Levels + ORB + Supertrend - Complete Guide
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
 
 ## Table of Contents
 1. [Overview](#overview)

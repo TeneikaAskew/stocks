@@ -1,6 +1,6 @@
 # Options Execution-Backtest
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
 
 **Status: see [`docs/OPTIONS_EXEC_BACKTEST_RESULTS.md`](../../docs/OPTIONS_EXEC_BACKTEST_RESULTS.md) for the verdict.**
 

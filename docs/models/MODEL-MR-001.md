@@ -1,5 +1,7 @@
 # MODEL-MR-001 — Mean-reversion strategy
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
+
 **Code:** `lib/signals.py` (`evaluate_signal`, the **live** implementation) ·
 `lib/strategies/mean_reversion.py` (`MeanReversionStrategy`, the offline class) ·
 thresholds in `lib/strategies/config.py` and `lib/config.py:SignalConfig` ·
