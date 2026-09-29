@@ -70,7 +70,7 @@
    "disposition": "FLAGGED — deferred",
    "id": "DOC-12",
    "label": "DOC-12",
-   "why": "#1060 is an open PR refreshing the infrastructure docs; fixing the same counts here would collide"
+   "why": "#1060 was the PR refreshing the infrastructure docs; it was closed without merging (checked 2026-09-29), so the collision that deferred this no longer applies, but the infrastructure counts are still unrefreshed"
   },
   "DOC-13": {
    "disposition": "FIXED HERE (mostly)",
@@ -1505,7 +1505,7 @@
  ],
  "models": {
   "MODEL-AGREE-001": {
-   "blocking_issues": "#905 freeze and prospectively validate expectancy",
+   "blocking_issues": "#1206 freeze and prospectively validate expectancy",
    "code": "`lib/strategies/agreement.py`",
    "code_paths": [
     "lib/strategies/agreement.py"
@@ -1514,7 +1514,7 @@
    "doc": "CURRENT · doc",
    "id": "MODEL-AGREE-001",
    "issue_numbers": [
-    905
+    1206
    ],
    "name": "Agreement scoring",
    "rec": "RESTRUCTURE",
@@ -1649,7 +1649,7 @@
    "type": "Heuristic"
   },
   "MODEL-EWV-001": {
-   "blocking_issues": "#1151 fixed and re-scored 2026-09-26: after-close reporters had been scored against the pre-announcement session, 1,263 of 2,383 scored rows. Each pick is now scored on the NYSE session its news reaches, and the stored verdicts were re-computed: 1,233 of 1,251 stored after-close closes are now nearer the next session's daily close than the report day's, where 1,226 of 1,249 were nearer the report day's before, and 328 of 1,263 verdicts flipped · #1168 the live premarket brief never shows a verdict; only `BRIEF_AS_OF` replays do · #1181 fixed: each empty call is counted by the vendor's reason, a run whose every call came back empty is decided by one SPY call, and share classes are sent dashed",
+   "blocking_issues": "#1151 fixed and re-scored 2026-09-26: after-close reporters had been scored against the pre-announcement session, 1,263 of 2,383 scored rows. Each pick is now scored on the NYSE session its news reaches, and the stored verdicts were re-computed: 1,233 of 1,251 stored after-close closes are now nearer the next session's daily close than the report day's, where 1,226 of 1,249 were nearer the report day's before, and 328 of 1,263 verdicts flipped · #1168 fixed: the weekday premarket brief recaps the last session's verdicts, and today's rows carry none · #1181 fixed: each empty call is counted by the vendor's reason, a run whose every call came back empty is decided by one SPY call, and share classes are sent dashed",
    "code": "`gcp/fetchers/evaluate_ew_strikes.py`",
    "code_paths": [
     "gcp/fetchers/evaluate_ew_strikes.py"
@@ -2076,7 +2076,7 @@
    "type": "Heuristic"
   },
   "MODEL-QUAL-001": {
-   "blocking_issues": "#1152 fixed and verified 2026-09-25: the score-discrimination half never ran, because its timestamp join matched 0 live rows, and the minute-truncated join the issue proposed would have paired live mean-reversion alerts with unrelated momentum replay rows. Each alert is now paired with its own `exit_return_pct`, the comparison is signed, and the check is report-only, because on real rows its fortnightly rho swings from -0.8 to +0.8 and the score has no measurable edge (Spearman -0.004, p = 0.91, n = 1,024, measured 2026-09-24; #905). The deployed job's first run paired n = 116 and gave rho = +0.200 · #1166 fixed 2026-09-26: the nightly report fired at the same minute as its writer, so it read `historical_signals` before each session was written and never scored a Friday (0 of 20,323 Friday rows over 120 days). It now fires at 01:30 ET, also scores any row from the last 35 days still missing from `signal_metrics` (a new ticker's 30-day bootstrap included), and exits 1 when a row it selected stays unscored · #1167 the timeframe lookup was fitted on the 100x-lenient classes · #1154 fixed and re-classified 2026-09-25: the 5/15/30/60m classes had compared fraction thresholds with percentage-point returns, 100x too lenient; `cls_60m` moved from 90.2% to 32.0% `CLEAN_HIT` · `CLEAN_THRESHOLD = 0.005` and `NOISE_THRESHOLD = 0.003` decide what counts as a hit for every strategy and carry no derivation; `ticker_calibration.threshold_clean` / `_wrong` / `_noise`, written quarterly by MODEL-CALIB-001, are never read by it",
+   "blocking_issues": "#1152 fixed and verified 2026-09-25: the score-discrimination half never ran, because its timestamp join matched 0 live rows, and the minute-truncated join the issue proposed would have paired live mean-reversion alerts with unrelated momentum replay rows. Each alert is now paired with its own `exit_return_pct`, the comparison is signed, and the check is report-only, because on real rows its fortnightly rho swings from -0.8 to +0.8 and the score has no measurable edge (Spearman -0.004, p = 0.91, n = 1,024, measured 2026-09-24; now tracked in #1206). The deployed job's first run paired n = 116 and gave rho = +0.200 · #1166 fixed 2026-09-26: the nightly report fired at the same minute as its writer, so it read `historical_signals` before each session was written and never scored a Friday (0 of 20,323 Friday rows over 120 days). It now fires at 01:30 ET, also scores any row from the last 35 days still missing from `signal_metrics` (a new ticker's 30-day bootstrap included), and exits 1 when a row it selected stays unscored · #1167 retired the timeframe lookup: re-derived on the corrected classes it picked 240m for 50 of 52 buckets, so backfill tags use the placeholder tiers and the stored history is re-tagged after merge · #1154 fixed and re-classified 2026-09-25: the 5/15/30/60m classes had compared fraction thresholds with percentage-point returns, 100x too lenient; `cls_60m` moved from 90.2% to 32.0% `CLEAN_HIT` · `CLEAN_THRESHOLD = 0.005` and `NOISE_THRESHOLD = 0.003` decide what counts as a hit for every strategy and carry no derivation; `ticker_calibration.threshold_clean` / `_wrong` / `_noise`, written quarterly by MODEL-CALIB-001, are never read by it",
    "code": "`scripts/signal_quality_report.py`, `gcp/signal_quality_alarm.py`",
    "code_paths": [
     "scripts/signal_quality_report.py",
@@ -2086,11 +2086,11 @@
    "doc": "CURRENT · doc",
    "id": "MODEL-QUAL-001",
    "issue_numbers": [
-    905,
     1152,
     1154,
     1166,
-    1167
+    1167,
+    1206
    ],
    "name": "Signal-quality classification and regression alarm",
    "rec": "RETEST",
@@ -2533,7 +2533,7 @@
     "MODEL-EWV-001"
    ],
    "scheduler": "`evaluate-ew-strikes-daily`",
-   "serves": "MODEL-EWV-001 — HIT / MISS / KEPT / ASSIGNED verdicts on Earnings Whispers strike picks (`gcp/fetchers/evaluate_ew_strikes.py:101-180`), with a render path in the premarket brief (`gcp/premarket_brief.py:2391-2396`) that only `BRIEF_AS_OF` replays reach (#1168)"
+   "serves": "MODEL-EWV-001 — HIT / MISS / KEPT / ASSIGNED verdicts on Earnings Whispers strike picks (`gcp/fetchers/evaluate_ew_strikes.py:101-180`), recapped by the next weekday's premarket brief (`gcp/premarket_brief.py:718`, #1168)"
   },
   {
    "cron_america_new_york": "`0 9 * * 6`",
@@ -2623,8 +2623,8 @@
   }
  ],
  "sources": {
-  "docs/EXPERIMENT_REGISTRY.md": "cfbcca257edc74928cc0af69d275a02f2fd78c0c",
-  "docs/product/07-MODEL-REGISTRY.md": "1e70bf96a3e8ab49e714745d2571b662001ceb39",
+  "docs/EXPERIMENT_REGISTRY.md": "928c447f336fc10a2a08d2e69b5e1ec5c1eddb7c",
+  "docs/product/07-MODEL-REGISTRY.md": "e21ba0ba68f7e62bc5f971e0e51e35e75be403e8",
   "scripts/gate/export_model_registry.py": "74e5fdc5bb2e7bf11894b3de2601c4dc8428122d"
  },
  "tables": [
