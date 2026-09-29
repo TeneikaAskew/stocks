@@ -1,5 +1,7 @@
 # MODEL-FLOW-001 — Dealer flow-direction features (DEX / vanna / charm)
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
+
 **Code:** `lib/features/flow_direction.py` (587 lines), `gcp/build_options_daily_greeks.py` ·
 **Table:** `etf_options_daily_greeks` ·
 **Job:** `build-options-greeks` — scheduled `options-daily-greeks`, `15 23 * * 1-5`, **ENABLED** ·

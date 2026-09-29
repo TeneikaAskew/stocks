@@ -1,5 +1,7 @@
 # MODEL-BRIEF-001 — Brief bias / movement statement
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
+
 **Code:** `lib/strategies/brief_bias.py` (266 lines), `lib/movement_statement.py` (1004 lines) ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** Experimental · **Rec:** RETEST

@@ -1,6 +1,6 @@
 # Alpha Vantage Quick Start Guide
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
 
 ## Setup (One-time)
 
