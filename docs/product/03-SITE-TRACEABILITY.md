@@ -629,7 +629,7 @@ UI spec: [UI-SCREENS.md § SCREEN-INSIGHTS](https://github.com/TeneikaAskew/soly
 ### Checklist
 | ID | Element | S | T | V | Te | Evidence |
 |---|---|---|---|---|---|---|
-| INSIGHTS-01 | Report cards | [ ] | [x] | [ ] | [ ] | T 2026-09-30 ea22585 |
+| INSIGHTS-01 | Report cards | [ ] | [x] | [ ] | [ ] | T 2026-09-30 d239e49 |
 | INSIGHTS-02 | Agents tab | [ ] | [x] | [ ] | [ ] | T 2026-09-30 ea22585 |
 | INSIGHTS-03 | History tab | [ ] | [x] | [ ] | [ ] | T 2026-09-30 ea22585 |
 | INSIGHTS-04 | Watchlist tab | [ ] | [x] | [ ] | [ ] | T 2026-09-30 a5602aa |
