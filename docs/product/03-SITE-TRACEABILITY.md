@@ -42,20 +42,20 @@ defined in this document's Gates section. The element ID is the join to the UI s
 | 01 · Landing | 13 | 13 | 13 | 11 | 9 |
 | 02 · AuthGate and sign-in | 10 | 10 | 10 | 3 | 6 |
 | 03 · AppShell | 16 | 16 | 16 | 3 | 8 |
-| 04 · Dashboard | 21 | 0 | 6 | 0 | 0 |
-| 05 · Live Market | 13 | 0 | 5 | 0 | 0 |
-| 06 · Charts | 17 | 0 | 11 | 0 | 0 |
-| 07 · Options Flow | 13 | 0 | 6 | 0 | 0 |
-| 08 · Signals | 12 | 0 | 2 | 0 | 0 |
-| 09 · AI Insights | 15 | 0 | 4 | 0 | 0 |
-| 10 · Catalysts | 14 | 0 | 6 | 0 | 0 |
-| 11 · Playbook | 10 | 0 | 2 | 0 | 0 |
-| 12 · Reports | 10 | 0 | 0 | 0 | 0 |
-| 13 · Journal | 16 | 0 | 9 | 0 | 0 |
-| 14 · Admin | 13 | 0 | 7 | 0 | 0 |
-| 15 · Settings | 13 | 0 | 4 | 0 | 0 |
-| 16 · Help and Glossary | 8 | 0 | 0 | 0 | 0 |
-| Total | 222 | 47 | 109 | 23 | 30 |
+| 04 · Dashboard | 21 | 0 | 21 | 0 | 0 |
+| 05 · Live Market | 13 | 0 | 13 | 0 | 0 |
+| 06 · Charts | 17 | 0 | 17 | 0 | 0 |
+| 07 · Options Flow | 13 | 0 | 13 | 0 | 0 |
+| 08 · Signals | 12 | 0 | 12 | 0 | 0 |
+| 09 · AI Insights | 15 | 0 | 15 | 0 | 0 |
+| 10 · Catalysts | 14 | 0 | 14 | 0 | 0 |
+| 11 · Playbook | 10 | 0 | 10 | 0 | 0 |
+| 12 · Reports | 10 | 0 | 10 | 0 | 0 |
+| 13 · Journal | 16 | 0 | 16 | 0 | 0 |
+| 14 · Admin | 13 | 0 | 13 | 0 | 0 |
+| 15 · Settings | 13 | 0 | 13 | 0 | 0 |
+| 16 · Help and Glossary | 8 | 0 | 8 | 0 | 0 |
+| Total | 222 | 47 | 222 | 23 | 30 |
 
 ```bash
 # whole document; run between two "## NN ·" headings for one area
@@ -303,26 +303,26 @@ UI spec: [UI-SCREENS.md § SCREEN-DASHBOARD](https://github.com/TeneikaAskew/sol
 | ID | Element | S | T | V | Te | Evidence |
 |---|---|---|---|---|---|---|
 | DASHBOARD-01 | Briefing strip | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
-| DASHBOARD-02 | Top setup | [ ] | [ ] | [ ] | [ ] | |
+| DASHBOARD-02 | Top setup | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7306b5b |
 | DASHBOARD-03 | Daily KPIs | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
 | DASHBOARD-04 | Intraday chart | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
-| DASHBOARD-05 | Live signals table | [ ] | [ ] | [ ] | [ ] | |
+| DASHBOARD-05 | Live signals table | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7306b5b |
 | DASHBOARD-06 | Catalysts list | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
-| DASHBOARD-07 | Sector rotation | [ ] | [ ] | [ ] | [ ] | |
-| DASHBOARD-08 | AI take | [ ] | [ ] | [ ] | [ ] | |
+| DASHBOARD-07 | Sector rotation | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7306b5b |
+| DASHBOARD-08 | AI take | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7306b5b |
 | DASHBOARD-09 | News | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
-| DASHBOARD-10 | Switch ticker | [ ] | [ ] | [ ] | [ ] | |
-| DASHBOARD-11 | Refresh | [ ] | [ ] | [ ] | [ ] | |
-| DASHBOARD-12 | Candles or Area toggle | [ ] | [ ] | [ ] | [ ] | |
-| DASHBOARD-13 | 1D or 5D sector period | [ ] | [ ] | [ ] | [ ] | |
-| DASHBOARD-14 | Click a card (signals, catalysts, news, AI take) | [ ] | [ ] | [ ] | [ ] | |
+| DASHBOARD-10 | Switch ticker | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7306b5b |
+| DASHBOARD-11 | Refresh | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7306b5b |
+| DASHBOARD-12 | Candles or Area toggle | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7306b5b |
+| DASHBOARD-13 | 1D or 5D sector period | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7306b5b |
+| DASHBOARD-14 | Click a card (signals, catalysts, news, AI take) | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7306b5b |
 | DASHBOARD-15 | Review mode | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
-| DASHBOARD-16 | State: loading | [ ] | [ ] | [ ] | [ ] | |
-| DASHBOARD-17 | State: empty | [ ] | [ ] | [ ] | [ ] | |
-| DASHBOARD-18 | State: error | [ ] | [ ] | [ ] | [ ] | |
-| DASHBOARD-19 | State: stale | [ ] | [ ] | [ ] | [ ] | |
-| DASHBOARD-20 | State: permission | [ ] | [ ] | [ ] | [ ] | |
-| DASHBOARD-21 | Movement Read card (feature-flagged) | [ ] | [ ] | [ ] | [ ] | |
+| DASHBOARD-16 | State: loading | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7306b5b |
+| DASHBOARD-17 | State: empty | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7306b5b |
+| DASHBOARD-18 | State: error | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7306b5b |
+| DASHBOARD-19 | State: stale | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7306b5b |
+| DASHBOARD-20 | State: permission | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7306b5b |
+| DASHBOARD-21 | Movement Read card (feature-flagged) | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7306b5b |
 
 ### Chain
 | ID | API | Backend | Data | GCP | External | Tests |
@@ -376,19 +376,19 @@ UI spec: [UI-SCREENS.md § SCREEN-LIVEMARKET](https://github.com/TeneikaAskew/so
 ### Checklist
 | ID | Element | S | T | V | Te | Evidence |
 |---|---|---|---|---|---|---|
-| LIVE-01 | Session bar | [ ] | [ ] | [ ] | [ ] | |
+| LIVE-01 | Session bar | [ ] | [x] | [ ] | [ ] | T 2026-09-30 33cee1b |
 | LIVE-02 | Quote card | [ ] | [x] | [ ] | [ ] | T 2026-09-30 bca8ffd |
 | LIVE-03 | Six indicator tiles | [ ] | [x] | [ ] | [ ] | T 2026-09-30 bca8ffd |
 | LIVE-04 | CALL and PUT setup cards | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
-| LIVE-05 | Live (15s) or Paused toggle | [ ] | [ ] | [ ] | [ ] | |
-| LIVE-06 | Sound alert | [ ] | [ ] | [ ] | [ ] | |
-| LIVE-07 | Switch ticker | [ ] | [ ] | [ ] | [ ] | |
+| LIVE-05 | Live (15s) or Paused toggle | [ ] | [x] | [ ] | [ ] | T 2026-09-30 33cee1b |
+| LIVE-06 | Sound alert | [ ] | [x] | [ ] | [ ] | T 2026-09-30 33cee1b |
+| LIVE-07 | Switch ticker | [ ] | [x] | [ ] | [ ] | T 2026-09-30 33cee1b |
 | LIVE-08 | Review mode | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
-| LIVE-09 | State: loading | [ ] | [ ] | [ ] | [ ] | |
-| LIVE-10 | State: empty | [ ] | [ ] | [ ] | [ ] | |
+| LIVE-09 | State: loading | [ ] | [x] | [ ] | [ ] | T 2026-09-30 33cee1b |
+| LIVE-10 | State: empty | [ ] | [x] | [ ] | [ ] | T 2026-09-30 33cee1b |
 | LIVE-11 | State: error | [ ] | [x] | [ ] | [ ] | T 2026-09-30 bca8ffd |
-| LIVE-12 | State: stale | [ ] | [ ] | [ ] | [ ] | |
-| LIVE-13 | State: permission | [ ] | [ ] | [ ] | [ ] | |
+| LIVE-12 | State: stale | [ ] | [x] | [ ] | [ ] | T 2026-09-30 33cee1b |
+| LIVE-13 | State: permission | [ ] | [x] | [ ] | [ ] | T 2026-09-30 33cee1b |
 
 ### Chain
 | ID | API | Backend | Data | GCP | External | Tests |
@@ -444,17 +444,17 @@ UI spec: [UI-SCREENS.md § SCREEN-CHARTS](https://github.com/TeneikaAskew/solyra
 | CHARTS-04 | Replay session controls | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
 | CHARTS-05 | Strategy conditions card | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
 | CHARTS-06 | Similar setups card | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
-| CHARTS-07 | Backtester | [ ] | [ ] | [ ] | [ ] | |
+| CHARTS-07 | Backtester | [ ] | [x] | [ ] | [ ] | T 2026-09-30 1f266df |
 | CHARTS-08 | Post-session scorecard | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
 | CHARTS-09 | Change date or timeframe | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
 | CHARTS-10 | Toggle overlays | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
 | CHARTS-11 | Run a replay session | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
 | CHARTS-12 | Backtest my trades | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
-| CHARTS-13 | State: loading | [ ] | [ ] | [ ] | [ ] | |
-| CHARTS-14 | State: empty | [ ] | [ ] | [ ] | [ ] | |
-| CHARTS-15 | State: error | [ ] | [ ] | [ ] | [ ] | |
-| CHARTS-16 | State: stale | [ ] | [ ] | [ ] | [ ] | |
-| CHARTS-17 | State: permission | [ ] | [ ] | [ ] | [ ] | |
+| CHARTS-13 | State: loading | [ ] | [x] | [ ] | [ ] | T 2026-09-30 1f266df |
+| CHARTS-14 | State: empty | [ ] | [x] | [ ] | [ ] | T 2026-09-30 1f266df |
+| CHARTS-15 | State: error | [ ] | [x] | [ ] | [ ] | T 2026-09-30 1f266df |
+| CHARTS-16 | State: stale | [ ] | [x] | [ ] | [ ] | T 2026-09-30 1f266df |
+| CHARTS-17 | State: permission | [ ] | [x] | [ ] | [ ] | T 2026-09-30 1f266df |
 
 ### Chain
 | ID | API | Backend | Data | GCP | External | Tests |
@@ -512,17 +512,17 @@ UI spec: [UI-SCREENS.md § SCREEN-OPTIONSFLOW](https://github.com/TeneikaAskew/s
 |---|---|---|---|---|---|---|
 | OPTIONS-01 | Heatseeker: Swing Mode | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
 | OPTIONS-02 | Heatseeker: Trinity Mode | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
-| OPTIONS-03 | Flowseeker: Live Feed | [ ] | [ ] | [ ] | [ ] | |
-| OPTIONS-04 | Flowseeker: Contract Drilldown | [ ] | [ ] | [ ] | [ ] | |
+| OPTIONS-03 | Flowseeker: Live Feed | [ ] | [x] | [ ] | [ ] | T 2026-09-30 8429cf6 |
+| OPTIONS-04 | Flowseeker: Contract Drilldown | [ ] | [x] | [ ] | [ ] | T 2026-09-30 8429cf6 |
 | OPTIONS-05 | Profiles | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
 | OPTIONS-06 | Symbol picker | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
-| OPTIONS-07 | View switcher | [ ] | [ ] | [ ] | [ ] | |
+| OPTIONS-07 | View switcher | [ ] | [x] | [ ] | [ ] | T 2026-09-30 8429cf6 |
 | OPTIONS-08 | Pick an expiration date | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
-| OPTIONS-09 | State: loading | [ ] | [ ] | [ ] | [ ] | |
-| OPTIONS-10 | State: empty | [ ] | [ ] | [ ] | [ ] | |
-| OPTIONS-11 | State: error | [ ] | [ ] | [ ] | [ ] | |
+| OPTIONS-09 | State: loading | [ ] | [x] | [ ] | [ ] | T 2026-09-30 8429cf6 |
+| OPTIONS-10 | State: empty | [ ] | [x] | [ ] | [ ] | T 2026-09-30 8429cf6 |
+| OPTIONS-11 | State: error | [ ] | [x] | [ ] | [ ] | T 2026-09-30 8429cf6 |
 | OPTIONS-12 | State: stale | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
-| OPTIONS-13 | State: permission | [ ] | [ ] | [ ] | [ ] | |
+| OPTIONS-13 | State: permission | [ ] | [x] | [ ] | [ ] | T 2026-09-30 8429cf6 |
 
 ### Chain
 | ID | API | Backend | Data | GCP | External | Tests |
@@ -575,16 +575,16 @@ UI spec: [UI-SCREENS.md § SCREEN-SIGNALS](https://github.com/TeneikaAskew/solyr
 |---|---|---|---|---|---|---|
 | SIGNALS-01 | Header | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
 | SIGNALS-02 | Performance KPIs | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
-| SIGNALS-03 | Filter bar | [ ] | [ ] | [ ] | [ ] | |
-| SIGNALS-04 | Signals table | [ ] | [ ] | [ ] | [ ] | |
-| SIGNALS-05 | Filter and sort | [ ] | [ ] | [ ] | [ ] | |
-| SIGNALS-06 | Clear filters | [ ] | [ ] | [ ] | [ ] | |
-| SIGNALS-07 | Review mode | [ ] | [ ] | [ ] | [ ] | |
-| SIGNALS-08 | State: loading | [ ] | [ ] | [ ] | [ ] | |
-| SIGNALS-09 | State: empty | [ ] | [ ] | [ ] | [ ] | |
-| SIGNALS-10 | State: error | [ ] | [ ] | [ ] | [ ] | |
-| SIGNALS-11 | State: stale | [ ] | [ ] | [ ] | [ ] | |
-| SIGNALS-12 | State: permission | [ ] | [ ] | [ ] | [ ] | |
+| SIGNALS-03 | Filter bar | [ ] | [x] | [ ] | [ ] | T 2026-09-30 c4362a1 |
+| SIGNALS-04 | Signals table | [ ] | [x] | [ ] | [ ] | T 2026-09-30 c4362a1 |
+| SIGNALS-05 | Filter and sort | [ ] | [x] | [ ] | [ ] | T 2026-09-30 c4362a1 |
+| SIGNALS-06 | Clear filters | [ ] | [x] | [ ] | [ ] | T 2026-09-30 c4362a1 |
+| SIGNALS-07 | Review mode | [ ] | [x] | [ ] | [ ] | T 2026-09-30 c4362a1 |
+| SIGNALS-08 | State: loading | [ ] | [x] | [ ] | [ ] | T 2026-09-30 c4362a1 |
+| SIGNALS-09 | State: empty | [ ] | [x] | [ ] | [ ] | T 2026-09-30 c4362a1 |
+| SIGNALS-10 | State: error | [ ] | [x] | [ ] | [ ] | T 2026-09-30 c4362a1 |
+| SIGNALS-11 | State: stale | [ ] | [x] | [ ] | [ ] | T 2026-09-30 c4362a1 |
+| SIGNALS-12 | State: permission | [ ] | [x] | [ ] | [ ] | T 2026-09-30 c4362a1 |
 
 ### Chain
 | ID | API | Backend | Data | GCP | External | Tests |
@@ -629,21 +629,21 @@ UI spec: [UI-SCREENS.md § SCREEN-INSIGHTS](https://github.com/TeneikaAskew/soly
 ### Checklist
 | ID | Element | S | T | V | Te | Evidence |
 |---|---|---|---|---|---|---|
-| INSIGHTS-01 | Report cards | [ ] | [ ] | [ ] | [ ] | |
-| INSIGHTS-02 | Agents tab | [ ] | [ ] | [ ] | [ ] | |
-| INSIGHTS-03 | History tab | [ ] | [ ] | [ ] | [ ] | |
+| INSIGHTS-01 | Report cards | [ ] | [x] | [ ] | [ ] | T 2026-09-30 ea22585 |
+| INSIGHTS-02 | Agents tab | [ ] | [x] | [ ] | [ ] | T 2026-09-30 ea22585 |
+| INSIGHTS-03 | History tab | [ ] | [x] | [ ] | [ ] | T 2026-09-30 ea22585 |
 | INSIGHTS-04 | Watchlist tab | [ ] | [x] | [ ] | [ ] | T 2026-09-30 a5602aa |
-| INSIGHTS-05 | Chat tab | [ ] | [ ] | [ ] | [ ] | |
-| INSIGHTS-06 | Degradation banner | [ ] | [ ] | [ ] | [ ] | |
+| INSIGHTS-05 | Chat tab | [ ] | [x] | [ ] | [ ] | T 2026-09-30 ea22585 |
+| INSIGHTS-06 | Degradation banner | [ ] | [x] | [ ] | [ ] | T 2026-09-30 ea22585 |
 | INSIGHTS-07 | Generate or refresh a report | [ ] | [x] | [ ] | [ ] | T 2026-09-30 a5602aa |
 | INSIGHTS-08 | Set a point-in-time cutoff | [ ] | [x] | [ ] | [ ] | T 2026-09-30 3dfb11a |
 | INSIGHTS-09 | Add or remove watchlist tickers | [ ] | [x] | [ ] | [ ] | T 2026-09-30 a5602aa |
-| INSIGHTS-10 | Chat | [ ] | [ ] | [ ] | [ ] | |
-| INSIGHTS-11 | State: loading | [ ] | [ ] | [ ] | [ ] | |
-| INSIGHTS-12 | State: empty | [ ] | [ ] | [ ] | [ ] | |
-| INSIGHTS-13 | State: error | [ ] | [ ] | [ ] | [ ] | |
-| INSIGHTS-14 | State: stale | [ ] | [ ] | [ ] | [ ] | |
-| INSIGHTS-15 | State: permission | [ ] | [ ] | [ ] | [ ] | |
+| INSIGHTS-10 | Chat | [ ] | [x] | [ ] | [ ] | T 2026-09-30 ea22585 |
+| INSIGHTS-11 | State: loading | [ ] | [x] | [ ] | [ ] | T 2026-09-30 cbe8e48 |
+| INSIGHTS-12 | State: empty | [ ] | [x] | [ ] | [ ] | T 2026-09-30 ea22585 |
+| INSIGHTS-13 | State: error | [ ] | [x] | [ ] | [ ] | T 2026-09-30 ea22585 |
+| INSIGHTS-14 | State: stale | [ ] | [x] | [ ] | [ ] | T 2026-09-30 ea22585 |
+| INSIGHTS-15 | State: permission | [ ] | [x] | [ ] | [ ] | T 2026-09-30 ea22585 |
 
 ### Chain
 | ID | API | Backend | Data | GCP | External | Tests |
@@ -706,15 +706,15 @@ UI spec: [UI-SCREENS.md § SCREEN-CATALYSTS](https://github.com/TeneikaAskew/sol
 | CATALYSTS-03 | Type chips | [ ] | [x] | [ ] | [ ] | T 2026-09-30 a5602aa |
 | CATALYSTS-04 | Event timeline | [ ] | [x] | [ ] | [ ] | T 2026-09-30 a5602aa |
 | CATALYSTS-05 | WSH upgrade banner | [ ] | [x] | [ ] | [ ] | T 2026-09-30 bca8ffd |
-| CATALYSTS-06 | Change date range | [ ] | [ ] | [ ] | [ ] | |
-| CATALYSTS-07 | Filter by impact or type | [ ] | [ ] | [ ] | [ ] | |
-| CATALYSTS-08 | Expand an event | [ ] | [ ] | [ ] | [ ] | |
-| CATALYSTS-09 | Open insight report | [ ] | [ ] | [ ] | [ ] | |
-| CATALYSTS-10 | State: loading | [ ] | [ ] | [ ] | [ ] | |
-| CATALYSTS-11 | State: empty | [ ] | [ ] | [ ] | [ ] | |
+| CATALYSTS-06 | Change date range | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7a6be78 |
+| CATALYSTS-07 | Filter by impact or type | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7a6be78 |
+| CATALYSTS-08 | Expand an event | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7a6be78 |
+| CATALYSTS-09 | Open insight report | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7a6be78 |
+| CATALYSTS-10 | State: loading | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7a6be78 |
+| CATALYSTS-11 | State: empty | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7a6be78 |
 | CATALYSTS-12 | State: error | [ ] | [x] | [ ] | [ ] | T 2026-09-30 a5602aa |
-| CATALYSTS-13 | State: stale | [ ] | [ ] | [ ] | [ ] | |
-| CATALYSTS-14 | State: permission | [ ] | [ ] | [ ] | [ ] | |
+| CATALYSTS-13 | State: stale | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7a6be78 |
+| CATALYSTS-14 | State: permission | [ ] | [x] | [ ] | [ ] | T 2026-09-30 7a6be78 |
 
 ### Chain
 | ID | API | Backend | Data | GCP | External | Tests |
@@ -763,16 +763,16 @@ UI spec: [UI-SCREENS.md § SCREEN-PLAYBOOK](https://github.com/TeneikaAskew/soly
 ### Checklist
 | ID | Element | S | T | V | Te | Evidence |
 |---|---|---|---|---|---|---|
-| PLAYBOOK-01 | Header | [ ] | [ ] | [ ] | [ ] | |
-| PLAYBOOK-02 | Setup cards | [ ] | [ ] | [ ] | [ ] | |
+| PLAYBOOK-01 | Header | [ ] | [x] | [ ] | [ ] | T 2026-09-30 24e8492 |
+| PLAYBOOK-02 | Setup cards | [ ] | [x] | [ ] | [ ] | T 2026-09-30 24e8492 |
 | PLAYBOOK-03 | Trade levels | [ ] | [x] | [ ] | [ ] | T 2026-09-30 a5602aa |
-| PLAYBOOK-04 | Switch ticker | [ ] | [ ] | [ ] | [ ] | |
+| PLAYBOOK-04 | Switch ticker | [ ] | [x] | [ ] | [ ] | T 2026-09-30 24e8492 |
 | PLAYBOOK-05 | Watch conditions fill | [ ] | [x] | [ ] | [ ] | T 2026-09-30 a5602aa |
-| PLAYBOOK-06 | State: loading | [ ] | [ ] | [ ] | [ ] | |
-| PLAYBOOK-07 | State: empty | [ ] | [ ] | [ ] | [ ] | |
-| PLAYBOOK-08 | State: error | [ ] | [ ] | [ ] | [ ] | |
-| PLAYBOOK-09 | State: stale | [ ] | [ ] | [ ] | [ ] | |
-| PLAYBOOK-10 | State: permission | [ ] | [ ] | [ ] | [ ] | |
+| PLAYBOOK-06 | State: loading | [ ] | [x] | [ ] | [ ] | T 2026-09-30 24e8492 |
+| PLAYBOOK-07 | State: empty | [ ] | [x] | [ ] | [ ] | T 2026-09-30 24e8492 |
+| PLAYBOOK-08 | State: error | [ ] | [x] | [ ] | [ ] | T 2026-09-30 24e8492 |
+| PLAYBOOK-09 | State: stale | [ ] | [x] | [ ] | [ ] | T 2026-09-30 24e8492 |
+| PLAYBOOK-10 | State: permission | [ ] | [x] | [ ] | [ ] | T 2026-09-30 24e8492 |
 
 ### Chain
 | ID | API | Backend | Data | GCP | External | Tests |
@@ -814,16 +814,16 @@ UI spec: [UI-SCREENS.md § SCREEN-REPORTS](https://github.com/TeneikaAskew/solyr
 ### Checklist
 | ID | Element | S | T | V | Te | Evidence |
 |---|---|---|---|---|---|---|
-| REPORTS-01 | Picker bar | [ ] | [ ] | [ ] | [ ] | |
-| REPORTS-02 | Report header | [ ] | [ ] | [ ] | [ ] | |
-| REPORTS-03 | Report body | [ ] | [ ] | [ ] | [ ] | |
-| REPORTS-04 | Select a report | [ ] | [ ] | [ ] | [ ] | |
-| REPORTS-05 | Previous or Next | [ ] | [ ] | [ ] | [ ] | |
-| REPORTS-06 | State: loading | [ ] | [ ] | [ ] | [ ] | |
-| REPORTS-07 | State: empty | [ ] | [ ] | [ ] | [ ] | |
-| REPORTS-08 | State: error | [ ] | [ ] | [ ] | [ ] | |
-| REPORTS-09 | State: stale | [ ] | [ ] | [ ] | [ ] | |
-| REPORTS-10 | State: permission | [ ] | [ ] | [ ] | [ ] | |
+| REPORTS-01 | Picker bar | [ ] | [x] | [ ] | [ ] | T 2026-09-30 e876f9e |
+| REPORTS-02 | Report header | [ ] | [x] | [ ] | [ ] | T 2026-09-30 e876f9e |
+| REPORTS-03 | Report body | [ ] | [x] | [ ] | [ ] | T 2026-09-30 e876f9e |
+| REPORTS-04 | Select a report | [ ] | [x] | [ ] | [ ] | T 2026-09-30 e876f9e |
+| REPORTS-05 | Previous or Next | [ ] | [x] | [ ] | [ ] | T 2026-09-30 e876f9e |
+| REPORTS-06 | State: loading | [ ] | [x] | [ ] | [ ] | T 2026-09-30 e876f9e |
+| REPORTS-07 | State: empty | [ ] | [x] | [ ] | [ ] | T 2026-09-30 e876f9e |
+| REPORTS-08 | State: error | [ ] | [x] | [ ] | [ ] | T 2026-09-30 e876f9e |
+| REPORTS-09 | State: stale | [ ] | [x] | [ ] | [ ] | T 2026-09-30 e876f9e |
+| REPORTS-10 | State: permission | [ ] | [x] | [ ] | [ ] | T 2026-09-30 e876f9e |
 
 ### Chain
 | ID | API | Backend | Data | GCP | External | Tests |
@@ -868,17 +868,17 @@ UI spec: [UI-SCREENS.md § SCREEN-JOURNAL](https://github.com/TeneikaAskew/solyr
 | JOURNAL-02 | Cockpit row | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
 | JOURNAL-03 | KPI tiles | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
 | JOURNAL-04 | My style panel | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
-| JOURNAL-05 | Add-trade form | [ ] | [ ] | [ ] | [ ] | |
+| JOURNAL-05 | Add-trade form | [ ] | [x] | [ ] | [ ] | T 2026-09-30 69e75e6 |
 | JOURNAL-06 | Trade table | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
-| JOURNAL-07 | Mark entry on the chart | [ ] | [ ] | [ ] | [ ] | |
-| JOURNAL-08 | Add trade manually | [ ] | [ ] | [ ] | [ ] | |
-| JOURNAL-09 | Import CSV | [ ] | [ ] | [ ] | [ ] | |
-| JOURNAL-10 | Export CSV | [ ] | [ ] | [ ] | [ ] | |
+| JOURNAL-07 | Mark entry on the chart | [ ] | [x] | [ ] | [ ] | T 2026-09-30 69e75e6 |
+| JOURNAL-08 | Add trade manually | [ ] | [x] | [ ] | [ ] | T 2026-09-30 69e75e6 |
+| JOURNAL-09 | Import CSV | [ ] | [x] | [ ] | [ ] | T 2026-09-30 69e75e6 |
+| JOURNAL-10 | Export CSV | [ ] | [x] | [ ] | [ ] | T 2026-09-30 69e75e6 |
 | JOURNAL-11 | Switch view or session | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
-| JOURNAL-12 | State: loading | [ ] | [ ] | [ ] | [ ] | |
+| JOURNAL-12 | State: loading | [ ] | [x] | [ ] | [ ] | T 2026-09-30 69e75e6 |
 | JOURNAL-13 | State: empty | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
 | JOURNAL-14 | State: error | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
-| JOURNAL-15 | State: stale | [ ] | [ ] | [ ] | [ ] | |
+| JOURNAL-15 | State: stale | [ ] | [x] | [ ] | [ ] | T 2026-09-30 69e75e6 |
 | JOURNAL-16 | State: permission | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
 
 ### Chain
@@ -933,17 +933,17 @@ UI spec: [UI-SCREENS.md § SCREEN-ADMIN](https://github.com/TeneikaAskew/solyra/
 | ID | Element | S | T | V | Te | Evidence |
 |---|---|---|---|---|---|---|
 | ADMIN-01 | Users and roles tab | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
-| ADMIN-02 | Chart and report data tab | [ ] | [ ] | [ ] | [ ] | |
-| ADMIN-03 | Models and routing tab | [ ] | [ ] | [ ] | [ ] | |
+| ADMIN-02 | Chart and report data tab | [ ] | [x] | [ ] | [ ] | T 2026-09-30 89f4894 |
+| ADMIN-03 | Models and routing tab | [ ] | [x] | [ ] | [ ] | T 2026-09-30 89f4894 |
 | ADMIN-04 | Grant or revoke roles | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
 | ADMIN-05 | Disable a user | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
 | ADMIN-06 | Refresh a data source | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
 | ADMIN-07 | Change provider or model per role and save | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
-| ADMIN-08 | Run a predict | [ ] | [ ] | [ ] | [ ] | |
-| ADMIN-09 | State: loading | [ ] | [ ] | [ ] | [ ] | |
-| ADMIN-10 | State: empty | [ ] | [ ] | [ ] | [ ] | |
+| ADMIN-08 | Run a predict | [ ] | [x] | [ ] | [ ] | T 2026-09-30 89f4894 |
+| ADMIN-09 | State: loading | [ ] | [x] | [ ] | [ ] | T 2026-09-30 89f4894 |
+| ADMIN-10 | State: empty | [ ] | [x] | [ ] | [ ] | T 2026-09-30 89f4894 |
 | ADMIN-11 | State: error | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
-| ADMIN-12 | State: stale | [ ] | [ ] | [ ] | [ ] | |
+| ADMIN-12 | State: stale | [ ] | [x] | [ ] | [ ] | T 2026-09-30 89f4894 |
 | ADMIN-13 | State: permission | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
 
 ### Chain
@@ -996,17 +996,17 @@ UI spec: [UI-SCREENS.md § SCREEN-SETTINGS](https://github.com/TeneikaAskew/soly
 | ID | Element | S | T | V | Te | Evidence |
 |---|---|---|---|---|---|---|
 | SETTINGS-01 | Profile tab | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
-| SETTINGS-02 | Appearance tab | [ ] | [ ] | [ ] | [ ] | |
-| SETTINGS-03 | Trading tab | [ ] | [ ] | [ ] | [ ] | |
+| SETTINGS-02 | Appearance tab | [ ] | [x] | [ ] | [ ] | T 2026-09-30 1027020 |
+| SETTINGS-03 | Trading tab | [ ] | [x] | [ ] | [ ] | T 2026-09-30 1027020 |
 | SETTINGS-04 | Notifications tab | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
 | SETTINGS-05 | Account tab | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
-| SETTINGS-06 | Toggle appearance | [ ] | [ ] | [ ] | [ ] | |
-| SETTINGS-07 | Save changes or Discard | [ ] | [ ] | [ ] | [ ] | |
-| SETTINGS-08 | Sign out | [ ] | [ ] | [ ] | [ ] | |
-| SETTINGS-09 | State: loading | [ ] | [ ] | [ ] | [ ] | |
-| SETTINGS-10 | State: empty | [ ] | [ ] | [ ] | [ ] | |
-| SETTINGS-11 | State: error | [ ] | [ ] | [ ] | [ ] | |
-| SETTINGS-12 | State: stale | [ ] | [ ] | [ ] | [ ] | |
+| SETTINGS-06 | Toggle appearance | [ ] | [x] | [ ] | [ ] | T 2026-09-30 1027020 |
+| SETTINGS-07 | Save changes or Discard | [ ] | [x] | [ ] | [ ] | T 2026-09-30 1027020 |
+| SETTINGS-08 | Sign out | [ ] | [x] | [ ] | [ ] | T 2026-09-30 1027020 |
+| SETTINGS-09 | State: loading | [ ] | [x] | [ ] | [ ] | T 2026-09-30 1027020 |
+| SETTINGS-10 | State: empty | [ ] | [x] | [ ] | [ ] | T 2026-09-30 1027020 |
+| SETTINGS-11 | State: error | [ ] | [x] | [ ] | [ ] | T 2026-09-30 1027020 |
+| SETTINGS-12 | State: stale | [ ] | [x] | [ ] | [ ] | T 2026-09-30 1027020 |
 | SETTINGS-13 | State: permission | [ ] | [x] | [ ] | [ ] | T 2026-09-30 2c02324 |
 
 ### Chain
@@ -1051,14 +1051,14 @@ UI spec: [UI-SCREENS.md § SCREEN-HELP](https://github.com/TeneikaAskew/solyra/b
 ### Checklist
 | ID | Element | S | T | V | Te | Evidence |
 |---|---|---|---|---|---|---|
-| HELP-01 | Search box | [ ] | [ ] | [ ] | [ ] | |
-| HELP-02 | Category pills | [ ] | [ ] | [ ] | [ ] | |
-| HELP-03 | Glossary entries | [ ] | [ ] | [ ] | [ ] | |
-| HELP-04 | State: empty (no entry matches) | [ ] | [ ] | [ ] | [ ] | |
-| HELP-05 | Search | [ ] | [ ] | [ ] | [ ] | |
-| HELP-06 | Filter by category | [ ] | [ ] | [ ] | [ ] | |
-| HELP-07 | Expand an entry | [ ] | [ ] | [ ] | [ ] | |
-| HELP-08 | TermHover links from other pages | [ ] | [ ] | [ ] | [ ] | |
+| HELP-01 | Search box | [ ] | [x] | [ ] | [ ] | T 2026-09-30 83f9502 |
+| HELP-02 | Category pills | [ ] | [x] | [ ] | [ ] | T 2026-09-30 83f9502 |
+| HELP-03 | Glossary entries | [ ] | [x] | [ ] | [ ] | T 2026-09-30 83f9502 |
+| HELP-04 | State: empty (no entry matches) | [ ] | [x] | [ ] | [ ] | T 2026-09-30 83f9502 |
+| HELP-05 | Search | [ ] | [x] | [ ] | [ ] | T 2026-09-30 83f9502 |
+| HELP-06 | Filter by category | [ ] | [x] | [ ] | [ ] | T 2026-09-30 83f9502 |
+| HELP-07 | Expand an entry | [ ] | [x] | [ ] | [ ] | T 2026-09-30 83f9502 |
+| HELP-08 | TermHover links from other pages | [ ] | [x] | [ ] | [ ] | T 2026-09-30 83f9502 |
 
 ### Chain
 | ID | API | Backend | Data | GCP | External | Tests |
