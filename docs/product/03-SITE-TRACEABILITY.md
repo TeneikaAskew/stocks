@@ -377,8 +377,8 @@ UI spec: [UI-SCREENS.md § SCREEN-LIVEMARKET](https://github.com/TeneikaAskew/so
 | ID | Element | S | T | V | Te | Evidence |
 |---|---|---|---|---|---|---|
 | LIVE-01 | Session bar | [ ] | [ ] | [ ] | [ ] | |
-| LIVE-02 | Quote card | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
-| LIVE-03 | Six indicator tiles | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
+| LIVE-02 | Quote card | [ ] | [x] | [ ] | [ ] | T 2026-09-30 bca8ffd |
+| LIVE-03 | Six indicator tiles | [ ] | [x] | [ ] | [ ] | T 2026-09-30 bca8ffd |
 | LIVE-04 | CALL and PUT setup cards | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
 | LIVE-05 | Live (15s) or Paused toggle | [ ] | [ ] | [ ] | [ ] | |
 | LIVE-06 | Sound alert | [ ] | [ ] | [ ] | [ ] | |
@@ -386,7 +386,7 @@ UI spec: [UI-SCREENS.md § SCREEN-LIVEMARKET](https://github.com/TeneikaAskew/so
 | LIVE-08 | Review mode | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
 | LIVE-09 | State: loading | [ ] | [ ] | [ ] | [ ] | |
 | LIVE-10 | State: empty | [ ] | [ ] | [ ] | [ ] | |
-| LIVE-11 | State: error | [ ] | [x] | [ ] | [ ] | T 2026-09-30 fe698ab |
+| LIVE-11 | State: error | [ ] | [x] | [ ] | [ ] | T 2026-09-30 bca8ffd |
 | LIVE-12 | State: stale | [ ] | [ ] | [ ] | [ ] | |
 | LIVE-13 | State: permission | [ ] | [ ] | [ ] | [ ] | |
 
@@ -705,7 +705,7 @@ UI spec: [UI-SCREENS.md § SCREEN-CATALYSTS](https://github.com/TeneikaAskew/sol
 | CATALYSTS-02 | Impact tier filter | [ ] | [x] | [ ] | [ ] | T 2026-09-30 a5602aa |
 | CATALYSTS-03 | Type chips | [ ] | [x] | [ ] | [ ] | T 2026-09-30 a5602aa |
 | CATALYSTS-04 | Event timeline | [ ] | [x] | [ ] | [ ] | T 2026-09-30 a5602aa |
-| CATALYSTS-05 | WSH upgrade banner | [ ] | [x] | [ ] | [ ] | T 2026-09-30 a5602aa |
+| CATALYSTS-05 | WSH upgrade banner | [ ] | [x] | [ ] | [ ] | T 2026-09-30 bca8ffd |
 | CATALYSTS-06 | Change date range | [ ] | [ ] | [ ] | [ ] | |
 | CATALYSTS-07 | Filter by impact or type | [ ] | [ ] | [ ] | [ ] | |
 | CATALYSTS-08 | Expand an event | [ ] | [ ] | [ ] | [ ] | |
