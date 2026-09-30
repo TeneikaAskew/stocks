@@ -121,6 +121,8 @@ grep -oE '‚Üê `[a-z0-9_-]+`' docs/product/03-SITE-TRACEABILITY.md | sed -E 's/‚Ü
 ```
 Expected: prints nothing. A citation that does not resolve is fixed in a first stocks commit `docs: repair chain citations before the T sweep`, listing each in the report; no row is ticked on a broken citation.
 
+- [ ] **Step 2b: Complete blank cells (ruling during execution).** Spec 4.4 says a blank cell means not traced, so no row is ticked while a Chain cell is blank. For each blank cell of areas 04 to 16, open the row's handler and the area's Backend notes and fill it with the citation where a vendor, service, secret, bucket, queue or scheduler applies, or `none (<reason>)` where nothing does (state rows: `none (state of <displayed ID>; no call of its own)`); give bare `none` cells their reason. One stocks commit per area: `docs: complete the <area> chains`. The tick script then cites the completion commit for those rows.
+
 - [ ] **Step 3: Tick T.** For each Chain row of areas 04 to 16, take the commit from `git blame` on that row's line (Global Constraints), and set the Checklist row's T cell to `[x]` with `T 2026-09-30 <commit>` as its Evidence entry (the Evidence cell was empty; the entry becomes its first item). Do it with a script that reads the file once and writes it once; paste the script into the report.
 
 - [ ] **Step 4: Progress and metric.** Set each area row's T to its row count and the Total's T to 222; set the README Snapshot row to `222 of 222`.
