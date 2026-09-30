@@ -179,4 +179,4 @@ deliberately does not answer, and the three are reconciled in
 | PRs mapped | 151 significant, #184–#932 |
 | Tests | 230 python (29 Playwright + 27 Vitest moved to solyra in #957) |
 | Capabilities at Production (unqualified) | **2 of 25** (Landing, Help) |
-| Site elements traced | 109 of 222 ([03](03-SITE-TRACEABILITY.md)) |
+| Site elements traced | 222 of 222 ([03](03-SITE-TRACEABILITY.md)) |
