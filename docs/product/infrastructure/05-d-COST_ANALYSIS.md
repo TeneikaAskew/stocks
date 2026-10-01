@@ -1,107 +1,87 @@
-# GCP Cost Analysis — 90-day rollup
+# GCP Cost Analysis — 90-day trailing
 
-**WARNING: Incomplete data.** The source `refresh-inputs/billing.json` was truncated during the read process. The analysis below is based on partial data for **August 2026 only**. A 90-day trailing window analysis is not possible. All numbers should be considered lower bounds.
+**Last reviewed:** 2026-09-06 ([`COST_AUDIT_2026-09-06.md`](../../audits/COST_AUDIT_2026-09-06.md)) · **Last scanned:** 2026-09-18 · **Owner:** TBD
 
-**Source data:** `refresh-inputs/billing.json` (partial)
-**Component map:** [ARCHITECTURE.md](05-a-ARCHITECTURE.md)
+Total spend over the trailing 90-day period was $222.71. This analysis is generated from `refresh-inputs/billing_by_month.csv` and `refresh-inputs/billing_by_sku.csv`.
 
----
+The cost profile is dominated by a spike in August 2026, which was caused by the expiration of promotional credits as detailed in the [September 2026 cost audit](../../audits/COST_AUDIT_2026-09-06.md). Several cost-saving measures were implemented in early September; their effect should be visible from the October 2026 billing cycle onward.
 
 ## 1. Total spend by month
 
 | Month | Spend (USD) | Notes |
-|---|---:|---|
-| 2026-08 | $208.66 | Partial data due to truncated input file. |
-| **Total observed** | **$208.66** | |
-
-The observed cost for August is significantly higher than in previous months, but this is based on incomplete data. Cloud Run and Cloud SQL appear to be the main cost drivers.
-
----
+|---|---:|:---|
+| 2026-07 | $4.77 | Partial month in 90-day window. |
+| 2026-08 | $211.00 | First full month after promotional credits expired. |
+| 2026-09 | $6.94 | Partial month (current). Cost reduction measures were applied early this month. |
+| **Total** | **$222.71** | |
 
 ## 2. Top 10 cost line items by SKU
 
-August 2026 is a partial month in this window.
-
-| Rank | Service | SKU | 90-day cost | Aug 2026 | Maps to (ARCHITECTURE.md) |
-|---:|---|---|---:|---:|---:|
-| 1 | Cloud Run | `Services CPU (Instance-based billing) in us-east1` | $47.89 | $47.89 | `solyra-api-prod`, `discord-interactions`, `failure-notifier` services. |
-| 2 | Cloud Run | `Jobs CPU in us-east1` | $35.70 | $35.70 | CPU time across all 76 Cloud Run Jobs. Not attributable per-job from billing. |
-| 3 | Cloud SQL | `Cloud SQL for PostgreSQL: Zonal - Standard storage in Americas` | $32.16 | $32.16 | Persistent disk on `trading-db`. |
-| 4 | Artifact Registry | `Artifact Registry Storage` | $29.10 | $29.10 | The `trading/trading-system` container repo. High cost suggests many images. |
-| 5 | Cloud SQL | `Cloud SQL for PostgreSQL: Zonal - Small instance in Americas` | $25.80 | $25.80 | The single `trading-db` instance. Used by all jobs and services. |
-| 6 | Cloud SQL | `Cloud SQL for PostgreSQL: Zonal - Serverless Exports in Americas` | $10.10 | $10.10 | SQL data exports. |
-| 7 | Cloud Scheduler | `Jobs` | $8.02 | $8.02 | All scheduled jobs (e.g., `premarket-brief-daily`). |
-| 8 | Cloud Run | `Jobs Memory in us-east1` | $8.01 | $8.01 | RAM allocation across all 76 jobs. |
-| 9 | Cloud SQL | `Storage PD Snapshot` | $4.81 | $4.81 | Automated daily backups of `trading-db`. |
-| 10 | Cloud Run | `Services Memory (Instance-based billing) in us-east1` | $2.66 | $2.66 | Memory for Cloud Run services. |
-
----
+| Rank | Service | SKU | 90-day cost | Maps to (05-a-ARCHITECTURE.md component) |
+|:---:|---|---|---:|:---|
+| 1 | Cloud Run | Services CPU (Instance-based billing) in us-east1 | $50.54 | Cloud Run Services (`discord-interactions`, `solyra-api-prod`, etc.) |
+| 2 | Cloud Run | Jobs CPU in us-east1 | $37.75 | CPU time across all 76 Cloud Run Jobs. |
+| 3 | Cloud SQL | Cloud SQL for PostgreSQL: Zonal - Standard storage in Americas | $34.24 | Persistent disk for `trading-db`. |
+| 4 | Artifact Registry | Artifact Registry Storage | $32.08 | Container image storage for `trading/trading-system` and `gcr.io/.../solyra-api`. |
+| 5 | Cloud SQL | Cloud SQL for PostgreSQL: Zonal - Small instance in Americas | $27.44 | The `trading-db` instance itself. |
+| 6 | Cloud SQL | Cloud SQL for PostgreSQL: Zonal - Serverless Exports in Americas | $10.10 | `cloud-sql-weekly-export` job. |
+| 7 | Cloud Run | Jobs Memory in us-east1 | $8.45 | RAM allocation across all 76 Cloud Run Jobs. |
+| 8 | Cloud Scheduler | Jobs | $8.02 | All 65 scheduled jobs. |
+| 9 | Cloud SQL | Storage PD Snapshot | $5.32 | Automated daily backups of `trading-db`. |
+| 10 | Cloud Run | Services Memory (Instance-based billing) in us-east1 | $2.81 | Memory for the 4 Cloud Run services. |
 
 ## 3. Per-component cost estimate
 
-August 2026 is a partial month in this window.
+Estimates are the sum of all relevant SKUs from the 90-day billing export.
 
-### Cloud Run (Jobs & Services) — $94.26
-- **Services (CPU + Memory):** $50.55
-- **Jobs (CPU + Memory):** $43.71
-
-The cost is not attributable to individual jobs or services from the billing export. The high cost warrants an investigation into the resource allocation and execution frequency of the Cloud Run components.
-
-### Cloud SQL (`trading-db`) — $72.87
-- **Instance:** $25.80
-- **Storage:** $32.16
-- **Exports:** $10.10
-- **Backups:** $4.81
-
-The database remains a significant component of the cost.
-
-### Artifact Registry — $29.10
-This cost is for storing container images. The high cost suggests that a large number of images or large images are being stored.
-
-### Other Components
-- **Cloud Scheduler:** $8.02
-- **Cloud Storage:** $2.36
-- **Secret Manager:** $1.12
-- **Vertex AI:** $0.93 (Gemini 2.5 Pro and 3.1 Flash Lite)
-
----
+*   **Cloud SQL (`trading-db`):** $77.10
+*   **Cloud Run Services (4 services):** $53.58
+*   **Cloud Run Jobs (76 jobs):** $46.20
+*   **Artifact Registry:** $32.08
+*   **Cloud Scheduler (65 jobs, 3 free):** $8.02
+*   **Cloud Storage:** $2.53
+*   **Vertex AI:** $1.88
+*   **Secret Manager (22 secrets):** $1.31
+*   **Not attributable from billing export alone:** Pub/Sub, Logging, and Cloud Build costs were $0.00 for this period, likely falling within the free tier. The cost of individual jobs and services cannot be broken down further from the provided billing data.
 
 ## 4. Anomalies
 
-### A. Month-over-month comparison not possible
-Due to the truncated input data, only partial data for August 2026 is available, making it impossible to compare with previous months to identify trends or spikes.
+### A. August 2026 cost spike
+The billing data shows a dramatic increase in August to $211.00, followed by a sharp decrease in September. The [September 2026 cost audit](../../audits/COST_AUDIT_2026-09-06.md) confirms this was due to the expiration of a `FreeTrialUpgrade` promotional credit, not a change in usage. The low cost in September reflects both the partial month and the effect of cost-saving measures implemented after that audit.
 
-### B. Vertex AI / Gemini spend is now non-zero
-Unlike the previous report, there is now a clear non-zero spend on Vertex AI ($0.93), specifically on Gemini models. This indicates that the `insight-pipeline-daily` job is likely running as expected.
+### B. High Artifact Registry cost
+With a 90-day cost of $32.08, Artifact Registry remains a top cost driver. An audit in early September identified this and a cleanup policy was applied. The cost remains high because the 90-day window includes the period before the cleanup. This cost is expected to decrease significantly in subsequent billing periods as stale images are purged.
 
-### C. High Artifact Registry cost
-A cost of $29.10 for Artifact Registry storage is unusually high for a project of this scale, suggesting that image retention policies may be absent or too lenient.
-
----
+### C. Vertex AI spend is now stable and expected
+The small, consistent spend on Vertex AI ($1.88 over 90 days) confirms that the insight pipelines relying on Gemini models are running as intended. This is a positive confirmation of functionality, not an anomaly.
 
 ## 5. Cost-reduction recommendations
 
-### #1 — Implement Artifact Registry retention policies (estimated saving: $20-25/mo)
-**Resource:** Artifact Registry repository `trading/trading-system`.
-**Change:** The high storage cost suggests many old container images are being retained. Implement a lifecycle policy to delete images older than a certain age (e.g., 90 days) or to keep only a limited number of recent versions.
-**Estimated saving:** Assuming a 90% reduction in storage, this could save ~$25/month.
-**Risk:** Deleting images that might be needed for rollback. This can be mitigated by keeping a safe number of recent versions.
-**Validation:** Check the number and size of images currently stored in the repository.
+The [cost audit of 2026-09-06](../../audits/COST_AUDIT_2026-09-06.md) identified and implemented the most critical cost-saving measures, including Artifact Registry cleanup and scheduling a warm window for the `discord-interactions` service. The following recommendations are to monitor the effects of those changes and continue pursuing optimizations identified in that audit.
 
-### #2 — Investigate Cloud Run service performance (estimated saving: $10-20/mo)
-**Resource:** Cloud Run services, particularly `solyra-api-prod`.
-**Change:** The `Services CPU` is the highest cost item. This could be due to inefficient code, or the service being over-provisioned (e.g., `min-instances` set too high). Profile the application and check the service configuration.
-**Estimated saving:** Optimizing the service could lead to significant savings. A 20-40% reduction in CPU consumption is often achievable and would result in $10-20/month savings.
-**Risk:** Reducing instances or CPU could impact performance. Changes should be tested under load.
-**Validation:** Monitor service latency and CPU utilization metrics in Cloud Monitoring before and after the change.
+### 1. Monitor the impact of recent changes (Expected saving: ~$65/month)
+**Resource:** Artifact Registry, Cloud Run (`discord-interactions` service).
+**Change:** The September 6th audit implemented an image cleanup policy for Artifact Registry and a market-hours-only warm window for the Discord service.
+**Estimated saving:** The audit estimated savings of ~$25/month for Artifact Registry and ~$40/month for the service scheduling.
+**Risk:** None. This is a monitoring action.
+**Validation:** Compare the October 2026 billing report against the August 2026 baseline for the `Artifact Registry Storage` and `Cloud Run Services CPU` SKUs.
 
-### #3 — Right-size Cloud SQL instance (estimated saving: $5-15/mo)
+### 2. Investigate high-duration Cloud Run jobs (Potential saving: $5-10/month)
+**Resource:** Cloud Run Jobs, specifically `backfill-daily-indicators` and `freshness-watchdog`.
+**Change:** The September 6th audit noted these jobs were running for unexpectedly long durations. `Jobs CPU` is the second-highest cost SKU. Investigate the logs of these jobs to identify and remedy inefficiencies.
+**Estimated saving:** A 25% efficiency improvement in the most active jobs could save $5-10/month.
+**Risk:** Low. This is an investigation into code efficiency, not a change in infrastructure.
+**Validation:** Check execution logs for `processed=` counts or long-running queries. A command to inspect the logs for `backfill-daily-indicators` is:
+```sh
+gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="backfill-daily-indicators"' --project=adept-mountain-474619-d4 --limit=100
+```
+
+### 3. Right-size Cloud SQL disk after data cleanup (Potential saving: ~$10-30/month)
 **Resource:** Cloud SQL instance `trading-db`.
-**Change:** The instance is currently a `Small` instance. Previous analysis suggested `db-f1-micro` might be viable. Check the CPU and memory utilization metrics for the `trading-db` instance over a representative period. If the utilization is consistently low, consider changing to a smaller instance type.
-**Estimated saving:** ~$10-15/month, as seen in the previous analysis.
-**Risk:** A smaller instance might not handle peak loads, leading to performance degradation.
-**Validation:** Test the application against a cloned database on a smaller instance type.
+**Change:** The September 6th audit identified that the 191 GB disk is the main driver of SQL cost and cannot be shrunk directly. The path to savings is to first reduce data volume by enforcing retention policies (e.g., on the 141M-row `etf_options_snapshots` table) and cleaning up bloated indexes, then migrating to a new, smaller instance.
+**Estimated saving:** Halving the disk size after cleanup would save ~$15/month.
+**Risk:** Medium. Requires careful data migration to a new instance to avoid downtime or data loss.
+**Validation:** Monitor table sizes in Cloud SQL after implementing data retention policies.
 
 ---
-
-Generated 2026-09-02 by .github/workflows/refresh-architecture-docs.yml
+Generated 2026-10-01 by .github/workflows/refresh-architecture-docs.yml
