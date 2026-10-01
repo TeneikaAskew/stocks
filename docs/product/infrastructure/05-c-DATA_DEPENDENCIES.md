@@ -1,12 +1,14 @@
 # Data Dependencies — table-level write/read graph
 
-**Generated 2026-09-07** from [`gcp/schema.sql`](../../../gcp/schema.sql), a whole-word scan of `gcp/`, `lib/`, `scripts/` and `platform/api` (tests and `archive/` excluded), and the 2026-09-07 live table statistics, by [`scripts/maintenance/doc_inventory.py`](../../../scripts/maintenance/doc_inventory.py). Every citation is a `file:line` you can open. The blocks between `<!-- inventory:*:start/end -->` markers are re-rendered by the monthly refresh; the prose between them is maintained by hand.
+**Last reviewed:** 2026-10-01 · **Last scanned:** 2026-10-01 · **Owner:** TBD
 
-This doc complements [ARCHITECTURE.md](05-a-ARCHITECTURE.md) §5 (schema by domain) and §6 (jobs). Where ARCHITECTURE says "job X runs module Y", this doc answers "module Y writes table Z, and Z is read by A, B, C".
+**Live fleet:** **76** Cloud Run Jobs (**68** declared in [`gcp/deploy.sh`](../../../gcp/deploy.sh)); **65** Cloud Scheduler jobs (**66** declared); **4** Cloud Run services; **22** Secret Manager secrets; **98** Cloud SQL relations (**72** declared in [`gcp/schema.sql`](../../../gcp/schema.sql), **26** runtime-created).
+
+This document complements [ARCHITECTURE.md](05-a-ARCHITECTURE.md) §5 (schema by domain) and §6 (jobs). Where ARCHITECTURE says "job X runs module Y", this doc answers "module Y writes table Z, and Z is read by A, B, C".
 
 > **Partition handling.** `market_data_intraday` is LIST-partitioned by ticker into five children (`_spy`, `_iwm`, `_qqq`, `_spx`, `_other`). Writes are routed by Postgres through the parent, so no child has a writer of its own. Four of them ARE read directly, by name assembled at run time: `scripts/analysis/per_ticker_calibration.py` builds the suffix for SPY / IWM / QQQ / SPX, and `gcp/research/p2_outcomes_grid.py`, `gcp/research/strat_engine/strat_data_builder.py`, `lib/options_exec_backtest/runner.py` and `gcp/research/p7_build_multi_tf_features.py` look one up in a per-ticker mapping. Those four therefore carry §3 reference sections; `_other` is named by no branch and appears only in §1 and §5.
 >
-> **Runtime tables.** The live database holds 28 relations that `gcp/schema.sql` does not declare (`strat_features_*`, `magnitude_*`, `gamma_levels_eod`, `daily_vex`, `gamma_events`, `*_30m_predictions`, `market_data_indicators*`, `market_data_cross_asset`); they are created by research and analytics jobs at runtime. They are listed in §1b with row counts but have no write/read graph here because their names are built dynamically in code.
+> **Runtime tables.** The live database holds **26** relations that `gcp/schema.sql` does not declare (e.g., `strat_features_*`, `magnitude_*`, `gamma_levels_eod`, `daily_vex`, `gamma_events`, `*_30m_predictions`, `market_data_indicators*`, `market_data_cross_asset`). They are created by research and analytics jobs at runtime. They are listed in §1b with row counts and sizes but have no write/read graph here because their names are built dynamically in code.
 >
 > **Ad-hoc access.** [`scripts/db_query_cr.sh`](../../../scripts/db_query_cr.sh) → the `db-query` Cloud Run Job can read or (with `--commit`) write any table. It is an operator tool, not a pipeline component, and is not listed as a writer or reader.
 
@@ -105,84 +107,85 @@ This doc complements [ARCHITECTURE.md](05-a-ARCHITECTURE.md) §5 (schema by doma
 | `backtest_sweeps` | 45 | 96 kB | `gcp/schema.sql` |
 | `backtest_trades` | 149,898 | 48 MB | `gcp/schema.sql` |
 | `backtest_walk_forward_folds` | 0 | 496 kB | `gcp/schema.sql` |
-| `daily_rates` | 2,916 | 424 kB | `gcp/schema.sql` |
-| `daily_vex` | 218 | 936 kB | **runtime-created** (not in schema.sql) |
-| `earnings_calendar` | 60,076 | 24 MB | `gcp/schema.sql` |
+| `daily_rates` | 2,933 | 424 kB | `gcp/schema.sql` |
+| `daily_vex` | 269 | 944 kB | **runtime-created** (not in schema.sql) |
+| `earnings_calendar` | 63,647 | 25 MB | `gcp/schema.sql` |
 | `earnings_calibration` | 0 | 48 kB | `gcp/schema.sql` |
-| `earnings_event_outcomes` | 0 | 24 kB | `gcp/schema.sql` (materialized view) |
-| `earnings_history` | 132,353 | 41 MB | `gcp/schema.sql` |
+| `earnings_event_outcomes` | 63,406 | 16 MB | `gcp/schema.sql` (materialized view) |
+| `earnings_history` | 134,356 | 42 MB | `gcp/schema.sql` |
 | `earnings_options_snapshots` | 0 | 588 MB | `gcp/schema.sql` |
 | `earnings_options_strategy_insights` | 0 | 104 kB | `gcp/schema.sql` |
 | `earnings_options_strategy_winners` | 0 | 160 kB | `gcp/schema.sql` |
-| `earnings_reactions` | 62,783 | 50 MB | `gcp/schema.sql` |
-| `earnings_ticker_lean` | 0 | 32 kB | `gcp/schema.sql` (materialized view) |
-| `earnings_upcoming_with_history` | 46,320 | 15 MB | `gcp/schema.sql` |
-| `economic_events` | 2,981 | 648 kB | `gcp/schema.sql` |
-| `etf_options_daily_greeks` | 8,042 | 976 kB | `gcp/schema.sql` |
-| `etf_options_snapshots` | 141,113,379 | 74 GB | `gcp/schema.sql` |
+| `earnings_reactions` | 66,714 | 50 MB | `gcp/schema.sql` |
+| `earnings_ticker_lean` | 1,956 | 544 kB | `gcp/schema.sql` (materialized view) |
+| `earnings_upcoming_with_history` | 52,242 | 17 MB | `gcp/schema.sql` |
+| `economic_events` | 3,042 | 656 kB | `gcp/schema.sql` |
+| `etf_options_daily_greeks` | 8,093 | 984 kB | `gcp/schema.sql` |
+| `etf_options_snapshots` | 140,672,370 | 75 GB | `gcp/schema.sql` |
 | `exit_config_overrides` | 0 | 48 kB | `gcp/schema.sql` |
 | `gamma_events` | 0 | 3456 kB | **runtime-created** (not in schema.sql) |
-| `gamma_levels_eod` | 102,442 | 31 MB | **runtime-created** (not in schema.sql) |
-| `historical_signals` | 96,376 | 3376 MB | `gcp/schema.sql` |
+| `gamma_levels_eod` | 103,124 | 31 MB | **runtime-created** (not in schema.sql) |
+| `historical_signals` | 1,791,896 | 4015 MB | `gcp/schema.sql` |
 | `indicator_correlation` | 3,016 | 1512 kB | `gcp/schema.sql` |
-| `insider_transactions` | 1,708,432 | 594 MB | `gcp/schema.sql` |
-| `insight_reports` | 790 | 4384 kB | `gcp/schema.sql` |
-| `insight_reports_history` | 846 | 3200 kB | `gcp/schema.sql` |
-| `insight_runs` | 948 | 360 kB | `gcp/schema.sql` |
+| `insider_transactions` | 1,815,391 | 627 MB | `gcp/schema.sql` |
+| `insight_reports` | 875 | 5384 kB | `gcp/schema.sql` |
+| `insight_reports_history` | 931 | 3616 kB | `gcp/schema.sql` |
+| `insight_runs` | 1,044 | 376 kB | `gcp/schema.sql` |
 | `intraday_flow_15m` | 529,920 | 63 MB | `gcp/schema.sql` |
 | `intraday_gex_15m` | 487,540 | 87 MB | `gcp/schema.sql` |
 | `iwm_30m_predictions` | 0 | 352 kB | **runtime-created** (not in schema.sql) |
-| `job_runs` | 14 | 48 kB | `gcp/schema.sql` |
-| `journal_entries` | 2 | 1288 kB | `gcp/schema.sql` |
-| `magnitude_per_bar_predictions` | 15,380 | 4584 kB | **runtime-created** (not in schema.sql) |
-| `magnitude_walk_forward_results` | 1,695 | 1184 kB | **runtime-created** (not in schema.sql) |
+| `job_runs` | 39 | 48 kB | `gcp/schema.sql` |
+| `journal_entries` | 2 | 1296 kB | `gcp/schema.sql` |
+| `magnitude_per_bar_predictions` | 22,567 | 6560 kB | **runtime-created** (not in schema.sql) |
+| `magnitude_walk_forward_results` | 3,484 | 2168 kB | **runtime-created** (not in schema.sql) |
 | `market_data_cross_asset` | 0 | 16 kB | **runtime-created** (not in schema.sql) |
-| `market_data_daily` | 5,553,479 | 3895 MB | `gcp/schema.sql` |
+| `market_data_daily` | 5,665,724 | 3911 MB | `gcp/schema.sql` |
 | `market_data_indicators` | 0 | 0 bytes | **runtime-created** (not in schema.sql) (partitioned table) |
 | `market_data_indicators_iwm` | 0 | 2200 kB | **runtime-created** (not in schema.sql) |
 | `market_data_indicators_other` | 0 | 16 kB | **runtime-created** (not in schema.sql) |
 | `market_data_indicators_qqq` | 0 | 2224 kB | **runtime-created** (not in schema.sql) |
 | `market_data_indicators_spy` | 0 | 2232 kB | **runtime-created** (not in schema.sql) |
 | `market_data_intraday` | 0 | 0 bytes | `gcp/schema.sql` (partitioned table) |
-| `market_data_intraday_iwm` | 2,006,813 | 512 MB | `gcp/schema.sql` |
-| `market_data_intraday_other` | 5,653,650 | 67 GB | `gcp/schema.sql` |
-| `market_data_intraday_qqq` | 2,281,849 | 585 MB | `gcp/schema.sql` |
+| `market_data_intraday_iwm` | 2,021,037 | 519 MB | `gcp/schema.sql` |
+| `market_data_intraday_other` | 6,171,707 | 67 GB | `gcp/schema.sql` |
+| `market_data_intraday_qqq` | 2,295,883 | 591 MB | `gcp/schema.sql` |
 | `market_data_intraday_spx` | 0 | 2144 kB | `gcp/schema.sql` |
-| `market_data_intraday_spy` | 2,432,886 | 664 MB | `gcp/schema.sql` |
+| `market_data_intraday_spy` | 2,455,490 | 669 MB | `gcp/schema.sql` |
 | `model_routing` | 0 | 24 kB | `gcp/schema.sql` |
-| `news_sentiment` | 212,368 | 298 MB | `gcp/schema.sql` |
-| `options_daily_features` | 8,042 | 1112 kB | `gcp/schema.sql` |
-| `playbook_cards` | 72 | 144 kB | `gcp/schema.sql` |
+| `news_sentiment` | 225,356 | 316 MB | `gcp/schema.sql` |
+| `options_daily_features` | 8,093 | 1120 kB | `gcp/schema.sql` |
+| `playbook_cards` | 756 | 864 kB | `gcp/schema.sql` |
 | `playbook_cards_staging` | 0 | 16 kB | `gcp/schema.sql` |
-| `premarket_analysis` | 383 | 1208 kB | `gcp/schema.sql` |
-| `premarket_analysis_history` | 702 | 1664 kB | `gcp/schema.sql` |
+| `premarket_analysis` | 431 | 1416 kB | `gcp/schema.sql` |
+| `premarket_analysis_history` | 766 | 1848 kB | `gcp/schema.sql` |
 | `qqq_30m_predictions` | 0 | 352 kB | **runtime-created** (not in schema.sql) |
-| `ranker_runs` | 93 | 840 kB | `gcp/schema.sql` |
-| `realtime_gex_15m` | 6,321 | 904 kB | `gcp/schema.sql` |
-| `regime_combo_results` | 8,640 | 3872 kB | `gcp/schema.sql` |
-| `sec_filings` | 4,274 | 1560 kB | `gcp/schema.sql` |
-| `signal_alerts` | 3,011 | 2648 kB | `gcp/schema.sql` |
-| `signal_metrics` | 179,485 | 58 MB | `gcp/schema.sql` |
+| `ranker_runs` | 113 | 992 kB | `gcp/schema.sql` |
+| `realtime_gex_15m` | 7,805 | 1160 kB | `gcp/schema.sql` |
+| `regime_combo_results` | 10,368 | 4616 kB | `gcp/schema.sql` |
+| `schema_apply_history` | 19 | 208 kB | `gcp/schema.sql` |
+| `sec_filings` | 4,730 | 1696 kB | `gcp/schema.sql` |
+| `signal_alerts` | 3,209 | 2656 kB | `gcp/schema.sql` |
+| `signal_metrics` | 248,543 | 87 MB | `gcp/schema.sql` |
 | `spy_30m_predictions` | 0 | 352 kB | **runtime-created** (not in schema.sql) |
 | `strat_combo_results` | 0 | 32 kB | `gcp/schema.sql` |
-| `strat_features_15m` | 206,458 | 303 MB | **runtime-created** (not in schema.sql) |
-| `strat_features_1m` | 3,105,422 | 4080 MB | **runtime-created** (not in schema.sql) |
-| `strat_features_30m` | 103,261 | 152 MB | **runtime-created** (not in schema.sql) |
-| `strat_features_4h` | 18,542 | 26 MB | **runtime-created** (not in schema.sql) |
-| `strat_features_5m` | 587,853 | 811 MB | **runtime-created** (not in schema.sql) |
-| `strat_features_60m` | 55,619 | 81 MB | **runtime-created** (not in schema.sql) |
-| `strat_features_levels_15m` | 206,661 | 368 MB | **runtime-created** (not in schema.sql) |
-| `strat_features_levels_1m` | 3,087,834 | 8155 MB | **runtime-created** (not in schema.sql) |
-| `strat_features_levels_30m` | 103,261 | 184 MB | **runtime-created** (not in schema.sql) |
-| `strat_features_levels_4h` | 18,542 | 28 MB | **runtime-created** (not in schema.sql) |
-| `strat_features_levels_5m` | 617,241 | 1134 MB | **runtime-created** (not in schema.sql) |
-| `strat_features_levels_60m` | 55,619 | 86 MB | **runtime-created** (not in schema.sql) |
-| `strat_levels` | 13,889 | 3184 kB | `gcp/schema.sql` |
+| `strat_features_15m` | 207,784 | 303 MB | **runtime-created** (not in schema.sql) |
+| `strat_features_1m` | 3,125,312 | 4081 MB | **runtime-created** (not in schema.sql) |
+| `strat_features_30m` | 103,924 | 152 MB | **runtime-created** (not in schema.sql) |
+| `strat_features_4h` | 18,644 | 26 MB | **runtime-created** (not in schema.sql) |
+| `strat_features_5m` | 591,831 | 811 MB | **runtime-created** (not in schema.sql) |
+| `strat_features_60m` | 55,976 | 81 MB | **runtime-created** (not in schema.sql) |
+| `strat_features_levels_15m` | 208,318 | 370 MB | **runtime-created** (not in schema.sql) |
+| `strat_features_levels_1m` | 3,087,623 | 8201 MB | **runtime-created** (not in schema.sql) |
+| `strat_features_levels_30m` | 103,924 | 185 MB | **runtime-created** (not in schema.sql) |
+| `strat_features_levels_4h` | 18,644 | 28 MB | **runtime-created** (not in schema.sql) |
+| `strat_features_levels_5m` | 624,795 | 1134 MB | **runtime-created** (not in schema.sql) |
+| `strat_features_levels_60m` | 55,976 | 87 MB | **runtime-created** (not in schema.sql) |
+| `strat_levels` | 15,279 | 3480 kB | `gcp/schema.sql` |
 | `ticker_calibration` | 1 | 48 kB | `gcp/schema.sql` |
 | `ticker_info` | 0 | 24 kB | `gcp/schema.sql` |
-| `top_movers_daily` | 5,760 | 1128 kB | `gcp/schema.sql` |
-| `top_movers_intraday` | 6,380 | 1152 kB | `gcp/schema.sql` |
-| `trades` | 2,968 | 1360 kB | `gcp/schema.sql` |
+| `top_movers_daily` | 6,840 | 1320 kB | `gcp/schema.sql` |
+| `top_movers_intraday` | 9,260 | 1632 kB | `gcp/schema.sql` |
+| `trades` | 3,166 | 1400 kB | `gcp/schema.sql` |
 | `user_preferences` | 1 | 32 kB | `gcp/schema.sql` |
 | `user_profile` | 0 | 16 kB | `gcp/schema.sql` |
 | `user_roles` | 2 | 48 kB | `gcp/schema.sql` |
@@ -190,9 +193,9 @@ This doc complements [ARCHITECTURE.md](05-a-ARCHITECTURE.md) §5 (schema by doma
 | `v_etf_options_node` | — | 0 bytes | `gcp/schema.sql` (view) |
 | `waitlist_signups` | 1 | 48 kB | `gcp/schema.sql` |
 | `walk_forward_results` | 0 | 264 kB | `gcp/schema.sql` |
+| `watchlist_history` | 20 | 56 kB | `gcp/schema.sql` |
+| `watchlist_history_origin` | 1 | 24 kB | `gcp/schema.sql` |
 | `watchlists` | 0 | 64 kB | `gcp/schema.sql` |
-
-Declared in `gcp/schema.sql` but absent live: `schema_apply_history`, `watchlist_history`, `watchlist_history_origin`
 <!-- inventory:dbtables:end -->
 
 ---
@@ -908,11 +911,11 @@ Tables with two or more writing files. The risk in each case is the same shape: 
 
 Notes on the ones that matter operationally:
 
-- **`market_data_daily`** — `fetch_market_data` is canonical (nightly OHLCV + indicators); `fetch_premarket_refresh` UPDATEs only `gap_pct`/`pre_*` at 08:20; `backfill_daily_indicators` recomputes NULL indicator columns; `premarket_brief` DELETEs NULL-close placeholder rows; `backfill_ticker` and the two backfill scripts are on-demand. Ordering is enforced by the schedule (08:20 before 08:30, 23:00 after close).
-- **`etf_options_snapshots`** — `fetch_av_historical_options` (nightly) and `fetch_av_realtime_options` (every 5 min in RTH) both upsert on `(ticker, snapshot_ts, contract)`; `options_retention_job` DELETEs by age; `compute_spx_greeks` UPDATEs Greek columns; the grid router writes derived rows. A re-fetch can overwrite computed Greeks.
-- **`signal_alerts` / `trades`** — `signal_monitor` (live fires and closes), `signal_monitor_eod_resolver` (outcome columns), and the replay/backfill scripts. Replays must not clobber live alerts; `scripts/replay_signal_monitor.py` mocks the upsert (CLAUDE.md Rule 3.6).
-- **`insight_reports` / `insight_runs`** — the pipeline job, the insights router (on-demand), `auto_refresh_top_n` and `discord_interactions` all insert runs with their own UUIDs; the `status` UPDATE path is shared between job and router.
-- **`watchlists`** — `backfill_ticker`, `discord_interactions` (`/watchlist`), `_watchlist.py` and `signal_monitor` (seed flags); soft-delete via `removed_at`.
+- **`market_data_daily`** has 8 writers. `gcp/fetchers/fetch_market_data.py` is the canonical nightly OHLCV + indicators writer. `gcp/fetchers/fetch_premarket_refresh.py` UPDATEs `gap_pct` and `pre_*` columns at 08:20. `gcp/fetchers/backfill_daily_indicators.py` recomputes NULL indicator columns. `gcp/premarket_brief.py` DELETEs placeholder rows. `gcp/backfill_ticker.py`, `scripts/backfill_watchlist_data.py` and `scripts/deep_backfill_ticker.py` are for on-demand backfills. Ordering is enforced by the schedule.
+- **`etf_options_snapshots`** has 6 writers. `gcp/fetchers/fetch_av_historical_options.py` (nightly) and `gcp/fetchers/fetch_av_realtime_options.py` (RTH) upsert on `(ticker, snapshot_ts, contract)`. `gcp/options_retention_job.py` DELETEs by age. `scripts/maintenance/compute_spx_greeks.py` UPDATEs Greek columns. `platform/api/routers/grid.py` writes derived rows. A re-fetch can overwrite computed Greeks. `gcp/migrate_to_gcp.py` is a one-off.
+- **`signal_alerts` and `trades`** are written by `gcp/signal_monitor.py` (live fires/closes), `gcp/signal_monitor_eod_resolver.py` (outcomes), and replay/backfill scripts (`scripts/replay_signal_monitor.py`). Replays must not clobber live alerts.
+- **`insight_reports` and `insight_runs`** are written by `gcp/insight_pipeline_job.py`, `platform/api/routers/insights.py` (on-demand), `gcp/auto_refresh_top_n.py`, and `gcp/discord_interactions/main.py`. All insert runs with their own UUIDs.
+- **`watchlists`** is written by `gcp/backfill_ticker.py`, `gcp/discord_interactions/main.py` (`/watchlist`), and `gcp/fetchers/_watchlist.py`.
 
 ---
 
@@ -946,7 +949,11 @@ Notes on the ones that matter operationally:
 | `watchlist_history_origin` | 0 | 1 | read-only (no writer names it in code) |
 <!-- inventory:orphans:end -->
 
-Reading the statuses: the four `archive_yahoo_*` tables are frozen forensics (0 rows live); `earnings_event_outcomes` / `earnings_ticker_lean` are materialized views refreshed by `gcp/refresh_earnings_views.py` (the `REFRESH MATERIALIZED VIEW` names reach the statement through the `_WEEKLY_VIEWS` tuple, so both are attributed to that job in §6); `ranker_runs`, `admin_refresh_leases`, `user_style_results`, `playbook_cards_staging`, `waitlist_signups` and `indicator_correlation` are write-only audit or staging tables; `strat_combo_results` and `v_etf_options_node` have no code reference and are drop candidates pending an operator decision.
+Reading the statuses:
+- The four `archive_yahoo_*` tables and `strat_combo_results` are completely unreferenced and are drop candidates. `v_etf_options_node` is an unreferenced view.
+- `admin_refresh_leases`, `backtest_reports`, `indicator_correlation`, `playbook_cards_staging`, `ranker_runs`, `regime_combo_results`, `strat_levels`, `user_style_results`, `waitlist_signups`, and `walk_forward_results` are write-only audit, staging, or results tables.
+- `watchlist_history` and `watchlist_history_origin` are read-only; they are populated by a manual process.
+- The `market_data_intraday_*` partitions are read directly; writes are routed through the `market_data_intraday` parent table.
 
 ---
 
@@ -1027,7 +1034,7 @@ If the job stops, the listed readers lose fresh data from the tables it writes. 
 | `weekend-review` | `gcp/weekend_review.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 <!-- inventory:blast:end -->
 
-Hand-created live jobs (no `deploy_*` function, so not in the table above): `p2-build-gamma-levels` writes `gamma_levels_eod`; the `p7*`, `p45-deep-ds`, `strat-dir-features`, `exec-backtest`, `backtest-playability` and `compare-tier-fires` jobs write research tables or GCS reports only.
+Hand-created live jobs (no `deploy_*` function, so not in the table above): 8 of the 76 live jobs are not declared in `gcp/deploy.sh`. The digest lists 10 hand-created jobs; some may be inactive or scheduled manually. They are: `backtest-playability`, `compare-tier-fires`, `exec-backtest`, `p2-outcomes-grid` (writes runtime `gamma_events`), `p45-deep-ds`, `p7-build-multi-tf-features` (writes runtime `daily_vex` and `strat_features_*`), `strat-dir-features`, and three not in this checkout (`p7-analyze-tf`, `p7a-iwm-30m-pipeline`, `p7b-next-candle-classifier`).
 
 ---
 
@@ -1418,20 +1425,21 @@ flowchart LR
 ```
 <!-- inventory:graph:end -->
 
-Rendered from `table_refs` by `scripts/maintenance/doc_inventory.py`: thick `==>` is a write by code reachable from the job's entry module through the names it imports, thin `-->` is a read by the same scope (the attribution rule is stated under §6). Every job with at least one edge to a relation declared in `gcp/schema.sql`, and every such relation with at least one edge, appears; runtime-created relations (§1b) and the jobs whose only edges are to them are not drawn, and `gcp/database.py`'s `job_runs` bookkeeping is excluded, as in §6.
+The graph is rendered from `table_refs` by `scripts/maintenance/doc_inventory.py`. A thick arrow `==>` denotes a write, and a thin arrow `-->` denotes a read. The attribution of a read/write to a job is explained in §6. The graph includes all jobs with at least one edge to a relation in `gcp/schema.sql`. Runtime-created relations (see §1b) and the jobs that only touch them are not shown. The `job_runs` table is also excluded.
 
 ---
 
 ## 8. Notes for follow-up work
 
-1. `strat_combo_results` and `v_etf_options_node` have no writer or reader in code — confirm nobody queries them by hand, then drop.
-2. `earnings_options_snapshots` has 0 live rows but 588 MB of dead space; its only production writer is the on-demand `earnings-options-backfill`. A `VACUUM FULL` or drop is an operator call.
-3. `gcp/fetchers/fetch_rss_news.py` writes `news_sentiment` but has no `deploy_*` function and no scheduler.
-4. The 26 runtime-created relations are outside the schema migration path (`gcp/schema.sql` + `apply-schema-migrations`) and outside `scripts/audit_data_freshness.py`; `strat_features_levels_1m` alone is 8 GB.
-5. `market_data_intraday_other` (5.7 M rows, 67 GB) is larger than the three ETF partitions combined; it holds every non-ETF ticker ever backfilled and has more index than data ([`docs/audits/COST_AUDIT_2026-09-06.md`](../../audits/COST_AUDIT_2026-09-06.md) §7).
+1.  **Drop candidates:** `strat_combo_results`, `v_etf_options_node`, and the `archive_yahoo_*` tables have no writer or reader in code. Confirm nobody queries them by hand, then drop.
+2.  **Bloated table:** `earnings_options_snapshots` has 0 live rows but may have dead space. Its only production writer is the on-demand `earnings-options-backfill`. A `VACUUM FULL` or drop is an operator call.
+3.  **Undeployed writer:** `gcp/fetchers/fetch_rss_news.py` writes `news_sentiment` but has no `deploy_*` function and is not scheduled.
+4.  **Runtime relations:** The 26 runtime-created relations are outside the schema migration path (`gcp/schema.sql` + `apply-schema-migrations`) and `scripts/audit_data_freshness.py`. `strat_features_levels_1m` alone is over 8 GB.
+5.  **Partition size:** `market_data_intraday_other` is significantly larger than other partitions, holding non-ETF tickers. See [`docs/audits/COST_AUDIT_2026-09-06.md`](../../audits/COST_AUDIT_2026-09-06.md) §7.
+6.  **Read-only tables:** `watchlist_history` and `watchlist_history_origin` are read-only in the codebase; their population is a manual process.
 
 ## 9. Removed since last refresh
 
 - 2026-09-07: the 2026-09-02 layout's "1. Table inventory" became "1. Table inventory (declared in `gcp/schema.sql`)" plus "1b. Live relations"; its "`market_data_intraday` (and partitions)" write-graph subsection became the per-table `market_data_intraday` subsection (partitions are routed by Postgres and are listed in §1 and §5 only). Every table that had a §2/§3 entry still has one.
 
-Generated 2026-09-07 by the monthly documentation refresh; inventory blocks rendered by `scripts/maintenance/doc_inventory.py`. The audits that established this layout are in [`docs/audits/`](../../audits). The monthly refresh updates this line.
+Generated 2026-10-01 by the monthly documentation refresh; inventory blocks rendered by `scripts/maintenance/doc_inventory.py`. The audits that established this layout are in [`docs/audits/`](../../audits). The monthly refresh updates this line.
