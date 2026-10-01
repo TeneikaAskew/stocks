@@ -657,7 +657,7 @@ UI spec: [UI-SCREENS.md § SCREEN-SIGNALS](https://github.com/TeneikaAskew/solyr
 ### Checklist
 | ID | Element | S | T | V | Te | Evidence |
 |---|---|---|---|---|---|---|
-| SIGNALS-01 | Header | [x] | [x] | [x] | [ ] | S 2026-10-01 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#signals-01--header) · T 2026-10-01 d7547ac · V 2026-10-01 [evidence](https://github.com/TeneikaAskew/stocks/issues/1234#issuecomment-5925426180) |
+| SIGNALS-01 | Header | [x] | [x] | [x] | [ ] | S 2026-10-01 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#signals-01--header) · T 2026-10-01 b622e2d · V 2026-10-01 [evidence](https://github.com/TeneikaAskew/stocks/issues/1234#issuecomment-5925426180) |
 | SIGNALS-02 | Performance KPIs | [x] | [x] | [x] | [ ] | S 2026-10-01 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#signals-02--performance-kpis) · T 2026-10-01 d7547ac · V 2026-10-01 [evidence](https://github.com/TeneikaAskew/stocks/issues/1234#issuecomment-5925426180) |
 | SIGNALS-03 | Filter bar | [x] | [x] | [ ] | [ ] | S 2026-10-01 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#signals-03--filter-bar) · T 2026-10-01 d7547ac |
 | SIGNALS-04 | Signals table | [x] | [x] | [x] | [ ] | S 2026-10-01 [spec](https://github.com/TeneikaAskew/solyra/blob/main/docs/UI-SCREENS.md#signals-04--signals-table) · T 2026-10-01 d7547ac · V 2026-10-01 [evidence](https://github.com/TeneikaAskew/stocks/issues/1234#issuecomment-5925426180) |
