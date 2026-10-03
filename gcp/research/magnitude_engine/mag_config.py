@@ -15,7 +15,7 @@ import os
 from dataclasses import dataclass
 from fractions import Fraction
 from types import MappingProxyType
-from typing import Sequence
+from typing import Mapping, Sequence
 
 
 # ─────────────────────── Scope ───────────────────────
@@ -114,6 +114,164 @@ def resolve_magnitude_thresholds() -> tuple[float, ...]:
 # matching option's IV (call IV for call, put IV for put).
 LABEL_MODES: tuple[str, ...] = ("body", "excursion", "call", "put")
 DEFAULT_LABEL_MODE = "body"
+
+
+# ─────────────── Feature research registry ───────────────
+# This is deliberately a versioned, immutable registry rather than a list in a
+# notebook.  A registry version identifies both the candidate names and the
+# feature-selection contract below; changing either requires a new version.
+FEATURE_REGISTRY_VERSION = "magnitude-features-v2"
+
+FEATURE_FAMILIES: tuple[str, ...] = (
+    "price_volume",
+    "volatility",
+    "trend",
+    "options_iv",
+    "market_breadth",
+    "cross_asset",
+    "calendar_event",
+    "time_of_session",
+)
+
+
+@dataclass(frozen=True)
+class FeatureCandidate:
+    """A point-in-time feature proposed for ticker-level evaluation.
+
+    ``available=False`` reserves a stable name for a family whose point-in-time
+    data is not yet on the magnitude spine.  It must not be silently replaced
+    by a proxy or included in an experiment.
+    """
+
+    name: str
+    source: str
+    tickers: tuple[str, ...] = TICKERS
+    available: bool = True
+    timestamp_contract: str = "value must be known at or before the bar close"
+
+
+def _candidates(source: str, *names: str, available: bool = True,
+                timestamp_contract: str =
+                "value must be known at or before the bar close") \
+        -> tuple[FeatureCandidate, ...]:
+    return tuple(FeatureCandidate(name, source, available=available,
+                                  timestamp_contract=timestamp_contract)
+                 for name in names)
+
+
+# Information-source groupings are intentionally disjoint.  They describe the
+# candidate surface, not which columns happen to coexist in a phase today.
+FEATURE_REGISTRY: Mapping[str, tuple[FeatureCandidate, ...]] = MappingProxyType({
+    "price_volume": _candidates(
+        "strat_features_<tf>", "obv", "rvol", "rvol_10",
+        "price_vs_vwap", "intraday_return", "high_low_spread_pct"),
+    "volatility": _candidates(
+        "strat_features_<tf>", "atr_expansion", "bb20_bandwidth",
+        "realized_vol_z", "range_expansion_ratio",
+        "intraday_range_vs_prevday"),
+    "trend": _candidates(
+        "strat_features_<tf>/market_data_indicators", "ema_9", "ema_20",
+        "ema_50", "ema_200", "macd", "macd_signal", "macd_histogram",
+        "av_adx", "av_mfi", "av_chaikin_ad_osc", "av_aroon_up",
+        "av_aroon_down", "av_roc", "av_bbands_bandwidth"),
+    "options_iv": _candidates(
+        "prior-session options/gamma snapshots", "total_gex", "total_vex",
+        "dist_to_gamma_flip_pct", "dist_to_balance_pct", "atm_call_iv",
+        "atm_put_iv", timestamp_contract=
+        "use only the latest snapshot published before the bar timestamp"),
+    "market_breadth": _candidates(
+        "point-in-time breadth feed (not yet available)",
+        "advance_decline_ratio", "new_high_low_ratio", "up_down_volume_ratio",
+        available=False),
+    "cross_asset": _candidates(
+        "market_data_cross_asset", "vix_5m_delta", "vix_z_15",
+        "ust10y_delta", "dxy_delta", "oil_z", "gold_z", available=False),
+    "calendar_event": (
+        _candidates(
+            "unversioned economic calendar (not point-in-time safe)",
+            "hours_until_next_hi_event", "hours_since_last_hi_event",
+            "is_event_day_pm4h", available=False,
+            timestamp_contract=
+            "requires a versioned schedule published before the bar")
+        + _candidates(
+            "exchange calendar/bar timestamp", "cal_day_of_week",
+            "cal_week_of_month", "cal_is_first_friday", "cal_is_fomc_week",
+            "cal_is_month_end", "cal_is_quarter_end")),
+    "time_of_session": _candidates(
+        "exchange calendar/bar timestamp", "cal_hour_of_day",
+        "cal_minute_of_hour"),
+})
+
+
+@dataclass(frozen=True)
+class FeatureSelectionProtocol:
+    """Pre-registered rules for accepting a family for one ticker."""
+
+    benchmark_phase: str = "phase0"
+    benchmark_class_weight: None = None
+    seed: int = 42
+    primary_metric: str = "multiclass_log_loss"
+    calibration_metric: str = "expected_calibration_error"
+    experiments: tuple[str, ...] = (
+        "unweighted_phase0_benchmark",
+        "add_one_candidate_family",
+        "remove_one_baseline_family",
+    )
+    identical_samples_within_fold: bool = True
+    chronological_folds: bool = True
+    # walk_forward treats each cutoff as a fold START and uses the next cutoff
+    # as its exclusive end.  Keep the locked start in the boundary sequence so
+    # the last selection fold ends there, but never select/evaluate its fold.
+    fold_boundaries: tuple[str, ...] = tuple(DEFAULT_CUTOFFS)
+    selection_fold_starts: tuple[str, ...] = tuple(DEFAULT_CUTOFFS[:-1])
+    final_test_cutoff: str = DEFAULT_CUTOFFS[-1]
+    importance_split: str = "held_out_only"
+    permutation_repeats: int = 30
+    max_missing_fraction: float = 0.20
+    max_ece_regression: float = 0.01
+    min_improving_folds: int = 5
+    min_median_log_loss_improvement: float = 0.001
+    min_rank_stability_spearman: float = 0.50
+    max_pairwise_spearman: float = 0.90
+    drift_metric: str = "population_stability_index"
+    required_reports: tuple[str, ...] = (
+        "held_out_permutation_importance",
+        "fold_rank_stability",
+        "missingness",
+        "feature_drift",
+        "pairwise_redundancy",
+        "timestamp_leakage_audit",
+    )
+    rejection_reasons: tuple[str, ...] = (
+        "unstable_importance",
+        "excessive_missingness",
+        "timestamp_leakage",
+    )
+    retention_rule: str = (
+        "retain only when log loss improves by at least 0.001 at the median, "
+        "improves in at least 5 of 7 selection folds, and median ECE does not "
+        "worsen by more than 0.01"
+    )
+
+
+FEATURE_SELECTION_PROTOCOL = FeatureSelectionProtocol()
+
+
+def candidates_for_ticker(ticker: str, *, include_unavailable: bool = False) \
+        -> dict[str, tuple[FeatureCandidate, ...]]:
+    """Return the registered candidate families applicable to ``ticker``."""
+    ticker = ticker.upper()
+    if ticker not in TICKERS:
+        raise ValueError(f"unsupported magnitude ticker {ticker!r}; expected {TICKERS}")
+    return {
+        family: tuple(c for c in candidates
+                      if ticker in c.tickers and (include_unavailable or c.available))
+        for family, candidates in FEATURE_REGISTRY.items()
+    }
+
+
+if tuple(FEATURE_REGISTRY) != FEATURE_FAMILIES:
+    raise RuntimeError("feature registry families/order do not match FEATURE_FAMILIES")
 
 
 # ─────────────────────── Phases ───────────────────────
