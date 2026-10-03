@@ -1060,6 +1060,7 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`lib/options_exec_backtest/runner.py`](../../../lib/options_exec_backtest/runner.py) | Walk-forward orchestrator for the options exec backtest. | — |
 | [`lib/options_greeks.py`](../../../lib/options_greeks.py) | Black-Scholes-Merton implied volatility solve and Greeks computation for | — |
 | [`lib/options_intraday.py`](../../../lib/options_intraday.py) | Intraday option repricing from EOD snapshots + 1-min underlying bars. | — |
+| [`lib/promotion_evaluator.py`](../../../lib/promotion_evaluator.py) | Fail-closed model promotion and rollback policy evaluation. | — |
 | [`lib/signals.py`](../../../lib/signals.py) | Signal generation — 3-of-5 condition scoring for CALL and PUT entries, | — |
 | [`lib/single_flight.py`](../../../lib/single_flight.py) | Coalesce concurrent work on the same key without parking worker threads. | — |
 | [`lib/strat.py`](../../../lib/strat.py) | The Strat candle classification system. | — |
