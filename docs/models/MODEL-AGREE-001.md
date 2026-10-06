@@ -1,5 +1,7 @@
 # MODEL-AGREE-001 — Strategy-agreement scoring
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
+
 **Code:** `lib/strategies/agreement.py` (106 lines) ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** Production but needs remediation · **Rec:** RESTRUCTURE

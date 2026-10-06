@@ -1,5 +1,7 @@
 # MODEL-WATCH-001 — Long-side earnings watchlist ("Next NVAX")
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
+
 **Code:** `gcp/earnings_long_watchlist.py` ·
 **Reads:** `earnings_calendar`, `earnings_options_strategy_winners` ·
 **Job:** `earnings-long-watchlist` (`45 19 * * 0`, Sunday evening) ·

@@ -1,6 +1,6 @@
 # Trading System Technical Architecture
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
 
 > **Project:** adept-mountain-474619-d4
 > **Region:** us-east1

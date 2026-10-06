@@ -1,5 +1,7 @@
 # MODEL-SWEEP-001 — Walk-forward parameter sweep
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
+
 **Code:** `lib/walk_forward.py` (607 lines), `scripts/run_param_sweep.py`,
 `scripts/calibrate_iwm_strat.py`, `scripts/run_walk_forward.py` ·
 **Table:** `exit_config_overrides` · **Job:** `param-sweep` — deployed but **unscheduled**, run by hand ·
