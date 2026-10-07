@@ -2,7 +2,7 @@
 
 **Last reviewed:** 2026-08-31 · **Last scanned:** 2026-09-29 · **Owner:** TBD
 
-**VERIFIED — CODE.** Extracted from FastAPI decorators in `platform/api` using Python AST parsing of all `@router|@app.<method>(...)` calls, including decorators whose path is declared on a later line. The inventory also inspects the enclosing handler, docstring, and SQL identifiers. **92 platform API endpoints** resolved this way; the Discord service contributes 2 additional HTTP endpoints.
+**VERIFIED — CODE.** Extracted from FastAPI decorators in `platform/api` using Python AST parsing of all `@router|@app.<method>(...)` calls, including decorators whose path is declared on a later line. The inventory also inspects the enclosing handler, docstring, and SQL identifiers. **96 platform API endpoints** resolved this way; the Discord service contributes 2 additional HTTP endpoints. The admin router has gained five user and data-source routes since that extraction that the inventory does not list yet ([#1341](https://github.com/TeneikaAskew/stocks/issues/1341)).
 
 ## How to read the Auth column
 
@@ -23,6 +23,7 @@ Auth is **global ASGI middleware**, not a per-handler dependency — see
 | Gated in `firebase`; **unenforced in `iap`/`open`** | 78 |
 | **OPEN prefix — never gated** | 5 |
 | Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | 7 |
+| Gated in `firebase`; **unenforced in `iap`/`open`** + an owner check (`_prefs_owner`, `_profile_owner`) | 4 |
 | **Not gated in any mode** (non-`/api/`) | 2 |
 
 ## Capability map
