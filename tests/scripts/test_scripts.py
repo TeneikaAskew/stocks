@@ -170,6 +170,53 @@ class TestHandleWorkflowFailure:
         except SystemExit:
             pass  # acceptable — script may call sys.exit when run directly
 
+    def test_legacy_failure_branches_are_still_found(self):
+        """stocks#1205 r4117897784 (handle_workflow_failure.py:252).
+
+        The handler now opens fix/feat-cicd-001-workflow-<name>-<run>, but a draft
+        opened before the rename still carries fix/workflow-<name>-<run>. The
+        lookup must find either, or the next failure opens a duplicate draft.
+        """
+        from scripts.handle_workflow_failure import is_failure_branch, is_legacy_failure_branch
+        base = "refresh-architecture-docs"
+        assert is_failure_branch("TeneikaAskew:fix/feat-cicd-001-workflow-refresh-architecture-docs-25", "TeneikaAskew", base)
+        # stocks#1205 r4119048054: a legacy draft is found to be superseded, never reused, because
+        # the spec gate rejects a fix pushed to its branch shape
+        assert not is_failure_branch("TeneikaAskew:fix/workflow-refresh-architecture-docs-19", "TeneikaAskew", base)
+        assert is_legacy_failure_branch("TeneikaAskew:fix/workflow-refresh-architecture-docs-19", "TeneikaAskew", base)
+        assert not is_legacy_failure_branch("someone:fix/workflow-refresh-architecture-docs-19", "TeneikaAskew", base)
+        assert not is_legacy_failure_branch("TeneikaAskew:fix/workflow-fetch-news-sentiment-3", "TeneikaAskew", base)
+
+    def test_the_failure_branch_slug_is_kebab_case(self):
+        """stocks#1205 r4119634442 (handle_workflow_failure.py:622).
+
+        The branch kept the workflow stem verbatim, so `fetch_etf_options.yml`
+        produced an underscore the spec gate's branch pattern rejects; a fix pushed
+        to that draft could never merge. The stem is normalized, and the lookup
+        matches the normalized branch.
+        """
+        import re
+        from scripts.handle_workflow_failure import FAILURE_BRANCH_PREFIX, is_failure_branch, workflow_slug
+        assert workflow_slug("fetch_etf_options.yml") == "fetch-etf-options"
+        assert workflow_slug("Refresh Architecture.Docs.yaml") == "refresh-architecture-docs"
+        assert workflow_slug("fetch-news-sentiment.yml") == "fetch-news-sentiment"
+        branch = f"{FAILURE_BRANCH_PREFIX}{workflow_slug('fetch_etf_options.yml')}-7"
+        assert re.match(r"^(feature|fix)/(feat-[a-z]+-\d{3})(-[a-z0-9]+)+$", branch), branch
+        assert is_failure_branch(f"TeneikaAskew:{branch}", "TeneikaAskew", workflow_slug("fetch_etf_options.yml"))
+
+    def test_the_failure_pr_title_carries_the_feat_id(self):
+        """stocks#1205 r4118661314 (handle_workflow_failure.py:604).
+
+        The branch is fix/feat-cicd-001-..., so check_pr_metadata() requires a title
+        starting with 'FEAT-CICD-001:'. A 'Fix: ...' title would fail the gate on
+        every auto-created failure PR once its fix is pushed.
+        """
+        import re
+        from scripts.handle_workflow_failure import failure_pr_title
+        title = failure_pr_title("❌ Monthly architecture doc refresh failed")
+        assert title == "FEAT-CICD-001: Monthly architecture doc refresh failed"
+        assert re.match(r"^FEAT-CICD-001:", title)
+
 
 # ---------------------------------------------------------------------------
 # fetch_market_data.py

@@ -1,6 +1,6 @@
 # Trading Application — Briefing Deck
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
 
 **Compiled:** 2026-04-26 (refreshed post-PR-#99)
 **Scope:** Full-system reference covering architecture, data pipeline, infrastructure, plans executed, and operational runbook.
@@ -620,7 +620,7 @@ handle-failure:
 
 Implemented by `scripts/handle_workflow_failure.py` (Python). Behavior:
 - Creates a labeled issue with workflow context, last 50 log lines, link to logs.
-- Creates a draft PR on `fix/workflow-{name}-{run-number}` branch.
+- Creates a draft PR on `fix/feat-cicd-001-workflow-{name}-{run-number}` branch.
 - Duplicate detection: if an issue already exists for the same workflow, comments on it instead of opening a new one.
 
 ---
@@ -1344,7 +1344,7 @@ Per memory `MEMORY.md`:
 | `/api/health` reports `cloud_sql: false` | Connector not initialized | Verify `--add-cloudsql-instances` set on Cloud Run service; check IAM has `roles/cloudsql.client` |
 | `/admin` returns 401 | `ADMIN_TOKEN` missing or wrong | Set via Secret Manager + Cloud Run env var |
 | Cloud Run Job fails silently | Stale image (pre-migration) | `bash gcp/deploy.sh build` to rebuild + redeploy. Check digest with `gcloud run jobs describe` |
-| GH Actions workflow fails repeatedly | Real bug or rate limit | Auto-issue created with last 50 log lines; auto-PR on `fix/workflow-{name}-{run}` branch |
+| GH Actions workflow fails repeatedly | Real bug or rate limit | Auto-issue created with last 50 log lines; auto-PR on `fix/feat-cicd-001-workflow-{name}-{run}` branch |
 | Playwright E2E "Auth required" against deployed URL | IAP cookies expired | Re-run `npm run e2e:cloud:auth` (interactive Google sign-in) |
 | `tsc -b` fails with `defineConfig` errors | `vite.config.ts` not using `vitest/config` | Confirm `import { defineConfig } from 'vitest/config'` |
 | Backtester returns no trades | Catalyst-analog matching needs catalyst data | Verify `news_sentiment`, `earnings_history`, `sec_filings` populated for the ticker/date |
@@ -1427,9 +1427,10 @@ Per CLAUDE.md and memory:
 
 ### 18.5 Branch naming
 
-- `feature/short-description` for new features
-- `fix/short-description` for bug fixes
-- `fix/workflow-{name}-{run-number}` for auto-created failure-handler branches
+- `feature/<feat-id>-<slug>` for new features (e.g. `feature/feat-model-001-model-decisions`); the spec gate reads the FEAT-ID from the branch
+- `fix/<feat-id>-<slug>` for bug fixes, filed under the capability's FEAT-ID
+- `docs/<slug>` for documentation only, `chore/<slug>` for dependency manifests, lockfiles and the gate's own files
+- `fix/feat-cicd-001-workflow-{name}-{run-number}` for auto-created failure-handler branches
 - Never commit non-trivial changes directly to `main`
 
 ### 18.6 File-management philosophy (CLAUDE.md)

@@ -271,12 +271,12 @@ def map_signals_to_table(signals_df: pd.DataFrame, ticker: str,
         # Cast NaN-tolerant int — keep nullable
         out['entry_volume'] = out['entry_volume'].astype('Int64')
 
-    # Phase 1: timeframe tagging on every research-pipeline row.
-    # signals_df has entry_rsi at the per-row level. Pass it through
-    # so the empirical lookup (EMPIRICAL_LOOKUP in
-    # lib/strategies/timeframe.py) hits the populated buckets instead
-    # of cold-starting on the rsi='unknown' bucket. ATR is still
-    # unavailable at this layer (no per-row snapshot in signals_df).
+    # Phase 1: timeframe tagging on every research-pipeline row, by the
+    # placeholder tiers in lib/strategies/timeframe.py (EMPIRICAL_LOOKUP was
+    # retired in #1167). entry_rsi is passed for the helper's signature and
+    # is unused. ATR is unavailable at this layer (no per-row snapshot in
+    # signals_df), so the tier comes from strategy and signal strength;
+    # scripts/backfill_timeframe_tags.py joins signal_metrics for ATR.
     from lib.strategies.timeframe import assign_timeframe_for_backfill
     if 'signal_strength' in out.columns:
         rsi_series = out['entry_rsi'] if 'entry_rsi' in out.columns else None

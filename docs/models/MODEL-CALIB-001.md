@@ -1,5 +1,7 @@
 # MODEL-CALIB-001 — Per-ticker threshold calibration (percentile)
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
+
 **Code:** `scripts/calibrate_thresholds.py` ·
 **Table:** `ticker_calibration` · **Job:** `calibrate-thresholds`
 (`0 2 1 1,4,7,10 *`, quarterly) ·

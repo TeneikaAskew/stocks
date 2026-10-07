@@ -85,6 +85,9 @@ REPLACEMENTS: list[tuple[str, str]] = [
     ("Cloud Scheduler (49 crons)", "Cloud Scheduler (65 live entries)"),
     ("Cloud Scheduler (66 live entries)", "Cloud Scheduler (65 live entries)"),
     ("trading-runner SA\nruntime identity for all Jobs", "trading-runner@ (jobs, Discord, notifier)\ntrading-platform-svc@ (API services)"),
+    # The failure handler files its branches under FEAT-CICD-001, so the spec
+    # gate reads a FEAT-ID from them (scripts/handle_workflow_failure.py).
+    ("(fix/workflow-{name}-{run})", "(fix/feat-cicd-001-workflow-{name}-{run})"),
 ]
 
 # Cells retired outright (their edges go too).

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Installed via: git config core.hooksPath .githooks
+# Runs for every author and every harness. Bypass only with --no-verify, which CI will still catch.
+set -e
+# The gate needs Python 3.11+ (tomllib). Say so plainly instead of failing on an import.
+if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+  echo "spec gate: python3 >= 3.11 is required on PATH (found: $(python3 --version 2>&1 || echo none))" >&2
+  exit 1
+fi
+# The gate inspects the index; the copy it runs must be the copy being committed, or an
+# unstaged edit to the gate could wave the staged change through (stocks#1205 r4120660302).
+if ! git diff --quiet -- scripts/gate/spec_gate.py; then
+  echo "spec gate: scripts/gate/spec_gate.py has unstaged changes; stage or stash them before committing" >&2
+  exit 1
+fi
+python3 "$(git rev-parse --show-toplevel)/scripts/gate/spec_gate.py" --commit

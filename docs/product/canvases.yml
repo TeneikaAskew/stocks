@@ -1,0 +1,71 @@
+# Claude Design canvases that depict this repo, and which repo source feeds each one.
+# Read by the refresh-canvas skill and by product-delivery Phase 1.
+# Refresh is manual, from main, diff-first. Never from a branch, never in CI.
+#
+# mode: report-only marks a canvas with no exporter (source_json: null). The refresh
+# compares it against source_docs by hand and reports the differences; it never writes.
+# A repo field whose JSON value is null is "not sourced" for that card and is never
+# written over. A field with merge: ordered_set keeps the canvas's order.
+
+canvases:
+  - name: Stocks models diagram
+    url: https://claude.ai/artifact/Fg4VQHB6dFGWF9iXSJUDtg
+    repo: TeneikaAskew/stocks
+    source_json: docs/product/generated/model-registry.json
+    source_docs:
+      - docs/product/07-MODEL-REGISTRY.md
+      - docs/EXPERIMENT_REGISTRY.md
+    boards:
+      - file: project/Main.dc.html
+        constant: MODELS
+        key: id
+        # fields the repo owns (overwritten on refresh) -> JSON path in source_json
+        repo_fields:
+          name: models.<id>.name
+          type: models.<id>.type
+          decides: models.<id>.decision_produced
+          code: models.<id>.code_paths
+          status: models.<id>.status
+          rec: models.<id>.rec
+          doc: models.<id>.doc
+          note: models.<id>.blocking_issues
+          exp: experiment_traceability.<id>.experiments
+          deepdoc: experiment_traceability.<id>.deep_doc
+          verdict: experiment_traceability.<id>.recorded_verdict
+          sched: {path: "schedulers[models contains <id>]", merge: ordered_set}
+        # fields curated on the canvas (never touched by refresh)
+        canvas_fields: [tier, statusNote, issues, prs, bucket, why, flow, stage, short, alert, ratKind, ratText]
+      - file: project/Concerns.dc.html
+        constant: CONCERNS
+        key: id
+        repo_fields:
+          area: findings[id].doc
+          concern: findings[id].claim_actual
+          kind: findings[id].kind
+          sev: findings[id].sev
+          model: findings[id].models
+          disp: dispositions[id].disposition
+          note: dispositions[id].why
+        canvas_fields: []
+    feat_ids: [FEAT-MODEL-001, FEAT-REPLAY-001, FEAT-SIGNAL-001]
+
+  - name: Stocks backend architecture diagram
+    url: https://claude.ai/artifact/LXZ5iRtXogCyFfApfsxXVN
+    repo: TeneikaAskew/stocks
+    mode: report-only
+    source_json: null   # no exporter yet; refresh compares against source_docs by hand
+    source_docs:
+      - docs/product/infrastructure/05-a-ARCHITECTURE.md
+      - docs/product/05-INFRASTRUCTURE.md
+    boards: []
+    feat_ids: [FEAT-DEPLOY-001, FEAT-DATA-001, FEAT-OPS-001]
+
+  - name: Solyra website structure diagram
+    url: https://claude.ai/artifact/Wdf4yL4hqQYK6bNU8BtMuK
+    repo: TeneikaAskew/solyra
+    mode: report-only
+    source_json: null   # no exporter yet; refresh compares against source_docs by hand
+    source_docs:
+      - docs/UI-SCREENS.md
+    boards: []
+    feat_ids: [FEAT-UI-001]

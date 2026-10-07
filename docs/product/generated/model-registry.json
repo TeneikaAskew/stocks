@@ -1,0 +1,2796 @@
+{
+ "dispositions": {
+  "DOC-01": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-01…DOC-05",
+   "label": "DOC-01…DOC-05",
+   "why": "Repo facts. Each was checked against the issue tracker, the filesystem or `gcp/deploy.sh` and corrected in this commit"
+  },
+  "DOC-02": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-01…DOC-05",
+   "label": "DOC-01…DOC-05",
+   "why": "Repo facts. Each was checked against the issue tracker, the filesystem or `gcp/deploy.sh` and corrected in this commit"
+  },
+  "DOC-03": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-01…DOC-05",
+   "label": "DOC-01…DOC-05",
+   "why": "Repo facts. Each was checked against the issue tracker, the filesystem or `gcp/deploy.sh` and corrected in this commit"
+  },
+  "DOC-04": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-01…DOC-05",
+   "label": "DOC-01…DOC-05",
+   "why": "Repo facts. Each was checked against the issue tracker, the filesystem or `gcp/deploy.sh` and corrected in this commit"
+  },
+  "DOC-05": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-01…DOC-05",
+   "label": "DOC-01…DOC-05",
+   "why": "Repo facts. Each was checked against the issue tracker, the filesystem or `gcp/deploy.sh` and corrected in this commit"
+  },
+  "DOC-06": {
+   "disposition": "FLAGGED — needs measurement, re-stated 2026-09-21",
+   "id": "DOC-06",
+   "label": "DOC-06",
+   "why": "#1117 landed as `164b262`; this row's previous text said to re-read the finding against it, so that was done against the merged document rather than the PR's commit message. Gate 7 was not overturned. `MAGNITUDE_ENGINE_RESULTS.md:3` still opens `PROJECT VERDICT: FAIL (closed 2026-05-29 by gate 7)` and `:519` still reads \"Gate 7 verdict: FAIL on every cell\" — 0 of 23 IV-covered folds, aggregate 0.67-0.73 over 24 folds in §12. What changed is the other half: `pred_bucket` is now `P(bucket) ≥ 2× prior` instead of argmax, and `magnitude-engine-6hp7l` is promoted on SPY/QQQ/IWM 5m, so the engine is no longer serving constants on three of four cells. The contradiction therefore narrows and survives: it was \"the doc reads closed, the system is collapsed and serving nothing\"; it is now \"the doc reads closed, and the system serves real per-bar decisions whose edge over the option chain is still measured at 0.67-0.73\". Resolving it still means re-running gate 7"
+  },
+  "DOC-07": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-07, DOC-08, DOC-13 (registry half), DOC-14",
+   "label": "DOC-07, DOC-08, DOC-13 (registry half), DOC-14",
+   "why": "Labelled in place with the measured reality; no result was rewritten"
+  },
+  "DOC-08": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-07, DOC-08, DOC-13 (registry half), DOC-14",
+   "label": "DOC-07, DOC-08, DOC-13 (registry half), DOC-14",
+   "why": "Labelled in place with the measured reality; no result was rewritten"
+  },
+  "DOC-09": {
+   "disposition": "FILED as #1118",
+   "id": "DOC-09",
+   "label": "DOC-09",
+   "why": "The swallow at `refresh-architecture-docs.yml:895` is a real Rule 3.7 defect and is now tracked. Whether the block is actually stale still needs a live `ticker_calibration` read — the issue says so and gives the query rather than assuming"
+  },
+  "DOC-10": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-10",
+   "label": "DOC-10",
+   "why": "Seven reference docs written to `docs/models/`, from source and tests. Each carries a `Rationale` section that states the recorded derivation where one exists and says `UNKNOWN — not recorded in code or tests` where it does not. MODEL-EARN-001's quintiles trace to a 21,592-prediction calibration; MOM and MR record single-change measurements (a walk-forward for MOM's floor, 72.2% and 84.6% fire rates for two dropped conditions); STYLE's floors trace to an endpoint contract; the operating bands of four models remain genuinely undocumented, and saying so is the finding"
+  },
+  "DOC-11": {
+   "disposition": "FLAGGED — needs your decision",
+   "id": "DOC-11",
+   "label": "DOC-11",
+   "why": "Which learned models deserve a master-matrix row is a capability question, not a correction"
+  },
+  "DOC-12": {
+   "disposition": "FLAGGED — deferred",
+   "id": "DOC-12",
+   "label": "DOC-12",
+   "why": "#1060 was the PR refreshing the infrastructure docs; it was closed without merging (per the freshness audit docs audit), so the collision that deferred this no longer applies, but the infrastructure counts are still unrefreshed"
+  },
+  "DOC-13": {
+   "disposition": "FIXED HERE (mostly)",
+   "id": "DOC-13",
+   "label": "DOC-13",
+   "why": "The two relocatable paths are repointed, and the test now classifies solyra-owned paths instead of counting them as rot — the backlog drops from 57 to 2, both genuinely deleted scripts. A new invariant replaces the count: any doc citing a solyra path must say where the frontend went, which caught `16-CONSOLIDATION-AUDIT.md` doing so silently"
+  },
+  "DOC-14": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-07, DOC-08, DOC-13 (registry half), DOC-14",
+   "label": "DOC-07, DOC-08, DOC-13 (registry half), DOC-14",
+   "why": "Labelled in place with the measured reality; no result was rewritten"
+  },
+  "DOC-15": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-15, DOC-16, DOC-17",
+   "label": "DOC-15, DOC-16, DOC-17",
+   "why": "Found by review, not by this audit — all three were verified against `EXPERIMENT_REGISTRY.md` and `EXEC_BACKTEST_RESULTS.md` before being corrected, and the join is now gated by `tests/meta/test_model_registry_consistency.py`"
+  },
+  "DOC-16": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-15, DOC-16, DOC-17",
+   "label": "DOC-15, DOC-16, DOC-17",
+   "why": "Found by review, not by this audit — all three were verified against `EXPERIMENT_REGISTRY.md` and `EXEC_BACKTEST_RESULTS.md` before being corrected, and the join is now gated by `tests/meta/test_model_registry_consistency.py`"
+  },
+  "DOC-17": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-15, DOC-16, DOC-17",
+   "label": "DOC-15, DOC-16, DOC-17",
+   "why": "Found by review, not by this audit — all three were verified against `EXPERIMENT_REGISTRY.md` and `EXEC_BACKTEST_RESULTS.md` before being corrected, and the join is now gated by `tests/meta/test_model_registry_consistency.py`"
+  },
+  "DOC-18": {
+   "disposition": "FIXED HERE in the docs, FLAGGED at source",
+   "id": "DOC-18",
+   "label": "DOC-18",
+   "why": "The reference docs now warn about each stale docstring and say which source to trust. Correcting the docstrings themselves touches `lib/strategies/` and `lib/movement_statement.py` and belongs in a code PR, not this docs PR — filed as #1137"
+  },
+  "DOC-19": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-19",
+   "label": "DOC-19",
+   "why": "All six rewritten from the scoring functions, every condition and constant quoted with its `file:line`. Found by review, not by me — see the note under How this registry is kept honest"
+  },
+  "DOC-20": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-20",
+   "label": "DOC-20",
+   "why": "Six rows added and `MODEL_BEARING` in the test extended so the completeness gate can see the fire path. The gate reported green throughout because its substring list never named `signal-monitor`. The count this finding corrected (eight → fourteen) was itself wrong, and is now deleted rather than corrected a third time — see DOC-22"
+  },
+  "DOC-21": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-21",
+   "label": "DOC-21",
+   "why": "All eleven rewritten against the cited `file:line`; the MODEL-CALIB-001 split is also recorded as an open decision in 15-OPEN-DECISIONS. Two recurring habits produced them: labelling a constant undocumented without reading the comment block above it, and naming a class canonical without checking which implementation the scheduled job calls"
+  },
+  "DOC-22": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-22",
+   "label": "DOC-22",
+   "why": "MODEL-CALIB-001 split into the scheduled percentile calibrator and the new MODEL-SWEEP-001 (walk-forward, `Invalidated`, owns #813/#817/#886). The scheduler count is deleted rather than corrected a third time. Two new invariants gate the class: a model doc's named live implementation must appear in its registry `Code` cell, and no disposition may claim a model uniquely has a recorded derivation"
+  },
+  "DOC-23": {
+   "disposition": "FIXED HERE in the doc, FLAGGED at source",
+   "id": "DOC-23",
+   "label": "DOC-23",
+   "why": "MODEL-MR-001 now documents `lib.signals.evaluate_signal` as the live implementation, with the runtime gates only it applies. Making the module delegate to the class, or retiring the class, is code work — filed as #1136, paired with #285 so momentum and mean reversion converge the same way"
+  },
+  "DOC-24": {
+   "disposition": "FIXED HERE in the doc, FLAGGED at source",
+   "id": "DOC-24",
+   "label": "DOC-24",
+   "why": "MODEL-EARN-001 now records the duplicate path and quotes the divergence. Routing `refresh_earnings_views.py` through `classify_archetype` changes a production job's output and needs a code PR with a before/after on the affected rows — filed as #1135"
+  },
+  "DOC-25": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-25",
+   "label": "DOC-25",
+   "why": "The duplicate row is deleted, DOC-20's disposition records that the count was deleted rather than corrected a third time, and a new invariant gates the half of the register the old one skipped. Repeating an id across rows stays legal — DOC-13 genuinely has a registry half and a path half — what is gated is two rows disagreeing about what was done"
+  },
+  "DOC-26": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-26",
+   "label": "DOC-26",
+   "why": "All six widened and each mutation-tested: move `E-23` to MODEL-MAG-001, set an LLM row to `Bogus`, typo a `file.py:NN` pointer in a model doc, cite `E-99`, add a conflicting `DOC-03` row, revert `EXP_ID` to the bare pattern. The invariant descriptions in this section were rewritten to match what each gate now does — they had been describing the intent, not the code"
+  },
+  "DOC-27": {
+   "disposition": "FIXED HERE in the doc, FILED as #1138",
+   "id": "DOC-27",
+   "label": "DOC-27",
+   "why": "MODEL-EARN-001 now records 65 bars in, 64 returns out, no trim, and that the `+ 5` is undocumented. Changing the SQL would move every playability score and re-bucket quintiles across the watchlist, so it is a code PR with a before/after, not an edit here"
+  },
+  "DOC-28": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-28",
+   "label": "DOC-28",
+   "why": "Six rows added with their `deploy.sh` line and live state, `MODEL_BEARING` extended, the deliberate exclusions (`phase6-playbook-daily` and four fetchers) written down so an exclusion is not indistinguishable from an omission, and the false `fred-rates-daily` example replaced with two verified by reading the imports"
+  },
+  "DOC-29": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-29",
+   "label": "DOC-29",
+   "why": "Each document gains an availability-gate section kept separate from its scored conditions, with the measurement that decides whether it matters: unreachable under `lib.indicators` (RSI never NaN, `StochRSI_K` NaN on bars 0-1, `min_bars_for_signals = 30`), reachable under `MarketAnalyzer`, which has no `fillna` and skips bars 3-15. That is the path populating `historical_signals`, so it is evidence for the backfill-interchangeability decision already open in 15-OPEN-DECISIONS"
+  },
+  "DOC-30": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-30",
+   "label": "DOC-30",
+   "why": "Reclassified dead-generator → unsynchronized artifact, in the register and in `BACKTEST_RESULTS.md`'s own header, which repeated the inference. The sharper fact is that `run_pipeline.py` has no commit or upload step: the job renders into an ephemeral container filesystem and the canonical output is the `backtest_reports` row, so the checked-in copy cannot be refreshed by running the pipeline"
+  },
+  "DOC-31": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-31",
+   "label": "DOC-31",
+   "why": "All four references repointed. New invariant `test_no_model_doc_denies_an_issue_the_register_names`: no model doc may deny an issue for a `DOC-nn` whose disposition names one. The two invariants added for DOC-22 both run doc → registry row; neither ran doc → disposition, which is the direction that failed"
+  },
+  "DOC-32": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-32",
+   "label": "DOC-32",
+   "why": "Registered as MODEL-FLOW-001 — `Failed` / `PAUSE`, with the ledger's B5 (E5) verdict (falsified; null and dilutive, IWM +0.053/z2.85 → −0.008/z−0.49). Only then added to `MODEL_BEARING` and the scheduler table, so the gate is satisfied rather than bypassed. The governance point is recorded, not decided: a daily cron has been materializing a falsified feature set whose only reader is a research probe"
+  },
+  "DOC-33": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-33",
+   "label": "DOC-33",
+   "why": "Registered as MODEL-EARN-002 — `Experimental` / `RETEST`, since no experiment tests whether the labels precede the moves they name. Registered separately rather than folded into MODEL-EARN-001, following the MODEL-FLOW-001 precedent from the same review cycle: it answers a different question (characterise the historical setup, not tag an archetype for sizing) and shares no code. The four-implementation count is recorded in its document, because the count is itself the observation"
+  },
+  "DOC-34": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-34",
+   "label": "DOC-34",
+   "why": "The LLM table gains a `Code` column, `STATUS_COLUMN` moves 5 → 6, and the bare `orchestrator.py` pointer is repointed at `lib/agents/orchestrator.py`. Then `insight-pipeline`, `insight-discord-push` and `earnings-reactions-brief` join `MODEL_BEARING` and the scheduler table — in that order, so the gate is satisfied rather than bypassed. Same structural shape as DOC-32: the whitelist rule was right and the registry could not supply what it asked for"
+  },
+  "DOC-35": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-35",
+   "label": "DOC-35",
+   "why": "The inclusion rule is rewritten and published: a scheduled job is model-bearing when it produces a decision, a label or a verdict about a trade, a signal or a position that reaches a person or a served surface — wherever its thresholds live. Imports become one sufficient signal, not the definition. `phase6-playbook-daily` is registered as MODEL-PLAY-001, and every live scheduler now appears in the scheduler table or in a new deliberate-exclusion table with its reason, gated by `test_every_live_scheduler_is_classified`. The count said 63 until 2026-09-22; it is 66, and the three the parsers could not see were the ones that mattered — DOC-48."
+  },
+  "DOC-36": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-36",
+   "label": "DOC-36",
+   "why": "The docstring is rewritten (`gcp/weekend_review.py:1-21`) to describe what the module does, naming DOC-36 and #1137 so the correction is greppable from the code. This row previously read \"RECORDED — and its issue may close without it\", warning that #1139 says `Closes #1137` while fixing three other docstrings. That risk is now closed from this side: the file was already being edited for DOC-62, and a one-sentence correction cost nothing next to the chance of the issue closing over it. #1137 stays open for the docstrings it also covers"
+  },
+  "DOC-37": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-37",
+   "label": "DOC-37",
+   "why": "The parser joins backslash continuations before matching, and the module docstring records the failure in the terms that matter — an assertion that every item resolves says nothing about items the enumeration missed. Both schedulers it had hidden — `signal-quality-report-nightly` and `signal-quality-alarm-daily` — are registered as MODEL-QUAL-001. The durable lesson is that the second parser is what found it: `test_every_live_scheduler_is_classified` enumerates independently and disagreed by two"
+  },
+  "DOC-38": {
+   "disposition": "FILED — #1151",
+   "id": "DOC-38",
+   "label": "DOC-38",
+   "why": "Status moves `Production` / `KEEP` → `Production but needs remediation` / `RESTRUCTURE`: the arithmetic is right and the input is the wrong day's bars. The doc now leads with the measured table and keeps the timezone reasoning below it, marked as the thing that was true and was not the thing to be confident about. The fix is code — resolve a `postmarket` row to the next trading session — and existing rows need re-evaluation with an explicit `--start`/`--end`"
+  },
+  "DOC-39": {
+   "disposition": "FILED — #1152",
+   "id": "DOC-39",
+   "label": "DOC-39",
+   "why": "Status moves `Production` → `Production but needs remediation`. The issue proposes truncating both sides of the join to the minute, which the 230-row measurement shows would clear the alarm's own `QUALITY_CORRELATION_MIN_SAMPLE = 50`. The `abs(rho)` finding rides the same issue. Note what separates the two findings in this document: `abs(rho)` was measured by calling the function with synthetic rows and is sound; the join was described rather than queried, and the function works — nothing reaches it"
+  },
+  "DOC-40": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-40",
+   "label": "DOC-40",
+   "why": "A new section separates eligibility from persistence: the conditions and thresholds govern whether momentum would be eligible, and the flag governs whether anything survives. Not filed — the flag is a deliberate setting, not a defect; what was wrong was the document"
+  },
+  "DOC-41": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-41",
+   "label": "DOC-41",
+   "why": "All 12 cells regenerated from `deploy.sh` by script rather than retyped, with the `news-sentiment` row now naming its three jobs. Gated by `test_exclusion_table_job_cells_match_deploy_sh` and mutation-tested both ways — a single wrong name, and the subtler case of three jobs collapsed to one. This cell also said the gate was \"mirrored in `scripts/audit_scheduler_coverage.py`\". It was not, and that claim is what DOC-61 is: the script used a subset test where the pytest asserts equality, so the two disagreed on any EXTRA name and only the pytest was ever mutation-tested. Corrected 2026-09-22; the mirror is now real and mutation-tested on both surfaces. This is the second consecutive round whose defect was \"the other direction, or the other column, was never checked\" (DOC-37 was the scheduler set; this is the job column). The pattern is worth naming: a parser written for one purpose gets reused as though it validated everything it touched"
+  },
+  "DOC-42": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-42",
+   "label": "DOC-42",
+   "why": "Replaced with the measured rate, quoted from `schema.sql` and the track-D audit rather than re-derived, and the solo-fire distinction the old text erased is now stated: ~98% of fires are mean reversion alone, so the agreement bonus touches roughly 1 fire in 45. Cross-linked both ways with MODEL-MOM-001. The second half of this cell used to read that the same measurement \"explains why `enable_standalone_momentum = False` costs so little — … it is not eligible on 765 of 782 bars\". Retracted 2026-09-22 (DOC-53): the 782 are rows in `signal_alerts`, i.e. emitted alerts, not bars, and the sample excludes the discarded population by construction. DOC-51 declared this \"RETRACTED in both documents\" while it survived nine rows above, in the same table — DOC-22's class, committed inside the commit that retracted it. Not filed: a documentation error, not a code defect"
+  },
+  "DOC-43": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-43",
+   "label": "DOC-43",
+   "why": "Both rows moved into the scheduler table, each with what it actually emits and at what strength — the live writer on the rule's decision clause, the backfill on its label clause, since `backfill_daily_indicators.py:137-138` records that `ftfc_score` / `strat_setup` are \"populated only by the live writer's per-day pass\". Gated by `test_excluded_jobs_importing_model_code_justify_it`, which demotes the old proxy from a failed inclusion rule to an exclusion tripwire: an excluded job importing MODEL-cited code must carry an explicit `Inputs only —` justification. Exactly one row trips it today, `premarket-refresh-daily`, whose justification is a grep a reader can re-run. Mutation-tested both ways, including restoring the original defect. Not filed: the jobs are correctly built and were wrongly classified"
+  },
+  "DOC-44": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-44",
+   "label": "DOC-44",
+   "why": "All five sections rewritten against the suites, with counts taken from `pytest --collect-only` rather than read off. Each carries a blockquote quoting the wrong claim it replaces. Three gates added, because the three modes fail differently: `test_cited_test_files_cover_the_model` (cited file must reference the model), `test_no_test_claims_are_true` (a \"no test\" claim must survive an import search — import, not mention, so MODEL-EWV-001's correct section stays green), and `test_every_model_doc_states_its_test_surface` (a section may not stay silent). This PR's own description claimed the suite cannot check prose against code; that is true of behaviour and false of coverage claims, which are three mechanical questions"
+  },
+  "DOC-45": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-45",
+   "label": "DOC-45",
+   "why": "`_cited_paths` rewritten: the character class is now open, braces and globs are expanded and every file they name checked, `::`/`:Symbol`/comma-range suffixes are stripped, and anything still unresolvable raises rather than returning empty — `test_doc_pointers_are_all_validatable`. The 36 exposed pointers were repointed at the real `tests/<area>/` locations and `gcp/failure_notifier.py`; `scripts/analysis/phase1…phase7` became `phase[1-7].py`. Mutation: renaming `strat_walk_forward_adaptive.py` is now red and was green before. Separately, `KNOWN_BACKLOG` became an exceptions table rather than the list of documents that get checked — it named 7 of 16, leaving 9 product docs with no dead-path gate at all"
+  },
+  "DOC-46": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-46",
+   "label": "DOC-46",
+   "why": "The link gate now covers `docs/models/` as well, and the MODEL-IND-001 link points at its registry row"
+  },
+  "DOC-47": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-47",
+   "label": "DOC-47",
+   "why": "All four corrected and gated by `test_open_decisions_coverage_row_matches_the_registry`, which recomputes coverage from the filesystem and takes the absentee count from DOC-11's own bolded list. The gate's first version was itself vacuous — it searched the whole row, and two of three mutations passed because the correction note legitimately repeats \"fourteen\" and \"MODEL-STRAT-001\". Each claim is now matched as its own clause. Writing a substring check while documenting DOC-45 is the round's own joke at my expense"
+  },
+  "DOC-48": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-48",
+   "label": "DOC-48",
+   "why": "Both parsers now delegate to `doc_inventory.deploy_schedulers()` — a FOURTH hand-rolled parse of `deploy.sh` is how the first three came to disagree, and this file's DOC-37 note already said so. The audit also resolves a scheduler's `containerOverrides` module ahead of the job's default, because `strat-enrich-daily` targets the model-bearing `strat-engine` job while running `strat_enrich_levels`; judging it by the job's name says model-bearing, judging it by the code it runs says inputs-only. All three are now classified — the weekly backfill as model-bearing (same job, same label clause as its daily twin), the other two excluded with reasons. `test_scheduler_enumeration_matches_the_canonical_parser` fails if any of the three enumerations diverges again"
+  },
+  "DOC-49": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-49",
+   "label": "DOC-49",
+   "why": "Rewritten as a named visibility-only exception covering both rows, with what each writes and who reads it, since a live cron whose output reaches nobody is the row an operator most needs to see. Explicitly not presented as a swept set: only these two were checked, and a naive \"writes no served table\" scan over-reports — `calibrate-thresholds-quarterly` reaches the live fire path through `lib/strategies/calibration.py`'s RSI-range resolvers, read at `gcp/signal_monitor.py:1084-1085` — so no count is published. This cell said `exit_config_overrides` until 2026-09-22: the wrong table, in the disposition of the correction it describes. DOC-52"
+  },
+  "DOC-50": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-50",
+   "label": "DOC-50",
+   "why": "The audit now reports `IN BOTH` and exits non-zero. Mutation: adding `weekend-review-weekly` to the exclusion table while it is listed gives rc=1"
+  },
+  "DOC-51": {
+   "disposition": "RETRACTED in both documents",
+   "id": "DOC-51",
+   "label": "DOC-51",
+   "why": "Each now states what the 782 rows do establish (a low overlap rate among emitted alerts), why they cannot establish the other thing, and names the measurement that would — `momentum_evaluated_count` and `momentum_fired_count`, already recorded at `gcp/signal_monitor.py:1098` and `:1102-1103` and logged at `:2493` — marked not checked, per §3.11's rule that this is a complete answer"
+  },
+  "DOC-52": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-52",
+   "label": "DOC-52",
+   "why": "Both instances corrected to name `lib/strategies/calibration.py` and its RSI-range resolvers, each carrying a note saying what it used to say. Gated is the harder half: see the note on `test_cited_readers_actually_read_the_table` below"
+  },
+  "DOC-53": {
+   "disposition": "RETRACTED HERE",
+   "id": "DOC-53",
+   "label": "DOC-53",
+   "why": "The second half of DOC-42's disposition is withdrawn in place, with what it used to claim quoted. The first half — the overlap rate among emitted alerts — is correct and stays, because that is precisely what DOC-51 concedes the sample does establish. A repo-wide sweep confirms this was the only surviving instance"
+  },
+  "DOC-54": {
+   "disposition": "FIXED HERE — and deliberately NOT gated",
+   "id": "DOC-54",
+   "label": "DOC-54",
+   "why": "One word deleted. The paragraph needed only that the two systems are unrelated, and \"an entirely separate, never-evaluated production threshold calibrator\" lands its actual conclusion — that MODEL-CALIB-001 carries no experiment at all — more strongly than the wrong status did. A gate was prototyped and rejected. Comparing a status word in prose against the model's row requires attributing the word to a subject, and the block carrying this very defect names FOUR model ids, so the prototype skipped it: green on the defect it existed to catch. Shipping it would have added a vacuous gate in the round that fixes three of them (DOC-45, DOC-48, DOC-50). Recorded rather than dropped quietly, because \"no gate\" and \"a gate that passes\" look identical six months from now"
+  },
+  "DOC-55": {
+   "disposition": "FIXED HERE, boundary claim FILED",
+   "id": "DOC-55",
+   "label": "DOC-55",
+   "why": "All eleven range statements corrected, and `EXPERIMENT_REGISTRY` now publishes the rule that book membership is read off position rather than id number. `test_book_membership_matches_heading_position` checks coverage in both directions and asserts the rule is present. It deliberately does not check Book I set-equality: Book I is non-contiguous, and three successive versions of that check were wrong in three different granularities — per line it missed a wrapped bullet, per block it merged two adjacent ones. A gate that cannot be stated precisely is not a weaker gate, it is a misleading one"
+  },
+  "DOC-56": {
+   "disposition": "FIXED HERE — behaviour change, and it introduced DOC-62",
+   "id": "DOC-56",
+   "label": "DOC-56",
+   "why": "Grouped by label from the unrounded score, one rung per row with its observed span, `NaN` counted and surfaced rather than labelled. `tests/gcp/test_weekend_review_score_labels.py`, now 23 cases, mutation-tested eight ways. Weekly reports before 2026-09-22 used the truncated labels, so their per-rung win rates are not comparable with later ones. Giving each rung its own `(s > 0).mean()` added a fifth fabricated zero to a module that already had four — see DOC-62. The fix removed one §3.7 violation and added another, and I did not re-read the document describing the module I had just changed, which is how DOC-58 and DOC-59 happened in the same commit"
+  },
+  "DOC-57": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-57",
+   "label": "DOC-57",
+   "why": "The 2026-07-06 session keeps `E-26`; the magnitude sweep is renumbered E-35, following the `E-24` → `E-32` precedent, with a banner on the section and an entry in the disambiguation note. Nine citations were disambiguated individually by date and subject before being edited — the ambiguity was the defect, so a blanket replace would have been the same mistake. The missing `Engine/area:` field is added, which is what the override had been covering for. `test_experiment_ids_are_unique_in_the_ledger` rejects an id that holds both a section and a session claim"
+  },
+  "DOC-58": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-58",
+   "label": "DOC-58",
+   "why": "The Tests section is rewritten against `pytest --collect-only` and narrowed rather than deleted: it now names what the 23 cases cover and what is still untested — overall win rate / total P&L / average return executed but never asserted, `by_ticker` and `by_exit_reason` untouched — which is what `RESTRUCTURE` rests on. Not gated. DOC-44's gate keys on the phrase \"no test\" and this sentence never contained it; a gate matching any prose that could be a coverage claim is the DOC-54 prototype again. What is gated is the adjacent, mechanical half: DOC-59's pointer check"
+  },
+  "DOC-59": {
+   "disposition": "FIXED HERE — and gated",
+   "id": "DOC-59",
+   "label": "DOC-59",
+   "why": "All eight stale references in MODEL-WEEK-001 repointed, plus MODEL-EARN-002's `:152` → `:143`, which no review filed. `test_symbol_anchored_line_pointers_resolve` resolves every `` `sym` (`:N`) `` in `docs/models/` against the nearest cited source that defines that symbol and fails if the symbol is not within 3 lines. Three prototypes, two of them wrong, and the count would not have told me which: any file the doc names reported 2 stale and was green on the real drift, answered by the test file the doc cites; header files only reported 4 and false-positived on a correct pointer in a file the header does not name; nearest-preceding + mentions was still green on the drift, for the same reason as the first. Reading which file answered each pointer is what separated them. Mutation-tested six ways; scope stated in the docstring — 30 of 33 pointers, sensitivity exactly the 3-line window, and the 93 bare `` `:A-B` `` ranges deliberately uncovered because resolving them by proximity produces false positives rather than findings"
+  },
+  "DOC-60": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-60",
+   "label": "DOC-60",
+   "why": "Token regex extended to `path.py:Symbol`, comparison moved from unsuffixed basename-as-substring to the full path, and `found >= 8` replaced with a per-document assertion — a corpus count cannot notice a single skipped token. The disagreement it was hiding is fixed: MODEL-MR-001's row now names `lib/config.py:SignalConfig` with its definition, import and use sites. Mutation-tested four ways, one of which passed and was a faulty mutation rather than a gap: the row names `lib/signals.py` three times and I replaced one. Reading why it passed is the only thing that separates the two"
+  },
+  "DOC-61": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-61",
+   "label": "DOC-61",
+   "why": "`excluded_job_cells()` returns rows rather than a flattened map, and the audit compares `real == claimed` per row, as the pytest already did. Both surfaces now go red on all three mutations: an extra invented name, three jobs collapsed to one, and one of a three-job row's names dropped. DOC-41's disposition, which claimed this mirror already existed and was mutation-tested both ways, is corrected in place"
+  },
+  "DOC-62": {
+   "disposition": "FIXED HERE — behaviour change",
+   "id": "DOC-62",
+   "label": "DOC-62",
+   "why": "All five sites carry `NaN` end to end; the embed renders unknown as an em-dash and takes the grey \"no data\" colour rather than the red \"losing week\" branch that `NaN > 0` selected. A measured 0% still reads `0.0%` — that distinction is the whole change and has its own test. The missing-column case still raises, now as a `ValueError` naming the column instead of pandas' `IndexingError`. Eight mutations, eight reds. DOC-36 is fixed in the same file while it was open"
+  },
+  "DOC-63": {
+   "disposition": "FIXED HERE — and gated",
+   "id": "DOC-63",
+   "label": "DOC-63",
+   "why": "16 closed rows removed, 13 missing ones added, every heading, slug, count cell, blocker list and severity row recomputed from the rows. Five layers now agree at 128 = 126 open in stocks + 2 in solyra, verified against `list_issues(state=OPEN)` rather than against each other — reconciling them to each other would have made them agree on a wrong number, which is worse than visibly disagreeing. `test_issue_counts_agree_across_layers` and `test_severity_table_totals_the_rows_it_summarises`, six mutations including the `2385c240` shape (change the count, leave the slug). Three conventions that had been applied inconsistently are now written down in `12`: severity ordering, how blocker lists are derived, and that a closed issue does not keep a row"
+  },
+  "DOC-64": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-64",
+   "label": "DOC-64",
+   "why": "The docstring now says the embed carries three of the five groupings and names the two that reach only stdout, with what it used to say. Not gated: checking a docstring's prose against `format_discord_message`'s field names needs the same subject attribution DOC-54's rejected prototype needed. What is gated is the MODEL-WEEK-001 side, where the same fact is stated against a line range the pointer gate checks"
+  },
+  "DOC-65": {
+   "disposition": "FIXED HERE — and gated, reversing a call I made one round ago",
+   "id": "DOC-65",
+   "label": "DOC-65",
+   "why": "The claim is now three items, each checked against the assertions: `avg_return` (asserted nowhere), `by_exit_reason` (no test), the 7-day window boundary. `test_untested_claims_name_nothing_the_suite_asserts` parses the cited suite and fails if an \"untested\" sentence names a key it exercises. In the DOC-58 reply I argued this gate would repeat DOC-54's vacuous prototype. That was wrong. DOC-54 needed subject attribution across four model ids in one block; this needs none — the subject is the module, the claim names backticked identifiers, and the suite is cited by path in the same section. Four mutations; the one that passes is the load-bearing result: restricting extraction to subscripts lexically inside `assert` misses `by_ticker`, because the test loops `for row in review[\"by_ticker\"]` and asserts on `row[...]` — that narrower gate would have been green on this very finding"
+  },
+  "DOC-66": {
+   "disposition": "FIXED HERE — a gate PROTOTYPED and REJECTED",
+   "id": "DOC-66",
+   "label": "DOC-66",
+   "why": "Corrected to 66, with the declared-vs-live distinction written down so the next sweep does not \"fix\" the correct 65s. A count gate was built and measured across `docs/`: it produced four flags, all four false positives (a \"1 scheduler block\", a PR-rename row, and two correct live-fleet counts) and missed this defect entirely, because MODEL-QUAL-001 says \"the real count is 63\" and never the string \"63 schedulers\". Green on the defect it existed to catch and red on four correct statements — DOC-54's shape exactly. Recorded rather than dropped quietly, because \"no gate\" and \"a gate that passes\" look identical six months from now."
+  },
+  "DOC-67": {
+   "disposition": "FIXED HERE",
+   "id": "DOC-67",
+   "label": "DOC-67",
+   "why": "The cell says what `composite_score` is (persisted, displayed, ordered by nothing) and the rationale is rewritten to keep the two values apart — the asymmetry that `AGREEMENT_BONUS` is consumed and the composite is not is now the stated reason for `RESTRUCTURE`, rather than a claim about ranking quality. Both withdrawn phrasings are quoted in correction notes, so `test_retracted_claims_stay_retracted`'s contract holds"
+  }
+ },
+ "excluded_schedulers": [
+  {
+   "job": "`strat-engine` (overridden to `gcp.research.strat_engine.strat_enrich_levels`)",
+   "scheduler": "`strat-enrich-daily`",
+   "why_it_is_not_model_bearing": "Inputs only — backfills `strat_features_levels{tf}` with ORB windows, historical levels and order blocks. It imports `lib.indicators` (cited by MODEL-IND-001), which is why the tripwire flags it, and the justification is checkable: the module contains no classifier call, no threshold and no label — `grep -n \"StratClassifier|strat_setup|ftfc_score\" gcp/research/strat_engine/strat_enrich_levels.py` returns nothing. Every reader of `strat_features_levels_*` is under `gcp/research/strat_engine/` or is tooling (`audit_data_freshness`, `doc_inventory`); no router, no Discord, no served surface. Note this scheduler overrides the job's entrypoint: the `strat-engine` job defaults to `strat_data_builder`, so classifying it on the job's own module would judge the wrong code"
+  },
+  {
+   "job": "`failure-notifier` (Cloud Run service, `${service_url}/reconcile`)",
+   "scheduler": "`reconcile-failure-notifier-hourly`",
+   "why_it_is_not_model_bearing": "Ops only — hourly reconciliation of the workflow-failure notifier. It decides nothing about a trade, a signal or a position, and runs no entrypoint of its own. Same shape as the `discord-warm-` service pings already excluded here"
+  },
+  {
+   "job": "`fetch-premarket-refresh`",
+   "scheduler": "`premarket-refresh-daily`",
+   "why_it_is_not_model_bearing": "Inputs only — refreshes the current session's `market_data_daily` row before the brief reads it. It imports `lib.indicators` (cited by MODEL-IND-001), which is why the tripwire below flags it, and the justification is checkable: `grep -n \"StratClassifier|strat_setup|ftfc_score\" gcp/fetchers/fetch_premarket_refresh.py` returns nothing. It writes indicator columns and no classification, label or threshold. The two jobs that did emit one — `fetch-market-data-daily` and `backfill-indicators-daily` — were excluded from this table on the same wording until 2026-09-22 (DOC-43)"
+  },
+  {
+   "job": "`fetch-alphavantage-intraday`",
+   "scheduler": "`av-intraday-nightly` · `av-intraday-monthly`",
+   "why_it_is_not_model_bearing": "AlphaVantage 1-min bars → `market_data_intraday`. Pure ingest"
+  },
+  {
+   "job": "`fetch-av-options-backfill`",
+   "scheduler": "`av-options-daily` · `av-options-monthly`",
+   "why_it_is_not_model_bearing": "Historical options chains → `etf_options_snapshots`. Pure ingest"
+  },
+  {
+   "job": "`fetch-av-options-realtime`",
+   "scheduler": "`av-options-realtime`",
+   "why_it_is_not_model_bearing": "Intraday chain snapshot → `etf_options_snapshots`. Pure ingest"
+  },
+  {
+   "job": "`fetch-earnings-calendar`",
+   "scheduler": "`daily-earnings-refresh-calendar` · `weekly-earnings-refresh-calendar`",
+   "why_it_is_not_model_bearing": "Earnings dates → `earnings_calendar`. Ingest. (The verdict columns on the same table come from `evaluate-ew-strikes-daily`, which is listed above)"
+  },
+  {
+   "job": "`fetch-earnings-history`",
+   "scheduler": "`daily-earnings-refresh-history` · `weekly-earnings-refresh-history`",
+   "why_it_is_not_model_bearing": "Reported EPS / surprise → `earnings_history`. Ingest"
+  },
+  {
+   "job": "`compute-earnings-reactions`",
+   "scheduler": "`daily-earnings-refresh-reactions` · `weekly-earnings-refresh-reactions`",
+   "why_it_is_not_model_bearing": "Derives post-earnings move statistics into `earnings_reactions`. Descriptive statistics over history, not a call on any position; MODEL-EARN-001 is the model that reads them"
+  },
+  {
+   "job": "`fetch-economic-events`",
+   "scheduler": "`economic-events-daily`",
+   "why_it_is_not_model_bearing": "Calendar → `economic_events`. Ingest"
+  },
+  {
+   "job": "`fetch-fred-rates`",
+   "scheduler": "`fred-rates-daily`",
+   "why_it_is_not_model_bearing": "FRED series → `daily_rates`. Ingest. Its only `lib` import is `lib.logging_config`"
+  },
+  {
+   "job": "`fetch-insider-transactions`",
+   "scheduler": "`insider-transactions-daily`",
+   "why_it_is_not_model_bearing": "Form 4 filings → `insider_transactions`. Ingest"
+  },
+  {
+   "job": "`fetch-sec-filings`",
+   "scheduler": "`sec-filings-intraday`",
+   "why_it_is_not_model_bearing": "EDGAR filings → `sec_filings`. Ingest"
+  },
+  {
+   "job": "`fetch-news-sentiment` · `fetch-news-sentiment-earnings` · `fetch-news-sentiment-topics`",
+   "scheduler": "`news-sentiment-hourly` · `news-sentiment-earnings-0600` · `news-topics-hourly`",
+   "why_it_is_not_model_bearing": "Vendor-scored sentiment → `news_sentiment`. The score is the vendor's; this job stores it"
+  },
+  {
+   "job": "`fetch-top-movers`",
+   "scheduler": "`top-movers-daily` · `top-movers-intraday-hourly` · `top-movers-intraday-close`",
+   "why_it_is_not_model_bearing": "Ranks by realized % change → `top_movers_daily` / `top_movers_intraday`. A sort of what already happened, with no threshold and no call"
+  },
+  {
+   "job": "`freshness-watchdog`",
+   "scheduler": "`freshness-watchdog-hourly` · `freshness-watchdog-nightly`",
+   "why_it_is_not_model_bearing": "Alarms when a table stops being written. Reaches a person, decides nothing about a position — the clause that keeps ops alarms out"
+  },
+  {
+   "job": "`audit-infra-drift`",
+   "scheduler": "`audit-infra-drift-daily`",
+   "why_it_is_not_model_bearing": "Same shape: deployed GCP state vs `gcp/deploy.sh`, Discord on drift. Infrastructure, not markets"
+  },
+  {
+   "job": "`etf-options-retention`",
+   "scheduler": "`options-retention-daily`",
+   "why_it_is_not_model_bearing": "Prunes aged `etf_options_snapshots` rows. Storage housekeeping"
+  },
+  {
+   "job": "`cloud-sql-weekly-export`",
+   "scheduler": "`cloud-sql-weekly-export-sunday`",
+   "why_it_is_not_model_bearing": "`pg_dump` → GCS. The third backup layer; see CLAUDE.md § Backup and disaster recovery"
+  },
+  {
+   "job": "`discord-interactions`",
+   "scheduler": "`discord-warm-open` · `discord-warm-close`",
+   "why_it_is_not_model_bearing": "Pings a Cloud Run service to beat the cold start inside Discord's 3-second interaction ack. Not a job at all"
+  }
+ ],
+ "experiment_ids": [
+  "E-01",
+  "E-02",
+  "E-03",
+  "E-04",
+  "E-05",
+  "E-06",
+  "E-07",
+  "E-08",
+  "E-09",
+  "E-10",
+  "E-11",
+  "E-12",
+  "E-13",
+  "E-14",
+  "E-15",
+  "E-16",
+  "E-17",
+  "E-18",
+  "E-19",
+  "E-20",
+  "E-21",
+  "E-22",
+  "E-23",
+  "E-24",
+  "E-25",
+  "E-26",
+  "E-27",
+  "E-28",
+  "E-29",
+  "E-30",
+  "E-31",
+  "E-32",
+  "E-33",
+  "E-34",
+  "E-35"
+ ],
+ "experiment_traceability": {
+  "MODEL-AGREE-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-AGREE-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-BREAK-001": {
+   "deep_doc": "MODEL_RETHINK_PLANS §RESULTS · EXPERIMENT_REGISTRY §E-18",
+   "experiments": "E-18 ★, E-32",
+   "issue_numbers": [],
+   "model": "MODEL-BREAK-001",
+   "primary_code": "`gcp/research/strat_engine/breakout_meta_walk_forward.py`",
+   "primary_code_paths": [
+    "gcp/research/strat_engine/breakout_meta_walk_forward.py"
+   ],
+   "recorded_verdict": "Gross 24/24. Net fragile — 2026-06-09 reconfirm: only IWM 5m clean net-positive (+0.110 R, 8/8); SPY/QQQ NET_FAIL"
+  },
+  "MODEL-BRIEF-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-BRIEF-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-CALIB-001": {
+   "deep_doc": "none — no experiment in the ledger evaluates this system",
+   "experiments": "— (no `E-` id)",
+   "issue_numbers": [],
+   "model": "MODEL-CALIB-001",
+   "primary_code": "`scripts/calibrate_thresholds.py`",
+   "primary_code_paths": [
+    "scripts/calibrate_thresholds.py"
+   ],
+   "recorded_verdict": "Unevaluated. A rolling 60-day percentile calibrator, scheduled quarterly, writing thresholds MODEL-MOM-001 and MODEL-MR-001 read. Whether a 60-day percentile is the right operating threshold has never been tested"
+  },
+  "MODEL-DIR-001": {
+   "deep_doc": "DIRECTION_RESEARCH_RESULTS · DIRECTION_FEATURES_R&D · DIRECTION_LITERATURE_SCAN",
+   "experiments": "E-07, E-08, E-17, E-34",
+   "issue_numbers": [],
+   "model": "MODEL-DIR-001",
+   "primary_code": "`gcp/research/strat_engine/strat_dir_walk_forward{,extended}.py`, `strat_dir_probes.py`, `dir_regime_walk_forward.py`, `gcp/research/direction_program/`",
+   "primary_code_paths": [
+    "gcp/research/strat_engine/strat_dir_walk_forward{,_extended}.py",
+    "strat_dir_probes.py",
+    "dir_regime_walk_forward.py",
+    "gcp/research/direction_program/"
+   ],
+   "recorded_verdict": "No generalizable directional edge; baseline 0/72 folds; one unresolved IWM-only flicker"
+  },
+  "MODEL-EARN-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-EARN-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-EARN-002": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-EARN-002",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-EWV-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-EWV-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-EXIT-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-EXIT-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-FEAT-X": {
+   "deep_doc": "DIRECTION_FEATURES_R&D",
+   "experiments": "E-08 (C-news / C-xasset / C-vol / C-options) — committed; E-34 (Phase 2 feature-family ablation, five families in isolation and full stack via `--features`); E-26, E-31, E-33 — scratch harness, artifacts unavailable",
+   "issue_numbers": [],
+   "model": "MODEL-FEAT-X",
+   "primary_code": "E-08: `lib/features/experimental/`. E-34's families: `gcp/research/direction_program/phase2_features.py`. E-26/E-31/E-33: no code committed — the ledger records their result JSONs as retained by the author only, so nothing here reproduces them",
+   "primary_code_paths": [
+    "lib/features/experimental/",
+    "gcp/research/direction_program/phase2_features.py"
+   ],
+   "recorded_verdict": "FAIL — three orthogonal families, 0/8 folds each; vol-regime and external-data probes NEUTRAL"
+  },
+  "MODEL-FLOW-001": {
+   "deep_doc": "EXPERIMENT_REGISTRY §B5",
+   "experiments": "B5 (E5) — Book II thematic ledger, not an `E-nn` id",
+   "issue_numbers": [],
+   "model": "MODEL-FLOW-001",
+   "primary_code": "`lib/features/flow_direction.py`, `gcp/build_options_daily_greeks.py`",
+   "primary_code_paths": [
+    "lib/features/flow_direction.py",
+    "gcp/build_options_daily_greeks.py"
+   ],
+   "recorded_verdict": "failed (null + dilutive) — IWM +0.053/z2.85 → −0.008/z−0.49; fires 726→881 while precision falls"
+  },
+  "MODEL-FTFC-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-FTFC-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-GAMMA-001": {
+   "deep_doc": "docs/research/2026-05-23/P2_gamma_outcomes.md · gamma_levels.md · GAMMA_BALANCE_AUDIT",
+   "experiments": "E-22 (P2), E-24",
+   "issue_numbers": [],
+   "model": "MODEL-GAMMA-001",
+   "primary_code": "`gcp/research/p2_build_gamma_levels.py`, `p2_outcomes_grid.py`, `lib/gamma.py`, `lib/features/intraday_gex.py`",
+   "primary_code_paths": [
+    "gcp/research/p2_build_gamma_levels.py",
+    "p2_outcomes_grid.py",
+    "lib/gamma.py",
+    "lib/features/intraday_gex.py"
+   ],
+   "recorded_verdict": "VOL signal confirmed, direction null; E-24 fixed a `gamma_regime` sign inversion at source"
+  },
+  "MODEL-IND-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-IND-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-LEVEL-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-LEVEL-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-LLM-ANALYST": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-LLM-ANALYST",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-LLM-DEBATE": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-LLM-DEBATE",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-LLM-JUDGE": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-LLM-JUDGE",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-LLM-PM": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-LLM-PM",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-LLM-RISK": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-LLM-RISK",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-LLM-TRADER": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-LLM-TRADER",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-MAG-001": {
+   "deep_doc": "MAGNITUDE_ENGINE_RESULTS · MAGNITUDE_DIRECTIONAL_SESSION_HANDOFF",
+   "experiments": "E-09…E-15, E-19, E-20 (probability calibration), E-34 (SIZE arm), E-35 (class-weight sweep + the 2026-09-14 gate-4 decision-rule amendment — renumbered 2026-09-22 out of a duplicated id, DOC-57)",
+   "issue_numbers": [],
+   "model": "MODEL-MAG-001",
+   "primary_code": "`gcp/research/magnitude_engine/` (`mag_walk_forward.py`, `mag_pred_train.py`, `mag_leakage_audit.py`, `mag_inference.py`)",
+   "primary_code_paths": [
+    "gcp/research/magnitude_engine/",
+    "mag_walk_forward.py",
+    "mag_pred_train.py",
+    "mag_leakage_audit.py",
+    "mag_inference.py"
+   ],
+   "recorded_verdict": "PROJECT VERDICT FAIL — closed by gate 7, 2026-05-29. Size is learnable; nothing beats option IV"
+  },
+  "MODEL-MOM-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-MOM-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-MR-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-MR-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-NEXTBAR-001": {
+   "deep_doc": "EXPERIMENT_REGISTRY §E-25 · MODEL_REGISTRY §CAT-A8",
+   "experiments": "E-25",
+   "issue_numbers": [],
+   "model": "MODEL-NEXTBAR-001",
+   "primary_code": "`scripts/strat_forward_walk{,oos}.py`, `strat_oos{clv_ablation,multi_tf}.py`, `strat_clv_demech.py`, `strat_struct_backtest.py`, `strat_next_candle_analysis.py`",
+   "primary_code_paths": [
+    "scripts/strat_forward_walk{,_oos}.py",
+    "strat_oos_{clv_ablation,multi_tf}.py",
+    "strat_clv_demech.py",
+    "strat_struct_backtest.py",
+    "strat_next_candle_analysis.py"
+   ],
+   "recorded_verdict": "Held-out OOS edge confirmed; CLV ablation shows it is largely gap-mechanical (CLV_LAG1 ≈ 0)"
+  },
+  "MODEL-OPT-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-OPT-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-PLAY-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-PLAY-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-QUAL-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-QUAL-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-RANK-001": {
+   "deep_doc": "08",
+   "experiments": "— (no `E-` id)",
+   "issue_numbers": [],
+   "model": "MODEL-RANK-001",
+   "primary_code": "`lib/agents/ranker/`",
+   "primary_code_paths": [
+    "lib/agents/ranker/"
+   ],
+   "recorded_verdict": "Experimental; no promotion evidence"
+  },
+  "MODEL-STRAT-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-STRAT-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-STYLE-001": {
+   "deep_doc": "#707",
+   "experiments": "— (no `E-` id)",
+   "issue_numbers": [],
+   "model": "MODEL-STYLE-001",
+   "primary_code": "`lib/style_miner.py`, `platform/api/routers/backtest.py`",
+   "primary_code_paths": [
+    "lib/style_miner.py",
+    "platform/api/routers/backtest.py"
+   ],
+   "recorded_verdict": "Walk-forward validated into the playbook seam"
+  },
+  "MODEL-SUM-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-SUM-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-SWEEP-001": {
+   "deep_doc": "none — no experiment in the ledger evaluates this system",
+   "experiments": "— (no `E-` id)",
+   "issue_numbers": [
+    813,
+    817,
+    886
+   ],
+   "model": "MODEL-SWEEP-001",
+   "primary_code": "`lib/walk_forward.py`, `scripts/run_param_sweep.py`, `scripts/calibrate_iwm_strat.py`, `scripts/run_walk_forward.py`",
+   "primary_code_paths": [
+    "lib/walk_forward.py",
+    "scripts/run_param_sweep.py",
+    "scripts/calibrate_iwm_strat.py",
+    "scripts/run_walk_forward.py"
+   ],
+   "recorded_verdict": "Invalidated — #813 “out-of-sample” calibration is in-sample and auto-writes production · #817 exhaustive in-sample mining · #886 survivorship bias"
+  },
+  "MODEL-TYPE-001": {
+   "deep_doc": "MODEL_REGISTRY §A1 · STRAT_ENGINE_ARCHITECTURE · STRAT_ENGINE_OPERATIONS",
+   "experiments": "E-01, E-02, E-03, E-04, E-05, E-06, E-19 (STRAT half), E-20 (probability calibration), E-23 (execution test)",
+   "issue_numbers": [],
+   "model": "MODEL-TYPE-001",
+   "primary_code": "`gcp/research/strat_engine/strat_walk_forward{,adaptive}.py`, `strat_pred_train.py`, `strat_pred_per_class.py`",
+   "primary_code_paths": [
+    "gcp/research/strat_engine/strat_walk_forward{,_adaptive}.py",
+    "strat_pred_train.py",
+    "strat_pred_per_class.py"
+   ],
+   "recorded_verdict": "Two verdicts, both true. Prediction: VALIDATED 8/8 folds, ECE ≤ 0.05 (5m/15m), 30m PARTIAL, leakage audit CLEAN (E-19). Execution: FAIL — E-23 tested this model's 0.55-confidence 2U/2D calls and got 0/8 positive-expectancy folds in every cell, net expectancy negative after friction (EXEC_BACKTEST_RESULTS). Ops doc says \"ON THE SHELF\""
+  },
+  "MODEL-WATCH-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-WATCH-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  },
+  "MODEL-WEEK-001": {
+   "deep_doc": null,
+   "experiments": null,
+   "model": "MODEL-WEEK-001",
+   "primary_code": null,
+   "recorded_verdict": null,
+   "unsourced": true
+  }
+ },
+ "findings": [
+  {
+   "claim_actual": "Cited #825 and #900 as open blockers → both closed 2026-09-14",
+   "doc": "`07` (this file)",
+   "id": "DOC-01",
+   "kind": "closed-issue",
+   "label": "DOC-01",
+   "models": "MODEL-OPT-001, MODEL-BRIEF-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "MODEL-OPT-001 listed `platform/src/lib/greeksCalculator.ts` → file deleted; BS math is `lib/options_greeks.py`. The repo's own BRIEFING_DECK already recorded the deletion",
+   "doc": "`07` (this file)",
+   "id": "DOC-02",
+   "kind": "dead-path",
+   "label": "DOC-02",
+   "models": "MODEL-OPT-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "\"six model-bearing jobs are scheduled\", `p2-build-gamma-levels` listed unscheduled → `gcp/deploy.sh:4410` declares `gamma-levels-daily`; it is seven",
+   "doc": "`07` (this file)",
+   "id": "DOC-03",
+   "kind": "contradiction",
+   "label": "DOC-03",
+   "models": "MODEL-GAMMA-001",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "E-20 mapped to MODEL-CALIB-001 → E-20 is LightGBM probability calibration; MODEL-CALIB-001 is the per-ticker threshold writer. Unrelated systems sharing a word",
+   "doc": "`07` (this file)",
+   "id": "DOC-04",
+   "kind": "contradiction",
+   "label": "DOC-04",
+   "models": "MODEL-CALIB-001, MODEL-TYPE-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "E-22 appeared as both owned and ownerless → it is an umbrella; only its P2 arm is owned",
+   "doc": "`07` (this file)",
+   "id": "DOC-05",
+   "kind": "contradiction",
+   "label": "DOC-05",
+   "models": "MODEL-GAMMA-001",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "Opens \"PROJECT VERDICT: FAIL (closed 2026-05-29)\" → the engine has source commits on 2026-09-11 and 2026-09-14, runs on two daily schedulers, and #1025 reported it argmax-collapsed and serving nothing since 2026-09-03 (resolved by #1117, merged `164b262`; 5m now serves a promoted non-constant model). The doc reads as closed; the system is not",
+   "doc": "MAGNITUDE_ENGINE_RESULTS",
+   "id": "DOC-06",
+   "kind": "contradiction",
+   "label": "DOC-06",
+   "models": "MODEL-MAG-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "\"Deploy is blocked until Track B and Track C both report verdicts\" → both reported FAIL. The gate condition is met and the doc never moved",
+   "doc": "STRUCTURE_BRIEF_DESIGN",
+   "id": "DOC-07",
+   "kind": "stamp",
+   "label": "DOC-07",
+   "models": "MODEL-TYPE-001",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "Self-labelled \"Auto-generated by `generate_backtest_report.py` — 2026-04-12\" while the content is a frozen April snapshot. This row first called the generator dead, on the evidence that `grep -rn generate_backtest_report .github/` is empty. The grep is correct and the inference was wrong: the `report` job was migrated to the on-demand `backtest-pipeline` Cloud Run Job (`gcp/deploy.sh:3013-3037`), which runs `scripts.run_pipeline`, invokes the generator as a subprocess (`scripts/run_pipeline.py:233-243`) and writes `backtest_reports` — executions on 2026-05-24, 2026-08-26 and 2026-08-27. `.github/workflows/backtest-pipeline.yml:3` says so itself. I searched the one directory the workload had been moved out of, under a convention this repo documents",
+   "doc": "`BACKTEST_RESULTS.md` (repo root)",
+   "id": "DOC-08",
+   "kind": "unsynchronized artifact",
+   "label": "DOC-08",
+   "models": "MODEL-CALIB-001",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "`ticker_calibration` block says \"auto-refreshed monthly\" → the monthly workflow does call `scripts/refresh_calibration_table.py`, but as `python -m … || echo \"::warning::\"`, so a failure is swallowed and the block silently ages. Data stamped 2026-07-01",
+   "doc": "INVESTMENT_MODELS_SUMMARY",
+   "id": "DOC-09",
+   "kind": "dead-generator",
+   "label": "DOC-09 (#1118)",
+   "models": "MODEL-CALIB-001",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "No doc describes them beyond scattered plan/audit mentions: MODEL-MOM-001, MODEL-MR-001, MODEL-AGREE-001, MODEL-BRIEF-001, MODEL-EARN-001, MODEL-STYLE-001, MODEL-CALIB-001 — measured by searching `docs/` for each one's primary module",
+   "doc": "Seven models",
+   "id": "DOC-10",
+   "kind": "omission",
+   "label": "DOC-10",
+   "models": "(seven, listed)",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "Lists 15 of the 29 models in the two registry tables. Absent: MODEL-BREAK-001, MODEL-DIR-001, MODEL-EARN-002, MODEL-EWV-001, MODEL-FEAT-X, MODEL-FLOW-001, MODEL-MAG-001, MODEL-NEXTBAR-001, MODEL-PLAY-001, MODEL-QUAL-001, MODEL-RANK-001, MODEL-TYPE-001, MODEL-WATCH-001, MODEL-WEEK-001. Recomputed 2026-09-18 after the scheduler sweep added five rows; the README was not updated, so the absentee count went 9 → 14 while the fraction's numerator stayed put. An earlier revision of this row said \"every learned model is absent\" and listed MODEL-SUM-001 — both wrong: MODEL-CALIB-001 and MODEL-STYLE-001 are learned and are present at README:138, MODEL-RANK-001 is heuristic not learned, and the actually-absent MODEL-FEAT-X was missing from the list. Recomputed from the tables rather than restated",
+   "doc": "README master matrix",
+   "id": "DOC-11",
+   "kind": "omission",
+   "label": "DOC-11",
+   "models": "(fourteen, listed)",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "\"Cloud Run jobs (67 declared / 76 live)… Scheduler (65 live)\" → `doc_inventory.py` parses 68 declared jobs and 66 declared schedulers",
+   "doc": "05-INFRASTRUCTURE",
+   "id": "DOC-12",
+   "kind": "stamp",
+   "label": "DOC-12",
+   "models": "—",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "A first pass counted 57 dead repo-rooted paths across the product plan. Re-measured: 27 distinct, and 22 of those are not debt — they are `platform/src/` and frontend `.spec.ts` paths the #957 split moved to `TeneikaAskew/solyra`, cited deliberately and explained by a header note in 11. Genuinely dead: 2 (`scripts/backfill_signals.py`, `scripts/validate_track2_live.py`). Relocatable and now fixed: 2 (`gcp/freshness_watchdog.py` → `scripts/audit_data_freshness.py`, which is what `gcp/deploy.sh:2471` actually runs; `lib/data_loader` → `lib/data_loader.py`)",
+   "doc": "`docs/product/.md`",
+   "id": "DOC-13",
+   "kind": "dead-path",
+   "label": "DOC-13",
+   "models": "—",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "Module docstrings describe behaviour the code no longer has. momentum's lists `StochRSI < 80` (dropped in Phase 0.7.1) and omits `rvol_above_recent` / `atr_expansion` / `rsi_thrust` (added since); mean_reversion's lists an EMA-proximity condition that does not exist. momentum's function docstring also says `min_conditions=3` while `config.py:108` sets `MIN_CONDITIONS_MOMENTUM = 5`, and says `consecutive_up` was \"relaxed ... to 3-of-5\" (`:57`) while the body reads the 3-of-3 column (`:78`) and `config.py:101-103` records the reversion. `lib/movement_statement.py:1-7` still says \"PHASE 2 (feature-flagged, NOT user-facing) ... Nothing here renders to users\" while `platform/deploy.sh:177` sets the flag `true` and `dashboard.py:530-545` serves the card",
+   "doc": "`lib/strategies/momentum.py`, `lib/strategies/mean_reversion.py`",
+   "id": "DOC-18",
+   "kind": "contradiction",
+   "label": "DOC-18",
+   "models": "MODEL-MOM-001, MODEL-MR-001, MODEL-BRIEF-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "Six of the seven new reference docs misdescribed production, because they were assembled from module docstrings rather than the scoring functions: MOM and MR described a conjunction where the code scores a gate, EARN called recorded archetype thresholds `UNKNOWN`, BRIEF said a flag was `false` that is `true`, AGREE claimed a ranking that does not exist, STYLE listed 5 of 8 conditions",
+   "doc": "`docs/models/` (this PR's own first revision)",
+   "id": "DOC-19",
+   "kind": "contradiction",
+   "label": "DOC-19",
+   "models": "six models",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "MODEL-TYPE-001's row showed only its prediction verdict (VALIDATED 8/8) → E-23 tested that same model's 0.55-confidence calls and returned 0/8 positive-expectancy folds in every cell, net negative after friction. Filing E-23 as ownerless hid the model's failed tradeability test",
+   "doc": "`07` (this file)",
+   "id": "DOC-15",
+   "kind": "contradiction",
+   "label": "DOC-15",
+   "models": "MODEL-TYPE-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "E-19 assigned only to MODEL-MAG-001 → its ledger entry is `Engine/area: both (integrity)` and it names `strat_leakage_audit.py`; the integrity evidence underwriting the TYPE verdict was missing from TYPE's row",
+   "doc": "`07` (this file)",
+   "id": "DOC-16",
+   "kind": "omission",
+   "label": "DOC-16",
+   "models": "MODEL-TYPE-001, MODEL-MAG-001",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "E-26 / E-31 / E-33 listed beside committed modules → the ledger records their results as from a scratch harness, “not committed to the repo” (`EXPERIMENT_REGISTRY.md:1260`); `phase2_features.py` belongs to E-34. The table implied code that reproduces them",
+   "doc": "`07` (this file)",
+   "id": "DOC-17",
+   "kind": "dead-path",
+   "label": "DOC-17",
+   "models": "MODEL-FEAT-X",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "Git dates are unusable as a freshness signal: this is a shallow clone whose graft `4df291d` (2026-09-07) has no parent, so 187 of 220 docs show exactly one commit on that date regardless of when they were written",
+   "doc": "Whole corpus",
+   "id": "DOC-14",
+   "kind": "stamp",
+   "label": "DOC-14",
+   "models": "—",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "The scheduler table claimed eight model-bearing cron jobs and omitted `signal-monitor-daily` — the live fire path running MODEL-MOM/MR/AGREE/EXIT/BRIEF every trading morning, plus the two ORB triggers, the EOD resolver, `realtime-gex-daily` and `refresh-earnings-views-weekly`. This row first said the real count was fourteen; applied literally the stated rule also catches jobs that merely import model code, so fourteen was wrong too and the table now publishes no count at all — see DOC-22",
+   "doc": "`07` (this file)",
+   "id": "DOC-20",
+   "kind": "omission",
+   "label": "DOC-20",
+   "models": "MODEL-MOM-001, MODEL-MR-001, MODEL-AGREE-001, MODEL-EXIT-001, MODEL-BRIEF-001, MODEL-IND-001, MODEL-GAMMA-001, MODEL-EARN-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "Eleven further errors in the reference docs, same class as DOC-19: thresholds labelled UNKNOWN that the source records (STYLE's sample floors, BRIEF's actionable threshold), a \"canonical\" implementation production does not call (`MeanReversionStrategy` vs `lib.signals.evaluate_signal`), a delegating wrapper that is a second implementation (`MarketAnalyzer.generate_technical_signals`), a reverted relaxation described as current (momentum 3-of-5), a tie-break that only applies on ties, two independent systems merged into one model record (MODEL-CALIB-001), and three EARN claims contradicted by source",
+   "doc": "`docs/models/` (second round)",
+   "id": "DOC-21",
+   "kind": "contradiction",
+   "label": "DOC-21",
+   "models": "six models",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "Four corrections applied to one document and left standing in another: the MR registry row still named the non-production class after its doc was fixed; DOC-10's disposition still claimed MODEL-EARN-001 was the only model with a recorded derivation; the MODEL-CALIB-001 row still carried one `Invalidated` status after its doc documented the two-system split; and the scheduler count was corrected to a number that was still wrong. Fixing the instance is not fixing the claim",
+   "doc": "`07` (this file) + `docs/models/`",
+   "id": "DOC-22",
+   "kind": "contradiction",
+   "label": "DOC-22",
+   "models": "MODEL-MR-001, MODEL-EARN-001, MODEL-CALIB-001, MODEL-SWEEP-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "`_derive_archetype` (`:312-336`) reimplements `classify_archetype`'s thresholds for the daily `earnings_upcoming_with_history` rebuild the watchlist reads (`platform/api/routers/earnings.py:122`) instead of calling it, and diverges on missing inputs: `dir_consistency` missing with `reversal_rate >= 0.40` → `reversal_play` where the canonical function returns `quiet` (`lib/earnings_reactions.py:481-482`); `reversal_rate` missing → a trend tag where canonical returns `quiet`; `bias = ... or 0.0` (`:328`). The reference doc claimed every consumer read one implementation",
+   "doc": "`gcp/refresh_earnings_views.py`",
+   "id": "DOC-24",
+   "kind": "contradiction",
+   "label": "DOC-24",
+   "models": "MODEL-EARN-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "Two mean-reversion implementations. The live path is `lib.signals.evaluate_signal` (`gcp/signal_monitor.py:1107`), which alone applies `SignalConfig.min_conditions`, the per-ticker `consecutive_periods` override and the `disabled_conditions` / `disabled_directions` kill switches (`lib/signals.py:311-344`); `MeanReversionStrategy` is not called in production. The reference doc had called `lib/signals.py` \"a thin shim re-exporting from\" the class. No issue tracks the MR duplicate the way #285 tracks momentum's",
+   "doc": "`lib/signals.py`, `lib/strategies/mean_reversion.py`",
+   "id": "DOC-23",
+   "kind": "contradiction",
+   "label": "DOC-23",
+   "models": "MODEL-MR-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "Six gates reported green while checking less than the invariants table claimed. A parenthetical suppressed a family mismatch without its contents ever being read, and a `cross-cutting` ledger scope passed on any model; the status vocabulary skipped `## LLM nodes`, a third of the inventory; the dead-path regex had no `:` in its character class, so every `file.py:NN` pointer matched nothing — and `docs/models/.md` was not checked at all; ledger coverage asserted `ledger - owned` but never `owned - ledger`, so `E-99` was citable as evidence; `DOC-01…DOC-05` was not expanded in the disposition gate; and `re.findall(r\"E-\\d+\")` parsed a phantom `E-001` out of `MODEL-AGREE-001`",
+   "doc": "`tests/meta/test_model_registry_consistency.py`",
+   "id": "DOC-26",
+   "kind": "contradiction",
+   "label": "DOC-26",
+   "models": "(the gate, not a model)",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "`query_typical_daily_return` normalizes over 64 returns, not the 60 its parameter is named for: it binds `window_days + 5` (`:619`), keeps 65 bars (`:599`) and drops one NULL `LAG` (`:616`), with no trim. The median is the divisor in `move_magnitude_norm` (`:199`) and the score is bucketed by fixed cut-points, so the four extra bars can move a name across a quintile. The `+ 5` carries no comment; only the consumer's docstring hedges, with a tilde (`:175`)",
+   "doc": "`lib/earnings_reactions.py`",
+   "id": "DOC-27",
+   "kind": "contradiction",
+   "label": "DOC-27",
+   "models": "MODEL-EARN-001",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "The scheduler table omitted six model-bearing entries, not the one review found: `premarket-brief-daily` / `-sunday` (five registry Code paths), `auto-refresh-top-n` (MODEL-RANK-001's only scheduled caller), `options-daily-features` (MODEL-FEAT-X), `historical-signals-watchlist-daily` (the producer of `historical_signals`) and `earnings-sweep-sunday` (MODEL-EARN-001's calibration writer, declared but not live). `MODEL_BEARING` named none of them — the DOC-20 mechanism again. In the same paragraph, my own justifying example was false: `fred-rates-daily` does not import `lib/options_greeks.py`; `gcp/fetchers/fetch_fred_rates.py:15` is a docstring mention",
+   "doc": "`07` (this file)",
+   "id": "DOC-28",
+   "kind": "omission",
+   "label": "DOC-28",
+   "models": "MODEL-BRIEF-001, MODEL-RANK-001, MODEL-FEAT-X, MODEL-EARN-001, MODEL-MOM-001, MODEL-MR-001, MODEL-IND-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "Both documents described the scored conditions and the runtime kill switches and never said when the strategy declines to evaluate at all. Both classes hard-`return None` on a NaN indicator before scoring (`momentum.py:190-195`, `mean_reversion.py:151-155`), and momentum gates on `StochRSI_K` — a factor it removed from scoring in Phase 0.7.1. The gate outlived the factor",
+   "doc": "`docs/models/MODEL-MOM-001.md`, `MODEL-MR-001.md`",
+   "id": "DOC-29",
+   "kind": "omission",
+   "label": "DOC-29",
+   "models": "MODEL-MOM-001, MODEL-MR-001",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "DOC-08 classified the backtest report generator as dead on the evidence `grep -rn generate_backtest_report .github/` → empty. The grep was right; the inference was wrong — the workload was migrated to the `backtest-pipeline` Cloud Run Job and last ran 2026-08-27. I searched the directory the work had been moved out of, under a migration convention CLAUDE.md documents",
+   "doc": "`07` (this file) + `BACKTEST_RESULTS.md`",
+   "id": "DOC-30",
+   "kind": "contradiction",
+   "label": "DOC-30",
+   "models": "MODEL-CALIB-001",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "Four issues were filed (#1135, #1136, #1137, #1138) and the register's dispositions repointed at them — and not one of the eight model docs was. Two still read “No issue tracks this” and MODEL-BRIEF-001's `Known issues` still said “None open.” while #1137 named its stale header. DOC-22's class, committed in the commit recording DOC-22 closed",
+   "doc": "`docs/models/.md`",
+   "id": "DOC-31",
+   "kind": "contradiction",
+   "label": "DOC-31",
+   "models": "MODEL-EARN-001, MODEL-MR-001, MODEL-MOM-001, MODEL-BRIEF-001",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "A 587-line module computing dealer DEX / vanna / charm, writing `etf_options_daily_greeks` on a live weekday cron (`options-daily-greeks`, `15 23 * * 1-5`, ENABLED), cited across `EXPERIMENT_REGISTRY`, `RESEARCH_COMPENDIUM` and `06-DATA-ARCHITECTURE` — and named by no `MODEL-` row. The completeness gate could not see its job, correctly: its rule is “executes code cited in a `MODEL-` row”. The registry was short a model, not the whitelist an entry",
+   "doc": "`lib/features/flow_direction.py`",
+   "id": "DOC-32",
+   "kind": "omission",
+   "label": "DOC-32",
+   "models": "MODEL-FLOW-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "`classify_context` (`:474-565`) assigns one of four setup labels from its own thresholds (`MIN_QUARTERS_FOR_CLASSIFICATION = 4`, `REVERSAL_HIGH = 0.40`, `DRIFT_HOT_PCT = 2.0`, `CONSISTENCY_HIGH = 0.60`), posts them to Discord every weekday — and was covered by no model row and no reference document. It shares no code with MODEL-EARN-001: `grep \"lib\\.\" gcp/earnings_reactions_brief.py` returns zero matches. It is the fourth archetype-shaped classifier in the earnings surface, after `classify_archetype`, `_derive_archetype` (#1135) and `recommended_structure`",
+   "doc": "`gcp/earnings_reactions_brief.py`",
+   "id": "DOC-33",
+   "kind": "omission",
+   "label": "DOC-33",
+   "models": "MODEL-EARN-002",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "The `## LLM nodes` table was the only `MODEL-` table with no `Code` column, so the scheduler-completeness gate — whose rule is “executes code cited in a `MODEL-` row” — could not see `insight-pipeline`, the job that runs all 14 registered LLM nodes on a weekday cron. Its one code pointer, `orchestrator.py:490-492`, sat in the Numeric authority prose and named no directory. `insight-discord-push-daily` was missing for the same reason, and `premarket-brief-daily`'s row never mentioned the second live LLM path it also runs",
+   "doc": "`07` (this file)",
+   "id": "DOC-34",
+   "kind": "omission",
+   "label": "DOC-34",
+   "models": "the 7 LLM node groups",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "The register's own Disposition table carried two conflicting verdicts for DOC-24 — “FIXED HERE in the doc, FLAGGED at source” and “FLAGGED — needs a code fix” — left by the same renumbering that produced the DOC-23 collision, and the uniqueness gate written to catch that collision read only the Findings table. DOC-20's disposition also still claimed the scheduler count had been “corrected to fourteen” after the count was deleted",
+   "doc": "`07` (this file)",
+   "id": "DOC-25",
+   "kind": "contradiction",
+   "label": "DOC-25",
+   "models": "MODEL-EARN-001, MODEL-MR-001",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "The deliberate-exclusion paragraph excluded `phase6-playbook-daily` because it \"has no `from lib.` import of its own and writes markdown decision cards from earlier phases' output\" — a sentence arguing a job is not a decision system, containing the phrase \"decision cards\". It passes `--write-db` (`gcp/deploy.sh:4430`) and upserts `playbook_cards` (`scripts/analysis/phase6_playbook.py:942-993`), which `/api/playbook` serves. The exclusion was written to make near-misses visible; the first one written down was false",
+   "doc": "`07` (this file)",
+   "id": "DOC-35",
+   "kind": "wrong-claim",
+   "label": "DOC-35",
+   "models": "MODEL-PLAY-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "Module docstring (then `:3-7`, now `:1-14`) said the job \"compares actual performance to backtest expectations\". It does not — there is no backtest, expectation or prior referenced anywhere in the file; every number is a realized statistic over `trades`. Tracked under #1137 with the other stale module docstrings",
+   "doc": "`gcp/weekend_review.py`",
+   "id": "DOC-36",
+   "kind": "wrong-claim",
+   "label": "DOC-36",
+   "models": "MODEL-WEEK-001",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "The sweep written to end the missed-scheduler pattern enumerated 61 of 63 schedulers and reported \"61 declared, 61 resolved\". Its parser matched line by line, so two `_schedule` calls split across a backslash continuation were never seen — and an entry a parser never sees cannot fail the assertion that every entry resolves. Caught by a second parser (the registry gate's `_declared_schedulers`) disagreeing by two, not by the check designed for it",
+   "doc": "`scripts/audit_scheduler_coverage.py`",
+   "id": "DOC-37",
+   "kind": "wrong-claim",
+   "label": "DOC-37",
+   "models": "MODEL-QUAL-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "Called the session handling \"right, and non-obviously so\" and used that to justify `Production` / `KEEP`. `evaluate_ew_strikes.py` never read `earnings_time`: it selected by `earnings_date` and fetched bars for that same date, so every after-close reporter was scored against the session before the announcement. Measured 2026-09-22: 1,261 of 2,372 scored rows, 53.2%. (Line pointers into the pre-fix code are dropped rather than maintained; #1151 replaced it.) The timezone of the window was verified; which day the window was on was never asked",
+   "doc": "MODEL-EWV-001",
+   "id": "DOC-38",
+   "kind": "wrong-claim",
+   "label": "DOC-38",
+   "models": "MODEL-EWV-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "Presented the score-discrimination alarm as operating, giving its threshold and its non-zero exit, without checking whether its query returns anything. The join needs a wall-clock `alert_ts` (`signal_monitor.py:1662`, `:1849-1877`) to equal a bar-timestamp `entry_time` (`signal_quality_report.py:417-419`). Measured 2026-09-22: 0 live rows join, 230 when truncated to the minute. That half of the job has never run",
+   "doc": "MODEL-QUAL-001",
+   "id": "DOC-39",
+   "kind": "wrong-claim",
+   "label": "DOC-39",
+   "models": "MODEL-QUAL-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "Described the firing rule without `SignalConfig.enable_standalone_momentum`, which is `False` (`lib/config.py:444`, executed via `load_config()`) and which `gcp/signal_monitor.py:1139` requires before keeping a momentum-only result. Momentum alone never reaches a person; it contributes only by agreeing with a mean-reversion fire. The document overstated this model's production exposure",
+   "doc": "MODEL-MOM-001",
+   "id": "DOC-40",
+   "kind": "wrong-claim",
+   "label": "DOC-40",
+   "models": "MODEL-MOM-001",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "The deliberate-exclusion table's Job column named jobs that do not exist on 12 of 21 rows — `fred-rates` for `fetch-fred-rates`, `av-intraday` for `fetch-alphavantage-intraday`, and one row collapsing three distinct jobs into a single invented `news-sentiment`. Derived by stripping each scheduler's suffix instead of reading `deploy.sh`. Both parsers read only the FIRST cell, so every gate stayed green; the listed table's Job cell was already checked, so only the exclusion table could rot",
+   "doc": "`07` (this file)",
+   "id": "DOC-41",
+   "kind": "wrong-claim",
+   "label": "DOC-41",
+   "models": "(12 excluded schedulers)",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "Republished \"same-direction agreement is ~21% of overlapping fires — the other ~79% are the opposing-direction case\". Both halves wrong, and the correction was already in this repository: `gcp/schema.sql:1133-1138` names `docs/plans/SIGNAL_QUALITY_TEST_PLAN.md`'s 21% stale and gives the measured 17 of 782 = 2.2% (per-ticker 1.4-3.2%), while `docs/audit/2026-05-08/track-D.md:308-315` shows the remainder is not disagreement at all — on 765 of 782 only mean reversion fired and momentum returned `None`",
+   "doc": "MODEL-AGREE-001",
+   "id": "DOC-42",
+   "kind": "wrong-claim",
+   "label": "DOC-42",
+   "models": "MODEL-AGREE-001, MODEL-MOM-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "The exclusion table excluded `fetch-market-data-daily` and `backfill-indicators-daily` on the words \"those are model inputs, materialised for later readers. No decision is emitted\". One is emitted: `strat_setup = last_combo and abs(ftfc_score) >= 0.3` (`gcp/fetchers/fetch_market_data.py:370-379`), served by `/api/dashboard` (`platform/api/routers/dashboard.py:146-149`) and scored by the ranker (`lib/agents/ranker/signals.py:55`). The shape is new: the rule was replaced and the evidence for it was not re-derived. DOC-28 fixed this same paragraph by verifying its examples' imports — then round 10 changed the rule from \"imports `lib/` code\" to \"emits a decision\", and the examples were never re-checked against the new question",
+   "doc": "`07` (this file)",
+   "id": "DOC-43",
+   "kind": "wrong-claim",
+   "label": "DOC-43",
+   "models": "MODEL-STRAT-001, MODEL-FTFC-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "Five of the fifteen model docs stated test coverage that was wrong, in three modes. Wrong file — MODEL-CALIB-001 and MODEL-PLAY-001 both carried the identical sentence \"`tests/scripts/test_scripts.py` covers the CLI surface\"; that file references neither model, while `test_calibrate_thresholds.py` (28 tests) and `test_phase6_playbook.py` + `test_phase6_playbook_scheduler.py` (23) do. Falsely claims none — MODEL-WEEK-001 and MODEL-WATCH-001 both said \"No test file targets this module\"; both modules are imported outright, by `test_trade_logger_reads.py` and `test_earnings_long_watchlist_freshness.py`. MODEL-WATCH-001 added that a test \"would need a real or fixture database; none exists\" — the suite that exists monkeypatches `get_engine`. Silent omission — MODEL-QUAL-001 named no file at all while 70 tests across two suites target it. Each was asserted without searching for the tests, and in both \"no test\" cases the real file's NAME does not contain the module's, so a filename search misses what a content search finds instantly",
+   "doc": "`docs/models/.md`",
+   "id": "DOC-44",
+   "kind": "wrong-claim",
+   "label": "DOC-44",
+   "models": "MODEL-CALIB-001, MODEL-PLAY-001, MODEL-WEEK-001, MODEL-WATCH-001, MODEL-QUAL-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "The dead-path invariant silently collected nothing for five pointer forms while publishing \"every repo-rooted path cited here exists\": brace expansion (`strat_walk_forward{,adaptive}.py`), globs (`p7.py`, 9 files), `::symbol` qualifiers, non-numeric `:` suffixes and comma line-ranges. `lib/gamma.py` and `lib/walk_forward.py` were checked by nothing at all. Enabling glob expansion then exposed 36 genuinely dead pointers across 8 documents, left over from the `tests/<area>/` reorganisation. The section describing the invariant (`:540`) used two forms the invariant could not parse. Rule 3.7's forbidden pattern in a test: on input it cannot handle, return empty and report success",
+   "doc": "`tests/meta/test_model_registry_consistency.py`",
+   "id": "DOC-45",
+   "kind": "vacuous-gate",
+   "label": "DOC-45",
+   "models": "all",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "`test_product_docs_have_no_dead_relative_links` globbed `docs/product/.md` only, so `docs/models/` — the directory the `Doc` column sends every reader to — had no link gate. MODEL-WEEK-001 linked to `MODEL-IND-001.md`, which has never existed; MODEL-IND-001 is a registry row. The gate was named for the directory it happened to check rather than the invariant it claimed",
+   "doc": "`tests/meta/test_model_registry_consistency.py`",
+   "id": "DOC-46",
+   "kind": "vacuous-gate",
+   "label": "DOC-46",
+   "models": "MODEL-WEEK-001, MODEL-IND-001",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "The model-documentation decision row was wrong in four ways at once: it claimed \"a reference doc per model\" against 29 models and 15 files; it said seven models were absent from the master matrix while linking to DOC-11, which lists fourteen and records the 9 → 14 recomputation; it called MODEL-EARN-001 the exception to the `UNKNOWN` rationale although that document records its `window_days + 5` as \"not recorded anywhere\"; and \"among the seven\" was stale at fifteen. All of it beside a disclaimer reading \"No bare count is published here\", added after DOC-28 for this exact reason, in the same sentence as two bare counts",
+   "doc": "15-OPEN-DECISIONS",
+   "id": "DOC-47",
+   "kind": "wrong-claim",
+   "label": "DOC-47",
+   "models": "all",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "Three live schedulers were in neither registry table while both completeness gates reported full coverage. `reconcile-failure-notifier-hourly`, `strat-enrich-daily` and `backfill-indicators-weekly` are declared with a raw `gcloud scheduler jobs create http`; both parsers recognised only `_schedule*` helpers, so all three were invisible and could not be counted as unclassified. Two invoke model-producing jobs. The canonical `scripts/maintenance/doc_inventory.py` already parsed both forms and reported 66 where these reported 63 — and the two that agreed were agreeing about the same blind spot, which reads exactly like corroboration. A completeness check over an incomplete enumeration is a check over nothing, which is DOC-37's shape one level up: that round fixed the parser's continuations, this one its declaration forms",
+   "doc": "`scripts/audit_scheduler_coverage.py`, `tests/meta/test_model_registry_consistency.py`",
+   "id": "DOC-48",
+   "kind": "vacuous-gate",
+   "label": "DOC-48",
+   "models": "MODEL-STRAT-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "The inclusion-rule section said `regime-combo-weekly` \"is the one row whose output reaches nobody\". `options-daily-greeks` is a second: `etf_options_daily_greeks` is read only by `lib/features/flow_direction.py`, whose own comment at `:485` says \"Experiments read the materialized…\". The counter-example was already written in MODEL-FLOW-001's own document while this sentence claimed uniqueness",
+   "doc": "`07` (this file)",
+   "id": "DOC-49",
+   "kind": "wrong-claim",
+   "label": "DOC-49",
+   "models": "MODEL-FLOW-001",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "Classification was a precedence chain — `\"listed\" if s in listed else \"excluded\" if s in excluded` — so a scheduler appearing in both tables silently reported as `listed` and the script exited 0, while its own stated contract is that every scheduler appears in exactly one. The pytest suite had an overlap assertion; this script is the one the registry tells reviewers to run",
+   "doc": "`scripts/audit_scheduler_coverage.py`",
+   "id": "DOC-50",
+   "kind": "vacuous-gate",
+   "label": "DOC-50",
+   "models": "all",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "Both concluded that `enable_standalone_momentum = False` \"costs little because there is little to discard\", from the Track D finding that momentum returned `None` on 765 of 782 alerts. The sample cannot support it. `signal_alerts` holds only alerts that were emitted, and with the flag off a momentum-eligible bar on which mean reversion misses emits nothing (`gcp/signal_monitor.py:1139`, fall-through at `:1181-1183`) — so the discarded population is exactly the one excluded from the 782. A low overlap rate was quoted as a low eligibility rate: CLAUDE.md §3.11's \"an aggregate cannot characterise a population\", committed twice and defended once in review",
+   "doc": "MODEL-MOM-001, MODEL-AGREE-001",
+   "id": "DOC-51",
+   "kind": "wrong-claim",
+   "label": "DOC-51",
+   "models": "MODEL-MOM-001, MODEL-AGREE-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "A correction that introduced the next defect, twice. DOC-49's text named `lib/strategies/exit_config_overrides.py` as the reader putting `ticker_calibration` on the live fire path. That file contains zero occurrences of `ticker_calibration` — it reads `FROM exit_config_overrides` (`:124`), a different table written by MODEL-SWEEP-001 (`run_param_sweep.py:134`). The real path is `lib/strategies/calibration.py:91` → `get_call_rsi_range` / `get_put_rsi_range` → `gcp/signal_monitor.py:1084-1085`. Made twice — the prose named the wrong module, DOC-49's own disposition named the wrong table — and repeated in the review reply, as the evidence offered for being careful about counts. MODEL-CALIB-001's doc states the split at `:102`, and it had been read a round earlier",
+   "doc": "`07` (this file)",
+   "id": "DOC-52",
+   "kind": "wrong-claim",
+   "label": "DOC-52",
+   "models": "MODEL-CALIB-001, MODEL-SWEEP-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "DOC-42's disposition still concluded that `enable_standalone_momentum = False` \"costs so little — … it is not eligible on 765 of 782 bars\" — the inference DOC-51 marks `wrong-claim`/H and declares \"RETRACTED in both documents\", surviving nine rows above it in the same table. \"bars\" is the load-bearing word: the 782 are rows in `signal_alerts`, i.e. emitted alerts, and `MODEL-AGREE-001.md:46-47` now says \"not the same as 98% of bars\" — so the register contradicted the document it points at. DOC-22's class (corrections applied to one document and left standing in another), committed inside the commit that made the correction",
+   "doc": "`07` (this file)",
+   "id": "DOC-53",
+   "kind": "wrong-claim",
+   "label": "DOC-53",
+   "models": "MODEL-MOM-001, MODEL-AGREE-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "Called MODEL-CALIB-001 \"a separately invalidated production threshold calibrator\". Its row says Retest Required, its issues cell says \"no open issue names this system\", the status tally has exactly one `Invalidated` model (MODEL-SWEEP-001), and its reference doc opens \"This model is not Invalidated, and until 2026-09-18 this document said it was.\" Third surviving instance of a claim DOC-21 and DOC-22 both book as fixed — and DOC-22 is the entry whose own text reads \"Fixing the instance is not fixing the claim\"",
+   "doc": "`07` (this file)",
+   "id": "DOC-54",
+   "kind": "wrong-claim",
+   "label": "DOC-54",
+   "models": "MODEL-CALIB-001, MODEL-SWEEP-001",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "Two contradictory book contracts, neither matching the file. `EXPERIMENT_REGISTRY` advertised Book I as `E-01…E-24` in three places, silently dropping `E-25` and `E-32` — the latter the follow-up to the ledger's only claimed real edge. Ten other documents advertised `E-01…E-34`, sweeping all of Book II into Book I; two of them are in this file. By heading position Book I is `E-01…E-25` + `E-32` and Book II is `E-26…E-31`, `E-33`…`E-35`. Nothing caught it because the one code consumer collects by position and is book-agnostic: the contract lived only in prose, which is why DOC-44's coverage claims survived a green suite too. Also: MODEL-EARN-001 claimed its quintile boundaries were measured, when the backtest froze two of the score's five inputs and bucketed by `pd.qcut` rank rather than the absolute cut-points production applies → #1158",
+   "doc": "EXPERIMENT_REGISTRY + 10 docs",
+   "id": "DOC-55",
+   "kind": "wrong-claim",
+   "label": "DOC-55",
+   "models": "MODEL-EARN-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "The weekly report labelled each score with `get_signal_strength_label(int(score), …)` while the live monitor passes the unrounded `total_score` (`gcp/signal_monitor.py:1343`). Four of six catalyst multipliers are non-integral and `strat_bonus` moves in quarter points, so fractional scores are the normal case, and `int()` truncates toward zero — every mismatch a downgrade, twelve on integer raw scores alone. Each rung's win rate was contaminated by the rung above it, in the one report used to judge the ladder. It also grouped by the raw float and rendered `int(score)`, producing duplicate rows with conflicting win rates, and labelled a `NaN` score `perfect` via the ladder's else-branch. MODEL-WEEK-001 quoted the `int(score)` call and asserted equivalence with the live path in the same sentence",
+   "doc": "`gcp/weekend_review.py`",
+   "id": "DOC-56",
+   "kind": "code-defect",
+   "label": "DOC-56",
+   "models": "MODEL-WEEK-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "`E-26` named two experiments: the vol-regime-features probe (2026-07-06 session table) and the magnitude class-weight sweep (its own `## E-26` section, 2026-09-14). Nine documents cited it, meaning one or the other. Round 1's class — ID collisions — still live in the ledger this registry joins against, through fifteen further rounds. The overrides table made it worse rather than catching it: `LEDGER_SCOPE_OVERRIDES[\"E-26\"]` was written for the session entry and masked the magnitude entry's missing `Engine/area:` field, which every other section carries. Two defects covering for each other under one id",
+   "doc": "EXPERIMENT_REGISTRY",
+   "id": "DOC-57",
+   "kind": "id-collision",
+   "label": "DOC-57",
+   "models": "MODEL-MAG-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "Its Tests section said \"The statistics themselves are untested. Nothing exercises win rate, total P&L, average return, the score-bucket grouping, or the all-NULL week\" — written in the same commit that added `tests/gcp/test_weekend_review_score_labels.py`, which covers the score grouping, and left standing while that suite grew. DOC-44's gate cannot see it: `test_no_test_claims_are_true` keys on the phrase \"no test\", and this sentence does not contain it. A gate built one round earlier for exactly this class, scoped to the wording of the instance that prompted it",
+   "doc": "MODEL-WEEK-001",
+   "id": "DOC-58",
+   "kind": "wrong-claim",
+   "label": "DOC-58",
+   "models": "MODEL-WEEK-001",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "Line-pointer drift. The DOC-56 fix inserted 38 lines into `gcp/weekend_review.py` and updated none of the references below the insertion, so MODEL-WEEK-001 cited `main` at `:163` (really `:294`) and `format_discord_message` at `:103` (really `:214`), plus five stale ranges and a worked example of a row shape that no longer renders. A repo-wide sweep found a third, never filed: MODEL-EARN-002 cited `has_sufficient_history` at `:152`; it is at `:143`. Every pointer below an insertion goes stale silently, and prose review is the slowest way to find it",
+   "doc": "`docs/models/.md`",
+   "id": "DOC-59",
+   "kind": "wrong-claim",
+   "label": "DOC-59",
+   "models": "MODEL-WEEK-001, MODEL-EARN-002",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "`test_registry_code_column_names_the_live_implementation` was vacuous twice over, and fixing either half alone left it green. (1) its token class `` `[A-Za-z0-9./]+\\.py` `` has no `:`, so `` `lib/config.py:SignalConfig` `` did not match at all and was skipped in silence — 25 of 26 header tokens matched and the single miss was the only one that disagreed. (2) it compared an unsuffixed basename as a substring, so `config.py` was satisfied by the cell's different `lib/strategies/config.py`. The `found >= 8` tripwire is what made it feel safe: a corpus-wide count satisfied by 25 unrelated paths. Underneath sat a real disagreement — `lib/config.py:424` defines `SignalConfig`, `lib/signals.py:15` imports it, `evaluate_signal` takes it at `:185`, MODEL-MR-001's header names it, and the registry row listed a different `config.py`",
+   "doc": "`tests/meta/test_model_registry_consistency.py`",
+   "id": "DOC-60",
+   "kind": "vacuous-gate",
+   "label": "DOC-60",
+   "models": "MODEL-MR-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "The Job-cell check was `if not real <= claimed` — a subset test, where the pytest mirror asserts equality. It catches a MISSING job and never an EXTRA one: a bogus `fred-rates` beside the real `fetch-fred-rates` left the script at exit 0 while `test_exclusion_table_job_cells_match_deploy_sh` failed on the same text. DOC-50's shape one column over, and again on the permissive surface the registry tells reviewers to run. The obvious in-place fix is wrong: `excluded_job_cells()` flattened rows to `scheduler -> claimed`, discarding the grouping, so `real` was always a singleton and `!=` would false-positive on the legitimate three-scheduler `news-sentiment-` row. `07:560` meanwhile claimed this gate was \"mirrored … and mutation-tested both ways\"",
+   "doc": "`scripts/audit_scheduler_coverage.py`",
+   "id": "DOC-61",
+   "kind": "vacuous-gate",
+   "label": "DOC-61",
+   "models": "all",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "On a week whose `return_pct` is entirely NULL the embed published `0.0%` in seven places, from FIVE code sites — overall `win_rate` and `total_pnl`, both per-direction rates, both per-ticker figures, and one per rung. `avg_return` alone reported `nan`. Four predate this PR; the per-rung one was introduced by DOC-56's fix, in the commit that removed a different fabricated value. MODEL-WEEK-001 said the violation \"is two values, not seven\" — understated when written, and counted from the two sites the sentence before it happened to name rather than from a run. §3.7 forbidden pattern 2, on the surface a person reads to judge the score ladder",
+   "doc": "`gcp/weekend_review.py`",
+   "id": "DOC-62",
+   "kind": "code-defect",
+   "label": "DOC-62",
+   "models": "MODEL-WEEK-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "Five different open-issue totals, none of them the repository's. Summary column 121, detail blocks 123, the anchor slugs those blocks link to 127, the rows behind those anchors 131, the severity table 121. Six cells disagree with the anchor beside them; review filed three. And the rows are not a baseline either: `list_issues(state=OPEN)` returns 127, against 129 stocks rows — 16 listed as open that are closed and 14 open with no row at all, including #1154, filed by this PR two rounds ago and cited from MODEL-QUAL-001 without a row. `test_cross_document_anchors_resolve` checks only that a fragment RESOLVES, never that the displayed count matches the `-(\\d+)-open` in the slug — so renaming a heading breaks the anchor and the minimal green-making edit is to change the slug alone, which is what `2385c240` did, in the commit whose stated purpose was widening gates that reported green while checking less",
+   "doc": "02-FEATURE-CATALOG, 12-PR-ISSUE-TRACEABILITY",
+   "id": "DOC-63",
+   "kind": "wrong-claim",
+   "label": "DOC-63",
+   "models": "all",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "The module docstring, rewritten in `e9de5e0`, said the Discord summary is \"broken down by direction, by signal-strength rung, by ticker and by exit reason\". `format_discord_message` emits three fields — `Overall`, the per-direction pair, `By Signal Strength` — so `by_ticker` and `by_exit_reason` reach only stdout. The same commit established that fact in MODEL-WEEK-001 and then contradicted it one file over. DOC-36's own fix, carrying DOC-36's defect",
+   "doc": "`gcp/weekend_review.py`",
+   "id": "DOC-64",
+   "kind": "wrong-claim",
+   "label": "DOC-64",
+   "models": "MODEL-WEEK-001",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "The same sentence wrong a third time, each version narrower than the last. DOC-44: \"no test file targets this module\". DOC-58: \"nothing exercises the score-bucket grouping\", in the commit adding the suite that does. DOC-65: after being \"narrowed\", \"overall win rate, total P&L and average return are executed but never asserted\" and \"`by_ticker` has no test at all\" — both false. `test_partial_returns_compute_what_is_known_and_dash_what_is_not` and `test_a_real_zero_is_still_a_zero` assert `review[\"win_rate\"]` and `review[\"total_pnl\"]`; `test_all_null_week_publishes_no_per_ticker_zero` asserts both per-ticker figures. Narrowing a claim by eye is not checking it",
+   "doc": "MODEL-WEEK-001",
+   "id": "DOC-65",
+   "kind": "wrong-claim",
+   "label": "DOC-65",
+   "models": "MODEL-WEEK-001",
+   "sev": "H"
+  },
+  {
+   "claim_actual": "Stated \"the real count is 63\" schedulers. DOC-48 corrected that to 66 one round earlier and the sweep reached the registry but not this document — the identical shape to the defect the paragraph itself narrates, one document over. Also worth pinning, because it is what makes this look like a contradiction elsewhere: 66 is declared in `deploy.sh`, 65 is live in GCP (read 2026-09-22), and the several documents saying 65 about the live fleet are correct",
+   "doc": "MODEL-QUAL-001",
+   "id": "DOC-66",
+   "kind": "wrong-claim",
+   "label": "DOC-66",
+   "models": "MODEL-QUAL-001",
+   "sev": "M"
+  },
+  {
+   "claim_actual": "The entry-point table called `composite_score` \"the ranking score\" two lines above the paragraph headed \"The composite score does not rank anything\", and the rationale thirty lines below called it \"a ranking heuristic\". Nothing in the repository sorts, filters or gates on it; it is persisted and displayed. Describing an unvalidated value by the use it does not have also buried the one that matters: `AGREEMENT_BONUS` is consumed, moving `total_score`, position size and the strength label",
+   "doc": "MODEL-AGREE-001",
+   "id": "DOC-67",
+   "kind": "wrong-claim",
+   "label": "DOC-67",
+   "models": "MODEL-AGREE-001",
+   "sev": "M"
+  }
+ ],
+ "generated_from": [
+  "docs/product/07-MODEL-REGISTRY.md",
+  "docs/EXPERIMENT_REGISTRY.md"
+ ],
+ "models": {
+  "MODEL-AGREE-001": {
+   "blocking_issues": "#1206 freeze and prospectively validate expectancy",
+   "code": "`lib/strategies/agreement.py`",
+   "code_paths": [
+    "lib/strategies/agreement.py"
+   ],
+   "decision_produced": "combine strategy evidence into a score",
+   "doc": "CURRENT · doc",
+   "id": "MODEL-AGREE-001",
+   "issue_numbers": [
+    1206
+   ],
+   "name": "Agreement scoring",
+   "rec": "RESTRUCTURE",
+   "status": "Production but needs remediation",
+   "tier": "Deterministic and heuristic systems",
+   "type": "Heuristic / ensemble"
+  },
+  "MODEL-BREAK-001": {
+   "blocking_issues": null,
+   "code": "`gcp/research`, `lib/strategies`",
+   "code_artifact": "`gcp/research`, `lib/strategies`",
+   "code_artifact_paths": [
+    "gcp/research",
+    "lib/strategies"
+   ],
+   "code_paths": [
+    "gcp/research",
+    "lib/strategies"
+   ],
+   "decision_produced": "filter / rank breakouts",
+   "doc": "UNVERIFIED",
+   "evidence": "Net reconfirmed in #598",
+   "id": "MODEL-BREAK-001",
+   "issue_numbers": [
+    598
+   ],
+   "name": "Breakout meta-model",
+   "rec": "RETEST",
+   "status": "Research",
+   "tier": "Learned models",
+   "type": "ML / ensemble"
+  },
+  "MODEL-BRIEF-001": {
+   "blocking_issues": "none open — its last one (`#900`, unlinked: it is closed and `12` maps only open issues) closed 2026-09-14; the RETEST rests on no current blocker and needs a stated reason or a status change",
+   "code": "`lib/strategies/brief_bias.py`, `lib/movement_statement.py`",
+   "code_paths": [
+    "lib/strategies/brief_bias.py",
+    "lib/movement_statement.py"
+   ],
+   "decision_produced": "market bias and explanation",
+   "doc": "CURRENT · doc",
+   "id": "MODEL-BRIEF-001",
+   "issue_numbers": [
+    900
+   ],
+   "name": "Brief bias / movement statement",
+   "rec": "RETEST",
+   "status": "Experimental",
+   "tier": "Deterministic and heuristic systems",
+   "type": "Heuristic"
+  },
+  "MODEL-CALIB-001": {
+   "blocking_issues": null,
+   "code": "`scripts/calibrate_thresholds.py`, `ticker_calibration`",
+   "code_artifact": "`scripts/calibrate_thresholds.py`, `ticker_calibration`",
+   "code_artifact_paths": [
+    "scripts/calibrate_thresholds.py",
+    "ticker_calibration"
+   ],
+   "code_paths": [
+    "scripts/calibrate_thresholds.py",
+    "ticker_calibration"
+   ],
+   "decision_produced": "per-ticker ATR/RVOL/RSI thresholds written to `ticker_calibration`",
+   "doc": "CURRENT · doc",
+   "evidence": "— no open issue names this system; nothing in the ledger evaluates it, which is the standing concern",
+   "id": "MODEL-CALIB-001",
+   "issue_numbers": [],
+   "name": "Ticker threshold calibration (percentile)",
+   "rec": "RETEST",
+   "status": "Retest Required",
+   "tier": "Learned models",
+   "type": "Statistical"
+  },
+  "MODEL-DIR-001": {
+   "blocking_issues": null,
+   "code": "`gcp/research/strat_engine`",
+   "code_artifact": "`gcp/research/strat_engine`",
+   "code_artifact_paths": [
+    "gcp/research/strat_engine"
+   ],
+   "code_paths": [
+    "gcp/research/strat_engine"
+   ],
+   "decision_produced": "direction classification",
+   "doc": "UNVERIFIED",
+   "evidence": "Archive rather than delete — the negative result is evidence. Directionality research verdict DEAD-END (#588); experimental direction features FAIL (#566)",
+   "id": "MODEL-DIR-001",
+   "issue_numbers": [
+    566,
+    588
+   ],
+   "name": "STRAT direction model",
+   "rec": "REMOVE",
+   "status": "Failed",
+   "tier": "Learned models",
+   "type": "ML"
+  },
+  "MODEL-EARN-001": {
+   "blocking_issues": "#863 winners posted to Discord at 99 days old",
+   "code": "`lib/earnings_reactions.py`",
+   "code_paths": [
+    "lib/earnings_reactions.py"
+   ],
+   "decision_produced": "event reaction and strategy lean",
+   "doc": "CURRENT · doc",
+   "id": "MODEL-EARN-001",
+   "issue_numbers": [
+    863
+   ],
+   "name": "Earnings reaction analytics",
+   "rec": "RETEST",
+   "status": "Experimental",
+   "tier": "Deterministic and heuristic systems",
+   "type": "Statistical / heuristic"
+  },
+  "MODEL-EARN-002": {
+   "blocking_issues": "None filed. Unevaluated — no experiment tests whether the labels precede the moves they name, and the output is a Discord embed with no table behind it",
+   "code": "`gcp/earnings_reactions_brief.py` (`classify_context`)",
+   "code_paths": [
+    "gcp/earnings_reactions_brief.py",
+    "classify_context"
+   ],
+   "decision_produced": "one of four setup labels per upcoming reporter",
+   "doc": "CURRENT · doc",
+   "id": "MODEL-EARN-002",
+   "issue_numbers": [],
+   "name": "Earnings-reaction setup classifier",
+   "rec": "RETEST",
+   "status": "Experimental",
+   "tier": "Deterministic and heuristic systems",
+   "type": "Heuristic"
+  },
+  "MODEL-EWV-001": {
+   "blocking_issues": "#1151 fixed and re-scored 2026-09-26: after-close reporters had been scored against the pre-announcement session, 1,263 of 2,383 scored rows. Each pick is now scored on the NYSE session its news reaches, and the stored verdicts were re-computed: 1,233 of 1,251 stored after-close closes are now nearer the next session's daily close than the report day's, where 1,226 of 1,249 were nearer the report day's before, and 328 of 1,263 verdicts flipped · #1168 fixed: the weekday premarket brief recaps the last session's verdicts, and today's rows carry none · #1181 fixed: each empty call is counted by the vendor's reason, a run whose every call came back empty is decided by one SPY call, and share classes are sent dashed",
+   "code": "`gcp/fetchers/evaluate_ew_strikes.py`",
+   "code_paths": [
+    "gcp/fetchers/evaluate_ew_strikes.py"
+   ],
+   "decision_produced": "HIT / MISS / KEPT / ASSIGNED on each strike pick",
+   "doc": "CURRENT · doc",
+   "id": "MODEL-EWV-001",
+   "issue_numbers": [
+    1151,
+    1168,
+    1181
+   ],
+   "name": "Earnings Whispers strike verdicts",
+   "rec": "KEEP",
+   "status": "Production but needs remediation",
+   "tier": "Deterministic and heuristic systems",
+   "type": "Deterministic"
+  },
+  "MODEL-EXIT-001": {
+   "blocking_issues": "#815 live has no stop-loss, backtest does · #816 daily loss limit structurally unenforceable · #862 overrides 113 days stale on the live fire path · #915 same-minute ordering",
+   "code": "`lib/strategies`, `gcp/signal_monitor.py`, `exit_config_overrides`",
+   "code_paths": [
+    "lib/strategies",
+    "gcp/signal_monitor.py",
+    "exit_config_overrides"
+   ],
+   "decision_produced": "exit, stop, target selection",
+   "doc": "UNVERIFIED",
+   "id": "MODEL-EXIT-001",
+   "issue_numbers": [
+    815,
+    816,
+    862,
+    915
+   ],
+   "name": "Exit / stop / target policy",
+   "rec": "RESTRUCTURE",
+   "status": "Broken",
+   "tier": "Deterministic and heuristic systems",
+   "type": "Heuristic"
+  },
+  "MODEL-FEAT-X": {
+   "blocking_issues": null,
+   "code": "`lib/features/experimental`",
+   "code_artifact": "`lib/features/experimental`",
+   "code_artifact_paths": [
+    "lib/features/experimental"
+   ],
+   "code_paths": [
+    "lib/features/experimental"
+   ],
+   "decision_produced": "cross-asset / news / options / vol features",
+   "doc": "UNVERIFIED",
+   "evidence": "#784 incremental-vol ablation open",
+   "id": "MODEL-FEAT-X",
+   "issue_numbers": [
+    784
+   ],
+   "name": "Experimental feature families",
+   "rec": "PAUSE",
+   "status": "Research",
+   "tier": "Learned models",
+   "type": "Statistical"
+  },
+  "MODEL-FLOW-001": {
+   "blocking_issues": null,
+   "code": "`lib/features/flow_direction.py`, `gcp/build_options_daily_greeks.py`, `etf_options_daily_greeks`",
+   "code_artifact": "`lib/features/flow_direction.py`, `gcp/build_options_daily_greeks.py`, `etf_options_daily_greeks`",
+   "code_artifact_paths": [
+    "lib/features/flow_direction.py",
+    "gcp/build_options_daily_greeks.py",
+    "etf_options_daily_greeks"
+   ],
+   "code_paths": [
+    "lib/features/flow_direction.py",
+    "gcp/build_options_daily_greeks.py",
+    "etf_options_daily_greeks"
+   ],
+   "decision_produced": "directional dealer positioning — DEX / vanna / charm",
+   "doc": "CURRENT · doc",
+   "evidence": "None filed. Falsified by ledger B5 (E5) — “slow daily positioning adds nothing, dilutes the lone edge” — yet `options-daily-greeks` still materializes it every weekday and no production path reads the table",
+   "id": "MODEL-FLOW-001",
+   "issue_numbers": [],
+   "name": "Dealer flow-direction features",
+   "rec": "PAUSE",
+   "status": "Failed",
+   "tier": "Learned models",
+   "type": "Statistical"
+  },
+  "MODEL-FTFC-001": {
+   "blocking_issues": "#884 weighted-vote semantics",
+   "code": "`lib/strat.py`, `lib/exec_backtest/ftfc.py`",
+   "code_paths": [
+    "lib/strat.py",
+    "lib/exec_backtest/ftfc.py"
+   ],
+   "decision_produced": "multi-timeframe direction and alignment",
+   "doc": "UNVERIFIED",
+   "id": "MODEL-FTFC-001",
+   "issue_numbers": [
+    884
+   ],
+   "name": "Full Time Frame Continuity",
+   "rec": "RETEST",
+   "status": "Production but needs remediation",
+   "tier": "Deterministic and heuristic systems",
+   "type": "Deterministic"
+  },
+  "MODEL-GAMMA-001": {
+   "blocking_issues": "#812 fabricated flips from float underflow · #826 `or 0` on gamma/OI · #871 contract multiplier · #872 implied-move scaling · #876 balance semantics · #880 GEX scope · #896 VEX invariants",
+   "code": "`lib/gamma.py`, `lib/features/intraday_gex.py`, `lib/strategies/gamma_proximity.py`",
+   "code_paths": [
+    "lib/gamma.py",
+    "lib/features/intraday_gex.py",
+    "lib/strategies/gamma_proximity.py"
+   ],
+   "decision_produced": "gamma exposure and regime context",
+   "doc": "UNVERIFIED · DOC-03",
+   "id": "MODEL-GAMMA-001",
+   "issue_numbers": [
+    812,
+    826,
+    871,
+    872,
+    876,
+    880,
+    896
+   ],
+   "name": "Gamma / GEX regime and proximity",
+   "rec": "RETEST",
+   "status": "Retest Required",
+   "tier": "Deterministic and heuristic systems",
+   "type": "Deterministic / statistical"
+  },
+  "MODEL-IND-001": {
+   "blocking_issues": "#870 RSI warm-up · #892 ATR warm-up · #894 premarket bars in RTH VWAP · #912 duplicate implementations",
+   "code": "`lib/indicators.py`, `lib/signals.py`",
+   "code_paths": [
+    "lib/indicators.py",
+    "lib/signals.py"
+   ],
+   "decision_produced": "indicator and opening-range context",
+   "doc": "UNVERIFIED",
+   "id": "MODEL-IND-001",
+   "issue_numbers": [
+    870,
+    892,
+    894,
+    912
+   ],
+   "name": "Technical indicators / RVOL / ORB",
+   "rec": "RETEST",
+   "status": "Production but needs remediation",
+   "tier": "Deterministic and heuristic systems",
+   "type": "Deterministic / statistical"
+  },
+  "MODEL-LEVEL-001": {
+   "blocking_issues": "#866 PDH/PDL off-by-one · #907 legacy positional fallback · #908 executable repricing",
+   "code": "`lib/strat_levels.py`",
+   "code_paths": [
+    "lib/strat_levels.py"
+   ],
+   "decision_produced": "proximity, state, targets",
+   "doc": "UNVERIFIED",
+   "id": "MODEL-LEVEL-001",
+   "issue_numbers": [
+    866,
+    907,
+    908
+   ],
+   "name": "Structural level state / magnitude",
+   "rec": "RETEST",
+   "status": "Production but needs remediation",
+   "tier": "Deterministic and heuristic systems",
+   "type": "Heuristic"
+  },
+  "MODEL-LLM-ANALYST": {
+   "blocking_issues": null,
+   "code": "`lib/agents/orchestrator.py`, `lib/agents/prompts.py`",
+   "code_paths": [
+    "lib/agents/orchestrator.py",
+    "lib/agents/prompts.py"
+   ],
+   "count": "6",
+   "decision_produced": null,
+   "doc": null,
+   "id": "MODEL-LLM-ANALYST",
+   "name": null,
+   "nodes": "market, strat, options, gamma, catalyst, sentiment",
+   "numeric_authority": "explanation only",
+   "rec": null,
+   "status": "Experimental",
+   "tier": "LLM nodes",
+   "type": null
+  },
+  "MODEL-LLM-DEBATE": {
+   "blocking_issues": null,
+   "code": "`lib/agents/orchestrator.py`",
+   "code_paths": [
+    "lib/agents/orchestrator.py"
+   ],
+   "count": "2",
+   "decision_produced": null,
+   "doc": null,
+   "id": "MODEL-LLM-DEBATE",
+   "name": null,
+   "nodes": "bull, bear",
+   "numeric_authority": "explanation only",
+   "rec": null,
+   "status": "Experimental",
+   "tier": "LLM nodes",
+   "type": null
+  },
+  "MODEL-LLM-JUDGE": {
+   "blocking_issues": null,
+   "code": "`lib/agents/orchestrator.py`",
+   "code_paths": [
+    "lib/agents/orchestrator.py"
+   ],
+   "count": "1",
+   "decision_produced": null,
+   "doc": null,
+   "id": "MODEL-LLM-JUDGE",
+   "name": null,
+   "nodes": "research_manager",
+   "numeric_authority": "no invented confidence or levels",
+   "rec": null,
+   "status": "Experimental",
+   "tier": "LLM nodes",
+   "type": null
+  },
+  "MODEL-LLM-PM": {
+   "blocking_issues": null,
+   "code": "`lib/agents/orchestrator.py`",
+   "code_paths": [
+    "lib/agents/orchestrator.py"
+   ],
+   "count": "1",
+   "decision_produced": null,
+   "doc": null,
+   "id": "MODEL-LLM-PM",
+   "name": null,
+   "nodes": "portfolio_manager",
+   "numeric_authority": "obeys exposure/config constraints",
+   "rec": null,
+   "status": "Experimental",
+   "tier": "LLM nodes",
+   "type": null
+  },
+  "MODEL-LLM-RISK": {
+   "blocking_issues": null,
+   "code": "`lib/agents/orchestrator.py`",
+   "code_paths": [
+    "lib/agents/orchestrator.py"
+   ],
+   "count": "3",
+   "decision_produced": null,
+   "doc": null,
+   "id": "MODEL-LLM-RISK",
+   "name": null,
+   "nodes": "aggressive, conservative, neutral",
+   "numeric_authority": "numeric plan field discarded (`lib/agents/orchestrator.py:490-492`)",
+   "rec": null,
+   "status": "Experimental",
+   "tier": "LLM nodes",
+   "type": null
+  },
+  "MODEL-LLM-TRADER": {
+   "blocking_issues": null,
+   "code": "`lib/agents/orchestrator.py`",
+   "code_paths": [
+    "lib/agents/orchestrator.py"
+   ],
+   "count": "1",
+   "decision_produced": null,
+   "doc": null,
+   "id": "MODEL-LLM-TRADER",
+   "name": null,
+   "nodes": "trader",
+   "numeric_authority": "narrative over deterministic inputs",
+   "rec": null,
+   "status": "Experimental",
+   "tier": "LLM nodes",
+   "type": null
+  },
+  "MODEL-MAG-001": {
+   "blocking_issues": null,
+   "code": "`gcp/research/magnitude_engine`, `platform/api/routers/magnitude.py`",
+   "code_artifact": "`gcp/research/magnitude_engine`, `platform/api/routers/magnitude.py`",
+   "code_artifact_paths": [
+    "gcp/research/magnitude_engine",
+    "platform/api/routers/magnitude.py"
+   ],
+   "code_paths": [
+    "gcp/research/magnitude_engine",
+    "platform/api/routers/magnitude.py"
+   ],
+   "decision_produced": "target magnitude class / probability",
+   "doc": "CONTRADICTED · DOC-06",
+   "evidence": "Research arc closed PROJECT VERDICT FAIL by gate 7 (#575). Later argmax-collapse incident: predicted TIGHT on 588/588 live bars; promotion gate added in #810, no-op fixed in #811. 2026-09-14 (E-35): the serving `c49qf` artifacts measured as constants (TIGHT on 99.9-100% of bars); the two promotion criteria were shown mutually unsatisfiable for any class weighting because they scored argmax; `pred_bucket` is now the decision rule P(bucket) ≥ 2× prior, recorded in CONTRACT.json; on 2026-09-15 the amended criteria promoted `magnitude-engine-6hp7l` (α=0) on SPY/QQQ/IWM 5m (gate 5 100%, gate 6 0.9-1.2×), replacing three of the four constants; IWM 15m still serves `c49qf` and the detector sample-size question is open in 15. Open: #874, #875, #890",
+   "id": "MODEL-MAG-001",
+   "issue_numbers": [
+    575,
+    810,
+    811,
+    874,
+    875,
+    890
+   ],
+   "name": "Magnitude prediction",
+   "rec": "RETEST",
+   "status": "Experimental — 5m promoted 2026-09-15; research verdict still FAIL by gate 7",
+   "tier": "Learned models",
+   "type": "ML"
+  },
+  "MODEL-MOM-001": {
+   "blocking_issues": "#285 duplicate inline path · #701 two divergent voters",
+   "code": "`lib/strategies/momentum.py`, `lib/strategies/config.py` (thresholds)",
+   "code_paths": [
+    "lib/strategies/momentum.py",
+    "lib/strategies/config.py"
+   ],
+   "decision_produced": "long/short eligibility",
+   "doc": "CURRENT · doc",
+   "id": "MODEL-MOM-001",
+   "issue_numbers": [
+    285,
+    701
+   ],
+   "name": "Momentum strategy",
+   "rec": "RETEST",
+   "status": "Production but needs remediation",
+   "tier": "Deterministic and heuristic systems",
+   "type": "Heuristic"
+  },
+  "MODEL-MR-001": {
+   "blocking_issues": "#249 walk-forward RSI thresholds",
+   "code": "`lib/signals.py` (live path — `evaluate_signal`), `lib/strategies/mean_reversion.py` (class form, not on the fire path), thresholds in `lib/strategies/config.py` and `lib/config.py:SignalConfig` (`lib/config.py:424`, imported at `lib/signals.py:15` and taken by `evaluate_signal` at `lib/signals.py:185`)",
+   "code_paths": [
+    "lib/signals.py",
+    "evaluate_signal",
+    "lib/strategies/mean_reversion.py",
+    "lib/strategies/config.py",
+    "lib/config.py:SignalConfig",
+    "lib/config.py:424",
+    "lib/signals.py:15",
+    "evaluate_signal",
+    "lib/signals.py:185"
+   ],
+   "decision_produced": "reversion eligibility",
+   "doc": "CURRENT · doc",
+   "id": "MODEL-MR-001",
+   "issue_numbers": [
+    249
+   ],
+   "name": "Mean reversion strategy",
+   "rec": "RETEST",
+   "status": "Production but needs remediation",
+   "tier": "Deterministic and heuristic systems",
+   "type": "Heuristic"
+  },
+  "MODEL-NEXTBAR-001": {
+   "blocking_issues": null,
+   "code": "`gcp/research/strat_engine`, `lib/strat.py`",
+   "code_artifact": "`gcp/research/strat_engine`, `lib/strat.py`",
+   "code_artifact_paths": [
+    "gcp/research/strat_engine",
+    "lib/strat.py"
+   ],
+   "code_paths": [
+    "gcp/research/strat_engine",
+    "lib/strat.py"
+   ],
+   "decision_produced": "next-candle prediction",
+   "doc": "UNVERIFIED",
+   "evidence": "Held-out OOS forward-walk confirms edge (#593, #594); CLV ablation quantifies mechanical vs genuine (#595, #598)",
+   "id": "MODEL-NEXTBAR-001",
+   "issue_numbers": [
+    593,
+    594,
+    595,
+    598
+   ],
+   "name": "STRAT next-bar edge",
+   "rec": "RETEST",
+   "status": "Research",
+   "tier": "Learned models",
+   "type": "Statistical / ML"
+  },
+  "MODEL-OPT-001": {
+   "blocking_issues": "#878 discount parity spot · #927 hard-coded rates · #607 0DTE theta anchored to EOD",
+   "code": "`lib/options_greeks.py`",
+   "code_paths": [
+    "lib/options_greeks.py"
+   ],
+   "decision_produced": "Greeks, parity spot, theta path",
+   "doc": "UNVERIFIED · DOC-02",
+   "id": "MODEL-OPT-001",
+   "issue_numbers": [
+    607,
+    878,
+    927
+   ],
+   "name": "Options Greeks / parity / theta",
+   "rec": "RETEST",
+   "status": "Production but needs remediation",
+   "tier": "Deterministic and heuristic systems",
+   "type": "Statistical"
+  },
+  "MODEL-PLAY-001": {
+   "blocking_issues": "None filed. Card statistics are in-sample (no train/test split anywhere in the module) and the published `best_horizon` is an argmax over four holds scored on that same data (`:110`); no costs are modelled (`compute_card_stats` docstring). And the statistics do not score the rule the card states: 11 of 12 cards pass a setup-only mask to `compute_card_stats` while displaying a confirmation checklist that narrows it; Card 12 (`:703`) is the only one whose mask carries its own RSI / EMA / ORB terms",
+   "code": "`scripts/analysis/phase6_playbook.py`",
+   "code_paths": [
+    "scripts/analysis/phase6_playbook.py"
+   ],
+   "decision_produced": "per-ticker entry cards — setup, direction, confirmation checklist, target/stop",
+   "doc": "CURRENT · doc",
+   "id": "MODEL-PLAY-001",
+   "issue_numbers": [],
+   "name": "Phase 6 playbook cards",
+   "rec": "RETEST",
+   "status": "Experimental",
+   "tier": "Deterministic and heuristic systems",
+   "type": "Heuristic"
+  },
+  "MODEL-QUAL-001": {
+   "blocking_issues": "#1152 fixed and verified 2026-09-25: the score-discrimination half never ran, because its timestamp join matched 0 live rows, and the minute-truncated join the issue proposed would have paired live mean-reversion alerts with unrelated momentum replay rows. Each alert is now paired with its own `exit_return_pct`, the comparison is signed, and the check is report-only, because on real rows its fortnightly rho swings from -0.8 to +0.8 and the score has no measurable edge (Spearman -0.004, p = 0.91, n = 1,024, measured 2026-09-24; now tracked in #1206). The deployed job's first run paired n = 116 and gave rho = +0.200 · #1166 fixed 2026-09-26: the nightly report fired at the same minute as its writer, so it read `historical_signals` before each session was written and never scored a Friday (0 of 20,323 Friday rows over 120 days). It now fires at 01:30 ET, also scores any row from the last 35 days still missing from `signal_metrics` (a new ticker's 30-day bootstrap included), and exits 1 when a row it selected stays unscored · #1167 retired the timeframe lookup: re-derived on the corrected classes it picked 240m for 50 of 52 buckets, so backfill tags use the placeholder tiers and the stored history is re-tagged after merge · #1154 fixed and re-classified 2026-09-25: the 5/15/30/60m classes had compared fraction thresholds with percentage-point returns, 100x too lenient; `cls_60m` moved from 90.2% to 32.0% `CLEAN_HIT` · `CLEAN_THRESHOLD = 0.005` and `NOISE_THRESHOLD = 0.003` decide what counts as a hit for every strategy and carry no derivation; `ticker_calibration.threshold_clean` / `_wrong` / `_noise`, written quarterly by MODEL-CALIB-001, are never read by it",
+   "code": "`scripts/signal_quality_report.py`, `gcp/signal_quality_alarm.py`",
+   "code_paths": [
+    "scripts/signal_quality_report.py",
+    "gcp/signal_quality_alarm.py"
+   ],
+   "decision_produced": "CLEAN_HIT / WRONG_DIRECTION / NOISE / MIXED per fire per horizon, and whether the clean rate has regressed",
+   "doc": "CURRENT · doc",
+   "id": "MODEL-QUAL-001",
+   "issue_numbers": [
+    1152,
+    1154,
+    1166,
+    1167,
+    1206
+   ],
+   "name": "Signal-quality classification and regression alarm",
+   "rec": "RETEST",
+   "status": "Production but needs remediation",
+   "tier": "Deterministic and heuristic systems",
+   "type": "Deterministic / statistical"
+  },
+  "MODEL-RANK-001": {
+   "blocking_issues": "—",
+   "code": "`lib/agents/ranker`",
+   "code_paths": [
+    "lib/agents/ranker"
+   ],
+   "decision_produced": "rank trade candidates",
+   "doc": "UNVERIFIED",
+   "id": "MODEL-RANK-001",
+   "issue_numbers": [],
+   "name": "Candidate ranker",
+   "rec": "RESTRUCTURE",
+   "status": "Experimental",
+   "tier": "Deterministic and heuristic systems",
+   "type": "Heuristic / ensemble"
+  },
+  "MODEL-STRAT-001": {
+   "blocking_issues": "—",
+   "code": "`lib/strat.py`",
+   "code_paths": [
+    "lib/strat.py"
+   ],
+   "decision_produced": "classify bars 1 / 2U / 2D / 3",
+   "doc": "UNVERIFIED",
+   "id": "MODEL-STRAT-001",
+   "issue_numbers": [],
+   "name": "STRAT candle scenarios",
+   "rec": "KEEP",
+   "status": "Production but needs remediation",
+   "tier": "Deterministic and heuristic systems",
+   "type": "Deterministic"
+  },
+  "MODEL-STYLE-001": {
+   "blocking_issues": null,
+   "code": "`lib/style_miner.py` (the miner), `lib/walk_forward.py` (validation), `platform/api/routers/backtest.py` (`/api/style/mine-and-validate`), `user_style_results`",
+   "code_artifact": "`lib/style_miner.py` (the miner), `lib/walk_forward.py` (validation), `platform/api/routers/backtest.py` (`/api/style/mine-and-validate`), `user_style_results`",
+   "code_artifact_paths": [
+    "lib/style_miner.py",
+    "lib/walk_forward.py",
+    "platform/api/routers/backtest.py",
+    "/api/style/mine-and-validate",
+    "user_style_results"
+   ],
+   "code_paths": [
+    "lib/style_miner.py",
+    "lib/walk_forward.py",
+    "platform/api/routers/backtest.py",
+    "/api/style/mine-and-validate",
+    "user_style_results"
+   ],
+   "decision_produced": "learned personal trading pattern",
+   "doc": "CURRENT · doc",
+   "evidence": "Origin #707 — walk-forward validated into the playbook seam",
+   "id": "MODEL-STYLE-001",
+   "issue_numbers": [
+    707
+   ],
+   "name": "User style mining",
+   "rec": "RETEST",
+   "status": "Experimental",
+   "tier": "Learned models",
+   "type": "ML"
+  },
+  "MODEL-SUM-001": {
+   "blocking_issues": null,
+   "code": "`lib/agents/summarizers.py`",
+   "code_paths": [
+    "lib/agents/summarizers.py"
+   ],
+   "count": "—",
+   "decision_produced": null,
+   "doc": null,
+   "id": "MODEL-SUM-001",
+   "name": null,
+   "nodes": "deterministic + LLM summarizers",
+   "numeric_authority": "preserve supplied values",
+   "rec": null,
+   "status": "Experimental — #827 silent fallback",
+   "tier": "LLM nodes",
+   "type": null
+  },
+  "MODEL-SWEEP-001": {
+   "blocking_issues": null,
+   "code": "`lib/walk_forward.py`, `scripts/run_param_sweep.py`, `scripts/run_walk_forward.py`, `scripts/calibrate_iwm_strat.py`, `exit_config_overrides`",
+   "code_artifact": "`lib/walk_forward.py`, `scripts/run_param_sweep.py`, `scripts/run_walk_forward.py`, `scripts/calibrate_iwm_strat.py`, `exit_config_overrides`",
+   "code_artifact_paths": [
+    "lib/walk_forward.py",
+    "scripts/run_param_sweep.py",
+    "scripts/run_walk_forward.py",
+    "scripts/calibrate_iwm_strat.py",
+    "exit_config_overrides"
+   ],
+   "code_paths": [
+    "lib/walk_forward.py",
+    "scripts/run_param_sweep.py",
+    "scripts/run_walk_forward.py",
+    "scripts/calibrate_iwm_strat.py",
+    "exit_config_overrides"
+   ],
+   "decision_produced": "winning exit/entry parameter set written to `exit_config_overrides`",
+   "doc": "CURRENT · doc",
+   "evidence": "#813 \"out-of-sample\" calibration is in-sample and auto-writes production · #817 exhaustive in-sample mining, no multiple-testing control · #886 survivorship bias · #380 close the loop",
+   "id": "MODEL-SWEEP-001",
+   "issue_numbers": [
+    380,
+    813,
+    817,
+    886
+   ],
+   "name": "Walk-forward parameter sweep",
+   "rec": "RESTRUCTURE",
+   "status": "Invalidated",
+   "tier": "Learned models",
+   "type": "Statistical"
+  },
+  "MODEL-TYPE-001": {
+   "blocking_issues": null,
+   "code": "`gcp/research/strat_engine`",
+   "code_artifact": "`gcp/research/strat_engine`",
+   "code_artifact_paths": [
+    "gcp/research/strat_engine"
+   ],
+   "code_paths": [
+    "gcp/research/strat_engine"
+   ],
+   "decision_produced": "scenario / type classification",
+   "doc": "UNVERIFIED · DOC-07",
+   "evidence": "Wired behind a feature flag (#647); QQQ-30m explicitly gated as not calibrated (#648)",
+   "id": "MODEL-TYPE-001",
+   "issue_numbers": [
+    647,
+    648
+   ],
+   "name": "STRAT type / structure continuation",
+   "rec": "RETEST",
+   "status": "Shadow",
+   "tier": "Learned models",
+   "type": "ML"
+  },
+  "MODEL-WATCH-001": {
+   "blocking_issues": "None filed. Unevaluated — `min_wins = 2` and the prior-winners-repeat premise carry no derivation and no experiment",
+   "code": "`gcp/earnings_long_watchlist.py`",
+   "code_paths": [
+    "gcp/earnings_long_watchlist.py"
+   ],
+   "decision_produced": "which upcoming reporters to consider a long-premium position on",
+   "doc": "CURRENT · doc",
+   "id": "MODEL-WATCH-001",
+   "issue_numbers": [],
+   "name": "Long-side earnings watchlist",
+   "rec": "RETEST",
+   "status": "Experimental",
+   "tier": "Deterministic and heuristic systems",
+   "type": "Heuristic"
+  },
+  "MODEL-WEEK-001": {
+   "blocking_issues": "#1137 the module docstring claims a backtest comparison the code does not perform · §3.7 — fixed 2026-09-22 (DOC-62): a week whose `return_pct` was entirely NULL published `0.0` to Discord from five code sites, not the two this cell used to name — overall `win_rate` and `total_pnl`, both per-direction rates, both per-ticker figures, and one per strength rung, the last of them introduced by DOC-56's own fix. All five now carry `NaN` end to end and render as an em-dash; a measured 0% still reads `0.0%`. A `trades` frame missing the column still raises, now a `ValueError` naming it rather than pandas' `IndexingError`. Measured through `generate_weekly_review`, not inferred. The line pointers this cell carried described the pre-fix code and were briefly bumped mechanically on 2026-09-22, which pointed them at unrelated lines; historical pointers are dropped rather than maintained.",
+   "code": "`gcp/weekend_review.py`",
+   "code_paths": [
+    "gcp/weekend_review.py"
+   ],
+   "decision_produced": "realized win rate per score bucket, labelled on the live ladder",
+   "doc": "CURRENT · doc",
+   "id": "MODEL-WEEK-001",
+   "issue_numbers": [
+    1137
+   ],
+   "name": "Weekend performance review",
+   "rec": "RESTRUCTURE",
+   "status": "Production but needs remediation",
+   "tier": "Deterministic and heuristic systems",
+   "type": "Heuristic"
+  }
+ },
+ "registry_last_reviewed": "2026-09-26",
+ "schedulers": [
+  {
+   "cron_america_new_york": "`35 23 * * 1-5`",
+   "job": "`strat-engine`",
+   "models": [
+    "MODEL-TYPE-001"
+   ],
+   "scheduler": "`strat-engine-daily`",
+   "serves": "MODEL-TYPE-001"
+  },
+  {
+   "cron_america_new_york": "`25 9 * * 1-5`",
+   "job": "`magnitude-inference`",
+   "models": [
+    "MODEL-MAG-001"
+   ],
+   "scheduler": "`magnitude-inference-daily`",
+   "serves": "MODEL-MAG-001"
+  },
+  {
+   "cron_america_new_york": "`55 9 * * 1-5`",
+   "job": "`audit-magnitude-drift`",
+   "models": [
+    "MODEL-MAG-001"
+   ],
+   "scheduler": "`audit-magnitude-drift-daily`",
+   "serves": "MODEL-MAG-001 drift"
+  },
+  {
+   "cron_america_new_york": "`0 9 * * 6`",
+   "job": "`audit-walkforward`",
+   "models": [
+    "MODEL-MOM-001",
+    "MODEL-MR-001"
+   ],
+   "scheduler": "`audit-walkforward-weekly`",
+   "serves": "MODEL-MOM-001 / MODEL-MR-001 factor audit (`scripts.analysis.per_factor_walkforward`, read-only)"
+  },
+  {
+   "cron_america_new_york": "`0 5 * * 0`",
+   "job": "`regime-combo`",
+   "models": [],
+   "models_note": "no registered model named in Serves: combo mining (E-22) — writes `regime_combo_results`, and nothing in this repo reads that table. Owned by the ledger, not by a `MODEL-` row, because it feeds no decision. Listed so the weekly spend is visible, not because anything consumes it",
+   "scheduler": "`regime-combo-weekly`",
+   "serves": "combo mining (E-22) — writes `regime_combo_results`, and nothing in this repo reads that table. Owned by the ledger, not by a `MODEL-` row, because it feeds no decision. Listed so the weekly spend is visible, not because anything consumes it"
+  },
+  {
+   "cron_america_new_york": "`0 2 1 1,4,7,10 `",
+   "job": "`calibrate-thresholds`",
+   "models": [
+    "MODEL-CALIB-001"
+   ],
+   "scheduler": "`calibrate-thresholds-quarterly`",
+   "serves": "MODEL-CALIB-001 writer (A), the percentile calibrator"
+  },
+  {
+   "cron_america_new_york": "`30 22 * * 1-5`",
+   "job": "`p2-build-gamma-levels`",
+   "models": [
+    "MODEL-GAMMA-001"
+   ],
+   "scheduler": "`gamma-levels-daily`",
+   "serves": "MODEL-GAMMA-001"
+  },
+  {
+   "cron_america_new_york": "`0 10 * * 0`",
+   "job": "`audit-brief-bias`",
+   "models": [
+    "MODEL-BRIEF-001"
+   ],
+   "scheduler": "`audit-brief-bias-weekly`",
+   "serves": "MODEL-BRIEF-001 audit"
+  },
+  {
+   "cron_america_new_york": "`25 9 * * 1-5`",
+   "job": "`signal-monitor`",
+   "models": [
+    "MODEL-AGREE-001",
+    "MODEL-BRIEF-001",
+    "MODEL-EXIT-001",
+    "MODEL-FTFC-001",
+    "MODEL-IND-001",
+    "MODEL-LEVEL-001",
+    "MODEL-MOM-001",
+    "MODEL-MR-001",
+    "MODEL-STRAT-001"
+   ],
+   "scheduler": "`signal-monitor-daily`",
+   "serves": "the live fire path — MODEL-STRAT-001, MODEL-FTFC-001, MODEL-LEVEL-001, MODEL-IND-001, MODEL-MOM-001, MODEL-MR-001, MODEL-AGREE-001, MODEL-EXIT-001, MODEL-BRIEF-001"
+  },
+  {
+   "cron_america_new_york": "`45 9 * * 1-5`",
+   "job": "`signal-monitor`",
+   "models": [
+    "MODEL-IND-001"
+   ],
+   "scheduler": "`orb-15m-alert`",
+   "serves": "MODEL-IND-001 (opening range)"
+  },
+  {
+   "cron_america_new_york": "`0 10 * * 1-5`",
+   "job": "`signal-monitor`",
+   "models": [
+    "MODEL-IND-001"
+   ],
+   "scheduler": "`orb-30m-alert`",
+   "serves": "MODEL-IND-001 (opening range)"
+  },
+  {
+   "cron_america_new_york": "`30 16 * * 1-5`",
+   "job": "`signal-monitor-eod-resolver`",
+   "models": [
+    "MODEL-EXIT-001"
+   ],
+   "scheduler": "`signal-monitor-eod-resolver-daily`",
+   "serves": "MODEL-EXIT-001 outcomes"
+  },
+  {
+   "cron_america_new_york": "`0 17 * * 1-5`",
+   "job": "`build-realtime-gex`",
+   "models": [
+    "MODEL-GAMMA-001"
+   ],
+   "scheduler": "`realtime-gex-daily`",
+   "serves": "MODEL-GAMMA-001"
+  },
+  {
+   "cron_america_new_york": "`0 20 * * 0`",
+   "job": "`refresh-earnings-views`",
+   "models": [
+    "MODEL-EARN-001"
+   ],
+   "scheduler": "`refresh-earnings-views-weekly`",
+   "serves": "MODEL-EARN-001"
+  },
+  {
+   "cron_america_new_york": "`30 7 * * 1-5`",
+   "job": "`refresh-earnings-views`",
+   "models": [
+    "MODEL-EARN-001"
+   ],
+   "scheduler": "`refresh-earnings-views-daily`",
+   "serves": "MODEL-EARN-001 (declared via `_schedule_args`)"
+  },
+  {
+   "cron_america_new_york": "`15 21 * * 1-5`",
+   "job": "`premarket-playbook-resolver`",
+   "models": [
+    "MODEL-LEVEL-001"
+   ],
+   "scheduler": "`premarket-playbook-resolver-daily`",
+   "serves": "MODEL-LEVEL-001 (calls `build_level_map`)"
+  },
+  {
+   "cron_america_new_york": "`30 8 * * 1-5`",
+   "job": "`premarket-brief`",
+   "models": [
+    "MODEL-BRIEF-001",
+    "MODEL-EARN-001",
+    "MODEL-IND-001",
+    "MODEL-LEVEL-001",
+    "MODEL-STRAT-001"
+   ],
+   "scheduler": "`premarket-brief-daily`",
+   "serves": "MODEL-BRIEF-001 — and the MODEL-IND-001 / MODEL-STRAT-001 / MODEL-LEVEL-001 / mean-reversion condition helpers it imports at `gcp/premarket_brief.py:25-28`, plus MODEL-EARN-001 at `:615`. Also a second live LLM path: `lib.agents.summarizers` (`:131`), `lib.agents.trade_planner` (`:1416`) and, via `gcp/brief_explanations.py:114-115`, `lib.agents.llm_client`"
+  },
+  {
+   "cron_america_new_york": "`0 21 * * 0`",
+   "job": "`premarket-brief`",
+   "models": [
+    "MODEL-BRIEF-001",
+    "MODEL-EARN-001",
+    "MODEL-IND-001",
+    "MODEL-LEVEL-001",
+    "MODEL-STRAT-001"
+   ],
+   "scheduler": "`premarket-brief-sunday`",
+   "serves": "the same job, weekend refresh"
+  },
+  {
+   "cron_america_new_york": "`10 8 * * 1-5`",
+   "job": "`auto-refresh-top-n`",
+   "models": [
+    "MODEL-RANK-001"
+   ],
+   "scheduler": "`auto-refresh-top-n`",
+   "serves": "MODEL-RANK-001 — `lib.agents.ranker.rank_tickers` (`gcp/auto_refresh_top_n.py:53`), its only scheduled caller"
+  },
+  {
+   "cron_america_new_york": "`0 22 * * 1-5`",
+   "job": "`build-options-daily-features`",
+   "models": [
+    "MODEL-FEAT-X"
+   ],
+   "scheduler": "`options-daily-features`",
+   "serves": "MODEL-FEAT-X — `lib.features.experimental.options_derived` (`gcp/fetchers/build_options_daily_features.py:30`)"
+  },
+  {
+   "cron_america_new_york": "`15 23 * * 1-5`",
+   "job": "`build-options-greeks`",
+   "models": [
+    "MODEL-FLOW-001"
+   ],
+   "scheduler": "`options-daily-greeks`",
+   "serves": "MODEL-FLOW-001 — `lib.features.flow_direction` (lazy import at `gcp/build_options_daily_greeks.py:131`). Live for a falsified feature set, and one of the two visibility-only exceptions above: `etf_options_daily_greeks` has no production reader, only the research joiner in `lib/features/flow_direction.py`. Listed so the weekly spend is visible, not because it satisfies the rule — see the model's doc"
+  },
+  {
+   "cron_america_new_york": "`0 1 * * 2-6`",
+   "job": "`historical-signals-watchlist`",
+   "models": [
+    "MODEL-IND-001",
+    "MODEL-MOM-001",
+    "MODEL-MR-001"
+   ],
+   "scheduler": "`historical-signals-watchlist-daily`",
+   "serves": "MODEL-MOM-001 / MODEL-MR-001 / MODEL-IND-001 replayed over history — `MarketAnalyzer` (`scripts/run_historical_signals.py:40`), `lib.signals.generate_signals` (`:366`). The producer of `historical_signals`"
+  },
+  {
+   "cron_america_new_york": "`30 20 * * 0`",
+   "job": "`earnings-sweep`",
+   "models": [
+    "MODEL-EARN-001"
+   ],
+   "scheduler": "`earnings-sweep-sunday`",
+   "serves": "MODEL-EARN-001 — writes `earnings_calibration`; applying is the default (`--no-apply` opts out). Declared in `gcp/deploy.sh:4707`, absent from the live fleet — confirmed 2026-09-18 against `gcloud scheduler jobs list`, and pinned by `tests/scripts/test_doc_inventory.py:235`"
+  },
+  {
+   "cron_america_new_york": "`35 8 * * 1-5`",
+   "job": "`earnings-reactions-brief`",
+   "models": [
+    "MODEL-EARN-002"
+   ],
+   "scheduler": "`earnings-reactions-brief-daily`",
+   "serves": "MODEL-EARN-002 — `classify_context` (`gcp/earnings_reactions_brief.py:474`). Output is a Discord embed; there is no table behind it"
+  },
+  {
+   "cron_america_new_york": "`30 4 * * 1-5`",
+   "job": "`phase6-playbook`",
+   "models": [
+    "MODEL-PLAY-001"
+   ],
+   "scheduler": "`phase6-playbook-daily`",
+   "serves": "MODEL-PLAY-001 — per-ticker entry cards, `\"IF ALL CONFIRMED -> {direction} ENTRY\"` (`scripts/analysis/phase6_playbook.py:305`), upserted to `playbook_cards` and served by `/api/playbook`. Registered 2026-09-18; it was the deliberate exclusion quoted above"
+  },
+  {
+   "cron_america_new_york": "`45 19 * * 0`",
+   "job": "`earnings-long-watchlist`",
+   "models": [
+    "MODEL-WATCH-001"
+   ],
+   "scheduler": "`earnings-long-watchlist-sunday`",
+   "serves": "MODEL-WATCH-001 — ranks upcoming reporters by prior long-side wins, `HAVING COUNT(DISTINCT (structure, event_date)) >= :min_wins` (`gcp/earnings_long_watchlist.py:169`), Discord embed"
+  },
+  {
+   "cron_america_new_york": "`0 23 * * 1-5`",
+   "job": "`evaluate-ew-strikes`",
+   "models": [
+    "MODEL-EWV-001"
+   ],
+   "scheduler": "`evaluate-ew-strikes-daily`",
+   "serves": "MODEL-EWV-001 — HIT / MISS / KEPT / ASSIGNED verdicts on Earnings Whispers strike picks (`gcp/fetchers/evaluate_ew_strikes.py:101-180`), recapped by the next weekday's premarket brief (`gcp/premarket_brief.py:718`, #1168)"
+  },
+  {
+   "cron_america_new_york": "`0 9 * * 6`",
+   "job": "`weekend-review`",
+   "models": [
+    "MODEL-WEEK-001"
+   ],
+   "scheduler": "`weekend-review-weekly`",
+   "serves": "MODEL-WEEK-001 — realized win rate per score bucket, labelled with `get_signal_strength_label` (`gcp/weekend_review.py:72`), the same ladder `gcp/signal_monitor.py:1343` labels live fires with. Discord"
+  },
+  {
+   "cron_america_new_york": "`30 1 * * 2-6`",
+   "job": "`signal-quality-report`",
+   "models": [
+    "MODEL-QUAL-001"
+   ],
+   "scheduler": "`signal-quality-report-nightly`",
+   "serves": "MODEL-QUAL-001 — classifies every historical fire at seven horizons into `signal_metrics` (`scripts/signal_quality_report.py:92-115`). Fires half an hour after its writer, `historical-signals-watchlist-daily`, and heals any row from the last 35 days still unscored (#1166)"
+  },
+  {
+   "cron_america_new_york": "`0 2 * * 2-6`",
+   "job": "`signal-quality-alarm`",
+   "models": [
+    "MODEL-QUAL-001"
+   ],
+   "scheduler": "`signal-quality-alarm-daily`",
+   "serves": "MODEL-QUAL-001 regression alarm — trailing-7d vs prior-7d clean rate, fires below `-3.0` pp on `>= 50` rows per window (`gcp/signal_quality_alarm.py:120-122`); plus a report-only score-discrimination check over 14 days of live exits"
+  },
+  {
+   "cron_america_new_york": "`0 23 * * 1-5`",
+   "job": "`fetch-market-data`",
+   "models": [
+    "MODEL-FTFC-001",
+    "MODEL-RANK-001",
+    "MODEL-STRAT-001"
+   ],
+   "scheduler": "`fetch-market-data-daily`",
+   "serves": "MODEL-STRAT-001 / MODEL-FTFC-001 — emits the decision, not just the inputs: `StratClassifier.classify_series` + `detect_combos` (`gcp/fetchers/fetch_market_data.py:367-380`), then `ftfc_score`, `ftfc_direction` and the thresholded `strat_setup = last_combo and abs(ftfc_score) >= 0.3` (`:370-379`), upserted to `market_data_daily` (`:439`). Served by `/api/dashboard` (`platform/api/routers/dashboard.py:146-149`) and scored by MODEL-RANK-001 (`lib/agents/ranker/signals.py:55`, `:68-73`)"
+  },
+  {
+   "cron_america_new_york": "`30 2 * * 1-6`",
+   "job": "`backfill-daily-indicators`",
+   "models": [
+    "MODEL-STRAT-001"
+   ],
+   "scheduler": "`backfill-indicators-daily`",
+   "serves": "MODEL-STRAT-001 — the label clause, not the decision one: it writes `strat_candle` and `strat_combo` over history (`gcp/fetchers/backfill_daily_indicators.py:320-341`) and its own comment at `:137-138` records that `ftfc_score` / `strat_setup` are \"populated only by the live writer's per-day pass\". The candle classification is MODEL-STRAT-001's output and the dashboard serves it"
+  },
+  {
+   "cron_america_new_york": "`0 3 * * 0`",
+   "job": "`backfill-daily-indicators`",
+   "models": [
+    "MODEL-STRAT-001"
+   ],
+   "scheduler": "`backfill-indicators-weekly`",
+   "serves": "MODEL-STRAT-001 — the same job as `backfill-indicators-daily` above, on a Sunday full-history pass (`BACKFILL_MODE=full`). Same label clause, same `strat_candle` / `strat_combo` output, same dashboard reader. Declared with a raw `gcloud scheduler jobs create http`, which is why it was invisible to the coverage audit until 2026-09-22 (DOC-48)"
+  },
+  {
+   "cron_america_new_york": "`45 8 * * 1-5`",
+   "job": "`insight-pipeline`",
+   "models": [
+    "MODEL-LLM-ANALYST",
+    "MODEL-LLM-DEBATE",
+    "MODEL-LLM-JUDGE",
+    "MODEL-LLM-PM",
+    "MODEL-LLM-RISK",
+    "MODEL-LLM-TRADER",
+    "MODEL-SUM-001"
+   ],
+   "scheduler": "`insight-pipeline-daily`",
+   "serves": "all 14 LLM nodes — `lib.agents.orchestrator.run_insight_pipeline`, imported at `gcp/insight_pipeline_job.py:69` and called at `:526`"
+  },
+  {
+   "cron_america_new_york": "`15 9 * * 1-5`",
+   "job": "`insight-discord-push`",
+   "models": [
+    "MODEL-LLM-ANALYST",
+    "MODEL-LLM-DEBATE",
+    "MODEL-LLM-JUDGE",
+    "MODEL-LLM-PM",
+    "MODEL-LLM-RISK",
+    "MODEL-LLM-TRADER",
+    "MODEL-SUM-001"
+   ],
+   "scheduler": "`insight-discord-push-daily`",
+   "serves": "the LLM nodes' delivery half — `lib.agents.model_routing` (`gcp/insight_discord_push.py:36`)"
+  }
+ ],
+ "sources": {
+  "docs/EXPERIMENT_REGISTRY.md": "928c447f336fc10a2a08d2e69b5e1ec5c1eddb7c",
+  "docs/product/07-MODEL-REGISTRY.md": "d8f23bc5a258f5b6408e3f70816f8139dce9a25e",
+  "scripts/gate/export_model_registry.py": "74e5fdc5bb2e7bf11894b3de2601c4dc8428122d"
+ },
+ "tables": [
+  {
+   "columns": [
+    "ID",
+    "Name",
+    "Type",
+    "Decision produced",
+    "Code",
+    "Status",
+    "Rec",
+    "Doc",
+    "Blocking issues"
+   ],
+   "rows": 19,
+   "section": "Model and Algorithm Registry / Deterministic and heuristic systems"
+  },
+  {
+   "columns": [
+    "Case",
+    "`8eccde7` (pre-#942)",
+    "`b9621c4` (post-#942)"
+   ],
+   "rows": 2,
+   "section": "Model and Algorithm Registry / Deterministic and heuristic systems / MODEL-GAMMA-001 — what was and was not reproduced, 2026-08-30"
+  },
+  {
+   "columns": [
+    "ID",
+    "Name",
+    "Type",
+    "Decision produced",
+    "Code / artifact",
+    "Status",
+    "Rec",
+    "Doc",
+    "Evidence"
+   ],
+   "rows": 10,
+   "section": "Model and Algorithm Registry / Learned models"
+  },
+  {
+   "columns": [
+    "ID",
+    "Nodes",
+    "Count",
+    "Code",
+    "Numeric authority",
+    "Status"
+   ],
+   "rows": 7,
+   "section": "Model and Algorithm Registry / LLM nodes"
+  },
+  {
+   "columns": [
+    "Status",
+    "Models"
+   ],
+   "rows": 8,
+   "section": "Model and Algorithm Registry / Status summary"
+  },
+  {
+   "columns": [
+    "Model",
+    "Experiments",
+    "Primary code",
+    "Deep doc",
+    "Recorded verdict"
+   ],
+   "rows": 12,
+   "section": "Model and Algorithm Registry / Experiment traceability"
+  },
+  {
+   "columns": [
+    "Experiments",
+    "Subject",
+    "Where it lives",
+    "Verdict"
+   ],
+   "rows": 6,
+   "section": "Model and Algorithm Registry / Experiment traceability / Experiments with no `MODEL-` owner"
+  },
+  {
+   "columns": [
+    "Row",
+    "Writes",
+    "Read by"
+   ],
+   "rows": 2,
+   "section": "Model and Algorithm Registry / Experiment traceability / Which of these actually run"
+  },
+  {
+   "columns": [
+    "Scheduler",
+    "Cron (`America/New_York`)",
+    "Job",
+    "Serves"
+   ],
+   "rows": 35,
+   "section": "Model and Algorithm Registry / Experiment traceability / Which of these actually run"
+  },
+  {
+   "columns": [
+    "Scheduler",
+    "Job",
+    "Why it is not model-bearing"
+   ],
+   "rows": 20,
+   "section": "Model and Algorithm Registry / Experiment traceability / Which of these actually run / Deliberately not model-bearing"
+  },
+  {
+   "columns": [
+    "Doc",
+    "Holds"
+   ],
+   "rows": 14,
+   "section": "Model and Algorithm Registry / Experiment traceability / Research documentation corpus"
+  },
+  {
+   "columns": [
+    "ID",
+    "Doc",
+    "Claim → actual",
+    "Kind",
+    "Sev",
+    "Models"
+   ],
+   "rows": 67,
+   "section": "Model and Algorithm Registry / Documentation coverage and freshness / Findings"
+  },
+  {
+   "columns": [
+    "ID",
+    "Disposition",
+    "Why"
+   ],
+   "rows": 59,
+   "section": "Model and Algorithm Registry / Documentation coverage and freshness / Disposition"
+  },
+  {
+   "columns": [
+    "PR",
+    "Opened",
+    "Scope",
+    "Bearing on this registry"
+   ],
+   "rows": 4,
+   "section": "Model and Algorithm Registry / Documentation coverage and freshness / Open pull requests touching this surface"
+  },
+  {
+   "columns": [
+    "Invariant",
+    "Catches"
+   ],
+   "rows": 30,
+   "section": "Model and Algorithm Registry / How this registry is kept honest"
+  },
+  {
+   "columns": [
+    "Aspect",
+    "Reference"
+   ],
+   "rows": 5,
+   "section": "Model and Algorithm Registry / Traceability"
+  }
+ ],
+ "traceability_rows": 12
+}

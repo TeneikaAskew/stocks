@@ -8,12 +8,49 @@ and creates or updates issues and draft PRs for tracking fixes.
 """
 
 import os
+import re
 import sys
 import json
 import argparse
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 import requests
+
+# Failure branches are fix/<feat-id>-<slug> so the spec gate can read FEAT-CICD-001
+# from them. Drafts opened before that rename still carry fix/workflow-<name>-<run>,
+# and the lookup must keep finding them, or the next failure opens a duplicate.
+FAILURE_BRANCH_PREFIX = "fix/feat-cicd-001-workflow-"
+LEGACY_FAILURE_BRANCH_PREFIX = "fix/workflow-"
+FAILURE_BRANCH_PREFIXES = (FAILURE_BRANCH_PREFIX, LEGACY_FAILURE_BRANCH_PREFIX)
+FAILURE_FEAT_ID = "FEAT-CICD-001"
+
+
+def failure_pr_title(failure_title: str) -> str:
+    """The draft PR's title: '<FEAT-ID>: <failure>', the shape the spec gate requires.
+
+    check_pr_metadata() demands a title starting with the branch's FEAT-ID, so a
+    'Fix: ...' title would turn every failure PR red the moment its fix lands.
+    """
+    return f"{FAILURE_FEAT_ID}: {failure_title.replace('❌', '').strip()}"
+
+
+def workflow_slug(workflow_file: str) -> str:
+    """The workflow's stem as a lowercase kebab-case slug: `fetch_etf_options.yml` becomes
+    `fetch-etf-options`, the only shape the spec gate's branch pattern accepts."""
+    stem = re.sub(r"\.ya?ml$", "", workflow_file.rsplit("/", 1)[-1])
+    return re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-")
+
+
+def is_failure_branch(head_label: str, owner: str, workflow_base: str) -> bool:
+    """True when a PR head label is this workflow's failure branch under the current name:
+    the only branch shape the spec gate lets a fix merge from."""
+    return head_label.startswith(f"{owner}:{FAILURE_BRANCH_PREFIX}{workflow_base}-")
+
+
+def is_legacy_failure_branch(head_label: str, owner: str, workflow_base: str) -> bool:
+    """True for a draft opened before the rename: a fix pushed there cannot pass the spec
+    gate, so it is superseded by a new PR rather than reused."""
+    return head_label.startswith(f"{owner}:{LEGACY_FAILURE_BRANCH_PREFIX}{workflow_base}-")
 
 
 class GitHubAPIError(Exception):
@@ -247,25 +284,33 @@ class WorkflowFailureHandler:
         Returns:
             PR number if found, None otherwise
         """
-        # Look for PRs with branch pattern fix/workflow-{workflow_file}-*
-        workflow_base = workflow_file.replace('.yml', '')
-        head_pattern = f"{self.owner}:fix/workflow-{workflow_base}-"
+        # Only a PR on the current branch shape is reused: the spec gate rejects a fix
+        # pushed to a legacy fix/workflow-* branch, so such a draft is superseded instead.
+        workflow_base = workflow_slug(workflow_file)
 
         try:
-            # Search for open PRs
-            endpoint = f"/repos/{self.owner}/{self.repo}/pulls?state=open&per_page=100"
-            response = self._make_request("GET", endpoint)
-
-            for pr in response:
+            for pr in self._open_prs():
                 pr_head = pr.get('head', {}).get('label', '')
-                # Check if PR head matches the pattern
-                if pr_head.startswith(head_pattern):
+                if is_failure_branch(pr_head, self.owner, workflow_base):
                     return pr['number']
 
         except GitHubAPIError:
             pass
 
         return None
+
+    def _open_prs(self) -> list:
+        endpoint = f"/repos/{self.owner}/{self.repo}/pulls?state=open&per_page=100"
+        return self._make_request("GET", endpoint)
+
+    def find_legacy_prs(self, workflow_file: str) -> List[int]:
+        """Open drafts on the pre-rename fix/workflow-<name>-<run> branch for this workflow."""
+        workflow_base = workflow_file.replace('.yml', '')
+        try:
+            return [pr['number'] for pr in self._open_prs()
+                    if is_legacy_failure_branch(pr.get('head', {}).get('label', ''), self.owner, workflow_base)]
+        except GitHubAPIError:
+            return []
 
     def add_pr_comment(self, pr_number: int, body: str) -> None:
         """Add a comment to an existing PR (same endpoint as issues)."""
@@ -581,7 +626,8 @@ Based on the workflow, these files may need attention:
                 pr_number = existing_pr
             else:
                 # Create branch and PR
-                branch_name = f"fix/workflow-{workflow_file.replace('.yml', '')}-{run_number}"
+                # fix/<feat-id>-<slug>: the spec gate reads FEAT-CICD-001 from this shape.
+                branch_name = f"{FAILURE_BRANCH_PREFIX}{workflow_slug(workflow_file)}-{run_number}"
                 print(f"Creating branch: {branch_name}")
 
                 try:
@@ -592,7 +638,7 @@ Based on the workflow, these files may need attention:
                         branch_head_sha = self.create_placeholder_commit(branch_name, branch_head_sha)
 
                     # Create PR
-                    pr_title = f"Fix: {failure_title.replace('❌', '').strip()}"
+                    pr_title = failure_pr_title(failure_title)
                     error_summary = error_logs[:500] + "..." if len(error_logs) > 500 else error_logs
 
                     pr_body = self.format_pr_body(
@@ -603,6 +649,11 @@ Based on the workflow, these files may need attention:
                     print("Creating draft pull request...")
                     pr_number = self.create_pull_request(pr_title, pr_body, branch_name, "main", draft=True)
                     print(f"Created PR #{pr_number}")
+                    for legacy in self.find_legacy_prs(workflow_file):
+                        self.add_pr_comment(legacy, (
+                            f"Superseded by #{pr_number}. This draft's branch predates the spec gate's "
+                            f"`fix/feat-cicd-001-workflow-*` shape, so a fix pushed here cannot merge; "
+                            f"carry it to #{pr_number} and close this one."))
 
                     # Update issue with PR link if this is a new issue
                     if not existing_issue:

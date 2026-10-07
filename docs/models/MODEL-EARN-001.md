@@ -1,5 +1,7 @@
 # MODEL-EARN-001 — Earnings-reaction analytics
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
+
 **Code:** `lib/earnings_reactions.py` (958 lines) ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** Experimental · **Rec:** RETEST
@@ -60,7 +62,7 @@ is linear in `1 / typical_daily_return`, and the score is bucketed by the **fixe
 `(15.7, 21.2, 28.2, 41.9)` below — four extra bars can move a name across a quintile boundary
 and therefore across the sizing guidance. The default is what production runs:
 `enrich_with_playability` passes `daily_return_window = 60` straight through (`:879-883`,
-`:902`) and `gcp/premarket_brief.py:615-616` calls it with no argument.
+`:902`) and `gcp/premarket_brief.py:603-604` calls it with no argument.
 
 The `+ 5` carries no comment. The function's own docstring says *"over the last `window_days`
 trading days"* (`:576`), while the docstring of the consumer hedges with a tilde — *"median
@@ -84,12 +86,12 @@ documented as intended.
 Boundaries are midpoints between adjacent quintile-average scores, so a score landing
 exactly on an average maps to that quintile.
 
-**Q1 names are not dropped.** `gcp/premarket_brief.py:669-696` moves every Q1-scoring
-survivor into a separate `low_conviction` list (`:684-685`) rather than discarding it — the
+**Q1 names are not dropped.** `gcp/premarket_brief.py:657-684` moves every Q1-scoring
+survivor into a separate `low_conviction` list (`:672-673`) rather than discarding it — the
 comment records why: silently dropping them *"hides whole-slate visibility"* and made
 mega-caps *"vanish without a trace"*. The daily embed then renders them per BMO/AMC bucket
-as one compact `⤷ Also reporting (lower conviction): TICK, TICK, …` line (`:2684`,
-`:2732`) and counts them in the title (`:2690`), so the full slate stays visible without
+as one compact `⤷ Also reporting (lower conviction): TICK, TICK, …` line (`:2746`,
+`:2794`) and counts them in the title (`:2752`), so the full slate stays visible without
 giving a below-baseline name a playability row.
 
 ## Archetypes

@@ -1,5 +1,7 @@
 # MODEL-AGREE-001 — Strategy-agreement scoring
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
+
 **Code:** `lib/strategies/agreement.py` (106 lines) ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
 **Status:** Production but needs remediation · **Rec:** RESTRUCTURE
@@ -96,7 +98,7 @@ order alerts, and it does size them.
 
 **UNKNOWN — not recorded in code or tests.** `AGREEMENT_BONUS = 1.0` carries no
 derivation, and the composite score's weighting is not tied to a measured outcome.
-This is what [#905](https://github.com/TeneikaAskew/stocks/issues/905) asks for: freeze
+This is what [#905](https://github.com/TeneikaAskew/stocks/issues/905) (superseded by [#1206](https://github.com/TeneikaAskew/stocks/issues/1206)) asks for: freeze
 the score and validate its expectancy prospectively.
 
 **Keep the two apart, because only one of them is consumed.** `AGREEMENT_BONUS` is added to

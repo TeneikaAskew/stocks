@@ -1,6 +1,6 @@
 # Documentation registry
 
-**Last reviewed:** 2026-09-16 · **Last scanned:** 2026-09-26 · **Owner:** TBD
+**Last reviewed:** 2026-09-16 · **Last scanned:** 2026-09-29 · **Owner:** TBD
 
 Which documents this repo maintains, who owns each one, and what code each one
 describes. `scripts/maintenance/docs_audit.py` reads the table below; the prose
@@ -169,6 +169,7 @@ point: somebody decides its class rather than inheriting a directory's.
 | A | docs/product/infrastructure/05-d-COST_ANALYSIS.md | gcp/deploy.sh | prose:.github/prompts/cost-analysis.md |
 | A | docs/product/infrastructure/05-e-API.md | platform/api | inventory:*; inventory:routers; inventory:routes |
 | A | docs/INVESTMENT_MODELS_SUMMARY.md | lib/strategies | mark:ticker_calibration_resolved_values |
+| A | docs/product/generated/model-registry.json | docs/product/07-MODEL-REGISTRY.md, docs/EXPERIMENT_REGISTRY.md, scripts/gate/export_model_registry.py | all |
 | B | docs/product/infrastructure/manual/* | |  |
 | C | docs/archive/* | |  |
 | C | docs/audit/* | |  |
@@ -292,4 +293,5 @@ point: somebody decides its class rather than inheriting a directory's.
 | D | tradingview-pine-scripts/*.md | tradingview-pine-scripts |  |
 | X | .claude/agents/*.md | |  |
 | X | .claude/commands/*.md | |  |
+| X | .claude/skills/**/*.md | |  |
 | X | .github/pull_request_template.md | |  |

@@ -13,7 +13,7 @@ This project has 17+ GitHub Actions workflows with an automated failure handling
 - **Reusable workflow**: `.github/workflows/handle-workflow-failure.yml`
 - **Failure script**: `scripts/handle_workflow_failure.py`
 - When a workflow fails, an issue is auto-created with label `workflow-failure`
-- A draft PR is auto-created on branch `fix/workflow-{name}-{run-number}`
+- A draft PR is auto-created on branch `fix/feat-cicd-001-workflow-{name}-{run-number}`
 
 ## Key Workflows and Their Data Pipelines
 

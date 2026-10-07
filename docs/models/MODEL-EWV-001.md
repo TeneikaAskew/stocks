@@ -1,5 +1,7 @@
 # MODEL-EWV-001 — Earnings Whispers strike verdicts
 
+**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
+
 **Code:** `gcp/fetchers/evaluate_ew_strikes.py` ·
 **Writes:** `earnings_calendar.ew_*` columns ·
 **Job:** `evaluate-ew-strikes` (`0 23 * * 1-5`, after the close) ·
@@ -39,17 +41,33 @@ half the picks.
 
 ## Where the verdict goes
 
-`gcp/premarket_brief.py` selects `ec.ew_strike_verdict, ec.ew_strike_move_pct` (`:358`), carries
-it through `_first_non_null('ew_strike_verdict')` (`:509`) into the brief payload (`:544`), and
-renders it at `:2391-2396` and `:2616`. Nothing else in the repository reads these columns; no
+**The weekday premarket brief recaps the last session's verdicts** (#1168).
+`gcp/premarket_brief.py`'s `load_ew_recap` (`:718`) finds the last NYSE session before the brief's
+date, reads the picks dated from the session before it through that one in one query, and keeps
+those that `scoring_session` scores on it, the rule this job uses. The brief attaches it on
+weekdays (`:1356`), so Monday's brief recaps Friday's session, and renders each scored pick with
+`_ew_verdict_str` (`:2454`) in its own section (`:2895`), counting the unscored ones. A failed load
+logs the error with its stack and puts an "unavailable" line in the embed
+(`_ew_recap_or_unavailable`, `:774`). Nothing else in the repository reads these columns; no
 router serves them.
 
-**On the code path, the live brief never shows a verdict** (#1168). The brief loads the rows
-whose `earnings_date` is today (in daily mode; the coming week on Sundays), at 08:30 ET, and this
-job scores at 23:00 ET, so those rows are always unscored when read. The render path is reachable
-only in `BRIEF_AS_OF` replays. This is from reading the code, not from a replay; #1168 names the
-check that would confirm it. Earlier revisions of this document and #1151 said the verdicts were
-"already rendered to a person"; on this reading they were not.
+Before #1168 the brief read the verdict from **today's** rows, which this job scores at 23:00 ET,
+so the live 08:30 brief never showed one. Only a `BRIEF_AS_OF` replay of day D could, and it
+showed D's own verdict, computed from D's session, in D's morning brief: a look-ahead. Today's rows
+no longer carry the `ew_*` columns (`load_earnings_for_brief`, `:300`), and the Whispers section
+shows today's pick without a verdict. Earlier revisions of this document and #1151 said the
+verdicts were "already rendered to a person"; before #1168 they were not.
+
+The brief's own suite pins this (#1168):
+- Monday's brief recaps Friday's session, in one query.
+- A Thursday after-close pick is recapped Monday, not Friday.
+- Today's rows never carry a verdict, and one on a row for today is not rendered.
+- The recap renders its verdicts, and does so on a day without earnings.
+- A failed recap is logged and named in the embed.
+- A NULL metric that pandas reads back as NaN renders as absent. Production's SNX (KEPT,
+  2026-09-24) has a NULL `ew_minutes_to_hit`, and `_ew_verdict_str` calls `int()` on the minutes.
+
+All 8 failed against the code before #1168.
 
 ## The scoring session (#1151, closed 2026-09-26)
 
@@ -223,13 +241,9 @@ Run against the code before #1181, 37 of the 62 failed. The wp7kf night's case r
 `assert 1 == 0`: the old rule failed it. Run against the code before #1151, 26 of the 33 then in
 the file failed. The case that is #1151 itself read
 `assert ['2026-09-24'] == ['2026-09-25']`: the pre-announcement session was fetched.
-`tests/gcp/test_premarket_brief.py:2387-2413` still covers the **consumer** with
-`ew_strike_verdict='HIT'` and `None` fixtures.
+The consumer's tests are with the consumer; see *Where the verdict goes*.
 
 ## Known issues
-
-[#1168](https://github.com/TeneikaAskew/stocks/issues/1168) the live premarket brief never shows
-a verdict; only `BRIEF_AS_OF` replays do.
 
 Titles and severity are owned by
 [12-PR-ISSUE-TRACEABILITY](../product/12-PR-ISSUE-TRACEABILITY.md).

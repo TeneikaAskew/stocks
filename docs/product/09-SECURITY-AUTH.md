@@ -1,6 +1,6 @@
 # Security, Authentication, Authorization, Tenancy
 
-**Last reviewed:** 2026-09-04 · **Last scanned:** 2026-09-18 · **Owner:** TBD · **Trust status:** Production but needs remediation
+**Last reviewed:** 2026-09-04 · **Last scanned:** 2026-09-29 · **Owner:** TBD · **Trust status:** Production but needs remediation
 
 > 2026-09-04 refresh: admin authorization is now role-based (the shared
 > `X-Admin-Token` gate is gone), the open-path list split into exact vs
@@ -407,6 +407,6 @@ to close registration. It is unset here on purpose.
 | Origin PR | [#623](https://github.com/TeneikaAskew/stocks/pull/623) Firebase auth end-to-end (backend + frontend + fail-closed deploy) |
 | Evolution | [#674](https://github.com/TeneikaAskew/stocks/pull/674) clock-skew tolerance · [#677](https://github.com/TeneikaAskew/stocks/pull/677) test coverage guarding #674 · [#626](https://github.com/TeneikaAskew/stocks/pull/626) journal per-user scoping · [#635](https://github.com/TeneikaAskew/stocks/pull/635) watchlist scoping · [#982](https://github.com/TeneikaAskew/stocks/pull/982) `/api/me/profile` with fail-closed ownership · [#983](https://github.com/TeneikaAskew/stocks/pull/983)/[#985](https://github.com/TeneikaAskew/stocks/pull/985) CI deploy identity, WIF ref clamp, `gha-creds` exclusion |
 | Secret hardening | [#318](https://github.com/TeneikaAskew/stocks/pull/318) · [#424](https://github.com/TeneikaAskew/stocks/pull/424) split Discord webhooks · [#385](https://github.com/TeneikaAskew/stocks/pull/385) IaC drift + secret hardening |
-| Open issues | [#911](https://github.com/TeneikaAskew/stocks/issues/911) · [#830](https://github.com/TeneikaAskew/stocks/issues/830) · [#850](https://github.com/TeneikaAskew/stocks/issues/850) · [#836](https://github.com/TeneikaAskew/stocks/issues/836) · [#837](https://github.com/TeneikaAskew/stocks/issues/837) · [#838](https://github.com/TeneikaAskew/stocks/issues/838) · [#839](https://github.com/TeneikaAskew/stocks/issues/839) · [#943](https://github.com/TeneikaAskew/stocks/issues/943) |
+| Open issues | [#911](https://github.com/TeneikaAskew/stocks/issues/911) · [#830](https://github.com/TeneikaAskew/stocks/issues/830) · [#850](https://github.com/TeneikaAskew/stocks/issues/850) · [#836](https://github.com/TeneikaAskew/stocks/issues/836) · [#837](https://github.com/TeneikaAskew/stocks/issues/837) · [#839](https://github.com/TeneikaAskew/stocks/issues/839) · [#943](https://github.com/TeneikaAskew/stocks/issues/943) |
 | Code | `platform/api/auth.py`, `platform/api/main.py:70,245,366-372`, `platform/api/routers/admin.py:51`, `platform/api/routers/profile.py`, `platform/deploy.sh:25-64,91-98`, `.github/workflows/deploy-staging.yml`, solyra `src/lib/authedFetch.ts:45,91` |
 | Tests | solyra `tests/auth-gate.spec.ts`, `admin-auth.spec.ts` (moved in #957); `dev.spec.ts` deleted in #957 — [#943](https://github.com/TeneikaAskew/stocks/issues/943) tests to be written fresh |
