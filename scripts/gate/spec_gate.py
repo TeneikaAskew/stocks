@@ -35,6 +35,7 @@ checks, and PR_BASE_REF must be main. Any harness (Claude Code, Codex, a human) 
 from __future__ import annotations
 
 import ast
+import functools
 import html
 import json
 import datetime
@@ -2254,14 +2255,20 @@ def visible(body: str) -> str:
     return "\n".join(kept)
 
 
+def rendered_line(line: str) -> str:
+    """One line as it renders: a link reads as its text, emphasis and code markers drop out.
+    Link text stops at a `[`, which keeps a run of `[` linear (red-team, this PR); balanced brackets
+    inside link text, which GitHub allows, are not modelled, as main's pattern did not model them."""
+    return re.sub(r"(?<!\w)[*_]{1,3}(?=\S)|(?<=\S)[*_]{1,3}(?!\w)", "", re.sub(r"\[([^\[\]]*)\]\([^)]*\)", r"\1", line)).replace("`", "")
+
+
 def checklist(body: str) -> list[tuple[bool, str]]:
     """Each rendered task-list item: its checkbox line plus the indented continuation
     lines that render as part of it, so a deferral written under the box still counts."""
     items: list[tuple[bool, str] | None] = []
     depth: list[int] = []
     # a link renders its text and emphasis its word: `[follow](url)-up`, `*follow*-up` (round five)
-    lines = [re.sub(r"(?<!\w)[*_]{1,3}(?=\S)|(?<=\S)[*_]{1,3}(?!\w)", "", re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", ln)).replace("`", "")
-             for ln in split_lines(visible(body))]
+    lines = [rendered_line(ln) for ln in split_lines(visible(body))]
     for n, line in enumerate(lines):
         if (m := CHECKBOX.match(line)):
             box = (m.group(1) in "xX", norm(m.group(2)))
@@ -2298,13 +2305,32 @@ def done_items(t: Traced) -> list[str]:
     return [norm(str(i)) for i in items] if isinstance(items, list) else []
 
 
+def item_prefix(text: str, item: str) -> int | None:
+    """How much of a checkbox's rendered text is the done_when item, or None when it does not
+    start with it. The item counts as written in the spec or as it renders: a box line is read
+    rendered, so `docs/**` copied verbatim from the spec reads `docs/` (solyra#82)."""
+    # rendered_line only, not visible(): that cuts an item at `<!--`, and the stub would match
+    # unrelated boxes (red-team, this PR)
+    for form in sorted({item, rendered_item(item)}, key=len, reverse=True):
+        if form and text.startswith(form):
+            return len(form)
+    return None
+
+
+@functools.lru_cache(maxsize=None)
+def rendered_item(item: str) -> str:
+    """Once per item, not per box: the link pattern is slow on a pathological item (red-team, this PR)."""
+    return norm(rendered_line(item))
+
+
 def matched_boxes(items: list[str], boxes: list[tuple[bool, str]]) -> dict[str, tuple[bool, str] | None]:
     """Each done_when item's own checkbox line, or None. A line serves one item, and the
     longest item claims first, so `run the tests` cannot also tick `run the tests on 3.12`."""
     free = list(boxes)
     out: dict[str, tuple[bool, str] | None] = {i: None for i in items}
-    for item in sorted(items, key=len, reverse=True):
-        hit = next((b for b in free if b[1].startswith(item)), None)
+    # longest as a box reads it: `[npm test](package.json) passes` is shorter than `npm test passes on node 22`
+    for item in sorted(items, key=lambda i: (len(rendered_item(i)), len(i)), reverse=True):
+        hit = next((b for b in free if item_prefix(b[1], item) is not None), None)
         if hit is not None:
             free.remove(hit)
         out[item] = hit
@@ -2370,7 +2396,9 @@ def check_pr_metadata(t: Traced, env: dict, tree: Tree) -> list[str]:
         matched = matched_boxes(done_items(t), boxes)
         missing = [i for i, box in matched.items() if box is None]
         items = done_items(t)
-        own = lambda i: [b for b in boxes if b[1].startswith(i) and not any(len(j) > len(i) and b[1].startswith(j) for j in items)]
+        # a tie goes to the item the box carries as written: `config FOO` over `config FOO_` (red-team, this PR)
+        claim = lambda b, i: ((p := item_prefix(b[1], i)) or 0, bool(p) and b[1].startswith(i))
+        own = lambda i: [b for b in boxes if claim(b, i)[0] and not any(claim(b, j) > claim(b, i) for j in items)]
         if twice := [i for i in items if len(own(i)) > 1]:
             # red-team round three: a ticked copy above an honest unticked line claimed the item
             errs.append("PR body carries more than one checkbox line for: " + "; ".join(twice) + "; one line per item")
@@ -2379,7 +2407,7 @@ def check_pr_metadata(t: Traced, env: dict, tree: Tree) -> list[str]:
                         "missing: " + "; ".join(missing))
         # Scanned past the item's own words: a done_when that says "no pending jobs" is the
         # spec's wording, not a deferral; what the author wrote after it is.
-        deferred = [box[1] for item, box in matched.items() if box and box[0] and DEFERRAL.search(box[1][len(item):])]
+        deferred = [box[1] for item, box in matched.items() if box and box[0] and DEFERRAL.search(box[1][item_prefix(box[1], item):])]
         if deferred:
             errs.append("a ticked done_when item defers its work, so it is not done: " + "; ".join(deferred))
         errs += check_canvas_handoff(t, body, tree)

@@ -1293,6 +1293,34 @@ def test_each_done_when_item_needs_its_own_checkbox(repo):
     assert pr(repo, BRANCH, CODE, **title, PR_BODY=two).returncode == 0
 
 
+def test_a_done_when_item_matches_as_written_or_as_rendered(repo):
+    """solyra#82: the body is read rendered, so `docs/**` pasted from the spec read `docs/`
+    and no spelling of the box could match an item holding `**`. The item now counts as
+    written or as rendered, in the body check and the close-out check alike."""
+    item = "e2e.yml has paths-ignore: ['docs/**', '**/*.md']"
+    on_base(repo, {SPEC: spec(done_when=[item])})
+    title = {"PR_TITLE": "FEAT-MODEL-001: x"}
+    for box in (item, f"e2e.yml has paths-ignore: `['docs/**', '**/*.md']`"):
+        assert pr(repo, BRANCH, CODE, **title, PR_BODY=f"Spec: {SPEC}\nPlan: {PLAN}\n\n- [ ] {box}\n").returncode == 0, box
+    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", f"| Models | Production | {TODAY} | #42 |")
+    meta = {**title, "PR_NUMBER": "42", "PR_DRAFT": "false"}
+    r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row}, **meta, PR_BODY=f"Spec: {SPEC}\nPlan: {PLAN}\n\n- [x] {item} (actionlint)\n")
+    assert r.returncode == 0, r.stdout
+    r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row}, **meta, PR_BODY=f"Spec: {SPEC}\nPlan: {PLAN}\n\n- [x] {item}, follow-up\n")
+    assert r.returncode == 1 and "defers its work" in r.stdout, r.stdout
+    # red-team, this PR: the rendered form drops markers only, so an item cut at `<!--` is not a stub
+    # that ticks an unrelated box, and the longer item as rendered claims first
+    on_base(repo, {SPEC: spec(done_when=["strip <!-- markers from the PR template"])})
+    r = pr(repo, BRANCH, CODE, **title, PR_BODY=f"Spec: {SPEC}\nPlan: {PLAN}\n\n- [ ] strip trailing whitespace\n")
+    assert r.returncode == 1 and "missing: strip <!--" in r.stdout, r.stdout
+    on_base(repo, {SPEC: spec(done_when=["[npm test](package.json) passes", "npm test passes on node 22"])})
+    for two in ("- [ ] npm test passes\n- [ ] npm test passes on node 22\n", "- [ ] npm test passes on node 22\n- [ ] npm test passes\n"):
+        assert pr(repo, BRANCH, CODE, **title, PR_BODY=f"Spec: {SPEC}\nPlan: {PLAN}\n\n{two}").returncode == 0, two
+    on_base(repo, {SPEC: spec(done_when=["config FOO_", "config FOO"])})
+    two = "- [ ] config FOO_BAR set\n- [ ] config FOO\n"
+    assert pr(repo, BRANCH, CODE, **title, PR_BODY=f"Spec: {SPEC}\nPlan: {PLAN}\n\n{two}").returncode == 0
+
+
 def test_the_pr_number_goes_in_the_prs_cell(repo):
     """solyra#72 r4118418395 (spec_gate.py:658).
 
