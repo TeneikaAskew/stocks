@@ -29,7 +29,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | [FEAT-MODEL-001](#feat-model-001) | Models / research | Predictive + calibration systems | `/admin` | `/api/magnitude`, `/api/admin/strat-engine` | `ticker_calibration`, `user_style_results` | **Invalidated / Failed** (mixed) | P0 | 4 | 11 | [#817](https://github.com/TeneikaAskew/stocks/issues/817) [#813](https://github.com/TeneikaAskew/stocks/issues/813) [#910](https://github.com/TeneikaAskew/stocks/issues/910) [#909](https://github.com/TeneikaAskew/stocks/issues/909) |
 | [FEAT-JOURNAL-001](#feat-journal-001) | Journal / portfolio | Per-user trade record + import | `/journal` | `/api/journal` (9) | `trades`, `journal_entries` | Production but needs remediation | P1 | 5 | 2 | [#722](https://github.com/TeneikaAskew/stocks/issues/722) [#716](https://github.com/TeneikaAskew/stocks/issues/716) |
 | [FEAT-ALERT-001](#feat-alert-001) | Alerts / Discord | Signal + brief delivery | — | `gcp/discord_interactions/` | `signal_alerts` | Production but needs remediation | P1 | 3 | 0 | — |
-| [FEAT-ADMIN-001](#feat-admin-001) | Administration | Operator surface | `/admin` | `/api/admin` (7), `/api/config` | `model_routing` | Production but needs remediation | P2 | 6 | 0 | — |
+| [FEAT-ADMIN-001](#feat-admin-001) | Administration | Operator surface | `/admin` | `/api/admin` (12), `/api/config` | `model_routing` | Production but needs remediation | P2 | 6 | 0 | — |
 | [FEAT-HELP-001](#feat-help-001) | Help / glossary | Term reference | `/help` | `/api/glossary/gamma` | — | Production | P3 | 5 | 0 | — |
 | [FEAT-SETTINGS-001](#feat-settings-001) | Settings | Account-backed appearance, trading defaults and profile | `/settings` | `/api/me/preferences`, `/api/me/profile` | `user_preferences`, `user_profile` | Production but needs remediation | P3 | 5 | 13 | [solyra#117](https://github.com/TeneikaAskew/solyra/issues/117) [solyra#119](https://github.com/TeneikaAskew/solyra/issues/119) [solyra#121](https://github.com/TeneikaAskew/solyra/issues/121) |
 | [FEAT-DATA-001](#feat-data-001) | Data platform | Ingestion, storage, freshness | — | fetcher jobs | 64 relations — see [06](06-DATA-ARCHITECTURE.md) | Production but needs remediation | P0 | 1 | 18 | [#926](https://github.com/TeneikaAskew/stocks/issues/926) [#925](https://github.com/TeneikaAskew/stocks/issues/925) [#863](https://github.com/TeneikaAskew/stocks/issues/863) [#862](https://github.com/TeneikaAskew/stocks/issues/862) |
@@ -446,7 +446,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Last reviewed | 2026-08-30 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/admin` |
-| Backend | `/api/admin` (7), `/api/config` |
+| Backend | `/api/admin` (12), `/api/config` |
 | Data | `model_routing` |
 | Models | — |
 | Code | [solyra `src/routes/AdminPage.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/routes/AdminPage.tsx), `platform/api/routers/admin.py` |

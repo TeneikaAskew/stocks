@@ -2,7 +2,7 @@
 
 **Last reviewed:** 2026-08-31 · **Last scanned:** 2026-09-29 · **Owner:** TBD
 
-**VERIFIED — CODE.** Extracted from FastAPI decorators in `platform/api` using Python AST parsing of all `@router|@app.<method>(...)` calls, including decorators whose path is declared on a later line. The inventory also inspects the enclosing handler, docstring, and SQL identifiers. **96 platform API endpoints** resolved this way; the Discord service contributes 2 additional HTTP endpoints. The admin router has gained five user and data-source routes since that extraction that the inventory does not list yet ([#1341](https://github.com/TeneikaAskew/stocks/issues/1341)).
+**VERIFIED — CODE.** Extracted from FastAPI decorators in `platform/api` using Python AST parsing of all `@router|@app.<method>(...)` calls, including decorators whose path is declared on a later line. The inventory also inspects the enclosing handler, docstring, and SQL identifiers. **101 platform API endpoints** resolved this way; the Discord service contributes 2 additional HTTP endpoints.
 
 ## How to read the Auth column
 
@@ -22,7 +22,7 @@ Auth is **global ASGI middleware**, not a per-handler dependency — see
 |---|---|
 | Gated in `firebase`; **unenforced in `iap`/`open`** | 78 |
 | **OPEN prefix — never gated** | 5 |
-| Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | 7 |
+| Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | 12 |
 | Gated in `firebase`; **unenforced in `iap`/`open`** + an owner check (`_prefs_owner`, `_profile_owner`) | 4 |
 | **Not gated in any mode** (non-`/api/`) | 2 |
 
@@ -51,7 +51,7 @@ Auth is **global ASGI middleware**, not a per-handler dependency — see
 | GET | `/api/market/most-active` | Most-active tickers snapshot, with per-ticker snapshot sparklines. | Gated in `firebase`; **unenforced in `iap`/`open`** | `market_data_intraday`, `top_movers_intraday` | ✓ |
 | GET | `/{full_path:path}` | SPA fallback — serve index.html for any non-API, non-asset route. | **Not gated in any mode** (non-`/api/`) | via `lib/` | — |
 
-### `platform/api/routers/admin.py` — 7 endpoints
+### `platform/api/routers/admin.py` — 12 endpoints
 
 | Method | Route | Purpose | Auth | Tables touched | UI |
 |---|---|---|---|---|---|
@@ -62,6 +62,11 @@ Auth is **global ASGI middleware**, not a per-handler dependency — see
 | GET | `/api/admin/strat-engine/state` | Operator snapshot of the on-shelf strat-engine model state. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | via `lib/` | ✓ |
 | POST | `/api/admin/strat-engine/predict` | Run an operator-authorized STRAT engine prediction. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | model artifacts via `lib/` | ✓ |
 | POST | `/api/admin/strat-engine/structure-continuation` | Evaluate operator-authorized structure-continuation evidence. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | model artifacts via `lib/` | ✓ |
+| GET | `/api/admin/users` | Every Firebase account + its stored role(s). | Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | `user_roles`; the Firebase Auth user directory through the Admin SDK | ✓ |
+| PUT | `/api/admin/users/{uid}/roles` | Replace an account's stored role. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | `user_roles` | ✓ |
+| PUT | `/api/admin/users/{uid}/status` | Enable or disable a Firebase account. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | `user_roles` (read back for the row); the Firebase Auth account's `disabled` flag | ✓ |
+| GET | `/api/admin/data-sources` | Per-dataset freshness/coverage, aggregated from the shared audit. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | the freshness audit's tables through `scripts/audit_data_freshness.py` | ✓ |
+| POST | `/api/admin/data-sources/{source_id}/refresh` | Queue the dataset's Cloud Run fetcher job. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | `admin_refresh_leases`; then the dispatched job's own table | ✓ |
 
 ### `platform/api/routers/analytics.py` — 2 endpoints
 
