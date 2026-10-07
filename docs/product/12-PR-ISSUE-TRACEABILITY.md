@@ -47,7 +47,7 @@ Both are correct; they count different sets. Re-reconciled 2026-09-03 after the 
 
 **Update 2026-09-03 (frontend split follow-through):** after the #957 split, [#683](https://github.com/TeneikaAskew/stocks/issues/683)/[#685](https://github.com/TeneikaAskew/stocks/issues/685) moved to [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26)/[solyra#27](https://github.com/TeneikaAskew/solyra/issues/27) and canonical [#868](https://github.com/TeneikaAskew/stocks/issues/868) moved to [solyra#28](https://github.com/TeneikaAskew/solyra/issues/28); all three stocks records are closed as not planned with the work still open in solyra. Post-audit #958 closed completed and follow-up [#971](https://github.com/TeneikaAskew/stocks/issues/971) opened for the live-connectivity coverage remainder. The canonical inventory stays 104, with #868's slot now tracked cross-repo.
 
-**Update 2026-09-14 (full reverification):** every open issue was reverified against `origin/main` at `ee565e4` — see the manifest's "Full reverification against origin/main (2026-09-14)" section in `docs/audit/2026-08-27/issue-reconciliation.md` for per-issue classifications. Changes since the table above: canonical [#861](https://github.com/TeneikaAskew/stocks/issues/861) (via #1005) and [#841](https://github.com/TeneikaAskew/stocks/issues/841) closed earlier in September; pre-audit [#717](https://github.com/TeneikaAskew/stocks/issues/717) closed as duplicate of #716; ten more canonical issues closed with verification evidence on 2026-09-14 (#820, #825, #829, #831, #833, #838, #843, #898, #900, #904) plus post-audit #1019 (superseded by #1049); and eleven new post-audit issues opened (#1017, #1025, #1034, #1047, #1052, #1066, #1067, #1076, #1084, #1091, and [#1095](https://github.com/TeneikaAskew/stocks/issues/1095), the 2026-09-14 provenance audit extending #820's class to three more API-served tables). The ledger is now: **115 open = 91 canonical in stocks + 10 pre-audit + 14 post-audit**, and the canonical inventory stands at 105 filed, 13 resolved, 1 relocated, **92 open (91 stocks + solyra#28)**.
+**Update 2026-09-14 (full reverification):** every open issue was reverified against `origin/main` at `ee565e4` — see the manifest's "Full reverification against origin/main (2026-09-14)" section in `docs/audit/2026-08-27/issue-reconciliation.md` for per-issue classifications. Changes since the table above: canonical [#861](https://github.com/TeneikaAskew/stocks/issues/861) (via #1005) and [#841](https://github.com/TeneikaAskew/stocks/issues/841) closed earlier in September; pre-audit [#717](https://github.com/TeneikaAskew/stocks/issues/717) closed as duplicate of #716; ten more canonical issues closed with verification evidence on 2026-09-14 (#820, #825, #829, #831, #833, #838, #843, #898, #900, #904) plus post-audit #1019 (superseded by #1049); and eleven new post-audit issues opened (#1017, #1025, #1034, #1047, #1052, #1066, #1067, #1076, #1084, #1091, and [#1095](https://github.com/TeneikaAskew/stocks/issues/1095), the 2026-09-14 provenance audit extending #820's class to three more API-served tables, closed on 2026-09-14). The ledger is now: **115 open = 91 canonical in stocks + 10 pre-audit + 14 post-audit**, and the canonical inventory stands at 105 filed, 13 resolved, 1 relocated, **92 open (91 stocks + solyra#28)**.
 
 **Update 2026-09-22 (the map is reconciled to `list_issues`, not just the note above):**
 `list_issues(state=OPEN)` returns **126** open in stocks; the capability map below carried
@@ -186,7 +186,7 @@ part of #863. The actionable candidate inventory is:
 | [#815](https://github.com/TeneikaAskew/stocks/issues/815) | [#937](https://github.com/TeneikaAskew/stocks/pull/937) | open documentation candidate | Policy decision or disproof via within-live counterfactual outstanding |
 | [#816](https://github.com/TeneikaAskew/stocks/issues/816) | [#933](https://github.com/TeneikaAskew/stocks/pull/933) | merged default-no-op mechanism | #940 state restore, shadow analysis, P&L semantics and per-control decision outstanding |
 | [#818](https://github.com/TeneikaAskew/stocks/issues/818) | [#934](https://github.com/TeneikaAskew/stocks/pull/934) | merged, deployed, cap engagement production-verified | Closed on its count/cap DoD; 15 replay fires = 15 live with 969 suppressions, but fire identities remain unverified and gate #816 calibration |
-| [#863](https://github.com/TeneikaAskew/stocks/issues/863) | [#938](https://github.com/TeneikaAskew/stocks/pull/938) | open one-surface guard | Weekly publication/writer diagnosis and shared #833/#922 freshness primitive outstanding |
+| [#863](https://github.com/TeneikaAskew/stocks/issues/863) | [#938](https://github.com/TeneikaAskew/stocks/pull/938) | open one-surface guard | Weekly publication/writer diagnosis and the shared freshness primitive (#922; #833 closed on 2026-09-14) outstanding |
 
 The other **100 canonical issues have no implementation candidate** at this snapshot. Governance
 PRs (#924/#931/#935/#939/#941/#945) and dependency-only cross-references are excluded. Every
@@ -212,24 +212,24 @@ unmeasured claims in this repository.
 
 ## Severity distribution (open)
 
-As of 2026-09-28 (P0 unchanged: #905 closed as superseded by #1206, which tracks the same question in plain terms; LOW −1: #1168 closed after the deploy and a replay showed the recap). As of 2026-09-27 (MEDIUM −1: #1171 closed, every job pinned by digest and a narrow deploy verified in production; MEDIUM +1: #1201, filed from #1171's production run; LOW −1: #1181 closed, the failed fill re-ran to exit 0 with every empty call named). As of 2026-09-26 (P1 −1: #1151 closed after its stored verdicts were re-scored; LOW +1: #1181, filed from that re-score; MEDIUM −1: #1166 closed, its unscored sessions healed to zero; LOW +1: #1188, filed while fixing #1181). As of 2026-09-25 (P1 −2: #1154 and #1152 closed; MEDIUM +2: #1166/#1171 and LOW +2: #1167/#1168, all four filed while resolving them). As of 2026-09-18 (P1 +2: #1135/#1136; P2 +2: #1137/#1138 — all four filed from the #1111 registry audit). Prior, as of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to solyra; ops −2: #930/#944 resolved; DEBT +1: #971 opened):
+As of 2026-10-07 (P1 +4, P2 +21, P3 +6: the 31 Playbook and Settings issues filed from the site traceability matrix ([03](03-SITE-TRACEABILITY.md)) on 2026-10-06 and 2026-10-07, in the FEAT-PLAYBOOK-001 section and the new FEAT-SETTINGS-001 section; the other 194 issues of that batch are not mapped yet, tracked as [#1342](https://github.com/TeneikaAskew/stocks/issues/1342)). As of 2026-09-28 (P0 unchanged: #905 closed as superseded by #1206, which tracks the same question in plain terms; LOW −1: #1168 closed after the deploy and a replay showed the recap). As of 2026-09-27 (MEDIUM −1: #1171 closed, every job pinned by digest and a narrow deploy verified in production; MEDIUM +1: #1201, filed from #1171's production run; LOW −1: #1181 closed, the failed fill re-ran to exit 0 with every empty call named). As of 2026-09-26 (P1 −1: #1151 closed after its stored verdicts were re-scored; LOW +1: #1181, filed from that re-score; MEDIUM −1: #1166 closed, its unscored sessions healed to zero; LOW +1: #1188, filed while fixing #1181). As of 2026-09-25 (P1 −2: #1154 and #1152 closed; MEDIUM +2: #1166/#1171 and LOW +2: #1167/#1168, all four filed while resolving them). As of 2026-09-18 (P1 +2: #1135/#1136; P2 +2: #1137/#1138 — all four filed from the #1111 registry audit). Prior, as of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to solyra; ops −2: #930/#944 resolved; DEBT +1: #971 opened):
 
 | Severity | Count |
 |---|---|
 | CRITICAL | 15 |
 | P0 | 14 |
 | HIGH | 15 |
-| P1 | 29 |
+| P1 | 33 |
 | MEDIUM | 10 |
-| P2 | 15 |
+| P2 | 36 |
 | LOW | 5 |
-| P3 | 2 |
+| P3 | 8 |
 | DEBT | 11 |
 | ENH | 5 |
 | ops | 4 |
 | DECISION | 1 |
 | UNTRIAGED | 2 |
-| **Total** | **128** |
+| **Total** | **159** |
 
 ## Full open-issue map by capability
 
@@ -247,6 +247,9 @@ As of 2026-09-28 (P0 unchanged: #905 closed as superseded by #1206, which tracks
 > `tests/meta/test_model_registry_consistency.py` requires every issue the registry
 > cites to exist here. The other ten are still unmapped (#958 and #1019 also postdate
 > the map but have closed again).
+> The site traceability batch of 2026-10-06 and 2026-10-07 (stocks#1257 to #1337, solyra#84 to #227) is
+> mapped only for FEAT-PLAYBOOK-001 and FEAT-SETTINGS-001 (31 rows added 2026-10-07); its other 194 issues
+> wait for the refresh tracked as [#1342](https://github.com/TeneikaAskew/stocks/issues/1342).
 > Cross-check the updates before treating a row as a live blocker.
 
 **No range notation** — the previous revision wrote
@@ -484,12 +487,50 @@ As of 2026-09-28 (P0 unchanged: #905 closed as superseded by #1206, which tracks
 
 **PR lineage:** [#546](https://github.com/TeneikaAskew/stocks/pull/546) *origin* · [#611](https://github.com/TeneikaAskew/stocks/pull/611) *structural* · [#643](https://github.com/TeneikaAskew/stocks/pull/643) *evolution* · [#684](https://github.com/TeneikaAskew/stocks/pull/684) *origin* · [#687](https://github.com/TeneikaAskew/stocks/pull/687) *evolution* · [#690](https://github.com/TeneikaAskew/stocks/pull/690) *evolution* · [#692](https://github.com/TeneikaAskew/stocks/pull/692) *evolution* · [#700](https://github.com/TeneikaAskew/stocks/pull/700) *remediation* · [#703](https://github.com/TeneikaAskew/stocks/pull/703) *evolution* · [#715](https://github.com/TeneikaAskew/stocks/pull/715) *evolution*
 
-### FEAT-PLAYBOOK-001 — Premarket / playbook (0 open)
+### FEAT-PLAYBOOK-001 — Premarket / playbook (18 open)
 
 | Issue | Sev | Title |
 |---|---|---|
+| [solyra#112](https://github.com/TeneikaAskew/solyra/issues/112) | P1 | [P1][Playbook] Failed live reads and a failed evaluation render as a closed market or as 0/N cards |
+| [#1304](https://github.com/TeneikaAskew/stocks/issues/1304) | P2 | [P2][Playbook] Live indicators return no opening range, so ORB conditions go dark after 11:38 ET |
+| [#1305](https://github.com/TeneikaAskew/stocks/issues/1305) | P2 | [P2][Playbook] Evaluator judges past-state RSI conditions on the latest RSI and support on one anchor |
+| [#1306](https://github.com/TeneikaAskew/stocks/issues/1306) | P2 | [P2][Playbook] Card avg_return is rounded to two decimals of a percent, so every card reads 0.0 |
+| [#1307](https://github.com/TeneikaAskew/stocks/issues/1307) | P2 | [P2][Playbook] Win rate counts any positive return at the time stop, not target before stop |
+| [#1308](https://github.com/TeneikaAskew/stocks/issues/1308) | P2 | [P2][Playbook] age_days counts against the UTC date, so a same-day set reads 1d old from 20:00 ET |
+| [#1309](https://github.com/TeneikaAskew/stocks/issues/1309) | P2 | [P2][Playbook] build_all_cards fills a missing indicator column with a neutral value |
+| [#1310](https://github.com/TeneikaAskew/stocks/issues/1310) | P2 | [P2][Playbook] _jsonish reads a NULL or unparseable conditions cell as an empty list |
+| [solyra#197](https://github.com/TeneikaAskew/solyra/issues/197) | P2 | [P2][Playbook] Live fill falls back to the paused line and 0% on every quote change and new bar |
+| [solyra#198](https://github.com/TeneikaAskew/solyra/issues/198) | P2 | [P2][Playbook] Progress line labels every condition the evaluator cannot judge as subjective |
+| [solyra#199](https://github.com/TeneikaAskew/solyra/issues/199) | P2 | [P2][Playbook] A card is fully lit on its judged conditions alone while its percent counts them all |
+| [solyra#200](https://github.com/TeneikaAskew/solyra/issues/200) | P2 | [P2][Playbook] The page derives the opening range itself, with a window calculate_orb does not use |
+| [solyra#201](https://github.com/TeneikaAskew/solyra/issues/201) | P2 | [P2][Playbook] A missing quote is replaced by the last bar's close with no label |
+| [solyra#202](https://github.com/TeneikaAskew/solyra/issues/202) | P2 | [P2][Playbook] Avg Return shows a green +0.0% for a negative average |
+| [solyra#203](https://github.com/TeneikaAskew/solyra/issues/203) | P2 | [P2][Playbook] The best-window star marks a losing average, and two best-window fields are never drawn |
+| [solyra#204](https://github.com/TeneikaAskew/solyra/issues/204) | P2 | [P2][Playbook] A page left open past the close keeps its live snapshot and calls it live |
+| [solyra#130](https://github.com/TeneikaAskew/solyra/issues/130) | P3 | [P3][Playbook] Unreachable empty state tells the reader to run scripts/run_pipeline.py |
+| [solyra#132](https://github.com/TeneikaAskew/solyra/issues/132) | P3 | [P3][Playbook] The setup count has no singular, so one card reads 1 setups and the spec asserts it |
 
 **PR lineage:** [#293](https://github.com/TeneikaAskew/stocks/pull/293) *audit* · [#335](https://github.com/TeneikaAskew/stocks/pull/335) *evolution* · [#336](https://github.com/TeneikaAskew/stocks/pull/336) *evolution* · [#444](https://github.com/TeneikaAskew/stocks/pull/444) *origin* · [#620](https://github.com/TeneikaAskew/stocks/pull/620) *evolution* · [#774](https://github.com/TeneikaAskew/stocks/pull/774) *remediation*
+
+### FEAT-SETTINGS-001 — Settings (13 open)
+
+| Issue | Sev | Title |
+|---|---|---|
+| [solyra#117](https://github.com/TeneikaAskew/solyra/issues/117) | P1 | [P1][Settings] Settings Sign out leaves the previous account's cached answers on screen |
+| [solyra#119](https://github.com/TeneikaAskew/solyra/issues/119) | P1 | [P1][Settings] Typing a decimal point into Account size or Risk per trade drops it |
+| [solyra#121](https://github.com/TeneikaAskew/solyra/issues/121) | P1 | [P1][Settings] Settings promises uses of saved fields and email alerts that nothing implements |
+| [#1322](https://github.com/TeneikaAskew/stocks/issues/1322) | P2 | [P2][Settings] PUT /api/me/profile stores negative sizes, 500 percent risk and invented time zones |
+| [#1323](https://github.com/TeneikaAskew/stocks/issues/1323) | P2 | [P2][Settings] Profile and preferences routes serve one shared local row to identity-less callers |
+| [solyra#216](https://github.com/TeneikaAskew/solyra/issues/216) | P2 | [P2][Settings] Header says Synced after failed reads and ignores a pending appearance write |
+| [solyra#217](https://github.com/TeneikaAskew/solyra/issues/217) | P2 | [P2][Settings] The profile draft is replaced without notice by a late read, a refocus or a route change |
+| [solyra#218](https://github.com/TeneikaAskew/solyra/issues/218) | P2 | [P2][Settings] An appearance pick made during load, or refused by the server, is never stored |
+| [solyra#219](https://github.com/TeneikaAskew/solyra/issues/219) | P2 | [P2][Settings] A failed save's error outlives the draft and the server's reason is dropped |
+| [solyra#157](https://github.com/TeneikaAskew/solyra/issues/157) | P3 | [P3][Settings] Every appearance change PUTs all four values |
+| [solyra#159](https://github.com/TeneikaAskew/solyra/issues/159) | P3 | [P3][Settings] Settings boxes enforce no limit or format: no maxLength, range or zone check |
+| [solyra#160](https://github.com/TeneikaAskew/solyra/issues/160) | P3 | [P3][Settings] A switch turned on and off leaves the form dirty and saves false over null |
+| [solyra#162](https://github.com/TeneikaAskew/solyra/issues/162) | P3 | [P3][Settings] The Settings tab strip declares tablist and tab roles with no tab panels |
+
+**PR lineage:** [#1048](https://github.com/TeneikaAskew/stocks/pull/1048) *origin* · [#1114](https://github.com/TeneikaAskew/stocks/pull/1114) *evolution*
 
 ## Governance PRs (cross-cutting)
 

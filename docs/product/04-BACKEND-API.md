@@ -2,7 +2,7 @@
 
 **Last reviewed:** 2026-08-31 · **Last scanned:** 2026-09-29 · **Owner:** TBD
 
-**VERIFIED — CODE.** Extracted from FastAPI decorators in `platform/api` using Python AST parsing of all `@router|@app.<method>(...)` calls, including decorators whose path is declared on a later line. The inventory also inspects the enclosing handler, docstring, and SQL identifiers. **92 platform API endpoints** resolved this way; the Discord service contributes 2 additional HTTP endpoints.
+**VERIFIED — CODE.** Extracted from FastAPI decorators in `platform/api` using Python AST parsing of all `@router|@app.<method>(...)` calls, including decorators whose path is declared on a later line. The inventory also inspects the enclosing handler, docstring, and SQL identifiers. **101 platform API endpoints** resolved this way; the Discord service contributes 2 additional HTTP endpoints.
 
 ## How to read the Auth column
 
@@ -22,14 +22,15 @@ Auth is **global ASGI middleware**, not a per-handler dependency — see
 |---|---|
 | Gated in `firebase`; **unenforced in `iap`/`open`** | 78 |
 | **OPEN prefix — never gated** | 5 |
-| Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | 7 |
+| Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | 12 |
+| Gated in `firebase`; **unenforced in `iap`/`open`** + an owner check (`_prefs_owner`, `_profile_owner`) | 4 |
 | **Not gated in any mode** (non-`/api/`) | 2 |
 
 ## Capability map
 
 | Capability | Entry points | Trigger | Data | Target gap |
 |---|---|---|---|---|
-| Platform API | `platform/api/main.py` + 18 routers | HTTPS | Cloud SQL via `lib/data_loader.py`, GCS | consistent contracts, ownership, telemetry |
+| Platform API | `platform/api/main.py` + 20 routers | HTTPS | Cloud SQL via `lib/data_loader.py`, GCS | consistent contracts, ownership, telemetry |
 | Ingestion / analysis jobs | 76 Cloud Run jobs live (67 declared in `gcp/**`) | Cloud Scheduler (65 live) / manual | vendors → SQL/artifacts | idempotency, freshness, provenance, and 8 undeclared jobs — see [05](05-INFRASTRUCTURE.md) |
 | Discord interactions | `gcp/discord_interactions/main.py` | Discord HTTPS | interaction validation | secrets via env not Secret Manager ([#830](https://github.com/TeneikaAskew/stocks/issues/830)) |
 
@@ -50,7 +51,7 @@ Auth is **global ASGI middleware**, not a per-handler dependency — see
 | GET | `/api/market/most-active` | Most-active tickers snapshot, with per-ticker snapshot sparklines. | Gated in `firebase`; **unenforced in `iap`/`open`** | `market_data_intraday`, `top_movers_intraday` | ✓ |
 | GET | `/{full_path:path}` | SPA fallback — serve index.html for any non-API, non-asset route. | **Not gated in any mode** (non-`/api/`) | via `lib/` | — |
 
-### `platform/api/routers/admin.py` — 7 endpoints
+### `platform/api/routers/admin.py` — 12 endpoints
 
 | Method | Route | Purpose | Auth | Tables touched | UI |
 |---|---|---|---|---|---|
@@ -61,6 +62,11 @@ Auth is **global ASGI middleware**, not a per-handler dependency — see
 | GET | `/api/admin/strat-engine/state` | Operator snapshot of the on-shelf strat-engine model state. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | via `lib/` | ✓ |
 | POST | `/api/admin/strat-engine/predict` | Run an operator-authorized STRAT engine prediction. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | model artifacts via `lib/` | ✓ |
 | POST | `/api/admin/strat-engine/structure-continuation` | Evaluate operator-authorized structure-continuation evidence. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | model artifacts via `lib/` | ✓ |
+| GET | `/api/admin/users` | Every Firebase account + its stored role(s). | Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | `user_roles`; the Firebase Auth user directory through the Admin SDK | ✓ |
+| PUT | `/api/admin/users/{uid}/roles` | Replace an account's stored role. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | `user_roles` | ✓ |
+| PUT | `/api/admin/users/{uid}/status` | Enable or disable a Firebase account. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | `user_roles` (read back for the row); the Firebase Auth account's `disabled` flag | ✓ |
+| GET | `/api/admin/data-sources` | Per-dataset freshness/coverage, aggregated from the shared audit. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | the freshness audit's tables through `scripts/audit_data_freshness.py` | ✓ |
+| POST | `/api/admin/data-sources/{source_id}/refresh` | Queue the dataset's Cloud Run fetcher job. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_require_admin` | `admin_refresh_leases`; then the dispatched job's own table | ✓ |
 
 ### `platform/api/routers/analytics.py` — 2 endpoints
 
@@ -211,6 +217,20 @@ Both responses carry the four bucket probabilities and `pred_bucket`. Since 2026
 | GET | `/api/reports/{ticker}/{phase}` | Return the raw markdown text of a specific phase report for a ticker from GCS. | Gated in `firebase`; **unenforced in `iap`/`open`** | via `lib/` | ✓ |
 | POST | `/api/playbook/evaluate` | Evaluate playbook condition strings against a live snapshot. | Gated in `firebase`; **unenforced in `iap`/`open`** | via `lib/` | ✓ |
 
+### `platform/api/routers/preferences.py`: 2 endpoints
+
+| Method | Route | Purpose | Auth | Tables touched | UI |
+|---|---|---|---|---|---|
+| GET | `/api/me/preferences` | Return the signed-in user's stored preferences; 404 when none are stored. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_prefs_owner` (`firebase`: the verified email, else 401; `iap`: the IAP header email, else the shared `local` row; `open`: always the shared `local` row) | `user_preferences` | ✓ |
+| PUT | `/api/me/preferences` | Upsert the provided subset of fields and return the full stored row. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_prefs_owner` (`firebase`: the verified email, else 401; `iap`: the IAP header email, else the shared `local` row; `open`: always the shared `local` row) | `user_preferences` | ✓ |
+
+### `platform/api/routers/profile.py`: 2 endpoints
+
+| Method | Route | Purpose | Auth | Tables touched | UI |
+|---|---|---|---|---|---|
+| GET | `/api/me/profile` | Return the signed-in user's stored profile; 404 when none is stored. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_profile_owner` (`firebase`: the verified email, else 401; `iap`: the IAP header email, else the shared `local` row; `open`: always the shared `local` row) | `user_profile` | ✓ |
+| PUT | `/api/me/profile` | Upsert the provided subset of fields and return the full stored row. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_profile_owner` (`firebase`: the verified email, else 401; `iap`: the IAP header email, else the shared `local` row; `open`: always the shared `local` row) | `user_profile` | ✓ |
+
 ### `platform/api/routers/signals.py` — 2 endpoints
 
 | Method | Route | Purpose | Auth | Tables touched | UI |
@@ -282,4 +302,4 @@ not just a cleanup question.
 | Test coverage | [#503](https://github.com/TeneikaAskew/stocks/pull/503) 12 hermetic API test classes · [#505](https://github.com/TeneikaAskew/stocks/pull/505) real-SQL integration tests on ephemeral Postgres · [#509](https://github.com/TeneikaAskew/stocks/pull/509) |
 | Remediation | [#518](https://github.com/TeneikaAskew/stocks/pull/518) INT-column coercion (22P02 bug class) · [#483](https://github.com/TeneikaAskew/stocks/pull/483) `pool_pre_ping` for Cloud SQL TLS drops · [#507](https://github.com/TeneikaAskew/stocks/pull/507) CPU throttling |
 | Code | `platform/api/main.py`, `platform/api/routers/*.py`, `platform/api/auth.py`, `lib/data_loader.py` |
-| Tests | `tests/api/test_*.py`, `platform/tests/api-smoke.spec.ts` |
+| Tests | `tests/api/test_*.py`; the Playwright smoke spec that made live requests to `:8000` was retired in the #957 frontend split (solyra's [CLAUDE.md](https://github.com/TeneikaAskew/solyra/blob/main/CLAUDE.md), Testing section, records that those live-request contract tests are deliberately absent there) |

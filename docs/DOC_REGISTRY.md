@@ -201,6 +201,7 @@ point: somebody decides its class rather than inheriting a directory's.
 | D | docs/product/00-PRODUCT-OVERVIEW.md | |  |
 | D | docs/product/01-PRODUCT-REQUIREMENTS.md | |  |
 | D | docs/product/02-FEATURE-CATALOG.md | lib, platform/api, gcp |  |
+| D | docs/product/03-SITE-TRACEABILITY.md | platform/api, platform/deploy.sh, platform/Dockerfile, gcp, lib, scripts, tests |  |
 | D | docs/product/04-BACKEND-API.md | platform/api |  |
 | D | docs/product/05-INFRASTRUCTURE.md | gcp/deploy.sh |  |
 | D | docs/product/06-DATA-ARCHITECTURE.md | gcp/schema.sql |  |

@@ -33,6 +33,8 @@ Canvas refresh pending: none
 <!-- What changed and why. Link the issue (or auto-created workflow-failure
      issue) if one exists. -->
 
+- Matrix rows touched and gates changed: <!-- IDs from docs/product/03-SITE-TRACEABILITY.md, or "none" -->
+
 ## No Silent Fallbacks (Rule 3.7)
 
 - [ ] No new forbidden patterns: `except Exception: return <empty>` in
