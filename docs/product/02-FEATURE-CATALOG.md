@@ -18,7 +18,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | [FEAT-LIVE-001](#feat-live-001) | Intraday monitoring | Live quotes, indicators, STRAT state | `/live` | `/api/live` | `market_data_intraday` | Production but needs remediation | P0 | 3 | 0 | — |
 | [FEAT-CHART-001](#feat-chart-001) | Charting | Instrument / timeframe analysis | `/charts` | `/api/live/history`, `/api/options/*/grid` | `market_data_daily`, `market_data_intraday` | Production but needs remediation | P1 | 5 | 0 | — |
 | [FEAT-OPTION-001](#feat-option-001) | Options / gamma | Flow, Greeks, GEX grid | `/options` | `/api/options`, `/api/grid` | `etf_options_snapshots`, `intraday_gex_15m`, `realtime_gex_15m` | Retest Required | P0 | 3 | 10 | [#826](https://github.com/TeneikaAskew/stocks/issues/826) [#812](https://github.com/TeneikaAskew/stocks/issues/812) [#896](https://github.com/TeneikaAskew/stocks/issues/896) [#878](https://github.com/TeneikaAskew/stocks/issues/878) |
-| [FEAT-SIGNAL-001](#feat-signal-001) | Signals / execution | Signal discovery, alerting, exits | `/signals`, `/live` | `/api/signals` | `signal_alerts`, `historical_signals`, `exit_config_overrides` | Production but needs remediation | P0 | 1 | 12 | [#816](https://github.com/TeneikaAskew/stocks/issues/816) [#815](https://github.com/TeneikaAskew/stocks/issues/815) [#928](https://github.com/TeneikaAskew/stocks/issues/928) [#905](https://github.com/TeneikaAskew/stocks/issues/905) |
+| [FEAT-SIGNAL-001](#feat-signal-001) | Signals / execution | Signal discovery, alerting, exits | `/signals`, `/live` | `/api/signals` | `signal_alerts`, `historical_signals`, `exit_config_overrides` | Production but needs remediation | P0 | 1 | 12 | [#816](https://github.com/TeneikaAskew/stocks/issues/816) [#815](https://github.com/TeneikaAskew/stocks/issues/815) [#928](https://github.com/TeneikaAskew/stocks/issues/928) [#1206](https://github.com/TeneikaAskew/stocks/issues/1206) |
 | [FEAT-PLAYBOOK-001](#feat-playbook-001) | Premarket / playbook | Structured daily setups | `/playbook` | `/api/playbook` | `premarket_analysis`, `playbook_cards` | **Broken** | P0 | 3 | 1 | — |
 | [FEAT-STRAT-001](#feat-strat-001) | STRAT / levels | Candle classification, FTFC, structural levels | `/charts`, `/live` | via `lib/` | `strat_levels`, `strat_combo_results` | Production but needs remediation | P0 | 1 | 4 | [#908](https://github.com/TeneikaAskew/stocks/issues/908) [#866](https://github.com/TeneikaAskew/stocks/issues/866) [#907](https://github.com/TeneikaAskew/stocks/issues/907) [#884](https://github.com/TeneikaAskew/stocks/issues/884) |
 | [FEAT-IND-001](#feat-ind-001) | Indicators | RVOL, ORB, ATR, RSI, VWAP | `/live`, `/charts` | via `lib/` | `market_data_*` | Production but needs remediation | P1 | 1 | 4 | [#894](https://github.com/TeneikaAskew/stocks/issues/894) [#892](https://github.com/TeneikaAskew/stocks/issues/892) [#870](https://github.com/TeneikaAskew/stocks/issues/870) [#912](https://github.com/TeneikaAskew/stocks/issues/912) |
@@ -31,12 +31,12 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | [FEAT-ALERT-001](#feat-alert-001) | Alerts / Discord | Signal + brief delivery | — | `gcp/discord_interactions/` | `signal_alerts` | Production but needs remediation | P1 | 3 | 0 | — |
 | [FEAT-ADMIN-001](#feat-admin-001) | Administration | Operator surface | `/admin` | `/api/admin` (7), `/api/config` | `model_routing` | Production but needs remediation | P2 | 6 | 0 | — |
 | [FEAT-HELP-001](#feat-help-001) | Help / glossary | Term reference | `/help` | `/api/glossary/gamma` | — | Production | P3 | 5 | 0 | — |
-| [FEAT-SETTINGS-001](#feat-settings-001) | Settings | Device-local appearance/layout | `/settings` | **none — `localStorage`** | **none** | Incomplete | P3 | 5 | 0 | — |
+| [FEAT-SETTINGS-001](#feat-settings-001) | Settings | Account-backed appearance, trading defaults and profile | `/settings` | `/api/me/preferences`, `/api/me/profile` | `user_preferences`, `user_profile` | Production but needs remediation | P3 | 5 | 0 | — |
 | [FEAT-DATA-001](#feat-data-001) | Data platform | Ingestion, storage, freshness | — | fetcher jobs | 64 relations — see [06](06-DATA-ARCHITECTURE.md) | Production but needs remediation | P0 | 1 | 19 | [#926](https://github.com/TeneikaAskew/stocks/issues/926) [#925](https://github.com/TeneikaAskew/stocks/issues/925) [#863](https://github.com/TeneikaAskew/stocks/issues/863) [#862](https://github.com/TeneikaAskew/stocks/issues/862) |
 | [FEAT-DEPLOY-001](#feat-deploy-001) | Infrastructure / deploy | 76 jobs, 65 schedulers, Cloud Run | — | — | — | Production but needs remediation | P1 | 6 | 14 | [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#859](https://github.com/TeneikaAskew/stocks/issues/859) [#857](https://github.com/TeneikaAskew/stocks/issues/857) |
 | [FEAT-OPS-001](#feat-ops-001) | Operations / reliability | Freshness, telemetry, DR | `/admin` | `/api/health/freshness` | `job_runs` | Incomplete | P1 | 6 | 9 | [#922](https://github.com/TeneikaAskew/stocks/issues/922) [#1052](https://github.com/TeneikaAskew/stocks/issues/1052) [#1066](https://github.com/TeneikaAskew/stocks/issues/1066) [#1067](https://github.com/TeneikaAskew/stocks/issues/1067) |
 | [FEAT-CICD-001](#feat-cicd-001) | CI / testing | Build, test, deploy automation | — | — | — | Production but needs remediation | P1 | 6 | 9 | [#848](https://github.com/TeneikaAskew/stocks/issues/848) [#846](https://github.com/TeneikaAskew/stocks/issues/846) [#845](https://github.com/TeneikaAskew/stocks/issues/845) [#844](https://github.com/TeneikaAskew/stocks/issues/844) |
-| [FEAT-UI-001](#feat-ui-001) | Web / UI shell | Nav, shell, responsive, a11y | all | — | — | Production but needs remediation | P2 | 5 | 2 | [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27) [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26) |
+| [FEAT-UI-001](#feat-ui-001) | Web / UI shell | Nav, shell, responsive, a11y | all | — | — | Production but needs remediation | P2 | 5 | 2 | — |
 | [FEAT-DEBT-001](#feat-debt-001) | Technical debt | Legacy retirement | — | — | — | Retire candidate | P3 | 7 | 5 | [#917](https://github.com/TeneikaAskew/stocks/issues/917) [#1137](https://github.com/TeneikaAskew/stocks/issues/1137) [#921](https://github.com/TeneikaAskew/stocks/issues/921) [#1034](https://github.com/TeneikaAskew/stocks/issues/1034) |
 
 ## Capability records
@@ -59,7 +59,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Data | identity/config |
 | Models | Firebase / IAP |
 | Code | `platform/api/auth.py`, `platform/api/main.py:51`, `platform/src/components/auth` |
-| Tests | solyra `tests/auth-gate.spec.ts`, `admin-auth.spec.ts` (moved in the #957 split) |
+| Tests | [solyra `tests/shared/auth-gate.spec.ts`](https://github.com/TeneikaAskew/solyra/blob/main/tests/shared/auth-gate.spec.ts), [solyra `tests/admin/admin-auth.spec.ts`](https://github.com/TeneikaAskew/solyra/blob/main/tests/admin/admin-auth.spec.ts) (moved in the #957 split) |
 | Open issues | 7 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-auth-001--auth--security-7-open) |
 | Blocking issues | [#830](https://github.com/TeneikaAskew/stocks/issues/830) [#850](https://github.com/TeneikaAskew/stocks/issues/850) [#911](https://github.com/TeneikaAskew/stocks/issues/911) [#837](https://github.com/TeneikaAskew/stocks/issues/837) [#836](https://github.com/TeneikaAskew/stocks/issues/836) [#839](https://github.com/TeneikaAskew/stocks/issues/839) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
@@ -81,7 +81,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Backend | `/api/waitlist` |
 | Data | `waitlist_signups` |
 | Models | — |
-| Code | `platform/src/routes/LandingPage.tsx`, `platform/api/routers/waitlist.py` |
+| Code | [solyra `src/routes/LandingPage.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/routes/LandingPage.tsx), `platform/api/routers/waitlist.py` |
 | Tests | `landing.spec.ts`, `waitlist.test.ts` |
 | Open issues | 0 — full list in [12](12-PR-ISSUE-TRACEABILITY.md) |
 | Blocking issues | — |
@@ -104,7 +104,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Backend | `/api/dashboard`, `/api/movement-statement` |
 | Data | `market_data_daily`, `premarket_analysis` |
 | Models | MODEL-BRIEF-001 |
-| Code | `platform/src/routes/DashboardPage.tsx`, `platform/api/routers/dashboard.py`, `lib/movement_statement.py` |
+| Code | [solyra `src/routes/DashboardPage.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/routes/DashboardPage.tsx), `platform/api/routers/dashboard.py`, `lib/movement_statement.py` |
 | Tests | `dashboard.spec.ts`, `movement-read.spec.ts`, `MovementRead.test.tsx` |
 | Open issues | 0 — full list in [12](12-PR-ISSUE-TRACEABILITY.md) |
 | Blocking issues | — |
@@ -127,7 +127,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Backend | `/api/live` |
 | Data | `market_data_intraday` |
 | Models | MODEL-IND-001, MODEL-STRAT-001 |
-| Code | `platform/src/routes/LiveMarketPage.tsx`, `platform/api/routers/live.py`, `lib/indicators.py` |
+| Code | [solyra `src/routes/LiveMarketPage.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/routes/LiveMarketPage.tsx), `platform/api/routers/live.py`, `lib/indicators.py` |
 | Tests | `live-market.spec.ts` |
 | Open issues | 0 — full list in [12](12-PR-ISSUE-TRACEABILITY.md) |
 | Blocking issues | — |
@@ -150,7 +150,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Backend | `/api/live/history`, `/api/options/*/grid` |
 | Data | `market_data_daily`, `market_data_intraday` |
 | Models | MODEL-STRAT-001, MODEL-LEVEL-001 |
-| Code | `platform/src/routes/ChartsPage.tsx`, `platform/api/routers/live.py`, `grid.py` |
+| Code | [solyra `src/routes/ChartsPage.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/routes/ChartsPage.tsx), `platform/api/routers/live.py`, `grid.py` |
 | Tests | `charts-cards.spec.ts`, `phase1-charts.spec.ts` |
 | Open issues | 0 — full list in [12](12-PR-ISSUE-TRACEABILITY.md) |
 | Blocking issues | — |
@@ -173,7 +173,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Backend | `/api/options`, `/api/grid` |
 | Data | `etf_options_snapshots`, `intraday_gex_15m`, `realtime_gex_15m` |
 | Models | MODEL-GAMMA-001, MODEL-OPT-001 |
-| Code | `platform/src/routes/OptionsFlowPage.tsx`, `platform/api/routers/options.py`, `grid.py`, `lib/gamma.py`, `lib/options_greeks.py` |
+| Code | [solyra `src/routes/OptionsFlowPage.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/routes/OptionsFlowPage.tsx), `platform/api/routers/options.py`, `grid.py`, `lib/gamma.py`, `lib/options_greeks.py` |
 | Tests | `options-flow.spec.ts`, `gamma-levels.spec.ts`, `swingGridUtils.test.ts` |
 | Open issues | 10 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-option-001--options--gamma-10-open) |
 | Blocking issues | [#826](https://github.com/TeneikaAskew/stocks/issues/826) [#812](https://github.com/TeneikaAskew/stocks/issues/812) [#896](https://github.com/TeneikaAskew/stocks/issues/896) [#878](https://github.com/TeneikaAskew/stocks/issues/878) [#876](https://github.com/TeneikaAskew/stocks/issues/876) [#872](https://github.com/TeneikaAskew/stocks/issues/872) |
@@ -199,7 +199,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Code | `lib/signals.py`, `lib/strategies/`, `gcp/signal_monitor.py`, `platform/api/routers/signals.py` |
 | Tests | `signals.spec.ts`, `tests/*/test_signal*.py` |
 | Open issues | 12 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-signal-001--signals--execution-12-open) |
-| Blocking issues | [#816](https://github.com/TeneikaAskew/stocks/issues/816) [#815](https://github.com/TeneikaAskew/stocks/issues/815) [#928](https://github.com/TeneikaAskew/stocks/issues/928) [#905](https://github.com/TeneikaAskew/stocks/issues/905) [#915](https://github.com/TeneikaAskew/stocks/issues/915) [#1136](https://github.com/TeneikaAskew/stocks/issues/1136) |
+| Blocking issues | [#816](https://github.com/TeneikaAskew/stocks/issues/816) [#815](https://github.com/TeneikaAskew/stocks/issues/815) [#928](https://github.com/TeneikaAskew/stocks/issues/928) [#1206](https://github.com/TeneikaAskew/stocks/issues/1206) [#915](https://github.com/TeneikaAskew/stocks/issues/915) [#1136](https://github.com/TeneikaAskew/stocks/issues/1136) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
 
 ### FEAT-PLAYBOOK-001
@@ -219,7 +219,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Backend | `/api/playbook` |
 | Data | `premarket_analysis`, `playbook_cards` |
 | Models | MODEL-BRIEF-001, MODEL-LEVEL-001 |
-| Code | `platform/src/routes/PlaybookPage.tsx`, `platform/api/routers/playbook.py`, `gcp/premarket_brief.py`, `scripts/analysis/phase6_playbook.py` |
+| Code | [solyra `src/routes/PlaybookPage.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/routes/PlaybookPage.tsx), `platform/api/routers/playbook.py`, `gcp/premarket_brief.py`, `scripts/analysis/phase6_playbook.py` |
 | Tests | `playbook.spec.ts`, `tests/scripts/test_phase6_playbook.py` |
 | Open issues | 1 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-playbook-001--premarket--playbook-1-open) |
 | Blocking issues | — |
@@ -334,7 +334,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Backend | `/api/analytics`, `/api/backtest` |
 | Data | `backtest_*`, `walk_forward_results` |
 | Models | MODEL-CALIB-001, MODEL-SWEEP-001, MODEL-STYLE-001 |
-| Code | `platform/src/routes/ReportsPage.tsx`, `platform/api/routers/backtest.py`, `analytics.py` |
+| Code | [solyra `src/routes/ReportsPage.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/routes/ReportsPage.tsx), `platform/api/routers/backtest.py`, `analytics.py` |
 | Tests | `reports.spec.ts`, `BacktesterSection.format.test.ts` |
 | Open issues | 0 — full list in [12](12-PR-ISSUE-TRACEABILITY.md) |
 | Blocking issues | — |
@@ -403,7 +403,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Backend | `/api/journal` (9) |
 | Data | `trades`, `journal_entries` |
 | Models | MODEL-STYLE-001 |
-| Code | `platform/src/routes/JournalPage.tsx`, `platform/api/routers/journal.py`, `lib/broker_import.py` |
+| Code | [solyra `src/routes/JournalPage.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/routes/JournalPage.tsx), `platform/api/routers/journal.py`, `lib/broker_import.py` |
 | Tests | `journal.spec.ts`, `journal-import.spec.ts`, `journal-onestop.spec.ts` |
 | Open issues | 2 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-journal-001--journal--portfolio-2-open) |
 | Blocking issues | [#722](https://github.com/TeneikaAskew/stocks/issues/722) [#716](https://github.com/TeneikaAskew/stocks/issues/716) |
@@ -449,7 +449,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Backend | `/api/admin` (7), `/api/config` |
 | Data | `model_routing` |
 | Models | — |
-| Code | `platform/src/routes/AdminPage.tsx`, `platform/api/routers/admin.py` |
+| Code | [solyra `src/routes/AdminPage.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/routes/AdminPage.tsx), `platform/api/routers/admin.py` |
 | Tests | `admin.spec.ts`, `admin-auth.spec.ts` |
 | Open issues | 0 — full list in [12](12-PR-ISSUE-TRACEABILITY.md) |
 | Blocking issues | — |
@@ -472,7 +472,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Backend | `/api/glossary/gamma` |
 | Data | — |
 | Models | — |
-| Code | `platform/src/routes/HelpPage.tsx`, `platform/api/routers/glossary.py` |
+| Code | [solyra `src/routes/HelpPage.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/routes/HelpPage.tsx), `platform/api/routers/glossary.py` |
 | Tests | `help.spec.ts` |
 | Open issues | 0 — full list in [12](12-PR-ISSUE-TRACEABILITY.md) |
 | Blocking issues | — |
@@ -480,23 +480,23 @@ capabilities — including the P0 model and operations rows — resolved to no c
 
 ### FEAT-SETTINGS-001
 
-**Device-local appearance/layout** — Settings
+**Account-backed appearance, trading defaults and profile** — Settings
 
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Incomplete |
+| Status | Production but needs remediation |
 | Priority | P3 |
 | Target phase | Phase 5 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-08-30 |
+| Last reviewed | 2026-10-07 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/settings` |
-| Backend | **none — `localStorage`** |
-| Data | **none** |
+| Backend | GET and PUT `/api/me/preferences` (`platform/api/routers/preferences.py:132`, `:149`); GET and PUT `/api/me/profile` (`platform/api/routers/profile.py:145`, `:162`); both mounted at `platform/api/main.py:187-189` and gated in `firebase` mode, because only the exact `/api/me` is open (`_OPEN_API_EXACT`, `platform/api/auth.py:69`); the owner rule per auth mode is in [04](04-BACKEND-API.md) |
+| Data | `user_preferences` and `user_profile`, one row per `user_email`, upserted with `ON CONFLICT (user_email) DO UPDATE` |
 | Models | — |
-| Code | `platform/src/routes/SettingsPage.tsx`, `platform/src/stores/settingsStore.ts`, `themeStore.ts` |
-| Tests | **none** |
+| Code | [solyra `src/routes/SettingsPage.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/routes/SettingsPage.tsx), [solyra `src/stores/settingsStore.ts`](https://github.com/TeneikaAskew/solyra/blob/main/src/stores/settingsStore.ts), [solyra `src/stores/themeStore.ts`](https://github.com/TeneikaAskew/solyra/blob/main/src/stores/themeStore.ts), [solyra `src/hooks/usePreferences.ts`](https://github.com/TeneikaAskew/solyra/blob/main/src/hooks/usePreferences.ts), [solyra `src/hooks/useProfile.ts`](https://github.com/TeneikaAskew/solyra/blob/main/src/hooks/useProfile.ts), `platform/api/routers/preferences.py`, `platform/api/routers/profile.py` |
+| Tests | `tests/api/test_preferences_router.py`, `tests/api/test_profile_router.py`, [solyra `tests/settings/settings.spec.ts`](https://github.com/TeneikaAskew/solyra/blob/main/tests/settings/settings.spec.ts) |
 | Open issues | 0 — full list in [12](12-PR-ISSUE-TRACEABILITY.md) |
 | Blocking issues | — |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 5 |
@@ -611,9 +611,9 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Data | — |
 | Models | — |
 | Code | [solyra `src/App.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/App.tsx), solyra `src/components/` — moved out of stocks in the #957 split |
-| Tests | [solyra `tests/navigation.spec.ts`](https://github.com/TeneikaAskew/solyra/blob/main/tests/navigation.spec.ts) |
+| Tests | [solyra `tests/shared/navigation.spec.ts`](https://github.com/TeneikaAskew/solyra/blob/main/tests/shared/navigation.spec.ts) |
 | Open issues | 2 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-ui-001--web--ui-2-open) |
-| Blocking issues | [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27) [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26) |
+| Blocking issues | — |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 5 |
 
 ### FEAT-DEBT-001

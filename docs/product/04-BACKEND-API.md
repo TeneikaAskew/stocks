@@ -29,7 +29,7 @@ Auth is **global ASGI middleware**, not a per-handler dependency — see
 
 | Capability | Entry points | Trigger | Data | Target gap |
 |---|---|---|---|---|
-| Platform API | `platform/api/main.py` + 18 routers | HTTPS | Cloud SQL via `lib/data_loader.py`, GCS | consistent contracts, ownership, telemetry |
+| Platform API | `platform/api/main.py` + 20 routers | HTTPS | Cloud SQL via `lib/data_loader.py`, GCS | consistent contracts, ownership, telemetry |
 | Ingestion / analysis jobs | 76 Cloud Run jobs live (67 declared in `gcp/**`) | Cloud Scheduler (65 live) / manual | vendors → SQL/artifacts | idempotency, freshness, provenance, and 8 undeclared jobs — see [05](05-INFRASTRUCTURE.md) |
 | Discord interactions | `gcp/discord_interactions/main.py` | Discord HTTPS | interaction validation | secrets via env not Secret Manager ([#830](https://github.com/TeneikaAskew/stocks/issues/830)) |
 
@@ -211,6 +211,20 @@ Both responses carry the four bucket probabilities and `pred_bucket`. Since 2026
 | GET | `/api/reports/{ticker}/{phase}` | Return the raw markdown text of a specific phase report for a ticker from GCS. | Gated in `firebase`; **unenforced in `iap`/`open`** | via `lib/` | ✓ |
 | POST | `/api/playbook/evaluate` | Evaluate playbook condition strings against a live snapshot. | Gated in `firebase`; **unenforced in `iap`/`open`** | via `lib/` | ✓ |
 
+### `platform/api/routers/preferences.py`: 2 endpoints
+
+| Method | Route | Purpose | Auth | Tables touched | UI |
+|---|---|---|---|---|---|
+| GET | `/api/me/preferences` | Return the signed-in user's stored preferences; 404 when none are stored. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_prefs_owner` (`firebase`: the verified email, else 401; `iap`: the IAP header email, else the shared `local` row; `open`: always the shared `local` row) | `user_preferences` | ✓ |
+| PUT | `/api/me/preferences` | Upsert the provided subset of fields and return the full stored row. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_prefs_owner` (`firebase`: the verified email, else 401; `iap`: the IAP header email, else the shared `local` row; `open`: always the shared `local` row) | `user_preferences` | ✓ |
+
+### `platform/api/routers/profile.py`: 2 endpoints
+
+| Method | Route | Purpose | Auth | Tables touched | UI |
+|---|---|---|---|---|---|
+| GET | `/api/me/profile` | Return the signed-in user's stored profile; 404 when none is stored. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_profile_owner` (`firebase`: the verified email, else 401; `iap`: the IAP header email, else the shared `local` row; `open`: always the shared `local` row) | `user_profile` | ✓ |
+| PUT | `/api/me/profile` | Upsert the provided subset of fields and return the full stored row. | Gated in `firebase`; **unenforced in `iap`/`open`** + `_profile_owner` (`firebase`: the verified email, else 401; `iap`: the IAP header email, else the shared `local` row; `open`: always the shared `local` row) | `user_profile` | ✓ |
+
 ### `platform/api/routers/signals.py` — 2 endpoints
 
 | Method | Route | Purpose | Auth | Tables touched | UI |
@@ -282,4 +296,4 @@ not just a cleanup question.
 | Test coverage | [#503](https://github.com/TeneikaAskew/stocks/pull/503) 12 hermetic API test classes · [#505](https://github.com/TeneikaAskew/stocks/pull/505) real-SQL integration tests on ephemeral Postgres · [#509](https://github.com/TeneikaAskew/stocks/pull/509) |
 | Remediation | [#518](https://github.com/TeneikaAskew/stocks/pull/518) INT-column coercion (22P02 bug class) · [#483](https://github.com/TeneikaAskew/stocks/pull/483) `pool_pre_ping` for Cloud SQL TLS drops · [#507](https://github.com/TeneikaAskew/stocks/pull/507) CPU throttling |
 | Code | `platform/api/main.py`, `platform/api/routers/*.py`, `platform/api/auth.py`, `lib/data_loader.py` |
-| Tests | `tests/api/test_*.py`, `platform/tests/api-smoke.spec.ts` |
+| Tests | `tests/api/test_*.py`; the Playwright smoke spec that made live requests to `:8000` was retired in the #957 frontend split (solyra's [CLAUDE.md](https://github.com/TeneikaAskew/solyra/blob/main/CLAUDE.md), Testing section, records that those live-request contract tests are deliberately absent there) |
