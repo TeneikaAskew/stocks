@@ -3,7 +3,7 @@ feat_id: FEAT-DEPLOY-001
 spec: docs/superpowers/specs/2026-10-08-feat-deploy-001-service-config-test.md
 branch: feature/feat-deploy-001-service-config-test
 pr: 1350
-status: ready
+status: done
 ---
 
 # Deploy service configuration test implementation plan
