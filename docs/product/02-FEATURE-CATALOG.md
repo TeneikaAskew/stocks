@@ -37,7 +37,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | [FEAT-OPS-001](#feat-ops-001) | Operations / reliability | Freshness, telemetry, DR | `/admin` | `/api/health/freshness` | `job_runs` | Incomplete | P1 | 6 | 11 | [#922](https://github.com/TeneikaAskew/stocks/issues/922) [#1052](https://github.com/TeneikaAskew/stocks/issues/1052) [#1066](https://github.com/TeneikaAskew/stocks/issues/1066) [#1067](https://github.com/TeneikaAskew/stocks/issues/1067) |
 | [FEAT-CICD-001](#feat-cicd-001) | CI / testing | Build, test, deploy automation | — | — | — | Production but needs remediation | P1 | 6 | 12 | [#844](https://github.com/TeneikaAskew/stocks/issues/844) [#845](https://github.com/TeneikaAskew/stocks/issues/845) [#846](https://github.com/TeneikaAskew/stocks/issues/846) [#848](https://github.com/TeneikaAskew/stocks/issues/848) |
 | [FEAT-UI-001](#feat-ui-001) | Web / UI shell | Nav, shell, responsive, a11y | all | — | — | Production but needs remediation | P2 | 5 | 2 | [solyra#135](https://github.com/TeneikaAskew/solyra/issues/135) [solyra#95](https://github.com/TeneikaAskew/solyra/issues/95) |
-| [FEAT-DEBT-001](#feat-debt-001) | Technical debt | Legacy retirement | — | — | — | Retire candidate | P3 | 7 | 12 | [#917](https://github.com/TeneikaAskew/stocks/issues/917) [#1137](https://github.com/TeneikaAskew/stocks/issues/1137) [#921](https://github.com/TeneikaAskew/stocks/issues/921) [#1227](https://github.com/TeneikaAskew/stocks/issues/1227) |
+| [FEAT-DEBT-001](#feat-debt-001) | Technical debt | Legacy retirement | — | — | — | Retire candidate | P3 | 7 | 11 | [#917](https://github.com/TeneikaAskew/stocks/issues/917) [#1137](https://github.com/TeneikaAskew/stocks/issues/1137) [#921](https://github.com/TeneikaAskew/stocks/issues/921) [#1227](https://github.com/TeneikaAskew/stocks/issues/1227) |
 
 ## Capability records
 
@@ -635,7 +635,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Models | — |
 | Code | `scripts/`, archived apps |
 | Tests | — |
-| Open issues | 12 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-debt-001--technical-debt-12-open) |
-| Blocking issues | [#917](https://github.com/TeneikaAskew/stocks/issues/917) [#1137](https://github.com/TeneikaAskew/stocks/issues/1137) [#921](https://github.com/TeneikaAskew/stocks/issues/921) [#1227](https://github.com/TeneikaAskew/stocks/issues/1227) [#1335](https://github.com/TeneikaAskew/stocks/issues/1335) [#1345](https://github.com/TeneikaAskew/stocks/issues/1345) |
+| Open issues | 11 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-debt-001--technical-debt-11-open) |
+| Blocking issues | [#917](https://github.com/TeneikaAskew/stocks/issues/917) [#1137](https://github.com/TeneikaAskew/stocks/issues/1137) [#921](https://github.com/TeneikaAskew/stocks/issues/921) [#1227](https://github.com/TeneikaAskew/stocks/issues/1227) [#1335](https://github.com/TeneikaAskew/stocks/issues/1335) [solyra#79](https://github.com/TeneikaAskew/solyra/issues/79) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 7 |
 

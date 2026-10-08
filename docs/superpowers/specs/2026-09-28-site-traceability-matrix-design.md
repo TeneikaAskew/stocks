@@ -540,3 +540,30 @@ UI spec: [UI-SCREENS.md § SCREEN-AUTH](https://github.com/TeneikaAskew/solyra/b
 - The design's backend diagram labels the dashboard "no per-user auth" and the platform
   service "FastAPI + React"; both predate the #957 split.
 ```
+
+## Status, 2026-10-08
+
+Appended under the registry's rule for dated records (class C): the design above is the one the
+owner approved and is not rewritten.
+
+- **Approved and built.** The owner reviewed this written spec on 2026-09-28 and asked for the
+  implementation plan, so the header's "written spec pending review" describes the day it was
+  written. The matrix and the screen inventory were built to it in stocks#1338, with the
+  follow-ups stocks#1347 and stocks#1348.
+- **Te and state rows.** Where a state has its own Checklist row, as this design lays it out
+  ("every element and state row present with an ID"), the state's coverage is that row's own
+  Te. An element row's Te covers the element and any state that has no row of its own. Settled
+  under stocks#1345 (item 6, closed on 2026-10-08): holding an element's tick until its state
+  rows are covered would make the tick a roll-up of other rows and hide coverage the element
+  has, while the progress table, which counts rows, already shows each uncovered state as its
+  own unticked Te.
+- **V and permission states.** V validates the production path's answer. A recorded request and
+  response on staging, the evidence the V definition names, validates a permission state: the
+  recorded 401 is the answer the page renders, and how the page renders it is client behaviour
+  that Te covers. Settled under stocks#1345 (item 5, closed on 2026-10-08): every V tick in the
+  matrix rests on a recorded staging response, so asking only the permission rows for a browser
+  observation would hold them to a different standard.
+- **The deployment layer.** A row whose chain cites configuration that `platform/deploy.sh` sets
+  is ticked at Te only with a test of that configuration. That test is
+  `tests/gcp/test_platform_deploy_service_config.py` (stocks#1350), which runs the script
+  against a stub `gcloud` and asserts what each service is deployed with.

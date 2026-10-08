@@ -6,7 +6,7 @@
 
 | | Count | Method |
 |---|---|---|
-| Open issues mapped | **379 of 379 (100%) at the 2026-10-08 regeneration** (stocks 227, solyra 152) | `list_issues` (state OPEN) in both repositories, classified by title prefix, label and subject; the per-capability map below is that regeneration |
+| Open issues mapped | **378 of 378 (100%)**: the 2026-10-08 regeneration less [#1345](https://github.com/TeneikaAskew/stocks/issues/1345), closed on 2026-10-08 (stocks 226, solyra 152) | `list_issues` (state OPEN) in both repositories, classified by title prefix, label and subject; the per-capability map below is that regeneration |
 | Significant PRs mapped | **151** | `list_pull_requests` (state closed, 4 pages, #184–#932) |
 
 > **Why PR lineage came from the API, not `git log`.** The working clone is **shallow**
@@ -80,7 +80,7 @@ Three conventions were also made explicit, because each had been applied inconsi
   The one prior exception, #868, was a cross-repo move and is now represented by its solyra
   record.
 
-The current ledger is **379 rows** (stocks 227 + solyra 152), regenerated on 2026-10-08 from `list_issues` in both repositories with every open issue mapped once; the 2026-09-22 reconciliation's 128-row ledger and the dated deltas after it are in this file's git history. Counts derived from GitHub are a snapshot: #1157 closed between two calls made minutes apart while an earlier revision was being written, which is why the gate checks the documents against each other and leaves the refresh against GitHub to the maintenance procedure at the end of this file.
+The current ledger is **378 rows** (stocks 226 + solyra 152): the 2026-10-08 regeneration from `list_issues` in both repositories mapped every open issue once, and [#1345](https://github.com/TeneikaAskew/stocks/issues/1345) has since closed on 2026-10-08; the 2026-09-22 reconciliation's 128-row ledger and the dated deltas after it are in this file's git history. Counts derived from GitHub are a snapshot: #1157 closed between two calls made minutes apart while an earlier revision was being written, which is why the gate checks the documents against each other and leaves the refresh against GitHub to the maintenance procedure at the end of this file.
 
 
 The 13 pre-audit issues excluded from the canonical set are
@@ -208,7 +208,7 @@ unmeasured claims in this repository.
 
 ## Severity distribution (open)
 
-As of 2026-10-08, regenerated from the live issue lists (stocks 227 open, solyra 152 open): every open issue of both repositories appears exactly once in the map below. The regeneration dropped six rows whose issues had closed ([#1150](https://github.com/TeneikaAskew/stocks/issues/1150) closed on 2026-09-23, [#1155](https://github.com/TeneikaAskew/stocks/issues/1155) closed on 2026-09-23, [#1167](https://github.com/TeneikaAskew/stocks/issues/1167) closed on 2026-09-28, [#1188](https://github.com/TeneikaAskew/stocks/issues/1188) closed on 2026-09-28, [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26) closed on 2026-09-14, [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27) closed on 2026-09-14), added the 225 issues the site traceability matrix filed on 2026-10-06 and 2026-10-07 (stocks#1257 to #1337, solyra#84 to #227) and 31 older or newer open issues that had no row, and gave seven capabilities their first section. #1209 and #1234, the matrix's evidence records, stay open and sit under FEAT-DEBT-001; #1342, the issue this regeneration closes, has no row. The dated deltas this paragraph used to carry are in the git history of this file.
+As of 2026-10-08, regenerated from the live issue lists (stocks 227 open, solyra 152 open): every open issue of both repositories appears exactly once in the map below. The regeneration dropped six rows whose issues had closed ([#1150](https://github.com/TeneikaAskew/stocks/issues/1150) closed on 2026-09-23, [#1155](https://github.com/TeneikaAskew/stocks/issues/1155) closed on 2026-09-23, [#1167](https://github.com/TeneikaAskew/stocks/issues/1167) closed on 2026-09-28, [#1188](https://github.com/TeneikaAskew/stocks/issues/1188) closed on 2026-09-28, [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26) closed on 2026-09-14, [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27) closed on 2026-09-14), added the 225 issues the site traceability matrix filed on 2026-10-06 and 2026-10-07 (stocks#1257 to #1337, solyra#84 to #227) and 31 older or newer open issues that had no row, and gave seven capabilities their first section. #1209 and #1234, the matrix's evidence records, stay open and sit under FEAT-DEBT-001; #1342, the issue this regeneration closes, has no row, and neither has [#1345](https://github.com/TeneikaAskew/stocks/issues/1345), closed on 2026-10-08 by the change that re-ticked the site traceability matrix's deployment-layer rows. The dated deltas this paragraph used to carry are in the git history of this file.
 
 | Severity | Count |
 |---|---|
@@ -219,13 +219,13 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open, solyra
 | MEDIUM | 10 |
 | P2 | 163 |
 | LOW | 3 |
-| P3 | 72 |
+| P3 | 71 |
 | DEBT | 13 |
 | ENH | 3 |
 | ops | 5 |
 | DECISION | 1 |
 | UNTRIAGED | 3 |
-| **Total** | **379** |
+| **Total** | **378** |
 
 ## Full open-issue map by capability
 
@@ -519,7 +519,7 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open, solyra
 
 **PR lineage:** [#189](https://github.com/TeneikaAskew/stocks/pull/189) *origin* · [#192](https://github.com/TeneikaAskew/stocks/pull/192) *evolution* · [#200](https://github.com/TeneikaAskew/stocks/pull/200) *remediation* · [#235](https://github.com/TeneikaAskew/stocks/pull/235) *origin* · [#323](https://github.com/TeneikaAskew/stocks/pull/323) *remediation* · [#389](https://github.com/TeneikaAskew/stocks/pull/389) *origin* · [#392](https://github.com/TeneikaAskew/stocks/pull/392) *origin* · [#494](https://github.com/TeneikaAskew/stocks/pull/494) *evolution* · [#641](https://github.com/TeneikaAskew/stocks/pull/641) *origin* · [#644](https://github.com/TeneikaAskew/stocks/pull/644) *origin* · [#759](https://github.com/TeneikaAskew/stocks/pull/759) *origin* · [#771](https://github.com/TeneikaAskew/stocks/pull/771) *remediation*
 
-### FEAT-DEBT-001 — Technical debt (12 open)
+### FEAT-DEBT-001 — Technical debt (11 open)
 
 | Issue | Sev | Title |
 |---|---|---|
@@ -528,7 +528,6 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open, solyra
 | [#921](https://github.com/TeneikaAskew/stocks/issues/921) | P3 | [P3][Cleanup] Decide and remove orphan tables, dead API endpoints, and legacy apps |
 | [#1227](https://github.com/TeneikaAskew/stocks/issues/1227) | P3 | [P3][Docs] Fix stale citations and claims found by the site traceability matrix (stocks) |
 | [#1335](https://github.com/TeneikaAskew/stocks/issues/1335) | P3 | [P3][Docs] Fix the stale citations, claims and missing tests found by the site traceability matrix, phases 2 to 6 (stocks) |
-| [#1345](https://github.com/TeneikaAskew/stocks/issues/1345) | P3 | [P3][Docs] Site traceability matrix: the third review round on #1338 (provenance stamp, bare none cells, OPTIONS-05, two gate-standard questions) |
 | [solyra#79](https://github.com/TeneikaAskew/solyra/issues/79) | P3 | [P3][Docs] Fix stale citations, claims and missing tests found by the site traceability matrix (solyra) |
 | [solyra#168](https://github.com/TeneikaAskew/solyra/issues/168) | P3 | [P3][Docs] Fix the stale citations, claims and missing tests found by the site traceability matrix, phases 2 to 6 (solyra) |
 | [#1034](https://github.com/TeneikaAskew/stocks/issues/1034) | DEBT | `notebooks/stock_analysis.ipynb` is a zero-byte tracked file |
