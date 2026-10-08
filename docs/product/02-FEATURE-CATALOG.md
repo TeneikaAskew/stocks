@@ -535,14 +535,14 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Priority | P1 |
 | Target phase | Phase 6 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-08-30 |
+| Last reviewed | 2026-10-08 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | — |
 | Backend | — |
 | Data | — |
 | Models | — |
 | Code | `gcp/deploy.sh`, `platform/deploy.sh`, `gcp/cloudbuild/` |
-| Tests | static checks only |
+| Tests | static checks; `tests/gcp/test_platform_deploy_service_config.py` runs `platform/deploy.sh` against a stub `gcloud` and asserts each service's auth mode, service account, environment, secrets, ingress and the `SETUP_IAM` grant ([#1350](https://github.com/TeneikaAskew/stocks/pull/1350)) |
 | Open issues | 15 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-deploy-001--infrastructure--deploy-15-open) |
 | Blocking issues | [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#832](https://github.com/TeneikaAskew/stocks/issues/832) [#851](https://github.com/TeneikaAskew/stocks/issues/851) [#855](https://github.com/TeneikaAskew/stocks/issues/855) [#856](https://github.com/TeneikaAskew/stocks/issues/856) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 6 |
