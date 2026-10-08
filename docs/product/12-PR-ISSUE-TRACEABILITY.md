@@ -6,7 +6,7 @@
 
 | | Count | Method |
 |---|---|---|
-| Open issues mapped | **121 of 121 (100%) at the 2026-08-31 snapshot** | `list_issues` (state OPEN), classified by label and title prefix. Reconciled 2026-08-31; the dated updates below carry the deltas since — **115 open as of 2026-09-14** — and the per-capability map further down is the 2026-08-31 snapshot pending the next regeneration |
+| Open issues mapped | **378 of 378 (100%) at the 2026-10-08 regeneration** (stocks 226, solyra 152) | `list_issues` (state OPEN) in both repositories, classified by title prefix, label and subject; the per-capability map below is that regeneration |
 | Significant PRs mapped | **151** | `list_pull_requests` (state closed, 4 pages, #184–#932) |
 
 > **Why PR lineage came from the API, not `git log`.** The working clone is **shallow**
@@ -212,45 +212,29 @@ unmeasured claims in this repository.
 
 ## Severity distribution (open)
 
-As of 2026-10-07 (P1 +4, P2 +21, P3 +6: the 31 Playbook and Settings issues filed from the site traceability matrix ([03](03-SITE-TRACEABILITY.md)) on 2026-10-06 and 2026-10-07, in the FEAT-PLAYBOOK-001 section and the new FEAT-SETTINGS-001 section; the other 194 issues of that batch are not mapped yet, tracked as [#1342](https://github.com/TeneikaAskew/stocks/issues/1342)). As of 2026-09-28 (P0 unchanged: #905 closed as superseded by #1206, which tracks the same question in plain terms; LOW −1: #1168 closed after the deploy and a replay showed the recap). As of 2026-09-27 (MEDIUM −1: #1171 closed, every job pinned by digest and a narrow deploy verified in production; MEDIUM +1: #1201, filed from #1171's production run; LOW −1: #1181 closed, the failed fill re-ran to exit 0 with every empty call named). As of 2026-09-26 (P1 −1: #1151 closed after its stored verdicts were re-scored; LOW +1: #1181, filed from that re-score; MEDIUM −1: #1166 closed, its unscored sessions healed to zero; LOW +1: #1188, filed while fixing #1181). As of 2026-09-25 (P1 −2: #1154 and #1152 closed; MEDIUM +2: #1166/#1171 and LOW +2: #1167/#1168, all four filed while resolving them). As of 2026-09-18 (P1 +2: #1135/#1136; P2 +2: #1137/#1138 — all four filed from the #1111 registry audit). Prior, as of 2026-09-03 (P2 −1: #868 moved to solyra; ENH −2: #683/#685 moved to solyra; ops −2: #930/#944 resolved; DEBT +1: #971 opened):
+As of 2026-10-08, regenerated from the live issue lists (stocks 226 open, solyra 152 open): every open issue of both repositories appears exactly once in the map below. The regeneration dropped six rows whose issues had closed ([#1150](https://github.com/TeneikaAskew/stocks/issues/1150), [#1155](https://github.com/TeneikaAskew/stocks/issues/1155), [#1167](https://github.com/TeneikaAskew/stocks/issues/1167), [#1188](https://github.com/TeneikaAskew/stocks/issues/1188), [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26), [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27)), added the 225 issues the site traceability matrix filed on 2026-10-06 and 2026-10-07 (stocks#1257 to #1337, solyra#84 to #227) and 31 older or newer open issues that had no row, and gave seven capabilities their first section. #1209 and #1234, the matrix's evidence records, were closed on 2026-10-08. The dated deltas this paragraph used to carry are in the git history of this file.
 
 | Severity | Count |
 |---|---|
 | CRITICAL | 15 |
 | P0 | 14 |
 | HIGH | 15 |
-| P1 | 33 |
+| P1 | 62 |
 | MEDIUM | 10 |
-| P2 | 36 |
-| LOW | 5 |
-| P3 | 8 |
+| P2 | 163 |
+| LOW | 3 |
+| P3 | 73 |
 | DEBT | 11 |
-| ENH | 5 |
-| ops | 4 |
+| ENH | 3 |
+| ops | 5 |
 | DECISION | 1 |
-| UNTRIAGED | 2 |
-| **Total** | **159** |
+| UNTRIAGED | 3 |
+| **Total** | **378** |
 
 ## Full open-issue map by capability
 
-> **Last regenerated for the 2026-08-31 reconciliation, with the 2026-09-03 cross-repo
-> edits applied (#971 added; the #683/#685 rows re-pointed at solyra#26/#27); not
-> regenerated since.** As of 2026-09-03 every then-open issue appeared exactly once.
-> The dated updates above list the deltas since: fourteen of the rows below are now
-> closed (canonical #820, #825, #829, #831, #833, #838, #841, #843, #861, #898, #900,
-> #904, and ops records #930/#944), #868's row points at solyra#28, #717 closed as
-> duplicate, and of the eleven issues opened after 2026-09-03 that remain open (#1017,
-> #1025, #1034, #1047, #1052, #1066, #1067, #1076, #1084, #1091, #1095), **only #1025 is
-> mapped** (plus #1118, filed 2026-09-16 and mapped to FEAT-OPS-001 on creation) — #1025
-> was added to FEAT-MODEL-001 on 2026-09-15 because
-> [07](07-MODEL-REGISTRY.md) cites it as MODEL-MAG-001's live blocker and
-> `tests/meta/test_model_registry_consistency.py` requires every issue the registry
-> cites to exist here. The other ten are still unmapped (#958 and #1019 also postdate
-> the map but have closed again).
-> The site traceability batch of 2026-10-06 and 2026-10-07 (stocks#1257 to #1337, solyra#84 to #227) is
-> mapped only for FEAT-PLAYBOOK-001 and FEAT-SETTINGS-001 (31 rows added 2026-10-07); its other 194 issues
-> wait for the refresh tracked as [#1342](https://github.com/TeneikaAskew/stocks/issues/1342).
-> Cross-check the updates before treating a row as a live blocker.
+> **Regenerated 2026-10-08** from `list_issues` (state OPEN) in both repositories: every open issue appears exactly once, classified by its `[Area]` title prefix (the matrix's areas map onto the capabilities below; the Shared area is classified issue by issue) or, for issues without a prefix, by label and subject. Six closed rows were dropped and seven capabilities (Market dashboard, Intraday monitoring, Charting, Earnings / catalysts, Reports / analytics, Administration, Help / glossary) gained their first section.
+> Cross-check an issue's state before treating a row as a live blocker: the map is a snapshot, and `tests/meta/test_model_registry_consistency.py` holds the counts to the catalogue, not to GitHub.
 
 **No range notation** — the previous revision wrote
 `#829–#850`, which reads as 22 issues while naming six. Ranges are replaced with explicit lists.
@@ -259,85 +243,112 @@ As of 2026-10-07 (P1 +4, P2 +21, P3 +6: the 31 Playbook and Settings issues file
 
 | Issue | Sev | Title |
 |---|---|---|
-| [#824](https://github.com/TeneikaAskew/stocks/issues/824) | CRITICAL | [audit] R7 — scripts/backfill_and_replay.py re-implements the daily fetcher with a divergent indicator map |
-| [#823](https://github.com/TeneikaAskew/stocks/issues/823) | CRITICAL | [audit] R6 — As-of leakage: refresh_level_map builds level maps from today's daily bars |
-| [#822](https://github.com/TeneikaAskew/stocks/issues/822) | CRITICAL | [audit] R5 — As-of leakage: summarize_backtest_metrics reads the as-of day's completed bar |
-| [#821](https://github.com/TeneikaAskew/stocks/issues/821) | CRITICAL | [audit] R4 — scripts/compare_tier_fires.py is a throwaway harness whose numbers gated a calibration PR |
-| [#819](https://github.com/TeneikaAskew/stocks/issues/819) | CRITICAL | [audit] R2 — ORB session window applied against a UTC index in replay (the 5/6 V1 bug, now in production code) |
 | [#814](https://github.com/TeneikaAskew/stocks/issues/814) | CRITICAL | [audit] T3 — Backtest signals and fills use the same bar's close; zero slippage/commission |
-| [#906](https://github.com/TeneikaAskew/stocks/issues/906) | P0 | [P0][Replay] Quarantine and rerun pre-PR-135 future-leaked artifacts |
+| [#819](https://github.com/TeneikaAskew/stocks/issues/819) | CRITICAL | [audit] R2 — ORB session window applied against a UTC index in replay (the 5/6 V1 bug, now in production code) |
+| [#821](https://github.com/TeneikaAskew/stocks/issues/821) | CRITICAL | [audit] R4 — scripts/compare_tier_fires.py is a throwaway harness whose numbers gated a calibration PR |
+| [#822](https://github.com/TeneikaAskew/stocks/issues/822) | CRITICAL | [audit] R5 — As-of leakage: summarize_backtest_metrics reads the as-of day's completed bar |
+| [#823](https://github.com/TeneikaAskew/stocks/issues/823) | CRITICAL | [audit] R6 — As-of leakage: refresh_level_map builds level maps from today's daily bars |
+| [#824](https://github.com/TeneikaAskew/stocks/issues/824) | CRITICAL | [audit] R7 — scripts/backfill_and_replay.py re-implements the daily fetcher with a divergent indicator map |
 | [#873](https://github.com/TeneikaAskew/stocks/issues/873) | P0 | [P0][Replay] Use replay clock for lifecycle timestamps and elapsed time |
-| [#929](https://github.com/TeneikaAskew/stocks/issues/929) | P1 | [P1][Replay] Reject bars missing their event timestamp |
-| [#903](https://github.com/TeneikaAskew/stocks/issues/903) | P1 | [P1][Replay] Assert canonical indicator columns across replay and backfill |
-| [#902](https://github.com/TeneikaAskew/stocks/issues/902) | P1 | [P1][Resolver] Make historical resolver upper bounds replay-aware |
-| [#901](https://github.com/TeneikaAskew/stocks/issues/901) | P1 | [P1][Replay] Enforce premarket cutoff in signal-alert summaries |
-| [#899](https://github.com/TeneikaAskew/stocks/issues/899) | P1 | [P1][Replay] Persist replay alerts through the production schema contract |
-| [#897](https://github.com/TeneikaAskew/stocks/issues/897) | P1 | [P1][Replay] Scope LevelMap timestamps and caches to the replay date |
-| [#882](https://github.com/TeneikaAskew/stocks/issues/882) | P1 | [P1][Backtest] Make profit factor and aggregate metrics position-size aware |
+| [#906](https://github.com/TeneikaAskew/stocks/issues/906) | P0 | [P0][Replay] Quarantine and rerun pre-PR-135 future-leaked artifacts |
 | [#869](https://github.com/TeneikaAskew/stocks/issues/869) | P1 | [P1][Resolver] Restrict EOD resolution and target hits to RTH bars |
+| [#882](https://github.com/TeneikaAskew/stocks/issues/882) | P1 | [P1][Backtest] Make profit factor and aggregate metrics position-size aware |
+| [#897](https://github.com/TeneikaAskew/stocks/issues/897) | P1 | [P1][Replay] Scope LevelMap timestamps and caches to the replay date |
+| [#899](https://github.com/TeneikaAskew/stocks/issues/899) | P1 | [P1][Replay] Persist replay alerts through the production schema contract |
+| [#901](https://github.com/TeneikaAskew/stocks/issues/901) | P1 | [P1][Replay] Enforce premarket cutoff in signal-alert summaries |
+| [#902](https://github.com/TeneikaAskew/stocks/issues/902) | P1 | [P1][Resolver] Make historical resolver upper bounds replay-aware |
+| [#903](https://github.com/TeneikaAskew/stocks/issues/903) | P1 | [P1][Replay] Assert canonical indicator columns across replay and backfill |
+| [#929](https://github.com/TeneikaAskew/stocks/issues/929) | P1 | [P1][Replay] Reject bars missing their event timestamp |
 | [#923](https://github.com/TeneikaAskew/stocks/issues/923) | P2 | [P2][Architecture] Isolate divergent legacy replay, backfill, and analysis stacks |
 
 **PR lineage:** [#210](https://github.com/TeneikaAskew/stocks/pull/210) *origin* · [#319](https://github.com/TeneikaAskew/stocks/pull/319) *origin* · [#350](https://github.com/TeneikaAskew/stocks/pull/350) *structural* · [#406](https://github.com/TeneikaAskew/stocks/pull/406) *remediation* · [#418](https://github.com/TeneikaAskew/stocks/pull/418) *evolution* · [#513](https://github.com/TeneikaAskew/stocks/pull/513) *structural* · [#519](https://github.com/TeneikaAskew/stocks/pull/519) *evolution* · [#548](https://github.com/TeneikaAskew/stocks/pull/548) *origin* · [#694](https://github.com/TeneikaAskew/stocks/pull/694) *evolution* · [#706](https://github.com/TeneikaAskew/stocks/pull/706) *origin* · [#710](https://github.com/TeneikaAskew/stocks/pull/710) *origin*
 
-### FEAT-DEPLOY-001 — Infrastructure / deploy (14 open)
+### FEAT-DEPLOY-001 — Infrastructure / deploy (15 open)
 
 | Issue | Sev | Title |
 |---|---|---|
-| [#835](https://github.com/TeneikaAskew/stocks/issues/835) | CRITICAL | [audit] D3 — fetch-fred-rates pinned to a 3.5-month-old image tag (plus 4 more stale-image jobs) |
 | [#834](https://github.com/TeneikaAskew/stocks/issues/834) | CRITICAL | [audit] D2 — p2-build-gamma-levels: daily production job with zero infra-as-code |
-| [#859](https://github.com/TeneikaAskew/stocks/issues/859) | HIGH | [audit] D4-D8 — Five live-vs-repo config drifts (two re-verified 2026-08-29) |
-| [#857](https://github.com/TeneikaAskew/stocks/issues/857) | HIGH | [audit] C4 — magnitude-engine: 27-way fan-out with no connection-dimension capacity math |
-| [#856](https://github.com/TeneikaAskew/stocks/issues/856) | HIGH | [audit] C3 — fetch-premarket-refresh: per-ticker SELECT in the loop, as little as 1.2x timeout headroom |
-| [#855](https://github.com/TeneikaAskew/stocks/issues/855) | HIGH | [audit] C2 — backtest-pipeline timeout is ~1.8x measured, not the required 4x |
-| [#851](https://github.com/TeneikaAskew/stocks/issues/851) | HIGH | [audit] K6 — Five jobs have no --task-timeout, silently defaulting to 600s |
+| [#835](https://github.com/TeneikaAskew/stocks/issues/835) | CRITICAL | [audit] D3 — fetch-fred-rates pinned to a 3.5-month-old image tag (plus 4 more stale-image jobs) |
 | [#832](https://github.com/TeneikaAskew/stocks/issues/832) | HIGH | [audit] C1 — fetch-market-data: per-ticker N+1, and the task-timeout is sized off an N that is 5x too small |
-| [#858](https://github.com/TeneikaAskew/stocks/issues/858) | MEDIUM | [audit] C5 + C8 — av-options-realtime scheduler/job window mismatch; enrichment-check comment overstates its cadence |
-| [#854](https://github.com/TeneikaAskew/stocks/issues/854) | MEDIUM | [audit] K9 — update branches inconsistently mirror create sizing flags |
-| [#853](https://github.com/TeneikaAskew/stocks/issues/853) | MEDIUM | [audit] K8 / C6 / C7 — Widespread unjustified non-zero --max-retries (~23 jobs) |
+| [#851](https://github.com/TeneikaAskew/stocks/issues/851) | HIGH | [audit] K6 — Five jobs have no --task-timeout, silently defaulting to 600s |
+| [#855](https://github.com/TeneikaAskew/stocks/issues/855) | HIGH | [audit] C2 — backtest-pipeline timeout is ~1.8x measured, not the required 4x |
+| [#856](https://github.com/TeneikaAskew/stocks/issues/856) | HIGH | [audit] C3 — fetch-premarket-refresh: per-ticker SELECT in the loop, as little as 1.2x timeout headroom |
+| [#857](https://github.com/TeneikaAskew/stocks/issues/857) | HIGH | [audit] C4 — magnitude-engine: 27-way fan-out with no connection-dimension capacity math |
+| [#859](https://github.com/TeneikaAskew/stocks/issues/859) | HIGH | [audit] D4-D8 — Five live-vs-repo config drifts (two re-verified 2026-08-29) |
 | [#852](https://github.com/TeneikaAskew/stocks/issues/852) | MEDIUM | [audit] K7 — 19 deploy_* functions reachable only via the bundled fetchers target |
-| [#1140](https://github.com/TeneikaAskew/stocks/issues/1140) | ops | [ESCALATED] magnitude-inference: fix in #1122 merged 2026-09-16 but never deployed — job still failing nightly, auto-closed each time |
+| [#853](https://github.com/TeneikaAskew/stocks/issues/853) | MEDIUM | [audit] K8 / C6 / C7 — Widespread unjustified non-zero --max-retries (~23 jobs) |
+| [#854](https://github.com/TeneikaAskew/stocks/issues/854) | MEDIUM | [audit] K9 — update branches inconsistently mirror create sizing flags |
+| [#858](https://github.com/TeneikaAskew/stocks/issues/858) | MEDIUM | [audit] C5 + C8 — av-options-realtime scheduler/job window mismatch; enrichment-check comment overstates its cadence |
 | [#1201](https://github.com/TeneikaAskew/stocks/issues/1201) | MEDIUM | audit-infra-drift: both scheduler checks fail with 403 on every run; trading-runner@ holds no Cloud Scheduler role |
+| [#1140](https://github.com/TeneikaAskew/stocks/issues/1140) | ops | [ESCALATED] magnitude-inference: fix in #1122 merged 2026-09-16 but never deployed — job still failing nightly, auto-closed each time |
+| [solyra#12](https://github.com/TeneikaAskew/solyra/issues/12) | ops | GCP billing follow-ups: Detailed export, stalled backfill, account-wide budget |
 
 **PR lineage:** [#507](https://github.com/TeneikaAskew/stocks/pull/507) *remediation*
 
-### FEAT-DATA-001 — Data platform (18 open)
+### FEAT-DATA-001 — Data platform (21 open)
 
 | Issue | Sev | Title |
 |---|---|---|
-| [#926](https://github.com/TeneikaAskew/stocks/issues/926) | P0 | [P0][Data Loader] Remove the second silent empty-data swallow |
 | [#925](https://github.com/TeneikaAskew/stocks/issues/925) | P0 | [P0][Data Access] Stop legacy database query failures from becoming empty data |
-| [#863](https://github.com/TeneikaAskew/stocks/issues/863) | HIGH | [audit] S2 + S4 — earnings_options_strategy_winners posted to Discord at 99 days old; signal_metrics rolling classification |
-| [#862](https://github.com/TeneikaAskew/stocks/issues/862) | HIGH | [audit] S3 — exit_config_overrides: 113 days old, on the live fire path, guard trips ~2026-11-04 |
+| [#926](https://github.com/TeneikaAskew/stocks/issues/926) | P0 | [P0][Data Loader] Remove the second silent empty-data swallow |
 | [#828](https://github.com/TeneikaAskew/stocks/issues/828) | HIGH | [audit] H2 — Partially-remediated fallback in gcp/signal_monitor.py:433-513 |
-| [#927](https://github.com/TeneikaAskew/stocks/issues/927) | P1 | [P1][Rates] Do not silently price Greeks with hard-coded rates |
-| [#914](https://github.com/TeneikaAskew/stocks/issues/914) | P1 | [P1][Calendar] Centralize exchange sessions, holidays, half-days, and DST |
+| [#862](https://github.com/TeneikaAskew/stocks/issues/862) | HIGH | [audit] S3 — exit_config_overrides: 113 days old, on the live fire path, guard trips ~2026-11-04 |
+| [#863](https://github.com/TeneikaAskew/stocks/issues/863) | HIGH | [audit] S2 + S4 — earnings_options_strategy_winners posted to Discord at 99 days old; signal_metrics rolling classification |
 | [#913](https://github.com/TeneikaAskew/stocks/issues/913) | P1 | [P1][Data] Enforce a raw-versus-adjusted corporate-action policy |
+| [#914](https://github.com/TeneikaAskew/stocks/issues/914) | P1 | [P1][Calendar] Centralize exchange sessions, holidays, half-days, and DST |
+| [#927](https://github.com/TeneikaAskew/stocks/issues/927) | P1 | [P1][Rates] Do not silently price Greeks with hard-coded rates |
 | [#1135](https://github.com/TeneikaAskew/stocks/issues/1135) | P1 | [P1][Earnings] `_derive_archetype` reimplements `classify_archetype` and diverges on missing consistency data |
-| [#860](https://github.com/TeneikaAskew/stocks/issues/860) | MEDIUM | [audit] D9-D11 — Live columns absent from gcp/schema.sql; p7_schema.sql documents a stale process |
 | [#842](https://github.com/TeneikaAskew/stocks/issues/842) | MEDIUM | [audit] FB-M1..M6 — Six MEDIUM silent fallbacks on financial fields (Rule 3.7) |
-| [#919](https://github.com/TeneikaAskew/stocks/issues/919) | P2 | [P2][Dormant Data] Restore or retire wired-but-unfed production tables |
+| [#860](https://github.com/TeneikaAskew/stocks/issues/860) | MEDIUM | [audit] D9-D11 — Live columns absent from gcp/schema.sql; p7_schema.sql documents a stale process |
 | [#918](https://github.com/TeneikaAskew/stocks/issues/918) | P2 | [P2][Database] Replace schema convergence sprawl with ordered migrations |
+| [#919](https://github.com/TeneikaAskew/stocks/issues/919) | P2 | [P2][Dormant Data] Restore or retire wired-but-unfed production tables |
 | [#1138](https://github.com/TeneikaAskew/stocks/issues/1138) | P2 | [P2][Earnings] `query_typical_daily_return` normalizes over 64 returns, not the 60 its parameter names |
 | [#1158](https://github.com/TeneikaAskew/stocks/issues/1158) | P2 | [P2][Earnings] playability quintile boundaries were calibrated on a score with two of five inputs frozen, and bucketed by rank rather than the absolute cut-points production applies |
-| [#1188](https://github.com/TeneikaAskew/stocks/issues/1188) | LOW | fetch-market-data stores no bars for share classes: AlphaVantage refuses the dotted form (BF.B, MOG.A) |
+| [#1271](https://github.com/TeneikaAskew/stocks/issues/1271) | P2 | [P2][Shared] Market-data endpoint serves legacy GCS parquets after a Cloud SQL failure with no marker |
+| [#1277](https://github.com/TeneikaAskew/stocks/issues/1277) | P2 | [P2][Shared] Market-data endpoint sends a missing bar volume as 0 |
+| [#1287](https://github.com/TeneikaAskew/stocks/issues/1287) | P2 | [P2][Shared] GET /api/market/coverage reads about 7.35 million rows to answer for four tickers |
 | [#1047](https://github.com/TeneikaAskew/stocks/issues/1047) | DEBT | Fallback audit wave 3: the ~106 silent-fallback sites left after #1022, by module and priority |
 | [#1076](https://github.com/TeneikaAskew/stocks/issues/1076) | DEBT | `MARKET_HOLIDAYS_2026` is a single-year constant; holiday-aware checks break in 2027 |
+| [#1190](https://github.com/TeneikaAskew/stocks/issues/1190) | UNTRIAGED | Recompute tooling for bar-derived results after the intraday re-framing migration |
 
 **PR lineage:** [#204](https://github.com/TeneikaAskew/stocks/pull/204) *evolution* · [#205](https://github.com/TeneikaAskew/stocks/pull/205) *structural* · [#322](https://github.com/TeneikaAskew/stocks/pull/322) *remediation* · [#325](https://github.com/TeneikaAskew/stocks/pull/325) *evolution* · [#339](https://github.com/TeneikaAskew/stocks/pull/339) *remediation* · [#518](https://github.com/TeneikaAskew/stocks/pull/518) *remediation* · [#760](https://github.com/TeneikaAskew/stocks/pull/760) *remediation*
 
-### FEAT-OPTION-001 — Options / gamma (10 open)
+### FEAT-OPTION-001 — Options / gamma (33 open)
 
 | Issue | Sev | Title |
 |---|---|---|
-| [#826](https://github.com/TeneikaAskew/stocks/issues/826) | CRITICAL | [audit] C-N2 — `or 0` on gamma and open_interest with no coverage gate |
 | [#812](https://github.com/TeneikaAskew/stocks/issues/812) | CRITICAL | [audit] T1 — compute_gamma_flip_bs fabricates gamma flips out of float underflow |
-| [#896](https://github.com/TeneikaAskew/stocks/issues/896) | P1 | [P1][Gamma] Preserve put/call infinity and NaN VEX invariants |
-| [#878](https://github.com/TeneikaAskew/stocks/issues/878) | P1 | [P1][Options] Discount parity spot before proximity tagging |
-| [#876](https://github.com/TeneikaAskew/stocks/issues/876) | P1 | [P1][Gamma] Define and rename gamma-balance semantics |
-| [#872](https://github.com/TeneikaAskew/stocks/issues/872) | P1 | [P1][Gamma] Correct implied-move horizon scaling |
+| [#826](https://github.com/TeneikaAskew/stocks/issues/826) | CRITICAL | [audit] C-N2 — `or 0` on gamma and open_interest with no coverage gate |
 | [#871](https://github.com/TeneikaAskew/stocks/issues/871) | P1 | [P1][Gamma] Apply the options contract multiplier consistently to GEX |
-| [#880](https://github.com/TeneikaAskew/stocks/issues/880) | P2 | [P2][Gamma] Align displayed total-GEX scope with regime scope |
+| [#872](https://github.com/TeneikaAskew/stocks/issues/872) | P1 | [P1][Gamma] Correct implied-move horizon scaling |
+| [#876](https://github.com/TeneikaAskew/stocks/issues/876) | P1 | [P1][Gamma] Define and rename gamma-balance semantics |
+| [#878](https://github.com/TeneikaAskew/stocks/issues/878) | P1 | [P1][Options] Discount parity spot before proximity tagging |
+| [#896](https://github.com/TeneikaAskew/stocks/issues/896) | P1 | [P1][Gamma] Preserve put/call infinity and NaN VEX invariants |
+| [#1211](https://github.com/TeneikaAskew/stocks/issues/1211) | P1 | [P1][Options] Stop labelling a REALTIME snapshot up to 20 days old as live |
+| [#1259](https://github.com/TeneikaAskew/stocks/issues/1259) | P1 | [P1][Options] SPY and SPX EOD options chains hold calls only and the job logs success |
+| [#1260](https://github.com/TeneikaAskew/stocks/issues/1260) | P1 | [P1][Options] A calls-only chain passes every gate: SPY reads positive_gamma +221.1M and put/call 0.0 |
+| [solyra#74](https://github.com/TeneikaAskew/solyra/issues/74) | P1 | [P1][Options] Failed Greeks request renders a fabricated $0 GEX instead of an error |
+| [solyra#87](https://github.com/TeneikaAskew/solyra/issues/87) | P1 | [P1][Options] Swing Mode draws mock Hedge and Midpoint levels beside real levels |
+| [solyra#88](https://github.com/TeneikaAskew/solyra/issues/88) | P1 | [P1][Options] Options views draw zeros and thin-chain text for a no-gamma chain and ignore warnings |
+| [solyra#89](https://github.com/TeneikaAskew/solyra/issues/89) | P1 | [P1][Options] The Flip chip and Profiles' Gamma Flip card show the gamma balance, not the flip |
+| [solyra#90](https://github.com/TeneikaAskew/solyra/issues/90) | P1 | [P1][Options] The King chip on Swing and Trinity is the lowest-strike King, not the largest |
+| [solyra#93](https://github.com/TeneikaAskew/solyra/issues/93) | P1 | [P1][Options] Profiles' VEX button changes the first card and the header, not the bars |
+| [solyra#110](https://github.com/TeneikaAskew/solyra/issues/110) | P1 | [P1][Options] Profiles posts a delta-proxy spot to the Greeks handler; its figures differ from Swing's |
 | [#784](https://github.com/TeneikaAskew/stocks/issues/784) | P2 | R4: incremental-vol ablation — does gamma regime add value over ATR/RVOL/VIX before position sizing? |
+| [#880](https://github.com/TeneikaAskew/stocks/issues/880) | P2 | [P2][Gamma] Align displayed total-GEX scope with regime scope |
+| [#1212](https://github.com/TeneikaAskew/stocks/issues/1212) | P2 | [P2][Options] Options chain pins today's first intraday snapshot for 12 hours |
+| [#1282](https://github.com/TeneikaAskew/stocks/issues/1282) | P2 | [P2][Shared] A daily_rates failure drops the gamma flip with one log line and no warnings entry |
+| [#1285](https://github.com/TeneikaAskew/stocks/issues/1285) | P2 | [P2][Options] SPX chains hold no Greeks, and the sidecar job that would compute them is one-shot |
+| [#1286](https://github.com/TeneikaAskew/stocks/issues/1286) | P2 | [P2][Options] The unavailable grid envelope carries zero totals despite promising no synthetic numbers |
+| [solyra#174](https://github.com/TeneikaAskew/solyra/issues/174) | P2 | [P2][Options] Swing mixes two snapshots and two windows: legend from /levels, heatmap from the grid |
+| [solyra#175](https://github.com/TeneikaAskew/solyra/issues/175) | P2 | [P2][Options] Swing reads a loading or failed grid as unavailable, or as a symbol with no grid |
+| [solyra#176](https://github.com/TeneikaAskew/solyra/issues/176) | P2 | [P2][Options] Profiles labels every Cloud SQL chain AlphaVantage EOD, even a REALTIME snapshot |
+| [solyra#177](https://github.com/TeneikaAskew/solyra/issues/177) | P2 | [P2][Options] A date step can leave the previous date's Greeks on the Profiles cards |
+| [solyra#178](https://github.com/TeneikaAskew/solyra/issues/178) | P2 | [P2][Options] Swing's expiry chips change only their own highlight |
+| [solyra#179](https://github.com/TeneikaAskew/solyra/issues/179) | P2 | [P2][Options] A failed dates or levels request reads as empty or as nothing on the Options views |
+| [#1326](https://github.com/TeneikaAskew/stocks/issues/1326) | P3 | [P3][Options] daily_rates.sp500_div_yld is a configured constant stored as if it were a measurement |
+| [solyra#106](https://github.com/TeneikaAskew/solyra/issues/106) | P3 | [P3][Options] The Contract Drilldown names the clicked contract above another contract's numbers |
+| [solyra#107](https://github.com/TeneikaAskew/solyra/issues/107) | P3 | [P3][Options] The options picker offers symbols the options routes reject |
 | [#607](https://github.com/TeneikaAskew/stocks/issues/607) | DEBT | 0DTE options P&L: theta magnitude still anchored to EOD Greek — switch to intraday repricing |
 
 **PR lineage:** [#255](https://github.com/TeneikaAskew/stocks/pull/255) *structural* · [#536](https://github.com/TeneikaAskew/stocks/pull/536) *origin* · [#539](https://github.com/TeneikaAskew/stocks/pull/539) *origin* · [#540](https://github.com/TeneikaAskew/stocks/pull/540) *origin* · [#541](https://github.com/TeneikaAskew/stocks/pull/541) *evolution* · [#544](https://github.com/TeneikaAskew/stocks/pull/544) *evolution* · [#609](https://github.com/TeneikaAskew/stocks/pull/609) *evolution* · [#614](https://github.com/TeneikaAskew/stocks/pull/614) *evolution* · [#639](https://github.com/TeneikaAskew/stocks/pull/639) *remediation* · [#640](https://github.com/TeneikaAskew/stocks/pull/640) *remediation* · [#645](https://github.com/TeneikaAskew/stocks/pull/645) *structural* · [#791](https://github.com/TeneikaAskew/stocks/pull/791) *remediation*
@@ -346,102 +357,155 @@ As of 2026-10-07 (P1 +4, P2 +21, P3 +6: the 31 Playbook and Settings issues file
 
 | Issue | Sev | Title |
 |---|---|---|
-| [#817](https://github.com/TeneikaAskew/stocks/issues/817) | CRITICAL | [audit] T6 — Exhaustive in-sample mining with no OOS and no multiple-testing control |
 | [#813](https://github.com/TeneikaAskew/stocks/issues/813) | CRITICAL | [audit] T2 — Walk-forward "out-of-sample" calibration is in-sample, and auto-writes production |
-| [#910](https://github.com/TeneikaAskew/stocks/issues/910) | P0 | [P0][Provenance] Persist a complete decision and experiment manifest |
-| [#909](https://github.com/TeneikaAskew/stocks/issues/909) | P0 | [P0][Evaluation] Cohort every metric by strategy, config, code, and objective |
-| [#888](https://github.com/TeneikaAskew/stocks/issues/888) | P0 | [P0][Research] Separate underlying returns from options-product returns |
-| [#875](https://github.com/TeneikaAskew/stocks/issues/875) | P0 | [P0][Magnitude] Preserve missing gamma instead of filling signed distances with zero |
+| [#817](https://github.com/TeneikaAskew/stocks/issues/817) | CRITICAL | [audit] T6 — Exhaustive in-sample mining with no OOS and no multiple-testing control |
 | [#874](https://github.com/TeneikaAskew/stocks/issues/874) | P0 | [P0][Magnitude] Remove same-day daily-indicator leakage from intraday Phase 2/4 |
+| [#875](https://github.com/TeneikaAskew/stocks/issues/875) | P0 | [P0][Magnitude] Preserve missing gamma instead of filling signed distances with zero |
+| [#888](https://github.com/TeneikaAskew/stocks/issues/888) | P0 | [P0][Research] Separate underlying returns from options-product returns |
+| [#909](https://github.com/TeneikaAskew/stocks/issues/909) | P0 | [P0][Evaluation] Cohort every metric by strategy, config, code, and objective |
+| [#910](https://github.com/TeneikaAskew/stocks/issues/910) | P0 | [P0][Provenance] Persist a complete decision and experiment manifest |
 | [#1025](https://github.com/TeneikaAskew/stocks/issues/1025) | P0 | Retrain the magnitude engine: `magnitude-engine-c49qf` is 100% argmax-collapsed and has served nothing since 2026-09-03 |
-| [#890](https://github.com/TeneikaAskew/stocks/issues/890) | P1 | [P1][Validation] Replace the magnitude leakage audit with an actual recomputation check |
-| [#886](https://github.com/TeneikaAskew/stocks/issues/886) | P1 | [P1][Research] Eliminate hand-picked-universe survivorship bias |
 | [#380](https://github.com/TeneikaAskew/stocks/issues/380) | P1 | feat: close the loop — data-driven disabled_conditions from per_factor_walkforward verdicts |
+| [#886](https://github.com/TeneikaAskew/stocks/issues/886) | P1 | [P1][Research] Eliminate hand-picked-universe survivorship bias |
+| [#890](https://github.com/TeneikaAskew/stocks/issues/890) | P1 | [P1][Validation] Replace the magnitude leakage audit with an actual recomputation check |
 
 **PR lineage:** [#355](https://github.com/TeneikaAskew/stocks/pull/355) *origin* · [#575](https://github.com/TeneikaAskew/stocks/pull/575) *verdict* · [#588](https://github.com/TeneikaAskew/stocks/pull/588) *verdict* · [#591](https://github.com/TeneikaAskew/stocks/pull/591) *origin* · [#593](https://github.com/TeneikaAskew/stocks/pull/593) *evolution* · [#594](https://github.com/TeneikaAskew/stocks/pull/594) *evolution* · [#595](https://github.com/TeneikaAskew/stocks/pull/595) *evolution* · [#597](https://github.com/TeneikaAskew/stocks/pull/597) *structural* · [#615](https://github.com/TeneikaAskew/stocks/pull/615) *evolution* · [#622](https://github.com/TeneikaAskew/stocks/pull/622) *remediation* · [#629](https://github.com/TeneikaAskew/stocks/pull/629) *remediation* · [#637](https://github.com/TeneikaAskew/stocks/pull/637) *structural* · [#638](https://github.com/TeneikaAskew/stocks/pull/638) *remediation* · [#647](https://github.com/TeneikaAskew/stocks/pull/647) *evolution* · [#698](https://github.com/TeneikaAskew/stocks/pull/698) *origin* · [#707](https://github.com/TeneikaAskew/stocks/pull/707) *origin* · [#719](https://github.com/TeneikaAskew/stocks/pull/719) *evolution* · [#735](https://github.com/TeneikaAskew/stocks/pull/735) *evolution* · [#810](https://github.com/TeneikaAskew/stocks/pull/810) *structural* · [#811](https://github.com/TeneikaAskew/stocks/pull/811) *remediation*
 
-### FEAT-SIGNAL-001 — Signals / execution (12 open)
+### FEAT-SIGNAL-001 — Signals / execution (25 open)
 
 | Issue | Sev | Title |
 |---|---|---|
-| [#816](https://github.com/TeneikaAskew/stocks/issues/816) | CRITICAL | [audit] T5 — max_daily_trades interacts badly with sizing; daily loss limit is structurally unenforceable |
 | [#815](https://github.com/TeneikaAskew/stocks/issues/815) | CRITICAL | [audit] T4 — Live has no stop-loss; the validating backtest does (proposed resolution: do NOT add one) |
+| [#816](https://github.com/TeneikaAskew/stocks/issues/816) | CRITICAL | [audit] T5 — max_daily_trades interacts badly with sizing; daily loss limit is structurally unenforceable |
 | [#928](https://github.com/TeneikaAskew/stocks/issues/928) | P0 | [P0][Signals] Fail visibly when live condition overrides cannot be resolved |
 | [#1206](https://github.com/TeneikaAskew/stocks/issues/1206) | P0 | Track: what the alerts called vs what the stock actually did, by buy/sell and month |
 | [#915](https://github.com/TeneikaAskew/stocks/issues/915) | P1 | [P1][Execution] Bound same-minute trigger, target, and stop ordering ambiguity |
 | [#1136](https://github.com/TeneikaAskew/stocks/issues/1136) | P1 | [P1][Signals] Two mean-reversion implementations; only `lib.signals.evaluate_signal` applies the runtime gates |
-| [#1167](https://github.com/TeneikaAskew/stocks/issues/1167) | LOW | Re-derive EMPIRICAL_LOOKUP after the #1154 re-run: it was fitted on 100x-lenient classifications |
+| [#1210](https://github.com/TeneikaAskew/stocks/issues/1210) | P1 | [P1][Signals] Fix historical_signals entry_time mixing UTC and Eastern conventions |
+| [#1213](https://github.com/TeneikaAskew/stocks/issues/1213) | P1 | [P1][Signals] Signals date filters silently reach only the newest 5,000 rows |
+| [#1261](https://github.com/TeneikaAskew/stocks/issues/1261) | P1 | [P1][Signals] A symbol a signed-in user picks never reaches the nightly signals job |
+| [#1262](https://github.com/TeneikaAskew/stocks/issues/1262) | P1 | [P1][Signals] A trades write hit by a Cloud SQL outage is kept in a container file and logged as done |
+| [#1288](https://github.com/TeneikaAskew/stocks/issues/1288) | P2 | [P2][Signals] conditions_met is stored as <score>/5 though a signal can meet seven conditions |
+| [#1289](https://github.com/TeneikaAskew/stocks/issues/1289) | P2 | [P2][Signals] signal-monitor-nwmlx died at 10:11 ET on 2026-09-30 and nothing restarted the monitor |
+| [solyra#180](https://github.com/TeneikaAskew/solyra/issues/180) | P2 | [P2][Signals] Min score offers 5+ to 8+ over scores that run 3 to 7 |
+| [solyra#181](https://github.com/TeneikaAskew/solyra/issues/181) | P2 | [P2][Signals] Every failed signals request reads "Run the signals generation pipeline first" |
+| [solyra#182](https://github.com/TeneikaAskew/solyra/issues/182) | P2 | [P2][Signals] Performance block says 90-day backtest but sums live trades and ignores review mode |
+| [solyra#183](https://github.com/TeneikaAskew/solyra/issues/183) | P2 | [P2][Signals] Performance block vanishes silently for tickers with no live trades or a failed summary |
+| [solyra#184](https://github.com/TeneikaAskew/solyra/issues/184) | P2 | [P2][Signals] Signals table prints thin volumes as 0K and null cells as 0.0, NaN, null and undefined |
+| [#1327](https://github.com/TeneikaAskew/stocks/issues/1327) | P3 | [P3][Signals] The analytics summary counts open trades in its call and put totals |
+| [solyra#108](https://github.com/TeneikaAskew/solyra/issues/108) | P3 | [P3][Signals] Filter bar and sortable headers have no accessible names, states or roles |
+| [solyra#109](https://github.com/TeneikaAskew/solyra/issues/109) | P3 | [P3][Signals] A To date typed before review mode is held and returns when review mode ends |
 | [#285](https://github.com/TeneikaAskew/stocks/issues/285) | DEBT | PR-7: decommission lib/trading_analysis.py momentum inline path or route through MomentumStrategy |
-| [#701](https://github.com/TeneikaAskew/stocks/issues/701) | ENH | Align the two strategy voters: Live/Charts trend panel vs lib.signals production alert voter |
 | [#249](https://github.com/TeneikaAskew/stocks/issues/249) | ENH | feat(strategies): walk-forward IR-optimized RSI thresholds (Tier-A v2) |
+| [#701](https://github.com/TeneikaAskew/stocks/issues/701) | ENH | Align the two strategy voters: Live/Charts trend panel vs lib.signals production alert voter |
 | [#808](https://github.com/TeneikaAskew/stocks/issues/808) | DECISION | Decision checkpoint (target 2026-09-11): flip signal.level_gate_mode to enforce, or don't |
 | [#940](https://github.com/TeneikaAskew/stocks/issues/940) | UNTRIAGED | Session-scoped risk state does not survive a signal-monitor restart |
 
 **PR lineage:** [#184](https://github.com/TeneikaAskew/stocks/pull/184) *origin* · [#186](https://github.com/TeneikaAskew/stocks/pull/186) *evolution* · [#191](https://github.com/TeneikaAskew/stocks/pull/191) *evolution* · [#201](https://github.com/TeneikaAskew/stocks/pull/201) *evolution* · [#203](https://github.com/TeneikaAskew/stocks/pull/203) *evolution* · [#227](https://github.com/TeneikaAskew/stocks/pull/227) *evolution* · [#231](https://github.com/TeneikaAskew/stocks/pull/231) *remediation* · [#248](https://github.com/TeneikaAskew/stocks/pull/248) *evolution* · [#262](https://github.com/TeneikaAskew/stocks/pull/262) *evolution* · [#279](https://github.com/TeneikaAskew/stocks/pull/279) *remediation* · [#289](https://github.com/TeneikaAskew/stocks/pull/289) *audit* · [#315](https://github.com/TeneikaAskew/stocks/pull/315) *remediation* · [#326](https://github.com/TeneikaAskew/stocks/pull/326) *origin* · [#327](https://github.com/TeneikaAskew/stocks/pull/327) *evolution* · [#358](https://github.com/TeneikaAskew/stocks/pull/358) *evolution* · [#419](https://github.com/TeneikaAskew/stocks/pull/419) *evolution* · [#504](https://github.com/TeneikaAskew/stocks/pull/504) *evolution* · [#510](https://github.com/TeneikaAskew/stocks/pull/510) *evolution* · [#727](https://github.com/TeneikaAskew/stocks/pull/727) *evolution* · [#785](https://github.com/TeneikaAskew/stocks/pull/785) *remediation* · [#803](https://github.com/TeneikaAskew/stocks/pull/803) *remediation*
 
-### FEAT-CICD-001 — CI / testing (9 open)
+### FEAT-CICD-001 — CI / testing (12 open)
 
 | Issue | Sev | Title |
 |---|---|---|
-| [#848](https://github.com/TeneikaAskew/stocks/issues/848) | HIGH | [audit] G6 — The silent-success fetcher pattern was fixed in one file, never swept |
-| [#846](https://github.com/TeneikaAskew/stocks/issues/846) | HIGH | [audit] G4 — build_options_daily_greeks.py and build_intraday_gex.py: money-path builders with zero tests |
-| [#845](https://github.com/TeneikaAskew/stocks/issues/845) | HIGH | [audit] G3 — fetch_fred_rates.py: scheduled daily, feeds the Greeks risk-free rate, zero tests |
 | [#844](https://github.com/TeneikaAskew/stocks/issues/844) | HIGH | [audit] G2 — No end-to-end test of the fire path <-> EOD resolver |
+| [#845](https://github.com/TeneikaAskew/stocks/issues/845) | HIGH | [audit] G3 — fetch_fred_rates.py: scheduled daily, feeds the Greeks risk-free rate, zero tests |
+| [#846](https://github.com/TeneikaAskew/stocks/issues/846) | HIGH | [audit] G4 — build_options_daily_greeks.py and build_intraday_gex.py: money-path builders with zero tests |
+| [#848](https://github.com/TeneikaAskew/stocks/issues/848) | HIGH | [audit] G6 — The silent-success fetcher pattern was fixed in one file, never swept |
 | [#847](https://github.com/TeneikaAskew/stocks/issues/847) | MEDIUM | [audit] G5 — dashboard.py / analytics.py routers: PARTIAL coverage only, implicated in a real incident |
-| [#849](https://github.com/TeneikaAskew/stocks/issues/849) | LOW | [audit] G7 — scripts/analysis/*: 17 of 22 files with no test reference |
+| [solyra#28](https://github.com/TeneikaAskew/solyra/issues/28) | P2 | [P2][Testing] Run Vitest and Playwright suites in CI |
 | [#840](https://github.com/TeneikaAskew/stocks/issues/840) | LOW | [audit] SEC-L3 — CI log dump committed into the workflows directory |
+| [#849](https://github.com/TeneikaAskew/stocks/issues/849) | LOW | [audit] G7 — scripts/analysis/*: 17 of 22 files with no test reference |
+| [#1225](https://github.com/TeneikaAskew/stocks/issues/1225) | P3 | [P3][Tests] test_movement_statement_router fails inside tests/api unless a prior test imports strat_pred_serve |
+| [#1226](https://github.com/TeneikaAskew/stocks/issues/1226) | P3 | [P3][Tests] test_waitlist_router.py fails at collection when run as a single file |
 | [#971](https://github.com/TeneikaAskew/stocks/issues/971) | DEBT | test: restore a live API connectivity smoke test lost in the frontend split |
 | [#1017](https://github.com/TeneikaAskew/stocks/issues/1017) | DEBT | API: 17 operations still have no response model |
 
 **PR lineage:** [#502](https://github.com/TeneikaAskew/stocks/pull/502) *origin* · [#503](https://github.com/TeneikaAskew/stocks/pull/503) *origin* · [#505](https://github.com/TeneikaAskew/stocks/pull/505) *origin* · [#757](https://github.com/TeneikaAskew/stocks/pull/757) *origin*
 
-### FEAT-AUTH-001 — Auth / security (7 open)
+### FEAT-AUTH-001 — Auth / security (14 open)
 
 | Issue | Sev | Title |
 |---|---|---|
 | [#830](https://github.com/TeneikaAskew/stocks/issues/830) | CRITICAL | [audit] K2 — DISCORD_BOT_TOKEN and DISCORD_PUBLIC_KEY passed via --set-env-vars on a public service |
 | [#850](https://github.com/TeneikaAskew/stocks/issues/850) | HIGH | [audit] K4 + K5 — ADMIN_TOKEN, EW_USER/EW_PASS passed via --set-env-vars instead of --set-secrets |
 | [#911](https://github.com/TeneikaAskew/stocks/issues/911) | P1 | [P1][Security] Fail closed on application authentication outside local development |
-| [#837](https://github.com/TeneikaAskew/stocks/issues/837) | MEDIUM | [audit] SEC-M2 — Pervasive SELECT * (data minimization) |
 | [#836](https://github.com/TeneikaAskew/stocks/issues/836) | MEDIUM | [audit] SEC-M1 — No technical control stops a secret pasted into ad-hoc SQL from being logged |
+| [#837](https://github.com/TeneikaAskew/stocks/issues/837) | MEDIUM | [audit] SEC-M2 — Pervasive SELECT * (data minimization) |
+| [#1319](https://github.com/TeneikaAskew/stocks/issues/1319) | P2 | [P2][Shared] /api/me answers 200 with no role when the user_roles lookup fails |
+| [solyra#161](https://github.com/TeneikaAskew/solyra/issues/161) | P2 | [P2][Shared] DataGate cannot render and onUnauthorized has no registrant, so no 401 reaches a sign-in |
+| [solyra#172](https://github.com/TeneikaAskew/solyra/issues/172) | P2 | [P2][Shared] WidgetState shows a 401 as a load error: isAuthError never matches the server's text |
+| [solyra#212](https://github.com/TeneikaAskew/solyra/issues/212) | P2 | [P2][Shared] useUser reads a failing /api/me as not admin and Member, with no error state |
+| [solyra#220](https://github.com/TeneikaAskew/solyra/issues/220) | P2 | [P2][Shared] A failing /api/me in firebase mode keeps AuthGate cycling |
 | [#839](https://github.com/TeneikaAskew/stocks/issues/839) | LOW | [audit] SEC-L2 — Token in run: argv in a retired workflow |
+| [solyra#105](https://github.com/TeneikaAskew/solyra/issues/105) | P3 | [P3][Shared] SignInBanner follows the last gated answer, not whether any request was rejected |
+| [solyra#155](https://github.com/TeneikaAskew/solyra/issues/155) | P3 | [P3][Shared] No sign-out clears platform-theme, platform-shell-settings or solyra-mock-mode |
 | [#943](https://github.com/TeneikaAskew/stocks/issues/943) | UNTRIAGED | security: protect or remove unauthenticated `/dev` diagnostics on public staging |
 
 **PR lineage:** [#318](https://github.com/TeneikaAskew/stocks/pull/318) *remediation* · [#424](https://github.com/TeneikaAskew/stocks/pull/424) *evolution* · [#623](https://github.com/TeneikaAskew/stocks/pull/623) *origin* · [#674](https://github.com/TeneikaAskew/stocks/pull/674) *remediation* · [#677](https://github.com/TeneikaAskew/stocks/pull/677) *evolution*
 
-### FEAT-INSIGHT-001 — AI insights (4 open)
+### FEAT-INSIGHT-001 — AI insights (31 open)
 
 | Issue | Sev | Title |
 |---|---|---|
 | [#827](https://github.com/TeneikaAskew/stocks/issues/827) | HIGH | [audit] H1 — Silent fallback in lib/agents/summarizers.py:547-565 |
 | [#867](https://github.com/TeneikaAskew/stocks/issues/867) | P1 | [P1][AI Insights] Risk reviewers evaluate a different plan than the final deterministic plan |
+| [#1215](https://github.com/TeneikaAskew/stocks/issues/1215) | P1 | [P1][Insights] Watchlist tab is empty for every signed-in user except the default owner |
+| [#1216](https://github.com/TeneikaAskew/stocks/issues/1216) | P1 | [P1][Insights] Ranker compares ftfc_direction against bull/bear, but the writer stores bullish/bearish |
+| [#1217](https://github.com/TeneikaAskew/stocks/issues/1217) | P1 | [P1][Insights] Point-in-time replay leaks up to 24 hours of post-cutoff data |
 | [#916](https://github.com/TeneikaAskew/stocks/issues/916) | P2 | [P2][AI Insights] Ablate the agent graph and prohibit unsupported numeric recommendations |
+| [#1214](https://github.com/TeneikaAskew/stocks/issues/1214) | P2 | [P2][Insights] Insight refresh runs in-process on deployed services and never reaches insight-pipeline-queue |
+| [#1291](https://github.com/TeneikaAskew/stocks/issues/1291) | P2 | [P2][Insights] insight_runs rows left running by a killed execution are never closed |
+| [#1292](https://github.com/TeneikaAskew/stocks/issues/1292) | P2 | [P2][Insights] The live insight-pipeline job still runs 4Gi and 1 CPU after the 8Gi and 2 CPU fix merged |
+| [#1293](https://github.com/TeneikaAskew/stocks/issues/1293) | P2 | [P2][Insights] Report and by-id envelopes return run_kind null for live, replay and backfill rows |
+| [#1294](https://github.com/TeneikaAskew/stocks/issues/1294) | P2 | [P2][Insights] Reflection memory can never return a similar past trade |
+| [#1295](https://github.com/TeneikaAskew/stocks/issues/1295) | P2 | [P2][Insights] A failed trader or manager call publishes fallback plan fields with no failed section |
+| [#1296](https://github.com/TeneikaAskew/stocks/issues/1296) | P2 | [P2][Insights] Chat streams Vertex failures as "Gemini error:" text with HTTP 200 |
+| [#1297](https://github.com/TeneikaAskew/stocks/issues/1297) | P2 | [P2][Insights] Chat prompts promise signals, backtests, GEX and playbook data the request never carries |
+| [#1298](https://github.com/TeneikaAskew/stocks/issues/1298) | P2 | [P2][Insights] Ticker search answers 200 with no results when AlphaVantage fails or rate-limits |
+| [solyra#185](https://github.com/TeneikaAskew/solyra/issues/185) | P2 | [P2][Insights] A failed refresh, status poll or run shows nothing and a run's error is never drawn |
+| [solyra#186](https://github.com/TeneikaAskew/solyra/issues/186) | P2 | [P2][Insights] History draws replay and backfill runs like live ones, with no run kind shown |
+| [solyra#187](https://github.com/TeneikaAskew/solyra/issues/187) | P2 | [P2][Insights] The replay cutoff has no zone, is read as UTC and its max is the UTC clock |
+| [solyra#188](https://github.com/TeneikaAskew/solyra/issues/188) | P2 | [P2][Insights] Supporting Signals and Similar Past Trades report designed-empty data as absence |
+| [solyra#189](https://github.com/TeneikaAskew/solyra/issues/189) | P2 | [P2][Insights] A report of any age is served as current, with no stale badge and no brief age |
+| [solyra#190](https://github.com/TeneikaAskew/solyra/issues/190) | P2 | [P2][Insights] House Views compares a brief with any open report and reads unavailable while loading |
+| [solyra#191](https://github.com/TeneikaAskew/solyra/issues/191) | P2 | [P2][Insights] Failed history and roster reads draw "No history yet" and "Admin access required" |
+| [#1328](https://github.com/TeneikaAskew/stocks/issues/1328) | P3 | [P3][Insights] GET /api/insights/watchlist inserts a ranker_runs row on every call |
+| [#1329](https://github.com/TeneikaAskew/stocks/issues/1329) | P3 | [P3][Insights] The watchlist add route turns a failed read-back into an empty list |
+| [solyra#111](https://github.com/TeneikaAskew/solyra/issues/111) | P3 | [P3][Insights] A run that finishes after a ticker switch refetches the new ticker, not the one run |
+| [solyra#113](https://github.com/TeneikaAskew/solyra/issues/113) | P3 | [P3][Insights] The partial-report banner names failed sections and drops the stored reasons |
+| [solyra#115](https://github.com/TeneikaAskew/solyra/issues/115) | P3 | [P3][Insights] The Agents tab counts the rows it was sent and mixes UTC times with local ones |
+| [solyra#116](https://github.com/TeneikaAskew/solyra/issues/116) | P3 | [P3][Insights] Chat sends its own error bubbles back to the model as assistant turns |
+| [solyra#118](https://github.com/TeneikaAskew/solyra/issues/118) | P3 | [P3][Insights] A failed ticker search draws nothing when the server answers 500 |
+| [solyra#120](https://github.com/TeneikaAskew/solyra/issues/120) | P3 | [P3][Insights] No control removes a ticker from the Watchlist though the hook and the route exist |
 | [#442](https://github.com/TeneikaAskew/stocks/issues/442) | ENH | [insights] Add opening-range / first-5-min intraday feed for direction + ORB selection |
 
 **PR lineage:** [#290](https://github.com/TeneikaAskew/stocks/pull/290) *audit* · [#344](https://github.com/TeneikaAskew/stocks/pull/344) *evolution* · [#351](https://github.com/TeneikaAskew/stocks/pull/351) *remediation* · [#353](https://github.com/TeneikaAskew/stocks/pull/353) *evolution* · [#362](https://github.com/TeneikaAskew/stocks/pull/362) *remediation* · [#450](https://github.com/TeneikaAskew/stocks/pull/450) *structural* · [#451](https://github.com/TeneikaAskew/stocks/pull/451) *remediation*
 
-### FEAT-IND-001 — Indicators (4 open)
+### FEAT-IND-001 — Indicators (5 open)
 
 | Issue | Sev | Title |
 |---|---|---|
-| [#894](https://github.com/TeneikaAskew/stocks/issues/894) | P1 | [P1][Indicators] Exclude premarket bars from RTH VWAP |
-| [#892](https://github.com/TeneikaAskew/stocks/issues/892) | P1 | [P1][Indicators] Enforce ATR warm-up and unit contracts |
 | [#870](https://github.com/TeneikaAskew/stocks/issues/870) | P1 | [P1][Indicators] RSI warm-up fabrication causes live/resolver exit divergence |
+| [#892](https://github.com/TeneikaAskew/stocks/issues/892) | P1 | [P1][Indicators] Enforce ATR warm-up and unit contracts |
+| [#894](https://github.com/TeneikaAskew/stocks/issues/894) | P1 | [P1][Indicators] Exclude premarket bars from RTH VWAP |
 | [#912](https://github.com/TeneikaAskew/stocks/issues/912) | P2 | [P2][Indicators] Consolidate duplicate indicator implementations behind a metric registry |
+| [#1276](https://github.com/TeneikaAskew/stocks/issues/1276) | P2 | [P2][Shared] RVOL divides the day's volume so far by a whole-day average in two handlers |
 
+**PR lineage:** UNKNOWN / NEEDS HISTORY TRACE (the README's PRs column reads UNKNOWN for this capability)
 
-### FEAT-STRAT-001 — Levels / STRAT (4 open)
+### FEAT-STRAT-001 — Levels / STRAT (5 open)
 
 | Issue | Sev | Title |
 |---|---|---|
-| [#908](https://github.com/TeneikaAskew/stocks/issues/908) | P0 | [P0][Levels] Reprice level outcomes with executable gap, spread, and latency semantics |
 | [#866](https://github.com/TeneikaAskew/stocks/issues/866) | P0 | [P0][Levels] Effective PDH/PDL mother-bar walk-back is off by one in premarket mode |
+| [#908](https://github.com/TeneikaAskew/stocks/issues/908) | P0 | [P0][Levels] Reprice level outcomes with executable gap, spread, and latency semantics |
 | [#907](https://github.com/TeneikaAskew/stocks/issues/907) | P1 | [P1][Levels] Remove legacy positional compute_previous_levels fallback |
 | [#884](https://github.com/TeneikaAskew/stocks/issues/884) | P2 | [P2][STRAT] Rename or correct FTFC weighted-vote semantics |
+| [solyra#140](https://github.com/TeneikaAskew/solyra/issues/140) | P2 | [P2][Shared] useReferenceLevels turns a failed request into a null that is cached for the session |
 
 **PR lineage:** [#242](https://github.com/TeneikaAskew/stocks/pull/242) *origin* · [#244](https://github.com/TeneikaAskew/stocks/pull/244) *origin* · [#379](https://github.com/TeneikaAskew/stocks/pull/379) *remediation* · [#381](https://github.com/TeneikaAskew/stocks/pull/381) *evolution* · [#400](https://github.com/TeneikaAskew/stocks/pull/400) *remediation* · [#445](https://github.com/TeneikaAskew/stocks/pull/445) *remediation* · [#592](https://github.com/TeneikaAskew/stocks/pull/592) *origin* · [#633](https://github.com/TeneikaAskew/stocks/pull/633) *evolution* · [#796](https://github.com/TeneikaAskew/stocks/pull/796) *evolution* · [#799](https://github.com/TeneikaAskew/stocks/pull/799) *evolution*
 
-### FEAT-OPS-001 — Operations / reliability (9 open)
+### FEAT-OPS-001 — Operations / reliability (11 open)
 
 | Issue | Sev | Title |
 |---|---|---|
@@ -449,32 +513,58 @@ As of 2026-10-07 (P1 +4, P2 +21, P3 +6: the 31 Playbook and Settings issues file
 | [#1052](https://github.com/TeneikaAskew/stocks/issues/1052) | P2 | 23 API handlers report an application defect as a retryable 503 |
 | [#1066](https://github.com/TeneikaAskew/stocks/issues/1066) | P2 | `audit_data_freshness`: `expected_close_dt` hardcodes 20:00 UTC, wrong by 1h under EST |
 | [#1067](https://github.com/TeneikaAskew/stocks/issues/1067) | P2 | `historical_signals` freshness needs a `job_runs` heartbeat, not a data-column check |
+| [#1224](https://github.com/TeneikaAskew/stocks/issues/1224) | P2 | [P2][Shared] /api/health/freshness blocks over 30 seconds before answering 503 |
+| [#1290](https://github.com/TeneikaAskew/stocks/issues/1290) | P2 | [P2][Shared] failure_notifier closed the signal-monitor failure against an ORB run that finished first |
 | [#920](https://github.com/TeneikaAskew/stocks/issues/920) | P3 | [P3][Operations] Retire or consume write-only scheduled production surfaces |
 | [#1118](https://github.com/TeneikaAskew/stocks/issues/1118) | DEBT | refresh_calibration_table failures are swallowed, so INVESTMENT_MODELS_SUMMARY can age silently while claiming to be auto-refreshed |
 | [#1091](https://github.com/TeneikaAskew/stocks/issues/1091) | ops | [ESCALATED] GCP job failed: earnings-long-watchlist — earnings-sweep-sunday scheduler still not deployed |
-| [#1150](https://github.com/TeneikaAskew/stocks/issues/1150) | ops | GCP job failed: fetch-av-options-backfill |
-| [#1155](https://github.com/TeneikaAskew/stocks/issues/1155) | ops | GCP job failed: freshness-watchdog |
+| [#1239](https://github.com/TeneikaAskew/stocks/issues/1239) | ops | GCP job failed: calibrate-thresholds |
+| [#1248](https://github.com/TeneikaAskew/stocks/issues/1248) | ops | [ESCALATED] GCP job failed: signal-quality-alarm |
 
 **PR lineage:** [#189](https://github.com/TeneikaAskew/stocks/pull/189) *origin* · [#192](https://github.com/TeneikaAskew/stocks/pull/192) *evolution* · [#200](https://github.com/TeneikaAskew/stocks/pull/200) *remediation* · [#235](https://github.com/TeneikaAskew/stocks/pull/235) *origin* · [#323](https://github.com/TeneikaAskew/stocks/pull/323) *remediation* · [#389](https://github.com/TeneikaAskew/stocks/pull/389) *origin* · [#392](https://github.com/TeneikaAskew/stocks/pull/392) *origin* · [#494](https://github.com/TeneikaAskew/stocks/pull/494) *evolution* · [#641](https://github.com/TeneikaAskew/stocks/pull/641) *origin* · [#644](https://github.com/TeneikaAskew/stocks/pull/644) *origin* · [#759](https://github.com/TeneikaAskew/stocks/pull/759) *origin* · [#771](https://github.com/TeneikaAskew/stocks/pull/771) *remediation*
 
-### FEAT-DEBT-001 — Technical debt (5 open)
+### FEAT-DEBT-001 — Technical debt (11 open)
 
 | Issue | Sev | Title |
 |---|---|---|
 | [#917](https://github.com/TeneikaAskew/stocks/issues/917) | P2 | [P2][Architecture] Split oversized compute, persistence, rendering, and deploy control points |
 | [#1137](https://github.com/TeneikaAskew/stocks/issues/1137) | P2 | [P2][Docs] Three module docstrings describe behaviour the code no longer has |
 | [#921](https://github.com/TeneikaAskew/stocks/issues/921) | P3 | [P3][Cleanup] Decide and remove orphan tables, dead API endpoints, and legacy apps |
+| [#1227](https://github.com/TeneikaAskew/stocks/issues/1227) | P3 | [P3][Docs] Fix stale citations and claims found by the site traceability matrix (stocks) |
+| [#1335](https://github.com/TeneikaAskew/stocks/issues/1335) | P3 | [P3][Docs] Fix the stale citations, claims and missing tests found by the site traceability matrix, phases 2 to 6 (stocks) |
+| [#1342](https://github.com/TeneikaAskew/stocks/issues/1342) | P3 | [P3][Docs] 12-PR-ISSUE-TRACEABILITY.md maps 31 of the 225 issues filed from the site traceability matrix |
+| [#1345](https://github.com/TeneikaAskew/stocks/issues/1345) | P3 | [P3][Docs] Site traceability matrix: the third review round on #1338 (provenance stamp, bare none cells, OPTIONS-05, two gate-standard questions) |
+| [solyra#79](https://github.com/TeneikaAskew/solyra/issues/79) | P3 | [P3][Docs] Fix stale citations, claims and missing tests found by the site traceability matrix (solyra) |
+| [solyra#168](https://github.com/TeneikaAskew/solyra/issues/168) | P3 | [P3][Docs] Fix the stale citations, claims and missing tests found by the site traceability matrix, phases 2 to 6 (solyra) |
 | [#1034](https://github.com/TeneikaAskew/stocks/issues/1034) | DEBT | `notebooks/stock_analysis.ipynb` is a zero-byte tracked file |
 | [#1134](https://github.com/TeneikaAskew/stocks/issues/1134) | DEBT | docs_audit: five under-detection gaps deferred from #1121 |
 
 **PR lineage:** [#259](https://github.com/TeneikaAskew/stocks/pull/259) *retirement*
 
-### FEAT-JOURNAL-001 — Journal / portfolio (2 open)
+### FEAT-JOURNAL-001 — Journal / portfolio (20 open)
 
 | Issue | Sev | Title |
 |---|---|---|
-| [#722](https://github.com/TeneikaAskew/stocks/issues/722) | DEBT | Pipeline trades table: signal re-firing duplicates + migrate_trades tz guard |
+| [#1219](https://github.com/TeneikaAskew/stocks/issues/1219) | P1 | [P1][Journal] Journal Examples view shows returns 100 times too large |
+| [#1263](https://github.com/TeneikaAskew/stocks/issues/1263) | P1 | [P1][Journal] Import commit cannot succeed because journal_entries.source is varchar(10) |
+| [#1264](https://github.com/TeneikaAskew/stocks/issues/1264) | P1 | [P1][Journal] Export to Pipeline writes a file nothing reads, one per ticker for every caller |
+| [#1220](https://github.com/TeneikaAskew/stocks/issues/1220) | P2 | [P2][Journal] Deleting a journal trade that matches nothing still reports success |
+| [#1312](https://github.com/TeneikaAskew/stocks/issues/1312) | P2 | [P2][Journal] POST /api/journal/trades stores impossible trades and answers 500 for malformed strings |
+| [#1313](https://github.com/TeneikaAskew/stocks/issues/1313) | P2 | [P2][Journal] Style mining falls back from intraday to daily bars and the answer does not say so |
+| [#1314](https://github.com/TeneikaAskew/stocks/issues/1314) | P2 | [P2][Journal] My style stages a profile into two tables that nothing reads |
+| [#1315](https://github.com/TeneikaAskew/stocks/issues/1315) | P2 | [P2][Journal] Journal owner key falls through to the shared local owner with no fail-closed guard |
+| [solyra#76](https://github.com/TeneikaAskew/solyra/issues/76) | P2 | [P2][Journal] Failed trade marks, exits and deletes render no error to the user |
+| [solyra#207](https://github.com/TeneikaAskew/solyra/issues/207) | P2 | [P2][Journal] A failed own-journal read shows Local storage and a 401 is blamed on the database |
+| [solyra#208](https://github.com/TeneikaAskew/solyra/issues/208) | P2 | [P2][Journal] A failed export downloads a CSV under the same green line as a success |
+| [solyra#209](https://github.com/TeneikaAskew/solyra/issues/209) | P2 | [P2][Journal] Chart card reads a closed market while the dates list loads or fails |
+| [solyra#210](https://github.com/TeneikaAskew/solyra/issues/210) | P2 | [P2][Journal] Nothing shows how old the Examples are, so stale or incomplete sessions look current |
+| [#1330](https://github.com/TeneikaAskew/stocks/issues/1330) | P3 | [P3][Journal] Examples endpoint reads every live regular-hours row with no limit |
+| [#1331](https://github.com/TeneikaAskew/stocks/issues/1331) | P3 | [P3][Journal] Import preview is async def and runs its blocking duplicate read on the event loop |
+| [#1332](https://github.com/TeneikaAskew/stocks/issues/1332) | P3 | [P3][Journal] ADMIN_EMAIL defaults to a personal address in source and production does not set it |
+| [solyra#143](https://github.com/TeneikaAskew/solyra/issues/143) | P3 | [P3][Journal] Manual trade form enables Save for impossible trades and its labels name no control |
+| [solyra#145](https://github.com/TeneikaAskew/solyra/issues/145) | P3 | [P3][Journal] Schwab, Fidelity and IBKR chips preset a mapping the generic importer cannot use |
 | [#716](https://github.com/TeneikaAskew/stocks/issues/716) | DEBT | Journal one-stop follow-ups: return-unit mix in stats, import polish, marking-chart hardening |
+| [#722](https://github.com/TeneikaAskew/stocks/issues/722) | DEBT | Pipeline trades table: signal re-firing duplicates + migrate_trades tz guard |
 
 **PR lineage:** [#626](https://github.com/TeneikaAskew/stocks/pull/626) *origin* · [#635](https://github.com/TeneikaAskew/stocks/pull/635) *evolution* · [#705](https://github.com/TeneikaAskew/stocks/pull/705) *evolution* · [#713](https://github.com/TeneikaAskew/stocks/pull/713) *remediation* · [#718](https://github.com/TeneikaAskew/stocks/pull/718) *structural* · [#720](https://github.com/TeneikaAskew/stocks/pull/720) *evolution* · [#764](https://github.com/TeneikaAskew/stocks/pull/764) *remediation*
 
@@ -482,12 +572,12 @@ As of 2026-10-07 (P1 +4, P2 +21, P3 +6: the 31 Playbook and Settings issues file
 
 | Issue | Sev | Title |
 |---|---|---|
-| [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27) | ENH | Rename internal Heatseeker/Flowseeker tabs before Solyra public launch (was #685; moved 2026-09-03) |
-| [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26) | ENH | landing perf: lazy app shell / defer Firebase init (was #683; moved 2026-09-03) |
+| [solyra#135](https://github.com/TeneikaAskew/solyra/issues/135) | P2 | [P2][Shared] Card with an onClick is a div that keyboard users cannot reach or operate |
+| [solyra#95](https://github.com/TeneikaAskew/solyra/issues/95) | P3 | [P3][Shared] Initial localStorage reads have no guard against a storage that throws |
 
 **PR lineage:** [#546](https://github.com/TeneikaAskew/stocks/pull/546) *origin* · [#611](https://github.com/TeneikaAskew/stocks/pull/611) *structural* · [#643](https://github.com/TeneikaAskew/stocks/pull/643) *evolution* · [#684](https://github.com/TeneikaAskew/stocks/pull/684) *origin* · [#687](https://github.com/TeneikaAskew/stocks/pull/687) *evolution* · [#690](https://github.com/TeneikaAskew/stocks/pull/690) *evolution* · [#692](https://github.com/TeneikaAskew/stocks/pull/692) *evolution* · [#700](https://github.com/TeneikaAskew/stocks/pull/700) *remediation* · [#703](https://github.com/TeneikaAskew/stocks/pull/703) *evolution* · [#715](https://github.com/TeneikaAskew/stocks/pull/715) *evolution*
 
-### FEAT-PLAYBOOK-001 — Premarket / playbook (18 open)
+### FEAT-PLAYBOOK-001 — Premarket / playbook (19 open)
 
 | Issue | Sev | Title |
 |---|---|---|
@@ -507,6 +597,7 @@ As of 2026-10-07 (P1 +4, P2 +21, P3 +6: the 31 Playbook and Settings issues file
 | [solyra#202](https://github.com/TeneikaAskew/solyra/issues/202) | P2 | [P2][Playbook] Avg Return shows a green +0.0% for a negative average |
 | [solyra#203](https://github.com/TeneikaAskew/solyra/issues/203) | P2 | [P2][Playbook] The best-window star marks a losing average, and two best-window fields are never drawn |
 | [solyra#204](https://github.com/TeneikaAskew/solyra/issues/204) | P2 | [P2][Playbook] A page left open past the close keeps its live snapshot and calls it live |
+| [solyra#92](https://github.com/TeneikaAskew/solyra/issues/92) | P3 | [P3][Shared] SetupCardDetails draws CALL levels for a card with no direction or a NEUTRAL one |
 | [solyra#130](https://github.com/TeneikaAskew/solyra/issues/130) | P3 | [P3][Playbook] Unreachable empty state tells the reader to run scripts/run_pipeline.py |
 | [solyra#132](https://github.com/TeneikaAskew/solyra/issues/132) | P3 | [P3][Playbook] The setup count has no singular, so one card reads 1 setups and the spec asserts it |
 
@@ -531,6 +622,168 @@ As of 2026-10-07 (P1 +4, P2 +21, P3 +6: the 31 Playbook and Settings issues file
 | [solyra#162](https://github.com/TeneikaAskew/solyra/issues/162) | P3 | [P3][Settings] The Settings tab strip declares tablist and tab roles with no tab panels |
 
 **PR lineage:** [#1048](https://github.com/TeneikaAskew/stocks/pull/1048) *origin* · [#1114](https://github.com/TeneikaAskew/stocks/pull/1114) *evolution*
+
+### FEAT-CHART-001 — Charting (21 open)
+
+| Issue | Sev | Title |
+|---|---|---|
+| [#1257](https://github.com/TeneikaAskew/stocks/issues/1257) | P1 | [P1][Charts] Review mode's last bar includes minutes after the cutoff on every timeframe above 1m |
+| [#1258](https://github.com/TeneikaAskew/stocks/issues/1258) | P1 | [P1][Charts] The similar-setups card reports momentum outcomes for a mean-reversion fire |
+| [solyra#85](https://github.com/TeneikaAskew/solyra/issues/85) | P1 | [P1][Charts] The replay scorecard cannot be reached: nothing on Charts closes a replay trade |
+| [solyra#86](https://github.com/TeneikaAskew/solyra/issues/86) | P1 | [P1][Charts] A failed indicators request leaves No setup 0/5 in the Strategy conditions card |
+| [#1279](https://github.com/TeneikaAskew/stocks/issues/1279) | P2 | [P2][Charts] Sig overlay ignores the per-ticker overrides that suppress production alerts |
+| [#1280](https://github.com/TeneikaAskew/stocks/issues/1280) | P2 | [P2][Charts] Market data serves UTC-stamped legacy GCS bars as Eastern wall clock |
+| [#1281](https://github.com/TeneikaAskew/stocks/issues/1281) | P2 | [P2][Charts] A failed GCS read in the market data loader is swallowed and a coarser file is served |
+| [#1283](https://github.com/TeneikaAskew/stocks/issues/1283) | P2 | [P2][Charts] GET /api/backtest/all/{ticker} downloads and parses every run's CSV to list the runs |
+| [#1284](https://github.com/TeneikaAskew/stocks/issues/1284) | P2 | [P2][Charts] The similar-setups stats query reads the whole strength bucket: 2,001 ms for 242 rows |
+| [solyra#163](https://github.com/TeneikaAskew/solyra/issues/163) | P2 | [P2][Charts] The conditions and similar-setups cards describe a different bar than the RTH chart |
+| [solyra#164](https://github.com/TeneikaAskew/solyra/issues/164) | P2 | [P2][Charts] On 1h the RTH filter drops the bar that holds the session's first half hour |
+| [solyra#165](https://github.com/TeneikaAskew/solyra/issues/165) | P2 | [P2][Charts] Every replay step posts all revealed bars to /api/live/indicators with no debounce |
+| [solyra#166](https://github.com/TeneikaAskew/solyra/issues/166) | P2 | [P2][Charts] A replay session is not tied to its day or timeframe |
+| [solyra#167](https://github.com/TeneikaAskew/solyra/issues/167) | P2 | [P2][Charts] A failed Mark Entry post is silent and the toolbar reads as saved |
+| [solyra#169](https://github.com/TeneikaAskew/solyra/issues/169) | P2 | [P2][Charts] Gamma levels and journal trades fail silently on Charts |
+| [solyra#170](https://github.com/TeneikaAskew/solyra/issues/170) | P2 | [P2][Charts] SPX can be chosen on Charts, where no bars exist, and the Gamma toggle then does nothing |
+| [solyra#171](https://github.com/TeneikaAskew/solyra/issues/171) | P2 | [P2][Charts] Charts never reads the labels that mark a degraded answer |
+| [solyra#173](https://github.com/TeneikaAskew/solyra/issues/173) | P2 | [P2][Charts] The Backtester shows its run-a-script advice for every error, including 401 and 503 |
+| [#1325](https://github.com/TeneikaAskew/stocks/issues/1325) | P3 | [P3][Charts] GET /api/journal/trades/{ticker} has no date bound; Charts keeps one day of it |
+| [solyra#103](https://github.com/TeneikaAskew/solyra/issues/103) | P3 | [P3][Charts] The chart's two-line empty text is unreachable; an empty day shows as a load error |
+| [solyra#104](https://github.com/TeneikaAskew/solyra/issues/104) | P3 | [P3][Charts] A review date older than every listed date shows the oldest day with no Snapped to note |
+
+**PR lineage:** UNKNOWN / NEEDS HISTORY TRACE (the README's PRs column reads UNKNOWN for this capability)
+
+### FEAT-ADMIN-001 — Administration (21 open)
+
+| Issue | Sev | Title |
+|---|---|---|
+| [#1221](https://github.com/TeneikaAskew/stocks/issues/1221) | P1 | [P1][Admin] Model routing offers gemini-2.0-flash, which 404s at the seeded Vertex location |
+| [#1265](https://github.com/TeneikaAskew/stocks/issues/1265) | P1 | [P1][Admin] Data sources report the expected day's row count as Rows and a null or repeated Coverage |
+| [solyra#114](https://github.com/TeneikaAskew/solyra/issues/114) | P1 | [P1][Admin] Data tab reads a date-only Last refresh as UTC midnight, a day early west of UTC |
+| [#1316](https://github.com/TeneikaAskew/stocks/issues/1316) | P2 | [P2][Admin] Structure brief and model state answer 200 with empty cells when GCS fails |
+| [#1317](https://github.com/TeneikaAskew/stocks/issues/1317) | P2 | [P2][Admin] A Disable leaves an already issued ID token valid for up to an hour |
+| [#1318](https://github.com/TeneikaAskew/stocks/issues/1318) | P2 | [P2][Admin] An admin can remove their own role; only a Disable of oneself is refused |
+| [#1320](https://github.com/TeneikaAskew/stocks/issues/1320) | P2 | [P2][Admin] Predict reads a zoneless as_of_timestamp as UTC and scores a bar 4 to 5 hours early |
+| [#1321](https://github.com/TeneikaAskew/stocks/issues/1321) | P2 | [P2][Admin] Predict zero-fills model features the live frame lacks and still answers available |
+| [solyra#77](https://github.com/TeneikaAskew/solyra/issues/77) | P2 | [P2][Admin] Granting a role to an account that already holds one always fails with 422 |
+| [solyra#78](https://github.com/TeneikaAskew/solyra/issues/78) | P2 | [P2][Admin] Disable button is shown for every account but cannot work on prod |
+| [solyra#211](https://github.com/TeneikaAskew/solyra/issues/211) | P2 | [P2][Admin] Data tab drops the report's stale flag and says nothing is cached client-side |
+| [solyra#213](https://github.com/TeneikaAskew/solyra/issues/213) | P2 | [P2][Admin] Routing panel provider change selects a disabled model for anthropic |
+| [solyra#214](https://github.com/TeneikaAskew/solyra/issues/214) | P2 | [P2][Admin] Routing panel raises an unhandled rejection and hides a failed models list |
+| [solyra#215](https://github.com/TeneikaAskew/solyra/issues/215) | P2 | [P2][Admin] Predict form sends a zoneless time that the API reads as UTC |
+| [#1333](https://github.com/TeneikaAskew/stocks/issues/1333) | P3 | [P3][Admin] Refresh reason for market_data_intraday names a monthly backfill as its only writer |
+| [#1334](https://github.com/TeneikaAskew/stocks/issues/1334) | P3 | [P3][Admin] The one-role 422 lists two assignable roles where the table allows three |
+| [solyra#146](https://github.com/TeneikaAskew/solyra/issues/146) | P3 | [P3][Admin] Data tab shows a bare spinner for a cold audit of 51 to 67 s and never times out |
+| [solyra#148](https://github.com/TeneikaAskew/solyra/issues/148) | P3 | [P3][Admin] Data tab Refresh shows nothing on success, raw JSON on refusal and a generic tooltip |
+| [solyra#150](https://github.com/TeneikaAskew/solyra/issues/150) | P3 | [P3][Admin] Users panel masks one write error behind another and mislabels empty lists |
+| [solyra#152](https://github.com/TeneikaAskew/solyra/issues/152) | P3 | [P3][Admin] Class probability bars turn a missing class into 0 percent with an unmarked ?? 0 |
+| [solyra#154](https://github.com/TeneikaAskew/solyra/issues/154) | P3 | [P3][Admin] Model State card reads ready for models 120 to 129 days old, with no age or flag |
+
+**PR lineage:** UNKNOWN / NEEDS HISTORY TRACE (the README's PRs column reads UNKNOWN for this capability)
+
+### FEAT-MARKET-001 — Market dashboard (14 open)
+
+| Issue | Sev | Title |
+|---|---|---|
+| [solyra#84](https://github.com/TeneikaAskew/solyra/issues/84) | P1 | [P1][Dashboard] Live signals table shows each return 100 times too large and a missing one as +0.00% |
+| [#1218](https://github.com/TeneikaAskew/stocks/issues/1218) | P2 | [P2][Dashboard] strat_dataset silently falls back to a plain-features query when the levels join fails |
+| [#1222](https://github.com/TeneikaAskew/stocks/issues/1222) | P2 | [P2][Dashboard] Brief handler swallows read failures and defaults missing streaks to 0 |
+| [#1266](https://github.com/TeneikaAskew/stocks/issues/1266) | P2 | [P2][Dashboard] Brief reads today's NULL-close premarket row as the latest daily row |
+| [#1267](https://github.com/TeneikaAskew/stocks/issues/1267) | P2 | [P2][Dashboard] Brief handler answers a neutral cloud_sql brief and stale_days 0 when it has no data |
+| [solyra#126](https://github.com/TeneikaAskew/solyra/issues/126) | P2 | [P2][Dashboard] AI take, Catalysts and News cards render a failed request as their empty line |
+| [solyra#129](https://github.com/TeneikaAskew/solyra/issues/129) | P2 | [P2][Dashboard] Catalysts and News cards list the oldest rows first under upcoming and fresh |
+| [solyra#131](https://github.com/TeneikaAskew/solyra/issues/131) | P2 | [P2][Dashboard] Candles chart draws the whole month of bars in review mode |
+| [solyra#133](https://github.com/TeneikaAskew/solyra/issues/133) | P2 | [P2][Dashboard] Sector rotation and News show current data beside the HISTORICAL pill |
+| [solyra#137](https://github.com/TeneikaAskew/solyra/issues/137) | P2 | [P2][Dashboard] Movement Read vanishes without a message on a 400 or a 503, after two retries |
+| [solyra#142](https://github.com/TeneikaAskew/solyra/issues/142) | P2 | [P2][Dashboard] The page reads neither source nor stale_days of the reference answer |
+| [solyra#144](https://github.com/TeneikaAskew/solyra/issues/144) | P2 | [P2][Dashboard] Top setup entry row says live price when the price is the brief's last close |
+| [solyra#91](https://github.com/TeneikaAskew/solyra/issues/91) | P3 | [P3][Dashboard] Top setup card has no way to open the Playbook page |
+| [solyra#94](https://github.com/TeneikaAskew/solyra/issues/94) | P3 | [P3][Dashboard] News pill reads a missing sentiment score as 0 and draws a neutral tone |
+
+**PR lineage:** [#649](https://github.com/TeneikaAskew/stocks/pull/649) · [#732](https://github.com/TeneikaAskew/stocks/pull/732) · [#729](https://github.com/TeneikaAskew/stocks/pull/729) · [#733](https://github.com/TeneikaAskew/stocks/pull/733) (the README's PRs column; kinds not classified)
+
+### FEAT-CATALYST-001 — Earnings / catalysts (19 open)
+
+| Issue | Sev | Title |
+|---|---|---|
+| [#1223](https://github.com/TeneikaAskew/stocks/issues/1223) | P2 | [P2][Catalysts] Benzinga is named as a source with no configured API key |
+| [#1268](https://github.com/TeneikaAskew/stocks/issues/1268) | P2 | [P2][Catalysts] Insider-cluster and 8-K reads of the events feed cannot match a forward window |
+| [#1269](https://github.com/TeneikaAskew/stocks/issues/1269) | P2 | [P2][Catalysts] or 0 guards turn NULL into 0.0, nan or null in insider titles and news scores |
+| [#1270](https://github.com/TeneikaAskew/stocks/issues/1270) | P2 | [P2][Catalysts] News events are dated by the UTC day, so evening articles read as tomorrow |
+| [#1299](https://github.com/TeneikaAskew/stocks/issues/1299) | P2 | [P2][Catalysts] The source label counts every database event as "news + sec" and names two of five |
+| [#1300](https://github.com/TeneikaAskew/stocks/issues/1300) | P2 | [P2][Catalysts] News events ignore the requested range and empty out over weekends |
+| [#1301](https://github.com/TeneikaAskew/stocks/issues/1301) | P2 | [P2][Catalysts] Earnings titles read "est nan" and the dedupe can hide another source's estimate |
+| [#1302](https://github.com/TeneikaAskew/stocks/issues/1302) | P2 | [P2][Catalysts] The earnings calendar keeps only today plus 7 while the page asks for plus 14 |
+| [#1303](https://github.com/TeneikaAskew/stocks/issues/1303) | P2 | [P2][Catalysts] Events response has no per-source age, so stale or short sources look current |
+| [solyra#192](https://github.com/TeneikaAskew/solyra/issues/192) | P2 | [P2][Catalysts] Hot Now fills its ten slots with news and does not say it stops at ten |
+| [solyra#193](https://github.com/TeneikaAskew/solyra/issues/193) | P2 | [P2][Catalysts] The date range label is a day early in a browser west of New York |
+| [solyra#194](https://github.com/TeneikaAskew/solyra/issues/194) | P2 | [P2][Catalysts] A type filter outlives its data and leaves an empty timeline under a full count |
+| [solyra#195](https://github.com/TeneikaAskew/solyra/issues/195) | P2 | [P2][Catalysts] A new range blanks the page and every returned event is drawn at once |
+| [solyra#196](https://github.com/TeneikaAskew/solyra/issues/196) | P2 | [P2][Catalysts] No empty state, and every failure reads "Failed to fetch catalysts" |
+| [solyra#122](https://github.com/TeneikaAskew/solyra/issues/122) | P3 | [P3][Catalysts] The Refresh button never asks the server to refresh from Benzinga |
+| [solyra#123](https://github.com/TeneikaAskew/solyra/issues/123) | P3 | [P3][Catalysts] INSIDER_BUY and INSIDER_SELL have no type config and a selected chip is invisible |
+| [solyra#125](https://github.com/TeneikaAskew/solyra/issues/125) | P3 | [P3][Catalysts] Filter chips have no pressed state and View is invisible under keyboard focus |
+| [solyra#127](https://github.com/TeneikaAskew/solyra/issues/127) | P3 | [P3][Catalysts] Expanding an event adds nothing and no row links to its article or filing |
+| [solyra#128](https://github.com/TeneikaAskew/solyra/issues/128) | P3 | [P3][Catalysts] A titleless event prints "undefined undefined" and no impact counts as Medium |
+
+**PR lineage:** [#220](https://github.com/TeneikaAskew/stocks/pull/220) · [#514](https://github.com/TeneikaAskew/stocks/pull/514) · [#532](https://github.com/TeneikaAskew/stocks/pull/532) (the README's PRs column; kinds not classified)
+
+### FEAT-LIVE-001 — Intraday monitoring (20 open)
+
+| Issue | Sev | Title |
+|---|---|---|
+| [solyra#75](https://github.com/TeneikaAskew/solyra/issues/75) | P1 | [P1][Live] Failed indicators request renders fabricated 0% setup cards instead of an error |
+| [#1272](https://github.com/TeneikaAskew/stocks/issues/1272) | P2 | [P2][Live] Avg-volume falls back to AlphaVantage on a Cloud SQL failure; the page ignores source |
+| [#1273](https://github.com/TeneikaAskew/stocks/issues/1273) | P2 | [P2][Live] Avg-volume has no date bound, so review-mode RVOL uses the latest 20 sessions |
+| [#1274](https://github.com/TeneikaAskew/stocks/issues/1274) | P2 | [P2][Live] The live router's holiday set omits Juneteenth and has no date after 2026 |
+| [#1275](https://github.com/TeneikaAskew/stocks/issues/1275) | P2 | [P2][Live] The ATR > 2.0 setup condition compares a one-minute 14-bar ATR with a fixed 2.0 |
+| [solyra#124](https://github.com/TeneikaAskew/solyra/issues/124) | P2 | [P2][Shared] A failed live-status request is drawn as a closed market on Dashboard and Live |
+| [solyra#147](https://github.com/TeneikaAskew/solyra/issues/147) | P2 | [P2][Live] Any quote failure reads as an API key or rate-limit problem and replaces the last quote |
+| [solyra#149](https://github.com/TeneikaAskew/solyra/issues/149) | P2 | [P2][Live] Review mode requests avg-volume without the review date |
+| [solyra#151](https://github.com/TeneikaAskew/solyra/issues/151) | P2 | [P2][Live] The quote is requested every 15 seconds in every session, from any visible tab |
+| [solyra#153](https://github.com/TeneikaAskew/solyra/issues/153) | P2 | [P2][Live] Review mode's Open, High, Low and Vol include the premarket session |
+| [solyra#156](https://github.com/TeneikaAskew/solyra/issues/156) | P2 | [P2][Live] A failed history request or a review day with no bars reads as loading for ever |
+| [solyra#158](https://github.com/TeneikaAskew/solyra/issues/158) | P2 | [P2][Live] Updated shows the last successful fetch time and never the vendor's last_updated |
+| [#1324](https://github.com/TeneikaAskew/stocks/issues/1324) | P3 | [P3][Live] GET /api/live/history drops bars that fail to parse without counting them |
+| [solyra#96](https://github.com/TeneikaAskew/solyra/issues/96) | P3 | [P3][Live] Review mode turns a missing bar volume into 0 |
+| [solyra#97](https://github.com/TeneikaAskew/solyra/issues/97) | P3 | [P3][Live] The RSI tile draws Neutral with a green up arrow |
+| [solyra#98](https://github.com/TeneikaAskew/solyra/issues/98) | P3 | [P3][Live] A failed avg-volume request is invisible and silently drops the RVOL condition |
+| [solyra#99](https://github.com/TeneikaAskew/solyra/issues/99) | P3 | [P3][Live] The two-minute sound throttle compares a direction only with the last alert's |
+| [solyra#100](https://github.com/TeneikaAskew/solyra/issues/100) | P3 | [P3][Live] The Last signal line is never cleared, so it outlives Sound and review mode |
+| [solyra#101](https://github.com/TeneikaAskew/solyra/issues/101) | P3 | [P3][Live] playAlert never resumes a suspended audio context, so a blocked alert is silent |
+| [solyra#102](https://github.com/TeneikaAskew/solyra/issues/102) | P3 | [P3][Live] The Sound button carries no on or off state for assistive technology |
+
+**PR lineage:** UNKNOWN / NEEDS HISTORY TRACE (the README's PRs column reads UNKNOWN for this capability)
+
+### FEAT-REPORT-001 — Reports / analytics (9 open)
+
+| Issue | Sev | Title |
+|---|---|---|
+| [#1278](https://github.com/TeneikaAskew/stocks/issues/1278) | P2 | [P2][Shared] Backtester and Reports read GCS prefixes that no job writes; both hold February output |
+| [#1311](https://github.com/TeneikaAskew/stocks/issues/1311) | P2 | [P2][Reports] An empty reports listing answers 404, so the page's empty state cannot show |
+| [solyra#205](https://github.com/TeneikaAskew/solyra/issues/205) | P2 | [P2][Reports] Reports page shows no age for text generated 221 days before the read |
+| [solyra#206](https://github.com/TeneikaAskew/solyra/issues/206) | P2 | [P2][Reports] A ticker with no reports of its own is shown the combined reports under its name |
+| [solyra#134](https://github.com/TeneikaAskew/solyra/issues/134) | P3 | [P3][Reports] Next and Previous walk the server's descending order while the picker lists ascending |
+| [solyra#136](https://github.com/TeneikaAskew/solyra/issues/136) | P3 | [P3][Reports] Error and empty states leave "Select a report above" under a disabled picker |
+| [solyra#138](https://github.com/TeneikaAskew/solyra/issues/138) | P3 | [P3][Reports] phaseLabel turns phase5d_cross_ticker into "Phase 5:D Cross Ticker" |
+| [solyra#139](https://github.com/TeneikaAskew/solyra/issues/139) | P3 | [P3][Reports] Report errors drop the server's reason, and two 503 answers in a row read as a failure |
+| [solyra#141](https://github.com/TeneikaAskew/solyra/issues/141) | P3 | [P3][Reports] Report sanitizer keeps a style element, a form, a remote image and a data: image |
+
+**PR lineage:** UNKNOWN / NEEDS HISTORY TRACE (the README's PRs column reads UNKNOWN for this capability)
+
+### FEAT-HELP-001 — Help / glossary (9 open)
+
+| Issue | Sev | Title |
+|---|---|---|
+| [#1336](https://github.com/TeneikaAskew/stocks/issues/1336) | P2 | [P2][Help] /api/config/indicators serves literals and image defaults, not the config the jobs run |
+| [solyra#221](https://github.com/TeneikaAskew/solyra/issues/221) | P2 | [P2][Help] Fallback thresholds show with no marker, and a partial config answer blanks Help |
+| [solyra#222](https://github.com/TeneikaAskew/solyra/issues/222) | P2 | [P2][Help] Help says RVOL gates signals and RSI neutral is 40-60; the system does neither |
+| [solyra#223](https://github.com/TeneikaAskew/solyra/issues/223) | P2 | [P2][Help] Help, the Gamma Map and the served glossary define the King three different ways |
+| [solyra#224](https://github.com/TeneikaAskew/solyra/issues/224) | P2 | [P2][Help] Help search skips the definition text and does not trim the query |
+| [#1337](https://github.com/TeneikaAskew/stocks/issues/1337) | P3 | [P3][Help] The glossary's King says one strike where its long text and lib/gamma.py allow several |
+| [solyra#225](https://github.com/TeneikaAskew/solyra/issues/225) | P3 | [P3][Help] The empty state names no query or category and offers no way back |
+| [solyra#226](https://github.com/TeneikaAskew/solyra/issues/226) | P3 | [P3][Help] Nothing links to a glossary entry and Help keeps its state out of the URL |
+| [solyra#227](https://github.com/TeneikaAskew/solyra/issues/227) | P3 | [P3][Help] No Help control carries its state to assistive technology |
+
+**PR lineage:** UNKNOWN / NEEDS HISTORY TRACE (the README's PRs column reads UNKNOWN for this capability)
 
 ## Governance PRs (cross-cutting)
 
