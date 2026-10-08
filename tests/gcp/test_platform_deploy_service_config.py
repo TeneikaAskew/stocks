@@ -121,6 +121,9 @@ def test_staging_service_deploy_configures_solyra_api_staging(tmp_path):
     assert d["env"]["MOVEMENT_STATEMENT_ENABLED"] == "true"
     assert d["secrets"]["AV_API_KEY"] == "av-api-key:latest"
     assert d["secrets"]["ALPHA_VANTAGE_API_KEY"] == "av-api-key:latest"
+    # REQ-SECRET-001 holds on this path too: the Firebase block appends to the
+    # environment, and nothing it appends may carry the key as a plain value.
+    assert "AV_API_KEY" not in d["env"] and "ALPHA_VANTAGE_API_KEY" not in d["env"]
     assert "--allow-unauthenticated" in d["args"]
     assert "--no-allow-unauthenticated" not in d["args"]
 
