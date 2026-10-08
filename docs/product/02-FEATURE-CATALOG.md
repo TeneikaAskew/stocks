@@ -37,7 +37,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | [FEAT-OPS-001](#feat-ops-001) | Operations / reliability | Freshness, telemetry, DR | `/admin` | `/api/health/freshness` | `job_runs` | Incomplete | P1 | 6 | 11 | [#922](https://github.com/TeneikaAskew/stocks/issues/922) [#1052](https://github.com/TeneikaAskew/stocks/issues/1052) [#1066](https://github.com/TeneikaAskew/stocks/issues/1066) [#1067](https://github.com/TeneikaAskew/stocks/issues/1067) |
 | [FEAT-CICD-001](#feat-cicd-001) | CI / testing | Build, test, deploy automation | — | — | — | Production but needs remediation | P1 | 6 | 12 | [#848](https://github.com/TeneikaAskew/stocks/issues/848) [#846](https://github.com/TeneikaAskew/stocks/issues/846) [#845](https://github.com/TeneikaAskew/stocks/issues/845) [#844](https://github.com/TeneikaAskew/stocks/issues/844) |
 | [FEAT-UI-001](#feat-ui-001) | Web / UI shell | Nav, shell, responsive, a11y | all | — | — | Production but needs remediation | P2 | 5 | 2 | — |
-| [FEAT-DEBT-001](#feat-debt-001) | Technical debt | Legacy retirement | — | — | — | Retire candidate | P3 | 7 | 11 | [#917](https://github.com/TeneikaAskew/stocks/issues/917) [#1137](https://github.com/TeneikaAskew/stocks/issues/1137) [#921](https://github.com/TeneikaAskew/stocks/issues/921) [#1034](https://github.com/TeneikaAskew/stocks/issues/1034) |
+| [FEAT-DEBT-001](#feat-debt-001) | Technical debt | Legacy retirement | — | — | — | Retire candidate | P3 | 7 | 13 | [#917](https://github.com/TeneikaAskew/stocks/issues/917) [#1137](https://github.com/TeneikaAskew/stocks/issues/1137) [#921](https://github.com/TeneikaAskew/stocks/issues/921) [#1034](https://github.com/TeneikaAskew/stocks/issues/1034) |
 
 ## Capability records
 
@@ -635,7 +635,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Models | — |
 | Code | `scripts/`, archived apps |
 | Tests | — |
-| Open issues | 11 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-debt-001--technical-debt-11-open) |
+| Open issues | 13 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-debt-001--technical-debt-13-open) |
 | Blocking issues | [#917](https://github.com/TeneikaAskew/stocks/issues/917) [#1137](https://github.com/TeneikaAskew/stocks/issues/1137) [#921](https://github.com/TeneikaAskew/stocks/issues/921) [#1034](https://github.com/TeneikaAskew/stocks/issues/1034) [#1134](https://github.com/TeneikaAskew/stocks/issues/1134) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 7 |
 
