@@ -2,7 +2,7 @@
 feat_id: FEAT-DEPLOY-001
 spec: docs/superpowers/specs/2026-10-08-feat-deploy-001-service-config-test.md
 branch: feature/feat-deploy-001-service-config-test
-pr: null
+pr: 1350
 status: ready
 ---
 
