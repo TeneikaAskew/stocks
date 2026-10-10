@@ -6,7 +6,7 @@
 
 | | Count | Method |
 |---|---|---|
-| Open issues mapped | **378 of 378 (100%)**: the 2026-10-08 regeneration less [#1345](https://github.com/TeneikaAskew/stocks/issues/1345), closed on 2026-10-08 (stocks 226, solyra 152) | `list_issues` (state OPEN) in both repositories, classified by title prefix, label and subject; the per-capability map below is that regeneration |
+| Open issues mapped | **377 of 377 (100%)**: the 2026-10-08 regeneration less [#1345](https://github.com/TeneikaAskew/stocks/issues/1345), closed on 2026-10-08, and [#943](https://github.com/TeneikaAskew/stocks/issues/943), closed on 2026-10-10 by [#1360](https://github.com/TeneikaAskew/stocks/pull/1360) (stocks 225, solyra 152) | `list_issues` (state OPEN) in both repositories, classified by title prefix, label and subject; the per-capability map below is that regeneration |
 | Significant PRs mapped | **151** | `list_pull_requests` (state closed, 4 pages, #184–#932) |
 
 > **Why PR lineage came from the API, not `git log`.** The working clone is **shallow**
@@ -208,7 +208,7 @@ unmeasured claims in this repository.
 
 ## Severity distribution (open)
 
-As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and solyra 152 open at the regeneration, stocks 226 once #1345 closed later that day): every open issue of both repositories appears exactly once in the map below. The regeneration dropped six rows whose issues had closed ([#1150](https://github.com/TeneikaAskew/stocks/issues/1150) closed on 2026-09-23, [#1155](https://github.com/TeneikaAskew/stocks/issues/1155) closed on 2026-09-23, [#1167](https://github.com/TeneikaAskew/stocks/issues/1167) closed on 2026-09-28, [#1188](https://github.com/TeneikaAskew/stocks/issues/1188) closed on 2026-09-28, [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26) closed on 2026-09-14, [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27) closed on 2026-09-14), added the 225 issues the site traceability matrix filed on 2026-10-06 and 2026-10-07 (stocks#1257 to #1337, solyra#84 to #227) and 31 older or newer open issues that had no row, and gave seven capabilities their first section. #1209 and #1234, the matrix's evidence records, stay open and sit under FEAT-DEBT-001; #1342, the issue this regeneration closes, has no row, and neither has [#1345](https://github.com/TeneikaAskew/stocks/issues/1345), closed on 2026-10-08 by the change that re-ticked the site traceability matrix's deployment-layer rows. The dated deltas this paragraph used to carry are in the git history of this file.
+As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and solyra 152 open at the regeneration, stocks 226 once #1345 closed later that day, 225 once #943 closed on 2026-10-10): every open issue of both repositories appears exactly once in the map below. The regeneration dropped six rows whose issues had closed ([#1150](https://github.com/TeneikaAskew/stocks/issues/1150) closed on 2026-09-23, [#1155](https://github.com/TeneikaAskew/stocks/issues/1155) closed on 2026-09-23, [#1167](https://github.com/TeneikaAskew/stocks/issues/1167) closed on 2026-09-28, [#1188](https://github.com/TeneikaAskew/stocks/issues/1188) closed on 2026-09-28, [solyra#26](https://github.com/TeneikaAskew/solyra/issues/26) closed on 2026-09-14, [solyra#27](https://github.com/TeneikaAskew/solyra/issues/27) closed on 2026-09-14), added the 225 issues the site traceability matrix filed on 2026-10-06 and 2026-10-07 (stocks#1257 to #1337, solyra#84 to #227) and 31 older or newer open issues that had no row, and gave seven capabilities their first section. #1209 and #1234, the matrix's evidence records, stay open and sit under FEAT-DEBT-001; #1342, the issue this regeneration closes, has no row, and neither has [#1345](https://github.com/TeneikaAskew/stocks/issues/1345), closed on 2026-10-08 by the change that re-ticked the site traceability matrix's deployment-layer rows. The dated deltas this paragraph used to carry are in the git history of this file.
 
 | Severity | Count |
 |---|---|
@@ -224,8 +224,8 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and sol
 | ENH | 3 |
 | ops | 5 |
 | DECISION | 1 |
-| UNTRIAGED | 3 |
-| **Total** | **378** |
+| UNTRIAGED | 2 |
+| **Total** | **377** |
 
 ## Full open-issue map by capability
 
@@ -418,7 +418,7 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and sol
 
 **PR lineage:** [#502](https://github.com/TeneikaAskew/stocks/pull/502) *origin* · [#503](https://github.com/TeneikaAskew/stocks/pull/503) *origin* · [#505](https://github.com/TeneikaAskew/stocks/pull/505) *origin* · [#757](https://github.com/TeneikaAskew/stocks/pull/757) *origin*
 
-### FEAT-AUTH-001 — Auth / security (14 open)
+### FEAT-AUTH-001 — Auth / security (13 open)
 
 | Issue | Sev | Title |
 |---|---|---|
@@ -435,7 +435,6 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and sol
 | [#839](https://github.com/TeneikaAskew/stocks/issues/839) | LOW | [audit] SEC-L2 — Token in run: argv in a retired workflow |
 | [solyra#105](https://github.com/TeneikaAskew/solyra/issues/105) | P3 | [P3][Shared] SignInBanner follows the last gated answer, not whether any request was rejected |
 | [solyra#155](https://github.com/TeneikaAskew/solyra/issues/155) | P3 | [P3][Shared] No sign-out clears platform-theme, platform-shell-settings or solyra-mock-mode |
-| [#943](https://github.com/TeneikaAskew/stocks/issues/943) | UNTRIAGED | security: protect or remove unauthenticated `/dev` diagnostics on public staging |
 
 **PR lineage:** [#318](https://github.com/TeneikaAskew/stocks/pull/318) *remediation* · [#424](https://github.com/TeneikaAskew/stocks/pull/424) *evolution* · [#623](https://github.com/TeneikaAskew/stocks/pull/623) *origin* · [#674](https://github.com/TeneikaAskew/stocks/pull/674) *remediation* · [#677](https://github.com/TeneikaAskew/stocks/pull/677) *evolution* · [#1360](https://github.com/TeneikaAskew/stocks/pull/1360) *remediation*
 
