@@ -7,6 +7,10 @@
 > prefix matching, `/api/me/profile` landed with fail-closed ownership, and
 > deploys gained a CI identity with its own trust boundary. Citations
 > re-verified against current line numbers.
+>
+> 2026-10-10 ([#1360](https://github.com/TeneikaAskew/stocks/pull/1360)):
+> firebase mode now refuses a token whose email Firebase has not verified, and
+> `/dev` is gated by `AUTH_MODE` ([#943](https://github.com/TeneikaAskew/stocks/issues/943) closed).
 
 ## Enforcement mechanism — VERIFIED — CODE
 
@@ -32,7 +36,8 @@ flowchart TB
  M -->|yes| P{"_path_requires_auth(path)?"}
  P -->|"non-/api/ path, exact /api/me, or one of the 3 open prefixes (health, config/firebase, waitlist) — /api/me/* SUB-paths are gated"| PASS
  P -->|gated| V["_verify_bearer_email"]
- V -->|throws| E401[401 invalid or expired sign-in]
+ V -->|"UnverifiedEmailError (email_verified not true)"| E403v[403 verify your email to continue]
+ V -->|any other exception| E401[401 invalid or expired sign-in]
  V -->|none| E401b[401 sign in to continue]
  V -->|email| AL{"_is_allowed(email)"}
  AL -->|no| E403[403 account not allowed]
@@ -46,7 +51,7 @@ flowchart TB
 
 | Mode | App-layer enforcement | Identity source | Notes |
 |---|---|---|---|
-| `firebase` | **Yes** — bearer verified, allowlist applied | `_verify_bearer_email` | The only mode with application enforcement |
+| `firebase` | **Yes** — bearer verified, `email_verified` required, allowlist applied | `_verify_bearer_email` | The only mode with application enforcement |
 | `iap` | **None** — `call_next` unconditionally | `_iap_email` header, read lazily | Relies entirely on the perimeter |
 | `open` | **None** — `call_next` unconditionally | none | Intended for local development |
 
@@ -77,9 +82,9 @@ application-layer check**, so:
    a public revision, a direct `run.app` URL — a **missing IAP identity is not rejected by the
    application**. Remediation scoped only to `open` leaves this untested.
 
-## Confirmed exposure: `/dev` on public Firebase staging — VERIFIED — CODE
+## Resolved exposure: `/dev` on public Firebase staging — FIXED 2026-10-10 in #1360
 
-Found by Codex review on PR #931 and reproduced here.
+Found by Codex review on PR #931. The table below is the pre-fix state, kept for the record.
 
 | Step | Evidence |
 |---|---|
@@ -88,16 +93,32 @@ Found by Codex review on PR #931 and reproduced here.
 | Handler allows when no IAP header present | `main.py:366-372` — `email = _iap_user_email(request)`; the 403 fires only `if email is not None and email != _DEV_ALLOWED_EMAIL`. With no IAP in staging, `email is None` → falls through. Re-verified 2026-09-04: unchanged |
 | Page contents | service account, IAP OAuth audience, `K_REVISION`, service URL, strat-engine model state |
 
-Net: on a `STAGING_SERVICE=1` deployment, `/dev` is reachable **without sign-in**.
-Neither gate applies — the middleware skips non-`/api/` paths and the handler's own check
-is a no-op without an IAP header. `_DEV_ALLOWED_EMAIL` defaults to a hardcoded address
-(`main.py:245`). Formerly covered by `platform/tests/dev.spec.ts`, which was deleted in the
-#957 frontend split with no replacement, and which in any case did not exercise the staging
-(`PUBLIC=1`, no-IAP) configuration — [#943](https://github.com/TeneikaAskew/stocks/issues/943)'s
-acceptance tests must be written fresh in this repo (starting point recoverable via
-`git show 9f28a60^:platform/tests/dev.spec.ts`).
+Net, before the fix: on a `STAGING_SERVICE=1` deployment, `/dev` was reachable **without
+sign-in**. Neither gate applied: the middleware skips non-`/api/` paths and the handler's own
+check was a no-op without an IAP header. The only earlier test, `platform/tests/dev.spec.ts`,
+was deleted in the #957 frontend split and never exercised the staging (`PUBLIC=1`, no-IAP)
+configuration; #1360 replaced it with `tests/api/test_dev_page_auth.py`, which does.
 
-**Status:** tracked by [#943](https://github.com/TeneikaAskew/stocks/issues/943). **Next action:** choose whether to authenticate, remove, or explicitly accept the endpoint after security review; do not treat it as covered by #911, whose scope is the `AUTH_MODE` default.
+**Status:** fixed by [#1360](https://github.com/TeneikaAskew/stocks/pull/1360), closing [#943](https://github.com/TeneikaAskew/stocks/issues/943). `dev_info` asks `auth.dev_page_status` before reading any field:
+
+| `AUTH_MODE` | `/dev` answers |
+|---|---|
+| `firebase` (public staging) | 404, with or without an IAP header; browser navigation carries no bearer token, so it is not served at all |
+| `iap` (production) | 200 only when the IAP header names `DEV_ALLOWED_EMAIL`; a missing header is 403, not treated as local |
+| `open` (local dev) | 200, or 403 if a header names another email |
+
+Covered by `tests/api/test_dev_page_auth.py`.
+
+## Unverified Firebase emails — FIXED 2026-10-10 in #1360
+
+Staging allows open email/password sign-up and admin is granted by email, so
+before #1360 anyone could sign up as another person's address, including
+`ADMIN_EMAIL`, and be treated as its owner. The bearer-token verifier now
+requires `email_verified is True` (absent or non-boolean is refused): gated
+routes answer `403 verify your email to continue`, and `current_user_email`
+resolves such a token to no identity, so `/api/me` reports `email: null` and
+`is_admin: false`. Google sign-ins always carry `email_verified=true`.
+Covered by `tests/api/test_platform_auth.py`.
 
 ## Authorization
 
@@ -353,7 +374,8 @@ condition awaiting remediation.
 Stating the boundary plainly, because "public signup" and "unprotected" are
 different things and the difference is where the real controls live:
 
-- anyone can create an account with a verified Firebase identity;
+- anyone can create an account with a verified Firebase identity (the email
+  itself must be verified since #1360);
 - a registered user reaches the same database and bucket as prod
   (`CLOUD_SQL_CONNECTION_NAME=…:trading-db`, `DB_NAME=trading`,
   `GCS_BUCKET=…-trading-data`);
@@ -405,8 +427,8 @@ to close registration. It is unset here on purpose.
 | Aspect | Reference |
 |---|---|
 | Origin PR | [#623](https://github.com/TeneikaAskew/stocks/pull/623) Firebase auth end-to-end (backend + frontend + fail-closed deploy) |
-| Evolution | [#674](https://github.com/TeneikaAskew/stocks/pull/674) clock-skew tolerance · [#677](https://github.com/TeneikaAskew/stocks/pull/677) test coverage guarding #674 · [#626](https://github.com/TeneikaAskew/stocks/pull/626) journal per-user scoping · [#635](https://github.com/TeneikaAskew/stocks/pull/635) watchlist scoping · [#982](https://github.com/TeneikaAskew/stocks/pull/982) `/api/me/profile` with fail-closed ownership · [#983](https://github.com/TeneikaAskew/stocks/pull/983)/[#985](https://github.com/TeneikaAskew/stocks/pull/985) CI deploy identity, WIF ref clamp, `gha-creds` exclusion |
+| Evolution | [#674](https://github.com/TeneikaAskew/stocks/pull/674) clock-skew tolerance · [#677](https://github.com/TeneikaAskew/stocks/pull/677) test coverage guarding #674 · [#626](https://github.com/TeneikaAskew/stocks/pull/626) journal per-user scoping · [#635](https://github.com/TeneikaAskew/stocks/pull/635) watchlist scoping · [#982](https://github.com/TeneikaAskew/stocks/pull/982) `/api/me/profile` with fail-closed ownership · [#983](https://github.com/TeneikaAskew/stocks/pull/983)/[#985](https://github.com/TeneikaAskew/stocks/pull/985) CI deploy identity, WIF ref clamp, `gha-creds` exclusion · [#1360](https://github.com/TeneikaAskew/stocks/pull/1360) verified-email requirement and `/dev` gating (closed [#943](https://github.com/TeneikaAskew/stocks/issues/943)) |
 | Secret hardening | [#318](https://github.com/TeneikaAskew/stocks/pull/318) · [#424](https://github.com/TeneikaAskew/stocks/pull/424) split Discord webhooks · [#385](https://github.com/TeneikaAskew/stocks/pull/385) IaC drift + secret hardening |
-| Open issues | [#911](https://github.com/TeneikaAskew/stocks/issues/911) · [#830](https://github.com/TeneikaAskew/stocks/issues/830) · [#850](https://github.com/TeneikaAskew/stocks/issues/850) · [#836](https://github.com/TeneikaAskew/stocks/issues/836) · [#837](https://github.com/TeneikaAskew/stocks/issues/837) · [#839](https://github.com/TeneikaAskew/stocks/issues/839) · [#943](https://github.com/TeneikaAskew/stocks/issues/943) |
+| Open issues | [#911](https://github.com/TeneikaAskew/stocks/issues/911) · [#830](https://github.com/TeneikaAskew/stocks/issues/830) · [#850](https://github.com/TeneikaAskew/stocks/issues/850) · [#836](https://github.com/TeneikaAskew/stocks/issues/836) · [#837](https://github.com/TeneikaAskew/stocks/issues/837) · [#839](https://github.com/TeneikaAskew/stocks/issues/839) |
 | Code | `platform/api/auth.py`, `platform/api/main.py:70,245,366-372`, `platform/api/routers/admin.py:51`, `platform/api/routers/profile.py`, `platform/deploy.sh:25-64,91-98`, `.github/workflows/deploy-staging.yml`, solyra `src/lib/authedFetch.ts:45,91` |
-| Tests | solyra `tests/auth-gate.spec.ts`, `admin-auth.spec.ts` (moved in #957); `dev.spec.ts` deleted in #957 — [#943](https://github.com/TeneikaAskew/stocks/issues/943) tests to be written fresh |
+| Tests | solyra `tests/auth-gate.spec.ts`, `admin-auth.spec.ts` (moved in #957); `dev.spec.ts` deleted in #957; stocks `tests/api/test_platform_auth.py` and `tests/api/test_dev_page_auth.py` ([#1360](https://github.com/TeneikaAskew/stocks/pull/1360)) |
