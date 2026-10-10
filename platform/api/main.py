@@ -305,15 +305,9 @@ def get_current_user(request: Request):
 
 
 # ── /dev — test-account info page (behind IAP in prod) ─────────────────────
-# Shows the Playwright tester service account, IAP audience, revision, Cloud
-# SQL connection name and strat-engine state. It sits outside /api/, so the
-# auth middleware never sees it; dev_info gates it itself, by AUTH_MODE
-# (REQ-AUTH-003, stocks#943):
-#   firebase (public staging): not served (404). Browser navigation carries no
-#            bearer token, so it could not be gated like /api/* anyway.
-#   iap (production): the IAP header must name DEV_ALLOWED_EMAIL; a missing
-#            header is refused, not assumed to be local (REQ-AUTH-002).
-#   open (local dev): served unless a header names another email.
+# Shows the Playwright tester SA, IAP audience, revision, Cloud SQL and strat-engine
+# state. Outside /api/, so dev_info gates it itself via auth.dev_page_status: not
+# served in firebase mode; in iap mode the IAP header must name DEV_ALLOWED_EMAIL.
 
 _DEV_ALLOWED_EMAIL = os.environ.get("DEV_ALLOWED_EMAIL", "teneika@bictech.org").lower()
 
@@ -440,15 +434,10 @@ def _strat_engine_state() -> list[dict]:
 def dev_info(request: Request):
     from fastapi.responses import HTMLResponse, PlainTextResponse
 
-    from api import auth as _auth  # read per request: tests set AUTH_MODE
-
-    if _auth.AUTH_MODE == "firebase":
-        return PlainTextResponse("Not Found", status_code=404)
     email = _iap_user_email(request)
-    if _auth.AUTH_MODE == "iap" and email is None:
-        return PlainTextResponse("Forbidden", status_code=403)
-    if email is not None and email != _DEV_ALLOWED_EMAIL:
-        return PlainTextResponse("Forbidden", status_code=403)
+    from api.auth import dev_page_status  # read per request: tests set AUTH_MODE
+    if (status := dev_page_status(email, _DEV_ALLOWED_EMAIL)) is not None:
+        return PlainTextResponse("Not Found" if status == 404 else "Forbidden", status_code=status)
 
     project_id = os.environ.get("GCP_PROJECT_ID", "adept-mountain-474619-d4")
     sa_email = os.environ.get(
