@@ -437,7 +437,7 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and sol
 | [solyra#155](https://github.com/TeneikaAskew/solyra/issues/155) | P3 | [P3][Shared] No sign-out clears platform-theme, platform-shell-settings or solyra-mock-mode |
 | [#943](https://github.com/TeneikaAskew/stocks/issues/943) | UNTRIAGED | security: protect or remove unauthenticated `/dev` diagnostics on public staging |
 
-**PR lineage:** [#318](https://github.com/TeneikaAskew/stocks/pull/318) *remediation* · [#424](https://github.com/TeneikaAskew/stocks/pull/424) *evolution* · [#623](https://github.com/TeneikaAskew/stocks/pull/623) *origin* · [#674](https://github.com/TeneikaAskew/stocks/pull/674) *remediation* · [#677](https://github.com/TeneikaAskew/stocks/pull/677) *evolution*
+**PR lineage:** [#318](https://github.com/TeneikaAskew/stocks/pull/318) *remediation* · [#424](https://github.com/TeneikaAskew/stocks/pull/424) *evolution* · [#623](https://github.com/TeneikaAskew/stocks/pull/623) *origin* · [#674](https://github.com/TeneikaAskew/stocks/pull/674) *remediation* · [#677](https://github.com/TeneikaAskew/stocks/pull/677) *evolution* · [#1360](https://github.com/TeneikaAskew/stocks/pull/1360) *remediation*
 
 ### FEAT-INSIGHT-001 — AI insights (31 open)
 

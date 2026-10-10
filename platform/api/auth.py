@@ -13,7 +13,7 @@ all from the same image:
     The middleware does NOT enforce here — IAP already gated the request.
   - "open": no-op (local dev — no auth).
 
-Access policy (firebase mode): open self-signup by default
+Access policy (firebase mode): a verified email, then open self-signup by default
 (`AUTH_OPEN_SIGNUP=1`). Flip to an allow-list with `AUTH_OPEN_SIGNUP=0` +
 `AUTH_ALLOWED_EMAILS=a@x.com,b@y.com` — one env change, no code edit.
 
@@ -135,7 +135,7 @@ def _verify_bearer_email(request: Request) -> Optional[str]:
     # documented, production-grade way to handle real-world clock drift.
     decoded = fb_auth.verify_id_token(token, clock_skew_seconds=60)
     email = (decoded.get("email") or "").strip().lower()
-    return email or None
+    return _verified_email_or_none(email, decoded)
 
 
 def _iap_email(request: Request) -> Optional[str]:
@@ -201,8 +201,8 @@ async def auth_middleware(
 
     try:
         email = _verify_bearer_email(request)
-    except Exception:
-        return JSONResponse(status_code=401, content={"detail": "invalid or expired sign-in"})
+    except Exception as exc:
+        return _sign_in_refusal(exc)
 
     if not email:
         return JSONResponse(status_code=401, content={"detail": "sign in to continue"})
@@ -305,3 +305,51 @@ def is_admin_email(email: Optional[str]) -> bool:
             normalized,
         )
         return False
+
+
+# ── Verified email and /dev gating (FEAT-AUTH-001, REQ-AUTH-002/003, #943) ──
+# Kept at the end of the module so the line numbers the generated docs cite
+# for the code above do not move.
+
+class UnverifiedEmailError(Exception):
+    """A valid Firebase token whose email the provider has not verified.
+
+    Staging allows open email/password sign-up, and admin is granted by email,
+    so an unverified address is a claim, not an identity: anyone could sign up
+    as someone else's address. auth_middleware refuses it with a 403;
+    current_user_email's catch-all resolves it to no identity, so /api/me
+    reports neither the address nor its admin flag.
+    """
+
+
+def _verified_email_or_none(email: str, decoded: dict) -> Optional[str]:
+    # `is not True`: an absent or non-boolean claim is refused, never assumed.
+    # Google sign-ins always carry email_verified=true.
+    if email and decoded.get("email_verified") is not True:
+        raise UnverifiedEmailError(email)
+    return email or None
+
+
+def _sign_in_refusal(exc: Exception) -> JSONResponse:
+    if isinstance(exc, UnverifiedEmailError):
+        return JSONResponse(status_code=403, content={"detail": "verify your email to continue"})
+    return JSONResponse(status_code=401, content={"detail": "invalid or expired sign-in"})
+
+
+def dev_page_status(iap_email: Optional[str], allowed_email: str) -> Optional[int]:
+    """The status /dev refuses with, or None to serve it.
+
+    /dev sits outside /api/, so auth_middleware never sees it.
+      firebase (public staging): 404. Browser navigation carries no bearer
+               token, so it could not be gated like /api/* anyway.
+      iap (production): the IAP header must name allowed_email; a missing
+               header is refused, not assumed to be local.
+      open (local dev): served unless a header names another email.
+    """
+    if AUTH_MODE == "firebase":
+        return 404
+    if AUTH_MODE == "iap" and iap_email is None:
+        return 403
+    if iap_email is not None and iap_email != allowed_email:
+        return 403
+    return None

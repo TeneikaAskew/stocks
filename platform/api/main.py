@@ -305,9 +305,9 @@ def get_current_user(request: Request):
 
 
 # ── /dev — test-account info page (behind IAP in prod) ─────────────────────
-# Shows the Playwright tester service account, IAP audience, and ready-to-run
-# curl/gcloud snippets. Visible only to humans who already passed IAP, so the
-# page itself is fine to expose publicly within the deployed service.
+# Shows the Playwright tester SA, IAP audience, revision, Cloud SQL and strat-engine
+# state. Outside /api/, so dev_info gates it itself via auth.dev_page_status: not
+# served in firebase mode; in iap mode the IAP header must name DEV_ALLOWED_EMAIL.
 
 _DEV_ALLOWED_EMAIL = os.environ.get("DEV_ALLOWED_EMAIL", "teneika@bictech.org").lower()
 
@@ -435,9 +435,9 @@ def dev_info(request: Request):
     from fastapi.responses import HTMLResponse, PlainTextResponse
 
     email = _iap_user_email(request)
-    # Local dev (no IAP header) → allow. Cloud Run with IAP → require allow-list match.
-    if email is not None and email != _DEV_ALLOWED_EMAIL:
-        return PlainTextResponse("Forbidden", status_code=403)
+    from api.auth import dev_page_status  # read per request: tests set AUTH_MODE
+    if (status := dev_page_status(email, _DEV_ALLOWED_EMAIL)) is not None:
+        return PlainTextResponse("Not Found" if status == 404 else "Forbidden", status_code=status)
 
     project_id = os.environ.get("GCP_PROJECT_ID", "adept-mountain-474619-d4")
     sa_email = os.environ.get(

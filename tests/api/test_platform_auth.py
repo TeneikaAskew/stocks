@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -53,6 +54,8 @@ def _build(monkeypatch, mode: str, *, open_signup: str = "1", allowed: str = "")
             raise ValueError("invalid token")
         if tok.startswith("good:"):
             return tok.split(":", 1)[1].strip().lower() or None
+        if tok.startswith("unverified:"):
+            raise a.UnverifiedEmailError(tok.split(":", 1)[1])
         return None
 
     monkeypatch.setattr(a, "_verify_bearer_email", fake_verify)
@@ -161,7 +164,7 @@ def test_verify_bearer_email_tolerates_clock_skew(monkeypatch):
         @staticmethod
         def verify_id_token(token, **kwargs):
             captured["kwargs"] = kwargs
-            return {"email": "Me@X.com"}
+            return {"email": "Me@X.com", "email_verified": True}
 
     fake_mod = types.ModuleType("firebase_admin")
     fake_mod.auth = _FakeAuth  # `from firebase_admin import auth as fb_auth`
@@ -183,6 +186,83 @@ def test_verify_bearer_email_tolerates_clock_skew(monkeypatch):
     skew = captured["kwargs"].get("clock_skew_seconds")
     assert skew is not None, "verify_id_token called with zero clock-skew tolerance"
     assert 0 < skew <= 60
+
+
+def test_firebase_refuses_unverified_email(monkeypatch):
+    """A valid token whose email is not verified is refused on gated routes
+    with a 403 the frontend can explain, and resolves to NO identity on the
+    open /api/me probe. Otherwise anyone able to create a Firebase account
+    with an address they do not own is treated as its owner, admin included
+    (spec 2026-10-10-feat-auth-001-signin-hardening)."""
+    c, _ = _build(monkeypatch, "firebase")
+    r = c.get("/api/secret", headers={"authorization": "Bearer unverified:boss@x.com"})
+    assert r.status_code == 403
+    assert r.json() == {"detail": "verify your email to continue"}
+    r = c.get("/api/me", headers={"authorization": "Bearer unverified:boss@x.com"})
+    assert r.status_code == 200 and r.json()["email"] is None
+
+
+def test_me_reports_unverified_admin_email_as_anonymous(monkeypatch):
+    """The real /api/me must not report is_admin for an unverified token on
+    the admin's address: the frontend renders admin UI from that flag."""
+    from api.main import app
+
+    a, _ = _real_verify_with_claims(
+        monkeypatch, {"email": "boss@x.com", "email_verified": False}
+    )
+    monkeypatch.setattr(a, "AUTH_MODE", "firebase")
+    monkeypatch.setenv("ADMIN_EMAIL", "boss@x.com")
+    _stub_db(monkeypatch, rows=1)
+    r = TestClient(app).get("/api/me", headers={"authorization": "Bearer t"})
+    assert r.status_code == 200
+    assert r.json()["email"] is None
+    assert r.json()["is_admin"] is False
+
+
+def _real_verify_with_claims(monkeypatch, claims: dict):
+    """Run the real _verify_bearer_email against a stub firebase_admin whose
+    verify_id_token returns `claims`."""
+    import api.auth as a
+    from starlette.requests import Request
+
+    monkeypatch.setattr(a, "_ensure_firebase", lambda: None)
+
+    class _FakeAuth:
+        @staticmethod
+        def verify_id_token(token, **kwargs):
+            return dict(claims)
+
+    fake_mod = types.ModuleType("firebase_admin")
+    fake_mod.auth = _FakeAuth
+    monkeypatch.setitem(sys.modules, "firebase_admin", fake_mod)
+    req = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/api/secret",
+        "headers": [(b"authorization", b"Bearer sometoken")],
+    })
+    return a, req
+
+
+def test_verify_bearer_email_accepts_verified_email(monkeypatch):
+    a, req = _real_verify_with_claims(
+        monkeypatch, {"email": "Me@X.com", "email_verified": True}
+    )
+    assert a._verify_bearer_email(req) == "me@x.com"
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        {"email": "Me@X.com", "email_verified": False},
+        {"email": "Me@X.com"},  # absent claim is refused, never assumed
+        {"email": "Me@X.com", "email_verified": "true"},  # only the boolean counts
+    ],
+)
+def test_verify_bearer_email_refuses_unverified_email(monkeypatch, claims):
+    a, req = _real_verify_with_claims(monkeypatch, claims)
+    with pytest.raises(a.UnverifiedEmailError):
+        a._verify_bearer_email(req)
 
 
 # ─── Authorization: is_admin_email (user_roles table + ADMIN_EMAIL) ─────────
