@@ -35,8 +35,11 @@ checks, and PR_BASE_REF must be main. Any harness (Claude Code, Codex, a human) 
 from __future__ import annotations
 
 import ast
+import bisect
+import functools
 import html
 import json
+import collections
 import datetime
 import os
 import pathlib
@@ -66,7 +69,9 @@ FEAT_IDS = re.compile(r"\bFEAT-[A-Z]+-\d{3}\b")
 BRANCH = re.compile(r"^(feature|fix)/(feat-[a-z]+-\d{3})(-[a-z0-9]+)+$")   # lowercase kebab-case: git refs are case-sensitive
 REQ_SHAPE = re.compile(r"^REQ-[A-Z]+-\d{3}$")
 REQ_DEFINITION = re.compile(r"\*\*(REQ-[A-Z]+-\d{3}):\*\*")
-CHECKBOX = re.compile(r"^\s*(?:[-*+]|\d{1,9}[.)])\s+\[([ xX])\]\s+(.*\S)\s*$")   # (round seven: `+` and `1.` render boxes too; a marker over nine digits is text, stocks#1205 r4127577559)
+CHECKBOX = re.compile(r"^\s*(?:[-*+]|\d{1,9}[.)])\s+\[([ xX])\]\s+(\S(?:.*\S)?)\s*$")   # (round seven: `+` and `1.` render boxes too; a marker over nine digits is text, stocks#1205 r4127577559)
+# (red-team, this PR: the text starts at its first non-space character, so a line holding only spaces after
+# the box fails to match in one pass, where `(.*\S)` was retried from every space)
 HEADING = re.compile(r"^ {0,3}(#{1,6})\s")   # up to three leading spaces still render as a heading (stocks#1205 r4127396415); the level is the hash run
 ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 PR_REF = re.compile(r"^#?(\d+)$")
@@ -2168,13 +2173,139 @@ CODE_SPAN = re.compile(r"(`+)(?:(?!\1)[\s\S])*?\1")
 CONFUSABLE = str.maketrans("АВСЕНКМОРТХаеорсухΑΒΕΖΗΙΚΜΝΟΡΤΥΧ", "ABCEHKMOPTXaeopcyxABEZHIKMNOPTYX")
 
 
-def fold_text(text: str) -> str:
+ENTITY = re.compile(r"(?<!\\)&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);?")
+# an entity as GitHub reads one: with its semicolon, so `follow-up&#108` keeps its word
+STRICT_ENTITY = re.compile(r"(?<!\\)&(?:#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]{1,31});")
+INERT_SPACE = "\ue0fe"   # a non-ASCII space, in visible(inert=True): shown as a space, read by no markup
+INERT = 0xE100   # an entity for ASCII punctuation, kept as one character no markup reads: GitHub shows it as text
+# what each stand-in shows, for reading a deferral: the character, a space, or a line break
+SHOWN_AS = {**{INERT + c: chr(c) for c in range(33, 127) if not chr(c).isalnum()}, ord("\ue0fe"): " ", 0xE0FF: " ", 0xE0FC: " ",
+            0xE0FD: " "}
+
+
+def inert_entities(text: str) -> str:
+    """`text` with each entity that names ASCII punctuation as a stand-in character, so `&lt;` opens no tag
+    and `&#96;` no code span, as GitHub reads them (red-team, this PR)."""
+    def one(m: re.Match) -> str:
+        c = html.unescape(no_huge_refs(m.group(0)))
+        return chr(INERT + ord(c)) if len(c) == 1 and c.isascii() and not c.isalnum() and not c.isspace() else m.group(0)
+    return ENTITY.sub(one, text)
+
+
+def ticked_spans(text: str) -> str:
+    """`text` with each match of main's code span pattern as backticks, as main masks it to find comments."""
+    out, i = [], 0
+    for a, b in code_span_places(NOT_TICK.sub("x", text)):
+        out += [text[i:a], "`" * (b - a)]
+        i = b
+    return "".join(out) + text[i:]
+
+
+NOT_TICK = re.compile(r"[^`]")
+
+
+def code_span_places(skeleton: str) -> tuple[tuple[int, int], ...]:
+    """Where main's code span pattern matches, found on the text's backticks alone, which is all the pattern reads:
+    each run of other characters read as one, so every reading of a body shares one scan whenever their backticks
+    line up, an entity or not, however long it is written (red-team, this PR)."""
+    runs = list(X_RUN.finditer(skeleton))
+    if not runs:
+        return backtick_spans(skeleton)
+    # a place in the collapsed skeleton maps back by the length each run before it lost
+    places, shift, lost, cut = [], [], 0, []
+    for m in runs:
+        cut.append(skeleton[len(cut) and runs[len(cut) - 1].end():m.start()] + "x")
+        lost += m.end() - m.start() - 1
+        places.append(m.end() - lost)
+        shift.append(lost)
+    cut.append(skeleton[runs[-1].end():])
+    def back(k: int) -> int:
+        return k + (shift[j] if (j := bisect.bisect_right(places, k) - 1) >= 0 else 0)
+    return tuple((back(a), back(b)) for a, b in backtick_spans("".join(cut)))
+
+
+X_RUN = re.compile(r"x{2,}")
+
+
+@functools.lru_cache(maxsize=None)
+def backtick_spans(skeleton: str) -> tuple[tuple[int, int], ...]:
+    """Where main's code span pattern matches a skeleton of backticks and single other characters."""
+    return tuple(m.span() for m in CODE_SPAN.finditer(skeleton))
+
+
+@functools.lru_cache(maxsize=None)   # both readings of a body most often reach it with the same text (red-team, this PR)
+def without_fences(body: str) -> str:
+    """`body` without its fenced code blocks, as main's visible() removes them."""
+    body = re.sub(r"^ {0,3}(`{3,})(?![^\n]*`).*?^ {0,3}\1`*[ \t]*$", "", body, flags=re.S | re.M)
+    body = re.sub(r"^ {0,3}(~{3,}).*?^ {0,3}\1~*[ \t]*$", "", body, flags=re.S | re.M)
+    body = re.sub(r"^([ \t]*)(`{3,})(?![^\n]*`).*?^\1 {0,3}\2`*[ \t]*$", "", body, flags=re.S | re.M)   # a backtick in the info string is not a fence (round five)
+    body = re.sub(r"^([ \t]*)(~{3,}).*?^\1 {0,3}\2~*[ \t]*$", "", body, flags=re.S | re.M)
+    return re.sub(r"^[ \t]*(`{3,}(?![^\n]*`)|~{3,}).*\Z", "", body, flags=re.S | re.M)
+
+
+def code_masked(text: str) -> str:
+    """`text` as main masks it to find comments, each code span's text as backticks, for the body read as GitHub
+    reads it: main's pattern runs over the text as main decodes it, one character per entity (`&#96` a backtick),
+    so it costs what it costs on main and splits the body into main's lines (red-team, this PR)."""
+    if "<!--" not in text or not ("`" in text or "&" in text or chr(INERT + 96) in text):
+        return text   # masked only to find comments: without one, or a backtick, nothing changes
+    # the skeleton main's pattern reads: one character per entity, a backtick where it decodes to one; each entity's
+    # extra length is kept so a place in the skeleton maps back to the text
+    pieces, i, extra, places, shift = [], 0, 0, [], []
+    for m in ENTITY_UNIT.finditer(text):
+        pieces += [NOT_TICK.sub("x", text[i:m.start()].replace(chr(INERT + 96), "`")),
+                   "`" if html.unescape(no_huge_refs(m.group(0))) == "`" else "x"]
+        extra += len(m.group(0)) - 1
+        places.append(m.end() - extra)
+        shift.append(extra)
+        i = m.end()
+    pieces.append(NOT_TICK.sub("x", text[i:].replace(chr(INERT + 96), "`")))
+    def back(k: int) -> int:
+        return k + (shift[j] if (j := bisect.bisect_right(places, k) - 1) >= 0 else 0)
+    out, i = [], 0
+    for s, e in code_span_places("".join(pieces)):
+        a, b = back(s), back(e)
+        out += [text[i:a], "`" * (b - a)]
+        i = b
+    return "".join(out) + text[i:]
+
+
+# one character as main's decoding reads the body: an entity, with or without its semicolon
+ENTITY_UNIT = re.compile(r"&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);?")
+
+
+def outside_code(change, text: str) -> str:
+    """`text` with `change` applied outside its code spans, as cmark-gfm finds them paragraph by paragraph,
+    raw HTML first (raw_html()): GitHub shows a code span's entities and links as written (red-team, this PR)."""
+    out = []
+    for part in re.split(r"(\n[ \t]*\n)", text):
+        if "`" not in part:
+            out.append(change(part))
+            continue
+        i = 0
+        for a, b, kind in raw_html(part):
+            if kind == "code":
+                out += [change(part[i:a]), part[a:b]]
+                i = b
+        out.append(change(part[i:]))
+    return "".join(out)
+
+
+OWN_MARKS = {c: "\ufffd" for c in range(0xE000, 0xE200)}   # KEPT_TICK, the line marks, the stand-ins: never the body's
+
+
+def fold_text(text: str, inert: bool = False) -> str:
     """Text as a reader sees it: entities decoded, invisible characters and variation selectors
     dropped, look-alike Cyrillic and Greek letters and non-ASCII spaces read as the ASCII ones
-    (red-team round five: `fоllow-up` with a Cyrillic о, `foll\u2060ow-up`)."""
-    text = html.unescape(text)
+    (red-team round five: `fоllow-up` with a Cyrillic о, `foll\u2060ow-up`); with `inert`, an entity for
+    ASCII punctuation is kept as a stand-in no markup reads (inert_entities())."""
+    # the private-use characters the gate marks with, typed or encoded, are no marker of its own (red-team, this PR)
+    text = text.translate(OWN_MARKS)
+    text = outside_code(lambda s: STRICT_ENTITY.sub(lambda m: html.unescape(m.group(0)).translate(OWN_MARKS), inert_entities(s)), text) \
+        if inert else html.unescape(text).translate(OWN_MARKS)
     text = INVISIBLE.sub("", re.sub("[\ufe00-\ufe0f]", "", text))
-    text = re.sub("[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]", " ", text)
+    # inert: a no-break or other non-ASCII space is no space raw HTML reads (`<tsc\u00a0build>` is text)
+    text = re.sub("[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]", INERT_SPACE if inert else " ", text)
     return text.translate(CONFUSABLE)
 
 
@@ -2184,15 +2315,18 @@ HTML_BLOCK_TAGS = (
     "|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul")
 
 
-def without_html_blocks(body: str) -> str:
+def without_html_blocks(body: str, mark: bool = False) -> str:
     """The body with GFM's HTML blocks blanked: a checklist, a link or a Capacity section inside `<pre>`,
     `<script>`, `<?..?>`, CDATA, a declaration or a `<div>` without a blank line renders as raw HTML or
     not at all, never as Markdown (red-team round seven). Each dropped line becomes a blank line so
-    the lines around it keep their positions."""
+    the lines around it keep their positions; with `mark`, its indent and HTML_LINE, so a box can tell
+    raw HTML under it (red-team, this PR)."""
     out, end, prev_blank = [], None, True
+    def dropped(line: str) -> str:
+        return line[:len(line) - len(line.lstrip(" \t"))] + HTML_LINE if mark and line.strip() else ""
     for line in split_lines(body):
         if end is not None:
-            out.append("")
+            out.append(dropped(line))
             if end == "" and not line.strip() or (end and re.search(end, line)):
                 end = None
             continue
@@ -2205,25 +2339,68 @@ def without_html_blocks(body: str) -> str:
         if kind is None:
             out.append(line)
             continue
-        out.append("")
+        out.append(dropped(line))
         if not (kind and re.search(kind, t[2:])):   # opened and closed on one line: that line alone
             end = kind
     return "\n".join(out)
 
 
-def visible(body: str) -> str:
+BLOCK_START = r"^\s*([-*+]\s|\d{1,9}[.)]\s|>|#{1,6}\s|\|)"   # what main's checklist() reads as another block
+HTML_LINE = "\ue0ff"   # a line of an HTML block, in visible(inert=True): raw HTML the gate does not read as Markdown
+BLOCK_BREAK = "<\ue0fd "   # before a block of its own under a box: a `<` that ends any tag running into it
+CODE_LINE = "\ue0fc"   # an indented line main reads as code, in visible(inert=True): under a list item, GitHub's paragraph
+
+
+DASH_LOOKALIKES = re.compile("[\u2010-\u2015\u2212\ufe58\ufe63\uff0d]")
+INLINE_TAG = re.compile(r"</?(b|i|em|strong|s|del|u|span|sub|sup|small|code|br|kbd|mark|abbr)(\s[^<>]*)?/?>", re.I)
+
+
+@functools.lru_cache(maxsize=None)   # pure, and one run reads the same body in several checks (red-team)
+def visible(body: str, inert: bool = False) -> str:
     """The PR body as it renders: HTML comments and fenced code blocks removed, so a
-    checkbox inside the template's comments or a code example is not a checkbox."""
+    checkbox inside the template's comments or a code example is not a checkbox; with `inert`, its
+    entities for ASCII punctuation kept as stand-ins (fold_text()) and its inline tags kept, as GitHub
+    reads its raw HTML (`<!X <br>` is one declaration)."""
+    lines = split_lines(before_code(body, inert))
+    # An indented code block: lines indented four spaces or a tab after a blank line, until
+    # the next unindented text. Those render as code, not as links or checkboxes.
+    # Read as GitHub reads it, a line is code where main's reading has it code, line for line, so a line main
+    # reads as blank (a spacer `&nbsp;` or `<br>`, a tab its HTML block blanks) moves no line (red-team, this PR);
+    # where the readings have other lines, lines_split() refuses the body
+    mains = split_lines(before_code(body, False)) if inert else lines
+    if not (aligned := len(mains) == len(lines)):
+        mains = [INLINE_TAG.sub("", line.translate(SHOWN_AS)) for line in lines]
+    kept, in_code, prev_blank = [], False, True
+    for line, main in zip(lines, mains):
+        blank = not main.strip()
+        indented = main.startswith(("    ", "\t")) and (aligned or line.strip() != HTML_LINE)
+        if in_code and (indented or blank):
+            if inert and line.strip():
+                kept.append(CODE_LINE + line)   # read, under a box, as the paragraph GitHub may show there
+            continue
+        in_code = indented and prev_blank
+        if not in_code:
+            kept.append(line)
+        elif inert:
+            kept.append(CODE_LINE + line)
+        prev_blank = blank   # a marked HTML block line was a blank line
+    return "\n".join(kept)
+
+
+@functools.lru_cache(maxsize=None)   # each reading of a body takes main's reading of its lines (red-team, this PR)
+def before_code(body: str, inert: bool = False) -> str:
+    """The body as visible() reads it before it takes out indented code."""
     # round five: a `<!--` inside a code span is code, `<!-->` is not a comment, a link or emphasis renders
     # its text, and a look-alike letter, an invisible character or a no-break space is the plain word
-    body = fold_text(body)
-    masked = CODE_SPAN.sub(lambda m: "`" * len(m.group(0)), body)   # a `<!--` inside a code span is code
+    body = fold_text(body, inert)
+    # a `<!--` inside a code span is code; read as GitHub reads it, main's pattern runs over the body as main decodes
+    # it, where on the text read as GitHub reads it a run main's decoding closes would backtrack (red-team, this PR)
+    masked = code_masked(body) if inert else ticked_spans(body)
     for m in reversed(list(re.finditer(r"<!--(?!>|->).*?-->|<!--(?!>|->).*\Z", masked, flags=re.S))):   # an unclosed comment runs to the end
         body = body[:m.start()] + body[m.end():]
-    body = without_html_blocks(body)
+    body = without_html_blocks(body, mark=inert)
     # red-team round four: `follow&#8209;up`, `non-<b></b>blocking` and a U+2011 render as the plain words
-    body = re.sub(r"</?(b|i|em|strong|s|del|u|span|sub|sup|small|code|br|kbd|mark|abbr)(\s[^<>]*)?/?>", "", body, flags=re.I)
-    body = re.sub("[\u2010-\u2015\u2212\ufe58\ufe63\uff0d]", "-", body)
+    body = DASH_LOOKALIKES.sub("-", body if inert else INLINE_TAG.sub("", body))   # inert: tags read where GitHub reads them
     # A fence opens with 3+ backticks or tildes after up to three spaces and closes with a
     # fence of the same character at least as long; an unclosed fence runs to the end.
     # (`{3,} and ~{3,} separately: a closer mixing the two characters does not close a
@@ -2235,62 +2412,426 @@ def visible(body: str) -> str:
     # (stocks#1205 r4127396407: a top-level opener indented one to three spaces closes on any closer
     # indented zero to three, whatever the opener's indent; only a fence nested under a list item
     # ties its closer to the opener's offset)
-    body = re.sub(r"^ {0,3}(`{3,})(?![^\n]*`).*?^ {0,3}\1`*[ \t]*$", "", body, flags=re.S | re.M)
-    body = re.sub(r"^ {0,3}(~{3,}).*?^ {0,3}\1~*[ \t]*$", "", body, flags=re.S | re.M)
-    body = re.sub(r"^([ \t]*)(`{3,})(?![^\n]*`).*?^\1 {0,3}\2`*[ \t]*$", "", body, flags=re.S | re.M)   # a backtick in the info string is not a fence (round five)
-    body = re.sub(r"^([ \t]*)(~{3,}).*?^\1 {0,3}\2~*[ \t]*$", "", body, flags=re.S | re.M)
-    body = re.sub(r"^[ \t]*(`{3,}(?![^\n]*`)|~{3,}).*\Z", "", body, flags=re.S | re.M)
-    # An indented code block: lines indented four spaces or a tab after a blank line, until
-    # the next unindented text. Those render as code, not as links or checkboxes.
-    kept, in_code, prev_blank = [], False, True
-    for line in split_lines(body):
-        indented = line.startswith(("    ", "\t"))
-        if in_code and (indented or not line.strip()):
-            continue
-        in_code = indented and prev_blank
-        if not in_code:
-            kept.append(line)
-        prev_blank = not line.strip()
-    return "\n".join(kept)
+    body = without_fences(body)
+    return body
 
 
-def checklist(body: str) -> list[tuple[bool, str]]:
-    """Each rendered task-list item: its checkbox line plus the indented continuation
-    lines that render as part of it, so a deferral written under the box still counts."""
-    items: list[tuple[bool, str] | None] = []
-    depth: list[int] = []
+# main's link pattern, plus two alternatives that consume, unchanged, a `[` span no link closes: the output
+# is main's (checked on 400,000 random strings) and the scan is linear, where main's rescans the rest of
+# the line from every `[` of a run, so rendering a body or an item is never quadratic (red-team, this PR)
+LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)|\[[^\]]*\]\([^)]*\Z|\[[^\]]*")
+
+
+MARKUP = re.compile(r"[\[*_`]")
+
+
+def rendered_line(line: str) -> str:
+    """A line as it renders: a link reads as its text, emphasis and code markers drop out."""
+    if not MARKUP.search(line):
+        return line   # nothing in it renders differently, and a body may hold tens of thousands of such lines
     # a link renders its text and emphasis its word: `[follow](url)-up`, `*follow*-up` (round five)
-    lines = [re.sub(r"(?<!\w)[*_]{1,3}(?=\S)|(?<=\S)[*_]{1,3}(?!\w)", "", re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", ln)).replace("`", "")
-             for ln in split_lines(visible(body))]
+    linked = LINK.sub(lambda m: m.group(0) if m.group(1) is None else m.group(1), line)
+    return re.sub(r"(?<!\w)[*_]{1,3}(?=\S)|(?<=\S)[*_]{1,3}(?!\w)", "", linked).replace("`", "")
+
+
+@functools.lru_cache(maxsize=None)   # the metadata check and the close-out read the same body (red-team)
+def checklist(body: str, github: bool = True) -> list[tuple[bool, str, str, str, str]]:
+    """Each rendered task-list item: its checkbox line plus the indented continuation
+    lines that render as part of it, so a deferral written under the box still counts.
+    Each carries its text as rendered, as written (still out of comments and code), the letters and
+    digits that show, and the text they are read from, where a code span shows its `<` (as_read()).
+    Callers only read the list it returns."""
+    items: list[tuple[list[bool], list[str], list[str]] | None] = []   # pieces, joined once (red-team, this PR)
+    depth: list[int] = []
+    raw = split_lines(visible(body))
+    lines = [rendered_line(ln) for ln in raw]
+    # what is written is read from the body with its entities for punctuation inert, as GitHub reads them, so
+    # `<lo:&lt;x>` stays an autolink (red-team, this PR); lines_split() refuses a body whose lines that moves
+    # the twice-read body is main's alone: its boxes as written stay as main reads them, never read again
+    inert, under = written_lines(body) if github else (raw, {})
+    if aligned := github and len(inert) == len(raw):
+        raw = inert
+    later = next_indents(lines)
     for n, line in enumerate(lines):
         if (m := CHECKBOX.match(line)):
-            box = (m.group(1) in "xX", norm(m.group(2)))
+            written = (mr.group(2) if (mr := CHECKBOX.match(raw[n])) else m.group(2))
+            ticked, text, raw_text = m.group(1) in "xX", norm(m.group(2)), norm(written)
             if items and items[-1] is not None and indent(line) > depth[-1]:
                 # red-team round three: an unticked or deferring child renders under its parent, so the
                 # parent is not done; its words reach the parent's text
-                ticked, text = items[-1]
-                items[-1] = (ticked and box[0], norm(f"{text} {box[1]}"))
+                items[-1][0].append(ticked)
+                items[-1][1].append(text)
+                items[-1][2].append(raw_text)
             else:
-                items.append(box)
+                items.append(([ticked], [text], [raw_text]))
                 depth.append(indent(line))
         elif items and items[-1] is not None and line.strip() and not any(line.strip().startswith(mk) for mk in CANVAS_MARKERS.values()) and (
                 not re.match(r"^\s*([-*+]\s|\d{1,9}[.)]\s|>|#{1,6}\s|\|)", line)
                 or (re.match(r"^\s*([-*+]\s|\d{1,9}[.)]\s)", line) and indent(line) > depth[-1])):
             # an indented line, an unindented one that starts no other block (lazy continuation: red-team
             # round three) or a nested bullet (round four) renders inside the item
-            ticked, text = items[-1]
-            items[-1] = (ticked, norm(f"{text} {line}"))
-        elif not line.strip() and items and items[-1] is not None and next_indented_past(lines, n, depth[-1]):
+            # each piece normalised once, not the whole text again per line (red-team, this PR)
+            items[-1][1].append(norm(line))
+            if not re.match(r"^\s*(-+|=+)\s*$", raw[n]):   # an underline makes the line above a heading: no text of its
+                items[-1][2].append(norm(raw[n]))       # own, and it parts the words around it (red-team, this PR)
+        elif aligned and items and items[-1] is not None and (
+                indent(raw[n]) > depth[-1] and (raw[n].strip() == HTML_LINE or (line.strip() and re.match(r"^\s*>", line)))
+                or line.strip() and re.match(BLOCK_START, line) and not re.match(BLOCK_START, raw[n])
+                or line.lstrip().startswith("|")   # a `|` line alone is no table: GitHub keeps it in the item (red-team)
+                or not line.strip() and raw[n].strip() and raw[n].strip() != HTML_LINE   # main's reading drops it, GitHub's
+                and (indent(raw[n]) > depth[-1] or not re.match(BLOCK_START, raw[n]))):   # shows it (`&lt;?x` opens no block)
+            # under the box, inside the item: a quote, read for its words, an HTML block line, which the gate
+            # does not read as GitHub does, or a line that only renders, or decodes, as another block (`` `> ``,
+            # `&#45; x` go on the item's text) (red-team, this PR); only the box as written holds them
+            # a block of its own as written: a `<` before it opens nothing that runs into it (`not<brun` then
+            # `  >later PR`); a line that only renders as one goes on the paragraph, and a tag may span it
+            items[-1][2].append(HTML_LINE if raw[n].strip() == HTML_LINE
+                                else (BLOCK_BREAK if re.match(BLOCK_START, raw[n]) else "") + norm(raw[n]))
+            items[-1][2].extend(norm(c) for c in under.get(n, ()) if indent(c) > depth[-1])   # code main drops after it
+        elif aligned and not line.strip() and items and items[-1] is not None and any(indent(c) > depth[-1] for c in under.get(n, ())):
+            # an indented paragraph after a blank line, inside the item, that main reads as code (red-team, this PR)
+            items[-1][2].extend(norm(c) for c in under[n] if indent(c) > depth[-1])
+        elif not line.strip() and items and items[-1] is not None and later[n] is not None and later[n] > depth[-1]:
             continue   # a loose item: the blank line does not end it while what follows is indented past its marker (round five)
         else:
+            if aligned and items and items[-1] is not None:
+                # what GitHub keeps in the item after main ends it: every line blank or indented past its marker, up
+                # to the next box or a line at the margin (a heading, an HTML block, a paragraph after blank lines),
+                # read as written for a deferral, an HTML block as one the gate cannot read (red-team, this PR)
+                k = n
+                while k < len(lines) and not CHECKBOX.match(lines[k]) and (not raw[k].strip() or indent(raw[k]) > depth[-1]):
+                    if raw[k].strip():
+                        items[-1][2].append(HTML_LINE if raw[k].strip() == HTML_LINE else BLOCK_BREAK + norm(raw[k]))
+                    items[-1][2].extend(BLOCK_BREAK + norm(c) for c in under.get(k, ()) if indent(c) > depth[-1])
+                    k += 1
             items.append(None)   # a blank line or another block ends the item
             depth.append(0)
-    return [i for i in items if i is not None]
+    # raw HTML is read over the whole box, as the box is written, so a tag split across its lines still hides (red-team, this PR)
+    boxes = [(all(ticked), " ".join(filter(None, text)), w := " ".join(filter(None, written)), as_read(w))
+             for ticked, text, written in filter(None, items)]
+    return [(ticked, text, written, letters(read), read) for ticked, text, written, read in boxes]
 
 
-def next_indented_past(lines: list[str], n: int, marker: int) -> bool:
-    later = next((ln for ln in lines[n + 1:] if ln.strip()), None)
-    return later is not None and indent(later) > marker
+CODE_RUN = re.compile(r"`+")
+IMAGE = re.compile(r"!\[[^\[\]]*\]\([^()]*\)")   # main's link pattern after a `!`, one `[` and `(` deep, so it scans linearly
+
+
+def code_spans(line: str) -> list[tuple[int, int]]:
+    """Where `line` holds code span text, read with its raw HTML as cmark-gfm reads both (raw_html())."""
+    return [(a, b) for a, b, kind in raw_html(line) if kind == "code"]
+
+
+def escaped(text: str, p: int) -> bool:
+    """Whether the character at `p` follows an odd run of backslashes, which escapes it."""
+    k = p
+    while k > 0 and text[k - 1] == "\\":
+        k -= 1
+    return (p - k) % 2 == 1
+
+
+KEPT_TICK = "\ue000"   # a backtick that opens or closes no code span, kept through rendered_line() as text
+# a code span's links, images and emphasis are text: its markup kept through rendered_line() (red-team, this PR)
+HELD_MARKUP = str.maketrans({c: chr(0xE001 + k) for k, c in enumerate("[]()*_")})
+SHOWN_MARKUP = {ord(v): chr(k) for k, v in HELD_MARKUP.items()}
+
+
+@functools.lru_cache(maxsize=None)   # pure, and each line is read once per item that weighs it
+def as_read(line: str) -> str:
+    """A written line as rendered for its letters, its raw HTML read once as written, where code spans and
+    backslash escapes are known: what shows nothing is cut, any other `<` is text, so `` `<Dialog>` `` keeps its
+    word and `` <sc`> `` is no tag; a backtick that opens no code span stays; an image outside code spans, its `!`
+    not escaped, shows no text, while a code span shows its links, images and emphasis as written (red-team,
+    this PR)."""
+    line = spaced_breaks(line)   # a line break parts the words around it (`not<br>run`, red-team, this PR)
+    if "`" in line or "<" in line:
+        cut, i = [], 0
+        events = sorted([(s, e, "hide") for s, e in zip(*hidden(line))] + [(s, e, "code") for s, e in code_spans(line)])
+        for s, e, kind in events:
+            if s < i:
+                continue   # after a quote left open, which runs to the end: the line is refused as unreadable
+            cut.append(no_images(line, i, s).replace("`", KEPT_TICK).replace("<", " "))
+            if kind == "code":
+                run = 0   # the closing run, as long as the opening one, which an escaped backtick may precede
+                while e + run < len(line) and line[e + run] == "`":
+                    run += 1
+                cut[-1] = cut[-1][:len(cut[-1]) - run] + "`" * run   # its opening run, which renders as nothing
+                cut += [line[s:e].replace("`", KEPT_TICK).replace("<", " ").translate(HELD_MARKUP), "`" * run]
+                e += run
+            i = e
+        line = "".join(cut) + no_images(line, i, len(line)).replace("`", KEPT_TICK).replace("<", " ")
+    else:
+        line = no_images(line, 0, len(line))
+    return norm(rendered_line(line)).replace(KEPT_TICK, "`").translate(SHOWN_MARKUP)
+
+
+def no_images(line: str, start: int, end: int) -> str:
+    """`line[start:end]` without the images whose `!` no backslash escapes, each showing no text, and with each
+    escaped link, image or emphasis marker shown as text, its backslash dropped, as GitHub shows `\\[x\\](y)`."""
+    piece = IMAGE.sub(lambda m: m.group(0) if escaped(line, start + m.start()) else "", line[start:end])
+    return ESCAPED_MARK.sub(lambda m: m.group(1).translate(HELD_MARKUP), piece) if "\\" in piece else piece
+
+
+ESCAPED_MARK = re.compile(r"\\([\\\[\]()*_!])")
+
+
+# What cmark-gfm 0.29.0.gfm.13, GitHub's renderer, reads at a `<` in a paragraph. An autolink first, which is not raw
+# HTML: a scheme of 2 to 32 characters and a colon, or an email address, between a `<` and a `>` that do not show.
+# A tag: a name, then attributes with valid names and CommonMark's ASCII spaces, so `i<n is checked (not run ->`
+# stays text. A declaration: an upper-case name and a space. GFM's tag filter prints as text the `<` that opens
+# `<script>` and its like.
+AUTOLINK = re.compile(r"<[A-Za-z][A-Za-z0-9.+-]{1,31}:[^\x00-\x20<>]*>|<[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+"
+                      r"@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*>")
+HTML_TAG = re.compile(r"</[A-Za-z][A-Za-z0-9-]*[ \t\n\v\f\r]*>|<[A-Za-z][A-Za-z0-9-]*"
+                      r"(?:[ \t\n\v\f\r]+[A-Za-z_:][A-Za-z0-9_.:-]*"
+                      r"(?:[ \t\n\v\f\r]*=[ \t\n\v\f\r]*(?:[^ \t\n\v\f\r\"'=<>`]+|'[^']*'|\"[^\"]*\"))?)*[ \t\n\v\f\r]*/?>")
+DECLARATION = re.compile(r"<![A-Z]+[ \t\n\v\f\r]")
+FILTERED_TAG = re.compile(r"</?(?i:title|textarea|style|xmp|iframe|noembed|noframes|script|plaintext)(?=[ \t\n\v\f\r>]|/>)")
+FOREIGN_TAG = re.compile(r"<(?i:svg|math)[ \t\n\f/>]")   # opens svg or math, where CDATA is text
+ASCII_LETTER = re.compile(r"[A-Za-z]")
+
+
+def pi_closes(text: str) -> list[int]:
+    """For each position, where cmark-gfm's scan of a processing instruction's text from there ends, past its
+    `?>`, or -1: a `?` takes the character after it unless that is `>`, so `<?a??>` never closes."""
+    out = [-1] * (len(text) + 2)
+    for p in range(len(text) - 1, -1, -1):
+        if text[p] != "?":
+            out[p] = out[p + 1]
+        elif p + 1 < len(text):
+            out[p] = p + 2 if text[p + 1] == ">" else out[p + 2]
+    return out
+
+
+def cdata_closes(text: str) -> list[int]:
+    """For each position, where cmark-gfm's scan of CDATA's text from there ends, past its `]]>`, or -1: a `]`
+    takes the character after it unless that is `]`, and `]]` the one after them unless that is `>`."""
+    n = len(text)
+    out = [-1] * (n + 3)
+    for p in range(n - 1, -1, -1):
+        if text[p] != "]":
+            out[p] = out[p + 1]
+        elif p + 1 < n and text[p + 1] != "]":
+            out[p] = out[p + 2]
+        elif p + 2 < n:
+            out[p] = p + 3 if text[p + 2] == ">" else out[p + 3]
+    return out
+
+
+@functools.lru_cache(maxsize=None)
+def raw_html(text: str) -> tuple[tuple[int, int, str], ...]:
+    """What cmark-gfm reads at each `<` of `text`, as (start, end, kind) spans in order: an autolink, or the raw
+    HTML it passes through: an open or closing tag, `<!-->` and `<!--->`, a declaration (`<!X ...>`), and a
+    processing instruction (`<?..?>`) or CDATA once its scan closes, and no processing instruction after one whose
+    scan does not; a tag the tag filter prints starts after its `<`, as raw HTML read past it. A code span is read
+    as it comes, left to right, so whichever starts first wins: a backtick inside a tag's attribute opens nothing,
+    and a `<` inside a code span is text; its text is a "code" span. Each scan's ends are found in one pass from
+    the end, and each backtick run is weighed once, so no start rescans the text (red-team, this PR)."""
+    spans: list[tuple[int, int, str]] = []
+    pi = cdata = None
+    no_pi, i, last_gt = False, 0, text.rfind(">")
+    runs = [(m.start(), m.end()) for m in CODE_RUN.finditer(text)]
+    same: dict[int, list[int]] = {}
+    for n, (a, b) in enumerate(runs):
+        same.setdefault(b - a, []).append(n)
+    r = 0
+    while True:
+        while r < len(runs) and runs[r][0] < i:
+            r += 1
+        j = text.find("<", i)
+        if r < len(runs) and (j == -1 or runs[r][0] < j):
+            a, b = runs[r]
+            a += escaped(text, a)   # a backslash escapes an opening backtick, never a closing one
+            if a == b:
+                i = b
+                continue
+            follow = same.get(b - a, [])
+            if (k := bisect.bisect_right(follow, r)) < len(follow):   # closed by the next run of its length
+                spans.append((b, runs[follow[k]][0], "code"))
+                i = runs[follow[k]][1]
+            else:
+                i = b
+            continue
+        if j == -1:
+            break
+        i, end, kind = j + 1, -1, "raw"
+        if escaped(text, j):
+            continue
+        if (m := AUTOLINK.match(text, j)):
+            end, kind = m.end(), "autolink"
+        elif text.startswith(("<!-->", "<!--->"), j):
+            end = j + 5 + text.startswith("<!--->", j)
+        elif text.startswith("<![CDATA[", j):
+            cdata = cdata or cdata_closes(text)
+            end = cdata[j + 9]
+        elif DECLARATION.match(text, j):
+            end = text.find(">", j) + 1 if j < last_gt else -1
+        elif text.startswith("<?", j) and not no_pi:
+            pi = pi or pi_closes(text)
+            end = pi[j + 2]
+            no_pi = end == -1
+        elif (m := HTML_TAG.match(text, j)):
+            end, kind = m.end(), "raw" if FILTERED_TAG.match(text, j) else "tag"
+            j += kind == "raw"
+        if end != -1:
+            spans.append((j, end, kind))
+            i = end
+    return tuple(spans)
+
+
+def html_tag_end(text: str, j: int, e: int) -> int | None:
+    """Where an HTML parser ends the tag at `j`, in raw HTML that ends at `e`: past its first `>` outside a quoted
+    attribute value, or None where a quote left open runs on past `e`."""
+    i = j + 1 + (text[j + 1] == "/")
+    while i < e and text[i] not in " \t\n\f/>":
+        i += 1
+    while i < e:
+        if text[i] == ">":
+            return i + 1
+        if text[i] in " \t\n\f/":
+            i += 1
+            continue
+        i += 1   # an attribute's name, which may start with `=`
+        while i < e and text[i] not in " \t\n\f/>=":
+            i += 1
+        k = i
+        while k < e and text[k] in " \t\n\f":
+            k += 1
+        if k < e and text[k] == "=":
+            k += 1
+            while k < e and text[k] in " \t\n\f":
+                k += 1
+            if k < e and text[k] in "\"'":
+                if (k := text.find(text[k], k + 1, e) + 1) == 0:
+                    return None
+            else:
+                while k < e and text[k] not in " \t\n\f>":
+                    k += 1
+        i = k
+    return None
+
+
+@functools.lru_cache(maxsize=None)
+def read_html(text: str) -> tuple[tuple[int, ...], tuple[int, ...], bool]:
+    """What of `text` shows nothing, as the starts and ends of its spans in order, and whether the gate cannot read
+    it: cmark-gfm's spans as an HTML parser then reads them. An autolink hides its `<` and `>`. A processing
+    instruction, a declaration, CDATA outside svg and math, `</` without a name or `<!-->` is a comment there,
+    ended by its first `>`, so `<?x>y?>` shows `y?>`, and a tag ends at its `>` outside quotes. Unreadable: a quote
+    left open in raw HTML, which cmark-gfm's own markup after it can end, or CDATA after `<svg` or `<math`, which
+    shows its text (red-team, this PR)."""
+    if "<" not in text:
+        return (), (), False   # raw HTML and autolinks all open with a `<`: no scan needed
+    starts: list[int] = []
+    ends: list[int] = []
+    foreign = False
+    for s, e, kind in raw_html(text):
+        if kind == "code":
+            continue
+        if kind == "autolink":
+            starts += (s, e - 1)
+            ends += (s + 1, e)
+            continue
+        if kind == "tag":   # an HTML parser ends it where cmark-gfm's grammar does
+            foreign = foreign or FOREIGN_TAG.match(text, s) is not None
+            starts.append(s)
+            ends.append(e)
+            continue
+        j = s
+        while (j := text.find("<", j, e)) != -1:
+            if text.startswith(("<!-->", "<!--->"), j):
+                end = j + 5 + text.startswith("<!--->", j)
+            elif text[j + 1] in "!?" or (text[j + 1] == "/" and not ASCII_LETTER.match(text, j + 2)):
+                if foreign and text.startswith("<![CDATA[", j):
+                    return tuple(starts), tuple(ends), True
+                end = text.find(">", j + 2, e) + 1   # a span ends with its `>`
+            elif ASCII_LETTER.match(text, j + 1 + (text[j + 1] == "/")):
+                if (end := html_tag_end(text, j, e)) is None:
+                    return tuple(starts) + (j,), tuple(ends) + (len(text),), True
+                foreign = foreign or FOREIGN_TAG.match(text, j) is not None
+            else:
+                j += 1
+                continue
+            starts.append(j)
+            ends.append(end)
+            j = end
+    return tuple(starts), tuple(ends), False
+
+
+def hidden(text: str) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Where `text` shows nothing, as the starts and ends of its spans in order."""
+    return read_html(text)[:2]
+
+
+def straddles(text: str, pos: int) -> bool:
+    """Whether something in `text` that shows nothing starts before `pos` and ends after it."""
+    starts, ends = hidden(text)
+    return (k := bisect.bisect_left(starts, pos) - 1) >= 0 and ends[k] > pos
+
+
+def unreadable(text: str) -> bool:
+    """Whether `text` holds raw HTML the gate cannot read as GitHub shows it."""
+    return read_html(text)[2]
+
+
+def quiet(text: str) -> str:
+    """`text` without what shows nothing."""
+    out, i = [], 0
+    for a, b in zip(*hidden(text)):
+        out.append(text[i:a])
+        i = b
+    return "".join(out) + text[i:]
+
+
+EMPTY_LINK = re.compile(r"\[\]\([^)]*\)")   # main's link pattern with no text: it renders as nothing
+WORD_CHAR = re.compile(r"\w")
+# Where goes_on() lands from each position it has walked, by (text, word): each position of a line is walked once
+# however many items are weighed against it, where every item walked the whole run again (red-team, this PR).
+LANDINGS: dict[tuple[str, bool], dict[int, int]] = {}
+
+
+def goes_on(text: str, pos: int, word: bool) -> bool:
+    """Whether `text` goes on at `pos`, what shows nothing read as nothing (`fol<ins></ins>low`, `fol<?x?>low`,
+    `follow[]()*-up`, `fol<low-up:>`, `fol![](i.png)low`): with a word character, across `*`, `~`, a backtick, `\\` and `[` too
+    (`word`, read on the line as written, where raw HTML and code spans are known), or else with a
+    marker. Each span is skipped once, where a pattern repeating the tag pattern backtracked exponentially over
+    `<img src=a/>` (red-team, this PR)."""
+    if (land := LANDINGS.get((text, word))) is None:
+        land = LANDINGS[text, word] = {}
+    if pos not in land:
+        starts, ends = hidden(text)
+        walked = []
+        while pos not in land:
+            walked.append(pos)
+            if (k := bisect.bisect_right(starts, pos) - 1) >= 0 and ends[k] > pos:
+                pos = ends[k]
+            elif (m := EMPTY_LINK.match(text, pos) or IMAGE.match(text, pos)):   # an image shows no text
+                pos = m.end()
+            elif word and text.startswith(("*", "~", "`", "\\", "["), pos):
+                pos += 1
+            else:
+                land[pos] = pos
+        for p in walked:
+            land[p] = land[pos]
+    pos = land[pos]
+    return WORD_CHAR.match(text, pos) is not None if word else text[pos:pos + 1] in ("*", "_", "`")
+
+
+NON_WORD = re.compile(r"[\W_]+")
+LETTER = re.compile(r"[^\W_]")   # one letter or digit, as letters() keeps them
+
+
+def letters(text: str) -> str:
+    """Only the letters and digits of what shows: what a reader's copy of a line keeps, whatever its markup,
+    including raw HTML the body does not strip (`<ins>`, `<?x?>`) (red-team, this PR)."""
+    return NON_WORD.sub("", quiet(text))
+
+
+def next_indents(lines: list[str]) -> list[int | None]:
+    """The indent of the first non-blank line after each line, None after the last one: found in one
+    pass from the end, where looking ahead from every blank line of a run was quadratic (red-team)."""
+    out: list[int | None] = [None] * len(lines)
+    for n in range(len(lines) - 1, 0, -1):
+        out[n - 1] = indent(lines[n]) if lines[n].strip() else out[n]
+    return out
 
 
 def done_items(t: Traced) -> list[str]:
@@ -2298,17 +2839,291 @@ def done_items(t: Traced) -> list[str]:
     return [norm(str(i)) for i in items] if isinstance(items, list) else []
 
 
-def matched_boxes(items: list[str], boxes: list[tuple[bool, str]]) -> dict[str, tuple[bool, str] | None]:
+@functools.lru_cache(maxsize=None)
+def folded_item(item: str) -> str:
+    """The item read through the body's character folding (entities, invisible and look-alike
+    characters, dashes), never its Markdown: `docs/**` keeps its stars (solyra#228 r4207718694,
+    stocks#1343 r4207817356). Its tags stay: an item holding a tag the body strips (`<b>`, `<span>`)
+    is never carried, as on main, rather than folding to a stub that another tag, or none, would
+    match (red-team, this PR)."""
+    return norm(DASH_LOOKALIKES.sub("-", fold_text(no_huge_refs(item))))
+
+
+def written_lines(body: str) -> tuple[list[str], dict[int, list[str]]]:
+    """The body's lines as GitHub reads their raw HTML (visible(inert=True)), and, by the line before them, the
+    indented lines main reads as code."""
+    lines: list[str] = []
+    under: dict[int, list[str]] = {}
+    for line in split_lines(visible(body, inert=True)):
+        if line.startswith(CODE_LINE):
+            under.setdefault(len(lines) - 1, []).append(line[len(CODE_LINE):])
+        else:
+            lines.append(line)
+    return lines, under
+
+
+def lines_split(body: str) -> bool:
+    """Whether `body` read as GitHub reads its raw HTML (visible(inert=True)) has other lines than as main
+    reads it: an entity read as a comment or fence opener, or an inline tag across lines. Then a box's line
+    as written cannot be found, and the body is refused rather than read as GitHub does not (red-team, this PR)."""
+    return len(split_lines(visible(body))) != len(written_lines(body)[0])
+
+
+def decoded_again(text: str) -> str:
+    """Text already through visible() with its entities decoded once more, and the inline tags and
+    dashes that reveals, as the body read through visible() twice decodes it: `n&amp;#111;t run`
+    reads `not run` (red-team, this PR)."""
+    return DASH_LOOKALIKES.sub("-", INLINE_TAG.sub("", fold_text(no_huge_refs(text))))
+
+
+def no_huge_refs(text: str) -> str:
+    """A decimal reference past Python's int digit limit, kept literal: html.unescape would raise on
+    it. Main reads such a body as a crash; here an item holding one is missing, as on main (red-team)."""
+    if limit := getattr(sys, "get_int_max_str_digits", lambda: 0)():
+        return re.sub(r"&#(?=\d{%d})" % (limit + 1), "&amp;#", text)
+    return text
+
+
+@functools.lru_cache(maxsize=None)
+def shown_item(item: str) -> str:
+    """The item as a reader sees it rendered."""
+    return norm(rendered_line(folded_item(item)))
+
+
+@functools.lru_cache(maxsize=None)
+def copy_key(item: str) -> str:
+    """For an item whose markup changes how it reads, the letters and digits a reader's copy of
+    it starts with; empty for a plain item, which main's prefix match already covers."""
+    return letters(as_read(folded_item(item))) if shown_item(item) != folded_item(item) else ""
+
+
+@functools.lru_cache(maxsize=None)   # the two readings and the close-out weigh the same lines against the same items
+def claim(box: tuple[bool, str, str, str, str], item: str) -> tuple[int, int, int]:
+    """How a box reads as the item, ranked by what a reader sees: (length of the item as it renders,
+    kind, length as written), so a hidden link destination never makes an item the longer one
+    (red-team, this PR). Kind 2: the box carries the item, as it renders (main's match) or as written
+    while a reader also sees the item's rendered text, not nothing, first; so a verbatim `docs/**`
+    counts (solyra#82), while a link straddling the item's end does not, nor does a box going on with
+    the item's last word or with a marker right after it (`ship *follow*-up` for `ship *fol` or
+    `ship *follow`). Kind 1: a reader's copy of an item whose markup changes how it reads, a line whose
+    rendered text starts with the item's or whose letters and digits do, so no rendering detail hides
+    it (`docs/` for `docs/**`, `SELECT *` for `` `SELECT *` ``); it never satisfies the item, and still
+    makes the line one of its lines (red-team, this PR). (0, 0, 0): neither."""
+    want, shown, written = folded_item(item), shown_item(item), as_written(box, item)
+    if written and (spaced := spaced_breaks(box[2])) != box[2] and spaced.startswith(written):   # a line break after the
+        box = (box[0], box[1], spaced, box[3], box[4])                                             # item ends its last word
+    if written and (straddles(box[2], len(written))   # an image the item's own `!` opens spans its end too (red-team)
+                    or written.endswith("!") and box[2].startswith("[", len(written)) and not escaped(box[2], len(written) - 1)):
+        want = written = ""   # raw HTML from inside the item to past it: its own words never show (red-team, this PR)
+    if want and (box[1].startswith(want) or (shown and written and box[1].startswith(shown)
+                                             and not (WORD_CHAR.match(shown[-1]) and goes_on(box[2], len(written), word=True))
+                                             and not goes_on(box[2], len(written), word=False)
+                                             and not goes_on_as_read(box[2], written))):
+        return (len(shown), 2, len(want))
+    if (key := copy_key(item)) and (box[3].startswith(key) or box[1].startswith(shown)):
+        return (len(shown), 1, len(want))
+    return (0, 0, 0)
+
+
+def past_item(box: tuple[bool, str, str, str, str], item: str) -> str:
+    """What a box carrying the item says after it, as it renders: past the item, or past its rendered
+    text, or, for a reader's copy known only by its letters, past as many letters and digits as the
+    item's own, however the copy renders them (red-team, this PR)."""
+    want, shown = folded_item(item), shown_item(item)
+    if box[1].startswith(want):
+        return box[1][len(want):]
+    if box[1].startswith(shown):
+        return box[1][len(shown):]
+    return past_letters(box[4], len(copy_key(item)))
+
+
+def goes_on_as_read(written: str, want: str) -> bool:
+    """Whether a reader, reading `written` as as_read() does, sees the last word of `want` go on: as many
+    letters and digits as the item shows, then another, past a link or anything else that shows nothing
+    (`back[<ins></ins>](x)log`)."""
+    key = word_key(want)
+    if not key:
+        return False
+    line, shown, at = read_index(written)
+    return bool(key) and shown.startswith(key) and at[len(key) - 1] + 1 < len(line) \
+        and WORD_CHAR.match(line[at[len(key) - 1] + 1]) is not None
+
+
+@functools.lru_cache(maxsize=None)
+def word_key(want: str) -> str:
+    """The letters and digits of the item as read, when it ends in one; "" when its last word cannot go on."""
+    seen = as_read(want)
+    return letters(seen) if seen and seen[-1].isalnum() else ""
+
+
+@functools.lru_cache(maxsize=None)   # every item is weighed against the same long line (red-team, this PR)
+def read_index(written: str) -> tuple[str, str, tuple[int, ...]]:
+    """`written` as read (as_read(), what shows nothing cut), its letters and digits, and where each is."""
+    line = quiet(as_read(written))
+    at = tuple(m.start() for m in LETTER.finditer(line))
+    return line, "".join(line[i] for i in at), at
+
+
+# an image (its text one level of brackets deep) or a link with no text, as cmark-gfm reads one
+# a destination: no space, one level of parentheses, a backslash escaping what follows, never opening with `<`
+DESTINATION = r"\(\s*(?!<)(?:[^()\s\\]|\\.|\((?:[^()\s\\]|\\.)*\))*\s*\)"
+LINK_TEXT = re.compile(r"(?<!\\)\[([^\[\]]*)\]" + DESTINATION)
+SHOWS_NOTHING = re.compile(r"(?<!\\)(?:!\[(?:[^\[\]\\]|\\.|\[[^\[\]]*\])*\]|\[\])" + DESTINATION)
+
+
+@functools.lru_cache(maxsize=None)   # each reading of the body weighs the same box
+def written_views(written: str) -> tuple[str, ...]:
+    """How a reader may read `written`, for a deferral: as as_read() does; with emphasis markers gone, so
+    `pend~~ing~~` joins; and with what shows nothing gone (images and empty links, nested too), then every
+    other mark a space, so an escaped `\\[lo](x)not run` or `not[](x) run` splits, or emphasis markers and
+    backslashes gone, so `non\\-blocking` joins (red-team, this PR)."""
+    written = spaced_breaks(written)
+    def nothing(s: str) -> str:   # `![](i[](x).png)`, `[![](i.png)](x)`: a few levels, so nesting costs no pass per level
+        if s.count("![") + s.count("[]") > 64:
+            return s   # each start scans on to the end: past a few dozen, read as text (red-team, this PR)
+        for _ in range(4):
+            if (less := SHOWS_NOTHING.sub("", s)) == s:
+                break
+            s = less
+        return s
+    # a code span's text is held aside once, as GitHub shows it as written, and each view is built in one pass
+    held: list[str] = []
+    def hold(text: str) -> str:
+        # cmark-gfm drops one space from each end of a code span's text that has both (`` pen` ding, ` low``)
+        held.append(text[1:-1] if len(text) > 2 and text[0] == " " == text[-1] and text.strip() else text)
+        return f"\ue0fa{len(held) - 1}\ue0fa"
+    spans = [(a, b) for a, b, kind in raw_html(written) if kind == "code"] if "`" in written else []
+    masked, i = [], 0
+    for a, b in spans:
+        masked += [written[i:a], hold(written[a:b])]
+        i = b
+    def back(s: str) -> str:
+        return re.sub("\ue0fa(\\d+)\ue0fa", lambda m: held[int(m.group(1))], s) if held else s
+    read, bare = as_read(written), nothing("".join(masked) + written[i:])
+    # a link reads as its text, never its destination: apart from its neighbours to split, joined to them to join;
+    # in a code span it is text (`` d`one[lo](x)` ``)
+    apart = back(quiet(LINK_TEXT.sub(r" \1 ", bare)))
+    joined = quiet(LINK_TEXT.sub(r"\1", bare))
+    # only a plain tail is read here (plain_tail(), in defers()): no marker in it can open or close emphasis, escape
+    # punctuation or strike through, so the words read as they show, split at every mark, or joined across a code
+    # span's backticks (`` d`one` ``) are all its readings
+    views = (read, norm(re.sub(r"[^\w\s-]", " ", apart)), norm(back(joined.replace("`", ""))), norm(back(joined)))
+    # each stand-in as what it shows (`0&nbsp;skipped`), and a count stays a count: `**0** skipped`, `` `0` skipped ``
+    return tuple(dict.fromkeys(re.sub(r"(?<=\d)[*_~`]+(?=\s)", "", v.translate(SHOWN_AS)) for v in views))
+
+
+def marked_past(box: tuple[bool, str, str, str, str], item: str) -> str:
+    """What follows an item with markup as the box writes it, for its deferral; "" for a plain item, which is read
+    as main reads it, so no reading of the box as written refuses what main accepts (red-team, this PR)."""
+    return written_past(box, item) if shown_item(item) != folded_item(item) else ""
+
+
+def written_past(box: tuple[bool, str, str, str, str], item: str) -> str:
+    """What a box says after the item as written, when it starts with it, before anything is rendered."""
+    return box[2][len(written):] if (written := as_written(box, item)) else ""
+
+
+def as_written(box: tuple[bool, str, str, str, str], item: str) -> str:
+    """The item as the box writes it, when the box starts with it: read as the body is read as written, an
+    entity for punctuation kept as what it shows (`&lt;` in `exit code &lt; 2`, red-team, this PR), or, in
+    main's twice-read body, decoded; "" when the box starts with neither."""
+    return next((w for w in (written_item(item), folded_item(item)) if w and box[2].startswith(w)), "")
+
+
+@functools.lru_cache(maxsize=None)
+def written_item(item: str) -> str:
+    """The item folded as visible(inert=True) folds the body: entities for punctuation as stand-ins."""
+    return norm(DASH_LOOKALIKES.sub("-", fold_text(no_huge_refs(item), inert=True)))
+
+
+def past_letters(text: str, n: int) -> str:
+    """What follows the first `n` letters and digits of `text` that show, counted as letters() does."""
+    skip, i = dict(zip(*hidden(text))), 0
+    while n > 0 and i < len(text):
+        if i in skip:
+            i = skip[i]
+            continue
+        n -= text[i].isalnum()
+        i += 1
+    return text[i:]
+
+
+# Line lookups one check makes, over every reading of the body, before it refuses: a real body needs a few
+# dozen, while items that share a copy key against a full body need millions and timed the job out (red-team).
+PAIR_BUDGET = 100_000
+# GitHub's limit on a pull request body. Main matches each item raw within a body of at most this size,
+# so items whose raw text totals more can never all be matched there; they are refused here too,
+# before any is folded or rendered (red-team, this PR).
+BODY_LIMIT = 65_536
+
+
+class TooManyPairs(Exception):
+    """More than the gate weighs, refused rather than timed out: done_when items larger, or more of them,
+    than a PR body can hold, or more line lookups than PAIR_BUDGET."""
+
+
+class BoxIndex:
+    """The boxes sorted by rendered text and by its letters: those starting with a prefix are one
+    run, found by bisection, so no item is tried against every box (red-team, this PR). A box can
+    read as an item only where its rendered text starts with the item, folded or as it renders,
+    or its letters start with the item's copy key."""
+
+    spent = 0   # the line lookups of the check under way, whatever index made them: reset as each check starts
+
+    def __init__(self, boxes: list[tuple[bool, str, str, str, str]]) -> None:
+        self.by_text = self.keyed(boxes, 1)
+        self.by_letters = self.keyed(boxes, 3)
+
+    @staticmethod
+    def keyed(boxes: list[tuple[bool, str, str, str, str]], field: int) -> tuple[list[int], list[str]]:
+        order = sorted(range(len(boxes)), key=lambda n: boxes[n][field])
+        return order, [boxes[n][field] for n in order]
+
+    def starting(self, keyed: tuple[list[int], list[str]], prefix: str) -> list[int]:
+        order, keys = keyed
+        k, out = bisect.bisect_left(keys, prefix), []
+        while k < len(keys) and keys[k].startswith(prefix):
+            out.append(order[k])
+            k += 1
+            BoxIndex.spent += 1
+            if BoxIndex.spent > PAIR_BUDGET:
+                raise TooManyPairs(f"weighing the PR body's checkbox lines against the done_when items takes over "
+                                   f"{PAIR_BUDGET} line lookups; carry each item once, on its own line")
+        return out
+
+    def candidates(self, item: str) -> list[int]:
+        """Positions in the body of the boxes that can read as the item, in body order."""
+        found = {n for p in {folded_item(item), shown_item(item)} if p for n in self.starting(self.by_text, p)}
+        if key := copy_key(item):
+            found.update(self.starting(self.by_letters, key))
+        return sorted(found)
+
+
+def matched_boxes(items: list[str], boxes: list[tuple[bool, str, str, str, str]], least: int = 2) -> dict[str, tuple[bool, str, str, str, str] | None]:
     """Each done_when item's own checkbox line, or None. A line serves one item, and the
-    longest item claims first, so `run the tests` cannot also tick `run the tests on 3.12`."""
-    free = list(boxes)
-    out: dict[str, tuple[bool, str] | None] = {i: None for i in items}
-    for item in sorted(items, key=len, reverse=True):
-        hit = next((b for b in free if b[1].startswith(item)), None)
+    longest item claims first, so `run the tests` cannot also tick `run the tests on 3.12`.
+    With `least` 1, the first line a reader takes as the item, a reader's copy included."""
+    return dict(matching(tuple(items), tuple(boxes), least))
+
+
+@functools.lru_cache(maxsize=None)   # the close-out matches the body the metadata check read once (red-team, this PR)
+def matching(items: tuple[str, ...], boxes: tuple[tuple[bool, str, str, str, str], ...], least: int) -> tuple[tuple[str, tuple[bool, str, str, str, str] | None], ...]:
+    """matched_boxes(), as (item, line) pairs in the items' order."""
+    if (size := sum(map(len, items))) > BODY_LIMIT:
+        raise TooManyPairs(f"the done_when items hold {size} characters, more than a PR body can hold ({BODY_LIMIT}); "
+                           "shorten them so each fits on its own line")
+    if len(items) > BODY_LIMIT // 8:   # `- [ ] x` and its line break, the fewest characters a box takes (red-team, this PR)
+        raise TooManyPairs(f"the spec lists {len(items)} done_when items, more checkbox lines than a PR body can hold "
+                           f"({BODY_LIMIT // 8}); merge them so each fits on its own line")
+    index, taken = BoxIndex(boxes), set()
+    out: dict[str, tuple[bool, str, str, str, str] | None] = {i: None for i in items}
+    # longest as a reader sees it first, then as written (red-team, this PR)
+    for item in sorted(items, key=lambda i: (len(shown_item(i)), len(folded_item(i))), reverse=True):
+        hit = next((n for n in index.candidates(item) if n not in taken and claim(boxes[n], item)[1] >= least), None)
         if hit is not None:
-            free.remove(hit)
-        out[item] = hit
-    return out
+            taken.add(hit)
+            out[item] = boxes[hit]
+    return tuple(out.items())
 
 
 def canvas_modes(text: str | None) -> dict[str, str]:
@@ -2366,24 +3181,188 @@ def check_pr_metadata(t: Traced, env: dict, tree: Tree) -> list[str]:
             errs.append(f"PR body must link the spec the plan names: {t.spec_path}")
         if not links_path(shown, t.plan_path):
             errs.append(f"PR body must link the plan: {t.plan_path}")
-        boxes = checklist(shown)
-        matched = matched_boxes(done_items(t), boxes)
-        missing = [i for i, box in matched.items() if box is None]
-        items = done_items(t)
-        own = lambda i: [b for b in boxes if b[1].startswith(i) and not any(len(j) > len(i) and b[1].startswith(j) for j in items)]
-        if twice := [i for i in items if len(own(i)) > 1]:
-            # red-team round three: a ticked copy above an honest unticked line claimed the item
-            errs.append("PR body carries more than one checkbox line for: " + "; ".join(twice) + "; one line per item")
-        if missing:
-            errs.append("PR body must carry each done_when item as its own '- [ ]' line starting with its text; "
-                        "missing: " + "; ".join(missing))
-        # Scanned past the item's own words: a done_when that says "no pending jobs" is the
-        # spec's wording, not a deferral; what the author wrote after it is.
-        deferred = [box[1] for item, box in matched.items() if box and box[0] and DEFERRAL.search(box[1][len(item):])]
-        if deferred:
-            errs.append("a ticked done_when item defers its work, so it is not done: " + "; ".join(deferred))
+        if checklist(body) and lines_split(body):   # the body as GitHub reads it; the twice-read one is main's
+            errs.append("PR body holds markup the gate splits into lines otherwise than GitHub: an entity for a comment "
+                        "or fence (`&lt;!--`, `&#96;&#96;&#96;`) or an inline tag across lines; write it plainly")
+        BoxIndex.spent = 0
+        try:
+            # main's check reads the body through visible() twice, and missing items, second lines and
+            # deferrals are decided on that reading here too, each item matched as written or as rendered
+            errs += check_done_boxes(t, checklist(shown, False), github=checklist(body) == checklist(shown, False))
+            # the close-out ticks the boxes of the body read once: a ticked one that defers its work is refused
+            # too, so the box the close-out ticks is checked for a deferral as well (red-team, this PR)
+            if (once := checklist(body)) != checklist(shown, False):
+                errs += [e for e in check_done_boxes(t, once, once=True, known=frozenset(checklist(shown, False)),
+                                                     shown_texts=frozenset(box[1] for box in checklist(uncommented(body), False)))
+                         if e not in errs]
+        except TooManyPairs as e:
+            errs.append(str(e))
         errs += check_canvas_handoff(t, body, tree)
     return errs
+
+
+TICK_IN_DESTINATION = re.compile(r"\]\((?:[^()\s\\`]|\\.)*`")   # `](` and a destination holding a backtick
+
+
+COMMENT = re.compile(r"<!--(?!>|->).*?-->|<!--(?!>|->).*\Z", re.S)   # main's comment, an unclosed one to the end
+
+
+def uncommented(body: str) -> str:
+    """`body` without the comments written in it, wherever a code span might hold their `<!--`: what the body read
+    once shows only where main's code span reading uncovers a comment GitHub hides is not in it."""
+    return COMMENT.sub("", body)
+
+
+def check_done_boxes(t: Traced, boxes: list[tuple[bool, str, str, str, str]], once: bool = False,
+                     known: frozenset[tuple[bool, str, str, str, str]] = frozenset(), github: bool = True,
+                     shown_texts: frozenset[str] = frozenset()) -> list[str]:
+    """Each done_when item on its own line, one line per item, and no ticked line deferring its work, on
+    the body read through visible() twice, as main's check reads it. `once` is the body read once, whose
+    boxes the close-out ticks: there only a second line for an item and a ticked line deferring its work are
+    refused, what follows the item read as it renders and decoded once more, as the twice-read body reads it
+    (red-team, this PR).
+    In either reading a line holding raw HTML the gate cannot read is refused."""
+    errs: list[str] = []
+    # raw HTML whose text GitHub may show where the gate cannot tell, read as written, where a code span shows it
+    # as text (red-team, this PR)
+    if unread := [box[1] for box in boxes if unreadable(box[2])]:
+        errs.append("a checkbox line holds raw HTML the gate cannot read as GitHub shows it (a quote left open, "
+                    "or CDATA inside svg or math): " + "; ".join(unread) + "; remove it")
+    # a backtick in a link's or image's destination, which GitHub reads as part of it, where the gate pairs it with
+    # a code span past it (`![](a`b.png) `x``, red-team, this PR)
+    if ticked_url := [box[1] for box in boxes if TICK_IN_DESTINATION.search(box[2])]:
+        errs.append("a checkbox line has a backtick inside a link or image destination, which the gate cannot read "
+                    "as GitHub does: " + "; ".join(ticked_url) + "; remove it")
+    matched = matched_boxes(done_items(t), boxes)
+    items = done_items(t)
+    # a line is one of the item's lines where no other item reads it more fully, in either reading, so a copy
+    # GitHub shows as text is one in the body read once (red-team, this PR); read once, only items a box that
+    # reads otherwise than in the twice-read body may claim are weighed again, and only boxes that body holds count
+    texts = {box[1] for box in known}
+    # every item is weighed, so a longer one still claims its own line first; only the items a fresh box may claim
+    # are reported (red-team, this PR)
+    weighed = items
+    if once:
+        fresh = BoxIndex([box for box in boxes if box not in known])
+        weighed = [i for i in items if fresh.candidates(i)]
+    claims: list[dict[str, tuple[int, int, int]]] = [{} for _ in boxes]
+    index = BoxIndex(boxes)
+    for i in (items if weighed else ()):
+        for n in index.candidates(i):
+            claims[n][i] = claim(boxes[n], i)
+    best = [max(c.values()) if c else (0, 0, 0) for c in claims]
+    # read once, a box counts unless the twice-read body hides it and a comment written in the body holds it: that
+    # one only main's code span reading uncovers, and GitHub hides it too, while a comment only reading twice
+    # builds, from an entity or tags (`&amp;lt;!--`, `<!<b></b>--`), GitHub shows as text (red-team, this PR)
+    owned = collections.Counter(i for box, c, top in zip(boxes, claims, best) if top[1] and (
+                                    not once or box[1] in texts or box[1] in shown_texts)
+                                for i, v in c.items() if v == top)
+    if once or github:
+        # read as GitHub reads it, the line shows the item's own letters: a tag GitHub hides is no `&lt;...&gt;` the
+        # spec spells out (`Shipped <the migration verified>` for `Shipped &lt;the migration verified&gt;`, red-team)
+        # (read as a reader reads both: a link shows its text, `the [registry](docs/r.md) test passes`, red-team)
+        # (or as a placeholder the item writes as text and the box shows: `` `<name>` `` for `<name>`, red-team)
+        if hid := [i for i, box in matched.items() if box and not box[3].startswith(letters(as_read(written_item(i))))
+                   and not box[3].startswith(letters(as_read(written_item(i).replace("<", chr(INERT + 60)))))]:
+            errs.append("a done_when line hides part of its item as GitHub shows it (raw HTML for what the spec "
+                        "writes as text): " + "; ".join(hid) + "; write the item as the spec does")
+    if twice := [i for i in weighed if owned[i] > 1]:
+        # red-team round three: a ticked copy above an honest unticked line claimed the item
+        errs.append("PR body carries more than one checkbox line for: " + "; ".join(twice) + "; one line per item")
+    if once:
+        # the first line a reader takes as the item, a reader's copy too, as the close-out reads it (red-team, this PR)
+        first = matched_boxes(done_items(t), boxes, least=1)
+        deferred = list(dict.fromkeys(box[1] for m in (matched, first) for item, box in m.items()
+                                      if box and box[0] and defers(past_item(box, item), again=True, written=marked_past(box, item))))
+        return errs + (["a ticked done_when item defers its work, so it is not done: " + "; ".join(deferred)] if deferred else []) \
+            + html_under(m for mm in (matched, first) for m in mm.items())
+    missing = [i for i, box in matched.items() if box is None]
+    if missing:
+        errs.append("PR body must carry each done_when item as its own '- [ ]' line starting with its text; "
+                    "missing: " + "; ".join(missing))
+    # Scanned past the item's own words: a done_when that says "no pending jobs" is the
+    # spec's wording, not a deferral; what the author wrote after it is.
+    deferred = [box[1] for item, box in matched.items() if box and box[0] and defers(past_item(box, item), again=False, written=marked_past(box, item))]
+    if deferred:
+        errs.append("a ticked done_when item defers its work, so it is not done: " + "; ".join(deferred))
+    if github:   # what follows a done item is read on the body as GitHub reads it, never main's twice-read one
+        errs += [e for e in html_under(matched.items()) if e not in errs]
+    return errs
+
+
+def html_under(pairs) -> list[str]:
+    """A ticked box carrying an item with markup, as written only, followed by what the gate cannot read for a
+    deferral as GitHub shows it: an HTML block inside it, or markup other than code spans, links, images and
+    bare inline tags (red-team, this PR). Main never matched such an item; an item it matches is read as on main."""
+    tails = [(item, box[1], written_past(box, item)) for item, box in pairs if box and box[0]
+             and shown_item(item) != folded_item(item) and not box[1].startswith(folded_item(item))]
+    held = list(dict.fromkeys(text for _, text, tail in tails if HTML_LINE in tail))
+    # a tilde in the tail pairs with one in the item, striking through across its end (red-team, this PR)
+    marked = list(dict.fromkeys(text for item, text, tail in tails if HTML_LINE not in tail and (
+        not plain_tail(tail) or "~" in uncoded(tail) and "~" in uncoded(item))))
+    return (["a ticked done_when item holds an HTML block the gate cannot read: " + "; ".join(held)
+             + "; move it below the checklist or write it as Markdown"] if held else []) \
+        + (["a ticked done_when item is followed by markup the gate cannot read for a deferral: " + "; ".join(marked)
+            + "; write what follows it as words, code spans and links"] if marked else [])
+
+
+# a link or an image whose text is plain, and an inline tag with no attributes: what a done item's tail may hold
+PLAIN_LINK = re.compile(r"!?\[[^\[\]<>`*_~\\]*\]\((?:[^()\s<>`\\]|\([^()\s<>`\\]*\))*\)")
+LINE_BREAK = re.compile(r"</?br\s*/?>", re.I)   # shows no text, but a line break between words
+
+
+@functools.lru_cache(maxsize=None)   # every item weighs the same long box (red-team, this PR)
+def spaced_breaks(text: str) -> str:
+    """`text` with each line break tag cmark-gfm reads as a tag of its own a break between words (BLOCK_BREAK,
+    whose `<` completes no tag around it); one inside other raw HTML (`<!X <br>`) is part of what shows nothing."""
+    if not LINE_BREAK.search(text):
+        return text
+    out, i = [], 0
+    for a, b, kind in raw_html(text):
+        if kind == "tag" and LINE_BREAK.fullmatch(text, a, b):
+            out += [text[i:a], BLOCK_BREAK]   # its `<` completes no tag the break interrupts (`<sses<br>not run>`)
+            i = b
+    return "".join(out) + text[i:]
+PLAIN_TAG = re.compile(r"</?(?:b|i|em|strong|s|del|ins|u|span|sub|sup|small|code|br|kbd|mark|abbr)\s*/?>", re.I)
+
+
+@functools.lru_cache(maxsize=None)
+def uncoded(text: str) -> str:
+    """`text` with its code spans, delimiters included, left out."""
+    out, i = [], 0
+    for a, b, kind in (raw_html(text) if "`" in text else ()):   # code spans, where there can be one
+        if kind == "code":
+            run = m.end() - b if (m := CODE_RUN.match(text, b)) else 0   # the closing run, as long as the opening one
+            out.append(text[i:max(i, a - run)])
+            i = b + run
+    return "".join(out) + text[i:]
+
+
+@functools.lru_cache(maxsize=None)
+def plain_tail(tail: str) -> bool:
+    """Whether what follows a done item holds, outside its code spans, plain links and images, autolinks and bare
+    inline tags, nothing GitHub may read as markup the gate does not: no other raw HTML (a `<` before a letter,
+    `/`, `!` or `?`), no star or underscore that can open or close emphasis, no escape (a backslash before
+    punctuation), bracket, backtick or pair of tildes; `a < b`, `3 * 4` and `C:\\tmp` are words (red-team, this PR)."""
+    bare = uncoded(tail)
+    if re.search(r"\\[!-/:-@\[-`{-~]", bare):   # an escape, before links are taken out: `\[a](b)` is no link
+        return False
+    rest = PLAIN_TAG.sub(" ", AUTOLINK.sub(" ", PLAIN_LINK.sub(" ", bare.replace(BLOCK_BREAK, " "))))
+    return not (re.search(r"[\[\]`]|<[A-Za-z/!?]", rest)   # a bracket, a backtick, a tag
+                or re.search(r"\S\*|\*\S", rest)   # a star that can open or close emphasis: `3 * 4` cannot
+                or re.search(r"(?<![^\W_])_(?=\S)|(?<=\S)_(?![^\W_])", rest) or rest.count("~") > 1)
+
+
+@functools.lru_cache(maxsize=None)   # each check of each reading weighs the same tails (red-team, this PR)
+def defers(tail: str, again: bool, written: str = "") -> bool:
+    """Whether what follows an item defers its work, as written or without what shows nothing, so raw HTML
+    inside a word does not split it (`fol<ins></ins>low-up`), and as a reader reads it as written (as_read()),
+    its raw HTML read before rendering can change it and an image shows no text (`fol<a x=*>low-up`,
+    `fol![](i.png)low-up`, red-team, this PR), in each of written_views(); with `again`, also once its entities are decoded once more and
+    it is rendered, as main's check read it."""
+    return bool(DEFERRAL.search(tail) or DEFERRAL.search(norm(quiet(tail)))
+                # a tail that is not plain words is refused as one (html_under()), so its views need not be read
+                or written and plain_tail(written) and DEFERRAL.search("\n".join(written_views(written))) or again and (d := decoded_again(tail)) != tail and DEFERRAL.search(norm(rendered_line(d))))
 
 
 def section(body: str, title: str) -> str | None:
@@ -2880,8 +3859,16 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
     n = env["PR_NUMBER"]
     pr_ref = re.compile(rf"#{re.escape(n)}(?![\w])")
     errs: list[str] = []
-    matched = matched_boxes(done_items(t), checklist(env.get("PR_BODY") or ""))
-    unticked = [i for i, box in matched.items() if not (box and box[0])]
+    BoxIndex.spent = 0
+    try:
+        matched = matched_boxes(done_items(t), boxes := checklist(env.get("PR_BODY") or ""))
+        # the first line a reader takes as the item is ticked too, a reader's copy included, as main's close-out
+        # took the first line reading as the item (red-team, this PR)
+        first = matched_boxes(done_items(t), boxes, least=1)
+    except TooManyPairs as e:
+        errs.append(str(e))
+        matched, first = {}, {}
+    unticked = [i for i, box in matched.items() if not (box and box[0] and (first.get(i) or box)[0])]
     if unticked:
         errs.append("ready for review with done_when item(s) not ticked: " + "; ".join(unticked))
     now = feat_fields(ch.tree.read(CATALOG), t.feat_id)
@@ -3057,7 +4044,7 @@ def run(argv: list[str]) -> int:
             ready = env.get("PR_DRAFT") == "false"
             errs += check_plan_pr(traced, env, ready)
             if env.get("PR_NUMBER") and ready:
-                errs += check_close_out(traced, ch, merge_base, head, env)
+                errs += [e for e in check_close_out(traced, ch, merge_base, head, env) if e not in errs]   # a refused size once (red-team, this PR)
     else:
         print(__doc__)
         return 2
