@@ -36,7 +36,8 @@ flowchart TB
  M -->|yes| P{"_path_requires_auth(path)?"}
  P -->|"non-/api/ path, exact /api/me, or one of the 3 open prefixes (health, config/firebase, waitlist) — /api/me/* SUB-paths are gated"| PASS
  P -->|gated| V["_verify_bearer_email"]
- V -->|throws| E401[401 invalid or expired sign-in]
+ V -->|"UnverifiedEmailError (email_verified not true)"| E403v[403 verify your email to continue]
+ V -->|any other exception| E401[401 invalid or expired sign-in]
  V -->|none| E401b[401 sign in to continue]
  V -->|email| AL{"_is_allowed(email)"}
  AL -->|no| E403[403 account not allowed]
@@ -92,14 +93,11 @@ Found by Codex review on PR #931. The table below is the pre-fix state, kept for
 | Handler allows when no IAP header present | `main.py:366-372` — `email = _iap_user_email(request)`; the 403 fires only `if email is not None and email != _DEV_ALLOWED_EMAIL`. With no IAP in staging, `email is None` → falls through. Re-verified 2026-09-04: unchanged |
 | Page contents | service account, IAP OAuth audience, `K_REVISION`, service URL, strat-engine model state |
 
-Net: on a `STAGING_SERVICE=1` deployment, `/dev` is reachable **without sign-in**.
-Neither gate applies — the middleware skips non-`/api/` paths and the handler's own check
-is a no-op without an IAP header. `_DEV_ALLOWED_EMAIL` defaults to a hardcoded address
-(`main.py:245`). Formerly covered by `platform/tests/dev.spec.ts`, which was deleted in the
-#957 frontend split with no replacement, and which in any case did not exercise the staging
-(`PUBLIC=1`, no-IAP) configuration — [#943](https://github.com/TeneikaAskew/stocks/issues/943)'s
-acceptance tests must be written fresh in this repo (starting point recoverable via
-`git show 9f28a60^:platform/tests/dev.spec.ts`).
+Net, before the fix: on a `STAGING_SERVICE=1` deployment, `/dev` was reachable **without
+sign-in**. Neither gate applied: the middleware skips non-`/api/` paths and the handler's own
+check was a no-op without an IAP header. The only earlier test, `platform/tests/dev.spec.ts`,
+was deleted in the #957 frontend split and never exercised the staging (`PUBLIC=1`, no-IAP)
+configuration; #1360 replaced it with `tests/api/test_dev_page_auth.py`, which does.
 
 **Status:** fixed by [#1360](https://github.com/TeneikaAskew/stocks/pull/1360), closing [#943](https://github.com/TeneikaAskew/stocks/issues/943). `dev_info` asks `auth.dev_page_status` before reading any field:
 

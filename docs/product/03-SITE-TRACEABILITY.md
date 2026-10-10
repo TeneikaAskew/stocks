@@ -1,6 +1,6 @@
 # Site Traceability Matrix
 
-**Last reviewed:** 2026-10-10 · **Depth:** verified · **Against:** `ee9d4344` · **Owner:** TBD
+**Last reviewed:** 2026-10-08 · **Depth:** verified · **Against:** `913c70f4` · **Owner:** TBD
 
 ## How to read this
 
