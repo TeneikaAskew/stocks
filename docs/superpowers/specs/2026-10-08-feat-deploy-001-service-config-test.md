@@ -10,7 +10,7 @@ done_when:
   - "A staging deploy without FIREBASE_API_KEY is asserted to exit non-zero naming FIREBASE_API_KEY before any gcloud builds submit or gcloud run deploy"
   - "SETUP_IAM=1 is asserted to grant roles/firebaseauth.admin on the project to trading-platform-svc@ and to exit 0 without a gcloud builds submit or gcloud run deploy"
   - "The FEAT-DEPLOY-001 record in 02-FEATURE-CATALOG shows a current Status and Last reviewed and names the new test, and 12-PR-ISSUE-TRACEABILITY lists this PR under FEAT-DEPLOY-001"
-status: approved
+status: superseded
 supersedes: null
 ---
 
