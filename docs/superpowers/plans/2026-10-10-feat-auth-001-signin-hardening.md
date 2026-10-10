@@ -2,7 +2,7 @@
 feat_id: FEAT-AUTH-001
 spec: docs/superpowers/specs/2026-10-10-feat-auth-001-signin-hardening.md
 branch: feature/feat-auth-001-signin-hardening
-pr: null
+pr: 1360
 status: ready
 ---
 
