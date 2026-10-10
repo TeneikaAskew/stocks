@@ -1,6 +1,6 @@
 ---
 feat_id: FEAT-DEPLOY-001
-req_ids: [REQ-DEPLOY-001, REQ-AUTH-001]
+req_ids: [REQ-DEPLOY-001, REQ-SECRET-001, REQ-AUTH-001]
 issues: []
 canvases: []
 done_when:
@@ -136,18 +136,35 @@ Tests:
   triggers and has no `deploy-solyra-api-prod`.
 - `tests/api/test_platform_auth.py`: the CORS test gains the new origin and its variants.
 
-Live, after this PR merges, so the refusal is on `main` before anything is deleted. Every command
-names `--project=adept-mountain-474619-d4`, and the trigger commands `--region=global`:
+Live, after this PR merges, so the refusal is on `main` before anything is deleted. The commands
+are written out in full, each naming the project, and the trigger commands the region:
 
-1. Export the service, `gcloud run services describe solyra-api-prod --region=us-east1
-   --format=export`, and the trigger, `gcloud builds triggers describe deploy-solyra-api-prod
-   --format=yaml`, to `gs://adept-mountain-474619-d4-trading-data/retired/2026-10-10/`. The
-   export carries the environment, secret references, service account, scaling and IAP
-   annotation; no secret value is in it.
-2. `gcloud builds triggers delete deploy-solyra-api-prod`, then
-   `gcloud run services delete solyra-api-prod --region=us-east1`.
-3. Show both `describe` calls answering NOT_FOUND, and the export's object listing, in a comment
-   on this PR. The docs pass cites that comment.
+```bash
+P=adept-mountain-474619-d4; DEST=gs://${P}-trading-data/retired/2026-10-10
+# 1. Persist the recovery artifacts, and confirm they exist before deleting anything.
+gcloud run services describe solyra-api-prod --project=$P --region=us-east1 --format=export > solyra-api-prod.service.yaml
+gcloud builds triggers describe deploy-solyra-api-prod --project=$P --region=global --format=yaml > deploy-solyra-api-prod.trigger.yaml
+gcloud storage cp solyra-api-prod.service.yaml deploy-solyra-api-prod.trigger.yaml "$DEST/" --project=$P
+gcloud storage ls -l "$DEST/" --project=$P          # both objects, non-zero size
+# 2. Delete the trigger, then drain any promotion it already started: deleting a
+#    trigger does not cancel its builds, and one still running would recreate the
+#    service after step 3.
+gcloud builds triggers delete deploy-solyra-api-prod --project=$P --region=global --quiet
+gcloud builds list --project=$P --region=global --ongoing --filter='tags=solyra-api-prod-promote' --format='value(id)'
+#    each id printed: gcloud builds cancel <id> --project=$P --region=global; then re-list until empty
+# 3. Delete the service.
+gcloud run services delete solyra-api-prod --project=$P --region=us-east1 --quiet
+# 4. Evidence: both describes answer NOT_FOUND.
+gcloud run services describe solyra-api-prod --project=$P --region=us-east1
+gcloud builds triggers describe deploy-solyra-api-prod --project=$P --region=global
+```
+
+The output of steps 1, 2 and 4 goes in a comment on this PR, and the docs pass cites it. This is
+not a done_when item, because done_when is ticked before the merge and these steps run after it;
+it is instead what closes the plan: the plan's `status` moves to `done` only once that comment
+exists, and the gate refuses `done` while the PR is open, so the order cannot be skipped. The
+export carries the environment, secret references, service account, scaling and IAP annotation;
+no secret value is in it.
 
 Recovery, should a caller turn up: set the export's `image` to the digest `solyra-api-staging`
 serves at that time and run `gcloud run services replace` on it. The retired digest itself is not
