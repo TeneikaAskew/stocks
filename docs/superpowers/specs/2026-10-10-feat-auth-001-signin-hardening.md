@@ -4,8 +4,8 @@ req_ids: [REQ-AUTH-001, REQ-AUTH-002, REQ-AUTH-003, REQ-AUTHZ-001]
 issues: [943]
 canvases: []
 done_when:
-  - "tests/api/test_platform_auth.py asserts that in firebase mode a gated /api/* request whose token has email_verified false or absent gets 403 with detail 'verify your email to continue', and that the same token resolves to no identity in current_user_email, so /api/me reports email null and is_admin false for it"
-  - "tests/api/test_platform_auth.py runs the real _verify_bearer_email against a stub firebase_admin and asserts it returns the email when email_verified is true and raises UnverifiedEmailError when it is false or absent"
+  - "tests/api/test_platform_auth.py asserts that in firebase mode a gated API request whose token has email_verified false or absent gets 403 with detail 'verify your email to continue', and that the same token resolves to no identity in current_user_email, so /api/me reports email null and is_admin false for it"
+  - "tests/api/test_platform_auth.py runs the real bearer-token verifier in platform/api/auth.py against a stub firebase_admin and asserts it returns the email when email_verified is true and raises UnverifiedEmailError when it is false or absent"
   - "tests/api/test_dev_page_auth.py asserts /dev answers 404 in firebase mode with and without an IAP header, 403 in iap mode with no IAP header or a header naming another email, 200 in iap mode for DEV_ALLOWED_EMAIL, and 200 in open mode"
   - "Every new test is shown failing against the platform/api code on origin/main at the time the PR opens, and the Backtest Pipeline Run Tests job is green on the PR head"
   - "The FEAT-AUTH-001 record in 02-FEATURE-CATALOG shows a current Status and Last reviewed and names both test files, 12-PR-ISSUE-TRACEABILITY lists the PR under FEAT-AUTH-001, and the PR body closes #943"
