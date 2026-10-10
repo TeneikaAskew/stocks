@@ -8,7 +8,8 @@ service account, the Firebase web config of the public staging service, the
 
 The routine Cloud Build deploys change the image and merge one environment key, and
 leave the rest of the service as this script last set it, so this script is where
-those settings live. These tests run it, in a scratch tree, against a stub `gcloud`
+those settings live. Since 2026-10-10 it deploys one service, solyra-api-staging;
+solyra-api-prod was retired and every mode that targeted it is refused. These tests run it, in a scratch tree, against a stub `gcloud`
 that records every call, and assert what it asked Cloud Run for in each mode. A text
 match over the script would prove the text; running it proves the mode logic too.
 """
@@ -90,20 +91,33 @@ def _ran(calls, *prefix):
     return any(c[:len(prefix)] == list(prefix) for c in calls)
 
 
-def test_prod_deploy_configures_solyra_api_prod(tmp_path):
+def _assert_refused_as_retired(proc, calls):
+    """solyra-api-prod was retired on 2026-10-10: every mode that targeted it stops
+    before touching gcloud, and says which mode to use instead."""
+    assert proc.returncode != 0, proc.stdout
+    out = proc.stdout + proc.stderr
+    assert "STAGING_SERVICE=1" in out, out
+    assert "solyra-api-prod" in out, out
+    assert calls == [], calls
+
+
+def test_a_run_with_no_mode_is_refused_now_prod_is_retired(tmp_path):
+    # This used to deploy solyra-api-prod behind IAP; one forgotten variable
+    # would have recreated the retired service.
     proc, calls = _run(tmp_path)
-    assert proc.returncode == 0, proc.stderr
-    d = _deploy(calls)
-    assert d["service"] == "solyra-api-prod"
-    assert d["service_account"] == RUNTIME_SA
-    assert d["env"]["AUTH_MODE"] == "iap"
-    assert d["env"]["MOVEMENT_STATEMENT_ENABLED"] == "true"
-    assert d["secrets"]["AV_API_KEY"] == "av-api-key:latest"
-    assert d["secrets"]["ALPHA_VANTAGE_API_KEY"] == "av-api-key:latest"
-    # REQ-SECRET-001: the key travels as a secret reference, never as a plain value.
-    assert "AV_API_KEY" not in d["env"] and "ALPHA_VANTAGE_API_KEY" not in d["env"]
-    assert "--no-allow-unauthenticated" in d["args"]
-    assert "--allow-unauthenticated" not in d["args"]
+    _assert_refused_as_retired(proc, calls)
+
+
+def test_the_legacy_staging_tag_mode_is_refused(tmp_path):
+    # STAGING=1 put a no-traffic tagged revision on solyra-api-prod.
+    proc, calls = _run(tmp_path, STAGING="1")
+    _assert_refused_as_retired(proc, calls)
+
+
+def test_the_legacy_staging_tag_mode_is_refused_alongside_staging_service(tmp_path):
+    proc, calls = _run(tmp_path, STAGING="1", STAGING_SERVICE="1", FIREBASE_API_KEY="test-api-key",
+                       FIREBASE_AUTH_DOMAIN="test.firebaseapp.com", FIREBASE_APP_ID="1:2:web:3")
+    _assert_refused_as_retired(proc, calls)
 
 
 def test_staging_service_deploy_configures_solyra_api_staging(tmp_path):

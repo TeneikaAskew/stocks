@@ -6,17 +6,17 @@ stdin and writes one revision name on stdout.
 
 Why not `status.latestReadyRevisionName`: the two differ whenever the service
 has been rolled back, is split across revisions, or was deployed
-`--no-traffic` (a mode `platform/deploy.sh` still supports). In each of those
+`--no-traffic` (a mode `platform/deploy.sh` once had). In each of those
 the latest ready revision is precisely the one nobody validated (Codex,
 PR #990).
 
 Fails loud rather than guessing: nothing serving, or traffic split across
 several revisions, both exit non-zero instead of picking one.
 
-Lives here rather than inline in a build step because two callers need the
-same answer -- the prod promote trigger, which promotes what staging serves,
-and `platform/deploy.sh`, which refuses to deploy over a service that moved
-under it. Two copies of this rule would drift, and the drift would be silent.
+Lives here rather than inline in a build step so the rule has one copy.
+`platform/deploy.sh` uses it to refuse to deploy over a service that moved
+under it; the prod promote trigger, its other caller, was retired with
+solyra-api-prod on 2026-10-10.
 """
 import json
 import sys

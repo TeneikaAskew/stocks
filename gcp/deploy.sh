@@ -458,8 +458,8 @@ retire_legacy_images() {
         done <<<"${live}"
     done
     if [ "${blocked}" -eq 1 ]; then
-        echo "ERROR: a live revision still runs a legacy image. Promote prod" \
-             "(deploy-solyra-api-prod trigger) first, then re-run." >&2
+        echo "ERROR: a live revision still runs a legacy image. Redeploy that" \
+             "service onto a current solyra-api digest first, then re-run." >&2
         return 1
     fi
     local pkg versions rc=0
@@ -4820,7 +4820,7 @@ deploy_schedulers() {
     # Platform keep-warm — DROPPED (was: a plain unauthenticated GET to
     # ${PLATFORM_URL}/api/earnings/health/ping every 5 min on business hours).
     #
-    # The solyra-api-prod service is deployed by platform/deploy.sh behind
+    # The solyra-api-prod service (retired 2026-10-10) was deployed by platform/deploy.sh behind
     # Identity-Aware Proxy (IAP) — NOT by this file, and NOT with plain Cloud
     # Run IAM. A bare unauthenticated GET gets 401/403 at IAP and never reaches
     # the FastAPI worker, so it warmed nothing while still firing on a cron.
@@ -5136,7 +5136,6 @@ backfill_watchlist() {
 # service account are untouched. Import is idempotent.
 _CLOUDBUILD_TRIGGERS=(
     "deploy-solyra-api-staging:gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml"
-    "deploy-solyra-api-prod:gcp/cloudbuild/deploy-solyra-api-prod-cloudbuild.yaml"
     "apply-schema-on-change:gcp/cloudbuild/apply-schema-cloudbuild.yaml"
 )
 sync_cloudbuild_triggers() {

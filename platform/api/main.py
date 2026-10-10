@@ -127,6 +127,10 @@ def _cors_origin_regex(auth_mode: str) -> str:
         pattern += (
             r"|https://([a-z0-9-]+\.)+lovable\.app"
             r"|https://([a-z0-9-]+\.)+lovableproject\.com"
+            # The Lovable site's custom domain (connected 2026-10-10). One
+            # exact host: the apex serves a different site, and a wildcard
+            # would admit every future subdomain.
+            r"|https://stocks\.insightscollective\.org"
         )
     return pattern
 

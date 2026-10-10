@@ -485,6 +485,28 @@ def test_cors_regex_excludes_lovable_in_iap_mode():
     assert iap.fullmatch(codespace) and fb.fullmatch(codespace)
 
 
+def test_cors_regex_admits_the_custom_domain_exactly():
+    """The Lovable site is also served at https://stocks.insightscollective.org
+    (connected 2026-10-10). One exact origin, under the same auth-mode gate as
+    the Lovable branches: the apex serves a different site, and a wildcard
+    would admit every future subdomain."""
+    import re
+
+    from api.main import _cors_origin_regex
+
+    iap = re.compile(_cors_origin_regex("iap"))
+    fb = re.compile(_cors_origin_regex("firebase"))
+
+    custom = "https://stocks.insightscollective.org"
+    assert fb.fullmatch(custom)
+    assert iap.fullmatch(custom) is None
+    for lookalike in ("http://stocks.insightscollective.org",
+                      "https://stocks.insightscollective.org.evil.com",
+                      "https://evil-stocks.insightscollective.org",
+                      "https://insightscollective.org"):
+        assert fb.fullmatch(lookalike) is None, lookalike
+
+
 # ---------------------------------------------------------------------------
 # /api/me role flags (platform/api/main.py get_current_user)
 #

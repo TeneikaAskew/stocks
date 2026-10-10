@@ -2,21 +2,25 @@
 # Build and deploy the trading platform to Cloud Run.
 # Run from repo root:  ./platform/deploy.sh
 #
-# Modes:
-#   ./platform/deploy.sh                  prod deploy (solyra-api-prod, behind IAP)
-#   STAGING=1 ./platform/deploy.sh        prod service, new revision tagged `staging`,
-#                                         no traffic — shares prod's IAP (see note below)
-#   STAGING_SERVICE=1 ./platform/deploy.sh  SEPARATE public staging service
-#                                         (solyra-api-staging) NO IAP, gated by
+# One mode since 2026-10-10:
+#   STAGING_SERVICE=1 ./platform/deploy.sh  the public API service
+#                                         (solyra-api-staging), NO IAP, gated by
 #                                         in-app Firebase login (AUTH_MODE=firebase).
-#                                         Prod untouched. Needs FIREBASE_API_KEY,
-#                                         FIREBASE_AUTH_DOMAIN, FIREBASE_APP_ID (+ optional
-#                                         AUTH_ALLOWED_EMAILS) in env.
+#                                         Needs FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN,
+#                                         FIREBASE_APP_ID (+ optional AUTH_ALLOWED_EMAILS)
+#                                         in env.
+#   SETUP_IAM=1 ./platform/deploy.sh      one-time IAM grants; deploys nothing.
+#
+# solyra-api-prod (IAP) was retired on 2026-10-10: the website only ever called
+# solyra-api-staging, and both services shared one database. A run without
+# STAGING_SERVICE=1, and the legacy STAGING=1 revision-tag mode on prod, are
+# refused before any gcloud call so the retired service cannot come back by
+# accident (docs/superpowers/specs/2026-10-10-feat-deploy-001-retire-prod-service.md).
 set -euo pipefail
 
 PROJECT_ID="${PROJECT_ID:-adept-mountain-474619-d4}"
 REGION="${REGION:-us-east1}"
-SERVICE="${SERVICE:-solyra-api-prod}"
+SERVICE="solyra-api-staging"
 INSTANCE="${INSTANCE:-${PROJECT_ID}:${REGION}:trading-db}"
 # The image is the same app for every service — build once, reuse for staging.
 IMAGE_NAME="${IMAGE_NAME:-solyra-api}"
@@ -63,20 +67,30 @@ if [[ "${SETUP_IAM:-0}" == "1" ]]; then
   exit 0
 fi
 
+# ── The one API service ────────────────────────────────────────────────────
+# Refused before the DB_USER check and before any gcloud call: a run that
+# would have deployed the retired solyra-api-prod stops here and says what to
+# run instead.
+if [[ "${STAGING:-0}" == "1" || "${STAGING_SERVICE:-0}" != "1" ]]; then
+  echo ">> ERROR: solyra-api-prod was retired on 2026-10-10; solyra-api-staging is" >&2
+  echo "   the only API service. STAGING=1 (a tagged revision on prod) is gone too." >&2
+  echo "   Deploy with:  STAGING_SERVICE=1 ./platform/deploy.sh" >&2
+  exit 1
+fi
+
 # DB credentials — set DB_USER / DB_NAME in env, store DB_PASS in Secret Manager.
 DB_USER="${DB_USER:?set DB_USER (e.g. export DB_USER=postgres)}"
 DB_NAME="${DB_NAME:?set DB_NAME (e.g. export DB_NAME=trading)}"
 DB_PASS_SECRET="${DB_PASS_SECRET:-trading-db-pass}"
 
-# ── Separate public staging service ────────────────────────────────────────
+# ── The public API service ─────────────────────────────────────────────────
 # solyra-api-staging runs WITHOUT IAP (--allow-unauthenticated) because
 # IAP on Cloud Run is service-level and can't be dropped per-revision. Instead,
 # AUTH_MODE=firebase re-protects the API: api/auth.py verifies a Firebase ID
 # token on every gated /api/* request, so the service is NOT wide-open even
 # though anyone can load the login page. Access defaults to OPEN self-signup —
 # any user who signs in (Google or email/password) is allowed; flip to an
-# allow-list with AUTH_OPEN_SIGNUP=0 + AUTH_ALLOWED_EMAILS. Prod
-# (solyra-api-prod) is untouched and stays behind IAP.
+# allow-list with AUTH_OPEN_SIGNUP=0 + AUTH_ALLOWED_EMAILS.
 #
 # One-time prerequisites (operator with run.admin — NOT the CI SA):
 #   1. Create a Firebase web app (console -> Project settings -> Web app) and
@@ -86,48 +100,15 @@ DB_PASS_SECRET="${DB_PASS_SECRET:-trading-db-pass}"
 #   2. --allow-unauthenticated needs run.services.setIamPolicy; deploying as a
 #      run.admin principal grants allUsers invoker automatically. (If org policy
 #      DRS blocks allUsers, the public service can't be created — escalate.)
-# Auth mode (read by api/auth.py): prod = iap (IAP gates at the edge; identity
-# comes from the IAP header). The public staging service flips to firebase below.
-AUTH_MODE_VAL="${AUTH_MODE:-iap}"
+# Auth mode (read by api/auth.py): in-app Firebase login verifies an ID token
+# on every gated /api/* request.
+PUBLIC=1                   # public ingress so the login page can load
+AUTH_MODE_VAL="firebase"   # in-app Firebase login gates the API (verify ID token)
+echo ">> deploying PUBLIC ${SERVICE} (no IAP; Firebase login gates the API)"
 
-if [[ "${STAGING_SERVICE:-0}" == "1" ]]; then
-  SERVICE="solyra-api-staging"
-  PUBLIC=1                   # public ingress so the login page can load
-  AUTH_MODE_VAL="firebase"   # in-app Firebase login gates the API (verify ID token)
-  echo ">> STAGING_SERVICE mode: deploying PUBLIC ${SERVICE} (no IAP; Firebase login gates the API)"
-fi
-
-# Auth: PUBLIC=1 ./deploy.sh skips the IAM gate (then put IAP or app-level auth in front).
-# In STAGING (revision-tag) mode the service-level IAM policy is left untouched — a staging
-# revision shares the service's existing auth posture, and re-asserting it
-# would need run.services.setIamPolicy, which the CI deploy SA does not hold.
-AUTH_FLAGS=()
-if [[ "${STAGING:-0}" != "1" ]]; then
-  if [[ "${PUBLIC:-0}" == "1" ]]; then
-    AUTH_FLAGS=(--allow-unauthenticated)
-  else
-    AUTH_FLAGS=(--no-allow-unauthenticated)
-  fi
-fi
-
-# Staging (revision-tag): STAGING=1 ./deploy.sh deploys a new revision tagged
-# `staging` on the PROD service that receives NO production traffic. The prod
-# URL keeps serving the current 100%-traffic revision. Promote later with:
-#   gcloud run services update-traffic "${SERVICE}" --region "${REGION}" --to-tags=staging=100
-#
-# LEGACY as of 2026-09-05, kept for one-off operator use only. The routine
-# staging path is now the separate solyra-api-staging SERVICE (STAGING_SERVICE=1
-# above, and the deploy-solyra-api-staging Cloud Build trigger on merge to main),
-# not a tag on prod. This mode is what made the old setup so easy to misread:
-# a `staging` tag says nothing about traffic, and when --no-traffic was dropped
-# from the Cloud Build trigger on 2026-08-25 the "staging" tag silently ended up
-# carrying 100% of production. If you use this mode, the tag is doing nothing to
-# protect prod on its own — the --no-traffic below is.
-STAGING_FLAGS=()
-if [[ "${STAGING:-0}" == "1" ]]; then
-  STAGING_FLAGS=(--no-traffic --tag staging)
-  echo ">> STAGING mode: new revision tagged 'staging', no production traffic"
-fi
+# Public ingress: the login page has to load before anyone has a token, and
+# AUTH_MODE=firebase re-protects every gated /api/* call.
+AUTH_FLAGS=(--allow-unauthenticated)
 
 # ── Env vars + secrets (composed so staging can append its own) ────────────
 # MOVEMENT_STATEMENT_ENABLED=true again as of #1024 (2026-09-07). It was
@@ -150,11 +131,11 @@ fi
 # no flag change here.
 #
 # PROPAGATION. This script is the break-glass deploy path; the routine one is
-# gcp/cloudbuild/deploy-solyra-api-{staging,prod}-cloudbuild.yaml, which
-# deploys the image and otherwise leaves the service's env alone. Both
-# routine files now pass --update-env-vars=MOVEMENT_STATEMENT_ENABLED=true
-# (merge mode: that one key only, nothing else touched), so the flag rides
-# every rollout and the two paths agree (Codex P1 on #1030). Live on
+# gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml, which
+# deploys the image and otherwise leaves the service's env alone. It passes
+# --update-env-vars=MOVEMENT_STATEMENT_ENABLED=true (merge mode: that one key
+# only, nothing else touched), so the flag rides every rollout and the two
+# paths agree (Codex P1 on #1030). Live on
 # 2026-09-07 per platform/GCP_DATA_DICTIONARY.md the browser-facing
 # solyra-api-staging still carried false; the first routine deploy after
 # this merges flips it. To flip it sooner without a deploy:
@@ -205,9 +186,10 @@ gcloud config set project "${PROJECT_ID}" >/dev/null
 # ${IMAGE} -- i.e. :latest -- which the deploy-solyra-api-staging Cloud Build
 # trigger writes too. Two overlapping runs could then push over each other
 # between one run's push and its deploy, so `gcloud run deploy --image
-# ...:latest` resolved to an image that run never built. The prod promote
-# trigger promotes whatever digest is serving staging, so a mutable tag put an
-# unvalidated image one click from production.
+# ...:latest` resolved to an image that run never built. (The prod promote
+# trigger, retired with solyra-api-prod on 2026-10-10, promoted whatever digest
+# was serving staging, so a mutable tag put an unvalidated image one click from
+# production.)
 IMAGE_TAG="${IMAGE_TAG:-$(git rev-parse --short HEAD 2>/dev/null || date -u +%Y%m%dT%H%M%SZ)}"
 
 # A FAST-FAIL courtesy check, not the interlock.
@@ -219,9 +201,8 @@ IMAGE_TAG="${IMAGE_TAG:-$(git rev-parse --short HEAD 2>/dev/null || date -u +%Y%
 # starting in the window between here and `gcloud builds submit` would see
 # nothing and proceed (Codex, PR #990).
 #
-# STAGING_SERVICE, not STAGING: the former deploys solyra-api-staging (what
-# the trigger also deploys); the latter is the legacy revision-tag mode on
-# prod. Non-fatal here -- the in-build check is what decides.
+# solyra-api-staging is what the trigger also deploys. Non-fatal here -- the
+# in-build check is what decides.
 if [[ "${STAGING_SERVICE:-0}" == "1" ]]; then
   bash "$(dirname "${BASH_SOURCE[0]}")/../gcp/cloudbuild/assert_no_concurrent_staging_deploy.sh" \
     || { echo ">> a concurrent deploy was detected before submitting; aborting early"; exit 1; }
@@ -375,8 +356,7 @@ gcloud run deploy "${SERVICE}" \
   --timeout 300 \
   --min-instances 0 \
   --max-instances 5 \
-  ${AUTH_FLAGS[@]+"${AUTH_FLAGS[@]}"} \
-  ${STAGING_FLAGS[@]+"${STAGING_FLAGS[@]}"}
+  ${AUTH_FLAGS[@]+"${AUTH_FLAGS[@]}"}
 
 # Pin the digest this deploy just made current. The `pin-images` call above runs
 # BEFORE the build, so it tags the revision this run replaces -- the new digest
@@ -384,17 +364,8 @@ gcloud run deploy "${SERVICE}" \
 # `inuse-svc-*` tag at all. Against the 30-day delete rule this PR adds to the
 # gcr.io cleanup policy, an unpinned digest is deletable while it is still the
 # serving revision, so the manual and break-glass paths pin again here. The
-# automatic staging and prod triggers do the same as their own last step
-# (Codex, PR #990).
+# automatic staging trigger does the same as its own last step (Codex, PR #990).
 ./gcp/deploy.sh pin-images --no-sweep
 
 echo ">> done"
-if [[ "${STAGING:-0}" == "1" ]]; then
-  echo ">> staging revision URL (no production traffic):"
-  # The staging-tagged revision is reachable at the service URL with a
-  # `staging---` host prefix — Cloud Run's stable tag-URL convention.
-  base_url="$(gcloud run services describe "${SERVICE}" --region "${REGION}" --format='value(status.url)')"
-  echo "https://staging---${base_url#https://}"
-else
-  gcloud run services describe "${SERVICE}" --region "${REGION}" --format='value(status.url)'
-fi
+gcloud run services describe "${SERVICE}" --region "${REGION}" --format='value(status.url)'

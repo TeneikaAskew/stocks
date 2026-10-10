@@ -16,7 +16,7 @@ These are derived from the actual backup config — `gcloud sql instances descri
 | **Cloud SQL `trading-db`** | 30-60 min | **~5 min** | PITR enabled (7d transaction log retention). Without PITR, RPO would be 24h (one daily backup). |
 | **GCS `adept-mountain-474619-d4-trading-data`** | ∞ for missing data | ∞ | **No versioning, no backup.** Loss is permanent unless the file can be re-fetched from an external API (AlphaVantage daily/intraday only, no historical re-issue). |
 | **Cloud Run Jobs (76 live) + Schedulers (65)** | 60-90 min | n/a (stateless) | `gcp/deploy.sh all` recreates the **67 declared** jobs and `deploy.sh schedulers` the 65 entries. It does **not** recreate the 11 live-only jobs that were made by hand with `gcloud run jobs create` and have no `deploy_*` function (ARCHITECTURE.md §15 lists them); `p2-build-gamma-levels` matters most, because `gamma-levels-daily` schedules it. Recreate those from the §15 table or accept their loss. |
-| **Cloud Run Services (4: solyra-api-prod, solyra-api-staging, discord-interactions, failure-notifier)** | 30 min | n/a | TWO scripts: `gcp/deploy.sh` redeploys `discord-interactions` and `failure-notifier`, `platform/deploy.sh` the two API services (step 10 below). `solyra-api-staging` is NOT optional in a rebuild: it is the API the frontend actually calls, and `api.stocks.insightscollective.org` maps to it (`STAGING_API` in solyra's `src/lib/apiTargets.ts`), so omitting it leaves the user-facing app dead. |
+| **Cloud Run Services (3: solyra-api-staging, discord-interactions, failure-notifier)** | 30 min | n/a | TWO scripts: `gcp/deploy.sh` redeploys `discord-interactions` and `failure-notifier`, `platform/deploy.sh` the API service (step 10 below; `solyra-api-prod` was retired on 2026-10-10). `solyra-api-staging` is NOT optional in a rebuild: it is the API the frontend actually calls, and `api.stocks.insightscollective.org` maps to it (`STAGING_API` in solyra's `src/lib/apiTargets.ts`), so omitting it leaves the user-facing app dead. |
 | **Secret Manager (22 secrets)** | 1-4 hours **per secret you can't recover** | 100% loss for unrecoverable secrets | No automated backup. API keys must be re-issued from each provider (AV, FRED, Anthropic, Discord, GitHub PAT, etc.). DB password is internal — can re-rotate via Cloud SQL. |
 | **Whole-project rebuild** | 4-8 hours | Whatever Cloud SQL backup you can restore (≤ 7 days old) | Rebuild sequence in §4 below. |
 
@@ -460,10 +460,9 @@ echo -n "<value>" | gcloud secrets create <name> --data-file=- --replication-pol
                            # Then point Discord's Interactions Endpoint URL at the new
                            # service URL and run scripts/discord/register_commands.py
 
-# The two API services. Staging first: it is the one the frontend calls, and
-# prod is a promotion of a digest staging has served.
+# The API service, the one the frontend calls. solyra-api-prod (IAP) was
+# retired on 2026-10-10 and platform/deploy.sh refuses every other mode.
 STAGING_SERVICE=1 ./platform/deploy.sh   # solyra-api-staging  (public edge, Firebase)
-./platform/deploy.sh                     # solyra-api-prod     (IAP)
 # Then re-create the custom domain mapping, which is Cloud Run state and in no
 # script:
 gcloud beta run domain-mappings create --service=solyra-api-staging \

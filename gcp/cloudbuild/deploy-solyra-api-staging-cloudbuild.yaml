@@ -21,9 +21,9 @@
 # Widening rather than enumerating: the Dockerfile copies whole directories, so
 # a per-module list would drift the moment a route imports something new.
 #
-# Builds the API image and deploys it to the STAGING service, solyra-api-staging.
-# Merging to main NEVER touches prod. Prod moves only when a human runs the
-# deploy-solyra-api-prod trigger (see the sibling file).
+# Builds the API image and deploys it to solyra-api-staging, the one API
+# service since solyra-api-prod and its deploy-solyra-api-prod promote trigger
+# were retired on 2026-10-10.
 #
 # This replaced a tag-based blue/green on the single trading-platform service,
 # where a deploy created a `staging`-tagged revision and a manual promote shifted
