@@ -2,7 +2,7 @@
 feat_id: FEAT-DEPLOY-001
 spec: docs/superpowers/specs/2026-10-10-feat-deploy-001-retire-prod-service.md
 branch: feature/feat-deploy-001-retire-prod
-pr: null
+pr: 1366
 status: ready
 ---
 
