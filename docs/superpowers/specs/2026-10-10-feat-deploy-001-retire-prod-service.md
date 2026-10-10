@@ -8,12 +8,13 @@ done_when:
   - "tests/gcp/test_staging_deploy_paths.py asserts that gcp/cloudbuild/deploy-solyra-api-prod-cloudbuild.yaml does not exist and that gcp/deploy.sh registers no deploy-solyra-api-prod Cloud Build trigger, and its remaining tests pass against the staging path alone"
   - "Each new or changed assertion is shown failing against the code on origin/main when the PR opens, and the Backtest Pipeline Run Tests job is green on the PR head"
   - "gcloud run services describe solyra-api-prod and gcloud builds triggers describe deploy-solyra-api-prod both answer NOT_FOUND, shown in a PR comment that also records the service's last configuration, read before the deletion"
+  - "tests/api/test_platform_auth.py asserts that the CORS origin pattern in firebase mode fully matches https://stocks.insightscollective.org and does not match http://stocks.insightscollective.org, https://stocks.insightscollective.org.evil.com or https://evil-stocks.insightscollective.org, and that the iap-mode pattern does not match it"
   - "The FEAT-DEPLOY-001 record in 02-FEATURE-CATALOG shows a current Status and Last reviewed and names the retired service, and 12-PR-ISSUE-TRACEABILITY lists this PR under FEAT-DEPLOY-001"
 status: approved
 supersedes: null
 ---
 
-# Retire the solyra-api-prod service
+# Retire the solyra-api-prod service and serve the site from stocks.insightscollective.org
 
 ## Problem
 
@@ -41,6 +42,13 @@ repository recreate it:
 3. `gcp/deploy.sh cloudbuild-triggers`, which imports that file into that trigger and fails when
    the trigger is missing.
 
+The same day the owner connected `stocks.insightscollective.org` to the Lovable project, so the
+one live site gets an address on the owner's domain (Lovable domain settings; the A record
+`185.158.133.1` and the `_lovable` TXT record resolve at Squarespace DNS). The site calls this
+API cross-origin from there, and `_cors_origin_regex` in `platform/api/main.py` admits only
+Lovable and Codespaces origins, so every call from the new address would be blocked by the
+browser.
+
 ## Non-goals
 
 - No rename. `solyra-api-staging` keeps its name, URL and domain mapping
@@ -55,6 +63,10 @@ repository recreate it:
   and it changes on its own branch.
 - Not stale comments in files this change does not otherwise touch (`platform/api/main.py`,
   `platform/api/routers/earnings.py`, `gcp/schema.sql`), per the stale-reference policy.
+- Not the sign-in domain (`auth.stocks.insightscollective.org` on Firebase Hosting, the Firebase
+  Auth authorized domains, the OAuth redirect URI, the service's `FIREBASE_AUTH_DOMAIN`). Those
+  are project settings, not repository content; they are recorded in the docs pass.
+- Not the solyra side of the new address (its static-host list); that is solyra's own change.
 - Not the IAP OAuth client, the `trading-platform-svc` service account or the images in the
   registry. The staging service uses the first two, and the images let the service be redeployed
   if it is ever wanted again.
@@ -101,6 +113,13 @@ Tests:
   or narrowed to the staging trigger, and one test asserts the file is absent and the trigger list
   in `gcp/deploy.sh` has no `deploy-solyra-api-prod` entry, so neither comes back unnoticed.
 
+`platform/api/main.py`, `_cors_origin_regex`: in non-`iap` modes the pattern gains the exact
+origin `https://stocks\.insightscollective\.org`, beside the Lovable branches and under the same
+auth-mode gate, so the docstring's reasoning (gated endpoints still need a verified Firebase
+token) covers it unchanged. One exact host, not `*.insightscollective.org`: the apex serves a
+different Lovable site, and a wildcard would admit every future subdomain. Starlette fullmatches
+the pattern, so suffix and scheme variants do not match; the test pins that.
+
 Live, after CI is green on the PR and before it merges:
 
 1. Record `gcloud run services describe solyra-api-prod --format=yaml` and the trigger's
@@ -125,5 +144,7 @@ load.
   caller's logs after the deletion; the recorded configuration is enough to redeploy the same
   digest with `platform/deploy.sh` at the commit before this one.
 - An operator runs the old default. The refusal names the change and the command to use.
+- The new origin admits more than intended. The test asserts the scheme, suffix and prefix
+  variants do not match, and that iap mode does not admit it.
 - `deploy-staging.yml` breaks. It runs `STAGING_SERVICE=1 ./platform/deploy.sh`, which the staging
   test keeps asserting end to end.
