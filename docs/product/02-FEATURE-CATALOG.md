@@ -52,14 +52,14 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Priority | P0 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-08-30 |
+| Last reviewed | 2026-10-10 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | SignInScreen / AuthGate |
 | Backend | middleware `auth.py`, `/api/me` |
 | Data | identity/config |
 | Models | Firebase / IAP |
 | Code | `platform/api/auth.py`, `platform/api/main.py:51`, `platform/src/components/auth` |
-| Tests | [solyra `tests/shared/auth-gate.spec.ts`](https://github.com/TeneikaAskew/solyra/blob/main/tests/shared/auth-gate.spec.ts), [solyra `tests/admin/admin-auth.spec.ts`](https://github.com/TeneikaAskew/solyra/blob/main/tests/admin/admin-auth.spec.ts) (moved in the #957 split) |
+| Tests | [solyra `tests/shared/auth-gate.spec.ts`](https://github.com/TeneikaAskew/solyra/blob/main/tests/shared/auth-gate.spec.ts), [solyra `tests/admin/admin-auth.spec.ts`](https://github.com/TeneikaAskew/solyra/blob/main/tests/admin/admin-auth.spec.ts) (moved in the #957 split); `tests/api/test_platform_auth.py` (refuses a Firebase token whose email is not verified: 403 on gated routes, no identity on `/api/me`) and `tests/api/test_dev_page_auth.py` (`/dev` absent in firebase mode, IAP header required in iap mode) (PR_PLACEHOLDER) |
 | Open issues | 14 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-auth-001--auth--security-14-open) |
 | Blocking issues | [#830](https://github.com/TeneikaAskew/stocks/issues/830) [#850](https://github.com/TeneikaAskew/stocks/issues/850) [#911](https://github.com/TeneikaAskew/stocks/issues/911) [#836](https://github.com/TeneikaAskew/stocks/issues/836) [#837](https://github.com/TeneikaAskew/stocks/issues/837) [#1319](https://github.com/TeneikaAskew/stocks/issues/1319) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |

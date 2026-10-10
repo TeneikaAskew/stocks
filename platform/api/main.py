@@ -305,9 +305,15 @@ def get_current_user(request: Request):
 
 
 # ── /dev — test-account info page (behind IAP in prod) ─────────────────────
-# Shows the Playwright tester service account, IAP audience, and ready-to-run
-# curl/gcloud snippets. Visible only to humans who already passed IAP, so the
-# page itself is fine to expose publicly within the deployed service.
+# Shows the Playwright tester service account, IAP audience, revision, Cloud
+# SQL connection name and strat-engine state. It sits outside /api/, so the
+# auth middleware never sees it; dev_info gates it itself, by AUTH_MODE
+# (REQ-AUTH-003, stocks#943):
+#   firebase (public staging): not served (404). Browser navigation carries no
+#            bearer token, so it could not be gated like /api/* anyway.
+#   iap (production): the IAP header must name DEV_ALLOWED_EMAIL; a missing
+#            header is refused, not assumed to be local (REQ-AUTH-002).
+#   open (local dev): served unless a header names another email.
 
 _DEV_ALLOWED_EMAIL = os.environ.get("DEV_ALLOWED_EMAIL", "teneika@bictech.org").lower()
 
@@ -434,8 +440,13 @@ def _strat_engine_state() -> list[dict]:
 def dev_info(request: Request):
     from fastapi.responses import HTMLResponse, PlainTextResponse
 
+    from api import auth as _auth  # read per request: tests set AUTH_MODE
+
+    if _auth.AUTH_MODE == "firebase":
+        return PlainTextResponse("Not Found", status_code=404)
     email = _iap_user_email(request)
-    # Local dev (no IAP header) → allow. Cloud Run with IAP → require allow-list match.
+    if _auth.AUTH_MODE == "iap" and email is None:
+        return PlainTextResponse("Forbidden", status_code=403)
     if email is not None and email != _DEV_ALLOWED_EMAIL:
         return PlainTextResponse("Forbidden", status_code=403)
 
