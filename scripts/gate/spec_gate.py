@@ -1158,6 +1158,20 @@ def git(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", "-c", "core.quotePath=false", *args], capture_output=True, encoding="utf-8", errors="replace", cwd=ROOT)
 
 
+def git_lines(*args: str) -> list[str]:
+    """A git listing split on newlines alone, each line decoded from its raw bytes with os.fsdecode: a ref or remote
+    name holding U+2028 or U+0085 stays one line, and names that are no UTF-8 stay distinct (red-team, this PR)."""
+    out = subprocess.run(["git", "-c", "core.quotePath=false", *args], capture_output=True, cwd=ROOT).stdout
+    return [os.fsdecode(line) for line in out.split(b"\n") if line]
+
+
+def git_path(name: str) -> pathlib.Path:
+    """Where git keeps `name`, decoded from its raw bytes: an absolute git dir (a linked worktree) whose path is no
+    UTF-8 survives, where git()'s replacement characters name nothing on disk (red-team, this PR)."""
+    return ROOT / os.fsdecode(subprocess.run(["git", "rev-parse", "--git-path", name], capture_output=True,
+                                             cwd=ROOT).stdout.strip())
+
+
 def git_out(*args: str) -> str:
     """stdout of a git command that must succeed: a failed diff or listing is not an empty one."""
     r = git(*args)
@@ -1438,6 +1452,8 @@ class Change:
     base: Tree              # policy: the catalog, specs and requirements are read here
     before: Tree            # the files as they were before the change: HEAD, or the merge base
     trusted: bool = True    # False for a PR from a fork: no prefix allowances
+    mains: tuple[Tree, ...] = ()   # commit mode: every remote's main and main, where a spec is frozen; none reads the base
+    merged: tuple[Tree, ...] = ()  # commit mode: what a merge on the branch, or in progress, brought in; one more main
 
 
 @dataclass
@@ -1625,6 +1641,31 @@ def summarize(paths: list[str]) -> str:
     return shown + (f" and {len(paths) - 3} more" if len(paths) > 3 else "")
 
 
+def frozen_since_main(ch: "Change", path: str, text: str, base_text: str | None) -> bool:
+    """Commit mode: whether an approved spec stays frozen, measured against main rather than the branch's own
+    prior commit. Anything this cannot work out keeps the old freeze, never a new refusal (red-team, this PR)."""
+    try:
+        # a spec is frozen once main holds it, approved or superseded since: a commit on its own branch, before it
+        # merges, may still revise one an earlier commit there approved, as the PR, measured against main, may; read
+        # on every remote's main and on main, any one freezes it (red-team, this PR)
+        # A move to superseded stays checked whatever main holds, and a main that lists the spec, or whose tree
+        # cannot be listed, but cannot be read (a partial clone offline) freezes it too; with no main that shares
+        # history with the base (none at all, another repository's, one a shallow clone cuts off) the base decides,
+        # as before (red-team, this PR)
+        # A main this clone never fetched cannot be read: a branch built on a newer one is measured by the older, and
+        # CI, measuring against the real main, refuses what this lets through
+        return frontmatter(text).get("status") == "superseded" or any(
+            frontmatter(held).get("status") in ("approved", "superseded") if (held := t.read(path)) is not None
+            else (r := git("ls-tree", t.rev, "--", path)).returncode != 0 or bool(r.stdout.strip())
+            for t in ch.mains + ch.merged) or not any(
+            git("merge-base", ch.base.rev, t.rev).returncode == 0 for t in ch.mains) or (
+            # a replacement whose target this change holds superseded keeps naming it, as CI requires
+            base_text is not None and isinstance(target := frontmatter(base_text).get("supersedes"), str)
+            and (now := ch.tree.read(target)) is not None and frontmatter(now).get("status") == "superseded")
+    except Exception:   # the loosening is optional: an error keeps the spec frozen, as before this change
+        return True
+
+
 def check_changed_specs(ch: Change) -> list[str]:
     """validate_spec over every spec the change adds or edits, read at the head."""
     errs: list[str] = []
@@ -1661,7 +1702,8 @@ def check_changed_specs(ch: Change) -> list[str]:
             if isinstance(url, str) and url not in modes:
                 errs.append(f"{path}: lists canvas {url}, which is not in {CANVASES}; register it or fix the URL")
         base_text = ch.base.read(path)
-        if base_text is not None and frontmatter(base_text).get("status") == "approved" and text != base_text:
+        frozen = frozen_since_main(ch, path, text, base_text)
+        if base_text is not None and frontmatter(base_text).get("status") == "approved" and frozen and text != base_text:
             # The one edit an approved spec takes is its status moving to superseded when the
             # spec that replaces it lands; anything else is a new contract nobody approved.
             strip = lambda t: re.sub(r"^status:.*$", "", t, flags=re.M)
@@ -3927,6 +3969,41 @@ def merges_main() -> bool:
     return False
 
 
+def main_trees(base: "Tree") -> tuple[tuple["Tree", ...], tuple["Tree", ...]]:
+    """Commit mode: the mains a spec is frozen against, and what merges on the branch brought in. Paths are tested
+    with os.path.isfile, which answers False where pathlib raises (a name too long); anything else this cannot work
+    out returns none, so the base decides as before this change (red-team, this PR)."""
+    try:
+        # every remote's main (a fork's upstream too, a remote whose name holds a slash) and main, by exact full ref
+        # name as for-each-ref lists it, never rev-parse's guess: a branch named origin/main or main/x, or a tag named
+        # main or refs/heads/main, never stands in for one (red-team, this PR)
+        listed = {name: sha for sha, name in (line.split(" ", 1) for line in git_lines(
+            "for-each-ref", "--format=%(objectname) %(refname)", "refs/heads/main", "refs/remotes"))}
+        loose = git_path("refs/remotes")
+        refs = ["refs/heads/main"] + [f"refs/remotes/{name}/main" for name in git_lines("remote")] + [
+            r for r in listed if re.fullmatch(r"refs/remotes/[^/]+/main", r)] + [
+            f"refs/remotes/{p.parent.name}/main" for p in sorted(loose.glob("*/main"))]
+        # a main that is no commit is kept as listed: a tree is read as it is, and a missing object (a shared clone
+        # whose source pruned it) or a tag of one cannot be read, so it freezes as unreadable; a ref file the listing
+        # leaves out as broken (empty, garbage, a symref to nothing) is kept as an object no read finds, so it
+        # freezes too (red-team, this PR)
+        mains = tuple(Tree(resolve(listed[ref]) or listed[ref]) if ref in listed else Tree("0" * 40)
+                      for ref in dict.fromkeys(refs)
+                      if ref in listed or os.path.isfile(git_path(ref)))
+        # a merge on the branch may have brought in a newer main than any ref here holds (GitHub's "Update branch",
+        # then a pull of the branch alone): each commit a merge since a related main brought in is read as one too
+        related = [t.rev for t in mains if git("merge-base", base.rev, t.rev).returncode == 0]
+        merged = tuple(Tree(parent) for line in git("rev-list", "--merges", "--parents", base.rev, *(
+            f"^{rev}" for rev in related)).stdout.splitlines() for parent in line.split()[2:]) if related else ()
+        # so does a merge still in progress, which the commit being made concludes: every head it is merging is read
+        merging = git_path("MERGE_HEAD")
+        merged += tuple(Tree(sha) for sha in (os.fsdecode(merging.read_bytes()).split()
+                                              if os.path.isfile(merging) else ()))
+        return mains, merged
+    except Exception:   # the loosening is optional: an error leaves no main, and the base decides
+        return (), ()
+
+
 def resolve(rev: str) -> str | None:
     r = git("rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}")
     return r.stdout.strip() if r.returncode == 0 else None
@@ -3983,7 +4060,8 @@ def run(argv: list[str]) -> int:
                 against = ["MERGE_HEAD"]
         staged = git_out("diff", "--cached", "--name-only", "--no-renames", *against).splitlines()
         before = Tree(against[0] if against else "HEAD")
-        ch = Change("commit", branch, staged, Tree(None), before, before)
+        mains, merged = main_trees(before)
+        ch = Change("commit", branch, staged, Tree(None), before, before, mains=mains, merged=merged)
         errs, _ = check(ch)
     elif mode == "--pr":
         env = dict(os.environ)
