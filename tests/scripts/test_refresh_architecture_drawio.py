@@ -19,6 +19,7 @@ Both are asserted through `check()`, which is what a monthly run consults.
 from __future__ import annotations
 
 import json
+import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -28,6 +29,21 @@ import scripts.maintenance.refresh_architecture_drawio as dw
 
 REPO = Path(__file__).resolve().parents[2]
 SNAPSHOT = REPO / "tests/fixtures/live_gcp_snapshot_2026-09-07.json"
+DIAGRAMS = ("Architecture.drawio", "Architecture-icons.drawio")
+
+
+def _diagram_copies(tmp_path: Path, monkeypatch) -> list[tuple[Path, Path]]:
+    """Point the generator at copies of both committed diagrams, so a test
+    that runs main() can show what it would have written without touching
+    the files in the repo. Returns (committed, copy) pairs."""
+    pairs = []
+    for name, attr in zip(DIAGRAMS, ("MAIN", "ICONS")):
+        committed = REPO / name
+        copy = tmp_path / name
+        shutil.copyfile(committed, copy)
+        monkeypatch.setattr(dw, attr, copy)
+        pairs.append((committed, copy))
+    return pairs
 
 
 @pytest.fixture
@@ -153,3 +169,21 @@ def test_every_live_service_must_be_drawn(main_root, live):
                  counts=dict(live["counts"], services=5))
     problems = dw.check(main_root, live5)
     assert any("brand-new-svc" in p for p in problems), problems
+
+
+@pytest.mark.parametrize("tables", [None, {}], ids=["missing", "empty"])
+def test_main_refuses_a_snapshot_without_db_tables(tmp_path, monkeypatch, tables):
+    """A snapshot taken without table statistics (the sandbox default) used
+    to regenerate both diagrams as "0 relations" and pass check(): a silent
+    fallback (Rule 3.7). main() must refuse it and write neither file."""
+    snap = json.loads(SNAPSHOT.read_text())
+    if tables is None:
+        del snap["db_tables"]
+    else:
+        snap["db_tables"] = tables
+    path = tmp_path / "live.json"
+    path.write_text(json.dumps(snap))
+    pairs = _diagram_copies(tmp_path, monkeypatch)
+    assert dw.main(["--snapshot", str(path)]) != 0
+    for committed, copy in pairs:
+        assert copy.read_bytes() == committed.read_bytes(), committed.name

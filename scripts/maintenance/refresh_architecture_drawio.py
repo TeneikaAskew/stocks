@@ -257,7 +257,7 @@ def refresh_main(root: ET.Element, live: dict) -> None:
     by_id["title"].set("value", "Stocks Trading Platform — GCP Architecture (project: adept-mountain-474619-d4, us-east1)")
     by_id[SUBTITLE_ID].set("value",
         f"{counts['jobs']} Cloud Run Jobs (live) • {counts['services']} Cloud Run Services • {counts['schedulers']} Cloud Scheduler entries "
-        f"• Cloud SQL trading-db: {len(live.get('db_tables', {}))} relations • {counts['secrets']} secrets • read live {read} — companion to docs/product/infrastructure/05-a-ARCHITECTURE.md")
+        f"• Cloud SQL trading-db: {len(live['db_tables'])} relations • {counts['secrets']} secrets • read live {read} — companion to docs/product/infrastructure/05-a-ARCHITECTURE.md")
     paused = [n for n, x in live["schedulers"].items() if x.get("state") != "ENABLED"]
     paused_note = f"; {len(paused)} paused: {', '.join(paused)}" if paused else "; none paused"
     wf = live.get("_workflows")
@@ -331,7 +331,7 @@ def refresh_main(root: ET.Element, live: dict) -> None:
     notes = [
         ("addon_schema_box",
          f"★ Cloud SQL: {sql.get('tier','')} • {sql.get('disk_gb','')} GB • public IPv4 {'on' if sql.get('ipv4_enabled') else 'off'} • PITR {'on' if sql.get('pitr') else 'off'} • "
-         f"{len(live.get('db_tables', {}))} live relations ({_declared_relations()} declared in gcp/schema.sql; strat_features_*, magnitude_*, gamma_levels_eod … created at runtime) • weekly pg_dump to gs://…/sql-dumps/",
+         f"{len(live['db_tables'])} live relations ({_declared_relations()} declared in gcp/schema.sql; strat_features_*, magnitude_*, gamma_levels_eod … created at runtime) • weekly pg_dump to gs://…/sql-dumps/",
          60, y_after, 2280, 40),
         ("addon_auth_box",
          "★ Auth: AUTH_MODE iap (solyra-api-prod) / firebase (solyra-api-staging) / open (local) • roles from user_roles (admin, user, dev) • /api/me → is_admin, is_dev • CORS Lovable hosts only outside iap",
@@ -438,7 +438,7 @@ def _icon_values(live: dict) -> dict[str, str]:
     return {
         "jobs": str(live["counts"]["jobs"]), "services": str(live["counts"]["services"]),
         "schedulers": str(live["counts"]["schedulers"]), "secrets": str(live["counts"]["secrets"]),
-        "relations": str(len(live.get("db_tables") or {})),
+        "relations": str(len(live["db_tables"])),
     }
 
 
@@ -558,6 +558,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--check", action="store_true", help="verify only; do not write")
     a = ap.parse_args(argv)
     live = json.loads(pathlib.Path(a.snapshot).read_text())
+    # A snapshot taken without table statistics (doc_inventory --live alone,
+    # the default from a sandbox that cannot reach Cloud SQL) used to print
+    # "0 relations" on both diagrams and pass check(): a silent fallback
+    # (CLAUDE.md Rule 3.7). refresh-architecture-docs.yml refuses such a
+    # snapshot before calling this script; a manual run gets the same refusal
+    # here, before either diagram is parsed.
+    if not live.get("db_tables"):
+        print(f"::error::{a.snapshot} has no db_tables; rebuild it with --db-tables "
+              "(DB_TABLES_SQL through scripts/db_query_cr.sh). Neither diagram was written.")
+        return 2
     if a.repo_jobs:
         live["_repo_jobs"] = json.loads(pathlib.Path(a.repo_jobs).read_text())
     # Active workflows are a REPO fact, not a live-GCP one, so they are read
