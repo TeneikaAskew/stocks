@@ -296,7 +296,7 @@ runs the pipeline inline via `BackgroundTasks` (same code path).
 - Freshness: `insight_reports` latest `as_of` = **2026-06-04 12:46 UTC**;
   `premarket_analysis` latest = **2026-06-04**; `market_data_daily` (SPY) latest =
   **2026-06-04** — all current to the prior trading day.
-- Live `gcloud` (read 2026-09-07): 4 Cloud Run services, 76 Jobs, 65 schedulers, 22 secrets (all enumerated above).
+- Live `gcloud` (read 2026-09-07): 4 Cloud Run services, 76 Jobs, 65 schedulers, 22 secrets (all enumerated above). `solyra-api-prod` was retired on 2026-10-10 ([stocks#1366](https://github.com/TeneikaAskew/stocks/pull/1366)), so three services remain (§4). <!-- verify-docs-ok: the 4 is the dated 2026-09-07 read; the count after the retirement is stated beside it -->
 
 ### Pages whose data is NOT actually populated by a live Job (call-outs)
 1. **Journal** — `journal_entries` = 0 rows; data exists only after a user manually logs trades (no Job writes it).
