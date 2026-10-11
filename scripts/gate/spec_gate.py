@@ -3514,10 +3514,16 @@ def changed_lines(merge_base: str, head: str, path: str) -> list[tuple[str, int,
     return out
 
 
+def lines_of(text: str) -> list[str]:
+    """text's lines as git numbers them: split on "\\n" alone, so index i is git's line i + 1. splitlines() also
+    breaks at a lone carriage return, U+2028 and U+0085, where git does not."""
+    return text.split("\n")
+
+
 def feat_span(text: str, feat_id: str) -> set[int]:
     """1-based line numbers that belong to feat_id in a product document: its table rows,
     and every section whose heading names it, up to the next heading of that level or higher."""
-    lines = text.splitlines()
+    lines = lines_of(text)
     span: set[int] = set()
     level = None
     for n, line in enumerate(lines, 1):
@@ -3534,12 +3540,12 @@ def feat_span(text: str, feat_id: str) -> set[int]:
 
 def heading_levels(text: str, feat_id: str) -> list[int]:
     """The levels of the headings naming the FEAT, in order."""
-    return [len(h.group(1)) for line in text.splitlines() if (h := HEADING.match(line)) and feat_id in FEAT_IDS.findall(line)]
+    return [len(h.group(1)) for line in lines_of(text) if (h := HEADING.match(line)) and feat_id in FEAT_IDS.findall(line)]
 
 
 def feat_headings(text: str, feat_id: str) -> tuple[int, int]:
     """(headings naming the FEAT, table rows keyed by it): one record, one of each."""
-    lines = text.splitlines()
+    lines = lines_of(text)
     return (sum(1 for line in lines if HEADING.match(line) and feat_id in FEAT_IDS.findall(line)),
             sum(1 for line in lines if (m := FEAT_ROW.match(line)) and m.group(1) == feat_id))
 
@@ -3708,7 +3714,9 @@ def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) ->
             errs.append(f"{path} changes in this feature change; requirements change on their own docs/ branch, "
                         "before the work that cites them")
         elif path in (CATALOG, TRACEABILITY):
-            before_text, after_text = Tree(merge_base).read(path) or "", ch.tree.read(path) or ""
+            # raw bytes decoded without newline translation, so line i is git's line i (Tree.read folds a lone CR)
+            before_text = (Tree(merge_base).raw(path) or b"").decode("utf-8", "replace")
+            after_text = (ch.tree.raw(path) or b"").decode("utf-8", "replace")
             had, has = feat_headings(before_text, feat_id), feat_headings(after_text, feat_id)
             if any(before and after > before for before, after in zip(had, has)) or (any(had) and has[0] > had[0]):
                 # solyra#72 r4127814359: a heading added beside an existing row would carry the Status and
@@ -3833,7 +3841,7 @@ def feat_record(text: str | None, feat_id: str) -> str:
     """The FEAT's catalog record as rendered: its section where the catalog has one
     (stocks) and its table rows (solyra); what a close-out must change."""
     shown = visible(text or "")
-    lines = shown.splitlines()
+    lines = lines_of(shown)
     section = [lines[ln - 1] for ln in section_of(shown, feat_id) if ln <= len(lines)]
     rows = [line for line in lines if line.startswith("|") and feat_id in FEAT_IDS.findall(line)]
     return "\n".join(section + rows)
@@ -3843,7 +3851,7 @@ def repeated_fields(text: str | None, feat_id: str) -> list[str]:
     """Close-out fields that appear more than once in the FEAT's record table: the record
     would carry two values and the gate would read the last (stocks#1205 r4120381488)."""
     text = visible(text or "")
-    lines = text.splitlines()
+    lines = lines_of(text)
     seen: list[str] = []
     for ln in section_of(text, feat_id):
         row = cells(lines[ln - 1]) if lines[ln - 1].startswith("|") else []
@@ -3857,7 +3865,7 @@ def feat_fields(text: str | None, feat_id: str) -> dict[str, str]:
     record has one (stocks), otherwise from its catalog row's columns (solyra).
     Read as rendered: a row inside an HTML comment or a code block is not a field."""
     text = visible(text or "")
-    lines = text.splitlines()
+    lines = lines_of(text)
     fields = {}
     for ln in section_of(text, feat_id):
         row = cells(lines[ln - 1]) if lines[ln - 1].startswith("|") else []
@@ -3870,7 +3878,7 @@ def feat_fields(text: str | None, feat_id: str) -> dict[str, str]:
 
 def section_of(text: str, feat_id: str) -> range:
     """Line numbers (1-based) of the section whose heading names feat_id."""
-    lines = text.splitlines()
+    lines = lines_of(text)
     for i, line in enumerate(lines):
         h = HEADING.match(line)
         if h and feat_id in FEAT_IDS.findall(line):
@@ -3885,7 +3893,7 @@ def lineage_refs(text: str, feat_id: str) -> set[str]:
     """The PR entries in the FEAT's traceability section as rendered: each `**PR lineage:**`
     line or list item in the visible section, so a `<!-- #N -->` is not an entry."""
     shown = visible(text)
-    lines = shown.splitlines()
+    lines = lines_of(shown)
     return {line.strip() for ln in section_of(shown, feat_id)
             if ln <= len(lines) and re.match(r"^\s*(\*\*PR lineage:\*\*|[-*]\s)", (line := lines[ln - 1]))}
 

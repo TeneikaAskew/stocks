@@ -3806,3 +3806,33 @@ def test_added_lines_is_gone():
     changed_lines did."""
     defined = {n.name for n in ast.parse(GATE.read_text(encoding="utf-8")).body if isinstance(n, ast.FunctionDef)}
     assert "changed_lines" in defined and "added_lines" not in defined
+
+
+def test_feat_span_and_section_of_number_lines_as_git_does(repo):
+    """FEAT-CICD-001 spec, the diff reader (done_when[2]): git numbers lines by "\\n" alone. Main split decoded text
+    with splitlines(), which also breaks at U+2028 and a lone carriage return, so its line numbers ran ahead of git's."""
+    sg = load_gate(repo)
+    assert sg.feat_span("### FEAT-A-001\nx y\n### FEAT-B-001\nz\n", "FEAT-A-001") == {1, 2}      # main: {1, 2, 3}
+    assert sg.section_of("### FEAT-A-001\nx\ry\n### FEAT-B-001\n", "FEAT-A-001") == range(1, 3)    # main: range(1, 4)
+
+
+def test_the_catalog_scope_check_sees_every_changed_line(repo):
+    """FEAT-CICD-001 spec, the diff reader (done_when[2]).
+
+    Each case is an edit to FEAT-DATA-001's record by the FEAT-MODEL-001 branch that main's gate passed (measured):
+    the reader dropped the line, or numbered it inside the branch's own record.
+    """
+    own = "### FEAT-MODEL-001\n\n- Status: Production"
+    added = "### FEAT-DATA-001\nAdded by a FEAT-MODEL-001 branch.\nAnd a second line.\n"
+    ok = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body()}
+    outcomes = {}
+    on_base(repo, {CATALOG: CATALOG_TEXT + "\n---\n\n-- keep this caveat\n"})
+    outcomes["a removed '---' line"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT + "\n\n\n-- keep this caveat\n"}, **ok)
+    on_base(repo, {CATALOG: CATALOG_TEXT})
+    outcomes["a NUL in the own Status"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + "\x00").replace(
+        "### FEAT-DATA-001\n\n- Status: Production", "### FEAT-DATA-001\n\n- Status: Retired")}, **ok)
+    outcomes["U+2028 in the own record"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + " " * 4).replace("### FEAT-DATA-001\n", added)}, **ok)
+    outcomes["lone CRs in the own record"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + "\r" * 4).replace("### FEAT-DATA-001\n", added)}, **ok)
+    missed = {k: r.stdout[-300:] for k, r in outcomes.items() if r.returncode != 1
+              or not ("lines outside FEAT-MODEL-001's row and record change" in r.stdout or "no text hunk" in r.stdout)}
+    assert missed == {}, missed
