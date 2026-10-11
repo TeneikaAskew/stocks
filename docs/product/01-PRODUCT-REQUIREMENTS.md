@@ -27,6 +27,7 @@ one, and each names the agent that enforces it.
 | **REQ-VALID-001:** Validation or calibration SHALL NOT freeze a baseline until all upstream input-semantics and replay/data-path blockers are repaired and the affected dataset is regenerated. Code may land independently when safe, but its validation result is inadmissible before those gates pass. | audit dependency review | `replay-integrity-reviewer` + model reviewer |
 | **REQ-FRESH-002:** A shared read-side freshness primitive SHALL serve every current-facing consumer; overlapping stopped-writer/still-reading defects SHALL depend on that primitive rather than implementing divergent freshness checks. | #833/#863/#922 root-cause review | operations review |
 | **REQ-REVIEW-001:** A required issue-level review SHALL name an available human or authenticated reviewer and record `PASS`, `PASS WITH CORRECTIONS`, or `FAIL`. Posting to an unavailable bot SHALL NOT count as delivered review. | PR #932 closure | review-feedback gate |
+| **REQ-GOV-004:** The inventory blocks of the generated infrastructure documents (`docs/product/infrastructure/05-a-ARCHITECTURE.md`, `05-c-DATA_DEPENDENCIES.md`, `05-e-API.md`) SHALL equal what `scripts/maintenance/doc_inventory.py` renders from the repository on `main`. A pull request that changes what those blocks cite SHALL carry the re-rendered blocks itself, and the gate SHALL accept a change to those documents from a feature branch only inside the blocks, and only when the same pull request leaves the render unchanged: `doc_inventory.py`, `scripts/maintenance/check_generated_docs.py`, `tests/scripts/test_check_generated_docs.py` and the GCP snapshot that test reads. | stocks#1366 (a line-moving fix that the docs test and the gate could not both pass) | `tests/scripts/test_check_generated_docs.py` (exact render); planned: `scripts/gate/spec_gate.py` (FEAT-CICD-001) |
 | **REQ-RISK-001:** Risk-control calibration or activation SHALL use a production replay path proven to exercise the control **and match live fire identities (ticker, direction, timestamp and position context)**; aggregate capped counts are insufficient. Persisted session state SHALL be restored before any default-no-op ceiling is lowered. | #818/#816/#940 | replay + trading-logic reviewers |
 
 **Rule 3.6 in the acceptance gate.** REQ-REL-001 below requires shared live/replay fixtures.
@@ -115,7 +116,7 @@ A significant feature is done only when **all** hold:
 3. Data contract, freshness and provenance are measured.
 4. Loading, empty, error and stale behavior is tested (REQ-UX-001).
 5. Telemetry, an alert and a runbook exist (REQ-OBS-001, REQ-FRESH-001).
-6. Documentation and traceability are current — catalog row, code locus, evidence tag, review date.
+6. Documentation and traceability are current — catalog row, code locus, evidence tag, review date; generated documents match a fresh render (REQ-GOV-004).
 7. Deployment is reproducible and reversible (REQ-DEPLOY-001).
 8. **Scheduled workloads meet REQ-CAP-001..003.**
 9. **Evidence was produced through a production replay path (REQ-REPLAY-001).**
