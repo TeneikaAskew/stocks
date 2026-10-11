@@ -45,12 +45,12 @@ git.
   SHA was never recorded and a later security finding could not be classified once the next run
   replaced the row. The review cap is two rounds, so the work moved here. The first commit carries
   #1387's tree at `48b583a9` for every file #1387 changes (this plan naming this branch, `pr` unset).
-  The second gives each Codex review type its own comment, `First Codex code review: …` and
+  The commits after it give each Codex review type its own comment, `First Codex code review: …` and
   `First Codex security review: …`, posted when that type's row first reads Completed; Rule 2.5,
   resolve-issue steps 3 and 6 and the template's Merge gate classify a later finding against the
   comment for its own review type, the type of the run that posted it, found by the summary row and
   timing since a Codex finding names none; and step 4 settles a finding's review type with its round,
-  a Security Review finding falling in the round whose code review covered the same commit.
+  a Security Review finding falling in the latest round that had started when it posted.
 - **#1380** (`feature/feat-cicd-001-review-guidelines`) executed the first version of this plan.
 - **Round 1**, Codex's code review of `7daf2384`, four findings: debug-local's before-fix capture sat
   under "After the fix" (4240413675); resolve-issue step 4 fixed a finding before settling its round
@@ -614,11 +614,11 @@ Codex finding's inline comment names no review type either (each one on
 #1380 and #1387 carries a severity badge, a title and its text, and neither
 PR has a security-review finding to compare), so that run is identified by
 the summary row and timing: the row whose run was going when the finding
-posted and reads Completed just after it (#1387's finding 4240753728 posted
-at 07:46:37Z, and the Code Review row read Completed for `48b583a` at
-07:46:40Z). A reviewer whose clean review does create a review object, as a
-person's approval does, needs no such comment: that object's `commit_id`
-names the commit its first review covered.
+posted and reads Completed just after it (on 2026-10-11, #1387's finding
+4240753728 posted at 07:46:37Z, and the Code Review row read Completed for
+`48b583a` at 07:46:40Z). A reviewer whose clean review does create a review
+object, as a person's approval does, needs no such comment: that object's
+`commit_id` names the commit its first review covered.
 
 #### A resolved thread is not a reviewed commit
 ````
@@ -906,7 +906,7 @@ python3 "$SCRATCH/clause_check.py" .claude/commands/resolve-issue.md '^## Phase 
   "returning a code review that is authored by the review bot (chatgpt-codex-connector[bot]), is not CHANGES_REQUESTED" \
   "the Code Review row of the Codex summary comment showing Completed against the head SHA" \
   "Settle the round first: which run raised the finding, of which review type (step 3 noted it), and so which round" \
-  "rounds count runs of Codex's code review, so a Security Review finding falls in the round whose code review covered the same commit" \
+  "rounds count runs of Codex's code review, so a Security Review finding falls in the latest round that had started when it posted, the first if none had" \
   "A finding from the PR's second review round is verified here and not fixed: step 5 says what it gets." \
   "A round is one run of Codex's code review on the PR, and a push to a PR open for review starts one (CLAUDE.md §2.5). After the second, push nothing, a merge of main included: a PR that then needs a commit, or main merged in (a conflict, or a base the gate needs), is re-cut from main, like one whose second round raised a finding, and a clean second round merges as it stands." \
   "In detail, the second of these satisfies this step, and the first counts only alongside it" \
@@ -1132,7 +1132,7 @@ New:
    absent from what you are holding. And a review WITH findings satisfies step 2
    perfectly well, since the bar there is a Code Review row reading Completed,
    which a run with findings reaches too, so nothing else catches it. Read
-   both rows of the summary here. When the run a row shows is the PR's first
+   each row of the summary here. When the run a row shows is the PR's first
    of that review type, post the PR comment CLAUDE.md Rule 2.5 asks for now,
    while the row still shows its SHA, since the next run replaces the row:
    for the Code Review row,
@@ -1178,10 +1178,10 @@ New:
 4. **Settle the round first:** which run raised the finding, of which review
    type (step 3 noted it), and so which round (step 5 says what a round is;
    rounds count runs of Codex's code review, so a Security Review finding
-   falls in the round whose code review covered the same commit). Then verify
-   each finding against the code before fixing it: reproduce, write the
-   failing test, fix, show it pass. A fix built on a misread finding is worse
-   than no fix.
+   falls in the latest round that had started when it posted, the first if
+   none had). Then verify each finding against the code before fixing it:
+   reproduce, write the failing test, fix, show it pass. A fix built on a
+   misread finding is worse than no fix.
 ````
 
 - [ ] **Step 6: Step 4's last word on a second-round finding, and step 5, the review cap and what a
