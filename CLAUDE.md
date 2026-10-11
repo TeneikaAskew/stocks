@@ -253,12 +253,12 @@ review-summary comment reads Completed for the head's SHA, as
 `.claude/commands/resolve-issue.md` step 2 requires. Both halves count
 Codex's code review only: the review-triggering events are the PR opened for
 review, the draft marked ready, an `@codex review` comment and a push of new
-commits (an `@codex security review` starts only the security review), and
-the review must not be `CHANGES_REQUESTED`. The cutoff matters: re-marking a draft ready, or an
-`@codex review` on an unchanged head, would otherwise count the older review
-while the new run is still going. `get_reviews` returns oldest first, so the
-current review is on the last page, and all threads `is_outdated` still
-means the review predates the current content entirely.
+commits, and the review must not be `CHANGES_REQUESTED`. The cutoff matters:
+re-marking a draft ready, or an `@codex review` on an unchanged head, would
+otherwise count the older review while the new run is still going.
+`get_reviews` returns oldest first, so the current review is on the last page,
+and all threads `is_outdated` still means the review predates the current
+content entirely.
 
 When the head is unreviewed and the change is more than cosmetic, comment
 `@codex review` and wait, rather than reading resolution as coverage.

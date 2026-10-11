@@ -77,9 +77,8 @@ Canvas refresh pending: none
       Completed for the head's SHA (a clean Codex review leaves no review
       object, so read the row). Both halves count Codex's code review only:
       the review-triggering events are the PR opened for review, the draft
-      marked ready, an `@codex review` comment and a push of new commits (an
-      `@codex security review` starts only the security review), and the
-      review must not be `CHANGES_REQUESTED`. `get_reviews` returns OLDEST
+      marked ready, an `@codex review` comment and a push of new commits, and
+      the review must not be `CHANGES_REQUESTED`. `get_reviews` returns OLDEST
       FIRST, so the current review is on the LAST page: reading page 1 and
       finding an older "no findings" is how #991 was merged two minutes
       after a review it never saw. Unreviewed → comment `@codex review` and

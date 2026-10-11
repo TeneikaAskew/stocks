@@ -4024,8 +4024,7 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    the Code Review row of Codex's own review-summary comment reads Completed
    for the head's SHA. Both halves count Codex's code review only: the
    review-triggering events are the PR opened for review, the draft marked
-   ready, an `@codex review` comment and a push of new commits (an
-   `@codex security review` starts only the security review), and the review
+   ready, an `@codex review` comment and a push of new commits, and the review
    must not be `CHANGES_REQUESTED`. In detail, either of these satisfies this
    step:
    - `pull_request_read` `method: "get_reviews"` returning a code review that
