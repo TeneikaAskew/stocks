@@ -50,7 +50,9 @@ git.
   resolve-issue steps 3 and 6 and the template's Merge gate classify a later finding against the
   comment for its own review type, the type of the run that posted it, found by the summary row and
   timing since a Codex finding names none; and step 4 settles a finding's review type with its round,
-  a Security Review finding falling in the latest round that had started when it posted.
+  a Security Review finding falling in the latest round that had started when it posted. The re-cut's
+  own review also corrected §2.5's "(it reacts 👍 instead)": Codex's summary comment says it reacts 👍
+  once all its reviews finish with no findings.
 - **#1380** (`feature/feat-cicd-001-review-guidelines`) executed the first version of this plan.
 - **Round 1**, Codex's code review of `7daf2384`, four findings: debug-local's before-fix capture sat
   under "After the fix" (4240413675); resolve-issue step 4 fixed a finding before settling its round
@@ -767,8 +769,9 @@ it was read past.
 So resolving a thread records that *someone* answered the finding. It
 says nothing about whether a reviewer has looked at what is actually
 about to merge, and neither does the review list on its own: from Codex, a
-review with no findings leaves no review object (it reacts 👍 instead), and
-every reply you post on a thread is itself a review object naming the head.
+review with no findings leaves no review object (its summary comment says it
+reacts 👍 once all its reviews finish with no findings), and every reply you
+post on a thread is itself a review object naming the head.
 So the head counts as reviewed only when, after the PR's latest
 review-triggering event, a review authored by `chatgpt-codex-connector[bot]`
 was submitted naming it in `commit_id`, or the Code Review row of Codex's own

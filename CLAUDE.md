@@ -260,8 +260,9 @@ it was read past.
 So resolving a thread records that *someone* answered the finding. It
 says nothing about whether a reviewer has looked at what is actually
 about to merge, and neither does the review list on its own: from Codex, a
-review with no findings leaves no review object (it reacts 👍 instead), and
-every reply you post on a thread is itself a review object naming the head.
+review with no findings leaves no review object (its summary comment says it
+reacts 👍 once all its reviews finish with no findings), and every reply you
+post on a thread is itself a review object naming the head.
 So the head counts as reviewed only when, after the PR's latest
 review-triggering event, a review authored by `chatgpt-codex-connector[bot]`
 was submitted naming it in `commit_id`, or the Code Review row of Codex's own
