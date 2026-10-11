@@ -65,10 +65,18 @@ Canvas refresh pending: none
       before CI, not after
 - [ ] Zero unresolved threads: each one fixed-and-resolved (naming what
       changed and the covering test/commit) or replied to with why not
-- [ ] A review exists for the **current head SHA** — compare `get_reviews`
-      `commit_id` against head; all threads `is_outdated` means the head is
-      unreviewed → comment `@codex review` and wait.
-      `get_reviews` returns OLDEST FIRST, so the current review is on the
-      LAST page: reading page 1 and finding an older "no findings" is how
-      #991 was merged two minutes after a review it never saw
+- [ ] Each thread holding a finding a reviewer posted after its own first
+      review carries the reply classifying each location before it is
+      resolved: uncounted, missed (with the SHA of the commit the first
+      review covered) or new (with the SHA of the later commit), as
+      CLAUDE.md Rule 2.5 says
+- [ ] The **current head** is reviewed as CLAUDE.md §2.5 counts it: after
+      the PR's latest review-triggering event, a review authored by
+      `chatgpt-codex-connector[bot]` was submitted naming it in `commit_id`,
+      or the Code Review row of Codex's review-summary comment reads
+      Completed for the head's SHA (a clean review leaves no review object,
+      so read the row). `get_reviews` returns OLDEST FIRST, so the current
+      review is on the LAST page: reading page 1 and finding an older "no
+      findings" is how #991 was merged two minutes after a review it never
+      saw. Unreviewed → comment `@codex review` and wait
 - [ ] CI green on the current head, no merge conflict

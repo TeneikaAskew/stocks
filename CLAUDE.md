@@ -229,24 +229,29 @@ a PR comment then, since the next run replaces the row:
 none of which had ever been applied to the code that merged.**
 
 Codex reviews on a fixed set of triggers: a PR opened for review, a draft
-marked ready, or an explicit `@codex review` comment. **A push does not
-trigger a re-review** — not a force-push, not a branch update, not a
-regeneration. #953's only Codex review was of commit `40cc6a149e`, the
-original blind-generated docs. The branch was then fully regenerated
-twice (`f8fece0`, `a5990b2`) and merged, and Codex never saw either.
-Every thread carried `is_outdated: true`, which is the tell, and it was
-read past.
+marked ready, or an explicit `@codex review` comment, and Codex's code review
+also runs when new commits are pushed to a PR open for review (the "New
+commits" trigger in its review-summary comment on #1366 and #1371). When #953
+merged, a push did not trigger a re-review: #953's only Codex review was of
+commit `40cc6a149e`, the original blind-generated docs. The branch was then
+fully regenerated twice (`f8fece0`, `a5990b2`) and merged, and Codex never
+saw either. Every thread carried `is_outdated: true`, which is the tell, and
+it was read past.
 
 So resolving a thread records that *someone* answered the finding. It
 says nothing about whether a reviewer has looked at what is actually
-about to merge. Before merging, check both:
-
-1. `pull_request_read` with `method: "get_reviews"` — compare each
-   review's `commit_id` against the PR's current head SHA. If no review
-   names the head, the head is unreviewed regardless of how many threads
-   show resolved.
-2. `is_outdated` on every thread. All-outdated means the review predates
-   the current content entirely.
+about to merge, and neither does the review list on its own: a review with
+no findings leaves no review object (Codex reacts 👍 instead), and every reply
+you post on a thread is itself a review object naming the head. So the head
+counts as reviewed only when, after the PR's latest review-triggering event,
+a review authored by `chatgpt-codex-connector[bot]` was submitted naming it
+in `commit_id`, or the Code Review row of Codex's own review-summary comment
+reads Completed for the head's SHA, as `.claude/commands/resolve-issue.md`
+step 2 requires. The cutoff matters: re-marking a draft ready, or an
+`@codex review` on an unchanged head, would otherwise count the older review
+while the new run is still going. `get_reviews` returns oldest first, so the
+current review is on the last page, and all threads `is_outdated` still
+means the review predates the current content entirely.
 
 When the head is unreviewed and the change is more than cosmetic, comment
 `@codex review` and wait, rather than reading resolution as coverage.
