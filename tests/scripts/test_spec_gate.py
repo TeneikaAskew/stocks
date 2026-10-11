@@ -4145,12 +4145,15 @@ def test_a_block_must_equal_mains_render(inventory_repo):
         # differing_blocks read the block as ending there and passed the hand-written row after it)
         end = "\n<!-- inventory:routes:end -->"
         behind = pr(root, BRANCH, {**moved, API_DOC: edit(moved[API_DOC], end, end + " (hand)\n| `GET` | `/api/hand-written` | x | not rendered |" + end)}, **DOCS_OK)
+        # (red-team round 2: a blank line added at a block's end was refused as "first difference: the same lines")
+        blank = pr(root, BRANCH, {**moved, API_DOC: edit(moved[API_DOC], end, "\n" + end)}, **DOCS_OK)
         missed = [k for k, ok in {
             "hand edit": refused(hand, "differs from main's render") and f"--restore {API_DOC}" in hand.stdout and SNAPSHOT_FILE in hand.stdout,
             "a hand row behind a line that begins with the end marker": refused(behind, "differs from main's render"),
+            "a blank line at a block's end, named": refused(blank, "differs from main's render") and "-'' +'<missing>'" in blank.stdout,
             "renderer failure": refused(broken, "renderer failed") and "SyntaxError" in broken.stdout and "Traceback" not in broken.stderr,
         }.items() if not ok]
-        assert missed == [], hand.stdout + broken.stdout + broken.stderr + behind.stdout
+        assert missed == [], hand.stdout + broken.stdout + broken.stderr + behind.stdout + blank.stdout
 
 
 def test_the_render_reads_only_the_pull_requests_files(inventory_repo, tmp_path_factory):

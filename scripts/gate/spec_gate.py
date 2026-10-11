@@ -3921,14 +3921,16 @@ def render_fence(root: str) -> Callable[[str, tuple], None]:
 
 
 def first_difference(current: str, fresh: str) -> str:
-    """The first line where a block's body and main's render of it part, as differing_blocks words it."""
-    cur, new = current.splitlines(), fresh.splitlines()
+    """The first line where a block's body and main's render of it part, worded as differing_blocks words it, with
+    lines split on "\\n" alone: splitlines() made a blank line added at a block's end read as "the same lines"
+    (red-team round 2)."""
+    cur, new = current.split("\n"), fresh.split("\n")
     for i in range(max(len(cur), len(new))):
         a = cur[i] if i < len(cur) else "<missing>"
         b = new[i] if i < len(new) else "<missing>"
         if a != b:
             return f"line {i + 1}: -{a[:120]!r} +{b[:120]!r}"
-    return "the same lines"
+    return "the same lines, in other bytes"
 
 
 def render_inventory(tree: str, docs: list[str]) -> int:
