@@ -4162,3 +4162,11 @@ def test_the_refused_heads_have_accepted_controls(inventory_repo):
         b, h = spliced(root, f"040000 tree {x}\tok")   # Task 7's splice, a plain entry
         plain = gate(root, "--pr", b, h, PR_HEAD_REF=BRANCH, **DOCS_OK)
         assert (route.returncode, plain.returncode) == (0, 0), route.stdout + plain.stdout
+
+
+def test_the_skill_names_the_inventory_allowance():
+    """FEAT-CICD-001 spec, the allowance (done_when[7]): the product-delivery skill's "Never" list names the
+    re-rendered inventory blocks as a change a feature branch may carry, and cites REQ-GOV-004."""
+    skill = (REPO / ".claude/skills/product-delivery/SKILL.md").read_text(encoding="utf-8")
+    never = next(line for line in skill.splitlines() if line.startswith("- Never edit `docs/product/` from a feature branch"))
+    assert "REQ-GOV-004" in never and "re-rendered by `scripts/maintenance/doc_inventory.py`" in never, never
