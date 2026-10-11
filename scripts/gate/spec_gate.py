@@ -3746,6 +3746,73 @@ def generated_refusal(path: str, reason: str) -> str:
             "as main's scripts/maintenance/doc_inventory.py re-renders them from this pull request)")
 
 
+def split_inventory(raw: bytes, names: tuple[str, ...], start: str, end: str,
+                    marker_line: re.Pattern[str]) -> tuple[list[tuple[int, bytes]], list[tuple[str, list[bytes]]]]:
+    """(the lines outside every block body as (line number, bytes), marker lines included; the blocks as (name, body
+    lines) in document order), the document split on "\\n" alone. A line marker_line matches is a marker line and
+    must be exactly start or end for a name in `names`: the docs test finds blocks by exact string and only for those
+    names, so no other line may open or close one here. Raises ValueError ("marker lines: ...") otherwise, and for a
+    block nested, repeated, unclosed, closed out of turn, or missing."""
+    starts = {start.format(name=n).encode(): n for n in names}
+    ends = {end.format(name=n).encode(): n for n in names}
+    outside: list[tuple[int, bytes]] = []
+    blocks: list[tuple[str, list[bytes]]] = []
+    current: tuple[str, list[bytes]] | None = None
+    for n, line in enumerate(raw.split(b"\n"), 1):
+        if not marker_line.match(line.decode("utf-8", "replace")):
+            if current:
+                current[1].append(line)
+            else:
+                outside.append((n, line))
+            continue
+        if line in starts:
+            name = starts[line]
+            if current:
+                raise ValueError(f"marker lines: line {n} opens inventory:{name} inside inventory:{current[0]}")
+            if any(name == b[0] for b in blocks):
+                raise ValueError(f"marker lines: line {n} opens inventory:{name} a second time")
+            current = (name, [])
+            blocks.append(current)
+        elif line in ends:
+            if not current or ends[line] != current[0]:
+                raise ValueError(f"marker lines: line {n} closes inventory:{ends[line]}, which is not the open block")
+            current = None
+        else:
+            raise ValueError(f"marker lines: line {n} reads as a marker but is not exactly one of this document's "
+                             f"({', '.join(names)}): {line[:100].decode('utf-8', 'replace')!r}")
+        outside.append((n, line))
+    if current:
+        raise ValueError(f"marker lines: inventory:{current[0]} is never closed")
+    if missing := [name for name in names if all(name != b[0] for b in blocks)]:
+        raise ValueError(f"marker lines: no block for {', '.join(missing)}")
+    return outside, blocks
+
+
+def document_refusal(doc: str, base: Tree, tree: Tree, inv: types.ModuleType, cgd: types.ModuleType) -> str | None:
+    """The first of REQ-GOV-004's per-document rules that `doc` breaks, as a reason, or None."""
+    before, after = base.raw(doc), tree.raw(doc)
+    if before is None or after is None or base.mode(doc) != tree.mode(doc):
+        return "is deleted, renamed or changes file mode; only its inventory block bodies may change"
+    if b"\r" in after and b"\r" not in before:
+        return "adds carriage returns (CRLF line endings); commit it with LF line endings"
+    names = tuple(cgd.EXPECTED_MARKERS[doc])
+    sides = {}
+    for side, raw in (("on main: ", before), ("", after)):
+        try:
+            sides[side] = split_inventory(raw, names, inv.MARKER_START, inv.MARKER_END, cgd._MARKER_LINE)
+        except ValueError as e:
+            return f"{side}{e}"
+    (was, was_blocks), (now, now_blocks) = sides["on main: "], sides[""]
+    if [b[0] for b in was_blocks] != [b[0] for b in now_blocks]:
+        return (f"marker lines: the blocks appear in another order than on main "
+                f"({', '.join(b[0] for b in now_blocks)} against {', '.join(b[0] for b in was_blocks)})")
+    if [line for _, line in was] != [line for _, line in now]:
+        i = next((i for i, (a, b) in enumerate(zip(was, now)) if a[1] != b[1]), min(len(was), len(now)))
+        n = now[i][0] if i < len(now) else len(after.split(b"\n"))
+        return f"changes line {n} outside its inventory blocks"
+    return None
+
+
 def generated_doc_refusals(ch: Change, merge_base: str, head: str, docs: list[str], inv: types.ModuleType,
                            cgd: types.ModuleType) -> list[str]:
     """Why each changed generated document in `docs` is refused, or [] when every one carries only main's render
@@ -3754,13 +3821,9 @@ def generated_doc_refusals(ch: Change, merge_base: str, head: str, docs: list[st
     if inputs:
         return [generated_refusal(doc, f"changes alongside {summarize(inputs)}, which decide the render; land that "
                                        "change first, then re-render") for doc in docs]
-    base, errs = Tree(merge_base), []
-    for doc in docs:
-        if base.raw(doc) is None or ch.tree.raw(doc) is None or base.mode(doc) != ch.tree.mode(doc):
-            errs.append(generated_refusal(doc, "is deleted, renamed or changes file mode; only its inventory block bodies may change"))
-            continue
-        errs.append(generated_refusal(doc, "is not yet checked against main's render"))
-    return errs
+    base = Tree(merge_base)
+    return [generated_refusal(doc, document_refusal(doc, base, ch.tree, inv, cgd) or "is not yet checked against main's render")
+            for doc in docs]
 
 
 def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) -> list[str]:

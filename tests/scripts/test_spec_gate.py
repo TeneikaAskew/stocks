@@ -4000,3 +4000,32 @@ def test_render_inputs_and_the_documents_themselves_stay_put(inventory_repo):
         outcomes = {k: pr(root, BRANCH, f, then=t, **DOCS_OK) for k, (f, t, _) in cases.items()}
         missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, cases[k][2])}
         assert missed == {}, missed
+
+
+def test_only_inventory_block_bodies_change(inventory_repo):
+    """FEAT-CICD-001 spec, "Exact markers" and "Only block bodies change" (done_when[1]): with every block body set
+    aside, 05-e must equal main's byte for byte, on exact marker lines in main's order. Each case is the #1366 head
+    with one change, and each is refused citing REQ-GOV-004 and naming its condition."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        t = moved[API_DOC]
+        rs, re_, ts = "<!-- inventory:routes:start -->", "<!-- inventory:routes:end -->", "<!-- inventory:routers:start -->"
+        routers = t[t.index(ts):t.index("<!-- inventory:routers:end -->") + len("<!-- inventory:routers:end -->\n")]
+        routes = t[t.index(rs):t.index(re_) + len(re_) + 1]
+        n = t.split("\n").index("Prose after routes.") + 1
+        first_body = t.index("\n", t.index(rs) + len(rs) + 1)          # the newline ending the routes block's first body line
+        cases = {
+            "a byte outside the blocks": (edit(t, "Prose after routes.", "Prose after routes!"), f"changes line {n} outside its inventory blocks"),
+            "CRLF throughout": (t.replace("\n", "\r\n"), "carriage return"),
+            "a CRLF inside a block body": (t[:first_body] + "\r" + t[first_body:], "carriage return"),
+            "a marker added": (t + re_ + "\n", "marker lines"),
+            "a marker removed": (edit(t, "<!-- inventory:routers:end -->\n", ""), "marker lines"),
+            "a block moved": (edit(t.replace(routes, ""), ts, routes + ts), "marker lines"),
+            "a marker renamed": (t.replace("inventory:routes:", "inventory:paths:"), "marker lines"),
+            "a marker re-spaced": (edit(t, rs, "<!--  inventory:routes:start -->"), "marker lines"),
+            "a block repeated": (edit(t, routers, routers + routers), "marker lines"),
+            "a name 05-e does not carry": (edit(t, "Prose after routes.", "Prose after routes.\n<!-- inventory:jobs:start -->"), "marker lines"),
+        }
+        outcomes = {k: pr(root, BRANCH, {**moved, API_DOC: text}, **DOCS_OK) for k, (text, _) in cases.items()}
+        missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, cases[k][1])}
+        assert missed == {}, missed
