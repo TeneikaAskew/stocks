@@ -4,7 +4,9 @@ Every test here RUNS scripts/gate/spec_gate.py inside a throwaway git
 repository, the way the pre-commit hook (`--commit`) and the spec-gate
 workflow (`--pr BASE HEAD`) run it: a real index, real commits, real
 `git diff`. Nothing is stubbed. The script is byte-identical in solyra, so
-this suite covers both repositories.
+this suite covers both repositories. Tests that need the renderer under
+scripts/maintenance/ run where it exists (RENDERER_HERE), so the file can
+stay byte-identical in solyra.
 
 One test per Codex finding on stocks#1205 and solyra#72, named in its
 docstring; a finding both repositories received is one test. Each was run
@@ -33,6 +35,8 @@ TODAY = datetime.date.today().isoformat()   # the head commit's date, which Last
 REPO = Path(__file__).resolve().parents[2]
 GATE = REPO / "scripts/gate/spec_gate.py"
 WORKFLOW = REPO / ".github/workflows/spec-gate.yml"
+# stocks renders three product documents with scripts/maintenance/doc_inventory.py; solyra has neither
+RENDERER_HERE = (REPO / "scripts/maintenance/doc_inventory.py").is_file()
 
 CATALOG = "docs/product/02-FEATURE-CATALOG.md"
 REQUIREMENTS = "docs/product/01-PRODUCT-REQUIREMENTS.md"
@@ -3836,3 +3840,30 @@ def test_the_catalog_scope_check_sees_every_changed_line(repo):
     missed = {k: r.stdout[-300:] for k, r in outcomes.items() if r.returncode != 1
               or not ("lines outside FEAT-MODEL-001's row and record change" in r.stdout or "no text hunk" in r.stdout)}
     assert missed == {}, missed
+
+
+def test_the_renderer_and_its_snapshot_are_process_files(repo):
+    """FEAT-CICD-001 spec, is_process_file (done_when[4]): the gate now trusts the renderer, its package and its
+    snapshot to decide a verdict, so a change to them is FEAT-CICD-001's work, as the gate's own files are."""
+    cicd_row = CATALOG_TEXT.replace("| [FEAT-DATA-001]", "| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]", 1)
+    on_base(repo, {CATALOG: cicd_row})
+    paths = ("scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
+             "scripts/maintenance/__init__.py", "tests/fixtures/live_gcp_snapshot_2026-09-07.json")
+    missed = [p for p in paths if "belong to FEAT-CICD-001" not in
+              pr(repo, BRANCH, {**CODE, p: "# x\n"}, PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body()).stdout]
+    assert missed == [], missed
+
+
+def test_the_gate_names_the_documents_and_snapshot_the_docs_test_reads():
+    """FEAT-CICD-001 spec, parity (done_when[3]): the gate's three document paths are the renderer's MARKER_DOCS
+    and its snapshot is the docs test's SNAPSHOT, so the gate checks what the docs test checks."""
+    sg = load_gate(REPO)
+    assert sg.GENERATED_RULE == "REQ-GOV-004" and sg.RENDER_INPUTS == (
+        "scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
+        "tests/scripts/test_check_generated_docs.py", "tests/fixtures/live_gcp_snapshot_2026-09-07.json")
+    # the renderer tests cannot be switched off in a repository that carries the documents
+    assert RENDERER_HERE == all((REPO / d).is_file() for d in sg.GENERATED_DOCS)
+    if RENDERER_HERE:
+        from scripts.maintenance import check_generated_docs as cgd
+        from tests.scripts.test_check_generated_docs import SNAPSHOT
+        assert sg.GENERATED_DOCS == cgd.MARKER_DOCS and REPO / sg.RENDER_SNAPSHOT == SNAPSHOT

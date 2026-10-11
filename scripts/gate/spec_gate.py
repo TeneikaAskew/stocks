@@ -63,6 +63,18 @@ MAIN = "main"
 # it generates. Everything else under docs/product/ changes on its own docs/ branch.
 PRODUCT_DOCS = "docs/product/"
 REGISTRY_DOCS = ("docs/product/07-MODEL-REGISTRY.md", "docs/product/generated/model-registry.json")
+# REQ-GOV-004: the documents whose inventory blocks scripts/maintenance/doc_inventory.py renders from the
+# repository. A feature change may carry those blocks exactly as main's renderer renders them from its own files
+# (check_product_scope); the paths equal check_generated_docs.MARKER_DOCS and the docs test's SNAPSHOT (the suite
+# pins both).
+GENERATED_DOCS = ("docs/product/infrastructure/05-a-ARCHITECTURE.md", "docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md",
+                  "docs/product/infrastructure/05-e-API.md")
+GENERATED_RULE = "REQ-GOV-004"
+RENDER_SNAPSHOT = "tests/fixtures/live_gcp_snapshot_2026-09-07.json"
+RENDER_INPUTS = ("scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
+                 "tests/scripts/test_check_generated_docs.py", RENDER_SNAPSHOT)          # REQ-GOV-004: unchanged beside blocks
+RENDERER_FILES = ("scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
+                  "scripts/maintenance/__init__.py", RENDER_SNAPSHOT)                     # process files: FEAT-CICD-001's
 
 FEAT_ROW = re.compile(r"^\|\s*\[?(FEAT-[A-Z]+-\d{3})\b", re.M)
 FEAT_IDS = re.compile(r"\bFEAT-[A-Z]+-\d{3}\b")
@@ -1081,11 +1093,12 @@ WORKFLOW_FEAT = "FEAT-CICD-001"
 DEPLOY_FEAT = "FEAT-DEPLOY-001"
 DEPLOY_FILE = re.compile(r"^((gcp|platform)/deploy\.sh|gcp/cloudbuild/[^/]+|cloudbuild[^/]*\.ya?ml|Dockerfile[^/]*|\.gcloudignore|\.dockerignore)$")
 # The files that are the delivery process itself: CI configuration at any path under .github/, the gate's
-# files and pinned copies, the hook, the agent instructions and the local skills (round six)
+# files and pinned copies, the hook, the agent instructions and the local skills (round six), and the renderer and
+# snapshot the gate runs for REQ-GOV-004 (FEAT-CICD-001)
 def is_process_file(path: str) -> bool:
     return ((path.startswith(".github/") and not is_documentation(path)) or is_gate_file(path) or path in PINNED.values()
             or path.startswith(LOCAL_SKILLS) or path.startswith((".claude/", ".githooks/"))
-            or path.rsplit("/", 1)[-1] in ("CLAUDE.md", "AGENTS.md", "CLAUDE.local.md"))
+            or path.rsplit("/", 1)[-1] in ("CLAUDE.md", "AGENTS.md", "CLAUDE.local.md") or path in RENDERER_FILES)
 # The files the gate runs from: no change may delete one, whatever its branch, or the
 # base's copy judges the deletion green and every later PR runs without a gate.
 SUITE = "tests/scripts/test_spec_gate.py"
