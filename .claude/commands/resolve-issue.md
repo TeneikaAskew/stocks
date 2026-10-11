@@ -3992,7 +3992,8 @@ inside that window.** An empty review list at 60 seconds means "wait", not
 
    This is step 0 rather than a late step because **marking ready is itself a
    review trigger** (CLAUDE.md §2.5: "a PR opened for review, a draft marked
-   ready, or an explicit `@codex review`"). Undrafting after the review checks
+   ready, or an explicit `@codex review` comment, and Codex's code review also
+   runs when new commits are pushed to a PR open for review"). Undrafting after the review checks
    starts a fresh review that the remaining steps would walk straight past, and
    the PR merges while it is still running. Undraft first, then let every check
    below run against the review that transition triggered.
@@ -4006,11 +4007,11 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    command's own primary route terminate one step from the end, which is the
    same condition step 7 states correctly for merging.
 1. `pull_request_read` `method: "get_review_comments"` — **before** CI, not
-   after, and **page it to exhaustion**. Nine review rounds on one PR is not
-   hypothetical here, and a first page that happens to show every thread
-   resolved says nothing about the next one. Zero unresolved means zero across
-   every page, the same discipline the issue listing and `get_reviews` already
-   get.
+   after, and **page it to exhaustion**. One PR can carry several reviews'
+   threads (each review type's first review, and a later review for each push
+   of new commits), so a first page that happens to show every thread resolved
+   says nothing about the next one. Zero unresolved means zero across every
+   page, the same discipline the issue listing and `get_reviews` already get.
 2. Confirm the current head **has been reviewed**, which is not the same as "a
    review object exists for it". A clean run posts no review at all, only a
    reaction, so requiring a review object would deadlock every PR that has
@@ -4028,7 +4029,9 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      So the cutoff is the LATEST of: the undraft transition if step 0 made one,
      and the timestamp of the most recent `@codex review` comment on the PR —
      read it from the issue comments rather than remembering it, since a
-     rerun may have been requested by someone else. **On a PR that was never
+     rerun may have been requested by someone else. A push of new commits
+     triggers a review too (CLAUDE.md §2.5), but it moves the head, so the
+     head-SHA test already ties the review to it. **On a PR that was never
      drafted and never re-triggered — the ordinary CASE B path — there is no
      such event and no cutoff**; the head SHA and the author check carry the
      step on their own, and applying a cutoff to an event that did not happen
@@ -4086,10 +4089,12 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    rebutted a finding, and the one where a later review adds nothing new.** Requiring it here would deadlock: step 3 would demand a finding be
    resolved before step 4 has said to reproduce, test and fix it, and the only
    way out is resolving a thread you have not validated. Read and triage here;
-   fix there. What follows is the bar step 5 enforces: every thread
+   fix there. What follows is the bar step 6 enforces: every thread
    fixed-and-resolved, naming what changed
-   and the covering test and commit, or replied to with why not. Zero unresolved
-   across every page is the bar.
+   and the covering test and commit, or replied to with why not, and a thread
+   holding a finding a reviewer posted after its own first review resolved
+   only after the reply that classifies each location (CLAUDE.md Rule 2.5).
+   Zero unresolved across every page is the bar.
 4. Verify each finding against the code before fixing it: reproduce, write the
    failing test, fix, show it pass. A fix built on a misread finding is worse
    than no fix.
@@ -4114,18 +4119,31 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    the reviewer is a bot you configured), but it is the weaker half —
    reconstruction is what actually holds, because it does not depend on
    recognising a hostile string.
-5. **If step 4 produced a commit, go back to step 1 on the new head.** A fix
-   commit moves the head past the review that approved it, so merging straight
-   from here lets the review-fix itself merge unreviewed. That is the same
-   stale-head condition steps 1-3 exist to catch, arriving by a different
-   route. Push the fix, let the review re-run on the new SHA, and re-check.
-   There is no round limit: repeated findings mean fix the root cause, not
-   stop.
+5. **If step 4 produced a commit for a finding from the PR's first review
+   round, go back to step 1 on the new head.** A fix commit moves the head
+   past the review that approved it, so merging straight from here lets the
+   review-fix itself merge unreviewed. That is the same stale-head condition
+   steps 1-3 exist to catch, arriving by a different route. Push the fix, let
+   the review re-run on the new SHA, and re-check: that run is the PR's
+   second review round.
+
+   **The review cap is two rounds** (CLAUDE.md, "Review cap"; the
+   product-delivery skill, Phase 4): after a PR's second review round, stop
+   and split, re-cut or discard it when that round raised a finding; a second
+   round with no findings goes on to step 6. A finding from the second round
+   gets its classifying reply (CLAUDE.md Rule 2.5) and no fix commit, so there
+   is no third review: present split, re-cut or discard
+   (`superpowers:finishing-a-development-branch`) and name that choice in the
+   Phase 9 "Still open before this closes".
 6. **Zero unresolved, across every page** — re-page `get_review_comments` and
    check it, whether or not step 4 produced a commit. A rebutted finding still
    needs its reply and its resolve, and a review that added nothing still has
-   to be looked at rather than assumed empty. Then CI green on the current
-   head, and no merge conflict.
+   to be looked at rather than assumed empty. A thread holding a finding that
+   a reviewer posted after its own first review is resolved only after a
+   reply on it classifies each location: uncounted, missed (with the SHA of
+   the commit that first review covered) or new (with the SHA of the later
+   commit), as CLAUDE.md Rule 2.5 says. Then CI green on the current head,
+   and no merge conflict.
 7. **Merge it, bound to the SHA that passed.** Steps 0-6 are the gate, not
    the destination; stopping here leaves the fix on a branch while Phase 9
    describes the issue as landed. Merge once every step above passes, and
