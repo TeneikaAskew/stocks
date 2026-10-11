@@ -3509,8 +3509,10 @@ def changed_lines(merge_base: str, head: str, path: str) -> list[tuple[str, int,
     """("-", line in base, text) for every line the change removes from path and
     ("+", line in head, text) for every line it adds, numbered as git numbers them.
     The diff is read as bytes and split on "\\n" alone; `---` and `+++` are file headers only before the
-    first hunk, so a content line that begins with them is still a changed line. A diff of path with no
-    text hunk (binary, a NUL, a mode change) raises: the gate reads every changed line, never none."""
+    first hunk, so a content line that begins with them is still a changed line. Context lines are counted:
+    -U0 asks for none, but diff.interHunkContext and GIT_DIFF_OPTS add them, and diff.suppressBlankEmpty
+    prints a blank one empty (red-team round 1). A diff of path with no text hunk (binary, a NUL, a mode
+    change) raises: the gate reads every changed line, never none."""
     out, old, new, hunks = [], 0, 0, 0
     diff = git_bytes("diff", "--no-color", "--no-ext-diff", "--no-textconv", "-U0", merge_base, head, "--", path)
     for line in diff.split(b"\n"):
@@ -3525,6 +3527,8 @@ def changed_lines(merge_base: str, head: str, path: str) -> list[tuple[str, int,
         elif line.startswith(b"+"):
             out.append(("+", new, line[1:].decode("utf-8", "replace")))
             new += 1
+        else:   # a context line, " " or, under diff.suppressBlankEmpty, ""
+            old, new = old + 1, new + 1
     if not hunks:
         raise GitFailed(f"git diff of {path} shows no text hunk (a binary file, a NUL byte or a mode-only change); "
                         "the gate reads every changed line and refuses to pass on none")
@@ -3916,14 +3920,31 @@ def render_fence(root: str) -> Callable[[str, tuple], None]:
     return fence
 
 
+def first_difference(current: str, fresh: str) -> str:
+    """The first line where a block's body and main's render of it part, as differing_blocks words it."""
+    cur, new = current.splitlines(), fresh.splitlines()
+    for i in range(max(len(cur), len(new))):
+        a = cur[i] if i < len(cur) else "<missing>"
+        b = new[i] if i < len(new) else "<missing>"
+        if a != b:
+            return f"line {i + 1}: -{a[:120]!r} +{b[:120]!r}"
+    return "the same lines"
+
+
 def render_inventory(tree: str, docs: list[str]) -> int:
     """The child (RENDER_MODE): main's renderer over `tree`, the pull request's files. Prints one
-    `doc<TAB>block<TAB>first difference` line per block that differs from main's render of it."""
+    `doc<TAB>block<TAB>first difference` line per block that differs from main's render of it, read two ways
+    from one _block_bodies call (calling differing_blocks as well rendered every block twice: 40 s became 72 s
+    on main's tree): as differing_blocks reads it (current != fresh, the docs test's rule), and as the exact
+    body between its exact marker lines (red-team round 1: differing_blocks ends a block at the first end
+    marker, even one that only begins a line, so it passed a hand-written row behind such a line)."""
     sys.path.insert(0, str(ROOT))
     inv = importlib.import_module("scripts.maintenance.doc_inventory")
-    if pathlib.Path(inv.__file__ or "").resolve() != (ROOT / "scripts/maintenance/doc_inventory.py").resolve():
-        os.write(2, f"{inv.__file__}\n".encode("utf-8", "replace"))
-        return RENDER_MISPLACED
+    cgd = importlib.import_module("scripts.maintenance.check_generated_docs")
+    for m in (inv, cgd):
+        if pathlib.Path(m.__file__ or "").resolve().parent != (ROOT / "scripts/maintenance").resolve():
+            os.write(2, f"{m.__file__}\n".encode("utf-8", "replace"))
+            return RENDER_MISPLACED
     live = json.loads((ROOT / RENDER_SNAPSHOT).read_text(encoding="utf-8"))
     for name in RENDER_PREIMPORTS:
         importlib.import_module(name)
@@ -3931,7 +3952,18 @@ def render_inventory(tree: str, docs: list[str]) -> int:
     at = pathlib.Path(tree)
     try:
         repo = inv.repo_inventory(at)
-        differs = [(doc, name, diff) for doc in docs for name, diff in inv.differing_blocks(at / doc, repo, live, root=at)]
+        differs = []
+        for doc in docs:
+            bodies = inv._block_bodies(at / doc, repo, live, at)
+            found = {name: first_difference(current, body) for name, current, body, _pattern in bodies if current != body}
+            fresh = {name: body for name, _current, body, _pattern in bodies}
+            names = tuple(cgd.EXPECTED_MARKERS[doc])
+            _outside, blocks = split_inventory((at / doc).read_bytes(), names, inv.MARKER_START, inv.MARKER_END, cgd._MARKER_LINE)
+            for name, body in blocks:
+                exact = b"\n".join(body).decode("utf-8", "replace")
+                if name not in found and exact != fresh.get(name):
+                    found[name] = first_difference(exact, fresh.get(name, "<not rendered>"))
+            differs += [(doc, name, diff) for name, diff in found.items()]
     except Exception as e:
         # Reported here, one line: Python's traceback printer reads source lines through linecache, and the fence
         # ends the child on that open (a SyntaxError's "<unknown>"), which would name a read, not the failure.
@@ -3946,15 +3978,19 @@ def render_inventory(tree: str, docs: list[str]) -> int:
 def render_refusals(entries: list[tuple[str, str, str]], docs: list[str]) -> list[str]:
     """[] when main's renderer, run over the head tree written to a temporary directory, renders every block of
     `docs` exactly as committed; otherwise why not."""
+    every = ", ".join(docs)
     with tempfile.TemporaryDirectory(prefix="spec-gate-render-") as tmp:
         tree, cwd = pathlib.Path(tmp) / "tree", pathlib.Path(tmp) / "run"
         tree.mkdir()
         cwd.mkdir()
-        materialize(entries, tree)
+        try:
+            materialize(entries, tree)
+        except (OSError, ValueError, GitFailed) as e:
+            # (red-team round 1: a name the filesystem cannot hold crashed the gate with a traceback)
+            return [generated_refusal(every, f"the head tree cannot be written out ({e})")]
         r = subprocess.run([sys.executable, "-I", "-B", str(pathlib.Path(__file__).resolve()), RENDER_MODE, str(tree), *docs],
                            cwd=cwd, capture_output=True, encoding="utf-8", errors="replace")
     last = (r.stderr.strip().splitlines() or ["no output"])[-1]
-    every = ", ".join(docs)
     if r.returncode == 0:
         return []
     if r.returncode == RENDER_DIFFERS:

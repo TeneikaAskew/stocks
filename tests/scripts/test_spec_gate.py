@@ -3799,6 +3799,12 @@ def test_changed_lines_reads_the_diff_as_bytes(repo):
     on_base(repo, {"docs/f.md": "a\nb\nc\nd\ne\nf\n"})
     pr(repo, "docs/probe", {"docs/f.md": "a\nb-new\r+phantom\nc\nd\ne-new\u2028@@ -9 +9 @@\nf\n"})
     assert sg.changed_lines(*base_and_head(repo), "docs/f.md") == [("-", 2, "b"), ("+", 2, "b-new\r+phantom"), ("-", 5, "e"), ("+", 5, "e-new\u2028@@ -9 +9 @@")]
+    # (red-team round 1: context lines that git's config adds between hunks, blank ones printed empty, are counted)
+    on_base(repo, {"docs/f.md": "a\nb\n\nc\nd\ne\n"})
+    pr(repo, "docs/probe", {"docs/f.md": "a\nB\n\nc\nd\nE\n"})
+    _git(repo, "config", "diff.interHunkContext", "5")
+    _git(repo, "config", "diff.suppressBlankEmpty", "true")
+    assert sg.changed_lines(*base_and_head(repo), "docs/f.md") == [("-", 2, "b"), ("+", 2, "B"), ("-", 6, "e"), ("+", 6, "E")]
 
 
 def test_changed_lines_raises_on_a_binary_or_hunkless_diff(repo):
@@ -3849,6 +3855,11 @@ def test_the_catalog_scope_check_sees_every_changed_line(repo):
         "### FEAT-DATA-001\n\n- Status: Production", "### FEAT-DATA-001\n\n- Status: Retired")}, **ok)
     outcomes["U+2028 in the own record"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + " " * 4).replace("### FEAT-DATA-001\n", added)}, **ok)
     outcomes["lone CRs in the own record"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + "\r" * 4).replace("### FEAT-DATA-001\n", added)}, **ok)
+    # (red-team round 1: with diff.interHunkContext in the config git reads, main numbered the second hunk inside the own record)
+    _git(repo, "config", "diff.interHunkContext", "5")
+    outcomes["context lines from git's config"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + "\n- Note: mine").replace(
+        "### FEAT-DATA-001\n\n- Status: Production", "### FEAT-DATA-001\n\n- Status: Retired")}, **ok)
+    _git(repo, "config", "--unset", "diff.interHunkContext")
     missed = {k: r.stdout[-300:] for k, r in outcomes.items() if r.returncode != 1
               or not ("lines outside FEAT-MODEL-001's row and record change" in r.stdout or "no text hunk" in r.stdout)}
     assert missed == {}, missed
@@ -4083,7 +4094,9 @@ def test_the_head_tree_is_plain_files(inventory_repo):
         entries = {"a symbolic link": (f"120000 blob {blob}\tlink", "a symbolic link"),
                    "a submodule": (f"160000 commit {_git(root, 'rev-parse', 'base')}\tsub", "a submodule"),
                    "an empty component": (f"040000 tree {x}\t", "cannot be listed"),
-                   **{f"component {c}": (f"040000 tree {x}\t{c}", "a path component") for c in (".", "..", ".git", ".GIT")}}
+                   **{f"component {c}": (f"040000 tree {x}\t{c}", "a path component") for c in (".", "..", ".git", ".GIT")},
+                   # (red-team round 1: a name the filesystem cannot hold crashed the gate with a traceback)
+                   "a 256-byte name": (f"100644 blob {blob}\t{'x' * 256}", "cannot be written out")}
         change(root, BRANCH, moved)   # the #1366 head, which each splice extends
         for name, (entry, fragment) in entries.items():
             b, h = spliced(root, entry)
@@ -4128,11 +4141,16 @@ def test_a_block_must_equal_mains_render(inventory_repo):
         root, moved = inventory_repo
         hand = pr(root, BRANCH, {**moved, API_DOC: edit(moved[API_DOC], "Liveness probe:", "Liveness probe, hand-edited:")}, **DOCS_OK)
         broken = pr(root, BRANCH, {**moved, MAIN_PY: moved_main() + "\ndef broken(:\n"}, **DOCS_OK)
+        # (red-team round 1: the docs test's block pattern ends at the first end marker even mid-line, so main's
+        # differing_blocks read the block as ending there and passed the hand-written row after it)
+        end = "\n<!-- inventory:routes:end -->"
+        behind = pr(root, BRANCH, {**moved, API_DOC: edit(moved[API_DOC], end, end + " (hand)\n| `GET` | `/api/hand-written` | x | not rendered |" + end)}, **DOCS_OK)
         missed = [k for k, ok in {
             "hand edit": refused(hand, "differs from main's render") and f"--restore {API_DOC}" in hand.stdout and SNAPSHOT_FILE in hand.stdout,
+            "a hand row behind a line that begins with the end marker": refused(behind, "differs from main's render"),
             "renderer failure": refused(broken, "renderer failed") and "SyntaxError" in broken.stdout and "Traceback" not in broken.stderr,
         }.items() if not ok]
-        assert missed == [], hand.stdout + broken.stdout + broken.stderr
+        assert missed == [], hand.stdout + broken.stdout + broken.stderr + behind.stdout
 
 
 def test_the_render_reads_only_the_pull_requests_files(inventory_repo, tmp_path_factory):
