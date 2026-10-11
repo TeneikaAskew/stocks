@@ -38,6 +38,7 @@ import ast
 import bisect
 import functools
 import html
+import importlib
 import json
 import collections
 import datetime
@@ -48,6 +49,7 @@ import re
 import subprocess
 import sys
 import tomllib
+import types
 from dataclasses import dataclass
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -3717,12 +3719,62 @@ def check_record_uniqueness(ch: Change) -> list[str]:
     return errs
 
 
+# REQ-GOV-004: generated documents. A feature change that moves a line the three documents cite carries their
+# re-rendered inventory blocks, and the gate accepts them only as main's renderer renders them from this pull
+# request's files. "Main's" is the gate's own checkout: the base commit in CI, the worktree in a local run.
+
+def maintenance_modules() -> tuple[types.ModuleType, types.ModuleType] | None:
+    """Main's (doc_inventory, check_generated_docs), from this checkout's scripts/maintenance/, or None where the
+    repository has no renderer (solyra): it then gets no allowance. Any other import error propagates."""
+    folder = ROOT / "scripts/maintenance"
+    if not folder.is_dir():
+        return None
+    sys.path.insert(0, str(ROOT))
+    mods = (importlib.import_module("scripts.maintenance.doc_inventory"),
+            importlib.import_module("scripts.maintenance.check_generated_docs"))
+    for m in mods:
+        # a regular `scripts` package anywhere on sys.path beats this checkout's namespace one
+        where = pathlib.Path(m.__file__ or "").resolve()
+        if where.parent != folder.resolve():
+            raise ImportError(f"{m.__name__} was imported from {where}, outside {folder}; the gate renders with this "
+                              "checkout's renderer only")
+    return mods
+
+
+def generated_refusal(path: str, reason: str) -> str:
+    return (f"{path}: {reason} ({GENERATED_RULE}: a feature change carries a generated document's inventory blocks only "
+            "as main's scripts/maintenance/doc_inventory.py re-renders them from this pull request)")
+
+
+def generated_doc_refusals(ch: Change, merge_base: str, head: str, docs: list[str], inv: types.ModuleType,
+                           cgd: types.ModuleType) -> list[str]:
+    """Why each changed generated document in `docs` is refused, or [] when every one carries only main's render
+    of its inventory blocks. The rules run cheapest first; a document refused by one is not read further."""
+    inputs = [p for p in RENDER_INPUTS if p in ch.changed]
+    if inputs:
+        return [generated_refusal(doc, f"changes alongside {summarize(inputs)}, which decide the render; land that "
+                                       "change first, then re-render") for doc in docs]
+    base, errs = Tree(merge_base), []
+    for doc in docs:
+        if base.raw(doc) is None or ch.tree.raw(doc) is None or base.mode(doc) != ch.tree.mode(doc):
+            errs.append(generated_refusal(doc, "is deleted, renamed or changes file mode; only its inventory block bodies may change"))
+            continue
+        errs.append(generated_refusal(doc, "is not yet checked against main's render"))
+    return errs
+
+
 def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) -> list[str]:
     """CI only: a feature change edits its own catalog record and traceability section, and
     nothing else's. The requirements document changes on its own docs/ branch. Runs on a
     feature/ or fix/ PR whether or not it carries code, so a docs-only one is scoped too."""
     errs: list[str] = []
+    generated = [p for p in ch.changed if p in GENERATED_DOCS]
+    mods = maintenance_modules() if generated else None
+    if mods:
+        errs += generated_doc_refusals(ch, merge_base, head, generated, *mods)
     for path in ch.changed:
+        if mods and path in generated:
+            continue   # judged above, by REQ-GOV-004's rules
         if path == REQUIREMENTS:
             errs.append(f"{path} changes in this feature change; requirements change on their own docs/ branch, "
                         "before the work that cites them")
@@ -3752,7 +3804,9 @@ def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) ->
                             "a feature change edits only its own record")
         elif path.startswith(PRODUCT_DOCS) and path not in REGISTRY_DOCS:
             errs.append(f"{path} changes in this feature change; under {PRODUCT_DOCS} only the FEAT's own catalog "
-                        "and traceability records, the model registry and its generated files may change here")
+                        "and traceability records, the model registry and its generated files, and, where the repository "
+                        "renders them, the inventory blocks of 05-a-ARCHITECTURE.md, 05-c-DATA_DEPENDENCIES.md and "
+                        f"05-e-API.md re-rendered by scripts/maintenance/doc_inventory.py ({GENERATED_RULE}) may change here")
     return errs
 
 

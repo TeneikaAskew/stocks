@@ -141,25 +141,30 @@ def write(repo: Path, path: str, text: str) -> None:
         p.chmod(0o755)   # a hook is executable unless a test takes that away
 
 
-@pytest.fixture
-def repo(tmp_path):
+def make_repo(root: Path) -> Path:
     """`main` holds the gate, a catalog, requirements, one approved spec and its
     ready plan, and one code file. Tag `base` marks it; every change branches
     from there."""
-    _git(tmp_path, "init", "-q", "-b", "main")
-    _git(tmp_path, "config", "user.email", "t@example.com")
-    _git(tmp_path, "config", "user.name", "t")
-    _git(tmp_path, "config", "commit.gpgsign", "false")
-    write(tmp_path, "scripts/gate/spec_gate.py", GATE.read_text(encoding="utf-8"))
-    write(tmp_path, CATALOG, CATALOG_TEXT)
-    write(tmp_path, REQUIREMENTS, REQUIREMENTS_TEXT)
-    write(tmp_path, SPEC, spec())
-    write(tmp_path, PLAN, plan())
-    write(tmp_path, "lib/model.py", "DECISION = 'size'\n")
-    _git(tmp_path, "add", "-A")
-    _git(tmp_path, "commit", "-q", "-m", "base")
-    _git(tmp_path, "tag", "base")
-    return tmp_path
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "config", "user.email", "t@example.com")
+    _git(root, "config", "user.name", "t")
+    _git(root, "config", "commit.gpgsign", "false")
+    write(root, "scripts/gate/spec_gate.py", GATE.read_text(encoding="utf-8"))
+    write(root, CATALOG, CATALOG_TEXT)
+    write(root, REQUIREMENTS, REQUIREMENTS_TEXT)
+    write(root, SPEC, spec())
+    write(root, PLAN, plan())
+    write(root, "lib/model.py", "DECISION = 'size'\n")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "base")
+    _git(root, "tag", "base")
+    return root
+
+
+@pytest.fixture
+def repo(tmp_path):
+    """make_repo in this test's own directory."""
+    return make_repo(tmp_path)
 
 
 def gate(repo: Path, *args: str, **env: str) -> subprocess.CompletedProcess:
@@ -174,9 +179,9 @@ def cells(line: str) -> list[str]:
     return [c.strip() for c in line.strip().strip("|").split("|")]
 
 
-def on_base(repo: Path, files: dict[str, str | None]) -> None:
-    """Commit `files` on main and move the `base` tag there: what a change is measured against.
-    The catalog row and the approved spec are read from the base, never from the change."""
+def on_base(repo: Path, files: dict[str, str | None], then: Callable[[Path], object] | None = None) -> None:
+    """Commit `files` on main, after `then(repo)` if given, and move the `base` tag there: what a change is
+    measured against. The catalog row and the approved spec are read from the base, never from the change."""
     _git(repo, "reset", "-q", "--hard")
     _git(repo, "clean", "-qfd")
     _git(repo, "checkout", "-q", "main")
@@ -185,6 +190,8 @@ def on_base(repo: Path, files: dict[str, str | None]) -> None:
             (repo / path).unlink()
         else:
             write(repo, path, text)
+    if then is not None:
+        then(repo)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "on base")
     _git(repo, "tag", "-f", "base")
@@ -3867,3 +3874,129 @@ def test_the_gate_names_the_documents_and_snapshot_the_docs_test_reads():
         from scripts.maintenance import check_generated_docs as cgd
         from tests.scripts.test_check_generated_docs import SNAPSHOT
         assert sg.GENERATED_DOCS == cgd.MARKER_DOCS and REPO / sg.RENDER_SNAPSHOT == SNAPSHOT
+
+
+# The generated documents: a fixture tree holding scripts/maintenance/, the snapshot and only the files the three
+# documents' blocks render from, rendered once per session (inventory_template) and copied per test.
+INFRA = "docs/product/infrastructure"
+GENERATED = (f"{INFRA}/05-a-ARCHITECTURE.md", f"{INFRA}/05-c-DATA_DEPENDENCIES.md", f"{INFRA}/05-e-API.md")
+API_DOC = GENERATED[2]
+SNAPSHOT_FILE = "tests/fixtures/live_gcp_snapshot_2026-09-07.json"
+MAIN_PY = "platform/api/main.py"
+RENDER_TREE = ("scripts/maintenance/__init__.py", "scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
+               SNAPSHOT_FILE, MAIN_PY, "gcp/deploy.sh", "gcp/schema.sql", "scripts/discord/register_commands.py")
+TRACE_TEXT = "# Traceability\n\n### FEAT-MODEL-001\n\n- #1\n"
+RULE = "REQ-GOV-004"
+DOCS_OK = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body() + "\n\n## Capacity\nn/a: x\n"}
+
+
+def skeleton(doc: str) -> str:
+    """doc with prose around every block the docs test expects in it, each block empty until rendered."""
+    from scripts.maintenance.check_generated_docs import EXPECTED_MARKERS   # stocks only: called where RENDERER_HERE
+    from scripts.maintenance.doc_inventory import MARKER_END, MARKER_START
+    parts = [f"# {Path(doc).stem}", "Prose before the blocks."]
+    for name in EXPECTED_MARKERS[doc]:
+        parts += [f"{MARKER_START.format(name=name)}\n\n{MARKER_END.format(name=name)}", f"Prose after {name}."]
+    return "\n\n".join(parts) + "\n"
+
+
+def render(root: Path, docs: tuple[str, ...] = GENERATED) -> None:
+    """Re-render docs' blocks in root's working tree with root's renderer, as a person re-renders them.
+    -B: a __pycache__ would otherwise be committed by `git add -A`."""
+    subprocess.run([sys.executable, "-B", "-m", "scripts.maintenance.doc_inventory", "--root", ".", "--snapshot", SNAPSHOT_FILE,
+                    "--insert", *docs], cwd=root, check=True)
+
+
+def moved_main() -> str:
+    """REPO's platform/api/main.py with four lines added after its docstring: every line the documents cite below
+    them moves, as stocks#1366 moved them."""
+    lines = (REPO / MAIN_PY).read_bytes().decode("utf-8").split("\n")
+    return "\n".join(lines[:4] + ["# moved by four lines, as stocks#1366 moved them", "# two", "# three", "# four"] + lines[4:])
+
+
+def edit(text: str, old: str, new: str) -> str:
+    """text with its first `old` replaced, which must be there: a case cannot silently become its control."""
+    assert old in text, old
+    return text.replace(old, new, 1)
+
+
+def refused(r: subprocess.CompletedProcess, fragment: str) -> bool:
+    return r.returncode == 1 and RULE in r.stdout and fragment in r.stdout
+
+
+@pytest.fixture(scope="session")
+def inventory_template(tmp_path_factory) -> tuple[Path, dict[str, str]] | None:
+    """make_repo plus RENDER_TREE from REPO and the three documents rendered over it, as `base`; and `moved`, the
+    files a change that moves main.py's cited lines carries: main.py and the three documents re-rendered. The render
+    runs in this whole repository, because lib/ and scripts/gate/ change its modules and table-reference blocks."""
+    if not RENDERER_HERE:
+        return None
+    root = make_repo(tmp_path_factory.mktemp("inventory"))
+    files = {p: (REPO / p).read_bytes().decode("utf-8") for p in RENDER_TREE}
+    on_base(root, {**files, **{d: skeleton(d) for d in GENERATED}, TRACEABILITY: TRACE_TEXT}, then=render)
+    _git(root, "checkout", "-q", "-b", "moved", "base")
+    write(root, MAIN_PY, moved_main())
+    render(root)
+    moved = {p: (root / p).read_bytes().decode("utf-8") for p in (MAIN_PY, *GENERATED)}
+    _git(root, "checkout", "-q", "-f", "main")
+    _git(root, "branch", "-q", "-D", "moved")
+    return root, moved
+
+
+@pytest.fixture
+def inventory_repo(inventory_template, tmp_path) -> tuple[Path, dict[str, str]] | None:
+    """A copy of inventory_template for one test, which may move its base."""
+    if inventory_template is None:
+        return None
+    template, moved = inventory_template
+    root = tmp_path / "repo"
+    shutil.copytree(template, root, symlinks=True)
+    return root, dict(moved)
+
+
+def test_the_gate_imports_the_renderer_only_for_a_generated_document(inventory_repo):
+    """FEAT-CICD-001 spec, the allowance (done_when[3]): the gate imports scripts/maintenance only when one of the
+    three documents changes, so every other pull request is judged without it."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        on_base(root, {"scripts/maintenance/doc_inventory.py": 'raise RuntimeError("doc_inventory imported")\n'})
+        code_only = pr(root, BRANCH, CODE, **DOCS_OK)
+        with_docs = pr(root, BRANCH, {**CODE, API_DOC: moved[API_DOC]}, **DOCS_OK)
+        assert (code_only.returncode, with_docs.returncode != 0, "doc_inventory imported" in with_docs.stderr) == (0, True, True), \
+            code_only.stdout + with_docs.stdout + with_docs.stderr
+
+
+def test_a_checkout_without_the_renderer_refuses_generated_documents_as_before(repo):
+    """FEAT-CICD-001 spec, the allowance (done_when[3]): a checkout without scripts/maintenance/ (solyra's, and this
+    suite's plain repo) gives no allowance and refuses a generated document as main does, without failing."""
+    r = pr(repo, BRANCH, {**CODE, "docs/product/infrastructure/05-e-API.md": "# API\n"}, **DOCS_OK)
+    assert r.returncode == 1 and "05-e-API.md changes in this feature change" in r.stdout and RULE in r.stdout \
+        and "Traceback" not in r.stderr, r.stdout + r.stderr
+
+
+def test_the_refusal_names_the_inventory_allowance(repo):
+    """FEAT-CICD-001 spec, the allowance (done_when[7]): the refusal for every other docs/product/ path names the
+    re-rendered inventory blocks as an allowed change and cites REQ-GOV-004."""
+    r = pr(repo, BRANCH, {**CODE, "docs/product/13-ROADMAP.md": "# Roadmap\n"}, **DOCS_OK)
+    assert r.returncode == 1 and "13-ROADMAP.md changes in this feature change" in r.stdout \
+        and "re-rendered by scripts/maintenance/doc_inventory.py (REQ-GOV-004)" in r.stdout, r.stdout
+
+
+def test_render_inputs_and_the_documents_themselves_stay_put(inventory_repo):
+    """FEAT-CICD-001 spec, "Render inputs unchanged" and "Same file" (done_when[1]): each case differs from the
+    #1366-shaped head (moved) in one condition, and each is refused citing REQ-GOV-004."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        inputs, same = "which decide the render", "is deleted, renamed or changes file mode"
+        cases = {   # name: (files, then, fragment); each differs from the #1366 head in one condition
+            "doc_inventory.py changes": ({**moved, "scripts/maintenance/doc_inventory.py": (REPO / "scripts/maintenance/doc_inventory.py").read_text(encoding="utf-8") + "# touched\n"}, None, inputs),
+            "check_generated_docs.py changes": ({**moved, "scripts/maintenance/check_generated_docs.py": (REPO / "scripts/maintenance/check_generated_docs.py").read_text(encoding="utf-8") + "# touched\n"}, None, inputs),
+            "the docs test changes": ({**moved, "tests/scripts/test_check_generated_docs.py": "# touched\n"}, None, inputs),
+            "the snapshot changes": ({**moved, SNAPSHOT_FILE: (REPO / SNAPSHOT_FILE).read_text(encoding="utf-8") + "\n"}, None, inputs),
+            "05-e deleted": ({**moved, API_DOC: None}, None, same),
+            "05-e renamed": ({**moved, API_DOC: None, f"{INFRA}/05-e-API-v2.md": moved[API_DOC]}, None, same),
+            "05-e made executable": (moved, lambda r: (r / API_DOC).chmod(0o755), same),
+        }
+        outcomes = {k: pr(root, BRANCH, f, then=t, **DOCS_OK) for k, (f, t, _) in cases.items()}
+        missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, cases[k][2])}
+        assert missed == {}, missed
