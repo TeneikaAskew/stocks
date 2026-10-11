@@ -3746,6 +3746,11 @@ def generated_refusal(path: str, reason: str) -> str:
             "as main's scripts/maintenance/doc_inventory.py re-renders them from this pull request)")
 
 
+# Bytes the docs test reads past: it compares read_text() strings, so a CR folds into a line break, and git calls a
+# file with a NUL binary; U+0085, U+2028 and U+2029 are line breaks to str.splitlines() and none to git.
+CLEAN_BYTES = re.compile(rb"\r|\x00|\xc2\x85|\xe2\x80[\xa8\xa9]")
+
+
 def split_inventory(raw: bytes, names: tuple[str, ...], start: str, end: str,
                     marker_line: re.Pattern[str]) -> tuple[list[tuple[int, bytes]], list[tuple[str, list[bytes]]]]:
     """(the lines outside every block body as (line number, bytes), marker lines included; the blocks as (name, body
@@ -3810,6 +3815,9 @@ def document_refusal(doc: str, base: Tree, tree: Tree, inv: types.ModuleType, cg
         i = next((i for i, (a, b) in enumerate(zip(was, now)) if a[1] != b[1]), min(len(was), len(now)))
         n = now[i][0] if i < len(now) else len(after.split(b"\n"))
         return f"changes line {n} outside its inventory blocks"
+    for name, body in now_blocks:
+        if CLEAN_BYTES.search(b"\n".join(body)):
+            return f"inventory:{name} carries a carriage return, NUL, U+0085, U+2028 or U+2029, which the docs test reads past"
     return None
 
 

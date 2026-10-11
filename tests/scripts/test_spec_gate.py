@@ -4029,3 +4029,19 @@ def test_only_inventory_block_bodies_change(inventory_repo):
         outcomes = {k: pr(root, BRANCH, {**moved, API_DOC: text}, **DOCS_OK) for k, (text, _) in cases.items()}
         missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, cases[k][1])}
         assert missed == {}, missed
+
+
+# A route whose path holds an escape sequence written as source text: main's renderer renders each escape into one
+# 05-a and two 05-e block lines (verified 2026-10-11), so the bytes come from the fixture tree's own rendered text.
+ROUTE = '\n\n@app.get("/api/zz{}")\ndef zz_probe():\n    """Probe."""\n    return {{}}\n'
+
+
+def test_a_block_carries_only_bytes_the_docs_test_sees(inventory_repo):
+    """FEAT-CICD-001 spec, "Clean bytes" (done_when[1]): the docs test reads with read_text(), so a NUL, U+0085,
+    U+2028 or U+2029 inside a block body passes it unseen. Rendered from the route path, so only this rule refuses."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        outcomes = {esc: pr(root, BRANCH, {MAIN_PY: moved_main() + ROUTE.format(esc)}, then=render, **DOCS_OK)
+                    for esc in ("\\x00", "\\x85", "\\u2028", "\\u2029")}   # rendered from the route path, so only this rule refuses
+        missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, "carries a carriage return, NUL, U+0085, U+2028 or U+2029")}
+        assert missed == {}, missed
