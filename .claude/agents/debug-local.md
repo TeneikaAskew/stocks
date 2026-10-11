@@ -53,6 +53,8 @@ If the error is a silent hang (e.g., `make dev` never responds on port 8000), as
 
 If the stack trace points into `site-packages/`, trace back until you hit the first frame in the user's own code — THAT is the failing line, not the library internals.
 
+For a bug a user sees in the site, capture the before-fix reproduction here, before Step 3 writes any fix: an API test of the broken response under `tests/api/`, run against the unfixed code to show it fails, and the owner's Playwright run against the deployed site that reproduces the bug, with screenshots. Step 4 item 5 checks the fix against these runs.
+
 ### Step 3 — Propose a minimal fix (≤5 lines)
 
 The fix must change only what's broken. Forbidden in the same commit:
@@ -78,6 +80,17 @@ After the fix:
 2. Confirm the error is gone
 3. Run `make test` (or the narrower test file closest to the changed code)
 4. Verify no regressions in adjacent features
+5. A bug a user sees in the site is verified with a Playwright run that reproduces it before the
+   fix and passes after it, with screenshots of both: an API test of the fixed response in the PR
+   that fails before the fix and passes after it, and runs against the deployed site that
+   reproduce it before the merge and pass once staging has deployed the fix, which the owner posts
+   on the PR as close-out steps (`AGENTS.md`, `## Review guidelines`, "Browser proof"). This is
+   REQ-GOV-001's "reproduced against pre-fix code before a fix is written", carried into the
+   browser. The runs that reproduce it before the fix are the ones Step 2 captured, and the
+   after-fix runs repeat them. In stocks the API test is pytest under `tests/api/` and carries no screenshots; the
+   screenshots come from the Playwright runs against the deployed site. Those runs use a
+   `*.cloud.spec.ts` written in solyra for the change and run with `npm run e2e:cloud` (none
+   exists yet; solyra CLAUDE.md, Testing discipline, item 5).
 
 If any verification step fails, back out the fix and return to Step 2 — you had the wrong root cause.
 
@@ -164,6 +177,7 @@ Duration so far: <time>
 ## Step 2 — Root cause
 File: <path:line>
 Cause: <explanation>
+Before-fix reproduction (a bug a user sees): <the failing tests/api/ test and its output; the owner's deployed-site run, with screenshots>
 
 ## Step 3 — Minimal fix
 <diff or exact edit>
@@ -172,6 +186,7 @@ Cause: <explanation>
 - [x] Original command reruns cleanly
 - [x] make test passes (or: narrow test xyz passes)
 - [x] no regressions observed
+- [x] a bug a user sees: the Step 2 API test now passes; the owner posts the deployed-site runs, with screenshots, on the PR (item 5)
 
 ## Step 5 — Postmortem
 Written to: docs/incidents/YYYY-MM-DD_<name>.md
