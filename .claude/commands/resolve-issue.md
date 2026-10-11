@@ -4174,10 +4174,12 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    Documentation, tests, and CI-only changes are the genuine exemption — they
    ship by merging.
 
-   `gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml:26` says it
-   outright: *"Merging to main NEVER touches prod. Prod moves only when a human
-   runs the `deploy-solyra-api-prod` trigger."* And the staging build itself is
-   conditional — the same file records that the trigger's `includedFiles` is
+   `gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml:24-26` says the
+   trigger deploys `solyra-api-staging`, the one API service since
+   `solyra-api-prod` and its promote trigger were retired on 2026-10-10, so
+   the staging deploy that a merge to `main` starts is the deployment for an
+   API change. That build is conditional — the same file records (lines 2-8)
+   that the trigger's `includedFiles` is
    `platform/**, lib/**, requirements.txt, gcp/database.py`, so a fix under
    `scripts/` or `gcp/` that an API route imports at request time merges to
    main and starts **no build at all**. Cloud Run Jobs are further out still:
@@ -4679,8 +4681,8 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      about the project, not about your invocation: if the trigger call fails
      on IAM, on its concurrency preflight, or on trigger config, the `list`
      still succeeds and hands you someone else's build, or the previous one —
-     which you then watch go green and promote, shipping the revision staging
-     was already serving.
+     which you then watch go green and verify against, while staging still
+     serves the revision it was already serving.
 
      **Reads whichever shape the CLI returns**, rather than betting on one.
      Without `--async`, `gcloud builds triggers run` waits and returns a
@@ -4696,51 +4698,24 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      both documented shapes and against a response carrying neither, where it
      yields empty and the `test -n` stops the run.
 
-     Then validate against staging and read its serving revision, as below.
-     Promoting without this promotes whatever staging was already serving,
-     which is the code your fix was meant to replace. **Staging is not the end of it.** The same file says
-     prod moves only when a human runs the `deploy-solyra-api-prod` trigger,
-     so a staging-only outcome leaves the fix not serving. Run that trigger
-     and verify against prod, or take the next bullet — do not treat "staging
-     is green" as the deployment.
-
-     **That trigger will not run without the revision you validated.**
-     `gcp/cloudbuild/deploy-solyra-api-prod-cloudbuild.yaml:84-92` exits 1 on an
-     empty `_EXPECT_STAGING_REVISION`, and exits 1 again if the value does not
-     match what staging is serving now — by design, so a promotion moves the
-     revision you actually checked rather than whatever landed on staging while
-     you were checking. So capture the staging revision as part of the
-     verification, not afterwards:
+     Then verify the fix against staging: re-run THIS ISSUE's reproduction
+     from Phase 4 — the failing-before test — against the staging URL, and
+     read which revision staging is serving while you do. **That staging
+     deploy is the deployment.** `solyra-api-staging` is the only API service:
+     `solyra-api-prod` and its `deploy-solyra-api-prod` trigger were retired on 2026-10-10 (#1366),
+     so there is no promotion step after it, and the reproduction passing
+     against the revision you read is the production evidence Phase 9 asks for.
 
      Read the revision with the repo's own helper, not
      `latestReadyRevisionName`. `gcp/cloudbuild/serving_revision.py` exists
      because the two differ whenever staging was rolled back, is split across
-     revisions, or was deployed `--no-traffic` — and in each of those "the
-     latest ready revision is precisely the one nobody validated". The prod
-     trigger resolves the serving revision with that helper, so binding
-     `_EXPECT_STAGING_REVISION` to the latest-ready name makes the promotion
-     fail closed on exactly the cases the helper exists to catch. It also fails
-     loud on nothing-serving or a traffic split, rather than picking one:
-
-     **`--project` on both, resolved once.** Neither command carried it, so
-     both ran in whatever project the active gcloud configuration points at:
-     the describe reads a `solyra-api-staging` that may not be the one you
-     validated, and the trigger promotes in that project or not at all. This is
-     the ambient-project hole the retirement helpers refuse by construction,
-     reintroduced in the block that promotes to production.
-
-     **A function here too, and for a second reason.** `return` outside a
-     function is not merely wrong, it is the `false` bug wearing different
-     clothes: bash prints `return: can only \`return\' from a function or
-     sourced script` and **carries on to the next line** — measured, the guard
-     above printed "no project resolved" and the following command ran anyway.
-     Under `set -e` it aborts instead, so the same two lines behave differently
-     depending on a shell option the reader cannot see. `exit` is not the
-     alternative: these blocks are pasted into a live shell, and `exit` closes
-     it. A function is the only form that stops exactly the recipe.
+     revisions, or was deployed `--no-traffic`, and in each of those the latest
+     ready revision is precisely the one nobody validated. It also fails loud on
+     nothing-serving or a traffic split, rather than picking one. A function,
+     with `--project` resolved once, for the reasons the blocks above give:
 
      ```bash
-     promote_to_prod() {
+     staging_serving_revision() {
        local PROJECT_ID="${PROJECT_ID:-$(gcloud config get-value project)}" REV
        test -n "$PROJECT_ID" || { echo "no project resolved"; return 1; }
        REV=$(gcloud run services describe solyra-api-staging \
@@ -4748,48 +4723,20 @@ inside that window.** An empty review list at 60 seconds means "wait", not
                --format=json | python gcp/cloudbuild/serving_revision.py) \
          || { echo "could not read the staging serving revision"; return 1; }
        test -n "$REV" || { echo "staging is serving nothing, or is split"; return 1; }
-       # THE VERIFICATION IS A STEP, NOT A COMMENT. This line used to read
-       # "...verify against staging while it is serving $REV, THEN promote..."
-       # and nothing enforced it: measured with a stubbed gcloud, the function
-       # as supplied read the revision and ran the production trigger, rc=0,
-       # with no verification of any kind. Reading which revision staging
-       # serves proves that staging serves it, and nothing about whether the
-       # fix works there.
-       # BOUND TO $REV, the same shape round 50 gave the advanced-tip gate:
-       # an acknowledgement of the revision you checked yesterday cannot clear
-       # today's promotion, and staging moves whenever anything else deploys.
-       test "${STAGING_VERIFIED:-}" = "$REV" || {
-         echo "staging is serving $REV and nothing here has verified it."
-         echo "Run THIS ISSUE's reproduction against staging now, while it is"
-         echo "still serving that revision — the failing-before test from"
-         echo "Phase 4, against the staging URL — then re-run bound to it:"
-         printf '  STAGING_VERIFIED=%q promote_to_prod\n' "$REV"
-         echo "If staging has moved on by then, this refuses again with the new"
-         echo "revision, which is the point: the acknowledgement names what you"
-         echo "actually tested."
-         return 1; }
-       gcloud builds triggers run deploy-solyra-api-prod \
-         --project="$PROJECT_ID" --branch=main \
-         --substitutions=_EXPECT_STAGING_REVISION="$REV"
+       echo "staging is serving $REV"
      }
-     promote_to_prod     # BARE, and nothing after it
+     staging_serving_revision     # BARE — see the note above
      ```
 
-     The `|| { …; return 1; }` on the `REV=` assignment is not decoration. A
-     command substitution's failure is invisible to the next line: `REV=$(…)`
-     that dies still assigns the empty string, and `--substitutions=_EXPECT_STAGING_REVISION=`
-     is precisely the empty value `deploy-solyra-api-prod-cloudbuild.yaml:84-92`
-     exits 1 on — a promotion that reports failure for the wrong reason, from a
-     read that failed rather than a revision that moved.
-
-     It fails closed, which is the safe direction — but "run the trigger" as
-     written simply does not promote anything, so the issue would be closed on a
-     deploy that never happened.
-   - **Where promotion is an owner action this session cannot take**, keep the
-     issue OPEN, put the exact command in "Still open before this closes", and
-     say the fix is merged but not yet serving. Closing on candidate evidence
-     while calling it production proof is the failure this whole phase exists
-     to prevent.
+     Run it before and after the reproduction. If the revision changed in
+     between, something else deployed while you were checking: verify again
+     against the new one. Paste both reads and the reproduction's output in
+     the Phase 9 status comment, naming the revision.
+   - **Where the staging deploy or its verification is an owner action this
+     session cannot take**, keep the issue OPEN, put the exact command in
+     "Still open before this closes", and say the fix is merged but not yet
+     verified as serving. Closing on candidate evidence while calling it
+     production proof is the failure this whole phase exists to prevent.
 
 **A completed review with no findings posts no review at all** — Codex reacts
 👍 instead. So `get_reviews` cannot by itself distinguish "reviewed clean" from
