@@ -838,7 +838,12 @@ plausible mechanism. For a change the site shows, evidence includes Playwright
 evidence as `AGENTS.md`'s `## Review guidelines` define it: an API test of the
 changed response in the PR, and runs against the deployed site before the merge
 and once staging has deployed it, which the owner posts on the PR as close-out
-steps, with screenshots of the state each shows.
+steps, with screenshots of the state each shows. In stocks the API test is
+pytest under `tests/api/` and carries no screenshots; the screenshots come from
+the Playwright runs against the deployed site. Those runs use a
+`*.cloud.spec.ts` written in solyra for the change and run with
+`npm run e2e:cloud` (none exists yet; solyra CLAUDE.md, Testing discipline,
+item 5).
 
 #### A doc is a claim, not evidence
 
