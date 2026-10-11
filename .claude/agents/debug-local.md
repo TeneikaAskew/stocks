@@ -78,6 +78,13 @@ After the fix:
 2. Confirm the error is gone
 3. Run `make test` (or the narrower test file closest to the changed code)
 4. Verify no regressions in adjacent features
+5. A bug a user sees in the site is verified with a Playwright run that reproduces it before the
+   fix and passes after it, with screenshots of both: an API test of the fixed response in the PR
+   that fails before the fix and passes after it, and runs against the deployed site that
+   reproduce it before the merge and pass once staging has deployed the fix, which the owner posts
+   on the PR as close-out steps (`AGENTS.md`, `## Review guidelines`, "Browser proof"). This is
+   REQ-GOV-001's "reproduced against pre-fix code before a fix is written", carried into the
+   browser.
 
 If any verification step fails, back out the fix and return to Step 2 — you had the wrong root cause.
 

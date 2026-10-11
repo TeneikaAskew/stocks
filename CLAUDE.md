@@ -827,7 +827,11 @@ confident guess is not.
 
 Evidence means `EXPLAIN (ANALYZE, BUFFERS)`, a live `gcloud` read, a log query,
 or a test run — **with the output shown**. Not a doc, not a code comment, not a
-plausible mechanism.
+plausible mechanism. For a change the site shows, evidence includes Playwright
+evidence as `AGENTS.md`'s `## Review guidelines` define it: an API test of the
+changed response in the PR, and runs against the deployed site before the merge
+and once staging has deployed it, which the owner posts on the PR as close-out
+steps, with screenshots of the state each shows.
 
 #### A doc is a claim, not evidence
 
