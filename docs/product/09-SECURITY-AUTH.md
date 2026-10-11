@@ -68,12 +68,12 @@ if AUTH_MODE != "firebase":
 | Layer | Default | Evidence |
 |---|---|---|
 | Application source | `open` | `auth.py:34` — `os.environ.get("AUTH_MODE", "open")` |
-| Primary deploy script | `iap` | `platform/deploy.sh:91` — `AUTH_MODE_VAL="${AUTH_MODE:-iap}"` |
-| Staging deploy path | `firebase` + **public ingress** | `platform/deploy.sh:93-98` — `STAGING_SERVICE=1` sets `PUBLIC=1`, `AUTH_MODE_VAL="firebase"` |
+| Manual deploy (`platform/deploy.sh`) | `firebase` + **public ingress** | `platform/deploy.sh:74` refuses any run without `STAGING_SERVICE=1`; `platform/deploy.sh:105-106` set `PUBLIC=1`, `AUTH_MODE_VAL="firebase"` |
+| Routine deploy (merge to `main`, `deploy-solyra-api-staging` trigger) | **inherits** the service's existing settings | `gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml:225-229` runs `gcloud run deploy` with only `--update-env-vars=MOVEMENT_STATEMENT_ENABLED=true`, which keeps every other variable and the ingress setting. `AUTH_MODE=firebase` holds because the service already has it (read live 2026-10-11), set by the last manual deploy |
 
 **These differ, and the difference changes the risk statement for
 [#911](https://github.com/TeneikaAskew/stocks/issues/911).** The exposure is not "production runs
-`open`" — the standard deploy path sets `iap`. It is that **neither `open` nor `iap` performs any
+`open`" — the manual deploy path sets `firebase` and the routine one keeps what the service already has (the `iap` default deployed `solyra-api-prod`, retired on 2026-10-10, [stocks#1366](https://github.com/TeneikaAskew/stocks/pull/1366)). It is that **neither `open` nor `iap` performs any
 application-layer check**, so:
 
 1. Any deploy path that does not set `AUTH_MODE` (a manual `gcloud run deploy`, a new job or
@@ -104,7 +104,7 @@ configuration; #1360 replaced it with `tests/api/test_dev_page_auth.py`, which d
 | `AUTH_MODE` | `/dev` answers |
 |---|---|
 | `firebase` (public staging) | 404, with or without an IAP header; browser navigation carries no bearer token, so it is not served at all |
-| `iap` (production) | 200 only when the IAP header names `DEV_ALLOWED_EMAIL`; a missing header is 403, not treated as local |
+| `iap` (no deployed service since `solyra-api-prod` was retired on 2026-10-10) | 200 only when the IAP header names `DEV_ALLOWED_EMAIL`; a missing header is 403, not treated as local |
 | `open` (local dev) | 200, or 403 if a header names another email |
 
 Covered by `tests/api/test_dev_page_auth.py`.
@@ -128,7 +128,7 @@ Covered by `tests/api/test_platform_auth.py`.
 | Admin role management | `PUT /api/admin/users/{uid}/roles` (`admin.py:884`) writes `user_roles`; itself admin-gated | Bootstrap is the env fallback by design |
 | Allowlist | `auth.py:128-136 _is_allowed` | Not a gap — **open registration is the intended model.** `AUTH_OPEN_SIGNUP` defaults to `"1"`, so any verified Firebase identity is admitted; `AUTH_ALLOWED_EMAILS` exists for a deployment that wants to close it and is consulted only then. Firebase still verifies the identity, and the rows below (admin gate, per-user scoping) are what bound what a registered user can do |
 | Ownership / tenancy | per-user scoping for journal ([#626](https://github.com/TeneikaAskew/stocks/pull/626)) and watchlists ([#635](https://github.com/TeneikaAskew/stocks/pull/635)); preferences and profile scope every row by the SERVER-verified identity with a fail-closed guard (see below) | No repo-wide immutable-owner invariant; multi-user policy **not verified** |
-| Deployment perimeter | IAP, Cloud Run IAM/ingress, service identities | `PUBLIC=1` paths bypass the IAM gate by design |
+| Deployment perimeter | Cloud Run IAM/ingress, service identities | `PUBLIC=1` paths bypass the IAM gate by design |
 
 ### Per-user rows: preferences and profile — VERIFIED — CODE
 
@@ -198,9 +198,16 @@ them mis-scopes a review:
    | Trigger | Fires | Deploys |
    |---|---|---|
    | `deploy-solyra-api-staging` | push to main touching `platform/`, `lib/`, `requirements.txt`, `gcp/database.py` | `solyra-api-staging` |
-   | `deploy-solyra-api-prod` | **manual only** | `solyra-api-prod` |
+   | `deploy-solyra-api-prod` | **manual only**; deleted, retired on 2026-10-10 | `solyra-api-prod` |
 
-   **Merging to main can no longer reach production.** That gate was believed
+   The manual `deploy-solyra-api-prod` trigger, which promoted the staging digest onto
+   `solyra-api-prod`, was deleted with that service when it was retired on
+   2026-10-10 ([stocks#1366](https://github.com/TeneikaAskew/stocks/pull/1366),
+   [evidence](https://github.com/TeneikaAskew/stocks/pull/1366#issuecomment-6104207089)).
+   The `deploy-solyra-api-staging` trigger above deploys `solyra-api-staging`, the
+   one API service and the one the site calls, on every push to main it fires on.
+
+   **Merging to main could not reach `solyra-api-prod`.** That gate was believed
    to exist before and did not. The previous design was a tag-based blue/green
    on one service: deploy a `staging`-tagged revision at 0% traffic, then a
    manual promote shifts traffic. `--no-traffic` was dropped from the trigger
@@ -213,19 +220,21 @@ them mis-scopes a review:
    resolved, and the answer was the unfavourable one. Both `trading-platform`
    and `trading-platform-staging` were deleted on 2026-09-06 once the Lovable
    frontend had republished against `solyra-api-staging`; `gcloud run services
-   list` now returns only `solyra-api-prod`, `solyra-api-staging`,
-   `discord-interactions` and `failure-notifier` (verified 2026-09-06).
+   list` then returned only `solyra-api-prod`, `solyra-api-staging`,
+   `discord-interactions` and `failure-notifier` (verified 2026-09-06); since
+   `solyra-api-prod` was retired on 2026-10-10 it returns `discord-interactions`,
+   `failure-notifier` and `solyra-api-staging` (read 2026-10-11).
 
-   Two services now replace the tag: the environment a deploy lands in is the
-   service name, not a traffic percentage. The prod trigger promotes the image
-   digest currently serving staging (read from `status.imageDigest`) rather
-   than rebuilding from main, so prod ships the bits staging validated instead
-   of whatever merged since. Deploys set the image only; env, secrets, Cloud
-   SQL and memory live on the service, because `--set-env-vars` replaces the
-   whole set on every deploy.
+   Two services replaced the tag: the environment a deploy landed in was the
+   service name, not a traffic percentage, and the prod trigger promoted the
+   image digest serving staging (read from `status.imageDigest`) rather than
+   rebuilding from main, until `solyra-api-prod` was retired on 2026-10-10.
+   Deploys set the image only; env, secrets, Cloud SQL and memory live on the
+   service, because `--set-env-vars` replaces the whole set on every deploy.
 
 Operator-run `platform/deploy.sh` under a personal gcloud identity remains a
-third, manual path for both services.
+third, manual path, for `solyra-api-staging` only: since #1366 the script refuses
+any run without `STAGING_SERVICE=1`.
 
 Staging deploys moved from an operator's personal gcloud login to the
 workflow running as the WIF service account `arch-refresh-bot@…`. That SA is
@@ -357,7 +366,7 @@ Two **API** Cloud Run services, read live 2026-09-05:
 
 | Service | Edge | App auth | Reached by |
 |---|---|---|---|
-| `solyra-api-prod` | `iap-enabled: true` | `AUTH_MODE=iap` | Google SSO through IAP |
+| `solyra-api-prod`, retired on 2026-10-10 ([stocks#1366](https://github.com/TeneikaAskew/stocks/pull/1366)) | `iap-enabled: true` | `AUTH_MODE=iap` | Google SSO through IAP |
 | `solyra-api-staging` | `allUsers` → `roles/run.invoker` | `AUTH_MODE=firebase` | anyone; app verifies a Firebase ID token per request |
 
 `allUsers` on staging is deliberate and matches what the service it replaced
@@ -376,7 +385,7 @@ different things and the difference is where the real controls live:
 
 - anyone can create an account with a verified Firebase identity (the email
   itself must be verified since #1360);
-- a registered user reaches the same database and bucket as prod
+- a registered user reaches the production database and bucket
   (`CLOUD_SQL_CONNECTION_NAME=…:trading-db`, `DB_NAME=trading`,
   `GCS_BUCKET=…-trading-data`);
 - what they can **do** there is bounded by authorization rather than by
@@ -394,7 +403,7 @@ to close registration. It is unset here on purpose.
 
 | Item | State |
 |---|---|
-| No environment isolation | "Staging" and "prod" differ in auth mode and one feature flag; the data layer is shared. The rename made the environments legible, it did not separate them. A dedicated staging database is the actual fix and is planned, not done |
+| No environment isolation | "Staging" and "prod" differed in auth mode and one feature flag over a shared data layer until `solyra-api-prod` was retired on 2026-10-10 ([stocks#1366](https://github.com/TeneikaAskew/stocks/pull/1366)); `solyra-api-staging`, the one API service, serves the site from the production database. The rename made the environments legible, it did not separate them. A dedicated staging database is the actual fix and is planned, not done |
 | Least-privilege shape | The deploy identity retains `run.admin` + `actAs` on a compute SA that holds `roles/editor`. Unchanged from the assessment above |
 
 ## Requirements

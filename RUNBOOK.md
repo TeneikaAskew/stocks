@@ -16,7 +16,7 @@ These are derived from the actual backup config — `gcloud sql instances descri
 | **Cloud SQL `trading-db`** | 30-60 min | **~5 min** | PITR enabled (7d transaction log retention). Without PITR, RPO would be 24h (one daily backup). |
 | **GCS `adept-mountain-474619-d4-trading-data`** | ∞ for missing data | ∞ | **No versioning, no backup.** Loss is permanent unless the file can be re-fetched from an external API (AlphaVantage daily/intraday only, no historical re-issue). |
 | **Cloud Run Jobs (76 live) + Schedulers (65)** | 60-90 min | n/a (stateless) | `gcp/deploy.sh all` recreates the **67 declared** jobs and `deploy.sh schedulers` the 65 entries. It does **not** recreate the 11 live-only jobs that were made by hand with `gcloud run jobs create` and have no `deploy_*` function (ARCHITECTURE.md §15 lists them); `p2-build-gamma-levels` matters most, because `gamma-levels-daily` schedules it. Recreate those from the §15 table or accept their loss. |
-| **Cloud Run Services (3: solyra-api-staging, discord-interactions, failure-notifier)** | 30 min | n/a | TWO scripts: `gcp/deploy.sh` redeploys `discord-interactions` and `failure-notifier`, `platform/deploy.sh` the API service (step 10 below; `solyra-api-prod` was retired on 2026-10-10). `solyra-api-staging` is NOT optional in a rebuild: it is the API the frontend actually calls, and `api.stocks.insightscollective.org` maps to it (`STAGING_API` in solyra's `src/lib/apiTargets.ts`), so omitting it leaves the user-facing app dead. |
+| **Cloud Run Services (3: solyra-api-staging, discord-interactions, failure-notifier)** | 30 min | n/a | TWO scripts: `gcp/deploy.sh` redeploys `discord-interactions` and `failure-notifier`, `platform/deploy.sh` the API service (step 10 below; `solyra-api-prod` was retired on 2026-10-10, [stocks#1366](https://github.com/TeneikaAskew/stocks/pull/1366)). `solyra-api-staging` is NOT optional in a rebuild: it is the API the frontend actually calls, and `api.stocks.insightscollective.org` maps to it (`STAGING_API` in solyra's `src/lib/apiTargets.ts`), so omitting it leaves the user-facing app dead. |
 | **Secret Manager (22 secrets)** | 1-4 hours **per secret you can't recover** | 100% loss for unrecoverable secrets | No automated backup. API keys must be re-issued from each provider (AV, FRED, Anthropic, Discord, GitHub PAT, etc.). DB password is internal — can re-rotate via Cloud SQL. |
 | **Whole-project rebuild** | 4-8 hours | Whatever Cloud SQL backup you can restore (≤ 7 days old) | Rebuild sequence in §4 below. |
 
@@ -454,14 +454,22 @@ echo -n "<value>" | gcloud secrets create <name> --data-file=- --replication-pol
 
 # === Step 10: Deploy services that aren't in `all` ===
 # `gcp/deploy.sh all` deploys the JOBS and failure-notifier. It does not create
-# either API service -- those are platform/deploy.sh's -- so a rebuild that
+# the API service -- that is platform/deploy.sh's -- so a rebuild that
 # stops at step 9 leaves the browser-facing API absent (Codex, PR #990).
 ./gcp/deploy.sh discord    # discord-interactions Cloud Run Service (slash commands)
                            # Then point Discord's Interactions Endpoint URL at the new
                            # service URL and run scripts/discord/register_commands.py
 
 # The API service, the one the frontend calls. solyra-api-prod (IAP) was
-# retired on 2026-10-10 and platform/deploy.sh refuses every other mode.
+# retired on 2026-10-10 (stocks#1366) and platform/deploy.sh refuses every
+# other mode.
+# platform/deploy.sh stops unless DB_USER and DB_NAME are set, and in firebase
+# mode the web app's FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN and FIREBASE_APP_ID
+# (public identifiers; the live ones are in the response of
+# `curl https://api.stocks.insightscollective.org/api/config/firebase`).
+DB_USER=trading_user DB_NAME=trading \
+FIREBASE_API_KEY=<apiKey> FIREBASE_AUTH_DOMAIN=auth.stocks.insightscollective.org \
+FIREBASE_APP_ID=<appId> \
 STAGING_SERVICE=1 ./platform/deploy.sh   # solyra-api-staging  (public edge, Firebase)
 # Then re-create the custom domain mapping, which is Cloud Run state and in no
 # script:

@@ -50,7 +50,7 @@ A full-stack equity trading research and execution platform centered on four pri
 | Google Apps Script files | 33 |
 | Test files | ~35 Python (`make test` ~703 tests after PR #94's +251), 34+ E2E specs (includes `admin-auth.spec.ts` — 13 IAP auth tests), 18 script regression |
 | Plans logged Apr 10–26 | 17 (13 ✅ shipped, 3 🟡 partial, 1 📋 investigation) |
-| Production URL | `solyra-api-prod-5sjtb3yl7a-ue.a.run.app` (Cloud Run + IAP SSO, bictech.org) |
+| Production URL | `https://stocks.insightscollective.org` (solyra on Lovable; `solyra-stocks.lovable.app` redirects there), calling `solyra-api-staging` (Firebase sign-in; also mapped at `api.stocks.insightscollective.org`). `solyra-api-prod-5sjtb3yl7a-ue.a.run.app` (Cloud Run + IAP SSO, bictech.org) was retired on 2026-10-10 ([stocks#1366](https://github.com/TeneikaAskew/stocks/pull/1366)) |
 
 **Key architectural achievements (Apr 2026):**
 - **Canonical gamma/Greeks math server-side** (`lib/gamma.py` ~568 lines + `lib/options_greeks.py` ~470-line BSM IV solver). Client-side `greeksCalculator.ts` and `nodeAnalyzer.ts` deleted. New endpoints `POST /api/options/greeks` and `GET /api/options/{ticker}/{date}/levels` drive heatmap + King/Gate/Spot/Flip taxonomy.
@@ -106,7 +106,7 @@ A full-stack equity trading research and execution platform centered on four pri
                     │  FastAPI Backend (platform/api/)       │
                     │  10 routers, TTL caching               │
                     │  uvicorn — port 8000 (dev) /           │
-                    │  Cloud Run (prod, behind IAP)          │
+                    │  Cloud Run (solyra-api-staging)        │
                     └──────────────────┬─────────────────────┘
                                        │ /api/*
                                        ▼
@@ -277,7 +277,9 @@ Vite proxies `/api/*` to `:8000`. CORS allows `*.app.github.dev` for Codespace. 
 
 ### 4.5 Production deployment (Cloud Run + IAP)
 
-Production service: **`solyra-api-prod`** in region `us-east1`. URL: `solyra-api-prod-5sjtb3yl7a-ue.a.run.app`.
+**Retired on 2026-10-10 ([stocks#1366](https://github.com/TeneikaAskew/stocks/pull/1366)).** The service and its `deploy-solyra-api-prod` trigger were deleted ([evidence](https://github.com/TeneikaAskew/stocks/pull/1366#issuecomment-6104207089)); `solyra-api-staging` is the only API service, deployed with `STAGING_SERVICE=1 ./platform/deploy.sh` and served at `api.stocks.insightscollective.org` behind Firebase sign-in. This section records the retired service.
+
+Production service, retired on 2026-10-10: **`solyra-api-prod`** in region `us-east1`. URL: `solyra-api-prod-5sjtb3yl7a-ue.a.run.app`.
 
 **Container build:** multi-stage Dockerfile at `platform/Dockerfile` — Node 20 stage builds the Vite frontend; Python 3.11 stage runs Uvicorn and serves both `/api/*` and the SPA at `/` via FastAPI StaticFiles.
 
@@ -1365,12 +1367,21 @@ bash gcp/deploy.sh fetchers
 # Deploy failure notifier
 bash gcp/deploy.sh notifier
 
-# Deploy unified web service (with IAP)
-bash gcp/deploy.sh platform
+# Deploy the API service by hand (solyra-api-staging; solyra-api-prod was
+# retired on 2026-10-10, stocks#1366). A merge to main redeploys it through the
+# deploy-solyra-api-staging trigger; this is the manual path.
+# platform/deploy.sh stops unless DB_USER and DB_NAME are set, and in firebase
+# mode the web app's FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN and FIREBASE_APP_ID
+# (public identifiers; the live ones are in the response of
+# `curl https://api.stocks.insightscollective.org/api/config/firebase`).
+DB_USER=trading_user DB_NAME=trading \
+FIREBASE_API_KEY=<apiKey> FIREBASE_AUTH_DOMAIN=auth.stocks.insightscollective.org \
+FIREBASE_APP_ID=<appId> \
+STAGING_SERVICE=1 ./platform/deploy.sh
 
 # Verify post-deploy
-curl https://solyra-api-prod-...run.app/api/health
-gcloud run services describe solyra-api-prod --region us-east1
+curl https://api.stocks.insightscollective.org/api/health
+gcloud run services describe solyra-api-staging --region us-east1
 ```
 
 ### 17.7 Ports inventory
