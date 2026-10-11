@@ -66,18 +66,18 @@ git.
   non-`CHANGES_REQUESTED` review object by `chatgpt-codex-connector[bot]` naming the head, though no
   field of a review object names its review type, in CLAUDE.md, the PR template and resolve-issue step 2
   (4240629921, P1); the FEAT-CICD-001 record's Tests field still read "230 python tests" under a Last
-  reviewed of 2026-10-11 (4240629923, P2). The commit after `49a090c8` fixes all three: nothing is
-  pushed after the second round, a merge of `main` included, and a PR that then needs a commit or `main`
-  is re-cut;
-  a review object counts only once the Code Review row reads Completed for its SHA, in the same words in
+  reviewed of 2026-10-11 (4240629923, P2). `dca61430` fixes all three: nothing is pushed after the
+  second round, a merge of `main` included, and a PR that then needs a commit or `main` is re-cut; a
+  review object counts only once the Code Review row reads Completed for its SHA, in the same words in
   all three homes; the Tests field is a count with its command, date and commit (Task 7). It also fixes
   the defects of the same classes found reviewing it: step 5 sends round-1 fixes in one push; step 7
   re-cuts a head that moved past the second round; step 2's detail no longer calls the review object and
   the row alternatives, and its failure list names a review object without a Completed row; step 2,
   CLAUDE.md's closing paragraph and the template wait while the row reads Running rather than ask for a
-  run in progress again; step 3's quote of step 2's bar; this plan's Global Constraints merge `main` only
-  before the second round. `docs/product/README.md:155` and `docs/product/11-CODE-TRACEABILITY.md:43`
-  carry the same stale count and are corrected on a `docs/` branch once this PR merges (Task 7).
+  run in progress again; step 3 quotes step 2's new bar; this plan's Global Constraints merge `main`
+  only before the second round. `docs/product/README.md:155` and
+  `docs/product/11-CODE-TRACEABILITY.md:43` carry the same stale count and are corrected on a `docs/`
+  branch once this PR merges (Task 7).
 - Task numbers are unchanged. Round-1 work sits with the task that owns its file area: the registry rows
   in Task 1, code-reviewer.md in Task 2, the reviewed-head rule in Tasks 3 and 4, the staging gate and
   the resume notes in Task 5, debug-local's before-fix capture and failure handling in Task 6.
