@@ -68,11 +68,12 @@ if AUTH_MODE != "firebase":
 | Layer | Default | Evidence |
 |---|---|---|
 | Application source | `open` | `auth.py:34` — `os.environ.get("AUTH_MODE", "open")` |
-| Staging deploy path | `firebase` + **public ingress** | `platform/deploy.sh:74` refuses any run without `STAGING_SERVICE=1`; `platform/deploy.sh:105-106` set `PUBLIC=1`, `AUTH_MODE_VAL="firebase"` |
+| Manual deploy (`platform/deploy.sh`) | `firebase` + **public ingress** | `platform/deploy.sh:74` refuses any run without `STAGING_SERVICE=1`; `platform/deploy.sh:105-106` set `PUBLIC=1`, `AUTH_MODE_VAL="firebase"` |
+| Routine deploy (merge to `main`, `deploy-solyra-api-staging` trigger) | **inherits** the service's existing settings | `gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml:225-229` runs `gcloud run deploy` with only `--update-env-vars=MOVEMENT_STATEMENT_ENABLED=true`, which keeps every other variable and the ingress setting. `AUTH_MODE=firebase` holds because the service already has it (read live 2026-10-11), set by the last manual deploy |
 
 **These differ, and the difference changes the risk statement for
 [#911](https://github.com/TeneikaAskew/stocks/issues/911).** The exposure is not "production runs
-`open`" — the one deploy path sets `firebase` (its `iap` default deployed `solyra-api-prod`, retired on 2026-10-10, [stocks#1366](https://github.com/TeneikaAskew/stocks/pull/1366)). It is that **neither `open` nor `iap` performs any
+`open`" — the manual deploy path sets `firebase` and the routine one keeps what the service already has (the `iap` default deployed `solyra-api-prod`, retired on 2026-10-10, [stocks#1366](https://github.com/TeneikaAskew/stocks/pull/1366)). It is that **neither `open` nor `iap` performs any
 application-layer check**, so:
 
 1. Any deploy path that does not set `AUTH_MODE` (a manual `gcloud run deploy`, a new job or

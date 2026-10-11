@@ -463,6 +463,13 @@ echo -n "<value>" | gcloud secrets create <name> --data-file=- --replication-pol
 # The API service, the one the frontend calls. solyra-api-prod (IAP) was
 # retired on 2026-10-10 (stocks#1366) and platform/deploy.sh refuses every
 # other mode.
+# platform/deploy.sh stops unless DB_USER and DB_NAME are set, and in firebase
+# mode the web app's FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN and FIREBASE_APP_ID
+# (public identifiers; the live ones are in the response of
+# `curl https://api.stocks.insightscollective.org/api/config/firebase`).
+DB_USER=trading_user DB_NAME=trading \
+FIREBASE_API_KEY=<apiKey> FIREBASE_AUTH_DOMAIN=auth.stocks.insightscollective.org \
+FIREBASE_APP_ID=<appId> \
 STAGING_SERVICE=1 ./platform/deploy.sh   # solyra-api-staging  (public edge, Firebase)
 # Then re-create the custom domain mapping, which is Cloud Run state and in no
 # script:

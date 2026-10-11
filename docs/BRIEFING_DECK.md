@@ -1367,8 +1367,16 @@ bash gcp/deploy.sh fetchers
 # Deploy failure notifier
 bash gcp/deploy.sh notifier
 
-# Deploy the API service (solyra-api-staging; solyra-api-prod was retired on
-# 2026-10-10, stocks#1366)
+# Deploy the API service by hand (solyra-api-staging; solyra-api-prod was
+# retired on 2026-10-10, stocks#1366). A merge to main redeploys it through the
+# deploy-solyra-api-staging trigger; this is the manual path.
+# platform/deploy.sh stops unless DB_USER and DB_NAME are set, and in firebase
+# mode the web app's FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN and FIREBASE_APP_ID
+# (public identifiers; the live ones are in the response of
+# `curl https://api.stocks.insightscollective.org/api/config/firebase`).
+DB_USER=trading_user DB_NAME=trading \
+FIREBASE_API_KEY=<apiKey> FIREBASE_AUTH_DOMAIN=auth.stocks.insightscollective.org \
+FIREBASE_APP_ID=<appId> \
 STAGING_SERVICE=1 ./platform/deploy.sh
 
 # Verify post-deploy
