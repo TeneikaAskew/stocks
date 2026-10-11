@@ -214,6 +214,24 @@ GRID_COLS, GRID_W, GRID_H, GRID_GAP = 9, 240, 62, 12
 GRID_X0, GRID_Y0 = 60, 1540
 
 
+def image_label(image: str) -> str:
+    """The short label an add-on card shows for its container image.
+
+    Read from the reference's last path segment: a digest-pinned image
+    (`name@sha256:<64 hex>`, or `name:tag@sha256:<64 hex>`, which the digest
+    pins) is labelled by its algorithm and the digest's first 12 characters;
+    a tagged image by its tag; anything else by `latest`. The grid used to take
+    the text after the first `:`, so a digest printed all 64 hex characters and
+    overflowed its 240-pixel box, and a tag plus a digest printed
+    `research@sha256`.
+    """
+    last = image.split("/")[-1]
+    if "@" in last:
+        algo, _, digest = last.split("@", 1)[1].partition(":")
+        return f"{algo}:{digest[:12]}"
+    return last.split(":", 1)[1] if ":" in last else "latest"
+
+
 def _cells(page: ET.Element) -> list[ET.Element]:
     return page.find("mxGraphModel/root").findall("mxCell")
 
@@ -316,8 +334,7 @@ def refresh_main(root: ET.Element, live: dict) -> None:
         j = live["jobs"][name]
         r, col = divmod(i, GRID_COLS)
         star = "" if (not repo_jobs or name in repo_jobs) else " ★"
-        img = j["image"].split("/")[-1]
-        tag = img.split(":")[1] if ":" in img else "latest"
+        tag = image_label(j["image"])
         last = j["last_execution"]["time"][:10] or "never"
         text = f"{name}{star}\n{(j['command'] + ' ' + j['args']).strip()[:60]}\n{j['memory']}/{j['cpu']}cpu • {tag} • last {last}"
         fill = "#e1d5e7" if tag.startswith("research") else "#dae8fc"

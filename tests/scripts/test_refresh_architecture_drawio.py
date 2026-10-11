@@ -187,3 +187,28 @@ def test_main_refuses_a_snapshot_without_db_tables(tmp_path, monkeypatch, tables
     assert dw.main(["--snapshot", str(path)]) != 0
     for committed, copy in pairs:
         assert copy.read_bytes() == committed.read_bytes(), committed.name
+
+
+def test_an_add_on_job_is_labelled_by_digest_prefix_or_tag(main_root, live):
+    """Every live job now runs an image pinned by digest. The grid took the
+    text after the first `:` as the tag, so a digest printed all 64 hex
+    characters in a 240-pixel box, and `name:tag@sha256:...` printed
+    `research@sha256`."""
+    page = main_root.findall("diagram")[0]
+
+    def cards() -> dict[str, str]:
+        return {c.get("value").split("\n")[0].replace(" ★", ""): c.get("value")
+                for c in page.iter("mxCell") if (c.get("id") or "").startswith("addon_job_")}
+
+    pinned, tagged, both = sorted(cards())[:3]
+    digest = "0123456789ab" + "c" * 52
+    repo = "us-east1-docker.pkg.dev/p/trading/trading-system"
+    jobs = dict(live["jobs"])
+    jobs[pinned] = dict(jobs[pinned], image=f"{repo}@sha256:{digest}")
+    jobs[tagged] = dict(jobs[tagged], image=f"{repo}:research")
+    jobs[both] = dict(jobs[both], image=f"{repo}:research@sha256:{digest}")
+    dw.refresh_main(main_root, dict(live, jobs=jobs))
+    assert "• sha256:0123456789ab •" in cards()[pinned]
+    assert digest not in cards()[pinned]
+    assert "• research •" in cards()[tagged]
+    assert "• sha256:0123456789ab •" in cards()[both]
