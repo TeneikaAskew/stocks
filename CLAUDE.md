@@ -217,11 +217,14 @@ first review covered, named by SHA), or new (a later commit introduced or
 worsened it, named by SHA). The missed count per reviewer and pull request is
 the lower bound REQ-GOV-003 keeps on what a first review misses.
 
-A first review that posts no findings leaves no review object, so the commit
-it covered is the one Codex's review-summary comment shows for that review
-type when that row first reads Completed, and the author records that SHA in
-a PR comment then, since the next run replaces the row:
-`First Codex code review: Completed on <sha>, no findings.`
+For Codex, a first review that posts no findings leaves no review object, so
+the commit it covered is the one Codex's review-summary comment shows for
+that review type when that row first reads Completed, and the author records
+that SHA in a PR comment then, since the next run replaces the row:
+`First Codex code review: Completed on <sha>, no findings.` A reviewer whose
+clean review does create a review object, as a person's approval does, needs
+no such comment: that object's `commit_id` names the commit its first review
+covered.
 
 #### A resolved thread is not a reviewed commit
 
@@ -240,14 +243,18 @@ it was read past.
 
 So resolving a thread records that *someone* answered the finding. It
 says nothing about whether a reviewer has looked at what is actually
-about to merge, and neither does the review list on its own: a review with
-no findings leaves no review object (Codex reacts 👍 instead), and every reply
-you post on a thread is itself a review object naming the head. So the head
-counts as reviewed only when, after the PR's latest review-triggering event,
-a review authored by `chatgpt-codex-connector[bot]` was submitted naming it
-in `commit_id`, or the Code Review row of Codex's own review-summary comment
-reads Completed for the head's SHA, as `.claude/commands/resolve-issue.md`
-step 2 requires. The cutoff matters: re-marking a draft ready, or an
+about to merge, and neither does the review list on its own: from Codex, a
+review with no findings leaves no review object (it reacts 👍 instead), and
+every reply you post on a thread is itself a review object naming the head.
+So the head counts as reviewed only when, after the PR's latest
+review-triggering event, a review authored by `chatgpt-codex-connector[bot]`
+was submitted naming it in `commit_id`, or the Code Review row of Codex's own
+review-summary comment reads Completed for the head's SHA, as
+`.claude/commands/resolve-issue.md` step 2 requires. Both halves count
+Codex's code review only: the review-triggering events are the PR opened for
+review, the draft marked ready, an `@codex review` comment and a push of new
+commits (an `@codex security review` starts only the security review), and
+the review must not be `CHANGES_REQUESTED`. The cutoff matters: re-marking a draft ready, or an
 `@codex review` on an unchanged head, would otherwise count the older review
 while the new run is still going. `get_reviews` returns oldest first, so the
 current review is on the last page, and all threads `is_outdated` still

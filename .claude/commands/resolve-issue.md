@@ -4017,9 +4017,20 @@ inside that window.** An empty review list at 60 seconds means "wait", not
 2. Confirm the current head **has been reviewed**, which is not the same as "a
    review object exists for it". A clean run posts no review at all, only a
    reaction, so requiring a review object would deadlock every PR that has
-   nothing wrong with it. Either of these satisfies this step:
-   - `pull_request_read` `method: "get_reviews"` returning a review that is
-     **authored by the review bot**, is not `CHANGES_REQUESTED`, whose
+   nothing wrong with it. The rule, as CLAUDE.md §2.5 and the PR template's
+   Merge gate state it: the head counts as reviewed only when, after the PR's
+   latest review-triggering event, a review authored by
+   `chatgpt-codex-connector[bot]` was submitted naming it in `commit_id`, or
+   the Code Review row of Codex's own review-summary comment reads Completed
+   for the head's SHA. Both halves count Codex's code review only: the
+   review-triggering events are the PR opened for review, the draft marked
+   ready, an `@codex review` comment and a push of new commits (an
+   `@codex security review` starts only the security review), and the review
+   must not be `CHANGES_REQUESTED`. In detail, either of these satisfies this
+   step:
+   - `pull_request_read` `method: "get_reviews"` returning a code review that
+     is **authored by the review bot** (`chatgpt-codex-connector[bot]`), is
+     not `CHANGES_REQUESTED`, whose
      `commit_id` is the head SHA, **and `submitted_at` after the most recent
      REVIEW-TRIGGERING EVENT on this PR, whichever it was**. Undrafting is one
      such event; an explicit `@codex review` comment is another, and neither
@@ -4034,8 +4045,10 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      rerun may have been requested by someone else. A push of new commits
      triggers a review too (CLAUDE.md §2.5), but it moves the head, so the
      head-SHA test already ties the review to it. **On a PR that was never
-     drafted and never re-triggered — the ordinary CASE B path — there is no
-     such event and no cutoff**; the head SHA and the author check carry the
+     drafted and never re-triggered — the ordinary CASE B path — the only
+     events are the opening and the pushes, which any review naming the head
+     already follows, so there is no separate cutoff**; the head SHA and the
+     author check carry the
      step on their own, and applying a cutoff to an event that did not happen
      would make the gate unsatisfiable on the normal path.
      **When a cutoff applies and the only review predates it, the answer is
@@ -4044,7 +4057,8 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      review is on the LAST page**; reading page 1 and finding an older "no
      findings" is exactly how #991 merged two minutes after a review it never
      saw; or
-   - the Codex summary comment showing **Completed** against the head SHA,
+   - the **Code Review row** of the Codex summary comment showing
+     **Completed** against the head SHA,
      **authored by the review bot** — and Completed for the CURRENT run: the
      same summary comment is edited in place and flips to **Running** when a
      rerun starts, so a summary read before the rerun began, or one showing
@@ -4066,7 +4080,7 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      is only as strong as its weaker half — which is the same argument the
      forgeability clause above makes, applied to timing instead of authorship.
      **On a PR that was never drafted and never re-triggered there is still no
-     event and no cutoff**, exactly as above; the head SHA and the author check
+     separate cutoff**, exactly as above; the head SHA and the author check
      carry it.
 
    **Check the author, not just the SHA.** Every reply you post on a thread is

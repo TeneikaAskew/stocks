@@ -74,9 +74,14 @@ Canvas refresh pending: none
       the PR's latest review-triggering event, a review authored by
       `chatgpt-codex-connector[bot]` was submitted naming it in `commit_id`,
       or the Code Review row of Codex's review-summary comment reads
-      Completed for the head's SHA (a clean review leaves no review object,
-      so read the row). `get_reviews` returns OLDEST FIRST, so the current
-      review is on the LAST page: reading page 1 and finding an older "no
-      findings" is how #991 was merged two minutes after a review it never
-      saw. Unreviewed → comment `@codex review` and wait
+      Completed for the head's SHA (a clean Codex review leaves no review
+      object, so read the row). Both halves count Codex's code review only:
+      the review-triggering events are the PR opened for review, the draft
+      marked ready, an `@codex review` comment and a push of new commits (an
+      `@codex security review` starts only the security review), and the
+      review must not be `CHANGES_REQUESTED`. `get_reviews` returns OLDEST
+      FIRST, so the current review is on the LAST page: reading page 1 and
+      finding an older "no findings" is how #991 was merged two minutes
+      after a review it never saw. Unreviewed → comment `@codex review` and
+      wait
 - [ ] CI green on the current head, no merge conflict
