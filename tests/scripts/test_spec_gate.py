@@ -16,10 +16,16 @@ finding gives.
 from __future__ import annotations
 
 import ast
+import base64
+import concurrent.futures
 import datetime
+import functools
+import hashlib
 import importlib.util
 import json
+import marshal
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -220,6 +226,96 @@ def pr(repo: Path, branch: str, files: dict[str, str | None], then: Callable[[Pa
     change(repo, branch, files, then)
     # (stocks#1205 r4127577496: Actions passes two 40-character shas, so the suite does too)
     return gate(repo, "--pr", _git(repo, "rev-parse", "base"), _git(repo, "rev-parse", "HEAD"), **{"PR_HEAD_REF": branch, **env})
+
+
+def commits(repo: Path, cases: dict[str, dict[str, str | None]], base: str = "base",
+            modes: dict[str, dict[str, str]] | None = None) -> dict[str, tuple[str, str]]:
+    """{case: (base, head)}: each case's files (None deletes one) committed as one commit parented on `base`, the tree
+    change() commits on a branch cut from it, all made by one `git fast-import` instead of a checkout and a commit per
+    case. `modes` gives a path a case writes its file mode ("100755"). The working tree is left as it is."""
+    parent = _git(repo, "rev-parse", f"{base}^{{commit}}")
+    stream = bytearray()
+    for i, (name, files) in enumerate(cases.items()):
+        stream += f"commit refs/judge/{i}\ncommitter t <t@example.com> {int(datetime.datetime.now().timestamp())} +0000\n" \
+                  f"data 0\nfrom {parent}\n".encode("utf-8")
+        for path, text in files.items():
+            assert "\n" not in path and not path.startswith('"'), path   # a path fast-import reads unquoted
+            if text is None:
+                stream += f"D {path}\n".encode("utf-8")
+            else:
+                data = text.encode("utf-8")
+                stream += f"M {(modes or {}).get(name, {}).get(path, '100644')} inline {path}\ndata {len(data)}\n".encode("utf-8") + data + b"\n"
+    subprocess.run(["git", "fast-import", "--quiet", "--force"], input=bytes(stream), cwd=repo, capture_output=True, check=True)
+    made = dict(line.split() for line in _git(repo, "for-each-ref", "--format=%(refname) %(objectname)", "refs/judge/").splitlines())
+    return {name: (parent, made[f"refs/judge/{i}"]) for i, name in enumerate(cases)}
+
+
+# One interpreter judging many (base, head) pairs as `spec_gate.py --pr BASE HEAD` judges each: the gate's code is
+# executed afresh as a new module per pair, so no state carries from one verdict to the next, and main() runs with its
+# stdout and stderr captured. An exception main() lets out is a traceback and exit 1, as the command line shows it.
+# The code is gate_code()'s compile of GATE when the repository's gate is that file byte for byte, its own otherwise.
+VERDICTS = r'''
+import base64, contextlib, hashlib, io, json, marshal, os, sys, traceback, types
+path = os.path.abspath("scripts/gate/spec_gate.py")
+sys.path[0] = os.path.dirname(path)
+given = json.load(sys.stdin)
+with open(path, "rb") as f:
+    source = f.read()
+digest, packed = given["gate"]
+code = marshal.loads(base64.b64decode(packed)) if hashlib.sha256(source).hexdigest() == digest else \
+    compile(source, "scripts/gate/spec_gate.py", "exec")
+judged = {}
+for name, base, head in given["cases"]:
+    module = types.ModuleType("spec_gate")
+    module.__file__ = path
+    sys.modules["spec_gate"] = module
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            exec(code, module.__dict__)
+            rc = module.main(["scripts/gate/spec_gate.py", "--pr", base, head])
+        except SystemExit as e:
+            rc = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+            if not isinstance(e.code, (int, type(None))):
+                print(e.code, file=sys.stderr)
+        except BaseException:
+            traceback.print_exc()
+            rc = 1
+    judged[name] = [rc, out.getvalue(), err.getvalue()]
+sys.stdout.write(json.dumps(judged))
+'''
+
+
+BATCHES = 2   # interpreters judging at once in verdicts(), beside its gate() runs: CI's runner has 4 CPUs
+
+
+@functools.lru_cache(maxsize=None)
+def gate_code() -> tuple[str, str]:
+    """(sha-256 of GATE, its compiled code marshalled and base64-encoded) for VERDICTS, compiled once per session:
+    each interpreter would otherwise compile the gate's 4,500 lines itself."""
+    source = GATE.read_bytes()
+    return hashlib.sha256(source).hexdigest(), base64.b64encode(marshal.dumps(compile(source, "scripts/gate/spec_gate.py", "exec"))).decode("ascii")
+
+
+def verdicts(repo: Path, pairs: dict[str, tuple[str, str]], e2e: tuple[str, ...] = (), **env: str) -> dict[str, subprocess.CompletedProcess]:
+    """{case: outcome} for each (base, head) pair, judged as the spec-gate workflow judges a pull request from BRANCH:
+    the `e2e` cases each through gate(), the command CI runs, and the rest split over BATCHES interpreters running
+    VERDICTS. All of them run at once: a verdict only reads the repository, and renders in a directory of its own."""
+    env = {"PR_HEAD_REF": BRANCH, **env}
+    inherited = {k: v for k, v in os.environ.items() if not k.startswith(("PR_", "SPEC_GATE_", "GIT_", "PYTEST_"))}   # as gate()
+    rest = [[name, *pair] for name, pair in pairs.items() if name not in e2e]
+    batches = [rest[i::BATCHES] for i in range(min(BATCHES, len(rest)))]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(e2e) + len(batches) or 1) as pool:
+        singles = {name: pool.submit(gate, repo, "--pr", *pairs[name], **env) for name in e2e}
+        runs = [pool.submit(subprocess.run, [sys.executable, "-B", "-c", VERDICTS], cwd=repo, env={**inherited, **env},
+                            input=json.dumps({"gate": gate_code(), "cases": batch}), capture_output=True, text=True) for batch in batches]
+        outcomes = {name: future.result() for name, future in singles.items()}
+        for run in runs:
+            r = run.result()
+            assert r.returncode == 0, r.stderr
+            outcomes |= {name: subprocess.CompletedProcess(["spec_gate.py", "--pr", *pairs[name]], rc, out, err)
+                         for name, (rc, out, err) in json.loads(r.stdout).items()}
+    return outcomes
 
 
 def test_the_gate_cannot_be_edited_outside_chore_and_ci_runs_the_base_copy(repo):
@@ -3794,14 +3890,14 @@ def test_changed_lines_reads_the_diff_as_bytes(repo):
     """
     sg = load_gate(repo)
     on_base(repo, {"docs/f.md": "a\n---\n-- keep\nb\nc\nd\n"})
-    pr(repo, "docs/probe", {"docs/f.md": "a\n+++ added\n++ also\nb\nc\nd\n"})
+    change(repo, "docs/probe", {"docs/f.md": "a\n+++ added\n++ also\nb\nc\nd\n"})
     assert sg.changed_lines(*base_and_head(repo), "docs/f.md") == [("-", 2, "---"), ("-", 3, "-- keep"), ("+", 2, "+++ added"), ("+", 3, "++ also")]
     on_base(repo, {"docs/f.md": "a\nb\nc\nd\ne\nf\n"})
-    pr(repo, "docs/probe", {"docs/f.md": "a\nb-new\r+phantom\nc\nd\ne-new\u2028@@ -9 +9 @@\nf\n"})
+    change(repo, "docs/probe", {"docs/f.md": "a\nb-new\r+phantom\nc\nd\ne-new\u2028@@ -9 +9 @@\nf\n"})
     assert sg.changed_lines(*base_and_head(repo), "docs/f.md") == [("-", 2, "b"), ("+", 2, "b-new\r+phantom"), ("-", 5, "e"), ("+", 5, "e-new\u2028@@ -9 +9 @@")]
     # (red-team round 1: context lines that git's config adds between hunks, blank ones printed empty, are counted)
     on_base(repo, {"docs/f.md": "a\nb\n\nc\nd\ne\n"})
-    pr(repo, "docs/probe", {"docs/f.md": "a\nB\n\nc\nd\nE\n"})
+    change(repo, "docs/probe", {"docs/f.md": "a\nB\n\nc\nd\nE\n"})
     _git(repo, "config", "diff.interHunkContext", "5")
     _git(repo, "config", "diff.suppressBlankEmpty", "true")
     assert sg.changed_lines(*base_and_head(repo), "docs/f.md") == [("-", 2, "b"), ("+", 2, "B"), ("-", 6, "e"), ("+", 6, "E")]
@@ -3815,10 +3911,10 @@ def test_changed_lines_raises_on_a_binary_or_hunkless_diff(repo):
     """
     sg = load_gate(repo)
     on_base(repo, {"docs/f.md": "a\n"})
-    pr(repo, "docs/probe", {"docs/f.md": "a\x00\n"})                                  # binary
+    change(repo, "docs/probe", {"docs/f.md": "a\x00\n"})                              # binary
     with pytest.raises(sg.GitFailed, match="no text hunk"):
         sg.changed_lines(*base_and_head(repo), "docs/f.md")
-    pr(repo, "docs/probe", {}, then=lambda r: (r / "docs/f.md").chmod(0o755))         # mode only
+    change(repo, "docs/probe", {}, then=lambda r: (r / "docs/f.md").chmod(0o755))     # mode only
     with pytest.raises(sg.GitFailed, match="no text hunk"):
         sg.changed_lines(*base_and_head(repo), "docs/f.md")
 
@@ -3847,14 +3943,15 @@ def test_the_catalog_scope_check_sees_every_changed_line(repo):
     own = "### FEAT-MODEL-001\n\n- Status: Production"
     added = "### FEAT-DATA-001\nAdded by a FEAT-MODEL-001 branch.\nAnd a second line.\n"
     ok = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body()}
-    outcomes = {}
-    on_base(repo, {CATALOG: CATALOG_TEXT + "\n---\n\n-- keep this caveat\n"})
-    outcomes["a removed '---' line"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT + "\n\n\n-- keep this caveat\n"}, **ok)
-    on_base(repo, {CATALOG: CATALOG_TEXT})
-    outcomes["a NUL in the own Status"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + "\x00").replace(
-        "### FEAT-DATA-001\n\n- Status: Production", "### FEAT-DATA-001\n\n- Status: Retired")}, **ok)
-    outcomes["U+2028 in the own record"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + " " * 4).replace("### FEAT-DATA-001\n", added)}, **ok)
-    outcomes["lone CRs in the own record"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + "\r" * 4).replace("### FEAT-DATA-001\n", added)}, **ok)
+    # the first two through gate() and the other two by verdicts()'s interpreters; the first on a base holding the line
+    dashed = commits(repo, {"base": {CATALOG: CATALOG_TEXT + "\n---\n\n-- keep this caveat\n"}})["base"][1]
+    pairs = commits(repo, {"a removed '---' line": {**CODE, CATALOG: CATALOG_TEXT + "\n\n\n-- keep this caveat\n"}}, base=dashed)
+    pairs |= commits(repo, {
+        "a NUL in the own Status": {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + "\x00").replace(
+            "### FEAT-DATA-001\n\n- Status: Production", "### FEAT-DATA-001\n\n- Status: Retired")},
+        "U+2028 in the own record": {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + " " * 4).replace("### FEAT-DATA-001\n", added)},
+        "lone CRs in the own record": {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + "\r" * 4).replace("### FEAT-DATA-001\n", added)}})
+    outcomes = verdicts(repo, pairs, e2e=("a removed '---' line", "a NUL in the own Status"), **ok)
     # (red-team round 1: with diff.interHunkContext in the config git reads, main numbered the second hunk inside the own record)
     _git(repo, "config", "diff.interHunkContext", "5")
     outcomes["context lines from git's config"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + "\n- Note: mine").replace(
@@ -3872,8 +3969,9 @@ def test_the_renderer_and_its_snapshot_are_process_files(repo):
     on_base(repo, {CATALOG: cicd_row})
     paths = ("scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
              "scripts/maintenance/__init__.py", "tests/fixtures/live_gcp_snapshot_2026-09-07.json")
-    missed = [p for p in paths if "belong to FEAT-CICD-001" not in
-              pr(repo, BRANCH, {**CODE, p: "# x\n"}, PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body()).stdout]
+    outcomes = verdicts(repo, commits(repo, {p: {**CODE, p: "# x\n"} for p in paths}), e2e=paths[:1],   # the first through gate()
+                        PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body())
+    missed = [p for p in paths if "belong to FEAT-CICD-001" not in outcomes[p].stdout]
     assert missed == [], missed
 
 
@@ -3893,7 +3991,10 @@ def test_the_gate_names_the_documents_and_snapshot_the_docs_test_reads():
 
 
 # The generated documents: a fixture tree holding scripts/maintenance/, the snapshot and only the files the three
-# documents' blocks render from, rendered once per session (inventory_template) and copied per test.
+# documents' blocks render from, built and rendered once per session (inventory_template) and copied per test. The
+# gate runs from the working tree but is not committed there (.git/info/exclude): scanning its 4,500 lines doubled
+# the cost of every render, the person's and the gate's own, and changed no block. gcp/deploy.sh and gcp/schema.sql
+# are cut short (cut()) for the same reason.
 INFRA = "docs/product/infrastructure"
 GENERATED = (f"{INFRA}/05-a-ARCHITECTURE.md", f"{INFRA}/05-c-DATA_DEPENDENCIES.md", f"{INFRA}/05-e-API.md")
 API_DOC = GENERATED[2]
@@ -3904,6 +4005,13 @@ RENDER_TREE = ("scripts/maintenance/__init__.py", "scripts/maintenance/doc_inven
 TRACE_TEXT = "# Traceability\n\n### FEAT-MODEL-001\n\n- #1\n"
 RULE = "REQ-GOV-004"
 DOCS_OK = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body() + "\n\n## Capacity\nn/a: x\n"}
+# A route whose path holds an escape sequence written as source text: main's renderer renders each escape into one
+# 05-a and two 05-e block lines (verified 2026-10-11), so the bytes come from the fixture tree's own rendered text.
+ROUTE = '\n\n@app.get("/api/zz{}")\ndef zz_probe():\n    """Probe."""\n    return {{}}\n'
+ESCAPES = {"\\x00": "\x00", "\\x85": "\x85", "\\u2028": " ", "\\u2029": " "}   # as main.py spells each: as rendered
+# A deploy.sh job whose --args names its entrypoint: the renderer reads that file's first docstring line. Verified on
+# 2026-10-11: with an absolute path the fence exits 86, and with gcp/evil_job.py the render opens nothing outside.
+JOB = "\ndeploy_evil_job() {{\n    gcloud run jobs deploy evil-job \\\n        --command python3 \\\n        --args {}\n}}\n"
 
 
 def skeleton(doc: str) -> str:
@@ -3920,7 +4028,25 @@ def render(root: Path, docs: tuple[str, ...] = GENERATED) -> None:
     """Re-render docs' blocks in root's working tree with root's renderer, as a person re-renders them.
     -B: a __pycache__ would otherwise be committed by `git add -A`."""
     subprocess.run([sys.executable, "-B", "-m", "scripts.maintenance.doc_inventory", "--root", ".", "--snapshot", SNAPSHOT_FILE,
-                    "--insert", *docs], cwd=root, check=True)
+                    "--insert", *docs], cwd=root, check=True, capture_output=True)
+
+
+# Where cut() ends each file: before the fourth deploy_ function, which keeps three jobs, and before the eleventh
+# CREATE TABLE, which keeps ten tables.
+CUTS = {"gcp/deploy.sh": (re.compile(r"^deploy_", re.M), 3), "gcp/schema.sql": (re.compile(r"^CREATE TABLE", re.M), 10)}
+
+
+def cut(path: str) -> str:
+    """REPO's `path`, ended where CUTS says for a render input whose length costs time and is read by no case: the
+    renderer reads every job and every table on each render (1.26 s a render whole, 0.56 s cut, measured 2026-10-11),
+    and the blocks the cases edit render from main.py, which stays whole."""
+    text = (REPO / path).read_bytes().decode("utf-8")
+    if path not in CUTS:
+        return text
+    pattern, keep = CUTS[path]
+    starts = [m.start() for m in pattern.finditer(text)]
+    assert len(starts) > keep, path   # a cut that keeps the whole file would cost what it is meant to save
+    return text[:starts[keep]]
 
 
 def moved_main() -> str:
@@ -3940,44 +4066,131 @@ def refused(r: subprocess.CompletedProcess, fragment: str) -> bool:
     return r.returncode == 1 and RULE in r.stdout and fragment in r.stdout
 
 
+def reason(r: subprocess.CompletedProcess, path: str) -> str:
+    """The refusal lines the gate printed for path."""
+    return "\n".join(line for line in r.stdout.splitlines() if line.startswith(f" - {path}"))
+
+
+def with_escape(control: dict[str, str], src: str) -> dict[str, str]:
+    """control with ROUTE's path holding the escape spelled `src`, and that character put into the documents' rows
+    where main's renderer copies the path: what it renders, as the template's \\x00 render shows."""
+    c = ESCAPES[src]
+    return {**control, MAIN_PY: moved_main() + ROUTE.format(src),
+            **{d: control[d].replace("`/api/zz`", f"`/api/zz{c}`") for d in GENERATED}}
+
+
+def mktree(root: Path, lines: str) -> str:
+    """The id of the tree `git mktree` builds from ls-tree-format `lines`."""
+    return subprocess.run(["git", "mktree"], input=lines, cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def spliced(root: Path, entry: str, base: str = "base", head: str = "HEAD") -> tuple[str, str]:
+    """(base, head) rebuilt with one more root entry, `vendor`, a tree made from the single ls-tree line `entry`, in
+    both commits. The head commit is parented on the base, so the entry sits in the head tree and never in the diff."""
+    vendor = mktree(root, entry + "\n")
+    shas: list[str] = []
+    for rev in (base, head):
+        tree = mktree(root, _git(root, "ls-tree", f"{rev}^{{tree}}") + f"\n040000 tree {vendor}\tvendor\n")
+        parent = shas[-1] if shas else _git(root, "rev-parse", base)
+        shas.append(_git(root, "commit-tree", tree, "-p", parent, "-m", f"{rev} with vendor"))
+    return shas[0], shas[1]
+
+
+def plain_entry(root: Path) -> str:
+    """The ls-tree line for `ok`, a tree holding one plain file: what the accepted control splices in."""
+    blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], input="x", cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+    tree = mktree(root, f"100644 blob {blob}\tx\n")
+    return f"040000 tree {tree}\tok"
+
+
+def control_pairs(root: Path, cases: dict[str, dict[str, str | None]]) -> dict[str, tuple[str, str]]:
+    """{case: (base, head)}: each case's files committed on base (commits()) with the plain `ok` spliced in, as the
+    accepted control (accepted_control) carries it, so each head differs from the control in its files alone."""
+    ok = plain_entry(root)
+    return {name: spliced(root, ok, *pair) for name, pair in commits(root, cases).items()}
+
+
 @pytest.fixture(scope="session")
-def inventory_template(tmp_path_factory) -> tuple[Path, dict[str, str]] | None:
-    """make_repo plus RENDER_TREE from REPO and the three documents rendered over it, as `base`; and `moved`, the
-    files a change that moves main.py's cited lines carries: main.py and the three documents re-rendered. The render
-    runs in this whole repository, because lib/ and scripts/gate/ change its modules and table-reference blocks."""
+def inventory_template(tmp_path_factory) -> tuple[Path, dict[str, dict[str, str]]] | None:
+    """make_repo plus RENDER_TREE from REPO (cut()) and the three documents with empty blocks, as `base`, and the
+    heads the tests carry, rendered here once:
+    - moved: main.py with four lines added near the top, as stocks#1366 added them, and the documents re-rendered;
+    - nul: moved's main.py plus ROUTE with \\x00 in its path, a deploy.sh job whose entrypoint is gcp/evil_job.py,
+      that file, and the documents re-rendered;
+    - control: nul with the escape taken out of ROUTE and out of the rows that carry its path. accepted_control shows
+      the gate's own render of this head equals it; it is the accepted control for the clean-bytes, fence and
+      head-tree cases;
+    - escaped: control with the job's entrypoint an absolute path to a file outside the tree; the documents are
+      control's, since the fence refuses before anything is compared.
+    The base's blocks stay empty: the gate compares a head's blocks with main's render of that head and never reads
+    the base's, so a base render would cost a render and change no verdict."""
     if not RENDERER_HERE:
         return None
     root = make_repo(tmp_path_factory.mktemp("inventory"))
-    files = {p: (REPO / p).read_bytes().decode("utf-8") for p in RENDER_TREE}
-    on_base(root, {**files, **{d: skeleton(d) for d in GENERATED}, TRACEABILITY: TRACE_TEXT}, then=render)
-    _git(root, "checkout", "-q", "-b", "moved", "base")
-    write(root, MAIN_PY, moved_main())
-    render(root)
-    moved = {p: (root / p).read_bytes().decode("utf-8") for p in (MAIN_PY, *GENERATED)}
-    _git(root, "checkout", "-q", "-f", "main")
-    _git(root, "branch", "-q", "-D", "moved")
-    return root, moved
+    def untrack_gate(r: Path) -> None:
+        _git(r, "rm", "-q", "--cached", "scripts/gate/spec_gate.py")
+        (r / "scripts/gate/spec_gate.py").unlink()
+        with open(r / ".git/info/exclude", "a", encoding="utf-8") as f:
+            f.write("/scripts/gate/spec_gate.py\n")
+    files = {p: cut(p) for p in RENDER_TREE}
+    on_base(root, {**files, **{d: skeleton(d) for d in GENERATED}, TRACEABILITY: TRACE_TEXT}, then=untrack_gate)
+    # the renderer's modules compiled once, as the gate's first import leaves them in CI, and never committed: every
+    # copy's gate, its render and the interpreters judging verdicts otherwise compile their 7,000 lines each time
+    with open(root / ".git/info/exclude", "a", encoding="utf-8") as f:
+        f.write("__pycache__/\n")
+    subprocess.run([sys.executable, "-m", "compileall", "-q", "scripts/maintenance"], cwd=root, check=True)
+    outside = tmp_path_factory.mktemp("outside") / "evil_job.py"
+    outside.write_text('"""A job entrypoint outside the tree."""\n', encoding="utf-8")
+    job = {"gcp/deploy.sh": files["gcp/deploy.sh"] + JOB.format("gcp/evil_job.py"), "gcp/evil_job.py": '"""A job entrypoint inside the tree."""\n'}
+    heads: dict[str, dict[str, str]] = {"moved": {MAIN_PY: moved_main()}, "nul": {**job, MAIN_PY: moved_main() + ROUTE.format("\\x00")}}
+    trees = {name: tmp_path_factory.mktemp(name) / "tree" for name in heads}
+    for name, tree in trees.items():   # the base's files with the head's written over them, each rendered at once
+        shutil.copytree(root, tree, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+        for path, text in heads[name].items():
+            write(tree, path, text)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(trees)) as pool:
+        list(pool.map(render, trees.values()))
+    for name, tree in trees.items():
+        heads[name] |= {d: (tree / d).read_bytes().decode("utf-8") for d in GENERATED}
+    heads["control"] = {**heads["nul"], MAIN_PY: moved_main() + ROUTE.format(""),
+                        **{d: heads["nul"][d].replace("`/api/zz\x00`", "`/api/zz`") for d in GENERATED}}
+    heads["escaped"] = {**heads["control"], "gcp/deploy.sh": files["gcp/deploy.sh"] + JOB.format(outside)}
+    write(root, "scripts/gate/spec_gate.py", GATE.read_text(encoding="utf-8"))   # the gate runs from here, uncommitted
+    return root, heads
 
 
 @pytest.fixture
-def inventory_repo(inventory_template, tmp_path) -> tuple[Path, dict[str, str]] | None:
+def inventory_repo(inventory_template, tmp_path) -> tuple[Path, dict[str, dict[str, str]]] | None:
     """A copy of inventory_template for one test, which may move its base."""
     if inventory_template is None:
         return None
-    template, moved = inventory_template
+    template, heads = inventory_template
     root = tmp_path / "repo"
     shutil.copytree(template, root, symlinks=True)
-    return root, dict(moved)
+    return root, {name: dict(files) for name, files in heads.items()}
+
+
+@pytest.fixture(scope="session")
+def accepted_control(inventory_template, tmp_path_factory) -> subprocess.CompletedProcess | None:
+    """The gate's verdict, in a subprocess, on the control head with the plain `ok` spliced in: the accepted control
+    the clean-bytes, fence and head-tree cases each differ from in one condition, judged once for the tests citing it."""
+    if inventory_template is None:
+        return None
+    template, heads = inventory_template
+    root = tmp_path_factory.mktemp("control") / "repo"
+    shutil.copytree(template, root, symlinks=True)
+    return gate(root, "--pr", *control_pairs(root, {"control": heads["control"]})["control"], PR_HEAD_REF=BRANCH, **DOCS_OK)
 
 
 def test_the_gate_imports_the_renderer_only_for_a_generated_document(inventory_repo):
     """FEAT-CICD-001 spec, the allowance (done_when[3]): the gate imports scripts/maintenance only when one of the
     three documents changes, so every other pull request is judged without it."""
     if RENDERER_HERE:
-        root, moved = inventory_repo
+        root, heads = inventory_repo
         on_base(root, {"scripts/maintenance/doc_inventory.py": 'raise RuntimeError("doc_inventory imported")\n'})
-        code_only = pr(root, BRANCH, CODE, **DOCS_OK)
-        with_docs = pr(root, BRANCH, {**CODE, API_DOC: moved[API_DOC]}, **DOCS_OK)
+        both = verdicts(root, commits(root, {"code only": CODE, "with docs": {**CODE, API_DOC: heads["moved"][API_DOC]}}),
+                        e2e=("code only", "with docs"), **DOCS_OK)
+        code_only, with_docs = both["code only"], both["with docs"]
         assert (code_only.returncode, with_docs.returncode != 0, "doc_inventory imported" in with_docs.stderr) == (0, True, True), \
             code_only.stdout + with_docs.stdout + with_docs.stderr
 
@@ -4002,19 +4215,21 @@ def test_render_inputs_and_the_documents_themselves_stay_put(inventory_repo):
     """FEAT-CICD-001 spec, "Render inputs unchanged" and "Same file" (done_when[1]): each case differs from the
     #1366-shaped head (moved) in one condition, and each is refused citing REQ-GOV-004."""
     if RENDERER_HERE:
-        root, moved = inventory_repo
+        root, heads = inventory_repo
+        moved = heads["moved"]
         inputs, same = "which decide the render", "is deleted, renamed or changes file mode"
-        cases = {   # name: (files, then, fragment); each differs from the #1366 head in one condition
-            "doc_inventory.py changes": ({**moved, "scripts/maintenance/doc_inventory.py": (REPO / "scripts/maintenance/doc_inventory.py").read_text(encoding="utf-8") + "# touched\n"}, None, inputs),
-            "check_generated_docs.py changes": ({**moved, "scripts/maintenance/check_generated_docs.py": (REPO / "scripts/maintenance/check_generated_docs.py").read_text(encoding="utf-8") + "# touched\n"}, None, inputs),
-            "the docs test changes": ({**moved, "tests/scripts/test_check_generated_docs.py": "# touched\n"}, None, inputs),
-            "the snapshot changes": ({**moved, SNAPSHOT_FILE: (REPO / SNAPSHOT_FILE).read_text(encoding="utf-8") + "\n"}, None, inputs),
-            "05-e deleted": ({**moved, API_DOC: None}, None, same),
-            "05-e renamed": ({**moved, API_DOC: None, f"{INFRA}/05-e-API-v2.md": moved[API_DOC]}, None, same),
-            "05-e made executable": (moved, lambda r: (r / API_DOC).chmod(0o755), same),
+        cases = {   # name: (files, fragment); each differs from the #1366 head in one condition
+            "doc_inventory.py changes": ({**moved, "scripts/maintenance/doc_inventory.py": (REPO / "scripts/maintenance/doc_inventory.py").read_text(encoding="utf-8") + "# touched\n"}, inputs),
+            "check_generated_docs.py changes": ({**moved, "scripts/maintenance/check_generated_docs.py": (REPO / "scripts/maintenance/check_generated_docs.py").read_text(encoding="utf-8") + "# touched\n"}, inputs),
+            "the docs test changes": ({**moved, "tests/scripts/test_check_generated_docs.py": "# touched\n"}, inputs),
+            "the snapshot changes": ({**moved, SNAPSHOT_FILE: (REPO / SNAPSHOT_FILE).read_text(encoding="utf-8") + "\n"}, inputs),
+            "05-e deleted": ({**moved, API_DOC: None}, same),
+            "05-e renamed": ({**moved, API_DOC: None, f"{INFRA}/05-e-API-v2.md": moved[API_DOC]}, same),
+            "05-e made executable": (moved, same),
         }
-        outcomes = {k: pr(root, BRANCH, f, then=t, **DOCS_OK) for k, (f, t, _) in cases.items()}
-        missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, cases[k][2])}
+        pairs = commits(root, {k: f for k, (f, _) in cases.items()}, modes={"05-e made executable": {API_DOC: "100755"}})
+        outcomes = verdicts(root, pairs, e2e=("doc_inventory.py changes", "05-e deleted"), **DOCS_OK)   # one per refusal through gate()
+        missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, cases[k][1])}
         assert missed == {}, missed
 
 
@@ -4023,7 +4238,8 @@ def test_only_inventory_block_bodies_change(inventory_repo):
     aside, 05-e must equal main's byte for byte, on exact marker lines in main's order. Each case is the #1366 head
     with one change, and each is refused citing REQ-GOV-004 and naming its condition."""
     if RENDERER_HERE:
-        root, moved = inventory_repo
+        root, heads = inventory_repo
+        moved = heads["moved"]
         t = moved[API_DOC]
         rs, re_, ts = "<!-- inventory:routes:start -->", "<!-- inventory:routes:end -->", "<!-- inventory:routers:start -->"
         routers = t[t.index(ts):t.index("<!-- inventory:routers:end -->") + len("<!-- inventory:routers:end -->\n")]
@@ -4042,53 +4258,44 @@ def test_only_inventory_block_bodies_change(inventory_repo):
             "a block repeated": (edit(t, routers, routers + routers), "marker lines"),
             "a name 05-e does not carry": (edit(t, "Prose after routes.", "Prose after routes.\n<!-- inventory:jobs:start -->"), "marker lines"),
         }
-        outcomes = {k: pr(root, BRANCH, {**moved, API_DOC: text}, **DOCS_OK) for k, (text, _) in cases.items()}
+        arch, deps = GENERATED[0], GENERATED[1]
+        a, c = moved[arch], moved[deps]
+        n_a = a.split("\n").index("Prose after routes.") + 1
+        pairs = commits(root, {**{k: {**moved, API_DOC: text} for k, (text, _) in cases.items()},
+                               # one refusal of each kind, one per document, through gate(), the command CI runs
+                               "end to end": {**moved, arch: edit(a, "Prose after routes.", "Prose after routes!"), deps: c.replace("\n", "\r\n"),
+                                              API_DOC: cases["a marker added"][0]}})
+        outcomes = verdicts(root, pairs, e2e=("end to end",), **DOCS_OK)
+        e2e = outcomes.pop("end to end")
         missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, cases[k][1])}
-        assert missed == {}, missed
-
-
-# A route whose path holds an escape sequence written as source text: main's renderer renders each escape into one
-# 05-a and two 05-e block lines (verified 2026-10-11), so the bytes come from the fixture tree's own rendered text.
-ROUTE = '\n\n@app.get("/api/zz{}")\ndef zz_probe():\n    """Probe."""\n    return {{}}\n'
+        shown = (f"changes line {n_a} outside its inventory blocks" in reason(e2e, arch), "carriage return" in reason(e2e, deps),
+                 "marker lines" in reason(e2e, API_DOC))
+        assert (missed, shown) == ({}, (True, True, True)), (missed, e2e.stdout)
 
 
 def test_a_block_carries_only_bytes_the_docs_test_sees(inventory_repo):
     """FEAT-CICD-001 spec, "Clean bytes" (done_when[1]): the docs test reads with read_text(), so a NUL, U+0085,
-    U+2028 or U+2029 inside a block body passes it unseen. Rendered from the route path, so only this rule refuses."""
+    U+2028 or U+2029 inside a block body passes it unseen. Rendered from the route path, so only this rule refuses:
+    \\x00 as the template rendered it, judged in a subprocess, and the others as the same substitution renders them,
+    which the test checks against that render."""
     if RENDERER_HERE:
-        root, moved = inventory_repo
-        outcomes = {esc: pr(root, BRANCH, {MAIN_PY: moved_main() + ROUTE.format(esc)}, then=render, **DOCS_OK)
-                    for esc in ("\\x00", "\\x85", "\\u2028", "\\u2029")}   # rendered from the route path, so only this rule refuses
+        root, heads = inventory_repo
+        control, nul = heads["control"], heads["nul"]
+        pairs = control_pairs(root, {src: nul if src == "\\x00" else with_escape(control, src) for src in ESCAPES})
+        outcomes = verdicts(root, pairs, e2e=("\\x00",), **DOCS_OK)
         missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, "carries a carriage return, NUL, U+0085, U+2028 or U+2029")}
-        assert missed == {}, missed
-
-
-def mktree(root: Path, lines: str) -> str:
-    """The id of the tree `git mktree` builds from ls-tree-format `lines`."""
-    return subprocess.run(["git", "mktree"], input=lines, cwd=root, capture_output=True, text=True, check=True).stdout.strip()
-
-
-def spliced(root: Path, entry: str) -> tuple[str, str]:
-    """(base, head) rebuilt with one more root entry, `vendor`, a tree made from the single ls-tree line `entry`, in
-    both commits. The head commit is parented on the base, so the entry sits in the head tree and never in the diff.
-    Called after pr(), on its HEAD."""
-    vendor = mktree(root, entry + "\n")
-    shas: list[str] = []
-    for rev in ("base", "HEAD"):
-        tree = mktree(root, _git(root, "ls-tree", f"{rev}^{{tree}}") + f"\n040000 tree {vendor}\tvendor\n")
-        parent = shas[-1] if shas else _git(root, "rev-parse", "base")
-        shas.append(_git(root, "commit-tree", tree, "-p", parent, "-m", f"{rev} with vendor"))
-    return shas[0], shas[1]
+        assert with_escape(control, "\\x00") == nul and missed == {}, missed
 
 
 def test_the_head_tree_is_plain_files(inventory_repo):
     """FEAT-CICD-001 spec, "Exact render", the tree (done_when[1]): the render reads the head tree written out as plain
     files, so a .gitattributes that changes bytes on export, a symbolic link, a submodule and a path component that
-    is empty, '.', '..' or '.git' (in any case) are each refused before anything is written."""
+    is empty, '.', '..' or '.git' (in any case) are each refused before anything is written. Each case is the accepted
+    control (accepted_control) with its plain spliced entry replaced, or with a .gitattributes added."""
     if RENDERER_HERE:
-        root, moved = inventory_repo
-        outcomes = {f".gitattributes {a}": (pr(root, BRANCH, {**moved, ".gitattributes": f"{API_DOC} {a}\n"}, **DOCS_OK), "a .gitattributes")
-                    for a in ("export-subst", "eol=crlf", "ident")}
+        root, heads = inventory_repo
+        control = heads["control"]
+        attributes = {f".gitattributes {a}": {**control, ".gitattributes": f"{API_DOC} {a}\n"} for a in ("export-subst", "eol=crlf", "ident")}
         blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], input="../gcp/schema.sql", cwd=root, capture_output=True, text=True, check=True).stdout.strip()
         x = mktree(root, f"100644 blob {blob}\tx\n")
         entries = {"a symbolic link": (f"120000 blob {blob}\tlink", "a symbolic link"),
@@ -4097,11 +4304,11 @@ def test_the_head_tree_is_plain_files(inventory_repo):
                    **{f"component {c}": (f"040000 tree {x}\t{c}", "a path component") for c in (".", "..", ".git", ".GIT")},
                    # (red-team round 1: a name the filesystem cannot hold crashed the gate with a traceback)
                    "a 256-byte name": (f"100644 blob {blob}\t{'x' * 256}", "cannot be written out")}
-        change(root, BRANCH, moved)   # the #1366 head, which each splice extends
-        for name, (entry, fragment) in entries.items():
-            b, h = spliced(root, entry)
-            outcomes[name] = (gate(root, "--pr", b, h, PR_HEAD_REF=BRANCH, **DOCS_OK), fragment)
-        missed = {k: r.stdout[-400:] for k, (r, fragment) in outcomes.items() if not refused(r, fragment)}
+        pair = commits(root, {"control": control})["control"]   # the accepted control's head; each entry stands in for `ok`
+        pairs = {**control_pairs(root, attributes), **{name: spliced(root, entry, *pair) for name, (entry, _) in entries.items()}}
+        outcomes = verdicts(root, pairs, e2e=(".gitattributes export-subst", "an empty component", "a 256-byte name"), **DOCS_OK)
+        fragments = {**{k: "a .gitattributes" for k in attributes}, **{k: fragment for k, (_, fragment) in entries.items()}}
+        missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, fragments[k])}
         assert missed == {}, missed
 
 
@@ -4116,19 +4323,14 @@ def test_materialize_writes_inside_its_directory_only(repo, tmp_path_factory):
     assert (out / "lib/model.py").read_bytes() == b"DECISION = 'size'\n" and not (out.parent / "escape.py").exists()
 
 
-# A deploy.sh job whose --args names its entrypoint: the renderer reads that file's first docstring line. Verified on
-# 2026-10-11: with an absolute path the fence exits 86, and with gcp/evil_job.py the render opens nothing outside.
-JOB = "\ndeploy_evil_job() {{\n    gcloud run jobs deploy evil-job \\\n        --command python3 \\\n        --args {}\n}}\n"
-
-
 def test_a_feature_change_carries_its_re_rendered_inventory_blocks(inventory_repo):
     """FEAT-CICD-001 spec, the allowance (done_when[0]): a feature branch that adds four lines near the top of
     platform/api/main.py, as stocks#1366 did, passes the PR-mode gate carrying the three documents' re-rendered
     blocks and its own catalog and traceability records."""
     if RENDERER_HERE:
-        root, moved = inventory_repo
+        root, heads = inventory_repo
         own = edit(CATALOG_TEXT, "### FEAT-MODEL-001\n\n- Status: Production", "### FEAT-MODEL-001\n\n- Status: Production\n- Note: cited lines moved")
-        r = pr(root, BRANCH, {**moved, CATALOG: own, TRACEABILITY: TRACE_TEXT + "- #7\n"}, **DOCS_OK)
+        r = pr(root, BRANCH, {**heads["moved"], CATALOG: own, TRACEABILITY: TRACE_TEXT + "- #7\n"}, **DOCS_OK)
         changed = set(_git(root, "diff", "--name-only", "base", "HEAD").splitlines())
         assert r.returncode == 0 and changed == {MAIN_PY, *GENERATED, CATALOG, TRACEABILITY}, r.stdout + r.stderr
 
@@ -4136,53 +4338,51 @@ def test_a_feature_change_carries_its_re_rendered_inventory_blocks(inventory_rep
 def test_a_block_must_equal_mains_render(inventory_repo):
     """FEAT-CICD-001 spec, "Exact render" (done_when[1]): a hand-edited row is refused with the first difference and
     the exact re-render command, and a renderer that fails on the pull request's files refuses with its exception
-    line rather than passing, reporting a difference, or crashing the gate."""
+    line rather than passing, reporting a difference, or crashing the gate. The three documents each carry one
+    edited block in one head: main's renderer reports every block that differs, so one render judges all three."""
     if RENDERER_HERE:
-        root, moved = inventory_repo
-        hand = pr(root, BRANCH, {**moved, API_DOC: edit(moved[API_DOC], "Liveness probe:", "Liveness probe, hand-edited:")}, **DOCS_OK)
-        broken = pr(root, BRANCH, {**moved, MAIN_PY: moved_main() + "\ndef broken(:\n"}, **DOCS_OK)
-        # (red-team round 1: the docs test's block pattern ends at the first end marker even mid-line, so main's
-        # differing_blocks read the block as ending there and passed the hand-written row after it)
-        end = "\n<!-- inventory:routes:end -->"
-        behind = pr(root, BRANCH, {**moved, API_DOC: edit(moved[API_DOC], end, end + " (hand)\n| `GET` | `/api/hand-written` | x | not rendered |" + end)}, **DOCS_OK)
-        # (red-team round 2: a blank line added at a block's end was refused as "first difference: the same lines")
-        blank = pr(root, BRANCH, {**moved, API_DOC: edit(moved[API_DOC], end, "\n" + end)}, **DOCS_OK)
+        root, heads = inventory_repo
+        moved = heads["moved"]
+        arch, deps, end = GENERATED[0], GENERATED[1], "\n<!-- inventory:routes:end -->"
+        heads = {"three": {**moved, API_DOC: edit(moved[API_DOC], "Liveness probe:", "Liveness probe, hand-edited:"),
+                                  # (red-team round 1: the docs test's block pattern ends at the first end marker even
+                                  # mid-line, so main's differing_blocks read the block as ending there and passed the
+                                  # hand-written row after it)
+                                  arch: edit(moved[arch], end, end + " (hand)\n| `GET` | `/api/hand-written` | x | not rendered |" + end),
+                                  # (red-team round 2: a blank line added at a block's end was refused as "first
+                                  # difference: the same lines")
+                                  deps: edit(moved[deps], "\n<!-- inventory:tables:end -->", "\n\n<!-- inventory:tables:end -->")},
+                 "broken": {**moved, MAIN_PY: moved_main() + "\ndef broken(:\n"}}
+        outcomes = verdicts(root, commits(root, heads), e2e=tuple(heads), **DOCS_OK)
+        three, broken = outcomes["three"], outcomes["broken"]
         missed = [k for k, ok in {
-            "hand edit": refused(hand, "differs from main's render") and f"--restore {API_DOC}" in hand.stdout and SNAPSHOT_FILE in hand.stdout,
-            "a hand row behind a line that begins with the end marker": refused(behind, "differs from main's render"),
-            "a blank line at a block's end, named": refused(blank, "differs from main's render") and "-'' +'<missing>'" in blank.stdout,
+            "hand edit": all(f in reason(three, API_DOC) for f in ("inventory:routes differs from main's render", f"--restore {API_DOC}", SNAPSHOT_FILE)),
+            "a hand row behind a line that begins with the end marker": "inventory:routes differs from main's render" in reason(three, arch),
+            "a blank line at a block's end, named": all(f in reason(three, deps) for f in ("inventory:tables differs from main's render", "-'' +'<missing>'")),
             "renderer failure": refused(broken, "renderer failed") and "SyntaxError" in broken.stdout and "Traceback" not in broken.stderr,
         }.items() if not ok]
-        assert missed == [], hand.stdout + broken.stdout + broken.stderr + behind.stdout + blank.stdout
+        assert refused(three, "differs from main's render") and missed == [], three.stdout + broken.stdout + broken.stderr
 
 
-def test_the_render_reads_only_the_pull_requests_files(inventory_repo, tmp_path_factory):
+def test_the_render_reads_only_the_pull_requests_files(inventory_repo, accepted_control):
     """FEAT-CICD-001 spec, "Exact render" (done_when[1]): a render that opens a file outside the materialized tree
-    (a job entrypoint given as an absolute path) is refused and names the file; the same job inside the tree passes."""
+    (a job entrypoint given as an absolute path) is refused and names the file; the accepted control, the same job
+    with its entrypoint inside the tree, passes."""
     if RENDERER_HERE:
-        root, moved = inventory_repo
-        outside = tmp_path_factory.mktemp("outside") / "evil_job.py"
-        outside.write_text('"""A job entrypoint outside the tree."""\n', encoding="utf-8")
-        deploy = (REPO / "gcp/deploy.sh").read_text(encoding="utf-8")
-        escaped = pr(root, BRANCH, {MAIN_PY: moved_main(), "gcp/deploy.sh": deploy + JOB.format(outside)}, then=render, **DOCS_OK)
-        inside = pr(root, BRANCH, {MAIN_PY: moved_main(), "gcp/evil_job.py": outside.read_text(encoding="utf-8"),
-                                   "gcp/deploy.sh": deploy + JOB.format("gcp/evil_job.py")}, then=render, **DOCS_OK)
-        assert (refused(escaped, "read outside this pull request's files"), "evil_job.py" in escaped.stdout, inside.returncode) == (True, True, 0), \
-            escaped.stdout + inside.stdout
+        root, heads = inventory_repo
+        escaped = gate(root, "--pr", *control_pairs(root, {"escaped": heads["escaped"]})["escaped"], PR_HEAD_REF=BRANCH, **DOCS_OK)
+        assert (refused(escaped, "read outside this pull request's files"), "evil_job.py" in escaped.stdout, accepted_control.returncode) == (True, True, 0), \
+            escaped.stdout + accepted_control.stdout
 
 
-def test_the_refused_heads_have_accepted_controls(inventory_repo):
-    """FEAT-CICD-001 spec (done_when[1]): the controls for the clean-bytes and head-tree cases, each differing only in
-    the condition under test, pass: the route without an escape, and a plain spliced entry."""
+def test_the_refused_heads_have_accepted_controls(inventory_template, accepted_control):
+    """FEAT-CICD-001 spec (done_when[1]): the control for the clean-bytes, fence and head-tree cases passes. It is one
+    head carrying each case's control condition, rendered: the route without an escape, the job's entrypoint inside
+    the tree, and a plain spliced entry; each refused case differs from it in its one condition."""
     if RENDERER_HERE:
-        root, moved = inventory_repo
-        route = pr(root, BRANCH, {MAIN_PY: moved_main() + ROUTE.format("")}, then=render, **DOCS_OK)   # Task 6's route, no escape
-        change(root, BRANCH, moved)
-        blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], input="x", cwd=root, capture_output=True, text=True, check=True).stdout.strip()
-        x = mktree(root, f"100644 blob {blob}\tx\n")
-        b, h = spliced(root, f"040000 tree {x}\tok")   # Task 7's splice, a plain entry
-        plain = gate(root, "--pr", b, h, PR_HEAD_REF=BRANCH, **DOCS_OK)
-        assert (route.returncode, plain.returncode) == (0, 0), route.stdout + plain.stdout
+        _, heads = inventory_template
+        shown = ("`/api/zz`" in heads["control"][API_DOC], "evil-job" in heads["control"][GENERATED[0]])   # it renders what it controls for
+        assert (accepted_control.returncode, shown) == (0, (True, True)), accepted_control.stdout + accepted_control.stderr
 
 
 def test_the_skill_names_the_inventory_allowance():
