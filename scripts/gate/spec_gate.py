@@ -3821,6 +3821,62 @@ def document_refusal(doc: str, base: Tree, tree: Tree, inv: types.ModuleType, cg
     return None
 
 
+def head_entries(head: str) -> list[tuple[str, str, str]]:
+    """(mode, object id, path) for every file in head's tree, from `git ls-tree -r -z`: no quoting, no attributes."""
+    entries = []
+    for record in git_bytes("ls-tree", "-r", "-z", "--full-tree", head).split(b"\0"):
+        if record:
+            meta, _, path = record.partition(b"\t")
+            mode, _kind, oid = meta.decode("ascii").split()
+            entries.append((mode, oid, os.fsdecode(path)))
+    return entries
+
+
+def tree_refusal(entries: list[tuple[str, str, str]]) -> str | None:
+    """The first entry the render cannot read as a plain file, named, or None."""
+    for mode, _oid, path in entries:
+        parts = path.split("/")
+        if mode == "120000":
+            return f"a symbolic link ({path})"
+        if mode == "160000":
+            return f"a submodule ({path})"
+        if parts[-1].lower() == ".gitattributes":
+            return f"a .gitattributes ({path})"
+        for c in parts:
+            if c == "" or c.lower() in (".", "..", ".git"):
+                return f"a path component {c!r} ({path})"
+    return None
+
+
+def materialize(entries: list[tuple[str, str, str]], into: pathlib.Path) -> None:
+    """Write each entry's blob, byte for byte, to into/path, from one `git cat-file --batch`, which applies no
+    attributes. Raises ValueError, before writing, for a path that resolves outside `into`."""
+    top = os.path.realpath(into) + os.sep
+    def target(path: str) -> str:
+        where = os.path.realpath(os.path.join(into, path))
+        if not where.startswith(top):
+            raise ValueError(f"{path} resolves to {where}, outside {into}")
+        return where
+    for _mode, _oid, path in entries:
+        target(path)
+    r = subprocess.run(["git", "cat-file", "--batch"], input=b"".join(oid.encode("ascii") + b"\n" for _, oid, _ in entries),
+                       capture_output=True, cwd=ROOT)
+    if r.returncode != 0:
+        raise GitFailed(f"git cat-file --batch failed ({r.returncode}): {r.stderr.decode('utf-8', 'replace').strip() or 'no output'}")
+    out, pos = r.stdout, 0
+    for _mode, oid, path in entries:
+        eol = out.index(b"\n", pos)
+        header = out[pos:eol].decode("ascii", "replace").split()
+        if len(header) != 3 or header[0] != oid or header[1] != "blob":
+            raise GitFailed(f"git cat-file --batch answered {' '.join(header)!r} for {path} ({oid})")
+        size = int(header[2])
+        where = target(path)
+        os.makedirs(os.path.dirname(where), exist_ok=True)
+        with open(where, "wb") as f:
+            f.write(out[eol + 1:eol + 1 + size])
+        pos = eol + 1 + size + 1
+
+
 def generated_doc_refusals(ch: Change, merge_base: str, head: str, docs: list[str], inv: types.ModuleType,
                            cgd: types.ModuleType) -> list[str]:
     """Why each changed generated document in `docs` is refused, or [] when every one carries only main's render
@@ -3830,8 +3886,15 @@ def generated_doc_refusals(ch: Change, merge_base: str, head: str, docs: list[st
         return [generated_refusal(doc, f"changes alongside {summarize(inputs)}, which decide the render; land that "
                                        "change first, then re-render") for doc in docs]
     base = Tree(merge_base)
-    return [generated_refusal(doc, document_refusal(doc, base, ch.tree, inv, cgd) or "is not yet checked against main's render")
-            for doc in docs]
+    if errs := [generated_refusal(doc, why) for doc in docs if (why := document_refusal(doc, base, ch.tree, inv, cgd))]:
+        return errs
+    try:
+        entries = head_entries(head)
+    except GitFailed as e:
+        return [generated_refusal(", ".join(docs), f"the head tree cannot be listed ({e})")]
+    if why := tree_refusal(entries):
+        return [generated_refusal(", ".join(docs), f"the head tree holds {why}; the render reads plain files only")]
+    return [generated_refusal(doc, "is not yet checked against main's render") for doc in docs]
 
 
 def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) -> list[str]:

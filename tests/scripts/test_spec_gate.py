@@ -4045,3 +4045,54 @@ def test_a_block_carries_only_bytes_the_docs_test_sees(inventory_repo):
                     for esc in ("\\x00", "\\x85", "\\u2028", "\\u2029")}   # rendered from the route path, so only this rule refuses
         missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, "carries a carriage return, NUL, U+0085, U+2028 or U+2029")}
         assert missed == {}, missed
+
+
+def mktree(root: Path, lines: str) -> str:
+    """The id of the tree `git mktree` builds from ls-tree-format `lines`."""
+    return subprocess.run(["git", "mktree"], input=lines, cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def spliced(root: Path, entry: str) -> tuple[str, str]:
+    """(base, head) rebuilt with one more root entry, `vendor`, a tree made from the single ls-tree line `entry`, in
+    both commits. The head commit is parented on the base, so the entry sits in the head tree and never in the diff.
+    Called after pr(), on its HEAD."""
+    vendor = mktree(root, entry + "\n")
+    shas: list[str] = []
+    for rev in ("base", "HEAD"):
+        tree = mktree(root, _git(root, "ls-tree", f"{rev}^{{tree}}") + f"\n040000 tree {vendor}\tvendor\n")
+        parent = shas[-1] if shas else _git(root, "rev-parse", "base")
+        shas.append(_git(root, "commit-tree", tree, "-p", parent, "-m", f"{rev} with vendor"))
+    return shas[0], shas[1]
+
+
+def test_the_head_tree_is_plain_files(inventory_repo):
+    """FEAT-CICD-001 spec, "Exact render", the tree (done_when[1]): the render reads the head tree written out as plain
+    files, so a .gitattributes that changes bytes on export, a symbolic link, a submodule and a path component that
+    is empty, '.', '..' or '.git' (in any case) are each refused before anything is written."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        outcomes = {f".gitattributes {a}": (pr(root, BRANCH, {**moved, ".gitattributes": f"{API_DOC} {a}\n"}, **DOCS_OK), "a .gitattributes")
+                    for a in ("export-subst", "eol=crlf", "ident")}
+        blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], input="../gcp/schema.sql", cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+        x = mktree(root, f"100644 blob {blob}\tx\n")
+        entries = {"a symbolic link": (f"120000 blob {blob}\tlink", "a symbolic link"),
+                   "a submodule": (f"160000 commit {_git(root, 'rev-parse', 'base')}\tsub", "a submodule"),
+                   "an empty component": (f"040000 tree {x}\t", "cannot be listed"),
+                   **{f"component {c}": (f"040000 tree {x}\t{c}", "a path component") for c in (".", "..", ".git", ".GIT")}}
+        for name, (entry, fragment) in entries.items():
+            pr(root, BRANCH, moved, **DOCS_OK)
+            b, h = spliced(root, entry)
+            outcomes[name] = (gate(root, "--pr", b, h, PR_HEAD_REF=BRANCH, **DOCS_OK), fragment)
+        missed = {k: r.stdout[-400:] for k, (r, fragment) in outcomes.items() if not refused(r, fragment)}
+        assert missed == {}, missed
+
+
+def test_materialize_writes_inside_its_directory_only(repo, tmp_path_factory):
+    """FEAT-CICD-001 spec, "Exact render" (done_when[1]): every resolved path stays inside the directory before it is
+    written, and each blob is written byte for byte."""
+    sg = load_gate(repo)
+    oid, out = _git(repo, "rev-parse", "base:lib/model.py"), tmp_path_factory.mktemp("tree")
+    with pytest.raises(ValueError, match="outside"):
+        sg.materialize([("100644", oid, "../escape.py")], out)
+    sg.materialize([("100644", oid, "lib/model.py")], out)
+    assert (out / "lib/model.py").read_bytes() == b"DECISION = 'size'\n" and not (out.parent / "escape.py").exists()
