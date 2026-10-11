@@ -193,8 +193,10 @@ def test_real_repo_counts_match_the_workflow_gate():
     assert repo["counts"]["routers"] >= 20
     assert {"replay", "replay-signals", "watchlist", "validate", "backtest"} <= {
         c["name"] for c in repo["discord_commands"]}
-    assert {"deploy-solyra-api-staging", "deploy-solyra-api-prod", "apply-schema-on-change"} <= {
-        t["trigger"] for t in repo["cloudbuild_triggers"]}
+    triggers = {t["trigger"] for t in repo["cloudbuild_triggers"]}
+    assert {"deploy-solyra-api-staging", "apply-schema-on-change"} <= triggers
+    # solyra-api-prod and its promote trigger were retired on 2026-10-10.
+    assert "deploy-solyra-api-prod" not in triggers
     assert any(r["path"] == "/api/me/profile" and r["method"] == "PUT" for r in repo["routes"])
 
 

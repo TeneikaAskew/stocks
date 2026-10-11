@@ -127,7 +127,7 @@ def _cors_origin_regex(auth_mode: str) -> str:
         pattern += (
             r"|https://([a-z0-9-]+\.)+lovable\.app"
             r"|https://([a-z0-9-]+\.)+lovableproject\.com"
-        )
+            r"|https://stocks\.insightscollective\.org")  # custom domain: one exact host, no wildcard
     return pattern
 
 

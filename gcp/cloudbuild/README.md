@@ -34,7 +34,6 @@ the new steps run under `trading-runner@`.
 
 `apply-schema-cloudbuild.yaml` builds the trading-system image from the triggering revision, moves `apply-schema-migrations` to that digest and then executes it, so the schema applied is the one in the merged commit. **The live triggers still hold the previous inline configs** (verified 2026-09-07: `apply-schema-on-change` is the single `gcloud run jobs execute` step and `deploy-solyra-api-staging` has no `migrate` step) and keep doing so until the two `--inline-config` re-imports below are run, which must happen AFTER the config files are on `main`: a trigger build checks out `main`, so a config that references `gcp/cloudbuild/wait_for_earlier_schema_builds.sh` before that file is merged fails at its `serialize` step. `deploy-solyra-api-staging-cloudbuild.yaml` applies the same revision's schema through the same job (its `migrate` step, from the API image it just built) before it deploys the service, so an API revision cannot exist before the columns it reads. Every build that mutates `apply-schema-migrations` (both triggers) runs `wait_for_earlier_schema_builds.sh` first and applies in start order, so two schema pushes minutes apart cannot leave the older revision's schema applied last. The wait is budgeted from the build's own `startTime` and `timeout` (7200 s in both configs) minus a 2400 s reserve for the apply job and the deploy, so the outer build timeout cannot cut the apply short. The staging trigger's preflight uses the same waiter (with the operator image-build tag added) instead of the refusing interlock, so two pushes minutes apart deploy in order rather than the second dying at preflight while its schema build still applies. The deploy-staging GitHub workflow's opt-in apply runs the waiter in `--external` mode and passes the guard arguments, so it is ordered and recorded like a build. Ordering is not exclusion, though: the tag scan cannot see a build that starts while the runner is mid-apply, nor that runner from inside such a build, so both would pass the revision guard before either recorded and the one finishing last would roll the other's `CREATE OR REPLACE` objects back (Codex on #1022). What serialises them is a Postgres advisory lock held by `gcp/apply_schema.py` across guard, apply and record — every applier reaches the same database, whatever started it. It waits up to `SCHEMA_APPLY_LOCK_WAIT` seconds (default 900, against a 1800 s task-timeout and a measured 75 s full apply) and then exits 4 rather than applying concurrently. Start order is not commit order, so the applier (`gcp/apply_schema.py`) also records each applied source revision in `schema_apply_history` and refuses one that is older than, or cannot be ordered against, the newest applied: the build deepens its single-revision checkout and passes `git rev-list` so a same-second tie (main has 38 adjacent pairs of them) is resolved by ancestry, and refused when it cannot be. The live trigger stores the config inline; after editing the file (and after it is on `main`), `gcloud builds triggers update github apply-schema-on-change --region=global --inline-config=gcp/cloudbuild/apply-schema-cloudbuild.yaml`, and the same for `deploy-solyra-api-staging` with its file. Verify with `gcloud builds triggers describe <name> --region=global --format='yaml(build.steps[].id,build.timeout,build.tags)'`: the step ids must match the file. An apply whose `schema.sql` text is byte-identical to the newest applied revision's is recorded but not run (`schema_apply_history.schema_sha256`), so a code-only push and the second build of the same push no longer hold the earnings mat views' lock for a refresh.
 | `deploy-solyra-api-staging-cloudbuild.yaml` | `deploy-solyra-api-staging` (push to main on `platform/`, `lib/`, etc.) | `.github/workflows/deploy-platform-staging.yml` |
-| `deploy-solyra-api-prod-cloudbuild.yaml`  | `deploy-solyra-api-prod` (manual) | `.github/workflows/promote-platform-prod.yml` |
 
 ## Required IAM grants on `trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com`
 
@@ -75,8 +74,8 @@ this SA rather than delegating to a nested Cloud Build) and `run.developer`
 (the `gcloud run deploy` step). Re-verify before relying on this; a grant can
 be revoked without any repo change.
 
-The `deploy-solyra-api-staging` and `deploy-solyra-api-prod` triggers
-need these grants before they'll run successfully:
+The `deploy-solyra-api-staging` trigger needs these grants before it will run
+successfully:
 
 ```bash
 SA=trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
@@ -177,43 +176,14 @@ gcloud builds triggers run deploy-solyra-api-staging --branch=main
 gcloud builds list --limit=1 --format='value(id,status)'
 ```
 
-The third trigger (`deploy-solyra-api-prod`) is manual-only and is the
-path prod is SUPPOSED to change through:
-
-```bash
-# 1. read what staging is serving, and validate THAT
-gcloud run services describe solyra-api-staging --region=us-east1 --format=json \
-  | python3 gcp/cloudbuild/serving_revision.py
-# 2. promote it by name
-gcloud builds triggers run deploy-solyra-api-prod --branch=main \
-  --substitutions=_EXPECT_STAGING_REVISION=<the revision from step 1>
-```
-
-It no longer shifts traffic between tags on one service. It reads the image
-digest currently serving `solyra-api-staging` and deploys that exact digest to
-`solyra-api-prod`, so prod ships the bits staging validated rather than a fresh
-build of whatever has since merged to main. The same IAM grants above cover it.
-
-**There is a second way into prod, and it does not have this gate.**
-`./platform/deploy.sh` with its defaults (no `STAGING_SERVICE=1`) builds the
-caller's working tree and deploys it straight to `solyra-api-prod`. That path
-never consults staging, so nothing there is the digest anybody validated, and
-`_EXPECT_STAGING_REVISION` cannot apply to it. It is kept deliberately as the
-break-glass route for the case the promote trigger cannot serve — prod is
-broken and staging is too — and it is named here rather than left for an
-auditor to find, because "the only path that changes prod" was not true
-(Codex, PR #990). Use it only when the promote path cannot work, and expect
-the revision it creates to be replaced by the next promotion.
-
-`_EXPECT_STAGING_REVISION` is **required**, and it is what ties the promotion to
-what you actually looked at. "What staging is serving now" and "what was
-validated" are the same answer only while nothing deploys in between — and the
-staging trigger fires on every push to main, so that is not a safe assumption.
-With the expectation passed, a staging deploy landing in the gap aborts the
-promotion instead of silently substituting a revision nobody reviewed. An image
-digest is accepted in its place if you validated by artifact. The failure
-message prints the revision serving right now, so re-running after a
-re-validation is a copy-paste.
+`solyra-api-prod` and its manual promote trigger, `deploy-solyra-api-prod`,
+were retired on 2026-10-10: the website only ever called `solyra-api-staging`,
+and both services shared one database. The trigger, its config file and its
+entry in `gcp/deploy.sh cloudbuild-triggers` are gone, and `platform/deploy.sh`
+refuses every mode except `STAGING_SERVICE=1`. The live service and trigger are
+deleted after that change merges, once their configuration is exported to
+`gs://adept-mountain-474619-d4-trading-data/retired/2026-10-10/`
+(docs/superpowers/specs/2026-10-10-feat-deploy-001-retire-prod-service.md).
 
 ## Two staging deploy paths, and how they are kept from interleaving
 
@@ -231,9 +201,9 @@ mechanisms close the gap:
    deploy the bare image — `:latest`, a mutable pointer both of them write. Two
    overlapping runs could push over each other between one run's push and its
    deploy, so `gcloud run deploy --image …:latest` resolved to an image that
-   run never built. Since the promote trigger above deliberately promotes
-   whatever digest is serving staging, a mutable tag put an unvalidated image
-   one click from production. Both paths now tag with the commit
+   run never built. While the prod promote trigger existed it promoted
+   whatever digest was serving staging, so a mutable tag put an unvalidated
+   image one click from production. Both paths now tag with the commit
    (`$SHORT_SHA`, or `git rev-parse --short HEAD` in `platform/deploy.sh`),
    resolve that tag to its `sha256` digest, and deploy the **digest** — so a
    revision is pinned to exactly the artifact its run built.
@@ -249,7 +219,4 @@ mechanisms close the gap:
    grants to both `trading-runner@` and the workflow's WIF SA — no new grants.
 
    It refuses rather than queues: a deploy that silently starts twenty minutes
-   later is harder to reason about than one an operator re-runs. Because
-   `platform/cloudbuild.yaml` serves prod as well and its tag is static, a prod
-   deploy also blocks a concurrent staging deploy — conservative rather than
-   wrong, since both are manual and both publish into the same repository.
+   later is harder to reason about than one an operator re-runs.

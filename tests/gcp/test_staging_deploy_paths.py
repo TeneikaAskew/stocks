@@ -10,9 +10,11 @@ ITSELF and has no reach over a Cloud Build run (Codex, PR #990).
 Both paths used to build, push and deploy the bare image -- `:latest`, a
 mutable pointer both of them write. Two overlapping runs could push over each
 other between one run's push and its deploy, so `gcloud run deploy --image
-...:latest` resolved to an image that run never built. The promote trigger
-deliberately promotes whatever digest is serving staging, so a mutable tag put
-an unvalidated image one click from production.
+...:latest` resolved to an image that run never built. The prod promote trigger
+promoted whatever digest was serving staging, so a mutable tag put an
+unvalidated image one click from production. That trigger and solyra-api-prod
+were retired on 2026-10-10; staging is the only API service, and the last test
+in the first block keeps the prod path from coming back unnoticed.
 
 These are config invariants, not behaviour, so they are asserted by reading the
 files. A live deploy is the only thing that proves the mechanism, and that
@@ -31,7 +33,7 @@ PLATFORM = REPO / "platform/cloudbuild.yaml"
 DEPLOY_SH = REPO / "platform/deploy.sh"
 INTERLOCK = REPO / "gcp/cloudbuild/assert_no_concurrent_staging_deploy.sh"
 WORKFLOW = REPO / ".github/workflows/deploy-staging.yml"
-PROMOTE = REPO / "gcp/cloudbuild/deploy-solyra-api-prod-cloudbuild.yaml"
+RETIRED_PROMOTE = REPO / "gcp/cloudbuild/deploy-solyra-api-prod-cloudbuild.yaml"
 SERVING = REPO / "gcp/cloudbuild/serving_revision.py"
 
 
@@ -240,31 +242,21 @@ def test_the_manual_deploy_pins_the_digest_it_made_current():
         "the deployed digest is only in the inventory after the deploy")
 
 
-def test_both_deploy_paths_resolve_the_serving_revision_the_same_way():
-    """One implementation, two callers — a second copy would drift silently."""
+def test_the_manual_deploy_resolves_the_serving_revision_with_the_shared_helper():
+    """One implementation of "which revision is serving" — a second copy would drift."""
     assert SERVING.exists()
     assert "serving_revision.py" in DEPLOY_SH.read_text()
-    assert "serving_revision.py" in PROMOTE.read_text()
-    body = _all_args(_promote_step(yaml.safe_load(PROMOTE.read_text())))
-    assert "latestReadyRevisionName" not in body, (
-        "the promote config must not resolve the revision itself")
-    assert "traffic" not in body
 
 
-def _promote_step(cfg):
-    """The step that deploys, not the interlock that now precedes it."""
-    return next(s for s in cfg["steps"] if s.get("id") == "promote")
-
-
-def test_promotion_requires_the_revision_the_operator_validated():
-    cfg = yaml.safe_load(PROMOTE.read_text())
-    assert "_EXPECT_STAGING_REVISION" in cfg.get("substitutions", {})
-    body = _all_args(_promote_step(cfg))
-    assert 'if [ -z "$$EXPECT" ]' in body, (
-        "an absent expectation must abort; resolving the serving revision at "
-        "run time answers a different question than what was validated")
-    assert 'if [ "$$EXPECT" != "$$REV" ] && [ "$$EXPECT" != "$$DIGEST" ]' in body
-    assert body.index('if [ -z "$$EXPECT" ]') < body.index("gcloud run deploy")
+def test_the_retired_prod_service_has_no_deploy_path():
+    """solyra-api-prod was retired on 2026-10-10. Its promote file and its entry in
+    the trigger sync would recreate it, so neither may come back unnoticed."""
+    assert not RETIRED_PROMOTE.exists(), RETIRED_PROMOTE
+    text = REPO.joinpath("gcp/deploy.sh").read_text()
+    start = text.index("_CLOUDBUILD_TRIGGERS=(")
+    triggers = text[start:text.index("\n)", start)]
+    assert "deploy-solyra-api-staging:" in triggers, triggers
+    assert "deploy-solyra-api-prod" not in triggers, triggers
 
 
 def test_the_baseline_read_fails_closed():
@@ -287,7 +279,7 @@ def test_the_baseline_read_fails_closed():
         "function's failure into a stopped deploy")
 
 
-def test_both_triggers_pin_what_they_deployed():
+def test_the_trigger_pins_what_it_deployed():
     """The cleanup policy expires build tags, so the running digest needs one.
 
     Every qualifying push leaves a `solyra-api:<short sha>` tag; nothing
@@ -295,12 +287,11 @@ def test_both_triggers_pin_what_they_deployed():
     grew without bound (Codex, PR #990). Expiring them is only safe while the
     digests in use carry an `inuse-*` tag.
     """
-    for path in (TRIGGER, PROMOTE):
-        body = "\n".join(_all_args(step) for step in _steps(path))
-        assert "pin-images --no-sweep" in body, (
-            f"{path.name} deploys without pinning the digest it deployed")
-        assert body.index("gcloud run deploy") < body.rindex("pin-images"), (
-            f"{path.name} pins before it deploys, which pins the wrong digest")
+    body = "\n".join(_all_args(step) for step in _steps(TRIGGER))
+    assert "pin-images --no-sweep" in body, (
+        f"{TRIGGER.name} deploys without pinning the digest it deployed")
+    assert body.index("gcloud run deploy") < body.rindex("pin-images"), (
+        f"{TRIGGER.name} pins before it deploys, which pins the wrong digest")
 
 
 def test_the_cleanup_policy_expires_build_tags_but_keeps_pins():
@@ -316,34 +307,6 @@ def test_the_cleanup_policy_expires_build_tags_but_keeps_pins():
     assert '"tagPrefixes": ["inuse-", "latest"]' in gcr
     assert '"name": "keep-tagged"' not in gcr, (
         "a blanket keep-tagged rule is what let the build tags accumulate")
-
-
-def test_two_prod_promotions_cannot_overlap():
-    """The one that finishes last wins, which can roll prod backwards.
-
-    Promotion A (validated revision A) and promotion B (validated later) can
-    both pass their expectation checks; without an interlock both reach
-    `gcloud run deploy` and the older one can land after the newer
-    (Codex, PR #990).
-    """
-    cfg = yaml.safe_load(PROMOTE.read_text())
-    assert "solyra-api-prod-promote" in cfg.get("tags", []), (
-        "a promotion can only see a peer through a tag in this file")
-    ids = [s.get("id") for s in cfg["steps"]]
-    assert ids[0] == "no-concurrent-promote", (
-        "the interlock must be the first step, so the build is registered and "
-        "tagged before the scan")
-    body = _all_args(cfg["steps"][0])
-    assert "|| true" not in "\n".join(
-        l for l in body.splitlines() if not l.strip().startswith("#")), (
-        "the scan must fail closed: an unlistable peer is not an absent one")
-
-
-def test_the_promotion_refuses_when_prod_moved():
-    body = "\n".join(_all_args(s) for s in _steps(PROMOTE))
-    assert "PROD_BEFORE" in body and "PROD_NOW" in body
-    assert body.index("PROD_BEFORE=") < body.index("gcloud run deploy"), (
-        "the baseline must be read before the deploy it guards")
 
 
 def test_the_staging_trigger_filter_gap_is_recorded():
@@ -381,16 +344,15 @@ def test_the_trigger_applies_this_revisions_schema_before_deploying():
     assert '--image="$${DIGEST}"' in args, "the job must run this revision's image"
 
 
-def test_both_routine_rollouts_carry_the_movement_flag_in_merge_mode():
-    """The routine cloudbuild paths deploy the image and leave the service env
+def test_the_routine_rollout_carries_the_movement_flag_in_merge_mode():
+    """The routine cloudbuild path deploys the image and leaves the service env
     alone, so a repo-owned product flag would never reach the service unless
-    an operator remembered a manual update (Codex P1 on #1030). Both now pass
-    the flag with --update-env-vars, which MERGES that one key; --set-env-vars
+    an operator remembered a manual update (Codex P1 on #1030). It passes the
+    flag with --update-env-vars, which MERGES that one key; --set-env-vars
     would replace the whole set and must never appear here."""
-    for name in ("deploy-solyra-api-staging-cloudbuild.yaml", "deploy-solyra-api-prod-cloudbuild.yaml"):
-        src = (REPO / "gcp" / "cloudbuild" / name).read_text()
-        assert "--update-env-vars=MOVEMENT_STATEMENT_ENABLED=true" in src, name
-        assert "--set-env-vars" not in src.split("gcloud run deploy", 1)[1].split("\n\n", 1)[0], name
+    src = TRIGGER.read_text()
+    assert "--update-env-vars=MOVEMENT_STATEMENT_ENABLED=true" in src, TRIGGER.name
+    assert "--set-env-vars" not in src.split("gcloud run deploy", 1)[1].split("\n\n", 1)[0], TRIGGER.name
 
 
 # ── cloudbuild-triggers: the file-to-trigger import (#1033, #1037) ───────────
@@ -426,7 +388,7 @@ def _run_cloudbuild_triggers(tmp_path, *args):
 
 
 def test_cloudbuild_triggers_rejects_an_unknown_option_before_touching_gcloud(tmp_path):
-    """The default action imports into three live triggers, so a mistyped
+    """The default action imports into the live triggers, so a mistyped
     safety flag must be a usage error, not a silent import (Codex, #1037):
     `--checks` used to leave the mode as `import` and proceed.
     """
