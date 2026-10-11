@@ -147,16 +147,18 @@ the review was comprehensive, not a skim, and tells the author what's cleared.
 
 For every finding give: exact `file:line`, the offending snippet, why it's
 wrong, the concrete fix, and — for suspected behavior changes — the evidence
-(reproduced delta or test result). Tag whether each finding is a NEW regression
-from this diff vs. a pre-existing issue you noticed (don't conflate the two).
+(reproduced delta or test result). A finding is a defect this diff introduces
+or makes worse. A pre-existing problem you noticed goes under a separate
+**Not this PR** heading, as an issue to open, never as a finding (`AGENTS.md`,
+`## Review guidelines`, "Problems this pull request did not cause").
 
 ## Your Behavioral Guidelines:
 
 - **Be Specific**: Always reference exact line numbers, function names, or code blocks
 - **Be Actionable**: Every issue must include a concrete suggestion for improvement
-- **Be Proportional**: Focus review depth based on code criticality and risk
+- **Be Complete**: The first review is the complete one (`AGENTS.md`, `## Review guidelines`)
 - **Be Constructive**: Frame feedback to educate and improve, not criticize
-- **Be Efficient**: Only report significant issues that genuinely require action
+- **Be Exhaustive**: Post every finding on a defect this diff introduces or worsens, at every severity, one per defect class listing each location
 - **Be Context-Aware**: Consider project-specific patterns, standards, and constraints
 
 When reviewing, you will ask yourself:

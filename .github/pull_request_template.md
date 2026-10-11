@@ -65,10 +65,30 @@ Canvas refresh pending: none
       before CI, not after
 - [ ] Zero unresolved threads: each one fixed-and-resolved (naming what
       changed and the covering test/commit) or replied to with why not
-- [ ] A review exists for the **current head SHA** — compare `get_reviews`
-      `commit_id` against head; all threads `is_outdated` means the head is
-      unreviewed → comment `@codex review` and wait.
-      `get_reviews` returns OLDEST FIRST, so the current review is on the
-      LAST page: reading page 1 and finding an older "no findings" is how
-      #991 was merged two minutes after a review it never saw
+- [ ] Each thread holding a finding a reviewer posted after its own first
+      review carries the reply classifying each location before it is
+      resolved: uncounted, missed (with the SHA of the commit the first
+      review covered) or new (with the SHA of the later commit), as
+      CLAUDE.md Rule 2.5 says; for Codex, the first review's SHA is the one
+      the PR's `First Codex code review: Completed on <sha>, …` comment
+      records
+- [ ] The **current head** is reviewed as CLAUDE.md §2.5 counts it: after
+      the PR's latest review-triggering event, a review authored by
+      `chatgpt-codex-connector[bot]` was submitted naming it in `commit_id`,
+      or the Code Review row of Codex's review-summary comment reads
+      Completed for the head's SHA (a clean Codex review leaves no review
+      object, so read the row). Only the row says which review ran (a review
+      object names no review type: Codex's reply on a thread is a bodiless
+      review object, as #1380's review 5482164471 on `2b559d3d` is, and its
+      security review runs under the same account), so a review object
+      counts only once the Code Review row reads Completed for the same SHA;
+      the review object is where that run's findings are read. The rule
+      counts Codex's code review only: the review-triggering events are the
+      PR opened for review, the draft marked ready, an `@codex review`
+      comment and a push of new commits, and a review object counts only if
+      it is not `CHANGES_REQUESTED`. `get_reviews` returns OLDEST FIRST, so
+      the current review is on the LAST page: reading page 1 and finding an
+      older "no findings" is how #991 was merged two minutes after a review
+      it never saw. Unreviewed → wait while the row reads Running, and
+      otherwise comment `@codex review` and wait
 - [ ] CI green on the current head, no merge conflict
