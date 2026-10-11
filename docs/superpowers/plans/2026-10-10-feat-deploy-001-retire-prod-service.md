@@ -3,7 +3,7 @@ feat_id: FEAT-DEPLOY-001
 spec: docs/superpowers/specs/2026-10-10-feat-deploy-001-retire-prod-service.md
 branch: feature/feat-deploy-001-retire-prod
 pr: 1366
-status: ready
+status: done
 ---
 
 # Retire solyra-api-prod and admit the custom domain origin: implementation plan
