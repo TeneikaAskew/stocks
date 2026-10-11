@@ -9,7 +9,7 @@ script makes the refresh repeatable:
 * rewrites the title, subtitle and group headers with live counts;
 * renames or retires surfaces and jobs that changed (replacement table);
 * deletes cells (and their edges) for retired surfaces;
-* adds the staging API service and the Cloud Build deploy path;
+* adds any cell listed in NEW_CELLS (none today: svc_tp draws the API service);
 * regenerates the "jobs not shown above" grid from every live job that the
   hand-placed fetcher / compute / on-demand rows do not already carry;
 * applies the same label replacements to Architecture-icons.drawio where the
@@ -38,7 +38,7 @@ ICONS = REPO / "Architecture-icons.drawio"
 # Exact-substring replacements applied to every cell label on every page.
 REPLACEMENTS: list[tuple[str, str]] = [
     ("solyra-api-prod\nCloud Run Service\nFastAPI API (IAP)",
-     "solyra-api-staging / -prod\nCloud Run Services\nFastAPI only; the browser reaches staging (Firebase), prod is IAP"),
+     "solyra-api-staging\nCloud Run Service\nFastAPI only; the browser signs in with Firebase"),
     ("Browser\n(internal team React UI)", "solyra React UI\n(Lovable-published, separate repo)"),
     ("Browser\nReact dashboard", "solyra React UI\n(separate repo)"),
     ("React dashboard", "solyra React UI"),
@@ -46,14 +46,16 @@ REPLACEMENTS: list[tuple[str, str]] = [
     ("FastAPI + React (mounts 13 routers:\ninsights, live, options, playbook,\nbacktest, signals, journal, dashboard,\ncatalysts, admin, analytics, config, health)",
      "FastAPI API only — no SPA since #957 (20 routers:\nlive, grid, options, playbook, backtest, signals,\ninsights, journal, dashboard, catalysts, admin,\nanalytics, config, health, glossary, magnitude,\nearnings, waitlist, preferences, profile)"),
     ("▸ prod domain: stocks.insightscollective.org (IAP + managed TLS)\n▸ deploy: staging revision → promote workflow",
-     "▸ IAP-gated, AUTH_MODE=iap, SA trading-platform-svc@\n▸ deploy: deploy-solyra-api-prod Cloud Build trigger (manual digest promote)"),
-    ("Cloud Run Service\nFastAPI + React", "Cloud Run Service\nFastAPI API (IAP)"),
-    # The `trading-platform` Cloud Run service was deleted; prod is
-    # `solyra-api-prod`. check() rejected only `trading-platform-staging`, so
-    # three cells kept the dead name through every refresh. (Codex, PR #1009.)
-    ("trading-platform\nFastAPI API only", "solyra-api-prod\nFastAPI API only"),
-    ("trading-platform\nCloud Run Service", "solyra-api-prod\nCloud Run Service"),
-    ("Browser → trading-platform Cloud Run Service", "Browser → solyra-api-prod Cloud Run Service"),
+     "▸ public, Firebase login (AUTH_MODE=firebase), SA trading-platform-svc@\n▸ deploy: deploy-solyra-api-staging Cloud Build trigger on push to main"),
+    ("Cloud Run Service\nFastAPI + React", "Cloud Run Service\nFastAPI API"),
+    # The `trading-platform` Cloud Run service was deleted, and so was its
+    # successor `solyra-api-prod` (2026-10-10, #1366); both map to
+    # `solyra-api-staging`, the one API service. check() rejected only
+    # `trading-platform-staging`, so three cells kept the dead name through
+    # every refresh. (Codex, PR #1009.)
+    ("trading-platform\nFastAPI API only", "solyra-api-staging\nFastAPI API only"),
+    ("trading-platform\nCloud Run Service", "solyra-api-staging\nCloud Run Service"),
+    ("Browser → trading-platform Cloud Run Service", "Browser → solyra-api-staging Cloud Run Service"),
     ("FastAPI + React", "FastAPI API"),
     ("GitHub Actions\n20 workflows: backups, audits, db-query,\nsheet downloads, platform deploy + promote",
      "GitHub Actions (5 workflows) + Cloud Build (3 triggers)\nCI, manual staging deploy, REST bridge, failure\nhandler, docs-vs-live check, monthly doc refresh;\nAPI + schema deploys"),
@@ -68,8 +70,6 @@ REPLACEMENTS: list[tuple[str, str]] = [
     ("Backup mirrors\nfetch-market-data, earnings-options-analytics, etc.", "backtest-pipeline.yml\nCI tests on push / PR\n+ nightly canary on main"),
     ("Heavy backtests\nwalk-forward audits\nfreshness audits", "gh-api.yml\nGitHub REST bridge for\nfenced sandboxes"),
     ("download-google-sheets.yml\nsheet → Cloud SQL ingest", "Cloud Build: deploy-solyra-api-staging\npush to main → build by digest\n→ solyra-api-staging"),
-    ("deploy-trading-apps.yml\nchart-viewer → GitHub Pages\n(options-heatseeker retired #255)", "Cloud Build: deploy-solyra-api-prod\nmanual: promote the digest\nstaging serves → solyra-api-prod"),
-    ("deploy-trading-apps.yml\nchart-viewer → GitHub Pages\n(options-heatseeker archived 2026-05-04)", "Cloud Build: deploy-solyra-api-prod\nmanual: promote the digest\nstaging serves → solyra-api-prod"),
     ("Audit / type-check / test workflows\nsecurity-review, audit-review,\nvalidate-data, pre-deploy-check", "Cloud Build: apply-schema-on-change\npush touching gcp/schema.sql\n→ apply-schema-migrations job"),
     ("refresh-architecture-docs.yml (monthly Gemini regen)", "refresh-architecture-docs.yml (monthly: live snapshot → rendered blocks → gated prose update)"),
     ("⑩ GitHub Actions — 14 active workflows: backups, audits, sandbox bridges, deploys", "⑩ GitHub Actions (5 workflows) and Cloud Build (3 triggers) — CI, deploys, bridges, doc refresh"),
@@ -77,7 +77,7 @@ REPLACEMENTS: list[tuple[str, str]] = [
     ("7:15 ET — earnings-calendar refreshes today's reporters", "19:00 ET prior evening — daily-earnings-refresh-calendar / -history / -reactions"),
     ("4️⃣  8:20 ET — premarket-refresh polls AV intraday → gap_pct, pre_high/low/vwap\n5️⃣  8:30 ET — premarket-brief reads everything → Discord (multi-embed)",
      "4️⃣  8:20 ET — premarket-refresh polls AV intraday → gap_pct, pre_high/low/vwap\n5️⃣  8:30 ET — premarket-brief → Discord; 8:35 earnings-reactions-brief; 8:10 auto-refresh-top-n pre-warmed insights"),
-    ("Browser → solyra-api-prod Cloud Run Service", "solyra UI → solyra-api-staging (Firebase) or solyra-api-prod (IAP)"),
+    ("Browser → solyra-api-prod Cloud Run Service", "solyra UI → solyra-api-staging (Firebase)"),
     ("User-triggered single-ticker refresh from React dashboard", "User-triggered single-ticker refresh from the solyra UI"),
     ("Insulates the React dashboard", "Insulates the UI"),
     ("daily 7:15 ET", "daily 19:00 ET (prior evening)"),
@@ -88,22 +88,39 @@ REPLACEMENTS: list[tuple[str, str]] = [
     # The failure handler files its branches under FEAT-CICD-001, so the spec
     # gate reads a FEAT-ID from them (scripts/handle_workflow_failure.py).
     ("(fix/workflow-{name}-{run})", "(fix/feat-cicd-001-workflow-{name}-{run})"),
+    # solyra-api-prod and its deploy-solyra-api-prod trigger were deleted on
+    # 2026-10-10 (#1366). No source above was left in either diagram, so the
+    # cells naming the service kept it through every refresh (FEAT-DEPLOY-001).
+    # Each source below is the label committed before this change. p4_tp's
+    # entry precedes ic_tp's: ic_tp's label is p4_tp's first line, so the
+    # shorter entry running first would leave p4_tp's "prod is IAP" behind.
+    # svc_tp (Architecture.drawio, main page)
+    ('solyra-api-prod\nFastAPI API only — no SPA since #957 (20 routers:\nlive, grid, options, playbook, backtest, signals,\ninsights, journal, dashboard, catalysts, admin,\nanalytics, config, health, glossary, magnitude,\nearnings, waitlist, preferences, profile)\n▸ IAP-gated, AUTH_MODE=iap, SA trading-platform-svc@\n▸ deploy: deploy-solyra-api-prod Cloud Build trigger (manual digest promote)\n▸ --no-cpu-throttling (PR #507) for BackgroundTasks',
+     'solyra-api-staging\nFastAPI API only — no SPA since #957 (20 routers:\nlive, grid, options, playbook, backtest, signals,\ninsights, journal, dashboard, catalysts, admin,\nanalytics, config, health, glossary, magnitude,\nearnings, waitlist, preferences, profile)\n▸ public, Firebase login (AUTH_MODE=firebase), SA trading-platform-svc@\n▸ open self-signup over production data (#943)\n▸ api.stocks.insightscollective.org → this service (since 2026-09-06)\n▸ deploy: deploy-solyra-api-staging Cloud Build trigger on push to main'),
+    # p4_tp (Architecture.drawio page 4, "⚡ Insight Refresh"); before ic_tp, whose label is this one's first line
+    ('solyra-api-staging / -prod\nCloud Run Services\nFastAPI only; the browser reaches staging (Firebase), prod is IAP',
+     'solyra-api-staging\nCloud Run Service\nFastAPI only; the browser signs in with Firebase'),
+    # ic_tp (Architecture-icons.drawio, "1 · System Overview")
+    ('solyra-api-staging / -prod', 'solyra-api-staging'),
+    # flow_c (main page) and ref_s2 (icons, "4 · Insight Refresh") carry this as a substring
+    ('solyra UI → solyra-api-staging (Firebase) or solyra-api-prod (IAP)',
+     'solyra UI → solyra-api-staging (Firebase)'),
+    # tp_txt (icons, "1 · System Overview")
+    ('FastAPI only — no React in the image since #957 (13 routers)\napi.stocks.insightscollective.org → solyra-api-staging (managed TLS, 2026-09-06)\nstocks.insightscollective.org = Firebase auth-email domain / reserved for the SPA\nstaging AUTH_MODE=firebase · prod IAP-gated · --no-cpu-throttling (PR #507) · min-instances=0',
+     'FastAPI only — no React in the image since #957 (20 routers)\napi.stocks.insightscollective.org → solyra-api-staging (managed TLS, 2026-09-06)\nstocks.insightscollective.org = the solyra SPA and the Firebase auth-email domain\nAUTH_MODE=firebase · open self-signup · --cpu-throttling · min-instances=0'),
+    # gh_txt (icons, "1 · System Overview")
+    ('db-query.yml sandbox SQL access  ·  deploy-solyra-api-staging → solyra-api-staging (auto on main)  ·  deploy-solyra-api-prod → solyra-api-prod (manual only)  ·  auth CLAUDE_CODE_WEB_GCP_SA_KEY',
+     'db-query.yml sandbox SQL access  ·  deploy-solyra-api-staging → solyra-api-staging (auto on main)  ·  auth CLAUDE_CODE_WEB_GCP_SA_KEY'),
 ]
 
-# Cells retired outright (their edges go too).
-DELETE_IDS = {"ext_ghpages", "ext_gas", "svc_sm_orphan"}
+# Cells retired outright (their edges go too). svc_st drew solyra-api-staging
+# beside svc_tp, which now draws that service and keeps its four edges;
+# gha_dep drew the deploy-solyra-api-prod promote trigger, deleted with the
+# service (#1366), and gha_ds already draws the staging trigger.
+DELETE_IDS = {"ext_ghpages", "ext_gas", "svc_sm_orphan", "svc_st", "gha_dep"}
 
 # New cells on the main page: (id, value, style, x, y, w, h)
-NEW_CELLS = [
-    ("svc_st",
-     "solyra-api-staging\nFastAPI API — PUBLIC edge, Firebase login (AUTH_MODE=firebase)\n"
-     "▸ open self-signup over production data (#943)\n"
-     "▸ api.stocks.insightscollective.org → this service (since 2026-09-06;\n"
-     "   the apex stocks.insightscollective.org is reserved for the SPA and Firebase auth emails, #1006)\n"
-     "▸ deploy: deploy-solyra-api-staging trigger on push to main",
-     "rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b85450;fontSize=10;fontStyle=1;",
-     2000, 675, 220, 95),
-]
+NEW_CELLS: list[tuple[str, str, str, int, int, int, int]] = []
 
 SUBTITLE_ID = "subtitle"
 SCHED_GROUP_ID = "sched_group"
@@ -351,7 +368,7 @@ def refresh_main(root: ET.Element, live: dict) -> None:
          f"{len(live['db_tables'])} live relations ({_declared_relations()} declared in gcp/schema.sql; strat_features_*, magnitude_*, gamma_levels_eod … created at runtime) • weekly pg_dump to gs://…/sql-dumps/",
          60, y_after, 2280, 40),
         ("addon_auth_box",
-         "★ Auth: AUTH_MODE iap (solyra-api-prod) / firebase (solyra-api-staging) / open (local) • roles from user_roles (admin, user, dev) • /api/me → is_admin, is_dev • CORS Lovable hosts only outside iap",
+         "★ Auth: AUTH_MODE firebase (solyra-api-staging) / open (local) • roles from user_roles (admin, user, dev) • /api/me → is_admin, is_dev • CORS Lovable hosts and stocks.insightscollective.org",
          60, y_after + 50, 2280, 40),
         ("addon_note",
          f"📝 Refreshed {read} by scripts/maintenance/refresh_architecture_drawio.py from the live snapshot; docs/product/infrastructure/05-a-ARCHITECTURE.md is the text of record.",
@@ -379,7 +396,7 @@ ICON_COUNT_TEMPLATES = [
     ("19 workflows: backups · audits · deploy", "6 workflows: CI · deploys · bridges · docs check · doc refresh"),
 ]
 ICON_STALE = ("42 Cloud Run Jobs", "~50 cron", "~50 Scheduler", "44 tables", "44-table", "19 secrets", "19 workflows",
-              "trading-platform-staging", "React dashboard")
+              "trading-platform-staging", "React dashboard", "solyra-api-prod", "staging / -prod")
 
 
 # Count-bearing text on the MAIN page. Everything here is rewritten from
@@ -495,6 +512,9 @@ def refresh_icons(root: ET.Element, live: dict) -> int:
             (r"\b\d+ Scheduler entries\b", f"{vals['schedulers']} Scheduler entries"),
             (r"\b\d+ secrets\b", f"{vals['secrets']} secrets"),
             (r"\b\d+ relations\b", f"{vals['relations']} relations"),
+            # the icon subtitle `sub` reads "N-relation Cloud SQL"; without this
+            # it kept 95 while every note moved to 98 (FEAT-DEPLOY-001)
+            (r"\b\d+-relation\b", f"{vals['relations']}-relation"),
             (r"\b\d+ Services\b", f"{vals['services']} Services"),
         ):
             new = re.sub(pat, repl, new)
@@ -521,6 +541,7 @@ def check_icons(root: ET.Element, live: dict) -> list[str]:
             (r"\b(\d+) Scheduler entries\b", vals["schedulers"], "Scheduler entries"),
             (r"\b(\d+) secrets\b", vals["secrets"], "secrets"),
             (r"\b(\d+) relations\b", vals["relations"], "relations"),
+            (r"\b(\d+)-relation\b", vals["relations"], "relations"),
         ):
             for m in re.finditer(pat, v):
                 if int(m.group(1)) != int(want):
@@ -548,14 +569,15 @@ def check(root: ET.Element, live: dict) -> list[str]:
             problems.append(f"hand-authored cell {hand} is missing")
     text = ET.tostring(root, encoding="unicode")
     for stale in ("GitHub Pages", "Google Apps Script", "download-google-sheets.yml", "fetch-catalyst-calendar",
-                  "migrate-to-gcp", "FastAPI + React", "db-query.yml", "trading-platform-staging", "React dashboard", "~49"):
+                  "migrate-to-gcp", "FastAPI + React", "db-query.yml", "trading-platform-staging", "React dashboard", "~49",
+                  "solyra-api-prod", "staging / -prod"):
         if stale in text:
             problems.append(f"stale label still present: {stale}")
     # `trading-platform` the SERVICE is deleted; `trading-platform-svc@` the
     # service account is live, so the bare name needs a boundary rather than a
     # substring test. (Codex, PR #1009.)
     if re.search(r"trading-platform(?!-svc)\b", text):
-        problems.append("stale label still present: trading-platform (the service is deleted; prod is solyra-api-prod)")
+        problems.append("stale label still present: trading-platform (the service is deleted)")
     # Every live service must appear somewhere on the page.
     for svc in sorted(live.get("services", {})):
         if svc not in text:
