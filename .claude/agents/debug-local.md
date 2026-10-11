@@ -53,7 +53,7 @@ If the error is a silent hang (e.g., `make dev` never responds on port 8000), as
 
 If the stack trace points into `site-packages/`, trace back until you hit the first frame in the user's own code — THAT is the failing line, not the library internals.
 
-For a bug a user sees in the site, capture the before-fix reproduction here, before Step 3 writes any fix: an API test of the broken response under `tests/api/`, run against the unfixed code to show it fails, and the owner's Playwright run against the deployed site that reproduces the bug, with screenshots. Step 4 item 5 checks the fix against these runs.
+For a bug a user sees in the site, capture the before-fix reproduction here, before Step 3 writes any fix: an API test of the broken response under `tests/api/`, run against the unfixed code to show it fails. Ask the owner for the Playwright run against the deployed site that reproduces the bug, with screenshots; the deployed site serves the unfixed code until the merge, so that run can come any time before it, and the owner posts it on the PR. Step 4 item 5 checks the fix against these runs.
 
 ### Step 3 — Propose a minimal fix (≤5 lines)
 
@@ -87,12 +87,14 @@ After the fix:
    on the PR as close-out steps (`AGENTS.md`, `## Review guidelines`, "Browser proof"). This is
    REQ-GOV-001's "reproduced against pre-fix code before a fix is written", carried into the
    browser. The runs that reproduce it before the fix are the ones Step 2 captured, and the
-   after-fix runs repeat them. In stocks the API test is pytest under `tests/api/` and carries no screenshots; the
-   screenshots come from the Playwright runs against the deployed site. Those runs use a
-   `*.cloud.spec.ts` written in solyra for the change and run with `npm run e2e:cloud` (none
-   exists yet; solyra CLAUDE.md, Testing discipline, item 5).
+   after-fix runs repeat them. In stocks the API test is pytest under `tests/api/` and carries
+   no screenshots; the screenshots come from the Playwright runs against the deployed site.
+   Those runs use a `*.cloud.spec.ts` written in solyra for the change and run with
+   `npm run e2e:cloud` (none exists yet; solyra CLAUDE.md, Testing discipline, item 5).
 
-If any verification step fails, back out the fix and return to Step 2 — you had the wrong root cause.
+If a verification step before the merge fails (items 1 to 4, or item 5's API test), back out the fix and return to Step 2: you had the wrong root cause.
+
+Item 5's after-fix run against the deployed site comes only after the merge, once staging has deployed the fix, and backing out a local fix cannot undo a merged deployment. If that run still shows the bug, keep the issue open, post the failing run and its screenshots on it, and start a revert of the merged change or a new remediation (a fresh pass from Step 1).
 
 ### Step 5 — Postmortem
 
@@ -177,7 +179,7 @@ Duration so far: <time>
 ## Step 2 — Root cause
 File: <path:line>
 Cause: <explanation>
-Before-fix reproduction (a bug a user sees): <the failing tests/api/ test and its output; the owner's deployed-site run, with screenshots>
+Before-fix reproduction (a bug a user sees): <the failing tests/api/ test and its output>; deployed-site run: <link once the owner posts it on the PR, before the merge>
 
 ## Step 3 — Minimal fix
 <diff or exact edit>
@@ -186,7 +188,8 @@ Before-fix reproduction (a bug a user sees): <the failing tests/api/ test and it
 - [x] Original command reruns cleanly
 - [x] make test passes (or: narrow test xyz passes)
 - [x] no regressions observed
-- [x] a bug a user sees: the Step 2 API test now passes; the owner posts the deployed-site runs, with screenshots, on the PR (item 5)
+- [x] a bug a user sees: the Step 2 API test now passes (item 5)
+- [ ] pending, the owner's close-out after the merge: the deployed-site run passes once staging has deployed the fix, with screenshots posted on the PR; if it fails, the issue stays open for a revert or a new remediation
 
 ## Step 5 — Postmortem
 Written to: docs/incidents/YYYY-MM-DD_<name>.md

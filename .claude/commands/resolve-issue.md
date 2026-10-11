@@ -4196,6 +4196,11 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    Documentation, tests, and CI-only changes are the genuine exemption — they
    ship by merging.
 
+   A production check that fails after the merge is not a local failure: the
+   fix is merged and may already be serving, and backing out a local change
+   undoes nothing. Keep the issue open, post the failing output on it, and
+   start a revert of the merged change or a new remediation.
+
    `gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml:24-26` says the
    trigger deploys `solyra-api-staging`, the one API service since
    `solyra-api-prod` and its promote trigger were retired on 2026-10-10, so
@@ -4744,7 +4749,7 @@ inside that window.** An empty review list at 60 seconds means "wait", not
        test -n "$PROJECT_ID" || { echo "no project resolved" >&2; return 1; }
        REV=$(gcloud run services describe solyra-api-staging \
                --project="$PROJECT_ID" --region=us-east1 \
-               --format=json | python gcp/cloudbuild/serving_revision.py) \
+               --format=json | python3 gcp/cloudbuild/serving_revision.py) \
          || { echo "could not read the staging serving revision" >&2; return 1; }
        test -n "$REV" || { echo "staging is serving nothing, or is split" >&2; return 1; }
        echo "$REV"
@@ -4761,10 +4766,11 @@ inside that window.** An empty review list at 60 seconds means "wait", not
          echo "staging is serving $REV and nothing here has verified it."
          echo "Run THIS ISSUE's reproduction against staging now, while it is"
          echo "still serving that revision (the failing-before test from"
-         echo "Phase 4, against the staging URL), then re-run bound to it:"
+         echo "Phase 4, against the staging URL). Once it passes, re-run:"
          printf '  STAGING_VERIFIED=%q staging_verified\n' "$REV"
-         echo "If staging has moved on by then, this refuses again with the"
-         echo "new revision: verify again against that one."
+         echo "If it fails, do not set it: keep the issue open and start a"
+         echo "revert or a new remediation. If staging has moved on by then,"
+         echo "this refuses again with the new revision: verify against it."
          return 1; }
        echo "staging verified: $REV, read before and after the reproduction"
      }
@@ -4772,13 +4778,16 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      ```
 
      Call it bare first: the refusal is the read before the reproduction,
-     and it names the revision. Run the reproduction, then call it with
-     `STAGING_VERIFIED` set to that revision: that is the read after. Only
-     its pass, where both reads name the same revision, lets Phase 9 close
-     the issue. If the revision changed in between, something else deployed
-     while you were checking: verify again against the new one. Paste the
-     refusal, the pass and the reproduction's output in the Phase 9 status
-     comment.
+     and it names the revision. Run the reproduction, and only once it
+     passes call it with `STAGING_VERIFIED` set to that revision: that is the
+     read after. Only its pass, where both reads name the same revision, lets
+     Phase 9 close the issue. If the revision changed in between, something
+     else deployed while you were checking: verify again against the new one.
+     If the reproduction fails against staging, do not set
+     `STAGING_VERIFIED`: the merged fix does not work where it serves, so keep
+     the issue open and start a revert or a new remediation, as the top of
+     this step says. Paste the refusal, the pass and the reproduction's output
+     in the Phase 9 status comment.
    - **Where the staging deploy or its verification is an owner action this
      session cannot take**, keep the issue OPEN, put the exact command in
      "Still open before this closes", and say the fix is merged but not yet
