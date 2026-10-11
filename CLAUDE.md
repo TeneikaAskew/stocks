@@ -223,10 +223,22 @@ reviewed commit" below), so for every Codex first review, with or without
 findings, the commit it covered is the one Codex's review-summary comment
 shows for that review type when that row first reads Completed, and the
 author records that SHA in a PR comment then, since the next run replaces the
-row, as `First Codex code review: Completed on <sha>, no findings.` for a
-review that posted none, or as
-`First Codex code review: Completed on <sha>, N findings.` for one that
-posted N. A reviewer whose clean review does create a review object, as a
+row. Each review type gets its own comment, posted when its own row first
+reads Completed: for the Code Review row,
+`First Codex code review: Completed on <sha>, no findings.` or
+`First Codex code review: Completed on <sha>, N findings.`, and for the
+Security Review row,
+`First Codex security review: Completed on <sha>, no findings.` or
+`First Codex security review: Completed on <sha>, N findings.`, with N the
+findings that run posted. A later finding is classified against the comment
+for its own review type, which is the type of the run that posted it. A
+Codex finding's inline comment names no review type either (each one on
+#1380 and #1387 carries a severity badge, a title and its text, and neither
+PR has a security-review finding to compare), so that run is identified by
+the summary row and timing: the row whose run was going when the finding
+posted and reads Completed just after it (#1387's finding 4240753728 posted
+at 07:46:37Z, and the Code Review row read Completed for `48b583a` at
+07:46:40Z). A reviewer whose clean review does create a review object, as a
 person's approval does, needs no such comment: that object's `commit_id`
 names the commit its first review covered.
 
