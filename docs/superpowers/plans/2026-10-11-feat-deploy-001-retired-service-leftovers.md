@@ -2,7 +2,7 @@
 feat_id: FEAT-DEPLOY-001
 spec: docs/superpowers/specs/2026-10-11-feat-deploy-001-retired-service-leftovers.md
 branch: feature/feat-deploy-001-retired-service-leftovers
-pr: null
+pr: 1384
 status: ready
 ---
 
