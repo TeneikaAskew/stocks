@@ -64,7 +64,7 @@ hand-edited and the workflow never touches it.
 
 | Component | Purpose / runtime | Deployment source | Identity / secrets | Trigger | Current gap |
 |---|---|---|---|---|---|
-| FastAPI API service | **API only** — the SPA moved to the solyra repo in #957 and `platform/Dockerfile` copies no `dist/`, so `main.py`'s conditional SPA mount never activates. Two services: `solyra-api-prod` and `solyra-api-staging` | `platform/Dockerfile`, `gcp/cloudbuild/*.yaml`, `platform/deploy.sh` | `AUTH_MODE` (`iap` on prod; `firebase` on staging), Cloud SQL connector, Secret Manager | HTTPS | auth unenforced outside `firebase`/`iap` ([09](09-SECURITY-AUTH.md)); `/dev` exposed on public staging |
+| FastAPI API service | **API only** — the SPA moved to the solyra repo in #957 and `platform/Dockerfile` copies no `dist/`, so `main.py`'s conditional SPA mount never activates. One service, `solyra-api-staging`; `solyra-api-prod` was retired on 2026-10-10 ([stocks#1366](https://github.com/TeneikaAskew/stocks/pull/1366)) | `platform/Dockerfile`, `gcp/cloudbuild/*.yaml`, `platform/deploy.sh` | `AUTH_MODE=firebase`, Cloud SQL connector, Secret Manager | HTTPS | auth unenforced outside `firebase`/`iap` ([09](09-SECURITY-AUTH.md)); `/dev` exposed on public staging |
 | Cloud Run jobs (67 declared / 76 live) | ingestion, analysis, insights, alerts, maintenance | `gcp/deploy.sh` | `trading-runner@` SA, vendor secrets | Scheduler (65 live) / manual | 11 jobs exist only by hand — see the table above <!-- verify-docs-ok: 11 is the live-only subset (76 live minus the 65 names also declared), not the fleet total, which the first cell states --> |
 | Cloud Scheduler (65 live) | invokes jobs | `gcp/deploy.sh` `_schedule*` helpers plus `deploy_notifier` | OIDC | cron (`America/New_York`) | the declared total is not tracked here: the entries are created across several helpers and a count derived by grep is not evidence |
 | Cloud SQL PostgreSQL | analytical + application store | `gcp/schema.sql`, `apply-schema-migrations` job | private connector, DB secret | — | convergence sprawl ([#918](https://github.com/TeneikaAskew/stocks/issues/918)); restore drills unproven |
@@ -92,11 +92,13 @@ Related infra-drift issues not detectable from source alone (they compare *live*
 **VERIFIED — DEPLOYMENT.** The production URL was probed on 2026-08-30: both `/` and
 `/api/health` return a redirect to Google SSO carrying IAP OAuth client
 `369001918367-t5qrahnqdaasaifvk6akpqkpjk9vli58`, which is the same client ID hardcoded at
-`platform/deploy.sh:99`. The service is live and IAP is active on it.
+`platform/deploy.sh:99`. The service was live and IAP was active on it. `solyra-api-prod` was retired on
+2026-10-10 ([stocks#1366](https://github.com/TeneikaAskew/stocks/pull/1366)): the service and its `deploy-solyra-api-prod` trigger were deleted ([evidence](https://github.com/TeneikaAskew/stocks/pull/1366#issuecomment-6104207089)),
+and `solyra-api-staging` is the only API service.
 
 | Environment | Service | URL | Auth | Evidence |
 |---|---|---|---|---|
-| **Production** | `solyra-api-prod` (us-east1) | `https://solyra-api-prod-5sjtb3yl7a-ue.a.run.app` | IAP SSO, audience `bictech.org` | solyra `playwright.config.ts` (`CLOUD_RUN_URL`), `docs/BRIEFING_DECK.md:51,278`; live probe 2026-08-30 |
+| **Production**, retired on 2026-10-10 ([stocks#1366](https://github.com/TeneikaAskew/stocks/pull/1366)) | `solyra-api-prod` (us-east1), deleted | `https://solyra-api-prod-5sjtb3yl7a-ue.a.run.app`, no longer served | IAP SSO, audience `bictech.org`, while it ran | solyra `playwright.config.ts` (`CLOUD_RUN_URL`), `docs/BRIEFING_DECK.md:51,278`; live probe 2026-08-30; deletion [evidence](https://github.com/TeneikaAskew/stocks/pull/1366#issuecomment-6104207089) |
 | **Staging** | `solyra-api-staging` | `https://solyra-api-staging-5sjtb3yl7a-ue.a.run.app` — also served at `api.stocks.insightscollective.org` | **public ingress + Firebase** (`allUsers` run.invoker, `AUTH_MODE=firebase`, `AUTH_OPEN_SIGNUP=1`) | live probe 2026-09-05; solyra `src/lib/apiTargets.ts` (`STAGING_API`) |
 | **Discord interactions** | `discord-interactions` | `https://discord-interactions-5sjtb3yl7a-ue.a.run.app` | `--allow-unauthenticated` (Discord cannot IAM-auth); Ed25519 signature verification at the app layer | live read 2026-09-05 |
 | **Failure notifier** | `failure-notifier` | `https://failure-notifier-5sjtb3yl7a-ue.a.run.app` | internal | live read 2026-09-05 |
@@ -130,7 +132,7 @@ If the intent was to keep Cloud Run hostnames out of the repo, that is a
 decision to apply everywhere at once — including `apiTargets.ts`, which needs
 the origin at runtime and would have to read it from config instead. Neither
 service relies on an unguessable URL for security: `discord-interactions`
-verifies Ed25519 signatures, the API services are IAP- or Firebase-gated.
+verifies Ed25519 signatures, the API service is Firebase-gated.
 
 ### Resolving service URLs
 
@@ -241,7 +243,7 @@ default applies (task-timeout **600s**, max-retries **3**).
 flowchart TB
  GH[GitHub] --> CI[Actions / Cloud Build]
  CI --> IMG[Artifact Registry images]
- IMG --> WEB[Cloud Run: solyra-api-prod]
+ IMG --> WEB[Cloud Run: solyra-api-staging]
  IMG --> JOB[Cloud Run: 67 jobs]
  SCH[Cloud Scheduler x58] -->|OIDC| JOB
  SCH -.->|BROKEN: gamma-levels-daily| MISSING[p2-build-gamma-levels — no IaC]
@@ -252,7 +254,6 @@ flowchart TB
  JOB --> GCS[(GCS artifacts)]
  V[AlphaVantage / FRED / SEC / Yahoo] --> JOB
  JOB --> DISCORD[Discord]
- IAP[IAP / Cloud Run IAM] --> WEB
  FB[Firebase identity] --> WEB
  WEB --> LOG[Cloud Logging]
  JOB --> LOG

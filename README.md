@@ -2,7 +2,7 @@
 
 **Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
 
-A private stocks and options trading intelligence platform on GCP: Cloud Run Jobs pull market, options, earnings, macro, filings and news data into Cloud SQL, compute Strat, gamma and signal analytics with one shared `lib/` engine, and deliver briefs and alerts to Discord. A FastAPI service (`solyra-api-prod` behind IAP, `solyra-api-staging` public with Firebase login) serves the [solyra](https://github.com/TeneikaAskew/solyra) React UI. This repository is the backend; the frontend moved to solyra in #957.
+A private stocks and options trading intelligence platform on GCP: Cloud Run Jobs pull market, options, earnings, macro, filings and news data into Cloud SQL, compute Strat, gamma and signal analytics with one shared `lib/` engine, and deliver briefs and alerts to Discord. A FastAPI service (`solyra-api-staging`, public with Firebase login; `solyra-api-prod` behind IAP was retired on 2026-10-10, [stocks#1366](https://github.com/TeneikaAskew/stocks/pull/1366)) serves the [solyra](https://github.com/TeneikaAskew/solyra) React UI. This repository is the backend; the frontend moved to solyra in #957.
 
 ![Last audit](https://img.shields.io/badge/docs_verified-2026--09--07-blue)
 ![Cloud Run Jobs](https://img.shields.io/badge/cloud_run_jobs-76_live_%2F_67_declared-blue)

@@ -21,20 +21,20 @@
 
 ## 0. The Cloud Run *services* (live state, read 2026-09-07)
 
-Four services exist. **Two of them serve this API**, from the same code, and the
-one the browser actually reaches is `solyra-api-staging` — `api.stocks.insightscollective.org`
-maps to it and it is the origin solyra's `src/lib/apiTargets.ts` calls. An
-operator diagnosing "the user-facing service" through the prod row is looking
-at the wrong service.
+Four services existed on that date, two of them serving this API from the same
+code. `solyra-api-prod` was retired on 2026-10-10
+([stocks#1366](https://github.com/TeneikaAskew/stocks/pull/1366)), so three remain and
+**one serves this API**: `solyra-api-staging` — `api.stocks.insightscollective.org`
+maps to it and it is the origin solyra's `src/lib/apiTargets.ts` calls.
 
 | Service | Region | What it is | Service account | Ingress / app auth | Secrets mounted |
 |---|---|---|---|---|---|
 | **`solyra-api-staging`** | us-east1 | **The service the browser talks to.** FastAPI only — no SPA in the image since #957. `api.stocks.insightscollective.org` maps here. | `trading-platform-svc@…` | `allUsers` → `roles/run.invoker` (public), app auth `AUTH_MODE=firebase` with `AUTH_OPEN_SIGNUP=1` | `DB_PASS` ← `trading-db-pass:latest`; `AV_API_KEY` and `ALPHA_VANTAGE_API_KEY` ← `av-api-key:latest` |
-| **`solyra-api-prod`** | us-east1 | Same FastAPI app, IAP-gated. Not reached by the browser today. | `trading-platform-svc@…` | IAP enabled, no `allUsers` binding, app auth `AUTH_MODE=iap` | identical to staging |
+| **`solyra-api-prod`**, retired on 2026-10-10 ([stocks#1366](https://github.com/TeneikaAskew/stocks/pull/1366)) | us-east1 | Same FastAPI app, IAP-gated. Not reached by the browser when read; now deleted. | `trading-platform-svc@…` | IAP enabled, no `allUsers` binding, app auth `AUTH_MODE=iap` | identical to staging |
 | `discord-interactions` | us-east1 | Discord slash-command webhook receiver (`gcp/discord_interactions`). Not part of the UI. | `trading-runner@…` | — | DB + AV + Discord + `DISCORD_APP_ID/PUBLIC_KEY/BOT_TOKEN` |
 | `failure-notifier` | us-east1 | Pub/Sub-driven GCP-job-failure → GitHub issue/PR sink (`gcp/failure_notifier`). Not part of the UI. | `trading-runner@…` | — | DB + `GITHUB_PAT`/`GITHUB_REPO` + `discord-webhook-gcp` |
 
-Where the two API services differ, in full:
+Where the two API services differed, in full, until `solyra-api-prod` was retired:
 
 | Env var | staging | prod |
 |---|---|---|
@@ -46,18 +46,18 @@ Where the two API services differ, in full:
 | `GCP_REGION` | `us-east1` | *(unset)* |
 | `FIREBASE_*` | project/API key/auth domain/app ID set | *(unset)* |
 
-> **Both services now run the `solyra-api` image.** Read live 2026-09-07: prod
+> **Both services ran the `solyra-api` image.** Read live 2026-09-07: prod
 > runs `gcr.io/…/solyra-api@sha256:fa6e1908…` and staging runs
 > `gcr.io/…/solyra-api`. An earlier revision of this note recorded prod still
 > on the pre-rename image; that drift has since closed, and #1007 deleted the
 > retired `trading-platform` / `trading-platform-staging` image packages
-> outright. Note the asymmetry that remains: prod is pinned to a
-> **digest**, staging to a **mutable tag**, which is what the immutable
-> `IMAGE_TAG` in `platform/deploy.sh` exists to end.
+> outright. Note the asymmetry that remained until prod was retired on
+> 2026-10-10: prod was pinned to a **digest**, staging to a **mutable tag**,
+> which is what the immutable `IMAGE_TAG` in `platform/deploy.sh` exists to end.
 
-> **Deploy source mismatch (intentional).** These two services are deployed by
-> **`platform/deploy.sh`** and by `gcp/cloudbuild/deploy-solyra-api-*.yaml`, NOT by
-> `gcp/deploy.sh` (which deploys the Jobs + the other two services). They share
+> **Deploy source mismatch (intentional).** The API service is deployed by
+> **`platform/deploy.sh`** and by `gcp/cloudbuild/deploy-solyra-api-staging-cloudbuild.yaml`, NOT by
+> `gcp/deploy.sh` (which deploys the Jobs + the other two services). It shares
 > env-var *names* with the Jobs (`CLOUD_SQL_CONNECTION_NAME`, `DB_USER`, `DB_NAME`,
 > `GCS_BUCKET`, `GCP_PROJECT_ID`) but a much smaller secret surface — see §0.1.
 
@@ -87,21 +87,20 @@ Consequences for the data flows below:
    > and the two prose notes in §2 and §3a, have been corrected with it.
 
 2. **No `ADMIN_TOKEN` is mounted on either service.** `/api/admin/*` therefore
-   falls back to identity auth: on prod the IAP header
-   (`X-Goog-Authenticated-User-Email`), on staging the Firebase identity checked
-   against `ADMIN_EMAIL=teneika@bictech.org`. A request carrying neither gets
-   **503 "ADMIN_TOKEN not configured"**, not 401.
+   falls back to identity auth: on staging the Firebase identity checked
+   against `ADMIN_EMAIL=teneika@bictech.org` (on prod, until it was retired on
+   2026-10-10, the IAP header `X-Goog-Authenticated-User-Email`). A request
+   carrying neither gets **503 "ADMIN_TOKEN not configured"**, not 401.
 3. **Vertex Gemini auth is via ADC**, i.e. the attached
    `trading-platform-svc@` identity — there is no Gemini API key. The insights
    pipeline that actually calls Vertex runs in the **`insight-pipeline` Job**
    (SA `trading-runner@`), not in these services; the only Vertex call a
    *service* makes is the `/api/insights/chat` streaming endpoint.
-4. **Auth posture.** Prod is IAP-gated with no `allUsers` binding. Staging is
-   public at the Cloud Run edge (`allUsers` → `roles/run.invoker`) and gated in
-   the app by Firebase, with open registration on by design. Secrets live
-   server-side only; **the browser bundle contains no secrets** (confirmed —
-   see §2). The runtime SA is `trading-platform-svc@` on both, not the default
-   compute SA.
+4. **Auth posture.** Staging is public at the Cloud Run edge
+   (`allUsers` → `roles/run.invoker`) and gated in the app by Firebase, with
+   open registration on by design. Secrets live server-side only; **the
+   browser bundle contains no secrets** (confirmed — see §2). The runtime SA is
+   `trading-platform-svc@`, not the default compute SA.
 
 ---
 
@@ -113,17 +112,17 @@ writes them, except Journal).
 
 | Page (route) | API endpoint(s) | Cloud SQL table(s) | GCP Job(s) that populate the data | Other GCP / external services | Secrets the data flow depends on |
 |---|---|---|---|---|---|
-| **Dashboard / Overview** (`/`) `DashboardPage.tsx` | `/api/dashboard/brief/{t}`, `/api/playbook/{t}`, `/api/signals/{t}`, `/api/catalysts/events`, `/api/market/reference/{t}/{d}`, `/api/market/data/{t}/{m}`, `/api/health/freshness`, `/api/me` | `premarket_analysis`, `market_data_daily`, `historical_signals`, `news_sentiment`/`earnings_calendar`/`sec_filings`/`insider_transactions`/`economic_events` (catalysts), `market_data_intraday` | `premarket-brief`, `fetch-market-data`, `backfill-daily-indicators`, `historical-signals-watchlist`, `fetch-news-sentiment*`, `fetch-earnings-calendar`, `fetch-sec-filings`, `fetch-insider-transactions`, `fetch-economic-events` | Cloud SQL; GCS (playbook md); **AlphaVantage** for the live-quote overlay (open-market only) | `db-trading-pass`; `av-api-key` (live overlay only — mounted on both API services); `benzinga-api-key` (catalysts, optional) |
-| **Live Market** (`/live`) `LiveMarketPage.tsx` | `/api/live/quote/{t}`, `/api/live/history/{t}`, `/api/live/avg-volume/{t}`, `/api/live/status`, `/api/live/indicators` (POST), `/api/market/data/{t}/{d}` | `market_data_daily` (avg-volume fallback), `market_data_intraday` (historical bars) | `fetch-market-data`, `backfill-daily-indicators`, `fetch-alphavantage-intraday` | **AlphaVantage** GLOBAL_QUOTE + TIME_SERIES_INTRADAY + TIME_SERIES_DAILY (request-path); `lib/indicators.py` for server-side indicators | `av-api-key` (mounted on both API services); `db-trading-pass` |
+| **Dashboard / Overview** (`/`) `DashboardPage.tsx` | `/api/dashboard/brief/{t}`, `/api/playbook/{t}`, `/api/signals/{t}`, `/api/catalysts/events`, `/api/market/reference/{t}/{d}`, `/api/market/data/{t}/{m}`, `/api/health/freshness`, `/api/me` | `premarket_analysis`, `market_data_daily`, `historical_signals`, `news_sentiment`/`earnings_calendar`/`sec_filings`/`insider_transactions`/`economic_events` (catalysts), `market_data_intraday` | `premarket-brief`, `fetch-market-data`, `backfill-daily-indicators`, `historical-signals-watchlist`, `fetch-news-sentiment*`, `fetch-earnings-calendar`, `fetch-sec-filings`, `fetch-insider-transactions`, `fetch-economic-events` | Cloud SQL; GCS (playbook md); **AlphaVantage** for the live-quote overlay (open-market only) | `db-trading-pass`; `av-api-key` (live overlay only — mounted on the API service); `benzinga-api-key` (catalysts, optional) |
+| **Live Market** (`/live`) `LiveMarketPage.tsx` | `/api/live/quote/{t}`, `/api/live/history/{t}`, `/api/live/avg-volume/{t}`, `/api/live/status`, `/api/live/indicators` (POST), `/api/market/data/{t}/{d}` | `market_data_daily` (avg-volume fallback), `market_data_intraday` (historical bars) | `fetch-market-data`, `backfill-daily-indicators`, `fetch-alphavantage-intraday` | **AlphaVantage** GLOBAL_QUOTE + TIME_SERIES_INTRADAY + TIME_SERIES_DAILY (request-path); `lib/indicators.py` for server-side indicators | `av-api-key` (mounted on the API service); `db-trading-pass` |
 | **Charts** (`/charts`) `ChartsPage.tsx` | `/api/market/data/{t}/{d}`, `/api/market/dates/{t}`, `/api/market/reference/{t}/{d}`, `/api/options/{t}/{d}/levels`, `/api/options/greeks` (POST), `/api/signals/{t}/similar`, `/api/analytics/trade-stats` (POST), `/api/backtest/{all,results,equity}/{t}` (BacktesterSection), `/api/config/*`, `/api/glossary/gamma` | `market_data_intraday`, `market_data_daily`, `etf_options_snapshots`, `historical_signals`; backtest CSVs in **GCS** `raw/data/backtest_results/` | `fetch-market-data`, `fetch-alphavantage-intraday`, `fetch-av-options-backfill`/`fetch-av-options-realtime`, `historical-signals-watchlist`, `backtest` (writes the GCS CSVs) | Cloud SQL; **GCS** (backtest CSVs); `lib/gamma.py` (GEX/levels), `lib/indicators.py`; AV reference fallback | `db-trading-pass`; `av-api-key` (recent-date reference only) |
-| **Options Flow** (`/options`) `OptionsFlowPage.tsx` | `/api/options/dates/{t}`, `/api/options/{t}/{d}`, `/api/options/live/{t}/{d}`, `/api/options/{t}/{d}/levels`, `/api/options/greeks` (POST) | `etf_options_snapshots` (`data_source='alphavantage'`, ~107M rows) | `fetch-av-options-backfill` (EOD, `av-options-daily` 21:00 ET), `fetch-av-options-realtime` (intraday, `av-options-realtime`) | Cloud SQL; **AlphaVantage** HISTORICAL_OPTIONS live proxy (fallback); `lib/gamma.py` | `db-trading-pass`; `av-api-key` (live proxy + on-demand grid — mounted on both API services) |
+| **Options Flow** (`/options`) `OptionsFlowPage.tsx` | `/api/options/dates/{t}`, `/api/options/{t}/{d}`, `/api/options/live/{t}/{d}`, `/api/options/{t}/{d}/levels`, `/api/options/greeks` (POST) | `etf_options_snapshots` (`data_source='alphavantage'`, ~107M rows) | `fetch-av-options-backfill` (EOD, `av-options-daily` 21:00 ET), `fetch-av-options-realtime` (intraday, `av-options-realtime`) | Cloud SQL; **AlphaVantage** HISTORICAL_OPTIONS live proxy (fallback); `lib/gamma.py` | `db-trading-pass`; `av-api-key` (live proxy + on-demand grid — mounted on the API service) |
 | **Signals** (`/signals`) `SignalsPage.tsx` | `/api/signals/{t}`, `/api/signals/{t}/similar` | `historical_signals` (~1.48M rows); GCS parquet fallback `raw/data/signals/` | `historical-signals-watchlist` (`scripts/run_historical_signals.py`) | Cloud SQL | `db-trading-pass` |
 | **AI Insights** (`/insights`) `InsightsPage.tsx` | `/api/insights/report/{t}`, `/api/insights/reports/{id}`, `/api/insights/report/{t}/history`, `/api/insights/report/{t}/refresh` (POST→Tasks), `/api/insights/runs/{id}`, `/api/insights/chat` (POST stream), `/api/dashboard/brief/{t}` | `insight_reports` (568 rows), `insight_runs`, `insight_reports_history`, `model_routing`; reads of `market_data_daily`/`etf_options_snapshots`/`signal_alerts`/`news_sentiment`/`earnings_calendar`/`sec_filings`/`economic_events` inside the pipeline | **`insight-pipeline`** Job (refresh → Cloud Tasks → Job; daily `insight-pipeline-daily` 08:45 ET) | **Vertex AI Gemini** `gemini-3.1-flash-lite` (all 7 roles, live `model_routing`); **Cloud Tasks** (`insight-pipeline-queue`); Cloud Run Job; Cloud SQL; AV (ticker-info inside pipeline) | **Vertex via ADC SA** (no key); `db-trading-pass`; `av-api-key` (pipeline data); `admin-token` (only for /admin routing UI) |
 | **Catalysts** (`/catalysts`) `CatalystsPage.tsx` | `/api/catalysts/events`, `/api/catalysts/types`, `/api/catalysts/ticker/{t}`, `/api/catalysts/asof/{t}` | `news_sentiment`, `economic_events`, `earnings_calendar`, `earnings_history`, `insider_transactions`, `sec_filings`, `market_data_daily` (+ local `data/catalysts/catalyst_calendar.json` cache) | `fetch-news-sentiment*`, `fetch-economic-events`, `fetch-earnings-calendar`, `fetch-earnings-history`, `fetch-insider-transactions`, `fetch-sec-filings` | **Benzinga** Calendar API (primary, optional); Cloud SQL; **FRED** (economic events upstream) | `db-trading-pass`; `benzinga-api-key` (optional); `fred-api-key` (economic upstream) |
 | **Playbook** (`/playbook`) `PlaybookPage.tsx` | `/api/playbook/{t}`, `/api/playbook/evaluate` (POST), `/api/market/reference/{t}/{d}` | *none directly* — reads markdown from GCS | `premarket-brief` / research jobs write `phase6_playbook_{t}.md`; condition eval is pure `lib` math (`platform/api/routers/playbook.py`) | **GCS** `raw/reports/` (playbook markdown); Cloud SQL (reference fallback) | `db-trading-pass` (reference only); GCS via SA |
 | **Reports** (`/reports`) `ReportsPage.tsx` | `/api/reports/list/{t}`, `/api/reports/{t}/{phase}` | *none* | research/phase jobs write phase report `*.md` to GCS | **GCS** `raw/reports/` (phase markdown) | (none beyond GCS SA) |
 | **Journal** (`/journal`) `JournalPage.tsx` | `/api/journal/trades/{t}` (GET), `/api/journal/trades` (POST), `/api/journal/trades/{id}` (DELETE), `/api/journal/export/{t}` (POST) | **`journal_entries`** — *user-written via the UI* (not a Job). **Live count = 0 rows.** Local JSON fallback when Cloud SQL off. | *none* (the page is the writer) | Cloud SQL | `db-trading-pass` |
-| **Admin** (`/admin`) `AdminPage.tsx` | `/api/admin/routes` (GET/PUT), `/api/admin/models`, `/api/admin/structure-brief`, `/api/admin/strat-engine/state`, `/api/admin/strat-engine/predict` (POST), `/api/me` | `model_routing` (routes); strat-engine reads `strat_features_*` on predict | `insight-pipeline` consumes `model_routing`; strat-engine artifacts written by the `strat-engine` research Job to GCS | Cloud SQL; **GCS** `research/strat_engine/` (model.pkl + metrics + structure_brief); `lib/agents/pricing.py` catalog | `admin-token` ⚠️ (*not mounted on either API service → 503 unless the IAP or Firebase identity matches*); `db-trading-pass` |
+| **Admin** (`/admin`) `AdminPage.tsx` | `/api/admin/routes` (GET/PUT), `/api/admin/models`, `/api/admin/structure-brief`, `/api/admin/strat-engine/state`, `/api/admin/strat-engine/predict` (POST), `/api/me` | `model_routing` (routes); strat-engine reads `strat_features_*` on predict | `insight-pipeline` consumes `model_routing`; strat-engine artifacts written by the `strat-engine` research Job to GCS | Cloud SQL; **GCS** `research/strat_engine/` (model.pkl + metrics + structure_brief); `lib/agents/pricing.py` catalog | `admin-token` ⚠️ (*not mounted on the API service → 503 unless the Firebase identity matches*); `db-trading-pass` |
 | **Help** (`/help`) `HelpPage.tsx` | `/api/glossary/gamma` (+ `<TermHover>` shared) | *none* | *none* — served from `lib/gamma_glossary.py` module constant | (static, in-process) | (none) |
 
 **Cross-cutting calls present on most pages** (via shared components): `/api/glossary/gamma`
@@ -157,11 +156,11 @@ secrets server-side.
 
 | Secret | What it's for | Consumed by (Cloud Run svc/job) | Browser-reachable? | Backs a page's data flow? |
 |---|---|---|---|---|
-| **`trading-db-pass`** | Cloud SQL password for `trading_user` — **the one secret the `solyra-api-prod` UI service mounts** (`DB_PASS`) | `solyra-api-prod` (UI) | **No** | **Yes — every Cloud-SQL-backed page** (Dashboard, Charts, Options, Signals, Insights, Catalysts, Journal, Admin) |
+| **`trading-db-pass`** | Cloud SQL password for `trading_user` — **mounted by the API service, `solyra-api-staging`** (`DB_PASS`) | `solyra-api-staging` (API) | **No** | **Yes — every Cloud-SQL-backed page** (Dashboard, Charts, Options, Signals, Insights, Catalysts, Journal, Admin) |
 | `db-trading-pass` | Same DB password, different secret name; mounted as `DB_PASS` into all the **Jobs** + the other two services (`gcp/deploy.sh` `DB_SECRET_FLAG`) | all Jobs, `discord-interactions`, `failure-notifier` | No | Yes — indirectly (the Jobs that populate the tables) |
 | `db-trading-user` / `cloud-sql-connection-name` | Non-secret DB username + instance conn-name, kept in SM for central rotation; injected as plain env on Jobs | all Jobs | No | Yes (DB connectivity) |
-| **`av-api-key`** | **AlphaVantage** API key (realtime-options tier). Mapped to BOTH `AV_API_KEY` + `ALPHA_VANTAGE_API_KEY` | Jobs (fetch-market-data, fetch-av-options-*, fetch-alphavantage-intraday, insight-pipeline, …), `discord-interactions`, **and both API services** (`solyra-api-staging` and `solyra-api-prod` — read live 2026-09-07, matching §0) | No | **Yes** — Live Market (quote/history), Options Flow (live proxy), Charts/Dashboard (reference, ticker search). Request-path AV works on both API services. |
-| **`admin-token`** | `ADMIN_TOKEN` for `/api/admin/*` model-routing UI. Mounted into `insight-pipeline` Job; **NOT on either API service** | `insight-pipeline` Job | No (browser sends it as `X-Admin-Token` from sessionStorage; the value lives server-side) | Admin page (⚠️ not mounted on either API service → identity auth is the only working path: IAP email on prod, `ADMIN_EMAIL` on staging) |
+| **`av-api-key`** | **AlphaVantage** API key (realtime-options tier). Mapped to BOTH `AV_API_KEY` + `ALPHA_VANTAGE_API_KEY` | Jobs (fetch-market-data, fetch-av-options-*, fetch-alphavantage-intraday, insight-pipeline, …), `discord-interactions`, **and the API service** (`solyra-api-staging` — read live 2026-09-07, matching §0) | No | **Yes** — Live Market (quote/history), Options Flow (live proxy), Charts/Dashboard (reference, ticker search). Request-path AV works on the API service. |
+| **`admin-token`** | `ADMIN_TOKEN` for `/api/admin/*` model-routing UI. Mounted into `insight-pipeline` Job; **NOT on the API service** | `insight-pipeline` Job | No (browser sends it as `X-Admin-Token` from sessionStorage; the value lives server-side) | Admin page (⚠️ not mounted on the API service → identity auth is the only working path: `ADMIN_EMAIL` on staging) |
 | `benzinga-api-key` | **Benzinga** catalyst calendar | catalyst fetchers / `BENZINGA_API_KEY` (optional) | No | Catalysts (optional/primary) |
 | `fred-api-key` | **FRED** economic data | `fetch-fred-rates`, `fetch-economic-events` (optional) | No | Catalysts (economic events), Greeks risk-free rate |
 | `ew-user` / `ew-pass` | Earnings Whispers login (paid) | earnings fetchers | No | Indirect (earnings calendar enrichment) |
@@ -190,8 +189,8 @@ into the bundle, and is sent only as a request header.
 
 ## 3. "Search a stock → end-to-end" trace
 
-Naming each GCP hop for the three flows the user called out. Both API services
-mount `av-api-key`, so the AV request path works on either (§0).
+Naming each GCP hop for the three flows the user called out. The API service
+mounts `av-api-key`, so the AV request path works (§0).
 
 ### 3a. Search a stock (ticker autocomplete)
 ```
@@ -202,7 +201,7 @@ Browser  ──GET /api/insights/ticker/search?keywords=…&limit=8──▶  so
   ◀── matches[] {symbol,name,type,region,currency,match_score}
 ```
 GCP hops: **Cloud Run service (FastAPI)** → **AlphaVantage** (external). No Cloud SQL.
-`AV_API_KEY` is mounted on both API services from `av-api-key:latest`
+`AV_API_KEY` is mounted on the API service from `av-api-key:latest`
 (`platform/deploy.sh`, read live 2026-09-07), so autocomplete works. This note
 previously said the opposite — see the correction in §0.1.
 
@@ -270,7 +269,7 @@ runs the pipeline inline via `BackgroundTasks` (same code path).
 
 | GCP service | Used for |
 |---|---|
-| **Cloud Run — services** | Four, read live 2026-09-07. `solyra-api-staging` (FastAPI only — **the service the browser reaches**; `api.stocks.insightscollective.org` maps to it); `solyra-api-prod` (same FastAPI image, IAP-gated, not browser-reached today); `discord-interactions` (slash-command webhook); `failure-notifier` (job-failure → GitHub). Neither API image ships the SPA — that ended at #957; see §0. |
+| **Cloud Run — services** | Three, read live 2026-10-11, after `solyra-api-prod` was retired on 2026-10-10 ([stocks#1366](https://github.com/TeneikaAskew/stocks/pull/1366)): `solyra-api-staging` (FastAPI only — **the service the browser reaches**; `api.stocks.insightscollective.org` maps to it); `discord-interactions` (slash-command webhook); `failure-notifier` (job-failure → GitHub). The API image ships no SPA — that ended at #957; see §0. |
 | **Cloud Run — jobs** (76 live, read 2026-09-07) | All data ingestion + analytics writers. Page-relevant: `insight-pipeline` (AI Insights), `fetch-market-data` + `fetch-alphavantage-intraday` + `backfill-daily-indicators` (price data → Dashboard/Charts/Live), `fetch-av-options-backfill` + `fetch-av-options-realtime` (Options Flow), `historical-signals-watchlist` (Signals), `premarket-brief` (Dashboard brief + Playbook md), `fetch-news-sentiment*`/`fetch-earnings-calendar`/`fetch-earnings-history`/`fetch-sec-filings`/`fetch-insider-transactions`/`fetch-economic-events`/`fetch-fred-rates` (Catalysts), `backtest` (Insights backtest panel), `auto-refresh-top-n` (pre-warms insight cache), `db-query` (ops SQL), `strat-engine` (research artifacts → Admin). |
 | **Cloud SQL (Postgres `trading-db`)** | System of record for nearly every page. ~50 tables; page-critical: `market_data_daily`/`market_data_intraday`, `etf_options_snapshots`, `historical_signals`, `insight_reports`/`insight_runs`/`insight_reports_history`/`model_routing`, `premarket_analysis`, `news_sentiment`/`earnings_calendar`/`earnings_history`/`sec_filings`/`insider_transactions`/`economic_events`, `journal_entries`, `trades`, `watchlists`, `ticker_info`, `signal_alerts`. |
 | **Vertex AI (Gemini)** | The LLM for AI Insights. Model `gemini-3.1-flash-lite` for all 7 agent roles (live `model_routing`), via `google-genai` in Vertex mode on the **`global`** endpoint. Adapter registry also supports Anthropic + OpenAI (`lib/agents/pricing.py` price table), but **only the Vertex adapter is registered** by the insights router/job, and the live routing table targets Vertex exclusively. |
@@ -278,9 +277,9 @@ runs the pipeline inline via `BackgroundTasks` (same code path).
 | **GCS (`…-trading-data`)** | Playbook + phase-report **markdown** (`raw/reports/`) for Playbook & Reports pages; backtest CSVs (`raw/data/backtest_results/`) for the Insights backtest panel; signals/market **parquet fallbacks** (`raw/data/…`); strat-engine **model artifacts** (`research/strat_engine/`) for Admin; `db-query` results + weekly `pg_dump` (`sql-dumps/`). Bucket prefix for app reads = `raw/` (`platform/api/gcs_reader.py`). |
 | **Secret Manager** | All 22 secrets in §2, mounted into containers at start via `--set-secrets` (except `staging-e2e-login`, which is read by an operator, not a container). |
 | **Cloud Scheduler** | 65 cron triggers driving the Jobs above. Page-relevant cadences: `insight-pipeline-daily` 08:45 ET; `fetch-market-data-daily` 23:00 ET; `av-options-daily` 21:00 ET + `av-options-realtime` */5 9-15 ET; `backfill-indicators-daily` 02:30 ET; `premarket-refresh-daily`/`premarket-brief-daily`; `sec-filings-intraday` 07/10/13/17 ET; `news-sentiment-hourly` + `news-topics-hourly` 8-17 ET; `auto-refresh-top-n` 08:10 ET; `freshness-watchdog-hourly`; `phase6-playbook-daily` 04:30 ET. |
-| **Artifact Registry** | Hosts `us-east1-docker.pkg.dev/.../trading/trading-system` (Jobs image) + `gcr.io/.../solyra-api` (API image, shared by solyra-api-prod and solyra-api-staging). The two repos carry DIFFERENT cleanup policies, and the difference is the tag shape. `trading` keeps every tagged version plus the 10 newest and deletes untagged versions older than 14 days — its tags are job names, one per job. `gcr.io` cannot keep every tagged version, because `solyra-api` gains one commit tag per push: it keeps `inuse-*` and `latest` plus the 10 newest, and deletes `solyra-api` versions older than 30 days whatever their tag. That is safe only because the digests in use are tagged `inuse-job-*` / `inuse-svc-*` by `gcp/deploy.sh pin-images`, which every deploy path runs. Do not rely on an old commit tag surviving. |
+| **Artifact Registry** | Hosts `us-east1-docker.pkg.dev/.../trading/trading-system` (Jobs image) + `gcr.io/.../solyra-api` (API image, run by solyra-api-staging). The two repos carry DIFFERENT cleanup policies, and the difference is the tag shape. `trading` keeps every tagged version plus the 10 newest and deletes untagged versions older than 14 days — its tags are job names, one per job. `gcr.io` cannot keep every tagged version, because `solyra-api` gains one commit tag per push: it keeps `inuse-*` and `latest` plus the 10 newest, and deletes `solyra-api` versions older than 30 days whatever their tag. That is safe only because the digests in use are tagged `inuse-job-*` / `inuse-svc-*` by `gcp/deploy.sh pin-images`, which every deploy path runs. Do not rely on an old commit tag surviving. |
 | **Cloud Build** | Builds both images (`gcloud builds submit` via `platform/cloudbuild.yaml` and `gcp/deploy.sh build`). |
-| **IAM / IAP** | `solyra-api-prod` is IAM-gated; an `IAP_OAUTH_CLIENT_ID` is wired and the admin/`/me`/`/dev` routes read the `X-Goog-Authenticated-User-Email` IAP header. SAs: both API services run as `trading-platform-svc@` (read live 2026-09-07, see §0); Jobs = `trading-runner@`; sandbox dispatch = `claude-web@`. |
+| **IAM / IAP** | No service has been IAP-gated since `solyra-api-prod` was retired on 2026-10-10 ([stocks#1366](https://github.com/TeneikaAskew/stocks/pull/1366)); an `IAP_OAUTH_CLIENT_ID` is still wired and the admin/`/me`/`/dev` routes read the `X-Goog-Authenticated-User-Email` IAP header. SAs: the API service runs as `trading-platform-svc@` (read live 2026-09-07, see §0); Jobs = `trading-runner@`; sandbox dispatch = `claude-web@`. |
 
 ---
 
@@ -305,4 +304,4 @@ runs the pipeline inline via `BackgroundTasks` (same code path).
 3. **Options Flow → Heatseeker → Swing Mode grid** — mock 2-D grid (real-data overlay only when `/levels` resolves for the focus symbol).
 4. **Admin → structure-brief / strat-engine predict** — dev-only, deploy-gated; no scheduler writes the structure-brief snapshot, so cells render `available=false`.
 5. **Reports / Playbook** — depend on phase/playbook **markdown in GCS**; populated by research/brief jobs, not a dedicated scheduled fetcher — if those md files are absent the pages 404.
-6. **Everything AlphaVantage-on-request** (Live Market quote/history, ticker autocomplete, Options live proxy) — backed by a live external API rather than a Job, so these degrade with the vendor rather than with a stale table. Both API services mount `av-api-key` (read live 2026-09-07), so the path is wired on either.
+6. **Everything AlphaVantage-on-request** (Live Market quote/history, ticker autocomplete, Options live proxy) — backed by a live external API rather than a Job, so these degrade with the vendor rather than with a stale table. The API service mounts `av-api-key` (read live 2026-09-07), so the path is wired.

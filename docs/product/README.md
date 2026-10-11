@@ -55,7 +55,7 @@ run records: [07 § Research documentation corpus](07-MODEL-REGISTRY.md#research
 
 | Environment | URL | Auth |
 |---|---|---|
-| Production | `https://solyra-api-prod-5sjtb3yl7a-ue.a.run.app` | IAP SSO (`bictech.org`) — verified live 2026-08-30 |
+| Production | `https://stocks.insightscollective.org` (solyra on Lovable; `solyra-stocks.lovable.app` redirects there), calling `solyra-api-staging` below. `solyra-api-prod` (IAP SSO) was retired on 2026-10-10 ([stocks#1366](https://github.com/TeneikaAskew/stocks/pull/1366)) | Firebase sign-in |
 | Staging | `https://solyra-api-staging-5sjtb3yl7a-ue.a.run.app`, also `api.stocks.insightscollective.org` | **public edge + Firebase**, `AUTH_OPEN_SIGNUP=1` — see [09](09-SECURITY-AUTH.md) |
 | Local dev | `http://localhost:5173` (API `http://localhost:8000`) | none (`AUTH_MODE` defaults to `open`) |
 
