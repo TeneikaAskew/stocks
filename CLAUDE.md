@@ -250,18 +250,24 @@ So the head counts as reviewed only when, after the PR's latest
 review-triggering event, a review authored by `chatgpt-codex-connector[bot]`
 was submitted naming it in `commit_id`, or the Code Review row of Codex's own
 review-summary comment reads Completed for the head's SHA, as
-`.claude/commands/resolve-issue.md` step 2 requires. Both halves count
-Codex's code review only: the review-triggering events are the PR opened for
-review, the draft marked ready, an `@codex review` comment and a push of new
-commits, and the review must not be `CHANGES_REQUESTED`. The cutoff matters:
-re-marking a draft ready, or an `@codex review` on an unchanged head, would
-otherwise count the older review while the new run is still going.
+`.claude/commands/resolve-issue.md` step 2 requires. Only the row says which
+review ran (a review object names no review type: Codex's reply on a thread
+is a bodiless review object, as #1380's review 5482164471 on `2b559d3d` is,
+and its security review runs under the same account), so a review object
+counts only once the Code Review row reads Completed for the same SHA; the
+review object is where that run's findings are read. The rule counts Codex's
+code review only: the review-triggering events are the PR opened for review,
+the draft marked ready, an `@codex review` comment and a push of new commits,
+and a review object counts only if it is not `CHANGES_REQUESTED`. The cutoff
+matters: re-marking a draft ready, or an `@codex review` on an unchanged head,
+would otherwise count the older review while the new run is still going.
 `get_reviews` returns oldest first, so the current review is on the last page,
 and all threads `is_outdated` still means the review predates the current
 content entirely.
 
-When the head is unreviewed and the change is more than cosmetic, comment
-`@codex review` and wait, rather than reading resolution as coverage.
+When the head is unreviewed and the change is more than cosmetic, wait while
+the Code Review row reads Running, and otherwise comment `@codex review` and
+wait, rather than reading resolution as coverage.
 
 #### Verify the claim before fixing it, and reproduce before you fix
 

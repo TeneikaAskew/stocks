@@ -4022,11 +4022,17 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    latest review-triggering event, a review authored by
    `chatgpt-codex-connector[bot]` was submitted naming it in `commit_id`, or
    the Code Review row of Codex's own review-summary comment reads Completed
-   for the head's SHA. Both halves count Codex's code review only: the
-   review-triggering events are the PR opened for review, the draft marked
-   ready, an `@codex review` comment and a push of new commits, and the review
-   must not be `CHANGES_REQUESTED`. In detail, either of these satisfies this
-   step:
+   for the head's SHA. Only the row says which review ran (a review object
+   names no review type: Codex's reply on a thread is a bodiless review
+   object, as #1380's review 5482164471 on `2b559d3d` is, and its security
+   review runs under the same account), so a review object counts only once
+   the Code Review row reads Completed for the same SHA; the review object is
+   where that run's findings are read. The rule counts Codex's code review
+   only: the review-triggering events are the PR opened for review, the draft
+   marked ready, an `@codex review` comment and a push of new commits, and a
+   review object counts only if it is not `CHANGES_REQUESTED`. In detail, the
+   second of these satisfies this step, and the first counts only alongside
+   it:
    - `pull_request_read` `method: "get_reviews"` returning a code review that
      is **authored by the review bot** (`chatgpt-codex-connector[bot]`), is
      not `CHANGES_REQUESTED`, whose
@@ -4055,7 +4061,7 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      **`get_reviews` returns oldest first, so the current
      review is on the LAST page**; reading page 1 and finding an older "no
      findings" is exactly how #991 merged two minutes after a review it never
-     saw; or
+     saw; and
    - the **Code Review row** of the Codex summary comment showing
      **Completed** against the head SHA,
      **authored by the review bot** — and Completed for the CURRENT run: the
@@ -4066,18 +4072,19 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      comment that says Completed and names the head, and the author check
      above is about review objects, so without this clause the cheaper of the
      two conditions is the forgeable one. And it takes **the same cutoff as
-     the review-object alternative above — the LATEST review-triggering
+     the review-object condition above — the LATEST review-triggering
      event, whichever it was**: the summary's own timestamp for the current
-     run must follow it. Round 65 widened the cutoff on the alternative above
+     run must follow it. Round 65 widened the cutoff on the condition above
      from "the undraft" to "the latest triggering event" and left this one
      saying "again only where step 0 undrafted", which is the exact interval
      that matters: comment `@codex review` on an unchanged head and the
      PREVIOUS run's summary keeps reading Completed against that same SHA
      until the new run edits it to Running, so a resolver reading it in that
-     window satisfies this step with the run it was trying to supersede. Two
-     alternatives to one step have to be equally hard to satisfy or the gate
-     is only as strong as its weaker half — which is the same argument the
-     forgeability clause above makes, applied to timing instead of authorship.
+     window satisfies this step with the run it was trying to supersede. The
+     row is what satisfies this step, so it has to be at least as hard to
+     satisfy as the review object, or the gate is only as strong as its weaker
+     half — which is the same argument the forgeability clause above makes,
+     applied to timing instead of authorship.
      **On a PR that was never drafted and never re-triggered there is still no
      separate cutoff**, exactly as above; the head SHA and the author check
      carry it.
@@ -4089,15 +4096,17 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    own replies satisfy the gate while the real review was still running.
 
    What fails this step: a summary showing Running, or naming an older commit
-   with all threads `is_outdated`, or a head whose only reviews are yours. That
-   head is unreviewed — comment `@codex review` and wait.
+   with all threads `is_outdated`, a Codex review object naming the head while
+   the Code Review row does not read Completed for it, or a head whose only
+   reviews are yours. That head is unreviewed: wait while the row reads
+   Running, and otherwise comment `@codex review` and wait.
 3. **Re-page `get_review_comments` now**, after step 2 established the review
    is Completed — do not reuse step 1's snapshot. Step 1 runs deliberately
    before CI and can therefore run while the current head's review is still
    posting; every finding it lands between that read and step 2's completion is
    absent from what you are holding. And a review WITH findings satisfies step 2
-   perfectly well, since the bar there is "not `CHANGES_REQUESTED`", so nothing
-   else catches it.
+   perfectly well, since the bar there is a Code Review row reading Completed,
+   which a run with findings reaches too, so nothing else catches it.
 
    **Then go to step 4 and work them. Zero unresolved is checked at step 6, on
    every path — including the one where step 4 produces no commit because you
@@ -4142,9 +4151,9 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    round, go back to step 1 on the new head.** A fix commit moves the head
    past the review that approved it, so merging straight from here lets the
    review-fix itself merge unreviewed. That is the same stale-head condition
-   steps 1-3 exist to catch, arriving by a different route. Push the fix, let
-   the review re-run on the new SHA, and re-check: that run is the PR's
-   second review round.
+   steps 1-3 exist to catch, arriving by a different route. Push every
+   first-round fix in one push, let the review re-run on the new SHA, and
+   re-check: that run is the PR's second review round.
 
    **The review cap is two rounds** (CLAUDE.md, "Review cap"; the
    product-delivery skill, Phase 4): after a PR's second review round, stop
@@ -4154,9 +4163,11 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    is no third review: present split, re-cut or discard
    (`superpowers:finishing-a-development-branch`) and name that choice in the
    Phase 9 "Still open before this closes". A round is one run of Codex's code
-   review on the PR. After the second, push nothing but a merge of `main` that
-   edits no conflict by hand, and handle any finding the run it starts raises
-   as a second-round finding.
+   review on the PR, and a push to a PR open for review starts one (CLAUDE.md
+   §2.5). After the second, push nothing, a merge of `main` included: a PR
+   that then needs a commit, or `main` merged in (a conflict, or a base the
+   gate needs), is re-cut from `main`, like one whose second round raised a
+   finding, and a clean second round merges as it stands.
 6. **Zero unresolved, across every page** — re-page `get_review_comments` and
    check it, whether or not step 4 produced a commit. A rebutted finding still
    needs its reply and its resolve, and a review that added nothing still has
@@ -4178,7 +4189,8 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    immediately before merging and give `merge_pull_request` its
    `expectedHeadSha`, so a head that moved is a rejected merge rather than an
    unreviewed one. If it has moved, that is not an obstacle to work around:
-   go back to step 1 for the new head.
+   go back to step 1 for the new head, or, past the PR's second round, re-cut
+   it as step 5 says, since the run that move started is a third.
 
    Two cases where you stop instead of merging, and say which: the PR is one
    this session did not open and was not asked to drive, so the merge is its

@@ -588,7 +588,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Data | — |
 | Models | — |
 | Code | `.github/workflows/`; review guidelines in `AGENTS.md` (`## Review guidelines`), merge gate in `CLAUDE.md` Rule 2.5 |
-| Tests | 230 python tests (29 e2e + 27 vitest moved to solyra in the #957 split) |
+| Tests | 7352 pytest items in `make test`'s scope (a parametrized test counts once per case), collected 2026-10-11 at `17bbacd3` by `python3 -m pytest tests/ --ignore=tests/integration --collect-only -q -p no:cacheprovider` with 0 collection errors; 29 e2e and 27 vitest tests moved to solyra in the #957 split |
 | Open issues | 12 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-cicd-001--ci--testing-12-open) |
 | Blocking issues | [#844](https://github.com/TeneikaAskew/stocks/issues/844) [#845](https://github.com/TeneikaAskew/stocks/issues/845) [#846](https://github.com/TeneikaAskew/stocks/issues/846) [#848](https://github.com/TeneikaAskew/stocks/issues/848) [#847](https://github.com/TeneikaAskew/stocks/issues/847) [solyra#28](https://github.com/TeneikaAskew/solyra/issues/28) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 6 |
