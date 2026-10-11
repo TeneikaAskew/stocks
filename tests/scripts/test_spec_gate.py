@@ -197,10 +197,8 @@ def on_base(repo: Path, files: dict[str, str | None], then: Callable[[Path], obj
     _git(repo, "tag", "-f", "base")
 
 
-def pr(repo: Path, branch: str, files: dict[str, str | None], then: Callable[[Path], object] | None = None,
-       **env: str) -> subprocess.CompletedProcess:
-    """A pull request from `branch`, cut from base, that writes `files` (None deletes one),
-    then runs `then(repo)` if given, judged the way the spec-gate workflow judges it."""
+def change(repo: Path, branch: str, files: dict[str, str | None], then: Callable[[Path], object] | None = None) -> None:
+    """Commit, on `branch` cut from base, `files` (None deletes one), after `then(repo)` if given."""
     _git(repo, "reset", "-q", "--hard")
     _git(repo, "clean", "-qfd")
     _git(repo, "checkout", "-q", "-B", branch, "base")
@@ -213,6 +211,13 @@ def pr(repo: Path, branch: str, files: dict[str, str | None], then: Callable[[Pa
         then(repo)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", f"change on {branch}")
+
+
+def pr(repo: Path, branch: str, files: dict[str, str | None], then: Callable[[Path], object] | None = None,
+       **env: str) -> subprocess.CompletedProcess:
+    """A pull request from `branch`, cut from base, that writes `files` (None deletes one),
+    then runs `then(repo)` if given, judged the way the spec-gate workflow judges it."""
+    change(repo, branch, files, then)
     # (stocks#1205 r4127577496: Actions passes two 40-character shas, so the suite does too)
     return gate(repo, "--pr", _git(repo, "rev-parse", "base"), _git(repo, "rev-parse", "HEAD"), **{"PR_HEAD_REF": branch, **env})
 
@@ -4079,8 +4084,8 @@ def test_the_head_tree_is_plain_files(inventory_repo):
                    "a submodule": (f"160000 commit {_git(root, 'rev-parse', 'base')}\tsub", "a submodule"),
                    "an empty component": (f"040000 tree {x}\t", "cannot be listed"),
                    **{f"component {c}": (f"040000 tree {x}\t{c}", "a path component") for c in (".", "..", ".git", ".GIT")}}
+        change(root, BRANCH, moved)   # the #1366 head, which each splice extends
         for name, (entry, fragment) in entries.items():
-            pr(root, BRANCH, moved, **DOCS_OK)
             b, h = spliced(root, entry)
             outcomes[name] = (gate(root, "--pr", b, h, PR_HEAD_REF=BRANCH, **DOCS_OK), fragment)
         missed = {k: r.stdout[-400:] for k, (r, fragment) in outcomes.items() if not refused(r, fragment)}
@@ -4096,3 +4101,64 @@ def test_materialize_writes_inside_its_directory_only(repo, tmp_path_factory):
         sg.materialize([("100644", oid, "../escape.py")], out)
     sg.materialize([("100644", oid, "lib/model.py")], out)
     assert (out / "lib/model.py").read_bytes() == b"DECISION = 'size'\n" and not (out.parent / "escape.py").exists()
+
+
+# A deploy.sh job whose --args names its entrypoint: the renderer reads that file's first docstring line. Verified on
+# 2026-10-11: with an absolute path the fence exits 86, and with gcp/evil_job.py the render opens nothing outside.
+JOB = "\ndeploy_evil_job() {{\n    gcloud run jobs deploy evil-job \\\n        --command python3 \\\n        --args {}\n}}\n"
+
+
+def test_a_feature_change_carries_its_re_rendered_inventory_blocks(inventory_repo):
+    """FEAT-CICD-001 spec, the allowance (done_when[0]): a feature branch that adds four lines near the top of
+    platform/api/main.py, as stocks#1366 did, passes the PR-mode gate carrying the three documents' re-rendered
+    blocks and its own catalog and traceability records."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        own = edit(CATALOG_TEXT, "### FEAT-MODEL-001\n\n- Status: Production", "### FEAT-MODEL-001\n\n- Status: Production\n- Note: cited lines moved")
+        r = pr(root, BRANCH, {**moved, CATALOG: own, TRACEABILITY: TRACE_TEXT + "- #7\n"}, **DOCS_OK)
+        changed = set(_git(root, "diff", "--name-only", "base", "HEAD").splitlines())
+        assert r.returncode == 0 and changed == {MAIN_PY, *GENERATED, CATALOG, TRACEABILITY}, r.stdout + r.stderr
+
+
+def test_a_block_must_equal_mains_render(inventory_repo):
+    """FEAT-CICD-001 spec, "Exact render" (done_when[1]): a hand-edited row is refused with the first difference and
+    the exact re-render command, and a renderer that fails on the pull request's files refuses with its exception
+    line rather than passing, reporting a difference, or crashing the gate."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        hand = pr(root, BRANCH, {**moved, API_DOC: edit(moved[API_DOC], "Liveness probe:", "Liveness probe, hand-edited:")}, **DOCS_OK)
+        broken = pr(root, BRANCH, {**moved, MAIN_PY: moved_main() + "\ndef broken(:\n"}, **DOCS_OK)
+        missed = [k for k, ok in {
+            "hand edit": refused(hand, "differs from main's render") and f"--restore {API_DOC}" in hand.stdout and SNAPSHOT_FILE in hand.stdout,
+            "renderer failure": refused(broken, "renderer failed") and "SyntaxError" in broken.stdout and "Traceback" not in broken.stderr,
+        }.items() if not ok]
+        assert missed == [], hand.stdout + broken.stdout + broken.stderr
+
+
+def test_the_render_reads_only_the_pull_requests_files(inventory_repo, tmp_path_factory):
+    """FEAT-CICD-001 spec, "Exact render" (done_when[1]): a render that opens a file outside the materialized tree
+    (a job entrypoint given as an absolute path) is refused and names the file; the same job inside the tree passes."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        outside = tmp_path_factory.mktemp("outside") / "evil_job.py"
+        outside.write_text('"""A job entrypoint outside the tree."""\n', encoding="utf-8")
+        deploy = (REPO / "gcp/deploy.sh").read_text(encoding="utf-8")
+        escaped = pr(root, BRANCH, {MAIN_PY: moved_main(), "gcp/deploy.sh": deploy + JOB.format(outside)}, then=render, **DOCS_OK)
+        inside = pr(root, BRANCH, {MAIN_PY: moved_main(), "gcp/evil_job.py": outside.read_text(encoding="utf-8"),
+                                   "gcp/deploy.sh": deploy + JOB.format("gcp/evil_job.py")}, then=render, **DOCS_OK)
+        assert (refused(escaped, "read outside this pull request's files"), "evil_job.py" in escaped.stdout, inside.returncode) == (True, True, 0), \
+            escaped.stdout + inside.stdout
+
+
+def test_the_refused_heads_have_accepted_controls(inventory_repo):
+    """FEAT-CICD-001 spec (done_when[1]): the controls for the clean-bytes and head-tree cases, each differing only in
+    the condition under test, pass: the route without an escape, and a plain spliced entry."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        route = pr(root, BRANCH, {MAIN_PY: moved_main() + ROUTE.format("")}, then=render, **DOCS_OK)   # Task 6's route, no escape
+        change(root, BRANCH, moved)
+        blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], input="x", cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+        x = mktree(root, f"100644 blob {blob}\tx\n")
+        b, h = spliced(root, f"040000 tree {x}\tok")   # Task 7's splice, a plain entry
+        plain = gate(root, "--pr", b, h, PR_HEAD_REF=BRANCH, **DOCS_OK)
+        assert (route.returncode, plain.returncode) == (0, 0), route.stdout + plain.stdout

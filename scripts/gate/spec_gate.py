@@ -48,8 +48,10 @@ import posixpath
 import re
 import subprocess
 import sys
+import tempfile
 import tomllib
 import types
+from collections.abc import Callable
 from dataclasses import dataclass
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -3877,6 +3879,97 @@ def materialize(entries: list[tuple[str, str, str]], into: pathlib.Path) -> None
         pos = eol + 1 + size + 1
 
 
+# The render runs main's doc_inventory in a child process: this file in a hidden mode, under `python3 -I -B`, from
+# a working directory outside the written tree, behind an audit hook that ends the child on any open, listdir or
+# scandir outside the tree. The renderer reads the tree by parsing it and never imports or runs it (measured
+# 2026-10-11); the fence turns any read that escapes the pull request's files into a refusal.
+RENDER_MODE = "--render-inventory"
+RENDER_PREIMPORTS = ("inspect",)   # ast.get_docstring imports it lazily; behind the fence that open would be refused
+RENDER_FAILED = 1   # the renderer raised; Python's own exit code for an uncaught exception
+RENDER_DIFFERS = 3
+RENDER_MISPLACED = 4
+RENDER_ESCAPED = 86
+PSEUDO_FILE = re.compile(r"<[^/\\\x00]*>")   # "<unknown>", "<string>": names compile gives source it was handed as a string
+
+
+def render_fence(root: str) -> Callable[[str, tuple], None]:
+    """An audit hook that ends the process with RENDER_ESCAPED on an open, os.listdir or os.scandir of a path whose
+    realpath is not root or under it. It exits rather than raising: the renderer's own `except OSError` would
+    swallow an exception. Integer file descriptors were opened through a path already checked. A pseudo-filename
+    such as "<unknown>" passes: compile opens the name it was given for source handed over as a string, to quote a
+    SyntaxError's line, and from the child's empty working directory that name reads nothing."""
+    top = root + os.sep
+    def fence(event: str, args: tuple) -> None:
+        if event not in ("open", "os.listdir", "os.scandir"):
+            return
+        path = args[0] if args else None
+        if isinstance(path, int) or (isinstance(path, str) and PSEUDO_FILE.fullmatch(path)):
+            return
+        try:
+            shown = os.fsdecode("." if path is None else path)
+            real = os.path.realpath(shown)
+        except Exception:   # a path realpath cannot read is not a path inside the tree
+            shown, real = repr(path), ""
+        if real != root and not real.startswith(top):
+            os.write(2, f"opened {shown}\n".encode("utf-8", "replace"))
+            os._exit(RENDER_ESCAPED)
+    return fence
+
+
+def render_inventory(tree: str, docs: list[str]) -> int:
+    """The child (RENDER_MODE): main's renderer over `tree`, the pull request's files. Prints one
+    `doc<TAB>block<TAB>first difference` line per block that differs from main's render of it."""
+    sys.path.insert(0, str(ROOT))
+    inv = importlib.import_module("scripts.maintenance.doc_inventory")
+    if pathlib.Path(inv.__file__ or "").resolve() != (ROOT / "scripts/maintenance/doc_inventory.py").resolve():
+        os.write(2, f"{inv.__file__}\n".encode("utf-8", "replace"))
+        return RENDER_MISPLACED
+    live = json.loads((ROOT / RENDER_SNAPSHOT).read_text(encoding="utf-8"))
+    for name in RENDER_PREIMPORTS:
+        importlib.import_module(name)
+    sys.addaudithook(render_fence(os.path.realpath(tree)))
+    at = pathlib.Path(tree)
+    try:
+        repo = inv.repo_inventory(at)
+        differs = [(doc, name, diff) for doc in docs for name, diff in inv.differing_blocks(at / doc, repo, live, root=at)]
+    except Exception as e:
+        # Reported here, one line: Python's traceback printer reads source lines through linecache, and the fence
+        # ends the child on that open (a SyntaxError's "<unknown>"), which would name a read, not the failure.
+        os.write(2, f"{type(e).__name__}: {e}\n".encode("utf-8", "replace"))
+        return RENDER_FAILED
+    for doc, name, diff in differs:
+        sys.stdout.buffer.write(f"{doc}\t{name}\t{diff}\n".encode("utf-8", "replace"))
+    sys.stdout.flush()
+    return RENDER_DIFFERS if differs else 0
+
+
+def render_refusals(entries: list[tuple[str, str, str]], docs: list[str]) -> list[str]:
+    """[] when main's renderer, run over the head tree written to a temporary directory, renders every block of
+    `docs` exactly as committed; otherwise why not."""
+    with tempfile.TemporaryDirectory(prefix="spec-gate-render-") as tmp:
+        tree, cwd = pathlib.Path(tmp) / "tree", pathlib.Path(tmp) / "run"
+        tree.mkdir()
+        cwd.mkdir()
+        materialize(entries, tree)
+        r = subprocess.run([sys.executable, "-I", "-B", str(pathlib.Path(__file__).resolve()), RENDER_MODE, str(tree), *docs],
+                           cwd=cwd, capture_output=True, encoding="utf-8", errors="replace")
+    last = (r.stderr.strip().splitlines() or ["no output"])[-1]
+    every = ", ".join(docs)
+    if r.returncode == 0:
+        return []
+    if r.returncode == RENDER_DIFFERS:
+        found = [line.split("\t", 2) for line in r.stdout.split("\n") if line]
+        if found and all(len(f) == 3 for f in found):
+            return [generated_refusal(doc, f"inventory:{name} differs from main's render; first difference: {diff}. Re-render "
+                                           f"with: python3 -m scripts.maintenance.doc_inventory --snapshot {RENDER_SNAPSHOT} --restore {doc}")
+                    for doc, name, diff in found]
+    elif r.returncode == RENDER_ESCAPED:
+        return [generated_refusal(every, f"main's renderer read outside this pull request's files ({last})")]
+    elif r.returncode == RENDER_MISPLACED:
+        return [generated_refusal(every, f"main's renderer was imported from outside this checkout ({last})")]
+    return [generated_refusal(every, f"main's renderer failed on this pull request's files (exit {r.returncode}): {last}")]
+
+
 def generated_doc_refusals(ch: Change, merge_base: str, head: str, docs: list[str], inv: types.ModuleType,
                            cgd: types.ModuleType) -> list[str]:
     """Why each changed generated document in `docs` is refused, or [] when every one carries only main's render
@@ -3894,7 +3987,7 @@ def generated_doc_refusals(ch: Change, merge_base: str, head: str, docs: list[st
         return [generated_refusal(", ".join(docs), f"the head tree cannot be listed ({e})")]
     if why := tree_refusal(entries):
         return [generated_refusal(", ".join(docs), f"the head tree holds {why}; the render reads plain files only")]
-    return [generated_refusal(doc, "is not yet checked against main's render") for doc in docs]
+    return render_refusals(entries, docs)
 
 
 def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) -> list[str]:
@@ -4240,6 +4333,8 @@ def main(argv: list[str]) -> int:
 
 def run(argv: list[str]) -> int:
     mode = argv[1] if len(argv) > 1 else "--commit"
+    if mode == RENDER_MODE:
+        return render_inventory(argv[2], argv[3:])
     env = os.environ
     if mode == "--check-spec":
         if len(argv) < 3:
