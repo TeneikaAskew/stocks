@@ -13,11 +13,16 @@ finding gives.
 """
 from __future__ import annotations
 
+import ast
 import datetime
+import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
+import types
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -181,9 +186,10 @@ def on_base(repo: Path, files: dict[str, str | None]) -> None:
     _git(repo, "tag", "-f", "base")
 
 
-def pr(repo: Path, branch: str, files: dict[str, str | None], **env: str) -> subprocess.CompletedProcess:
+def pr(repo: Path, branch: str, files: dict[str, str | None], then: Callable[[Path], object] | None = None,
+       **env: str) -> subprocess.CompletedProcess:
     """A pull request from `branch`, cut from base, that writes `files` (None deletes one),
-    judged the way the spec-gate workflow judges it."""
+    then runs `then(repo)` if given, judged the way the spec-gate workflow judges it."""
     _git(repo, "reset", "-q", "--hard")
     _git(repo, "clean", "-qfd")
     _git(repo, "checkout", "-q", "-B", branch, "base")
@@ -192,6 +198,8 @@ def pr(repo: Path, branch: str, files: dict[str, str | None], **env: str) -> sub
             (repo / path).unlink()
         else:
             write(repo, path, text)
+    if then is not None:
+        then(repo)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", f"change on {branch}")
     # (stocks#1205 r4127577496: Actions passes two 40-character shas, so the suite does too)
@@ -3739,3 +3747,62 @@ def test_chained_exits_quoted_hashes_and_headings_beside_rows_are_the_contract(r
     with_heading = row_only + f"\n### FEAT-MODEL-001\n\n- Status: Production\n- Last reviewed: {TODAY}\n- PRs: #42\n"
     r = pr(repo, BRANCH, {**job, CATALOG: with_heading}, **title, PR_BODY=body(ticked=True) + "\n\n## Capacity\nn/a: x\n")
     assert r.returncode == 1 and "adds a second heading or row" in r.stdout, r.stdout
+
+
+# REQ-GOV-004 and the byte-exact diff reader
+
+
+def load_gate(root: Path) -> types.ModuleType:
+    """root's copy of the gate as a module of its own: its ROOT is root, so its git calls read that repository.
+    Registered in sys.modules, where dataclasses look their module up."""
+    n = 0
+    while f"spec_gate_under_test_{n}" in sys.modules:
+        n += 1
+    name = f"spec_gate_under_test_{n}"
+    found = importlib.util.spec_from_file_location(name, root / "scripts/gate/spec_gate.py")
+    module = importlib.util.module_from_spec(found)
+    sys.modules[name] = module
+    found.loader.exec_module(module)
+    return module
+
+
+def base_and_head(repo: Path) -> tuple[str, str]:
+    return _git(repo, "rev-parse", "base"), _git(repo, "rev-parse", "HEAD")
+
+
+def test_changed_lines_reads_the_diff_as_bytes(repo):
+    """FEAT-CICD-001 spec, the diff reader (done_when[2]).
+
+    Main's reader took a content line beginning with `---` or `+++` for a file header and split text-mode output at a
+    lone carriage return and at U+2028: the first diff read as [], the second as five lines that git never wrote.
+    """
+    sg = load_gate(repo)
+    on_base(repo, {"docs/f.md": "a\n---\n-- keep\nb\nc\nd\n"})
+    pr(repo, "docs/probe", {"docs/f.md": "a\n+++ added\n++ also\nb\nc\nd\n"})
+    assert sg.changed_lines(*base_and_head(repo), "docs/f.md") == [("-", 2, "---"), ("-", 3, "-- keep"), ("+", 2, "+++ added"), ("+", 3, "++ also")]
+    on_base(repo, {"docs/f.md": "a\nb\nc\nd\ne\nf\n"})
+    pr(repo, "docs/probe", {"docs/f.md": "a\nb-new\r+phantom\nc\nd\ne-new\u2028@@ -9 +9 @@\nf\n"})
+    assert sg.changed_lines(*base_and_head(repo), "docs/f.md") == [("-", 2, "b"), ("+", 2, "b-new\r+phantom"), ("-", 5, "e"), ("+", 5, "e-new\u2028@@ -9 +9 @@")]
+
+
+def test_changed_lines_raises_on_a_binary_or_hunkless_diff(repo):
+    """FEAT-CICD-001 spec, the diff reader (done_when[2]).
+
+    A NUL makes git print "Binary files differ" and a mode change prints no hunk: main's reader returned no lines for a
+    path it was asked about, which the catalog scope check read as nothing changed.
+    """
+    sg = load_gate(repo)
+    on_base(repo, {"docs/f.md": "a\n"})
+    pr(repo, "docs/probe", {"docs/f.md": "a\x00\n"})                                  # binary
+    with pytest.raises(sg.GitFailed, match="no text hunk"):
+        sg.changed_lines(*base_and_head(repo), "docs/f.md")
+    pr(repo, "docs/probe", {}, then=lambda r: (r / "docs/f.md").chmod(0o755))         # mode only
+    with pytest.raises(sg.GitFailed, match="no text hunk"):
+        sg.changed_lines(*base_and_head(repo), "docs/f.md")
+
+
+def test_added_lines_is_gone():
+    """FEAT-CICD-001 spec, the diff reader (done_when[2]): added_lines had no caller and read the diff as main's
+    changed_lines did."""
+    defined = {n.name for n in ast.parse(GATE.read_text(encoding="utf-8")).body if isinstance(n, ast.FunctionDef)}
+    assert "changed_lines" in defined and "added_lines" not in defined

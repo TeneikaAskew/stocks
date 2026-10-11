@@ -89,7 +89,7 @@ REGISTRY_HOSTS = ("registry.npmjs.org", "registry.yarnpkg.com", "files.pythonhos
 
 def lockfile_sources(name: str, text: str) -> list[str]:
     """Every location a lockfile fetches a package from, parsed as its installer parses it
-    (round seven: `HTTPS://`, `https:\/\/` and `file:` slipped a text scan). Raises ValueError
+    (round seven: `HTTPS://`, `https:\\/\\/` and `file:` slipped a text scan). Raises ValueError
     when the file cannot be parsed."""
     found: list[str] = []
     if name == "package-lock.json":
@@ -1178,6 +1178,15 @@ def git_out(*args: str) -> str:
     if r.returncode != 0:
         raise GitFailed(f"git {' '.join(args[:2])} failed ({r.returncode}): {r.stderr.strip() or 'no output'}; "
                         "refusing to pass on a diff the gate could not compute")
+    return r.stdout
+
+
+def git_bytes(*args: str) -> bytes:
+    """stdout of a git command that must succeed, undecoded: text mode reads a lone carriage return as a line break."""
+    r = subprocess.run(["git", "-c", "core.quotePath=false", *args], capture_output=True, cwd=ROOT)
+    if r.returncode != 0:
+        raise GitFailed(f"git {' '.join(args[:2])} failed ({r.returncode}): "
+                        f"{r.stderr.decode('utf-8', 'replace').strip() or 'no output'}; refusing to pass on a diff the gate could not compute")
     return r.stdout
 
 
@@ -3481,18 +3490,27 @@ def check_capacity(body: str | None, changed: list[str]) -> list[str]:
 
 def changed_lines(merge_base: str, head: str, path: str) -> list[tuple[str, int, str]]:
     """("-", line in base, text) for every line the change removes from path and
-    ("+", line in head, text) for every line it adds."""
-    out, old, new = [], 0, 0
-    for line in git_out("diff", "-U0", merge_base, head, "--", path).splitlines():
-        hunk = re.match(r"^@@ -(\d+)(?:,\d+)? \+(\d+)", line)
+    ("+", line in head, text) for every line it adds, numbered as git numbers them.
+    The diff is read as bytes and split on "\\n" alone; `---` and `+++` are file headers only before the
+    first hunk, so a content line that begins with them is still a changed line. A diff of path with no
+    text hunk (binary, a NUL, a mode change) raises: the gate reads every changed line, never none."""
+    out, old, new, hunks = [], 0, 0, 0
+    diff = git_bytes("diff", "--no-color", "--no-ext-diff", "--no-textconv", "-U0", merge_base, head, "--", path)
+    for line in diff.split(b"\n"):
+        hunk = re.match(rb"^@@ -(\d+)(?:,\d+)? \+(\d+)", line)
         if hunk:
-            old, new = int(hunk.group(1)), int(hunk.group(2))
-        elif line.startswith("-") and not line.startswith("---"):
-            out.append(("-", old, line[1:]))
+            old, new, hunks = int(hunk.group(1)), int(hunk.group(2)), hunks + 1
+        elif not hunks or line.startswith(b"\\"):
+            continue   # a header before the first hunk, or "\ No newline at end of file"
+        elif line.startswith(b"-"):
+            out.append(("-", old, line[1:].decode("utf-8", "replace")))
             old += 1
-        elif line.startswith("+") and not line.startswith("+++"):
-            out.append(("+", new, line[1:]))
+        elif line.startswith(b"+"):
+            out.append(("+", new, line[1:].decode("utf-8", "replace")))
             new += 1
+    if not hunks:
+        raise GitFailed(f"git diff of {path} shows no text hunk (a binary file, a NUL byte or a mode-only change); "
+                        "the gate reads every changed line and refuses to pass on none")
     return out
 
 
@@ -3848,19 +3866,6 @@ def feat_fields(text: str | None, feat_id: str) -> dict[str, str]:
     if fields:
         return fields
     return {h: v for h, v in row_fields(text, feat_id).items() if h in CLOSE_OUT_FIELDS}
-
-
-def added_lines(merge_base: str, head: str, path: str) -> list[tuple[int, str]]:
-    """(line number in head, text) for every line the PR adds to path."""
-    out, lineno = [], 0
-    for line in git_out("diff", "-U0", merge_base, head, "--", path).splitlines():
-        hunk = re.match(r"^@@ -\S+ \+(\d+)", line)
-        if hunk:
-            lineno = int(hunk.group(1))
-        elif line.startswith("+") and not line.startswith("+++"):
-            out.append((lineno, line[1:]))
-            lineno += 1
-    return out
 
 
 def section_of(text: str, feat_id: str) -> range:
