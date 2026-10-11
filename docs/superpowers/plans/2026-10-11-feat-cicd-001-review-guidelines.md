@@ -77,7 +77,10 @@ git.
   run in progress again; step 3 quotes step 2's new bar; this plan's Global Constraints merge `main`
   only before the second round. `docs/product/README.md:155` and
   `docs/product/11-CODE-TRACEABILITY.md:43` carry the same stale count and are corrected on a `docs/`
-  branch once this PR merges (Task 7).
+  branch once this PR merges (Task 7). The commit after `18891144` closes the same class in Rule 2.5:
+  the row is the source of every Codex first review's SHA, with or without findings, recorded in a PR
+  comment (`First Codex code review: Completed on <sha>, no findings.` or `…, N findings.`);
+  resolve-issue step 3 posts it, and the template's classifying-reply item points at it.
 - Task numbers are unchanged. Round-1 work sits with the task that owns its file area: the registry rows
   in Task 1, code-reviewer.md in Task 2, the reviewed-head rule in Tasks 3 and 4, the staging gate and
   the resume notes in Task 5, debug-local's before-fix capture and failure handling in Task 6.
@@ -97,8 +100,9 @@ git.
 - **Shared text.** The `## Review guidelines` section (Task 1) is byte-identical to solyra's, except
   `Rule 3.7` here and `Rule 4` there (spec § Design, last paragraph); it is not edited in this PR, and
   its corrections go to a later spec for both repositories. The Rule 2.5 subsections (Task 2) match
-  solyra's except that rule number and round 1's Codex qualification of the clean-review paragraph
-  (4240413683), which solyra carries in its own PR or not.
+  solyra's except that rule number, round 1's Codex qualification of the clean-review paragraph
+  (4240413683) and #1387 round 1's change to the same paragraph (the row is the source for every Codex
+  first review), which solyra carries in its own PR or not.
 - **Anchors.** Line numbers are `origin/main` at `17bbacd3`; the target files there are unchanged
   from `1a6ff45e`, where the first version of this plan was measured. Each Old block occurs exactly once
   in its file on `main`, and `plan_replay.py` fails if one does not.
@@ -297,6 +301,8 @@ run "no project resolved"         STUB_JSON="$T/one.json" STUB_PROJECT= STAGING_
 10. **A review object counted without its run's row** (#1387 round 1, 4240629921). No field of a review
    object names its review type, so only the Code Review row says a code review ran. Tasks 3 and 4 check
    the row sentence in all three homes, and Task 4 that step 2's detail no longer reads "either of these".
+   Task 2 checks that Rule 2.5 takes every Codex first review's SHA from the row, with or without
+   findings; Task 4 that step 3 posts that comment, and Task 3 that the template points at it.
 11. **A stale count under a fresh review date** (#1387 round 1, 4240629923). Task 7 re-counts the
    FEAT-CICD-001 record's Tests field with a named command, date and commit.
 
@@ -501,7 +507,9 @@ python3 "$SCRATCH/clause_check.py" CLAUDE.md '^### 2\.5\.' '^### 3\.' \
   "A reviewer of a pull request here" \
   "follows AGENTS.md's ## Review guidelines" \
   "For Codex, a first review that posts no findings leaves no review object" \
-  "A reviewer whose clean review does create a review object, as a person's approval does, needs no such comment: that object's commit_id names the commit its first review covered"
+  "A reviewer whose clean review does create a review object, as a person's approval does, needs no such comment: that object's commit_id names the commit its first review covered" \
+  "a review object names no review type (see 'A resolved thread is not a reviewed commit' below), so for every Codex first review, with or without findings, the commit it covered is the one Codex's review-summary comment shows for that review type when that row first reads Completed" \
+  "as First Codex code review: Completed on <sha>, no findings. for a review that posted none, or as First Codex code review: Completed on <sha>, N findings. for one that posted N"
 ```
 
 ```bash
@@ -513,11 +521,13 @@ python3 "$SCRATCH/clause_check.py" .claude/agents/code-reviewer.md '^## Your Out
 grep -n "Be Proportional\|Be Efficient\|a pre-existing issue you noticed" .claude/agents/code-reviewer.md
 ```
 
-Expected on main: rule25 `0/12`, code-reviewer `0/4`, both exit 1, and the grep
+Expected on main: rule25 `0/14`, code-reviewer `0/4`, both exit 1, and the grep
 prints three lines.
 
 - [ ] **Step 2: Insert the two subsections.** The clean-review paragraph is qualified as Codex's
   (round 1, 4240413683): a person's clean approval is a review object whose `commit_id` names the SHA.
+  For every Codex first review, with or without findings, the SHA comes from the row and goes in a PR
+  comment, since a review object names no review type (#1387 round 1, the class of 4240629921).
 
 **Edit `CLAUDE.md`** (lines 195-197 on origin/main)
 
@@ -557,14 +567,18 @@ first review covered, named by SHA), or new (a later commit introduced or
 worsened it, named by SHA). The missed count per reviewer and pull request is
 the lower bound REQ-GOV-003 keeps on what a first review misses.
 
-For Codex, a first review that posts no findings leaves no review object, so
-the commit it covered is the one Codex's review-summary comment shows for
-that review type when that row first reads Completed, and the author records
-that SHA in a PR comment then, since the next run replaces the row:
-`First Codex code review: Completed on <sha>, no findings.` A reviewer whose
-clean review does create a review object, as a person's approval does, needs
-no such comment: that object's `commit_id` names the commit its first review
-covered.
+For Codex, a first review that posts no findings leaves no review object, and
+a review object names no review type (see "A resolved thread is not a
+reviewed commit" below), so for every Codex first review, with or without
+findings, the commit it covered is the one Codex's review-summary comment
+shows for that review type when that row first reads Completed, and the
+author records that SHA in a PR comment then, since the next run replaces the
+row, as `First Codex code review: Completed on <sha>, no findings.` for a
+review that posted none, or as
+`First Codex code review: Completed on <sha>, N findings.` for one that
+posted N. A reviewer whose clean review does create a review object, as a
+person's approval does, needs no such comment: that object's `commit_id`
+names the commit its first review covered.
 
 #### A resolved thread is not a reviewed commit
 ````
@@ -607,7 +621,7 @@ or makes worse. A pre-existing problem you noticed goes under a separate
 
 - [ ] **Step 4: Run the checks again (expect PASS)**
 
-Same commands. Expected: rule25 `12/12`, code-reviewer `4/4`, exit 0; the grep
+Same commands. Expected: rule25 `14/14`, code-reviewer `4/4`, exit 0; the grep
 prints nothing (exit 1).
 
 - [ ] **Step 5: Commit**
@@ -659,10 +673,11 @@ python3 "$SCRATCH/clause_check.py" .github/pull_request_template.md '^## Merge g
   "a clean Codex review leaves no review object" \
   "Only the row says which review ran (a review object names no review type: Codex's reply on a thread is a bodiless review object, as #1380's review 5482164471 on 2b559d3d is, and its security review runs under the same account), so a review object counts only once the Code Review row reads Completed for the same SHA; the review object is where that run's findings are read" \
   "The rule counts Codex's code review only: the review-triggering events are the PR opened for review, the draft marked ready, an @codex review comment and a push of new commits, and a review object counts only if it is not CHANGES_REQUESTED" \
-  "Unreviewed → wait while the row reads Running, and otherwise comment @codex review and wait"
+  "Unreviewed → wait while the row reads Running, and otherwise comment @codex review and wait" \
+  "for Codex, the first review's SHA is the one the PR's First Codex code review: Completed on <sha>, … comment records"
 ```
 
-Expected on main: claude-25 `0/8`, template `0/9`, both exit 1.
+Expected on main: claude-25 `0/8`, template `0/10`, both exit 1.
 
 - [ ] **Step 2: Replace the §2.5 paragraphs**, and have the closing paragraph ("When the head is
   unreviewed and the change is more than cosmetic, comment `@codex review` and wait…") wait while the
@@ -780,7 +795,9 @@ New:
       review carries the reply classifying each location before it is
       resolved: uncounted, missed (with the SHA of the commit the first
       review covered) or new (with the SHA of the later commit), as
-      CLAUDE.md Rule 2.5 says
+      CLAUDE.md Rule 2.5 says; for Codex, the first review's SHA is the one
+      the PR's `First Codex code review: Completed on <sha>, …` comment
+      records
 - [ ] The **current head** is reviewed as CLAUDE.md §2.5 counts it: after
       the PR's latest review-triggering event, a review authored by
       `chatgpt-codex-connector[bot]` was submitted naming it in `commit_id`,
@@ -804,7 +821,7 @@ New:
 
 - [ ] **Step 4: Run both checks again (expect PASS)**
 
-Same commands. Expected: claude-25 `8/8`, template `9/9`, exit 0. Also
+Same commands. Expected: claude-25 `8/8`, template `10/10`, exit 0. Also
 `grep -n "A push does not" CLAUDE.md` prints nothing (exit 1).
 
 - [ ] **Step 5: Commit**
@@ -851,10 +868,11 @@ python3 "$SCRATCH/clause_check.py" .claude/commands/resolve-issue.md '^## Phase 
   "since the bar there is a Code Review row reading Completed, which a run with findings reaches too" \
   "Push every first-round fix in one push" \
   "or, past the PR's second round, re-cut it as step 5 says, since the run that move started is a third" \
-  "That head is unreviewed: wait while the row reads Running, and otherwise comment @codex review and wait"
+  "That head is unreviewed: wait while the row reads Running, and otherwise comment @codex review and wait" \
+  "When that run is the PR's first Codex code review, post the PR comment CLAUDE.md Rule 2.5 asks for now, while the row still shows its SHA, since the next run replaces the row: First Codex code review: Completed on <sha>, no findings. or First Codex code review: Completed on <sha>, N findings., with N the findings that run posted"
 ```
 
-Expected on main: phase8 `0/20`, exit 1.
+Expected on main: phase8 `0/21`, exit 1.
 
 - [ ] **Step 2: Step 0, the quoted trigger list**
 
@@ -1032,7 +1050,7 @@ New:
      separate cutoff**, exactly as above; the head SHA and the author check
 ````
 
-**Edit `.claude/commands/resolve-issue.md`** (lines 4073-4082 on origin/main; #1387 round 1: what fails step 2, and the bar step 3 quotes from it)
+**Edit `.claude/commands/resolve-issue.md`** (lines 4073-4082 on origin/main; #1387 round 1: what fails step 2, the bar step 3 quotes from it, and step 3's first-review comment)
 
 Old:
 
@@ -1063,7 +1081,13 @@ New:
    posting; every finding it lands between that read and step 2's completion is
    absent from what you are holding. And a review WITH findings satisfies step 2
    perfectly well, since the bar there is a Code Review row reading Completed,
-   which a run with findings reaches too, so nothing else catches it.
+   which a run with findings reaches too, so nothing else catches it. When
+   that run is the PR's first Codex code review, post the PR comment CLAUDE.md
+   Rule 2.5 asks for now, while the row still shows its SHA, since the next
+   run replaces the row:
+   `First Codex code review: Completed on <sha>, no findings.` or
+   `First Codex code review: Completed on <sha>, N findings.`, with N the
+   findings that run posted.
 ````
 
 - [ ] **Step 5: Step 3, the bar, and step 4, the round first** ("step 5 enforces" becomes "step 6
@@ -1191,7 +1215,7 @@ New:
 
 - [ ] **Step 8: Run the check again (expect PASS)**
 
-Same command. Expected: phase8 `20/20`, exit 0. And
+Same command. Expected: phase8 `21/21`, exit 0. And
 `grep -n "There is no round limit\|Nine review rounds\|push nothing but\|either of these satisfies" .claude/commands/resolve-issue.md`
 prints nothing (exit 1). The row sentence and the scoping sentence now read the same in all three homes:
 
@@ -1925,8 +1949,8 @@ git commit -m "docs: record #NNN under FEAT-CICD-001"
 - [ ] **Step 4: Tick the boxes with evidence, then prove the ready-for-review gate locally**
 
 Change each `- [ ]` under "Done when" to `- [x]` and append ` — <evidence>` after the item's text, the
-check name and its output from the tasks above (Task 1 15/15, Task 2 12/12, Task 3 8/8 and 9/9, Task 4
-20/20, Task 5's greps, count, stub test and 8/8, Task 6 4/4 and 6/6, Step 1's replay, gate and audit,
+check name and its output from the tasks above (Task 1 15/15, Task 2 14/14, Task 3 8/8 and 10/10, Task 4
+21/21, Task 5's greps, count, stub test and 8/8, Task 6 4/4 and 6/6, Step 1's replay, gate and audit,
 and the records). Save the body to `$SCRATCH/pr-body.md`, re-run Step 1, then:
 
 ```bash
@@ -1937,8 +1961,9 @@ PR_NUMBER=NNN PR_DRAFT=false PR_HEAD_REF=feature/feat-cicd-001-review-guidelines
 ```
 
 Then push, update the PR body on GitHub with the same text, and mark the PR ready for review. From here
-CLAUDE.md Rule 2.5 governs: read the review before CI, record the first Codex review's SHA in a PR
-comment if it posts no findings, give each later finding its classifying reply, and stop at two rounds.
+CLAUDE.md Rule 2.5 governs: read the review before CI, record the first Codex code review's SHA in a PR
+comment when its row first reads Completed, with or without findings, give each later finding its
+classifying reply, and stop at two rounds.
 
 - [ ] **Step 5: After the merge**
 

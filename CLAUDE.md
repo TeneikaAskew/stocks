@@ -217,14 +217,18 @@ first review covered, named by SHA), or new (a later commit introduced or
 worsened it, named by SHA). The missed count per reviewer and pull request is
 the lower bound REQ-GOV-003 keeps on what a first review misses.
 
-For Codex, a first review that posts no findings leaves no review object, so
-the commit it covered is the one Codex's review-summary comment shows for
-that review type when that row first reads Completed, and the author records
-that SHA in a PR comment then, since the next run replaces the row:
-`First Codex code review: Completed on <sha>, no findings.` A reviewer whose
-clean review does create a review object, as a person's approval does, needs
-no such comment: that object's `commit_id` names the commit its first review
-covered.
+For Codex, a first review that posts no findings leaves no review object, and
+a review object names no review type (see "A resolved thread is not a
+reviewed commit" below), so for every Codex first review, with or without
+findings, the commit it covered is the one Codex's review-summary comment
+shows for that review type when that row first reads Completed, and the
+author records that SHA in a PR comment then, since the next run replaces the
+row, as `First Codex code review: Completed on <sha>, no findings.` for a
+review that posted none, or as
+`First Codex code review: Completed on <sha>, N findings.` for one that
+posted N. A reviewer whose clean review does create a review object, as a
+person's approval does, needs no such comment: that object's `commit_id`
+names the commit its first review covered.
 
 #### A resolved thread is not a reviewed commit
 

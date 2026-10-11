@@ -69,7 +69,9 @@ Canvas refresh pending: none
       review carries the reply classifying each location before it is
       resolved: uncounted, missed (with the SHA of the commit the first
       review covered) or new (with the SHA of the later commit), as
-      CLAUDE.md Rule 2.5 says
+      CLAUDE.md Rule 2.5 says; for Codex, the first review's SHA is the one
+      the PR's `First Codex code review: Completed on <sha>, …` comment
+      records
 - [ ] The **current head** is reviewed as CLAUDE.md §2.5 counts it: after
       the PR's latest review-triggering event, a review authored by
       `chatgpt-codex-connector[bot]` was submitted naming it in `commit_id`,

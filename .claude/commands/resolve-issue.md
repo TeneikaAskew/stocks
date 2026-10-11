@@ -4106,7 +4106,13 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    posting; every finding it lands between that read and step 2's completion is
    absent from what you are holding. And a review WITH findings satisfies step 2
    perfectly well, since the bar there is a Code Review row reading Completed,
-   which a run with findings reaches too, so nothing else catches it.
+   which a run with findings reaches too, so nothing else catches it. When
+   that run is the PR's first Codex code review, post the PR comment CLAUDE.md
+   Rule 2.5 asks for now, while the row still shows its SHA, since the next
+   run replaces the row:
+   `First Codex code review: Completed on <sha>, no findings.` or
+   `First Codex code review: Completed on <sha>, N findings.`, with N the
+   findings that run posted.
 
    **Then go to step 4 and work them. Zero unresolved is checked at step 6, on
    every path — including the one where step 4 produces no commit because you
