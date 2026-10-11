@@ -417,6 +417,178 @@ def test_commit_mode_reads_what_is_staged(repo):
     assert gate(repo, "--commit").returncode == 0
 
 
+def test_commit_mode_freezes_a_spec_once_main_holds_it_approved(repo):
+    """A spec approved by an earlier commit on its own docs/ branch, not yet on main, was refused any further
+    edit by the pre-commit check, which compared it with HEAD; the PR, measured against main, allows it.
+    Commit mode now freezes a spec once any remote's main or main holds it approved or superseded, read by their
+    exact full ref names, along with what a merge on the branch brought in; an unreadable main freezes it; a move to
+    superseded stays checked; without a main that shares its history it compares with HEAD."""
+    newer = "docs/superpowers/specs/2026-09-02-model-decisions-v2.md"
+    _git(repo, "checkout", "-q", "-B", "docs/spec-feat-model-001-v2", "base")
+    # a remote branch named with a line separator git allows is one ref, not a crash, and a remote whose name is too
+    # long for a file name is no main rather than a crash (red-team, this PR)
+    _git(repo, "update-ref", "refs/remotes/origin/fix\u2028notes\u0085more", "base")
+    _git(repo, "remote", "add", "r" * 300, "https://example.invalid/x.git")
+    # nor is a supersedes with a NUL in it, in an earlier commit's copy of a draft (red-team, this PR)
+    odd = "docs/superpowers/specs/2026-09-03-draft-notes.md"
+    write(repo, odd, spec(status="draft", supersedes="docs/superpowers/specs/x\x00.md"))
+    _git(repo, "add", odd)
+    _git(repo, "commit", "-q", "--no-verify", "-m", "a draft committed past the hook")
+    write(repo, odd, spec(status="draft", supersedes="null"))
+    _git(repo, "add", odd)
+    r = gate(repo, "--commit")
+    assert r.returncode == 0, r.stdout + r.stderr
+    _git(repo, "reset", "-q", "--hard", "HEAD^1")
+    write(repo, newer, spec(done_when=["first wording"]))
+    _git(repo, "add", newer)
+    assert gate(repo, "--commit").returncode == 0
+    _git(repo, "commit", "-q", "-m", "approve v2")
+    write(repo, newer, spec(done_when=["revised in review"]))
+    _git(repo, "add", newer)
+    r = gate(repo, "--commit")
+    assert r.returncode == 0, r.stdout
+    _git(repo, "commit", "-q", "-m", "revise v2")
+    # a move to superseded with no approved replacement is still refused, as CI refuses it (red-team, this PR)
+    write(repo, newer, spec(status="superseded", done_when=["revised in review"]))
+    _git(repo, "add", newer)
+    r = gate(repo, "--commit")
+    assert r.returncode == 1 and "names it in `supersedes`" in r.stdout, r.stdout
+    _git(repo, "reset", "-q", "HEAD", "--", newer)
+    _git(repo, "checkout", "-q", "--", newer)
+    # a replacement that has superseded its target keeps naming it, as CI requires (red-team, this PR)
+    write(repo, newer, spec(supersedes=SPEC, done_when=["revised in review"]))
+    write(repo, SPEC, spec(status="superseded"))
+    _git(repo, "add", newer, SPEC)
+    r = gate(repo, "--commit")
+    assert r.returncode == 0, r.stdout
+    _git(repo, "commit", "-q", "-m", "v2 supersedes the original")
+    write(repo, newer, spec(done_when=["revised in review"]))
+    _git(repo, "add", newer)
+    r = gate(repo, "--commit")
+    assert r.returncode == 1 and f"{newer}: an approved spec does not change in place" in r.stdout, r.stdout
+    _git(repo, "reset", "-q", "--hard", "HEAD^1")
+    # the spec main holds approved is still frozen in commit mode
+    write(repo, SPEC, spec(done_when=["something easier"]))
+    _git(repo, "add", SPEC)
+    r = gate(repo, "--commit")
+    assert r.returncode == 1 and "does not change in place" in r.stdout, r.stdout
+    # nor does one main has since superseded, nor one a local main ahead of origin/main holds (red-team, this PR)
+    _git(repo, "reset", "-q", "HEAD", "--", SPEC)
+    _git(repo, "checkout", "-q", "--", SPEC)
+    _git(repo, "checkout", "-q", "main")
+    write(repo, SPEC, spec(status="superseded"))
+    _git(repo, "commit", "-qam", "superseded on main")
+    _git(repo, "checkout", "-q", "docs/spec-feat-model-001-v2")
+    write(repo, SPEC, spec(done_when=["something easier"]))
+    _git(repo, "add", SPEC)
+    r = gate(repo, "--commit")
+    assert r.returncode == 1 and "does not change in place" in r.stdout, r.stdout
+    _git(repo, "reset", "-q", "HEAD", "--", SPEC)
+    _git(repo, "checkout", "-q", "--", SPEC)
+    _git(repo, "update-ref", "refs/remotes/origin/main", "base")
+    _git(repo, "checkout", "-q", "main")
+    _git(repo, "checkout", "-q", "docs/spec-feat-model-001-v2", "--", newer)
+    _git(repo, "commit", "-qm", "v2 approved on a local main")
+    _git(repo, "checkout", "-q", "docs/spec-feat-model-001-v2")
+    write(repo, newer, spec(done_when=["changed after main took it"]))
+    _git(repo, "add", newer)
+    r = gate(repo, "--commit")
+    assert r.returncode == 1 and "does not change in place" in r.stdout, r.stdout
+    # nor does one only another remote's main holds, as a fork's upstream, its name holding a slash (red-team, this PR)
+    _git(repo, "remote", "add", "team/fork", str(repo))
+    _git(repo, "update-ref", "refs/remotes/team/fork/main", "main")
+    _git(repo, "branch", "-q", "-f", "main", "base")
+    r = gate(repo, "--commit")
+    assert r.returncode == 1 and "does not change in place" in r.stdout, r.stdout
+    _git(repo, "branch", "-q", "-f", "main", "refs/remotes/team/fork/main")
+    _git(repo, "remote", "remove", "team/fork")
+    if sys.platform.startswith("linux"):   # names that are no UTF-8: Windows cannot decode them, APFS refuses them
+        # nor does one whose remote's name is no UTF-8, beside another that decodes alike (red-team, this PR)
+        held, stale = (os.fsdecode(b"refs/remotes/\xe8/main"), os.fsdecode(b"refs/remotes/\xe9/main"))
+        _git(repo, "update-ref", held, "main")
+        _git(repo, "update-ref", stale, "base")
+        _git(repo, "branch", "-q", "-f", "main", "base")
+        _git(repo, "pack-refs", "--all")
+        r = gate(repo, "--commit")
+        assert r.returncode == 1 and "does not change in place" in r.stdout, r.stdout
+        _git(repo, "branch", "-q", "-f", "main", held)
+        _git(repo, "update-ref", "-d", held)
+        _git(repo, "update-ref", "-d", stale)
+    # a main whose object is missing is unreadable, so it freezes rather than drops out (red-team, this PR)
+    upstream = _git(repo, "rev-parse", "main")
+    _git(repo, "branch", "-q", "-f", "main", "base")
+    (repo / ".git/refs/remotes/origin").mkdir(parents=True, exist_ok=True)   # packed above, its folder pruned
+    (repo / ".git/refs/remotes/origin/main").write_text("1" * 40 + "\n")
+    r = gate(repo, "--commit")
+    assert r.returncode == 1 and "does not change in place" in r.stdout, r.stdout
+    (repo / ".git/refs/remotes/origin/main").unlink()
+    # nor does one that names main's tree rather than its commit
+    _git(repo, "update-ref", "refs/remotes/origin/main", f"{upstream}^{{tree}}")
+    r = gate(repo, "--commit")
+    assert r.returncode == 1 and "does not change in place" in r.stdout, r.stdout
+    # nor one that is broken: an empty ref file, a symref to nothing
+    (repo / ".git/refs/remotes/origin/main").write_text("")
+    r = gate(repo, "--commit")
+    assert r.returncode == 1 and "does not change in place" in r.stdout, r.stdout
+    (repo / ".git/refs/remotes/origin/main").unlink()
+    _git(repo, "symbolic-ref", "refs/remotes/origin/main", "refs/remotes/origin/gone")
+    r = gate(repo, "--commit")
+    assert r.returncode == 1 and "does not change in place" in r.stdout, r.stdout
+    _git(repo, "symbolic-ref", "-d", "refs/remotes/origin/main")
+    _git(repo, "update-ref", "refs/remotes/origin/main", "base")
+    # nor does one a merge brings in from a main newer than any ref here holds, in progress or committed
+    # (red-team, this PR)
+    _git(repo, "reset", "-q", "HEAD", "--", newer)
+    _git(repo, "checkout", "-q", "--", newer)
+    _git(repo, "merge", "-q", "--no-ff", "--no-commit", upstream)
+    write(repo, newer, spec(done_when=["changed after main took it"]))
+    _git(repo, "add", newer)
+    r = gate(repo, "--commit")
+    assert r.returncode == 1 and f"{newer}: an approved spec does not change in place" in r.stdout, r.stdout
+    # and from below the root, where git reports MERGE_HEAD relative to the root it runs in
+    r = subprocess.run([sys.executable, str(repo / "scripts/gate/spec_gate.py"), "--commit"], cwd=repo / "docs",
+                       capture_output=True, text=True, env={k: v for k, v in os.environ.items()
+                                                            if not k.startswith(("PR_", "SPEC_GATE_", "GIT_", "PYTEST_"))})
+    assert r.returncode == 1 and f"{newer}: an approved spec does not change in place" in r.stdout, r.stdout
+    _git(repo, "merge", "--abort")
+    if sys.platform.startswith("linux"):   # a path that is no UTF-8: Windows cannot decode it, APFS refuses it
+        # and in a linked worktree whose git dir's path is no UTF-8, which git reports whole (red-team, this PR)
+        tree = repo.parent / os.fsdecode(repo.name.encode() + b"-wt-\xe9")
+        _git(repo, "worktree", "add", "-q", "-b", "docs/spec-feat-model-001-wt", str(tree), "HEAD")
+        _git(tree, "merge", "-q", "--no-ff", "--no-commit", upstream)
+        write(tree, newer, spec(done_when=["changed after main took it"]))
+        _git(tree, "add", newer)
+        r = gate(tree, "--commit")
+        assert r.returncode == 1 and f"{newer}: an approved spec does not change in place" in r.stdout, r.stdout
+        _git(repo, "worktree", "remove", "--force", str(tree))
+        _git(repo, "branch", "-q", "-D", "docs/spec-feat-model-001-wt")
+    _git(repo, "merge", "-q", "--no-ff", "--no-edit", upstream)
+    write(repo, newer, spec(done_when=["changed after main took it"]))
+    _git(repo, "add", newer)
+    r = gate(repo, "--commit")
+    assert r.returncode == 1 and "does not change in place" in r.stdout, r.stdout
+    _git(repo, "reset", "-q", "--hard", "HEAD^1")   # drop the merge, or what it brought in freezes every later step
+    write(repo, newer, spec(done_when=["changed after main took it"]))
+    _git(repo, "add", newer)
+    _git(repo, "branch", "-q", "-f", "main", upstream)
+    # a branch named origin/main, which a short name reads first, does not stand in for the remote one
+    _git(repo, "update-ref", "refs/remotes/origin/main", "main")
+    _git(repo, "branch", "-q", "-m", "main", "trunk")
+    _git(repo, "branch", "-q", "origin/main", "base")
+    r = gate(repo, "--commit")
+    assert r.returncode == 1 and "does not change in place" in r.stdout, r.stdout
+    _git(repo, "branch", "-q", "-D", "origin/main")
+    _git(repo, "update-ref", "-d", "refs/remotes/origin/main")
+    # with no main to read, the branch's own HEAD decides, as before; a branch named main/old or a tag named
+    # refs/heads/main is not main, and another repository's main shares no history to measure by (red-team, this PR)
+    _git(repo, "branch", "-q", "main/old", "base")
+    _git(repo, "tag", "refs/heads/main", "base")
+    other = _git(repo, "commit-tree", "-m", "another repository", _git(repo, "hash-object", "-t", "tree", "/dev/null"))
+    _git(repo, "update-ref", "refs/remotes/skills/main", other)
+    r = gate(repo, "--commit")
+    assert r.returncode == 1 and "does not change in place" in r.stdout, r.stdout
+
+
 def test_a_detached_head_commit_must_name_its_branch(repo):
     """stocks#1205 r4117591691 (spec_gate.py:30).
 
