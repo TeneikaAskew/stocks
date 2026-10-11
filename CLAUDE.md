@@ -194,6 +194,35 @@ as unaddressed to everyone but you. When you fix a finding:
 - Then resolve it.
 - If the fix landed in a different PR, say which one.
 
+#### Reviewing a pull request
+
+A reviewer of a pull request here, Claude included, follows
+`AGENTS.md`'s `## Review guidelines`: its first review is the complete one.
+Claude Code loads this file and not `AGENTS.md`, so this is where a Claude
+reviewer is sent to them.
+
+#### A finding raised after a reviewer's first review
+
+A reviewer is one account, split by review type where the account runs
+separately triggered types (Codex's code review and its security review are
+two), and its first review is the earliest review it completes on the pull
+request, including one that posts no findings (REQ-GOV-003).
+
+A thread holding a finding that a reviewer posted after its own first review
+is not resolved until a reply on it classifies each location, taking the
+first class that applies: uncounted (not a defect, a defect the pull request
+neither introduces nor makes worse, or one that first review raised there),
+missed (the pull request had introduced or worsened it by the commit that
+first review covered, named by SHA), or new (a later commit introduced or
+worsened it, named by SHA). The missed count per reviewer and pull request is
+the lower bound REQ-GOV-003 keeps on what a first review misses.
+
+A first review that posts no findings leaves no review object, so the commit
+it covered is the one Codex's review-summary comment shows for that review
+type when that row first reads Completed, and the author records that SHA in
+a PR comment then, since the next run replaces the row:
+`First Codex code review: Completed on <sha>, no findings.`
+
 #### A resolved thread is not a reviewed commit
 
 **Added 2026-09-02 after merging #953 with five "resolved" Codex threads,
