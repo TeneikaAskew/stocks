@@ -107,6 +107,8 @@ Canvas refresh pending: none
       is re-cut instead. `get_reviews` returns OLDEST FIRST, so the current
       review is on the LAST page: reading page 1 and finding an older "no
       findings" is how #991 was merged two minutes after a review it never
-      saw. Unreviewed → wait while the row reads Running, and otherwise
-      comment `@codex review` and wait
+      saw. An unreviewed head waits while the Code Review row reads Running;
+      otherwise, before the PR's second review round, comment `@codex review`
+      and wait, and past that round nothing is pushed or requested and the PR
+      is re-cut (the review cap)
 - [ ] CI green on the current head, no merge conflict

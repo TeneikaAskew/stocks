@@ -310,9 +310,11 @@ would otherwise count the older review while the new run is still going.
 and all threads `is_outdated` still means the review predates the current
 content entirely.
 
-When the head is unreviewed and the change is more than cosmetic, wait while
-the Code Review row reads Running, and otherwise comment `@codex review` and
-wait, rather than reading resolution as coverage.
+When the head is unreviewed and the change is more than cosmetic, do not read
+resolution as coverage. An unreviewed head waits while the Code Review row
+reads Running; otherwise, before the PR's second review round, comment
+`@codex review` and wait, and past that round nothing is pushed or requested
+and the PR is re-cut (the review cap).
 
 #### Verify the claim before fixing it, and reproduce before you fix
 

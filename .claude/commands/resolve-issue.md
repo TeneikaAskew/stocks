@@ -4015,8 +4015,9 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    says nothing about the next one. Zero unresolved means zero across every
    page, the same discipline the issue listing and `get_reviews` already get.
 2. Confirm the current head **has been reviewed**, which is not the same as "a
-   review object exists for it". A clean run posts no review at all, only a
-   reaction, so requiring a review object would deadlock every PR that has
+   review object exists for it". A clean run posts no review at all (Codex's
+   summary comment says it reacts 👍 once all its reviews finish with no
+   findings), so requiring a review object would deadlock every PR that has
    nothing wrong with it. The rule, as CLAUDE.md §2.5 and the PR template's
    Merge gate state it: the head counts as reviewed only when, after the PR's
    latest review-triggering event, a review authored by
@@ -4115,8 +4116,10 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    follow the latest review-triggering event, a missing or unreadable summary
    comment, a Codex review object naming the head while the Code Review row
    does not read Completed for it, or a head whose only reviews are yours.
-   That head is unreviewed: wait while the row reads Running, and otherwise
-   comment `@codex review` and wait.
+   That head is unreviewed. An unreviewed head waits while the Code Review row
+   reads Running; otherwise, before the PR's second review round, comment
+   `@codex review` and wait, and past that round nothing is pushed or
+   requested and the PR is re-cut (the review cap).
 3. **Re-page `get_review_comments` now**, after step 2 established the review
    is Completed — do not reuse step 1's snapshot. Step 1 runs deliberately
    before CI and can therefore run while the current head's review is still
@@ -4854,9 +4857,10 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      verified as serving. Closing on candidate evidence while calling it
      production proof is the failure this whole phase exists to prevent.
 
-**A completed review with no findings posts no review at all** — Codex reacts
-👍 instead. So `get_reviews` cannot by itself distinguish "reviewed clean" from
-"never reviewed": both look like an absent review for that SHA. Read the Codex
+**A completed review with no findings posts no review at all**: Codex's summary
+comment says it reacts 👍 once all its reviews finish with no findings. So
+`get_reviews` cannot by itself distinguish "reviewed clean" from "never
+reviewed": both look like an absent review for that SHA. Read the Codex
 summary comment's status table alongside it, which names the commit and whether
 the run is Running or Completed. Verified live on #1018, where the head showed
 no review for eleven minutes while the run was still in flight.
