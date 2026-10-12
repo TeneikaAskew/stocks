@@ -254,11 +254,12 @@ def commits(repo: Path, cases: dict[str, dict[str, str | None]], base: str = "ba
 
 
 def judged(repo: Path, cases: list[tuple[dict[str, str | None] | None, dict[str, str | None], dict[str, str]]]) -> list[subprocess.CompletedProcess]:
-    """gate()'s verdict on each (on_main, files, env) case, as pr() reaches it after on_base(on_main) when on_main is
-    given: a pull request from BRANCH writing `files` over that base, judged with `env`. Its commits come from
-    commits(), with no checkout, since no check in --pr mode reads the working tree's documents, and its command-line
-    runs go four at a time, so the registry job runs this suite inside its pinned five minutes beside a pull request's
-    full-tree render (red-team round 4)."""
+    """The verdict on each (on_main, files, env) case, as pr() reaches it after on_base(on_main) when on_main is given:
+    a pull request from BRANCH writing `files` over that base, judged with `env`. Its commits come from commits(),
+    with no checkout, since no check in --pr mode reads the working tree's documents. A single case runs through
+    gate(), the command line; several run in the forked interpreters of VERDICTS (forked()), each with its own PR_*
+    variables, so the registry job runs this suite inside its pinned five minutes beside a pull request's full-tree
+    render (red-team round 4)."""
     made: dict[str, tuple[str, str]] = {}
     pairs = []
     for on_main, files, _env in cases:
@@ -267,14 +268,17 @@ def judged(repo: Path, cases: list[tuple[dict[str, str | None] | None, dict[str,
             base = commits(repo, {"main": on_main})["main"][1] if on_main else "base"
             made[key] = commits(repo, {"head": files}, base=base)["head"]
         pairs.append(made[key])
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        return list(pool.map(lambda job: gate(repo, "--pr", *job[0], **{"PR_HEAD_REF": BRANCH, **job[1]}), zip(pairs, (env for *_, env in cases))))
+    if len(cases) == 1:
+        return [gate(repo, "--pr", *pairs[0], **{"PR_HEAD_REF": BRANCH, **cases[0][2]})]
+    outcomes = forked(repo, [[str(i), *pair, env] for i, (pair, (*_, env)) in enumerate(zip(pairs, cases))], {"PR_HEAD_REF": BRANCH})
+    return [outcomes[str(i)] for i in range(len(cases))]
 
 
 # One interpreter judging many (base, head) pairs, each as `python3 scripts/gate/spec_gate.py --pr BASE HEAD` judges
 # it: a forked process per pair runs the gate's code as __main__, with that pair's sys.argv and sys.orig_argv, the
 # interpreter's own stdout and stderr (TextIOWrappers over file descriptors 1 and 2, made from PYTHONIOENCODING as a
-# command line's are) and the flags CI runs it with (no -B), and exits with the status Python would. The gate's
+# command line's are) and the flags CI runs it with (no -B), and exits with the status Python would. A case may carry
+# environment variables of its own, set in its process before the gate starts. The gate's
 # imports are loaded once, before the first fork, as a fresh process imports them. The code is gate_code()'s compile
 # of GATE when the repository's gate is that file byte for byte, and its own compile otherwise.
 VERDICTS = r"""
@@ -293,7 +297,7 @@ del sys.modules[preload.__name__]
 sys.path[0] = os.path.dirname(path)
 judged = {}
 with tempfile.TemporaryDirectory() as tmp:
-    for i, (name, base, head) in enumerate(given["cases"]):
+    for i, (name, base, head, *own) in enumerate(given["cases"]):
         files = [os.path.join(tmp, f"{i}.{s}") for s in ("out", "err")]
         sys.stdout.flush()
         sys.stderr.flush()
@@ -303,6 +307,7 @@ with tempfile.TemporaryDirectory() as tmp:
             try:
                 for fd, f in zip((1, 2), files):
                     os.dup2(os.open(f, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), fd)
+                os.environ.update(own[0] if own else {})   # the case's own PR_* variables, over the runner's
                 sys.argv = ["scripts/gate/spec_gate.py", "--pr", base, head]
                 sys.orig_argv = [sys.executable, *sys.argv]
                 main = types.ModuleType("__main__")
@@ -355,19 +360,28 @@ def verdicts(repo: Path, pairs: dict[str, tuple[str, str]], e2e: tuple[str, ...]
     BATCHES interpreters running VERDICTS. All of them run at once: a verdict only reads the repository, and renders in
     a directory of its own."""
     env = {"PR_HEAD_REF": BRANCH, **STRICT, **env}
-    inherited = {k: v for k, v in os.environ.items() if not k.startswith(("PR_", "SPEC_GATE_", "GIT_", "PYTEST_"))}   # as gate()
     rest = [[name, *pair] for name, pair in pairs.items() if name not in e2e]
-    batches = [rest[i::BATCHES] for i in range(min(BATCHES, len(rest)))]
-    given = {"gate": gate_code(str((repo / "scripts/gate/spec_gate.py").resolve()))}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(e2e) + len(batches) or 1) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(e2e) or 1) as pool:
         singles = {name: pool.submit(gate, repo, "--pr", *pairs[name], **env) for name in e2e}
+        batched = forked(repo, rest, env)
+        return {**{name: future.result() for name, future in singles.items()}, **batched}
+
+
+def forked(repo: Path, rows: list[list], env: dict[str, str]) -> dict[str, subprocess.CompletedProcess]:
+    """{name: outcome} for each [name, base, head] or [name, base, head, own env] row, split over BATCHES interpreters
+    running VERDICTS at once, each started with gate()'s environment plus `env`."""
+    inherited = {k: v for k, v in os.environ.items() if not k.startswith(("PR_", "SPEC_GATE_", "GIT_", "PYTEST_"))}   # as gate()
+    batches = [rows[i::BATCHES] for i in range(min(BATCHES, len(rows)))]
+    given = {"gate": gate_code(str((repo / "scripts/gate/spec_gate.py").resolve()))}
+    outcomes: dict[str, subprocess.CompletedProcess] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(batches) or 1) as pool:
         runs = [pool.submit(subprocess.run, [sys.executable, "-c", VERDICTS], cwd=repo, env={**inherited, **env},
                             input=json.dumps({**given, "cases": batch}).encode("ascii"), capture_output=True) for batch in batches]
-        outcomes = {name: future.result() for name, future in singles.items()}
+        args = {row[0]: row[1:3] for row in rows}
         for run in runs:
             r = run.result()
             assert r.returncode == 0, r.stderr.decode("utf-8", "replace")
-            outcomes |= {name: subprocess.CompletedProcess(["spec_gate.py", "--pr", *pairs[name]], rc,
+            outcomes |= {name: subprocess.CompletedProcess(["spec_gate.py", "--pr", *args[name]], rc,
                                                            as_text(base64.b64decode(out)), as_text(base64.b64decode(err)))
                          for name, (rc, out, err) in json.loads(r.stdout).items()}
     return outcomes
