@@ -75,9 +75,10 @@ GENERATED_DOCS = ("docs/product/infrastructure/05-a-ARCHITECTURE.md", "docs/prod
                   "docs/product/infrastructure/05-e-API.md")
 GENERATED_RULE = "REQ-GOV-004"
 RENDER_SNAPSHOT = "tests/fixtures/live_gcp_snapshot_2026-09-07.json"
-RENDER_INPUTS = ("scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
+RENDER_INPUTS = ("scripts/__init__.py", "scripts/maintenance/__init__.py",
+                 "scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
                  "tests/scripts/test_check_generated_docs.py", RENDER_SNAPSHOT)          # REQ-GOV-004: unchanged beside blocks
-RENDERER_FILES = ("scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
+RENDERER_FILES = ("scripts/__init__.py", "scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
                   "scripts/maintenance/__init__.py", RENDER_SNAPSHOT)                     # process files: FEAT-CICD-001's
 
 FEAT_ROW = re.compile(r"^\|\s*\[?(FEAT-[A-Z]+-\d{3})\b", re.M)
@@ -1245,66 +1246,27 @@ def is_documentation(path: str) -> bool:
     return path.startswith("docs/") or path.endswith((".md", ".drawio")) or bool(LICENSE_FILE.match(name))
 
 
-# Cache successful immutable committed blobs only, bounded across this process.
-# Repository identity prevents reuse if a caller changes ROOT. Index/worktree and
-# moving symbolic refs never become cache keys; failures are never retained.
-_COMMITTED_BLOBS: collections.OrderedDict[tuple[str, str, str], bytes] = collections.OrderedDict()
-_COMMITTED_BLOB_BYTES = 0
-_COMMITTED_BLOB_LIMIT = 8 * 1024 * 1024
-_COMMITTED_BLOB_ENTRIES = 64
-
-
 class Tree:
     """One revision's files: the index (rev None), the working tree, or a commit."""
 
     def __init__(self, rev: str | None):
         self.rev = rev
-        self._immutable_commit: str | None = None
 
     def read(self, path: str) -> str | None:
         if self.rev == WORKTREE:
             p = ROOT / path
             return p.read_text(encoding="utf-8", errors="replace") if p.is_file() else None
-        raw = self.raw(path)
-        # Preserve subprocess text=True's universal-newline behavior. Scope/pin
-        # checks deliberately use raw(), which remains byte-exact.
-        return raw.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n") if raw is not None else None
+        r = git("show", f":{path}" if self.rev is None else f"{self.rev}:{path}")
+        return r.stdout if r.returncode == 0 else None
 
     def raw(self, path: str) -> bytes | None:
         """The file's bytes, untranslated (round six: text mode folds CRLF, so the pin compares bytes)."""
         if self.rev == WORKTREE:
             p = ROOT / path
             return p.read_bytes() if p.is_file() else None
-        global _COMMITTED_BLOB_BYTES
-        commit = None
-        if self.rev is not None:
-            commit = self._immutable_commit
-            if commit is None:
-                resolved = git("rev-parse", "--verify", "--end-of-options", f"{self.rev}^{{commit}}")
-                if resolved.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", resolved.stdout.strip()):
-                    commit = resolved.stdout.strip()
-                    # An object ID cannot move. Symbolic refs resolve again on
-                    # EVERY read so a force-moved base/main/HEAD stays fresh.
-                    if re.fullmatch(r"[0-9a-f]{40}", self.rev):
-                        self._immutable_commit = commit
-        key = (str(ROOT.resolve()), commit, path) if commit is not None else None
-        if key is not None and key in _COMMITTED_BLOBS:
-            _COMMITTED_BLOBS.move_to_end(key)
-            return _COMMITTED_BLOBS[key]
-        revision = commit if commit is not None else self.rev
-        r = subprocess.run(["git", "-c", "core.quotePath=false", "show", f":{path}" if revision is None else f"{revision}:{path}"],
+        r = subprocess.run(["git", "-c", "core.quotePath=false", "show", f":{path}" if self.rev is None else f"{self.rev}:{path}"],
                            capture_output=True, cwd=ROOT)
-        if r.returncode != 0:
-            return None  # keep absence/refusal behavior, never cache failures
-        value = r.stdout
-        if key is not None and len(value) <= _COMMITTED_BLOB_LIMIT:
-            while _COMMITTED_BLOBS and (len(_COMMITTED_BLOBS) >= _COMMITTED_BLOB_ENTRIES
-                                       or _COMMITTED_BLOB_BYTES + len(value) > _COMMITTED_BLOB_LIMIT):
-                _, previous = _COMMITTED_BLOBS.popitem(last=False)
-                _COMMITTED_BLOB_BYTES -= len(previous)
-            _COMMITTED_BLOBS[key] = value
-            _COMMITTED_BLOB_BYTES += len(value)
-        return value
+        return r.stdout if r.returncode == 0 else None
 
     def mode(self, path: str) -> str | None:
         """The file's git mode ("100755" for an executable) at this revision or in the index."""

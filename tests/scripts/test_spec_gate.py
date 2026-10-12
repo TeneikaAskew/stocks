@@ -3884,7 +3884,7 @@ def test_the_renderer_and_its_snapshot_are_process_files(repo):
     snapshot to decide a verdict, so a change to them is FEAT-CICD-001's work, as the gate's own files are."""
     cicd_row = CATALOG_TEXT.replace("| [FEAT-DATA-001]", "| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]", 1)
     on_base(repo, {CATALOG: cicd_row})
-    paths = ("scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
+    paths = ("scripts/__init__.py", "scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
              "scripts/maintenance/__init__.py", "tests/fixtures/live_gcp_snapshot_2026-09-07.json")
     missed = [p for p in paths if "belong to FEAT-CICD-001" not in
               pr(repo, BRANCH, {**CODE, p: "# x\n"}, PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body()).stdout]
@@ -3896,6 +3896,7 @@ def test_the_gate_names_the_documents_and_snapshot_the_docs_test_reads():
     and its snapshot is the docs test's SNAPSHOT, so the gate checks what the docs test checks."""
     sg = load_gate(REPO)
     assert sg.GENERATED_RULE == "REQ-GOV-004" and sg.RENDER_INPUTS == (
+        "scripts/__init__.py", "scripts/maintenance/__init__.py",
         "scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
         "tests/scripts/test_check_generated_docs.py", "tests/fixtures/live_gcp_snapshot_2026-09-07.json")
     # the renderer tests cannot be switched off in a repository that carries the documents
@@ -3915,6 +3916,16 @@ SNAPSHOT_FILE = "tests/fixtures/live_gcp_snapshot_2026-09-07.json"
 MAIN_PY = "platform/api/main.py"
 RENDER_TREE = ("scripts/maintenance/__init__.py", "scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
                SNAPSHOT_FILE, MAIN_PY, "gcp/deploy.sh", "gcp/schema.sql", "scripts/discord/register_commands.py")
+# Representative SOURCE input, not mocked renderer output. The same four source
+# paths exercise real route/deploy/schema/command parsing and line citations.
+# Full production-tree rendering is measured separately; copying its entire ASTs
+# into every adversarial fixture needlessly multiplied test I/O/render time.
+RENDER_SOURCE = {
+    MAIN_PY: '"""Representative API.\n\nInventory fixture.\n"""\nfrom fastapi import FastAPI\nfrom gcp.database import query_to_dataframe\napp = FastAPI()\n\n@app.get("/health")\ndef health_check():\n    """Liveness probe: reports service health."""\n    return {"status": "ok"}\n\n@app.get("/api/daily")\ndef daily_rows():\n    """Read retained daily observations."""\n    return query_to_dataframe("SELECT close FROM market_data_daily")\n',
+    "gcp/deploy.sh": '#!/bin/bash\ndeploy_probe() {\n    gcloud run jobs deploy inventory-probe \\\n        --command python3 \\\n        --args gcp/probe.py\n}\n',
+    "gcp/schema.sql": "CREATE TABLE market_data_daily (\n    ticker TEXT NOT NULL,\n    date DATE NOT NULL,\n    close DOUBLE PRECISION,\n    volume BIGINT,\n    PRIMARY KEY (ticker, date)\n);\n",
+    "scripts/discord/register_commands.py": 'SUB_COMMAND = 1\nCOMMANDS = [{"name": "probe", "description": "Inventory probe", "options": []}]\n',
+}
 TRACE_TEXT = "# Traceability\n\n### FEAT-MODEL-001\n\n- #1\n"
 RULE = "REQ-GOV-004"
 DOCS_OK = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body() + "\n\n## Capacity\nn/a: x\n"}
@@ -3938,9 +3949,9 @@ def render(root: Path, docs: tuple[str, ...] = GENERATED) -> None:
 
 
 def moved_main() -> str:
-    """REPO's platform/api/main.py with four lines added after its docstring: every line the documents cite below
+    """Fixture platform/api/main.py with four lines added after its docstring: every line the documents cite below
     them moves, as stocks#1366 moved them."""
-    lines = (REPO / MAIN_PY).read_bytes().decode("utf-8").split("\n")
+    lines = RENDER_SOURCE[MAIN_PY].split("\n")
     return "\n".join(lines[:4] + ["# moved by four lines, as stocks#1366 moved them", "# two", "# three", "# four"] + lines[4:])
 
 
@@ -3962,7 +3973,8 @@ def inventory_template(tmp_path_factory) -> tuple[Path, dict[str, str]] | None:
     if not RENDERER_HERE:
         return None
     root = make_repo(tmp_path_factory.mktemp("inventory"))
-    files = {p: (REPO / p).read_bytes().decode("utf-8") for p in RENDER_TREE}
+    files = {p: RENDER_SOURCE[p] if p in RENDER_SOURCE else (REPO / p).read_bytes().decode("utf-8")
+             for p in RENDER_TREE}
     on_base(root, {**files, **{d: skeleton(d) for d in GENERATED}, TRACEABILITY: TRACE_TEXT}, then=render)
     _git(root, "checkout", "-q", "-b", "moved", "base")
     write(root, MAIN_PY, moved_main())
@@ -4004,6 +4016,37 @@ def test_a_checkout_without_the_renderer_refuses_generated_documents_as_before(r
         and "Traceback" not in r.stderr, r.stdout + r.stderr
 
 
+def test_parent_renderer_initializer_cannot_enter_main_via_a_feature(inventory_repo):
+    """Real BASE-checkout first-stage refusal closes the later startup-verdict bypass."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        sentinel = root / "UNTRUSTED_PACKAGE_EXECUTED"
+        cicd_row = CATALOG_TEXT.replace("| [FEAT-DATA-001]", "| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]", 1)
+        on_base(root, {CATALOG: cicd_row})
+        initializer = (
+            "import os, sys\n"
+            "if '--pr' in sys.argv:\n"
+            f"    open({str(sentinel)!r}, 'w').write('executed')\n"
+            "    print('spec gate ok: forged by package startup', flush=True)\n"
+            "    os._exit(0)\n"
+        )
+        change(root, BRANCH, {**moved, "scripts/__init__.py": initializer})
+        base, head = base_and_head(root)
+        _git(root, "checkout", "-q", "-f", "main")
+        attempted = gate(root, "--pr", base, head, PR_HEAD_REF=BRANCH, **DOCS_OK)
+        assert attempted.returncode == 1 and "belong to FEAT-CICD-001" in attempted.stdout, attempted.stdout
+        assert RULE in attempted.stdout and "which decide the render" in attempted.stdout, attempted.stdout
+        assert not sentinel.exists(), "HEAD initializer executed before a trusted verdict"
+        # The refused first stage cannot become BASE. From the unchanged real
+        # BASE, the otherwise IDENTICAL generated movement is still accepted.
+        change(root, BRANCH, moved)
+        base, head = base_and_head(root)
+        _git(root, "checkout", "-q", "-f", "main")
+        clean = gate(root, "--pr", base, head, PR_HEAD_REF=BRANCH, **DOCS_OK)
+        assert clean.returncode == 0, clean.stdout + clean.stderr
+        assert not sentinel.exists()
+
+
 def test_the_refusal_names_the_inventory_allowance(repo):
     """FEAT-CICD-001 spec, the allowance (done_when[7]): the refusal for every other docs/product/ path names the
     re-rendered inventory blocks as an allowed change and cites REQ-GOV-004."""
@@ -4019,6 +4062,8 @@ def test_render_inputs_and_the_documents_themselves_stay_put(inventory_repo):
         root, moved = inventory_repo
         inputs, same = "which decide the render", "is deleted, renamed or changes file mode"
         cases = {   # name: (files, then, fragment); each differs from the #1366 head in one condition
+            "parent scripts initializer changes": ({**moved, "scripts/__init__.py": "# touched\n"}, None, inputs),
+            "maintenance initializer changes": ({**moved, "scripts/maintenance/__init__.py": "# touched\n"}, None, inputs),
             "doc_inventory.py changes": ({**moved, "scripts/maintenance/doc_inventory.py": (REPO / "scripts/maintenance/doc_inventory.py").read_text(encoding="utf-8") + "# touched\n"}, None, inputs),
             "check_generated_docs.py changes": ({**moved, "scripts/maintenance/check_generated_docs.py": (REPO / "scripts/maintenance/check_generated_docs.py").read_text(encoding="utf-8") + "# touched\n"}, None, inputs),
             "the docs test changes": ({**moved, "tests/scripts/test_check_generated_docs.py": "# touched\n"}, None, inputs),
@@ -4177,7 +4222,7 @@ def test_the_render_reads_only_the_pull_requests_files(inventory_repo, tmp_path_
         root, moved = inventory_repo
         outside = tmp_path_factory.mktemp("outside") / "evil_job.py"
         outside.write_text('"""A job entrypoint outside the tree."""\n', encoding="utf-8")
-        deploy = (REPO / "gcp/deploy.sh").read_text(encoding="utf-8")
+        deploy = RENDER_SOURCE["gcp/deploy.sh"]
         escaped = pr(root, BRANCH, {MAIN_PY: moved_main(), "gcp/deploy.sh": deploy + JOB.format(outside)}, then=render, **DOCS_OK)
         inside = pr(root, BRANCH, {MAIN_PY: moved_main(), "gcp/evil_job.py": outside.read_text(encoding="utf-8"),
                                    "gcp/deploy.sh": deploy + JOB.format("gcp/evil_job.py")}, then=render, **DOCS_OK)
@@ -4220,7 +4265,7 @@ class _OneBlobShowFailure:
 
 
 def test_committed_blob_cache_keeps_mutable_refs_index_and_failures_fresh(repo, monkeypatch):
-    """Optimization preserves actual mutation/error behavior, not a stale symbolic key."""
+    """Revision reads preserve mutation/error behavior without stale ref or failure retention."""
     sg = load_gate(repo)
     original = _git(repo, "rev-parse", "base")
     immutable, moving = sg.Tree(original), sg.Tree("base")
@@ -4242,12 +4287,12 @@ def test_committed_blob_cache_keeps_mutable_refs_index_and_failures_fresh(repo, 
 
     # A transient git-show failure cannot become cached absence. Recover through
     # the SAME Tree and real git; the new path has no preexisting cached value.
-    on_base(repo, {"lib/recovery.py": "RECOVERED = True\n"})
+    on_base(repo, {"lib/recovery.py": "RECOVERED = True\n", "lib/empty.py": ""})
     recovered = sg.Tree(_git(repo, "rev-parse", "base"))
     transient = _OneBlobShowFailure(sg.subprocess.run)
     monkeypatch.setattr(sg.subprocess, "run", transient)
     assert recovered.raw("lib/recovery.py") is None
     assert recovered.raw("lib/recovery.py") == b"RECOVERED = True\n"
     assert transient.failed
-    assert all(key[1] not in ("base", "HEAD", "main") for key in sg._COMMITTED_BLOBS)
-    assert sg._COMMITTED_BLOB_BYTES <= sg._COMMITTED_BLOB_LIMIT
+    assert recovered.raw("lib/empty.py") == b"", "Empty committed bytes are not an absent path"
+    assert recovered.raw("lib/missing.py") is None, "An actually absent path remains unavailable"
