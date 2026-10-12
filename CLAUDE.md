@@ -179,7 +179,11 @@ inside that window. Concretely, before any merge:
    means nothing; wait and re-check.
 2. Every thread either resolved, or replied to with why it is not being
    actioned. Zero unresolved threads is the bar.
-3. Only then CI, then merge.
+3. The head is reviewed and each Codex review type's first review is recorded,
+   as "A resolved thread is not a reviewed commit" and "A finding raised after
+   a reviewer's first review" below say. If that meant waiting for a run,
+   items 1 and 2 are done again.
+4. Only then CI, then merge.
 
 A PR is done when: CI green **and** no unresolved review threads **and** no
 merge conflict. Green CI alone is not done.
@@ -194,33 +198,148 @@ as unaddressed to everyone but you. When you fix a finding:
 - Then resolve it.
 - If the fix landed in a different PR, say which one.
 
+#### Reviewing a pull request
+
+A reviewer of a pull request here, Claude included, follows
+`AGENTS.md`'s `## Review guidelines`: its first review is the complete one.
+Claude Code loads this file and not `AGENTS.md`, so this is where a Claude
+reviewer is sent to them.
+
+#### A finding raised after a reviewer's first review
+
+A reviewer is one account, split by review type where the account runs
+separately triggered types (Codex's code review and its security review are
+two), and its first review is the earliest review it completes on the pull
+request, including one that posts no findings (REQ-GOV-003).
+
+A thread holding a finding that a reviewer posted after its own first review
+is not resolved until a reply on it classifies each location, taking the
+first class that applies: uncounted (not a defect, a defect the pull request
+neither introduces nor makes worse, or one that first review raised there),
+missed (the pull request had introduced or worsened it by the commit that
+first review covered, named by SHA), or new (a later commit introduced or
+worsened it, named by SHA). The missed count per reviewer and pull request is
+the lower bound REQ-GOV-003 keeps on what a first review misses.
+
+For Codex, a first review that posts no findings leaves no review object, and
+a review object names no review type (see "A resolved thread is not a
+reviewed commit" below), so for every Codex first review, with or without
+findings, the commit it covered is the one Codex's review-summary comment
+shows for that review type when that row first reads Completed, and the
+author records that SHA in a PR comment then, since the next run replaces the
+row. Each review type gets its own comment, posted when its own row first
+reads Completed: for the Code Review row,
+`First Codex code review: Completed on <sha>, no findings.` or
+`First Codex code review: Completed on <sha>, N findings.`, and for the
+Security Review row,
+`First Codex security review: Completed on <sha>, no findings.` or
+`First Codex security review: Completed on <sha>, N findings.`, with N the
+findings that run posted. The pull request does not merge while a review
+type's first run still reads Running, or before each review type that has
+completed a review on it has its first-review comment. A row the procedure
+waits on, a first run's or the Code Review run's for the head, that still
+reads Running an hour after its trigger (the runs on #1398 took about 8 and 18
+minutes), or a first run's row that another run replaced before its comment
+was posted, is reported once on the PR, and the owner decides whether to push
+or merge without it, so no wait on a row lasts longer than that. A later
+finding is classified against the comment for its own review type, which is
+the type of the run that posted it. A finding is an inline comment that opens
+a thread; Codex's replies inside a thread, held by bodiless review objects
+(#1380's 5482164471, #1387's 5482409691), are not findings and are never
+typed. A Codex finding names no review type either (each one on #1380, #1387
+and #1398 carries a severity badge, a title and its text), and the two types
+can run at once (Codex's summary comment 6124933119 on #1398 read both rows
+Running at 13:09:45Z, the Code Review row since 13:09:40.806534Z and the
+Security Review row since 13:09:40.775251Z, as read on 2026-10-12 from the
+comment's edit event delivered to a Claude Code session, since its edit
+history is GraphQL-only), so timing cannot tell which run posted a finding.
+The review object that holds the finding does: in `get_reviews`, the Codex
+review object with a body whose `submitted_at` is the finding's `created_at`
+or the second before it (`get_review_comments` carries no review id), and that
+review's `commit_id` is then the reviewed commit. If more than one bodied
+Codex review falls in a finding's window, its type is ambiguous: it is
+classified against the earlier of the two types' first-review SHAs, and as
+uncounted if either type's first review raised it there, which keeps the
+missed count a lower bound, and its reply says so. Every bodied Codex review
+object holding a finding on #1380, #1387 and #1398 is a code review's, and
+though no field says so, each opens its body with `### 💡 Codex Review` and
+names its commit as `**Reviewed commit:**` (on #1398, review 5491453317 on
+`a269671e`, submitted at 13:27:56Z, holds all four findings, created at
+13:27:56Z and 13:27:57Z). No security-review finding or review object has been
+seen on those pull requests, so the security review's heading is not known: a
+finding held by a bodied Codex review object without the code review's heading
+is the security review's, and the author notes that object's heading in a PR
+comment the first time one appears. A reviewer whose clean review does create
+a review object, as a person's approval does, needs no such comment: that
+object's `commit_id` names the commit its first review covered.
+
 #### A resolved thread is not a reviewed commit
 
 **Added 2026-09-02 after merging #953 with five "resolved" Codex threads,
 none of which had ever been applied to the code that merged.**
 
 Codex reviews on a fixed set of triggers: a PR opened for review, a draft
-marked ready, or an explicit `@codex review` comment. **A push does not
-trigger a re-review** — not a force-push, not a branch update, not a
-regeneration. #953's only Codex review was of commit `40cc6a149e`, the
-original blind-generated docs. The branch was then fully regenerated
-twice (`f8fece0`, `a5990b2`) and merged, and Codex never saw either.
-Every thread carried `is_outdated: true`, which is the tell, and it was
-read past.
+marked ready, or an explicit `@codex review` comment, and Codex's code review
+also runs when new commits are pushed to a PR open for review (the "New
+commits" trigger in its review-summary comment on #1366 and #1371). When #953
+merged, a push did not trigger a re-review: #953's only Codex review was of
+commit `40cc6a149e`, the original blind-generated docs. The branch was then
+fully regenerated twice (`f8fece0`, `a5990b2`) and merged, and Codex never
+saw either. Every thread carried `is_outdated: true`, which is the tell, and
+it was read past.
 
 So resolving a thread records that *someone* answered the finding. It
 says nothing about whether a reviewer has looked at what is actually
-about to merge. Before merging, check both:
+about to merge, and neither does the review list on its own: from Codex, a
+review with no findings leaves no review object (its summary comment says it
+reacts 👍 once all its reviews finish with no findings), and every reply you
+post on a thread is itself a review object naming the head.
+So the head counts as reviewed only when, after the PR's latest
+review-triggering event, a review authored by `chatgpt-codex-connector[bot]`
+was submitted naming it in `commit_id`, or the Code Review row of Codex's own
+review-summary comment reads Completed for the head's SHA, as
+`.claude/commands/resolve-issue.md` step 2 requires. Only the row says which
+review ran (a review object names no review type: Codex's reply on a thread is
+a bodiless review object, as #1380's review 5482164471 on `2b559d3d` is, and
+its security review runs under the same account), so the row is what satisfies
+this rule, and a review object never does without it: it counts only once the
+Code Review row reads Completed for the same SHA, and it is where that run's
+findings are read. The rule counts Codex's code review only: the
+review-triggering events are the PR opened for review, the draft marked ready,
+an `@codex review` comment and a push of new commits, and a review object
+counts only if it is not `CHANGES_REQUESTED`. An `@codex review` comment is a
+comment whose body begins with `@codex review`, posted by an account other
+than chatgpt-codex-connector[bot] and timed by its `created_at`; one the Code
+Review row has not picked up within roughly 3 minutes of its `created_at` is
+reported once on the PR, is not answered with a request, and no longer counts
+as a review-triggering event; a request of your own that is not picked up is
+not repeated, and the owner decides how to go on. The Code Review row's own
+time, the `<relative-time datetime=…>` inside it, is what must follow the
+latest of those events: the comment's `updated_at` does not stand in for it,
+since an update to either row moves it while the Code Review row can still
+show the previous run's Completed (on #1398 the Code Review row reads
+Completed at 13:28:00Z, the Security Review row at 13:17:34Z, and the
+comment's `updated_at` is 13:28:03Z). The cutoff matters: re-marking a draft
+ready, or an `@codex review` on an unchanged head, would otherwise count the
+older review while the new run is still going. `get_reviews` returns oldest
+first, so the current review is on the last page, and all threads
+`is_outdated` still means the review predates the current content entirely.
 
-1. `pull_request_read` with `method: "get_reviews"` — compare each
-   review's `commit_id` against the PR's current head SHA. If no review
-   names the head, the head is unreviewed regardless of how many threads
-   show resolved.
-2. `is_outdated` on every thread. All-outdated means the review predates
-   the current content entirely.
-
-When the head is unreviewed and the change is more than cosmetic, comment
-`@codex review` and wait, rather than reading resolution as coverage.
+When the head is unreviewed and the change is more than cosmetic, do not read
+resolution as coverage. A head whose Code Review row does not read Completed
+for it, with its own time after the latest review-triggering event, is
+unreviewed. It waits while that row reads Running, and for roughly 3 minutes
+after that event while the summary comment or its Code Review row has not yet
+picked it up (no summary yet, or the row still showing the previous run);
+otherwise, once any first-review comment a Completed row is owed (Rule 2.5)
+has been posted, a run is requested with `@codex review` (unless a request of
+your own was dropped as above). A read of the summary comment that fails is
+retried, and does not count as a row that is missing or not Completed; a read
+still failing an hour later is reported once on the PR, and the owner decides
+whether to push or merge. Requesting a run (`@codex review`) or pushing
+happens only before the PR's second review round has started; once it has
+started, nothing is pushed or requested, and a PR that then needs either is
+split, re-cut or discarded (the review cap).
 
 #### Verify the claim before fixing it, and reproduce before you fix
 
@@ -793,7 +912,16 @@ confident guess is not.
 
 Evidence means `EXPLAIN (ANALYZE, BUFFERS)`, a live `gcloud` read, a log query,
 or a test run — **with the output shown**. Not a doc, not a code comment, not a
-plausible mechanism.
+plausible mechanism. For a change the site shows, evidence includes Playwright
+evidence as `AGENTS.md`'s `## Review guidelines` define it: an API test of the
+changed response in the PR, and runs against the deployed site before the merge
+and once staging has deployed it, which the owner posts on the PR as close-out
+steps, with screenshots of the state each shows. In stocks the API test is
+pytest under `tests/api/` and carries no screenshots; the screenshots come from
+the Playwright runs against the deployed site. Those runs use a
+`*.cloud.spec.ts` written in solyra for the change and run with
+`npm run e2e:cloud` (none exists yet; solyra CLAUDE.md, Testing discipline,
+item 5).
 
 #### A doc is a claim, not evidence
 

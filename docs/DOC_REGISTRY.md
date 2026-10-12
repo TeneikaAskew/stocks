@@ -192,7 +192,7 @@ point: somebody decides its class rather than inheriting a directory's.
 | C | docs/MAGNITUDE_ENGINE_RESULTS.md | |  |
 | C | docs/long_only_findings.md | |  |
 | C | BACKTEST_RESULTS.md | |  |
-| D | CLAUDE.md | .claude, gcp/deploy.sh |  |
+| D | CLAUDE.md | .claude, gcp/deploy.sh, AGENTS.md |  |
 | D | RUNBOOK.md | gcp/deploy.sh, gcp/database.py |  |
 | D | SETUP.md | .github/workflows |  |
 | D | QUICK_REFERENCE.md | scripts, gcp/deploy.sh |  |
@@ -295,3 +295,4 @@ point: somebody decides its class rather than inheriting a directory's.
 | X | .claude/commands/*.md | |  |
 | X | .claude/skills/**/*.md | |  |
 | X | .github/pull_request_template.md | |  |
+| X | AGENTS.md | |  |
