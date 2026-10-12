@@ -3,7 +3,7 @@ feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-10-11-feat-cicd-001-review-guidelines.md
 branch: feature/feat-cicd-001-review-guidelines-r3
 pr: 1398
-status: ready
+status: done
 ---
 
 # Review guidelines and browser proof (stocks) implementation plan
