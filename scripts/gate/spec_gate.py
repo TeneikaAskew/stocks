@@ -39,6 +39,8 @@ import bisect
 import functools
 import html
 import importlib
+import importlib.abc
+import importlib.machinery
 import json
 import collections
 import datetime
@@ -75,10 +77,11 @@ GENERATED_DOCS = ("docs/product/infrastructure/05-a-ARCHITECTURE.md", "docs/prod
                   "docs/product/infrastructure/05-e-API.md")
 GENERATED_RULE = "REQ-GOV-004"
 RENDER_SNAPSHOT = "tests/fixtures/live_gcp_snapshot_2026-09-07.json"
-RENDER_INPUTS = ("scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
-                 "tests/scripts/test_check_generated_docs.py", RENDER_SNAPSHOT)          # REQ-GOV-004: unchanged beside blocks
 RENDERER_FILES = ("scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
                   "scripts/maintenance/__init__.py", RENDER_SNAPSHOT)                     # process files: FEAT-CICD-001's
+# REQ-GOV-004: unchanged beside blocks. Every file the gate runs or reads for the render, and the docs test (red-team
+# round 4: the package's __init__ runs on every render and can patch doc_inventory).
+RENDER_INPUTS = (*RENDERER_FILES, "tests/scripts/test_check_generated_docs.py")
 
 FEAT_ROW = re.compile(r"^\|\s*\[?(FEAT-[A-Z]+-\d{3})\b", re.M)
 FEAT_IDS = re.compile(r"\bFEAT-[A-Z]+-\d{3}\b")
@@ -3729,15 +3732,65 @@ def check_record_uniqueness(ch: Change) -> list[str]:
 # re-rendered inventory blocks, and the gate accepts them only as main's renderer renders them from this pull
 # request's files. "Main's" is the gate's own checkout: the base commit in CI, the worktree in a local run.
 
+class OutsideCheckout(importlib.abc.MetaPathFinder):
+    """While main's renderer loads, a top-level import is found only outside this checkout, where the standard library
+    is: a module at the repository root named after one the renderer imports (argparse) is never run (red-team round
+    4). check_generated_docs puts the checkout first on sys.path itself, so filtering sys.path once is not enough."""
+
+    def find_spec(self, name: str, path=None, target=None):
+        if path is not None:
+            return None   # a submodule, found under its own package's __path__
+        outside = [p for p in sys.path if not in_checkout(p)]
+        if found := importlib.machinery.PathFinder.find_spec(name, outside):
+            return found
+        raise ModuleNotFoundError(f"No module named {name!r} outside this checkout", name=name)
+
+
+def in_checkout(entry: str) -> bool:
+    where, top = os.path.realpath(entry or os.getcwd()), os.path.realpath(ROOT)
+    return where == top or where.startswith(top + os.sep)
+
+
+def load_renderer() -> tuple[types.ModuleType, types.ModuleType]:
+    """Main's doc_inventory and check_generated_docs, each compiled from its .py file in this checkout, so that the
+    code the gate runs is exactly RENDERER_FILES (red-team round 4): a committed __pycache__ entry, which Python loads
+    unchecked against the source when it is built that way, is never read, `scripts` is a package in name only so no
+    scripts/__init__.py runs, scripts/maintenance/__init__.py (a renderer file) does, and no import made while they
+    load resolves into the checkout (OutsideCheckout). sys.path and sys.meta_path are restored afterwards."""
+    folder = ROOT / "scripts/maintenance"
+    saved_path, saved_finders = sys.path[:], sys.meta_path[:]
+    at = next((i for i, f in enumerate(sys.meta_path) if f is importlib.machinery.PathFinder), len(sys.meta_path))
+    sys.meta_path.insert(at, OutsideCheckout())
+    try:
+        def module(name: str, source: pathlib.Path | None = None) -> types.ModuleType:
+            m = types.ModuleType(name)
+            parent, _, leaf = name.rpartition(".")
+            m.__package__ = name if name.count(".") < 2 else parent
+            if name.count(".") < 2:
+                m.__path__ = []   # a package that finds no submodule of its own: each is placed here by hand
+            sys.modules[name] = m
+            if parent:
+                setattr(sys.modules[parent], leaf, m)
+            if source is not None:   # a missing renderer file raises, as a failed import did
+                m.__file__ = str(source)
+                exec(compile(source.read_bytes(), str(source), "exec"), m.__dict__)
+            return m
+        module("scripts")
+        init = folder / "__init__.py"
+        module("scripts.maintenance", init if init.is_file() else None)
+        return module("scripts.maintenance.doc_inventory", folder / "doc_inventory.py"), \
+            module("scripts.maintenance.check_generated_docs", folder / "check_generated_docs.py")
+    finally:
+        sys.path[:], sys.meta_path[:] = saved_path, saved_finders
+
+
 def maintenance_modules() -> tuple[types.ModuleType, types.ModuleType] | None:
-    """Main's (doc_inventory, check_generated_docs), from this checkout's scripts/maintenance/, or None where the
-    repository has no renderer (solyra): it then gets no allowance. Any other import error propagates."""
+    """Main's (doc_inventory, check_generated_docs), from this checkout's scripts/maintenance/ (load_renderer), or None
+    where the repository has no renderer (solyra): it then gets no allowance. Any other import error propagates."""
     folder = ROOT / "scripts/maintenance"
     if not folder.is_dir():
         return None
-    sys.path.insert(0, str(ROOT))
-    mods = (importlib.import_module("scripts.maintenance.doc_inventory"),
-            importlib.import_module("scripts.maintenance.check_generated_docs"))
+    mods = load_renderer()
     for m in mods:
         # a regular `scripts` package anywhere on sys.path beats this checkout's namespace one
         where = pathlib.Path(m.__file__ or "").resolve()
@@ -3799,10 +3852,11 @@ def split_inventory(raw: bytes, names: tuple[str, ...], start: str, end: str,
     return outside, blocks
 
 
-def document_refusal(doc: str, base: Tree, tree: Tree, inv: types.ModuleType, cgd: types.ModuleType) -> str | None:
-    """The first of REQ-GOV-004's per-document rules that `doc` breaks, as a reason, or None."""
-    before, after = base.raw(doc), tree.raw(doc)
-    if before is None or after is None or base.mode(doc) != tree.mode(doc):
+def document_refusal(doc: str, base: Tree, now: tuple[str, bytes] | None, inv: types.ModuleType, cgd: types.ModuleType) -> str | None:
+    """The first of REQ-GOV-004's per-document rules that `doc` breaks, as a reason, or None. `now` is the head's
+    (mode, bytes) for doc from the one listing of the head tree that the render writes out (red-team round 4)."""
+    before, after = base.raw(doc), (now[1] if now else None)
+    if before is None or after is None or base.mode(doc) != now[0]:
         return "is deleted, renamed or changes file mode; only its inventory block bodies may change"
     if b"\r" in after and b"\r" not in before:
         return "adds carriage returns (CRLF line endings); commit it with LF line endings"
@@ -3838,19 +3892,73 @@ def head_entries(head: str) -> list[tuple[str, str, str]]:
     return entries
 
 
+def blobs(oids: list[str]) -> list[bytes]:
+    """Each blob's bytes, from one `git cat-file --batch`, which applies no attributes."""
+    if not oids:
+        return []
+    r = subprocess.run(["git", "cat-file", "--batch"], input=b"".join(oid.encode("ascii") + b"\n" for oid in oids),
+                       capture_output=True, cwd=ROOT)
+    if r.returncode != 0:
+        raise GitFailed(f"git cat-file --batch failed ({r.returncode}): {r.stderr.decode('utf-8', 'replace').strip() or 'no output'}")
+    out, pos, found = r.stdout, 0, []
+    for oid in oids:
+        eol = out.index(b"\n", pos)
+        header = out[pos:eol].decode("ascii", "replace").split()
+        if len(header) != 3 or header[0] != oid or header[1] != "blob":
+            raise GitFailed(f"git cat-file --batch answered {' '.join(header)!r} for {oid}")
+        size = int(header[2])
+        found.append(out[eol + 1:eol + 1 + size])
+        pos = eol + 1 + size + 1
+    return found
+
+
+# The attributes that change a file's bytes on checkout or on export. The render reads blobs as committed, while the
+# docs test reads them checked out, so a .gitattributes setting one of these, or a macro that sets one, would let the
+# two disagree. Any other attribute (linguist-generated, diff, merge) changes no byte (red-team round 4: a byte-neutral
+# .gitattributes on main shut the allowance for every later pull request).
+BYTE_ATTRIBUTES = frozenset(("text", "eol", "crlf", "ident", "filter", "working-tree-encoding", "export-subst"))
+
+
+def attributes_refusal(text: bytes) -> str | None:
+    """The first token of a .gitattributes that names a BYTE_ATTRIBUTES attribute, set, unset or given a value, in an
+    attribute line or a macro definition, or None. Read token by token past the first on each line (the pattern, or
+    the macro's name), so a quoted pattern holding spaces at worst refuses a harmless file."""
+    for line in text.decode("utf-8", "replace").split("\n"):
+        tokens = line.strip().split()
+        if not tokens or tokens[0].startswith("#"):
+            continue
+        for token in tokens[1:] + ([tokens[0][len("[attr]"):]] if tokens[0].startswith("[attr]") else []):
+            if token.lstrip("-!").split("=", 1)[0].lower() in BYTE_ATTRIBUTES:
+                return token
+    return None
+
+
 def tree_refusal(entries: list[tuple[str, str, str]]) -> str | None:
-    """The first entry the render cannot read as a plain file, named, or None."""
+    """The first entry the render cannot read as a plain file, or that the docs test would read in other bytes, named,
+    or None. A name listed twice is refused outright: `git show` reads the first entry and a checkout the last
+    (red-team round 4), and a name that is a file and a directory at once is too."""
+    seen: set[str] = set()
+    for _mode, _oid, path in entries:
+        if path in seen:
+            return f"a tree that lists {path} twice"
+        seen.add(path)
+    for _mode, _oid, path in entries:   # in the listing's order, so the same collision is named on every run
+        parts = path.split("/")
+        if dirs := [d for d in ("/".join(parts[:i]) for i in range(1, len(parts))) if d in seen]:
+            return f"{dirs[0]} as both a file and a directory"
+    attributes = [(path, oid) for mode, oid, path in entries if path.split("/")[-1].lower() == ".gitattributes" and mode in ("100644", "100755")]
     for mode, _oid, path in entries:
         parts = path.split("/")
         if mode == "120000":
             return f"a symbolic link ({path})"
         if mode == "160000":
             return f"a submodule ({path})"
-        if parts[-1].lower() == ".gitattributes":
-            return f"a .gitattributes ({path})"
         for c in parts:
             if c == "" or c.lower() in (".", "..", ".git"):
                 return f"a path component {c!r} ({path})"
+    for (path, _oid), text in zip(attributes, blobs([oid for _, oid in attributes])):
+        if token := attributes_refusal(text):
+            return f"a .gitattributes that changes bytes on checkout or export ({path}: {token}); the render reads blobs as committed"
     return None
 
 
@@ -3940,9 +4048,7 @@ def render_inventory(tree: str, docs: list[str]) -> int:
     on main's tree): as differing_blocks reads it (current != fresh, the docs test's rule), and as the exact
     body between its exact marker lines (red-team round 1: differing_blocks ends a block at the first end
     marker, even one that only begins a line, so it passed a hand-written row behind such a line)."""
-    sys.path.insert(0, str(ROOT))
-    inv = importlib.import_module("scripts.maintenance.doc_inventory")
-    cgd = importlib.import_module("scripts.maintenance.check_generated_docs")
+    inv, cgd = load_renderer()
     for m in (inv, cgd):
         if pathlib.Path(m.__file__ or "").resolve().parent != (ROOT / "scripts/maintenance").resolve():
             os.write(2, f"{m.__file__}\n".encode("utf-8", "replace"))
@@ -3957,29 +4063,32 @@ def render_inventory(tree: str, docs: list[str]) -> int:
         differs = []
         for doc in docs:
             bodies = inv._block_bodies(at / doc, repo, live, at)
-            found = {name: first_difference(current, body) for name, current, body, _pattern in bodies if current != body}
+            found = {name: ("render", first_difference(current, body)) for name, current, body, _pattern in bodies if current != body}
             fresh = {name: body for name, _current, body, _pattern in bodies}
             names = tuple(cgd.EXPECTED_MARKERS[doc])
             _outside, blocks = split_inventory((at / doc).read_bytes(), names, inv.MARKER_START, inv.MARKER_END, cgd._MARKER_LINE)
             for name, body in blocks:
                 exact = b"\n".join(body).decode("utf-8", "replace")
                 if name not in found and exact != fresh.get(name):
-                    found[name] = first_difference(exact, fresh.get(name, "<not rendered>"))
-            differs += [(doc, name, diff) for name, diff in found.items()]
+                    # the docs test's reading matches, so a line holding marker text has cut the block short there,
+                    # and --restore, which reads it the same way, would leave it (red-team round 4)
+                    found[name] = ("marker", first_difference(exact, fresh.get(name, "<not rendered>")))
+            differs += [(doc, name, kind, diff) for name, (kind, diff) in found.items()]
     except Exception as e:
         # Reported here, one line: Python's traceback printer reads source lines through linecache, and the fence
         # ends the child on that open (a SyntaxError's "<unknown>"), which would name a read, not the failure.
         os.write(2, f"{type(e).__name__}: {e}\n".encode("utf-8", "replace"))
         return RENDER_FAILED
-    for doc, name, diff in differs:
-        sys.stdout.buffer.write(f"{doc}\t{name}\t{diff}\n".encode("utf-8", "replace"))
+    for doc, name, kind, diff in differs:
+        sys.stdout.buffer.write(f"{doc}\t{name}\t{kind}\t{diff}\n".encode("utf-8", "replace"))
     sys.stdout.flush()
     return RENDER_DIFFERS if differs else 0
 
 
-def render_refusals(entries: list[tuple[str, str, str]], docs: list[str]) -> list[str]:
+def render_refusals(entries: list[tuple[str, str, str]], docs: list[str], moved: list[str]) -> list[str]:
     """[] when main's renderer, run over the head tree written to a temporary directory, renders every block of
-    `docs` exactly as committed; otherwise why not."""
+    `docs` exactly as committed; otherwise why not, with what clears it. `moved` names the render inputs main changed
+    after the branch forked: the branch's own renderer then cannot produce main's render (red-team round 4)."""
     every = ", ".join(docs)
     with tempfile.TemporaryDirectory(prefix="spec-gate-render-") as tmp:
         tree, cwd = pathlib.Path(tmp) / "tree", pathlib.Path(tmp) / "run"
@@ -3996,11 +4105,16 @@ def render_refusals(entries: list[tuple[str, str, str]], docs: list[str]) -> lis
     if r.returncode == 0:
         return []
     if r.returncode == RENDER_DIFFERS:
-        found = [line.split("\t", 2) for line in r.stdout.split("\n") if line]
-        if found and all(len(f) == 3 for f in found):
-            return [generated_refusal(doc, f"inventory:{name} differs from main's render; first difference: {diff}. Re-render "
-                                           f"with: python3 -m scripts.maintenance.doc_inventory --snapshot {RENDER_SNAPSHOT} --restore {doc}")
-                    for doc, name, diff in found]
+        found = [line.split("\t", 3) for line in r.stdout.split("\n") if line]
+        if found and all(len(f) == 4 and f[2] in ("render", "marker") for f in found):
+            restore = lambda doc: f"python3 -m scripts.maintenance.doc_inventory --snapshot {RENDER_SNAPSHOT} --restore {doc}"
+            how = {"render": lambda doc: (f"main changed {summarize(moved)} after this branch forked, so merge main into the branch, "
+                                          f"then re-render with: {restore(doc)}" if moved else f"Re-render with: {restore(doc)}"),
+                   "marker": lambda doc: ("A line in it holds this block's marker text, which ends the block early for the "
+                                          f"renderer, so --restore would leave it: delete that line and anything after it up "
+                                          f"to the block's end marker, then re-render with: {restore(doc)}")}
+            return [generated_refusal(doc, f"inventory:{name} differs from main's render; first difference: {diff}. {how[kind](doc)}")
+                    for doc, name, kind, diff in found]
     elif r.returncode == RENDER_ESCAPED:
         return [generated_refusal(every, f"main's renderer read outside this pull request's files ({last})")]
     elif r.returncode == RENDER_MISPLACED:
@@ -4016,16 +4130,22 @@ def generated_doc_refusals(ch: Change, merge_base: str, head: str, docs: list[st
     if inputs:
         return [generated_refusal(doc, f"changes alongside {summarize(inputs)}, which decide the render; land that "
                                        "change first, then re-render") for doc in docs]
-    base = Tree(merge_base)
-    if errs := [generated_refusal(doc, why) for doc in docs if (why := document_refusal(doc, base, ch.tree, inv, cgd))]:
-        return errs
+    # The head tree is listed once: the per-document rules, the tree rules and the render all read that listing, so
+    # no rule reads a document the render does not (red-team round 4: a tree listing 05-e twice).
     try:
         entries = head_entries(head)
     except GitFailed as e:
         return [generated_refusal(", ".join(docs), f"the head tree cannot be listed ({e})")]
     if why := tree_refusal(entries):
         return [generated_refusal(", ".join(docs), f"the head tree holds {why}; the render reads plain files only")]
-    return render_refusals(entries, docs)
+    listed = {path: (mode, oid) for mode, oid, path in entries}
+    present = [doc for doc in docs if doc in listed]
+    now = {doc: (listed[doc][0], text) for doc, text in zip(present, blobs([listed[doc][1] for doc in present]))}
+    base = Tree(merge_base)
+    if errs := [generated_refusal(doc, why) for doc in docs if (why := document_refusal(doc, base, now.get(doc), inv, cgd))]:
+        return errs
+    moved = git_out("diff", "--name-only", "--no-renames", merge_base, ch.base.rev, "--", *RENDER_INPUTS).splitlines()
+    return render_refusals(entries, docs, moved)
 
 
 def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) -> list[str]:
@@ -4033,7 +4153,7 @@ def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) ->
     nothing else's. The requirements document changes on its own docs/ branch. Runs on a
     feature/ or fix/ PR whether or not it carries code, so a docs-only one is scoped too."""
     errs: list[str] = []
-    generated = [p for p in ch.changed if p in GENERATED_DOCS]
+    generated = list(dict.fromkeys(p for p in ch.changed if p in GENERATED_DOCS))   # a tree listing one twice lists it once here
     mods = maintenance_modules() if generated else None
     if mods:
         errs += generated_doc_refusals(ch, merge_base, head, generated, *mods)
@@ -4354,10 +4474,23 @@ def resolve(rev: str) -> str | None:
     return r.stdout.strip() if r.returncode == 0 else None
 
 
+def printable(text: str) -> str:
+    """text as any stdout can write it: a path whose bytes are not UTF-8 reaches the gate as lone surrogates
+    (os.fsdecode), which a strict stdout refuses with UnicodeEncodeError and no verdict (red-team round 4); each is
+    shown as the byte it stands for (\\xff), and a character stdout's encoding lacks as an escape."""
+    try:
+        raw = text.encode("utf-8", "surrogateescape")
+    except UnicodeEncodeError:
+        raw = text.encode("utf-8", "backslashreplace")
+    shown = raw.decode("utf-8", "backslashreplace")
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    return shown.encode(encoding, "backslashreplace").decode(encoding)
+
+
 def fail(errs: list[str]) -> int:
     print("SPEC GATE FAILED")
     for e in errs:
-        print(" -", e)
+        print(" -", printable(e))
     print("\nRun the product-delivery skill (Phase 1 to 3) before continuing.")
     return 1
 
@@ -4475,7 +4608,7 @@ def run(argv: list[str]) -> int:
         return 2
     if errs:
         return fail(errs)
-    print(f"spec gate ok (branch={ch.branch}, {len(ch.changed)} changed file(s))")
+    print(printable(f"spec gate ok (branch={ch.branch}, {len(ch.changed)} changed file(s))"))
     return 0
 
 

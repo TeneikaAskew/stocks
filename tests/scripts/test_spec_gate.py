@@ -22,9 +22,12 @@ import datetime
 import functools
 import hashlib
 import importlib.util
+import io
 import json
+import locale
 import marshal
 import os
+import py_compile
 import re
 import shutil
 import subprocess
@@ -250,70 +253,122 @@ def commits(repo: Path, cases: dict[str, dict[str, str | None]], base: str = "ba
     return {name: (parent, made[f"refs/judge/{i}"]) for i, name in enumerate(cases)}
 
 
-# One interpreter judging many (base, head) pairs as `spec_gate.py --pr BASE HEAD` judges each: the gate's code is
-# executed afresh as a new module per pair, so no state carries from one verdict to the next, and main() runs with its
-# stdout and stderr captured. An exception main() lets out is a traceback and exit 1, as the command line shows it.
-# The code is gate_code()'s compile of GATE when the repository's gate is that file byte for byte, its own otherwise.
-VERDICTS = r'''
-import base64, contextlib, hashlib, io, json, marshal, os, sys, traceback, types
+def judged(repo: Path, cases: list[tuple[dict[str, str | None] | None, dict[str, str | None], dict[str, str]]]) -> list[subprocess.CompletedProcess]:
+    """gate()'s verdict on each (on_main, files, env) case, as pr() reaches it after on_base(on_main) when on_main is
+    given: a pull request from BRANCH writing `files` over that base, judged with `env`. Its commits come from
+    commits(), with no checkout, since no check in --pr mode reads the working tree's documents, and its command-line
+    runs go four at a time, so the registry job runs this suite inside its pinned five minutes beside a pull request's
+    full-tree render (red-team round 4)."""
+    made: dict[str, tuple[str, str]] = {}
+    pairs = []
+    for on_main, files, _env in cases:
+        key = repr((sorted(on_main.items()) if on_main else None, sorted(files.items())))
+        if key not in made:
+            base = commits(repo, {"main": on_main})["main"][1] if on_main else "base"
+            made[key] = commits(repo, {"head": files}, base=base)["head"]
+        pairs.append(made[key])
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        return list(pool.map(lambda job: gate(repo, "--pr", *job[0], **{"PR_HEAD_REF": BRANCH, **job[1]}), zip(pairs, (env for *_, env in cases))))
+
+
+# One interpreter judging many (base, head) pairs, each as `python3 scripts/gate/spec_gate.py --pr BASE HEAD` judges
+# it: a forked process per pair runs the gate's code as __main__, with that pair's sys.argv and sys.orig_argv, the
+# interpreter's own stdout and stderr (TextIOWrappers over file descriptors 1 and 2, made from PYTHONIOENCODING as a
+# command line's are) and the flags CI runs it with (no -B), and exits with the status Python would. The gate's
+# imports are loaded once, before the first fork, as a fresh process imports them. The code is gate_code()'s compile
+# of GATE when the repository's gate is that file byte for byte, and its own compile otherwise.
+VERDICTS = r"""
+import base64, builtins, hashlib, importlib.machinery, json, marshal, os, sys, tempfile, traceback, types
 path = os.path.abspath("scripts/gate/spec_gate.py")
-sys.path[0] = os.path.dirname(path)
 given = json.load(sys.stdin)
 with open(path, "rb") as f:
     source = f.read()
 digest, packed = given["gate"]
-code = marshal.loads(base64.b64decode(packed)) if hashlib.sha256(source).hexdigest() == digest else \
-    compile(source, "scripts/gate/spec_gate.py", "exec")
+code = marshal.loads(base64.b64decode(packed)) if hashlib.sha256(source).hexdigest() == digest else compile(source, path, "exec")
+preload = types.ModuleType("spec_gate_preload")
+preload.__file__ = path
+sys.modules[preload.__name__] = preload
+exec(code, preload.__dict__)
+del sys.modules[preload.__name__]
+sys.path[0] = os.path.dirname(path)
 judged = {}
-for name, base, head in given["cases"]:
-    module = types.ModuleType("spec_gate")
-    module.__file__ = path
-    sys.modules["spec_gate"] = module
-    out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        try:
-            exec(code, module.__dict__)
-            rc = module.main(["scripts/gate/spec_gate.py", "--pr", base, head])
-        except SystemExit as e:
-            rc = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
-            if not isinstance(e.code, (int, type(None))):
-                print(e.code, file=sys.stderr)
-        except BaseException:
-            traceback.print_exc()
-            rc = 1
-    judged[name] = [rc, out.getvalue(), err.getvalue()]
+with tempfile.TemporaryDirectory() as tmp:
+    for i, (name, base, head) in enumerate(given["cases"]):
+        files = [os.path.join(tmp, f"{i}.{s}") for s in ("out", "err")]
+        sys.stdout.flush()
+        sys.stderr.flush()
+        pid = os.fork()
+        if pid == 0:
+            status = 1
+            try:
+                for fd, f in zip((1, 2), files):
+                    os.dup2(os.open(f, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), fd)
+                sys.argv = ["scripts/gate/spec_gate.py", "--pr", base, head]
+                sys.orig_argv = [sys.executable, *sys.argv]
+                main = types.ModuleType("__main__")
+                main.__dict__.update(__file__=path, __cached__=None, __builtins__=builtins,
+                                     __loader__=importlib.machinery.SourceFileLoader("__main__", path))
+                sys.modules["__main__"] = main
+                try:
+                    exec(code, main.__dict__)
+                    status = 0
+                except SystemExit as e:
+                    status = e.code if isinstance(e.code, int) else int(e.code is not None)
+                    if not isinstance(e.code, (int, type(None))):
+                        print(e.code, file=sys.stderr)
+                except BaseException:
+                    traceback.print_exc()
+                    status = 1
+            finally:
+                try:
+                    sys.stdout.flush()
+                    sys.stderr.flush()
+                except BaseException:
+                    status = 120   # Python's exit status when it cannot flush stdout at exit
+                os._exit(status)
+        _, waited = os.waitpid(pid, 0)
+        judged[name] = [os.waitstatus_to_exitcode(waited)] + [base64.b64encode(open(f, "rb").read()).decode("ascii") for f in files]
 sys.stdout.write(json.dumps(judged))
-'''
+"""
 
 
 BATCHES = 2   # interpreters judging at once in verdicts(), beside its gate() runs: CI's runner has 4 CPUs
+STRICT = {"PYTHONIOENCODING": "utf-8:strict"}   # verdicts()' stdout and stderr, as a locale other than C/POSIX gives them
 
 
 @functools.lru_cache(maxsize=None)
-def gate_code() -> tuple[str, str]:
-    """(sha-256 of GATE, its compiled code marshalled and base64-encoded) for VERDICTS, compiled once per session:
-    each interpreter would otherwise compile the gate's 4,500 lines itself."""
+def gate_code(path: str) -> tuple[str, str]:
+    """(sha-256 of GATE, GATE compiled as the command line compiles it at `path`, marshalled and base64-encoded), for
+    VERDICTS: compiled once per repository, where each interpreter would otherwise compile the gate's 4,500 lines."""
     source = GATE.read_bytes()
-    return hashlib.sha256(source).hexdigest(), base64.b64encode(marshal.dumps(compile(source, "scripts/gate/spec_gate.py", "exec"))).decode("ascii")
+    return hashlib.sha256(source).hexdigest(), base64.b64encode(marshal.dumps(compile(source, path, "exec"))).decode("ascii")
+
+
+def as_text(raw: bytes) -> str:
+    """raw read as subprocess.run(text=True) reads a child's output: the locale's encoding, strict, newlines folded."""
+    return io.TextIOWrapper(io.BytesIO(raw), encoding=locale.getpreferredencoding(False)).read()
 
 
 def verdicts(repo: Path, pairs: dict[str, tuple[str, str]], e2e: tuple[str, ...] = (), **env: str) -> dict[str, subprocess.CompletedProcess]:
-    """{case: outcome} for each (base, head) pair, judged as the spec-gate workflow judges a pull request from BRANCH:
-    the `e2e` cases each through gate(), the command CI runs, and the rest split over BATCHES interpreters running
-    VERDICTS. All of them run at once: a verdict only reads the repository, and renders in a directory of its own."""
-    env = {"PR_HEAD_REF": BRANCH, **env}
+    """{case: outcome} for each (base, head) pair, judged as the spec-gate workflow judges a pull request from BRANCH,
+    with a strict stdout (STRICT): the `e2e` cases each through gate(), the command CI runs, and the rest split over
+    BATCHES interpreters running VERDICTS. All of them run at once: a verdict only reads the repository, and renders in
+    a directory of its own."""
+    env = {"PR_HEAD_REF": BRANCH, **STRICT, **env}
     inherited = {k: v for k, v in os.environ.items() if not k.startswith(("PR_", "SPEC_GATE_", "GIT_", "PYTEST_"))}   # as gate()
     rest = [[name, *pair] for name, pair in pairs.items() if name not in e2e]
     batches = [rest[i::BATCHES] for i in range(min(BATCHES, len(rest)))]
+    given = {"gate": gate_code(str((repo / "scripts/gate/spec_gate.py").resolve()))}
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(e2e) + len(batches) or 1) as pool:
         singles = {name: pool.submit(gate, repo, "--pr", *pairs[name], **env) for name in e2e}
-        runs = [pool.submit(subprocess.run, [sys.executable, "-B", "-c", VERDICTS], cwd=repo, env={**inherited, **env},
-                            input=json.dumps({"gate": gate_code(), "cases": batch}), capture_output=True, text=True) for batch in batches]
+        runs = [pool.submit(subprocess.run, [sys.executable, "-c", VERDICTS], cwd=repo, env={**inherited, **env},
+                            input=json.dumps({**given, "cases": batch}).encode("ascii"), capture_output=True) for batch in batches]
         outcomes = {name: future.result() for name, future in singles.items()}
         for run in runs:
             r = run.result()
-            assert r.returncode == 0, r.stderr
-            outcomes |= {name: subprocess.CompletedProcess(["spec_gate.py", "--pr", *pairs[name]], rc, out, err)
+            assert r.returncode == 0, r.stderr.decode("utf-8", "replace")
+            outcomes |= {name: subprocess.CompletedProcess(["spec_gate.py", "--pr", *pairs[name]], rc,
+                                                           as_text(base64.b64decode(out)), as_text(base64.b64decode(err)))
                          for name, (rc, out, err) in json.loads(r.stdout).items()}
     return outcomes
 
@@ -1594,39 +1649,44 @@ def test_a_done_when_item_matches_as_written_or_as_rendered(repo):
     item = "e2e.yml has paths-ignore: ['docs/**', '**/*.md']"
     on_base(repo, {SPEC: spec(done_when=[item])})
     title = {"PR_TITLE": "FEAT-MODEL-001: x"}
-    ok = lambda boxes: pr(repo, BRANCH, CODE, **title, PR_BODY=f"Spec: {SPEC}\nPlan: {PLAN}\n\n{boxes}")
+    # each body is judged as pr() judges it, several at a time (judged): the registry job runs this suite inside its
+    # pinned five minutes, with a pull request's full-tree render beside it (red-team round 4)
+    oks = lambda many: judged(repo, [(None, CODE, {**title, "PR_BODY": f"Spec: {SPEC}\nPlan: {PLAN}\n\n{boxes}"}) for boxes in many])
+    ok = lambda boxes: oks([boxes])[0]
     assert ok(f"- [ ] {item}\n").returncode == 0
-    for wrong in ("- [ ] e2e.yml has paths-ignore: ['docs/', '/.md']\n", f"<!-- - [x] {item} -->\n",
-                  "- [ ] e2e.yml has paths-ignore: `['docs/**', '**/*.md']`\n"):   # a code span folds `**` here too, as on main
-        r = ok(wrong)
+    wrongs = ("- [ ] e2e.yml has paths-ignore: ['docs/', '/.md']\n", f"<!-- - [x] {item} -->\n",
+              "- [ ] e2e.yml has paths-ignore: `['docs/**', '**/*.md']`\n")   # a code span folds `**` here too, as on main
+    for wrong, r in zip(wrongs, oks(wrongs)):
         assert r.returncode == 1 and "missing: e2e.yml" in r.stdout, (wrong, r.stdout)
     row = CATALOG_TEXT.replace("| Models | Production | unknown | none |", f"| Models | Production | {TODAY} | #42 |")
     meta = {**title, "PR_NUMBER": "42", "PR_DRAFT": "false"}
-    done = lambda boxes: pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row}, **meta, PR_BODY=f"Spec: {SPEC}\nPlan: {PLAN}\n\n{boxes}")
+    as_done = lambda boxes, on_main=None: (on_main, {**CODE, PLAN: plan(pr=42), CATALOG: row}, {**meta, "PR_BODY": f"Spec: {SPEC}\nPlan: {PLAN}\n\n{boxes}"})
+    dones = lambda many: judged(repo, [as_done(boxes) for boxes in many])
+    done = lambda boxes: dones([boxes])[0]
     assert done(f"- [x] {item} (actionlint)\n").returncode == 0
-    for tail in (", follow-up", " **follow**-up", " [follow](u)-up", " [see](\n  - follow-up)", " [see](\n  - [x] follow-up)", " [see](\n\n  follow-up)", ", fol<a x=*>low-up", " (not <a x=_>run)", ", fol![](i.png)low-up", " (not ![](i.png)run)", ", fol<low-up:&lt;>", " (not ~~run~~ <pend~~ing~~)", " &lt;follow<!X <br>-up",
+    deferring = (", follow-up", " **follow**-up", " [follow](u)-up", " [see](\n  - follow-up)", " [see](\n  - [x] follow-up)", " [see](\n\n  follow-up)", ", fol<a x=*>low-up", " (not <a x=_>run)", ", fol![](i.png)low-up", " (not ![](i.png)run)", ", fol<low-up:&lt;>", " (not ~~run~~ <pend~~ing~~)", " &lt;follow<!X <br>-up",
                  " skipp![](i[](x).png)ed", ", non\\-blocking", " \\[lo](x)not run", ", r[](x\\)later PR",
                  " ([lo](xr<a x=_>)pending", ", <x a=', p`ending&#108;`", "\n  > pending", "<!X \n`>  later PR",
                  " not d`one[lo](x)`", ", \n&#45; pending", ", fo![r\\[](i.png)llow-up", ", not<brun\n  >later PR",
                  " (pendin<a unx=\n  _>g", " (*ing&#108;*~~pend*ing", ", follow\\-up\\not", " (later\n\n    PR)",
                  ", follow\n  ---\n  up", " (not<br>run)", ", later<br>PR", ", for<br/>now", "\n| not run, follow-up PR",
-                 "\n  | pending", "\n  # follow-up", "\n\n\n    not run", ", pen` ding, ` low"):
-        r = done(f"- [x] {item}{tail}\n")   # refused as deferring, or as markup it cannot read for a deferral
+                 "\n  | pending", "\n  # follow-up", "\n\n\n    not run", ", pen` ding, ` low")
+    for tail, r in zip(deferring, dones([f"- [x] {item}{tail}\n" for tail in deferring])):
         assert r.returncode == 1 and ("defers its work" in r.stdout or "cannot read for a deferral" in r.stdout), (tail, r.stdout)
     # an underscore inside a word is no marker, and a no-break space before a count is a space (red-team, this PR)
-    for tail in (" (`x.to(dev, non_blocking=True)`)", " with non_blocking=True", " (incl. `follow_up`)",
-                 ": 12 passed, 0&nbsp;skipped", ": 12 passed, 0\u00a0skipped"):
-        r = done(f"- [x] {item}{tail}\n")
+    plain = (" (`x.to(dev, non_blocking=True)`)", " with non_blocking=True", " (incl. `follow_up`)",
+             ": 12 passed, 0&nbsp;skipped", ": 12 passed, 0\u00a0skipped")
+    for tail, r in zip(plain, dones([f"- [x] {item}{tail}\n" for tail in plain])):
         assert r.returncode == 0, (tail, r.stdout)
     # what follows a done item with markup is words, code spans, links, autolinks and bare inline tags, or refused
     # (red-team, this PR); main never matched such an item
-    for tail in (" <a x=*>ok</a>", " *done* here", " <?x?> ok", " \\[x] ok", " ~~old~~ ok", " _ok_", ", \\[a](b) ok", ", \\![a](b) ok"):
-        r = done(f"- [x] {item}{tail}\n")
+    marked = (" <a x=*>ok</a>", " *done* here", " <?x?> ok", " \\[x] ok", " ~~old~~ ok", " _ok_", ", \\[a](b) ok", ", \\![a](b) ok")
+    for tail, r in zip(marked, dones([f"- [x] {item}{tail}\n" for tail in marked])):
         assert r.returncode == 1 and "cannot read for a deferral" in r.stdout, (tail, r.stdout)
-    for tail in (" <https://ci.example.com/1>", " <ins>now</ins>", " ![ok](i.png)", " [log](https://ci.example.com/1)",
-                 " (`npm test`: 12 passed)", " ~2 min", " -> 3 s", "<br>in CI", " (a < b holds)", " - p<0.05",
-                 " - 3 * 4 = 12", " (C:\\tmp)", " (`12` passed, `0` skipped)"):
-        r = done(f"- [x] {item}{tail}\n")
+    readable = (" <https://ci.example.com/1>", " <ins>now</ins>", " ![ok](i.png)", " [log](https://ci.example.com/1)",
+                " (`npm test`: 12 passed)", " ~2 min", " -> 3 s", "<br>in CI", " (a < b holds)", " - p<0.05",
+                " - 3 * 4 = 12", " (C:\\tmp)", " (`12` passed, `0` skipped)")
+    for tail, r in zip(readable, dones([f"- [x] {item}{tail}\n" for tail in readable])):
         assert r.returncode == 0, (tail, r.stdout)
     # a verbatim box beside one a reader sees as the item is two lines for it (red-team, this PR)
     r = done(f"- [x] {item}\n- [ ] e2e.yml has paths-ignore: ['docs/', '/.md']\n")
@@ -1656,35 +1716,35 @@ def test_a_done_when_item_matches_as_written_or_as_rendered(repo):
             assert r.returncode == 1 and "more than one checkbox line" in r.stdout, (one, second, r.stdout)
     # a link straddling the item's end shows the reader something else, so the box does not carry it;
     # read as written, a box must not go on with the item's last word or a marker either
-    for cut, box in (("ship step [", "ship step [follow](u)-up"), ("ship [fol", "ship [follow](u)-up"), ("ship [p", "ship [p](u)ending"),
-                     ("ship [fol](pending", "ship [fol](pending)low-up"), ("ship *fol", "ship *follow*-up"),
-                     ("ship `fol", "ship `follow`-up"), ("ship _pend", "ship _pending_"), ("ship *follow", "ship *follow*-up"),
-                     ("ship *fol*", "ship *fol*low up"), ("ship *fol", "ship *fol<ins></ins>low*-up"),
-                     ("ship *follow", "ship *follow<wbr>*-up"), ("the `tsc` build pass", "the `tsc` build pass<wbr>es"),
-                     ("ship *follow", "ship *follow[]()*-up"), ("ship *fol", "ship *fol<??>low*-up"), ("ship *follow", "ship *follow<??>*-up"),
-                     ("ship *fol", "ship *fol<?x>low*-up ?>"), ("ship *follow", "ship *follow<!-->*-up"), ("ship *fol", "ship *fol<!-->low*-up"),
-                     ("publish the `v2` notes post", "publish the `v2` notes post<poned:>"), ("ship *fol", "ship *fol<low-up:>*"),
-                     ("the `tsc` build pass", "the `tsc` build pass~~es~~"), ("ship *fol", "ship *fol~~low~~-up"),
-                     ("the `tsc` build pass", "the `tsc` build pass<?x>es<?`?>"), ("ship *fol", "ship *fol<?x>low<?`?>*-up"),
-                     ("the `tsc` build pass", "the `tsc` build pass<![CDATA[x]`]]>es"), ("ship *fol", "ship *fol![](i.png)low*-up"),
-                     ("the `tsc` build pass", "the `tsc` build pass![x](i.png)es"),
-                     ("the `deploy` job can roll back", "the `deploy` job can roll back[<ins></ins>](x)log"),
-                     ("the `tsc` build passes, fol", "the `tsc` build passes, fol[<ins></ins>](x)low-up"),
-                     ("the `tsc` build passes; fol", "the `tsc` build passes; fol[![](i.png)](x)low-up"),
-                     ("the `deploy` job can roll back!", "the `deploy` job can roll back![](x)log")):
-        on_base(repo, {SPEC: spec(done_when=[cut])})
-        r = done(f"- [x] {box}\n")
+    cut_items = (("ship step [", "ship step [follow](u)-up"), ("ship [fol", "ship [follow](u)-up"), ("ship [p", "ship [p](u)ending"),
+                 ("ship [fol](pending", "ship [fol](pending)low-up"), ("ship *fol", "ship *follow*-up"),
+                 ("ship `fol", "ship `follow`-up"), ("ship _pend", "ship _pending_"), ("ship *follow", "ship *follow*-up"),
+                 ("ship *fol*", "ship *fol*low up"), ("ship *fol", "ship *fol<ins></ins>low*-up"),
+                 ("ship *follow", "ship *follow<wbr>*-up"), ("the `tsc` build pass", "the `tsc` build pass<wbr>es"),
+                 ("ship *follow", "ship *follow[]()*-up"), ("ship *fol", "ship *fol<??>low*-up"), ("ship *follow", "ship *follow<??>*-up"),
+                 ("ship *fol", "ship *fol<?x>low*-up ?>"), ("ship *follow", "ship *follow<!-->*-up"), ("ship *fol", "ship *fol<!-->low*-up"),
+                 ("publish the `v2` notes post", "publish the `v2` notes post<poned:>"), ("ship *fol", "ship *fol<low-up:>*"),
+                 ("the `tsc` build pass", "the `tsc` build pass~~es~~"), ("ship *fol", "ship *fol~~low~~-up"),
+                 ("the `tsc` build pass", "the `tsc` build pass<?x>es<?`?>"), ("ship *fol", "ship *fol<?x>low<?`?>*-up"),
+                 ("the `tsc` build pass", "the `tsc` build pass<![CDATA[x]`]]>es"), ("ship *fol", "ship *fol![](i.png)low*-up"),
+                 ("the `tsc` build pass", "the `tsc` build pass![x](i.png)es"),
+                 ("the `deploy` job can roll back", "the `deploy` job can roll back[<ins></ins>](x)log"),
+                 ("the `tsc` build passes, fol", "the `tsc` build passes, fol[<ins></ins>](x)low-up"),
+                 ("the `tsc` build passes; fol", "the `tsc` build passes; fol[![](i.png)](x)low-up"),
+                 ("the `deploy` job can roll back!", "the `deploy` job can roll back![](x)log"))
+    for (cut, box), r in zip(cut_items, judged(repo, [as_done(f"- [x] {box}\n", {SPEC: spec(done_when=[cut])}) for cut, box in cut_items])):
         assert r.returncode == 1 and f"missing: {cut}" in r.stdout, (cut, r.stdout)
     # a plain item is read as main reads it: a count with markup stays a count (red-team, this PR)
     on_base(repo, {SPEC: spec(done_when=["the registry test passes"])})
-    for tail in (": 12 passed, **0** skipped", " (`12` passed, `0` skipped)", ": 12 passed, _0_ skipped"):
-        assert done(f"- [x] the registry test passes{tail}\n").returncode == 0, tail
+    counts = (": 12 passed, **0** skipped", " (`12` passed, `0` skipped)", ": 12 passed, _0_ skipped")
+    for tail, r in zip(counts, dones([f"- [x] the registry test passes{tail}\n" for tail in counts])):
+        assert r.returncode == 0, tail
     # the gate's own private-use markers, typed in the body, are no marker: no hidden deferral, no crash (red-team, this PR)
-    for body in ("- [x] the registry test passes\n\ue0ff\n    pending follow-up\n", "- [x] the registry test passes\n  \ue0ff\n    not run\n"):
-        r = done(body)
+    markers = ("- [x] the registry test passes\n\ue0ff\n    pending follow-up\n", "- [x] the registry test passes\n  \ue0ff\n    not run\n")
+    for body, r in zip(markers, dones(markers)):
         assert r.returncode == 1 and "defers its work" in r.stdout, (body, r.stdout)
-    for body in ("- [x] the registry test passes `x` \ue0fa9\ue0fa\n", "- [x] the registry test passes &#xe0fa;9&#xe0fa; `x`\n"):
-        r = done(body)
+    typed = ("- [x] the registry test passes `x` \ue0fa9\ue0fa\n", "- [x] the registry test passes &#xe0fa;9&#xe0fa; `x`\n")
+    for body, r in zip(typed, dones(typed)):
         assert r.returncode == 0 and "Traceback" not in r.stderr, (body, r.stdout, r.stderr)
     # an item holding an entity for punctuation is carried by its verbatim box, at close-out too (red-team, this PR)
     on_base(repo, {SPEC: spec(done_when=["the `tsc` exit code &lt; 2"])})
@@ -1717,10 +1777,11 @@ def test_a_done_when_item_matches_as_written_or_as_rendered(repo):
     assert r.returncode == 1 and "the `tsc` build pass" in r.stdout, r.stdout
     # a copy written with an escaped tag or a no-break space inside one is text, as GitHub shows it (red-team, this PR)
     on_base(repo, {SPEC: spec(done_when=["the `tsc` build passes"])})
-    for copy in ("the &lt;tsc build&gt; passes (not run)", "the <tsc\u00a0build> passes (not run)", "the <tsc\u2003build> passes (not run)",
-                 "the tsc build pa<sses<br>not run>"):
-        for body in (f"- [ ] {copy}\n- [x] the `tsc` build passes\n", f"- [x] the `tsc` build passes\n- [ ] {copy}\n"):
-            assert done(body).returncode == 1, (copy, body)
+    copies = [(copy, body) for copy in ("the &lt;tsc build&gt; passes (not run)", "the <tsc\u00a0build> passes (not run)",
+                                        "the <tsc\u2003build> passes (not run)", "the tsc build pa<sses<br>not run>")
+              for body in (f"- [ ] {copy}\n- [x] the `tsc` build passes\n", f"- [x] the `tsc` build passes\n- [ ] {copy}\n")]
+    for (copy, body), r in zip(copies, dones([body for _, body in copies])):
+        assert r.returncode == 1, (copy, body)
     # raw HTML from inside the item to past its end hides the item's own words, so the box does not carry it
     for item in ("`cmp` holds when a<c and the result is negative", "cmp holds when a<c and the result is negative"):
         on_base(repo, {SPEC: spec(done_when=[item])})
@@ -1734,17 +1795,19 @@ def test_a_done_when_item_matches_as_written_or_as_rendered(repo):
     assert done("- [x] [run the tests](https://ci.example.com/o/r/pipelines/main)\n- [x] run the tests on 3.12\n").returncode == 0
     # read once too, the longer item still claims its own line first (red-team, this PR)
     on_base(repo, {SPEC: spec(done_when=["run the tests", "run the tests on 3.12"])})
-    for tail in (" (R&amp;D sign-off)", " (p &lt; 0.05)", "<br>", " <b>green</b>"):
-        assert done(f"- [x] run the tests on 3.12\n- [x] run the tests{tail}\n").returncode == 0, tail
+    longer = (" (R&amp;D sign-off)", " (p &lt; 0.05)", "<br>", " <b>green</b>")
+    for tail, r in zip(longer, dones([f"- [x] run the tests on 3.12\n- [x] run the tests{tail}\n" for tail in longer])):
+        assert r.returncode == 0, tail
     # a spacer line before an indented one splits both readings alike: no refusal (red-team, this PR)
-    for spacer in ("&nbsp;", "<br>", "<kbd>x</kbd>", "&lt;b&gt;"):
-        body = f"- [x] run the tests on 3.12\n    {spacer}\n    ran locally\n- [x] run the tests\n"
-        assert done(body).returncode == 0, (spacer, done(body).stdout)
+    spacers = ("&nbsp;", "<br>", "<kbd>x</kbd>", "&lt;b&gt;")
+    for spacer, r in zip(spacers, dones([f"- [x] run the tests on 3.12\n    {spacer}\n    ran locally\n- [x] run the tests\n" for spacer in spacers])):
+        assert r.returncode == 0, (spacer, r.stdout)
     # both readings take main's indented code line for line: a whitespace-only line, or one an HTML block
     # main ends at a no-break space holds, moves no line (red-team, this PR)
-    for body in ("- [x] run the tests\n\t\n&lt;b&gt;\n    ran locally\n", "- [x] run the tests\n</div>\n&nbsp;\n    ran locally\n",
-                 "- [x] run the tests\n<div>\n    &nbsp;\n    ran locally\n"):
-        assert done("- [x] run the tests on 3.12\n" + body).returncode == 0, (body, done("- [x] run the tests on 3.12\n" + body).stdout)
+    indented = ("- [x] run the tests\n\t\n&lt;b&gt;\n    ran locally\n", "- [x] run the tests\n</div>\n&nbsp;\n    ran locally\n",
+                "- [x] run the tests\n<div>\n    &nbsp;\n    ran locally\n")
+    for body, r in zip(indented, dones(["- [x] run the tests on 3.12\n" + body for body in indented])):
+        assert r.returncode == 0, (body, r.stdout)
     # items sharing a copy key against a long body are refused within a budget, not timed out (red-team, this PR)
     on_base(repo, {SPEC: spec(done_when=["`a`" + "." * k for k in range(1, 31)])})
     r = ok("- [x] a.\n" * 4000)
@@ -1792,39 +1855,39 @@ def test_a_done_when_item_matches_as_written_or_as_rendered(repo):
     assert r.returncode == 1 and "more checkbox lines than a PR body can hold" in r.stdout, r.stdout[-300:]
     # an entity encoded twice still reads as its word for a deferral or a second line, as main read it
     on_base(repo, {SPEC: spec(done_when=["every model states its decision"])})
-    for two in ("- [x] every model states its decision, n&amp;#111;t run\n",
-                "- [x] every model states its decision\n- [ ] every model &amp;#115;tates its decision (not run)\n",
-                "- [x] every model states its decision [see](\n  n&amp;#111;t run)\n",
-                "- [x] every model states its decision&amp;#10;- [ ] every model states its decision\n",
-                "- [x] every model states its decision follow<<b></b>b>-up\n",
-                "- [x] every model states its decision\n" + "\n" * 20000 + "  not run\n",   # still the loose item past 20,000 blank lines
-                # main's reading joins the box to the line below
-                "- [x] every model states its decision <!<b></b>--\n\n--> not run\n",
-                # a line that reads as a list item only once decoded keeps no box from the deferral check
-                "&amp;lt;!--\n&amp;#45; [ ] notes --&amp;gt;\n  - [x] every model states its decision, n&amp;#111;t run\n",
-                "- &amp;#91; ] notes\n  - [x] every model states its decision, n&amp;#111;t run\n",
-                *(f"{above}\n\n- [x] every model states its decision, n&amp;#111;t run\n"
-                  for above in ("&amp;lt;!--", "&amp;lt;pre&amp;gt;", "&amp;#96;" * 3))):
-        r = done(two)
+    twice = ("- [x] every model states its decision, n&amp;#111;t run\n",
+             "- [x] every model states its decision\n- [ ] every model &amp;#115;tates its decision (not run)\n",
+             "- [x] every model states its decision [see](\n  n&amp;#111;t run)\n",
+             "- [x] every model states its decision&amp;#10;- [ ] every model states its decision\n",
+             "- [x] every model states its decision follow<<b></b>b>-up\n",
+             "- [x] every model states its decision\n" + "\n" * 20000 + "  not run\n",   # still the loose item past 20,000 blank lines
+             # main's reading joins the box to the line below
+             "- [x] every model states its decision <!<b></b>--\n\n--> not run\n",
+             # a line that reads as a list item only once decoded keeps no box from the deferral check
+             "&amp;lt;!--\n&amp;#45; [ ] notes --&amp;gt;\n  - [x] every model states its decision, n&amp;#111;t run\n",
+             "- &amp;#91; ] notes\n  - [x] every model states its decision, n&amp;#111;t run\n",
+             *(f"{above}\n\n- [x] every model states its decision, n&amp;#111;t run\n"
+             for above in ("&amp;lt;!--", "&amp;lt;pre&amp;gt;", "&amp;#96;" * 3)))
+    for two, r in zip(twice, dones(twice)):
         assert r.returncode == 1 and ("defers its work" in r.stdout or "more than one checkbox line" in r.stdout), (two, r.stdout)
     # decided on the body read twice, as on main: there a backtick that paired with one in a later code block
     # hides no comment, and a tag line after a closed fence opens its HTML block (red-team, this PR)
-    for hidden in ("Escape the ` in shell strings.\n\n<!--\n- [x] every model states its decision\n-->\n\n```bash\nnpm test\n```\n",
-                   "```\nnpm test\n```\n<img alt=\"image\" src=\"https://example.com/a.png\">\n- [x] every model states its decision\n",
-                   *(f"{above}\n\n- [x] every model states its decision, n&amp;#111;t run\n" for above in ("<!\u2010\u2010", "<!<b></b>--"))):
-        r = done(hidden)
+    hiddens = ("Escape the ` in shell strings.\n\n<!--\n- [x] every model states its decision\n-->\n\n```bash\nnpm test\n```\n",
+               "```\nnpm test\n```\n<img alt=\"image\" src=\"https://example.com/a.png\">\n- [x] every model states its decision\n",
+               *(f"{above}\n\n- [x] every model states its decision, n&amp;#111;t run\n" for above in ("<!\u2010\u2010", "<!<b></b>--")))
+    for hidden, r in zip(hiddens, dones(hiddens)):
         assert r.returncode == 1 and "missing: every model states its decision" in r.stdout, (hidden, r.stdout)
     assert done("Escape the ` in shell strings.\n- [x] every model states its decision\n\n<!--\n- [ ] every model states its decision\n-->\n\n"
                 "```bash\nnpm test\n```\n").returncode == 0
     # a line GitHub shows that only the twice-read body hides, behind an entity it decodes again, is a second line
     # for its item (red-team, this PR)
     # or tags (`<!<b></b>--`, `<<b></b>pre>`) it strips (red-team, this PR)
-    for wrap, end in (("&amp;lt;!--", "--&amp;gt;"), ("&amp;#96;" * 3, "&amp;#96;" * 3), ("<!<b></b>--", "--<b></b>>"),
-                      ("<!<span></span>--", "--<span></span>>"), ("<<b></b>pre>", "<<b></b>/pre>")):
-        for copy in ("- [ ] every model states its decision (not run)", "- [x] every model states its decision, follow-up PR"):
-            two = f"- [x] every model states its decision\n\n{wrap}\n\n{copy}\n\n{end}\n"
-            r = done(two)
-            assert r.returncode == 1 and ("more than one checkbox line" in r.stdout or "defers its work" in r.stdout), (two, r.stdout)
+    wrapped = [f"- [x] every model states its decision\n\n{wrap}\n\n{copy}\n\n{end}\n"
+               for wrap, end in (("&amp;lt;!--", "--&amp;gt;"), ("&amp;#96;" * 3, "&amp;#96;" * 3), ("<!<b></b>--", "--<b></b>>"),
+                                 ("<!<span></span>--", "--<span></span>>"), ("<<b></b>pre>", "<<b></b>/pre>"))
+               for copy in ("- [ ] every model states its decision (not run)", "- [x] every model states its decision, follow-up PR")]
+    for two, r in zip(wrapped, dones(wrapped)):
+        assert r.returncode == 1 and ("more than one checkbox line" in r.stdout or "defers its work" in r.stdout), (two, r.stdout)
     # the close-out ticks the box the body read once shows first, as on main (red-team, this PR)
     r = done('Notes [a](u "<!<!-- -->--").\n\n- [ ] every model states its decision\n\nRef [b](v "-->").\n\n- [x] every model states its decision\n')
     assert r.returncode == 1 and "not ticked: every model states its decision" in r.stdout, r.stdout
@@ -1834,22 +1897,23 @@ def test_a_done_when_item_matches_as_written_or_as_rendered(repo):
     # raw HTML reads as cmark-gfm 0.29.0.gfm.13 passes it through and an HTML parser then shows it: a processing
     # instruction up to its first `>`, a lower-case declaration as text, an autolink as its text; raw HTML whose
     # text the gate cannot tell, a quote left open in it or CDATA inside svg, is refused (red-team, this PR)
-    for first, why in (("- [ ] the <code>tsc</code> build passes", "not ticked"), ("- [x] the <code>tsc</code> build passes, not run", "defers its work"),
-                       ("- [ ] the t<?x?>sc build passes (not run)", "not ticked"), ("- [ ] the t<?x>sc build passes (not run) ?>", "not ticked"),
-                       ("- [x] the t<!X y>sc build passes, not run", "defers its work"),
-                       ("- [x] the t<![CDATA[x]]>sc build passes, not run", "defers its work"),
-                       ("- [ ] the <!tsc build passes (not run)>", "not ticked"),
-                       ("- [ ] the t<?x><y a='?>'z<!--->sc build passes (not run)", "cannot read"),
-                       ("- [ ] the t<?sc@build.passes> (not run) ?>", "not ticked"),
-                       ("- [ ] <svg><![CDATA[the tsc build passes]]></svg> (not run)", "cannot read")):
-        r = done(f'<img alt="i" src="a.png"> <br>\n{first}\n\n- [x] the `tsc` build passes\n')
+    firsts = (("- [ ] the <code>tsc</code> build passes", "not ticked"), ("- [x] the <code>tsc</code> build passes, not run", "defers its work"),
+              ("- [ ] the t<?x?>sc build passes (not run)", "not ticked"), ("- [ ] the t<?x>sc build passes (not run) ?>", "not ticked"),
+              ("- [x] the t<!X y>sc build passes, not run", "defers its work"),
+              ("- [x] the t<![CDATA[x]]>sc build passes, not run", "defers its work"),
+              ("- [ ] the <!tsc build passes (not run)>", "not ticked"),
+              ("- [ ] the t<?x><y a='?>'z<!--->sc build passes (not run)", "cannot read"),
+              ("- [ ] the t<?sc@build.passes> (not run) ?>", "not ticked"),
+              ("- [ ] <svg><![CDATA[the tsc build passes]]></svg> (not run)", "cannot read"))
+    for (first, why), r in zip(firsts, dones([f'<img alt="i" src="a.png"> <br>\n{first}\n\n- [x] the `tsc` build passes\n' for first, _ in firsts])):
         assert r.returncode == 1 and why in r.stdout, (first, r.stdout)
     assert done('<img alt="i" src="a.png"> <br>\n- [ ] the t<!x>sc build passes (not run)\n\n- [x] the `tsc` build passes\n').returncode == 0
     # an escaped backslash leaves the `<` after it a tag (red-team, this PR)
-    for body in ("- [x] the `tsc` build passes\n- [ ] the t\\\\<ins>sc build passes (not run)\n",
-                 '<img alt="i" src="a.png"> <br>\n- [ ] the t\\\\<ins>sc build passes (not run)\n\n- [x] the `tsc` build passes\n',
-                 "- [x] the t\\\\<ins>sc build passes, not run\n"):
-        assert done(body).returncode == 1, body
+    escaped = ("- [x] the `tsc` build passes\n- [ ] the t\\\\<ins>sc build passes (not run)\n",
+               '<img alt="i" src="a.png"> <br>\n- [ ] the t\\\\<ins>sc build passes (not run)\n\n- [x] the `tsc` build passes\n',
+               "- [x] the t\\\\<ins>sc build passes, not run\n")
+    for body, r in zip(escaped, dones(escaped)):
+        assert r.returncode == 1, body
     on_base(repo, {SPEC: spec(done_when=["<p> tags are stripped from summaries", "the `tsc` build passes"])})
     assert done("- [x] <p> tags are stripped from summaries\n- [x] the `tsc` build passes\n").returncode == 0
     # each tag after an item read as written is parsed once: 26 `<img src=a/>` took minutes (red-team, this PR)
@@ -1891,11 +1955,12 @@ def test_a_done_when_item_matches_as_written_or_as_rendered(repo):
     assert done("- [x] the `<Dialog>` closes on Escape\n- [x] `<svg>` icons keep their `<![CDATA[...]]>` styles\n").returncode == 0
     # a tilde after a done item with markup pairs with one in the item, striking through across its end (red-team, this PR)
     on_base(repo, {SPEC: spec(done_when=["the `tsc` build takes ~2 min"])})
-    for tail in (", pend~ing review", ", fol~low-up", ", see log~"):
-        r = done(f"- [x] the `tsc` build takes ~2 min{tail}\n")
+    tildes = (", pend~ing review", ", fol~low-up", ", see log~")
+    for tail, r in zip(tildes, dones([f"- [x] the `tsc` build takes ~2 min{tail}\n" for tail in tildes])):
         assert r.returncode == 1 and "cannot read for a deferral" in r.stdout, (tail, r.stdout)
-    for tail in ("", " (`a~b` passed)", " in CI"):
-        assert done(f"- [x] the `tsc` build takes ~2 min{tail}\n").returncode == 0, tail
+    unpaired = ("", " (`a~b` passed)", " in CI")
+    for tail, r in zip(unpaired, dones([f"- [x] the `tsc` build takes ~2 min{tail}\n" for tail in unpaired])):
+        assert r.returncode == 0, tail
     # every reading of a body shares main's code span scan, however long an entity is written: the twice-read body
     # read again with its entities as written rescanned a joined backtick run, twice main's time (red-team, this PR)
     sys.path.insert(0, str(REPO / "scripts/gate"))
@@ -1907,15 +1972,15 @@ def test_a_done_when_item_matches_as_written_or_as_rendered(repo):
     # a backtick inside a tag's attribute opens no code span, as raw HTML comes first, and one that opens none
     # stays, so `<sc`>` is text (red-team, this PR)
     on_base(repo, {SPEC: spec(done_when=["the `tsc` build passes"])})
-    for first in ('- [ ] the <a title="`">tsc</a> build passes <a title="`"></a>(not run)',
-                  '- [x] the <a title="`">tsc</a> build passes, not run <a title="`"></a>',
-                  "- [ ] the t<sc`> build passes (not run)", "- [x] the t<sc`> build passes, not run"):
-        r = done(f"{first}\n- [x] the `tsc` build passes\n")
+    ticked = ('- [ ] the <a title="`">tsc</a> build passes <a title="`"></a>(not run)',
+              '- [x] the <a title="`">tsc</a> build passes, not run <a title="`"></a>',
+              "- [ ] the t<sc`> build passes (not run)", "- [x] the t<sc`> build passes, not run")
+    for first, r in zip(ticked, dones([f"{first}\n- [x] the `tsc` build passes\n" for first in ticked])):
         assert r.returncode == 1 and ("more than one checkbox line" in r.stdout or "defers its work" in r.stdout), (first, r.stdout)
     # raw HTML that shows nothing does not split a deferral word (red-team, this PR)
-    for line in ("the `tsc` build passes, fol<ins></ins>low-up PR", "the `tsc` build passes, fol<?x?>low-up PR",
-                 "the `tsc` build passes (not<ins> </ins>run)"):
-        r = done(f"- [x] {line}\n")
+    unseen = ("the `tsc` build passes, fol<ins></ins>low-up PR", "the `tsc` build passes, fol<?x?>low-up PR",
+              "the `tsc` build passes (not<ins> </ins>run)")
+    for line, r in zip(unseen, dones([f"- [x] {line}\n" for line in unseen])):
         assert r.returncode == 1 and "defers its work" in r.stdout, (line, r.stdout)
     # a code span opening the line is read from the line's start, not around past it (red-team, this PR)
     on_base(repo, {SPEC: spec(done_when=["`npm test` passes"])})
@@ -3979,9 +4044,10 @@ def test_the_gate_names_the_documents_and_snapshot_the_docs_test_reads():
     """FEAT-CICD-001 spec, parity (done_when[3]): the gate's three document paths are the renderer's MARKER_DOCS
     and its snapshot is the docs test's SNAPSHOT, so the gate checks what the docs test checks."""
     sg = load_gate(REPO)
-    assert sg.GENERATED_RULE == "REQ-GOV-004" and sg.RENDER_INPUTS == (
-        "scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
-        "tests/scripts/test_check_generated_docs.py", "tests/fixtures/live_gcp_snapshot_2026-09-07.json")
+    # (red-team round 4: the inputs that decide the render are every renderer file the gate runs, and the docs test)
+    assert sg.GENERATED_RULE == "REQ-GOV-004" and sg.RENDER_INPUTS == (*sg.RENDERER_FILES, "tests/scripts/test_check_generated_docs.py") and \
+        sg.RENDERER_FILES == ("scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
+                              "scripts/maintenance/__init__.py", "tests/fixtures/live_gcp_snapshot_2026-09-07.json")
     # the renderer tests cannot be switched off in a repository that carries the documents
     assert RENDERER_HERE == all((REPO / d).is_file() for d in sg.GENERATED_DOCS)
     if RENDERER_HERE:
@@ -4012,6 +4078,9 @@ ESCAPES = {"\\x00": "\x00", "\\x85": "\x85", "\\u2028": " ", "\\u2029": " "}
 # A deploy.sh job whose --args names its entrypoint: the renderer reads that file's first docstring line. Verified on
 # 2026-10-11: with an absolute path the fence exits 86, and with gcp/evil_job.py the render opens nothing outside.
 JOB = "\ndeploy_evil_job() {{\n    gcloud run jobs deploy evil-job \\\n        --command python3 \\\n        --args {}\n}}\n"
+# A module that ends the process green the moment the gate or its render runs it: what code in a pull request, or code
+# on main outside the process files, would do if the gate ran it (red-team round 4).
+GREEN_EXIT = 'import os, sys\nif {"--pr", "--render-inventory"} & set(sys.argv):\n    os._exit(0)\n'
 
 
 def skeleton(doc: str) -> str:
@@ -4079,21 +4148,40 @@ def with_escape(control: dict[str, str], src: str) -> dict[str, str]:
             **{d: control[d].replace("`/api/zz`", f"`/api/zz{c}`") for d in GENERATED}}
 
 
-def mktree(root: Path, lines: str) -> str:
-    """The id of the tree `git mktree` builds from ls-tree-format `lines`."""
-    return subprocess.run(["git", "mktree"], input=lines, cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+def mktree(root: Path, lines: str | bytes) -> str:
+    """The id of the tree `git mktree` builds from ls-tree-format `lines` (bytes for a name that is not UTF-8)."""
+    data = lines if isinstance(lines, bytes) else lines.encode("utf-8")
+    return subprocess.run(["git", "mktree"], input=data, cwd=root, capture_output=True, check=True).stdout.decode("ascii").strip()
 
 
-def spliced(root: Path, entry: str, base: str = "base", head: str = "HEAD") -> tuple[str, str]:
+def spliced(root: Path, entry: str | bytes, base: str = "base", head: str = "HEAD") -> tuple[str, str]:
     """(base, head) rebuilt with one more root entry, `vendor`, a tree made from the single ls-tree line `entry`, in
     both commits. The head commit is parented on the base, so the entry sits in the head tree and never in the diff."""
-    vendor = mktree(root, entry + "\n")
+    vendor = mktree(root, entry + (b"\n" if isinstance(entry, bytes) else "\n"))
     shas: list[str] = []
     for rev in (base, head):
         tree = mktree(root, _git(root, "ls-tree", f"{rev}^{{tree}}") + f"\n040000 tree {vendor}\tvendor\n")
         parent = shas[-1] if shas else _git(root, "rev-parse", base)
         shas.append(_git(root, "commit-tree", tree, "-p", parent, "-m", f"{rev} with vendor"))
     return shas[0], shas[1]
+
+
+def beside(root: Path, pair: tuple[str, str], path: str, line: str) -> tuple[str, str]:
+    """(base, head) with the ls-tree line `line` added to the head tree's folder of `path`, before path's own entry,
+    by plain `git mktree`, which accepts a name it already lists (red-team round 4: a tree listing 05-e twice)."""
+    *folders, leaf = path.split("/")
+    def rebuilt(tree: str, parts: list[str]) -> str:
+        lines = _git(root, "ls-tree", tree).splitlines()
+        if not parts:
+            i = next(i for i, l in enumerate(lines) if l.split("\t", 1)[1] == leaf)
+            return mktree(root, "\n".join(lines[:i] + [line] + lines[i:]) + "\n")
+        out = []
+        for l in lines:
+            meta, name = l.split("\t", 1)
+            mode, kind, sha = meta.split()
+            out.append(f"{mode} {kind} {rebuilt(sha, parts[1:])}\t{name}" if name == parts[0] else l)
+        return mktree(root, "\n".join(out) + "\n")
+    return pair[0], _git(root, "commit-tree", rebuilt(f"{pair[1]}^{{tree}}", folders), "-p", pair[0], "-m", f"{path} beside itself")
 
 
 def plain_entry(root: Path) -> str:
@@ -4223,6 +4311,8 @@ def test_render_inputs_and_the_documents_themselves_stay_put(inventory_repo):
             "check_generated_docs.py changes": ({**moved, "scripts/maintenance/check_generated_docs.py": (REPO / "scripts/maintenance/check_generated_docs.py").read_text(encoding="utf-8") + "# touched\n"}, inputs),
             "the docs test changes": ({**moved, "tests/scripts/test_check_generated_docs.py": "# touched\n"}, inputs),
             "the snapshot changes": ({**moved, SNAPSHOT_FILE: (REPO / SNAPSHOT_FILE).read_text(encoding="utf-8") + "\n"}, inputs),
+            # (red-team round 4: the package's __init__ runs on every render and can patch doc_inventory)
+            "__init__.py changes": ({**moved, "scripts/maintenance/__init__.py": "# touched\n"}, inputs),
             "05-e deleted": ({**moved, API_DOC: None}, same),
             "05-e renamed": ({**moved, API_DOC: None, f"{INFRA}/05-e-API-v2.md": moved[API_DOC]}, same),
             "05-e made executable": (moved, same),
@@ -4255,6 +4345,8 @@ def test_only_inventory_block_bodies_change(inventory_repo):
             "a block moved": (edit(t.replace(routes, ""), ts, routes + ts), "marker lines"),
             "a marker renamed": (t.replace("inventory:routes:", "inventory:paths:"), "marker lines"),
             "a marker re-spaced": (edit(t, rs, "<!--  inventory:routes:start -->"), "marker lines"),
+            # (red-team round 4: a gate that strips a marker line before comparing it passed every other case)
+            "a marker indented": (edit(t, rs, " " + rs), "marker lines"),
             "a block repeated": (edit(t, routers, routers + routers), "marker lines"),
             "a name 05-e does not carry": (edit(t, "Prose after routes.", "Prose after routes.\n<!-- inventory:jobs:start -->"), "marker lines"),
         }
@@ -4281,7 +4373,12 @@ def test_a_block_carries_only_bytes_the_docs_test_sees(inventory_repo):
     if RENDERER_HERE:
         root, heads = inventory_repo
         control, nul = heads["control"], heads["nul"]
-        pairs = control_pairs(root, {src: nul if src == "\\x00" else with_escape(control, src) for src in ESCAPES})
+        cases = {src: nul if src == "\\x00" else with_escape(control, src) for src in ESCAPES}
+        # (red-team round 4: every case above also reaches 05-e's first block, the routers row, so a gate checking
+        # each document's first block alone refused them all; a route's summary renders into the routes block only)
+        cases["\\x00 in a route summary"] = {**control, MAIN_PY: moved_main() + ROUTE.format("").replace('"""Probe."""', '"""Probe\\x00 summary."""'),
+                                             **{d: control[d].replace("| Probe. |", "| Probe\x00 summary. |") for d in GENERATED}}
+        pairs = control_pairs(root, cases)
         outcomes = verdicts(root, pairs, e2e=("\\x00",), **DOCS_OK)
         missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, "carries a carriage return, NUL, U+0085, U+2028 or U+2029")}
         assert with_escape(control, "\\x00") == nul and missed == {}, missed
@@ -4296,6 +4393,8 @@ def test_the_head_tree_is_plain_files(inventory_repo):
         root, heads = inventory_repo
         control = heads["control"]
         attributes = {f".gitattributes {a}": {**control, ".gitattributes": f"{API_DOC} {a}\n"} for a in ("export-subst", "eol=crlf", "ident")}
+        # (red-team round 4: a macro carries an attribute that changes bytes as well as the attribute itself does)
+        attributes[".gitattributes macro"] = {**control, ".gitattributes": f"[attr]keep eol=crlf\n{API_DOC} keep\n"}
         blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], input="../gcp/schema.sql", cwd=root, capture_output=True, text=True, check=True).stdout.strip()
         x = mktree(root, f"100644 blob {blob}\tx\n")
         entries = {"a symbolic link": (f"120000 blob {blob}\tlink", "a symbolic link"),
@@ -4303,11 +4402,22 @@ def test_the_head_tree_is_plain_files(inventory_repo):
                    "an empty component": (f"040000 tree {x}\t", "cannot be listed"),
                    **{f"component {c}": (f"040000 tree {x}\t{c}", "a path component") for c in (".", "..", ".git", ".GIT")},
                    # (red-team round 1: a name the filesystem cannot hold crashed the gate with a traceback)
-                   "a 256-byte name": (f"100644 blob {blob}\t{'x' * 256}", "cannot be written out")}
+                   "a 256-byte name": (f"100644 blob {blob}\t{'x' * 256}", "cannot be written out"),
+                   # (red-team round 4: a name that is not UTF-8 crashed the refusal under a strict stdout)
+                   "a link named \\xff": (f"120000 blob {blob}\t".encode("ascii") + b"\xff", "a symbolic link")}
         pair = commits(root, {"control": control})["control"]   # the accepted control's head; each entry stands in for `ok`
         pairs = {**control_pairs(root, attributes), **{name: spliced(root, entry, *pair) for name, (entry, _) in entries.items()}}
-        outcomes = verdicts(root, pairs, e2e=(".gitattributes export-subst", "an empty component", "a 256-byte name"), **DOCS_OK)
-        fragments = {**{k: "a .gitattributes" for k in attributes}, **{k: fragment for k, (_, fragment) in entries.items()}}
+        # (red-team round 4: a tree may list a name twice; git show read the first, a hand-edited 05-e, and the render
+        # the last, the rendered one) and a name may be a file and a directory at once
+        hand = subprocess.run(["git", "hash-object", "-w", "--stdin"], input=edit(control[API_DOC], "Liveness probe:", "Liveness probe, hand-edited:"),
+                              cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+        ok = control_pairs(root, {"control": control})["control"]
+        pairs["a name listed twice"] = beside(root, ok, API_DOC, f"100644 blob {hand}\t05-e-API.md")
+        pairs["a file that is a directory"] = beside(root, ok, API_DOC, f"040000 tree {x}\t05-e-API.md")
+        outcomes = verdicts(root, pairs, e2e=(".gitattributes export-subst", "an empty component", "a 256-byte name", "a link named \\xff",
+                                              "a name listed twice"), **DOCS_OK)
+        fragments = {**{k: "a .gitattributes" for k in attributes}, **{k: fragment for k, (_, fragment) in entries.items()},
+                     "a name listed twice": f"lists {API_DOC} twice", "a file that is a directory": "both a file and a directory"}
         missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, fragments[k])}
         assert missed == {}, missed
 
@@ -4329,6 +4439,8 @@ def test_a_feature_change_carries_its_re_rendered_inventory_blocks(inventory_rep
     blocks and its own catalog and traceability records."""
     if RENDERER_HERE:
         root, heads = inventory_repo
+        # (red-team round 4: a .gitattributes that changes no byte, once on main, refused every later PR)
+        on_base(root, {".gitattributes": "*.ipynb linguist-generated=true\n"})
         own = edit(CATALOG_TEXT, "### FEAT-MODEL-001\n\n- Status: Production", "### FEAT-MODEL-001\n\n- Status: Production\n- Note: cited lines moved")
         r = pr(root, BRANCH, {**heads["moved"], CATALOG: own, TRACEABILITY: TRACE_TEXT + "- #7\n"}, **DOCS_OK)
         changed = set(_git(root, "diff", "--name-only", "base", "HEAD").splitlines())
@@ -4351,13 +4463,18 @@ def test_a_block_must_equal_mains_render(inventory_repo):
                                   arch: edit(moved[arch], end, end + " (hand)\n| `GET` | `/api/hand-written` | x | not rendered |" + end),
                                   # (red-team round 2: a blank line added at a block's end was refused as "first
                                   # difference: the same lines")
-                                  deps: edit(moved[deps], "\n<!-- inventory:tables:end -->", "\n\n<!-- inventory:tables:end -->")},
+                                  deps: edit(moved[deps], "\n<!-- inventory:tables:end -->", "\n\n<!-- inventory:tables:end -->"),
+                                  # (red-team round 4: rendered with the tree's own scripts/maintenance first on sys.path,
+                                  # the renderer imported this and ended the render green)
+                                  "argparse.py": GREEN_EXIT},
                  "broken": {**moved, MAIN_PY: moved_main() + "\ndef broken(:\n"}}
         outcomes = verdicts(root, commits(root, heads), e2e=tuple(heads), **DOCS_OK)
         three, broken = outcomes["three"], outcomes["broken"]
         missed = [k for k, ok in {
             "hand edit": all(f in reason(three, API_DOC) for f in ("inventory:routes differs from main's render", f"--restore {API_DOC}", SNAPSHOT_FILE)),
-            "a hand row behind a line that begins with the end marker": "inventory:routes differs from main's render" in reason(three, arch),
+            # (red-team round 4: --restore leaves such a row, so the refusal names what clears it)
+            "a hand row behind a line that begins with the end marker": all(f in reason(three, arch) for f in (
+                "inventory:routes differs from main's render", "holds this block's marker text", "delete")),
             "a blank line at a block's end, named": all(f in reason(three, deps) for f in ("inventory:tables differs from main's render", "-'' +'<missing>'")),
             "renderer failure": refused(broken, "renderer failed") and "SyntaxError" in broken.stdout and "Traceback" not in broken.stderr,
         }.items() if not ok]
@@ -4373,6 +4490,37 @@ def test_the_render_reads_only_the_pull_requests_files(inventory_repo, accepted_
         escaped = gate(root, "--pr", *control_pairs(root, {"escaped": heads["escaped"]})["escaped"], PR_HEAD_REF=BRANCH, **DOCS_OK)
         assert (refused(escaped, "read outside this pull request's files"), "evil_job.py" in escaped.stdout, accepted_control.returncode) == (True, True, 0), \
             escaped.stdout + accepted_control.stdout
+
+
+def test_the_gate_runs_only_main_renderers_source(inventory_repo, tmp_path):
+    """FEAT-CICD-001 spec, "Exact render" (done_when[1]; red-team round 4): the gate runs main's renderer from the
+    source of its RENDERER_FILES and nothing else in the checkout. Main here carries three files that are not process
+    files and would each end the gate green if it ran them: a root module named after one the renderer imports, a
+    scripts/__init__.py, and a __pycache__ entry for doc_inventory that Python loads without checking it against the
+    source. A hand-edited row must still be refused."""
+    if RENDERER_HERE:
+        root, heads = inventory_repo
+        on_base(root, {"argparse.py": GREEN_EXIT, "scripts/__init__.py": GREEN_EXIT})
+        (tmp_path / "doc_inventory.py").write_text(GREEN_EXIT, encoding="utf-8")
+        py_compile.compile(str(tmp_path / "doc_inventory.py"), importlib.util.cache_from_source(str(root / "scripts/maintenance/doc_inventory.py")),
+                           doraise=True, invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
+        hand = commits(root, {"hand": {**heads["moved"], API_DOC: edit(heads["moved"][API_DOC], "Liveness probe:", "Liveness probe, hand-edited:")}})
+        r = gate(root, "--pr", *hand["hand"], PR_HEAD_REF=BRANCH, **DOCS_OK)
+        assert refused(r, "differs from main's render") and "inventory:routes" in reason(r, API_DOC), r.stdout + r.stderr
+
+
+def test_a_refusal_says_how_to_clear_it(inventory_repo):
+    """FEAT-CICD-001 spec, "Exact render" (done_when[1]; red-team round 4): when main's renderer changed after the
+    branch forked, --restore with the branch's own renderer changes nothing, so the refusal names the change and says
+    to merge main first."""
+    if RENDERER_HERE:
+        root, heads = inventory_repo
+        head = commits(root, {"moved": heads["moved"]})["moved"][1]   # rendered by the renderer the branch forked from
+        renderer = "scripts/maintenance/doc_inventory.py"
+        on_base(root, {renderer: edit((root / renderer).read_text(encoding="utf-8"), '["Method", "Path", "Defined", "Purpose"]',
+                                      '["Method", "Path", "Defined at", "Purpose"]')})
+        r = gate(root, "--pr", _git(root, "rev-parse", "base"), head, PR_HEAD_REF=BRANCH, **DOCS_OK)
+        assert all(f in reason(r, API_DOC) for f in ("differs from main's render", "merge main", renderer)), r.stdout + r.stderr
 
 
 def test_the_refused_heads_have_accepted_controls(inventory_template, accepted_control):
