@@ -145,51 +145,34 @@ def _attach_av_date(df: pd.DataFrame, av_dates: dict) -> int:
 
 # ── AlphaVantage earnings calendar (source of truth for dates) ──────────────
 
-def fetch_alphavantage_earnings(horizon: str = '3month') -> pd.DataFrame:
+def fetch_alphavantage_earnings(horizon: str = '3month', *, dry_run=False, scope=None) -> pd.DataFrame:
     """Fetch AlphaVantage EARNINGS_CALENDAR (CSV) as the date-of-truth source.
 
     AV pulls from SEC filings so its reportDate is authoritative. We use this
     to override EW and UW dates when they disagree. Returns a DataFrame with
     the common earnings_calendar schema.
     """
-    api_key = os.environ.get('AV_API_KEY') or os.environ.get('ALPHA_VANTAGE_API_KEY', '')
+    from gcp.fetchers import _av_ingestion as av
+    api_key=os.environ.get('AV_API_KEY') or os.environ.get('ALPHA_VANTAGE_API_KEY')
     if not api_key:
-        logger.info("AV_API_KEY / ALPHA_VANTAGE_API_KEY not set — skipping AV earnings")
-        return pd.DataFrame()
-
-    url = 'https://www.alphavantage.co/query'
-    params = {'function': 'EARNINGS_CALENDAR', 'horizon': horizon, 'apikey': api_key}
-    logger.info("Fetching AV earnings calendar (horizon=%s)...", horizon)
-
+        raise av.SourceError('credential_missing')
+    capture=av.fetch_capture('EARNINGS_CALENDAR',{'horizon':horizon},api_key,max_bytes=20*1024*1024)
+    # Complete CSV bytes are archived before parsing or business filtering.
+    raw_uri=av.archive_capture(capture,dry_run=dry_run)
     try:
-        r = requests.get(url, params=params, timeout=30)
-        r.raise_for_status()
-    except requests.RequestException as e:
-        logger.warning("AV request failed: %s", e)
-        return pd.DataFrame()
-
-    text = (r.text or '').strip()
-    if not text:
-        logger.warning("AV earnings returned empty body")
-        return pd.DataFrame()
-
-    # AV returns JSON error envelopes or "Information"/"Error Message" strings
-    # when rate-limited or key invalid, instead of CSV
-    lower_head = text[:200].lower()
-    if text.startswith('{') or 'error message' in lower_head or 'information' in lower_head or 'rate limit' in lower_head:
-        logger.warning("AV earnings returned non-CSV response: %s", text[:200])
-        return pd.DataFrame()
-
+        text=capture.body.decode('utf-8-sig')
+    except UnicodeError:
+        raise av.SourceError('calendar_encoding') from None
+    if not text.strip() or text.lstrip().startswith('{'):
+        raise av.SourceError('calendar_non_csv')
     from io import StringIO
     try:
         df = pd.read_csv(StringIO(text))
     except Exception as e:
-        logger.warning("AV CSV parse failed: %s", e)
-        return pd.DataFrame()
+        raise av.SourceError("calendar_csv_parse") from None
 
-    if df.empty or 'symbol' not in df.columns or 'reportDate' not in df.columns:
-        logger.warning("AV CSV missing expected columns, got: %s", list(df.columns))
-        return pd.DataFrame()
+    if 'symbol' not in df.columns or 'reportDate' not in df.columns:
+        raise av.SourceError('calendar_required_columns')
 
     logger.info("AV returned %d earnings announcements", len(df))
 
@@ -226,6 +209,27 @@ def fetch_alphavantage_earnings(horizon: str = '3month') -> pd.DataFrame:
         result = result.sort_values('date').reset_index(drop=True)
         logger.info("AV total: %d records across %d unique tickers",
                      len(result), result['ticker'].nunique())
+    result.attrs.update(capture=capture,raw_uri=raw_uri)
+    if not dry_run:
+        receipt=av.capture_record(capture,raw_uri,len(records),source_count=len(df))
+        av.isolated_sql(av.capture_sql([receipt]),{'captures':av.canonical([receipt])},timeout_s=8)
+        run=av.Run('fetch-earnings-calendar',scope or _resolve_scope())
+        native_symbols=sorted(set(str(t).upper() for t in df['symbol']))
+        valid_records=result.to_dict('records')
+        manifest={'schema_version':'av_catalyst_run/v1','pipeline_scope':run.mode,
+          'source_function':'EARNINGS_CALENDAR','coverage_scope':'av_raw_horizon',
+          'scope_hash':av.digest(native_symbols),'universe_count':len(native_symbols),'configured_universe':native_symbols,
+          'native_csv_rows':len(df),'requested_count':len(df),'verified_count':len(records),'excluded_count':len(df)-len(records),
+          'pending_count':len(df)-len(records),'coverage_complete':len(df)==len(records),
+          'source_window_start':str(df['reportDate'].min()) if not df.empty else None,
+          'source_window_end':str(df['reportDate'].max()) if not df.empty else None,
+          'complete_through':capture.retrieved_at.isoformat() if len(df)==len(records) else None,
+          'source_revision_ids':[capture.observation_id],'source_digest':capture.body_sha256,
+          'predecessor_execution_name':None,'captured_receipts':[receipt],
+          'raw_uri':raw_uri,'raw_sha256':capture.body_sha256,'source_retrieved_at':capture.retrieved_at.isoformat(),
+          'source_all_coverage':'unavailable','business_subset_coverage':'not_assessed',**av.code_identity()}
+        published=av.publish_manifest(run,manifest)
+        result.attrs.update(source_manifest_id=published['source_manifest_id'],source_manifest_known_at=published['source_manifest_known_at'])
     return result
 
 
@@ -1459,6 +1463,7 @@ def main():
              "reporters; 'weekly' targets the next Mon-Fri (Sunday setup).",
     )
 
+    parser.add_argument("--dry-run",action="store_true",help="Read sources without GCS/SQL writes")
     args = parser.parse_args()
 
     fetcher = EarningsCalendarFetcher()
@@ -1477,7 +1482,7 @@ def main():
     # ── AlphaVantage (FIRST — used as date-of-truth reference, NOT override) ──
     av_dates: dict = {}  # ticker → (date, time)
     if args.source in ("all", "av"):
-        av_df = fetch_alphavantage_earnings(horizon=args.av_horizon)
+        av_df = fetch_alphavantage_earnings(horizon=args.av_horizon,dry_run=args.dry_run,scope=_resolve_scope(args.scope))
         if not av_df.empty:
             # AV rows: their av_earnings_date equals their own earnings_date
             av_df['av_earnings_date'] = av_df['date']
@@ -1585,6 +1590,9 @@ def main():
     # Persist un-deduped frame to Cloud SQL so each source lands as its own
     # row — required for the brief's per-source tier scoring.
     try:
+        if args.dry_run:
+            print(f"[dry-run] {len(all_rows_df)} calendar rows; no SQL/GCS writes")
+            return
         n = persist_to_cloud_sql(all_rows_df)
         if n:
             print(f"Persisted {n} rows to Cloud SQL earnings_calendar table")

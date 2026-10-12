@@ -1058,3 +1058,12 @@ class TestTickersReportingInWindowTimezone:
         assert 'BETWEEN CURRENT_DATE' not in sql, (
             "Naked CURRENT_DATE re-introduces the timezone bug (Codex P2 #488)."
         )
+
+
+def test_split_windows_are_rejected_without_point_in_time_factors():
+    for ratio in [.5,2/3]:
+        bars=_bars([(date(2026,10,7),100,100,100,100),
+                    (date(2026,10,8),100,100,100,100),
+                    (date(2026,10,9),100*ratio,100*ratio,100*ratio,100*ratio)])
+        bars['split_coefficient']=[1,1,1/ratio]
+        assert compute_reaction(_eps(date(2026,10,8)),bars,'AMC') is None

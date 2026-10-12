@@ -620,154 +620,95 @@ def get_catalyst_snapshot(
         7, description="Lookback window for news/SEC/insider events (default 7d)"
     ),
 ):
-    """Unified point-in-time catalyst view for a ticker.
+    """Catalyst snapshot with qualified section availability.
 
-    Note on naming: the canonical path is /api/catalysts/asof/{ticker}.
-    The /snapshot/ alias is preserved for back-compat — the word
-    'snapshot' otherwise refers to the etf_options_snapshots table
-    (live intraday options chain capture, currently paused), and they
-    are unrelated.
-
-    Returns *only* data that would have been visible on or before `as_of`,
-    pulled from news_sentiment, sec_filings, insider_transactions,
-    earnings_calendar, earnings_history, and market_data_daily. Use this
-    to answer "what would have appeared on the catalyst screen for AVGO
-    on April 7?".
-
-    Window: news/SEC/insider events from `as_of - window_days` through
-    `as_of`. Earnings calendar is forward-looking (the next 30 days from
-    `as_of`). Earnings history is the most recent quarterly result on or
-    before `as_of`.
+    Explicit historical requests use permanent earnings vintages and suppress
+    unversioned sources. Live source errors never masquerade as empty results.
     """
-    from datetime import date as _date
-    from gcp.database import query_to_dataframe
+    import math
+    from datetime import timezone
+    from zoneinfo import ZoneInfo
+    from gcp.database import query_to_dataframe_strict
+    from lib.earnings_history import exchange_date_cutoff, read_earnings_asof
 
     tk = ticker.upper()
+    historical = as_of is not None
     try:
-        cutoff = _date.fromisoformat(as_of) if as_of else _date.today()
+        cutoff = exchange_date_cutoff(as_of) if historical else datetime.now(timezone.utc)
     except ValueError:
-        raise HTTPException(status_code=400, detail="as_of must be YYYY-MM-DD")
-    window_start = cutoff - timedelta(days=window_days)
+        raise HTTPException(status_code=400, detail="as_of must be YYYY-MM-DD") from None
+    if not 0 <= window_days <= 90:
+        raise HTTPException(status_code=400, detail="window_days must be in 0..90")
+    session_date = cutoff.astimezone(ZoneInfo("America/New_York")).date()
+    start = session_date - timedelta(days=window_days)
+    availability = {}
 
-    def _df_to_records(df):
-        if df is None or df.empty:
+    def records(df):
+        rows = df.astype(object).where(df.notna(), None).to_dict("records")
+        return [{k: None if isinstance(v, float) and not math.isfinite(v) else v
+                 for k,v in row.items()} for row in rows]
+
+    def section(name, query):
+        if historical:
+            availability[name] = {"status": "unavailable", "reason": "historical_provenance_unavailable",
+                                  "cutoff": cutoff.isoformat()}
             return []
-        # pandas NaN/NaT aren't JSON-encodable; replace with None so
-        # FastAPI's json.dumps doesn't 500 on the response.
-        import math
-        recs = df.where(df.notna(), None).to_dict(orient="records")
-        for r in recs:
-            for k, v in list(r.items()):
-                if isinstance(v, float) and math.isnan(v):
-                    r[k] = None
-        return recs
-
-    def _safe(fn):
         try:
-            return fn()
+            result = records(query_to_dataframe_strict(query, {"tk": tk, "cutoff": cutoff, "start": start}, timeout_s=5))
+            availability[name] = {"status": "ok" if result else "empty", "cutoff": cutoff.isoformat(),
+                                  "provenance": "live_unversioned"}
+            return result
         except Exception as exc:
-            logger.warning("snapshot section failed: %s", exc)
+            availability[name] = {"status": "error", "reason": "database_read_failed",
+                                  "error_class": type(exc).__name__, "cutoff": cutoff.isoformat()}
+            logger.warning("snapshot_section_failed section=%s error_class=%s", name, type(exc).__name__)
             return []
 
-    news = _safe(lambda: _df_to_records(query_to_dataframe(
-        """
-        SELECT published_ts, title, url, source,
-               overall_sentiment_label, sentiment_score, relevance_score,
-               topics
-        FROM news_sentiment
-        WHERE ticker = :tk
-          AND published_ts <= CAST(:cutoff AS timestamptz) + INTERVAL '23 hours 59 minutes'
-          AND published_ts >= CAST(:start AS timestamptz)
-        ORDER BY published_ts DESC
-        LIMIT 50
-        """,
-        {"tk": tk, "cutoff": str(cutoff), "start": str(window_start)},
-    )))
-
-    sec_filings = _safe(lambda: _df_to_records(query_to_dataframe(
-        """
-        SELECT filing_date, form, items, primary_doc, accession_number
-        FROM sec_filings
-        WHERE ticker = :tk
-          AND filing_date <= CAST(:cutoff AS date)
-          AND filing_date >= CAST(:start AS date)
-        ORDER BY filing_date DESC
-        """,
-        {"tk": tk, "cutoff": str(cutoff), "start": str(window_start)},
-    )))
-
-    insider = _safe(lambda: _df_to_records(query_to_dataframe(
-        """
-        SELECT transaction_date, executive, title, transaction_type,
-               shares, share_price, transaction_value
-        FROM insider_transactions
-        WHERE ticker = :tk
-          AND transaction_date <= CAST(:cutoff AS date)
-          AND transaction_date >= CAST(:start AS date)
-        ORDER BY transaction_date DESC, transaction_value DESC NULLS LAST
-        LIMIT 50
-        """,
-        {"tk": tk, "cutoff": str(cutoff), "start": str(window_start)},
-    )))
-
-    next_earnings = _safe(lambda: _df_to_records(query_to_dataframe(
-        """
-        SELECT earnings_date, earnings_time, eps_estimate
-        FROM earnings_calendar
-        WHERE ticker = :tk
-          AND earnings_date >= CAST(:cutoff AS date)
-          AND earnings_date <= CAST(:cutoff AS date) + INTERVAL '90 days'
-        ORDER BY earnings_date
-        LIMIT 1
-        """,
-        {"tk": tk, "cutoff": str(cutoff)},
-    )))
-
-    last_earnings = _safe(lambda: _df_to_records(query_to_dataframe(
-        """
-        SELECT reported_date, fiscal_date_ending, reported_eps,
-               estimated_eps, surprise, surprise_pct
-        FROM earnings_history
-        WHERE ticker = :tk
-          AND reported_date <= CAST(:cutoff AS date)
-        ORDER BY reported_date DESC
-        LIMIT 4
-        """,
-        {"tk": tk, "cutoff": str(cutoff)},
-    )))
-
-    price_context = _safe(lambda: _df_to_records(query_to_dataframe(
-        """
-        SELECT date, open, high, low, close, volume,
-               rsi_14, ema_20, sma_200
-        FROM market_data_daily
-        WHERE ticker = :tk
-          AND date <= CAST(:cutoff AS date)
-          AND date >= CAST(:cutoff AS date) - INTERVAL '10 days'
-        ORDER BY date DESC
-        """,
-        {"tk": tk, "cutoff": str(cutoff)},
-    )))
-
-    return {
-        "ticker": tk,
-        "as_of": str(cutoff),
-        "window_start": str(window_start),
-        "window_days": window_days,
-        "news": news,
-        "sec_filings": sec_filings,
-        "insider_transactions": insider,
-        "next_earnings": next_earnings[0] if next_earnings else None,
-        "earnings_history_recent": last_earnings,
-        "price_context_daily": price_context,
-        "counts": {
-            "news_articles": len(news),
-            "sec_filings": len(sec_filings),
-            "insider_transactions": len(insider),
-            "earnings_history": len(last_earnings),
-            "price_bars": len(price_context),
-        },
-    }
+    news = section("news", """
+      SELECT published_ts,title,url,source,overall_sentiment_label,sentiment_score,relevance_score,topics
+      FROM news_sentiment WHERE ticker=:tk AND published_ts<=:cutoff
+      AND published_ts>=CAST(:start AS date) ORDER BY published_ts DESC LIMIT 50
+    """)
+    sec = section("sec_filings", """
+      SELECT filing_date,form,items,primary_doc,accession_number FROM sec_filings
+      WHERE ticker=:tk AND filing_date<=(:cutoff AT TIME ZONE 'America/New_York')::date
+      AND filing_date>=:start ORDER BY filing_date DESC LIMIT 100
+    """)
+    insider = section("insider_transactions", """
+      SELECT transaction_date,executive,title,transaction_type,shares,share_price,transaction_value
+      FROM insider_transactions WHERE ticker=:tk
+      AND transaction_date<=(:cutoff AT TIME ZONE 'America/New_York')::date
+      AND transaction_date>=:start ORDER BY transaction_date DESC LIMIT 50
+    """)
+    upcoming = section("next_earnings", """
+      SELECT earnings_date,earnings_time,eps_estimate FROM earnings_calendar WHERE ticker=:tk
+      AND earnings_date>=(:cutoff AT TIME ZONE 'America/New_York')::date
+      AND earnings_date<=(:cutoff AT TIME ZONE 'America/New_York')::date+90
+      ORDER BY earnings_date LIMIT 1
+    """)
+    prices = section("price_context_daily", """
+      SELECT date,open,high,low,close,volume,rsi_14,ema_20,sma_200 FROM market_data_daily
+      WHERE ticker=:tk AND date<=(:cutoff AT TIME ZONE 'America/New_York')::date
+      AND date>=(:cutoff AT TIME ZONE 'America/New_York')::date-10 ORDER BY date DESC LIMIT 11
+    """)
+    try:
+        vintage = read_earnings_asof(tk, cutoff, limit=4)
+        last_earnings = vintage.pop("records")
+        availability["earnings_history_recent"] = vintage
+    except Exception as exc:
+        last_earnings = []
+        availability["earnings_history_recent"] = {"status": "error", "reason": "database_read_failed",
+            "error_class": type(exc).__name__, "cutoff": cutoff.isoformat()}
+        logger.warning("snapshot_section_failed section=earnings_history error_class=%s", type(exc).__name__)
+    return {"ticker": tk, "as_of": str(session_date), "knowledge_cutoff": cutoff.isoformat(),
+            "window_start": str(start), "window_days": window_days,
+            "news": news, "sec_filings": sec, "insider_transactions": insider,
+            "next_earnings": upcoming[0] if upcoming else None,
+            "earnings_history_recent": last_earnings, "price_context_daily": prices,
+            "availability": availability,
+            "counts": {"news_articles": len(news), "sec_filings": len(sec),
+                       "insider_transactions": len(insider), "earnings_history": len(last_earnings),
+                       "price_bars": len(prices)}}
 
 
 @router.get("/api/catalysts/types", response_model=CatalystTypesResponse, response_model_exclude_unset=True)

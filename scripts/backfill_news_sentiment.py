@@ -69,6 +69,11 @@ def fetch_av_news(ticker: str, api_key: str, limit: int = 50) -> list[dict]:
     return out
 
 
+def prepare_news_rows(frame):
+    from gcp.fetchers.fetch_news_sentiment import prepare_news_rows as prepare
+    return prepare(frame)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tickers", default="SPY,IWM,QQQ", help="Comma-separated tickers")
@@ -97,8 +102,8 @@ def main():
             continue
 
         df = pd.DataFrame(rows)
-        df = df.drop_duplicates(subset=["ticker", "published_ts", "url"])
-        n = upsert_dataframe(df, "news_sentiment", ["ticker", "published_ts", "url"])
+        from gcp.fetchers.fetch_news_sentiment import persist_to_cloud_sql
+        n = persist_to_cloud_sql(prepare_news_rows(df))
         log.info("%s: wrote %d rows to news_sentiment", t, n)
         total_rows += n
 

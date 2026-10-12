@@ -695,29 +695,16 @@ def build_dataframe(matched_rows: list[dict]) -> pd.DataFrame:
     return df
 
 
-def write_to_cloud_sql(df: pd.DataFrame) -> int:
-    """Step 6: Upsert DataFrame to news_sentiment table."""
-    if df.empty:
-        return 0
-    try:
-        from gcp.database import upsert_dataframe, is_cloud_sql_configured
-        if not is_cloud_sql_configured():
-            logger.warning(
-                "Cloud SQL not configured — set CLOUD_SQL_CONNECTION_NAME, "
-                "DB_USER, DB_PASS, DB_NAME env vars"
-            )
-            return 0
-        n = upsert_dataframe(df, "news_sentiment", conflict_cols=["ticker", "published_ts", "url"])
-        logger.info("Step 6 WRITE: upserted %d rows to news_sentiment", n)
-        return n
-    except Exception as exc:
-        logger.error("Cloud SQL write failed (%d rows): %s", len(df), exc)
-        return 0
+def prepare_news_rows(frame):
+    from gcp.fetchers.fetch_news_sentiment import prepare_news_rows as prepare
+    return prepare(frame)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# MAIN
-# ═══════════════════════════════════════════════════════════════════════════
+def write_to_cloud_sql(df):
+    """RSS shares economic identity writes; it never certifies AV windows."""
+    from gcp.fetchers.fetch_news_sentiment import persist_to_cloud_sql
+    return persist_to_cloud_sql(prepare_news_rows(df)) if not df.empty else 0
+
 
 def main():
     try:
