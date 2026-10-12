@@ -2,7 +2,7 @@
 feat_id: FEAT-CATALYST-001
 spec: docs/superpowers/specs/2026-10-12-feat-catalyst-001-av-catalysts.md
 branch: fix/feat-catalyst-001-av-catalysts
-pr: null
+pr: 1430
 status: ready
 ---
 
