@@ -80,5 +80,5 @@ In the SAME PR, before requesting final review:
 
 - Never write implementation code before a spec has `status: approved`.
 - Never mark a `done_when` item "future-work", "non-blocking", or "follow-up". Either finish it or remove it from the spec with the user's explicit consent, and say so in the PR.
-- Never edit `docs/product/` from a feature branch except the one FEAT row or record and the traceability entry this PR owns, the `07-MODEL-REGISTRY.md` rows for models this spec changes, and the `generated/model-registry.json` that step 4 regenerates.
+- Never edit `docs/product/` from a feature branch except the one FEAT row or record and the traceability entry this PR owns, the `07-MODEL-REGISTRY.md` rows for models this spec changes, the `generated/model-registry.json` that step 4 regenerates, and, in stocks, the inventory blocks of `infrastructure/05-a-ARCHITECTURE.md`, `05-c-DATA_DEPENDENCIES.md` and `05-e-API.md` re-rendered by `scripts/maintenance/doc_inventory.py` when the change moves what they cite (REQ-GOV-004: the blocks only, exactly as main's renderer renders them, never in the same PR as a change to the renderer, `check_generated_docs.py`, its test or its snapshot).
 - Never let a second agent (Codex, Lovable, a webhook-triggered session) push to a branch this plan owns. One plan, one author.
