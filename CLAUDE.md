@@ -307,11 +307,12 @@ Code Review row reads Completed for the same SHA, and it is where that run's
 findings are read. The rule counts Codex's code review only: the
 review-triggering events are the PR opened for review, the draft marked ready,
 an `@codex review` comment and a push of new commits, and a review object
-counts only if it is not `CHANGES_REQUESTED`. An `@codex review` comment is
-one posted by an account other than chatgpt-codex-connector[bot], timed by its
-`created_at`; one the Code Review row has not picked up within the window is
-reported once on the PR and is not answered with a request, and the owner
-decides whether to merge without it. The Code Review row's own time, the
+counts only if it is not `CHANGES_REQUESTED`. An `@codex review` comment is a
+comment whose body begins with `@codex review`, posted by an account other
+than chatgpt-codex-connector[bot] and timed by its `created_at`; one the Code
+Review row has not picked up within roughly 3 minutes of its `created_at` is
+reported once on the PR, is not answered with a request, and no longer counts
+as a review-triggering event. The Code Review row's own time, the
 `<relative-time datetime=…>` inside it, is what must follow the latest of
 those events: the comment's `updated_at` does not stand in for it, since an
 update to either row moves it while the Code Review row can still show the
