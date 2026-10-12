@@ -4191,8 +4191,10 @@ def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) ->
             # raw bytes decoded without newline translation, so line i is git's line i (Tree.read folds a lone CR)
             before_text = (Tree(merge_base).raw(path) or b"").decode("utf-8", "replace")
             after_text = (ch.tree.raw(path) or b"").decode("utf-8", "replace")
-            # headings and rows are counted as GitHub shows them, a lone CR breaking the line, as the uniqueness
-            # check and the close-out read them (red-team round 5: one joined to the own row by lone CRs was missed)
+            # headings and rows are counted with line breaks folded (a CRLF or a lone CR ends a line, as split_lines
+            # reads it), as check_record_uniqueness counts them in Tree.read's text (red-team round 5: one joined to the
+            # own row by lone CRs was missed). The close-out reads the record through visible(), which this count does
+            # not follow; that gap is stocks#1428.
             shown_before, shown_after = "\n".join(split_lines(before_text)), "\n".join(split_lines(after_text))
             had, has = feat_headings(shown_before, feat_id), feat_headings(shown_after, feat_id)
             if any(before and after > before for before, after in zip(had, has)) or (any(had) and has[0] > had[0]):
