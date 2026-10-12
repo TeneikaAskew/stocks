@@ -519,7 +519,9 @@ the containment check). Advances done_when[1].
 
 **Interfaces:**
 - Produces: `head_entries(head: str) -> list[tuple[str, str, str]]`. It parses
-  `git_bytes("ls-tree", "-r", "-z", "--full-tree", head)` into `(mode, oid, os.fsdecode(path))`.
+  `git_bytes("ls-tree", "-r", "-t", "-z", "--full-tree", head)` into `(mode, oid, os.fsdecode(path))`, trees included
+  (mode `040000`), so that `order_refusal` sees every name, an empty tree's too; the files are the other entries
+  (red-team round 7).
 - Produces: `tree_refusal(entries: list[tuple[str, str, str]]) -> str | None`. It names the first problem, in one of
   these forms:
   - `f"a symbolic link ({path})"` for mode `120000`
@@ -533,7 +535,18 @@ the containment check). Advances done_when[1].
     (`"*.md"eol=crlf`, a quoted macro name); a NUL ends the line; only a space, tab, CR or LF separates. git reads
     a .gitattributes from the tree's blob, as checkout and export do, which stops the file at the first NUL and keeps
     a leading byte order mark, and from the working tree, which reads on past a NUL line and drops the mark; the text
-    rule reads it both ways.
+    rule reads it both ways. A valued form that changes no byte on this tree (`* text=auto eol=lf`) is still refused,
+    the conservative direction the spec's prose takes (it refuses any `.gitattributes`); the refusal says "refused
+    even where it changes no byte here", and which valued forms are neutral is not modelled (red-team round 7). The
+    refusal ends with how to clear it: unset the attribute (`-text`, `!eol`) or remove the line, or, when that line is
+    already in the same file on main, that it is not this pull request's: land a feature/ or fix/ change on main that
+    unsets it (a `.gitattributes` is code, which the gate refuses on docs/ and chore/ branches, checked on
+    2026-10-12), then merge main and re-run.
+  - `order_refusal(listing)` (red-team round 7): the first entry out of git's order, comparing each path as bytes
+    with a slash after a tree's name, as git sorts a tree. git fsck refuses such a tree (treeNotSorted), and
+    `git check-attr --source` stops looking for a `.gitattributes` at the first name sorting after it, so it reads
+    none where a checkout, from its sorted index, applies one. It runs after `tree_refusal`, which names a duplicate
+    or a file that is also a directory first.
   - `f"a tree that lists {path} twice"` and `f"{dir} as both a file and a directory"` (red-team round 4)
   - `f"a path component {c!r} ({path})"` for a component that is empty or, lower-cased, is `.`, `..` or `.git`
 - Produces: `materialize(entries: list[tuple[str, str, str]], into: pathlib.Path) -> None`. It runs one
@@ -546,12 +559,16 @@ the containment check). Advances done_when[1].
     it breaks: "the render reads plain files only", or for a `.gitattributes` that sets or gives a value to a
     byte-changing attribute, "the render reads blobs as committed, and the docs test reads them checked out" (red-team
     round 5: it said both).
-  - Then `applied_attributes(head, entries)`, when the tree holds a `.gitattributes`: `git check-attr --source=<head>
-    -a --stdin -z` over every path in the tree, run in an empty bare repository of its own that borrows this one's
+  - Then `applied_attributes(head, listing)`, when the tree holds a `.gitattributes`: `git check-attr --source=<head>
+    -a --stdin -z` over every file in the tree, run in an empty bare repository of its own that borrows this one's
     objects (`objects/info/alternates`), with no system, global or user attributes file, so neither this repository's
-    `info/attributes` nor its config is read. A byte-changing attribute set or valued there is refused the same way,
-    naming it, the path and "as git check-attr reads it"; a git failure refuses with "the head tree's attributes
-    cannot be read". Both rules run (red-team round 6): check-attr is git's own reading, so it covers any way the
+    `info/attributes` nor its config is read. check-attr answers "no attributes" for an object it cannot read, so one
+    `cat-file --batch-check` there first confirms it reads the head commit, its tree, each tree holding a
+    `.gitattributes` and each `.gitattributes` blob (red-team round 7). `head_entries`' ls-tree and `tree_refusal`'s
+    `cat-file --batch` run before it in this repository, so a partial clone has fetched those objects from its
+    promisor remote, which the borrowed store has none of. A byte-changing attribute set or valued there is refused
+    the same way, naming it, the path and "as git check-attr reads it", with the same remedy; a git failure, or an
+    object it cannot read, refuses with "the head tree's attributes cannot be read". Both rules run (red-team round 6): check-attr is git's own reading, so it covers any way the
     text rule could still part from git's parser, while the text rule also reads the working-tree way that check-attr,
     reading the blob, does not (a line past a NUL, a byte order mark), and names the file and the word that set it.
   - Ruling: git itself cannot list an empty component. `ls-tree -r` exits 128 with
@@ -857,7 +874,9 @@ done_when[5].
   - A Capacity section:
     - Volume: the head tree, 1,514 files and 186 MiB on 498d0ad1, written once per PR that changes a generated
       document.
-    - Velocity: one `ls-tree`, one `cat-file --batch` and one child process per such PR, and none otherwise.
+    - Velocity: one `ls-tree`, one `cat-file --batch` and one child process per such PR, and none otherwise. When the
+      head tree holds a `.gitattributes`, also one `git init`, one `cat-file --batch-check` and one `check-attr` in
+      the borrowed repository: 34 ms (30 to 40 ms, measured 2026-10-12 on main's 1,666 entries); without one, none.
     - Wall-clock: about 40 s (37.2 s render and 1.9 s write, measured) inside the gate job's 300 s. The suite adds about
       60 s locally, about 47 s in CI, to registry-check's 231 s of 300 s.
     - Cost: a public repository on standard runners, so $0 × runs/day × 30 = $0.

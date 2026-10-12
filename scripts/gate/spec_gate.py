@@ -3896,10 +3896,15 @@ def document_refusal(doc: str, base: Tree, now: tuple[str, bytes] | None, inv: t
     return None
 
 
+TREE_MODE = "040000"
+
+
 def head_entries(head: str) -> list[tuple[str, str, str]]:
-    """(mode, object id, path) for every file in head's tree, from `git ls-tree -r -z`: no quoting, no attributes."""
+    """(mode, object id, path) for every entry of head's tree, from `git ls-tree -r -t -z`: no quoting, no attributes.
+    Each tree is listed too (mode TREE_MODE), before its entries, so that order_refusal sees every name, an empty
+    tree's included; the files are the entries of any other mode."""
     entries = []
-    for record in git_bytes("ls-tree", "-r", "-z", "--full-tree", head).split(b"\0"):
+    for record in git_bytes("ls-tree", "-r", "-t", "-z", "--full-tree", head).split(b"\0"):
         if record:
             meta, _, path = record.partition(b"\t")
             mode, _kind, oid = meta.decode("ascii").split()
@@ -3933,6 +3938,12 @@ def blobs(oids: list[str]) -> list[bytes]:
 # .gitattributes on main shut the allowance for every later pull request).
 BYTE_ATTRIBUTES = frozenset(("text", "eol", "crlf", "ident", "filter", "working-tree-encoding", "export-subst"))
 ATTRIBUTE_READING = "the render reads blobs as committed, and the docs test reads them checked out"
+# Set or valued, a byte-changing attribute is refused whether or not it changes a byte of this tree: which valued forms
+# are neutral here (text=auto, eol=lf on a tree of LF files) is not modelled (red-team round 7, policy note 2).
+NEUTRAL_TOO = "refused even where it changes no byte here"
+UNSET_REMEDY = "Unset it (as -text or !eol) or remove the line, then re-run"
+MAIN_REMEDY = ("land a feature/ or fix/ change on main that unsets it or removes the line (a .gitattributes is code, which docs/ "
+               "and chore/ branches cannot carry), then merge main into this branch and re-run")
 ATTR_WORD = re.compile(rb"[^ \t\r\n]*")   # attr.c's `blank` is a space, tab, CR or LF: a vertical tab separates nothing
 C_ESCAPES = dict(zip(b'abfnrtv\\"', b'\a\b\f\n\r\t\v\\"'))
 UTF8_BOM = b"\xef\xbb\xbf"
@@ -3986,45 +3997,76 @@ def line_attributes(line: bytes) -> list[bytes]:
 def attributes_refusal(text: bytes) -> str | None:
     """The first word of a .gitattributes that sets a BYTE_ATTRIBUTES attribute or gives it a value, in an attribute
     line or a macro definition, or None. Unsetting one (`-text`, which `binary` does) or leaving it unspecified
-    (`!eol`) only takes a conversion away, so checkout writes the bytes as committed (red-team round 5). Each line
-    ends at its first NUL. git reads the file in two ways (red-team round 6): from the tree's blob, as checkout and
-    export do, which stops the whole file at the first NUL and keeps a leading byte order mark in the first pattern,
-    and from the working tree, which reads on past a line holding a NUL and drops the mark. Both are read here: every
-    line, and the first one also without its mark."""
+    (`!eol`) only takes a conversion away, so checkout writes the bytes as committed (red-team round 5). The lines
+    are attribute_lines'."""
+    hit = attribute_hit(text)
+    return hit[0] if hit else None
+
+
+def attribute_lines(text: bytes) -> list[bytes]:
+    """The lines git may read in a .gitattributes, each ended at its first NUL. git reads the file in two ways
+    (red-team round 6): from the tree's blob, as checkout and export do, which stops the whole file at the first NUL
+    and keeps a leading byte order mark in the first pattern, and from the working tree, which reads on past a line
+    holding a NUL and drops the mark. Both are read here: every line, and the first one also without its mark."""
     lines = [line.split(b"\0", 1)[0] for line in text.split(b"\n")]
     if lines[0].startswith(UTF8_BOM):
         lines.append(lines[0][len(UTF8_BOM):])
-    for line in lines:
+    return lines
+
+
+def attribute_hit(text: bytes) -> tuple[str, bytes] | None:
+    """(the word, its line as attribute_lines reads it) for attributes_refusal's first word, or None."""
+    for line in attribute_lines(text):
         for word in line_attributes(line):
             if not word.startswith((b"-", b"!")) and word.split(b"=", 1)[0].decode("ascii", "replace").lower() in BYTE_ATTRIBUTES:
-                return word.decode("utf-8", "replace")
+                return word.decode("utf-8", "replace"), line
     return None
 
 
-def applied_attributes(head: str, entries: list[tuple[str, str, str]]) -> str | None:
+def applied_attributes(head: str, listing: list[tuple[str, str, str]]) -> str | None:
     """The first BYTE_ATTRIBUTES attribute, set or valued, that git itself applies to a file of head's tree, as
     `git check-attr --source` reads head's .gitattributes files, or None; None at once when the tree holds none.
-    It runs in an empty repository of its own that borrows this one's objects, with no system, global or user
-    attributes file, so the repository's info/attributes and its config, which are not the pull request's, are not
-    read. It reads the blob as checkout does, which is why attributes_refusal runs too: a working-tree read applies a
-    line past a NUL that this one never sees. Raises GitFailed when git cannot answer."""
-    if not any(path.split("/")[-1].lower() == ".gitattributes" for _mode, _oid, path in entries):
+    `listing` is head_entries' listing, trees included. It runs in an empty repository of its own that borrows this
+    one's objects, with no system, global or user attributes file, so the repository's info/attributes and its
+    config, which are not the pull request's, are not read. It reads the blob as checkout does, which is why
+    attributes_refusal runs too: a working-tree read applies a line past a NUL that this one never sees. check-attr
+    answers "no attributes" for an object it cannot read (red-team round 7), so one cat-file --batch-check first
+    confirms that the borrowed store reads the head commit, its tree, each tree holding a .gitattributes and each
+    .gitattributes blob. Raises GitFailed when git cannot answer or cannot read one of them."""
+    files = [(mode, oid, path) for mode, oid, path in listing if mode != TREE_MODE]
+    attributes = [(path, oid) for _mode, oid, path in files if path.split("/")[-1].lower() == ".gitattributes"]
+    if not attributes:
         return None
+    trees = {path: oid for mode, oid, path in listing if mode == TREE_MODE}
+    folders = sorted({"/".join(path.split("/")[:i]) for path, _oid in attributes for i in range(1, path.count("/") + 1)})
+    if unlisted := [f for f in folders if f not in trees]:
+        raise GitFailed(f"git ls-tree listed no tree for {', '.join(unlisted)}, which holds a .gitattributes")
+    wanted = [(head, "commit"), (f"{head}^{{tree}}", "tree"), *((trees[f], "tree") for f in folders), *((oid, "blob") for _path, oid in attributes)]
     with tempfile.TemporaryDirectory(prefix="spec-gate-attributes-") as tmp:
         env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
         env |= {"GIT_DIR": tmp, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_ATTR_NOSYSTEM": "1"}
-        step = "init"
-        r = subprocess.run(["git", "init", "-q", "--bare", "--template=", f"--object-format={'sha256' if len(head) == 64 else 'sha1'}", tmp],
-                           env=env, capture_output=True)
-        if r.returncode == 0:
-            (pathlib.Path(tmp) / "objects/info").mkdir(parents=True, exist_ok=True)
-            (pathlib.Path(tmp) / "objects/info/alternates").write_bytes(os.fsencode(git_path("objects").resolve()) + b"\n")
-            step = "check-attr"
-            r = subprocess.run(["git", "-c", f"core.attributesFile={os.devnull}", "check-attr", f"--source={head}", "-a", "--stdin", "-z"],
-                               input=b"".join(os.fsencode(path) + b"\0" for _mode, _oid, path in entries), env=env, capture_output=True, cwd=tmp)
-    fields = r.stdout.split(b"\0")[:-1]
-    if r.returncode != 0 or len(fields) % 3:
-        raise GitFailed(f"git {step} failed ({r.returncode}): {r.stderr.decode('utf-8', 'replace').strip() or 'no output'}")
+        def borrowed(step: str, args: list[str], data: bytes | None = None) -> bytes:
+            r = subprocess.run(["git", *args], input=data, env=env, capture_output=True, cwd=tmp)
+            if r.returncode != 0:
+                raise GitFailed(f"git {step} failed ({r.returncode}): {r.stderr.decode('utf-8', 'replace').strip() or 'no output'}")
+            return r.stdout
+        borrowed("init", ["init", "-q", "--bare", "--template=", f"--object-format={'sha256' if len(head) == 64 else 'sha1'}", tmp])
+        (pathlib.Path(tmp) / "objects/info").mkdir(parents=True, exist_ok=True)
+        (pathlib.Path(tmp) / "objects/info/alternates").write_bytes(os.fsencode(git_path("objects").resolve()) + b"\n")
+        # head_entries' ls-tree and tree_refusal's cat-file --batch have already run in this repository: in a partial
+        # clone they fetched any tree or .gitattributes blob still on the promisor remote, which the borrowed store,
+        # having no remote, never would. So they run first, and this batch-check confirms the borrowed store reads them.
+        found = borrowed("cat-file --batch-check", ["cat-file", "--batch-check"], "".join(f"{name}\n" for name, _kind in wanted).encode("ascii"))
+        lines = found.decode("utf-8", "replace").split("\n")[:-1]
+        unread = [name for (name, kind), line in zip(wanted, lines) if not re.fullmatch(rf"[0-9a-f]+ {kind} [0-9]+", line)]
+        if unread or len(lines) != len(wanted):
+            raise GitFailed(f"git check-attr cannot read {', '.join(unread) or 'all it needs'} in the objects it borrows, and would "
+                            "read no attributes there")
+        out = borrowed("check-attr", ["-c", f"core.attributesFile={os.devnull}", "check-attr", f"--source={head}", "-a", "--stdin", "-z"],
+                       b"".join(os.fsencode(path) + b"\0" for _mode, _oid, path in files))
+    fields = out.split(b"\0")[:-1]
+    if len(fields) % 3:
+        raise GitFailed(f"git check-attr answered {len(fields)} fields, not path, attribute and value triples")
     for path, name, value in zip(fields[0::3], fields[1::3], fields[2::3]):
         if name.decode("utf-8", "replace") in BYTE_ATTRIBUTES and value not in (b"unset", b"unspecified"):
             shown = name if value == b"set" else name + b"=" + value
@@ -4032,10 +4074,26 @@ def applied_attributes(head: str, entries: list[tuple[str, str, str]]) -> str | 
     return None
 
 
-def tree_refusal(entries: list[tuple[str, str, str]]) -> str | None:
+def order_refusal(listing: list[tuple[str, str, str]]) -> str | None:
+    """The first entry of head_entries' listing, trees included, that is out of git's order, or None. git sorts a
+    tree's entries by name, a tree's name read with a slash after it, so a recursive listing of sorted trees runs in
+    the byte order of those keys; git fsck refuses any other order (treeNotSorted). git check-attr --source looks a
+    .gitattributes up in such a tree and stops at the first name that sorts after it, so it reads none where a
+    checkout, reading its sorted index, applies one (red-team round 7). A name listed twice is tree_refusal's."""
+    keys = [os.fsencode(path) + (b"/" if mode == TREE_MODE else b"") for mode, _oid, path in listing]
+    for i in range(1, len(keys)):
+        if keys[i] < keys[i - 1]:
+            return (f"a tree whose entries are not in git's order ({listing[i][2]} listed after {listing[i - 1][2]}), which git "
+                    "fsck refuses; git check-attr misses a .gitattributes in such a tree that a checkout reads")
+    return None
+
+
+def tree_refusal(entries: list[tuple[str, str, str]], base: "Tree | None" = None) -> str | None:
     """The first entry the render cannot read as a plain file, or that the docs test would read in other bytes, named
     with the reading it breaks, or None. A name listed twice is refused outright: `git show` reads the first entry and a checkout the last
-    (red-team round 4), and a name that is a file and a directory at once is too."""
+    (red-team round 4), and a name that is a file and a directory at once is too. A .gitattributes refusal says how to
+    clear it, and, when its line is already in that file on `base` (main), that the line is not this pull request's
+    (red-team round 7, policy note 3)."""
     plain = "; the render reads plain files only"
     seen: set[str] = set()
     for _mode, _oid, path in entries:
@@ -4057,8 +4115,11 @@ def tree_refusal(entries: list[tuple[str, str, str]]) -> str | None:
             if c == "" or c.lower() in (".", "..", ".git"):
                 return f"a path component {c!r} ({path}){plain}"
     for (path, _oid), text in zip(attributes, blobs([oid for _, oid in attributes])):
-        if token := attributes_refusal(text):
-            return f"a .gitattributes that changes bytes on checkout or export ({path}: {token}); {ATTRIBUTE_READING}"
+        if hit := attribute_hit(text):
+            word, line = hit
+            on_main = base is not None and line in attribute_lines(base.raw(path) or b"")
+            remedy = f"That line is already on main, so it is not this pull request's: {MAIN_REMEDY}" if on_main else UNSET_REMEDY
+            return f"a .gitattributes that can change bytes on checkout or export ({path}: {word}), {NEUTRAL_TOO}; {ATTRIBUTE_READING}. {remedy}"
     return None
 
 
@@ -4238,19 +4299,24 @@ def generated_doc_refusals(ch: Change, merge_base: str, head: str, docs: list[st
     # The head tree is listed once: the per-document rules, the tree rules and the render all read that listing, so
     # no rule reads a document the render does not (red-team round 4: a tree listing 05-e twice).
     try:
-        entries = head_entries(head)
+        listing = head_entries(head)
     except GitFailed as e:
         return [generated_refusal(", ".join(docs), f"the head tree cannot be listed ({e})")]
-    if why := tree_refusal(entries):
+    entries = [(mode, oid, path) for mode, oid, path in listing if mode != TREE_MODE]
+    if why := tree_refusal(entries, ch.base) or order_refusal(listing):
         return [generated_refusal(", ".join(docs), f"the head tree holds {why}")]   # why says which reading it breaks
-    # git's own reading of the head's attributes, beside tree_refusal's reading of their text (red-team round 6)
+    # git's own reading of the head's attributes, beside tree_refusal's reading of their text (red-team round 6); it
+    # runs after tree_refusal, whose cat-file --batch has fetched the .gitattributes blobs in a partial clone
     try:
-        applied = applied_attributes(head, entries)
+        applied = applied_attributes(head, listing)
     except GitFailed as e:
         return [generated_refusal(", ".join(docs), f"the head tree's attributes cannot be read ({e})")]
     if applied:
-        return [generated_refusal(", ".join(docs), f"the head tree holds a .gitattributes that changes bytes on checkout or "
-                                                   f"export ({applied}, as git check-attr reads it); {ATTRIBUTE_READING}")]
+        return [generated_refusal(", ".join(docs), f"the head tree holds a .gitattributes that can change bytes on checkout or "
+                                                   f"export ({applied}, as git check-attr reads it), {NEUTRAL_TOO}; {ATTRIBUTE_READING}. "
+                                                   "Find the line that sets it (git check-attr -a -- <path> names the attribute), then "
+                                                   "unset it (as -text or !eol) or remove it; if that line is already on main, it is not "
+                                                   f"this pull request's: {MAIN_REMEDY}")]
     listed = {path: (mode, oid) for mode, oid, path in entries}
     present = [doc for doc in docs if doc in listed]
     now = {doc: (listed[doc][0], text) for doc, text in zip(present, blobs([listed[doc][1] for doc in present]))}
