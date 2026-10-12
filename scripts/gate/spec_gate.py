@@ -3852,9 +3852,23 @@ def split_inventory(raw: bytes, names: tuple[str, ...], start: str, end: str,
     return outside, blocks
 
 
-def document_refusal(doc: str, base: Tree, now: tuple[str, bytes] | None, inv: types.ModuleType, cgd: types.ModuleType) -> str | None:
-    """The first of REQ-GOV-004's per-document rules that `doc` breaks, as a reason, or None. `now` is the head's
-    (mode, bytes) for doc from the one listing of the head tree that the render writes out (red-team round 4)."""
+def restore_command(doc: str) -> str:
+    return f"python3 -m scripts.maintenance.doc_inventory --snapshot {RENDER_SNAPSHOT} --restore {doc}"
+
+
+def merge_main(moved: list[str], doc: str) -> str:
+    """The remedy when main changed the render inputs `moved` after the branch forked: the branch's own renderer
+    and markers cannot produce what main's expect (red-team rounds 4 and 5)."""
+    return (f"main changed {summarize(moved)} after this branch forked, so merge main into the branch, then re-render "
+            f"with: {restore_command(doc)}")
+
+
+def document_refusal(doc: str, base: Tree, now: tuple[str, bytes] | None, inv: types.ModuleType, cgd: types.ModuleType,
+                     moved: list[str]) -> str | None:
+    """The first of REQ-GOV-004's per-document rules that `doc` breaks, as a reason, or None. `base` is the merge
+    base, and `now` is the head's (mode, bytes) for doc from the one listing of the head tree that the render writes
+    out (red-team round 4). `moved` names the render inputs main changed since the merge base: when main's markers no
+    longer read the merge base's document, the reason says to merge main (red-team round 5)."""
     before, after = base.raw(doc), (now[1] if now else None)
     if before is None or after is None or base.mode(doc) != now[0]:
         return "is deleted, renamed or changes file mode; only its inventory block bodies may change"
@@ -3862,14 +3876,14 @@ def document_refusal(doc: str, base: Tree, now: tuple[str, bytes] | None, inv: t
         return "adds carriage returns (CRLF line endings); commit it with LF line endings"
     names = tuple(cgd.EXPECTED_MARKERS[doc])
     sides = {}
-    for side, raw in (("on main: ", before), ("", after)):
+    for side, raw in (("on the merge base: ", before), ("", after)):
         try:
             sides[side] = split_inventory(raw, names, inv.MARKER_START, inv.MARKER_END, cgd._MARKER_LINE)
         except ValueError as e:
-            return f"{side}{e}"
-    (was, was_blocks), (now, now_blocks) = sides["on main: "], sides[""]
+            return f"{side}{e}" + (f". {merge_main(moved, doc)}" if side and moved else "")
+    (was, was_blocks), (now, now_blocks) = sides["on the merge base: "], sides[""]
     if [b[0] for b in was_blocks] != [b[0] for b in now_blocks]:
-        return (f"marker lines: the blocks appear in another order than on main "
+        return (f"marker lines: the blocks appear in another order than on the merge base "
                 f"({', '.join(b[0] for b in now_blocks)} against {', '.join(b[0] for b in was_blocks)})")
     if [line for _, line in was] != [line for _, line in now]:
         i = next((i for i, (a, b) in enumerate(zip(was, now)) if a[1] != b[1]), min(len(was), len(now)))
@@ -3920,45 +3934,49 @@ BYTE_ATTRIBUTES = frozenset(("text", "eol", "crlf", "ident", "filter", "working-
 
 
 def attributes_refusal(text: bytes) -> str | None:
-    """The first token of a .gitattributes that names a BYTE_ATTRIBUTES attribute, set, unset or given a value, in an
-    attribute line or a macro definition, or None. Read token by token past the first on each line (the pattern, or
-    the macro's name), so a quoted pattern holding spaces at worst refuses a harmless file."""
+    """The first token of a .gitattributes that sets a BYTE_ATTRIBUTES attribute or gives it a value, in an attribute
+    line or a macro definition, or None. Unsetting one (`-text`, which `binary` does) or leaving it unspecified
+    (`!eol`) only takes a conversion away, so checkout writes the bytes as committed (red-team round 5). Read token by
+    token past the first on each line (the pattern, or the macro's name), so a quoted pattern holding spaces at worst
+    refuses a harmless file."""
     for line in text.decode("utf-8", "replace").split("\n"):
         tokens = line.strip().split()
         if not tokens or tokens[0].startswith("#"):
             continue
         for token in tokens[1:] + ([tokens[0][len("[attr]"):]] if tokens[0].startswith("[attr]") else []):
-            if token.lstrip("-!").split("=", 1)[0].lower() in BYTE_ATTRIBUTES:
+            if not token.startswith(("-", "!")) and token.split("=", 1)[0].lower() in BYTE_ATTRIBUTES:
                 return token
     return None
 
 
 def tree_refusal(entries: list[tuple[str, str, str]]) -> str | None:
-    """The first entry the render cannot read as a plain file, or that the docs test would read in other bytes, named,
-    or None. A name listed twice is refused outright: `git show` reads the first entry and a checkout the last
+    """The first entry the render cannot read as a plain file, or that the docs test would read in other bytes, named
+    with the reading it breaks, or None. A name listed twice is refused outright: `git show` reads the first entry and a checkout the last
     (red-team round 4), and a name that is a file and a directory at once is too."""
+    plain = "; the render reads plain files only"
     seen: set[str] = set()
     for _mode, _oid, path in entries:
         if path in seen:
-            return f"a tree that lists {path} twice"
+            return f"a tree that lists {path} twice{plain}"
         seen.add(path)
     for _mode, _oid, path in entries:   # in the listing's order, so the same collision is named on every run
         parts = path.split("/")
         if dirs := [d for d in ("/".join(parts[:i]) for i in range(1, len(parts))) if d in seen]:
-            return f"{dirs[0]} as both a file and a directory"
+            return f"{dirs[0]} as both a file and a directory{plain}"
     attributes = [(path, oid) for mode, oid, path in entries if path.split("/")[-1].lower() == ".gitattributes" and mode in ("100644", "100755")]
     for mode, _oid, path in entries:
         parts = path.split("/")
         if mode == "120000":
-            return f"a symbolic link ({path})"
+            return f"a symbolic link ({path}){plain}"
         if mode == "160000":
-            return f"a submodule ({path})"
+            return f"a submodule ({path}){plain}"
         for c in parts:
             if c == "" or c.lower() in (".", "..", ".git"):
-                return f"a path component {c!r} ({path})"
+                return f"a path component {c!r} ({path}){plain}"
     for (path, _oid), text in zip(attributes, blobs([oid for _, oid in attributes])):
         if token := attributes_refusal(text):
-            return f"a .gitattributes that changes bytes on checkout or export ({path}: {token}); the render reads blobs as committed"
+            return (f"a .gitattributes that changes bytes on checkout or export ({path}: {token}); the render reads blobs "
+                    "as committed, and the docs test reads them checked out")
     return None
 
 
@@ -4000,6 +4018,7 @@ RENDER_PREIMPORTS = ("inspect",)   # ast.get_docstring imports it lazily; behind
 RENDER_FAILED = 1   # the renderer raised; Python's own exit code for an uncaught exception
 RENDER_DIFFERS = 3
 RENDER_MISPLACED = 4
+RENDER_UNISOLATED = 5   # started without -I: PYTHONPATH, the user site and the script's folder would reach the render
 RENDER_ESCAPED = 86
 PSEUDO_FILE = re.compile(r"<[^/\\\x00]*>")   # "<unknown>", "<string>": names compile gives source it was handed as a string
 
@@ -4048,6 +4067,10 @@ def render_inventory(tree: str, docs: list[str]) -> int:
     on main's tree): as differing_blocks reads it (current != fresh, the docs test's rule), and as the exact
     body between its exact marker lines (red-team round 1: differing_blocks ends a block at the first end
     marker, even one that only begins a line, so it passed a hand-written row behind such a line)."""
+    if not sys.flags.isolated:
+        # (red-team round 5: nothing noticed -I dropped from the command that starts this child)
+        os.write(2, b"the render child was started without -I\n")
+        return RENDER_UNISOLATED
     inv, cgd = load_renderer()
     for m in (inv, cgd):
         if pathlib.Path(m.__file__ or "").resolve().parent != (ROOT / "scripts/maintenance").resolve():
@@ -4107,18 +4130,18 @@ def render_refusals(entries: list[tuple[str, str, str]], docs: list[str], moved:
     if r.returncode == RENDER_DIFFERS:
         found = [line.split("\t", 3) for line in r.stdout.split("\n") if line]
         if found and all(len(f) == 4 and f[2] in ("render", "marker") for f in found):
-            restore = lambda doc: f"python3 -m scripts.maintenance.doc_inventory --snapshot {RENDER_SNAPSHOT} --restore {doc}"
-            how = {"render": lambda doc: (f"main changed {summarize(moved)} after this branch forked, so merge main into the branch, "
-                                          f"then re-render with: {restore(doc)}" if moved else f"Re-render with: {restore(doc)}"),
+            how = {"render": lambda doc: merge_main(moved, doc) if moved else f"Re-render with: {restore_command(doc)}",
                    "marker": lambda doc: ("A line in it holds this block's marker text, which ends the block early for the "
                                           f"renderer, so --restore would leave it: delete that line and anything after it up "
-                                          f"to the block's end marker, then re-render with: {restore(doc)}")}
+                                          f"to the block's end marker, then re-render with: {restore_command(doc)}")}
             return [generated_refusal(doc, f"inventory:{name} differs from main's render; first difference: {diff}. {how[kind](doc)}")
                     for doc, name, kind, diff in found]
     elif r.returncode == RENDER_ESCAPED:
         return [generated_refusal(every, f"main's renderer read outside this pull request's files ({last})")]
     elif r.returncode == RENDER_MISPLACED:
         return [generated_refusal(every, f"main's renderer was imported from outside this checkout ({last})")]
+    elif r.returncode == RENDER_UNISOLATED:
+        return [generated_refusal(every, f"the render did not run isolated ({last})")]
     return [generated_refusal(every, f"main's renderer failed on this pull request's files (exit {r.returncode}): {last}")]
 
 
@@ -4137,14 +4160,14 @@ def generated_doc_refusals(ch: Change, merge_base: str, head: str, docs: list[st
     except GitFailed as e:
         return [generated_refusal(", ".join(docs), f"the head tree cannot be listed ({e})")]
     if why := tree_refusal(entries):
-        return [generated_refusal(", ".join(docs), f"the head tree holds {why}; the render reads plain files only")]
+        return [generated_refusal(", ".join(docs), f"the head tree holds {why}")]   # why says which reading it breaks
     listed = {path: (mode, oid) for mode, oid, path in entries}
     present = [doc for doc in docs if doc in listed]
     now = {doc: (listed[doc][0], text) for doc, text in zip(present, blobs([listed[doc][1] for doc in present]))}
     base = Tree(merge_base)
-    if errs := [generated_refusal(doc, why) for doc in docs if (why := document_refusal(doc, base, now.get(doc), inv, cgd))]:
-        return errs
     moved = git_out("diff", "--name-only", "--no-renames", merge_base, ch.base.rev, "--", *RENDER_INPUTS).splitlines()
+    if errs := [generated_refusal(doc, why) for doc in docs if (why := document_refusal(doc, base, now.get(doc), inv, cgd, moved))]:
+        return errs
     return render_refusals(entries, docs, moved)
 
 
@@ -4167,14 +4190,17 @@ def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) ->
             # raw bytes decoded without newline translation, so line i is git's line i (Tree.read folds a lone CR)
             before_text = (Tree(merge_base).raw(path) or b"").decode("utf-8", "replace")
             after_text = (ch.tree.raw(path) or b"").decode("utf-8", "replace")
-            had, has = feat_headings(before_text, feat_id), feat_headings(after_text, feat_id)
+            # headings and rows are counted as GitHub shows them, a lone CR breaking the line, as the uniqueness
+            # check and the close-out read them (red-team round 5: one joined to the own row by lone CRs was missed)
+            shown_before, shown_after = "\n".join(split_lines(before_text)), "\n".join(split_lines(after_text))
+            had, has = feat_headings(shown_before, feat_id), feat_headings(shown_after, feat_id)
             if any(before and after > before for before, after in zip(had, has)) or (any(had) and has[0] > had[0]):
                 # solyra#72 r4127814359: a heading added beside an existing row would carry the Status and
                 # Last reviewed the close-out prefers while the row keeps saying unknown
                 errs.append(f"{path}: adds a second heading or row for {feat_id}; a capability has one record, "
                             "so extend the existing one rather than opening another")
                 continue
-            if heading_levels(before_text, feat_id) and heading_levels(before_text, feat_id) != heading_levels(after_text, feat_id):
+            if heading_levels(shown_before, feat_id) and heading_levels(shown_before, feat_id) != heading_levels(shown_after, feat_id):
                 errs.append(f"{path}: changes the level of the {feat_id} heading; a promoted heading would swallow the "
                             "capabilities below it, so the record keeps its level")
                 continue

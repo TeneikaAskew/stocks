@@ -4058,14 +4058,23 @@ def test_the_catalog_scope_check_sees_every_changed_line(repo):
             "### FEAT-DATA-001\n\n- Status: Production", "### FEAT-DATA-001\n\n- Status: Retired")},
         "U+2028 in the own record": {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + " " * 4).replace("### FEAT-DATA-001\n", added)},
         "lone CRs in the own record": {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + "\r" * 4).replace("### FEAT-DATA-001\n", added)}})
+    # (red-team round 5: the heading count read the catalog as git numbers its lines, so a heading joined to the own
+    # row by lone carriage returns, which GitHub shows as a second record beside the row, was not counted)
+    # (the own row last, as in solyra's row-only catalog, so the record it carries ends the table)
+    row, data = "| [FEAT-MODEL-001](#feat-model-001) | Models | Production | unknown | none |", "| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |"
+    row_only = edit(CATALOG_TEXT.replace("### FEAT-MODEL-001\n\n- Status: Production\n\n", "", 1), f"{row}\n{data}", f"{data}\n{row}")
+    record =["", "### FEAT-MODEL-001", "", "| Field | Value |", "|---|---|", "| Status | Production |", f"| Last reviewed | {TODAY} |"]
+    pairs |= commits(repo, {"a heading behind lone CRs in the own row": {**CODE, CATALOG: edit(row_only, row, "\r".join([row, *record]))}},
+                     base=commits(repo, {"base": {CATALOG: row_only}})["base"][1])
     outcomes = verdicts(repo, pairs, e2e=("a removed '---' line", "a NUL in the own Status"), **ok)
     # (red-team round 1: with diff.interHunkContext in the config git reads, main numbered the second hunk inside the own record)
     _git(repo, "config", "diff.interHunkContext", "5")
     outcomes["context lines from git's config"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + "\n- Note: mine").replace(
         "### FEAT-DATA-001\n\n- Status: Production", "### FEAT-DATA-001\n\n- Status: Retired")}, **ok)
     _git(repo, "config", "--unset", "diff.interHunkContext")
-    missed = {k: r.stdout[-300:] for k, r in outcomes.items() if r.returncode != 1
-              or not ("lines outside FEAT-MODEL-001's row and record change" in r.stdout or "no text hunk" in r.stdout)}
+    expected = {"a heading behind lone CRs in the own row": ("adds a second heading or row for FEAT-MODEL-001",)}
+    missed = {k: r.stdout[-300:] for k, r in outcomes.items() if r.returncode != 1 or not any(
+        f in r.stdout for f in expected.get(k, ("lines outside FEAT-MODEL-001's row and record change", "no text hunk")))}
     assert missed == {}, missed
 
 
@@ -4123,6 +4132,13 @@ JOB = "\ndeploy_evil_job() {{\n    gcloud run jobs deploy evil-job \\\n        -
 # A module that ends the process green the moment the gate or its render runs it: what code in a pull request, or code
 # on main outside the process files, would do if the gate ran it (red-team round 4).
 GREEN_EXIT = 'import os, sys\nif {"--pr", "--render-inventory"} & set(sys.argv):\n    os._exit(0)\n'
+# The stdlib's inspect, which the gate imports (dataclasses does), as a module on a PYTHONPATH would replace it: in the
+# render child it ends the process green, and anywhere else it loads the real inspect in its place (red-team round 5).
+PLANTED_INSPECT = ('import importlib.machinery, importlib.util, os, sys\n'
+                   'if "--render-inventory" in sys.argv:\n    os._exit(0)\n'
+                   'here = os.path.dirname(os.path.abspath(__file__))\n'
+                   'spec = importlib.machinery.PathFinder.find_spec("inspect", [p for p in sys.path if os.path.abspath(p or os.curdir) != here])\n'
+                   'real = importlib.util.module_from_spec(spec)\nsys.modules["inspect"] = real\nspec.loader.exec_module(real)\n')
 
 
 def skeleton(doc: str) -> str:
@@ -4434,7 +4450,7 @@ def test_the_head_tree_is_plain_files(inventory_repo):
     if RENDERER_HERE:
         root, heads = inventory_repo
         control = heads["control"]
-        attributes = {f".gitattributes {a}": {**control, ".gitattributes": f"{API_DOC} {a}\n"} for a in ("export-subst", "eol=crlf", "ident")}
+        attributes = {f".gitattributes {a}": {**control, ".gitattributes": f"{API_DOC} {a}\n"} for a in ("export-subst", "eol=crlf", "ident", "text")}
         # (red-team round 4: a macro carries an attribute that changes bytes as well as the attribute itself does)
         attributes[".gitattributes macro"] = {**control, ".gitattributes": f"[attr]keep eol=crlf\n{API_DOC} keep\n"}
         blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], input="../gcp/schema.sql", cwd=root, capture_output=True, text=True, check=True).stdout.strip()
@@ -4460,7 +4476,9 @@ def test_the_head_tree_is_plain_files(inventory_repo):
                                               "a name listed twice"), **DOCS_OK)
         fragments = {**{k: "a .gitattributes" for k in attributes}, **{k: fragment for k, (_, fragment) in entries.items()},
                      "a name listed twice": f"lists {API_DOC} twice", "a file that is a directory": "both a file and a directory"}
-        missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, fragments[k])}
+        # (red-team round 5: a .gitattributes refusal said why twice) each says it once
+        missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, fragments[k])
+                  or k in attributes and r.stdout.count("the render reads") != 1}
         assert missed == {}, missed
 
 
@@ -4481,12 +4499,19 @@ def test_a_feature_change_carries_its_re_rendered_inventory_blocks(inventory_rep
     blocks and its own catalog and traceability records."""
     if RENDERER_HERE:
         root, heads = inventory_repo
-        # (red-team round 4: a .gitattributes that changes no byte, once on main, refused every later PR)
-        on_base(root, {".gitattributes": "*.ipynb linguist-generated=true\n"})
+        # (red-team round 4: a .gitattributes that changes no byte, once on main, refused every later PR; round 5: nor
+        # does one that unsets an attribute or leaves it unspecified, directly, as `binary` does, or through a macro)
+        on_base(root, {".gitattributes": "*.ipynb linguist-generated=true\n*.png -text\n*.md !eol\n*.py -ident\n*.bin -filter\n"
+                                         "*.jpg binary\n[attr]asis -text -eol -crlf\n*.dat asis\n"})
         own = edit(CATALOG_TEXT, "### FEAT-MODEL-001\n\n- Status: Production", "### FEAT-MODEL-001\n\n- Status: Production\n- Note: cited lines moved")
         r = pr(root, BRANCH, {**heads["moved"], CATALOG: own, TRACEABILITY: TRACE_TEXT + "- #7\n"}, **DOCS_OK)
         changed = set(_git(root, "diff", "--name-only", "base", "HEAD").splitlines())
         assert r.returncode == 0 and changed == {MAIN_PY, *GENERATED, CATALOG, TRACEABILITY}, r.stdout + r.stderr
+        # (red-team round 5: no test ran a fix/ branch, which the allowance covers as it covers feature/)
+        fix, fix_plan = "fix/feat-model-001-moved-lines", "docs/superpowers/plans/2026-09-02-moved-lines.md"
+        r = judged(root, [({fix_plan: plan(branch=fix)}, heads["moved"],
+                           {**DOCS_OK, "PR_HEAD_REF": fix, "PR_BODY": body(plan_path=fix_plan) + "\n\n## Capacity\nn/a: x\n"})])[0]
+        assert r.returncode == 0 and f"branch={fix}" in r.stdout, r.stdout + r.stderr
 
 
 def test_a_block_must_equal_mains_render(inventory_repo):
@@ -4547,8 +4572,16 @@ def test_the_gate_runs_only_main_renderers_source(inventory_repo, tmp_path):
         py_compile.compile(str(tmp_path / "doc_inventory.py"), importlib.util.cache_from_source(str(root / "scripts/maintenance/doc_inventory.py")),
                            doraise=True, invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
         hand = commits(root, {"hand": {**heads["moved"], API_DOC: edit(heads["moved"][API_DOC], "Liveness probe:", "Liveness probe, hand-edited:")}})
-        r = gate(root, "--pr", *hand["hand"], PR_HEAD_REF=BRANCH, **DOCS_OK)
+        # (red-team round 5: nothing noticed the render child losing -I) and a PYTHONPATH that the child must ignore
+        # holds a module the gate imports, which ends the render green there and stands in for the real one elsewhere
+        (tmp_path / "planted").mkdir()
+        (tmp_path / "planted/inspect.py").write_text(PLANTED_INSPECT, encoding="utf-8")
+        r = gate(root, "--pr", *hand["hand"], PR_HEAD_REF=BRANCH, PYTHONPATH=str(tmp_path / "planted"), **DOCS_OK)
         assert refused(r, "differs from main's render") and "inventory:routes" in reason(r, API_DOC), r.stdout + r.stderr
+        # and the child renders nothing unless it was started isolated
+        bare = subprocess.run([sys.executable, "-B", str(root / "scripts/gate/spec_gate.py"), "--render-inventory", str(tmp_path), API_DOC],
+                              cwd=tmp_path, capture_output=True, text=True)
+        assert bare.returncode == load_gate(root).RENDER_UNISOLATED and bare.stdout == "", bare.stdout + bare.stderr
 
 
 def test_a_refusal_says_how_to_clear_it(inventory_repo):
@@ -4563,6 +4596,14 @@ def test_a_refusal_says_how_to_clear_it(inventory_repo):
                                       '["Method", "Path", "Defined at", "Purpose"]')})
         r = gate(root, "--pr", _git(root, "rev-parse", "base"), head, PR_HEAD_REF=BRANCH, **DOCS_OK)
         assert all(f in reason(r, API_DOC) for f in ("differs from main's render", "merge main", renderer)), r.stdout + r.stderr
+        # (red-team round 5: when main changes the blocks a document holds after the fork, the merge base no longer
+        # reads under main's markers; that refusal named the merge base "main" and gave no remedy)
+        markers = "scripts/maintenance/check_generated_docs.py"
+        on_base(root, {markers: edit((root / markers).read_text(encoding="utf-8"), 'API: ("routers", "routes"),', 'API: ("routers", "routes", "services"),'),
+                       API_DOC: (root / API_DOC).read_text(encoding="utf-8") + "\n<!-- inventory:services:start -->\n\n<!-- inventory:services:end -->\n"})
+        r = gate(root, "--pr", _git(root, "rev-parse", "base"), head, PR_HEAD_REF=BRANCH, **DOCS_OK)
+        assert all(f in reason(r, API_DOC) for f in ("on the merge base", "no block for services", "merge main", markers)) \
+            and "on main" not in r.stdout, r.stdout + r.stderr
 
 
 def test_the_refused_heads_have_accepted_controls(inventory_template, accepted_control):

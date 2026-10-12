@@ -433,8 +433,9 @@ Spec: § Design, "Exact markers" and "Only block bodies change". Advances done_w
   1. **Line endings.** When `b"\r" in head` and `b"\r" not in base`, the reason is
      `"adds carriage returns (CRLF line endings); commit it with LF line endings"`. This is Review Focus 4.
   2. **Markers.** `split_inventory` runs on both sides with `names = cgd.EXPECTED_MARKERS[doc]`. A `ValueError` becomes
-     the reason, prefixed `on main: ` when it is the base side that fails. Differing name orders give the reason
-     `f"marker lines: the blocks appear in another order than on main ({...})"`.
+     the reason, prefixed `on the merge base: ` when it is the base side that fails, and followed by the merge-main
+     remedy when main changed a render input after the fork (red-team round 5). Differing name orders give the reason
+     `f"marker lines: the blocks appear in another order than on the merge base ({...})"`.
   3. **Outside bytes.** The outside contents must be equal. Otherwise the reason is
      `f"changes line {n} outside its inventory blocks"`, where `n` is the head line number of the first difference.
      This is Review Focus 2.
@@ -523,7 +524,11 @@ the containment check). Advances done_when[1].
   these forms:
   - `f"a symbolic link ({path})"` for mode `120000`
   - `f"a submodule ({path})"` for mode `160000`
-  - `f"a .gitattributes ({path})"` when the last component, lower-cased, is `.gitattributes`
+  - `f"a .gitattributes that changes bytes on checkout or export ({path}: {token})"` when a file whose last
+    component, lower-cased, is `.gitattributes` sets one of `BYTE_ATTRIBUTES` (text, eol, crlf, ident, filter,
+    working-tree-encoding, export-subst) or gives it a value, directly or in a macro definition. Unsetting one or
+    leaving it unspecified (`-text`, `binary`, `!eol`) changes no byte and passes (red-team rounds 4 and 5).
+  - `f"a tree that lists {path} twice"` and `f"{dir} as both a file and a directory"` (red-team round 4)
   - `f"a path component {c!r} ({path})"` for a component that is empty or, lower-cased, is `.`, `..` or `.git`
 - Produces: `materialize(entries: list[tuple[str, str, str]], into: pathlib.Path) -> None`. It runs one
   `git cat-file --batch` (cwd `ROOT`) and writes each blob's exact bytes to `into / path`. Before writing, it raises
@@ -531,7 +536,10 @@ the containment check). Advances done_when[1].
 - In `generated_doc_refusals`, after the per-document rules pass:
   - When `head_entries` raises `GitFailed`, the result is one refusal for `", ".join(docs)` with reason
     `f"the head tree cannot be listed ({e})"`.
-  - When `tree_refusal` finds a problem, the reason is `f"the head tree holds {why}; the render reads plain files only"`.
+  - When `tree_refusal` finds a problem, the reason is `f"the head tree holds {why}"`, where `why` ends with the reading
+    it breaks: "the render reads plain files only", or for a `.gitattributes` that sets or gives a value to a
+    byte-changing attribute, "the render reads blobs as committed, and the docs test reads them checked out" (red-team
+    round 5: it said both).
   - Ruling: git itself cannot list an empty component. `ls-tree -r` exits 128 with
     `fatal: empty filename in tree entry`, measured on 2026-10-11, so that case is refused by the listing rule. The
     component check still names `""` for completeness.
