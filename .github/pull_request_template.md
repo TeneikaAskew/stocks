@@ -65,10 +65,70 @@ Canvas refresh pending: none
       before CI, not after
 - [ ] Zero unresolved threads: each one fixed-and-resolved (naming what
       changed and the covering test/commit) or replied to with why not
-- [ ] A review exists for the **current head SHA** — compare `get_reviews`
-      `commit_id` against head; all threads `is_outdated` means the head is
-      unreviewed → comment `@codex review` and wait.
-      `get_reviews` returns OLDEST FIRST, so the current review is on the
-      LAST page: reading page 1 and finding an older "no findings" is how
-      #991 was merged two minutes after a review it never saw
+- [ ] Each thread holding a finding a reviewer posted after its own first
+      review carries the reply classifying each location before it is
+      resolved: uncounted, missed (with the SHA of the commit the first review
+      covered) or new (with the SHA of the later commit), as CLAUDE.md Rule
+      2.5 says; for Codex, the first review's SHA is the one the PR's comment
+      for the finding's review type records,
+      `First Codex code review: Completed on <sha>, …` or
+      `First Codex security review: Completed on <sha>, …`; the finding's
+      review type is that of the run that posted it, read from the review
+      object that holds it as CLAUDE.md Rule 2.5 says, since a Codex finding
+      names none
+- [ ] The pull request does not merge while a review type's first run still
+      reads Running, or before each review type that has completed a review on
+      it has its first-review comment. A row the procedure waits on, a first
+      run's or the Code Review run's for the head, that still reads Running an
+      hour after its trigger (the runs on #1398 took about 8 and 18 minutes),
+      or a first run's row that another run replaced before its comment was
+      posted, is reported once on the PR, and the owner decides whether to
+      push or merge without it, so no wait on a row lasts longer than that
+- [ ] The **current head** is reviewed as CLAUDE.md §2.5 counts it: after the
+      PR's latest review-triggering event, a review authored by
+      `chatgpt-codex-connector[bot]` was submitted naming it in `commit_id`,
+      or the Code Review row of Codex's review-summary comment reads Completed
+      for the head's SHA (a clean Codex review leaves no review object, so
+      read the row). Only the row says which review ran (a review object names
+      no review type: Codex's reply on a thread is a bodiless review object,
+      as #1380's review 5482164471 on `2b559d3d` is, and its security review
+      runs under the same account), so the row is what satisfies this rule,
+      and a review object never does without it: it counts only once the Code
+      Review row reads Completed for the same SHA, and it is where that run's
+      findings are read. The rule counts Codex's code review only: the
+      review-triggering events are the PR opened for review, the draft marked
+      ready, an `@codex review` comment and a push of new commits, and a
+      review object counts only if it is not `CHANGES_REQUESTED`. An
+      `@codex review` comment is a comment whose body begins with
+      `@codex review`, posted by an account other than
+      chatgpt-codex-connector[bot] and timed by its `created_at`; one the Code
+      Review row has not picked up within roughly 3 minutes of its
+      `created_at` is reported once on the PR, is not answered with a request,
+      and no longer counts as a review-triggering event; a request of your own
+      that is not picked up is not repeated, and the owner decides how to go
+      on. The Code Review row's own time, the `<relative-time datetime=…>`
+      inside it, is what must follow the latest of those events: the comment's
+      `updated_at` does not stand in for it, since an update to either row
+      moves it while the Code Review row can still show the previous run's
+      Completed (on #1398 the Code Review row reads Completed at 13:28:00Z,
+      the Security Review row at 13:17:34Z, and the comment's `updated_at` is
+      13:28:03Z). `get_reviews` returns OLDEST FIRST, so the current review is
+      on the LAST page: reading page 1 and finding an older "no findings" is
+      how #991 was merged two minutes after a review it never saw. A head
+      whose Code Review row does not read Completed for it, with its own time
+      after the latest review-triggering event, is unreviewed. It waits while
+      that row reads Running, and for roughly 3 minutes after that event while
+      the summary comment or its Code Review row has not yet picked it up (no
+      summary yet, or the row still showing the previous run); otherwise, once
+      any first-review comment a Completed row is owed (Rule 2.5) has been
+      posted, a run is requested with `@codex review` (unless a request of
+      your own was dropped as above). A read of the summary comment that fails
+      is retried, and does not count as a row that is missing or not
+      Completed; a read still failing an hour later is reported once on the
+      PR, and the owner decides whether to push or merge. Requesting a run
+      (`@codex review`) or pushing happens only before the PR's second review
+      round has started; once it has started, nothing is pushed or requested,
+      and a PR that then needs either is split, re-cut or discarded (the
+      review cap). If this item or the hold above meant waiting for a run, the
+      first two items are done again
 - [ ] CI green on the current head, no merge conflict

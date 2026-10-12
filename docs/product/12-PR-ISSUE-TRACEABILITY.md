@@ -434,7 +434,7 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and sol
 | [#971](https://github.com/TeneikaAskew/stocks/issues/971) | DEBT | test: restore a live API connectivity smoke test lost in the frontend split |
 | [#1017](https://github.com/TeneikaAskew/stocks/issues/1017) | DEBT | API: 17 operations still have no response model |
 
-**PR lineage:** [#502](https://github.com/TeneikaAskew/stocks/pull/502) *origin* · [#503](https://github.com/TeneikaAskew/stocks/pull/503) *origin* · [#505](https://github.com/TeneikaAskew/stocks/pull/505) *origin* · [#757](https://github.com/TeneikaAskew/stocks/pull/757) *origin*
+**PR lineage:** [#502](https://github.com/TeneikaAskew/stocks/pull/502) *origin* · [#503](https://github.com/TeneikaAskew/stocks/pull/503) *origin* · [#505](https://github.com/TeneikaAskew/stocks/pull/505) *origin* · [#757](https://github.com/TeneikaAskew/stocks/pull/757) *origin* · [#1380](https://github.com/TeneikaAskew/stocks/pull/1380) *evolution* · [#1387](https://github.com/TeneikaAskew/stocks/pull/1387) *evolution* · [#1398](https://github.com/TeneikaAskew/stocks/pull/1398) *evolution*
 
 ### FEAT-AUTH-001 — Auth / security (13 open)
 

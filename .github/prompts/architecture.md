@@ -89,10 +89,13 @@ A generator that infers these from an older doc gets both wrong, and this file
 is regenerated every month, so they are restated here rather than trusted to
 survive (carried forward from PR #990):
 
-- **The API is served by TWO API-only Cloud Run services**: `solyra-api-prod`
-  behind IAP, and `solyra-api-staging` on a public edge gated per request by a
-  Firebase ID token. The React frontend left this repo in #957 and lives at
-  github.com/TeneikaAskew/solyra; the image contains no SPA.
+- **The API is served by ONE API-only Cloud Run service**, `solyra-api-staging`,
+  on a public edge gated per request by a Firebase ID token.
+  `solyra-api-prod` (behind IAP) and its `deploy-solyra-api-prod` trigger were retired on 2026-10-10
+  (#1366): never describe either as live, and write the services table, the
+  diagram and the deploy path with the one service. The React frontend left
+  this repo in #957 and lives at github.com/TeneikaAskew/solyra; the image
+  contains no SPA.
 - **Never write "no public auth" or "no per-user data partitioning."**
   `solyra-api-staging` is publicly reachable with open self-signup
   (`AUTH_OPEN_SIGNUP=1`) over production data, and per-user scoping exists
