@@ -1,6 +1,6 @@
 """Permanent catalyst vintages: explicit aware cutoffs, never cache fallback."""
 from datetime import date, datetime, time, timedelta, timezone
-from zoneinfo import ZoneInfo
+from lib.eastern_time import ET
 
 from gcp.database import query_to_dataframe_strict
 
@@ -13,7 +13,7 @@ def aware_cutoff(value):
 
 def exchange_date_cutoff(value: str):
     session = date.fromisoformat(value)
-    return (datetime.combine(session + timedelta(days=1), time(), ZoneInfo("America/New_York"))
+    return (datetime.combine(session + timedelta(days=1), time(), ET)
             - timedelta(microseconds=1)).astimezone(timezone.utc)
 
 

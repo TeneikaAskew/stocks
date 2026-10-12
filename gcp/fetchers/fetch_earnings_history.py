@@ -33,7 +33,7 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from lib.eastern_time import ET_NAME
+from lib.eastern_time import ET, ET_NAME
 
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
 from gcp.fetchers import _av_ingestion as av
@@ -433,7 +433,7 @@ def persist_history(frame,*,executor=None):
 def assess_history_manifest(run,universe,*,executor=None):
     executor=executor or av.isolated_sql
     cutoff=datetime.now(timezone.utc)
-    assessment_date=cutoff.astimezone(ZoneInfo(ET_NAME)).date()
+    assessment_date=cutoff.astimezone(ET).date()
     facts=executor("""SELECT e.ticker,e.reported_date,r.revision_id,r.known_at,r.payload->>'reported_eps' AS reported_eps,
       av_earnings_values(to_jsonb(e))=r.payload AS coherent_cache,CASE WHEN proof.capture_id IS NOT NULL THEN 'source_verified' ELSE CASE WHEN r.availability_quality='source_verified' THEN 'source_provenance_unavailable' ELSE r.availability_quality END END AS availability_quality,
       COALESCE(proof.yahoo_timing_observation_id,r.yahoo_timing_observation_id) AS yahoo_timing_observation_id FROM earnings_history e

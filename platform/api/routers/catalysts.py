@@ -627,7 +627,7 @@ def get_catalyst_snapshot(
     """
     import math
     from datetime import timezone
-    from zoneinfo import ZoneInfo
+    from lib.eastern_time import market_date
     from gcp.database import query_to_dataframe_strict
     from lib.earnings_history import exchange_date_cutoff, read_earnings_asof
 
@@ -639,7 +639,7 @@ def get_catalyst_snapshot(
         raise HTTPException(status_code=400, detail="as_of must be YYYY-MM-DD") from None
     if not 0 <= window_days <= 90:
         raise HTTPException(status_code=400, detail="window_days must be in 0..90")
-    session_date = cutoff.astimezone(ZoneInfo("America/New_York")).date()
+    session_date = market_date(cutoff)
     start = session_date - timedelta(days=window_days)
     availability = {}
 
