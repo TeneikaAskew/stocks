@@ -201,7 +201,7 @@ point: somebody decides its class rather than inheriting a directory's.
 | D | docs/product/00-PRODUCT-OVERVIEW.md | |  |
 | D | docs/product/01-PRODUCT-REQUIREMENTS.md | |  |
 | D | docs/product/02-FEATURE-CATALOG.md | lib, platform/api, gcp |  |
-| D | docs/product/03-SITE-TRACEABILITY.md | platform/api, platform/deploy.sh, platform/Dockerfile, gcp, lib, scripts, tests |  |
+| D | docs/product/03-SITE-TRACEABILITY.md | platform/api, platform/deploy.sh, platform/Dockerfile, gcp, lib, scripts/analysis, scripts/audit_data_freshness.py, scripts/backfill_journal_embeddings.py, scripts/backfill_news_sentiment.py, scripts/backfill_timeframe_tags.py, scripts/backfill_watchlist_data.py, scripts/db_query_cr.sh, scripts/deep_backfill_ticker.py, scripts/fetch_earnings_calendar.py, scripts/generate_historical_report.py, scripts/maintenance/compute_spx_greeks.py, scripts/run_backtest.py, scripts/run_historical_signals.py, scripts/run_param_sweep.py, scripts/run_pipeline.py, tests/agents, tests/api, tests/audits, tests/gcp, tests/integration, tests/lib, tests/meta, tests/scripts/test_phase6_playbook.py, tests/scripts/test_run_historical_signals_args.py, tests/scripts/test_run_historical_signals_provenance.py, tests/scripts/test_run_historical_signals_strategy.py, tests/test_auth_email_templates.py |  |
 | D | docs/product/04-BACKEND-API.md | platform/api |  |
 | D | docs/product/05-INFRASTRUCTURE.md | gcp/deploy.sh |  |
 | D | docs/product/06-DATA-ARCHITECTURE.md | gcp/schema.sql |  |
