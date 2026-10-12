@@ -4630,7 +4630,8 @@ def test_git_reads_the_head_trees_attributes_alone_or_the_gate_refuses(repo, mon
     blob, or GitFailed is raised; and a tree out of git's order, where check-attr misses a .gitattributes that a
     checkout reads, is refused by order_refusal."""
     sg = load_gate(repo)
-    neutral = commits(repo, {"neutral": {".gitattributes": "*.png binary\n"}})["neutral"][1]
+    # lib-x.py sorts before the tree lib, read as lib/ ('-' before '/'), as git sorts them: the control for order_refusal
+    neutral = commits(repo, {"neutral": {".gitattributes": "*.png binary\n", "lib-x.py": "x\n"}})["neutral"][1]
     side = tmp_path / "side.git"
     _git(tmp_path, "init", "-q", "--bare", str(side))
     monkeypatch.setenv("GIT_ALTERNATE_OBJECT_DIRECTORIES", str(side / "objects"))   # this repository reads it; the borrowed store does not
@@ -4664,7 +4665,7 @@ def test_git_reads_the_head_trees_attributes_alone_or_the_gate_refuses(repo, mon
     monkeypatch.undo()
     check = next((args, env) for args, env in calls if "check-attr" in args)
     assert all("cannot read" in str(unread[w]) for w in elsewhere) and ".gitattributes listed after" in (order or "") \
-        and ".gitattributes listed after zz-empty" in (hidden or ""), (unread, order, hidden)
+        and ".gitattributes listed after zz-empty" in (hidden or "") and sg.order_refusal(sg.head_entries(neutral)) is None, (unread, order, hidden)
     assert "text: auto" in planted and "eol: crlf" in planted and user is None and f"core.attributesFile={os.devnull}" in check[0] \
         and {k: check[1].get(k) for k in ("GIT_ATTR_NOSYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL")} == \
         {"GIT_ATTR_NOSYSTEM": "1", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}, (planted, user, check)
