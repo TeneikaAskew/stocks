@@ -179,7 +179,10 @@ inside that window. Concretely, before any merge:
    means nothing; wait and re-check.
 2. Every thread either resolved, or replied to with why it is not being
    actioned. Zero unresolved threads is the bar.
-3. Only then CI, then merge.
+3. The head is reviewed and each Codex review type's first review is
+   recorded, as "A resolved thread is not a reviewed commit" and "A finding
+   raised after a reviewer's first review" below say.
+4. Only then CI, then merge.
 
 A PR is done when: CI green **and** no unresolved review threads **and** no
 merge conflict. Green CI alone is not done.
@@ -232,32 +235,37 @@ Security Review row,
 `First Codex security review: Completed on <sha>, N findings.`, with N the
 findings that run posted. The pull request does not merge while a review
 type's first run still reads Running, or before each review type that has
-completed a review on it has its first-review comment. A later finding is
+completed a review on it has its first-review comment. A first run whose row
+still reads Running an hour after its trigger (the runs on #1398 took about 8
+and 18 minutes), or whose row another run replaced before its comment was
+posted, is reported once on the PR, and the owner decides whether to push or
+merge without that comment: nothing waits on it forever. A later finding is
 classified against the comment for its own review type, which is the type of
-the run that posted it. A Codex finding's inline comment names no review type
-either (each one on #1380, #1387 and #1398 carries a severity badge, a title
-and its text), and the two types can run at once (on #1398 the draft marked
-ready started both, and the Security Review row read Completed at 13:17:34Z,
-the Code Review row at 13:28:00Z), so timing cannot tell which run posted a
-finding. The review object that holds the finding does:
-`gh api repos/{owner}/{repo}/pulls/<n>/comments` gives each finding's
-`pull_request_review_id` (it answered for #1380, #1387 and #1398 on
-2026-10-12), and on the MCP surface, whose finding comments carry no review
-id, it is the Codex review object with a body whose `submitted_at` is the
-finding's `created_at` or the second before it (when two qualify, only the
-REST listing settles it), and that object's `commit_id` is the commit the
-finding was raised on. Every Codex review object holding a finding on those
-three pull requests is a code review's, and though no field says so, each
-opens its body with `### 💡 Codex Review` and names its commit as
-`**Reviewed commit:**` (on #1398, review 5491453317 on `a269671e`, submitted
-at 13:27:56Z, holds all four findings, created at 13:27:56Z and 13:27:57Z). No
-security-review finding or review object has been seen on those pull requests,
-so the security review's heading is not known: a finding held by a Codex
-review object without the code review's heading is the security review's, and
-the author notes that object's heading in a PR comment the first time one
-appears. A reviewer whose clean review does create a review object, as a
-person's approval does, needs no such comment: that object's `commit_id` names
-the commit its first review covered.
+the run that posted it. A finding is an inline comment that opens a thread;
+Codex's replies inside a thread, held by bodiless review objects (#1380's
+5482164471, #1387's 5482409691), are not findings and are never typed. A Codex
+finding names no review type either (each one on #1380, #1387 and #1398
+carries a severity badge, a title and its text), and the two types can run at
+once (Codex's summary comment 6124933119 on #1398 read both rows Running at
+13:09:45Z, the Code Review row since 13:09:40.806534Z and the Security Review
+row since 13:09:40.775251Z, as read on 2026-10-12 from the comment's edit
+event delivered to a Claude Code session, since its edit history is
+GraphQL-only), so timing cannot tell which run posted a finding. The review
+object that holds the finding does: in `get_reviews`, the Codex review object
+with a body whose `submitted_at` is the finding's `created_at` or the second
+before it (`get_review_comments` carries no review id), and that review's
+`commit_id` is then the reviewed commit. Every bodied Codex review object
+holding a finding on #1380, #1387 and #1398 is a code review's, and though no
+field says so, each opens its body with `### 💡 Codex Review` and names its
+commit as `**Reviewed commit:**` (on #1398, review 5491453317 on `a269671e`,
+submitted at 13:27:56Z, holds all four findings, created at 13:27:56Z and
+13:27:57Z). No security-review finding or review object has been seen on those
+pull requests, so the security review's heading is not known: a finding held
+by a bodied Codex review object without the code review's heading is the
+security review's, and the author notes that object's heading in a PR comment
+the first time one appears. A reviewer whose clean review does create a review
+object, as a person's approval does, needs no such comment: that object's
+`commit_id` names the commit its first review covered.
 
 #### A resolved thread is not a reviewed commit
 
@@ -285,36 +293,36 @@ review-triggering event, a review authored by `chatgpt-codex-connector[bot]`
 was submitted naming it in `commit_id`, or the Code Review row of Codex's own
 review-summary comment reads Completed for the head's SHA, as
 `.claude/commands/resolve-issue.md` step 2 requires. Only the row says which
-review ran (a review object names no review type: Codex's reply on a thread
-is a bodiless review object, as #1380's review 5482164471 on `2b559d3d` is,
-and its security review runs under the same account), so the row is what
-satisfies this rule, and a review object never does without it: it counts
-only once the Code Review row reads Completed for the same SHA, and it is
-where that run's findings are read. The rule counts Codex's code review only:
-the review-triggering events are the PR opened for review, the draft marked
-ready, an `@codex review` comment and a push of new commits, and a review
-object counts only if it is not `CHANGES_REQUESTED`. The Code Review row's own
-time, the `<relative-time datetime=…>` inside it, is what must follow the
-latest of those events: the comment's `updated_at` does not stand in for it,
-since an update to either row moves it while the Code Review row can still
-show the previous run's Completed (on #1398 the Code Review row reads
-Completed at 13:28:00Z, the Security Review row at 13:17:34Z, and the
-comment's `updated_at` is 13:28:03Z). A missing or unreadable summary comment
-leaves the head unreviewed: comment `@codex review`, since a run posts the
-summary when the pull request has none (on #1398, comment 6124933119 was
-created when the draft was marked ready), and wait; past the second review
-round that run would be a third, so the PR is re-cut instead. The cutoff
-matters: re-marking a draft ready, or an `@codex review` on an unchanged head,
-would otherwise count the older review while the new run is still going.
-`get_reviews` returns oldest first, so the current review is on the last page,
-and all threads `is_outdated` still means the review predates the current
-content entirely.
+review ran (a review object names no review type: Codex's reply on a thread is
+a bodiless review object, as #1380's review 5482164471 on `2b559d3d` is, and
+its security review runs under the same account), so the row is what satisfies
+this rule, and a review object never does without it: it counts only once the
+Code Review row reads Completed for the same SHA, and it is where that run's
+findings are read. The rule counts Codex's code review only: the
+review-triggering events are the PR opened for review, the draft marked ready,
+an `@codex review` comment and a push of new commits, and a review object
+counts only if it is not `CHANGES_REQUESTED`. The Code Review row's own time,
+the `<relative-time datetime=…>` inside it, is what must follow the latest of
+those events: the comment's `updated_at` does not stand in for it, since an
+update to either row moves it while the Code Review row can still show the
+previous run's Completed (on #1398 the Code Review row reads Completed at
+13:28:00Z, the Security Review row at 13:17:34Z, and the comment's
+`updated_at` is 13:28:03Z). The cutoff matters: re-marking a draft ready, or
+an `@codex review` on an unchanged head, would otherwise count the older
+review while the new run is still going. `get_reviews` returns oldest first,
+so the current review is on the last page, and all threads `is_outdated` still
+means the review predates the current content entirely.
 
 When the head is unreviewed and the change is more than cosmetic, do not read
-resolution as coverage. An unreviewed head waits while the Code Review row
-reads Running; otherwise, before the PR's second review round, comment
-`@codex review` and wait, and past that round nothing is pushed or requested
-and the PR is re-cut (the review cap).
+resolution as coverage. A head with no readable Code Review row reading
+Completed for it is unreviewed. It waits while that row reads Running, or
+while the summary comment has not appeared within the roughly 3 minutes after
+the trigger that CLAUDE.md §2.5 "The gate" gives Codex; otherwise, once any
+first-review comment a Completed row is owed (Rule 2.5) has been posted, a run
+is requested with `@codex review`. Requesting a run (`@codex review`) or
+pushing happens only before the PR's second review round has started; once it
+has started, nothing is pushed or requested, and a PR that then needs either
+is split, re-cut or discarded (the review cap).
 
 #### Verify the claim before fixing it, and reproduce before you fix
 

@@ -4037,14 +4037,9 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    the latest of those events: the comment's `updated_at` does not stand in
    for it, since an update to either row moves it while the Code Review row
    can still show the previous run's Completed (on #1398 the Code Review row
-   reads Completed at 13:28:00Z, the Security Review row at 13:17:34Z, and
-   the comment's `updated_at` is 13:28:03Z). A missing or unreadable summary
-   comment leaves the head unreviewed: comment `@codex review`, since a run
-   posts the summary when the pull request has none (on #1398, comment
-   6124933119 was created when the draft was marked ready), and wait; past
-   the second review round that run would be a third, so the PR is re-cut
-   instead. In detail, the second of the two conditions satisfies this step,
-   and the first counts only alongside it:
+   reads Completed at 13:28:00Z, the Security Review row at 13:17:34Z, and the
+   comment's `updated_at` is 13:28:03Z). In detail, the second of the two
+   conditions satisfies this step, and the first counts only alongside it:
    - `pull_request_read` `method: "get_reviews"` returning a code review that
      is **authored by the review bot** (`chatgpt-codex-connector[bot]`), is
      not `CHANGES_REQUESTED`, whose
@@ -4065,9 +4060,9 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      drafted and never re-triggered — the ordinary CASE B path — the only
      events are the opening and the pushes, which any review naming the head
      already follows, so there is no separate cutoff**; the head SHA and the
-     author check carry the
-     step on their own, and applying a cutoff to an event that did not happen
-     would make the gate unsatisfiable on the normal path.
+     author check are all this condition needs, and it still counts only
+     alongside the row below; applying a cutoff to an event that did not
+     happen would make the gate unsatisfiable on the normal path.
      **When a cutoff applies and the only review predates it, the answer is
      WAIT, not merge**: the running review is the one whose findings matter.
      **`get_reviews` returns oldest first, so the current
@@ -4097,10 +4092,9 @@ inside that window.** An empty review list at 60 seconds means "wait", not
      PREVIOUS run's summary keeps reading Completed against that same SHA
      until the new run edits it to Running, so a resolver reading it in that
      window satisfies this step with the run it was trying to supersede. The
-     row is what satisfies this step, so it has to be at least as hard to
-     satisfy as the review object, or the gate is only as strong as its weaker
-     half — which is the same argument the forgeability clause above makes,
-     applied to timing instead of authorship.
+     row is the condition this step rests on, so its time is checked as
+     strictly as its author: the same argument the forgeability clause above
+     makes, applied to timing instead of authorship.
      **On a PR that was never drafted and never re-triggered there is still no
      separate cutoff**, exactly as above; the head SHA and the author check
      carry it.
@@ -4113,13 +4107,18 @@ inside that window.** An empty review list at 60 seconds means "wait", not
 
    What fails this step: a summary showing Running, or naming an older commit
    with all threads `is_outdated`, a Code Review row whose own time does not
-   follow the latest review-triggering event, a missing or unreadable summary
-   comment, a Codex review object naming the head while the Code Review row
-   does not read Completed for it, or a head whose only reviews are yours.
-   That head is unreviewed. An unreviewed head waits while the Code Review row
-   reads Running; otherwise, before the PR's second review round, comment
-   `@codex review` and wait, and past that round nothing is pushed or
-   requested and the PR is re-cut (the review cap).
+   follow the latest review-triggering event, no readable Code Review row, a
+   Codex review object naming the head while the Code Review row does not read
+   Completed for it, or a head whose only reviews are yours. A head with no
+   readable Code Review row reading Completed for it is unreviewed. It waits
+   while that row reads Running, or while the summary comment has not appeared
+   within the roughly 3 minutes after the trigger that CLAUDE.md §2.5 "The
+   gate" gives Codex; otherwise, once any first-review comment a Completed row
+   is owed (Rule 2.5) has been posted, a run is requested with
+   `@codex review`. Requesting a run (`@codex review`) or pushing happens only
+   before the PR's second review round has started; once it has started,
+   nothing is pushed or requested, and a PR that then needs either is split,
+   re-cut or discarded (the review cap).
 3. **Re-page `get_review_comments` now**, after step 2 established the review
    is Completed — do not reuse step 1's snapshot. Step 1 runs deliberately
    before CI and can therefore run while the current head's review is still
@@ -4138,12 +4137,12 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    `First Codex security review: Completed on <sha>, N findings.`, with N
    the findings that run posted. A row whose first run still reads Running
    here gets its comment when it first reads Completed, and step 6 waits for
-   that. Note each finding's review type as you read it: a Codex finding
-   names none, so it is the type of the run that posted it, read from the
-   review object that holds the finding as CLAUDE.md Rule 2.5 says (its
-   `pull_request_review_id`, or on the MCP surface the Codex review object
-   with a body submitted in the finding's second or the second before), not
-   from timing, since both review types can run at once.
+   that. Note each finding's review type as you read it: a Codex finding names
+   none, so it is the type of the run that posted it, read from the review
+   object that holds the finding as CLAUDE.md Rule 2.5 says (the Codex review
+   with a body in `get_reviews` submitted in the finding's second or the one
+   before; a Codex reply inside a thread is not a finding), not from timing,
+   since both review types can run at once.
 
    **Then go to step 4 and work them. Zero unresolved is checked at step 6, on
    every path — including the one where step 4 produces no commit because you
@@ -4194,9 +4193,11 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    steps 1-3 exist to catch, arriving by a different route. Push every
    first-round fix in one push, once no review type's first run still reads
    Running and each one that has completed a review has its first-review
-   comment (step 3), since a run the push starts replaces its type's row; let
-   the review re-run on the new SHA, and re-check: that run is the PR's second
-   review round.
+   comment (step 3), since a run the push starts replaces its type's row.
+   After that wait, re-page `get_review_comments`: if the run you waited on
+   posted findings, go back to step 3 with them, and their fixes join the same
+   push. Then let the review re-run on the new SHA, and re-check: that run is
+   the PR's second review round.
 
    **The review cap is two rounds** (CLAUDE.md, "Review cap"; the
    product-delivery skill, Phase 4): after a PR's second review round, stop
@@ -4207,10 +4208,13 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    (`superpowers:finishing-a-development-branch`) and name that choice in the
    Phase 9 "Still open before this closes". A round is one run of Codex's code
    review on the PR, and a push to a PR open for review starts one (CLAUDE.md
-   §2.5). After the second, push nothing, a merge of `main` included: a PR
-   that then needs a commit, or `main` merged in (a conflict, or a base the
-   gate needs), is re-cut from `main`, like one whose second round raised a
-   finding, and a clean second round merges as it stands.
+   §2.5). Requesting a run (`@codex review`) or pushing happens only before
+   the PR's second review round has started; once it has started, nothing is
+   pushed or requested, and a PR that then needs either is split, re-cut or
+   discarded (the review cap). A merge of `main` is a push too, so a PR that
+   then needs a commit or `main` merged in (a conflict, or a base the gate
+   needs) is split, re-cut or discarded the same way, and a clean second round
+   merges as it stands.
 6. **Zero unresolved, across every page** — re-page `get_review_comments` and
    check it, whether or not step 4 produced a commit. A rebutted finding still
    needs its reply and its resolve, and a review that added nothing still has
@@ -4224,10 +4228,16 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    SHA of the later commit), as CLAUDE.md Rule 2.5 says. Read the summary
    again too: wait while a review type's first run still reads Running, and a
    row whose first run has read Completed since step 3 gets its comment now,
-   as step 3 says. The pull request does not merge while a review type's first
-   run still reads Running, or before each review type that has completed a
-   review on it has its first-review comment. Then CI green on the current
-   head, and no merge conflict.
+   as step 3 says. After any such wait, re-page `get_review_comments`: if the
+   run you waited on posted findings, go back to step 3 with them, and their
+   fixes join the same push. The pull request does not merge while a review
+   type's first run still reads Running, or before each review type that has
+   completed a review on it has its first-review comment. A first run whose
+   row still reads Running an hour after its trigger (the runs on #1398 took
+   about 8 and 18 minutes), or whose row another run replaced before its
+   comment was posted, is reported once on the PR, and the owner decides
+   whether to push or merge without that comment: nothing waits on it forever.
+   Then CI green on the current head, and no merge conflict.
 7. **Merge it, bound to the SHA that passed.** Steps 0-6 are the gate, not
    the destination; stopping here leaves the fix on a branch while Phase 9
    describes the issue as landed. Merge once every step above passes, and
@@ -4240,8 +4250,9 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    immediately before merging and give `merge_pull_request` its
    `expectedHeadSha`, so a head that moved is a rejected merge rather than an
    unreviewed one. If it has moved, that is not an obstacle to work around:
-   go back to step 1 for the new head, or, past the PR's second round, re-cut
-   it as step 5 says, since the run that move started is a third.
+   go back to step 1 for the new head, or, once the PR's second review round
+   has started, split, re-cut or discard it as step 5 says, since the run that
+   move started is a third.
 
    Two cases where you stop instead of merging, and say which: the PR is one
    this session did not open and was not asked to drive, so the merge is its
@@ -4860,10 +4871,10 @@ inside that window.** An empty review list at 60 seconds means "wait", not
 **A completed review with no findings posts no review at all**: Codex's summary
 comment says it reacts 👍 once all its reviews finish with no findings. So
 `get_reviews` cannot by itself distinguish "reviewed clean" from "never
-reviewed": both look like an absent review for that SHA. Read the Codex
-summary comment's status table alongside it, which names the commit and whether
-the run is Running or Completed. Verified live on #1018, where the head showed
-no review for eleven minutes while the run was still in flight.
+reviewed": both look like an absent review for that SHA. Read the Code Review
+row of the Codex summary comment alongside it, which names the commit and
+whether that run is Running or Completed. Verified live on #1018, where the head
+showed no review for eleven minutes while the run was still in flight.
 
 A finding whose fix exceeds this PR's scope becomes a **new issue** with the
 provenance recorded, the way #940 was split out of the #933 review, so the
