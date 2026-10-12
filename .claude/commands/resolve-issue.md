@@ -4037,15 +4037,16 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    account other than chatgpt-codex-connector[bot] and timed by its
    `created_at`; one the Code Review row has not picked up within roughly 3
    minutes of its `created_at` is reported once on the PR, is not answered
-   with a request, and no longer counts as a review-triggering event. The Code
-   Review row's own time, the `<relative-time datetime=…>` inside it, is what
-   must follow the latest of those events: the comment's `updated_at` does not
-   stand in for it, since an update to either row moves it while the Code
-   Review row can still show the previous run's Completed (on #1398 the Code
-   Review row reads Completed at 13:28:00Z, the Security Review row at
-   13:17:34Z, and the comment's `updated_at` is 13:28:03Z). In detail, the
-   second of the two conditions satisfies this step, and the first counts only
-   alongside it:
+   with a request, and no longer counts as a review-triggering event; a
+   request of your own that is not picked up is not repeated, and the owner
+   decides how to go on. The Code Review row's own time, the
+   `<relative-time datetime=…>` inside it, is what must follow the latest of
+   those events: the comment's `updated_at` does not stand in for it, since an
+   update to either row moves it while the Code Review row can still show the
+   previous run's Completed (on #1398 the Code Review row reads Completed at
+   13:28:00Z, the Security Review row at 13:17:34Z, and the comment's
+   `updated_at` is 13:28:03Z). In detail, the second of the two conditions
+   satisfies this step, and the first counts only alongside it:
    - `pull_request_read` `method: "get_reviews"` returning a code review that
      is **authored by the review bot** (`chatgpt-codex-connector[bot]`), is
      not `CHANGES_REQUESTED`, whose
@@ -4123,14 +4124,15 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    while the summary comment or its Code Review row has not yet picked it up
    (no summary yet, or the row still showing the previous run); otherwise,
    once any first-review comment a Completed row is owed (Rule 2.5) has been
-   posted, a run is requested with `@codex review`. A read of the summary
-   comment that fails is retried, and does not count as a row that is missing
-   or not Completed; a read still failing an hour later is reported once on
-   the PR, and the owner decides whether to push or merge. Requesting a run
-   (`@codex review`) or pushing happens only before the PR's second review
-   round has started; once it has started, nothing is pushed or requested, and
-   a PR that then needs either is split, re-cut or discarded (the review cap).
-   A Code Review row that stays Running gets step 6's exit.
+   posted, a run is requested with `@codex review` (unless a request of your
+   own was dropped as above). A read of the summary comment that fails is
+   retried, and does not count as a row that is missing or not Completed; a
+   read still failing an hour later is reported once on the PR, and the owner
+   decides whether to push or merge. Requesting a run (`@codex review`) or
+   pushing happens only before the PR's second review round has started; once
+   it has started, nothing is pushed or requested, and a PR that then needs
+   either is split, re-cut or discarded (the review cap). A Code Review row
+   that stays Running gets step 6's exit.
 3. **Re-page `get_review_comments` now**, after step 2 established the review
    is Completed — do not reuse step 1's snapshot. Step 1 runs deliberately
    before CI and can therefore run while the current head's review is still

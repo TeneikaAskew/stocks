@@ -104,26 +104,28 @@ Canvas refresh pending: none
       chatgpt-codex-connector[bot] and timed by its `created_at`; one the Code
       Review row has not picked up within roughly 3 minutes of its
       `created_at` is reported once on the PR, is not answered with a request,
-      and no longer counts as a review-triggering event. The Code Review row's
-      own time, the `<relative-time datetime=…>` inside it, is what must
-      follow the latest of those events: the comment's `updated_at` does not
-      stand in for it, since an update to either row moves it while the Code
-      Review row can still show the previous run's Completed (on #1398 the
-      Code Review row reads Completed at 13:28:00Z, the Security Review row at
-      13:17:34Z, and the comment's `updated_at` is 13:28:03Z). `get_reviews`
-      returns OLDEST FIRST, so the current review is on the LAST page: reading
-      page 1 and finding an older "no findings" is how #991 was merged two
-      minutes after a review it never saw. A head whose Code Review row does
-      not read Completed for it, with its own time after the latest
-      review-triggering event, is unreviewed. It waits while that row reads
-      Running, and for roughly 3 minutes after that event while the summary
-      comment or its Code Review row has not yet picked it up (no summary yet,
-      or the row still showing the previous run); otherwise, once any
-      first-review comment a Completed row is owed (Rule 2.5) has been posted,
-      a run is requested with `@codex review`. A read of the summary comment
-      that fails is retried, and does not count as a row that is missing or
-      not Completed; a read still failing an hour later is reported once on
-      the PR, and the owner decides whether to push or merge. Requesting a run
+      and no longer counts as a review-triggering event; a request of your own
+      that is not picked up is not repeated, and the owner decides how to go
+      on. The Code Review row's own time, the `<relative-time datetime=…>`
+      inside it, is what must follow the latest of those events: the comment's
+      `updated_at` does not stand in for it, since an update to either row
+      moves it while the Code Review row can still show the previous run's
+      Completed (on #1398 the Code Review row reads Completed at 13:28:00Z,
+      the Security Review row at 13:17:34Z, and the comment's `updated_at` is
+      13:28:03Z). `get_reviews` returns OLDEST FIRST, so the current review is
+      on the LAST page: reading page 1 and finding an older "no findings" is
+      how #991 was merged two minutes after a review it never saw. A head
+      whose Code Review row does not read Completed for it, with its own time
+      after the latest review-triggering event, is unreviewed. It waits while
+      that row reads Running, and for roughly 3 minutes after that event while
+      the summary comment or its Code Review row has not yet picked it up (no
+      summary yet, or the row still showing the previous run); otherwise, once
+      any first-review comment a Completed row is owed (Rule 2.5) has been
+      posted, a run is requested with `@codex review` (unless a request of
+      your own was dropped as above). A read of the summary comment that fails
+      is retried, and does not count as a row that is missing or not
+      Completed; a read still failing an hour later is reported once on the
+      PR, and the owner decides whether to push or merge. Requesting a run
       (`@codex review`) or pushing happens only before the PR's second review
       round has started; once it has started, nothing is pushed or requested,
       and a PR that then needs either is split, re-cut or discarded (the
