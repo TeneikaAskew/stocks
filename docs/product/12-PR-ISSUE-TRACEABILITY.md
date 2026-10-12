@@ -207,6 +207,22 @@ Related merged [#1022](https://github.com/TeneikaAskew/stocks/pull/1022) and [#1
 
 **Scheduling disposition:** publish this canonical documentation-only inventory before accepting/publishing the repair specifications or scheduling their implementation. Independent FEAT-DATA-001, stocks FEAT-INSIGHT-001 and FEAT-DEPLOY-001 specs must preserve these remaining criteria; the solyra companion consumes their contracts. Record the inventory merge revision in controller preflight, and rescan affected timelines if new candidates appear. No issue is closed by this inventory. The initial timeline capture and this disposition are a dated scheduling pass, not a permanent claim that future candidates cannot exist.
 
+
+#### 2026-10-12 18:05:33 UTC — bounded status and documentation-candidate delta
+
+This refresh covers the same six issues only: **five OPEN** ([#1259](https://github.com/TeneikaAskew/stocks/issues/1259), [#1260](https://github.com/TeneikaAskew/stocks/issues/1260), [#1302](https://github.com/TeneikaAskew/stocks/issues/1302), [#1303](https://github.com/TeneikaAskew/stocks/issues/1303) and [#1295](https://github.com/TeneikaAskew/stocks/issues/1295)) and **#1365 CLOSED**. The 14:47:25 UTC all-open statement and candidate table above remain the historical snapshot at that time. This delta does not rescan the historical 105-issue inventory, refresh the whole open-issue map, or change its dated counts.
+
+[#1365](https://github.com/TeneikaAskew/stocks/issues/1365) closed at **2026-10-12 15:00:07 UTC** through `gcp.failure_notifier.reconcile_closures`. The [automatic recovery comment](https://github.com/TeneikaAskew/stocks/issues/1365#issuecomment-6126845758), posted at 15:00:06 UTC, identifies `freshness-watchdog-wrlmt`, completed successfully at **2026-10-12T14:09:32.705882Z**. The retained read-only Cloud Run execution description independently records `Completed=True`, `succeededCount=1`, and that completion time for `python scripts/audit_data_freshness.py --strict`; [execution logs](https://console.cloud.google.com/run/jobs/executions/details/us-east1/freshness-watchdog-wrlmt/logs?project=adept-mountain-474619-d4) identify the run. This establishes recovery of that watchdog execution. It does not establish a reusable code patch, explain the earlier failure, repair historical options partitions, or satisfy the approved source/derived/API/research acceptance gates. The refreshed #1365 timeline links documentation PRs #1396 and [#1410](https://github.com/TeneikaAskew/stocks/pull/1410), with no new linked runtime implementation candidate or closure commit. #1410 merged the canonical inventory at `50538b8546bb4cdd1e778fe9553a0a6edd819bd3`; that merge is documentation evidence only.
+
+| Documentation candidate | State at this scheduling update | Recoverability and remaining acceptance |
+|---|---|---|
+| [#1411 — data integrity](https://github.com/TeneikaAskew/stocks/pull/1411) | OPEN, unmerged, specification only | Replacement standalone data contract for the earlier combined spec publication; approved-scope prose is recoverable, with no runtime implementation patch or historical repair established |
+| [#1412 — report consistency](https://github.com/TeneikaAskew/stocks/pull/1412) | OPEN, unmerged, specification only | Replacement standalone report contract; implementation, real consumer handoff and tolerant deployed UI evidence remain separate requirements |
+| [#1413 — refresh deployment](https://github.com/TeneikaAskew/stocks/pull/1413) | OPEN, unmerged, specification only | Separate deployment ownership contract; runtime prerequisite, actual scheduler/IAM configuration and operational proof remain separate requirements |
+| [#1396 — earlier combined specifications](https://github.com/TeneikaAskew/stocks/pull/1396) | Still OPEN and unmerged at this update | Earlier documentation candidate remains recorded; the separate contracts above supersede its publication role, not an implemented runtime fix. No closure or merge is inferred |
+
+**Scheduling effect:** acknowledge #1365's recorded current-run recovery and closed issue state; retain the five open issues' remaining criteria and the existing partial-work assessment for #1295. No issue state is changed by this document, no runtime acceptance is credited to specification publication, and no candidate code is replayed from the recovery comment. The approved repair contracts still require their independent regression, downstream and operational evidence before completion claims.
+
 ## Audit PRs
 
 | PR | Merged | Scope |
