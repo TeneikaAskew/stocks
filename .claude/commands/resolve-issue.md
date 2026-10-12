@@ -4107,18 +4107,22 @@ inside that window.** An empty review list at 60 seconds means "wait", not
 
    What fails this step: a summary showing Running, or naming an older commit
    with all threads `is_outdated`, a Code Review row whose own time does not
-   follow the latest review-triggering event, no readable Code Review row, a
-   Codex review object naming the head while the Code Review row does not read
-   Completed for it, or a head whose only reviews are yours. A head with no
-   readable Code Review row reading Completed for it is unreviewed. It waits
-   while that row reads Running, or while the summary comment has not appeared
-   within the roughly 3 minutes after the trigger that CLAUDE.md §2.5 "The
-   gate" gives Codex; otherwise, once any first-review comment a Completed row
-   is owed (Rule 2.5) has been posted, a run is requested with
-   `@codex review`. Requesting a run (`@codex review`) or pushing happens only
-   before the PR's second review round has started; once it has started,
+   follow the latest review-triggering event, no Code Review row in the
+   summary, a Codex review object naming the head while the Code Review row
+   does not read Completed for it, or a head whose only reviews are yours. A
+   head whose Code Review row does not read Completed for it, with its own
+   time after the latest review-triggering event, is unreviewed. It waits
+   while that row reads Running, and for roughly 3 minutes after that event
+   while the summary comment or its Code Review row has not yet picked it up
+   (no summary yet, or the row still showing the previous run); otherwise,
+   once any first-review comment a Completed row is owed (Rule 2.5) has been
+   posted, a run is requested with `@codex review`. A read of the summary
+   comment that fails is retried, and does not count as a row that is missing
+   or not Completed. Requesting a run (`@codex review`) or pushing happens
+   only before the PR's second review round has started; once it has started,
    nothing is pushed or requested, and a PR that then needs either is split,
-   re-cut or discarded (the review cap).
+   re-cut or discarded (the review cap). A Code Review row that stays Running
+   gets step 6's exit.
 3. **Re-page `get_review_comments` now**, after step 2 established the review
    is Completed — do not reuse step 1's snapshot. Step 1 runs deliberately
    before CI and can therefore run while the current head's review is still
@@ -4229,15 +4233,20 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    again too: wait while a review type's first run still reads Running, and a
    row whose first run has read Completed since step 3 gets its comment now,
    as step 3 says. After any such wait, re-page `get_review_comments`: if the
-   run you waited on posted findings, go back to step 3 with them, and their
-   fixes join the same push. The pull request does not merge while a review
-   type's first run still reads Running, or before each review type that has
-   completed a review on it has its first-review comment. A first run whose
-   row still reads Running an hour after its trigger (the runs on #1398 took
-   about 8 and 18 minutes), or whose row another run replaced before its
-   comment was posted, is reported once on the PR, and the owner decides
-   whether to push or merge without that comment: nothing waits on it forever.
-   Then CI green on the current head, and no merge conflict.
+   run you waited on posted findings, go back to step 3 with them. Their
+   fixes are this round's push (step 5) while the PR's second review round
+   has not started; once it has, they are second-round findings and get what
+   step 5 gives one: the classifying reply where Rule 2.5 asks for it, no fix
+   commit, and the review cap (split, re-cut or discard). The pull request
+   does not merge while a review type's first run still reads Running, or
+   before each review type that has completed a review on it has its
+   first-review comment. A row the procedure waits on, a first run's or the
+   Code Review run's for the head, that still reads Running an hour after its
+   trigger (the runs on #1398 took about 8 and 18 minutes), or a first run's
+   row that another run replaced before its comment was posted, is reported
+   once on the PR, and the owner decides whether to push or merge without it,
+   so no wait on a row lasts longer than that. Then CI green on the current
+   head, and no merge conflict.
 7. **Merge it, bound to the SHA that passed.** Steps 0-6 are the gate, not
    the destination; stopping here leaves the fix on a branch while Phase 9
    describes the issue as landed. Merge once every step above passes, and

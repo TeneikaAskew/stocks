@@ -78,11 +78,12 @@ Canvas refresh pending: none
       names none
 - [ ] The pull request does not merge while a review type's first run still
       reads Running, or before each review type that has completed a review on
-      it has its first-review comment. A first run whose row still reads
-      Running an hour after its trigger (the runs on #1398 took about 8 and 18
-      minutes), or whose row another run replaced before its comment was
+      it has its first-review comment. A row the procedure waits on, a first
+      run's or the Code Review run's for the head, that still reads Running an
+      hour after its trigger (the runs on #1398 took about 8 and 18 minutes),
+      or a first run's row that another run replaced before its comment was
       posted, is reported once on the PR, and the owner decides whether to
-      push or merge without that comment: nothing waits on it forever
+      push or merge without it, so no wait on a row lasts longer than that
 - [ ] The **current head** is reviewed as CLAUDE.md §2.5 counts it: after the
       PR's latest review-triggering event, a review authored by
       `chatgpt-codex-connector[bot]` was submitted naming it in `commit_id`,
@@ -107,14 +108,18 @@ Canvas refresh pending: none
       the comment's `updated_at` is 13:28:03Z). `get_reviews` returns OLDEST
       FIRST, so the current review is on the LAST page: reading page 1 and
       finding an older "no findings" is how #991 was merged two minutes after
-      a review it never saw. A head with no readable Code Review row reading
-      Completed for it is unreviewed. It waits while that row reads Running,
-      or while the summary comment has not appeared within the roughly 3
-      minutes after the trigger that CLAUDE.md §2.5 "The gate" gives Codex;
-      otherwise, once any first-review comment a Completed row is owed (Rule
-      2.5) has been posted, a run is requested with `@codex review`.
-      Requesting a run (`@codex review`) or pushing happens only before the
-      PR's second review round has started; once it has started, nothing is
-      pushed or requested, and a PR that then needs either is split, re-cut
-      or discarded (the review cap)
+      a review it never saw. A head whose Code Review row does not read
+      Completed for it, with its own time after the latest review-triggering
+      event, is unreviewed. It waits while that row reads Running, and for
+      roughly 3 minutes after that event while the summary comment or its
+      Code Review row has not yet picked it up (no summary yet, or the row
+      still showing the previous run); otherwise, once any first-review
+      comment a Completed row is owed (Rule 2.5) has been posted, a run is
+      requested with `@codex review`. A read of the summary comment that
+      fails is retried, and does not count as a row that is missing or not
+      Completed. Requesting a run (`@codex review`) or pushing happens only
+      before the PR's second review round has started; once it has started,
+      nothing is pushed or requested, and a PR that then needs either is
+      split, re-cut or discarded (the review cap). If this item or the hold
+      above meant waiting for a run, the first two items are done again
 - [ ] CI green on the current head, no merge conflict

@@ -105,34 +105,39 @@ git.
   (4248548383, P2); step 3 left a first Security Review still Running to step 6, which went on to
   merge without waiting for it, so its SHA could go unrecorded (4248548369, P1); step 2's row cutoff
   read the summary comment's own timestamp, which the Security Review row's updates move while the
-  Code Review row can still show the previous run's Completed (4248548361, P1); and a finding's review
-  type came from the summary row and timing, which cannot tell apart two types running at once
-  (4248548397, P2). The fixes are in the three homes (CLAUDE.md Rule 2.5 and "A resolved thread is not
-  a reviewed commit", the template's Merge gate, resolve-issue Phase 8), in `8be06d6c`, `699c3f68` and
-  the commit after `699c3f68`, which acts on an independent review of `a269671e..699c3f68` before any
-  push. As they now stand: the row sentence says the row is what satisfies the rule and a review
-  object never does without it, beside the approved spec's "only when … or …" sentence, and step 2's
-  review-object condition no longer carries the step on its own; an unreviewed-head sentence makes a
-  head with no readable Code Review row Completed for it unreviewed, waits while that row reads
-  Running or until the summary has had the roughly 3 minutes "The gate" gives Codex, posts any
-  first-review comment a Completed row is owed, and only then asks for a run, and a boundary sentence
-  allows a request or a push only before the second review round has started, after which a PR that
-  needs either is split, re-cut or discarded (an earlier missing-summary sentence that asked for a run
-  at once is gone); a wait sentence holds the merge while a type's first run reads Running or before
-  each type that has completed a review has its first-review comment, with one exit (a run still
-  Running after an hour, or a row replaced first, is reported once and left to the owner), and steps 5
-  and 6 re-page the threads after any such wait and take that run's findings back to step 3, their
-  fixes joining the one push; a row-time sentence makes the Code Review row's own
+  Code Review row can still show the previous run's Completed (4248548361, P1); and a finding's
+  review type came from the summary row and timing, which cannot tell apart two types running at once
+  (4248548397, P2). The fixes are in the three homes (CLAUDE.md Rule 2.5 and "A resolved thread is
+  not a reviewed commit", the template's Merge gate, resolve-issue Phase 8), in `8be06d6c`,
+  `699c3f68`, `1e2c348f` and the commit after `1e2c348f`; the last two act on two independent reviews
+  of the fixes before any push. As they now stand: the row sentence says the row is what satisfies
+  the rule and a review object never does without it, beside the approved spec's "only when … or …"
+  sentence, and step 2's review-object condition no longer carries the step on its own; an
+  unreviewed-head sentence makes a head unreviewed when its Code Review row does not read Completed
+  for it with its own time after the latest trigger, waits while that row reads Running and for
+  roughly 3 minutes after the trigger while the summary or its row has not picked it up (no summary
+  yet, or the row still showing the previous run), posts any first-review comment a Completed row is
+  owed, and only then asks for a run, a failed read being retried rather than counted; a boundary
+  sentence allows a request or a push only before the second review round has started, after which a
+  PR that needs either is split, re-cut or discarded (an earlier missing-summary sentence that asked
+  for a run at once is gone); a wait sentence holds the merge while a type's first run reads Running
+  or before each type that has completed a review has its first-review comment, and one exit covers
+  every row the procedure waits on (still Running an hour after its trigger, or a first run's row
+  replaced first: reported once and left to the owner); steps 5 and 6 re-page the threads after any
+  such wait and take that run's findings back to step 3, their fixes joining this round's push only
+  while the second round has not started, and "The gate" and the template repeat their first two
+  items after a wait; a row-time sentence makes the Code Review row's own
   `<relative-time datetime=…>`, not the comment's `updated_at`, follow the latest trigger; and a
   finding, a comment that opens a thread, has the type of the bodied Codex review in `get_reviews`
-  submitted in its second or the one before (on #1380, #1387 and #1398 each finding was created in its
-  review's second or the next), the code review's opening with `### 💡 Codex Review`, while Codex's
-  replies, held by bodiless review objects, are never typed (an earlier REST route through
-  `pull_request_review_id` is gone). Of the same classes: CLAUDE.md's "The gate" list points at the
-  reviewed-head check and the first-review comments, and resolve-issue's step 2 opening and its
-  paragraph after step 8 say Codex reacts 👍 only once all its reviews finish with no findings, as
-  638d49f3 made CLAUDE.md say, the latter naming the Code Review row. The tasks' checks and counts
-  follow (Task 2 26/26, Task 3 10/10 and 16/16, Task 4 42/42; 35 edits).
+  submitted in its second or the one before (on #1380, #1387 and #1398 each finding was created in
+  its review's second or the next), the code review's opening with `### 💡 Codex Review`, two such
+  reviews in one window making the type ambiguous and the finding classified against the earlier
+  first-review SHA, while Codex's replies, held by bodiless review objects, are never typed (an
+  earlier REST route through `pull_request_review_id` is gone). Of the same classes: CLAUDE.md's "The
+  gate" list points at the reviewed-head check and the first-review comments, and resolve-issue's
+  step 2 opening and its paragraph after step 8 say Codex reacts 👍 only once all its reviews finish
+  with no findings, as 638d49f3 made CLAUDE.md say, the latter naming the Code Review row. The tasks'
+  checks and counts follow (Task 2 27/27, Task 3 11/11 and 18/18, Task 4 42/42; 35 edits).
 - Task numbers are unchanged. Round-1 work sits with the task that owns its file area: the registry rows
   in Task 1, code-reviewer.md in Task 2, the reviewed-head rule in Tasks 3 and 4, the staging gate and
   the resume notes in Task 5, debug-local's before-fix capture and failure handling in Task 6.
@@ -375,8 +380,9 @@ run "no project resolved"         STUB_JSON="$T/one.json" STUB_PROJECT= STAGING_
    PR does not merge, and step 5 does not push, while a type's first run reads Running or before each
    type that has completed a review has its comment, with one exit, and the threads are re-paged after
    that wait (Tasks 2, 3 and 4); the Code Review row's own time, not the comment's `updated_at`, must
-   follow the latest trigger, and an unreviewed head waits for the summary, posts any owed first-review
-   comment and asks for a run only before the second round has started (Tasks 3 and 4). Task 4 Step 8
+   follow the latest trigger, and an unreviewed head waits while its row reads Running and for roughly
+   3 minutes while the summary has not picked up the trigger, then posts any owed first-review comment
+   and asks for a run only before the second round has started (Tasks 3 and 4). Task 4 Step 8
    greps that the timing and shared-timestamp wording, the missing-summary request, the REST route, the
    unqualified request for a run and "reacts 👍 instead" are gone.
 
@@ -593,9 +599,10 @@ python3 "$SCRATCH/clause_check.py" CLAUDE.md '^### 2\.5\.' '^### 3\.' \
   "on #1398, review 5491453317 on a269671e, submitted at 13:27:56Z, holds all four findings, created at 13:27:56Z and 13:27:57Z" \
   "No security-review finding or review object has been seen on those pull requests, so the security review's heading is not known: a finding held by a bodied Codex review object without the code review's heading is the security review's, and the author notes that object's heading in a PR comment the first time one appears" \
   "A finding is an inline comment that opens a thread; Codex's replies inside a thread, held by bodiless review objects (#1380's 5482164471, #1387's 5482409691), are not findings and are never typed" \
-  "A first run whose row still reads Running an hour after its trigger (the runs on #1398 took about 8 and 18 minutes), or whose row another run replaced before its comment was posted, is reported once on the PR, and the owner decides whether to push or merge without that comment: nothing waits on it forever" \
+  "A row the procedure waits on, a first run's or the Code Review run's for the head, that still reads Running an hour after its trigger (the runs on #1398 took about 8 and 18 minutes), or a first run's row that another run replaced before its comment was posted, is reported once on the PR, and the owner decides whether to push or merge without it, so no wait on a row lasts longer than that" \
   "Codex's summary comment 6124933119 on #1398 read both rows Running at 13:09:45Z, the Code Review row since 13:09:40.806534Z and the Security Review row since 13:09:40.775251Z, as read on 2026-10-12 from the comment's edit event delivered to a Claude Code session, since its edit history is GraphQL-only" \
-  "3. The head is reviewed and each Codex review type's first review is recorded, as 'A resolved thread is not a reviewed commit' and 'A finding raised after a reviewer's first review' below say."
+  "3. The head is reviewed and each Codex review type's first review is recorded, as 'A resolved thread is not a reviewed commit' and 'A finding raised after a reviewer's first review' below say. If that meant waiting for a run, items 1 and 2 are done again." \
+  "If more than one bodied Codex review falls in a finding's window, its type is ambiguous: it is classified against the earlier of the two types' first-review SHAs, which keeps the missed count a lower bound, and its reply says so"
 ```
 
 ```bash
@@ -607,7 +614,7 @@ python3 "$SCRATCH/clause_check.py" .claude/agents/code-reviewer.md '^## Your Out
 grep -n "Be Proportional\|Be Efficient\|a pre-existing issue you noticed" .claude/agents/code-reviewer.md
 ```
 
-Expected on main: rule25 `0/26`, code-reviewer `0/4`, both exit 1, and the grep
+Expected on main: rule25 `0/27`, code-reviewer `0/4`, both exit 1, and the grep
 prints three lines.
 
 - [ ] **Step 2: Insert the two subsections.** The clean-review paragraph is qualified as Codex's
@@ -620,7 +627,9 @@ prints three lines.
   finding is a comment that opens a thread, so Codex's replies are never typed, and the holding review
   is found in `get_reviews` alone. The pull request does not merge while a type's first run reads
   Running or before each type that has completed a review has its comment (#1398 round 1, 4248548369),
-  with one exit, and "The gate" points at both checks (#1398 round 1, the pre-push review).
+  with one exit, and "The gate" points at both checks; two bodied reviews in one finding's window make
+  its type ambiguous, and it is classified against the earlier first-review SHA (#1398 round 1, the two
+  pre-push reviews).
 
 **Edit `CLAUDE.md`** (lines 195-197 on origin/main)
 
@@ -675,37 +684,42 @@ Security Review row,
 `First Codex security review: Completed on <sha>, N findings.`, with N the
 findings that run posted. The pull request does not merge while a review
 type's first run still reads Running, or before each review type that has
-completed a review on it has its first-review comment. A first run whose row
-still reads Running an hour after its trigger (the runs on #1398 took about 8
-and 18 minutes), or whose row another run replaced before its comment was
-posted, is reported once on the PR, and the owner decides whether to push or
-merge without that comment: nothing waits on it forever. A later finding is
-classified against the comment for its own review type, which is the type of
-the run that posted it. A finding is an inline comment that opens a thread;
-Codex's replies inside a thread, held by bodiless review objects (#1380's
-5482164471, #1387's 5482409691), are not findings and are never typed. A Codex
-finding names no review type either (each one on #1380, #1387 and #1398
-carries a severity badge, a title and its text), and the two types can run at
-once (Codex's summary comment 6124933119 on #1398 read both rows Running at
-13:09:45Z, the Code Review row since 13:09:40.806534Z and the Security Review
-row since 13:09:40.775251Z, as read on 2026-10-12 from the comment's edit
-event delivered to a Claude Code session, since its edit history is
-GraphQL-only), so timing cannot tell which run posted a finding. The review
-object that holds the finding does: in `get_reviews`, the Codex review object
-with a body whose `submitted_at` is the finding's `created_at` or the second
-before it (`get_review_comments` carries no review id), and that review's
-`commit_id` is then the reviewed commit. Every bodied Codex review object
-holding a finding on #1380, #1387 and #1398 is a code review's, and though no
-field says so, each opens its body with `### 💡 Codex Review` and names its
-commit as `**Reviewed commit:**` (on #1398, review 5491453317 on `a269671e`,
-submitted at 13:27:56Z, holds all four findings, created at 13:27:56Z and
-13:27:57Z). No security-review finding or review object has been seen on those
-pull requests, so the security review's heading is not known: a finding held
-by a bodied Codex review object without the code review's heading is the
-security review's, and the author notes that object's heading in a PR comment
-the first time one appears. A reviewer whose clean review does create a review
-object, as a person's approval does, needs no such comment: that object's
-`commit_id` names the commit its first review covered.
+completed a review on it has its first-review comment. A row the procedure
+waits on, a first run's or the Code Review run's for the head, that still
+reads Running an hour after its trigger (the runs on #1398 took about 8 and 18
+minutes), or a first run's row that another run replaced before its comment
+was posted, is reported once on the PR, and the owner decides whether to push
+or merge without it, so no wait on a row lasts longer than that. A later
+finding is classified against the comment for its own review type, which is
+the type of the run that posted it. A finding is an inline comment that opens
+a thread; Codex's replies inside a thread, held by bodiless review objects
+(#1380's 5482164471, #1387's 5482409691), are not findings and are never
+typed. A Codex finding names no review type either (each one on #1380, #1387
+and #1398 carries a severity badge, a title and its text), and the two types
+can run at once (Codex's summary comment 6124933119 on #1398 read both rows
+Running at 13:09:45Z, the Code Review row since 13:09:40.806534Z and the
+Security Review row since 13:09:40.775251Z, as read on 2026-10-12 from the
+comment's edit event delivered to a Claude Code session, since its edit
+history is GraphQL-only), so timing cannot tell which run posted a finding.
+The review object that holds the finding does: in `get_reviews`, the Codex
+review object with a body whose `submitted_at` is the finding's `created_at`
+or the second before it (`get_review_comments` carries no review id), and that
+review's `commit_id` is then the reviewed commit. If more than one bodied
+Codex review falls in a finding's window, its type is ambiguous: it is
+classified against the earlier of the two types' first-review SHAs, which
+keeps the missed count a lower bound, and its reply says so. Every bodied
+Codex review object holding a finding on #1380, #1387 and #1398 is a code
+review's, and though no field says so, each opens its body with
+`### 💡 Codex Review` and names its commit as `**Reviewed commit:**` (on #1398,
+review 5491453317 on `a269671e`, submitted at 13:27:56Z, holds all four
+findings, created at 13:27:56Z and 13:27:57Z). No security-review finding or
+review object has been seen on those pull requests, so the security review's
+heading is not known: a finding held by a bodied Codex review object without
+the code review's heading is the security review's, and the author notes that
+object's heading in a PR comment the first time one appears. A reviewer whose
+clean review does create a review object, as a person's approval does, needs
+no such comment: that object's `commit_id` names the commit its first review
+covered.
 
 #### A resolved thread is not a reviewed commit
 ````
@@ -748,7 +762,7 @@ or makes worse. A pre-existing problem you noticed goes under a separate
 
 - [ ] **Step 4: Run the checks again (expect PASS)**
 
-Same commands. Expected: rule25 `26/26`, code-reviewer `4/4`, exit 0; the grep
+Same commands. Expected: rule25 `27/27`, code-reviewer `4/4`, exit 0; the grep
 prints nothing (exit 1).
 
 - [ ] **Step 5: Commit**
@@ -776,7 +790,8 @@ done_when[3].
   4240629921; since #1398 round 1, 4248548383, it says the row is what satisfies the rule and a review
   object never does without it), its scoping sentence ("The rule counts Codex's code review only: …"),
   its row-time sentence ("The Code Review row's own time …", #1398 round 1, 4248548361), its
-  unreviewed-head sentence ("A head with no readable Code Review row …") and its boundary sentence
+  unreviewed-head sentence ("A head whose Code Review row does not read Completed for it …", with the
+  failed-read sentence after it) and its boundary sentence
   ("Requesting a run … or pushing happens only before …", #1398 round 1, 4248548383 and the pre-push
   review), which Task 4 states again in step 2 in the same words (round 1).
 
@@ -792,7 +807,8 @@ python3 "$SCRATCH/clause_check.py" CLAUDE.md '^#### A resolved thread is not a r
   "Only the row says which review ran (a review object names no review type: Codex's reply on a thread is a bodiless review object, as #1380's review 5482164471 on 2b559d3d is, and its security review runs under the same account), so the row is what satisfies this rule, and a review object never does without it: it counts only once the Code Review row reads Completed for the same SHA, and it is where that run's findings are read" \
   "The rule counts Codex's code review only: the review-triggering events are the PR opened for review, the draft marked ready, an @codex review comment and a push of new commits, and a review object counts only if it is not CHANGES_REQUESTED" \
   "The Code Review row's own time, the <relative-time datetime=…> inside it, is what must follow the latest of those events: the comment's updated_at does not stand in for it, since an update to either row moves it while the Code Review row can still show the previous run's Completed (on #1398 the Code Review row reads Completed at 13:28:00Z, the Security Review row at 13:17:34Z, and the comment's updated_at is 13:28:03Z)" \
-  "When the head is unreviewed and the change is more than cosmetic, do not read resolution as coverage. A head with no readable Code Review row reading Completed for it is unreviewed. It waits while that row reads Running, or while the summary comment has not appeared within the roughly 3 minutes after the trigger that CLAUDE.md §2.5 'The gate' gives Codex; otherwise, once any first-review comment a Completed row is owed (Rule 2.5) has been posted, a run is requested with @codex review." \
+  "When the head is unreviewed and the change is more than cosmetic, do not read resolution as coverage. A head whose Code Review row does not read Completed for it, with its own time after the latest review-triggering event, is unreviewed. It waits while that row reads Running, and for roughly 3 minutes after that event while the summary comment or its Code Review row has not yet picked it up (no summary yet, or the row still showing the previous run); otherwise, once any first-review comment a Completed row is owed (Rule 2.5) has been posted, a run is requested with @codex review." \
+  "A read of the summary comment that fails is retried, and does not count as a row that is missing or not Completed." \
   "Requesting a run (@codex review) or pushing happens only before the PR's second review round has started; once it has started, nothing is pushed or requested, and a PR that then needs either is split, re-cut or discarded (the review cap)"
 ```
 
@@ -806,24 +822,27 @@ python3 "$SCRATCH/clause_check.py" .github/pull_request_template.md '^## Merge g
   "a clean Codex review leaves no review object" \
   "Only the row says which review ran (a review object names no review type: Codex's reply on a thread is a bodiless review object, as #1380's review 5482164471 on 2b559d3d is, and its security review runs under the same account), so the row is what satisfies this rule, and a review object never does without it: it counts only once the Code Review row reads Completed for the same SHA, and it is where that run's findings are read" \
   "The rule counts Codex's code review only: the review-triggering events are the PR opened for review, the draft marked ready, an @codex review comment and a push of new commits, and a review object counts only if it is not CHANGES_REQUESTED" \
-  "A head with no readable Code Review row reading Completed for it is unreviewed. It waits while that row reads Running, or while the summary comment has not appeared within the roughly 3 minutes after the trigger that CLAUDE.md §2.5 'The gate' gives Codex; otherwise, once any first-review comment a Completed row is owed (Rule 2.5) has been posted, a run is requested with @codex review." \
+  "A head whose Code Review row does not read Completed for it, with its own time after the latest review-triggering event, is unreviewed. It waits while that row reads Running, and for roughly 3 minutes after that event while the summary comment or its Code Review row has not yet picked it up (no summary yet, or the row still showing the previous run); otherwise, once any first-review comment a Completed row is owed (Rule 2.5) has been posted, a run is requested with @codex review." \
+  "A read of the summary comment that fails is retried, and does not count as a row that is missing or not Completed." \
   "Requesting a run (@codex review) or pushing happens only before the PR's second review round has started; once it has started, nothing is pushed or requested, and a PR that then needs either is split, re-cut or discarded (the review cap)" \
   "for Codex, the first review's SHA is the one the PR's comment for the finding's review type records, First Codex code review: Completed on <sha>, … or First Codex security review: Completed on <sha>, …" \
   "the finding's review type is that of the run that posted it, read from the review object that holds it as CLAUDE.md Rule 2.5 says, since a Codex finding names none" \
   "The Code Review row's own time, the <relative-time datetime=…> inside it, is what must follow the latest of those events: the comment's updated_at does not stand in for it, since an update to either row moves it while the Code Review row can still show the previous run's Completed (on #1398 the Code Review row reads Completed at 13:28:00Z, the Security Review row at 13:17:34Z, and the comment's updated_at is 13:28:03Z)" \
   "The pull request does not merge while a review type's first run still reads Running, or before each review type that has completed a review on it has its first-review comment" \
-  "A first run whose row still reads Running an hour after its trigger (the runs on #1398 took about 8 and 18 minutes), or whose row another run replaced before its comment was posted, is reported once on the PR, and the owner decides whether to push or merge without that comment: nothing waits on it forever" \
-  "- [ ] The pull request does not merge while a review type's first run still reads Running"
+  "A row the procedure waits on, a first run's or the Code Review run's for the head, that still reads Running an hour after its trigger (the runs on #1398 took about 8 and 18 minutes), or a first run's row that another run replaced before its comment was posted, is reported once on the PR, and the owner decides whether to push or merge without it, so no wait on a row lasts longer than that" \
+  "- [ ] The pull request does not merge while a review type's first run still reads Running" \
+  "If this item or the hold above meant waiting for a run, the first two items are done again"
 ```
 
-Expected on main: claude-25 `0/10`, template `0/16`, both exit 1.
+Expected on main: claude-25 `0/11`, template `0/18`, both exit 1.
 
 - [ ] **Step 2: Replace the §2.5 paragraphs**, and have the closing paragraph ("When the head is
   unreviewed and the change is more than cosmetic, comment `@codex review` and wait…") wait while the
   Code Review row reads Running, as resolve-issue step 2 and the template do, so a run in progress is
   not asked for again (#1387 round 1), and ask for a run only before the PR's second review round has
   started, since after that a run is a third and the PR is split, re-cut or discarded (#1398 round 1);
-  the gate list gains an item for the reviewed head and the first-review comments (#1398 round 1)
+  the gate list gains an item for the reviewed head and the first-review comments, after which items 1
+  and 2 are done again if it meant a wait (#1398 round 1)
 
 **Edit `CLAUDE.md`** (lines 180-182 on origin/main; #1398 round 1: the gate list points at the reviewed-head check and the first-review comments)
 
@@ -840,9 +859,10 @@ New:
 ````markdown
 2. Every thread either resolved, or replied to with why it is not being
    actioned. Zero unresolved threads is the bar.
-3. The head is reviewed and each Codex review type's first review is
-   recorded, as "A resolved thread is not a reviewed commit" and "A finding
-   raised after a reviewer's first review" below say.
+3. The head is reviewed and each Codex review type's first review is recorded,
+   as "A resolved thread is not a reviewed commit" and "A finding raised after
+   a reviewer's first review" below say. If that meant waiting for a run,
+   items 1 and 2 are done again.
 4. Only then CI, then merge.
 ````
 
@@ -934,20 +954,24 @@ New:
 
 ````markdown
 When the head is unreviewed and the change is more than cosmetic, do not read
-resolution as coverage. A head with no readable Code Review row reading
-Completed for it is unreviewed. It waits while that row reads Running, or
-while the summary comment has not appeared within the roughly 3 minutes after
-the trigger that CLAUDE.md §2.5 "The gate" gives Codex; otherwise, once any
-first-review comment a Completed row is owed (Rule 2.5) has been posted, a run
-is requested with `@codex review`. Requesting a run (`@codex review`) or
-pushing happens only before the PR's second review round has started; once it
-has started, nothing is pushed or requested, and a PR that then needs either
-is split, re-cut or discarded (the review cap).
+resolution as coverage. A head whose Code Review row does not read Completed
+for it, with its own time after the latest review-triggering event, is
+unreviewed. It waits while that row reads Running, and for roughly 3 minutes
+after that event while the summary comment or its Code Review row has not yet
+picked it up (no summary yet, or the row still showing the previous run);
+otherwise, once any first-review comment a Completed row is owed (Rule 2.5)
+has been posted, a run is requested with `@codex review`. A read of the
+summary comment that fails is retried, and does not count as a row that is
+missing or not Completed. Requesting a run (`@codex review`) or pushing
+happens only before the PR's second review round has started; once it has
+started, nothing is pushed or requested, and a PR that then needs either is
+split, re-cut or discarded (the review cap).
 ````
 
 - [ ] **Step 3: Replace the template's Merge gate items**; the classifying-reply item reads a finding's
-  type from the review object that holds it, and an item of its own holds the merge for each type's
-  first-review comment, with its exit (#1398 round 1)
+  type from the review object that holds it, an item of its own holds the merge for each type's
+  first-review comment, with its exit, and the reviewed-head item repeats the first two items after a
+  wait (#1398 round 1)
 
 **Edit `.github/pull_request_template.md`** (lines 66-73 on origin/main)
 
@@ -982,11 +1006,12 @@ New:
       names none
 - [ ] The pull request does not merge while a review type's first run still
       reads Running, or before each review type that has completed a review on
-      it has its first-review comment. A first run whose row still reads
-      Running an hour after its trigger (the runs on #1398 took about 8 and 18
-      minutes), or whose row another run replaced before its comment was
+      it has its first-review comment. A row the procedure waits on, a first
+      run's or the Code Review run's for the head, that still reads Running an
+      hour after its trigger (the runs on #1398 took about 8 and 18 minutes),
+      or a first run's row that another run replaced before its comment was
       posted, is reported once on the PR, and the owner decides whether to
-      push or merge without that comment: nothing waits on it forever
+      push or merge without it, so no wait on a row lasts longer than that
 - [ ] The **current head** is reviewed as CLAUDE.md §2.5 counts it: after the
       PR's latest review-triggering event, a review authored by
       `chatgpt-codex-connector[bot]` was submitted naming it in `commit_id`,
@@ -1011,21 +1036,25 @@ New:
       the comment's `updated_at` is 13:28:03Z). `get_reviews` returns OLDEST
       FIRST, so the current review is on the LAST page: reading page 1 and
       finding an older "no findings" is how #991 was merged two minutes after
-      a review it never saw. A head with no readable Code Review row reading
-      Completed for it is unreviewed. It waits while that row reads Running,
-      or while the summary comment has not appeared within the roughly 3
-      minutes after the trigger that CLAUDE.md §2.5 "The gate" gives Codex;
-      otherwise, once any first-review comment a Completed row is owed (Rule
-      2.5) has been posted, a run is requested with `@codex review`.
-      Requesting a run (`@codex review`) or pushing happens only before the
-      PR's second review round has started; once it has started, nothing is
-      pushed or requested, and a PR that then needs either is split, re-cut
-      or discarded (the review cap)
+      a review it never saw. A head whose Code Review row does not read
+      Completed for it, with its own time after the latest review-triggering
+      event, is unreviewed. It waits while that row reads Running, and for
+      roughly 3 minutes after that event while the summary comment or its
+      Code Review row has not yet picked it up (no summary yet, or the row
+      still showing the previous run); otherwise, once any first-review
+      comment a Completed row is owed (Rule 2.5) has been posted, a run is
+      requested with `@codex review`. A read of the summary comment that
+      fails is retried, and does not count as a row that is missing or not
+      Completed. Requesting a run (`@codex review`) or pushing happens only
+      before the PR's second review round has started; once it has started,
+      nothing is pushed or requested, and a PR that then needs either is
+      split, re-cut or discarded (the review cap). If this item or the hold
+      above meant waiting for a run, the first two items are done again
 ````
 
 - [ ] **Step 4: Run both checks again (expect PASS)**
 
-Same commands. Expected: claude-25 `10/10`, template `16/16`, exit 0. Also
+Same commands. Expected: claude-25 `11/11`, template `18/18`, exit 0. Also
 `grep -n "A push does not" CLAUDE.md` prints nothing (exit 1).
 
 - [ ] **Step 5: Commit**
@@ -1075,7 +1104,7 @@ python3 "$SCRATCH/clause_check.py" .claude/commands/resolve-issue.md '^## Phase 
   "since the bar there is a Code Review row reading Completed, which a run with findings reaches too" \
   "Push every first-round fix in one push" \
   "or, once the PR's second review round has started, split, re-cut or discard it as step 5 says, since the run that move started is a third" \
-  "A head with no readable Code Review row reading Completed for it is unreviewed. It waits while that row reads Running, or while the summary comment has not appeared within the roughly 3 minutes after the trigger that CLAUDE.md §2.5 'The gate' gives Codex; otherwise, once any first-review comment a Completed row is owed (Rule 2.5) has been posted, a run is requested with @codex review. Requesting a run (@codex review) or pushing happens only before the PR's second review round has started; once it has started, nothing is pushed or requested, and a PR that then needs either is split, re-cut or discarded (the review cap)" \
+  "A head whose Code Review row does not read Completed for it, with its own time after the latest review-triggering event, is unreviewed. It waits while that row reads Running, and for roughly 3 minutes after that event while the summary comment or its Code Review row has not yet picked it up (no summary yet, or the row still showing the previous run); otherwise, once any first-review comment a Completed row is owed (Rule 2.5) has been posted, a run is requested with @codex review. A read of the summary comment that fails is retried, and does not count as a row that is missing or not Completed. Requesting a run (@codex review) or pushing happens only before the PR's second review round has started; once it has started, nothing is pushed or requested, and a PR that then needs either is split, re-cut or discarded (the review cap). A Code Review row that stays Running gets step 6's exit." \
   "A clean run posts no review at all (Codex's summary comment says it reacts 👍 once all its reviews finish with no findings), so requiring a review object would deadlock every PR that has nothing wrong with it" \
   "A completed review with no findings posts no review at all: Codex's summary comment says it reacts 👍 once all its reviews finish with no findings. So get_reviews cannot by itself distinguish" \
   "When the run a row shows is the PR's first of that review type, post the PR comment CLAUDE.md Rule 2.5 asks for now, while the row still shows its SHA, since the next run replaces the row: for the Code Review row, First Codex code review: Completed on <sha>, no findings. or First Codex code review: Completed on <sha>, N findings., and for the Security Review row, First Codex security review: Completed on <sha>, no findings. or First Codex security review: Completed on <sha>, N findings., with N the findings that run posted" \
@@ -1087,12 +1116,12 @@ python3 "$SCRATCH/clause_check.py" .claude/commands/resolve-issue.md '^## Phase 
   "The Code Review row's own time, the <relative-time datetime=…> inside it, is what must follow the latest of those events: the comment's updated_at does not stand in for it, since an update to either row moves it while the Code Review row can still show the previous run's Completed (on #1398 the Code Review row reads Completed at 13:28:00Z, the Security Review row at 13:17:34Z, and the comment's updated_at is 13:28:03Z)" \
   "The pull request does not merge while a review type's first run still reads Running, or before each review type that has completed a review on it has its first-review comment" \
   "the Code Review row's own time, the <relative-time datetime=…> inside that row, must follow it. The comment's updated_at does not stand in for it: the summary is one comment holding both rows" \
-  "a Code Review row whose own time does not follow the latest review-triggering event, no readable Code Review row, a Codex review object naming the head" \
+  "a Code Review row whose own time does not follow the latest review-triggering event, no Code Review row in the summary, a Codex review object naming the head" \
   "once no review type's first run still reads Running and each one that has completed a review has its first-review comment (step 3), since a run the push starts replaces its type's row" \
   "wait while a review type's first run still reads Running" \
-  "A first run whose row still reads Running an hour after its trigger (the runs on #1398 took about 8 and 18 minutes), or whose row another run replaced before its comment was posted, is reported once on the PR, and the owner decides whether to push or merge without that comment: nothing waits on it forever" \
+  "A row the procedure waits on, a first run's or the Code Review run's for the head, that still reads Running an hour after its trigger (the runs on #1398 took about 8 and 18 minutes), or a first run's row that another run replaced before its comment was posted, is reported once on the PR, and the owner decides whether to push or merge without it, so no wait on a row lasts longer than that" \
   "After that wait, re-page get_review_comments: if the run you waited on posted findings, go back to step 3 with them, and their fixes join the same push" \
-  "After any such wait, re-page get_review_comments: if the run you waited on posted findings, go back to step 3 with them, and their fixes join the same push" \
+  "After any such wait, re-page get_review_comments: if the run you waited on posted findings, go back to step 3 with them. Their fixes are this round's push (step 5) while the PR's second review round has not started; once it has, they are second-round findings and get what step 5 gives one: the classifying reply where Rule 2.5 asks for it, no fix commit, and the review cap (split, re-cut or discard)" \
   "the head SHA and the author check are all this condition needs, and it still counts only alongside the row below" \
   "The row is the condition this step rests on, so its time is checked as strictly as its author: the same argument the forgeability clause above makes, applied to timing instead of authorship" \
   "(the Codex review with a body in get_reviews submitted in the finding's second or the one before; a Codex reply inside a thread is not a finding)" \
@@ -1335,18 +1364,22 @@ New:
 ````markdown
    What fails this step: a summary showing Running, or naming an older commit
    with all threads `is_outdated`, a Code Review row whose own time does not
-   follow the latest review-triggering event, no readable Code Review row, a
-   Codex review object naming the head while the Code Review row does not read
-   Completed for it, or a head whose only reviews are yours. A head with no
-   readable Code Review row reading Completed for it is unreviewed. It waits
-   while that row reads Running, or while the summary comment has not appeared
-   within the roughly 3 minutes after the trigger that CLAUDE.md §2.5 "The
-   gate" gives Codex; otherwise, once any first-review comment a Completed row
-   is owed (Rule 2.5) has been posted, a run is requested with
-   `@codex review`. Requesting a run (`@codex review`) or pushing happens only
-   before the PR's second review round has started; once it has started,
+   follow the latest review-triggering event, no Code Review row in the
+   summary, a Codex review object naming the head while the Code Review row
+   does not read Completed for it, or a head whose only reviews are yours. A
+   head whose Code Review row does not read Completed for it, with its own
+   time after the latest review-triggering event, is unreviewed. It waits
+   while that row reads Running, and for roughly 3 minutes after that event
+   while the summary comment or its Code Review row has not yet picked it up
+   (no summary yet, or the row still showing the previous run); otherwise,
+   once any first-review comment a Completed row is owed (Rule 2.5) has been
+   posted, a run is requested with `@codex review`. A read of the summary
+   comment that fails is retried, and does not count as a row that is missing
+   or not Completed. Requesting a run (`@codex review`) or pushing happens
+   only before the PR's second review round has started; once it has started,
    nothing is pushed or requested, and a PR that then needs either is split,
-   re-cut or discarded (the review cap).
+   re-cut or discarded (the review cap). A Code Review row that stays Running
+   gets step 6's exit.
 3. **Re-page `get_review_comments` now**, after step 2 established the review
    is Completed — do not reuse step 1's snapshot. Step 1 runs deliberately
    before CI and can therefore run while the current head's review is still
@@ -1475,8 +1508,9 @@ New:
   head that moved past the second round** (#1387 round 1, 4240629928). Step 6 reads the comment for
   the finding's review type and posts one for a row first Completed since step 3 (#1387 round 2), and
   waits while a type's first run reads Running: the PR does not merge before each type that has
-  completed a review has its comment, with one exit, and after the wait step 6 re-pages the threads
-  (#1398 round 1, 4248548369 and the pre-push review).
+  completed a review has its comment, with one exit that covers every row the procedure waits on, and
+  after the wait step 6 re-pages the threads; the fixes of what it finds are this round's push only
+  while the second round has not started (#1398 round 1, 4248548369 and the pre-push reviews).
 
 **Edit `.claude/commands/resolve-issue.md`** (lines 4127-4128 on origin/main)
 
@@ -1501,15 +1535,20 @@ New:
    again too: wait while a review type's first run still reads Running, and a
    row whose first run has read Completed since step 3 gets its comment now,
    as step 3 says. After any such wait, re-page `get_review_comments`: if the
-   run you waited on posted findings, go back to step 3 with them, and their
-   fixes join the same push. The pull request does not merge while a review
-   type's first run still reads Running, or before each review type that has
-   completed a review on it has its first-review comment. A first run whose
-   row still reads Running an hour after its trigger (the runs on #1398 took
-   about 8 and 18 minutes), or whose row another run replaced before its
-   comment was posted, is reported once on the PR, and the owner decides
-   whether to push or merge without that comment: nothing waits on it forever.
-   Then CI green on the current head, and no merge conflict.
+   run you waited on posted findings, go back to step 3 with them. Their
+   fixes are this round's push (step 5) while the PR's second review round
+   has not started; once it has, they are second-round findings and get what
+   step 5 gives one: the classifying reply where Rule 2.5 asks for it, no fix
+   commit, and the review cap (split, re-cut or discard). The pull request
+   does not merge while a review type's first run still reads Running, or
+   before each review type that has completed a review on it has its
+   first-review comment. A row the procedure waits on, a first run's or the
+   Code Review run's for the head, that still reads Running an hour after its
+   trigger (the runs on #1398 took about 8 and 18 minutes), or a first run's
+   row that another run replaced before its comment was posted, is reported
+   once on the PR, and the owner decides whether to push or merge without it,
+   so no wait on a row lasts longer than that. Then CI green on the current
+   head, and no merge conflict.
 ````
 
 **Edit `.claude/commands/resolve-issue.md`** (lines 4140-4141 on origin/main; #1387 round 1: a head that moved past the second round)
@@ -1565,9 +1604,10 @@ showed no review for eleven minutes while the run was still in flight.
 Same command. Expected: phase8 `42/42`, exit 0. And
 `grep -n "There is no round limit\|Nine review rounds\|push nothing but\|either of these satisfies" .claude/commands/resolve-issue.md`
 prints nothing (exit 1), and so does
-`grep -n "summary row and timing\|summary's own timestamp\|which step 6 checks\|step 3 noted it\|and otherwise comment\|reacts 👍 instead\|only a reaction\|pull_request_review_id\|unreadable summary\|re-cut instead\|After the second, push nothing" CLAUDE.md .github/pull_request_template.md .claude/commands/resolve-issue.md`
+`grep -n "summary row and timing\|summary's own timestamp\|which step 6 checks\|step 3 noted it\|and otherwise comment\|reacts 👍 instead\|only a reaction\|pull_request_review_id\|unreadable summary\|re-cut instead\|After the second, push nothing\|no readable\|waits on it forever\|has not appeared within" CLAUDE.md .github/pull_request_template.md .claude/commands/resolve-issue.md`
 (#1398 round 1). The row sentence, the scoping sentence, the row-time sentence, the wait sentence, its
-exit, the unreviewed-head sentence and the boundary sentence read the same in all three homes; the
+exit, the unreviewed-head sentence, the failed-read sentence and the boundary sentence read the same in
+all three homes; the
 boundary sentence is in resolve-issue twice, in step 2 and in step 5:
 
 ```bash
@@ -1589,26 +1629,31 @@ time = norm("The Code Review row's own time, the <relative-time datetime=…> in
             "13:17:34Z, and the comment's updated_at is 13:28:03Z).")
 wait = norm("The pull request does not merge while a review type's first run still reads Running, or "
             "before each review type that has completed a review on it has its first-review comment.")
-exit_ = norm("A first run whose row still reads Running an hour after its trigger (the runs on #1398 took "
-             "about 8 and 18 minutes), or whose row another run replaced before its comment was posted, is "
-             "reported once on the PR, and the owner decides whether to push or merge without that comment: "
-             "nothing waits on it forever")
-unrev = norm("A head with no readable Code Review row reading Completed for it is unreviewed. It waits while "
-             "that row reads Running, or while the summary comment has not appeared within the roughly 3 "
-             "minutes after the trigger that CLAUDE.md §2.5 \"The gate\" gives Codex; otherwise, once any "
-             "first-review comment a Completed row is owed (Rule 2.5) has been posted, a run is requested "
-             "with @codex review.")
+exit_ = norm("A row the procedure waits on, a first run's or the Code Review run's for the head, that still "
+             "reads Running an hour after its trigger (the runs on #1398 took about 8 and 18 minutes), or a "
+             "first run's row that another run replaced before its comment was posted, is reported once on "
+             "the PR, and the owner decides whether to push or merge without it, so no wait on a row lasts "
+             "longer than that")
+unrev = norm("A head whose Code Review row does not read Completed for it, with its own time after the "
+             "latest review-triggering event, is unreviewed. It waits while that row reads Running, and for "
+             "roughly 3 minutes after that event while the summary comment or its Code Review row has not "
+             "yet picked it up (no summary yet, or the row still showing the previous run); otherwise, once "
+             "any first-review comment a Completed row is owed (Rule 2.5) has been posted, a run is "
+             "requested with @codex review.")
+retry = norm("A read of the summary comment that fails is retried, and does not count as a row that is "
+             "missing or not Completed.")
 bound = norm("Requesting a run (@codex review) or pushing happens only before the PR's second review round "
              "has started; once it has started, nothing is pushed or requested, and a PR that then needs "
              "either is split, re-cut or discarded (the review cap)")
 for f in ("CLAUDE.md", ".github/pull_request_template.md", ".claude/commands/resolve-issue.md"):
     text = norm(open(f).read())
-    print(f, *(text.count(s) for s in (row, scope, time, wait, exit_, unrev, bound, "both halves count")))
+    print(f, *(text.count(s) for s in (row, scope, time, wait, exit_, unrev, retry, bound,
+                                        "both halves count")))
 EOF
 ```
 
-Expected: `CLAUDE.md 1 1 1 1 1 1 1 0`, `.github/pull_request_template.md 1 1 1 1 1 1 1 0`,
-`.claude/commands/resolve-issue.md 1 1 1 1 1 1 2 0`. Each home names the code review's comment and
+Expected: `CLAUDE.md 1 1 1 1 1 1 1 1 0`, `.github/pull_request_template.md 1 1 1 1 1 1 1 1 0`,
+`.claude/commands/resolve-issue.md 1 1 1 1 1 1 1 2 0`. Each home names the code review's comment and
 the security review's equally (#1387 round 2):
 
 ```bash
@@ -2331,7 +2376,7 @@ git commit -m "docs: record #NNN under FEAT-CICD-001"
 - [ ] **Step 4: Tick the boxes with evidence, then prove the ready-for-review gate locally**
 
 Change each `- [ ]` under "Done when" to `- [x]` and append ` — <evidence>` after the item's text, the
-check name and its output from the tasks above (Task 1 15/15, Task 2 26/26, Task 3 10/10 and 16/16, Task 4
+check name and its output from the tasks above (Task 1 15/15, Task 2 27/27, Task 3 11/11 and 18/18, Task 4
 42/42, Task 5's greps, count, stub test and 8/8, Task 6 4/4 and 6/6, Step 1's replay, gate and audit,
 and the records). Save the body to `$SCRATCH/pr-body.md`, re-run Step 1, then:
 

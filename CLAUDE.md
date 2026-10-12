@@ -179,9 +179,10 @@ inside that window. Concretely, before any merge:
    means nothing; wait and re-check.
 2. Every thread either resolved, or replied to with why it is not being
    actioned. Zero unresolved threads is the bar.
-3. The head is reviewed and each Codex review type's first review is
-   recorded, as "A resolved thread is not a reviewed commit" and "A finding
-   raised after a reviewer's first review" below say.
+3. The head is reviewed and each Codex review type's first review is recorded,
+   as "A resolved thread is not a reviewed commit" and "A finding raised after
+   a reviewer's first review" below say. If that meant waiting for a run,
+   items 1 and 2 are done again.
 4. Only then CI, then merge.
 
 A PR is done when: CI green **and** no unresolved review threads **and** no
@@ -235,37 +236,42 @@ Security Review row,
 `First Codex security review: Completed on <sha>, N findings.`, with N the
 findings that run posted. The pull request does not merge while a review
 type's first run still reads Running, or before each review type that has
-completed a review on it has its first-review comment. A first run whose row
-still reads Running an hour after its trigger (the runs on #1398 took about 8
-and 18 minutes), or whose row another run replaced before its comment was
-posted, is reported once on the PR, and the owner decides whether to push or
-merge without that comment: nothing waits on it forever. A later finding is
-classified against the comment for its own review type, which is the type of
-the run that posted it. A finding is an inline comment that opens a thread;
-Codex's replies inside a thread, held by bodiless review objects (#1380's
-5482164471, #1387's 5482409691), are not findings and are never typed. A Codex
-finding names no review type either (each one on #1380, #1387 and #1398
-carries a severity badge, a title and its text), and the two types can run at
-once (Codex's summary comment 6124933119 on #1398 read both rows Running at
-13:09:45Z, the Code Review row since 13:09:40.806534Z and the Security Review
-row since 13:09:40.775251Z, as read on 2026-10-12 from the comment's edit
-event delivered to a Claude Code session, since its edit history is
-GraphQL-only), so timing cannot tell which run posted a finding. The review
-object that holds the finding does: in `get_reviews`, the Codex review object
-with a body whose `submitted_at` is the finding's `created_at` or the second
-before it (`get_review_comments` carries no review id), and that review's
-`commit_id` is then the reviewed commit. Every bodied Codex review object
-holding a finding on #1380, #1387 and #1398 is a code review's, and though no
-field says so, each opens its body with `### 💡 Codex Review` and names its
-commit as `**Reviewed commit:**` (on #1398, review 5491453317 on `a269671e`,
-submitted at 13:27:56Z, holds all four findings, created at 13:27:56Z and
-13:27:57Z). No security-review finding or review object has been seen on those
-pull requests, so the security review's heading is not known: a finding held
-by a bodied Codex review object without the code review's heading is the
-security review's, and the author notes that object's heading in a PR comment
-the first time one appears. A reviewer whose clean review does create a review
-object, as a person's approval does, needs no such comment: that object's
-`commit_id` names the commit its first review covered.
+completed a review on it has its first-review comment. A row the procedure
+waits on, a first run's or the Code Review run's for the head, that still
+reads Running an hour after its trigger (the runs on #1398 took about 8 and 18
+minutes), or a first run's row that another run replaced before its comment
+was posted, is reported once on the PR, and the owner decides whether to push
+or merge without it, so no wait on a row lasts longer than that. A later
+finding is classified against the comment for its own review type, which is
+the type of the run that posted it. A finding is an inline comment that opens
+a thread; Codex's replies inside a thread, held by bodiless review objects
+(#1380's 5482164471, #1387's 5482409691), are not findings and are never
+typed. A Codex finding names no review type either (each one on #1380, #1387
+and #1398 carries a severity badge, a title and its text), and the two types
+can run at once (Codex's summary comment 6124933119 on #1398 read both rows
+Running at 13:09:45Z, the Code Review row since 13:09:40.806534Z and the
+Security Review row since 13:09:40.775251Z, as read on 2026-10-12 from the
+comment's edit event delivered to a Claude Code session, since its edit
+history is GraphQL-only), so timing cannot tell which run posted a finding.
+The review object that holds the finding does: in `get_reviews`, the Codex
+review object with a body whose `submitted_at` is the finding's `created_at`
+or the second before it (`get_review_comments` carries no review id), and that
+review's `commit_id` is then the reviewed commit. If more than one bodied
+Codex review falls in a finding's window, its type is ambiguous: it is
+classified against the earlier of the two types' first-review SHAs, which
+keeps the missed count a lower bound, and its reply says so. Every bodied
+Codex review object holding a finding on #1380, #1387 and #1398 is a code
+review's, and though no field says so, each opens its body with
+`### 💡 Codex Review` and names its commit as `**Reviewed commit:**` (on #1398,
+review 5491453317 on `a269671e`, submitted at 13:27:56Z, holds all four
+findings, created at 13:27:56Z and 13:27:57Z). No security-review finding or
+review object has been seen on those pull requests, so the security review's
+heading is not known: a finding held by a bodied Codex review object without
+the code review's heading is the security review's, and the author notes that
+object's heading in a PR comment the first time one appears. A reviewer whose
+clean review does create a review object, as a person's approval does, needs
+no such comment: that object's `commit_id` names the commit its first review
+covered.
 
 #### A resolved thread is not a reviewed commit
 
@@ -314,15 +320,18 @@ so the current review is on the last page, and all threads `is_outdated` still
 means the review predates the current content entirely.
 
 When the head is unreviewed and the change is more than cosmetic, do not read
-resolution as coverage. A head with no readable Code Review row reading
-Completed for it is unreviewed. It waits while that row reads Running, or
-while the summary comment has not appeared within the roughly 3 minutes after
-the trigger that CLAUDE.md §2.5 "The gate" gives Codex; otherwise, once any
-first-review comment a Completed row is owed (Rule 2.5) has been posted, a run
-is requested with `@codex review`. Requesting a run (`@codex review`) or
-pushing happens only before the PR's second review round has started; once it
-has started, nothing is pushed or requested, and a PR that then needs either
-is split, re-cut or discarded (the review cap).
+resolution as coverage. A head whose Code Review row does not read Completed
+for it, with its own time after the latest review-triggering event, is
+unreviewed. It waits while that row reads Running, and for roughly 3 minutes
+after that event while the summary comment or its Code Review row has not yet
+picked it up (no summary yet, or the row still showing the previous run);
+otherwise, once any first-review comment a Completed row is owed (Rule 2.5)
+has been posted, a run is requested with `@codex review`. A read of the
+summary comment that fails is retried, and does not count as a row that is
+missing or not Completed. Requesting a run (`@codex review`) or pushing
+happens only before the PR's second review round has started; once it has
+started, nothing is pushed or requested, and a PR that then needs either is
+split, re-cut or discarded (the review cap).
 
 #### Verify the claim before fixing it, and reproduce before you fix
 
