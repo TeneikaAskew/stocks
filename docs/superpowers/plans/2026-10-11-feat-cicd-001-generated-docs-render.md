@@ -850,6 +850,20 @@ number, so it follows the draft PR in a second push that changes no gate file.
 
 ---
 
+## After the merge: a docs/ pull request
+
+A feature branch cannot carry these, since the gate refuses `01-PRODUCT-REQUIREMENTS.md` and the prose of 05-a outside
+its blocks on one. The red team's round 4 recorded them; they land on one `docs/` branch once this PR merges.
+
+- **REQ-GOV-004's "Verified by" cell** (`01-PRODUCT-REQUIREMENTS.md:31`) reads "planned: `scripts/gate/spec_gate.py`
+  (FEAT-CICD-001)". It becomes `scripts/gate/spec_gate.py` (`check_product_scope`, `generated_doc_refusals`) and
+  `tests/scripts/test_spec_gate.py`. The requirement's list of render inputs gains `scripts/maintenance/__init__.py`,
+  which the gate now holds fixed beside the blocks (`RENDER_INPUTS`).
+- **05-a's maintenance note** (`docs/product/infrastructure/05-a-ARCHITECTURE.md:5`) says "Edit prose freely; never
+  hand-edit inside a marker block". On a feature branch only re-rendered blocks may change, and prose is refused, so
+  the sentence becomes: "Never hand-edit inside a marker block. A feature branch may carry the blocks only as
+  `doc_inventory.py` re-renders them (REQ-GOV-004); prose changes on a `docs/` branch."
+
 ## Solyra (not this plan's PR)
 
 These three files are byte-identical on both mains today, and the identity is kept only by convention:
