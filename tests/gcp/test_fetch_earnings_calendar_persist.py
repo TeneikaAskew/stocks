@@ -182,6 +182,7 @@ def test_full_feed_archive_preserves_weekly_subset(monkeypatch):
     def publish(run,manifest):
         assert writes and manifest['native_csv_rows']==3 and manifest['universe_count']==3
         assert manifest['coverage_scope']=='av_raw_horizon' and manifest['source_all_coverage']=='unavailable'
+        assert manifest['coverage_complete'] and manifest['verified_count']==3 and manifest['pending_count']==0
         return dict(manifest,source_manifest_id='synthetic-test-id',source_manifest_known_at=datetime.now(timezone.utc).isoformat())
     monkeypatch.setattr(av,'publish_manifest',publish)
     frame=calendar.fetch_alphavantage_earnings(scope='weekly')

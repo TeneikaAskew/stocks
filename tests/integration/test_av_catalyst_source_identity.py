@@ -28,19 +28,45 @@ def test_nullable_feed_replay_converges(catalyst_db):
         c.commit()
 
 
-def test_all_news_writers_replay_under_migrated_constraints(catalyst_db):
+def test_all_news_writers_replay_under_migrated_constraints(catalyst_db,monkeypatch):
+    from gcp.fetchers import fetch_news_sentiment as news,fetch_rss_news as rss
+    from scripts import backfill_news_sentiment as standalone
+    from gcp import backfill_ticker as ticker
     c=catalyst_db
-    # Actual writer preparation paths are added by this remediation; this
-    # parametrized integration uses their one shared SQL identity contract.
-    from gcp.fetchers.fetch_news_sentiment import prepare_news_rows
-    from gcp.fetchers.fetch_rss_news import prepare_news_rows as rss_prepare
-    from scripts.backfill_news_sentiment import prepare_news_rows as standalone_prepare
-    from gcp.backfill_ticker import prepare_news_rows as ticker_prepare
-    row={'ticker':'IWM','published_ts':datetime(2026,10,9,tzinfo=timezone.utc),'url':None,'title':'same','source':'wire'}
-    for prepare in [prepare_news_rows,rss_prepare,standalone_prepare,ticker_prepare]:
-        rows=prepare(pd.DataFrame([row])).to_dict('records')
-        c.execute(text(av.identity_write_sql('news_sentiment',False)),{'rows':av.canonical(rows)});c.commit()
-    assert c.execute(text("SELECT count(*) FROM news_sentiment")).scalar()==1
+    def execute(sql,params=None,read=False,**kw):
+        concurrent='INDEX CONCURRENTLY' in sql
+        if concurrent:c.execution_options(isolation_level='AUTOCOMMIT')
+        result=c.execute(text(sql),params or {})
+        answer=[dict(r) for r in result.mappings()] if read else result.rowcount
+        c.commit()
+        if concurrent:c.execution_options(isolation_level='READ COMMITTED')
+        return answer
+    monkeypatch.setattr(av,'isolated_sql',execute)
+    native={'time_published':'20261009T000000','url':None,'title':'same','source':'wire',
+            'ticker_sentiment':[{'ticker':'IWM'}]}
+    class Response:
+        def raise_for_status(self):pass
+        def json(self):return {'feed':[native]}
+    monkeypatch.setattr(standalone.requests,'get',lambda *a,**kw:Response())
+    monkeypatch.setenv('AV_API_KEY','dummy')
+    monkeypatch.setattr('sys.argv',['backfill_news_sentiment','--tickers=IWM'])
+    def scheduled():news.persist_to_cloud_sql(pd.DataFrame(news._article_to_rows(native)))
+    def rss_writer():rss.write_to_cloud_sql(rss.build_dataframe([{'ticker':'IWM','published_ts':datetime(2026,10,9,tzinfo=timezone.utc),'url':None,'title':'same','source':'wire'}]))
+    def ticker_writer():ticker.persist_backfill_news([native])
+    writers=[scheduled,rss_writer,ticker_writer,standalone.main]
+    for writer in writers:
+        writer();writer()
+    assert c.execute(text('SELECT count(*) FROM news_sentiment')).scalar()==1;c.commit()
+    names=['gcp.fetchers.fetch_news_sentiment','gcp.backfill_ticker','gcp.fetchers.fetch_rss_news','scripts.backfill_news_sentiment']
+    manifest={'old_writers_drained':True,'verification_evidence_uri':'gs://ephemeral-test/actual-writers',
+              'writer_checks':{name:{'entrypoint_verified':True,'inactive_old_commands_blocked':True,
+                'identity_contract':'av-source-identity/v1','source_commit':'a'*40,'image_digest':'sha256:'+'b'*64} for name in names}}
+    assert av.finalize_identity('news_sentiment',manifest,executor=execute)['phase']=='final'
+    for writer in writers:
+        writer();writer()
+    assert c.execute(text('SELECT count(*) FROM news_sentiment')).scalar()==1
+    assert c.execute(text("SELECT is_nullable FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='news_sentiment' AND column_name='source_identity_hash'")).scalar()=='NO'
+    assert c.execute(text('SELECT url FROM news_sentiment')).scalar() is None
 
 
 def test_staged_identity_migration_requires_drain_and_preserves_duplicate_evidence(catalyst_db):

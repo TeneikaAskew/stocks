@@ -176,25 +176,26 @@ class Capture:
         return value
 
 
+def _request_body(function,parameters,api_key,*,url="https://www.alphavantage.co/query",timeout_s=30,max_bytes=MAX_SOURCE_BYTES):
+    import requests
+    with requests.Session() as session:
+        response=session.get(url,params={"function":function,**parameters,"apikey":api_key},
+                             timeout=min(timeout_s,30),stream=True,allow_redirects=False)
+        response.raise_for_status()
+        if 300<=response.status_code<400:
+            raise SourceError('unexpected_redirect')
+        parts,count=[],0
+        for piece in response.iter_content(chunk_size=65536):
+            count+=len(piece)
+            if count>max_bytes:raise SourceError('source_body_limit')
+            parts.append(piece)
+        return b''.join(parts),datetime.now(UTC)
+
+
 def fetch_capture(function: str, parameters: dict, api_key: str, *, timeout_s=30, max_bytes=MAX_SOURCE_BYTES):
-    def request():
-        import requests
-        with requests.Session() as session:
-            # New session has no retry adapter. Disable redirects explicitly.
-            response = session.get("https://www.alphavantage.co/query",
-                                   params={"function": function, **parameters, "apikey": api_key},
-                                   timeout=min(timeout_s, 30), stream=True, allow_redirects=False)
-            response.raise_for_status()
-            if 300 <= response.status_code < 400:
-                raise SourceError("unexpected_redirect")
-            parts, count = [], 0
-            for piece in response.iter_content(chunk_size=65536):
-                count += len(piece)
-                if count > max_bytes:
-                    raise SourceError("source_body_limit")
-                parts.append(piece)
-            return b"".join(parts), datetime.now(UTC)
-    body, clock = bounded_call(request, timeout_s, error="transport_failed")
+    # Parent supervisor bounds actual acquisition, streaming, parsing and cleanup.
+    body,clock=bounded_call(lambda:_request_body(function,parameters,api_key,
+                           timeout_s=timeout_s,max_bytes=max_bytes),timeout_s,error='transport_failed')
     return Capture.from_bytes(function, parameters, body, retrieved_at=clock)
 
 
@@ -347,6 +348,12 @@ def isolated_sql(sql, params=None, *, timeout_s=2, read=False):
             raise SourceError("database_outcome_unavailable") from None
 
 
+def read_dataframe(sql,params=None,*,timeout_s=5):
+    """One supervised strict SELECT, including pool/connect and result receipt."""
+    import pandas as pd
+    return pd.DataFrame(isolated_sql(sql,params,read=True,timeout_s=timeout_s))
+
+
 def capture_sql(captures):
     """One statement; caller combines this with its bounded row transaction."""
     return """
@@ -460,7 +467,7 @@ def claim_work(function, tickers, scope, owner, *, limit=100, force=False, dry_r
     return [r["ticker"] for r in rows]
 
 
-def finish_work(function, scope, outcomes, *, timeout_s=8):
+def finish_work(function, scope, outcomes, *, owner,timeout_s=8):
     if not outcomes:
         return
     isolated_sql("""UPDATE av_catalyst_work w SET lease_owner=NULL,lease_expires_at=NULL,
@@ -469,8 +476,8 @@ def finish_work(function, scope, outcomes, *, timeout_s=8):
         LEAST(168,power(2,LEAST(w.failure_count,8))) * interval '1 hour' END,
       last_successful_observation_at=CASE WHEN o.success THEN o.observed_at ELSE w.last_successful_observation_at END
       FROM jsonb_to_recordset(CAST(:outcomes AS jsonb)) o(ticker text,success boolean,observed_at timestamptz)
-      WHERE w.function=:function AND w.scope=:scope AND w.ticker=o.ticker""",
-      {"outcomes": canonical(outcomes), "function": function, "scope": scope}, timeout_s=timeout_s)
+      WHERE w.function=:function AND w.scope=:scope AND w.ticker=o.ticker AND w.lease_owner=:owner""",
+      {"outcomes": canonical(outcomes), "function": function, "scope": scope,"owner":owner}, timeout_s=timeout_s)
 
 
 def write_identity_group(table, rows, *, captures=(), final=False, outcomes=(), timeout_s=8):
@@ -496,10 +503,14 @@ def write_identity_group(table, rows, *, captures=(), final=False, outcomes=(), 
           next_retry_at=CASE WHEN o.success THEN NULL ELSE clock_timestamp()+
             LEAST(168,power(2,LEAST(w.failure_count,8))) * interval '1 hour' END,
           last_successful_observation_at=CASE WHEN o.success THEN o.observed_at ELSE w.last_successful_observation_at END
-          FROM jsonb_to_recordset(CAST(:outcomes AS jsonb)) o(function text,ticker text,scope text,success boolean,observed_at timestamptz)
-          WHERE w.function=o.function AND w.ticker=o.ticker AND w.scope=o.scope RETURNING w.ticker)""")
+          FROM jsonb_to_recordset(CAST(:outcomes AS jsonb)) o(function text,ticker text,scope text,success boolean,observed_at timestamptz,lease_owner text)
+          WHERE w.function=o.function AND w.ticker=o.ticker AND w.scope=o.scope AND w.lease_owner=o.lease_owner RETURNING w.ticker)""")
     if pieces:
-        isolated_sql("WITH "+",".join(pieces)+" SELECT 1",parameters,timeout_s=timeout_s)
+        # SELECT-based identity function is not a data-modifying CTE: it must
+        # be referenced, otherwise PostgreSQL can discard the entire write.
+        dependencies=' CROSS JOIN '.join('(SELECT count(*) FROM '+name+') '+name+'_count'
+          for name in ['captured','written','attempts'] if any(piece.startswith(name+' AS') for piece in pieces))
+        isolated_sql("WITH "+",".join(pieces)+" SELECT 1 FROM "+dependencies,parameters,timeout_s=timeout_s)
     return len(rows)
 
 
@@ -511,9 +522,17 @@ def publish_manifest(run, manifest, *, manifest_id=None, timeout_s=2):
        "manifest": canonical(manifest)}, timeout_s=timeout_s)
     # This clock is captured only after the manifest/source transaction ACK.
     known = datetime.now(UTC)
-    isolated_sql("""INSERT INTO av_catalyst_manifest_publications(manifest_id,known_at)
-      VALUES(CAST(:id AS uuid),:known) ON CONFLICT DO NOTHING""", {"id": manifest_id, "known": known}, timeout_s=timeout_s)
-    return {**manifest, "source_manifest_id": manifest_id, "source_manifest_known_at": known.isoformat()}
+    rows=isolated_sql("""WITH published AS(
+      INSERT INTO av_catalyst_manifest_publications(manifest_id,known_at)
+      VALUES(CAST(:id AS uuid),:known) ON CONFLICT DO NOTHING RETURNING known_at)
+      SELECT known_at FROM published UNION ALL
+      SELECT known_at FROM av_catalyst_manifest_publications WHERE manifest_id=CAST(:id AS uuid)
+      LIMIT 1""", {"id": manifest_id, "known": known}, read=True,timeout_s=timeout_s)
+    if len(rows)!=1:
+        raise SourceError('manifest_publication_ack_unavailable')
+    # Retry cannot replace the original availability clock with its new proposal.
+    actual_known=rows[0]['known_at']
+    return {**manifest, "source_manifest_id": manifest_id, "source_manifest_known_at": actual_known.isoformat()}
 
 
 @dataclass

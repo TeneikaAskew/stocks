@@ -770,7 +770,7 @@ ALTER TABLE earnings_history
 -- BEGIN AV CATALYST REVISIONS
 -- Install journals, source columns, seed and trigger atomically. This lock
 -- also serializes alternate writers across the installation boundary.
-BEGIN;
+-- ATOMIC-BEGIN av-catalyst-revisions
 LOCK TABLE earnings_history IN SHARE ROW EXCLUSIVE MODE;
 ALTER TABLE earnings_history
     ADD COLUMN IF NOT EXISTS source_fetch_id UUID,
@@ -886,7 +886,7 @@ CREATE TRIGGER av_timing_immutable BEFORE UPDATE OR DELETE ON earnings_timing_ob
 DROP TRIGGER IF EXISTS av_revision_observation_immutable ON earnings_revision_observations;
 CREATE TRIGGER av_revision_observation_immutable BEFORE UPDATE OR DELETE ON earnings_revision_observations
     FOR EACH ROW EXECUTE FUNCTION av_catalyst_append_only();
-COMMIT;
+-- ATOMIC-END av-catalyst-revisions
 -- END AV CATALYST REVISIONS
 
 

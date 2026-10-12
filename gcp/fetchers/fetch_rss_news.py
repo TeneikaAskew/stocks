@@ -635,9 +635,7 @@ def build_dataframe(matched_rows: list[dict]) -> pd.DataFrame:
     now = datetime.now(timezone.utc)
     for row in matched_rows:
         title = (row.get("title") or "")[:500] or None
-        url = (row.get("url") or "")[:1000]
-        if not url:
-            continue  # url is part of UNIQUE — required
+        url = (row.get("url") or "")[:1000] or None
         summary = (row.get("description") or "")[:2000] or None
         # Truncate label to VARCHAR(20)
         label = row.get("overall_sentiment_label")
@@ -673,7 +671,7 @@ def build_dataframe(matched_rows: list[dict]) -> pd.DataFrame:
     df = pd.DataFrame(records)
 
     # Validate required columns (UNIQUE constraint cols)
-    required = ["ticker", "published_ts", "url"]
+    required = ["ticker", "published_ts"]
     for col in required:
         if col not in df.columns:
             logger.error("DataFrame missing required column: %s", col)
@@ -688,7 +686,7 @@ def build_dataframe(matched_rows: list[dict]) -> pd.DataFrame:
     # Final dedup on UNIQUE constraint (within this batch — Cloud SQL handles
     # cross-batch via ON CONFLICT)
     before = len(df)
-    df = df.drop_duplicates(subset=required, keep="first")
+    df = prepare_news_rows(df)
     if len(df) < before:
         logger.info("Dropped %d intra-batch duplicates", before - len(df))
 

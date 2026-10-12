@@ -38,6 +38,7 @@ from lib.eastern_time import ET_NAME
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
 from gcp.fetchers import _av_ingestion as av
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import json
 import uuid
 import math
@@ -109,11 +110,9 @@ def _yahoo_timing_from_event_dt(event_dt) -> str | None:
     return None  # intraday — let AV fallback decide
 
 
-def _yahoo_provider_observation(ticker, limit=40):
+def _bounded_yahoo_session():
     """Actual bounded curl adapter; rejects an unsupported installed library."""
-    import yfinance as yf
     from curl_cffi.requests import Session
-    from importlib.metadata import version
     class BoundedSession(Session):
         attempts = 0
         def request(self, *args, **kwargs):
@@ -136,9 +135,16 @@ def _yahoo_provider_observation(ticker, limit=40):
             if response.status_code >= 300 or total > av.MAX_SOURCE_BYTES:
                 raise av.SourceError("yahoo_response_limit")
             return response
+    return BoundedSession(impersonate="chrome")
+
+
+def _yahoo_provider_observation(ticker, limit=40):
+    """Actual bounded curl adapter; rejects an unsupported installed library."""
+    import yfinance as yf
+    from importlib.metadata import version
     if version("yfinance") != "1.7.0":
         raise av.SourceError("yahoo_adapter_version_unavailable")
-    with BoundedSession(impersonate="chrome") as session:
+    with _bounded_yahoo_session() as session:
         frame = yf.Ticker(ticker,session=session).get_earnings_dates(limit=limit)
         if frame is None:
             raise av.SourceError("yahoo_observation_unavailable")
@@ -360,10 +366,9 @@ def _earnings_history_tickers() -> list[str]:
 
 
 def resolve_refresh_universe(scope,lookback_days=30,force=False):
-    from gcp.database import query_to_dataframe_strict
     if not 1<=lookback_days<=90:
         raise av.SourceError("lookback_limit")
-    return query_to_dataframe_strict("""
+    return av.read_dataframe("""
       WITH universe AS(SELECT ticker FROM earnings_history UNION SELECT ticker FROM earnings_calendar
         WHERE earnings_date BETWEEN (NOW() AT TIME ZONE 'America/New_York')::date-CAST(:days AS integer)
           AND (NOW() AT TIME ZONE 'America/New_York')::date+14 UNION SELECT ticker FROM watchlists WHERE removed_at IS NULL)
@@ -423,24 +428,25 @@ def persist_history(frame,*,executor=None):
 def assess_history_manifest(run,universe,*,executor=None):
     executor=executor or av.isolated_sql
     facts=executor("""SELECT e.ticker,e.reported_date,r.revision_id,r.known_at,r.payload->>'reported_eps' AS reported_eps,
-      av_earnings_values(to_jsonb(e))=r.payload AS coherent_cache,CASE WHEN proof.capture_id IS NOT NULL THEN 'source_verified' ELSE r.availability_quality END AS availability_quality,
+      av_earnings_values(to_jsonb(e))=r.payload AS coherent_cache,CASE WHEN proof.capture_id IS NOT NULL THEN 'source_verified' ELSE CASE WHEN r.availability_quality='source_verified' THEN 'source_provenance_unavailable' ELSE r.availability_quality END END AS availability_quality,
       COALESCE(proof.yahoo_timing_observation_id,r.yahoo_timing_observation_id) AS yahoo_timing_observation_id FROM earnings_history e
       LEFT JOIN LATERAL(SELECT * FROM earnings_history_revisions v WHERE v.ticker=e.ticker
         AND v.fiscal_date_ending=e.fiscal_date_ending AND v.known_at<=:cutoff
         ORDER BY v.known_at DESC,v.revision_id DESC LIMIT 1) r ON true
       LEFT JOIN LATERAL(SELECT o.* FROM earnings_revision_observations o
-        JOIN av_catalyst_source_captures c ON c.capture_id=o.capture_id AND c.validation_status='validated'
+        JOIN av_catalyst_source_captures c ON c.capture_id=o.capture_id AND c.validation_status='validated' AND c.function='EARNINGS' AND c.ticker=r.ticker
         WHERE o.revision_id=r.revision_id AND o.known_at<=:cutoff AND c.source_retrieved_at<=:cutoff
         ORDER BY o.known_at DESC,o.capture_id DESC LIMIT 1) proof ON true
       WHERE e.ticker=ANY(CAST(:universe AS text[])) AND e.reported_date BETWEEN
         (:cutoff AT TIME ZONE 'America/New_York')::date-30 AND (:cutoff AT TIME ZONE 'America/New_York')::date
       ORDER BY e.ticker,e.reported_date""",{"universe":universe,"cutoff":datetime.now(timezone.utc)},read=True,timeout_s=8)
+    assessment_date=run.started_at.astimezone(ZoneInfo(ET_NAME)).date()
     verified=[r for r in facts if r["availability_quality"]=='source_verified' and r["reported_eps"] is not None and r["coherent_cache"]]
     events=[{"ticker":r["ticker"],"event_reported_date":str(r["reported_date"])} for r in facts]
     manifest={"schema_version":"av_catalyst_run/v1","pipeline_scope":run.mode,"scope_hash":av.digest(events),
       "universe_count":len(universe),"configured_universe":universe,"expected_events":events,
-      "source_window_start":(run.started_at.date()-pd.Timedelta(days=30)).isoformat(),
-      "source_window_end":run.started_at.date().isoformat(),"complete_through":run.started_at.isoformat() if len(verified)==len(facts) and not run.failed else None,
+      "source_window_start":(assessment_date-pd.Timedelta(days=30)).isoformat(),
+      "source_window_end":assessment_date.isoformat(),"complete_through":run.started_at.isoformat() if len(verified)==len(facts) and not run.failed else None,
       "coverage_complete":len(verified)==len(facts) and not run.failed,
       "requested_count":len(events),"verified_count":len(verified),"excluded_count":0,
       "pending_count":len(facts)-len(verified),"source_revision_ids":[r["revision_id"] for r in verified],
@@ -510,14 +516,17 @@ def main(argv=None):
                 outcomes.append({"ticker":ticker,"success":False,"observed_at":None})
                 run.groups.append({"ticker":ticker,"error_class":str(exc) if isinstance(exc,av.SourceError) else type(exc).__name__,"coverage_complete":False})
             if len(outcomes)>=10 and not args.dry_run:
-                av.finish_work("EARNINGS",scope,outcomes);outcomes=[]
+                av.finish_work("EARNINGS",scope,outcomes,owner=run.execution_name);outcomes=[]
         if not args.dry_run:
-            av.finish_work("EARNINGS",scope,outcomes)
+            av.finish_work("EARNINGS",scope,outcomes,owner=run.execution_name)
             manifest=assess_history_manifest(run,universe)
     except Exception as exc:
         run.failed+=1
         run.groups.append({"error_class":str(exc) if isinstance(exc,av.SourceError) else type(exc).__name__,"coverage_complete":False})
-    return run.terminal(dry_run=args.dry_run,extra=manifest)
+    try:
+        return run.terminal(dry_run=args.dry_run,extra=manifest)
+    finally:
+        av.close_sql_worker()
 
 
 if __name__=="__main__":

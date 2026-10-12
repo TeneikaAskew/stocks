@@ -86,6 +86,8 @@ def _fetch(params,dry_run=False):
     data=capture.json()
     if not isinstance(data.get('feed'),list) or any(not isinstance(a,dict) for a in data['feed']):
         raise av.SourceError("news_schema")
+    if len(data['feed'])>int(params.get('limit',1000)):
+        raise av.SourceError('news_article_limit')
     return CapturedFeed(data['feed'],capture,uri)
 
 
@@ -122,6 +124,9 @@ def _article_to_rows(article: dict) -> list[dict]:
 
     rows = []
     for ts in ticker_entries:
+        if len(rows)>=4000:
+            from gcp.fetchers import _av_ingestion as av
+            raise av.SourceError('news_expansion_limit')
         tk = (ts.get("ticker") or "").upper().strip()
         if not tk:
             continue
@@ -454,6 +459,8 @@ def run_news_windows(run,scopes,key,*,limit=1000,max_requests=300,dry_run=False,
             qid=window['query_identity']
             if limits[qid]<=0:
                 continue
+            if run.request_attempts:
+                __import__('time').sleep(.4)
             limits[qid]-=1;run.request_attempts+=1;run.attempted+=1
             start=pd.Timestamp(window['window_start']).to_pydatetime();end=pd.Timestamp(window['window_end']).to_pydatetime()
             params={'function':'NEWS_SENTIMENT',**window['parameters'],'limit':limit,'apikey':key,'sort':'EARLIEST',
@@ -461,12 +468,16 @@ def run_news_windows(run,scopes,key,*,limit=1000,max_requests=300,dry_run=False,
             try:
                 feed=fetcher(params,dry_run=dry_run)
                 source_rows=[]
+                if len(feed)>limit:
+                    raise av.SourceError('news_article_limit')
                 for article in feed:
                     published=_parse_av_timestamp(article.get('time_published',''))
                     if published is None:
                         raise av.SourceError('news_required_timestamp')
                     if start<=published<end:
                         source_rows.extend(_article_to_rows(article))
+                        if len(source_rows)>4000:
+                            raise av.SourceError('news_expansion_limit')
                 if len(source_rows)>4000 or len(av.canonical(source_rows).encode())>4_800_000:
                     raise av.SourceError('news_expansion_limit')
                 saturated=len(feed)>=limit
@@ -495,10 +506,20 @@ def run_news_windows(run,scopes,key,*,limit=1000,max_requests=300,dry_run=False,
         if len(rows)>40000 or len(av.canonical(rows).encode())>64*1024*1024:
             raise av.SourceError('news_group_limit')
         if not dry_run:
-            _write_news_group(rows,captures,outcomes,final,executor)
+            try:
+                _write_news_group(rows,captures,outcomes,final,executor)
+            except Exception:
+                # Proposed frontiers are not evidence of committed coverage.
+                for note in run.groups[group_start:]:
+                    note.update(coverage_complete=False,complete_through=None,cursor_after=None,
+                                commit_outcome='unknown_or_failed')
+                raise
             run.rows_written+=len(rows)
         run.processed+=successes
-        if dry_run or budget_exhausted:
+        if dry_run:
+            run.pending=max(0,len(windows)-run.attempted)+sum(bool(g.get('saturated')) for g in run.groups)
+            break
+        if budget_exhausted:
             break
     if not dry_run:
         facts=executor("""SELECT query_identity,
@@ -527,8 +548,7 @@ def main(argv=None):
         if len(topics)>5 or not 1<=args.limit<=1000 or not 1<=args.max_requests<=300:
             raise av.SourceError('news_admission_limit')
         if not tickers and not topics:
-            from gcp.database import query_to_dataframe_strict
-            frame=query_to_dataframe_strict("""SELECT DISTINCT ticker FROM (
+            frame=av.read_dataframe("""SELECT DISTINCT ticker FROM (
               SELECT ticker FROM watchlists WHERE removed_at IS NULL UNION SELECT ticker FROM earnings_calendar
               WHERE :days>0 AND earnings_date BETWEEN (NOW() AT TIME ZONE 'America/New_York')::date-CAST(:days AS integer)
                 AND (NOW() AT TIME ZONE 'America/New_York')::date+CAST(:days AS integer)

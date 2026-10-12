@@ -68,3 +68,75 @@ def test_source_identity_preserves_null_and_normalizes_numbers():
     article = {"ticker": "IWM", "published_ts": datetime(2026, 10, 9, tzinfo=timezone.utc),
                "url": None, "title": "Article", "source": "wire", "sentiment_score": None}
     assert av.source_identity("news_sentiment", article) == av.source_identity("news_sentiment", dict(article, sentiment_score=.5))
+
+
+def test_revision_installation_is_one_real_applier_transaction():
+    from pathlib import Path
+    from gcp.apply_schema import split_statement_groups
+    sql=Path('gcp/schema.sql').read_text().split('-- BEGIN AV CATALYST REVISIONS')[1].split('-- END AV CATALYST REVISIONS')[0]
+    units=split_statement_groups(sql)
+    assert len(units)==1 and len(units[0])>10
+    assert not any(statement.strip().upper() in {'BEGIN;','COMMIT;'} for statement in units[0])
+
+
+def test_actual_trickling_http_and_blocked_archive_are_cancelled():
+    import threading
+    from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200);self.end_headers()
+            try:
+                for _ in range(100):
+                    self.wfile.write(b'x');self.wfile.flush();time.sleep(.05)
+            except (BrokenPipeError,ConnectionResetError):pass
+        def log_message(self,*a):pass
+    server=ThreadingHTTPServer(('127.0.0.1',0),Handler);server.daemon_threads=True
+    thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+    url='http://127.0.0.1:'+str(server.server_port)
+    before={p.pid for p in multiprocessing.active_children()}
+    started=time.monotonic()
+    try:
+        with pytest.raises(av.SourceError,match='deadline'):
+            av.bounded_call(lambda:av._request_body('EARNINGS',{'symbol':'IWM'},'dummy',url=url,timeout_s=2),.6)
+        assert time.monotonic()-started<1.7
+        assert {p.pid for p in multiprocessing.active_children()}==before
+        class Blob:
+            def upload_from_string(self,*a,**kw):time.sleep(60)
+        class Bucket:
+            def blob(self,*a):return Blob()
+        class Client:
+            def bucket(self,*a):return Bucket()
+        capture=av.Capture.from_bytes('EARNINGS',{'symbol':'IWM'},b'{}')
+        started=time.monotonic()
+        with pytest.raises(av.SourceError,match='archive_failed'):
+            av.archive_capture(capture,bucket='dummy',client=Client(),timeout_s=.3)
+        assert time.monotonic()-started<1.4
+        assert {p.pid for p in multiprocessing.active_children()}==before
+    finally:
+        server.shutdown();server.server_close();thread.join(1)
+
+
+def test_actual_blocked_database_acquisition_is_cancelled(monkeypatch):
+    import socket,threading
+    for selector in ['CLOUD_SQL_CONNECTION_NAME','CLOUD_SQL_URL','GOOGLE_APPLICATION_CREDENTIALS']:
+        monkeypatch.delenv(selector,raising=False)
+    server=socket.socket();server.bind(('127.0.0.1',0));server.listen()
+    monkeypatch.setenv('DB_HOST','127.0.0.1');monkeypatch.setenv('DB_PORT',str(server.getsockname()[1]))
+    monkeypatch.setenv('DB_NAME','av_catalysts');monkeypatch.setenv('DB_USER','trading_user');monkeypatch.setenv('DB_PASS','testpass')
+    # This server accepts TCP and deliberately never completes PostgreSQL auth.
+    peers=[]
+    def accept():
+        try:peers.append(server.accept()[0])
+        except OSError:pass
+    thread=threading.Thread(target=accept,daemon=True);thread.start()
+    av.close_sql_worker();before={p.pid for p in multiprocessing.active_children()}
+    started=time.monotonic()
+    try:
+        with pytest.raises(av.SourceError,match='database_outcome_unavailable'):
+            av.isolated_sql('SELECT 1',read=True,timeout_s=1)
+        assert time.monotonic()-started<2.1
+        assert {p.pid for p in multiprocessing.active_children()}==before
+    finally:
+        av.close_sql_worker();server.close()
+        for peer in peers:peer.close()
+        thread.join(.1)

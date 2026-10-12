@@ -138,7 +138,15 @@ def run_insider(run,tickers,key,*,dry_run=False,fetcher=None,writer=None,final=F
         if not outcomes:
             return
         if not dry_run:
-            writer('insider_transactions',rows,captures=captures,final=final,outcomes=outcomes)
+            try:
+                writer('insider_transactions',rows,captures=captures,final=final,outcomes=outcomes)
+            except Exception:
+                affected={o['ticker'] for o in outcomes}
+                for note in run.groups:
+                    if note.get('ticker') in affected:
+                        note.update(coverage_complete=False,complete_through=None,cursor_after=None,
+                                    commit_outcome='unknown_or_failed')
+                raise
             run.rows_written+=len(rows)
         run.processed+=sum(o['success'] for o in outcomes)
         rows=[];captures=[];outcomes=[]
@@ -146,6 +154,8 @@ def run_insider(run,tickers,key,*,dry_run=False,fetcher=None,writer=None,final=F
         if time_module.monotonic()-start>=820:
             run.pending+=len(tickers)-run.attempted
             break
+        if run.request_attempts:
+            time_module.sleep(.4)
         run.attempted+=1;run.request_attempts+=1
         try:
             frame=fetcher(ticker,key,dry_run=dry_run)
@@ -159,13 +169,13 @@ def run_insider(run,tickers,key,*,dry_run=False,fetcher=None,writer=None,final=F
                 rows.extend(prepared)
             if not dry_run:
                 captures.append(av.capture_record(capture,frame.attrs['raw_uri'],len(frame),source_count=frame.attrs['source_count']))
-            outcomes.append({'function':'INSIDER_TRANSACTIONS','ticker':ticker,'scope':'daily','success':True,'observed_at':capture.retrieved_at.isoformat()})
+            outcomes.append({'function':'INSIDER_TRANSACTIONS','ticker':ticker,'scope':'daily','lease_owner':run.execution_name,'success':True,'observed_at':capture.retrieved_at.isoformat()})
             run.groups.append({'ticker':ticker,'source_event_max':str(frame['transaction_date'].max()) if not frame.empty else None,
               'requested_source_window':None,'complete_through':capture.retrieved_at.isoformat(),'coverage_complete':True,
               'cursor_before':None,'cursor_after':capture.retrieved_at.isoformat(),'excluded_future':frame.attrs.get('skipped_future',0)})
         except Exception as exc:
             run.failed+=1
-            outcomes.append({'function':'INSIDER_TRANSACTIONS','ticker':ticker,'scope':'daily','success':False,'observed_at':None})
+            outcomes.append({'function':'INSIDER_TRANSACTIONS','ticker':ticker,'scope':'daily','lease_owner':run.execution_name,'success':False,'observed_at':None})
             run.groups.append({'ticker':ticker,'coverage_complete':False,'error_class':str(exc) if isinstance(exc,av.SourceError) else type(exc).__name__})
         if len(outcomes)==10:
             flush()
@@ -190,8 +200,7 @@ def main(argv=None):
         if args.tickers:
             universe=sorted({t.strip().upper() for t in args.tickers.split(',') if t.strip()})
         else:
-            from gcp.database import query_to_dataframe_strict
-            frame=query_to_dataframe_strict("""SELECT DISTINCT ticker FROM (
+            frame=av.read_dataframe("""SELECT DISTINCT ticker FROM (
               SELECT ticker FROM watchlists WHERE removed_at IS NULL UNION SELECT ticker FROM earnings_calendar
               WHERE earnings_date BETWEEN (NOW() AT TIME ZONE 'America/New_York')::date-CAST(:days AS integer)
                 AND (NOW() AT TIME ZONE 'America/New_York')::date+CAST(:days AS integer)) scoped ORDER BY ticker""",

@@ -481,7 +481,7 @@ def test_refresh_selector_is_bounded_one_strict_query(monkeypatch):
         assert 'earnings_history' in sql and 'source_fetch_id IS NULL' in sql
         assert params['days']==30 and params['scope']=='daily'
         return pd.DataFrame({'ticker':['AAPL'],'needs_refresh':[True]})
-    monkeypatch.setattr('gcp.database.query_to_dataframe_strict',read)
+    monkeypatch.setattr(history.av,'read_dataframe',read)
     result=history.resolve_refresh_universe('daily',30)
     assert result.iloc[0]['needs_refresh']
     assert len(calls)==1 and calls[0][2]['timeout_s']==5
@@ -494,3 +494,83 @@ def test_backfill_phase_budget_preserves_primary_outcome(monkeypatch):
         raise AssertionError('primary/source chain ran without admission')
     monkeypatch.setattr(history,'fetch_history_for_ticker',forbidden)
     assert history.main(['--tickers=AAPL','--dry-run'])==1
+
+
+def test_yahoo_provider_process_cancels_blocking_request():
+    """Actual child, curl adapter, local HTTP, parent deadline and reaping."""
+    import threading,time,multiprocessing
+    from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
+    from gcp.fetchers import _av_ingestion as av
+    from gcp.fetchers import fetch_earnings_history as history
+    calls=[]
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            calls.append(self.path)
+            if self.path=='/blocking':time.sleep(10)
+            self.send_response(200);self.end_headers()
+            try:self.wfile.write(b'x'*(av.MAX_SOURCE_BYTES+1) if self.path=='/large' else b'{}')
+            except (BrokenPipeError,ConnectionResetError):pass
+        def log_message(self,*a):pass
+    server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
+    server.daemon_threads=True
+    worker=threading.Thread(target=server.serve_forever,daemon=True);worker.start()
+    base='http://127.0.0.1:'+str(server.server_port)
+    def provider(ticker):
+        from gcp.fetchers.fetch_earnings_history import _bounded_yahoo_session
+        with _bounded_yahoo_session() as session:
+            for _ in range(4):session.get(base+'/ok')
+            try:session.get(base+'/fifth')
+            except av.SourceError as exc:
+                assert str(exc)=='yahoo_request_limit'
+                return {'request_attempts':session.attempts}
+            raise AssertionError('fifth request was admitted')
+    before={p.pid for p in multiprocessing.active_children()}
+    events=[]
+    try:
+        assert history.fetch_yahoo_observation('IWM',provider=provider,on_event=events.append)['request_attempts']==4
+        assert len(events)==4 and calls==['/ok']*4
+        def oversized(ticker):
+            from gcp.fetchers.fetch_earnings_history import _bounded_yahoo_session
+            with _bounded_yahoo_session() as session:return session.get(base+'/large')
+        with pytest.raises(av.SourceError):history.fetch_yahoo_observation('IWM',provider=oversized)
+        def blocking(ticker):
+            from gcp.fetchers.fetch_earnings_history import _bounded_yahoo_session
+            with _bounded_yahoo_session() as session:
+                for _ in range(4):
+                    try:session.get(base+'/blocking')
+                    except Exception:pass
+                time.sleep(30)  # Library CPU/lock hang also bounded by parent.
+                return {'late':True}
+        started=time.monotonic();events=[]
+        with pytest.raises(av.SourceError,match='deadline'):
+            history.fetch_yahoo_observation('IWM',provider=blocking,on_event=events.append)
+        assert time.monotonic()-started<9.2
+        assert 1<=len(events)<=4
+        assert {p.pid for p in multiprocessing.active_children()}==before
+        # 100tickers: AV30+archive10+Yahoo8+reap1+SQL2+pace.4=5140;
+        # startup/group/publication allowance<=80, under6000 primary phase.
+        assert 100*(30+10+8+1+2+2+.4)+80+80==5500<6000
+    finally:
+        server.shutdown();server.server_close();worker.join(1)
+
+
+def test_yahoo_timing_revision_has_independent_observation(monkeypatch):
+    import json,uuid
+    from datetime import datetime,timezone
+    from gcp.fetchers import _av_ingestion as av
+    from gcp.fetchers import fetch_earnings_history as history
+    body=json.dumps({'symbol':'AAPL','quarterlyEarnings':[{'fiscalDateEnding':'2026-06-30','reportedDate':'2026-07-30','reportedEPS':'1'}]}).encode()
+    capture=av.Capture.from_bytes('EARNINGS',{'symbol':'AAPL'},body)
+    monkeypatch.setattr(av,'fetch_capture',lambda *a,**kw:capture)
+    monkeypatch.setattr(av,'archive_capture',lambda *a,**kw:'gs://test/source')
+    frames=[]
+    for timestamp in ['2026-07-30T08:00:00-04:00','2026-07-30T16:30:00-04:00']:
+        payload={'rows':[{'timestamp':timestamp,'values':{'EPS Estimate':1.2}}]}
+        obs={'observation_id':str(uuid.uuid4()),'source_retrieved_at':datetime.now(timezone.utc).isoformat(),
+             'content_sha256':av.digest(payload),'payload':payload}
+        monkeypatch.setattr(history,'fetch_yahoo_observation',lambda *a,**kw:obs)
+        frames.append(history.fetch_history_for_ticker('AAPL','dummy'))
+    assert frames[0].attrs['capture'].body==frames[1].attrs['capture'].body==body
+    assert [f.iloc[0]['yahoo_report_time'] for f in frames]==['pre-market','post-market']
+    assert frames[0].attrs['yahoo_observation']['observation_id']!=frames[1].attrs['yahoo_observation']['observation_id']
+    assert frames[0].attrs['yahoo_observation']['content_sha256']!=frames[1].attrs['yahoo_observation']['content_sha256']

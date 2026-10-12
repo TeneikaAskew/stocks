@@ -102,7 +102,7 @@ from sqlalchemy import create_engine
 @pytest.fixture
 def catalyst_db():
     if not os.environ.get("DB_HOST"):
-        pytest.skip("requires explicit ephemeral PostgreSQL selectors")
+        pytest.fail("mandatory integration collection requires explicit ephemeral PostgreSQL selectors")
     assert os.environ.get("DB_HOST") in {"127.0.0.1", "localhost"}
     assert os.environ.get("DB_NAME", "").startswith("av_") or (
         os.environ.get("GITHUB_ACTIONS")=="true" and os.environ.get("DB_NAME")=="trading"

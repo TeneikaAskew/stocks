@@ -954,7 +954,7 @@ class TestFetchDailyWindowsForTickerDates:
         that makes the timeout fix work."""
         from gcp.fetchers import compute_earnings_reactions as cer
         bars = self._sample_bars()
-        with patch.object(cer, 'query_to_dataframe', return_value=bars) as qm:
+        with patch.object(cer.av, 'read_dataframe', return_value=bars) as qm:
             from datetime import date
             out = cer.fetch_daily_windows_for_ticker_dates(
                 'AAPL',
@@ -978,7 +978,7 @@ class TestFetchDailyWindowsForTickerDates:
         from gcp.fetchers import compute_earnings_reactions as cer
         bars = self._sample_bars()
         from datetime import date, timedelta
-        with patch.object(cer, 'query_to_dataframe', return_value=bars):
+        with patch.object(cer.av, 'read_dataframe', return_value=bars):
             out = cer.fetch_daily_windows_for_ticker_dates(
                 'AAPL', [date(2025, 6, 1)],
             )
@@ -994,7 +994,7 @@ class TestFetchDailyWindowsForTickerDates:
         import pandas as pd
         from gcp.fetchers import compute_earnings_reactions as cer
         from datetime import date
-        with patch.object(cer, 'query_to_dataframe',
+        with patch.object(cer.av, 'read_dataframe',
                           return_value=pd.DataFrame()):
             out = cer.fetch_daily_windows_for_ticker_dates(
                 'XYZ',
@@ -1010,7 +1010,7 @@ class TestFetchDailyWindowsForTickerDates:
         from gcp.fetchers import compute_earnings_reactions as cer
         bars = self._sample_bars()
         from datetime import date, timedelta
-        with patch.object(cer, 'query_to_dataframe', return_value=bars) as qm:
+        with patch.object(cer.av, 'read_dataframe', return_value=bars) as qm:
             cer.fetch_daily_windows_for_ticker_dates(
                 'AAPL', [date(2025, 2, 1), date(2025, 10, 1)],
             )

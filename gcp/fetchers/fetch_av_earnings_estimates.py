@@ -49,20 +49,24 @@ def persist_estimate_group(group, *, executor=None):
     # Source capture ACK precedes the actual knowledge clock.
     known = datetime.now(timezone.utc)
     rows = [{**r, "known_at": known.isoformat()} for r in rows]
-    executor("""INSERT INTO av_earnings_estimates_observations
+    observed=executor("""WITH inserted AS(INSERT INTO av_earnings_estimates_observations
       SELECT * FROM jsonb_populate_recordset(NULL::av_earnings_estimates_observations,CAST(:rows AS jsonb))
-      ON CONFLICT(fetch_id,ticker,fiscal_date_ending,horizon) DO NOTHING""", {"rows": av.canonical(rows)}, timeout_s=2)
+      ON CONFLICT(fetch_id,ticker,fiscal_date_ending,horizon) DO NOTHING RETURNING fetch_id,known_at)
+      SELECT fetch_id,min(known_at) AS known_at FROM(
+        SELECT fetch_id,known_at FROM inserted UNION ALL SELECT fetch_id,known_at
+        FROM av_earnings_estimates_observations WHERE fetch_id=ANY(CAST(:ids AS uuid[]))
+      ) all_observations GROUP BY fetch_id""", {"rows": av.canonical(rows),"ids":[c.observation_id for c,_,_ in group]},read=True,timeout_s=2)
+    clocks={str(r['fetch_id']):r['known_at'].isoformat() for r in observed}
     for capture, uri, records in group:
         receipts.append({"ticker": capture.parameters["symbol"], "fetch_id": capture.observation_id,
                          "status": "validated" if records else "validated_empty",
-                         "source_retrieved_at": capture.retrieved_at.isoformat(), "known_at": known.isoformat(),
+                         "source_retrieved_at": capture.retrieved_at.isoformat(), "known_at": clocks.get(capture.observation_id,known.isoformat()),
                          "raw_sha256": capture.body_sha256, "raw_uri": uri, "observation_count": len(records)})
     return receipts
 
 
 def resolve_universe():
-    from gcp.database import query_to_dataframe_strict
-    df = query_to_dataframe_strict("""SELECT DISTINCT ticker FROM (
+    df = av.read_dataframe("""SELECT DISTINCT ticker FROM (
       SELECT ticker FROM earnings_history UNION SELECT ticker FROM earnings_calendar
       WHERE earnings_date BETWEEN (NOW() AT TIME ZONE 'America/New_York')::date-30
         AND (NOW() AT TIME ZONE 'America/New_York')::date+30
@@ -80,6 +84,21 @@ def main(argv=None):
     started = time.monotonic()
     receipts, group, manifest = [], [], None
     outcomes = []
+    def flush():
+        nonlocal group
+        batch,group=group,[]
+        if not batch:return
+        try:
+            durable=persist_estimate_group(batch)
+        except av.SourceError as exc:
+            run.failed+=len(batch)
+            outcomes.extend({'ticker':c.parameters['symbol'],'success':False,'observed_at':None} for c,_,_ in batch)
+            run.groups.append({'selected_tickers':[c.parameters['symbol'] for c,_,_ in batch],
+                               'error_class':str(exc),'coverage_complete':False})
+            return
+        receipts.extend(durable);run.processed+=len(batch)
+        run.rows_written+=sum(len(rows) for _,_,rows in batch)
+        outcomes.extend({'ticker':r['ticker'],'success':True,'observed_at':r['source_retrieved_at']} for r in durable)
     try:
         if not 1 <= args.max_tickers <= 100:
             raise av.SourceError("estimate_admission_limit")
@@ -92,14 +111,18 @@ def main(argv=None):
                                  limit=args.max_tickers, dry_run=args.dry_run)
         run.pending = len(universe) - len(selected)
         for ticker in selected:
+            if run.request_attempts:
+                time.sleep(.4)
             remaining = 450 - (time.monotonic() - started)
-            if remaining < 14:
+            # Reserve archive, finalgroup, queue, publication and terminal ACK;
+            # never start a source whose full remaining path cannot be admitted.
+            if remaining <= 48:
                 run.pending += len(selected) - run.attempted
                 break
             run.attempted += 1; run.request_attempts += 1
             try:
                 capture = av.fetch_capture("EARNINGS_ESTIMATES", {"symbol": ticker}, key,
-                                           timeout_s=min(30,remaining-12))
+                                           timeout_s=min(30,remaining-48))
                 uri = av.archive_capture(capture, dry_run=args.dry_run)
                 rows = parse_estimates(capture)
                 if args.dry_run:
@@ -107,24 +130,15 @@ def main(argv=None):
                 else:
                     group.append((capture, uri, rows))
                 if len(group) == 10:
-                    durable = persist_estimate_group(group)
-                    receipts.extend(durable); run.processed += len(group)
-                    run.rows_written += sum(len(r) for _,_,r in group)
-                    outcomes.extend({"ticker": r["ticker"], "success": True,
-                                     "observed_at": r["source_retrieved_at"]} for r in durable)
-                    group.clear()
+                    flush()
             except av.SourceError as exc:
                 run.failed += 1
                 outcomes.append({"ticker": ticker, "success": False, "observed_at": None})
                 run.groups.append({"ticker": ticker, "error_class": str(exc), "coverage_complete": False})
         if group:
-            durable = persist_estimate_group(group)
-            receipts.extend(durable); run.processed += len(group)
-            run.rows_written += sum(len(r) for _,_,r in group)
-            outcomes.extend({"ticker": r["ticker"], "success": True,
-                             "observed_at": r["source_retrieved_at"]} for r in durable)
+            flush()
         if not args.dry_run:
-            av.finish_work("EARNINGS_ESTIMATES", "daily", outcomes)
+            av.finish_work("EARNINGS_ESTIMATES", "daily", outcomes,owner=run.execution_name)
             manifest = {"schema_version": "av_catalyst_run/v1", "pipeline_scope": "estimates_daily",
               "scope_hash": av.digest(universe), "universe_count": len(universe), "configured_universe": universe,
               "selected_scope_hash": av.digest(selected), "selected_count": len(selected), "pending_count": run.pending,
@@ -137,7 +151,10 @@ def main(argv=None):
     except Exception as exc:
         run.failed += 1
         run.groups.append({"error_class": str(exc) if isinstance(exc,av.SourceError) else type(exc).__name__, "coverage_complete": False})
-    return run.terminal(dry_run=args.dry_run, extra=manifest)
+    try:
+        return run.terminal(dry_run=args.dry_run, extra=manifest)
+    finally:
+        av.close_sql_worker()
 
 
 if __name__ == "__main__":
