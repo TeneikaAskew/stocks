@@ -108,9 +108,8 @@ git.
   the summary comment's own timestamp, which the Security Review row's updates move while the Code
   Review row can still show the previous run's Completed (4248548361, P1); and a finding's review type
   came from the summary row and timing, which cannot tell apart two types running at once (4248548397,
-  P2). The commit after `a269671e` fixes all four in the three homes (CLAUDE.md Rule 2.5 and "A
-  resolved thread is not a reviewed commit", the template's Merge gate, resolve-issue Phase 8). The row
-  sentence says the row is what satisfies the rule and a review object never does without it, beside
+  P2). `8be06d6c` fixes all four in the three homes (CLAUDE.md Rule 2.5 and "A resolved thread is not
+  a reviewed commit", the template's Merge gate, resolve-issue Phase 8). The row sentence says the row is what satisfies the rule and a review object never does without it, beside
   the approved spec's "only when … or …" sentence, and a missing-summary sentence answers a missing or
   unreadable summary with `@codex review`, or a re-cut past the second round. A wait sentence holds the
   merge while a review type's first run reads Running, or before each type that has completed a review
@@ -146,8 +145,9 @@ git.
   its corrections go to a later spec for both repositories. The Rule 2.5 subsections (Task 2) match
   solyra's except that rule number, round 1's Codex qualification of the clean-review paragraph
   (4240413683), #1387 round 1's change to the same paragraph (the row is the source for every Codex
-  first review) and #1387 round 2's (a comment per review type, 4240753728), which solyra carries in
-  its own PR or not.
+  first review), #1387 round 2's (a comment per review type, 4240753728) and #1398 round 1's (the
+  merge held for each type's first-review comment, and a finding's type read from the review object
+  that holds it, 4248548369 and 4248548397), which solyra carries in its own PR or not.
 - **Anchors.** Line numbers are `origin/main` at `17bbacd3`; the target files there are unchanged
   from `1a6ff45e`, where the first version of this plan was measured. Each Old block occurs exactly once
   in its file on `main`, and `plan_replay.py` fails if one does not.
