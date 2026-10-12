@@ -4622,3 +4622,109 @@ def test_the_skill_names_the_inventory_allowance():
     skill = (REPO / ".claude/skills/product-delivery/SKILL.md").read_text(encoding="utf-8")
     never = next(line for line in skill.splitlines() if line.startswith("- Never edit `docs/product/` from a feature branch"))
     assert "REQ-GOV-004" in never and "re-rendered by `scripts/maintenance/doc_inventory.py`" in never, never
+
+
+# What a gate could read to tell the suite's forked runner (VERDICTS) from the command line CI runs, and so pass the
+# suite while it drops a rule in CI (red-team round 5): its caller's frame, the modules the runner loaded before it,
+# exit handlers that a forked process ending in os._exit never runs, its parent process, its interpreter's own
+# arguments and flags, the objects that refer to it, and how its module was named and loaded.
+INVOCATION_ATTRS = frozenset(("_getframe", "f_back", "f_globals", "f_locals", "f_code", "f_builtins", "tb_frame", "_current_frames",
+                              "currentframe", "stack", "getouterframes", "getinnerframes", "getframeinfo", "extract_stack",
+                              "walk_stack", "format_stack", "print_stack", "settrace", "setprofile", "gettrace", "getprofile",
+                              "orig_argv", "getppid", "get_referrers", "get_referents", "get_objects", "register_at_fork",
+                              "_register_atexit", "__getattribute__"))
+INVOCATION_SYS = frozenset(("modules", "argv", "flags", "__dict__", "stdin"))
+INVOCATION_MODULES = frozenset(("atexit", "gc", "weakref"))
+INVOCATION_NAMES = frozenset(("__spec__", "__loader__", "__cached__", "__builtins__"))
+INVOCATION_CALLS = frozenset(("globals", "locals", "vars", "dir", "eval", "exec", "compile", "__import__"))
+
+
+def invocation_reads(source: str) -> list[str]:
+    """`line: what` for each place in a gate's source that reads how the gate was started (INVOCATION_*), read by AST.
+    Allowed: `__name__` in the `if __name__ == "__main__":` test; sys.argv in main() and that guard; sys.flags.isolated
+    in the render child (render_inventory); sys.modules written, never read, by load_renderer; exec and compile of the
+    renderer's source in load_renderer; importlib.import_module in render_inventory. getattr, hasattr, setattr and
+    delattr on sys, or on any imported module, must name a literal attribute, and none of the above."""
+    tree = ast.parse(source)
+    parent = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    def functions(node: ast.AST) -> list[str]:
+        out = []
+        while node in parent:
+            node = parent[node]
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                out.append(node.name)
+        return out
+    guards = [n for n in tree.body if isinstance(n, ast.If) and isinstance(n.test, ast.Compare) and isinstance(n.test.left, ast.Name)
+              and n.test.left.id == "__name__" and [ast.unparse(c) for c in n.test.comparators] == ["'__main__'"]]
+    guarded = {node for g in guards for node in ast.walk(g)}
+    sys_names, module_names = {"sys"}, set()
+    found: list[str] = []
+    flag = lambda node, what: found.append(f"{node.lineno}: {what}")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                module_names.add(a.asname or a.name.split(".")[0])
+                if a.name == "sys":
+                    sys_names.add(a.asname or "sys")
+                if a.name.split(".")[0] in INVOCATION_MODULES:
+                    flag(node, f"imports {a.name}")
+        elif isinstance(node, ast.ImportFrom):
+            names = {a.name for a in node.names}
+            if (node.module or "").split(".")[0] in INVOCATION_MODULES or names & (INVOCATION_ATTRS | INVOCATION_SYS):
+                flag(node, f"imports {', '.join(sorted(names))} from {node.module}")
+    for node in ast.walk(tree):
+        where = functions(node)
+        if isinstance(node, ast.Name) and node.id == "__name__" and node not in guarded:
+            flag(node, "__name__ outside the __main__ guard")
+        elif isinstance(node, ast.Name) and node.id in INVOCATION_NAMES:
+            flag(node, node.id)
+        elif isinstance(node, ast.FunctionDef) and node.name == "__del__":
+            flag(node, "a __del__ method, which runs at exit")
+        elif isinstance(node, ast.Attribute) and node.attr in INVOCATION_ATTRS:
+            flag(node, ast.unparse(node))
+        elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in sys_names and node.attr in INVOCATION_SYS:
+            allowed = {"argv": "main" in where or node in guarded,
+                       "flags": "render_inventory" in where and isinstance(parent[node], ast.Attribute) and parent[node].attr == "isolated",
+                       "modules": "load_renderer" in where and isinstance(parent[node], ast.Subscript) and isinstance(parent[node].ctx, ast.Store)}
+            if not allowed.get(node.attr):
+                flag(node, ast.unparse(node))
+        elif isinstance(node, ast.Call):
+            builtin = node.func.id if isinstance(node.func, ast.Name) else ""
+            name = builtin or (node.func.attr if isinstance(node.func, ast.Attribute) else "")
+            if builtin in INVOCATION_CALLS and not (builtin in ("exec", "compile") and "load_renderer" in where):
+                flag(node, f"{builtin}()")
+            elif name == "import_module" and "render_inventory" not in where:
+                flag(node, "import_module()")
+            elif name in ("getattr", "hasattr", "setattr", "delattr", "attrgetter") and node.args:
+                of, attr = (node.args[0], node.args[1] if len(node.args) > 1 else None) if name != "attrgetter" else (None, node.args[0])
+                literal = attr.value if isinstance(attr, ast.Constant) and isinstance(attr.value, str) else None
+                on_module = isinstance(of, ast.Name) and of.id in sys_names | module_names
+                if literal is None and on_module or literal in INVOCATION_ATTRS or \
+                        literal in INVOCATION_SYS and isinstance(of, ast.Name) and of.id in sys_names:
+                    flag(node, ast.unparse(node)[:80])
+    return sorted(set(found), key=lambda f: int(f.split(":")[0]))
+
+
+def test_the_gate_reads_nothing_of_how_it_was_started():
+    """FEAT-CICD-001 spec (done_when[5]; red-team round 5): the suite judges most cases in its forked runner and only
+    some on the command line CI runs, so a gate that can tell the two apart passes the suite while dropping a rule
+    in CI. A gate keyed on `sys._getframe().f_back` passed all 118 tests that way. The gate's source must read none of
+    INVOCATION_* (invocation_reads), checked by AST, including getattr with a name built at run time.
+
+    Residual: a determined obfuscation the AST check cannot resolve is still possible: an attribute name computed at
+    run time and read through an object the check does not track, such as a module object a function returns. Code
+    review catches it."""
+    assert invocation_reads(GATE.read_text(encoding="utf-8")) == []
+    # the check itself: each read is caught, however it is spelled, and what the gate does need is not
+    caught = ("_BATCHED = sys._getframe().f_back is not None", "x = getattr(sys, '_get' + 'frame')()",
+              "x = getattr(sys, name)", "x = 'marshal' in getattr(sys, 'mod' + 'ules')", "x = 'base64' in sys.modules",
+              "import atexit", "from sys import orig_argv", "x = os.getppid()", "import gc\ngc.get_referrers(x)",
+              "x = inspect.stack()", "x = sys.argv", "x = sys.flags.dont_write_bytecode", "x = __name__",
+              "x = __spec__", "x = globals()", "x = hasattr(sys, 'orig_argv')", "import sys as s\nx = s.modules",
+              "class A:\n    def __del__(self):\n        pass", "import os\nx = getattr(os, 'get' + 'ppid')()", "x = vars(sys)")
+    missed = [c for c in caught if not invocation_reads(c)]
+    allowed = ('if __name__ == "__main__":\n    sys.exit(main(sys.argv))', "def main(argv):\n    return sys.argv",
+               "def render_inventory():\n    return sys.flags.isolated", "x = getattr(sys.stdout, 'encoding', None)",
+               "def load_renderer():\n    sys.modules['x'] = m")
+    flagged = [a for a in allowed if invocation_reads(a)]
+    assert (missed, flagged) == ([], []), (missed, flagged)

@@ -776,6 +776,17 @@ done_when[6].
 - [ ] **Step 5: Record the findings** as a table for the PR body, with columns round, reviewer, finding, snippet, and the
   test that now refuses it.
 
+Ruling, red-team round 5 (the diff seat's F2). The suite judges most cases in its forked runner (`VERDICTS`) and only
+some on the command line CI runs, and a gate keyed on how it was started (`sys._getframe().f_back`, the runner's
+preloaded modules, exit handlers a forked process never runs) passed all 118 tests while dropping rules in CI. Command
+line cases per condition would cost the registry job time it does not have. Instead,
+`test_the_gate_reads_nothing_of_how_it_was_started` checks the gate's source by AST: it reads no caller frame,
+`sys.modules`, `atexit`, inspect stack or frame call, `os.getppid`, `sys.orig_argv` or `gc.get_referrers`, no
+`__name__` outside the `__main__` guard, and `sys.argv` and `sys.flags` only in `main()`, that guard and the render
+child's isolation check, including through `getattr` on `sys` or a module with a name built at run time. Residual: a
+determined obfuscation the AST check cannot resolve (an attribute name computed at run time and read through an
+object it does not track, such as a module object a function returns) is still possible, and code review catches it.
+
 ## Task 11: Evidence: the full suite, the base-suite job, and RED against main
 
 Spec: § Capacity. Advances done_when[5].

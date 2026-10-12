@@ -3761,16 +3761,17 @@ def load_renderer() -> tuple[types.ModuleType, types.ModuleType]:
     saved_path, saved_finders = sys.path[:], sys.meta_path[:]
     at = next((i for i, f in enumerate(sys.meta_path) if f is importlib.machinery.PathFinder), len(sys.meta_path))
     sys.meta_path.insert(at, OutsideCheckout())
+    made: dict[str, types.ModuleType] = {}
     try:
         def module(name: str, source: pathlib.Path | None = None) -> types.ModuleType:
-            m = types.ModuleType(name)
+            m = made[name] = types.ModuleType(name)
             parent, _, leaf = name.rpartition(".")
             m.__package__ = name if name.count(".") < 2 else parent
             if name.count(".") < 2:
                 m.__path__ = []   # a package that finds no submodule of its own: each is placed here by hand
-            sys.modules[name] = m
+            sys.modules[name] = m   # written, never read: what the gate reads of sys.modules could tell how it was run
             if parent:
-                setattr(sys.modules[parent], leaf, m)
+                setattr(made[parent], leaf, m)
             if source is not None:   # a missing renderer file raises, as a failed import did
                 m.__file__ = str(source)
                 exec(compile(source.read_bytes(), str(source), "exec"), m.__dict__)
