@@ -527,7 +527,13 @@ the containment check). Advances done_when[1].
   - `f"a .gitattributes that changes bytes on checkout or export ({path}: {token})"` when a file whose last
     component, lower-cased, is `.gitattributes` sets one of `BYTE_ATTRIBUTES` (text, eol, crlf, ident, filter,
     working-tree-encoding, export-subst) or gives it a value, directly or in a macro definition. Unsetting one or
-    leaving it unspecified (`-text`, `binary`, `!eol`) changes no byte and passes (red-team rounds 4 and 5).
+    leaving it unspecified (`-text`, `binary`, `!eol`) changes no byte and passes (red-team rounds 4 and 5). Each
+    line is read as git's `parse_attr_line` reads it (red-team round 6): a pattern opening with a double quote is
+    unquoted C-style and its attributes start right after the closing quote, with no blank between
+    (`"*.md"eol=crlf`, a quoted macro name); a NUL ends the line; only a space, tab, CR or LF separates. git reads
+    a .gitattributes from the tree's blob, as checkout and export do, which stops the file at the first NUL and keeps
+    a leading byte order mark, and from the working tree, which reads on past a NUL line and drops the mark; the text
+    rule reads it both ways.
   - `f"a tree that lists {path} twice"` and `f"{dir} as both a file and a directory"` (red-team round 4)
   - `f"a path component {c!r} ({path})"` for a component that is empty or, lower-cased, is `.`, `..` or `.git`
 - Produces: `materialize(entries: list[tuple[str, str, str]], into: pathlib.Path) -> None`. It runs one
@@ -540,6 +546,14 @@ the containment check). Advances done_when[1].
     it breaks: "the render reads plain files only", or for a `.gitattributes` that sets or gives a value to a
     byte-changing attribute, "the render reads blobs as committed, and the docs test reads them checked out" (red-team
     round 5: it said both).
+  - Then `applied_attributes(head, entries)`, when the tree holds a `.gitattributes`: `git check-attr --source=<head>
+    -a --stdin -z` over every path in the tree, run in an empty bare repository of its own that borrows this one's
+    objects (`objects/info/alternates`), with no system, global or user attributes file, so neither this repository's
+    `info/attributes` nor its config is read. A byte-changing attribute set or valued there is refused the same way,
+    naming it, the path and "as git check-attr reads it"; a git failure refuses with "the head tree's attributes
+    cannot be read". Both rules run (red-team round 6): check-attr is git's own reading, so it covers any way the
+    text rule could still part from git's parser, while the text rule also reads the working-tree way that check-attr,
+    reading the blob, does not (a line past a NUL, a byte order mark), and names the file and the word that set it.
   - Ruling: git itself cannot list an empty component. `ls-tree -r` exits 128 with
     `fatal: empty filename in tree entry`, measured on 2026-10-11, so that case is refused by the listing rule. The
     component check still names `""` for completeness.

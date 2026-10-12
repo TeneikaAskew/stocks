@@ -3932,21 +3932,103 @@ def blobs(oids: list[str]) -> list[bytes]:
 # two disagree. Any other attribute (linguist-generated, diff, merge) changes no byte (red-team round 4: a byte-neutral
 # .gitattributes on main shut the allowance for every later pull request).
 BYTE_ATTRIBUTES = frozenset(("text", "eol", "crlf", "ident", "filter", "working-tree-encoding", "export-subst"))
+ATTRIBUTE_READING = "the render reads blobs as committed, and the docs test reads them checked out"
+ATTR_WORD = re.compile(rb"[^ \t\r\n]*")   # attr.c's `blank` is a space, tab, CR or LF: a vertical tab separates nothing
+C_ESCAPES = dict(zip(b'abfnrtv\\"', b'\a\b\f\n\r\t\v\\"'))
+UTF8_BOM = b"\xef\xbb\xbf"
+
+
+def unquoted_pattern(line: bytes) -> tuple[bytes, bytes] | None:
+    """(pattern, rest) for a line that opens with a double quote, unquoted as git's unquote_c_style reads it: the
+    escapes in C_ESCAPES and three octal digits, the rest starting right after the closing quote. None where git
+    cannot unquote it, and reads the line as if unquoted."""
+    out, i = bytearray(), 1
+    while i < len(line):
+        c = line[i]
+        if c == ord('"'):
+            return bytes(out), line[i + 1:]
+        if c != ord("\\"):
+            out.append(c)
+            i += 1
+        elif line[i + 1:i + 2] and line[i + 1] in C_ESCAPES:
+            out.append(C_ESCAPES[line[i + 1]])
+            i += 2
+        elif re.fullmatch(rb"[0-3][0-7][0-7]", line[i + 1:i + 4]):
+            out.append(int(line[i + 1:i + 4], 8))
+            i += 4
+        else:
+            return None
+    return None
+
+
+def line_attributes(line: bytes) -> list[bytes]:
+    """The attribute words git reads on one .gitattributes line, as attr.c's parse_attr_line reads them, with a macro
+    definition's name first: a pattern in double quotes is unquoted (unquoted_pattern) and its attributes start right
+    after the closing quote, with no blank between (red-team round 6: `"*.md"eol=crlf` set eol); otherwise the pattern
+    ends at the first blank. A macro's name is the first word after `[attr]` and the rest of a quoted name is not
+    read. A line git ignores as a whole, for an invalid name or a negated pattern, is still read: that refuses at
+    worst a file git ignores."""
+    line = line.lstrip(b" \t\r\n")
+    if not line or line.startswith(b"#"):
+        return []
+    quoted = unquoted_pattern(line) if line.startswith(b'"') else None
+    if quoted is not None:
+        pattern, states = quoted
+    else:
+        pattern = ATTR_WORD.match(line).group(0)
+        states = line[len(pattern):]
+    named = []
+    if len(pattern) > len(b"[attr]") and pattern.startswith(b"[attr]"):
+        named = [ATTR_WORD.match(pattern[len(b"[attr]"):].lstrip(b" \t\r\n").split(b"\0", 1)[0]).group(0)]
+    return named + [w for w in re.split(rb"[ \t\r\n]", states) if w]
 
 
 def attributes_refusal(text: bytes) -> str | None:
-    """The first token of a .gitattributes that sets a BYTE_ATTRIBUTES attribute or gives it a value, in an attribute
+    """The first word of a .gitattributes that sets a BYTE_ATTRIBUTES attribute or gives it a value, in an attribute
     line or a macro definition, or None. Unsetting one (`-text`, which `binary` does) or leaving it unspecified
-    (`!eol`) only takes a conversion away, so checkout writes the bytes as committed (red-team round 5). Read token by
-    token past the first on each line (the pattern, or the macro's name), so a quoted pattern holding spaces at worst
-    refuses a harmless file."""
-    for line in text.decode("utf-8", "replace").split("\n"):
-        tokens = line.strip().split()
-        if not tokens or tokens[0].startswith("#"):
-            continue
-        for token in tokens[1:] + ([tokens[0][len("[attr]"):]] if tokens[0].startswith("[attr]") else []):
-            if not token.startswith(("-", "!")) and token.split("=", 1)[0].lower() in BYTE_ATTRIBUTES:
-                return token
+    (`!eol`) only takes a conversion away, so checkout writes the bytes as committed (red-team round 5). Each line
+    ends at its first NUL. git reads the file in two ways (red-team round 6): from the tree's blob, as checkout and
+    export do, which stops the whole file at the first NUL and keeps a leading byte order mark in the first pattern,
+    and from the working tree, which reads on past a line holding a NUL and drops the mark. Both are read here: every
+    line, and the first one also without its mark."""
+    lines = [line.split(b"\0", 1)[0] for line in text.split(b"\n")]
+    if lines[0].startswith(UTF8_BOM):
+        lines.append(lines[0][len(UTF8_BOM):])
+    for line in lines:
+        for word in line_attributes(line):
+            if not word.startswith((b"-", b"!")) and word.split(b"=", 1)[0].decode("ascii", "replace").lower() in BYTE_ATTRIBUTES:
+                return word.decode("utf-8", "replace")
+    return None
+
+
+def applied_attributes(head: str, entries: list[tuple[str, str, str]]) -> str | None:
+    """The first BYTE_ATTRIBUTES attribute, set or valued, that git itself applies to a file of head's tree, as
+    `git check-attr --source` reads head's .gitattributes files, or None; None at once when the tree holds none.
+    It runs in an empty repository of its own that borrows this one's objects, with no system, global or user
+    attributes file, so the repository's info/attributes and its config, which are not the pull request's, are not
+    read. It reads the blob as checkout does, which is why attributes_refusal runs too: a working-tree read applies a
+    line past a NUL that this one never sees. Raises GitFailed when git cannot answer."""
+    if not any(path.split("/")[-1].lower() == ".gitattributes" for _mode, _oid, path in entries):
+        return None
+    with tempfile.TemporaryDirectory(prefix="spec-gate-attributes-") as tmp:
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        env |= {"GIT_DIR": tmp, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_ATTR_NOSYSTEM": "1"}
+        step = "init"
+        r = subprocess.run(["git", "init", "-q", "--bare", "--template=", f"--object-format={'sha256' if len(head) == 64 else 'sha1'}", tmp],
+                           env=env, capture_output=True)
+        if r.returncode == 0:
+            (pathlib.Path(tmp) / "objects/info").mkdir(parents=True, exist_ok=True)
+            (pathlib.Path(tmp) / "objects/info/alternates").write_bytes(os.fsencode(git_path("objects").resolve()) + b"\n")
+            step = "check-attr"
+            r = subprocess.run(["git", "-c", f"core.attributesFile={os.devnull}", "check-attr", f"--source={head}", "-a", "--stdin", "-z"],
+                               input=b"".join(os.fsencode(path) + b"\0" for _mode, _oid, path in entries), env=env, capture_output=True, cwd=tmp)
+    fields = r.stdout.split(b"\0")[:-1]
+    if r.returncode != 0 or len(fields) % 3:
+        raise GitFailed(f"git {step} failed ({r.returncode}): {r.stderr.decode('utf-8', 'replace').strip() or 'no output'}")
+    for path, name, value in zip(fields[0::3], fields[1::3], fields[2::3]):
+        if name.decode("utf-8", "replace") in BYTE_ATTRIBUTES and value not in (b"unset", b"unspecified"):
+            shown = name if value == b"set" else name + b"=" + value
+            return f"{shown.decode('utf-8', 'replace')} on {os.fsdecode(path)}"
     return None
 
 
@@ -3976,8 +4058,7 @@ def tree_refusal(entries: list[tuple[str, str, str]]) -> str | None:
                 return f"a path component {c!r} ({path}){plain}"
     for (path, _oid), text in zip(attributes, blobs([oid for _, oid in attributes])):
         if token := attributes_refusal(text):
-            return (f"a .gitattributes that changes bytes on checkout or export ({path}: {token}); the render reads blobs "
-                    "as committed, and the docs test reads them checked out")
+            return f"a .gitattributes that changes bytes on checkout or export ({path}: {token}); {ATTRIBUTE_READING}"
     return None
 
 
@@ -4162,6 +4243,14 @@ def generated_doc_refusals(ch: Change, merge_base: str, head: str, docs: list[st
         return [generated_refusal(", ".join(docs), f"the head tree cannot be listed ({e})")]
     if why := tree_refusal(entries):
         return [generated_refusal(", ".join(docs), f"the head tree holds {why}")]   # why says which reading it breaks
+    # git's own reading of the head's attributes, beside tree_refusal's reading of their text (red-team round 6)
+    try:
+        applied = applied_attributes(head, entries)
+    except GitFailed as e:
+        return [generated_refusal(", ".join(docs), f"the head tree's attributes cannot be read ({e})")]
+    if applied:
+        return [generated_refusal(", ".join(docs), f"the head tree holds a .gitattributes that changes bytes on checkout or "
+                                                   f"export ({applied}, as git check-attr reads it); {ATTRIBUTE_READING}")]
     listed = {path: (mode, oid) for mode, oid, path in entries}
     present = [doc for doc in docs if doc in listed]
     now = {doc: (listed[doc][0], text) for doc, text in zip(present, blobs([listed[doc][1] for doc in present]))}

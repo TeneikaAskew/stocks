@@ -4139,6 +4139,13 @@ PLANTED_INSPECT = ('import importlib.machinery, importlib.util, os, sys\n'
                    'here = os.path.dirname(os.path.abspath(__file__))\n'
                    'spec = importlib.machinery.PathFinder.find_spec("inspect", [p for p in sys.path if os.path.abspath(p or os.curdir) != here])\n'
                    'real = importlib.util.module_from_spec(spec)\nsys.modules["inspect"] = real\nspec.loader.exec_module(real)\n')
+# The gate as the command line runs it, with its .gitattributes text rule (attributes_refusal) switched off, so that git
+# check-attr's reading, the second rule, is judged on its own (red-team round 6).
+TEXT_RULE_OFF = ("import importlib.util, sys\n"
+                 "spec = importlib.util.spec_from_file_location('spec_gate', 'scripts/gate/spec_gate.py')\n"
+                 "gate = sys.modules['spec_gate'] = importlib.util.module_from_spec(spec)\n"
+                 "spec.loader.exec_module(gate)\ngate.attributes_refusal = lambda text: None\n"
+                 "sys.exit(gate.main(['spec_gate.py', *sys.argv[1:]]))\n")
 
 
 def skeleton(doc: str) -> str:
@@ -4446,13 +4453,23 @@ def test_the_head_tree_is_plain_files(inventory_repo):
     """FEAT-CICD-001 spec, "Exact render", the tree (done_when[1]): the render reads the head tree written out as plain
     files, so a .gitattributes that changes bytes on export, a symbolic link, a submodule and a path component that
     is empty, '.', '..' or '.git' (in any case) are each refused before anything is written. Each case is the accepted
-    control (accepted_control) with its plain spliced entry replaced, or with a .gitattributes added."""
+    control (accepted_control) with its plain spliced entry replaced, or with a .gitattributes added. A .gitattributes
+    is read as git reads its text (test_attributes_are_read_as_git_reads_them), and git check-attr's own reading of
+    the head tree refuses by itself, shown with the text rule switched off (TEXT_RULE_OFF)."""
     if RENDERER_HERE:
         root, heads = inventory_repo
         control = heads["control"]
         attributes = {f".gitattributes {a}": {**control, ".gitattributes": f"{API_DOC} {a}\n"} for a in ("export-subst", "eol=crlf", "ident", "text")}
         # (red-team round 4: a macro carries an attribute that changes bytes as well as the attribute itself does)
         attributes[".gitattributes macro"] = {**control, ".gitattributes": f"[attr]keep eol=crlf\n{API_DOC} keep\n"}
+        # (red-team round 6: git unquotes a pattern in double quotes and reads attributes from right after the closing
+        # quote, ends a line at a NUL, and a working-tree read drops a byte order mark and reads on past a NUL line;
+        # a UTF-16 working-tree-encoding took the docs test from 140 passed to 10 failed)
+        attributes |= {f".gitattributes {k}": {**control, ".gitattributes": v} for k, v in {
+            "quoted *.md, eol=crlf": '"*.md"eol=crlf\n', "quoted 05-e, ident": f'"{API_DOC}"ident\n',
+            "quoted 05-e, UTF-16": f'"{API_DOC}"working-tree-encoding=UTF-16\n', "quoted macro": f'"[attr]keep"eol=crlf\n{API_DOC} keep\n',
+            "text before a NUL": "*.md text\0junk\n", "ident before a NUL": "*.md ident\0x\n",
+            "eol=crlf past a NUL line": "*.md linguist-generated\0x\n*.md eol=crlf\n", "eol=crlf behind a BOM": '\ufeff"*.md"eol=crlf\n'}.items()}
         blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], input="../gcp/schema.sql", cwd=root, capture_output=True, text=True, check=True).stdout.strip()
         x = mktree(root, f"100644 blob {blob}\tx\n")
         entries = {"a symbolic link": (f"120000 blob {blob}\tlink", "a symbolic link"),
@@ -4472,14 +4489,58 @@ def test_the_head_tree_is_plain_files(inventory_repo):
         ok = control_pairs(root, {"control": control})["control"]
         pairs["a name listed twice"] = beside(root, ok, API_DOC, f"100644 blob {hand}\t05-e-API.md")
         pairs["a file that is a directory"] = beside(root, ok, API_DOC, f"040000 tree {x}\t05-e-API.md")
-        outcomes = verdicts(root, pairs, e2e=(".gitattributes export-subst", "an empty component", "a 256-byte name", "a link named \\xff",
-                                              "a name listed twice"), **DOCS_OK)
+        inherited = {k: v for k, v in os.environ.items() if not k.startswith(("PR_", "SPEC_GATE_", "GIT_", "PYTEST_"))}   # as gate()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:   # beside the verdicts, which it does not slow
+            alone = pool.submit(subprocess.run, [sys.executable, "-c", TEXT_RULE_OFF, "--pr", *pairs[".gitattributes quoted *.md, eol=crlf"]],
+                                cwd=root, capture_output=True, text=True, env={**inherited, "PR_HEAD_REF": BRANCH, **STRICT, **DOCS_OK})
+            outcomes = verdicts(root, pairs, e2e=(".gitattributes export-subst", "an empty component", "a 256-byte name", "a link named \\xff",
+                                                  "a name listed twice"), **DOCS_OK)
         fragments = {**{k: "a .gitattributes" for k in attributes}, **{k: fragment for k, (_, fragment) in entries.items()},
                      "a name listed twice": f"lists {API_DOC} twice", "a file that is a directory": "both a file and a directory"}
         # (red-team round 5: a .gitattributes refusal said why twice) each says it once
         missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, fragments[k])
                   or k in attributes and r.stdout.count("the render reads") != 1}
-        assert missed == {}, missed
+        by_git = alone.result()
+        assert missed == {} and refused(by_git, "eol=crlf on docs/") and "as git check-attr reads it" in by_git.stdout \
+            and by_git.stdout.count("the render reads") == 1, (missed, by_git.stdout[-600:] + by_git.stderr[-600:])
+
+
+def test_attributes_are_read_as_git_reads_them(repo):
+    """FEAT-CICD-001 spec, "Exact render", the tree (done_when[1]), red-team round 6: a .gitattributes line is read as
+    git's parse_attr_line reads it. A pattern in double quotes is unquoted C-style and its attributes start right
+    after the closing quote, with no blank between; a NUL ends the line; only a space, tab, CR or LF separates. git
+    reads the file two ways: from the tree's blob (checkout and export), which stops the whole file at a NUL and keeps
+    a leading byte order mark, and from the working tree, which reads on past a NUL line and drops the mark. The text
+    rule reads both ways. Every refused form below is one git applies (git check-attr, 2026-10-12, git 2.43); every
+    accepted one sets or values no byte-changing attribute. Beside the text rule, applied_attributes asks git itself,
+    reading the head tree's attribute files alone: it names what git applies, ignores the repository's own
+    info/attributes and core.attributesFile, and, reading the blob as checkout does, misses the line past a NUL that
+    a working-tree read applies and the text rule refuses, which is why both run."""
+    sg = load_gate(repo)
+    doc = "docs/product/infrastructure/05-e-API.md"
+    refused = {'"*.md"eol=crlf\n': "eol=crlf", f'"{doc}"ident\n': "ident", f'"{doc}"working-tree-encoding=UTF-16\n': "working-tree-encoding=UTF-16",
+               f'"[attr]keep"eol=crlf\n{doc} keep\n': "eol=crlf", '"*.\\155d"export-subst\n': "export-subst",   # \155 is m
+               "*.md text\0junk\n": "text", "*.md ident\0x\n": "ident", "*.md linguist-generated\0x\n*.md eol=crlf\n": "eol=crlf",
+               '\ufeff"*.md"eol=crlf\n': "eol=crlf", "*.md -diff\reol=crlf\n": "eol=crlf",
+               # forms refused before round 6
+               f'"{doc}" eol=crlf\n': "eol=crlf", "[attr]keep eol=crlf\n*.md keep\n": "eol=crlf", "*.md text=auto\n": "text=auto"}
+    accepted = (f'"{doc}"-text\n', "*.md binary\n", '"*.md"!eol\n', "*.md -text=crlf\n", "[attr]asis -text -eol\n*.md asis\n",
+                # what git does not read as an attribute: the rest of a quoted macro name, a word joined by a vertical tab
+                # or a form feed, a comment
+                '"[attr]keep eol=crlf"\n*.md keep\n', "*.md\x0beol=crlf\n", "*.md\x0cident\n", "# *.md eol=crlf\n")
+    read = {text: sg.attributes_refusal(text.encode("utf-8")) for text in (*refused, *accepted)}
+    assert read == {**refused, **dict.fromkeys(accepted)}, read
+    heads = {name: head for name, (_, head) in commits(repo, {"quoted": {".gitattributes": '"lib/*.py"eol=crlf\n'},
+                                                               "past a NUL": {".gitattributes": "*.py linguist-generated\0x\n*.py eol=crlf\n"},
+                                                               "neutral": {".gitattributes": '"lib/*.py"-text\n*.py binary\n'}}).items()}
+    (repo / ".git/info").mkdir(exist_ok=True)
+    (repo / ".git/info/attributes").write_text("* eol=crlf\n", encoding="utf-8")
+    write(repo, "own.attributes", "* ident\n")
+    _git(repo, "config", "core.attributesFile", str(repo / "own.attributes"))
+    applied = {name: sg.applied_attributes(head, sg.head_entries(head)) for name, head in heads.items()}
+    plain = _git(repo, "check-attr", f"--source={heads['neutral']}", "eol", "ident", "--", "lib/model.py")   # what isolation keeps out
+    assert ("eol=crlf on lib/model.py" in (applied["quoted"] or ""), applied["past a NUL"], applied["neutral"]) == (True, None, None) \
+        and "eol: crlf" in plain and "ident: set" in plain, (applied, plain)
 
 
 def test_materialize_writes_inside_its_directory_only(repo, tmp_path_factory):
@@ -4502,7 +4563,9 @@ def test_a_feature_change_carries_its_re_rendered_inventory_blocks(inventory_rep
         # (red-team round 4: a .gitattributes that changes no byte, once on main, refused every later PR; round 5: nor
         # does one that unsets an attribute or leaves it unspecified, directly, as `binary` does, or through a macro)
         on_base(root, {".gitattributes": "*.ipynb linguist-generated=true\n*.png -text\n*.md !eol\n*.py -ident\n*.bin -filter\n"
-                                         "*.jpg binary\n[attr]asis -text -eol -crlf\n*.dat asis\n"})
+                                         "*.jpg binary\n[attr]asis -text -eol -crlf\n*.dat asis\n"
+                                         # (red-team round 6: in double quotes, with the attributes right after them)
+                                         f'"{API_DOC}"-text\n"*.svg"binary\n'})
         own = edit(CATALOG_TEXT, "### FEAT-MODEL-001\n\n- Status: Production", "### FEAT-MODEL-001\n\n- Status: Production\n- Note: cited lines moved")
         r = pr(root, BRANCH, {**heads["moved"], CATALOG: own, TRACEABILITY: TRACE_TEXT + "- #7\n"}, **DOCS_OK)
         changed = set(_git(root, "diff", "--name-only", "base", "HEAD").splitlines())
