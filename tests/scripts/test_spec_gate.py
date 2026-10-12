@@ -1664,8 +1664,12 @@ def test_a_done_when_item_matches_as_written_or_as_rendered(repo):
     on_base(repo, {SPEC: spec(done_when=[item])})
     title = {"PR_TITLE": "FEAT-MODEL-001: x"}
     # each body is judged as pr() judges it, several at a time (judged): the registry job runs this suite inside its
-    # pinned five minutes, with a pull request's full-tree render beside it (red-team round 4)
-    oks = lambda many: judged(repo, [(None, CODE, {**title, "PR_BODY": f"Spec: {SPEC}\nPlan: {PLAN}\n\n{boxes}"}) for boxes in many])
+    # pinned five minutes, with a pull request's full-tree render beside it (red-team round 4). A case may carry the
+    # main it is judged against (on), as pr() judges it after on_base() writes that spec; a few stay single, through
+    # the command line
+    on = lambda *items: {SPEC: spec(done_when=list(items))}
+    as_ok = lambda boxes, on_main=None: (on_main, CODE, {**title, "PR_BODY": f"Spec: {SPEC}\nPlan: {PLAN}\n\n{boxes}"})
+    oks = lambda many: judged(repo, [as_ok(boxes) for boxes in many])
     ok = lambda boxes: oks([boxes])[0]
     assert ok(f"- [ ] {item}\n").returncode == 0
     wrongs = ("- [ ] e2e.yml has paths-ignore: ['docs/', '/.md']\n", f"<!-- - [x] {item} -->\n",
@@ -1702,31 +1706,32 @@ def test_a_done_when_item_matches_as_written_or_as_rendered(repo):
                 " - 3 * 4 = 12", " (C:\\tmp)", " (`12` passed, `0` skipped)")
     for tail, r in zip(readable, dones([f"- [x] {item}{tail}\n" for tail in readable])):
         assert r.returncode == 0, (tail, r.stdout)
-    # a verbatim box beside one a reader sees as the item is two lines for it (red-team, this PR)
-    r = done(f"- [x] {item}\n- [ ] e2e.yml has paths-ignore: ['docs/', '/.md']\n")
-    assert r.returncode == 1 and "more than one checkbox line" in r.stdout, r.stdout
-    # an HTML block inside a ticked box the gate cannot read as GitHub shows it (red-team, this PR)
-    r = done(f"- [x] {item} (actionlint)\n  <?x>run</x>\n")
-    assert r.returncode == 1 and "HTML block the gate cannot read" in r.stdout, r.stdout
-    r = done(f"- [x] {item} (actionlint)\n\n  <div>not run\n")
-    assert r.returncode == 1 and "HTML block the gate cannot read" in r.stdout, r.stdout
-    # an entity GitHub shows as text, read as a comment opener, would move the body's lines (red-team, this PR)
-    r = done(f"- [x] {item}\n\nwe strip &lt;!-- and\n\nthe rest --&gt; here\n")
-    assert r.returncode == 1 and "splits into lines otherwise" in r.stdout, r.stdout
-    assert done(f"- [x] {item}\n\nwe strip `<!--` and &lt; here\n").returncode == 0
-    # a tag split across the copy's lines hides as it does on one line (red-team, this PR)
-    r = done(f"- [x] {item}\n- [ ] e2e.yml has paths-<a title='x\n  y'>ignore: docs/**, **/*.md (not run)\n")
-    assert r.returncode == 1 and "more than one checkbox line" in r.stdout, r.stdout
-    # a deferring copy that the body read twice hides is read past its letters, however short it renders
-    r = done(f'<img alt="i" src="a.png"> <br>\n- [x] e2e.yml has paths-ignore: docs/**, **/*.md, not run\n\n- [x] {item}\n')
-    assert r.returncode == 1 and "defers its work" in r.stdout, r.stdout
-    for one, others in (("the `tsc` build passes", ["the tsc build passes"]), ("the [registry](docs/r.md) test passes", ["the registry test passes"]),
-                        ("no `SELECT *` on the hot path", ["no SELECT * on the hot path", "no <ins>SELECT</ins> * on the hot path"]),
-                        ("the loop guard `i<n` is checked", ["the loop guard i<n is checked (not run -> next PR)"])):
-        on_base(repo, {SPEC: spec(done_when=[one])})
-        assert done(f"- [x] {one}\n").returncode == 0
-        for second in [f"- [ ] {o}" for o in others] + [f"- [x] {o}, follow-up PR" for o in others]:
-            r = done(f"- [x] {one}\n{second}\n")
+    verbatim, unread, opened, entity, coded, split, twice_hidden = dones([
+        # a verbatim box beside one a reader sees as the item is two lines for it (red-team, this PR)
+        f"- [x] {item}\n- [ ] e2e.yml has paths-ignore: ['docs/', '/.md']\n",
+        # an HTML block inside a ticked box the gate cannot read as GitHub shows it (red-team, this PR)
+        f"- [x] {item} (actionlint)\n  <?x>run</x>\n", f"- [x] {item} (actionlint)\n\n  <div>not run\n",
+        # an entity GitHub shows as text, read as a comment opener, would move the body's lines (red-team, this PR)
+        f"- [x] {item}\n\nwe strip &lt;!-- and\n\nthe rest --&gt; here\n", f"- [x] {item}\n\nwe strip `<!--` and &lt; here\n",
+        # a tag split across the copy's lines hides as it does on one line (red-team, this PR)
+        f"- [x] {item}\n- [ ] e2e.yml has paths-<a title='x\n  y'>ignore: docs/**, **/*.md (not run)\n",
+        # a deferring copy that the body read twice hides is read past its letters, however short it renders
+        f'<img alt="i" src="a.png"> <br>\n- [x] e2e.yml has paths-ignore: docs/**, **/*.md, not run\n\n- [x] {item}\n'])
+    assert verbatim.returncode == 1 and "more than one checkbox line" in verbatim.stdout, verbatim.stdout
+    assert unread.returncode == 1 and "HTML block the gate cannot read" in unread.stdout, unread.stdout
+    assert opened.returncode == 1 and "HTML block the gate cannot read" in opened.stdout, opened.stdout
+    assert entity.returncode == 1 and "splits into lines otherwise" in entity.stdout, entity.stdout
+    assert coded.returncode == 0
+    assert split.returncode == 1 and "more than one checkbox line" in split.stdout, split.stdout
+    assert twice_hidden.returncode == 1 and "defers its work" in twice_hidden.stdout, twice_hidden.stdout
+    pairs = [(one, [f"- [ ] {o}" for o in others] + [f"- [x] {o}, follow-up PR" for o in others])
+             for one, others in (("the `tsc` build passes", ["the tsc build passes"]), ("the [registry](docs/r.md) test passes", ["the registry test passes"]),
+                                 ("no `SELECT *` on the hot path", ["no SELECT * on the hot path", "no <ins>SELECT</ins> * on the hot path"]),
+                                 ("the loop guard `i<n` is checked", ["the loop guard i<n is checked (not run -> next PR)"]))]
+    judging = iter(judged(repo, [as_done(f"- [x] {one}\n{second}", on(one)) for one, seconds in pairs for second in ["", *(f"{s}\n" for s in seconds)]]))
+    for one, seconds in pairs:
+        assert next(judging).returncode == 0
+        for second, r in zip(seconds, judging):
             assert r.returncode == 1 and "more than one checkbox line" in r.stdout, (one, second, r.stdout)
     # a link straddling the item's end shows the reader something else, so the box does not carry it;
     # read as written, a box must not go on with the item's last word or a marker either
@@ -1761,33 +1766,38 @@ def test_a_done_when_item_matches_as_written_or_as_rendered(repo):
     for body, r in zip(typed, dones(typed)):
         assert r.returncode == 0 and "Traceback" not in r.stderr, (body, r.stdout, r.stderr)
     # an item holding an entity for punctuation is carried by its verbatim box, at close-out too (red-team, this PR)
-    on_base(repo, {SPEC: spec(done_when=["the `tsc` exit code &lt; 2"])})
-    assert ok("- [ ] the `tsc` exit code &lt; 2\n").returncode == 0
-    assert done("- [x] the `tsc` exit code &lt; 2\n").returncode == 0
-    assert done("- [x] the `tsc` exit code < 2\n").returncode == 0
+    entities = [as_ok("- [ ] the `tsc` exit code &lt; 2\n", on("the `tsc` exit code &lt; 2")),
+                *(as_done(box, on("the `tsc` exit code &lt; 2")) for box in ("- [x] the `tsc` exit code &lt; 2\n", "- [x] the `tsc` exit code < 2\n"))]
     # a link in a box shows its text: the item is all a reader sees (red-team, this PR)
-    for item, box in (("the registry test passes", "the [registry](docs/r.md) test passes"),
-                      ("the CI job is green", "the CI [job](https://github.com/o/r/actions/runs/1) is green")):
-        on_base(repo, {SPEC: spec(done_when=[item])})
-        assert ok(f"- [ ] {box}\n").returncode == 0, box
-        assert done(f"- [x] {box}\n").returncode == 0, (box, done(f"- [x] {box}\n").stdout)
+    links = (("the registry test passes", "the [registry](docs/r.md) test passes"),
+             ("the CI job is green", "the CI [job](https://github.com/o/r/actions/runs/1) is green"))
     # a placeholder the item writes as a tag is carried by a box that shows it, as on main (red-team, this PR)
-    for item, boxes in (("set <name> in the config", ("set `<name>` in the config", "set &lt;name&gt; in the config")),
-                        ("Box<T> compiles", ("`Box<T>` compiles", "Box&lt;T&gt; compiles"))):
-        on_base(repo, {SPEC: spec(done_when=[item])})
-        for box in boxes:
-            assert ok(f"- [ ] {box}\n").returncode == 0, box
-            assert done(f"- [x] {box}\n").returncode == 0, (box, done(f"- [x] {box}\n").stdout)
+    placeholders = [(item, box) for item, boxes in (("set <name> in the config", ("set `<name>` in the config", "set &lt;name&gt; in the config")),
+                                                    ("Box<T> compiles", ("`Box<T>` compiles", "Box&lt;T&gt; compiles"))) for box in boxes]
     # a tag GitHub hides is not the text an item spells with entities, plain or with markup (red-team, this PR)
-    for item in ("Shipped &lt;the migration verified&gt;", "`deploy` ships &lt;the migration verified&gt;", "List&lt;T&gt; serializes"):
-        on_base(repo, {SPEC: spec(done_when=[item])})
-        assert done(f"- [x] {item}\n").returncode == 0, item
-        for box in (item.replace("&lt;", "<").replace("&gt;", ">"), item.replace("&lt;", "*<").replace("&gt;", ">*")):
-            r = done(f"- [x] {box}\n")
+    hidden = [(item, (item.replace("&lt;", "<").replace("&gt;", ">"), item.replace("&lt;", "*<").replace("&gt;", ">*")))
+              for item in ("Shipped &lt;the migration verified&gt;", "`deploy` ships &lt;the migration verified&gt;", "List&lt;T&gt; serializes")]
+    judging = iter(judged(repo, [*entities,
+                                 *(case for item, box in (*links, *placeholders) for case in (as_ok(f"- [ ] {box}\n", on(item)), as_done(f"- [x] {box}\n", on(item)))),
+                                 *(as_done(f"- [x] {box}\n", on(item)) for item, boxes in hidden for box in (item, *boxes)),
+                                 # an entity GitHub reads as text keeps an autolink whole, so the word goes on (red-team, this PR)
+                                 as_done("- [x] the `tsc` build pass<es:&lt;x>\n", on("the `tsc` build pass"))]))
+    assert next(judging).returncode == 0
+    assert next(judging).returncode == 0
+    assert next(judging).returncode == 0
+    for item, box in links:
+        assert next(judging).returncode == 0, box
+        r = next(judging)
+        assert r.returncode == 0, (box, r.stdout)
+    for item, box in placeholders:
+        assert next(judging).returncode == 0, box
+        r = next(judging)
+        assert r.returncode == 0, (box, r.stdout)
+    for item, boxes in hidden:
+        assert next(judging).returncode == 0, item
+        for box, r in zip(boxes, judging):
             assert r.returncode == 1 and ("hides part of its item" in r.stdout or "missing" in r.stdout), (box, r.stdout)
-    # an entity GitHub reads as text keeps an autolink whole, so the word goes on (red-team, this PR)
-    on_base(repo, {SPEC: spec(done_when=["the `tsc` build pass"])})
-    r = done("- [x] the `tsc` build pass<es:&lt;x>\n")
+    r = next(judging)
     assert r.returncode == 1 and "the `tsc` build pass" in r.stdout, r.stdout
     # a copy written with an escaped tag or a no-break space inside one is text, as GitHub shows it (red-team, this PR)
     on_base(repo, {SPEC: spec(done_when=["the `tsc` build passes"])})
@@ -1797,16 +1807,19 @@ def test_a_done_when_item_matches_as_written_or_as_rendered(repo):
     for (copy, body), r in zip(copies, dones([body for _, body in copies])):
         assert r.returncode == 1, (copy, body)
     # raw HTML from inside the item to past its end hides the item's own words, so the box does not carry it
-    for item in ("`cmp` holds when a<c and the result is negative", "cmp holds when a<c and the result is negative"):
-        on_base(repo, {SPEC: spec(done_when=[item])})
-        r = done(f"- [x] {item}>\n")
+    raws = ("`cmp` holds when a<c and the result is negative", "cmp holds when a<c and the result is negative")
+    longest = on("[run the tests](https://ci.example.com/o/r/pipelines/main)", "run the tests on 3.12")
+    judging = iter(judged(repo, [*(as_done(f"- [x] {item}{end}\n", on(item)) for item in raws for end in (">", "")),
+                                 # the longer item is the longer one a reader sees, not one with a long hidden link (red-team, this PR)
+                                 as_done("- [x] [run the tests](https://ci.example.com/o/r/pipelines/main) on 3.12\n- [x] run the tests on 3.12\n", longest),
+                                 as_done("- [x] [run the tests](https://ci.example.com/o/r/pipelines/main)\n- [x] run the tests on 3.12\n", longest)]))
+    for item in raws:
+        r = next(judging)
         assert r.returncode == 1 and f"missing: {item}" in r.stdout, (item, r.stdout)
-        assert done(f"- [x] {item}\n").returncode == 0
-    # the longer item is the longer one a reader sees, not one with a long hidden link (red-team, this PR)
-    on_base(repo, {SPEC: spec(done_when=["[run the tests](https://ci.example.com/o/r/pipelines/main)", "run the tests on 3.12"])})
-    r = done("- [x] [run the tests](https://ci.example.com/o/r/pipelines/main) on 3.12\n- [x] run the tests on 3.12\n")
+        assert next(judging).returncode == 0
+    r = next(judging)
     assert r.returncode == 1 and "more than one checkbox line for: run the tests on 3.12" in r.stdout, r.stdout
-    assert done("- [x] [run the tests](https://ci.example.com/o/r/pipelines/main)\n- [x] run the tests on 3.12\n").returncode == 0
+    assert next(judging).returncode == 0
     # read once too, the longer item still claims its own line first (red-team, this PR)
     on_base(repo, {SPEC: spec(done_when=["run the tests", "run the tests on 3.12"])})
     longer = (" (R&amp;D sign-off)", " (p &lt; 0.05)", "<br>", " <b>green</b>")
@@ -1831,25 +1844,26 @@ def test_a_done_when_item_matches_as_written_or_as_rendered(repo):
     r = ok("- [x] a\n" * 8160)
     assert r.returncode == 1 and "line lookups" in r.stdout, r.stdout[-400:]
     # each box claims its own item: a link target or a trailing marker tells two items apart (solyra#228 r4207718706)
-    on_base(repo, {SPEC: spec(done_when=["[workflow](a.yml) passes", "[workflow](b.yml) passes", "config FOO_", "config FOO"])})
-    assert ok("- [ ] [workflow](b.yml) passes\n- [ ] [workflow](a.yml) passes\n- [ ] config FOO_BAR set\n- [ ] config FOO\n").returncode == 0
+    targets = on("[workflow](a.yml) passes", "[workflow](b.yml) passes", "config FOO_", "config FOO")
     # a reader's copy of a link item never carries it, as on main (red-team, this PR)
-    on_base(repo, {SPEC: spec(done_when=["[npm test](package.json) passes", "npm test passes on node 22"])})
-    assert ok("- [ ] [npm test](package.json) passes\n- [ ] npm test passes on node 22\n").returncode == 0
-    for two in ("- [ ] npm test passes\n- [ ] npm test passes on node 22\n", "- [ ] npm test passes on node 22\n- [ ] npm test passes\n"):
-        r = ok(two)
-        assert r.returncode == 1 and "missing: [npm test](package.json) passes" in r.stdout, (two, r.stdout)
-    # an entity or a dash reads as the body reads it, once (solyra#228 r4207718694, red-team)
-    on_base(repo, {SPEC: spec(done_when=["R&amp;D signs the step \u2013 done"])})
-    assert ok("- [ ] R&amp;D signs the step \u2013 done\n").returncode == 0
+    copied = on("[npm test](package.json) passes", "npm test passes on node 22")
+    twos = ("- [ ] npm test passes\n- [ ] npm test passes on node 22\n", "- [ ] npm test passes on node 22\n- [ ] npm test passes\n")
     # a tag stays in the item, so no other tag, or none, stands in for it (red-team, this PR)
-    for tagged, boxes in (("Ship<span title=' the migration verified'>", ["Shipped the README typo fix"]),
-                          ("`<kbd>` hints show the shortcut", ["`<sub>` hints show the shortcut", "`` hints show the shortcut"]),
-                          ("**", ["**bold claim** done"])):
-        on_base(repo, {SPEC: spec(done_when=[tagged])})
-        for box in boxes:
-            r = ok(f"- [x] {box}\n")
-            assert r.returncode == 1 and f"missing: {tagged}" in r.stdout, (tagged, box, r.stdout)
+    tags = [(tagged, box) for tagged, boxes in (("Ship<span title=' the migration verified'>", ["Shipped the README typo fix"]),
+                                                ("`<kbd>` hints show the shortcut", ["`<sub>` hints show the shortcut", "`` hints show the shortcut"]),
+                                                ("**", ["**bold claim** done"])) for box in boxes]
+    judging = iter(judged(repo, [as_ok("- [ ] [workflow](b.yml) passes\n- [ ] [workflow](a.yml) passes\n- [ ] config FOO_BAR set\n- [ ] config FOO\n", targets),
+                                 *(as_ok(body, copied) for body in ("- [ ] [npm test](package.json) passes\n- [ ] npm test passes on node 22\n", *twos)),
+                                 # an entity or a dash reads as the body reads it, once (solyra#228 r4207718694, red-team)
+                                 as_ok("- [ ] R&amp;D signs the step \u2013 done\n", on("R&amp;D signs the step \u2013 done")),
+                                 *(as_ok(f"- [x] {box}\n", on(tagged)) for tagged, box in tags)]))
+    assert next(judging).returncode == 0
+    assert next(judging).returncode == 0
+    for two, r in zip(twos, judging):
+        assert r.returncode == 1 and "missing: [npm test](package.json) passes" in r.stdout, (two, r.stdout)
+    assert next(judging).returncode == 0
+    for (tagged, box), r in zip(tags, judging):
+        assert r.returncode == 1 and f"missing: {tagged}" in r.stdout, (tagged, box, r.stdout)
     # an item cut at `<!--` is not a stub that ticks an unrelated box (red-team, this PR)
     on_base(repo, {SPEC: spec(done_when=["strip <!-- markers from the PR template"])})
     r = ok("- [ ] strip trailing whitespace\n")
@@ -1882,17 +1896,11 @@ def test_a_done_when_item_matches_as_written_or_as_rendered(repo):
              "- &amp;#91; ] notes\n  - [x] every model states its decision, n&amp;#111;t run\n",
              *(f"{above}\n\n- [x] every model states its decision, n&amp;#111;t run\n"
              for above in ("&amp;lt;!--", "&amp;lt;pre&amp;gt;", "&amp;#96;" * 3)))
-    for two, r in zip(twice, dones(twice)):
-        assert r.returncode == 1 and ("defers its work" in r.stdout or "more than one checkbox line" in r.stdout), (two, r.stdout)
     # decided on the body read twice, as on main: there a backtick that paired with one in a later code block
     # hides no comment, and a tag line after a closed fence opens its HTML block (red-team, this PR)
     hiddens = ("Escape the ` in shell strings.\n\n<!--\n- [x] every model states its decision\n-->\n\n```bash\nnpm test\n```\n",
                "```\nnpm test\n```\n<img alt=\"image\" src=\"https://example.com/a.png\">\n- [x] every model states its decision\n",
                *(f"{above}\n\n- [x] every model states its decision, n&amp;#111;t run\n" for above in ("<!\u2010\u2010", "<!<b></b>--")))
-    for hidden, r in zip(hiddens, dones(hiddens)):
-        assert r.returncode == 1 and "missing: every model states its decision" in r.stdout, (hidden, r.stdout)
-    assert done("Escape the ` in shell strings.\n- [x] every model states its decision\n\n<!--\n- [ ] every model states its decision\n-->\n\n"
-                "```bash\nnpm test\n```\n").returncode == 0
     # a line GitHub shows that only the twice-read body hides, behind an entity it decodes again, is a second line
     # for its item (red-team, this PR)
     # or tags (`<!<b></b>--`, `<<b></b>pre>`) it strips (red-team, this PR)
@@ -1900,10 +1908,18 @@ def test_a_done_when_item_matches_as_written_or_as_rendered(repo):
                for wrap, end in (("&amp;lt;!--", "--&amp;gt;"), ("&amp;#96;" * 3, "&amp;#96;" * 3), ("<!<b></b>--", "--<b></b>>"),
                                  ("<!<span></span>--", "--<span></span>>"), ("<<b></b>pre>", "<<b></b>/pre>"))
                for copy in ("- [ ] every model states its decision (not run)", "- [x] every model states its decision, follow-up PR")]
-    for two, r in zip(wrapped, dones(wrapped)):
+    judging = iter(dones([*twice, *hiddens, "Escape the ` in shell strings.\n- [x] every model states its decision\n\n<!--\n- [ ] every model states its decision\n-->\n\n"
+                          "```bash\nnpm test\n```\n", *wrapped,
+                          # the close-out ticks the box the body read once shows first, as on main (red-team, this PR)
+                          'Notes [a](u "<!<!-- -->--").\n\n- [ ] every model states its decision\n\nRef [b](v "-->").\n\n- [x] every model states its decision\n']))
+    for two, r in zip(twice, judging):
+        assert r.returncode == 1 and ("defers its work" in r.stdout or "more than one checkbox line" in r.stdout), (two, r.stdout)
+    for hidden, r in zip(hiddens, judging):
+        assert r.returncode == 1 and "missing: every model states its decision" in r.stdout, (hidden, r.stdout)
+    assert next(judging).returncode == 0
+    for two, r in zip(wrapped, judging):
         assert r.returncode == 1 and ("more than one checkbox line" in r.stdout or "defers its work" in r.stdout), (two, r.stdout)
-    # the close-out ticks the box the body read once shows first, as on main (red-team, this PR)
-    r = done('Notes [a](u "<!<!-- -->--").\n\n- [ ] every model states its decision\n\nRef [b](v "-->").\n\n- [x] every model states its decision\n')
+    r = next(judging)
     assert r.returncode == 1 and "not ticked: every model states its decision" in r.stdout, r.stdout
     # the first line a reader takes as a markup item is the close-out's too, its copy included, wherever the
     # body read twice hides it: it must be ticked and must not defer (red-team, this PR)
@@ -1919,61 +1935,70 @@ def test_a_done_when_item_matches_as_written_or_as_rendered(repo):
               ("- [ ] the t<?x><y a='?>'z<!--->sc build passes (not run)", "cannot read"),
               ("- [ ] the t<?sc@build.passes> (not run) ?>", "not ticked"),
               ("- [ ] <svg><![CDATA[the tsc build passes]]></svg> (not run)", "cannot read"))
-    for (first, why), r in zip(firsts, dones([f'<img alt="i" src="a.png"> <br>\n{first}\n\n- [x] the `tsc` build passes\n' for first, _ in firsts])):
-        assert r.returncode == 1 and why in r.stdout, (first, r.stdout)
-    assert done('<img alt="i" src="a.png"> <br>\n- [ ] the t<!x>sc build passes (not run)\n\n- [x] the `tsc` build passes\n').returncode == 0
     # an escaped backslash leaves the `<` after it a tag (red-team, this PR)
     escaped = ("- [x] the `tsc` build passes\n- [ ] the t\\\\<ins>sc build passes (not run)\n",
                '<img alt="i" src="a.png"> <br>\n- [ ] the t\\\\<ins>sc build passes (not run)\n\n- [x] the `tsc` build passes\n',
                "- [x] the t\\\\<ins>sc build passes, not run\n")
-    for body, r in zip(escaped, dones(escaped)):
+    ptags = on("<p> tags are stripped from summaries", "the `tsc` build passes")
+    ptwos = ("- [x] <p> tags are stripped from summaries, n&amp;#111;t run\n- [x] the `tsc` build passes\n",
+             "- [x] <p> tags are stripped from summaries\n- [x] the `tsc` build passes\n- [ ] the `tsc` build p&amp;#97;sses (not run)\n")
+    judging = iter(judged(repo, [*(as_done(f'<img alt="i" src="a.png"> <br>\n{first}\n\n- [x] the `tsc` build passes\n') for first, _ in firsts),
+                                 as_done('<img alt="i" src="a.png"> <br>\n- [ ] the t<!x>sc build passes (not run)\n\n- [x] the `tsc` build passes\n'),
+                                 *(as_done(body) for body in escaped),
+                                 *(as_done(body, ptags) for body in (
+                                     "- [x] <p> tags are stripped from summaries\n- [x] the `tsc` build passes\n",
+                                     # each tag after an item read as written is parsed once: 26 `<img src=a/>` took minutes (red-team, this PR)
+                                     # (and refused: tags with attributes after a done item with markup are no plain words, red-team, this PR)
+                                     "- [x] <p> tags are stripped from summaries\n- [x] the `tsc` build passes" + "<img src=a/>" * 26 + "!\n", *ptwos))]))
+    for (first, why), r in zip(firsts, judging):
+        assert r.returncode == 1 and why in r.stdout, (first, r.stdout)
+    assert next(judging).returncode == 0
+    for body, r in zip(escaped, judging):
         assert r.returncode == 1, body
-    on_base(repo, {SPEC: spec(done_when=["<p> tags are stripped from summaries", "the `tsc` build passes"])})
-    assert done("- [x] <p> tags are stripped from summaries\n- [x] the `tsc` build passes\n").returncode == 0
-    # each tag after an item read as written is parsed once: 26 `<img src=a/>` took minutes (red-team, this PR)
-    # (and refused: tags with attributes after a done item with markup are no plain words, red-team, this PR)
-    r = done("- [x] <p> tags are stripped from summaries\n- [x] the `tsc` build passes" + "<img src=a/>" * 26 + "!\n")
+    assert next(judging).returncode == 0
+    r = next(judging)
     assert r.returncode == 1 and "cannot read for a deferral" in r.stdout, r.stdout
-    for two in ("- [x] <p> tags are stripped from summaries, n&amp;#111;t run\n- [x] the `tsc` build passes\n",
-                "- [x] <p> tags are stripped from summaries\n- [x] the `tsc` build passes\n- [ ] the `tsc` build p&amp;#97;sses (not run)\n"):
-        r = done(two)
+    for two, r in zip(ptwos, judging):
         assert r.returncode == 1 and ("defers its work" in r.stdout or "more than one checkbox line" in r.stdout), (two, r.stdout)
     # each position after an item is walked once, however many items are weighed against the line (red-team, this PR)
     on_base(repo, {SPEC: spec(done_when=["*a" + "<a>" * k for k in range(208)])})
     r = done("- [ ] x &amp;#111;\n- [x] *a" + "<a>" * 21000 + "`\n")
     assert r.returncode == 1 and "missing: *a" in r.stdout, r.stdout[-300:]
     # a tag in an item's code span is text, as it renders, so a plain copy of the item is one of its lines (red-team, this PR)
-    on_base(repo, {SPEC: spec(done_when=["the `<Dialog>` closes on Escape"])})
-    r = done("- [x] the `<Dialog>` closes on Escape\n- [ ] the Dialog closes on Escape (not run)\n")
-    assert r.returncode == 1 and "more than one checkbox line" in r.stdout, r.stdout
+    dialog = on("the `<Dialog>` closes on Escape")
     # a backtick in an image's destination is part of it on GitHub, which the gate does not pair: refused
     # (red-team, this PR)
-    on_base(repo, {SPEC: spec(done_when=["ship `x` done"])})
-    for body in ("- [x] ship `x` done\n- [ ] ship ![](a`b.png) `x` done (not run)\n",
-                 "- [ ] ship ![](a`b.png) `x` done (not run)\n- [x] ship `x` done\n"):
-        r = done(body)
-        assert r.returncode == 1 and "backtick inside a link or image destination" in r.stdout, (body, r.stdout)
-    assert done("- [x] ship `x` done ([log](https://ci.example.com/1))\n").returncode == 0
-    # an image in a code span is text too: a plain copy of the item is one of its lines (red-team, this PR)
-    on_base(repo, {SPEC: spec(done_when=["the `![badge](b.svg)` markup renders"])})
-    r = done("- [x] the `![badge](b.svg)` markup renders\n- [ ] the \\!\\[badge\\](b.svg) markup renders (not run)\n")
-    assert r.returncode == 1 and "more than one checkbox line" in r.stdout, r.stdout
-    assert done("- [x] the `![badge](b.svg)` markup renders\n").returncode == 0
+    destinations = ("- [x] ship `x` done\n- [ ] ship ![](a`b.png) `x` done (not run)\n",
+                    "- [ ] ship ![](a`b.png) `x` done (not run)\n- [x] ship `x` done\n")
     # and so is a link or image in a code span: its destination shows too (red-team, this PR)
-    for item, copy in (("the `xy` syntax renders", "the `[x](y)` syntax renders"), ("the `xipng` syntax renders", "the `![x](i.png)` syntax renders")):
-        on_base(repo, {SPEC: spec(done_when=[item])})
-        r = done(f"- [x] {item}\n- [ ] {copy}\n")
-        assert r.returncode == 1 and "more than one checkbox line" in r.stdout, (copy, r.stdout)
-    on_base(repo, {SPEC: spec(done_when=["the `<Dialog>` closes on Escape"])})
-    # raw HTML in a code span is text, so it never makes a line unreadable (red-team, this PR)
-    assert done("- [x] the `<Dialog>` closes on Escape\n- [x] `<svg>` icons keep their `<![CDATA[...]]>` styles\n").returncode == 0
+    spans = (("the `xy` syntax renders", "the `[x](y)` syntax renders"), ("the `xipng` syntax renders", "the `![x](i.png)` syntax renders"))
     # a tilde after a done item with markup pairs with one in the item, striking through across its end (red-team, this PR)
-    on_base(repo, {SPEC: spec(done_when=["the `tsc` build takes ~2 min"])})
     tildes = (", pend~ing review", ", fol~low-up", ", see log~")
-    for tail, r in zip(tildes, dones([f"- [x] the `tsc` build takes ~2 min{tail}\n" for tail in tildes])):
-        assert r.returncode == 1 and "cannot read for a deferral" in r.stdout, (tail, r.stdout)
     unpaired = ("", " (`a~b` passed)", " in CI")
-    for tail, r in zip(unpaired, dones([f"- [x] the `tsc` build takes ~2 min{tail}\n" for tail in unpaired])):
+    judging = iter(judged(repo, [as_done("- [x] the `<Dialog>` closes on Escape\n- [ ] the Dialog closes on Escape (not run)\n", dialog),
+                                 *(as_done(body, on("ship `x` done")) for body in (*destinations, "- [x] ship `x` done ([log](https://ci.example.com/1))\n")),
+                                 # an image in a code span is text too: a plain copy of the item is one of its lines (red-team, this PR)
+                                 *(as_done(body, on("the `![badge](b.svg)` markup renders")) for body in (
+                                     "- [x] the `![badge](b.svg)` markup renders\n- [ ] the \\!\\[badge\\](b.svg) markup renders (not run)\n",
+                                     "- [x] the `![badge](b.svg)` markup renders\n")),
+                                 *(as_done(f"- [x] {item}\n- [ ] {copy}\n", on(item)) for item, copy in spans),
+                                 # raw HTML in a code span is text, so it never makes a line unreadable (red-team, this PR)
+                                 as_done("- [x] the `<Dialog>` closes on Escape\n- [x] `<svg>` icons keep their `<![CDATA[...]]>` styles\n", dialog),
+                                 *(as_done(f"- [x] the `tsc` build takes ~2 min{tail}\n", on("the `tsc` build takes ~2 min")) for tail in (*tildes, *unpaired))]))
+    r = next(judging)
+    assert r.returncode == 1 and "more than one checkbox line" in r.stdout, r.stdout
+    for body, r in zip(destinations, judging):
+        assert r.returncode == 1 and "backtick inside a link or image destination" in r.stdout, (body, r.stdout)
+    assert next(judging).returncode == 0
+    r = next(judging)
+    assert r.returncode == 1 and "more than one checkbox line" in r.stdout, r.stdout
+    assert next(judging).returncode == 0
+    for (item, copy), r in zip(spans, judging):
+        assert r.returncode == 1 and "more than one checkbox line" in r.stdout, (copy, r.stdout)
+    assert next(judging).returncode == 0
+    for tail, r in zip(tildes, judging):
+        assert r.returncode == 1 and "cannot read for a deferral" in r.stdout, (tail, r.stdout)
+    for tail, r in zip(unpaired, judging):
         assert r.returncode == 0, tail
     # every reading of a body shares main's code span scan, however long an entity is written: the twice-read body
     # read again with its entities as written rescanned a joined backtick run, twice main's time (red-team, this PR)
@@ -1985,30 +2010,33 @@ def test_a_done_when_item_matches_as_written_or_as_rendered(repo):
     assert spec_gate.backtick_spans.cache_info().misses == 1
     # a backtick inside a tag's attribute opens no code span, as raw HTML comes first, and one that opens none
     # stays, so `<sc`>` is text (red-team, this PR)
-    on_base(repo, {SPEC: spec(done_when=["the `tsc` build passes"])})
+    tsc = on("the `tsc` build passes")
     ticked = ('- [ ] the <a title="`">tsc</a> build passes <a title="`"></a>(not run)',
               '- [x] the <a title="`">tsc</a> build passes, not run <a title="`"></a>',
               "- [ ] the t<sc`> build passes (not run)", "- [x] the t<sc`> build passes, not run")
-    for first, r in zip(ticked, dones([f"{first}\n- [x] the `tsc` build passes\n" for first in ticked])):
-        assert r.returncode == 1 and ("more than one checkbox line" in r.stdout or "defers its work" in r.stdout), (first, r.stdout)
     # raw HTML that shows nothing does not split a deferral word (red-team, this PR)
     unseen = ("the `tsc` build passes, fol<ins></ins>low-up PR", "the `tsc` build passes, fol<?x?>low-up PR",
               "the `tsc` build passes (not<ins> </ins>run)")
-    for line, r in zip(unseen, dones([f"- [x] {line}\n" for line in unseen])):
+    judging = iter(judged(repo, [*(as_done(f"{first}\n- [x] the `tsc` build passes\n", tsc) for first in ticked),
+                                 *(as_done(f"- [x] {line}\n", tsc) for line in unseen),
+                                 # a code span opening the line is read from the line's start, not around past it (red-team, this PR)
+                                 as_done("- [ ] `npm`-test passes ``\n- [x] `npm test` passes\n", on("`npm test` passes")),
+                                 # an escaped backtick before a code span is text, and the span's own run is what renders as nothing
+                                 # (red-team, this PR)
+                                 as_done("- [x] the `tsc` build passes\n- [ ] \\``t`he tsc build passes (not run)\n", tsc),
+                                 as_done("- [x] escape &amp;lt; in docs, n&amp;#111;t run\n", on("escape &amp;lt; in docs")),
+                                 as_done("- [x] R&amp;amp;amp;D signs off\n- [ ] R&amp;amp;D signs off\n", on("R&amp;amp;D signs off"))]))
+    for first, r in zip(ticked, judging):
+        assert r.returncode == 1 and ("more than one checkbox line" in r.stdout or "defers its work" in r.stdout), (first, r.stdout)
+    for line, r in zip(unseen, judging):
         assert r.returncode == 1 and "defers its work" in r.stdout, (line, r.stdout)
-    # a code span opening the line is read from the line's start, not around past it (red-team, this PR)
-    on_base(repo, {SPEC: spec(done_when=["`npm test` passes"])})
-    r = done("- [ ] `npm`-test passes ``\n- [x] `npm test` passes\n")
+    r = next(judging)
     assert r.returncode == 1 and "more than one checkbox line" in r.stdout, r.stdout
-    # an escaped backtick before a code span is text, and the span's own run is what renders as nothing (red-team, this PR)
-    on_base(repo, {SPEC: spec(done_when=["the `tsc` build passes"])})
-    r = done("- [x] the `tsc` build passes\n- [ ] \\``t`he tsc build passes (not run)\n")
+    r = next(judging)
     assert r.returncode == 1 and "more than one checkbox line" in r.stdout, r.stdout
-    on_base(repo, {SPEC: spec(done_when=["escape &amp;lt; in docs"])})
-    r = done("- [x] escape &amp;lt; in docs, n&amp;#111;t run\n")
+    r = next(judging)
     assert r.returncode == 1 and "defers its work" in r.stdout, r.stdout
-    on_base(repo, {SPEC: spec(done_when=["R&amp;amp;D signs off"])})
-    r = done("- [x] R&amp;amp;amp;D signs off\n- [ ] R&amp;amp;D signs off\n")
+    r = next(judging)
     assert r.returncode == 1, r.stdout
 
 
