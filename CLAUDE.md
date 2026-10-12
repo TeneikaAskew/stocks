@@ -258,20 +258,20 @@ review object with a body whose `submitted_at` is the finding's `created_at`
 or the second before it (`get_review_comments` carries no review id), and that
 review's `commit_id` is then the reviewed commit. If more than one bodied
 Codex review falls in a finding's window, its type is ambiguous: it is
-classified against the earlier of the two types' first-review SHAs, which
-keeps the missed count a lower bound, and its reply says so. Every bodied
-Codex review object holding a finding on #1380, #1387 and #1398 is a code
-review's, and though no field says so, each opens its body with
-`### 💡 Codex Review` and names its commit as `**Reviewed commit:**` (on #1398,
-review 5491453317 on `a269671e`, submitted at 13:27:56Z, holds all four
-findings, created at 13:27:56Z and 13:27:57Z). No security-review finding or
-review object has been seen on those pull requests, so the security review's
-heading is not known: a finding held by a bodied Codex review object without
-the code review's heading is the security review's, and the author notes that
-object's heading in a PR comment the first time one appears. A reviewer whose
-clean review does create a review object, as a person's approval does, needs
-no such comment: that object's `commit_id` names the commit its first review
-covered.
+classified against the earlier of the two types' first-review SHAs, and as
+uncounted if either type's first review raised it there, which keeps the
+missed count a lower bound, and its reply says so. Every bodied Codex review
+object holding a finding on #1380, #1387 and #1398 is a code review's, and
+though no field says so, each opens its body with `### 💡 Codex Review` and
+names its commit as `**Reviewed commit:**` (on #1398, review 5491453317 on
+`a269671e`, submitted at 13:27:56Z, holds all four findings, created at
+13:27:56Z and 13:27:57Z). No security-review finding or review object has been
+seen on those pull requests, so the security review's heading is not known: a
+finding held by a bodied Codex review object without the code review's heading
+is the security review's, and the author notes that object's heading in a PR
+comment the first time one appears. A reviewer whose clean review does create
+a review object, as a person's approval does, needs no such comment: that
+object's `commit_id` names the commit its first review covered.
 
 #### A resolved thread is not a reviewed commit
 
@@ -307,8 +307,12 @@ Code Review row reads Completed for the same SHA, and it is where that run's
 findings are read. The rule counts Codex's code review only: the
 review-triggering events are the PR opened for review, the draft marked ready,
 an `@codex review` comment and a push of new commits, and a review object
-counts only if it is not `CHANGES_REQUESTED`. The Code Review row's own time,
-the `<relative-time datetime=…>` inside it, is what must follow the latest of
+counts only if it is not `CHANGES_REQUESTED`. An `@codex review` comment is
+one posted by an account other than chatgpt-codex-connector[bot], timed by its
+`created_at`; one the Code Review row has not picked up within the window is
+reported once on the PR and is not answered with a request, and the owner
+decides whether to merge without it. The Code Review row's own time, the
+`<relative-time datetime=…>` inside it, is what must follow the latest of
 those events: the comment's `updated_at` does not stand in for it, since an
 update to either row moves it while the Code Review row can still show the
 previous run's Completed (on #1398 the Code Review row reads Completed at
@@ -328,10 +332,11 @@ picked it up (no summary yet, or the row still showing the previous run);
 otherwise, once any first-review comment a Completed row is owed (Rule 2.5)
 has been posted, a run is requested with `@codex review`. A read of the
 summary comment that fails is retried, and does not count as a row that is
-missing or not Completed. Requesting a run (`@codex review`) or pushing
-happens only before the PR's second review round has started; once it has
-started, nothing is pushed or requested, and a PR that then needs either is
-split, re-cut or discarded (the review cap).
+missing or not Completed; a read still failing an hour later is reported once
+on the PR, and the owner decides whether to push or merge. Requesting a run
+(`@codex review`) or pushing happens only before the PR's second review round
+has started; once it has started, nothing is pushed or requested, and a PR
+that then needs either is split, re-cut or discarded (the review cap).
 
 #### Verify the claim before fixing it, and reproduce before you fix
 

@@ -87,19 +87,23 @@ Canvas refresh pending: none
 - [ ] The **current head** is reviewed as CLAUDE.md §2.5 counts it: after the
       PR's latest review-triggering event, a review authored by
       `chatgpt-codex-connector[bot]` was submitted naming it in `commit_id`,
-      or the Code Review row of Codex's review-summary comment reads
-      Completed for the head's SHA (a clean Codex review leaves no review
-      object, so read the row). Only the row says which review ran (a review
-      object names no review type: Codex's reply on a thread is a bodiless
-      review object, as #1380's review 5482164471 on `2b559d3d` is, and its
-      security review runs under the same account), so the row is what
-      satisfies this rule, and a review object never does without it: it
-      counts only once the Code Review row reads Completed for the same SHA,
-      and it is where that run's findings are read. The rule counts Codex's
-      code review only: the review-triggering events are the PR opened for
-      review, the draft marked ready, an `@codex review` comment and a push
-      of new commits, and a review object counts only if it is not
-      `CHANGES_REQUESTED`. The Code Review row's own time, the
+      or the Code Review row of Codex's review-summary comment reads Completed
+      for the head's SHA (a clean Codex review leaves no review object, so
+      read the row). Only the row says which review ran (a review object names
+      no review type: Codex's reply on a thread is a bodiless review object,
+      as #1380's review 5482164471 on `2b559d3d` is, and its security review
+      runs under the same account), so the row is what satisfies this rule,
+      and a review object never does without it: it counts only once the Code
+      Review row reads Completed for the same SHA, and it is where that run's
+      findings are read. The rule counts Codex's code review only: the
+      review-triggering events are the PR opened for review, the draft marked
+      ready, an `@codex review` comment and a push of new commits, and a
+      review object counts only if it is not `CHANGES_REQUESTED`. An
+      `@codex review` comment is one posted by an account other than
+      chatgpt-codex-connector[bot], timed by its `created_at`; one the Code
+      Review row has not picked up within the window is reported once on the
+      PR and is not answered with a request, and the owner decides whether to
+      merge without it. The Code Review row's own time, the
       `<relative-time datetime=…>` inside it, is what must follow the latest
       of those events: the comment's `updated_at` does not stand in for it,
       since an update to either row moves it while the Code Review row can
@@ -111,15 +115,17 @@ Canvas refresh pending: none
       a review it never saw. A head whose Code Review row does not read
       Completed for it, with its own time after the latest review-triggering
       event, is unreviewed. It waits while that row reads Running, and for
-      roughly 3 minutes after that event while the summary comment or its
-      Code Review row has not yet picked it up (no summary yet, or the row
-      still showing the previous run); otherwise, once any first-review
-      comment a Completed row is owed (Rule 2.5) has been posted, a run is
-      requested with `@codex review`. A read of the summary comment that
-      fails is retried, and does not count as a row that is missing or not
-      Completed. Requesting a run (`@codex review`) or pushing happens only
-      before the PR's second review round has started; once it has started,
-      nothing is pushed or requested, and a PR that then needs either is
-      split, re-cut or discarded (the review cap). If this item or the hold
-      above meant waiting for a run, the first two items are done again
+      roughly 3 minutes after that event while the summary comment or its Code
+      Review row has not yet picked it up (no summary yet, or the row still
+      showing the previous run); otherwise, once any first-review comment a
+      Completed row is owed (Rule 2.5) has been posted, a run is requested
+      with `@codex review`. A read of the summary comment that fails is
+      retried, and does not count as a row that is missing or not Completed; a
+      read still failing an hour later is reported once on the PR, and the
+      owner decides whether to push or merge. Requesting a run
+      (`@codex review`) or pushing happens only before the PR's second review
+      round has started; once it has started, nothing is pushed or requested,
+      and a PR that then needs either is split, re-cut or discarded (the
+      review cap). If this item or the hold above meant waiting for a run, the
+      first two items are done again
 - [ ] CI green on the current head, no merge conflict
