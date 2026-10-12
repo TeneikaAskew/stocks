@@ -1,6 +1,6 @@
 ---
 feat_id: FEAT-DATA-001
-req_ids: ["REQ-DATA-001", "REQ-DATA-003", "REQ-DATA-004", "REQ-CAP-001", "REQ-CAP-002", "REQ-CAP-003", "REQ-FRESH-001"]
+req_ids: ["REQ-DATA-001", "REQ-DATA-003", "REQ-DATA-004", "REQ-CAP-001", "REQ-CAP-002", "REQ-CAP-003", "REQ-FRESH-001", "REQ-OBS-001"]
 issues: [913]
 canvases: ["https://claude.ai/artifact/LXZ5iRtXogCyFfApfsxXVN"]
 done_when:
@@ -34,7 +34,7 @@ No expansion to all 128 APIs, change to strategy/model promotion or risk calibra
 
 ## Design
 
-Preserve adjusted_close in every AV daily writer. Add a bounded explicit-ticker/date repair that updates existing rows only, defaults to a reviewable dry-run, and commits per ticker with idempotent batch SQL. Add native SPX and VIX daily index routing preserving the existing ^VIX stored alias, raw OHLC and absent volume as NULL; retain explicit AV index provenance and reject silent Yahoo fallback. Add bounded INDEX_CATALOG, INDEX_DATA, ETF_PROFILE, DIVIDENDS, SPLITS and LISTING_STATUS ingestion using actual vendor contracts. Store normalized reference records and safe request/raw response/fetched UTC/SHA256 provenance in an additive SQL journal; limit journal retention to 90 days. Produce a 128-function registry with parameters, entitlement, symbol scope, timezone, table/key, cadence, owner, retained fields and excluded/historical-only reasons. Planned endpoint status is not called active until deployment evidence exists. No imports from an unmerged sibling branch.
+Preserve adjusted_close in every AV daily writer. Add a bounded explicit-ticker/date repair that updates existing rows only, defaults to a reviewable dry-run, and commits per ticker with idempotent batch SQL. Add native SPX and VIX daily index routing preserving the existing ^VIX stored alias, raw OHLC and absent volume as NULL; retain explicit AV index provenance and reject silent Yahoo fallback. Add bounded INDEX_CATALOG, INDEX_DATA, ETF_PROFILE, DIVIDENDS, SPLITS and LISTING_STATUS ingestion using actual vendor contracts. Store normalized reference records and safe request/raw response/fetched UTC/SHA256 provenance in an additive SQL journal; limit journal retention to 90 days. Produce a 128-function registry with parameters, entitlement, symbol scope, timezone, table/key, cadence, owner, retained fields and excluded/historical-only reasons. Planned endpoint status is not called active until deployment evidence exists. Broad daily backfill and repair publish complete/partial/error counts and fail nonzero for failed requested groups. Registry format is version 1 with a functions mapping; lifecycle is one of active, planned, on_demand, historical_only or excluded, and keys are validated against declared table contracts. No imports from an unmerged sibling branch.
 
 ### File ownership
 

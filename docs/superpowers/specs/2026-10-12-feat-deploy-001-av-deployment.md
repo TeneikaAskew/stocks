@@ -1,7 +1,7 @@
 ---
 feat_id: FEAT-DEPLOY-001
 req_ids: ["REQ-SECRET-001", "REQ-DEPLOY-001", "REQ-CAP-001", "REQ-CAP-002", "REQ-CAP-003", "REQ-OBS-001"]
-issues: []
+issues: [1201]
 canvases: ["https://claude.ai/artifact/LXZ5iRtXogCyFfApfsxXVN"]
 done_when:
   - "Stubbed deployment tests prove targeted create/update convergence, safe Secret Manager usage and unrelated-resource isolation."
@@ -34,7 +34,7 @@ No expansion to all 128 APIs, change to strategy/model promotion or risk calibra
 
 ## Design
 
-Add a selective av-remediation deployment path that converges only the authorized AV feeds/auditor and new bounded refresh jobs, preserving unrelated services and audience/IAM. Use Secret Manager references and safe env replacement for all three news jobs; set identical runtime/args controls in create and update paths, zero retries for incomplete-sensitive feeds. Grant the existing auditor identity the minimal scheduler-reader role when needed and fail closed on inability to read or update that exact policy. Configure GCS raw-response bucket and a 90-day object-age lifecycle rule scoped only to the dedicated AV archive prefix, preserving existing bucket lifecycle entries. Wire sibling module CLIs only when their reviewed implementation exists: indicators incremental Tue–Sat 02:45 ET; native indices weekdays 23:15 ET; ETF/actions/listing weekly Sunday 05:15 ET; bounded estimates weekdays 06:15 ET. Add a separate closing-only options job with a 13:00–16:00 hourly trigger guarded by the actual exchange close (including half-days); regular job uses the shared RTH guard. Stage targeted rollout from reviewed source and verify actual deployed flags/secrets/IAM/schedule targets.
+Add a selective av-remediation deployment path that converges only the authorized AV feeds/auditor and new bounded refresh jobs, preserving unrelated services and audience/IAM. Use Secret Manager references and safe env replacement for all three news jobs; set identical runtime/args controls in create and update paths, zero retries for incomplete-sensitive feeds. Grant the existing auditor identity the minimal scheduler-reader role when needed and fail closed on inability to read or update that exact policy. Configure GCS raw-response bucket and a 90-day object-age lifecycle rule scoped only to the exact av/raw/ prefix, preserving existing bucket lifecycle entries. Wire sibling module CLIs only when their reviewed implementation exists: indicators incremental Tue–Sat 02:45 ET; native indices weekdays 23:15 ET; ETF/actions/listing weekly Sunday 05:15 ET; bounded estimates weekdays 06:15 ET. Add a separate closing-only options job with a 13:00–16:00 hourly trigger guarded by the actual exchange close (including half-days); regular job uses the shared RTH guard. Leave AV_INDICATOR_COVERAGE_ENABLED false until the first scheduled-writer bounded refresh is verified; then enable it on the existing watchdog. Stage targeted rollout from reviewed source and verify actual deployed flags/secrets/IAM/schedule targets.
 
 ### File ownership
 
@@ -42,7 +42,7 @@ gcp/deploy.sh and its focused deployment tests; deployment runbooks; generated i
 
 ### Capacity and cost
 
-Indicator: 54 calls, <=350s, timeout1800s. Index: ~3 calls/incremental dates, <=185s, timeout1200s. ETF/reference: ~10 calls/<=20k listing rows, <=600s, timeout2400s. Estimates: <=100calls,~270s,timeout1800s. All oneCPU512Mi zero retries. Insider/news capped300 responses, <=810s typical bounded estimate, timeout3600s. Existing earnings-history long timeout remains. Closing job only actual-close calls 3 vendors, otherwise explicit skip, <=150s target timeout600s. New Cloud Run schedules estimated <=$0.55/month; report archive storage at measured and worst-case rates separately.
+Indicator: 54 calls, <=350s, timeout1800s. Index: ~3 calls/incremental dates, <=185s, timeout1200s. ETF/reference: ~10 calls/<=20k listing rows, <=675s including SQL margin, timeout2700s. Estimates: <=100calls,~270s,timeout1800s. All oneCPU512Mi zero retries. Insider/news capped300 responses, <=810s typical bounded estimate, timeout3600s. Existing earnings-history long timeout remains. Closing job only actual-close calls 3 vendors, otherwise explicit skip, <=150s target timeout600s. New Cloud Run schedules estimated <=$0.55/month; report archive storage at measured and worst-case rates separately.
 
 ### Validation and rollout
 
