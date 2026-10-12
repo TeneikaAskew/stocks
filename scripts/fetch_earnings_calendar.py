@@ -167,7 +167,7 @@ def fetch_alphavantage_earnings(horizon: str = '3month', *, dry_run=False, scope
         raise av.SourceError('calendar_non_csv')
     from io import StringIO
     try:
-        df = pd.read_csv(StringIO(text))
+        df = pd.read_csv(StringIO(text),keep_default_na=False)
     except Exception as e:
         raise av.SourceError("calendar_csv_parse") from None
 
@@ -179,12 +179,13 @@ def fetch_alphavantage_earnings(horizon: str = '3month', *, dry_run=False, scope
     records = []
     for _, row in df.iterrows():
         try:
-            rd = pd.to_datetime(row['reportDate'], errors='coerce')
-            if pd.isna(rd):
+            report_date=str(row['reportDate']).strip()
+            ticker=str(row.get('symbol', '')).upper().strip()
+            if not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}',report_date):
                 continue
-            ticker = str(row.get('symbol', '')).upper().strip()
-            if not ticker or len(ticker) > 10:
+            if not re.fullmatch(r'[A-Z0-9][A-Z0-9.-]{0,9}',ticker):
                 continue
+            rd=date.fromisoformat(report_date)
             records.append({
                 'date': rd.strftime('%Y-%m-%d'),
                 'ticker': ticker,
