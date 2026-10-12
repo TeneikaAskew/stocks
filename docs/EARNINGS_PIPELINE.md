@@ -1,6 +1,6 @@
 # Earnings and AV catalyst pipeline
 
-**Last reviewed:** unknown · **Depth:** scanned · **Against:** `92d695d80ff0ae69105f9de44e067003675dfbef` · **Last scanned:** 2026-10-12
+**Last reviewed:** 2026-10-12 · **Depth:** verified · **Against:** `4bb79c5954cadedc633cc981bc1d41c2fb0abf98` · **Last scanned:** 2026-10-12
 
 Candidate implementation: [PR #1430](https://github.com/TeneikaAskew/stocks/pull/1430), [approved CAT specification](superpowers/specs/2026-10-12-feat-catalyst-001-av-catalysts.md), [implementation plan](superpowers/plans/2026-10-12-feat-catalyst-001-av-catalysts.md). Implementation and review are in progress; production rollout has not been verified. Existing unrelated catalyst providers retain their behavior and remain separately qualified.
 
@@ -42,7 +42,7 @@ News windows are durable half-open minute intervals, initially 48 hours and neve
 
 `lib.earnings_history` selects latest immutable earnings/estimate vintage at an aware cutoff in one bounded query. Pre-observation history is unavailable, not the latest cache. `/api/catalysts/asof/{ticker}?as_of=YYYY-MM-DD` resolves exchange-date end in America/New_York, including DST. Explicit historical requests suppress unversioned news, SEC, insider, calendar and prices with section-level unavailable reasons. Live database errors differ from successful empty responses.
 
-New reactions require actual validated source-capture proof, the applicable earnings revision/knowledge clock and independent timing observation, resolved configuration/hash, rule version, code commit/image, common OHLC basis and a permanent `earnings_reaction_input_artifacts` identity/hash. Artifacts and derived rows commit consistently. The shared DATA `lib.price_basis` helper validates exact canonical UTF8 `artifact_payload` bytes and ordered `price_inputs`; OHLC uses adjusted-close/raw-close factors, volume uses split factors only. Legacy raw ATR is recomputed on common basis. Missing DATA columns/helper, missing depth or unknown factors is unavailable and cannot become a successful certified reaction.
+New reactions require actual validated source-capture proof, the applicable earnings revision/knowledge clock and independent timing observation, resolved configuration/hash, rule version, code commit/image, common OHLC basis and a permanent `earnings_reaction_input_artifacts` identity/hash. Artifacts and derived rows commit consistently. The required shared DATA `lib.price_basis` interface (helper/schema not merged at this checkpoint; positive integration remains pending) validates exact canonical UTF8 `artifact_payload` bytes and ordered `price_inputs`; OHLC uses adjusted-close/raw-close factors, volume uses split factors only. Legacy raw ATR is recomputed on common basis. Missing DATA columns/helper, missing depth or unknown factors is unavailable and cannot become a successful certified reaction.
 
 Current mutable revised prices support `current_revision_analytics` only. Historical/as-of reaction certification is refused without a real immutable price vintage satisfying the cutoff. Existing reaction/view rows with missing provenance remain legacy/unavailable for qualified admission; this does not promote them into a point-in-time strategy/model.
 
