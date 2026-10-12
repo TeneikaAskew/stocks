@@ -1,4 +1,5 @@
 import json
+import pytest
 
 from sqlalchemy import text
 
@@ -44,7 +45,8 @@ def test_actual_estimates_group_retains_full_native_payload_and_retry_identity(c
     assert receipts[0]['status']=='validated'
 
 
-def test_full_scope_manifests_reuse_verified_sources_and_require_acknowledgement(catalyst_db,monkeypatch):
+@pytest.mark.parametrize('variant',['daily','weekly'])
+def test_full_scope_manifests_reuse_verified_sources_and_require_acknowledgement(catalyst_db,monkeypatch,variant):
     from datetime import datetime,timezone
     from zoneinfo import ZoneInfo
     from gcp.fetchers import compute_earnings_reactions as reactions
@@ -58,31 +60,31 @@ def test_full_scope_manifests_reuse_verified_sources_and_require_acknowledgement
         monkeypatch.setattr(av,'fetch_capture',lambda *a,**kw:capture)
         monkeypatch.setattr(av,'archive_capture',lambda *a,**kw:'gs://test/frozen')
         history.persist_history(history.fetch_history_for_ticker(ticker,'dummy',enrich_with_yahoo=False),executor=execute)
-    run=av.Run('fetch-earnings-history','daily',expected=1,processed=1)
+    run=av.Run('fetch-earnings-history',variant,expected=1,processed=1)
     manifest=history.assess_history_manifest(run,['AAPL','MSFT'],executor=execute)
     assert manifest['coverage_complete'] and manifest['requested_count']==2 and manifest['verified_count']==2
     assert len(manifest['configured_universe'])==2 and len(manifest['verified_events'])==2
-    predecessor=reactions.eligible_history_manifest(variant='daily')
+    predecessor=reactions.eligible_history_manifest(variant=variant)
     assert str(predecessor['manifest_id'])==manifest['source_manifest_id']
     # Stored post-ACK clock is stable on reconciliation of the same manifest.
     again=av.publish_manifest(run,predecessor['manifest'],manifest_id=str(predecessor['manifest_id']))
     assert again['source_manifest_known_at']==manifest['source_manifest_known_at']
-    derived=reactions.publish_reactions_manifest(av.Run('compute-earnings-reactions','daily'),predecessor,executor=execute)
+    derived=reactions.publish_reactions_manifest(av.Run('compute-earnings-reactions',variant),predecessor,executor=execute)
     assert derived['pending_count']==2 and not derived['coverage_complete']
     assert derived['history_source_manifest_id']==manifest['source_manifest_id']
     # Neither an unacknowledged row nor a future publication may become eligible.
     c.execute(text("DELETE FROM av_catalyst_manifest_publications WHERE false"));c.commit()
     import uuid
     later=str(uuid.uuid4())
-    c.execute(text("INSERT INTO av_catalyst_source_manifests VALUES(CAST(:id AS uuid),'fetch-earnings-history','daily','missing-ack',CAST(:payload AS jsonb))"),{'id':later,'payload':av.canonical(dict(predecessor['manifest'],coverage_complete=False))});c.commit()
-    assert str(reactions.eligible_history_manifest(variant='daily')['manifest_id'])==manifest['source_manifest_id']
+    c.execute(text("INSERT INTO av_catalyst_source_manifests VALUES(CAST(:id AS uuid),'fetch-earnings-history',:variant,'missing-ack',CAST(:payload AS jsonb))"),{'id':later,'variant':variant,'payload':av.canonical(dict(predecessor['manifest'],coverage_complete=False))});c.commit()
+    assert str(reactions.eligible_history_manifest(variant=variant)['manifest_id'])==manifest['source_manifest_id']
     c.execute(text("INSERT INTO av_catalyst_manifest_publications VALUES(CAST(:id AS uuid),clock_timestamp()+interval '1 day')"),{'id':later});c.commit()
-    assert str(reactions.eligible_history_manifest(variant='daily')['manifest_id'])==manifest['source_manifest_id']
+    assert str(reactions.eligible_history_manifest(variant=variant)['manifest_id'])==manifest['source_manifest_id']
     import pytest
-    with pytest.raises(av.SourceError):reactions.eligible_history_manifest(variant='weekly')
-    pending=history.assess_history_manifest(av.Run('fetch-earnings-history','daily',failed=1),['AAPL','MSFT'],executor=execute)
+    with pytest.raises(av.SourceError):reactions.eligible_history_manifest(variant='weekly' if variant=='daily' else 'daily')
+    pending=history.assess_history_manifest(av.Run('fetch-earnings-history',variant,failed=1),['AAPL','MSFT'],executor=execute)
     assert not pending['coverage_complete']
-    with pytest.raises(av.SourceError):reactions.eligible_history_manifest(variant='daily')
+    with pytest.raises(av.SourceError):reactions.eligible_history_manifest(variant=variant)
 
 
 def test_actual_yahoo_timing_change_has_independent_clock_and_attribution(catalyst_db,monkeypatch):
@@ -176,3 +178,46 @@ def test_history_manifest_refuses_unbacked_source_pointer(catalyst_db,monkeypatc
     execute=executor(c);monkeypatch.setattr(av,'isolated_sql',execute)
     result=history.assess_history_manifest(av.Run('fetch-earnings-history','daily'),['AAPL'],executor=execute)
     assert not result['coverage_complete'] and result['pending_count']==1
+
+
+def test_manifest_identity_collision_cannot_relabel_acknowledged_scope(catalyst_db,monkeypatch):
+    c=catalyst_db;monkeypatch.setattr(av,'isolated_sql',executor(c))
+    run=av.Run('fetch-earnings-history','daily')
+    manifest={'scope_hash':'a'*64,'coverage_complete':False}
+    first=av.publish_manifest(run,manifest,manifest_id='00000000-0000-0000-0000-000000000001')
+    with pytest.raises(av.SourceError,match='manifest_identity_conflict'):
+        av.publish_manifest(run,dict(manifest,scope_hash='b'*64,coverage_complete=True),manifest_id=first['source_manifest_id'])
+
+
+def test_daily_selector_fetches_new_report_after_prior_complete_quarter(catalyst_db,monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    c=catalyst_db
+    c.exec_driver_sql('CREATE TABLE earnings_calendar(ticker TEXT,earnings_date DATE)')
+    c.exec_driver_sql('CREATE TABLE watchlists(ticker TEXT,removed_at TIMESTAMPTZ)')
+    c.execute(text("INSERT INTO earnings_history(ticker,fiscal_date_ending,reported_date,reported_eps) VALUES('AAPL','2026-03-31','2026-04-30',1)"))
+    c.execute(text('INSERT INTO earnings_calendar VALUES(:ticker,:day)'),{'ticker':'AAPL','day':datetime.now(ZoneInfo('America/New_York')).date()});c.commit()
+    monkeypatch.setattr(av,'isolated_sql',executor(c))
+    selected=history.resolve_refresh_universe('daily',30)
+    assert selected.iloc[0]['needs_refresh']
+
+
+@pytest.mark.parametrize('variant',['daily','weekly'])
+def test_history_event_window_is_exactly_thirty_inclusive_dates(catalyst_db,monkeypatch,variant):
+    from datetime import datetime,timedelta,timezone
+    from zoneinfo import ZoneInfo
+    c=catalyst_db;execute=executor(c)
+    monkeypatch.setattr(av,'isolated_sql',execute)
+    monkeypatch.setattr(av,'archive_capture',lambda capture,**kw:'gs://test/'+capture.observation_id)
+    end=datetime.now(ZoneInfo('America/New_York')).date();start=end-timedelta(days=29)
+    for ticker,day in [('FIRST',start),('OUTSIDE',start-timedelta(days=1)),('LAST',end)]:
+        body={'symbol':ticker,'quarterlyEarnings':[{'fiscalDateEnding':'2026-06-30','reportedDate':day.isoformat(),'reportedEPS':'1'}]}
+        capture=av.Capture.from_bytes('EARNINGS',{'symbol':ticker},av.canonical(body).encode())
+        monkeypatch.setattr(av,'fetch_capture',lambda *a,**kw:capture)
+        history.persist_history(history.fetch_history_for_ticker(ticker,'dummy',enrich_with_yahoo=False),executor=execute)
+    manifest=history.assess_history_manifest(av.Run('fetch-earnings-history',variant),['FIRST','LAST','OUTSIDE'],executor=execute)
+    assert manifest['source_window_start']==start.isoformat()
+    assert manifest['source_window_end']==end.isoformat()
+    assert manifest['expected_events']==[{'ticker':'FIRST','event_reported_date':start.isoformat()},
+                                         {'ticker':'LAST','event_reported_date':end.isoformat()}]
+    assert manifest['scope_hash']==av.digest(manifest['expected_events'])

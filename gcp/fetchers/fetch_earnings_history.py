@@ -373,6 +373,11 @@ def resolve_refresh_universe(scope,lookback_days=30,force=False):
         WHERE earnings_date BETWEEN (NOW() AT TIME ZONE 'America/New_York')::date-CAST(:days AS integer)
           AND (NOW() AT TIME ZONE 'America/New_York')::date+14 UNION SELECT ticker FROM watchlists WHERE removed_at IS NULL)
       SELECT u.ticker,(:forced OR :scope='weekly' OR NOT EXISTS(SELECT 1 FROM earnings_history e WHERE e.ticker=u.ticker)
+        OR EXISTS(SELECT 1 FROM earnings_calendar c WHERE c.ticker=u.ticker
+          AND c.earnings_date BETWEEN (NOW() AT TIME ZONE 'America/New_York')::date-CAST(:days AS integer)
+            AND (NOW() AT TIME ZONE 'America/New_York')::date
+          AND NOT EXISTS(SELECT 1 FROM earnings_history e WHERE e.ticker=u.ticker
+            AND e.reported_date=c.earnings_date AND e.reported_eps IS NOT NULL AND e.source_fetch_id IS NOT NULL))
         OR EXISTS(SELECT 1 FROM earnings_history e WHERE e.ticker=u.ticker
           AND e.reported_date>=(NOW() AT TIME ZONE 'America/New_York')::date-CAST(:days AS integer)
           AND (e.reported_eps IS NULL OR e.source_fetch_id IS NULL))) AS needs_refresh
@@ -427,6 +432,8 @@ def persist_history(frame,*,executor=None):
 
 def assess_history_manifest(run,universe,*,executor=None):
     executor=executor or av.isolated_sql
+    cutoff=datetime.now(timezone.utc)
+    assessment_date=cutoff.astimezone(ZoneInfo(ET_NAME)).date()
     facts=executor("""SELECT e.ticker,e.reported_date,r.revision_id,r.known_at,r.payload->>'reported_eps' AS reported_eps,
       av_earnings_values(to_jsonb(e))=r.payload AS coherent_cache,CASE WHEN proof.capture_id IS NOT NULL THEN 'source_verified' ELSE CASE WHEN r.availability_quality='source_verified' THEN 'source_provenance_unavailable' ELSE r.availability_quality END END AS availability_quality,
       COALESCE(proof.yahoo_timing_observation_id,r.yahoo_timing_observation_id) AS yahoo_timing_observation_id FROM earnings_history e
@@ -438,15 +445,14 @@ def assess_history_manifest(run,universe,*,executor=None):
         WHERE o.revision_id=r.revision_id AND o.known_at<=:cutoff AND c.source_retrieved_at<=:cutoff
         ORDER BY o.known_at DESC,o.capture_id DESC LIMIT 1) proof ON true
       WHERE e.ticker=ANY(CAST(:universe AS text[])) AND e.reported_date BETWEEN
-        (:cutoff AT TIME ZONE 'America/New_York')::date-30 AND (:cutoff AT TIME ZONE 'America/New_York')::date
-      ORDER BY e.ticker,e.reported_date""",{"universe":universe,"cutoff":datetime.now(timezone.utc)},read=True,timeout_s=8)
-    assessment_date=run.started_at.astimezone(ZoneInfo(ET_NAME)).date()
+        (:cutoff AT TIME ZONE 'America/New_York')::date-29 AND (:cutoff AT TIME ZONE 'America/New_York')::date
+      ORDER BY e.ticker,e.reported_date""",{"universe":universe,"cutoff":cutoff},read=True,timeout_s=8)
     verified=[r for r in facts if r["availability_quality"]=='source_verified' and r["reported_eps"] is not None and r["coherent_cache"]]
     events=[{"ticker":r["ticker"],"event_reported_date":str(r["reported_date"])} for r in facts]
     manifest={"schema_version":"av_catalyst_run/v1","pipeline_scope":run.mode,"scope_hash":av.digest(events),
       "universe_count":len(universe),"configured_universe":universe,"expected_events":events,
-      "source_window_start":(assessment_date-pd.Timedelta(days=30)).isoformat(),
-      "source_window_end":assessment_date.isoformat(),"complete_through":run.started_at.isoformat() if len(verified)==len(facts) and not run.failed else None,
+      "source_window_start":(assessment_date-pd.Timedelta(days=29)).isoformat(),
+      "source_window_end":assessment_date.isoformat(),"complete_through":cutoff.isoformat() if len(verified)==len(facts) and not run.failed else None,
       "coverage_complete":len(verified)==len(facts) and not run.failed,
       "requested_count":len(events),"verified_count":len(verified),"excluded_count":0,
       "pending_count":len(facts)-len(verified),"source_revision_ids":[r["revision_id"] for r in verified],

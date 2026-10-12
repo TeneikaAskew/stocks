@@ -1,6 +1,8 @@
 # Earnings and AV catalyst pipeline
 
-Last reviewed: 2026-10-12. Candidate implementation: [PR #1430](https://github.com/TeneikaAskew/stocks/pull/1430), [approved CAT specification](superpowers/specs/2026-10-12-feat-catalyst-001-av-catalysts.md), [implementation plan](superpowers/plans/2026-10-12-feat-catalyst-001-av-catalysts.md). Implementation and review are in progress; production rollout has not been verified. Existing unrelated catalyst providers retain their behavior and remain separately qualified.
+**Last reviewed:** unknown · **Depth:** scanned · **Against:** `92d695d80ff0ae69105f9de44e067003675dfbef` · **Last scanned:** 2026-10-12
+
+Candidate implementation: [PR #1430](https://github.com/TeneikaAskew/stocks/pull/1430), [approved CAT specification](superpowers/specs/2026-10-12-feat-catalyst-001-av-catalysts.md), [implementation plan](superpowers/plans/2026-10-12-feat-catalyst-001-av-catalysts.md). Implementation and review are in progress; production rollout has not been verified. Existing unrelated catalyst providers retain their behavior and remain separately qualified.
 
 ## Source and publication contract
 
@@ -64,7 +66,7 @@ Local evidence as of the implementation checkpoint: baseline184 focused tests pa
 
 Illustrative oneCPU/1GiB Cloud Run price$0.000020/s: history680s expected≈$0.0136/run,5,500s admitted≈$0.11/run. Five weekday+oneweekly≈25.7runs/month yields≈$0.35expected or$2.83admitted, excluding free tier/fixed SQL/subscriptions/storage. New estimates planning250s≈$0.005/run ×1/day ×30=$0.15/month. Record actual billing/pricing revision during rollout; these are not guarantees.
 
-For ten weekday hourly slots each ticker/topic mode and one earnings mode, maximum admitted raw bodies/day are6GB ticker +0.6GB topic +0.6GB earnings +2.8MB estimates +0.18MB calendar≈7.203GB; ×66weekdays≈475.4GB over90days before envelope/base64/gzip/metadata. Approximately6,640 AVraw PUTs/day. The illustrative30-ticker case≈1.26GB/day is not a300-call maximum. History adds≤200MiB per invocation separately (six/week over90days≈15.1GiB); insider adds≤600MB/300PUTs per full run separately. Measure actual compressed object bytes and permanent SQL/index growth. Legacy seed≈74MB before indexes,≈100–200MB with indexes; pathological100×100 changed quarters adds≈10MB permanent revisions.
+The immutable `av-cost-estimate-v3` source-body illustration is6GB watchlist news +0.6GB topic news +0.6GB earnings news +3MB estimates (100×30KB typical) =7.203GB/weekday and3,700 AV response objects/weekday. It excludes EARNINGS, calendar, Yahoo and insider. Its original90day×5/7 assumption gives463.05GB; daily maxima give648.27GB, before envelope/base64/gzip/metadata. A separately declared66weekday assumption gives475.398GB. The original unsaturated30-symbol illustration is1.223GB/weekday and does not bound a300-call backlog. Estimates actual admitted body maximum is100×2MiB=200MiB/run, separately from typical30KB. Calendar adds one native response object and up to20MiB/run. History adds≤100 AVresponse objects/≤200MiB per invocation separately (six/week over90days≈15.1GiB) plus independent Yahoo/artifact objects; insider adds≤600MB/300PUTs per full run separately. Measure actual compressed object bytes and permanent SQL/index growth. Legacy seed≈74MB before indexes,≈100–200MB with indexes; pathological100×100 changed quarters adds≈10MB permanent revisions.
 
 ## Promotion and identity checklist
 
@@ -72,9 +74,74 @@ For ten weekday hourly slots each ticker/topic mode and one earnings mode, maxim
 2. Apply additive schema through the revision-recording schema applier. Validate populated-cache seed clocks, atomic trigger/guard installation, permanent tables/indexes and transitional nonunique identity lookup indexes. Dry-run inspection cannot prove installation.
 3. Deploy every news writer (scheduled AV, ticker backfill, RSS, standalone backfill) and insider writer with the shared preparation/bulk identity function. Verify active and inactive old commands/images cannot still write outside that contract. Keep hashes nullable during this stage; do not create the final unique index yet.
 4. Backfill existing NULL identity hashes in admitted≤5,000-row primary-key chunks. Record progress/evidence and reconcile collisions explicitly without deleting evidence or fabricating financial fields. Failed drain/duplicate/null checks keep the preparatory compatible state.
-5. Only after accountable writer-drain proof, use `python -m gcp.fetchers._av_ingestion --identity-table=news_sentiment --finalize --writer-manifest=<reviewed JSON path>` (or insider table). The manifest must prove all required current writer entrypoints, inactive-old blocking, code/image/contract versions and evidence URI. The helper checks nulls/collisions, builds its scoped UNIQUE INDEX CONCURRENTLY, sets NOTNULL and records the final checkpoint. Inspect/reconcile an invalid partial index; unknown outcome is not successful finalization. Never fill this manifest with deployment guesses.
+5. Only after accountable writer-drain proof, use `python -m gcp.fetchers._av_ingestion --identity-table=news_sentiment --finalize-identities --writer-manifest=<reviewed JSON path>` (or insider table). The manifest must prove all required current writer entrypoints, inactive-old blocking, code/image/contract versions and evidence URI. The helper checks nulls/collisions, builds its scoped UNIQUE INDEX CONCURRENTLY, sets NOTNULL and records the final checkpoint. Inspect/reconcile an invalid partial index; unknown outcome is not successful finalization. Never fill this manifest with deployment guesses.
 6. Parent performs bounded primary-only refresh/repair, validates actual source bytes/clock/hash and permanent revisions/estimate vintages, and records full/selected/pending scope. Verify source publication ACK and exact history/reaction linkage before OPTION admission. Missing DATA depth/helper/basis is a named recovery dependency, not completeness.
 7. Measure cold/warm full admitted shape, logical/underlying requests, raw+normalized+SQL bytes, archive latency, pg8000 group round trips, working-set peak and whole-run elapsed including failure/terminal. Admit only a measured≤quarter-timeout workload. Full transport/SQL/GCS verification remains post-merge parent promotion evidence.
 8. The accountable `av-api-key` rotation role is the GCP Secret Manager key owner/on-call operator, coordinated by the parent rollout owner. Confirm the actual assignee in the deployment record; do not invent a person. Rotate the previously exposed credential, update all approved existing consumers/versions, verify source success without logging secrets, and retire the old version only after references converge. This author has not performed rotation.
 
 Related records: [feature catalog](product/02-FEATURE-CATALOG.md#feat-catalyst-001), [traceability](product/12-PR-ISSUE-TRACEABILITY.md#feat-catalyst-001--earnings--catalysts-19-open), [DATA pipeline](product/infrastructure/05-g-DATA_PIPELINE.md), [approved specification](superpowers/specs/2026-10-12-feat-catalyst-001-av-catalysts.md). Earlier May2026 broad market-backfill commands and cron observations are historical context, not an admitted recovery command for this candidate.
+
+## Literal producer source choices (candidate code, not supplemental approval)
+
+These declarations document the existing CAT implementation choices under immutable spec1419. The root-owned supplemental producer-receipts specification must be separately approved/merged; this appendix does not label itself approved or establish deployed availability. Source references below are the actual code in PR1430, and schema/producer rollout remains a prerequisite.
+
+```sql
+CREATE TABLE IF NOT EXISTS av_catalyst_source_captures (
+    capture_id UUID PRIMARY KEY,
+    function TEXT NOT NULL,
+    ticker TEXT,
+    source_retrieved_at TIMESTAMPTZ NOT NULL,
+    raw_uri TEXT NOT NULL,
+    raw_sha256 CHAR(64) NOT NULL,
+    metadata JSONB NOT NULL,
+    validation_status TEXT NOT NULL CHECK(validation_status IN ('validated','validated_empty')),
+    normalized_count INTEGER NOT NULL CHECK(normalized_count>=0)
+);
+```
+
+```sql
+CREATE TABLE IF NOT EXISTS av_catalyst_source_manifests (
+    manifest_id UUID PRIMARY KEY,
+    job_name TEXT NOT NULL,
+    variant TEXT NOT NULL,
+    execution_name TEXT NOT NULL,
+    manifest JSONB NOT NULL
+);
+```
+
+```sql
+CREATE TABLE IF NOT EXISTS av_catalyst_manifest_publications (
+    manifest_id UUID PRIMARY KEY REFERENCES av_catalyst_source_manifests(manifest_id),
+    known_at TIMESTAMPTZ NOT NULL
+);
+```
+
+```sql
+CREATE TABLE IF NOT EXISTS av_earnings_estimates_observations (
+    observation_id UUID PRIMARY KEY,
+    fetch_id UUID NOT NULL REFERENCES av_catalyst_source_captures(capture_id),
+    ticker TEXT NOT NULL,
+    fiscal_date_ending DATE NOT NULL,
+    horizon TEXT NOT NULL,
+    known_at TIMESTAMPTZ NOT NULL,
+    source_retrieved_at TIMESTAMPTZ NOT NULL,
+    raw_uri TEXT NOT NULL,
+    raw_sha256 CHAR(64) NOT NULL,
+    payload JSONB NOT NULL,
+    UNIQUE(fetch_id,ticker,fiscal_date_ending,horizon)
+);
+```
+
+Source: `gcp/schema.sql` additive CAT storage block. Append-only guards cover captures, manifests, publications and estimate observations. Actual estimates source writer is `gcp/fetchers/fetch_av_earnings_estimates.py::main`; native adapter `parse_estimates`, grouped writer `persist_estimate_group`; manifest publication is `gcp/fetchers/_av_ingestion.py::publish_manifest`. Producer job_name is `fetch-av-earnings-estimates`, variant `daily`, pipeline_scope `estimates_daily`.
+
+Full estimate denominator: `configured_universe`, `universe_count`, `scope_hash` = SHA256(canonical sorted configured symbols). Selection: `selected_count`≤100, `selected_scope_hash`, `pending_count` separate from full universe. Windows: `source_window_start`, `source_window_end`, `complete_through`, `coverage_complete`. Sources: `captured_receipts`, `source_revision_ids` (fetch UUIDs), `source_digest`, `predecessor_execution_name`, code/image/pipeline identity. Each selected receipt contains literal `ticker`, `fetch_id`, `status` (`validated` or `validated_empty`), `source_retrieved_at`, `known_at`, `raw_sha256`, `raw_uri`, `observation_count`. Valid empty has no fiscal observation; selected100 cannot certify configured1239. Failed or unacknowledged groups cannot contribute complete receipt coverage.
+
+Publication uses two supervised acknowledged SQL boundaries. A duplicate manifest identity must match stored job/variant/execution/full JSON exactly; a conflict or uncertain acknowledgement is refused. The second boundary returns the actual stored publication.known_at, including retries. Terminal note repeats `source_manifest_id`, `source_manifest_known_at`, full canonical manifest keys plus ordinary expected/attempted/processed/failed/pending/rows/group/task-attempt accounting. Join permanent manifests/publications; missing or future publication is ineligible. Source capture has no known_at field. Receipt `known_at` follows capture acknowledgement, and nonempty retries retain their original fiscal-observation clock.
+
+Calendar source writer is `scripts/fetch_earnings_calendar.py::fetch_alphavantage_earnings`, job `fetch-earnings-calendar`, native variant/scope daily or weekly. Its AV-only manifest stores `source_function=EARNINGS_CALENDAR`, `coverage_scope=av_raw_horizon`, native symbol scope/hash/count, native_csv_rows and requested/verified/excluded/pending native validation counts, min/max native reportDate, source retrieval/digest/raw location, `captured_receipts`, and complete_through/coverage_complete only when every native required row validates. Downstream business filtering never changes native counts. NonAV union remains `source_all_coverage=unavailable`; `business_subset_coverage=not_assessed`.
+
+History writer/assessment is `gcp/fetchers/fetch_earnings_history.py::main` / `assess_history_manifest`, job `fetch-earnings-history`, daily or weekly variant/pipeline_scope. Full configured universe is independent of selected≤100 fetches. Ordered `expected_events` are `{ticker,event_reported_date}`; `scope_hash` hashes these events, not calendar symbols. `verified_events` add BIGINT `revision_id`; `source_revision_ids` and source_digest bind actual immutable values, independently completed timing and validated EARNINGS capture proof. The exact inclusive30-date event window is assessment ETdate-29 through assessment ETdate, with a single aware assessment cutoff for SQL and emitted dates/clocks. Source retrieval/proof clocks are cutoff-bounded, with missing capture provenance refused. Raw refresh Run.pending is distinct from event manifest.pending_count; explicit unknown-source/joint consumer admission remains required complementary-spec work, not an implemented full-source certification here.
+
+Reaction writer/assessment is `gcp/fetchers/compute_earnings_reactions.py::main` / `publish_reactions_manifest`, job `compute-earnings-reactions`, daily or weekly. It inherits exact configured universe/event scope/hash/window, `history_source_manifest_id` and predecessor_execution_name. Each qualified derived event must match its own exact expected revision, source known_at≤history acknowledgement, validated provenance/configuration and an actual permanent input artifact. Full requested/verified/excluded/pending counts cannot be replaced by selected output count. Current cache prices remain current_revision_analytics; no historical certification is invented.
+
+Existing actual local acceptance: `tests/integration/test_av_catalyst_producer_writes.py::test_actual_estimates_daily_writer_publishes_selected_receipts_and_pending_scope`, `::test_actual_estimates_uncertain_publication_never_certifies_availability`, `::test_actual_estimates_group_retains_full_native_payload_and_retry_identity`, `::test_full_scope_manifests_reuse_verified_sources_and_require_acknowledgement` (daily/weekly), `::test_manifest_identity_collision_cannot_relabel_acknowledged_scope`, `::test_daily_selector_fetches_new_report_after_prior_complete_quarter` and `::test_history_event_window_is_exactly_thirty_inclusive_dates` (daily/weekly); plus `tests/gcp/test_av_catalyst_predecessor_manifests.py::test_daily_manifest_links_full_assessed_scope_and_acknowledged_sources` adapter shape and `tests/gcp/test_fetch_earnings_calendar_persist.py::test_full_feed_archive_preserves_weekly_subset`. These are synthetic native adapters and real local SQL, not production receipts. DEPLOY/OPS admission stays dependency_pending until the owning specification/code/schema and actual deployed digest/source receipts are verified.

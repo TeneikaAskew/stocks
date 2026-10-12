@@ -516,10 +516,16 @@ def write_identity_group(table, rows, *, captures=(), final=False, outcomes=(), 
 
 def publish_manifest(run, manifest, *, manifest_id=None, timeout_s=2):
     manifest_id = manifest_id or str(uuid.uuid4())
-    isolated_sql("""INSERT INTO av_catalyst_source_manifests(manifest_id,job_name,variant,execution_name,manifest)
-      VALUES(CAST(:id AS uuid),:job,:variant,:execution,CAST(:manifest AS jsonb)) ON CONFLICT DO NOTHING""",
+    acknowledged=isolated_sql("""WITH inserted AS(
+      INSERT INTO av_catalyst_source_manifests(manifest_id,job_name,variant,execution_name,manifest)
+      VALUES(CAST(:id AS uuid),:job,:variant,:execution,CAST(:manifest AS jsonb)) ON CONFLICT DO NOTHING RETURNING manifest_id)
+      SELECT manifest_id FROM inserted UNION ALL SELECT manifest_id FROM av_catalyst_source_manifests
+      WHERE manifest_id=CAST(:id AS uuid) AND job_name=:job AND variant=:variant
+        AND execution_name=:execution AND manifest=CAST(:manifest AS jsonb) LIMIT 1""",
       {"id": manifest_id, "job": run.job_name, "variant": run.mode, "execution": run.execution_name,
-       "manifest": canonical(manifest)}, timeout_s=timeout_s)
+       "manifest": canonical(manifest)}, read=True,timeout_s=timeout_s)
+    if len(acknowledged)!=1 or str(acknowledged[0]['manifest_id'])!=manifest_id:
+        raise SourceError('manifest_identity_conflict_or_ack_unavailable')
     # This clock is captured only after the manifest/source transaction ACK.
     known = datetime.now(UTC)
     rows=isolated_sql("""WITH published AS(

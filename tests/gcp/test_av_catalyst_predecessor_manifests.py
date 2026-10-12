@@ -8,7 +8,7 @@ def test_manifest_retry_returns_actual_acknowledged_publication(monkeypatch):
     calls=[]
     def sql(query,params,**kw):
         calls.append(query)
-        return [{'known_at':stored}]
+        return [{'manifest_id':params['id']}] if 'INSERT INTO av_catalyst_source_manifests' in query else [{'known_at':stored}]
     monkeypatch.setattr(av,'isolated_sql',sql)
     run=av.Run('fetch-earnings-history','daily')
     result=av.publish_manifest(run,{'coverage_complete':True},manifest_id='00000000-0000-0000-0000-000000000001')
