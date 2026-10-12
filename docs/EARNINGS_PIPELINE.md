@@ -1,6 +1,6 @@
 # Earnings and AV catalyst pipeline
 
-**Last reviewed:** 2026-10-12 · **Depth:** verified · **Against:** `4bb79c5954cadedc633cc981bc1d41c2fb0abf98` · **Last scanned:** 2026-10-12
+**Last reviewed:** 2026-10-12 · **Depth:** verified · **Against:** `dbb5887de1bd1718efb86ce36bb67d5d078c45de` · **Last scanned:** 2026-10-12
 
 Candidate implementation: [PR #1430](https://github.com/TeneikaAskew/stocks/pull/1430), [approved CAT specification](superpowers/specs/2026-10-12-feat-catalyst-001-av-catalysts.md), [implementation plan](superpowers/plans/2026-10-12-feat-catalyst-001-av-catalysts.md). Implementation and review are in progress; production rollout has not been verified. Existing unrelated catalyst providers retain their behavior and remain separately qualified.
 
