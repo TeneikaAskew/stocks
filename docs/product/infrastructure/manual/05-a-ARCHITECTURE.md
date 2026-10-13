@@ -578,7 +578,7 @@ Deployed by [`gcp/deploy.sh:1023`](../../../../gcp/deploy.sh#L1023) (`uvicorn gc
 
 ### 7.5 `failure-notifier`
 
-Deployed by [`gcp/deploy.sh:2922`](../../../../gcp/deploy.sh#L2922); stdlib `http.server`, no FastAPI. Receives the Pub/Sub push, posts to the `discord-webhook-gcp` channel and opens or comments on a GitHub issue labelled `gcp-job-failure,<job_name>` ([`gcp/failure_notifier.py:8`](../../../../gcp/failure_notifier.py#L8)). `POST /reconcile` ([`gcp/failure_notifier.py:582`](https://github.com/TeneikaAskew/stocks/blob/303b66a3/gcp/failure_notifier.py#L582)), fired hourly by `reconcile-failure-notifier-hourly`, closes issues whose job has since succeeded.
+Deployed by [`gcp/deploy.sh:2922`](../../../../gcp/deploy.sh#L2922); stdlib `http.server`, no FastAPI. Receives the Pub/Sub push, posts to the `discord-webhook-gcp` channel and opens or comments on a GitHub issue labelled `gcp-job-failure,<job_name>` ([`gcp/failure_notifier.py:8`](../../../../gcp/failure_notifier.py#L8)). `POST /reconcile` ([`gcp/failure_notifier.py:582`](https://github.com/TeneikaAskew/stocks/blob/208cd64d7e6c6fa92739cdbc7c811e30cb2c5984/gcp/failure_notifier.py#L582)), fired hourly by `reconcile-failure-notifier-hourly`, closes issues whose job has since succeeded.
 
 ## 8. Cloud Scheduler timeline
 
