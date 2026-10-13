@@ -4101,6 +4101,18 @@ def test_the_gate_names_the_documents_and_snapshot_the_docs_test_reads():
         sg.RENDER_INPUTS == (*sg.RENDERER_FILES, "tests/scripts/test_check_generated_docs.py", "scripts/__init__.py") and \
         sg.RENDERER_FILES == ("scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
                               "scripts/maintenance/__init__.py", "tests/fixtures/live_gcp_snapshot_2026-09-07.json")
+    # (red-team round 9) every loader spelling of a protected module or initializer is a render input, read through
+    # the one definition the refusal and `moved` read; a neighbour of the renderer is not
+    spellings = {**dict.fromkeys(("scripts/__init__.pyc", "scripts/__init__.pyi", "scripts/__init__.abi3.so", "scripts/maintenance/__init__.pyc",
+                                  "scripts/maintenance/doc_inventory.pyc", "scripts/maintenance/check_generated_docs.cpython-312-x86_64-linux-gnu.so",
+                                  "scripts/maintenance/doc_inventory/__init__.py", "scripts/maintenance/check_generated_docs/x.py",
+                                  "scripts/__pycache__/__init__.cpython-312.pyc", "scripts/maintenance/__pycache__/doc_inventory.cpython-312.pyc",
+                                  "scripts.py", "scripts.pyc", "scripts.cpython-312-x86_64-linux-gnu.so", *sg.RENDER_INPUTS), True),
+                 **dict.fromkeys(("scripts/maintenance/docs_audit.py", "scripts/maintenance/doc_inventory_helpers.py", "scripts/gate/spec_gate.py",
+                                  "scripts/discord/__init__.py", "scripts/scripts.py", "tests/scripts/__init__.py", "tests/conftest.py",
+                                  "tests/__init__.py", "scriptsx.py", "lib/scripts.py"), False)}
+    read = {path: sg.is_render_input(path) for path in spellings}
+    assert read == spellings, {p: v for p, v in read.items() if v != spellings[p]}
     # the renderer tests cannot be switched off in a repository that carries the documents
     assert RENDERER_HERE == all((REPO / d).is_file() for d in sg.GENERATED_DOCS)
     if RENDERER_HERE:
@@ -4141,6 +4153,10 @@ PLANTED_INSPECT = ('import importlib.machinery, importlib.util, os, sys\n'
                    'here = os.path.dirname(os.path.abspath(__file__))\n'
                    'spec = importlib.machinery.PathFinder.find_spec("inspect", [p for p in sys.path if os.path.abspath(p or os.curdir) != here])\n'
                    'real = importlib.util.module_from_spec(spec)\nsys.modules["inspect"] = real\nspec.loader.exec_module(real)\n')
+# The one instruction every .gitattributes refusal ends with, the text rule's and git check-attr's alike (red-team
+# round 9: three rounds of wording findings came from the gate judging whose line it was and which branch clears it).
+ATTRIBUTES_REMEDY = ("Take each such line out of this pull request. If this pull request did not add it, it has to come off main "
+                     "first (a change to main), and then main merged into this branch.")
 # The gate as the command line runs it, with its .gitattributes text rule (attribute_hits, which attributes_refusal
 # and tree_refusal read; attribute_hit and attributes_refusal in earlier gates) switched off, so that git check-attr's
 # reading and the order check are judged on their own (red-team rounds 6 to 8).
@@ -4384,14 +4400,24 @@ def test_render_inputs_and_the_documents_themselves_stay_put(inventory_repo):
             "__init__.py changes": ({**moved, "scripts/maintenance/__init__.py": "# touched\n"}, inputs),
             # (red-team round 8: REQ-GOV-004 names the parent scripts package's initializer, when present, since #1440)
             "scripts/__init__.py added": ({**moved, "scripts/__init__.py": "# a package now\n"}, "alongside scripts/__init__.py, which decide the render"),
+            # (red-team round 9: Python loads these in place of, or before, a protected module or initializer; the gate
+            # refuses by path, so a file's content does not matter here)
+            **{f"{path} added": ({**moved, path: "# loaded first\n"}, f"alongside {path}, which decide the render") for path in (
+                "scripts/__init__.pyc", "scripts/__init__.cpython-312-x86_64-linux-gnu.so", "scripts/maintenance/__pycache__/__init__.cpython-312.pyc",
+                "scripts/maintenance/__pycache__/doc_inventory.cpython-312.pyc", "scripts/maintenance/doc_inventory/__init__.py",
+                "scripts/maintenance/check_generated_docs.pyc", "scripts.py")},
             "05-e deleted": ({**moved, API_DOC: None}, same),
             "05-e renamed": ({**moved, API_DOC: None, f"{INFRA}/05-e-API-v2.md": moved[API_DOC]}, same),
             "05-e made executable": (moved, same),
         }
-        pairs = commits(root, {k: f for k, (f, _) in cases.items()}, modes={"05-e made executable": {API_DOC: "100755"}})
+        # the control: a file beside the renderer that no import loads in its place changes nothing the render reads
+        unrelated = {**moved, "scripts/maintenance/docs_audit.py": "AUDIT = 1\n"}
+        pairs = commits(root, {**{k: f for k, (f, _) in cases.items()}, "an unrelated scripts/maintenance file": unrelated},
+                        modes={"05-e made executable": {API_DOC: "100755"}})
         outcomes = verdicts(root, pairs, e2e=("doc_inventory.py changes", "05-e deleted"), **DOCS_OK)   # one per refusal through gate()
-        missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, cases[k][1])}
-        assert missed == {}, missed
+        missed = {k: r.stdout[-400:] for k, r in outcomes.items() if k in cases and not refused(r, cases[k][1])}
+        control = outcomes["an unrelated scripts/maintenance file"]
+        assert missed == {} and control.returncode == 0, (missed, control.stdout[-600:])
 
 
 def test_only_inventory_block_bodies_change(inventory_repo):
@@ -4508,7 +4534,7 @@ def test_the_head_tree_is_plain_files(inventory_repo):
                   or k in attributes and r.stdout.count("the render reads") != 1}
         by_git = alone.result()
         assert missed == {} and refused(by_git, "eol=crlf on docs/") and "as git check-attr reads it" in by_git.stdout \
-            and "git check-attr -a" in by_git.stdout and by_git.stdout.count("the render reads") == 1, (missed, by_git.stdout[-600:] + by_git.stderr[-600:])
+            and ATTRIBUTES_REMEDY in by_git.stdout and by_git.stdout.count("the render reads") == 1, (missed, by_git.stdout[-600:] + by_git.stderr[-600:])
 
 
 def test_a_head_tree_git_cannot_read_whole_is_refused(inventory_repo, tmp_path):
@@ -4561,41 +4587,40 @@ def test_a_head_tree_git_cannot_read_whole_is_refused(inventory_repo, tmp_path):
                      "lib listed twice": ("not in git's order", "lib listed twice in the root tree"),
                      "infrastructure listed twice": ("not in git's order", "infrastructure listed twice in the tree docs/product"),
                      "git cannot answer": ("attributes cannot be read", "check-attr is out of service"),
-                     "a valued attribute": ("(.gitattributes: text=auto)", "refused even where it changes no byte here", "unset it (as -text or !eol) or remove it"),
-                     "a line already on main": ("already on main", "merge main into this branch")}
+                     "a valued attribute": (f".gitattributes: text=auto ({API_DOC} text=auto eol=lf)", "refused even where it changes no byte here",
+                                            ATTRIBUTES_REMEDY),
+                     "a line already on main": ('.gitattributes: eol=crlf ("*.md"eol=crlf)', ATTRIBUTES_REMEDY)}
         missed = {k: outcomes[k].stdout[-700:] + outcomes[k].stderr[-300:] for k, fs in fragments.items() if not all(refused(outcomes[k], f) for f in fs)}
         assert missed == {}, missed
 
 
 def test_an_attribute_refusal_says_whose_line_it_is(inventory_repo):
-    """FEAT-CICD-001 spec, "Exact render", the tree (done_when[1]), red-team round 8, policy F1 to F3. A refused
-    .gitattributes line is the pull request's own when the merge base's copy of that file lacks it, and main's
-    otherwise. Main's line still on main's tip is cleared by a docs/ change on main for a file under docs/ (which
-    is_documentation reads as documentation) and by a feature/ or fix/ change for any other, then a merge of main;
-    one main has since re-spaced or removed is cleared by merging main. Every refused line is named, the pull
-    request's own first, each with its own remedy."""
+    """FEAT-CICD-001 spec, "Exact render", the tree (done_when[1]), red-team rounds 8 and 9 (the name is round 8's,
+    kept because the gate's suite only grows). A .gitattributes refusal
+    names every refused line with what the gate verifies, `<file>: <attribute> (<the line as written>)`, one entry per
+    line per file in the listing's order, a line identical to another included, and then one fixed instruction, the
+    same whoever added the line: the gate no longer judges whose it is or which branch clears it (round 9, policy F1
+    to F4, YAML F2 and F3)."""
     if RENDERER_HERE:
         root, heads = inventory_repo
         control, infra = heads["control"], f"{INFRA}/.gitattributes"
         forked_from = commits(root, {"root": {".gitattributes": "*.md text\n"}, "docs": {infra: "*.md text\n"}})
         main, docs_main = forked_from["root"][1], forked_from["docs"][1]
-        later = commits(root, {"re-spaced": {".gitattributes": "*.md\ttext\n"}, "removed": {".gitattributes": "*.png binary\n"}}, base=main)
         heads_on = {name: commits(root, {"h": files}, base=on)["h"][1] for name, (files, on) in {
-            "root": (control, main), "docs": (control, docs_main), "own": ({**control, ".gitattributes": "*.md text\n*.sh eol=crlf\n"}, main)}.items()}
+            "root": (control, main), "docs": (control, docs_main), "own": ({**control, ".gitattributes": "*.md text\n*.sh eol=crlf\n"}, main),
+            "twice": ({**control, ".gitattributes": "*.sh text eol=lf\n*.png binary\n*.sh text eol=lf\n", "lib/.gitattributes": "*.py ident\n"}, main),
+            "bom": ({**control, ".gitattributes": '\ufeff"*.md"eol=crlf\n'}, main)}.items()}
         outcomes = forked(root, [["a root line on main", main, heads_on["root"]], ["a docs/ line on main", docs_main, heads_on["docs"]],
-                                 ["main re-spaced the line", later["re-spaced"][1], heads_on["root"]],
-                                 ["main removed the line", later["removed"][1], heads_on["root"]],
-                                 ["main's line and the pull request's own", main, heads_on["own"]]], {"PR_HEAD_REF": BRANCH, **STRICT, **DOCS_OK})
-        on_main = "A line already on main ({}: text), so not this pull request's: land {} on main that unsets it or removes the line, then merge main into this branch and re-run."
-        moved_on = "A line from main (.gitattributes: text) that main has changed or removed since this branch forked: merge main into this branch and re-run."
-        own = "This pull request's line (.gitattributes: eol=crlf): unset it (as -text or !eol) or remove it, then re-run."
-        expected = {"a root line on main": [on_main.format(".gitattributes", "a feature/ or fix/ change")],
-                    "a docs/ line on main": [on_main.format(infra, "a docs/ change")],
-                    "main re-spaced the line": [moved_on], "main removed the line": [moved_on],
-                    "main's line and the pull request's own": [own, on_main.format(".gitattributes", "a feature/ or fix/ change")]}
-        found = {k: [r.stdout.find(t) for t in expected[k]] for k, r in outcomes.items()}
-        wrong = {k: outcomes[k].stdout[-900:] for k, at in found.items() if not refused(outcomes[k], "a .gitattributes") or -1 in at or at != sorted(at)
-                 or "cannot carry" in outcomes[k].stdout or (k != "main's line and the pull request's own" and "This pull request's line" in outcomes[k].stdout)}
+                                 ["main's line and the pull request's own", main, heads_on["own"]],
+                                 ["one line twice, and a second file", main, heads_on["twice"]], ["a byte order mark", main, heads_on["bom"]]],
+                          {"PR_HEAD_REF": BRANCH, **STRICT, **DOCS_OK})
+        named = {"a root line on main": ".gitattributes: text (*.md text)", "a docs/ line on main": f"{infra}: text (*.md text)",
+                 "main's line and the pull request's own": ".gitattributes: text (*.md text); .gitattributes: eol=crlf (*.sh eol=crlf)",
+                 "one line twice, and a second file": ".gitattributes: text (*.sh text eol=lf); .gitattributes: text (*.sh text eol=lf); "
+                                                      "lib/.gitattributes: ident (*.py ident)",
+                 "a byte order mark": '.gitattributes: eol=crlf (\\ufeff"*.md"eol=crlf)'}   # a character that prints nothing, escaped
+        wrong = {k: outcomes[k].stdout[-900:] for k in named if not refused(outcomes[k], f"checked out: {named[k]}. {ATTRIBUTES_REMEDY}")
+                 or any(old in outcomes[k].stdout for old in ("This pull request's line", "already on main", "-text", "docs/ change"))}
         assert wrong == {}, wrong
 
 
@@ -4749,6 +4774,12 @@ def test_git_reads_the_head_trees_attributes_alone_or_the_gate_refuses(repo, mon
     # an empty tree, which a listing of files alone never shows, put first: check-attr stops there, before .gitattributes
     empty = bytes.fromhex(stored(repo, "tree", b""))
     hidden = order_of(sg, rewritten(repo, neutral, lambda es: [b"40000 zz-empty\0" + empty] + es))
+    # (red-team round 9) a mode zero-padded to 7 digits, which ls-tree lists and check-attr reads past, then entries out
+    # of order with .gitattributes last: the parser cannot read the tree and refuses it rather than passing it
+    one, crlf = (bytes.fromhex(stored(repo, "blob", b)) for b in (b"one\ntwo\n", b"*.md eol=crlf\n"))
+    padded = order_of(sg, _git(repo, "commit-tree", subprocess.run(
+        ["git", "hash-object", "-t", "tree", "--literally", "-w", "--stdin"], input=b"0100644 x.md\0" + one + b"100644 z\0" + one
+        + b"100644 .gitattributes\0" + crlf, cwd=repo, capture_output=True, check=True).stdout.decode("ascii").strip(), "-m", "padded"))
     # a tree git itself writes (mktree sorts its input), names sorting around '/', an empty tree beside e-x and e0
     x = stored(repo, "blob", b"x\n")
     folder = subprocess.run(["git", "mktree"], input=f"100644 blob {x}\tx\n".encode(), cwd=repo, capture_output=True, check=True).stdout.decode().strip()
@@ -4770,8 +4801,8 @@ def test_git_reads_the_head_trees_attributes_alone_or_the_gate_refuses(repo, mon
     monkeypatch.undo()
     check = next((args, env) for args, env in calls if "check-attr" in args)
     assert all("cannot read" in str(unread[w]) for w in elsewhere) and ".gitattributes listed after" in (order or "") \
-        and ".gitattributes listed after zz-empty" in (hidden or "") and order_of(sg, neutral) is None and order_of(sg, honest) is None, \
-        (unread, order, hidden, order_of(sg, honest))
+        and ".gitattributes listed after zz-empty" in (hidden or "") and order_of(sg, neutral) is None and order_of(sg, honest) is None \
+        and padded == "a tree git cannot parse (the root tree), which git fsck --strict refuses", (unread, order, hidden, order_of(sg, honest), padded)
     assert "text: auto" in planted and "eol: crlf" in planted and user is None and f"core.attributesFile={os.devnull}" in check[0] \
         and {k: check[1].get(k) for k in ("GIT_ATTR_NOSYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL")} == \
         {"GIT_ATTR_NOSYSTEM": "1", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}, (planted, user, check)
@@ -4918,7 +4949,9 @@ def test_the_skill_names_the_inventory_allowance():
     re-rendered inventory blocks as a change a feature branch may carry, and cites REQ-GOV-004."""
     skill = (REPO / ".claude/skills/product-delivery/SKILL.md").read_text(encoding="utf-8")
     never = next(line for line in skill.splitlines() if line.startswith("- Never edit `docs/product/` from a feature branch"))
-    assert "REQ-GOV-004" in never and "re-rendered by `scripts/maintenance/doc_inventory.py`" in never, never
+    # (red-team round 9) and the scripts package initializers, which REQ-GOV-004 holds fixed beside the blocks too
+    assert "REQ-GOV-004" in never and "re-rendered by `scripts/maintenance/doc_inventory.py`" in never \
+        and "the `scripts` and `scripts/maintenance` package initializers" in never, never
 
 
 # What a gate could read to tell the suite's forked runner (VERDICTS) from the command line CI runs, and so pass the

@@ -261,6 +261,15 @@ RENDER_INPUTS = (*RENDERER_FILES, "tests/scripts/test_check_generated_docs.py",
   not a renderer file, since the gate never runs it (`load_renderer` keeps `scripts` a package in name only).
   #1440's wider allowance (renderer-owned relation counts, table/materialized-view/view breakdowns and as-of labels
   outside the blocks) is not implemented here: #1440's own body says a separately approved spec must come first.
+- Produces (red-team round 9): `is_render_input(path) -> bool`, the one definition the render-inputs refusal, `moved`
+  and the suite read: a `RENDER_INPUTS` path, or a spelling `RENDER_LOADERS` matches, that is every file Python would
+  load in place of, or before, a protected module or initializer: any `scripts/__init__.*` or
+  `scripts/maintenance/__init__.*`, any `scripts/maintenance/doc_inventory.*` or `scripts/maintenance/check_generated_docs.*`,
+  a package folder of either renderer module's name, anything under `scripts/__pycache__/` or
+  `scripts/maintenance/__pycache__/`, and a root `scripts.*` file, which shadows the `scripts` package.
+- Risk accepted (red-team round 9): `tests/__init__.py`, `tests/scripts/__init__.py` and `tests/conftest.py` stay
+  unprotected, though the docs test imports them: REQ-GOV-004 does not name them, the approved spec's Approach 3
+  already concedes test-time code, the gate's render runs none of them, and honest feature PRs change shared fixtures.
 
 - Produces (suite): `RENDERER_HERE = (REPO / "scripts/maintenance/doc_inventory.py").is_file()`.
 - Ruling: tests that need stocks' renderer run only where `RENDERER_HERE` is true. They guard with `if RENDERER_HERE:`
@@ -528,12 +537,11 @@ the containment check). Advances done_when[1].
   `git_bytes("ls-tree", "-r", "-t", "-z", "--full-tree", head)` into `(mode, oid, os.fsdecode(path))`, trees included
   (mode `040000`), so that `order_refusal` sees every name, an empty tree's too; the files are the other entries
   (red-team round 7).
-- Produces: `tree_refusal(entries: list[tuple[str, str, str]], forked: Tree | None = None, main: Tree | None = None)
-  -> str | None`, over the files of the listing only (`generated_doc_refusals` passes `Tree(merge_base)` and `ch.base`).
-  It names the first problem, in one of these forms:
+- Produces: `tree_refusal(entries: list[tuple[str, str, str]]) -> str | None`, over the files of the listing only. It
+  names the first problem, in one of these forms:
   - `f"a symbolic link ({path})"` for mode `120000`
   - `f"a submodule ({path})"` for mode `160000`
-  - `f"a .gitattributes that can change bytes on checkout or export, {NEUTRAL_TOO}; {ATTRIBUTE_READING}. {lines}"`
+  - `f"a .gitattributes that can change bytes on checkout or export, {NEUTRAL_TOO}; {ATTRIBUTE_READING}: {lines}. {ATTRIBUTES_REMEDY}"`
     when a file whose last component, lower-cased, is `.gitattributes` sets one of `BYTE_ATTRIBUTES` (text, eol, crlf, ident, filter,
     working-tree-encoding, export-subst) or gives it a value, directly or in a macro definition. Unsetting one or
     leaving it unspecified (`-text`, `binary`, `!eol`) changes no byte and passes (red-team rounds 4 and 5). Each
@@ -545,18 +553,13 @@ the containment check). Advances done_when[1].
     rule reads it both ways. A valued form that changes no byte on this tree (`* text=auto eol=lf`) is still refused,
     the conservative direction the spec's prose takes (it refuses any `.gitattributes`); the refusal says "refused
     even where it changes no byte here", and which valued forms are neutral is not modelled (red-team round 7).
-    `{lines}` names every refused line, the first byte-changing word of each, this pull request's own lines first,
-    each with how to clear it (red-team round 8, policy F1 to F3). Whose line it is comes from the merge base's copy
-    of that `.gitattributes` (`forked`), not main's tip:
-    - absent from it, the pull request's own: `f"This pull request's line ({path}: {word}): unset it (as -text or
-      !eol) or remove it, then re-run."`;
-    - in it, and still in main's tip (`main`): `f"A line already on main ({path}: {word}), so not this pull
-      request's: land {carrier} on main that unsets it or removes the line, then merge main into this branch and
-      re-run."`, where `carrier` is "a docs/ change" for a `.gitattributes` the gate reads as documentation (under
-      `docs/`, which `check_product_scope` refuses on a feature/ or fix/ branch under `docs/product/`) and "a
-      feature/ or fix/ change" for any other, which the gate reads as code (refused on docs/ and chore/);
-    - in it, but gone from main's tip (main re-spaced or removed it): `f"A line from main ({path}: {word}) that main
-      has changed or removed since this branch forked: merge main into this branch and re-run."`.
+    `{lines}` names every refused line with what the gate verifies, `f"{file}: {attribute} ({the line as written})"`
+    joined by "; ", one entry per line per file in the listing's order, a line identical to another included, a
+    character that prints nothing escaped (red-team rounds 8 and 9). `ATTRIBUTES_REMEDY` is one fixed instruction,
+    the same for every line and for the check-attr refusal: "Take each such line out of this pull request. If this
+    pull request did not add it, it has to come off main first (a change to main), and then main merged into this
+    branch." The gate does not judge whose a line is or which branch clears it: round 8's judgement from the merge
+    base drew three rounds of wording findings (round 9, policy F1 to F4, YAML F2 and F3).
   - `order_refusal(head, listing)` (red-team rounds 7 and 8), after `tree_refusal`: every tree of the head, the root
     and each `040000` entry of the listing, read raw in one `cat-file --batch` and checked as git fsck's
     `verify_ordered` checks it: an empty name, a name holding a slash, a name listed twice whatever its modes, or
@@ -566,7 +569,9 @@ the containment check). Advances done_when[1].
     `git check-attr --source` stops looking for a `.gitattributes` at the first name sorting after it, or enters the
     first of two folders of one name, so it reads none where a checkout, from its sorted index, applies one. Round 7's
     comparison of full paths passed a name holding a slash and a folder listed twice with an empty first copy; this
-    replaced it. Measured on ed3ddf08's tree (1,672 entries, 153 trees): 12 ms median (11.7 to 17.7 ms).
+    replaced it. Measured on ed3ddf08's tree (1,672 entries, 153 trees): 12 ms median (11.7 to 17.7 ms). A tree its
+    parser cannot read, such as a mode zero-padded to seven digits, is refused as `f"a tree git cannot parse
+    ({where}), which git fsck --strict refuses"` (default fsck only warns on a zero-padded mode; round 9).
   - `f"a tree that lists {path} twice"` and `f"{dir} as both a file and a directory"` (red-team round 4)
   - `f"a path component {c!r} ({path})"` for a component that is empty or, lower-cased, is `.`, `..` or `.git`
 - Produces: `materialize(entries: list[tuple[str, str, str]], into: pathlib.Path) -> None`. It runs one
@@ -588,11 +593,8 @@ the containment check). Advances done_when[1].
     `cat-file --batch` run before it in this repository, so a partial clone has fetched those objects from its
     promisor remote, which the borrowed store has none of. A byte-changing attribute set or valued there is refused
     as `f"a .gitattributes that can change bytes on checkout or export ({attribute} on {path}, as git check-attr reads
-    it), {NEUTRAL_TOO}; {ATTRIBUTE_READING}. ..."`. check-attr names the attribute and a file it applies to, not the
-    line, so its remedy differs from `tree_refusal`'s: it says how to find the line (`git check-attr -a -- <path>`)
-    and then states the three cases conditionally (this pull request's: unset or remove; main's and still on main: a
-    docs/ change for a `.gitattributes` under `docs/`, a feature/ or fix/ change for any other, then merge main; main's
-    and changed since: merge main), without deciding which applies. A git failure, or an object it cannot read,
+    it), {NEUTRAL_TOO}; {ATTRIBUTE_READING}. {ATTRIBUTES_REMEDY}"`: check-attr names the attribute and a file it applies
+    to, not the line, and the instruction is the text rule's (round 9). A git failure, or an object it cannot read,
     refuses with "the head tree's attributes cannot be read". Both rules run (red-team round 6): check-attr is git's own reading, so it covers any way the
     text rule could still part from git's parser, while the text rule also reads the working-tree way that check-attr,
     reading the blob, does not (a line past a NUL, a byte order mark), and names the file and the word that set it.
@@ -849,6 +851,13 @@ F2); `scripts/__init__.py` joined RENDER_INPUTS (YAML, REQ-GOV-004 since #1440);
 whose line it is from the merge base, names the branch type that can carry the fix by the file's path, and names every
 refused line, the pull request's own first (policy F1 to F3); this plan's Velocity counts and Task 7 forms now match
 the code (policy F4).
+
+Red-team round 9 (one batch): a `.gitattributes` refusal names each refused line as written and ends with one fixed
+instruction, without judging whose the line is (policy F1 to F4 and N1, YAML F2 and F3); every loader spelling of a
+protected module or initializer, a root `scripts.*` shadow and the packages' `__pycache__` included, is a render input
+(`is_render_input`; shell F1, policy F5, YAML F1); a test reaches the order check's "cannot parse" branch, which now
+says "git fsck --strict" (shell F2, F3); and the product-delivery skill's "Never" bullet names the scripts package
+initializers (policy F6).
 
 ## Task 11: Evidence: the full suite, the base-suite job, and RED against main
 
