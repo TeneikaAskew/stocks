@@ -12,7 +12,7 @@ done_when:
   - "The actual portable verification CLI records count, admitted bytes, identities and elapsed time; one shared five-second deadline, combined eight-MiB record/listing/metadata-input ceiling and combined 20000-entry ceiling fail closed, including oversized, slow and partial-output controls."
   - "Actual producer failure/corrupt output cannot pass the verifier or audit; real CLI tests cover nonzero/partial producer output, validly formatted mismatched records and unsupported record versions instead of synthetic success dictionaries."
   - "Catalog, PR traceability, delivery skill and template distinguish source-identity-matched/review pending from authenticated CODE review and deployed-state verification; post-merge main and staging close-out remains mandatory."
-status: draft
+status: approved
 supersedes: null
 ---
 
