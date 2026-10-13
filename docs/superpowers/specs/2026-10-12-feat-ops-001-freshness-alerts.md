@@ -40,6 +40,11 @@ send manual notifications, or deploy without the normal deployment workflow.
 
 ## Design
 
+Delivery ownership: notification and audit code is FEAT-OPS-001. The already
+approved deployment/access portion below is delivered independently under
+docs/superpowers/specs/2026-10-12-feat-deploy-001-notifier-audit-access.md;
+gcp/deploy.sh changes do not belong in the OPS implementation PR.
+
 For freshness-watchdog execution-failure notifications, use Application Default
 Credentials to read Cloud Logging evidence scoped to project, region, job and
 the exact execution name. Never classify using a different or latest run.
