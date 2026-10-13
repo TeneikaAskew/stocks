@@ -4915,10 +4915,18 @@ def test_the_gate_runs_only_main_renderers_source(inventory_repo, tmp_path):
 def test_a_refusal_says_how_to_clear_it(inventory_repo):
     """FEAT-CICD-001 spec, "Exact render" (done_when[1]; red-team round 4): when main's renderer changed after the
     branch forked, --restore with the branch's own renderer changes nothing, so the refusal names the change and says
-    to merge main first."""
+    to merge main first. A loader spelling of a render input that main adds counts as such a change (red-team round 9:
+    `moved` reads is_render_input, as the refusal of the pull request's own files does)."""
     if RENDERER_HERE:
         root, heads = inventory_repo
-        head = commits(root, {"moved": heads["moved"]})["moved"][1]   # rendered by the renderer the branch forked from
+        made = commits(root, {"moved": heads["moved"],   # rendered by the renderer the branch forked from
+                              "hand edit": {**heads["moved"], API_DOC: edit(heads["moved"][API_DOC], "Liveness probe:", "Liveness probe, hand-edited:")}})
+        head = made["moved"][1]
+        loader = "scripts/__init__.pyc"
+        on_base(root, {loader: "# bytes Python would load before scripts/__init__.py\n"}, then=lambda r: _git(r, "add", "-f", loader))
+        r = gate(root, "--pr", _git(root, "rev-parse", "base"), made["hand edit"][1], PR_HEAD_REF=BRANCH, **DOCS_OK)
+        assert all(f in reason(r, API_DOC) for f in ("differs from main's render", f"main changed {loader} after this branch forked",
+                                                     "merge main into the branch")), r.stdout + r.stderr
         renderer = "scripts/maintenance/doc_inventory.py"
         on_base(root, {renderer: edit((root / renderer).read_text(encoding="utf-8"), '["Method", "Path", "Defined", "Purpose"]',
                                       '["Method", "Path", "Defined at", "Purpose"]')})
