@@ -54,8 +54,11 @@ Spec: § Complete policy-only contract. Advances done_when[0,4].
 ## Task 4: Actual gate and audit verification
 Spec: § Actual feasibility and publication sequence. Advances done_when[1,2].
 - [ ] Run actual commit gate, authoritative unchanged BASE PR gate, required existing suites/checks and complete actual branch/main documentation audits (no skipped ordinary checks); retain .claude watcher/unknown-marker findings and require no new findings. No fake virtual-policy acceptance substitutes for actual approved main or final CI.
-- [ ] Run unchanged actual BASE PR checker against exact committed HEAD with genuine draft metadata; accepted feature control and refused DOC metadata must identify both gated Markdown files. No tests mirroring prose changes or checker exemption.
-- [ ] Record direct-file oracle/scoped-record/unchanged runtime checks and actual audit/gate results; new findings block readiness without waiver.
+- [x] Run unchanged actual BASE PR checker against exact committed HEAD with genuine draft metadata; accepted feature control and refused DOC metadata must identify both gated Markdown files. No tests mirroring prose changes or checker exemption.
+- [x] Record direct-file oracle/scoped-record/unchanged runtime checks and actual audit/gate results; new findings block readiness without waiver.
+
+
+Local evidence: the exact merged c811 literal oracle matches both complete files; actual BASE feature acceptance and DOC refusal identify both gated Markdown paths. Complete default branch/main audits at 9fb76604/182d444 each retain exactly284 identical findings. Existing unchanged `tests/scripts/test_spec_gate.py` suite passes96 tests in253.62seconds; one pre-existing SyntaxWarning remains. Current-head external CODE review and required CI are still pending; they are not inferred from these local checks.
 
 ## Task 5: Normal review and main close-out
 Spec: § Actual feasibility and publication sequence. Advances done_when[3,4].
