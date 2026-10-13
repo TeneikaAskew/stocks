@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-10-13-feat-cicd-001-source-review-policy.md
 branch: feature/feat-cicd-001-source-review-policy
-pr: null
+pr: 1464
 status: ready
 ---
 
@@ -37,9 +37,9 @@ status: ready
 
 ## Task 1: Verify approved main prerequisite
 Spec: § Actual feasibility and publication sequence. Advances done_when[1].
-- [ ] Independently verify actual approved policy spec/main identity SHA256 c81168fa1b122e744286860706e7bf09305588cf3caf788dde1a509374ba57ca, existing FEAT/requirements and the single isolated named feature branch from actual main.
-- [ ] Stage only this five-task ready plan, run `python3 scripts/gate/spec_gate.py --commit` and `bash .githooks/pre-commit` (expect acceptance), then commit plan before any policy edit.
-- [ ] Open the single draft PR with exact spec/plan links and five initially unticked acceptance items; set plan pr to its real number in the next commit.
+- [x] Independently verify actual approved policy spec/main identity SHA256 c81168fa1b122e744286860706e7bf09305588cf3caf788dde1a509374ba57ca, existing FEAT/requirements and the single isolated named feature branch from actual main.
+- [x] Stage only this five-task ready plan, run `python3 scripts/gate/spec_gate.py --commit` and `bash .githooks/pre-commit` (expect acceptance), then commit plan before any policy edit.
+- [x] Open the single draft PR with exact spec/plan links and five initially unticked acceptance items; set plan pr to its real number in the next commit.
 
 ## Task 2: Apply exact conditional skill/template wording
 Spec: § Complete policy-only contract. Advances done_when[0,3].
