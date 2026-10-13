@@ -536,7 +536,7 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and sol
 
 ### FEAT-OPS-001 — Operations / reliability (11 open)
 
-Delivery: [#1499](https://github.com/TeneikaAskew/stocks/pull/1499) replaces #1456 with confirmed freshness-audit alert classification and delivery regressions.
+**PR lineage:** [#1499](https://github.com/TeneikaAskew/stocks/pull/1499) replaces #1456 with confirmed freshness-audit alert classification and delivery regressions.
 
 | Issue | Sev | Title |
 |---|---|---|
