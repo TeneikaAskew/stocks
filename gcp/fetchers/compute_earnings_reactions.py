@@ -823,6 +823,10 @@ def prepare_reaction_inputs(eps,daily,*,as_of=None):
               'availability_quality':config['mode'],**daily.attrs.get('immutable_vintage',{})}
     frame=daily.rename(columns={'open':'Open','high':'High','low':'Low','close':'Close','volume':'Volume'})
     basis=prepare_daily_basis(frame,basis_date=max(daily['date']),observed_at=clock,mode=config['mode'],as_of=as_of,input_artifact=artifact)
+    # Native reactions contain volume-dependent features. A qualified
+    # price-only basis cannot make their missing split-volume evidence valid.
+    if basis.volume_capability!='verified':
+        raise av.SourceError('reaction_volume_basis_unavailable')
     analysis=basis.analysis_frame.rename(columns={'Open':'open','High':'high','Low':'low','Close':'close','Volume':'volume'}).copy()
     analysis['atr_14']=None  # Legacy raw-spine ATR cannot certify adjusted windows.
     analysis.attrs['validated_common_basis']=True

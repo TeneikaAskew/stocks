@@ -1102,3 +1102,33 @@ def test_reaction_caller_batches_one_hundred_tickers_without_basis_substitute(mo
     assert run.failed==10000 and run.rows_written==0
     assert len([sql for sql,p in reads if 'windows' in (p or {})])==10
     assert len([sql for sql,p in reads if 'earnings_timing_observations' in sql])==1
+
+
+def test_reaction_adapter_refuses_unavailable_split_volume_capability(monkeypatch):
+    """Negative adapter contract only; no fixture certifies the absent DATA helper."""
+    import importlib.util
+    import sys
+    from datetime import datetime, timezone
+    from types import ModuleType, SimpleNamespace
+    from gcp.fetchers import compute_earnings_reactions as reactions, _av_ingestion as av
+
+    day = date(2026, 10, 12)
+    daily = pd.DataFrame([{'date': day, 'open': 100, 'high': 101, 'low': 99,
+                           'close': 100, 'volume': None, 'adjusted_close': 100,
+                           'split_coefficient': 1}])
+    # Deliberately non-capable boundary response. This contains no DATA
+    # calculation/source SQL and cannot satisfy positive basis integration.
+    boundary = ModuleType('lib.price_basis')
+    boundary.prepare_daily_basis = lambda frame, **kw: SimpleNamespace(
+        analysis_frame=frame.copy(), basis_version='av-adjusted-daily-v1',
+        provenance={}, volume_capability='unavailable')
+    monkeypatch.setitem(sys.modules, 'lib.price_basis', boundary)
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, 'find_spec',
+                        lambda name, *a, **kw: object() if name == 'lib.price_basis'
+                        else real_find_spec(name, *a, **kw))
+    eps = {'ticker': 'IWM', 'reported_date': day,
+           'revision_id': '00000000-0000-0000-0000-000000000001',
+           'known_at': datetime.now(timezone.utc), 'availability_quality': 'source_verified'}
+    with pytest.raises(av.SourceError, match='reaction_volume_basis_unavailable'):
+        reactions.prepare_reaction_inputs(eps, daily)
