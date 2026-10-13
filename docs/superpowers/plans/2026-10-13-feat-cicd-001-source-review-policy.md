@@ -43,13 +43,13 @@ Spec: § Actual feasibility and publication sequence. Advances done_when[1].
 
 ## Task 2: Apply exact conditional skill/template wording
 Spec: § Complete policy-only contract. Advances done_when[0,3].
-- [ ] Rebuild from the actual merged approved spec literal oracle: replace only the existing Never product-document bullet and append exact SKILL section/final three template rules; explicitly separate policy implementation from later approved verifier spec/implementation. Do not add verifier code/tests or activate SITE/audit routes.
-- [ ] Independently reconstruct both expected full files from actual BASE bytes plus merged oracle and compare all actual bytes; expect exact equality. Inspect complete diff and preserve every unrelated guard/fence/initializer/resource/review rule, including premerge tests vs separately tracked genuine postmerge close-out.
-- [ ] Run actual commit gate/hook before the policy commit; expect acceptance.
+- [x] Rebuild from the actual merged approved spec literal oracle: replace only the existing Never product-document bullet and append exact SKILL section/final three template rules; explicitly separate policy implementation from later approved verifier spec/implementation. Do not add verifier code/tests or activate SITE/audit routes.
+- [x] Independently reconstruct both expected full files from actual BASE bytes plus merged oracle and compare all actual bytes; expect exact equality. Inspect complete diff and preserve every unrelated guard/fence/initializer/resource/review rule, including premerge tests vs separately tracked genuine postmerge close-out.
+- [x] Run actual commit gate/hook before the policy commit; expect acceptance.
 
 ## Task 3: Scoped capability records
 Spec: § Complete policy-only contract. Advances done_when[0,4].
-- [ ] Update only own catalog Status/Last reviewed and PR traceability, saying policy wording verified and verifier/global remediation pending; record draft PR number in this ready plan after opening. Do not close issue1121 or claim deployment/verifier evidence.
+- [x] Update only own catalog Status/Last reviewed and PR traceability, saying policy wording verified and verifier/global remediation pending; record draft PR number in this ready plan after opening. Do not close issue1121 or claim deployment/verifier evidence.
 
 ## Task 4: Actual gate and audit verification
 Spec: § Actual feasibility and publication sequence. Advances done_when[1,2].
