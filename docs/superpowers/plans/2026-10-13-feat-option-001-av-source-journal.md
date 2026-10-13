@@ -2,7 +2,7 @@
 feat_id: FEAT-OPTION-001
 spec: docs/superpowers/specs/2026-10-13-feat-option-001-av-source-journal.md
 branch: fix/feat-option-001-av-source-journal
-pr: null
+pr: 1495
 status: ready
 ---
 
