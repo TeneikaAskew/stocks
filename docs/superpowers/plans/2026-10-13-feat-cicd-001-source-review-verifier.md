@@ -100,13 +100,15 @@ Spec: § Exact record and committed-source contract; § Audit routing and bootst
 
 ## Task 12: Complete verification and resource evidence
 Spec: § Bounds and acceptance controls. Advances done_when[0,1,2,3,4,5,6].
-- [ ] Run complete affected snapshot/audit/gate suites and unchanged BASE suite; retain cold/ordinary actual CLI counts/bytes/runtime and actual bound-failure controls. No timeout/drop-assertions/alternate-checker substitute.
-- [ ] Preserve registry285second and existing full-render60second/512MiB acceptance contracts; run their required actual checks where the shared gate change requires them, coordinated with core author.
+- [x] Run complete affected snapshot/audit/gate suites and unchanged BASE suite; retain cold/ordinary actual CLI counts/bytes/runtime and actual bound-failure controls. No timeout/drop-assertions/alternate-checker substitute.
+- [x] Preserve registry285second and existing full-render60second/512MiB acceptance contracts; run their required actual checks where the shared gate change requires them, coordinated with core author.
 
 ## Task 13: Delivery records, sidecar and initial bootstrap evidence
 Spec: § Audit routing and bootstrap, Stage2; § Local identity and external review are separate. Advances done_when[4,7].
-- [ ] Update only own catalog/PR traceability, ready plan PR number and sidecar. Initial implementation edits NO SITE, registry watcher, pinned workflow or initializer; all watched changes stay within the fixed six-file bootstrap allowlist while trusted policy lacks verifier. Produce/commit/verify sidecar binding existing SITE body and final scoped source; rerun on any later watched-source change.
-- [ ] Capture actual branch/main audits with no new findings and authoritative unchanged BASE `--pr` verdict, preserving source identity vs external CODE review vs rollout-pending labels.
+- [x] Update only own catalog/PR traceability, ready plan PR number and sidecar. Initial implementation edits NO SITE, registry watcher, pinned workflow or initializer; all watched changes stay within the fixed six-file bootstrap allowlist while trusted policy lacks verifier. Produce/commit/verify sidecar binding existing SITE body and final scoped source; rerun on any later watched-source change.
+- [x] Capture actual branch/main audits with no new findings and authoritative unchanged BASE `--pr` verdict, preserving source identity vs external CODE review vs rollout-pending labels.
+
+Local prepush evidence: actual auditor642 + source91 controls pass (733 tests,120.55seconds); proposed gate98 passes269.87seconds; unchanged current-main BASE96 passes269.48seconds; unchanged exporter41 passes90.11seconds and actual registry check is current. Exact current-main suite bytes SHA2567ee523785cc0b3c4d90528120da74e3d5de5fa4c00aaa71c708ec066312bdc3b. Actual default main/branch audits have identical284-finding multisets; actual unchanged BASE and proposed draft PR gates pass. Current repository committed bootstrap verifies1428combined entries and7200865counted bytes in2.004seconds, below fixed limits. Local source identity is c74fae37c81b5a946f6532c14c31ca964d6bdeb8f9f9722237822f711d96594f; existing SITE body identity is77a15dbd34bfeefd531d1482eb61490748933d78fa73bd951a9221e747c0115b. These are local implementation checks; Task14 external reviews, CI, merge and actual main/staging close-out remain incomplete.
 
 ## Task 14: Independent review, merge and post-merge close-out
 Spec: § Audit routing and bootstrap; § Bounds and acceptance controls. Advances done_when[4,7].
