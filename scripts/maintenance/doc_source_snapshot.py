@@ -215,6 +215,7 @@ class Git:
         self.env = dict(os.environ, GIT_NO_REPLACE_OBJECTS="1", GIT_NO_LAZY_FETCH="1")
         self.metadata = {}
         self.listings = {}
+        self.contents = {}
         self.command(["--no-lazy-fetch", "--version"], guarded=False)
         for key in ("extensions.partialClone",):
             if self.command(["config", "--get", key], allowed=(0, 1)):
@@ -345,10 +346,55 @@ class Git:
             raise Unavailable("required input is not a regular mode100644 blob")
         size = self.sizes([row["blob_oid"]])[row["blob_oid"]]
         self.budget.admit_size(size)
+        if row["blob_oid"] in self.contents:
+            # Immutable-object reuse still debits every required logical read.
+            self.budget.read(size)
+            return self.contents[row["blob_oid"]]
         raw = self.command(["cat-file", "blob", row["blob_oid"]])
         if len(raw) != size:
             raise Unavailable("incomplete committed blob")
+        self.contents[row["blob_oid"]] = raw
         return raw
+
+    def blobs(self, ref: str, paths: list[str]) -> list[bytes]:
+        """Complete bounded object batch; no authored subset or partial frames."""
+        rows = [self.tree(ref).get(path) for path in paths]
+        if any(row is None or row["mode"] != "100644" or row["type"] != "blob" for row in rows):
+            raise Unavailable("required batch input is not a regular mode100644 blob")
+        oids = [row["blob_oid"] for row in rows]
+        sizes = self.sizes(oids)
+        wanted = list(dict.fromkeys(oid for oid in oids if oid not in self.contents))
+        # Include framing before materializing the batch and debit aliases/reuse.
+        framing = sum(len(f"{oid} blob {sizes[oid]}\n".encode("ascii")) + 1 for oid in wanted)
+        self.budget.admit_size(sum(sizes[oid] for oid in oids) + framing)
+        if wanted:
+            raw = self.command(["cat-file", "--batch"], data=("\n".join(wanted) + "\n").encode("ascii"))
+            offset = 0
+            pending = {}
+            for oid in wanted:
+                header = f"{oid} blob {sizes[oid]}\n".encode("ascii")
+                end = offset + len(header)
+                if raw[offset:end] != header:
+                    raise Unavailable("incomplete or mismatched Git batch header")
+                offset = end
+                end = offset + sizes[oid]
+                if end >= len(raw) or raw[end:end + 1] != b"\n":
+                    raise Unavailable("incomplete Git batch content")
+                pending[oid] = raw[offset:end]
+                offset = end + 1
+                self.budget.remaining()
+            if offset != len(raw):
+                raise Unavailable("unexpected trailing Git batch output")
+            self.contents.update(pending)
+        first = set(wanted)
+        values = []
+        for oid in oids:
+            if oid in first:
+                first.remove(oid)
+            else:
+                self.budget.read(sizes[oid])
+            values.append(self.contents[oid])
+        return values
 
     def manifest(self, ref: str, scopes: list[str]) -> list[dict]:
         rows = [row for path, row in self.tree(ref).items() if watched(path, scopes)]
@@ -451,6 +497,8 @@ class Snapshot:
         self.policy_hash = None
         self.body_hash = None
         self.route = None
+        self.body_hashes = {}
+        self.registries = {}
         self.budget = Budget(seconds, max_bytes, max_entries)
         self.git = Git(Path(repo), self.budget)
         self.audit = trusted_module("_source_snapshot_audit", "scripts/maintenance/docs_audit.py", self.budget)
@@ -462,7 +510,7 @@ class Snapshot:
         source_row = self.git.tree(source_ref).get(REGISTRY)
         if require_source_equal and source_row != row:
             raise Unavailable("SOURCE registry blob/mode/type differs from trusted POLICY")
-        registry = self.audit.load_registry(text(raw))
+        registry = self.registry(row["blob_oid"], raw)
         if self.audit.classification_is_ambiguous(SITE, registry):
             raise Unavailable("ambiguous SITE watcher policy")
         cls, paths, _ = self.audit.classify(SITE, registry)
@@ -478,10 +526,20 @@ class Snapshot:
         self.policy_hash = policy["policy_identity_sha256"]
         return policy
 
+    def registry(self, oid, raw):
+        if oid not in self.registries:
+            self.registries[oid] = self.audit.load_registry(text(raw))
+        self.budget.remaining()
+        return self.registries[oid]
+
     def body(self, ref: str) -> tuple[bytes, str]:
         raw = self.git.blob(ref, SITE)
-        normalized = self.audit._without_marker(text(raw)).encode("utf-8", "strict")
-        return raw, hashlib.sha256(normalized).hexdigest()
+        oid = self.git.tree(ref)[SITE]["blob_oid"]
+        if oid not in self.body_hashes:
+            normalized = self.audit._without_marker(text(raw)).encode("utf-8", "strict")
+            self.body_hashes[oid] = hashlib.sha256(normalized).hexdigest()
+        self.budget.remaining()
+        return raw, self.body_hashes[oid]
 
     def source_identity(self, entries, policy):
         return digest({"object_format": self.git.object_format,
@@ -503,11 +561,13 @@ class Snapshot:
         fm = self.gate.frontmatter(text(values[0]))
         if fm.get("status") != "approved" or fm.get("feat_id") != feat or fm.get("_duplicate_keys") or fm.get("_tab_indented"):
             raise Unavailable("approved immutable FEAT/spec binding failed")
-        for candidate in self.git.tree(policy):
-            if candidate != path and candidate.startswith("docs/superpowers/specs/") and candidate.endswith(".md"):
-                newer = self.gate.frontmatter(text(self.git.blob(policy, candidate)))
-                if newer.get("status") == "approved" and newer.get("feat_id") == feat and newer.get("supersedes") == path:
-                    raise Unavailable("bound approved spec has been superseded in trusted POLICY")
+        candidates = [candidate for candidate in self.git.tree(policy)
+                      if candidate != path and candidate.startswith("docs/superpowers/specs/") and candidate.endswith(".md")]
+        for raw in self.git.blobs(policy, candidates):
+            newer = self.gate.frontmatter(text(raw))
+            if newer.get("status") == "approved" and newer.get("feat_id") == feat and newer.get("supersedes") == path:
+                raise Unavailable("bound approved spec has been superseded in trusted POLICY")
+            self.budget.remaining()
         return rows[0]["blob_oid"], fm
 
     def gate_note_scope(self, baseline_ref, policy_ref, source_ref, feat, spec_path, *, only_changed_source=False):
@@ -555,12 +615,14 @@ class Snapshot:
             raise Unavailable("ordinary production requires its actual named feature branch/source")
         feat = matched.group(2).upper()
         selected = []
-        for path in self.git.tree(source):
-            if path.startswith("docs/superpowers/plans/") and path.endswith(".md"):
-                raw = text(self.git.blob(source, path))
-                fm = self.gate.frontmatter(raw)
-                if fm.get("branch") == branch:
-                    selected.append((fm, raw))
+        plans = [path for path in self.git.tree(source)
+                 if path.startswith("docs/superpowers/plans/") and path.endswith(".md")]
+        for value in self.git.blobs(source, plans):
+            raw = text(value)
+            fm = self.gate.frontmatter(raw)
+            if fm.get("branch") == branch:
+                selected.append((fm, raw))
+            self.budget.remaining()
         if len(selected) != 1:
             raise Unavailable("one committed active plan must bind the actual branch")
         fm, raw = selected[0]
@@ -596,7 +658,7 @@ class Snapshot:
         code, _ = self.git.command(["merge-base", "--is-ancestor", against, current], allowed=(0, 1), return_code=True)
         if code or self.git.blob(against, SITE, optional=True) is None or self.body(against)[1] != self.body_hash:
             return False
-        registry = self.audit.load_registry(text(self.git.blob(current, REGISTRY)))
+        registry = self.registry(self.git.tree(current)[REGISTRY]["blob_oid"], self.git.blob(current, REGISTRY))
         documents = frozenset(self.audit.document_set(set(self.git.tree(source)), registry))
         # The whole range keeps both sides of cross-directory pure renames.
         history = text(self.git.command(["log", "--no-ext-diff", "--format=%H%x09%s", "--name-status", "-M",

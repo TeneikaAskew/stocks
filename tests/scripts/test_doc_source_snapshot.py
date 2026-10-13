@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -696,3 +697,84 @@ def test_actual_well_formed_forged_identity_refused_by_verifier_and_audit(tmp_pa
     assert SITE not in report["source_identities"]
     assert any(f["doc"] == SITE and f["check"] == "source-provenance" for f in report["findings"])
     assert any(f["doc"] == SITE and f["check"] == "changed-since" for f in report["findings"])
+
+
+def policy_batch_repo(path, content="---\nstatus: draft\nfeat_id: FEAT-CICD-001\n---\n\n# Batch candidate\n"):
+    repo = Repo(path)
+    repo.git("checkout", "-q", "main")
+    repo.write("docs/superpowers/specs/2026-10-13-batch-candidate.md", content)
+    repo.base = repo.commit("docs: seed complete policy batch candidate")
+    repo.git("update-ref", "refs/remotes/origin/main", repo.base)
+    repo.git("checkout", "-q", BRANCH)
+    repo.git("reset", "--hard", repo.base)
+    repo.write(MODULE, (ROOT / MODULE).read_bytes())
+    repo.write(PLAN, (ROOT / PLAN).read_text().replace("pr: 1470", "pr: 7"))
+    repo.commit("feat: introduce exact bootstrap against batch policy")
+    return repo
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("failure", ["partial", "trailing", "wrong-header", "nonzero"])
+def test_actual_git_object_batch_failure_preserves_absent_or_valid_record(existing, failure, tmp_path):
+    repo = policy_batch_repo(tmp_path / "repo")
+    if existing:
+        repo.produce_committed()
+    old = (repo.path / RECORD).read_bytes() if existing else None
+    real_git = shutil.which("git")
+    wrappers = tmp_path / "wrappers"
+    wrappers.mkdir()
+    sentinel = tmp_path / "actual-batch-observed"
+    change = {"partial": "raw = raw[:-1]", "trailing": "raw += b'unexpected'",
+              "wrong-header": "raw = (b'0' if raw[:1] != b'0' else b'1') + raw[1:]", "nonzero": "pass"}[failure]
+    code = ("#!/usr/bin/env python3\nimport os,sys,subprocess\nfrom pathlib import Path\n"
+            "if '--batch' in sys.argv:\n"
+            "    Path(" + repr(str(sentinel)) + ").write_text('actual Git batch')\n"
+            "    result = subprocess.run([" + repr(real_git) + "] + sys.argv[1:], input=sys.stdin.buffer.read(), capture_output=True)\n"
+            "    raw = result.stdout\n    " + change + "\n"
+            "    sys.stdout.buffer.write(raw)\n    raise SystemExit(" + ("77" if failure == "nonzero" else "result.returncode") + ")\n"
+            "os.execv(" + repr(real_git) + ", [" + repr(real_git) + "] + sys.argv[1:])\n")
+    wrapper = wrappers / "git"
+    handler = wrappers / "batch-handler.py"
+    handler.write_text(code)
+    wrapper.write_text("#!/bin/sh\nfor option do\n"
+                       "    if [ \"$option\" = --batch ]; then exec " + shlex.quote(sys.executable) + " " + shlex.quote(str(handler)) + " \"$@\"; fi\n"
+                       "done\nexec " + shlex.quote(real_git) + " \"$@\"\n")
+    wrapper.chmod(0o755)
+    env = dict(os.environ, PATH=str(wrappers) + os.pathsep + os.environ["PATH"])
+    refused = subprocess.run([sys.executable, MODULE, "produce"], cwd=repo.path,
+                             env=env, capture_output=True, text=True, timeout=10)
+    assert sentinel.exists(), refused.stdout + refused.stderr
+    assert refused.returncode != 0
+    assert json.loads(refused.stdout)["status"] == "unverified"
+    if existing:
+        assert (repo.path / RECORD).read_bytes() == old
+    else:
+        assert not (repo.path / RECORD).exists()
+
+
+def test_actual_policy_batch_oversize_refuses_before_materialization(tmp_path):
+    repo = policy_batch_repo(tmp_path / "repo", "# Oversized candidate\n" + "x" * 8388608)
+    real_git = shutil.which("git")
+    wrappers = tmp_path / "wrappers"
+    wrappers.mkdir()
+    sentinel = tmp_path / "content-batch-must-not-start"
+    wrapper = wrappers / "git"
+    wrapper.write_text("#!/usr/bin/env python3\nimport os,sys\nfrom pathlib import Path\n"
+                       "if '--batch' in sys.argv: Path(" + repr(str(sentinel)) + ").write_text('buffered')\n"
+                       "os.execv(" + repr(real_git) + ", [" + repr(real_git) + "] + sys.argv[1:])\n")
+    wrapper.chmod(0o755)
+    env = dict(os.environ, PATH=str(wrappers) + os.pathsep + os.environ["PATH"])
+    refused = subprocess.run([sys.executable, MODULE, "produce"], cwd=repo.path,
+                             env=env, capture_output=True, text=True, timeout=10)
+    assert refused.returncode != 0
+    assert "remaining input-byte" in json.loads(refused.stdout)["reason"]
+    assert not sentinel.exists()
+    assert not (repo.path / RECORD).exists()
+
+
+def test_actual_policy_batch_checks_superseding_candidate(tmp_path):
+    repo = policy_batch_repo(tmp_path / "repo", "---\nstatus: approved\nfeat_id: FEAT-CICD-001\nsupersedes: " + SPEC + "\n---\n")
+    refused = repo.cli("produce")
+    assert refused.returncode != 0
+    assert "superseded" in json.loads(refused.stdout)["reason"]
+    assert not (repo.path / RECORD).exists()
