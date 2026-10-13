@@ -2,7 +2,7 @@
 feat_id: FEAT-OPS-001
 spec: docs/superpowers/specs/2026-10-12-feat-ops-001-freshness-alerts.md
 branch: fix/feat-ops-001-freshness-alerts
-pr: null
+pr: 1456
 status: ready
 ---
 
