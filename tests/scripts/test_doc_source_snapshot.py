@@ -924,6 +924,12 @@ mode = sys.argv[1]
 def prior_handler(signum, frame):
     raise AssertionError("previous caller alarm must not execute")
 signal.signal(signal.SIGALRM, prior_handler)
+original_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+if mode == "blocked":
+    signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+elif mode == "mask-accepted":
+    signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
+expected_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
 if mode == "active":
     signal.setitimer(signal.ITIMER_REAL, 10, 3)
 elif mode == "unsupported":
@@ -968,13 +974,17 @@ else:
     result = module.main(args)
 remaining, interval = signal.getitimer(signal.ITIMER_REAL)
 restored = signal.getsignal(signal.SIGALRM) is prior_handler
-print(json.dumps({"handler_restored": restored, "remaining": remaining, "interval": interval}), file=sys.stderr)
+mask_restored = signal.pthread_sigmask(signal.SIG_BLOCK, set()) == expected_mask
+print(json.dumps({"handler_restored": restored, "mask_restored": mask_restored,
+                  "remaining": remaining, "interval": interval}), file=sys.stderr)
 if mode == "active":
     assert 0 < remaining <= 10 and interval == 3
     signal.setitimer(signal.ITIMER_REAL, 0)
 else:
     assert remaining == interval == 0
 assert restored
+assert mask_restored
+signal.pthread_sigmask(signal.SIG_SETMASK, original_mask)
 raise SystemExit(result)
 '''
 
@@ -984,26 +994,33 @@ def actual_cpu_caller(repo, mode):
                           capture_output=True, text=True, timeout=10)
 
 
-@pytest.mark.parametrize("mode", ["produce", "verify", "init-refusal", "active", "thread", "unsupported"])
-def test_actual_entrypoint_restores_or_preserves_caller_timer(mode, tmp_path):
+@pytest.mark.parametrize("mode", ["produce", "verify", "init-refusal", "active", "thread", "unsupported", "blocked", "mask-accepted"])
+@pytest.mark.parametrize("existing", [False, True])
+def test_actual_entrypoint_restores_or_preserves_caller_timer(mode, existing, tmp_path):
     repo = Repo(tmp_path / "repo")
-    if mode == "verify":
+    if existing or mode == "verify":
         repo.produce_committed()
+    old = (repo.path / RECORD).read_bytes() if (repo.path / RECORD).exists() else None
     if mode == "init-refusal":
         repo.git("config", "remote.fixture.promisor", "true")
     result = actual_cpu_caller(repo, mode)
     verdict = json.loads(result.stdout)
     assert json.loads(result.stderr.splitlines()[-1])["handler_restored"] is True, result.stderr
-    if mode in ("produce", "verify"):
+    assert json.loads(result.stderr.splitlines()[-1])["mask_restored"] is True, result.stderr
+    if mode in ("produce", "verify", "mask-accepted"):
         assert result.returncode == 0, result.stdout + result.stderr
         assert verdict["status"] == "identity-matched"
     else:
         assert result.returncode != 0
         assert verdict["status"] == "unverified"
         expected = {"init-refusal": "partial-clone or promisor", "active": "preexisting active CPU timer",
-                    "thread": "POSIX main-thread caller", "unsupported": "POSIX main-thread caller"}[mode]
+                    "thread": "POSIX main-thread caller", "unsupported": "POSIX main-thread caller",
+                    "blocked": "preblocked SIGALRM"}[mode]
         assert expected in verdict["reason"]
-        assert not (repo.path / RECORD).exists()
+        if old is None:
+            assert not (repo.path / RECORD).exists()
+        else:
+            assert (repo.path / RECORD).read_bytes() == old
 
 
 @pytest.mark.parametrize("existing", [False, True])
@@ -1101,3 +1118,117 @@ print(json.dumps({"refused": True, "handler_restored": True, "entry": entry}))
                             capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads(result.stdout) == {"refused": True, "handler_restored": True, "entry": entry}
+
+
+@pytest.mark.parametrize("edge", ["handle", "selector", "selector-close", "reap"])
+@pytest.mark.parametrize("existing", [False, True])
+def test_actual_spawn_boundary_deadline_kills_and_reaps_git_group(edge, existing, tmp_path):
+    repo = Repo(tmp_path / "repo")
+    if existing:
+        repo.produce_committed()
+    old = (repo.path / RECORD).read_bytes() if existing else None
+    wrapper = repo.path / "fixture-git-bin"
+    wrapper.mkdir()
+    git = shutil.which("git")
+    child_sentinel = repo.path / "unreaped-git-child"
+    launcher = wrapper / "git"
+    launcher.write_text("#!/bin/sh\ncase \" $* \" in\n  *' --version '*)\n"
+                        + "    (sleep 2; printf orphan > " + shlex.quote(str(child_sentinel)) + ") &\n"
+                        + "    sleep 3\n    ;;\nesac\nexec " + shlex.quote(git) + " \"$@\"\n")
+    launcher.chmod(0o755)
+    script = r'''
+import importlib.util, json, os, pathlib, signal, sys, time
+spec = importlib.util.spec_from_file_location("actual_spawn_boundary", pathlib.Path.cwd() / "scripts/maintenance/doc_source_snapshot.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+edge = sys.argv[1]
+children = []
+armed = False
+def prior_handler(signum, frame):
+    raise AssertionError("previous caller alarm executed")
+signal.signal(signal.SIGALRM, prior_handler)
+prior_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGUSR1})
+expected_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+original_popen = module.subprocess.Popen
+def popen(argv, *args, **kwargs):
+    global armed
+    child = original_popen(argv, *args, **kwargs)
+    if "--version" in argv:
+        children.append(child)
+        armed = True
+        if edge == "handle":
+            # Expire the actual one-second alarm while its acquisition mask is
+            # blocked; delivery must occur after handle storage inside cleanup.
+            until = time.monotonic() + 1.1
+            while time.monotonic() < until:
+                pass
+    return child
+module.subprocess.Popen = popen
+original_selector = module.selectors.DefaultSelector
+selected = False
+def selector():
+    global selected
+    target = armed and not selected
+    if target:
+        selected = True
+    if target and edge == "selector":
+        while True:
+            pass
+    value = original_selector()
+    if target and edge in ("selector-close", "reap"):
+        original_close = value.close
+        def close():
+            if edge == "selector-close":
+                while True:
+                    pass
+            original_close()
+        value.close = close
+        # Enter cleanup from a concrete setup error while the alarm is armed.
+        def register(*args, **kwargs):
+            raise OSError("actual selector setup refusal")
+        value.register = register
+    return value
+module.selectors.DefaultSelector = selector
+original_kill = module.os.killpg
+kill_entered = False
+def killpg(*args):
+    global kill_entered
+    if armed and edge == "reap" and not kill_entered:
+        kill_entered = True
+        while True:
+            pass
+    return original_kill(*args)
+module.os.killpg = killpg
+result = module.main(["produce", "--max-seconds", "1"])
+assert result == 1 and children
+for child in children:
+    assert child.returncode is not None
+    try:
+        os.waitpid(child.pid, os.WNOHANG)
+    except ChildProcessError:
+        pass
+    else:
+        raise AssertionError("Git child was not reaped")
+assert signal.getsignal(signal.SIGALRM) is prior_handler
+assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+assert signal.pthread_sigmask(signal.SIG_BLOCK, set()) == expected_mask
+signal.pthread_sigmask(signal.SIG_SETMASK, prior_mask)
+print(json.dumps({"reaped": True, "handler_restored": True, "mask_restored": True}), file=sys.stderr)
+raise SystemExit(result)
+'''
+    env = dict(os.environ, PATH=str(wrapper) + os.pathsep + os.environ["PATH"])
+    refused = subprocess.run([sys.executable, "-B", "-c", script, edge], cwd=repo.path,
+                             env=env, capture_output=True, text=True, timeout=10)
+    assert refused.returncode == 1, refused.stdout + refused.stderr
+    assert len(refused.stdout.splitlines()) == 1
+    verdict = json.loads(refused.stdout)
+    assert verdict["status"] == "unverified"
+    assert verdict["reason"] == "whole verification CPU deadline exceeded"
+    assert json.loads(refused.stderr.splitlines()[-1]) == {"reaped": True, "handler_restored": True, "mask_restored": True}
+    time.sleep(2.1)
+    assert not child_sentinel.exists()
+    if old is None:
+        assert not (repo.path / RECORD).exists()
+    else:
+        assert (repo.path / RECORD).read_bytes() == old
+    assert not list((repo.path / RECORD).parent.glob(".source-snapshot-*"))

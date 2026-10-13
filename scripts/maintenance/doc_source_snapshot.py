@@ -214,10 +214,13 @@ class Budget:
                 self.cpu_depth -= 1
             return
         if (not hasattr(signal, "setitimer") or not hasattr(signal, "ITIMER_REAL")
+                or not hasattr(signal, "pthread_sigmask")
                 or threading.current_thread() is not threading.main_thread()):
             raise Unavailable("hard CPU deadline requires a supported POSIX main-thread caller")
         if any(signal.getitimer(signal.ITIMER_REAL)):
             raise Unavailable("preexisting active CPU timer cannot be replaced")
+        if signal.SIGALRM in signal.pthread_sigmask(signal.SIG_BLOCK, set()):
+            raise Unavailable("preblocked SIGALRM prevents hard CPU deadline")
         previous = signal.getsignal(signal.SIGALRM)
         def expired(_signum, _frame):
             raise Unavailable("whole verification CPU deadline exceeded")
@@ -288,13 +291,23 @@ class Git:
     def command(self, args, *, data: bytes | None = None, allowed=(0,), guarded=True, return_code=False):
         self.budget.remaining()
         argv = ["git"] + (["--no-lazy-fetch", "-c", "core.quotePath=false"] if guarded else []) + list(args)
-        proc = subprocess.Popen(argv, cwd=self.repo, env=self.env, stdin=subprocess.PIPE if data is not None else subprocess.DEVNULL,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
-        sel = selectors.DefaultSelector()
+        proc = None
+        sel = None
         buffers = {"out": bytearray(), "err": bytearray()}
         sent = 0
         completed = False
         try:
+            # A pending alarm must not strand a spawned child between Popen's
+            # return and acquisition of its cleanup handle. Restore precisely
+            # the caller's mask inside the owning try so it can reap on alarm.
+            previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+            try:
+                proc = subprocess.Popen(argv, cwd=self.repo, env=self.env,
+                                        stdin=subprocess.PIPE if data is not None else subprocess.DEVNULL,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+            sel = selectors.DefaultSelector()
             for pipe, label in ((proc.stdout, "out"), (proc.stderr, "err")):
                 os.set_blocking(pipe.fileno(), False)
                 sel.register(pipe, selectors.EVENT_READ, label)
@@ -323,16 +336,29 @@ class Git:
             completed = True
             return (code, bytes(buffers["out"])) if return_code else bytes(buffers["out"])
         finally:
-            sel.close()
-            if not completed:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            proc.wait()
-            for pipe in (proc.stdin, proc.stdout, proc.stderr):
-                if pipe is not None and not pipe.closed:
-                    pipe.close()
+            try:
+                if sel is not None:
+                    sel.close()
+            finally:
+                if proc is not None:
+                    def reap():
+                        if not completed:
+                            try:
+                                os.killpg(proc.pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                        proc.wait()
+                    try:
+                        reap()
+                    except Unavailable:
+                        # The one-shot CPU alarm may arrive during cleanup of
+                        # another rejection. Finish kill/reap before refusing.
+                        reap()
+                        raise
+                    finally:
+                        for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                            if pipe is not None and not pipe.closed:
+                                pipe.close()
 
     def oid(self, value: str):
         if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{" + str(self.width) + r"}", value):
