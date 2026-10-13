@@ -27,7 +27,7 @@ gcp/failure_notifier.py hardcodes Job Failed regardless of the audit outcome.
 ## Non-goals
 
 Change no freshness thresholds, SQL checks, schedules, exit codes or Cloud Run
-execution status. Do not repair gamma_flip data, rewrite historical issues,
+execution status. Do not repair gamma_flip data, rewrite historical issue bodies,
 send manual notifications, or deploy without the normal deployment workflow.
 
 ## Approaches considered
@@ -45,13 +45,21 @@ Credentials to read Cloud Logging evidence scoped to project, region, job and
 the exact execution name. Never classify using a different or latest run.
 Use a bounded query for terminal audit output. Strip ANSI formatting when
 reading the existing terminal table; require an Overall: STALE result and
-extract its stale rows and associated writer-job lines. Preserve the original
+extract its stale rows and associated writer-job lines. Extend terminal output
+with full diagnostic detail lines for stale rows, including last_row_at,
+expected_latest and row_count_recent, so display truncation does not erase the
+finding. Continue supporting the older table output for historical executions.
+Inspect structured errors and all explicit task/attempt identities too; a
+structured crash or ambiguous retry must not become an audit finding.
+Preserve the original
 Cloud Run failure message as execution context. Exit code 1 or job name alone
 is insufficient evidence of an audit finding.
 
 When confirmed, GitHub title and body heading and Discord embed title use
 Freshness Audit Failed. Repeat comments use Additional freshness audit failure.
 The finding section includes table/column, ticker, diagnostic values and writer.
+On a new repeat, PATCH the current grouped issue title to match that event's
+classification before appending its comment; do not edit old bodies or comments.
 For #1365's evidence the message identifies 0/78 populated gamma_flip rows for
 IWM and SPY and strat-engine as the responsible writer. An audit may flag
 missing values or duration regressions, so describe the actual finding instead
@@ -60,13 +68,21 @@ of claiming every finding is old timestamps.
 Crashes, timeouts and failures without conclusive audit evidence retain current
 execution-failure wording. An unavailable evidence lookup must log the cause and
 visibly state that audit classification is unavailable while still delivering
-the original execution failure. Other jobs retain their current notifications.
+the original execution failure. This explicitly includes delayed log ingestion:
+one lookup is the latency/cost contract; unavailable evidence is reported as
+unclassified, never as proof of a crash or a passed audit. No polling or deferred
+reclassification is part of this change. Other jobs retain their current notifications.
 Keep existing labels, grouping by job and close-on-success reconciliation so
 open issues created before this change continue to receive updates and close.
 
 Extend deploy_notifier in gcp/deploy.sh to grant its service account the read-only
 Cloud Logging access required by the query, using the existing fail-visible IAM
-binding pattern. Add classification and rendering tests to the existing notifier
+binding pattern. Provision a dedicated failure-notifier runtime service account;
+do not add Logging viewer access to the shared trading-runner identity. Give the
+notifier only its GitHub PAT/repository and dedicated Discord webhook secrets,
+plus the Run viewer access needed for existing recovery reconciliation. Preserve
+the existing Pub/Sub and scheduler invoking identities and their Run invoker grants.
+Add classification and rendering tests to the existing notifier
 suite, including complete October 10/11-style output, genuine execution errors,
 cross-execution isolation, lookup failure and bounded response handling.
 
