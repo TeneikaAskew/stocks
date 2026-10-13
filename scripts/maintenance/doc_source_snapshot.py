@@ -640,7 +640,7 @@ class Snapshot:
         self.dirty_site()
         current, source = self.git.commit(policy_ref), self.git.commit(source_ref)
         policy = self.policy(current, source, require_source_equal=False)
-        raw, self.body_hash = self.body(source)
+        raw = self.git.blob(source, SITE)
         lines = text(raw).split("\n")
         markers = self.audit.find_markers(lines)
         if len(markers) != 1 or self.audit.check_marker_shape(SITE, lines):
@@ -656,7 +656,7 @@ class Snapshot:
         except Unavailable:
             return False
         code, _ = self.git.command(["merge-base", "--is-ancestor", against, current], allowed=(0, 1), return_code=True)
-        if code or self.git.blob(against, SITE, optional=True) is None or self.body(against)[1] != self.body_hash:
+        if code or self.git.blob(against, SITE, optional=True) is None:
             return False
         registry = self.registry(self.git.tree(current)[REGISTRY]["blob_oid"], self.git.blob(current, REGISTRY))
         documents = frozenset(self.audit.document_set(set(self.git.tree(source)), registry))
@@ -664,6 +664,11 @@ class Snapshot:
         history = text(self.git.command(["log", "--no-ext-diff", "--format=%H%x09%s", "--name-status", "-M",
                                         "--diff-filter=AMDRT", f"{against}..{source}", "--"]))
         if self.audit.drift_commits(history, policy["watch_paths"], documents):
+            return False
+        # Source drift already refuses this conjunction. Normalize complete
+        # bodies only when the original source question could be terminal.
+        self.body_hash = self.body(source)[1]
+        if self.body(against)[1] != self.body_hash:
             return False
         entries, old_entries = self.admitted_manifests(source, against, policy["watch_paths"])
         self.source_hash = self.source_identity(entries, policy)
