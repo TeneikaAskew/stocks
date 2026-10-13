@@ -10,6 +10,303 @@ import pytest
 from gcp import failure_notifier as fn
 
 
+def _freshness_details():
+    return {
+        "job_name": "freshness-watchdog", "execution_name": "freshness-watchdog-nl8lw",
+        "severity": "ERROR", "timestamp": "2026-10-11T23:38:37.872976Z",
+        "message": "Execution freshness-watchdog-nl8lw has failed to complete, 0/1 tasks were a success.",
+        "log_url": "https://example.test/logs", "project_id": "p", "location": "us-east1",
+    }
+
+
+def _freshness_entries():
+    # Actual terminal formatting from the October 11 execution, including ANSI,
+    # truncated diagnostics, separate writer lines and deliberate exit evidence.
+    lines = [
+        "\x1b[1mData freshness audit\x1b[0m — expected close: 2026-10-09",
+        "  market_data_daily            IWM     2026-10-09                    0.0       30  \x1b[32m●\x1b[0m ok",
+        "  strat_features_5m.gamma_flip IWM     0/78 non-NULL (0.0%) o          —        0  \x1b[31m●\x1b[0m stale",
+        "  \x1b[2m    └─ writer-job: strat-engine\x1b[0m",
+        "  strat_features_5m.gamma_flip SPY     0/78 non-NULL (0.0%) o          —        0  \x1b[31m●\x1b[0m stale",
+        "  \x1b[2m    └─ writer-job: strat-engine\x1b[0m",
+        "  \x1b[1mOverall:\x1b[0m \x1b[31mSTALE\x1b[0m",
+        "Container called exit(1).",
+    ]
+    return [{
+        "resource": {"type": "cloud_run_job", "labels": {
+            "job_name": "freshness-watchdog", "location": "us-east1", "project_id": "p"}},
+        "labels": {"run.googleapis.com/execution_name": "freshness-watchdog-nl8lw",
+                   "run.googleapis.com/task_attempt": "0", "run.googleapis.com/task_index": "0"},
+        "timestamp": f"2026-10-11T23:38:29.{i:06d}Z", "textPayload": line,
+    } for i, line in enumerate(lines)]
+
+
+def _mock_freshness_lookup(monkeypatch, payload):
+    token = MagicMock(return_value="test-token")
+    monkeypatch.setattr(fn, "_freshness_token", token)
+    response = MagicMock()
+    response.iter_content.return_value = [json.dumps(payload).encode()]
+    post = MagicMock(return_value=response)
+    monkeypatch.setattr(fn.requests, "post", post)
+    return token, post, response
+
+
+def test_freshness_evidence_classifies_real_output_and_bounds_io(monkeypatch):
+    token, post, response = _mock_freshness_lookup(
+        monkeypatch, {"entries": list(reversed(_freshness_entries()))})
+    details = fn.enrich_freshness_failure(_freshness_details())
+    assert details["audit_failed"] is True
+    assert "strat_features_5m.gamma_flip" in details["audit_findings"]
+    assert "IWM" in details["audit_findings"] and "SPY" in details["audit_findings"]
+    assert "0/78 non-NULL" in details["audit_findings"]
+    assert "writer-job: strat-engine" in details["audit_findings"]
+    assert "\x1b" not in details["audit_findings"]
+    assert details["message"] == _freshness_details()["message"]
+    token.assert_called_once()
+    post.assert_called_once()
+    request = post.call_args.kwargs
+    assert request["timeout"] == 5 and request["stream"] is True
+    assert request["json"]["pageSize"] == 200
+    assert 'resource.labels.project_id="p"' in request["json"]["filter"]
+    assert 'resource.labels.location="us-east1"' in request["json"]["filter"]
+    assert 'timestamp>="2026-10-11T21:38:37.872976+00:00"' in request["json"]["filter"]
+    assert 'run.googleapis.com/execution_name"="freshness-watchdog-nl8lw"' in request["json"]["filter"]
+    response.close.assert_called_once()
+
+
+@pytest.mark.parametrize("change", [
+    "ok", "missing_summary", "missing_rows", "crash", "timeout", "wrong_execution",
+    "wrong_project", "wrong_region", "wrong_job", "next_page", "too_many",
+    "bad_entries", "multiple_attempts", "wrong_exit", "no_exit", "multiple_tasks",
+])
+def test_freshness_ambiguous_or_execution_failure_evidence_stays_unclassified(monkeypatch, change):
+    entries = _freshness_entries()
+    payload = {"entries": entries}
+    if change == "ok":
+        entries[-2]["textPayload"] = "Overall: OK"
+    elif change == "missing_summary":
+        del entries[-2]
+    elif change == "missing_rows":
+        entries[:] = entries[-2:]
+    elif change in ("crash", "timeout"):
+        entries[-1]["textPayload"] = "Traceback (most recent call last):" if change == "crash" else "Task timed out."
+    elif change.startswith("wrong_") and change != "wrong_exit":
+        for entry in entries:
+            if change == "wrong_execution":
+                entry["labels"]["run.googleapis.com/execution_name"] = "freshness-watchdog-other"
+            else:
+                key = {"wrong_project": "project_id", "wrong_region": "location", "wrong_job": "job_name"}[change]
+                entry["resource"]["labels"][key] = "other"
+    elif change == "next_page":
+        payload["nextPageToken"] = "more"
+    elif change == "too_many":
+        entries *= 26
+    elif change == "bad_entries":
+        payload["entries"] = "not a list"
+    elif change in ("multiple_attempts", "multiple_tasks"):
+        key = "run.googleapis.com/task_attempt" if change == "multiple_attempts" else "run.googleapis.com/task_index"
+        entries[-1]["labels"][key] = "1"
+    elif change == "wrong_exit":
+        entries[-1]["textPayload"] = "Container called exit(2)."
+    elif change == "no_exit":
+        entries.pop()
+    _mock_freshness_lookup(monkeypatch, payload)
+    details = fn.enrich_freshness_failure(_freshness_details())
+    assert not details.get("audit_failed")
+    assert details["audit_classification_unavailable"]
+
+
+@pytest.mark.parametrize("failure", ["denied", "auth", "oversized", "malformed"])
+def test_freshness_lookup_failure_is_visible_and_preserves_alert(monkeypatch, caplog, failure):
+    token, post, response = _mock_freshness_lookup(monkeypatch, {"entries": _freshness_entries()})
+    if failure == "denied":
+        response.raise_for_status.side_effect = fn.requests.HTTPError("403 forbidden")
+    elif failure == "auth":
+        token.side_effect = RuntimeError("authentication unavailable")
+    elif failure == "oversized":
+        response.iter_content.return_value = [b"x" * (256 * 1024 + 1)]
+    else:
+        response.iter_content.return_value = [b"not JSON"]
+    details = fn.enrich_freshness_failure(_freshness_details())
+    assert not details.get("audit_failed")
+    assert details["audit_classification_unavailable"]
+    assert details["message"] == _freshness_details()["message"]
+    assert "classification unavailable" in caplog.text
+    assert "test-token" not in caplog.text
+
+
+def test_freshness_other_jobs_and_nonterminal_errors_do_not_query(monkeypatch):
+    token, post, _ = _mock_freshness_lookup(monkeypatch, {})
+    details = _freshness_details()
+    details["job_name"] = "other-job"
+    assert fn.enrich_freshness_failure(details) == details
+    details["job_name"] = "freshness-watchdog"
+    details["message"] = "Traceback: RuntimeError"
+    assert fn.enrich_freshness_failure(details) == details
+    token.assert_not_called()
+    post.assert_not_called()
+
+
+def test_freshness_io_deadline_is_bounded(monkeypatch):
+    executor = MagicMock()
+    executor.submit.return_value.result.side_effect = TimeoutError()
+    monkeypatch.setattr(fn, "_FRESHNESS_IO", executor)
+    with pytest.raises(TimeoutError):
+        fn._bounded_freshness_io(lambda: None)
+    executor.submit.return_value.result.assert_called_once_with(timeout=5)
+    executor.submit.return_value.cancel.assert_called_once()
+
+
+def test_freshness_token_refresh_uses_bounded_managed_adc(monkeypatch):
+    import google.auth
+    import google.auth.transport.requests
+    creds = MagicMock(token="test-token")
+    default = MagicMock(return_value=(creds, "p"))
+    request = MagicMock()
+    request.return_value.status = 200
+    monkeypatch.setattr(google.auth, "default", default)
+    monkeypatch.setattr(google.auth.transport.requests, "Request", MagicMock(return_value=request))
+    assert fn._freshness_token() == "test-token"
+    creds.refresh.assert_called_once()
+    bounded_request = creds.refresh.call_args.args[0]
+    bounded_request(url="https://example.test/token", timeout=120)
+    assert request.call_args.kwargs["timeout"] <= 5
+
+
+def test_freshness_audit_copy_in_github_and_discord(monkeypatch):
+    _mock_freshness_lookup(monkeypatch, {"entries": _freshness_entries()})
+    details = fn.enrich_freshness_failure(_freshness_details())
+    embed = fn.build_discord_payload(details)["embeds"][0]
+    assert embed["title"] == "Freshness Audit Failed: freshness-watchdog"
+    findings = next(f for f in embed["fields"] if f["name"] == "Findings")["value"]
+    assert "IWM" in findings and "SPY" in findings and "strat-engine" in findings
+    assert "0/78 non-NULL" in findings
+    body = fn.format_issue_body(details)
+    assert body.startswith("## Freshness Audit Failed")
+    assert "### Findings" in body and "strat-engine" in body
+    assert "### Execution status" in body
+    assert details["message"] in body
+
+
+def test_freshness_findings_do_not_inherit_writer_from_an_unrelated_warning(monkeypatch):
+    entries = _freshness_entries()
+    entries[4]["textPayload"] = "  other_table SPY 2026-10-09 20 30 ● warn"
+    entries[5]["textPayload"] = "  └─ writer-job: unrelated-writer"
+    _mock_freshness_lookup(monkeypatch, {"entries": entries})
+    details = fn.enrich_freshness_failure(_freshness_details())
+    assert details["audit_failed"] is True
+    assert "unrelated-writer" not in details["audit_findings"]
+
+
+@pytest.mark.parametrize("payload_type", ["json", "proto", "retry"])
+def test_freshness_structured_error_or_retry_prevents_audit_classification(monkeypatch, payload_type):
+    entries = _freshness_entries()
+    entry = json.loads(json.dumps(entries[-1]))
+    entry.pop("textPayload")
+    entry["timestamp"] = "2026-10-11T23:38:30Z"
+    if payload_type == "json":
+        entry["jsonPayload"] = {"message": "Traceback (most recent call last): RuntimeError during shutdown"}
+        entry["severity"] = "ERROR"
+    elif payload_type == "proto":
+        entry["protoPayload"] = {"status": {"message": "Task timed out"}}
+    else:
+        entry["jsonPayload"] = {"message": "Starting retry"}
+        entry["labels"]["run.googleapis.com/task_attempt"] = "1"
+    entries.append(entry)
+    _mock_freshness_lookup(monkeypatch, {"entries": entries})
+    details = fn.enrich_freshness_failure(_freshness_details())
+    assert not details.get("audit_failed")
+
+
+def test_freshness_rfc3339_precision_does_not_reorder_terminal_evidence(monkeypatch):
+    entries = _freshness_entries()
+    entries[-2]["timestamp"] = "2026-10-11T23:38:29Z"
+    entries[-1]["timestamp"] = "2026-10-11T23:38:29.1Z"
+    _mock_freshness_lookup(monkeypatch, {"entries": entries})
+    assert fn.enrich_freshness_failure(_freshness_details())["audit_failed"] is True
+
+
+def test_freshness_unavailable_evidence_logs_safe_cause(monkeypatch, caplog):
+    _mock_freshness_lookup(monkeypatch, {"entries": _freshness_entries(), "nextPageToken": "more"})
+    details = fn.enrich_freshness_failure(_freshness_details())
+    assert "Incomplete Logging evidence" in details["audit_classification_unavailable"]
+    assert "Incomplete Logging evidence" in caplog.text
+
+
+def test_freshness_full_diagnostics_reach_alert(monkeypatch):
+    from scripts.audit_data_freshness import FreshnessReport, FreshnessRow, format_terminal
+    diagnostic = "missing dates 2026-10-05, 2026-10-06; bad rows 173"
+    expected = "all sessions present; count 200"
+    report = FreshnessReport(checked_at="x", expected_market_close="y", rows=[
+        FreshnessRow(table="example", ticker="IWM", last_row_at=diagnostic,
+                     expected_latest=expected, lag_hours=None, expected_max_hours=0,
+                     row_count_recent=27, status="stale", writer_job="writer"),
+    ])
+    entries = _freshness_entries()[:1]
+    entries[0]["textPayload"] = format_terminal(report)
+    entries.append(_freshness_entries()[-1])
+    _mock_freshness_lookup(monkeypatch, {"entries": entries})
+    details = fn.enrich_freshness_failure(_freshness_details())
+    assert diagnostic in details["audit_findings"]
+    assert expected in details["audit_findings"]
+    assert '"row_count_recent": 27' in details["audit_findings"]
+
+
+def test_freshness_unavailable_classification_copy_retains_execution_failure(monkeypatch):
+    _mock_freshness_lookup(monkeypatch, {})
+    details = fn.enrich_freshness_failure(_freshness_details())
+    body = fn.format_issue_body(details)
+    assert body.startswith("## GCP Cloud Run Job Failed")
+    assert "Audit classification unavailable" in body
+    embed = fn.build_discord_payload(details)["embeds"][0]
+    assert embed["title"] == "GCP job failed: freshness-watchdog"
+    assert any("Audit classification unavailable" in f["value"] for f in embed["fields"])
+
+
+@pytest.mark.parametrize("existing", [None, 42])
+def test_freshness_github_title_and_repeat_comment_update_keep_grouping(monkeypatch, existing):
+    details = _freshness_details() | {"audit_failed": True, "audit_findings": "gamma_flip IWM 0/78; writer-job: strat-engine"}
+    monkeypatch.setattr(fn.time, "sleep", lambda _: None)
+    monkeypatch.setattr(fn, "find_existing_issue", lambda *args: existing)
+    monkeypatch.setattr(fn, "find_all_open_issues", lambda *args: [])
+    create = MagicMock(return_value=99)
+    comment = MagicMock()
+    patch_title = MagicMock()
+    monkeypatch.setattr(fn, "create_issue", create)
+    monkeypatch.setattr(fn, "add_issue_comment", comment)
+    monkeypatch.setattr(fn.requests, "patch", patch_title)
+    fn.create_or_update_github_issue("owner/repo", "ghp_test", details)
+    if existing:
+        assert comment.call_args.args[2].startswith("### Additional freshness audit failure")
+        assert patch_title.call_args.kwargs["json"]["title"] == "Freshness Audit Failed: freshness-watchdog"
+    else:
+        assert create.call_args.args[1] == "Freshness Audit Failed: freshness-watchdog"
+        assert create.call_args.args[3] == ["gcp-job-failure", "freshness-watchdog", "automated"]
+
+
+@pytest.mark.parametrize("lookup_fails", [False, True])
+def test_freshness_handler_delivers_enriched_or_unclassified_alert(monkeypatch, lookup_fails):
+    _, _, response = _mock_freshness_lookup(monkeypatch, {"entries": _freshness_entries()})
+    if lookup_fails:
+        response.raise_for_status.side_effect = fn.requests.HTTPError("403")
+    monkeypatch.setenv("GCP_PROJECT_ID", "p")
+    monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://discord.test/webhook")
+    monkeypatch.setenv("GITHUB_PAT", "ghp_test")
+    monkeypatch.setenv("GITHUB_REPO", "owner/repo")
+    discord = MagicMock()
+    github = MagicMock()
+    monkeypatch.setattr(fn, "send_discord", discord)
+    monkeypatch.setattr(fn, "create_or_update_github_issue", github)
+    details = _freshness_details()
+    entry = {"resource": {"labels": {"job_name": details["job_name"], "location": "us-east1"}},
+             "labels": {"run.googleapis.com/execution_name": details["execution_name"]},
+             "timestamp": details["timestamp"],
+             "protoPayload": {"status": {"message": details["message"]}}}
+    assert fn.handle_notification(_make_envelope(entry))[0] == 204
+    assert bool(github.call_args.args[2].get("audit_failed")) is not lookup_fails
+    assert discord.call_count == github.call_count == 1
+
+
 # ── Pub/Sub envelope parsing ────────────────────────────────────────────────
 def _make_envelope(log_entry: dict) -> bytes:
     data = base64.b64encode(json.dumps(log_entry).encode()).decode()
