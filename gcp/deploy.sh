@@ -1089,7 +1089,7 @@ _build_secret_flag() {
 case "${1:-}" in
     setup|setup-notifier-secrets|setup-pg-dump-iam|migrate|build|build-research|\
     backfill|registry-cleanup|retire-legacy-images|pin-images|pin-floating|\
-    cloudbuild-triggers|p7b-classifier|schedulers|pg-dump|audit-infra-drift|\
+    cloudbuild-triggers|p7b-classifier|schedulers|pg-dump|audit-infra-drift|notifier|\
     help|"") _NEEDS_DEPLOY_CREDS=0 ;;
     *) _NEEDS_DEPLOY_CREDS=1 ;;
 esac

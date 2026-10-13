@@ -71,7 +71,7 @@ def test_notifier_identity_and_secrets_are_isolated_from_trading_jobs():
     assert "DB_SECRET_FLAG" not in body
 
 
-@pytest.mark.parametrize("failure", ["none", "account", "secret", "logging"])
+@pytest.mark.parametrize("failure", ["none", "account", "secret", "run", "logging"])
 def test_notifier_deployment_setup_is_fail_visible_and_precedes_revision(tmp_path, failure):
     calls = tmp_path / "gcloud-calls"
     script = r'''
@@ -90,6 +90,7 @@ gcloud() {
     'iam service-accounts describe '*) return 1 ;;
     'iam service-accounts create '*) if [ FAILURE = account ]; then return 1; fi ;;
     'secrets add-iam-policy-binding discord-webhook-gcp '*) if [ FAILURE = secret ]; then return 1; fi ;;
+    'projects add-iam-policy-binding '*roles/run.viewer*) if [ FAILURE = run ]; then return 1; fi ;;
     'projects add-iam-policy-binding '*roles/logging.viewer*) if [ FAILURE = logging ]; then return 1; fi ;;
     'run services describe '*) printf '%s\n' 'https://notifier.example.test' ;;
     'projects describe '*) printf '%s\n' '123456' ;;
