@@ -45,7 +45,19 @@ def persist_estimate_group(group, *, executor=None):
     for capture, uri, records in group:
         captures.append(av.capture_record(capture, uri, len(records)))
         rows.extend({**r, "raw_uri": uri} for r in records)
-    executor(av.capture_sql(captures), {"captures": av.canonical(captures)}, timeout_s=2)
+    acknowledged=executor("""WITH requested AS(
+      SELECT * FROM jsonb_populate_recordset(NULL::av_catalyst_source_captures,CAST(:captures AS jsonb))),
+      inserted AS(INSERT INTO av_catalyst_source_captures SELECT * FROM requested
+        ON CONFLICT(capture_id) DO NOTHING RETURNING *)
+      SELECT c.capture_id FROM(SELECT * FROM inserted UNION ALL
+        SELECT * FROM av_catalyst_source_captures WHERE capture_id=ANY(CAST(:ids AS uuid[]))) c
+      JOIN requested r ON r.capture_id=c.capture_id
+        AND c.function=r.function AND c.ticker IS NOT DISTINCT FROM r.ticker
+        AND c.source_retrieved_at=r.source_retrieved_at AND c.raw_uri=r.raw_uri
+        AND c.raw_sha256=r.raw_sha256 AND c.metadata=r.metadata
+        AND c.validation_status=r.validation_status AND c.normalized_count=r.normalized_count""",
+      {"captures":av.canonical(captures),"ids":[c.observation_id for c,_,_ in group]},read=True,timeout_s=2)
+    if len(acknowledged)!=len(group):raise av.SourceError('estimate_capture_identity_conflict_or_ack_unknown')
     # Source capture ACK precedes the actual knowledge clock.
     known = datetime.now(timezone.utc)
     rows = [{**r, "known_at": known.isoformat()} for r in rows]
@@ -56,12 +68,42 @@ def persist_estimate_group(group, *, executor=None):
         SELECT fetch_id,known_at FROM inserted UNION ALL SELECT fetch_id,known_at
         FROM av_earnings_estimates_observations WHERE fetch_id=ANY(CAST(:ids AS uuid[]))
       ) all_observations GROUP BY fetch_id""", {"rows": av.canonical(rows),"ids":[c.observation_id for c,_,_ in group]},read=True,timeout_s=2)
-    clocks={str(r['fetch_id']):r['known_at'].isoformat() for r in observed}
-    for capture, uri, records in group:
-        receipts.append({"ticker": capture.parameters["symbol"], "fetch_id": capture.observation_id,
-                         "status": "validated" if records else "validated_empty",
-                         "source_retrieved_at": capture.retrieved_at.isoformat(), "known_at": clocks.get(capture.observation_id,known.isoformat()),
-                         "raw_sha256": capture.body_sha256, "raw_uri": uri, "observation_count": len(records)})
+    # All complete source transactions have actually acknowledged. Their
+    # proposed observation clocks are preserved; availability gets a separate
+    # immutable post-source-ACK publication (including native valid empty).
+    source_ack=datetime.now(timezone.utc)
+    requested=[]
+    for capture,uri,records in group:
+        requested.append({'fetch_id':capture.observation_id,'ticker':capture.parameters['symbol'],
+          'validation_status':'validated' if records else 'validated_empty','observation_count':len(records),
+          'source_commit_acknowledged_at':source_ack.isoformat(),
+          'raw_sha256':capture.body_sha256,'raw_uri':uri})
+    published=executor("""WITH requested AS(
+      SELECT * FROM jsonb_to_recordset(CAST(:publications AS jsonb)) r(fetch_id uuid,ticker text,
+        validation_status text,observation_count integer,source_commit_acknowledged_at timestamptz,
+        raw_sha256 text,raw_uri text)),
+      matched AS(SELECT r.* FROM requested r JOIN av_catalyst_source_captures c ON c.capture_id=r.fetch_id
+        AND c.function='EARNINGS_ESTIMATES' AND c.ticker=r.ticker AND c.validation_status=r.validation_status
+        AND c.normalized_count=r.observation_count AND c.raw_sha256=r.raw_sha256 AND c.raw_uri=r.raw_uri
+        AND c.source_retrieved_at<=r.source_commit_acknowledged_at
+        WHERE (SELECT count(*) FROM av_earnings_estimates_observations o WHERE o.fetch_id=r.fetch_id)=r.observation_count),
+      inserted AS(INSERT INTO av_estimate_receipt_publications
+        SELECT fetch_id,ticker,validation_status,observation_count,source_commit_acknowledged_at FROM matched
+        ON CONFLICT(fetch_id) DO NOTHING RETURNING *)
+      SELECT p.fetch_id,p.source_commit_acknowledged_at FROM(SELECT * FROM inserted UNION ALL
+        SELECT * FROM av_estimate_receipt_publications WHERE fetch_id=ANY(CAST(:ids AS uuid[]))) p
+      JOIN matched r ON r.fetch_id=p.fetch_id AND r.ticker=p.ticker
+        AND r.validation_status=p.validation_status AND r.observation_count=p.observation_count
+        AND p.source_commit_acknowledged_at<=:source_ack""",
+      {'publications':av.canonical(requested),'ids':[c.observation_id for c,_,_ in group],'source_ack':source_ack},
+      read=True,timeout_s=2)
+    clocks={str(r['fetch_id']):r['source_commit_acknowledged_at'] for r in published}
+    if len(clocks)!=len(group):raise av.SourceError('estimate_receipt_conflict_or_ack_unknown')
+    for capture,uri,records in group:
+        receipts.append({'ticker':capture.parameters['symbol'],'fetch_id':capture.observation_id,
+          'status':'validated' if records else 'validated_empty',
+          'source_retrieved_at':av.clock_string(capture.retrieved_at),'known_at':av.clock_string(clocks[capture.observation_id]),
+          'raw_sha256':capture.body_sha256,'raw_uri':uri,'observation_count':len(records)})
     return receipts
 
 
@@ -140,12 +182,12 @@ def main(argv=None):
         if not args.dry_run:
             av.finish_work("EARNINGS_ESTIMATES", "daily", outcomes,owner=run.execution_name)
             manifest = {"schema_version": "av_catalyst_run/v1", "pipeline_scope": "estimates_daily",
-              "scope_hash": av.digest(universe), "universe_count": len(universe), "configured_universe": universe,
-              "selected_scope_hash": av.digest(selected), "selected_count": len(selected), "pending_count": run.pending,
+              "scope_hash": av.manifest_digest(av.symbol_scope(universe)), "universe_count": len(universe), "configured_universe": universe,
+              "selected_scope_hash": av.manifest_digest(av.symbol_scope(selected)), "selected_count": len(selected), "pending_count": run.pending,
               "source_window_start": run.started_at.isoformat(), "source_window_end": datetime.now(timezone.utc).isoformat(),
               "complete_through": datetime.now(timezone.utc).isoformat() if not run.failed and not run.pending else None,
               "coverage_complete": not run.failed and not run.pending, "captured_receipts": receipts,
-              "source_revision_ids": [r["fetch_id"] for r in receipts], "source_digest": av.digest(receipts),
+              "source_revision_ids": [r["fetch_id"] for r in receipts], "source_digest": av.manifest_digest(sorted(receipts,key=lambda r:(r["ticker"],r["fetch_id"]))), "source_digest_kind":"canonical_source_facts/v1",
               "predecessor_execution_name": None, **av.code_identity()}
             manifest = av.publish_manifest(run, manifest)
     except Exception as exc:

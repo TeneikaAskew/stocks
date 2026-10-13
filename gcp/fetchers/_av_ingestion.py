@@ -13,6 +13,7 @@ import json
 import math
 import multiprocessing as mp
 import os
+import re
 import subprocess
 import threading
 import time
@@ -49,6 +50,82 @@ def canonical(value) -> str:
 
 def digest(value) -> str:
     return hashlib.sha256(canonical(value).encode()).hexdigest()
+
+
+MAX_MANIFEST_BYTES = 8 * 1024 * 1024
+MAX_TERMINAL_BYTES = 64 * 1024
+
+
+def manifest_bytes(value) -> bytes:
+    """Strict scope/proof JSON; financial serialization remains separate."""
+    def validate(item):
+        if item is None or isinstance(item,bool):return
+        if isinstance(item,int):
+            if not -(2**63)<=item<2**63:raise SourceError('canonical_integer_range')
+            return
+        if isinstance(item,str):
+            if any(0xD800<=ord(c)<=0xDFFF for c in item):raise SourceError('canonical_unicode')
+            return
+        if isinstance(item,list):
+            for member in item:validate(member)
+            return
+        if isinstance(item,dict) and all(isinstance(k,str) for k in item):
+            for key,member in item.items():validate(key);validate(member)
+            return
+        raise SourceError('canonical_projection_type_unavailable')
+    validate(value)
+    return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=True,allow_nan=False).encode('utf-8')
+
+
+def manifest_digest(value):
+    return hashlib.sha256(manifest_bytes(value)).hexdigest()
+
+
+def parse_manifest_json(raw):
+    if not isinstance(raw,(str,bytes)) or len(raw.encode('utf-8') if isinstance(raw,str) else raw)>MAX_MANIFEST_BYTES:
+        raise SourceError('manifest_json_byte_limit')
+    def unique(pairs):
+        result={}
+        for key,value in pairs:
+            if key in result:raise SourceError('canonical_duplicate_key')
+            result[key]=value
+        return result
+    try:result=json.loads(raw,object_pairs_hook=unique)
+    except (ValueError,UnicodeError):raise SourceError('manifest_json_unavailable') from None
+    manifest_bytes(result)
+    return result
+
+
+def clock_string(value):
+    try:
+        clock=datetime.fromisoformat(value.replace('Z','+00:00')) if isinstance(value,str) else value
+        if not isinstance(clock,datetime) or clock.tzinfo is None or clock.utcoffset() is None:
+            raise ValueError()
+        return clock.astimezone(UTC).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+    except (ValueError,TypeError,OverflowError):raise SourceError('proof_clock_unavailable') from None
+
+
+def symbol_scope(values):
+    if not isinstance(values,(list,tuple)) or any(not isinstance(v,str) for v in values):
+        raise SourceError('canonical_symbol_scope')
+    symbols=sorted({v.strip().upper() for v in values})
+    if any(not re.fullmatch(r'[A-Z0-9][A-Z0-9.-]{0,9}',v) for v in symbols):
+        raise SourceError('canonical_symbol_scope')
+    return symbols
+
+
+def event_scope(values):
+    result=[]
+    for item in values:
+        if set(item)!={'ticker','event_reported_date'}:raise SourceError('canonical_event_keys')
+        day=item['event_reported_date']
+        if isinstance(day,date) and not isinstance(day,datetime):day=day.isoformat()
+        if not isinstance(day,str) or not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}',day):
+            raise SourceError('canonical_event_date')
+        try:date.fromisoformat(day)
+        except ValueError:raise SourceError('canonical_event_date') from None
+        result.append({'ticker':symbol_scope([item['ticker']])[0],'event_reported_date':day})
+    return sorted(result,key=lambda item:(item['ticker'],item['event_reported_date']))
 
 
 def safe_parameters(parameters: dict) -> dict:
@@ -516,6 +593,10 @@ def write_identity_group(table, rows, *, captures=(), final=False, outcomes=(), 
 
 def publish_manifest(run, manifest, *, manifest_id=None, timeout_s=2):
     manifest_id = manifest_id or str(uuid.uuid4())
+    body=dict(manifest)
+    if run.groups and 'run_groups' not in body:body['run_groups']=run.groups
+    encoded=manifest_bytes(body)
+    if len(encoded)>MAX_MANIFEST_BYTES:raise SourceError('manifest_byte_limit')
     acknowledged=isolated_sql("""WITH inserted AS(
       INSERT INTO av_catalyst_source_manifests(manifest_id,job_name,variant,execution_name,manifest)
       VALUES(CAST(:id AS uuid),:job,:variant,:execution,CAST(:manifest AS jsonb)) ON CONFLICT DO NOTHING RETURNING manifest_id)
@@ -523,7 +604,7 @@ def publish_manifest(run, manifest, *, manifest_id=None, timeout_s=2):
       WHERE manifest_id=CAST(:id AS uuid) AND job_name=:job AND variant=:variant
         AND execution_name=:execution AND manifest=CAST(:manifest AS jsonb) LIMIT 1""",
       {"id": manifest_id, "job": run.job_name, "variant": run.mode, "execution": run.execution_name,
-       "manifest": canonical(manifest)}, read=True,timeout_s=timeout_s)
+       "manifest": encoded.decode("utf-8")}, read=True,timeout_s=timeout_s)
     if len(acknowledged)!=1 or str(acknowledged[0]['manifest_id'])!=manifest_id:
         raise SourceError('manifest_identity_conflict_or_ack_unavailable')
     # This clock is captured only after the manifest/source transaction ACK.
@@ -538,7 +619,12 @@ def publish_manifest(run, manifest, *, manifest_id=None, timeout_s=2):
         raise SourceError('manifest_publication_ack_unavailable')
     # Retry cannot replace the original availability clock with its new proposal.
     actual_known=rows[0]['known_at']
-    return {**manifest, "source_manifest_id": manifest_id, "source_manifest_known_at": actual_known.isoformat()}
+    # A retry must not adopt a future/naive pre-existing publication proposal.
+    clock_string(actual_known)
+    if actual_known>known:raise SourceError('manifest_publication_clock_unavailable')
+    return {**body, "source_manifest_id": manifest_id, "source_manifest_known_at": actual_known.isoformat(),
+            "manifest_sha256":hashlib.sha256(encoded).hexdigest(),"manifest_bytes":len(encoded),
+            "manifest_schema_version":body.get("schema_version")}
 
 
 @dataclass
@@ -578,8 +664,51 @@ class Run:
 
     def terminal(self, *, dry_run=False, extra=None):
         import logging
-        note = {**self.note(), **(extra or {})}
-        logging.getLogger(__name__).info("%s", canonical(note))
+        base=self.note()
+        if extra and extra.get('source_manifest_id'):
+            # Complete proof/group arrays are retained in the immutable SQL
+            # body; the terminal log and TEXT note use identical references.
+            base.pop('groups',None)
+            base.update(groups_count=len(self.groups),details_omitted_count=len(self.groups))
+            allowed={'schema_version','pipeline_scope','source_manifest_id','source_manifest_known_at',
+              'manifest_sha256','manifest_bytes','manifest_schema_version','code_revision','image_digest','pipeline_version',
+              'scope_hash','source_universe_scope_hash','selected_scope_hash','selected_count','universe_count',
+              'requested_count','verified_count','excluded_count','pending_count','coverage_complete',
+              'event_pending_count','source_universe_unknown_count','raw_refresh_pending','raw_refresh_status',
+              'event_cohort_complete','full_current_cohort_status','source_scope_quality','source_window_start',
+              'source_window_end','complete_through','history_source_manifest_id','predecessor_execution_name',
+              'source_function','coverage_scope','native_csv_rows','source_all_coverage','business_subset_coverage'}
+            note={**base,**{k:v for k,v in extra.items() if k in allowed}}
+            reasons={}
+            for group in self.groups:
+                reason=group.get('error_class')
+                if reason:reasons[str(reason)[:128]]=reasons.get(str(reason)[:128],0)+1
+            note['error_summary']=[{'reason_class':key,'count':reasons[key]} for key in sorted(reasons)[:16]]
+            note['error_classes_omitted']=max(0,len(reasons)-16)
+        else:
+            note={**base,**(extra or {})}
+        encoded=canonical(note)
+        if len(encoded.encode('utf-8'))>MAX_TERMINAL_BYTES:
+            omitted=0
+            for key in ('metrics','error_summary'):
+                value=note.pop(key,None)
+                if value:omitted+=len(value)
+            note['optional_details_omitted_count']=omitted
+            encoded=canonical(note)
+        if len(encoded.encode('utf-8'))>MAX_TERMINAL_BYTES:
+            self.failed+=1
+            note={'schema_version':'av_catalyst_run/v1','job_name':self.job_name,'mode':self.mode,
+              'execution_name':self.execution_name,'terminal_status':self.status,
+              'error_class':'terminal_byte_limit','groups_count':len(self.groups),'details_omitted_count':len(self.groups)}
+            # Failure notes retain exact ordinary identities; an oversized
+            # required identity is explicitly replaced by its digest, never
+            # truncated into a purported successfully certified identity.
+            for key in ('job_name','mode','execution_name'):
+                if len(note[key].encode('utf-8'))>512:
+                    note[key+'_sha256']=hashlib.sha256(note.pop(key).encode('utf-8')).hexdigest()
+                    note[key+'_omitted']=True
+            encoded=canonical(note)
+        logging.getLogger(__name__).info("%s", encoded)
         if not dry_run:
             try:
                 finished=datetime.now(UTC)
@@ -589,7 +718,7 @@ class Run:
                   {'job':self.job_name,'variant':self.mode,'execution':self.execution_name,'started':self.started_at,
                    'finished':finished,'duration':(finished-self.started_at).total_seconds(),'status':self.status,
                    'total':self.expected,'processed':self.processed,'failed':self.failed+self.pending,
-                   'rows':self.rows_written,'note':canonical(note)},timeout_s=8)
+                   'rows':self.rows_written,'note':encoded},timeout_s=8)
                 delivered=True
             except SourceError:
                 delivered=False

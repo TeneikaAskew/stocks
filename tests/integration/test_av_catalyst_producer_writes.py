@@ -221,3 +221,125 @@ def test_history_event_window_is_exactly_thirty_inclusive_dates(catalyst_db,monk
     assert manifest['expected_events']==[{'ticker':'FIRST','event_reported_date':start.isoformat()},
                                          {'ticker':'LAST','event_reported_date':end.isoformat()}]
     assert manifest['scope_hash']==av.digest(manifest['expected_events'])
+
+
+@pytest.mark.parametrize('empty',[False,True])
+def test_estimate_receipt_availability_follows_complete_source_ack(catalyst_db,empty):
+    from datetime import datetime,timezone
+    import time
+    c=catalyst_db;ack=[]
+    base=executor(c)
+    def delayed(sql,params=None,**kw):
+        result=base(sql,params,**kw)
+        if 'av_earnings_estimates_observations' in sql:
+            time.sleep(.03)
+            ack.append(datetime.now(timezone.utc))
+        return result
+    rows=[] if empty else [{'date':'2026-12-31','horizon':'fiscal quarter','eps_estimate_average':'2.05'}]
+    capture=av.Capture.from_bytes('EARNINGS_ESTIMATES',{'symbol':'AAPL'},av.canonical({'symbol':'AAPL','estimates':rows}).encode())
+    records=estimates.parse_estimates(capture)
+    first=estimates.persist_estimate_group([(capture,'gs://test/post-ack',records)],executor=delayed)[0]
+    assert datetime.fromisoformat(first['known_at'])>=ack[0]
+    second=estimates.persist_estimate_group([(capture,'gs://test/post-ack',records)],executor=delayed)[0]
+    assert second['known_at']==first['known_at']
+    receipt=c.execute(text('SELECT source_commit_acknowledged_at FROM av_estimate_receipt_publications')).scalar()
+    assert receipt==datetime.fromisoformat(first['known_at'])
+    if not empty:
+        observed=c.execute(text('SELECT known_at FROM av_earnings_estimates_observations')).scalar()
+        assert observed<receipt
+
+
+def test_estimate_reader_requires_source_ack_and_matching_run_publication(catalyst_db,monkeypatch):
+    from datetime import datetime,timezone
+    import pandas as pd
+    from lib import earnings_history as readers
+    c=catalyst_db
+    execute=_prepare_estimates_cli(c,monkeypatch)
+    monkeypatch.setattr(av,'isolated_sql',execute)
+    def read(sql,params,**kw):
+        return pd.DataFrame(execute(sql,params,read=True))
+    monkeypatch.setattr(readers,'query_to_dataframe_strict',read)
+    native={'symbol':'AAPL','estimates':[{'date':'2026-12-31','horizon':'fiscal quarter','eps_estimate_average':'2.05'}]}
+    capture=av.Capture.from_bytes('EARNINGS_ESTIMATES',{'symbol':'AAPL'},av.canonical(native).encode())
+    receipt=estimates.persist_estimate_group([(capture,'gs://test/reader',estimates.parse_estimates(capture))],executor=execute)[0]
+    proposed=c.execute(text('SELECT known_at FROM av_earnings_estimates_observations')).scalar()
+    source_ack=datetime.fromisoformat(receipt['known_at'])
+    between=proposed+(source_ack-proposed)/2
+    assert readers.read_estimates_asof('AAPL',between)['status']=='unavailable'
+    assert readers.read_estimates_asof('AAPL',datetime.now(timezone.utc))['status']=='unavailable'
+    run=av.Run('fetch-av-earnings-estimates','daily',expected=1,processed=1,rows_written=1)
+    manifest=av.publish_manifest(run,{'schema_version':'av_catalyst_run/v1','pipeline_scope':'estimates_daily',
+        'scope_hash':av.manifest_digest(['AAPL']),'selected_scope_hash':av.manifest_digest(['AAPL']),
+        'configured_universe':['AAPL'],'universe_count':1,'selected_count':1,'pending_count':0,
+        'coverage_complete':True,'captured_receipts':[receipt]})
+    assert readers.read_estimates_asof('AAPL',datetime.now(timezone.utc))['status']=='unavailable'
+    assert run.terminal(extra=manifest)==0
+    result=readers.read_estimates_asof('AAPL',datetime.now(timezone.utc))
+    assert result['status']=='ok'
+    assert result['records'][0]['known_at']>=source_ack
+    assert result['records'][0]['observation_known_at']==proposed
+    assert result['records'][0]['source_manifest_id']==manifest['source_manifest_id']
+
+
+def test_full_manifest_has_bounded_terminal_reference(catalyst_db,monkeypatch,caplog):
+    import logging
+    c=catalyst_db
+    execute=_prepare_estimates_cli(c,monkeypatch)
+    monkeypatch.setattr(av,'isolated_sql',execute)
+    universe=[f'S{i:04d}' for i in range(1239)]
+    payload={'schema_version':'av_catalyst_run/v1','configured_universe':universe,'universe_count':1239,
+        'scope_hash':av.manifest_digest(universe),'coverage_complete':False,'complete_through':None,
+        'source_universe_unknown_count':1239,'full_current_cohort_status':'dependency_pending',
+        'independent_expected_cohort_proof':None,
+        'source_scope_proofs':[{'ticker':ticker,'state':'unknown','reason':'no_capture','capture_id':None,
+            'source_retrieved_at':None,'function':None,'validation_status':None,'normalized_count':None,
+            'raw_uri':None,'raw_sha256':None,'quarter_observations':[],
+            'required_window_status':'not_assessed','required_window_reason':'required_source_cutoff_missing',
+            'vendor_covered_through':None,'full_scope_reason':'independent_expected_cohort_proof_missing'} for ticker in universe]}
+    run=av.Run('fetch-earnings-history','weekly',expected=1239,processed=100,pending=1139)
+    published=av.publish_manifest(run,payload)
+    with caplog.at_level(logging.INFO):assert run.terminal(extra=published)==1
+    stored=c.execute(text('SELECT manifest FROM av_catalyst_source_manifests WHERE manifest_id=CAST(:id AS uuid)'),
+        {'id':published['source_manifest_id']}).scalar()
+    note_raw=c.execute(text('SELECT note FROM job_runs')).scalar()
+    note=json.loads(note_raw)
+    assert len(av.manifest_bytes(stored))>256*1024
+    assert len(note_raw.encode())<=64*1024
+    assert len(stored['source_scope_proofs'])==1239 and stored['configured_universe']==universe
+    assert note['manifest_sha256']==av.manifest_digest(stored)
+    assert note['manifest_bytes']==len(av.manifest_bytes(stored))
+    assert 'configured_universe' not in note and 'source_scope_proofs' not in note
+    assert any(record.message==note_raw for record in caplog.records)
+
+
+@pytest.mark.parametrize('empty',[False,True])
+def test_estimate_receipt_uncertain_ack_preserves_identity_and_requires_reconciliation(catalyst_db,empty):
+    c=catalyst_db;execute=executor(c)
+    rows=[] if empty else [{'date':'2026-12-31','horizon':'fiscal year','native_revision':'unchanged'}]
+    capture=av.Capture.from_bytes('EARNINGS_ESTIMATES',{'symbol':'AAPL'},av.canonical({'symbol':'AAPL','estimates':rows}).encode())
+    group=[(capture,'gs://test/reconcile',estimates.parse_estimates(capture))]
+    def lost_ack(sql,params=None,**kw):
+        answer=execute(sql,params,**kw)
+        if 'INSERT INTO av_estimate_receipt_publications' in sql:raise av.SourceError('database_outcome_unavailable:deadline')
+        return answer
+    with pytest.raises(av.SourceError,match='database_outcome_unavailable'):
+        estimates.persist_estimate_group(group,executor=lost_ack)
+    clock=c.execute(text('SELECT source_commit_acknowledged_at FROM av_estimate_receipt_publications')).scalar()
+    assert c.execute(text('SELECT count(*) FROM av_earnings_estimates_observations')).scalar()==len(rows)
+    reconciled=estimates.persist_estimate_group(group,executor=execute)[0]
+    assert reconciled['known_at']==av.clock_string(clock)
+    assert reconciled['status']==('validated_empty' if empty else 'validated')
+    with pytest.raises(av.SourceError,match='estimate_capture_identity_conflict'):
+        estimates.persist_estimate_group([(capture,'gs://different/identity',group[0][2])],executor=execute)
+
+
+def test_future_estimate_receipt_publication_is_not_replay_eligible(catalyst_db):
+    from datetime import datetime,timedelta,timezone
+    c=catalyst_db;execute=executor(c)
+    capture=av.Capture.from_bytes('EARNINGS_ESTIMATES',{'symbol':'AAPL'},b'{"symbol":"AAPL","estimates":[]}')
+    execute("INSERT INTO av_catalyst_source_captures SELECT * FROM jsonb_populate_recordset(NULL::av_catalyst_source_captures,CAST(:captures AS jsonb))",
+        {'captures':av.canonical([av.capture_record(capture,'gs://test/future',0)])})
+    execute("INSERT INTO av_estimate_receipt_publications VALUES(CAST(:id AS uuid),'AAPL','validated_empty',0,:clock)",
+        {'id':capture.observation_id,'clock':datetime.now(timezone.utc)+timedelta(days=1)})
+    with pytest.raises(av.SourceError,match='estimate_receipt_conflict_or_ack_unknown'):
+        estimates.persist_estimate_group([(capture,'gs://test/future',[])],executor=execute)

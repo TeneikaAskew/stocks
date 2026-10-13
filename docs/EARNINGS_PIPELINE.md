@@ -10,7 +10,7 @@ AV `EARNINGS` populates the latest `earnings_history` cache. Permanent `earnings
 
 Yahoo timing has its own immutable `earnings_timing_observations` identity, UTC retrieval/knowledge clocks, installed-library version, safe parameters, complete timestamp/index/returned values and content hash. A Yahoo timing correction can change the effective timing while AV EPS bytes remain unchanged. Disabled or unavailable Yahoo enrichment is explicit; an observation missing the applicable quarter does not erase previous evidence. Yahoo requests are counted separately from AV quota calls.
 
-`EARNINGS_ESTIMATES` stores every native payload field permanently in `av_earnings_estimates_observations`. Fetch identity plus ticker, fiscal date and fiscal-quarter/year horizon is idempotent; later retrievals append vintages. `known_at` follows acknowledged capture persistence. Retry receipts use the original nonempty observation clock. A validated empty endpoint response has a captured receipt, no fabricated fiscal row. Raw expiry cannot erase permanent earnings, estimates, timing or reaction inputs.
+`EARNINGS_ESTIMATES` stores every native payload field permanently in `av_earnings_estimates_observations`. Fetch identity plus ticker, fiscal date and fiscal-quarter/year horizon is idempotent; later retrievals append vintages. Observation `known_at` is the immutable proposed insertion clock. The separate `av_estimate_receipt_publications.source_commit_acknowledged_at` records the actual ACK of complete capture and observation transactions. Empty and nonempty retry receipts retain that original durable receipt clock. A validated empty response has a capture/publication and no fabricated fiscal row. The reader additionally requires matching run-manifest publication and terminal linkage; old observations without that publication are unavailable. Raw expiry cannot erase permanent earnings, estimates, timing or reaction inputs.
 
 Original bytes for `EARNINGS`, `EARNINGS_ESTIMATES`, `NEWS_SENTIMENT`, `EARNINGS_CALENDAR` and admitted insider captures use immutable `av/raw/<FUNCTION>/<UTC date>/<capture UUID>.json.gz` objects. Gzip envelopes contain reversible original bytes, SHA256, safe parameters, UTC retrieval and code identity. Credential parameters and request URLs are excluded. GCS creation uses generation-zero preconditions; same-identity retry must match exact bytes. Missing bucket or failed/uncertain upload cannot create provenance-complete SQL rows. Dry-run performs no GCS or SQL writes.
 
@@ -81,9 +81,9 @@ The immutable `av-cost-estimate-v3` source-body illustration is6GB watchlist new
 
 Related records: [feature catalog](product/02-FEATURE-CATALOG.md#feat-catalyst-001), [traceability](product/12-PR-ISSUE-TRACEABILITY.md#feat-catalyst-001--earnings--catalysts-19-open), [DATA pipeline](product/infrastructure/05-g-DATA_PIPELINE.md), [approved specification](superpowers/specs/2026-10-12-feat-catalyst-001-av-catalysts.md). Earlier May2026 broad market-backfill commands and cron observations are historical context, not an admitted recovery command for this candidate.
 
-## Literal producer source choices (candidate code, not supplemental approval)
+## Literal producer source choices (candidate implementation)
 
-These declarations document the existing CAT implementation choices under immutable spec1419. The root-owned supplemental producer-receipts specification must be separately approved/merged; this appendix does not label itself approved or establish deployed availability. Source references below are the actual code in PR1430, and schema/producer rollout remains a prerequisite.
+The [complementary producer-receipts specification](superpowers/specs/2026-10-12-feat-catalyst-001-av-producer-receipts.md) merged at76783d56; immutable spec1419 remains unchanged. PR1430 is implementing both contracts, with acceptance and deployment pending. Source references below describe the candidate implementation; actual schema/producer rollout remains a prerequisite.
 
 ```sql
 CREATE TABLE IF NOT EXISTS av_catalyst_source_captures (
@@ -132,11 +132,29 @@ CREATE TABLE IF NOT EXISTS av_earnings_estimates_observations (
 );
 ```
 
-Source: `gcp/schema.sql` additive CAT storage block. Append-only guards cover captures, manifests, publications and estimate observations. Actual estimates source writer is `gcp/fetchers/fetch_av_earnings_estimates.py::main`; native adapter `parse_estimates`, grouped writer `persist_estimate_group`; manifest publication is `gcp/fetchers/_av_ingestion.py::publish_manifest`. Producer job_name is `fetch-av-earnings-estimates`, variant `daily`, pipeline_scope `estimates_daily`.
+```sql
+CREATE TABLE IF NOT EXISTS av_estimate_receipt_publications (
+    fetch_id UUID PRIMARY KEY REFERENCES av_catalyst_source_captures(capture_id),
+    ticker TEXT NOT NULL,
+    validation_status TEXT NOT NULL CHECK(validation_status IN ('validated','validated_empty')),
+    observation_count INTEGER NOT NULL CHECK(observation_count>=0),
+    source_commit_acknowledged_at TIMESTAMPTZ NOT NULL,
+    CHECK((validation_status='validated_empty' AND observation_count=0)
+       OR (validation_status='validated' AND observation_count>0))
+);
+CREATE INDEX IF NOT EXISTS av_estimate_receipt_known_idx
+    ON av_estimate_receipt_publications(ticker,source_commit_acknowledged_at DESC);
+```
+
+Source: `gcp/schema.sql` additive CAT storage block. Append-only guards cover captures, manifests, publications and estimate observations/receipt publications. Actual estimates source writer is `gcp/fetchers/fetch_av_earnings_estimates.py::main`; native adapter `parse_estimates`, grouped writer `persist_estimate_group`; manifest publication is `gcp/fetchers/_av_ingestion.py::publish_manifest`. Producer job_name is `fetch-av-earnings-estimates`, variant `daily`, pipeline_scope `estimates_daily`.
 
 Full estimate denominator: `configured_universe`, `universe_count`, `scope_hash` = SHA256(canonical sorted configured symbols). Selection: `selected_count`≤100, `selected_scope_hash`, `pending_count` separate from full universe. Windows: `source_window_start`, `source_window_end`, `complete_through`, `coverage_complete`. Sources: `captured_receipts`, `source_revision_ids` (fetch UUIDs), `source_digest`, `predecessor_execution_name`, code/image/pipeline identity. Each selected receipt contains literal `ticker`, `fetch_id`, `status` (`validated` or `validated_empty`), `source_retrieved_at`, `known_at`, `raw_sha256`, `raw_uri`, `observation_count`. Valid empty has no fiscal observation; selected100 cannot certify configured1239. Failed or unacknowledged groups cannot contribute complete receipt coverage.
 
-Publication uses two supervised acknowledged SQL boundaries. A duplicate manifest identity must match stored job/variant/execution/full JSON exactly; a conflict or uncertain acknowledgement is refused. The second boundary returns the actual stored publication.known_at, including retries. Terminal note repeats `source_manifest_id`, `source_manifest_known_at`, full canonical manifest keys plus ordinary expected/attempted/processed/failed/pending/rows/group/task-attempt accounting. Join permanent manifests/publications; missing or future publication is ineligible. Source capture has no known_at field. Receipt `known_at` follows capture acknowledgement, and nonempty retries retain their original fiscal-observation clock.
+Publication uses two supervised acknowledged SQL boundaries. A duplicate manifest identity must match stored job/variant/execution/full JSON exactly; a conflict or uncertain acknowledgement is refused. The second boundary returns the actual stored publication.known_at, including retries; a future stored proposal is refused. The full strict canonical manifest is capped at8MiB before SQL. Terminal log and TEXT note contain identical <=64KiB references/counts, including source_manifest_id/source_manifest_known_at/manifest_sha256/manifest_bytes/manifest_schema_version. Complete configured/proof/event/receipt/group arrays stay in SQL and are retrieved by exact ID with digest verification. Optional detail is omitted explicitly before failing required projection; required overflow produces a <=4KiB controlled failure, never successful truncated scope. Source capture has no known_at field. Receipt known_at aliases the separate post-source-ACK receipt publication clock, including empty responses. A lost ACK may leave committed evidence; no certified receipt is returned until explicit identity-preserving reconciliation receives an ACK.
+
+`av-catalyst-canonical/v1` uses sorted JSON keys, prescribed array order, comma/colon separators without spaces, ensure_ascii=true, UTF8 without BOM/newline and signed64-bit integers; scope/proof projections reject floats, duplicate keys and unsupported values. Symbols are trimmed uppercase ASCII, sorted/deduplicated; event multiplicity is retained. Proof clocks use awareUTC six-microsecond Z form. Known-answer bytes/hashes are committed in tests/fixtures/av_catalyst_scope_vectors.json. Independent consumer-parser integration remains pending; a producer helper test does not certify those consumers.
+
+The receipt adds one bounded statement per <=10-response group: estimates now uses <=30 core plus6 other SQL round trips. Planning200seconds source/pace/archive/parse+36×2seconds SQL+30setup=302seconds below450 admission and1800 retained task, about$0.1812 per30-invocation month at$0.000020/second;450 cap is$0.27/month. These are assumptions, not measured production costs. Receipt publication adds <=3000rows/month (illustrative0.6MB before indexes); full manifests add at most8MiB/run, about416MiB/month at26history+26reaction runs, before SQL/index amplification and other producers.
 
 Calendar source writer is `scripts/fetch_earnings_calendar.py::fetch_alphavantage_earnings`, job `fetch-earnings-calendar`, native variant/scope daily or weekly. Its AV-only manifest stores `source_function=EARNINGS_CALENDAR`, `coverage_scope=av_raw_horizon`, native symbol scope/hash/count, native_csv_rows and requested/verified/excluded/pending native validation counts, min/max native reportDate, source retrieval/digest/raw location, `captured_receipts`, and complete_through/coverage_complete only when every native required row validates. Downstream business filtering never changes native counts. NonAV union remains `source_all_coverage=unavailable`; `business_subset_coverage=not_assessed`.
 

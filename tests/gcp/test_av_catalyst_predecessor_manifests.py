@@ -51,3 +51,83 @@ def test_daily_manifest_links_full_assessed_scope_and_acknowledged_sources(monke
     assert result['history_source_manifest_id']==manifest['source_manifest_id']
     assert result['scope_hash']==manifest['scope_hash'] and result['pending_count']==1
     assert not result['coverage_complete']
+
+
+def test_manifest_oversize_refuses_before_publication(monkeypatch):
+    called=[]
+    monkeypatch.setattr(av,'isolated_sql',lambda *a,**kw:called.append(a))
+    with pytest.raises(av.SourceError,match='manifest_byte_limit'):
+        av.publish_manifest(av.Run('fetch-earnings-history','weekly'),{'proof':'x'*(8*1024*1024)})
+    assert not called
+
+
+def test_full_manifest_has_bounded_terminal_reference(monkeypatch,caplog):
+    import json,logging
+    from datetime import datetime,timezone
+    calls=[]
+    def execute(sql,params=None,read=False,**kw):
+        calls.append((sql,params))
+        if 'WITH inserted' in sql:return [{'manifest_id':params['id']}]
+        if 'WITH published' in sql:return [{'known_at':params['known']}]
+        return 1
+    monkeypatch.setattr(av,'isolated_sql',execute)
+    payload={'schema_version':'av_catalyst_run/v1','configured_universe':[f'S{i:04d}' for i in range(1239)],
+             'source_scope_proofs':[{'ticker':f'S{i:04d}','state':'unknown','reason':'no_capture','capture_id':None,
+                                    'raw_uri':None,'raw_sha256':None,'quarter_observations':[]} for i in range(1239)],
+             'universe_count':1239,'scope_hash':'a'*64,'coverage_complete':False,'source_universe_unknown_count':1239}
+    run=av.Run('fetch-earnings-history','weekly',pending=1139,processed=100)
+    published=av.publish_manifest(run,payload)
+    with caplog.at_level(logging.INFO):assert run.terminal(extra=published)==1
+    stored=json.loads(next(p['note'] for sql,p in calls if 'INSERT INTO job_runs' in sql))
+    assert len(av.canonical(stored).encode())<=64*1024
+    assert 'source_scope_proofs' not in stored and 'configured_universe' not in stored
+    assert stored['manifest_sha256']==av.digest(payload)
+    assert stored['manifest_bytes']==len(av.canonical(payload).encode())
+    assert stored['source_manifest_id']==published['source_manifest_id']
+    assert any(record.message==av.canonical(stored) for record in caplog.records)
+    sql_manifest=json.loads(next(p['manifest'] for sql,p in calls if 'WITH inserted' in sql))
+    assert len(sql_manifest['source_scope_proofs'])==1239
+
+
+def test_canonical_scope_vectors_are_byte_exact_and_typed():
+    import json
+    from pathlib import Path
+    for vector in json.loads(Path('tests/fixtures/av_catalyst_scope_vectors.json').read_text()):
+        assert av.manifest_bytes(vector['input']).hex()==vector['canonical_utf8_hex']
+        assert av.manifest_digest(vector['input'])==vector['sha256']
+    for value in [float('nan'),float('inf'),1.0,2**63,{1:'wrong-key'}]:
+        with pytest.raises(av.SourceError):av.manifest_bytes(value)
+    with pytest.raises(av.SourceError):av.parse_manifest_json('{"x":1,"x":2}')
+
+
+def test_optional_terminal_detail_is_omitted_before_failing_required_projection(monkeypatch):
+    calls=[]
+    monkeypatch.setattr(av,'isolated_sql',lambda sql,params,**kw:calls.append(params) or 1)
+    run=av.Run('fetch-av-earnings-estimates','daily',processed=1,rows_written=1,
+               metrics={'oversized_optional':'x'*(70*1024)})
+    assert run.terminal(extra={'source_manifest_id':'00000000-0000-0000-0000-000000000001',
+        'manifest_sha256':'a'*64,'manifest_bytes':10})==0
+    import json
+    note=json.loads(calls[0]['note'])
+    assert note['source_manifest_id'] and note['optional_details_omitted_count']>0
+    assert len(calls[0]['note'].encode())<=64*1024
+
+
+def test_required_terminal_overflow_fails_with_small_controlled_note(monkeypatch):
+    calls=[]
+    monkeypatch.setattr(av,'isolated_sql',lambda sql,params,**kw:calls.append(params) or 1)
+    run=av.Run('fetch-earnings-history','weekly',execution_name='x'*(70*1024))
+    assert run.terminal(extra={'source_manifest_id':'00000000-0000-0000-0000-000000000001'})==1
+    assert len(calls[0]['note'].encode())<=4*1024
+
+
+def test_future_publication_clock_cannot_certify_replayed_manifest(monkeypatch):
+    def execute(sql,params,**kw):
+        if 'WITH inserted' in sql:return [{'manifest_id':params['id']}]
+        return [{'known_at':datetime.now(timezone.utc)+timedelta(days=1)}]
+    monkeypatch.setattr(av,'isolated_sql',execute)
+    with pytest.raises(av.SourceError,match='publication_clock'):
+        av.publish_manifest(av.Run('fetch-earnings-history','daily'),{})
+    assert av.clock_string('2026-10-12T08:00:00-04:00')=='2026-10-12T12:00:00.000000Z'
+    with pytest.raises(av.SourceError):av.clock_string('2026-10-12T12:00:00')
+    assert av.symbol_scope(['msft',' AAPL ','AAPL'])==['AAPL','MSFT']

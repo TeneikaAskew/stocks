@@ -1,0 +1,40 @@
+[
+  {
+    "kind": "configured_symbols",
+    "input": [
+      "AAPL",
+      "MSFT"
+    ],
+    "canonical_utf8_hex": "5b224141504c222c224d534654225d",
+    "sha256": "a1c55462c19f91d1b39e57f5337c6639db0783d72b4671bff74dcc9eabd7c958"
+  },
+  {
+    "kind": "selected_symbols",
+    "input": [
+      "AAPL"
+    ],
+    "canonical_utf8_hex": "5b224141504c225d",
+    "sha256": "fcbb30b4ee6baa4d3f82a772009dc5186286d0a0b9be62a6c897abb4e08623e6"
+  },
+  {
+    "kind": "expected_events",
+    "input": [
+      {
+        "ticker": "AAPL",
+        "event_reported_date": "2026-10-12"
+      }
+    ],
+    "canonical_utf8_hex": "5b7b226576656e745f7265706f727465645f64617465223a22323032362d31302d3132222c227469636b6572223a224141504c227d5d",
+    "sha256": "ddd0602285b5841b551d2182c3455d4ce5adbfb9499926d3251b15f8620ec8a2"
+  },
+  {
+    "kind": "escaping",
+    "input": {
+      "text": "caf\u00e9",
+      "missing": null,
+      "count": 0
+    },
+    "canonical_utf8_hex": "7b22636f756e74223a302c226d697373696e67223a6e756c6c2c2274657874223a226361665c7530306539227d",
+    "sha256": "a23dd3fa95608fd09c89e36d31944ace9e5e32a42e35530922a336561f5c5a5c"
+  }
+]

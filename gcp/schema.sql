@@ -1892,6 +1892,18 @@ CREATE TABLE IF NOT EXISTS av_earnings_estimates_observations (
 );
 CREATE INDEX IF NOT EXISTS av_estimates_asof_idx
     ON av_earnings_estimates_observations(ticker,fiscal_date_ending,horizon,known_at DESC);
+CREATE TABLE IF NOT EXISTS av_estimate_receipt_publications (
+    fetch_id UUID PRIMARY KEY REFERENCES av_catalyst_source_captures(capture_id),
+    ticker TEXT NOT NULL,
+    validation_status TEXT NOT NULL CHECK(validation_status IN ('validated','validated_empty')),
+    observation_count INTEGER NOT NULL CHECK(observation_count>=0),
+    source_commit_acknowledged_at TIMESTAMPTZ NOT NULL,
+    CHECK ((validation_status='validated_empty' AND observation_count=0)
+        OR (validation_status='validated' AND observation_count>0))
+);
+CREATE INDEX IF NOT EXISTS av_estimate_receipt_known_idx
+    ON av_estimate_receipt_publications(ticker,source_commit_acknowledged_at DESC);
+
 CREATE TABLE IF NOT EXISTS earnings_reaction_input_artifacts (
     artifact_sha256 CHAR(64) PRIMARY KEY,
     captured_at TIMESTAMPTZ NOT NULL,
@@ -2033,7 +2045,7 @@ END;
 $$;
 DO $$ DECLARE n TEXT; BEGIN
   FOREACH n IN ARRAY ARRAY['av_catalyst_source_captures','av_catalyst_source_manifests',
-    'av_catalyst_manifest_publications','av_earnings_estimates_observations','earnings_reaction_input_artifacts'] LOOP
+    'av_catalyst_manifest_publications','av_earnings_estimates_observations','av_estimate_receipt_publications','earnings_reaction_input_artifacts'] LOOP
     EXECUTE format('DROP TRIGGER IF EXISTS av_evidence_immutable ON %I',n);
     EXECUTE format('CREATE TRIGGER av_evidence_immutable BEFORE UPDATE OR DELETE ON %I FOR EACH ROW EXECUTE FUNCTION av_catalyst_append_only()',n);
   END LOOP;
