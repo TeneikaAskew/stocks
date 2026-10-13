@@ -536,6 +536,29 @@ def add_issue_comment(repo: str, issue_number: int, body: str, token: str) -> No
     resp.raise_for_status()
 
 
+def _github_findings(value: str) -> str:
+    """Keep complete finding groups within GitHub's channel limit."""
+    groups = []
+    for line in value.splitlines():
+        if line.startswith(("└─ writer-job:", "└─ details:")) and groups:
+            groups[-1] += "\n" + line
+        else:
+            groups.append(line)
+    kept = []
+    size = 0
+    # Leave room for the original error, identity, links and repeat-comment prefix.
+    # UTF-8 bytes are a conservative bound for GitHub's character allowance.
+    for group in groups:
+        added = len(group.encode("utf-8")) + 1
+        if size + added <= 45000:
+            kept.append(group)
+            size += added
+    omitted = len(groups) - len(kept)
+    if omitted:
+        kept.append(f"[{omitted} findings omitted to fit GitHub; view execution logs for complete diagnostics.]")
+    return "\n".join(kept)
+
+
 def format_issue_body(details: dict[str, Any]) -> str:
     """Render a parsed log entry as the markdown body of a GitHub issue.
 
@@ -546,7 +569,7 @@ def format_issue_body(details: dict[str, Any]) -> str:
     heading = "Freshness Audit Failed" if details.get("audit_failed") else "GCP Cloud Run Job Failed"
     findings = ""
     if details.get("audit_failed"):
-        findings = f"### Findings\n```\n{details['audit_findings']}\n```\n\n"
+        findings = f"### Findings\n```\n{_github_findings(details['audit_findings'])}\n```\n\n"
     elif details.get("audit_classification_unavailable"):
         findings = f"**Audit classification unavailable:** {details['audit_classification_unavailable']}\n\n"
     error_heading = "Execution status" if details.get("audit_failed") else "Error"

@@ -1353,3 +1353,20 @@ def test_watchdog_discord_outage_reserves_github_delivery_time(monkeypatch):
     assert len(delivered)==1 and delivered[0]['audit_failed']
     assert clock[0]<=55
     assert fn._NOTIFICATION_DEADLINE.get() is None
+
+
+@pytest.mark.parametrize('giant_first',[False,True])
+def test_github_oversized_findings_preserve_whole_rows_and_report_omissions(giant_first):
+    rows=[f'table_{i} SPY stale\n└─ writer-job: writer_{i}\n└─ details: '+('診断'*1000) for i in range(40)]
+    if giant_first: rows.insert(0,'giant IWM stale\n└─ details: '+('x'*70000))
+    details=_freshness_details() | {'audit_failed':True,'audit_findings':'\n'.join(rows)}
+    body=fn.format_issue_body(details)
+    assert len(body.encode('utf-8'))<60000
+    assert 'findings omitted' in body
+    assert '[View execution logs in Cloud Console]' in body
+    assert 'Execution status' in body
+    assert rows[0 if not giant_first else 1] in body
+    for row in rows:
+        if row.splitlines()[0] in body:
+            assert row in body, 'retained findings must include their writer and full diagnostic'
+    assert len(('### Additional failure (from race-created #100000000000, now closed)\n\n'+body))<65536
