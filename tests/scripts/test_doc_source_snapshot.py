@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
+import importlib.util
 import json
 import os
 import shlex
@@ -778,3 +780,80 @@ def test_actual_policy_batch_checks_superseding_candidate(tmp_path):
     assert refused.returncode != 0
     assert "superseded" in json.loads(refused.stdout)["reason"]
     assert not (repo.path / RECORD).exists()
+
+
+def normalization_oracle():
+    spec = importlib.util.spec_from_file_location("_test_source_body_protocol", ROOT / MODULE)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    previous = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        spec.loader.exec_module(module)
+        audit = module.trusted_module("_test_source_body_original_audit", AUDIT)
+    finally:
+        sys.dont_write_bytecode = previous
+    snapshot = module.Snapshot.__new__(module.Snapshot)
+    snapshot.audit = audit
+    return snapshot, audit
+
+
+@pytest.mark.parametrize("shape", ["plain", "heading-code", "heading-html", "comment", "fence",
+                                   "span", "quote", "setext", "extra-prose", "owner-markup",
+                                   "duplicate", "late-marker", "crlf", "bom"])
+def test_complete_body_normalization_equals_original_parser_at_visibility_boundaries(shape):
+    snapshot, audit = normalization_oracle()
+    marker = "**Last reviewed:** " + DAY + " · **Depth:** verified · **Against:** `12345678` · **Owner:** Source tests"
+    prefix = "# Plain title\n\n" + marker + "\n\n## Body\n"
+    if shape == "heading-code":
+        prefix = prefix.replace("# Plain title", "# `title`")
+    elif shape == "heading-html":
+        prefix = prefix.replace("# Plain title", "# <span>title</span>")
+    elif shape in ("comment", "fence", "span"):
+        opener, closer = {"comment": ("<!--\n", "-->\n"), "fence": ("```markdown\n", "```\n"), "span": ("`\n", "`\n")}[shape]
+        prefix = opener + prefix + closer
+    elif shape == "quote":
+        prefix = "\n".join("> " + line for line in prefix.split("\n"))
+    elif shape == "setext":
+        prefix = prefix.replace("# Plain title", "Plain title\n===========")
+    elif shape == "extra-prose":
+        prefix = prefix.replace(marker, marker + " · **Trust status:** preserve every word")
+    elif shape == "owner-markup":
+        prefix = prefix.replace("Source tests", "[Source tests](https://example.invalid)")
+    elif shape == "duplicate":
+        prefix = prefix.replace("\n\n## Body", "\n" + marker + "\n\n## Body")
+    elif shape == "late-marker":
+        prefix = prefix.replace("\n\n" + marker, "\n" * 41 + marker)
+    elif shape == "crlf":
+        prefix = prefix.replace("\n", "\r\n")
+    elif shape == "bom":
+        prefix = "\ufeff" + prefix
+    # Later source/progress/metadata and unmatched suffix openers stay in full.
+    suffix = "backend source; frontend progress 17%; café\n```python\nVALUE = 2\n```\n<div>\n" + marker + "\n</div>\n`unclosed suffix\n"
+    text = prefix + suffix
+    expected = audit._without_marker(text)
+    assert snapshot.normalized_body(text) == expected
+    changed = text.replace("progress 17%", "progress 18%")
+    assert snapshot.normalized_body(changed) == audit._without_marker(changed)
+    assert snapshot.normalized_body(changed) != expected
+
+
+def test_actual_full_current_site_producer_hash_matches_complete_original_normalizer(tmp_path):
+    _, audit = normalization_oracle()
+    raw = (ROOT / SITE).read_bytes()
+    expected = hashlib.sha256(audit._without_marker(raw.decode("utf-8")).encode("utf-8")).hexdigest()
+    repo = Repo(tmp_path / "repo")
+    repo.git("checkout", "-q", "main")
+    repo.write(SITE, raw)
+    repo.base = repo.commit("docs: complete actual current SITE body oracle input")
+    repo.git("update-ref", "refs/remotes/origin/main", repo.base)
+    repo.git("checkout", "-q", BRANCH)
+    repo.git("reset", "--hard", repo.base)
+    repo.write(MODULE, (ROOT / MODULE).read_bytes())
+    repo.write(PLAN, (ROOT / PLAN).read_text().replace("pr: 1470", "pr: 7"))
+    repo.commit("feat: exact bootstrap against complete actual SITE body")
+    accepted = repo.cli("produce")
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    verdict = json.loads(accepted.stdout)
+    assert verdict["document_body_sha256"] == expected
+    assert verdict["counted_bytes"] >= len(raw) * 2

@@ -27,6 +27,13 @@ MODULE = "scripts/maintenance/doc_source_snapshot.py"
 MAX_SECONDS = 5.0
 MAX_BYTES = 8388608
 MAX_ENTRIES = 20000
+PLAIN_HEADING = re.compile(r"# [A-Za-z0-9 _()/\-]+")
+PLAIN_SECTION = re.compile(r"#{2,6} [A-Za-z0-9 _()/\-]+")
+PLAIN_MARKER = re.compile(
+    r"\*\*Last reviewed:\*\* (?:unknown|\d{4}-\d{2}-\d{2}) · "
+    r"\*\*Depth:\*\* (?:verified|scanned) · \*\*Against:\*\* `[0-9a-f]{7,40}`"
+    r"(?: · \*\*Last scanned:\*\* \d{4}-\d{2}-\d{2})? · "
+    r"\*\*Owner:\*\* [A-Za-z0-9_@. /(),:\-]+")
 INITIAL_FILES = frozenset((MODULE, "scripts/maintenance/docs_audit.py", "scripts/gate/spec_gate.py",
                           "tests/scripts/test_doc_source_snapshot.py", "tests/scripts/test_docs_audit.py",
                           "tests/scripts/test_spec_gate.py"))
@@ -536,10 +543,34 @@ class Snapshot:
         raw = self.git.blob(ref, SITE)
         oid = self.git.tree(ref)[SITE]["blob_oid"]
         if oid not in self.body_hashes:
-            normalized = self.audit._without_marker(text(raw)).encode("utf-8", "strict")
+            normalized = self.normalized_body(text(raw)).encode("utf-8", "strict")
             self.body_hashes[oid] = hashlib.sha256(normalized).hexdigest()
         self.budget.remaining()
         return raw, self.body_hashes[oid]
+
+    def normalized_body(self, value: str) -> str:
+        """Reuse the existing normalizer only across a self-contained prefix.
+
+        A plain ATX H1, closed canonical marker and plain next section contain
+        no fence/comment/HTML/frontmatter/span opener. The next section closes
+        the original provenance window; suffix bytes cannot change that prefix.
+        Complex headings/markers use the original complete-body parser.
+        """
+        lines = value.split("\n")
+        if PLAIN_HEADING.fullmatch(lines[0]):
+            limit = min(40, len(lines))
+            i = 1
+            while i < limit and lines[i] == "":
+                i += 1
+            if i < limit and PLAIN_MARKER.fullmatch(lines[i]):
+                j = i + 1
+                while j < limit and lines[j] == "":
+                    j += 1
+                if j < limit and PLAIN_SECTION.fullmatch(lines[j]):
+                    prefix = self.audit._without_marker("\n".join(lines[:j + 1]))
+                    # The whole suffix participates, including its exact newlines.
+                    return prefix + ("\n" + "\n".join(lines[j + 1:]) if j + 1 < len(lines) else "")
+        return self.audit._without_marker(value)
 
     def source_identity(self, entries, policy):
         return digest({"object_format": self.git.object_format,
