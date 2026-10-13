@@ -563,13 +563,12 @@ def fetch_earnings_history_for_tickers(tickers,*,as_of=None,max_quarters=100):
       r.payload->>'report_time' AS report_time,r.payload->>'yahoo_report_time' AS yahoo_report_time,
       r.revision_id,COALESCE(proof.known_at,r.known_at) AS known_at,
       CASE WHEN proof.capture_id IS NOT NULL THEN 'source_verified' ELSE CASE WHEN r.availability_quality='source_verified' THEN 'source_provenance_unavailable' ELSE r.availability_quality END END AS availability_quality,
-      COALESCE(proof.yahoo_timing_observation_id,r.yahoo_timing_observation_id) AS yahoo_timing_observation_id,
-      t.payload AS yahoo_timing_payload FROM ranked r
+      COALESCE(proof.yahoo_timing_observation_id,r.yahoo_timing_observation_id) AS yahoo_timing_observation_id
+      FROM ranked r
       LEFT JOIN LATERAL(SELECT o.* FROM earnings_revision_observations o
         JOIN av_catalyst_source_captures c ON c.capture_id=o.capture_id AND c.validation_status='validated' AND c.function='EARNINGS' AND c.ticker=r.ticker
         WHERE o.revision_id=r.revision_id AND o.known_at<=:cutoff AND c.source_retrieved_at<=:cutoff
         ORDER BY o.known_at DESC,o.capture_id DESC LIMIT 1) proof ON true
-      LEFT JOIN earnings_timing_observations t ON t.observation_id=COALESCE(proof.yahoo_timing_observation_id,r.yahoo_timing_observation_id)
       WHERE position<=:quarters AND r.payload->>'reported_date' IS NOT NULL
       ORDER BY r.ticker,r.fiscal_date_ending DESC""",{'tickers':tickers,'cutoff':cutoff,'quarters':max_quarters})
 
@@ -705,6 +704,77 @@ def fetch_daily_windows_for_ticker_dates(
     return out
 
 
+def fetch_reaction_timing_observations(ids,*,cutoff):
+    """One deduplicated bounded read; complete source payload stays permanent."""
+    import uuid
+    try:ids=sorted({str(uuid.UUID(str(value))) for value in ids if value is not None})
+    except (ValueError,TypeError,AttributeError):raise av.SourceError('timing_identity_unavailable') from None
+    if len(ids)>100:raise av.SourceError('timing_observation_admission_limit')
+    frame=av.read_dataframe("""WITH selected AS(SELECT observation_id,ticker,known_at,source_retrieved_at,
+        content_sha256,library_version,safe_parameters,payload FROM earnings_timing_observations
+        WHERE observation_id=ANY(CAST(:ids AS uuid[])) AND known_at<=:cutoff AND source_retrieved_at<=:cutoff),
+      measured AS(SELECT count(*) AS observation_count,COALESCE(sum(octet_length(to_jsonb(s)::text)),0) AS bytes FROM selected s)
+      SELECT CASE WHEN m.bytes<=2097152 AND m.observation_count<=100 THEN
+        (SELECT COALESCE(jsonb_agg(to_jsonb(s) ORDER BY observation_id),'[]'::jsonb) FROM selected s) ELSE NULL END AS records,
+        m.bytes,m.observation_count FROM measured m""",{'ids':ids,'cutoff':cutoff},timeout_s=8)
+    if frame.empty:
+        if ids:raise av.SourceError('timing_read_unavailable')
+        return {}
+    row=frame.iloc[0]
+    if row['records'] is None:raise av.SourceError('timing_batch_byte_limit')
+    records=row['records']
+    if len(av.canonical(records).encode())>2*1024*1024:raise av.SourceError('timing_batch_byte_limit')
+    result={}
+    for record in records:
+        payload=record['payload']
+        if (not isinstance(payload,dict) or not isinstance(payload.get('rows'),list)
+            or len(payload['rows'])>50 or any(len(av.canonical(r).encode())>400 for r in payload['rows'])
+            or av.digest(payload)!=record['content_sha256']):raise av.SourceError('timing_observation_provenance_unavailable')
+        result[record['observation_id']]=record
+    return result
+
+
+def fetch_daily_windows_for_ticker_batch(groups):
+    """One <=10-ticker, <=26000-bar, <=16MiB guarded SQL price read."""
+    if len(groups)>10:raise av.SourceError('price_batch_ticker_limit')
+    windows=[{'ticker':ticker,'start':(min(dates)-timedelta(days=90)).isoformat(),
+              'end':(max(dates)+timedelta(days=25)).isoformat()} for ticker,dates in groups.items() if dates]
+    frame=av.read_dataframe("""WITH source AS(SELECT m.ticker,m.date,m.open,m.high,m.low,m.close,m.volume,m.atr_14,
+        m.adjusted_close,m.split_coefficient,m.daily_source_journal_id AS source_journal_id,m.daily_provenance
+      FROM market_data_daily m JOIN jsonb_to_recordset(CAST(:windows AS jsonb)) w(ticker text,start date,"end" date)
+        ON m.ticker=w.ticker AND m.date BETWEEN w.start AND w."end" ORDER BY m.ticker,m.date LIMIT 26001),
+      measured AS(SELECT count(*) AS bar_count,COALESCE(sum(octet_length(to_jsonb(s)::text)),0) AS bytes FROM source s)
+      SELECT s.*,NULL::text AS capacity_error FROM source s CROSS JOIN measured m
+        WHERE m.bar_count<=26000 AND m.bytes<=16777216
+      UNION ALL SELECT NULL::text,NULL::date,NULL::numeric,NULL::numeric,NULL::numeric,NULL::numeric,
+        NULL::bigint,NULL::numeric,NULL::numeric,NULL::numeric,NULL::uuid,NULL::jsonb,'price_batch_capacity_limit'
+        FROM measured m WHERE m.bar_count>26000 OR m.bytes>16777216""",{'windows':av.canonical(windows)},timeout_s=8)
+    if not frame.empty and frame['capacity_error'].notna().any():raise av.SourceError('price_batch_capacity_limit')
+    if not frame.empty:
+        frame=frame.drop(columns=['capacity_error'])
+        if len(frame)>26000 or len(av.canonical(frame.to_dict('records')).encode())>16*1024*1024:
+            raise av.SourceError('price_batch_capacity_limit')
+        frame['date']=pd.to_datetime(frame['date']).dt.date
+    result={}
+    for ticker,dates in groups.items():
+        source=frame.loc[frame['ticker']==ticker].drop(columns=['ticker']).sort_values('date') if not frame.empty else frame
+        result[ticker]={d:source.loc[(source['date']>=d-timedelta(days=90)) & (source['date']<=d+timedelta(days=25))].reset_index(drop=True).copy()
+            if not source.empty else source for d in set(dates)}
+    return result
+
+
+def _iter_reaction_price_batches(eps_df,*,run,deadline):
+    tickers=eps_df['ticker'].drop_duplicates().tolist()
+    for offset in range(0,len(tickers),10):
+        if deadline is not None and __import__('time').monotonic()>=deadline-48:
+            run.pending+=len(tickers)-offset
+            run.groups.append({'coverage_complete':False,'error_class':'reaction_deadline_pending'})
+            return
+        batch={ticker:eps_df.loc[eps_df['ticker']==ticker,'reported_date'].tolist() for ticker in tickers[offset:offset+10]}
+        windows=fetch_daily_windows_for_ticker_batch(batch)
+        for ticker in batch:yield ticker,eps_df.loc[eps_df['ticker']==ticker],windows[ticker]
+
+
 def prepare_reaction_inputs(eps,daily,*,as_of=None):
     """Use only the actually merged DATA helper; absent dependency is unavailable."""
     import importlib.util
@@ -765,15 +835,25 @@ def prepare_reaction_inputs(eps,daily,*,as_of=None):
 
 def persist_reaction_group(rows,artifacts,*,executor=None):
     executor=executor or av.isolated_sql
-    if len(rows)>100 or len(av.canonical(artifacts).encode())>1024*1024:
+    if not rows or len(rows)>100 or len(artifacts)!=len(rows) or len(av.canonical(artifacts).encode())>1024*1024 or len(av.canonical(rows).encode())>1024*1024:
         raise av.SourceError('reaction_group_limit')
+    if any(a['artifact_sha256']!=av.digest(a['payload']) for a in artifacts):raise av.SourceError('reaction_artifact_hash_mismatch')
+    if {r['input_artifact_sha256'] for r in rows}!={a['artifact_sha256'] for a in artifacts}:
+        raise av.SourceError('reaction_artifact_scope_mismatch')
     columns=[c for c in rows[0] if c not in {'id','inserted_at'}]
     updates=','.join(c+'=excluded.'+c for c in columns if c not in {'ticker','fiscal_date_ending'})
-    sql="""WITH inputs AS(INSERT INTO earnings_reaction_input_artifacts
-      SELECT * FROM jsonb_populate_recordset(NULL::earnings_reaction_input_artifacts,CAST(:artifacts AS jsonb))
-      ON CONFLICT DO NOTHING RETURNING artifact_sha256)
-    INSERT INTO earnings_reactions("""+','.join(columns)+") SELECT "+','.join(columns)+" FROM jsonb_populate_recordset(NULL::earnings_reactions,CAST(:rows AS jsonb)) ON CONFLICT(ticker,fiscal_date_ending) DO UPDATE SET "+updates
-    return executor(sql,{'artifacts':av.canonical(artifacts),'rows':av.canonical(rows)},timeout_s=8)
+    sql="""WITH requested AS(SELECT * FROM jsonb_populate_recordset(NULL::earnings_reaction_input_artifacts,CAST(:artifacts AS jsonb))),
+      inputs AS(INSERT INTO earnings_reaction_input_artifacts SELECT * FROM requested
+        ON CONFLICT DO NOTHING RETURNING artifact_sha256,payload),
+      matched AS(SELECT DISTINCT q.artifact_sha256 FROM requested q JOIN(
+        SELECT artifact_sha256,payload FROM inputs UNION ALL
+        SELECT artifact_sha256,payload FROM earnings_reaction_input_artifacts
+        WHERE artifact_sha256=ANY(CAST(:hashes AS text[]))) a
+        ON a.artifact_sha256=q.artifact_sha256 AND a.payload=q.payload),
+      guarded AS(SELECT 1/(CASE WHEN (SELECT count(*) FROM matched)=
+        (SELECT count(DISTINCT artifact_sha256) FROM requested) THEN 1 ELSE 0 END) AS identity_ok)
+    INSERT INTO earnings_reactions("""+','.join(columns)+") SELECT "+','.join('r.'+c for c in columns)+" FROM jsonb_populate_recordset(NULL::earnings_reactions,CAST(:rows AS jsonb)) r CROSS JOIN guarded g WHERE g.identity_ok=1 ON CONFLICT(ticker,fiscal_date_ending) DO UPDATE SET "+updates
+    return executor(sql,{'artifacts':av.canonical(artifacts),'rows':av.canonical(rows),'hashes':[a['artifact_sha256'] for a in artifacts]},timeout_s=8)
 
 
 def populate_for_tickers(tickers,dry_run=False,*,as_of=None,source_as_of=None,run=None,max_quarters=100,event_scope=None,deadline=None):
@@ -786,16 +866,24 @@ def populate_for_tickers(tickers,dry_run=False,*,as_of=None,source_as_of=None,ru
     if event_scope is not None:
         allowed={(e['ticker'],str(e['event_reported_date'])) for e in event_scope}
         eps_df=eps_df.loc[[(r['ticker'],str(r['reported_date'])) in allowed for r in eps_df.to_dict('records')]]
+    if len(eps_df)>10000:raise av.SourceError('reaction_financial_row_limit')
+    from lib.earnings_history import aware_cutoff
+    source_cutoff=aware_cutoff(source_as_of or as_of) if source_as_of or as_of else datetime.now(timezone.utc)
+    timing=fetch_reaction_timing_observations(eps_df['yahoo_timing_observation_id'].astype(object).where(eps_df['yahoo_timing_observation_id'].notna(),None).tolist(),cutoff=source_cutoff)
     count=0
-    for ticker,group in eps_df.groupby('ticker',sort=False):
+    for ticker,group,windows in _iter_reaction_price_batches(eps_df,run=run,deadline=deadline):
         if deadline is not None and __import__('time').monotonic()>=deadline-40:
             run.pending+=eps_df['ticker'].nunique()-len({g.get('ticker') for g in run.groups if g.get('coverage_complete')})
             run.groups.append({'ticker':ticker,'coverage_complete':False,'error_class':'reaction_deadline_pending'})
             break
-        windows=fetch_daily_windows_for_ticker_dates(ticker,group['reported_date'].tolist())
         rows=[];artifacts=[]
         for _,entry in group.iterrows():
             eps=entry.astype(object).where(entry.notna(),None).to_dict()
+            observation=timing.get(str(eps.get('yahoo_timing_observation_id')))
+            if observation and observation['ticker']!=ticker:raise av.SourceError('timing_symbol_mismatch')
+            eps['yahoo_timing_payload']=observation['payload'] if observation else None
+            eps['yahoo_timing_content_sha256']=observation['content_sha256'] if observation else None
+            eps['yahoo_timing_known_at']=observation['known_at'] if observation else None
             daily=windows.get(eps['reported_date'],pd.DataFrame())
             run.attempted+=1
             try:
@@ -803,6 +891,8 @@ def populate_for_tickers(tickers,dry_run=False,*,as_of=None,source_as_of=None,ru
                     raise av.SourceError('reaction_deadline_pending')
                 if daily.empty:
                     raise av.SourceError('price_depth_unavailable')
+                if eps.get('yahoo_timing_observation_id') is not None and not observation:
+                    raise av.SourceError('timing_observation_unavailable')
                 prepared,payload,sha,config,basis_provenance=prepare_reaction_inputs(eps,daily,as_of=as_of)
                 timing=normalize_timing(eps.get('report_time'),None,eps.get('yahoo_report_time'))
                 result=compute_reaction(eps,prepared,timing)
@@ -937,18 +1027,40 @@ def _filter_already_have_reactions(
 
 def eligible_history_manifest(as_of=None,*,variant="daily"):
     cutoff=as_of or datetime.now(timezone.utc)
-    facts=av.isolated_sql("""SELECT m.manifest_id,m.execution_name,m.manifest,p.known_at
+    from lib.earnings_history import aware_cutoff
+    cutoff=aware_cutoff(cutoff)
+    facts=av.isolated_sql("""SELECT m.manifest_id,m.execution_name,m.manifest,p.known_at,j.note AS terminal_note,j.status AS terminal_status
       FROM av_catalyst_source_manifests m JOIN av_catalyst_manifest_publications p USING(manifest_id)
+      LEFT JOIN LATERAL(SELECT note,status FROM job_runs r WHERE r.job_name=m.job_name AND r.variant=m.variant
+        AND r.execution_name=m.execution_name AND r.finished_at<=:cutoff
+        AND r.note::jsonb->>'source_manifest_id'=m.manifest_id::text ORDER BY r.finished_at DESC,r.id DESC LIMIT 1) j ON true
       WHERE m.job_name='fetch-earnings-history' AND m.variant=:variant AND p.known_at<=:cutoff
       ORDER BY p.known_at DESC,m.manifest_id DESC LIMIT 1""",{'cutoff':cutoff,'variant':variant},read=True,timeout_s=8)
-    if not facts or not facts[0]['manifest'].get('coverage_complete'):
+    if not facts:
         raise av.SourceError('history_predecessor_coverage_unavailable')
+    source=facts[0];manifest=source['manifest']
+    if (not manifest.get('event_cohort_complete') or manifest.get('source_scope_quality')!='observed_snapshot'
+        or manifest.get('coverage_complete') is not False or manifest.get('complete_through') is not None
+        or manifest.get('independent_expected_cohort_proof') is not None
+        or manifest.get('full_current_cohort_status')!='dependency_pending'
+        or manifest.get('scope_hash')!=av.manifest_digest(av.event_scope(manifest['expected_events']))
+        or manifest.get('source_universe_scope_hash')!=av.manifest_digest(av.symbol_scope(manifest['configured_universe']))
+        or source['terminal_status'] not in {'success','no_data','partial'} or not source['terminal_note']):
+        raise av.SourceError('history_predecessor_coverage_unavailable')
+    note=av.parse_manifest_json(source['terminal_note'])
+    if (note.get('manifest_sha256')!=av.manifest_digest(manifest)
+        or note.get('manifest_bytes')!=len(av.manifest_bytes(manifest))
+        or av.clock_string(note.get('source_manifest_known_at'))!=av.clock_string(source['known_at'])
+        or note.get('failed')!=0):raise av.SourceError('history_predecessor_terminal_unavailable')
+    source.pop('terminal_note');source.pop('terminal_status')
     return facts[0]
 
 
-def publish_reactions_manifest(run,history_manifest,*,executor=None):
+def publish_reactions_manifest(run,history_manifest,*,selected=None,executor=None):
     executor=executor or av.isolated_sql
     manifest=history_manifest['manifest']
+    selected=av.symbol_scope(selected or [])
+    if len(selected)>100 or not set(selected)<=set(manifest['configured_universe']):raise av.SourceError('reaction_selected_scope')
     events=manifest.get('expected_events',[])
     # Assess the full inherited scope in one indexed batch, including events
     # outside this bounded invocation. Existing verified revisions can qualify.
@@ -959,21 +1071,43 @@ def publish_reactions_manifest(run,history_manifest,*,executor=None):
       LEFT JOIN earnings_reactions r ON r.ticker=e.ticker AND r.reported_date=e.event_reported_date
       AND r.source_revision_id=e.revision_id AND r.source_known_at<=:history_known_at
       AND r.provenance_quality='validated_current_revision'
-      AND r.provenance->>'configuration_sha256' IS NOT NULL
-      AND EXISTS(SELECT 1 FROM earnings_reaction_input_artifacts a WHERE a.artifact_sha256=r.input_artifact_sha256)
+      AND r.provenance->>'configuration_sha256' ~ '^[0-9a-f]{64}$'
+      AND EXISTS(SELECT 1 FROM earnings_reaction_input_artifacts a WHERE a.artifact_sha256=r.input_artifact_sha256
+        AND a.payload->'earnings'->>'ticker'=e.ticker
+        AND (a.payload->'earnings'->>'revision_id')::bigint=e.revision_id
+        AND (a.payload->'earnings'->>'reported_date')::date=e.event_reported_date
+        AND (a.payload->'earnings'->>'fiscal_date_ending')::date=r.fiscal_date_ending
+        AND (a.payload->'earnings'->>'known_at')::timestamptz=r.source_known_at
+        AND a.payload->'configuration'=r.provenance->'configuration'
+        AND a.payload->>'price_basis'='av-adjusted-daily-v1'
+        AND a.payload->'configuration'->>'mode'='current_revision_analytics')
       ORDER BY e.ticker,e.event_reported_date""",
       {'events':av.canonical(manifest['verified_events']),'history_known_at':history_manifest['known_at']},read=True,timeout_s=8)
     verified=[f for f in facts if f['source_revision_id'] is not None]
+    source_facts=sorted([{key:(str(f[key]) if key=='event_reported_date' else f[key]) for key in
+        ('ticker','event_reported_date','source_revision_id','input_artifact_sha256','configuration_sha256')} for f in verified],
+        key=lambda f:(f['ticker'],f['event_reported_date'],f['source_revision_id'],av.manifest_bytes(f)))
     result={"schema_version":"av_catalyst_run/v1","pipeline_scope":run.mode,
       "scope_hash":manifest['scope_hash'],"universe_count":manifest['universe_count'],
       "configured_universe":manifest['configured_universe'],"expected_events":events,
       "source_window_start":manifest['source_window_start'],"source_window_end":manifest['source_window_end'],
-      "complete_through":run.started_at.isoformat() if len(verified)==len(events) and not run.failed else None,
-      "coverage_complete":len(verified)==len(events) and not run.failed,
+      "complete_through":None,"coverage_complete":False,
       "requested_count":len(events),"verified_count":len(verified),"excluded_count":0,
-      "pending_count":len(events)-len(verified),"source_revision_ids":[f['source_revision_id'] for f in verified],
-      "source_digest":av.digest(facts),"predecessor_execution_name":history_manifest['execution_name'],
-      "history_source_manifest_id":str(history_manifest['manifest_id']),**av.code_identity()}
+      "pending_count":len(events)-len(verified),"event_pending_count":len(events)-len(verified),
+      "source_revision_ids":[f['source_revision_id'] for f in verified],
+      "source_scope_quality":"observed_snapshot","source_scope_proofs":manifest['source_scope_proofs'],
+      "assessment_cutoff":av.clock_string(datetime.now(timezone.utc)),
+      "independent_expected_cohort_proof":None,"source_universe_unknown_count":manifest['source_universe_unknown_count'],
+      "source_universe_scope_hash":manifest['source_universe_scope_hash'],
+      "selected_count":len(selected),"selected_scope_hash":av.manifest_digest(selected),
+      "full_current_cohort_status":"dependency_pending","full_scope_reason":"independent_cohort_proof_unavailable",
+      "event_cohort_complete":len(verified)==len(events) and not run.failed,
+      "raw_refresh_pending":run.pending,"raw_refresh_status":run.status,
+      "observed_source_facts":source_facts,"source_digest":av.manifest_digest(source_facts),
+      "source_digest_kind":"canonical_source_facts/v1","predecessor_execution_name":history_manifest['execution_name'],
+      "history_source_manifest_id":str(history_manifest['manifest_id']),
+      "history_source_manifest_known_at":av.clock_string(history_manifest['known_at']),
+      "history_source_manifest_sha256":av.manifest_digest(manifest),**av.code_identity()}
     return av.publish_manifest(run,result)
 
 
@@ -1010,7 +1144,7 @@ def main(argv=None):
             outcomes=[{'ticker':t,'success':any(g.get('ticker')==t and g.get('coverage_complete') for g in run.groups) and not any(g.get('ticker')==t and not g.get('coverage_complete') for g in run.groups),
                        'observed_at':datetime.now(timezone.utc).isoformat()} for t in selected]
             av.finish_work('EARNINGS_REACTIONS',run.mode,outcomes,owner=run.execution_name)
-            manifest=publish_reactions_manifest(run,predecessor)
+            manifest=publish_reactions_manifest(run,predecessor,selected=selected)
     except Exception as exc:
         run.failed+=1
         run.groups.append({'coverage_complete':False,'error_class':str(exc) if isinstance(exc,av.SourceError) else type(exc).__name__})

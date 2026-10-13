@@ -171,8 +171,10 @@ def run_insider(run,tickers,key,*,dry_run=False,fetcher=None,writer=None,final=F
                 captures.append(av.capture_record(capture,frame.attrs['raw_uri'],len(frame),source_count=frame.attrs['source_count']))
             outcomes.append({'function':'INSIDER_TRANSACTIONS','ticker':ticker,'scope':'daily','lease_owner':run.execution_name,'success':True,'observed_at':capture.retrieved_at.isoformat()})
             run.groups.append({'ticker':ticker,'source_event_max':str(frame['transaction_date'].max()) if not frame.empty else None,
-              'requested_source_window':None,'complete_through':capture.retrieved_at.isoformat(),'coverage_complete':True,
-              'cursor_before':None,'cursor_after':capture.retrieved_at.isoformat(),'excluded_future':frame.attrs.get('skipped_future',0)})
+              'source_capture_id':capture.observation_id,'raw_uri':frame.attrs['raw_uri'],'raw_sha256':capture.body_sha256,
+              'source_retrieved_at':av.clock_string(capture.retrieved_at),
+              'requested_source_window':None,'complete_through':av.clock_string(capture.retrieved_at),'coverage_complete':True,
+              'cursor_before':None,'cursor_after':av.clock_string(capture.retrieved_at),'excluded_future':frame.attrs.get('skipped_future',0)})
         except Exception as exc:
             run.failed+=1
             outcomes.append({'function':'INSIDER_TRANSACTIONS','ticker':ticker,'scope':'daily','lease_owner':run.execution_name,'success':False,'observed_at':None})

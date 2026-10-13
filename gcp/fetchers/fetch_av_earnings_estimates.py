@@ -12,7 +12,7 @@ from gcp.fetchers import _av_ingestion as av
 
 def parse_estimates(capture):
     data = capture.json()
-    ticker = capture.parameters["symbol"].upper()
+    ticker = av.symbol_scope([capture.parameters["symbol"]])[0]
     if data.get("symbol", "").upper() != ticker or not isinstance(data.get("estimates"), list):
         raise av.SourceError("estimate_schema")
     if len(data["estimates"]) > 100:
@@ -74,7 +74,7 @@ def persist_estimate_group(group, *, executor=None):
     source_ack=datetime.now(timezone.utc)
     requested=[]
     for capture,uri,records in group:
-        requested.append({'fetch_id':capture.observation_id,'ticker':capture.parameters['symbol'],
+        requested.append({'fetch_id':capture.observation_id,'ticker':av.symbol_scope([capture.parameters['symbol']])[0],
           'validation_status':'validated' if records else 'validated_empty','observation_count':len(records),
           'source_commit_acknowledged_at':source_ack.isoformat(),
           'raw_sha256':capture.body_sha256,'raw_uri':uri})
@@ -100,7 +100,7 @@ def persist_estimate_group(group, *, executor=None):
     clocks={str(r['fetch_id']):r['source_commit_acknowledged_at'] for r in published}
     if len(clocks)!=len(group):raise av.SourceError('estimate_receipt_conflict_or_ack_unknown')
     for capture,uri,records in group:
-        receipts.append({'ticker':capture.parameters['symbol'],'fetch_id':capture.observation_id,
+        receipts.append({'ticker':av.symbol_scope([capture.parameters['symbol']])[0],'fetch_id':capture.observation_id,
           'status':'validated' if records else 'validated_empty',
           'source_retrieved_at':av.clock_string(capture.retrieved_at),'known_at':av.clock_string(clocks[capture.observation_id]),
           'raw_sha256':capture.body_sha256,'raw_uri':uri,'observation_count':len(records)})
@@ -147,7 +147,7 @@ def main(argv=None):
         key = os.environ.get("AV_API_KEY") or os.environ.get("ALPHA_VANTAGE_API_KEY")
         if not key:
             raise av.SourceError("credential_missing")
-        universe = sorted(set(args.tickers.upper().split(","))) if args.tickers else resolve_universe()
+        universe = av.symbol_scope(args.tickers.split(',') if args.tickers else resolve_universe())
         run.expected = len(universe)
         selected = av.claim_work("EARNINGS_ESTIMATES", universe, "daily", run.execution_name,
                                  limit=args.max_tickers, dry_run=args.dry_run)
@@ -184,8 +184,8 @@ def main(argv=None):
             manifest = {"schema_version": "av_catalyst_run/v1", "pipeline_scope": "estimates_daily",
               "scope_hash": av.manifest_digest(av.symbol_scope(universe)), "universe_count": len(universe), "configured_universe": universe,
               "selected_scope_hash": av.manifest_digest(av.symbol_scope(selected)), "selected_count": len(selected), "pending_count": run.pending,
-              "source_window_start": run.started_at.isoformat(), "source_window_end": datetime.now(timezone.utc).isoformat(),
-              "complete_through": datetime.now(timezone.utc).isoformat() if not run.failed and not run.pending else None,
+              "source_window_start": av.clock_string(run.started_at), "source_window_end": av.clock_string(datetime.now(timezone.utc)),
+              "complete_through": av.clock_string(datetime.now(timezone.utc)) if not run.failed and not run.pending else None,
               "coverage_complete": not run.failed and not run.pending, "captured_receipts": receipts,
               "source_revision_ids": [r["fetch_id"] for r in receipts], "source_digest": av.manifest_digest(sorted(receipts,key=lambda r:(r["ticker"],r["fetch_id"]))), "source_digest_kind":"canonical_source_facts/v1",
               "predecessor_execution_name": None, **av.code_identity()}

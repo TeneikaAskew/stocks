@@ -51,6 +51,7 @@ def test_full_scope_manifests_reuse_verified_sources_and_require_acknowledgement
     from zoneinfo import ZoneInfo
     from gcp.fetchers import compute_earnings_reactions as reactions
     c=catalyst_db
+    _prepare_estimates_cli(c,monkeypatch)
     execute=executor(c)
     monkeypatch.setattr(av,'isolated_sql',execute)
     day=datetime.now(ZoneInfo('America/New_York')).date().isoformat()
@@ -62,8 +63,11 @@ def test_full_scope_manifests_reuse_verified_sources_and_require_acknowledgement
         history.persist_history(history.fetch_history_for_ticker(ticker,'dummy',enrich_with_yahoo=False),executor=execute)
     run=av.Run('fetch-earnings-history',variant,expected=1,processed=1)
     manifest=history.assess_history_manifest(run,['AAPL','MSFT'],executor=execute)
-    assert manifest['coverage_complete'] and manifest['requested_count']==2 and manifest['verified_count']==2
+    assert not manifest['coverage_complete'] and manifest['event_cohort_complete']
+    assert manifest['source_universe_unknown_count']==2 and manifest['complete_through'] is None
+    assert manifest['requested_count']==2 and manifest['verified_count']==2
     assert len(manifest['configured_universe'])==2 and len(manifest['verified_events'])==2
+    assert run.terminal(extra=manifest)==0
     predecessor=reactions.eligible_history_manifest(variant=variant)
     assert str(predecessor['manifest_id'])==manifest['source_manifest_id']
     # Stored post-ACK clock is stable on reconciliation of the same manifest.
@@ -82,7 +86,9 @@ def test_full_scope_manifests_reuse_verified_sources_and_require_acknowledgement
     assert str(reactions.eligible_history_manifest(variant=variant)['manifest_id'])==manifest['source_manifest_id']
     import pytest
     with pytest.raises(av.SourceError):reactions.eligible_history_manifest(variant='weekly' if variant=='daily' else 'daily')
-    pending=history.assess_history_manifest(av.Run('fetch-earnings-history',variant,failed=1),['AAPL','MSFT'],executor=execute)
+    failed_run=av.Run('fetch-earnings-history',variant,failed=1)
+    pending=history.assess_history_manifest(failed_run,['AAPL','MSFT'],executor=execute)
+    assert failed_run.terminal(extra=pending)==1
     assert not pending['coverage_complete']
     with pytest.raises(av.SourceError):reactions.eligible_history_manifest(variant=variant)
 
@@ -112,6 +118,13 @@ def test_actual_yahoo_timing_change_has_independent_clock_and_attribution(cataly
     assert [r[1] for r in facts]==['pre-market','post-market']
     assert [str(r[2]) for r in facts]==ids
     assert c.execute(text('SELECT count(DISTINCT content_sha256) FROM earnings_timing_observations')).scalar()==2
+    from gcp.fetchers import compute_earnings_reactions as reactions
+    monkeypatch.setattr(av,'isolated_sql',executor(c))
+    compact=reactions.fetch_earnings_history_for_tickers(['AAPL'],as_of=datetime.now(timezone.utc))
+    assert len(compact)==1 and 'yahoo_timing_payload' not in compact.columns
+    assert str(compact.iloc[0]['yahoo_timing_observation_id'])==ids[-1]
+    timing=reactions.fetch_reaction_timing_observations(compact['yahoo_timing_observation_id'].tolist(),cutoff=datetime.now(timezone.utc))
+    assert list(timing)==[ids[-1]] and timing[ids[-1]]['payload']['rows'][0]['timestamp']=='2026-07-30T16:30:00-04:00'
 
 
 def _prepare_estimates_cli(connection,monkeypatch):
@@ -150,7 +163,7 @@ def test_actual_estimates_daily_writer_publishes_selected_receipts_and_pending_s
     assert c.execute(text("SELECT validation_status FROM av_catalyst_source_captures WHERE ticker='EMPTY'")).scalar()=='validated_empty'
     terminal=c.execute(text('SELECT note FROM job_runs')).scalar()
     terminal=json.loads(terminal)
-    assert terminal['source_manifest_known_at']==row.known_at.isoformat() and terminal['pending_count']==1
+    assert terminal['source_manifest_known_at']==av.clock_string(row.known_at) and terminal['pending_count']==1
 
 
 def test_actual_estimates_uncertain_publication_never_certifies_availability(catalyst_db,monkeypatch):
@@ -343,3 +356,152 @@ def test_future_estimate_receipt_publication_is_not_replay_eligible(catalyst_db)
         {'id':capture.observation_id,'clock':datetime.now(timezone.utc)+timedelta(days=1)})
     with pytest.raises(av.SourceError,match='estimate_receipt_conflict_or_ack_unknown'):
         estimates.persist_estimate_group([(capture,'gs://test/future',[])],executor=execute)
+
+
+@pytest.mark.parametrize('variant',['daily','weekly'])
+def test_native_history_cli_retains_nullable_full_universe_without_global_certification(catalyst_db,monkeypatch,variant):
+    from datetime import datetime,timezone
+    import pandas as pd
+    c=catalyst_db;execute=_prepare_estimates_cli(c,monkeypatch)
+    universe=['AAPL','EMPTY','FAILED']+[f'S{i:04d}' for i in range(1236)]
+    day=datetime.now(timezone.utc).astimezone(history.ET).date().isoformat()
+    monkeypatch.setattr(av,'isolated_sql',execute)
+    monkeypatch.setattr(history,'resolve_refresh_universe',lambda *a,**kw:pd.DataFrame({'ticker':universe,'needs_refresh':True}))
+    monkeypatch.setattr(history.time_module,'sleep',lambda *a:None)
+    def source(fn,params,*a,**kw):
+        if params['symbol']=='FAILED':raise av.SourceError('transport_failed')
+        rows=[] if params['symbol']=='EMPTY' else [{'fiscalDateEnding':'2026-06-30','reportedDate':day,'reportedEPS':'1'}]
+        return av.Capture.from_bytes(fn,params,av.canonical({'symbol':params['symbol'],'quarterlyEarnings':rows}).encode())
+    monkeypatch.setattr(av,'fetch_capture',source)
+    assert history.main([f'--scope={variant}','--max-tickers=3','--no-yahoo','--no-backfill'])==1
+    manifest=c.execute(text("SELECT manifest FROM av_catalyst_source_manifests WHERE job_name='fetch-earnings-history'")).scalar()
+    assert manifest['configured_universe']==universe and manifest['universe_count']==1239
+    assert manifest['selected_count']==3 and manifest['raw_refresh_pending']==1236
+    assert not manifest['coverage_complete'] and manifest['complete_through'] is None
+    assert manifest['independent_expected_cohort_proof'] is None
+    assert manifest['full_current_cohort_status']=='dependency_pending'
+    assert manifest['source_universe_unknown_count']==1239
+    proofs={p['ticker']:p for p in manifest['source_scope_proofs']}
+    assert len(proofs)==1239
+    assert proofs['AAPL']['state']=='observed_snapshot' and proofs['AAPL']['capture_id']
+    assert proofs['EMPTY']['validation_status']=='validated_empty' and proofs['EMPTY']['normalized_count']==0
+    assert proofs['FAILED']['state']=='failed' and proofs['FAILED']['reason']=='retrieval_failed'
+    assert proofs['S0000']['state']=='unknown' and proofs['S0000']['reason']=='no_capture'
+    for ticker in ['FAILED','S0000']:
+        assert all(proofs[ticker][key] is None for key in ['capture_id','source_retrieved_at','function','validation_status','normalized_count','raw_sha256','raw_uri'])
+        assert proofs[ticker]['quarter_observations']==[]
+    assert all(p['vendor_covered_through'] is None for p in proofs.values())
+    assert c.execute(text('SELECT count(*) FROM av_catalyst_manifest_publications')).scalar()==1
+    terminal=json.loads(c.execute(text("SELECT note FROM job_runs WHERE job_name='fetch-earnings-history'")).scalar())
+    assert terminal['source_universe_unknown_count']==1239 and terminal['coverage_complete'] is False
+
+
+@pytest.mark.parametrize('variant',['daily','weekly'])
+def test_native_history_cli_reuses_observed_events_with_partial_raw_refresh(catalyst_db,monkeypatch,variant):
+    from datetime import datetime,timezone
+    import pandas as pd
+    from gcp.fetchers import compute_earnings_reactions as reactions
+    c=catalyst_db;execute=_prepare_estimates_cli(c,monkeypatch)
+    universe=['AAPL','MSFT']+[f'S{i:04d}' for i in range(1237)]
+    day=datetime.now(timezone.utc).astimezone(history.ET).date().isoformat()
+    monkeypatch.setattr(av,'isolated_sql',execute)
+    monkeypatch.setattr(history,'resolve_refresh_universe',lambda *a,**kw:pd.DataFrame({'ticker':universe,'needs_refresh':True}))
+    monkeypatch.setattr(history.time_module,'sleep',lambda *a:None)
+    calls=[]
+    def source(fn,params,*a,**kw):
+        calls.append(params['symbol'])
+        rows=[{'fiscalDateEnding':'2026-06-30','reportedDate':day,'reportedEPS':'1'}] if params['symbol'] in {'AAPL','MSFT'} else []
+        return av.Capture.from_bytes(fn,params,av.canonical({'symbol':params['symbol'],'quarterlyEarnings':rows}).encode())
+    monkeypatch.setattr(av,'fetch_capture',source)
+    assert history.main([f'--scope={variant}','--max-tickers=2','--no-yahoo','--no-backfill'])==1
+    prior=reactions.eligible_history_manifest(variant=variant)
+    prior_facts=prior['manifest']['observed_source_facts']
+    assert history.main([f'--scope={variant}','--max-tickers=100','--no-yahoo','--no-backfill'])==1
+    latest=reactions.eligible_history_manifest(variant=variant)
+    m=latest['manifest']
+    assert len(calls)==102 and len(set(calls))==102
+    assert m['universe_count']==1239 and m['selected_count']==100 and m['raw_refresh_pending']==1139
+    assert m['raw_refresh_status']=='partial' and m['event_pending_count']==0 and m['event_cohort_complete']
+    assert m['observed_source_facts']==prior_facts and m['verified_count']==m['requested_count']==2
+    assert m['source_universe_unknown_count']==1239 and not m['coverage_complete'] and m['complete_through'] is None
+    assert m['independent_expected_cohort_proof'] is None and m['full_current_cohort_status']=='dependency_pending'
+    assert all(p['vendor_covered_through'] is None for p in m['source_scope_proofs'])
+    assert sum(p['state']=='observed_snapshot' for p in m['source_scope_proofs'])==102
+
+
+@pytest.mark.parametrize('malformed',[False,True])
+def test_native_calendar_archives_full_feed_before_business_selection(catalyst_db,monkeypatch,malformed):
+    from scripts import fetch_earnings_calendar as calendar
+    c=catalyst_db;execute=executor(c)
+    monkeypatch.setenv('AV_API_KEY','dummy')
+    body=b'symbol,name,reportDate,fiscalDateEnding,estimate,currency\nAAPL,Apple,2026-10-14,2026-09-30,2.1,USD\nMSFT,Microsoft,'+(b'bad-date' if malformed else b'2026-11-14')+b',2026-09-30,3.2,USD\n'
+    capture=av.Capture.from_bytes('EARNINGS_CALENDAR',{'horizon':'3month'},body)
+    archives=[]
+    monkeypatch.setattr(av,'fetch_capture',lambda *a,**kw:capture)
+    monkeypatch.setattr(av,'archive_capture',lambda captured,**kw:archives.append(captured.body) or 'gs://test/full-calendar')
+    monkeypatch.setattr(av,'isolated_sql',execute)
+    frame=calendar.fetch_alphavantage_earnings(scope='weekly')
+    m=c.execute(text('SELECT manifest FROM av_catalyst_source_manifests')).scalar()
+    assert archives==[body]
+    assert m['native_csv_rows']==m['requested_count']==2
+    assert m['verified_count']==(1 if malformed else 2) and m['pending_count']==int(malformed)
+    assert m['source_digest_kind']=='raw_body_sha256' and m['source_digest']==capture.body_sha256
+    assert m['source_window_start']=='2026-10-14' and m['source_window_end']==('2026-10-14' if malformed else '2026-11-14')
+    assert m['coverage_complete'] is (not malformed)
+    assert m['source_all_coverage']=='unavailable' and m['business_subset_coverage']=='not_assessed'
+    business=frame.loc[frame['date']=='2026-10-14']
+    assert len(business)==1 and m['native_csv_rows']==2
+    assert c.execute(text('SELECT count(*) FROM av_catalyst_source_captures')).scalar()==1
+    assert c.execute(text('SELECT count(*) FROM av_catalyst_manifest_publications')).scalar()==1
+
+
+def test_reaction_artifact_identity_collision_rolls_back_derived_write(catalyst_db):
+    from datetime import datetime,timezone
+    from gcp.fetchers import compute_earnings_reactions as reactions
+    from sqlalchemy.exc import DBAPIError
+    c=catalyst_db;execute=executor(c)
+    config={'rule_version':'earnings-reaction/v2','mode':'current_revision_analytics'}
+    payload={'earnings':{'ticker':'AAPL','fiscal_date_ending':'2026-06-30'},'configuration':config}
+    sha=av.digest(payload)
+    execute('INSERT INTO earnings_reaction_input_artifacts VALUES(:sha,clock_timestamp(),CAST(:body AS jsonb))',
+        {'sha':sha,'body':av.canonical({'wrong':'immutable identity'})})
+    rows=[{'ticker':'AAPL','fiscal_date_ending':'2026-06-30','reported_date':'2026-07-30','input_artifact_sha256':sha}]
+    with pytest.raises((DBAPIError,av.SourceError)):
+        reactions.persist_reaction_group(rows,[{'artifact_sha256':sha,'captured_at':datetime.now(timezone.utc),'payload':payload}],executor=execute)
+    c.rollback()
+    assert c.execute(text('SELECT count(*) FROM earnings_reactions')).scalar()==0
+    assert c.execute(text('SELECT payload FROM earnings_reaction_input_artifacts')).scalar()=={'wrong':'immutable identity'}
+
+
+def test_native_news_three_hundred_calls_keep_full_sql_group_detail(catalyst_db,monkeypatch):
+    import time
+    from gcp.fetchers import fetch_news_sentiment as news
+    c=catalyst_db;execute=_prepare_estimates_cli(c,monkeypatch)
+    calls=[];statements=[]
+    def source(fn,params,*a,**kw):
+        calls.append(params)
+        return av.Capture.from_bytes(fn,params,b'{"feed":[]}')
+    def observed(sql,params=None,**kw):
+        statements.append(sql)
+        return execute(sql,params,**kw)
+    monkeypatch.setattr(av,'fetch_capture',source)
+    monkeypatch.setattr(av,'isolated_sql',observed)
+    monkeypatch.setattr(time,'sleep',lambda *a:None)
+    names=','.join(f'S{i:03d}' for i in range(300))
+    outcome=news.main([f'--tickers={names}','--max-tickers=300','--max-requests=300',
+        '--time-from=20261001T0000','--time-to=20261002T0000'])
+    assert outcome==0,{'calls':len(calls),'statements':len(statements),'groups':[json.loads(n)['groups'] for n in c.execute(text('SELECT note FROM job_runs')).scalars()]}
+    m=c.execute(text('SELECT manifest FROM av_catalyst_source_manifests')).scalar()
+    note_raw=c.execute(text('SELECT note FROM job_runs')).scalar();note=json.loads(note_raw)
+    assert len(calls)==300 and len(m['run_groups'])==600
+    assert len(av.canonical(m['run_groups']).encode())>64*1024 and len(note_raw.encode())<=64*1024
+    assert len([s for s in statements if 'INSERT INTO av_catalyst_source_manifests' in s])==1
+    assert len([s for s in statements if 'INSERT INTO av_catalyst_manifest_publications' in s])==1
+    assert len([s for s in statements if 'INSERT INTO job_runs' in s])==1
+    assert note['manifest_sha256']==av.manifest_digest(m) and note['manifest_bytes']==len(av.manifest_bytes(m))
+    assert note['processed']==300 and note['pending']==0 and note['terminal_status']=='no_data'
+    assert c.execute(text('SELECT count(*) FROM av_catalyst_source_captures')).scalar()==300
+    assert c.execute(text("SELECT count(*) FROM av_catalyst_news_windows WHERE status='complete'")).scalar()==300
+    captures={str(r.capture_id):r.raw_sha256 for r in c.execute(text('SELECT capture_id,raw_sha256 FROM av_catalyst_source_captures'))}
+    assert {g['source_capture_id'] for g in m['run_groups'] if 'source_capture_id' in g}==set(captures)
+    assert all(g['raw_sha256']==captures[g['source_capture_id']] for g in m['run_groups'] if 'source_capture_id' in g)

@@ -490,10 +490,12 @@ def run_news_windows(run,scopes,key,*,limit=1000,max_requests=300,dry_run=False,
                     captures.append(av.capture_record(feed.capture,feed.raw_uri,len(source_rows),source_count=len(feed)))
                     outcomes.append({'window_id':str(window['window_id']),'lease_owner':run.execution_name,
                                      'capture_id':feed.capture.observation_id,'status':'validated','saturated':saturated})
-                run.groups.append({'query_identity':qid,'requested_source_window':[start.isoformat(),end.isoformat()],
-                  'source_event_max':max((r['published_ts'].isoformat() for r in source_rows),default=None),
-                  'complete_through':None if saturated else end.isoformat(),'coverage_complete':not saturated,
-                  'cursor_before':start.isoformat(),'cursor_after':None if saturated else end.isoformat(),
+                run.groups.append({'query_identity':qid,'requested_source_window':[av.clock_string(start),av.clock_string(end)],
+                  'source_capture_id':feed.capture.observation_id,'raw_uri':feed.raw_uri,'raw_sha256':feed.capture.body_sha256,
+                  'source_retrieved_at':av.clock_string(feed.capture.retrieved_at),
+                  'source_event_max':max((av.clock_string(r['published_ts']) for r in source_rows),default=None),
+                  'complete_through':None if saturated else av.clock_string(end),'coverage_complete':not saturated,
+                  'cursor_before':av.clock_string(start),'cursor_after':None if saturated else av.clock_string(end),
                   'saturated':saturated})
                 successes+=1
             except Exception as exc:
@@ -530,7 +532,8 @@ def run_news_windows(run,scopes,key,*,limit=1000,max_requests=300,dry_run=False,
           {'ids':list(limits)},read=True,timeout_s=8)
         run.pending=sum(f['pending'] for f in facts)
         for f in facts:
-            run.groups.append({'query_identity':f['query_identity'],'complete_through':str(f['first_gap'] or f['completed_end']),
+            through=f['first_gap'] or f['completed_end']
+            run.groups.append({'query_identity':f['query_identity'],'complete_through':av.clock_string(through) if through is not None else None,
                                'coverage_complete':not f['pending'],'pending':f['pending']})
     return run
 

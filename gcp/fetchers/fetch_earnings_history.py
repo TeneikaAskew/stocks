@@ -430,34 +430,85 @@ def persist_history(frame,*,executor=None):
     return len(records)
 
 
-def assess_history_manifest(run,universe,*,executor=None):
+def assess_history_manifest(run,universe,*,selected=None,executor=None):
     executor=executor or av.isolated_sql
+    universe=av.symbol_scope(universe)
+    selected=av.symbol_scope(selected or [])
+    if len(selected)>100 or not set(selected)<=set(universe):raise av.SourceError('history_selected_scope')
     cutoff=datetime.now(timezone.utc)
     assessment_date=cutoff.astimezone(ET).date()
-    facts=executor("""SELECT e.ticker,e.reported_date,r.revision_id,r.known_at,r.payload->>'reported_eps' AS reported_eps,
+    assessed=executor("""WITH event_facts AS(SELECT e.ticker,e.reported_date,r.revision_id,r.known_at,r.payload->>'reported_eps' AS reported_eps,
       av_earnings_values(to_jsonb(e))=r.payload AS coherent_cache,CASE WHEN proof.capture_id IS NOT NULL THEN 'source_verified' ELSE CASE WHEN r.availability_quality='source_verified' THEN 'source_provenance_unavailable' ELSE r.availability_quality END END AS availability_quality,
+      proof.capture_id,proof.source_retrieved_at,proof.validation_status,proof.known_at AS observation_known_at,
       COALESCE(proof.yahoo_timing_observation_id,r.yahoo_timing_observation_id) AS yahoo_timing_observation_id FROM earnings_history e
       LEFT JOIN LATERAL(SELECT * FROM earnings_history_revisions v WHERE v.ticker=e.ticker
         AND v.fiscal_date_ending=e.fiscal_date_ending AND v.known_at<=:cutoff
         ORDER BY v.known_at DESC,v.revision_id DESC LIMIT 1) r ON true
-      LEFT JOIN LATERAL(SELECT o.* FROM earnings_revision_observations o
+      LEFT JOIN LATERAL(SELECT o.*,c.source_retrieved_at,c.validation_status FROM earnings_revision_observations o
         JOIN av_catalyst_source_captures c ON c.capture_id=o.capture_id AND c.validation_status='validated' AND c.function='EARNINGS' AND c.ticker=r.ticker
         WHERE o.revision_id=r.revision_id AND o.known_at<=:cutoff AND c.source_retrieved_at<=:cutoff
         ORDER BY o.known_at DESC,o.capture_id DESC LIMIT 1) proof ON true
       WHERE e.ticker=ANY(CAST(:universe AS text[])) AND e.reported_date BETWEEN
         (:cutoff AT TIME ZONE 'America/New_York')::date-29 AND (:cutoff AT TIME ZONE 'America/New_York')::date
-      ORDER BY e.ticker,e.reported_date""",{"universe":universe,"cutoff":cutoff},read=True,timeout_s=8)
+      ORDER BY e.ticker,e.reported_date),
+      events_by_symbol AS(SELECT ticker,jsonb_agg(to_jsonb(f) ORDER BY reported_date,revision_id) AS event_facts
+        FROM event_facts f GROUP BY ticker)
+      ,partitions AS(SELECT u.ticker,c.capture_id,c.source_retrieved_at,c.function,c.validation_status,c.normalized_count,c.raw_sha256,c.raw_uri,
+        COALESCE(e.event_facts,'[]'::jsonb) AS event_facts,
+        COALESCE((SELECT jsonb_agg(jsonb_build_object('revision_id',f.revision_id,'capture_id',f.capture_id,
+          'known_at',f.observation_known_at,'yahoo_timing_observation_id',f.yahoo_timing_observation_id)
+          ORDER BY f.revision_id,f.capture_id) FROM event_facts f WHERE f.ticker=u.ticker AND f.capture_id=c.capture_id),'[]'::jsonb) AS quarter_observations
+      FROM unnest(CAST(:universe AS text[])) u(ticker)
+      LEFT JOIN LATERAL(SELECT * FROM av_catalyst_source_captures s WHERE s.function='EARNINGS'
+        AND s.ticker=u.ticker AND s.source_retrieved_at<=:cutoff
+        AND s.validation_status IN ('validated','validated_empty') ORDER BY s.source_retrieved_at DESC,s.capture_id DESC LIMIT 1) c ON true
+      LEFT JOIN events_by_symbol e ON e.ticker=u.ticker ORDER BY u.ticker),
+      measured AS(SELECT COALESCE(sum(octet_length(to_jsonb(p)::text)),0)+2*count(*) AS bytes FROM partitions p)
+      SELECT CASE WHEN m.bytes<=8388608 THEN(SELECT COALESCE(jsonb_agg(to_jsonb(p) ORDER BY ticker),'[]'::jsonb)
+        FROM partitions p) ELSE NULL END AS partitions,m.bytes FROM measured m""",{"universe":universe,"cutoff":cutoff},read=True,timeout_s=8)
+    if len(assessed)!=1 or assessed[0]['partitions'] is None:raise av.SourceError('manifest_assessment_byte_limit')
+    partitions=assessed[0]['partitions']
+    if [p['ticker'] for p in partitions]!=universe:raise av.SourceError('history_assessment_scope_unknown')
+    facts=[f for p in partitions for f in p['event_facts']]
     verified=[r for r in facts if r["availability_quality"]=='source_verified' and r["reported_eps"] is not None and r["coherent_cache"]]
-    events=[{"ticker":r["ticker"],"event_reported_date":str(r["reported_date"])} for r in facts]
-    manifest={"schema_version":"av_catalyst_run/v1","pipeline_scope":run.mode,"scope_hash":av.digest(events),
+    events=av.event_scope([{"ticker":r["ticker"],"event_reported_date":str(r["reported_date"])} for r in facts])
+    failed={g['ticker']:('source_ack_unknown' if 'ack' in str(g.get('error_class','')) or 'database_outcome' in str(g.get('error_class','')) else 'retrieval_failed')
+        for g in run.groups if g.get('ticker') and not g.get('coverage_complete')}
+    proofs=[]
+    for p in partitions:
+        has_capture=p['capture_id'] is not None
+        proof={key:p[key] for key in ('ticker','capture_id','source_retrieved_at','function','validation_status','normalized_count','raw_sha256','raw_uri')}
+        if has_capture:
+            proof['capture_id']=str(proof['capture_id'])
+            proof['source_retrieved_at']=av.clock_string(proof['source_retrieved_at'])
+        proof['quarter_observations']=[dict(q,capture_id=str(q['capture_id']),known_at=av.clock_string(q['known_at'])) for q in p['quarter_observations']]
+        proof.update(state='failed' if p['ticker'] in failed else 'observed_snapshot' if has_capture else 'unknown',
+            reason=failed.get(p['ticker']) if p['ticker'] in failed else None if has_capture else 'no_capture',
+            vendor_covered_through=None,required_window_status='not_assessed',required_window_reason='required_cutoff_missing',
+            full_scope_reason='independent_cohort_proof_unavailable')
+        proofs.append(proof)
+    source_facts=[{'ticker':r['ticker'],'event_reported_date':str(r['reported_date']),'revision_id':r['revision_id'],
+        'capture_id':str(r['capture_id']),'source_retrieved_at':av.clock_string(r['source_retrieved_at']),
+        'known_at':av.clock_string(r['observation_known_at']),'validation_status':r['validation_status'],
+        'yahoo_timing_observation_id':str(r['yahoo_timing_observation_id']) if r['yahoo_timing_observation_id'] else None} for r in verified]
+    source_facts.sort(key=lambda r:(r['ticker'],r['event_reported_date'],r['revision_id'],r['capture_id'],av.manifest_bytes(r)))
+    event_pending=len(facts)-len(verified)
+    manifest={"schema_version":"av_catalyst_run/v1","pipeline_scope":run.mode,"scope_hash":av.manifest_digest(events),
       "universe_count":len(universe),"configured_universe":universe,"expected_events":events,
       "source_window_start":(assessment_date-pd.Timedelta(days=29)).isoformat(),
-      "source_window_end":assessment_date.isoformat(),"complete_through":cutoff.isoformat() if len(verified)==len(facts) and not run.failed else None,
-      "coverage_complete":len(verified)==len(facts) and not run.failed,
+      "source_window_end":assessment_date.isoformat(),"complete_through":None,"coverage_complete":False,
       "requested_count":len(events),"verified_count":len(verified),"excluded_count":0,
-      "pending_count":len(facts)-len(verified),"source_revision_ids":[r["revision_id"] for r in verified],
+      "pending_count":event_pending,"event_pending_count":event_pending,"source_revision_ids":[r["revision_id"] for r in verified],
       "verified_events":[{"ticker":r["ticker"],"event_reported_date":str(r["reported_date"]),"revision_id":r["revision_id"]} for r in verified],
-      "source_digest":av.digest(facts),"predecessor_execution_name":None,**av.code_identity()}
+      "source_digest":av.manifest_digest(source_facts),"source_digest_kind":"canonical_source_facts/v1","observed_source_facts":source_facts,
+      "assessment_cutoff":av.clock_string(cutoff),"source_scope_quality":"observed_snapshot","source_scope_proofs":proofs,
+      "independent_expected_cohort_proof":None,"source_universe_unknown_count":len(proofs),
+      "full_current_cohort_status":"dependency_pending","full_scope_reason":"independent_cohort_proof_unavailable",
+      "event_cohort_complete":event_pending==0 and not run.failed,
+      "raw_refresh_pending":run.pending,"raw_refresh_status":run.status,
+      "selected_count":len(selected),"selected_scope_hash":av.manifest_digest(selected),
+      "source_universe_scope_hash":av.manifest_digest(universe),
+      "predecessor_execution_name":None,**av.code_identity()}
     return av.publish_manifest(run,manifest)
 
 
@@ -487,11 +538,11 @@ def main(argv=None):
         if not api_key:
             raise av.SourceError("credential_missing")
         if args.tickers:
-            universe=sorted({t.strip().upper() for t in args.tickers.split(',') if t.strip()})
+            universe=av.symbol_scope(args.tickers.split(','))
             eligible=universe
         else:
             resolved=resolve_refresh_universe(scope,args.lookback_days,args.force)
-            universe=resolved['ticker'].str.upper().tolist() if not resolved.empty else []
+            universe=av.symbol_scope(resolved['ticker'].tolist()) if not resolved.empty else []
             eligible=resolved.loc[resolved['needs_refresh'],'ticker'].str.upper().tolist() if not resolved.empty else []
         run.expected=len(eligible)
         selected=av.claim_work("EARNINGS",eligible,scope,run.execution_name,limit=args.max_tickers,
@@ -514,8 +565,8 @@ def main(argv=None):
                     run.failed+=1
                 run.groups.append({"ticker":ticker,"requested_source_window":None,
                   "source_event_max":str(frame['reported_date'].max()) if not frame.empty else None,
-                  "complete_through":frame.attrs['capture'].retrieved_at.isoformat(),"coverage_complete":True,
-                  "cursor_before":None,"cursor_after":frame.attrs['capture'].retrieved_at.isoformat(),
+                  "complete_through":av.clock_string(frame.attrs['capture'].retrieved_at),"coverage_complete":True,
+                  "cursor_before":None,"cursor_after":av.clock_string(frame.attrs['capture'].retrieved_at),
                   "yahoo_mode":frame.attrs['yahoo_mode'],"yahoo_error_class":frame.attrs.get('yahoo_error')})
             except Exception as exc:
                 run.failed+=1
@@ -525,7 +576,7 @@ def main(argv=None):
                 av.finish_work("EARNINGS",scope,outcomes,owner=run.execution_name);outcomes=[]
         if not args.dry_run:
             av.finish_work("EARNINGS",scope,outcomes,owner=run.execution_name)
-            manifest=assess_history_manifest(run,universe)
+            manifest=assess_history_manifest(run,universe,selected=selected)
     except Exception as exc:
         run.failed+=1
         run.groups.append({"error_class":str(exc) if isinstance(exc,av.SourceError) else type(exc).__name__,"coverage_complete":False})

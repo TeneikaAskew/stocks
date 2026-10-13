@@ -448,9 +448,11 @@ def capture_sql(captures):
 def capture_record(capture, raw_uri, count, *, source_count=None):
     if not raw_uri:
         raise SourceError("archive_provenance_missing")
+    ticker=capture.parameters.get("symbol") or capture.parameters.get("tickers")
+    if capture.function in {'EARNINGS','EARNINGS_ESTIMATES','INSIDER_TRANSACTIONS'}:ticker=symbol_scope([ticker])[0]
     return {"capture_id": capture.observation_id, "function": capture.function,
-            "ticker": capture.parameters.get("symbol") or capture.parameters.get("tickers"),
-            "source_retrieved_at": capture.retrieved_at.isoformat(), "raw_uri": raw_uri,
+            "ticker": ticker,
+            "source_retrieved_at": clock_string(capture.retrieved_at), "raw_uri": raw_uri,
             "raw_sha256": capture.body_sha256, "metadata": capture.metadata(),
             "validation_status": "validated" if (count if source_count is None else source_count) else "validated_empty", "normalized_count": count}
 
@@ -622,7 +624,7 @@ def publish_manifest(run, manifest, *, manifest_id=None, timeout_s=2):
     # A retry must not adopt a future/naive pre-existing publication proposal.
     clock_string(actual_known)
     if actual_known>known:raise SourceError('manifest_publication_clock_unavailable')
-    return {**body, "source_manifest_id": manifest_id, "source_manifest_known_at": actual_known.isoformat(),
+    return {**body, "source_manifest_id": manifest_id, "source_manifest_known_at": clock_string(actual_known),
             "manifest_sha256":hashlib.sha256(encoded).hexdigest(),"manifest_bytes":len(encoded),
             "manifest_schema_version":body.get("schema_version")}
 
@@ -664,7 +666,26 @@ class Run:
 
     def terminal(self, *, dry_run=False, extra=None):
         import logging
+        terminal_started=time.monotonic()
         base=self.note()
+        # Large bounded native jobs retain their complete group history in
+        # SQL rather than failing a healthy run or truncating its watermarks.
+        # This adds only the existing two acknowledged publication statements.
+        if (not extra and not dry_run and self.job_name in {'fetch-news-sentiment','fetch-insider-transactions'}
+            and len(canonical(self.groups).encode('utf-8'))>MAX_TERMINAL_BYTES-4096):
+            details={k:v for k,v in base.items() if k not in {'groups','metrics'}}
+            details.update(pipeline_scope=self.mode,coverage_scope='bounded_native_work',
+                source_scope_quality='observed_snapshot',coverage_complete=not self.failed and not self.pending,
+                source_function='NEWS_SENTIMENT' if self.job_name=='fetch-news-sentiment' else 'INSIDER_TRANSACTIONS',
+                optional_metrics_omitted_count=len(self.metrics))
+            try:
+                if time.monotonic()-terminal_started>=4:raise SourceError('terminal_publication_admission_exhausted')
+                extra=publish_manifest(self,details,timeout_s=2)
+            except SourceError:
+                # No acknowledged reference can be returned for an uncertain
+                # write. Source progress is preserved; terminal fails closed.
+                self.failed+=1
+                base=self.note()
         if extra and extra.get('source_manifest_id'):
             # Complete proof/group arrays are retained in the immutable SQL
             # body; the terminal log and TEXT note use identical references.
@@ -711,6 +732,8 @@ class Run:
         logging.getLogger(__name__).info("%s", encoded)
         if not dry_run:
             try:
+                remaining=8-(time.monotonic()-terminal_started)
+                if remaining<=0:raise SourceError('terminal_delivery_deadline')
                 finished=datetime.now(UTC)
                 isolated_sql("""INSERT INTO job_runs(job_name,variant,execution_name,started_at,finished_at,duration_s,
                   status,items_total,items_processed,items_failed,rows_written,note)
@@ -718,7 +741,7 @@ class Run:
                   {'job':self.job_name,'variant':self.mode,'execution':self.execution_name,'started':self.started_at,
                    'finished':finished,'duration':(finished-self.started_at).total_seconds(),'status':self.status,
                    'total':self.expected,'processed':self.processed,'failed':self.failed+self.pending,
-                   'rows':self.rows_written,'note':encoded},timeout_s=8)
+                   'rows':self.rows_written,'note':encoded},timeout_s=remaining)
                 delivered=True
             except SourceError:
                 delivered=False

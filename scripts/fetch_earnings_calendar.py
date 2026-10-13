@@ -215,19 +215,28 @@ def fetch_alphavantage_earnings(horizon: str = '3month', *, dry_run=False, scope
         receipt=av.capture_record(capture,raw_uri,len(records),source_count=len(df))
         av.isolated_sql(av.capture_sql([receipt]),{'captures':av.canonical([receipt])},timeout_s=8)
         run=av.Run('fetch-earnings-calendar',scope or _resolve_scope())
-        native_symbols=sorted(set(str(t).upper() for t in df['symbol']))
-        valid_records=result.to_dict('records')
+        raw_symbols=[str(t).strip().upper() for t in df['symbol']]
+        native_symbols=av.symbol_scope([t for t in raw_symbols if re.fullmatch(r'[A-Z0-9][A-Z0-9.-]{0,9}',t)])
+        native_dates=[]
+        for value in df['reportDate']:
+            try:
+                value=str(value).strip()
+                if re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}',value):native_dates.append(date.fromisoformat(value).isoformat())
+            except ValueError:pass  # Already counted as unvalidated native scope.
         manifest={'schema_version':'av_catalyst_run/v1','pipeline_scope':run.mode,
           'source_function':'EARNINGS_CALENDAR','coverage_scope':'av_raw_horizon',
-          'scope_hash':av.digest(native_symbols),'universe_count':len(native_symbols),'configured_universe':native_symbols,
+          'scope_hash':av.manifest_digest(native_symbols),'source_universe_scope_hash':av.manifest_digest(native_symbols),
+          'universe_count':len(native_symbols),'configured_universe':native_symbols,
+          'configured_universe_quality':'supported_native_identifiers',
+          'invalid_native_symbol_rows':sum(not re.fullmatch(r'[A-Z0-9][A-Z0-9.-]{0,9}',t) for t in raw_symbols),
           'native_csv_rows':len(df),'requested_count':len(df),'verified_count':len(records),'excluded_count':len(df)-len(records),
           'pending_count':len(df)-len(records),'coverage_complete':len(df)==len(records),
-          'source_window_start':str(df['reportDate'].min()) if not df.empty else None,
-          'source_window_end':str(df['reportDate'].max()) if not df.empty else None,
-          'complete_through':capture.retrieved_at.isoformat() if len(df)==len(records) else None,
-          'source_revision_ids':[capture.observation_id],'source_digest':capture.body_sha256,
+          'source_window_start':min(native_dates) if native_dates else None,
+          'source_window_end':max(native_dates) if native_dates else None,
+          'complete_through':av.clock_string(capture.retrieved_at) if len(df)==len(records) else None,
+          'source_revision_ids':[capture.observation_id],'source_digest':capture.body_sha256,'source_digest_kind':'raw_body_sha256',
           'predecessor_execution_name':None,'captured_receipts':[receipt],
-          'raw_uri':raw_uri,'raw_sha256':capture.body_sha256,'source_retrieved_at':capture.retrieved_at.isoformat(),
+          'raw_uri':raw_uri,'raw_sha256':capture.body_sha256,'source_retrieved_at':av.clock_string(capture.retrieved_at),
           'source_all_coverage':'unavailable','business_subset_coverage':'not_assessed',**av.code_identity()}
         published=av.publish_manifest(run,manifest)
         result.attrs.update(source_manifest_id=published['source_manifest_id'],source_manifest_known_at=published['source_manifest_known_at'])
