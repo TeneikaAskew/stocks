@@ -151,7 +151,7 @@ def watched(path: str, scopes: list[str]) -> bool:
 
 def trusted_module(name: str, file: str, budget=None):
     expected = ROOT / file
-    if expected.is_symlink() or expected.resolve() != expected:
+    if expected.is_symlink() or expected.resolve() != expected or not expected.is_file():
         raise Unavailable("trusted module path is not a regular local input")
     spec = importlib.util.spec_from_file_location(name, expected)
     if spec is None or spec.loader is None:
@@ -361,13 +361,21 @@ class Git:
                  "size_bytes": sizes[row["blob_oid"]]} for row in sorted(rows, key=lambda r: r["path"].encode("utf-8"))]
 
 
-def json_record(raw: bytes) -> dict:
+def json_record(raw: bytes, max_entries=MAX_ENTRIES) -> dict:
+    if type(max_entries) is not int or not 0 < max_entries <= MAX_ENTRIES:
+        raise Unavailable("record entry admission ceiling cannot be raised")
+    entry_count = 0
     def pairs(items):
+        nonlocal entry_count
         result = {}
         for key, value in items:
             if key in result:
                 raise Unavailable("duplicate JSON record key")
             result[key] = value
+        if set(result) == {"path", "mode", "blob_oid", "size_bytes"}:
+            entry_count += 1
+            if entry_count > max_entries:
+                raise Unavailable("combined record entry ceiling exceeded")
         return result
     def floating(_):
         raise Unavailable("record floats/nonfinite numbers are unsupported")
@@ -448,11 +456,11 @@ class Snapshot:
         self.audit = trusted_module("_source_snapshot_audit", "scripts/maintenance/docs_audit.py", self.budget)
         self.gate = trusted_module("_source_snapshot_gate", "scripts/gate/spec_gate.py", self.budget)
 
-    def policy(self, policy_ref: str, source_ref: str):
+    def policy(self, policy_ref: str, source_ref: str, *, require_source_equal=True):
         raw = self.git.blob(policy_ref, REGISTRY)
         row = self.git.tree(policy_ref)[REGISTRY]
         source_row = self.git.tree(source_ref).get(REGISTRY)
-        if source_row != row:
+        if require_source_equal and source_row != row:
             raise Unavailable("SOURCE registry blob/mode/type differs from trusted POLICY")
         registry = self.audit.load_registry(text(raw))
         if self.audit.classification_is_ambiguous(SITE, registry):
@@ -479,6 +487,12 @@ class Snapshot:
         return digest({"object_format": self.git.object_format,
                        "policy_identity_sha256": policy["policy_identity_sha256"], "source_entries": entries})
 
+    def admitted_manifests(self, source, baseline, scopes):
+        self.budget.entries = sum(watched(path, scopes) for ref in (source, baseline) for path in self.git.tree(ref))
+        if self.budget.entries > self.budget.max_entries:
+            raise Unavailable("combined current/baseline entry ceiling exceeded")
+        return self.git.manifest(source, scopes), self.git.manifest(baseline, scopes)
+
     def spec_binding(self, baseline, policy, source, path, feat):
         if not repo_path(path) or not path.startswith("docs/superpowers/specs/") or not path.endswith(".md"):
             raise Unavailable("unsupported approved spec path")
@@ -503,11 +517,7 @@ class Snapshot:
         old_raw, _ = self.body(baseline)
         new_raw, self.body_hash = self.body(source)
         ids = declaration(fm, text(old_raw))
-        entries = self.git.manifest(source, policy["watch_paths"])
-        baseline_entries = self.git.manifest(baseline, policy["watch_paths"])
-        self.budget.entries = len(entries) + len(baseline_entries)
-        if self.budget.entries > self.budget.max_entries:
-            raise Unavailable("combined gate manifest entry ceiling exceeded")
+        entries, baseline_entries = self.admitted_manifests(source, baseline, policy["watch_paths"])
         self.source_hash = self.source_identity(entries, policy)
         if only_changed_source and entries == baseline_entries:
             self.budget.remaining()
@@ -520,7 +530,7 @@ class Snapshot:
             return self.verdict()
         source = self.git.commit(source_ref)
         raw = self.git.blob(source, RECORD)
-        record = json_record(raw)
+        record = json_record(raw, self.budget.max_entries)
         expected = self.build(policy_ref, source_ref, record)
         if expected != record:
             raise Unavailable("record differs from independently derived committed identity")
@@ -567,7 +577,7 @@ class Snapshot:
         """Original marker predicates and source/body drift; records have no role."""
         self.dirty_site()
         current, source = self.git.commit(policy_ref), self.git.commit(source_ref)
-        policy = self.policy(current, source)
+        policy = self.policy(current, source, require_source_equal=False)
         raw, self.body_hash = self.body(source)
         lines = text(raw).split("\n")
         markers = self.audit.find_markers(lines)
@@ -591,15 +601,9 @@ class Snapshot:
         # The whole range keeps both sides of cross-directory pure renames.
         history = text(self.git.command(["log", "--no-ext-diff", "--format=%H%x09%s", "--name-status", "-M",
                                         "--diff-filter=AMDRT", f"{against}..{source}", "--"]))
-        if self.git.object_format == "sha256":
-            history = re.sub(r"(?m)^([0-9a-f]{40})[0-9a-f]{24}(\t)", r"\1\2", history)
         if self.audit.drift_commits(history, policy["watch_paths"], documents):
             return False
-        entries = self.git.manifest(source, policy["watch_paths"])
-        old_entries = self.git.manifest(against, policy["watch_paths"])
-        self.budget.entries = len(entries) + len(old_entries)
-        if self.budget.entries > self.budget.max_entries:
-            raise Unavailable("combined terminal current/baseline entry ceiling exceeded")
+        entries, old_entries = self.admitted_manifests(source, against, policy["watch_paths"])
         self.source_hash = self.source_identity(entries, policy)
         self.route = "terminal-ordinary"
         self.budget.remaining()
@@ -658,11 +662,7 @@ class Snapshot:
             raise Unavailable("baseline is not available on current trusted main ancestry")
         policy = self.policy(current, source)
         scopes = policy["watch_paths"]
-        entries = self.git.manifest(source, scopes)
-        old_entries = self.git.manifest(baseline, scopes)
-        self.budget.entries = len(entries) + len(old_entries)
-        if self.budget.entries > self.budget.max_entries:
-            raise Unavailable("combined current/baseline entry ceiling exceeded")
+        entries, old_entries = self.admitted_manifests(source, baseline, scopes)
         self.source_hash = self.source_identity(entries, policy)
         body_raw, self.body_hash = self.body(source)
         old_body_raw, old_body_hash = self.body(baseline)
@@ -694,7 +694,33 @@ class Snapshot:
                 "context": context if status == "identity-matched" else "unverified", "reason": reason}
 
 
-def install(record: bytes, budget: Budget):
+def emit(value, budget=None):
+    """A verdict cannot block past the shared deadline on an unread pipe."""
+    raw = (json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
+    fd = sys.stdout.fileno()
+    previous = os.get_blocking(fd)
+    selector = selectors.DefaultSelector()
+    try:
+        os.set_blocking(fd, False)
+        sent = 0
+        while sent < len(raw):
+            if budget is not None:
+                budget.remaining()
+            try:
+                sent += os.write(fd, raw[sent:])
+            except BlockingIOError:
+                if not selector.get_map():
+                    selector.register(fd, selectors.EVENT_WRITE)
+                if not selector.select(budget.remaining() if budget is not None else 0):
+                    raise Unavailable("verdict output deadline exceeded")
+        if budget is not None:
+            budget.remaining()
+    finally:
+        selector.close()
+        os.set_blocking(fd, previous)
+
+
+def install(record: bytes, budget: Budget, complete):
     destination = ROOT / RECORD
     for path in (destination, destination.parent, destination.parent.parent):
         if path.is_symlink():
@@ -703,7 +729,22 @@ def install(record: bytes, budget: Budget):
     budget.read(len(record))
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
+    backup = None
+    installed = False
     try:
+        if destination.exists():
+            if not destination.is_file() or destination.stat().st_mode & 0o111:
+                raise Unavailable("existing sidecar is not a regular mode100644 file")
+            budget.admit_size(destination.stat().st_size)
+            with destination.open("rb") as previous:
+                old = previous.read(budget.max_bytes - budget.bytes + 1)
+            budget.read(len(old))
+            with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".source-snapshot-backup-", delete=False) as stream:
+                backup = Path(stream.name)
+                stream.write(old)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.chmod(backup, 0o644)
         with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".source-snapshot-", delete=False) as stream:
             temporary = Path(stream.name)
             stream.write(record)
@@ -713,9 +754,21 @@ def install(record: bytes, budget: Budget):
         budget.remaining()
         os.replace(temporary, destination)
         temporary = None
+        installed = True
+        complete()
+    except BaseException:
+        if installed:
+            if backup is None:
+                destination.unlink(missing_ok=True)
+            else:
+                os.replace(backup, destination)
+                backup = None
+        raise
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+        if backup is not None:
+            backup.unlink(missing_ok=True)
 
 
 def main(argv=None):
@@ -737,17 +790,22 @@ def main(argv=None):
         snapshot.__init__(seconds=args.max_seconds, max_bytes=args.max_input_bytes, max_entries=args.max_entries)
         if args.action == "produce":
             value = snapshot.build(args.policy_ref, args.source_ref)
-            install(canonical(value), snapshot.budget)
+            serialized = canonical(value)
+            json_record(serialized, snapshot.budget.max_entries)
+            install(serialized, snapshot.budget, lambda: emit(snapshot.verdict(), snapshot.budget))
         else:
             snapshot.verify(args.policy_ref, args.source_ref)
-        print(json.dumps(snapshot.verdict(), ensure_ascii=False, sort_keys=True))
+            emit(snapshot.verdict(), snapshot.budget)
         return 0
     except (Unavailable, OSError, ValueError, subprocess.SubprocessError, UnicodeError, RecursionError) as exc:
         result = snapshot.verdict("unverified", str(exc)) if snapshot is not None and hasattr(snapshot, "budget") else {
             "status": "unverified", "success": False, "eligible_route": None, "entry_count": 0,
             "counted_bytes": 0, "source_identity_sha256": None, "policy_identity_sha256": None,
             "document_body_sha256": None, "elapsed_seconds": 0.0, "context": "unverified", "reason": str(exc)}
-        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        try:
+            emit(result)
+        except (OSError, Unavailable):
+            pass
         return 1
 
 

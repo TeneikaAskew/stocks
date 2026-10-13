@@ -6435,7 +6435,9 @@ def check_marker_sha(doc: str, sha: str | None, base_ref: str, *,
 # range is widened as well because the parser is public and is handed output
 # the caller produced. No status line can collide: `--name-status` emits a
 # letter or `R###`, and `R` is not a hex digit.
-_DRIFT_HEADER_RE = re.compile(r"^[0-9a-f]{4,40}\t")
+# Native full OIDs are 40 hex (SHA-1) or 64 hex (SHA-256); prefixes remain
+# admitted for this existing public parser. No drift predicate changes.
+_DRIFT_HEADER_RE = re.compile(r"^[0-9a-f]{4,64}\t")
 _DRIFT_STATUS_RE = re.compile(r"^([AMDRCT])(\d{3})?\t")
 
 
@@ -7504,7 +7506,7 @@ def main(argv: list[str] | None = None) -> int:
     protocol = source_protocol()
     try:
         # Repository admission precedes resolve_base_ref and every object read.
-        protocol.Git(REPO, protocol.Budget())
+        repository_guard = protocol.Git(REPO, protocol.Budget())
     except (protocol.Unavailable, OSError, ValueError, subprocess.SubprocessError) as exc:
         raise AuditError("committed-source repository admission failed: " + str(exc)) from exc
     os.environ["GIT_NO_LAZY_FETCH"] = "1"
@@ -7523,6 +7525,17 @@ def main(argv: list[str] | None = None) -> int:
     # resolved through git rather than trusted, and a value git cannot place
     # is exit 2 before anything is written.
     head = resolve_marker_sha(args.since, base_ref)
+    trusted_site_classification = None
+    try:
+        source_commit = repository_guard.commit(base_ref)
+        if protocol.SITE in repository_guard.tree(source_commit):
+            policy_commit = repository_guard.commit("origin/main")
+            policy_registry = load_registry(protocol.text(repository_guard.blob(policy_commit, REGISTRY)))
+            trusted_site_classification = classify(protocol.SITE, policy_registry)
+            if trusted_site_classification[0] != "D" or classification_is_ambiguous(protocol.SITE, policy_registry):
+                raise protocol.Unavailable("trusted SITE watcher policy is unavailable")
+    except (protocol.Unavailable, OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise AuditError("trusted SITE watcher policy could not be read: " + str(exc)) from exc
 
     reg_path = REPO / REGISTRY
     if not reg_path.exists():
@@ -7537,6 +7550,8 @@ def main(argv: list[str] | None = None) -> int:
     # reason.
     refuse_symlink(REGISTRY)
     try:
+        if reg_path.stat().st_size > protocol.MAX_BYTES:
+            raise AuditError("registry exceeds the fixed eight-MiB policy-input allowance")
         registry_text = reg_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         # Unreadable, a directory, or not UTF-8. Left unguarded these walk past
@@ -7683,6 +7698,9 @@ def main(argv: list[str] | None = None) -> int:
 
     for doc in docs:
         cls, code_paths, regions = classify(doc, registry)
+        if doc == protocol.SITE and trusted_site_classification is not None:
+            # Authored/staged registry changes cannot hide SITE or its broad watchers.
+            cls, code_paths, regions = trusted_site_classification
         if cls is None:
             counts["unclassified"] += 1
             findings.append({"check": "unclassified", "doc": doc, "severity": "P2",
@@ -7844,6 +7862,14 @@ def main(argv: list[str] | None = None) -> int:
                 if doc == protocol.SITE:
                     try:
                         snapshot = protocol.Snapshot(REPO)
+                        source_commit = snapshot.git.commit(base_ref)
+                        committed_registry = snapshot.git.blob(source_commit, REGISTRY)
+                        snapshot.budget.admit_size(reg_path.stat().st_size)
+                        with reg_path.open("rb") as registry_stream:
+                            working_registry = registry_stream.read(snapshot.budget.max_bytes - snapshot.budget.bytes + 1)
+                        snapshot.budget.read(len(working_registry))
+                        if working_registry != committed_registry:
+                            raise protocol.Unavailable("registry worktree differs from committed SOURCE policy")
                         identity = snapshot.verify("origin/main", base_ref)
                     except (protocol.Unavailable, OSError, ValueError, subprocess.SubprocessError, UnicodeError, RecursionError) as exc:
                         findings += drift

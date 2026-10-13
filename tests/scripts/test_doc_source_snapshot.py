@@ -144,9 +144,10 @@ def test_actual_committed_source_mutation_refuses_old_record(tmp_path):
     assert json.loads(result.stdout)["status"] == "unverified"
 
 
-@pytest.mark.parametrize("mutation", ["baseline-list", "bool-size", "unknown-nested", "duplicate", "escape", "wrong-width"])
-def test_actual_record_schema_corruption_is_explicit_unverified(mutation, tmp_path):
-    repo = Repo(tmp_path / "repo")
+@pytest.mark.parametrize("mutation", ["baseline-list", "bool-size", "unknown-nested", "duplicate", "escape", "wrong-width", "version", "float", "extra-json"])
+@pytest.mark.parametrize("object_format", ["sha1", "sha256"])
+def test_actual_record_schema_corruption_is_explicit_unverified(mutation, object_format, tmp_path):
+    repo = Repo(tmp_path / "repo", object_format)
     repo.produce_committed()
     record = json.loads((repo.path / RECORD).read_text())
     if mutation == "baseline-list":
@@ -156,18 +157,29 @@ def test_actual_record_schema_corruption_is_explicit_unverified(mutation, tmp_pa
     elif mutation == "unknown-nested":
         record["eligibility"]["approved"] = True
     elif mutation == "wrong-width":
-        record["baseline"]["main_commit_oid"] = "a" * 64
+        record["baseline"]["main_commit_oid"] = "a" * (64 if object_format == "sha1" else 40)
+    elif mutation == "version":
+        record["version"] = 2
+    elif mutation == "float":
+        record["source_entries"][0]["size_bytes"] = 0.5
     raw = (json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode()
     if mutation == "duplicate":
         raw = raw.replace(b'{"baseline":', b'{"version":1,"baseline":', 1)
     elif mutation == "escape":
         raw = raw.replace(b"docs/", b"docs\\/", 1)
+    elif mutation == "extra-json":
+        raw += b"{}\n"
     repo.write(RECORD, raw)
     repo.commit("docs: corrupt authored record")
     result = repo.cli("verify")
     assert result.returncode != 0
     assert json.loads(result.stdout)["status"] == "unverified", result.stderr
     assert "Traceback" not in result.stderr
+    if mutation in ("version", "float", "extra-json"):
+        report = json.loads(repo.audit().stdout)
+        assert SITE not in report["source_identities"]
+        assert any(f["doc"] == SITE and f["check"] == "source-provenance" for f in report["findings"])
+        assert any(f["doc"] == SITE and f["check"] == "changed-since" for f in report["findings"])
 
 
 @pytest.mark.parametrize("existing", [False, True])
@@ -625,3 +637,62 @@ def test_actual_repeated_baseline_policy_source_spec_bytes_all_count(tmp_path):
         assert refused.returncode != 0
         assert "remaining input-byte" in json.loads(refused.stdout)["reason"]
         assert (repo.path / RECORD).read_bytes() == original
+
+
+@pytest.mark.parametrize("change", ["committed", "unstaged"])
+def test_actual_source_registry_cannot_reclassify_site_out_of_runtime_checks(change, tmp_path):
+    repo = Repo(tmp_path / "repo")
+    repo.produce_committed()
+    repo.write(REGISTRY, (repo.path / REGISTRY).read_text().replace("| D | " + SITE + " | lib, scripts, tests | |", "| C | " + SITE + " | | |"))
+    if change == "committed":
+        repo.commit("docs: attempt unsupported SITE reclassification")
+    report = json.loads(repo.audit().stdout)
+    assert SITE not in report["source_identities"]
+    assert any(f["doc"] == SITE and f["check"] == "source-provenance" for f in report["findings"])
+    assert any(f["doc"] == SITE and f["check"] == "changed-since" for f in report["findings"])
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_actual_closed_verdict_pipe_preserves_installed_or_absent_output(existing, tmp_path):
+    repo = Repo(tmp_path / "repo")
+    if existing:
+        repo.produce_committed()
+    old = (repo.path / RECORD).read_bytes() if existing else None
+    read_fd, write_fd = os.pipe()
+    os.close(read_fd)
+    try:
+        result = subprocess.run([sys.executable, MODULE, "produce"], cwd=repo.path, stdout=write_fd,
+                                stderr=subprocess.PIPE, timeout=10)
+    finally:
+        os.close(write_fd)
+    assert result.returncode != 0
+    if existing:
+        assert (repo.path / RECORD).read_bytes() == old
+    else:
+        assert not (repo.path / RECORD).exists()
+    assert not list((repo.path / RECORD).parent.glob(".source-snapshot-*"))
+
+
+def test_actual_manifest_reads_committed_code_not_dirty_worktree(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    produced = repo.produce_committed()
+    repo.write("lib/input.py", "VALUE = 999\n")
+    verified = repo.cli("verify")
+    assert verified.returncode == 0, verified.stdout + verified.stderr
+    assert json.loads(verified.stdout)["source_identity_sha256"] == produced["source_identity_sha256"]
+
+
+def test_actual_well_formed_forged_identity_refused_by_verifier_and_audit(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    repo.produce_committed()
+    record = json.loads((repo.path / RECORD).read_text())
+    record["source_identity_sha256"] = "0" * 64
+    repo.write(RECORD, json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
+    repo.commit("docs: canonical but false authored identity")
+    refused = repo.cli("verify")
+    assert refused.returncode != 0
+    assert "independently derived committed identity" in json.loads(refused.stdout)["reason"]
+    report = json.loads(repo.audit().stdout)
+    assert SITE not in report["source_identities"]
+    assert any(f["doc"] == SITE and f["check"] == "source-provenance" for f in report["findings"])
+    assert any(f["doc"] == SITE and f["check"] == "changed-since" for f in report["findings"])

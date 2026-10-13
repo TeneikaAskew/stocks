@@ -46,57 +46,57 @@ Spec: § Audit routing and bootstrap, Stage1/2. Advances done_when[4,7].
 
 ## Task 2: Real committed-repository fixtures and initial refusals
 Spec: § Bounds and acceptance controls. Advances done_when[0,1,6].
-- [ ] Add disposable real Git repo builders to `tests/scripts/test_doc_source_snapshot.py`, not successful verifier substitutes. Seed actual `docs/DOC_REGISTRY.md`, SITE, watched source and genuine trunk history.
-- [ ] Run initially failing actual-CLI controls for absent producer/record, committed-vs-dirty source and unresolved refs; retain meaningful expected exit/finding assertions.
+- [x] Add disposable real Git repo builders to `tests/scripts/test_doc_source_snapshot.py`, not successful verifier substitutes. Seed actual `docs/DOC_REGISTRY.md`, SITE, watched source and genuine trunk history.
+- [x] Run initially failing actual-CLI controls for absent producer/record, committed-vs-dirty source and unresolved refs; retain meaningful expected exit/finding assertions.
 
 ## Task 3: Strict canonical record and path contracts
 Spec: § Exact record and committed-source contract. Advances done_when[0,1,6].
-- [ ] Implement version1 schema/canonical identity calculations in new stdlib-only `scripts/maintenance/doc_source_snapshot.py`; strict keys/types/duplicates/UTF-8/paths/object-format/modes/entry order.
-- [ ] Test malformed/unknown/duplicate/oversized records, floats/bool integers, paths and unsupported entry types through actual CLI. Real SHA-1 and SHA-256 repositories must accept exact OID widths and refuse malformed/wrong-width OIDs; literal scripts/café.py UTF-8 canonical bytes pass, alternate Unicode/solidus escapes refuse.
+- [x] Implement version1 schema/canonical identity calculations in new stdlib-only `scripts/maintenance/doc_source_snapshot.py`; strict keys/types/duplicates/UTF-8/paths/object-format/modes/entry order.
+- [x] Test malformed/unknown/duplicate/oversized records, floats/bool integers, paths and unsupported entry types through actual CLI. Real SHA-1 and SHA-256 repositories must accept exact OID widths and refuse malformed/wrong-width OIDs; literal scripts/café.py UTF-8 canonical bytes pass, alternate Unicode/solidus escapes refuse.
 
 ## Task 4: Trusted policy and exact current/baseline manifests
 Spec: § Exact record and committed-source contract. Advances done_when[0,1].
-- [ ] Derive the entire SITE watcher declaration from trusted `docs/DOC_REGISTRY.md`, preserving exact/descendant semantics and new descendants; independently enumerate committed paths/modes/OIDs/type/size through Git argv plumbing.
-- [ ] Verify source/policy hashes and actual ancestral baseline.main_commit_oid/tree/spec; require current main baseline for branch routes, unchanged approved FEAT/spec copies and SOURCE registry blob/mode/type exactly equal POLICY. Accept landed route only when source AND body match independently measured current policy tree. No caller-selected merge bypass or required vanished feature SHA.
-- [ ] Exercise actual new/deleted/renamed/mode-changed blobs, narrowed scope, source-registry blob/mode/type inequality, unavailable ancestral baseline and changed trusted policy refusals.
+- [x] Derive the entire SITE watcher declaration from trusted `docs/DOC_REGISTRY.md`, preserving exact/descendant semantics and new descendants; independently enumerate committed paths/modes/OIDs/type/size through Git argv plumbing.
+- [x] Verify source/policy hashes and actual ancestral baseline.main_commit_oid/tree/spec; require current main baseline for branch routes, unchanged approved FEAT/spec copies and SOURCE registry blob/mode/type exactly equal POLICY. Accept landed route only when source AND body match independently measured current policy tree. No caller-selected merge bypass or required vanished feature SHA.
+- [x] Exercise actual new/deleted/renamed/mode-changed blobs, narrowed scope, source-registry blob/mode/type inequality, unavailable ancestral baseline and changed trusted policy refusals.
 
 ## Task 5: Deadline, byte accounting and Git-state refusal
 Spec: § Bounds and acceptance controls. Advances done_when[5,6].
-- [ ] Enforce a single monotonic5second whole-operation budget, combined8388608input bytes and20000current/baseline entries, including record/listing/metadata/body/repeated reads/output admission. Tests may lower limits only.
-- [ ] Count EVERY actual policy/eligibility input byte, including each registry/selected plan/current-baseline-POLICY-SOURCE spec/initializer-policy read and repeated reads; reject oversized inputs before buffering/parsing. Actual oversized registry, selected plan and each required spec revision refuse; accepted below-bound controls use the same CLI.
-- [ ] Bound/reap Git children, reject partial output and replacement/graft/unsupported shallow state. Exercise real slow/large/partial controls without sandbox changes or partial success.
-- [ ] Before object-inspecting Git plumbing refuse partial-clone/promisor/config/pack state, verify a supported no-lazy-fetch capability and apply it to every producer/verifier Git child. Preserve inherited credentials/proxy/CA. Real missing-watched-blob promisor fixture with instrumented LOCAL remote must leave access sentinel absent on actual producer/verifier/audit refusal; unprotected actual Git lazy fetch must detect access, complete ordinary repo must accept. No production/network action.
+- [x] Enforce a single monotonic5second whole-operation budget, combined8388608input bytes and20000current/baseline entries, including record/listing/metadata/body/repeated reads/output admission. Tests may lower limits only.
+- [x] Count EVERY actual policy/eligibility input byte, including each registry/selected plan/current-baseline-POLICY-SOURCE spec/initializer-policy read and repeated reads; reject oversized inputs before buffering/parsing. Actual oversized registry, selected plan and each required spec revision refuse; accepted below-bound controls use the same CLI.
+- [x] Bound/reap Git children, reject partial output and replacement/graft/unsupported shallow state. Exercise real slow/large/partial controls without sandbox changes or partial success.
+- [x] Before object-inspecting Git plumbing refuse partial-clone/promisor/config/pack state, verify a supported no-lazy-fetch capability and apply it to every producer/verifier Git child. Preserve inherited credentials/proxy/CA. Real missing-watched-blob promisor fixture with instrumented LOCAL remote must leave access sentinel absent on actual producer/verifier/audit refusal; unprotected actual Git lazy fetch must detect access, complete ordinary repo must accept. No production/network action.
 
 ## Task 6: Producer and committed verifier CLI
 Spec: § Exact record and committed-source contract. Advances done_when[0,5,6].
-- [ ] Implement exact approved produce/verify argv; producer writes only the fixed sidecar, installs atomically after complete success, and verifier reads it from committed source ref.
-- [ ] Report actual verdict/reason/count/bytes/source-policy-body identities/elapsed time. Actual nonzero/timeout/partial failures start BOTH absent and valid installed output: absent remains absent, existing valid bytes remain exact after EVERY failure. Do not open/truncate/delete destination before complete success; temporary output atomically replaces only on verified success. Corrupt/fake output cannot pass real verifier/audit.
+- [x] Implement exact approved produce/verify argv; producer writes only the fixed sidecar, installs atomically after complete success, and verifier reads it from committed source ref.
+- [x] Report actual verdict/reason/count/bytes/source-policy-body identities/elapsed time. Actual nonzero/timeout/partial failures start BOTH absent and valid installed output: absent remains absent, existing valid bytes remain exact after EVERY failure. Do not open/truncate/delete destination before complete success; temporary output atomically replaces only on verified success. Corrupt/fake output cannot pass real verifier/audit.
 
 ## Task 7: Body normalization and dirty-document protection
 Spec: § Exact record and committed-source contract, document identity. Advances done_when[0,1].
-- [ ] Reuse existing `_without_marker` semantics without widening ignored metadata or importing untrusted HEAD startup inputs into the trusted gate; protect any necessary local initialization inputs.
-- [ ] Hash strict UTF-8 complete committed SITE body, preserve extra marker prose and reject dirty SITE before identity OR terminal verified routes. Actual audit controls modify SITE separately only in index, only unstaged, and staged then restored worktree; paired clean identical committed-record control passes. Real note/frontend/progress/extra-marker changes invalidate identity.
+- [x] Reuse existing `_without_marker` semantics without widening ignored metadata or importing untrusted HEAD startup inputs into the trusted gate; protect any necessary local initialization inputs.
+- [x] Hash strict UTF-8 complete committed SITE body, preserve extra marker prose and reject dirty SITE before identity OR terminal verified routes. Actual audit controls modify SITE separately only in index, only unstaged, and staged then restored worktree; paired clean identical committed-record control passes. Real note/frontend/progress/extra-marker changes invalidate identity.
 
 ## Task 8: Narrow docs-audit routing
 Spec: § Local identity and external review are separate; § Audit routing and bootstrap. Advances done_when[0,4,7].
-- [ ] First accept independently valid ordinary verified current-trunk marker plus zero original source/body drift with no sidecar requirement. Otherwise route SITE's two changed-since checks only on complete eligible declared-note/bootstrap/DOC-closeout identity; invalid/missing records retain originals plus needed provenance finding. Preserve ordinary marker/date/ancestry/reference/description/test checks and all other documents.
-- [ ] Add actual audit CLI controls for valid and stale proof plus unrelated finding; labels never claim authenticated external review/deployment and stamping remains trunk-only.
+- [x] First accept independently valid ordinary verified current-trunk marker plus zero original source/body drift with no sidecar requirement. Otherwise route SITE's two changed-since checks only on complete eligible declared-note/bootstrap/DOC-closeout identity; invalid/missing records retain originals plus needed provenance finding. Preserve ordinary marker/date/ancestry/reference/description/test checks and all other documents.
+- [x] Add actual audit CLI controls for valid and stale proof plus unrelated finding; labels never claim authenticated external review/deployment and stamping remains trunk-only.
 
 ## Task 9: Trusted spec selectors and SITE-note byte ownership
 Spec: § Exact document allowance. Advances done_when[2].
-- [ ] Extend approved-spec validation for sorted unique `site_source_notes`; derive existing unique Chain IDs from trusted SITE and declarations only from immutable approved merge-base spec.
-- [ ] Extend `check_product_scope` for only own declared FEAT/component rows in the appended exact-header note table, preserving all other bytes. Require actual added/updated declared own notes bound to exact current source hash and unchanged approved FEAT/spec; no/empty declaration, unchanged notes or removal alone cannot clear CODE drift. Reject mixed existing Chain edits, frontend/checklist/marker changes, duplicate headings/rows, foreign removals, undeclared IDs and self-approved selectors with actual gate controls.
+- [x] Extend approved-spec validation for sorted unique `site_source_notes`; derive existing unique Chain IDs from trusted SITE and declarations only from immutable approved merge-base spec.
+- [x] Extend `check_product_scope` for only own declared FEAT/component rows in the appended exact-header note table, preserving all other bytes. Require actual added/updated declared own notes bound to exact current source hash and unchanged approved FEAT/spec; no/empty declaration, unchanged notes or removal alone cannot clear CODE drift. Reject mixed existing Chain edits, frontend/checklist/marker changes, duplicate headings/rows, foreign removals, undeclared IDs and self-approved selectors with actual gate controls.
 
 ## Task 10: Protected CICD verifier/suite/init ownership
 Spec: § Implementation boundary via bootstrap and done_when protected files. Advances done_when[3,4].
-- [ ] Add producer/verifier, docs_audit, their suites and actual local initialization dependency closure to existing process ownership without changing core renderer logic or broad watchers.
-- [ ] Actual unrelated-feature gate controls must refuse attempted code/suite/init changes; legitimate standalone CICD control must pass. Coordinate exact diff with review_deploy before either author pushes shared-file work.
+- [x] Add producer/verifier, docs_audit, their suites and actual local initialization dependency closure to existing process ownership without changing core renderer logic or broad watchers.
+- [x] Actual unrelated-feature gate controls must refuse attempted code/suite/init changes; legitimate standalone CICD control must pass. Coordinate exact diff with review_deploy before either author pushes shared-file work.
 
 ## Task 11: Squash and fresh-clone acceptance
 Spec: § Exact record and committed-source contract; § Audit routing and bootstrap, Stage3. Advances done_when[1,6].
-- [ ] Run actual producer → commit record → actual verify/audit/gate on feature, actual squash to main, clone without original feature commit and verify landed identity with trunk history sufficient for marker.
-- [ ] Mutated landed source/body/policy must fail; vanished feature SHA must not be fetched or assumed. Include actual corrupt producer-output negative paired with accepted record, no-note CODE branch refusal, bootstrap reuse refusal and exact six-file initial-bootstrap accepted/refused controls.
-- [ ] Run real DOC-only body-first close-out producer/merge, then genuine current-trunk stamp/record deletion. Refuse changed CODE masquerading as DOC, registry/type/mode changes, dirty/moved marker and premature retirement; genuine terminal original marker+zero source/body drift must pass without a record.
+- [x] Run actual producer → commit record → actual verify/audit/gate on feature, actual squash to main, clone without original feature commit and verify landed identity with trunk history sufficient for marker.
+- [x] Mutated landed source/body/policy must fail; vanished feature SHA must not be fetched or assumed. Include actual corrupt producer-output negative paired with accepted record, no-note CODE branch refusal, bootstrap reuse refusal and exact six-file initial-bootstrap accepted/refused controls.
+- [x] Run real DOC-only body-first close-out producer/merge, then genuine current-trunk stamp/record deletion. Refuse changed CODE masquerading as DOC, registry/type/mode changes, dirty/moved marker and premature retirement; genuine terminal original marker+zero source/body drift must pass without a record.
 
 ## Task 12: Complete verification and resource evidence
 Spec: § Bounds and acceptance controls. Advances done_when[0,1,2,3,4,5,6].
