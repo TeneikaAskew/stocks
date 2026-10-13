@@ -311,6 +311,24 @@ gcloud pubsub topics delete gcp-job-failures --quiet
 # Delete the Cloud Run service
 gcloud run services delete failure-notifier --region us-east1 --quiet
 
+# Revoke access granted to the dedicated runtime identity before deleting it.
+# Keep trading-runner: it invokes other jobs, Pub/Sub and schedulers.
+notifier_project=adept-mountain-474619-d4
+notifier_runtime="failure-notifier@${notifier_project}.iam.gserviceaccount.com"
+for notifier_secret in github-pat github-repo discord-webhook-gcp; do
+  gcloud secrets remove-iam-policy-binding "$notifier_secret" \
+    --project="$notifier_project" \
+    --member="serviceAccount:${notifier_runtime}" \
+    --role=roles/secretmanager.secretAccessor --quiet || exit 1
+done
+for notifier_role in roles/run.viewer roles/logging.viewer; do
+  gcloud projects remove-iam-policy-binding "$notifier_project" \
+    --member="serviceAccount:${notifier_runtime}" \
+    --role="$notifier_role" --condition=None --quiet || exit 1
+done
+gcloud iam service-accounts delete "$notifier_runtime" \
+  --project="$notifier_project" --quiet || exit 1
+
 # Optionally delete the secrets (only if you want to redo setup-notifier)
 gcloud secrets delete github-pat --quiet
 gcloud secrets delete github-repo --quiet
