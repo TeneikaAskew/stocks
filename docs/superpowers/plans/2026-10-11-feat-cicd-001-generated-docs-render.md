@@ -261,20 +261,29 @@ RENDER_INPUTS = (*RENDERER_FILES, "tests/scripts/test_check_generated_docs.py",
   not a renderer file, since the gate never runs it (`load_renderer` keeps `scripts` a package in name only).
   #1440's wider allowance (renderer-owned relation counts, table/materialized-view/view breakdowns and as-of labels
   outside the blocks) is not implemented here: #1440's own body says a separately approved spec must come first.
-- Produces (red-team round 9): `is_render_input(path) -> bool`, the one definition the render-inputs refusal, `moved`
-  and the suite read: a `RENDER_INPUTS` path, or a spelling `RENDER_LOADERS` matches, that is every file Python would
-  load in place of, or before, a protected module or initializer: any `scripts/__init__.*` or
-  `scripts/maintenance/__init__.*`, any `scripts/maintenance/doc_inventory.*` or `scripts/maintenance/check_generated_docs.*`,
-  a package folder of either renderer module's name, anything under `scripts/__pycache__/` or
-  `scripts/maintenance/__pycache__/`, and a root `scripts.*` file, which shadows the `scripts` package.
+- Produces (red-team rounds 9 and 10): `is_render_input(path) -> bool`, the one definition the render-inputs refusal,
+  `moved` and the suite read: a `RENDER_INPUTS` path, or a name `RENDER_LOADERS` matches, which Python imports a
+  protected module or initializer by at its own path: a `.py`, a `.pyc` or an extension module (a name ending `.so` or
+  `.pyd`) of `scripts/__init__`, `scripts/maintenance/__init__`, `scripts/maintenance/doc_inventory` or
+  `scripts/maintenance/check_generated_docs`, a package folder of either renderer module's name, anything under
+  `scripts/__pycache__/` or `scripts/maintenance/__pycache__/`, and a root `scripts` module of those suffixes, which
+  shadows the namespace package. A name Python does not import (`.pyi`, `.md`, `.sh`) is not one (round 10, policy F2,
+  shell F3, YAML N1).
 - Risk accepted (red-team round 9): `tests/__init__.py`, `tests/scripts/__init__.py` and `tests/conftest.py` stay
   unprotected, though the docs test imports them: REQ-GOV-004 does not name them, the approved spec's Approach 3
   already concedes test-time code, the gate's render runs none of them, and honest feature PRs change shared fixtures.
+- Ruled out (red-team round 10, shell F1 and F2, YAML F2): a `scripts` package elsewhere on `sys.path`
+  (`platform/api/scripts/`, `platform/scripts/`, `scripts/scripts/`), a root module named after one in the standard
+  library (`argparse.py`, `json.py`, `__future__.py`) and test-time code. REQ-GOV-004 names files; the gate's own render
+  is fenced from all of these (`OutsideCheckout`, `-I`); and the approved spec's Approach 3 concedes that code in a pull
+  request can change what the docs test runs. The gate protects the named files, their importable names at their own
+  paths, and the root `scripts` shadow, no more.
 
 - Produces (suite): `RENDERER_HERE = (REPO / "scripts/maintenance/doc_inventory.py").is_file()`.
 - Ruling: tests that need stocks' renderer run only where `RENDERER_HERE` is true. They guard with `if RENDERER_HERE:`
   because a test may not `return`. This keeps the suite portable to solyra; see "Solyra" at the end of this plan.
-- `is_process_file` gains `or path in RENDERER_FILES`.
+- `is_process_file` gains `or path in RENDERER_FILES`, and (red-team round 10, YAML F3) `or RENDER_LOADERS.fullmatch(path)`:
+  a name Python imports in place of a renderer module or a scripts package initializer is FEAT-CICD-001's work too.
 - The suite docstring at `:6` gains one sentence: tests that need the renderer under `scripts/maintenance/` run where it
   exists (`RENDERER_HERE`), so the file can stay byte-identical in solyra.
 
@@ -292,9 +301,10 @@ def test_the_renderer_and_its_snapshot_are_process_files(repo):
 
 def test_the_gate_names_the_documents_and_snapshot_the_docs_test_reads():
     sg = load_gate(REPO)
-    assert sg.GENERATED_RULE == "REQ-GOV-004" and sg.RENDER_INPUTS == (
-        "scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
-        "tests/scripts/test_check_generated_docs.py", "tests/fixtures/live_gcp_snapshot_2026-09-07.json")
+    assert sg.GENERATED_RULE == "REQ-GOV-004" and \
+        sg.RENDER_INPUTS == (*sg.RENDERER_FILES, "tests/scripts/test_check_generated_docs.py", "scripts/__init__.py") and \
+        sg.RENDERER_FILES == ("scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
+                              "scripts/maintenance/__init__.py", "tests/fixtures/live_gcp_snapshot_2026-09-07.json")
     # the renderer tests cannot be switched off in a repository that carries the documents
     assert RENDERER_HERE == all((REPO / d).is_file() for d in sg.GENERATED_DOCS)
     if RENDERER_HERE:
@@ -553,13 +563,18 @@ the containment check). Advances done_when[1].
     rule reads it both ways. A valued form that changes no byte on this tree (`* text=auto eol=lf`) is still refused,
     the conservative direction the spec's prose takes (it refuses any `.gitattributes`); the refusal says "refused
     even where it changes no byte here", and which valued forms are neutral is not modelled (red-team round 7).
-    `{lines}` names every refused line with what the gate verifies, `f"{file}: {attribute} ({the line as written})"`
-    joined by "; ", one entry per line per file in the listing's order, a line identical to another included, a
-    character that prints nothing escaped (red-team rounds 8 and 9). `ATTRIBUTES_REMEDY` is one fixed instruction,
-    the same for every line and for the check-attr refusal: "Take each such line out of this pull request. If this
-    pull request did not add it, it has to come off main first (a change to main), and then main merged into this
-    branch." The gate does not judge whose a line is or which branch clears it: round 8's judgement from the merge
-    base drew three rounds of wording findings (round 9, policy F1 to F4, YAML F2 and F3).
+    `{lines}` names every refused line with what the gate verifies, `f"{file}: {attribute} ({shown_line(line)})"`
+    joined by "; ", one entry per line per file in the listing's order, a line identical to another included (red-team
+    rounds 8 and 9). `shown_line` prints the line as written in double quotes: a backslash and a double quote escaped
+    with a backslash, a byte that is not printable ASCII or not part of valid UTF-8 as `\xNN`, a code point that prints
+    nothing (U+2028, a byte order mark) as `\uNNNN`, and printable UTF-8 as itself, so two different lines never show
+    alike (round 10, policy F3, shell F4). `ATTRIBUTES_REMEDY` is one fixed instruction, the same for every line and,
+    after how to find the line, for the check-attr refusal: "Undo this pull request's change to each such line: remove
+    a line it added, or put back main's text for a line it changed. A line this pull request did not change comes off
+    main first (a change to main), and then main is merged into this branch." The gate does not judge whose a line is
+    or which branch clears it: round 8's judgement from the merge base drew three rounds of wording findings (round 9,
+    policy F1 to F4, YAML F2 and F3), and round 9's "take each such line out" deleted main's line where the pull
+    request had only edited it (round 10, policy F1).
   - `order_refusal(head, listing)` (red-team rounds 7 and 8), after `tree_refusal`: every tree of the head, the root
     and each `040000` entry of the listing, read raw in one `cat-file --batch` and checked as git fsck's
     `verify_ordered` checks it: an empty name, a name holding a slash, a name listed twice whatever its modes, or
@@ -593,8 +608,10 @@ the containment check). Advances done_when[1].
     `cat-file --batch` run before it in this repository, so a partial clone has fetched those objects from its
     promisor remote, which the borrowed store has none of. A byte-changing attribute set or valued there is refused
     as `f"a .gitattributes that can change bytes on checkout or export ({attribute} on {path}, as git check-attr reads
-    it), {NEUTRAL_TOO}; {ATTRIBUTE_READING}. {ATTRIBUTES_REMEDY}"`: check-attr names the attribute and a file it applies
-    to, not the line, and the instruction is the text rule's (round 9). A git failure, or an object it cannot read,
+    it), {NEUTRAL_TOO}; {ATTRIBUTE_READING}. {CHECK_ATTR_REMEDY}"`: check-attr names the attribute and a file it applies
+    to, not the line, so `CHECK_ATTR_REMEDY` is "Find the .gitattributes line that sets it (`git check-attr -a --
+    <path>` names the attribute), then: " and the text rule's instruction (rounds 9 and 10). A git failure, or an object
+    it cannot read,
     refuses with "the head tree's attributes cannot be read". Both rules run (red-team round 6): check-attr is git's own reading, so it covers any way the
     text rule could still part from git's parser, while the text rule also reads the working-tree way that check-attr,
     reading the blob, does not (a line past a NUL, a byte order mark), and names the file and the word that set it.
@@ -859,6 +876,15 @@ protected module or initializer, a root `scripts.*` shadow and the packages' `__
 says "git fsck --strict" (shell F2, F3); and the product-delivery skill's "Never" bullet names the scripts package
 initializers (policy F6).
 
+Red-team round 10 (one batch): the `.gitattributes` instruction undoes the pull request's change to a line instead of
+taking it out, and the check-attr refusal first says how to find the line (policy F1, N1); a render input's other
+names are only the ones Python imports, `.py`, `.pyc` and extension modules (policy F2, shell F3, YAML N1); a refused
+line is shown in double quotes, escaped one way only (policy F3, shell F4); what the gate does not protect is written
+down beside the tests/ initializers line (shell F1, F2, YAML F2); every such name of a renderer module or a scripts
+package initializer is a process file (YAML F3); the suite's inventory fixture reads no live text or optional file
+and asserts no count a feature PR can change, and creates `.git/info/` before writing its exclude file (YAML F1, F4);
+and this plan's Task 3 test text and Velocity line match the code (policy N3, N4).
+
 ## Task 11: Evidence: the full suite, the base-suite job, and RED against main
 
 Spec: § Capacity. Advances done_when[5].
@@ -918,10 +944,11 @@ done_when[5].
     - Velocity, per such PR and none otherwise, counted under `generated_doc_refusals` for the accepted control on
       2026-10-13 (red-team round 8, policy F4): 12 subprocesses without a `.gitattributes` (one `ls-tree -r -t`; three
       `cat-file --batch`, for the trees the order check reads, the three documents and the materialized tree; one
-      `diff` of the render inputs; per document one `show` and one `ls-tree` of its merge-base copy; one child), and
-      17 with one (also `tree_refusal`'s `cat-file --batch` of the `.gitattributes` blobs, and in the borrowed
-      repository `git init`, `rev-parse --git-path objects`, `cat-file --batch-check` and `check-attr`). Every count
-      is constant per PR. The order check costs 12 ms and the attribute cross-check 34 ms (30 to 40 ms) on main's tree.
+      `diff --name-only` of the merge base against main, filtered by `is_render_input`; per document one `show` and
+      one `ls-tree` of its merge-base copy; one child), and 17 with one (also `tree_refusal`'s `cat-file --batch` of
+      the `.gitattributes` blobs, and in the borrowed repository `git init`, `rev-parse --git-path objects`,
+      `cat-file --batch-check` and `check-attr`). Every count is constant per PR. The order check costs 12 ms and the
+      attribute cross-check 34 ms (30 to 40 ms) on main's tree.
     - Wall-clock: about 40 s (37.2 s render and 1.9 s write, measured) inside the gate job's 300 s. The suite adds about
       60 s locally, about 47 s in CI, to registry-check's 231 s of 300 s.
     - Cost: a public repository on standard runners, so $0 × runs/day × 30 = $0.

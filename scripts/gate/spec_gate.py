@@ -84,18 +84,25 @@ RENDERER_FILES = ("scripts/maintenance/doc_inventory.py", "scripts/maintenance/c
 # initializer, which REQ-GOV-004 names since #1440 (red-team round 8): the gate never runs it, since load_renderer keeps
 # `scripts` a package in name only, but the docs test imports scripts.maintenance through it.
 RENDER_INPUTS = (*RENDERER_FILES, "tests/scripts/test_check_generated_docs.py", "scripts/__init__.py")
-# Beside those paths, every file Python would load in place of, or before, a protected module or package initializer
-# (red-team round 9): another spelling of an initializer or of a renderer module (.pyc, an extension module, .pyi), a
-# package folder of a renderer module's name, anything in the packages' __pycache__, and a root module that shadows the
-# `scripts` package. tests/__init__.py, tests/scripts/__init__.py and tests/conftest.py stay outside: REQ-GOV-004 does
-# not name them, the spec's Approach 3 concedes test-time code, and the gate's render runs none of them.
-RENDER_LOADERS = re.compile(r"scripts\.[^/]+|scripts/(?:maintenance/)?(?:__init__\.[^/]+|__pycache__/.+)"
-                            r"|scripts/maintenance/(?:doc_inventory|check_generated_docs)(?:\.[^/]+|/.+)")
+# Beside those paths, the other names a protected module or package initializer is imported by at its own path
+# (red-team rounds 9 and 10): a .py, a .pyc or an extension module (a name ending .so or .pyd) of a scripts package
+# initializer or a renderer module, a package folder of a renderer module's name, anything in the two packages'
+# __pycache__, and a root `scripts` module of those suffixes, which shadows the namespace package. A name Python does
+# not import (.pyi, .md, .sh) is not one (round 10, policy F2, shell F3, YAML N1).
+# Ruled out (round 10, shell F1 and F2, YAML F2): a `scripts` package elsewhere on sys.path (platform/api/scripts/,
+# platform/scripts/, scripts/scripts/), a root module named after one in the standard library (argparse.py, json.py,
+# __future__.py), and test-time code, tests/__init__.py, tests/scripts/__init__.py and tests/conftest.py among it.
+# REQ-GOV-004 names files; the gate's own render is fenced from all of these (OutsideCheckout, -I); and the approved
+# spec's Approach 3 concedes that code in a pull request can change what the docs test runs.
+IMPORTED_AS = r"\.(?:pyc?|(?:[^/]*\.)?(?:so|pyd))"
+RENDER_LOADERS = re.compile(rf"scripts{IMPORTED_AS}|scripts/(?:maintenance/)?(?:__init__{IMPORTED_AS}|__pycache__/.+)"
+                            rf"|scripts/maintenance/(?:doc_inventory|check_generated_docs)(?:{IMPORTED_AS}|/.+)")
 
 
 def is_render_input(path: str) -> bool:
-    """Whether a change to `path` can change what the docs test or the printed re-render command loads for the
-    render: one of RENDER_INPUTS, or a spelling RENDER_LOADERS matches. The refusal and `moved` read only this."""
+    """Whether REQ-GOV-004 holds `path` unchanged beside the blocks: one of RENDER_INPUTS, or a name RENDER_LOADERS
+    matches, which Python imports a protected module or initializer by at its own path. The refusal and `moved` read
+    only this, and is_process_file reads RENDER_LOADERS."""
     return path in RENDER_INPUTS or bool(RENDER_LOADERS.fullmatch(path))
 
 FEAT_ROW = re.compile(r"^\|\s*\[?(FEAT-[A-Z]+-\d{3})\b", re.M)
@@ -1120,7 +1127,10 @@ DEPLOY_FILE = re.compile(r"^((gcp|platform)/deploy\.sh|gcp/cloudbuild/[^/]+|clou
 def is_process_file(path: str) -> bool:
     return ((path.startswith(".github/") and not is_documentation(path)) or is_gate_file(path) or path in PINNED.values()
             or path.startswith(LOCAL_SKILLS) or path.startswith((".claude/", ".githooks/"))
-            or path.rsplit("/", 1)[-1] in ("CLAUDE.md", "AGENTS.md", "CLAUDE.local.md") or path in RENDERER_FILES)
+            or path.rsplit("/", 1)[-1] in ("CLAUDE.md", "AGENTS.md", "CLAUDE.local.md") or path in RENDERER_FILES
+            # (red-team round 10, YAML F3) a name Python imports in place of a renderer module or a scripts package
+            # initializer: another FEAT landing one would change what the docs test and the re-render command run
+            or bool(RENDER_LOADERS.fullmatch(path)))
 # The files the gate runs from: no change may delete one, whatever its branch, or the
 # base's copy judges the deletion green and every later PR runs without a gate.
 SUITE = "tests/scripts/test_spec_gate.py"
@@ -3959,9 +3969,14 @@ ATTRIBUTE_READING = "the render reads blobs as committed, and the docs test read
 NEUTRAL_TOO = "refused even where it changes no byte here"
 # The one instruction every .gitattributes refusal ends with, the text rule's and git check-attr's alike. The gate does
 # not judge whose a line is or which branch clears it (red-team round 9: three rounds of wording findings came from
-# that judgement); it names what it verifies and says what clears every case.
-ATTRIBUTES_REMEDY = ("Take each such line out of this pull request. If this pull request did not add it, it has to come off main "
-                     "first (a change to main), and then main merged into this branch.")
+# that judgement); it names what it verifies and says what clears every case. It undoes the pull request's change to a
+# line, so a line of main's that the pull request edited is put back rather than deleted (round 10, policy F1).
+ATTRIBUTES_REMEDY = ("Undo this pull request's change to each such line: remove a line it added, or put back main's text for a line "
+                     "it changed. A line this pull request did not change comes off main first (a change to main), and then main "
+                     "is merged into this branch.")
+# git check-attr names an attribute and a file it applies to, not the line, so its refusal says how to find the line
+# (round 10, policy N1)
+CHECK_ATTR_REMEDY = f"Find the .gitattributes line that sets it (`git check-attr -a -- <path>` names the attribute), then: {ATTRIBUTES_REMEDY}"
 ATTR_WORD = re.compile(rb"[^ \t\r\n]*")   # attr.c's `blank` is a space, tab, CR or LF: a vertical tab separates nothing
 C_ESCAPES = dict(zip(b'abfnrtv\\"', b'\a\b\f\n\r\t\v\\"'))
 UTF8_BOM = b"\xef\xbb\xbf"
@@ -4047,8 +4062,22 @@ def attribute_hits(text: bytes) -> list[tuple[str, bytes]]:
 
 
 def shown_line(raw: bytes) -> str:
-    """A .gitattributes line as written, each character that prints nothing (a NUL, a CR, a byte order mark) escaped."""
-    return "".join(c if c.isprintable() else c.encode("unicode_escape").decode("ascii") for c in raw.decode("utf-8", "replace"))
+    """A .gitattributes line as written, in double quotes and read one way only (red-team round 10, policy F3, shell
+    F4): a backslash and a double quote escaped with a backslash, a byte that is not printable ASCII or not part of
+    valid UTF-8 as \\xNN, a code point that prints nothing (U+2028, a byte order mark) as \\uNNNN, and printable
+    UTF-8 as itself. Two different lines never show alike, and a "; " or ")" in one stays inside its quotes."""
+    out = []
+    for c in raw.decode("utf-8", "surrogateescape"):   # a byte that is not valid UTF-8 comes back as U+DC80 to U+DCFF
+        n = ord(c)
+        if 0xDC80 <= n <= 0xDCFF:
+            out.append(f"\\x{n - 0xDC00:02x}")
+        elif c in '\\"':
+            out.append("\\" + c)
+        elif n < 0x80:
+            out.append(c if 0x20 <= n < 0x7F else f"\\x{n:02x}")
+        else:
+            out.append(c if c.isprintable() else f"\\u{n:04x}" if n <= 0xFFFF else f"\\U{n:08x}")
+    return '"' + "".join(out) + '"'
 
 
 def applied_attributes(head: str, listing: list[tuple[str, str, str]]) -> str | None:
@@ -4366,10 +4395,10 @@ def generated_doc_refusals(ch: Change, merge_base: str, head: str, docs: list[st
     except GitFailed as e:
         return [generated_refusal(", ".join(docs), f"the head tree's attributes cannot be read ({e})")]
     if applied:
-        # the same instruction as tree_refusal's; git names the attribute and a file it applies to, not the line
+        # tree_refusal's instruction, after how to find the line: git names the attribute and a file it applies to
         return [generated_refusal(", ".join(docs), f"the head tree holds a .gitattributes that can change bytes on checkout or "
                                                    f"export ({applied}, as git check-attr reads it), {NEUTRAL_TOO}; {ATTRIBUTE_READING}. "
-                                                   f"{ATTRIBUTES_REMEDY}")]
+                                                   f"{CHECK_ATTR_REMEDY}")]
     listed = {path: (mode, oid) for mode, oid, path in entries}
     present = [doc for doc in docs if doc in listed]
     now = {doc: (listed[doc][0], text) for doc, text in zip(present, blobs([listed[doc][1] for doc in present]))}

@@ -4080,15 +4080,24 @@ def test_the_catalog_scope_check_sees_every_changed_line(repo):
 
 def test_the_renderer_and_its_snapshot_are_process_files(repo):
     """FEAT-CICD-001 spec, is_process_file (done_when[4]): the gate now trusts the renderer, its package and its
-    snapshot to decide a verdict, so a change to them is FEAT-CICD-001's work, as the gate's own files are."""
+    snapshot to decide a verdict, so a change to them is FEAT-CICD-001's work, as the gate's own files are. So is a
+    file Python imports in place of a renderer module or a scripts package initializer (red-team round 10, YAML F3:
+    another FEAT could land a package or an unchecked __pycache__ entry that the docs test and the re-render command
+    run instead of the renderer); on FEAT-CICD-001's own branch none is refused as a process change."""
     cicd_row = CATALOG_TEXT.replace("| [FEAT-DATA-001]", "| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]", 1)
-    on_base(repo, {CATALOG: cicd_row})
+    cicd_spec, cicd_plan, cicd = "docs/superpowers/specs/2026-09-01-ci.md", "docs/superpowers/plans/2026-09-01-ci.md", "feature/feat-cicd-001-renderer"
+    on_base(repo, {CATALOG: cicd_row, cicd_spec: spec(feat_id="FEAT-CICD-001"), cicd_plan: plan(feat_id="FEAT-CICD-001", spec=cicd_spec, branch=cicd)})
     paths = ("scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
-             "scripts/maintenance/__init__.py", "tests/fixtures/live_gcp_snapshot_2026-09-07.json")
-    outcomes = verdicts(repo, commits(repo, {p: {**CODE, p: "# x\n"} for p in paths}), e2e=paths[:1],   # the first through gate()
+             "scripts/maintenance/__init__.py", "tests/fixtures/live_gcp_snapshot_2026-09-07.json",
+             "scripts/maintenance/doc_inventory/__init__.py", "scripts/maintenance/__pycache__/doc_inventory.cpython-312.pyc")
+    pairs = commits(repo, {p: {**CODE, p: "# x\n"} for p in paths})
+    outcomes = verdicts(repo, pairs, e2e=paths[:1],   # the first through gate()
                         PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body())
     missed = [p for p in paths if "belong to FEAT-CICD-001" not in outcomes[p].stdout]
-    assert missed == [], missed
+    own = verdicts(repo, pairs, PR_HEAD_REF=cicd, PR_TITLE="FEAT-CICD-001: x",
+                   PR_BODY=body(spec_path=cicd_spec, plan_path=cicd_plan) + "\n\n## Capacity\nn/a: x\n")
+    refused_own = {p: r.stdout[-400:] for p, r in own.items() if r.returncode != 0}
+    assert (missed, refused_own) == ([], {}), (missed, refused_own)
 
 
 def test_the_gate_names_the_documents_and_snapshot_the_docs_test_reads():
@@ -4102,15 +4111,23 @@ def test_the_gate_names_the_documents_and_snapshot_the_docs_test_reads():
         sg.RENDERER_FILES == ("scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
                               "scripts/maintenance/__init__.py", "tests/fixtures/live_gcp_snapshot_2026-09-07.json")
     # (red-team round 9) every loader spelling of a protected module or initializer is a render input, read through
-    # the one definition the refusal and `moved` read; a neighbour of the renderer is not
-    spellings = {**dict.fromkeys(("scripts/__init__.pyc", "scripts/__init__.pyi", "scripts/__init__.abi3.so", "scripts/maintenance/__init__.pyc",
+    # the one definition the refusal and `moved` read; a neighbour of the renderer is not. (Round 10, policy F2, shell
+    # F3, YAML N1: a spelling is a name Python imports, a .py, a .pyc or an extension module, so a .pyi, a .md or a
+    # .sh of the same stem is not; a package folder and __pycache__ keep their whole reach.)
+    spellings = {**dict.fromkeys(("scripts/__init__.pyc", "scripts/__init__.abi3.so", "scripts/maintenance/__init__.pyc",
+                                  "scripts/maintenance/__init__.so", "scripts/maintenance/doc_inventory.pyd",
+                                  "scripts/maintenance/check_generated_docs.cp312-win_amd64.pyd", "scripts.abi3.so", "scripts.pyd",
+                                  "scripts/maintenance/doc_inventory/README.md", "scripts/__pycache__/notes.txt",
                                   "scripts/maintenance/doc_inventory.pyc", "scripts/maintenance/check_generated_docs.cpython-312-x86_64-linux-gnu.so",
                                   "scripts/maintenance/doc_inventory/__init__.py", "scripts/maintenance/check_generated_docs/x.py",
                                   "scripts/__pycache__/__init__.cpython-312.pyc", "scripts/maintenance/__pycache__/doc_inventory.cpython-312.pyc",
                                   "scripts.py", "scripts.pyc", "scripts.cpython-312-x86_64-linux-gnu.so", *sg.RENDER_INPUTS), True),
                  **dict.fromkeys(("scripts/maintenance/docs_audit.py", "scripts/maintenance/doc_inventory_helpers.py", "scripts/gate/spec_gate.py",
                                   "scripts/discord/__init__.py", "scripts/scripts.py", "tests/scripts/__init__.py", "tests/conftest.py",
-                                  "tests/__init__.py", "scriptsx.py", "lib/scripts.py"), False)}
+                                  "tests/__init__.py", "scriptsx.py", "lib/scripts.py", "scripts.md", "scripts.json", "scripts.pyi",
+                                  "scripts.d/run.sh", "scripts/__init__.md", "scripts/__init__.pyi", "scripts/maintenance/__init__.pyi",
+                                  "scripts/maintenance/doc_inventory.md", "scripts/maintenance/doc_inventory.pyi",
+                                  "scripts/maintenance/doc_inventory.py.orig", "scripts/maintenance/check_generated_docs.sh"), False)}
     read = {path: sg.is_render_input(path) for path in spellings}
     assert read == spellings, {p: v for p, v in read.items() if v != spellings[p]}
     # the renderer tests cannot be switched off in a repository that carries the documents
@@ -4154,9 +4171,14 @@ PLANTED_INSPECT = ('import importlib.machinery, importlib.util, os, sys\n'
                    'spec = importlib.machinery.PathFinder.find_spec("inspect", [p for p in sys.path if os.path.abspath(p or os.curdir) != here])\n'
                    'real = importlib.util.module_from_spec(spec)\nsys.modules["inspect"] = real\nspec.loader.exec_module(real)\n')
 # The one instruction every .gitattributes refusal ends with, the text rule's and git check-attr's alike (red-team
-# round 9: three rounds of wording findings came from the gate judging whose line it was and which branch clears it).
-ATTRIBUTES_REMEDY = ("Take each such line out of this pull request. If this pull request did not add it, it has to come off main "
-                     "first (a change to main), and then main merged into this branch.")
+# round 9: three rounds of wording findings came from the gate judging whose line it was and which branch clears it;
+# round 10, policy F1: "take each such line out" deleted main's own line where the pull request had only edited it).
+ATTRIBUTES_REMEDY = ("Undo this pull request's change to each such line: remove a line it added, or put back main's text for a line "
+                     "it changed. A line this pull request did not change comes off main first (a change to main), and then main "
+                     "is merged into this branch.")
+# git check-attr names an attribute and a file it applies to, not a line, so its refusal says how to find the line
+# first (round 10, policy N1)
+CHECK_ATTR_REMEDY = f"Find the .gitattributes line that sets it (`git check-attr -a -- <path>` names the attribute), then: {ATTRIBUTES_REMEDY}"
 # The gate as the command line runs it, with its .gitattributes text rule (attribute_hits, which attributes_refusal
 # and tree_refusal read; attribute_hit and attributes_refusal in earlier gates) switched off, so that git check-attr's
 # reading and the order check are judged on their own (red-team rounds 6 to 8).
@@ -4186,21 +4208,28 @@ def render(root: Path, docs: tuple[str, ...] = GENERATED) -> None:
 
 
 # Where cut() ends each file: before the fourth deploy_ function, which keeps three jobs, and before the eleventh
-# CREATE TABLE, which keeps ten tables.
+# CREATE TABLE, which keeps ten tables. A file with fewer is used whole: a feature PR may retire jobs or tables, and
+# the suite asserts nothing about the live files' text or counts (red-team round 10, YAML F1).
 CUTS = {"gcp/deploy.sh": (re.compile(r"^deploy_", re.M), 3), "gcp/schema.sql": (re.compile(r"^CREATE TABLE", re.M), 10)}
+# A render input a feature PR may delete, with what the fixture writes in its place: the renderer reads it on every
+# render, and no case reads the block it renders (red-team round 10, YAML F1: deleting the Discord script failed
+# cut() in every later PR's suite).
+STAND_INS = {"scripts/discord/register_commands.py": '"""Slash commands: a stand-in the fixture writes for a file the repository no longer has."""\n'}
 
 
 def cut(path: str) -> str:
     """REPO's `path`, ended where CUTS says for a render input whose length costs time and is read by no case: the
     renderer reads every job and every table on each render (1.26 s a render whole, 0.56 s cut, measured 2026-10-11),
-    and the blocks the cases edit render from main.py, which stays whole."""
+    and the blocks the cases edit render from main.py, which stays whole. A STAND_INS path the repository no longer
+    has is its stand-in."""
+    if path in STAND_INS and not (REPO / path).is_file():
+        return STAND_INS[path]
     text = (REPO / path).read_bytes().decode("utf-8")
     if path not in CUTS:
         return text
     pattern, keep = CUTS[path]
     starts = [m.start() for m in pattern.finditer(text)]
-    assert len(starts) > keep, path   # a cut that keeps the whole file would cost what it is meant to save
-    return text[:starts[keep]]
+    return text[:starts[keep]] if len(starts) > keep else text
 
 
 def moved_main() -> str:
@@ -4208,6 +4237,16 @@ def moved_main() -> str:
     them moves, as stocks#1366 moved them."""
     lines = (REPO / MAIN_PY).read_bytes().decode("utf-8").split("\n")
     return "\n".join(lines[:4] + ["# moved by four lines, as stocks#1366 moved them", "# two", "# three", "# four"] + lines[4:])
+
+
+def hand_edited(doc: str) -> str:
+    """doc with one row of its routes block changed by hand: the first row the render wrote there, found in the block
+    rather than named by its text, so no case depends on what a live route says (red-team round 10, YAML F1: a case
+    editing "Liveness probe:" from platform/api/main.py failed the suite once an honest feature PR reworded it)."""
+    start = doc.index("<!-- inventory:routes:start -->")
+    row = re.compile(r"^\| `.*\|$", re.M).search(doc, start, doc.index("<!-- inventory:routes:end -->", start))
+    assert row is not None, doc[start:start + 400]   # every head here renders main.py's routes
+    return doc[:row.end() - 1] + "hand-edited |" + doc[row.end():]
 
 
 def edit(text: str, old: str, new: str) -> str:
@@ -4303,12 +4342,14 @@ def inventory_template(tmp_path_factory) -> tuple[Path, dict[str, dict[str, str]
     def untrack_gate(r: Path) -> None:
         _git(r, "rm", "-q", "--cached", "scripts/gate/spec_gate.py")
         (r / "scripts/gate/spec_gate.py").unlink()
+        (r / ".git/info").mkdir(exist_ok=True)   # (red-team round 10, YAML F4) git's template directory may have none
         with open(r / ".git/info/exclude", "a", encoding="utf-8") as f:
             f.write("/scripts/gate/spec_gate.py\n")
     files = {p: cut(p) for p in RENDER_TREE}
     on_base(root, {**files, **{d: skeleton(d) for d in GENERATED}, TRACEABILITY: TRACE_TEXT}, then=untrack_gate)
     # the renderer's modules compiled once, as the gate's first import leaves them in CI, and never committed: every
     # copy's gate, its render and the interpreters judging verdicts otherwise compile their 7,000 lines each time
+    (root / ".git/info").mkdir(exist_ok=True)
     with open(root / ".git/info/exclude", "a", encoding="utf-8") as f:
         f.write("__pycache__/\n")
     subprocess.run([sys.executable, "-m", "compileall", "-q", "scripts/maintenance"], cwd=root, check=True)
@@ -4400,7 +4441,7 @@ def test_render_inputs_and_the_documents_themselves_stay_put(inventory_repo):
             "__init__.py changes": ({**moved, "scripts/maintenance/__init__.py": "# touched\n"}, inputs),
             # (red-team round 8: REQ-GOV-004 names the parent scripts package's initializer, when present, since #1440)
             "scripts/__init__.py added": ({**moved, "scripts/__init__.py": "# a package now\n"}, "alongside scripts/__init__.py, which decide the render"),
-            # (red-team round 9: Python loads these in place of, or before, a protected module or initializer; the gate
+            # (red-team round 9: Python imports these in place of a protected module or initializer; the gate
             # refuses by path, so a file's content does not matter here)
             **{f"{path} added": ({**moved, path: "# loaded first\n"}, f"alongside {path}, which decide the render") for path in (
                 "scripts/__init__.pyc", "scripts/__init__.cpython-312-x86_64-linux-gnu.so", "scripts/maintenance/__pycache__/__init__.cpython-312.pyc",
@@ -4410,14 +4451,19 @@ def test_render_inputs_and_the_documents_themselves_stay_put(inventory_repo):
             "05-e renamed": ({**moved, API_DOC: None, f"{INFRA}/05-e-API-v2.md": moved[API_DOC]}, same),
             "05-e made executable": (moved, same),
         }
-        # the control: a file beside the renderer that no import loads in its place changes nothing the render reads
-        unrelated = {**moved, "scripts/maintenance/docs_audit.py": "AUDIT = 1\n"}
-        pairs = commits(root, {**{k: f for k, (f, _) in cases.items()}, "an unrelated scripts/maintenance file": unrelated},
-                        modes={"05-e made executable": {API_DOC: "100755"}})
+        # the controls: a file beside the renderer that no import loads in its place changes nothing the render reads,
+        # and nor does a name of a protected module's or initializer's stem that Python does not import (round 10,
+        # policy F2, shell F3, YAML N1)
+        controls = {"an unrelated scripts/maintenance file": {**moved, "scripts/maintenance/docs_audit.py": "AUDIT = 1\n"},
+                    "names Python does not import": {**moved, "scripts.md": "# notes\n", "scripts/__init__.md": "# notes\n",
+                                                     "scripts/maintenance/doc_inventory.md": "# notes\n",
+                                                     "scripts/maintenance/doc_inventory.pyi": "def main() -> int: ...\n",
+                                                     "scripts/maintenance/check_generated_docs.sh": "#!/bin/sh\n"}}
+        pairs = commits(root, {**{k: f for k, (f, _) in cases.items()}, **controls}, modes={"05-e made executable": {API_DOC: "100755"}})
         outcomes = verdicts(root, pairs, e2e=("doc_inventory.py changes", "05-e deleted"), **DOCS_OK)   # one per refusal through gate()
         missed = {k: r.stdout[-400:] for k, r in outcomes.items() if k in cases and not refused(r, cases[k][1])}
-        control = outcomes["an unrelated scripts/maintenance file"]
-        assert missed == {} and control.returncode == 0, (missed, control.stdout[-600:])
+        accepted = {k: outcomes[k].stdout[-600:] for k in controls if outcomes[k].returncode != 0}
+        assert (missed, accepted) == ({}, {}), (missed, accepted)
 
 
 def test_only_inventory_block_bodies_change(inventory_repo):
@@ -4516,7 +4562,7 @@ def test_the_head_tree_is_plain_files(inventory_repo):
         pairs = {**control_pairs(root, attributes), **{name: spliced(root, entry, *pair) for name, (entry, _) in entries.items()}}
         # (red-team round 4: a tree may list a name twice; git show read the first, a hand-edited 05-e, and the render
         # the last, the rendered one) and a name may be a file and a directory at once
-        hand = subprocess.run(["git", "hash-object", "-w", "--stdin"], input=edit(control[API_DOC], "Liveness probe:", "Liveness probe, hand-edited:"),
+        hand = subprocess.run(["git", "hash-object", "-w", "--stdin"], input=hand_edited(control[API_DOC]),
                               cwd=root, capture_output=True, text=True, check=True).stdout.strip()
         ok = control_pairs(root, {"control": control})["control"]
         pairs["a name listed twice"] = beside(root, ok, API_DOC, f"100644 blob {hand}\t05-e-API.md")
@@ -4534,7 +4580,7 @@ def test_the_head_tree_is_plain_files(inventory_repo):
                   or k in attributes and r.stdout.count("the render reads") != 1}
         by_git = alone.result()
         assert missed == {} and refused(by_git, "eol=crlf on docs/") and "as git check-attr reads it" in by_git.stdout \
-            and ATTRIBUTES_REMEDY in by_git.stdout and by_git.stdout.count("the render reads") == 1, (missed, by_git.stdout[-600:] + by_git.stderr[-600:])
+            and CHECK_ATTR_REMEDY in by_git.stdout and by_git.stdout.count("the render reads") == 1, (missed, by_git.stdout[-600:] + by_git.stderr[-600:])
 
 
 def test_a_head_tree_git_cannot_read_whole_is_refused(inventory_repo, tmp_path):
@@ -4587,41 +4633,60 @@ def test_a_head_tree_git_cannot_read_whole_is_refused(inventory_repo, tmp_path):
                      "lib listed twice": ("not in git's order", "lib listed twice in the root tree"),
                      "infrastructure listed twice": ("not in git's order", "infrastructure listed twice in the tree docs/product"),
                      "git cannot answer": ("attributes cannot be read", "check-attr is out of service"),
-                     "a valued attribute": (f".gitattributes: text=auto ({API_DOC} text=auto eol=lf)", "refused even where it changes no byte here",
+                     "a valued attribute": (f'.gitattributes: text=auto ("{API_DOC} text=auto eol=lf")', "refused even where it changes no byte here",
                                             ATTRIBUTES_REMEDY),
-                     "a line already on main": ('.gitattributes: eol=crlf ("*.md"eol=crlf)', ATTRIBUTES_REMEDY)}
+                     "a line already on main": ('.gitattributes: eol=crlf ("\\"*.md\\"eol=crlf")', ATTRIBUTES_REMEDY)}
         missed = {k: outcomes[k].stdout[-700:] + outcomes[k].stderr[-300:] for k, fs in fragments.items() if not all(refused(outcomes[k], f) for f in fs)}
         assert missed == {}, missed
 
 
 def test_an_attribute_refusal_says_whose_line_it_is(inventory_repo):
-    """FEAT-CICD-001 spec, "Exact render", the tree (done_when[1]), red-team rounds 8 and 9 (the name is round 8's,
+    """FEAT-CICD-001 spec, "Exact render", the tree (done_when[1]), red-team rounds 8 to 10 (the name is round 8's,
     kept because the gate's suite only grows). A .gitattributes refusal
     names every refused line with what the gate verifies, `<file>: <attribute> (<the line as written>)`, one entry per
     line per file in the listing's order, a line identical to another included, and then one fixed instruction, the
     same whoever added the line: the gate no longer judges whose it is or which branch clears it (round 9, policy F1
-    to F4, YAML F2 and F3)."""
+    to F4, YAML F2 and F3). The instruction undoes the pull request's change to a line, so a line of main's that it
+    only edited is put back, not deleted (round 10, policy F1). The line is shown in double quotes, a backslash and a
+    quote escaped, a byte that is not printable ASCII or not UTF-8 as \\xNN and a code point that prints nothing as
+    \\uNNNN, so two different lines never show alike and a "; " or ")" in one stays inside its quotes (round 10,
+    policy F3, shell F4)."""
     if RENDERER_HERE:
         root, heads = inventory_repo
+        sg = load_gate(root)
+        shown = {b"a\\tb.md text": '"a\\\\tb.md text"', b"a\tb.md text": '"a\\x09b.md text"',   # a backslash and a t, and a tab
+                 b"caf\xe9.md text": '"caf\\xe9.md text"', "caf\ufffd.md text".encode(): '"caf\ufffd.md text"',   # not UTF-8, and U+FFFD
+                 b'"a; b).md" text': '"\\"a; b).md\\" text"', b"*.md text\r": '"*.md text\\x0d"', b"*.md text\0x": '"*.md text\\x00x"',
+                 '\ufeff"*.md"eol=crlf'.encode(): '"\\ufeff\\"*.md\\"eol=crlf"', "*.md\u2028text".encode(): '"*.md\\u2028text"'}
+        read = {raw: sg.shown_line(raw) for raw in shown}
         control, infra = heads["control"], f"{INFRA}/.gitattributes"
-        forked_from = commits(root, {"root": {".gitattributes": "*.md text\n"}, "docs": {infra: "*.md text\n"}})
-        main, docs_main = forked_from["root"][1], forked_from["docs"][1]
+        fork = _git(root, "rev-parse", "base")
+        forked_from = commits(root, {"root": {".gitattributes": "*.md text\n"}, "docs": {infra: "*.md text\n"},
+                                     "neutral": {".gitattributes": "*.md diff=markdown\n*.png binary\n"}})
+        main, docs_main, neutral = forked_from["root"][1], forked_from["docs"][1], forked_from["neutral"][1]
         heads_on = {name: commits(root, {"h": files}, base=on)["h"][1] for name, (files, on) in {
             "root": (control, main), "docs": (control, docs_main), "own": ({**control, ".gitattributes": "*.md text\n*.sh eol=crlf\n"}, main),
             "twice": ({**control, ".gitattributes": "*.sh text eol=lf\n*.png binary\n*.sh text eol=lf\n", "lib/.gitattributes": "*.py ident\n"}, main),
-            "bom": ({**control, ".gitattributes": '\ufeff"*.md"eol=crlf\n'}, main)}.items()}
+            "bom": ({**control, ".gitattributes": '\ufeff"*.md"eol=crlf\n'}, main),
+            "edited": ({**control, ".gitattributes": "*.md diff=markdown eol=lf\n*.png binary\n"}, neutral),
+            "separators": ({**control, ".gitattributes": '"a; b).md" text\n'}, fork)}.items()}
         outcomes = forked(root, [["a root line on main", main, heads_on["root"]], ["a docs/ line on main", docs_main, heads_on["docs"]],
                                  ["main's line and the pull request's own", main, heads_on["own"]],
-                                 ["one line twice, and a second file", main, heads_on["twice"]], ["a byte order mark", main, heads_on["bom"]]],
+                                 ["one line twice, and a second file", main, heads_on["twice"]], ["a byte order mark", main, heads_on["bom"]],
+                                 ["a line of main's the pull request edited", neutral, heads_on["edited"]],
+                                 ["a line holding '; ' and ')'", fork, heads_on["separators"]]],
                           {"PR_HEAD_REF": BRANCH, **STRICT, **DOCS_OK})
-        named = {"a root line on main": ".gitattributes: text (*.md text)", "a docs/ line on main": f"{infra}: text (*.md text)",
-                 "main's line and the pull request's own": ".gitattributes: text (*.md text); .gitattributes: eol=crlf (*.sh eol=crlf)",
-                 "one line twice, and a second file": ".gitattributes: text (*.sh text eol=lf); .gitattributes: text (*.sh text eol=lf); "
-                                                      "lib/.gitattributes: ident (*.py ident)",
-                 "a byte order mark": '.gitattributes: eol=crlf (\\ufeff"*.md"eol=crlf)'}   # a character that prints nothing, escaped
+        named = {"a root line on main": '.gitattributes: text ("*.md text")', "a docs/ line on main": f'{infra}: text ("*.md text")',
+                 "main's line and the pull request's own": '.gitattributes: text ("*.md text"); .gitattributes: eol=crlf ("*.sh eol=crlf")',
+                 "one line twice, and a second file": '.gitattributes: text ("*.sh text eol=lf"); .gitattributes: text ("*.sh text eol=lf"); '
+                                                      'lib/.gitattributes: ident ("*.py ident")',
+                 "a byte order mark": '.gitattributes: eol=crlf ("\\ufeff\\"*.md\\"eol=crlf")',   # a character that prints nothing, escaped
+                 "a line of main's the pull request edited": '.gitattributes: eol=lf ("*.md diff=markdown eol=lf")',
+                 "a line holding '; ' and ')'": '.gitattributes: text ("\\"a; b).md\\" text")'}
         wrong = {k: outcomes[k].stdout[-900:] for k in named if not refused(outcomes[k], f"checked out: {named[k]}. {ATTRIBUTES_REMEDY}")
-                 or any(old in outcomes[k].stdout for old in ("This pull request's line", "already on main", "-text", "docs/ change"))}
-        assert wrong == {}, wrong
+                 or any(old in outcomes[k].stdout for old in ("This pull request's line", "already on main", "-text", "docs/ change",
+                                                              "Take each such line out"))}
+        assert (wrong, read, len(set(read.values()))) == ({}, shown, len(shown)), (wrong, {k: v for k, v in read.items() if v != shown[k]})
 
 
 def test_attributes_are_read_as_git_reads_them(repo):
@@ -4851,7 +4916,7 @@ def test_a_block_must_equal_mains_render(inventory_repo):
         root, heads = inventory_repo
         moved = heads["moved"]
         arch, deps, end = GENERATED[0], GENERATED[1], "\n<!-- inventory:routes:end -->"
-        heads = {"three": {**moved, API_DOC: edit(moved[API_DOC], "Liveness probe:", "Liveness probe, hand-edited:"),
+        heads = {"three": {**moved, API_DOC: hand_edited(moved[API_DOC]),
                                   # (red-team round 1: the docs test's block pattern ends at the first end marker even
                                   # mid-line, so main's differing_blocks read the block as ending there and passed the
                                   # hand-written row after it)
@@ -4899,7 +4964,7 @@ def test_the_gate_runs_only_main_renderers_source(inventory_repo, tmp_path):
         (tmp_path / "doc_inventory.py").write_text(GREEN_EXIT, encoding="utf-8")
         py_compile.compile(str(tmp_path / "doc_inventory.py"), importlib.util.cache_from_source(str(root / "scripts/maintenance/doc_inventory.py")),
                            doraise=True, invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
-        hand = commits(root, {"hand": {**heads["moved"], API_DOC: edit(heads["moved"][API_DOC], "Liveness probe:", "Liveness probe, hand-edited:")}})
+        hand = commits(root, {"hand": {**heads["moved"], API_DOC: hand_edited(heads["moved"][API_DOC])}})
         # (red-team round 5: nothing noticed the render child losing -I) and a PYTHONPATH that the child must ignore
         # holds a module the gate imports, which ends the render green there and stands in for the real one elsewhere
         (tmp_path / "planted").mkdir()
@@ -4920,10 +4985,11 @@ def test_a_refusal_says_how_to_clear_it(inventory_repo):
     if RENDERER_HERE:
         root, heads = inventory_repo
         made = commits(root, {"moved": heads["moved"],   # rendered by the renderer the branch forked from
-                              "hand edit": {**heads["moved"], API_DOC: edit(heads["moved"][API_DOC], "Liveness probe:", "Liveness probe, hand-edited:")}})
+                              "hand edit": {**heads["moved"], API_DOC: hand_edited(heads["moved"][API_DOC])}})
         head = made["moved"][1]
         loader = "scripts/__init__.pyc"
-        on_base(root, {loader: "# bytes Python would load before scripts/__init__.py\n"}, then=lambda r: _git(r, "add", "-f", loader))
+        on_base(root, {loader: "# a sourceless scripts/__init__.pyc, which Python loads where scripts/__init__.py is missing\n"},
+                then=lambda r: _git(r, "add", "-f", loader))
         r = gate(root, "--pr", _git(root, "rev-parse", "base"), made["hand edit"][1], PR_HEAD_REF=BRANCH, **DOCS_OK)
         assert all(f in reason(r, API_DOC) for f in ("differs from main's render", f"main changed {loader} after this branch forked",
                                                      "merge main into the branch")), r.stdout + r.stderr
