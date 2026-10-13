@@ -1,6 +1,7 @@
 ---
 feat_id: FEAT-CATALYST-001
 spec: docs/superpowers/specs/2026-10-12-feat-catalyst-001-av-catalysts.md
+supplemental_specs: [docs/superpowers/specs/2026-10-12-feat-catalyst-001-av-producer-receipts.md]
 branch: fix/feat-catalyst-001-av-catalysts
 pr: 1430
 status: ready
@@ -92,3 +93,49 @@ These exact approved specification acceptance items require actual implementatio
 - Reviewed FEAT-DEPLOY-001 contract evidence includes tests/gcp/test_deploy_av_remediation.py::test_catalyst_create_update_runtime_and_secrets and ::test_all_lifecycle_writers_preserve_av_prefix_retention, tests/gcp/test_deploy_av_remediation.py::test_calendar_secret_refs_and_missing_secret_preflight, a targeted deployed-state verifier and docs/EARNINGS_PIPELINE.md staged-identity/primary-only promotion checklist; actual deployed verification is the mandatory post-merge parent milestone.
 - docs/product/02-FEATURE-CATALOG.md FEAT-CATALYST-001 record and docs/product/12-PR-ISSUE-TRACEABILITY.md identify this implementation PR as implementation verified / rollout pending; they do not claim production rollout complete before post-merge verification.
 - tests/gcp/test_av_catalyst_predecessor_manifests.py::test_daily_manifest_links_full_assessed_scope_and_acknowledged_sources proves full-window eligibility with bounded fetching, reused verified revisions, matching history/reactions linkage and refusal of pending, wrong-scope, missing or future acknowledgement before OPTION admission.
+
+## Complementary approved contract intake — 2026-10-13
+
+Actual canonical main merge76783d56642a633cac4d7f0b6d258b52901a2fd0 (PR1446), approved producer-receipts spec SHA25608035b3816975ae05b41f4cdd9aa3b0e08eafa5226687e3985a0e61b6eb72c5f. Original1419 specification and its28 done_when items remain unchanged. All13 complementary done_when items are additionally binding (the original10 plus terminal bounds, full reaction I/O and cross-consumer canonical vectors). The sole author updated this still-DRAFT branch onto actual main only; preserved former1dfb checkpoint in local backup/catalyst-before-supp-76783. No sibling implementation was imported. All acceptance remains unticked.
+
+## Task 3: Canonical identities and bounded permanent publication
+
+Spec: complementary § Byte-exact scope and manifest hashing; § Acknowledgement and immutable publication. Advances complementary done_when[1,7,8,10].
+
+- [ ] Preserve a pre-fix failure from actual publisher collision/malformed canonical input/oversized manifest and bounded-terminal reference cases.
+- [ ] Commit the four exact known-answer inputs/bytes/digests at tests/fixtures/av_catalyst_scope_vectors.json; implement typed symbol/event/proof clock normalization, duplicate/nonfinite/type refusal and explicit digest kinds in owned producer code. Actual independent consumer parsers remain separately owned integration prerequisites; no helper-versus-itself claim.
+- [ ] Bound full SQL manifests to8MiB before publication; emit identical structured log/job_runs.note projection <=64KiB with exact ID/digest/bytes/scope/counter references and bounded error details. Preserve full1239-symbol SQL proof, reject partial/oversized identity, and prove missing/future/uncertain/colliding ACK refusal using actual PostgreSQL.
+
+## Task 4: Durable post-source-ACK estimate receipt publication
+
+Spec: complementary § Additive permanent schema and identities; § Estimates daily native producer and receipt denominator. Advances complementary done_when[0,1,2,11].
+
+- [ ] First fail an actual empty/nonempty group replay/ACK/cutoff case against old proposed transaction known_at semantics.
+- [ ] Add exact append-only av_estimate_receipt_publications DDL/index/FK/check constraints; persist its source_commit_acknowledged_at only after complete source ACK, then require receipt publication ACK. Preserve original observation ID/transaction clock; return stable stored receipt clock for empty AND nonempty retries and reject collisions/uncertainty.
+- [ ] Execute actual estimates daily CLI producer against isolated PostgreSQL for native payload retention, valid empty, full/selected/pending counters and publication/terminal linkage. Update bounded asof availability reader to use the matching durable receipt/run publication, never a proposed observation clock alone.
+
+## Task 5: Native daily/weekly observed-cohort lineage and honest unknown scope
+
+Spec: complementary § Calendar AV-native capture; § History and reactions daily/weekly exact linkage. Advances complementary done_when[3,4,5,6].
+
+- [ ] First fail native daily AND weekly CLI cases at configured1239/selected<=100 with reused source-backed observed events, exact inclusive end-29..end boundary and nullable no-capture/failure evidence.
+- [ ] Persist actual observed_snapshot/unknown/failed per-symbol shapes, distinct observation/window/raw-refresh/event counters and actual lineage clocks. independent_expected_cohort_proof remainsNULL and full-current coverage remains dependency_pending; never require or fake a nonexistent independent proof producer.
+- [ ] Qualify only current-revision observed analytics under exact source/event/revision/ACK/code/image scope. Refuse wrong/future/missing lineage and both old/fresh captures promoted to vendor watermarks. No new Sunday CLI flag/job/source call or nonAV instrumentation.
+- [ ] Execute actual native calendar producer against PostgreSQL before business filtering; preserve raw complete AV horizon separately from business/nonAV selections and source-clock/availability proof.
+
+## Task 6: Batched reaction I/O within unchanged450second admission
+
+Spec: complementary § Capacity and cost; § History/reactions linkage. Advances complementary done_when[4,9].
+
+- [ ] First fail actual source-adapter/caller shape controls for the former100 per-ticker price queries and repeated whole timing payloads.
+- [ ] One compact financial query plus one deduplicated independent timing query, ten<=10ticker/26000bar/16MiB streamed price reads,100<=100row atomic artifact/derived writes with <=1MiB each parameter (<=2MiB combined); all119 network round trips and actual CPU/serialization/setup/final ACK count.
+- [ ] Actual merged DATA helper/schema remains missing at intake. Implement honest refusal/batched source paths without copying or faking a helper. Required native positive lineage/max10000-row integration becomes executable only after actual DATA main merge; no new skip/xfail or premature positive evidence.
+- [ ] Prove actual maximum caller with real PostgreSQL and the merged helper fits declared420s planning/450s admission and peak working-set, with complete driver-delay accounting. If actual bounds fail, preserve durable groups/pending and revise bounded architecture; never raise timeout or hide fallback.
+
+## Task 7: Supplementary delivery evidence and final review
+
+Spec: complementary § Validation, ownership and activation; original § Validation/rollout. Advances complementary done_when[11,12] and original delivery clauses.
+
+- [ ] Record exact commands/source hashes/data/SQL counts/serialized bytes/runtime/peak/storage headroom; distinguish observed analytics from unsupported full-current vendor/global/historical coverage and deployed milestones.
+- [ ] Update only owned runbook/catalog/traceability with original28 plus complementary13 exact acceptance in draft1430; actual independent consumer fixtures, DATA positive integration, generated-documentation and Gov runtime/audit are honest dependencies until tested.
+- [ ] Run appropriate focused/native mandatory PostgreSQL cases with fail-on-missing integration selectors, compare branch/main docs audit and actual PR gate, then submit full combined branch for root-owned independent review/CI/merge and promotion. No author deployment or acceptance ticks borrowed from proposed contracts.
