@@ -250,11 +250,17 @@ GENERATED_DOCS = ("docs/product/infrastructure/05-a-ARCHITECTURE.md", "docs/prod
                   "docs/product/infrastructure/05-e-API.md")
 GENERATED_RULE = "REQ-GOV-004"
 RENDER_SNAPSHOT = "tests/fixtures/live_gcp_snapshot_2026-09-07.json"
-RENDER_INPUTS = ("scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
-                 "tests/scripts/test_check_generated_docs.py", RENDER_SNAPSHOT)          # REQ-GOV-004: unchanged beside blocks
 RENDERER_FILES = ("scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
                   "scripts/maintenance/__init__.py", RENDER_SNAPSHOT)                     # process files: FEAT-CICD-001's
+RENDER_INPUTS = (*RENDERER_FILES, "tests/scripts/test_check_generated_docs.py",
+                 "scripts/__init__.py")                                                   # REQ-GOV-004: unchanged beside blocks
 ```
+
+  `scripts/maintenance/__init__.py` joined both in red-team round 4, and `scripts/__init__.py`, "the parent scripts
+  package initializer, when present", joined RENDER_INPUTS in round 8 because REQ-GOV-004 names it since #1440; it is
+  not a renderer file, since the gate never runs it (`load_renderer` keeps `scripts` a package in name only).
+  #1440's wider allowance (renderer-owned relation counts, table/materialized-view/view breakdowns and as-of labels
+  outside the blocks) is not implemented here: #1440's own body says a separately approved spec must come first.
 
 - Produces (suite): `RENDERER_HERE = (REPO / "scripts/maintenance/doc_inventory.py").is_file()`.
 - Ruling: tests that need stocks' renderer run only where `RENDERER_HERE` is true. They guard with `if RENDERER_HERE:`
@@ -522,12 +528,13 @@ the containment check). Advances done_when[1].
   `git_bytes("ls-tree", "-r", "-t", "-z", "--full-tree", head)` into `(mode, oid, os.fsdecode(path))`, trees included
   (mode `040000`), so that `order_refusal` sees every name, an empty tree's too; the files are the other entries
   (red-team round 7).
-- Produces: `tree_refusal(entries: list[tuple[str, str, str]]) -> str | None`. It names the first problem, in one of
-  these forms:
+- Produces: `tree_refusal(entries: list[tuple[str, str, str]], forked: Tree | None = None, main: Tree | None = None)
+  -> str | None`, over the files of the listing only (`generated_doc_refusals` passes `Tree(merge_base)` and `ch.base`).
+  It names the first problem, in one of these forms:
   - `f"a symbolic link ({path})"` for mode `120000`
   - `f"a submodule ({path})"` for mode `160000`
-  - `f"a .gitattributes that changes bytes on checkout or export ({path}: {token})"` when a file whose last
-    component, lower-cased, is `.gitattributes` sets one of `BYTE_ATTRIBUTES` (text, eol, crlf, ident, filter,
+  - `f"a .gitattributes that can change bytes on checkout or export, {NEUTRAL_TOO}; {ATTRIBUTE_READING}. {lines}"`
+    when a file whose last component, lower-cased, is `.gitattributes` sets one of `BYTE_ATTRIBUTES` (text, eol, crlf, ident, filter,
     working-tree-encoding, export-subst) or gives it a value, directly or in a macro definition. Unsetting one or
     leaving it unspecified (`-text`, `binary`, `!eol`) changes no byte and passes (red-team rounds 4 and 5). Each
     line is read as git's `parse_attr_line` reads it (red-team round 6): a pattern opening with a double quote is
@@ -537,16 +544,29 @@ the containment check). Advances done_when[1].
     a leading byte order mark, and from the working tree, which reads on past a NUL line and drops the mark; the text
     rule reads it both ways. A valued form that changes no byte on this tree (`* text=auto eol=lf`) is still refused,
     the conservative direction the spec's prose takes (it refuses any `.gitattributes`); the refusal says "refused
-    even where it changes no byte here", and which valued forms are neutral is not modelled (red-team round 7). The
-    refusal ends with how to clear it: unset the attribute (`-text`, `!eol`) or remove the line, or, when that line is
-    already in the same file on main, that it is not this pull request's: land a feature/ or fix/ change on main that
-    unsets it (a `.gitattributes` is code, which the gate refuses on docs/ and chore/ branches, checked on
-    2026-10-12), then merge main and re-run.
-  - `order_refusal(listing)` (red-team round 7): the first entry out of git's order, comparing each path as bytes
-    with a slash after a tree's name, as git sorts a tree. git fsck refuses such a tree (treeNotSorted), and
-    `git check-attr --source` stops looking for a `.gitattributes` at the first name sorting after it, so it reads
-    none where a checkout, from its sorted index, applies one. It runs after `tree_refusal`, which names a duplicate
-    or a file that is also a directory first.
+    even where it changes no byte here", and which valued forms are neutral is not modelled (red-team round 7).
+    `{lines}` names every refused line, the first byte-changing word of each, this pull request's own lines first,
+    each with how to clear it (red-team round 8, policy F1 to F3). Whose line it is comes from the merge base's copy
+    of that `.gitattributes` (`forked`), not main's tip:
+    - absent from it, the pull request's own: `f"This pull request's line ({path}: {word}): unset it (as -text or
+      !eol) or remove it, then re-run."`;
+    - in it, and still in main's tip (`main`): `f"A line already on main ({path}: {word}), so not this pull
+      request's: land {carrier} on main that unsets it or removes the line, then merge main into this branch and
+      re-run."`, where `carrier` is "a docs/ change" for a `.gitattributes` the gate reads as documentation (under
+      `docs/`, which `check_product_scope` refuses on a feature/ or fix/ branch under `docs/product/`) and "a
+      feature/ or fix/ change" for any other, which the gate reads as code (refused on docs/ and chore/);
+    - in it, but gone from main's tip (main re-spaced or removed it): `f"A line from main ({path}: {word}) that main
+      has changed or removed since this branch forked: merge main into this branch and re-run."`.
+  - `order_refusal(head, listing)` (red-team rounds 7 and 8), after `tree_refusal`: every tree of the head, the root
+    and each `040000` entry of the listing, read raw in one `cat-file --batch` and checked as git fsck's
+    `verify_ordered` checks it: an empty name, a name holding a slash, a name listed twice whatever its modes, or
+    entries not strictly increasing in git's order (a tree's name read with a slash after it) is refused as
+    `f"a tree whose entries are not in git's order ({detail} in {where}), which git fsck refuses; git check-attr misses
+    a .gitattributes in such a tree that a checkout reads"`, where `where` is "the root tree" or "the tree <path>".
+    `git check-attr --source` stops looking for a `.gitattributes` at the first name sorting after it, or enters the
+    first of two folders of one name, so it reads none where a checkout, from its sorted index, applies one. Round 7's
+    comparison of full paths passed a name holding a slash and a folder listed twice with an empty first copy; this
+    replaced it. Measured on ed3ddf08's tree (1,672 entries, 153 trees): 12 ms median (11.7 to 17.7 ms).
   - `f"a tree that lists {path} twice"` and `f"{dir} as both a file and a directory"` (red-team round 4)
   - `f"a path component {c!r} ({path})"` for a component that is empty or, lower-cased, is `.`, `..` or `.git`
 - Produces: `materialize(entries: list[tuple[str, str, str]], into: pathlib.Path) -> None`. It runs one
@@ -567,8 +587,13 @@ the containment check). Advances done_when[1].
     `.gitattributes` and each `.gitattributes` blob (red-team round 7). `head_entries`' ls-tree and `tree_refusal`'s
     `cat-file --batch` run before it in this repository, so a partial clone has fetched those objects from its
     promisor remote, which the borrowed store has none of. A byte-changing attribute set or valued there is refused
-    the same way, naming it, the path and "as git check-attr reads it", with the same remedy; a git failure, or an
-    object it cannot read, refuses with "the head tree's attributes cannot be read". Both rules run (red-team round 6): check-attr is git's own reading, so it covers any way the
+    as `f"a .gitattributes that can change bytes on checkout or export ({attribute} on {path}, as git check-attr reads
+    it), {NEUTRAL_TOO}; {ATTRIBUTE_READING}. ..."`. check-attr names the attribute and a file it applies to, not the
+    line, so its remedy differs from `tree_refusal`'s: it says how to find the line (`git check-attr -a -- <path>`)
+    and then states the three cases conditionally (this pull request's: unset or remove; main's and still on main: a
+    docs/ change for a `.gitattributes` under `docs/`, a feature/ or fix/ change for any other, then merge main; main's
+    and changed since: merge main), without deciding which applies. A git failure, or an object it cannot read,
+    refuses with "the head tree's attributes cannot be read". Both rules run (red-team round 6): check-attr is git's own reading, so it covers any way the
     text rule could still part from git's parser, while the text rule also reads the working-tree way that check-attr,
     reading the blob, does not (a line past a NUL, a byte order mark), and names the file and the word that set it.
   - Ruling: git itself cannot list an empty component. `ls-tree -r` exits 128 with
@@ -818,6 +843,13 @@ child's isolation check, including through `getattr` on `sys` or a module with a
 determined obfuscation the AST check cannot resolve (an attribute name computed at run time and read through an
 object it does not track, such as a module object a function returns) is still possible, and code review catches it.
 
+Red-team round 8 (fixed in one batch after merging main at eca17a65): the order check reads each tree as git fsck
+does instead of comparing full paths (shell F1, YAML F1); a test reads a folder's tree through the borrowed store (shell
+F2); `scripts/__init__.py` joined RENDER_INPUTS (YAML, REQ-GOV-004 since #1440); and a `.gitattributes` refusal decides
+whose line it is from the merge base, names the branch type that can carry the fix by the file's path, and names every
+refused line, the pull request's own first (policy F1 to F3); this plan's Velocity counts and Task 7 forms now match
+the code (policy F4).
+
 ## Task 11: Evidence: the full suite, the base-suite job, and RED against main
 
 Spec: § Capacity. Advances done_when[5].
@@ -874,9 +906,13 @@ done_when[5].
   - A Capacity section:
     - Volume: the head tree, 1,514 files and 186 MiB on 498d0ad1, written once per PR that changes a generated
       document.
-    - Velocity: one `ls-tree`, one `cat-file --batch` and one child process per such PR, and none otherwise. When the
-      head tree holds a `.gitattributes`, also one `git init`, one `cat-file --batch-check` and one `check-attr` in
-      the borrowed repository: 34 ms (30 to 40 ms, measured 2026-10-12 on main's 1,666 entries); without one, none.
+    - Velocity, per such PR and none otherwise, counted under `generated_doc_refusals` for the accepted control on
+      2026-10-13 (red-team round 8, policy F4): 12 subprocesses without a `.gitattributes` (one `ls-tree -r -t`; three
+      `cat-file --batch`, for the trees the order check reads, the three documents and the materialized tree; one
+      `diff` of the render inputs; per document one `show` and one `ls-tree` of its merge-base copy; one child), and
+      17 with one (also `tree_refusal`'s `cat-file --batch` of the `.gitattributes` blobs, and in the borrowed
+      repository `git init`, `rev-parse --git-path objects`, `cat-file --batch-check` and `check-attr`). Every count
+      is constant per PR. The order check costs 12 ms and the attribute cross-check 34 ms (30 to 40 ms) on main's tree.
     - Wall-clock: about 40 s (37.2 s render and 1.9 s write, measured) inside the gate job's 300 s. The suite adds about
       60 s locally, about 47 s in CI, to registry-check's 231 s of 300 s.
     - Cost: a public repository on standard runners, so $0 × runs/day × 30 = $0.
@@ -909,8 +945,8 @@ its blocks on one. The red team's round 4 recorded them; they land on one `docs/
 
 - **REQ-GOV-004's "Verified by" cell** (`01-PRODUCT-REQUIREMENTS.md:31`) reads "planned: `scripts/gate/spec_gate.py`
   (FEAT-CICD-001)". It becomes `scripts/gate/spec_gate.py` (`check_product_scope`, `generated_doc_refusals`) and
-  `tests/scripts/test_spec_gate.py`. The requirement's list of render inputs gains `scripts/maintenance/__init__.py`,
-  which the gate now holds fixed beside the blocks (`RENDER_INPUTS`).
+  `tests/scripts/test_spec_gate.py`. (The requirement's list of render inputs already names
+  `scripts/maintenance/__init__.py` and the parent `scripts/__init__.py` since #1440.)
 - **05-a's maintenance note** (`docs/product/infrastructure/05-a-ARCHITECTURE.md:5`) says "Edit prose freely; never
   hand-edit inside a marker block". On a feature branch only re-rendered blocks may change, and prose is refused, so
   the sentence becomes: "Never hand-edit inside a marker block. A feature branch may carry the blocks only as

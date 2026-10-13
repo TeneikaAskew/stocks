@@ -4095,8 +4095,10 @@ def test_the_gate_names_the_documents_and_snapshot_the_docs_test_reads():
     """FEAT-CICD-001 spec, parity (done_when[3]): the gate's three document paths are the renderer's MARKER_DOCS
     and its snapshot is the docs test's SNAPSHOT, so the gate checks what the docs test checks."""
     sg = load_gate(REPO)
-    # (red-team round 4: the inputs that decide the render are every renderer file the gate runs, and the docs test)
-    assert sg.GENERATED_RULE == "REQ-GOV-004" and sg.RENDER_INPUTS == (*sg.RENDERER_FILES, "tests/scripts/test_check_generated_docs.py") and \
+    # (red-team round 4: the inputs that decide the render are every renderer file the gate runs, and the docs test;
+    # round 8: and the parent scripts package's initializer, which REQ-GOV-004 names since #1440)
+    assert sg.GENERATED_RULE == "REQ-GOV-004" and \
+        sg.RENDER_INPUTS == (*sg.RENDERER_FILES, "tests/scripts/test_check_generated_docs.py", "scripts/__init__.py") and \
         sg.RENDERER_FILES == ("scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
                               "scripts/maintenance/__init__.py", "tests/fixtures/live_gcp_snapshot_2026-09-07.json")
     # the renderer tests cannot be switched off in a repository that carries the documents
@@ -4139,12 +4141,14 @@ PLANTED_INSPECT = ('import importlib.machinery, importlib.util, os, sys\n'
                    'here = os.path.dirname(os.path.abspath(__file__))\n'
                    'spec = importlib.machinery.PathFinder.find_spec("inspect", [p for p in sys.path if os.path.abspath(p or os.curdir) != here])\n'
                    'real = importlib.util.module_from_spec(spec)\nsys.modules["inspect"] = real\nspec.loader.exec_module(real)\n')
-# The gate as the command line runs it, with its .gitattributes text rule (attribute_hit, which attributes_refusal
-# reads) switched off, so that git check-attr's reading, the second rule, is judged on its own (red-team round 6).
+# The gate as the command line runs it, with its .gitattributes text rule (attribute_hits, which attributes_refusal
+# and tree_refusal read; attribute_hit and attributes_refusal in earlier gates) switched off, so that git check-attr's
+# reading and the order check are judged on their own (red-team rounds 6 to 8).
 TEXT_RULE_OFF = ("import importlib.util, sys\n"
                  "spec = importlib.util.spec_from_file_location('spec_gate', 'scripts/gate/spec_gate.py')\n"
                  "gate = sys.modules['spec_gate'] = importlib.util.module_from_spec(spec)\n"
                  "spec.loader.exec_module(gate)\ngate.attributes_refusal = gate.attribute_hit = lambda text: None\n"
+                 "gate.attribute_hits = lambda text: []\n"
                  "sys.exit(gate.main(['spec_gate.py', *sys.argv[1:]]))\n")
 
 
@@ -4378,6 +4382,8 @@ def test_render_inputs_and_the_documents_themselves_stay_put(inventory_repo):
             "the snapshot changes": ({**moved, SNAPSHOT_FILE: (REPO / SNAPSHOT_FILE).read_text(encoding="utf-8") + "\n"}, inputs),
             # (red-team round 4: the package's __init__ runs on every render and can patch doc_inventory)
             "__init__.py changes": ({**moved, "scripts/maintenance/__init__.py": "# touched\n"}, inputs),
+            # (red-team round 8: REQ-GOV-004 names the parent scripts package's initializer, when present, since #1440)
+            "scripts/__init__.py added": ({**moved, "scripts/__init__.py": "# a package now\n"}, "alongside scripts/__init__.py, which decide the render"),
             "05-e deleted": ({**moved, API_DOC: None}, same),
             "05-e renamed": ({**moved, API_DOC: None, f"{INFRA}/05-e-API-v2.md": moved[API_DOC]}, same),
             "05-e made executable": (moved, same),
@@ -4508,7 +4514,9 @@ def test_the_head_tree_is_plain_files(inventory_repo):
 def test_a_head_tree_git_cannot_read_whole_is_refused(inventory_repo, tmp_path):
     """FEAT-CICD-001 spec, "Exact render", the tree (done_when[1]), red-team round 7: git check-attr answered "no
     attributes", and the gate passed with its text rule off (TEXT_RULE_OFF), for a .gitattributes blob the borrowed
-    object store cannot read and for a root tree out of git's order, which a checkout still reads. Each is refused now,
+    object store cannot read and for a root tree out of git's order, which a checkout still reads; round 8: and for a
+    name holding a slash and for a folder listed twice, the empty copy first, which git fsck refuses as unsorted and
+    as duplicate entries, at the root and under docs/product/infrastructure. Each is refused now,
     and a git that cannot answer at all refuses too. An attribute refusal says how to clear it: unset the attribute or
     remove the line, or, when the line is already on main, land the change that unsets it there first; and a valued
     attribute is refused even where it changes no byte (policy notes 2 and 3)."""
@@ -4527,25 +4535,68 @@ def test_a_head_tree_git_cannot_read_whole_is_refused(inventory_repo, tmp_path):
         (stub / "git").write_text(f'#!/bin/sh\nfor a in "$@"; do [ "$a" = check-attr ] && {{ echo "check-attr is out of service" >&2; exit 3; }}; done\n'
                                   f'exec "{shutil.which("git")}" "$@"\n', encoding="utf-8")
         (stub / "git").chmod(0o755)
+        # (red-team round 8) each shape in both trees of the neutral pair, so only the control's files are in the diff
+        empty = bytes.fromhex(stored(root, "tree", b""))
+        crlf, ident, doc = (bytes.fromhex(stored(root, "blob", b)) for b in (b"*.md eol=crlf\n", b"*.py ident\n", b"one\ntwo\n"))
+        fsck = {"a name holding a slash": both_swapped(root, pairs["neutral"], ([], lambda es: [x for e in es for x in (
+                    [b"40000 d\0" + empty, b"100644 d/.gitattributes\0" + crlf, b"100644 d/x.md\0" + doc, e] if named(e) == b"docs" else [e])])),
+                "lib listed twice": both_swapped(root, pairs["neutral"], ([b"lib"], added(b"100644 .gitattributes\0" + ident)), ([], listed_twice(b"lib", empty))),
+                "infrastructure listed twice": both_swapped(root, pairs["neutral"], ([b"docs", b"product", b"infrastructure"], added(b"100644 .gitattributes\0" + crlf)),
+                                                            ([b"docs", b"product"], listed_twice(b"infrastructure", empty)))}
         on_main = commits(root, {"main": {".gitattributes": '"*.md"eol=crlf\n'}})["main"][1]
         from_main = commits(root, {"head": control}, base=on_main)["head"][1]
         inherited = {k: v for k, v in os.environ.items() if not k.startswith(("PR_", "SPEC_GATE_", "GIT_", "PYTEST_"))}   # as gate()
         env = {"PR_HEAD_REF": BRANCH, **STRICT, **DOCS_OK}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            alone = {name: pool.submit(subprocess.run, [sys.executable, "-c", TEXT_RULE_OFF, "--pr", base, head], cwd=root, capture_output=True,
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+            alone = {name: pool.submit(subprocess.run, [sys.executable, "-c", TEXT_RULE_OFF, "--pr", *pair], cwd=root, capture_output=True,
                                        text=True, env={**inherited, **env, **extra})
-                     for name, head, extra in (("a .gitattributes blob elsewhere", elsewhere, {"GIT_ALTERNATE_OBJECT_DIRECTORIES": str(side / "objects")}),
-                                               ("a root tree out of order", unsorted, {}))}
+                     for name, pair, extra in (("a .gitattributes blob elsewhere", (base, elsewhere), {"GIT_ALTERNATE_OBJECT_DIRECTORIES": str(side / "objects")}),
+                                               ("a root tree out of order", (base, unsorted), {}), *((k, v, {}) for k, v in fsck.items()))}
             outcomes = forked(root, [["git cannot answer", *pairs["neutral"], {"PATH": f"{stub}{os.pathsep}{os.environ['PATH']}"}],
                                      ["a valued attribute", *pairs["valued"]], ["a line already on main", on_main, from_main]], env)
             outcomes |= {k: f.result() for k, f in alone.items()}
         fragments = {"a .gitattributes blob elsewhere": ("attributes cannot be read", "cannot read"),
                      "a root tree out of order": ("not in git's order", ".gitattributes listed after"),
+                     "a name holding a slash": ("not in git's order", "d/.gitattributes, a name holding a slash, in the root tree"),
+                     "lib listed twice": ("not in git's order", "lib listed twice in the root tree"),
+                     "infrastructure listed twice": ("not in git's order", "infrastructure listed twice in the tree docs/product"),
                      "git cannot answer": ("attributes cannot be read", "check-attr is out of service"),
-                     "a valued attribute": ("(.gitattributes: text=auto)", "refused even where it changes no byte here", "Unset it"),
+                     "a valued attribute": ("(.gitattributes: text=auto)", "refused even where it changes no byte here", "unset it (as -text or !eol) or remove it"),
                      "a line already on main": ("already on main", "merge main into this branch")}
         missed = {k: outcomes[k].stdout[-700:] + outcomes[k].stderr[-300:] for k, fs in fragments.items() if not all(refused(outcomes[k], f) for f in fs)}
         assert missed == {}, missed
+
+
+def test_an_attribute_refusal_says_whose_line_it_is(inventory_repo):
+    """FEAT-CICD-001 spec, "Exact render", the tree (done_when[1]), red-team round 8, policy F1 to F3. A refused
+    .gitattributes line is the pull request's own when the merge base's copy of that file lacks it, and main's
+    otherwise. Main's line still on main's tip is cleared by a docs/ change on main for a file under docs/ (which
+    is_documentation reads as documentation) and by a feature/ or fix/ change for any other, then a merge of main;
+    one main has since re-spaced or removed is cleared by merging main. Every refused line is named, the pull
+    request's own first, each with its own remedy."""
+    if RENDERER_HERE:
+        root, heads = inventory_repo
+        control, infra = heads["control"], f"{INFRA}/.gitattributes"
+        forked_from = commits(root, {"root": {".gitattributes": "*.md text\n"}, "docs": {infra: "*.md text\n"}})
+        main, docs_main = forked_from["root"][1], forked_from["docs"][1]
+        later = commits(root, {"re-spaced": {".gitattributes": "*.md\ttext\n"}, "removed": {".gitattributes": "*.png binary\n"}}, base=main)
+        heads_on = {name: commits(root, {"h": files}, base=on)["h"][1] for name, (files, on) in {
+            "root": (control, main), "docs": (control, docs_main), "own": ({**control, ".gitattributes": "*.md text\n*.sh eol=crlf\n"}, main)}.items()}
+        outcomes = forked(root, [["a root line on main", main, heads_on["root"]], ["a docs/ line on main", docs_main, heads_on["docs"]],
+                                 ["main re-spaced the line", later["re-spaced"][1], heads_on["root"]],
+                                 ["main removed the line", later["removed"][1], heads_on["root"]],
+                                 ["main's line and the pull request's own", main, heads_on["own"]]], {"PR_HEAD_REF": BRANCH, **STRICT, **DOCS_OK})
+        on_main = "A line already on main ({}: text), so not this pull request's: land {} on main that unsets it or removes the line, then merge main into this branch and re-run."
+        moved_on = "A line from main (.gitattributes: text) that main has changed or removed since this branch forked: merge main into this branch and re-run."
+        own = "This pull request's line (.gitattributes: eol=crlf): unset it (as -text or !eol) or remove it, then re-run."
+        expected = {"a root line on main": [on_main.format(".gitattributes", "a feature/ or fix/ change")],
+                    "a docs/ line on main": [on_main.format(infra, "a docs/ change")],
+                    "main re-spaced the line": [moved_on], "main removed the line": [moved_on],
+                    "main's line and the pull request's own": [own, on_main.format(".gitattributes", "a feature/ or fix/ change")]}
+        found = {k: [r.stdout.find(t) for t in expected[k]] for k, r in outcomes.items()}
+        wrong = {k: outcomes[k].stdout[-900:] for k, at in found.items() if not refused(outcomes[k], "a .gitattributes") or -1 in at or at != sorted(at)
+                 or "cannot carry" in outcomes[k].stdout or (k != "main's line and the pull request's own" and "This pull request's line" in outcomes[k].stdout)}
+        assert wrong == {}, wrong
 
 
 def test_attributes_are_read_as_git_reads_them(repo):
@@ -4603,6 +4654,43 @@ def rewritten(root: Path, head: str, swap: Callable[[list[bytes]], list[bytes]],
     return _git(root, "commit-tree", tree, "-p", _git(root, "rev-parse", f"{head}^"), "-m", "rewritten root tree")
 
 
+def tree_swapped(root: Path, tree: str, parts: list[bytes], swap: Callable[[list[bytes]], list[bytes]]) -> str:
+    """tree with the raw entries of its folder at `parts` (tree itself when parts is empty) passed through `swap` and
+    written as is (hash-object --literally), each folder above it re-pointed."""
+    raw = subprocess.run(["git", "cat-file", "tree", tree], cwd=root, capture_output=True, check=True).stdout
+    width, entries, pos = len(tree) // 2, [], 0
+    while pos < len(raw):
+        end = raw.index(b"\0", pos) + 1 + width
+        entries.append(raw[pos:end])
+        pos = end
+    entries = swap(entries) if not parts else [e[:-width] + bytes.fromhex(tree_swapped(root, e[-width:].hex(), parts[1:], swap))
+                                               if named(e) == parts[0] else e for e in entries]
+    return subprocess.run(["git", "hash-object", "-t", "tree", "--literally", "-w", "--stdin"], input=b"".join(entries), cwd=root,
+                          capture_output=True, check=True).stdout.decode("ascii").strip()
+
+
+def both_swapped(root: Path, pair: tuple[str, str], *swaps: tuple[list[bytes], Callable[[list[bytes]], list[bytes]]]) -> tuple[str, str]:
+    """(base, head) rebuilt with the same (folder, swap) steps applied to both trees, the head parented on the new base,
+    so what the swaps write sits in the head tree and never in the diff."""
+    made: list[str] = []
+    for rev in pair:
+        tree = _git(root, "rev-parse", f"{rev}^{{tree}}")
+        for parts, swap in swaps:
+            tree = tree_swapped(root, tree, parts, swap)
+        made.append(_git(root, "commit-tree", tree, "-p", made[0] if made else pair[0], "-m", "swapped"))
+    return made[0], made[1]
+
+
+def listed_twice(name: bytes, empty: bytes) -> Callable[[list[bytes]], list[bytes]]:
+    """A swap for tree_swapped(): the entry `name` listed twice, an empty tree (id `empty`) first."""
+    return lambda entries: [x for e in entries for x in ([b"40000 " + name + b"\0" + empty, e] if named(e) == name else [e])]
+
+
+def added(entry: bytes) -> Callable[[list[bytes]], list[bytes]]:
+    """A swap for tree_swapped(): `entry` added in git's order (a tree's name read with a slash after it)."""
+    return lambda entries: sorted(entries + [entry], key=lambda e: named(e) + (b"/" if e.startswith(b"40000 ") else b""))
+
+
 def named(entry: bytes) -> bytes:
     """A raw tree entry's name."""
     return entry.split(b"\0", 1)[0].split(b" ", 1)[1]
@@ -4613,6 +4701,11 @@ def stored(root: Path, kind: str, data: bytes, store: Path | None = None) -> str
     where = ["--git-dir", str(store)] if store else []
     return subprocess.run(["git", *where, "hash-object", "-t", kind, "-w", "--stdin"], input=data, cwd=root, capture_output=True,
                           check=True).stdout.decode("ascii").strip()
+
+
+def order_of(sg, head: str) -> str | None:
+    """The gate module sg's order_refusal on head's tree, as generated_doc_refusals calls it."""
+    return sg.order_refusal(head, sg.head_entries(head))
 
 
 def attributes_blob(oid: str) -> Callable[[list[bytes]], list[bytes]]:
@@ -4627,8 +4720,9 @@ def test_git_reads_the_head_trees_attributes_alone_or_the_gate_refuses(repo, mon
     without writing to /etc, is switched off on the command line it runs (GIT_ATTR_NOSYSTEM=1, with no system or
     global config and core.attributesFile set to the null device). git check-attr answers "no attributes" for an
     object it cannot read, so the borrowed object store must read the head commit, its tree and every .gitattributes
-    blob, or GitFailed is raised; and a tree out of git's order, where check-attr misses a .gitattributes that a
-    checkout reads, is refused by order_refusal."""
+    blob, and the tree of each folder holding a .gitattributes (red-team round 8), or GitFailed is raised; and a tree
+    out of git's order, where check-attr misses a .gitattributes that a checkout reads, is refused by order_refusal,
+    while a tree git itself writes, with names sorting around '/' and an empty tree among them, passes."""
     sg = load_gate(repo)
     # lib-x.py sorts before the tree lib, read as lib/ ('-' before '/'), as git sorts them: the control for order_refusal
     neutral = commits(repo, {"neutral": {".gitattributes": "*.png binary\n", "lib-x.py": "x\n"}})["neutral"][1]
@@ -4639,18 +4733,29 @@ def test_git_reads_the_head_trees_attributes_alone_or_the_gate_refuses(repo, mon
     commit = f"tree {tree}\nparent {_git(repo, 'rev-parse', 'base')}\nauthor t <t@example.com> 0 +0000\ncommitter t <t@example.com> 0 +0000\n\nx\n"
     elsewhere = {"a .gitattributes blob": rewritten(repo, neutral, attributes_blob(stored(repo, "blob", b"*.png binary\n# a blob elsewhere\n", side))),
                  "the root tree": rewritten(repo, neutral, attributes_blob(stored(repo, "blob", b"*.png binary\n# a tree elsewhere\n")), side),
-                 "the head commit": stored(repo, "commit", commit.encode("utf-8"), side)}
+                 "the head commit": stored(repo, "commit", commit.encode("utf-8"), side),
+                 # (red-team round 8: no test read a folder's tree from the borrowed store)
+                 "a folder's tree": rewritten(repo, neutral, lambda es: es + [b"40000 zsub\0" + bytes.fromhex(stored(repo, "tree", b"".join(
+                     (b"100644 " + name + b"\0" + bytes.fromhex(stored(repo, "blob", data))) for name, data in
+                     ((b".gitattributes", b"*.png binary\n# a folder elsewhere\n"), (b"x.md", b"x\n"))), side))])}
     unread = {}
     for what, head in elsewhere.items():
         try:
             unread[what] = sg.applied_attributes(head, sg.head_entries(head))
         except sg.GitFailed as e:
             unread[what] = str(e)
-    order = sg.order_refusal(sg.head_entries(rewritten(repo, neutral, lambda es: [e for e in es if named(e) != b".gitattributes"]
-                                                                                + [e for e in es if named(e) == b".gitattributes"])))
+    order = order_of(sg, rewritten(repo, neutral, lambda es: [e for e in es if named(e) != b".gitattributes"]
+                                   + [e for e in es if named(e) == b".gitattributes"]))
     # an empty tree, which a listing of files alone never shows, put first: check-attr stops there, before .gitattributes
     empty = bytes.fromhex(stored(repo, "tree", b""))
-    hidden = sg.order_refusal(sg.head_entries(rewritten(repo, neutral, lambda es: [b"40000 zz-empty\0" + empty] + es)))
+    hidden = order_of(sg, rewritten(repo, neutral, lambda es: [b"40000 zz-empty\0" + empty] + es))
+    # a tree git itself writes (mktree sorts its input), names sorting around '/', an empty tree beside e-x and e0
+    x = stored(repo, "blob", b"x\n")
+    folder = subprocess.run(["git", "mktree"], input=f"100644 blob {x}\tx\n".encode(), cwd=repo, capture_output=True, check=True).stdout.decode().strip()
+    honest = _git(repo, "commit-tree", subprocess.run(["git", "mktree"], cwd=repo, capture_output=True, check=True, input=b"".join(
+        f"{mode} {kind} {oid}\t".encode() + name + b"\n" for mode, kind, oid, name in
+        [("100644", "blob", x, n) for n in (b"a-b", b"a.b", b"a0", b"a!", "\u00e9".encode(), b"\xff", b"e-x", b"e0")]
+        + [("040000", "tree", folder, b"a"), ("040000", "tree", empty.hex(), b"e")])).stdout.decode().strip(), "-m", "honest")
     # the user's attributes file, which git reads from XDG_CONFIG_HOME, or from HOME when that is unset
     for folder in (tmp_path / "xdg/git", tmp_path / "home/.config/git"):
         folder.mkdir(parents=True)
@@ -4665,7 +4770,8 @@ def test_git_reads_the_head_trees_attributes_alone_or_the_gate_refuses(repo, mon
     monkeypatch.undo()
     check = next((args, env) for args, env in calls if "check-attr" in args)
     assert all("cannot read" in str(unread[w]) for w in elsewhere) and ".gitattributes listed after" in (order or "") \
-        and ".gitattributes listed after zz-empty" in (hidden or "") and sg.order_refusal(sg.head_entries(neutral)) is None, (unread, order, hidden)
+        and ".gitattributes listed after zz-empty" in (hidden or "") and order_of(sg, neutral) is None and order_of(sg, honest) is None, \
+        (unread, order, hidden, order_of(sg, honest))
     assert "text: auto" in planted and "eol: crlf" in planted and user is None and f"core.attributesFile={os.devnull}" in check[0] \
         and {k: check[1].get(k) for k in ("GIT_ATTR_NOSYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL")} == \
         {"GIT_ATTR_NOSYSTEM": "1", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}, (planted, user, check)
