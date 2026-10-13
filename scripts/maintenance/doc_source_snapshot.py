@@ -224,27 +224,28 @@ class Git:
         self.listings = {}
         self.contents = {}
         self.command(["--no-lazy-fetch", "--version"], guarded=False)
-        for key in ("extensions.partialClone",):
-            if self.command(["config", "--get", key], allowed=(0, 1)):
-                raise Unavailable("partial-clone repository is unavailable")
-        if self.command(["config", "--get-regexp", r"^remote\..*\.promisor$"], allowed=(0, 1)):
-            raise Unavailable("promisor repository configuration is unavailable")
-        pack = Path(text(self.command(["rev-parse", "--git-path", "objects/pack"])).strip())
+        if self.command(["config", "--get-regexp", r"^(extensions\.partial[Cc]lone|remote\..*\.promisor)$"], allowed=(0, 1)):
+            raise Unavailable("partial-clone or promisor repository configuration is unavailable")
+        metadata = text(self.command(["rev-parse", "--git-path", "objects/pack", "--git-path", "info/grafts",
+                                      "--is-shallow-repository", "--show-object-format"])).splitlines()
+        if len(metadata) != 4 or not metadata[0] or not metadata[1]:
+            raise Unavailable("incomplete repository admission metadata")
+        pack = Path(metadata[0])
         pack = pack if pack.is_absolute() else self.repo / pack
         if pack.exists():
             for entry in pack.iterdir():
                 self.budget.remaining()
                 if entry.name.endswith(".promisor"):
                     raise Unavailable("promisor object pack is unavailable")
-        grafts = Path(text(self.command(["rev-parse", "--git-path", "info/grafts"])).strip())
+        grafts = Path(metadata[1])
         grafts = grafts if grafts.is_absolute() else self.repo / grafts
         if grafts.exists():
             raise Unavailable("history grafts are unavailable")
         if self.command(["for-each-ref", "--format=%(refname)", "refs/replace/"]):
             raise Unavailable("replacement refs are unavailable")
-        if text(self.command(["rev-parse", "--is-shallow-repository"])).strip() != "false":
+        if metadata[2] != "false":
             raise Unavailable("unsupported shallow repository")
-        self.object_format = text(self.command(["rev-parse", "--show-object-format"])).strip()
+        self.object_format = metadata[3]
         if self.object_format not in ("sha1", "sha256"):
             raise Unavailable("unsupported Git object format")
         self.width = 40 if self.object_format == "sha1" else 64
@@ -758,6 +759,16 @@ class Snapshot:
         ancestry, _ = self.git.command(["merge-base", "--is-ancestor", baseline, current], allowed=(0, 1), return_code=True)
         if ancestry != 0:
             raise Unavailable("baseline is not available on current trusted main ancestry")
+        # These inputs are required by every nonterminal identity route. Share
+        # their size/presence inspection, while every content role still debits
+        # its complete bytes and validates mode/type at the original read site.
+        inputs = []
+        for ref in (current, source, baseline):
+            tree = self.git.tree(ref)
+            inputs.extend(tree[path]["blob_oid"] for path in (REGISTRY, SITE) if path in tree)
+        inputs.extend(row["blob_oid"] for path, row in self.git.tree(current).items()
+                      if path.startswith("docs/superpowers/specs/") and path.endswith(".md"))
+        self.git.sizes(inputs)
         policy = self.policy(current, source)
         scopes = policy["watch_paths"]
         entries, old_entries = self.admitted_manifests(source, baseline, scopes)
