@@ -1,6 +1,8 @@
 # Failure Notifier Deployment Plan
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-10-13 · **Owner:** TBD
+
+> This guide describes the configuration proposed in PRs #1456 and #1457. Apply it after those changes merge; it does not claim a production deployment has occurred.
 
 Step-by-step guide to deploy the GCP Cloud Run Job failure notifier, which sends Discord alerts and creates GitHub issues whenever any Cloud Run Job fails.
 
@@ -40,9 +42,7 @@ gcloud config get-value project
 
 The following must exist before deploying the notifier (created by `./gcp/deploy.sh setup`):
 
-- Cloud SQL instance with `trading` database
-- GCS bucket `adept-mountain-474619-d4-trading-data`
-- Service account `trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com`
+- Invoking service account `trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com` for Pub/Sub push and scheduler OIDC. The notifier runtime uses a separate `failure-notifier@` account provisioned by the notifier deployment.
 - Artifact Registry repo `us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system`
 
 Verify:
@@ -110,8 +110,8 @@ make notifier
 
 **What this does (in order):**
 1. Builds Docker image and pushes to Artifact Registry
-2. Deploys `failure-notifier` Cloud Run Service (512Mi, 0-3 instances, unauthenticated access blocked)
-3. Mounts `github-pat` and `github-repo` from Secret Manager via `--set-secrets`
+2. Describes or creates `failure-notifier@${PROJECT_ID}.iam.gserviceaccount.com`, then grants access to only `github-pat`, `github-repo`, and `discord-webhook-gcp`, plus project roles `roles/run.viewer` and `roles/logging.viewer`. Any denied setup aborts before deploying a revision.
+3. Deploys `failure-notifier` Cloud Run Service under that dedicated identity (512Mi, 0-3 instances, unauthenticated access blocked), mounting the three notification secrets. It receives project/region settings and no database or trading secrets. The `notifier` target skips the database-secret payload probe.
 4. Creates Pub/Sub topic `gcp-job-failures`
 5. Grants Pub/Sub service account `roles/run.invoker` on the service
 6. Creates dead-letter topic `gcp-job-failures-dlq`
@@ -160,7 +160,30 @@ gcloud logging sinks describe gcp-job-failures-sink \
 # 3f. Secrets are mounted (not visible in env vars)
 gcloud run services describe failure-notifier --region us-east1 \
   --format='yaml(spec.template.spec.containers[0].env)'
-# GITHUB_PAT and GITHUB_REPO should NOT appear here (they're in --set-secrets)
+# GITHUB_PAT, GITHUB_REPO and DISCORD_WEBHOOK_URL must use valueFrom.secretKeyRef.
+# DB_PASS and trading secrets must be absent; secret payloads are not printed.
+
+# 3g. Dedicated runtime identity and invoking identity
+gcloud run services describe failure-notifier --region us-east1 \
+  --format='value(spec.template.spec.serviceAccountName)'
+# Expected: failure-notifier@adept-mountain-474619-d4.iam.gserviceaccount.com
+gcloud pubsub subscriptions describe gcp-job-failures-push \
+  --format='value(pushConfig.oidcToken.serviceAccountEmail)'
+# Expected: trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+
+# 3h. Evidence/recovery grants and notification-secret access (metadata only)
+gcloud projects get-iam-policy adept-mountain-474619-d4 \
+  --flatten='bindings[].members' \
+  --filter='bindings.members:failure-notifier@adept-mountain-474619-d4.iam.gserviceaccount.com' \
+  --format='table(bindings.role)'
+# Expected roles: roles/run.viewer and roles/logging.viewer
+for notifier_secret in github-pat github-repo discord-webhook-gcp; do
+  gcloud secrets get-iam-policy "$notifier_secret" \
+    --flatten='bindings[].members' \
+    --filter='bindings.members:failure-notifier@adept-mountain-474619-d4.iam.gserviceaccount.com' \
+    --format='table(bindings.role)'
+done
+# Expected: roles/secretmanager.secretAccessor for each secret
 ```
 
 ---
@@ -173,7 +196,7 @@ gcloud run services describe failure-notifier --region us-east1 \
 python -m pytest tests/gcp/test_failure_notifier.py -v
 ```
 
-**Expected:** 11/11 passing. Covers:
+**Expected:** all tests pass. Covers:
 - Pub/Sub envelope parsing (valid JSON, empty data, non-JSON payload)
 - Log entry field extraction and Cloud Console URL building
 - Discord payload truncation for long error messages
@@ -181,6 +204,8 @@ python -m pytest tests/gcp/test_failure_notifier.py -v
 - Self-loop suppression (`job_name == "failure-notifier"` → skip)
 - Graceful skip when env vars missing
 - End-to-end handler fires both Discord and GitHub channels
+- Confirmed strict freshness audits use **Freshness Audit Failed** and include stale table/ticker findings and writer jobs. Crashes and timeouts retain job-failure wording; unavailable execution evidence is stated explicitly.
+- Watchdog delivery shares a 55-second acknowledgement budget; this does not change the subscription deadline.
 
 ### Test 2: Health check (after deployment)
 
@@ -286,6 +311,24 @@ gcloud pubsub topics delete gcp-job-failures --quiet
 # Delete the Cloud Run service
 gcloud run services delete failure-notifier --region us-east1 --quiet
 
+# Revoke access granted to the dedicated runtime identity before deleting it.
+# Keep trading-runner: it invokes other jobs, Pub/Sub and schedulers.
+notifier_project=adept-mountain-474619-d4
+notifier_runtime="failure-notifier@${notifier_project}.iam.gserviceaccount.com"
+for notifier_secret in github-pat github-repo discord-webhook-gcp; do
+  gcloud secrets remove-iam-policy-binding "$notifier_secret" \
+    --project="$notifier_project" \
+    --member="serviceAccount:${notifier_runtime}" \
+    --role=roles/secretmanager.secretAccessor --quiet || exit 1
+done
+for notifier_role in roles/run.viewer roles/logging.viewer; do
+  gcloud projects remove-iam-policy-binding "$notifier_project" \
+    --member="serviceAccount:${notifier_runtime}" \
+    --role="$notifier_role" --condition=None --quiet || exit 1
+done
+gcloud iam service-accounts delete "$notifier_runtime" \
+  --project="$notifier_project" --quiet || exit 1
+
 # Optionally delete the secrets (only if you want to redo setup-notifier)
 gcloud secrets delete github-pat --quiet
 gcloud secrets delete github-repo --quiet
@@ -350,4 +393,6 @@ gcloud run jobs list --region us-east1 --format='table(name,status.latestCreated
 | Logging Sink | `gcp-job-failures-sink` |
 | Secret (PAT) | `github-pat` |
 | Secret (repo) | `github-repo` |
+| Secret (Discord) | `discord-webhook-gcp` |
+| Runtime identity | `failure-notifier@${PROJECT_ID}.iam.gserviceaccount.com` |
 | Secret (PAT source) | `gh-stocks-repo-pat` (project 28960574877) |
