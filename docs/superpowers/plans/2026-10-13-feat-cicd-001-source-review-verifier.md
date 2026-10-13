@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-10-13-feat-cicd-001-source-review-verifier.md
 branch: feature/feat-cicd-001-source-review-verifier
-pr: null
+pr: 1470
 status: ready
 ---
 
@@ -40,9 +40,9 @@ The approved verifier specification SHA2568609bae9976547eb45c88f9dc8a561da0d43d6
 
 ## Task 1: Verify main prerequisites and overlapping-file sequence
 Spec: § Audit routing and bootstrap, Stage1/2. Advances done_when[4,7].
-- [ ] Independently verify actual main fdbcdaa7 contains approved verifier8609 and completed Policy A exact skill65ef/template4b4e, approved own FEAT/requirements and immutable policy/verifier specs.
-- [ ] Confirm review_deploy's renderer/main sequencing and additive protected-file interface before editing shared `scripts/gate/spec_gate.py` or `tests/scripts/test_spec_gate.py`; preserve current trusted BASE checker/exporter/init/renderer semantics.
-- [ ] Create one isolated named implementation branch from that main; stage ONLY this canonical fourteen-task ready plan, run actual commit gate and hook (expect PASS), and commit before implementation. Open one draft PR, then bind its real pr number in the next gated commit. No shared-branch/source push before four-seat review.
+- [x] Independently verify actual main fdbcdaa7 contains approved verifier8609 and completed Policy A exact skill65ef/template4b4e, approved own FEAT/requirements and immutable policy/verifier specs.
+- [x] Confirm review_deploy's renderer/main sequencing and additive protected-file interface before editing shared `scripts/gate/spec_gate.py` or `tests/scripts/test_spec_gate.py`; preserve current trusted BASE checker/exporter/init/renderer semantics.
+- [x] Create one isolated named implementation branch from that main; stage ONLY this canonical fourteen-task ready plan, run actual commit gate and hook (expect PASS), and commit before implementation. Open one draft PR, then bind its real pr number in the next gated commit. No shared-branch/source push before four-seat review.
 
 ## Task 2: Real committed-repository fixtures and initial refusals
 Spec: § Bounds and acceptance controls. Advances done_when[0,1,6].
