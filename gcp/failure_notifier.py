@@ -26,6 +26,7 @@ import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
@@ -41,6 +42,46 @@ logging.basicConfig(
 
 GITHUB_API = "https://api.github.com"
 REQUEST_TIMEOUT = 15
+_NOTIFICATION_DEADLINE = ContextVar("notification_deadline", default=None)
+_NOTIFICATION_IO = ThreadPoolExecutor(max_workers=2, thread_name_prefix="notification-delivery")
+# Leave five seconds for response handling before the subscription's 60s ack deadline.
+_NOTIFICATION_BUDGET = 55
+
+
+def _notification_expired(_retry_state=None):
+    deadline = _NOTIFICATION_DEADLINE.get()
+    return deadline is not None and time.monotonic() >= deadline
+
+
+def _notification_wait(state):
+    delay = wait_exponential(min=1, max=10)(state)
+    deadline = _NOTIFICATION_DEADLINE.get()
+    return delay if deadline is None else min(delay, max(0, deadline - time.monotonic()))
+
+
+def _notification_request(method, *args, **kwargs):
+    deadline = _NOTIFICATION_DEADLINE.get()
+    if deadline is None:
+        return method(*args, **kwargs)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise requests.Timeout("Notification acknowledgement budget exhausted")
+    kwargs["timeout"] = min(kwargs.get("timeout", REQUEST_TIMEOUT), remaining)
+    future = _NOTIFICATION_IO.submit(method, *args, **kwargs)
+    try:
+        return future.result(timeout=remaining)
+    except TimeoutError as exc:
+        future.cancel()
+        raise requests.Timeout("Notification acknowledgement budget exhausted") from exc
+
+
+def _notification_sleep(seconds):
+    deadline = _NOTIFICATION_DEADLINE.get()
+    if deadline is not None:
+        seconds = min(seconds, max(0, deadline - time.monotonic()))
+    time.sleep(seconds)
+
+
 MAX_BODY = 1_048_576  # 1 MB — log entries are typically < 10 KB
 
 # Bound both caller latency and background concurrency. A slow ADC discovery or
@@ -118,7 +159,7 @@ def _freshness_evidence(details: dict[str, Any], token: str) -> dict:
     cutoff = datetime.fromisoformat(details["timestamp"].replace("Z", "+00:00")) - timedelta(hours=2)
     filters.append(f"timestamp>={json.dumps(cutoff.isoformat())}")
     deadline = time.monotonic() + _FRESHNESS_TIMEOUT
-    response = requests.post(
+    response = _notification_request(requests.post,
         "https://logging.googleapis.com/v2/entries:list",
         headers={"Authorization": f"Bearer {token}"},
         json={"resourceNames": [f"projects/{details['project_id']}"],
@@ -196,7 +237,7 @@ def _freshness_findings(payload: dict, details: dict[str, Any]) -> str:
                 next_index += 1
     if not findings:
         raise ValueError("Stale audit has no attributable findings")
-    return "\n".join(findings)[:4000]
+    return "\n".join(findings)
 
 
 def enrich_freshness_failure(details: dict[str, Any]) -> dict[str, Any]:
@@ -406,10 +447,10 @@ def build_discord_payload(details: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+@retry(stop=stop_after_attempt(3) | _notification_expired, wait=_notification_wait, reraise=True)
 def send_discord(webhook_url: str, payload: dict[str, Any]) -> None:
     """Post to Discord webhook. Retries up to 3 times with exponential backoff."""
-    resp = requests.post(webhook_url, json=payload, timeout=REQUEST_TIMEOUT)
+    resp = _notification_request(requests.post, webhook_url, json=payload, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
     logger.info("Discord notification sent (status=%s)", resp.status_code)
 
@@ -429,7 +470,7 @@ def find_existing_issue(repo: str, labels: list[str], token: str) -> int | None:
     label_q = ",".join(labels)
     url = f"{GITHUB_API}/repos/{repo}/issues?state=open&labels={label_q}&per_page=1"
     try:
-        resp = requests.get(url, headers=_gh_headers(token), timeout=REQUEST_TIMEOUT)
+        resp = _notification_request(requests.get, url, headers=_gh_headers(token), timeout=REQUEST_TIMEOUT)
         resp.raise_for_status()
         items = resp.json()
         if items:
@@ -448,7 +489,7 @@ def find_all_open_issues(repo: str, labels: list[str], token: str) -> list[dict]
     label_q = ",".join(labels)
     url = f"{GITHUB_API}/repos/{repo}/issues?state=open&labels={label_q}&per_page=100"
     try:
-        resp = requests.get(url, headers=_gh_headers(token), timeout=REQUEST_TIMEOUT)
+        resp = _notification_request(requests.get, url, headers=_gh_headers(token), timeout=REQUEST_TIMEOUT)
         resp.raise_for_status()
         return resp.json()
     except requests.RequestException as e:
@@ -456,13 +497,13 @@ def find_all_open_issues(repo: str, labels: list[str], token: str) -> list[dict]
         return []
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+@retry(stop=stop_after_attempt(3) | _notification_expired, wait=_notification_wait, reraise=True)
 def close_issue(repo: str, issue_number: int, comment: str, token: str) -> None:
     """Add a closing comment then transition the issue to closed."""
     if comment:
         add_issue_comment(repo, issue_number, comment, token)
     url = f"{GITHUB_API}/repos/{repo}/issues/{issue_number}"
-    resp = requests.patch(
+    resp = _notification_request(requests.patch,
         url,
         headers=_gh_headers(token),
         json={"state": "closed"},
@@ -471,11 +512,11 @@ def close_issue(repo: str, issue_number: int, comment: str, token: str) -> None:
     resp.raise_for_status()
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+@retry(stop=stop_after_attempt(3) | _notification_expired, wait=_notification_wait, reraise=True)
 def create_issue(repo: str, title: str, body: str, labels: list[str], token: str) -> int:
     """POST a new issue and return its number. Retries 3× on transient errors."""
     url = f"{GITHUB_API}/repos/{repo}/issues"
-    resp = requests.post(
+    resp = _notification_request(requests.post,
         url,
         headers=_gh_headers(token),
         json={"title": title, "body": body, "labels": labels},
@@ -485,11 +526,11 @@ def create_issue(repo: str, title: str, body: str, labels: list[str], token: str
     return resp.json()["number"]
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+@retry(stop=stop_after_attempt(3) | _notification_expired, wait=_notification_wait, reraise=True)
 def add_issue_comment(repo: str, issue_number: int, body: str, token: str) -> None:
     """POST a comment on an existing issue. Retries 3× on transient errors."""
     url = f"{GITHUB_API}/repos/{repo}/issues/{issue_number}/comments"
-    resp = requests.post(
+    resp = _notification_request(requests.post,
         url, headers=_gh_headers(token), json={"body": body}, timeout=REQUEST_TIMEOUT
     )
     resp.raise_for_status()
@@ -527,6 +568,16 @@ def format_issue_body(details: dict[str, Any]) -> str:
     )
 
 
+def _update_freshness_title(repo, number, token, details):
+    if details["job_name"] == "freshness-watchdog":
+        resp = _notification_request(requests.patch,
+            f"{GITHUB_API}/repos/{repo}/issues/{number}",
+            headers=_gh_headers(token), json={"title": _alert_title(details)},
+            timeout=REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+
+
 def create_or_update_github_issue(
     repo: str, token: str, details: dict[str, Any]
 ) -> tuple[int, bool]:
@@ -550,19 +601,11 @@ def create_or_update_github_issue(
     # Jitter: spread concurrent handlers across a 0-2s window so that the
     # second (and later) instances are more likely to find the issue already
     # created by the first when they call find_existing_issue below.
-    time.sleep(random.uniform(0, 2))
+    _notification_sleep(random.uniform(0, 2))
 
     existing = find_existing_issue(repo, label_match, token)
     if existing:
-        if job_name == "freshness-watchdog":
-            # The label remains stable, so previously created issues get the
-            # accurate title too; a subsequent execution error resets the title.
-            resp = requests.patch(
-                f"{GITHUB_API}/repos/{repo}/issues/{existing}",
-                headers=_gh_headers(token), json={"title": _alert_title(details)},
-                timeout=REQUEST_TIMEOUT,
-            )
-            resp.raise_for_status()
+        _update_freshness_title(repo, existing, token, details)
         add_issue_comment(repo, existing, f"### {_repeat_heading(details)}\n\n{body}", token)
         logger.info("Appended comment to existing issue #%s", existing)
         return existing, False
@@ -574,7 +617,7 @@ def create_or_update_github_issue(
     # Sleep 5s before re-querying so GitHub has time to index all concurrent
     # creates — without this delay the list endpoint can return only this
     # instance's own issue, making each instance believe it is the canonical.
-    time.sleep(5)
+    _notification_sleep(5)
     open_matches = find_all_open_issues(repo, label_match, token)
     open_numbers = sorted(int(i["number"]) for i in open_matches)
     if len(open_numbers) > 1:
@@ -589,6 +632,7 @@ def create_or_update_github_issue(
                     f"failure burst). Content moved to the canonical issue.",
                     token,
                 )
+                _update_freshness_title(repo, canonical, token, details)
                 add_issue_comment(
                     repo,
                     canonical,
@@ -640,7 +684,7 @@ def _get_latest_execution_status(
         f"locations/{region}/jobs/{job_name}/executions?pageSize=1"
     )
     try:
-        resp = requests.get(
+        resp = _notification_request(requests.get,
             url,
             headers={"Authorization": f"Bearer {token}"},
             timeout=REQUEST_TIMEOUT,
@@ -741,6 +785,22 @@ def reconcile_closures(
 
 # ── Handler ──────────────────────────────────────────────────────────────────
 def handle_notification(body: bytes) -> tuple[int, str]:
+    # Scope the budget to watchdog alerts; preserve other jobs' delivery behavior.
+    try:
+        entry = parse_pubsub_envelope(body)
+        watchdog = entry and extract_failure_details(entry)["job_name"] == "freshness-watchdog"
+    except (ValueError, json.JSONDecodeError):
+        watchdog = False
+    if not watchdog:
+        return _handle_notification(body)
+    context = _NOTIFICATION_DEADLINE.set(time.monotonic() + _NOTIFICATION_BUDGET)
+    try:
+        return _handle_notification(body)
+    finally:
+        _NOTIFICATION_DEADLINE.reset(context)
+
+
+def _handle_notification(body: bytes) -> tuple[int, str]:
     """Process one Pub/Sub push. Returns (http_status, message)."""
     try:
         log_entry = parse_pubsub_envelope(body)

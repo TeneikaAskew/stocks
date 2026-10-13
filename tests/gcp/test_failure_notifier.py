@@ -1231,3 +1231,62 @@ def test_handler_post_reconcile_routes_to_reconciler(monkeypatch):
     assert b"200" in out
     assert b'"closed": 0' in out
     assert notif_called == []  # notify was NOT routed
+
+
+@pytest.mark.parametrize("audit_failed", [True, False])
+def test_freshness_race_retitles_the_canonical_issue(monkeypatch, audit_failed):
+    details = _freshness_details() | {"audit_failed": audit_failed, "audit_findings": "stale"}
+    monkeypatch.setattr(fn.time, "sleep", lambda _: None)
+    monkeypatch.setattr(fn, "find_existing_issue", lambda *a: None)
+    monkeypatch.setattr(fn, "create_issue", lambda *a: 105)
+    monkeypatch.setattr(fn, "find_all_open_issues", lambda *a: [{"number": 100}, {"number": 105}])
+    monkeypatch.setattr(fn, "close_issue", MagicMock())
+    comment = MagicMock()
+    monkeypatch.setattr(fn, "add_issue_comment", comment)
+    patch_request = MagicMock()
+    monkeypatch.setattr(fn.requests, "patch", patch_request)
+    assert fn.create_or_update_github_issue("owner/repo", "token", details) == (100, False)
+    assert patch_request.call_args.args[0].endswith("/issues/100")
+    assert patch_request.call_args.kwargs["json"] == {"title": fn._alert_title(details)}
+    assert comment.call_args.args[1] == 100
+
+
+def test_freshness_github_preserves_findings_beyond_discord_limit(monkeypatch):
+    entries = _freshness_entries()
+    detail = "  └─ details: " + "diagnostic " * 500
+    extra = dict(entries[3], textPayload=detail, timestamp="2026-10-11T23:38:29.0000035Z")
+    entries.append(extra)
+    _mock_freshness_lookup(monkeypatch, {"entries": entries})
+    details = fn.enrich_freshness_failure(_freshness_details())
+    assert len(details["audit_findings"]) > 4000
+    body = fn.format_issue_body(details)
+    assert detail.strip() in body
+    assert "SPY" in body
+    discord = fn.build_discord_payload(details)
+    finding = next(f for f in discord["embeds"][0]["fields"] if f["name"] == "Findings")
+    assert len(finding["value"]) <= 810
+
+
+def test_watchdog_delivery_transport_uses_remaining_ack_budget(monkeypatch):
+    monkeypatch.setattr(fn.time, "monotonic", lambda: 100)
+    method = MagicMock(return_value="response")
+    future = MagicMock()
+    future.result.side_effect = TimeoutError()
+    pool = MagicMock()
+    pool.submit.return_value = future
+    monkeypatch.setattr(fn, "_NOTIFICATION_IO", pool)
+    context = fn._NOTIFICATION_DEADLINE.set(103)
+    try:
+        with pytest.raises(fn.requests.Timeout, match="acknowledgement budget"):
+            fn._notification_request(method, "url", timeout=15)
+        assert pool.submit.call_args.kwargs["timeout"] == 3
+        future.result.assert_called_once_with(timeout=3)
+        future.cancel.assert_called_once()
+        assert fn._notification_expired() is False
+        monkeypatch.setattr(fn.time, "monotonic", lambda: 104)
+        assert fn._notification_expired() is True
+        with pytest.raises(fn.requests.Timeout):
+            fn._notification_request(method, "url", timeout=15)
+        assert pool.submit.call_count == 1
+    finally:
+        fn._NOTIFICATION_DEADLINE.reset(context)
