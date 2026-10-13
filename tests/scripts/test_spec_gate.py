@@ -39,6 +39,14 @@ DONE = ["every model states its decision", "the registry test passes"]
 CODE = {"lib/model.py": "DECISION = 'direction'\n"}
 NOT_A_FEAT_BRANCH = "is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>"
 
+SOURCE_REVIEW_PROTECTED = (
+    "scripts/maintenance/doc_source_snapshot.py", "scripts/maintenance/docs_audit.py",
+    "tests/scripts/test_doc_source_snapshot.py", "tests/scripts/test_docs_audit.py",
+    "scripts/__init__.py", "scripts/maintenance/__init__.py", "scripts/gate/__init__.py",
+    "tests/__init__.py", "tests/scripts/__init__.py", "tests/conftest.py", "tests/scripts/conftest.py",
+    "scripts/maintenance/json.py", "scripts/maintenance/json/__init__.py", "scripts/json.py",
+)
+
 CATALOG_TEXT = """\
 # Feature Catalog
 
@@ -220,6 +228,32 @@ def test_the_gate_cannot_be_edited_outside_chore_and_ci_runs_the_base_copy(repo)
         checkout = next(s for s in job["steps"] if s.get("uses", "").startswith("actions/checkout"))
         assert checkout["with"]["ref"] == "${{ github.event.pull_request.base.sha }}"
         assert not any("python3 scripts/gate/export_model_registry.py" in s.get("run", "") for s in job["steps"])
+
+
+def test_source_review_inputs_and_startup_dependencies_belong_to_cicd(repo):
+    """The actual gate refuses unrelated-feature edits, including new shadow slots."""
+    catalog = CATALOG_TEXT.replace("| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |",
+                                   "| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |\n| FEAT-CICD-001 | Delivery | Production | unknown | none |")
+    on_base(repo, {CATALOG: catalog})
+    for path in SOURCE_REVIEW_PROTECTED:
+        refused = pr(repo, BRANCH, {path: "LOCAL = 'benign ownership control'\n"},
+                     PR_TITLE="FEAT-MODEL-001: local source review ownership", PR_DRAFT="true")
+        assert refused.returncode == 1 and "belong to FEAT-CICD-001" in refused.stdout, (path, refused.stdout)
+
+
+def test_source_review_input_legitimate_cicd_change_passes_actual_gate(repo):
+    branch = "feature/feat-cicd-001-source-review-inputs"
+    cicd_spec = SPEC.replace("model-decisions", "source-review-inputs")
+    cicd_plan = PLAN.replace("model-decisions", "source-review-inputs")
+    on_base(repo, {
+        CATALOG: CATALOG_TEXT.replace("| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |",
+                                     "| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |\n| FEAT-CICD-001 | Delivery | Production | unknown | none |"),
+        cicd_spec: spec(feat_id="FEAT-CICD-001"),
+    })
+    accepted = pr(repo, branch, {cicd_plan: plan(feat_id="FEAT-CICD-001", branch=branch, spec=cicd_spec),
+                                "scripts/maintenance/doc_source_snapshot.py": "LOCAL = 'benign CICD-owned control'\n"},
+                  PR_TITLE="FEAT-CICD-001: source review input ownership", PR_DRAFT="true")
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
 
 
 def test_deploy_and_config_files_are_gated(repo):
