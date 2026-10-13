@@ -857,3 +857,247 @@ def test_actual_full_current_site_producer_hash_matches_complete_original_normal
     verdict = json.loads(accepted.stdout)
     assert verdict["document_body_sha256"] == expected
     assert verdict["counted_bytes"] >= len(raw) * 2
+
+
+def complex_body_repo(path, line_count, existing=False):
+    repo = Repo(path)
+    if existing:
+        repo.produce_committed()
+    old = (repo.path / RECORD).read_bytes() if existing else None
+    repo.git("checkout", "-q", "main")
+    body = (repo.path / SITE).read_text().replace("# Site traceability", "# Site *traceability*", 1)
+    body += "\n" + "Ordinary bounded document prose and a citation-free sentence.\n" * line_count
+    repo.write(SITE, body)
+    repo.base = repo.commit("docs: genuine complete complex-heading body")
+    repo.git("update-ref", "refs/remotes/origin/main", repo.base)
+    repo.git("checkout", "-q", BRANCH)
+    repo.git("reset", "--hard", repo.base)
+    repo.write(MODULE, (ROOT / MODULE).read_bytes())
+    repo.write(PLAN, (ROOT / PLAN).read_text().replace("pr: 1470", "pr: 7"))
+    repo.commit("feat: scoped verifier against unchanged complete complex body")
+    if old is not None:
+        repo.write(RECORD, old)
+    return repo, body, old
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_actual_fallback_parser_cpu_deadline_preserves_absent_or_valid_record(existing, tmp_path):
+    repo, body, old = complex_body_repo(tmp_path / "repo", 40000, existing)
+    refused = repo.cli("produce", "--max-seconds", "2")
+    verdict = json.loads(refused.stdout)
+    assert refused.returncode != 0, refused.stdout + refused.stderr
+    assert verdict["status"] == "unverified"
+    assert verdict["reason"] == "whole verification CPU deadline exceeded"
+    assert verdict["source_identity_sha256"] is not None
+    assert verdict["counted_bytes"] >= len(body.encode("utf-8"))
+    assert verdict["counted_bytes"] <= 8388608
+    # A lower-only two-second cap avoids relying on host throughput to make
+    # this bounded complete parser input exceed the default five-second cap.
+    # The alarm interrupts CPU work at two seconds; this measures only the
+    # ensuing handler restoration and refusal serialization, not a larger cap.
+    assert verdict["elapsed_seconds"] < 2.1
+    if old is None:
+        assert not (repo.path / RECORD).exists()
+    else:
+        assert (repo.path / RECORD).read_bytes() == old
+    assert not list((repo.path / RECORD).parent.glob(".source-snapshot-*"))
+
+
+def test_actual_nearby_complete_fallback_parser_produce_and_verify_accepted(tmp_path):
+    repo, body, _ = complex_body_repo(tmp_path / "repo", 5000)
+    produced = repo.produce_committed()
+    assert produced["counted_bytes"] >= len(body.encode("utf-8")) * 2
+    verified = repo.cli("verify")
+    assert verified.returncode == 0, verified.stdout + verified.stderr
+    verdict = json.loads(verified.stdout)
+    assert verdict["source_identity_sha256"] == produced["source_identity_sha256"]
+    assert verdict["document_body_sha256"] == produced["document_body_sha256"]
+    assert verdict["elapsed_seconds"] < 5
+
+
+CPU_CALLER = r'''
+import importlib.util, json, pathlib, signal, sys, threading, time
+spec = importlib.util.spec_from_file_location("actual_cpu_protocol", pathlib.Path.cwd() / "scripts/maintenance/doc_source_snapshot.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+mode = sys.argv[1]
+def prior_handler(signum, frame):
+    raise AssertionError("previous caller alarm must not execute")
+signal.signal(signal.SIGALRM, prior_handler)
+if mode == "active":
+    signal.setitimer(signal.ITIMER_REAL, 10, 3)
+elif mode == "unsupported":
+    del signal.setitimer
+elif mode == "backup-cleanup":
+    original_unlink = module.Path.unlink
+    def unlink(self, *args, **kwargs):
+        if self.name.startswith(".source-snapshot-backup-"):
+            raise OSError("actual backup cleanup refusal")
+        return original_unlink(self, *args, **kwargs)
+    module.Path.unlink = unlink
+elif mode in ("output-timeout", "post-output-refusal"):
+    original_emit = module.emit
+    original_remaining = module.Budget.remaining
+    output_complete = False
+    def remaining(self):
+        if output_complete:
+            raise module.Unavailable("actual final guard boundary refusal")
+        return original_remaining(self)
+    if mode == "post-output-refusal":
+        module.Budget.remaining = remaining
+    def emit(value, budget=None):
+        global output_complete
+        if value["status"] == "identity-matched":
+            pathlib.Path("output-callback-entered").write_text("actual installed producer callback\n")
+            if mode == "post-output-refusal":
+                original_emit(value, budget)
+                output_complete = True
+                return
+            while True:
+                pass
+        return original_emit(value, budget)
+    module.emit = emit
+args = ["verify"] if mode == "verify" else ["produce"]
+if mode == "thread":
+    results = []
+    worker = threading.Thread(target=lambda: results.append(module.main(args)))
+    worker.start()
+    worker.join()
+    result = results[0]
+else:
+    result = module.main(args)
+remaining, interval = signal.getitimer(signal.ITIMER_REAL)
+restored = signal.getsignal(signal.SIGALRM) is prior_handler
+print(json.dumps({"handler_restored": restored, "remaining": remaining, "interval": interval}), file=sys.stderr)
+if mode == "active":
+    assert 0 < remaining <= 10 and interval == 3
+    signal.setitimer(signal.ITIMER_REAL, 0)
+else:
+    assert remaining == interval == 0
+assert restored
+raise SystemExit(result)
+'''
+
+
+def actual_cpu_caller(repo, mode):
+    return subprocess.run([sys.executable, "-B", "-c", CPU_CALLER, mode], cwd=repo.path,
+                          capture_output=True, text=True, timeout=10)
+
+
+@pytest.mark.parametrize("mode", ["produce", "verify", "init-refusal", "active", "thread", "unsupported"])
+def test_actual_entrypoint_restores_or_preserves_caller_timer(mode, tmp_path):
+    repo = Repo(tmp_path / "repo")
+    if mode == "verify":
+        repo.produce_committed()
+    if mode == "init-refusal":
+        repo.git("config", "remote.fixture.promisor", "true")
+    result = actual_cpu_caller(repo, mode)
+    verdict = json.loads(result.stdout)
+    assert json.loads(result.stderr.splitlines()[-1])["handler_restored"] is True, result.stderr
+    if mode in ("produce", "verify"):
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert verdict["status"] == "identity-matched"
+    else:
+        assert result.returncode != 0
+        assert verdict["status"] == "unverified"
+        expected = {"init-refusal": "partial-clone or promisor", "active": "preexisting active CPU timer",
+                    "thread": "POSIX main-thread caller", "unsupported": "POSIX main-thread caller"}[mode]
+        assert expected in verdict["reason"]
+        assert not (repo.path / RECORD).exists()
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_actual_output_callback_cpu_timeout_rolls_back_and_restores_caller(existing, tmp_path):
+    repo = Repo(tmp_path / "repo")
+    if existing:
+        repo.produce_committed()
+    old = (repo.path / RECORD).read_bytes() if existing else None
+    refused = actual_cpu_caller(repo, "output-timeout")
+    assert refused.returncode != 0
+    assert json.loads(refused.stdout)["reason"] == "whole verification CPU deadline exceeded"
+    assert json.loads(refused.stderr.splitlines()[-1])["handler_restored"] is True
+    assert (repo.path / "output-callback-entered").exists()
+    if old is None:
+        assert not (repo.path / RECORD).exists()
+    else:
+        assert (repo.path / RECORD).read_bytes() == old
+    assert not list((repo.path / RECORD).parent.glob(".source-snapshot-*"))
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_actual_final_guard_refusal_after_output_rolls_back_record(existing, tmp_path):
+    repo = Repo(tmp_path / "repo")
+    if existing:
+        repo.produce_committed()
+    old = (repo.path / RECORD).read_bytes() if existing else None
+    refused = actual_cpu_caller(repo, "post-output-refusal")
+    assert refused.returncode != 0
+    verdicts = [json.loads(line) for line in refused.stdout.splitlines()]
+    # A printed preliminary success cannot replace the process exit/status
+    # contract: the final guard refusal emits unverified and rolls back.
+    assert [value["status"] for value in verdicts] == ["identity-matched", "unverified"]
+    assert verdicts[-1]["reason"] == "actual final guard boundary refusal"
+    assert json.loads(refused.stderr.splitlines()[-1])["handler_restored"] is True
+    assert (repo.path / "output-callback-entered").exists()
+    if old is None:
+        assert not (repo.path / RECORD).exists()
+    else:
+        assert (repo.path / RECORD).read_bytes() == old
+    assert not list((repo.path / RECORD).parent.glob(".source-snapshot-*"))
+
+
+def test_actual_backup_cleanup_failure_restores_valid_record(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    repo.produce_committed()
+    old = (repo.path / RECORD).read_bytes()
+    refused = actual_cpu_caller(repo, "backup-cleanup")
+    assert refused.returncode != 0
+    verdicts = [json.loads(line) for line in refused.stdout.splitlines()]
+    assert [value["status"] for value in verdicts] == ["identity-matched", "unverified"]
+    assert verdicts[-1]["reason"] == "actual backup cleanup refusal"
+    assert json.loads(refused.stderr.splitlines()[-1])["handler_restored"] is True
+    assert (repo.path / RECORD).read_bytes() == old
+    assert not list((repo.path / RECORD).parent.glob(".source-snapshot-*"))
+
+
+@pytest.mark.parametrize("entry", ["build", "verify", "terminal", "gate_note_scope"])
+def test_actual_library_entrypoint_cpu_guard_and_nested_deadline(entry, tmp_path):
+    repo = Repo(tmp_path / "repo")
+    script = r'''
+import importlib.util, json, pathlib, signal, sys, time
+spec = importlib.util.spec_from_file_location("actual_cpu_library", pathlib.Path.cwd() / "scripts/maintenance/doc_source_snapshot.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+def prior_handler(signum, frame):
+    raise AssertionError("prior caller timer executed")
+signal.signal(signal.SIGALRM, prior_handler)
+snapshot = module.Snapshot(pathlib.Path.cwd())
+snapshot.budget.deadline = time.monotonic() + 0.05
+# Exercise the real public library wrapper with CPU work at its first existing
+# operation; no authored verdict or alternative successful parser is supplied.
+def busy(*args, **kwargs):
+    while True:
+        pass
+entry = sys.argv[1]
+if entry == "gate_note_scope":
+    snapshot.git.commit = busy
+    args = ("origin/main", "origin/main", "HEAD", "FEAT-CICD-001", module.SPEC)
+else:
+    snapshot.dirty_site = busy
+    args = ()
+try:
+    with snapshot.budget.cpu_guard():
+        getattr(snapshot, entry)(*args)
+except module.Unavailable as error:
+    assert str(error) == "whole verification CPU deadline exceeded"
+else:
+    raise AssertionError("public library entrypoint completed beyond its deadline")
+assert snapshot.budget.cpu_depth == 0
+assert signal.getsignal(signal.SIGALRM) is prior_handler
+assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+print(json.dumps({"refused": True, "handler_restored": True, "entry": entry}))
+'''
+    result = subprocess.run([sys.executable, "-B", "-c", script, entry], cwd=repo.path,
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout) == {"refused": True, "handler_restored": True, "entry": entry}

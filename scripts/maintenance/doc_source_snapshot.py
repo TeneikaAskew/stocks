@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
+import functools
 import hashlib
 import importlib.util
 import json
@@ -15,6 +17,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unicodedata
 
@@ -196,6 +199,38 @@ class Budget:
         self.max_entries = max_entries
         self.bytes = 0
         self.entries = 0
+        self.cpu_depth = 0
+
+    @contextlib.contextmanager
+    def cpu_guard(self):
+        """Interrupt CPU parsing at the same deadline without replacing a guard."""
+        self.remaining()
+        if self.cpu_depth:
+            self.cpu_depth += 1
+            try:
+                yield
+                self.remaining()
+            finally:
+                self.cpu_depth -= 1
+            return
+        if (not hasattr(signal, "setitimer") or not hasattr(signal, "ITIMER_REAL")
+                or threading.current_thread() is not threading.main_thread()):
+            raise Unavailable("hard CPU deadline requires a supported POSIX main-thread caller")
+        if any(signal.getitimer(signal.ITIMER_REAL)):
+            raise Unavailable("preexisting active CPU timer cannot be replaced")
+        previous = signal.getsignal(signal.SIGALRM)
+        def expired(_signum, _frame):
+            raise Unavailable("whole verification CPU deadline exceeded")
+        try:
+            signal.signal(signal.SIGALRM, expired)
+            signal.setitimer(signal.ITIMER_REAL, self.remaining())
+            self.cpu_depth = 1
+            yield
+            self.remaining()
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
+            self.cpu_depth = 0
 
     def remaining(self) -> float:
         left = self.deadline - time.monotonic()
@@ -499,6 +534,14 @@ def json_record(raw: bytes, max_entries=MAX_ENTRIES) -> dict:
     return value
 
 
+def snapshot_guard(function):
+    @functools.wraps(function)
+    def guarded(self, *args, **kwargs):
+        with self.budget.cpu_guard():
+            return function(self, *args, **kwargs)
+    return guarded
+
+
 class Snapshot:
     def __init__(self, repo=ROOT, *, seconds=MAX_SECONDS, max_bytes=MAX_BYTES, max_entries=MAX_ENTRIES):
         self.source_hash = None
@@ -508,9 +551,10 @@ class Snapshot:
         self.body_hashes = {}
         self.registries = {}
         self.budget = Budget(seconds, max_bytes, max_entries)
-        self.git = Git(Path(repo), self.budget)
-        self.audit = trusted_module("_source_snapshot_audit", "scripts/maintenance/docs_audit.py", self.budget)
-        self.gate = trusted_module("_source_snapshot_gate", "scripts/gate/spec_gate.py", self.budget)
+        with self.budget.cpu_guard():
+            self.git = Git(Path(repo), self.budget)
+            self.audit = trusted_module("_source_snapshot_audit", "scripts/maintenance/docs_audit.py", self.budget)
+            self.gate = trusted_module("_source_snapshot_gate", "scripts/gate/spec_gate.py", self.budget)
 
     def policy(self, policy_ref: str, source_ref: str, *, require_source_equal=True):
         raw = self.git.blob(policy_ref, REGISTRY)
@@ -602,6 +646,7 @@ class Snapshot:
             self.budget.remaining()
         return rows[0]["blob_oid"], fm
 
+    @snapshot_guard
     def gate_note_scope(self, baseline_ref, policy_ref, source_ref, feat, spec_path, *, only_changed_source=False):
         baseline, current, source = (self.git.commit(ref) for ref in (baseline_ref, policy_ref, source_ref))
         policy = self.policy(current, source)
@@ -617,6 +662,7 @@ class Snapshot:
         note_delta(text(old_raw), text(new_raw), feat, ids, self.source_hash)
         self.budget.remaining()
 
+    @snapshot_guard
     def verify(self, policy_ref="origin/main", source_ref="HEAD"):
         if self.terminal(policy_ref, source_ref):
             return self.verdict()
@@ -667,6 +713,7 @@ class Snapshot:
         lines = text(raw).split("\n")
         return [self.audit._marker_body(lines, i) for i, _ in self.audit.find_markers(lines)]
 
+    @snapshot_guard
     def terminal(self, policy_ref="origin/main", source_ref="HEAD") -> bool:
         """Original marker predicates and source/body drift; records have no role."""
         self.dirty_site()
@@ -749,6 +796,7 @@ class Snapshot:
         return {"kind": kind, "feat_id": feat, "spec_path": path, "spec_blob_oid": spec_oid,
                 "component_ids": components}
 
+    @snapshot_guard
     def build(self, policy_ref="origin/main", source_ref="HEAD", record=None):
         self.dirty_site()
         current = self.git.commit(policy_ref)
@@ -831,40 +879,48 @@ def emit(value, budget=None):
 
 def install(record: bytes, budget: Budget, complete):
     destination = ROOT / RECORD
-    for path in (destination, destination.parent, destination.parent.parent):
-        if path.is_symlink():
-            raise Unavailable("sidecar installation path is a symlink")
-    budget.admit_size(len(record))
-    budget.read(len(record))
-    destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     backup = None
     installed = False
     try:
-        if destination.exists():
-            if not destination.is_file() or destination.stat().st_mode & 0o111:
-                raise Unavailable("existing sidecar is not a regular mode100644 file")
-            budget.admit_size(destination.stat().st_size)
-            with destination.open("rb") as previous:
-                old = previous.read(budget.max_bytes - budget.bytes + 1)
-            budget.read(len(old))
-            with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".source-snapshot-backup-", delete=False) as stream:
-                backup = Path(stream.name)
-                stream.write(old)
+        # Retain rollback through the final deadline check and timer restoration;
+        # an outer guard ending after this transaction could fail too late.
+        with budget.cpu_guard():
+            for path in (destination, destination.parent, destination.parent.parent):
+                if path.is_symlink():
+                    raise Unavailable("sidecar installation path is a symlink")
+            budget.admit_size(len(record))
+            budget.read(len(record))
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                if not destination.is_file() or destination.stat().st_mode & 0o111:
+                    raise Unavailable("existing sidecar is not a regular mode100644 file")
+                budget.admit_size(destination.stat().st_size)
+                with destination.open("rb") as previous:
+                    old = previous.read(budget.max_bytes - budget.bytes + 1)
+                budget.read(len(old))
+                with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".source-snapshot-backup-", delete=False) as stream:
+                    backup = Path(stream.name)
+                    stream.write(old)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.chmod(backup, 0o644)
+            with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".source-snapshot-", delete=False) as stream:
+                temporary = Path(stream.name)
+                stream.write(record)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.chmod(backup, 0o644)
-        with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".source-snapshot-", delete=False) as stream:
-            temporary = Path(stream.name)
-            stream.write(record)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(temporary, 0o644)
-        budget.remaining()
-        os.replace(temporary, destination)
-        temporary = None
-        installed = True
-        complete()
+            os.chmod(temporary, 0o644)
+            budget.remaining()
+            os.replace(temporary, destination)
+            temporary = None
+            installed = True
+            complete()
+        # A backup-removal error is still a failed producer, with its original
+        # backup available to the exception handler for atomic restoration.
+        if backup is not None:
+            backup.unlink(missing_ok=True)
+            backup = None
     except BaseException:
         if installed:
             if backup is None:
@@ -897,14 +953,16 @@ def main(argv=None):
             raise Unavailable("only the fixed committed sidecar path is eligible")
         snapshot = Snapshot.__new__(Snapshot)
         snapshot.__init__(seconds=args.max_seconds, max_bytes=args.max_input_bytes, max_entries=args.max_entries)
+        with snapshot.budget.cpu_guard():
+            if args.action == "produce":
+                value = snapshot.build(args.policy_ref, args.source_ref)
+                serialized = canonical(value)
+                json_record(serialized, snapshot.budget.max_entries)
+            else:
+                snapshot.verify(args.policy_ref, args.source_ref)
+                emit(snapshot.verdict(), snapshot.budget)
         if args.action == "produce":
-            value = snapshot.build(args.policy_ref, args.source_ref)
-            serialized = canonical(value)
-            json_record(serialized, snapshot.budget.max_entries)
             install(serialized, snapshot.budget, lambda: emit(snapshot.verdict(), snapshot.budget))
-        else:
-            snapshot.verify(args.policy_ref, args.source_ref)
-            emit(snapshot.verdict(), snapshot.budget)
         return 0
     except (Unavailable, OSError, ValueError, subprocess.SubprocessError, UnicodeError, RecursionError) as exc:
         result = snapshot.verdict("unverified", str(exc)) if snapshot is not None and hasattr(snapshot, "budget") else {
