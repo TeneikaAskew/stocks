@@ -6,7 +6,7 @@ canvases: []
 done_when:
   - "D1: in stocks and solyra, grep -c 'a whole re-cut PR' AGENTS.md and grep -c 'an approved spec does not change in place' AGENTS.md each print 0 (1 on main), and grep -c 'A spec PR is fixed' AGENTS.md prints 1 (0 on main)"
   - "D2: in both repos, grep -c 'must fail against a broken implementation' AGENTS.md prints 0 (1 on main) and grep -c 'realistic path to a user-visible' AGENTS.md prints 1 (0 on main), in the spec-PR bullet, which asks each behavior done_when item to name a test or check that fails on main and passes on the design"
-  - "D3: in both repos, grep -c 'Blocking threshold: P1.' AGENTS.md prints 1, under a '### What blocks the merge' heading, and grep -c 'may get a reply instead of a' CLAUDE.md prints 1, in Rule 2.5's merge-gate item 2 (both 0 on main)"
+  - "D3: in both repos, grep -c 'Blocking threshold: P1.' AGENTS.md and grep -c 'which blocks only as the spec-PR rule' AGENTS.md each print 1, under a '### What blocks the merge' heading, and grep -c 'may get a reply instead of a' CLAUDE.md prints 1, in Rule 2.5's merge-gate item 2 (all 0 on main)"
   - "D4: in both repos, grep -c 'then split, re-cut, or discard' CLAUDE.md prints 0 (1 on main) and grep -c 'If no finding that blocks the merge remains' .claude/skills/product-delivery/SKILL.md prints 1 (0 on main); in stocks, grep -c 'needs neither: its reply is enough' CLAUDE.md prints 1 (0 on main)"
   - "python3 scripts/gate/spec_gate.py --pr origin/main passes on each implementation PR head, the two repos' '## Review guidelines' sections differ only in the Rule 3.7 / Rule 4 line, and each repo's FEAT-CICD-001 catalog entry shows a current Status and Last reviewed and records the PR"
 status: approved
@@ -83,8 +83,8 @@ After:
 > - A spec PR is reviewed against the code it will change: the reviewer opens each file the spec names
 >   and checks that every `done_when` item can be met, and that each `done_when` item that describes
 >   behavior names a test or check that fails on `main` (or on the prior state the item names) and
->   passes on the design. A broken implementation that would still pass may be posted as a finding;
->   whatever its severity, it blocks the merge only when it shows a realistic path to a user-visible
+>   passes on the design. A broken implementation that would still pass is posted as a finding. It
+>   blocks the merge, whatever its severity, only when it shows a realistic path to a user-visible
 >   defect, and otherwise gets a reply. Items that record delivery (the gate, the docs audit, the
 >   catalog row) are only checked for being met.
 
@@ -95,15 +95,17 @@ P2 to block too, one word changes: "Blocking threshold: P1." becomes "P2.".
 >
 > Blocking threshold: P1. Severity runs from P0, the most severe, to P3, as Codex's badges show; a
 > finding without a badge states its severity, and only the owner changes a reviewer's severity. A
-> finding at or above the threshold blocks the merge until it is fixed. A finding below it gets a
-> reply on its thread, and an issue the reply links when it is real; the thread is then resolved and
-> the pull request merges without the fix.
+> finding at or above the threshold blocks the merge until it is fixed, unless it is a spec PR's
+> finding of a broken implementation that would still pass, which blocks only as the spec-PR rule
+> in "The first review is the complete one" says. A finding below the threshold, or one that rule
+> excuses, gets a reply on its thread, and an issue the reply links when it is real; the thread is
+> then resolved and the pull request merges without the fix.
 
 CLAUDE.md Rule 2.5 merge gate, item 2 (stocks L180-181; solyra L124-125, which reads "isn't" for
 "is not"), gains two lines; before is the first two lines below. After:
 > 2. Every thread either resolved, or replied to with why it is not being
->    actioned. Zero unresolved threads is the bar. A finding below the blocking
->    threshold (AGENTS.md `## Review guidelines`) may get a reply instead of a
+>    actioned. Zero unresolved threads is the bar. A finding that does not block
+>    the merge (AGENTS.md `## Review guidelines`) may get a reply instead of a
 >    fix, linking an issue when it is real; its thread is then resolved.
 
 ### D4. Exit rule after round 2
@@ -126,7 +128,9 @@ stocks CLAUDE.md Rule 2.5, L340-342, gains one sentence; before is the first thr
 > split, re-cut or discarded (the review cap). A finding that does not block
 > the merge (AGENTS.md `## Review guidelines`) needs neither: its reply is enough.
 
-"Blocks the merge" comes from D3, narrowed by D2. If D3 is struck, it means a defect the author
+"Blocks the merge" comes from D3, whose subsection states D2's exception, so AGENTS.md alone gives
+one answer for a P0 or P1 that D2 excuses. If D2 is struck, D3 drops that exception (its "unless"
+clause and "or one that rule excuses"); if D3 is struck, "blocks the merge" means a defect the author
 confirms (Rule 2.5) that D2 does not excuse; if D2 and D3 are both struck, strike D4 too.
 
 ## Delivery and landing
