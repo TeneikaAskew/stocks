@@ -44,12 +44,13 @@ Spec: § D4. Advances done_when[3].
 - [ ] Commit: `docs(claude): merge after round 2 when nothing blocks`
 
 ## Task 4: close
-Spec: § Done when. Closes done_when[4].
+Spec: the `done_when` frontmatter. Closes done_when[4].
 - [ ] Check each of the spec's After blocks is in its file verbatim (the `> ` quote prefix removed, solyra's
       "isn't" where the spec says so) and each Before block is gone; the greps count markers only, so this is
       what shows no clause was dropped (Codex, solyra#280 r4274729914). The PR body shows the output
 - [ ] `diff` the two repos' `## Review guidelines` sections of AGENTS.md: they differ only in the Rule 3.7 / Rule 4 line
-- [ ] Update the FEAT-CICD-001 Status and Last reviewed (stocks: its record in 02-FEATURE-CATALOG; solyra: its row)
+- [ ] Confirm the FEAT-CICD-001 Status still holds and update Last reviewed (stocks: its record in 02-FEATURE-CATALOG;
+      solyra: its row)
 - [ ] Add this PR to 12-PR-ISSUE-TRACEABILITY under FEAT-CICD-001 (solyra: the catalog row's PRs column)
 - [ ] Docs audit reports nothing new over origin/main (`python3 scripts/maintenance/docs_audit.py` in stocks,
       `node scripts/docs-audit.mjs` in solyra)
