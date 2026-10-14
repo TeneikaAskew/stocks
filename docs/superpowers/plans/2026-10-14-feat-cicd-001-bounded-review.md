@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-10-14-feat-cicd-001-bounded-review.md
 branch: feature/feat-cicd-001-bounded-review
-pr: null
+pr: 1512
 status: ready
 ---
 
