@@ -40,7 +40,7 @@ Status column comes from [02](02-FEATURE-CATALOG.md).
 | [FEAT-DATA-001](02-FEATURE-CATALOG.md#feat-data-001) | `gcp/fetchers/`, `gcp/schema.sql`, `lib/data_loader.py`, `gcp/database.py` | `tests/lib/test_data_loader*.py`, integration suite | Production but needs remediation |
 | [FEAT-DEPLOY-001](02-FEATURE-CATALOG.md#feat-deploy-001) | `gcp/deploy.sh`, `platform/deploy.sh`, `gcp/cloudbuild/` | static checks only | Production but needs remediation |
 | [FEAT-OPS-001](02-FEATURE-CATALOG.md#feat-ops-001) | `scripts/audit_data_freshness.py`, `gcp/failure_notifier.py`, `platform/api/routers/health.py` | `data-pipeline-status.spec.ts` deleted in #957 — see [#971](https://github.com/TeneikaAskew/stocks/issues/971) and [solyra#29](https://github.com/TeneikaAskew/solyra/pull/29) | Incomplete |
-| [FEAT-CICD-001](02-FEATURE-CATALOG.md#feat-cicd-001) | `.github/workflows/`, `gcp/cloudbuild/` | 230 python tests (frontend suites moved to solyra in #957) | Production but needs remediation |
+| [FEAT-CICD-001](02-FEATURE-CATALOG.md#feat-cicd-001) | `.github/workflows/`, `gcp/cloudbuild/` | 7352 pytest items at `a327cf17` (frontend suites moved to solyra in #957) | Production but needs remediation |
 | [FEAT-UI-001](02-FEATURE-CATALOG.md#feat-ui-001) | [solyra `src/App.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/App.tsx), solyra `src/components/` | solyra `tests/navigation.spec.ts` | Production but needs remediation |
 | [FEAT-DEBT-001](02-FEATURE-CATALOG.md#feat-debt-001) | `scripts/`, archived apps | — | Retire candidate |
 
@@ -56,4 +56,4 @@ Status column comes from [02](02-FEATURE-CATALOG.md).
 | `scripts/analysis/` | analysis scripts — **but also feeds `playbook_cards`** | a production user-facing table is written from here; weakest coverage ([#849](https://github.com/TeneikaAskew/stocks/issues/849)) |
 | `gcp/schema.sql` | 64 relations | runtime SQL must be reconciled ([#860](https://github.com/TeneikaAskew/stocks/issues/860)) |
 | `.github/workflows`, `gcp/deploy.sh` | delivery intent | not necessarily live state ([#859](https://github.com/TeneikaAskew/stocks/issues/859)) |
-| `tests/` (e2e + vitest suites moved to solyra in #957) | 230 python | frontend suites do not run in CI ([solyra#28](https://github.com/TeneikaAskew/solyra/issues/28), formerly #868); live API connectivity smoke gap tracked in [#971](https://github.com/TeneikaAskew/stocks/issues/971) |
+| `tests/` (e2e + vitest suites moved to solyra in #957) | 7352 pytest items at `a327cf17` | frontend suites do not run in CI ([solyra#28](https://github.com/TeneikaAskew/solyra/issues/28), formerly #868); live API connectivity smoke gap tracked in [#971](https://github.com/TeneikaAskew/stocks/issues/971) |
