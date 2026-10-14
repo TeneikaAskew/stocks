@@ -119,8 +119,13 @@ def body(ticked: bool = False, spec_path: str = SPEC, plan_path: str | None = PL
     return "\n".join(links + [""] + [f"- [{box}] {item}" for item in DONE])
 
 
+# Every commit the suite makes is dated TODAY, so a run that crosses midnight cannot split the
+# module-level TODAY from the head commit's date (nightly canary, 2026-10-14, stocks#1502)
+_COMMIT_DATES = {"GIT_AUTHOR_DATE": f"{TODAY}T12:00:00+0000", "GIT_COMMITTER_DATE": f"{TODAY}T12:00:00+0000"}
+
+
 def _git(cwd: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=cwd, check=True,
+    return subprocess.run(["git", *args], cwd=cwd, check=True, env={**os.environ, **_COMMIT_DATES},
                           capture_output=True, text=True).stdout.strip()
 
 
