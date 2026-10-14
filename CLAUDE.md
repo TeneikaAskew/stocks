@@ -178,7 +178,9 @@ inside that window. Concretely, before any merge:
    checking CI, not after. An empty result 60 seconds after opening the PR
    means nothing; wait and re-check.
 2. Every thread either resolved, or replied to with why it is not being
-   actioned. Zero unresolved threads is the bar.
+   actioned. Zero unresolved threads is the bar. A finding that does not block
+   the merge (AGENTS.md `## Review guidelines`) may get a reply instead of a
+   fix, linking an issue when it is real; its thread is then resolved.
 3. The head is reviewed and each Codex review type's first review is recorded,
    as "A resolved thread is not a reviewed commit" and "A finding raised after
    a reviewer's first review" below say. If that meant waiting for a run,

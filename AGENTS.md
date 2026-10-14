@@ -49,6 +49,16 @@ Rule 2.5.
 A problem the pull request neither introduces nor makes worse is not posted as a finding (a reviewer
 who can open an issue may open one), since every thread holds the merge (REQ-GOV-001).
 
+### What blocks the merge
+
+Blocking threshold: P1. Severity runs from P0, the most severe, to P3, as Codex's badges show; a
+finding without a badge states its severity, and only the owner changes a reviewer's severity. A
+finding at or above the threshold blocks the merge until it is fixed, unless it is a spec PR's
+finding of a broken implementation that would still pass, which blocks only as the spec-PR rule
+in "The first review is the complete one" says. A finding below the threshold, or one that rule
+excuses, gets a reply on its thread, and an issue the reply links when it is real; the thread is
+then resolved and the pull request merges without the fix.
+
 ### Browser proof
 
 A change a user can see in the site carries Playwright evidence from a run that exercises the
