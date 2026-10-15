@@ -754,7 +754,7 @@ class Snapshot:
         index, info = markers[0]
         if (info.get("legacy") or info.get("depth") != "verified" or not info.get("sha")
                 or info.get("date") in (None, "unknown")
-                or self.audit.check_marker_dates(SITE, info, datetime.date.today().isoformat())
+                or self.audit.check_marker_dates(SITE, info, datetime.date.today().isoformat())  # tz-ok: doc review-date validation matches docs_audit, not market data
                 or self.audit.check_marker_fields(SITE, info, self.audit._marker_body(lines, index))):
             return False
         try:
