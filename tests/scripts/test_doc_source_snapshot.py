@@ -28,6 +28,61 @@ BRANCH = "feature/feat-cicd-001-source-review-verifier"
 DAY = datetime.date.today().isoformat()
 
 
+DESCENDANT_SUPERVISOR = r'''
+# Test-only Linux adopter. The production CLI and its Git process group are
+# unchanged. Orphaned fixture grandchildren remain owned and waitable here.
+import ctypes, json, os, pathlib, signal, subprocess, sys, time
+libc = ctypes.CDLL(None, use_errno=True)
+if libc.prctl(36, 1, 0, 0, 0) != 0:
+    raise OSError(ctypes.get_errno(), "fixture subreaper unavailable")
+child = subprocess.Popen(sys.argv[2:])
+reaped = []
+escaped = False
+try:
+    result = child.wait(timeout=8)
+finally:
+    if child.poll() is None:
+        child.kill()
+        child.wait()
+    until = time.monotonic() + 0.5
+    while True:
+        try:
+            pid, status = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            break
+        if pid:
+            reaped.append({"pid": pid, "status": status})
+            continue
+        if time.monotonic() >= until:
+            escaped = True
+            # Only this isolated adopter's own children are signalable here;
+            # never PID1, another runner or an external process group.
+            children = pathlib.Path(f"/proc/self/task/{os.getpid()}/children")
+            for raw in children.read_text().split():
+                try:
+                    os.kill(int(raw), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        time.sleep(0.005)
+    pathlib.Path(sys.argv[1]).write_text(json.dumps({"reaped": reaped, "escaped_live_child": escaped,
+                                                   "remaining_children": []}))
+if escaped:
+    raise AssertionError("actual CLI left a live fixture descendant")
+raise SystemExit(result)
+'''
+
+
+def run_descendant_fixture(args, report, *, require_adoption=True, **kwargs):
+    """Contain deliberate kill-group fixtures without relying on runner PID1."""
+    result = subprocess.run([sys.executable, "-B", "-c", DESCENDANT_SUPERVISOR, str(report), *args], **kwargs)
+    reaping = json.loads(report.read_text())
+    assert not reaping["escaped_live_child"]
+    assert reaping["remaining_children"] == []
+    if require_adoption:
+        assert reaping["reaped"], "deliberately killed grandchildren must be collected"
+    return result
+
+
 class Repo:
     def __init__(self, path: Path, object_format: str = "sha1"):
         self.path = path
@@ -333,7 +388,12 @@ def test_actual_missing_promisor_blob_refuses_before_sensitive_local_remote(tmp_
         assert "promisor" in result.stdout + result.stderr or "partial-clone" in result.stdout + result.stderr
         assert not sentinel.exists()
     env = {key: value for key, value in os.environ.items() if key not in ("GIT_NO_LAZY_FETCH", "GIT_NO_REPLACE_OBJECTS")}
-    detection = subprocess.run(["git", "cat-file", "-p", missing], cwd=partial, env=env, capture_output=True, timeout=10)
+    # Failed ext transport also leaves Git's remote helper orphaned on runners
+    # without a reaping PID1; retain the real lazy-fetch/sentinel control while
+    # adopting its local transport descendants in the isolated test harness.
+    detection = run_descendant_fixture(["git", "cat-file", "-p", missing],
+                                      tmp_path / "promisor-descendant-reaping.json", cwd=partial,
+                                      env=env, capture_output=True, timeout=10, require_adoption=False)
     assert detection.returncode != 0
     assert sentinel.read_text() == "accessed", detection.stderr
 
@@ -396,6 +456,40 @@ def test_actual_doc_body_squash_then_trunk_stamp_and_retirement(object_format, t
     repo.commit("docs: change body after stamp")
     broken = repo.audit()
     assert any(f["doc"] == SITE and f["check"] == "source-provenance" for f in json.loads(broken.stdout)["findings"])
+
+
+@pytest.mark.parametrize("field", ["Last reviewed", "Last scanned"])
+@pytest.mark.parametrize("date", ["2099-01-01", "2099-02-30"])
+def test_actual_terminal_rejects_future_and_impossible_marker_dates(field, date, tmp_path):
+    repo = installed_repo(tmp_path / "repo")
+    repo.git("checkout", "-q", "-b", "docs/source-closeout")
+    repo.write(SITE, (repo.path / SITE).read_text() + "\nGenuine local main body close-out evidence.\n")
+    repo.commit("docs: actual body publication before terminal marker")
+    repo.produce_committed()
+    repo.git("checkout", "-q", "main")
+    repo.git("merge", "--squash", "docs/source-closeout")
+    landed = repo.commit("docs: actual body-first squash")
+    repo.git("update-ref", "refs/remotes/origin/main", landed)
+    repo.git("checkout", "-q", "-b", "docs/source-terminal")
+    stamped = repo.audit("--stamp", "--verify", SITE)
+    assert stamped.returncode in (0, 1), stamped.stdout + stamped.stderr
+    assert any(row["doc"] == SITE and row["action"] in ("updated", "unchanged") for row in json.loads(stamped.stdout)["stamped"])
+    (repo.path / RECORD).unlink()
+    repo.commit("docs: genuine terminal stamp and record retirement")
+    accepted = repo.cli("verify")
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    assert json.loads(accepted.stdout)["eligible_route"] == "terminal-ordinary"
+    body = (repo.path / SITE).read_text()
+    needle = f"**{field}:** {DAY}"
+    assert needle in body
+    repo.write(SITE, body.replace(needle, f"**{field}:** {date}", 1))
+    repo.commit("docs: record refused marker date")
+    refused = repo.cli("verify")
+    assert refused.returncode != 0, refused.stdout + refused.stderr
+    assert json.loads(refused.stdout)["status"] == "unverified"
+    report = json.loads(repo.audit().stdout)
+    assert any(f["doc"] == SITE and f["check"] == "marker" and date in f["detail"] for f in report["findings"])
+    assert any(f["doc"] == SITE and f["check"] == "source-provenance" for f in report["findings"])
 
 
 @pytest.mark.parametrize("mutation", ["foreign-row", "frontend", "marker", "header", "duplicate-heading", "duplicate-row", "undeclared", "wrong-hash", "unchanged", "remove-only"])
@@ -543,7 +637,9 @@ def test_actual_git_failure_and_timeout_preserve_output_and_reap_children(existi
     wrapper.chmod(0o755)
     env = dict(os.environ, PATH=str(wrappers) + os.pathsep + os.environ["PATH"])
     args = [sys.executable, MODULE, "produce"] + (["--max-seconds", "0.1"] if failure == "slow" else [])
-    result = subprocess.run(args, cwd=repo.path, env=env, capture_output=True, text=True, timeout=10)
+    runner = run_descendant_fixture if failure == "slow" else subprocess.run
+    extra = {"report": tmp_path / "descendant-reaping.json"} if failure == "slow" else {}
+    result = runner(args, **extra, cwd=repo.path, env=env, capture_output=True, text=True, timeout=10)
     assert result.returncode != 0
     assert json.loads(result.stdout)["status"] == "unverified"
     if existing:
@@ -941,6 +1037,22 @@ elif mode == "backup-cleanup":
             raise OSError("actual backup cleanup refusal")
         return original_unlink(self, *args, **kwargs)
     module.Path.unlink = unlink
+elif mode.startswith("cleanup-"):
+    original_unlink = module.Path.unlink
+    def unlink(self, *args, **kwargs):
+        if self.name.startswith(".source-snapshot-backup-"):
+            pathlib.Path("cleanup-entered").write_text(mode)
+            if mode in ("cleanup-after-delay", "cleanup-after-error"):
+                original_unlink(self, *args, **kwargs)
+                pathlib.Path("cleanup-physically-complete").write_text(mode)
+            if mode.endswith("delay"):
+                time.sleep(5.25 if mode == "cleanup-default-delay" else 1.3)
+            elif mode.endswith("error"):
+                raise OSError("actual cleanup boundary refusal")
+            if mode in ("cleanup-after-delay", "cleanup-after-error"):
+                return
+        return original_unlink(self, *args, **kwargs)
+    module.Path.unlink = unlink
 elif mode in ("output-timeout", "post-output-refusal"):
     original_emit = module.emit
     original_remaining = module.Budget.remaining
@@ -964,6 +1076,8 @@ elif mode in ("output-timeout", "post-output-refusal"):
         return original_emit(value, budget)
     module.emit = emit
 args = ["verify"] if mode == "verify" else ["produce"]
+if mode.startswith("cleanup-") and mode != "cleanup-default-delay":
+    args += ["--max-seconds", "1"]
 if mode == "thread":
     results = []
     worker = threading.Thread(target=lambda: results.append(module.main(args)))
@@ -1049,11 +1163,11 @@ def test_actual_final_guard_refusal_after_output_rolls_back_record(existing, tmp
     old = (repo.path / RECORD).read_bytes() if existing else None
     refused = actual_cpu_caller(repo, "post-output-refusal")
     assert refused.returncode != 0
-    verdicts = [json.loads(line) for line in refused.stdout.splitlines()]
-    # A printed preliminary success cannot replace the process exit/status
-    # contract: the final guard refusal emits unverified and rolls back.
-    assert [value["status"] for value in verdicts] == ["identity-matched", "unverified"]
-    assert verdicts[-1]["reason"] == "actual final guard boundary refusal"
+    # Bytes already written to a pipe cannot be retracted. A final guard
+    # refusal must roll back, exit nonzero and never append contradictory JSON;
+    # this cannot satisfy exit0 plus one complete final verdict acceptance.
+    assert len(refused.stdout.splitlines()) == 1
+    assert json.loads(refused.stdout)["status"] == "identity-matched"
     assert json.loads(refused.stderr.splitlines()[-1])["handler_restored"] is True
     assert (repo.path / "output-callback-entered").exists()
     if old is None:
@@ -1069,11 +1183,51 @@ def test_actual_backup_cleanup_failure_restores_valid_record(tmp_path):
     old = (repo.path / RECORD).read_bytes()
     refused = actual_cpu_caller(repo, "backup-cleanup")
     assert refused.returncode != 0
-    verdicts = [json.loads(line) for line in refused.stdout.splitlines()]
-    assert [value["status"] for value in verdicts] == ["identity-matched", "unverified"]
-    assert verdicts[-1]["reason"] == "actual backup cleanup refusal"
+    verdict = json.loads(refused.stdout)
+    assert verdict["status"] == "unverified"
+    assert verdict["reason"] == "actual backup cleanup refusal"
     assert json.loads(refused.stderr.splitlines()[-1])["handler_restored"] is True
     assert (repo.path / RECORD).read_bytes() == old
+    assert not list((repo.path / RECORD).parent.glob(".source-snapshot-*"))
+
+
+@pytest.mark.parametrize("mode", ["cleanup-before-delay", "cleanup-after-delay", "cleanup-before-error", "cleanup-after-error", "cleanup-default-delay", "cleanup-accepted"])
+def test_actual_cleanup_boundary_preserves_different_valid_record(mode, tmp_path):
+    repo = Repo(tmp_path / "repo")
+    repo.produce_committed()
+    old = (repo.path / RECORD).read_bytes()
+    repo.write(MODULE, (repo.path / MODULE).read_bytes() + b"\n# Genuine later bootstrap source.\n")
+    repo.commit("feat: change eligible bootstrap source after old valid record")
+    expected = repo.cli("produce")
+    assert expected.returncode == 0, expected.stdout + expected.stderr
+    new = (repo.path / RECORD).read_bytes()
+    assert new != old
+    (repo.path / RECORD).write_bytes(old)
+    started = time.monotonic()
+    attempted = actual_cpu_caller(repo, mode)
+    elapsed = time.monotonic() - started
+    assert (repo.path / "cleanup-entered").exists()
+    assert json.loads(attempted.stderr.splitlines()[-1])["handler_restored"] is True
+    assert json.loads(attempted.stderr.splitlines()[-1])["mask_restored"] is True
+    if mode == "cleanup-accepted":
+        assert attempted.returncode == 0, attempted.stdout + attempted.stderr
+        verdict = json.loads(attempted.stdout)
+        assert verdict["status"] == "identity-matched"
+        assert (repo.path / RECORD).read_bytes() == new
+        assert verdict["elapsed_seconds"] < 1
+    else:
+        assert attempted.returncode != 0, attempted.stdout + attempted.stderr
+        verdict = json.loads(attempted.stdout)
+        assert verdict["status"] == "unverified"
+        assert (repo.path / RECORD).read_bytes() == old
+        if mode.endswith("delay"):
+            cap = 5 if mode == "cleanup-default-delay" else 1
+            assert verdict["elapsed_seconds"] < cap + 0.15
+            assert elapsed < cap + 0.5
+        else:
+            assert verdict["reason"] == "actual cleanup boundary refusal"
+    if mode in ("cleanup-after-delay", "cleanup-after-error"):
+        assert (repo.path / "cleanup-physically-complete").exists()
     assert not list((repo.path / RECORD).parent.glob(".source-snapshot-*"))
 
 
@@ -1217,8 +1371,9 @@ print(json.dumps({"reaped": True, "handler_restored": True, "mask_restored": Tru
 raise SystemExit(result)
 '''
     env = dict(os.environ, PATH=str(wrapper) + os.pathsep + os.environ["PATH"])
-    refused = subprocess.run([sys.executable, "-B", "-c", script, edge], cwd=repo.path,
-                             env=env, capture_output=True, text=True, timeout=10)
+    refused = run_descendant_fixture([sys.executable, "-B", "-c", script, edge],
+                                     tmp_path / "descendant-reaping.json", cwd=repo.path,
+                                     env=env, capture_output=True, text=True, timeout=10)
     assert refused.returncode == 1, refused.stdout + refused.stderr
     assert len(refused.stdout.splitlines()) == 1
     verdict = json.loads(refused.stdout)

@@ -200,6 +200,7 @@ class Budget:
         self.bytes = 0
         self.entries = 0
         self.cpu_depth = 0
+        self.output_started = False
 
     @contextlib.contextmanager
     def cpu_guard(self):
@@ -753,7 +754,7 @@ class Snapshot:
         index, info = markers[0]
         if (info.get("legacy") or info.get("depth") != "verified" or not info.get("sha")
                 or info.get("date") in (None, "unknown")
-                or self.audit.check_marker_dates(SITE, info)
+                or self.audit.check_marker_dates(SITE, info, datetime.date.today().isoformat())
                 or self.audit.check_marker_fields(SITE, info, self.audit._marker_body(lines, index))):
             return False
         try:
@@ -890,6 +891,10 @@ def emit(value, budget=None):
             if budget is not None:
                 budget.remaining()
             try:
+                # Once a write is attempted stdout may contain a partial final
+                # verdict. A later refusal must not append another JSON value.
+                if budget is not None:
+                    budget.output_started = True
                 sent += os.write(fd, raw[sent:])
             except BlockingIOError:
                 if not selector.get_map():
@@ -908,6 +913,7 @@ def install(record: bytes, budget: Budget, complete):
     temporary = None
     backup = None
     installed = False
+    old = None
     try:
         # Retain rollback through the final deadline check and timer restoration;
         # an outer guard ending after this transaction could fail too late.
@@ -941,19 +947,36 @@ def install(record: bytes, budget: Budget, complete):
             os.replace(temporary, destination)
             temporary = None
             installed = True
+            # Finalize before constructing the verdict, under the original
+            # deadline. Retain charged old bytes even if unlink completes just
+            # before an alarm/error, so the pathname is not our only rollback.
+            if backup is not None:
+                backup.unlink(missing_ok=True)
+                backup = None
+            budget.remaining()
             complete()
-        # A backup-removal error is still a failed producer, with its original
-        # backup available to the exception handler for atomic restoration.
-        if backup is not None:
-            backup.unlink(missing_ok=True)
-            backup = None
     except BaseException:
         if installed:
-            if backup is None:
+            if old is None:
                 destination.unlink(missing_ok=True)
             else:
-                os.replace(backup, destination)
-                backup = None
+                try:
+                    if backup is None:
+                        raise FileNotFoundError
+                    os.replace(backup, destination)
+                    backup = None
+                except FileNotFoundError:
+                    # A completed unlink cannot destroy the previous record:
+                    # restore the already admitted bytes by atomic replacement.
+                    with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".source-snapshot-restore-", delete=False) as stream:
+                        temporary = Path(stream.name)
+                        stream.write(old)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.chmod(temporary, 0o644)
+                    os.replace(temporary, destination)
+                    temporary = None
+                    backup = None
         raise
     finally:
         if temporary is not None:
@@ -995,10 +1018,13 @@ def main(argv=None):
             "status": "unverified", "success": False, "eligible_route": None, "entry_count": 0,
             "counted_bytes": 0, "source_identity_sha256": None, "policy_identity_sha256": None,
             "document_body_sha256": None, "elapsed_seconds": 0.0, "context": "unverified", "reason": str(exc)}
-        try:
-            emit(result)
-        except (OSError, Unavailable):
-            pass
+        # A failed/partial final write is not retractable on a pipe. Its
+        # nonzero exit is authoritative; never publish contradictory JSON.
+        if snapshot is None or not hasattr(snapshot, "budget") or not snapshot.budget.output_started:
+            try:
+                emit(result)
+            except (OSError, Unavailable):
+                pass
         return 1
 
 
