@@ -731,6 +731,8 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and sol
 
 ### FEAT-CATALYST-001 — Earnings / catalysts (19 open)
 
+**AV remediation implementation:** [#1430](https://github.com/TeneikaAskew/stocks/pull/1430) — draft implementation in progress / rollout pending; approved spec [#1419](https://github.com/TeneikaAskew/stocks/pull/1419). Acceptance and production verification are incomplete; no unrelated issue is declared closed.
+
 | Issue | Sev | Title |
 |---|---|---|
 | [#1223](https://github.com/TeneikaAskew/stocks/issues/1223) | P2 | [P2][Catalysts] Benzinga is named as a source with no configured API key |

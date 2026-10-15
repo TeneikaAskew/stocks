@@ -767,6 +767,128 @@ ALTER TABLE earnings_history
     ADD COLUMN IF NOT EXISTS report_time         VARCHAR(20),
     ADD COLUMN IF NOT EXISTS yahoo_report_time   VARCHAR(20);
 
+-- BEGIN AV CATALYST REVISIONS
+-- Install journals, source columns, seed and trigger atomically. This lock
+-- also serializes alternate writers across the installation boundary.
+-- ATOMIC-BEGIN av-catalyst-revisions
+LOCK TABLE earnings_history IN SHARE ROW EXCLUSIVE MODE;
+ALTER TABLE earnings_history
+    ADD COLUMN IF NOT EXISTS source_fetch_id UUID,
+    ADD COLUMN IF NOT EXISTS source_retrieved_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS raw_uri TEXT,
+    ADD COLUMN IF NOT EXISTS raw_sha256 CHAR(64),
+    ADD COLUMN IF NOT EXISTS yahoo_timing_observation_id UUID;
+CREATE TABLE IF NOT EXISTS earnings_timing_observations (
+    observation_id UUID PRIMARY KEY,
+    ticker TEXT NOT NULL,
+    known_at TIMESTAMPTZ NOT NULL,
+    source_retrieved_at TIMESTAMPTZ NOT NULL,
+    library_version TEXT NOT NULL,
+    safe_parameters JSONB NOT NULL,
+    content_sha256 CHAR(64) NOT NULL,
+    payload JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS earnings_timing_observations_asof_idx
+    ON earnings_timing_observations(ticker, known_at DESC);
+CREATE TABLE IF NOT EXISTS earnings_history_revisions (
+    revision_id BIGSERIAL PRIMARY KEY,
+    ticker TEXT NOT NULL,
+    fiscal_date_ending DATE NOT NULL,
+    known_at TIMESTAMPTZ NOT NULL,
+    availability_quality TEXT NOT NULL,
+    payload JSONB NOT NULL,
+    value_sha256 CHAR(64) NOT NULL,
+    source_fetch_id UUID,
+    source_retrieved_at TIMESTAMPTZ,
+    raw_uri TEXT,
+    raw_sha256 CHAR(64),
+    yahoo_timing_observation_id UUID REFERENCES earnings_timing_observations(observation_id)
+);
+CREATE INDEX IF NOT EXISTS earnings_history_revisions_asof_idx
+    ON earnings_history_revisions(ticker, fiscal_date_ending, known_at DESC, revision_id DESC);
+CREATE TABLE IF NOT EXISTS earnings_revision_observations (
+    revision_id BIGINT NOT NULL REFERENCES earnings_history_revisions(revision_id),
+    capture_id UUID NOT NULL,
+    known_at TIMESTAMPTZ NOT NULL,
+    yahoo_timing_observation_id UUID REFERENCES earnings_timing_observations(observation_id),
+    PRIMARY KEY(revision_id,capture_id)
+);
+CREATE INDEX IF NOT EXISTS earnings_revision_observations_known_idx
+    ON earnings_revision_observations(revision_id,known_at DESC);
+CREATE OR REPLACE FUNCTION av_earnings_values(r JSONB) RETURNS JSONB
+LANGUAGE SQL IMMUTABLE AS $$
+    SELECT jsonb_build_object('ticker',r->'ticker',
+      'fiscal_date_ending',r->'fiscal_date_ending','reported_date',r->'reported_date',
+      'reported_eps',r->'reported_eps','estimated_eps',r->'estimated_eps',
+      'surprise',r->'surprise','surprise_pct',r->'surprise_pct',
+      'report_time',r->'report_time','yahoo_report_time',r->'yahoo_report_time');
+$$;
+CREATE OR REPLACE FUNCTION av_catalyst_append_only() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'append-only catalyst evidence'; END;
+$$;
+INSERT INTO earnings_history_revisions(ticker,fiscal_date_ending,known_at,
+    availability_quality,payload,value_sha256)
+SELECT e.ticker,e.fiscal_date_ending,clock_timestamp(),'observed_legacy',
+    av_earnings_values(to_jsonb(e)),
+    encode(sha256(convert_to(av_earnings_values(to_jsonb(e))::text,'UTF8')),'hex')
+FROM earnings_history e
+WHERE NOT EXISTS (SELECT 1 FROM earnings_history_revisions r
+    WHERE r.ticker=e.ticker AND r.fiscal_date_ending=e.fiscal_date_ending);
+CREATE OR REPLACE FUNCTION av_capture_earnings_revision() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE v JSONB; prior JSONB; quality TEXT; version_id BIGINT;
+BEGIN
+    v := av_earnings_values(to_jsonb(NEW));
+    SELECT payload,revision_id INTO prior,version_id FROM earnings_history_revisions
+      WHERE ticker=NEW.ticker AND fiscal_date_ending=NEW.fiscal_date_ending
+      ORDER BY known_at DESC,revision_id DESC LIMIT 1;
+    quality := 'observed_cache';
+    IF NEW.source_fetch_id IS NOT NULL AND NEW.source_retrieved_at IS NOT NULL
+       AND NEW.source_retrieved_at <= clock_timestamp()
+       AND NEW.raw_uri IS NOT NULL AND NEW.raw_sha256 IS NOT NULL THEN
+      IF TG_OP = 'INSERT' OR NEW.source_fetch_id IS DISTINCT FROM OLD.source_fetch_id
+         OR NEW.yahoo_timing_observation_id IS DISTINCT FROM OLD.yahoo_timing_observation_id THEN
+        quality := 'source_verified';
+      END IF;
+    END IF;
+    IF prior IS NOT DISTINCT FROM v THEN
+      IF quality='source_verified' THEN
+        INSERT INTO earnings_revision_observations(revision_id,capture_id,known_at,yahoo_timing_observation_id)
+          VALUES(version_id,NEW.source_fetch_id,clock_timestamp(),NEW.yahoo_timing_observation_id) ON CONFLICT DO NOTHING;
+      END IF;
+      RETURN NEW;
+    END IF;
+    INSERT INTO earnings_history_revisions(ticker,fiscal_date_ending,known_at,
+      availability_quality,payload,value_sha256,source_fetch_id,source_retrieved_at,
+      raw_uri,raw_sha256,yahoo_timing_observation_id)
+    VALUES(NEW.ticker,NEW.fiscal_date_ending,clock_timestamp(),quality,v,
+      encode(sha256(convert_to(v::text,'UTF8')),'hex'),
+      CASE WHEN quality='source_verified' THEN NEW.source_fetch_id END,
+      CASE WHEN quality='source_verified' THEN NEW.source_retrieved_at END,
+      CASE WHEN quality='source_verified' THEN NEW.raw_uri END,
+      CASE WHEN quality='source_verified' THEN NEW.raw_sha256 END,
+      NEW.yahoo_timing_observation_id) RETURNING revision_id INTO version_id;
+    IF quality='source_verified' THEN
+      INSERT INTO earnings_revision_observations(revision_id,capture_id,known_at,yahoo_timing_observation_id)
+        VALUES(version_id,NEW.source_fetch_id,clock_timestamp(),NEW.yahoo_timing_observation_id) ON CONFLICT DO NOTHING;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS av_earnings_revision_capture ON earnings_history;
+CREATE TRIGGER av_earnings_revision_capture AFTER INSERT OR UPDATE ON earnings_history
+    FOR EACH ROW EXECUTE FUNCTION av_capture_earnings_revision();
+DROP TRIGGER IF EXISTS av_earnings_revisions_immutable ON earnings_history_revisions;
+CREATE TRIGGER av_earnings_revisions_immutable BEFORE UPDATE OR DELETE ON earnings_history_revisions
+    FOR EACH ROW EXECUTE FUNCTION av_catalyst_append_only();
+DROP TRIGGER IF EXISTS av_timing_immutable ON earnings_timing_observations;
+CREATE TRIGGER av_timing_immutable BEFORE UPDATE OR DELETE ON earnings_timing_observations
+    FOR EACH ROW EXECUTE FUNCTION av_catalyst_append_only();
+DROP TRIGGER IF EXISTS av_revision_observation_immutable ON earnings_revision_observations;
+CREATE TRIGGER av_revision_observation_immutable BEFORE UPDATE OR DELETE ON earnings_revision_observations
+    FOR EACH ROW EXECUTE FUNCTION av_catalyst_append_only();
+-- ATOMIC-END av-catalyst-revisions
+-- END AV CATALYST REVISIONS
+
 
 -- ─────────────────────────────────────────────────────────
 -- EARNINGS REACTIONS (per-quarter post-earnings reaction profile)
@@ -1659,6 +1781,276 @@ ALTER TABLE news_sentiment
 -- GIN index for fast `topics @> ARRAY['mergers_and_acquisitions']` lookups.
 CREATE INDEX IF NOT EXISTS idx_news_sentiment_topics
     ON news_sentiment USING GIN (topics);
+
+-- BEGIN AV CATALYST STORAGE
+-- Preparatory additive schema only. Identity enforcement requires the explicit
+-- drained-writer / duplicate-preflight checkpoint described in the runbook.
+ALTER TABLE news_sentiment ADD COLUMN IF NOT EXISTS source_identity_hash CHAR(64),
+    ADD COLUMN IF NOT EXISTS source_identity_quality TEXT,
+    ADD COLUMN IF NOT EXISTS source_capture_id UUID,
+    ADD COLUMN IF NOT EXISTS data_source VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS match_method VARCHAR(20);
+ALTER TABLE insider_transactions ADD COLUMN IF NOT EXISTS source_identity_hash CHAR(64),
+    ADD COLUMN IF NOT EXISTS source_identity_quality TEXT,
+    ADD COLUMN IF NOT EXISTS source_capture_id UUID;
+CREATE INDEX IF NOT EXISTS av_news_identity_lookup ON news_sentiment(source_identity_hash);
+CREATE INDEX IF NOT EXISTS av_insider_identity_lookup ON insider_transactions(source_identity_hash);
+CREATE TABLE IF NOT EXISTS av_catalyst_identity_migrations (
+    table_name TEXT PRIMARY KEY CHECK(table_name IN ('news_sentiment','insider_transactions')),
+    phase TEXT NOT NULL DEFAULT 'preparatory' CHECK(phase IN ('preparatory','final')),
+    old_writers_drained BOOLEAN NOT NULL DEFAULT FALSE,
+    verified_writer_manifest JSONB,
+    checkpoint_at TIMESTAMPTZ
+);
+INSERT INTO av_catalyst_identity_migrations(table_name) VALUES('news_sentiment'),('insider_transactions')
+    ON CONFLICT DO NOTHING;
+CREATE OR REPLACE FUNCTION av_write_identity_rows(target TEXT,rows_json JSONB,final_phase BOOLEAN)
+RETURNS INTEGER LANGUAGE plpgsql AS $$
+DECLARE columns_sql TEXT; update_sql TEXT; join_sql TEXT; duplicate_count INTEGER; row_count INTEGER;
+BEGIN
+  IF target NOT IN ('news_sentiment','insider_transactions') THEN RAISE EXCEPTION 'identity_table_invalid'; END IF;
+  row_count:=jsonb_array_length(rows_json);
+  IF row_count>(CASE WHEN target='news_sentiment' THEN 40000 ELSE 10000 END) THEN
+    RAISE EXCEPTION 'identity_group_limit';
+  END IF;
+  PERFORM pg_advisory_xact_lock(hashtext('av-identity:'||target));
+  IF target='news_sentiment' THEN
+    columns_sql:='ticker,published_ts,title,url,summary,sentiment_score,relevance_score,overall_sentiment_score,overall_sentiment_label,topics,source,data_source,match_method,source_identity_hash,source_identity_quality,source_capture_id';
+    join_sql:='t.ticker=d.ticker AND t.published_ts=d.published_ts AND t.url IS NOT DISTINCT FROM d.url AND (d.url IS NOT NULL OR (t.source IS NOT DISTINCT FROM d.source AND t.title IS NOT DISTINCT FROM d.title))';
+  ELSE
+    columns_sql:='ticker,transaction_date,executive,title,transaction_type,shares,share_price,transaction_value,source_identity_hash,source_identity_quality,source_capture_id';
+    join_sql:='t.ticker=d.ticker AND t.transaction_date=d.transaction_date AND t.executive IS NOT DISTINCT FROM d.executive AND t.transaction_type IS NOT DISTINCT FROM d.transaction_type AND t.shares IS NOT DISTINCT FROM d.shares AND t.share_price IS NOT DISTINCT FROM d.share_price';
+  END IF;
+  SELECT string_agg(format('%I=excluded.%I',c,c),',') INTO update_sql
+    FROM unnest(string_to_array(columns_sql,',')) c WHERE c<>'source_identity_hash';
+  IF final_phase THEN
+    IF NOT EXISTS(SELECT 1 FROM av_catalyst_identity_migrations WHERE table_name=target
+      AND phase='final' AND old_writers_drained AND checkpoint_at IS NOT NULL) THEN
+      RAISE EXCEPTION 'identity_checkpoint_unverified';
+    END IF;
+    EXECUTE format('INSERT INTO %I(%s) SELECT %s FROM jsonb_populate_recordset(NULL::%I,$1) ON CONFLICT(source_identity_hash) DO UPDATE SET %s',
+      target,columns_sql,columns_sql,target,update_sql) USING rows_json;
+  ELSE
+    -- Equality on ticker/publication or ticker/transaction_date restricts the
+    -- existing composite source indexes before nullable identity comparisons.
+    -- No OR between a whole-table hash lookup and an unindexed legacy join.
+    EXECUTE format('SELECT count(*) FROM (SELECT d.source_identity_hash FROM %I t JOIN jsonb_populate_recordset(NULL::%I,$1) d ON %s GROUP BY d.source_identity_hash HAVING count(DISTINCT t.id)>1) collisions',
+      target,target,join_sql) INTO duplicate_count USING rows_json;
+    IF duplicate_count>0 THEN RAISE EXCEPTION 'identity_duplicate_reconciliation_required'; END IF;
+    EXECUTE format('UPDATE %I t SET source_identity_hash=d.source_identity_hash,source_identity_quality=d.source_identity_quality FROM jsonb_populate_recordset(NULL::%I,$1) d WHERE t.source_identity_hash IS NULL AND %s',
+      target,target,join_sql) USING rows_json;
+    SELECT string_agg(format('%I=d.%I',c,c),',') INTO update_sql
+      FROM unnest(string_to_array(columns_sql,',')) c;
+    EXECUTE format('UPDATE %I t SET %s FROM jsonb_populate_recordset(NULL::%I,$1) d WHERE t.source_identity_hash=d.source_identity_hash',
+      target,update_sql,target) USING rows_json;
+    EXECUTE format('INSERT INTO %I(%s) SELECT %s FROM jsonb_populate_recordset(NULL::%I,$1) d WHERE NOT EXISTS(SELECT 1 FROM %I t WHERE t.source_identity_hash=d.source_identity_hash)',
+      target,columns_sql,columns_sql,target,target) USING rows_json;
+  END IF;
+  RETURN row_count;
+END;
+$$;
+CREATE TABLE IF NOT EXISTS av_catalyst_source_captures (
+    capture_id UUID PRIMARY KEY,
+    function TEXT NOT NULL,
+    ticker TEXT,
+    source_retrieved_at TIMESTAMPTZ NOT NULL,
+    raw_uri TEXT NOT NULL,
+    raw_sha256 CHAR(64) NOT NULL,
+    metadata JSONB NOT NULL,
+    validation_status TEXT NOT NULL CHECK(validation_status IN ('validated','validated_empty')),
+    normalized_count INTEGER NOT NULL CHECK(normalized_count>=0)
+);
+CREATE INDEX IF NOT EXISTS av_catalyst_capture_scope_idx
+    ON av_catalyst_source_captures(function,ticker,source_retrieved_at DESC);
+CREATE TABLE IF NOT EXISTS av_catalyst_source_manifests (
+    manifest_id UUID PRIMARY KEY,
+    job_name TEXT NOT NULL,
+    variant TEXT NOT NULL,
+    execution_name TEXT NOT NULL,
+    manifest JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS av_catalyst_manifest_source_idx
+    ON av_catalyst_source_manifests(job_name,variant,execution_name);
+CREATE TABLE IF NOT EXISTS av_catalyst_manifest_publications (
+    manifest_id UUID PRIMARY KEY REFERENCES av_catalyst_source_manifests(manifest_id),
+    known_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS av_catalyst_manifest_known_idx
+    ON av_catalyst_manifest_publications(known_at DESC);
+CREATE TABLE IF NOT EXISTS av_earnings_estimates_observations (
+    observation_id UUID PRIMARY KEY,
+    fetch_id UUID NOT NULL REFERENCES av_catalyst_source_captures(capture_id),
+    ticker TEXT NOT NULL,
+    fiscal_date_ending DATE NOT NULL,
+    horizon TEXT NOT NULL,
+    known_at TIMESTAMPTZ NOT NULL,
+    source_retrieved_at TIMESTAMPTZ NOT NULL,
+    raw_uri TEXT NOT NULL,
+    raw_sha256 CHAR(64) NOT NULL,
+    payload JSONB NOT NULL,
+    UNIQUE(fetch_id,ticker,fiscal_date_ending,horizon)
+);
+CREATE INDEX IF NOT EXISTS av_estimates_asof_idx
+    ON av_earnings_estimates_observations(ticker,fiscal_date_ending,horizon,known_at DESC);
+CREATE TABLE IF NOT EXISTS av_estimate_receipt_publications (
+    fetch_id UUID PRIMARY KEY REFERENCES av_catalyst_source_captures(capture_id),
+    ticker TEXT NOT NULL,
+    validation_status TEXT NOT NULL CHECK(validation_status IN ('validated','validated_empty')),
+    observation_count INTEGER NOT NULL CHECK(observation_count>=0),
+    source_commit_acknowledged_at TIMESTAMPTZ NOT NULL,
+    CHECK ((validation_status='validated_empty' AND observation_count=0)
+        OR (validation_status='validated' AND observation_count>0))
+);
+CREATE INDEX IF NOT EXISTS av_estimate_receipt_known_idx
+    ON av_estimate_receipt_publications(ticker,source_commit_acknowledged_at DESC);
+
+CREATE TABLE IF NOT EXISTS earnings_reaction_input_artifacts (
+    artifact_sha256 CHAR(64) PRIMARY KEY,
+    captured_at TIMESTAMPTZ NOT NULL,
+    payload JSONB NOT NULL
+);
+ALTER TABLE earnings_reactions
+    ADD COLUMN IF NOT EXISTS source_revision_id BIGINT REFERENCES earnings_history_revisions(revision_id),
+    ADD COLUMN IF NOT EXISTS source_known_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS yahoo_timing_observation_id UUID,
+    ADD COLUMN IF NOT EXISTS input_artifact_sha256 CHAR(64) REFERENCES earnings_reaction_input_artifacts(artifact_sha256),
+    ADD COLUMN IF NOT EXISTS provenance JSONB,
+    ADD COLUMN IF NOT EXISTS provenance_quality TEXT NOT NULL DEFAULT 'legacy_provenance_unavailable';
+-- BEGIN AV CATALYST WORK
+CREATE TABLE IF NOT EXISTS av_catalyst_work (
+    function TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    last_attempt_at TIMESTAMPTZ,
+    last_successful_observation_at TIMESTAMPTZ,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    next_retry_at TIMESTAMPTZ,
+    lease_owner TEXT,
+    lease_expires_at TIMESTAMPTZ,
+    PRIMARY KEY(function,ticker,scope)
+);
+CREATE INDEX IF NOT EXISTS av_catalyst_work_claim_idx
+    ON av_catalyst_work(function,scope,next_retry_at,last_attempt_at);
+CREATE OR REPLACE FUNCTION av_claim_catalyst_work(f TEXT, symbols TEXT[], s TEXT,
+    owner TEXT, cap INTEGER, forced BOOLEAN) RETURNS TABLE(ticker TEXT)
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF cap<1 OR cap>300 OR cardinality(symbols)>10000 THEN
+    RAISE EXCEPTION 'work_admission_limit';
+  END IF;
+  INSERT INTO av_catalyst_work(function,ticker,scope)
+    SELECT f,unnest(symbols),s ON CONFLICT DO NOTHING;
+  RETURN QUERY WITH picked AS(
+    SELECT w.function,w.ticker,w.scope FROM av_catalyst_work w
+    WHERE w.function=f AND w.scope=s AND w.ticker=ANY(symbols)
+      AND (w.lease_expires_at IS NULL OR w.lease_expires_at<=clock_timestamp())
+      AND (forced OR w.next_retry_at IS NULL OR w.next_retry_at<=clock_timestamp())
+    ORDER BY w.last_attempt_at NULLS FIRST,w.last_successful_observation_at NULLS FIRST,w.ticker
+    LIMIT cap FOR UPDATE SKIP LOCKED
+  ) UPDATE av_catalyst_work w SET last_attempt_at=clock_timestamp(),lease_owner=owner,
+    lease_expires_at=clock_timestamp()+interval '100 minutes'
+    FROM picked p WHERE w.function=p.function AND w.ticker=p.ticker AND w.scope=p.scope
+    RETURNING w.ticker;
+END;
+$$;
+-- END AV CATALYST WORK
+CREATE TABLE IF NOT EXISTS av_catalyst_news_windows (
+    window_id UUID PRIMARY KEY,
+    query_identity TEXT NOT NULL,
+    parameters JSONB NOT NULL,
+    window_start TIMESTAMPTZ NOT NULL,
+    window_end TIMESTAMPTZ NOT NULL CHECK(window_end>window_start),
+    parent_id UUID REFERENCES av_catalyst_news_windows(window_id),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','leased','complete','split','failed','blocked_vendor_granularity')),
+    last_attempt_at TIMESTAMPTZ,
+    next_retry_at TIMESTAMPTZ,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    lease_owner TEXT,
+    lease_expires_at TIMESTAMPTZ,
+    source_capture_id UUID REFERENCES av_catalyst_source_captures(capture_id),
+    UNIQUE(query_identity,window_start,window_end)
+);
+CREATE INDEX IF NOT EXISTS av_catalyst_news_claim_idx
+    ON av_catalyst_news_windows(status,next_retry_at,window_start,query_identity);
+CREATE OR REPLACE FUNCTION av_seed_news_windows(scopes JSONB) RETURNS INTEGER LANGUAGE plpgsql AS $$
+DECLARE r JSONB; start_at TIMESTAMPTZ; end_at TIMESTAMPTZ; previous TIMESTAMPTZ; n INTEGER:=0;
+BEGIN
+  FOR r IN SELECT value FROM jsonb_array_elements(scopes) LOOP
+    start_at:=(r->>'window_start')::timestamptz; end_at:=(r->>'window_end')::timestamptz;
+    SELECT max(window_end) INTO previous FROM av_catalyst_news_windows
+      WHERE query_identity=r->>'query_identity' AND parent_id IS NULL;
+    IF previous IS NOT NULL THEN start_at:=GREATEST(start_at,previous); END IF;
+    IF end_at>start_at THEN
+      INSERT INTO av_catalyst_news_windows(window_id,query_identity,parameters,window_start,window_end)
+      VALUES(gen_random_uuid(),r->>'query_identity',r->'parameters',start_at,end_at) ON CONFLICT DO NOTHING;
+      n:=n+1;
+    END IF;
+  END LOOP;
+  RETURN n;
+END;
+$$;
+CREATE OR REPLACE FUNCTION av_claim_news_windows(limits JSONB,owner TEXT,cap INTEGER)
+RETURNS SETOF av_catalyst_news_windows LANGUAGE plpgsql AS $$
+BEGIN
+  IF cap<1 OR cap>10 THEN RAISE EXCEPTION 'news_group_limit'; END IF;
+  RETURN QUERY WITH ranked AS(
+    SELECT w.window_id,row_number() OVER(PARTITION BY w.query_identity
+      ORDER BY w.window_start,w.last_attempt_at NULLS FIRST,w.window_id) AS position,
+      (limits->>w.query_identity)::integer AS remaining
+    FROM av_catalyst_news_windows w WHERE limits ? w.query_identity
+      AND w.status IN ('pending','failed','leased')
+      AND (w.lease_expires_at IS NULL OR w.lease_expires_at<=clock_timestamp())
+      AND (w.next_retry_at IS NULL OR w.next_retry_at<=clock_timestamp())
+  ), selected AS(
+    SELECT w.window_id FROM av_catalyst_news_windows w JOIN ranked r USING(window_id)
+    WHERE r.position<=r.remaining ORDER BY w.window_start,w.last_attempt_at NULLS FIRST,w.query_identity
+    LIMIT cap FOR UPDATE OF w SKIP LOCKED
+  ) UPDATE av_catalyst_news_windows w SET status='leased',lease_owner=owner,
+      lease_expires_at=clock_timestamp()+interval '15 minutes',last_attempt_at=clock_timestamp()
+      FROM selected s WHERE w.window_id=s.window_id RETURNING w.*;
+END;
+$$;
+CREATE OR REPLACE FUNCTION av_complete_news_windows(outcomes JSONB) RETURNS INTEGER LANGUAGE plpgsql AS $$
+DECLARE r JSONB; w av_catalyst_news_windows; middle TIMESTAMPTZ; n INTEGER:=0;
+BEGIN
+  IF jsonb_array_length(outcomes)>10 THEN RAISE EXCEPTION 'news_group_limit'; END IF;
+  FOR r IN SELECT value FROM jsonb_array_elements(outcomes) LOOP
+    SELECT * INTO w FROM av_catalyst_news_windows WHERE window_id=(r->>'window_id')::uuid
+      AND lease_owner=r->>'lease_owner' FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'news_lease_changed'; END IF;
+    IF r->>'status'='failed' THEN
+      UPDATE av_catalyst_news_windows SET status='failed',failure_count=failure_count+1,
+        next_retry_at=clock_timestamp()+LEAST(168,power(2,LEAST(failure_count,8)))*interval '1 hour',
+        lease_owner=NULL,lease_expires_at=NULL WHERE window_id=w.window_id;
+    ELSIF (r->>'saturated')::boolean THEN
+      middle:=date_trunc('minute',w.window_start+(w.window_end-w.window_start)/2);
+      IF middle<=w.window_start OR middle>=w.window_end THEN
+        UPDATE av_catalyst_news_windows SET status='blocked_vendor_granularity',
+          source_capture_id=(r->>'capture_id')::uuid,lease_owner=NULL,lease_expires_at=NULL WHERE window_id=w.window_id;
+      ELSE
+        UPDATE av_catalyst_news_windows SET status='split',source_capture_id=(r->>'capture_id')::uuid,
+          lease_owner=NULL,lease_expires_at=NULL WHERE window_id=w.window_id;
+        INSERT INTO av_catalyst_news_windows(window_id,query_identity,parameters,window_start,window_end,parent_id)
+          VALUES(gen_random_uuid(),w.query_identity,w.parameters,w.window_start,middle,w.window_id),
+          (gen_random_uuid(),w.query_identity,w.parameters,middle,w.window_end,w.window_id) ON CONFLICT DO NOTHING;
+      END IF;
+    ELSE
+      UPDATE av_catalyst_news_windows SET status='complete',source_capture_id=(r->>'capture_id')::uuid,
+        lease_owner=NULL,lease_expires_at=NULL,next_retry_at=NULL,failure_count=0 WHERE window_id=w.window_id;
+    END IF;
+    n:=n+1;
+  END LOOP;
+  RETURN n;
+END;
+$$;
+DO $$ DECLARE n TEXT; BEGIN
+  FOREACH n IN ARRAY ARRAY['av_catalyst_source_captures','av_catalyst_source_manifests',
+    'av_catalyst_manifest_publications','av_earnings_estimates_observations','av_estimate_receipt_publications','earnings_reaction_input_artifacts'] LOOP
+    EXECUTE format('DROP TRIGGER IF EXISTS av_evidence_immutable ON %I',n);
+    EXECUTE format('CREATE TRIGGER av_evidence_immutable BEFORE UPDATE OR DELETE ON %I FOR EACH ROW EXECUTE FUNCTION av_catalyst_append_only()',n);
+  END LOOP;
+END $$;
+-- END AV CATALYST STORAGE
 
 
 -- ============================================================================

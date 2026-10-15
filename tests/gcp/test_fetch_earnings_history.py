@@ -39,7 +39,7 @@ class TestEarningsHistorySelfHealSource:
             return pd.DataFrame({"ticker": ["amzn", "msft", "AVGO"]})
 
         monkeypatch.setattr(
-            "gcp.database.query_to_dataframe", fake_query_to_dataframe
+            "gcp.database.query_to_dataframe_strict", fake_query_to_dataframe
         )
         result = _earnings_history_tickers()
         assert result == ["AMZN", "MSFT", "AVGO"]
@@ -47,7 +47,7 @@ class TestEarningsHistorySelfHealSource:
     def test_empty_db_returns_empty_list(self, monkeypatch):
         from gcp.fetchers import fetch_earnings_history as feh
         monkeypatch.setattr(
-            "gcp.database.query_to_dataframe",
+            "gcp.database.query_to_dataframe_strict",
             lambda sql, params=None: pd.DataFrame(),
         )
         assert _earnings_history_tickers() == []
@@ -58,8 +58,9 @@ class TestEarningsHistorySelfHealSource:
         from gcp.fetchers import fetch_earnings_history as feh
         def boom(sql, params=None):
             raise RuntimeError("connection refused")
-        monkeypatch.setattr("gcp.database.query_to_dataframe", boom)
-        assert _earnings_history_tickers() == []
+        monkeypatch.setattr("gcp.database.query_to_dataframe_strict", boom)
+        with pytest.raises(Exception, match="eligibility_query_failed"):
+            _earnings_history_tickers()
 
 
 # ────────────────────────────────────────────────────────────
@@ -199,6 +200,19 @@ class TestYahooTimingFromEventDt:
 
 
 class TestFetchHistory:
+    @pytest.fixture(autouse=True)
+    def capture_adapter(self,monkeypatch):
+        import json
+        from gcp.fetchers import fetch_earnings_history as feh
+        def capture(function,parameters,key):
+            data=feh.requests.get("synthetic-parser-fixture").json()
+            if data.get("symbol")=="TEST":
+                data["symbol"]=parameters["symbol"]
+            return feh.av.Capture.from_bytes(function,parameters,json.dumps(data).encode())
+        monkeypatch.setattr(feh.av,"fetch_capture",capture)
+        monkeypatch.setattr(feh.av,"archive_capture",lambda *a,**kw:"gs://test/parser-fixture")
+        monkeypatch.setattr(feh,"fetch_yahoo_observation",lambda *a,**kw:{"payload":{"rows":[]}})
+
     def _mock_av_response(self, quarterly):
         """Build a fake `requests.Response` mocking AV's EARNINGS reply."""
         mock_resp = MagicMock()
@@ -345,10 +359,10 @@ class TestFetchHistory:
         mock_resp.raise_for_status.return_value = None
         mock_get.return_value = mock_resp
 
-        df = fetch_history_for_ticker("TEST", "fake-key", enrich_with_yahoo=False)
-        assert df.empty
+        with pytest.raises(Exception,match="vendor_error"):
+            fetch_history_for_ticker("TEST", "fake-key", enrich_with_yahoo=False)
 
-    @patch("gcp.fetchers.fetch_earnings_history.fetch_yahoo_timing_for_ticker")
+    @patch("gcp.fetchers.fetch_earnings_history.fetch_yahoo_observation")
     @patch("gcp.fetchers.fetch_earnings_history.requests.get")
     def test_yahoo_merge_overrides_av_disagreement(self, mock_get, mock_yahoo):
         """When Yahoo says post-market but AV reportTime says pre-market,
@@ -365,16 +379,14 @@ class TestFetchHistory:
                 "reportTime": "pre-market",   # AV's wrong value
             }
         ])
-        mock_yahoo.return_value = {
-            pd.to_datetime("2026-02-25").date(): "post-market"  # Yahoo's correct value
-        }
+        mock_yahoo.return_value = {"payload":{"rows":[{"timestamp":"2026-02-25T16:31:00-05:00","values":{}}]}}
 
         df = fetch_history_for_ticker("NVDA", "fake-key", enrich_with_yahoo=True)
         assert len(df) == 1
         assert df.iloc[0]["report_time"] == "pre-market"          # AV preserved
         assert df.iloc[0]["yahoo_report_time"] == "post-market"   # Yahoo override
 
-    @patch("gcp.fetchers.fetch_earnings_history.fetch_yahoo_timing_for_ticker")
+    @patch("gcp.fetchers.fetch_earnings_history.fetch_yahoo_observation")
     @patch("gcp.fetchers.fetch_earnings_history.requests.get")
     def test_yahoo_merge_no_data_leaves_yahoo_null(self, mock_get, mock_yahoo):
         """When Yahoo has no row for a particular reported_date, the
@@ -390,13 +402,13 @@ class TestFetchHistory:
                 "reportTime": "post-market",
             }
         ])
-        mock_yahoo.return_value = {}  # No Yahoo data
+        mock_yahoo.return_value = {"payload":{"rows":[]}}  # Completed empty Yahoo observation
 
         df = fetch_history_for_ticker("AVGO", "fake-key", enrich_with_yahoo=True)
         assert df.iloc[0]["report_time"] == "post-market"
         assert df.iloc[0]["yahoo_report_time"] is None
 
-    @patch("gcp.fetchers.fetch_earnings_history.fetch_yahoo_timing_for_ticker")
+    @patch("gcp.fetchers.fetch_earnings_history.fetch_yahoo_observation")
     @patch("gcp.fetchers.fetch_earnings_history.requests.get")
     def test_yahoo_merge_when_av_missing(self, mock_get, mock_yahoo):
         """When AV reportTime is None but Yahoo has data, yahoo_report_time
@@ -409,9 +421,7 @@ class TestFetchHistory:
                 # no reportTime
             }
         ])
-        mock_yahoo.return_value = {
-            pd.to_datetime("2026-02-25").date(): "post-market"
-        }
+        mock_yahoo.return_value = {"payload":{"rows":[{"timestamp":"2026-02-25T16:31:00-05:00","values":{}}]}}
 
         df = fetch_history_for_ticker("NVDA", "fake-key", enrich_with_yahoo=True)
         assert df.iloc[0]["report_time"] is None
@@ -444,7 +454,7 @@ class TestTickersReportingInWindowTimezone:
             return pd.DataFrame({'ticker': ['NVDA', 'AVGO']})
 
         monkeypatch.setattr(
-            'gcp.database.query_to_dataframe', fake_qdf
+            'gcp.database.query_to_dataframe_strict', fake_qdf
         )
         out = feh._tickers_reporting_in_window(0)
 
@@ -461,3 +471,106 @@ class TestTickersReportingInWindowTimezone:
         assert 'BETWEEN CURRENT_DATE' not in sql, (
             "Naked CURRENT_DATE re-introduces the timezone bug (Codex P2 #488)."
         )
+
+
+def test_refresh_selector_is_bounded_one_strict_query(monkeypatch):
+    from gcp.fetchers import fetch_earnings_history as history
+    calls=[]
+    def read(sql,params,**kw):
+        calls.append((sql,params,kw))
+        assert 'earnings_history' in sql and 'source_fetch_id IS NULL' in sql
+        assert params['days']==30 and params['scope']=='daily'
+        return pd.DataFrame({'ticker':['AAPL'],'needs_refresh':[True]})
+    monkeypatch.setattr(history.av,'read_dataframe',read)
+    result=history.resolve_refresh_universe('daily',30)
+    assert result.iloc[0]['needs_refresh']
+    assert len(calls)==1 and calls[0][2]['timeout_s']==5
+
+
+def test_backfill_phase_budget_preserves_primary_outcome(monkeypatch):
+    from gcp.fetchers import fetch_earnings_history as history
+    monkeypatch.setenv('AV_API_KEY','dummy')
+    def forbidden(*a,**kw):
+        raise AssertionError('primary/source chain ran without admission')
+    monkeypatch.setattr(history,'fetch_history_for_ticker',forbidden)
+    assert history.main(['--tickers=AAPL','--dry-run'])==1
+
+
+def test_yahoo_provider_process_cancels_blocking_request():
+    """Actual child, curl adapter, local HTTP, parent deadline and reaping."""
+    import threading,time,multiprocessing
+    from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
+    from gcp.fetchers import _av_ingestion as av
+    from gcp.fetchers import fetch_earnings_history as history
+    calls=[]
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            calls.append(self.path)
+            if self.path=='/blocking':time.sleep(10)
+            self.send_response(200);self.end_headers()
+            try:self.wfile.write(b'x'*(av.MAX_SOURCE_BYTES+1) if self.path=='/large' else b'{}')
+            except (BrokenPipeError,ConnectionResetError):pass
+        def log_message(self,*a):pass
+    server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
+    server.daemon_threads=True
+    worker=threading.Thread(target=server.serve_forever,daemon=True);worker.start()
+    base='http://127.0.0.1:'+str(server.server_port)
+    def provider(ticker):
+        from gcp.fetchers.fetch_earnings_history import _bounded_yahoo_session
+        with _bounded_yahoo_session() as session:
+            for _ in range(4):session.get(base+'/ok')
+            try:session.get(base+'/fifth')
+            except av.SourceError as exc:
+                assert str(exc)=='yahoo_request_limit'
+                return {'request_attempts':session.attempts}
+            raise AssertionError('fifth request was admitted')
+    before={p.pid for p in multiprocessing.active_children()}
+    events=[]
+    try:
+        assert history.fetch_yahoo_observation('IWM',provider=provider,on_event=events.append)['request_attempts']==4
+        assert len(events)==4 and calls==['/ok']*4
+        def oversized(ticker):
+            from gcp.fetchers.fetch_earnings_history import _bounded_yahoo_session
+            with _bounded_yahoo_session() as session:return session.get(base+'/large')
+        with pytest.raises(av.SourceError):history.fetch_yahoo_observation('IWM',provider=oversized)
+        def blocking(ticker):
+            from gcp.fetchers.fetch_earnings_history import _bounded_yahoo_session
+            with _bounded_yahoo_session() as session:
+                for _ in range(4):
+                    try:session.get(base+'/blocking')
+                    except Exception:pass
+                time.sleep(30)  # Library CPU/lock hang also bounded by parent.
+                return {'late':True}
+        started=time.monotonic();events=[]
+        with pytest.raises(av.SourceError,match='deadline'):
+            history.fetch_yahoo_observation('IWM',provider=blocking,on_event=events.append)
+        assert time.monotonic()-started<9.2
+        assert 1<=len(events)<=4
+        assert {p.pid for p in multiprocessing.active_children()}==before
+        # 100tickers: AV30+archive10+Yahoo8+reap1+SQL2+pace.4=5140;
+        # startup/group/publication allowance<=80, under6000 primary phase.
+        assert 100*(30+10+8+1+2+2+.4)+80+80==5500<6000
+    finally:
+        server.shutdown();server.server_close();worker.join(1)
+
+
+def test_yahoo_timing_revision_has_independent_observation(monkeypatch):
+    import json,uuid
+    from datetime import datetime,timezone
+    from gcp.fetchers import _av_ingestion as av
+    from gcp.fetchers import fetch_earnings_history as history
+    body=json.dumps({'symbol':'AAPL','quarterlyEarnings':[{'fiscalDateEnding':'2026-06-30','reportedDate':'2026-07-30','reportedEPS':'1'}]}).encode()
+    capture=av.Capture.from_bytes('EARNINGS',{'symbol':'AAPL'},body)
+    monkeypatch.setattr(av,'fetch_capture',lambda *a,**kw:capture)
+    monkeypatch.setattr(av,'archive_capture',lambda *a,**kw:'gs://test/source')
+    frames=[]
+    for timestamp in ['2026-07-30T08:00:00-04:00','2026-07-30T16:30:00-04:00']:
+        payload={'rows':[{'timestamp':timestamp,'values':{'EPS Estimate':1.2}}]}
+        obs={'observation_id':str(uuid.uuid4()),'source_retrieved_at':datetime.now(timezone.utc).isoformat(),
+             'content_sha256':av.digest(payload),'payload':payload}
+        monkeypatch.setattr(history,'fetch_yahoo_observation',lambda *a,**kw:obs)
+        frames.append(history.fetch_history_for_ticker('AAPL','dummy'))
+    assert frames[0].attrs['capture'].body==frames[1].attrs['capture'].body==body
+    assert [f.iloc[0]['yahoo_report_time'] for f in frames]==['pre-market','post-market']
+    assert frames[0].attrs['yahoo_observation']['observation_id']!=frames[1].attrs['yahoo_observation']['observation_id']
+    assert frames[0].attrs['yahoo_observation']['content_sha256']!=frames[1].attrs['yahoo_observation']['content_sha256']

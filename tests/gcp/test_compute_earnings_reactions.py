@@ -954,7 +954,7 @@ class TestFetchDailyWindowsForTickerDates:
         that makes the timeout fix work."""
         from gcp.fetchers import compute_earnings_reactions as cer
         bars = self._sample_bars()
-        with patch.object(cer, 'query_to_dataframe', return_value=bars) as qm:
+        with patch.object(cer.av, 'read_dataframe', return_value=bars) as qm:
             from datetime import date
             out = cer.fetch_daily_windows_for_ticker_dates(
                 'AAPL',
@@ -978,7 +978,7 @@ class TestFetchDailyWindowsForTickerDates:
         from gcp.fetchers import compute_earnings_reactions as cer
         bars = self._sample_bars()
         from datetime import date, timedelta
-        with patch.object(cer, 'query_to_dataframe', return_value=bars):
+        with patch.object(cer.av, 'read_dataframe', return_value=bars):
             out = cer.fetch_daily_windows_for_ticker_dates(
                 'AAPL', [date(2025, 6, 1)],
             )
@@ -994,7 +994,7 @@ class TestFetchDailyWindowsForTickerDates:
         import pandas as pd
         from gcp.fetchers import compute_earnings_reactions as cer
         from datetime import date
-        with patch.object(cer, 'query_to_dataframe',
+        with patch.object(cer.av, 'read_dataframe',
                           return_value=pd.DataFrame()):
             out = cer.fetch_daily_windows_for_ticker_dates(
                 'XYZ',
@@ -1010,7 +1010,7 @@ class TestFetchDailyWindowsForTickerDates:
         from gcp.fetchers import compute_earnings_reactions as cer
         bars = self._sample_bars()
         from datetime import date, timedelta
-        with patch.object(cer, 'query_to_dataframe', return_value=bars) as qm:
+        with patch.object(cer.av, 'read_dataframe', return_value=bars) as qm:
             cer.fetch_daily_windows_for_ticker_dates(
                 'AAPL', [date(2025, 2, 1), date(2025, 10, 1)],
             )
@@ -1058,3 +1058,77 @@ class TestTickersReportingInWindowTimezone:
         assert 'BETWEEN CURRENT_DATE' not in sql, (
             "Naked CURRENT_DATE re-introduces the timezone bug (Codex P2 #488)."
         )
+
+
+def test_split_windows_are_rejected_without_point_in_time_factors():
+    for ratio in [.5,2/3]:
+        bars=_bars([(date(2026,10,7),100,100,100,100),
+                    (date(2026,10,8),100,100,100,100),
+                    (date(2026,10,9),100*ratio,100*ratio,100*ratio,100*ratio)])
+        bars['split_coefficient']=[1,1,1/ratio]
+        assert compute_reaction(_eps(date(2026,10,8)),bars,'AMC') is None
+# The maximum caller still exercises real dependency refusal; no synthetic
+# price-basis helper can certify a successful reaction in this shape test.
+def test_reaction_caller_batches_one_hundred_tickers_without_basis_substitute(monkeypatch):
+    from datetime import date,datetime,timezone
+    import pandas as pd
+    from gcp.fetchers import compute_earnings_reactions as reactions,_av_ingestion as av
+    tickers=[f'S{i:03d}' for i in range(100)]
+    day=date(2026,10,12)
+    frame=pd.DataFrame([{'ticker':t,'reported_date':day,'fiscal_date_ending':date(2000+i//4,(i%4+1)*3,1),
+        'revision_id':i+1,'known_at':datetime.now(timezone.utc),'availability_quality':'source_verified',
+        'yahoo_timing_observation_id':None,'reported_eps':1.0,'estimated_eps':1.0,
+        'surprise_pct':0.0,'report_time':'post-market','yahoo_report_time':None} for t in tickers for i in range(100)])
+    monkeypatch.setattr(reactions,'fetch_earnings_history_for_tickers',lambda *a,**kw:frame)
+    reads=[]
+    def read(sql,params=None,**kw):
+        reads.append((sql,params))
+        if 'earnings_timing_observations' in sql:return pd.DataFrame()
+        assert 'windows' in params,'former per-ticker price query exceeds119RT contract'
+        import json
+        names=[r['ticker'] for r in json.loads(params['windows'])]
+        assert len(names)<=10
+        return pd.DataFrame([{'ticker':t,'date':day,'open':100,'high':101,'low':99,'close':100,
+            'volume':100,'adjusted_close':100,'split_coefficient':1,'source_journal_id':None,
+            'daily_provenance':None,'capacity_error':None} for t in names])
+    monkeypatch.setattr(av,'read_dataframe',read)
+    # Existing native helper absence is itself a required honest dependency;
+    # do not inject an implementation or successful preparation stand-in.
+    import importlib.util
+    original_find_spec=importlib.util.find_spec
+    monkeypatch.setattr(importlib.util,'find_spec',lambda name,*a,**kw:None if name=='lib.price_basis' else original_find_spec(name,*a,**kw))
+    run=av.Run('compute-earnings-reactions','daily',expected=100)
+    assert reactions.populate_for_tickers(tickers,run=run)==0
+    assert run.failed==10000 and run.rows_written==0
+    assert len([sql for sql,p in reads if 'windows' in (p or {})])==10
+    assert len([sql for sql,p in reads if 'earnings_timing_observations' in sql])==1
+
+
+def test_reaction_adapter_refuses_unavailable_split_volume_capability(monkeypatch):
+    """Negative adapter contract only; no fixture certifies the absent DATA helper."""
+    import importlib.util
+    import sys
+    from datetime import datetime, timezone
+    from types import ModuleType, SimpleNamespace
+    from gcp.fetchers import compute_earnings_reactions as reactions, _av_ingestion as av
+
+    day = date(2026, 10, 12)
+    daily = pd.DataFrame([{'date': day, 'open': 100, 'high': 101, 'low': 99,
+                           'close': 100, 'volume': None, 'adjusted_close': 100,
+                           'split_coefficient': 1}])
+    # Deliberately non-capable boundary response. This contains no DATA
+    # calculation/source SQL and cannot satisfy positive basis integration.
+    boundary = ModuleType('lib.price_basis')
+    boundary.prepare_daily_basis = lambda frame, **kw: SimpleNamespace(
+        analysis_frame=frame.copy(), basis_version='av-adjusted-daily-v1',
+        provenance={}, volume_capability='unavailable')
+    monkeypatch.setitem(sys.modules, 'lib.price_basis', boundary)
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, 'find_spec',
+                        lambda name, *a, **kw: object() if name == 'lib.price_basis'
+                        else real_find_spec(name, *a, **kw))
+    eps = {'ticker': 'IWM', 'reported_date': day,
+           'revision_id': '00000000-0000-0000-0000-000000000001',
+           'known_at': datetime.now(timezone.utc), 'availability_quality': 'source_verified'}
+    with pytest.raises(av.SourceError, match='reaction_volume_basis_unavailable'):
+        reactions.prepare_reaction_inputs(eps, daily)

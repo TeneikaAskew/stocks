@@ -22,6 +22,17 @@ import pandas as pd
 import pytest
 
 
+@pytest.fixture
+def catalyst_capture_source(monkeypatch):
+    """Native source seam for owned AV callers; never contacts a live vendor."""
+    from gcp.fetchers import _av_ingestion as av
+    monkeypatch.setattr(av, 'archive_capture', lambda capture, **kw: 'gs://test/'+capture.observation_id)
+    def prepare(function, ticker, payload):
+        capture=av.Capture.from_bytes(function, {'symbol':ticker}, av.canonical(payload).encode())
+        monkeypatch.setattr(av, 'fetch_capture', lambda *a, **kw: capture)
+    return prepare
+
+
 # ──────────────────────────────────────────────────────────────────────
 # fetch_news_sentiment
 # ──────────────────────────────────────────────────────────────────────
@@ -122,7 +133,7 @@ def test_news_fetch_by_topics_truncates_over_5_topics():
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_earnings_history_parses_av_response():
+def test_earnings_history_parses_av_response(catalyst_capture_source):
     """AV EARNINGS quarterlyEarnings must produce one row per fiscal quarter."""
     from gcp.fetchers import fetch_earnings_history as feh
 
@@ -149,16 +160,8 @@ def test_earnings_history_parses_av_response():
         ],
     }
 
-    class FakeResp:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return av_response
-
-    with patch("gcp.fetchers.fetch_earnings_history.requests.get",
-               return_value=FakeResp()):
-        df = feh.fetch_history_for_ticker("AAPL", "fake-key")
+    catalyst_capture_source('EARNINGS','AAPL',av_response)
+    df = feh.fetch_history_for_ticker("AAPL", "fake-key",enrich_with_yahoo=False)
 
     assert len(df) == 2
     row = df.iloc[0]
@@ -171,21 +174,14 @@ def test_earnings_history_parses_av_response():
     assert df.iloc[1]["surprise"] == -0.02
 
 
-def test_earnings_history_handles_rate_limit():
-    """AV 'Information' (rate-limit) response should yield an empty DF."""
+def test_earnings_history_handles_rate_limit(catalyst_capture_source):
+    """AV rate limits stay explicit failures, never valid-empty earnings."""
     from gcp.fetchers import fetch_earnings_history as feh
 
-    class FakeResp:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"Information": "API rate limit"}
-
-    with patch("gcp.fetchers.fetch_earnings_history.requests.get",
-               return_value=FakeResp()):
-        df = feh.fetch_history_for_ticker("AAPL", "k")
-    assert df.empty
+    from gcp.fetchers import _av_ingestion as av
+    catalyst_capture_source('EARNINGS','AAPL',{'Information':'API rate limit'})
+    with pytest.raises(av.SourceError,match='vendor_error'):
+        feh.fetch_history_for_ticker("AAPL","k",enrich_with_yahoo=False)
 
 
 def test_earnings_history_safe_float_handles_av_garbage():
@@ -282,7 +278,7 @@ def test_sec_fetch_submissions_zips_parallel_arrays():
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_insider_transactions_parses_av_response():
+def test_insider_transactions_parses_av_response(catalyst_capture_source):
     from gcp.fetchers import fetch_insider_transactions as fit
 
     av_response = {
@@ -308,16 +304,8 @@ def test_insider_transactions_parses_av_response():
         ]
     }
 
-    class FakeResp:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return av_response
-
-    with patch("gcp.fetchers.fetch_insider_transactions.requests.get",
-               return_value=FakeResp()):
-        df = fit.fetch_for_ticker("AVGO", "fake-key")
+    catalyst_capture_source('INSIDER_TRANSACTIONS','AVGO',av_response)
+    df = fit.fetch_for_ticker("AVGO", "fake-key")
 
     assert len(df) == 2
     buy = df.iloc[0]
@@ -329,19 +317,11 @@ def test_insider_transactions_parses_av_response():
     assert sell["transaction_type"] == "D"
 
 
-def test_insider_transactions_handles_empty_response():
+def test_insider_transactions_handles_empty_response(catalyst_capture_source):
     from gcp.fetchers import fetch_insider_transactions as fit
 
-    class FakeResp:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"data": []}
-
-    with patch("gcp.fetchers.fetch_insider_transactions.requests.get",
-               return_value=FakeResp()):
-        df = fit.fetch_for_ticker("XYZ", "k")
+    catalyst_capture_source('INSIDER_TRANSACTIONS','XYZ',{'data':[]})
+    df = fit.fetch_for_ticker("XYZ", "k")
     assert df.empty
 
 

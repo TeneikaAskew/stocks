@@ -225,6 +225,18 @@ def _av_list(art: dict, key: str, malformed: list[str]) -> list:
     return value
 
 
+def prepare_news_rows(frame):
+    from gcp.fetchers.fetch_news_sentiment import prepare_news_rows as prepare
+    return prepare(frame)
+
+
+def persist_backfill_news(feed: list[dict]) -> int:
+    """The actual ticker news write phase shares staged identity publication."""
+    from gcp.fetchers.fetch_news_sentiment import persist_to_cloud_sql
+    rows=av_news_to_rows(feed)
+    return persist_to_cloud_sql(prepare_news_rows(pd.DataFrame(rows))) if rows else 0
+
+
 def av_news_to_rows(feed: list[dict]) -> list[dict]:
     """Explode AV news feed into one row per (article, ticker)."""
     rows = []
@@ -628,8 +640,7 @@ def run() -> int:
                        last.strftime("%Y%m%dT2359"), api_key)
         rows = av_news_to_rows(feed)
         if rows:
-            upsert_dataframe(pd.DataFrame(rows), "news_sentiment",
-                             ["ticker", "published_ts", "url"])
+            persist_backfill_news(feed)
             log.info("✓ wrote %d news rows", len(rows))
 
     # 4a. Multi-day indicators for the FULL backfilled range. Without
