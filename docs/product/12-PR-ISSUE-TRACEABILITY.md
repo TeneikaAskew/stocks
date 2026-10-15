@@ -313,7 +313,7 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and sol
 | [#1140](https://github.com/TeneikaAskew/stocks/issues/1140) | ops | [ESCALATED] magnitude-inference: fix in #1122 merged 2026-09-16 but never deployed — job still failing nightly, auto-closed each time |
 | [solyra#12](https://github.com/TeneikaAskew/solyra/issues/12) | ops | GCP billing follow-ups: Detailed export, stalled backfill, account-wide budget |
 
-**PR lineage:** [#507](https://github.com/TeneikaAskew/stocks/pull/507) *remediation* · [#1350](https://github.com/TeneikaAskew/stocks/pull/1350) *remediation* · [#1366](https://github.com/TeneikaAskew/stocks/pull/1366) *remediation*
+**PR lineage:** [#507](https://github.com/TeneikaAskew/stocks/pull/507) *remediation* · [#1350](https://github.com/TeneikaAskew/stocks/pull/1350) *remediation* · [#1366](https://github.com/TeneikaAskew/stocks/pull/1366) *remediation* · [#1457](https://github.com/TeneikaAskew/stocks/pull/1457) *remediation*
 
 ### FEAT-DATA-001 — Data platform (21 open)
 
@@ -550,7 +550,7 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and sol
 | [#1239](https://github.com/TeneikaAskew/stocks/issues/1239) | ops | GCP job failed: calibrate-thresholds |
 | [#1248](https://github.com/TeneikaAskew/stocks/issues/1248) | ops | [ESCALATED] GCP job failed: signal-quality-alarm |
 
-**PR lineage:** [#189](https://github.com/TeneikaAskew/stocks/pull/189) *origin* · [#192](https://github.com/TeneikaAskew/stocks/pull/192) *evolution* · [#200](https://github.com/TeneikaAskew/stocks/pull/200) *remediation* · [#235](https://github.com/TeneikaAskew/stocks/pull/235) *origin* · [#323](https://github.com/TeneikaAskew/stocks/pull/323) *remediation* · [#389](https://github.com/TeneikaAskew/stocks/pull/389) *origin* · [#392](https://github.com/TeneikaAskew/stocks/pull/392) *origin* · [#494](https://github.com/TeneikaAskew/stocks/pull/494) *evolution* · [#641](https://github.com/TeneikaAskew/stocks/pull/641) *origin* · [#644](https://github.com/TeneikaAskew/stocks/pull/644) *origin* · [#759](https://github.com/TeneikaAskew/stocks/pull/759) *origin* · [#771](https://github.com/TeneikaAskew/stocks/pull/771) *remediation*
+**PR lineage:** [#189](https://github.com/TeneikaAskew/stocks/pull/189) *origin* · [#192](https://github.com/TeneikaAskew/stocks/pull/192) *evolution* · [#200](https://github.com/TeneikaAskew/stocks/pull/200) *remediation* · [#235](https://github.com/TeneikaAskew/stocks/pull/235) *origin* · [#323](https://github.com/TeneikaAskew/stocks/pull/323) *remediation* · [#389](https://github.com/TeneikaAskew/stocks/pull/389) *origin* · [#392](https://github.com/TeneikaAskew/stocks/pull/392) *origin* · [#494](https://github.com/TeneikaAskew/stocks/pull/494) *evolution* · [#641](https://github.com/TeneikaAskew/stocks/pull/641) *origin* · [#644](https://github.com/TeneikaAskew/stocks/pull/644) *origin* · [#759](https://github.com/TeneikaAskew/stocks/pull/759) *origin* · [#771](https://github.com/TeneikaAskew/stocks/pull/771) *remediation* · [#1499](https://github.com/TeneikaAskew/stocks/pull/1499) *remediation — replaces unmerged #1456: confirmed freshness-audit alert classification and reliable diagnostic delivery*
 
 ### FEAT-DEBT-001 — Technical debt (11 open)
 

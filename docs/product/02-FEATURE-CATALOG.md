@@ -531,11 +531,11 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation |
+| Status | Production but needs remediation — notifier runtime access isolated |
 | Priority | P1 |
 | Target phase | Phase 6 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-10-11 |
+| Last reviewed | 2026-10-12 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | — |
 | Backend | — |
@@ -558,7 +558,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Priority | P1 |
 | Target phase | Phase 6 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-08-30 |
+| Last reviewed | 2026-10-13 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/admin` |
 | Backend | `/api/health/freshness` |
@@ -568,7 +568,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Tests | `data-pipeline-status.spec.ts` deleted in #957: widget guard ported in [solyra#29](https://github.com/TeneikaAskew/solyra/pull/29); live `/api/health/freshness` tests tracked in [#971](https://github.com/TeneikaAskew/stocks/issues/971) |
 | Open issues | 11 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-ops-001--operations--reliability-11-open) |
 | Blocking issues | [#922](https://github.com/TeneikaAskew/stocks/issues/922) [#1052](https://github.com/TeneikaAskew/stocks/issues/1052) [#1066](https://github.com/TeneikaAskew/stocks/issues/1066) [#1067](https://github.com/TeneikaAskew/stocks/issues/1067) [#1224](https://github.com/TeneikaAskew/stocks/issues/1224) [#1290](https://github.com/TeneikaAskew/stocks/issues/1290) |
-| Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 6 |
+| Next action | Freshness audit alert replacement in PR #1499 after the review cap;  TBD — sequence from [13](13-ROADMAP.md) Phase 6 |
 
 ### FEAT-CICD-001
 
