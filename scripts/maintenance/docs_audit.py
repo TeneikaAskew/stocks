@@ -92,6 +92,7 @@ import datetime
 import fnmatch
 import functools
 import html
+import importlib.util
 import json
 import os
 import pathlib
@@ -1714,6 +1715,25 @@ class AuditError(RuntimeError):
     """The run itself could not be completed. Never degrades to empty results."""
 
 
+def source_protocol():
+    """Load only this trusted checkout's fixed protected module, never a HEAD blob."""
+    path = pathlib.Path(__file__).resolve().parent / "doc_source_snapshot.py"
+    if path.is_symlink() or path.resolve() != path or not path.is_file():
+        raise AuditError("protected committed-source verifier is unavailable")
+    spec = importlib.util.spec_from_file_location("_audit_source_protocol", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    previous = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
+    if pathlib.Path(module.__file__).resolve() != path:
+        raise AuditError("protected committed-source verifier identity differs")
+    return module
+
+
 def run(cmd: list[str], *, cwd: pathlib.Path | None = None,
         ok_exit_codes: tuple[int, ...] = ()) -> str:
     """Run a command, treating only the listed non-zero exits as answers.
@@ -3114,6 +3134,8 @@ def indented_code_lines(lines: list[str]) -> set[int]:
                 # item needs six to open one -- so rendered continuation
                 # content was skipped by the dead-link and blocker checks.
                 pass
+
+
             else:
                 list_indent = 0
                 floor = 4
@@ -6413,7 +6435,9 @@ def check_marker_sha(doc: str, sha: str | None, base_ref: str, *,
 # range is widened as well because the parser is public and is handed output
 # the caller produced. No status line can collide: `--name-status` emits a
 # letter or `R###`, and `R` is not a hex digit.
-_DRIFT_HEADER_RE = re.compile(r"^[0-9a-f]{4,40}\t")
+# Native full OIDs are 40 hex (SHA-1) or 64 hex (SHA-256); prefixes remain
+# admitted for this existing public parser. No drift predicate changes.
+_DRIFT_HEADER_RE = re.compile(r"^[0-9a-f]{4,64}\t")
 _DRIFT_STATUS_RE = re.compile(r"^([AMDRCT])(\d{3})?\t")
 
 
@@ -7479,6 +7503,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.verify is not None and not args.verify:
         raise AuditError("--verify needs at least one path")
 
+    protocol = source_protocol()
+    try:
+        # Repository admission precedes resolve_base_ref and every object read.
+        repository_guard = protocol.Git(REPO, protocol.Budget())
+    except (protocol.Unavailable, OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise AuditError("committed-source repository admission failed: " + str(exc)) from exc
+    os.environ["GIT_NO_LAZY_FETCH"] = "1"
+    os.environ["GIT_NO_REPLACE_OBJECTS"] = "1"
+    source_identities = {}
     base_ref = resolve_base_ref()
     # --short alone honours core.abbrev, which can be set below 7:
     # `git -c core.abbrev=4 rev-parse --short HEAD` emits four characters, and
@@ -7492,6 +7525,17 @@ def main(argv: list[str] | None = None) -> int:
     # resolved through git rather than trusted, and a value git cannot place
     # is exit 2 before anything is written.
     head = resolve_marker_sha(args.since, base_ref)
+    trusted_site_classification = None
+    try:
+        source_commit = repository_guard.commit(base_ref)
+        if protocol.SITE in repository_guard.tree(source_commit):
+            policy_commit = repository_guard.commit("origin/main")
+            policy_registry = load_registry(protocol.text(repository_guard.blob(policy_commit, REGISTRY)))
+            trusted_site_classification = classify(protocol.SITE, policy_registry)
+            if trusted_site_classification[0] != "D" or classification_is_ambiguous(protocol.SITE, policy_registry):
+                raise protocol.Unavailable("trusted SITE watcher policy is unavailable")
+    except (protocol.Unavailable, OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise AuditError("trusted SITE watcher policy could not be read: " + str(exc)) from exc
 
     reg_path = REPO / REGISTRY
     if not reg_path.exists():
@@ -7506,6 +7550,8 @@ def main(argv: list[str] | None = None) -> int:
     # reason.
     refuse_symlink(REGISTRY)
     try:
+        if reg_path.stat().st_size > protocol.MAX_BYTES:
+            raise AuditError("registry exceeds the fixed eight-MiB policy-input allowance")
         registry_text = reg_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         # Unreadable, a directory, or not UTF-8. Left unguarded these walk past
@@ -7652,6 +7698,9 @@ def main(argv: list[str] | None = None) -> int:
 
     for doc in docs:
         cls, code_paths, regions = classify(doc, registry)
+        if doc == protocol.SITE and trusted_site_classification is not None:
+            # Authored/staged registry changes cannot hide SITE or its broad watchers.
+            cls, code_paths, regions = trusted_site_classification
         if cls is None:
             counts["unclassified"] += 1
             findings.append({"check": "unclassified", "doc": doc, "severity": "P2",
@@ -7804,12 +7853,35 @@ def main(argv: list[str] | None = None) -> int:
                 findings.append({"check": "marker", "doc": doc, "severity": "P3",
                                  "detail": "incomplete provenance: " + "; ".join(missing)})
             if measurable:
-                findings += check_changed_since(doc, info["sha"], code_paths,
-                                                base_ref, documents=_documents)
+                drift = check_changed_since(doc, info["sha"], code_paths,
+                                            base_ref, documents=_documents)
                 # And the document itself, which the code-path query cannot
                 # see -- and which is the ONLY drift signal a registry row
                 # with no declared code paths has.
-                findings += check_doc_changed_since(doc, info["sha"], base_ref)
+                drift += check_doc_changed_since(doc, info["sha"], base_ref)
+                if doc == protocol.SITE:
+                    try:
+                        snapshot = protocol.Snapshot(REPO)
+                        source_commit = snapshot.git.commit(base_ref)
+                        committed_registry = snapshot.git.blob(source_commit, REGISTRY)
+                        snapshot.budget.admit_size(reg_path.stat().st_size)
+                        with reg_path.open("rb") as registry_stream:
+                            working_registry = registry_stream.read(snapshot.budget.max_bytes - snapshot.budget.bytes + 1)
+                        snapshot.budget.read(len(working_registry))
+                        if working_registry != committed_registry:
+                            raise protocol.Unavailable("registry worktree differs from committed SOURCE policy")
+                        identity = snapshot.verify("origin/main", base_ref)
+                    except (protocol.Unavailable, OSError, ValueError, subprocess.SubprocessError, UnicodeError, RecursionError) as exc:
+                        findings += drift
+                        findings.append({"check": "source-provenance", "doc": doc, "severity": "P2",
+                                         "detail": "implementation-source identity unavailable: " + str(exc)})
+                    else:
+                        if identity["eligible_route"] == "terminal-ordinary":
+                            findings += drift
+                        else:
+                            source_identities[doc] = identity
+                else:
+                    findings += drift
 
         if args.stamp:
             # Never write a marker into a generated region. The marker goes
@@ -8071,6 +8143,7 @@ def main(argv: list[str] | None = None) -> int:
         "date": today, "base_ref": base_ref, "head": head, "docs": len(docs),
         "classes": counts, "regions": region_maps,
         "findings": findings, "stamped": stamped,
+        "source_identities": source_identities,
         "summary": {k: sum(1 for f in findings if f["check"] == k)
                     for k in sorted({f["check"] for f in findings})},
     }
@@ -8079,6 +8152,8 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, indent=2))
     else:
         print(f"docs {len(docs)}  classes {counts}  head {head} ({base_ref})")
+        for doc, identity in sorted(source_identities.items()):
+            print(f"  source identity: {doc} — {identity['context']}")
         for d, rm in sorted(region_maps.items()):
             if rm["unowned_lines"]:
                 print(f"  region: {d} — {rm['unowned_lines']} of {rm['lines']} lines "

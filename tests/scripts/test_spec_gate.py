@@ -39,6 +39,14 @@ DONE = ["every model states its decision", "the registry test passes"]
 CODE = {"lib/model.py": "DECISION = 'direction'\n"}
 NOT_A_FEAT_BRANCH = "is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>"
 
+SOURCE_REVIEW_PROTECTED = (
+    "scripts/maintenance/doc_source_snapshot.py", "scripts/maintenance/docs_audit.py",
+    "tests/scripts/test_doc_source_snapshot.py", "tests/scripts/test_docs_audit.py",
+    "scripts/__init__.py", "scripts/maintenance/__init__.py", "scripts/gate/__init__.py",
+    "tests/__init__.py", "tests/scripts/__init__.py", "tests/conftest.py", "tests/scripts/conftest.py",
+    "scripts/maintenance/json.py", "scripts/maintenance/json/__init__.py", "scripts/json.py",
+)
+
 CATALOG_TEXT = """\
 # Feature Catalog
 
@@ -119,8 +127,15 @@ def body(ticked: bool = False, spec_path: str = SPEC, plan_path: str | None = PL
     return "\n".join(links + [""] + [f"- [{box}] {item}" for item in DONE])
 
 
-def _git(cwd: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=cwd, check=True,
+def _git(cwd: Path, *args: str, env: dict[str, str] | None = None) -> str:
+    # Fixture records use the collection day; real test commits must use that
+    # same day even when a long native suite crosses midnight. Explicit dates
+    # supplied by an individual test still take precedence over these defaults.
+    git_env = dict(os.environ)
+    git_env.setdefault("GIT_AUTHOR_DATE", f"{TODAY}T12:00:00+00:00")
+    git_env.setdefault("GIT_COMMITTER_DATE", f"{TODAY}T12:00:00+00:00")
+    git_env.update(env or {})
+    return subprocess.run(["git", *args], cwd=cwd, check=True, env=git_env,
                           capture_output=True, text=True).stdout.strip()
 
 
@@ -198,6 +213,32 @@ def pr(repo: Path, branch: str, files: dict[str, str | None], **env: str) -> sub
     return gate(repo, "--pr", _git(repo, "rev-parse", "base"), _git(repo, "rev-parse", "HEAD"), **{"PR_HEAD_REF": branch, **env})
 
 
+def test_fixture_commit_dates_survive_midnight_and_preserve_explicit_dates(repo, monkeypatch):
+    fixture_day = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+    monkeypatch.setitem(globals(), "TODAY", fixture_day)
+    meta = {"PR_TITLE": "FEAT-MODEL-001: midnight fixture", "PR_BODY": body(ticked=True),
+            "PR_NUMBER": "42", "PR_DRAFT": "false"}
+    recorded = {**CODE, PLAN: plan(pr=42)}
+    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |",
+                               f"| Models | Production | {fixture_day} | #42 |")
+    accepted = pr(repo, BRANCH, {**recorded, CATALOG: row}, **meta)
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    assert _git(repo, "show", "-s", "--format=%as|%cs", "HEAD") == f"{fixture_day}|{fixture_day}"
+    wrong_day = (datetime.date.fromisoformat(fixture_day) + datetime.timedelta(days=1)).isoformat()
+    refused = pr(repo, BRANCH, {**recorded, CATALOG: row.replace(fixture_day, wrong_day)}, **meta)
+    assert refused.returncode == 1 and "head commit date" in refused.stdout, refused.stdout
+    assert fixture_day in refused.stdout and wrong_day in refused.stdout
+
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2001-02-03T12:00:00+00:00")
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2002-04-05T12:00:00+00:00")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "explicit inherited fixture dates")
+    assert _git(repo, "show", "-s", "--format=%as|%cs", "HEAD") == "2001-02-03|2002-04-05"
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "explicit per-call fixture dates",
+         env={"GIT_AUTHOR_DATE": "2003-06-07T12:00:00+00:00",
+              "GIT_COMMITTER_DATE": "2004-08-09T12:00:00+00:00"})
+    assert _git(repo, "show", "-s", "--format=%as|%cs", "HEAD") == "2003-06-07|2004-08-09"
+
+
 def test_the_gate_cannot_be_edited_outside_chore_and_ci_runs_the_base_copy(repo):
     """stocks#1205 r4116983555 (spec_gate.py:116, P1); solyra#72 r4117710094 (:116).
 
@@ -220,6 +261,32 @@ def test_the_gate_cannot_be_edited_outside_chore_and_ci_runs_the_base_copy(repo)
         checkout = next(s for s in job["steps"] if s.get("uses", "").startswith("actions/checkout"))
         assert checkout["with"]["ref"] == "${{ github.event.pull_request.base.sha }}"
         assert not any("python3 scripts/gate/export_model_registry.py" in s.get("run", "") for s in job["steps"])
+
+
+def test_source_review_inputs_and_startup_dependencies_belong_to_cicd(repo):
+    """The actual gate refuses unrelated-feature edits, including new shadow slots."""
+    catalog = CATALOG_TEXT.replace("| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |",
+                                   "| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |\n| FEAT-CICD-001 | Delivery | Production | unknown | none |")
+    on_base(repo, {CATALOG: catalog})
+    for path in SOURCE_REVIEW_PROTECTED:
+        refused = pr(repo, BRANCH, {path: "LOCAL = 'benign ownership control'\n"},
+                     PR_TITLE="FEAT-MODEL-001: local source review ownership", PR_DRAFT="true")
+        assert refused.returncode == 1 and "belong to FEAT-CICD-001" in refused.stdout, (path, refused.stdout)
+
+
+def test_source_review_input_legitimate_cicd_change_passes_actual_gate(repo):
+    branch = "feature/feat-cicd-001-source-review-inputs"
+    cicd_spec = SPEC.replace("model-decisions", "source-review-inputs")
+    cicd_plan = PLAN.replace("model-decisions", "source-review-inputs")
+    on_base(repo, {
+        CATALOG: CATALOG_TEXT.replace("| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |",
+                                     "| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |\n| FEAT-CICD-001 | Delivery | Production | unknown | none |"),
+        cicd_spec: spec(feat_id="FEAT-CICD-001"),
+    })
+    accepted = pr(repo, branch, {cicd_plan: plan(feat_id="FEAT-CICD-001", branch=branch, spec=cicd_spec),
+                                "scripts/maintenance/doc_source_snapshot.py": "LOCAL = 'benign CICD-owned control'\n"},
+                  PR_TITLE="FEAT-CICD-001: source review input ownership", PR_DRAFT="true")
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
 
 
 def test_deploy_and_config_files_are_gated(repo):
