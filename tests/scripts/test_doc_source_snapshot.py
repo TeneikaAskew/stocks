@@ -460,7 +460,11 @@ def test_actual_doc_body_squash_then_trunk_stamp_and_retirement(object_format, t
 
 @pytest.mark.parametrize("field", ["Last reviewed", "Last scanned"])
 @pytest.mark.parametrize("date", ["2099-01-01", "2099-02-30"])
-def test_actual_terminal_rejects_future_and_impossible_marker_dates(field, date, tmp_path):
+@pytest.mark.parametrize("stale_import_day", [False, True])
+def test_actual_terminal_rejects_future_and_impossible_marker_dates(field, date, stale_import_day, monkeypatch, tmp_path):
+    if stale_import_day:
+        # Collection can precede midnight while the actual auditor stamps later.
+        monkeypatch.setitem(globals(), "DAY", (datetime.date.today() - datetime.timedelta(days=1)).isoformat())
     repo = installed_repo(tmp_path / "repo")
     repo.git("checkout", "-q", "-b", "docs/source-closeout")
     repo.write(SITE, (repo.path / SITE).read_text() + "\nGenuine local main body close-out evidence.\n")
@@ -471,7 +475,9 @@ def test_actual_terminal_rejects_future_and_impossible_marker_dates(field, date,
     landed = repo.commit("docs: actual body-first squash")
     repo.git("update-ref", "refs/remotes/origin/main", landed)
     repo.git("checkout", "-q", "-b", "docs/source-terminal")
+    stamp_before = datetime.date.today()
     stamped = repo.audit("--stamp", "--verify", SITE)
+    stamp_after = datetime.date.today()
     assert stamped.returncode in (0, 1), stamped.stdout + stamped.stderr
     assert any(row["doc"] == SITE and row["action"] in ("updated", "unchanged") for row in json.loads(stamped.stdout)["stamped"])
     (repo.path / RECORD).unlink()
@@ -480,8 +486,13 @@ def test_actual_terminal_rejects_future_and_impossible_marker_dates(field, date,
     assert accepted.returncode == 0, accepted.stdout + accepted.stderr
     assert json.loads(accepted.stdout)["eligible_route"] == "terminal-ordinary"
     body = (repo.path / SITE).read_text()
-    needle = f"**{field}:** {DAY}"
-    assert needle in body
+    marker = next(line for line in body.splitlines() if line.startswith("**Last reviewed:** "))
+    prefix = f"**{field}:** "
+    tokens = [token for token in marker.split(" · ") if token.startswith(prefix)]
+    assert len(tokens) == 1
+    needle = tokens[0]
+    assert stamp_before <= datetime.date.fromisoformat(needle[len(prefix):]) <= stamp_after
+    assert body.count(needle) == 1
     repo.write(SITE, body.replace(needle, f"**{field}:** {date}", 1))
     repo.commit("docs: record refused marker date")
     refused = repo.cli("verify")

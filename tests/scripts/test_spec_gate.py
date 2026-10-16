@@ -127,8 +127,15 @@ def body(ticked: bool = False, spec_path: str = SPEC, plan_path: str | None = PL
     return "\n".join(links + [""] + [f"- [{box}] {item}" for item in DONE])
 
 
-def _git(cwd: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=cwd, check=True,
+def _git(cwd: Path, *args: str, env: dict[str, str] | None = None) -> str:
+    # Fixture records use the collection day; real test commits must use that
+    # same day even when a long native suite crosses midnight. Explicit dates
+    # supplied by an individual test still take precedence over these defaults.
+    git_env = dict(os.environ)
+    git_env.setdefault("GIT_AUTHOR_DATE", f"{TODAY}T12:00:00+00:00")
+    git_env.setdefault("GIT_COMMITTER_DATE", f"{TODAY}T12:00:00+00:00")
+    git_env.update(env or {})
+    return subprocess.run(["git", *args], cwd=cwd, check=True, env=git_env,
                           capture_output=True, text=True).stdout.strip()
 
 
@@ -204,6 +211,32 @@ def pr(repo: Path, branch: str, files: dict[str, str | None], **env: str) -> sub
     _git(repo, "commit", "-q", "-m", f"change on {branch}")
     # (stocks#1205 r4127577496: Actions passes two 40-character shas, so the suite does too)
     return gate(repo, "--pr", _git(repo, "rev-parse", "base"), _git(repo, "rev-parse", "HEAD"), **{"PR_HEAD_REF": branch, **env})
+
+
+def test_fixture_commit_dates_survive_midnight_and_preserve_explicit_dates(repo, monkeypatch):
+    fixture_day = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+    monkeypatch.setitem(globals(), "TODAY", fixture_day)
+    meta = {"PR_TITLE": "FEAT-MODEL-001: midnight fixture", "PR_BODY": body(ticked=True),
+            "PR_NUMBER": "42", "PR_DRAFT": "false"}
+    recorded = {**CODE, PLAN: plan(pr=42)}
+    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |",
+                               f"| Models | Production | {fixture_day} | #42 |")
+    accepted = pr(repo, BRANCH, {**recorded, CATALOG: row}, **meta)
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    assert _git(repo, "show", "-s", "--format=%as|%cs", "HEAD") == f"{fixture_day}|{fixture_day}"
+    wrong_day = (datetime.date.fromisoformat(fixture_day) + datetime.timedelta(days=1)).isoformat()
+    refused = pr(repo, BRANCH, {**recorded, CATALOG: row.replace(fixture_day, wrong_day)}, **meta)
+    assert refused.returncode == 1 and "head commit date" in refused.stdout, refused.stdout
+    assert fixture_day in refused.stdout and wrong_day in refused.stdout
+
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2001-02-03T12:00:00+00:00")
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2002-04-05T12:00:00+00:00")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "explicit inherited fixture dates")
+    assert _git(repo, "show", "-s", "--format=%as|%cs", "HEAD") == "2001-02-03|2002-04-05"
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "explicit per-call fixture dates",
+         env={"GIT_AUTHOR_DATE": "2003-06-07T12:00:00+00:00",
+              "GIT_COMMITTER_DATE": "2004-08-09T12:00:00+00:00"})
+    assert _git(repo, "show", "-s", "--format=%as|%cs", "HEAD") == "2003-06-07|2004-08-09"
 
 
 def test_the_gate_cannot_be_edited_outside_chore_and_ci_runs_the_base_copy(repo):
