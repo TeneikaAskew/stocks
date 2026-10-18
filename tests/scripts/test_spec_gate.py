@@ -4396,3 +4396,110 @@ def test_complete_inventory_refuses_non_renderer_prose(inventory_repo):
         assert control.returncode == 0, control.stdout + control.stderr
         assert all(refused(r, "differs from main's render") for r in results.values()), {
             name: r.stdout + r.stderr for name, r in results.items() if not refused(r, "differs from main's render")}
+
+
+MEASURE = 'tests/scripts/measure_inventory_render.py'
+
+
+def measurement(root: Path, *args: str) -> tuple[subprocess.CompletedProcess, dict]:
+    r = subprocess.run([sys.executable, str(root / MEASURE), *args], cwd=root, capture_output=True, text=True)
+    return r, json.loads(r.stdout) if r.stdout.strip().startswith('{') else {}
+
+
+def test_measure_inventory_render_runs_the_actual_gate(inventory_repo):
+    """Actual committed-tree CLI uses real trusted gate; uncommitted application bytes are not its source."""
+    if RENDERER_HERE:
+        root, _moved = inventory_repo
+        assert (REPO / MEASURE).is_file(), 'approved standalone observer is missing'
+        on_base(root, {MEASURE: (REPO / MEASURE).read_text(encoding='utf-8')})
+        # A path with spaces travels through real argv, not shell interpolation.
+        spaced = root.parent / 'render repository with spaces'
+        root.rename(spaced); root = spaced
+        write(root, MAIN_PY, 'raise RuntimeError("dirty worktree must not run")\n')
+        r, report = measurement(root, '--ref', 'base', '--max-rss-mib', '128', '--max-seconds', '10')
+        assert r.returncode == 0 and report['kind'] == 'committed-inventory-render', r.stdout + r.stderr
+        assert report['worker']['ref'] == _git(root, 'rev-parse', 'base') and report['worker']['renderer_exit'] == 0
+        assert report['worker']['source_bytes'] > 0 and report['worker']['source_entries'] > 10
+        assert Path(report['worker']['renderer_argv'][5]).is_absolute() and 'spec-gate-render-' in report['worker']['renderer_argv'][5]
+        assert report['worker']['renderer_cwd'] and all('<owned' not in arg for arg in report['worker']['renderer_argv'])
+        assert report['sample_count'] > 1 and report['peak_rss_bytes'] >= report['monitor_rss_bytes'] > 0
+        assert report['sample_gap_seconds']['max'] > 0 and report['discovery_gap_seconds']['max'] > 0
+        assert report['kernel_child_peak_bytes'] > 0 and report['owned_group_gone']
+        for option, value in [('--max-rss-mib','513'),('--max-seconds','61'),('--max-seconds','nan'),
+                              ('--max-rss-mib','0'),('--max-seconds','true')]:
+            bad, _ = measurement(root, '--ref', 'base', option, value)
+            assert bad.returncode != 0, (option, value, bad.stdout)
+        # Trust checking is independent of the committed app tree and rejects forged observer/gate bytes.
+        write(root, 'scripts/gate/spec_gate.py', (root / 'scripts/gate/spec_gate.py').read_text() + '\n# forged trusted helper\n')
+        bad, evidence = measurement(root, '--ref', 'base', '--max-seconds', '10')
+        assert bad.returncode != 0 and not evidence['ok'] and 'trusted input differs' in evidence['stderr'], bad.stdout + bad.stderr
+        # An unchanged helper cannot turn an actual renderer parse/refusal into a budget success.
+        on_base(root, {MAIN_PY: RENDER_SOURCE[MAIN_PY] + '\ndef invalid(:\n'})
+        bad, evidence = measurement(root, '--ref', 'base', '--max-seconds', '10')
+        assert bad.returncode != 0 and evidence['worker']['renderer_exit'] != 0, bad.stdout + bad.stderr
+        assert 'SyntaxError' in '\n'.join(evidence['worker']['refusals']) and evidence['owned_group_gone']
+        on_base(root, {MAIN_PY: RENDER_SOURCE[MAIN_PY], SNAPSHOT_FILE: None})
+        bad, evidence = measurement(root, '--ref', 'base', '--max-seconds', '10')
+        assert bad.returncode != 0 and not evidence['ok'] and evidence['owned_group_gone'], bad.stdout + bad.stderr
+        # Source identity covers the observer itself, independently of gate identity.
+        on_base(root, {SNAPSHOT_FILE: (REPO / SNAPSHOT_FILE).read_text(encoding='utf-8')})
+        write(root, MEASURE, (root / MEASURE).read_text() + '\n# changed trusted monitor\n')
+        bad, evidence = measurement(root, '--ref', 'base', '--max-seconds', '10')
+        assert bad.returncode != 0 and 'trusted input differs' in evidence['stderr'], bad.stdout + bad.stderr
+
+
+def bounded_measurement(tmp_path: Path, code: str, *, mib: int = 128, seconds: float = 2) -> dict:
+    """Run the actual private monitor in a fresh process, with actual harmless owned child groups."""
+    assert (REPO / MEASURE).is_file(), 'approved standalone observer is missing'
+    launcher = (
+        "import importlib.util,json,pathlib,sys; "
+        "s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]); "
+        "m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m); "
+        "r=m.run_bounded([sys.executable,'-c',sys.argv[2]],pathlib.Path(sys.argv[3]),"
+        "max_rss_bytes=int(sys.argv[4]),max_seconds=float(sys.argv[5]));print(json.dumps(r))"
+    )
+    r = subprocess.run([sys.executable,'-c',launcher,str(REPO / MEASURE),code,str(tmp_path),str(mib*1024*1024),str(seconds)],
+                       capture_output=True,text=True,timeout=10)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return json.loads(r.stdout)
+
+
+def test_measure_inventory_render_real_memory_refusal(tmp_path):
+    """A sustained actual allocation, not a mocked sample, crosses a lowered combined monitor/group cap."""
+    good = bounded_measurement(tmp_path, 'import time; a=bytearray(1024*1024);time.sleep(.2)', mib=64)
+    bad = bounded_measurement(tmp_path, 'import time; a=bytearray(96*1024*1024);time.sleep(2)', mib=64)
+    assert good['ok'] and good['owned_group_gone'], good
+    assert not bad['ok'] and bad['reason'] == 'rss_limit' and bad['peak_rss_bytes'] > 64*1024*1024, bad
+    assert bad['owned_group_gone'] and bad['monitor_rss_bytes'] > 0 and bad['sample_count'] > 1
+
+
+def test_measure_inventory_render_real_timeout_reaps_group(tmp_path):
+    """Actual parent+grandchild outlive lowered deadline; entire owned group is killed and reaped."""
+    pidfile = tmp_path / 'owned-pids.json'
+    code = ("import json,os,subprocess,sys,time; "
+            "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(20)']); "
+            f"open({str(pidfile)!r},'w').write(json.dumps([os.getpid(),p.pid]));time.sleep(20)")
+    bad = bounded_measurement(tmp_path, code, seconds=1)
+    pids = json.loads(pidfile.read_text())
+    assert not bad['ok'] and bad['reason'] == 'time_limit' and bad['owned_group_gone'], bad
+    assert all(not Path(f'/proc/{p}').exists() for p in pids), (pids, bad)
+    good = bounded_measurement(tmp_path, 'import time;time.sleep(.05)', seconds=1)
+    nonzero = bounded_measurement(tmp_path, 'raise SystemExit(7)')
+    assert good['ok'] and good['owned_group_gone'], good
+    assert not nonzero['ok'] and nonzero['worker_exit'] == 7 and nonzero['owned_group_gone'], nonzero
+
+
+def test_measure_inventory_render_refuses_unavailable_proc(tmp_path):
+    """Missing actual observation files refuse before creating a child; no assumed RSS pass."""
+    assert (REPO / MEASURE).is_file()
+    launch = ("import importlib.util,json,pathlib,sys; "
+              "s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]); "
+              "m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m); "
+              "m.PROC=pathlib.Path(sys.argv[2]); "
+              "print(json.dumps(m.run_bounded([sys.executable,'-c','pass'],pathlib.Path.cwd(),"
+              "max_rss_bytes=128*1024*1024,max_seconds=1)))")
+    r = subprocess.run([sys.executable,'-c',launch,str(REPO / MEASURE),str(tmp_path/'absent-proc')],
+                       capture_output=True,text=True,timeout=5)
+    evidence = json.loads(r.stdout)
+    assert r.returncode == 0 and not evidence['ok'] and evidence['reason'] == 'observation_failure', r.stdout + r.stderr
+    assert 'process_group' not in evidence and evidence['sample_count'] == 0

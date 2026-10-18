@@ -4064,7 +4064,8 @@ def render_inventory(tree: str, docs: list[str]) -> int:
     return RENDER_DIFFERS if differs else 0
 
 
-def render_refusals(entries: list[tuple[str, str, str]], docs: list[str], base_docs: dict[str, bytes]) -> list[str]:
+def render_refusals(entries: list[tuple[str, str, str]], docs: list[str], base_docs: dict[str, bytes],
+                    evidence: dict | None = None) -> list[str]:
     """[] when main's renderer, run over the head tree written to a temporary directory, renders every block of
     `docs` exactly as committed; otherwise why not."""
     every = ", ".join(docs)
@@ -4080,8 +4081,10 @@ def render_refusals(entries: list[tuple[str, str, str]], docs: list[str], base_d
         except (OSError, ValueError, GitFailed) as e:
             # (red-team round 1: a name the filesystem cannot hold crashed the gate with a traceback)
             return [generated_refusal(every, f"the head tree cannot be written out ({e})")]
-        r = subprocess.run([sys.executable, "-I", "-B", str(pathlib.Path(__file__).resolve()), RENDER_MODE, str(tree), *docs],
-                           input=json.dumps(submitted), cwd=cwd, capture_output=True, encoding="utf-8", errors="replace")
+        command = [sys.executable, "-I", "-B", str(pathlib.Path(__file__).resolve()), RENDER_MODE, str(tree), *docs]
+        r = subprocess.run(command, input=json.dumps(submitted), cwd=cwd, capture_output=True, encoding="utf-8", errors="replace")
+        if evidence is not None:
+            evidence.update(argv=command, cwd=str(cwd), exit=r.returncode)
     last = (r.stderr.strip().splitlines() or ["no output"])[-1]
     if r.returncode == 0:
         return []
