@@ -39,6 +39,8 @@ with the frontmatter in `references/spec-template.md`. `done_when` is the contra
 
 Present the spec in sections. Stop after each section for feedback. Do not proceed until the user says approved. Then set `status: approved` and commit the spec alone (branch `docs/spec-<feat-id-lowercase>`, kebab-case like every delivery branch; the gate validates the spec's frontmatter and nothing else there), and merge it before the implementation branch opens: the gate reads the catalog row and the approved spec from the merge base (HEAD for a local commit), so a change that adds or edits its own spec, or its own catalog row, is refused.
 
+If review changes an approved spec on its open PR, present the changed sections to the user again and get their approval before that PR merges. A fix that changes no decision and no `done_when` item (wording, a citation, a line number) needs no new approval.
+
 ## Phase 3: plan
 
 Invoke `superpowers:writing-plans`. Write:
