@@ -577,7 +577,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation — policy wording verified; verifier/global remediation pending |
+| Status | Production but needs remediation — policy wording verified; verifier/global remediation pending; the test suite cannot reach a real gcloud ([#1536](https://github.com/TeneikaAskew/stocks/pull/1536)) |
 | Priority | P1 |
 | Target phase | Phase 6 — see [13](13-ROADMAP.md) |
 | Target release | TBD |

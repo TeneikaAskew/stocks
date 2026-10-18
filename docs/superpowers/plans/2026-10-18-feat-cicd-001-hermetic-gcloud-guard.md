@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-10-18-feat-cicd-001-hermetic-gcloud-guard.md
 branch: fix/feat-cicd-001-hermetic-gcloud
-pr: null
+pr: 1536
 status: ready
 ---
 
