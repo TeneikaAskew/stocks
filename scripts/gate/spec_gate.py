@@ -39,6 +39,7 @@ import bisect
 import functools
 import html
 import importlib.util
+import importlib.machinery
 import json
 import collections
 import datetime
@@ -1083,9 +1084,9 @@ DEPLOY_FEAT = "FEAT-DEPLOY-001"
 DEPLOY_FILE = re.compile(r"^((gcp|platform)/deploy\.sh|gcp/cloudbuild/[^/]+|cloudbuild[^/]*\.ya?ml|Dockerfile[^/]*|\.gcloudignore|\.dockerignore)$")
 # The files that are the delivery process itself: CI configuration at any path under .github/, the gate's
 # files and pinned copies, the hook, the agent instructions and the local skills (round six)
-def is_process_file(path: str) -> bool:
+def is_process_file(path: str, trees=()) -> bool:
     return ((path.startswith(".github/") and not is_documentation(path)) or is_gate_file(path) or path in PINNED.values()
-            or path in SOURCE_REVIEW_INPUTS or source_import_shadow(path)
+            or path in SOURCE_REVIEW_INPUTS or source_import_shadow(path, trees=trees)
             or path.startswith(LOCAL_SKILLS) or path.startswith((".claude/", ".githooks/"))
             or path.rsplit("/", 1)[-1] in ("CLAUDE.md", "AGENTS.md", "CLAUDE.local.md"))
 # The files the gate runs from: no change may delete one, whatever its branch, or the
@@ -1102,13 +1103,43 @@ SOURCE_REVIEW_INPUTS = frozenset((
 SITE_TRACEABILITY = "docs/product/03-SITE-TRACEABILITY.md"
 
 
-def source_import_shadow(path: str) -> bool:
-    # A new local stdlib-shaped module/package can become a startup dependency.
-    for parent in ("scripts/maintenance/", "scripts/", "tests/scripts/", "tests/"):
-        if path.startswith(parent):
-            component = path[len(parent):].split("/", 1)[0]
-            name = component.removesuffix(".py").removesuffix(".pyw")
-            if name in sys.stdlib_module_names or name in ("sitecustomize", "usercustomize"):
+SOURCE_IMPORT_NAMES = frozenset(sys.stdlib_module_names) | {
+    "sitecustomize", "usercustomize", "yaml", "_yaml", "pytest", "_pytest",
+    "pluggy", "iniconfig", "py", "pygments", "packaging", "exceptiongroup",
+    "tomli", "colorama", "_distutils_hack", "cython_runtime", "conftest",
+}
+SOURCE_IMPORT_SUFFIXES = tuple(dict.fromkeys((".py", ".pyc", ".pyw", ".so", ".pyd",
+                                             *importlib.machinery.EXTENSION_SUFFIXES)))
+SOURCE_ROOT_IMPORT_NAMES = SOURCE_IMPORT_NAMES | {"scripts", "tests"}
+
+
+def source_import_shadow(path: str, *, trees=(), present=None) -> bool:
+    """Effective startup slots, including both sides of package transitions.
+
+    A namespace-only application directory does not override a regular stdlib
+    module/package. Its initializer transition does; once regular, all children
+    can be transitive imports. Committed manifests supply their already-read
+    path map, while the gate inspects its actual BASE and proposed trees.
+    """
+    def exists(candidate):
+        return candidate in present if present is not None else any(t.mode(candidate) is not None for t in trees)
+
+    for parent in ("", "scripts/maintenance/", "scripts/", "tests/scripts/", "tests/"):
+        if not path.startswith(parent):
+            continue
+        component, slash, tail = path[len(parent):].partition("/")
+        names = SOURCE_ROOT_IMPORT_NAMES if not parent else SOURCE_IMPORT_NAMES
+        if not slash:
+            # A bare name can be a symlink to an importable package. Orphan
+            # __pycache__ entries and namespace-only directories are not files
+            # that Git reports here and are not inferred as executable inputs.
+            if component in names or any(component.endswith(s) and component[:-len(s)] in names for s in SOURCE_IMPORT_SUFFIXES):
+                return True
+        elif component in names:
+            initializers = tuple("__init__" + s for s in SOURCE_IMPORT_SUFFIXES)
+            if tail in initializers:
+                return True
+            if component not in ("scripts", "tests") and any(exists(parent + component + "/" + init) for init in initializers):
                 return True
     return False
 
@@ -4169,7 +4200,7 @@ def run(argv: list[str]) -> int:
         manifest_edit = lambda f: f.rsplit("/", 1)[-1] in ("package.json", "pyproject.toml", "Makefile") and \
             (f.endswith("Makefile") or (ch.base.read(f) is not None and ch.tree.read(f) is not None
                                         and non_dependency_edit(f, ch.base.read(f), ch.tree.read(f)) is not None))
-        if traced and (owned := [f for f in ch.changed if is_process_file(f) or manifest_edit(f)]) \
+        if traced and (owned := [f for f in ch.changed if is_process_file(f, (ch.before, ch.tree)) or manifest_edit(f)]) \
                 and traced.feat_id != WORKFLOW_FEAT and WORKFLOW_FEAT in catalog_ids(ch.base.read(CATALOG)):
             errs.append(f"process change(s) ({summarize(owned)}) belong to {WORKFLOW_FEAT}, not {traced.feat_id}; "
                         "CI configuration, the gate and the agent instructions are that capability's work")

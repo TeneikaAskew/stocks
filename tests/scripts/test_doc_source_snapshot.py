@@ -26,6 +26,7 @@ SPEC = "docs/superpowers/specs/2026-10-13-feat-cicd-001-source-review-verifier.m
 PLAN = "docs/superpowers/plans/2026-10-13-feat-cicd-001-source-review-verifier.md"
 BRANCH = "feature/feat-cicd-001-source-review-verifier"
 DAY = datetime.date.today().isoformat()
+SITE_SCOPES = "platform/api, platform/deploy.sh, platform/Dockerfile, gcp, lib, scripts, tests"
 
 
 DESCENDANT_SUPERVISOR = r'''
@@ -96,11 +97,15 @@ class Repo:
         self.write("scripts/maintenance/__init__.py", b"")
         self.write("lib/input.py", b"VALUE = 1\n")
         self.write("tests/source_input.py", b"INPUT = 'native'\n")
+        self.write("gcp/source_input.py", b"INPUT = 'native GCP source'\n")
+        self.write("platform/api/source_input.py", b"INPUT = 'namespace API source'\n")
+        self.write("platform/deploy.sh", b"#!/bin/sh\nexit 0\n")
+        self.write("platform/Dockerfile", b"FROM scratch\n")
         self.write(SPEC, (ROOT / SPEC).read_bytes())
         self.write("docs/product/02-FEATURE-CATALOG.md", "# Catalog\n\n| ID | Area |\n|---|---|\n| FEAT-CICD-001 | CI |\n\n### FEAT-CICD-001\n\n| Field | Value |\n|---|---|\n| Status | Source identity tests |\n| Last reviewed | " + DAY + " |\n")
         self.write("docs/product/01-PRODUCT-REQUIREMENTS.md", "# Requirements\n\n**REQ-GOV-001:** Conversations resolve.\n\n**REQ-REVIEW-001:** Authentic CODE review.\n")
         self.write("docs/product/12-PR-ISSUE-TRACEABILITY.md", "# Traceability\n\n### FEAT-CICD-001\n\n**PR lineage:** #1\n")
-        self.write(REGISTRY, "# Documentation registry\n\n## Registry\n\n| Class | Path glob | Declared code paths | Generated regions |\n|---|---|---|---|\n| D | " + SITE + " | lib, scripts, tests | |\n| C | docs/product/* | | |\n| C | docs/superpowers/** | | |\n| C | docs/DOC_REGISTRY.md | | |\n")
+        self.write(REGISTRY, "# Documentation registry\n\n## Registry\n\n| Class | Path glob | Declared code paths | Generated regions |\n|---|---|---|---|\n| D | " + SITE + " | " + SITE_SCOPES + " | |\n| C | docs/product/* | | |\n| C | docs/superpowers/** | | |\n| C | docs/DOC_REGISTRY.md | | |\n")
         self.body = "# Site traceability\n\n### Chain\n\n| Element | Backend source | Evidence |\n|---|---|---|\n| SHARED-01 | API service | Local source tests |\n"
         self.write(SITE, self.body)
         seed = self.commit("docs: seed genuine trunk source and body")
@@ -369,7 +374,8 @@ def test_actual_missing_promisor_blob_refuses_before_sensitive_local_remote(tmp_
     partial = tmp_path / "partial"
     subprocess.run(["git", "clone", "-q", "--filter=blob:none", "--no-checkout", bare.as_uri(), str(partial)], check=True)
     missing = complete.git("rev-parse", "HEAD:lib/input.py").stdout.strip()
-    unavailable = subprocess.run(["git", "--no-lazy-fetch", "cat-file", "-e", missing], cwd=partial, capture_output=True)
+    unavailable = subprocess.run(["git", "cat-file", "-e", missing], cwd=partial, capture_output=True,
+                                 env=dict(os.environ, GIT_NO_LAZY_FETCH="1", GIT_ALLOW_PROTOCOL="/"))
     assert unavailable.returncode != 0
     sentinel = tmp_path / "remote-access"
     helper = tmp_path / "local-promisor-helper"
@@ -387,7 +393,7 @@ def test_actual_missing_promisor_blob_refuses_before_sensitive_local_remote(tmp_
         assert result.returncode != 0, result.stdout + result.stderr
         assert "promisor" in result.stdout + result.stderr or "partial-clone" in result.stdout + result.stderr
         assert not sentinel.exists()
-    env = {key: value for key, value in os.environ.items() if key not in ("GIT_NO_LAZY_FETCH", "GIT_NO_REPLACE_OBJECTS")}
+    env = {key: value for key, value in os.environ.items() if key not in ("GIT_NO_LAZY_FETCH", "GIT_NO_REPLACE_OBJECTS", "GIT_ALLOW_PROTOCOL")}
     # Failed ext transport also leaves Git's remote helper orphaned on runners
     # without a reaping PID1; retain the real lazy-fetch/sentinel control while
     # adopting its local transport descendants in the isolated test harness.
@@ -410,7 +416,8 @@ def test_actual_bootstrap_squash_fresh_clone_and_reuse_refusal(object_format, tm
     repo.git("branch", "-D", BRANCH)
     fresh = tmp_path / "fresh"
     subprocess.run(["git", "clone", "-q", "--single-branch", "--branch", "main", "--no-local", str(repo.path), str(fresh)], check=True)
-    assert subprocess.run(["git", "--no-lazy-fetch", "cat-file", "-e", feature], cwd=fresh, capture_output=True).returncode != 0
+    assert subprocess.run(["git", "cat-file", "-e", feature], cwd=fresh, capture_output=True,
+                          env=dict(os.environ, GIT_NO_LAZY_FETCH="1", GIT_ALLOW_PROTOCOL="/")).returncode != 0
     verified = subprocess.run([sys.executable, MODULE, "verify"], cwd=fresh, capture_output=True, text=True, timeout=10)
     assert verified.returncode == 0, verified.stdout + verified.stderr
     assert json.loads(verified.stdout)["eligible_route"] == "initial-bootstrap"
@@ -753,7 +760,7 @@ def test_actual_repeated_baseline_policy_source_spec_bytes_all_count(tmp_path):
 def test_actual_source_registry_cannot_reclassify_site_out_of_runtime_checks(change, tmp_path):
     repo = Repo(tmp_path / "repo")
     repo.produce_committed()
-    repo.write(REGISTRY, (repo.path / REGISTRY).read_text().replace("| D | " + SITE + " | lib, scripts, tests | |", "| C | " + SITE + " | | |"))
+    repo.write(REGISTRY, (repo.path / REGISTRY).read_text().replace("| D | " + SITE + " | " + SITE_SCOPES + " | |", "| C | " + SITE + " | | |"))
     if change == "committed":
         repo.commit("docs: attempt unsupported SITE reclassification")
     report = json.loads(repo.audit().stdout)
@@ -1297,7 +1304,7 @@ def test_actual_spawn_boundary_deadline_kills_and_reaps_git_group(edge, existing
     git = shutil.which("git")
     child_sentinel = repo.path / "unreaped-git-child"
     launcher = wrapper / "git"
-    launcher.write_text("#!/bin/sh\ncase \" $* \" in\n  *' --version '*)\n"
+    launcher.write_text("#!/bin/sh\ncase \" $* \" in\n  *' config --get-regexp '*)\n"
                         + "    (sleep 2; printf orphan > " + shlex.quote(str(child_sentinel)) + ") &\n"
                         + "    sleep 3\n    ;;\nesac\nexec " + shlex.quote(git) + " \"$@\"\n")
     launcher.chmod(0o755)
@@ -1318,7 +1325,7 @@ original_popen = module.subprocess.Popen
 def popen(argv, *args, **kwargs):
     global armed
     child = original_popen(argv, *args, **kwargs)
-    if "--version" in argv:
+    if "config" in argv and "--get-regexp" in argv:
         children.append(child)
         armed = True
         if edge == "handle":
@@ -1398,3 +1405,157 @@ raise SystemExit(result)
     else:
         assert (repo.path / RECORD).read_bytes() == old
     assert not list((repo.path / RECORD).parent.glob(".source-snapshot-*"))
+
+@pytest.mark.parametrize('missing', SITE_SCOPES.split(', '))
+def test_actual_prior_policy_cannot_remove_protected_site_root(missing, tmp_path):
+    repo = Repo(tmp_path / 'repo')
+    repo.git('checkout', '-q', 'main')
+    policy = (repo.path / REGISTRY).read_text()
+    reduced = ', '.join(p for p in SITE_SCOPES.split(', ') if p != missing)
+    repo.write(REGISTRY, policy.replace(SITE_SCOPES, reduced))
+    repo.base = repo.commit('docs: prior policy removes one actual SITE root')
+    repo.git('update-ref', 'refs/remotes/origin/main', repo.base)
+    repo.git('checkout', '-q', BRANCH)
+    repo.git('merge', '-q', 'main')
+    for action in ('produce', 'verify'):
+        result = repo.cli(action)
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert 'minimum' in json.loads(result.stdout)['reason'], result.stdout
+    audited = repo.audit()
+    assert audited.returncode == 2, audited.stdout + audited.stderr
+    assert 'minimum' in audited.stderr
+
+
+def test_actual_root_shadow_changes_are_not_absent_from_source_identity(tmp_path):
+    repo = Repo(tmp_path / 'repo')
+    repo.produce_committed()
+    repo.write('json.py', "VALUE = 'unexecuted proposed input'\n")
+    repo.commit('feat: root startup slot changes after production')
+    result = repo.cli('verify')
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)['status'] == 'unverified'
+
+
+def test_actual_complete_repository_runs_with_native_git243(tmp_path, monkeypatch):
+    native = os.environ.get('SOURCE_REVIEW_GIT243', shutil.which('git'))
+    shim = tmp_path / 'native-bin'
+    shim.mkdir()
+    (shim / 'git').symlink_to(native)
+    monkeypatch.setenv('PATH', str(shim) + os.pathsep + os.environ['PATH'])
+    if 'SOURCE_REVIEW_GIT243' in os.environ:
+        monkeypatch.setenv('GIT_EXEC_PATH', str(Path(native).parent))
+    repo = Repo(tmp_path / 'repo')
+    repo.produce_committed()
+    assert repo.cli('verify').returncode == 0
+
+
+@pytest.mark.parametrize('key,value', [
+    ('extensions.partialClone', 'fixture'), ('extensions.PARTIALCLONE', ''),
+    ('remote.fixture.promisor', 'true'), ('remote.fixture.PROMISOR', 'false'),
+    ('remote.fixture.promisor', '0'), ('remote.fixture.partialclonefilter', 'blob:none'),
+    ('remote.fixture.PARTIALCLONEFILTER', ''),
+])
+def test_actual_promisor_configuration_refuses_before_object_reads(key, value, tmp_path, monkeypatch):
+    repo = Repo(tmp_path / 'repo')
+    repo.produce_committed()
+    original = (repo.path / RECORD).read_bytes()
+    repo.git('config', key, value)
+    real_git = shutil.which('git')
+    log = tmp_path / 'admission-commands.jsonl'
+    wrappers = tmp_path / 'git-bin'
+    wrappers.mkdir()
+    wrapper = wrappers / 'git'
+    wrapper.write_text('#!' + sys.executable + '\nimport json,os,sys\n'
+                       + 'with open(' + repr(str(log)) + ',"a") as out: out.write(json.dumps(sys.argv[1:])+"\\n")\n'
+                       + 'os.execv(' + repr(real_git) + ',[' + repr(real_git) + ']+sys.argv[1:])\n')
+    wrapper.chmod(0o755)
+    monkeypatch.setenv('PATH', str(wrappers) + os.pathsep + os.environ['PATH'])
+    for action in ('produce', 'verify'):
+        result = repo.cli(action)
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert 'promisor' in json.loads(result.stdout)['reason']
+        assert json.loads(result.stdout)['source_identity_sha256'] is None
+        assert (repo.path / RECORD).read_bytes() == original
+    audited = repo.audit()
+    assert audited.returncode == 2, audited.stdout + audited.stderr
+    assert 'promisor' in audited.stderr
+    commands = [json.loads(line) for line in log.read_text().splitlines()]
+    assert len(commands) == 3
+    assert all('config' in args and '--get-regexp' in args for args in commands), commands
+
+
+@pytest.mark.parametrize('path', ['json.py', 'signal.py', 'json/__init__.py', 'json.pyc',
+                                  'json.so', 'scripts.py', 'yaml.py', '_pytest/__init__.py'])
+def test_actual_proposed_root_import_slot_is_manifested_without_execution(path, tmp_path):
+    repo = bound_note_repo(tmp_path / 'repo')
+    repo.write(path, "UNEXECUTED_SOURCE_INPUT = 1\n")
+    repo.commit('feat: new committed startup input')
+    refused = repo.cli('verify')
+    assert refused.returncode != 0, refused.stdout + refused.stderr
+    preflight = repo.cli('produce')
+    assert preflight.returncode != 0
+    identity = json.loads(preflight.stdout)['source_identity_sha256']
+    assert identity
+    old_record = json.loads((repo.path / RECORD).read_text())
+    repo.write(SITE, (repo.path / SITE).read_text().replace(old_record['source_identity_sha256'], identity))
+    repo.commit('docs: bind actual new startup source input')
+    repo.produce_committed()
+    record = json.loads((repo.path / RECORD).read_text())
+    assert path in {row['path'] for row in record['source_entries']}
+    assert repo.cli('verify').returncode == 0
+
+
+def test_actual_minimum_preserves_additive_watchers(tmp_path):
+    repo = installed_repo(tmp_path / 'repo')
+    repo.git('checkout', '-q', 'main')
+    repo.write(REGISTRY, (repo.path / REGISTRY).read_text().replace(SITE_SCOPES, SITE_SCOPES + ', extra_runtime'))
+    repo.base = repo.commit('docs: add a genuine extra runtime watcher')
+    repo.git('update-ref', 'refs/remotes/origin/main', repo.base)
+    repo.git('checkout', '-q', BRANCH)
+    repo.git('reset', '--hard', repo.base)
+    repo.write(PLAN, (ROOT / PLAN).read_text().replace(SPEC, NOTE_SPEC).replace('pr: 1470', 'pr: 7'))
+    repo.write('extra_runtime/new_input.py', 'EXTRA = 1\n')
+    repo.commit('feat: added runtime root must remain watched')
+    preflight = repo.cli('produce')
+    assert preflight.returncode != 0, preflight.stdout
+    identity = json.loads(preflight.stdout)['source_identity_sha256']
+    assert identity
+    append_note(repo, identity)
+    repo.produce_committed()
+    record = json.loads((repo.path / RECORD).read_text())
+    assert 'extra_runtime' in record['policy']['watch_paths']
+    assert 'extra_runtime/new_input.py' in {row['path'] for row in record['source_entries']}
+    assert repo.cli('verify').returncode == 0
+
+
+@pytest.mark.parametrize('replacement', ['scripts/narrow', 'scriptss', 'platform/apix'])
+def test_actual_policy_minimum_rejects_descendants_and_false_prefixes(replacement, tmp_path):
+    repo = Repo(tmp_path / 'repo')
+    repo.produce_committed()
+    original = (repo.path / RECORD).read_bytes()
+    repo.git('checkout', '-q', 'main')
+    dropped = 'platform/api' if replacement.startswith('platform') else 'scripts'
+    narrowed = ', '.join(replacement if p == dropped else p for p in SITE_SCOPES.split(', '))
+    repo.write(REGISTRY, (repo.path / REGISTRY).read_text().replace(SITE_SCOPES, narrowed))
+    repo.base = repo.commit('docs: earlier narrowed current policy')
+    repo.git('update-ref', 'refs/remotes/origin/main', repo.base)
+    repo.git('checkout', '-q', BRANCH)
+    repo.git('merge', '-q', 'main')
+    for action in ('produce', 'verify'):
+        result = repo.cli(action)
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert 'minimum' in json.loads(result.stdout)['reason']
+        assert (repo.path / RECORD).read_bytes() == original
+
+
+def test_actual_policy_minimum_accepts_true_broader_platform_ancestor(tmp_path):
+    repo = Repo(tmp_path / 'repo')
+    repo.git('checkout', '-q', 'main')
+    broader = 'platform, gcp, lib, scripts, tests'
+    repo.write(REGISTRY, (repo.path / REGISTRY).read_text().replace(SITE_SCOPES, broader))
+    repo.base = repo.commit('docs: true broader platform watcher')
+    repo.git('update-ref', 'refs/remotes/origin/main', repo.base)
+    repo.git('checkout', '-q', BRANCH)
+    repo.git('merge', '-q', 'main')
+    repo.produce_committed()
+    assert repo.cli('verify').returncode == 0

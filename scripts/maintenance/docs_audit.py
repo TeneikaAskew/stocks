@@ -6460,7 +6460,7 @@ def _git_unquote(cell: str) -> str:
         return cell
 
 
-def _touches(status_line: str, paths: list[str]) -> bool:
+def _touches(status_line: str, paths: list[str], import_shadow=None) -> bool:
     """Does this `--name-status` line name one of the declared paths?
 
     Both sides of a rename count: `R100 old.py new.py` is about the declared
@@ -6468,7 +6468,7 @@ def _touches(status_line: str, paths: list[str]) -> bool:
     """
     for cell in status_line.split("\t")[1:]:
         cell = _git_unquote(cell.strip())
-        if any(cell == p or cell.startswith(f"{p}/") for p in paths):
+        if any(cell == p or cell.startswith(f"{p}/") for p in paths) or (import_shadow is not None and import_shadow(cell)):
             return True
     return False
 
@@ -6484,7 +6484,7 @@ def _all_documents(status_line: str, documents: frozenset[str]) -> bool:
 
 
 def drift_commits(out: str, paths: list[str] | None = None,
-                  documents: frozenset[str] | None = None) -> list[str]:
+                  documents: frozenset[str] | None = None, *, import_shadow=None) -> list[str]:
     """Commits in a `--name-status` listing that actually changed content.
 
     A pure rename (`R100`) is not drift; a moved file with an edit (`R096`) is
@@ -6523,16 +6523,18 @@ def drift_commits(out: str, paths: list[str] | None = None,
         # The query may have been widened to a containing directory so rename
         # pairs survive (see check_doc_changed_since); the answer is narrowed
         # back here, so a commit that touched only a sibling file is not drift.
-        if paths is not None and not _touches(line, paths):
+        if paths is not None and not _touches(line, paths, import_shadow):
             continue
         kind, score = status.group(1), status.group(2)
-        if kind in "AMDT" or (kind == "R" and int(score or 100) < 100):
+        import_transition = import_shadow is not None and any(
+            import_shadow(_git_unquote(cell.strip())) for cell in line.split("\t")[1:])
+        if kind in "AMDT" or (kind == "R" and (int(score or 100) < 100 or import_transition)):
             commits[-1] = (commits[-1][0], True)
     return [line for line, drift in commits if drift]
 
 
 def _add_is_a_pure_rename(commit: str, paths: list[str],
-                          cwd: pathlib.Path | None = None) -> bool:
+                          cwd: pathlib.Path | None = None, *, import_shadow=None) -> bool:
     """Was every declared path this commit touched arrived at by a pure move?
 
     Only asked about a commit the scoped log already called drift, so the
@@ -6547,8 +6549,11 @@ def _add_is_a_pure_rename(commit: str, paths: list[str],
     out = run(["git", "-c", "core.quotePath=false",
                "show", "--format=", "--name-status", "-M", commit],
               cwd=cwd or REPO, ok_exit_codes=(128,))
-    touched = [l for l in out.split("\n") if _touches(l, paths)]
+    touched = [l for l in out.split("\n") if _touches(l, paths, import_shadow)]
     if not touched:
+        return False
+    if import_shadow is not None and any(import_shadow(_git_unquote(cell.strip()))
+                                         for line in touched for cell in line.split("\t")[1:]):
         return False
     for line in touched:
         status = _DRIFT_STATUS_RE.match(line)
@@ -6665,7 +6670,7 @@ def _without_marker(text: str) -> str:
 
 def check_changed_since(doc: str, sha: str | None, code_paths: list[str], base_ref: str,
                         *, documents: frozenset[str] | None = None,
-                        cwd: pathlib.Path | None = None) -> list[dict]:
+                        cwd: pathlib.Path | None = None, import_shadow=None) -> list[dict]:
     if not sha or not code_paths:
         return []
     # `git log` exits 0 with empty output when the range holds no commits, so
@@ -6692,6 +6697,8 @@ def check_changed_since(doc: str, sha: str | None, code_paths: list[str], base_r
     # afterwards, so the widened query never widens the answer.
     scopes = sorted({p if not posixpath.splitext(p)[1] else (posixpath.dirname(p) or ".")
                      for p in code_paths})
+    if import_shadow is not None:
+        scopes = ["."]
     # `-c core.quotePath=false`: git C-quotes any path with a non-ASCII byte,
     # so modifying `src/caf\u00e9.py` emits `M\t"src/caf\\303\\251.py"` and
     # `_touches` compared that escaped spelling against the decoded registry
@@ -6707,7 +6714,8 @@ def check_changed_since(doc: str, sha: str | None, code_paths: list[str], base_r
                # with a symlink changed the surface and queued no review.
                "--diff-filter=AMDRT", f"{sha}..{base_ref}", "--"] + scopes,
               cwd=cwd or REPO)
-    commits = drift_commits(out, code_paths, documents)
+    commits = (drift_commits(out, code_paths, documents, import_shadow=import_shadow)
+               if import_shadow is not None else drift_commits(out, code_paths, documents))
     # The directory scope keeps a rename pair intact only while both sides
     # share a parent. A file moved BETWEEN directories, with the registry
     # updated to the new path, leaves the old side outside every scope, so git
@@ -6716,7 +6724,7 @@ def check_changed_since(doc: str, sha: str | None, code_paths: list[str], base_r
     # path limit: cost scales with the suspicious answer rather than the tree.
     if commits:
         commits = [c for c in commits
-                   if not _add_is_a_pure_rename(c.split("\t", 1)[0], code_paths, cwd)]
+                   if not _add_is_a_pure_rename(c.split("\t", 1)[0], code_paths, cwd, import_shadow=import_shadow)]
     if not commits:
         return []
     return [{"check": "changed-since", "doc": doc,
@@ -7511,6 +7519,7 @@ def main(argv: list[str] | None = None) -> int:
         raise AuditError("committed-source repository admission failed: " + str(exc)) from exc
     os.environ["GIT_NO_LAZY_FETCH"] = "1"
     os.environ["GIT_NO_REPLACE_OBJECTS"] = "1"
+    os.environ["GIT_ALLOW_PROTOCOL"] = "/"
     source_identities = {}
     base_ref = resolve_base_ref()
     # --short alone honours core.abbrev, which can be set below 7:
@@ -7526,6 +7535,7 @@ def main(argv: list[str] | None = None) -> int:
     # is exit 2 before anything is written.
     head = resolve_marker_sha(args.since, base_ref)
     trusted_site_classification = None
+    site_import_shadow = None
     try:
         source_commit = repository_guard.commit(base_ref)
         if protocol.SITE in repository_guard.tree(source_commit):
@@ -7534,6 +7544,10 @@ def main(argv: list[str] | None = None) -> int:
             trusted_site_classification = classify(protocol.SITE, policy_registry)
             if trusted_site_classification[0] != "D" or classification_is_ambiguous(protocol.SITE, policy_registry):
                 raise protocol.Unavailable("trusted SITE watcher policy is unavailable")
+            protocol.validate_site_policy(trusted_site_classification)
+            gate = protocol.trusted_module("_audit_import_scope_gate", "scripts/gate/spec_gate.py", repository_guard.budget)
+            source_tree = repository_guard.tree(source_commit)
+            site_import_shadow = lambda path: gate.source_import_shadow(path, present=source_tree)
     except (protocol.Unavailable, OSError, ValueError, subprocess.SubprocessError) as exc:
         raise AuditError("trusted SITE watcher policy could not be read: " + str(exc)) from exc
 
@@ -7854,7 +7868,8 @@ def main(argv: list[str] | None = None) -> int:
                                  "detail": "incomplete provenance: " + "; ".join(missing)})
             if measurable:
                 drift = check_changed_since(doc, info["sha"], code_paths,
-                                            base_ref, documents=_documents)
+                                            base_ref, documents=_documents,
+                                            import_shadow=site_import_shadow if doc == protocol.SITE else None)
                 # And the document itself, which the code-path query cannot
                 # see -- and which is the ONLY drift signal a registry row
                 # with no declared code paths has.
@@ -8016,7 +8031,8 @@ def main(argv: list[str] | None = None) -> int:
             # work. Runs the same diff check_changed_since runs, so the guard
             # and the check it protects cannot disagree about what drift is.
             if reviewed and head != base_ref and check_changed_since(
-                    doc, head, list(code_paths), base_ref, documents=_documents):
+                    doc, head, list(code_paths), base_ref, documents=_documents,
+                    import_shadow=site_import_shadow if doc == protocol.SITE else None):
                 stamp_refusals[doc] = "code-drift-since-baseline"
                 continue
             # And the baseline has to SURVIVE the merge. This repository

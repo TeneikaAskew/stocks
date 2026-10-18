@@ -45,6 +45,10 @@ SOURCE_REVIEW_PROTECTED = (
     "scripts/__init__.py", "scripts/maintenance/__init__.py", "scripts/gate/__init__.py",
     "tests/__init__.py", "tests/scripts/__init__.py", "tests/conftest.py", "tests/scripts/conftest.py",
     "scripts/maintenance/json.py", "scripts/maintenance/json/__init__.py", "scripts/json.py",
+    "json.py", "signal.py", "json/__init__.py", "scripts.py", "tests.py",
+    "json.pyc", "json/__init__.pyc", "json.so", "json.abi3.so",
+    "yaml.py", "yaml/__init__.py", "pytest.py", "pytest/__init__.py",
+    "scripts/maintenance/json.pyc", "scripts/maintenance/json.so", "tests/scripts/json.pyc",
 )
 
 CATALOG_TEXT = """\
@@ -3806,3 +3810,28 @@ def test_chained_exits_quoted_hashes_and_headings_beside_rows_are_the_contract(r
     with_heading = row_only + f"\n### FEAT-MODEL-001\n\n- Status: Production\n- Last reviewed: {TODAY}\n- PRs: #42\n"
     r = pr(repo, BRANCH, {**job, CATALOG: with_heading}, **title, PR_BODY=body(ticked=True) + "\n\n## Capacity\nn/a: x\n")
     assert r.returncode == 1 and "adds a second heading or row" in r.stdout, r.stdout
+
+
+def test_root_namespace_application_stays_owned_by_its_actual_feature(repo):
+    catalog = CATALOG_TEXT.replace('| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |',
+                                   '| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |\n| FEAT-CICD-001 | Delivery | Production | unknown | none |')
+    on_base(repo, {CATALOG: catalog})
+    accepted = pr(repo, BRANCH, {'platform/api/ordinary.py': 'VALUE = 1\n'},
+                  PR_TITLE='FEAT-MODEL-001: namespace application input', PR_DRAFT='true')
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    refused = pr(repo, BRANCH, {'platform/__init__.py': '# regular package transition\n'},
+                 PR_TITLE='FEAT-MODEL-001: effective package transition', PR_DRAFT='true')
+    assert refused.returncode == 1 and 'belong to FEAT-CICD-001' in refused.stdout
+
+
+def test_existing_root_regular_package_child_is_process_input_on_both_sides(repo):
+    catalog = CATALOG_TEXT.replace('| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |',
+                                   '| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |\n| FEAT-CICD-001 | Delivery | Production | unknown | none |')
+    on_base(repo, {CATALOG: catalog, 'json/__init__.py': '# actual regular package\n',
+                   'json/decoder.py': 'VALUE = 1\n'})
+    refused = pr(repo, BRANCH, {'json/decoder.py': 'VALUE = 2\n'},
+                 PR_TITLE='FEAT-MODEL-001: transitive startup input', PR_DRAFT='true')
+    assert refused.returncode == 1 and 'belong to FEAT-CICD-001' in refused.stdout
+    removed = pr(repo, BRANCH, {'json/__init__.py': None, 'json/decoder.py': 'VALUE = 3\n'},
+                 PR_TITLE='FEAT-MODEL-001: package removal remains process input', PR_DRAFT='true')
+    assert removed.returncode == 1 and 'belong to FEAT-CICD-001' in removed.stdout

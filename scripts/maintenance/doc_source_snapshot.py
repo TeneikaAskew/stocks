@@ -40,6 +40,8 @@ PLAIN_MARKER = re.compile(
 INITIAL_FILES = frozenset((MODULE, "scripts/maintenance/docs_audit.py", "scripts/gate/spec_gate.py",
                           "tests/scripts/test_doc_source_snapshot.py", "tests/scripts/test_docs_audit.py",
                           "tests/scripts/test_spec_gate.py"))
+MINIMUM_SITE_SCOPES = ("platform/api", "platform/deploy.sh", "platform/Dockerfile",
+                       "gcp", "lib", "scripts", "tests")
 CONTEXT = "implementation-source identity matched; external CODE review under existing rules; rollout pending"
 NOTE_HEADING = "## Implementation-source notes"
 NOTE_HEADER = "| FEAT | Component | Backend source and tests (implementation only; rollout pending) |"
@@ -159,6 +161,17 @@ def watched(path: str, scopes: list[str]) -> bool:
     return any(path == scope or path.startswith(scope + "/") for scope in scopes)
 
 
+def validate_site_policy(classification):
+    cls, paths, _ = classification
+    if cls != "D" or not paths or any(not repo_path(p) for p in paths):
+        raise Unavailable("unsupported SITE watcher policy")
+    if not all(watched(required, paths) for required in MINIMUM_SITE_SCOPES):
+        raise Unavailable("trusted SITE watcher policy omits protected minimum coverage")
+    if watched(SITE, paths) or watched(RECORD, paths):
+        raise Unavailable("SITE/sidecar cannot participate in the source hash")
+    return sorted(set(paths), key=lambda p: p.encode("utf-8"))
+
+
 def trusted_module(name: str, file: str, budget=None):
     expected = ROOT / file
     if expected.is_symlink() or expected.resolve() != expected or not expected.is_file():
@@ -258,12 +271,16 @@ class Git:
     def __init__(self, repo: Path, budget: Budget):
         self.repo = repo
         self.budget = budget
-        self.env = dict(os.environ, GIT_NO_REPLACE_OBJECTS="1", GIT_NO_LAZY_FETCH="1")
+        # Git2.43 lacks both the global no-lazy-fetch option and its environment
+        # equivalent. Refuse every promisor configuration before object reads;
+        # additionally deny all usable transports for every child. An empty
+        # whitelist admits the empty remote helper; '/' cannot name an
+        # executable git-remote-/ helper. Modern Git also suppresses lazy fetch.
+        self.env = dict(os.environ, GIT_NO_REPLACE_OBJECTS="1", GIT_NO_LAZY_FETCH="1", GIT_ALLOW_PROTOCOL="/")
         self.metadata = {}
         self.listings = {}
         self.contents = {}
-        self.command(["--no-lazy-fetch", "--version"], guarded=False)
-        if self.command(["config", "--get-regexp", r"^(extensions\.partial[Cc]lone|remote\..*\.promisor)$"], allowed=(0, 1)):
+        if self.command(["config", "--get-regexp", r"^(extensions\.partialclone|remote\..*\.(promisor|partialclonefilter))$"], allowed=(0, 1)):
             raise Unavailable("partial-clone or promisor repository configuration is unavailable")
         metadata = text(self.command(["rev-parse", "--git-path", "objects/pack", "--git-path", "info/grafts",
                                       "--is-shallow-repository", "--show-object-format"])).splitlines()
@@ -291,7 +308,7 @@ class Git:
 
     def command(self, args, *, data: bytes | None = None, allowed=(0,), guarded=True, return_code=False):
         self.budget.remaining()
-        argv = ["git"] + (["--no-lazy-fetch", "-c", "core.quotePath=false"] if guarded else []) + list(args)
+        argv = ["git"] + (["-c", "core.quotePath=false"] if guarded else []) + list(args)
         proc = None
         sel = None
         buffers = {"out": bytearray(), "err": bytearray()}
@@ -467,7 +484,9 @@ class Git:
         return values
 
     def manifest(self, ref: str, scopes: list[str]) -> list[dict]:
-        rows = [row for path, row in self.tree(ref).items() if watched(path, scopes)]
+        tree = self.tree(ref)
+        rows = [row for path, row in tree.items() if watched(path, scopes)
+                or self.import_shadow(path, tree)]
         if len(rows) > self.budget.max_entries:
             raise Unavailable("manifest entry ceiling exceeded")
         if any(row["mode"] not in ("100644", "100755") or row["type"] != "blob" for row in rows):
@@ -582,6 +601,7 @@ class Snapshot:
             self.git = Git(Path(repo), self.budget)
             self.audit = trusted_module("_source_snapshot_audit", "scripts/maintenance/docs_audit.py", self.budget)
             self.gate = trusted_module("_source_snapshot_gate", "scripts/gate/spec_gate.py", self.budget)
+            self.git.import_shadow = lambda path, present: self.gate.source_import_shadow(path, present=present)
 
     def policy(self, policy_ref: str, source_ref: str, *, require_source_equal=True):
         raw = self.git.blob(policy_ref, REGISTRY)
@@ -592,12 +612,7 @@ class Snapshot:
         registry = self.registry(row["blob_oid"], raw)
         if self.audit.classification_is_ambiguous(SITE, registry):
             raise Unavailable("ambiguous SITE watcher policy")
-        cls, paths, _ = self.audit.classify(SITE, registry)
-        if cls != "D" or not paths or any(not repo_path(p) for p in paths):
-            raise Unavailable("unsupported SITE watcher policy")
-        paths = sorted(set(paths), key=lambda p: p.encode("utf-8"))
-        if watched(SITE, paths) or watched(RECORD, paths):
-            raise Unavailable("SITE/sidecar cannot participate in the source hash")
+        paths = validate_site_policy(self.audit.classify(SITE, registry))
         policy = {"registry_path": REGISTRY, "registry_blob_oid": row["blob_oid"],
                   "registry_mode": "100644", "registry_type": "blob", "document_path": SITE,
                   "watch_paths": paths}
@@ -649,7 +664,8 @@ class Snapshot:
                        "policy_identity_sha256": policy["policy_identity_sha256"], "source_entries": entries})
 
     def admitted_manifests(self, source, baseline, scopes):
-        self.budget.entries = sum(watched(path, scopes) for ref in (source, baseline) for path in self.git.tree(ref))
+        self.budget.entries = sum(watched(path, scopes) or self.git.import_shadow(path, self.git.tree(ref))
+                                  for ref in (source, baseline) for path in self.git.tree(ref))
         if self.budget.entries > self.budget.max_entries:
             raise Unavailable("combined current/baseline entry ceiling exceeded")
         return self.git.manifest(source, scopes), self.git.manifest(baseline, scopes)
@@ -769,7 +785,9 @@ class Snapshot:
         # The whole range keeps both sides of cross-directory pure renames.
         history = text(self.git.command(["log", "--no-ext-diff", "--format=%H%x09%s", "--name-status", "-M",
                                         "--diff-filter=AMDRT", f"{against}..{source}", "--"]))
-        if self.audit.drift_commits(history, policy["watch_paths"], documents):
+        shadow = lambda path: (self.git.import_shadow(path, self.git.tree(source))
+                               or self.git.import_shadow(path, self.git.tree(against)))
+        if self.audit.drift_commits(history, policy["watch_paths"], documents, import_shadow=shadow):
             return False
         # Source drift already refuses this conjunction. Normalize complete
         # bodies only when the original source question could be terminal.
@@ -777,6 +795,9 @@ class Snapshot:
         if self.body(against)[1] != self.body_hash:
             return False
         entries, old_entries = self.admitted_manifests(source, against, policy["watch_paths"])
+        if ([row for row in entries if self.git.import_shadow(row["path"], self.git.tree(source))]
+                != [row for row in old_entries if self.git.import_shadow(row["path"], self.git.tree(against))]):
+            return False
         self.source_hash = self.source_identity(entries, policy)
         self.route = "terminal-ordinary"
         self.budget.remaining()
@@ -784,8 +805,9 @@ class Snapshot:
 
     def eligibility(self, baseline, current, source, policy, changed, old_body_raw, body_raw, record):
         scopes = policy["watch_paths"]
-        scoped = {path for path in changed if watched(path, scopes)}
         before_tree, after_tree = self.git.tree(baseline), self.git.tree(source)
+        scoped = {path for path in changed if watched(path, scopes)
+                  or self.git.import_shadow(path, before_tree) or self.git.import_shadow(path, after_tree)}
         bootstrap = (MODULE not in before_tree and MODULE in after_tree and scoped and scoped <= INITIAL_FILES
                      and body_raw == old_body_raw and (baseline != current or MODULE not in self.git.tree(current)))
         doc_pending = (not scoped and set(changed) and set(changed) <= {SITE, RECORD}
