@@ -3898,10 +3898,6 @@ def document_refusal(doc: str, base: Tree, tree: Tree, inv: types.ModuleType, cg
     if [b[0] for b in was_blocks] != [b[0] for b in now_blocks]:
         return (f"marker lines: the blocks appear in another order than on main "
                 f"({', '.join(b[0] for b in now_blocks)} against {', '.join(b[0] for b in was_blocks)})")
-    if [line for _, line in was] != [line for _, line in now]:
-        i = next((i for i, (a, b) in enumerate(zip(was, now)) if a[1] != b[1]), min(len(was), len(now)))
-        n = now[i][0] if i < len(now) else len(after.split(b"\n"))
-        return f"changes line {n} outside its inventory blocks"
     for name, body in now_blocks:
         if CLEAN_BYTES.search(b"\n".join(body)):
             return f"inventory:{name} carries a carriage return, NUL, U+0085, U+2028 or U+2029, which the docs test reads past"
@@ -4015,12 +4011,14 @@ def first_difference(current: str, fresh: str) -> str:
 
 
 def render_inventory(tree: str, docs: list[str]) -> int:
-    """The child (RENDER_MODE): main's renderer over `tree`, the pull request's files. Prints one
-    `doc<TAB>block<TAB>first difference` line per block that differs from main's render of it, read two ways
-    from one _block_bodies call (calling differing_blocks as well rendered every block twice: 40 s became 72 s
-    on main's tree): as differing_blocks reads it (current != fresh, the docs test's rule), and as the exact
-    body between its exact marker lines (red-team round 1: differing_blocks ends a block at the first end
-    marker, even one that only begins a line, so it passed a hand-written row behind such a line)."""
+    """Actual isolated child: complete trusted output from BASE prose and committed HEAD source.
+
+    The parent has replaced only output-document inputs with BASE bytes. Submitted bytes arrive on stdin;
+    they never seed the render. Exact structural rules were already checked before materialization.
+    """
+    submitted = {doc: bytes.fromhex(raw) for doc, raw in json.load(sys.stdin).items()}
+    if set(submitted) != set(docs):
+        raise ValueError("submitted document set differs from requested documents")
     sys.path.insert(0, str(ROOT))
     inv = importlib.import_module("scripts.maintenance.doc_inventory")
     cgd = importlib.import_module("scripts.maintenance.check_generated_docs")
@@ -4037,19 +4035,27 @@ def render_inventory(tree: str, docs: list[str]) -> int:
         repo = inv.repo_inventory(at)
         differs = []
         for doc in docs:
-            bodies = inv._block_bodies(at / doc, repo, live, at)
-            found = {name: first_difference(current, body) for name, current, body, _pattern in bodies if current != body}
-            fresh = {name: body for name, _current, body, _pattern in bodies}
+            inv.insert_blocks(at / doc, repo, live, root=at, counts=True)
+            fresh = (at / doc).read_bytes()
+            current = submitted[doc]
+            if current == fresh:
+                continue
             names = tuple(cgd.EXPECTED_MARKERS[doc])
-            _outside, blocks = split_inventory((at / doc).read_bytes(), names, inv.MARKER_START, inv.MARKER_END, cgd._MARKER_LINE)
-            for name, body in blocks:
-                exact = b"\n".join(body).decode("utf-8", "replace")
-                if name not in found and exact != fresh.get(name):
-                    found[name] = first_difference(exact, fresh.get(name, "<not rendered>"))
-            differs += [(doc, name, diff) for name, diff in found.items()]
+            old_outside, old_blocks = split_inventory(current, names, inv.MARKER_START, inv.MARKER_END, cgd._MARKER_LINE)
+            new_outside, new_blocks = split_inventory(fresh, names, inv.MARKER_START, inv.MARKER_END, cgd._MARKER_LINE)
+            fresh_blocks = dict(new_blocks)
+            found = [(doc, name, first_difference(b"\n".join(body).decode("utf-8"),
+                                                 b"\n".join(fresh_blocks[name]).decode("utf-8")))
+                     for name, body in old_blocks if body != fresh_blocks[name]]
+            if not found:
+                i = next((i for i, (a, b) in enumerate(zip(old_outside, new_outside)) if a[1] != b[1]),
+                         min(len(old_outside), len(new_outside)))
+                n = old_outside[i][0] if i < len(old_outside) else len(current.split(b"\n"))
+                found = [(doc, "document", f"changes line {n} outside its inventory blocks; " +
+                          first_difference(current.decode("utf-8"), fresh.decode("utf-8")))]
+            differs += found
     except Exception as e:
-        # Reported here, one line: Python's traceback printer reads source lines through linecache, and the fence
-        # ends the child on that open (a SyntaxError's "<unknown>"), which would name a read, not the failure.
+        # Traceback formatting would open trusted source outside the read fence; report one controlled line.
         os.write(2, f"{type(e).__name__}: {e}\n".encode("utf-8", "replace"))
         return RENDER_FAILED
     for doc, name, diff in differs:
@@ -4058,7 +4064,7 @@ def render_inventory(tree: str, docs: list[str]) -> int:
     return RENDER_DIFFERS if differs else 0
 
 
-def render_refusals(entries: list[tuple[str, str, str]], docs: list[str]) -> list[str]:
+def render_refusals(entries: list[tuple[str, str, str]], docs: list[str], base_docs: dict[str, bytes]) -> list[str]:
     """[] when main's renderer, run over the head tree written to a temporary directory, renders every block of
     `docs` exactly as committed; otherwise why not."""
     every = ", ".join(docs)
@@ -4068,11 +4074,14 @@ def render_refusals(entries: list[tuple[str, str, str]], docs: list[str]) -> lis
         cwd.mkdir()
         try:
             materialize(entries, tree)
+            submitted = {doc: (tree / doc).read_bytes().hex() for doc in docs}
+            for doc in docs:
+                (tree / doc).write_bytes(base_docs[doc])
         except (OSError, ValueError, GitFailed) as e:
             # (red-team round 1: a name the filesystem cannot hold crashed the gate with a traceback)
             return [generated_refusal(every, f"the head tree cannot be written out ({e})")]
         r = subprocess.run([sys.executable, "-I", "-B", str(pathlib.Path(__file__).resolve()), RENDER_MODE, str(tree), *docs],
-                           cwd=cwd, capture_output=True, encoding="utf-8", errors="replace")
+                           input=json.dumps(submitted), cwd=cwd, capture_output=True, encoding="utf-8", errors="replace")
     last = (r.stderr.strip().splitlines() or ["no output"])[-1]
     if r.returncode == 0:
         return []
@@ -4106,7 +4115,7 @@ def generated_doc_refusals(ch: Change, merge_base: str, head: str, docs: list[st
         return [generated_refusal(", ".join(docs), f"the head tree cannot be listed ({e})")]
     if why := tree_refusal(entries):
         return [generated_refusal(", ".join(docs), f"the head tree holds {why}; the render reads plain files only")]
-    return render_refusals(entries, docs)
+    return render_refusals(entries, docs, {doc: base.raw(doc) for doc in docs})
 
 
 def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str, traced: Traced | None = None) -> list[str]:

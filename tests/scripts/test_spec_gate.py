@@ -4345,3 +4345,54 @@ def test_inventory_budget_observer_keeps_cicd_ownership(repo):
     owner = pr(repo, ci_branch, payload, PR_TITLE="FEAT-CICD-001: observer", PR_BODY=body(spec_path=ci_spec, plan_path=ci_plan))
     assert unrelated.returncode == 1 and "belong to FEAT-CICD-001" in unrelated.stdout, unrelated.stdout
     assert owner.returncode == 0, owner.stdout + owner.stderr
+
+
+def complete_inventory_case(root: Path) -> dict[str, str]:
+    """Real BASE prose with old counter/date shapes; unchanged renderer supplies every expected byte."""
+    prose = ("\nDeclared: 999 runtime-created relations (999 tables, 999 materialized views, 999 views).\n"
+             "Live 2001-02-03; read on **2001-02-03**; from the 2001-02-03 live snapshot.\n"
+             "Historical correction: 2001-02-03. Neighbor: unchanged.\n")
+    on_base(root, {d: _git(root, 'show', f'base:{d}') + prose for d in GENERATED})
+    change(root, BRANCH, {MAIN_PY: moved_main(),
+                          'gcp/schema.sql': RENDER_SOURCE['gcp/schema.sql'] + '\nCREATE TABLE new_observations (id INTEGER);\n'}, then=render)
+    return {p: (root / p).read_text(encoding='utf-8') for p in (MAIN_PY, 'gcp/schema.sql', *GENERATED)}
+
+
+def test_complete_inventory_renders_from_merge_base_prose(inventory_repo):
+    """Full actual trusted output allows only BASE counter/asof shapes plus fresh HEAD source citations."""
+    if RENDERER_HERE:
+        root, _moved = inventory_repo
+        expected = complete_inventory_case(root)
+        assert all('999 runtime-created relations' not in expected[d] and '999 tables' not in expected[d]
+                   and 'Live 2001-02-03' not in expected[d] and 'Historical correction: 2001-02-03.' in expected[d]
+                   for d in GENERATED), expected
+        r = pr(root, BRANCH, expected, **DOCS_OK)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert set(_git(root, 'diff', '--name-only', 'base', 'HEAD').splitlines()) == {MAIN_PY, 'gcp/schema.sql', *GENERATED}
+
+
+def test_complete_inventory_refuses_non_renderer_prose(inventory_repo):
+    """Each refused head differs from the actual accepted full render in exactly its named condition."""
+    if RENDERER_HERE:
+        root, _moved = inventory_repo
+        expected = complete_inventory_case(root)
+        text = expected[API_DOC]
+        import re
+        total = re.search(r'\d+ runtime-created relations', text).group(0)
+        breakdown = re.search(r'\(\d+ tables?, \d+ materialized views?, \d+ views?\)', text).group(0)
+        live = re.search(r'Live \d{4}-\d{2}-\d{2}', text).group(0)
+        cases = {
+            'wrong total': edit(text, total, '999 runtime-created relations'),
+            'wrong breakdown': edit(text, breakdown, '(999 tables, 999 materialized views, 999 views)'),
+            'wrong snapshot date': edit(text, live, 'Live 2001-02-03'),
+            'neighbor': edit(text, 'Neighbor: unchanged.', 'Neighbor: changed.'),
+            'historical date': edit(text, 'Historical correction: 2001-02-03.', 'Historical correction: 2002-03-04.'),
+            'new count pattern': text + '\n999 runtime-created relations\n',
+            'new asof pattern': text + '\nLive 2001-02-03\n',
+            'same-valued new pattern': text + '\n' + total + '\n' + live + '\n',
+        }
+        control = pr(root, BRANCH, expected, **DOCS_OK)
+        results = {name: pr(root, BRANCH, {**expected, API_DOC: changed}, **DOCS_OK) for name, changed in cases.items()}
+        assert control.returncode == 0, control.stdout + control.stderr
+        assert all(refused(r, "differs from main's render") for r in results.values()), {
+            name: r.stdout + r.stderr for name, r in results.items() if not refused(r, "differs from main's render")}
