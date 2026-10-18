@@ -1251,6 +1251,15 @@ def git_out(*args: str) -> str:
     return r.stdout
 
 
+def git_bytes(*args: str) -> bytes:
+    """stdout of a git command that must succeed, undecoded: text mode reads a lone carriage return as a line break."""
+    r = subprocess.run(["git", "-c", "core.quotePath=false", *args], capture_output=True, cwd=ROOT)
+    if r.returncode != 0:
+        raise GitFailed(f"git {' '.join(args[:2])} failed ({r.returncode}): "
+                        f"{r.stderr.decode('utf-8', 'replace').strip() or 'no output'}; refusing to pass on a diff the gate could not compute")
+    return r.stdout
+
+
 def catalog_ids(text: str | None) -> set[str]:
     """FEAT-IDs from the first cell of the catalog's table rows. A FEAT-ID mentioned
     anywhere else (prose, a link, a comment) is not a catalog entry."""
@@ -3560,27 +3569,46 @@ def check_capacity(body: str | None, changed: list[str]) -> list[str]:
     return []
 
 
+def lines_of(text: str) -> list[str]:
+    """text's lines as git numbers them: split on "\\n" alone, so index i is git's line i + 1. splitlines() also
+    breaks at a lone carriage return, U+2028 and U+0085, where git does not."""
+    return text.split("\n")
+
+
 def changed_lines(merge_base: str, head: str, path: str) -> list[tuple[str, int, str]]:
     """("-", line in base, text) for every line the change removes from path and
-    ("+", line in head, text) for every line it adds."""
-    out, old, new = [], 0, 0
-    for line in git_out("diff", "-U0", merge_base, head, "--", path).splitlines():
-        hunk = re.match(r"^@@ -(\d+)(?:,\d+)? \+(\d+)", line)
+    ("+", line in head, text) for every line it adds, numbered as git numbers them.
+    The diff is read as bytes and split on "\\n" alone; `---` and `+++` are file headers only before the
+    first hunk, so a content line that begins with them is still a changed line. Context lines are counted:
+    -U0 asks for none, but diff.interHunkContext and GIT_DIFF_OPTS add them, and diff.suppressBlankEmpty
+    prints a blank one empty (red-team round 1). A diff of path with no text hunk (binary, a NUL, a mode
+    change) raises: the gate reads every changed line, never none."""
+    out, old, new, hunks = [], 0, 0, 0
+    diff = git_bytes("diff", "--no-color", "--no-ext-diff", "--no-textconv", "-U0", merge_base, head, "--", path)
+    for line in diff.split(b"\n"):
+        hunk = re.match(rb"^@@ -(\d+)(?:,\d+)? \+(\d+)", line)
         if hunk:
-            old, new = int(hunk.group(1)), int(hunk.group(2))
-        elif line.startswith("-") and not line.startswith("---"):
-            out.append(("-", old, line[1:]))
+            old, new, hunks = int(hunk.group(1)), int(hunk.group(2)), hunks + 1
+        elif not hunks or line.startswith(b"\\"):
+            continue   # a header before the first hunk, or "\ No newline at end of file"
+        elif line.startswith(b"-"):
+            out.append(("-", old, line[1:].decode("utf-8", "replace")))
             old += 1
-        elif line.startswith("+") and not line.startswith("+++"):
-            out.append(("+", new, line[1:]))
+        elif line.startswith(b"+"):
+            out.append(("+", new, line[1:].decode("utf-8", "replace")))
             new += 1
+        else:   # a context line, " " or, under diff.suppressBlankEmpty, ""
+            old, new = old + 1, new + 1
+    if not hunks:
+        raise GitFailed(f"git diff of {path} shows no text hunk (a binary file, a NUL byte or a mode-only change); "
+                        "the gate reads every changed line and refuses to pass on none")
     return out
 
 
 def feat_span(text: str, feat_id: str) -> set[int]:
     """1-based line numbers that belong to feat_id in a product document: its table rows,
     and every section whose heading names it, up to the next heading of that level or higher."""
-    lines = text.splitlines()
+    lines = lines_of(text)
     span: set[int] = set()
     level = None
     for n, line in enumerate(lines, 1):
@@ -3597,12 +3625,12 @@ def feat_span(text: str, feat_id: str) -> set[int]:
 
 def heading_levels(text: str, feat_id: str) -> list[int]:
     """The levels of the headings naming the FEAT, in order."""
-    return [len(h.group(1)) for line in text.splitlines() if (h := HEADING.match(line)) and feat_id in FEAT_IDS.findall(line)]
+    return [len(h.group(1)) for line in lines_of(text) if (h := HEADING.match(line)) and feat_id in FEAT_IDS.findall(line)]
 
 
 def feat_headings(text: str, feat_id: str) -> tuple[int, int]:
     """(headings naming the FEAT, table rows keyed by it): one record, one of each."""
-    lines = text.splitlines()
+    lines = lines_of(text)
     return (sum(1 for line in lines if HEADING.match(line) and feat_id in FEAT_IDS.findall(line)),
             sum(1 for line in lines if (m := FEAT_ROW.match(line)) and m.group(1) == feat_id))
 
@@ -3771,7 +3799,9 @@ def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str, tr
             errs.append(f"{path} changes in this feature change; requirements change on their own docs/ branch, "
                         "before the work that cites them")
         elif path in (CATALOG, TRACEABILITY):
-            before_text, after_text = Tree(merge_base).read(path) or "", ch.tree.read(path) or ""
+            # LF alone numbers raw Git blob lines; text-mode Tree.read folds lone CR.
+            before_text = (Tree(merge_base).raw(path) or b"").decode("utf-8", "replace")
+            after_text = (ch.tree.raw(path) or b"").decode("utf-8", "replace")
             had, has = feat_headings(before_text, feat_id), feat_headings(after_text, feat_id)
             if any(before and after > before for before, after in zip(had, has)) or (any(had) and has[0] > had[0]):
                 # solyra#72 r4127814359: a heading added beside an existing row would carry the Status and
@@ -3910,7 +3940,7 @@ def feat_record(text: str | None, feat_id: str) -> str:
     """The FEAT's catalog record as rendered: its section where the catalog has one
     (stocks) and its table rows (solyra); what a close-out must change."""
     shown = visible(text or "")
-    lines = shown.splitlines()
+    lines = lines_of(shown)
     section = [lines[ln - 1] for ln in section_of(shown, feat_id) if ln <= len(lines)]
     rows = [line for line in lines if line.startswith("|") and feat_id in FEAT_IDS.findall(line)]
     return "\n".join(section + rows)
@@ -3920,7 +3950,7 @@ def repeated_fields(text: str | None, feat_id: str) -> list[str]:
     """Close-out fields that appear more than once in the FEAT's record table: the record
     would carry two values and the gate would read the last (stocks#1205 r4120381488)."""
     text = visible(text or "")
-    lines = text.splitlines()
+    lines = lines_of(text)
     seen: list[str] = []
     for ln in section_of(text, feat_id):
         row = cells(lines[ln - 1]) if lines[ln - 1].startswith("|") else []
@@ -3934,7 +3964,7 @@ def feat_fields(text: str | None, feat_id: str) -> dict[str, str]:
     record has one (stocks), otherwise from its catalog row's columns (solyra).
     Read as rendered: a row inside an HTML comment or a code block is not a field."""
     text = visible(text or "")
-    lines = text.splitlines()
+    lines = lines_of(text)
     fields = {}
     for ln in section_of(text, feat_id):
         row = cells(lines[ln - 1]) if lines[ln - 1].startswith("|") else []
@@ -3945,22 +3975,10 @@ def feat_fields(text: str | None, feat_id: str) -> dict[str, str]:
     return {h: v for h, v in row_fields(text, feat_id).items() if h in CLOSE_OUT_FIELDS}
 
 
-def added_lines(merge_base: str, head: str, path: str) -> list[tuple[int, str]]:
-    """(line number in head, text) for every line the PR adds to path."""
-    out, lineno = [], 0
-    for line in git_out("diff", "-U0", merge_base, head, "--", path).splitlines():
-        hunk = re.match(r"^@@ -\S+ \+(\d+)", line)
-        if hunk:
-            lineno = int(hunk.group(1))
-        elif line.startswith("+") and not line.startswith("+++"):
-            out.append((lineno, line[1:]))
-            lineno += 1
-    return out
-
 
 def section_of(text: str, feat_id: str) -> range:
     """Line numbers (1-based) of the section whose heading names feat_id."""
-    lines = text.splitlines()
+    lines = lines_of(text)
     for i, line in enumerate(lines):
         h = HEADING.match(line)
         if h and feat_id in FEAT_IDS.findall(line):
@@ -3975,7 +3993,7 @@ def lineage_refs(text: str, feat_id: str) -> set[str]:
     """The PR entries in the FEAT's traceability section as rendered: each `**PR lineage:**`
     line or list item in the visible section, so a `<!-- #N -->` is not an entry."""
     shown = visible(text)
-    lines = shown.splitlines()
+    lines = lines_of(shown)
     return {line.strip() for ln in section_of(shown, feat_id)
             if ln <= len(lines) and re.match(r"^\s*(\*\*PR lineage:\*\*|[-*]\s)", (line := lines[ln - 1]))}
 

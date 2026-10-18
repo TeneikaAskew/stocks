@@ -13,7 +13,10 @@ finding gives.
 """
 from __future__ import annotations
 
+import ast
 import datetime
+import importlib.util
+import types
 import json
 import os
 import subprocess
@@ -200,7 +203,7 @@ def on_base(repo: Path, files: dict[str, str | None]) -> None:
     _git(repo, "tag", "-f", "base")
 
 
-def pr(repo: Path, branch: str, files: dict[str, str | None], **env: str) -> subprocess.CompletedProcess:
+def pr(repo: Path, branch: str, files: dict[str, str | None], then=None, **env: str) -> subprocess.CompletedProcess:
     """A pull request from `branch`, cut from base, that writes `files` (None deletes one),
     judged the way the spec-gate workflow judges it."""
     _git(repo, "reset", "-q", "--hard")
@@ -211,6 +214,8 @@ def pr(repo: Path, branch: str, files: dict[str, str | None], **env: str) -> sub
             (repo / path).unlink()
         else:
             write(repo, path, text)
+    if then is not None:
+        then(repo)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", f"change on {branch}")
     # (stocks#1205 r4127577496: Actions passes two 40-character shas, so the suite does too)
@@ -3835,3 +3840,96 @@ def test_existing_root_regular_package_child_is_process_input_on_both_sides(repo
     removed = pr(repo, BRANCH, {'json/__init__.py': None, 'json/decoder.py': 'VALUE = 3\n'},
                  PR_TITLE='FEAT-MODEL-001: package removal remains process input', PR_DRAFT='true')
     assert removed.returncode == 1 and 'belong to FEAT-CICD-001' in removed.stdout
+
+
+# REQ-GOV-004 byte-scope acceptance, attributed core fd178/9ee; current governance retained.
+
+def load_gate(root: Path) -> types.ModuleType:
+    """root's copy of the gate as a module of its own: its ROOT is root, so its git calls read that repository.
+    Registered in sys.modules, where dataclasses look their module up."""
+    n = 0
+    while f"spec_gate_under_test_{n}" in sys.modules:
+        n += 1
+    name = f"spec_gate_under_test_{n}"
+    found = importlib.util.spec_from_file_location(name, root / "scripts/gate/spec_gate.py")
+    module = importlib.util.module_from_spec(found)
+    sys.modules[name] = module
+    found.loader.exec_module(module)
+    return module
+
+def base_and_head(repo: Path) -> tuple[str, str]:
+    return _git(repo, "rev-parse", "base"), _git(repo, "rev-parse", "HEAD")
+
+def test_changed_lines_reads_the_diff_as_bytes(repo):
+    """FEAT-CICD-001 spec, the diff reader (done_when[2]).
+
+    Main's reader took a content line beginning with `---` or `+++` for a file header and split text-mode output at a
+    lone carriage return and at U+2028: the first diff read as [], the second as five lines that git never wrote.
+    """
+    sg = load_gate(repo)
+    on_base(repo, {"docs/f.md": "a\n---\n-- keep\nb\nc\nd\n"})
+    pr(repo, "docs/probe", {"docs/f.md": "a\n+++ added\n++ also\nb\nc\nd\n"})
+    assert sg.changed_lines(*base_and_head(repo), "docs/f.md") == [("-", 2, "---"), ("-", 3, "-- keep"), ("+", 2, "+++ added"), ("+", 3, "++ also")]
+    on_base(repo, {"docs/f.md": "a\nb\nc\nd\ne\nf\n"})
+    pr(repo, "docs/probe", {"docs/f.md": "a\nb-new\r+phantom\nc\nd\ne-new\u2028@@ -9 +9 @@\nf\n"})
+    assert sg.changed_lines(*base_and_head(repo), "docs/f.md") == [("-", 2, "b"), ("+", 2, "b-new\r+phantom"), ("-", 5, "e"), ("+", 5, "e-new\u2028@@ -9 +9 @@")]
+    # (red-team round 1: context lines that git's config adds between hunks, blank ones printed empty, are counted)
+    on_base(repo, {"docs/f.md": "a\nb\n\nc\nd\ne\n"})
+    pr(repo, "docs/probe", {"docs/f.md": "a\nB\n\nc\nd\nE\n"})
+    _git(repo, "config", "diff.interHunkContext", "5")
+    _git(repo, "config", "diff.suppressBlankEmpty", "true")
+    assert sg.changed_lines(*base_and_head(repo), "docs/f.md") == [("-", 2, "b"), ("+", 2, "B"), ("-", 6, "e"), ("+", 6, "E")]
+
+def test_changed_lines_raises_on_a_binary_or_hunkless_diff(repo):
+    """FEAT-CICD-001 spec, the diff reader (done_when[2]).
+
+    A NUL makes git print "Binary files differ" and a mode change prints no hunk: main's reader returned no lines for a
+    path it was asked about, which the catalog scope check read as nothing changed.
+    """
+    sg = load_gate(repo)
+    on_base(repo, {"docs/f.md": "a\n"})
+    pr(repo, "docs/probe", {"docs/f.md": "a\x00\n"})                                  # binary
+    with pytest.raises(sg.GitFailed, match="no text hunk"):
+        sg.changed_lines(*base_and_head(repo), "docs/f.md")
+    pr(repo, "docs/probe", {}, then=lambda r: (r / "docs/f.md").chmod(0o755))         # mode only
+    with pytest.raises(sg.GitFailed, match="no text hunk"):
+        sg.changed_lines(*base_and_head(repo), "docs/f.md")
+
+def test_added_lines_is_gone():
+    """FEAT-CICD-001 spec, the diff reader (done_when[2]): added_lines had no caller and read the diff as main's
+    changed_lines did."""
+    defined = {n.name for n in ast.parse(GATE.read_text(encoding="utf-8")).body if isinstance(n, ast.FunctionDef)}
+    assert "changed_lines" in defined and "added_lines" not in defined
+
+def test_feat_span_and_section_of_number_lines_as_git_does(repo):
+    """FEAT-CICD-001 spec, the diff reader (done_when[2]): git numbers lines by "\\n" alone. Main split decoded text
+    with splitlines(), which also breaks at U+2028 and a lone carriage return, so its line numbers ran ahead of git's."""
+    sg = load_gate(repo)
+    assert sg.feat_span("### FEAT-A-001\nx y\n### FEAT-B-001\nz\n", "FEAT-A-001") == {1, 2}      # main: {1, 2, 3}
+    assert sg.section_of("### FEAT-A-001\nx\ry\n### FEAT-B-001\n", "FEAT-A-001") == range(1, 3)    # main: range(1, 4)
+
+def test_the_catalog_scope_check_sees_every_changed_line(repo):
+    """FEAT-CICD-001 spec, the diff reader (done_when[2]).
+
+    Each case is an edit to FEAT-DATA-001's record by the FEAT-MODEL-001 branch that main's gate passed (measured):
+    the reader dropped the line, or numbered it inside the branch's own record.
+    """
+    own = "### FEAT-MODEL-001\n\n- Status: Production"
+    added = "### FEAT-DATA-001\nAdded by a FEAT-MODEL-001 branch.\nAnd a second line.\n"
+    ok = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body()}
+    outcomes = {}
+    on_base(repo, {CATALOG: CATALOG_TEXT + "\n---\n\n-- keep this caveat\n"})
+    outcomes["a removed '---' line"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT + "\n\n\n-- keep this caveat\n"}, **ok)
+    on_base(repo, {CATALOG: CATALOG_TEXT})
+    outcomes["a NUL in the own Status"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + "\x00").replace(
+        "### FEAT-DATA-001\n\n- Status: Production", "### FEAT-DATA-001\n\n- Status: Retired")}, **ok)
+    outcomes["U+2028 in the own record"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + " " * 4).replace("### FEAT-DATA-001\n", added)}, **ok)
+    outcomes["lone CRs in the own record"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + "\r" * 4).replace("### FEAT-DATA-001\n", added)}, **ok)
+    # (red-team round 1: with diff.interHunkContext in the config git reads, main numbered the second hunk inside the own record)
+    _git(repo, "config", "diff.interHunkContext", "5")
+    outcomes["context lines from git's config"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + "\n- Note: mine").replace(
+        "### FEAT-DATA-001\n\n- Status: Production", "### FEAT-DATA-001\n\n- Status: Retired")}, **ok)
+    _git(repo, "config", "--unset", "diff.interHunkContext")
+    missed = {k: r.stdout[-300:] for k, r in outcomes.items() if r.returncode != 1
+              or not ("lines outside FEAT-MODEL-001's row and record change" in r.stdout or "no text hunk" in r.stdout)}
+    assert missed == {}, missed
