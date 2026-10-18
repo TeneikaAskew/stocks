@@ -6,7 +6,8 @@ canvases: []
 done_when:
   - "tests/meta/test_hermetic_gcloud.py proves that inside the test suite gcloud, gsutil and bq resolve to the tripwire when no fake is ahead of it, and the tripwire exits non-zero naming the command it refused"
   - "tests/meta/test_hermetic_gcloud.py proves that a fake gcloud made non-executable (the noexec case) falls through to the tripwire, not to an installed gcloud"
-  - "tests/meta/test_hermetic_gcloud.py proves that the suite's CLOUDSDK_CONFIG is an empty directory and CLOUDSDK_AUTH_ACCESS_TOKEN is unset"
+  - "tests/meta/test_hermetic_gcloud.py proves that the suite's CLOUDSDK_CONFIG is an empty directory, CLOUDSDK_AUTH_DISABLE_CREDENTIALS is true, and CLOUDSDK_AUTH_ACCESS_TOKEN and CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE are unset"
+  - "tests/meta/test_hermetic_gcloud.py proves that tests/conftest.py::_gcloud_secret, the deliberate live-backend path, runs gcloud with the environment captured before the guard"
   - "With an installed gcloud replaced by a logging sentinel and pytest's temp directory on a noexec mount, the six fake-gcloud test files log zero sentinel calls, against 50 before (command and output in the PR)"
   - "make test passes apart from the sandbox-only failures listed in the PR, and the delivery gate passes with the FEAT-CICD-001 record and PR traceability updated"
 status: approved
@@ -84,7 +85,7 @@ skipped ends the same way.
    config directory, drop its token variable, and put a committed tripwire
    directory first on PATH. A skipped fake hits the tripwire, which fails with
    a message naming the call; an installed `gcloud` is never reached, and even
-   if it were, it has no account and no project.
+   if it were, it would load no credential at all.
 
 ## Design
 
@@ -95,6 +96,11 @@ environment from `os.environ`:
   removed at session end.
 - `CLOUDSDK_AUTH_ACCESS_TOKEN` and `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE`
   removed.
+- `CLOUDSDK_AUTH_DISABLE_CREDENTIALS=true`. An empty config is not enough on
+  its own: a fresh config reports `core/check_gce_metadata = True`, so on a GCE
+  runner or in Cloud Shell gcloud would take an account and project from the
+  instance metadata server. With credentials disabled, gcloud loads none, from
+  any source (Codex on #1535).
 - `tests/fixtures/gcloud_tripwire/` prepended to PATH. It holds executable
   `gcloud`, `gsutil` and `bq` scripts that print `hermetic test suite: real
   <cmd> refused: <args>` to stderr and exit 97.
@@ -105,8 +111,18 @@ The tripwire lives in the repository, not in a temp directory, so a `noexec`
 temp mount cannot disable it. A test's own fake, prepended ahead of it, still
 wins whenever it can execute, so passing tests are unaffected.
 
+One path in the suite reaches GCP on purpose. In `--mode=live` (the default),
+`db_conn` connects to Cloud SQL, and when no `DB_*` variables are set,
+`_gcloud_secret` reads the two database secrets by running the owner's
+`gcloud.cmd` at its absolute Windows path. It bypasses PATH, so the tripwire
+never sees it, but it would inherit the empty, credential-less config and
+`db_conn` would skip where it used to connect (Codex on #1535). So the guard
+first snapshots `os.environ` as `_PRE_GUARD_ENV`, and `_gcloud_secret` passes
+`env=_PRE_GUARD_ENV`. That path's behaviour is unchanged: an explicit,
+read-only secret read, by absolute path, on the owner's machine.
+
 `tests/meta/test_hermetic_gcloud.py` carries the regression tests in
-`done_when` 1 to 3. Item 4 is the reproduction above, rerun on the branch.
+`done_when` 1 to 4. Item 5 is the reproduction above, rerun on the branch.
 
 Capacity: test-only change. No job, query or build; about 0.1 s added to suite
 start. Cost $0.
@@ -115,6 +131,8 @@ start. Cost $0.
 
 - A test that relied on reaching a real `gcloud` would now fail. None of the
   six files does: with every fake executable they reached the sentinel 0 times.
-  Item 5's full-suite run catches any other file.
+  Item 6's full-suite run catches any other file.
+- The live path above still reaches production. That is its purpose; this
+  change only stops the guard from silently disabling it.
 - Running a single test file still loads `tests/conftest.py`, so it is covered.
   A run with `--noconftest` is not; that flag is not used by `make test` or CI.
