@@ -22,10 +22,16 @@ TRIPWIRE = Path(__file__).resolve().parents[1] / "fixtures" / "gcloud_tripwire"
 TOOLS = ("gcloud", "gsutil", "bq")
 
 
+# Windows resolves commands through PATHEXT, so it finds the .cmd forms; bash
+# (Git Bash included) finds the extensionless scripts.
+SUFFIX = ".cmd" if os.name == "nt" else ""
+
+
 @pytest.mark.parametrize("tool", TOOLS)
 def test_each_cli_resolves_to_the_tripwire_and_refuses(tool):
-    assert shutil.which(tool) == str(TRIPWIRE / tool)
-    proc = subprocess.run([tool, "run", "jobs", "list"], capture_output=True, text=True, timeout=30)
+    found = shutil.which(tool)
+    assert found and os.path.normcase(found) == os.path.normcase(str(TRIPWIRE / f"{tool}{SUFFIX}"))
+    proc = subprocess.run([found, "run", "jobs", "list"], capture_output=True, text=True, timeout=30)
     assert proc.returncode == 97
     assert f"real {tool} refused: run jobs list" in proc.stderr
 
@@ -36,6 +42,15 @@ def _call_through(fake_dir: Path) -> subprocess.CompletedProcess:
                           capture_output=True, text=True, env=env, timeout=30)
 
 
+@pytest.mark.parametrize("tool", TOOLS)
+def test_the_windows_tripwires_keep_the_same_contract(tool):
+    """Checked on every platform, so the .cmd forms cannot drift unseen."""
+    body = (TRIPWIRE / f"{tool}.cmd").read_text()
+    assert "echo hermetic test suite: real %~n0 refused: %* 1>&2" in body
+    assert "exit /b 97" in body
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows has no execute bit, so a fake cannot be skipped this way")
 def test_a_fake_that_cannot_execute_falls_through_to_the_tripwire(tmp_path):
     """The noexec case: bash skips a file it cannot execute and keeps looking."""
     fake = tmp_path / "gcloud"
