@@ -27,6 +27,15 @@ NOW = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 # This file is two levels below the repo root (tests/scripts/).
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+
+def test_site_import_slot_rename_is_drift_while_ordinary_pure_rename_stays_exempt():
+    """The same bytes newly named json.py change startup, unlike a pure move."""
+    sha = "a" * 40
+    history = sha + "\tfeat: move existing bytes into a startup slot\n\nR100\tlib/helper.py\tjson.py\n"
+    assert m.drift_commits(history, ["lib"]) == []
+    assert m.drift_commits(history, ["lib"], import_shadow=lambda p: p == "json.py") == [history.splitlines()[0]]
+    assert m.drift_commits(history, ["unrelated"]) == []
 # The display titles the owning workflow's `run-name:` produces, which is the
 # only record of a dry run any REST endpoint exposes. Built from the module's
 # own markers so a fixture cannot drift from the code it exercises.

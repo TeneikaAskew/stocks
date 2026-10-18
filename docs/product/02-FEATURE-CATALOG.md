@@ -577,12 +577,12 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation — policy wording verified; verifier/global remediation pending |
+| Status | Production but needs remediation — committed source identity implemented; rollout/global remediation pending |
 | Priority | P1 |
 | Target phase | Phase 6 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
 | Last reviewed | 2026-10-18 |
-| Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
+| Evidence status | SOURCE IDENTITY — local committed implementation checks; authenticated CODE review and CI required on [#1470](https://github.com/TeneikaAskew/stocks/pull/1470); deployed-state close-out is separate |
 | UI surface | — |
 | Backend | — |
 | Data | — |
