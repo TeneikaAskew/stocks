@@ -5,12 +5,12 @@ issues: [1076]
 canvases:
   - https://claude.ai/artifact/LXZ5iRtXogCyFfApfsxXVN
 done_when:
-  - "tests/lib/test_market_sessions.py passes: known 2026 and 2027 dates, day-by-day parity with the NYSE library for 2020-2027, session_schedule open and close parity for 2000-2027 including the 2002-09-11 delayed open, every calendar function raising both when pandas_market_calendars is unimportable and when its schedule lookup raises, one schedule build under 16 concurrent first calls, and correct neighbours at both cache boundaries"
+  - "tests/lib/test_market_sessions.py passes: known 2026 and 2027 dates, day-by-day parity with the NYSE library for 2020-2027, session_schedule open and close parity for 2000-2027 including the 2002-09-11 delayed open, every calendar function raising when pandas_market_calendars is unimportable, when get_calendar raises, when its schedule lookup raises, and when a cache build returns no sessions, one schedule build under 16 concurrent first calls, concurrent lower and upper extensions of a built cache both kept, and correct neighbours at both cache boundaries"
   - "A guard test passes proving no hard-coded holiday date set and no direct pandas_market_calendars import exists under lib/, gcp/, scripts/ or platform/api/ outside lib/eastern_time.py"
   - "git grep for MARKET_HOLIDAYS_2026 and NYSE_FULL_CLOSURES returns no match in lib/, gcp/, scripts/ or platform/api/"
-  - "Frozen-clock consumer tests pass: the live router (Juneteenth closed, Black Friday regular before and after-hours after its 13:00 ET close, 2027-01-18 closed, _next_open_et across a holiday Monday and a Friday close, the most-active label), the dashboard (Juneteenth skipped, exclusive end, calendar failure returns stale_days null), the freshness audit (2027 holiday, Black Friday expected, winter and half-day session closes, a live premarket_analysis row on 2026-11-26 evaluated without a calendar error, calendar failure gives an unknown nyse_calendar row whose detail carries the exception type and message in JSON and terminal output, and --strict exit 2) and the playbook resolver (2025 and 2027 holidays benign, Black Friday still a failure); the PR lists every pre-existing expectation that changed with its reason"
+  - "Frozen-clock consumer tests pass: the live router (Juneteenth closed, Black Friday regular before and after-hours after its 13:00 ET close, 2027-01-18 closed, _next_open_et in an ordinary session's premarket, across a holiday Monday and after a Friday close, the most-active label), the dashboard (Juneteenth skipped, exclusive end, same-day and reversed ranges count 0, calendar failure returns stale_days null), the freshness audit (2027 holiday, Black Friday expected, winter and half-day session closes, a live premarket_analysis row on 2026-11-26 evaluated without a calendar error, calendar failure gives an unknown nyse_calendar row whose detail carries the exception type and message in JSON and terminal output, and --strict exit 2) and the playbook resolver (2025 and 2027 holidays benign, Black Friday still a failure); the PR lists every pre-existing expectation that changed with its reason"
   - "platform/api/requirements.txt pins pandas-market-calendars==5.3.0 and a test proves the pin equals requirements.lock and requirements-gcp.lock"
-  - "A frozen-clock TestClient test of /api/config/market-hours proves 2026-06-19 is in holidays_2026 and holidays, 2026-11-27 is in neither, 2027 holidays are in holidays, early_closes equals exactly 2026-11-27, 2026-12-24 and 2027-11-26 at 13:00, and the two-year window rolls over at 2027-01-01 00:00 Eastern; the first calendar call's latency with the API requirements is recorded in the PR; after merge, the same values read from staging are recorded on the PR as a close-out step"
+  - "A frozen-clock TestClient test of /api/config/market-hours proves holidays_2026 equals exactly the ten 2026 NYSE weekday closures and holidays exactly the twenty 2026 and 2027 ones (so 2026-06-19 is in both and 2026-11-27 in neither), early_closes equals exactly 2026-11-27, 2026-12-24 and 2027-11-26 at 13:00, and the two-year window rolls over at 2027-01-01 00:00 Eastern; the first calendar call's latency with the API requirements is recorded in the PR; after merge, the same values read from staging are recorded on the PR as a close-out step"
   - "The stocks OpenAPI snapshot is regenerated, and solyra's contract test passes when run locally against it before merge; the solyra contract sync PR follows the merge as a close-out step"
   - "02-FEATURE-CATALOG FEAT-DATA-001 record and 12-PR-ISSUE-TRACEABILITY list this PR"
 status: approved
@@ -118,7 +118,10 @@ Behaviour:
   imported inside the first calendar call, never at module import, so the 41
   importers that use only the time-zone helpers do not pay for it.
 - Fails loud: an import error, and an error from `get_calendar` or
-  `schedule` after a successful import, both propagate. No weekday-only
+  `schedule` after a successful import, both propagate. A schedule build
+  that returns no sessions for its range raises `RuntimeError` and is never
+  cached, since an empty schedule would report every date closed and every
+  weekday a holiday. No weekday-only
   fallback anywhere (REQ-DATA-001, §3.7).
 - Cached: one schedule per process over a padded range (2000 to current year
   plus 2). Year-agnostic, so it closes #1076.
@@ -139,8 +142,10 @@ Behaviour:
      and `next_session`, so Black Friday closes at 13:00 ET.
    - `platform/api/routers/dashboard.py:_trading_days_between` keeps its
      meaning, sessions strictly between `start` and `end` with both excluded
-     (today's bar does not exist yet): `session_count(start, end)` minus one
-     when `end` is itself a session. Its silent `set()` holiday fallback is
+     (today's bar does not exist yet): 0 when `end <= start`, as today,
+     otherwise `session_count(start, end)` minus one when `end` is itself a
+     session. The guard matters: on a same-day session range the formula
+     alone gives -1. Its silent `set()` holiday fallback is
      removed. The caller in `dashboard_brief` (`dashboard.py:178-180`) catches
      every exception and reports `stale_days = 0`, which would show a calendar
      failure as fresh data; it reports `stale_days: null` instead (the
@@ -224,14 +229,24 @@ unimportable case):
    library's exact `market_open` and `market_close`. Known delayed open:
    2002-09-11 opens at 16:00 UTC (12:00 ET) and closes at 20:00 UTC, so
    `expected_session_bars` expects 16 fifteen-minute bars that day, not 26.
-3. Fail loud, both ways: (a) with `pandas_market_calendars` unimportable,
-   every function raises; (b) with the library importable but a fake
-   calendar whose `schedule` raises, every function propagates that error.
+3. Fail loud, every way: (a) with `pandas_market_calendars` unimportable,
+   every function raises; (b) with the library importable but
+   `get_calendar` raising, every function propagates that error; (c) with a
+   fake calendar whose `schedule` raises, every function propagates that
+   error; (d) with a fake calendar whose `schedule` returns an empty frame,
+   every function raises `RuntimeError`, and a later call with the real
+   calendar restored builds again (the empty result was not cached).
 4. Cache:
    - Repeated calls within the cached range make one schedule build.
    - Concurrent first calls: 16 threads released together by a
      `threading.Barrier` make exactly one schedule build and all get the same
      answer.
+   - Concurrent extensions: with the cache built for 2000 to 2028, two
+     threads released together by a `threading.Barrier` ask
+     `previous_session(date(1995,1,3))` and `next_session(date(2032,12,31))`;
+     both get the library's answer (1994-12-30 and 2033-01-03), and the
+     cache then covers at least 1994-12-24 to 2033-01-10, so repeating either call
+     makes no further schedule build.
    - Boundaries: with the cache built from 2000-01-01,
      `previous_session(date(2000,1,1)) == date(1999,12,31)`; with it built
      through 2028-12-31, `next_session(date(2028,12,29)) == date(2029,1,2)`.
@@ -244,14 +259,20 @@ unimportable case):
    module parity suite passes (the existing live-router tests only assert
    field presence against the wall clock):
    - Live router: 2026-06-19 closed; 2026-11-27 regular at 12:59 ET and
-     after-hours at 13:30 ET; 2027-01-18 closed; `_next_open_et` from a
-     holiday Monday before 09:30 gives Tuesday 09:30 and from Friday after
-     the close gives Monday 09:30; `_most_active_label` is not "live" on
+     after-hours at 13:30 ET; 2027-01-18 closed; `_next_open_et` at 08:00 ET on
+     ordinary session 2026-10-19 gives 2026-10-19 09:30, from a holiday
+     Monday before 09:30 gives Tuesday 09:30, and from Friday after the
+     close gives Monday 09:30; `_most_active_label` is not "live" on
      2026-06-19 during regular hours.
    - Market hours, with the clock frozen at 2026-10-19 12:00 ET (so the test
      never depends on the real date):
-     - 2026-06-19 is in `holidays_2026` and in `holidays`; 2027-01-18 is in
-       `holidays`.
+     - `holidays_2026` equals exactly 2026-01-01, 2026-01-19, 2026-02-16,
+       2026-04-03, 2026-05-25, 2026-06-19, 2026-07-03, 2026-09-07,
+       2026-11-26 and 2026-12-25.
+     - `holidays` equals exactly those ten followed by 2027-01-01,
+       2027-01-18, 2027-02-15, 2027-03-26, 2027-05-31, 2027-06-18,
+       2027-07-05, 2027-09-06, 2027-11-25 and 2027-12-24, so a federal-only
+       day such as 2026-10-12 or 2026-11-11 is absent.
      - 2026-11-27 is in neither `holidays_2026` nor `holidays`.
      - `early_closes` equals exactly 2026-11-27, 2026-12-24 and 2027-11-26,
        each at 13:00, so an ordinary session such as 2026-07-15 is absent.
@@ -260,7 +281,8 @@ unimportable case):
      covers 2027 and 2028, and `early_closes` equals 2027-11-26, 2028-07-03
      and 2028-11-24.
    - Dashboard: Thursday to Monday counts 1 session; 2026-06-18 to 2026-06-22
-     counts 0; with the calendar failing, `dashboard_brief` returns
+     counts 0; 2026-10-19 to 2026-10-19 (a session) counts 0, not -1, and
+     2026-10-19 to 2026-10-16 counts 0; with the calendar failing, `dashboard_brief` returns
      `stale_days: null`.
    - Freshness audit:
      - 2027-01-18 is skipped, and Black Friday is an expected session.
