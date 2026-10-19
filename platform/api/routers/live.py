@@ -31,7 +31,7 @@ except Exception:
     _CLOUD_SQL = False
     query_to_dataframe = None  # type: ignore[assignment]
 
-from lib.eastern_time import ET, is_session, next_session, session_close
+from lib.eastern_time import ET, eastern_now, is_session, next_session, session_close
 
 # Canonical indicator implementations — single source of truth.
 from lib.indicators import (
@@ -157,7 +157,7 @@ def _next_open_et(now_et: datetime) -> str | None:
 @router.get("/api/live/status", response_model=LiveStatusResponse, response_model_exclude_unset=True)
 def get_market_status():
     """Return current market open/closed status based on Eastern Time."""
-    now_et = datetime.now(ET_TZ)
+    now_et = eastern_now()
     is_open, session = _is_market_open(now_et)
     next_open = _next_open_et(now_et)
 

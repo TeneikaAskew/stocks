@@ -266,12 +266,25 @@ class MarketHoursWindow(ApiModel):
     close: str
 
 
+class EarlyClose(ApiModel):
+    """A half-day session: its date and its Eastern close, ``HH:MM``."""
+
+    date: str
+    close: str
+
+
 class MarketHoursResponse(ApiModel):
+    """``holidays`` and ``early_closes`` cover the current and next Eastern
+    year. ``holidays_2026`` is kept for solyra's replay picker until Spec C
+    moves it to ``holidays`` and removes it."""
+
     timezone: str
     regular: MarketHoursWindow
     pre_market: MarketHoursWindow
     after_hours: MarketHoursWindow
     holidays_2026: list[str]
+    holidays: list[str]
+    early_closes: list[EarlyClose]
 
 
 # ── main.py ──────────────────────────────────────────────────────────────
