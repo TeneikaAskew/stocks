@@ -1431,6 +1431,10 @@ class FreshnessRow(ApiModel):
     status: str
     row_count_recent: int
     writer_job: Optional[str] = None
+    # Why the row is what it is when the other fields cannot say it; the
+    # `nyse_calendar` row carries the calendar exception's type and message
+    # (scripts/audit_data_freshness.py, FEAT-DATA-001).
+    detail: Optional[str] = None
 
 
 class FreshnessResponse(ApiModel):

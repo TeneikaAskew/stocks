@@ -2311,6 +2311,17 @@
       "FreshnessRow": {
         "additionalProperties": true,
         "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
           "expected_latest": {
             "title": "Expected Latest",
             "type": "string"

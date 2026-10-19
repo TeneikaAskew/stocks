@@ -1351,6 +1351,42 @@ class TestHealthFreshnessAPI:
         r2 = client.get("/api/health/freshness")
         assert r2.status_code == 200
 
+    def test_freshness_api_carries_calendar_detail(self, client, monkeypatch):
+        """FEAT-DATA-001 / #1542 item 4: a shared-calendar failure is one
+        `nyse_calendar` row with status unknown, and its `detail` (exception
+        type and message) reaches the API response rather than being dropped
+        by the response model. The real audit runs; only the calendar build
+        and the database are patched."""
+        import pandas as pd
+
+        from gcp import database
+        from lib import eastern_time
+
+        self._reset_cache()
+        import audit_data_freshness as audit_mod
+
+        def failing_build(first, last):
+            raise RuntimeError("calendar build failed in test")
+
+        eastern_time._reset_session_cache()
+        monkeypatch.setattr(eastern_time, "_build_session_cache", failing_build)
+        monkeypatch.setattr(audit_mod, "query_to_dataframe",
+                            lambda sql, params=None: pd.DataFrame([{"bad": 0}]))
+        monkeypatch.setattr(database, "table_exists", lambda t: False)
+        try:
+            r = client.get("/api/health/freshness")
+        finally:
+            monkeypatch.undo()
+            eastern_time._reset_session_cache()
+            self._reset_cache()
+
+        assert r.status_code == 200, r.text
+        cal = [t for t in r.json()["tables"] if t["table"] == "nyse_calendar"]
+        assert len(cal) == 1
+        assert cal[0]["status"] == "unknown"
+        assert "RuntimeError" in cal[0]["detail"]
+        assert "calendar build failed in test" in cal[0]["detail"]
+
 
 # ── Phase-report markdown fetch ─────────────────────────────────────────────
 
