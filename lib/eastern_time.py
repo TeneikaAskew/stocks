@@ -25,9 +25,14 @@ wall time stamped as UTC (CLAUDE.md 3.9).
 from __future__ import annotations
 
 import re
+import threading
+from bisect import bisect_left, bisect_right
 from datetime import date, datetime, time, timedelta, timezone
-from typing import TypeAlias
+from typing import TYPE_CHECKING, NamedTuple, TypeAlias
 from zoneinfo import ZoneInfo
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 #: The canonical Eastern zone name. Use it for the pandas / pytz string APIs
 #: (``tz_convert(ET_NAME)``, ``pytz.timezone(ET_NAME)``).
@@ -373,6 +378,211 @@ def market_date_sql(column: str) -> str:
 def market_today_sql() -> str:
     """SQL for today's Eastern date (the ``CURRENT_DATE`` replacement)."""
     return f"(now() AT TIME ZONE '{ET_NAME}')::date"
+
+
+# -- NYSE sessions -------------------------------------------------------------
+#
+# The one NYSE calendar every job, script and the API reads (FEAT-DATA-001).
+# Backed by pandas_market_calendars, imported inside the first calendar call so
+# the importers that only need the zone helpers above do not pay for it.
+#
+# Fails loud (CLAUDE.md 3.7, REQ-DATA-001): an import error and any error from
+# get_calendar or schedule propagate, and a build that returns no sessions
+# raises and is never cached -- an empty schedule would report every date
+# closed and every weekday a holiday. There is no weekday-only fallback.
+#
+# One schedule per process over a padded range (2000 through the current year
+# plus 2), extended on demand. Before answering, the cache must cover the asked
+# date(s) plus _SESSION_PAD on each side, so a date at either edge still finds
+# its true neighbour. Building and extending happen under one lock with the
+# coverage re-checked inside it: concurrent cold calls make one build, and an
+# extension is taken over the union with whatever the cache already holds, so
+# two extensions in opposite directions are both kept.
+
+_NYSE = "NYSE"
+_SESSION_CACHE_FIRST_DAY = date(2000, 1, 1)
+_SESSION_CACHE_YEARS_AHEAD = 2
+_SESSION_PAD = timedelta(days=10)
+# A neighbour search widens its window by this factor while it finds nothing
+# (only a closure longer than _SESSION_PAD needs it, e.g. 1914), up to the cap.
+_NEIGHBOUR_WIDEN = 4
+_NEIGHBOUR_MAX_PAD = timedelta(days=3660)
+
+
+class _SessionCache(NamedTuple):
+    """An immutable snapshot of the schedule over ``[first, last]``.
+
+    ``days`` is the session dates, ascending, parallel to ``frame``'s rows.
+    Readers take the module-level reference once and never see it change.
+    """
+
+    first: date
+    last: date
+    days: list[date]
+    frame: pd.DataFrame
+
+
+_session_cache: _SessionCache | None = None
+_session_cache_lock = threading.Lock()
+
+
+def _reset_session_cache() -> None:
+    """Drop the cached schedule (tests only)."""
+    global _session_cache
+    with _session_cache_lock:
+        _session_cache = None
+
+
+def _build_session_cache(first: date, last: date) -> _SessionCache:
+    """Read the NYSE schedule for ``[first, last]`` from the library.
+
+    No ``except`` here or in any caller: every library error propagates.
+    """
+    import pandas_market_calendars as mcal
+
+    schedule = mcal.get_calendar(_NYSE).schedule(
+        start_date=first.isoformat(), end_date=last.isoformat()
+    )
+    if len(schedule) == 0:
+        raise RuntimeError(
+            f"NYSE schedule for {first} to {last} has no sessions; refusing to "
+            "cache it (it would report every weekday as a holiday)"
+        )
+    frame = schedule[["market_open", "market_close"]]
+    return _SessionCache(first, last, list(frame.index.date), frame)
+
+
+def _sessions_covering(first: date, last: date) -> _SessionCache:
+    """The cached schedule, built or extended so it covers ``[first, last]``."""
+    global _session_cache
+    cache = _session_cache
+    if cache is not None and cache.first <= first and last <= cache.last:
+        return cache
+    with _session_cache_lock:
+        cache = _session_cache  # another thread may have built it meanwhile
+        if cache is not None and cache.first <= first and last <= cache.last:
+            return cache
+        if cache is None:
+            lo = _SESSION_CACHE_FIRST_DAY
+            hi = date(market_today().year + _SESSION_CACHE_YEARS_AHEAD, 12, 31)
+        else:
+            lo, hi = cache.first, cache.last
+        built = _build_session_cache(min(lo, first), max(hi, last))
+        _session_cache = built
+        return built
+
+
+def _session_day(value: DateLike | str) -> date:
+    """Normalise a calendar argument to an Eastern market date.
+
+    An ISO ``YYYY-MM-DD`` string is a date; anything else goes through
+    :func:`market_date`, so an aware datetime is read as its Eastern date and a
+    naive one is refused.
+    """
+    if isinstance(value, str):
+        return date.fromisoformat(value)
+    day = market_date(value)
+    if not isinstance(day, date):
+        raise TypeError(f"expected a date, datetime or ISO date string, got {value!r}")
+    return day
+
+
+def _cache_around(day: date) -> _SessionCache:
+    return _sessions_covering(day - _SESSION_PAD, day + _SESSION_PAD)
+
+
+def is_session(day: DateLike | str) -> bool:
+    """True when NYSE trades on *day*, half days included."""
+    d = _session_day(day)
+    days = _cache_around(d).days
+    i = bisect_left(days, d)
+    return i < len(days) and days[i] == d
+
+
+def previous_session(day: DateLike | str) -> date:
+    """The last NYSE session strictly before *day*."""
+    d = _session_day(day)
+    pad = _SESSION_PAD
+    while True:
+        cache = _sessions_covering(d - pad, d + _SESSION_PAD)
+        i = bisect_left(cache.days, d)
+        if i > 0:
+            return cache.days[i - 1]
+        if pad >= _NEIGHBOUR_MAX_PAD:
+            raise RuntimeError(f"no NYSE session within {pad.days} days before {d}")
+        pad *= _NEIGHBOUR_WIDEN
+
+
+def next_session(day: DateLike | str) -> date:
+    """The first NYSE session strictly after *day*."""
+    d = _session_day(day)
+    pad = _SESSION_PAD
+    while True:
+        cache = _sessions_covering(d - _SESSION_PAD, d + pad)
+        i = bisect_right(cache.days, d)
+        if i < len(cache.days):
+            return cache.days[i]
+        if pad >= _NEIGHBOUR_MAX_PAD:
+            raise RuntimeError(f"no NYSE session within {pad.days} days after {d}")
+        pad *= _NEIGHBOUR_WIDEN
+
+
+def latest_session_on_or_before(day: DateLike | str) -> date:
+    """*day* when it is a session, else :func:`previous_session` of it."""
+    d = _session_day(day)
+    return d if is_session(d) else previous_session(d)
+
+
+def sessions_between(start: DateLike | str, end: DateLike | str) -> list[date]:
+    """NYSE sessions in ``[start, end]``, ascending; empty when ``end < start``."""
+    s, e = _session_day(start), _session_day(end)
+    days = _sessions_covering(min(s, e) - _SESSION_PAD, max(s, e) + _SESSION_PAD).days
+    return days[bisect_left(days, s):bisect_right(days, e)]
+
+
+def session_count(start: DateLike | str, end: DateLike | str) -> int:
+    """Number of NYSE sessions in ``(start, end]``; 0 when ``end <= start``."""
+    s, e = _session_day(start), _session_day(end)
+    days = _sessions_covering(min(s, e) - _SESSION_PAD, max(s, e) + _SESSION_PAD).days
+    return max(0, bisect_right(days, e) - bisect_right(days, s))
+
+
+def session_close(day: DateLike | str) -> datetime:
+    """The close of session *day* as an aware UTC datetime.
+
+    13:00 ET on half days. Raises ``ValueError`` when *day* is not a session:
+    a closed day has no close, and inventing 16:00 for it is the fallback this
+    module exists to prevent.
+    """
+    d = _session_day(day)
+    cache = _cache_around(d)
+    i = bisect_left(cache.days, d)
+    if i == len(cache.days) or cache.days[i] != d:
+        raise ValueError(f"{d} is not an NYSE session")
+    return cache.frame["market_close"].iloc[i].to_pydatetime().astimezone(UTC)
+
+
+def holidays_in(year: int) -> list[date]:
+    """Weekdays in *year* on which NYSE does not trade, ascending."""
+    first, last = date(year, 1, 1), date(year, 12, 31)
+    days = _sessions_covering(first - _SESSION_PAD, last + _SESSION_PAD).days
+    sessions = set(days[bisect_left(days, first):bisect_right(days, last)])
+    every_day = (first + timedelta(days=n) for n in range((last - first).days + 1))
+    return [d for d in every_day if d.weekday() < 5 and d not in sessions]
+
+
+def session_schedule(start: DateLike | str, end: DateLike | str) -> pd.DataFrame:
+    """The NYSE schedule for sessions in ``[start, end]``.
+
+    Indexed by session date (naive ``Timestamp``), with the library's actual
+    ``market_open`` and ``market_close`` as UTC timestamps: early closes and
+    delayed opens included (2002-09-11 opened at 12:00 ET). The primitive the
+    other calendar functions are built on; returns a copy.
+    """
+    s, e = _session_day(start), _session_day(end)
+    cache = _sessions_covering(min(s, e) - _SESSION_PAD, max(s, e) + _SESSION_PAD)
+    lo, hi = bisect_left(cache.days, s), bisect_right(cache.days, e)
+    return cache.frame.iloc[lo:max(lo, hi)].copy()
 
 
 def verify_eastern_is_dst_correct() -> None:
