@@ -14,7 +14,7 @@ Dependencies:
   - lib/indicators.py (calculate_historical_levels for Prev_* columns)
 """
 
-from lib.eastern_time import ET_NAME
+from lib.eastern_time import ET_NAME, session_count
 import pandas as pd
 import numpy as np
 import re
@@ -1705,48 +1705,33 @@ def daily_data_freshness(
 def _trading_days_between(source_ts: pd.Timestamp, ref_ts: pd.Timestamp) -> int:
     """Count NYSE trading days from source_ts (exclusive) to ref_ts (inclusive).
 
-    Returns 0 when source >= ref. Honors NYSE market holidays via
-    `pandas_market_calendars.get_calendar('NYSE')`. Examples:
+    Returns 0 when source >= ref. Delegates to the shared NYSE calendar
+    (`lib.eastern_time.session_count`, FEAT-DATA-001), which honours holidays
+    and raises, never approximates, when the calendar is unavailable.
+    Examples:
       Fri 5/8 close → Mon 5/11 brief = 1 trading day (Mon)
       Thu 5/22 close → Tue 5/27 (post-Memorial-Day) brief = 2 (Fri + Tue,
         skipping Memorial-Day Mon)
       4/27 close → 5/6 (the original 5/6 freeze) = 6 trading days
 
+    Each end counts as the calendar date it carries (``Timestamp.date()``,
+    the same date the old ``normalize()`` walk used), not as an Eastern
+    instant. Callers hand in date-valued stamps localised to UTC midnight
+    (``df.index.max()`` and ``analysis_date`` in the premarket brief);
+    converting those to Eastern would move each back to the previous evening
+    and change the count whenever the reference day is a weekend or holiday.
+
     The freshness guard uses business-days because that's the semantic
     intent: "no more than N trading sessions behind." Calendar days
     have to use a +3-day weekend buffer (max_age_days=4 to allow for
     Mon-after-Fri = 3 calendar days), which is implicit.
+
+    Rule 3.7: the only caller does `if biz_days > max_age_business_days:
+    raise StaleSourceDataError`, so a count that fell back to an estimate or
+    to 0 on a calendar failure would disable the staleness guard. Every
+    calendar error therefore propagates.
     """
-    if source_ts >= ref_ts:
-        return 0
-    try:
-        import pandas_market_calendars as mcal
-    except ImportError:
-        # Fallback: caller environment doesn't have the calendar lib.
-        # Approximate with calendar-days / 1.4 (rough business-day ratio).
-        # Defensive — production has the dep per requirements-gcp.txt.
-        return max(0, int((ref_ts - source_ts).total_seconds() / 86400.0 / 1.4))
-    nyse = mcal.get_calendar('NYSE')
-    # `valid_days` returns DatetimeIndex of trading days in [start, end].
-    # Use source_ts.normalize() + 1 day as start so source itself is excluded.
-    start_date = (source_ts.normalize() + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
-    end_date = ref_ts.normalize().strftime('%Y-%m-%d')
-    try:
-        days = nyse.valid_days(start_date=start_date, end_date=end_date)
-    except Exception as exc:
-        # Rule 3.7, and the direction matters. This returned 0, and the only
-        # caller does `if biz_days > max_age_business_days: raise
-        # StaleSourceDataError`. 0 is never greater than the threshold, so a
-        # calendar failure DISABLED the staleness guard and let a level map
-        # built off stale market_data_daily be written -- the exact incident
-        # persist_level_map exists to prevent. A swallow that silences a guard
-        # is worse than the failure it swallows.
-        raise RuntimeError(
-            f"NYSE calendar lookup failed for {start_date}..{end_date}: "
-            f"{type(exc).__name__}: {exc}. Refusing to report 0 trading days, "
-            f"which would read as 'not stale' to the caller."
-        ) from exc
-    return len(days)
+    return session_count(source_ts.date(), ref_ts.date())
 
 
 def persist_level_map(
