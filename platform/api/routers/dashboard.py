@@ -16,6 +16,7 @@ from api.schemas import (
     DashboardBriefResponse,
     MovementStatementResponse,
 )
+from lib.eastern_time import is_session
 from lib.infra_errors import is_backend_outage, is_infrastructure_error
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -42,7 +43,6 @@ try:
         _is_market_open,
         get_live_quote,
         ET_TZ,
-        MARKET_HOLIDAYS_2026,
     )
 except Exception:  # pragma: no cover - import path differs when launched as `api.main`
     try:
@@ -50,13 +50,11 @@ except Exception:  # pragma: no cover - import path differs when launched as `ap
             _is_market_open,
             get_live_quote,
             ET_TZ,
-            MARKET_HOLIDAYS_2026,
         )
     except Exception:
         _is_market_open = None  # type: ignore[assignment]
         get_live_quote = None  # type: ignore[assignment]
         ET_TZ = None  # type: ignore[assignment]
-        MARKET_HOLIDAYS_2026 = set()  # type: ignore[assignment]
 
 
 def _trading_days_between(start: _date_cls, end: _date_cls) -> int:
@@ -73,7 +71,7 @@ def _trading_days_between(start: _date_cls, end: _date_cls) -> int:
     count = 0
     cur = start + timedelta(days=1)
     while cur < end:
-        if cur.weekday() < 5 and cur not in MARKET_HOLIDAYS_2026:
+        if is_session(cur):
             count += 1
         cur += timedelta(days=1)
     return count

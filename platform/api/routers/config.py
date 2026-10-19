@@ -29,8 +29,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from api.routers.live import (  # noqa: E402
     MARKET_OPEN,
     MARKET_CLOSE,
-    MARKET_HOLIDAYS_2026,
 )
+from lib.eastern_time import holidays_in
 from lib.config import load_config  # noqa: E402
 from api import auth as _auth  # noqa: E402  (AUTH_MODE validated at import there)
 from api.schemas import (
@@ -139,5 +139,5 @@ def get_market_hours() -> dict:
         },
         "pre_market": {"open": "04:00", "close": _time_to_str(MARKET_OPEN)},
         "after_hours": {"open": _time_to_str(MARKET_CLOSE), "close": "20:00"},
-        "holidays_2026": sorted(d.isoformat() for d in MARKET_HOLIDAYS_2026),
+        "holidays_2026": [d.isoformat() for d in holidays_in(2026)],
     }
