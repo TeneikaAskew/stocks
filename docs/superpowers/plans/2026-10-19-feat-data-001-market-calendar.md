@@ -2,7 +2,7 @@
 feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-10-19-feat-data-001-shared-market-calendar.md
 branch: feature/feat-data-001-market-calendar
-pr: null
+pr: 1546
 status: ready
 ---
 
