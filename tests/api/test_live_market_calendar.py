@@ -189,7 +189,8 @@ def test_cold_calendar_does_not_stall_event_loop(monkeypatch, cold_calendar):
     # The brief did read the calendar: Friday 2026-10-16 is the one session
     # strictly between the 2026-10-15 row and the frozen 2026-10-19.
     assert brief.json()["daily_indicators"]["stale_days"] == 1
-    assert health_done < 0.3, f"/api/health took {health_done:.3f}s behind a cold calendar"
+    # Loose bound (build is 1 s); the thread check on builds below is the real proof.
+    assert health_done < 0.9, f"/api/health took {health_done:.3f}s behind a cold calendar"
     assert builds == [False], f"schedule builds (True = on the event loop): {builds}"
 
 

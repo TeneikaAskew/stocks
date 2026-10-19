@@ -5,6 +5,7 @@ the shared calendar, so holidays of any year are skipped and its old silent
 empty-holiday-set fallback is gone. When that count fails, the brief reports
 ``stale_days: null`` instead of ``0``, which read as fresh data.
 """
+import asyncio
 import logging
 import os
 import sys
@@ -139,3 +140,36 @@ def test_brief_today_is_the_eastern_date(monkeypatch):
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["daily_indicators"]["stale_days"] == 1
+
+
+def test_brief_calendar_call_runs_off_the_event_loop(monkeypatch):
+    """The brief is an async handler; the calendar can build or extend its
+    cache on a cold or far-future ?date= (seconds of CPU), so the session
+    count must run in the threadpool, never on the loop (CLAUDE.md 3.10).
+    Deterministic: the wrapper records whether it ran on a thread with a
+    running event loop."""
+    real = dashboard._trading_days_between
+    on_loop = []  # True per call that ran on an event-loop thread
+
+    def spy(start, end):
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return real(start, end)
+
+    async def _no_overlay(_ticker, _daily):
+        return {}
+
+    monkeypatch.setattr(dashboard, "_CLOUD_SQL", True)
+    monkeypatch.setattr(dashboard, "_query_fn", _brief_query)
+    monkeypatch.setattr(dashboard, "_apply_live_overlay", _no_overlay)
+    monkeypatch.setattr(dashboard, "_trading_days_between", spy)
+
+    with TestClient(main.app) as client:
+        resp = client.get("/api/dashboard/brief/SPY", params={"date": "2026-10-19"})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["daily_indicators"]["stale_days"] == 1
+    assert on_loop == [False], f"calendar calls (True = on the event loop): {on_loop}"

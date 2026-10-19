@@ -174,7 +174,9 @@ async def dashboard_brief(
                 # The Eastern market date: the container clock is UTC, which
                 # is already tomorrow from 20:00 ET (CLAUDE.md 3.9).
                 ref_today = datetime.strptime(date, "%Y-%m-%d").date() if date else market_today()
-                stale_days = _trading_days_between(row_d, ref_today)
+                # The session count may build or extend the calendar cache
+                # (seconds of CPU for a far-future ?date=): off the loop.
+                stale_days = await run_in_threadpool(_trading_days_between, row_d, ref_today)
             except Exception:
                 # Unknown, not fresh: 0 would read as up to date (CLAUDE.md 3.7).
                 logger.exception("stale_days for %s could not be computed; reporting null", ticker)
