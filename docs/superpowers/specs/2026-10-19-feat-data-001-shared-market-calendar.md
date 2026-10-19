@@ -8,10 +8,10 @@ done_when:
   - "tests/lib/test_market_sessions.py passes: known 2026 and 2027 dates, day-by-day parity with the NYSE library for 2020-2027, and every calendar function raising when pandas_market_calendars is unimportable"
   - "A guard test passes proving no hard-coded holiday date set and no direct pandas_market_calendars import exists under lib/, gcp/, scripts/ or platform/api/ outside lib/eastern_time.py"
   - "git grep for MARKET_HOLIDAYS_2026 and NYSE_FULL_CLOSURES returns no match in lib/, gcp/, scripts/ or platform/api/"
-  - "The live router, freshness audit, playbook resolver and dashboard tests pass, and the PR lists every expected value that changed with its reason"
+  - "Frozen-clock consumer tests pass: the live router (Juneteenth closed, Black Friday regular before and after-hours after its 13:00 ET close, 2027-01-18 closed, _next_open_et across a holiday Monday and a Friday close, the most-active label), the dashboard (Juneteenth skipped, exclusive end, calendar failure returns stale_days null), the freshness audit (2027 holiday, Black Friday expected, winter and half-day session closes, calendar failure gives an unknown row and --strict exit 2) and the playbook resolver (2025 and 2027 holidays benign, Black Friday still a failure); the PR lists every pre-existing expectation that changed with its reason"
   - "platform/api/requirements.txt pins pandas-market-calendars==5.3.0 and a test proves the pin equals requirements.lock and requirements-gcp.lock"
-  - "On staging, /api/config/market-hours lists 2026-06-19 as a holiday, includes 2027 holidays in holidays, and reports 2026-11-27 as a 13:00 ET early close; the first calendar call's latency on the staging image is recorded in the PR"
-  - "The stocks OpenAPI snapshot is regenerated and solyra's contract sync and contract test pass against it"
+  - "A TestClient test of /api/config/market-hours proves 2026-06-19 is in holidays_2026 and holidays, 2027 holidays are in holidays, and early_closes holds 2026-11-27 at 13:00; the first calendar call's latency with the API requirements is recorded in the PR; after merge, the same values read from staging are recorded on the PR as a close-out step"
+  - "The stocks OpenAPI snapshot is regenerated, and solyra's contract test passes when run locally against it before merge; the solyra contract sync PR follows the merge as a close-out step"
   - "02-FEATURE-CATALOG FEAT-DATA-001 record and 12-PR-ISSUE-TRACEABILITY list this PR"
 status: approved
 supersedes: null
@@ -57,9 +57,11 @@ list.
 
 ## Non-goals
 
-- The earnings options pipeline and every earnings T-1 call site (Spec B:
-  backfill fetcher, `backtest_playability`, `earnings_event_outcomes`, ranker
-  SQL, weekly schedule, stale-input refusal).
+- The earnings options pipeline and every earnings T-1 call site (Spec B,
+  which implements the served earnings-options coverage section of
+  `2026-10-12-feat-ops-001-av-operations.md` on this calendar, plus the
+  backfill fetcher's session choice, `backtest_playability`,
+  `earnings_event_outcomes` and the ranker SQL).
 - Migrating the other likely-bug call sites, `np.busday_count`, the brief and
   refresh walk-backs, `strat_levels.daily_data_freshness` semantics, solyra's
   `ReplayControl`, and the unsure items (Spec C).
@@ -100,6 +102,11 @@ All arguments and results are Eastern market dates unless stated.
 | `session_count(start, end)` | Number of sessions in `(start, end]` |
 | `session_close(d)` | Close as an aware UTC datetime; 13:00 ET on half days; raises when `d` is not a session |
 | `holidays_in(year)` | Weekday full closures in `year`, ascending |
+| `session_schedule(start, end)` | The schedule itself: one row per session in `[start, end]`, with the library's actual UTC `market_open` and `market_close` (early closes and delayed opens included, e.g. 2002-09-11 opened at 12:00 ET) |
+
+`session_schedule` is the primitive the other eight are built on. It lets
+`nyse_sessions` and `expected_session_bars` keep their DataFrame shape and
+their real open times instead of assuming 09:30 ET (review finding on #1540).
 
 Behaviour:
 
@@ -118,12 +125,28 @@ Behaviour:
    - `platform/api/routers/live.py`: `MARKET_HOLIDAYS_2026` removed;
      `_is_market_open` and `_next_open_et` use `is_session`, `session_close`
      and `next_session`, so Black Friday closes at 13:00 ET.
-   - `platform/api/routers/dashboard.py:_trading_days_between` uses
-     `session_count`; its silent `set()` fallback is removed.
+   - `platform/api/routers/dashboard.py:_trading_days_between` keeps its
+     meaning, sessions strictly between `start` and `end` with both excluded
+     (today's bar does not exist yet): `session_count(start, end)` minus one
+     when `end` is itself a session. Its silent `set()` holiday fallback is
+     removed. The caller in `dashboard_brief` (`dashboard.py:178-180`) catches
+     every exception and reports `stale_days = 0`, which would show a calendar
+     failure as fresh data; it reports `stale_days: null` instead (the
+     response schema already allows null), so the failure is visible.
    - `platform/api/main.py:_most_active_label` keeps calling
      `live._is_market_open`.
-   - `scripts/audit_data_freshness.py`: `MARKET_HOLIDAYS_2026`,
-     `most_recent_trading_day` and `_recent_trading_days` use the module.
+   - `scripts/audit_data_freshness.py`:
+     - `MARKET_HOLIDAYS_2026` is removed; `most_recent_trading_day` and
+       `_recent_trading_days` use the module, keeping each writer's settle
+       hour and lag policy.
+     - The fixed 20:00 UTC close (`audit_data_freshness.py:596-612`, #1066) is
+       replaced by `session_close`: a DATE row's close and the expected close
+       are the session's real close, so winter (21:00 UTC) and half days
+       (18:00 UTC on 2026-11-27) are measured correctly.
+     - A calendar failure is reported as one explicit row named
+       `nyse_calendar` with status `unknown` and the error text, and
+       `--strict` exits 2 when that row is present. No check falls back to
+       weekdays.
    - `gcp/premarket_playbook_resolver.py`: `NYSE_FULL_CLOSURES` and its import
      from `scripts/` are removed in favour of `is_session`.
 2. Library wrappers become thin calls to the module, losing their fallbacks:
@@ -135,7 +158,10 @@ Behaviour:
    `scripts/fetch_alphavantage_intraday.py:is_month_all_non_trading_days`.
    Their public signatures and return shapes stay the same.
 3. `/api/config/market-hours` adds `holidays` (current and next year, from
-   `holidays_in`). `holidays_2026` stays, filled from the module, so solyra's
+   `holidays_in`) and `early_closes`, a list of `{date, close}` objects for
+   the same two years with `close` as `HH:MM` Eastern (for example
+   `{"date": "2026-11-27", "close": "13:00"}`), so clients no longer read the
+   static 16:00 `regular.close` on half days. `holidays_2026` stays, filled from the module, so solyra's
    replay picker is unchanged until Spec C moves it to `holidays` and removes
    the old key. The vendored OpenAPI snapshot and solyra's contract test are
    updated in the same change set (solyra CLAUDE.md Rule 6).
@@ -149,8 +175,12 @@ Behaviour:
 | `/api/live/status`, `_next_open_et`, most-active label | Juneteenth a session; Black Friday closed; 2027 has no holidays | Correct closures for any year; Black Friday a 13:00 ET session |
 | Freshness audit | Correct for 2026 only | Correct for any year |
 | Playbook resolver | Correct for 2026 only | Correct for any year, including pre-2026 backfills |
+| Freshness audit lag math | Closes assumed at 20:00 UTC (one hour early all winter, two hours late on Black Friday) | Each session's real close |
+| Freshness audit on calendar failure | n/a (no calendar used) | One `nyse_calendar` row, status `unknown`; `--strict` exits 2 |
+| `/api/config/market-hours` | `holidays_2026` only | Adds `holidays` and `early_closes` for the current and next year |
 | Library wrappers | Weekday-only on import or lookup failure | Raise |
 | `dashboard._trading_days_between` | No holidays when its import fails | Holiday-aware; import failure raises |
+| `dashboard_brief` on calendar failure | `stale_days: 0` (reads as fresh) | `stale_days: null` |
 
 `strat_levels.daily_data_freshness` is deliberately unchanged: it flags a
 post-holiday session as stale by design, and changing that alters what the
@@ -175,14 +205,34 @@ unimportable case):
    `lib/ gcp/ scripts/ platform/api/`.
 6. Pin parity: `platform/api/requirements.txt`, `requirements.lock` and
    `requirements-gcp.lock` pin the same version.
-7. Existing tests for the live router, freshness audit, playbook resolver and
-   dashboard pass; each changed expectation is listed in the PR with its
-   reason.
+7. Consumer tests with a frozen clock, so a wrong wiring fails even when the
+   module parity suite passes (the existing live-router tests only assert
+   field presence against the wall clock):
+   - Live router: 2026-06-19 closed; 2026-11-27 regular at 12:59 ET and
+     after-hours at 13:30 ET; 2027-01-18 closed; `_next_open_et` from a
+     holiday Monday before 09:30 gives Tuesday 09:30 and from Friday after
+     the close gives Monday 09:30; `_most_active_label` is not "live" on
+     2026-06-19 during regular hours.
+   - Market hours: a TestClient request returns 2026-06-19 in `holidays_2026`
+     and `holidays`, 2027 holidays in `holidays`, and
+     `{"date": "2026-11-27", "close": "13:00"}` in `early_closes`.
+   - Dashboard: Thursday to Monday counts 1 session; 2026-06-18 to 2026-06-22
+     counts 0; with the calendar failing, `dashboard_brief` returns
+     `stale_days: null`.
+   - Freshness audit: 2027-01-18 is skipped; Black Friday is an expected
+     session; a DATE row's lag uses 21:00 UTC in January and 18:00 UTC on
+     2026-11-27; with the calendar failing, the report holds a `nyse_calendar`
+     row with status `unknown` and `--strict` exits 2.
+   - Playbook resolver: `classify_date_outcome` returns `benign_holiday` for
+     2025-07-04 and 2027-01-18, and still `failed` for 2026-11-27.
+8. Existing tests for these consumers pass; each changed expectation is listed
+   in the PR with its reason.
 
 ### Capacity and cost (CLAUDE.md Rule 0)
 
 Measured 2026-10-19 in a sandbox with `pandas_market_calendars` 5.5.0 (the
-lock pins 5.3.0; the staging measurement in done_when replaces this):
+lock pins 5.3.0; the measurement with the API requirements in done_when 6,
+and the staging read after merge, replace this):
 
 - Volume: no new data. One cached schedule per process; 2010-2032 is 5,782
   sessions.
@@ -199,8 +249,39 @@ lock pins 5.3.0; the staging measurement in done_when replaces this):
 ### Deployment
 
 Both images rebuild. The API change ships through the existing
-`deploy-staging.yml` workflow; jobs pick up the module on their next deploy.
-No IAM, schedule or schema change.
+`deploy-staging.yml` workflow, which deploys only from `main`; jobs pick up
+the module on their next deploy. No IAM, schedule or schema change.
+
+Close-out after merge (not pre-merge `done_when` items, because staging and
+solyra's contract sync both read `main`):
+
+1. Dispatch `deploy-staging.yml` from `main`, read `/api/config/market-hours`
+   and `/api/live/status` on staging, and record the done_when 6 values and
+   the first calendar call's latency on the PR.
+2. Open the solyra contract sync PR (`npm run contract:sync`), updating the
+   market-hours mock for `holidays` and `early_closes`.
+
+## Relationship to approved specifications
+
+This spec takes over the section "One actual exchange calendar" of
+`docs/superpowers/specs/2026-10-12-feat-ops-001-av-operations.md` (approved
+2026-10-13, no plan or implementation yet), with the user's approval on
+2026-10-19. Its other sections are unchanged.
+
+- Kept from that section: the audit resolves sessions through
+  `gcp.fetchers.evaluate_ew_strikes.nyse_sessions` (which now delegates to
+  `lib/eastern_time.py`); session closes are real (DST and half days);
+  Black Friday is a session; 2027 holidays are closed; a calendar failure is
+  an attributable `unknown` with a nonzero `--strict` exit; no hard-coded
+  holiday set or weekday fallback in the audit.
+- Changed: that section keeps `MARKET_HOLIDAYS_2026` as a deprecated
+  compatibility export for `gcp/premarket_playbook_resolver.py`. This spec
+  removes it, because the resolver, its only consumer, moves to `is_session`
+  in the same PR. That section's rule not to delete a public import while its
+  consumer remains unchanged is met: the consumer changes with it.
+- Not taken over: the AV indicator coverage clocks and the served
+  earnings-options coverage sections. Spec B implements the latter on this
+  calendar.
 
 ## Risks
 
@@ -210,8 +291,13 @@ No IAM, schedule or schema change.
   Intended (§3.7); the failure notifier reports it.
 - Pin drift between the API image and the jobs image. Caught by the pin parity
   test (done_when 5).
-- First-call latency on the API is higher than measured. Caught by the staging
-  measurement (done_when 6); loading at startup is the fallback design.
+- First-call latency on the API is higher than measured. Caught by the
+  measurement with the API requirements (done_when 6) and the staging read
+  after merge; loading at startup is the fallback design.
+- A calendar failure hidden by a caller's catch-all, as in `dashboard_brief`.
+  Caught by the failure-path consumer tests (done_when 4); the guard test
+  (done_when 2) does not see callers, so the PR's review checks every
+  `except` around a migrated call.
 
 ## Appendix A: audit of calendar-day versus trading-day logic (2026-10-18)
 
