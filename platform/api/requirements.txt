@@ -22,3 +22,11 @@ google-cloud-run>=0.10.0
 # transitively (it is currently on the box only via streamlit, a
 # requirements-research.txt dev-only package not present in this image).
 python-multipart>=0.0.9
+
+# pandas-market-calendars backs the NYSE session calendar in
+# lib/eastern_time.py (lazy import), which the API calls. The platform-api
+# image installs ONLY this file plus the Dockerfile's inline list, so the
+# copy in requirements.lock does not reach it. Pinned exactly, equal to both
+# locks (tests/meta/test_market_calendar_pin.py): the holiday table ships
+# inside the library, and the API and the jobs must agree on open days.
+pandas-market-calendars==5.3.0
