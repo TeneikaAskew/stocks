@@ -16,7 +16,7 @@ from api.schemas import (
     DashboardBriefResponse,
     MovementStatementResponse,
 )
-from lib.eastern_time import is_session, session_count
+from lib.eastern_time import is_session, market_today, session_count
 from lib.infra_errors import is_backend_outage, is_infrastructure_error
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -171,7 +171,9 @@ async def dashboard_brief(
                     row_d = row_date
                 else:
                     row_d = datetime.strptime(str(row_date), "%Y-%m-%d").date()
-                ref_today = datetime.strptime(date, "%Y-%m-%d").date() if date else datetime.now().date()
+                # The Eastern market date: the container clock is UTC, which
+                # is already tomorrow from 20:00 ET (CLAUDE.md 3.9).
+                ref_today = datetime.strptime(date, "%Y-%m-%d").date() if date else market_today()
                 stale_days = _trading_days_between(row_d, ref_today)
             except Exception:
                 # Unknown, not fresh: 0 would read as up to date (CLAUDE.md 3.7).

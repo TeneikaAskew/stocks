@@ -157,6 +157,10 @@ def test_cold_calendar_does_not_stall_event_loop(monkeypatch, cold_calendar):
 
     daily_queried = threading.Event()
     monkeypatch.setattr(eastern_time, "_build_session_cache", slow_build)
+    # Freeze the Eastern clock (market_today reads eastern_now) so the brief's
+    # "today", and so stale_days, never depend on the real date.
+    frozen = _et(2026, 10, 19, 12)
+    monkeypatch.setattr(eastern_time, "eastern_now", lambda: frozen)
     monkeypatch.setattr(dashboard, "_CLOUD_SQL", True)
     monkeypatch.setattr(dashboard, "_query_fn", _brief_query_factory(daily_queried))
 
@@ -182,7 +186,8 @@ def test_cold_calendar_does_not_stall_event_loop(monkeypatch, cold_calendar):
 
     assert health.status_code == 200
     assert brief.status_code == 200
-    # The brief did read the calendar: stale_days is a session count.
+    # The brief did read the calendar: Friday 2026-10-16 is the one session
+    # strictly between the 2026-10-15 row and the frozen 2026-10-19.
     assert brief.json()["daily_indicators"]["stale_days"] == 1
     assert health_done < 0.3, f"/api/health took {health_done:.3f}s behind a cold calendar"
     assert builds == [False], f"schedule builds (True = on the event loop): {builds}"

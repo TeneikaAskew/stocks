@@ -8,7 +8,7 @@ empty-holiday-set fallback is gone. When that count fails, the brief reports
 import logging
 import os
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -30,6 +30,9 @@ finally:
     os.chdir(_original_cwd)
 
 from fastapi.testclient import TestClient
+
+from lib import eastern_time
+from lib.eastern_time import ET, UTC
 
 
 def test_thursday_to_monday_counts_friday_only():
@@ -111,6 +114,28 @@ def test_brief_stale_days_counts_sessions(monkeypatch):
 
     with TestClient(main.app) as client:
         resp = client.get("/api/dashboard/brief/SPY", params={"date": "2026-10-19"})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["daily_indicators"]["stale_days"] == 1
+
+
+def test_brief_today_is_the_eastern_date(monkeypatch):
+    """With no ?date=, "today" is the Eastern market date (CLAUDE.md 3.9).
+    At 21:00 ET on 2026-10-19 the UTC date is already 2026-10-20, which
+    would count Monday 2026-10-19 as missing too and report 2."""
+    frozen = datetime(2026, 10, 20, 1, 0, tzinfo=UTC).astimezone(ET)  # 21:00 ET 2026-10-19
+    assert frozen.date() == date(2026, 10, 19)
+
+    async def _no_overlay(_ticker, _daily):
+        return {}
+
+    monkeypatch.setattr(eastern_time, "eastern_now", lambda: frozen)
+    monkeypatch.setattr(dashboard, "_CLOUD_SQL", True)
+    monkeypatch.setattr(dashboard, "_query_fn", _brief_query)
+    monkeypatch.setattr(dashboard, "_apply_live_overlay", _no_overlay)
+
+    with TestClient(main.app) as client:
+        resp = client.get("/api/dashboard/brief/SPY")
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["daily_indicators"]["stale_days"] == 1
