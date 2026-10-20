@@ -40,3 +40,4 @@ __all__ = [
     'RiskConfig',
     'ExitConfig',
 ]
+# C1 negative test: this PR must be blocked by the required gate check
