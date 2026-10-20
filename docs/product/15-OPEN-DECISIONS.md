@@ -1,6 +1,6 @@
 # Open Product Decisions
 
-**Last reviewed:** 2026-10-10 · **Last scanned:** 2026-09-29 · **Owner:** TBD
+**Last reviewed:** 2026-10-10 · **Last scanned:** 2026-10-20 · **Owner:** TBD
 
 Every item is **PRODUCT DECISION REQUIRED**; no target implementation should silently resolve it.
 
