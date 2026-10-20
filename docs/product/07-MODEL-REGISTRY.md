@@ -1,6 +1,6 @@
 # Model and Algorithm Registry
 
-**Last reviewed:** 2026-09-26 · **Last scanned:** 2026-10-20 · **Owner:** TBD
+**Last reviewed:** 2026-09-26 · **Owner:** TBD
 
 Covers deterministic rules, heuristics, statistical systems, trained estimators and LLM
 nodes — a model is anything that produces a decision, not only a fitted estimator.
