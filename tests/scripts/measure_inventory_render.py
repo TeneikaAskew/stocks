@@ -65,9 +65,7 @@ def process_table() -> dict[int, tuple[int, int]]:
         if not path.name.isdecimal():
             continue
         try:
-            raw = (path / "stat").read_text()
-            fields = raw[raw.rfind(")") + 2:].split()
-            result[int(path.name)] = (int(fields[19]), int(fields[1]))
+            result[int(path.name)] = process_identity(int(path.name))
         except (FileNotFoundError, ProcessLookupError):
             pass
     return result
@@ -88,11 +86,13 @@ def process_start(pid: int) -> int:
 
 
 def process_identity(pid: int) -> tuple[int, int]:
-    raw = (PROC / str(pid) / "stat").read_text()
+    # Linux comm permits arbitrary non-NUL bytes, including invalid UTF-8 and parentheses.
+    # Only the PID prefix and fixed numeric fields after its final ')' have identity meaning.
     try:
-        if int(raw[:raw.index(" (")]) != pid:
+        raw = (PROC / str(pid) / "stat").read_bytes()
+        if int(raw[:raw.index(b" (")]) != pid:
             raise ValueError("PID disagreement")
-        fields = raw[raw.rfind(")") + 2:].split()
+        fields = raw[raw.rfind(b")") + 2:].split()
         start, parent = int(fields[19]), int(fields[1])
         if start < 0 or parent < 0:
             raise ValueError("negative process identity")
@@ -170,7 +170,7 @@ class OwnedFamily:
                                 os.close(fd)
                 except (ProcessLookupError, FileNotFoundError):
                     pass
-                except OSError as e:
+                except (OSError, ValueError, IndexError) as e:
                     errors.append(str(e))
         if errors:
             raise OSError("owned process identity unavailable: " + errors[0])
@@ -196,7 +196,7 @@ class OwnedFamily:
                             table[pid] = process_identity(pid)
                         except (FileNotFoundError, ProcessLookupError):
                             pass
-                        except OSError as e:
+                        except (OSError, ValueError, IndexError) as e:
                             errors.append(str(e))
             except OSError as e:
                 errors.append(str(e))
@@ -219,12 +219,10 @@ class OwnedFamily:
         result = {os.getpid(): rss(os.getpid())}
         for pid, start in self.snapshot().items():
             try:
-                raw = (PROC / str(pid) / "stat").read_text()
-                if int(raw[raw.rfind(")") + 2:].split()[19]) != start:
+                if process_start(pid) != start:
                     continue
                 value = rss(pid)
-                raw = (PROC / str(pid) / "stat").read_text()
-                if int(raw[raw.rfind(")") + 2:].split()[19]) == start:
+                if process_start(pid) == start:
                     result[pid] = value
             except (FileNotFoundError, ProcessLookupError):
                 pass
@@ -246,10 +244,15 @@ class OwnedFamily:
 
     def terminate_and_reap(self, process: subprocess.Popen, deadline: float) -> bool:
         while True:
+            # Known stable handles and the exclusively owned unreaped root do not depend on
+            # successful observation. Stop them BEFORE any parser/collector can fail again.
+            self.signal_known()
+            if process.poll() is None:
+                process.kill()
             try:
                 self.cleanup_discover()
-            except OSError:
-                pass  # Always signal known owners, even if neither observation path is available.
+            except Exception:
+                pass  # Neither failed view can revoke known ownership or certify an unknown family.
             self.signal_known()
             # If PIDfd acquisition itself failed, Popen still owns this unreaped child.
             # Exclusive caller/default SIGCHLD prevents another waiter from recycling its PID.
@@ -270,7 +273,7 @@ class OwnedFamily:
                     # Discover again before certifying completion, even if the first scan failed.
                     if not self.cleanup_discover():
                         return True
-                except OSError:
+                except Exception:
                     if not self.known_live():
                         # Known owners are stopped; two unavailable views never certify the whole family.
                         return False

@@ -4849,7 +4849,7 @@ RECOVERY_PROBE = r"""
 import ctypes,importlib.util,json,os,pathlib,signal,subprocess,sys,time
 s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
 mode=sys.argv[2];pidfile=pathlib.Path('recovery-pids.json');native=ctypes.CDLL(None);prior=ctypes.c_int();assert native.prctl(37,ctypes.byref(prior),0,0,0)==0;assert native.prctl(36,1,0,0,0)==0
-real_popen=m.subprocess.Popen;real_table=m.process_table;real_scandir=m.os.scandir;real_read=pathlib.Path.read_text;root=None;targets=[]
+real_popen=m.subprocess.Popen;real_table=m.process_table;real_scandir=m.os.scandir;real_read=pathlib.Path.read_bytes;root=None;targets=[]
 code='''import os,sys,time,json
 if os.fork()==0:
  os.setsid()
@@ -4867,7 +4867,7 @@ def lost():raise OSError('general full-table observation unavailable after nativ
 def scan(*a,**kw):raise OSError('independent raw directory observation also unavailable')
 def read(path,*a,**kw):
  if str(path)==f'/proc/{os.getppid()}/stat':
-  if mode=='unrelated-malformed':return 'malformed stable process identity'
+  if mode=='unrelated-malformed':return b'malformed stable process identity'
   raise OSError('unrelated stable entry inaccessible')
  return real_read(path,*a,**kw)
 def popen(*a,**kw):
@@ -4882,14 +4882,14 @@ def popen(*a,**kw):
   assert len(targets)==2
   m.process_table=lost
   if mode=='both-unavailable':m.os.scandir=scan
-  if mode in ('unrelated-unreadable','unrelated-malformed'):pathlib.Path.read_text=read
+  if mode in ('unrelated-unreadable','unrelated-malformed'):pathlib.Path.read_bytes=read
  return root
 m.subprocess.Popen=popen
 try:
  report=m.run_bounded([sys.executable,'-I','-B','-c','import time;time.sleep(.02)' if mode=='accepted' else code,str(pidfile)],pathlib.Path.cwd(),max_rss_bytes=128*1024*1024,max_seconds=1)
  result=dict(report=report,root_reaped=root.poll() is not None,descendants_alive=[pid for pid in targets if pathlib.Path('/proc',str(pid)).exists()])
 finally:
- m.subprocess.Popen=real_popen;m.process_table=real_table;m.os.scandir=real_scandir;pathlib.Path.read_text=real_read
+ m.subprocess.Popen=real_popen;m.process_table=real_table;m.os.scandir=real_scandir;pathlib.Path.read_bytes=real_read
  if root is not None:
   if root.poll() is None:root.kill()
   root.wait()
@@ -4928,3 +4928,71 @@ def test_measure_inventory_render_recovers_unseen_owned_descendants(tmp_path):
     assert not results['unrelated-malformed']['report']['owned_family_gone'],results
     # Both real observation paths can be unavailable; known root cleanup still runs, with no false family claim.
     assert not results['both-unavailable']['report']['ok'] and not results['both-unavailable']['report']['owned_family_gone'],results
+
+
+NATIVE_NAME_PROBE = r'''
+import ctypes,importlib.util,json,os,pathlib,signal,subprocess,sys,time
+s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+mode=sys.argv[2];native=ctypes.CDLL(None);prior=ctypes.c_int();assert native.prctl(37,ctypes.byref(prior),0,0,0)==0;assert native.prctl(36,1,0,0,0)==0
+oldname=ctypes.create_string_buffer(16);assert native.prctl(16,oldname,0,0,0)==0
+real_popen=m.subprocess.Popen;real_sample=m.OwnedFamily.sample;real_identity=m.process_identity;root=None;hits=dict(native_name=False,sample_barrier=0,parser_failure=0);ready=pathlib.Path('native-name.ready');go=pathlib.Path('native-name.go')
+code="import ctypes,pathlib,sys,time;"+("\nwhile not pathlib.Path(sys.argv[2]).exists():time.sleep(.001)\n" if mode=='after-admission' else '')+"assert ctypes.CDLL(None).prctl(15,ctypes.c_char_p(b'bad-\\xff'),0,0,0)==0;pathlib.Path(sys.argv[1]).write_text('ready');time.sleep(.05)"
+def wait_name():
+ for _ in range(1000):
+  if ready.exists():break
+  time.sleep(.001)
+ assert ready.exists()
+ hits['native_name']=b'bad-\xff' in pathlib.Path('/proc',str(root.pid),'stat').read_bytes()
+ assert hits['native_name']
+def identity(pid):
+ if root is not None and pid==root.pid:hits['parser_failure']+=1;raise ValueError('ordinary identity parser boundary failure')
+ return real_identity(pid)
+def popen(*a,**kw):
+ global root
+ root=real_popen(*a,**kw)
+ if mode=='before-admission':wait_name()
+ if mode=='parser-failure':m.process_identity=identity
+ return root
+def sample(family):
+ if mode=='after-admission' and root is not None and not hits['sample_barrier']:
+  assert family.snapshot().get(root.pid) is not None
+  hits['sample_barrier']+=1;go.write_text('go');wait_name()
+ return real_sample(family)
+m.subprocess.Popen=popen;m.OwnedFamily.sample=sample
+if mode=='unrelated-native-name':
+ assert native.prctl(15,ctypes.c_char_p(b'bad-\xff'),0,0,0)==0
+ hits['native_name']=b'bad-\xff' in pathlib.Path('/proc/self/stat').read_bytes()
+try:
+ try:
+  report=m.run_bounded([sys.executable,'-I','-B','-c',code if mode in ('before-admission','after-admission') else 'import time;time.sleep(20)' if mode=='parser-failure' else 'pass',str(ready),str(go)],pathlib.Path.cwd(),max_rss_bytes=128*1024*1024,max_seconds=1)
+  result=dict(report=report,escaped_exception=None)
+ except Exception as e:result=dict(report=None,escaped_exception=type(e).__name__+': '+str(e))
+ result.update(root_created=root is not None,root_alive_after_monitor=root is not None and root.poll() is None,hits=hits)
+ state=ctypes.c_int();assert native.prctl(37,ctypes.byref(state),0,0,0)==0;result['subreaper_restored']=state.value==1
+finally:
+ m.subprocess.Popen=real_popen;m.OwnedFamily.sample=real_sample;m.process_identity=real_identity
+ if root is not None:
+  if root.poll() is None:root.kill()
+  root.wait()
+ native.prctl(15,oldname,0,0,0);native.prctl(36,prior.value,0,0,0)
+result['fixture_reaped']=root is None or root.returncode is not None
+print(json.dumps(result))
+'''
+
+
+def test_measure_inventory_render_reads_native_process_names_as_bytes(tmp_path):
+    """Real PR_SET_NAME 0xff before root admission/after sampling and outside the family needs no decoding."""
+    results={}
+    for mode in ('ascii','before-admission','after-admission','unrelated-native-name','parser-failure'):
+        directory=tmp_path/mode;directory.mkdir()
+        r=subprocess.run([sys.executable,'-c',NATIVE_NAME_PROBE,str(REPO/MEASURE),mode],cwd=directory,
+                         capture_output=True,text=True,timeout=5)
+        assert r.returncode==0,(mode,r.stdout,r.stderr)
+        results[mode]=json.loads(r.stdout)
+    (tmp_path/'native-name-results.json').write_text(json.dumps(results,indent=2))
+    assert all(x['escaped_exception'] is None and not x['root_alive_after_monitor'] and x['subreaper_restored'] and x['fixture_reaped'] for x in results.values()),results
+    for mode in ('ascii','before-admission','after-admission','unrelated-native-name'):
+        assert results[mode]['root_created'] and results[mode]['report']['ok'] and results[mode]['report']['owned_family_gone'],results
+    assert all(results[mode]['hits']['native_name'] for mode in ('before-admission','after-admission','unrelated-native-name')),results
+    assert results['after-admission']['hits']['sample_barrier']==1,results
+    assert results['parser-failure']['root_created'] and results['parser-failure']['hits']['parser_failure']>0 and not results['parser-failure']['report']['ok'],results
