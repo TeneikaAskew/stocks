@@ -2,7 +2,7 @@
 feat_id: FEAT-STRAT-001
 req_ids: [REQ-DATA-001, REQ-DATA-002, REQ-DATA-003, REQ-DATA-004, REQ-MARKET-001, REQ-PLAYBOOK-001, REQ-REL-001, REQ-REPLAY-001, REQ-REPLAY-002, REQ-VALID-001, REQ-CAP-001, REQ-CAP-002, REQ-PERF-002]
 issues: [884, 866, 907, 908]
-site_source_notes: [INSIGHTS-08]
+site_source_notes: [DASHBOARD-01, INSIGHTS-08]
 canvases:
   - https://claude.ai/artifact/Fg4VQHB6dFGWF9iXSJUDtg
 done_when:
@@ -69,6 +69,24 @@ must not be removed in a way that falsely makes nonadjacent intraday bars consec
 Return reason codes and gaps; valid first observations remain unknown rather than 1.
 Keep partial higher-period state explicitly marked as partial/observable.
 
+Daily analytics adopt approved `2026-10-12-feat-data-001-av-market-data.md`:
+coherent split-and-dividend adjusted daily OHLC/returns/ATR/Strat through the actual
+merged `lib.price_basis.prepare_daily_basis`, version `av-adjusted-daily-v1` and its
+artifact/clock/factor admission. Never mix raw OHL and adjusted Close. Restore all
+price-dimensional levels/ATR into target-session raw execution units through merged
+`restore_daily_units`; raw minute quotes/opening gaps remain separately named raw
+observations. Split-only share/volume conversion is not a new price-analytics policy.
+Missing/future/mismatched factor or vintage evidence is unavailable; no factor1 or
+current retrieval fabricates earlier knowledge. Production adoption waits for the
+real merged DATA helper; no copied unmerged helper or independent adjustment math.
+
+Clocked production consumers adopt actual shared `session_schedule`/session helpers
+from approved `2026-10-19-feat-data-001-shared-market-calendar.md` after that CODE
+implementation lands. Its fail-closed guard/parity covers holidays, DST, half-days
+and delayed opens. Do not add another calendar/cache primitive. Isolated coherent-
+input math/tests may proceed dependency-blocked; production integration/validation
+cannot claim calendar/basis completion before actual merged prerequisites.
+
 ### 2. Full pattern coverage with orthogonal facts
 
 Maintain a human-reviewable truth table and parameterized fixtures covering 1/2U/2D/3,
@@ -129,7 +147,8 @@ The existing briefing, insight summarizer, Strat history tooling and API readers
 and earnings snapshot paths use the same production functions with an explicit clock.
 This includes the persisted daily producers
 `gcp/fetchers/fetch_market_data.py` and
-`gcp/fetchers/backfill_daily_indicators.py`, and the
+`gcp/fetchers/backfill_daily_indicators.py`, on-demand replay writer
+`gcp/backfill_ticker.py`, and the
 `platform/api/routers/dashboard.py` reader of their stored Strat fields. Persist
 rule/alignment versions and independent pattern facts with new writes, expose them
 through the actual dashboard API response, and identify old unversioned records as
@@ -179,6 +198,29 @@ REQ-CAP-001/002 to changed existing scheduled paths. Shared snapshot math adds n
 per-row remote calls.
 Existing jobs only; no new schedule or recurring infrastructure charge is introduced.
 
+### Storage and live-version compatibility
+
+Deliver an idempotent additive migration for versioned state/facts covering market-
+data writers, premarket_analysis and premarket_analysis_history. Schema lands before
+new writers/readers. Old app revisions keep reading legacy fields; a new writer on
+old schema refuses required-column preflight, and a new reader returns explicit
+migration-unavailable/legacy state rather than querying absent fields. Never allow
+upsert_dataframe to drop required unknown columns and report success. Real PostgreSQL
+checks cover migration twice, rolling old/new revision compatibility and rollback.
+
+Keep canonical v2 state in separate versioned storage from legacy candle/combo/FTFC
+training features. Storage keys/lineage distinguish symbol/session/observation,
+source revision, rule/configuration, basis, artifact and code identities; no ambiguous
+latest record may merge v2 facts with a legacy alignment. Full scheduled backfill and on-demand replay cannot overwrite
+protected legacy rows. Test complete full-mode runs, protected-column equality and
+idempotent separate v2 output. The persisted research builder also selects an explicit
+legacy feature rule or refuses an unversioned rebuild; no default-classifier repair
+may silently relabel its training output. The actual signal-monitor classifier/bonus
+path stays explicitly legacy unless a separately declared migration is selected and
+replayed; an informational v2 tag alone does not preserve its arithmetic. Missing
+legacy inputs cannot silently recompute under v2. No threshold tuning, live setting
+promotion, alert quota or direction-gate change is implied.
+
 ## Executable acceptance mapping
 
 The implementation must add/extend the named checks below; a listed future test is
@@ -199,6 +241,51 @@ verdicts, missingness, current-vintage limitations and before/after changed-labe
 populations in the checked-in replay artifact. The broader October1–9/10–16 corpus
 from issue1563 is partitioned into the same admitted batches, with no holdout outcome
 scoring before repaired revision/settings freeze. This does not enlarge a batch cap.
+
+## Sensitive acceptance cases (mandatory additions)
+
+- `tests/lib/test_strat_history.py::TestHistoryObservationContract` (new) invokes
+  actual compute_strat_history with aware as_of, an invalid middle observation and
+  a later post-cutoff row. History tooling propagates the cutoff, retains invalid
+  positions and cannot bridge a pattern/trigger across them. Add
+  `tests/scripts/test_strat_history_contract.py::test_actual_report_and_backtest_propagate_clock_basis_and_rule_version`
+  through actual report/backtest CLI/shared-helper paths. Clock/basis admission
+  precedes loading/resampling; persisted comparisons require matching input/rule/
+  basis identity or explicitly report incomparable, never v2-v1 label accuracy.
+- `tests/lib/test_exec_ftfc_contract.py::TestLegacyFtfcGolden` (new) runs actual
+  build_ftfc_lookup/ftfc_score_at/batched scoring on fixed pre-change expected values:
+  configured frames/aliases, bucket/completion shift, weights, NaN/missing denominator
+  and between-bar lookup. Expected values are frozen literals, not mirrored code.
+  Actual persisted research-builder tests include valid 32-color/outside212/312 cases
+  whose canonical/legacy labels differ, proving an explicit feature version pin or
+  refusal of unversioned rebuilding, not just unchanged simple directional counts.
+- `tests/gcp/test_strat_snapshot_parity.py::TestPersistedWriterContract` invokes all
+  three named writers, including backfill_ticker, and actual dashboard readback.
+  Reject unversioned independent weekly/weight math, combo/strat_combo mismatch
+  and dropped facts. Different explicitly preserved legacy weight configurations
+  need not yield equal numeric scores; compare each declared weights/denominator
+  and expected per-configuration result under matching clock/basis/input identity.
+- `tests/integration/test_strat_schema_compatibility.py` (new, no-skip PG) applies
+  actual migration twice and invokes actual upsert_dataframe/writers/dashboard on
+  old/new schema and app combinations, including mirrored brief-history schema.
+  Required-column absence fails before partial publication; no warning-only success.
+  Include stale per-process reflected schema after DDL, required refresh/restart
+  behavior, old writers retaining v2 sidecar values and history-mirror readback.
+- `tests/gcp/test_strat_snapshot_parity.py::test_full_backfill_preserves_legacy`
+  executes actual full-mode backfill on seeded legacy labels. Protected columns
+  remain identical, separate v2 state is correct and retries are idempotent.
+- `tests/gcp/test_signal_monitor_strat_compatibility.py` (new) exercises actual
+  monitor-to-classifier/bonus strength/fire-selection behavior under explicit legacy
+  and explicitly migrated v2. Prove legacy numerical stability, unsupported-input
+  refusal of unadmitted version/basis migration, version selection and no implicit
+  live promotion. Existing legacy missing-FTFC fallback/threshold behavior stays
+  golden; this test does not introduce a new financial monitor rule.
+- `tests/lib/test_strat.py::TestCorporateActionBasis` (new) plus structural/actual
+  adapter tests use the real merged DATA helper on split/reverse-split/dividend,
+  missing-factor and future-vintage fixtures. Assert coherent adjusted facts,
+  restored raw levels/ATR and mixed-basis refusal. Run merged calendar guard/parity
+  and consumer checks, including delayed opens; dependency absence is blocked
+  integration, not a passing mock substitute for this acceptance.
 
 ## Risks
 
