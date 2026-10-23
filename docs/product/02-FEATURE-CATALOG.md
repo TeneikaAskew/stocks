@@ -577,12 +577,12 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation — committed source identity implemented; rollout/global remediation pending; tests that fake gcloud cannot reach a real one, the deliberate `--mode=live` secret read excepted ([#1536](https://github.com/TeneikaAskew/stocks/pull/1536)) |
+| Status | Production but needs remediation — committed source identity and complete generated-inventory verification implemented; rollout/global remediation pending; tests that fake gcloud cannot reach a real one, the deliberate `--mode=live` secret read excepted ([#1536](https://github.com/TeneikaAskew/stocks/pull/1536)) |
 | Priority | P1 |
 | Target phase | Phase 6 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-10-18 |
-| Evidence status | SOURCE IDENTITY — local committed implementation checks; authenticated CODE review and CI required on [#1470](https://github.com/TeneikaAskew/stocks/pull/1470); deployed-state close-out is separate |
+| Last reviewed | 2026-10-23 |
+| Evidence status | LOCAL SOURCE — complete generated-inventory verification and bounded resource-observer tests on [#1538](https://github.com/TeneikaAskew/stocks/pull/1538); authenticated CODE review and CI for this change remain required. [#1470](https://github.com/TeneikaAskew/stocks/pull/1470) and [#1537](https://github.com/TeneikaAskew/stocks/pull/1537) have actual-main source/terminal identity proof; this does not certify deployment or data freshness |
 | UI surface | — |
 | Backend | — |
 | Data | — |
