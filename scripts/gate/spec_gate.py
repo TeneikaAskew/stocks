@@ -1130,6 +1130,40 @@ SOURCE_IMPORT_SUFFIXES = tuple(dict.fromkeys((".py", ".pyc", ".pyw", ".so", ".py
 SOURCE_ROOT_IMPORT_NAMES = SOURCE_IMPORT_NAMES | {"scripts", "tests"}
 
 
+def source_backed_cache(path: str, *, trees=(), present=None) -> str | None:
+    """Map a tagged cache to its existing source, never an orphan namespace cache.
+
+    This parses names only; no candidate cache/native bytes are loaded. Present manifests
+    already supplied by the source verifier are reused; gate trees need at most one source
+    mode lookup per revision for a matching cache, not a whole-tree scan or retained cache.
+    """
+    if not path.endswith(".pyc") or "__pycache__" not in path.split("/"):
+        return None
+    try:
+        source = importlib.util.source_from_cache(path)
+    except ValueError:
+        # pytest's assertion-rewrite tag contains version dots beyond standard PEP3147's shape.
+        folder, _, name = path.rpartition("/")
+        stem, dot, tag = name.partition(".")
+        if (not dot or folder.rsplit("/", 1)[-1] != "__pycache__"
+                or not re.fullmatch(r"[A-Za-z0-9_-]+-pytest-[0-9][A-Za-z0-9_.-]*\.pyc", tag)):
+            return None
+        parent = folder.rpartition("/")[0]
+        source = f"{parent}/{stem}.py" if parent else f"{stem}.py"
+    exists = source in present if present is not None else any(t.mode(source) is not None for t in trees)
+    return source if exists else None
+
+
+def effective_python_input(path: str, sources, *, trees=(), present=None) -> str | None:
+    """Canonical trusted source role for direct loader siblings or source-backed tagged caches."""
+    if cached := source_backed_cache(path, trees=trees, present=present):
+        return cached if cached in sources else None
+    for suffix in SOURCE_IMPORT_SUFFIXES:
+        if path.endswith(suffix) and (source := path[:-len(suffix)] + ".py") in sources:
+            return source
+    return None
+
+
 def source_import_shadow(path: str, *, trees=(), present=None) -> bool:
     """Effective startup slots, including both sides of package transitions.
 
@@ -1141,6 +1175,10 @@ def source_import_shadow(path: str, *, trees=(), present=None) -> bool:
     def exists(candidate):
         return candidate in present if present is not None else any(t.mode(candidate) is not None for t in trees)
 
+    if effective_python_input(path, TRUSTED_PYTHON_INPUTS, trees=trees, present=present):
+        return True
+    if cached := source_backed_cache(path, trees=trees, present=present):
+        return source_import_shadow(cached, trees=trees, present=present)
     for parent in ("", "scripts/maintenance/", "scripts/", "tests/scripts/", "tests/"):
         if not path.startswith(parent):
             continue
@@ -1199,6 +1237,9 @@ GATE_ENTRYPOINTS = (
     "scripts/gate/export_model_registry.py", "tests/scripts/test_export_model_registry.py",   # where they exist (round five)
     *PINNED.values(),   # the pinned copies: without one, the file it pins is judged by the models alone
 )
+TRUSTED_PYTHON_INPUTS = frozenset(p for p in (
+    *SOURCE_REVIEW_INPUTS, *RENDERER_FILES, *GATE_ENTRYPOINTS, "tests/scripts/measure_inventory_render.py",
+) if p.endswith(".py"))
 # The manifest fields a chore/ branch may change. Anything else in package.json or
 # pyproject.toml (scripts, build config, tool tables) is executable configuration that
 # CI runs from the checkout, so it is a CHANGE.
@@ -4106,7 +4147,8 @@ def generated_doc_refusals(ch: Change, merge_base: str, head: str, docs: list[st
                            cgd: types.ModuleType) -> list[str]:
     """Why each changed generated document in `docs` is refused, or [] when every one carries only main's render
     of its inventory blocks. The rules run cheapest first; a document refused by one is not read further."""
-    inputs = [p for p in RENDER_INPUTS if p in ch.changed]
+    inputs = [p for p in ch.changed if p in RENDER_INPUTS
+              or effective_python_input(p, RENDER_INPUTS, trees=(ch.before, ch.tree))]
     if inputs:
         return [generated_refusal(doc, f"changes alongside {summarize(inputs)}, which decide the render; land that "
                                        "change first, then re-render") for doc in docs]

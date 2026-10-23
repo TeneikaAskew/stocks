@@ -4996,3 +4996,60 @@ def test_measure_inventory_render_reads_native_process_names_as_bytes(tmp_path):
     assert all(results[mode]['hits']['native_name'] for mode in ('before-admission','after-admission','unrelated-native-name')),results
     assert results['after-admission']['hits']['sample_barrier']==1,results
     assert results['parser-failure']['root_created'] and results['parser-failure']['hits']['parser_failure']>0 and not results['parser-failure']['report']['ok'],results
+
+
+def base_checkout_input_pr(repo: Path, branch: str, files: dict[str, str], **meta):
+    """Read candidate inert slots only as Git data, matching the public BASE-checkout gate job."""
+    change(repo,branch,files)
+    base,head=base_and_head(repo)
+    _git(repo,'checkout','-q','-f','main')
+    return gate(repo,'--pr',base,head,PR_HEAD_REF=branch,**meta)
+
+
+def test_effective_python_input_slots_have_inert_native_admission_controls(repo):
+    """Inert bytes prove startup-slot ownership without executing candidate cache/native artifacts."""
+    ci_branch='fix/feat-cicd-001-startup-slots';ci_spec='docs/superpowers/specs/2026-09-01-startup-slots.md';ci_plan='docs/superpowers/plans/2026-09-01-startup-slots.md'
+    row=CATALOG_TEXT.replace('| [FEAT-DATA-001]','| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]',1)
+    sources={'scripts/maintenance/doc_inventory.py','scripts/maintenance/check_generated_docs.py','scripts/maintenance/__init__.py','scripts/maintenance/doc_source_snapshot.py','tests/scripts/measure_inventory_render.py'}
+    on_base(repo,{CATALOG:row,ci_spec:spec(feat_id='FEAT-CICD-001'),ci_plan:plan(feat_id='FEAT-CICD-001',spec=ci_spec,branch=ci_branch),**{p:'# Trusted source-presence fixture; not executed.\n' for p in sources}})
+    tag=sys.implementation.cache_tag;inert='Inert admission fixture: not executable bytecode or a native library.\n'
+    slots=(f'scripts/maintenance/__pycache__/doc_inventory.{tag}.pyc',f'scripts/maintenance/__pycache__/__init__.{tag}.opt-1.pyc','scripts/maintenance/check_generated_docs.abi3.so','scripts/maintenance/doc_inventory.pyc',f'tests/scripts/__pycache__/measure_inventory_render.{tag}.pyc')
+    control=base_checkout_input_pr(repo,BRANCH,{**CODE,'scripts/maintenance/cache-notes.bin':inert},**DOCS_OK)
+    results={p:base_checkout_input_pr(repo,BRANCH,{**CODE,p:inert},**DOCS_OK) for p in slots}
+    assert control.returncode==0,control.stdout+control.stderr
+    assert all(r.returncode==1 and 'belong to FEAT-CICD-001' in r.stdout for r in results.values()),{p:r.stdout for p,r in results.items()}
+    owner=base_checkout_input_pr(repo,ci_branch,{**CODE,slots[0]:inert},PR_TITLE='FEAT-CICD-001: input ownership',PR_BODY=body(spec_path=ci_spec,plan_path=ci_plan))
+    assert owner.returncode==0,owner.stdout+owner.stderr
+    # Tagged cache without its source cannot initialize this namespace package.
+    orphan=base_checkout_input_pr(repo,BRANCH,{**CODE,f'scripts/__pycache__/__init__.{tag}.pyc':inert},**DOCS_OK)
+    assert orphan.returncode==0,orphan.stdout+orphan.stderr
+    sg=load_gate(repo)
+    effective_sources=sources|{'scripts/__init__.py','scripts/gate/spec_gate.py','json.py',
+                              'scripts/maintenance/docs_audit.py','tests/scripts/test_doc_source_snapshot.py',
+                              'tests/scripts/test_docs_audit.py','tests/scripts/test_spec_gate.py'}
+    present=types.SimpleNamespace(mode=lambda path:'100644' if path in effective_sources else None)
+    for source in effective_sources:
+        for optimization in ('','1','2'):
+            cache=importlib.util.cache_from_source(source,optimization=optimization)
+            assert sg.is_process_file(cache,(present,present)),cache
+        assert sg.is_process_file(source[:-3]+'.abi3.so',(present,present)),source
+    assert sg.is_process_file(f'tests/scripts/__pycache__/test_spec_gate.{tag}-pytest-8.3.2.pyc',(present,present))
+    assert sg.source_import_shadow(importlib.util.cache_from_source('json.py'),present={'json.py'})
+    assert not sg.source_import_shadow(importlib.util.cache_from_source('json.py'),present=set())
+
+
+def test_effective_renderer_slots_refuse_beside_generated_docs_for_the_owner(inventory_repo):
+    """The CICD owner still cannot change effective renderer/init slots alongside generated output."""
+    if RENDERER_HERE:
+        root,_=inventory_repo;ci_branch='fix/feat-cicd-001-render-inputs';ci_spec='docs/superpowers/specs/2026-09-01-render-inputs.md';ci_plan='docs/superpowers/plans/2026-09-01-render-inputs.md'
+        row=CATALOG_TEXT.replace('| [FEAT-DATA-001]','| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]',1)
+        on_base(root,{CATALOG:row,ci_spec:spec(feat_id='FEAT-CICD-001'),ci_plan:plan(feat_id='FEAT-CICD-001',spec=ci_spec,branch=ci_branch),'scripts/__init__.py':'# Trusted empty initializer.\n'},then=render)
+        change(root,ci_branch,{MAIN_PY:moved_main()},then=render)
+        expected={p:(root/p).read_text() for p in (MAIN_PY,*GENERATED)}
+        meta=dict(PR_TITLE='FEAT-CICD-001: renderer inputs',PR_BODY=body(spec_path=ci_spec,plan_path=ci_plan)+'\n\n## Capacity\nn/a: native fixture only\n')
+        tag=sys.implementation.cache_tag;inert='Inert admission fixture; never imported.\n'
+        control=base_checkout_input_pr(root,ci_branch,{**expected,'scripts/maintenance/cache-notes.bin':inert},**meta)
+        slots=(f'scripts/maintenance/__pycache__/doc_inventory.{tag}.pyc',f'scripts/maintenance/__pycache__/check_generated_docs.{tag}.opt-2.pyc',f'scripts/maintenance/__pycache__/__init__.{tag}.opt-1.pyc',f'scripts/__pycache__/__init__.{tag}.pyc','scripts/maintenance/check_generated_docs.abi3.so','scripts/maintenance/doc_inventory.pyc')
+        results={p:base_checkout_input_pr(root,ci_branch,{**expected,p:inert},**meta) for p in slots}
+        assert control.returncode==0,control.stdout+control.stderr
+        assert all(refused(r,'which decide the render') for r in results.values()),{p:r.stdout+r.stderr for p,r in results.items()}
