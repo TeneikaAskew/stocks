@@ -4795,7 +4795,7 @@ m.subprocess.Popen=popen;m.os.pidfd_open=pidfd;m.OwnedFamily.terminate_and_reap=
 if mode=='prior-state-failure':m.ctypes.CDLL=lambda *a,**kw:NoPriorState()
 try:
  try:
-  limit=1 if mode=='accepted' else .15
+  limit=1 if mode in ('accepted','cleanup-control') else .15
   with m.deadline_guard(time.monotonic()+limit):
    report=m.run_bounded([sys.executable,'-c','import signal,time;assert signal.SIGALRM not in signal.pthread_sigmask(signal.SIG_BLOCK,set());time.sleep(.02)' if mode=='accepted' else 'import time;time.sleep(20)'],pathlib.Path.cwd(),max_rss_bytes=128*1024*1024,max_seconds=limit)
  except m.DeliveryDeadline as e:outer=str(e)
