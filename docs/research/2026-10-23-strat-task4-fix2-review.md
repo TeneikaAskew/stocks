@@ -20,7 +20,7 @@ Decode each part separately, concatenate decoded bytes in order, verify archive 
 
 ## Remaining boundaries
 
-GCP raw upload remains paused. No organization IAM retry, API enablement, new credentials, policy change or raw public upload occurred. Holdout remains quarantined and unscored. Real merged calendar/DATA basis, source/PIT admission, owner-defined canonical PMG/custom anchors, downstream consumer and M1 propagation, resolver/#908 treatment, actual production replay/resource qualification and final delivery gates remain open. Local synthetic cases do not certify these requirements.
+Raw archival backup is managed separately under explicit owner approval; no raw data is included in this source checkpoint. No organization IAM retry, API enablement, new credentials, policy change or raw public upload occurred. Holdout remains quarantined and unscored. Real merged calendar/DATA basis, source/PIT admission, owner-defined canonical PMG/custom anchors, downstream consumer and M1 propagation, resolver/#908 treatment, actual production replay/resource qualification and final delivery gates remain open. Local synthetic cases do not certify these requirements.
 
 ## Original reviewer scoped result
 
