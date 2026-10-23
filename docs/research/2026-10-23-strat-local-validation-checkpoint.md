@@ -123,3 +123,28 @@ The [original reviewer scoped fix1 verification](2026-10-23-strat-task5a-fix1-re
 Fix1 source delta:25 members,91,696bytes,SHA256 `9c2e3d8ebee0e9d7ddfcd82887217c3fdc9fcb4b7efe5c2dfe99d01ee1cf978d`, [part1](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6371306139), [part2](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6371306734), [part3](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6371307366), [part4](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6371307947). Five-archive in-memory full-file restoration verifies all26 accepted paths against frozen bytes; no summary patches or live writes. Local combined receipt SHA256 `f497c046b0bd0aaf67795f5104f2ce218319c3a785278f15e1a972f053311b77`.
 
 Task5B has preserved41 accepted/prospective paths and begun bounded persistence/schema/dashboard reconstruction under the existing scope. Initial pure synthetic capacity evidence found12 repeated full snapshot calls cost14.505s, unsuitable for historical full backfills. A minimal shared descriptive daily batch API using the existing classifier is authorized locally; date-only labels retain unknown observation/acquisition/basis and unavailable current action. Actual caller weights and protected legacy nulls must remain unchanged. This is not production capacity or baseline predictive evidence.
+
+## Frozen Task5B local integration evidence — independent review active
+
+[Full frozen report, limitations and exact source/evidence backup](2026-10-23-strat-task5b-frozen-candidate.md) records17changedpaths/41presentfrozenfiles, manifest `0c34aab8cdb0d7ca1dcbd2e09e136d61ceadf7716c6717376f4745927609c3a3`. Final selectors cover342mock cases,42actual localPG behavior cases and7separate measuredPG cases. These totals describe distinct selectors after final fixes; stage35/17/313/etc counts are not additive. The historical-dashboard extra case is mock, not PG. No actual repaired production-entrypoint replay or baseline movement/activation/earnings outcome scoring has run.
+
+Exact final localPG commands (owned private local runtime selected in process, no credential values):
+
+```bash
+. /workspace/stocks-setup/shell-env.sh
+# cwd /workspace/stocks-strat-rebuild
+/workspace/stocks-venv/bin/python /workspace/strat-rebuild-control/task5b-rebuild/run-tests.py tests/integration/test_strat_schema_compatibility.py --mode=mock -q --tb=short
+#40passed16.07s
+/workspace/stocks-venv/bin/python /workspace/strat-rebuild-control/task5b-rebuild/run-tests.py tests/integration/test_strat_schema_compatibility.py -k failure_after_writes --mode=mock -q --tb=short
+#2newrollbackcasespassed0.81s,40deselected; no intervening production edit
+/workspace/stocks-venv/bin/python /workspace/strat-rebuild-control/task5b-rebuild/run-tests.py /workspace/strat-rebuild-control/task5b-rebuild/measure-writers.py -q -s --tb=short
+#7measuredPGcasespassed20.92s
+```
+
+The `--mode=mock` repository selector refuses external services; this specific guarded runner permits only the owned localhost PostgreSQL instance and synthetic data. These PG tests use actual database/writer/API functions. Their counts are not mock SQL success or full application lifespan/production-main proof. Cold/warm400/800-row writer measurements retain source/catalog/statement/response-cycle/connection/commit counts. PeakprocessRSS189.06MiB is not the full12-symbol replay result. A modeled scheduled full-universe latency scenario exceeds its quarterbudget, so no whole-job capacity PASS or waiver is asserted; the independent task reviewer is evaluating attribution to this change.
+
+## Baseline clock metadata presence
+
+A baseline-only metadata-shape check of unchanged native subsets finds24/24brief `written_at`/`data_as_of` and22/22insight `as_of`/`created_at` fields parse as timezone-aware timestamps;24/24brief `analysis_date` values are date-only. Metadata exists; its exact observation/write/source-availability meaning and matched input/basis still require validation. No market values were used for this check, no holdout file was read and no outcomes were scored.
+
+Aggregate receipt SHA256 `f2c31c9b32a3ad5c471122e77dbdc7e86531dfafe2620a1a519b44f23e53223c`; standalone checker SHA256 `551cd1415c5243e36087db805606bf08aa930c259a95719630cd0c8a0b16c0c2`. The preserved checker reproduced the original receipt without changing source bytes. [Three-member source/aggregate archive](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6372132043):1556bytes,SHA256 `806fb9e3a4ed4f6502a6ab241c9a119d2177c01083a80cf0825df92c0af558e2`,remote bytes/memberhashesverified. This does not establish which of the six differing archived brief/insight labels was correct.
