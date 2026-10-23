@@ -11076,7 +11076,7 @@
     },
     "/api/catalysts/asof/{ticker}": {
       "get": {
-        "description": "Unified point-in-time catalyst view for a ticker.\n\nNote on naming: the canonical path is /api/catalysts/asof/{ticker}.\nThe /snapshot/ alias is preserved for back-compat — the word\n'snapshot' otherwise refers to the etf_options_snapshots table\n(live intraday options chain capture, currently paused), and they\nare unrelated.\n\nReturns *only* data that would have been visible on or before `as_of`,\npulled from news_sentiment, sec_filings, insider_transactions,\nearnings_calendar, earnings_history, and market_data_daily. Use this\nto answer \"what would have appeared on the catalyst screen for AVGO\non April 7?\".\n\nWindow: news/SEC/insider events from `as_of - window_days` through\n`as_of`. Earnings calendar is forward-looking (the next 30 days from\n`as_of`). Earnings history is the most recent quarterly result on or\nbefore `as_of`.",
+        "description": "Catalyst snapshot with qualified section availability.\n\nExplicit historical requests use permanent earnings vintages and suppress\nunversioned sources. Live source errors never masquerade as empty results.",
         "operationId": "get_catalyst_snapshot_api_catalysts_asof__ticker__get",
         "parameters": [
           {

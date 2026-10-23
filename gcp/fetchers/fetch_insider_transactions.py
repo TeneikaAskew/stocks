@@ -32,6 +32,8 @@ import requests
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
+from gcp.fetchers import _av_ingestion as av
+import math
 from lib.config import AlphaVantageConfig
 from lib.logging_config import setup_logging
 
@@ -46,46 +48,32 @@ def _safe_float(val) -> float | None:
     if val is None or val == "" or val == "None":
         return None
     try:
-        return float(val)
+        f=float(val)
+        return f if math.isfinite(f) else None
     except (TypeError, ValueError):
         return None
 
 
-def fetch_for_ticker(ticker: str, api_key: str) -> pd.DataFrame:
-    """Pull all insider transactions AV has for one ticker."""
-    params = {
-        "function": "INSIDER_TRANSACTIONS",
-        "symbol": ticker.upper(),
-        "apikey": api_key,
-    }
-    try:
-        resp = requests.get(AV_BASE_URL, params=params, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as e:
-        log.warning("    AV INSIDER_TRANSACTIONS request failed for %s: %s", ticker, e)
-        return pd.DataFrame()
-
-    if "Information" in data:
-        log.warning("    AV info for %s: %s", ticker, data["Information"])
-        return pd.DataFrame()
-
-    txns = data.get("data") or []
-    if not txns:
-        log.info("    No insider transactions for %s", ticker)
-        return pd.DataFrame()
-
+def fetch_for_ticker(ticker,api_key,*,dry_run=False):
+    capture=av.fetch_capture('INSIDER_TRANSACTIONS',{'symbol':ticker.upper()},api_key)
+    uri=av.archive_capture(capture,dry_run=dry_run)
+    data=capture.json()
+    if not isinstance(data.get('data'),list) or any(not isinstance(t,dict) for t in data['data']):
+        raise av.SourceError('insider_schema')
+    txns=data['data']
+    if len(txns)>1000:
+        raise av.SourceError('insider_row_limit')
     rows = []
     today = pd.Timestamp.utcnow().date()
     skipped_future = 0
     for t in txns:
         td = t.get("transaction_date")
         if not td:
-            continue
+            raise av.SourceError("insider_required_date")
         try:
             txn_date = pd.to_datetime(td).date()
         except Exception:
-            continue
+            raise av.SourceError("insider_date") from None
         # AV occasionally returns garbage future dates (e.g. 2031-01-29).
         # Insider transactions are by definition reported after they happen,
         # so anything more than a week in the future is almost certainly a
@@ -114,12 +102,13 @@ def fetch_for_ticker(ticker: str, api_key: str) -> pd.DataFrame:
     if skipped_future:
         log.warning("    %s: skipped %d rows with implausible future dates",
                     ticker, skipped_future)
+    df.attrs.update(capture=capture,raw_uri=uri,skipped_future=skipped_future,source_count=len(txns))
     return df
 
 
 def _earnings_calendar_tickers(window_days: int) -> list[str]:
     try:
-        from gcp.database import query_to_dataframe
+        from gcp.database import query_to_dataframe_strict as query_to_dataframe
     except ImportError:
         return []
     sql = """
@@ -133,109 +122,106 @@ def _earnings_calendar_tickers(window_days: int) -> list[str]:
     try:
         df = query_to_dataframe(sql, {"w": window_days})
     except Exception as e:
-        log.warning("earnings_calendar lookup failed: %s", e)
-        return []
+        raise av.SourceError("eligibility_query_failed") from None
     if df is None or df.empty:
         return []
     return [str(t).upper() for t in df["ticker"].tolist()]
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Fetch insider transactions from AV → Cloud SQL"
-    )
-    parser.add_argument(
-        "--tickers", default=None,
-        help="Comma-separated tickers (overrides earnings_calendar resolution).",
-    )
-    parser.add_argument(
-        "--earnings-window-days", type=int,
-        default=int(os.environ.get("EARNINGS_WINDOW_DAYS", "7")),
-    )
-    parser.add_argument(
-        "--max-tickers", type=int,
-        default=int(os.environ.get("MAX_TICKERS", "300")),
-    )
-    parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args()
-
-    api_key = os.environ.get("AV_API_KEY") or os.environ.get("ALPHA_VANTAGE_API_KEY", "")
-    if not api_key:
-        log.error("AV_API_KEY not set — cannot fetch insider transactions")
-        sys.exit(1)
-
-    if args.tickers:
-        tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
-    else:
-        from gcp.fetchers._watchlist import load_watchlist
-
-        ec = _earnings_calendar_tickers(args.earnings_window_days)
-        wl = load_watchlist()
-        # Union (preserve order: earnings-window first, then watchlist extras).
-        seen: set[str] = set(ec)
-        tickers = list(ec) + [t for t in wl if t not in seen]
-        log.info("Resolved %d tickers (%d earnings ±%dd ∪ %d watchlist)",
-                 len(tickers), len(ec), args.earnings_window_days, len(wl))
-
-    if not tickers:
-        log.info("No tickers to process — exiting")
-        return
-
-    if len(tickers) > args.max_tickers:
-        log.warning("Ticker count %d exceeds cap %d; truncating",
-                    len(tickers), args.max_tickers)
-        tickers = tickers[:args.max_tickers]
-
-    log.info("Insider Transactions Fetch Job")
-    log.info("  Tickers : %d", len(tickers))
-    log.info("  SQL     : %s", "yes" if is_cloud_sql_configured() else "NO")
-
-    frames = []
-    errors = []
-    for i, tk in enumerate(tickers):
-        if i > 0:
-            time_module.sleep(_av_cfg.delay_between_calls)
+def run_insider(run,tickers,key,*,dry_run=False,fetcher=None,writer=None,final=False):
+    fetcher=fetcher or fetch_for_ticker
+    writer=writer or av.write_identity_group
+    start=time_module.monotonic()
+    rows=[];captures=[];outcomes=[]
+    def flush():
+        nonlocal rows,captures,outcomes
+        if not outcomes:
+            return
+        if not dry_run:
+            try:
+                writer('insider_transactions',rows,captures=captures,final=final,outcomes=outcomes)
+            except Exception:
+                affected={o['ticker'] for o in outcomes}
+                for note in run.groups:
+                    if note.get('ticker') in affected:
+                        note.update(coverage_complete=False,complete_through=None,cursor_after=None,
+                                    commit_outcome='unknown_or_failed')
+                raise
+            run.rows_written+=len(rows)
+        run.processed+=sum(o['success'] for o in outcomes)
+        rows=[];captures=[];outcomes=[]
+    for ticker in tickers:
+        if time_module.monotonic()-start>=820:
+            run.pending+=len(tickers)-run.attempted
+            break
+        if run.request_attempts:
+            time_module.sleep(.4)
+        run.attempted+=1;run.request_attempts+=1
         try:
-            df = fetch_for_ticker(tk, api_key)
-            if not df.empty:
-                frames.append(df)
-        except Exception as e:
-            log.error("  ✗ %s: %s", tk, e)
-            errors.append(tk)
-
-    if not frames:
-        log.warning("No insider data fetched")
-        return
-
-    combined = pd.concat(frames, ignore_index=True)
-    combined = combined.drop_duplicates(
-        subset=["ticker", "transaction_date", "executive",
-                "transaction_type", "shares", "share_price"],
-        keep="last",
-    )
-    log.info("Total rows: %d across %d tickers",
-             len(combined), combined["ticker"].nunique())
-
-    if args.dry_run:
-        with pd.option_context("display.max_rows", 30, "display.max_colwidth", 30):
-            print(combined.head(30).to_string(index=False))
-        print(f"\n[dry-run] {len(combined)} rows — not written to DB")
-        return
-
-    if is_cloud_sql_configured():
-        n = upsert_dataframe(
-            combined, "insider_transactions",
-            ["ticker", "transaction_date", "executive",
-             "transaction_type", "shares", "share_price"],
-        )
-        log.info("✓ upserted %d rows to insider_transactions", n)
-        print(f"Persisted {n} insider_transactions rows to Cloud SQL")
-    else:
-        log.warning("Cloud SQL not configured — skipping persist")
-
-    if errors:
-        log.warning("Failed (%d): %s", len(errors), errors[:20])
+            frame=fetcher(ticker,key,dry_run=dry_run)
+            if len(frame)>1000 or len(av.canonical(frame.astype(object).where(frame.notna(),None).to_dict('records')).encode())>1_200_000:
+                raise av.SourceError('insider_expansion_limit')
+            capture=frame.attrs['capture']
+            if not frame.empty:
+                prepared=av.prepare_identity_frame(frame,'insider_transactions').to_dict('records')
+                for row in prepared:
+                    row['source_capture_id']=capture.observation_id
+                rows.extend(prepared)
+            if not dry_run:
+                captures.append(av.capture_record(capture,frame.attrs['raw_uri'],len(frame),source_count=frame.attrs['source_count']))
+            outcomes.append({'function':'INSIDER_TRANSACTIONS','ticker':ticker,'scope':'daily','lease_owner':run.execution_name,'success':True,'observed_at':capture.retrieved_at.isoformat()})
+            run.groups.append({'ticker':ticker,'source_event_max':str(frame['transaction_date'].max()) if not frame.empty else None,
+              'source_capture_id':capture.observation_id,'raw_uri':frame.attrs['raw_uri'],'raw_sha256':capture.body_sha256,
+              'source_retrieved_at':av.clock_string(capture.retrieved_at),
+              'requested_source_window':None,'complete_through':av.clock_string(capture.retrieved_at),'coverage_complete':True,
+              'cursor_before':None,'cursor_after':av.clock_string(capture.retrieved_at),'excluded_future':frame.attrs.get('skipped_future',0)})
+        except Exception as exc:
+            run.failed+=1
+            outcomes.append({'function':'INSIDER_TRANSACTIONS','ticker':ticker,'scope':'daily','lease_owner':run.execution_name,'success':False,'observed_at':None})
+            run.groups.append({'ticker':ticker,'coverage_complete':False,'error_class':str(exc) if isinstance(exc,av.SourceError) else type(exc).__name__})
+        if len(outcomes)==10:
+            flush()
+    flush()
+    return run
 
 
-if __name__ == "__main__":
-    main()
+def main(argv=None):
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--tickers')
+    parser.add_argument('--earnings-window-days',type=int,default=7)
+    parser.add_argument('--max-tickers',type=int,default=300)
+    parser.add_argument('--dry-run',action='store_true')
+    args=parser.parse_args(argv)
+    run=av.Run('fetch-insider-transactions','daily')
+    try:
+        key=os.environ.get('AV_API_KEY') or os.environ.get('ALPHA_VANTAGE_API_KEY')
+        if not key:
+            raise av.SourceError('credential_missing')
+        if not 1<=args.max_tickers<=300:
+            raise av.SourceError('insider_admission_limit')
+        if args.tickers:
+            universe=sorted({t.strip().upper() for t in args.tickers.split(',') if t.strip()})
+        else:
+            frame=av.read_dataframe("""SELECT DISTINCT ticker FROM (
+              SELECT ticker FROM watchlists WHERE removed_at IS NULL UNION SELECT ticker FROM earnings_calendar
+              WHERE earnings_date BETWEEN (NOW() AT TIME ZONE 'America/New_York')::date-CAST(:days AS integer)
+                AND (NOW() AT TIME ZONE 'America/New_York')::date+CAST(:days AS integer)) scoped ORDER BY ticker""",
+              {'days':args.earnings_window_days},timeout_s=5)
+            universe=frame['ticker'].str.upper().tolist() if not frame.empty else []
+        run.expected=len(universe)
+        if len(universe)>args.max_tickers:
+            raise av.SourceError('insider_universe_requires_explicit_shards')
+        selected=av.claim_work('INSIDER_TRANSACTIONS',universe,'daily',run.execution_name,limit=args.max_tickers,dry_run=args.dry_run)
+        run.pending=len(universe)-len(selected)
+        run_insider(run,selected,key,dry_run=args.dry_run,final=False if args.dry_run else av.identity_state('insider_transactions'))
+    except Exception as exc:
+        run.failed+=1
+        run.groups.append({'coverage_complete':False,'error_class':str(exc) if isinstance(exc,av.SourceError) else type(exc).__name__})
+    try:
+        return run.terminal(dry_run=args.dry_run)
+    finally:
+        av.close_sql_worker()
+
+
+if __name__=='__main__':
+    raise SystemExit(main())

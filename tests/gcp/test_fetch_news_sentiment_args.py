@@ -23,19 +23,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def _build_parser():
-    """Reconstruct the argparse parser without invoking main() so we
-    can inspect default values without triggering env / DB lookups."""
-    import argparse
-    import os
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--tickers", type=str, default=os.environ.get("NEWS_TICKERS", ""))
-    parser.add_argument("--topics", type=str, default=os.environ.get("NEWS_TOPICS", ""))
-    parser.add_argument("--limit", type=int, default=1000)
-    parser.add_argument("--time-from", default=None)
-    parser.add_argument("--time-to", default=None)
-    parser.add_argument("--dry-run", action="store_true")
-    return parser
+    from gcp.fetchers.fetch_news_sentiment import build_parser
+    return build_parser()
 
 
 def test_limit_default_is_1000():
@@ -78,34 +67,5 @@ def test_limit_accepts_full_av_ceiling():
 
 
 def test_limit_module_default_matches_argparse():
-    """Catch the subtle drift case: someone changes one default but
-    not the other. Read the actual argparse default off the live
-    parser-builder and assert it matches the test's expectation.
-
-    Implementation note: parses an empty argv against the *real*
-    parser inside main() by stubbing out env / API key / DB calls
-    so we never actually hit a network or DB.
-    """
-    from gcp.fetchers import fetch_news_sentiment
-
-    captured = {}
-
-    # Stub everything main() does after argparse so we can read
-    # `args.limit` without firing the AV call.
-    def _grab_args(*_a, **_kw):
-        # First positional arg of fetch_by_tickers is `tickers`,
-        # third is `limit`. But we'll grab via inspecting argparse
-        # directly through a different patch.
-        raise SystemExit(0)
-
-    with patch.object(sys, "argv", ["fetch_news_sentiment"]), \
-         patch.object(fetch_news_sentiment, "fetch_by_tickers", _grab_args), \
-         patch.object(fetch_news_sentiment, "fetch_by_topics", _grab_args), \
-         patch.dict("os.environ", {"AV_API_KEY": "stub", "NEWS_TICKERS": "AVGO"}, clear=False):
-        # main() calls fetch_by_tickers which we've stubbed to SystemExit.
-        # Argparse runs first, so by the time we exit we know the parser
-        # accepted the empty CLI.
-        try:
-            fetch_news_sentiment.main()
-        except SystemExit as exc:
-            assert exc.code == 0
+    from gcp.fetchers.fetch_news_sentiment import build_parser
+    assert build_parser().parse_args([]).limit==1000

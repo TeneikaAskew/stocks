@@ -45,7 +45,8 @@ def test_last_published_ts_none_on_db_error(monkeypatch):
     def boom(*_a, **_kw):
         raise RuntimeError("connection refused")
     monkeypatch.setattr(fns, "query_to_dataframe", boom)
-    assert fns._last_published_ts("AVGO") is None
+    with pytest.raises(Exception,match="cursor_query_failed"):
+        fns._last_published_ts("AVGO")
 
 
 def test_last_published_ts_returns_max(monkeypatch):

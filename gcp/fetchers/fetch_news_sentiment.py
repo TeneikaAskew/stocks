@@ -45,7 +45,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from gcp.database import (
-    upsert_dataframe, is_cloud_sql_configured, query_to_dataframe,
+    upsert_dataframe, is_cloud_sql_configured, query_to_dataframe_strict as query_to_dataframe,
 )
 from lib.logging_config import setup_logging
 
@@ -69,25 +69,26 @@ COLD_START_LOOKBACK_HOURS = 48
 MAX_INCREMENTAL_HOURS = 24 * 7
 
 
-def _fetch(params: dict) -> list[dict]:
-    """Issue a single NEWS_SENTIMENT call and return the raw `feed` list."""
-    try:
-        import requests
-    except ImportError:
-        logger.error("requests library not available")
-        return []
+class CapturedFeed(list):
+    def __init__(self,feed,capture,raw_uri):
+        super().__init__(feed)
+        self.capture=capture
+        self.raw_uri=raw_uri
 
-    try:
-        resp = requests.get(AV_BASE_URL, params=params, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as e:
-        logger.warning("AV NEWS_SENTIMENT request failed (%s): %s", params, e)
-        return []
 
-    if "Information" in data:
-        logger.warning("AV info: %s", data["Information"])
-    return data.get("feed", []) or []
+def _fetch(params,dry_run=False):
+    from gcp.fetchers import _av_ingestion as av
+    safe={k:v for k,v in params.items() if k not in {'function','apikey'}}
+    capture=av.fetch_capture("NEWS_SENTIMENT",safe,params['apikey'],max_bytes=20*1024*1024)
+    uri=av.archive_capture(capture,dry_run=dry_run)
+    if len(capture.body)>2_000_000:
+        raise av.SourceError("news_admitted_body_limit")
+    data=capture.json()
+    if not isinstance(data.get('feed'),list) or any(not isinstance(a,dict) for a in data['feed']):
+        raise av.SourceError("news_schema")
+    if len(data['feed'])>int(params.get('limit',1000)):
+        raise av.SourceError('news_article_limit')
+    return CapturedFeed(data['feed'],capture,uri)
 
 
 def _article_to_rows(article: dict) -> list[dict]:
@@ -123,6 +124,9 @@ def _article_to_rows(article: dict) -> list[dict]:
 
     rows = []
     for ts in ticker_entries:
+        if len(rows)>=4000:
+            from gcp.fetchers import _av_ingestion as av
+            raise av.SourceError('news_expansion_limit')
         tk = (ts.get("ticker") or "").upper().strip()
         if not tk:
             continue
@@ -168,9 +172,9 @@ def _earnings_calendar_tickers(window_days: int) -> list[str]:
     """
     try:
         df = query_to_dataframe(sql, {"w": window_days})
-    except Exception as e:
-        logger.warning("earnings_calendar lookup failed: %s", e)
-        return []
+    except Exception:
+        from gcp.fetchers._av_ingestion import SourceError
+        raise SourceError("eligibility_query_failed") from None
     if df is None or df.empty:
         return []
     return [str(t).upper() for t in df["ticker"].tolist()]
@@ -192,8 +196,8 @@ def _last_published_ts(ticker: str) -> Optional[datetime]:
     try:
         df = query_to_dataframe(sql, {"tk": ticker.upper()})
     except Exception:
-        logger.warning("could not read MAX(published_ts) for %s; treating as cold start", ticker)
-        return None
+        from gcp.fetchers._av_ingestion import SourceError
+        raise SourceError("cursor_query_failed") from None
     if df.empty or df.iloc[0, 0] is None:
         return None
     val = df.iloc[0, 0]
@@ -202,14 +206,17 @@ def _last_published_ts(ticker: str) -> Optional[datetime]:
     try:
         return pd.to_datetime(val, utc=True).to_pydatetime()
     except Exception:
-        return None
+        from gcp.fetchers._av_ingestion import SourceError
+        raise SourceError("cursor_query_failed") from None
 
+
+_UNKNOWN_CURSOR=object()
 
 def _resolve_incremental_time_from(
     ticker: str,
     now: datetime,
     *,
-    last_ts: Optional[datetime] = None,
+    last_ts: Optional[datetime] = _UNKNOWN_CURSOR,
 ) -> str:
     """Compute the AV ``time_from`` string for an incremental fetch.
 
@@ -232,7 +239,7 @@ def _resolve_incremental_time_from(
     Pass ``last_ts`` explicitly when a caller (or test) already has it
     cached, to skip the per-ticker DB read.
     """
-    if last_ts is None:
+    if last_ts is _UNKNOWN_CURSOR:
         last_ts = _last_published_ts(ticker)
 
     if last_ts is None:
@@ -364,162 +371,210 @@ def _parse_av_timestamp(ts_str: str) -> datetime | None:
             return None
 
 
-def persist_to_cloud_sql(df: pd.DataFrame) -> int:
-    """Upsert news sentiment rows to Cloud SQL."""
+def prepare_news_rows(frame):
+    from gcp.fetchers._av_ingestion import prepare_identity_frame
+    return prepare_identity_frame(frame,"news_sentiment")
+
+
+def persist_to_cloud_sql(df):
     if df.empty:
-        logger.info("no rows to persist")
         return 0
-    if not is_cloud_sql_configured():
-        logger.warning("Cloud SQL not configured — skipping persist")
-        return 0
-    n = upsert_dataframe(df, "news_sentiment", ["ticker", "published_ts", "url"])
-    logger.info("upserted %d rows to news_sentiment", n)
-    return n
+    from gcp.fetchers import _av_ingestion as av
+    prepared=prepare_news_rows(df)
+    return av.write_identity_group("news_sentiment",prepared.to_dict("records"),final=av.identity_state("news_sentiment"))
 
 
-def main():
-    setup_logging()
-    parser = argparse.ArgumentParser(description="Fetch news sentiment → Cloud SQL")
-    parser.add_argument(
-        "--tickers",
-        type=str,
-        default=os.environ.get("NEWS_TICKERS", ""),
-        help="Comma-separated tickers for ticker-mode fetch.",
-    )
-    parser.add_argument(
-        "--topics",
-        type=str,
-        default=os.environ.get("NEWS_TOPICS", ""),
-        help="Comma-separated AV topics for topic-mode fetch (max 5).",
-    )
-    parser.add_argument("--limit", type=int, default=1000,
-                        help=(
-                            "Max articles per AV call (default: 1000, AV's documented ceiling). "
-                            "The previous default of 200 caused silent under-coverage on high-volume "
-                            "tickers — the 4/6–4/11 backfill window persisted only 17 of 151 AVGO "
-                            "articles AV had available because every batch hit the cap."
-                        ))
-    parser.add_argument(
-        "--time-from", default=None,
-        help="Backfill: AV time_from filter, format YYYYMMDDTHHMM (e.g. 20260407T0000)",
-    )
-    parser.add_argument(
-        "--time-to", default=None,
-        help="Backfill: AV time_to filter, format YYYYMMDDTHHMM",
-    )
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Fetch and print without writing to DB")
-    parser.add_argument(
-        "--since-last", action="store_true",
-        default=os.environ.get("NEWS_SINCE_LAST", "").lower() in ("1", "true", "yes"),
-        help=(
-            "Per-ticker incremental fetch: AV time_from = last persisted "
-            "published_ts minus 30-min safety overlap. Cold-start tickers "
-            "fall back to a 48h lookback; stale tickers cap at 7d. Cuts "
-            "scheduled-run bandwidth by ~99%% (no quota benefit, just less "
-            "wasted parsing of articles the upsert already deduped). "
-            "Ignored when --time-from or --time-to is passed (backfills "
-            "always honour the explicit caller window)."
-        ),
-    )
-    # Auto-resolve the ticker universe from earnings_calendar so upcoming
-    # reporters get news coverage without manual --tickers. Matches the
-    # pattern fetch_insider_transactions / fetch_sec_filings already use
-    # (gcp/fetchers/fetch_insider_transactions.py:_earnings_calendar_tickers).
-    parser.add_argument(
-        "--earnings-window-days", type=int,
-        default=int(os.environ.get("EARNINGS_WINDOW_DAYS", "0")),
-        help=(
-            "When >0 and no --tickers given, union earnings_calendar "
-            "(±N days from today) with the curated watchlist before "
-            "fetching. Used by the scheduled upcoming-reporter cron to "
-            "self-populate news for tomorrow's reporters."
-        ),
-    )
-    parser.add_argument(
-        "--max-tickers", type=int,
-        default=int(os.environ.get("MAX_TICKERS", "300")),
-        help="Cap on the resolved ticker universe (AV quota safety).",
-    )
-    args = parser.parse_args()
-
-    api_key = os.environ.get("AV_API_KEY") or os.environ.get("ALPHA_VANTAGE_API_KEY", "")
-    if not api_key:
-        logger.error("AV_API_KEY not set — cannot fetch news sentiment")
-        sys.exit(1)
-
-    tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
-    topics = [t.strip().lower() for t in args.topics.split(",") if t.strip()]
-
-    # If neither mode specified, fall back to:
-    #   1. earnings_calendar (±N days) ∪ watchlist  when --earnings-window-days > 0
-    #   2. watchlist                                 otherwise
-    #   3. DEFAULT_TICKERS                           as last resort
-    # The earnings-window branch keeps news coverage in lock-step with
-    # the catalyst set the rest of the pipeline (insider tx, sec filings,
-    # earnings history) already auto-resolves.
-    if not tickers and not topics:
-        from gcp.fetchers._watchlist import load_watchlist
-        wl = load_watchlist()
-        ec: list[str] = []
-        if args.earnings_window_days > 0:
-            ec = _earnings_calendar_tickers(args.earnings_window_days)
-        if ec or wl:
-            seen: set[str] = set()
-            tickers = []
-            for t in ec + wl:
-                if t not in seen:
-                    seen.add(t)
-                    tickers.append(t)
-            logger.info(
-                "resolved %d tickers (%d earnings ±%dd ∪ %d watchlist)",
-                len(tickers), len(ec), args.earnings_window_days, len(wl),
-            )
-        else:
-            tickers = [t.strip().upper() for t in DEFAULT_TICKERS.split(",") if t.strip()]
-            logger.info("no --tickers/--topics; falling back to defaults %s", tickers)
-
-        if len(tickers) > args.max_tickers:
-            logger.warning(
-                "ticker count %d exceeds cap %d; truncating",
-                len(tickers), args.max_tickers,
-            )
-            tickers = tickers[: args.max_tickers]
-
-    frames: list[pd.DataFrame] = []
-    if tickers:
-        df = fetch_by_tickers(
-            tickers, api_key, limit=args.limit,
-            time_from=args.time_from, time_to=args.time_to,
-            incremental=args.since_last,
-        )
-        if not df.empty:
-            frames.append(df)
-    if topics:
-        df = fetch_by_topics(topics, api_key, limit=args.limit)
-        if not df.empty:
-            frames.append(df)
-
-    if not frames:
-        logger.warning("no news data fetched from any source")
-        return
-
-    combined = pd.concat(frames, ignore_index=True)
-    combined = combined.drop_duplicates(
-        subset=["ticker", "published_ts", "url"], keep="last"
-    )
-    logger.info("total rows after dedup: %d", len(combined))
-
-    if args.dry_run:
-        # topics column is a list — print compactly
-        with pd.option_context("display.max_colwidth", 60):
-            print(combined.to_string(index=False))
-        print(f"\n[dry-run] {len(combined)} rows — not written to DB")
-        return
-
-    n = persist_to_cloud_sql(combined)
-    print(f"Persisted {n} news sentiment rows to Cloud SQL")
+def build_parser():
+    parser=argparse.ArgumentParser(description="Durable bounded AV news windows")
+    parser.add_argument('--tickers',default=os.environ.get('NEWS_TICKERS',''))
+    parser.add_argument('--topics',default=os.environ.get('NEWS_TOPICS',''))
+    parser.add_argument('--limit',type=int,default=1000)
+    parser.add_argument('--time-from')
+    parser.add_argument('--time-to')
+    parser.add_argument('--since-last',action='store_true')
+    parser.add_argument('--earnings-window-days',type=int,default=int(os.environ.get('EARNINGS_WINDOW_DAYS','0')))
+    parser.add_argument('--max-tickers',type=int,default=300)
+    parser.add_argument('--max-requests',type=int,default=300)
+    parser.add_argument('--dry-run',action='store_true')
+    return parser
 
 
-if __name__ == "__main__":
-    main()
+def news_window_scopes(tickers,topics,start,end):
+    from gcp.fetchers import _av_ingestion as av
+    scopes=[]
+    for params in [{'tickers':t} for t in tickers]+([{'topics':','.join(sorted(topics))}] if topics else []):
+        identity=av.digest(params)
+        scopes.append({'query_identity':identity,'parameters':params,'window_start':start.isoformat(),'window_end':end.isoformat()})
+    return scopes
+
+
+def _write_news_group(rows,captures,outcomes,final,executor=None):
+    from gcp.fetchers import _av_ingestion as av
+    executor=executor or av.isolated_sql
+    pieces=[]
+    params={'rows':av.canonical(rows),'captures':av.canonical(captures),'outcomes':av.canonical(outcomes)}
+    if captures:
+        pieces.append('captured AS('+av.capture_sql(captures)+' RETURNING capture_id)')
+    if rows:
+        sql=av.identity_write_sql('news_sentiment',final)
+        if sql.startswith('WITH '):
+            pos=sql.index('\n      INSERT INTO ')
+            pieces.append(sql[5:pos]);sql=sql[pos:]
+        pieces.append('written AS('+sql+')')
+    # Explicit dependency ensures source/row CTEs run before coverage advances.
+    dependencies=' CROSS JOIN '.join('(SELECT count(*) FROM '+name+') '+name+'count' for name in ['captured','written'] if any(p.startswith(name+' AS') for p in pieces))
+    terminal='SELECT av_complete_news_windows(CAST(:outcomes AS jsonb))'
+    if dependencies:
+        terminal+=' FROM '+dependencies
+    sql=('WITH '+','.join(pieces)+' '+terminal) if pieces else terminal
+    return executor(sql,params,timeout_s=8)
+
+
+def run_news_windows(run,scopes,key,*,limit=1000,max_requests=300,dry_run=False,executor=None,fetcher=None,final=False):
+    from gcp.fetchers import _av_ingestion as av
+    executor=executor or av.isolated_sql
+    fetcher=fetcher or _fetch
+    begun=__import__('time').monotonic()
+    limits={s['query_identity']:30 for s in scopes}
+    if dry_run:
+        windows=[dict(s,window_id=None,lease_owner=run.execution_name) for s in scopes]
+    else:
+        executor('SELECT av_seed_news_windows(CAST(:scopes AS jsonb))',{'scopes':av.canonical(scopes)},timeout_s=8)
+    budget_exhausted=False
+    while run.request_attempts<max_requests and __import__('time').monotonic()-begun<820:
+        if not dry_run:
+            windows=executor('SELECT * FROM av_claim_news_windows(CAST(:limits AS jsonb),:owner,:cap)',
+                             {'limits':av.canonical(limits),'owner':run.execution_name,'cap':min(10,max_requests-run.request_attempts)},read=True,timeout_s=8)
+        if not windows:
+            break
+        rows=[];captures=[];outcomes=[]
+        group_start=len(run.groups)
+        successes=0
+        for window in windows[:10]:
+            if __import__('time').monotonic()-begun>=820:
+                budget_exhausted=True
+                break
+            if run.request_attempts>=max_requests:
+                break
+            qid=window['query_identity']
+            if limits[qid]<=0:
+                continue
+            if run.request_attempts:
+                __import__('time').sleep(.4)
+            limits[qid]-=1;run.request_attempts+=1;run.attempted+=1
+            start=pd.Timestamp(window['window_start']).to_pydatetime();end=pd.Timestamp(window['window_end']).to_pydatetime()
+            params={'function':'NEWS_SENTIMENT',**window['parameters'],'limit':limit,'apikey':key,'sort':'EARLIEST',
+                    'time_from':(start-timedelta(minutes=1)).strftime('%Y%m%dT%H%M'),'time_to':end.strftime('%Y%m%dT%H%M')}
+            try:
+                feed=fetcher(params,dry_run=dry_run)
+                source_rows=[]
+                if len(feed)>limit:
+                    raise av.SourceError('news_article_limit')
+                for article in feed:
+                    published=_parse_av_timestamp(article.get('time_published',''))
+                    if published is None:
+                        raise av.SourceError('news_required_timestamp')
+                    if start<=published<end:
+                        source_rows.extend(_article_to_rows(article))
+                        if len(source_rows)>4000:
+                            raise av.SourceError('news_expansion_limit')
+                if len(source_rows)>4000 or len(av.canonical(source_rows).encode())>4_800_000:
+                    raise av.SourceError('news_expansion_limit')
+                saturated=len(feed)>=limit
+                if source_rows:
+                    prepared=prepare_news_rows(pd.DataFrame(source_rows)).to_dict('records')
+                    for row in prepared:
+                        row['source_capture_id']=feed.capture.observation_id
+                    rows.extend(prepared)
+                if not dry_run:
+                    captures.append(av.capture_record(feed.capture,feed.raw_uri,len(source_rows),source_count=len(feed)))
+                    outcomes.append({'window_id':str(window['window_id']),'lease_owner':run.execution_name,
+                                     'capture_id':feed.capture.observation_id,'status':'validated','saturated':saturated})
+                run.groups.append({'query_identity':qid,'requested_source_window':[av.clock_string(start),av.clock_string(end)],
+                  'source_capture_id':feed.capture.observation_id,'raw_uri':feed.raw_uri,'raw_sha256':feed.capture.body_sha256,
+                  'source_retrieved_at':av.clock_string(feed.capture.retrieved_at),
+                  'source_event_max':max((av.clock_string(r['published_ts']) for r in source_rows),default=None),
+                  'complete_through':None if saturated else av.clock_string(end),'coverage_complete':not saturated,
+                  'cursor_before':av.clock_string(start),'cursor_after':None if saturated else av.clock_string(end),
+                  'saturated':saturated})
+                successes+=1
+            except Exception as exc:
+                run.failed+=1
+                if not dry_run:
+                    outcomes.append({'window_id':str(window['window_id']),'lease_owner':run.execution_name,'status':'failed'})
+                run.groups.append({'query_identity':qid,'coverage_complete':False,'error_class':str(exc) if isinstance(exc,av.SourceError) else type(exc).__name__})
+        if rows:
+            rows=prepare_news_rows(pd.DataFrame(rows)).to_dict('records')
+        if len(rows)>40000 or len(av.canonical(rows).encode())>64*1024*1024:
+            raise av.SourceError('news_group_limit')
+        if not dry_run:
+            try:
+                _write_news_group(rows,captures,outcomes,final,executor)
+            except Exception:
+                # Proposed frontiers are not evidence of committed coverage.
+                for note in run.groups[group_start:]:
+                    note.update(coverage_complete=False,complete_through=None,cursor_after=None,
+                                commit_outcome='unknown_or_failed')
+                raise
+            run.rows_written+=len(rows)
+        run.processed+=successes
+        if dry_run:
+            run.pending=max(0,len(windows)-run.attempted)+sum(bool(g.get('saturated')) for g in run.groups)
+            break
+        if budget_exhausted:
+            break
+    if not dry_run:
+        facts=executor("""SELECT query_identity,
+          min(window_start) FILTER(WHERE status NOT IN ('complete','split')) AS first_gap,
+          max(window_end) FILTER(WHERE status='complete') AS completed_end,
+          count(*) FILTER(WHERE status NOT IN ('complete','split')) AS pending
+          FROM av_catalyst_news_windows WHERE query_identity=ANY(CAST(:ids AS text[])) GROUP BY query_identity""",
+          {'ids':list(limits)},read=True,timeout_s=8)
+        run.pending=sum(f['pending'] for f in facts)
+        for f in facts:
+            through=f['first_gap'] or f['completed_end']
+            run.groups.append({'query_identity':f['query_identity'],'complete_through':av.clock_string(through) if through is not None else None,
+                               'coverage_complete':not f['pending'],'pending':f['pending']})
+    return run
+
+
+def main(argv=None):
+    from gcp.fetchers import _av_ingestion as av
+    args=build_parser().parse_args(argv)
+    run=av.Run('fetch-news-sentiment','topics' if args.topics and not args.tickers else 'earnings' if args.earnings_window_days else 'tickers')
+    try:
+        key=os.environ.get('AV_API_KEY') or os.environ.get('ALPHA_VANTAGE_API_KEY')
+        if not key:
+            raise av.SourceError('credential_missing')
+        tickers=[t.strip().upper() for t in args.tickers.split(',') if t.strip()]
+        topics=[t.strip().lower() for t in args.topics.split(',') if t.strip()]
+        if len(topics)>5 or not 1<=args.limit<=1000 or not 1<=args.max_requests<=300:
+            raise av.SourceError('news_admission_limit')
+        if not tickers and not topics:
+            frame=av.read_dataframe("""SELECT DISTINCT ticker FROM (
+              SELECT ticker FROM watchlists WHERE removed_at IS NULL UNION SELECT ticker FROM earnings_calendar
+              WHERE :days>0 AND earnings_date BETWEEN (NOW() AT TIME ZONE 'America/New_York')::date-CAST(:days AS integer)
+                AND (NOW() AT TIME ZONE 'America/New_York')::date+CAST(:days AS integer)
+            ) scoped ORDER BY ticker""",{'days':args.earnings_window_days},timeout_s=5)
+            tickers=frame['ticker'].str.upper().tolist() if not frame.empty else []
+        if len(tickers)>min(300,args.max_tickers):
+            raise av.SourceError('news_universe_requires_explicit_shards')
+        now=datetime.now(timezone.utc).replace(second=0,microsecond=0)
+        start=datetime.strptime(args.time_from,'%Y%m%dT%H%M').replace(tzinfo=timezone.utc) if args.time_from else now-timedelta(hours=48)
+        end=datetime.strptime(args.time_to,'%Y%m%dT%H%M').replace(tzinfo=timezone.utc)+timedelta(minutes=1) if args.time_to else now
+        if end<=start or end-start>timedelta(days=7):
+            raise av.SourceError('news_window_admission_limit')
+        scopes=news_window_scopes(tickers,topics,start,end);run.expected=len(scopes)
+        final=False if args.dry_run else av.identity_state('news_sentiment')
+        run_news_windows(run,scopes,key,limit=args.limit,max_requests=min(args.max_requests,30 if topics and not tickers else 300),dry_run=args.dry_run,final=final)
+    except Exception as exc:
+        run.failed+=1
+        run.groups.append({'coverage_complete':False,'error_class':str(exc) if isinstance(exc,av.SourceError) else type(exc).__name__})
+    try:
+        return run.terminal(dry_run=args.dry_run)
+    finally:
+        av.close_sql_worker()
+
+
+if __name__=='__main__':
+    raise SystemExit(main())

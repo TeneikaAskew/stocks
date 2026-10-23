@@ -1,285 +1,174 @@
-# Earnings Pipeline — End-to-End Flow
+# Earnings and AV catalyst pipeline
 
-**Last updated:** 2026-05-04 — companion to PR on `claude/add-mck-earnings-atr-c6q9e` that fixed three silent-truncation gaps and added ATR-around-earnings to the reaction profile.
+**Last reviewed:** 2026-10-13 · **Depth:** verified · **Against:** `3c99b22fddad5019960af02ab2702e48796cf54c` · **Last scanned:** 2026-10-13
 
-This doc traces every step from "an earnings event is announced" to "a trader sees it in the Discord brief," names the cron that fires each step, and lists the assumptions each step makes about its upstream inputs. Use it together with [`DATA_PIPELINE.md`](product/infrastructure/05-g-DATA_PIPELINE.md) (per-table semantics) and [`docs/CLAUDE_CODE_ON_WEB.md`](CLAUDE_CODE_ON_WEB.md) (sandbox patterns).
+Candidate implementation: [PR #1430](https://github.com/TeneikaAskew/stocks/pull/1430), [approved CAT specification](superpowers/specs/2026-10-12-feat-catalyst-001-av-catalysts.md), [implementation plan](superpowers/plans/2026-10-12-feat-catalyst-001-av-catalysts.md). Implementation and review are in progress; production rollout has not been verified. Existing unrelated catalyst providers retain their behavior and remain separately qualified.
 
----
+## Source and publication contract
 
-## TL;DR
+AV `EARNINGS` populates the latest `earnings_history` cache. Permanent `earnings_history_revisions` retains changed EPS, surprise, reported dates and timing, including A–B–A reversions. The migration seeds existing rows at actual observation time as `observed_legacy`; it never infers their original vendor availability. An atomic source lock, seed, AFTER trigger and append-only guards protect installation and normal/alternate writes. Unchanged financial refreshes retain one revision and append new `earnings_revision_observations` source proof rather than duplicate financial versions.
 
-| Need | Where it happens |
-|---|---|
-| Get tomorrow's earnings into the calendar | `fetch-earnings-calendar` daily Mon–Fri 19:00 ET (`daily-earnings-refresh-calendar`) |
-| Get OHLC for those tickers | `fetch-market-data` daily Mon–Fri 23:00 ET |
-| Get historical EPS for those tickers | `fetch-earnings-history` Mon–Fri 19:15 ET + Sun 19:15 ET |
-| Compute the reaction profile (gap, sustain, ATR) | `compute-earnings-reactions` daily Mon–Fri 19:30 ET |
-| Show the trader the morning brief | `premarket-brief-daily` Mon–Fri 08:30 ET (`premarket-brief-sunday` runs the week-ahead Sunday 21:00 ET) |
+Yahoo timing has its own immutable `earnings_timing_observations` identity, UTC retrieval/knowledge clocks, installed-library version, safe parameters, complete timestamp/index/returned values and content hash. A Yahoo timing correction can change the effective timing while AV EPS bytes remain unchanged. Disabled or unavailable Yahoo enrichment is explicit; an observation missing the applicable quarter does not erase previous evidence. Yahoo requests are counted separately from AV quota calls.
 
-If any single step's filter or cap drops a ticker, that ticker silently disappears from the brief — no error, no warning. The fixes documented below tightened those filters so the universe size is bounded by an option-tradability filter, not by an arbitrary numeric cap.
+`EARNINGS_ESTIMATES` stores every native payload field permanently in `av_earnings_estimates_observations`. Fetch identity plus ticker, fiscal date and fiscal-quarter/year horizon is idempotent; later retrievals append vintages. Observation `known_at` is the immutable proposed insertion clock. The separate `av_estimate_receipt_publications.source_commit_acknowledged_at` records the actual ACK of complete capture and observation transactions. Empty and nonempty retry receipts retain that original durable receipt clock. A validated empty response has a capture/publication and no fabricated fiscal row. The reader additionally requires matching run-manifest publication and terminal linkage; old observations without that publication are unavailable. Raw expiry cannot erase permanent earnings, estimates, timing or reaction inputs.
 
----
+Original bytes for `EARNINGS`, `EARNINGS_ESTIMATES`, `NEWS_SENTIMENT`, `EARNINGS_CALENDAR` and admitted insider captures use immutable `av/raw/<FUNCTION>/<UTC date>/<capture UUID>.json.gz` objects. Gzip envelopes contain reversible original bytes, SHA256, safe parameters, UTC retrieval and code identity. Credential parameters and request URLs are excluded. GCS creation uses generation-zero preconditions; same-identity retry must match exact bytes. Missing bucket or failed/uncertain upload cannot create provenance-complete SQL rows. Dry-run performs no GCS or SQL writes.
 
-## Cron timeline (UTC)
+`av_catalyst_source_captures` holds validated/validated-empty receipts. `av_catalyst_source_manifests` records the full configured denominator and separately assessed observed scope, source/event window, immutable IDs/digests, requested/verified/excluded/pending counts and execution/code identity. Join `av_catalyst_manifest_publications` by manifest ID: its stored `known_at` is inserted only after acknowledged source/manifest commits. Terminal `job_runs.note` repeats `source_manifest_id` and `source_manifest_known_at`. Retrieval time or a Scheduler launch cannot replace this availability proof. A manifest retry returns the original publication clock; unknown publication stays unavailable.
 
-All scheduled jobs run via Cloud Scheduler against Cloud Run Jobs in `us-east1`. Cron expressions are interpreted in `America/New_York` (so the UTC last-attempt time will be 4–5 hours ahead of the cron-expression hour).
+Calendar capture includes the full native AV three-month CSV before downstream business filtering. Native validated rows and symbols describe the raw horizon; the established AV–UW business subset is a separate selection. AV raw coverage cannot establish the EW/UW/Yahoo union or the ~1,239 configured history universe. `source_all_coverage=unavailable` and `business_subset_coverage=not_assessed` are explicit. Native malformed required rows leave coverage incomplete.
 
-| ET cron | UTC | Job | What it writes |
-|---|---|---|---|
-| Mon–Fri 07:00 | 11:00 | `economic-events-daily`, `sec-filings-intraday` | `economic_events`, `sec_filings` |
-| Mon–Fri 08:10 | 12:10 | `auto-refresh-top-n` | Discord top-N watchlist refresh |
-| Mon–Fri 08:20 | 12:20 | `premarket-refresh-daily` | `market_data_daily.gap_pct`, `pre_high`, `pre_low`, `pre_vwap` |
-| **Mon–Fri 08:30** | **12:30** | **`premarket-brief-daily`** | Discord multi-embed (THE report traders see) |
-| Mon–Fri 08:45 | 12:45 | `insight-pipeline-daily` | LLM ticker analysis → `premarket_analysis` |
-| Mon–Fri 09:25 | 13:25 | `signal-monitor-daily` | `signal_events` |
-| Mon–Fri 09:45 / 10:00 | 13:45 / 14:00 | `orb-15m-alert` / `orb-30m-alert` | `orb_snapshots` |
-| Mon–Fri 08–17 hourly (`:00` / `:05`) | 12–21 | `news-sentiment-*`, `news-topics-*` | News / sentiment streams |
-| Mon–Fri 16:15 | 20:15 | `top-movers-daily` | `top_movers_daily` |
-| **Mon–Fri 19:00** | **23:00** | **`daily-earnings-refresh-calendar`** | `earnings_calendar` (AV + EW + Yahoo + UW; ±7d window from today) |
-| Mon–Fri 19:15 | 23:15 | `daily-earnings-refresh-history` | `earnings_history` |
-| Mon–Fri 19:30 | 23:30 | `daily-earnings-refresh-reactions` | `earnings_reactions` |
-| **Mon–Fri 23:00** | **03:00 next-day** | **`fetch-market-data-daily`** | `market_data_daily` (OHLCV + 30+ indicators for SPY/IWM/QQQ/SPX + watchlist + earnings union) |
-| Mon–Fri 23:00 | 03:00 next-day | `evaluate-ew-strikes-daily` | `earnings_calendar.ew_strike_verdict` |
-| Tue–Sat 01:30 | 05:30 | `signal-quality-report-nightly` | `signal_metrics` (after `historical-signals-watchlist-daily` at 01:00, #1166) |
-| Sun 19:00 | 23:00 | `weekly-earnings-refresh-calendar` | `earnings_calendar` |
-| **Sun 19:15** | **23:15** | **`weekly-earnings-refresh-history`** | `earnings_history` (10y of quarterly EPS for tickers reporting in next N days) |
-| Sun 19:30 | 23:30 | `weekly-earnings-refresh-reactions` | `earnings_reactions` |
-| Sun 21:00 | 01:00 next-day | `premarket-brief-sunday` | Discord week-ahead embed |
-| Sat 09:00 | 13:00 | `weekend-review-weekly` | Weekend report |
+## Bounded commands
 
-The four **bold** jobs above are the load-bearing chain that produces the daily brief
-(calendar → history → market data → brief). Everything else is supporting context (news, signals, ORB, etc.).
+These candidate commands are for reviewed, admitted execution after deployment dependencies are satisfied. Existing production jobs must retain their qualified serving state until verification passes. No full market backfill is launched by earnings refresh.
 
----
-
-## End-to-end flow for a single earnings event
-
-Concrete walkthrough: a ticker's earnings announcement on Wednesday → trader sees it in Wednesday morning's brief.
-
-```
-Day -21..   Multiple sources land the announcement in earnings_calendar.
-            Sources fire on independent schedules (UW pulls more
-            frequently than Yahoo, etc.). When the daily 19:00 ET
-            fetch-earnings-calendar runs, it merges all of them onto
-            the (ticker, earnings_date, strategy, data_source) unique
-            key. Typical lead time: 7–30 days before the event.
-
-Sun 19:15   weekly-earnings-refresh-history fires. For every ticker in
-ET          earnings_calendar reporting within next 14 days AND
-            with has_options=true (EW or UW confirmed), it pulls AV
-            EARNINGS endpoint → 10y of quarterly EPS history into
-            earnings_history. With the new filter (PR 2026-05-04)
-            this is ~200–400 tickers and takes ~3–5 min. Was 6,402
-            resolved → truncated to 500 alphabetical → MCK was
-            silently dropped. Fixed.
-
-Tue 19:30   daily-earnings-refresh-reactions fires (compute-earnings-
-ET          reactions). Iterates over every ticker in
-            earnings_history with reported_date NOT NULL. Joins
-            market_data_daily for the D-10 .. D+10 window around
-            each report and computes:
-              • timing-aware reaction_gap (BMO vs AMC)
-              • multi-horizon sustain (3d / 5d / 10d)
-              • direction_consistent / is_reversal flags
-              • ATR-around-earnings (added 2026-05-04):
-                atr_14_d_minus_1, atr_pct_d_minus_1, atr_14_d,
-                day_range_in_atr_units
-            ATR values stay NULL when the corresponding bar has no
-            atr_14 populated (legacy rows). The reaction stats are
-            independent of ATR and survive that case.
-
-Tue 23:00   fetch-market-data-daily fires. For every ticker in:
-ET            • the static set (SPY/IWM/QQQ/SPX, ~16 names with
-                watchlist), AND
-              • earnings_calendar reporting in next 7 days AND
-                has_options=true.
-            The job pulls 1d of intraday + the latest daily bar +
-            full 250-bar indicator series → market_data_daily. With
-            the new options-required filter the universe is ~500
-            names instead of the prior top-25 hard cap that dropped
-            MCK and ~470 other optionable names every night.
-
-            NOTE: reactions runs at 19:30 and market data at 23:00,
-            so the reaction rows written each evening join the
-            PREVIOUS night's market_data_daily — today's bar is not
-            loaded yet. Measured 2026-09-06: latest reported_date is
-            2026-09-04 in earnings_history, 2026-09-02 in
-            earnings_reactions, and 2026-08-28 for rows with
-            d_plus_1_close populated. Part of that lag is structural
-            (a Friday report's D+1 bar does not exist until Monday);
-            whether the rest is, is unverified and is the open
-            question this note exists to record.
-
-Wed 08:20   premarket-refresh-daily fires. For every ticker in the
-ET          earnings union + watchlist, pulls 4–9:30 AM ET intraday
-            and computes gap_pct / pre_high / pre_low / pre_vwap →
-            market_data_daily.
-
-Wed 08:30   premarket-brief-daily fires. SQL query path:
-ET            1. earnings_calendar WHERE earnings_date = today
-                 AND has_options = true (or sources merged)
-              2. LEFT JOIN market_data_daily on (ticker, today)
-                 for gap_pct / pre_high / pre_low / pre_vwap
-              3. LEFT JOIN earnings_reactions for the historical
-                 reaction profile (12-quarter rollup, ATR context)
-            Generates a multi-embed Discord post.
-
-[Trader sees the brief.]
-```
-
----
-
-## Dependency graph
-
-```
-                    ┌───────────────────────────┐
-                    │ fetch-earnings-calendar   │  Mon–Fri 19:00 ET
-                    │ (AV + EW + Yahoo + UW)    │
-                    └───────────┬───────────────┘
-                                │
-                       earnings_calendar
-                                │
-              ┌─────────────────┼────────────────────────┐
-              ▼                 ▼                        ▼
-  ┌───────────────────┐  ┌─────────────────┐  ┌───────────────────────┐
-  │ fetch-earnings-   │  │ fetch-market-   │  │ premarket-refresh     │
-  │ history (weekly)  │  │ data (daily)    │  │ (daily 08:20 ET)      │
-  │ Sun 19:15 ET      │  │ Mon–Fri 23:00   │  │                       │
-  │ filter: 14d +     │  │ filter: 7d +    │  │ pulls intraday for    │
-  │ has_options       │  │ has_options     │  │ earnings + watchlist  │
-  └─────────┬─────────┘  └────────┬────────┘  └───────────┬───────────┘
-            │                     │                       │
-       earnings_history     market_data_daily       market_data_daily
-                                  │              .gap_pct/.pre_high/.pre_low
-                                  │
-                 ┌────────────────┴──────────────┐
-                 ▼                               ▼
-   ┌──────────────────────────────┐   ┌────────────────────────┐
-   │ compute-earnings-reactions   │   │ analyze-market-data    │
-   │ daily Mon–Fri 19:30 ET       │   │ daily (strat / FTFC)   │
-   │ joins eh × market_data_daily │   │                        │
-   │ writes ATR around earnings   │   └────────────────────────┘
-   └──────────────┬───────────────┘
-                  │
-          earnings_reactions
-                  │
-                  ▼
-   ┌──────────────────────────────┐
-   │ premarket-brief              │
-   │ daily Mon–Fri 08:30 ET       │  ← THE REPORT TRADERS SEE
-   │ (Sunday 21:00 for week-ahead)│
-   └──────────────────────────────┘
-```
-
----
-
-## Filtering & capacity reasoning
-
-The pipeline used to silently drop tickers via numeric caps that didn't track the actual universe. Fixed by replacing the caps with a tradability filter.
-
-### `has_options=true` is the right cut, NOT `is_s_p_500=true`
-
-`is_s_p_500` is populated **only by Unusual Whales** (493 of 14,000+ rows in `earnings_calendar`). Even within UW, 229 of 493 rows leave the flag NULL — including JPM, UNH, and others that are obviously S&P 500 members. MCK has no UW row at all.
-
-`has_options=true` is set by **Earnings Whispers (682 rows)** and **Unusual Whales (157 rows)**. AV and Yahoo never set it. This effectively means "EW or UW confirmed this is options-tradable around earnings" — the right cut for an earnings-options pipeline.
-
-### The funnel (live numbers, 2026-05-04)
-
-| Filter | Tickers | Δ |
-|---|---:|---:|
-| 90-day window (legacy `--lookahead-days=90`) | 6,326 | base |
-| **Next 7 days** | 3,531 | −2,795 |
-| **+ has_options=true (EW or UW)** | **497** | **−3,034** |
-| + is_s_p_500=true (UW only — DON'T USE) | 47 | −450 (would lose MCK + 449 others) |
-
-### Capacity check (CLAUDE.md §0.2)
-
-`fetch-market-data` daily, 500 optionable + 16 static + watchlist ≈ 530 tickers:
-- ~3 AV calls per ticker (intraday + daily + supporting) = ~1,600 calls
-- AV Premium tier: 150 RPM
-- Wall clock: ~10–11 minutes
-- Cloud Run task-timeout: 1,800 s (30 min) → 19 min headroom
-
-`fetch-earnings-history` weekly, 14d window ≈ ~200–400 tickers:
-- 1 AV call per ticker = 200–400 calls
-- Wall clock: ~1.5–3 minutes
-- Cloud Run task-timeout: 1,800 s
-
-Both fit comfortably. Caps (`--max-tickers=800` for market, `--max-tickers=1500` for history) are now safety belts well above the typical universe, not silent truncators.
-
----
-
-## Known failure modes (and how the recent fixes address them)
-
-| Failure mode | Symptom | Fix |
-|---|---|---|
-| **Cap drops mid-tier optionable name.** Universe is 4,777/week reporters; old cap was 25; everything past top-25 by mcap silently dropped. | MCK landed in calendar 2026-04-12; 21 daily fetcher runs all skipped it; brief had zero data on 2026-05-07. | Fix 2: replace top-25 cap with `has_options=true` filter (~500 names) + raise `--max-tickers` to 800 as safety belt only. |
-| **Indicator backfill writes only 1 row.** Both `compute_indicators_for_dates` (backfill_ticker) and `compute_and_upsert_daily_indicators` (fetch_market_data) compute on a 250-bar window but upsert only the LAST row. New tickers get OHLC for 250+ days but ATR/RSI/MA for only 1 day. | After backfill, MCK had 400 days OHLC but only 8 days of `atr_14` populated. Brief / report queries returned NULL for historical indicator context. | Fix 1: new `compute_indicators_for_full_range(ticker)` in `backfill_ticker.py` writes indicators for every bar in the loaded range, in chunks of 200. |
-| **History fetcher 90d × 6,402 cap=500.** Sunday's earnings-history-weekly resolved 6,402 tickers from a 90-day lookahead and truncated to 500 alphabetical. Tickers beyond row 500 by ticker symbol got no quarterly EPS pulled. | MCK was outside the alphabetical first 500; no `earnings_history` rows; downstream `compute_earnings_reactions` silently skipped MCK. | Fix 3: tighten lookahead 90d → 14d, add `has_options=true` filter, raise cap 500 → 1,500 (safety belt only). |
-| **Ticker reports today with no historical reaction data.** Brief queries `earnings_reactions` for the 12-quarter rollup; if upstream missed the ticker, brief shows "no historical reaction data." | Trader sees a placeholder for an actively-traded earnings event. | Fixes 1–3 above ensure the ticker is in `market_data_daily` with indicators + in `earnings_history` + in `earnings_reactions` by the time the morning brief runs. |
-| **ATR around earnings was a one-off SQL query, not a column.** Trade-sizing question "what's the reaction-day range in ATR units?" required ad-hoc SQL every time. | One-off queries with risk of drift. | Fix 4: `earnings_reactions` schema gained `pre_report_atr`, `pre_report_atr_pct`, `post_report_atr`, `reaction_day_range`, `reaction_day_range_in_atr_units`. Populator computes them from the existing market_data_daily join with **timing-aware** D-vs-D+1 selection (see below). |
-| **First-cut Fix 4 used the wrong day for AMC reports.** Initial schema had `atr_14_d_minus_1` / `atr_14_d` / `day_range_in_atr_units` always anchored at D. For AMC reports D is normal trading (the report drops AFTER close), and the actual reaction trades on D+1 — so the column showed ~2× ATR ranges when third-party analytics showed 6×. | MCK 2026-02-04 AMC: the first-cut populator wrote 1.92× when the real reaction-day move was 6.22× ATR. | Replaced with timing-aware columns. The buggy first-cut columns were dropped in the same migration before any production consumer existed. |
-
----
-
-## Timing-aware ATR columns (Fix 4)
-
-The `earnings_reactions` table now has 5 ATR columns that are populated based on the report's `reaction_basis`:
-
-| Column | BMO (open report) | AMC (after-close report) |
-|---|---|---|
-| `pre_report_atr` | `atr_14` on **D-1** (last bar before report) | `atr_14` on **D** (last full bar before reaction) |
-| `pre_report_atr_pct` | pre_report_atr / D-1 close × 100 | pre_report_atr / D close × 100 |
-| `post_report_atr` | `atr_14` on **D** (reaction day) | `atr_14` on **D+1** (reaction day) |
-| `reaction_day_range` | high − low on **D** | high − low on **D+1** |
-| `reaction_day_range_in_atr_units` | reaction_day_range / pre_report_atr (BMO) | reaction_day_range / pre_report_atr (AMC) |
-
-**Why this matters.** For AMC reports D is normal trading — the report drops only after the close, so D's range is irrelevant to the earnings reaction. The actual move trades on D+1 (gap + intraday extension). Anchoring the day-range column on D instead of D+1 turns a 6× ATR explosion into a misleading 2× number. Use `pre_report_atr` as the natural denominator: it's the volatility regime traders actually saw going into the print.
-
-**Validated against third-party analytics for MCK 2026-02-04 AMC:**
-
-| Metric | Value | Source |
-|---|---:|---|
-| Pre-report ATR(14) (D for AMC) | $18.80 | our market_data_daily |
-| Reaction-day range (D+1) | $109.93 | our market_data_daily |
-| **Reaction range / pre ATR** | **5.85×** | our compute |
-| Third-party analytics | 6.0× | screenshot reference |
-
-Discrepancy is rounding + slight ATR-smoothing variant (Wilder vs SMA-of-TR).
-
----
-
-## 12-quarter coverage
-
-`compute_earnings_reactions` skips any quarter where `market_data_daily` doesn't have D-10..D+10 surrounding bars. To populate **12 quarters of reactions per ticker** the OHLC backfill needs ~3.2 years of bars: `12 × 63 trading days + 21d (D±10) + 14d (ATR warm-up) = ~800 calendar days`.
-
-**`backfill_ticker.py` default `BACKFILL_HISTORY_DAYS` is now 800** (was 250). Lower values silently produce fewer reaction rows — `compute_earnings_reactions` doesn't error, it just skips quarters without bars.
-
-For one-off `/replay` requests where you only want the recent context, override:
 ```bash
-gcloud run jobs execute backfill-ticker \
-  --update-env-vars="BACKFILL_TICKER=MCK,BACKFILL_HISTORY_DAYS=400"
+python -m gcp.fetchers.fetch_earnings_history --scope=daily --max-tickers=100 --no-backfill
+python -m gcp.fetchers.fetch_earnings_history --scope=weekly --max-tickers=100 --no-backfill
+python -m gcp.fetchers.fetch_earnings_history --tickers=AAPL --max-tickers=1 --no-backfill --dry-run --no-yahoo
+python -m gcp.fetchers.fetch_av_earnings_estimates --max-tickers=100
+python -m gcp.fetchers.fetch_news_sentiment --tickers=IWM,SPY --max-tickers=300 --max-requests=300
+python -m gcp.fetchers.fetch_news_sentiment --earnings-window-days=7 --max-tickers=300 --max-requests=300
+python -m gcp.fetchers.fetch_news_sentiment --topics=earnings,technology --max-requests=30
+python -m gcp.fetchers.fetch_insider_transactions --max-tickers=300
+python -m gcp.fetchers.compute_earnings_reactions --scope=daily --max-tickers=100 --max-quarters=100
 ```
 
----
+`--force` bypasses freshness selection, never count/runtime/byte admission. Above-cap news/insider universes require explicit independently assessed shards; no silent truncation. History/estimates selectors retain full resolved denominators and report selected and pending counts separately. Fair leased work chooses NULL/oldest attempt before repeating failed heads, with explicit backoff; attempt clocks never alter source freshness. Capped or timed-out required coverage is partial/nonzero. Recurring history and bounded repair must use `--no-backfill`; unsafe combined manual chains are refused. Do not run the old 77–120-minute market chain through this earnings command. Price-depth recovery belongs to the independently reviewed DATA/DEPLOY command and capacity contract.
 
-## Operational notes
+News windows are durable half-open minute intervals, initially 48 hours and never more than seven days per requested span. Vendor calls use explicit time bounds, EARLIEST ordering and boundary overlap followed by logical filtering. Saturated responses split into smaller durable windows across invocations; all initial/subdivision calls share the request budget. A saturated minimum-minute window becomes `blocked_vendor_granularity`, not complete. Failed/uncertain commits invalidate proposed group frontiers. Cursor completeness cannot jump an unresolved gap.
 
-- **The 23:00 ET window is contested.** Three jobs fire at the same minute (`fetch-market-data`, `compute-earnings-reactions`, `evaluate-ew-strikes`). They share Cloud SQL but talk to different tables. If any of them needs more time, stagger by 5 min — Cloud Scheduler precision is per-minute.
-- **AV rate limiting is the binding constraint.** All three weekday jobs share a 150 RPM budget. Raising universe size beyond ~600 tickers will start eating into the timeout. Estimate before changing.
-- **`has_options=true` filter depends on EW + UW running their fetches first.** If EW upload fails one day, the daily filter loses the ~454 EW-confirmed names. Mitigation: watchlist union (existing) + 7-day-window (we'll see EW data on the next run).
-- **Smoke test for any ticker change:** trigger `backfill-ticker` Cloud Run Job with `BACKFILL_TICKER=<TICKER>,BACKFILL_HISTORY_DAYS=400`, then dispatch `db-query.yml` with:
-  ```sql
-  SELECT COUNT(*) AS days, COUNT(atr_14) AS with_atr14, COUNT(rsi_14) AS with_rsi14
-  FROM market_data_daily WHERE ticker = '<TICKER>';
-  ```
-  After Fix 1 those counts should match (every loaded bar has indicators). Before Fix 1 only ~8 of N had indicators populated.
+## Historical and derived data
 
----
+`lib.earnings_history` selects latest immutable earnings/estimate vintage at an aware cutoff in one bounded query. Pre-observation history is unavailable, not the latest cache. `/api/catalysts/asof/{ticker}?as_of=YYYY-MM-DD` resolves exchange-date end in America/New_York, including DST. Explicit historical requests suppress unversioned news, SEC, insider, calendar and prices with section-level unavailable reasons. Live database errors differ from successful empty responses.
 
-## Related docs
+New reactions require actual validated source-capture proof, the applicable earnings revision/knowledge clock and independent timing observation, resolved configuration/hash, rule version, code commit/image, common OHLC basis and a permanent `earnings_reaction_input_artifacts` identity/hash. Artifacts and derived rows commit consistently. The required shared DATA `lib.price_basis` interface (helper/schema not merged at this checkpoint; positive integration remains pending) validates exact canonical UTF8 `artifact_payload` bytes and ordered `price_inputs`; OHLC uses adjusted-close/raw-close factors, volume uses split factors only. Legacy raw ATR is recomputed on common basis. Volume-sensitive reactions additionally require volume_capability=verified; a price-only basis with unavailable split-volume capability is refused, without NaN/zero/raw-volume substitution. Missing DATA columns/helper, missing depth or unknown factors is unavailable and cannot become a successful certified reaction.
 
-- [`DATA_PIPELINE.md`](product/infrastructure/05-g-DATA_PIPELINE.md) — per-table freshness contract
-- [`05-a-ARCHITECTURE.md`](product/infrastructure/05-a-ARCHITECTURE.md) — infrastructure overview (`docs/GCP_ARCHITECTURE.md` is a redirect to it)
-- [`CLAUDE_CODE_ON_WEB.md`](CLAUDE_CODE_ON_WEB.md) — sandbox patterns for ad-hoc DB queries
-- [`gamma_levels.md`](gamma_levels.md) — gamma analytics (independent pipeline)
+Current mutable revised prices support `current_revision_analytics` only. Historical/as-of reaction certification is refused without a real immutable price vintage satisfying the cutoff. Existing reaction/view rows with missing provenance remain legacy/unavailable for qualified admission; this does not promote them into a point-in-time strategy/model.
+
+History retains the full configured OPTIONS denominator and assesses the captured-source-derived last-30-day reported-event cohort while fetching at most100 admitted symbols. Existing unchanged source-verified revisions can qualify only for observed current-revision diagnostics. No independent expected-cohort proof producer exists: independent_expected_cohort_proof remains NULL, coverage_complete=false, complete_through=NULL and full_current_cohort_status=dependency_pending. Fresh or old receipts cannot zero source_universe_unknown_count or become vendor watermarks. Reaction manifests bind the exact history manifest ID, event scope/hash, window, configured universe and matching per-event revision IDs. Missing, pending, wrong-scope or future acknowledgement cannot be substituted by an older scheduled launch. DEPLOY owns new Sunday scheduling and its runtime predecessor wrapper; CAT adds no Sunday-specific CLI gate. Read the approved DEPLOY plan and deployed-state verifier for actual schedule/pipeline admission evidence.
+
+## Capacity, measurements and costs
+
+Planning numbers below are envelopes, not measured production latency. Actual whole-path transport/archive/pg8000 Cloud SQL latency and maximum shape must pass before promotion; a failing measurement requires smaller fair shards or a bounded architecture correction, never a raised timeout or hidden slow fallback.
+
+| Phase | Admitted volume | Network shape | Planning wall-clock and retained task cap |
+|---|---|---|---|
+| History primary | 100 symbols ×≤1,000 quarters ×500B≈50MB streamed; AV≤200MiB/run; Yahoo≤100×50×400B≈2MB | 100 AV calls; ≤400 Yahoo HTTP requests under100 supervised observations;100 archive PUTs;≤100 cache and100 timing writes;≤40 remaining round trips | 3,000 AV +900 Yahoo incl reaping +1,000 archive +200 cache +200 timing +80 remaining SQL +40 pacing +80 transform/startup=5,500s, below6,000 primary and7,200 quarter of28,800 task |
+| Insider | 300×1,000=300,000 rows;≤360MB streamed normalized;≤600MB raw | 300 calls;30 groups≤10responses/10,000rows/16MiB;≤4SQL round trips/group | 300×(1sAPI+.4pace+.3archive+.3parse)+120×2sSQL+30setup=870s; oversized terminal detail adds at most2 bounded manifest SQL RT/4s, so874s≤900 quarter of3,600 task |
+| Ticker/earnings news | ≤300 calls, including subdivisions;≤300,000 articles/1.2M equity rows/1.44GB streamed;≤600MB admitted raw | ≤30calls/query identity;30groups≤10responses/40,000rows/64MiB;≤4SQL round trips/group; batched startup/cursor | 300×2s+120×2s+30setup=870s; full300-capture detail publication adds at most2 bounded SQL RT/4s, so874s≤900 quarter of3,600 task |
+| Topic news | ≤30calls;≤30,000articles/120,000rows/144MB streamed;≤60MB raw | ≤3groups and12write round trips |30×2s+12×2s+30setup=114s≤900 |
+| Estimates |≤100symbols ×≤100 native rows, preserving complete payload; actual body≤2MiB each |≤100calls,100PUTs;≤10groups×3core statements plus6 remaining=36RT; full/selected/pending separate | 200s source/pace/archive/parse+72SQL+30setup=302s<450 admission; retained1,800 task; exhausted scope remains pending |
+| Reactions |≤100tickers×100quarters=10,000derived rows; streamed10price batches≤26,000bars/16MiB each, compact timing≤2MiB total |≤119SQL RT including10price batches/1deduplicated timing read/≤100atomic artifact+reaction writes; zero vendor calls | 238s SQL+100transform+30startup+20serialization+32reserve=420s≤450, retained1,800 task; actual positive DATA/max-shape integration remains pending |
+
+Source/body reads, GCS operations and SQL acquisition/query/ACK are supervised in spawned processes. Native Yahoo curl uses≤4requests,≤2s each, no redirects and a body callback cap, within8s overall plus≤1s terminate/kill/reap. Parent bounds cover trickling bodies and provider/library hangs. Source responses outside admitted news shape are archived up to the absolute20MiB transport ceiling, then refused; an unbounded response cannot be archived by assertion. Unknown commits retain immutable identities for explicit reconciliation, never automatic fabricated acknowledgements.
+
+Local evidence as of the implementation checkpoint: baseline184 focused tests passed; initial combined202 passed. Native300×1,000 insider parsing/identity preparation with30 bounded groups passed in a7-test batch98.07s before pacing was instrumented, observed process RSS≈132MiB; this measured CPU/shape with vendor/SQL adapters, not production network speed. Three news-mode tests exercise actual300/300/30 call paths and one full40,000-row native transformation group per mode; pacing is instrumented and SQL/vendor latency modeled explicitly. Real local pg8000 tests prove atomic migration rollback, concurrent upsert convergence, two full schema applications, actual four-writer preparation/final online identity replay, independent Yahoo timing, API correction cutoff, estimates CLI nonempty/empty/pending/uncertain publication, fair selection and news subdivision/restart. Actual local HTTP/curl/process fixtures exercise request count, body rejection,8s provider cancellation/reaping, trickling AV, blocked upload and blocked database acquisition. Final measured command/result/head package is in the PR review report; acceptance remains unticked until complete.
+
+Illustrative oneCPU/1GiB Cloud Run price$0.000020/s: history680s expected≈$0.0136/run,5,500s admitted≈$0.11/run. Five weekday+oneweekly≈25.7runs/month yields≈$0.35expected or$2.83admitted, excluding free tier/fixed SQL/subscriptions/storage. New estimates planning302s≈$0.00604/run ×1/day ×30=$0.1812/month (450s cap=$0.27/month). Reaction420s at1CPU/0.5GiB illustrative$0.000019/s≈$0.00798/run; about26invocations≈$0.2075/month, excluding fixed SQL/storage. Record actual billing/pricing revision during rollout; these are not guarantees.
+
+The immutable `av-cost-estimate-v3` source-body illustration is6GB watchlist news +0.6GB topic news +0.6GB earnings news +3MB estimates (100×30KB typical) =7.203GB/weekday and3,700 AV response objects/weekday. It excludes EARNINGS, calendar, Yahoo and insider. Its original90day×5/7 assumption gives463.05GB; daily maxima give648.27GB, before envelope/base64/gzip/metadata. A separately declared66weekday assumption gives475.398GB. The original unsaturated30-symbol illustration is1.223GB/weekday and does not bound a300-call backlog. Estimates actual admitted body maximum is100×2MiB=200MiB/run, separately from typical30KB. Calendar adds one native response object and up to20MiB/run. History adds≤100 AVresponse objects/≤200MiB per invocation separately (six/week over90days≈15.1GiB) plus independent Yahoo/artifact objects; insider adds≤600MB/300PUTs per full run separately. Measure actual compressed object bytes and permanent SQL/index growth. Legacy seed≈74MB before indexes,≈100–200MB with indexes; pathological100×100 changed quarters adds≈10MB permanent revisions.
+
+## Promotion and identity checklist
+
+1. Parent verifies approved DEPLOY tests for create/update secrets/runtime, calendar secret/missing-secret preflight and every lifecycle writer preserving exact `av/raw/`90day retention. Run the targeted deployed-state verifier after merge; code tests or existing Scheduler presence do not prove deployed state. Preserve unrelated bucket rules.
+2. Apply additive schema through the revision-recording schema applier. Validate populated-cache seed clocks, atomic trigger/guard installation, permanent tables/indexes and transitional nonunique identity lookup indexes. Dry-run inspection cannot prove installation.
+3. Deploy every news writer (scheduled AV, ticker backfill, RSS, standalone backfill) and insider writer with the shared preparation/bulk identity function. Verify active and inactive old commands/images cannot still write outside that contract. Keep hashes nullable during this stage; do not create the final unique index yet.
+4. Backfill existing NULL identity hashes in admitted≤5,000-row primary-key chunks. Record progress/evidence and reconcile collisions explicitly without deleting evidence or fabricating financial fields. Failed drain/duplicate/null checks keep the preparatory compatible state.
+5. Only after accountable writer-drain proof, use `python -m gcp.fetchers._av_ingestion --identity-table=news_sentiment --finalize-identities --writer-manifest=<reviewed JSON path>` (or insider table). The manifest must prove all required current writer entrypoints, inactive-old blocking, code/image/contract versions and evidence URI. The helper checks nulls/collisions, builds its scoped UNIQUE INDEX CONCURRENTLY, sets NOTNULL and records the final checkpoint. Inspect/reconcile an invalid partial index; unknown outcome is not successful finalization. Never fill this manifest with deployment guesses.
+6. Parent performs bounded primary-only refresh/repair, validates actual source bytes/clock/hash and permanent revisions/estimate vintages, and records full/selected/pending scope. Verify source publication ACK and exact history/reaction linkage before OPTION admission. Missing DATA depth/helper/basis is a named recovery dependency, not completeness.
+7. Measure cold/warm full admitted shape, logical/underlying requests, raw+normalized+SQL bytes, archive latency, pg8000 group round trips, working-set peak and whole-run elapsed including failure/terminal. Admit only a measured≤quarter-timeout workload. Full transport/SQL/GCS verification remains post-merge parent promotion evidence.
+8. The accountable `av-api-key` rotation role is the GCP Secret Manager key owner/on-call operator, coordinated by the parent rollout owner. Confirm the actual assignee in the deployment record; do not invent a person. Rotate the previously exposed credential, update all approved existing consumers/versions, verify source success without logging secrets, and retire the old version only after references converge. This author has not performed rotation.
+
+Related records: [feature catalog](product/02-FEATURE-CATALOG.md#feat-catalyst-001), [traceability](product/12-PR-ISSUE-TRACEABILITY.md#feat-catalyst-001--earnings--catalysts-19-open), [DATA pipeline](product/infrastructure/05-g-DATA_PIPELINE.md), [approved specification](superpowers/specs/2026-10-12-feat-catalyst-001-av-catalysts.md). Earlier May2026 broad market-backfill commands and cron observations are historical context, not an admitted recovery command for this candidate.
+
+## Literal producer source choices (candidate implementation)
+
+The [complementary producer-receipts specification](superpowers/specs/2026-10-12-feat-catalyst-001-av-producer-receipts.md) merged at76783d56; immutable spec1419 remains unchanged. PR1430 is implementing both contracts, with acceptance and deployment pending. Source references below describe the candidate implementation; actual schema/producer rollout remains a prerequisite.
+
+```sql
+CREATE TABLE IF NOT EXISTS av_catalyst_source_captures (
+    capture_id UUID PRIMARY KEY,
+    function TEXT NOT NULL,
+    ticker TEXT,
+    source_retrieved_at TIMESTAMPTZ NOT NULL,
+    raw_uri TEXT NOT NULL,
+    raw_sha256 CHAR(64) NOT NULL,
+    metadata JSONB NOT NULL,
+    validation_status TEXT NOT NULL CHECK(validation_status IN ('validated','validated_empty')),
+    normalized_count INTEGER NOT NULL CHECK(normalized_count>=0)
+);
+```
+
+```sql
+CREATE TABLE IF NOT EXISTS av_catalyst_source_manifests (
+    manifest_id UUID PRIMARY KEY,
+    job_name TEXT NOT NULL,
+    variant TEXT NOT NULL,
+    execution_name TEXT NOT NULL,
+    manifest JSONB NOT NULL
+);
+```
+
+```sql
+CREATE TABLE IF NOT EXISTS av_catalyst_manifest_publications (
+    manifest_id UUID PRIMARY KEY REFERENCES av_catalyst_source_manifests(manifest_id),
+    known_at TIMESTAMPTZ NOT NULL
+);
+```
+
+```sql
+CREATE TABLE IF NOT EXISTS av_earnings_estimates_observations (
+    observation_id UUID PRIMARY KEY,
+    fetch_id UUID NOT NULL REFERENCES av_catalyst_source_captures(capture_id),
+    ticker TEXT NOT NULL,
+    fiscal_date_ending DATE NOT NULL,
+    horizon TEXT NOT NULL,
+    known_at TIMESTAMPTZ NOT NULL,
+    source_retrieved_at TIMESTAMPTZ NOT NULL,
+    raw_uri TEXT NOT NULL,
+    raw_sha256 CHAR(64) NOT NULL,
+    payload JSONB NOT NULL,
+    UNIQUE(fetch_id,ticker,fiscal_date_ending,horizon)
+);
+```
+
+```sql
+CREATE TABLE IF NOT EXISTS av_estimate_receipt_publications (
+    fetch_id UUID PRIMARY KEY REFERENCES av_catalyst_source_captures(capture_id),
+    ticker TEXT NOT NULL,
+    validation_status TEXT NOT NULL CHECK(validation_status IN ('validated','validated_empty')),
+    observation_count INTEGER NOT NULL CHECK(observation_count>=0),
+    source_commit_acknowledged_at TIMESTAMPTZ NOT NULL,
+    CHECK((validation_status='validated_empty' AND observation_count=0)
+       OR (validation_status='validated' AND observation_count>0))
+);
+CREATE INDEX IF NOT EXISTS av_estimate_receipt_known_idx
+    ON av_estimate_receipt_publications(ticker,source_commit_acknowledged_at DESC);
+```
+
+Source: `gcp/schema.sql` additive CAT storage block. Append-only guards cover captures, manifests, publications and estimate observations/receipt publications. Actual estimates source writer is `gcp/fetchers/fetch_av_earnings_estimates.py::main`; native adapter `parse_estimates`, grouped writer `persist_estimate_group`; manifest publication is `gcp/fetchers/_av_ingestion.py::publish_manifest`. Producer job_name is `fetch-av-earnings-estimates`, variant `daily`, pipeline_scope `estimates_daily`.
+
+Full estimate denominator: `configured_universe`, `universe_count`, `scope_hash` = SHA256(canonical sorted configured symbols). Selection: `selected_count`≤100, `selected_scope_hash`, `pending_count` separate from full universe. Windows: `source_window_start`, `source_window_end`, `complete_through`, `coverage_complete`. Sources: `captured_receipts`, `source_revision_ids` (fetch UUIDs), `source_digest`, `predecessor_execution_name`, code/image/pipeline identity. Each selected receipt contains literal `ticker`, `fetch_id`, `status` (`validated` or `validated_empty`), `source_retrieved_at`, `known_at`, `raw_sha256`, `raw_uri`, `observation_count`. Valid empty has no fiscal observation; selected100 cannot certify configured1239. Failed or unacknowledged groups cannot contribute complete receipt coverage.
+
+Publication uses two supervised acknowledged SQL boundaries. A duplicate manifest identity must match stored job/variant/execution/full JSON exactly; a conflict or uncertain acknowledgement is refused. The second boundary returns the actual stored publication.known_at, including retries; a future stored proposal is refused. The full strict canonical manifest is capped at8MiB before SQL. Terminal log and TEXT note contain identical <=64KiB references/counts, including source_manifest_id/source_manifest_known_at/manifest_sha256/manifest_bytes/manifest_schema_version. Complete configured/proof/event/receipt/group arrays stay in SQL and are retrieved by exact ID with digest verification. Optional detail is omitted explicitly before failing required projection; required overflow produces a <=4KiB controlled failure, never successful truncated scope. Source capture has no known_at field. Receipt known_at aliases the separate post-source-ACK receipt publication clock, including empty responses. A lost ACK may leave committed evidence; no certified receipt is returned until explicit identity-preserving reconciliation receives an ACK.
+
+`av-catalyst-canonical/v1` uses sorted JSON keys, prescribed array order, comma/colon separators without spaces, ensure_ascii=true, UTF8 without BOM/newline and signed64-bit integers; scope/proof projections reject floats, duplicate keys and unsupported values. Symbols are trimmed uppercase ASCII, sorted/deduplicated; event multiplicity is retained. Proof clocks use awareUTC six-microsecond Z form. Known-answer bytes/hashes are committed in tests/fixtures/av_catalyst_scope_vectors.json. Independent consumer-parser integration remains pending; a producer helper test does not certify those consumers.
+
+The receipt adds one bounded statement per <=10-response group: estimates now uses <=30 core plus6 other SQL round trips. Planning200seconds source/pace/archive/parse+36×2seconds SQL+30setup=302seconds below450 admission and1800 retained task, about$0.1812 per30-invocation month at$0.000020/second;450 cap is$0.27/month. These are assumptions, not measured production costs. Receipt publication adds <=3000rows/month (illustrative0.6MB before indexes); full manifests add at most8MiB/run, about416MiB/month at26history+26reaction runs, before SQL/index amplification and other producers.
+
+Calendar source writer is `scripts/fetch_earnings_calendar.py::fetch_alphavantage_earnings`, job `fetch-earnings-calendar`, native variant/scope daily or weekly. Its AV-only manifest stores `source_function=EARNINGS_CALENDAR`, `coverage_scope=av_raw_horizon`, native symbol scope/hash/count, native_csv_rows and requested/verified/excluded/pending native validation counts, min/max native reportDate, source retrieval/digest/raw location, `captured_receipts`, and complete_through/coverage_complete only when every native required row validates. Downstream business filtering never changes native counts. NonAV union remains `source_all_coverage=unavailable`; `business_subset_coverage=not_assessed`.
+
+History writer/assessment is `gcp/fetchers/fetch_earnings_history.py::main` / `assess_history_manifest`, job `fetch-earnings-history`, daily or weekly variant/pipeline_scope. Full configured universe is independent of selected≤100 fetches. Ordered `expected_events` are `{ticker,event_reported_date}`; `scope_hash` hashes these events, not calendar symbols. `verified_events` add BIGINT `revision_id`; `source_revision_ids` and source_digest bind actual immutable values, independently completed timing and validated EARNINGS capture proof. The exact inclusive30-date event window is assessment ETdate-29 through assessment ETdate, with a single aware assessment cutoff for SQL and emitted dates/clocks. Source retrieval/proof clocks are cutoff-bounded, with missing capture provenance refused. Each configured symbol has exactly one observed_snapshot|unknown|failed tagged proof with nullable missing evidence and controlled reason. raw_refresh_pending/status retain actual Run.pending/status, distinct from event_pending_count and full-current source_universe_unknown_count. The actual diagnostic predicate accepts only exact acknowledged terminal/manifest/digest/code/scope/selected/window lineage, failed0/no required observed-event unknown, event_cohort_complete=true/event_pending_count0; a raw-only partial1139 backlog from1239/selected100 remains partial. Both old and fresh captures leave full-current dependency_pending, not current/global certification.
+
+Reaction writer/assessment is `gcp/fetchers/compute_earnings_reactions.py::main` / `publish_reactions_manifest`, job `compute-earnings-reactions`, daily or weekly. It inherits exact configured universe/event scope/hash/window, `history_source_manifest_id` and predecessor_execution_name. Each qualified derived event must match its own exact expected revision, source known_at≤history acknowledgement, validated provenance/configuration and an actual permanent input artifact. Full requested/verified/excluded/pending counts cannot be replaced by selected output count. Current cache prices remain current_revision_analytics; no historical certification is invented.
+
+Existing actual local acceptance: `tests/integration/test_av_catalyst_producer_writes.py::test_actual_estimates_daily_writer_publishes_selected_receipts_and_pending_scope`, `::test_actual_estimates_uncertain_publication_never_certifies_availability`, `::test_actual_estimates_group_retains_full_native_payload_and_retry_identity`, `::test_full_scope_manifests_reuse_verified_sources_and_require_acknowledgement` (daily/weekly), `::test_manifest_identity_collision_cannot_relabel_acknowledged_scope`, `::test_daily_selector_fetches_new_report_after_prior_complete_quarter` and `::test_history_event_window_is_exactly_thirty_inclusive_dates` (daily/weekly); plus `tests/gcp/test_av_catalyst_predecessor_manifests.py::test_daily_manifest_links_full_assessed_scope_and_acknowledged_sources` adapter shape and `tests/gcp/test_fetch_earnings_calendar_persist.py::test_full_feed_archive_preserves_weekly_subset`. These are synthetic native adapters and real local SQL, not production receipts. DEPLOY/OPS admission stays dependency_pending until the owning specification/code/schema and actual deployed digest/source receipts are verified.
+
+## Current native checkpoint and remaining admission prerequisites
+
+At code3c99b22f, the preceding native source/scope tranche5ab48847 passed40mandatory local PostgreSQL tests in15.89s with zero skips and175focused network-none Docker tests in37.19s (one previously executed insider full-scope case deselected). The negative volume-capability adapter regression failed before the guard and the native reaction file then passed65tests in3.93s. These are isolated dummy-DB/native source-adapter controls, not deployed source receipts, 512MiB/1CPU certification or positive DATA-helper integration. Actual native NEWS300 captures/600group facts produced permanent full SQL detail >64KiB with exactly2manifest publication statements plus1terminal; the same bounded reference JSON is logged/stored<=64KiB. Full detail retains every real capture ID/body SHA; no truncation certifies healthy scope. Auto-publication has a4s phase bound inside the original8s terminal envelope, and terminal INSERT receives only the remaining allowance. Failure/uncertain publication cannot certify availability.
+
+Reaction source reads now use one compact financial query, one deduplicated applicable timing projection and10indexed price batches, then at most100bounded atomic artifact+reaction writes. SQL-transfer guards reject oversized16MiB price/2MiB timing/8MiB manifest bodies before transferring them. Actual artifact identity collision rolls back new artifact and derived writes together. Full positive10,000-row common-basis/volume computation and production-driver peak/memory/timing remain blocked on the actual reviewed DATA schema/helper; no fixture substitutes for that implementation. Captured artifact SHA is producer-owned identity, not a fabricated DATA journal UUID or publication. Strict historical mode remains unavailable without independent immutable pre-cutoff inputs.
+
+Global/full-current source coverage remains dependency_pending under the merged producer-receipts contract. Qualified observed diagnostics never fulfill a whole-current source SLA or promote PIT/calibration. Independent consumer canonical-vector fixtures, actual reviewed governance/renderer CODE main, complete branch review/CI/audit and targeted deployed schema/image/receipt verification remain admission prerequisites. Separate pending operation-marker/calendar-terminal specifications confer no current code permission; no calendar operation terminal or common typed-marker adoption is claimed here.
