@@ -4569,6 +4569,9 @@ class _PolicyBatchTransportFailure:
 
 def test_fresh_policy_batch_preserves_bytes_absence_replace_root_and_errors(repo, tmp_path, monkeypatch):
     """Actual immutable-policy reads stay fresh across replacements, roots and Git failures."""
+    # Earlier in-process docs_audit.main() calls intentionally disable replacements.
+    # This fixture explicitly exercises enabled replacement refs, then both modes.
+    monkeypatch.delenv("GIT_NO_REPLACE_OBJECTS", raising=False)
     sg = load_gate(repo)
     mixed = b"first\r\nnext\rlast\x00\xff\n"
     on_base(repo, {CATALOG: "placeholder", TRACEABILITY: ""},
@@ -4581,6 +4584,10 @@ def test_fresh_policy_batch_preserves_bytes_absence_replace_root_and_errors(repo
     replacement = _git(repo, "rev-parse", "base")
     assert sg.policy_blob_bytes([(replacement, TRACEABILITY)]) == [None]
     _git(repo, "replace", original, replacement)
+    with monkeypatch.context() as disabled:
+        disabled.setenv("GIT_NO_REPLACE_OBJECTS", "1")
+        assert sg.policy_blob_bytes(queries) == [mixed, b""]
+        assert [sg.Tree(original).raw(path) for _, path in queries] == [mixed, b""]
     assert sg.policy_blob_bytes(queries) == [b"replacement\n", None]
     other = tmp_path / "other"
     shutil.copytree(repo, other)
