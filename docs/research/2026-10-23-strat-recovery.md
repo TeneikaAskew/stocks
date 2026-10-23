@@ -34,3 +34,15 @@ Recovery identifiers: candidate manifest SHA256 e718b33f011850426b68a048e3285d1a
 Ruling: treat inaccessible implementation as unverified until exact files are recovered, otherwise rebuild from executable requirements with fresh tests — prior approvals certify specific missing bytes, not approximate replacements — cost if wrong: repeated implementation/review work, but no false provenance or inherited market-proof claim.
 
 Ruling: publish this documentation checkpoint immediately and use PR-backed implementation checkpoints under the normal gate — user explicitly requested durable PR publication after runtime loss — cost if wrong: additional documentation/review overhead; no code-gate waiver.
+
+## Verified recovery checkpoint
+
+Recovered72 generation-pinned GCP query-result JSON artifacts,74,322,249 bytes;232 statement metadata records. This is a remote archival subset, not the missing467-file evaluation set. The original five-table archive contains2,167 native rows, matching prior recorded totals:42brief history,37insight reports,137alerts,1,946calendar,5reactions. Baseline-only selection produces24brief rows,22insights,89alerts,1,149calendar,3reactions; no deduplication or movement scoring. Holdout outcomes remain unscored. The original AV daily/minute captures and their complete467-file manifest remain missing.
+
+Task1's19 literal original edit commands were recovered and replayed with only worktree-path translation. First17 reproduce allthree original pre-review hashes. After the two recorded review fixes, allthree finalhashes match the original reviewer's independently retained approved hashes. Fresh tests reproduce initialRED30failed/76passed, reviewRED7failed/32passed, finalGREEN158passed. This is exact-byte source restoration, not approximate reconstruction. Independent recovery verification is being finalized.
+
+Task1 final source SHA256:b33fa6e0b047a1f07288a82298f4e2a537bfd95243e255bc56a40f301c905d6d; tests/lib/test_strat.py:a32be6dddc1244e3f2d0ba526f5ac97285e5bf63fb50a42e76f54f4bbd12824e; tests/lib/test_strat_history.py:9433003e6e2bafbd8fffbbb8de3bb37798c38a92af760eec13c20c1d8e4980c4. Other task-command exports are being assessed. Task2 is confirmed incomplete, so new implementation will require fresh tests/review rather than inherit its prior approval.
+
+The unfinished second spec-review round was requested again at the same unchanged head, with explicit recovery context and no extra completed-feedback round. GitHub markers now show fresh manual runs starting11:19AM Eastern onOctober23. There is no current-head completion yet; no merge performed.
+
+Ruling: retry the stalled unfinished second review at unchanged commits after the owner's explicit request to refresh threads — no completed second-round result existed and no new spec change was pushed — cost if wrong: duplicated review effort if an earlier worker also completes; combine same-revision findings and do not request a third feedback round.
