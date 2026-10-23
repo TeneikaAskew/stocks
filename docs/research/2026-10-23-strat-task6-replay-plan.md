@@ -56,3 +56,13 @@ Fresh subprocess full wall38.1642s, process CPU38.4710s, lifetime peak131340KiB 
 Sensitive selection initially24passed/5failed in22.37s: the failed assertions indexed a nonexistent structural-envelope status field. Failed revision/log retained; actual contract diagnosis and only necessary corrected-selector proof pending. Initial both-main test instrumentation and typed-field fixture errors are also preserved. Do not convert pending assertions into acceptance or aggregate test counts. No real-market source was loaded, no holdout peek/scoring, no October activation/movement outcome. Model audit and complete independent review remain pending.
 
 First partial GREEN source backup:27members132080bytes,SHA256 `c1c517d0bc4d66685be4f0159af7a29d3decb5fb3c339a5ed5e5e337690b78d5`, five verified PR1573parts6375824463–6375826224. It predates the capacity run and is explicitly narrower; final capacity-source/evidence backup will follow the frozen candidate.
+
+## Final frozen candidate and independent review
+
+The [full19-model source audit and diagnostic artifact](2026-10-23-strat-production-replay.md) is published verbatim from the frozen local candidate (SHA256 `7ab416d26f693263e32cec8c15e2eb88e8689945301a1e510b77f6476f8e4044`). It is candidate evidence under a fresh complete independent task review, not an acceptance or completed actual-market baseline.
+
+Final11-file manifest `9ad088d00f44cf2931db34e3e0bf43e21dcf0e37439f5291737fcee41b01a19f`; report `a8cc3d5191de5e044e2e4b51fa0f53493f8a649faaa68446ca354435c81b9d50`; complete diff `47a95a188b141bf7e1e5e80803f26cd92827f0fcdc4c4d335d2ecd27eeba2354`. Root independently verified all11live/frozen paths, all1365predecessor artifact identities, all350allowlisted files, exact full diff and no outside-owned tracked-source changes. Source/test/SQL stopped for review.
+
+Final same maximum on final bytes:1pass38.98s; lifetime131332KiB (128.2539MiB), full childwall38.7004s, CPU38.9997s,4physicalopens,17040syntheticrows/main,168actualgraph mockcompletions,0guardedexternalattempts. Contemporaneous before/after11-file manifests are identical to the final candidate. Additional source guards and adapter-field changes after first capacity justified this one final check; no blanket reassurance repeats. Compatibility117pass0.61s on same production bytes. Earlier partial/failed selections remain disclosed at their actual revisions.
+
+Synthetic-only mode is a deliberate admission limit. It cannot consume raw/current-vintage October captures yet. ActualOctober baseline/current-vintage profile and genuine merged calendar/DATA/source qualification remain BLOCKED/NOT_RUN; the fullTask6 spec is incomplete. No all-requirements PASS or whole-system qualification is claimed.
