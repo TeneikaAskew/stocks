@@ -1405,6 +1405,14 @@ def format_terminal(report: FreshnessReport) -> str:
         # operator doesn't have to grep deploy.sh to know who to debug.
         if r.writer_job and r.status in ("stale", "warn"):
             lines.append(f"  {DIM}    └─ writer-job: {r.writer_job}{RESET}")
+        if r.status == "stale":
+            # Keep the compact table, but preserve the full finding contract
+            # for execution-log alerts: display truncation must not hide the
+            # missing dates, bad-row counts or expected threshold.
+            details = json.dumps({"last_row_at": r.last_row_at,
+                                  "expected_latest": r.expected_latest,
+                                  "row_count_recent": r.row_count_recent}, default=str)
+            lines.append(f"  {DIM}    └─ details: {details}{RESET}")
 
     lines.append("")
     overall_color = {"ok": GREEN, "warn": YELLOW, "stale": RED, "unknown": DIM}[report.overall_status]

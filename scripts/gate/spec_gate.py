@@ -38,6 +38,8 @@ import ast
 import bisect
 import functools
 import html
+import importlib.util
+import importlib.machinery
 import json
 import collections
 import datetime
@@ -1082,8 +1084,9 @@ DEPLOY_FEAT = "FEAT-DEPLOY-001"
 DEPLOY_FILE = re.compile(r"^((gcp|platform)/deploy\.sh|gcp/cloudbuild/[^/]+|cloudbuild[^/]*\.ya?ml|Dockerfile[^/]*|\.gcloudignore|\.dockerignore)$")
 # The files that are the delivery process itself: CI configuration at any path under .github/, the gate's
 # files and pinned copies, the hook, the agent instructions and the local skills (round six)
-def is_process_file(path: str) -> bool:
+def is_process_file(path: str, trees=()) -> bool:
     return ((path.startswith(".github/") and not is_documentation(path)) or is_gate_file(path) or path in PINNED.values()
+            or path in SOURCE_REVIEW_INPUTS or source_import_shadow(path, trees=trees)
             or path.startswith(LOCAL_SKILLS) or path.startswith((".claude/", ".githooks/"))
             or path.rsplit("/", 1)[-1] in ("CLAUDE.md", "AGENTS.md", "CLAUDE.local.md"))
 # The files the gate runs from: no change may delete one, whatever its branch, or the
@@ -1091,6 +1094,73 @@ def is_process_file(path: str) -> bool:
 SUITE = "tests/scripts/test_spec_gate.py"
 # stocks#1205 r4121602817: the exporter's suite judges proposed exporters the same way
 SUITES = (SUITE, "tests/scripts/test_export_model_registry.py")
+SOURCE_REVIEW_INPUTS = frozenset((
+    "scripts/maintenance/doc_source_snapshot.py", "scripts/maintenance/docs_audit.py",
+    "tests/scripts/test_doc_source_snapshot.py", "tests/scripts/test_docs_audit.py",
+    "scripts/__init__.py", "scripts/maintenance/__init__.py", "scripts/gate/__init__.py",
+    "tests/__init__.py", "tests/scripts/__init__.py", "tests/conftest.py", "tests/scripts/conftest.py",
+))
+SITE_TRACEABILITY = "docs/product/03-SITE-TRACEABILITY.md"
+
+
+SOURCE_IMPORT_NAMES = frozenset(sys.stdlib_module_names) | {
+    "sitecustomize", "usercustomize", "yaml", "_yaml", "pytest", "_pytest",
+    "pluggy", "iniconfig", "py", "pygments", "packaging", "exceptiongroup",
+    "tomli", "colorama", "_distutils_hack", "cython_runtime", "conftest",
+}
+SOURCE_IMPORT_SUFFIXES = tuple(dict.fromkeys((".py", ".pyc", ".pyw", ".so", ".pyd",
+                                             *importlib.machinery.EXTENSION_SUFFIXES)))
+SOURCE_ROOT_IMPORT_NAMES = SOURCE_IMPORT_NAMES | {"scripts", "tests"}
+
+
+def source_import_shadow(path: str, *, trees=(), present=None) -> bool:
+    """Effective startup slots, including both sides of package transitions.
+
+    A namespace-only application directory does not override a regular stdlib
+    module/package. Its initializer transition does; once regular, all children
+    can be transitive imports. Committed manifests supply their already-read
+    path map, while the gate inspects its actual BASE and proposed trees.
+    """
+    def exists(candidate):
+        return candidate in present if present is not None else any(t.mode(candidate) is not None for t in trees)
+
+    for parent in ("", "scripts/maintenance/", "scripts/", "tests/scripts/", "tests/"):
+        if not path.startswith(parent):
+            continue
+        component, slash, tail = path[len(parent):].partition("/")
+        names = SOURCE_ROOT_IMPORT_NAMES if not parent else SOURCE_IMPORT_NAMES
+        if not slash:
+            # A bare name can be a symlink to an importable package. Orphan
+            # __pycache__ entries and namespace-only directories are not files
+            # that Git reports here and are not inferred as executable inputs.
+            if component in names or any(component.endswith(s) and component[:-len(s)] in names for s in SOURCE_IMPORT_SUFFIXES):
+                return True
+        elif component in names:
+            initializers = tuple("__init__" + s for s in SOURCE_IMPORT_SUFFIXES)
+            if tail in initializers:
+                return True
+            if component not in ("scripts", "tests") and any(exists(parent + component + "/" + init) for init in initializers):
+                return True
+    return False
+
+
+def source_protocol():
+    """Only the BASE checker's protected local file; no proposed-tree imports."""
+    path = ROOT / "scripts/maintenance/doc_source_snapshot.py"
+    if path.is_symlink() or path.resolve() != path or not path.is_file():
+        raise ValueError("trusted committed-source verifier unavailable")
+    spec = importlib.util.spec_from_file_location("_gate_source_protocol", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    previous = sys.dont_write_bytecode
+    try:
+        sys.dont_write_bytecode = True
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
+    if pathlib.Path(module.__file__).resolve() != path:
+        raise ValueError("trusted committed-source verifier identity differs")
+    return module
 # Red-team round five: after five rounds the shell and YAML models still leaked (`if: always()`
 # steps hidden from the write scan, `run :`, `|2`, quoted continuations, git subcommands, `scripts//gate`).
 # The workflows and the hook are therefore pinned byte for byte to copies under scripts/gate/pinned/,
@@ -1322,7 +1392,7 @@ def requirement_defs(tree: "Tree") -> set[str] | None:
     return None if text is None else requirement_definitions(text)
 
 
-def validate_spec(fm: dict, name: str, catalog: set[str], req_defs: set[str] | None) -> list[str]:
+def validate_spec(fm: dict, name: str, catalog: set[str], req_defs: set[str] | None, *, site_text: str | None = None) -> list[str]:
     errs = [f"{name}: missing frontmatter key '{k}'" for k in REQUIRED_SPEC_KEYS if k not in fm]
     if fm.get("_duplicate_keys"):
         errs.append(f"{name}: frontmatter defines {', '.join(fm['_duplicate_keys'])} more than once; one value per key")
@@ -1355,6 +1425,15 @@ def validate_spec(fm: dict, name: str, catalog: set[str], req_defs: set[str] | N
     for key in ("issues", "canvases"):
         if key in fm and fm[key] is not None and not isinstance(fm[key], list):
             errs.append(f"{name}: {key} must be a list")
+    if "site_source_notes" in fm:
+        try:
+            protocol = source_protocol()
+            protocol.declaration(fm, site_text or "")
+        except (ValueError, OSError) as exc:
+            errs.append(f"{name}: invalid site_source_notes: {exc}")
+        except Exception as exc:
+            # The protected module's explicit unavailable type is local to it.
+            errs.append(f"{name}: site_source_notes unavailable: {exc}")
     return errs
 
 
@@ -1694,7 +1773,8 @@ def check_changed_specs(ch: Change) -> list[str]:
             errs.append(f"{path}: a new spec is draft or approved; superseded is what an approved spec becomes")   # (round seven)
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}-[a-z0-9]+(-[a-z0-9]+)*\.md", path.rsplit("/", 1)[-1]):
             errs.append(f"{path}: a spec is named YYYY-MM-DD-<kebab-slug>.md")   # (round seven: the skill's shape, enforced)
-        errs += validate_spec(frontmatter(text), path, catalog, req_defs) + check_supersedes(frontmatter(text), path, ch.base)
+        errs += validate_spec(frontmatter(text), path, catalog, req_defs,
+                              site_text=ch.base.read(SITE_TRACEABILITY) if "site_source_notes" in frontmatter(text) else None) + check_supersedes(frontmatter(text), path, ch.base)
         # solyra#72 r4119957736: a canvas the spec names exists in the registry the head
         # carries, so the implementation's handoff is not the first place a typo shows
         modes = canvas_modes(ch.tree.read(CANVASES))
@@ -2196,7 +2276,8 @@ def check(ch: Change) -> tuple[list[str], Traced | None]:
              and nfm.get("status") == "approved" and nfm.get("feat_id") == feat_id]
     if newer:
         errs.append(f"{spec_path} is superseded by {', '.join(newer)}; point the plan at the current spec")
-    errs += validate_spec(spec_fm, spec_path, catalog, requirement_defs(ch.base))
+    errs += validate_spec(spec_fm, spec_path, catalog, requirement_defs(ch.base),
+                          site_text=ch.base.read(SITE_TRACEABILITY) if "site_source_notes" in spec_fm else None)
     return errs, Traced(feat_id, spec_path, spec_fm, plan_path, plan_fm)
 
 
@@ -3680,7 +3761,7 @@ def check_record_uniqueness(ch: Change) -> list[str]:
     return errs
 
 
-def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) -> list[str]:
+def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str, traced: Traced | None = None) -> list[str]:
     """CI only: a feature change edits its own catalog record and traceability section, and
     nothing else's. The requirements document changes on its own docs/ branch. Runs on a
     feature/ or fix/ PR whether or not it carries code, so a docs-only one is scoped too."""
@@ -3711,9 +3792,23 @@ def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str) ->
             if outside:
                 errs.append(f"{path}: lines outside {feat_id}'s row and record change ({summarize(outside)}); "
                             "a feature change edits only its own record")
+        elif path == SITE_TRACEABILITY and traced and traced.spec_fm.get("site_source_notes"):
+            try:
+                protocol = source_protocol()
+                snapshot = protocol.Snapshot(ROOT)
+                snapshot.gate_note_scope(merge_base, ch.base.rev, head, feat_id, traced.spec_path)
+            except Exception as exc:
+                errs.append(f"{path}: implementation-source notes unavailable: {exc}")
         elif path.startswith(PRODUCT_DOCS) and path not in REGISTRY_DOCS:
             errs.append(f"{path} changes in this feature change; under {PRODUCT_DOCS} only the FEAT's own catalog "
                         "and traceability records, the model registry and its generated files may change here")
+    if SITE_TRACEABILITY not in ch.changed and traced and traced.spec_fm.get("site_source_notes"):
+        try:
+            protocol = source_protocol()
+            snapshot = protocol.Snapshot(ROOT)
+            snapshot.gate_note_scope(merge_base, ch.base.rev, head, feat_id, traced.spec_path, only_changed_source=True)
+        except Exception as exc:
+            errs.append(f"{SITE_TRACEABILITY}: declared source-bound note updates unavailable: {exc}")
     return errs
 
 
@@ -4034,7 +4129,8 @@ def run(argv: list[str]) -> int:
         tree = Tree(WORKTREE)
         path = pathlib.Path(argv[2])
         fm = frontmatter(path.read_text(encoding="utf-8", errors="replace") if path.is_file() else None)
-        errs = validate_spec(fm, path.name, catalog_ids(tree.read(CATALOG)), requirement_defs(tree))
+        errs = validate_spec(fm, path.name, catalog_ids(tree.read(CATALOG)), requirement_defs(tree),
+                             site_text=Tree("HEAD").read(SITE_TRACEABILITY) if "site_source_notes" in fm else None)
         print("\n".join(errs) if errs else "spec ok")
         return 1 if errs else 0
     if mode == "--commit":
@@ -4097,14 +4193,14 @@ def run(argv: list[str]) -> int:
         ch = Change("pr", branch, changed, Tree(head), Tree(base), Tree(merge_base), trusted)
         errs, traced = check(ch)
         if (m := BRANCH.match(branch)):
-            errs += check_product_scope(m.group(2).upper(), ch, merge_base, head)
+            errs += check_product_scope(m.group(2).upper(), ch, merge_base, head, traced)
         # The checks below read the traced plan and spec; without them the errors from
         # check() already say what is missing.
         # solyra#72 r4127652804: the scripts CI runs from package.json or pyproject.toml are delivery process too
         manifest_edit = lambda f: f.rsplit("/", 1)[-1] in ("package.json", "pyproject.toml", "Makefile") and \
             (f.endswith("Makefile") or (ch.base.read(f) is not None and ch.tree.read(f) is not None
                                         and non_dependency_edit(f, ch.base.read(f), ch.tree.read(f)) is not None))
-        if traced and (owned := [f for f in ch.changed if is_process_file(f) or manifest_edit(f)]) \
+        if traced and (owned := [f for f in ch.changed if is_process_file(f, (ch.before, ch.tree)) or manifest_edit(f)]) \
                 and traced.feat_id != WORKFLOW_FEAT and WORKFLOW_FEAT in catalog_ids(ch.base.read(CATALOG)):
             errs.append(f"process change(s) ({summarize(owned)}) belong to {WORKFLOW_FEAT}, not {traced.feat_id}; "
                         "CI configuration, the gate and the agent instructions are that capability's work")

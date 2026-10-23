@@ -22,7 +22,11 @@ original deploy-noise false positives.
 from __future__ import annotations
 
 import re
+import shlex
+import subprocess
 from pathlib import Path
+
+import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 DEPLOY_SH = (REPO / "gcp/deploy.sh").read_text()
@@ -47,6 +51,78 @@ def _sink_filter() -> str:
     m = re.search(r"sink_filter='(.*?)'\n", body, re.DOTALL)
     assert m is not None, "sink_filter assignment not found in deploy_notifier()"
     return m.group(1)
+
+
+def test_notifier_can_read_audit_evidence_without_swallowing_iam_errors():
+    body = _deploy_notifier_body()
+    commands = re.findall(r'gcloud projects add-iam-policy-binding.*?(?=\n\n)', body, re.DOTALL)
+    logging_bindings = [command for command in commands if '--role="roles/logging.viewer"' in command]
+    assert len(logging_bindings) == 1
+    assert '--member="serviceAccount:${notifier_sa}"' in logging_bindings[0]
+    assert "||" not in logging_bindings[0]
+
+
+def test_notifier_identity_and_secrets_are_isolated_from_trading_jobs():
+    body = _deploy_notifier_body()
+    assert 'local notifier_sa="${NOTIFIER_SERVICE}@${PROJECT_ID}.iam.gserviceaccount.com"' in body
+    assert '--service-account "${notifier_sa}"' in body
+    assert '--role="roles/run.viewer"' in body
+    assert 'for secret in github-pat github-repo discord-webhook-gcp' in body
+    assert "DB_SECRET_FLAG" not in body
+
+
+@pytest.mark.parametrize("failure", ["none", "account", "secret", "run", "logging"])
+def test_notifier_deployment_setup_is_fail_visible_and_precedes_revision(tmp_path, failure):
+    calls = tmp_path / "gcloud-calls"
+    script = r'''
+set -euo pipefail
+PROJECT_ID=test-project
+REGION=us-east1
+NOTIFIER_SERVICE=failure-notifier
+NOTIFIER_TOPIC=failures
+NOTIFIER_SUB=failures-push
+NOTIFIER_SINK=failures-sink
+SA_EMAIL=trading-runner@test-project.iam.gserviceaccount.com
+IMAGE_REF=test-image
+gcloud() {
+  printf '%s\n' "$*" >> CALL_FILE
+  case "$*" in
+    'iam service-accounts describe '*) return 1 ;;
+    'iam service-accounts create '*) if [ FAILURE = account ]; then return 1; fi ;;
+    'secrets add-iam-policy-binding discord-webhook-gcp '*) if [ FAILURE = secret ]; then return 1; fi ;;
+    'projects add-iam-policy-binding '*roles/run.viewer*) if [ FAILURE = run ]; then return 1; fi ;;
+    'projects add-iam-policy-binding '*roles/logging.viewer*) if [ FAILURE = logging ]; then return 1; fi ;;
+    'run services describe '*) printf '%s\n' 'https://notifier.example.test' ;;
+    'projects describe '*) printf '%s\n' '123456' ;;
+    'logging sinks describe '*) printf '%s\n' 'serviceAccount:sink@example.test' ;;
+  esac
+  return 0
+}
+deploy_notifier() {
+FUNCTION_BODY
+}
+deploy_notifier
+'''.replace('CALL_FILE', shlex.quote(str(calls))).replace('FAILURE', shlex.quote(failure)).replace('FUNCTION_BODY', _deploy_notifier_body())
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    commands = calls.read_text().splitlines()
+    deployed = [c for c in commands if c.startswith("run deploy ")]
+    if failure != "none":
+        assert result.returncode != 0
+        assert not deployed, "missing access must not publish a revision"
+        return
+    assert result.returncode == 0, result.stderr
+    assert len(deployed) == 1
+    assert '--service-account failure-notifier@test-project.iam.gserviceaccount.com' in deployed[0]
+    assert 'DB_PASS=' not in deployed[0]
+    deploy_index = commands.index(deployed[0])
+    grants = [c for c in commands if c.startswith(("secrets add-iam-policy-binding", "projects add-iam-policy-binding"))]
+    assert len(grants) == 5
+    assert all(commands.index(c) < deploy_index for c in grants)
+    assert all('serviceAccount:failure-notifier@test-project.iam.gserviceaccount.com' in c for c in grants)
+    push = next(c for c in commands if c.startswith("pubsub subscriptions create "))
+    scheduler = next(c for c in commands if c.startswith("scheduler jobs create http "))
+    assert '--push-auth-service-account=trading-runner@test-project.iam.gserviceaccount.com' in push
+    assert '--oidc-service-account-email trading-runner@test-project.iam.gserviceaccount.com' in scheduler
 
 
 def _excluded_method_markers(sink_filter: str) -> list[str]:
