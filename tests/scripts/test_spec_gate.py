@@ -4751,3 +4751,84 @@ def test_measure_inventory_render_bounds_startup_usage_output(tmp_path):
             finally:
                 if p.poll() is None:os.killpg(p.pid,9);p.wait(timeout=1)
         finally:os.close(readfd);os.close(writefd)
+
+
+LIFECYCLE_PROBE = r'''
+import ctypes,importlib.util,json,os,pathlib,signal,subprocess,sys,time
+s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+mode=sys.argv[2];children=[];opened=[];report=None;outer=None
+handler=signal.getsignal(signal.SIGALRM);mask=signal.pthread_sigmask(signal.SIG_BLOCK,set())
+native=ctypes.CDLL(None,use_errno=True);prior=ctypes.c_int();assert native.prctl(37,ctypes.byref(prior),0,0,0)==0
+native.prctl(36,1,0,0,0)
+real_popen=m.subprocess.Popen;real_table=m.process_table;real_pidfd=m.os.pidfd_open;real_cdll=m.ctypes.CDLL;real_cleanup=m.OwnedFamily.terminate_and_reap;real_rss=m.rss
+calls=0
+
+def table():
+ global calls
+ calls+=1
+ if mode=='read-after' and calls<3:return real_table()
+ raise OSError('actual process-table read boundary unavailable')
+def popen(*a,**kw):
+ p=real_popen(*a,**kw);children.append(p)
+ if mode in ('read-before','read-after'):m.process_table=table
+ if mode=='spawn-delay':time.sleep(.3)
+ return p
+def pidfd(*a,**kw):
+ if mode=='pidfd-failure':raise OSError('actual descriptor acquisition boundary unavailable')
+ fd=real_pidfd(*a,**kw);opened.append(fd)
+ if mode=='pidfd-delay':time.sleep(.3)
+ return fd
+def cleanup(*a,**kw):
+ if mode=='cleanup-delay':time.sleep(.3)
+ return real_cleanup(*a,**kw)
+def rss(pid):
+ if mode in ('cleanup-delay','cleanup-control') and pid!=os.getpid():raise OSError('actual child RSS read boundary unavailable')
+ return real_rss(pid)
+class NoPriorState:
+ def prctl(self,operation,*a):
+  if operation==37:return -1
+  return native.prctl(operation,*a)
+m.subprocess.Popen=popen;m.os.pidfd_open=pidfd;m.OwnedFamily.terminate_and_reap=cleanup;m.rss=rss
+if mode=='prior-state-failure':m.ctypes.CDLL=lambda *a,**kw:NoPriorState()
+try:
+ try:
+  with m.deadline_guard(time.monotonic()+.15):
+   report=m.run_bounded([sys.executable,'-c','import signal,time;assert signal.SIGALRM not in signal.pthread_sigmask(signal.SIG_BLOCK,set());time.sleep(.02)' if mode=='accepted' else 'import time;time.sleep(20)'],pathlib.Path.cwd(),max_rss_bytes=128*1024*1024,max_seconds=.15)
+ except m.DeliveryDeadline as e:outer=str(e)
+ finally:
+  m.subprocess.Popen=real_popen;m.process_table=real_table;m.os.pidfd_open=real_pidfd;m.ctypes.CDLL=real_cdll;m.OwnedFamily.terminate_and_reap=real_cleanup;m.rss=real_rss
+ alive=[p.pid for p in children if p.poll() is None]
+ leaked=[]
+ for fd in opened:
+  try:os.fstat(fd);leaked.append(fd)
+  except OSError:pass
+ state=ctypes.c_int();assert native.prctl(37,ctypes.byref(state),0,0,0)==0
+ result=dict(report=report,outer_deadline=outer,native_children_alive_after_monitor=alive,pidfds_live_after_monitor=leaked,subreaper_after=state.value,mask_restored=signal.pthread_sigmask(signal.SIG_BLOCK,set())==mask,handler_restored=signal.getsignal(signal.SIGALRM)==handler,timer=signal.getitimer(signal.ITIMER_REAL))
+finally:
+ for p in children:
+  if p.poll() is None:p.kill()
+  p.wait()
+ for fd in opened:
+  try:os.close(fd)
+  except OSError:pass
+ native.prctl(36,prior.value,0,0,0)
+result['all_fixture_children_reaped']=all(p.returncode is not None for p in children)
+print(json.dumps(result))
+'''
+
+
+def test_measure_inventory_render_acquires_and_unwinds_actual_kernel_resources(tmp_path):
+    """Native read/acquisition/cleanup alarms preserve process, PIDfd, caller-mask and prior-state ownership."""
+    modes=('accepted','read-before','read-after','cleanup-control','spawn-delay','pidfd-delay','pidfd-failure','cleanup-delay','prior-state-failure')
+    results={}
+    for mode in modes:
+        r=subprocess.run([sys.executable,'-c',LIFECYCLE_PROBE,str(REPO/MEASURE),mode],cwd=tmp_path,
+                         capture_output=True,text=True,timeout=5)
+        assert r.returncode==0, (mode,r.stdout,r.stderr)
+        results[mode]=json.loads(r.stdout)
+    (tmp_path/'lifecycle-results.json').write_text(json.dumps(results,indent=2))
+    assert results['accepted']['report']['ok'], results['accepted']
+    assert all(not x['native_children_alive_after_monitor'] and not x['pidfds_live_after_monitor'] for x in results.values()), results
+    assert all(x['subreaper_after']==1 and x['mask_restored'] and x['handler_restored'] and x['timer']==[0,0] for x in results.values()), results
+    assert all(x['all_fixture_children_reaped'] for x in results.values())
+    assert all(not x['report'] or not x['report']['ok'] for name,x in results.items() if name!='accepted'), results

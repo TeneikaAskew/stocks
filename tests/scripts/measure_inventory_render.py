@@ -73,6 +73,21 @@ def process_table() -> dict[int, tuple[int, int]]:
     return result
 
 
+@contextlib.contextmanager
+def defer_deadline():
+    """Do not lose a returned kernel resource to the deadline before its owner is registered."""
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+    try:
+        yield previous
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+
+
+def process_start(pid: int) -> int:
+    raw = (PROC / str(pid) / "stat").read_text()
+    return int(raw[raw.rfind(")") + 2:].split()[19])
+
+
 class OwnedFamily:
     """A fresh single-threaded caller exclusively owns children created in this interval.
 
@@ -87,8 +102,16 @@ class OwnedFamily:
             raise OSError("existing children prevent exclusive descendant ownership")
         if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
             raise OSError("safe descendant ownership requires Linux PIDfds")
-        self.owned: dict[int, tuple[int, int]] = {}
+        if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+            raise OSError("custom child-reaping handlers prevent exclusive ownership")
+        self.owned: dict[int, tuple[int | None, int]] = {}
         self.lock = threading.RLock()
+
+    def admit_root(self, process: subprocess.Popen):
+        # Caller defers the deadline across actual spawn/return and this immediate admission.
+        fd = os.pidfd_open(process.pid)
+        self.owned[process.pid] = (None, fd)
+        self.owned[process.pid] = (process_start(process.pid), fd)
 
     def discover(self) -> dict[int, int]:
         with self.lock:
@@ -102,17 +125,21 @@ class OwnedFamily:
                 for pid in new:
                     start = table[pid][0]
                     try:
-                        fd = os.pidfd_open(pid)
-                        # Recheck the actual kernel identity after opening its stable signal handle.
-                        current = process_table().get(pid)
-                        if current is None or current[0] != start:
-                            os.close(fd)
-                            continue
-                        previous = self.owned.get(pid)
-                        if previous is not None:
-                            os.close(previous[1])
-                        self.owned[pid] = (start, fd)
-                    except ProcessLookupError:
+                        with defer_deadline():
+                            fd = os.pidfd_open(pid)
+                            registered = False
+                            try:
+                                if process_start(pid) != start:
+                                    continue
+                                previous = self.owned.get(pid)
+                                self.owned[pid] = (start, fd)
+                                registered = True
+                                if previous is not None:
+                                    os.close(previous[1])
+                            finally:
+                                if not registered:
+                                    os.close(fd)
+                    except (ProcessLookupError, FileNotFoundError):
                         continue
                 admitted.update(new)
             return {pid: start for pid, (start, _fd) in self.owned.items() if table.get(pid, (None,))[0] == start}
@@ -136,16 +163,33 @@ class OwnedFamily:
                 pass
         return result
 
-    def terminate_and_reap(self, process: subprocess.Popen, deadline: float) -> None:
+    def known_live(self) -> bool:
+        with selectors.DefaultSelector() as selector:
+            for _start, fd in self.owned.values():
+                selector.register(fd, selectors.EVENT_READ)
+            return len(selector.select(0)) != len(self.owned)
+
+    def signal_known(self):
+        # Stable handles are sufficient authority even if EVERY subsequent observation fails.
+        for _start, fd in self.owned.values():
+            try:
+                signal.pidfd_send_signal(fd, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    def terminate_and_reap(self, process: subprocess.Popen, deadline: float) -> bool:
         while True:
-            live = self.discover()
-            with self.lock:
-                for pid in live:
-                    try:
-                        signal.pidfd_send_signal(self.owned[pid][1], signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-            process.poll()  # retain Popen's actual root exit status before reaping adopted children
+            observation_error = None
+            try:
+                self.discover()
+            except OSError as e:
+                observation_error = e
+            self.signal_known()
+            # If PIDfd acquisition itself failed, Popen still owns this unreaped child.
+            # Exclusive caller/default SIGCHLD prevents another waiter from recycling its PID.
+            if process.poll() is None:
+                process.kill()
+            process.poll()
             for pid in self.snapshot():
                 if pid == process.pid:
                     continue
@@ -153,15 +197,21 @@ class OwnedFamily:
                     os.waitpid(pid, os.WNOHANG)
                 except ChildProcessError:
                     pass
-            if not self.discover():
+            if not self.known_live():
                 process.wait(timeout=max(.01, deadline - time.monotonic()))
-                return
+                if observation_error is not None:
+                    # Known owners are dead/reaped; unavailable discovery never certifies the whole family.
+                    return False
+                if not self.discover():
+                    return True
             if time.monotonic() >= deadline:
                 raise OSError("owned descendants not reaped before cleanup deadline")
             time.sleep(.002)
 
     def close(self) -> None:
         with self.lock:
+            if self.known_live():
+                raise OSError("cannot release live known descendant ownership")
             for _start, fd in self.owned.values():
                 os.close(fd)
             self.owned.clear()
@@ -183,6 +233,7 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
     sample_gaps: list[float] = []
     errors: list[str] = []
     old_subreaper = ctypes.c_int()
+    subreaper_acquired = False
 
     def record_sample():
         sample = family.sample() if family is not None else {os.getpid(): rss(os.getpid())}
@@ -195,15 +246,23 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
 
     try:
         family = OwnedFamily()
-        libc = ctypes.CDLL(None, use_errno=True)
-        if libc.prctl(37, ctypes.byref(old_subreaper), 0, 0, 0) or libc.prctl(36, 1, 0, 0, 0):
-            raise OSError(ctypes.get_errno(), "cannot own adopted descendants")
+        with defer_deadline():
+            libc = ctypes.CDLL(None, use_errno=True)
+            if libc.prctl(37, ctypes.byref(old_subreaper), 0, 0, 0):
+                raise OSError(ctypes.get_errno(), "cannot read prior child ownership state")
+            if libc.prctl(36, 1, 0, 0, 0):
+                raise OSError(ctypes.get_errno(), "cannot own adopted descendants")
+            subreaper_acquired = True
         if record_sample() > max_rss_bytes:
             report["reason"] = "rss_limit"
             return report
         with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-            process = subprocess.Popen(argv, cwd=cwd, stdout=stdout, stderr=stderr, start_new_session=True)
-            report["process_group"] = process.pid
+            with defer_deadline() as child_mask:
+                # Acquisition is atomic with respect to the deadline. The child inherits the caller's ORIGINAL mask.
+                process = subprocess.Popen(argv, cwd=cwd, stdout=stdout, stderr=stderr, start_new_session=True,
+                                           preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, child_mask))
+                family.admit_root(process)
+                report["process_group"] = process.pid
             family.discover()
 
             def discover():
@@ -252,7 +311,10 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
             observer.join(timeout=.2)
             if observer.is_alive():
                 raise OSError("discovery thread did not stop")
-            family.terminate_and_reap(process, started + max_seconds)
+            with defer_deadline():
+                complete_cleanup = family.terminate_and_reap(process, started + max_seconds)
+            if not complete_cleanup:
+                raise OSError("discovery unavailable after known child cleanup")
             report["owned_family_gone"] = True
             report["owned_group_gone"] = not group_members(process.pid)
             report["worker_exit"] = process.returncode
@@ -269,23 +331,30 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
     except Exception as e:
         report.update(ok=False, reason="observation_failure", error=f"{type(e).__name__}: {e}")
     finally:
-        stop.set()
-        if observer is not None:
-            observer.join(timeout=.2)
-        if process is not None and family is not None:
-            try:
-                # Error-unwind remains synchronous even when already late; lateness never admits success.
-                family.terminate_and_reap(process, time.monotonic() + 1)
-                report["owned_family_gone"] = True
-                report["owned_group_gone"] = not group_members(process.pid)
-            except Exception as e:
-                report.update(ok=False, reason="cleanup_failure", cleanup_error=str(e))
-        if family is not None:
-            report["discovered_process_identities"] = family.snapshot()
-            report["discovered_pids"] = sorted(family.snapshot())
-            family.close()
-        if libc is not None:
-            libc.prctl(36, old_subreaper.value, 0, 0, 0)
+        try:
+            with defer_deadline():
+                stop.set()
+                if observer is not None:
+                    observer.join(timeout=1)
+                if process is not None and family is not None:
+                    try:
+                        # Final unwind cannot abandon a child because the original hard alarm fires a second time.
+                        report["owned_family_gone"] = family.terminate_and_reap(process, time.monotonic() + 1)
+                        report["known_owned_reaped"] = not family.known_live()
+                        report["owned_group_gone"] = not group_members(process.pid)
+                        if not report["owned_family_gone"]:
+                            report.update(ok=False, reason="cleanup_observation_failure")
+                    except Exception as e:
+                        report.update(ok=False, reason="cleanup_failure", cleanup_error=str(e))
+                if family is not None:
+                    report["discovered_process_identities"] = family.snapshot()
+                    report["discovered_pids"] = sorted(family.snapshot())
+                    family.close()
+                if libc is not None and subreaper_acquired:
+                    if libc.prctl(36, old_subreaper.value, 0, 0, 0):
+                        report.update(ok=False, reason="cleanup_failure", cleanup_error="cannot restore prior child ownership state")
+        except DeliveryDeadline as e:
+            report.update(ok=False, reason="time_limit", error=str(e))
         report["elapsed_seconds"] = time.monotonic() - started
         report["sample_gap_seconds"] = gaps(sample_gaps)
         report["discovery_gap_seconds"] = gaps(discovery_gaps)
