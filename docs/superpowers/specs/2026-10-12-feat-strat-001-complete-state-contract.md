@@ -1,6 +1,6 @@
 ---
 feat_id: FEAT-STRAT-001
-req_ids: [REQ-DATA-001, REQ-DATA-002, REQ-DATA-003, REQ-DATA-004, REQ-MARKET-001, REQ-PLAYBOOK-001, REQ-REL-001]
+req_ids: [REQ-DATA-001, REQ-DATA-002, REQ-DATA-003, REQ-DATA-004, REQ-MARKET-001, REQ-PLAYBOOK-001, REQ-REL-001, REQ-REPLAY-001, REQ-REPLAY-002, REQ-VALID-001, REQ-CAP-001, REQ-CAP-002, REQ-PERF-002]
 issues: [884, 866, 907, 908]
 site_source_notes: [INSIGHTS-08]
 canvases:
@@ -126,14 +126,37 @@ touch/hold/bar-close confirmation rule.
 ### 5. Consumer parity and replay
 
 The existing briefing, insight summarizer, Strat history tooling and API readers,
-and earnings snapshot paths use the same production functions with an explicit clock. Maintain October 8-9
+and earnings snapshot paths use the same production functions with an explicit clock.
+This includes the persisted daily producers
+`gcp/fetchers/fetch_market_data.py` and
+`gcp/fetchers/backfill_daily_indicators.py`, and the
+`platform/api/routers/dashboard.py` reader of their stored Strat fields. Persist
+rule/alignment versions and independent pattern facts with new writes, expose them
+through the actual dashboard API response, and identify old unversioned records as
+legacy/unverified rather than retrospectively assigning the repaired version. A
+three-consumer fixture that omits these writers/readers does not meet parity. Maintain October 8-9
 fixtures for IWM/SPY/QQQ and adversarial calendar/boundary fixtures. Include 08:30,
 opening, meaningful break and closing checkpoints; prohibit future-minute highs and
 later daily closes from entering earlier snapshots.
 
-Extend existing replay/validation tooling where feasible, rather than maintaining
-another permanent throwaway engine. Reports distinguish observed/reconstructed inputs
-from contemporaneously acquired inputs and never relabel a retrospective replay as live.
+Decision evidence must execute the actual production replay orchestration through
+`BRIEF_AS_OF` in `gcp/premarket_brief.py` and, for insight-consumer proof, the
+`INSIGHT_AS_OF` production pipeline with deterministic/mocked-provider output where
+needed. Add precise observation-clock, captured-input and no-write modes to those
+production entrypoints first. `--no-discord` alone is insufficient: the current brief
+still writes SQL. Acceptance must prove that dry-run refuses all persistence and
+notification calls, enforces cutoff before source selection/aggregation, and runs the
+same production producers/adapters. Extend `scripts/validation/validate_brief_accuracy.py`
+only as a launcher/comparator of those production outputs, not as an alternate engine.
+Reports distinguish observed/reconstructed inputs from contemporaneously acquired
+inputs and never relabel a retrospective replay as live.
+
+The October captures are immutable regression inputs. Under REQ-VALID-001, arithmetic,
+code-correctness and reconstructed diagnostics are separate from admissible system or
+model validation: repair actual upstream input-semantics/replay blockers and regenerate
+the affected derived dataset before claiming a qualified baseline, validation result
+or promotion. Missing historical vintage evidence remains explicit; a later source
+retrieval cannot certify an earlier publication.
 
 ### 6. Model evaluation and capacity
 
@@ -149,8 +172,33 @@ budget is ~3.6 MB before pandas overhead; use a 256 MB bounded replay budget and
 fail explicitly on oversized requests. Batch sources by symbol/date; at most six
 read round-trips for the frozen replay, rather than one per minute/frame. At 2 seconds
 per round-trip, estimated I/O is <=12 seconds plus CPU; measure actual CPU/wall-clock
-before claiming deployability. Shared snapshot math adds no per-row remote calls.
+before claiming deployability. Compare with the pre-change configured task timeout;
+if estimated completion exceeds one quarter of that timeout, revise architecture or
+reduce the admitted bounded workload, rather than raise the timeout. Apply
+REQ-CAP-001/002 to changed existing scheduled paths. Shared snapshot math adds no
+per-row remote calls.
 Existing jobs only; no new schedule or recurring infrastructure charge is introduced.
+
+## Executable acceptance mapping
+
+The implementation must add/extend the named checks below; a listed future test is
+an acceptance requirement, not evidence it already exists. Each runs production code
+and must fail on the specified broken behavior. Keep the done_when contract above.
+
+| done_when (1-based) | Required command/check | Broken behavior the check must reject |
+|---|---|---|
+| 1 | `python -m pytest tests/lib/test_strat.py tests/lib/test_strat_history.py -q`, including `TestInvalidObservations`, `TestPatternTruthTable`, `TestFailedTwoPriority` | Invalid/missing OHLC becomes inside; type-3 terminal receives 212/312; documented32 is color-filtered; priority erases failure facts; unknown labels become false facts. |
+| 2 | `python -m pytest tests/lib/test_strat.py::TestComputeStratStatusAsOf tests/lib/test_strat.py::TestFailedTwoPriority -q` | Live None reads unfinished daily data, differs from the same frozen replay clock, or loses actual IWM October8 failed-2D. |
+| 3 | Add `tests/lib/test_strat.py::TestContinuityContracts`; run it with `python -m pytest tests/lib/test_strat.py::TestContinuityContracts -q` | Missing/equal-open/opposing required frames pass strict agreement, monthly zero weight becomes agreement, or legacy weighted values/versions/contributions drift silently. |
+| 4 | Add `tests/lib/test_strat_levels.py::TestStructuralStateContract`; run all existing level/playbook/freshness modules | Wrong D/W/M/Q/Y/calendar/custom-period levels, incomplete prior-year coverage called complete, conflated PMG definitions, duplicate targets or gap-crossed/touch-only evidence becomes fresh/close-confirmed activation. |
+| 5 | Add `tests/gcp/test_strat_snapshot_parity.py`; run it with the actual dashboard API tests and production captured-input replay under BRIEF_AS_OF/INSIGHT_AS_OF | Any brief/earnings/insight, fetch-market-data, backfill writer or dashboard response drops rule version/failure/coverage facts or disagrees at the same clock; old records are falsely stamped v2; later data enter an earlier checkpoint; dry-run writes/posts. |
+| 6 | Run affected focused suites, registry exporter, branch/main docs audits and `python scripts/gate/spec_gate.py --pr origin/main`; check named evidence for every preceding row | Delivery records or generated registry omit changed models, source identity is invalid, or an earlier behavioral row has no passing sensitive check. |
+
+Record production-entrypoint revision, exact invocations, input hashes, per-case
+verdicts, missingness, current-vintage limitations and before/after changed-label
+populations in the checked-in replay artifact. The broader October1–9/10–16 corpus
+from issue1563 is partitioned into the same admitted batches, with no holdout outcome
+scoring before repaired revision/settings freeze. This does not enlarge a batch cap.
 
 ## Risks
 

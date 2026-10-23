@@ -1,6 +1,6 @@
 ---
 feat_id: FEAT-CATALYST-001
-req_ids: [REQ-DATA-001, REQ-DATA-002, REQ-DATA-003, REQ-DATA-004, REQ-MARKET-001, REQ-PLAYBOOK-001, REQ-REL-001, REQ-FRESH-001, REQ-MODEL-001, REQ-MODEL-002, REQ-CAP-003]
+req_ids: [REQ-DATA-001, REQ-DATA-002, REQ-DATA-003, REQ-DATA-004, REQ-MARKET-001, REQ-PLAYBOOK-001, REQ-REL-001, REQ-FRESH-001, REQ-MODEL-001, REQ-MODEL-002, REQ-CAP-003, REQ-CAP-001, REQ-CAP-002, REQ-PERF-002, REQ-REPLAY-001, REQ-REPLAY-002, REQ-VALID-001, REQ-FRESH-002]
 issues: [1135, 1138, 1158, 863, 1301, 1302, 1303, 1091]
 site_source_notes: [CATALYSTS-04]
 canvases:
@@ -146,15 +146,22 @@ report which restriction applies. Do not tune thresholds to reproduce these two 
 
 ### 6. Replay, API and deterministic model evaluation
 
-Extend existing validation/research entrypoints rather than maintaining independent
-classification in a replay script. Offline captured-input mode and read-only GCP/AV
-mode run the same production helpers. Capture decision snapshots at 08:30, RTH open,
+Decision evidence executes actual production orchestration: `BRIEF_AS_OF` in
+`gcp/premarket_brief.py`, plus explicit as-of/captured-input/no-write modes added first
+to `gcp/earnings_reactions_brief.py`, `gcp/refresh_earnings_views.py` and
+`gcp/fetchers/compute_earnings_reactions.py` where absent. Production source selection,
+clock propagation, readiness, enrichment and consumer formatting are exercised; a
+standalone script calling the same helpers is insufficient under REQ-REPLAY-001/002.
+A validation script may launch/compare those outputs only. Prove dry-run refuses
+persistence and notifications: current BRIEF_AS_OF/--no-discord still writes SQL.
+Offline and remote modes use that same production orchestration. Capture decision snapshots at 08:30, RTH open,
 confirmation and subsequent meaningful movement. A clock may not read later daily
 closes, future intraday highs or unmatured reaction flags.
 
 Acceptance cases: ANGO failed strength, TLRY partial recovery, PEP trend continuation,
 BYRN downside-gap reversal, HELE upside-gap fade, NG less directional movement,
-NRIX AMC next-session reversal, DAL gap recovery, and APLD readiness/timing gaps.
+NRIX original AMC schedule/next-session price path with its conflicting later AV
+report date retained, DAL gap recovery, and APLD readiness/timing gaps.
 October 8-9 are regression cases, not a new training set. Include an additional frozen
 historical window and adverse/missing-data cases before promoting new empirical rules.
 
@@ -171,7 +178,23 @@ claiming all deterministic models are empirically validated because unit tests p
 
 The current app's existing score/archetype fields are corrected without client-breaking
 renames. Add the versioned action snapshot to upcoming/details responses and the
-brief payload. Confirm actual frontend consumption before declaring the app displays
+brief payload. Any response containing evolving quote/activation/failure/invalidation
+state uses `Cache-Control: no-store`, including upcoming and event detail; the existing
+86400-second historical-event cache must not cache live action state. Immutable
+historical-only responses can retain their existing policy. Test headers and two
+successive observation clocks through actual API handlers.
+
+The affected existing site reader `platform/api/routers/catalysts.py::_db_catalyst_events`
+and `/api/catalysts/events` are explicitly included for the already listed #1301–1303:
+use the shared per-event finite-value/source merge, omit unavailable EPS rather than
+render `est nan`, preserve event identity while deduplicating, and return truthful
+requested-horizon/source-age/coverage. For every existing included source, carry
+per-source count, newest data timestamp, newest write timestamp, read/status and
+error through `CatalystsResponse` serialization; unavailable timestamps/counts remain
+null with reasons. A failed read is not zero events. Raw age/read facts do not
+substitute for the absent shared PR-0 freshness verdict. Do not imply that adding upcoming/details fields
+changes the event timeline's current client rendering or manufactures missing second-week
+calendar ingestion. Test the actual catalysts response for these contracts. Confirm actual frontend consumption before declaring the app displays
 new action fields; any necessary solyra rendering change requires its own linked
 FEAT-CATALYST-001 spec and PR, not a silently widened backend PR.
 
@@ -182,8 +205,13 @@ and <=61 completed closes each: <=40,500 compact records. At 250 bytes/source re
 ~10 MB before dataframe overhead; budget 256 MB per batch and process bounded groups.
 Use <=8 reads plus batched writes per daily job, not one query per reporter or minute.
 At 2 seconds/read the I/O estimate is <=16 seconds plus measured CPU/write time.
-Record actual wall-clock and memory for the populated production-like volume and keep
-the Cloud Run timeout at least four times measured completion time.
+Record actual wall-clock and memory for the populated production-like volume and
+compare against the pre-change configured Cloud Run timeout. If completion exceeds
+one quarter of that fixed timeout, redesign batching/I/O or reduce the admitted
+bounded workload; do not raise the timeout to fit a slow job. Apply REQ-CAP-001/002
+and REQ-PERF-002 to the existing jobs, including separately measured multi-year
+reaction construction, full Strat context and additional enrichment sources. The
+40,500 compact-record arithmetic alone does not cover those extra inputs.
 
 The frozen two-day replay is <=12 symbols × 780 RTH bars plus daily history: <15,000
 source rows. Alpha Vantage retrieval is optional, cached, throttled and bounded; report
@@ -194,6 +222,42 @@ Cloud Run cost before deployment; no automatic multi-year backfill runs in produ
 Emit counts of missing timing, stale quotes, unmatched event keys, partial horizons,
 missing metric samples and producer/consumer mismatches. Reads never silently convert
 an internal failure into no earnings or quiet price action.
+
+## Executable acceptance mapping and inherited dependencies
+
+The implementation must add/extend these named checks against production functions,
+queries and handlers. Future named tests are requirements, not already passing evidence.
+Keep each done_when criterion above; a generic focused-suite pass cannot replace its
+sensitive check.
+
+| done_when (1-based) | Required command/check | Broken behavior the check must reject |
+|---|---|---|
+| 1 | Add `tests/gcp/test_earnings_snapshot_parity.py`; run with `tests/api/test_earnings_router.py` and `tests/api/test_catalysts_earnings_contract.py` (new) | Brief/refresh/API score or archetype diverges for identical event/clock, calendar strategy score substitutes for playability, source dates mix, or catalysts response retains est-nan/dedup/coverage defects. |
+| 2 | Add `tests/lib/test_lib_earnings_reactions.py::TestHistoricalClockAndSamples`; run it plus reaction-brief history query tests | Current/later report or immature horizon leaks, fiscal end substitutes for publication, 60 requested returns uses 64, or one clean sample passes a four-clean-observation gate. Use seeded real-SQL checks for query behavior. |
+| 3 | Add `tests/gcp/test_compute_earnings_reactions.py::TestReactionReadinessContract`; run the production reaction suite | Completed BMO requires D+1, AMC maps to a weekend/holiday, unknown timing becomes AMC, or an existing ticker prevents incomplete-event recovery/idempotent rerun. |
+| 4 | Add `tests/lib/test_lib_earnings_reactions.py::TestEarningsActionSnapshot`; run it with premarket/Strat integration and actual API header tests | First-print/latest/opening gaps conflate, missing/stale source evidence activates, type/continuity/PMG facts drop, same-minute order is invented, touch passes close confirmation, or no-store is absent on evolving actions. |
+| 5 | Add `tests/gcp/test_earnings_production_replay.py`; execute the production entrypoints above on the nine captured regression names and bounded October batches | Selection/orchestration differs from live, later bars/reactions enter earlier decisions, report-timing conflicts are hidden, original outputs are overwritten, or dry-run persists/posts. Check in `docs/research/earnings-engine-october-2026-replay.json`. |
+| 6 | Add `tests/gcp/test_earnings_validation_contract.py`; run with movement-watchlist tests | Proxy calibration becomes validated sizing/hit-rate advice, missing validation coverage is imputed, or historical Q1 suppresses an observed BYRN/HELE movement without a visible reason. |
+| 7 | Add `tests/gcp/test_earnings_capacity.py::test_changed_jobs_fit_retained_quarter_timeout_with_full_io` and `tests/gcp/test_compute_earnings_reactions.py::TestReactionReadinessContract::test_incomplete_event_recovery_is_bounded_idempotent_and_dry_run`; run them with API SQL integration on the admitted500-reporter/20-quarter/61-close fixture and measured extra context | Per-event remote loops, unbounded accumulation, premature reaction skipping, writes in dry-run, timeout inflation, false readiness or driver/schema mismatch. |
+| 8 | Run focused suites, branch/main docs audits, registry export and `python scripts/gate/spec_gate.py --pr origin/main`; verify criterion-by-criterion linked evidence | Missing provenance/model/capability records, untested behavior above or an unresolved delivery gate. |
+
+#863 is related audit context, not a promised closure or permission for a new
+earnings-only stopped-writer/read-side freshness implementation. Its whole-class
+remediation/validation depends on the actual shared PR-0 primitive under
+REQ-FRESH-002 and the roadmap; no such shared implementation is presently established.
+Consume the actual shared freshness verdict when available, otherwise propagate
+`dependency_unavailable` for that claim. Controlled captured-input fixtures can test
+state mechanics, but must not certify production freshness or model promotion from
+an invented healthy value. Record this dependency explicitly; do not import an
+unmerged proposal or silently fall back to a separate generic health check.
+
+Under REQ-VALID-001, captured October inputs remain immutable regression evidence;
+repair actual upstream input-semantics/replay blockers and regenerate affected derived
+data before claiming an admissible system/model baseline, validation or promotion.
+Current-vintage reconstructed/code-correctness diagnostics remain labeled as such.
+The October1–9 baseline and October10–16 holdout are processed in bounded batches;
+no holdout outcome scoring precedes the repaired revision/settings freeze. Historical
+publication-vintage absence cannot be repaired by retrieving the vendor again today.
 
 ## Risks and compatibility
 
