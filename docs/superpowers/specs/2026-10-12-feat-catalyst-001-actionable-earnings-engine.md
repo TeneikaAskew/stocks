@@ -1,6 +1,6 @@
 ---
 feat_id: FEAT-CATALYST-001
-req_ids: [REQ-DATA-001, REQ-DATA-002, REQ-DATA-003, REQ-DATA-004, REQ-MARKET-001, REQ-PLAYBOOK-001, REQ-REL-001, REQ-FRESH-001, REQ-MODEL-001, REQ-MODEL-002, REQ-CAP-003, REQ-CAP-001, REQ-CAP-002, REQ-PERF-002, REQ-REPLAY-001, REQ-REPLAY-002, REQ-VALID-001, REQ-FRESH-002, REQ-PERF-001, REQ-OBS-001]
+req_ids: [REQ-DATA-001, REQ-DATA-002, REQ-DATA-003, REQ-DATA-004, REQ-MARKET-001, REQ-PLAYBOOK-001, REQ-REL-001, REQ-FRESH-001, REQ-MODEL-001, REQ-MODEL-002, REQ-CAP-003, REQ-CAP-001, REQ-CAP-002, REQ-PERF-002, REQ-REPLAY-001, REQ-REPLAY-002, REQ-VALID-001, REQ-FRESH-002, REQ-PERF-001, REQ-OBS-001, REQ-MODEL-003]
 issues: [1135, 1138, 1158, 863, 1301, 1302, 1303, 1091]
 site_source_notes: [CATALYSTS-04]
 canvases:
@@ -59,7 +59,9 @@ clean-sample sufficiency and evaluation metadata. The brief and
 scores separately named. Use the same configured historical window, units, minimum
 samples and decision timestamp for parity comparisons.
 
-Source selection merges finite fields deterministically by `(ticker, event date)`.
+Source observations retain `(ticker, event date)` identity, while canonical report
+selection follows the evidence-backed independent identity in §B below; finite
+field precedence applies within supported report/source linkage.
 Preserve event/report timing and contradictory-source flags; do not mix MAX values
 from different upcoming dates into one event. Null/NaN/infinite values remain explicit
 unavailable data, not zero, quiet movement or an empty earnings slate. Store source,
@@ -216,7 +218,9 @@ FEAT-CATALYST-001 spec and PR, not a silently widened backend PR.
 Target existing daily refresh envelope: <=500 reporters, <=20 eligible quarters each,
 and <=61 completed closes each: <=40,500 compact records. At 250 bytes/source record,
 ~10 MB before dataframe overhead; budget 256 MB per batch and process bounded groups.
-Use <=8 reads plus batched writes per daily job, not one query per reporter or minute.
+The current/upcoming compact daily refresh uses <=8 reads plus batched writes,
+not one query per reporter or minute. The distinct historical reaction producer uses
+its inherited full admission in §F below, not this compact-refresh read arithmetic.
 At 2 seconds/read the I/O estimate is <=16 seconds plus measured CPU/write time.
 Record actual wall-clock and memory for the populated production-like volume and
 compare against the pre-change configured Cloud Run timeout. If completion exceeds
@@ -332,6 +336,182 @@ Current-vintage reconstructed/code-correctness diagnostics remain labeled as suc
 The October1–9 baseline and October10–16 holdout are processed in bounded batches;
 no holdout outcome scoring precedes the repaired revision/settings freeze. Historical
 publication-vintage absence cannot be repaired by retrieving the vendor again today.
+
+## Canonical prerequisites, identities and sensitive acceptance
+
+These checks are mandatory additions to the matrix, not evidence they already pass.
+All approved thresholds, sustain definitions and two structure-preference policies
+remain unchanged. Safe coherent-input math and isolated contract tests can proceed;
+actual production integration waits for genuine merged dependencies and is not
+certified by mocks, an enabled flag, a registry row or this specification.
+
+### A. Price basis and shared calendar
+
+Adopt approved `2026-10-12-feat-data-001-av-market-data.md` and its actual merged
+`lib.price_basis.prepare_daily_basis`/`restore_daily_units`, basis version
+av-adjusted-daily-v1. Continuous daily returns, normalizer, ATR and Strat use coherent
+all-OHLC split-and-dividend adjustment; share/volume factors remain independently
+split-only. Restore every price-dimensional level/ATR/target into the target raw
+execution basis before comparing with verified raw minute quotes. First-print,
+latest and RTH gap/displacement references and quotes must ALL be in the same known
+target share/execution units, including each numerator and denominator. A pre-split
+raw prior close cannot be compared directly with a post-split raw quote merely
+because both are labeled raw; use the approved clock-qualified mapping or return
+gap/action unavailable. Raw gap categories remain separately labeled; carry dividend/ex-date context
+without claiming a raw price move is a total return. Never mix raw OHL/adjusted Close
+or adjusted minutes/raw quotes. Missing/future factors, unknown minute basis or
+unverifiable vintage means unavailable/explicit current-revision diagnostics, not
+factor1 or a retrospective strict-as-of claim. No independent adjustment formula or
+unmerged helper is introduced here.
+
+The actual merged shared-calendar implementation under approved
+`2026-10-19-feat-data-001-shared-market-calendar.md` is a production dependency.
+Migrate earnings-owned consumers to its session_schedule/session helpers and run
+its guard/pin/parity checks; timezone conversion alone does not establish sessions.
+Provider/import/schedule/empty-cache failures remain errors/unavailable. Include
+future-year holidays, DST, half-days and delayed opens through actual earnings
+consumers, not only one weekend fixture. Do not copy draft PR1546/1489 code.
+
+Required checks: `TestEarningsActionSnapshot::test_split_dividend_basis_and_raw_execution_units`
+uses the real merged helper on split/reverse-split/dividend/no-action controls,
+missing/future factors and mixed minute inputs, through actual brief/detail adapters, including a split-boundary prior-close/quote
+control with no phantom actionable gap and a dividend-only raw ex-date displacement
+that remains observable separately from adjusted total-return analytics;
+`TestReactionReadinessContract::test_shared_calendar_consumer_parity_and_failure`
+runs with `tests/lib/test_market_sessions.py` and the shared guard/pin/consumer tests.
+Absence is a blocked integration dependency, not successful positive acceptance.
+
+### B. Canonical report identity, finite merge and lineage
+
+A disputed scheduled/reported date is an observation, not the complete report
+identity. Link canonical reports using actual issuer/fiscal-period/report-kind or
+source release identity evidence, preserving each source's date/timing/known-at and
+identity. Supported cross-source matches produce one canonical report with explicit
+conflicts and date aliases; genuinely different reports remain distinct. Without
+link evidence, keep identity_unresolved observations nonactionable; never merge by
+ticker/date proximity or force NRIX into a confirmed October9 reaction. Retain the
+existing per-date source identity as observation lineage rather than fabricate
+fiscal/release IDs or two independent directional recommendations.
+
+Every new reaction/aggregate/action output carries exact source/as-of, pipeline,
+configuration, rule/model, basis, input-artifact and code identities through actual
+writes/views/readers. Immutable lineage references must resolve to real full input
+content; no metadata-only fake hash. Preserve DATA UUID and CAT SHA256 namespaces
+from their approved contracts. Legacy/mixed retry rows stay unverified, never stamped
+repaired by a new reader. Finite source merge preserves legitimate zero EPS,
+displacement and counts, while null/NaN/infinities remain unavailable; positive
+price/factor domain constraints remain separate.
+
+Required checks: `tests/api/test_catalysts_earnings_contract.py::test_conflicting_report_dates_share_supported_identity_or_refuse_action`
+uses supported shared-period evidence, unresolved NRIX-like observations and truly
+distinct reports; shared/serialized `test_source_merge_preserves_zero_and_rejects_nonfinite_values`
+covers zero/negative-zero/finite/null/NaN/both infinities and precedence conflicts;
+`tests/gcp/test_earnings_snapshot_parity.py::test_persisted_and_served_lineage_distinguishes_revisions_and_retries`
+executes real writer/read boundaries on partial retries and mixed legacy/current
+identities, including actual input-artifact retrieval.
+
+### C. Required capabilities, history and maturity
+
+Declare the required-input capability for each actionable output; no catch-all
+optional field can bypass a required quote/level/Strat/continuity/unit/freshness input.
+Missing required evidence clears EVERY current directional recommendation field,
+actionable side, entry and CALL/PUT suggestion, including watch/await-confirmation
+states and rendered brief/API text. Preventing activation alone is insufficient.
+Descriptive candle direction, historical archetype and historical structure preference
+remain explicitly context, not a current recommendation. Unrelated optional gamma
+absence does not fabricate or erase an otherwise supported structural observation.
+Preserve positive qualified controls so always-null/unavailable implementations fail.
+
+Conditional analogs exclude the canonical current report and all its date/source
+aliases BEFORE ranking/window limits. Assert exact eligible cohort and per-metric
+clean numerator/denominator and unknown count. Held/reversed are distinct existing
+questions and may overlap; do not invent mutual exclusivity. Null flags cannot become
+false outcomes or inflate clean-sample sufficiency. A true zero differs from absent
+history. Base,3,5,10-session readiness advances independently at each declared actual
+session/source availability, while later horizons stay pending and refresh-eligible;
+no D+10 gate or first-horizon completion shortcut. Preserve sustain-anchor semantics.
+
+Required checks: `TestEarningsActionSnapshot::test_required_missing_inputs_clear_every_directional_output`
+parameterizes every declared required input/state and production brief/HTTP outputs;
+`TestHistoricalClockAndSamples::test_conditional_current_report_exclusion_and_clean_metric_counts`
+uses seeded actual SQL with current aliases, future revisions, null/false/overlapping
+outcomes, partially mature and out-of-band observations;
+`TestReactionReadinessContract::test_base_3_5_10_session_transitions_and_retry_selection`
+executes actual compute/write/reselect at just before/at each maturity, including
+BMO/AMC, holiday, half-day, unavailable source, unknown timing and duplicate retry.
+
+### D. Calibration and both structure modes
+
+Calibration candidate/report generation defaults to NO live writes, including
+`--options-insights`/winner side outputs and legacy `--no-apply` combinations.
+Keep numerical selection formulas; only an explicit admitted promotion may mutate
+live settings. Require qualified immutable source/cohort/cutoff, frozen unseen
+validation, shadow evidence, exact candidate/code/config identities, explicit
+promotion decision and real prior-version rollback target. CAS-check the expected
+active version and publish atomically with lineage; failure preserves last-good
+configuration. Current-revision/proxy diagnostics cannot promote or erase rollback
+history through same-day overwrite. This repair does not automatically tune settings.
+
+Required checks in `tests/scripts/test_calibrate_earnings.py`:
+`test_default_and_no_apply_flags_write_no_live_targets`,
+`test_unqualified_current_revision_or_missing_shadow_refuses_promotion`, and
+`test_admitted_promotion_is_atomic_versioned_and_rollbackable` exercise actual main
+and writers, default/options-insights flags, malformed/changed candidates and a
+qualified positive control. A dummy allowed boolean cannot replace admission proof.
+`tests/gcp/test_earnings_snapshot_parity.py::test_both_structure_preferences_survive_all_consumers`
+uses a fixture whose existing long-only and income/credit outputs differ, plus
+non-overpricing/SKIP controls. Assert both through producer/SQL/brief/compact upcoming/
+action page/detail; historical preference cannot resurrect a missing-input action.
+
+### E. Consistent continuation and deterministic movement proof
+
+Action continuation binds observation clock AND actual event-cohort/source revision,
+history/calibration/configuration, contributing prices and timing generations.
+Serve the exact immutable generation or explicitly refuse/restart when it changes.
+MAX(updated_at) and cutoff filters over mutable rows do not reconstruct deleted or
+overwritten history. Use actual merged publication/revision evidence when available;
+missing stable evidence remains dependency_unavailable. Any cohort manifest has
+explicit bounded storage/lifetime and fits the two-read/row/byte/concurrency budget;
+no unbounded held session or full-history rescan is hidden behind pagination.
+`TestInteractiveActionBudget::test_concurrent_source_change_preserves_or_refuses_continuation`
+changes insertion/deletion/backdate/calibration/price/timing between actual pages,
+asserting coherent results or explicit restart, never silently mixed generations.
+
+`tests/gcp/test_earnings_production_replay.py::test_movement_scorecard_schema_case_values_and_repeatability`
+asserts all nine identities and checkpoints, meaningful per-case values for break
+freshness/already-crossed, confirmation time, target progression, hold/failure,
+reversal delay, range, surfaced/missed movement and metric-specific coverage counts.
+Include reconstruction/conflict/unavailable reasons and NRIX uncertainty. Reject empty
+or partial artifacts, future observations, impossible delays and invented unavailable
+outcomes. Run identical input hashes/code/config twice; canonical semantic output is
+byte-identical and matches the checked-in artifact. Volatile run/emission identity
+lives in a separately compared envelope; never normalize financial differences away.
+
+### F. Full historical reaction admission
+
+The500×20/61 daily refresh envelope does not cover the canonical historical reaction
+job. Reuse the actual merged producer/receipt interface under approved
+`2026-10-12-feat-catalyst-001-av-producer-receipts.md`: <=100 tickers×100 reports
+(10,000), ten bounded <=10-ticker price batches with <=26,000 bars/16MiB each,
+<=100 atomic artifact/derived groups, <=1MiB artifact plus <=1MiB derived JSON/group,
+119 total network round trips and <=450s against retained1,800s timeout. Existing
+420s planning decomposition is238sI/O+100s transform+30s setup+20s serialization+
+32s reserve; these remain unmeasured bounds. Additional engine context must fit the
+complete retained budget or reduce admission, never inflate timeouts or hide cost.
+
+Resolve immutable event-key work with explicit pending scope/cursor/fair continuation;
+100/100 admission cannot mean full-history complete. Long-history price windows that
+exceed row/byte limits are split into admitted event windows or stay capacity-pending,
+never silently truncated or loaded unboundedly. An all-history CLI default cannot
+bypass admission and no automatic multi-year production rebuild is introduced.
+`tests/gcp/test_earnings_capacity.py::test_historical_reaction_maximum_admission_and_pending_universe`
+executes actual main at maximum source/artifact/serialization shape, >100 ticker/report
+scope, sparse/dense multi-year windows, deadline/byte overflow, intermediate commit/
+retry/fair continuation and complete selected-versus-pending reconciliation. Run
+`test_reaction_maximum_batched_io_fits_admission` with actual merged receipt integration.
+No per-report remote call or unbounded ticker/report accumulation is accepted. Missing
+producer/basis/receipt prerequisites remain explicit; pure local math is not a
+substitute for integrated maximum-shape evidence or a source-backed baseline.
 
 ## Risks and compatibility
 
