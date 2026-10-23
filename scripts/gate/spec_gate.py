@@ -265,8 +265,7 @@ RUNTIME_ENV = (r"(PATH|HOME|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|IFS|TMPDIR|PY
                # red-team round two: a proxy or CA bundle would route the verdict step's `pip install` elsewhere
                r"|HTTPS?_PROXY|https?_proxy|ALL_PROXY|all_proxy|NO_PROXY|no_proxy|SSL_CERT_\w+|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE)")
 PROTECTED = rf"(?:{GATE_INPUT}|{RUNTIME_ENV})"
-INPUT_OVERRIDE = re.compile(r"(?<![\w$.{-])" + PROTECTED + r"=|\b(export|unset|declare|typeset|local|readonly|read)\b[^;|&\n]*?(?<![\w$.{-])" + PROTECTED + r"\b|(?<![\w])(GITHUB_PATH)\b")
-ENV_KEY = re.compile(r"^\s*(" + GATE_INPUT[1:-1] + "|" + RUNTIME_ENV[1:-1] + r"):", re.M)
+INPUT_OVERRIDE = r"(?<![\w$.{-])" + PROTECTED + r"=|\b(export|unset|declare|typeset|local|readonly|read)\b[^;|&\n]*?(?<![\w$.{-])" + PROTECTED + r"\b|(?<![\w])(GITHUB_PATH)\b"
 
 
 def runtime_env_keys(body: str) -> list[str]:
@@ -289,7 +288,7 @@ def runtime_env_keys(body: str) -> list[str]:
 def input_overrides(text: str) -> list[str]:
     """The gate inputs a comment-stripped text assigns or unsets, in order of appearance."""
     found: list[str] = []
-    for m in INPUT_OVERRIDE.finditer(text):
+    for m in re.finditer(INPUT_OVERRIDE, text):
         name = next(g for g in m.groups() if g and g not in ("export", "unset", "declare", "typeset", "local", "readonly", "read"))
         if name not in found:
             found.append(name)
@@ -982,8 +981,8 @@ def checkout_violation(body: str, side: str) -> str | None:
 
 
 EXECUTABLES = r"(python3?|python3\.\d+|git|pytest)"
-SHADOW = re.compile(r"(?:^|[;&|{}(]\s*|\bfunction\s+)" + EXECUTABLES + r"\s*\(\s*\)|\bfunction\s+" + EXECUTABLES
-                    + r"\b|\balias\s+" + EXECUTABLES + r"=|\bhash\s+-p\s+\S+\s+" + EXECUTABLES + r"\b", re.M)
+SHADOW = (r"(?:^|[;&|{}(]\s*|\bfunction\s+)" + EXECUTABLES + r"\s*\(\s*\)|\bfunction\s+" + EXECUTABLES
+          + r"\b|\balias\s+" + EXECUTABLES + r"=|\bhash\s+-p\s+\S+\s+" + EXECUTABLES + r"\b")
 
 
 # Every line the hook may contain, after its interpreter line: comments, `set -e`, the Python
@@ -1010,7 +1009,7 @@ INDIRECT = r"['\"]?\$(?!(RUNNER_TEMP\b|\{RUNNER_TEMP\}|\{\{\s*runner\.temp\s*\}\
 EXECUTABLE_NAME = r"[^\s'\"]*/(python3?|python3\.\d+|git|pytest)\b"
 # red-team round four: the writer sits anywhere on the line (`command cp`, `timeout 5 cp`, `find -exec cp`,
 # `echo a b | xargs cp`, `((1)) && cp`), not only at its start after assignments
-WRITES_GATE = re.compile(r"(?m)(?<![\w/.-])" + WRITERS + r"\b[^\n]*(" + GATE_PATHS + "|" + INDIRECT + "|" + EXECUTABLE_NAME + r")|[>]{1,2}\|?\s*(['\"]?[^\s'\"]*" + GATE_PATHS + "|" + INDIRECT + "|['\"]?" + EXECUTABLE_NAME + ")")
+WRITES_GATE = (r"(?m)(?<![\w/.-])" + WRITERS + r"\b[^\n]*(" + GATE_PATHS + "|" + INDIRECT + "|" + EXECUTABLE_NAME + r")|[>]{1,2}\|?\s*(['\"]?[^\s'\"]*" + GATE_PATHS + "|" + INDIRECT + "|['\"]?" + EXECUTABLE_NAME + ")")
 
 
 # Commands that only read what they are given: any other command handed a gate path may write it
@@ -1023,7 +1022,7 @@ READ_ONLY = frozenset(("python3", "python", "git", "cat", "ls", "test", "[", "[[
 def writes_gate_file(runs: str) -> str | None:
     """The first executed run line that copies, moves, edits, deletes or redirects into a gate
     file's path (stocks#1205 r4121777299), or hands one to a command that is not known to only read."""
-    m = WRITES_GATE.search(runs)
+    m = re.search(WRITES_GATE, runs)
     if m:
         return runs[runs.rfind("\n", 0, m.start()) + 1:].split("\n")[0].strip()
     for line in runs.split("\n"):
@@ -1038,7 +1037,7 @@ def writes_gate_file(runs: str) -> str | None:
 
 def shadowed_executable(text: str) -> str | None:
     """The first contract executable a comment-stripped text redefines as a function or alias."""
-    m = SHADOW.search(text)
+    m = re.search(SHADOW, text, re.M)
     return next((g for g in m.groups() if g), None) if m else None
 
 
@@ -3765,7 +3764,16 @@ def check_policy_structure(ch: Change) -> list[str]:
     errs: list[str] = []
     if CANVASES in ch.changed and (canvases := ch.tree.read(CANVASES)) is not None:
         errs += validate_canvases(canvases)
-    if CATALOG in ch.changed and (catalog := ch.tree.read(CATALOG)) is not None and (base_catalog := ch.base.read(CATALOG)):
+    catalog_pair = None
+    if CATALOG in ch.changed and all(isinstance(t.rev, str) and re.fullmatch(r"[0-9a-f]{40}", t.rev)
+                                    for t in (ch.tree, ch.base)):
+        try:
+            catalog_pair = close_out_policy([(ch.tree.rev, CATALOG), (ch.base.rev, CATALOG)])
+        except GitFailed:
+            # Preserve Tree.read's original fallback and read order on unavailable batch transport/framing.
+            pass
+    if CATALOG in ch.changed and (catalog := catalog_pair[0] if catalog_pair is not None else ch.tree.read(CATALOG)) is not None \
+            and (base_catalog := catalog_pair[1] if catalog_pair is not None else ch.base.read(CATALOG)):
         # solyra#72 r4121753981: the close-out reads Status and Last reviewed by name, from the
         # row or the record; a renamed header would fail every later feature PR
         header = lambda text: re.search(r"(?m)^\|\s*ID\s*\|.*$", visible(text))
@@ -3801,7 +3809,8 @@ def check_policy_structure(ch: Change) -> list[str]:
             errs.append(f"{REQUIREMENTS}: a new requirements registry omits {len(missing)} requirement(s) the specs "
                         f"cite ({missing[0]}{' and more' if len(missing) > 1 else ''}); define them all or land none")
     for path in POLICY_DOCS:
-        if path not in ch.changed or (head := ch.tree.read(path)) is None or (base := ch.base.read(path)) is None:
+        if path not in ch.changed or (head := catalog_pair[0] if path == CATALOG and catalog_pair is not None else ch.tree.read(path)) is None \
+                or (base := catalog_pair[1] if path == CATALOG and catalog_pair is not None else ch.base.read(path)) is None:
             continue
         if dropped := sorted(policy_ids(path, base) - policy_ids(path, head)):
             errs.append(f"{path}: no longer defines {len(dropped)} ID(s) the base has ({dropped[0]}"

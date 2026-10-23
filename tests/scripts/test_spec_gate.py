@@ -157,16 +157,38 @@ def write(repo: Path, path: str, text: str) -> None:
         p.chmod(0o755)   # a hook is executable unless a test takes that away
 
 
-def make_repo(root: Path):
-    """`main` holds the gate, a catalog, requirements, one approved spec and its
-    ready plan, and one code file. Tag `base` marks it; every change branches
-    from there."""
-    _git(root, "init", "-q", "-b", "main")
+def configure_fixture_git(root: Path) -> None:
+    """Only Git's exact default local config can receive the fixed fixture settings directly."""
+    default = (b"[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n"
+               b"\tbare = false\n\tlogallrefupdates = true\n")
+    try:
+        if "GIT_CONFIG" in os.environ:
+            eligible = False
+        else:
+            path = root / _git(root, "rev-parse", "--git-path", "config")
+            eligible = (path == root / ".git/config" and not (root / ".git").is_symlink()
+                        and not path.is_symlink() and path.is_file() and path.read_bytes() == default)
+    except (OSError, subprocess.CalledProcessError):
+        eligible = False
+    if eligible:
+        with path.open("ab") as stream:
+            stream.write(b"[maintenance]\n\tautoDetach = false\n[gc]\n\tautoDetach = false\n"
+                         b"[user]\n\temail = t@example.com\n\tname = t\n[commit]\n\tgpgsign = false\n")
+        return
+    # Unknown templates/layouts retain Git's overwrite, include and multivalue-error semantics.
     _git(root, "config", "maintenance.autoDetach", "false")
     _git(root, "config", "gc.autoDetach", "false")
     _git(root, "config", "user.email", "t@example.com")
     _git(root, "config", "user.name", "t")
     _git(root, "config", "commit.gpgsign", "false")
+
+
+def make_repo(root: Path):
+    """`main` holds the gate, a catalog, requirements, one approved spec and its
+    ready plan, and one code file. Tag `base` marks it; every change branches
+    from there."""
+    _git(root, "init", "-q", "-b", "main")
+    configure_fixture_git(root)
     write(root, "scripts/gate/spec_gate.py", GATE.read_text(encoding="utf-8"))
     write(root, CATALOG, CATALOG_TEXT)
     write(root, REQUIREMENTS, REQUIREMENTS_TEXT)
@@ -230,7 +252,8 @@ def pr(repo: Path, branch: str, files: dict[str, str | None], then=None, **env: 
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", f"change on {branch}")
     # (stocks#1205 r4127577496: Actions passes two 40-character shas, so the suite does too)
-    return gate(repo, "--pr", _git(repo, "rev-parse", "base"), _git(repo, "rev-parse", "HEAD"), **{"PR_HEAD_REF": branch, **env})
+    base, head = base_and_head(repo)
+    return gate(repo, "--pr", base, head, **{"PR_HEAD_REF": branch, **env})
 
 
 def test_fixture_commit_dates_survive_midnight_and_preserve_explicit_dates(repo, monkeypatch):
@@ -3869,7 +3892,8 @@ def load_gate(root: Path) -> types.ModuleType:
     return module
 
 def base_and_head(repo: Path) -> tuple[str, str]:
-    return _git(repo, "rev-parse", "base"), _git(repo, "rev-parse", "HEAD")
+    base, head = _git(repo, "rev-parse", "base", "HEAD").splitlines()
+    return base, head
 
 def test_changed_lines_reads_the_diff_as_bytes(repo):
     """FEAT-CICD-001 spec, the diff reader (done_when[2]).
