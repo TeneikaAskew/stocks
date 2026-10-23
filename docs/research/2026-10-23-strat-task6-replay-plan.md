@@ -70,3 +70,19 @@ Synthetic-only mode is a deliberate admission limit. It cannot consume raw/curre
 ## Current independent-review hold
 
 The candidate is not accepted. One authorized offline reviewer probe confirmed that abbreviated diagnostic CLI flags with post-existing environment settings reach the legacy render boundary before the diagnostic guard. The probe replaced rendering with a recording sentinel: one boundary attempt, zero actual render/post, zero external attempts, no capture opened, and all11source hashes unchanged. This is a concrete uncovered early-branch defect despite passing exact-flag tests. Full static/identity/lineage checks have completed; the reviewer is writing the one complete first findings batch. No source fix begins before that batch; the existing five-round limit and scoped original-reviewer follow-up remain. Previously published research is the frozen candidate’s report, not an acceptance statement.
+
+## Complete first review and bounded fix1
+
+The [complete independent first review](2026-10-23-strat-task6-first-review.md) is now published verbatim (SHA256 `3d9f77655188153314c4dd3d2a3807559538ae93dca9aa682d0fb28f22c0c4ce`; machine evidence `cb0adf8e5fbb88ae7bc1d62f2811673d699ea25a0d1992f740793d198d125fed`). Verdict: bounded specification FAIL, quality NEEDS FIXES. FullTask6 actual-market requirements remain BLOCKED/NOT_RUN.
+
+| Finding | Severity | Required correction |
+|---|---|---|
+| R1 | P1 | Parse actual diagnostic CLI before environment-based post-existing replacement; preserve no-write on abbreviations and partial selectors. |
+| R2 | P2 | Actual routed playbook embed must preserve unavailable ORB choice instead of selecting a5m title. |
+| R3 | P2 | Invalid newest/history daily OHLC must make market context unavailable before indicators; never synthesize neutral/ranging from missing inputs. |
+| R4 | P2 | Count/refuse unexpected data/config opens across all relevant physical-open mechanisms; prove sensitivity to an extra read. Existing4expectedopens are observed, but complete read measurement was not established. |
+| R5 | P2 | Compare complete shared canonical facts/required presence/symbols, including rule/classification/coverage and alignment identity. Negative altered/dropped fields must fail. |
+| R6 | P2 | Correct per-indicator warm-up/null audit: existing RSI/StochRSI can fill50 and ATR has different warm-up behavior; do not change financial formulas. |
+| R7 | P3 | Point exit audit to actual SignalMonitor._check_exits. |
+
+Original implementer fixround1/5 covers ALL7, beginning with exact causes/baselines and bounded plan before source changes. Original reviewer stopped after its complete batch; subsequent verification is scoped to R1–R7 and new fix-induced changes only. No severity waiver, broad review restart, outside-ownership source edits, real-market/holdout read, merge or deployment. All original candidate/pass/failure/source artifacts remain immutable. Passing compatibility and maximum-source paths do not cover these uncovered defects; their measurements remain attached to the tested revision with the review’s qualifications.
