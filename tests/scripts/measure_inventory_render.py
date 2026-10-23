@@ -84,8 +84,21 @@ def defer_deadline():
 
 
 def process_start(pid: int) -> int:
+    return process_identity(pid)[0]
+
+
+def process_identity(pid: int) -> tuple[int, int]:
     raw = (PROC / str(pid) / "stat").read_text()
-    return int(raw[raw.rfind(")") + 2:].split()[19])
+    try:
+        if int(raw[:raw.index(" (")]) != pid:
+            raise ValueError("PID disagreement")
+        fields = raw[raw.rfind(")") + 2:].split()
+        start, parent = int(fields[19]), int(fields[1])
+        if start < 0 or parent < 0:
+            raise ValueError("negative process identity")
+        return start, parent
+    except (ValueError, IndexError) as e:
+        raise OSError(f"invalid process identity for {pid}") from e
 
 
 class OwnedFamily:
@@ -115,34 +128,88 @@ class OwnedFamily:
 
     def discover(self) -> dict[int, int]:
         with self.lock:
-            table = process_table()
-            admitted = {pid for pid, (start, _fd) in self.owned.items() if table.get(pid, (None,))[0] == start}
-            while True:
-                new = {pid for pid, (_start, parent) in table.items()
-                       if parent == os.getpid() or parent in admitted} - admitted
-                if not new:
-                    break
-                for pid in new:
-                    start = table[pid][0]
-                    try:
-                        with defer_deadline():
-                            fd = os.pidfd_open(pid)
-                            registered = False
-                            try:
-                                if process_start(pid) != start:
+            return self.admit_table(process_table())
+
+    def admit_table(self, table: dict[int, tuple[int, int]]) -> dict[int, int]:
+        """Only verified parentage and stable PIDfds authorize admission, never a bare PID or session."""
+        with selectors.DefaultSelector() as selector:
+            for pid, (_start, fd) in self.owned.items():
+                selector.register(fd, selectors.EVENT_READ, pid)
+            stopped = {key.data for key, _events in selector.select(0)}
+        admitted = {pid for pid, (start, _fd) in self.owned.items()
+                    if pid not in stopped and table.get(pid, (None,))[0] == start}
+        considered = set(admitted)
+        errors = []
+        while True:
+            new = {pid for pid, (_start, parent) in table.items()
+                   if parent == os.getpid() or parent in admitted} - considered
+            if not new:
+                break
+            considered.update(new)
+            for pid in new:
+                start = table[pid][0]
+                try:
+                    with defer_deadline():
+                        fd = os.pidfd_open(pid)
+                        registered = False
+                        try:
+                            current, parent = process_identity(pid)
+                            if current != start:
+                                continue
+                            if parent != os.getpid():
+                                if parent not in admitted or process_start(parent) != self.owned[parent][0]:
                                     continue
-                                previous = self.owned.get(pid)
-                                self.owned[pid] = (start, fd)
-                                registered = True
-                                if previous is not None:
-                                    os.close(previous[1])
-                            finally:
-                                if not registered:
-                                    os.close(fd)
-                    except (ProcessLookupError, FileNotFoundError):
-                        continue
-                admitted.update(new)
-            return {pid: start for pid, (start, _fd) in self.owned.items() if table.get(pid, (None,))[0] == start}
+                            previous = self.owned.get(pid)
+                            self.owned[pid] = (start, fd)
+                            registered = True
+                            admitted.add(pid)
+                            if previous is not None:
+                                os.close(previous[1])
+                        finally:
+                            if not registered:
+                                os.close(fd)
+                except (ProcessLookupError, FileNotFoundError):
+                    pass
+                except OSError as e:
+                    errors.append(str(e))
+        if errors:
+            raise OSError("owned process identity unavailable: " + errors[0])
+        return {pid: start for pid, (start, _fd) in self.owned.items() if table.get(pid, (None,))[0] == start}
+
+    def recover(self) -> dict[int, int]:
+        """Independent raw directory/stat path for cleanup when the normal collector fails.
+
+        Exclusive preflight and subreaper adoption establish ownership of new direct children.
+        Stable unreadable entries leave uncertainty, but do not prevent admitting other verified
+        descendants. No assumption about unavailable /proc children files is necessary.
+        """
+        with self.lock:
+            table = {}
+            errors = []
+            try:
+                with os.scandir(PROC) as entries:
+                    for entry in entries:
+                        if not entry.name.isdecimal():
+                            continue
+                        pid = int(entry.name)
+                        try:
+                            table[pid] = process_identity(pid)
+                        except (FileNotFoundError, ProcessLookupError):
+                            pass
+                        except OSError as e:
+                            errors.append(str(e))
+            except OSError as e:
+                errors.append(str(e))
+            result = self.admit_table(table)
+            if errors:
+                raise OSError("independent process observation incomplete: " + errors[0])
+            return result
+
+    def cleanup_discover(self) -> dict[int, int]:
+        try:
+            return self.discover()
+        except (OSError, ValueError, IndexError):
+            return self.recover()
 
     def snapshot(self) -> dict[int, int]:
         with self.lock:
@@ -179,11 +246,10 @@ class OwnedFamily:
 
     def terminate_and_reap(self, process: subprocess.Popen, deadline: float) -> bool:
         while True:
-            observation_error = None
             try:
-                self.discover()
-            except OSError as e:
-                observation_error = e
+                self.cleanup_discover()
+            except OSError:
+                pass  # Always signal known owners, even if neither observation path is available.
             self.signal_known()
             # If PIDfd acquisition itself failed, Popen still owns this unreaped child.
             # Exclusive caller/default SIGCHLD prevents another waiter from recycling its PID.
@@ -199,11 +265,15 @@ class OwnedFamily:
                     pass
             if not self.known_live():
                 process.wait(timeout=max(.01, deadline - time.monotonic()))
-                if observation_error is not None:
-                    # Known owners are dead/reaped; unavailable discovery never certifies the whole family.
-                    return False
-                if not self.discover():
-                    return True
+                try:
+                    # Killing a known parent may adopt previously unseen escaped descendants.
+                    # Discover again before certifying completion, even if the first scan failed.
+                    if not self.cleanup_discover():
+                        return True
+                except OSError:
+                    if not self.known_live():
+                        # Known owners are stopped; two unavailable views never certify the whole family.
+                        return False
             if time.monotonic() >= deadline:
                 raise OSError("owned descendants not reaped before cleanup deadline")
             time.sleep(.002)

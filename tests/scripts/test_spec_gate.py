@@ -4757,6 +4757,7 @@ LIFECYCLE_PROBE = r'''
 import ctypes,importlib.util,json,os,pathlib,signal,subprocess,sys,time
 s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
 mode=sys.argv[2];children=[];opened=[];report=None;outer=None
+hits=dict(popen=0,table_fault=0,pidfd=0,pidfd_delay=0,pidfd_failure=0,spawn_delay=0,rss_fault=0,cleanup_delay=0,prior_get_failure=0)
 handler=signal.getsignal(signal.SIGALRM);mask=signal.pthread_sigmask(signal.SIG_BLOCK,set())
 native=ctypes.CDLL(None,use_errno=True);prior=ctypes.c_int();assert native.prctl(37,ctypes.byref(prior),0,0,0)==0
 native.prctl(36,1,0,0,0)
@@ -4767,33 +4768,36 @@ def table():
  global calls
  calls+=1
  if mode=='read-after' and calls<3:return real_table()
+ hits['table_fault']+=1
  raise OSError('actual process-table read boundary unavailable')
 def popen(*a,**kw):
- p=real_popen(*a,**kw);children.append(p)
+ p=real_popen(*a,**kw);children.append(p);hits['popen']+=1
  if mode in ('read-before','read-after'):m.process_table=table
- if mode=='spawn-delay':time.sleep(.3)
+ if mode=='spawn-delay':hits['spawn_delay']+=1;time.sleep(.3)
  return p
 def pidfd(*a,**kw):
- if mode=='pidfd-failure':raise OSError('actual descriptor acquisition boundary unavailable')
+ hits['pidfd']+=1
+ if mode=='pidfd-failure':hits['pidfd_failure']+=1;raise OSError('actual descriptor acquisition boundary unavailable')
  fd=real_pidfd(*a,**kw);opened.append(fd)
- if mode=='pidfd-delay':time.sleep(.3)
+ if mode=='pidfd-delay':hits['pidfd_delay']+=1;time.sleep(.3)
  return fd
 def cleanup(*a,**kw):
- if mode=='cleanup-delay':time.sleep(.3)
+ if mode=='cleanup-delay':hits['cleanup_delay']+=1;time.sleep(.3)
  return real_cleanup(*a,**kw)
 def rss(pid):
- if mode in ('cleanup-delay','cleanup-control') and pid!=os.getpid():raise OSError('actual child RSS read boundary unavailable')
+ if mode in ('cleanup-delay','cleanup-control') and pid!=os.getpid():hits['rss_fault']+=1;raise OSError('actual child RSS read boundary unavailable')
  return real_rss(pid)
 class NoPriorState:
  def prctl(self,operation,*a):
-  if operation==37:return -1
+  if operation==37:hits['prior_get_failure']+=1;return -1
   return native.prctl(operation,*a)
 m.subprocess.Popen=popen;m.os.pidfd_open=pidfd;m.OwnedFamily.terminate_and_reap=cleanup;m.rss=rss
 if mode=='prior-state-failure':m.ctypes.CDLL=lambda *a,**kw:NoPriorState()
 try:
  try:
-  with m.deadline_guard(time.monotonic()+.15):
-   report=m.run_bounded([sys.executable,'-c','import signal,time;assert signal.SIGALRM not in signal.pthread_sigmask(signal.SIG_BLOCK,set());time.sleep(.02)' if mode=='accepted' else 'import time;time.sleep(20)'],pathlib.Path.cwd(),max_rss_bytes=128*1024*1024,max_seconds=.15)
+  limit=1 if mode=='accepted' else .15
+  with m.deadline_guard(time.monotonic()+limit):
+   report=m.run_bounded([sys.executable,'-c','import signal,time;assert signal.SIGALRM not in signal.pthread_sigmask(signal.SIG_BLOCK,set());time.sleep(.02)' if mode=='accepted' else 'import time;time.sleep(20)'],pathlib.Path.cwd(),max_rss_bytes=128*1024*1024,max_seconds=limit)
  except m.DeliveryDeadline as e:outer=str(e)
  finally:
   m.subprocess.Popen=real_popen;m.process_table=real_table;m.os.pidfd_open=real_pidfd;m.ctypes.CDLL=real_cdll;m.OwnedFamily.terminate_and_reap=real_cleanup;m.rss=real_rss
@@ -4803,7 +4807,7 @@ try:
   try:os.fstat(fd);leaked.append(fd)
   except OSError:pass
  state=ctypes.c_int();assert native.prctl(37,ctypes.byref(state),0,0,0)==0
- result=dict(report=report,outer_deadline=outer,native_children_alive_after_monitor=alive,pidfds_live_after_monitor=leaked,subreaper_after=state.value,mask_restored=signal.pthread_sigmask(signal.SIG_BLOCK,set())==mask,handler_restored=signal.getsignal(signal.SIGALRM)==handler,timer=signal.getitimer(signal.ITIMER_REAL))
+ result=dict(report=report,outer_deadline=outer,native_children_alive_after_monitor=alive,pidfds_live_after_monitor=leaked,subreaper_after=state.value,mask_restored=signal.pthread_sigmask(signal.SIG_BLOCK,set())==mask,handler_restored=signal.getsignal(signal.SIGALRM)==handler,timer=signal.getitimer(signal.ITIMER_REAL),fault_boundary_hits=hits,native_children_created=len(children),native_pidfds_opened=len(opened))
 finally:
  for p in children:
   if p.poll() is None:p.kill()
@@ -4832,3 +4836,95 @@ def test_measure_inventory_render_acquires_and_unwinds_actual_kernel_resources(t
     assert all(x['subreaper_after']==1 and x['mask_restored'] and x['handler_restored'] and x['timer']==[0,0] for x in results.values()), results
     assert all(x['all_fixture_children_reaped'] for x in results.values())
     assert all(not x['report'] or not x['report']['ok'] for name,x in results.items() if name!='accepted'), results
+    boundaries={'read-before':'table_fault','read-after':'table_fault','cleanup-control':'rss_fault',
+                'spawn-delay':'spawn_delay','pidfd-delay':'pidfd_delay','pidfd-failure':'pidfd_failure',
+                'cleanup-delay':'cleanup_delay','prior-state-failure':'prior_get_failure'}
+    assert all(results[name]['fault_boundary_hits'][boundary]>0 for name,boundary in boundaries.items()),results
+    assert all(x['native_children_created']==1 for name,x in results.items() if name!='prior-state-failure'),results
+    assert results['prior-state-failure']['native_children_created']==0,results
+    assert all(x['native_pidfds_opened']>0 for name,x in results.items() if name not in ('prior-state-failure','pidfd-failure')),results
+
+
+RECOVERY_PROBE = r"""
+import ctypes,importlib.util,json,os,pathlib,signal,subprocess,sys,time
+s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+mode=sys.argv[2];pidfile=pathlib.Path('recovery-pids.json');native=ctypes.CDLL(None);prior=ctypes.c_int();assert native.prctl(37,ctypes.byref(prior),0,0,0)==0;assert native.prctl(36,1,0,0,0)==0
+real_popen=m.subprocess.Popen;real_table=m.process_table;real_scandir=m.os.scandir;real_read=pathlib.Path.read_text;root=None;targets=[]
+code='''import os,sys,time,json
+if os.fork()==0:
+ os.setsid()
+ child=os.getpid()
+ grand=os.fork()
+ if grand==0:
+  time.sleep(20)
+  os._exit(0)
+ open(sys.argv[1],'w').write(json.dumps([child,grand]))
+ time.sleep(20)
+ os._exit(0)
+time.sleep(20)
+'''
+def lost():raise OSError('general full-table observation unavailable after native fork')
+def scan(*a,**kw):raise OSError('independent raw directory observation also unavailable')
+def read(path,*a,**kw):
+ if str(path)==f'/proc/{os.getppid()}/stat':
+  if mode=='unrelated-malformed':return 'malformed stable process identity'
+  raise OSError('unrelated stable entry inaccessible')
+ return real_read(path,*a,**kw)
+def popen(*a,**kw):
+ global root,targets
+ root=real_popen(*a,**kw)
+ if mode!='accepted':
+  for _ in range(1500):
+   if pidfile.exists():
+    try:targets=json.loads(pidfile.read_text());break
+    except ValueError:pass
+   time.sleep(.001)
+  assert len(targets)==2
+  m.process_table=lost
+  if mode=='both-unavailable':m.os.scandir=scan
+  if mode in ('unrelated-unreadable','unrelated-malformed'):pathlib.Path.read_text=read
+ return root
+m.subprocess.Popen=popen
+try:
+ report=m.run_bounded([sys.executable,'-I','-B','-c','import time;time.sleep(.02)' if mode=='accepted' else code,str(pidfile)],pathlib.Path.cwd(),max_rss_bytes=128*1024*1024,max_seconds=1)
+ result=dict(report=report,root_reaped=root.poll() is not None,descendants_alive=[pid for pid in targets if pathlib.Path('/proc',str(pid)).exists()])
+finally:
+ m.subprocess.Popen=real_popen;m.process_table=real_table;m.os.scandir=real_scandir;pathlib.Path.read_text=real_read
+ if root is not None:
+  if root.poll() is None:root.kill()
+  root.wait()
+ for pid in targets:
+  try:os.kill(pid,signal.SIGKILL)
+  except ProcessLookupError:pass
+ for _ in range(1000):
+  for pid in targets:
+   try:os.waitpid(pid,os.WNOHANG)
+   except ChildProcessError:pass
+  if not any(pathlib.Path('/proc',str(pid)).exists() for pid in targets):break
+  time.sleep(.001)
+ native.prctl(36,prior.value,0,0,0)
+result['fixture_cleanup_complete']=not any(pathlib.Path('/proc',str(pid)).exists() for pid in targets)
+print(json.dumps(result))
+"""
+
+
+def test_measure_inventory_render_recovers_unseen_owned_descendants(tmp_path):
+    """Native fork/setsid/grandchild precedes collector loss; independent relationship cleanup owns it safely."""
+    results={}
+    for mode in ('accepted','collector-unavailable','unrelated-unreadable','unrelated-malformed','both-unavailable'):
+        directory=tmp_path/mode;directory.mkdir()
+        r=subprocess.run([sys.executable,'-c',RECOVERY_PROBE,str(REPO/MEASURE),mode],cwd=directory,
+                         capture_output=True,text=True,timeout=5)
+        assert r.returncode==0,(mode,r.stdout,r.stderr)
+        results[mode]=json.loads(r.stdout)
+    (tmp_path/'recovery-results.json').write_text(json.dumps(results,indent=2))
+    assert results['accepted']['report']['ok'] and results['accepted']['report']['owned_family_gone'],results
+    assert all(x['root_reaped'] and x['fixture_cleanup_complete'] for x in results.values()),results
+    for mode in ('collector-unavailable','unrelated-unreadable','unrelated-malformed'):
+        assert not results[mode]['report']['ok'] and not results[mode]['descendants_alive'],results
+    assert results['collector-unavailable']['report']['owned_family_gone'],results
+    # Unreadable stable entries leave uncertainty, even when every actually owned process was stopped.
+    assert not results['unrelated-unreadable']['report']['owned_family_gone'],results
+    assert not results['unrelated-malformed']['report']['owned_family_gone'],results
+    # Both real observation paths can be unavailable; known root cleanup still runs, with no false family claim.
+    assert not results['both-unavailable']['report']['ok'] and not results['both-unavailable']['report']['owned_family_gone'],results
