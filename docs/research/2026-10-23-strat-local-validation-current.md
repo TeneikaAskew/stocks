@@ -1,6 +1,6 @@
 # Current local validation and baseline evidence
 
-This checkpoint supersedes pending-state statements in the chronological recovery notes. Tasks1–5E are accepted only as bounded local reconstruction partitions. Task5E passed its original reviewer’s scoped fix1 verification; Task6 actual production-entrypoint replay implementation has started with read-only source inventory. No repaired brief/insight production-entrypoint October replay, movement-outcome scoring, earnings evaluation or predictive performance acceptance has run. The Oct10–16 holdout remains quarantined and unscored.
+This checkpoint supersedes pending-state statements in the chronological recovery notes. Tasks1–5E are accepted only as bounded local reconstruction partitions. Both actual Task6 brief/insight entrypoints have executed with synthetic captured inputs. Their complete first review returned seven concerns; the original implementer's bounded fix1/5 remains active, awaiting a complete physical-read capacity result and scoped verification. No repaired brief/insight production-entrypoint October replay, movement-outcome scoring, earnings evaluation or predictive performance acceptance has run. The Oct10–16 holdout remains quarantined and unscored.
 
 ## Actual local commands and limits
 
