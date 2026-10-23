@@ -87,3 +87,9 @@ Task5A remains **in progress and unreviewed**. Checkpoint1 has48 focused synthet
 - [Task5A checkpoint1 archive part 4/6](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6370664982)
 - [Task5A checkpoint1 archive part 5/6](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6370665436)
 - [Task5A checkpoint1 archive part 6/6](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6370665886)
+
+## Additional archived baseline consistency evidence
+
+A read-only check of the recovered original native-output subsets finds **6/6 unique paired date/ticker keys** (SPY/QQQ/IWM×Oct8/9) have different stored candle/combo labels: all six insights store`1 / none`; all six briefs store`2D`, with bearish22 reversal onOct8 and bearish22 continuation onOct9. Brief data-source labels are prior-sessionOct7/8. There are exactly six selected records on each side, no duplicate pair keys.
+
+This is a categorical stored-output discrepancy, not a verified equal-clock parity failure or an outcome score: exact observation clock, completed/current session, price basis and source alignment still need the admitted production replay before declaring which output was correct. No native payload blob, price series, holdout value or predictive/profitability claim is published. Derived receipt SHA256`8573b443487ed53e314530d5ec4fb1436734f9355e2d8311f71668ef2436ce72`; input subset hashes: insights`6bf15ab7d48613bb145243ba2a94de9e26ff24ec40cf2858e55a85e01b109f74`, briefhistory`8ef45846765f4aa7d7a770e7ce9a95e0a39a81e421eaf8e78dbadaa83391a0bf`. Source: already-recovered`db-query-c5558.json` native archive, baseline-only subsets.
