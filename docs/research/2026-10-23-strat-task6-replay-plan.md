@@ -37,3 +37,22 @@ Sequence: preserve full prechange files/absence and literal live-boundary contro
 The19-entry deterministic/heuristic model artifact will audit real source/consumer/version/units/null/horizon/time safety and record separate code, compatibility, diagnostic and unavailable baseline verdicts. It is not empirical edge. No repaired-engine October baseline level/activation/movement outcome has run. Actual admitted baseline requires genuine merged calendar/DATA helpers and source-clock/session/basis/factor/vintage qualification. October10–16 remains quarantined/unscored until both repaired engines/settings freeze and gates permit. Original467 local captures remain missing; new Oct23 reacquisition is preserved separately.
 
 Overall completion duration remains unknown. The next implementation checkpoint is sensitive RED and the first useful GREEN source freeze, followed by measured actual-main diagnostics.
+
+## First executed production-path evidence (candidate under development)
+
+The actual brief and insight mains completed a small synthetic capture case, including14real typed graph node completions through a local mock provider. Its contemporaneous before/after source receipt matched exactly. This proves a local diagnostic path at that revision, not actual October replay or independent acceptance.
+
+The first full-capacity check then passed:
+
+```bash
+/workspace/stocks-venv/bin/python /workspace/strat-rebuild-control/task5b-rebuild/run-mock-tests.py --mode=mock -q -s tests/gcp/test_strat_snapshot_parity.py::test_production_replay_capacity_at_admitted_maximum
+# First capacity execution:1 passed,38.47s. Exact argv/source revision recorded in capacity-1-receipt.json.
+```
+
+Both actual mains processed12synthetic symbols/two sessions, each reading9360RTH+4800daily+2880separately-counted context rows (17040each). Source content2710430bytes,SHA256 `103c374721d93eff8f96d1e00d88c1c78b712310a98f8ee22c64bbec10d5cbdb`; all rows synthetic. Four independent source opens across both mains, no remote source/provider calls or guarded mutation/notification attempts. Actual graph168nodes, aggregation132calls, brief shared producer12, insight shared producer12, daily adapter48, minute adapter24, level builder12 and planner36 were spy-wrapped to execute originals.
+
+Fresh subprocess full wall38.1642s, process CPU38.4710s, lifetime peak131340KiB (128.26MiB), including interpreter/imports, both mains, parsing/context/graph/formatting. This is below the fixed256MiB/6read envelope. Four reads at assumed2s/read add8s sensitivity; this is not measured cloud latency. Existing brief/insight-create quarter budgets450s remain unchanged; updated deployed insight timeout remains unknown. This check is not a deployment certification.
+
+Sensitive selection initially24passed/5failed in22.37s: the failed assertions indexed a nonexistent structural-envelope status field. Failed revision/log retained; actual contract diagnosis and only necessary corrected-selector proof pending. Initial both-main test instrumentation and typed-field fixture errors are also preserved. Do not convert pending assertions into acceptance or aggregate test counts. No real-market source was loaded, no holdout peek/scoring, no October activation/movement outcome. Model audit and complete independent review remain pending.
+
+First partial GREEN source backup:27members132080bytes,SHA256 `c1c517d0bc4d66685be4f0159af7a29d3decb5fb3c339a5ed5e5e337690b78d5`, five verified PR1573parts6375824463–6375826224. It predates the capacity run and is explicitly narrower; final capacity-source/evidence backup will follow the frozen candidate.
