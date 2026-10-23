@@ -109,3 +109,17 @@ for name,path in [('reviewed',base),('fixed',fixed)]:
 print(json.dumps(outputs,indent=2))
 PY
 ```
+
+## Durable source/evidence backup
+
+The frozen fix1 candidate, baseline, sensitive RED/GREEN logs, manifests, exact original reviewer command/argv/script/stdout and this independent review are preserved in a 42-member source-only archive. No raw provider data, native database captures, private IAM policies or credential values are included. This is a new reconstructed, **unapproved** candidate; N1 is undergoing bounded fix round2/5.
+
+Archive: `task4-fix1-reviewed-checkpoint.tar.xz`, 140,512 bytes; SHA256 `8f892706d6789553256f972484a44aebe574012f8e7fc80f132f23297b05bc86`. Review SHA256 before this publication appendix: `afbf617da23ed99acba0114611a5e616bc49cb85e889078ab8724d64557e3490`.
+
+- [Archive part 1/5](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6370150647)
+- [Archive part 2/5](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6370151182)
+- [Archive part 3/5](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6370151631)
+- [Archive part 4/5](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6370152100)
+- [Archive part 5/5](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6370152678)
+
+Decode each comment’s base64 separately and concatenate decoded bytes in numeric part order. Verify archive SHA256 and every member against `BACKUP-MANIFEST.json`. Original archives/checkpoints remain intact. The historical probe used the live fixed-source path while its hash was ca3ecd8; after later edits, that identity is preserved at the archive’s `frozen-actual-tree/lib/strat_levels.py`. No probe re-execution is claimed for creating this backup.
