@@ -2,6 +2,7 @@
 feat_id: FEAT-STRAT-001
 req_ids: [REQ-DATA-001, REQ-DATA-002, REQ-DATA-003, REQ-DATA-004, REQ-MARKET-001, REQ-PLAYBOOK-001, REQ-REL-001]
 issues: [884, 866, 907, 908]
+site_source_notes: [INSIGHTS-08]
 canvases:
   - https://claude.ai/artifact/Fg4VQHB6dFGWF9iXSJUDtg
 done_when:
@@ -21,8 +22,8 @@ supersedes: null
 
 The owner explicitly requests the complete Strat engine as a first-class part of the
 earnings repair. Success means accurate, consistent price-action interpretation, not
-dollar returns. The intake audit is
-`docs/superpowers/audits/2026-10-12-earnings-strat-engine-intake.md`.
+dollar returns. The captured baseline and evaluation protocol are recorded in
+[issue #1563](https://github.com/TeneikaAskew/stocks/issues/1563).
 
 The capability row is: **FEAT-STRAT-001 — STRAT / levels — Candle classification,
 FTFC, structural levels — `lib/strat.py`, `lib/strat_levels.py`,
@@ -124,8 +125,8 @@ touch/hold/bar-close confirmation rule.
 
 ### 5. Consumer parity and replay
 
-The existing briefing, insight summarizer, Strat history API and earnings snapshot
-paths use the same production functions with an explicit clock. Maintain October 8-9
+The existing briefing, insight summarizer, Strat history tooling and API readers,
+and earnings snapshot paths use the same production functions with an explicit clock. Maintain October 8-9
 fixtures for IWM/SPY/QQQ and adversarial calendar/boundary fixtures. Include 08:30,
 opening, meaningful break and closing checkpoints; prohibit future-minute highs and
 later daily closes from entering earlier snapshots.
