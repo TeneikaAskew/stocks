@@ -5053,3 +5053,27 @@ def test_effective_renderer_slots_refuse_beside_generated_docs_for_the_owner(inv
         results={p:base_checkout_input_pr(root,ci_branch,{**expected,p:inert},**meta) for p in slots}
         assert control.returncode==0,control.stdout+control.stderr
         assert all(refused(r,'which decide the render') for r in results.values()),{p:r.stdout+r.stderr for p,r in results.items()}
+
+
+def test_effective_slots_include_current_policy_base_source_presence(inventory_repo):
+    """Inert cache fork predates trusted BASE's initializer: actual current BASE, HEAD and fork all matter."""
+    if RENDERER_HERE:
+        root,moved=inventory_repo;ci_branch='fix/feat-cicd-001-current-inputs';ci_spec='docs/superpowers/specs/2026-09-01-current-inputs.md';ci_plan='docs/superpowers/plans/2026-09-01-current-inputs.md'
+        row=CATALOG_TEXT.replace('| [FEAT-DATA-001]','| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]',1)
+        on_base(root,{CATALOG:row,ci_spec:spec(feat_id='FEAT-CICD-001'),ci_plan:plan(feat_id='FEAT-CICD-001',spec=ci_spec,branch=ci_branch)})
+        fork=_git(root,'rev-parse','base');slot=importlib.util.cache_from_source('scripts/__init__.py');inert='Inert source-presence admission fixture; not executable.\n'
+        change(root,BRANCH,{**CODE,slot:inert});unrelated=_git(root,'rev-parse','HEAD')
+        change(root,ci_branch,{**moved,slot:inert});owner=_git(root,'rev-parse','HEAD')
+        change(root,ci_branch,{**moved,'scripts/cache-notes.bin':inert});control=_git(root,'rev-parse','HEAD')
+        _git(root,'checkout','-q','-f','main')
+        orphan=gate(root,'--pr',fork,unrelated,PR_HEAD_REF=BRANCH,**DOCS_OK)
+        assert orphan.returncode==0,orphan.stdout+orphan.stderr
+        on_base(root,{'scripts/__init__.py':'# Newly present trusted initializer.\n'})
+        current=_git(root,'rev-parse','base');assert _git(root,'merge-base',current,owner)==fork
+        refused_owner=gate(root,'--pr',current,unrelated,PR_HEAD_REF=BRANCH,**DOCS_OK)
+        meta=dict(PR_HEAD_REF=ci_branch,PR_TITLE='FEAT-CICD-001: current renderer inputs',PR_BODY=body(spec_path=ci_spec,plan_path=ci_plan)+'\n\n## Capacity\nn/a: inert native fixture\n')
+        refused_render=gate(root,'--pr',current,owner,**meta)
+        accepted=gate(root,'--pr',current,control,**meta)
+        assert refused_owner.returncode==1 and 'belong to FEAT-CICD-001' in refused_owner.stdout,refused_owner.stdout
+        assert refused(refused_render,'which decide the render'),refused_render.stdout+refused_render.stderr
+        assert accepted.returncode==0,accepted.stdout+accepted.stderr

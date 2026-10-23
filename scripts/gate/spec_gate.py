@@ -4148,7 +4148,7 @@ def generated_doc_refusals(ch: Change, merge_base: str, head: str, docs: list[st
     """Why each changed generated document in `docs` is refused, or [] when every one carries only main's render
     of its inventory blocks. The rules run cheapest first; a document refused by one is not read further."""
     inputs = [p for p in ch.changed if p in RENDER_INPUTS
-              or effective_python_input(p, RENDER_INPUTS, trees=(ch.before, ch.tree))]
+              or effective_python_input(p, RENDER_INPUTS, trees=(ch.before, ch.base, ch.tree))]
     if inputs:
         return [generated_refusal(doc, f"changes alongside {summarize(inputs)}, which decide the render; land that "
                                        "change first, then re-render") for doc in docs]
@@ -4682,7 +4682,7 @@ def run(argv: list[str]) -> int:
         manifest_edit = lambda f: f.rsplit("/", 1)[-1] in ("package.json", "pyproject.toml", "Makefile") and \
             (f.endswith("Makefile") or (ch.base.read(f) is not None and ch.tree.read(f) is not None
                                         and non_dependency_edit(f, ch.base.read(f), ch.tree.read(f)) is not None))
-        if traced and (owned := [f for f in ch.changed if is_process_file(f, (ch.before, ch.tree)) or manifest_edit(f)]) \
+        if traced and (owned := [f for f in ch.changed if is_process_file(f, (ch.before, ch.base, ch.tree)) or manifest_edit(f)]) \
                 and traced.feat_id != WORKFLOW_FEAT and WORKFLOW_FEAT in catalog_ids(ch.base.read(CATALOG)):
             errs.append(f"process change(s) ({summarize(owned)}) belong to {WORKFLOW_FEAT}, not {traced.feat_id}; "
                         "CI configuration, the gate and the agent instructions are that capability's work")
