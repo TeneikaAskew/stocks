@@ -34,6 +34,8 @@ GATE = "scripts/gate/spec_gate.py"
 MAX_RSS = 512 * 1024 * 1024
 MAX_SECONDS = 60.0
 PROC = pathlib.Path("/proc")
+# A failed release must leave stable ownership reachable, and cannot admit more work.
+RETAINED_OWNERSHIP = None
 
 
 def gaps(values: list[float]) -> dict:
@@ -126,9 +128,14 @@ class OwnedFamily:
         self.owned[process.pid] = (None, fd)
         self.owned[process.pid] = (process_start(process.pid), fd)
 
-    def discover(self) -> dict[int, int]:
+    def discover(self, *, stopped: threading.Event | None = None) -> dict[int, int]:
         with self.lock:
-            return self.admit_table(process_table())
+            table = process_table()
+            # A collector can return after its measurement ended. Its old exclusive
+            # interval does not authorize admission of a caller's subsequent children.
+            if stopped is not None and stopped.is_set():
+                return {}
+            return self.admit_table(table)
 
     def admit_table(self, table: dict[int, tuple[int, int]]) -> dict[int, int]:
         """Only verified parentage and stable PIDfds authorize admission, never a bare PID or session."""
@@ -138,7 +145,9 @@ class OwnedFamily:
             stopped = {key.data for key, _events in selector.select(0)}
         admitted = {pid for pid, (start, _fd) in self.owned.items()
                     if pid not in stopped and table.get(pid, (None,))[0] == start}
-        considered = set(admitted)
+        # An already stopped PIDfd still owns this exact unreaped identity; do not replace it.
+        considered = {pid for pid, (start, _fd) in self.owned.items()
+                      if table.get(pid, (None,))[0] == start}
         errors = []
         while True:
             new = {pid for pid, (_start, parent) in table.items()
@@ -236,7 +245,7 @@ class OwnedFamily:
 
     def signal_known(self):
         # Stable handles are sufficient authority even if EVERY subsequent observation fails.
-        for _start, fd in self.owned.values():
+        for _start, fd in list(self.owned.values()):
             try:
                 signal.pidfd_send_signal(fd, signal.SIGKILL)
             except ProcessLookupError:
@@ -283,15 +292,25 @@ class OwnedFamily:
 
     def close(self) -> None:
         with self.lock:
-            if self.known_live():
-                raise OSError("cannot release live known descendant ownership")
-            for _start, fd in self.owned.values():
-                os.close(fd)
-            self.owned.clear()
+            errors = []
+            for pid, (_start, fd) in list(self.owned.items()):
+                try:
+                    with selectors.DefaultSelector() as selector:
+                        selector.register(fd, selectors.EVENT_READ)
+                        if not selector.select(0):
+                            raise OSError("cannot release live known descendant ownership")
+                    os.close(fd)
+                except OSError as e:
+                    errors.append(str(e))
+                else:
+                    del self.owned[pid]
+            if errors:
+                raise OSError("owned descriptor release failed: " + "; ".join(errors))
 
 
 def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_seconds: float) -> dict:
     """Observe/reap actual descendants, including new sessions; report sampling uncertainty honestly."""
+    global RETAINED_OWNERSHIP
     started = time.monotonic()
     if (isinstance(max_rss_bytes, bool) or not isinstance(max_rss_bytes, int) or not 0 < max_rss_bytes <= MAX_RSS
             or isinstance(max_seconds, bool) or not math.isfinite(max_seconds) or not 0 < max_seconds <= MAX_SECONDS):
@@ -318,6 +337,9 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
         return total
 
     try:
+        if RETAINED_OWNERSHIP is not None:
+            raise OSError("unresolved prior owned-family resources prevent another measurement")
+        kernel_peak_before = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024
         family = OwnedFamily()
         with defer_deadline():
             libc = ctypes.CDLL(None, use_errno=True)
@@ -342,7 +364,7 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                 last = time.monotonic()
                 while not stop.is_set():
                     try:
-                        family.discover()
+                        family.discover(stopped=stop)
                         now = time.monotonic()
                         discovery_gaps.append(now - last)
                         last = now
@@ -384,6 +406,8 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
             observer.join(timeout=.2)
             if observer.is_alive():
                 raise OSError("discovery thread did not stop")
+            if errors:
+                raise OSError(errors[0])
             with defer_deadline():
                 complete_cleanup = family.terminate_and_reap(process, started + max_seconds)
             if not complete_cleanup:
@@ -398,34 +422,83 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                 if len(raw) > 65536:
                     report["reason"] = "output_limit"
             report["kernel_child_peak_bytes"] = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024
-            if report["kernel_child_peak_bytes"] > max_rss_bytes:
+            report["kernel_child_peak_before_bytes"] = kernel_peak_before
+            report["kernel_child_peak_scope"] = ("invocation-owned children; zero prior child usage"
+                                                  if kernel_peak_before == 0 else
+                                                  "process-lifetime cumulative; diagnostic only")
+            if kernel_peak_before == 0 and report["kernel_child_peak_bytes"] > max_rss_bytes:
                 report["reason"] = "rss_limit"
             report["ok"] = report["reason"] == "completed" and report["owned_family_gone"]
     except Exception as e:
         report.update(ok=False, reason="observation_failure", error=f"{type(e).__name__}: {e}")
     finally:
+        cleanup_errors = []
+        def cleanup_failure(e):
+            cleanup_errors.append(f"{type(e).__name__}: {e}")
+            report.update(ok=False, reason="cleanup_failure", owned_family_gone=False,
+                          cleanup_error="; ".join(cleanup_errors))
         try:
             with defer_deadline():
-                stop.set()
-                if observer is not None:
-                    observer.join(timeout=1)
-                if process is not None and family is not None:
-                    try:
-                        # Final unwind cannot abandon a child because the original hard alarm fires a second time.
+                try:
+                    stop.set()
+                    if observer is not None:
+                        observer.join(timeout=1)
+                        if observer.is_alive():
+                            raise OSError("discovery thread did not stop during cleanup")
+                    if errors:
+                        report.update(ok=False, reason="observation_failure", error=errors[0])
+                except Exception as e:
+                    cleanup_failure(e)
+                observer_live = observer is not None and observer.is_alive()
+                try:
+                    if process is not None and family is not None:
+                        if observer_live:
+                            # Do not block on its lock or release authority it can still extend.
+                            family.signal_known()
+                            if process.poll() is None:
+                                process.kill()
+                            process.wait(timeout=1)
+                            raise OSError("active discovery retains unresolved descendant ownership")
+                        # Final unwind cannot abandon an owner when observation or the timer failed.
                         report["owned_family_gone"] = family.terminate_and_reap(process, time.monotonic() + 1)
                         report["known_owned_reaped"] = not family.known_live()
                         report["owned_group_gone"] = not group_members(process.pid)
                         if not report["owned_family_gone"]:
                             report.update(ok=False, reason="cleanup_observation_failure")
-                    except Exception as e:
-                        report.update(ok=False, reason="cleanup_failure", cleanup_error=str(e))
-                if family is not None:
-                    report["discovered_process_identities"] = family.snapshot()
-                    report["discovered_pids"] = sorted(family.snapshot())
-                    family.close()
-                if libc is not None and subreaper_acquired:
-                    if libc.prctl(36, old_subreaper.value, 0, 0, 0):
-                        report.update(ok=False, reason="cleanup_failure", cleanup_error="cannot restore prior child ownership state")
+                except Exception as e:
+                    cleanup_failure(e)
+                try:
+                    if family is not None and not observer_live:
+                        report["discovered_process_identities"] = family.snapshot()
+                        report["discovered_pids"] = sorted(family.snapshot())
+                except Exception as e:
+                    cleanup_failure(e)
+                finally:
+                    try:
+                        if family is not None:
+                            for attempt in range(0 if observer_live else 2):
+                                try:
+                                    family.close()
+                                    break
+                                except Exception as e:
+                                    cleanup_failure(e)
+                                    if attempt == 0 and process is not None:
+                                        try:
+                                            family.terminate_and_reap(process, time.monotonic() + 1)
+                                        except Exception as e:
+                                            cleanup_failure(e)
+                            if family.owned or observer_live:
+                                RETAINED_OWNERSHIP = (family, process, observer)
+                                report.update(ok=False, retained_ownership=True, owned_family_gone=False,
+                                              retained_observer_alive=observer_live,
+                                              retained_owned_pids=sorted(family.owned))
+                    finally:
+                        if libc is not None and subreaper_acquired:
+                            try:
+                                if libc.prctl(36, old_subreaper.value, 0, 0, 0):
+                                    raise OSError("cannot restore prior child ownership state")
+                            except Exception as e:
+                                cleanup_failure(e)
         except DeliveryDeadline as e:
             report.update(ok=False, reason="time_limit", error=str(e))
         report["elapsed_seconds"] = time.monotonic() - started
@@ -573,6 +646,10 @@ class BoundedParser(argparse.ArgumentParser):
 
 
 def main(argv: list[str] | None = None) -> int:
+    return _main(argv, time.monotonic())
+
+
+def _main(argv: list[str] | None, started: float) -> int:
     # No-output preparse establishes the same lowered bound even for --help/error delivery.
     probe = argparse.ArgumentParser(add_help=False, exit_on_error=False)
     probe.add_argument("--max-seconds", type=lambda s: lower_limit(s, 60), default=60)
@@ -581,7 +658,7 @@ def main(argv: list[str] | None = None) -> int:
         seconds = preliminary.max_seconds
     except (argparse.ArgumentError, ValueError):
         seconds = MAX_SECONDS
-    deadline = STARTED + seconds
+    deadline = started + seconds
     try:
         with deadline_guard(deadline):
             parser = BoundedParser(deadline=deadline, description=__doc__)
@@ -606,7 +683,7 @@ def main(argv: list[str] | None = None) -> int:
                     report.update(ok=False, reason="invalid_worker_result", error=str(e))
             elif report.get("ok"):
                 report.update(ok=False, reason="invalid_worker_result", error="worker produced no verdict")
-            report.update(elapsed_before_emission_seconds=time.monotonic() - STARTED,
+            report.update(elapsed_before_emission_seconds=time.monotonic() - started,
                           terminal_delivery="same whole deadline; exit status is authoritative after bounded final output")
             raw = (json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
             if args.output and report["reason"] != "unsupported_output":
@@ -625,4 +702,4 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"{type(e).__name__}: {e}", file=sys.stderr)
             raise SystemExit(1)
-    raise SystemExit(main())
+    raise SystemExit(_main(None, STARTED))

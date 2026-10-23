@@ -5108,3 +5108,99 @@ def test_effective_slots_include_current_policy_base_source_presence(inventory_r
         assert refused_owner.returncode==1 and 'belong to FEAT-CICD-001' in refused_owner.stdout,refused_owner.stdout
         assert refused(refused_render,'which decide the render'),refused_render.stdout+refused_render.stderr
         assert accepted.returncode==0,accepted.stdout+accepted.stderr
+
+
+FORMAL_OBSERVER_PROBE = r'''
+import ctypes,importlib.util,json,os,pathlib,subprocess,sys,threading,time
+s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+mode=sys.argv[2];native=ctypes.CDLL(None);prior=ctypes.c_int();assert native.prctl(37,ctypes.byref(prior),0,0,0)==0;assert native.prctl(36,0,0,0,0)==0
+real_popen=m.subprocess.Popen;real_discover=m.OwnedFamily.discover;real_pidfd=m.os.pidfd_open;real_close=m.os.close;real_snapshot=m.OwnedFamily.snapshot;real_cleanup=m.OwnedFamily.terminate_and_reap;real_run=m.run_bounded
+children=[];opened=[];hits=dict(late_error=0,close_error=0,snapshot_error=0);closed=[];release=threading.Event();failed=threading.Event();final_phase=False
+
+def popen(*a,**kw):
+ p=real_popen(*a,**kw);children.append(p)
+ if mode=='late-error':
+  poll=p.poll
+  def delayed_poll():
+   if not release.is_set():
+    p.wait(timeout=1);release.set();assert failed.wait(1)
+   return poll()
+  p.poll=delayed_poll
+ return p
+def discover(family,**kw):
+ if mode=='late-error' and threading.current_thread() is not threading.main_thread():
+  assert release.wait(1);hits['late_error']+=1;failed.set();raise OSError('late actual collector boundary failure')
+ return real_discover(family,**kw)
+def pidfd(*a,**kw):
+ fd=real_pidfd(*a,**kw);opened.append(fd);return fd
+def close(fd):
+ if final_phase=='ready' and fd in opened:closed.append(fd)
+ if mode in ('close-error','persistent-close') and final_phase=='ready' and fd in opened and (mode=='persistent-close' or not hits['close_error']):
+  hits['close_error']+=1;raise OSError('actual stopped PIDfd close boundary unavailable once')
+ return real_close(fd)
+def cleanup(*a,**kw):
+ global final_phase
+ result=real_cleanup(*a,**kw)
+ if final_phase:final_phase='ready'
+ else:final_phase=True
+ return result
+def snapshot(family):
+ if mode=='snapshot-error' and final_phase=='ready' and not hits['snapshot_error']:
+  hits['snapshot_error']+=1;raise OSError('final ownership snapshot boundary unavailable once')
+ return real_snapshot(family)
+m.subprocess.Popen=popen;m.OwnedFamily.discover=discover;m.os.pidfd_open=pidfd;m.os.close=close;m.OwnedFamily.terminate_and_reap=cleanup;m.OwnedFamily.snapshot=snapshot
+result={}
+try:
+ try:
+  if mode=='main':
+   codes=[];paths=[];times=[]
+   time.sleep(.35)
+   for index in range(2):
+    path=pathlib.Path(f'public-{index}.json');started=time.monotonic();codes.append(m.main(['--max-seconds','.3','--max-rss-mib','1','--output',str(path)]));times.append(time.monotonic()-started);paths.append(json.loads(path.read_text()) if path.exists() else None)
+   result.update(codes=codes,public_reports=paths,invocation_seconds=times)
+  else:
+   if mode=='accepted':
+    result['prior_high_report']=m.run_bounded([sys.executable,'-c','import time;x=bytearray(96*1024*1024);time.sleep(.02)'],pathlib.Path.cwd(),max_rss_bytes=256*1024*1024,max_seconds=2)
+   report=m.run_bounded([sys.executable,'-c','import time;time.sleep(.02)'],pathlib.Path.cwd(),max_rss_bytes=(64 if mode=='accepted' else 128)*1024*1024,max_seconds=1)
+   result['report']=report
+   if mode=='persistent-close':
+    before=len(children);result['second_report']=m.run_bounded([sys.executable,'-c','pass'],pathlib.Path.cwd(),max_rss_bytes=128*1024*1024,max_seconds=1);result['no_second_spawn']=len(children)==before;result['retained_reachable']=m.RETAINED_OWNERSHIP is not None
+  result['escaped_exception']=None
+ except Exception as e:result['escaped_exception']=type(e).__name__+': '+str(e)
+ state=ctypes.c_int();assert native.prctl(37,ctypes.byref(state),0,0,0)==0
+ leaked=[]
+ for fd in opened:
+  try:os.fstat(fd);leaked.append(fd)
+  except OSError:pass
+ result.update(hits=hits,children_created=len(children),native_children_alive=[p.pid for p in children if p.poll() is None],opened_pidfds=len(opened),live_pidfds=leaked,subreaper_after=state.value,owned_fd_close_attempts=closed)
+finally:
+ m.subprocess.Popen=real_popen;m.OwnedFamily.discover=real_discover;m.os.pidfd_open=real_pidfd;m.os.close=real_close;m.OwnedFamily.snapshot=real_snapshot;m.OwnedFamily.terminate_and_reap=real_cleanup;m.run_bounded=real_run
+ for p in children:
+  if p.poll() is None:p.kill()
+  p.wait()
+ for fd in opened:
+  try:real_close(fd)
+  except OSError:pass
+ native.prctl(36,prior.value,0,0,0)
+print('FORMAL_RESULT='+json.dumps(result))
+'''
+
+
+def test_measure_inventory_render_preserves_formal_review_terminal_invariants(tmp_path):
+    """Actual collector/close/snapshot boundaries and repeated imported public calls cannot report false success."""
+    results={}
+    for mode in ('accepted','late-error','close-error','snapshot-error','main'):
+        path=tmp_path/mode;path.mkdir()
+        r=subprocess.run([sys.executable,'-c',FORMAL_OBSERVER_PROBE,str(REPO/MEASURE),mode],cwd=path,
+                         capture_output=True,text=True,timeout=5)
+        assert r.returncode==0,(mode,r.stdout,r.stderr)
+        results[mode]=json.loads(next(line[len('FORMAL_RESULT='):] for line in r.stdout.splitlines() if line.startswith('FORMAL_RESULT=')))
+    (tmp_path/'formal-terminal-results.json').write_text(json.dumps(results,indent=2))
+    assert all(x['escaped_exception'] is None and not x['native_children_alive'] and not x['live_pidfds'] and x['subreaper_after']==0 for x in results.values()),results
+    assert all(x['children_created']>0 and x['opened_pidfds']>0 for name,x in results.items() if name!='main'),results
+    assert results['accepted']['report']['ok'] and results['accepted']['prior_high_report']['ok'],results
+    low=results['accepted']['report']
+    assert low['peak_rss_bytes']<64*1024*1024<low['kernel_child_peak_bytes'] and low['kernel_child_peak_before_bytes']>=64*1024*1024 and low['kernel_child_peak_scope']=='process-lifetime cumulative; diagnostic only',results
+    for mode,key in (('late-error','late_error'),('close-error','close_error'),('snapshot-error','snapshot_error')):
+        assert results[mode]['hits'][key]==1 and not results[mode]['report']['ok'],results
+    assert results['main']['codes']==[1,1] and all(x and not x['ok'] and x['reason']=='rss_limit' and 0<x['elapsed_before_emission_seconds']<.3 for x in results['main']['public_reports']),results
