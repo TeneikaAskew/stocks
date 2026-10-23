@@ -47,3 +47,7 @@ Before production edits,54 actual consumer synthetic cases plus two configured-w
 Source-only full prechange/RED archive:71members,415712 bytes,SHA256 `ed9ad401d3439516cd62f0cf8555c004d77d66926b1a657fa4aef342a439e1d8`;15 verified parts begin [6374517445](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6374517445) and end [6374523585](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6374523585). All remote bytes/member hashes verified; no raw market data/credentials. Worker implementation continues; no final GREEN or independentTask5Eacceptance claimed.
 
 Fresh read-only GitHub check:STRAT replacement1575 headf1b6629c,calendar1546 head5b926526,DATA1489 head69ff86fc remain open drafts/unmerged. GCP authentication/provider retrieval is not the current blocker. Task6 is prepared only,not dispatched before5Eacceptance.
+
+## Frozen cross-consumer candidate
+
+The [Task5E frozen report](2026-10-23-strat-task5e-frozen-candidate.md) records320 final focused mock passes, three final weighted controls, eight actual local PostgreSQL cases and one necessary provenance readback rerun at their exact disclosed revisions. Counts overlap; no actual October brief/insight production main ran. Independent complete first review is active.18changed fullfiles/1017preceding artifacts independently verified; final source/evidence archive and all62 combined source paths reconstruct from verified PR archives. Baseline data-quality evidence above remains the available market result; predictive outcomes remain unknown.
