@@ -2,7 +2,7 @@
 feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-10-12-feat-data-001-av-market-data.md
 branch: fix/feat-data-001-intraday-incident-1560
-pr: null
+pr: 1564
 status: ready
 ---
 
