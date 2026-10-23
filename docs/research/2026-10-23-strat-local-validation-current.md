@@ -1,6 +1,6 @@
 # Current local validation and baseline evidence
 
-This checkpoint supersedes pending-state statements in the chronological recovery notes. Tasks1–5D are accepted only as bounded local reconstruction partitions. Task5E is implementing the cross-consumer structural envelope and resolver eligibility contract. No repaired brief/insight production-entrypoint October replay, movement-outcome scoring, earnings evaluation or predictive performance acceptance has run. The Oct10–16 holdout remains quarantined and unscored.
+This checkpoint supersedes pending-state statements in the chronological recovery notes. Tasks1–5E are accepted only as bounded local reconstruction partitions. Task5E passed its original reviewer’s scoped fix1 verification; Task6 actual production-entrypoint replay implementation has started with read-only source inventory. No repaired brief/insight production-entrypoint October replay, movement-outcome scoring, earnings evaluation or predictive performance acceptance has run. The Oct10–16 holdout remains quarantined and unscored.
 
 ## Actual local commands and limits
 
@@ -34,7 +34,7 @@ Stored archived brief/insight candle/combo labels differ on6/6 paired SPY/QQQ/IW
 
 All24 planned AV payloads are captured:one Oct2026 raw extended-hours minute payload and one full adjusted daily payload per symbol. A reused SPY probe plus23 later requests completed; observed23-call run48.232s;zero planned requests remain. There was one separate connector refusal. Process-local30RPM/single-inflight pacing does not establish shared account quota, remaining balance or billing cost; those need the account contract and aggregate usage. No extra requests were made to estimate them. These are Oct23 current-vintage reacquisitions, not the missing467 original local captures or February–May archives. Raw month/full-daily payloads extend beyond the baseline and remain quarantined; no holdout scoring.
 
-Before safe repaired local main replay:finish/reviewTask5E; implementTask6 actual brief/insight captured-input and explicit-clock no-write routes, blocking SQL/history/GCS/notifications/CloudTasks/run transitions/level persistence and mutating cleanup. Existing no-discord/as-of switches are insufficient. A synthetic/unqualified main replay could then prove implementation behavior only. Meaningful admitted market baseline outcomes additionally require the genuine shared calendar and DATA prepare_daily_basis/restore_daily_units prerequisites plus source-clock/session/basis/factors/vintage qualification and upstream gates. Do not copy unmerged helpers, assume factor1 or fabricate historical availability. Run the real engine to freeze timestamped baseline hypotheses before comparing subsequent baseline-only movements.
+Before safe repaired local main replay:implement/reviewTask6 actual brief/insight captured-input and explicit-clock no-write routes, blocking SQL/history/GCS/notifications/CloudTasks/run transitions/level persistence and mutating cleanup. Existing no-discord/as-of switches are insufficient. A synthetic/unqualified main replay could then prove implementation behavior only. Meaningful admitted market baseline outcomes additionally require the genuine shared calendar and DATA prepare_daily_basis/restore_daily_units prerequisites plus source-clock/session/basis/factors/vintage qualification and upstream gates. Do not copy unmerged helpers, assume factor1 or fabricate historical availability. Run the real engine to freeze timestamped baseline hypotheses before comparing subsequent baseline-only movements.
 
 Pure/mock checks are runnable now. Small owned local PostgreSQL tests can run after root health/free-space and endpoint verification; no cloud/production database is required. Spec-on-main/code-commit and actual upstream qualification remain separate gates. No unguarded production-main replay is runnable safely yet. Overall completion duration is unknown pending these remaining implementation/review/dependency gates.
 
@@ -53,3 +53,28 @@ Fresh read-only GitHub check:STRAT replacement1575 headf1b6629c,calendar1546 hea
 The [Task5E frozen report](2026-10-23-strat-task5e-frozen-candidate.md) records320 final focused mock passes, three final weighted controls, eight actual local PostgreSQL cases and one necessary provenance readback rerun at their exact disclosed revisions. Counts overlap; no actual October brief/insight production main ran. Independent complete first review is active.18changed fullfiles/1017preceding artifacts independently verified; final source/evidence archive and all62 combined source paths reconstruct from verified PR archives. Baseline data-quality evidence above remains the available market result; predictive outcomes remain unknown.
 
 Task5E complete first review has now returned three P2/Important findings (processing-time identity, missing ordinary unavailable envelope and structural code-lineage omission), recorded in the linked frozen report. Original implementer fix1/5 is active; Task5E is not accepted and Task6 remains held. Passing checks remain valid at their disclosed revisions; they did not expose these uncovered integration edges. No new market outcome or holdout result is implied.
+
+## Accepted Task5E fix and current Task6 checkpoint
+
+Task5E original scoped fix1/5 review: specification PASS, quality PASS; all three original findings addressed, zero new fix-induced findings. Review SHA256 `ec61e5b558ee86ea90d5f737643bf0bfb537c3bda3d814afb661fa3919520e1d`; evidence `b7be8526dc1a4231df85334686df719221482e20d5598739694f7d4b6a9b2040`. Earlier pending/fix-active paragraphs above are chronological and superseded by this acceptance. No broader production or market-performance acceptance follows.
+
+The final20-file manifest is `26f7181b1294a0f6f97618a52267cdc6037aa2af4314fd628c34ba3529cc3f91`. Fix1 changed five production paths and two test paths. The fixed generator uses the observation clock in canonical state identity, ordinary unavailable paths preserve a truthful structural envelope, and code identity includes its structural dependencies. Numerical rules, financial policy and unsupported temporal-PMG status remain unchanged.
+
+Completed commands from the same detached worktree:
+
+```bash
+/workspace/stocks-venv/bin/python /workspace/strat-rebuild-control/task5b-rebuild/run-mock-tests.py tests/gcp/test_strat_task5e_fix1.py --mode=mock -q
+# 21 passed,13.82s,six existing DataFrame fragmentation warnings; synthetic/external-refused.
+
+/workspace/stocks-venv/bin/python /workspace/strat-rebuild-control/task5b-rebuild/run-tests.py tests/integration/test_strat_task5e_contract.py::test_fix1_actual_generator_observation_identity_current_history_state tests/integration/test_strat_task5e_contract.py::test_fix1_ordinary_missing_context_typed_writer_api -x -q
+# Actual owned PostgreSQL:1 passed/1 failed,3.87s; second case’s synthetic ticker exceeded VARCHAR(10).
+
+/workspace/stocks-venv/bin/python /workspace/strat-rebuild-control/task5b-rebuild/run-tests.py tests/integration/test_strat_task5e_contract.py::test_fix1_ordinary_missing_context_typed_writer_api -x -q
+# Corrected test-only ticker:1 passed,2.29s. Both PG cases passed across separate invocations.
+```
+
+A separately approved20-selector affected selection passed40 cases in6.34s; exact selector list/argv/source receipts are retained. Earlier failed fixture attempts and revisions are preserved, including qualification-metadata and absent outer-provenance assertions. Reviewer independently verified final identities and passed-test lineage without rerunning tests or SQL. Final read-only postflight found all five inspected local tables empty and zero OOM events. Do not sum overlapping test counts or equate these with October main replay.
+
+Final sanitized source/evidence archive:134members,317408 bytes,SHA256 `832a1bb9327677e2052f7d5363942d8bafba116d0f4b38964901e986730fae8b`;12 remote/member-verified parts [first6375556277](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6375556277) through [last6375560188](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6375560188). The seven-archive restoration proof reproduced all63 current source paths without modifying the worktree. Its review-pending flag records the proof’s creation time; the subsequent scoped review is the acceptance evidence. No raw data or credentials are in these public source backups.
+
+Task6 is dispatched to a fresh sole implementer under the existing SDD gate. First deliverable is the actual main/source/side-effect inventory and bounded implementation plan before production edits. No-write/cutoff/capacity behavior can be implemented and proved with synthetic inputs within existing authorization. Source-qualified October results additionally depend on genuine calendar/DATA helpers and admitted provenance. No unguarded main, new retrieval, production write, holdout peek/scoring, merge or deployment is authorized here. Overall engineering completion duration remains unknown; the next substantive checkpoint is the source inventory and concrete replay design.
