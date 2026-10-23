@@ -4420,8 +4420,9 @@ def test_measure_inventory_render_runs_the_actual_gate(inventory_repo):
         spaced = root.parent / 'render repository with spaces'
         root.rename(spaced); root = spaced
         write(root, MAIN_PY, 'raise RuntimeError("dirty worktree must not run")\n')
-        r, report = measurement(root, '--ref', 'base', '--max-rss-mib', '128', '--max-seconds', '10')
+        r, report = measurement(root, '--ref', 'base', '--max-rss-mib', '128', '--max-seconds', '10', '--output', str(root.parent/'accepted-output.json'))
         assert r.returncode == 0 and report['kind'] == 'committed-inventory-render', r.stdout + r.stderr
+        assert json.loads((root.parent/'accepted-output.json').read_text()) == report
         assert report['worker']['ref'] == _git(root, 'rev-parse', 'base') and report['worker']['renderer_exit'] == 0
         assert report['worker']['source_bytes'] > 0 and report['worker']['source_entries'] > 10
         assert Path(report['worker']['renderer_argv'][5]).is_absolute() and 'spec-gate-render-' in report['worker']['renderer_argv'][5]
@@ -4651,3 +4652,102 @@ def test_close_out_batch_keeps_current_policy_base_separate_from_merge_base(repo
 
     sg = load_gate(repo)
     assert sg.close_out_policy([(head, CATALOG)]) == [sg.Tree(head).read(CATALOG)]
+
+
+def escaped_measurement(tmp_path: Path, *, mib: int, parent_exit: int | None, child_seconds: float) -> dict:
+    """Native setsid child; outer supervisor rescues any old broken-monitor orphan before asserting RED."""
+    pidfile = tmp_path / f'escaped-{mib}-{parent_exit}-{child_seconds}.pid'
+    child = ("import os,time;os.setsid();" + f"open({str(pidfile)!r},'w').write(str(os.getpid()));" +
+             "a=bytearray(" + str(mib*1024*1024) + ");" +
+             f"open({str(pidfile)+'.ready'!r},'w').write('ready');time.sleep({child_seconds})")
+    parent = ("import os,subprocess,sys,time; p=subprocess.Popen([sys.executable,'-c'," + repr(child) + "]);"
+              "\nfor _ in range(1000):\n if os.path.exists(" + repr(str(pidfile)+'.ready') + "):break\n time.sleep(.001)\n")
+    parent += 'time.sleep(20)' if parent_exit is None else ('p.wait();' if child_seconds < 1 else '') + f'raise SystemExit({parent_exit})'
+    launcher = ("import ctypes,importlib.util,json,pathlib,os,signal,sys;ctypes.CDLL(None).prctl(36,1,0,0,0);"
+                "s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]);"
+                "m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m);"
+                "r=m.run_bounded([sys.executable,'-c',sys.argv[2]],pathlib.Path(sys.argv[3]),max_rss_bytes=64*1024*1024,max_seconds=1);"
+                "pid=int(pathlib.Path(sys.argv[4]).read_text());r['escaped_alive_after_monitor']=pathlib.Path('/proc',str(pid)).exists();"
+                "\ntry:os.kill(pid,signal.SIGKILL)\nexcept ProcessLookupError:pass\n"
+                "try:os.waitpid(pid,0)\nexcept ChildProcessError:pass\n"
+                "r['outer_cleanup_complete']=not pathlib.Path('/proc',str(pid)).exists();print(json.dumps(r))")
+    r = subprocess.run([sys.executable,'-c',launcher,str(REPO/MEASURE),parent,str(tmp_path),str(pidfile)],
+                       capture_output=True,text=True,timeout=5)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return json.loads(r.stdout)
+
+
+def test_measure_inventory_render_owns_session_changing_descendants(tmp_path):
+    """Stable escaped RSS is counted; root-success, timeout and error all stop/reap their actual family."""
+    memory = escaped_measurement(tmp_path,mib=96,parent_exit=0,child_seconds=20)
+    assert not memory['ok'] and memory['reason']=='rss_limit' and memory['peak_rss_bytes']>64*1024*1024, memory
+    assert not memory['escaped_alive_after_monitor'] and memory['outer_cleanup_complete'], memory
+    accepted = escaped_measurement(tmp_path,mib=1,parent_exit=0,child_seconds=.1)
+    assert accepted['ok'] and not accepted['escaped_alive_after_monitor'], accepted
+    timeout = escaped_measurement(tmp_path,mib=1,parent_exit=None,child_seconds=20)
+    failed = escaped_measurement(tmp_path,mib=1,parent_exit=7,child_seconds=20)
+    assert not timeout['ok'] and timeout['reason']=='time_limit' and not timeout['escaped_alive_after_monitor'], timeout
+    assert not failed['ok'] and failed['worker_exit']==7 and not failed['escaped_alive_after_monitor'], failed
+    assert all(x['owned_family_gone'] for x in (memory,accepted,timeout,failed))
+
+
+def test_measure_inventory_render_bounds_public_output_delivery(tmp_path):
+    """Real FIFO and full stdout-pipe backpressure cannot outlive the same whole public CLI bound."""
+    import fcntl
+    import time
+    fifo = tmp_path/'no-reader';os.mkfifo(fifo)
+    args = [sys.executable,str(REPO/MEASURE),'--max-rss-mib','1','--max-seconds','.2']
+    started=time.monotonic()
+    good=subprocess.run([*args,'--output',str(tmp_path/'ordinary.json')],capture_output=True,text=True,timeout=2)
+    assert good.returncode==1 and json.loads(good.stdout)['ok'] is False and time.monotonic()-started<1
+    started=time.monotonic()
+    blocked=subprocess.Popen([*args,'--output',str(fifo)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+    try:
+        out,err=blocked.communicate(timeout=1)
+        assert blocked.returncode!=0 and time.monotonic()-started<.8, (out,err)
+    finally:
+        if blocked.poll() is None:os.killpg(blocked.pid,9);blocked.communicate(timeout=1)
+    readfd,writefd=os.pipe();fcntl.fcntl(writefd,fcntl.F_SETPIPE_SZ,4096);os.write(writefd,b'x'*4096)
+    try:
+        started=time.monotonic();blocked=subprocess.Popen(args,stdout=writefd,stderr=subprocess.PIPE,start_new_session=True)
+        try:
+            blocked.wait(timeout=1)
+            assert blocked.returncode!=0 and time.monotonic()-started<.8
+        finally:
+            if blocked.poll() is None:os.killpg(blocked.pid,9);blocked.wait(timeout=1)
+            blocked.stderr.close()
+    finally:os.close(readfd);os.close(writefd)
+
+
+def test_measure_inventory_render_never_kills_an_existing_unrelated_child(tmp_path):
+    """Private harness refuses ambiguous ownership before launch, leaving a preexisting child untouched."""
+    launcher = ("import importlib.util,json,pathlib,subprocess,sys; "
+                "s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]); "
+                "m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m); "
+                "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(20)']); "
+                "\ntry:\n r=m.run_bounded([sys.executable,'-c','pass'],pathlib.Path.cwd(),max_rss_bytes=128*1024*1024,max_seconds=1);"
+                "r['unrelated_alive']=p.poll() is None;print(json.dumps(r))"
+                "\nfinally:p.kill();p.wait()")
+    r=subprocess.run([sys.executable,'-c',launcher,str(REPO/MEASURE)],capture_output=True,text=True,timeout=4)
+    assert r.returncode==0, r.stdout+r.stderr
+    evidence=json.loads(r.stdout)
+    assert not evidence['ok'] and evidence['unrelated_alive'] and 'process_group' not in evidence, evidence
+    assert 'exclusive descendant ownership' in evidence['error'], evidence
+
+
+def test_measure_inventory_render_bounds_startup_usage_output(tmp_path):
+    """Help and parse errors use the same deadline and unbuffered bounded delivery as the final verdict."""
+    import fcntl
+    import time
+    for option in ('--help','--unknown-option'):
+        readfd,writefd=os.pipe();fcntl.fcntl(writefd,fcntl.F_SETPIPE_SZ,4096);os.write(writefd,b'x'*4096)
+        try:
+            started=time.monotonic()
+            p=subprocess.Popen([sys.executable,str(REPO/MEASURE),'--max-seconds','.2',option],
+                               stdout=writefd,stderr=writefd,start_new_session=True)
+            try:
+                p.wait(timeout=1)
+                assert p.returncode!=0 and time.monotonic()-started<.8
+            finally:
+                if p.poll() is None:os.killpg(p.pid,9);p.wait(timeout=1)
+        finally:os.close(readfd);os.close(writefd)
