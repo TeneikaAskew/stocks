@@ -4351,6 +4351,68 @@ def calendar_date(value: str) -> bool:
     return True
 
 
+def policy_blob_bytes(queries: list[tuple[str, str]]) -> list[bytes | None]:
+    """Fresh fixed close-out inputs, with actual commit existence and raw size framing.
+
+    Nothing is retained across acquisitions: Git replacement refs and repository
+    identity are observed by every call. info avoids loading commit-message bodies.
+    Tree/index/worktree/symbolic-reference reads retain their ordinary uncached path.
+    """
+    if any(not re.fullmatch(r"[0-9a-f]{40}", rev) or path not in (CATALOG, TRACEABILITY)
+           for rev, path in queries):
+        raise GitFailed("batch reads require fixed committed policy paths and full object IDs")
+    revisions = list(dict.fromkeys(rev for rev, _ in queries))
+    commands = [f"info {rev}\n" for rev in revisions]
+    commands += [f"contents {rev}:{path}\n" for rev, path in queries]
+    r = subprocess.run(["git", "cat-file", "--batch-command", "--buffer"],
+                       input=("".join(commands) + "flush\n").encode("ascii"), capture_output=True, cwd=ROOT)
+    if r.returncode != 0:
+        raise GitFailed(f"git cat-file policy batch failed ({r.returncode}): "
+                        f"{r.stderr.decode('utf-8', 'replace').strip() or 'no output'}")
+    out, pos = r.stdout, 0
+    def header() -> bytes:
+        nonlocal pos
+        end = out.find(b"\n", pos)
+        if end < 0:
+            raise GitFailed("truncated policy batch header")
+        line, pos = out[pos:end], end + 1
+        return line
+    for rev in revisions:
+        if not re.fullmatch(rev.encode("ascii") + rb" commit (0|[1-9][0-9]*)", header()):
+            raise GitFailed(f"policy batch cannot verify commit {rev}")
+    result: list[bytes | None] = []
+    for rev, path in queries:
+        line = header()
+        if line == f"{rev}:{path} missing".encode("ascii"):
+            result.append(None)
+            continue
+        fields = re.fullmatch(rb"[0-9a-f]{40} blob (0|[1-9][0-9]*)", line)
+        if not fields:
+            raise GitFailed(f"invalid policy blob header for {path}")
+        # Compare the decimal length before int conversion: absurd/truncated sizes
+        # refuse without Python's integer-digit limit leaking an uncaught exception.
+        digits = fields.group(1)
+        maximum = str(len(out) - pos).encode("ascii")
+        if len(digits) > len(maximum) or (len(digits) == len(maximum) and digits > maximum):
+            raise GitFailed(f"truncated policy blob for {path}")
+        size = int(digits)
+        end = pos + size
+        if out[end:end + 1] != b"\n":
+            raise GitFailed(f"invalid policy blob trailer for {path}")
+        result.append(out[pos:end])
+        pos = end + 1
+    if pos != len(out):
+        raise GitFailed("unexpected trailing policy batch bytes")
+    return result
+
+
+def close_out_policy(queries: list[tuple[str, str]]) -> list[str | None]:
+    # git/show text mode uses universal newlines and UTF8 replacement. Preserve
+    # those semantics, while the acquisition itself retains exact original bytes.
+    return [None if data is None else data.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
+            for data in policy_blob_bytes(queries)]
+
+
 def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict) -> list[str]:
     """CI only, once the PR is ready for review: the Phase 5 records exist in this PR."""
     n = env["PR_NUMBER"]
@@ -4368,22 +4430,38 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
     unticked = [i for i, box in matched.items() if not (box and box[0] and (first.get(i) or box)[0])]
     if unticked:
         errs.append("ready for review with done_when item(s) not ticked: " + "; ".join(unticked))
-    now = feat_fields(ch.tree.read(CATALOG), t.feat_id)
-    before = feat_fields(Tree(merge_base).read(CATALOG), t.feat_id)
-    if twice := repeated_fields(ch.tree.read(CATALOG), t.feat_id):
+    # Current policy BASE and merge-base history are distinct inputs. Only these
+    # PR-mode full object IDs use the fresh fixed batch; other Tree modes do not.
+    if all(isinstance(rev, str) and re.fullmatch(r"[0-9a-f]{40}", rev)
+           for rev in (ch.tree.rev, merge_base, ch.base.rev)):
+        head_catalog, before_catalog, policy_trace = close_out_policy(
+            [(ch.tree.rev, CATALOG), (merge_base, CATALOG), (ch.base.rev, TRACEABILITY)])
+        if policy_trace is not None:
+            head_trace, before_trace = close_out_policy(
+                [(ch.tree.rev, TRACEABILITY), (merge_base, TRACEABILITY)])
+    else:
+        head_catalog, before_catalog = ch.tree.read(CATALOG), Tree(merge_base).read(CATALOG)
+        policy_trace = ch.base.read(TRACEABILITY)
+        if policy_trace is not None:
+            head_trace, before_trace = ch.tree.read(TRACEABILITY), Tree(merge_base).read(TRACEABILITY)
+    now = feat_fields(head_catalog, t.feat_id)
+    before = feat_fields(before_catalog, t.feat_id)
+    if twice := repeated_fields(head_catalog, t.feat_id):
         errs.append(f"{CATALOG}: the {t.feat_id} record carries {', '.join(twice)} more than once; each close-out "
                     "field has one row")
     reviewed, status = now.get("Last reviewed", ""), plain_text(fold_text(now.get("Status", "")))   # solyra#72 r4127734225: `_unknown_`, `[unknown](x)` read as the word
     if re.search(r"~~|<(s|del|strike)\b", now.get("Status", ""), re.I):
         # round six: `~~Production~~` renders struck through and read as the plain word
         errs.append(f"{CATALOG}: the {t.feat_id} Status is struck through; set it or remove it")
-    head_day = git_out("show", "-s", "--format=%cs", head).strip()
-    author_day = git_out("show", "-s", "--format=%as", head).strip()   # (round six: GitHub shows the author date)
+    dates = git_out("show", "-s", "--format=%cs%n%as", head).strip().splitlines()
+    if len(dates) != 2:
+        raise GitFailed("head commit date output is malformed")
+    head_day, author_day = dates   # (round six: GitHub shows the author date)
     # The head commit's date, exactly: any other date, past or future, is a false freshness record.
     if not calendar_date(reviewed) or reviewed not in (head_day, author_day):
         errs.append(f"{CATALOG}: set the {t.feat_id} Last reviewed to this PR's head commit date {head_day} in "
                     f"its row or record (it reads '{reviewed or 'nothing'}')")
-    elif squeeze(feat_record(ch.tree.read(CATALOG), t.feat_id)) == squeeze(feat_record(Tree(merge_base).read(CATALOG), t.feat_id)):
+    elif squeeze(feat_record(head_catalog, t.feat_id)) == squeeze(feat_record(before_catalog, t.feat_id)):
         errs.append(f"{CATALOG}: the {t.feat_id} record is unchanged from the base although it already reads "
                     f"{head_day}; a second PR the same day still updates its record (its PRs, Status or notes)")
     if status.lower() in ("", "unknown", "tbd", "tbc", "n/a", "none", "pending", "-", "—", "–") or set(status) <= set("?"):
@@ -4391,9 +4469,9 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
     # Which record carries the lineage is policy, read at the base: a repository that
     # keeps it in the catalog row (solyra) cannot be moved off that check by a PR that
     # brings its own traceability document.
-    if ch.base.read(TRACEABILITY) is not None:
-        now_lineage = lineage_refs(ch.tree.read(TRACEABILITY) or "", t.feat_id)
-        before_lineage = lineage_refs(Tree(merge_base).read(TRACEABILITY) or "", t.feat_id)
+    if policy_trace is not None:
+        now_lineage = lineage_refs(head_trace or "", t.feat_id)
+        before_lineage = lineage_refs(before_trace or "", t.feat_id)
         if not any(pr_ref.search(entry) for entry in now_lineage - before_lineage):
             errs.append(f"{TRACEABILITY}: add this PR (#{n}) to the {t.feat_id} section's PR lineage "
                         "(a `**PR lineage:**` line or a list item; a comment or prose mention does not count)")
@@ -4405,10 +4483,10 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
             errs.append(f"{TRACEABILITY}: the {t.feat_id} PR lineage loses earlier PR(s) "
                         f"#{', #'.join(lost)}; lineage only grows")
     else:
-        prs = row_fields(visible(ch.tree.read(CATALOG) or ""), t.feat_id).get("PRs", "")
+        prs = row_fields(visible(head_catalog or ""), t.feat_id).get("PRs", "")
         if not pr_ref.search(prs):
             errs.append(f"{CATALOG}: add this PR (#{n}) to the {t.feat_id} row's PRs column (it reads '{prs or 'nothing'}')")
-        before_prs = set(PR_MENTION.findall(row_fields(visible(Tree(merge_base).read(CATALOG) or ""), t.feat_id).get("PRs", "")))
+        before_prs = set(PR_MENTION.findall(row_fields(visible(before_catalog or ""), t.feat_id).get("PRs", "")))
         lost = sorted(before_prs - set(PR_MENTION.findall(prs)), key=int)
         if lost:
             errs.append(f"{CATALOG}: the {t.feat_id} row's PRs column loses earlier PR(s) "

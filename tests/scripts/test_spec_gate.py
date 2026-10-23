@@ -4507,3 +4507,147 @@ def test_measure_inventory_render_refuses_unavailable_proc(tmp_path):
     evidence = json.loads(r.stdout)
     assert r.returncode == 0 and not evidence['ok'] and evidence['reason'] == 'observation_failure', r.stdout + r.stderr
     assert 'process_group' not in evidence and evidence['sample_count'] == 0
+
+
+class _OneBlobShowFailure:
+    """Fail one transport operation, then delegate every call to actual git."""
+    def __init__(self, run):
+        self.run, self.failed = run, False
+
+    def __call__(self, args, *a, **kw):
+        if not self.failed and "show" in args and any(str(x).endswith(":lib/recovery.py") for x in args):
+            self.failed = True
+            return subprocess.CompletedProcess(args, 128, b"", b"transient object read failure")
+        return self.run(args, *a, **kw)
+
+
+def test_committed_blob_cache_keeps_mutable_refs_index_and_failures_fresh(repo, monkeypatch):
+    """Revision reads preserve mutation/error behavior without stale ref or failure retention."""
+    sg = load_gate(repo)
+    original = _git(repo, "rev-parse", "base")
+    immutable, moving = sg.Tree(original), sg.Tree("base")
+    assert immutable.raw("lib/model.py") == b"DECISION = 'size'\n"
+    assert moving.raw("lib/model.py") == b"DECISION = 'size'\n"
+    on_base(repo, {"lib/model.py": "DECISION = 'new'\r\n"})
+    assert moving.raw("lib/model.py") == b"DECISION = 'new'\r\n"
+    assert moving.read("lib/model.py") == "DECISION = 'new'\n"
+    assert immutable.raw("lib/model.py") == b"DECISION = 'size'\n"
+    index, worktree = sg.Tree(None), sg.Tree(sg.WORKTREE)
+    assert index.raw("lib/model.py") == b"DECISION = 'new'\r\n"
+    write(repo, "lib/model.py", "unstaged\n")
+    assert worktree.raw("lib/model.py") == b"unstaged\n"
+    _git(repo, "add", "lib/model.py")
+    assert index.raw("lib/model.py") == b"unstaged\n"
+    write(repo, "lib/model.py", "another unstaged\n")
+    assert worktree.raw("lib/model.py") == b"another unstaged\n"
+    assert index.raw("lib/model.py") == b"unstaged\n"
+
+    # A transient git-show failure cannot become cached absence. Recover through
+    # the SAME Tree and real git; the new path has no preexisting cached value.
+    on_base(repo, {"lib/recovery.py": "RECOVERED = True\n", "lib/empty.py": ""})
+    recovered = sg.Tree(_git(repo, "rev-parse", "base"))
+    transient = _OneBlobShowFailure(sg.subprocess.run)
+    monkeypatch.setattr(sg.subprocess, "run", transient)
+    assert recovered.raw("lib/recovery.py") is None
+    assert recovered.raw("lib/recovery.py") == b"RECOVERED = True\n"
+    assert transient.failed
+    assert recovered.raw("lib/empty.py") == b"", "Empty committed bytes are not an absent path"
+    assert recovered.raw("lib/missing.py") is None, "An actually absent path remains unavailable"
+
+
+class _PolicyBatchTransportFailure:
+    """Fail the actual batched transport; keep test bodies free of suite exits."""
+    def __init__(self, run):
+        self.run = run
+
+    def __call__(self, args, *a, **kw):
+        if "cat-file" in args:
+            return subprocess.CompletedProcess(args, 128, b"", b"transient batch transport failure")
+        return self.run(args, *a, **kw)
+
+
+def test_fresh_policy_batch_preserves_bytes_absence_replace_root_and_errors(repo, tmp_path, monkeypatch):
+    """Actual immutable-policy reads stay fresh across replacements, roots and Git failures."""
+    sg = load_gate(repo)
+    mixed = b"first\r\nnext\rlast\x00\xff\n"
+    on_base(repo, {CATALOG: "placeholder", TRACEABILITY: ""},
+            then=lambda root: (root / CATALOG).write_bytes(mixed))
+    original = _git(repo, "rev-parse", "base")
+    queries = [(original, CATALOG), (original, TRACEABILITY)]
+    assert sg.policy_blob_bytes(queries) == [mixed, b""]
+    assert sg.close_out_policy(queries) == [sg.Tree(original).read(CATALOG), ""]
+    on_base(repo, {CATALOG: "replacement\n", TRACEABILITY: None})
+    replacement = _git(repo, "rev-parse", "base")
+    assert sg.policy_blob_bytes([(replacement, TRACEABILITY)]) == [None]
+    _git(repo, "replace", original, replacement)
+    assert sg.policy_blob_bytes(queries) == [b"replacement\n", None]
+    other = tmp_path / "other"
+    shutil.copytree(repo, other)
+    on_base(other, {CATALOG: "other repository\n"})
+    _git(other, "replace", "-f", original, _git(other, "rev-parse", "base"))
+    monkeypatch.setattr(sg, "ROOT", other)
+    assert sg.policy_blob_bytes(queries) == [b"other repository\n", None]
+    monkeypatch.setattr(sg, "ROOT", repo)
+    assert sg.policy_blob_bytes(queries) == [b"replacement\n", None]
+    _git(repo, "replace", "-d", original)
+    assert sg.policy_blob_bytes(queries) == [mixed, b""]
+
+    real_run = sg.subprocess.run
+    monkeypatch.setattr(sg.subprocess, "run", _PolicyBatchTransportFailure(real_run))
+    with pytest.raises(sg.GitFailed, match="transient batch transport failure"):
+        sg.policy_blob_bytes(queries)
+    monkeypatch.setattr(sg.subprocess, "run", real_run)
+    assert sg.policy_blob_bytes(queries) == [mixed, b""]
+    with pytest.raises(sg.GitFailed, match="commit"):
+        sg.policy_blob_bytes([("0" * 40, CATALOG)])
+    for bad in (("base", CATALOG), (original, "lib/model.py")):
+        with pytest.raises(sg.GitFailed, match="fixed committed policy"):
+            sg.policy_blob_bytes([bad])
+    on_base(repo, {CATALOG: None, CATALOG + "/child.md": "not a policy blob\n"})
+    with pytest.raises(sg.GitFailed, match="blob header"):
+        sg.policy_blob_bytes([(_git(repo, "rev-parse", "base"), CATALOG)])
+
+
+def test_fresh_policy_batch_refuses_malformed_size_type_and_missing_commit(repo, monkeypatch):
+    """A transport success cannot disguise bad framing, missing objects or nonblob policy."""
+    sg = load_gate(repo)
+    revision = _git(repo, "rev-parse", "base")
+    info = f"{revision} commit 12\n".encode()
+    oid = b"1" * 40
+    good = info + oid + b" blob 3\nabc\n"
+    replies = [good, info + f"{revision}:{TRACEABILITY} missing\n".encode(),
+               info + oid + b" blob -1\n\n", info + oid + b" blob nope\n\n",
+               info + oid + b" blob 300\nabc\n", info + oid + b" blob 3\nabcX",
+               info + oid + b" tree 3\nabc\n", info + b"not a header\n",
+               good + b"extra", info + oid + b" blob 3", b"0" * 40 + b" missing\n",
+               info + oid + b" blob " + b"9" * 5000 + b"\n"]
+    def reply(value):
+        monkeypatch.setattr(sg.subprocess, "run", lambda args, **kw: subprocess.CompletedProcess(args, 0, value, b""))
+    reply(good)
+    assert sg.policy_blob_bytes([(revision, CATALOG)]) == [b"abc"]
+    reply(replies[1])
+    assert sg.policy_blob_bytes([(revision, TRACEABILITY)]) == [None]
+    for broken in replies[2:]:
+        reply(broken)
+        with pytest.raises(sg.GitFailed):
+            sg.policy_blob_bytes([(revision, CATALOG)])
+
+
+def test_close_out_batch_keeps_current_policy_base_separate_from_merge_base(repo):
+    """Real PR DAG: newly adopted BASE trace policy cannot be bypassed via older merge-base."""
+    meta = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body(ticked=True),
+            "PR_NUMBER": "42", "PR_DRAFT": "false", "PR_HEAD_REF": BRANCH}
+    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |",
+                               f"| Models | Production | {TODAY} | #42 |")
+    change(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row})
+    head, old_base = _git(repo, "rev-parse", "HEAD"), _git(repo, "rev-parse", "base")
+    control = gate(repo, "--pr", old_base, head, **meta)
+    assert control.returncode == 0, control.stdout
+    on_base(repo, {TRACEABILITY: "# Traceability\n\n## FEAT-MODEL-001\n\n- #1 prior\n"})
+    policy = _git(repo, "rev-parse", "base")
+    assert _git(repo, "merge-base", policy, head) == old_base
+    refused = gate(repo, "--pr", policy, head, **meta)
+    assert refused.returncode == 1 and "section's PR lineage" in refused.stdout, refused.stdout
+
+    sg = load_gate(repo)
+    assert sg.close_out_policy([(head, CATALOG)]) == [sg.Tree(head).read(CATALOG)]
