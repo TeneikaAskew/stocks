@@ -1,5 +1,7 @@
 # Task5B fresh reconstruction — frozen for independent review
 
+Root current status: the [complete first independent review](2026-10-23-strat-task5b-first-review.md) returned **NEEDS_CHANGES:2P2/Important;0P0/P1**. This document preserves the historical frozen candidate. Boundedfix1/5 is active; no acceptance or production-readiness claim follows.
+
 Status: DONE_WITH_CONCERNS. The bounded additive persistence/writer/API candidate is complete and locally verified; independent review has not accepted it. Production source qualification, actual shared calendar/DATA basis integration, complete capacity proof, specification-on-main and Tasks5C–6 remain separate gates. No production write, deployment, replay, capture/holdout access, branch/commit, or outcome scoring occurred.
 
 Frozen manifest SHA256: `0c34aab8cdb0d7ca1dcbd2e09e136d61ceadf7716c6717376f4745927609c3a3`. `frozen-tree/` contains41 actual source/test files, including23 untouched accepted files;17 paths changed in5B. `baseline-to-candidate.diff` is the full actual5B diff against exact prechange bytes, not a diff against an inferred old5B candidate. All26 accepted5A frozen and prechange hashes remain preserved. Only the approved appended batch API in lib/strat.py, persistence portion of premarket_brief.py and parity-test file differ among those26 accepted candidate paths. `preservation-checks.json` records every comparison. Original41-path baseline-manifest.json is immutable; additional-baseline-manifest.json records the previously unedited existing dashboard test before its stub-only change.
