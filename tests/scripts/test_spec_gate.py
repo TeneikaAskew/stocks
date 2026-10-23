@@ -4134,6 +4134,8 @@ def test_the_refusal_names_the_inventory_allowance(repo):
     r = pr(repo, BRANCH, {**CODE, "docs/product/13-ROADMAP.md": "# Roadmap\n"}, **DOCS_OK)
     assert r.returncode == 1 and "13-ROADMAP.md changes in this feature change" in r.stdout \
         and "re-rendered by scripts/maintenance/doc_inventory.py (REQ-GOV-004)" in r.stdout, r.stdout
+    assert "existing fixed renderer-owned count/as-of substitutions" in r.stdout, r.stdout
+    assert all(name in r.stdout for name in ('05-a-ARCHITECTURE.md', '05-c-DATA_DEPENDENCIES.md', '05-e-API.md')), r.stdout
 
 
 def test_render_inputs_and_the_documents_themselves_stay_put(inventory_repo):
@@ -4331,6 +4333,8 @@ def test_the_skill_names_the_inventory_allowance():
     skill = (REPO / ".claude/skills/product-delivery/SKILL.md").read_text(encoding="utf-8")
     never = next(line for line in skill.splitlines() if line.startswith("- Never edit `docs/product/` from a feature branch"))
     assert "REQ-GOV-004" in never and "re-rendered by `scripts/maintenance/doc_inventory.py`" in never, never
+    assert "existing fixed renderer-owned count/as-of substitutions" in never, never
+    assert all(name in never for name in ('05-a-ARCHITECTURE.md', '05-c-DATA_DEPENDENCIES.md', '05-e-API.md')), never
 
 def test_inventory_budget_observer_keeps_cicd_ownership(repo):
     """An unrelated feature cannot replace the budget verdict; the actual CICD owner can."""

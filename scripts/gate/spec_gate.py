@@ -3829,7 +3829,8 @@ def maintenance_modules() -> tuple[types.ModuleType, types.ModuleType] | None:
 
 
 def generated_refusal(path: str, reason: str) -> str:
-    return (f"{path}: {reason} ({GENERATED_RULE}: a feature change carries a generated document's inventory blocks only "
+    return (f"{path}: {reason} ({GENERATED_RULE}: a feature change carries a generated document's inventory blocks and "
+            "existing fixed renderer-owned count/as-of substitutions only "
             "as main's scripts/maintenance/doc_inventory.py re-renders them from this pull request)")
 
 
@@ -4171,7 +4172,8 @@ def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str, tr
             errs.append(f"{path} changes in this feature change; under {PRODUCT_DOCS} only the FEAT's own catalog "
                         "and traceability records, the model registry and its generated files, and, where the repository "
                         "renders them, the inventory blocks of 05-a-ARCHITECTURE.md, 05-c-DATA_DEPENDENCIES.md and "
-                        f"05-e-API.md re-rendered by scripts/maintenance/doc_inventory.py ({GENERATED_RULE}) may change here")
+                        f"05-e-API.md re-rendered by scripts/maintenance/doc_inventory.py ({GENERATED_RULE}), including only "
+                        "the existing fixed renderer-owned count/as-of substitutions, may change here")
     if SITE_TRACEABILITY not in ch.changed and traced and traced.spec_fm.get("site_source_notes"):
         try:
             protocol = source_protocol()
