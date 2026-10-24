@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-10-24-feat-cicd-001-review-alignment.md
 branch: feature/feat-cicd-001-review-alignment
-pr: null
+pr: 1583
 status: ready
 ---
 
@@ -22,7 +22,7 @@ status: ready
 
 This plan must be reviewed before policy edits begin, as the writing-plans skill requires. The approved spec must first be present on actual main. A schema status of ready does not waive either prerequisite. All implementation PRs remain drafts; no implementation merge, deployment or production write is authorized.
 
-The stocks implementation is its own planned delivery stage, not a re-cut of spec PR #1577. Record #1577's two external code reviews and security review as predecessor effort, without claiming they reviewed future policy edits. Replacement/split implementation PRs retain this implementation stage's ledger. If the owner treats spec and implementation as one capped lineage instead, stop for an explicit recorded budget extension before any new judgment pass; do not silently reset its external-round balance. This boundary must be settled in plan review.
+Plan review must explicitly settle the review-budget boundary between the spec and implementation stages. Record #1577's two external code reviews and security review as predecessor effort; they did not review future policy edits. If both stages share one capped lineage, obtain an explicit recorded aggregate/external allowance before any new judgment pass. If they are separate delivery-stage lineages, record that owner decision and the new stage's starting allowance. Replacement/split implementation PRs always retain the implementation ledger. Until this boundary is adjudicated, no fresh allowance is asserted and no implementation judgment cohort is commissioned.
 
 ## Global Constraints
 
