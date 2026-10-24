@@ -9,7 +9,7 @@ done_when:
   - "Existing native pin-order and workflow-contract controls reject a live-only or simultaneous pin/live timeout change; all original tests, assertions, native invocations and required checks remain present and pass."
   - "Exact-head hosted receipts for both implementation stages show every required check passing and pytest at most 285 seconds; the activated six-minute job additionally meets every component allocation and finishes within 335 seconds with at least 25 seconds measured headroom."
   - "Observed stage timings, exporter execution mode, cost and verification limits, independent reviews, ordinary source proof and full-default main/proposed no-new audits are recorded before release; any unresolved capacity or evidence failure holds release without retry loops or a gate waiver."
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -17,7 +17,7 @@ supersedes: null
 
 ## Decision requested and authority
 
-Propose **360 seconds / literal `timeout-minutes: 6`** for only the stocks `registry-check / registry` CI job. This is an unapproved capacity design, not a performance improvement. The owner authorized preparing, reviewing and publishing this draft only. Design approval, specification merge, subsequent implementation merges and deployment are not granted by that instruction. No implementation branch opens before an approved specification is actually MAIN.
+The owner approved **360 seconds / literal `timeout-minutes: 6`** for only the stocks `registry-check / registry` CI job on October 24, 2026, at reviewed head `58bc6be119a7ec39d086a8b2c049203f14ca2830`. This is a capacity design, not a performance improvement. The bounded finish authorization covers required Codex reviews and conditional specification and scoped implementation merges through normal protections, preserving the285s suite ceiling and all runtime caps/checks. It grants no check waiver, protection bypass, security/access expansion or stopped-candidate release. No implementation branch opens before this approved specification is actually MAIN.
 
 Feature ownership is FEAT-CICD-001: “CI / testing | Build, test, deploy automation.” REQ-GOV-001 preserves review resolution and REQ-GOV-004 preserves the generated-document contract. The canvas registry has no FEAT-CICD-001 mapping. Referenced PR numbers below are evidence links, not issue numbers to close.
 
@@ -100,4 +100,4 @@ If legitimate hosted observations fail allocations, headroom, safety or coverage
 
 Retain five minutes: no policy change, but measured pre-suite work plus a285s suite leaves no exporter allowance. Production-gate optimization with unchanged native coverage: potentially useful, but both preserved candidates demonstrated no gain and no additional optimization is designed here. Reducing process isolation changes the proof contract and requires separate explicit owner approval; it is excluded.
 
-Requested next decision is approval or revision of this concrete six-minute design, including its proposed reserves and acceptance conditions. Only after approval and normal specification MAIN merge may implementation planning begin. A green draft PR or this prose is not approval to merge, patch a timeout, merge governance implementation or deploy.
+Design approval is recorded for this concrete six-minute design, including its proposed reserves and acceptance conditions. Only after normal specification MAIN merge may implementation planning begin. Specification and scoped implementation merges remain conditional on required current-head reviews/checks and ordinary protections; this approval does not cover unrelated governance, a runtime-cap change or deployment.
