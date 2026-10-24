@@ -7,11 +7,16 @@ Any edit, fix, refactor, or feature, however small: invoke the `product-delivery
 It classifies the work (TRIVIAL / SPIKE / CHANGE), requires a FEAT-ID from docs/product/02-FEATURE-CATALOG.md,
 and runs the Superpowers brainstorming -> writing-plans -> subagent-driven-development chain.
 Commits and PRs that skip it are rejected by `scripts/gate/spec_gate.py` (pre-commit hook and CI).
-Review cap on every PR: two rounds. After the second, a PR with no finding that blocks the merge (AGENTS.md `## Review guidelines`) merges; one with such a finding is split, re-cut, or discarded. Never a third round, never a stacked follow-up.
+Review cap: follow AGENTS.md “Review budget and finding identity”: four coordinated judgment
+passes per lineage, at most two external code-review rounds, with all prior effort retained.
+Use its blocking/disposition precedence; no automatic merge, forced cosmetic re-cut or reset.
 Gate files (`scripts/gate/`, `.githooks/pre-commit`, `.github/workflows/spec-gate.yml`, `registry-check.yml`, their suites)
-get a red-team pass before every push: one reviewer per attack surface (shell, YAML/Actions, exporter and policy docs),
-each bypass proven by running the gate against a concrete snippet, everything found fixed in one batch, repeated until a
-pass comes back empty, then one push. Never push a gate change one finding at a time.
+get a red-team pass before every push: one reviewer per attack surface (shell, YAML/Actions,
+exporter and policy docs), each bypass proven by running the gate against a concrete snippet.
+Declare the cohort and reserve the pass first; fix confirmed blockers in one batch and verify
+within the remaining allowance. Every repeated pre-push judgment pass counts. If clean required
+review cannot be obtained within that allowance, stop and escalate to the owner under AGENTS.md;
+never waive the red-team prerequisite or push a gate change one finding at a time.
 The two gate workflows and the hook are pinned byte for byte to copies under `scripts/gate/pinned/`, read from main:
 change the copy in one PR, then make the file equal to it in the next. One PR changing both is refused.
 
@@ -242,8 +247,8 @@ completed a review on it has its first-review comment. A row the procedure
 waits on, a first run's or the Code Review run's for the head, that still
 reads Running an hour after its trigger (the runs on #1398 took about 8 and 18
 minutes), or a first run's row that another run replaced before its comment
-was posted, is reported once on the PR, and the owner decides whether to push
-or merge without it, so no wait on a row lasts longer than that. A later
+was posted, is reported once on the PR, and the owner decides how to recover the missing evidence; merge remains blocked until required
+evidence exists. Escalate after that hour rather than silently waiting or bypassing review. A later
 finding is classified against the comment for its own review type, which is
 the type of the run that posted it. A finding is an inline comment that opens
 a thread; Codex's replies inside a thread, held by bodiless review objects
@@ -338,11 +343,12 @@ has been posted, a run is requested with `@codex review` (unless a request of
 your own was dropped as above). A read of the summary comment that fails is
 retried, and does not count as a row that is missing or not Completed; a read
 still failing an hour later is reported once on the PR, and the owner decides
-whether to push or merge. Requesting a run (`@codex review`) or pushing
-happens only before the PR's second review round has started; once it has
-started, nothing is pushed or requested, and a PR that then needs either is
-split, re-cut or discarded (the review cap). A finding that does not block
-the merge (AGENTS.md `## Review guidelines`) needs neither: its reply is enough.
+how to recover the evidence. Required current-head review remains mandatory. Before requesting
+a run (`@codex review`) or pushing, reserve sufficient allowance under AGENTS.md, including any
+provider-triggered review. At exhaustion stop and request owner adjudication; a replacement PR
+cannot reset the allowance. A nonblocking finding needs its documented disposition, not a fix
+push or forced re-cut. No review request is repeated merely because the prior request was dropped.
+
 
 #### Verify the claim before fixing it, and reproduce before you fix
 

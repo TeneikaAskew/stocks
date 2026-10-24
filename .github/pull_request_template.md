@@ -82,8 +82,8 @@ Canvas refresh pending: none
       run's or the Code Review run's for the head, that still reads Running an
       hour after its trigger (the runs on #1398 took about 8 and 18 minutes),
       or a first run's row that another run replaced before its comment was
-      posted, is reported once on the PR, and the owner decides whether to
-      push or merge without it, so no wait on a row lasts longer than that
+      posted, is reported once on the PR, and the owner decides how to
+      recover required evidence; missing proof continues to block merge
 - [ ] The **current head** is reviewed as CLAUDE.md §2.5 counts it: after the
       PR's latest review-triggering event, a review authored by
       `chatgpt-codex-connector[bot]` was submitted naming it in `commit_id`,
@@ -125,10 +125,24 @@ Canvas refresh pending: none
       your own was dropped as above). A read of the summary comment that fails
       is retried, and does not count as a row that is missing or not
       Completed; a read still failing an hour later is reported once on the
-      PR, and the owner decides whether to push or merge. Requesting a run
-      (`@codex review`) or pushing happens only before the PR's second review
-      round has started; once it has started, nothing is pushed or requested,
-      and a PR that then needs either is split, re-cut or discarded (the
-      review cap). If this item or the hold above meant waiting for a run, the
+      PR for owner recovery/adjudication; missing required proof still blocks merge. Before
+      requesting or pushing reserve the allowance under AGENTS.md “Review budget and finding
+      identity”, including provider-triggered runs. At exhaustion stop; replacements and
+      splits retain the same spent effort and findings. Nonblocking P2/P3-only findings use
+      documented disposition and do not force re-cuts. If this item or the hold above meant waiting for a run, the
       first two items are done again
 - [ ] CI green on the current head, no merge conflict
+
+- [ ] Review ledger links the original lineage, all predecessor/replacement/split PRs,
+      immutable heads and reviewer/run receipts, stable findings with original severities,
+      spent/reserved aggregate passes and external rounds, and owner decisions. Pre-push
+      judgment counts; cancelled reservations are not refunded. No fresh replacement budget.
+- [ ] AGENTS.md blocking precedence applied: mandatory acceptance, security, data integrity,
+      capacity, no-fallback and required review/checks block regardless of badge; P0/P1 block.
+      Other P2/P3 findings have a reply, linked issue for a real defect and thread resolution.
+      Missing/conflicting severity goes to the owner, never silent downgrading.
+- [ ] Exclusive writer and expected-head/output-hash checks protect shared evidence; hashes
+      alone are not atomic exclusion. Generated evidence retains exact committed input/output
+      identities under the existing trusted renderer protocol.
+- [ ] Any budget extension is explicit and scoped, with aggregate and external allowances
+      distinguished. Merge authorization is separate; no auto-pass of unresolved blockers.

@@ -4128,10 +4128,10 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    own was dropped as above). A read of the summary comment that fails is
    retried, and does not count as a row that is missing or not Completed; a
    read still failing an hour later is reported once on the PR, and the owner
-   decides whether to push or merge. Requesting a run (`@codex review`) or
-   pushing happens only before the PR's second review round has started; once
-   it has started, nothing is pushed or requested, and a PR that then needs
-   either is split, re-cut or discarded (the review cap). A Code Review row
+   decides how to recover required evidence; missing proof still blocks merge.
+   Before a request or push, reserve allowance under AGENTS.md “Review budget and finding
+   identity”, including provider-triggered runs. At exhaustion stop and escalate; replacements
+   do not reset history. Do not repeat a dropped request. A Code Review row
    that stays Running gets step 6's exit.
 3. **Re-page `get_review_comments` now**, after step 2 established the review
    is Completed — do not reuse step 1's snapshot. Step 1 runs deliberately
@@ -4198,37 +4198,28 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    reconstruction is what actually holds, because it does not depend on
    recognising a hostile string.
 
-   A finding from the PR's second review round is verified here and not
-   fixed: step 5 says what it gets.
-5. **If step 4 produced a commit for a finding from the PR's first review
-   round, go back to step 1 on the new head.** A fix commit moves the head
-   past the review that approved it, so merging straight from here lets the
-   review-fix itself merge unreviewed. That is the same stale-head condition
-   steps 1-3 exist to catch, arriving by a different route. Push every
-   first-round fix in one push, once no review type's first run still reads
-   Running and each one that has completed a review has its first-review
-   comment (step 3), since a run the push starts replaces its type's row.
-   After that wait, re-page `get_review_comments`: if the run you waited on
-   posted findings, go back to step 3 with them, and their fixes join the same
-   push. Then let the review re-run on the new SHA, and re-check: that run is
-   the PR's second review round.
+   Classify each verified finding under AGENTS.md “What blocks the merge”. Preserve original
+   severity and stable identity; mandatory acceptance and protections override lower badges.
+5. **Batch blocking fixes within the remaining review allowance.** Before fixing/pushing,
+   reserve the required judgment under AGENTS.md “Review budget and finding identity”.
+   Wait until no review type's first run reads Running and record every completed type's
+   first-review receipt (step 3), then re-page findings and include confirmed blockers in one
+   batch. A fix changes the head: return to step 1 after publication; never merge a stale review.
 
-   **The review cap is two rounds** (CLAUDE.md, "Review cap"; the
-   product-delivery skill, Phase 4): after a PR's second review round, stop
-   and split, re-cut or discard it when that round raised a finding; a second
-   round with no findings goes on to step 6. A finding from the second round
-   gets its classifying reply (CLAUDE.md Rule 2.5) and no fix commit, so there
-   is no third review: present split, re-cut or discard
-   (`superpowers:finishing-a-development-branch`) and name that choice in the
-   Phase 9 "Still open before this closes". A round is one run of Codex's code
-   review on the PR, and a push to a PR open for review starts one (CLAUDE.md
-   §2.5). Requesting a run (`@codex review`) or pushing happens only before
-   the PR's second review round has started; once it has started, nothing is
-   pushed or requested, and a PR that then needs either is split, re-cut or
-   discarded (the review cap). A merge of `main` is a push too, so a PR that
-   then needs a commit or `main` merged in (a conflict, or a base the gate
-   needs) is split, re-cut or discarded the same way, and a clean second round
-   merges as it stands.
+   The default is four coordinated judgment passes per lineage, including pre-push judgment,
+   with at most two external code-review rounds. A declared parallel cohort on one immutable
+   head counts as one aggregate pass with each run recorded. Cancelled reservations, repeated
+   attempts and new-head judgment count; tests alone do not. Follow the canonical ledger rule
+   rather than creating a new budget here. Replacement and split PRs share spent effort and
+   findings, including original thread IDs and review-type SHA provenance.
+
+   A second round containing only otherwise nonblocking P2/P3 findings proceeds through
+   documented disposition to step 6; no compulsory fix or re-cut. Real P0/P1, unmet acceptance
+   and other mandatory protections still block. At exhaustion stop autonomous fixes, pushes
+   and review requests and present the exact history/findings to the owner for a bounded
+   extension, approved rescope or stop. Extending aggregate passes alone does not extend the
+   external-round cap. A merge of main is also a push; reserve any resulting review first.
+   Neither clean rounds nor disposition grant merge authority or waive current-head evidence.
 6. **Zero unresolved, across every page** — re-page `get_review_comments` and
    check it, whether or not step 4 produced a commit. A rebutted finding still
    needs its reply and its resolve, and a review that added nothing still has
@@ -4244,23 +4235,21 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    row whose first run has read Completed since step 3 gets its comment now,
    as step 3 says. After any such wait, re-page `get_review_comments`: if the
    run you waited on posted findings, go back to step 3 with them. Their
-   fixes are this round's push (step 5) while the PR's second review round
-   has not started; once it has, they are second-round findings and get what
-   step 5 gives one: the classifying reply where Rule 2.5 asks for it, no fix
-   commit, and the review cap (split, re-cut or discard). The pull request
+   fixes follow step 5's allowance check; at exhaustion stop and escalate. Nonblocking
+   findings get their classifying reply, issue for a real defect and resolution under AGENTS.md,
+   without a forced fix or re-cut. The pull request
    does not merge while a review type's first run still reads Running, or
    before each review type that has completed a review on it has its
    first-review comment. A row the procedure waits on, a first run's or the
    Code Review run's for the head, that still reads Running an hour after its
    trigger (the runs on #1398 took about 8 and 18 minutes), or a first run's
    row that another run replaced before its comment was posted, is reported
-   once on the PR, and the owner decides whether to push or merge without it,
-   so no wait on a row lasts longer than that. Then CI green on the current
+   once on the PR for owner recovery/adjudication. Required missing evidence still blocks
+   merge; do not turn the hour limit into a review waiver. Then CI green on the current
    head, and no merge conflict.
-7. **Merge it, bound to the SHA that passed.** Steps 0-6 are the gate, not
-   the destination; stopping here leaves the fix on a branch while Phase 9
-   describes the issue as landed. Merge once every step above passes, and
-   record the merge commit in the Phase 9 status comment.
+7. **When authorized, merge bound to the SHA that passed.** All steps above and the user's
+   merge authorization are required. Otherwise report the actual draft/ready state without
+   claiming the issue landed. Record the merge commit only after a successful authorized merge.
 
    **Pass the reviewed head SHA to the merge.** Steps 1-6 established that a
    review and a green CI run exist for one specific commit; a push landing
@@ -4269,9 +4258,8 @@ inside that window.** An empty review list at 60 seconds means "wait", not
    immediately before merging and give `merge_pull_request` its
    `expectedHeadSha`, so a head that moved is a rejected merge rather than an
    unreviewed one. If it has moved, that is not an obstacle to work around:
-   go back to step 1 for the new head, or, once the PR's second review round
-   has started, split, re-cut or discard it as step 5 says, since the run that
-   move started is a third.
+   go back to step 1 for the new head within recorded allowance, or stop for owner
+   adjudication under step 5. Never reset the budget or use a previous head's review.
 
    Two cases where you stop instead of merging, and say which: the PR is one
    this session did not open and was not asked to drive, so the merge is its
