@@ -8,7 +8,7 @@ done_when:
   - "tests/gcp/test_news_sentiment_log_redaction.py proves synthetic credentials, parameter dictionaries, request URLs, arbitrary exception text and provider Information content never reach warning messages, arguments or exception metadata in dispatch, HTTP-status and JSON failure cases."
   - "Mocked regressions prove unchanged endpoint, complete outgoing parameters including the fake key, timeout30, one HTTP attempt, exception-to-empty behavior, provider Information feed handling and ordinary successful/missing/null/empty feed returns."
   - "Directly affected existing NEWS_SENTIMENT tests, independent review, normal delivery records, documentation no-new audit and current-head required checks pass; no provider calls or actual leak/deployment claims are made."
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -20,7 +20,7 @@ The user identified a source vulnerability in gcp/fetchers/fetch_news_sentiment.
 
 This is a code finding, not evidence that a real credential was disclosed. No secret-bearing logs or provider traffic were inspected. The native connector's premium-endpoint error bypasses this fetcher and is not attributed to these warnings.
 
-FEAT-DATA-001 catalog row owns data-platform ingestion, storage and freshness. This new narrow specification is needed because the approved operation-metadata specification owns a different parser/terminal path and does not authorize this fetcher modification. Product-delivery Phase2 requires owner approval and approved-spec MAIN before implementation. The user authorized the repair and preparation, not bypassing that gate.
+FEAT-DATA-001 catalog row owns data-platform ingestion, storage and freshness. This new narrow specification is needed because the approved operation-metadata specification owns a different parser/terminal path and does not authorize this fetcher modification. Product-delivery Phase2 requires owner approval and approved-spec MAIN before implementation. The owner subsequently approved the bounded finish pass covering this written logger design, required Codex review, normal specification/implementation merges and scoped release on October 24, 2026 ("Do all the work needed"). This approval changes no acceptance item or logger scope and does not bypass specification MAIN or current-head checks. Publication waits for the fixture-owned CI-envelope implementation to reach MAIN; do not retrigger unchanged five-minute CI.
 
 ## Design
 
