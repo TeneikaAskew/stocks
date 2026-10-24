@@ -8,7 +8,7 @@ done_when:
   - "Actual unchanged MAIN BASE commit/PR gates accept the policy implementation under this approved primary; a docs branch attempting the same gated policy edit remains refused."
   - "The actual full-default branch and MAIN audits have no new findings under the duplicate-preserving check/doc/severity/detail comparison, with existing findings retained and no invented review stamp."
   - "Current-head authenticated external CODE review, required CI and conversation resolution are recorded for the policy implementation, and its product record distinguishes policy publication from unimplemented admission and COMMON deployment."
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -16,11 +16,11 @@ supersedes: null
 
 ## Problem and scope
 
-This is a draft requiring explicit USER approval of policy/specification decisions; root coordinates publication and cannot approve those decisions on the user’s behalf. It grants no implementation permission today. FEAT-CICD-001 is the catalog's existing CI/testing capability, “Build, test, deploy automation.” No canvas depicts this change; no issue closure is claimed. The affected delivery is draft PR1478, not an issue closed by this specification.
+The USER approved both exact reviewed designs at commit `0d0c97870ebe31f617db1a0123445ad1f71ef8f2` on 2026-10-24. Approval is for the designs only, not merge or implementation before their required actual MAIN prerequisites; root coordinates publication and does not confer that approval. FEAT-CICD-001 is the catalog's existing CI/testing capability, “Build, test, deploy automation.” No canvas depicts this change; no issue closure is claimed. The affected delivery is draft PR1478, not an issue closed by this specification.
 
 At inspected MAIN `6f03ab14a7c858e741d9023f215a1bf24e0371c1`, `docs/AV_OPERATION_TELEMETRY.md` is absent. COMMON's approved immutable primary requires that living runbook. Its candidate has genuine implementation tests and ordinary SITE identity, but its full audit introduces an unclassified P2. A D row alone would instead expose missing provenance: ordinary verified stamping correctly requires a body-containing trunk ancestor, which does not exist before the first squash. No private evidence content is copied into this specification.
 
-The product-delivery skill and spec template are executable policy. Their existing contract requires a policy-only implementation to reach MAIN before separately approved verifier implementation. This specification is that policy-only stage. The companion draft `2026-10-24-feat-cicd-001-common-runbook-admission-verifier.md` supplies the separately reviewable executable contract. Neither draft approves the other; neither publication alone activates a route.
+The product-delivery skill and spec template are executable policy. Their existing contract requires a policy-only implementation to reach MAIN before separately approved verifier implementation. This specification is that policy-only stage. The companion specification `2026-10-24-feat-cicd-001-common-runbook-admission-verifier.md` supplies the separately reviewable executable contract. Neither specification approves the other; neither publication alone activates a route.
 
 ## Approaches considered
 
@@ -32,7 +32,7 @@ The product-delivery skill and spec template are executable policy. Their existi
 
 After this primary is approved and actually MAIN, one fresh FEAT-CICD-001 branch/initial ready plan may append the block below verbatim to `.claude/skills/product-delivery/SKILL.md`. Append the final paragraph below verbatim to `.claude/skills/product-delivery/references/spec-template.md`. Preserve all original bytes; do not change the existing SITE protocol, watchers, render allowance, review threshold/cap or defaults.
 
-Only those two policy files and the branch's own plan and FEAT-CICD-001 catalog/traceability records change. No registry row, runbook, marker, sidecar, runtime script, test, workflow, COMMON source or other capability record changes. The unchanged BASE gate and actual full-default no-new comparison must pass. An inability to satisfy these checks blocks delivery; this draft authorizes no bootstrap for its policy stage.
+Only those two policy files and the branch's own plan and FEAT-CICD-001 catalog/traceability records change. No registry row, runbook, marker, sidecar, runtime script, test, workflow, COMMON source or other capability record changes. The unchanged BASE gate and actual full-default no-new comparison must pass. An inability to satisfy these checks blocks delivery; this specification authorizes no bootstrap for its policy stage.
 
 ### Literal block appended to the skill
 
@@ -54,7 +54,7 @@ The exact COMMON runbook first-publication protocol does not add a general front
 
 ## Sequence, capacity and review
 
-Both specifications remain draft until owner approval. Root is publisher; any new PR is draft. After the policy spec is approved/MAIN, create its own initial ready plan/branch, implement policy only, and obtain normal review and actual MAIN. After the verifier spec is independently approved/MAIN too, its separate fresh implementation may start. No stacking, old-plan rebinding or COMMON source adoption is authorized here.
+Both reviewed designs have USER approval as recorded above. Root is publisher; all PRs remain draft until normal eligibility is established. After the policy spec is approved/MAIN, create its own initial ready plan/branch, implement policy only, and obtain normal review and actual MAIN. After the verifier spec is independently approved/MAIN too, its separate fresh implementation may start. No stacking, old-plan rebinding or COMMON source adoption is authorized here.
 
 This stage adds no SQL, vendor/network call, job, schedule, dependency or deployed resource. Capacity is n/a for a new production workload; ordinary existing gates/audits still run, with their measured runtime and original limits. No test duplicating reversible wording is needed: exact two-file diff, actual gate controls and actual no-new audit establish policy acceptance. Verifier tests are the companion's responsibility, not deferred policy done_when.
 
