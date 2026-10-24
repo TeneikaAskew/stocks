@@ -12,6 +12,8 @@ Usage:
 
 import argparse
 import logging
+import json
+import re
 import os
 import sys
 import time
@@ -665,6 +667,45 @@ def _read_replace_list(path: str) -> list[tuple[str, int, int]]:
     return items
 
 
+# A retained-coverage mismatch is not evidence that another provider call helps.
+_REPLACE_RETRY_CANDIDATES = frozenset({FETCH_RATE_LIMIT, FETCH_REQUEST_ERROR, REPLACE_CHANGED})
+_REPLACE_STATUSES = frozenset({REPLACE_OK, REPLACE_DRY, REPLACE_INCOMPLETE,
+    REPLACE_NOTHING_HELD, REPLACE_CHANGED, FETCH_OK, FETCH_RATE_LIMIT,
+    FETCH_REQUEST_ERROR, FETCH_INVALID_API, FETCH_INFO_MSG, FETCH_NO_TIMESERIES,
+    'systemic'})
+
+
+def _log_replace_result(symbol, year, month, result, *, commit, task_index, recovery):
+    """One bounded safe per-month log; an application receipt, not SQL readback."""
+    def count(value):
+        return value if type(value) is int and 0 <= value <= 1_000_000_000 else None
+    status = result.get('status')
+    status = status if type(status) is str and status in _REPLACE_STATUSES else 'unknown'
+    execution = os.environ.get('CLOUD_RUN_EXECUTION', '')
+    execution = execution if len(execution) <= 128 and re.fullmatch(r'[a-z][a-z0-9-]{0,127}', execution) else None
+    safe_symbol = symbol if type(symbol) is str and len(symbol) <= 12 and re.fullmatch(r'[A-Z][A-Z0-9.\^-]{0,11}', symbol) else None
+    written = count(result.get('inserted')) if commit and status == REPLACE_OK else 0
+    planned = count(result.get('inserted')) if not commit and status == REPLACE_DRY else 0
+    safe_month = f'{year:04d}-{month:02d}' if type(year) is int and 1 <= year <= 9999 and type(month) is int and 1 <= month <= 12 else None
+    safe_task = task_index if type(task_index) is int and 0 <= task_index <= 9999 else None
+    recovery = recovery if recovery in {'none', 'review_required', 'targeted_retry_candidate'} else 'review_required'
+    event = {'event': 'intraday_replace_result', 'execution': execution,
+             'task_index': safe_task, 'ticker': safe_symbol,
+             'month': safe_month, 'commit': commit,
+             'status': status, 'recovery': recovery,
+             'held_sessions': count(result.get('held_sessions')),
+             'missing_sessions': count(result.get('missing_sessions')),
+             'planned_rows': planned, 'written_rows': written,
+             'write_outcome': ('not_applied' if not commit else
+                               'acknowledged' if status == REPLACE_OK else
+                               'uncertain' if status in {'systemic', 'unknown'} else 'not_applied')}
+    message = json.dumps(event, separators=(',', ':'), allow_nan=False)
+    if len(message.encode('utf-8')) <= 2048:
+        log.info('%s', message)
+    else:
+        log.warning('intraday replacement result telemetry unavailable')
+
+
 def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
     """Drive replace_month over the list; striped across Cloud Run tasks.
 
@@ -673,7 +714,9 @@ def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
     month or incomplete refetch leaves that month untouched, which is safe,
     but it means the migration is not done, and a green run must never imply
     it is (the reader cutover depends on it). Each such month is printed as a
-    ``RETRY TICKER,YYYY-MM`` line: collect them into the next list.
+    review or retry-candidate line. Only known transient/concurrency results
+    are retry candidates; incomplete history and unknown write outcomes require
+    review. No retry is performed by this driver.
     """
     items = _read_replace_list(path)
     if not items:
@@ -693,7 +736,8 @@ def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
     log.info("replace-months: task %d/%d, %d ticker-months, commit=%s",
              task_idx, task_cnt, len(items), commit)
     counts: dict = {}
-    retry: list[str] = []
+    pending: list[str] = []
+    retry_candidates: list[str] = []
     rebuild: dict = {}
     replaced: list[str] = []
     last = 0.0
@@ -707,22 +751,38 @@ def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
         last = time.time()
         try:
             r = replace_month(sym, y, m, api_keys[n % len(api_keys)], commit)
-        except Exception as e:
-            log.error("  ✗ %s %d-%02d SYSTEMIC: %s", sym, y, m, e)
+        except Exception:
+            # A committed transaction may have an uncertain acknowledgement.
+            # Never reflect exception text or promise that a replay is safe.
+            log.error("  month replacement failed; inspect isolated outcome")
             counts['systemic'] = counts.get('systemic', 0) + 1
-            retry.append(f"{sym},{y}-{m:02d}")
+            item = f"{sym},{y}-{m:02d}"
+            pending.append(item)
+            log.error("REVIEW %s", item)
+            _log_replace_result(sym, y, m, {'status': 'systemic'}, commit=commit,
+                                task_index=task_idx, recovery='review_required')
             continue
         counts[r['status']] = counts.get(r['status'], 0) + 1
         if r['status'] == REPLACE_OK:
             replaced.append(f"{r['symbol']},{r['month']}")
         for t, n in (r.get('derived_cleared') or {}).items():
             rebuild[t] = rebuild.get(t, 0) + n
+        recovery = 'none'
         if r['status'] != expected:
-            retry.append(f"{r['symbol']},{r['month']}")
+            item = f"{r['symbol']},{r['month']}"
+            pending.append(item)
+            if r['status'] in _REPLACE_RETRY_CANDIDATES:
+                retry_candidates.append(item)
+                recovery = 'targeted_retry_candidate'
+            else:
+                recovery = 'review_required'
+                log.error("REVIEW %s", item)
+        _log_replace_result(sym, y, m, r, commit=commit, task_index=task_idx,
+                            recovery=recovery)
         log.info("  %d/%d %s %s status=%s held_sessions=%s missing_sessions=%d "
-                 "deleted=%d inserted=%d%s", n, len(items), r['symbol'], r['month'],
+                 "deleted=%d %s=%d%s", n, len(items), r['symbol'], r['month'],
                  r['status'], r['held_sessions'], r['missing_sessions'],
-                 r['deleted'], r['inserted'],
+                 r['deleted'], 'acknowledged_inserted' if commit else 'planned_inserted', r['inserted'],
                  f" missing={r['missing']}" if r.get('missing') else "")
     log.info("replace-months summary: %s (expected %s for all %d)",
              counts, expected, len(items))
@@ -741,12 +801,13 @@ def run_replace_months(path: str, commit: bool, limit: Optional[int]) -> int:
         if commit:
             log.warning("Tables marked NO PATH YET stay computed from the old bars "
                         "until #1190 lands; the reader cutover is not complete.")
-    if retry:
-        for item in retry:
+    if pending:
+        for item in retry_candidates:
             log.error("RETRY %s", item)
-        log.error("%d of %d ticker-months did not reach %s; the migration is NOT "
-                  "complete. Re-run with the RETRY lines above as the list.",
-                  len(retry), len(items), expected)
+        log.error("%d of %d ticker-months did not reach %s; migration NOT complete. "
+                  "REVIEW items require coverage/write verification. RETRY items are "
+                  "candidates only; check coverage/quota and authorize a bounded run.",
+                  len(pending), len(items), expected)
         return 1
     return 0
 
@@ -763,7 +824,7 @@ def verify_month(symbol: str, year: int, month: int) -> dict:
     ambiguous stretch (no premarket label rows, no opening spike, under half a
     regular session) reads as true UTC here too, as it does in the reader
     (see the reply on #1185). Every month in the migration list either
-    reached ``replaced`` or is on the RETRY list, which is the check for those.
+    reached ``replaced`` or is on the REVIEW or RETRY list, which is the check for those.
     """
     start, end = month_replace_window(year, month)
     df = query_to_dataframe_strict(
