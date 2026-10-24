@@ -172,6 +172,7 @@ point: somebody decides its class rather than inheriting a directory's.
 | A | docs/product/generated/model-registry.json | docs/product/07-MODEL-REGISTRY.md, docs/EXPERIMENT_REGISTRY.md, scripts/gate/export_model_registry.py | all |
 | B | docs/product/infrastructure/manual/* | |  |
 | C | docs/archive/* | |  |
+| C | docs/review-evidence/2026-10-24-agent-review-alignment.md | | Dated instruction-compliance and regression evidence, not live policy proof |
 | C | docs/audit/* | |  |
 | C | docs/audits/* | |  |
 | C | docs/incidents/* | |  |

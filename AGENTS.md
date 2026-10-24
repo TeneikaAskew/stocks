@@ -13,9 +13,10 @@ which CLAUDE.md Rule 2.5 sends here; and a person. stocks and solyra carry the s
 
 ### The first review is the complete one
 
-Each reviewer's first review of the change lineage is complete. A replacement or split PR
-inherits its reviewed scope, findings and spent effort; a new reviewer still reads the entire
-scope. Reserve judgment work under “Review budget and finding identity” below before starting.
+Each reviewer's first review of each pull request is complete, including replacement and split
+PRs, as REQ-GOV-003 requires. Keep each account/type's first-review receipt per PR alongside
+the lineage's original finding provenance. Replacement/split PRs inherit all findings and spent
+effort; complete first-review coverage does not grant a fresh allowance. Reserve judgment work under “Review budget and finding identity” below before starting.
 A spec PR is fixed in place within that allowance; once `main` holds an approved spec, a
 changed contract requires a new superseding spec. Before posting, the reviewer:
 
@@ -40,7 +41,7 @@ changed contract requires a new superseding spec. Before posting, the reviewer:
 
 ### Later reviews
 
-A later review by the same reviewer verifies earlier findings and examines new semantics and
+A later review on the same PR by the same account/review type verifies earlier findings and examines new semantics and
 affected dependencies, rather than restarting a complete review of unchanged material. It still
 reports genuine late defects, classified under CLAUDE.md Rule 2.5 against the immutable first
 review SHA for that review type: missed, new (introducing SHA), or uncounted. Moving lines does
@@ -66,8 +67,10 @@ Apply these rules in order; disposition never grants merge authority:
    conversations, security, data integrity, capacity and no-silent-fallback protections block
    regardless of the finding's badge. A realistic user-visible spec counterexample also blocks.
 2. P0 and P1 findings always block until fixed and verified. Map CRITICAL=P0, HIGH=P1,
-   MEDIUM=P2 and LOW=P3 while retaining the original label. Missing or conflicting severities
-   go to the owner for adjudication; never silently relabel or downgrade them.
+   MEDIUM=P2 and LOW=P3 while retaining the original label. Missing, conflicting or unmapped severities
+   go to the owner for adjudication; never silently relabel or downgrade them. Disputed
+   classification or acceptance and unknown required-check status also remain pending owner
+   adjudication; agreement on a badge does not authorize the author to dismiss a disputed blocker.
 3. Other P2/P3 findings receive an explicit thread reply and, for a real defect, a linked issue,
    then resolution. A cosmetic preference needs an explanation, not an invented defect issue.
    A P2/P3-only second round satisfying all mandatory conditions does not force a fix or re-cut.
@@ -97,8 +100,10 @@ Replacement and split PRs inherit all findings and share the same remaining bala
 than each receiving a new allowance. Before a fix/push/review that would require further
 judgment, check the remaining allowance, including provider-triggered runs. At exhaustion stop
 autonomous fixes, pushes and review requests; report unresolved findings and exact history to
-the owner. The owner may explicitly extend a bounded scope, rescope through approved specs or
-stop. An aggregate extension does not extend the external-round limit unless explicitly stated.
+the owner. The owner may extend a bounded scope, rescope through approved specs or stop. Before resuming,
+record the extension reason, scope and exact numerical additional aggregate pass count, and
+separately whether and by how many external rounds the external limit increases. Unspecified
+external increases are zero; a vague permission to continue supplies no numerical allowance.
 Do not automatically re-cut, silently add a pass, waive mandatory checks or merge a blocker.
 
 ### Generated evidence and one writer

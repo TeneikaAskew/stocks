@@ -140,9 +140,11 @@ Canvas refresh pending: none
 - [ ] AGENTS.md blocking precedence applied: mandatory acceptance, security, data integrity,
       capacity, no-fallback and required review/checks block regardless of badge; P0/P1 block.
       Other P2/P3 findings have a reply, linked issue for a real defect and thread resolution.
-      Missing/conflicting severity goes to the owner, never silent downgrading.
+      Missing/conflicting/unmapped severity, disputed classification or acceptance, and unknown
+      required-check status remain pending owner adjudication, never silent downgrading.
 - [ ] Exclusive writer and expected-head/output-hash checks protect shared evidence; hashes
       alone are not atomic exclusion. Generated evidence retains exact committed input/output
       identities under the existing trusted renderer protocol.
-- [ ] Any budget extension is explicit and scoped, with aggregate and external allowances
-      distinguished. Merge authorization is separate; no auto-pass of unresolved blockers.
+- [ ] Any budget extension records reason, scope and exact numerical additional aggregate
+      passes, and separately exact additional external rounds (unspecified external increase
+      is zero). Merge authorization is separate; no auto-pass of unresolved blockers.

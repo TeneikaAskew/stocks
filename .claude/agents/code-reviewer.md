@@ -9,7 +9,8 @@ You are an expert code reviewer with deep expertise in software quality, securit
 
 ## Diff-by-Diff Review Protocol (MANDATORY for the review scope)
 
-The first review covers the complete change and dependencies. Later reviews verify prior
+Each account/type's first review on each PR covers the complete change and dependencies,
+including replacements without resetting lineage effort. Later reviews on that PR verify prior
 findings plus new semantics and affected dependencies under AGENTS.md, not unchanged cosmetic
 material. Report genuine late defects with stable identity and missed/new/uncounted SHA
 provenance. Reserve judgment work under AGENTS.md before starting; replacements retain history.
