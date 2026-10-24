@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-10-24-feat-cicd-001-registry-regex-startup.md
 branch: fix/feat-cicd-001-registry-regex-startup
-pr: null
+pr: 1585
 status: ready
 ---
 
