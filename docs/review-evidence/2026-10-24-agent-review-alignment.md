@@ -300,3 +300,32 @@ Reviewer declined: ongoing evidence/catalog/Solyra completion (handled by writer
 or live durability (explicitly unproven); unchanged operational deployment recipes (not run,
 outside scope); generic severity regrading (owner-only rule controls). No deferred cosmetic
 finding was reported.
+
+## Local validation receipts (2026-10-24)
+
+- Full existing affected suites command: `/workspace/stocks-venv/bin/python -m pytest -q
+  tests/scripts/test_spec_gate.py tests/scripts/test_doc_source_snapshot.py
+  tests/scripts/test_check_generated_docs.py` — **479 passed, 14 warnings, 478.53 seconds**,
+  exit 0. All named C9/C10 controls are included. Started at `1e960a49`, finished at
+  `78650677fed274615f3eff9bc92b5f23cd8a00eb`; test/gate/renderer/verifier code and their
+  fixture inputs were unchanged during the run. Policy correction and record edits are
+  separately pinned; this is not claimed as an atomic full-suite run on the final publication SHA.
+- Unchanged base gate and proposed gate both exit 0 for the same committed PR diff
+  `641a93b96e4f7fccab9f57e1be9adf3a221dbc55..78650677fed274615f3eff9bc92b5f23cd8a00eb`,
+  using real draft PR metadata. The earlier detached-base attempts used no plan-bearing
+  head and failed metadata validation; correcting the invocation tests the intended PR.
+- Full default `python3 scripts/maintenance/docs_audit.py` on base `641a93b9` and
+  committed head `78650677` exited 0. Compared every severity/type/path/claim identity,
+  retaining multiplicity; ignored only relocated Markdown line numbers. Zero new findings.
+  Both retain existing documentation debt; this is zero regression, not zero debt.
+- Focused writer verification **FIX-01** at `78650677`: actual resolver step 4 now forbids
+  edits before disposition/reservation; per-PR complete first review coexists with inherited
+  lineage effort; extension requires exact counts; disputed acceptance remains pending owner.
+  This new-head judgment is recorded separately from HEAD-01, not hidden in its cohort.
+  Current-main delivery rules apply; this writer fix verification was not a new adopted-policy
+  allowance or historical reset. No additional external review was triggered by these local commits.
+- No executable test, pinned workflow, gate, timeout or generated-inventory allowance changed.
+  Exact submitted-head CI and authorized bot receipts will be recorded on PR #1583 so that
+  receipt collection itself does not trigger another source push/review.
+
+Audit log SHA-256 receipts: `280cc324e52dfd79f1a89012b844c3097e5197193f7f03e23f4c354111e5af1b`, `1070a3b04acf274cadf4fd1d0245addc31958b2c6f1cb55cb93cdf2d3ffaf2a3`.
