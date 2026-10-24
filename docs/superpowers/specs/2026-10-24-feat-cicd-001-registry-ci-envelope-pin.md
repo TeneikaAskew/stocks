@@ -9,7 +9,7 @@ done_when:
   - "Existing native pin-order and workflow-contract controls pass and reject live-only or simultaneous pin/live changes; every original test, assertion, native invocation, permission and runtime safety deadline remains unchanged."
   - "The exact-head still-five-minute hosted registry job passes with pytest at most 285 seconds and its required exporter completed; actual stage times, exporter mode, counts and headroom against 300 seconds are recorded without claiming the future six-minute envelope is active."
   - "Own delivery records, ordinary SHARED-01 source proof, full-default main/proposed no-new audits, four independent prepush reviews, current-head Codex code/security reviews, all required checks and resolved conversations are complete; the parent final-stage criteria remain assigned to the live-stage primary without claiming global completion."
-status: approved
+status: superseded
 supersedes: null
 ---
 
