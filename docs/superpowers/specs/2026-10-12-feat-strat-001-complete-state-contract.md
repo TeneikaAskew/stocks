@@ -120,6 +120,19 @@ No lower-priority flag disappears because a higher-priority label won.
 
 ### 3. FTFC semantics and migration
 
+Default BacktestEngine FTFC causality clarification: legacy numerical compatibility
+means retaining each chronological finite observed prefix's final-asof scalar,
+configured weights, native resampling/classification, shift/reindex and arithmetic
+order. It does not require retaining earlier row values contaminated by membership
+of timeframes observed only later. Repair that default helper's per-row membership
+and denominator without requiring a diagnostic opt-in or changing any financial
+coefficient, strategy threshold, entry/exit/risk, ORB, strict-continuity, calendar,
+price-basis or gap policy. Preserve old frozen research/source artifacts under their
+original identities; validation artifacts must identify repaired code/config provenance; no new runtime
+schema or metadata migration is introduced by this two-file repair.
+This is a causal bug correction, not authorization to silently rewrite training
+features or rescore archived studies.
+
 Publish distinct results:
 
 - `weighted_candle_alignment`: the existing candle-type vote, with actual configured
@@ -325,6 +338,20 @@ plan retains eleven execution units; the mappings below add no parallel engine.
    `gcp/backtest_job.py`, `lib/walk_forward.py` and run-timeframe-sweep callers that
    execute the engine with Strat enabled. Exit-only engine construction is not
    evidence of classifier exposure. No profitability/return objective is added.
+
+
+   Default FTFC causality acceptance additionally names only `lib/backtest.py` and
+   new `tests/lib/test_backtest_ftfc_causality.py`. Require the actual-default
+   `test_default_helper_prefix_is_unchanged_by_appending_future` to fail on frozen
+   pre-repair source and pass after repair;
+   `test_multiple_clocks_and_sessions_ignore_future_ohlc` to preserve earlier scores;
+   `test_final_asof_matches_frozen_old_production_helper` to preserve final-asof
+   scalar arithmetic; and `test_default_engine_dispatch_and_trade_ledger_use_causal_helper`
+   to prove ordinary run dispatch without the diagnostic flag. The dispatch control
+   may stub only base signal generation and must retain actual helper/entry/exit.
+   Retain the affected native backtest and exit-extraction controls, literal weights
+   and unrelated-runtime preservation evidence. No new scoring/holdout/production
+   action or claim of general default-feature causality follows.
 
 2. **Consumer labels (5A/5E/6; done_when3,5).** Add
    `tests/gcp/test_strat_snapshot_parity.py::test_weighted_alignment_labels_survive_brief_schema_and_api`.
