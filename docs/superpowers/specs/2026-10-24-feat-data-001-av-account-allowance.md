@@ -9,7 +9,7 @@ done_when:
   - "tests/scripts/test_av_client_pacing.py proves both actual research CLI parsers/default batch loops consume local batch/delay, refuse invalid or unallocated faster delay overrides before dispatch, and preserve existing error/backoff/circuit decisions with zero provider calls."
   - "Consumer/configuration tests inventory all in-repository AlphaVantageConfig consumers, preserve existing task-count pacing partition exactly once, and prove no consumer automatically turns the purchased600RPM field into600RPM for every worker."
   - "Normal own plan/product records, independent review, no-new documentation audit, current-head required CI and review pass; no source claims global account enforcement, verified unused capacity or rollout before actual evidence."
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -19,7 +19,7 @@ supersedes: null
 
 The user explicitly authorized runtime correction on October24,2026: "Fix it in my code.600not150." The confirmed199.99/month plan supplies600requests/minute and no daily request limit. Main641a93b96 lib/config.py instead models150as the plan, returning60/rpm for delays andrpm for batch size. This is executable configuration, not merely inaccurate Markdown. Documentation-only PR1584 does not complete this change.
 
-FEAT-DATA-001 owns data-platform configuration. This candidate requires written design approval and actual approved-spec MAIN before implementation under product-delivery. The broad code-fix request authorizes this proposal; it is not approval of this newly written design. Root is the sole intended writer for this slice. Coordinate lib/config.py ownership with existing DATA/COMMON owners; do not push their private branches or copy their implementation. Freshness1580 owns disjoint API/UI paths and the native source worktree/evidence remains unchanged.
+FEAT-DATA-001 owns data-platform configuration. This candidate requires written design approval and actual approved-spec MAIN before implementation under product-delivery. The owner subsequently approved the bounded finish pass covering this written 600-RPM design, required Codex review, normal specification/implementation merges and scoped release on October 24, 2026 ("Do all the work needed"). All five acceptance items and the account600/local150 separation remain unchanged. Specification MAIN and normal current-head checks still precede runtime implementation. Publication waits for the fixture-owned CI-envelope implementation to reach MAIN; do not retrigger unchanged five-minute CI. Root is the sole intended writer for this slice. Coordinate lib/config.py ownership with existing DATA/COMMON owners; do not push their private branches or copy their implementation. Freshness1580 owns disjoint API/UI paths and the native source worktree/evidence remains unchanged.
 
 ## Scope and selected approach
 
