@@ -9,7 +9,7 @@ done_when:
   - "A3: scenarios C9-C11 preserve substantive spec reapproval, exact generated evidence and single-writer collision protection with accepted and refused controls"
   - "A4: each repository passes its unchanged base spec gate, affected regression suites and full branch-versus-main documentation audit with no new findings, and records its own FEAT-CICD-001 implementation PR"
   - "A5: the acceptance record contains immutable revisions, actual decisions and limitations for C1-C11, and a separately approved real-PR observation protocol with no claim of durability before its exit criteria pass"
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -17,17 +17,21 @@ supersedes: null
 
 ## Status and authority
 
-This is a proposal for owner review, not active policy or an approved implementation
-plan. The October 24 authorization permits this draft. It does not approve these
-proposed decisions, any rollout, or a merge. Existing instructions govern until
-separately approved changes land. No implementation acceptance box is complete merely
-because this document exists. This additive spec does not supersede the entire
-October 14 bounded-review spec; its existing historical approval remains intact.
+The owner approved the suggested repairs on October 24, 2026, in conversation
+message `Sentinel_21efae8681e88191b9825d10eb1c9641`: "I approve all of the suggested
+repairs and fixes you're suggesting." This records design approval, not active
+policy, implementation completion, deployment or merge authority. Existing
+instructions govern until separately reviewed changes land. No implementation
+acceptance box is complete merely because this document exists. This additive spec
+does not supersede the entire October 14 bounded-review spec; its historical
+approval remains intact.
 
-Use product-delivery Phase 2 to approve this written contract first. Only then write
-and review the implementation plan, land the approved spec, and open the independent
-FEAT-CICD-001 implementation branch under the ordinary gate. A matching Solyra spec
-and approval are required there; this stocks file grants no cross-repository authority.
+PR #1577 remains a draft. Product-delivery Phase 2 requires the approved spec to
+merge before an implementation branch opens; the owner has explicitly withheld
+merge authority. After that gate is satisfied, write and review the implementation
+plan under Phase 3 before any policy implementation. The matching Solyra contract
+must also follow its own spec/plan/review gates. No external Claude agent contact,
+production write, deployment, safeguard waiver or implementation merge is authorized.
 
 ## Problem and inspected baseline
 
@@ -291,7 +295,10 @@ median/max passes and elapsed time without claiming causation from this small sa
 A failure pauses adoption claims and returns the defect to the owner. Text tests and
 this draft's local validation establish neither reliability nor deployment readiness.
 
-Remaining owner decisions: approve the precedence rule and severity mapping; choose
-or revise the proposed four-pass aggregate/two-external limit and extension authority;
-approve ledger venue and handoff protocol; authorize the paired Solyra specification
-and later rollout; approve the observation window. Until then status remains draft.
+The October 24 approval accepts the proposed precedence/mapping, four-pass
+aggregate/two-external limit, extension authority, ledger/handoff protocol and
+observation-window design. It does not waive the required spec merge, implementation
+plan review, matching Solyra spec workflow or real observation evidence. The existing
+PR-body ledger option is available; no new ledger service is introduced. Any later
+substantive change requires renewed approval. Implementation and rollout remain
+pending those gates, and no durability claim is authorized by this approval.
