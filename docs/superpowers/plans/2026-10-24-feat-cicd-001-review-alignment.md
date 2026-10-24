@@ -22,14 +22,14 @@ status: ready
 
 This plan must be reviewed before policy edits begin, as the writing-plans skill requires. The approved spec must first be present on actual main. A schema status of ready does not waive either prerequisite. All implementation PRs remain drafts; no implementation merge, deployment or production write is authorized.
 
-Plan review must explicitly settle the review-budget boundary between the spec and implementation stages. Record #1577's two external code reviews and security review as predecessor effort; they did not review future policy edits. If both stages share one capped lineage, obtain an explicit recorded aggregate/external allowance before any new judgment pass. If they are separate delivery-stage lineages, record that owner decision and the new stage's starting allowance. Replacement/split implementation PRs always retain the implementation ledger. Until this boundary is adjudicated, no fresh allowance is asserted and no implementation judgment cohort is commissioned.
+Budget continuity is preserved without an extra pre-implementation approval gate. The approved spec's Status and authority section says existing instructions govern until the policy changes land. Therefore this delivery continues under current main's review rules, including its two-round per-PR cap; the proposed four-pass lineage policy is the implementation target, not an already-active controller. Record #1577's two external code reviews, its security review and known internal effort in the linked history; do not erase, relabel or reset any prior pass. Preserve the same root across #1577 and #1583 in the evidence ledger. Missing historical identities remain explicitly unknown. Before any later work relies on an allowance under the newly adopted lineage policy, use its owner-adjudication rule rather than asserting a fresh balance. This transition does not grant additional rounds under current policy, waive required reviews or reset replacement/split PR history.
 
 ## Global Constraints
 
 - One named writer owns the branch and shared evidence. Other agents are read-only.
 - P0/P1 and unmet mandatory acceptance, security, data-integrity, capacity and no-fallback protections block. Do not silently change severity.
 - Initial review is complete; later verification covers findings, changed semantics and affected dependencies. Genuine late defects are reported.
-- Four declared judgment passes per lineage, at most two external code-review rounds, including pre-push judgment work. Cancelled reservations remain spent; replacement and split PRs share the balance. Extensions require explicit owner adjudication and distinct aggregate/external allowances.
+- Implementation target: four declared judgment passes per lineage, at most two external code-review rounds, including pre-push judgment work. Cancelled reservations remain spent; replacement and split PRs share the balance. Extensions require explicit owner adjudication and distinct aggregate/external allowances. Until that policy is adopted, current main governs this delivery; retain all history for the transition.
 - No automatic merge or re-cut merely because a round ends. Required current-head external CODE review, CI, conversation resolution and existing protections remain mandatory.
 - No gate implementation, pinned workflow, timeout, dependency or generated-inventory allowance changes.
 - No documentation migration, STRAT/options/fixture changes, external Claude contact or automatic issue closure.
@@ -50,7 +50,7 @@ Spec: § Complete initial review, focused verification and stable identity; § P
 Files: create `docs/review-evidence/2026-10-24-agent-review-alignment.md`; no policy edit yet.
 
 - [ ] Confirm the spec's actual main commit/blob, active branch ownership and no competing alignment implementation PR.
-- [ ] Resolve the stage/lineage boundary in plan review; record lineage ID, predecessor/spec PR, all actual passes and known/unknown effort. Unknown history is a hold, not zero.
+- [ ] Record one linked root for #1577 and #1583, the predecessor/spec PR, all actual passes and known/unknown effort. Do not assert a new allowance from a stage change. Preserve current main review rules during delivery and explicitly record the later adoption/adjudication boundary.
 - [ ] Declare the full read-only acceptance cohort, immutable reviewed baseline and planned scope before invoking it. Reserve pass IDs before work. Record each reviewer/run separately even when in one cohort.
 - [ ] Record repository head/base, spec blob, original finding IDs/URLs, pass reservations/completions/cancellations, owner decisions and remaining aggregate/external allowance. Link the two clean spec code-review receipts and security receipt as predecessor evidence.
 - [ ] Commit only the plan/evidence setup after normal commit validation. Do not mark implementation acceptance complete.
