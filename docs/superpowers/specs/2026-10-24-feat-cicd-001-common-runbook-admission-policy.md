@@ -16,7 +16,7 @@ supersedes: null
 
 ## Problem and scope
 
-This is a draft requiring owner approval. It grants no implementation permission today. FEAT-CICD-001 is the catalog's existing CI/testing capability, “Build, test, deploy automation.” No canvas depicts this change; no issue closure is claimed. The affected delivery is draft PR1478, not an issue closed by this specification.
+This is a draft requiring explicit USER approval of policy/specification decisions; root coordinates publication and cannot approve those decisions on the user’s behalf. It grants no implementation permission today. FEAT-CICD-001 is the catalog's existing CI/testing capability, “Build, test, deploy automation.” No canvas depicts this change; no issue closure is claimed. The affected delivery is draft PR1478, not an issue closed by this specification.
 
 At inspected MAIN `6f03ab14a7c858e741d9023f215a1bf24e0371c1`, `docs/AV_OPERATION_TELEMETRY.md` is absent. COMMON's approved immutable primary requires that living runbook. Its candidate has genuine implementation tests and ordinary SITE identity, but its full audit introduces an unclassified P2. A D row alone would instead expose missing provenance: ordinary verified stamping correctly requires a body-containing trunk ancestor, which does not exist before the first squash. No private evidence content is copied into this specification.
 
