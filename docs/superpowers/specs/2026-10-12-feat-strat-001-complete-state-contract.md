@@ -87,6 +87,29 @@ must not be removed in a way that falsely makes nonadjacent intraday bars consec
 Return reason codes and gaps; valid first observations remain unknown rather than 1.
 Keep partial higher-period state explicitly marked as partial/observable.
 
+Owner-confirmed closed-candle rule: a signal or setup is confirmed only after the
+selected candle has closed. A developing candle is not confirmed. The primary
+signal/setup timeframes are `5m`, `15m`, `30m`, `1h`, `4h` and `1w`. Apply the same
+closed-candle distinction at each selected timeframe's observation clock; do not
+infer a completed candle from a later close or label a developing pattern confirmed.
+Partial/observable context remains separately identified and cannot stand in for a
+confirmed signal/setup.
+
+This primary timeframe list does not select the separate reference FTFC universe.
+Do not remove D/M/Q or other existing vendor-open-based reference FTFC frames by
+inference; the owner's reference FTFC set is pending. Preserve the separate weighted
+legacy FTFC contract in Section3. For `4h`/session and weekly boundaries, reuse
+actual validated aggregation/calendar conventions; if the intended anchor is not
+resolved by those conventions, report the precise ambiguity and keep affected
+acceptance blocked rather than choose a new anchor. The observed session aggregator
+clips the final regular-session `4h` bucket to13:30–16:00, unlike legacy wall-clock
+bins; whether that shorter final bucket qualifies for confirmed setups is still an
+owner decision. Weekly completion checks use the actual last session close, including
+holiday/early-close weeks, rather than a Friday-midnight period label. These existing
+conventions do not waive the merged-calendar integration prerequisite. Price-equality
+policy, the312 glossary, PMG, stop and expiry decisions remain undecided; this
+amendment selects none of them.
+
 Daily analytics adopt approved `2026-10-12-feat-data-001-av-market-data.md`:
 coherent split-and-dividend adjusted daily OHLC/returns/ATR/Strat through the actual
 merged `lib.price_basis.prepare_daily_basis`, version `av-adjusted-daily-v1` and its
@@ -317,6 +340,29 @@ scoring before repaired revision/settings freeze. This does not enlarge a batch 
   restored raw levels/ATR and mixed-basis refusal. Run merged calendar guard/parity
   and consumer checks, including delayed opens; dependency absence is blocked
   integration, not a passing mock substitute for this acceptance.
+
+## Closed-candle owner-decision acceptance
+
+Add `tests/lib/test_strat.py::TestClosedCandleConfirmation` as planned bounded
+intended-rule checks for each selected `5m`, `15m`, `30m`, `1h`, `4h` and `1w`
+candle: before its validated close it is developing/unconfirmed; only after
+that close may it supply a confirmed signal/setup. Exercise cutoff before source
+selection/aggregation, later-bar perturbation and the production consumer's actual
+confirmation boundary. A check that merely labels already-completed fixture rows
+without exercising a developing candle is insufficient. `4h`/session/weekly cases
+must bind to validated existing conventions or remain explicitly blocked with the
+unresolved anchor stated; do not fabricate a calendar/anchor to make them pass.
+An aggregation oracle's completed/coverage flags or test-only projection do not
+prove a production confirmed-only signal/setup producer exists or satisfies this
+acceptance. That actual consumer boundary still requires its sensitive RED/GREEN.
+
+Preserve the original first5m/15m visual proof and frozen outcomes under their exact
+identities. New intended-rule tests/reports use a separately identified revision and
+code/config/input provenance; they do not overwrite or reinterpret that earlier
+proof, certify every default feature causal, or authorize archived/holdout scoring.
+The existing six done_when strings remain unchanged; these checks advance their
+unfinished/invalid-input and observation-clock acceptance without selecting any of
+the undecided reference-FTFC/equality/312/PMG/stop/expiry rules.
 
 ## Consolidated production-boundary acceptance
 
