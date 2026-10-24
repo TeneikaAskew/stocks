@@ -250,14 +250,20 @@ class TestLabel:
 
     def test_not_live_on_market_holiday_even_if_recent_and_within_clock_rth(self):
         """Same regression as the Saturday case, for a US market holiday.
-        2026-07-03 (Independence Day, observed) is a Friday and is in
-        live.MARKET_HOLIDAYS_2026, so it passes the weekday check but must
-        still not report "live".
+        2026-07-03 (Independence Day, observed) is a Friday and the shared
+        NYSE calendar (lib.eastern_time) has no session that day, so it
+        passes the weekday check but must still not report "live".
         """
-        pytest.importorskip("api.routers.live")
-        from api.routers import live as live_router
-        assert __import__("datetime").date(2026, 7, 3) in live_router.MARKET_HOLIDAYS_2026
+        from lib.eastern_time import is_session
+        assert not is_session(__import__("datetime").date(2026, 7, 3))
 
         latest_ts = _ts("2026-07-03T14:30:00")  # 10:30 ET clock time
         now = datetime(2026, 7, 3, 15, 0, 0, tzinfo=timezone.utc)  # 11:00 ET, 30min later
         assert main._most_active_label(latest_ts, "2026-07-03", now_utc=now) == "2026-07-03"
+
+    def test_most_active_not_live_on_juneteenth(self):
+        """2026-06-19 (Juneteenth) is an NYSE closure the old 2026-only set
+        missed, so a fresh snapshot during clock RTH read as "live"."""
+        latest_ts = _ts("2026-06-19T15:00:00")  # 11:00 ET clock time
+        now = datetime(2026, 6, 19, 15, 10, 0, tzinfo=timezone.utc)  # 11:10 ET, 10min later
+        assert main._most_active_label(latest_ts, "2026-06-19", now_utc=now) == "2026-06-19"

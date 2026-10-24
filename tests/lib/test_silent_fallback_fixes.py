@@ -77,18 +77,44 @@ def test_trading_day_count_raises_rather_than_reporting_zero(monkeypatch):
     to prevent.
     """
     import lib.strat_levels as sl
+    from lib import eastern_time
 
     class _BustedCalendar:
-        def valid_days(self, start_date, end_date):
+        def schedule(self, start_date, end_date):
             raise RuntimeError("calendar data unavailable")
 
+    eastern_time._reset_session_cache()
     monkeypatch.setattr(
         "pandas_market_calendars.get_calendar", lambda _n: _BustedCalendar())
+    try:
+        # The shared calendar lets the library's own error through; it never
+        # reports 0 days (that read as "not stale" to persist_level_map).
+        with pytest.raises(RuntimeError, match="calendar data unavailable"):
+            sl._trading_days_between(
+                pd.Timestamp("2026-08-01", tz="UTC"),
+                pd.Timestamp("2026-09-04", tz="UTC"))
+    finally:
+        monkeypatch.undo()
+        eastern_time._reset_session_cache()
 
-    with pytest.raises(RuntimeError, match="Refusing to report 0 trading days"):
-        sl._trading_days_between(
-            pd.Timestamp("2026-08-01", tz="UTC"),
-            pd.Timestamp("2026-09-04", tz="UTC"))
+
+def test_strat_levels_raises_without_calendar(monkeypatch):
+    """With the library unimportable `_trading_days_between` used to return the
+    calendar-days / 1.4 estimate, so a missing dependency passed the staleness
+    guard on a guess. It now raises the shared calendar's ImportError."""
+    import lib.strat_levels as sl
+    from lib import eastern_time
+
+    eastern_time._reset_session_cache()
+    monkeypatch.setitem(sys.modules, "pandas_market_calendars", None)
+    try:
+        with pytest.raises(ImportError):
+            sl._trading_days_between(
+                pd.Timestamp("2026-10-16", tz="UTC"),
+                pd.Timestamp("2026-10-19", tz="UTC"))
+    finally:
+        monkeypatch.undo()
+        eastern_time._reset_session_cache()
 
 
 def test_trading_day_count_still_returns_zero_when_source_is_not_behind():

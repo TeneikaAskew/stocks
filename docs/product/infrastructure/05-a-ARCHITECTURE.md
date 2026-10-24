@@ -495,10 +495,10 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/catalysts/snapshot/{ticker}` | [`platform/api/routers/catalysts.py:613`](../../../platform/api/routers/catalysts.py#L613) | Unified point-in-time catalyst view for a ticker. |
 | `GET` | `/api/catalysts/ticker/{ticker}` | [`platform/api/routers/catalysts.py:575`](../../../platform/api/routers/catalysts.py#L575) | Get all catalyst events for a specific ticker. |
 | `GET` | `/api/catalysts/types` | [`platform/api/routers/catalysts.py:773`](../../../platform/api/routers/catalysts.py#L773) | Return available catalyst types and WSH upgrade info. |
-| `GET` | `/api/config/firebase` | [`platform/api/routers/config.py:45`](../../../platform/api/routers/config.py#L45) | Public runtime auth config for the frontend bootstrap. |
-| `GET` | `/api/config/indicators` | [`platform/api/routers/config.py:75`](../../../platform/api/routers/config.py#L75) | Return indicator periods, signal thresholds, and zone labels. |
-| `GET` | `/api/config/market-hours` | [`platform/api/routers/config.py:131`](../../../platform/api/routers/config.py#L131) | Return US equity market session windows + 2026 holidays. |
-| `GET` | `/api/dashboard/brief/{ticker}` | [`platform/api/routers/dashboard.py:82`](../../../platform/api/routers/dashboard.py#L82) | Return daily bias / strat status for the dashboard. |
+| `GET` | `/api/config/firebase` | [`platform/api/routers/config.py:47`](../../../platform/api/routers/config.py#L47) | Public runtime auth config for the frontend bootstrap. |
+| `GET` | `/api/config/indicators` | [`platform/api/routers/config.py:77`](../../../platform/api/routers/config.py#L77) | Return indicator periods, signal thresholds, and zone labels. |
+| `GET` | `/api/config/market-hours` | [`platform/api/routers/config.py:145`](../../../platform/api/routers/config.py#L145) | Return US equity market session windows, holidays and early closes. |
+| `GET` | `/api/dashboard/brief/{ticker}` | [`platform/api/routers/dashboard.py:79`](../../../platform/api/routers/dashboard.py#L79) | Return daily bias / strat status for the dashboard. |
 | `GET` | `/api/earnings/calibration` | [`platform/api/routers/earnings.py:304`](../../../platform/api/routers/earnings.py#L304) | The live calibration row (PR-A + PR-B headline finding). |
 | `GET` | `/api/earnings/event/{ticker}/{event_date}` | [`platform/api/routers/earnings.py:172`](../../../platform/api/routers/earnings.py#L172) | Single-event drill-down. |
 | `GET` | `/api/earnings/health/ping` | [`platform/api/routers/earnings.py:324`](../../../platform/api/routers/earnings.py#L324) | Lightweight warm-up probe. NOT called by a scheduler. |
@@ -509,7 +509,7 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/earnings/ticker/{ticker}/lean` | [`platform/api/routers/earnings.py:233`](../../../platform/api/routers/earnings.py#L233) | Lean stats for one ticker. |
 | `GET` | `/api/earnings/upcoming` | [`platform/api/routers/earnings.py:108`](../../../platform/api/routers/earnings.py#L108) | Next N days of earnings reporters, decorated with full history. |
 | `GET` | `/api/glossary/gamma` | [`platform/api/routers/glossary.py:30`](../../../platform/api/routers/glossary.py#L30) | Return the UI-safe gamma term dictionary. |
-| `GET` | `/api/health` | [`platform/api/main.py:270`](../../../platform/api/main.py#L270) | Liveness probe: reports the service version and its configured backends. |
+| `GET` | `/api/health` | [`platform/api/main.py:298`](../../../platform/api/main.py#L298) | Liveness probe: reports the service version and its configured backends. |
 | `GET` | `/api/health/freshness` | [`platform/api/routers/health.py:158`](../../../platform/api/routers/health.py#L158) | Return the cached freshness report (see freshness_report_dict). |
 | `POST` | `/api/insights/chat` | [`platform/api/routers/insights.py:1062`](../../../platform/api/routers/insights.py#L1062) | Stream a Gemini response for the given mode and message. |
 | `GET` | `/api/insights/report/{ticker}` | [`platform/api/routers/insights.py:764`](../../../platform/api/routers/insights.py#L764) | Return the most recent InsightReport for the ticker. |
@@ -533,26 +533,26 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/journal/trades/{ticker}` | [`platform/api/routers/journal.py:882`](../../../platform/api/routers/journal.py#L882) | Return the signed-in user's journal entries for the ticker, newest first. |
 | `DELETE` | `/api/journal/trades/{trade_id}` | [`platform/api/routers/journal.py:1253`](../../../platform/api/routers/journal.py#L1253) | Delete one of the signed-in user's journal entries by UUID. |
 | `PATCH` | `/api/journal/trades/{trade_id}` | [`platform/api/routers/journal.py:1166`](../../../platform/api/routers/journal.py#L1166) | Close an ACTIVE trade: sets exit_ts/exit_price, computes return_pct |
-| `GET` | `/api/live/avg-volume/{ticker}` | [`platform/api/routers/live.py:385`](../../../platform/api/routers/live.py#L385) | Return the 20-day average daily volume for RVOL calculation. |
-| `GET` | `/api/live/history/{ticker}` | [`platform/api/routers/live.py:315`](../../../platform/api/routers/live.py#L315) | Fetch last 100 1-min bars from Alpha Vantage TIME_SERIES_INTRADAY. |
-| `POST` | `/api/live/indicators` | [`platform/api/routers/live.py:527`](../../../platform/api/routers/live.py#L527) | Compute indicators and CALL/PUT signals from a bar series. |
-| `GET` | `/api/live/quote/{ticker}` | [`platform/api/routers/live.py:189`](../../../platform/api/routers/live.py#L189) | Fetch real-time quote from Alpha Vantage GLOBAL_QUOTE. |
-| `POST` | `/api/live/signal-series` | [`platform/api/routers/live.py:610`](../../../platform/api/routers/live.py#L610) | Per-bar CALL/PUT signal fires for the Charts page "Sig" overlay. |
-| `GET` | `/api/live/status` | [`platform/api/routers/live.py:174`](../../../platform/api/routers/live.py#L174) | Return current market open/closed status based on Eastern Time. |
+| `GET` | `/api/live/avg-volume/{ticker}` | [`platform/api/routers/live.py:368`](../../../platform/api/routers/live.py#L368) | Return the 20-day average daily volume for RVOL calculation. |
+| `GET` | `/api/live/history/{ticker}` | [`platform/api/routers/live.py:298`](../../../platform/api/routers/live.py#L298) | Fetch last 100 1-min bars from Alpha Vantage TIME_SERIES_INTRADAY. |
+| `POST` | `/api/live/indicators` | [`platform/api/routers/live.py:510`](../../../platform/api/routers/live.py#L510) | Compute indicators and CALL/PUT signals from a bar series. |
+| `GET` | `/api/live/quote/{ticker}` | [`platform/api/routers/live.py:172`](../../../platform/api/routers/live.py#L172) | Fetch real-time quote from Alpha Vantage GLOBAL_QUOTE. |
+| `POST` | `/api/live/signal-series` | [`platform/api/routers/live.py:593`](../../../platform/api/routers/live.py#L593) | Per-bar CALL/PUT signal fires for the Charts page "Sig" overlay. |
+| `GET` | `/api/live/status` | [`platform/api/routers/live.py:157`](../../../platform/api/routers/live.py#L157) | Return current market open/closed status based on Eastern Time. |
 | `GET` | `/api/magnitude/{ticker}/{tf}/at/{ts}` | [`platform/api/routers/magnitude.py:183`](../../../platform/api/routers/magnitude.py#L183) | Return the prediction for exactly this (ticker, tf, ts). |
 | `GET` | `/api/magnitude/{ticker}/{tf}/latest` | [`platform/api/routers/magnitude.py:129`](../../../platform/api/routers/magnitude.py#L129) | Return the most-recent prediction for this (ticker, tf). |
-| `GET` | `/api/market/coverage` | [`platform/api/main.py:1231`](../../../platform/api/main.py#L1231) | Data coverage per symbol — drives the type-ahead's full/daily/new badges. |
-| `GET` | `/api/market/data/{ticker}/{date}` | [`platform/api/main.py:905`](../../../platform/api/main.py#L905) | Load intraday OHLCV data for a specific ticker and date. |
-| `GET` | `/api/market/dates/{ticker}` | [`platform/api/main.py:607`](../../../platform/api/main.py#L607) | List available trading dates for a ticker (Cloud SQL → local fallback). |
-| `GET` | `/api/market/most-active` | [`platform/api/main.py:1510`](../../../platform/api/main.py#L1510) | Most-active tickers snapshot, with per-ticker snapshot sparklines. |
-| `GET` | `/api/market/reference/{ticker}/{date}` | [`platform/api/main.py:1061`](../../../platform/api/main.py#L1061) | Get previous day OHLC reference levels for support/resistance. |
-| `GET` | `/api/market/sectors` | [`platform/api/main.py:1402`](../../../platform/api/main.py#L1402) | Sector rotation snapshot computed from SPDR sector ETF daily closes. |
-| `GET` | `/api/me` | [`platform/api/main.py:282`](../../../platform/api/main.py#L282) | Return the authenticated identity + role flags. |
+| `GET` | `/api/market/coverage` | [`platform/api/main.py:1259`](../../../platform/api/main.py#L1259) | Data coverage per symbol — drives the type-ahead's full/daily/new badges. |
+| `GET` | `/api/market/data/{ticker}/{date}` | [`platform/api/main.py:933`](../../../platform/api/main.py#L933) | Load intraday OHLCV data for a specific ticker and date. |
+| `GET` | `/api/market/dates/{ticker}` | [`platform/api/main.py:635`](../../../platform/api/main.py#L635) | List available trading dates for a ticker (Cloud SQL → local fallback). |
+| `GET` | `/api/market/most-active` | [`platform/api/main.py:1538`](../../../platform/api/main.py#L1538) | Most-active tickers snapshot, with per-ticker snapshot sparklines. |
+| `GET` | `/api/market/reference/{ticker}/{date}` | [`platform/api/main.py:1089`](../../../platform/api/main.py#L1089) | Get previous day OHLC reference levels for support/resistance. |
+| `GET` | `/api/market/sectors` | [`platform/api/main.py:1430`](../../../platform/api/main.py#L1430) | Sector rotation snapshot computed from SPDR sector ETF daily closes. |
+| `GET` | `/api/me` | [`platform/api/main.py:310`](../../../platform/api/main.py#L310) | Return the authenticated identity + role flags. |
 | `GET` | `/api/me/preferences` | [`platform/api/routers/preferences.py:132`](../../../platform/api/routers/preferences.py#L132) |  |
 | `PUT` | `/api/me/preferences` | [`platform/api/routers/preferences.py:149`](../../../platform/api/routers/preferences.py#L149) | Upsert the provided subset of fields and return the full stored row. |
 | `GET` | `/api/me/profile` | [`platform/api/routers/profile.py:145`](../../../platform/api/routers/profile.py#L145) |  |
 | `PUT` | `/api/me/profile` | [`platform/api/routers/profile.py:162`](../../../platform/api/routers/profile.py#L162) | Upsert the provided subset of fields and return the full stored row. |
-| `GET` | `/api/movement-statement` | [`platform/api/routers/dashboard.py:530`](../../../platform/api/routers/dashboard.py#L530) | PHASE 3 — read-only, feature-flagged movement statement. |
+| `GET` | `/api/movement-statement` | [`platform/api/routers/dashboard.py:533`](../../../platform/api/routers/dashboard.py#L533) | PHASE 3 — read-only, feature-flagged movement statement. |
 | `GET` | `/api/options/dates/{ticker}` | [`platform/api/routers/options.py:318`](../../../platform/api/routers/options.py#L318) | Return the `limit` most-recent snapshot dates with AlphaVantage data. |
 | `POST` | `/api/options/greeks` | [`platform/api/routers/options.py:753`](../../../platform/api/routers/options.py#L753) | Single source of truth for GEX/VEX/max-pain/implied-move/nodes. |
 | `GET` | `/api/options/live/{ticker}/{date_str}` | [`platform/api/routers/options.py:633`](../../../platform/api/routers/options.py#L633) | Fetch the AlphaVantage HISTORICAL_OPTIONS chain live, with the same |
@@ -571,7 +571,7 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/signals/{ticker}/similar` | [`platform/api/routers/signals.py:321`](../../../platform/api/routers/signals.py#L321) | Return historical signals similar to the supplied bar's conditions. |
 | `POST` | `/api/style/mine-and-validate` | [`platform/api/routers/backtest.py:690`](../../../platform/api/routers/backtest.py#L690) | Mine the caller's closed journal trades into a condition profile, |
 | `POST` | `/api/waitlist` | [`platform/api/routers/waitlist.py:84`](../../../platform/api/routers/waitlist.py#L84) |  |
-| `GET` | `/dev` | [`platform/api/main.py:433`](../../../platform/api/main.py#L433) |  |
+| `GET` | `/dev` | [`platform/api/main.py:461`](../../../platform/api/main.py#L461) |  |
 <!-- inventory:routes:end -->
 
 ### 7.4 `discord-interactions`

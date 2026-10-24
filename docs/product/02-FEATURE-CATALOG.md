@@ -508,17 +508,17 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation |
+| Status | Production but needs remediation — one NYSE session calendar in `lib/eastern_time.py` replaces the 2026-only holiday sets and the ad hoc library wrappers ([#1546](https://github.com/TeneikaAskew/stocks/pull/1546)) |
 | Priority | P0 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-08-30 |
+| Last reviewed | 2026-10-19 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | — |
 | Backend | fetcher jobs |
 | Data | 64 relations — see [06](06-DATA-ARCHITECTURE.md) |
 | Models | — |
-| Code | `gcp/fetchers/`, `gcp/schema.sql`, `lib/data_loader.py`, `gcp/database.py` |
+| Code | `gcp/fetchers/`, `gcp/schema.sql`, `lib/data_loader.py`, `gcp/database.py`, `lib/eastern_time.py` (NYSE sessions) |
 | Tests | `tests/lib/test_data_loader*.py`, integration suite |
 | Open issues | 21 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-data-001--data-platform-21-open) |
 | Blocking issues | [#925](https://github.com/TeneikaAskew/stocks/issues/925) [#926](https://github.com/TeneikaAskew/stocks/issues/926) [#828](https://github.com/TeneikaAskew/stocks/issues/828) [#862](https://github.com/TeneikaAskew/stocks/issues/862) [#863](https://github.com/TeneikaAskew/stocks/issues/863) [#913](https://github.com/TeneikaAskew/stocks/issues/913) |

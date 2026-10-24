@@ -27,14 +27,7 @@ import json
 import os
 from dotenv import load_dotenv
 
-# Try to import market calendar for holiday detection
-try:
-    import pandas_market_calendars as mcal
-    CALENDAR_AVAILABLE = True
-except ImportError:
-    CALENDAR_AVAILABLE = False
-    print("Note: pandas_market_calendars not installed. Install with: pip install pandas_market_calendars")
-    print("      Holiday detection will be disabled.\n")
+from lib.eastern_time import is_session, sessions_between
 
 # Load environment variables
 load_dotenv()
@@ -59,38 +52,30 @@ def is_trading_day(date):
     """
     Check if a specific date is a trading day (not weekend or market holiday).
 
+    Reads the shared NYSE calendar (`lib.eastern_time`); a missing calendar
+    raises rather than answering from the weekday.
+
     Args:
         date: datetime.date object
 
     Returns:
         True if trading day, False if weekend or holiday
     """
-    if not CALENDAR_AVAILABLE:
-        # Fallback: just check if it's a weekday
-        return date.weekday() < 5
-
-    try:
-        # Get NYSE calendar
-        nyse = mcal.get_calendar('NYSE')
-        schedule = nyse.schedule(start_date=pd.Timestamp(date), end_date=pd.Timestamp(date))
-
-        # If schedule is not empty, it's a trading day
-        return len(schedule) > 0
-
-    except Exception as e:
-        # If any error, fallback to weekday check
-        return date.weekday() < 5
+    return is_session(date)
 
 
 def get_trading_days(start_date, end_date, skip_weekends=True):
     """
-    Generate a list of trading days between start and end dates.
-    If pandas_market_calendars is installed, this will also skip market holidays.
+    Generate a list of NYSE trading days between start and end dates (inclusive).
+
+    Reads the shared NYSE calendar (`lib.eastern_time`), so market holidays and
+    early-close days are handled by the one calendar every job uses.
 
     Args:
         start_date: Start date (datetime or string YYYY-MM-DD)
         end_date: End date (datetime or string YYYY-MM-DD)
-        skip_weekends: Whether to skip Saturday and Sunday (default: True)
+        skip_weekends: Kept for compatibility; it has no effect, because
+            sessions never include a Saturday or Sunday.
 
     Returns:
         List of datetime.date objects
@@ -99,31 +84,13 @@ def get_trading_days(start_date, end_date, skip_weekends=True):
         start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
     if isinstance(end_date, str):
         end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+    # A naive datetime has no zone to convert from; its calendar date is meant.
+    if isinstance(start_date, datetime):
+        start_date = start_date.date()
+    if isinstance(end_date, datetime):
+        end_date = end_date.date()
 
-    if CALENDAR_AVAILABLE:
-        # Use market calendar to get actual trading days
-        try:
-            nyse = mcal.get_calendar('NYSE')
-            schedule = nyse.schedule(start_date=pd.Timestamp(start_date), end_date=pd.Timestamp(end_date))
-            # Convert to list of datetime.date objects
-            return [d.date() for d in schedule.index]
-        except Exception as e:
-            print(f"Warning: Could not use market calendar ({e}). Falling back to weekday-only filtering.")
-
-    # Fallback: just skip weekends
-    days = []
-    current = start_date
-
-    while current <= end_date:
-        # Skip weekends if requested
-        if skip_weekends and current.weekday() >= 5:  # Saturday=5, Sunday=6
-            current += timedelta(days=1)
-            continue
-
-        days.append(current)
-        current += timedelta(days=1)
-
-    return days
+    return sessions_between(start_date, end_date)
 
 
 def switch_api_key():
