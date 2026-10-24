@@ -10,7 +10,7 @@ done_when:
   - "Hermetic Playwright options-screen tests and screenshots show stored/unverified timestamps without origin-only LIVE claims while preserving unavailable/loading/error states"
   - "Compatibility tests preserve numerical outputs, source selection and nullable response fields across existing grid and levels routes"
   - "Accepted A8/A10 source hashes remain unchanged and no Q qualification evaluator is duplicated"
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -24,8 +24,13 @@ Solyra's SourcePill translates realtime into LIVE with a pulse. A source name do
 not establish temporal freshness or chain completeness. A successful write
 acknowledgement likewise does not independently verify persistence or completeness.
 
-The user approved preparing this narrow contract on October 24, 2026. This is a
-draft artifact for review, not an approved-main implementation specification.
+The owner explicitly approved the written design at PR #1580 head
+`2c49a24e3624e8e2f55ab7545d8a8969ffcd28bb` on October 24, 2026, replying
+"Yes i approve" to the request to approve this written freshness design. This
+records design approval only; the decisions and acceptance criteria below are
+unchanged. Required review, checks and actual specification MAIN merge still
+precede implementation. No external review-bot contact is authorized by this
+approval.
 It complements the existing guarded API contract in
 [TeneikaAskew/stocks#1528](https://github.com/TeneikaAskew/stocks/pull/1528)
 and does not supersede or reopen its qualification protocol. Coordinate any
