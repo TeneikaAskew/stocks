@@ -9,17 +9,17 @@ done_when:
   - "test_registry_literal_patterns_preserve_native_verdicts and test_registry_literal_patterns_compile_exhaustively retain first/repeated-use, malformed-literal, dependency/shell/HTML/Unicode/bytes and native renderer-fence accepted/refused and own-import controls, with every original test, assertion, parameter and native gate/hook invocation unchanged."
   - "Matched complete original native BASE suites demonstrate a net wall-clock improvement with honest CPU/dispatch evidence; the complete proposed serial suite stays below285seconds, BASE below600seconds, and actual current-head hosted registry completes its exporter under the unchanged five-minute job timeout."
   - "Own product records, fresh ordinary declared-note source proof, full-default main/proposed no-new audits, four independent prepush reviews, authenticated current-head external reviews and all required CI are complete before merge."
-status: draft
-supersedes: null
+status: approved
+supersedes: docs/superpowers/specs/2026-10-24-feat-cicd-001-registry-read-batching.md
 ---
 
 # Deferred initialization of eleven immutable registry patterns
 
 ## Decision and authority
 
-This is an unapproved successor design, prepared for owner review. It contains no runtime implementation and grants no implementation, merge or deployment authority. Only after substantive owner approval and this specification's actual MAIN merge may its separate ready plan and initial PLANONLY draft implementation PR open. All new PRs remain drafts until the normal gates permit review.
+The owner approved this design on October 24, 2026, at reviewed head `2f887b0f1db00f37be3166fba74459c3ff717410`. The owner also authorized requesting GitHub Codex review and merging this specification only after required reviews and checks pass. It contains no runtime implementation or deployment authority. Only after this specification's actual MAIN merge may its separate ready plan and initial PLANONLY draft implementation PR open. All new PRs remain drafts until the normal gates permit review.
 
-The batching specification remains approved and unchanged at `docs/superpowers/specs/2026-10-24-feat-cicd-001-registry-read-batching.md`; stopped private candidates and PR1579 remain preserved. This draft does not activate a supersession. If the owner approves this replacement direction, the new specification's own metadata must name that path in `supersedes` under the ordinary approval/merge workflow; only approved MAIN policy makes the relationship effective. Do not edit the old specification, import its unreleased batching code, mark its plan done, or stack this work on its unmerged branch.
+The batching specification remains approved and unchanged at `docs/superpowers/specs/2026-10-24-feat-cicd-001-registry-read-batching.md`; stopped private candidates and PR1579 remain preserved. The approved successor metadata names that path in `supersedes`; only this approved specification's actual MAIN merge makes the relationship effective. Do not edit the old specification, import its unreleased batching code, mark its plan done, or stack this work on its unmerged branch.
 
 ## Problem and measured opportunity
 
