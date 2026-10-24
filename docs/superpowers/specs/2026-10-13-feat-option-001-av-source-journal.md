@@ -20,7 +20,7 @@ done_when:
   - "A13: tests/scripts/test_backfill_watchlist_options_contract.py invokes needs_options_backfill/backfill_options for partial/legacy/holiday/calendar-unknown refusal and asserts the options component's full REQ-OBS-001 success/failure/skip/recovery telemetry without owning unrelated source branches."
   - "A14: tests/integration/test_av_options_retention.py and tests/gcp/test_av_options_retention_cli.py invoke actual expiry/reconcile paths, assert durable attributable expiry receipts plus actual deletion ACK/recovery/FK/unexpired controls, every kill-point/takeover/no-false-refund disposition, full REQ-OBS-001 telemetry and counted prune75+lease15 shared90seconds ONLY without finalized-raw; real FINALIZED raw-object lifecycle disappearance/softdelete/unknown/failure/commit-gap/double-debit recovery tests run the actual retained-source-attempt path inside SAME90s (all-lane prune15+lease15+raw60), exact payload-expiry and finalized-attempt partial/range indexes, durable fair-probe cursor and real PG EXPLAIN/charged no-starvation controls; no extra job/uncounted GET or unlimited manual repair."
   - "A15: exact docs/superpowers/plans/2026-10-13-feat-option-001-av-source-journal.md, docs/runbooks/av-options-source-journal.md and docs/audits/av-options-source-journal-evidence.md record each core dataset owner/cadence/retrieved-age/deadline/alert integration/recovery and actual A1–14 proof/partial requirement status, own FEAT/trace/code PR plus trusted05a/c/e actual main gates; full B/C/OPS activation remains pending, no code/test unit hidden here."
-status: approved
+status: superseded
 supersedes: null
 ---
 
