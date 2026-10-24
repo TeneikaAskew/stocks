@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-10-24-feat-cicd-001-registry-ci-envelope-pin.md
 branch: fix/feat-cicd-001-registry-envelope-pin-bound
-pr: null
+pr: 1591
 status: ready
 ---
 
