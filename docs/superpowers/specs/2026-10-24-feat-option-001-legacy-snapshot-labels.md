@@ -76,7 +76,10 @@ existing fields and numerical outputs. Proposed wire members:
   manufacture Alpha Vantage identity for an unproven source.
 - `market_session`: actual selected REALTIME/EOD origin, otherwise null.
 - `snapshot_ts`: aware UTC ISO timestamp derived from actual selected source rows,
-  otherwise null. It is not request time, cache-fill time, retrieval time or ACK.
+  otherwise null. Retain the actual stored clock; legacy rows may contain a collector
+  batch-start stamp, while native rows may contain a receive stamp. Neither is
+  proof of the provider market as-of time. Do not relabel or replace that stored
+  value with current request time, cache-fill time, a new retrieval time or ACK.
 - `observed_at`: aware response-assembly UTC timestamp.
 - `snapshot_age_seconds`: finite nonnegative observed_at minus valid snapshot_ts;
   otherwise null. This is display age, not A's measured source retrieval age.
@@ -116,7 +119,10 @@ result is never described as a stored snapshot. The stored/unverified label appl
 only to actual present snapshot data.
 SwingMode.tsx SourcePill and source-derived exposure wording render
 "Stored options snapshot — freshness and completeness unverified" with the actual
-full Eastern date/time (including zone) when available. Missing/invalid provenance
+full Eastern date/time (including zone) when available, described as the recorded
+snapshot time. Its age is time since that stored clock, not a measured provider
+market-data delay. Provider as-of and actual feed latency remain unknown without
+independent original-source evidence. Missing/invalid provenance
 renders unavailable timestamp and unverified status. A REALTIME origin alone must
 not trigger LIVE wording, a live pulse, "5-min snapshot" or live dealer exposure.
 An older server or old cached body with actual snapshot data but lacking the
