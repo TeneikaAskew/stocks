@@ -121,9 +121,6 @@
   ]
  },
  "gcp/fetchers/fetch_earnings_history.py": {
-  "host-today": [
-   "_resolve_scope::_dt.now()"
-  ],
   "sql-utc-date": [
    "_earnings_calendar_tickers::str#abf8af94b4ed"
   ]
@@ -638,7 +635,6 @@
  "platform/api/routers/catalysts.py": {
   "host-today": [
    "get_catalyst_events::datetime.now()",
-   "get_catalyst_snapshot::_date.today()",
    "get_catalysts_for_ticker::datetime.now()"
   ],
   "sql-utc-date": [

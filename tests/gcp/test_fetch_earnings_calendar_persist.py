@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from datetime import datetime,timezone
 
 
 @pytest.fixture
@@ -166,3 +167,52 @@ class TestNoLegacyJsonWrite:
         f = EarningsCalendarFetcher()
         assert not hasattr(f, 'earnings_file')
         assert not hasattr(f, 'output_dir')
+
+
+def test_full_feed_archive_preserves_weekly_subset(monkeypatch):
+    from scripts import fetch_earnings_calendar as calendar
+    from gcp.fetchers import _av_ingestion as av
+    body=b'symbol,name,reportDate,fiscalDateEnding,estimate,currency,timeOfTheDay\nAAPL,Apple,2026-10-12,2026-09-30,1,USD,pre-market\nMSFT,Microsoft,2026-10-13,2026-09-30,2,USD,post-market\nAVGO,Broadcom,2026-10-28,2026-09-30,3,USD,\n'
+    capture=av.Capture.from_bytes('EARNINGS_CALENDAR',{'horizon':'3month'},body)
+    archived=[];writes=[]
+    monkeypatch.setenv('AV_API_KEY','dummy')
+    monkeypatch.setattr(av,'fetch_capture',lambda *a,**kw:capture)
+    monkeypatch.setattr(av,'archive_capture',lambda c,**kw:archived.append(c.body) or 'gs://test/calendar')
+    monkeypatch.setattr(av,'isolated_sql',lambda sql,params,**kw:writes.append((sql,params)))
+    def publish(run,manifest):
+        assert writes and manifest['native_csv_rows']==3 and manifest['universe_count']==3
+        assert manifest['coverage_scope']=='av_raw_horizon' and manifest['source_all_coverage']=='unavailable'
+        assert manifest['coverage_complete'] and manifest['verified_count']==3 and manifest['pending_count']==0
+        return dict(manifest,source_manifest_id='synthetic-test-id',source_manifest_known_at=datetime.now(timezone.utc).isoformat())
+    monkeypatch.setattr(av,'publish_manifest',publish)
+    frame=calendar.fetch_alphavantage_earnings(scope='weekly')
+    assert archived==[body]
+    assert len(frame)==3
+    established_dates={'2026-10-12','2026-10-13','2026-10-14','2026-10-15','2026-10-16'}
+    assert len(frame[frame['date'].isin(established_dates)])==2
+    assert frame.attrs['source_manifest_id']=='synthetic-test-id'
+
+
+@pytest.mark.parametrize('bad_symbol,bad_day',[('', '2026-10-14'),('INVALID!', '2026-10-14'),('AAPL','10/14/2026')])
+def test_native_calendar_invalid_required_values_remain_pending(monkeypatch,bad_symbol,bad_day):
+    from scripts import fetch_earnings_calendar as calendar
+    from gcp.fetchers import _av_ingestion as av
+    body=('symbol,name,reportDate\nMSFT,Microsoft,2026-10-13\n'+bad_symbol+',Bad,'+bad_day+'\n').encode()
+    capture=av.Capture.from_bytes('EARNINGS_CALENDAR',{'horizon':'3month'},body)
+    monkeypatch.setenv('AV_API_KEY','dummy')
+    monkeypatch.setattr(av,'fetch_capture',lambda *a,**kw:capture)
+    monkeypatch.setattr(av,'archive_capture',lambda *a,**kw:'gs://test/calendar')
+    writes=[];published=[]
+    monkeypatch.setattr(av,'isolated_sql',lambda sql,params,**kw:writes.append(params))
+    def publish(run,manifest):
+        published.append(manifest)
+        return dict(manifest,source_manifest_id='native-validation-fixture',source_manifest_known_at=datetime.now(timezone.utc).isoformat())
+    monkeypatch.setattr(av,'publish_manifest',publish)
+    frame=calendar.fetch_alphavantage_earnings(scope='weekly')
+    assert frame['ticker'].tolist()==['MSFT']
+    manifest=published[0]
+    assert manifest['requested_count']==2 and manifest['verified_count']==1 and manifest['pending_count']==1
+    assert not manifest['coverage_complete'] and manifest['complete_through'] is None
+    import json
+    receipt=json.loads(writes[0]['captures'])[0]
+    assert receipt['normalized_count']==1

@@ -87,3 +87,43 @@ def run_sql(db_engine):
             return pd.read_sql(sqlalchemy.text(sql), conn, params=params or {})
 
     return _run
+
+
+"""Explicit local-only PostgreSQL fixtures; no credential discovery fallback."""
+import os
+import re
+import uuid
+from pathlib import Path
+
+import pytest
+from sqlalchemy import create_engine
+
+
+@pytest.fixture
+def catalyst_db():
+    if not os.environ.get("DB_HOST"):
+        pytest.fail("mandatory integration collection requires explicit ephemeral PostgreSQL selectors")
+    assert os.environ.get("DB_HOST") in {"127.0.0.1", "localhost"}
+    assert os.environ.get("DB_NAME", "").startswith("av_") or (
+        os.environ.get("GITHUB_ACTIONS")=="true" and os.environ.get("DB_NAME")=="trading"
+        and os.environ.get("DB_USER")=="trading_user" and os.environ.get("DB_PASS")=="testpass")
+    from gcp.database import _direct_db_url
+    engine = create_engine(_direct_db_url())
+    c = engine.connect()
+    schema = "cat_scope_" + uuid.uuid4().hex[:12]
+    c.exec_driver_sql(f"CREATE SCHEMA {schema}"); c.commit()
+    c.exec_driver_sql(f"SET search_path TO {schema}"); c.commit()
+    sql = Path("gcp/schema.sql").read_text()
+    for name in ["earnings_history", "earnings_reactions", "news_sentiment", "insider_transactions"]:
+        definition = re.search(r"^CREATE TABLE IF NOT EXISTS " + name + r" \(.*?^\);", sql, re.M | re.S).group()
+        c.exec_driver_sql(definition)
+    c.exec_driver_sql("ALTER TABLE earnings_history ADD COLUMN report_time VARCHAR(20),ADD COLUMN yahoo_report_time VARCHAR(20)"); c.commit()
+    for marker in ["REVISIONS", "STORAGE"]:
+        c.exec_driver_sql(sql.split("-- BEGIN AV CATALYST " + marker)[1].split("-- END AV CATALYST " + marker)[0]); c.commit()
+    try:
+        yield c
+    finally:
+        c.rollback()
+        c.exec_driver_sql("SET search_path TO public"); c.commit()
+        c.exec_driver_sql(f"DROP SCHEMA {schema} CASCADE"); c.commit()
+        c.close(); engine.dispose()

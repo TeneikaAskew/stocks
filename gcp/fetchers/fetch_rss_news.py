@@ -635,9 +635,7 @@ def build_dataframe(matched_rows: list[dict]) -> pd.DataFrame:
     now = datetime.now(timezone.utc)
     for row in matched_rows:
         title = (row.get("title") or "")[:500] or None
-        url = (row.get("url") or "")[:1000]
-        if not url:
-            continue  # url is part of UNIQUE — required
+        url = (row.get("url") or "")[:1000] or None
         summary = (row.get("description") or "")[:2000] or None
         # Truncate label to VARCHAR(20)
         label = row.get("overall_sentiment_label")
@@ -673,7 +671,7 @@ def build_dataframe(matched_rows: list[dict]) -> pd.DataFrame:
     df = pd.DataFrame(records)
 
     # Validate required columns (UNIQUE constraint cols)
-    required = ["ticker", "published_ts", "url"]
+    required = ["ticker", "published_ts"]
     for col in required:
         if col not in df.columns:
             logger.error("DataFrame missing required column: %s", col)
@@ -688,36 +686,23 @@ def build_dataframe(matched_rows: list[dict]) -> pd.DataFrame:
     # Final dedup on UNIQUE constraint (within this batch — Cloud SQL handles
     # cross-batch via ON CONFLICT)
     before = len(df)
-    df = df.drop_duplicates(subset=required, keep="first")
+    df = prepare_news_rows(df)
     if len(df) < before:
         logger.info("Dropped %d intra-batch duplicates", before - len(df))
 
     return df
 
 
-def write_to_cloud_sql(df: pd.DataFrame) -> int:
-    """Step 6: Upsert DataFrame to news_sentiment table."""
-    if df.empty:
-        return 0
-    try:
-        from gcp.database import upsert_dataframe, is_cloud_sql_configured
-        if not is_cloud_sql_configured():
-            logger.warning(
-                "Cloud SQL not configured — set CLOUD_SQL_CONNECTION_NAME, "
-                "DB_USER, DB_PASS, DB_NAME env vars"
-            )
-            return 0
-        n = upsert_dataframe(df, "news_sentiment", conflict_cols=["ticker", "published_ts", "url"])
-        logger.info("Step 6 WRITE: upserted %d rows to news_sentiment", n)
-        return n
-    except Exception as exc:
-        logger.error("Cloud SQL write failed (%d rows): %s", len(df), exc)
-        return 0
+def prepare_news_rows(frame):
+    from gcp.fetchers.fetch_news_sentiment import prepare_news_rows as prepare
+    return prepare(frame)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# MAIN
-# ═══════════════════════════════════════════════════════════════════════════
+def write_to_cloud_sql(df):
+    """RSS shares economic identity writes; it never certifies AV windows."""
+    from gcp.fetchers.fetch_news_sentiment import persist_to_cloud_sql
+    return persist_to_cloud_sql(prepare_news_rows(df)) if not df.empty else 0
+
 
 def main():
     try:
