@@ -8,7 +8,7 @@ done_when:
   - "Focused current-base validation preserves literal-empty-only at-most2 retries,terminal invalid/unknown/missing/null/schema errors,no request after the absolute source deadline,encoded/decoded body bounds,safe HTTP metadata and credential-free attempt logging."
   - "Existing real local PostgreSQL evidence and any genuinely changed integration checks preserve an earlier ticker commit when a later source fails,explicit failed/uncertain acknowledgement semantics,and existing etf_options_snapshots upsert identity without deletion or whole-job replay."
   - "Actual NYSE-session and persistence preflight admit no provider request when not due or unconfigured,and exact scoped release verification compares intended image,subsequent execution and existing allowed persisted snapshot evidence without claiming historical repair."
-  - "Own narrow plan/product records,no-new documentation audit,current-head required Codex review and CI pass through normal gates;rollback and actual automatic release effects are reviewed before source merge/deployment."
+  - "Own narrow plan/product records,no-new documentation audit,current-head required Codex review and CI pass through normal gates;CLI/API routing and actual automatic release effects are reviewed before source merge/deployment."
 status: approved
 supersedes: null
 ---
@@ -35,7 +35,7 @@ SQL between source operations consumes remaining source-window time,so no later 
 
 ## Files and source identity
 
-Runtime changes are limited to the accepted fetcher. Tests are the three accepted focused files plus only genuinely necessary integration corrections named in the plan. No schema,shared helper,governance workflow,provider entitlement,credentials,security or network change. The API freshness fix,600configuration,news repairs and future journal remain separate plans/PRs. No Gamma formula,qualified-data evaluator or incomplete-data replacement logic is changed.
+The minimal integration keeps the scheduled and threaded API contexts separate:carry the unchanged accepted transport into a collector-only gcp/fetchers/_av_realtime_collector.py,delegate the existing job module main to it,and preserve the current API-imported fetch function. Reuse the AST-identical existing _normalize_av_response rather than duplicate financial normalization. The original job command stays unchanged. Retarget the three accepted test imports to the collector and add focused CLI/API-entry routing and normalization-parity checks. No spawned API process service or weakening of signal ownership is required. This is a separately recorded integration delta,not a claim that renamed/adapted current-head files already passed the original175tests. Runtime scope is the collector module and the original job entry;no other API behavior changes. Tests are the three focused files plus those necessary routing checks. No schema,shared helper,governance workflow,provider entitlement,credentials,security or network change. The API freshness fix,600configuration,news repairs and future journal remain separate plans/PRs. No Gamma formula,qualified-data evaluator or incomplete-data replacement logic is changed.
 
 Before publication,prove the narrow patch applies to actual MAIN without broad private files and identify differences from accepted source. Run focused validation only for changed dependencies or corrections;retain original175test/real PostgreSQL receipts without relabeling them as a new head. Normal committed-source documentation and own capability records remain required;no SITE or CI bypass.
 
