@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from collections import OrderedDict
+from contextlib import asynccontextmanager
 from typing import Optional
 
 import httpx
@@ -16,6 +17,7 @@ from cachetools import TTLCache
 from api.threadsafe_cache import MISS, ThreadSafeCache
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -35,7 +37,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.data_loader import DataLoader
 from lib.single_flight import SingleFlight
-from lib.eastern_time import ET, stored_intraday_to_eastern
+from lib.eastern_time import ET, is_session, market_today, stored_intraday_to_eastern
 from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health, glossary, grid, magnitude, earnings, waitlist, preferences, profile
 from api.auth import (
     AUTH_MODE,
@@ -65,7 +67,33 @@ try:
 except Exception:
     pass
 
-app = FastAPI(title="Trading Platform API", version="0.1.0")
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """Warm the shared NYSE calendar before the first request.
+
+    The first calendar call builds the schedule from 2000 onward, and async
+    handlers (the dashboard brief, the live quote and history) read the
+    calendar on the event loop, so a cold build there would stall every
+    concurrent request (CLAUDE.md 3.10, #1542). The build runs here in the
+    threadpool instead.
+
+    A failure does not stop the app, so the liveness probe keeps answering,
+    and it is not swallowed: it is logged with its traceback, nothing is
+    cached (lib.eastern_time never caches a failed build), and so the first
+    request that reads the calendar rebuilds it and raises the same error.
+    """
+    try:
+        await run_in_threadpool(is_session, market_today())
+    except Exception:
+        logger.exception(
+            "NYSE calendar warm-up failed; the first request that reads the "
+            "calendar retries the build and raises"
+        )
+    yield
+
+
+app = FastAPI(title="Trading Platform API", version="0.1.0", lifespan=_lifespan)
 
 
 # FastAPI's default 422 handler echoes the offending input; a non-finite
@@ -1483,10 +1511,10 @@ def _most_active_label(latest_ts, snapshot_date_str: str, now_utc: Optional[date
     regular trading session, else the ET snapshot_date string.
 
     "Regular trading session" reuses ``api.routers.live._is_market_open``
-    (weekend + ``MARKET_HOLIDAYS_2026``-aware) instead of a bare 09:30-16:00
-    ET clock-time check -- a fresh snapshot with a Saturday/holiday `now`
-    must not render "live" even though the clock time falls in RTH (T2
-    review, "Important"). ``live`` is already imported at module level
+    (the shared NYSE calendar in ``lib.eastern_time``: closures and half
+    days, any year) instead of a bare 09:30-16:00 ET clock-time check -- a
+    fresh snapshot with a Saturday/holiday `now` must not render "live"
+    even though the clock time falls in RTH (T2 review, "Important"). ``live`` is already imported at module level
     (see the ``from api.routers import live, ...`` block above), so no new
     import path or circular-import risk is introduced.
 

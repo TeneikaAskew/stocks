@@ -87,14 +87,16 @@ def test_dst_summer_uses_edt():
     assert most_recent_trading_day(now) == date(2026, 7, 15)
 
 
-def test_thanksgiving_friday_is_holiday():
-    """Black Friday 2026 (2026-11-27) is in the holiday set; Saturday
-    morning should walk back through Fri→Thu (Thanksgiving)→Wed."""
+def test_black_friday_is_the_most_recent_session_on_saturday():
+    """Black Friday 2026 (2026-11-27) is a half-day NYSE session (13:00 ET
+    close), so Saturday morning's most recent session is that Friday, not
+    Wednesday. FEAT-DATA-001: the old 2026-only holiday set listed it as
+    closed and this test expected 2026-11-25."""
     from scripts.audit_data_freshness import most_recent_trading_day
 
     # Sat 2026-11-28 at 10:00 ET = 15:00 UTC
     now = datetime(2026, 11, 28, 15, 0, 0)
-    assert most_recent_trading_day(now) == date(2026, 11, 25)  # Wed
+    assert most_recent_trading_day(now) == date(2026, 11, 27)  # Black Friday
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -772,3 +774,194 @@ def test_historical_signals_lag_detects_real_multi_day_outage(monkeypatch):
     fixed_row = _query_freshness_one(check, expected, now_utc=now)
     assert fixed_row.lag_hours == pytest.approx(72.08, abs=0.2)
     assert fixed_row.status == "stale", "fixed: entry_time preserves detection of a real outage"
+
+
+
+# ──────────────────────────────────────────────────────────────────────
+# FEAT-DATA-001: the shared NYSE calendar (lib/eastern_time.py)
+# ──────────────────────────────────────────────────────────────────────
+#
+# The audit used a hard-coded 2026-only holiday set (expired 2027-01-01,
+# #1076) and a fixed 20:00 UTC close (one hour early all winter, two hours
+# late on half days, #1066). These pin the replacement.
+
+
+def test_2027_holiday_skipped():
+    """17:00 ET on MLK Day 2027 (2027-01-18, closed): the most recent
+    session is Friday 2027-01-15, not the holiday itself."""
+    from scripts.audit_data_freshness import most_recent_trading_day
+
+    assert most_recent_trading_day(datetime(2027, 1, 18, 22, 0)) == date(2027, 1, 15)
+
+
+def test_black_friday_is_an_expected_session():
+    """Monday 2026-11-30 at 17:00 ET: the last three sessions are Monday,
+    Black Friday (a half day) and Wednesday; Thanksgiving is skipped."""
+    from scripts.audit_data_freshness import _recent_trading_days
+
+    assert _recent_trading_days(datetime(2026, 11, 30, 22, 0), 3) == [
+        date(2026, 11, 30), date(2026, 11, 27), date(2026, 11, 25),
+    ]
+
+
+def _date_check(name="x", lag=30):
+    return {"name": name, "ts_column": "d", "ts_is_date": True,
+            "expected_lag_hours": lag}
+
+
+def _ts_check(name="x", lag=30):
+    return {"name": name, "ts_column": "ts", "ts_is_date": False,
+            "expected_lag_hours": lag}
+
+
+_FIXED_NOW = datetime(2027, 6, 1, 12, 0)  # lag is measured close-to-close, not to now
+
+
+def test_winter_close_is_21_utc(monkeypatch):
+    """2026-01-15 is under EST: its 16:00 ET close is 21:00 UTC, for the
+    expected close and for a DATE row's close alike."""
+    from scripts.audit_data_freshness import _query_freshness_one
+
+    # Expected close: a row stamped 20:00 UTC is one hour before a 21:00 UTC
+    # close (the fixed 20:00 UTC close measured 0.0).
+    _patch_query(monkeypatch, pd.DataFrame([
+        {"last_row_at": datetime(2026, 1, 15, 20, 0), "row_count_recent": 1}]))
+    row = _query_freshness_one(_ts_check(), date(2026, 1, 15), now_utc=_FIXED_NOW)
+    assert row.lag_hours == 1.0
+
+    # Row close: a DATE row dated 2026-01-15 closes 21:00 UTC; expected
+    # Monday 2026-03-09 (EDT since 03-08) closes 20:00 UTC. 53 days less one
+    # hour = 1271 h (the fixed 20:00 UTC close on both sides gave 1272).
+    _patch_query(monkeypatch, pd.DataFrame([
+        {"last_row_at": date(2026, 1, 15), "row_count_recent": 1}]))
+    row = _query_freshness_one(_date_check(), date(2026, 3, 9), now_utc=_FIXED_NOW)
+    assert row.lag_hours == 1271.0
+
+    # Same-day winter DATE row against its own close: 0.
+    row = _query_freshness_one(_date_check(), date(2026, 1, 15), now_utc=_FIXED_NOW)
+    assert row.lag_hours == 0.0
+
+
+def test_half_day_close_is_18_utc(monkeypatch):
+    """Black Friday 2026-11-27 closes at 13:00 EST = 18:00 UTC."""
+    from scripts.audit_data_freshness import _query_freshness_one
+
+    # Expected close: a row stamped 17:00 UTC is one hour before an 18:00 UTC
+    # close (the fixed 20:00 UTC close measured 3.0).
+    _patch_query(monkeypatch, pd.DataFrame([
+        {"last_row_at": datetime(2026, 11, 27, 17, 0), "row_count_recent": 1}]))
+    row = _query_freshness_one(_ts_check(), date(2026, 11, 27), now_utc=_FIXED_NOW)
+    assert row.lag_hours == 1.0
+
+    # Row close: a DATE row dated 2026-11-27 closes 18:00 UTC; expected
+    # Monday 2026-11-30 closes 21:00 UTC (EST): 72 + 3 = 75 h (was 72).
+    _patch_query(monkeypatch, pd.DataFrame([
+        {"last_row_at": date(2026, 11, 27), "row_count_recent": 1}]))
+    row = _query_freshness_one(_date_check(), date(2026, 11, 30), now_utc=_FIXED_NOW)
+    assert row.lag_hours == 75.0
+
+
+def test_non_session_date_row_anchored_at_16_et(monkeypatch):
+    """premarket_analysis writes live briefs on weekday closures. A row dated
+    Thanksgiving 2026-11-26 is not a session, so it is anchored at 16:00 ET
+    that day (21:00 UTC under EST) and never handed to session_close, which
+    raises by contract for a non-session date (#1542 item 1)."""
+    from scripts.audit_data_freshness import (
+        CHECKS,
+        _date_row_close_utc,
+        _query_freshness_one,
+        most_recent_trading_day,
+    )
+
+    assert _date_row_close_utc(date(2026, 11, 26)) == datetime(2026, 11, 26, 21, 0)
+
+    check = next(c for c in CHECKS if c["name"] == "premarket_analysis")
+    now = datetime(2026, 11, 27, 22, 0)  # Black Friday 17:00 ET, after its close
+    expected = most_recent_trading_day(now, settle_hour_et=check.get("settle_hour_et", 16))
+    assert expected == date(2026, 11, 27)
+
+    _patch_query(monkeypatch, pd.DataFrame([
+        {"last_row_at": date(2026, 11, 26), "row_count_recent": 0}]))
+    row = _query_freshness_one(check, expected, ticker="SPY", now_utc=now)
+    # 2026-11-26 21:00 UTC to the half-day close 2026-11-27 18:00 UTC.
+    assert row.lag_hours == 21.0
+    assert row.status == "ok"
+    assert row.detail is None
+
+
+# ── calendar failure: one explicit nyse_calendar row, never a fallback ────
+
+
+@pytest.fixture
+def failing_calendar(monkeypatch):
+    """Every shared-calendar call raises RuntimeError("boom") (a cold cache
+    whose schedule build raises); the cache is dropped again afterwards."""
+    from lib import eastern_time
+
+    eastern_time._reset_session_cache()
+    message = {"text": "boom"}
+
+    def failing_build(first, last):
+        raise RuntimeError(message["text"])
+
+    monkeypatch.setattr(eastern_time, "_build_session_cache", failing_build)
+    yield message
+    monkeypatch.undo()
+    eastern_time._reset_session_cache()
+
+
+def _patch_non_calendar_checks(monkeypatch, mod):
+    """The checks that do not depend on sessions still run on a calendar
+    failure; give them a clean database."""
+    from gcp import database
+
+    monkeypatch.setattr(mod, "query_to_dataframe",
+                        lambda sql, params=None: pd.DataFrame([{"bad": 0}]))
+    monkeypatch.setattr(database, "table_exists", lambda t: False)
+
+
+def test_calendar_failure_is_unknown_and_strict_exits_2(monkeypatch, failing_calendar, capsys):
+    from scripts import audit_data_freshness as mod
+
+    _patch_non_calendar_checks(monkeypatch, mod)
+    now = datetime(2026, 10, 19, 22, 0)
+
+    report = mod.audit_all(now)
+    cal = [r for r in report.rows if r.table == "nyse_calendar"]
+    assert len(cal) == 1
+    assert cal[0].status == "unknown"
+    detail = cal[0].to_dict()["detail"]
+    assert "RuntimeError" in detail and "boom" in detail
+    assert "RuntimeError" in mod.format_terminal(report)
+    assert "boom" in mod.format_terminal(report)
+    assert report.to_dict()["tables"][0]["detail"] == detail
+    # No session-dependent check ran on a fabricated calendar.
+    assert not any(r.table.split(" ")[0] in {c["name"] for c in mod.CHECKS}
+                   for r in report.rows)
+
+    # A long message is capped at 300 characters.
+    failing_calendar["text"] = "x" * 1000
+    long_row = next(r for r in mod.audit_all(now).rows if r.table == "nyse_calendar")
+    assert len(long_row.detail) == 300
+    assert long_row.detail.startswith("RuntimeError: xxx")
+
+    # --strict exits 2 and the terminal output carries the detail.
+    failing_calendar["text"] = "boom"
+    monkeypatch.setattr(mod, "is_cloud_sql_configured", lambda: True)
+    monkeypatch.setattr(mod.sys, "argv", ["audit_data_freshness.py", "--strict"])
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
+    assert exc.value.code == 2
+    out = capsys.readouterr().out
+    assert "nyse_calendar" in out
+    assert "RuntimeError: boom" in out
+
+    # And the JSON form carries it too.
+    monkeypatch.setattr(mod.sys, "argv", ["audit_data_freshness.py", "--strict", "--json"])
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
+    assert exc.value.code == 2
+    import json
+    tables = json.loads(capsys.readouterr().out)["tables"]
+    assert any(t["table"] == "nyse_calendar" and "RuntimeError: boom" in t["detail"]
+               for t in tables)

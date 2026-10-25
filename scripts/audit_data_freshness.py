@@ -9,7 +9,8 @@ and compares against expected cadence. Catches failures like the April 13
 Usage:
     python scripts/audit_data_freshness.py                  # Pretty terminal table
     python scripts/audit_data_freshness.py --json           # JSON output
-    python scripts/audit_data_freshness.py --strict         # Exit 1 if any table is stale (for CI)
+    python scripts/audit_data_freshness.py --strict         # Exit 1 if any table is stale (for CI),
+                                                            # 2 if the NYSE calendar failed
 
 Required env vars: CLOUD_SQL_CONNECTION_NAME, DB_USER, DB_PASS, DB_NAME
 """
@@ -29,7 +30,15 @@ from zoneinfo import ZoneInfo
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-from lib.eastern_time import ET
+from lib.eastern_time import (
+    ET,
+    as_utc_instant,
+    is_session,
+    latest_session_on_or_before,
+    localize_assuming_eastern,
+    previous_session,
+    session_close,
+)
 
 from gcp.database import is_cloud_sql_configured, query_to_dataframe  # noqa: E402
 
@@ -362,21 +371,74 @@ CHECKS: list[dict] = [
 
 # ── Domain helpers ───────────────────────────────────────────────────────────
 
-# Market holidays for 2026 (NYSE). Used to avoid false "stale" alerts
-# when the most recent expected trading session was a holiday.
-MARKET_HOLIDAYS_2026 = {
-    date(2026, 1, 1),    # New Year's
-    date(2026, 1, 19),   # MLK Day
-    date(2026, 2, 16),   # Presidents Day
-    date(2026, 4, 3),    # Good Friday
-    date(2026, 5, 25),   # Memorial Day
-    date(2026, 6, 19),   # Juneteenth
-    date(2026, 7, 3),    # Independence Day observed
-    date(2026, 9, 7),    # Labor Day
-    date(2026, 11, 26),  # Thanksgiving
-    date(2026, 11, 27),  # Black Friday (early close, treated as closed)
-    date(2026, 12, 25),  # Christmas
-}
+# Sessions and closes come from the shared NYSE calendar in
+# lib/eastern_time.py (FEAT-DATA-001). It replaced a hard-coded 2026-only
+# holiday set (which expired on 2027-01-01, #1076, and listed Black Friday,
+# a 13:00 ET half day, as closed) and a fixed 20:00 UTC close (16:00 ET only
+# under EDT; one hour early all winter and two hours late on half days,
+# #1066).
+#
+# The calendar fails loud (CLAUDE.md 3.7). Every call goes through
+# _calendar(), which re-raises any error as CalendarUnavailable so
+# audit_all() can tell a calendar failure apart from any other failure and
+# report it as ONE explicit `nyse_calendar` row with status "unknown" (and
+# `--strict` exit 2), instead of crashing the whole report or falling back to
+# weekdays.
+
+#: Row name of the explicit calendar-failure row (see audit_all).
+CALENDAR_ROW = "nyse_calendar"
+
+#: `FreshnessRow.detail` is capped at this many characters.
+_DETAIL_MAX_CHARS = 300
+
+#: The report header's expected close when the calendar could not answer.
+_HEADER_DATE_UNAVAILABLE = "unknown (NYSE calendar unavailable)"
+
+
+class CalendarUnavailable(RuntimeError):
+    """The shared NYSE calendar raised. ``cause`` is the original exception."""
+
+    def __init__(self, cause: BaseException):
+        super().__init__(f"{type(cause).__name__}: {cause}")
+        self.cause = cause
+
+
+def _calendar(fn, *args):
+    """Call one shared-calendar function; any error becomes CalendarUnavailable."""
+    try:
+        return fn(*args)
+    except Exception as exc:
+        raise CalendarUnavailable(exc) from exc
+
+
+def _exception_detail(exc: BaseException) -> str:
+    """``"<Type>: <message>"`` capped at _DETAIL_MAX_CHARS, for FreshnessRow.detail."""
+    return f"{type(exc).__name__}: {exc}"[:_DETAIL_MAX_CHARS]
+
+
+def _session_close_utc(day: date) -> datetime:
+    """Session *day*'s real close as a naive UTC datetime (the lag math's frame).
+
+    16:00 ET is 20:00 UTC under EDT and 21:00 UTC under EST; a half day closes
+    at 13:00 ET (18:00 UTC on 2026-11-27).
+    """
+    return _calendar(session_close, day).replace(tzinfo=None)  # tz-ok: session_close is aware UTC; drop the label only
+
+
+def _date_row_close_utc(day: date) -> datetime:
+    """Where a DATE row dated *day* is anchored, as a naive UTC datetime.
+
+    A session date is anchored at its real close. A non-session date is
+    legitimate for some checks (premarket_analysis writes live briefs on
+    weekday closures, the case gcp/premarket_playbook_resolver already
+    classifies as benign), so it is
+    anchored at 16:00 Eastern that day, DST-correct, and never passed to
+    session_close, which raises by contract for a non-session date.
+    """
+    if _calendar(is_session, day):
+        return _session_close_utc(day)
+    sixteen_et = localize_assuming_eastern(datetime.combine(day, time(16, 0)))
+    return as_utc_instant(sixteen_et).replace(tzinfo=None)  # tz-ok: converted to UTC first; drop the label only
 
 
 def most_recent_trading_day(
@@ -420,6 +482,10 @@ def most_recent_trading_day(
 
     Converts UTC to America/New_York to handle EDT/EST correctly (UTC-4
     in summer, UTC-5 in winter) before checking against settle_hour_et.
+
+    Sessions come from the shared NYSE calendar (lib/eastern_time.py), so
+    holidays are skipped in every year and half days such as Black Friday
+    are sessions. A calendar failure raises CalendarUnavailable.
     """
     et_now = now_utc.replace(tzinfo=ZoneInfo("UTC")).astimezone(ET)
     # Step 1: anchor on the most recent CALENDAR day whose settle-hour
@@ -432,21 +498,17 @@ def most_recent_trading_day(
     if et_now.time() < time(settle_hour_et, 0, 0):
         cron_day = cron_day - timedelta(days=1)
     # Step 2: convert cron_day to the trading-day whose data was written.
-    # For lag=0 (writer fires same-day): walk back from cron_day to the
-    # nearest trading day (handles Sun/Sat/holiday cron_days).
+    # For lag=0 (writer fires same-day): the latest session on or before
+    # cron_day (handles Sun/Sat/holiday cron_days).
     # For lag=N (writer fires N trading days AFTER the data, e.g.
     # av-intraday-nightly Tue 21 ET writes Mon's bars): walk back N
-    # trading days from cron_day.
-    data_day = cron_day
+    # sessions from cron_day.
     walks_remaining = max(settle_lag_days, 0)
     if walks_remaining == 0:
-        while data_day.weekday() >= 5 or data_day in MARKET_HOLIDAYS_2026:
-            data_day = data_day - timedelta(days=1)
-    else:
-        for _ in range(walks_remaining):
-            data_day = data_day - timedelta(days=1)
-            while data_day.weekday() >= 5 or data_day in MARKET_HOLIDAYS_2026:
-                data_day = data_day - timedelta(days=1)
+        return _calendar(latest_session_on_or_before, cron_day)
+    data_day = cron_day
+    for _ in range(walks_remaining):
+        data_day = _calendar(previous_session, data_day)
     return data_day
 
 
@@ -470,6 +532,11 @@ class FreshnessRow:
     # output and the terminal `format_terminal` summary. Added 2026-06-02
     # for the F11 silent-fallback follow-up.
     writer_job: Optional[str] = None
+    # Optional: why the row is what it is, when the other fields cannot say
+    # it -- e.g. the `nyse_calendar` row carries the calendar exception's
+    # type and message, capped at _DETAIL_MAX_CHARS. Shown in the JSON report,
+    # the terminal output and GET /api/health/freshness.
+    detail: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -593,8 +660,9 @@ def _query_freshness_one(
 
     # Normalize last_row_at to a naive UTC datetime for lag math.
     if isinstance(last_row_at, date) and not isinstance(last_row_at, datetime):
-        # DATE column — assume 16:00 ET = 20:00 UTC (market close) for lag
-        last_dt = datetime.combine(last_row_at, time(20, 0, 0))
+        # DATE column — its session's real close, or 16:00 ET on a non-session
+        # date (see _date_row_close_utc).
+        last_dt = _date_row_close_utc(last_row_at)
     else:
         # TIMESTAMPTZ — convert to naive UTC
         last_dt = last_row_at
@@ -604,12 +672,10 @@ def _query_freshness_one(
     # Measure lag relative to expected session close, not wall clock.
     # Wall-clock lag inflates over weekends/holidays (e.g., Friday data looks
     # 65h old on Monday morning), causing false stale alarms.
-    # ISSUE-1066: this 20:00 UTC is only 16:00 ET during EDT; under EST
-    # (winter) 16:00 ET is 21:00 UTC, so lag_hours under-counts by up to 1h
-    # for every check in CHECKS, not just this one. See issue for why a
-    # fix belongs in a dedicated PR (ET-aware close, full regression
-    # across every check) rather than here.
-    expected_close_dt = datetime.combine(expected_date, time(20, 0, 0))  # 4 PM ET = 20:00 UTC
+    # The close is the session's real one (#1066): 20:00 UTC under EDT,
+    # 21:00 UTC under EST, 18:00 UTC on a 13:00 ET half day. expected_date is
+    # always a session (most_recent_trading_day returns sessions only).
+    expected_close_dt = _session_close_utc(expected_date)
     lag_hours = max(0, (expected_close_dt - last_dt).total_seconds() / 3600.0)
     expected_max = check["expected_lag_hours"]
 
@@ -660,12 +726,9 @@ def _recent_trading_days(
     end = most_recent_trading_day(
         now_utc, settle_hour_et=settle_hour_et, settle_lag_days=settle_lag_days,
     )
-    days: list[date] = []
-    d = end
+    days: list[date] = [end] if n > 0 else []
     while len(days) < n:
-        if d.weekday() < 5 and d not in MARKET_HOLIDAYS_2026:
-            days.append(d)
-        d = d - timedelta(days=1)
+        days.append(_calendar(previous_session, days[-1]))
     return days
 
 
@@ -1318,15 +1381,63 @@ def audit_all(now_utc: Optional[datetime] = None) -> FreshnessReport:
     market-close → fetcher-run window.
     """
     now = now_utc or datetime.now(UTC).replace(tzinfo=None)
+    report = FreshnessReport(
+        checked_at=now.isoformat() + "Z",
+        expected_market_close=_HEADER_DATE_UNAVAILABLE,
+    )
+
+    # A calendar failure is caught ONCE, here: CalendarUnavailable is raised
+    # only by _calendar(), so no other failure is mistaken for it. The
+    # session-dependent checks stop at the failure (rows they already
+    # produced stay), the explicit nyse_calendar row says why, and the
+    # session-independent checks still run. No check falls back to weekdays.
+    calendar_error: CalendarUnavailable | None = None
+    try:
+        _session_dependent_checks(report, now)
+    except CalendarUnavailable as exc:
+        calendar_error = exc
+        log.error("NYSE calendar unavailable; session-dependent checks not run: %s",
+                  exc.cause)
+        report.rows.append(_calendar_failure_row(exc.cause))
+
+    # Value sanity across tables — only reports failures
+    report.rows.extend(_timed("value_sanity", _query_value_sanity, now))
+
+    if calendar_error is None:
+        try:
+            _session_dependent_late_checks(report, now)
+        except CalendarUnavailable as exc:
+            log.error("NYSE calendar unavailable; session-dependent checks not run: %s",
+                      exc.cause)
+            report.rows.append(_calendar_failure_row(exc.cause))
+
+    # Duration-regression: capacity drift trends from job_runs, warned
+    # on BEFORE a task-timeout cliff. Only reports offenders.
+    report.rows.extend(_timed("job_duration_regression", _query_job_duration_regression, now))
+
+    return report
+
+
+def _calendar_failure_row(cause: BaseException) -> FreshnessRow:
+    """The one explicit row a calendar failure produces (status unknown)."""
+    return FreshnessRow(
+        table=CALENDAR_ROW,
+        ticker=None,
+        last_row_at=None,
+        expected_latest="NYSE sessions (lib/eastern_time.py)",
+        lag_hours=None,
+        expected_max_hours=0,
+        status="unknown",
+        detail=_exception_detail(cause),
+    )
+
+
+def _session_dependent_checks(report: FreshnessReport, now: datetime) -> None:
+    """The per-table freshness and gap-scan checks; raise CalendarUnavailable."""
     # The "global" expected_date is anchored at market close (16 ET) for
     # the report header only — actual freshness checks use per-CHECK
     # settle_hour_et below.
-    expected_date_for_header = most_recent_trading_day(now)
-
-    report = FreshnessReport(
-        checked_at=now.isoformat() + "Z",
-        expected_market_close=expected_date_for_header.isoformat(),
-    )
+    report.expected_market_close = most_recent_trading_day(now).isoformat()
 
     for check in CHECKS:
         check_settle = check.get("settle_hour_et", 16)
@@ -1342,9 +1453,9 @@ def audit_all(now_utc: Optional[datetime] = None) -> FreshnessReport:
         # Gap scan: only reports failing (ticker, day) combinations
         report.rows.extend(_query_gap_scan(check, now))
 
-    # Value sanity across tables — only reports failures
-    report.rows.extend(_timed("value_sanity", _query_value_sanity, now))
 
+def _session_dependent_late_checks(report: FreshnessReport, now: datetime) -> None:
+    """Column nullity and enrichment coverage; raise CalendarUnavailable."""
     # Column-nullity checks — flag tables whose rows ARE writing on
     # schedule but a critical column is silently NULL because an upstream
     # source froze (the 2026-06 ^VIX/gamma cascade signature). Only
@@ -1355,12 +1466,6 @@ def audit_all(now_utc: Optional[datetime] = None) -> FreshnessReport:
     # 02:30 ET indicator-enrich stage; a break there must page directly
     # instead of surfacing as a downstream job's timeout (issue #751).
     report.rows.extend(_timed("enrichment_coverage", _query_enrichment_coverage, now))
-
-    # Duration-regression: capacity drift trends from job_runs, warned
-    # on BEFORE a task-timeout cliff. Only reports offenders.
-    report.rows.extend(_timed("job_duration_regression", _query_job_duration_regression, now))
-
-    return report
 
 
 # ── Output formats ───────────────────────────────────────────────────────────
@@ -1405,6 +1510,8 @@ def format_terminal(report: FreshnessReport) -> str:
         # operator doesn't have to grep deploy.sh to know who to debug.
         if r.writer_job and r.status in ("stale", "warn"):
             lines.append(f"  {DIM}    └─ writer-job: {r.writer_job}{RESET}")
+        if r.detail:
+            lines.append(f"  {DIM}    └─ detail: {r.detail}{RESET}")
         if r.status == "stale":
             # Keep the compact table, but preserve the full finding contract
             # for execution-log alerts: display truncation must not hide the
@@ -1426,7 +1533,8 @@ def main():
         description="Audit Cloud SQL data freshness across the platform."
     )
     parser.add_argument("--json", action="store_true", help="Output JSON instead of a pretty table")
-    parser.add_argument("--strict", action="store_true", help="Exit 1 if any table is stale (for CI)")
+    parser.add_argument("--strict", action="store_true",
+                        help="Exit 1 if any table is stale, 2 if the NYSE calendar failed (for CI)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.WARNING, format="%(message)s")
@@ -1449,6 +1557,10 @@ def main():
     else:
         print(format_terminal(report))
 
+    # A calendar failure left the session-dependent checks unrun, so the
+    # report cannot vouch for freshness at all: exit 2, distinct from 1.
+    if args.strict and any(r.table == CALENDAR_ROW for r in report.rows):
+        sys.exit(2)
     if args.strict and report.overall_status == "stale":
         sys.exit(1)
 

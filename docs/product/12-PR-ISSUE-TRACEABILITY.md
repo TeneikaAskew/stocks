@@ -341,7 +341,7 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and sol
 | [#1076](https://github.com/TeneikaAskew/stocks/issues/1076) | DEBT | `MARKET_HOLIDAYS_2026` is a single-year constant; holiday-aware checks break in 2027 |
 | [#1190](https://github.com/TeneikaAskew/stocks/issues/1190) | UNTRIAGED | Recompute tooling for bar-derived results after the intraday re-framing migration |
 
-**PR lineage:** [#204](https://github.com/TeneikaAskew/stocks/pull/204) *evolution* · [#205](https://github.com/TeneikaAskew/stocks/pull/205) *structural* · [#322](https://github.com/TeneikaAskew/stocks/pull/322) *remediation* · [#325](https://github.com/TeneikaAskew/stocks/pull/325) *evolution* · [#339](https://github.com/TeneikaAskew/stocks/pull/339) *remediation* · [#518](https://github.com/TeneikaAskew/stocks/pull/518) *remediation* · [#760](https://github.com/TeneikaAskew/stocks/pull/760) *remediation*
+**PR lineage:** [#204](https://github.com/TeneikaAskew/stocks/pull/204) *evolution* · [#205](https://github.com/TeneikaAskew/stocks/pull/205) *structural* · [#322](https://github.com/TeneikaAskew/stocks/pull/322) *remediation* · [#325](https://github.com/TeneikaAskew/stocks/pull/325) *evolution* · [#339](https://github.com/TeneikaAskew/stocks/pull/339) *remediation* · [#518](https://github.com/TeneikaAskew/stocks/pull/518) *remediation* · [#760](https://github.com/TeneikaAskew/stocks/pull/760) *remediation* · [#1546](https://github.com/TeneikaAskew/stocks/pull/1546) *evolution: shared NYSE session calendar*
 
 ### FEAT-OPTION-001 — Options / gamma (33 open)
 

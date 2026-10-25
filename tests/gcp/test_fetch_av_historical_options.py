@@ -346,6 +346,24 @@ def test_trading_days_skips_market_holiday():
     assert out == ["2026-05-22", "2026-05-26", "2026-05-27"]
 
 
+def test_trading_days_raises_without_calendar(monkeypatch):
+    """No Mon-Fri fallback: with the library unimportable the weekday list used
+    to include Memorial Day, so a backfill spent an AV call on a closed day."""
+    import sys
+
+    from gcp.fetchers.fetch_av_historical_options import _trading_days
+    from lib import eastern_time
+
+    eastern_time._reset_session_cache()
+    monkeypatch.setitem(sys.modules, "pandas_market_calendars", None)
+    try:
+        with pytest.raises(ImportError):
+            _trading_days(date(2026, 5, 22), date(2026, 5, 26))
+    finally:
+        monkeypatch.undo()
+        eastern_time._reset_session_cache()
+
+
 # ──────────────────────────────────────────────────────────────────────
 # _resolve_start_from_latest — self-resuming start date
 # ──────────────────────────────────────────────────────────────────────

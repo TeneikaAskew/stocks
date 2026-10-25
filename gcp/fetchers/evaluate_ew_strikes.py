@@ -64,7 +64,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from lib.eastern_time import ET, ET_NAME  # noqa: E402
+from lib.eastern_time import ET, ET_NAME, session_schedule  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -197,12 +197,11 @@ def nyse_sessions(start: date, end: date) -> pd.DataFrame:
     """NYSE sessions in [start, end]: indexed by session date, with UTC
     `market_open` / `market_close` (early closes included).
 
-    `pandas_market_calendars` is a hard dependency (requirements-gcp.txt).
+    Read from the shared NYSE calendar (`lib.eastern_time`, FEAT-DATA-001).
     There is no weekday fallback: a guessed session is the defect #1151
     fixed, so a missing calendar must fail the run.
     """
-    import pandas_market_calendars as mcal
-    return mcal.get_calendar("NYSE").schedule(start_date=start, end_date=end)
+    return session_schedule(start, end)
 
 
 def scoring_session(earnings_date: date, earnings_time: Optional[str],

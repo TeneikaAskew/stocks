@@ -1900,6 +1900,26 @@
         "title": "Degeneracy",
         "type": "object"
       },
+      "EarlyClose": {
+        "additionalProperties": true,
+        "description": "A half-day session: its date and its Eastern close, ``HH:MM``.",
+        "properties": {
+          "close": {
+            "title": "Close",
+            "type": "string"
+          },
+          "date": {
+            "title": "Date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "date",
+          "close"
+        ],
+        "title": "EarlyClose",
+        "type": "object"
+      },
       "EmaConfig": {
         "additionalProperties": true,
         "properties": {
@@ -2291,6 +2311,17 @@
       "FreshnessRow": {
         "additionalProperties": true,
         "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
           "expected_latest": {
             "title": "Expected Latest",
             "type": "string"
@@ -4722,9 +4753,24 @@
       },
       "MarketHoursResponse": {
         "additionalProperties": true,
+        "description": "``holidays`` and ``early_closes`` cover the current and next Eastern\nyear. ``holidays_2026`` is kept for solyra's replay picker until Spec C\nmoves it to ``holidays`` and removes it.",
         "properties": {
           "after_hours": {
             "$ref": "#/components/schemas/MarketHoursWindow"
+          },
+          "early_closes": {
+            "items": {
+              "$ref": "#/components/schemas/EarlyClose"
+            },
+            "title": "Early Closes",
+            "type": "array"
+          },
+          "holidays": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Holidays",
+            "type": "array"
           },
           "holidays_2026": {
             "items": {
@@ -4749,7 +4795,9 @@
           "regular",
           "pre_market",
           "after_hours",
-          "holidays_2026"
+          "holidays_2026",
+          "holidays",
+          "early_closes"
         ],
         "title": "MarketHoursResponse",
         "type": "object"
@@ -11378,7 +11426,7 @@
     },
     "/api/config/market-hours": {
       "get": {
-        "description": "Return US equity market session windows + 2026 holidays.",
+        "description": "Return US equity market session windows, holidays and early closes.\n\n``holidays`` and ``early_closes`` cover the current and next year by the\nEastern date, so the window rolls at 00:00 ET on 1 January. Half days\nare sessions, so they are in ``early_closes`` and never in ``holidays``.\n``holidays_2026`` is kept, filled from the same calendar, for solyra's\nreplay picker until Spec C moves it to ``holidays`` and removes it.\nA calendar failure raises (CLAUDE.md 3.7); nothing is filled in.",
         "operationId": "get_market_hours_api_config_market_hours_get",
         "responses": {
           "200": {

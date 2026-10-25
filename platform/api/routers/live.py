@@ -9,7 +9,7 @@ import logging
 import math
 import os
 import sys
-from datetime import datetime, time, date
+from datetime import datetime, time
 from pathlib import Path
 from typing import Optional
 
@@ -31,7 +31,7 @@ except Exception:
     _CLOUD_SQL = False
     query_to_dataframe = None  # type: ignore[assignment]
 
-from lib.eastern_time import ET
+from lib.eastern_time import ET, eastern_now, is_session, next_session, session_close
 
 # Canonical indicator implementations — single source of truth.
 from lib.indicators import (
@@ -101,80 +101,63 @@ AV_BASE = "https://www.alphavantage.co/query"
 
 ET_TZ = ET
 
-# Regular market hours in Eastern Time
+# Regular market hours in Eastern Time. MARKET_CLOSE is the close of a full
+# session; a half day closes earlier, so the status functions below read each
+# day's real close from the shared NYSE calendar (session_close) instead.
 MARKET_OPEN = time(9, 30, 0)
 MARKET_CLOSE = time(16, 0, 0)
-
-# US market holidays (add more as needed)
-MARKET_HOLIDAYS_2026 = {
-    date(2026, 1, 1),   # New Year's Day
-    date(2026, 1, 19),  # MLK Day
-    date(2026, 2, 16),  # Presidents' Day
-    date(2026, 4, 3),   # Good Friday
-    date(2026, 5, 25),  # Memorial Day
-    date(2026, 7, 3),   # Independence Day (observed)
-    date(2026, 9, 7),   # Labor Day
-    date(2026, 11, 26), # Thanksgiving
-    date(2026, 11, 27), # Black Friday (early close, treated as closed)
-    date(2026, 12, 25), # Christmas
-}
+PRE_MARKET_OPEN = time(4, 0, 0)
+AFTER_HOURS_CLOSE = time(20, 0, 0)
 
 
 def _is_market_open(now_et: datetime) -> tuple[bool, str]:
-    """Return (is_open, session) for the given Eastern Time datetime."""
+    """Return (is_open, session) for the given Eastern Time datetime.
+
+    Holidays and half days come from the shared NYSE calendar
+    (``lib.eastern_time``, FEAT-DATA-001), any year: a day that is not a
+    session is ``"closed"`` all day, and the regular session ends at that
+    day's real close (13:00 ET on a half day), when after-hours begins. A
+    calendar failure raises; there is no weekday-only fallback (CLAUDE.md 3.7).
+    """
     today = now_et.date()
+    if not is_session(today):
+        return False, "closed"
+
     current_time = now_et.time()
+    close = session_close(today).astimezone(ET_TZ).time()
 
-    # Weekends
-    if today.weekday() >= 5:
-        return False, "closed"
-
-    # Holidays
-    if today in MARKET_HOLIDAYS_2026:
-        return False, "closed"
-
-    # Regular session
-    if MARKET_OPEN <= current_time < MARKET_CLOSE:
+    if MARKET_OPEN <= current_time < close:
         return True, "regular"
-
-    # Pre-market: 4:00 AM - 9:30 AM ET
-    if time(4, 0, 0) <= current_time < MARKET_OPEN:
+    if PRE_MARKET_OPEN <= current_time < MARKET_OPEN:
         return False, "pre-market"
-
-    # After-hours: 4:00 PM - 8:00 PM ET
-    if MARKET_CLOSE <= current_time < time(20, 0, 0):
+    if close <= current_time < AFTER_HOURS_CLOSE:
         return False, "after-hours"
-
     return False, "closed"
 
 
 def _next_open_et(now_et: datetime) -> str | None:
-    """Return the next market open as ISO string, or None if market is currently open."""
+    """Return the next market open as a naive ET ``YYYY-MM-DD HH:MM:SS``
+    string, or None when the market is open now.
+
+    Today at 09:30 when today is a session and it is not yet 09:30, otherwise
+    the next NYSE session at 09:30.
+    """
     is_open, _ = _is_market_open(now_et)
     if is_open:
         return None
 
-    # Walk forward day by day until we find a trading day
-    check = now_et.date()
-    # If today after close, start from tomorrow
-    if now_et.time() >= MARKET_CLOSE and check.weekday() < 5:
-        import datetime as dt
-        check = check + dt.timedelta(days=1)
-
-    import datetime as dt
-    for _ in range(10):
-        if check.weekday() < 5 and check not in MARKET_HOLIDAYS_2026:
-            next_open = datetime.combine(check, MARKET_OPEN)
-            return next_open.strftime("%Y-%m-%d %H:%M:%S")
-        check = check + dt.timedelta(days=1)
-
-    return None
+    today = now_et.date()
+    if is_session(today) and now_et.time() < MARKET_OPEN:
+        day = today
+    else:
+        day = next_session(today)
+    return datetime.combine(day, MARKET_OPEN).strftime("%Y-%m-%d %H:%M:%S")
 
 
 @router.get("/api/live/status", response_model=LiveStatusResponse, response_model_exclude_unset=True)
 def get_market_status():
     """Return current market open/closed status based on Eastern Time."""
-    now_et = datetime.now(ET_TZ)
+    now_et = eastern_now()
     is_open, session = _is_market_open(now_et)
     next_open = _next_open_et(now_et)
 

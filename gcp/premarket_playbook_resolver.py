@@ -51,7 +51,7 @@ Usage:
 """
 from __future__ import annotations
 
-from lib.eastern_time import ET
+from lib.eastern_time import ET, is_session
 import logging
 import os
 import sys
@@ -62,21 +62,15 @@ from typing import Optional
 import pandas as pd
 from sqlalchemy import text
 
-# Same NYSE holiday set audit_data_freshness.py uses to avoid false
-# "stale" alerts — reused here so a holiday date (a weekday brief row
-# with no session, per pending_dates()'s docstring) doesn't get
-# classified as a resolver failure. One source of truth for the
-# calendar rather than a second hardcoded list drifting from it.
-#
-# NYSE_FULL_CLOSURES excludes Black Friday: audit_data_freshness.py's own
-# comment says it's "early close, treated as closed" — a deliberate
-# leniency for ITS staleness check, not a real closure. NYSE trades an
-# abbreviated session that day, so intraday bars do land, and zero
-# resolved rows on it is a real gap this resolver must still flag red,
-# not the never-any-bars case the rest of the set represents.
-from scripts.audit_data_freshness import MARKET_HOLIDAYS_2026
-
-NYSE_FULL_CLOSURES = MARKET_HOLIDAYS_2026 - {date(2026, 11, 27)}
+# Holiday recognition reads the shared NYSE calendar
+# (lib/eastern_time.is_session, FEAT-DATA-001), so a holiday date (a weekday
+# brief row with no session, per pending_dates()'s docstring) is not
+# classified as a resolver failure in any year. It replaced a 2026-only set
+# imported from scripts/audit_data_freshness.py, which expired on 2027-01-01
+# (#1076). Half days are sessions: NYSE trades until 13:00 ET on Black
+# Friday, intraday bars do land, and zero resolved rows on it is a real gap
+# this resolver must still flag red. A calendar failure raises (CLAUDE.md
+# §3.7): there is no weekday-only fallback.
 
 logger = logging.getLogger(__name__)
 
@@ -531,8 +525,8 @@ def pending_dates(engine, today_et: date, lookback_days: int) -> list[date]:
     # naive `isinstance(d, date)` check this used to have is true for BOTH
     # and never normalizes the Timestamp. A Timestamp then compares unequal
     # to every plain `date` it's checked against downstream — `analysis_date
-    # == now_et.date()` and `analysis_date in NYSE_FULL_CLOSURES` are both
-    # always False for it (Python: comparing a date/datetime across classes
+    # == now_et.date()` and the old 2026 holiday-set membership test were
+    # both always False for it (Python: comparing a date/datetime across classes
     # is never equal), so classify_date_outcome's benign_pending AND
     # benign_holiday cases were both unreachable from this sweep in
     # production. Check datetime first so a Timestamp gets .date()'d; a
@@ -581,7 +575,7 @@ def classify_date_outcome(analysis_date: date, n_resolved: int, n_skipped: int,
         return 'ok'
     if analysis_date == now_et.date():
         return 'benign_pending'
-    if analysis_date in NYSE_FULL_CLOSURES:
+    if not is_session(analysis_date):
         return 'benign_holiday'
     return 'failed'
 
