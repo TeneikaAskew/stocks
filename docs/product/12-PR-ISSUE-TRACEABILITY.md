@@ -452,6 +452,8 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and sol
 
 **PR lineage:** [#502](https://github.com/TeneikaAskew/stocks/pull/502) *origin* · [#503](https://github.com/TeneikaAskew/stocks/pull/503) *origin* · [#505](https://github.com/TeneikaAskew/stocks/pull/505) *origin* · [#757](https://github.com/TeneikaAskew/stocks/pull/757) *origin* · [#1380](https://github.com/TeneikaAskew/stocks/pull/1380) *evolution* · [#1387](https://github.com/TeneikaAskew/stocks/pull/1387) *evolution* · [#1398](https://github.com/TeneikaAskew/stocks/pull/1398) *evolution* · [#1464](https://github.com/TeneikaAskew/stocks/pull/1464) *evolution* · [#1512](https://github.com/TeneikaAskew/stocks/pull/1512) *evolution* · [#1470](https://github.com/TeneikaAskew/stocks/pull/1470) *merged: committed-source verifier; authenticated CODE review and CI completed; actual-main/local-tool close-out checked* · [#1536](https://github.com/TeneikaAskew/stocks/pull/1536) *evolution* · [#1538](https://github.com/TeneikaAskew/stocks/pull/1538) *merged: complete generated-inventory verification; authenticated CODE review and CI completed; actual-main/local-tool close-out checked* · [#1591](https://github.com/TeneikaAskew/stocks/pull/1591) *pinned CI-envelope preparation only; live activation pending*
 
+Live registry continuation: [#1599](https://github.com/TeneikaAskew/stocks/pull/1599), bound to merged measured acceptance [#1594](https://github.com/TeneikaAskew/stocks/pull/1594), retains [#1592](https://github.com/TeneikaAskew/stocks/pull/1592) original59b9a309 timing and review history. Only live timeout5to6 matching separately merged pin6; final hosted verification pending.
+
 ### FEAT-AUTH-001 — Auth / security (13 open)
 
 | Issue | Sev | Title |
