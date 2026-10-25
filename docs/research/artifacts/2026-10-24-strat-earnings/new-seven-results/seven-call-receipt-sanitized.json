@@ -1,0 +1,141 @@
+{
+  "status": "COMPLETED_NEW_SEVEN_SINGLE_ATTEMPT_NEWS_READS",
+  "actual_provider_request_count": 7,
+  "automatic_retries": 0,
+  "redirect_replay": false,
+  "hard_request_wall_seconds": 30,
+  "max_response_bytes": 4194304,
+  "hard_whole_batch_seconds": 240,
+  "max_batch_response_bytes": 29360128,
+  "wall_seconds": 93.36090044799494,
+  "unattempted": [],
+  "original_receipt_sha256": "f446e1cb211fb00492c9efd0fefab8469542404e4452e6770fc1d229acadb0c6",
+  "requests": [
+    {
+      "call_id": "FDX",
+      "params_without_credential": {
+        "function": "NEWS_SENTIMENT",
+        "tickers": "FDX",
+        "time_from": "20260621T2002",
+        "time_to": "20260623T2002",
+        "sort": "EARLIEST",
+        "limit": 1000
+      },
+      "started_at": "2026-10-24T23:57:10.768508+00:00",
+      "ended_at": "2026-10-24T23:57:11.652768+00:00",
+      "http_status": 200,
+      "status": "HTTP200_NEWS_FEED_CAPTURED_COVERAGE_ONLY",
+      "raw_bytes": 51277,
+      "raw_sha256": "8eb0aba39c43a583944d29d28e9e3abdf797224967cde6a58358fc349b58f435",
+      "request_wall_seconds": 0.8842760940024164
+    },
+    {
+      "call_id": "LLY",
+      "params_without_credential": {
+        "function": "NEWS_SENTIMENT",
+        "tickers": "LLY",
+        "time_from": "20260803T1045",
+        "time_to": "20260805T1045",
+        "sort": "EARLIEST",
+        "limit": 1000
+      },
+      "started_at": "2026-10-24T23:57:25.768686+00:00",
+      "ended_at": "2026-10-24T23:57:26.512067+00:00",
+      "http_status": 200,
+      "status": "HTTP200_NEWS_FEED_CAPTURED_COVERAGE_ONLY",
+      "raw_bytes": 87438,
+      "raw_sha256": "c13152642129384e184aa3b4f1658612cc17c8d1616d61065073291c406a6274",
+      "request_wall_seconds": 0.7434361170016928
+    },
+    {
+      "call_id": "STX",
+      "params_without_credential": {
+        "function": "NEWS_SENTIMENT",
+        "tickers": "STX",
+        "time_from": "20260726T2005",
+        "time_to": "20260728T2005",
+        "sort": "EARLIEST",
+        "limit": 1000
+      },
+      "started_at": "2026-10-24T23:57:40.768805+00:00",
+      "ended_at": "2026-10-24T23:57:41.586890+00:00",
+      "http_status": 200,
+      "status": "HTTP200_NEWS_FEED_CAPTURED_COVERAGE_ONLY",
+      "raw_bytes": 65094,
+      "raw_sha256": "0560da3ec05528e25bf621d8d3413594336cc9fe0187e41442d6912f75af998e",
+      "request_wall_seconds": 0.8181122699897969
+    },
+    {
+      "call_id": "INTC",
+      "params_without_credential": {
+        "function": "NEWS_SENTIMENT",
+        "tickers": "INTC",
+        "time_from": "20260721T2001",
+        "time_to": "20260723T2001",
+        "sort": "EARLIEST",
+        "limit": 1000
+      },
+      "started_at": "2026-10-24T23:57:55.769191+00:00",
+      "ended_at": "2026-10-24T23:57:56.679485+00:00",
+      "http_status": 200,
+      "status": "HTTP200_NEWS_FEED_CAPTURED_COVERAGE_ONLY",
+      "raw_bytes": 183730,
+      "raw_sha256": "0f48059ce7b6f39bab14a102a939ecfe6335f2b5e929b675f01fb812c0507763",
+      "request_wall_seconds": 0.9103223199927015
+    },
+    {
+      "call_id": "AMD",
+      "params_without_credential": {
+        "function": "NEWS_SENTIMENT",
+        "tickers": "AMD",
+        "time_from": "20260802T2015",
+        "time_to": "20260804T2015",
+        "sort": "EARLIEST",
+        "limit": 1000
+      },
+      "started_at": "2026-10-24T23:58:10.769410+00:00",
+      "ended_at": "2026-10-24T23:58:12.074830+00:00",
+      "http_status": 200,
+      "status": "HTTP200_NEWS_FEED_CAPTURED_COVERAGE_ONLY",
+      "raw_bytes": 492112,
+      "raw_sha256": "dd420bf715941829da27bc849d30410fc165d0f2fa554d91529adf1072b3024b",
+      "request_wall_seconds": 1.3054530150111532
+    },
+    {
+      "call_id": "TWLO",
+      "params_without_credential": {
+        "function": "NEWS_SENTIMENT",
+        "tickers": "TWLO",
+        "time_from": "20260804T2005",
+        "time_to": "20260806T2005",
+        "sort": "EARLIEST",
+        "limit": 1000
+      },
+      "started_at": "2026-10-24T23:58:25.769584+00:00",
+      "ended_at": "2026-10-24T23:58:26.028119+00:00",
+      "http_status": 200,
+      "status": "HTTP200_NEWS_FEED_CAPTURED_COVERAGE_ONLY",
+      "raw_bytes": 312,
+      "raw_sha256": "2a7dc21dd8450bec4a6143a50e83a6e72a404e8df1512f4d07a689e44816a175",
+      "request_wall_seconds": 0.2585594010015484
+    },
+    {
+      "call_id": "VLO",
+      "params_without_credential": {
+        "function": "NEWS_SENTIMENT",
+        "tickers": "VLO",
+        "time_from": "20260728T1030",
+        "time_to": "20260730T1030",
+        "sort": "EARLIEST",
+        "limit": 1000
+      },
+      "started_at": "2026-10-24T23:58:40.769717+00:00",
+      "ended_at": "2026-10-24T23:58:41.282882+00:00",
+      "http_status": 200,
+      "status": "HTTP200_NEWS_FEED_CAPTURED_COVERAGE_ONLY",
+      "raw_bytes": 44245,
+      "raw_sha256": "e6a5f32b88c66ce00eeeaf57a95c2eb8bc435e9fc05c370ce2b7fd02e3e6a6de",
+      "request_wall_seconds": 0.5131907479953952
+    }
+  ]
+}
