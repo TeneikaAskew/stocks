@@ -25,7 +25,7 @@ done_when:
   - "tests/integration/test_ops_compact_freshness_publication.py::test_terminal_success_error_unique_race and OPTION D's owned served-refresh race acceptance prove both terminal orders and simultaneous writers yield exactly one committed terminal, with the loser rolling back; PK(id,stage) alone fails these tests."
   - "tests/integration/test_ops_compact_freshness_publication.py::test_finite_retention_protected_overflow_and_pruned_late_terminal proves actual64claim/128row/4MiB facts bounds, indexed whole-group reclamation of superseded unprotected running-only claims after >=64 actual failed-final publications and recovery, protected-overflow refusal, monotonic identity-sequence claims, preserved eligible current-cycle witnesses and no pruned terminal resurrection or older healthy fallback; reports measured physical churn/index/TOAST/WAL and all claim/final work inside the unchanged shared5second/whole45second budgets. No mocks, missing-DB skips or planned-test claim satisfies these four added acceptance items."
 
-status: approved
+status: superseded
 supersedes: null
 ---
 
