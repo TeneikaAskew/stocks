@@ -9,7 +9,7 @@ done_when:
   - "Existing native pin-order and workflow-contract controls reject a live-only or simultaneous pin/live timeout change; all original tests, assertions, native invocations and required checks remain present and pass."
   - "Exact-head hosted receipts for both implementation stages show every required check passing and pytest at most 285 seconds; the activated six-minute job additionally meets every component allocation and finishes within 335 seconds with at least 25 seconds measured headroom."
   - "Observed stage timings, exporter execution mode, cost and verification limits, independent reviews, ordinary source proof and full-default main/proposed no-new audits are recorded before release; any unresolved capacity or evidence failure holds release without retry loops or a gate waiver."
-status: approved
+status: superseded
 supersedes: null
 ---
 
