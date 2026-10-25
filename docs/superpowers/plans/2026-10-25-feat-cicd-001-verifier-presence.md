@@ -23,3 +23,13 @@ logical-byte accounting, source identities and fixed resource ceilings. Sole wri
 
 No cap increase, read discount, source exemption or review reset. The fixed ceiling
 may still legitimately refuse larger inputs. #1583 integration is separate.
+
+## Task 1: Remove redundant historical presence content read
+
+Spec: `docs/superpowers/specs/2026-10-13-feat-cicd-001-source-review-verifier.md` — resource admission and committed-source verification.
+
+- [ ] Replace the existence-only historical body read with regular-blob metadata validation.
+- [ ] Preserve full charged body reads when comparing bodies and all resource caps.
+- [ ] Run focused duplicate-read/changed-source/oversized-body tests and complete verifier suite.
+- [ ] Verify both actual failing published heads retain exact source/body identities.
+- [ ] Obtain normal scoped review and publish exact source/test handoff.
