@@ -778,8 +778,15 @@ class Snapshot:
         except Unavailable:
             return False
         code, _ = self.git.command(["merge-base", "--is-ancestor", against, current], allowed=(0, 1), return_code=True)
-        if code or self.git.blob(against, SITE, optional=True) is None:
+        if code:
             return False
+        prior = self.git.tree(against).get(SITE)
+        if prior is None:
+            return False
+        if prior["mode"] != "100644" or prior["type"] != "blob":
+            raise Unavailable("required input is not a regular mode100644 blob")
+        # Presence needs metadata only. Content is read and charged below when
+        # source drift permits the terminal body-comparison route.
         registry = self.registry(self.git.tree(current)[REGISTRY]["blob_oid"], self.git.blob(current, REGISTRY))
         documents = frozenset(self.audit.document_set(set(self.git.tree(source)), registry))
         # The whole range keeps both sides of cross-directory pure renames.
