@@ -1,0 +1,7 @@
+/workspace/stocks-recovery-docs/scripts/gate/spec_gate.py:110: SyntaxWarning: invalid escape sequence '\/'
+  (round seven: `HTTPS://`, `https:\/\/` and `file:` slipped a text scan). Raises ValueError
+SPEC GATE FAILED
+ - branch 'docs/strat-recovery-2026-10-23' changes 662 gated file(s) (docs/research/artifacts/2026-10-24-strat-earnings/analysis-source/data-provenance/earnings-recovery/extract_event_metadata.py, docs/research/artifacts/2026-10-24-strat-earnings/analysis-source/data-provenance/earnings-recovery/final_metadata_search_2026_10_24.py, docs/research/artifacts/2026-10-24-strat-earnings/analysis-source/data-provenance/earnings-recovery/repository_addendum.py and 659 more) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.
+ - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.
+
+Run the product-delivery skill (Phase 1 to 3) before continuing.

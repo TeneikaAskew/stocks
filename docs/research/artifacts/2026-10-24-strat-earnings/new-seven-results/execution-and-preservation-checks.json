@@ -1,0 +1,63 @@
+{
+  "status": "BOUNDED_EXECUTION_COMPLETE_STOPPED",
+  "at_current_utc": "2026-10-25T00:01:36.334132+00:00",
+  "provider_attempts": 7,
+  "provider_http200": 7,
+  "retries": 0,
+  "redirects": false,
+  "provider_price_calls": 0,
+  "new_native_financial_calls": 0,
+  "old_sample_reruns": 0,
+  "body_bytes": 924208,
+  "batch_wall_seconds": 93.36090044799494,
+  "minimum_observed_start_interval_seconds": 15.000119,
+  "source_selected_inputs_unchanged": true,
+  "news_frozen_before_join": true,
+  "news_freeze_sha256": "37c5a25a84236e7ee97c0ed8054bce9c1022cf86fe3d8af4ba05654f5a2a21f6",
+  "excluded_article_reasons": {
+    "at_or_after_exclusive_release": 1
+  },
+  "original_vendor_article_labels_separate_from_own_thresholds": {
+    "Somewhat-Bullish": 148,
+    "Neutral": 133,
+    "Somewhat-Bearish": 35,
+    "Bullish": 40,
+    "Bearish": 9
+  },
+  "original_price_superset_reads": 0,
+  "source_private_capture_paths_kept_private": true,
+  "raw_original_owner_archive_uploaded_by_child": false,
+  "visual_inspection": "PNG viewed using view_image; layout readable, no rerender needed",
+  "reaction_path_cash_dividend_rows": [
+    {
+      "ticker": "VLO",
+      "role": "prior",
+      "event_id": "VLO:2025-07-24:2025-06-30",
+      "date": "2025-07-31",
+      "cash_dividend": "1.1300"
+    },
+    {
+      "ticker": "VLO",
+      "role": "prior",
+      "event_id": "VLO:2026-01-29:2025-12-31",
+      "date": "2026-02-05",
+      "cash_dividend": "1.2000"
+    },
+    {
+      "ticker": "VLO",
+      "role": "target",
+      "event_id": "VLO:2026-07-30:2026-06-30",
+      "date": "2026-07-31",
+      "cash_dividend": "1.2000"
+    }
+  ],
+  "source_script_run_counts": {
+    "check_activity": 1,
+    "sample_executions": 1,
+    "acquire_once": 1,
+    "analyze_news_once": 1,
+    "join_and_describe_once": 1,
+    "render_delivery": 1
+  },
+  "preparation_note": "initial metadata preparer stopped before writing protocol due heterogeneous metadata timestamp key; corrected key-only preparation once, zero provider dispatch at that point; no retry of a provider or metric run"
+}
