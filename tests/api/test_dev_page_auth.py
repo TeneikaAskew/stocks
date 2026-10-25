@@ -71,3 +71,21 @@ def test_dev_in_iap_mode_serves_the_allowed_email(monkeypatch):
 def test_dev_in_open_mode_serves_local_development(monkeypatch):
     assert _get(monkeypatch, "open", None).status_code == 200
     assert _get(monkeypatch, "open", "someone@example.com").status_code == 403
+
+
+def test_dev_proxy_line_names_the_service_it_runs_on(monkeypatch):
+    """The proxy recipe named solyra-api-prod, deleted on 2026-10-10 (#1366).
+    It reads the service from Cloud Run's K_SERVICE instead."""
+    monkeypatch.setenv("K_SERVICE", "solyra-api-staging")
+    r = _get(monkeypatch, "open", None)
+    assert r.status_code == 200
+    assert "gcloud run services proxy solyra-api-staging --region us-east1" in r.text
+    assert "solyra-api-prod" not in r.text
+
+
+def test_dev_proxy_line_shows_a_visible_placeholder_without_k_service(monkeypatch):
+    """Outside Cloud Run K_SERVICE is unset. A bare `<service>` would be parsed
+    as a tag and show nothing, so the placeholder is escaped."""
+    monkeypatch.delenv("K_SERVICE", raising=False)
+    r = _get(monkeypatch, "open", None)
+    assert "gcloud run services proxy &lt;service&gt; --region us-east1" in r.text
