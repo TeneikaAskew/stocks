@@ -29,10 +29,10 @@ Spec: Design and Consumers; done_when[0,1,3].
 Files: lib/config.py; tests/lib/test_av_account_allowance.py.
 Consumes: existing AlphaVantageConfig construction and delay/batch consumers.
 Produces: rpm:int=600, local_rpm:int=150, account_rpm read alias, validated positive integer allocations and locally derived delay/batch.
-- [ ] Write default/explicit/invalid configuration tests and consumer/task partition controls.
-- [ ] Run `python3 -m pytest tests/lib/test_av_account_allowance.py -q`; expect behavior failures on current150 baseline before editing runtime source.
-- [ ] Implement only the config class allowance/validation/derived properties; preserve get_api_keys unchanged.
-- [ ] Run same suite; expect all pass. Commit with normal commit gate after meaningful green proof.
+- [x] Write default/explicit/invalid configuration tests and consumer/task partition controls.
+- [x] Run `python3 -m pytest tests/lib/test_av_account_allowance.py -q`; expect behavior failures on current150 baseline before editing runtime source.
+- [x] Implement only the config class allowance/validation/derived properties; preserve get_api_keys unchanged.
+- [x] Run same suite; expect all pass. Commit with normal commit gate after meaningful green proof.
 
 ## Task 2: actual research CLI pacing
 
@@ -40,10 +40,10 @@ Spec: Consumers and Regression; done_when[2,3].
 Files: scripts/fetch_alphavantage_intraday.py,scripts/fetch_alphavantage_options.py; tests/scripts/test_av_client_pacing.py.
 Consumes: Task1 local batch/delay; existing main parsers, fetch loops and circuit/backoff functions.
 Produces: local batch defaults and finite delay override no faster than allocation, enforced before any dispatch.
-- [ ] Mock dotenv/key loader/HTTP, use temporary local directories and fake clocks; test real parsers and both real batch loops, including invalid0/negative/nan/inf/faster overrides and valid default/slower settings.
-- [ ] Run `python3 -m pytest tests/scripts/test_av_client_pacing.py -q`; expect current unvalidated override and rpm batch failures.
-- [ ] Derive both batch constants from batch_size, validate delay with parser.error, update only pacing comments/help. Leave request, retry and breaker functions unchanged.
-- [ ] Run both new suites plus directly affected `tests/lib/test_config.py`; expect all pass. Record exact source hashes and results; no accepted options suite rerun.
+- [x] Mock dotenv/key loader/HTTP, use temporary local directories and fake clocks; test real parsers and both real batch loops, including invalid0/negative/nan/inf/faster overrides and valid default/slower settings.
+- [x] Run `python3 -m pytest tests/scripts/test_av_client_pacing.py -q`; expect current unvalidated override and rpm batch failures.
+- [x] Derive both batch constants from batch_size, validate delay with parser.error, update only pacing comments/help. Leave request, retry and breaker functions unchanged.
+- [x] Run both new suites plus directly affected `tests/lib/test_config.py`; expect all pass. Record exact source hashes and results; no accepted options suite rerun.
 
 ## Task 3: normal publication and release prerequisites
 
