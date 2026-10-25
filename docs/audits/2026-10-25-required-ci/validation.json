@@ -12452,5 +12452,17 @@
     "The first inclusive-default mutation used __kwdefaults__; setup error. Corrected mutation uses __defaults__ and two tests fail for the intended reason.",
     "research_run had four shell-environment failures; research_clean is the corrected isolated run.",
     "No full local 7662-test execution; hosted full result used for context, not current local all-green proof."
+  ],
+  "harness_errors": [
+    {
+      "name": "focused",
+      "pytest_exit": 4,
+      "reason": "Nonexistent selector TestCandleTypeAsOf; no tests ran; focused_corrected reran the intended sample."
+    },
+    {
+      "name": "duplicate_mutation",
+      "pytest_exit": 3,
+      "reason": "Mutation setup addressed __kwdefaults__ for positional parameter; INTERNALERROR before tests. duplicate_mutation_fixed used __defaults__ and both intended assertions failed."
+    }
   ]
 }

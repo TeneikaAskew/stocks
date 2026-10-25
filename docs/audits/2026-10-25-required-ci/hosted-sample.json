@@ -5,7 +5,7 @@
     {
       "job_id": 121059502490,
       "url": "https://github.com/TeneikaAskew/stocks/actions/runs/40156701740/job/121059502490",
-      "first_log_line": "﻿2026-10-25T03:02:08.3726810Z Current runner version: '2.338.0'",
+      "first_log_line": "\ufeff2026-10-25T03:02:08.3726810Z Current runner version: '2.338.0'",
       "last_log_line": "2026-10-25T03:24:56.3916669Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-python@v5. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/",
       "evidence": [
         "2026-10-25T03:02:11.8899866Z ##[group]Checking out the ref",
@@ -14,12 +14,13 @@
         "2026-10-25T03:02:17.7740418Z ##[group]Run pip install -r requirements.txt",
         "2026-10-25T03:03:22.1528008Z ##[group]Run python -m pytest tests/ -x -q --ignore=tests/integration",
         "2026-10-25T03:24:53.6497142Z 7594 passed, 71 skipped, 114 warnings in 1288.94s (0:21:28)"
-      ]
+      ],
+      "log_span_seconds": 1368.019
     },
     {
       "job_id": 121059502529,
       "url": "https://github.com/TeneikaAskew/stocks/actions/runs/40156701740/job/121059502529",
-      "first_log_line": "﻿2026-10-25T03:02:08.2613339Z Current runner version: '2.338.0'",
+      "first_log_line": "\ufeff2026-10-25T03:02:08.2613339Z Current runner version: '2.338.0'",
       "last_log_line": "2026-10-25T03:03:28.0507726Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-python@v5. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/",
       "evidence": [
         "2026-10-25T03:02:11.9098038Z ##[group]Checking out the ref",
@@ -28,12 +29,13 @@
         "2026-10-25T03:02:18.0738308Z ##[group]Run pip install -r requirements.txt -r requirements-research.txt",
         "2026-10-25T03:03:08.6915248Z ##[group]Run python -m pytest -q \\",
         "2026-10-25T03:03:26.9930597Z 767 passed, 20 skipped, 5 warnings in 17.13s"
-      ]
+      ],
+      "log_span_seconds": 79.789
     },
     {
       "job_id": 121059502299,
       "url": "https://github.com/TeneikaAskew/stocks/actions/runs/40156701740/job/121059502299",
-      "first_log_line": "﻿2026-10-25T03:02:08.0512779Z Current runner version: '2.338.0'",
+      "first_log_line": "\ufeff2026-10-25T03:02:08.0512779Z Current runner version: '2.338.0'",
       "last_log_line": "2026-10-25T03:03:45.7507103Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-python@v5. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/",
       "evidence": [
         "2026-10-25T03:02:11.4656705Z ##[group]Checking out the ref",
@@ -42,12 +44,13 @@
         "2026-10-25T03:02:29.3872589Z ##[group]Run pip install -r requirements.txt",
         "2026-10-25T03:03:37.3360104Z ##[group]Run python -m pytest tests/integration/ -q",
         "2026-10-25T03:03:45.0265909Z 83 passed, 1 warning in 6.05s"
-      ]
+      ],
+      "log_span_seconds": 97.699
     },
     {
       "job_id": 121059502183,
       "url": "https://github.com/TeneikaAskew/stocks/actions/runs/40156701701/job/121059502183",
-      "first_log_line": "﻿2026-10-25T03:02:07.9866105Z Current runner version: '2.338.0'",
+      "first_log_line": "\ufeff2026-10-25T03:02:07.9866105Z Current runner version: '2.338.0'",
       "last_log_line": "2026-10-25T03:07:02.5776340Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/",
       "evidence": [
         "2026-10-25T03:02:19.7622664Z ##[group]Checking out the ref",
@@ -58,27 +61,30 @@
         "2026-10-25T03:02:21.9106021Z spec gate ok (branch=docs/spec-feat-cicd-001-verifier-presence, 1 changed file(s))",
         "2026-10-25T03:07:02.0182743Z 144 passed, 10 warnings in 278.13s (0:04:38)",
         "2026-10-25T03:07:02.0519277Z ##[group]Run python3 scripts/gate/export_model_registry.py --check --rev \"$HEAD_SHA\" --base \"$BASE_SHA\""
-      ]
+      ],
+      "log_span_seconds": 294.591
     },
     {
       "job_id": 121059604099,
       "url": "https://github.com/TeneikaAskew/stocks/actions/runs/40156735939/job/121059604099",
-      "first_log_line": "﻿2026-10-25T03:02:40.7545527Z Current runner version: '2.338.0'",
+      "first_log_line": "\ufeff2026-10-25T03:02:40.7545527Z Current runner version: '2.338.0'",
       "last_log_line": "2026-10-25T03:02:55.1124503Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/upload-artifact@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/",
       "evidence": [
         "2026-10-25T03:02:53.9385239Z spec gate ok (branch=docs/spec-feat-cicd-001-verifier-presence, 1 changed file(s))"
-      ]
+      ],
+      "log_span_seconds": 14.358
     },
     {
       "job_id": 121059664299,
       "url": "https://github.com/TeneikaAskew/stocks/actions/runs/40156735939/job/121059664299",
-      "first_log_line": "﻿2026-10-25T03:02:59.9233593Z Current runner version: '2.338.0'",
+      "first_log_line": "\ufeff2026-10-25T03:02:59.9233593Z Current runner version: '2.338.0'",
       "last_log_line": "2026-10-25T03:08:02.6438748Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/download-artifact@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/",
       "evidence": [
         "2026-10-25T03:03:05.5693910Z ##[group]Run python3 -m pip install --quiet pytest pyyaml",
         "2026-10-25T03:07:47.7391647Z 144 passed, 11 warnings in 277.60s (0:04:37)",
         "2026-10-25T03:08:02.3777739Z 41 passed in 14.44s"
-      ]
+      ],
+      "log_span_seconds": 302.721
     }
   ]
 }

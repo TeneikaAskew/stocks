@@ -236,14 +236,14 @@ gate sources and two dependency manifests are byte-identical to the audit base
 (`git diff` over those paths is empty). These are historical completed results,
 not this draft's CI. `hosted-sample.json` provides job links and log timestamps.
 
-| Check | Hosted pytest result / measured pytest time |
-|---|---|
-| Run Tests | 7,594 passed, 71 skipped; 1,288.94 s |
-| Research | 767 passed, 20 skipped; 17.13 s |
-| Integration | 83 passed; 6.05 s |
-| Registry gate suite | 144 passed; 278.13 s |
-| Base suite | 144 passed in 277.60 s + 41 passed in 14.44 s |
-| Gate | Policy verdict success; no pytest workload |
+| Check | Hosted pytest result / measured pytest time | Observed job log span |
+|---|---|---|
+| Run Tests | 7,594 passed, 71 skipped; 1,288.94 s | 1,368.0 s |
+| Research | 767 passed, 20 skipped; 17.13 s | 79.8 s |
+| Integration | 83 passed; 6.05 s | 97.7 s |
+| Registry gate suite | 144 passed; 278.13 s | 294.6 s |
+| Base suite | 144 passed in 277.60 s + 41 passed in 14.44 s | 302.7 s |
+| Gate | Policy verdict success; no pytest workload | 14.4 s |
 
 The lean total reconciles with local collection: 7,594 + 71 = 7,665 report
 outcomes; 7,662 collected cases plus 3 module collection skips. Research:
