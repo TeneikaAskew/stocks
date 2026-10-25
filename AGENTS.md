@@ -13,11 +13,12 @@ which CLAUDE.md Rule 2.5 sends here; and a person. stocks and solyra carry the s
 
 ### The first review is the complete one
 
-A reviewer's first review of a pull request is the complete one. A pull request gets at most two
-review rounds (CLAUDE.md, "Review cap"), and Codex's code review runs again when new commits are
-pushed to a pull request open for review, so a finding held back costs a round. A spec PR is fixed
-in place by a push, like any other pull request; once `main` holds a spec, it changes only through a
-new spec that supersedes it. Before it posts:
+Each reviewer's first review of each pull request is complete, including replacement and split
+PRs, as REQ-GOV-003 requires. Keep each account/type's first-review receipt per PR alongside
+the lineage's original finding provenance. Replacement/split PRs inherit all findings and spent
+effort; complete first-review coverage does not grant a fresh allowance. Reserve judgment work under “Review budget and finding identity” below before starting.
+A spec PR is fixed in place within that allowance; once `main` holds an approved spec, a
+changed contract requires a new superseding spec. Before posting, the reviewer:
 
 - It reads every changed file in full, generated files included, and the direct callers and callees
   of what changed, and where a changed file's generator runs in the reviewer's environment it re-runs
@@ -34,15 +35,24 @@ new spec that supersedes it. Before it posts:
   and checks that every `done_when` item can be met, and that each `done_when` item that describes
   behavior names a test or check that fails on `main` (or on the prior state the item names) and
   passes on the design. A broken implementation that would still pass is posted as a finding. It
-  blocks the merge, whatever its severity, only when it shows a realistic path to a user-visible
-  defect, and otherwise gets a reply. Items that record delivery (the gate, the docs audit, the
+  blocks the merge when it shows a realistic path to a user-visible defect. Other counterexamples
+  get a reply unless an independent blocking condition below applies; P0/P1 always block. Items that record delivery (the gate, the docs audit, the
   catalog row) are only checked for being met.
 
 ### Later reviews
 
-A later review by the same reviewer checks its earlier findings, then the new commits, and still
-posts a defect it finds in what its first review covered, for the author to classify under CLAUDE.md
-Rule 2.5.
+A later review on the same PR by the same account/review type verifies earlier findings and examines new semantics and
+affected dependencies, rather than restarting a complete review of unchanged material. It still
+reports genuine late defects, classified under CLAUDE.md Rule 2.5 against the immutable first
+review SHA for that review type: missed, new (introducing SHA), or uncounted. Moving lines does
+not create a new finding. Retain every location and original thread in the finding record.
+
+Harmless punctuation, wording or citation corrections that change no decision, acceptance
+condition or executable meaning require neither renewed spec approval nor a new semantic review
+cycle by themselves. An asterisk changing an executable glob, MUST becoming MAY, or misleading
+documentation about available behavior is substantive, not cosmetic. Substantive changes to an
+approved unmerged spec require renewed owner approval. Actual provider runs still consume the
+allowance even after cosmetic pushes; required current-head review is never waived.
 
 ### Problems this pull request did not cause
 
@@ -51,13 +61,65 @@ who can open an issue may open one), since every thread holds the merge (REQ-GOV
 
 ### What blocks the merge
 
-Blocking threshold: P1. Severity runs from P0, the most severe, to P3, as Codex's badges show; a
-finding without a badge states its severity, and only the owner changes a reviewer's severity. A
-finding at or above the threshold blocks the merge until it is fixed, unless it is a spec PR's
-finding of a broken implementation that would still pass, which blocks only as the spec-PR rule
-in "The first review is the complete one" says. A finding below the threshold, or one that rule
-excuses, gets a reply on its thread, and an issue the reply links when it is real; the thread is
-then resolved and the pull request merges without the fix.
+Apply these rules in order; disposition never grants merge authority:
+
+1. Unmet required acceptance, required current-head review/checks, unresolved required
+   conversations, security, data integrity, capacity and no-silent-fallback protections block
+   regardless of the finding's badge. A realistic user-visible spec counterexample also blocks.
+2. P0 and P1 findings always block until fixed and verified. Map CRITICAL=P0, HIGH=P1,
+   MEDIUM=P2 and LOW=P3 while retaining the original label. Missing, conflicting or unmapped severities
+   go to the owner for adjudication; never silently relabel or downgrade them. Disputed
+   classification or acceptance and unknown required-check status also remain pending owner
+   adjudication; agreement on a badge does not authorize the author to dismiss a disputed blocker.
+3. Other P2/P3 findings receive an explicit thread reply and, for a real defect, a linked issue,
+   then resolution. A cosmetic preference needs an explanation, not an invented defect issue.
+   A P2/P3-only second round satisfying all mandatory conditions does not force a fix or re-cut.
+4. Only the owner changes a reviewer's severity. Exhaustion never auto-passes a real defect.
+   Normal merge authorization, branch protections and all required evidence still apply.
+
+### Review budget and finding identity
+
+The designated writer maintains one ledger rooted in the original change/spec, listing all
+predecessor, replacement and split PRs. Record immutable head/base/spec/policy identities,
+reviewer and review type, trigger, reservation/run/completion/cancellation IDs and receipts,
+original severity, stable finding IDs, all thread URLs/locations, verification and disposition,
+owner decisions, spent effort and remaining aggregate/external allowances. A finding ID follows
+the same underlying defect across moved lines and replacement PRs. No stage, branch or PR-number
+change resets history. Missing history is unknown, not zero; ask the owner to adjudicate before
+asserting an available balance, including when adopting this policy for legacy work.
+
+The default maximum is four coordinated judgment passes per lineage, including local pre-push,
+red-team and external judgment, with at most two external code-review rounds. Reserve a pass
+before work starts. A declared parallel cohort on one immutable head is one aggregate pass;
+record each reviewer/run separately. A new head, new cohort, repeated attempt or cancelled
+reservation consumes a pass; partial completion does not refund it. Actual external code runs
+also consume the external limit, even when automatically triggered. Required security review
+is not omitted. Tests, generators and deterministic gates alone are not judgment passes.
+
+Replacement and split PRs inherit all findings and share the same remaining balance, rather
+than each receiving a new allowance. Before a fix/push/review that would require further
+judgment, check the remaining allowance, including provider-triggered runs. At exhaustion stop
+autonomous fixes, pushes and review requests; report unresolved findings and exact history to
+the owner. The owner may extend a bounded scope, rescope through approved specs or stop. Before resuming,
+record the extension reason, scope and exact numerical additional aggregate pass count, and
+separately whether and by how many external rounds the external limit increases. Unspecified
+external increases are zero; a vague permission to continue supplies no numerical allowance.
+Do not automatically re-cut, silently add a pass, waive mandatory checks or merge a blocker.
+
+### Generated evidence and one writer
+
+Use the existing trusted renderer/source-snapshot protocol and its resource limits; this is
+not a new generated-inventory allowance. Record committed source/base/policy hashes, exact
+invocation and input identities, and SHA-256 hashes of output bytes. Two refreshes from identical
+committed inputs must match exactly; prose or executable requirement changes are not renderer
+output. Refuse unexpected source, policy, path or output identities under the existing verifier.
+
+One named writer exclusively publishes shared files and branch updates. Other participants read
+or produce writer-private outputs. Before publication, compare the expected branch head and
+shared-output hashes; on mismatch refuse to overwrite and reconcile with the owner. Use normal
+non-force pushes. Hash prechecks are not atomic compare-and-swap or a lock: if another writer
+cannot be excluded, stop publication and isolate the work. Handoff requires the old writer to
+be quiescent, an owner acknowledgment and recorded transfer before the new writer publishes.
 
 ### Browser proof
 
