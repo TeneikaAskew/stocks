@@ -343,6 +343,8 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and sol
 
 **PR lineage:** [#204](https://github.com/TeneikaAskew/stocks/pull/204) *evolution* · [#205](https://github.com/TeneikaAskew/stocks/pull/205) *structural* · [#322](https://github.com/TeneikaAskew/stocks/pull/322) *remediation* · [#325](https://github.com/TeneikaAskew/stocks/pull/325) *evolution* · [#339](https://github.com/TeneikaAskew/stocks/pull/339) *remediation* · [#518](https://github.com/TeneikaAskew/stocks/pull/518) *remediation* · [#760](https://github.com/TeneikaAskew/stocks/pull/760) *remediation*
 
+Allowance correction lineage: [#1587](https://github.com/TeneikaAskew/stocks/pull/1587) original specification, [#1604](https://github.com/TeneikaAskew/stocks/pull/1604) unchanged-runtime source-proof successor, preserved draft [#1603](https://github.com/TeneikaAskew/stocks/pull/1603), non-stacked replacement [#1606](https://github.com/TeneikaAskew/stocks/pull/1606). Same five runtime/test blobs and224-test/independent-review receipts; no acceptance or spent-review reset. Source proof and no-new audit pass; final current-head external review/CI and safe deployment remain pending. No global unused-quota or recovered-data claim.
+
 ### FEAT-OPTION-001 — Options / gamma (33 open)
 
 | Issue | Sev | Title |
