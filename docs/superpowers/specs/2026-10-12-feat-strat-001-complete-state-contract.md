@@ -323,17 +323,19 @@ and must fail on the specified broken behavior. Keep the done_when contract abov
 | done_when (1-based) | Required command/check | Broken behavior the check must reject |
 |---|---|---|
 | 1 | `python -m pytest tests/lib/test_strat.py tests/lib/test_strat_history.py -q`, including `TestInvalidObservations`, `TestPatternTruthTable`, `TestFailedTwoPriority` | Invalid/missing OHLC becomes inside; type-3 terminal receives 212/312; documented32 is color-filtered; priority erases failure facts; unknown labels become false facts. |
-| 2 | `python -m pytest tests/lib/test_strat.py::TestComputeStratStatusAsOf tests/lib/test_strat.py::TestFailedTwoPriority -q` | Live None reads unfinished daily data, differs from the same frozen replay clock, or loses actual IWM October8 failed-2D. |
-| 3 | Add `tests/lib/test_strat.py::TestContinuityContracts`; run it with `python -m pytest tests/lib/test_strat.py::TestContinuityContracts -q` | Missing/equal-open/opposing required frames pass strict agreement, monthly zero weight becomes agreement, or legacy weighted values/versions/contributions drift silently. |
-| 4 | Add `tests/lib/test_strat_levels.py::TestStructuralStateContract`; run all existing level/playbook/freshness modules | Wrong D/W/M/Q/Y/calendar/custom-period levels, incomplete prior-year coverage called complete, conflated PMG definitions, duplicate targets or gap-crossed/touch-only evidence becomes fresh/close-confirmed activation. |
-| 5 | Add `tests/gcp/test_strat_snapshot_parity.py`; run it with the actual dashboard API tests and production captured-input replay under BRIEF_AS_OF/INSIGHT_AS_OF | Any brief/earnings/insight, fetch-market-data, backfill writer or dashboard response drops rule version/failure/coverage facts or disagrees at the same clock; old records are falsely stamped v2; later data enter an earlier checkpoint; dry-run writes/posts. |
+| 2 | `python -m pytest tests/lib/test_strat.py::TestComputeStratStatusAsOf tests/lib/test_strat.py::TestClosedCandleConfirmation tests/lib/test_strat.py::TestFailedTwoPriority -q`; add the closed-candle class described below | A developing bar supplies a confirmed setup before its validated close on any selected timeframe; the same positive setup is never confirmed at its valid close; missing/invalid/unresolved-anchor bars confirm; future bars change an earlier result. |
+| 3 | Add `tests/lib/test_strat.py::TestContinuityContracts`; run it with `tests/lib/test_backtest_ftfc_causality.py` and `tests/lib/test_exec_ftfc_contract.py::TestLegacyFtfcGolden` | Price/open continuity is conflated with candle type or weighted alignment; missing/equal/opposing required frames pass strict agreement; the actual default engine or recorded trade FTFC changes under future append/perturbation; any of the 34 exact final-as-of legacy controls changes. |
+| 4 | Add `tests/agents/test_agent_summarizers.py::test_foundation_status_adapter_preserves_clock_completion_and_qualification` and `tests/gcp/test_strat_snapshot_parity.py::test_foundation_brief_unavailable_is_not_inside`; run them with `tests/lib/test_strat_history.py::TestHistoryObservationContract` | The actual status/history to `summarize_strat_status` to `lib.agents.schema.StratSnapshot` path strips clock, completion, source/basis qualification or unavailable reasons; the actual premarket adapter converts unavailable to inside/confirmed. Exercise qualified positive and developing/invalid controls before and at close through the actual producer, not a stubbed status dictionary; guard all external I/O. This is bounded adapter acceptance, not a storage migration or full production-brief replay. |
+| 5 | Add `tests/gcp/test_strat_snapshot_parity.py::test_captured_foundation_diagnostic_matches_actual_producers`; run the separately versioned captured-input foundation diagnostic with those actual producers/adapters | A chart-only or test-only projection disagrees with production candle/continuity/adapter arithmetic, lacks exact code/config/input hashes, uses unfinished/future bars, silently omits unavailable cases, overwrites the earlier frozen results or presents current-vintage inputs as original PIT. Bind the retained real-data visual rows and a deterministic per-case result manifest; no new outcome scoring or holdout access. |
 | 6 | Run affected focused suites, registry exporter, branch/main docs audits and `python scripts/gate/spec_gate.py --pr origin/main`; check named evidence for every preceding row | Delivery records or generated registry omit changed models, source identity is invalid, or an earlier behavioral row has no passing sensitive check. |
 
-Record production-entrypoint revision, exact invocations, input hashes, per-case
-verdicts, missingness, current-vintage limitations and before/after changed-label
-populations in the checked-in replay artifact. The broader October1–9/10–16 corpus
-from issue1563 is partitioned into the same admitted batches, with no holdout outcome
-scoring before repaired revision/settings freeze. This does not enlarge a batch cap.
+Record actual producer/adapter revision, exact invocations, input hashes, per-case
+verdicts, missingness and current-vintage limitations in the bounded foundation
+diagnostic artifact. These six rows map only the active foundation acceptance;
+the full structural-level, writer/storage and production replay cases below remain
+unfinished design context outside this release. The earlier captured results and
+reserved October12–16 holdout remain unchanged; this mapping authorizes neither
+new scoring nor a larger replay batch.
 
 ## Sensitive acceptance cases (mandatory additions)
 
