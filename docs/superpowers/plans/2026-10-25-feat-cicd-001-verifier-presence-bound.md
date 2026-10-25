@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-10-25-feat-cicd-001-verifier-presence.md
 branch: feature/feat-cicd-001-verifier-presence-bound
-pr: null
+pr: 1597
 status: ready
 ---
 
