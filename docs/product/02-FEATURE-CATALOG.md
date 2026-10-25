@@ -577,7 +577,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation — committed source identity and complete generated-inventory verification merged; local delivery-tool close-out checked; AV/global rollout and remediation pending; tests that fake gcloud cannot reach a real one, the deliberate `--mode=live` secret read excepted ([#1536](https://github.com/TeneikaAskew/stocks/pull/1536)); trusted registry six-minute pin prepared in #1591, live six-minute activation proposed in #1599 under measured acceptance #1594; hosted final verification pending |
+| Status | Production but needs remediation — historical SITE presence repair [#1597](https://github.com/TeneikaAskew/stocks/pull/1597) continues #1595 with original VP-01 and review history, final evidence pending; committed source identity and complete generated-inventory verification merged; local delivery-tool close-out checked; AV/global rollout and remediation pending; tests that fake gcloud cannot reach a real one, the deliberate `--mode=live` secret read excepted ([#1536](https://github.com/TeneikaAskew/stocks/pull/1536)); trusted registry six-minute pin #1591 and matching live activation #1599 merged as e7e74ccc; exact live/pin equality and all six hosted checks verified, registry144PASS/exporter-current314s/46s reserve ([receipt](https://github.com/TeneikaAskew/stocks/pull/1599#issuecomment-6400278126)) |
 | Priority | P1 |
 | Target phase | Phase 6 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
