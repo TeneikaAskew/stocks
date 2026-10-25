@@ -577,7 +577,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation — agent-review alignment in [#1583](https://github.com/TeneikaAskew/stocks/pull/1583) awaits required checks and review; matching Solyra #287 merged with acceptance evidence; live durability remains unproven; committed source identity and complete generated-inventory verification merged; local delivery-tool close-out checked; AV/global rollout and remediation pending; tests that fake gcloud cannot reach a real one, the deliberate `--mode=live` secret read excepted ([#1536](https://github.com/TeneikaAskew/stocks/pull/1536)) |
+| Status | Production but needs remediation — agent-review alignment in [#1583](https://github.com/TeneikaAskew/stocks/pull/1583) awaits required checks and review; matching Solyra #287 merged with acceptance evidence; live durability remains unproven; committed source identity and complete generated-inventory verification merged; local delivery-tool close-out checked; AV/global rollout and remediation pending; tests that fake gcloud cannot reach a real one, the deliberate `--mode=live` secret read excepted ([#1536](https://github.com/TeneikaAskew/stocks/pull/1536)); trusted registry six-minute pin prepared in #1591, live timeout remains five minutes and activation is pending |
 | Priority | P1 |
 | Target phase | Phase 6 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
