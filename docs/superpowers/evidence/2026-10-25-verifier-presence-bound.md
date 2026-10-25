@@ -37,3 +37,9 @@ and first SECURITY on1597 as the final declared cohort, retaining every prior
 review/PR/finding identity. Replacement first review remains complete. No fresh
 budget, abandoned finding, duplicate provider request or automatic issue closure.
 Final exact-head CI/review receipts belong on1597 to avoid receipt-only pushes.
+
+## Required current MAIN integration
+
+Integrated actual merged acceptance specification MAIN `35671dbba024efa6700e29febdf7ee6b8cea41c2` in `c4478d92`. The source module and tests remain byte-identical to reviewed `d065a3ef`; no algorithm, cap or test change. The only merge conflict was MAIN deleting the former sidecar while this implementation needs an ordinary declared-note record; retain and regenerate that record against actual MAIN. MAIN's independently verified SITE marker is retained, not reverted. Existing source/body identities remain `ba3b55735db8811c10982c8cde45832fc073ba6e587820b59064cfa4aacfc053` / `7d89ee2c6390c1c85cfc051874b305e4b2f4be720a9f864b75e1da3403cacac1`.
+
+This final integration is required after the approved dependency landed, not an unchanged timeout retry or review reset. Current-head hosted CI/review must independently complete; earlier cancelled registry and clean reviews remain evidence of their own commits only. No failed acceptance is marked passed.
