@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-10-25-feat-cicd-001-registry-measured-acceptance.md
 branch: fix/feat-cicd-001-registry-envelope-measured
-pr: null
+pr: 1599
 status: ready
 ---
 
