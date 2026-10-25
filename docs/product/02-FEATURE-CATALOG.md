@@ -577,12 +577,12 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation — agent-review alignment remains draft in [#1583](https://github.com/TeneikaAskew/stocks/pull/1583), pending matching Solyra acceptance and live observation; committed source identity and complete generated-inventory verification merged; local delivery-tool close-out checked; AV/global rollout and remediation pending; tests that fake gcloud cannot reach a real one, the deliberate `--mode=live` secret read excepted ([#1536](https://github.com/TeneikaAskew/stocks/pull/1536)) |
+| Status | Production but needs remediation — agent-review alignment in [#1583](https://github.com/TeneikaAskew/stocks/pull/1583) awaits required checks and review; matching Solyra #287 merged with acceptance evidence; live durability remains unproven; committed source identity and complete generated-inventory verification merged; local delivery-tool close-out checked; AV/global rollout and remediation pending; tests that fake gcloud cannot reach a real one, the deliberate `--mode=live` secret read excepted ([#1536](https://github.com/TeneikaAskew/stocks/pull/1536)) |
 | Priority | P1 |
 | Target phase | Phase 6 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-10-24 |
-| Evidence status | Review-policy instruction exercises and local generated-evidence/publication controls are recorded in [alignment evidence](../review-evidence/2026-10-24-agent-review-alignment.md); these do not prove mechanical review enforcement or live durability. LOCAL DELIVERY TOOLING VERIFIED — [#1470](https://github.com/TeneikaAskew/stocks/pull/1470) committed-source verifier and [#1538](https://github.com/TeneikaAskew/stocks/pull/1538) complete generated-inventory tooling merged after authenticated CODE review and required CI. Fresh actual-main identity, local-tool accepted/refused checks and terminal marker/record retirement verified in this DOC close-out. AV/global rollout and product deployment/data-freshness verification remain separate. |
+| Last reviewed | 2026-10-25 |
+| Evidence status | Review-policy instruction exercises and local generated-evidence/publication controls are recorded in [alignment evidence](../review-evidence/2026-10-25-agent-review-alignment.md); these do not prove mechanical review enforcement or live durability. LOCAL DELIVERY TOOLING VERIFIED — [#1470](https://github.com/TeneikaAskew/stocks/pull/1470) committed-source verifier and [#1538](https://github.com/TeneikaAskew/stocks/pull/1538) complete generated-inventory tooling merged after authenticated CODE review and required CI. Fresh actual-main identity, local-tool accepted/refused checks and terminal marker/record retirement verified in this DOC close-out. AV/global rollout and product deployment/data-freshness verification remain separate. |
 | UI surface | — |
 | Backend | — |
 | Data | — |

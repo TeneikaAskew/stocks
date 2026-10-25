@@ -329,3 +329,31 @@ finding was reported.
   receipt collection itself does not trigger another source push/review.
 
 Audit log SHA-256 receipts: `280cc324e52dfd79f1a89012b844c3097e5197193f7f03e23f4c354111e5af1b`, `1070a3b04acf274cadf4fd1d0245addc31958b2c6f1cb55cb93cdf2d3ffaf2a3`.
+
+## October 25 bounded finish update
+
+The owner authorized the scoped normal merge after required checks and reviews,
+and prospective observation on already-needed release PRs, without invented PRs
+or forced handoffs (Sentinel_314cdf4cfde8819183c963502f76acbb; parent finish delegation).
+This supersedes earlier pending-authority statements, without changing the design
+or resetting any review history. The user integrated main at c544e5779976bde89b7aa5a36776055fed60ce1c.
+The ready-metadata gate exposed a missing formal PR-lineage entry; this finish
+corrects that bookkeeping and the cross-repository status, with no policy changes.
+
+Solyra spec #286 merged at aafdc9d395744805ca88431efc4d6706d41c5e2c; implementation
+#287 merged at 30ba20568f2ad46d353043592244a1c225b211de, reviewed head
+110034f5353a9977d761bbde9851ca5641f191cb. Its baseline/proposed fixed-case decisions
+match these scenarios. Hosted 1139 unit tests, build/types, 96 registry tests and
+96 base tests passed; local 643 audit tests passed; full baseline/head audits
+had 28 existing findings and no new ones.
+Validation: https://github.com/TeneikaAskew/solyra/pull/287#issuecomment-6390226286
+Code/security review: https://github.com/TeneikaAskew/solyra/pull/287#issuecomment-6390257802
+
+Stocks local full audits at c544e577 versus d9731ecd retained 287 findings each,
+with no new identities including multiplicity (only relocated line numbers normalized).
+Final submitted-head receipts belong on #1583 to avoid receipt-only source pushes.
+All predecessor reviews remain linked; one external implementation code review
+completed on 8f2aafe4, with final current-head review still required.
+Mechanical evidence remains limited to the actual existing tests, exact renderer
+hashes and stale Git push refusal. Instruction exercises are not a controller.
+The prospective ten-real-lineage durability criteria remain unfulfilled.
