@@ -12464,5 +12464,27 @@
       "pytest_exit": 3,
       "reason": "Mutation setup addressed __kwdefaults__ for positional parameter; INTERNALERROR before tests. duplicate_mutation_fixed used __defaults__ and both intended assertions failed."
     }
-  ]
+  ],
+  "count_reconciliation": {
+    "source": "Existing local collection and execution receipts; no test rerun",
+    "collected_node_ids": 786,
+    "runtime_passed_cases": 767,
+    "runtime_setup_skipped_cases": 19,
+    "collection_skipped_modules": 1,
+    "pytest_summary_skipped": 20,
+    "pytest_summary": "767 passed, 20 skipped, 4 warnings in 19.71s",
+    "arithmetic": "786 = 767 passed cases + 19 setup-skipped cases; 20 summary skips = 19 cases + 1 module collection skip. 787 summary outcomes are not 787 collected tests.",
+    "collection_and_execution_node_sets_equal": true,
+    "node_set_sha256": "f52d3f1366221f9ae55835181bedb96bd828e022f2020600457297363332c2f0",
+    "runtime_skip_file": "tests/lib/test_strat_levels_playbook.py",
+    "module_collection_reports": [
+      {
+        "nodeid": "tests/api/test_strat_engine_predict.py",
+        "outcome": "skipped",
+        "detail": "('/workspace/stocks-ci-audit/tests/api/test_strat_engine_predict.py', 34, \"Skipped: admin router unavailable: No module named 'api'\")"
+      }
+    ],
+    "scope": "Same research workflow path expansion and isolated LightGBM 4.7.0 overlay; collection invocation adds --collect-only, runtime invocation adds -rs. Runtime harness also unsets inherited BASH_ENV; collected node sets remain identical.",
+    "hosted_limit": "Hosted historical summary has the same totals but omitted individual skip reasons; local attribution is verified, hosted per-skip identity is not."
+  }
 }

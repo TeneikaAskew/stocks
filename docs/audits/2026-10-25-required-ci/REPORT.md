@@ -245,6 +245,22 @@ not this draft's CI. `hosted-sample.json` provides job links and log timestamps.
 | Base suite | 144 passed in 277.60 s + 41 passed in 14.44 s | 302.7 s |
 | Gate | Policy verdict success; no pytest workload | 14.4 s |
 
+**Local research count reconciliation (existing receipts, no rerun):** the
+collection-only and corrected execution receipts contain exactly the same
+**786 unique node IDs**. Those divide into **767 passed cases + 19 cases skipped
+at setup** in `tests/lib/test_strat_levels_playbook.py`. Separately,
+`tests/api/test_strat_engine_predict.py` is skipped during module collection
+(`No module named 'api'`), producing no collected case IDs. Pytest includes that
+one module skip in its summary: **20 skipped = 19 case skips + 1 collection
+skip**. Thus `767 passed, 20 skipped` is **787 report outcomes, not 787 tests**.
+There is no missing or extra collected test. The selected paths and ML overlay
+match; the runtime command adds `-rs`, the collection command adds
+`--collect-only`, and the corrected runtime harness unsets `BASH_ENV`. These
+harness differences did not change the verified node-ID set. See
+`validation.json::count_reconciliation` for exact arithmetic and the node-set
+hash. This local per-skip attribution is stronger than the historical hosted
+summary, which did not print individual skip reasons.
+
 The lean total reconciles with local collection: 7,594 + 71 = 7,665 report
 outcomes; 7,662 collected cases plus 3 module collection skips. Research:
 767 + 20 = 787 outcomes; 786 collected cases plus 1 collection skip. Local
