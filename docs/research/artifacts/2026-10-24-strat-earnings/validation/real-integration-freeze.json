@@ -1,0 +1,34 @@
+{
+  "scope": "retrospective source-current-vintage descriptive component/consumer integration, not qualified PIT or confirmed action",
+  "baseline_day": "2026-10-01",
+  "selected_signal_frames": [
+    "5m",
+    "15m",
+    "30m",
+    "1h",
+    "4h",
+    "1w"
+  ],
+  "sources": {
+    "strat-baseline-views/IWM-minute.jsonl": "db68abce09f1075e87c395a14700ee6b4a6035576cfc3e82a2990a867b97c21b",
+    "strat-baseline-views/IWM-daily.jsonl": "12f5fd1c5f8c615bb9e1769a8fdca130c64e5329b82ac1095c2ec004caa8fdf1",
+    "strat-baseline-views/SPY-minute.jsonl": "85429f53f035d788bc0e1f75ac1695945ee8a6130d6a97af01845c2ad5d3392f",
+    "strat-baseline-views/SPY-daily.jsonl": "6e4f813ac4c0c241983255818ddc2b6ad8a64dc0daa804fdb5ad9a851fb65bf2",
+    "strat-baseline-views/QQQ-minute.jsonl": "8d5223a8a390e7cb448951a962a8c71fc83c6ea1541f3cfbacf8002db99b6d94",
+    "strat-baseline-views/QQQ-daily.jsonl": "6e7974322e750dae83bfea7aea1dd2b019529a5444c8e4e10eef152c738b20a3"
+  },
+  "code": {
+    "lib/strat.py": "a23de1ddb3c0312c7dfbef69ba38ba7c2a4794b9624a29147b8316f5c8e831fe",
+    "lib/data_loader.py": "428c67a9c3373dcf567f7212efc8781aefc404e81157902eca1063a89aa9833a",
+    "lib/agents/summarizers.py": "b5abef13001beade02bd7d2f29ae356e998bb3c17d766566d833d5c0ea49a10f",
+    "gcp/earnings_reactions_brief.py": "83ecf50749e02c7d7008e5ec46d7ab5dcc6f4e62603180257107719ae645c8c1"
+  },
+  "criteria": [
+    "completed5m/15m OHLC+labels equal existing visual audit (312 rows)",
+    "full5m/15m/30m/1h/4h first interval excludes last source minute until close",
+    "earlier native snapshot invariant to future bars and sensitive to completed bar changes",
+    "shared fields agree across actual producer/summary/earnings injected paths",
+    "current_action remains unavailable; no claim confirmed-only consumer implemented"
+  ],
+  "no_new_visuals": true
+}
