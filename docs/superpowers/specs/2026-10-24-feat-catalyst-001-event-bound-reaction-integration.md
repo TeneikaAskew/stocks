@@ -2,6 +2,7 @@
 feat_id: FEAT-CATALYST-001
 req_ids: [REQ-DATA-001, REQ-DATA-002, REQ-DATA-003, REQ-DATA-004, REQ-REL-001]
 issues: []
+site_source_notes: [CATALYSTS-04]
 canvases: []
 done_when:
   - "tests/gcp/test_compute_earnings_reactions.py verifies exact ticker/reported-date timing lookup, ambiguity and unknown refusals, unchanged valid legacy reaction formulas, and bounded ticker-batched source reads"
@@ -22,6 +23,10 @@ supersedes: null
 Owner approval is recorded in the October 24 continuation: “The owner explicitly approves clean integration of validated earnings repairs and new analysis into the existing pipeline,” including defining a minimal existing-table/view extension before application. The owner additionally authorized continuation down to the 1% budget threshold. The coordinating parent explicitly confirmed this bounded integration and required formal primary-stage admission without redundant planning approval. `status: approved` records that instruction; it is not an implementation/review/rollout verdict. All runtime/schema changes still wait for this specification to merge on main and the matching ready plan.
 
 This is a fresh main-based bounded primary-stage contract, not a third fix/review round on [#1567](https://github.com/TeneikaAskew/stocks/pull/1567) at4072f12585d97ee2f8814e481c43c80ba0935a3e. Its exhausted full actionable/intraday earnings contract remains unfinished. Nothing here claims to complete it or grants its unimplemented forecast/action semantics. No source is stacked from that unmerged branch. The primary stage explicitly admits independent event-timing repair, mature-history descriptive consumer conformance and the separately named daily closing-path metrics below. It does not require full STRAT CODE or structural levels before this independent specification/qualification; any later STRAT-consuming integration must wait for its genuine shared contract. Any security-wait decision on evidence PR1573 applies only there, not to this specification or its later CODE PR.
+
+## Backend-only implementation-source trace binding
+
+`CATALYSTS-04` is the existing Chain component under FEAT-CATALYST-001, whose capability owns both `/api/catalysts` and `/api/earnings` and the earnings data family. The optional source-note declaration authorizes only this feature's backend implementation-source note for the producer, earnings views/API and tests under the existing committed-source protocol. The existing calendar-feed edge remains unchanged: this is **not** an assertion that `/api/earnings` or the new outcomes currently power that timeline, and frontend outcome wiring remains unverified and rollout pending. The later CODE note must carry the exact measured source identity, describe implementation/tests only, and preserve every existing Chain, frontend/deployment claim, historical marker and foreign row. This specification adds no SITE row or frontend behavior, changes no financial decision or acceptance criterion, and grants no source-proof or review waiver.
 
 ## Problem and actual evidence
 
