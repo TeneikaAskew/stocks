@@ -8,7 +8,7 @@ done_when:
   - "tests/gcp/test_news_sentiment_log_redaction.py proves synthetic credentials, parameter dictionaries, request URLs, arbitrary exception text and provider Information content never reach warning messages, arguments or exception metadata in dispatch, HTTP-status and JSON failure cases."
   - "Mocked regressions prove unchanged endpoint, complete outgoing parameters including the fake key, timeout30, one HTTP attempt, exception-to-empty behavior, provider Information feed handling and ordinary successful/missing/null/empty feed returns."
   - "Directly affected existing NEWS_SENTIMENT tests, independent review, normal delivery records, documentation no-new audit and current-head required checks pass; no provider calls or actual leak/deployment claims are made."
-status: approved
+status: superseded
 supersedes: null
 ---
 
