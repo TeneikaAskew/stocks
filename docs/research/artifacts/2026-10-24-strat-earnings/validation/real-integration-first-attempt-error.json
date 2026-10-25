@@ -1,0 +1,6 @@
+{
+  "status": "FAILED_HARNESS_CONTROL",
+  "failed_assertion": "completed_minute_positive_sensitivity",
+  "cause": "Missing required session_context caused observed_price=None; sensitivity control correctly rejected vacuous invariance. Application source unchanged.",
+  "correction": "Supply actual existing baseline ordinary-session envelope, explicitly local/retrospective, without claiming canonical calendar or original known-at."
+}
