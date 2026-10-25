@@ -6,17 +6,52 @@ site_source_notes: [DASHBOARD-01, INSIGHTS-08]
 canvases:
   - https://claude.ai/artifact/Fg4VQHB6dFGWF9iXSJUDtg
 done_when:
-  - "The Strat truth-table suite covers every documented candle, combo, compression, failure flag and pattern collision, and passes against the production classifiers"
-  - "Live and replay snapshots exclude unfinished or invalid OHLC and retain IWM October 8 failed-2D independently of its continuation combo"
-  - "Strict timeframe continuity and weighted candle alignment have separate versioned fields with per-timeframe availability and contribution, and no consumer labels a weighted majority as full continuity"
-  - "The structural-level suite covers D/W/M/Q/Y boundaries, holiday and DST sessions, custom multi-day periods, PMG forms and gap-crossed trigger state without future bars"
-  - "A checked-in October 8-9 replay artifact demonstrates snapshot parity across brief, earnings and insight consumers, with observed state changes timestamped rather than inferred from later closes"
-  - "The affected model records, FEAT-STRAT-001 capability record and PR traceability are updated, and focused tests, docs audit and spec gate pass"
-status: draft
+  - "The production candle and pattern classifiers pass the bounded existing-version truth table and invalid/gapped-input controls, with unapproved equality and pattern-glossary choices explicitly excluded"
+  - "Confirmed setups use only completed coherent bars on 5m, 15m, 30m, 1h, 4h and 1w with validated session clocks; developing, missing or unresolved-anchor cases remain unconfirmed with reasons"
+  - "Price versus current-period-open continuity and legacy weighted candle alignment remain separate; actual default FTFC passes append and future-perturbation invariance and the 34 exact legacy final-as-of controls without changing weights"
+  - "Existing shared status/history and selected consumer adapters preserve the same as-of clock, completed/developing state, source and price-basis qualification, and explicit unavailable states without external I/O in isolated acceptance"
+  - "A separately versioned captured-data foundation diagnostic and retained visual evidence demonstrate actual candle, continuity and consumer arithmetic with exact code/input hashes and explicit retrospective-vintage limitations"
+  - "The affected FEAT-STRAT-001 capability and PR traceability records, focused tests, docs audit and spec gate pass; actual merge and deployed verification are separately recorded after normal release gates"
+status: approved
 supersedes: null
 ---
 
 # Complete and consistent Strat state contract
+
+## Owner-approved foundation-only release boundary
+
+Owner approval: the current owner explicitly approved isolating the STRAT
+foundation from later levels, reusing the validated prepared repairs and satisfying
+the formal stage-primary admission without a redundant planning approval. This
+approval changes the existing PR1575 acceptance to the six foundation criteria above;
+it does not claim those criteria are already implemented or passed. Root is the
+single publisher of this existing specification branch. Ordinary external review,
+required current-head checks and specification merge to MAIN still precede the
+matching ready implementation plan and CODE branch. No stage/CI/review gate is waived.
+
+The existing full structural-level/PMG/custom-period, storage-migration,
+full production-brief replay, stop/target/expiry and model-promotion clauses below
+remain preserved design context, but are OUTSIDE this foundation release and are
+not satisfied, deleted or silently waived. Their earlier six active acceptance
+strings are retained verbatim in the appendix below, explicitly unfinished. A later levels release needs its own genuinely approved
+contract. Core confirmation/classification acceptance is not evidence of a
+qualified current-action/level-plan producer or of predictive edge.
+
+The existing source/calendar/price-basis requirements still apply wherever a
+chosen production path requires them. Missing shared calendar, coherent basis,
+source qualification or historical vintage remains explicit unavailable or a
+blocked integration; it is not replaced with synthetic source labels. A finite
+injected raw-coherent retrospective arithmetic test cannot certify a live source
+loader, strict historical PIT or production writer. These unresolved dependencies
+must be reported per path and cannot be hidden by accepting only unavailable cases.
+
+This foundation release selects NO new equality, 3-1-2 glossary, reference FTFC frame set,
+clipped final 4h confirmation, PMG, stop or expiry policy. Existing compatibility
+labels are not declared universal STRAT truth. The full first 09:30–13:30 4h
+bucket may be tested; the shorter final bucket remains explicitly unconfirmed
+until a genuine owner choice. Weekly confirmation needs the actual final session
+close, including holiday and shortened sessions. Daily/monthly/quarterly reference
+context is not removed by the primary signal timeframe list.
 
 ## Publication and approval record
 
@@ -24,14 +59,18 @@ This main-based replacement consolidates the complete second review of
 [PR1566 at0f67903f](https://github.com/TeneikaAskew/stocks/pull/1566#pullrequestreview-5630527167).
 That PR has exhausted its two review rounds; no further fix push or review request
 is made there. Its previously approved six done_when strings and financial formulas
-are preserved exactly. This draft makes the existing contract sensitive to actual
-production consumer failures. It is not implementation acceptance or merge permission.
+are preserved exactly in the unfinished appendix. This approved foundation contract
+retains sensitivity to actual production consumer failures. Approval is not
+implementation acceptance or permission to bypass normal merge requirements.
 The full fifteen-concern reconciliation, including earnings, is maintained on the
 [recovery PR1573](https://github.com/TeneikaAskew/stocks/pull/1573).
 
-Only this STRAT spec is published first. The dependent earnings spec must reference
-this genuine landed contract, and earnings implementation still starts only from
-merged STRAT CODE with inherited production acceptance, never from an unmerged branch.
+The independent event-bound earnings producer, timing admission and descriptive
+daily-path integration may proceed in parallel under its own approved CATALYST
+specification. An earnings consumer change that actually invokes the new STRAT
+contract must bind the genuine merged STRAT contract and its inherited acceptance;
+it must never stack on an unmerged STRAT implementation. The entire later levels
+release is not a prerequisite for independent earnings repair.
 Existing calendar/basis/receipt/freshness prerequisites retain their actual ownership
 and integration gates. Exact local source recovery, reconstructed diagnostics and
 reacquired source vintages do not establish those prerequisites or market validity.
@@ -360,9 +399,9 @@ Preserve the original first5m/15m visual proof and frozen outcomes under their e
 identities. New intended-rule tests/reports use a separately identified revision and
 code/config/input provenance; they do not overwrite or reinterpret that earlier
 proof, certify every default feature causal, or authorize archived/holdout scoring.
-The existing six done_when strings remain unchanged; these checks advance their
-unfinished/invalid-input and observation-clock acceptance without selecting any of
-the undecided reference-FTFC/equality/312/PMG/stop/expiry rules.
+The earlier six acceptance strings are retained unfinished in the appendix. The
+current foundation criteria advance invalid-input and observation-clock acceptance
+without selecting any undecided reference-FTFC/equality/312/PMG/stop/expiry rule.
 
 ## Consolidated production-boundary acceptance
 
@@ -518,3 +557,16 @@ gate enforcement have separate ownership under FEAT-SIGNAL-001; audit their comp
 and avoid implying that changes to this library alone repair those live controls.
 The earnings integration is the separate FEAT-CATALYST-001 spec below. Each capability
 lands in its own non-stacked PR after the approved spec is merged.
+
+
+## Preserved earlier full-contract acceptance — NOT COMPLETED
+
+These are preserved records, not active foundation merge checkboxes. None is
+marked complete by this foundation-only amendment.
+
+  - "The Strat truth-table suite covers every documented candle, combo, compression, failure flag and pattern collision, and passes against the production classifiers"
+  - "Live and replay snapshots exclude unfinished or invalid OHLC and retain IWM October 8 failed-2D independently of its continuation combo"
+  - "Strict timeframe continuity and weighted candle alignment have separate versioned fields with per-timeframe availability and contribution, and no consumer labels a weighted majority as full continuity"
+  - "The structural-level suite covers D/W/M/Q/Y boundaries, holiday and DST sessions, custom multi-day periods, PMG forms and gap-crossed trigger state without future bars"
+  - "A checked-in October 8-9 replay artifact demonstrates snapshot parity across brief, earnings and insight consumers, with observed state changes timestamped rather than inferred from later closes"
+  - "The affected model records, FEAT-STRAT-001 capability record and PR traceability are updated, and focused tests, docs audit and spec gate pass"
