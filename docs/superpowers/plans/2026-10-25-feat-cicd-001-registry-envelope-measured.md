@@ -20,7 +20,7 @@ Ruling: The owner's explicit one-time #1591 exception supersedes only the pin jo
 
 Modify only `.github/workflows/registry-check.yml` for executable behavior: `jobs.registry.timeout-minutes: 5` becomes literal `6`, matching the already-landed pin. Existing regression controls are `tests/scripts/test_spec_gate.py::test_gate_workflows_and_hook_are_pinned_and_hidden_steps_are_scanned` and `tests/scripts/test_spec_gate.py::test_lockfiles_twin_workflows_pins_at_step_one_and_ownership_are_the_contract`; run their actual native probes without adding value-mirroring tests.
 
-Delivery-only files: this unique plan; owned FEAT-CICD-001 catalog/traceability records; only declared SHARED-01 SITE note; ordinary `docs/review-evidence/site-source-snapshot.json`; one scoped evidence receipt. Preserve every other row and executable byte.
+Delivery-only files: this unique plan; owned FEAT-CICD-001 catalog/traceability records; existing SHARED-01 terminal-ordinary proof (exact unchanged SITE/source, no new note or sidecar); one scoped evidence receipt. Preserve every other row and executable byte.
 
 Review focus: a live-only increase must fail when the base pin is5; simultaneous pin/live mutation must fail; exact native suite and exporter invocations must remain; read-only permissions and original event/runner/dependencies remain; identity/source-drift and oversized-input refusals remain. Existing workflow-contract controls and scoped four-seat concrete probes cover those conditions. Wholejob≤335seconds and reserve≥25seconds under360seconds remain mandatory; original285target UNMET stays historical.
 
@@ -35,7 +35,7 @@ Spec: § Prerequisites and exact scope. Advances done_when[0] and done_when[1].
 ## Task 2: ordinary owned delivery evidence
 Spec: §§ Prerequisites and exact scope; Unchanged arithmetic and observation criteria. Advances done_when[3].
 - [ ] Update only own FEAT-CICD-001 catalog/status/current commit date and traceability, preserving existing lineage.
-- [ ] Update the declared SHARED-01 implementation-source note and ordinary immutable sidecar from committed source; independently verify within5s/8MiB/20000entries.
+- [x] Verify ordinary SHARED-01 source proof with the existing terminal-ordinary route: actual watched SOURCE and SITE BODY are exactly MAIN, so preserve the historical pin-stage note/marker and do not create an unnecessary note delta or record. Actual trusted verification passes within5s/8MiB/20000entries; receipt in the owned evidence file.
 - [ ] Run full-default actual MAIN/proposed audits with duplicate-preserving all-severity no-new comparison, reusing an unchanged exact-main baseline if available.
 - [ ] Run ordinary BASE/proposed PR gate and normal commit hook; preserve every test/assertion/isolation/command, readonly permission and runtime/renderer/verifier deadline.
 
