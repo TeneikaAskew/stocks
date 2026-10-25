@@ -9,7 +9,7 @@ done_when:
   - "tests/scripts/test_av_client_pacing.py proves both actual research CLI parsers/default batch loops consume local batch/delay, refuse invalid or unallocated faster delay overrides before dispatch, and preserve existing error/backoff/circuit decisions with zero provider calls."
   - "Consumer/configuration tests inventory all in-repository AlphaVantageConfig consumers, preserve existing task-count pacing partition exactly once, and prove no consumer automatically turns the purchased600RPM field into600RPM for every worker."
   - "Normal own plan/product records, independent review, no-new documentation audit, current-head required CI and review pass; no source claims global account enforcement, verified unused capacity or rollout before actual evidence."
-status: approved
+status: superseded
 supersedes: null
 ---
 
