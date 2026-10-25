@@ -785,6 +785,8 @@ class Snapshot:
             return False
         if prior["mode"] != "100644" or prior["type"] != "blob":
             raise Unavailable("required input is not a regular mode100644 blob")
+        size = self.git.sizes([prior["blob_oid"]])[prior["blob_oid"]]
+        self.budget.admit_size(size)
         # Presence needs metadata only. Content is read and charged below when
         # source drift permits the terminal body-comparison route.
         registry = self.registry(self.git.tree(current)[REGISTRY]["blob_oid"], self.git.blob(current, REGISTRY))

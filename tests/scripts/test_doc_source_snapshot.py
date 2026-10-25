@@ -1589,3 +1589,16 @@ def test_terminal_presence_optimization_keeps_oversized_current_body_refusal(tmp
     result = repo.cli("verify")
     assert result.returncode != 0
     assert "input-byte" in json.loads(result.stdout)["reason"]
+
+
+@pytest.mark.parametrize("object_format", ["sha1", "sha256"])
+def test_terminal_missing_historical_site_blob_refuses_despite_valid_newer_record(object_format, tmp_path):
+    repo = bound_note_repo(tmp_path / "repo", object_format=object_format)
+    assert repo.cli("verify").returncode == 0
+    import re
+    historical = re.search(r"Against:\*\* `([0-9a-f]+)`", (repo.path / SITE).read_text()).group(1)
+    oid = repo.git("rev-parse", historical + ":" + SITE).stdout.strip()
+    (repo.path / ".git/objects" / oid[:2] / oid[2:]).unlink()
+    refused = repo.cli("verify")
+    assert refused.returncode != 0
+    assert "missing or unsupported scoped object" in json.loads(refused.stdout)["reason"]
