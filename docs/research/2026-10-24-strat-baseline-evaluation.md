@@ -1,5 +1,7 @@
 # Frozen local baseline results, October 24
 
+
+**Latest:** [NEW seven-ticker results, chart, validation and exact source-publication status](artifacts/2026-10-24-strat-earnings/README.md) are now recorded in this PR. Executable source publication was rejected by the normal CODE gate; actual source bytes are separately preserved privately. Earlier “not run” news statements below describe the pre-acquisition checkpoint and are superseded by the later seven-case edition. Both new correlations are −1/7 on six usable pairs; TWLO is valid-empty.
 This checkpoint supersedes the earlier synthetic-only status for the isolated historical diagnostic. The actual production STRAT conditional route, hybrid BacktestEngine arm, and independent fixed-formula comparator completed locally. This is evidence of executed retrospective behavior, not full feature acceptance, production qualification or demonstrated general predictive value.
 
 ## Cohort and provenance
@@ -120,3 +122,15 @@ Production: integrate and accept the actual event-identity/release-availability 
 ### Current local deterministic check
 
 The unchanged prepared lib/strat.py was tested locally with external network/process dispatch blocked: `python -m pytest -q tests/lib/test_strat.py --maxfail=1 -p no:cacheprovider` returned206passed in3.35seconds (controller3.82seconds), exit0, zero external-I/O attempts. Source/configuration freeze and stdout/stderr/receipt remain under closed-candle-foundation-v1/local-closure-v2. This verifies the existing focused rule/continuity suite, not the missing confirmed-only consumer, real-data six-timeframe end-to-end acceptance, deployment or resolution of conflicting owner references. No implementation was changed. The earlier database report's display15.0018 should read PostgreSQL15.18: its unchanged raw server_version_num is150018.
+
+### Later completed new-seven edition and current foundation proof
+
+The admitted seven-news batch completed7/7 HTTP200, zero retries/errors, 93.36seconds. Current-vintage vendor-only means matched six targets; TWLO was valid-empty/missing. Independent Fraction-rank arithmetic verified exactly rho=-1/7 for both opening gap and unchanged native five-day sustain, n6. This is weak negative exploratory association, not predictive support or publisher-qualified PIT proof. The original nine-event sample was not recomputed. The NEW chart/table and all 35 daily episode/185 closing-step derivatives, frozen rules and actual reproduction scripts are in the linked artifact folder.
+
+A first opposing daily closing step occurred within the frozen horizon in27/28 priors and7/7 targets. It is not a full-gap reversal or a precise intraday duration. Daily steps compare reaction open→close first, then consecutive closes; flat, missing and right-censored cases remain explicit. Continuous intraday behavior is unobserved. Seven target reaction-day ticker-month requests, or48distinct coverage cells across all35reaction-throughD+5windows, describe possible intraday input units, not new acquisition authority or verified net-new demand.
+
+Current foundation integration completed646 assertions on existing real inputs with unchanged source and no externalI/O, including312existingplottedrows,15before/exactclose boundarycases, actual sharedproducer→summary→earnings parity and prefix/perturbation sensitivity. Current rule suite separately passed206tests. The missing selected-frame confirmed-signal producer is still not implemented/accepted; weekly and clipped-final4h acceptance, reference conflicts, spec/main/readyplan and canonical calendar/basis gates remain real. No broad options/earnings/news work or future journal tables is a STRAT blocker. #1591pinrepair is under review; there is no established live six-minute activation or STRAT deployment.
+
+### Executable preservation gate result
+
+The request to put actual scripts/tests into the documentation recovery PR was attempted and rejected by the repository spec gate, which treats executable sources and archives as CODE regardless of docs/ location. Exact source bytes (663 files plus retained historical failures) were locally hash/parse checked and saved in the owner-only 691-member ZIP identified by the artifact README; source code was not pushed through a documentation exemption or renamed to bypass the gate. This remains an explicit missing deliverable, not a completed scripts PR. Permitted derived results, new chart/tables, frozen analysis rules, call receipts, validation evidence and exact missing-source paths/hashes are in #1573. Their actual first-party CODE publication still requires an applicable approved-main spec and matching ready FEAT plan/branch. No future options journal tables are needed.
