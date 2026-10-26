@@ -1222,6 +1222,8 @@ def compute_daily_path_v1(event, daily, *, observation_ts, price_evidence=None,
             raise ValueError('missing_daily_session')
         if len(frame) < 2:
             raise ValueError('reaction_close_not_mature')
+        if local_earnings_clock(receipt['observed_at']) < closes[visible[-1]]:
+            raise ValueError('price_observed_before_completed_bar')
         records = frame.to_dict('records')
         for row in records:
             nums = []
@@ -1356,6 +1358,9 @@ def admit_database_reaction(row, observation_ts, *, schedule=None):
             raise ValueError('reaction_identity_mismatch')
         if p.get('status') not in ('complete','not_applicable') or not p.get('basis_id'):
             raise ValueError('missing_complete_price_basis_evidence')
+        import re
+        if not isinstance(p.get('source_identity'),str) or not p['source_identity'].strip() or not re.fullmatch('[0-9a-f]{64}',str(p.get('input_identity',''))):
+            raise ValueError('missing_source_or_input_identity')
         from datetime import date, timedelta
         reported = date.fromisoformat(event['reported_date'])
         if schedule is None:
@@ -1371,6 +1376,8 @@ def admit_database_reaction(row, observation_ts, *, schedule=None):
             raise ValueError('native_endpoint_maturity_mismatch')
         if expected_maturity > clock:
             raise ValueError('reaction_features_not_mature')
+        if local_earnings_clock(p.get('source_observed_at')) < expected_maturity:
+            raise ValueError('price_observed_before_completed_bar')
         for key in _LOCAL_FEATURES:
             val = row.get(key)
             if key in ('direction_consistent_5d','is_reversal_5d'):

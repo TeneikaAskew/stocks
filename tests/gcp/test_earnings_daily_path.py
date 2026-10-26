@@ -130,3 +130,9 @@ def test_canonical_halfday_and_dst_endpoint_clocks_are_not_fixed_24hour_math():
     march=earnings_session_schedule(date(2026,3,6),date(2026,3,9))
     assert pd.Timestamp(march.iloc[0]['market_close']).hour==21
     assert pd.Timestamp(march.iloc[1]['market_close']).hour==20
+
+
+def test_claimed_source_observation_cannot_precede_its_completed_price_bars():
+    ev,f,e=control('BMO');e['observed_at']='2026-01-05T14:00:00Z'
+    result=compute_daily_path_v1(ev,f,observation_ts=CLOCK,price_evidence=e)
+    assert not result['available'] and result['reason']=='price_observed_before_completed_bar'

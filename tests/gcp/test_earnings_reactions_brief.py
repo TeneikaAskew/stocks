@@ -66,7 +66,8 @@ def _reaction_row(
         "reported_date": reported,
         "daily_path_v1": {"version":"earnings-daily-path-v1", "event_id":f"{ticker}:{fiscal}:{reported}",
                           "reaction_basis":basis, "basis_id":"synthetic:raw", "status":"complete",
-                          "mature_at":maturity},
+                          "mature_at":maturity,"source_identity":"synthetic:verified-control",
+                          "input_identity":"a"*64,"source_observed_at":maturity},
         "fiscal_date_ending": fiscal,
         "reaction_basis": basis,
         "reaction_gap_pct": gap,
@@ -574,3 +575,9 @@ def test_percentage_render_names_denominator_and_keeps_native_label_technical():
     assert '75%' in line and 'direction consistency (4 historical events)' in line
     assert '50%' in line and 'upward opening gaps' in line
     assert ctx.to_dict()['classification'] in (CLASS_BUY,CLASS_SELL,CLASS_FAILED_GAP)
+
+
+def test_default_consumer_requires_source_and_input_identities():
+    from lib.earnings_reactions import admit_database_reaction
+    row=_reaction_row(fiscal='2025-09-30');row['daily_path_v1'].pop('source_identity')
+    assert admit_database_reaction(row,'2026-05-15T00:00:00-04:00')['reason']=='missing_source_or_input_identity'
