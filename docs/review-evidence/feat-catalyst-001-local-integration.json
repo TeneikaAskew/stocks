@@ -1,13 +1,13 @@
 {
-  "version": "feat-catalyst-001-local-acceptance-v1",
-  "captured_at_utc": "2026-10-26T01:31:23.901071+00:00",
-  "runtime_source_commit": "5b9ab88cd1bd88abd37709477afa48d4dd0c0d16",
+  "version": "feat-catalyst-001-local-acceptance-v2",
+  "captured_at_utc": "2026-10-26T01:41:16.863666+00:00",
+  "runtime_source_commit": "9eefb77e",
   "approved_spec_main_merge": "d30c1e4de48236dbfd26dd0b7db48e72ee3936fd",
   "implementation_pr": 1608,
   "tests": {
     "command": "EARNINGS_TEST_DB_URL_FILE=<private loopback URL file> EARNINGS_ANGO_FIXTURE_ROOT=<private preserved delivery root> python -m pytest tests/integration/test_earnings_daily_path_persistence.py tests/research/test_earnings_new7_reproduction.py tests/gcp/test_compute_earnings_reactions.py tests/gcp/test_earnings_daily_path.py tests/gcp/test_earnings_local_admission.py tests/gcp/test_earnings_reactions_brief.py tests/api/test_earnings_router.py tests/lib/test_lib_earnings_reactions.py tests/gcp/test_earnings_upcoming_numeric_overflow.py tests/gcp/test_apply_schema.py -q",
-    "result": "326 passed in 14.65s",
-    "stdout_sha256": "0be0e94af7a6933181d12291602c9d8dd3c7159580b816ef8c1a3c25103ce198",
+    "result": "327 passed in 14.76s",
+    "stdout_sha256": "6fde34d758de5dee648bd73dc85b9f483bb879a1b2918662995e4595ce75d1e7",
     "real_local_postgresql_cases": 14,
     "private_fixture_cases": 1,
     "synthetic_market_controls_not_predictive_evidence": true
@@ -42,14 +42,14 @@
   },
   "actual_source_proof": {
     "context": "implementation-source identity matched; external CODE review under existing rules; rollout pending",
-    "counted_bytes": 8032552,
-    "document_body_sha256": "285a9b832c98de5019bc8cd976fbc482546f5bda0954d3bc38d1565f24b80994",
-    "elapsed_seconds": 0.37367209600051865,
+    "counted_bytes": 8033253,
+    "document_body_sha256": "fe7bf14206324f084e333fbb7fd02abc7819ab3c05b6c8990d68f3ed63c22003",
+    "elapsed_seconds": 0.37108492600236787,
     "eligible_route": "declared-note",
     "entry_count": 1452,
     "policy_identity_sha256": "061e4d117f055a8e78a37b17d1de573a7a6c049aee04e6c9d9fc9fb2600a089e",
     "reason": null,
-    "source_identity_sha256": "ac325889766a38742f0f3e5663cdee5c0fbab03d655c8270750b46d40d3a5422",
+    "source_identity_sha256": "1948de4dbc33216ec2130e274053ee50488db621ba7e777969c86c51be6920a1",
     "status": "identity-matched",
     "success": true
   },
@@ -91,8 +91,8 @@
     },
     {
       "path": "docs/product/03-SITE-TRACEABILITY.md",
-      "bytes": 981810,
-      "sha256": "bd44b148988dadf4f50fc9d4d8afb928ae1bdacd7df19c9ba813221e843c7dad"
+      "bytes": 981746,
+      "sha256": "49a18c9bcc899f46737e5b3d92d42de275f5292910e1702ce363e4f647b58025"
     },
     {
       "path": "docs/product/12-PR-ISSUE-TRACEABILITY.md",
@@ -107,7 +107,7 @@
     {
       "path": "docs/review-evidence/site-source-snapshot.json",
       "bytes": 199345,
-      "sha256": "246613651e5ff1ec5c3a617bc0b154bd42896275c60ef26828fc923dd87f3dfd"
+      "sha256": "bf2b010dec8ce979099db51097f00e53c74cd8bbb075c2d2cff4350bb4ee29af"
     },
     {
       "path": "docs/superpowers/plans/2026-10-25-feat-catalyst-001-event-bound-reactions.md",
@@ -136,8 +136,8 @@
     },
     {
       "path": "lib/earnings_reactions.py",
-      "bytes": 62538,
-      "sha256": "ea8fd8e0033218b690def3819f527387d157a8dd5e99a25a0544e8c382e5088b"
+      "bytes": 63517,
+      "sha256": "49e8c5e93121b1fca1ad71d9b17884c78be31c97cb4fec229a25a39a7e2aec6b"
     },
     {
       "path": "tests/gcp/test_compute_earnings_reactions.py",
@@ -146,8 +146,8 @@
     },
     {
       "path": "tests/gcp/test_earnings_daily_path.py",
-      "bytes": 7413,
-      "sha256": "2b589b32bbb98f477628014e6ff8039ac68449381e4b75c7ef0ee874c8757553"
+      "bytes": 8466,
+      "sha256": "53f57d81c619218f1e4f533307c5649975c814d7aaadc92121cd689b737143fd"
     },
     {
       "path": "tests/gcp/test_earnings_local_admission.py",
@@ -258,5 +258,49 @@
     "Daily opposite closing step and closing gap fill are descriptive, not full/intraday reversal or confidence",
     "Restricted raw captures/private manifests excluded from public PR",
     "Finite five-script preservation does not cover all663 source versions"
-  ]
+  ],
+  "capacity": {
+    "synthetic_helper": {
+      "kind": "local_synthetic_helper_capacity_only",
+      "calls": 100,
+      "calendar_batch_sessions": 7794,
+      "maximum_fragment_calendar_days": 44,
+      "maximum_price_steps": 6,
+      "elapsed_seconds": 0.18304660500143655,
+      "per_event_seconds": 0.0018304660500143655,
+      "CloudSQL_network_benchmark": false,
+      "production_volume_or_cost_measured": false,
+      "new_market_or_provider_calls": 0
+    },
+    "local_persistence_io": {
+      "scope": "local actual reflection+one persistence chunk, existing producer input-query shape independently tested",
+      "statement_count": 11,
+      "types": {
+        "INSERT": 1,
+        "SELECT": 10
+      },
+      "rows": 1,
+      "network_target": "disposable loopback only"
+    },
+    "source_sql_shape": "T+2 existing batched source reads plus10 actual reflection SELECTs +ceil(N/250) upsert statements",
+    "production_default_job_volume_walltime_cost": "not measured; no bulk-force/backfill run is admitted here",
+    "production_driver_wait_estimate_for_T1_N4_seconds": [
+      7,
+      28
+    ],
+    "illustrative_compute_rate_usd_per_second": 2e-05,
+    "rate_source": "existing 2026-10-13 FEAT-CATALYST-001 delivery specification; not verified tariff",
+    "new_schedulers": 0,
+    "new_provider_calls": 0
+  },
+  "independent_CODE_review_ledger": {
+    "maximum_rounds": 2,
+    "used_or_reserved_rounds": 1,
+    "completed_judgments": 0,
+    "unallocated_rounds": 1,
+    "interrupted_head": "779356c9aa230db675381dd7628a701cf2407910",
+    "interrupted_receipt": "code-review-round1/interrupted-779-accounting.json in private task evidence",
+    "actual_partial_activity": "six source-reading exec calls; no judgment, tests, probes, network, SQL or mutation; generated/remaining files not reviewed",
+    "start_stop_timestamps": "not captured"
+  }
 }
