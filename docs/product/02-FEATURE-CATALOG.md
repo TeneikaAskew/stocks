@@ -168,7 +168,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
 | Last reviewed | 2026-10-26 |
-| Evidence status | Actual existing main/process/fetch path wired locally; prior191 affected passes and41 independent changed-case passes preserved. Oct26 TLS classification/API-response closeout has123 affected passes; new real-fetcher API cases fail all3 against unchanged main. Additional LOCAL/external review is authorized but not yet completed. API worker remains on its legacy nonsignal path. No future options tables, production rollout, SQL persistence or full A1–A15 certification. |
+| Evidence status | Actual existing main/process/fetch path wired locally; prior191 affected passes and41 independent changed-case passes preserved. Oct26 TLS classification/API-response closeout has123 affected passes; new real-fetcher API cases fail all3 against unchanged main. The authorized additional LOCAL review is clean with4 new cases independently passing; the one additional external CODE round remains pending. API worker remains on its legacy nonsignal path. No future options tables, production rollout, SQL persistence or full A1–A15 certification. |
 | UI surface | `/options` |
 | Backend | `/api/options`, `/api/grid` |
 | Data | `etf_options_snapshots`, `intraday_gex_15m`, `realtime_gex_15m` |
