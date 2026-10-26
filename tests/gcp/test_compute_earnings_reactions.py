@@ -1107,7 +1107,7 @@ class TestProductionEventTimingContract:
             writes.append(frame.to_dict('records'))
             stored.update(frame.to_dict('records')[0])
             return len(frame)
-        monkeypatch.setattr(mod, 'upsert_dataframe', persist)
+        monkeypatch.setattr(mod, '_persist_reaction_frame', persist)
         assert mod.populate_for_tickers(['TEST']) == 0
         assert writes == []
         assert stored == prior
@@ -1125,7 +1125,7 @@ class TestProductionEventTimingContract:
         monkeypatch.setattr(mod, 'fetch_daily_windows_for_ticker_dates', lambda *args: {
             eps['reported_date']: TestComputeReactionAMC()._build_bars()})
         monkeypatch.setattr(mod, 'is_cloud_sql_configured', lambda: True)
-        monkeypatch.setattr(mod, 'upsert_dataframe', lambda df, *args, **kwargs: (writes.extend(df.to_dict('records')) or len(df)))
+        monkeypatch.setattr(mod, '_persist_reaction_frame', lambda df, *args, **kwargs: (writes.extend(df.to_dict('records')) or len(df)))
         assert mod.populate_for_tickers(['TEST']) == 1
         assert writes[0]['reaction_basis'] == 'BMO'
         # BMO110.5open vs110previousclose; never AMC120open vs111close.

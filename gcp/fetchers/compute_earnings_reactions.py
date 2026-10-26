@@ -611,7 +611,7 @@ def fetch_daily_window(ticker: str, reported_date: date) -> pd.DataFrame:
     see issue #452 and the post-fix benchmarks in the PR description.
     """
     sql = """
-        SELECT date, open, high, low, close, volume, atr_14
+        SELECT date, open, high, low, close, volume, atr_14, adjusted_close, data_source
           FROM market_data_daily
          WHERE ticker = :t AND date BETWEEN :start AND :end
          ORDER BY date
@@ -670,7 +670,7 @@ def fetch_daily_windows_for_ticker_dates(
     min_date = min(reported_dates) - timedelta(days=90)
     max_date = max(reported_dates) + timedelta(days=25)
     sql = """
-        SELECT date, open, high, low, close, volume, atr_14
+        SELECT date, open, high, low, close, volume, atr_14, adjusted_close, data_source
           FROM market_data_daily
          WHERE ticker = :t AND date BETWEEN :start AND :end
          ORDER BY date
@@ -699,7 +699,7 @@ def fetch_daily_windows_for_ticker_dates(
     return out
 
 
-def populate_for_tickers(tickers: list[str], dry_run: bool = False) -> int:
+def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observation_ts=None) -> int:
     """Build earnings_reactions rows for the given tickers, upsert.
 
     Returns the number of rows produced.
@@ -709,6 +709,22 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False) -> int:
         log.warning("No earnings_history rows for %s", tickers)
         return 0
 
+    from lib.earnings_reactions import (
+        local_earnings_clock, earnings_session_schedule, compute_daily_path_v1,
+        database_daily_price_evidence,
+    )
+    clock = local_earnings_clock(observation_ts or pd.Timestamp.now(tz='UTC'))
+    dates = [_timing_event_key(row['ticker'], row['reported_date'])
+             for row in eps_df.to_dict('records')]
+    dates = [key[1] for key in dates if key is not None]
+    if not dates:
+        log.warning('No valid reported event dates; prior reactions retained')
+        return 0
+    # One canonical calendar construction for the batch, not one per row.
+    schedule = earnings_session_schedule(min(dates) - timedelta(days=100),
+                                        max(dates) + timedelta(days=40))
+    session_closes = {stamp.date(): pd.Timestamp(row['market_close'])
+                      for stamp, row in schedule.iterrows()}
     calendar_timing = fetch_calendar_timing_map(tickers)
     log.info("earnings_history rows: %d / calendar timing event keys: %d",
              len(eps_df), len(calendar_timing))
@@ -747,12 +763,36 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False) -> int:
                 ticker_skipped += 1
                 unknown_timing += 1
                 continue
+            if event_key[1] not in session_closes:
+                # Never silently shift an unidentified non-session release.
+                ticker_skipped += 1
+                continue
 
             daily = windows.get(eps['reported_date'], pd.DataFrame())
+            if not daily.empty:
+                # Completed bars only; never assign a final close at interval start.
+                if any(day not in session_closes for day in daily['date']):
+                    ticker_skipped += 1
+                    continue
+                daily = daily[daily['date'].map(lambda day: session_closes[day] <= clock)].copy()
+                daily = daily.reset_index(drop=True)
             result = compute_reaction(eps.to_dict(), daily, basis)
             if result is None:
                 ticker_skipped += 1
                 continue
+            event = dict(eps.to_dict(), reaction_basis=basis,
+                         timing_source=('yahoo_report_time' if normalize_timing(None, None, yahoo_report_time)
+                             else 'report_time' if normalize_timing(report_time, None)
+                             else 'same_event_calendar'))
+            declared = daily.attrs.get('earnings_price_evidence')
+            price = ({'available': True, 'receipt': declared} if declared else
+                     database_daily_price_evidence(event, daily, schedule=schedule,
+                                                   observed_at=pd.Timestamp.now(tz='UTC')))
+            path = compute_daily_path_v1(event, daily, observation_ts=clock,
+                        price_evidence=price['receipt'], schedule=schedule)
+            if not price['available']:
+                path['payload']['reason'] = price['reason']
+            result['daily_path_v1'] = path['payload']
             rows.append(result)
             ticker_kept += 1
 
@@ -789,10 +829,7 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False) -> int:
         log.warning("Cloud SQL not configured — skipping persist")
         return 0
 
-    n = upsert_dataframe(
-        out_df, 'earnings_reactions',
-        ['ticker', 'fiscal_date_ending'],
-    )
+    n = _persist_reaction_frame(out_df)
     log.info("✓ upserted %d rows to earnings_reactions", n)
     return n
 
@@ -945,6 +982,70 @@ def main():
              len(tickers))
     n = populate_for_tickers(tickers, dry_run=args.dry_run)
     print(f"compute_earnings_reactions: {n} rows {'computed' if args.dry_run else 'upserted'}")
+
+
+
+
+def _persist_reaction_frame(frame):
+    """Atomic per-chunk PostgreSQL upsert retaining prior qualified values.
+
+    Refuse identity changes and any replacement that would null an existing
+    value. An incomplete/unavailable sidecar never erases a previous sidecar.
+    No previous-row/per-event SELECT is needed; conditions run at the row lock.
+    """
+    import sqlalchemy as sa
+    from sqlalchemy.dialects.postgresql import insert, JSONB
+    from gcp.database import get_engine
+    engine = get_engine()
+    with engine.connect() as conn:
+        table = sa.Table('earnings_reactions', sa.MetaData(), autoload_with=conn)
+    if 'daily_path_v1' not in table.c:
+        raise RuntimeError('earnings_reactions.daily_path_v1 migration is required')
+    table.c.daily_path_v1.type = JSONB(none_as_null=True)
+    columns = [name for name in frame.columns if name in table.c]
+    # Existing extra legacy calculations are not silently relabelled/stored.
+    missing = sorted(set(frame.columns) - set(columns))
+    if missing:
+        raise RuntimeError('reaction schema missing computed fields: ' + ','.join(missing))
+    records = frame[columns].to_dict('records')
+    count = 0
+    batch_size = min(250, max(1, 60000 // max(1, len(columns))))
+    for offset in range(0, len(records), batch_size):
+        batch = records[offset:offset + batch_size]
+        statement = insert(table).values(batch)
+        excluded = statement.excluded
+        conditions = [table.c.reported_date == excluded.reported_date,
+                      sa.or_(table.c.reaction_basis.is_(None),
+                             table.c.reaction_basis == excluded.reaction_basis)]
+        for name in columns:
+            if name not in ('ticker', 'fiscal_date_ending', 'daily_path_v1'):
+                conditions.append(sa.or_(table.c[name].is_(None), excluded[name].is_not(None)))
+        prior = table.c.daily_path_v1
+        incoming = excluded.daily_path_v1
+        old_status = prior['status'].astext
+        new_status = incoming['status'].astext
+        acceptable_payload = sa.and_(
+            incoming.is_not(None), new_status.in_(['complete', 'maturing', 'not_applicable']),
+            sa.or_(old_status.is_(None), old_status.notin_(['complete', 'not_applicable']),
+                   new_status.in_(['complete', 'not_applicable'])),
+            sa.or_(prior['event_id'].astext.is_(None),
+                   prior['event_id'].astext == incoming['event_id'].astext),
+            sa.or_(prior['basis_id'].astext.is_(None),
+                   prior['basis_id'].astext == incoming['basis_id'].astext),
+            sa.or_(prior['version'].astext.is_(None),
+                   prior['version'].astext == incoming['version'].astext))
+        conditions.append(sa.or_(prior.is_(None), sa.func.jsonb_typeof(prior) == 'null', acceptable_payload))
+        statement = statement.on_conflict_do_update(
+            index_elements=['ticker', 'fiscal_date_ending'],
+            set_={name: excluded[name] for name in columns
+                  if name not in ('ticker', 'fiscal_date_ending')},
+            where=sa.and_(*conditions))
+        with engine.begin() as conn:
+            count += conn.execute(statement).rowcount
+    if count < len(records):
+        log.warning('Retained %d prior reaction rows: incompatible identity or unavailable replacement',
+                    len(records) - count)
+    return count
 
 
 if __name__ == '__main__':

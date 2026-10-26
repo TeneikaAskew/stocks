@@ -787,6 +787,7 @@ CREATE TABLE IF NOT EXISTS earnings_reactions (
     reported_date               DATE         NOT NULL,
 
     -- Timing (canonical source: earnings_history.report_time)
+    daily_path_v1              JSONB,           -- versioned daily closing-path evidence; NULL is unqualified
     reaction_basis              VARCHAR(3),     -- 'AMC' or 'BMO'
 
     -- EPS context (denormalized from earnings_history for query speed)
@@ -866,6 +867,8 @@ CREATE TABLE IF NOT EXISTS earnings_reactions (
     CONSTRAINT ck_earnings_reactions_basis
         CHECK (reaction_basis IS NULL OR reaction_basis IN ('AMC', 'BMO'))
 );
+
+ALTER TABLE earnings_reactions ADD COLUMN IF NOT EXISTS daily_path_v1 JSONB;
 
 CREATE INDEX IF NOT EXISTS idx_earnings_reactions_ticker_reported
     ON earnings_reactions (ticker, reported_date DESC);
@@ -4438,9 +4441,9 @@ reactions_deduped AS (
              fiscal_date_ending DESC NULLS LAST
 ),
 history_deduped AS (
-    SELECT DISTINCT ON (ticker, reported_date) *
+    SELECT DISTINCT ON (ticker, reported_date, fiscal_date_ending) *
     FROM earnings_history
-    ORDER BY ticker, reported_date,
+    ORDER BY ticker, reported_date, fiscal_date_ending,
              (surprise_pct IS NULL),
              fiscal_date_ending DESC NULLS LAST
 ),
@@ -4558,6 +4561,9 @@ SELECT
     er.sustain_10d_pct,
     er.direction_consistent_5d,
     er.is_reversal_5d,
+    er.daily_path_v1,
+    er.reaction_anchor_price,
+    er.d_open, er.d_close, er.d_plus_1_open,
     er.reaction_max_run_pct,
     er.reaction_max_drawdown_pct,
     er.d_minus_1_close,
@@ -4588,6 +4594,7 @@ FROM reactions_deduped er
 LEFT JOIN history_deduped eh
     ON eh.ticker = er.ticker
    AND eh.reported_date = er.reported_date
+   AND eh.fiscal_date_ending = er.fiscal_date_ending
 LEFT JOIN atm_per_event a
     ON a.ticker = er.ticker
    AND a.reported_date = er.reported_date
@@ -4612,8 +4619,59 @@ CREATE INDEX idx_eeo_reported_date
 DROP MATERIALIZED VIEW IF EXISTS earnings_ticker_lean CASCADE;
 
 CREATE MATERIALIZED VIEW earnings_ticker_lean AS
+WITH ranked_daily_paths AS (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY reported_date DESC) AS path_rank
+    FROM earnings_event_outcomes
+), path_rows AS (
+    SELECT *, COALESCE(daily_path_v1->>'status' IN ('complete', 'not_applicable'), false)
+              AND COALESCE((daily_path_v1->>'mature_at')::timestamptz <= NOW(), false) AS path_ready,
+           reaction_gap_pct IS NOT NULL AND pre_earnings_drift_10d_pct IS NOT NULL
+           AND sustain_5d_pct IS NOT NULL AND direction_consistent_5d IS NOT NULL
+           AND is_reversal_5d IS NOT NULL AS native_fields_present
+    FROM ranked_daily_paths WHERE path_rank <= 12
+), path_summaries AS (
+    SELECT ticker, jsonb_build_object(
+        'version', 'earnings-daily-path-summary-v1',
+        'mode', 'retrospective_current_vintage',
+        'scope', 'latest_12_event_candidates_daily_closing_steps_only',
+        'point_in_time_verified', false,
+        'step_unit', 'trading_session_close_index_zero_is_reaction_session_close',
+        'event_n', COUNT(*),
+        'qualified_native_n', COUNT(*) FILTER (WHERE path_ready AND native_fields_present),
+        'historical_direction_consistency_pct',
+            100.0 * COUNT(*) FILTER (WHERE path_ready AND native_fields_present AND direction_consistent_5d)
+            / NULLIF(COUNT(*) FILTER (WHERE path_ready AND native_fields_present), 0),
+        'historical_upward_opening_gap_pct',
+            100.0 * COUNT(*) FILTER (WHERE path_ready AND native_fields_present AND reaction_gap_pct > 0)
+            / NULLIF(COUNT(*) FILTER (WHERE path_ready AND native_fields_present), 0),
+        'first_opposite_close', jsonb_build_object(
+            'eligible_n', COUNT(*) FILTER (WHERE path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,available}')::boolean, false)),
+            'observed_n', COUNT(*) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,available}')::boolean, false)) AND daily_path_v1->>'first_opposite_close_step' IS NOT NULL),
+            'right_censored_n', COUNT(*) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,available}')::boolean, false)) AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,censored}')::boolean, false)),
+            'not_applicable_n', COUNT(*) FILTER (WHERE daily_path_v1 #>> '{per_metric,first_opposite_close,status}' = 'not_applicable'),
+            'unavailable_n', COUNT(*) FILTER (WHERE NOT (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,available}')::boolean, false)) AND NOT COALESCE(daily_path_v1 #>> '{per_metric,first_opposite_close,status}' = 'not_applicable', false)),
+            'observed_rate_pct', 100.0 * COUNT(*) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,available}')::boolean, false)) AND daily_path_v1->>'first_opposite_close_step' IS NOT NULL) / NULLIF(COUNT(*) FILTER (WHERE path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,available}')::boolean, false)), 0),
+            'median_first_observed_step', percentile_cont(0.5) WITHIN GROUP (ORDER BY (daily_path_v1->>'first_opposite_close_step')::double precision) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,available}')::boolean, false)) AND daily_path_v1->>'first_opposite_close_step' IS NOT NULL)
+        ),
+        'closing_gap_fill', jsonb_build_object(
+            'eligible_n', COUNT(*) FILTER (WHERE path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,available}')::boolean, false)),
+            'observed_n', COUNT(*) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,available}')::boolean, false)) AND daily_path_v1->>'closing_gap_fill_step' IS NOT NULL),
+            'right_censored_n', COUNT(*) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,available}')::boolean, false)) AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,censored}')::boolean, false)),
+            'not_applicable_n', COUNT(*) FILTER (WHERE daily_path_v1 #>> '{per_metric,closing_gap_fill,status}' = 'not_applicable'),
+            'unavailable_n', COUNT(*) FILTER (WHERE NOT (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,available}')::boolean, false)) AND NOT COALESCE(daily_path_v1 #>> '{per_metric,closing_gap_fill,status}' = 'not_applicable', false)),
+            'observed_rate_pct', 100.0 * COUNT(*) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,available}')::boolean, false)) AND daily_path_v1->>'closing_gap_fill_step' IS NOT NULL) / NULLIF(COUNT(*) FILTER (WHERE path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,available}')::boolean, false)), 0),
+            'median_first_observed_step', percentile_cont(0.5) WITHIN GROUP (ORDER BY (daily_path_v1->>'closing_gap_fill_step')::double precision) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,available}')::boolean, false)) AND daily_path_v1->>'closing_gap_fill_step' IS NOT NULL)
+        ),
+        'events', jsonb_agg(jsonb_build_object(
+            'event_id', daily_path_v1->>'event_id', 'reported_date', reported_date,
+            'status', COALESCE(daily_path_v1->>'status', 'unavailable'),
+            'reason', COALESCE(daily_path_v1->>'reason', CASE WHEN daily_path_v1 IS NULL THEN 'missing_admitted_daily_path' ELSE NULL END))
+            ORDER BY reported_date DESC)
+    ) AS summary
+    FROM path_rows GROUP BY ticker
+)
 SELECT
-    ticker,
+    e.ticker,
     COUNT(*)                                                AS total_quarters,
     COUNT(*) FILTER (WHERE beat_meet_miss = 'beat')         AS n_beats,
     COUNT(*) FILTER (WHERE beat_meet_miss = 'meet')         AS n_meets,
@@ -4651,9 +4709,11 @@ SELECT
     ROUND(MAX(best_long_pnl_pct)::numeric, 0)               AS max_long_pnl_pct,
     ROUND(MAX(best_short_pnl_pct)::numeric, 0)              AS max_short_pnl_pct,
     -- Freshness.
-    MAX(reported_date)                                      AS last_event_date
-FROM earnings_event_outcomes
-GROUP BY ticker
+    MAX(reported_date)                                      AS last_event_date,
+    ps.summary                                             AS daily_path_summary_v1
+FROM earnings_event_outcomes e
+LEFT JOIN path_summaries ps ON ps.ticker = e.ticker
+GROUP BY e.ticker, ps.summary
 WITH NO DATA;
 
 CREATE UNIQUE INDEX idx_etl_ticker
