@@ -1,0 +1,54 @@
+{
+  "new_scoring_performed": false,
+  "raw_responses_or_raw_price_paths_included": false,
+  "files": [
+    {
+      "file": "daily-closing-steps.csv",
+      "sha256": "1e03f0ae699469cfac63c5b465dc22bd0051d839b1ad1a8eb18e6221ee9d7ec7",
+      "bytes": 44354,
+      "existing_derived_bytes_copied_unchanged": true
+    },
+    {
+      "file": "daily-episode-summary.csv",
+      "sha256": "e0827dfd6b415ce22584c7c57652fb49939ef7785acb1f31149cd9febf7b724e",
+      "bytes": 9457,
+      "existing_derived_bytes_copied_unchanged": true
+    },
+    {
+      "file": "new-seven-news-and-daily-comparison.pdf",
+      "sha256": "e1eab51be348fa330d4b56d86a463f7d6dc4f4fd59287a07d1aff072cf0d09a4",
+      "bytes": 39366,
+      "existing_derived_bytes_copied_unchanged": true
+    },
+    {
+      "file": "new-seven-news-and-daily-comparison.png",
+      "sha256": "81df7f2f04f3a1bc0e2542e1893b8cdb660e3e2daa02d6dd69c74f0578eaf3bc",
+      "bytes": 306931,
+      "existing_derived_bytes_copied_unchanged": true
+    },
+    {
+      "file": "news-full-recent-older.csv",
+      "sha256": "86f99eda33b3ca3800e18d1f6378ce6329e7d6e13fd3b242b10d1c8002f41b2c",
+      "bytes": 1436,
+      "existing_derived_bytes_copied_unchanged": true
+    },
+    {
+      "file": "root-independent-verification.json",
+      "sha256": "135dbe709be9e53823dee06569a77ce3f6eccfcabc855f92bfc4f16b8ddbee0e",
+      "bytes": 508,
+      "existing_derived_bytes_copied_unchanged": true
+    },
+    {
+      "file": "seven-case-comparison.csv",
+      "sha256": "a944260fd7420c6228c1d6cb4ca162b2933f1281d88e4e70a95a56e24d295874",
+      "bytes": 1412,
+      "existing_derived_bytes_copied_unchanged": true
+    },
+    {
+      "file": "summary.md",
+      "sha256": "a7724a093ec07c07ca39f331af1d97abd6738e3e3330076e7bd5afae328e200f",
+      "bytes": 3565,
+      "existing_derived_bytes_copied_unchanged": true
+    }
+  ]
+}
