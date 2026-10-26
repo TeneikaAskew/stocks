@@ -508,12 +508,12 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation — allowance repair implemented in draft #1606; rollout pending |
+| Status | Production but needs remediation — logger #1607 image rollout verified; allowance #1606 source integrated, release gated |
 | Priority | P0 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-10-25 |
-| Evidence status | Allowance runtime/test bytes match reviewed258fb789,224local tests preserved; committed source identity and279/279no-new audit pass. Current-head external review/CI and actual deployment remain pending; no full data-platform validation. |
+| Last reviewed | 2026-10-26 |
+| Evidence status | Logger source bd8c5310/build20c56463/image ef54b4b6 deployed Ready to three jobs with projected config preserved; next scheduled outcomes unobserved. Allowance runtime/test bytes unchanged from reviewed258fb789,224 tests preserved; prior CODE/SEC/CI clean, combined source proof and owner-approved round3 remain required. No complete data-platform, persistence or provider-root-cause certification. |
 | UI surface | — |
 | Backend | fetcher jobs |
 | Data | 64 relations — see [06](06-DATA-ARCHITECTURE.md) |
