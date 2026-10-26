@@ -1,5 +1,6 @@
 ---
 feat_id: FEAT-INSIGHT-001
+site_source_notes: [INSIGHTS-06]
 req_ids: [REQ-DATA-001, REQ-REL-001, REQ-SECRET-001]
 issues: []
 canvases: []
@@ -37,3 +38,7 @@ Write real-module failing regressions for failure versus successful-empty/nonemp
 lib/** may activate the existing API Cloud Build deployment/migration path. Before source MAIN merge,inspect actual live trigger scope,reviewed build/source identity,current schema-application revision and relevant view/dependency state through STRAT's existing allowed read-only export route. Image rollback cannot reverse committed schema units. Stop any destructive/security/migration surprise rather than disabling a gate or changing IAM. A documentation-only specification merge does not itself authorize unrelated source rollout.
 
 Normal unique ready plan,draft PR,independent diff/tests,Codex review,current-head CI and own delivery records precede source merge/deployment. API/ranker availability contracts,Dashboard historical date/PIT behavior,article watermark/cap/dedup,topic union and source acquisition remain separate work; this minimal repair does not claim all consumer defects are closed. No schema/provider request/retry/schedule/configuration/Gamma/ranker formula or credential change. Existing native connector premium-access cause remains unknown.
+
+## Existing delivery-record allowance
+
+The existing governed `site_source_notes: [INSIGHTS-06]` declaration authorizes only this capability's `(FEAT-INSIGHT-001, INSIGHTS-06)` implementation-source note for the bounded summary availability and mocked tests above. Preserve accurate existing own note content and every other SITE byte, historical marker, Chain/checklist/frontend/deployment claim. This is source/test traceability with rollout pending, not deployed availability or a change to any runtime decision or done_when item. No trusted gate, renderer, COMMON/DATA interface or security rule changes.
