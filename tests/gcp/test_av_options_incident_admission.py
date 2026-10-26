@@ -65,6 +65,17 @@ def source(monkeypatch, *, two=False):
             if two:
                 rows.append({"contractID": "SPY2", "type": "put", "expiration": "2026-12-18", "strike": "501"})
             return {"endpoint": "Realtime Options", "message": "success", "data": rows}
+        @property
+        def raw(self):
+            import io
+            import json as json_module
+            from urllib3.response import HTTPResponse
+            if not hasattr(self, '_raw'):
+                self._raw = HTTPResponse(body=io.BytesIO(json_module.dumps(self.json()).encode()), preload_content=False)
+            return self._raw
+        def close(self):
+            if hasattr(self, '_raw'):
+                self._raw.close()
     def get(*args, **kwargs):
         calls.append(kwargs["params"]["symbol"])
         return Response()
@@ -256,3 +267,93 @@ def test_direct_write_exception_preserves_original_exception(monkeypatch):
     with pytest.raises(RuntimeError) as caught:
         mod.process_ticker("SPY", "FAKE-key", datetime(2026, 10, 20, 15, tzinfo=timezone.utc))
     assert caught.value is error
+
+
+def _transport_fixture_response(ticker, *, empty=False):
+    import io
+    import json as json_module
+    from urllib3.response import HTTPResponse
+    payload = {'endpoint': 'Realtime Options', 'message': 'success', 'data': [] if empty else [{
+        'contractID': ticker + '-FIXTURE', 'type': 'call', 'expiration': '2026-12-18', 'strike': '500',
+    }]}
+    class Response:
+        status_code = 200
+        headers = {}
+        raw = HTTPResponse(body=io.BytesIO(json_module.dumps(payload).encode()), preload_content=False)
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return payload
+        def close(self):
+            self.raw.close()
+    return Response()
+
+
+def test_default_cli_transport_stops_late_source_after_sibling_ack(monkeypatch):
+    from gcp.fetchers import _av_realtime_transport as transport
+    from types import SimpleNamespace
+    clock(monkeypatch, datetime(2026, 10, 22, 19, 30, tzinfo=timezone.utc))
+    monkeypatch.setattr(mod.sys, 'argv', ['collector', '--tickers', 'SPY QQQ IWM'])
+    monkeypatch.setattr(mod, 'is_cloud_sql_configured', lambda: True)
+    monkeypatch.setattr(mod, '_av_cfg', SimpleNamespace(delay_between_calls=0))
+    now = [100.0]
+    monkeypatch.setattr(transport, '_source_clock', lambda: now[0])
+    calls, writes = [], []
+    def get(*args, **kwargs):
+        calls.append((kwargs['params']['symbol'], kwargs['timeout']))
+        return _transport_fixture_response(kwargs['params']['symbol'])
+    def write(df, table, keys):
+        writes.append(df['ticker'].iat[0])
+        now[0] += 20  # Prior SQL may finish; it must not grant more source time.
+        return len(df)
+    monkeypatch.setattr(mod.requests, 'get', get)
+    monkeypatch.setattr(mod, 'upsert_dataframe', write)
+    assert run_main() == 1
+    assert [t for t, _ in calls] == ['SPY']
+    assert 0 < calls[0][1] <= 15
+    assert writes == ['SPY']
+
+
+def test_default_cli_transport_retries_share_one_deadline(monkeypatch):
+    from gcp.fetchers import _av_realtime_transport as transport
+    from types import SimpleNamespace
+    clock(monkeypatch, datetime(2026, 10, 22, 19, 30, tzinfo=timezone.utc))
+    monkeypatch.setattr(mod.sys, 'argv', ['collector', '--tickers', 'SPY QQQ IWM'])
+    monkeypatch.setattr(mod, 'is_cloud_sql_configured', lambda: True)
+    monkeypatch.setattr(mod, '_av_cfg', SimpleNamespace(delay_between_calls=0))
+    now = [100.0]
+    monkeypatch.setattr(transport, '_source_clock', lambda: now[0])
+    calls, writes = [], []
+    def get(*args, **kwargs):
+        ticker = kwargs['params']['symbol']
+        calls.append((ticker, kwargs['timeout']))
+        now[0] += 4 if ticker == 'SPY' else 2
+        return _transport_fixture_response(ticker, empty=ticker == 'SPY')
+    def write(df, table, keys):
+        writes.append(df['ticker'].iat[0])
+        now[0] += 5
+        return len(df)
+    monkeypatch.setattr(mod.requests, 'get', get)
+    monkeypatch.setattr(mod, 'upsert_dataframe', write)
+    assert run_main() == 1
+    assert [t for t, _ in calls] == ['SPY', 'SPY', 'SPY', 'QQQ']
+    assert all(0 < timeout <= 15 for _, timeout in calls)
+    assert all(a > b for (_, a), (_, b) in zip(calls, calls[1:]))
+    assert writes == ['QQQ']
+
+
+def test_direct_worker_fetch_keeps_legacy_path_without_cli_signal(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from gcp.fetchers import _av_realtime_transport as transport
+    monkeypatch.setattr(transport, 'deadline', lambda: (_ for _ in ()).throw(AssertionError('CLI budget used by API worker')))
+    calls = []
+    def get(*args, **kwargs):
+        calls.append(kwargs)
+        return _transport_fixture_response('SPY')
+    monkeypatch.setattr(mod.requests, 'get', get)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        frame = pool.submit(mod.fetch_av_realtime_options, 'SPY', 'FAKE-key', datetime(2026, 10, 22, 19, 30, tzinfo=timezone.utc)).result(timeout=2)
+    assert len(frame) == 1
+    assert len(calls) == 1
+    assert calls[0]['timeout'] == 60
+    assert 'stream' not in calls[0]

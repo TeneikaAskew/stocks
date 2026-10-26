@@ -48,6 +48,18 @@ class _FakeResponse:
     def json(self):
         return self._json
 
+    @property
+    def raw(self):
+        import io
+        from urllib3.response import HTTPResponse
+        if not hasattr(self, '_raw'):
+            self._raw = HTTPResponse(body=io.BytesIO(json.dumps(self._json).encode()), preload_content=False)
+        return self._raw
+
+    def close(self):
+        if hasattr(self, '_raw'):
+            self._raw.close()
+
 
 _NOW = datetime(2026, 5, 22, 18, 7, 32, tzinfo=timezone.utc)
 
@@ -674,7 +686,7 @@ def test_main_transport_error_list_is_safe_and_continues_canonical_tickers(monke
     calls = []
     def request(*args, **kwargs):
         calls.append(kwargs["params"]["symbol"])
-        raise ConnectionError("FAKE-SECRET-1547 https://evil.invalid/?apikey=FAKE-SECRET-1547\r\nINJECTED")
+        raise mod.requests.ConnectionError("FAKE-SECRET-1547 https://evil.invalid/?apikey=FAKE-SECRET-1547\r\nINJECTED")
     monkeypatch.setattr(mod.requests, "get", request)
     sleeps = _no_sleep(monkeypatch)
     caplog.set_level(logging.INFO, logger=mod.__name__)

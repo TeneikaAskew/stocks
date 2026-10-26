@@ -144,7 +144,10 @@ def test_strict_main_keeps_successful_siblings_without_retrying_unknown(monkeypa
             'expiration': '2026-12-18', 'strike': '500',
         }]}
         payload = {'endpoint': 'Realtime Options', 'message': 'success', **fields}
-        return Mock(status_code=200, headers={}, json=Mock(return_value=payload))
+        import io
+        from urllib3.response import HTTPResponse
+        raw = HTTPResponse(body=io.BytesIO(json.dumps(payload).encode()), preload_content=False)
+        return Mock(status_code=200, headers={}, json=Mock(return_value=payload), raw=raw)
     def write(df, table, keys):
         writes.append((df['ticker'].iat[0], len(df), table))
         return len(df)
@@ -156,4 +159,58 @@ def test_strict_main_keeps_successful_siblings_without_retrying_unknown(monkeypa
     assert error.value.code == 1
     assert calls == ['SPY', 'QQQ', 'IWM']
     assert writes == [('SPY', 1, 'etf_options_snapshots'), ('IWM', 1, 'etf_options_snapshots')]
+    assert SECRET not in caplog.text
+
+
+@pytest.mark.parametrize('kind', ['read_timeout', 'protocol'])
+def test_source_body_network_failures_keep_transport_category(monkeypatch, caplog, kind):
+    from gcp.fetchers import _av_realtime_transport as transport
+    from urllib3.exceptions import ProtocolError, ReadTimeoutError
+    failure = ReadTimeoutError(None, 'https://example.invalid/?apikey=' + SECRET, SECRET) if kind == 'read_timeout' else ProtocolError(SECRET)
+    class Raw:
+        headers = {}
+        def read(self, *args, **kwargs):
+            raise failure
+    response = Mock(status_code=200, headers={}, raw=Raw())
+    request = Mock(return_value=response)
+    write = Mock(side_effect=AssertionError('must not write'))
+    monkeypatch.setattr(mod.requests, 'get', request)
+    monkeypatch.setattr(mod, 'upsert_dataframe', write)
+    caplog.set_level(logging.INFO, logger=mod.__name__)
+    with pytest.raises(mod.RealtimeOptionsUnavailable):
+        mod.process_ticker('QQQ', SECRET, NOW, _source_deadline=transport.deadline())
+    assert request.call_count == 1
+    write.assert_not_called()
+    event = attempt(caplog)
+    assert event['http_status'] == 200
+    assert event['error_class'] == 'transport_error'
+    assert event['response_schema'] == {'body': 'unavailable'}
+    assert SECRET not in caplog.text
+
+
+@pytest.mark.parametrize('admitted,kind,classification', [
+    (False, 'timeout', 'transport_error'),
+    (True, 'timeout', 'transport_error'),
+    (True, 'http', 'http_error'),
+])
+def test_source_requests_failures_before_and_after_response(monkeypatch, caplog, admitted, kind, classification):
+    from gcp.fetchers import _av_realtime_transport as transport
+    error_type = mod.requests.HTTPError if kind == 'http' else mod.requests.Timeout
+    response = Mock(status_code=200, headers={})
+    def decode(params, deadline, observed):
+        if admitted:
+            observed(response)
+        raise error_type(SECRET)
+    source = Mock(side_effect=decode)
+    write = Mock(side_effect=AssertionError('must not write'))
+    monkeypatch.setattr(transport, 'decoded_json', source)
+    monkeypatch.setattr(mod, 'upsert_dataframe', write)
+    caplog.set_level(logging.INFO, logger=mod.__name__)
+    with pytest.raises(error_type):
+        mod.process_ticker('QQQ', SECRET, NOW, _source_deadline=transport.deadline())
+    assert source.call_count == 1
+    write.assert_not_called()
+    event = attempt(caplog)
+    assert event['error_class'] == classification
+    assert event['http_status'] == (200 if admitted else None)
     assert SECRET not in caplog.text

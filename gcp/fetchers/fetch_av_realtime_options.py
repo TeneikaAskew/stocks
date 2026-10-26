@@ -43,6 +43,7 @@ import requests
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
+from gcp.fetchers import _av_realtime_transport as _cli_transport
 from lib.config import AlphaVantageConfig
 
 from lib.logging_config import setup_logging
@@ -242,7 +243,8 @@ def _emit_attempt_event(ticker, attempt, response, started, error_class,
 
 
 def fetch_av_realtime_options(ticker: str, api_key: str,
-                              snapshot_ts: datetime, *, _attempt: int = 1) -> pd.DataFrame:
+                              snapshot_ts: datetime, *, _attempt: int = 1,
+                              _source_deadline=None) -> pd.DataFrame:
     """
     Fetch the current intraday options chain from AV REALTIME_OPTIONS.
 
@@ -276,15 +278,33 @@ def fetch_av_realtime_options(ticker: str, api_key: str,
     started = _monotonic()
     error_class = 'transport_error'
     try:
-        response = requests.get(AV_BASE_URL, params=params, timeout=60)
-        error_class = 'http_error'
-        response.raise_for_status()
-        error_class = 'json_error'
-        try:
-            data = response.json()
-            response_payload = data
-        except Exception:
-            raise RealtimeOptionsUnavailable('AV REALTIME_OPTIONS JSON error') from None
+        if _source_deadline is None:
+            # API workers retain their existing path: no main-thread signals.
+            response = requests.get(AV_BASE_URL, params=params, timeout=60)
+            error_class = 'http_error'
+            response.raise_for_status()
+            error_class = 'json_error'
+            try:
+                data = response.json()
+            except Exception:
+                raise RealtimeOptionsUnavailable('AV REALTIME_OPTIONS JSON error') from None
+        else:
+            def observed_response(observed):
+                nonlocal response, error_class
+                response = observed
+                error_class = 'http_error'
+            try:
+                data = _cli_transport.decoded_json(params, _source_deadline, observed_response)
+            except _cli_transport.SourceUnavailable as error:
+                category = error.category
+                error_class = category if category in (
+                    'transport_error', 'http_error', 'json_error', 'source_deadline', 'body_limit'
+                ) else 'transport_error'
+                raise RealtimeOptionsUnavailable('AV REALTIME_OPTIONS source unavailable') from None
+            except requests.RequestException as error:
+                error_class = 'http_error' if isinstance(error, requests.HTTPError) else 'transport_error'
+                raise
+        response_payload = data
 
         error_class = 'parse_error'
         try:
@@ -390,7 +410,8 @@ def _normalize_av_response(df: pd.DataFrame, ticker: str,
     return out
 
 
-def process_ticker(ticker: str, api_key: str, snapshot_ts: datetime) -> int:
+def process_ticker(ticker: str, api_key: str, snapshot_ts: datetime, *,
+                   _source_deadline=None) -> int:
     """Fetch one ticker and return its complete acknowledged upsert count."""
     import time
 
@@ -403,7 +424,10 @@ def process_ticker(ticker: str, api_key: str, snapshot_ts: datetime) -> int:
     # propagate immediately (see RealtimeOptionsEmpty docstring).
     for attempt in range(EMPTY_RETRY_ATTEMPTS + 1):
         try:
-            df = fetch_av_realtime_options(ticker, api_key, snapshot_ts, _attempt=attempt + 1)
+            source_kwargs = {'_attempt': attempt + 1}
+            if _source_deadline is not None:
+                source_kwargs['_source_deadline'] = _source_deadline
+            df = fetch_av_realtime_options(ticker, api_key, snapshot_ts, **source_kwargs)
             break
         except RealtimeOptionsEmpty:
             if attempt == EMPTY_RETRY_ATTEMPTS:
@@ -416,7 +440,13 @@ def process_ticker(ticker: str, api_key: str, snapshot_ts: datetime) -> int:
                 "    %s returned 0 contracts (attempt %d/%d) — retrying",
                 _safe_ticker(ticker), attempt + 1, EMPTY_RETRY_ATTEMPTS + 1,
             )
-            time.sleep(_av_cfg.delay_between_calls)
+            if _source_deadline is None:
+                time.sleep(_av_cfg.delay_between_calls)
+            else:
+                try:
+                    _cli_transport.pace(_source_deadline, _av_cfg.delay_between_calls)
+                except _cli_transport.SourceUnavailable:
+                    raise RealtimeOptionsUnavailable('AV REALTIME_OPTIONS source pacing unavailable') from None
     log.info("    %d contracts received", len(df))
 
     # Dedupe defensively — AV occasionally returns duplicate contract rows
@@ -536,14 +566,20 @@ def main():
     log.info("  Snapshot_ts : %s", snapshot_ts.isoformat())
     log.info("  SQL         : configured")
 
+    try:
+        source_deadline = _cli_transport.deadline()
+    except _cli_transport.SourceUnavailable:
+        log.error("AV REALTIME_OPTIONS source deadline unavailable")
+        sys.exit(1)
     errors = []
     total_rows = 0
     for i, ticker in enumerate(tickers):
-        if i > 0:
-            time.sleep(_av_cfg.delay_between_calls)
         try:
-            total_rows += process_ticker(ticker, api_key, snapshot_ts)
-        except RealtimeOptionsUnavailable:
+            if i > 0:
+                _cli_transport.pace(source_deadline, _av_cfg.delay_between_calls)
+            total_rows += process_ticker(ticker, api_key, snapshot_ts,
+                                         _source_deadline=source_deadline)
+        except (RealtimeOptionsUnavailable, _cli_transport.SourceUnavailable):
             # Track which tickers were unavailable; we still try the rest.
             # Job exits non-zero at the end if any ticker failed, which lets
             # Cloud Run/Scheduler surface the failure without spamming
