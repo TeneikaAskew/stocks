@@ -1,0 +1,262 @@
+{
+  "version": "feat-catalyst-001-local-acceptance-v1",
+  "captured_at_utc": "2026-10-26T01:31:23.901071+00:00",
+  "runtime_source_commit": "5b9ab88cd1bd88abd37709477afa48d4dd0c0d16",
+  "approved_spec_main_merge": "d30c1e4de48236dbfd26dd0b7db48e72ee3936fd",
+  "implementation_pr": 1608,
+  "tests": {
+    "command": "EARNINGS_TEST_DB_URL_FILE=<private loopback URL file> EARNINGS_ANGO_FIXTURE_ROOT=<private preserved delivery root> python -m pytest tests/integration/test_earnings_daily_path_persistence.py tests/research/test_earnings_new7_reproduction.py tests/gcp/test_compute_earnings_reactions.py tests/gcp/test_earnings_daily_path.py tests/gcp/test_earnings_local_admission.py tests/gcp/test_earnings_reactions_brief.py tests/api/test_earnings_router.py tests/lib/test_lib_earnings_reactions.py tests/gcp/test_earnings_upcoming_numeric_overflow.py tests/gcp/test_apply_schema.py -q",
+    "result": "326 passed in 14.65s",
+    "stdout_sha256": "0be0e94af7a6933181d12291602c9d8dd3c7159580b816ef8c1a3c25103ce198",
+    "real_local_postgresql_cases": 14,
+    "private_fixture_cases": 1,
+    "synthetic_market_controls_not_predictive_evidence": true
+  },
+  "actual_local_database": {
+    "image_id": "sha256:4b4956e2ab1f0aec9779dfca20366a9963a3f24c34269c3a115dd838387f0734",
+    "loopback_disposable_only": true,
+    "production_credentials_or_connections_used": false,
+    "production_migration_performed": false,
+    "image_pulled": false
+  },
+  "actual_ango_acceptance": {
+    "historical_prior_quarters": 4,
+    "selected_raw_rows": 64,
+    "injected_interfaces": "source reads only; source hashes verified before use",
+    "actual_executed_components": [
+      "populate_for_tickers",
+      "compute_reaction",
+      "compute_daily_path_v1",
+      "PostgreSQL on-conflict persistence",
+      "earnings_event_outcomes",
+      "earnings_ticker_lean",
+      "earnings API router",
+      "default history admission and brief classifier"
+    ],
+    "direction_consistency_pct": 75,
+    "upward_opening_gap_pct": 50,
+    "count": 4,
+    "historical_publication_verified": false,
+    "forecast_accuracy_or_profitability_claim": false,
+    "original_frozen_evaluations_unchanged": true
+  },
+  "actual_source_proof": {
+    "context": "implementation-source identity matched; external CODE review under existing rules; rollout pending",
+    "counted_bytes": 8032552,
+    "document_body_sha256": "285a9b832c98de5019bc8cd976fbc482546f5bda0954d3bc38d1565f24b80994",
+    "elapsed_seconds": 0.37367209600051865,
+    "eligible_route": "declared-note",
+    "entry_count": 1452,
+    "policy_identity_sha256": "061e4d117f055a8e78a37b17d1de573a7a6c049aee04e6c9d9fc9fb2600a089e",
+    "reason": null,
+    "source_identity_sha256": "ac325889766a38742f0f3e5663cdee5c0fbab03d655c8270750b46d40d3a5422",
+    "status": "identity-matched",
+    "success": true
+  },
+  "actual_branch_main_docs_audit": {
+    "observed_at": "2026-10-26T01:30:14.520488+00:00",
+    "main_head": "d30c1e4de482",
+    "branch_head": "5b9ab88cd1bd",
+    "main_count": 290,
+    "branch_count": 287,
+    "new_findings": [],
+    "no_new_findings_pass": true,
+    "receipt_hashes": {
+      "runtime-main-docs-audit.json": "796247a40b022122f497a8fb52d84c15bb5926aa31a140bae47c6ad5113b55d0",
+      "runtime-candidate-docs-audit.json": "bac42cddf02241b3027b890e8c1d5704f669a39eadd3a641aa8797ec1f3ba985",
+      "source-proof-candidate-verify.json": "745e38c216387fe86bf860832e835db980ab1c53b3d995413966b25812c11848",
+      "candidate-complete-affected-suite.stdout": "0be0e94af7a6933181d12291602c9d8dd3c7159580b816ef8c1a3c25103ce198"
+    }
+  },
+  "api_contract": {
+    "existing_routes_unchanged": true,
+    "daily_path_v1_nullable": true,
+    "daily_path_summary_v1_events": "authoritative server latest-at-most12 event candidates; includes event_id,reported_date,fiscal_date_ending,status,reason",
+    "percentages": "0\u2013100 percentages with metric-specific count denominators",
+    "sample_steps": "reaction-session close index0; not hours or continuous intraday duration",
+    "unknown_numeric_values": "null; missing evidence is not zero/false",
+    "legacy_all_history_summary": "unchanged and distinct from new admitted latest12 summary"
+  },
+  "remaining_gates": [
+    "normal independent CODE review and current-head CI",
+    "eligible normal merge",
+    "schema-before-code authorized rollout with verified rollback",
+    "existing-app frontend binding separately gated in Solyra"
+  ],
+  "source_files": [
+    {
+      "path": "docs/product/02-FEATURE-CATALOG.md",
+      "bytes": 48863,
+      "sha256": "5743a43887a05a8c3d79190445aef7fcc75a36994bdd939b4aa7b4a72e74eba7"
+    },
+    {
+      "path": "docs/product/03-SITE-TRACEABILITY.md",
+      "bytes": 981810,
+      "sha256": "bd44b148988dadf4f50fc9d4d8afb928ae1bdacd7df19c9ba813221e843c7dad"
+    },
+    {
+      "path": "docs/product/12-PR-ISSUE-TRACEABILITY.md",
+      "bytes": 112888,
+      "sha256": "a73c2848e19934f37b8da69912d6679e20be9130a752b0762824154e6e167f34"
+    },
+    {
+      "path": "docs/research/2026-10-25-earnings-new7-reproduction.md",
+      "bytes": 2974,
+      "sha256": "c4437b512e116aa6bf0f76c435e7ff923b196e4155a3d379478ee6e7d48de676"
+    },
+    {
+      "path": "docs/review-evidence/site-source-snapshot.json",
+      "bytes": 199345,
+      "sha256": "246613651e5ff1ec5c3a617bc0b154bd42896275c60ef26828fc923dd87f3dfd"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-10-25-feat-catalyst-001-event-bound-reactions.md",
+      "bytes": 6701,
+      "sha256": "2c1d0bc3fa706bfe1651b469b3f63f9dd61b5e9f1fa671eee1a84cbdf4a128e7"
+    },
+    {
+      "path": "gcp/earnings_reactions_brief.py",
+      "bytes": 46771,
+      "sha256": "40e421484a98ee15c61f6ffc1dec40bc4f071c9a9ad5683ac94152c9473c21b8"
+    },
+    {
+      "path": "gcp/fetchers/compute_earnings_reactions.py",
+      "bytes": 50961,
+      "sha256": "bdddc7f916f42e019e2ae9dbe4d3cbfc472aac44d2aa28334bd07cb391f7bf14"
+    },
+    {
+      "path": "gcp/refresh_earnings_views.py",
+      "bytes": 16133,
+      "sha256": "af7f0943fac9b2afaa6226b1ea65d57a2dc9bdebaeb987d58a549cda7934cbfe"
+    },
+    {
+      "path": "gcp/schema.sql",
+      "bytes": 268969,
+      "sha256": "5c3e1dd1253125f4c6d161a61123cf4c7dd80bd7cf9f921e123faa541b30ec79"
+    },
+    {
+      "path": "lib/earnings_reactions.py",
+      "bytes": 62538,
+      "sha256": "ea8fd8e0033218b690def3819f527387d157a8dd5e99a25a0544e8c382e5088b"
+    },
+    {
+      "path": "tests/gcp/test_compute_earnings_reactions.py",
+      "bytes": 56883,
+      "sha256": "1f219939aa7f7cc6ed6ad6a1785094e10a323ba9df28c07eb4522b8efe87f8a6"
+    },
+    {
+      "path": "tests/gcp/test_earnings_daily_path.py",
+      "bytes": 7413,
+      "sha256": "2b589b32bbb98f477628014e6ff8039ac68449381e4b75c7ef0ee874c8757553"
+    },
+    {
+      "path": "tests/gcp/test_earnings_local_admission.py",
+      "bytes": 19772,
+      "sha256": "0bb3576895993687d4ea7f6e6741ef9dcb7b01bafb22e492f9ccd898a30fc9a4"
+    },
+    {
+      "path": "tests/gcp/test_earnings_reactions_brief.py",
+      "bytes": 26716,
+      "sha256": "8553b956cf505c43a57fa59aa49f8e5fee146acb292cbf6dcde0518b1716665a"
+    },
+    {
+      "path": "tests/integration/test_earnings_daily_path_persistence.py",
+      "bytes": 15884,
+      "sha256": "07823130a8ce4196c3918a17f4d573bad3b99f08c9b20b00c65e0cf2af6a7dcb"
+    },
+    {
+      "path": "tests/research/test_earnings_new7_reproduction.py",
+      "bytes": 4360,
+      "sha256": "fdbc47ffb7bd959be8da2ecf83ff9be1dd255cb73b82f5308f0e45a11ddc7e47"
+    },
+    {
+      "path": "tools/research/earnings_new7/analyze_news_once.py",
+      "bytes": 3032,
+      "sha256": "02dc9f5c59a9f9d30c0833d160a3999377a927f1564b4a381653bfe3147b5a1d"
+    },
+    {
+      "path": "tools/research/earnings_new7/examples/daily-closing-steps.csv",
+      "bytes": 44168,
+      "sha256": "d8acc0c6965661044b0b2d4a662f19ba78185f8d80696a3f91cd474dd001de8b"
+    },
+    {
+      "path": "tools/research/earnings_new7/examples/daily-episode-summary.csv",
+      "bytes": 9421,
+      "sha256": "5a732fa7c1f32a4034b30cbd5f1a98d69c4cfbfa3cd9b2adc336cbd581fadde5"
+    },
+    {
+      "path": "tools/research/earnings_new7/examples/identities.json",
+      "bytes": 3580,
+      "sha256": "2454c28da1724fe134925f0c622aa871d147aeda7a9f92ce59b1e3dd2ab5949c"
+    },
+    {
+      "path": "tools/research/earnings_new7/examples/new-seven-news-and-daily-comparison.pdf",
+      "bytes": 39366,
+      "sha256": "e1eab51be348fa330d4b56d86a463f7d6dc4f4fd59287a07d1aff072cf0d09a4"
+    },
+    {
+      "path": "tools/research/earnings_new7/examples/new-seven-news-and-daily-comparison.png",
+      "bytes": 306931,
+      "sha256": "81df7f2f04f3a1bc0e2542e1893b8cdb660e3e2daa02d6dd69c74f0578eaf3bc"
+    },
+    {
+      "path": "tools/research/earnings_new7/examples/news-full-recent-older.csv",
+      "bytes": 1428,
+      "sha256": "7f64d39c440b41ecc5d6d21ccba001c7e65f223aedf2b71144ed3631a692dc0c"
+    },
+    {
+      "path": "tools/research/earnings_new7/examples/root-independent-verification.json",
+      "bytes": 508,
+      "sha256": "135dbe709be9e53823dee06569a77ce3f6eccfcabc855f92bfc4f16b8ddbee0e"
+    },
+    {
+      "path": "tools/research/earnings_new7/examples/seven-case-comparison.csv",
+      "bytes": 1404,
+      "sha256": "f5adfaa7f5482bac32798538d22710bde7305c2e53fd02d15c06d82f437f3103"
+    },
+    {
+      "path": "tools/research/earnings_new7/frozen_news_rules.py",
+      "bytes": 10132,
+      "sha256": "d33f69305f9dd827993f605bb78c206ec291788945e34931fb3a7acacb27be4d"
+    },
+    {
+      "path": "tools/research/earnings_new7/frozen_rank_rules.py",
+      "bytes": 1163,
+      "sha256": "0fc31f2df47bc76855596d373af783621e644accd020fbd7685262e37029abd1"
+    },
+    {
+      "path": "tools/research/earnings_new7/join_and_describe_once.py",
+      "bytes": 8517,
+      "sha256": "0e8b5b4311706f723a1f2cccd21883fd0e603e897acb1012d2dc736bcb029d55"
+    },
+    {
+      "path": "tools/research/earnings_new7/protocol.json",
+      "bytes": 11253,
+      "sha256": "3b076448a53fbe89a875d1737d8e5e684aadcebf74bcd2ad8b739aac1e616d17"
+    },
+    {
+      "path": "tools/research/earnings_new7/render_delivery.py",
+      "bytes": 10538,
+      "sha256": "ecb9838cf7a5005a4d1900507862ce9d071aba7e1e64e3ccbb03a986538bd671"
+    },
+    {
+      "path": "tools/research/earnings_new7/research_io.py",
+      "bytes": 1849,
+      "sha256": "d0967ea761eeef5521620b0e902be7457fbe51fa79bc27791b6690b530bdb3e8"
+    },
+    {
+      "path": "tools/research/earnings_new7/source-identities.json",
+      "bytes": 2426,
+      "sha256": "00931131e99b389eeb3bf0b1ad7e437a7d0c2fcae4f0a334fe8e034fbae33982"
+    }
+  ],
+  "limits": [
+    "No production migration/backfill/deployment performed",
+    "No actual frontend traversal claimed; Solyra288 separately gates existing-app binding",
+    "Current-vintage ANGO sources do not certify original PIT",
+    "Native BMO/AMC financial anchors and classifier thresholds unchanged",
+    "Daily opposite closing step and closing gap fill are descriptive, not full/intraday reversal or confidence",
+    "Restricted raw captures/private manifests excluded from public PR",
+    "Finite five-script preservation does not cover all663 source versions"
+  ]
+}
