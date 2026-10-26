@@ -9,7 +9,8 @@
       "existing_derived_bytes_copied_unchanged": false,
       "published_sha256": "d8acc0c6965661044b0b2d4a662f19ba78185f8d80696a3f91cd474dd001de8b",
       "published_bytes": 44168,
-      "normalization": "CRLF to LF only; parsed cell identity independently checked; no metric recomputation"
+      "normalization": "CRLF to LF only; parsed cell identity independently checked; no metric recomputation",
+      "published_path": "tools/research/earnings_new7/examples/daily-closing-steps.csv"
     },
     {
       "file": "daily-episode-summary.csv",
@@ -18,19 +19,22 @@
       "existing_derived_bytes_copied_unchanged": false,
       "published_sha256": "5a732fa7c1f32a4034b30cbd5f1a98d69c4cfbfa3cd9b2adc336cbd581fadde5",
       "published_bytes": 9421,
-      "normalization": "CRLF to LF only; parsed cell identity independently checked; no metric recomputation"
+      "normalization": "CRLF to LF only; parsed cell identity independently checked; no metric recomputation",
+      "published_path": "tools/research/earnings_new7/examples/daily-episode-summary.csv"
     },
     {
       "file": "new-seven-news-and-daily-comparison.pdf",
       "sha256": "e1eab51be348fa330d4b56d86a463f7d6dc4f4fd59287a07d1aff072cf0d09a4",
       "bytes": 39366,
-      "existing_derived_bytes_copied_unchanged": true
+      "existing_derived_bytes_copied_unchanged": true,
+      "published_path": "tools/research/earnings_new7/examples/new-seven-news-and-daily-comparison.pdf"
     },
     {
       "file": "new-seven-news-and-daily-comparison.png",
       "sha256": "81df7f2f04f3a1bc0e2542e1893b8cdb660e3e2daa02d6dd69c74f0578eaf3bc",
       "bytes": 306931,
-      "existing_derived_bytes_copied_unchanged": true
+      "existing_derived_bytes_copied_unchanged": true,
+      "published_path": "tools/research/earnings_new7/examples/new-seven-news-and-daily-comparison.png"
     },
     {
       "file": "news-full-recent-older.csv",
@@ -39,13 +43,15 @@
       "existing_derived_bytes_copied_unchanged": false,
       "published_sha256": "7f64d39c440b41ecc5d6d21ccba001c7e65f223aedf2b71144ed3631a692dc0c",
       "published_bytes": 1428,
-      "normalization": "CRLF to LF only; parsed cell identity independently checked; no metric recomputation"
+      "normalization": "CRLF to LF only; parsed cell identity independently checked; no metric recomputation",
+      "published_path": "tools/research/earnings_new7/examples/news-full-recent-older.csv"
     },
     {
       "file": "root-independent-verification.json",
       "sha256": "135dbe709be9e53823dee06569a77ce3f6eccfcabc855f92bfc4f16b8ddbee0e",
       "bytes": 508,
-      "existing_derived_bytes_copied_unchanged": true
+      "existing_derived_bytes_copied_unchanged": true,
+      "published_path": "tools/research/earnings_new7/examples/root-independent-verification.json"
     },
     {
       "file": "seven-case-comparison.csv",
@@ -54,13 +60,15 @@
       "existing_derived_bytes_copied_unchanged": false,
       "published_sha256": "f5adfaa7f5482bac32798538d22710bde7305c2e53fd02d15c06d82f437f3103",
       "published_bytes": 1404,
-      "normalization": "CRLF to LF only; parsed cell identity independently checked; no metric recomputation"
+      "normalization": "CRLF to LF only; parsed cell identity independently checked; no metric recomputation",
+      "published_path": "tools/research/earnings_new7/examples/seven-case-comparison.csv"
     },
     {
       "file": "summary.md",
       "sha256": "a7724a093ec07c07ca39f331af1d97abd6738e3e3330076e7bd5afae328e200f",
       "bytes": 3565,
-      "existing_derived_bytes_copied_unchanged": true
+      "existing_derived_bytes_copied_unchanged": true,
+      "published_path": "docs/research/artifacts/2026-10-24-strat-earnings/new-seven-results/summary.md"
     }
   ]
 }

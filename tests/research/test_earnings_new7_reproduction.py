@@ -70,3 +70,16 @@ def test_seven_ticker_guard_refuses_legacy_ten_before_inputs():
     protocol=json.loads((ROOT/'protocol.json').read_text())
     assert rules.check_new7_protocol(protocol) is protocol
     with pytest.raises(ValueError):rules.check_new7_protocol({'order':['OLD']*10,'events':[]})
+
+
+def test_permitted_existing_derived_outputs_are_identical_or_lineending_only():
+    import csv,io
+    index=json.loads((ROOT/'examples/identities.json').read_text())
+    for item in index['files']:
+        path=ROOT.parents[2]/item['published_path']
+        body=path.read_bytes()
+        assert hashlib.sha256(body).hexdigest()==item.get('published_sha256',item['sha256'])
+        assert len(body)==item.get('published_bytes',item['bytes'])
+        if item['file'].endswith('.csv'):
+            assert item['normalization'].startswith('CRLF to LF only')
+            assert len(list(csv.reader(io.StringIO(body.decode()))))>1
