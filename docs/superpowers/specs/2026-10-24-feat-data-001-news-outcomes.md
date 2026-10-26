@@ -1,5 +1,6 @@
 ---
 feat_id: FEAT-DATA-001
+site_source_notes: [SHARED-07]
 req_ids: [REQ-DATA-001, REQ-REL-001, REQ-SECRET-001, REQ-CAP-001]
 issues: []
 canvases:
@@ -43,3 +44,7 @@ Runtime scope:gcp/fetchers/fetch_news_sentiment.py only,plus focused tests and r
 Mocked real-module and CLI regressions must exercise valid empty/nonempty,all failure classes,mixed sibling success/failure/empty,malformed article,safe logger,write exception/uncertainty and no second request. Replace the existing rate-limit-to-empty test rather than treating that weak behavior as required. Reuse prior diagnostic evidence; do not rerun accepted options suites.
 
 Existing request cardinality and timeout30 remain unchanged. Outcomes add bounded per-request bookkeeping,not raw-body storage or a new SQL table. Default ticker cap remains existing300;no concurrency or provider allowance increase. No source/SQL call is added and no performance/cost reduction is claimed. Normal plan,independent review,Codex/current-head CI and required records precede release. Unknown native binding,raw HTTP evidence and persisted completeness remain explicit.
+
+## Existing delivery-record allowance
+
+The existing governed `site_source_notes: [SHARED-07]` declaration authorizes only this capability's `(FEAT-DATA-001, SHARED-07)` implementation-source note for the bounded producer and mocked tests above. Preserve accurate existing own note content and every other SITE byte, historical marker, Chain/checklist/frontend/deployment claim. This is source/test traceability with rollout pending, not deployed availability or a change to any runtime decision or done_when item. No trusted gate, renderer, COMMON/DATA interface or security rule changes.
