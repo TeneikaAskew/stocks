@@ -541,6 +541,66 @@ class TestOnDemandDispatch:
         assert "sample data" in r.json()["detail"].lower() or \
                "unavailable" in r.json()["detail"].lower()
 
+    @pytest.mark.parametrize("fields,reason", [
+        ({}, "data missing"),
+        ({"data": None}, "data null"),
+        ({"data": {"untrusted": "FAKE-API-REDACTION-SECRET"}},
+         "data type unavailable"),
+    ])
+    def test_real_fetcher_schema_failure_returns_safe_http_503(
+        self, client, monkeypatch, caplog, fields, reason,
+    ):
+        """Exercise routing and the real parser, not a substituted fetcher.
+
+        ASGITransport keeps HTTP handling in process without TestClient's
+        lifespan thread bridge. FastAPI still runs the real sync endpoint in
+        its worker thread, so the fetcher cannot depend on CLI SIGALRM.
+        """
+        import asyncio
+        import logging
+        from unittest.mock import Mock
+        import httpx
+        import gcp.database as database
+        from gcp.fetchers import fetch_av_realtime_options as fetcher
+
+        secret = "FAKE-API-REDACTION-SECRET"
+        _install_query_router(monkeypatch)
+        monkeypatch.setattr(grid_router, "_AV_API_KEY", secret)
+        write = Mock(side_effect=AssertionError("unexpected persistence"))
+        engine = Mock(side_effect=AssertionError("unexpected SQL connection"))
+        monkeypatch.setattr(database, "upsert_dataframe", write)
+        monkeypatch.setattr(database, "get_engine", engine)
+        response = Mock(status_code=200, headers={}, json=Mock(return_value={
+            "endpoint": "Realtime Options", "message": "success", **fields,
+        }))
+        request = Mock(return_value=response)
+        monkeypatch.setattr(fetcher.requests, "get", request)
+        caplog.set_level(logging.INFO, logger=fetcher.__name__)
+
+        async def request_grid():
+            transport = httpx.ASGITransport(app=client.app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://testserver",
+            ) as local_client:
+                return await local_client.get("/api/options/NVDA/grid")
+
+        result = asyncio.run(request_grid())
+        assert result.status_code == 503
+        assert result.json() == {
+            "detail": "AV REALTIME_OPTIONS unavailable for NVDA: "
+                      "AV REALTIME_OPTIONS " + reason,
+        }
+        request.assert_called_once_with(
+            "https://www.alphavantage.co/query",
+            params={"function": "REALTIME_OPTIONS", "symbol": "NVDA",
+                    "require_greeks": "true", "apikey": secret, "datatype": "json"},
+            timeout=60,
+        )
+        write.assert_not_called()
+        engine.assert_not_called()
+        assert secret not in result.text
+        assert secret not in caplog.text
+
     def test_allow_on_demand_false_skips_av_call(self, client, monkeypatch):
         """`?allow_on_demand=false` short-circuits to the envelope
         WITHOUT firing AV. The opt-out is critical for B1-era tests

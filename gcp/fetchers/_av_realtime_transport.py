@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from time import monotonic as _source_clock
 
 import requests
-from urllib3.exceptions import ProtocolError, ReadTimeoutError
+from urllib3.exceptions import ProtocolError, ReadTimeoutError, SSLError as Urllib3SSLError
 
 _SOURCE_PHASE_SECONDS=15.0
 _SOURCE_BODY_MAX_BYTES=10*1024*1024
@@ -230,7 +230,7 @@ def decoded_json(params, deadline, on_response):
             return result
     except SourceUnavailable:
         raise
-    except (ReadTimeoutError, ProtocolError):
+    except (ReadTimeoutError, ProtocolError, Urllib3SSLError):
         raise SourceUnavailable('transport_error') from None
     except requests.RequestException as error:
         # Preserve transport/HTTP exception class without unsafe URL/body text.

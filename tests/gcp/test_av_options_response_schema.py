@@ -214,3 +214,41 @@ def test_source_requests_failures_before_and_after_response(monkeypatch, caplog,
     assert event['error_class'] == classification
     assert event['http_status'] == (200 if admitted else None)
     assert SECRET not in caplog.text
+
+
+def test_real_tls_body_failure_is_terminal_transport_error(monkeypatch, caplog):
+    """A native urllib3 TLS wrapper must not become a JSON/provider error."""
+    import io
+    import signal
+    import ssl
+    from urllib3.response import HTTPResponse
+    from gcp.fetchers import _av_realtime_transport as transport
+
+    class TLSBody(io.BytesIO):
+        def read(self, *args, **kwargs):
+            raise ssl.SSLError(1, SECRET)
+
+    raw = HTTPResponse(body=TLSBody(b""), preload_content=False, status=200)
+    response = Mock(status_code=200, headers={}, raw=raw)
+    response.close.side_effect = raw.close
+    request = Mock(return_value=response)
+    write = Mock(side_effect=AssertionError("must not write"))
+    monkeypatch.setattr(mod.requests, "get", request)
+    monkeypatch.setattr(mod, "upsert_dataframe", write)
+    caplog.set_level(logging.INFO, logger=mod.__name__)
+    handler, timer = signal.getsignal(signal.SIGALRM), signal.getitimer(signal.ITIMER_REAL)
+
+    with pytest.raises(mod.RealtimeOptionsUnavailable):
+        mod.process_ticker("QQQ", SECRET, NOW, _source_deadline=transport.deadline())
+
+    assert request.call_count == 1
+    write.assert_not_called()
+    event = attempt(caplog)
+    assert event["http_status"] == 200
+    assert event["error_class"] == "transport_error"
+    assert event["response_schema"] == {"body": "unavailable"}
+    response.close.assert_called_once()
+    assert raw.closed
+    assert signal.getsignal(signal.SIGALRM) == handler
+    assert signal.getitimer(signal.ITIMER_REAL) == timer
+    assert SECRET not in caplog.text
