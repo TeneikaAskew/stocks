@@ -757,6 +757,8 @@ Live registry continuation: [#1599](https://github.com/TeneikaAskew/stocks/pull/
 | [solyra#127](https://github.com/TeneikaAskew/solyra/issues/127) | P3 | [P3][Catalysts] Expanding an event adds nothing and no row links to its article or filing |
 | [solyra#128](https://github.com/TeneikaAskew/solyra/issues/128) | P3 | [P3][Catalysts] A titleless event prints "undefined undefined" and no impact counts as Medium |
 
+**Bounded event-reaction integration:** [approved spec #1593](https://github.com/TeneikaAskew/stocks/pull/1593), [implementation #1608](https://github.com/TeneikaAskew/stocks/pull/1608). Repairs the existing producer/brief and additive existing-table evidence only; no issue closure, deployed-screen or forecast claim.
+
 **PR lineage:** [#220](https://github.com/TeneikaAskew/stocks/pull/220) · [#514](https://github.com/TeneikaAskew/stocks/pull/514) · [#532](https://github.com/TeneikaAskew/stocks/pull/532) (the README's PRs column; kinds not classified)
 
 ### FEAT-LIVE-001 — Intraday monitoring (20 open)

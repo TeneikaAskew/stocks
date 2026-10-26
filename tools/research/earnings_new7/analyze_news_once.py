@@ -1,6 +1,6 @@
 """Frozen-rule NEWS-only computation. Does not open daily results or price files."""
 from pathlib import Path as _Path
-from research_io import selected_root, mapped_path as Path
+from research_io import selected_root, mapped_path as Path, check_new7_protocol
 import json,hashlib,datetime as dt,csv
 from frozen_news_rules import analyze_event
 O=selected_root()
@@ -9,7 +9,7 @@ def main():
  assert not (O/'news-results').exists()
  freeze=json.loads((O/'analysis-code-freeze.json').read_text())
  for p,h in freeze['news_sources'].items():assert sha(O/p)==h
- protocol=json.loads((O/'frozen-analysis-protocol.json').read_text());r=json.loads((O/'acquisition/batch-receipt.json').read_text());requests={q['call_id']:q for q in r['requests']}
+ protocol=check_new7_protocol(json.loads((O/'frozen-analysis-protocol.json').read_text()));r=json.loads((O/'acquisition/batch-receipt.json').read_text());requests={q['call_id']:q for q in r['requests']}
  out=O/'news-results';out.mkdir();events=[];articles=[];clusters=[]
  for event in protocol['events']:
   q=requests.get(event['ticker']);payload=None;status='not_collected'

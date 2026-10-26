@@ -62,3 +62,11 @@ def test_adaptation_hashes_and_cli_need_explicit_private_inputs():
     for name in ('analyze_news_once.py','join_and_describe_once.py','render_delivery.py'):
         run=subprocess.run([sys.executable,str(ROOT/name),'--help'],capture_output=True,text=True,timeout=20)
         assert run.returncode==0 and '--input-root' in run.stdout
+
+
+def test_seven_ticker_guard_refuses_legacy_ten_before_inputs():
+    import pytest
+    rules=module('research_io')
+    protocol=json.loads((ROOT/'protocol.json').read_text())
+    assert rules.check_new7_protocol(protocol) is protocol
+    with pytest.raises(ValueError):rules.check_new7_protocol({'order':['OLD']*10,'events':[]})

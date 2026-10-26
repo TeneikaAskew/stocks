@@ -4663,7 +4663,8 @@ WITH ranked_daily_paths AS (
             'median_first_observed_step', percentile_cont(0.5) WITHIN GROUP (ORDER BY (daily_path_v1->>'closing_gap_fill_step')::double precision) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,available}')::boolean, false)) AND daily_path_v1->>'closing_gap_fill_step' IS NOT NULL)
         ),
         'events', jsonb_agg(jsonb_build_object(
-            'event_id', daily_path_v1->>'event_id', 'reported_date', reported_date,
+            'event_id', COALESCE(daily_path_v1->>'event_id', ticker || ':' || fiscal_date_ending::text || ':' || reported_date::text),
+            'reported_date', reported_date, 'fiscal_date_ending', fiscal_date_ending,
             'status', COALESCE(daily_path_v1->>'status', 'unavailable'),
             'reason', COALESCE(daily_path_v1->>'reason', CASE WHEN daily_path_v1 IS NULL THEN 'missing_admitted_daily_path' ELSE NULL END))
             ORDER BY reported_date DESC)

@@ -1,6 +1,6 @@
 """New7 descriptive join and predeclared daily sampling only; no native/runtime calls."""
 from pathlib import Path as _Path
-from research_io import selected_root, mapped_path as Path
+from research_io import selected_root, mapped_path as Path, check_new7_protocol
 from decimal import Decimal as D,localcontext
 import json,csv,hashlib,datetime as dt,collections
 from frozen_rank_rules import spearman
@@ -15,8 +15,8 @@ def main():
  f=load(O/'pre-join-code-freeze.json')
  for path,h in f['sources'].items():assert sha(path)==h,path
  nf=load(O/'news-results/news-computation-freeze.json');assert sha(O/'news-results/events.json')==nf['events_sha256']
- proto=load(O/'frozen-analysis-protocol.json');order=proto['order'];news={e['ticker']:e for e in load(O/'news-results/events.json')};source=Path(f['existing_daily_root']);p=load(source/'selector-protocol-freeze.json');metadata={c['ticker']:c for c in p['cases']};existing={r['ticker']:r for r in load(source/'comparison-results.json')['rows']}
- frozen_inputs=load(O/'pre-outcome-input-freeze.json')['sources'];frozen={r['path']:r for r in frozen_inputs}
+ proto=check_new7_protocol(load(O/'frozen-analysis-protocol.json'));order=proto['order'];news={e['ticker']:e for e in load(O/'news-results/events.json')};source=Path(f['existing_daily_root']);p=load(source/'selector-protocol-freeze.json');metadata={c['ticker']:c for c in p['cases']};existing={r['ticker']:r for r in load(source/'comparison-results.json')['rows']}
+ frozen_inputs=load(O/'pre-outcome-input-freeze.json')['sources'];frozen={str(Path(r['path'])):r for r in frozen_inputs}
  for item in frozen_inputs:assert sha(item['path'])==item['sha256'],item['path']
  rows=[]
  for t in order:

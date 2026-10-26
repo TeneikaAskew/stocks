@@ -20,21 +20,21 @@
       "file": "analyze_news_once.py",
       "original_sha256": "9bf5f23e2381d0685a85ed05e2c097ef13fdd57ad152c480a0eff4ad00332e7c",
       "original_bytes": 2928,
-      "adapted_sha256": "e6fda04302cd16cc2612cbd0258d429004b88f9f492b481c1dab44f5658bd8c5",
+      "adapted_sha256": "02dc9f5c59a9f9d30c0833d160a3999377a927f1564b4a381653bfe3147b5a1d",
       "adaptation": "Explicit private input root/path mapping; renderer does not package restricted source payloads."
     },
     {
       "file": "join_and_describe_once.py",
       "original_sha256": "ee5991c2640f25e20cd95313c64379d900fc9ecd892dd394828640823d420557",
       "original_bytes": 8402,
-      "adapted_sha256": "8535a913d9341d27ff2be48e601bea732574a38ec8119c851ce7b41eecb9d329",
+      "adapted_sha256": "0e8b5b4311706f723a1f2cccd21883fd0e603e897acb1012d2dc736bcb029d55",
       "adaptation": "Explicit private input root/path mapping; renderer does not package restricted source payloads."
     },
     {
       "file": "render_delivery.py",
       "original_sha256": "d29359647e35f37405988c58005cfaf7ec43599d8cfce0f1a6e9a2915230df1a",
       "original_bytes": 11561,
-      "adapted_sha256": "a47a29783dd9461dc2c7098aedc8086e9a49199fc26453db270c48f421868859",
+      "adapted_sha256": "ecb9838cf7a5005a4d1900507862ce9d071aba7e1e64e3ccbb03a986538bd671",
       "adaptation": "Explicit private input root/path mapping; renderer does not package restricted source payloads."
     }
   ],

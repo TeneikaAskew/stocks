@@ -1,10 +1,10 @@
 from pathlib import Path as _Path
-from research_io import selected_root, mapped_path as Path
+from research_io import selected_root, mapped_path as Path, check_new7_protocol
 import json,csv,hashlib,collections,zipfile,datetime as dt
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-O=selected_root();public=O/'public-eligible';public.mkdir(exist_ok=False)
+O=selected_root();check_new7_protocol(json.loads((O/'frozen-analysis-protocol.json').read_text()));public=O/'public-eligible';public.mkdir(exist_ok=False)
 sha=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
 r=json.loads((O/'descriptive-results/comparison.json').read_text());episodes=json.loads((O/'descriptive-results/daily-episodes-private.json').read_text());news=json.loads((O/'news-results/events.json').read_text());articles=json.loads((O/'news-results/article-audit-private.json').read_text());order=[e['ticker'] for e in news]
 rows=[]

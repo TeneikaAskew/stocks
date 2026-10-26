@@ -6,13 +6,19 @@
       "file": "daily-closing-steps.csv",
       "sha256": "1e03f0ae699469cfac63c5b465dc22bd0051d839b1ad1a8eb18e6221ee9d7ec7",
       "bytes": 44354,
-      "existing_derived_bytes_copied_unchanged": true
+      "existing_derived_bytes_copied_unchanged": false,
+      "published_sha256": "d8acc0c6965661044b0b2d4a662f19ba78185f8d80696a3f91cd474dd001de8b",
+      "published_bytes": 44168,
+      "normalization": "CRLF to LF only; parsed cell identity independently checked; no metric recomputation"
     },
     {
       "file": "daily-episode-summary.csv",
       "sha256": "e0827dfd6b415ce22584c7c57652fb49939ef7785acb1f31149cd9febf7b724e",
       "bytes": 9457,
-      "existing_derived_bytes_copied_unchanged": true
+      "existing_derived_bytes_copied_unchanged": false,
+      "published_sha256": "5a732fa7c1f32a4034b30cbd5f1a98d69c4cfbfa3cd9b2adc336cbd581fadde5",
+      "published_bytes": 9421,
+      "normalization": "CRLF to LF only; parsed cell identity independently checked; no metric recomputation"
     },
     {
       "file": "new-seven-news-and-daily-comparison.pdf",
@@ -30,7 +36,10 @@
       "file": "news-full-recent-older.csv",
       "sha256": "86f99eda33b3ca3800e18d1f6378ce6329e7d6e13fd3b242b10d1c8002f41b2c",
       "bytes": 1436,
-      "existing_derived_bytes_copied_unchanged": true
+      "existing_derived_bytes_copied_unchanged": false,
+      "published_sha256": "7f64d39c440b41ecc5d6d21ccba001c7e65f223aedf2b71144ed3631a692dc0c",
+      "published_bytes": 1428,
+      "normalization": "CRLF to LF only; parsed cell identity independently checked; no metric recomputation"
     },
     {
       "file": "root-independent-verification.json",
@@ -42,7 +51,10 @@
       "file": "seven-case-comparison.csv",
       "sha256": "a944260fd7420c6228c1d6cb4ca162b2933f1281d88e4e70a95a56e24d295874",
       "bytes": 1412,
-      "existing_derived_bytes_copied_unchanged": true
+      "existing_derived_bytes_copied_unchanged": false,
+      "published_sha256": "f5adfaa7f5482bac32798538d22710bde7305c2e53fd02d15c06d82f437f3103",
+      "published_bytes": 1404,
+      "normalization": "CRLF to LF only; parsed cell identity independently checked; no metric recomputation"
     },
     {
       "file": "summary.md",

@@ -5,7 +5,7 @@ their historical post-earnings reaction pattern. Correctness invariants:
 
   - 12-quarter window aggregation: rates are honest fractions over
     non-NULL rows only; pre-earnings drift comes from the most recent row.
-  - No look-ahead: history queries filter on fiscal_date_ending < report.
+  - No look-ahead: history admits prior reported events only after canonical D+5 maturity.
   - I/O shape: a brief over N reporters issues a FIXED number of queries
     (not O(N)) — the batched-by-ticker contract from CLAUDE.md Rule 0.4.
   - Classification rule: SELL / BUY / FAILED-GAP / INSUFFICIENT thresholds.
@@ -285,7 +285,7 @@ def test_no_history_ticker_is_explicit_not_fabricated():
 
 def test_query_count_is_fixed_not_per_ticker(mock_db, monkeypatch):
     """A brief over many reporters issues a FIXED number of queries
-    (2 calendar + 2 history + 2 insider = 6), proving the batched-by-
+    (2 calendar + 2 history + 2 insider + 1 exact recap = 7), proving the batched-by-
     ticker contract (CLAUDE.md Rule 0.4) — not O(N)."""
     monkeypatch.delenv("EARNINGS_BRIEF_AS_OF", raising=False)
     install, captured = mock_db
@@ -300,7 +300,7 @@ def test_query_count_is_fixed_not_per_ticker(mock_db, monkeypatch):
 
     generate_brief(analysis_date=date(2026, 5, 14))  # a Thursday
 
-    # 2 calendar reads (next + last session) + 2 history + 2 insider.
+    # 2 calendar reads + 2 history + 2 insider + 1 exact-event recap.
     assert len(captured["sqls"]) == 7
 
 

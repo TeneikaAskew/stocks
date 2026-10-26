@@ -109,12 +109,23 @@ def test_zero_gap_is_not_applicable_not_an_observed_reversal():
 
 
 def test_canonical_halfday_and_dst_endpoint_clocks_are_not_fixed_24hour_math():
-    from datetime import timedelta
     from lib.earnings_reactions import earnings_session_schedule
-    schedule=earnings_session_schedule(date(2026,11,20),date(2026,12,10))
+    schedule=earnings_session_schedule(date(2026,11,17),date(2026,12,10))
     ev={'ticker':'SYNTH','fiscal_date_ending':'2026-08-31','reported_date':'2026-11-19','reaction_basis':'BMO'}
-    # Direct canonical controls independent of descriptor algorithm.
-    assert pd.Timestamp(schedule.loc['2026-11-27','market_close']).isoformat()=='2026-11-27T18:00:00+00:00'
+    labels=[date(2026,11,d) for d in (18,19,20,23,24,25,27)]
+    frame=pd.DataFrame([{'date':day,'open':100+i,'high':102+i,'low':99+i,'close':101+i}
+                        for i,day in enumerate(labels)])
+    frame.loc[1,['open','high']]=[110,111]
+    evidence={'event_id':'SYNTH:2026-08-31:2026-11-19','source_id':'synthetic-halfday',
+              'observed_at':'2026-11-27T18:00:00Z','acquired_at':'2026-11-27T18:00:00Z',
+              'price_basis_id':'synthetic-raw'}
+    p=compute_daily_path_v1(ev,frame,observation_ts='2026-11-27T18:00:00Z',
+                            price_evidence=evidence,schedule=schedule)['payload']
+    assert p['status']=='complete' and p['observed_steps']==6
+    assert p['mature_at']=='2026-11-27T18:00:00+00:00'
+    early=compute_daily_path_v1(ev,frame,observation_ts='2026-11-27T17:59:59Z',
+                                price_evidence=evidence,schedule=schedule)['payload']
+    assert early['status']=='maturing' and early['observed_steps']==5
     assert date(2026,11,26) not in [x.date() for x in schedule.index]
     march=earnings_session_schedule(date(2026,3,6),date(2026,3,9))
     assert pd.Timestamp(march.iloc[0]['market_close']).hour==21

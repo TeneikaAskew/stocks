@@ -35,3 +35,13 @@ def mapped_path(value):
         try:return new/path.relative_to(old)
         except ValueError:continue
     return path
+
+
+NEW7=('FDX','LLY','STX','INTC','AMD','TWLO','VLO')
+
+
+def check_new7_protocol(protocol):
+    """Reject unrelated ten-row runners before opening any response/outcome."""
+    if tuple(protocol.get('order',())) != NEW7 or tuple(e.get('ticker') for e in protocol.get('events',())) != NEW7:
+        raise ValueError('only the preserved seven-ticker cohort is admitted')
+    return protocol
