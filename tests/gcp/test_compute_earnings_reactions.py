@@ -44,15 +44,15 @@ class TestNormalizeTiming:
     def test_calendar_fallback_postmarket(self):
         assert normalize_timing(None, 'postmarket') == 'AMC'
 
-    def test_both_missing_defaults_amc(self):
-        assert normalize_timing(None, None) == 'AMC'
+    def test_both_missing_is_unavailable(self):
+        assert normalize_timing(None, None) is None
 
     def test_unknown_value_falls_through(self):
         # 'unknown' is not in the recognized list → falls back to next source
         assert normalize_timing('unknown', 'premarket') == 'BMO'
 
-    def test_both_unknown_defaults_amc(self):
-        assert normalize_timing('unknown', 'unknown') == 'AMC'
+    def test_both_unknown_is_unavailable(self):
+        assert normalize_timing('unknown', 'unknown') is None
 
     def test_case_insensitive(self):
         assert normalize_timing('Pre-Market', None) == 'BMO'
@@ -1058,3 +1058,75 @@ class TestTickersReportingInWindowTimezone:
         assert 'BETWEEN CURRENT_DATE' not in sql, (
             "Naked CURRENT_DATE re-introduces the timezone bug (Codex P2 #488)."
         )
+
+
+class TestProductionEventTimingContract:
+    def test_calendar_keys_include_event_date_and_do_not_borrow_later_session(self, monkeypatch):
+        import gcp.fetchers.compute_earnings_reactions as mod
+        seen = []
+        rows = pd.DataFrame([
+            {'ticker': 'TEST', 'earnings_date': date(2026, 3, 4), 'earnings_time': 'premarket', 'c': 1},
+            {'ticker': 'TEST', 'earnings_date': date(2026, 6, 4), 'earnings_time': 'postmarket', 'c': 2},
+        ])
+        monkeypatch.setattr(mod, 'query_to_dataframe', lambda sql, *args: (seen.append(sql) or rows))
+        actual = mod.fetch_calendar_timing_map(['TEST'])
+        assert actual[('TEST', date(2026, 3, 4))] == 'premarket'
+        assert actual[('TEST', date(2026, 6, 4))] == 'postmarket'
+        assert 'GROUP BY ticker, earnings_date, earnings_time' in seen[0]
+
+    def test_same_event_calendar_tie_is_unavailable(self, monkeypatch):
+        import gcp.fetchers.compute_earnings_reactions as mod
+        rows = pd.DataFrame([
+            {'ticker': 'TEST', 'earnings_date': date(2026, 3, 4), 'earnings_time': 'premarket', 'c': 1},
+            {'ticker': 'TEST', 'earnings_date': date(2026, 3, 4), 'earnings_time': 'postmarket', 'c': 1},
+        ])
+        monkeypatch.setattr(mod, 'query_to_dataframe', lambda *args: rows)
+        assert mod.fetch_calendar_timing_map(['TEST'])[('TEST', date(2026, 3, 4))] is None
+
+    @pytest.mark.parametrize('basis', [None, 'unknown', 'before_open'])
+    def test_pure_compute_cannot_treat_unrecognized_basis_as_amc(self, basis):
+        bars = TestComputeReactionAMC()._build_bars()
+        assert compute_reaction(_eps(date(2026, 3, 4)), bars, basis) is None
+
+    def test_actual_producer_unknown_timing_never_overwrites_prior_row(self, monkeypatch):
+        from copy import deepcopy
+        import gcp.fetchers.compute_earnings_reactions as mod
+        eps = _eps(date(2026, 3, 4))
+        prior = {**eps, 'reaction_basis': 'BMO', 'reaction_gap_pct': 5.0,
+                 'sustain_5d_pct': 3.0, 'daily_path_v1': {
+                     'status': 'observed', 'computed_at': '2026-03-12T21:01:00Z',
+                     'observation_ts': '2026-03-12T21:00:00Z', 'censored': False}}
+        stored = deepcopy(prior)
+        writes = []
+        monkeypatch.setattr(mod, 'fetch_earnings_history_for_tickers', lambda _: pd.DataFrame([eps]))
+        monkeypatch.setattr(mod, 'fetch_calendar_timing_map', lambda _: {})
+        monkeypatch.setattr(mod, 'fetch_daily_windows_for_ticker_dates', lambda *args: {
+            eps['reported_date']: TestComputeReactionAMC()._build_bars()})
+        monkeypatch.setattr(mod, 'is_cloud_sql_configured', lambda: True)
+        def persist(frame, *args, **kwargs):
+            writes.append(frame.to_dict('records'))
+            stored.update(frame.to_dict('records')[0])
+            return len(frame)
+        monkeypatch.setattr(mod, 'upsert_dataframe', persist)
+        assert mod.populate_for_tickers(['TEST']) == 0
+        assert writes == []
+        assert stored == prior
+
+    def test_actual_producer_uses_matching_calendar_event_for_native_math(self, monkeypatch):
+        import gcp.fetchers.compute_earnings_reactions as mod
+        eps = _eps(date(2026, 3, 4))
+        rows = pd.DataFrame([
+            {'ticker': 'TEST', 'earnings_date': date(2026, 3, 4), 'earnings_time': 'premarket', 'c': 1},
+            {'ticker': 'TEST', 'earnings_date': date(2026, 6, 4), 'earnings_time': 'postmarket', 'c': 2},
+        ])
+        writes = []
+        monkeypatch.setattr(mod, 'fetch_earnings_history_for_tickers', lambda _: pd.DataFrame([eps]))
+        monkeypatch.setattr(mod, 'query_to_dataframe', lambda *args: rows)
+        monkeypatch.setattr(mod, 'fetch_daily_windows_for_ticker_dates', lambda *args: {
+            eps['reported_date']: TestComputeReactionAMC()._build_bars()})
+        monkeypatch.setattr(mod, 'is_cloud_sql_configured', lambda: True)
+        monkeypatch.setattr(mod, 'upsert_dataframe', lambda df, *args, **kwargs: (writes.extend(df.to_dict('records')) or len(df)))
+        assert mod.populate_for_tickers(['TEST']) == 1
+        assert writes[0]['reaction_basis'] == 'BMO'
+        # BMO110.5open vs110previousclose; never AMC120open vs111close.
+        assert writes[0]['reaction_gap_pct'] == pytest.approx((110.5 / 110 - 1) * 100)

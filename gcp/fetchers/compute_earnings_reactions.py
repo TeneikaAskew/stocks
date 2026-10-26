@@ -7,7 +7,7 @@ timing-aware post-earnings reaction profile:
 
   - reaction_basis: 'BMO' (pre-market) or 'AMC' (post-market) from
     earnings_history.report_time. Falls back to earnings_calendar's
-    earnings_time, then to AMC default if both are missing.
+    earnings_time for the exact event; unknown timing refuses persistence.
   - reaction_gap_pct: D-open vs D-1-close (BMO) OR D+1-open vs D-close (AMC)
   - reaction_anchor_price: D close (BMO) or D+1 open (AMC)
   - sustain_{3,5,10}d_pct: anchored at reaction_anchor_price
@@ -50,8 +50,8 @@ def normalize_timing(
     report_time: Optional[str],
     earnings_time: Optional[str],
     yahoo_report_time: Optional[str] = None,
-) -> str:
-    """Resolve reaction_basis from up to three timing sources.
+) -> Optional[str]:
+    """Resolve reaction_basis from up to three event-matched timing sources.
 
     Precedence (verified by user 2026-05-01):
       1. yahoo_report_time (earnings_history.yahoo_report_time) — preferred,
@@ -61,7 +61,7 @@ def normalize_timing(
       2. report_time (earnings_history.report_time from AV) — fallback.
       3. earnings_time (earnings_calendar.earnings_time, majority vote
          across data_sources) — last fallback for upcoming reports.
-      4. AMC default — when nothing is known.
+      4. None — when nothing is known; callers must refuse this event.
     """
     for v in (yahoo_report_time, report_time, earnings_time):
         if v is None:
@@ -71,7 +71,15 @@ def normalize_timing(
             return 'BMO'
         if s in ('post-market', 'postmarket', 'after market', 'amc'):
             return 'AMC'
-    return 'AMC'  # default
+    return None  # Unknown timing is not an after-market observation.
+
+
+def _timing_event_key(ticker, reported_date):
+    """Normalize SQL DATE / ISO date identities without inventing a clock."""
+    try:
+        return str(ticker).upper(), date.fromisoformat(str(reported_date))
+    except (TypeError, ValueError):
+        return None
 
 
 def compute_reaction(
@@ -92,6 +100,8 @@ def compute_reaction(
     Required keys in eps_row: ticker, fiscal_date_ending, reported_date,
     reported_eps, estimated_eps, surprise_pct
     """
+    if reaction_basis not in ('BMO', 'AMC'):
+        return None
     reported = eps_row['reported_date']
     if daily.empty:
         return None
@@ -553,29 +563,34 @@ def fetch_earnings_history_for_tickers(tickers: list[str]) -> pd.DataFrame:
     return query_to_dataframe(sql)
 
 
-def fetch_calendar_timing_map(tickers: list[str]) -> dict[str, str]:
-    """Build a per-ticker fallback timing map from earnings_calendar.
+def fetch_calendar_timing_map(tickers: list[str]) -> dict[tuple[str, date], Optional[str]]:
+    """Calendar-row majority for each exact (ticker, earnings_date).
 
-    When earnings_history.report_time is NULL, fall back to whichever
-    timing the calendar majority-vote says. Returns ticker -> timing.
+    Keep the existing source precedence and vote counts, but never borrow a
+    different report's timing. A tie is unknown, not an arbitrary session.
     """
     if not tickers:
         return {}
-    placeholders = ','.join(f"'{t}'" for t in tickers)
+    params = {f'ticker_{i}': ticker for i, ticker in enumerate(tickers)}
+    placeholders = ','.join(f':{name}' for name in params)
     sql = f"""
-        SELECT ticker, earnings_time, COUNT(*) AS c
+        SELECT ticker, earnings_date, earnings_time, COUNT(*) AS c
         FROM earnings_calendar
         WHERE ticker IN ({placeholders})
           AND earnings_time IN ('premarket', 'postmarket')
-        GROUP BY ticker, earnings_time
+        GROUP BY ticker, earnings_date, earnings_time
     """
-    df = query_to_dataframe(sql)
+    df = query_to_dataframe(sql, params)
     if df.empty:
         return {}
-    out: dict[str, str] = {}
-    for ticker, group in df.groupby('ticker'):
-        winner = group.sort_values('c', ascending=False).iloc[0]
-        out[str(ticker)] = str(winner['earnings_time'])
+    out: dict[tuple[str, date], Optional[str]] = {}
+    for (ticker, earnings_date), group in df.groupby(['ticker', 'earnings_date']):
+        key = _timing_event_key(ticker, earnings_date)
+        if key is None:
+            continue
+        ranked = group.sort_values('c', ascending=False)
+        tied = len(ranked) > 1 and ranked.iloc[0]['c'] == ranked.iloc[1]['c']
+        out[key] = None if tied else str(ranked.iloc[0]['earnings_time'])
     return out
 
 
@@ -695,8 +710,8 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False) -> int:
         return 0
 
     calendar_timing = fetch_calendar_timing_map(tickers)
-    log.info("earnings_history rows: %d  /  calendar timing fallback: %s",
-             len(eps_df), calendar_timing)
+    log.info("earnings_history rows: %d / calendar timing event keys: %d",
+             len(eps_df), len(calendar_timing))
 
     # Group earnings by ticker so we issue ONE market_data_daily query
     # per ticker (covering the union of its reported_dates) instead of
@@ -707,6 +722,7 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False) -> int:
     # — never per-row when N could exceed 100."
     rows: list[dict] = []
     skipped: int = 0
+    unknown_timing: int = 0
     ticker_groups = list(eps_df.groupby('ticker', sort=False))
     n_tickers = len(ticker_groups)
     log.info("processing %d tickers × ~%d earnings rows each",
@@ -723,8 +739,14 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False) -> int:
         for _, eps in ticker_eps.iterrows():
             report_time = eps.get('report_time')
             yahoo_report_time = eps.get('yahoo_report_time')
-            cal_timing = calendar_timing.get(ticker)
+            event_key = _timing_event_key(ticker, eps['reported_date'])
+            cal_timing = calendar_timing.get(event_key)
             basis = normalize_timing(report_time, cal_timing, yahoo_report_time)
+            if event_key is None or basis is None:
+                # No write preserves the complete previously stored event row.
+                ticker_skipped += 1
+                unknown_timing += 1
+                continue
 
             daily = windows.get(eps['reported_date'], pd.DataFrame())
             result = compute_reaction(eps.to_dict(), daily, basis)
@@ -743,8 +765,8 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False) -> int:
                      ticker, ti, n_tickers,
                      ticker_kept, ticker_skipped, len(rows))
 
-    log.info("Computed %d reaction rows  (skipped %d for insufficient bars)",
-             len(rows), skipped)
+    log.info("Computed %d reaction rows (skipped=%d, unknown event timing=%d)",
+             len(rows), skipped, unknown_timing)
 
     if not rows:
         return 0
