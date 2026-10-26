@@ -1192,6 +1192,11 @@ def compute_daily_path_v1(event, daily, *, observation_ts, price_evidence=None,
         if schedule is None:
             schedule = earnings_session_schedule(reported - timedelta(days=14),
                                                   reported + timedelta(days=30))
+        # A producer batch calendar may cover decades. A single descriptor
+        # needs only this bounded canonical fragment, never a per-event scan
+        # of the entire batch history. This changes no calendar algorithm.
+        schedule = schedule.loc[(reported - timedelta(days=14)).isoformat():
+                                (reported + timedelta(days=30)).isoformat()]
         labels = [stamp.date() for stamp in schedule.index]
         if reported not in labels:
             raise ValueError('report_date_is_not_exchange_session')
@@ -1304,8 +1309,12 @@ def database_daily_price_evidence(event, frame, *, schedule, observed_at):
     import pandas as pd
     try:
         ev = normalize_local_event_dates(event)
+        from datetime import timedelta
+        reported = date.fromisoformat(ev['reported_date'])
+        schedule = schedule.loc[(reported-timedelta(days=14)).isoformat():
+                                (reported+timedelta(days=30)).isoformat()]
         labels = [stamp.date() for stamp in schedule.index]
-        d = labels.index(date.fromisoformat(ev['reported_date']))
+        d = labels.index(reported)
         start = d if ev.get('reaction_basis') == 'BMO' else d + 1
         required = labels[start - 1:d + 6]
         if len(required) < (7 if ev.get('reaction_basis') == 'BMO' else 6):
@@ -1365,6 +1374,11 @@ def admit_database_reaction(row, observation_ts, *, schedule=None):
         reported = date.fromisoformat(event['reported_date'])
         if schedule is None:
             schedule = earnings_session_schedule(reported-timedelta(days=10), reported+timedelta(days=40))
+        # A producer batch calendar may cover decades. A single descriptor
+        # needs only this bounded canonical fragment, never a per-event scan
+        # of the entire batch history. This changes no calendar algorithm.
+        schedule = schedule.loc[(reported - timedelta(days=14)).isoformat():
+                                (reported + timedelta(days=30)).isoformat()]
         labels = [stamp.date() for stamp in schedule.index]
         if reported not in labels:
             raise ValueError('report_date_is_not_exchange_session')

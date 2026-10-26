@@ -136,3 +136,26 @@ def test_claimed_source_observation_cannot_precede_its_completed_price_bars():
     ev,f,e=control('BMO');e['observed_at']='2026-01-05T14:00:00Z'
     result=compute_daily_path_v1(ev,f,observation_ts=CLOCK,price_evidence=e)
     assert not result['available'] and result['reason']=='price_observed_before_completed_bar'
+
+
+def test_supplied_batch_calendar_is_sliced_before_any_per_event_scan():
+    from lib.earnings_reactions import earnings_session_schedule
+    ev,f,e=control('BMO')
+    schedule=earnings_session_schedule(date(2025,12,1),date(2026,2,28))
+    slices=[]
+    class FragmentSelector:
+        def __getitem__(self,key):
+            assert isinstance(key,slice)
+            start,end=date.fromisoformat(key.start),date.fromisoformat(key.stop)
+            assert (end-start).days<=44
+            slices.append((start,end))
+            return schedule.loc[key]
+    class BatchCalendar:
+        loc=FragmentSelector()
+        @property
+        def index(self):
+            raise AssertionError('unbounded batch calendar scanned per event')
+    direct=compute_daily_path_v1(ev,f,observation_ts=CLOCK,price_evidence=e,schedule=schedule)['payload']
+    bounded=compute_daily_path_v1(ev,f,observation_ts=CLOCK,price_evidence=e,schedule=BatchCalendar())['payload']
+    direct.pop('computed_at');bounded.pop('computed_at')
+    assert bounded==direct and len(slices)==1
