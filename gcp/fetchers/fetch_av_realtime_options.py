@@ -297,8 +297,8 @@ def fetch_av_realtime_options(ticker: str, api_key: str,
                 error_class = 'provider_error'
                 raise RealtimeOptionsUnavailable('AV REALTIME_OPTIONS provider error')
 
-            records = data.get('data', [])
-            if records:
+            records = data.get('data')
+            if type(records) is list and records:
                 first_contract = str(records[0].get('contractID', ''))
                 if first_contract.startswith(_SAMPLE_CONTRACT_PREFIX):
                     error_class = 'sample'
@@ -308,6 +308,17 @@ def fetch_av_realtime_options(ticker: str, api_key: str,
                 error_class = 'unexpected_response'
                 raise RealtimeOptionsUnavailable('AV REALTIME_OPTIONS unexpected response')
 
+            # Retry only the documented literal empty-array shape. Missing,
+            # null or other JSON types do not establish an empty chain.
+            if 'data' not in data:
+                error_class = 'data_missing'
+                raise RealtimeOptionsUnavailable('AV REALTIME_OPTIONS data missing')
+            if records is None:
+                error_class = 'data_null'
+                raise RealtimeOptionsUnavailable('AV REALTIME_OPTIONS data null')
+            if type(records) is not list:
+                error_class = 'data_type'
+                raise RealtimeOptionsUnavailable('AV REALTIME_OPTIONS data type unavailable')
             if not records:
                 error_class = 'empty'
                 raise RealtimeOptionsEmpty('AV REALTIME_OPTIONS returned 0 contracts')

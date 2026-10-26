@@ -79,3 +79,81 @@ def test_huge_unknown_body_keys_and_values_are_not_reflected():
                       "endpoint": "other", "message": "other", "records": "array_nonempty"}
     assert len(json.dumps(result).encode()) < 200
     assert SECRET not in json.dumps(result)
+
+
+@pytest.mark.parametrize('fields,classification', [
+    ({}, 'data_missing'),
+    ({'data': None}, 'data_null'),
+    ({'data': False}, 'data_type'),
+    ({'data': 0}, 'data_type'),
+    ({'data': ''}, 'data_type'),
+    ({'data': {}}, 'data_type'),
+    ({'data': {'unsafe': SECRET}}, 'data_type'),
+    ({'data': SECRET}, 'data_type'),
+])
+def test_strict_success_requires_literal_data_array(monkeypatch, caplog, fields, classification):
+    payload = {'endpoint': 'Realtime Options', 'message': 'success', **fields}
+    request = Mock(return_value=Mock(status_code=200, headers={}, json=Mock(return_value=payload)))
+    write = Mock(side_effect=AssertionError('must not write'))
+    monkeypatch.setattr(mod.requests, 'get', request)
+    monkeypatch.setattr(mod, 'upsert_dataframe', write)
+    caplog.set_level(logging.INFO, logger=mod.__name__)
+    with pytest.raises(mod.RealtimeOptionsUnavailable) as error:
+        mod.process_ticker('QQQ', SECRET, NOW)
+    assert not isinstance(error.value, mod.RealtimeOptionsEmpty)
+    assert request.call_count == 1
+    write.assert_not_called()
+    assert attempt(caplog)['error_class'] == classification
+    assert SECRET not in caplog.text
+
+
+def test_strict_literal_empty_keeps_existing_three_attempt_limit(monkeypatch, caplog):
+    payload = {'endpoint': 'Realtime Options', 'message': 'success', 'data': []}
+    request = Mock(return_value=Mock(status_code=200, headers={}, json=Mock(return_value=payload)))
+    write = Mock(side_effect=AssertionError('must not write'))
+    monkeypatch.setattr(mod.requests, 'get', request)
+    monkeypatch.setattr(mod, 'upsert_dataframe', write)
+    caplog.set_level(logging.INFO, logger=mod.__name__)
+    with pytest.raises(mod.RealtimeOptionsEmpty):
+        mod.process_ticker('QQQ', SECRET, NOW)
+    assert mod.EMPTY_RETRY_ATTEMPTS == 2
+    assert request.call_count == 3
+    write.assert_not_called()
+    events = [json.loads(r.getMessage()) for r in caplog.records
+              if r.getMessage().startswith('{"event":"av_realtime_options_attempt"')]
+    assert [event['attempt'] for event in events] == [1, 2, 3]
+    assert all(event['error_class'] == 'empty' for event in events)
+    assert SECRET not in caplog.text
+
+
+def test_strict_main_keeps_successful_siblings_without_retrying_unknown(monkeypatch, caplog):
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW
+    monkeypatch.setattr(mod, 'datetime', FrozenDatetime)
+    monkeypatch.setattr(mod, '_regular_session_due', lambda _: True)
+    monkeypatch.setenv('AV_API_KEY', SECRET)
+    monkeypatch.setattr(mod.sys, 'argv', ['collector', '--tickers', 'SPY QQQ IWM'])
+    calls, writes = [], []
+    def get(*args, **kwargs):
+        ticker = kwargs['params']['symbol']
+        calls.append(ticker)
+        fields = {} if ticker == 'QQQ' else {'data': [{
+            'contractID': ticker + '-FAKE', 'type': 'call',
+            'expiration': '2026-12-18', 'strike': '500',
+        }]}
+        payload = {'endpoint': 'Realtime Options', 'message': 'success', **fields}
+        return Mock(status_code=200, headers={}, json=Mock(return_value=payload))
+    def write(df, table, keys):
+        writes.append((df['ticker'].iat[0], len(df), table))
+        return len(df)
+    monkeypatch.setattr(mod.requests, 'get', get)
+    monkeypatch.setattr(mod, 'upsert_dataframe', write)
+    caplog.set_level(logging.INFO, logger=mod.__name__)
+    with pytest.raises(SystemExit) as error:
+        mod.main()
+    assert error.value.code == 1
+    assert calls == ['SPY', 'QQQ', 'IWM']
+    assert writes == [('SPY', 1, 'etf_options_snapshots'), ('IWM', 1, 'etf_options_snapshots')]
+    assert SECRET not in caplog.text
