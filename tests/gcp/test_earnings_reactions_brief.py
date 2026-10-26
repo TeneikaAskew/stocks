@@ -57,8 +57,16 @@ def _reaction_row(
 ):
     """One synthetic earnings_reactions row (dict, as query_to_dataframe
     would yield via DataFrame.to_dict)."""
+    reported = (pd.Timestamp(fiscal) + pd.offsets.BDay(25)).date().isoformat()
+    from lib.earnings_reactions import earnings_session_schedule
+    schedule = earnings_session_schedule(date.fromisoformat(reported), date.fromisoformat(reported)+pd.Timedelta(days=30))
+    maturity = pd.Timestamp(schedule.iloc[5]["market_close"]).isoformat()
     return {
         "ticker": ticker,
+        "reported_date": reported,
+        "daily_path_v1": {"version":"earnings-daily-path-v1", "event_id":f"{ticker}:{fiscal}:{reported}",
+                          "reaction_basis":basis, "basis_id":"synthetic:raw", "status":"complete",
+                          "mature_at":maturity},
         "fiscal_date_ending": fiscal,
         "reaction_basis": basis,
         "reaction_gap_pct": gap,
@@ -93,13 +101,21 @@ def mock_db(monkeypatch):
             if "from earnings_calendar" in low:
                 return cal_df.copy()
             if "from earnings_reactions" in low:
-                return rx_df.copy()
+                frame=rx_df.copy()
+                if frame.empty: return frame
+                if 'before' in (params or {}):
+                    frame=frame[pd.to_datetime(frame['reported_date']).dt.date < params['before']]
+                if 'target' in (params or {}):
+                    frame=frame[pd.to_datetime(frame['reported_date']).dt.date == params['target']]
+                    frame['reported_date']=pd.to_datetime(frame['reported_date']).dt.date
+                return frame
             if "from insider_transactions" in low:
                 return ins_df.copy()
             return pd.DataFrame()
 
         monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: True)
         monkeypatch.setattr(database, "query_to_dataframe", fake_query)
+        monkeypatch.setattr(database, "query_to_dataframe_strict", fake_query)
 
     return install, captured
 
@@ -285,7 +301,7 @@ def test_query_count_is_fixed_not_per_ticker(mock_db, monkeypatch):
     generate_brief(analysis_date=date(2026, 5, 14))  # a Thursday
 
     # 2 calendar reads (next + last session) + 2 history + 2 insider.
-    assert len(captured["sqls"]) == 6
+    assert len(captured["sqls"]) == 7
 
 
 def test_calendar_query_applies_av_uw_liquidity_filter(mock_db, monkeypatch):
@@ -346,6 +362,7 @@ def test_last_session_sorted_by_absolute_gap_desc(mock_db, monkeypatch):
         _reaction_row(ticker="SMALL",   fiscal="2026-03-31", gap=0.5),
         # PENDING has no row at all → reaction not yet computed → bottom.
     ])
+    rx["reported_date"] = "2026-05-13"  # Exact recap event, not an older quarter.
     install(calendar=cal, reactions=rx)
 
     brief = generate_brief(analysis_date=date(2026, 5, 14))
@@ -389,11 +406,11 @@ def test_history_query_has_no_lookahead(mock_db):
                if "from earnings_reactions" in s.lower()]
     assert rx_sqls, "expected an earnings_reactions query"
     for s in rx_sqls:
-        assert "fiscal_date_ending <" in s.lower()
+        assert "reported_date <" in s.lower() or "reported_date = :target" in s.lower()
     # The lookback window is the 12-quarter constant.
     rx_params = [p for s, p in zip(captured["sqls"], captured["params"])
                  if "from earnings_reactions" in s.lower()]
-    assert all(p.get("lookback") == LOOKBACK_QUARTERS for p in rx_params)
+    assert all(p.get("lookback") == LOOKBACK_QUARTERS for p in rx_params if "before" in p)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -424,17 +441,17 @@ def test_generate_brief_buckets_and_embed_structure(mock_db, monkeypatch):
     # SELLER: hot upside pre-drift + high consistency, low reversal.
     for q in range(12):
         rows.append(_reaction_row(
-            ticker="SELLER", fiscal=f"20{23 + q // 4}-0{1 + 3 * (q % 4)}-28"[:10],
+            ticker="SELLER", fiscal=f"{2023 + q // 4}-{1 + 3 * (q % 4):02d}-28",
             gap=3.0, consistent=True, reversal=False, drift=4.5))
     # BUYER: high consistency, no upside pre-run.
     for q in range(12):
         rows.append(_reaction_row(
-            ticker="BUYER", fiscal=f"20{23 + q // 4}-0{1 + 3 * (q % 4)}-28"[:10],
+            ticker="BUYER", fiscal=f"{2023 + q // 4}-{1 + 3 * (q % 4):02d}-28",
             gap=2.0, consistent=True, reversal=False, drift=-1.0))
     # FADER: high reversal rate.
     for q in range(12):
         rows.append(_reaction_row(
-            ticker="FADER", fiscal=f"20{23 + q // 4}-0{1 + 3 * (q % 4)}-28"[:10],
+            ticker="FADER", fiscal=f"{2023 + q // 4}-{1 + 3 * (q % 4):02d}-28",
             gap=2.0, consistent=False, reversal=True, drift=0.0))
     # NEWBIE: only 2 quarters → insufficient.
     for q in range(2):
@@ -500,3 +517,60 @@ def test_to_dict_is_json_serialisable():
     _json.dumps(d)  # must not raise
     assert d["ticker"] == "AAPL"
     assert d["insider_net_value_60d"] == 1_250_000.0
+
+
+def test_default_history_admits_only_distinct_complete_prior_events(monkeypatch):
+    """Independent eligibility controls precede actual classifier aggregation."""
+    from gcp import database
+    good = _reaction_row(fiscal='2025-09-30')
+    future = _reaction_row(fiscal='2026-06-30')
+    missing = _reaction_row(fiscal='2025-06-30'); missing['daily_path_v1']=None
+    immature = _reaction_row(fiscal='2025-03-31'); immature['daily_path_v1']['status']='maturing'
+    mismatch = _reaction_row(fiscal='2024-12-31'); mismatch['daily_path_v1']['event_id']='another-event'
+    duplicate = _reaction_row(fiscal='2024-09-30')
+    # Deliberately return even excluded SQL rows: the admission boundary itself
+    # must defend the actual aggregate rather than trusting a test fake query.
+    monkeypatch.setattr(database,'query_to_dataframe_strict',lambda *a,**k:
+        pd.DataFrame([good,future,missing,immature,mismatch,duplicate,duplicate]))
+    rows=erb.load_reaction_history(['AAPL'],date(2026,5,15))['AAPL']
+    assert len(rows)==1 and rows[0]['reported_date']==good['reported_date']
+    assert rows[0]['source_mode']=='retrospective_current_vintage'
+    assert rows[0]['historical_publication_verified'] is False
+    ctx=erb.build_ticker_context({'ticker':'AAPL'},rows,None,date(2026,5,15))
+    assert ctx.classification==CLASS_INSUFFICIENT and ctx.n_quarters==1
+
+
+def test_database_maturity_cannot_be_backdated_and_missing_flags_are_not_false():
+    from lib.earnings_reactions import admit_database_reaction
+    row=_reaction_row(fiscal='2025-09-30')
+    clock='2026-05-15T00:00:00-04:00'
+    assert admit_database_reaction(row,clock)['available']
+    original=row['daily_path_v1']['mature_at']
+    row['daily_path_v1']['mature_at']='2025-09-01T00:00:00Z'
+    assert admit_database_reaction(row,clock)['reason']=='native_endpoint_maturity_mismatch'
+    row['daily_path_v1']['mature_at']=original
+    assert admit_database_reaction(row,pd.Timestamp(original)-pd.Timedelta(seconds=1))['reason']=='reaction_features_not_mature'
+    row['direction_consistent_5d']=None
+    assert admit_database_reaction(row,clock)['reason']=='missing_or_invalid_feature:direction_consistent_5d'
+
+
+def test_exact_recap_hides_unmatured_sustain_and_never_uses_other_date(monkeypatch):
+    from gcp import database
+    row=_reaction_row(); row['reported_date']=date(2026,5,13); row['reaction_basis']='AMC'
+    other=dict(row, ticker='OTHER', reported_date=date(2026,2,12))
+    monkeypatch.setattr(database,'query_to_dataframe_strict',lambda *a,**k:pd.DataFrame([row,other]))
+    assert erb.load_exact_reactions(['AAPL'],date(2026,5,13),observation_ts='2026-05-14T19:59:59Z')=={}
+    actual=erb.load_exact_reactions(['AAPL'],date(2026,5,13),observation_ts='2026-05-14T20:00:00Z')
+    assert list(actual)==['AAPL'] and actual['AAPL']['reaction_gap_pct']==3.
+    assert actual['AAPL']['sustain_5d_pct'] is None
+    assert actual['AAPL']['direction_consistent_5d'] is None
+
+
+def test_percentage_render_names_denominator_and_keeps_native_label_technical():
+    rows=[_reaction_row(fiscal=f'2025-{month:02d}-28',consistent=i<3,gap=1 if i<2 else -1)
+          for i,month in enumerate((1,4,7,10))]
+    ctx=erb.build_ticker_context({'ticker':'AAPL'},rows,None,date(2026,5,15))
+    line=erb._predictor_line(ctx)
+    assert '75%' in line and 'direction consistency (4 historical events)' in line
+    assert '50%' in line and 'upward opening gaps' in line
+    assert ctx.to_dict()['classification'] in (CLASS_BUY,CLASS_SELL,CLASS_FAILED_GAP)

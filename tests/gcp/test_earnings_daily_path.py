@@ -81,3 +81,41 @@ def test_unknown_basis_and_strict_pit_refuse_without_fabricating_clocks():
     r=compute_daily_path_v1(ev,f,observation_ts=CLOCK,price_evidence=e,mode='strict_pit')
     assert not r['available'] and r['reason']=='missing_exact_release_clock_for_strict_pit'
     assert 'release_ts' not in ev
+
+
+@pytest.mark.parametrize('defect,reason',[
+    ('duplicate','duplicate_daily_session'),('zero','invalid_daily_price'),
+    ('nonfinite','invalid_daily_price'),('incoherent','incoherent_daily_ohlc')])
+def test_price_quality_refusals_do_not_become_negative_outcomes(defect,reason):
+    ev,f,e=control('BMO')
+    f=f.astype({'open':float,'high':float,'low':float,'close':float})
+    if defect=='duplicate': f=pd.concat([f,f.iloc[[2]]],ignore_index=True)
+    elif defect=='zero': f.loc[2,'low']=0
+    elif defect=='nonfinite': f.loc[2,'close']=float('nan')
+    elif defect=='incoherent': f.loc[2,'high']=1
+    r=compute_daily_path_v1(ev,f,observation_ts=CLOCK,price_evidence=e)
+    assert not r['available'] and r['reason']==reason
+    assert r['payload']['first_opposite_close_step'] is None
+    assert r['payload']['censored'] is None
+
+
+def test_zero_gap_is_not_applicable_not_an_observed_reversal():
+    ev,f,e=control('BMO');f.loc[1,['open','low']]=[100,99]
+    p=compute_daily_path_v1(ev,f,observation_ts=CLOCK,price_evidence=e)['payload']
+    assert p['status']=='not_applicable' and p['gap_sign']==0
+    assert p['first_opposite_close_step'] is None
+    assert p['per_metric']['first_opposite_close']['status']=='not_applicable'
+    assert p['per_metric']['closing_gap_fill']['available'] is False
+
+
+def test_canonical_halfday_and_dst_endpoint_clocks_are_not_fixed_24hour_math():
+    from datetime import timedelta
+    from lib.earnings_reactions import earnings_session_schedule
+    schedule=earnings_session_schedule(date(2026,11,20),date(2026,12,10))
+    ev={'ticker':'SYNTH','fiscal_date_ending':'2026-08-31','reported_date':'2026-11-19','reaction_basis':'BMO'}
+    # Direct canonical controls independent of descriptor algorithm.
+    assert pd.Timestamp(schedule.loc['2026-11-27','market_close']).isoformat()=='2026-11-27T18:00:00+00:00'
+    assert date(2026,11,26) not in [x.date() for x in schedule.index]
+    march=earnings_session_schedule(date(2026,3,6),date(2026,3,9))
+    assert pd.Timestamp(march.iloc[0]['market_close']).hour==21
+    assert pd.Timestamp(march.iloc[1]['market_close']).hour==20

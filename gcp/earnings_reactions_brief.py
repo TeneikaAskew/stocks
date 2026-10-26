@@ -206,19 +206,17 @@ def _fmt_money(val: Optional[float]) -> str:
 
 
 def _next_session(today: date) -> date:
-    """The next trading session after ``today`` (skips Sat/Sun)."""
-    d = today + timedelta(days=1)
-    while d.weekday() >= 5:  # Sat=5, Sun=6
-        d += timedelta(days=1)
-    return d
+    """Next actual NYSE session; no weekday fallback."""
+    from lib.earnings_reactions import earnings_session_schedule
+    return min(stamp.date() for stamp in earnings_session_schedule(
+        today + timedelta(days=1), today + timedelta(days=20)).index)
 
 
 def _prev_session(today: date) -> date:
-    """The most recent trading session strictly before ``today``."""
-    d = today - timedelta(days=1)
-    while d.weekday() >= 5:
-        d -= timedelta(days=1)
-    return d
+    """Previous actual NYSE session; holidays are excluded."""
+    from lib.earnings_reactions import earnings_session_schedule
+    return max(stamp.date() for stamp in earnings_session_schedule(
+        today - timedelta(days=20), today - timedelta(days=1)).index)
 
 
 def _resolve_analysis_date() -> date:
@@ -313,52 +311,91 @@ def load_calendar_reporters(target_date: date) -> list[dict]:
 def load_reaction_history(
     tickers: list[str], before_date: date
 ) -> dict[str, list[dict]]:
-    """Pull up to LOOKBACK_QUARTERS reaction rows per ticker.
+    """Latest 12 event candidates, then admit distinct mature prior quarters.
 
-    NO LOOK-AHEAD: only quarters whose ``fiscal_date_ending`` is strictly
-    before ``before_date`` (the upcoming report date) are returned, so the
-    brief characterises a ticker using only history it could legitimately
-    have known going into the print.
-
-    ONE query covers all tickers (batched by ticker, sliced in memory) --
-    not N per-ticker queries (CLAUDE.md Rule 0.4).
-
-    Returns {ticker: [row dict, ...]} newest-first. Tickers with no history
-    are simply absent from the dict (the caller handles them explicitly).
+    Current database receipts are retrospective descriptive evidence, never an
+    original historical-PIT certification. Legacy rows without admitted price
+    basis/maturity evidence remain unavailable until a qualified recomputation.
+    One batched query; target event and later rows are excluded before ranking.
     """
-    from gcp.database import query_to_dataframe
-
+    from gcp.database import query_to_dataframe_strict
+    from lib.earnings_reactions import admit_database_reaction
     if not tickers:
         return {}
-
-    # Window the rows server-side: ROW_NUMBER per ticker, keep the most
-    # recent LOOKBACK_QUARTERS. Parameterised IN-list (no string interp).
     placeholders = ", ".join(f":t{i}" for i in range(len(tickers)))
-    params: dict = {f"t{i}": t for i, t in enumerate(tickers)}
-    params["before"] = before_date
-    params["lookback"] = LOOKBACK_QUARTERS
-
+    params = {f"t{i}": t for i, t in enumerate(tickers)}
+    params.update(before=before_date, lookback=LOOKBACK_QUARTERS)
     sql = f"""
         WITH ranked AS (
-            SELECT *,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY ticker
-                       ORDER BY fiscal_date_ending DESC
-                   ) AS rn
-              FROM earnings_reactions
-             WHERE ticker IN ({placeholders})
-               AND fiscal_date_ending < :before
-        )
-        SELECT * FROM ranked
-         WHERE rn <= :lookback
-         ORDER BY ticker, fiscal_date_ending DESC
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY ticker ORDER BY reported_date DESC, fiscal_date_ending DESC
+            ) AS rn FROM earnings_reactions
+            WHERE ticker IN ({placeholders}) AND reported_date < :before
+        ) SELECT * FROM ranked WHERE rn <= :lookback
+        ORDER BY ticker, reported_date DESC, fiscal_date_ending DESC
     """
-    df = query_to_dataframe(sql, params)
-
+    df = query_to_dataframe_strict(sql, params)
+    cutoff = min(pd.Timestamp(before_date).tz_localize("America/New_York"), pd.Timestamp.now(tz='UTC'))
+    from lib.earnings_reactions import earnings_session_schedule
+    schedule = None
+    if not df.empty:
+        dates = pd.to_datetime(df['reported_date']).dt.date
+        schedule = earnings_session_schedule(min(dates)-timedelta(days=10), max(dates)+timedelta(days=40))
     out: dict[str, list[dict]] = {}
-    for _, row in df.iterrows():
-        out.setdefault(str(row["ticker"]).upper(), []).append(row.to_dict())
+    duplicates = df.duplicated(['ticker','fiscal_date_ending'], keep=False) if not df.empty else []
+    refused = 0
+    for i, row in df.iterrows():
+        check = admit_database_reaction(row.to_dict(), cutoff, schedule=schedule)
+        if duplicates[i] or not check['available']:
+            refused += 1
+            continue
+        out.setdefault(str(row['ticker']).upper(), []).append(check['row'])
+    logger.info('history admission candidates=%d admitted=%d refused=%d mode=retrospective_current_vintage',
+                len(df), sum(map(len,out.values())), refused)
     return out
+
+
+def load_exact_reactions(tickers: list[str], target: date, *, observation_ts=None) -> dict:
+    """Recap exact target only; never borrow a historical quarter's reaction.
+
+    Gap is released only after the reaction session close has finalized (the
+    default table producer uses completed daily bars). Future native sustains
+    are hidden until their own canonical endpoint, independently of gap.
+    """
+    from gcp.database import query_to_dataframe_strict
+    from lib.earnings_reactions import earnings_session_schedule, local_earnings_clock
+    if not tickers:
+        return {}
+    slots = ', '.join(f':t{i}' for i in range(len(tickers)))
+    params = {f't{i}': t for i,t in enumerate(tickers)}; params['target']=target
+    df = query_to_dataframe_strict(
+        f'SELECT * FROM earnings_reactions WHERE ticker IN ({slots}) AND reported_date = :target', params)
+    schedule = earnings_session_schedule(target-timedelta(days=10), target+timedelta(days=40))
+    labels=[stamp.date() for stamp in schedule.index]
+    if target not in labels:
+        return {}
+    d=labels.index(target)
+    clock=local_earnings_clock(observation_ts if observation_ts is not None else pd.Timestamp.now(tz='UTC'))
+    out={}
+    for _,row in df.iterrows():
+        if row['reported_date'] != target or row.get('reaction_basis') not in ('BMO','AMC'):
+            continue
+        reaction=d+(row['reaction_basis']=='AMC')
+        if pd.Timestamp(schedule.iloc[reaction]['market_close']) > clock:
+            continue
+        item=row.to_dict()
+        for horizon in (3,5,10):
+            if d+horizon >= len(schedule) or pd.Timestamp(schedule.iloc[d+horizon]['market_close']) > clock:
+                item[f'sustain_{horizon}d_pct']=None
+                if horizon==5:
+                    item['direction_consistent_5d']=None; item['is_reversal_5d']=None
+        # Duplicate event identities are ambiguous, not last-write-wins.
+        ticker=str(row['ticker']).upper()
+        if ticker in out:
+            out[ticker]=None
+        else:
+            out[ticker]=item
+    return {k:v for k,v in out.items() if v is not None}
 
 
 def load_insider_net_flow(
@@ -662,6 +699,7 @@ def generate_brief(analysis_date: Optional[date] = None) -> dict:
         )
         next_contexts.append(ctx)
 
+    exact_reactions = load_exact_reactions([r["ticker"] for r in last_reporters], last_session)
     last_contexts = []
     for r in last_reporters:
         ctx = build_ticker_context(
@@ -670,6 +708,7 @@ def generate_brief(analysis_date: Optional[date] = None) -> dict:
             last_insider.get(r["ticker"]),
             upcoming_report_date=last_session,
         )
+        ctx.latest_reaction = exact_reactions.get(r["ticker"])
         last_contexts.append(ctx)
 
     # Sort last-session reporters by absolute reaction gap DESC -- the
@@ -726,12 +765,12 @@ def _predictor_line(ctx: TickerReactionContext) -> str:
             f"insufficient history ({ctx.n_quarters}q)"
         )
     parts = [
-        f"consist {_fmt_rate(ctx.hist12q_consistent_rate)}",
+        f"{_fmt_rate(ctx.hist12q_consistent_rate)} direction consistency ({ctx.n_quarters} historical events)",
         f"|move| {_fmt_pct(ctx.hist12q_avg_abs_gap_pct, 1).lstrip('+')}",
         f"reversal {_fmt_rate(ctx.hist12q_reversal_rate)}",
         f"drift 10d {_fmt_pct(ctx.pre_earnings_drift_10d_pct)}",
         f"sustain 5d {_fmt_pct(ctx.hist12q_avg_sustain_5d_pct)}",
-        f"gap up {_fmt_rate(ctx.hist12q_gap_up_rate)}",
+        f"{_fmt_rate(ctx.hist12q_gap_up_rate)} upward opening gaps",
         f"insider 60d {_fmt_money(ctx.insider_net_value_60d)}",
     ]
     return (
@@ -898,3 +937,128 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def generate_local_brief(*, observation_ts, evidence, mode):
+    """No-I/O research entrypoint sharing production context/aggregate math.
+
+    Only supplied source receipts can admit inputs. The strict receipt contract is separate from the current-DB retrospective
+    profile used by the repaired production entrypoint. No STRAT/model execution
+    is requested by this profile; its snapshot is explicitly unavailable.
+    """
+    from lib.earnings_reactions import (
+        LOCAL_EARNINGS_VERSION, local_earnings_clock, local_source_admission,
+        admit_local_reaction, normalize_local_event_dates,
+    )
+    from lib.earnings_reactions import earnings_session_schedule as nyse_schedule
+    result = {'version': LOCAL_EARNINGS_VERSION, 'mode': mode, 'available': False,
+              'historical_publication_verified': False,
+              'score': None, 'score_reason': 'missing_admitted_scoring_context',
+              'strat_prediction': None, 'next_contexts': [], 'last_session_contexts': [],
+              'rejections': []}
+    try:
+        clock = local_earnings_clock(observation_ts)
+        if mode not in ('strict_pit', 'retrospective_current_vintage'):
+            raise ValueError('invalid_local_mode')
+        if not isinstance(evidence, dict):
+            raise ValueError('missing_local_evidence')
+        reporters = evidence.get('reporters')
+        reactions = evidence.get('reactions')
+        if not isinstance(reporters, list) or not isinstance(reactions, list):
+            raise ValueError('missing_local_reporters_or_reactions')
+        if any(not isinstance(row, dict) or not isinstance(row.get('event'), dict)
+               for row in reporters + reactions):
+            raise ValueError('invalid_local_event_shape')
+        if len({row['event'].get('ticker') for row in reporters + reactions}) > 12:
+            raise ValueError('local_symbol_limit_exceeded')
+        if len(reporters) > 24 or len(reactions) > 400:
+            raise ValueError('local_batch_limit_exceeded')
+        # Normalize before quarter equality, date comparison, recap joins or ranking.
+        normalized_reactions = []
+        for record in reactions:
+            try:
+                normalized_reactions.append(dict(
+                    record, event=normalize_local_event_dates(record['event'])))
+            except (ValueError, KeyError, TypeError) as exc:
+                result['rejections'].append({'event_id': record['event'].get('event_id'),
+                                             'reason': str(exc)})
+        reactions = normalized_reactions
+        today = clock.tz_convert('America/New_York').date()
+        schedule = nyse_schedule(today - timedelta(days=20), today + timedelta(days=20))
+        labels = [stamp.date() for stamp in schedule.index]
+        previous = max(day for day in labels if day < today)
+        following = min(day for day in labels if day > today)
+        result.update(observation_ts=clock.isoformat(), analysis_date=today,
+                      next_session=following, last_session=previous)
+        seen = set()
+        for reporter in reporters:
+            event = reporter.get('event', {})
+            event_id = event.get('event_id')
+            try:
+                event = normalize_local_event_dates(event, require_fiscal=False)
+                receipt = local_source_admission(reporter.get('receipt'), event_id, clock, mode)
+                target = date.fromisoformat(str(event['reported_date']))
+                ticker = event['ticker']
+                if not isinstance(ticker, str) or not ticker or event_id in seen:
+                    raise ValueError('invalid_or_duplicate_reporter')
+                if target not in (previous, following):
+                    raise ValueError('reporter_outside_local_sessions')
+                seen.add(event_id)
+                admitted = []
+                recap = None
+                identities = [r.get('event', {}).get('event_id') for r in reactions]
+                quarters = [r.get('event', {}).get('fiscal_date_ending') for r in reactions
+                            if r.get('event', {}).get('ticker') == ticker]
+                for record in reactions:
+                    candidate = record.get('event', {})
+                    if candidate.get('ticker') != ticker:
+                        continue
+                    candidate_id = candidate.get('event_id')
+                    if identities.count(candidate_id) != 1 or quarters.count(candidate.get('fiscal_date_ending')) != 1:
+                        result['rejections'].append({'event_id': candidate_id,
+                                                     'reason': 'duplicate_reaction_or_quarter_identity'})
+                        continue
+                    if target == previous and candidate_id == event_id:
+                        matches_target = (
+                            candidate['reported_date'] == event['reported_date'] and
+                            ('fiscal_date_ending' not in event or
+                             candidate['fiscal_date_ending'] == event['fiscal_date_ending']))
+                        if matches_target:
+                            check = admit_local_reaction(record, clock, mode, gap_only=True)
+                            if check['available']:
+                                recap = check['row']
+                            else:
+                                result['rejections'].append({'event_id': candidate_id, 'reason': check['reason']})
+                            continue
+                        result['rejections'].append({'event_id': candidate_id,
+                                                     'reason': 'recap_target_identity_mismatch'})
+                        # An older, independently admitted quarter is history only.
+                    if str(candidate.get('reported_date', '')) >= target.isoformat():
+                        continue
+                    check = admit_local_reaction(record, clock, mode)
+                    if check['available']:
+                        admitted.append(check['row'])
+                    else:
+                        result['rejections'].append({'event_id': candidate_id, 'reason': check['reason']})
+                admitted.sort(key=lambda row: row['reported_date'], reverse=True)
+                # Reuse actual production math; no observation_ts means no STRAT call.
+                ctx = build_ticker_context({'ticker': ticker}, admitted[:LOOKBACK_QUARTERS],
+                                           None, target)
+                item = ctx.to_dict()
+                item.update(event_id=event_id, source_receipt=receipt)
+                if target == previous:
+                    # Historical aggregate remains separate from exact-event actual.
+                    item['latest_reaction'] = recap
+                    item['recap_available'] = recap is not None
+                    item['recap_reason'] = None if recap is not None else 'missing_admitted_exact_event_reaction'
+                    result['last_session_contexts'].append(item)
+                else:
+                    result['next_contexts'].append(item)
+            except (ValueError, KeyError, TypeError) as exc:
+                result['rejections'].append({'event_id': event_id, 'reason': str(exc)})
+        result['available'] = bool(result['next_contexts'] or result['last_session_contexts'])
+        if not result['available']:
+            result['reason'] = 'no_admitted_reporters'
+    except (ValueError, KeyError, TypeError, IndexError) as exc:
+        result['reason'] = str(exc)
+    return result

@@ -1173,8 +1173,11 @@ def compute_daily_path_v1(event, daily, *, observation_ts, price_evidence=None,
         if basis not in ('BMO', 'AMC'):
             raise ValueError('unknown_event_timing')
         event_id = f"{ev['ticker']}:{ev['fiscal_date_ending']}:{ev['reported_date']}"
+        timing_source = ev.get('timing_source')
+        if timing_source is not None and (not isinstance(timing_source,str) or len(timing_source)>128):
+            raise ValueError('invalid_timing_source_identity')
         payload.update(event_id=event_id, reaction_basis=basis,
-                       timing_source=ev.get('timing_source'))
+                       timing_source=timing_source)
         if mode == 'strict_pit' and not ev.get('release_ts'):
             raise ValueError('missing_exact_release_clock_for_strict_pit')
         receipt = local_source_admission(price_evidence, event_id, clock, mode)
@@ -1328,3 +1331,54 @@ def database_daily_price_evidence(event, frame, *, schedule, observed_at):
             'evidence_grade': 'current_db_writer_declaration_only'}}
     except (ValueError, TypeError, KeyError, IndexError) as exc:
         return {'available': False, 'reason': str(exc)[:160], 'receipt': None}
+
+
+def admit_database_reaction(row, observation_ts, *, schedule=None):
+    """Current-DB mature history adapter, not a strict original-PIT receipt.
+
+    Accept only the same-event complete descriptor, explicit price basis and
+    all native classifier fields. Never use the target or incomplete quarter.
+    The strict retained-source `admit_local_reaction` contract stays separate.
+    """
+    import math
+    import pandas as pd
+    try:
+        clock = local_earnings_clock(observation_ts)
+        event = normalize_local_event_dates(row)
+        report = pd.Timestamp(event['reported_date']).tz_localize('America/New_York')
+        if report >= clock:
+            raise ValueError('not_a_prior_event')
+        p = row.get('daily_path_v1')
+        event_id = f"{event['ticker']}:{event['fiscal_date_ending']}:{event['reported_date']}"
+        if not isinstance(p, dict) or p.get('version') != DAILY_PATH_VERSION:
+            raise ValueError('missing_admitted_daily_path')
+        if p.get('event_id') != event_id or p.get('reaction_basis') != row.get('reaction_basis'):
+            raise ValueError('reaction_identity_mismatch')
+        if p.get('status') not in ('complete','not_applicable') or not p.get('basis_id'):
+            raise ValueError('missing_complete_price_basis_evidence')
+        from datetime import date, timedelta
+        reported = date.fromisoformat(event['reported_date'])
+        if schedule is None:
+            schedule = earnings_session_schedule(reported-timedelta(days=10), reported+timedelta(days=40))
+        labels = [stamp.date() for stamp in schedule.index]
+        if reported not in labels:
+            raise ValueError('report_date_is_not_exchange_session')
+        d = labels.index(reported)
+        if d+5 >= len(schedule):
+            raise ValueError('missing_native_endpoint_session')
+        expected_maturity = local_earnings_clock(schedule.iloc[d+5]['market_close'])
+        if local_earnings_clock(p.get('mature_at')) != expected_maturity:
+            raise ValueError('native_endpoint_maturity_mismatch')
+        if expected_maturity > clock:
+            raise ValueError('reaction_features_not_mature')
+        for key in _LOCAL_FEATURES:
+            val = row.get(key)
+            if key in ('direction_consistent_5d','is_reversal_5d'):
+                if type(val) is not bool:
+                    raise ValueError('missing_or_invalid_feature:' + key)
+            elif isinstance(val,bool) or not isinstance(val,(int,float)) or not math.isfinite(val):
+                raise ValueError('missing_or_invalid_feature:' + key)
+        return {'available':True,'row':dict(row, source_mode='retrospective_current_vintage',
+                                           historical_publication_verified=False)}
+    except (ValueError,TypeError,KeyError) as exc:
+        return {'available':False,'reason':str(exc)}

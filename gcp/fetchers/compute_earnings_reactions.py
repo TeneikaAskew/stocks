@@ -1048,5 +1048,73 @@ def _persist_reaction_frame(frame):
     return count
 
 
+def compute_local_reaction(*, event, daily, price_receipts, observation_ts, mode):
+    """Admit explicit local completed bars, then invoke canonical reaction math.
+
+    This returns a bounded reaction-only projection, not a history admission or
+    classifier input. Source clocks for derived history still need their own
+    field receipts. No SQL, source fetching, persistence or default timing.
+    """
+    import math
+    from lib.earnings_reactions import (
+        local_earnings_clock, local_source_admission, local_event_timing,
+    )
+    try:
+        clock = local_earnings_clock(observation_ts)
+        basis, schedule, index = local_event_timing(event, clock, mode)
+        if local_earnings_clock(event['release_ts']) > clock:
+            raise ValueError('event_not_released_at_cutoff')
+        if not isinstance(daily, pd.DataFrame) or daily.empty or len(daily) > 120:
+            raise ValueError('missing_or_oversize_local_daily')
+        if not isinstance(price_receipts, dict):
+            raise ValueError('missing_price_receipts')
+        if daily['date'].duplicated().any():
+            raise ValueError('duplicate_daily_session')
+        frame = daily.copy().sort_values('date').reset_index(drop=True)
+        labels = {stamp.date(): row for stamp, row in schedule.iterrows()}
+        basis_ids = set()
+        for _, row in frame.iterrows():
+            label = row['date']
+            if label not in labels:
+                raise ValueError('non_exchange_daily_session')
+            close = pd.Timestamp(labels[label]['market_close'])
+            if close > clock:
+                raise ValueError('daily_bar_not_complete_at_cutoff')
+            receipt = price_receipts.get(label.isoformat())
+            checked = local_source_admission(receipt, event['event_id'], clock, mode)
+            observed = local_earnings_clock(checked['observed_at'])
+            if observed < close:
+                raise ValueError('daily_observed_before_completion')
+            if not receipt.get('price_basis_id'):
+                raise ValueError('missing_price_basis')
+            basis_ids.add(receipt['price_basis_id'])
+            prices = [row.get(name) for name in ('open', 'high', 'low', 'close')]
+            if any(isinstance(v, bool) or not isinstance(v, (float, int)) or
+                   not math.isfinite(v) or v <= 0 for v in prices):
+                raise ValueError('invalid_local_ohlc')
+            opening, high, low, closing = prices
+            if high < max(opening, closing, low) or low > min(opening, closing):
+                raise ValueError('incoherent_local_ohlc')
+        if len(basis_ids) != 1:
+            raise ValueError('incoherent_price_basis')
+        # Reject gaps: canonical D+N is positional and must mean NYSE sessions.
+        expected = [label for label in labels if frame.iloc[0]['date'] <= label <= frame.iloc[-1]['date']]
+        if list(frame['date']) != expected:
+            raise ValueError('missing_daily_session')
+        eps = dict(event)
+        eps['reported_date'] = date.fromisoformat(str(event['reported_date']))
+        row = compute_reaction(eps, frame, basis)
+        if row is None:
+            raise ValueError('insufficient_surrounding_daily_bars')
+        # Allowlist excludes all later-horizon/raw financial payload fields.
+        safe = {name: row[name] for name in (
+            'ticker', 'reported_date', 'fiscal_date_ending', 'reaction_basis',
+            'reaction_gap_pct', 'reaction_anchor_price')}
+        return {'available': True, 'row': safe, 'mode': mode,
+                'historical_publication_verified': False}
+    except (ValueError, KeyError, TypeError, IndexError) as exc:
+        return {'available': False, 'reason': str(exc)}
+
+
 if __name__ == '__main__':
     main()
