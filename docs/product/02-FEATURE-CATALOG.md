@@ -508,12 +508,12 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation |
+| Status | Production but needs remediation — news logger repair implemented in draft #1607; rollout pending |
 | Priority | P0 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-08-30 |
-| Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
+| Last reviewed | 2026-10-25 |
+| Evidence status | Logger runtime/test bytes match reviewed89ad9523,53mocked tests preserved; committed source identity and279/279no-new audit pass. Current-head external review/CI and deployment remain pending; typed-news and full data-platform health not certified. |
 | UI surface | — |
 | Backend | fetcher jobs |
 | Data | 64 relations — see [06](06-DATA-ARCHITECTURE.md) |
