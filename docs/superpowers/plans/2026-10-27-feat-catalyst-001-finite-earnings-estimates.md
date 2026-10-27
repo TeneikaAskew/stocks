@@ -33,6 +33,8 @@ Spec: docs/superpowers/specs/2026-10-27-feat-catalyst-001-optional-earnings-esti
 
 ### Task 1: actual shared API event boundary — spec done_when0,2
 
+Spec: § Smallest correct shared-layer repair and § Required conformance and evidence; advances done_when[0,2].
+
 Files: platform/api/routers/catalysts.py earnings-only normalization block; new tests/api/test_catalyst_earnings_estimate_numbers.py; literal tests/fixtures/catalyst_finite_nullable_numbers.json. Consume current _db_catalyst_events(d_from,d_to,ticker_list)->list[dict], actual get_catalyst_events, no new endpoint. Produce local private _finite_earnings_estimate(value:object)->float|None; do not expose a COMMON interface.
 
 - [ ] Create literal input/expected fixture covering None,empty string,pandasNA,floatNaN/DecimalNaN,±inf/numericstrings,malformed scalar,bool/NumPybool, finite0/-1.25/1.25 and finite numericstring. Serialization maps named sentinel fixture tokens to actual native values; expected results are literal, not computed by implementation helper.
@@ -43,6 +45,8 @@ Files: platform/api/routers/catalysts.py earnings-only normalization block; new 
 
 ### Task 2: producer conformance, this same sole writer — spec done_when1,2
 
+Spec: § Smallest correct shared-layer repair and § Ownership and sequencing; advances done_when[1,2].
+
 Files: scripts/fetch_earnings_calendar.py::_safe_num under the verified sole-writer clarification; tests/scripts/test_earnings_calendar_finite_numbers.py; same shared literal fixture. Interface remains _safe_num(value)->float|None; existing valid consumers/fields unchanged.
 
 - [x] Preserve exact owner clarification: the parent checked actual other-owned paths/plans and explicitly assigns this producer correction here. No competing writer is inferred from unrelated calendar1546. Full producer/API acceptance still requires the actual tests, not this ownership receipt.
@@ -52,6 +56,8 @@ Files: scripts/fetch_earnings_calendar.py::_safe_num under the verified sole-wri
 
 ### Task 3: genuine local PostgreSQL boundary — spec done_when1,2
 
+Spec: § Required conformance and evidence and § Validation and release; advances done_when[1,2].
+
 File tests/integration/test_catalyst_earnings_estimate_numbers_pg.py::test_sql_null_dataframe_roundtrip_preserves_missing.
 
 - [ ] Use existing ephemeral PostgreSQL fixture; explicit localhost/local socket allowlist and injected localengine; block CloudSQL/proxy/provider calls. No GCP environment credential use. Create isolated local fixture table/transaction, not any future av_options table or production migration.
@@ -59,6 +65,8 @@ File tests/integration/test_catalyst_earnings_estimate_numbers_pg.py::test_sql_n
 - [ ] Tear down only fixture namespace; run existing relevant localPG suite. Retain command/source identity, no skips disguised as pass and no claim that local SQL proves production persistence.
 
 ### Task 4: current-head review and existing API/producer release — spec done_when3
+
+Spec: § Validation and release and § Risks and exclusions; advances done_when[3].
 
 - [ ] Own unique ready plan/PR, CAT catalog/traceability and only declaredCATALYSTS-04 note; coordinate record writes with earnings owner. Preserve foreign records, raw SITE body and upstreamMAIN changes.
 - [ ] Regenerate committed source proof last against actualMAIN, fixed-bounds verify, matched main/branch audit with no new findings and local gates. One coherent review request when first fully ready, complete first independent review; no repeated loops or quota/options budget consumption.
