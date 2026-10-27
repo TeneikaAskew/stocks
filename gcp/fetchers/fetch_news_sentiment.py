@@ -81,12 +81,12 @@ def _fetch(params: dict) -> list[dict]:
         resp = requests.get(AV_BASE_URL, params=params, timeout=30)
         resp.raise_for_status()
         data = resp.json()
-    except Exception as e:
-        logger.warning("AV NEWS_SENTIMENT request failed (%s): %s", params, e)
+    except Exception:
+        logger.warning("AV NEWS_SENTIMENT request failed")
         return []
 
     if "Information" in data:
-        logger.warning("AV info: %s", data["Information"])
+        logger.warning("AV NEWS_SENTIMENT provider Information response")
     return data.get("feed", []) or []
 
 

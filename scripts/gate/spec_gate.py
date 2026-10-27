@@ -49,7 +49,9 @@ import posixpath
 import re
 import subprocess
 import sys
+import tempfile
 import tomllib
+import types
 from dataclasses import dataclass
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -65,6 +67,20 @@ MAIN = "main"
 # it generates. Everything else under docs/product/ changes on its own docs/ branch.
 PRODUCT_DOCS = "docs/product/"
 REGISTRY_DOCS = ("docs/product/07-MODEL-REGISTRY.md", "docs/product/generated/model-registry.json")
+
+# REQ-GOV-004: the documents whose inventory blocks scripts/maintenance/doc_inventory.py renders from the
+# repository. A feature change may carry those blocks exactly as main's renderer renders them from its own files
+# (check_product_scope); the paths equal check_generated_docs.MARKER_DOCS and the docs test's SNAPSHOT (the suite
+# pins both).
+GENERATED_DOCS = ("docs/product/infrastructure/05-a-ARCHITECTURE.md", "docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md",
+                  "docs/product/infrastructure/05-e-API.md")
+GENERATED_RULE = "REQ-GOV-004"
+RENDER_SNAPSHOT = "tests/fixtures/live_gcp_snapshot_2026-09-07.json"
+RENDER_INPUTS = ("scripts/__init__.py", "scripts/maintenance/__init__.py",
+                 "scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
+                 "tests/scripts/test_check_generated_docs.py", RENDER_SNAPSHOT)          # REQ-GOV-004: unchanged beside blocks
+RENDERER_FILES = ("scripts/__init__.py", "scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
+                  "scripts/maintenance/__init__.py", RENDER_SNAPSHOT)                     # process files: FEAT-CICD-001's
 
 FEAT_ROW = re.compile(r"^\|\s*\[?(FEAT-[A-Z]+-\d{3})\b", re.M)
 FEAT_IDS = re.compile(r"\bFEAT-[A-Z]+-\d{3}\b")
@@ -249,8 +265,7 @@ RUNTIME_ENV = (r"(PATH|HOME|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|IFS|TMPDIR|PY
                # red-team round two: a proxy or CA bundle would route the verdict step's `pip install` elsewhere
                r"|HTTPS?_PROXY|https?_proxy|ALL_PROXY|all_proxy|NO_PROXY|no_proxy|SSL_CERT_\w+|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE)")
 PROTECTED = rf"(?:{GATE_INPUT}|{RUNTIME_ENV})"
-INPUT_OVERRIDE = re.compile(r"(?<![\w$.{-])" + PROTECTED + r"=|\b(export|unset|declare|typeset|local|readonly|read)\b[^;|&\n]*?(?<![\w$.{-])" + PROTECTED + r"\b|(?<![\w])(GITHUB_PATH)\b")
-ENV_KEY = re.compile(r"^\s*(" + GATE_INPUT[1:-1] + "|" + RUNTIME_ENV[1:-1] + r"):", re.M)
+INPUT_OVERRIDE = r"(?<![\w$.{-])" + PROTECTED + r"=|\b(export|unset|declare|typeset|local|readonly|read)\b[^;|&\n]*?(?<![\w$.{-])" + PROTECTED + r"\b|(?<![\w])(GITHUB_PATH)\b"
 
 
 def runtime_env_keys(body: str) -> list[str]:
@@ -273,7 +288,7 @@ def runtime_env_keys(body: str) -> list[str]:
 def input_overrides(text: str) -> list[str]:
     """The gate inputs a comment-stripped text assigns or unsets, in order of appearance."""
     found: list[str] = []
-    for m in INPUT_OVERRIDE.finditer(text):
+    for m in re.finditer(INPUT_OVERRIDE, text):
         name = next(g for g in m.groups() if g and g not in ("export", "unset", "declare", "typeset", "local", "readonly", "read"))
         if name not in found:
             found.append(name)
@@ -966,8 +981,8 @@ def checkout_violation(body: str, side: str) -> str | None:
 
 
 EXECUTABLES = r"(python3?|python3\.\d+|git|pytest)"
-SHADOW = re.compile(r"(?:^|[;&|{}(]\s*|\bfunction\s+)" + EXECUTABLES + r"\s*\(\s*\)|\bfunction\s+" + EXECUTABLES
-                    + r"\b|\balias\s+" + EXECUTABLES + r"=|\bhash\s+-p\s+\S+\s+" + EXECUTABLES + r"\b", re.M)
+SHADOW = (r"(?:^|[;&|{}(]\s*|\bfunction\s+)" + EXECUTABLES + r"\s*\(\s*\)|\bfunction\s+" + EXECUTABLES
+          + r"\b|\balias\s+" + EXECUTABLES + r"=|\bhash\s+-p\s+\S+\s+" + EXECUTABLES + r"\b")
 
 
 # Every line the hook may contain, after its interpreter line: comments, `set -e`, the Python
@@ -994,7 +1009,7 @@ INDIRECT = r"['\"]?\$(?!(RUNNER_TEMP\b|\{RUNNER_TEMP\}|\{\{\s*runner\.temp\s*\}\
 EXECUTABLE_NAME = r"[^\s'\"]*/(python3?|python3\.\d+|git|pytest)\b"
 # red-team round four: the writer sits anywhere on the line (`command cp`, `timeout 5 cp`, `find -exec cp`,
 # `echo a b | xargs cp`, `((1)) && cp`), not only at its start after assignments
-WRITES_GATE = re.compile(r"(?m)(?<![\w/.-])" + WRITERS + r"\b[^\n]*(" + GATE_PATHS + "|" + INDIRECT + "|" + EXECUTABLE_NAME + r")|[>]{1,2}\|?\s*(['\"]?[^\s'\"]*" + GATE_PATHS + "|" + INDIRECT + "|['\"]?" + EXECUTABLE_NAME + ")")
+WRITES_GATE = (r"(?m)(?<![\w/.-])" + WRITERS + r"\b[^\n]*(" + GATE_PATHS + "|" + INDIRECT + "|" + EXECUTABLE_NAME + r")|[>]{1,2}\|?\s*(['\"]?[^\s'\"]*" + GATE_PATHS + "|" + INDIRECT + "|['\"]?" + EXECUTABLE_NAME + ")")
 
 
 # Commands that only read what they are given: any other command handed a gate path may write it
@@ -1007,7 +1022,7 @@ READ_ONLY = frozenset(("python3", "python", "git", "cat", "ls", "test", "[", "[[
 def writes_gate_file(runs: str) -> str | None:
     """The first executed run line that copies, moves, edits, deletes or redirects into a gate
     file's path (stocks#1205 r4121777299), or hands one to a command that is not known to only read."""
-    m = WRITES_GATE.search(runs)
+    m = re.search(WRITES_GATE, runs)
     if m:
         return runs[runs.rfind("\n", 0, m.start()) + 1:].split("\n")[0].strip()
     for line in runs.split("\n"):
@@ -1022,7 +1037,7 @@ def writes_gate_file(runs: str) -> str | None:
 
 def shadowed_executable(text: str) -> str | None:
     """The first contract executable a comment-stripped text redefines as a function or alias."""
-    m = SHADOW.search(text)
+    m = re.search(SHADOW, text, re.M)
     return next((g for g in m.groups() if g), None) if m else None
 
 
@@ -1087,6 +1102,7 @@ DEPLOY_FILE = re.compile(r"^((gcp|platform)/deploy\.sh|gcp/cloudbuild/[^/]+|clou
 def is_process_file(path: str, trees=()) -> bool:
     return ((path.startswith(".github/") and not is_documentation(path)) or is_gate_file(path) or path in PINNED.values()
             or path in SOURCE_REVIEW_INPUTS or source_import_shadow(path, trees=trees)
+            or path in RENDERER_FILES or path == "tests/scripts/measure_inventory_render.py"
             or path.startswith(LOCAL_SKILLS) or path.startswith((".claude/", ".githooks/"))
             or path.rsplit("/", 1)[-1] in ("CLAUDE.md", "AGENTS.md", "CLAUDE.local.md"))
 # The files the gate runs from: no change may delete one, whatever its branch, or the
@@ -1113,6 +1129,40 @@ SOURCE_IMPORT_SUFFIXES = tuple(dict.fromkeys((".py", ".pyc", ".pyw", ".so", ".py
 SOURCE_ROOT_IMPORT_NAMES = SOURCE_IMPORT_NAMES | {"scripts", "tests"}
 
 
+def source_backed_cache(path: str, *, trees=(), present=None) -> str | None:
+    """Map a tagged cache to its existing source, never an orphan namespace cache.
+
+    This parses names only; no candidate cache/native bytes are loaded. Present manifests
+    already supplied by the source verifier are reused; gate trees need at most one source
+    mode lookup per revision for a matching cache, not a whole-tree scan or retained cache.
+    """
+    if not path.endswith(".pyc") or "__pycache__" not in path.split("/"):
+        return None
+    try:
+        source = importlib.util.source_from_cache(path)
+    except ValueError:
+        # pytest's assertion-rewrite tag contains version dots beyond standard PEP3147's shape.
+        folder, _, name = path.rpartition("/")
+        stem, dot, tag = name.partition(".")
+        if (not dot or folder.rsplit("/", 1)[-1] != "__pycache__"
+                or not re.fullmatch(r"[A-Za-z0-9_-]+-pytest-[0-9][A-Za-z0-9_.-]*\.pyc", tag)):
+            return None
+        parent = folder.rpartition("/")[0]
+        source = f"{parent}/{stem}.py" if parent else f"{stem}.py"
+    exists = source in present if present is not None else any(t.mode(source) is not None for t in trees)
+    return source if exists else None
+
+
+def effective_python_input(path: str, sources, *, trees=(), present=None) -> str | None:
+    """Canonical trusted source role for direct loader siblings or source-backed tagged caches."""
+    if cached := source_backed_cache(path, trees=trees, present=present):
+        return cached if cached in sources else None
+    for suffix in SOURCE_IMPORT_SUFFIXES:
+        if path.endswith(suffix) and (source := path[:-len(suffix)] + ".py") in sources:
+            return source
+    return None
+
+
 def source_import_shadow(path: str, *, trees=(), present=None) -> bool:
     """Effective startup slots, including both sides of package transitions.
 
@@ -1124,6 +1174,10 @@ def source_import_shadow(path: str, *, trees=(), present=None) -> bool:
     def exists(candidate):
         return candidate in present if present is not None else any(t.mode(candidate) is not None for t in trees)
 
+    if effective_python_input(path, TRUSTED_PYTHON_INPUTS, trees=trees, present=present):
+        return True
+    if cached := source_backed_cache(path, trees=trees, present=present):
+        return source_import_shadow(cached, trees=trees, present=present)
     for parent in ("", "scripts/maintenance/", "scripts/", "tests/scripts/", "tests/"):
         if not path.startswith(parent):
             continue
@@ -1182,6 +1236,9 @@ GATE_ENTRYPOINTS = (
     "scripts/gate/export_model_registry.py", "tests/scripts/test_export_model_registry.py",   # where they exist (round five)
     *PINNED.values(),   # the pinned copies: without one, the file it pins is judged by the models alone
 )
+TRUSTED_PYTHON_INPUTS = frozenset(p for p in (
+    *SOURCE_REVIEW_INPUTS, *RENDERER_FILES, *GATE_ENTRYPOINTS, "tests/scripts/measure_inventory_render.py",
+) if p.endswith(".py"))
 # The manifest fields a chore/ branch may change. Anything else in package.json or
 # pyproject.toml (scripts, build config, tool tables) is executable configuration that
 # CI runs from the checkout, so it is a CHANGE.
@@ -1248,6 +1305,15 @@ def git_out(*args: str) -> str:
     if r.returncode != 0:
         raise GitFailed(f"git {' '.join(args[:2])} failed ({r.returncode}): {r.stderr.strip() or 'no output'}; "
                         "refusing to pass on a diff the gate could not compute")
+    return r.stdout
+
+
+def git_bytes(*args: str) -> bytes:
+    """stdout of a git command that must succeed, undecoded: text mode reads a lone carriage return as a line break."""
+    r = subprocess.run(["git", "-c", "core.quotePath=false", *args], capture_output=True, cwd=ROOT)
+    if r.returncode != 0:
+        raise GitFailed(f"git {' '.join(args[:2])} failed ({r.returncode}): "
+                        f"{r.stderr.decode('utf-8', 'replace').strip() or 'no output'}; refusing to pass on a diff the gate could not compute")
     return r.stdout
 
 
@@ -3560,27 +3626,46 @@ def check_capacity(body: str | None, changed: list[str]) -> list[str]:
     return []
 
 
+def lines_of(text: str) -> list[str]:
+    """text's lines as git numbers them: split on "\\n" alone, so index i is git's line i + 1. splitlines() also
+    breaks at a lone carriage return, U+2028 and U+0085, where git does not."""
+    return text.split("\n")
+
+
 def changed_lines(merge_base: str, head: str, path: str) -> list[tuple[str, int, str]]:
     """("-", line in base, text) for every line the change removes from path and
-    ("+", line in head, text) for every line it adds."""
-    out, old, new = [], 0, 0
-    for line in git_out("diff", "-U0", merge_base, head, "--", path).splitlines():
-        hunk = re.match(r"^@@ -(\d+)(?:,\d+)? \+(\d+)", line)
+    ("+", line in head, text) for every line it adds, numbered as git numbers them.
+    The diff is read as bytes and split on "\\n" alone; `---` and `+++` are file headers only before the
+    first hunk, so a content line that begins with them is still a changed line. Context lines are counted:
+    -U0 asks for none, but diff.interHunkContext and GIT_DIFF_OPTS add them, and diff.suppressBlankEmpty
+    prints a blank one empty (red-team round 1). A diff of path with no text hunk (binary, a NUL, a mode
+    change) raises: the gate reads every changed line, never none."""
+    out, old, new, hunks = [], 0, 0, 0
+    diff = git_bytes("diff", "--no-color", "--no-ext-diff", "--no-textconv", "-U0", merge_base, head, "--", path)
+    for line in diff.split(b"\n"):
+        hunk = re.match(rb"^@@ -(\d+)(?:,\d+)? \+(\d+)", line)
         if hunk:
-            old, new = int(hunk.group(1)), int(hunk.group(2))
-        elif line.startswith("-") and not line.startswith("---"):
-            out.append(("-", old, line[1:]))
+            old, new, hunks = int(hunk.group(1)), int(hunk.group(2)), hunks + 1
+        elif not hunks or line.startswith(b"\\"):
+            continue   # a header before the first hunk, or "\ No newline at end of file"
+        elif line.startswith(b"-"):
+            out.append(("-", old, line[1:].decode("utf-8", "replace")))
             old += 1
-        elif line.startswith("+") and not line.startswith("+++"):
-            out.append(("+", new, line[1:]))
+        elif line.startswith(b"+"):
+            out.append(("+", new, line[1:].decode("utf-8", "replace")))
             new += 1
+        else:   # a context line, " " or, under diff.suppressBlankEmpty, ""
+            old, new = old + 1, new + 1
+    if not hunks:
+        raise GitFailed(f"git diff of {path} shows no text hunk (a binary file, a NUL byte or a mode-only change); "
+                        "the gate reads every changed line and refuses to pass on none")
     return out
 
 
 def feat_span(text: str, feat_id: str) -> set[int]:
     """1-based line numbers that belong to feat_id in a product document: its table rows,
     and every section whose heading names it, up to the next heading of that level or higher."""
-    lines = text.splitlines()
+    lines = lines_of(text)
     span: set[int] = set()
     level = None
     for n, line in enumerate(lines, 1):
@@ -3597,12 +3682,12 @@ def feat_span(text: str, feat_id: str) -> set[int]:
 
 def heading_levels(text: str, feat_id: str) -> list[int]:
     """The levels of the headings naming the FEAT, in order."""
-    return [len(h.group(1)) for line in text.splitlines() if (h := HEADING.match(line)) and feat_id in FEAT_IDS.findall(line)]
+    return [len(h.group(1)) for line in lines_of(text) if (h := HEADING.match(line)) and feat_id in FEAT_IDS.findall(line)]
 
 
 def feat_headings(text: str, feat_id: str) -> tuple[int, int]:
     """(headings naming the FEAT, table rows keyed by it): one record, one of each."""
-    lines = text.splitlines()
+    lines = lines_of(text)
     return (sum(1 for line in lines if HEADING.match(line) and feat_id in FEAT_IDS.findall(line)),
             sum(1 for line in lines if (m := FEAT_ROW.match(line)) and m.group(1) == feat_id))
 
@@ -3679,7 +3764,16 @@ def check_policy_structure(ch: Change) -> list[str]:
     errs: list[str] = []
     if CANVASES in ch.changed and (canvases := ch.tree.read(CANVASES)) is not None:
         errs += validate_canvases(canvases)
-    if CATALOG in ch.changed and (catalog := ch.tree.read(CATALOG)) is not None and (base_catalog := ch.base.read(CATALOG)):
+    catalog_pair = None
+    if CATALOG in ch.changed and all(isinstance(t.rev, str) and re.fullmatch(r"[0-9a-f]{40}", t.rev)
+                                    for t in (ch.tree, ch.base)):
+        try:
+            catalog_pair = close_out_policy([(ch.tree.rev, CATALOG), (ch.base.rev, CATALOG)])
+        except GitFailed:
+            # Preserve Tree.read's original fallback and read order on unavailable batch transport/framing.
+            pass
+    if CATALOG in ch.changed and (catalog := catalog_pair[0] if catalog_pair is not None else ch.tree.read(CATALOG)) is not None \
+            and (base_catalog := catalog_pair[1] if catalog_pair is not None else ch.base.read(CATALOG)):
         # solyra#72 r4121753981: the close-out reads Status and Last reviewed by name, from the
         # row or the record; a renamed header would fail every later feature PR
         header = lambda text: re.search(r"(?m)^\|\s*ID\s*\|.*$", visible(text))
@@ -3715,7 +3809,8 @@ def check_policy_structure(ch: Change) -> list[str]:
             errs.append(f"{REQUIREMENTS}: a new requirements registry omits {len(missing)} requirement(s) the specs "
                         f"cite ({missing[0]}{' and more' if len(missing) > 1 else ''}); define them all or land none")
     for path in POLICY_DOCS:
-        if path not in ch.changed or (head := ch.tree.read(path)) is None or (base := ch.base.read(path)) is None:
+        if path not in ch.changed or (head := catalog_pair[0] if path == CATALOG and catalog_pair is not None else ch.tree.read(path)) is None \
+                or (base := catalog_pair[1] if path == CATALOG and catalog_pair is not None else ch.base.read(path)) is None:
             continue
         if dropped := sorted(policy_ids(path, base) - policy_ids(path, head)):
             errs.append(f"{path}: no longer defines {len(dropped)} ID(s) the base has ({dropped[0]}"
@@ -3761,17 +3856,342 @@ def check_record_uniqueness(ch: Change) -> list[str]:
     return errs
 
 
+# REQ-GOV-004: generated documents. A feature change that moves a line the three documents cite carries their
+# re-rendered inventory blocks, and the gate accepts them only as main's renderer renders them from this pull
+# request's files. "Main's" is the gate's own checkout: the base commit in CI, the worktree in a local run.
+
+def maintenance_modules() -> tuple[types.ModuleType, types.ModuleType] | None:
+    """Main's (doc_inventory, check_generated_docs), from this checkout's scripts/maintenance/, or None where the
+    repository has no renderer (solyra): it then gets no allowance. Any other import error propagates."""
+    folder = ROOT / "scripts/maintenance"
+    if not folder.is_dir():
+        return None
+    sys.path.insert(0, str(ROOT))
+    mods = (importlib.import_module("scripts.maintenance.doc_inventory"),
+            importlib.import_module("scripts.maintenance.check_generated_docs"))
+    for m in mods:
+        # a regular `scripts` package anywhere on sys.path beats this checkout's namespace one
+        where = pathlib.Path(m.__file__ or "").resolve()
+        if where.parent != folder.resolve():
+            raise ImportError(f"{m.__name__} was imported from {where}, outside {folder}; the gate renders with this "
+                              "checkout's renderer only")
+    return mods
+
+
+def generated_refusal(path: str, reason: str) -> str:
+    return (f"{path}: {reason} ({GENERATED_RULE}: a feature change carries a generated document's inventory blocks and "
+            "existing fixed renderer-owned count/as-of substitutions only "
+            "as main's scripts/maintenance/doc_inventory.py re-renders them from this pull request)")
+
+
+# Bytes the docs test reads past: it compares read_text() strings, so a CR folds into a line break, and git calls a
+# file with a NUL binary; U+0085, U+2028 and U+2029 are line breaks to str.splitlines() and none to git.
+CLEAN_BYTES = re.compile(rb"\r|\x00|\xc2\x85|\xe2\x80[\xa8\xa9]")
+
+
+def split_inventory(raw: bytes, names: tuple[str, ...], start: str, end: str,
+                    marker_line: re.Pattern[str]) -> tuple[list[tuple[int, bytes]], list[tuple[str, list[bytes]]]]:
+    """(the lines outside every block body as (line number, bytes), marker lines included; the blocks as (name, body
+    lines) in document order), the document split on "\\n" alone. A line marker_line matches is a marker line and
+    must be exactly start or end for a name in `names`: the docs test finds blocks by exact string and only for those
+    names, so no other line may open or close one here. Raises ValueError ("marker lines: ...") otherwise, and for a
+    block nested, repeated, unclosed, closed out of turn, or missing."""
+    starts = {start.format(name=n).encode(): n for n in names}
+    ends = {end.format(name=n).encode(): n for n in names}
+    outside: list[tuple[int, bytes]] = []
+    blocks: list[tuple[str, list[bytes]]] = []
+    current: tuple[str, list[bytes]] | None = None
+    for n, line in enumerate(raw.split(b"\n"), 1):
+        if not marker_line.match(line.decode("utf-8", "replace")):
+            if current:
+                current[1].append(line)
+            else:
+                outside.append((n, line))
+            continue
+        if line in starts:
+            name = starts[line]
+            if current:
+                raise ValueError(f"marker lines: line {n} opens inventory:{name} inside inventory:{current[0]}")
+            if any(name == b[0] for b in blocks):
+                raise ValueError(f"marker lines: line {n} opens inventory:{name} a second time")
+            current = (name, [])
+            blocks.append(current)
+        elif line in ends:
+            if not current or ends[line] != current[0]:
+                raise ValueError(f"marker lines: line {n} closes inventory:{ends[line]}, which is not the open block")
+            current = None
+        else:
+            raise ValueError(f"marker lines: line {n} reads as a marker but is not exactly one of this document's "
+                             f"({', '.join(names)}): {line[:100].decode('utf-8', 'replace')!r}")
+        outside.append((n, line))
+    if current:
+        raise ValueError(f"marker lines: inventory:{current[0]} is never closed")
+    if missing := [name for name in names if all(name != b[0] for b in blocks)]:
+        raise ValueError(f"marker lines: no block for {', '.join(missing)}")
+    return outside, blocks
+
+
+def document_refusal(doc: str, base: Tree, tree: Tree, inv: types.ModuleType, cgd: types.ModuleType) -> str | None:
+    """The first of REQ-GOV-004's per-document rules that `doc` breaks, as a reason, or None."""
+    before, after = base.raw(doc), tree.raw(doc)
+    if before is None or after is None or base.mode(doc) != tree.mode(doc):
+        return "is deleted, renamed or changes file mode; only its inventory block bodies may change"
+    if b"\r" in after and b"\r" not in before:
+        return "adds carriage returns (CRLF line endings); commit it with LF line endings"
+    names = tuple(cgd.EXPECTED_MARKERS[doc])
+    sides = {}
+    for side, raw in (("on main: ", before), ("", after)):
+        try:
+            sides[side] = split_inventory(raw, names, inv.MARKER_START, inv.MARKER_END, cgd._MARKER_LINE)
+        except ValueError as e:
+            return f"{side}{e}"
+    (was, was_blocks), (now, now_blocks) = sides["on main: "], sides[""]
+    if [b[0] for b in was_blocks] != [b[0] for b in now_blocks]:
+        return (f"marker lines: the blocks appear in another order than on main "
+                f"({', '.join(b[0] for b in now_blocks)} against {', '.join(b[0] for b in was_blocks)})")
+    for name, body in now_blocks:
+        if CLEAN_BYTES.search(b"\n".join(body)):
+            return f"inventory:{name} carries a carriage return, NUL, U+0085, U+2028 or U+2029, which the docs test reads past"
+    return None
+
+
+def head_entries(head: str) -> list[tuple[str, str, str]]:
+    """(mode, object id, path) for every file in head's tree, from `git ls-tree -r -z`: no quoting, no attributes."""
+    entries = []
+    for record in git_bytes("ls-tree", "-r", "-z", "--full-tree", head).split(b"\0"):
+        if record:
+            meta, _, path = record.partition(b"\t")
+            mode, _kind, oid = meta.decode("ascii").split()
+            entries.append((mode, oid, os.fsdecode(path)))
+    return entries
+
+
+def tree_refusal(entries: list[tuple[str, str, str]]) -> str | None:
+    """The first entry the render cannot read as a plain file, named, or None."""
+    for mode, _oid, path in entries:
+        parts = path.split("/")
+        if mode == "120000":
+            return f"a symbolic link ({path})"
+        if mode == "160000":
+            return f"a submodule ({path})"
+        if parts[-1].lower() == ".gitattributes":
+            return f"a .gitattributes ({path})"
+        for c in parts:
+            if c == "" or c.lower() in (".", "..", ".git"):
+                return f"a path component {c!r} ({path})"
+    return None
+
+
+def materialize(entries: list[tuple[str, str, str]], into: pathlib.Path) -> None:
+    """Write each entry's blob, byte for byte, to into/path, from one `git cat-file --batch`, which applies no
+    attributes. Raises ValueError, before writing, for a path that resolves outside `into`."""
+    top = os.path.realpath(into) + os.sep
+    def target(path: str) -> str:
+        where = os.path.realpath(os.path.join(into, path))
+        if not where.startswith(top):
+            raise ValueError(f"{path} resolves to {where}, outside {into}")
+        return where
+    for _mode, _oid, path in entries:
+        target(path)
+    r = subprocess.run(["git", "cat-file", "--batch"], input=b"".join(oid.encode("ascii") + b"\n" for _, oid, _ in entries),
+                       capture_output=True, cwd=ROOT)
+    if r.returncode != 0:
+        raise GitFailed(f"git cat-file --batch failed ({r.returncode}): {r.stderr.decode('utf-8', 'replace').strip() or 'no output'}")
+    out, pos = r.stdout, 0
+    for _mode, oid, path in entries:
+        eol = out.index(b"\n", pos)
+        header = out[pos:eol].decode("ascii", "replace").split()
+        if len(header) != 3 or header[0] != oid or header[1] != "blob":
+            raise GitFailed(f"git cat-file --batch answered {' '.join(header)!r} for {path} ({oid})")
+        size = int(header[2])
+        where = target(path)
+        os.makedirs(os.path.dirname(where), exist_ok=True)
+        with open(where, "wb") as f:
+            f.write(out[eol + 1:eol + 1 + size])
+        pos = eol + 1 + size + 1
+
+
+# The render runs main's doc_inventory in a child process: this file in a hidden mode, under `python3 -I -B`, from
+# a working directory outside the written tree, behind an audit hook that ends the child on any open, listdir or
+# scandir outside the tree. The renderer reads the tree by parsing it and never imports or runs it (measured
+# 2026-10-11); the fence turns any read that escapes the pull request's files into a refusal.
+RENDER_MODE = "--render-inventory"
+RENDER_PREIMPORTS = ("inspect",)   # ast.get_docstring imports it lazily; behind the fence that open would be refused
+RENDER_FAILED = 1   # the renderer raised; Python's own exit code for an uncaught exception
+RENDER_DIFFERS = 3
+RENDER_MISPLACED = 4
+RENDER_ESCAPED = 86
+PSEUDO_FILE = re.compile(r"<[^/\\\x00]*>")   # "<unknown>", "<string>": names compile gives source it was handed as a string
+
+
+def render_fence(root: str) -> Callable[[str, tuple], None]:
+    """An audit hook that ends the process with RENDER_ESCAPED on an open, os.listdir or os.scandir of a path whose
+    realpath is not root or under it. It exits rather than raising: the renderer's own `except OSError` would
+    swallow an exception. Integer file descriptors were opened through a path already checked. A pseudo-filename
+    such as "<unknown>" passes: compile opens the name it was given for source handed over as a string, to quote a
+    SyntaxError's line, and from the child's empty working directory that name reads nothing."""
+    top = root + os.sep
+    def fence(event: str, args: tuple) -> None:
+        if event not in ("open", "os.listdir", "os.scandir"):
+            return
+        path = args[0] if args else None
+        if isinstance(path, int) or (isinstance(path, str) and PSEUDO_FILE.fullmatch(path)):
+            return
+        try:
+            shown = os.fsdecode("." if path is None else path)
+            real = os.path.realpath(shown)
+        except Exception:   # a path realpath cannot read is not a path inside the tree
+            shown, real = repr(path), ""
+        if real != root and not real.startswith(top):
+            os.write(2, f"opened {shown}\n".encode("utf-8", "replace"))
+            os._exit(RENDER_ESCAPED)
+    return fence
+
+
+def first_difference(current: str, fresh: str) -> str:
+    """The first line where a block's body and main's render of it part, worded as differing_blocks words it, with
+    lines split on "\\n" alone: splitlines() made a blank line added at a block's end read as "the same lines"
+    (red-team round 2)."""
+    cur, new = current.split("\n"), fresh.split("\n")
+    for i in range(max(len(cur), len(new))):
+        a = cur[i] if i < len(cur) else "<missing>"
+        b = new[i] if i < len(new) else "<missing>"
+        if a != b:
+            return f"line {i + 1}: -{a[:120]!r} +{b[:120]!r}"
+    return "the same lines, in other bytes"
+
+
+def render_inventory(tree: str, docs: list[str]) -> int:
+    """Actual isolated child: complete trusted output from BASE prose and committed HEAD source.
+
+    The parent has replaced only output-document inputs with BASE bytes. Submitted bytes arrive on stdin;
+    they never seed the render. Exact structural rules were already checked before materialization.
+    """
+    submitted = {doc: bytes.fromhex(raw) for doc, raw in json.load(sys.stdin).items()}
+    if set(submitted) != set(docs):
+        raise ValueError("submitted document set differs from requested documents")
+    sys.path.insert(0, str(ROOT))
+    inv = importlib.import_module("scripts.maintenance.doc_inventory")
+    cgd = importlib.import_module("scripts.maintenance.check_generated_docs")
+    for m in (inv, cgd):
+        if pathlib.Path(m.__file__ or "").resolve().parent != (ROOT / "scripts/maintenance").resolve():
+            os.write(2, f"{m.__file__}\n".encode("utf-8", "replace"))
+            return RENDER_MISPLACED
+    live = json.loads((ROOT / RENDER_SNAPSHOT).read_text(encoding="utf-8"))
+    for name in RENDER_PREIMPORTS:
+        importlib.import_module(name)
+    sys.addaudithook(render_fence(os.path.realpath(tree)))
+    at = pathlib.Path(tree)
+    try:
+        repo = inv.repo_inventory(at)
+        differs = []
+        for doc in docs:
+            inv.insert_blocks(at / doc, repo, live, root=at, counts=True)
+            fresh = (at / doc).read_bytes()
+            current = submitted[doc]
+            if current == fresh:
+                continue
+            names = tuple(cgd.EXPECTED_MARKERS[doc])
+            old_outside, old_blocks = split_inventory(current, names, inv.MARKER_START, inv.MARKER_END, cgd._MARKER_LINE)
+            new_outside, new_blocks = split_inventory(fresh, names, inv.MARKER_START, inv.MARKER_END, cgd._MARKER_LINE)
+            fresh_blocks = dict(new_blocks)
+            found = [(doc, name, first_difference(b"\n".join(body).decode("utf-8"),
+                                                 b"\n".join(fresh_blocks[name]).decode("utf-8")))
+                     for name, body in old_blocks if body != fresh_blocks[name]]
+            if not found:
+                i = next((i for i, (a, b) in enumerate(zip(old_outside, new_outside)) if a[1] != b[1]),
+                         min(len(old_outside), len(new_outside)))
+                n = old_outside[i][0] if i < len(old_outside) else len(current.split(b"\n"))
+                found = [(doc, "document", f"changes line {n} outside its inventory blocks; " +
+                          first_difference(current.decode("utf-8"), fresh.decode("utf-8")))]
+            differs += found
+    except Exception as e:
+        # Traceback formatting would open trusted source outside the read fence; report one controlled line.
+        os.write(2, f"{type(e).__name__}: {e}\n".encode("utf-8", "replace"))
+        return RENDER_FAILED
+    for doc, name, diff in differs:
+        sys.stdout.buffer.write(f"{doc}\t{name}\t{diff}\n".encode("utf-8", "replace"))
+    sys.stdout.flush()
+    return RENDER_DIFFERS if differs else 0
+
+
+def render_refusals(entries: list[tuple[str, str, str]], docs: list[str], base_docs: dict[str, bytes],
+                    evidence: dict | None = None) -> list[str]:
+    """[] when main's renderer, run over the head tree written to a temporary directory, renders every block of
+    `docs` exactly as committed; otherwise why not."""
+    every = ", ".join(docs)
+    with tempfile.TemporaryDirectory(prefix="spec-gate-render-") as tmp:
+        tree, cwd = pathlib.Path(tmp) / "tree", pathlib.Path(tmp) / "run"
+        tree.mkdir()
+        cwd.mkdir()
+        try:
+            materialize(entries, tree)
+            submitted = {doc: (tree / doc).read_bytes().hex() for doc in docs}
+            for doc in docs:
+                (tree / doc).write_bytes(base_docs[doc])
+        except (OSError, ValueError, GitFailed) as e:
+            # (red-team round 1: a name the filesystem cannot hold crashed the gate with a traceback)
+            return [generated_refusal(every, f"the head tree cannot be written out ({e})")]
+        command = [sys.executable, "-I", "-B", str(pathlib.Path(__file__).resolve()), RENDER_MODE, str(tree), *docs]
+        r = subprocess.run(command, input=json.dumps(submitted), cwd=cwd, capture_output=True, encoding="utf-8", errors="replace")
+        if evidence is not None:
+            evidence.update(argv=command, cwd=str(cwd), exit=r.returncode)
+    last = (r.stderr.strip().splitlines() or ["no output"])[-1]
+    if r.returncode == 0:
+        return []
+    if r.returncode == RENDER_DIFFERS:
+        found = [line.split("\t", 2) for line in r.stdout.split("\n") if line]
+        if found and all(len(f) == 3 for f in found):
+            return [generated_refusal(doc, f"inventory:{name} differs from main's render; first difference: {diff}. Re-render "
+                                           f"with: python3 -m scripts.maintenance.doc_inventory --snapshot {RENDER_SNAPSHOT} --restore {doc}")
+                    for doc, name, diff in found]
+    elif r.returncode == RENDER_ESCAPED:
+        return [generated_refusal(every, f"main's renderer read outside this pull request's files ({last})")]
+    elif r.returncode == RENDER_MISPLACED:
+        return [generated_refusal(every, f"main's renderer was imported from outside this checkout ({last})")]
+    return [generated_refusal(every, f"main's renderer failed on this pull request's files (exit {r.returncode}): {last}")]
+
+
+def generated_doc_refusals(ch: Change, merge_base: str, head: str, docs: list[str], inv: types.ModuleType,
+                           cgd: types.ModuleType) -> list[str]:
+    """Why each changed generated document in `docs` is refused, or [] when every one carries only main's render
+    of its inventory blocks. The rules run cheapest first; a document refused by one is not read further."""
+    inputs = [p for p in ch.changed if p in RENDER_INPUTS
+              or effective_python_input(p, RENDER_INPUTS, trees=(ch.before, ch.base, ch.tree))]
+    if inputs:
+        return [generated_refusal(doc, f"changes alongside {summarize(inputs)}, which decide the render; land that "
+                                       "change first, then re-render") for doc in docs]
+    base = Tree(merge_base)
+    if errs := [generated_refusal(doc, why) for doc in docs if (why := document_refusal(doc, base, ch.tree, inv, cgd))]:
+        return errs
+    try:
+        entries = head_entries(head)
+    except GitFailed as e:
+        return [generated_refusal(", ".join(docs), f"the head tree cannot be listed ({e})")]
+    if why := tree_refusal(entries):
+        return [generated_refusal(", ".join(docs), f"the head tree holds {why}; the render reads plain files only")]
+    return render_refusals(entries, docs, {doc: base.raw(doc) for doc in docs})
+
+
 def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str, traced: Traced | None = None) -> list[str]:
     """CI only: a feature change edits its own catalog record and traceability section, and
     nothing else's. The requirements document changes on its own docs/ branch. Runs on a
     feature/ or fix/ PR whether or not it carries code, so a docs-only one is scoped too."""
     errs: list[str] = []
+    generated = [p for p in ch.changed if p in GENERATED_DOCS]
+    mods = maintenance_modules() if generated else None
+    if mods:
+        errs += generated_doc_refusals(ch, merge_base, head, generated, *mods)
     for path in ch.changed:
+        if mods and path in generated:
+            continue
         if path == REQUIREMENTS:
             errs.append(f"{path} changes in this feature change; requirements change on their own docs/ branch, "
                         "before the work that cites them")
         elif path in (CATALOG, TRACEABILITY):
-            before_text, after_text = Tree(merge_base).read(path) or "", ch.tree.read(path) or ""
+            # LF alone numbers raw Git blob lines; text-mode Tree.read folds lone CR.
+            before_text = (Tree(merge_base).raw(path) or b"").decode("utf-8", "replace")
+            after_text = (ch.tree.raw(path) or b"").decode("utf-8", "replace")
             had, has = feat_headings(before_text, feat_id), feat_headings(after_text, feat_id)
             if any(before and after > before for before, after in zip(had, has)) or (any(had) and has[0] > had[0]):
                 # solyra#72 r4127814359: a heading added beside an existing row would carry the Status and
@@ -3801,7 +4221,10 @@ def check_product_scope(feat_id: str, ch: Change, merge_base: str, head: str, tr
                 errs.append(f"{path}: implementation-source notes unavailable: {exc}")
         elif path.startswith(PRODUCT_DOCS) and path not in REGISTRY_DOCS:
             errs.append(f"{path} changes in this feature change; under {PRODUCT_DOCS} only the FEAT's own catalog "
-                        "and traceability records, the model registry and its generated files may change here")
+                        "and traceability records, the model registry and its generated files, and, where the repository "
+                        "renders them, the inventory blocks of 05-a-ARCHITECTURE.md, 05-c-DATA_DEPENDENCIES.md and "
+                        f"05-e-API.md re-rendered by scripts/maintenance/doc_inventory.py ({GENERATED_RULE}), including only "
+                        "the existing fixed renderer-owned count/as-of substitutions, may change here")
     if SITE_TRACEABILITY not in ch.changed and traced and traced.spec_fm.get("site_source_notes"):
         try:
             protocol = source_protocol()
@@ -3910,7 +4333,7 @@ def feat_record(text: str | None, feat_id: str) -> str:
     """The FEAT's catalog record as rendered: its section where the catalog has one
     (stocks) and its table rows (solyra); what a close-out must change."""
     shown = visible(text or "")
-    lines = shown.splitlines()
+    lines = lines_of(shown)
     section = [lines[ln - 1] for ln in section_of(shown, feat_id) if ln <= len(lines)]
     rows = [line for line in lines if line.startswith("|") and feat_id in FEAT_IDS.findall(line)]
     return "\n".join(section + rows)
@@ -3920,7 +4343,7 @@ def repeated_fields(text: str | None, feat_id: str) -> list[str]:
     """Close-out fields that appear more than once in the FEAT's record table: the record
     would carry two values and the gate would read the last (stocks#1205 r4120381488)."""
     text = visible(text or "")
-    lines = text.splitlines()
+    lines = lines_of(text)
     seen: list[str] = []
     for ln in section_of(text, feat_id):
         row = cells(lines[ln - 1]) if lines[ln - 1].startswith("|") else []
@@ -3934,7 +4357,7 @@ def feat_fields(text: str | None, feat_id: str) -> dict[str, str]:
     record has one (stocks), otherwise from its catalog row's columns (solyra).
     Read as rendered: a row inside an HTML comment or a code block is not a field."""
     text = visible(text or "")
-    lines = text.splitlines()
+    lines = lines_of(text)
     fields = {}
     for ln in section_of(text, feat_id):
         row = cells(lines[ln - 1]) if lines[ln - 1].startswith("|") else []
@@ -3945,22 +4368,10 @@ def feat_fields(text: str | None, feat_id: str) -> dict[str, str]:
     return {h: v for h, v in row_fields(text, feat_id).items() if h in CLOSE_OUT_FIELDS}
 
 
-def added_lines(merge_base: str, head: str, path: str) -> list[tuple[int, str]]:
-    """(line number in head, text) for every line the PR adds to path."""
-    out, lineno = [], 0
-    for line in git_out("diff", "-U0", merge_base, head, "--", path).splitlines():
-        hunk = re.match(r"^@@ -\S+ \+(\d+)", line)
-        if hunk:
-            lineno = int(hunk.group(1))
-        elif line.startswith("+") and not line.startswith("+++"):
-            out.append((lineno, line[1:]))
-            lineno += 1
-    return out
-
 
 def section_of(text: str, feat_id: str) -> range:
     """Line numbers (1-based) of the section whose heading names feat_id."""
-    lines = text.splitlines()
+    lines = lines_of(text)
     for i, line in enumerate(lines):
         h = HEADING.match(line)
         if h and feat_id in FEAT_IDS.findall(line):
@@ -3975,7 +4386,7 @@ def lineage_refs(text: str, feat_id: str) -> set[str]:
     """The PR entries in the FEAT's traceability section as rendered: each `**PR lineage:**`
     line or list item in the visible section, so a `<!-- #N -->` is not an entry."""
     shown = visible(text)
-    lines = shown.splitlines()
+    lines = lines_of(shown)
     return {line.strip() for ln in section_of(shown, feat_id)
             if ln <= len(lines) and re.match(r"^\s*(\*\*PR lineage:\*\*|[-*]\s)", (line := lines[ln - 1]))}
 
@@ -3989,6 +4400,68 @@ def calendar_date(value: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+def policy_blob_bytes(queries: list[tuple[str, str]]) -> list[bytes | None]:
+    """Fresh fixed close-out inputs, with actual commit existence and raw size framing.
+
+    Nothing is retained across acquisitions: Git replacement refs and repository
+    identity are observed by every call. info avoids loading commit-message bodies.
+    Tree/index/worktree/symbolic-reference reads retain their ordinary uncached path.
+    """
+    if any(not re.fullmatch(r"[0-9a-f]{40}", rev) or path not in (CATALOG, TRACEABILITY)
+           for rev, path in queries):
+        raise GitFailed("batch reads require fixed committed policy paths and full object IDs")
+    revisions = list(dict.fromkeys(rev for rev, _ in queries))
+    commands = [f"info {rev}\n" for rev in revisions]
+    commands += [f"contents {rev}:{path}\n" for rev, path in queries]
+    r = subprocess.run(["git", "cat-file", "--batch-command", "--buffer"],
+                       input=("".join(commands) + "flush\n").encode("ascii"), capture_output=True, cwd=ROOT)
+    if r.returncode != 0:
+        raise GitFailed(f"git cat-file policy batch failed ({r.returncode}): "
+                        f"{r.stderr.decode('utf-8', 'replace').strip() or 'no output'}")
+    out, pos = r.stdout, 0
+    def header() -> bytes:
+        nonlocal pos
+        end = out.find(b"\n", pos)
+        if end < 0:
+            raise GitFailed("truncated policy batch header")
+        line, pos = out[pos:end], end + 1
+        return line
+    for rev in revisions:
+        if not re.fullmatch(rev.encode("ascii") + rb" commit (0|[1-9][0-9]*)", header()):
+            raise GitFailed(f"policy batch cannot verify commit {rev}")
+    result: list[bytes | None] = []
+    for rev, path in queries:
+        line = header()
+        if line == f"{rev}:{path} missing".encode("ascii"):
+            result.append(None)
+            continue
+        fields = re.fullmatch(rb"[0-9a-f]{40} blob (0|[1-9][0-9]*)", line)
+        if not fields:
+            raise GitFailed(f"invalid policy blob header for {path}")
+        # Compare the decimal length before int conversion: absurd/truncated sizes
+        # refuse without Python's integer-digit limit leaking an uncaught exception.
+        digits = fields.group(1)
+        maximum = str(len(out) - pos).encode("ascii")
+        if len(digits) > len(maximum) or (len(digits) == len(maximum) and digits > maximum):
+            raise GitFailed(f"truncated policy blob for {path}")
+        size = int(digits)
+        end = pos + size
+        if out[end:end + 1] != b"\n":
+            raise GitFailed(f"invalid policy blob trailer for {path}")
+        result.append(out[pos:end])
+        pos = end + 1
+    if pos != len(out):
+        raise GitFailed("unexpected trailing policy batch bytes")
+    return result
+
+
+def close_out_policy(queries: list[tuple[str, str]]) -> list[str | None]:
+    # git/show text mode uses universal newlines and UTF8 replacement. Preserve
+    # those semantics, while the acquisition itself retains exact original bytes.
+    return [None if data is None else data.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n")
+            for data in policy_blob_bytes(queries)]
 
 
 def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict) -> list[str]:
@@ -4008,22 +4481,38 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
     unticked = [i for i, box in matched.items() if not (box and box[0] and (first.get(i) or box)[0])]
     if unticked:
         errs.append("ready for review with done_when item(s) not ticked: " + "; ".join(unticked))
-    now = feat_fields(ch.tree.read(CATALOG), t.feat_id)
-    before = feat_fields(Tree(merge_base).read(CATALOG), t.feat_id)
-    if twice := repeated_fields(ch.tree.read(CATALOG), t.feat_id):
+    # Current policy BASE and merge-base history are distinct inputs. Only these
+    # PR-mode full object IDs use the fresh fixed batch; other Tree modes do not.
+    if all(isinstance(rev, str) and re.fullmatch(r"[0-9a-f]{40}", rev)
+           for rev in (ch.tree.rev, merge_base, ch.base.rev)):
+        head_catalog, before_catalog, policy_trace = close_out_policy(
+            [(ch.tree.rev, CATALOG), (merge_base, CATALOG), (ch.base.rev, TRACEABILITY)])
+        if policy_trace is not None:
+            head_trace, before_trace = close_out_policy(
+                [(ch.tree.rev, TRACEABILITY), (merge_base, TRACEABILITY)])
+    else:
+        head_catalog, before_catalog = ch.tree.read(CATALOG), Tree(merge_base).read(CATALOG)
+        policy_trace = ch.base.read(TRACEABILITY)
+        if policy_trace is not None:
+            head_trace, before_trace = ch.tree.read(TRACEABILITY), Tree(merge_base).read(TRACEABILITY)
+    now = feat_fields(head_catalog, t.feat_id)
+    before = feat_fields(before_catalog, t.feat_id)
+    if twice := repeated_fields(head_catalog, t.feat_id):
         errs.append(f"{CATALOG}: the {t.feat_id} record carries {', '.join(twice)} more than once; each close-out "
                     "field has one row")
     reviewed, status = now.get("Last reviewed", ""), plain_text(fold_text(now.get("Status", "")))   # solyra#72 r4127734225: `_unknown_`, `[unknown](x)` read as the word
     if re.search(r"~~|<(s|del|strike)\b", now.get("Status", ""), re.I):
         # round six: `~~Production~~` renders struck through and read as the plain word
         errs.append(f"{CATALOG}: the {t.feat_id} Status is struck through; set it or remove it")
-    head_day = git_out("show", "-s", "--format=%cs", head).strip()
-    author_day = git_out("show", "-s", "--format=%as", head).strip()   # (round six: GitHub shows the author date)
+    dates = git_out("show", "-s", "--format=%cs%n%as", head).strip().splitlines()
+    if len(dates) != 2:
+        raise GitFailed("head commit date output is malformed")
+    head_day, author_day = dates   # (round six: GitHub shows the author date)
     # The head commit's date, exactly: any other date, past or future, is a false freshness record.
     if not calendar_date(reviewed) or reviewed not in (head_day, author_day):
         errs.append(f"{CATALOG}: set the {t.feat_id} Last reviewed to this PR's head commit date {head_day} in "
                     f"its row or record (it reads '{reviewed or 'nothing'}')")
-    elif squeeze(feat_record(ch.tree.read(CATALOG), t.feat_id)) == squeeze(feat_record(Tree(merge_base).read(CATALOG), t.feat_id)):
+    elif squeeze(feat_record(head_catalog, t.feat_id)) == squeeze(feat_record(before_catalog, t.feat_id)):
         errs.append(f"{CATALOG}: the {t.feat_id} record is unchanged from the base although it already reads "
                     f"{head_day}; a second PR the same day still updates its record (its PRs, Status or notes)")
     if status.lower() in ("", "unknown", "tbd", "tbc", "n/a", "none", "pending", "-", "—", "–") or set(status) <= set("?"):
@@ -4031,9 +4520,9 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
     # Which record carries the lineage is policy, read at the base: a repository that
     # keeps it in the catalog row (solyra) cannot be moved off that check by a PR that
     # brings its own traceability document.
-    if ch.base.read(TRACEABILITY) is not None:
-        now_lineage = lineage_refs(ch.tree.read(TRACEABILITY) or "", t.feat_id)
-        before_lineage = lineage_refs(Tree(merge_base).read(TRACEABILITY) or "", t.feat_id)
+    if policy_trace is not None:
+        now_lineage = lineage_refs(head_trace or "", t.feat_id)
+        before_lineage = lineage_refs(before_trace or "", t.feat_id)
         if not any(pr_ref.search(entry) for entry in now_lineage - before_lineage):
             errs.append(f"{TRACEABILITY}: add this PR (#{n}) to the {t.feat_id} section's PR lineage "
                         "(a `**PR lineage:**` line or a list item; a comment or prose mention does not count)")
@@ -4045,10 +4534,10 @@ def check_close_out(t: Traced, ch: Change, merge_base: str, head: str, env: dict
             errs.append(f"{TRACEABILITY}: the {t.feat_id} PR lineage loses earlier PR(s) "
                         f"#{', #'.join(lost)}; lineage only grows")
     else:
-        prs = row_fields(visible(ch.tree.read(CATALOG) or ""), t.feat_id).get("PRs", "")
+        prs = row_fields(visible(head_catalog or ""), t.feat_id).get("PRs", "")
         if not pr_ref.search(prs):
             errs.append(f"{CATALOG}: add this PR (#{n}) to the {t.feat_id} row's PRs column (it reads '{prs or 'nothing'}')")
-        before_prs = set(PR_MENTION.findall(row_fields(visible(Tree(merge_base).read(CATALOG) or ""), t.feat_id).get("PRs", "")))
+        before_prs = set(PR_MENTION.findall(row_fields(visible(before_catalog or ""), t.feat_id).get("PRs", "")))
         lost = sorted(before_prs - set(PR_MENTION.findall(prs)), key=int)
         if lost:
             errs.append(f"{CATALOG}: the {t.feat_id} row's PRs column loses earlier PR(s) "
@@ -4121,6 +4610,8 @@ def main(argv: list[str]) -> int:
 
 def run(argv: list[str]) -> int:
     mode = argv[1] if len(argv) > 1 else "--commit"
+    if mode == RENDER_MODE:
+        return render_inventory(argv[2], argv[3:])
     env = os.environ
     if mode == "--check-spec":
         if len(argv) < 3:
@@ -4200,7 +4691,7 @@ def run(argv: list[str]) -> int:
         manifest_edit = lambda f: f.rsplit("/", 1)[-1] in ("package.json", "pyproject.toml", "Makefile") and \
             (f.endswith("Makefile") or (ch.base.read(f) is not None and ch.tree.read(f) is not None
                                         and non_dependency_edit(f, ch.base.read(f), ch.tree.read(f)) is not None))
-        if traced and (owned := [f for f in ch.changed if is_process_file(f, (ch.before, ch.tree)) or manifest_edit(f)]) \
+        if traced and (owned := [f for f in ch.changed if is_process_file(f, (ch.before, ch.base, ch.tree)) or manifest_edit(f)]) \
                 and traced.feat_id != WORKFLOW_FEAT and WORKFLOW_FEAT in catalog_ids(ch.base.read(CATALOG)):
             errs.append(f"process change(s) ({summarize(owned)}) belong to {WORKFLOW_FEAT}, not {traced.feat_id}; "
                         "CI configuration, the gate and the agent instructions are that capability's work")
