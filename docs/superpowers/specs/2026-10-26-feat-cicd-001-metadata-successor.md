@@ -7,6 +7,8 @@ done_when:
   - "Commit and PR-mode gate tests accept the exact trusted-main earnings metadata successor through one additive metadata_successor field while retaining the original plan spec, branch, PR and acceptance authority."
   - "Gate tests reject changed original bindings, done-plan reopening, malformed or duplicate links, modified or unmerged specs, wrong feature or lineage, chains, cycles and every unrecognized successor."
   - "Registry tests permit only the existing daily/weekly earnings-reactions exclusion-row clarification retaining MODEL-EARN-001 and Inputs-only semantics, reject other rows, promotions and table reshaping, and retain exact generated-JSON verification."
+  - "tests/scripts/test_doc_source_snapshot.py exercises actual CLI preflight, production, committed verification, gate note scope and fresh-clone landed verification with the exact metadata link and unchanged original spec identity; it fails on main's independent supersession refusal and passes only with the narrowly validated pair."
+  - "Source-proof integration controls reject absent or malformed metadata links, changed plan bindings or either pinned spec, uncovered successors, wrong source hashes, missing or unchanged notes, source/body/policy drift and raised fixed ceilings; records retain the original spec path and blob identity and cannot author their own exception."
   - "The original superseded-spec, plan-binding and selected-spec regressions and the full spec-gate suite pass; normal source proof, fixed resource ceilings, no-new docs audits, mandatory gate red-team and current-head review/security/CI requirements remain enforced."
   - "The FEAT-CICD-001 catalog and traceability records identify the implementation PR and its verified gate behavior without claiming earnings runtime or deployment acceptance."
 status: approved
@@ -29,6 +31,13 @@ the selected original, which does not name the existing model reference.
 No existing matching gate specification was found on current main or in the
 matching GitHub PR search. This specification adds a narrow policy contract rather
 than reopening, replacing or circumventing any existing PR's review history.
+
+On October 27 the owner explicitly authorized amendment of this same open #1612
+specification to address first-review P1 `r4380178105`. Read-only reproduction on
+main returned `bound approved spec has been superseded in trusted POLICY` from
+`Snapshot.spec_binding`, independently of the gate's trace check. The authorized
+scope therefore also includes that verifier and its integration tests, preserving
+the first review and the normal remaining review round.
 
 ## Approaches and selected design
 
@@ -60,15 +69,45 @@ existing supersession policy.
 
 ## Runtime scope and authorization boundaries
 
-Change only `scripts/gate/spec_gate.py` and `tests/scripts/test_spec_gate.py`, plus
-ordinary required implementation plan and product close-out records.
+Change only `scripts/gate/spec_gate.py`, `tests/scripts/test_spec_gate.py`,
+`scripts/maintenance/doc_source_snapshot.py` and
+`tests/scripts/test_doc_source_snapshot.py`, plus ordinary required implementation
+plan and product close-out records.
 `plan_stays_bound` remains unchanged. The original plan's `spec`, `branch`, `pr`
 and done/ready protections remain immutable. No replacement earnings plan, branch
 or PR is authorized. `validate_plan` validates the optional field; `trace` separately
 verifies the exact pair and marks only that specific successor as covered. `Traced`
 carries the separately validated metadata scope without replacing `spec_path` or
-the original frontmatter. Existing source-note proof continues to use that original
-authority with unchanged capacities, producer identities and refusal conditions.
+the original frontmatter.
+
+## Independent source-proof binding
+
+`Snapshot.spec_binding` must independently validate the same exact pinned pair and
+the actual committed original plan's additive link before accepting that one
+successor. Both gate-note scope and ordinary snapshot production/verification must
+reach this check. Keep `selected_binding` and record eligibility bound to the
+original specification path and blob, FEAT, original plan, branch and PR; preserve
+the existing record schema. An authored record, caller flag, substituted spec,
+monkeypatch or skipped verifier cannot supply authority. Production reads the
+committed original plan; landed verification independently reads it from SOURCE
+and checks the historical baseline and trusted POLICY, without assuming the
+feature commit or its branch survives a squash.
+
+The original spec remains byte-identical across baseline/POLICY/SOURCE. The
+metadata successor must have the pinned regular-file bytes on trusted POLICY and
+SOURCE and on any baseline that supplies its authority; do not infer an approved
+specification from the proposed tree. Reject every additional uncovered successor.
+All additional manifest, plan and blob reads pass through the existing bounded Git
+reader and debit the unchanged logical-byte and whole-verification deadline
+budgets. A pure shared exact-pair validator in the gate may be reused with values
+read by the verifier; it may not bypass its independent reads or ceilings.
+
+The only changed source-proof refusal is the exact validated metadata-only
+supersession described here. Original financial acceptance, declared CATALYSTS-04
+note ownership, exact source/body/policy identities, unchanged trusted registry,
+ancestral-main availability and eligibility remain enforced. Missing, unchanged,
+wrong-hash or foreign notes, CODE disguised as DOC/bootstrap, dirty SITE, oversized
+input, deadline exhaustion and record tampering retain their normal refusals.
 
 `check_registry_rows` uses the verified scope only for the existing
 `daily-earnings-refresh-reactions` / `weekly-earnings-refresh-reactions` exclusion
@@ -90,7 +129,13 @@ financial content, approval/trust/lineage and row boundary independently. Preser
 `test_a_plan_on_the_base_stays_bound_to_its_branch_and_pr` and
 `test_the_plan_names_the_spec_that_is_enforced`. Prove ordinary source-proof and
 export validation still reject invalid evidence and JSON. Run the full affected
-suite and base/proposed no-new documentation audits. Required shell, YAML/Actions
+suite and `tests/scripts/test_doc_source_snapshot.py`, and base/proposed no-new
+documentation audits. Source-proof positive controls run the actual CLI producer,
+commit its generated sidecar and verify it without hand-authored proof; verify
+again after a real squash into synthetic main and in a fresh clone. Assert the
+record's original `eligibility.spec_path` and `spec_blob_oid`, and original
+component IDs. Exercise gate-note scope with the same accepted source and negative
+controls so accepting only `trace` cannot satisfy the tests. Required shell, YAML/Actions
 and exporter/policy red-team reviewers execute concrete bypass probes before any
 gate-code push. Normal capped review, security, CI and protected merge apply.
 
