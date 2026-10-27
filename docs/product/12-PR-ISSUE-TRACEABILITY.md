@@ -759,6 +759,8 @@ Live registry continuation: [#1599](https://github.com/TeneikaAskew/stocks/pull/
 
 **PR lineage:** [#220](https://github.com/TeneikaAskew/stocks/pull/220) · [#514](https://github.com/TeneikaAskew/stocks/pull/514) · [#532](https://github.com/TeneikaAskew/stocks/pull/532) (the README's PRs column; kinds not classified)
 
+Finite nullable estimate contract: [#1618](https://github.com/TeneikaAskew/stocks/pull/1618) (specification; merged). Implementation remains a separate normal delivery. #1301 is touched for invalid optional estimates only; its multi-source estimate-dedup behavior is not claimed fixed.
+
 ### FEAT-LIVE-001 — Intraday monitoring (20 open)
 
 | Issue | Sev | Title |
