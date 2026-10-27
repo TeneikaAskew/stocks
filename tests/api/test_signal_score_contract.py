@@ -95,3 +95,22 @@ def test_actual_similar_transport_accepts_six_without_query_change(client,monkey
     for score in ('2','6.5','nan'):
         assert client.get('/api/signals/IWM/similar?direction=CALL&rsi=35&score='+score).status_code==422
     assert len(calls)==1
+
+
+@pytest.mark.parametrize('invalid', [False,True])
+def test_known_parquet_metadata_uses_actual_profile_without_leaking_extras(client,monkeypatch,native,invalid):
+    monkeypatch.setattr(signals,'_CLOUD_SQL',False)
+    explanation=json.loads(json.dumps(native.score_explanation))
+    if invalid:
+        explanation['base_max']=5
+    row={'entry_time':'2024-01-02T14:39Z','trade_type':'call','signal_strength':6,
+         'conditions_met':native.conditions_met,'strategy':'momentum',
+         'extra':{'score_explanation':explanation,'unrelated_private':'must-not-expose'}}
+    monkeypatch.setattr(signals,'_load_ticker_df_parquet',lambda t:('synthetic.parquet',pd.DataFrame([row])))
+    r=client.get('/api/signals/IWM')
+    assert r.status_code==200
+    record=r.json()['signals'][0]
+    assert record['score']==6 and record['strategy']=='momentum'
+    assert 'unrelated_private' not in r.text and 'extra' not in record
+    assert record['score_explanation']['status']==('invalid_record' if invalid else 'recorded')
+    assert record['score_explanation']['base_max']==(None if invalid else 7)

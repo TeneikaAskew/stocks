@@ -52,6 +52,7 @@ Spec: Design sections 1/3/5; advances done_when[1].
 Spec: Design sections 2/4/5; advances done_when[2]/[3].
 - [ ] Add tests/api/test_signal_score_contract.py using producer-derived records at real persistence seams; prove SQL/parquet, legacy unknown/invalid and exact similar score six acceptance RED.
 - [ ] Update platform/api/routers/signals.py to project existing fields and bounded metadata; retain query count/order/windows and remove only guessed score upper bound.
+- [ ] After serialized handoff, implement `platform/api/gcs_reader.py::download_parquet(..., optional_columns=None)` with exactly one existing byte read and optional-name intersection from the downloaded parquet schema; test old missing optional fields and unchanged ordinary callers in `tests/api/test_signal_score_contract.py`.
 - [ ] After serialized handoff, add owned typed models/SignalRow fields in platform/api/schemas.py and regenerate shared OpenAPI only with parent authorization.
 - [ ] GREEN actual router serialization tests and invalid-param controls; no live data or provider requests.
 
