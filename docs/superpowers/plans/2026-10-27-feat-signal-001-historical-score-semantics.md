@@ -54,6 +54,7 @@ Spec: Design sections 2/4/5; advances done_when[2]/[3].
 - [x] Update platform/api/routers/signals.py to project existing fields and bounded metadata; retain query count/order/windows and remove only guessed score upper bound.
 - [x] After serialized handoff, implement `platform/api/gcs_reader.py::download_parquet(..., optional_columns=None)` with exactly one existing byte read and optional-name intersection from the downloaded parquet schema; test old missing optional fields and unchanged ordinary callers in `tests/api/test_signal_score_contract.py`.
 - [x] After serialized handoff, add owned typed models/SignalRow fields in platform/api/schemas.py and regenerate shared OpenAPI only with parent authorization.
+- [x] Preserve the existing 50000-row contract on configured Uvicorn HTTP1 using route-only StreamingResponse after full SignalsResponse validation/serialization before headers; <=65536-byte chunks, no Content-Length, unchanged JSON/auth/error behavior. ASGI body parity and preheader refusal controls pass; no global middleware or deploy configuration changes. The earlier51.7MB non-streamed result is wire-RED against32MiB, separately from passing local RSS/time.
 - [x] GREEN actual router serialization tests and invalid-param controls; no live data or provider requests.
 
 ## Task 4: Capacity, proof and normal delivery
