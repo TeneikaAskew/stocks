@@ -150,16 +150,30 @@ def test_maximum_limit_typed_http_capacity(client,monkeypatch,native):
     payload=response.json()
     elapsed=time.perf_counter()-started
     peak_bytes=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024
+    assert 'content-length' not in response.headers
     assert payload['returned']==50000 and len(payload['signals'])==50000
     assert len(calls)==2 and calls[1][1]['limit']==50000
     assert len(json.dumps(payload['signals'][0]['score_explanation'],separators=(',',':')).encode())<=2048
     assert payload['signals'][-1]['score_explanation']['base_max']==7
     assert elapsed<300 and peak_bytes<2*1024**3
+    # Paired body-size control: the original MAIN SQL projection omits these
+    # three additive fields. This is the same synthetic rows, not a production
+    # load run or a claim that legacy source metadata can be reconstructed.
+    baseline={**payload,'signals':[{k:v for k,v in row.items() if k not in
+        {'strategy','inserted_at','score_explanation'}} for row in payload['signals']]}
+    baseline_bytes=len(json.dumps(baseline,separators=(',',':'),ensure_ascii=False).encode())
     # Optional owner-selected evidence output, never a network/upload operation.
     if os.environ.get('SCORE_CAPACITY_RECEIPT'):
         Path(os.environ['SCORE_CAPACITY_RECEIPT']).write_text(json.dumps({
             'cases':50000,'rows_returned':payload['returned'],'response_bytes':len(response.content),
             'elapsed_seconds':elapsed,'process_peak_rss_bytes':peak_bytes,'sql_calls':len(calls),
+            'baseline_same_rows_original_projection_bytes':baseline_bytes,
+            'baseline_definition':'same synthetic rows, original MAIN37778997 SQL response fields only; not a deployed baseline load test',
+            'nonstreamed_http1_limit_bytes':32*1024**2,
+            'pre_repair_new_wire_eligible':False,
+            'current_content_length_header':response.headers.get('content-length'),
+            'transport':'typed prevalidated StreamingResponse, <=65536-byte ASGI chunks; configured Uvicorn HTTP1',
+            'live_cloud_run_transport_verified':False,
             'source':'first-party synthetic native producer records; real router/Pydantic/HTTP serialization',
             'limits':{'rows':50000,'explanation_bytes':2048,'service_seconds':300,'service_bytes':2*1024**3},
             'no_live_sql_or_provider':True},indent=2)+'\n')
@@ -205,7 +219,8 @@ def test_parquet_ordinary_callers_unchanged_and_malformed_refuses(monkeypatch):
     assert downloads==['ordinary','ordinary','bad']
 
 
-def test_actual_native_parquet_roundtrip_is_described(client,monkeypatch,native):
+@pytest.mark.parametrize('nullable_inserted_at',[False,True])
+def test_actual_native_parquet_roundtrip_is_described(client,monkeypatch,native,nullable_inserted_at):
     import io
     from api import gcs_reader
     monkeypatch.setattr(signals,'_CLOUD_SQL',False)
@@ -216,6 +231,8 @@ def test_actual_native_parquet_roundtrip_is_described(client,monkeypatch,native)
         'signal_strength':6,'conditions_met':native.conditions_met,'return_pct':None,
         'strategy':'momentum','score_explanation':native.score_explanation,
         'irrelevant':['do-not-read']}])
+    if nullable_inserted_at:
+        frame['inserted_at']=pd.Series([pd.NaT],dtype='datetime64[ns, UTC]')
     content=io.BytesIO();frame.to_parquet(content,index=False)
     downloads=[]
     monkeypatch.setattr(gcs_reader,'list_matching_blobs',lambda *a:['raw/data/signals/historical_iwm_20240102_20240102_signals.parquet'])
@@ -225,6 +242,77 @@ def test_actual_native_parquet_roundtrip_is_described(client,monkeypatch,native)
     row=r.json()['signals'][0]
     assert row['score_explanation']['status']=='recorded'
     assert row['score_explanation']['base_max']==7
+    if nullable_inserted_at:
+        assert row['inserted_at'] is None
+        assert row['score_explanation']['provenance']['inserted_at'] is None
     assert len(downloads)==1
     assert 'irrelevant' not in r.text
     signals._DF_CACHE.clear()
+
+
+def test_signal_list_uses_typed_stream_without_content_length(client,monkeypatch,native):
+    """Cloud Run HTTP/1 non-streamed bodies have a32MiB limit."""
+    monkeypatch.setattr(signals,'_CLOUD_SQL',True)
+    def query(sql,params):
+        if 'COUNT(*)' in sql:
+            return pd.DataFrame({'n':[1]})
+        return pd.DataFrame([{'time':'2024-01-02T14:39Z','direction':'CALL','score':6,
+            'strategy':'momentum','score_explanation':native.score_explanation}])
+    monkeypatch.setattr(signals,'_query_or_503',query)
+    r=client.get('/api/signals/IWM?limit=1')
+    assert r.status_code==200
+    assert 'content-length' not in r.headers
+    assert r.headers['content-type']=='application/json'
+    assert r.json()['signals'][0]['score_explanation']['base_max']==7
+
+
+def test_typed_stream_body_parity_chunks_and_preheader_validation(native):
+    import anyio
+    from pydantic import ValidationError
+    from api.schemas import SignalsResponse
+    payload={'ticker':'IWM','count':1000,'returned':1000,'source':'cloud_sql',
+        'signals':[{'ticker':'IWM','score':6,'conditions_met':'6/7','strategy':'momentum',
+                    'score_explanation':native.score_explanation}]*1000}
+    baseline=FastAPI()
+    @baseline.get('/control',response_model=SignalsResponse,response_model_exclude_unset=True)
+    def control():
+        return payload
+    ordinary=TestClient(baseline).get('/control')
+    response=signals._typed_signals_response(payload)
+    messages=[]
+    async def receive():
+        return {'type':'http.request','body':b'','more_body':False}
+    async def send(message):
+        messages.append(message)
+    async def run():
+        await response({'type':'http','asgi':{'spec_version':'2.4'},'method':'GET','path':'/api/signals/IWM','headers':[]},receive,send)
+    anyio.run(run)
+    assert messages[0]['type']=='http.response.start' and messages[0]['status']==200
+    assert b'content-length' not in dict(messages[0]['headers'])
+    bodies=[m for m in messages if m['type']=='http.response.body']
+    assert len(bodies)>2
+    assert all(m['more_body'] for m in bodies[:-1])
+    assert bodies[-1]['more_body'] is False
+    assert all(len(m.get('body',b''))<=65536 for m in bodies)
+    assert b''.join(m.get('body',b'') for m in bodies)==ordinary.content
+    invalid={**payload,'signals':[payload['signals'][0],{'ticker':'IWM','score':'invalid'}]}
+    with pytest.raises(ValidationError):
+        signals._typed_signals_response(invalid)  # no response object or headers exist
+
+
+@pytest.mark.parametrize('bad',[None,False,{},0,''])
+def test_malformed_reason_list_keeps_raw_score_and_other_rows(client,monkeypatch,native,bad):
+    monkeypatch.setattr(signals,'_CLOUD_SQL',True)
+    broken=json.loads(json.dumps(native.score_explanation))
+    broken['unavailable_reasons']=bad
+    def query(sql,params):
+        if 'COUNT(*)' in sql:
+            return pd.DataFrame({'n':[2]})
+        return pd.DataFrame([{'time':'2024-01-02T14:39Z','direction':'CALL','score':6,
+            'strategy':'momentum','score_explanation':e} for e in (native.score_explanation,broken)])
+    monkeypatch.setattr(signals,'_query_or_503',query)
+    r=client.get('/api/signals/IWM')
+    assert r.status_code==200 and r.json()['returned']==2
+    rows=r.json()['signals']
+    assert rows[0]['score_explanation']['status']=='recorded'
+    assert rows[1]['score']==6 and rows[1]['score_explanation']['status']=='invalid_record'

@@ -56,6 +56,7 @@ def test_legacy_six_preserves_unknown_definition():
     {'matched_conditions':['above_vwap']*6}, {'version':'invented'},
     {'provenance':{'producer_definition':'invented'}},
     {'unavailable_reasons':['x'*2100]},
+    *[{'unavailable_reasons':bad} for bad in (None,False,{},0,'')],
 ])
 def test_invalid_metadata_never_qualifies(mutation):
     e = copy.deepcopy(native_momentum().score_explanation)

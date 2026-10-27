@@ -25,6 +25,7 @@ import pandas as pd
 from cachetools import TTLCache
 from api.threadsafe_cache import MISS, ThreadSafeCache
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -238,6 +239,19 @@ def _query_signals_sql(
     return (total, _describe_score_rows(records, "cloud_sql"))
 
 
+def _typed_signals_response(payload: dict) -> StreamingResponse:
+    """Preserve the typed JSON wire contract without the HTTP/1 size ceiling.
+
+    Cloud Run limits non-streamed HTTP/1 responses to32MiB. The existing
+    50000-row limit can exceed it with explanations, so validate before
+    headers, serialize once and emit bounded chunks without Content-Length.
+    No query, row limit, financial computation or global middleware changes.
+    """
+    body = SignalsResponse.model_validate(payload).model_dump_json(exclude_unset=True).encode('utf-8')
+    chunks = (body[i:i + 65536] for i in range(0, len(body), 65536))
+    return StreamingResponse(chunks, media_type='application/json')
+
+
 @router.get("/api/signals/{ticker}", response_model=SignalsResponse, response_model_exclude_unset=True)
 def get_signals(
     ticker: str,
@@ -262,13 +276,13 @@ def get_signals(
         total, records = _query_signals_sql(
             ticker_upper, limit, direction, min_score, end_date, end_time
         )
-        return {
+        return _typed_signals_response({
             "ticker": ticker_upper,
             "count": total,
             "returned": len(records),
             "source": "cloud_sql",
             "signals": records,
-        }
+        })
 
     # ── Cloud SQL not configured: legacy GCS parquet path ───────────────
     filename, df = _load_ticker_df_parquet(ticker_upper)
@@ -322,20 +336,23 @@ def get_signals(
     out = out.tail(limit)
 
     for col in out.select_dtypes(include=["datetime64[ns]", "datetime64[ns, UTC]"]).columns:
-        out[col] = out[col].astype(str)
+        if col != 'inserted_at':
+            out[col] = out[col].astype(str)
+        # Preserve nullable insertion clocks for _describe_score_rows; NaT
+        # is missing evidence, not a literal timestamp or invalid metadata.
     if "time" in out.columns:
         out["time"] = out["time"].astype(str)
 
     records = _describe_score_rows(out.where(pd.notnull(out), other=None).to_dict(orient="records"), "gcs_parquet")
 
-    return {
+    return _typed_signals_response({
         "ticker": ticker_upper,
         "count": total_count,
         "returned": len(records),
         "source": "gcs_parquet",
         "file": filename,
         "signals": records,
-    }
+    })
 
 
 # ── /similar — "like-this-bar" historical setup lookup ─────────────────────

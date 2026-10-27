@@ -492,7 +492,7 @@ def _validate_score_explanation(value, score=None, strategy=None):
     if len(json.dumps(value, allow_nan=False, separators=(',', ':')).encode()) > 2048:
         raise ValueError('score_contract_oversize')
     if (value['version'] != 'historical-score-v1' or value['status'] != 'recorded'
-            or value['unavailable_reasons']):
+            or value['unavailable_reasons'] != []):
         raise ValueError('score_contract_version_or_status')
     p = value['provenance']
     if not isinstance(p, dict) or set(p) != _SCORE_PROVENANCE_KEYS:
