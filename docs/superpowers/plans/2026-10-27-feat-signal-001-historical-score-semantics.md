@@ -59,7 +59,7 @@ Spec: Design sections 2/4/5; advances done_when[2]/[3].
 ## Task 4: Capacity, proof and normal delivery
 Spec: Capacity and Files/serialized delivery; advances done_when[4].
 - [x] Measure actual 50000-row serialization wall/memory/bytes within API 2GiB/300s; metadata bound 2KiB per row.
-- [ ] Update only FEAT-SIGNAL-001 catalog/traceability and declared CHARTS-06/DASHBOARD-05/SIGNALS-04 implementation-source notes, with truthful rollout-pending evidence.
-- [ ] Produce/verify committed-source proof with trusted MAIN, compare actual branch/main docs audits and run spec gate.
+- [x] Update only FEAT-SIGNAL-001 catalog/traceability and declared CHARTS-06/DASHBOARD-05/SIGNALS-04 implementation-source notes, with truthful rollout-pending evidence.
+- [x] Produce/verify committed-source proof with trusted MAIN, compare actual branch/main docs audits and run spec gate.
 - [ ] Open one draft PR, record number, complete focused validation, then normal current-head reviews/checks under two-round limit.
 - [ ] Root announces any normal eligible merge; actual staging/frontend receipts and rollback remain separate close-out, not inferred from local fixtures.
