@@ -459,7 +459,12 @@ def score_execution_context(*, producer_definition, strategy, direction=None,
         'run_kind': None, 'storage_source': None,
         'producer_definition': producer_definition, 'profile': 'historical-default',
         'direction': direction,
-        'code_sha256': hashlib.sha256(Path(source_path).read_bytes()).hexdigest(),
+        # Bind both native wrapper and shared descriptor, without git or an
+        # absolute executor path. Enriched inputs are hashed separately below.
+        'code_sha256': hashlib.sha256(json.dumps({
+            Path(path).name: hashlib.sha256(Path(path).read_bytes()).hexdigest()
+            for path in {str(Path(source_path).resolve()), str(Path(__file__).resolve())}
+        }, sort_keys=True).encode()).hexdigest(),
         'config_sha256': hashlib.sha256(json.dumps(config, sort_keys=True,
             allow_nan=False).encode()).hexdigest(),
         'input_sha256': hashlib.sha256(frame.to_json(orient='split',
@@ -565,10 +570,20 @@ def read_score_explanation(value, *, score, strategy=None, run_kind=None,
     missing = value is None or (isinstance(value, (float, np.floating)) and np.isnan(value))
     if not missing:
         try:
-            if isinstance(value, str):
-                if len(value.encode()) > 2048:
-                    raise ValueError('score_contract_oversize')
-                value = json.loads(value)
+            if not isinstance(value, str):
+                # Arrow/pandas returns nested list columns as NumPy arrays.
+                # Normalize only their JSON representation, never score math.
+                def numpy_json(obj):
+                    if isinstance(obj, np.ndarray):
+                        return obj.tolist()
+                    if isinstance(obj, np.generic):
+                        return obj.item()
+                    raise TypeError('unsupported score contract value')
+                value = json.dumps(value, default=numpy_json, allow_nan=False,
+                                   separators=(',', ':'))
+            if len(value.encode()) > 2048:
+                raise ValueError('score_contract_oversize')
+            value = json.loads(value)
             if not _score_integer(score):
                 raise ValueError('score_contract_stored_total_missing')
             _validate_score_explanation(value, score=score, strategy=strategy)

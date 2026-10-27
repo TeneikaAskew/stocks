@@ -114,3 +114,117 @@ def test_known_parquet_metadata_uses_actual_profile_without_leaking_extras(clien
     assert 'unrelated_private' not in r.text and 'extra' not in record
     assert record['score_explanation']['status']==('invalid_record' if invalid else 'recorded')
     assert record['score_explanation']['base_max']==(None if invalid else 7)
+
+
+def test_typed_score_contract_is_in_actual_openapi(client):
+    from api.schemas import HistoricalScoreExplanation
+    from pydantic import ValidationError
+    schema=client.get('/openapi.json').json()['components']['schemas']
+    assert 'HistoricalScoreExplanation' in schema
+    assert 'score_explanation' in schema['SignalRow']['properties']
+    assert 'strategy' in schema['SignalRow']['properties']
+    assert schema['HistoricalScoreExplanation']['properties']['version']['const']=='historical-score-v1'
+    assert set(schema['HistoricalScoreExplanation']['properties']['status']['enum'])=={'recorded','legacy_unavailable','invalid_record'}
+    with pytest.raises(ValidationError):
+        HistoricalScoreExplanation.model_validate({'version':'invented','status':'recorded'})
+
+
+def test_maximum_limit_typed_http_capacity(client,monkeypatch,native):
+    """Real typed serialization at the existing hard limit; synthetic rows only."""
+    import os
+    import resource
+    import time
+    monkeypatch.setattr(signals,'_CLOUD_SQL',True)
+    calls=[]
+    def query(sql,params):
+        calls.append((sql,params))
+        if 'COUNT(*)' in sql:
+            return pd.DataFrame({'n':[50000]})
+        return pd.DataFrame([{'time':'2024-01-02T14:39Z','direction':'CALL',
+            'score':6,'conditions_met':native.conditions_met,'strategy':'momentum',
+            'run_kind':'backfill','score_explanation':native.score_explanation}]*50000)
+    monkeypatch.setattr(signals,'_query_or_503',query)
+    started=time.perf_counter()
+    response=client.get('/api/signals/IWM?limit=50000')
+    assert response.status_code==200
+    payload=response.json()
+    elapsed=time.perf_counter()-started
+    peak_bytes=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*1024
+    assert payload['returned']==50000 and len(payload['signals'])==50000
+    assert len(calls)==2 and calls[1][1]['limit']==50000
+    assert len(json.dumps(payload['signals'][0]['score_explanation'],separators=(',',':')).encode())<=2048
+    assert payload['signals'][-1]['score_explanation']['base_max']==7
+    assert elapsed<300 and peak_bytes<2*1024**3
+    # Optional owner-selected evidence output, never a network/upload operation.
+    if os.environ.get('SCORE_CAPACITY_RECEIPT'):
+        Path(os.environ['SCORE_CAPACITY_RECEIPT']).write_text(json.dumps({
+            'cases':50000,'rows_returned':payload['returned'],'response_bytes':len(response.content),
+            'elapsed_seconds':elapsed,'process_peak_rss_bytes':peak_bytes,'sql_calls':len(calls),
+            'source':'first-party synthetic native producer records; real router/Pydantic/HTTP serialization',
+            'limits':{'rows':50000,'explanation_bytes':2048,'service_seconds':300,'service_bytes':2*1024**3},
+            'no_live_sql_or_provider':True},indent=2)+'\n')
+
+
+@pytest.mark.parametrize('optional_present',[False,True])
+def test_parquet_optional_projection_one_download_no_full_frame(monkeypatch,optional_present):
+    import io
+    import pyarrow.parquet as pq
+    from api import gcs_reader
+    frame=pd.DataFrame({'entry_time':['2024-01-02'],'signal_strength':[6],'irrelevant':['not-decoded']})
+    if optional_present:
+        frame['strategy']='momentum'
+    content=io.BytesIO();frame.to_parquet(content,index=False)
+    downloads=[];reads=[]
+    monkeypatch.setattr(gcs_reader,'_download_bytes',lambda name:(downloads.append(name) or content.getvalue()))
+    original=pq.ParquetFile.read
+    def read(self,*a,**kwargs):
+        reads.append(kwargs.get('columns'))
+        return original(self,*a,**kwargs)
+    monkeypatch.setattr(pq.ParquetFile,'read',read)
+    result=gcs_reader.download_parquet('synthetic.parquet',columns=['entry_time','signal_strength'],
+        optional_columns=['strategy','run_kind','score_explanation'])
+    assert downloads==['synthetic.parquet']
+    expected=['entry_time','signal_strength']+(['strategy'] if optional_present else [])
+    assert list(result.columns)==expected and reads==[expected]
+    assert 'irrelevant' not in result
+
+
+def test_parquet_ordinary_callers_unchanged_and_malformed_refuses(monkeypatch):
+    import io
+    from api import gcs_reader
+    frame=pd.DataFrame({'required':[1],'other':[2]})
+    data=io.BytesIO();frame.to_parquet(data,index=False)
+    downloads=[]
+    monkeypatch.setattr(gcs_reader,'_download_bytes',lambda name:(downloads.append(name) or data.getvalue()))
+    pd.testing.assert_frame_equal(gcs_reader.download_parquet('ordinary',columns=['required']),frame[['required']])
+    pd.testing.assert_frame_equal(gcs_reader.download_parquet('ordinary'),frame)
+    monkeypatch.setattr(gcs_reader,'_download_bytes',lambda name:(downloads.append(name) or b'not parquet'))
+    import pyarrow.lib
+    with pytest.raises(pyarrow.lib.ArrowInvalid):
+        gcs_reader.download_parquet('bad',columns=['required'],optional_columns=['strategy'])
+    assert downloads==['ordinary','ordinary','bad']
+
+
+def test_actual_native_parquet_roundtrip_is_described(client,monkeypatch,native):
+    import io
+    from api import gcs_reader
+    monkeypatch.setattr(signals,'_CLOUD_SQL',False)
+    signals._DF_CACHE.clear()
+    frame=pd.DataFrame([{
+        'entry_time':'2024-01-02T14:39Z','trade_type':'call','entry_price':100.,
+        'entry_rsi':35.,'entry_ema9':99.,'entry_ema20':100.,'entry_volume':1000.,
+        'signal_strength':6,'conditions_met':native.conditions_met,'return_pct':None,
+        'strategy':'momentum','score_explanation':native.score_explanation,
+        'irrelevant':['do-not-read']}])
+    content=io.BytesIO();frame.to_parquet(content,index=False)
+    downloads=[]
+    monkeypatch.setattr(gcs_reader,'list_matching_blobs',lambda *a:['raw/data/signals/historical_iwm_20240102_20240102_signals.parquet'])
+    monkeypatch.setattr(gcs_reader,'_download_bytes',lambda name:(downloads.append(name) or content.getvalue()))
+    r=client.get('/api/signals/IWM')
+    assert r.status_code==200
+    row=r.json()['signals'][0]
+    assert row['score_explanation']['status']=='recorded'
+    assert row['score_explanation']['base_max']==7
+    assert len(downloads)==1
+    assert 'irrelevant' not in r.text
+    signals._DF_CACHE.clear()

@@ -128,6 +128,7 @@ def _load_ticker_df_parquet(ticker_upper: str) -> tuple[str, pd.DataFrame]:
                     "entry_ema9", "entry_ema20", "entry_volume",
                     "signal_strength", "conditions_met", "return_pct",
                 ],
+                optional_columns=["strategy", "run_kind", "inserted_at", "score_explanation", "extra"],
             )
         except Exception as exc:
             log.error("Failed to download %s: %s", blob_name, exc)
