@@ -25,5 +25,7 @@
   {"case":"numpy-zero","kind":"numpy_integer","value":0,"expected":0.0,"suffix":", est 0.00"},
   {"case":"numpy-negative","kind":"numpy_float","value":-1.25,"expected":-1.25,"suffix":", est -1.25"},
   {"case":"list","kind":"list","value":[1],"expected":null,"suffix":""},
-  {"case":"object","kind":"object","value":{"number":1},"expected":null,"suffix":""}
+  {"case":"object","kind":"object","value":{"number":1},"expected":null,"suffix":""},
+  {"case":"numpy-array","kind":"numpy_array","value":[1.25],"expected":null,"suffix":""},
+  {"case":"numpy-zero-dimensional-array","kind":"numpy_array","value":1.25,"expected":null,"suffix":""}
 ]

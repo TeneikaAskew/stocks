@@ -37,11 +37,11 @@ Spec: § Smallest correct shared-layer repair and § Required conformance and ev
 
 Files: platform/api/routers/catalysts.py earnings-only normalization block; new tests/api/test_catalyst_earnings_estimate_numbers.py; literal tests/fixtures/catalyst_finite_nullable_numbers.json. Consume current _db_catalyst_events(d_from,d_to,ticker_list)->list[dict], actual get_catalyst_events, no new endpoint. Produce local private _finite_earnings_estimate(value:object)->float|None; do not expose a COMMON interface.
 
-- [ ] Create literal input/expected fixture covering None,empty string,pandasNA,floatNaN/DecimalNaN,±inf/numericstrings,malformed scalar,bool/NumPybool, finite0/-1.25/1.25 and finite numericstring. Serialization maps named sentinel fixture tokens to actual native values; expected results are literal, not computed by implementation helper.
-- [ ] Add actualadapter test_nullable_estimate_contract_at_actual_response and parametrized real routed TestClient response test; seed safe cache and forbid all provider/cache-fetch/realSQL seams. Assert event retained, no nan/inf suffix, optional unavailable EPS omitted exactly like existingNone,0.00/-1.25/1.25 preserved and unrelated source/date/ticker/sibling fields unchanged. Assert nullable missing and malformed inputs do not raise.
-- [ ] Run only affected new tests against actual MAIN; retain failing cases, not just the earlier AST probe.
-- [ ] Implement minimal scalar normalization before float formatting; expected conversion errors only; preserve unrelated code/SQL/error paths and no string replacement of a completed title.
-- [ ] Run new controls and existing tests/api/test_catalysts_news_filter.py; verify query count/params and no calls to external seams. Run local spec gate before commit.
+- [x] Create literal input/expected fixture covering None,empty string,pandasNA,floatNaN/DecimalNaN,±inf/numericstrings,malformed scalar,bool/NumPybool, finite0/-1.25/1.25 and finite numericstring. Serialization maps named sentinel fixture tokens to actual native values; expected results are literal, not computed by implementation helper.
+- [x] Add actualadapter test_nullable_estimate_contract_at_actual_response and parametrized real routed TestClient response test; seed safe cache and forbid all provider/cache-fetch/realSQL seams. Assert event retained, no nan/inf suffix, optional unavailable EPS omitted exactly like existingNone,0.00/-1.25/1.25 preserved and unrelated source/date/ticker/sibling fields unchanged. Assert nullable missing and malformed inputs do not raise.
+- [x] Run only affected new tests against actual MAIN; retain failing cases, not just the earlier AST probe.
+- [x] Implement minimal scalar normalization before float formatting; expected conversion errors only; preserve unrelated code/SQL/error paths and no string replacement of a completed title.
+- [x] Run new controls and existing tests/api/test_catalysts_news_filter.py; verify query count/params and no calls to external seams. Run local spec gate before commit.
 
 ### Task 2: producer conformance, this same sole writer — spec done_when1,2
 
@@ -50,9 +50,9 @@ Spec: § Smallest correct shared-layer repair and § Ownership and sequencing; a
 Files: scripts/fetch_earnings_calendar.py::_safe_num under the verified sole-writer clarification; tests/scripts/test_earnings_calendar_finite_numbers.py; same shared literal fixture. Interface remains _safe_num(value)->float|None; existing valid consumers/fields unchanged.
 
 - [x] Preserve exact owner clarification: the parent checked actual other-owned paths/plans and explicitly assigns this producer correction here. No competing writer is inferred from unrelated calendar1546. Full producer/API acceptance still requires the actual tests, not this ownership receipt.
-- [ ] Root adds test_safe_num_finite_nullable_contract using the same expected vectors and actual helper; red controls include admittedinfinity, bool and nullable missing. Add valid finite helper-caller controls because _safe_int delegates to _safe_num. No financial threshold/clamp or source collection change.
-- [ ] Root repairs only normalization and runs targeted producer/helper/persist tests; preserve exact source/result bytes, existing unrelated work and no schema changes.
-- [ ] Keep both disjoint helper corrections in the same approved implementation branch from actualMAIN, with one writer and normal independent review; do not stack on or copy another owner's private work.
+- [x] Root adds test_safe_num_finite_nullable_contract using the same expected vectors and actual helper; red controls include admittedinfinity, bool and nullable missing. Add valid finite helper-caller controls because _safe_int delegates to _safe_num. No financial threshold/clamp or source collection change.
+- [x] Root repairs only normalization and runs targeted producer/helper/persist tests; preserve exact source/result bytes, existing unrelated work and no schema changes.
+- [x] Keep both disjoint helper corrections in the same approved implementation branch from actualMAIN, with one writer and normal independent review; do not stack on or copy another owner's private work.
 
 ### Task 3: genuine local PostgreSQL boundary — spec done_when1,2
 
@@ -60,9 +60,9 @@ Spec: § Required conformance and evidence and § Validation and release; advanc
 
 File tests/integration/test_catalyst_earnings_estimate_numbers_pg.py::test_sql_null_dataframe_roundtrip_preserves_missing.
 
-- [ ] Use existing ephemeral PostgreSQL fixture; explicit localhost/local socket allowlist and injected localengine; block CloudSQL/proxy/provider calls. No GCP environment credential use. Create isolated local fixture table/transaction, not any future av_options table or production migration.
-- [ ] Persist normalized null/valid finite producer rows through actual relevant local write/read path, obtain real local commit then query with actual pandas/SQL adapter; assert mixedNULL/finite read and API semantics. Baseline actualformatter fails, repairedAPI passes; unknown remainsNULL, finite0/negative unchanged, no event/sibling loss.
-- [ ] Tear down only fixture namespace; run existing relevant localPG suite. Retain command/source identity, no skips disguised as pass and no claim that local SQL proves production persistence.
+- [x] Use existing ephemeral PostgreSQL fixture; explicit localhost/local socket allowlist and injected localengine; block CloudSQL/proxy/provider calls. No GCP environment credential use. Create isolated local fixture table/transaction, not any future av_options table or production migration.
+- [x] Persist normalized null/valid finite producer rows through actual relevant local write/read path, obtain real local commit then query with actual pandas/SQL adapter; assert mixedNULL/finite read and API semantics. Baseline actualformatter fails, repairedAPI passes; unknown remainsNULL, finite0/negative unchanged, no event/sibling loss.
+- [x] Tear down only fixture namespace; run existing relevant localPG suite. Retain command/source identity, no skips disguised as pass and no claim that local SQL proves production persistence.
 
 ### Task 4: current-head review and existing API/producer release — spec done_when3
 

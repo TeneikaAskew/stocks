@@ -27,6 +27,7 @@ def input_value(case):
         "numpy_boolean": np.bool_,
         "numpy_integer": np.int64,
         "numpy_float": np.float64,
+        "numpy_array": np.asarray,
     }
     if kind in conversions:
         return conversions[kind](case["value"])
