@@ -2,7 +2,7 @@
 feat_id: FEAT-CATALYST-001
 spec: docs/superpowers/specs/2026-10-27-feat-catalyst-001-optional-earnings-estimate.md
 branch: fix/feat-catalyst-001-finite-earnings-estimates
-pr: null
+pr: 1621
 status: ready
 ---
 

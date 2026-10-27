@@ -761,6 +761,8 @@ Live registry continuation: [#1599](https://github.com/TeneikaAskew/stocks/pull/
 
 Finite nullable estimate contract: [#1618](https://github.com/TeneikaAskew/stocks/pull/1618) (specification; merged). Implementation remains a separate normal delivery. #1301 is touched for invalid optional estimates only; its multi-source estimate-dedup behavior is not claimed fixed.
 
+Implementation draft [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) follows merged finite-nullable specification #1618. Numeric-title portion of #1301 only; no claim of fixing its source-dedup concern or broad #1269. Local full unit7719passed/51skipped/112warnings and separate realPG/API proof; current-head hosted review and actual existing API/producer rollout remain required.
+
 ### FEAT-LIVE-001 — Intraday monitoring (20 open)
 
 | Issue | Sev | Title |
