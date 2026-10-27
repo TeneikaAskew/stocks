@@ -59,6 +59,10 @@ def event_client(monkeypatch, tmp_path):
                 "relevance_score": 0.95, "topics": ["earnings"],
                 "url": "https://example.invalid/news",
             }])
+        if "FROM insider_transactions " in sql and "insider" in state:
+            return state["insider"].copy()
+        if "FROM sec_filings " in sql and "sec" in state:
+            return state["sec"].copy()
         if any(t in sql for t in (
             "FROM economic_events ", "FROM insider_transactions ",
             "FROM sec_filings ",
@@ -109,3 +113,48 @@ def test_numeric_dataframe_null_is_not_a_published_estimate(event_client):
     events = response.json()["events_by_date"][DAY]
     assert next(e["title"] for e in events if e.get("ticker") == "IWM") == "ExampleCo earnings (BMO)"
     assert next(e["title"] for e in events if e.get("ticker") == "QQQ") == "SiblingCo earnings (AMC, est 1.25)"
+
+
+def test_nullable_estimate_preserves_duplicate_and_non_earnings_events(event_client):
+    client, state = event_client
+    # Preserve the existing one-per-(ticker, date) earnings dedup rule,
+    # without losing unrelated source events when an estimate is missing.
+    state["earnings"] = pd.concat(
+        [earnings_frame([None, -1.25]), earnings_frame([None, -1.25]).iloc[:1]],
+        ignore_index=True,
+    )
+    state["insider"] = pd.DataFrame([{
+        "ticker": "NVDA", "date": DAY, "transaction_type": "A",
+        "insiders": 3, "txns": 4, "total_value": 2_000_000.0,
+    }])
+    state["sec"] = pd.DataFrame([{
+        "ticker": "APOG", "date": DAY, "form": "8-K", "items": ["1.01"],
+        "primary_doc": "fixture.htm", "accession_number": "fixture-accession",
+    }])
+    response = client.get("/api/catalysts/events", params={
+        "date_from": DAY, "date_to": "2026-10-28",
+    })
+    assert response.status_code == 200
+    result = response.json()
+    events = result["events_by_date"][DAY]
+    assert result["total"] == 6
+    assert [e for e in events if e.get("ticker") == "IWM"] == [{
+        "date": DAY, "ticker": "IWM", "catalyst_type": "EARNINGS",
+        "title": "ExampleCo earnings (BMO)", "impact": "High",
+        "source": "AV earnings_calendar",
+    }]
+    assert next(e for e in events if e.get("ticker") == "NVDA") == {
+        "date": DAY, "ticker": "NVDA", "catalyst_type": "INSIDER_BUY",
+        "title": "3 insiders buying ~$2.0M", "impact": "Medium",
+        "source": "AV insider", "insiders": 3, "total_value": 2_000_000.0,
+    }
+    assert next(e for e in events if e.get("ticker") == "APOG") == {
+        "date": DAY, "ticker": "APOG", "catalyst_type": "SEC_8K",
+        "title": "8-K — Material Definitive Agreement", "impact": "High",
+        "source": "SEC EDGAR", "items": ["1.01"],
+        "primary_doc": "fixture.htm", "accession_number": "fixture-accession",
+    }
+    assert next(e["title"] for e in events if e.get("ticker") == "QQQ") == "SiblingCo earnings (AMC, est -1.25)"
+    assert any(e.get("title") == "Keep news sibling" for e in events)
+    assert any(e.get("title") == "Keep cached event" for e in events)
+    assert len(state["queries"]) == 5
