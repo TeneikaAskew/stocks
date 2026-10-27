@@ -1,6 +1,6 @@
 # MODEL-PLAY-001 — Phase 6 playbook cards
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-10-20 · **Owner:** TBD
 
 **Code:** `scripts/analysis/phase6_playbook.py` ·
 **Table:** `playbook_cards` · **Job:** `phase6-playbook`
