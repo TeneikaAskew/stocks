@@ -262,8 +262,8 @@ class TestSimilarSignalsAPI:
         assert "CALL or PUT" in r.json()["detail"]
 
     def test_similar_validates_score_range(self, client):
-        # FastAPI Query(ge=3, le=5) — 6 is out of range
-        r = client.get("/api/signals/IWM/similar?direction=CALL&rsi=55&score=6")
+        # FastAPI retains integer/minimum validation; native six is valid.
+        r = client.get("/api/signals/IWM/similar?direction=CALL&rsi=55&score=6.5")
         assert r.status_code == 422
         # And below the minimum
         r = client.get("/api/signals/IWM/similar?direction=CALL&rsi=55&score=2")

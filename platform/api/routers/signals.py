@@ -137,6 +137,22 @@ def _load_ticker_df_parquet(ticker_upper: str) -> tuple[str, pd.DataFrame]:
         return filename, df
 
 
+def _describe_score_rows(records: list[dict], storage_source: str) -> list[dict]:
+    """Add only the validated contract; raw score/condition evidence is unchanged."""
+    from lib.signals import read_score_explanation
+    for row in records:
+        for field in ('strategy', 'run_kind', 'inserted_at'):
+            value = row.get(field)
+            row[field] = None if value is None or (not isinstance(value, (dict, list)) and pd.isna(value)) else value
+        if row['inserted_at'] is not None:
+            row['inserted_at'] = str(row['inserted_at'])
+        row['score_explanation'] = read_score_explanation(
+            row.get('score_explanation'), score=row.get('score'), strategy=row['strategy'],
+            run_kind=row['run_kind'], storage_source=storage_source,
+            inserted_at=row['inserted_at'])
+    return records
+
+
 def _query_signals_sql(
     ticker_upper: str,
     limit: int,
@@ -200,7 +216,10 @@ def _query_signals_sql(
                    signal_strength AS score,
                    conditions_met,
                    return_pct,
-                   run_kind
+                   run_kind,
+                   strategy,
+                   inserted_at,
+                   extra -> 'score_explanation' AS score_explanation
             FROM historical_signals
             WHERE {where_sql}
             ORDER BY entry_time DESC
@@ -215,7 +234,7 @@ def _query_signals_sql(
         rows_df['time'] = rows_df['time'].astype(str)
     rows_df['ticker'] = ticker_upper
     records = rows_df.where(pd.notnull(rows_df), other=None).to_dict(orient='records')
-    return (total, records)
+    return (total, _describe_score_rows(records, "cloud_sql"))
 
 
 @router.get("/api/signals/{ticker}", response_model=SignalsResponse, response_model_exclude_unset=True)
@@ -274,7 +293,17 @@ def get_signals(
         "signal_strength": "score",
         "conditions_met": "conditions_met",
         "return_pct": "return_pct",
+        "strategy": "strategy",
+        "run_kind": "run_kind",
+        "inserted_at": "inserted_at",
+        "score_explanation": "score_explanation",
     }
+    if 'extra' in df.columns:
+        # No arbitrary extra keys reach the response.
+        def nested_score(value):
+            return value.get('score_explanation') if isinstance(value, dict) else None
+        if 'score_explanation' not in df.columns:
+            df['score_explanation'] = df['extra'].map(nested_score)
     available_cols = {k: v for k, v in rename_map.items() if k in df.columns}
     out = df.rename(columns=available_cols)[list(available_cols.values())].copy()
 
@@ -296,7 +325,7 @@ def get_signals(
     if "time" in out.columns:
         out["time"] = out["time"].astype(str)
 
-    records = out.where(pd.notnull(out), other=None).to_dict(orient="records")
+    records = _describe_score_rows(out.where(pd.notnull(out), other=None).to_dict(orient="records"), "gcs_parquet")
 
     return {
         "ticker": ticker_upper,
@@ -323,7 +352,7 @@ def get_similar_signals(
     ticker: str,
     direction: str = Query(..., description="CALL or PUT — the direction we're scouting"),
     rsi: float = Query(..., description="RSI value of the bar we're matching"),
-    score: int = Query(..., ge=3, le=5, description="Signal strength of the bar we're matching"),
+    score: int = Query(..., ge=3, description="Signal strength of the bar we're matching"),
     rsi_band: float = Query(default=5.0, ge=0.5, le=20.0, description="±RSI tolerance"),
     limit: int = Query(default=10, ge=1, le=100, description="Max recent matches to return"),
 ):
