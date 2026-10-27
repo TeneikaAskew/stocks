@@ -1,6 +1,6 @@
 # MODEL-QUAL-001 — Signal-quality classification and its regression alarm
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-10-20 · **Owner:** TBD
 
 **Code:** `scripts/signal_quality_report.py` (the classifier) ·
 `gcp/signal_quality_alarm.py` (the regression alarm) ·
