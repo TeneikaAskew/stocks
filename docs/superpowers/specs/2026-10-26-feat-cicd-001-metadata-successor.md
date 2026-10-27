@@ -3,6 +3,7 @@ feat_id: FEAT-CICD-001
 req_ids: [REQ-GOV-001, REQ-GOV-003, REQ-REVIEW-001]
 issues: []
 canvases: []
+site_source_notes: [SHARED-01]
 done_when:
   - "Commit and PR-mode gate tests accept the exact trusted-main earnings metadata successor through one additive metadata_successor field while retaining the original plan spec, branch, PR and acceptance authority."
   - "Gate tests reject changed original bindings, done-plan reopening, malformed or duplicate links, modified or unmerged specs, wrong feature or lineage, chains, cycles and every unrecognized successor."
@@ -118,6 +119,18 @@ promotion, other row, header, delimiter, disposition, prose or renderer exemptio
 is authorized by this field. Existing registry scope for an ordinarily selected
 spec remains unchanged. Normal generated JSON must equal the unchanged exporter's
 output; no additional generated-file allowance is introduced.
+
+## Gate implementation-source note ownership
+
+The gate-correction implementation may update only the existing FEAT-CICD-001 /
+SHARED-01 implementation-source note with its actual producer-derived source
+identity and backend tooling/test evidence. Preserve all other SITE bytes,
+historical marker, Chain rows, frontend claims and deployment evidence. Produce
+and verify the normal committed sidecar for the exact final source/body and actual
+trusted policy; no handwritten proof, widened watcher, changed record schema,
+resource ceiling, review waiver or deployed-availability claim is authorized.
+This declaration covers the gate correction itself; the earnings implementation
+retains its original CATALYSTS-04 authority and frozen plan/spec/branch/PR.
 
 ## Verification and risks
 
