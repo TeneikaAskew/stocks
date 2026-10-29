@@ -64,3 +64,14 @@ Spec: Capacity and Files/serialized delivery; advances done_when[4].
 - [x] Produce/verify committed-source proof with trusted MAIN, compare actual branch/main docs audits and run spec gate.
 - [ ] Open one draft PR, record number, complete focused validation, then normal current-head reviews/checks under two-round limit.
 - [ ] Root announces any normal eligible merge; actual staging/frontend receipts and rollback remain separate close-out, not inferred from local fixtures.
+
+## Authorized aggregate 6 / CODE4 repair (October 29)
+
+Owner approved one additional cycle at 00:33:55 UTC, with fresh SEC. Previous five aggregate cohorts and runtime CODE1–CODE3 remain consumed. Scope: concurrent response memory safety, catalog date, full PR-context validation, required checks. No additional review registered yet.
+
+- [x] Reproduce concurrent allocations before repair.
+- [x] Admit one signals response per configured single-worker process before any SQL/parquet allocation; explicitly return 503/Retry-After to competing requests and retain admission until streaming completes or disconnects.
+- [x] Preserve 50000-row/typed wire contract and test concurrent maximum-size responses, query/validation failures and stream lifetime; focused API/producer suites 68 passed.
+- [x] Correct only FEAT-SIGNAL-001 Last reviewed to current head date (October 29).
+- [ ] Current MAIN integration, final source proof/audit and full PR-input gate.
+- [ ] Authorized CODE4/current SEC, required checks and protected merge/deployment verification.

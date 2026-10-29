@@ -15,6 +15,8 @@ Falls back to the legacy GCS parquet path when Cloud SQL is not
 configured (e.g. local dev without ``CLOUD_SQL_CONNECTION_NAME``).
 """
 import logging
+from functools import wraps
+from threading import BoundedSemaphore
 import os
 import re
 import sys
@@ -239,6 +241,42 @@ def _query_signals_sql(
     return (total, _describe_score_rows(records, "cloud_sql"))
 
 
+# One Uvicorn worker is configured in platform/Dockerfile. Admission is per
+# process and precedes SQL/parquet allocation, including the response lifetime.
+_SIGNAL_RESPONSE_SLOT = BoundedSemaphore(1)
+
+
+class _AdmittedSignalsResponse(StreamingResponse):
+    owns_slot = False
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            if self.owns_slot:
+                self.owns_slot = False
+                _SIGNAL_RESPONSE_SLOT.release()
+
+
+def _admit_signal_response(handler):
+    @wraps(handler)
+    def admitted(*args, **kwargs):
+        if not _SIGNAL_RESPONSE_SLOT.acquire(blocking=False):
+            raise HTTPException(status_code=503,
+                detail="A signals response is in progress; retry shortly.",
+                headers={"Retry-After": "5"})
+        transferred = False
+        try:
+            response = handler(*args, **kwargs)
+            response.owns_slot = True
+            transferred = True
+            return response
+        finally:
+            if not transferred:
+                _SIGNAL_RESPONSE_SLOT.release()
+    return admitted
+
+
 def _typed_signals_response(payload: dict) -> StreamingResponse:
     """Preserve the typed JSON wire contract without the HTTP/1 size ceiling.
 
@@ -249,10 +287,11 @@ def _typed_signals_response(payload: dict) -> StreamingResponse:
     """
     body = SignalsResponse.model_validate(payload).model_dump_json(exclude_unset=True).encode('utf-8')
     chunks = (body[i:i + 65536] for i in range(0, len(body), 65536))
-    return StreamingResponse(chunks, media_type='application/json')
+    return _AdmittedSignalsResponse(chunks, media_type='application/json')
 
 
 @router.get("/api/signals/{ticker}", response_model=SignalsResponse, response_model_exclude_unset=True)
+@_admit_signal_response
 def get_signals(
     ticker: str,
     limit: int = Query(default=5000, le=50000),

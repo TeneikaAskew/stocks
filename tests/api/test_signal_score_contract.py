@@ -316,3 +316,84 @@ def test_malformed_reason_list_keeps_raw_score_and_other_rows(client,monkeypatch
     rows=r.json()['signals']
     assert rows[0]['score_explanation']['status']=='recorded'
     assert rows[1]['score']==6 and rows[1]['score_explanation']['status']=='invalid_record'
+
+
+def test_concurrent_signal_requests_refuse_before_materialization(client, monkeypatch, native):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    entered, release = Event(), Event()
+    calls = []
+    monkeypatch.setattr(signals, '_CLOUD_SQL', True)
+    def query(*args):
+        calls.append(args)
+        entered.set()
+        assert release.wait(10)
+        rows = [{"ticker": "IWM", "score": 6, "strategy": "momentum",
+                 "score_explanation": native.score_explanation} for _ in range(50000)]
+        return 50000, rows
+    monkeypatch.setattr(signals, '_query_signals_sql', query)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(client.get, '/api/signals/IWM?limit=50000')
+        assert entered.wait(10)
+        try:
+            second = client.get('/api/signals/SPY?limit=50000')
+            assert second.status_code == 503
+            assert second.headers['retry-after'] == '5'
+            assert len(calls) == 1
+        finally:
+            release.set()
+        completed = first.result(timeout=30)
+        assert completed.status_code == 200
+        assert completed.json()["returned"] == 50000
+    assert client.get('/api/signals/IWM?limit=50000').status_code == 200
+
+
+def test_signal_admission_releases_after_query_error(client, monkeypatch):
+    monkeypatch.setattr(signals, '_CLOUD_SQL', True)
+    def fail(*args):
+        raise RuntimeError('deliberate query defect')
+    monkeypatch.setattr(signals, '_query_signals_sql', fail)
+    with pytest.raises(RuntimeError, match='deliberate query defect'):
+        client.get('/api/signals/IWM')
+    monkeypatch.setattr(signals, '_query_signals_sql', lambda *args: (0, []))
+    assert client.get('/api/signals/IWM').status_code == 200
+
+
+@pytest.mark.parametrize('interrupt', [False, True])
+def test_signal_slot_held_until_stream_finishes_or_disconnects(monkeypatch, interrupt):
+    import anyio
+    monkeypatch.setattr(signals, '_CLOUD_SQL', True)
+    monkeypatch.setattr(signals, '_query_signals_sql', lambda *args: (0, []))
+    def response():
+        return signals.get_signals('IWM', 50000, '', 0, None, None)
+    first = response()
+    async def receive():
+        return {'type': 'http.request', 'body': b'', 'more_body': False}
+    async def send(message):
+        with pytest.raises(signals.HTTPException) as refusal:
+            response()
+        assert refusal.value.status_code == 503
+        if interrupt and message['type'] == 'http.response.body':
+            raise OSError('client disconnected')
+    async def run(item, sender):
+        await item({'type': 'http', 'asgi': {'spec_version': '2.4'}, 'method': 'GET',
+                    'path': '/api/signals/IWM', 'headers': []}, receive, sender)
+    try:
+        anyio.run(run, first, send)
+    except Exception as exc:
+        from starlette.requests import ClientDisconnect
+        assert interrupt and isinstance(exc, ClientDisconnect)
+    next_response = response()
+    async def discard(message):
+        pass
+    anyio.run(run, next_response, discard)
+
+
+def test_signal_admission_releases_after_typed_validation_failure(client, monkeypatch):
+    from pydantic import ValidationError
+    monkeypatch.setattr(signals, '_CLOUD_SQL', True)
+    monkeypatch.setattr(signals, '_query_signals_sql', lambda *args: (1, [{'score': 'bad'}]))
+    with pytest.raises(ValidationError):
+        client.get('/api/signals/IWM')
+    monkeypatch.setattr(signals, '_query_signals_sql', lambda *args: (0, []))
+    assert client.get('/api/signals/IWM').status_code == 200
