@@ -9,7 +9,7 @@ done_when:
   - "tests/gcp/test_av_options_collector_entry.py::test_scheduled_entry_rejects_bad_ack_without_replay invokes the original scheduled entry with missing, boolean, zero and mismatched acknowledgements: nonzero exit, no false ACK and no refetch. test_scheduled_entry_preserves_sibling_commit_on_later_failure uses actual local PostgreSQL and original scheduled entry to verify the earlier ticker remains committed after a later source deadline, with existing upsert identity and no deletion/replay; baseline false-success controls fail and the integrated collector passes."
   - "tests/gcp/test_av_options_collector_entry.py::test_scheduled_entry_admits_only_due_configured_sessions runs the original scheduled entry for NYSE regular, holiday, weekend, premarket and missing-DB cases; zero provider/write calls when not due or unconfigured, nonzero on unknown admission. Baseline negative controls fail, collector passes; release evidence separately verifies intended image/execution and existing allowed persistence exports without treating ACK/new snapshots as historical repair."
   - "Own narrow plan/product records,no-new documentation audit,current-head required Codex review and CI pass through normal gates;CLI/API routing and actual automatic release effects are reviewed before source merge/deployment."
-status: approved
+status: superseded
 supersedes: null
 ---
 
