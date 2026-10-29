@@ -515,7 +515,7 @@ Finite-number slice: approved spec [#1618](https://github.com/TeneikaAskew/stock
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
 | Last reviewed | 2026-10-29 |
-| Evidence status | Logger source bd8c5310/build20c56463/image ef54b4b6 deployed Ready to three jobs with projected config preserved; next scheduled outcomes unobserved. Allowance runtime/test bytes unchanged from reviewed258fb789,224 tests preserved; prior CODE/SEC/CI clean, combined source proof and owner-approved round3 remain required. No complete data-platform, persistence or provider-root-cause certification. |
+| Evidence status | Logger source bd8c5310/build20c56463/image ef54b4b6 deployed Ready to three jobs with projected config preserved; next scheduled outcomes unobserved. Allowance runtime/test bytes unchanged from reviewed258fb789,224 tests preserved; prior CODE/SEC/CI clean, combined source proof and owner-approved CODE7 remain required. No complete data-platform, persistence or provider-root-cause certification. |
 | UI surface | — |
 | Backend | fetcher jobs |
 | Data | 64 relations — see [06](06-DATA-ARCHITECTURE.md) |
