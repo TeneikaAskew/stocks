@@ -638,7 +638,7 @@ Live registry continuation: [#1599](https://github.com/TeneikaAskew/stocks/pull/
 | [solyra#130](https://github.com/TeneikaAskew/solyra/issues/130) | P3 | [P3][Playbook] Unreachable empty state tells the reader to run scripts/run_pipeline.py |
 | [solyra#132](https://github.com/TeneikaAskew/solyra/issues/132) | P3 | [P3][Playbook] The setup count has no singular, so one card reads 1 setups and the spec asserts it |
 
-**PR lineage:** [#1640](https://github.com/TeneikaAskew/stocks/pull/1640) *#1308 market-date runtime; source/tests verified locally, rollout pending* · [#1637](https://github.com/TeneikaAskew/stocks/pull/1637) *approved market-date specification* · [#293](https://github.com/TeneikaAskew/stocks/pull/293) *audit* · [#335](https://github.com/TeneikaAskew/stocks/pull/335) *evolution* · [#336](https://github.com/TeneikaAskew/stocks/pull/336) *evolution* · [#444](https://github.com/TeneikaAskew/stocks/pull/444) *origin* · [#620](https://github.com/TeneikaAskew/stocks/pull/620) *evolution* · [#774](https://github.com/TeneikaAskew/stocks/pull/774) *remediation*
+**PR lineage:** [#1640](https://github.com/TeneikaAskew/stocks/pull/1640) *#1308 market-date runtime* · [#1637](https://github.com/TeneikaAskew/stocks/pull/1637) *market-date specification* · [#293](https://github.com/TeneikaAskew/stocks/pull/293) *audit* · [#335](https://github.com/TeneikaAskew/stocks/pull/335) *evolution* · [#336](https://github.com/TeneikaAskew/stocks/pull/336) *evolution* · [#444](https://github.com/TeneikaAskew/stocks/pull/444) *origin* · [#620](https://github.com/TeneikaAskew/stocks/pull/620) *evolution* · [#774](https://github.com/TeneikaAskew/stocks/pull/774) *remediation*
 
 ### FEAT-SETTINGS-001 — Settings (13 open)
 
