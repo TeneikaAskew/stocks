@@ -262,66 +262,9 @@ def process_ticker(ticker: str, api_key: str, snapshot_ts: datetime) -> int:
 
 
 def main():
-    import time
-
-    parser = argparse.ArgumentParser(
-        description='Fetch intraday AV REALTIME_OPTIONS to Cloud SQL'
-    )
-    parser.add_argument(
-        '--tickers',
-        default=' '.join(DEFAULT_TICKERS),
-        help='Space-separated tickers (default: "SPY IWM QQQ"). '
-             'SPX/NDX excluded — AV returns "-" for index-option Greeks; '
-             'the BSM solver in lib/options_greeks.py only runs in the '
-             'EOD pipeline today.',
-    )
-    args = parser.parse_args()
-
-    api_key = (os.environ.get('AV_API_KEY')
-               or os.environ.get('ALPHA_VANTAGE_API_KEY', ''))
-    if not api_key:
-        log.error("AV_API_KEY not set — cannot fetch realtime options")
-        sys.exit(1)
-
-    tickers = args.tickers.upper().split()
-    # Single snapshot_ts for the whole batch so all tickers share an
-    # alignment point. Per-ticker iteration time is ~3-5 seconds; the
-    # tiny drift across that window is irrelevant for a 5-min cadence.
-    snapshot_ts = datetime.now(timezone.utc)
-
-    log.info("Fetch AV Realtime Options Job")
-    log.info("  Tickers     : %s", tickers)
-    log.info("  Snapshot_ts : %s", snapshot_ts.isoformat())
-    log.info("  SQL         : %s",
-             'yes' if is_cloud_sql_configured() else 'NO')
-    log.info("  AV key      : set (len=%d)", len(api_key))
-
-    errors = []
-    total_rows = 0
-    for i, ticker in enumerate(tickers):
-        if i > 0:
-            time.sleep(_av_cfg.delay_between_calls)
-        try:
-            total_rows += process_ticker(ticker, api_key, snapshot_ts)
-        except RealtimeOptionsUnavailable as e:
-            # Track which tickers were unavailable; we still try the rest.
-            # Job exits non-zero at the end if any ticker failed, which lets
-            # Cloud Run/Scheduler surface the failure without spamming
-            # one-ticker-failed emails when the other two succeeded.
-            log.error("  ✗ %s realtime UNAVAILABLE: %s", ticker, e)
-            errors.append(f"{ticker}: {e}")
-        except Exception as e:
-            log.error("  ✗ %s failed: %s", ticker, e)
-            errors.append(f"{ticker}: {e}")
-
-    log.info(
-        "Done. %d tickers, %d total contracts written, %d errors.",
-        len(tickers), total_rows, len(errors),
-    )
-
-    if errors:
-        log.error("Failed (%d): %s", len(errors), errors)
-        sys.exit(1)
+    """Existing scheduled entry; API imports keep their unchanged fetch path."""
+    from gcp.fetchers._av_realtime_collector import main as collector_main
+    return collector_main()
 
 
 if __name__ == '__main__':
