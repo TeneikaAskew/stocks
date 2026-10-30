@@ -514,8 +514,8 @@ Finite-number slice: approved spec [#1618](https://github.com/TeneikaAskew/stock
 | Priority | P0 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-10-29 |
-| Evidence status | Logger source bd8c5310/build20c56463/image ef54b4b6 deployed Ready to three jobs with projected config preserved; next scheduled outcomes unobserved. Allowance runtime/test bytes unchanged from reviewed258fb789,224 tests preserved; prior CODE/SEC/CI clean, combined source proof and owner-approved CODE7 remain required. No complete data-platform, persistence or provider-root-cause certification. |
+| Last reviewed | 2026-10-30 |
+| Evidence status | Logger source bd8c5310/build20c56463/image ef54b4b6 deployed Ready to three jobs with projected config preserved; next scheduled outcomes unobserved. Allowance runtime/test bytes unchanged from reviewed258fb789,224 tests preserved; prior CODE/SEC/CI clean, combined source proof and owner-approved CODE7 remain required. Typed-news consumer preparation preserves producer source on MAIN 63d1dbf7 with 92 mocked tests passing and 10 deselected; baseline entry controls had 8 failures and 2 passes. Runtime review admission, publication and retry0-coupled activation remain separate prerequisites. No complete data-platform, persistence or provider-root-cause certification. |
 | UI surface | — |
 | Backend | fetcher jobs |
 | Data | 64 relations — see [06](06-DATA-ARCHITECTURE.md) |
@@ -525,6 +525,9 @@ Finite-number slice: approved spec [#1618](https://github.com/TeneikaAskew/stock
 | Open issues | 21 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-data-001--data-platform-21-open) |
 | Blocking issues | [#925](https://github.com/TeneikaAskew/stocks/issues/925) [#926](https://github.com/TeneikaAskew/stocks/issues/926) [#828](https://github.com/TeneikaAskew/stocks/issues/828) [#862](https://github.com/TeneikaAskew/stocks/issues/862) [#863](https://github.com/TeneikaAskew/stocks/issues/863) [#913](https://github.com/TeneikaAskew/stocks/issues/913) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
+
+
+Typed-news runtime draft: [#1643](https://github.com/TeneikaAskew/stocks/pull/1643). Final integrated96-test consumer validation and source identity pass; hosted review/CI and separately qualified retry0/image/rollback activation remain pending.
 
 ### FEAT-DEPLOY-001
 
