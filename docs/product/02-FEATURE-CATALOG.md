@@ -33,7 +33,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | [FEAT-HELP-001](#feat-help-001) | Help / glossary | Term reference | `/help` | `/api/glossary/gamma` | — | Production | P3 | 5 | 9 | [#1336](https://github.com/TeneikaAskew/stocks/issues/1336) [solyra#221](https://github.com/TeneikaAskew/solyra/issues/221) [solyra#222](https://github.com/TeneikaAskew/solyra/issues/222) [solyra#223](https://github.com/TeneikaAskew/solyra/issues/223) |
 | [FEAT-SETTINGS-001](#feat-settings-001) | Settings | Account-backed appearance, trading defaults and profile | `/settings` | `/api/me/preferences`, `/api/me/profile` | `user_preferences`, `user_profile` | Production but needs remediation | P3 | 5 | 13 | [solyra#117](https://github.com/TeneikaAskew/solyra/issues/117) [solyra#119](https://github.com/TeneikaAskew/solyra/issues/119) [solyra#121](https://github.com/TeneikaAskew/solyra/issues/121) [#1322](https://github.com/TeneikaAskew/stocks/issues/1322) |
 | [FEAT-DATA-001](#feat-data-001) | Data platform | Ingestion, storage, freshness | — | fetcher jobs | 64 relations — see [06](06-DATA-ARCHITECTURE.md) | Production but needs remediation | P0 | 1 | 21 | [#925](https://github.com/TeneikaAskew/stocks/issues/925) [#926](https://github.com/TeneikaAskew/stocks/issues/926) [#828](https://github.com/TeneikaAskew/stocks/issues/828) [#862](https://github.com/TeneikaAskew/stocks/issues/862) |
-| [FEAT-DEPLOY-001](#feat-deploy-001) | Infrastructure / deploy | 76 jobs, 65 schedulers, Cloud Run | — | — | — | Production but needs remediation | P1 | 6 | 15 | [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#832](https://github.com/TeneikaAskew/stocks/issues/832) [#851](https://github.com/TeneikaAskew/stocks/issues/851) |
+| [FEAT-DEPLOY-001](#feat-deploy-001) | Infrastructure / deploy | 76 jobs, 66 schedulers, Cloud Run | — | — | — | Production but needs remediation | P1 | 6 | 15 | [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#832](https://github.com/TeneikaAskew/stocks/issues/832) [#851](https://github.com/TeneikaAskew/stocks/issues/851) |
 | [FEAT-OPS-001](#feat-ops-001) | Operations / reliability | Freshness, telemetry, DR | `/admin` | `/api/health/freshness` | `job_runs` | Incomplete | P1 | 6 | 11 | [#922](https://github.com/TeneikaAskew/stocks/issues/922) [#1052](https://github.com/TeneikaAskew/stocks/issues/1052) [#1066](https://github.com/TeneikaAskew/stocks/issues/1066) [#1067](https://github.com/TeneikaAskew/stocks/issues/1067) |
 | [FEAT-CICD-001](#feat-cicd-001) | CI / testing | Build, test, deploy automation | — | — | — | Production but needs remediation | P1 | 6 | 12 | [#844](https://github.com/TeneikaAskew/stocks/issues/844) [#845](https://github.com/TeneikaAskew/stocks/issues/845) [#846](https://github.com/TeneikaAskew/stocks/issues/846) [#848](https://github.com/TeneikaAskew/stocks/issues/848) |
 | [FEAT-UI-001](#feat-ui-001) | Web / UI shell | Nav, shell, responsive, a11y | all | — | — | Production but needs remediation | P2 | 5 | 2 | [solyra#135](https://github.com/TeneikaAskew/solyra/issues/135) [solyra#95](https://github.com/TeneikaAskew/solyra/issues/95) |
@@ -528,7 +528,7 @@ Finite-number slice: approved spec [#1618](https://github.com/TeneikaAskew/stock
 
 ### FEAT-DEPLOY-001
 
-**76 jobs, 65 schedulers, Cloud Run** — Infrastructure / deploy
+**76 jobs, 66 schedulers, Cloud Run** — Infrastructure / deploy
 
 | Field | Value |
 |---|---|
