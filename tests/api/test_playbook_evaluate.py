@@ -521,7 +521,7 @@ def _patch_db(monkeypatch, rows, configured=True):
 
 
 def _freeze_today(monkeypatch, pb, iso):
-    """Pin the router's notion of 'today' (UTC) for the live-mode guard."""
+    """Pin the market clock at noon UTC, on the same Eastern date."""
     from datetime import datetime, timezone
 
     class _FrozenDT(datetime):
@@ -529,6 +529,8 @@ def _freeze_today(monkeypatch, pb, iso):
         def now(cls, tz=None):
             return datetime.fromisoformat(f"{iso}T12:00:00+00:00")
     monkeypatch.setattr(pb, "datetime", _FrozenDT)
+    from lib import eastern_time
+    monkeypatch.setattr(eastern_time, "datetime", _FrozenDT)
 
 
 def test_cards_from_db_converts_and_preserves_nulls(monkeypatch, evaluator):
@@ -745,3 +747,28 @@ def test_repair_unrelated_condition_never_qualifies_orb(evaluator,make_snapshot,
     def forbidden(_):raise AssertionError('unrelated condition evaluated ORB')
     monkeypatch.setattr(evaluator,'_qualified_orb',forbidden)
     assert evaluator._eval_condition('at least 30 minutes after market open',make_snapshot()).status=='met'
+
+@pytest.mark.parametrize('instant,card_date,age', [
+    ('2026-10-30T00:01:00+00:00', '2026-10-29', 0),
+    ('2026-10-30T04:00:00+00:00', '2026-10-29', 1),
+    ('2026-01-10T04:59:00+00:00', '2026-01-09', 0),
+    ('2026-01-10T05:00:00+00:00', '2026-01-09', 1),
+])
+def test_playbook_age_uses_market_midnight(monkeypatch, evaluator, playbook_client, instant, card_date, age):
+    from datetime import datetime
+    from lib import eastern_time
+    now = datetime.fromisoformat(instant)
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz) if tz else now.replace(tzinfo=None)
+    monkeypatch.setattr(evaluator, 'datetime', Clock)
+    monkeypatch.setattr(eastern_time, 'datetime', Clock)
+    _patch_db(monkeypatch, _card_rows(card_date))
+    first = playbook_client.get('/api/playbook/IWM')
+    assert first.status_code == 200
+    assert first.json()['age_days'] == age
+    second = playbook_client.get('/api/playbook/IWM')
+    assert second.json()['age_days'] == age  # cached response uses same market date
+    historical = playbook_client.get('/api/playbook/IWM?date=' + card_date)
+    assert historical.status_code == 200 and historical.json()['age_days'] == 0

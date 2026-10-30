@@ -209,7 +209,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation |
+| Status | Production but needs remediation; issue #1308 market-date repair verified locally, rollout pending |
 | Priority | P0 |
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
@@ -220,7 +220,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Data | `premarket_analysis`, `playbook_cards` |
 | Models | MODEL-BRIEF-001, MODEL-LEVEL-001 |
 | Code | [solyra `src/routes/PlaybookPage.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/routes/PlaybookPage.tsx), `platform/api/routers/playbook.py`, `gcp/premarket_brief.py`, `scripts/analysis/phase6_playbook.py` |
-| Tests | `playbook.spec.ts`, `tests/scripts/test_phase6_playbook.py` |
+| Tests | `playbook.spec.ts`, `tests/scripts/test_phase6_playbook.py`, `tests/api/test_playbook_evaluate.py` (53 pass; paired summer/winter midnight, cache and historical-date controls for #1308) |
 | Open issues | 19 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-playbook-001--premarket--playbook-19-open) |
 | Blocking issues | [solyra#112](https://github.com/TeneikaAskew/solyra/issues/112) [#1304](https://github.com/TeneikaAskew/stocks/issues/1304) [#1305](https://github.com/TeneikaAskew/stocks/issues/1305) [#1306](https://github.com/TeneikaAskew/stocks/issues/1306) [#1307](https://github.com/TeneikaAskew/stocks/issues/1307) [#1308](https://github.com/TeneikaAskew/stocks/issues/1308) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 3 |
