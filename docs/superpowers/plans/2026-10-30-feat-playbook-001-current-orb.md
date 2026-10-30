@@ -6,7 +6,7 @@ pr: null
 status: ready
 ---
 
-# Private ready-metadata plan template (not runtime admission)
+# Current-session ORB implementation and consumer repair plan
 
 Parent confirms approved specification merged (Stocks#1638 / Solyra#305). Local base uses exact admitted spec commit; fresh publisher must reconcile actual MAIN merge before publication. Author implementation only, no judgment rounds reserved.
 
@@ -40,3 +40,9 @@ Verification: original four-class controls produced 9 failures/1 existing pass; 
 Ruling: preserve the existing repeated-cancellation control's resource assertions, but wait boundedly for actual worker completion after request cancellation instead of assuming request completion means worker completion — this is the corrected ownership contract; a wrong handoff would leak a slot or permit excess parsing, covered by two-expired-worker and closed-loop controls.
 
 Ruling: explicit parent authorization includes the P3 overflow repair in the same batch. No new review cohort, source publication or allowance reset. Root owns publication. API image proof remains blocked by the previously reported Docker buildx permission denial; no retry/override. Combined frontend/backend fleet quota is unqualified, not quota-neutral. Generated inventory, final committed source proof, full committed-doc gate and matched docs audit must be completed after the shared CPU window permits them.
+
+### Candidate capacity measurement
+
+Equivalent guarded candidate workload (original producer script was not retained): two concurrent parsers, each 50,000 rows and 7,950,156 bytes, completed in 4.838243 seconds. Process peak RSS was 207,208 KiB including imports and fixture generation; maximum observed event-loop gap was 0.128466 seconds. Each response projected 599 bytes and returned 31 same-session bars. Receipt `/tmp/orb-candidate-capacity.json`, runner `/tmp/orb_candidate_capacity.py`. This is a new local candidate measurement, not byte-identical reproduction of the author's 3.493875-second/203392-KiB/0.069-second receipt, nor API image, production latency or fleet proof. Fixed parser/input/concurrency bounds are unchanged. Docker remains unretired and quota must still qualify before activation.
+
+Renderer receipt: explicit three-path frozen-snapshot invocation hit the fixed 60-second timeout (exit 124) after only ARCHITECTURE completed. Its partial generated delta was restored; no cap raise, split render or retry has been performed. Full generated-document acceptance remains blocked pending a supported successful run. Log: `/tmp/orb-inventory.log`.
