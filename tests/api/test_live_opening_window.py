@@ -220,5 +220,199 @@ def test_repeated_cancel_does_not_release_live_parser_slot(route,client,monkeypa
             route._OPENING_SLOTS.release()
         finally:release.set()
         with pytest.raises(asyncio.CancelledError):await task
+        async with asyncio.timeout(2):
+            while route._OPENING_FLIGHT.in_flight():await asyncio.sleep(.001)
         assert route._OPENING_FLIGHT.in_flight()==0
+    asyncio.run(scenario())
+
+@pytest.mark.parametrize('canonical,alias', [
+    ('2026-10-29 10:00:00', '2026-10-29 10:0:00'),
+    ('2026-10-29 09:30:00', '2026-10-29 9:30:00'),
+    ('2026-10-29 08:00:00', '2026-10-29 8:00:00'),
+])
+def test_repair_rejects_timestamp_aliases_across_series(canonical, alias):
+    p=payload(); series=p['Time Series (1min)']
+    series[canonical]={'1. open':'100','2. high':'1000','3. low':'99','4. close':'101','5. volume':'10'}
+    series[alias]={**series[canonical], '4. close':'999'}
+    with pytest.raises(OpeningUnavailable):
+        parse_acquisition(json.dumps(p).encode(),'IWM',NOW,session_for(NOW))
+
+
+def test_repair_cold_calendar_burst_has_one_builder(monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from lib import opening_window as ow
+    original=ow.mcal.get_calendar
+    gate=threading.Barrier(6); release=threading.Event(); entered=threading.Event(); calls=[]
+    def slow_calendar(*args, **kwargs):
+        calls.append(1); entered.set()
+        assert release.wait(2)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(ow.mcal,'get_calendar',slow_calendar)
+    ow._SCHEDULE_CACHE.clear()
+    def ask():
+        gate.wait()
+        try:return ow.session_for(NOW)
+        except OpeningUnavailable:return None
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures=[pool.submit(ask) for _ in range(6)]
+        try:
+            assert entered.wait(1)
+            import time; time.sleep(.05)
+            assert len(calls)==1
+        finally:release.set()
+        results=[f.result() for f in futures]
+    assert any(r and r['label']=='2026-10-29' for r in results)
+    assert ow.session_for(NOW)['label']=='2026-10-29'
+    assert len(calls)==1
+
+
+def test_repair_timeout_returns_while_worker_owns_capacity(route,client,monkeypatch):
+    import threading
+    started=threading.Event();release=threading.Event();original=route.parse_acquisition
+    def delayed(*args):
+        started.set()
+        assert release.wait(2)
+        return original(*args)
+    monkeypatch.setattr(route,'parse_acquisition',delayed)
+    real_timeout=asyncio.timeout
+    monkeypatch.setattr(route.asyncio,'timeout',lambda _:real_timeout(.01))
+    async def scenario():
+        task=asyncio.create_task(route._get_opening_history('IWM',NOW))
+        try:
+            done,_=await asyncio.wait({task},timeout=.15)
+            assert started.is_set()
+            assert task in done, 'response waited for timed-out parser'
+            assert task.result()['opening']['reason']=='acquisition_timeout'
+            assert route._OPENING_FLIGHT.in_flight()==1
+            assert route._OPENING_SLOTS.acquire(blocking=False)
+            assert not route._OPENING_SLOTS.acquire(blocking=False)
+            route._OPENING_SLOTS.release()
+        finally:
+            release.set()
+            await task
+        async with real_timeout(2):
+            while route._OPENING_FLIGHT.in_flight():await asyncio.sleep(.001)
+        assert len(route._OPENING_CACHE)==0
+    asyncio.run(scenario())
+
+
+def test_repair_vendor_datetime_overflow_is_typed():
+    from lib.opening_window import vendor_time
+    with pytest.raises(OpeningUnavailable,match='invalid_timestamp'):
+        vendor_time('9999-12-31 23:59:00')
+
+
+def test_repair_all_datetime_arithmetic_is_typed():
+    from datetime import timezone
+    extreme=datetime.max.replace(tzinfo=timezone.utc)
+    with pytest.raises(OpeningUnavailable):
+        compute_observed_opening_range([],now=extreme,session={'open':extreme,'close':extreme,'label':'9999-12-31'})
+    underflow=datetime.min.replace(tzinfo=timezone(timedelta(hours=14)))
+    with pytest.raises(OpeningUnavailable):
+        parse_acquisition(b'{}','IWM',underflow,None)
+
+
+def test_repair_parser_ownership_survives_loop_close(route,client,monkeypatch):
+    import threading
+    started=threading.Event();release=threading.Event();finished=threading.Event()
+    def delayed(*args):
+        started.set()
+        try:
+            assert release.wait(2)
+            raise OpeningUnavailable('invalid_json')
+        finally:finished.set()
+    monkeypatch.setattr(route,'parse_acquisition',delayed)
+    async def cancel():
+        task=asyncio.create_task(route._get_opening_history('IWM',NOW))
+        async with asyncio.timeout(1):
+            while not started.is_set():await asyncio.sleep(.001)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):await task
+    try:
+        asyncio.run(cancel())  # caller's loop closes while worker still owns RAM
+        assert not finished.is_set()
+        assert route._OPENING_FLIGHT.in_flight()==1
+    finally:release.set()
+    assert finished.wait(1)
+    import time
+    until=time.monotonic()+1
+    while route._OPENING_FLIGHT.in_flight() and time.monotonic()<until:time.sleep(.001)
+    assert route._OPENING_FLIGHT.in_flight()==0
+    assert route._OPENING_SLOTS.acquire(blocking=False)
+    assert route._OPENING_SLOTS.acquire(blocking=False)
+    route._OPENING_SLOTS.release();route._OPENING_SLOTS.release()
+
+
+def test_repair_warm_calendar_survives_other_day_build(monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from lib import opening_window as ow
+    ow._SCHEDULE_CACHE.clear();expected=ow.session_for(NOW)
+    original=ow.mcal.get_calendar;started=threading.Event();release=threading.Event()
+    def slow(*args,**kwargs):
+        started.set();assert release.wait(2)
+        return original(*args,**kwargs)
+    monkeypatch.setattr(ow.mcal,'get_calendar',slow)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        cold=pool.submit(ow.session_for,NOW+timedelta(days=1))
+        try:
+            assert started.wait(1)
+            assert ow.session_for(NOW)==expected
+            with pytest.raises(OpeningUnavailable,match='calendar_in_progress'):
+                ow.session_for(NOW+timedelta(days=2))
+        finally:release.set()
+        assert cold.result()['label']=='2026-10-30'
+
+
+def test_repair_success_claim_held_through_cache_publication(route,client,monkeypatch):
+    real_cache=route._OPENING_CACHE
+    class ObservedCache:
+        def get(self,key):return real_cache.get(key)
+        def __setitem__(self,key,value):
+            assert route._OPENING_FLIGHT.in_flight()==1
+            assert route._OPENING_SLOTS.acquire(blocking=False)
+            assert not route._OPENING_SLOTS.acquire(blocking=False)
+            route._OPENING_SLOTS.release()
+            real_cache[key]=value
+    monkeypatch.setattr(route,'_OPENING_CACHE',ObservedCache())
+    async def scenario():
+        assert (await route._get_opening_history('IWM',NOW))['opening']['status']=='available'
+        assert route._OPENING_FLIGHT.in_flight()==0
+        assert (await route._get_opening_history('IWM',NOW))['opening']['status']=='available'
+        assert len(client.calls)==1
+    asyncio.run(scenario())
+
+@pytest.mark.parametrize('late_error',[False,True])
+def test_repair_two_expired_parsers_bound_all_remaining_work(route,client,monkeypatch,late_error):
+    import threading
+    release=threading.Event();original=route.parse_acquisition
+    def delayed(*args):
+        assert release.wait(2)
+        if late_error:raise OpeningUnavailable('invalid_json')
+        return original(*args)
+    monkeypatch.setattr(route,'parse_acquisition',delayed)
+    real_timeout=asyncio.timeout
+    monkeypatch.setattr(route.asyncio,'timeout',lambda _:real_timeout(.01))
+    async def scenario():
+        session_for(NOW)
+        tasks=[asyncio.create_task(route._get_opening_history(t,NOW)) for t in ('IWM','SPY')]
+        try:
+            done,_=await asyncio.wait(tasks,timeout=.15)
+            assert len(done)==2
+            assert all(t.result()['opening']['reason']=='acquisition_timeout' for t in tasks)
+            assert route._OPENING_FLIGHT.in_flight()==2
+            assert not route._OPENING_SLOTS.acquire(blocking=False)
+            assert (await route._get_opening_history('IWM',NOW))['opening']['reason']=='acquisition_in_progress'
+            assert (await route._get_opening_history('QQQ',NOW))['opening']['reason']=='capacity_unavailable'
+            assert len(client.calls)==2
+        finally:
+            release.set()
+            await asyncio.gather(*tasks)
+        async with real_timeout(2):
+            while route._OPENING_FLIGHT.in_flight():await asyncio.sleep(.001)
+        assert len(route._OPENING_CACHE)==0
+        assert route._OPENING_SLOTS.acquire(blocking=False)
+        assert route._OPENING_SLOTS.acquire(blocking=False)
+        route._OPENING_SLOTS.release();route._OPENING_SLOTS.release()
     asyncio.run(scenario())

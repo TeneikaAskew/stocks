@@ -8,7 +8,9 @@ from datetime import datetime, timedelta
 import hashlib
 import json
 import math
-from functools import lru_cache
+import re
+import threading
+from collections import OrderedDict
 import pandas_market_calendars as mcal
 from lib.eastern_time import as_utc_instant, localize_assuming_eastern, market_date
 
@@ -19,24 +21,57 @@ MAX_COMPARISON_AGE = 120
 class OpeningUnavailable(ValueError):
     """Fixed safe reason only; never include provider bodies or credentials."""
 
-@lru_cache(maxsize=8)
+# One builder across router/evaluator; cache hits never wait behind a cold build.
+_SCHEDULE_CACHE = OrderedDict()
+_SCHEDULE_LOCK = threading.Lock()
+_CALENDAR_BUILD_LOCK = threading.Lock()
+
 def _schedule(day):
-    frame=mcal.get_calendar('NYSE').schedule(start_date=day,end_date=day)
-    if frame.empty:return None
-    row=frame.iloc[0]
-    return {'label':day.isoformat(),'open':row.market_open.to_pydatetime(),'close':row.market_close.to_pydatetime(),'calendar':'NYSE','calendar_version':mcal.__version__}
+    with _SCHEDULE_LOCK:
+        if day in _SCHEDULE_CACHE:
+            _SCHEDULE_CACHE.move_to_end(day)
+            return _SCHEDULE_CACHE[day]
+    if not _CALENDAR_BUILD_LOCK.acquire(blocking=False):
+        raise OpeningUnavailable('calendar_in_progress')
+    try:
+        with _SCHEDULE_LOCK:
+            if day in _SCHEDULE_CACHE:
+                return _SCHEDULE_CACHE[day]
+        frame=mcal.get_calendar('NYSE').schedule(start_date=day,end_date=day)
+        result=None
+        if not frame.empty:
+            row=frame.iloc[0]
+            result={'label':day.isoformat(),'open':row.market_open.to_pydatetime(),'close':row.market_close.to_pydatetime(),'calendar':'NYSE','calendar_version':mcal.__version__}
+        with _SCHEDULE_LOCK:
+            _SCHEDULE_CACHE[day]=result
+            if len(_SCHEDULE_CACHE)>8:
+                _SCHEDULE_CACHE.popitem(last=False)
+        return result
+    finally:
+        _CALENDAR_BUILD_LOCK.release()
 
 def session_for(now):
-    return _schedule(market_date(as_utc_instant(now)))
+    try:
+        return _schedule(market_date(as_utc_instant(now)))
+    except (ValueError,TypeError,OverflowError) as exc:
+        if isinstance(exc,OpeningUnavailable):raise
+        raise OpeningUnavailable('invalid_session_timestamp') from None
 
 def vendor_time(value):
-    if not isinstance(value,str):raise OpeningUnavailable('invalid_timestamp')
+    if not isinstance(value,str) or not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}',value):
+        raise OpeningUnavailable('invalid_timestamp')
     try:
         t=datetime.strptime(value,'%Y-%m-%d %H:%M:%S')
         return as_utc_instant(localize_assuming_eastern(t))
-    except (ValueError,TypeError):raise OpeningUnavailable('invalid_timestamp') from None
+    except (ValueError,TypeError,OverflowError):raise OpeningUnavailable('invalid_timestamp') from None
 
 def compute_observed_opening_range(bars, *, now, session):
+    try:
+        return _compute_observed_opening_range(bars, now=now, session=session)
+    except OverflowError:
+        raise OpeningUnavailable('invalid_timestamp') from None
+
+def _compute_observed_opening_range(bars, *, now, session):
     now=as_utc_instant(now)
     if session is None:raise OpeningUnavailable('no_session')
     opening,closing=session['open'],session['close']
@@ -61,6 +96,12 @@ def _pairs(pairs):
     return result
 
 def parse_acquisition(body, ticker, now, session):
+    try:
+        return _parse_acquisition(body, ticker, now, session)
+    except OverflowError:
+        raise OpeningUnavailable('invalid_timestamp') from None
+
+def _parse_acquisition(body, ticker, now, session):
     now=as_utc_instant(now)
     if len(body)>MAX_BYTES:raise OpeningUnavailable('body_limit')
     try:data=json.loads(body,object_pairs_hook=_pairs,parse_constant=lambda _: (_ for _ in ()).throw(OpeningUnavailable('nonfinite_json')))
@@ -78,8 +119,11 @@ def parse_acquisition(body, ticker, now, session):
     if len(series)>MAX_ROWS:raise OpeningUnavailable('row_limit')
     if session is None:raise OpeningUnavailable('no_session')
     bars=[]
+    instants=set()
     for stamp,values in series.items():
         ts=vendor_time(stamp)
+        if ts in instants:raise OpeningUnavailable('duplicate_bar_instant')
+        instants.add(ts)
         if ts.second or ts.microsecond:raise OpeningUnavailable('off_grid_bar')
         if ts>now or ts>refreshed:raise OpeningUnavailable('future_bar')
         try:

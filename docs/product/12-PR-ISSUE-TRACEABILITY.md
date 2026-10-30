@@ -642,6 +642,9 @@ Live registry continuation: [#1599](https://github.com/TeneikaAskew/stocks/pull/
 
 **PR lineage:** [#293](https://github.com/TeneikaAskew/stocks/pull/293) *audit* · [#335](https://github.com/TeneikaAskew/stocks/pull/335) *evolution* · [#336](https://github.com/TeneikaAskew/stocks/pull/336) *evolution* · [#444](https://github.com/TeneikaAskew/stocks/pull/444) *origin* · [#620](https://github.com/TeneikaAskew/stocks/pull/620) *evolution* · [#774](https://github.com/TeneikaAskew/stocks/pull/774) *remediation*
 
+
+Current-session ORB specification lineage: Stocks #1638 and Solyra #305. The local backend draft retains `pr: null`; first consumer review on `68139f8b` produced one authorized four-class repair batch, reconciled with MAIN `05830d8d`. No hosted CODE round was used and no historical allowance reset is inferred. The guarded affected suite passes 137 tests. API image qualification, combined fleet quota, hosted checks and natural-session deployed parity remain distinct prerequisites; no runtime activation is claimed.
+
 ### FEAT-SETTINGS-001 — Settings (13 open)
 
 | Issue | Sev | Title |

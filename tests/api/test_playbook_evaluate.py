@@ -733,3 +733,15 @@ def test_orb_refuses_unqualified_projection(evaluator,make_snapshot,field,value)
 def test_orb_legacy_partial_extrema_do_not_qualify(evaluator,make_snapshot):
     s=make_snapshot(orbOpening=None,price=203.0)
     assert evaluator._eval_condition("above ORB high",s).status=='unknown'
+
+@pytest.mark.parametrize('field',['comparison_as_of','window_start','window_end'])
+def test_repair_orb_datetime_overflow_is_unknown(evaluator,make_snapshot,field):
+    s=make_snapshot(price=203.0)
+    setattr(s.orbOpening,field,'9999-12-31T23:59:00-05:00')
+    assert evaluator._eval_condition('broken above opening range high',s).status=='unknown'
+
+
+def test_repair_unrelated_condition_never_qualifies_orb(evaluator,make_snapshot,monkeypatch):
+    def forbidden(_):raise AssertionError('unrelated condition evaluated ORB')
+    monkeypatch.setattr(evaluator,'_qualified_orb',forbidden)
+    assert evaluator._eval_condition('at least 30 minutes after market open',make_snapshot()).status=='met'

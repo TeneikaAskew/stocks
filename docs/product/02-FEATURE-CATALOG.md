@@ -214,7 +214,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
 | Last reviewed | 2026-10-30 |
-| Evidence status | Existing production needs remediation; current-session ORB consumer candidate passes 83 hermetic backend tests and 2 OpenAPI tests. Implementation-source identity is recorded for PLAYBOOK-05; external review, hosted checks, API image/fleet qualification and deployed parity remain pending. |
+| Evidence status | Existing production needs remediation; current-session ORB consumer candidate passes 137 guarded affected backend/OpenAPI tests after the first local review repair batch (timestamp identity, cold-calendar admission, bounded-response worker ownership and overflow isolation). Implementation-source identity is recorded for PLAYBOOK-05; external review, hosted checks, API image/fleet qualification and deployed parity remain pending. |
 | UI surface | `/playbook` |
 | Backend | `/api/playbook` |
 | Data | `premarket_analysis`, `playbook_cards` |

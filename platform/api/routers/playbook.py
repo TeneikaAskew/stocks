@@ -607,7 +607,7 @@ def _qualified_orb(s):
                 or not all(v is not None and math.isfinite(v) and v > 0 for v in (o.high,o.low,o.comparison_price))
                 or o.high < o.low):
             return None, None, None
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return None, None, None
     return o.comparison_price, o.high, o.low
 
@@ -705,7 +705,9 @@ def _eval_condition(raw: str, s: _Snapshot) -> _EvalResult:
             detail=f"StochK {s.stochKPrev:.0f}→{ind.stochK:.0f}",
         )
 
-    orb_price, orb_high, orb_low = _qualified_orb(s)
+    orb_price = orb_high = orb_low = None
+    if re.search(r"broken above.*opening range high|above\s+orb\s+high|orb\s+high\s+break|broken below.*opening range low|below\s+orb\s+low|orb\s+low\s+break|orb\s*30m\s*trend is (?:bullish|bearish)", c, re.I):
+        orb_price, orb_high, orb_low = _qualified_orb(s)
     # ORB breaks
     if re.search(r"broken above.*opening range high|above\s+orb\s+high|orb\s+high\s+break", c, re.I):
         lbl = (f"{orb_price:.2f} > ORB-H {orb_high:.2f}"

@@ -25,3 +25,18 @@ Spec: § Reuse and resource contract; advances done_when[4].
 ## Task 4: Files and close-out
 Spec: § Files and close-out; advances done_when[6].
 - [ ] GenerateOpenAPI; update owncatalog/PRlineage andPLAYBOOK-05sourceproof; run actualdocs/gate/checks and reserve currentreviewledger.
+
+## Consumer first-review repair — 2026-10-30
+
+Runtime first local consumer review covered head `68139f8beecfae7e9590ecb9cbd28b0b9a5fc37e`. Root authorized one complete four-finding repair batch; no second judgment review or hosted CODE round is invoked here. Cached MAIN `05830d8d535de7f8003c9642417adedc2890ad75` is reconciled at `f624e9cb`, preserving admitted signal fairness, provenance, schemas and all three signal source notes.
+
+- P2 timestamp identity: reject noncanonical vendor aliases and duplicate normalized instants across the entire series, including comparison and non-opening rows. Opening-window alias refusal already passed; post-window/pre-window aliases reproduced RED.
+- P2 calendar admission: shared fail-fast cold construction admits one build across router/evaluator; warm date hits remain usable while a different date builds. Eight-date cache remains bounded. Contention is explicit unavailable, never a queued worker or second builder.
+- P2 response deadline: two-slot admitted parser executor owns actual worker completion. Request completion and worker completion jointly release the claim/slot once; normal success publishes cache before release, while timeout/cancel returns without waiting for the parser. No background cleanup task is spawned; loop closure cannot release a live worker's claim. Late success is not cached, late errors are consumed.
+- P3 overflow/isolation: vendor conversion, public parse/reduction arithmetic and projection conversion refuse overflow; only matching ORB predicates qualify the ORB projection. Unrelated minutes-after-open evaluation remains independent.
+
+Verification: original four-class controls produced 9 failures/1 existing pass; additional arithmetic overflow reproduced one failure. Final guarded affected suite: 137 passes (parser, calendar, cancellation/deadline, evaluator, schema/OpenAPI, Eastern time, live signal series and chart voter). Socket and SQL-engine tripwires prohibit external I/O; tests use mock mode. Logs: `/tmp/orb-repair-red.log`, `/tmp/orb-overflow-red.log`, `/tmp/orb-repair-suite.log`. This is the affected hermetic suite, not all repository tests.
+
+Ruling: preserve the existing repeated-cancellation control's resource assertions, but wait boundedly for actual worker completion after request cancellation instead of assuming request completion means worker completion — this is the corrected ownership contract; a wrong handoff would leak a slot or permit excess parsing, covered by two-expired-worker and closed-loop controls.
+
+Ruling: explicit parent authorization includes the P3 overflow repair in the same batch. No new review cohort, source publication or allowance reset. Root owns publication. API image proof remains blocked by the previously reported Docker buildx permission denial; no retry/override. Combined frontend/backend fleet quota is unqualified, not quota-neutral. Generated inventory, final committed source proof, full committed-doc gate and matched docs audit must be completed after the shared CPU window permits them.
