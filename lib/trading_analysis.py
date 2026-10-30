@@ -802,6 +802,12 @@ class MarketAnalyzer:
         df['Consecutive_Up_5'] = df['Up_Move'].rolling(5).sum()
         df['Consecutive_Down_5'] = df['Down_Move'].rolling(5).sum()
         
+        from lib.signals import build_score_explanation, score_execution_context
+        score_context = score_execution_context(
+            producer_definition='historical-momentum-v1', strategy='momentum',
+            source_path=__file__, config={'consecutive_periods': consecutive_periods,
+                'min_conditions': 5, 'min_core_conditions': 2,
+                'rvol': 1.2, 'atr_expansion': 1.15, 'rsi_thrust': 5.0}, frame=df)
         signals = []
         total_rows = len(df)
         processed = 0
@@ -847,48 +853,64 @@ class MarketAnalyzer:
             # before CONFIRMING conditions can pile on. CORE = defines
             # the setup (consec, RSI band, above/below VWAP, above/below
             # EMA9). CONFIRMING = rvol, atr_expansion, rsi_thrust.
+            call_matched = []
             call_conditions = 0
             call_core = 0
             if current.get('Consecutive_Up', 0) >= 3:  # 3-of-3 strict up bars
                 call_conditions += 1
+                call_matched.append('consecutive_up')
                 call_core += 1
             if current['RSI14_W'] < 50 and current['RSI14_W'] > 25:  # RSI in bullish range
                 call_conditions += 1
+                call_matched.append('rsi_bullish_zone')
                 call_core += 1
             if current['Last'] > current.get('VWAP', current['Last']):  # Price above VWAP
                 call_conditions += 1
+                call_matched.append('above_vwap')
                 call_core += 1
             if current['Last'] > current.get('EMA9', current['Last']):  # Price above EMA9
                 call_conditions += 1
+                call_matched.append('above_ema9')
                 call_core += 1
             if rvol_recent_fires:  # current vol > 1.2x rolling-20 median
                 call_conditions += 1
+                call_matched.append('rvol_above_recent')
             if atr_expansion_fires:  # ATR(5) > 1.15x ATR(20) — vol expanding
                 call_conditions += 1
+                call_matched.append('atr_expansion')
             if rsi_thrust_valid and rsi_thrust > 5.0:  # RSI accelerating up
                 call_conditions += 1
+                call_matched.append('rsi_thrust_up')
 
             # PUT Signal Conditions — Phase 0.7.x mirror.
+            put_matched = []
             put_conditions = 0
             put_core = 0
             if current.get('Consecutive_Down', 0) >= 3:  # 3-of-3 strict down bars
                 put_conditions += 1
+                put_matched.append('consecutive_down')
                 put_core += 1
             if current['RSI14_W'] > 50 and current['RSI14_W'] < 75:  # RSI in bearish range
                 put_conditions += 1
+                put_matched.append('rsi_bearish_zone')
                 put_core += 1
             if current['Last'] < current.get('VWAP', current['Last']):  # Price below VWAP
                 put_conditions += 1
+                put_matched.append('below_vwap')
                 put_core += 1
             if current['Last'] < current.get('EMA9', current['Last']):  # Price below EMA9
                 put_conditions += 1
+                put_matched.append('below_ema9')
                 put_core += 1
             if rvol_recent_fires:  # direction-agnostic volume confirmation
                 put_conditions += 1
+                put_matched.append('rvol_above_recent')
             if atr_expansion_fires:  # direction-agnostic vol regime gate
                 put_conditions += 1
+                put_matched.append('atr_expansion')
             if rsi_thrust_valid and rsi_thrust < -5.0:  # RSI accelerating down
                 put_conditions += 1
+                put_matched.append('rsi_thrust_down')
 
             # Generate signal if enough conditions are met. A gate-blocked
             # direction can't suppress the eligible direction — see
@@ -967,7 +989,11 @@ class MarketAnalyzer:
                             'best_return': best_return,
                             'best_window_minutes': best_window,
                             'signal_strength': signal_strength,
-                            'conditions_met': f"{signal_strength}/5",
+                            'conditions_met': f"{signal_strength}/7",
+                            'score_explanation': build_score_explanation(
+                                base_count=signal_strength,
+                                matched_conditions=call_matched if signal == 'call' else put_matched,
+                                provenance={**score_context, 'direction': signal}),
                             'entry_rsi': current['RSI14_W'],
                             'entry_vwap': current.get('VWAP', np.nan),
                             'entry_ema9': current.get('EMA9', np.nan),
