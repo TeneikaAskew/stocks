@@ -347,6 +347,11 @@ Credential-safe logger lineage: [#1588](https://github.com/TeneikaAskew/stocks/p
 
 Allowance correction lineage: [#1587](https://github.com/TeneikaAskew/stocks/pull/1587) original specification, [#1604](https://github.com/TeneikaAskew/stocks/pull/1604) unchanged-runtime source-proof successor, preserved draft [#1603](https://github.com/TeneikaAskew/stocks/pull/1603), non-stacked replacement [#1606](https://github.com/TeneikaAskew/stocks/pull/1606). Same five runtime/test blobs and224-test/independent-review receipts; no acceptance or spent-review reset. Source proof and no-new audit pass; final current-head external review/CI and safe deployment remain pending. No global unused-quota or recovered-data claim.
 
+
+Typed-news historical lineage: [#1600](https://github.com/TeneikaAskew/stocks/pull/1600) approved specification, CODE3 consumed; [#1430](https://github.com/TeneikaAskew/stocks/pull/1430) preserved unmerged runtime at head prefix `7e002a`. No spent-review reset or deployment-lineage allowance transfer.
+
+Typed-news consumer preparation on MAIN `63d1dbf7` retains the exact producer runtime/test afterimages, with 8 baseline failures/2 passes and 92 candidate passes/10 deselections. The local plan has no PR number. Root must reconcile DATA review admission and complete independent review, hosted review, required checks and publication. Separate deployment admission and verified retry0 on exactly three NEWS jobs precede runtime activation; no live provider, SQL, deployed-state or persisted-coverage claim.
+
 ### FEAT-OPTION-001 — Options / gamma (33 open)
 
 **PR lineage:** [#1565](https://github.com/TeneikaAskew/stocks/pull/1565) continues the isolated scheduled collector under approved successor [specification](../superpowers/specs/2026-10-29-feat-option-001-collector-source-declaration.md), admitted by #1636. Existing CLI delegates to bounded collector-only transport; threaded API behavior and financial normalization are preserved. LOCAL1/2 and CODE1–3 history remain; the explicitly approved runtime CODE4/current SEC and required checks cover the final integrated source. Specification aggregate4/CODE4 is separate. Source/test evidence is not job deployment, snapshot completeness or historical repair; seven future journal tables remain excluded.
