@@ -50,3 +50,10 @@ Consumer base: `63d1dbf7e04ba48ec73023ff0386231dcbcfb606`. The six producer afte
 Historical separate CAT runtime #1430 remains unmerged at head prefix `7e002a`; specification #1600 consumed CODE3. No review allowance is reset or pooled with the separate deployment lineage. DATA hosted-review allowance reconciliation remains with the root publisher; this local draft retains `pr: null`. Deployment retry source is excluded. Exact-three-job retry0 verification must precede typed runtime activation under separate deployment admission.
 
 Local preparation covers own catalog, traceability and source-bound SHARED-07 note with committed-source proof. Full remote docs audit, independent review, hosted CODE/SEC, CI, publication and deployment remain root-owned prerequisites. Offline audit results, if recorded, do not certify remote issue state or owning-job status.
+
+
+## Complete first consumer review and single repair batch
+
+Independent local review of e2687d92 against MAIN63d1 inspected the runtime, tests, direct dependencies, changed prose and generated source records. One introduced P2: the shared validator rejected a valid macro article with an empty ticker association list, dropping valid sibling article rows in both ticker and topic responses. The existing transformer already supports such zero-row articles. The one-line repair permits an empty list while retaining rejection of missing/null/non-list/malformed members. Four actual CLI regressions (mixed and macro-only feeds in both modes) were RED, then GREEN. Complete affected suite96passed/10deselected in0.99seconds; no network/provider/SQL calls. No declined judgment or additional local review cohort.
+
+Lineage readback: #1600 CODE3 is specification-only; #1607 logger-only CODE3 explicitly leaves typed-news semantics separate; #1430 is CATALYST rather than typed-news runtime. A bounded title search found no previously published typed-outcomes runtime PR. This first runtime review does not pool the separate DEP retry-policy extension or erase any historical cohort. Current-head hosted CODE/SEC, required checks and separately qualified retry0 activation remain pending.

@@ -179,3 +179,26 @@ def test_earnings_lookup_exception_is_not_reflected_in_diagnostics(monkeypatch, 
     caplog.set_level(logging.DEBUG)
     assert n._earnings_calendar_tickers(7) == []
     assert KEY not in caplog.text and "apikey=" not in caplog.text
+
+
+@pytest.mark.parametrize('mode', ['tickers', 'topics'])
+@pytest.mark.parametrize('with_equity', [True, False])
+def test_valid_macro_article_does_not_discard_equity_rows(monkeypatch, mode, with_equity):
+    macro = article('SPY')
+    macro['ticker_sentiment'] = []
+    macro['url'] = 'https://example.invalid/macro'
+    feed = ([article('SPY')] if with_equity else []) + [macro]
+    calls, writes = [], []
+    monkeypatch.setenv('AV_API_KEY', KEY)
+    monkeypatch.setattr(sys, 'argv', ['news', '--' + mode, 'SPY' if mode == 'tickers' else 'technology'])
+    def get(*args, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {'feed': feed})
+    monkeypatch.setattr(requests, 'get', get)
+    monkeypatch.setattr(n, 'persist_to_cloud_sql', lambda df: (writes.append(df.copy()), len(df))[1])
+    assert n.main() is None
+    assert len(calls) == 1 and calls[0]['timeout'] == 30
+    if with_equity:
+        assert len(writes) == 1 and writes[0]['ticker'].tolist() == ['SPY']
+    else:
+        assert writes == []

@@ -101,7 +101,7 @@ def _valid_article(article):
     if not isinstance(ts, str) or len(ts) > 80 or _parse_av_timestamp(ts) is None:
         return False
     tickers = article.get("ticker_sentiment")
-    if not isinstance(tickers, list) or not tickers:
+    if not isinstance(tickers, list):
         return False
     if any(not isinstance(t, dict) or not isinstance(t.get("ticker"), str) or not t["ticker"].strip() for t in tickers):
         return False
