@@ -11,7 +11,7 @@ done_when:
   - "The reviewed rollout record binds this retry configuration to the approved typed-news producer, defines exact three-job current/intended/rollback immutable-image verification and drift/active-execution refusal, applies and verifies retry0 before typed-image activation, and restores the logger-hardened image before any prior retry setting on rollback; actual live readbacks remain a separate post-merge requirement."
   - "The implementation contains only the three gcp/deploy.sh function edits, their focused behavioral tests and required own delivery records; normal source-bound FEAT-DEPLOY-001/SHARED-07 traceability, unchanged BASE gate and no-new branch-versus-main docs audit pass without claiming broad AV remediation acceptance."
   - "Exact historical and current review lineage is recorded without reset or borrowed allowance; an authorized independent final review, authenticated current-head CODE/SEC review and required CI pass before normal release."
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -19,7 +19,7 @@ supersedes: null
 
 ## Status and derivation
 
-Author admission draft. The user approved the requested bounded continuation at 2026-10-30 02:30:26 UTC: three additional aggregate passes and two hosted CODE rounds plus current security review for this narrow retry-policy/runtime lineage. No review has been triggered or spent by this author; historical counts are preserved. Root owns normal specification publication before runtime publication. No deployment is claimed. This extracts the already approved zero-retry policy from `2026-10-12-feat-deploy-001-av-deployment.md` Design line79 and pairs it with `2026-10-24-feat-data-001-news-outcomes.md` Whole-task retry safety and release. It neither supersedes nor edits either approved spec; all27 broad DEP acceptance criteria remain intact for their original scope.
+Owner-approved bounded admission. The user approved the requested bounded continuation at 2026-10-30 02:30:26 UTC: three additional aggregate passes and two hosted CODE rounds plus current security review for this narrow retry-policy/runtime lineage. No review has been triggered or spent by this author; historical counts are preserved. Parent confirmed on October30 that the explicit approved scope includes this narrow specification and implementation, derived from the existing approved zero-retry policy; no new retry product decision is introduced. Root owns normal specification publication before runtime publication. No deployment is claimed. This extracts the already approved zero-retry policy from `2026-10-12-feat-deploy-001-av-deployment.md` Design line79 and pairs it with `2026-10-24-feat-data-001-news-outcomes.md` Whole-task retry safety and release. It neither supersedes nor edits either approved spec; all27 broad DEP acceptance criteria remain intact for their original scope.
 
 Root supplied the bounded lineage evidence: DEP spec PR1471 merged at25cea4fc after reviewed head e3be4a2/CODE2 and explicitly contained no implementation. PR1457 is unrelated notifier deployment work. No AV runtime plan exists in pinned MAIN or root's bounded PR search. DATA spec1600CODE3 and old unmerged runtime1430head7e002a remain distinct preserved history. This document does not establish a fresh numeric budget; root/owner adjudicates the applicable continuing lineage before invoking a review.
 
