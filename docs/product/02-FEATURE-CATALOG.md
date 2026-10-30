@@ -163,12 +163,12 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Retest Required |
+| Status | Narrow collector repair: source review and rollout pending |
 | Priority | P0 |
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-08-30 |
-| Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
+| Last reviewed | 2026-10-30 |
+| Evidence status | Preserved isolated collector and acceptance receipts; final integrated-head review/CI and immutable job deployment remain pending. No historical-snapshot restoration claim. |
 | UI surface | `/options` |
 | Backend | `/api/options`, `/api/grid` |
 | Data | `etf_options_snapshots`, `intraday_gex_15m`, `realtime_gex_15m` |
