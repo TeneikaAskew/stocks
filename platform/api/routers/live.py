@@ -5,6 +5,18 @@ GET /api/live/history/{ticker} - Alpha Vantage TIME_SERIES_INTRADAY 1min (last 1
 GET /api/live/avg-volume/{ticker} - 20-day average daily volume (for RVOL denominator)
 GET /api/live/status - market open/closed status based on Eastern Time
 """
+import asyncio
+import copy
+import re
+import threading
+import time as monotonic_time
+from collections import deque
+from datetime import timedelta
+from cachetools import TTLCache
+from lib.single_flight import SingleFlight
+from lib.opening_window import MAX_BYTES, MAX_COMPARISON_AGE, OpeningUnavailable, parse_acquisition, session_for
+from api.threadsafe_cache import ThreadSafeCache
+
 import logging
 import math
 import os
@@ -312,8 +324,106 @@ async def get_live_quote(ticker: str):
     }
 
 
+# Opt-in full acquisitions are bounded separately; compact callers are unchanged.
+_OPENING_CACHE = ThreadSafeCache(TTLCache(maxsize=8, ttl=60))
+_OPENING_FLIGHT = SingleFlight()
+_OPENING_SLOTS = threading.BoundedSemaphore(2)
+_OPENING_RATE_LOCK = threading.Lock()
+_OPENING_ATTEMPTS = deque()
+
+def _opening_dispatch_allowed():
+    clock = monotonic_time.monotonic()
+    with _OPENING_RATE_LOCK:
+        while _OPENING_ATTEMPTS and clock - _OPENING_ATTEMPTS[0] >= 60:
+            _OPENING_ATTEMPTS.popleft()
+        if len(_OPENING_ATTEMPTS) >= 8:
+            return False
+        _OPENING_ATTEMPTS.append(clock) # failures count; no per-key eviction reset
+        return True
+
+def _opening_absent(ticker, reason, now):
+    return {"ticker": ticker, "interval": "1min", "count": 0,
+            "market_session": "unavailable", "market_open": False, "bars": [],
+            "opening": {"status": "unavailable", "reason": reason, "ticker": ticker,
+                        "fetched_at": now.isoformat()}}
+
+def _opening_cached(key, now):
+    value = _OPENING_CACHE.get(key)
+    if value is None:
+        return None
+    age = (now - datetime.fromisoformat(value["opening"]["comparison_as_of"])).total_seconds()
+    if not 0 <= age <= MAX_COMPARISON_AGE:
+        return None
+    result = copy.deepcopy(value)
+    result["opening"]["comparison_age_seconds"] = age
+    return result
+
+async def _get_opening_history(ticker, now):
+    if not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,9}", ticker):
+        raise HTTPException(status_code=422, detail="Invalid ticker")
+    # Calendar CPU work is bounded to a single date and uses an eight-day cache.
+    session = await run_in_threadpool(session_for, now)
+    if session is None:
+        return _opening_absent(ticker, "no_session", now)
+    if now < session["open"] + timedelta(minutes=30):
+        return _opening_absent(ticker, "opening_in_progress", now)
+    key = (ticker, session["label"], 30, "as_traded_requested", "v1")
+    cached = _opening_cached(key, now)
+    if cached is not None:
+        return cached
+    with _OPENING_FLIGHT.claim(str(key)) as mine:
+        if not mine:
+            return _opening_absent(ticker, "acquisition_in_progress", now)
+        cached = _opening_cached(key, now)
+        if cached is not None:
+            return cached
+        if not _OPENING_SLOTS.acquire(blocking=False):
+            return _opening_absent(ticker, "capacity_unavailable", now)
+        parser = None
+        try:
+            if not _opening_dispatch_allowed():
+                return _opening_absent(ticker, "request_budget_unavailable", now)
+            params = {"function": "TIME_SERIES_INTRADAY", "symbol": ticker,
+                      "interval": "1min", "outputsize": "full", "adjusted": "false",
+                      "entitlement": "realtime", "apikey": AV_API_KEY}
+            async with asyncio.timeout(15):
+                async with httpx.AsyncClient(timeout=15.0, headers={"Accept-Encoding": "identity"}) as client:
+                    async with client.stream("GET", AV_BASE, params=params) as response:
+                        response.raise_for_status()
+                        if response.headers.get("content-encoding", "identity").lower() != "identity":
+                            raise OpeningUnavailable("unsupported_content_encoding")
+                        body = bytearray()
+                        async for chunk in response.aiter_bytes(chunk_size=65536):
+                            if len(body) + len(chunk) > MAX_BYTES:
+                                raise OpeningUnavailable("body_limit")
+                            body.extend(chunk)
+                # Keep the slot and same-key claim until the worker truly exits,
+                # even if the waiter times out/cancels; never multiply parse RAM.
+                parser = asyncio.create_task(asyncio.to_thread(parse_acquisition, body, ticker, now, session))
+                result = await asyncio.shield(parser)
+            _OPENING_CACHE[key] = result
+            return result
+        except OpeningUnavailable as exc:
+            return _opening_absent(ticker, str(exc), now)
+        except (TimeoutError, httpx.TimeoutException):
+            return _opening_absent(ticker, "acquisition_timeout", now)
+        except httpx.HTTPError:
+            return _opening_absent(ticker, "source_http_error", now)
+        finally:
+            if parser is not None:
+                while not parser.done():
+                    try:
+                        await asyncio.shield(parser)
+                    except asyncio.CancelledError:
+                        # Repeated caller cancellation cannot release a RAM slot
+                        # while its bounded parse worker is still alive.
+                        continue
+                    except Exception:
+                        break
+            _OPENING_SLOTS.release()
+
 @router.get("/api/live/history/{ticker}", response_model=LiveHistoryResponse, response_model_exclude_unset=True)
-async def get_live_history(ticker: str):
+async def get_live_history(ticker: str, include_opening: bool = False):
     """Fetch last 100 1-min bars from Alpha Vantage TIME_SERIES_INTRADAY."""
     ticker_upper = ticker.upper()
 
@@ -321,6 +431,8 @@ async def get_live_history(ticker: str):
         raise HTTPException(status_code=503, detail="Alpha Vantage API key not configured")
 
     now_et = datetime.now(ET_TZ)
+    if include_opening:
+        return await _get_opening_history(ticker_upper, now_et)
     is_open, session = _is_market_open(now_et)
 
     params = {

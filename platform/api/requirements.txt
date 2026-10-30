@@ -22,3 +22,6 @@ google-cloud-run>=0.10.0
 # transitively (it is currently on the box only via streamlit, a
 # requirements-research.txt dev-only package not present in this image).
 python-multipart>=0.0.9
+
+# Current-session ORB uses the canonical NYSE schedule in the API image.
+pandas-market-calendars==5.3.0

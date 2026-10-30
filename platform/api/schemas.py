@@ -95,7 +95,29 @@ class LiveBar(ApiModel):
     volume: int
 
 
+class OpeningProjection(ApiModel):
+    status: str
+    reason: Optional[str] = None
+    ticker: str
+    session: Optional[str] = None
+    window_minutes: Optional[int] = None
+    window_start: Optional[str] = None
+    window_end: Optional[str] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
+    comparison_price: Optional[float] = None
+    comparison_as_of: Optional[str] = None
+    comparison_age_seconds: Optional[float] = None
+    price_basis: Optional[str] = None
+    source: Optional[str] = None
+    fetched_at: str
+    source_last_refreshed: Optional[str] = None
+    body_sha256: Optional[str] = None
+    calendar_version: Optional[str] = None
+
+
 class LiveHistoryResponse(ApiModel):
+    opening: Optional[OpeningProjection] = None
     ticker: str
     interval: str
     count: int

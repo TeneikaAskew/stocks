@@ -37,9 +37,15 @@ def evaluator():
 
 
 @pytest.fixture
-def make_snapshot(evaluator):
+def make_snapshot(evaluator, monkeypatch):
     """Build a `_Snapshot` with sane defaults; tests override the few
     fields they care about."""
+    from datetime import datetime as RealDatetime, timezone
+    class FixedDatetime(RealDatetime):
+        @classmethod
+        def now(cls, tz=None):
+            return RealDatetime(2026,10,29,15,0,tzinfo=timezone.utc)
+    monkeypatch.setattr(evaluator,"datetime",FixedDatetime)
     def factory(**overrides):
         ind_overrides = overrides.pop("ind", {})
         ind_defaults = {
@@ -67,6 +73,13 @@ def make_snapshot(evaluator):
             "indicators": ind_defaults,
         }
         snap_defaults.update(overrides)
+        snap_defaults['ticker']='IWM'
+        snap_defaults.setdefault('orbOpening', {
+            'status':'available','ticker':'IWM','session':'2026-10-29',
+            'window_minutes':30,'window_start':'2026-10-29T13:30:00Z','window_end':'2026-10-29T14:00:00Z',
+            'high':snap_defaults['orbHigh'],'low':snap_defaults['orbLow'],
+            'comparison_price':snap_defaults['price'],'comparison_as_of':'2026-10-29T15:00:00Z',
+            'price_basis':'as_traded_requested','source':'alphavantage','fetched_at':'2026-10-29T15:00:00Z'})
         return evaluator._Snapshot.model_validate(snap_defaults)
     return factory
 
@@ -704,3 +717,19 @@ def test_playbook_age_days_helper(evaluator):
     pb = evaluator
     assert pb.playbook_age_days(date(2026, 6, 13), date(2026, 9, 6)) == 85
     assert pb.playbook_age_days(date(2026, 9, 6), date(2026, 9, 6)) == 0
+
+
+def test_orb_uses_distinct_comparison_not_quote(evaluator, make_snapshot):
+    s=make_snapshot(price=203.0)
+    s.price=1.0
+    assert evaluator._eval_condition("above ORB high",s).status=='met'
+    assert evaluator._eval_condition("price above VWAP",s).status!='met'
+
+@pytest.mark.parametrize('field,value',[('comparison_as_of','2026-10-29T14:57:59Z'),('comparison_as_of','2026-10-29T15:00:01Z'),('ticker','SPY'),('session','2026-10-28'),('price_basis','adjusted'),('window_start','2026-10-29T13:31:00Z'),('status','unavailable')])
+def test_orb_refuses_unqualified_projection(evaluator,make_snapshot,field,value):
+    s=make_snapshot(price=203.0);setattr(s.orbOpening,field,value)
+    assert evaluator._eval_condition("above ORB high",s).status=='unknown'
+
+def test_orb_legacy_partial_extrema_do_not_qualify(evaluator,make_snapshot):
+    s=make_snapshot(orbOpening=None,price=203.0)
+    assert evaluator._eval_condition("above ORB high",s).status=='unknown'
