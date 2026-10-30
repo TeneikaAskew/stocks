@@ -43,6 +43,7 @@ cache because those files change rarely.
 """
 import json
 import logging
+import math
 import re
 import sys
 from datetime import date as date_cls, datetime, timezone
@@ -62,7 +63,10 @@ if str(PROJECT_ROOT) not in sys.path:
 from lib.eastern_time import market_today
 
 from api import gcs_reader  # noqa: E402
+from lib.eastern_time import as_utc_instant, market_date
+from lib.opening_window import session_for
 from api.schemas import (
+    OpeningProjection,
     PlaybookEvaluateResponse,
     PlaybookResponse,
     ReportListResponse,
@@ -537,6 +541,8 @@ class _Indicators(BaseModel):
 
 
 class _Snapshot(BaseModel):
+    ticker: str | None = None
+    orbOpening: OpeningProjection | None = None
     price: float | None = None
     prevClose: float | None = None
     prevHigh: float | None = None
@@ -579,6 +585,33 @@ def _cmp(lhs: float | None, op: str, rhs: float | None, label: str) -> _EvalResu
     else:  # "<="
         met = lhs <= rhs
     return _EvalResult(status="met" if met else "unmet", detail=label)
+
+
+def _qualified_orb(s):
+    """Only ORB conditions use the separately qualified raw comparison."""
+    o = s.orbOpening
+    if o is None or o.status != "available" or not s.ticker or o.ticker != s.ticker:
+        return None, None, None
+    try:
+        now = datetime.now(timezone.utc)
+        session = session_for(now)
+        if session is None:
+            return None, None, None
+        stamp = as_utc_instant(datetime.fromisoformat(o.comparison_as_of))
+        start = as_utc_instant(datetime.fromisoformat(o.window_start))
+        end = as_utc_instant(datetime.fromisoformat(o.window_end))
+        if (o.session != market_date(now).isoformat() or o.window_minutes != 30
+                or start != session["open"]
+                or (end-start).total_seconds() != 1800 or now < end
+                or not end <= stamp <= now
+                or (now-stamp).total_seconds() > 120
+                or o.price_basis != "as_traded_requested" or o.source != "alphavantage"
+                or not all(v is not None and math.isfinite(v) and v > 0 for v in (o.high,o.low,o.comparison_price))
+                or o.high < o.low):
+            return None, None, None
+    except (ValueError, TypeError, OverflowError):
+        return None, None, None
+    return o.comparison_price, o.high, o.low
 
 
 def _eval_condition(raw: str, s: _Snapshot) -> _EvalResult:
@@ -674,31 +707,34 @@ def _eval_condition(raw: str, s: _Snapshot) -> _EvalResult:
             detail=f"StochK {s.stochKPrev:.0f}→{ind.stochK:.0f}",
         )
 
+    orb_price = orb_high = orb_low = None
+    if re.search(r"broken above.*opening range high|above\s+orb\s+high|orb\s+high\s+break|broken below.*opening range low|below\s+orb\s+low|orb\s+low\s+break|orb\s*30m\s*trend is (?:bullish|bearish)", c, re.I):
+        orb_price, orb_high, orb_low = _qualified_orb(s)
     # ORB breaks
     if re.search(r"broken above.*opening range high|above\s+orb\s+high|orb\s+high\s+break", c, re.I):
-        lbl = (f"{s.price:.2f} > ORB-H {s.orbHigh:.2f}"
-               if s.price is not None and s.orbHigh is not None else "")
-        return _cmp(s.price, ">", s.orbHigh, lbl)
+        lbl = (f"{orb_price:.2f} > ORB-H {orb_high:.2f}"
+               if orb_price is not None and orb_high is not None else "")
+        return _cmp(orb_price, ">", orb_high, lbl)
     if re.search(r"broken below.*opening range low|below\s+orb\s+low|orb\s+low\s+break", c, re.I):
-        lbl = (f"{s.price:.2f} < ORB-L {s.orbLow:.2f}"
-               if s.price is not None and s.orbLow is not None else "")
-        return _cmp(s.price, "<", s.orbLow, lbl)
+        lbl = (f"{orb_price:.2f} < ORB-L {orb_low:.2f}"
+               if orb_price is not None and orb_low is not None else "")
+        return _cmp(orb_price, "<", orb_low, lbl)
 
     # ORB 30m trend
     if re.search(r"orb\s*30m\s*trend is bullish", c, re.I):
-        if s.price is None or s.orbHigh is None or s.orbLow is None:
+        if orb_price is None or orb_high is None or orb_low is None:
             return _EvalResult(status="unknown", reason="ORB n/a")
-        mid = (s.orbHigh + s.orbLow) / 2
-        met = s.price > mid
+        mid = (orb_high + orb_low) / 2
+        met = orb_price > mid
         return _EvalResult(status="met" if met else "unmet",
-                           detail=f"{s.price:.2f} {'>' if met else '<'} ORB-mid {mid:.2f}")
+                           detail=f"{orb_price:.2f} {'>' if met else '<'} ORB-mid {mid:.2f}")
     if re.search(r"orb\s*30m\s*trend is bearish", c, re.I):
-        if s.price is None or s.orbHigh is None or s.orbLow is None:
+        if orb_price is None or orb_high is None or orb_low is None:
             return _EvalResult(status="unknown", reason="ORB n/a")
-        mid = (s.orbHigh + s.orbLow) / 2
-        met = s.price < mid
+        mid = (orb_high + orb_low) / 2
+        met = orb_price < mid
         return _EvalResult(status="met" if met else "unmet",
-                           detail=f"{s.price:.2f} {'<' if met else '>'} ORB-mid {mid:.2f}")
+                           detail=f"{orb_price:.2f} {'<' if met else '>'} ORB-mid {mid:.2f}")
 
     # Minutes since open
     m = re.search(r"at least\s+(\d+)\s*min(?:ute)?s?\s+after\s+market\s+open", c, re.I)
