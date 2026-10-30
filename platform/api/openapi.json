@@ -3195,6 +3195,144 @@
         "title": "HealthResponse",
         "type": "object"
       },
+      "HistoricalScoreExplanation": {
+        "additionalProperties": false,
+        "description": "Additive explanation; null components mean unsupported, not zero.",
+        "properties": {
+          "base_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Count"
+          },
+          "base_max": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Max"
+          },
+          "bonus_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bonus Total"
+          },
+          "bonuses": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ScoreBonus"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bonuses"
+          },
+          "composite_max": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Composite Max"
+          },
+          "composite_strength": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Composite Strength"
+          },
+          "kind": {
+            "enum": [
+              "condition_count",
+              "base_plus_bonus",
+              "unknown"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "matched_conditions": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Conditions"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/ScoreProvenance"
+          },
+          "status": {
+            "enum": [
+              "recorded",
+              "legacy_unavailable",
+              "invalid_record"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "unavailable_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unavailable Reasons",
+            "type": "array"
+          },
+          "version": {
+            "const": "historical-score-v1",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "status",
+          "kind",
+          "base_count",
+          "base_max",
+          "matched_conditions",
+          "bonuses",
+          "bonus_total",
+          "composite_strength",
+          "composite_max",
+          "unavailable_reasons",
+          "provenance"
+        ],
+        "title": "HistoricalScoreExplanation",
+        "type": "object"
+      },
       "ImportCommitRequest": {
         "properties": {
           "broker": {
@@ -7700,6 +7838,181 @@
         "title": "RvolConfig",
         "type": "object"
       },
+      "ScoreBonus": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "value"
+        ],
+        "title": "ScoreBonus",
+        "type": "object"
+      },
+      "ScoreProvenance": {
+        "additionalProperties": false,
+        "description": "Recorded computation identity, never a claim of historical availability.",
+        "properties": {
+          "code_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code Sha256"
+          },
+          "config_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config Sha256"
+          },
+          "corpus": {
+            "const": "historical_signals",
+            "title": "Corpus",
+            "type": "string"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "enum": [
+                  "call",
+                  "put"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
+          },
+          "generated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generated At"
+          },
+          "input_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Sha256"
+          },
+          "inserted_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inserted At"
+          },
+          "producer_definition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Producer Definition"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile"
+          },
+          "run_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Kind"
+          },
+          "storage_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "cloud_sql",
+                  "gcs_parquet"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Storage Source"
+          },
+          "strategy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy"
+          }
+        },
+        "required": [
+          "corpus",
+          "strategy",
+          "run_kind",
+          "storage_source",
+          "producer_definition",
+          "profile",
+          "direction",
+          "code_sha256",
+          "config_sha256",
+          "input_sha256",
+          "generated_at",
+          "inserted_at"
+        ],
+        "title": "ScoreProvenance",
+        "type": "object"
+      },
       "SectorRow": {
         "additionalProperties": true,
         "properties": {
@@ -8069,6 +8382,17 @@
             ],
             "title": "Ema9"
           },
+          "inserted_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inserted At"
+          },
           "return_pct": {
             "anyOf": [
               {
@@ -8112,6 +8436,27 @@
               }
             ],
             "title": "Score"
+          },
+          "score_explanation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HistoricalScoreExplanation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "strategy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy"
           },
           "ticker": {
             "title": "Ticker",
@@ -14662,7 +15007,6 @@
             "required": true,
             "schema": {
               "description": "Signal strength of the bar we're matching",
-              "maximum": 5,
               "minimum": 3,
               "title": "Score",
               "type": "integer"

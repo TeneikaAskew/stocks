@@ -368,3 +368,48 @@ def test_load_intraday_bars_fetches_a_window_in_both_conventions(monkeypatch, st
     assert bars["Time"].max() == pd.Timestamp("2026-01-15 15:34", tz="UTC")
     assert len(bars) == 185
     assert seen["start"] == pd.Timestamp("2026-01-15 07:30", tz="UTC")
+
+
+def test_score_contract_mapping_preserves_nested_extras_and_native_components(monkeypatch):
+    from lib.trading_analysis import MarketAnalyzer
+    from lib.strategies import catalyst_proximity
+    fixture = json.loads((_REPO / 'tests/fixtures/historical_score_native_controls.json').read_text())
+    frame = pd.DataFrame(fixture['cases'][0]['enriched_rows'])
+    frame['Time'] = pd.to_datetime(frame.Time)
+    signals = MarketAnalyzer().generate_technical_signals(frame).iloc[:1].copy()
+    signals['extra'] = [{'preserved': {'list': [1, None, 'x']}}]
+    monkeypatch.setattr(catalyst_proximity, 'get_catalyst_context', lambda *a: {})
+    out = map_signals_to_table(signals, 'IWM')
+    e = out.extra.iloc[0]
+    assert e['preserved'] == {'list': [1, None, 'x']}
+    assert e['score_explanation']['composite_strength'] == out.signal_strength.iloc[0]
+    assert e['score_explanation']['base_max'] == 7
+    assert out.conditions_met.iloc[0].endswith('/7')
+
+
+def test_score_contract_reserved_collision_refuses_before_catalyst_io(monkeypatch):
+    from lib.strategies import catalyst_proximity
+    def forbidden(*a):
+        raise AssertionError('must refuse before persistence lookup')
+    monkeypatch.setattr(catalyst_proximity, 'get_catalyst_context', forbidden)
+    src = pd.DataFrame([{'entry_time':'2024-01-02T15:00Z','signal_strength':6,
+        'score_explanation': {'new': True}, 'extra': {'score_explanation': {'old': True}}}])
+    with pytest.raises(ValueError, match='score|reserved'):
+        map_signals_to_table(src, 'IWM')
+
+
+def test_historical_mr_records_actual_base_and_zero_bonus():
+    n = 35
+    closes = pd.Series([100-i*.05 for i in range(n)])
+    frame = pd.DataFrame({'Time': pd.date_range('2024-01-02 09:30',periods=n,freq='min'),
+        'Last':closes,'VWAP':closes+.5,'EMA9':closes+.3,'EMA20':closes+.4,
+        'RSI14_W':35.,'StochRSI_K':20., 'Broke_Prev_Day_High':1})
+    out = _generate_mean_reversion_signals(frame)
+    assert len(out) > 0
+    row = out.iloc[0]
+    assert row.signal_strength == 5
+    assert len(json.loads(row.conditions_met)) == 5
+    e = row.score_explanation
+    assert e['base_count'] == 5 and e['bonus_total'] == 0
+    assert e['composite_strength'] == 5
+    assert e['provenance']['producer_definition'] == 'historical-mr-v1'

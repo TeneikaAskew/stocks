@@ -186,11 +186,11 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation |
+| Status | Production needs remediation; historical-score contract implementation under review in #1620, not deployed |
 | Priority | P0 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-08-30 |
+| Last reviewed | 2026-10-30 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/signals`, `/live` |
 | Backend | `/api/signals` |
@@ -200,7 +200,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Tests | `signals.spec.ts`, `tests/*/test_signal*.py` |
 | Open issues | 25 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-signal-001--signals--execution-25-open) |
 | Blocking issues | [#815](https://github.com/TeneikaAskew/stocks/issues/815) [#816](https://github.com/TeneikaAskew/stocks/issues/816) [#928](https://github.com/TeneikaAskew/stocks/issues/928) [#1206](https://github.com/TeneikaAskew/stocks/issues/1206) [#915](https://github.com/TeneikaAskew/stocks/issues/915) [#1136](https://github.com/TeneikaAskew/stocks/issues/1136) |
-| Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
+| Next action | Complete normal #1620 current-head review/checks and actual staging/frontend close-out; legacy records are not reconstructed or backfilled |
 
 ### FEAT-PLAYBOOK-001
 
