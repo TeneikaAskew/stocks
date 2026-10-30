@@ -685,7 +685,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`platform/api/main.py`](../../../platform/api/main.py) — line [1032](../../../platform/api/main.py#L1032), [1107](../../../platform/api/main.py#L1107), [1251](../../../platform/api/main.py#L1251), [1421](../../../platform/api/main.py#L1421), [1423](../../../platform/api/main.py#L1423)
 - [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [756](../../../platform/api/routers/catalysts.py#L756)
 - [`platform/api/routers/dashboard.py`](../../../platform/api/routers/dashboard.py) — line [152](../../../platform/api/routers/dashboard.py#L152), [281](../../../platform/api/routers/dashboard.py#L281)
-- [`platform/api/routers/live.py`](../../../platform/api/routers/live.py) — line [547](../../../platform/api/routers/live.py#L547)
+- [`platform/api/routers/live.py`](../../../platform/api/routers/live.py) — line [563](../../../platform/api/routers/live.py#L563)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [1027](../../../scripts/audit_data_freshness.py#L1027), [1034](../../../scripts/audit_data_freshness.py#L1034), [1158](../../../scripts/audit_data_freshness.py#L1158), [1166](../../../scripts/audit_data_freshness.py#L1166), [552](../../../scripts/audit_data_freshness.py#L552), [553](../../../scripts/audit_data_freshness.py#L553), [712](../../../scripts/audit_data_freshness.py#L712)
 - [`scripts/backfill_and_replay.py`](../../../scripts/backfill_and_replay.py) — line [240](../../../scripts/backfill_and_replay.py#L240)
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [109](../../../scripts/backfill_watchlist_data.py#L109)
