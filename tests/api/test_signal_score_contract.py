@@ -322,6 +322,7 @@ def test_concurrent_signal_requests_refuse_before_materialization(client, monkey
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
     entered, release = Event(), Event()
+    monkeypatch.setattr(signals, '_SIGNAL_QUEUE_DEADLINE_SECONDS', 0.02)
     calls = []
     monkeypatch.setattr(signals, '_CLOUD_SQL', True)
     def query(*args):
@@ -364,14 +365,15 @@ def test_signal_slot_held_until_stream_finishes_or_disconnects(monkeypatch, inte
     import anyio
     monkeypatch.setattr(signals, '_CLOUD_SQL', True)
     monkeypatch.setattr(signals, '_query_signals_sql', lambda *args: (0, []))
-    def response():
-        return signals.get_signals('IWM', 50000, '', 0, None, None)
-    first = response()
+    monkeypatch.setattr(signals, '_SIGNAL_QUEUE_DEADLINE_SECONDS', 0.001)
+    async def response():
+        return await signals.get_signals('IWM', 50000, '', 0, None, None)
+    first = anyio.run(response)
     async def receive():
         return {'type': 'http.request', 'body': b'', 'more_body': False}
     async def send(message):
         with pytest.raises(signals.HTTPException) as refusal:
-            response()
+            await response()
         assert refusal.value.status_code == 503
         if interrupt and message['type'] == 'http.response.body':
             raise OSError('client disconnected')
@@ -383,7 +385,7 @@ def test_signal_slot_held_until_stream_finishes_or_disconnects(monkeypatch, inte
     except Exception as exc:
         from starlette.requests import ClientDisconnect
         assert interrupt and isinstance(exc, ClientDisconnect)
-    next_response = response()
+    next_response = anyio.run(response)
     async def discard(message):
         pass
     anyio.run(run, next_response, discard)
@@ -397,3 +399,305 @@ def test_signal_admission_releases_after_typed_validation_failure(client, monkey
         client.get('/api/signals/IWM')
     monkeypatch.setattr(signals, '_query_signals_sql', lambda *args: (0, []))
     assert client.get('/api/signals/IWM').status_code == 200
+
+
+@pytest.mark.parametrize('slow_mode', ['headers', 'stalled_body', 'trickle'])
+def test_signal_slow_consumer_deadline_releases_memory_and_admission(monkeypatch, slow_mode):
+    """A client cannot renew exclusive admission by slowly accepting chunks."""
+    import anyio
+    monkeypatch.setattr(signals, '_SIGNAL_STREAM_DEADLINE_SECONDS', 0.08, raising=False)
+    monkeypatch.setattr(signals, '_SIGNAL_QUEUE_DEADLINE_SECONDS', 0.001)
+    monkeypatch.setattr(signals, '_CLOUD_SQL', True)
+    # Enough JSON chunks for trickle delivery to exceed the total deadline.
+    monkeypatch.setattr(signals, '_query_signals_sql', lambda *a: (3000, [
+        {'ticker': 'IWM', 'score': 6, 'conditions_met': 'x' * 200}
+        for _ in range(3000)]))
+    response = anyio.run(signals.get_signals, 'IWM', 50000, '', 0, None, None)
+    sent = []
+    async def receive():
+        await anyio.sleep_forever()
+    async def send(message):
+        sent.append(message)
+        with pytest.raises(signals.HTTPException) as refused:
+            await signals.get_signals('SPY', 50000, '', 0, None, None)
+        assert refused.value.status_code == 503
+        if slow_mode == 'headers' or message['type'] == 'http.response.body':
+            await anyio.sleep(0.015 if slow_mode == 'trickle' else 1)
+    async def exercise():
+        # Outer watchdog distinguishes an enforced transport deadline from a hang.
+        with anyio.fail_after(0.5):
+            with pytest.raises(TimeoutError):
+                await response({'type': 'http', 'asgi': {'spec_version': '2.4'},
+                                'method': 'GET', 'headers': []}, receive, send)
+            # Closed iterator cannot retain/continue delivering the large body.
+            assert [chunk async for chunk in response.body_iterator] == []
+    anyio.run(exercise)
+    assert not any(m['type'] == 'http.response.body' and not m.get('more_body', False)
+                   for m in sent), 'timeout must not falsely finish partial JSON'
+    assert response.owns_slot is False
+    monkeypatch.setattr(signals, '_query_signals_sql', lambda *a: (0, []))
+    next_response = anyio.run(signals.get_signals, 'SPY', 50000, '', 0, None, None)
+    async def discard(message):
+        pass
+    async def finish():
+        await next_response({'type': 'http', 'asgi': {'spec_version': '2.4'},
+                             'method': 'GET', 'headers': []}, receive, discard)
+    anyio.run(finish)
+
+
+def test_signal_cancelled_transport_closes_body_before_readmission(monkeypatch):
+    import anyio
+    monkeypatch.setattr(signals, '_CLOUD_SQL', True)
+    monkeypatch.setattr(signals, '_query_signals_sql', lambda *a: (0, []))
+    response = anyio.run(signals.get_signals, 'IWM', 50000, '', 0, None, None)
+    async def receive():
+        await anyio.sleep_forever()
+    async def exercise():
+        with anyio.CancelScope() as scope:
+            async def send(message):
+                if message['type'] == 'http.response.body':
+                    scope.cancel()
+                    await anyio.sleep_forever()
+            await response({'type': 'http', 'asgi': {'spec_version': '2.4'},
+                            'method': 'GET', 'headers': []}, receive, send)
+        assert [chunk async for chunk in response.body_iterator] == []
+        assert response.owns_slot is False
+        next_response = await signals.get_signals('SPY', 50000, '', 0, None, None)
+        async def discard(message):
+            pass
+        await next_response({'type': 'http', 'asgi': {'spec_version': '2.4'},
+                             'method': 'GET', 'headers': []}, receive, discard)
+    anyio.run(exercise)
+
+
+@pytest.mark.parametrize('ending', ['complete', 'timeout', 'disconnect'])
+def test_three_immediate_recaptures_cannot_overtake_waiting_competitor(monkeypatch, ending):
+    """Permanent SEC regression: repeat caller A must yield to already waiting B."""
+    import anyio
+    import inspect
+    from api import auth
+    from starlette.requests import Request
+    from starlette.requests import ClientDisconnect
+    monkeypatch.setattr(auth, 'AUTH_MODE', 'firebase')
+    monkeypatch.setattr(signals, '_SIGNAL_STREAM_DEADLINE_SECONDS', .03)
+    monkeypatch.setattr(signals, '_CLOUD_SQL', True)
+    monkeypatch.setattr(signals, '_query_signals_sql', lambda *a: (0, []))
+    order = []
+    async def acquire(who='a'):
+        request = Request({'type': 'http', 'state': {'user_email': who + '@example.test'}})
+        value = signals.get_signals('IWM', 50000, '', 0, None, None, request=request)
+        return await value if inspect.isawaitable(value) else value
+    async def finish(item, held=False):
+        async def receive():
+            await anyio.sleep_forever()
+        async def send(message):
+            if held and message['type'] == 'http.response.body':
+                if ending == 'timeout':
+                    await anyio.sleep_forever()
+                if ending == 'disconnect':
+                    raise OSError('disconnected client')
+        await item({'type': 'http', 'asgi': {'spec_version': '2.4'},
+                    'method': 'GET', 'headers': []}, receive, send)
+    async def run():
+        for round_number in range(3):
+            held = await acquire()
+            started = anyio.Event()
+            async def competitor():
+                started.set()
+                try:
+                    item = await acquire('b')
+                except signals.HTTPException:
+                    order.append(('refused', round_number))
+                    return
+                order.append(('competitor', round_number))
+                await finish(item)
+            async with anyio.create_task_group() as group:
+                group.start_soon(competitor)
+                await started.wait()
+                await anyio.sleep(0)
+                if ending == 'complete':
+                    await finish(held, True)
+                else:
+                    with pytest.raises(TimeoutError if ending == 'timeout' else ClientDisconnect):
+                        await finish(held, True)
+                immediate_retry = await acquire()
+                order.append(('repeat', round_number))
+                await finish(immediate_retry)
+        assert order == [(who, i) for i in range(3) for who in ('competitor', 'repeat')]
+    anyio.run(run)
+
+
+def test_firebase_repeated_principal_cannot_fill_queue_or_spoof_identity(monkeypatch):
+    import anyio
+    import httpx
+    from threading import Event
+    from api import auth
+    monkeypatch.setattr(auth, 'AUTH_MODE', 'firebase')
+    # Exercise the real authentication middleware; stub only external token verification.
+    monkeypatch.setattr(auth, '_verify_bearer_email', lambda request:
+        {'Bearer A': 'a@example.test', 'Bearer B': 'b@example.test',
+         'Bearer C': 'c@example.test'}[request.headers['authorization']])
+    monkeypatch.setattr(signals, '_CLOUD_SQL', True)
+    entered, release = Event(), Event()
+    calls = []
+    def query(ticker, *args):
+        calls.append(ticker)
+        if ticker == 'IWM':
+            entered.set()
+            assert release.wait(5)
+        return 0, []
+    monkeypatch.setattr(signals, '_query_signals_sql', query)
+    app = FastAPI()
+    app.middleware('http')(auth.auth_middleware)
+    app.include_router(signals.router)
+    async def exercise():
+        results = {}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            async def get(who, ticker):
+                results[who] = await client.get('/api/signals/' + ticker, headers={'authorization': 'Bearer ' + who})
+            async with anyio.create_task_group() as group:
+                group.start_soon(get, 'A', 'IWM')
+                with anyio.fail_after(2):
+                    while not entered.is_set():
+                        await anyio.sleep(.001)
+                try:
+                    for i in range(10):
+                        rejected = await client.get('/api/signals/IWM', headers={
+                            'authorization': 'Bearer A', 'x-goog-authenticated-user-email': f'attacker:{i}@fake.test',
+                            'x-user-email': f'{i}@fake.test'})
+                        assert rejected.status_code == 503
+                        assert rejected.headers['retry-after'] == '5'
+                    assert calls == ['IWM'] and len(signals._SIGNAL_ADMISSION.waiters) == 0
+                    group.start_soon(get, 'B', 'SPY')
+                    with anyio.fail_after(2):
+                        while len(signals._SIGNAL_ADMISSION.waiters) != 1:
+                            await anyio.sleep(.001)
+                    group.start_soon(get, 'C', 'QQQ')
+                    with anyio.fail_after(2):
+                        while len(signals._SIGNAL_ADMISSION.waiters) != 2:
+                            await anyio.sleep(.001)
+                finally:
+                    release.set()
+            assert calls == ['IWM', 'SPY', 'QQQ']
+            assert all(r.status_code == 200 for r in results.values())
+            assert not signals._SIGNAL_ADMISSION.principals
+            assert (await client.get('/api/signals/SPY', headers={'authorization': 'Bearer A'})).status_code == 200
+    anyio.run(exercise)
+
+
+def test_firebase_missing_verified_state_refuses_before_allocation(client, monkeypatch):
+    from api import auth
+    monkeypatch.setattr(auth, 'AUTH_MODE', 'firebase')
+    def forbidden(*args):
+        raise AssertionError('must not allocate before verified identity')
+    monkeypatch.setattr(signals, '_query_signals_sql', forbidden)
+    # No authentication middleware on this fixture: raw headers cannot substitute.
+    r = client.get('/api/signals/IWM', headers={'authorization': 'Bearer invented',
+        'x-goog-authenticated-user-email': 'accounts.google.com:claimed@example.test'})
+    assert r.status_code == 401
+
+
+def test_fifo_capacity_cancel_timeout_and_grant_boundary_cleanup(monkeypatch):
+    import anyio
+    from starlette.requests import Request
+    from api import auth
+    monkeypatch.setattr(auth, 'AUTH_MODE', 'firebase')
+    admission = signals._SignalAdmission()
+    monkeypatch.setattr(signals, '_SIGNAL_ADMISSION', admission)
+    async def exercise():
+        await admission.acquire('holder')
+        cancelled = anyio.Event()
+        async def waiter(i):
+            try:
+                await admission.acquire('user' + str(i))
+            finally:
+                cancelled.set()
+        async with anyio.create_task_group() as group:
+            for i in range(signals._SIGNAL_MAX_WAITERS):
+                group.start_soon(waiter, i)
+            with anyio.fail_after(2):
+                while len(admission.waiters) != signals._SIGNAL_MAX_WAITERS:
+                    await anyio.sleep(.001)
+            with pytest.raises(signals.HTTPException) as full:
+                await admission.acquire('overflow')
+            assert full.value.status_code == 503 and 'full' in full.value.detail
+            group.cancel_scope.cancel()
+        assert not admission.waiters and admission.principals == {'holder'}
+        monkeypatch.setattr(signals, '_SIGNAL_QUEUE_DEADLINE_SECONDS', .01)
+        with pytest.raises(signals.HTTPException) as expired:
+            await admission.acquire('timeout')
+        assert 'expired' in expired.value.detail
+        assert admission.principals == {'holder'} and not admission.waiters
+        admission.release()
+        # Cancellation immediately after grant, before the worker starts, must release it.
+        with anyio.CancelScope() as cancel_scope:
+            async def cancelled_worker(*args, **kwargs):
+                cancel_scope.cancel()
+                await anyio.sleep_forever()
+            monkeypatch.setattr(signals, 'run_in_threadpool', cancelled_worker)
+            request = Request({'type': 'http', 'state': {'user_email': 'boundary@example.test'}})
+            await signals.get_signals('IWM', 50000, '', 0, None, None, request=request)
+        assert not admission.active and not admission.principals and not admission.waiters
+    anyio.run(exercise)
+
+
+@pytest.mark.parametrize('failure', ['query', 'serialization'])
+def test_verified_principal_released_after_materialization_error(monkeypatch, failure):
+    from api import auth
+    monkeypatch.setattr(auth, 'AUTH_MODE', 'firebase')
+    monkeypatch.setattr(auth, '_verify_bearer_email', lambda request: 'canonical@example.test')
+    monkeypatch.setattr(signals, '_CLOUD_SQL', True)
+    def query(*args):
+        if failure == 'query':
+            raise RuntimeError('query failure')
+        return 1, [{'score': 'bad'}]
+    monkeypatch.setattr(signals, '_query_signals_sql', query)
+    app = FastAPI()
+    app.middleware('http')(auth.auth_middleware)
+    app.include_router(signals.router)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        assert client.get('/api/signals/IWM').status_code == 500
+        assert not signals._SIGNAL_ADMISSION.active
+        assert not signals._SIGNAL_ADMISSION.principals
+        monkeypatch.setattr(signals, '_query_signals_sql', lambda *args: (0, []))
+        assert client.get('/api/signals/IWM').status_code == 200
+
+
+def test_cancel_during_materialization_keeps_slot_then_closes_unconsumed_body(monkeypatch):
+    import anyio
+    from threading import Event
+    from starlette.requests import Request
+    from api import auth
+    monkeypatch.setattr(auth, 'AUTH_MODE', 'firebase')
+    monkeypatch.setattr(signals, '_CLOUD_SQL', True)
+    entered, release = Event(), Event()
+    def query(*args):
+        entered.set()
+        assert release.wait(5)
+        return 0, []
+    monkeypatch.setattr(signals, '_query_signals_sql', query)
+    created = []
+    original = signals._typed_signals_response
+    def record(payload):
+        response = original(payload)
+        created.append(response)
+        return response
+    monkeypatch.setattr(signals, '_typed_signals_response', record)
+    async def exercise():
+        request = Request({'type': 'http', 'state': {'user_email': 'a@example.test'}})
+        async with anyio.create_task_group() as group:
+            async def invoke():
+                await signals.get_signals('IWM', 50000, '', 0, None, None, request=request)
+                pytest.fail('cancelled materialization must not transfer response ownership')
+            group.start_soon(invoke)
+            with anyio.fail_after(2):
+                while not entered.is_set():
+                    await anyio.sleep(.001)
+            group.cancel_scope.cancel()
+            assert signals._SIGNAL_ADMISSION.active
+            assert signals._SIGNAL_ADMISSION.principals == {'a@example.test'}
+            release.set()
+        assert not signals._SIGNAL_ADMISSION.active and not signals._SIGNAL_ADMISSION.principals
+        assert len(created) == 1
+        assert [chunk async for chunk in created[0].body_iterator] == []
+    anyio.run(exercise)

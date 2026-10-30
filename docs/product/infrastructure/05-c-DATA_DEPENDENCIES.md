@@ -271,6 +271,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/build_options_daily_greeks.py`](../../../gcp/build_options_daily_greeks.py) — line [62](../../../gcp/build_options_daily_greeks.py#L62)
 
 ### `etf_options_snapshots`
+- [`gcp/fetchers/_av_realtime_collector.py`](../../../gcp/fetchers/_av_realtime_collector.py) — line [399](../../../gcp/fetchers/_av_realtime_collector.py#L399)
 - [`gcp/fetchers/fetch_av_historical_options.py`](../../../gcp/fetchers/fetch_av_historical_options.py) — line [162](../../../gcp/fetchers/fetch_av_historical_options.py#L162)
 - [`gcp/fetchers/fetch_av_realtime_options.py`](../../../gcp/fetchers/fetch_av_realtime_options.py) — line [256](../../../gcp/fetchers/fetch_av_realtime_options.py#L256)
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [388](../../../gcp/migrate_to_gcp.py#L388), [447](../../../gcp/migrate_to_gcp.py#L447), [459](../../../gcp/migrate_to_gcp.py#L459), [500](../../../gcp/migrate_to_gcp.py#L500)
@@ -605,7 +606,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `historical_signals`
 - [`gcp/historical_signals.py`](../../../gcp/historical_signals.py) — line [102](../../../gcp/historical_signals.py#L102), [105](../../../gcp/historical_signals.py#L105)
-- [`platform/api/routers/signals.py`](../../../platform/api/routers/signals.py) — line [200](../../../platform/api/routers/signals.py#L200), [227](../../../platform/api/routers/signals.py#L227), [466](../../../platform/api/routers/signals.py#L466), [509](../../../platform/api/routers/signals.py#L509)
+- [`platform/api/routers/signals.py`](../../../platform/api/routers/signals.py) — line [204](../../../platform/api/routers/signals.py#L204), [231](../../../platform/api/routers/signals.py#L231), [567](../../../platform/api/routers/signals.py#L567), [610](../../../platform/api/routers/signals.py#L610)
 - [`scripts/analyze_timeframe_heuristic.py`](../../../scripts/analyze_timeframe_heuristic.py) — line [322](../../../scripts/analyze_timeframe_heuristic.py#L322)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [552](../../../scripts/audit_data_freshness.py#L552), [553](../../../scripts/audit_data_freshness.py#L553), [712](../../../scripts/audit_data_freshness.py#L712)
 - [`scripts/backfill_timeframe_tags.py`](../../../scripts/backfill_timeframe_tags.py) — line [84](../../../scripts/backfill_timeframe_tags.py#L84)
@@ -890,7 +891,7 @@ Tables with two or more writing files. The risk in each case is the same shape: 
 |---|---|---|
 | `earnings_calendar` | 2 | `gcp/fetchers/evaluate_ew_strikes.py`, `scripts/fetch_earnings_calendar.py` |
 | `earnings_options_snapshots` | 2 | `gcp/fetchers/fetch_av_earnings_options_backfill.py`, `gcp/migrate_to_gcp.py` |
-| `etf_options_snapshots` | 6 | `gcp/fetchers/fetch_av_historical_options.py`, `gcp/fetchers/fetch_av_realtime_options.py`, `gcp/migrate_to_gcp.py`, `gcp/options_retention_job.py`, `platform/api/routers/grid.py`, `scripts/maintenance/compute_spx_greeks.py` |
+| `etf_options_snapshots` | 7 | `gcp/fetchers/_av_realtime_collector.py`, `gcp/fetchers/fetch_av_historical_options.py`, `gcp/fetchers/fetch_av_realtime_options.py`, `gcp/migrate_to_gcp.py`, `gcp/options_retention_job.py`, `platform/api/routers/grid.py`, `scripts/maintenance/compute_spx_greeks.py` |
 | `historical_signals` | 2 | `gcp/historical_signals.py`, `scripts/backfill_timeframe_tags.py` |
 | `insight_reports` | 3 | `gcp/insight_pipeline_job.py`, `platform/api/routers/insights.py`, `scripts/generate_historical_report.py` |
 | `insight_reports_history` | 2 | `gcp/insight_pipeline_job.py`, `scripts/backfill_history_tables.py` |

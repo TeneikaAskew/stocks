@@ -567,8 +567,8 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/playbook/{ticker}` | [`platform/api/routers/playbook.py:306`](../../../platform/api/routers/playbook.py#L306) | Return structured setup cards for a ticker from ``playbook_cards``. |
 | `GET` | `/api/reports/list/{ticker}` | [`platform/api/routers/playbook.py:367`](../../../platform/api/routers/playbook.py#L367) | List available phase report files for a given ticker (from GCS). |
 | `GET` | `/api/reports/{ticker}/{phase}` | [`platform/api/routers/playbook.py:440`](../../../platform/api/routers/playbook.py#L440) | Return the raw markdown text of a specific phase report for a ticker from GCS. |
-| `GET` | `/api/signals/{ticker}` | [`platform/api/routers/signals.py:293`](../../../platform/api/routers/signals.py#L293) | Return historical signals for a ticker. |
-| `GET` | `/api/signals/{ticker}/similar` | [`platform/api/routers/signals.py:407`](../../../platform/api/routers/signals.py#L407) | Return historical signals similar to the supplied bar's conditions. |
+| `GET` | `/api/signals/{ticker}` | [`platform/api/routers/signals.py:393`](../../../platform/api/routers/signals.py#L393) | Return historical signals for a ticker. |
+| `GET` | `/api/signals/{ticker}/similar` | [`platform/api/routers/signals.py:508`](../../../platform/api/routers/signals.py#L508) | Return historical signals similar to the supplied bar's conditions. |
 | `POST` | `/api/style/mine-and-validate` | [`platform/api/routers/backtest.py:690`](../../../platform/api/routers/backtest.py#L690) | Mine the caller's closed journal trades into a condition profile, |
 | `POST` | `/api/waitlist` | [`platform/api/routers/waitlist.py:84`](../../../platform/api/routers/waitlist.py#L84) |  |
 | `GET` | `/dev` | [`platform/api/main.py:433`](../../../platform/api/main.py#L433) |  |
@@ -920,6 +920,8 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`gcp/earnings_long_watchlist.py`](../../../gcp/earnings_long_watchlist.py) | Cloud Run Job — weekly long-side earnings watchlist ("Next NVAX"). | `earnings-long-watchlist` |
 | [`gcp/earnings_reactions_brief.py`](../../../gcp/earnings_reactions_brief.py) | Earnings-reactions brief -- Cloud Run Job triggered by Cloud Scheduler at | `earnings-reactions-brief` |
 | [`gcp/failure_notifier.py`](../../../gcp/failure_notifier.py) | GCP Cloud Run Job failure notifier. | — |
+| [`gcp/fetchers/_av_realtime_collector.py`](../../../gcp/fetchers/_av_realtime_collector.py) | Cloud Run Job: Fetch intraday AV REALTIME_OPTIONS and write to Cloud SQL. | — |
+| [`gcp/fetchers/_av_realtime_transport.py`](../../../gcp/fetchers/_av_realtime_transport.py) | Private CLI transport: bounded source I/O only, no retry or storage policy. | — |
 | [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) | Shared helper: load the configured watchlist for every consumer. | — |
 | [`gcp/fetchers/backfill_daily_indicators.py`](../../../gcp/fetchers/backfill_daily_indicators.py) | Self-healing backfill of derived indicator columns in market_data_daily. | `backfill-daily-indicators` |
 | [`gcp/fetchers/build_options_daily_features.py`](../../../gcp/fetchers/build_options_daily_features.py) | Populate the materialized `options_daily_features` table (perf fix). | `build-options-daily-features` |

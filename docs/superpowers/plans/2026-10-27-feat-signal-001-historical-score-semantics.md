@@ -75,3 +75,20 @@ Owner approved one additional cycle at 00:33:55 UTC, with fresh SEC. Previous fi
 - [x] Correct only FEAT-SIGNAL-001 Last reviewed to current head date (October 29).
 - [ ] Current MAIN integration, final source proof/audit and full PR-input gate.
 - [ ] Authorized CODE4/current SEC, required checks and protected merge/deployment verification.
+
+### Authorized cycle 7 security repair
+
+- [x] Repair SEC P2 r4419981306 within the approved unused aggregate7/CODE5 batch: one slow client previously retained process-wide admission until disconnect.
+- [x] Bound total streaming delivery to 30 seconds (not a renewable per-chunk idle timeout); propagate timeout to abort incomplete JSON and log the deadline, close retained body before reopening admission. Keep pre-materialization exclusion and the typed 50000-row contract.
+- [x] Three discriminating slow-header/stalled-body/trickle regressions fail before the fix and pass afterward; explicit task cancellation, disconnect, capacity and query/validation failures covered. Full applicable author suite:245 passed.
+- [ ] Current-head CODE5, security, hosted checks and deployment remain publisher-owned; no review request or remote write made by this author.
+
+### Cycle7 final fairness correction (same unused external batch)
+
+The deadline-only3735d9c7 candidate was superseded after consumer reproduction showed three immediate recaptures while competitors received503. No external cohort was consumed.
+
+- [x] Use bounded process-local FIFO admission: maximum8 waiting tickets,35-second queue deadline, async waiting before SQL/serialization or threadpool allocation. Existing admitted waiters cannot be overtaken by a returning requester. Full/expired queue returns503/Retry-After before materialization.
+- [x] For Firebase only, use authenticated middleware's canonical lowercase verified request.state.user_email; allow at most one outstanding active-or-waiting request per principal. Missing verified state refuses401. Never use raw bearer/email/IAP headers for identity. Open/IAP have no application-verified principal here and retain identity-free bounded FIFO; no per-account guarantee claimed for those modes or across processes.
+- [x] Preserve one materialization/serialized body at a time and30-second total delivery deadline. Cancellation during worker allocation retains admission until work completes; cancellation before ownership transfer closes the unconsumed body. Disconnect/timeout closes body before releasing slot/principal. No partial successful JSON terminator.
+- [x] Reproduce exact supplied consumer counterexample on3735d9c7. Permanent three-cycle A/B production-route controls pass after complete/timeout/disconnect. Firebase forged-header/same-principal queue-fill, queue-full, cancellation/expiry/grant-boundary, query/serialization cleanup and missing verified identity controls pass. Full applicable author suite254passed in13.43seconds.
+- [ ] Publisher must obtain current-head CODE5/SEC and required hosted checks before normal merge/deployment. No new review consumed here.

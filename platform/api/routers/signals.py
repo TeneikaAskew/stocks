@@ -16,24 +16,28 @@ configured (e.g. local dev without ``CLOUD_SQL_CONNECTION_NAME``).
 """
 import logging
 from functools import wraps
-from threading import BoundedSemaphore
+from threading import Lock
+from collections import deque
+from time import monotonic
 import os
 import re
 import sys
 from pathlib import Path
 from typing import Optional
 
+import anyio
 import pandas as pd
 from cachetools import TTLCache
 from api.threadsafe_cache import MISS, ThreadSafeCache
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from api import gcs_reader  # noqa: E402
+from api import auth, gcs_reader  # noqa: E402
 from api.schemas import (
     SignalsResponse,
     SimilarResponse,
@@ -243,7 +247,73 @@ def _query_signals_sql(
 
 # One Uvicorn worker is configured in platform/Dockerfile. Admission is per
 # process and precedes SQL/parquet allocation, including the response lifetime.
-_SIGNAL_RESPONSE_SLOT = BoundedSemaphore(1)
+_SIGNAL_MAX_WAITERS = 8
+_SIGNAL_QUEUE_DEADLINE_SECONDS = 35.0
+
+
+def _signals_busy(detail):
+    return HTTPException(status_code=503, detail=detail, headers={"Retry-After": "5"})
+
+
+class _SignalAdmission:
+    """Bounded process-local FIFO; waiting allocates no rows or worker threads.
+
+    Ordering uses request tickets, never caller-supplied identity headers. A
+    returning caller joins behind existing waiters instead of racing them for
+    the released slot. Firebase's verified canonical email may hold only one
+    active-or-waiting ticket; open/IAP lack application-verified identity here
+    and use identity-free FIFO. This is not a cross-process/account rate limit.
+    """
+    def __init__(self):
+        self.lock = Lock()
+        self.waiters = deque()
+        self.active = False
+        self.active_principal = None
+        self.principals = set()
+
+    async def acquire(self, principal=None):
+        ticket = object()
+        expires = monotonic() + _SIGNAL_QUEUE_DEADLINE_SECONDS
+        with self.lock:
+            if principal is not None and principal in self.principals:
+                raise _signals_busy("This account already has an outstanding signals request.")
+            if len(self.waiters) >= _SIGNAL_MAX_WAITERS:
+                raise _signals_busy("Signals admission queue is full; retry shortly.")
+            self.waiters.append(ticket)
+            if principal is not None:
+                self.principals.add(principal)
+        granted = False
+        try:
+            while True:
+                with self.lock:
+                    if monotonic() >= expires:
+                        raise _signals_busy("Signals admission wait expired; retry shortly.")
+                    if not self.active and self.waiters[0] is ticket:
+                        self.waiters.popleft()
+                        self.active = True
+                        self.active_principal = principal
+                        granted = True
+                        return
+                # Async, bounded wait: never occupy Starlette's worker pool or
+                # the event loop while another response owns the allocation.
+                await anyio.sleep(0.01)
+        finally:
+            if not granted:
+                with self.lock:
+                    self.waiters.remove(ticket)
+                    self.principals.discard(principal)
+
+    def release(self):
+        with self.lock:
+            self.active = False
+            self.principals.discard(self.active_principal)
+            self.active_principal = None
+
+
+_SIGNAL_ADMISSION = _SignalAdmission()
+# Total delivery time, not an idle timeout that a trickling client can renew.
+# Abort a slow transport well before the service's 300-second request limit.
+_SIGNAL_STREAM_DEADLINE_SECONDS = 30.0
 
 
 class _AdmittedSignalsResponse(StreamingResponse):
@@ -251,29 +321,57 @@ class _AdmittedSignalsResponse(StreamingResponse):
 
     async def __call__(self, scope, receive, send):
         try:
-            await super().__call__(scope, receive, send)
+            with anyio.fail_after(_SIGNAL_STREAM_DEADLINE_SECONDS):
+                await super().__call__(scope, receive, send)
+        except TimeoutError:
+            log.warning("signals delivery deadline exceeded; aborting incomplete response")
+            # Headers may already be sent: propagate to abort the connection,
+            # never append an error body or a successful end to partial JSON.
+            raise
         finally:
-            if self.owns_slot:
-                self.owns_slot = False
-                _SIGNAL_RESPONSE_SLOT.release()
+            # Drop the serialized body BEFORE admitting another materialization.
+            # Shield cleanup from disconnect/cancellation of the response task.
+            try:
+                with anyio.CancelScope(shield=True):
+                    await self.body_iterator.aclose()
+            finally:
+                if self.owns_slot:
+                    self.owns_slot = False
+                    _SIGNAL_ADMISSION.release()
 
 
 def _admit_signal_response(handler):
     @wraps(handler)
-    def admitted(*args, **kwargs):
-        if not _SIGNAL_RESPONSE_SLOT.acquire(blocking=False):
-            raise HTTPException(status_code=503,
-                detail="A signals response is in progress; retry shortly.",
-                headers={"Retry-After": "5"})
+    async def admitted(*args, **kwargs):
+        # Firebase middleware is the only application-verified identity here.
+        # Never read caller headers (including IAP headers) for queue ownership.
+        principal = None
+        if auth.AUTH_MODE == "firebase":
+            request = kwargs.get("request")
+            principal = getattr(request.state, "user_email", None) if request is not None else None
+            if not principal:
+                raise HTTPException(status_code=401, detail="Verified signals identity is required.")
+        await _SIGNAL_ADMISSION.acquire(principal)
         transferred = False
+        response = None
         try:
-            response = handler(*args, **kwargs)
+            # Keep SQL/serialization off the event loop, with default
+            # non-abandoning cancellation so a live allocation retains its slot.
+            response = await run_in_threadpool(handler, *args, **kwargs)
+            # A cancellation during shielded thread work must not hand an
+            # unconsumed body/lease to an already cancelled response task.
+            await anyio.lowlevel.checkpoint_if_cancelled()
             response.owns_slot = True
             transferred = True
             return response
         finally:
             if not transferred:
-                _SIGNAL_RESPONSE_SLOT.release()
+                try:
+                    if response is not None:
+                        with anyio.CancelScope(shield=True):
+                            await response.body_iterator.aclose()
+                finally:
+                    _SIGNAL_ADMISSION.release()
     return admitted
 
 
@@ -286,8 +384,10 @@ def _typed_signals_response(payload: dict) -> StreamingResponse:
     No query, row limit, financial computation or global middleware changes.
     """
     body = SignalsResponse.model_validate(payload).model_dump_json(exclude_unset=True).encode('utf-8')
-    chunks = (body[i:i + 65536] for i in range(0, len(body), 65536))
-    return _AdmittedSignalsResponse(chunks, media_type='application/json')
+    async def chunks():
+        for i in range(0, len(body), 65536):
+            yield body[i:i + 65536]
+    return _AdmittedSignalsResponse(chunks(), media_type='application/json')
 
 
 @router.get("/api/signals/{ticker}", response_model=SignalsResponse, response_model_exclude_unset=True)
@@ -299,6 +399,7 @@ def get_signals(
     min_score: int = Query(default=0, ge=0),
     end_date: Optional[str] = Query(default=None, description="YYYY-MM-DD cutoff"),
     end_time: Optional[str] = Query(default=None, description="HH:MM (24h ET)"),
+    request: Request = None,
 ):
     """Return historical signals for a ticker.
 
