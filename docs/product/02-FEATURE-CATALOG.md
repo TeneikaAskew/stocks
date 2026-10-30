@@ -214,7 +214,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
 | Last reviewed | 2026-10-30 |
-| Evidence status | Existing production needs remediation; current-session ORB consumer candidate passes 137 guarded affected backend/OpenAPI tests after the first local review repair batch (timestamp identity, cold-calendar admission, bounded-response worker ownership and overflow isolation). Implementation-source identity is recorded for PLAYBOOK-05; external review, hosted checks, API image/fleet qualification and deployed parity remain pending. |
+| Evidence status | Existing production needs remediation; current-session ORB consumer candidate passes 137 guarded affected backend/OpenAPI tests after the first local review repair batch (timestamp identity, cold-calendar admission, bounded-response worker ownership and overflow isolation). The authorized SEC Low/P3 principal-fairness repair adds four verified-email attempts within the unchanged global eight and passes192 affected tests with1 existing Postgres-dependent skip. PLAYBOOK-05 source proof and generated inventory require final refresh for this repair; external review, hosted checks, API image/fleet qualification and deployed parity remain pending. |
 | UI surface | `/playbook` |
 | Backend | `/api/playbook` |
 | Data | `premarket_analysis`, `playbook_cards` |
@@ -226,7 +226,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 3 |
 
 
-Current-session ORB runtime draft: [#1642](https://github.com/TeneikaAskew/stocks/pull/1642). The137-test repair, formal renderer and source identity pass. API-image calendar import, combined fleet allocation, hosted review/checks and deployed parity remain pending.
+Current-session ORB runtime draft: [#1642](https://github.com/TeneikaAskew/stocks/pull/1642). The earlier137-test repair, formal renderer and source identity passed on the prior source. The current SEC fairness repair passes192 tests with1 existing Postgres-dependent skip; final source/document qualification remains root-owned. API-image calendar import, combined fleet allocation, hosted review/checks and deployed parity remain pending.
 
 ### FEAT-STRAT-001
 

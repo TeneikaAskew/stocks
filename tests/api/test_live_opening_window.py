@@ -104,14 +104,14 @@ def test_opt_in_contract(route,client):
     asyncio.run(route.get_live_history('IWM'))
     assert client.calls[0]['outputsize']=='compact'
     assert 'adjusted' not in client.calls[0]
-    r=asyncio.run(route._get_opening_history('IWM',NOW))
+    r=asyncio.run(route._get_opening_history('IWM',NOW, principal='fixture@example.test'))
     assert r['opening']['status']=='available'
     assert len(client.calls)==2
     assert client.calls[1]=={'function':'TIME_SERIES_INTRADAY','symbol':'IWM','interval':'1min','outputsize':'full','adjusted':'false','entitlement':'realtime','apikey':'synthetic-offline-key'}
 
 def test_bounded_stream(route,client):
     client.raw=b'x'*(8*1024*1024+1)
-    r=asyncio.run(route._get_opening_history('IWM',NOW))
+    r=asyncio.run(route._get_opening_history('IWM',NOW, principal='fixture@example.test'))
     assert r['opening']['reason']=='body_limit'
     assert r['bars']==[]
     assert len(client.calls)==1
@@ -119,16 +119,16 @@ def test_bounded_stream(route,client):
 def test_capacity_and_cache(route,client):
     async def scenario():
         client.wait=asyncio.Event()
-        one=asyncio.create_task(route._get_opening_history('IWM',NOW))
+        one=asyncio.create_task(route._get_opening_history('IWM',NOW, principal='fixture@example.test'))
         while len(client.calls)<1:await asyncio.sleep(0)
-        duplicate=await route._get_opening_history('IWM',NOW)
+        duplicate=await route._get_opening_history('IWM',NOW, principal='fixture@example.test')
         assert duplicate['opening']['reason']=='acquisition_in_progress'
-        two=asyncio.create_task(route._get_opening_history('SPY',NOW))
+        two=asyncio.create_task(route._get_opening_history('SPY',NOW, principal='fixture@example.test'))
         while len(client.calls)<2:await asyncio.sleep(0)
-        refused=await route._get_opening_history('QQQ',NOW)
+        refused=await route._get_opening_history('QQQ',NOW, principal='fixture@example.test')
         assert refused['opening']['reason']=='capacity_unavailable'
         client.wait.set();await asyncio.gather(one,two)
-        hit=await route._get_opening_history('IWM',NOW+timedelta(seconds=30))
+        hit=await route._get_opening_history('IWM',NOW+timedelta(seconds=30), principal='fixture@example.test')
         assert hit['opening']['comparison_age_seconds']==30
         assert len(client.calls)==2
         assert route._OPENING_FLIGHT.in_flight()==0
@@ -137,25 +137,25 @@ def test_capacity_and_cache(route,client):
 def test_all_attempt_budget_and_failure_not_cached(route,client):
     client.raw=b'{}'
     for i in range(8):
-        r=asyncio.run(route._get_opening_history('IWM',NOW))
+        r=asyncio.run(route._get_opening_history('IWM',NOW, principal=f'owner{i//4}@example.test'))
         assert r['opening']['reason']=='source_identity'
-    r=asyncio.run(route._get_opening_history('IWM',NOW))
+    r=asyncio.run(route._get_opening_history('IWM',NOW, principal='fixture@example.test'))
     assert r['opening']['reason']=='request_budget_unavailable'
     assert len(client.calls)==8
     assert len(route._OPENING_CACHE)==0
 
 def test_early_no_provider(route,client):
-    r=asyncio.run(route._get_opening_history('IWM',NOW-timedelta(minutes=2)))
+    r=asyncio.run(route._get_opening_history('IWM',NOW-timedelta(minutes=2), principal='fixture@example.test'))
     assert r['opening']['reason']=='opening_in_progress'
     assert not client.calls
 
 def test_cancel_releases_claim_and_slot(route,client):
     async def scenario():
-        client.wait=asyncio.Event();task=asyncio.create_task(route._get_opening_history('IWM',NOW))
+        client.wait=asyncio.Event();task=asyncio.create_task(route._get_opening_history('IWM',NOW, principal='fixture@example.test'))
         while not client.calls:await asyncio.sleep(0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):await task
-        client.wait.set();r=await route._get_opening_history('IWM',NOW)
+        client.wait.set();r=await route._get_opening_history('IWM',NOW, principal='fixture@example.test')
         assert r['opening']['status']=='available'
     asyncio.run(scenario())
 
@@ -167,17 +167,17 @@ def test_row_limit_and_non_object():
 
 def test_cache_bound_and_budget_rollover(route,client,monkeypatch):
     clock=[100.0];monkeypatch.setattr(route.monotonic_time,'monotonic',lambda:clock[0])
-    for i in range(8):assert route._opening_dispatch_allowed()
-    assert not route._opening_dispatch_allowed()
+    for i in range(8):assert route._opening_dispatch_allowed(f"owner{i//4}@example.test")
+    assert not route._opening_dispatch_allowed("other@example.test")
     clock[0]+=60
-    assert route._opening_dispatch_allowed()
+    assert route._opening_dispatch_allowed("owner0@example.test")
     for i in range(9):route._OPENING_CACHE[str(i)]={'fixture':i}
     assert len(route._OPENING_CACHE)==8
 
 def test_failed_required_refresh_does_not_expose_old_success(route,client):
-    assert asyncio.run(route._get_opening_history('IWM',NOW))['opening']['status']=='available'
+    assert asyncio.run(route._get_opening_history('IWM',NOW, principal='fixture@example.test'))['opening']['status']=='available'
     client.raw=b'{}'
-    r=asyncio.run(route._get_opening_history('IWM',NOW+timedelta(seconds=121)))
+    r=asyncio.run(route._get_opening_history('IWM',NOW+timedelta(seconds=121), principal='fixture@example.test'))
     assert r['opening']['status']=='unavailable'
     assert r['bars']==[]
 
@@ -186,7 +186,7 @@ def test_total_deadline_releases_capacity(route,client,monkeypatch):
     monkeypatch.setattr(route.asyncio,'timeout',lambda _:real_timeout(.01))
     async def scenario():
         client.wait=asyncio.Event()
-        r=await route._get_opening_history('IWM',NOW)
+        r=await route._get_opening_history('IWM',NOW, principal='fixture@example.test')
         assert r['opening']['reason']=='acquisition_timeout'
         assert route._OPENING_FLIGHT.in_flight()==0
         assert route._OPENING_SLOTS.acquire(blocking=False)
@@ -196,7 +196,7 @@ def test_total_deadline_releases_capacity(route,client,monkeypatch):
 
 def test_compressed_response_refused_before_decode(route,client):
     client.encoding='gzip'
-    r=asyncio.run(route._get_opening_history('IWM',NOW))
+    r=asyncio.run(route._get_opening_history('IWM',NOW, principal='fixture@example.test'))
     assert r['opening']['reason']=='unsupported_content_encoding'
     assert r['bars']==[]
 
@@ -209,7 +209,7 @@ def test_repeated_cancel_does_not_release_live_parser_slot(route,client,monkeypa
         return original(*args)
     monkeypatch.setattr(route,'parse_acquisition',delayed)
     async def scenario():
-        task=asyncio.create_task(route._get_opening_history('IWM',NOW))
+        task=asyncio.create_task(route._get_opening_history('IWM',NOW, principal='fixture@example.test'))
         try:
             async with asyncio.timeout(2):
                 while not started.is_set():await asyncio.sleep(.001)
@@ -278,7 +278,7 @@ def test_repair_timeout_returns_while_worker_owns_capacity(route,client,monkeypa
     real_timeout=asyncio.timeout
     monkeypatch.setattr(route.asyncio,'timeout',lambda _:real_timeout(.01))
     async def scenario():
-        task=asyncio.create_task(route._get_opening_history('IWM',NOW))
+        task=asyncio.create_task(route._get_opening_history('IWM',NOW, principal='fixture@example.test'))
         try:
             done,_=await asyncio.wait({task},timeout=.15)
             assert started.is_set()
@@ -324,7 +324,7 @@ def test_repair_parser_ownership_survives_loop_close(route,client,monkeypatch):
         finally:finished.set()
     monkeypatch.setattr(route,'parse_acquisition',delayed)
     async def cancel():
-        task=asyncio.create_task(route._get_opening_history('IWM',NOW))
+        task=asyncio.create_task(route._get_opening_history('IWM',NOW, principal='fixture@example.test'))
         async with asyncio.timeout(1):
             while not started.is_set():await asyncio.sleep(.001)
         task.cancel()
@@ -377,9 +377,9 @@ def test_repair_success_claim_held_through_cache_publication(route,client,monkey
             real_cache[key]=value
     monkeypatch.setattr(route,'_OPENING_CACHE',ObservedCache())
     async def scenario():
-        assert (await route._get_opening_history('IWM',NOW))['opening']['status']=='available'
+        assert (await route._get_opening_history('IWM',NOW, principal='fixture@example.test'))['opening']['status']=='available'
         assert route._OPENING_FLIGHT.in_flight()==0
-        assert (await route._get_opening_history('IWM',NOW))['opening']['status']=='available'
+        assert (await route._get_opening_history('IWM',NOW, principal='fixture@example.test'))['opening']['status']=='available'
         assert len(client.calls)==1
     asyncio.run(scenario())
 
@@ -396,15 +396,15 @@ def test_repair_two_expired_parsers_bound_all_remaining_work(route,client,monkey
     monkeypatch.setattr(route.asyncio,'timeout',lambda _:real_timeout(.01))
     async def scenario():
         session_for(NOW)
-        tasks=[asyncio.create_task(route._get_opening_history(t,NOW)) for t in ('IWM','SPY')]
+        tasks=[asyncio.create_task(route._get_opening_history(t,NOW, principal='fixture@example.test')) for t in ('IWM','SPY')]
         try:
             done,_=await asyncio.wait(tasks,timeout=.15)
             assert len(done)==2
             assert all(t.result()['opening']['reason']=='acquisition_timeout' for t in tasks)
             assert route._OPENING_FLIGHT.in_flight()==2
             assert not route._OPENING_SLOTS.acquire(blocking=False)
-            assert (await route._get_opening_history('IWM',NOW))['opening']['reason']=='acquisition_in_progress'
-            assert (await route._get_opening_history('QQQ',NOW))['opening']['reason']=='capacity_unavailable'
+            assert (await route._get_opening_history('IWM',NOW, principal='fixture@example.test'))['opening']['reason']=='acquisition_in_progress'
+            assert (await route._get_opening_history('QQQ',NOW, principal='fixture@example.test'))['opening']['reason']=='capacity_unavailable'
             assert len(client.calls)==2
         finally:
             release.set()
@@ -416,3 +416,175 @@ def test_repair_two_expired_parsers_bound_all_remaining_work(route,client,monkey
         assert route._OPENING_SLOTS.acquire(blocking=False)
         route._OPENING_SLOTS.release();route._OPENING_SLOTS.release()
     asyncio.run(scenario())
+
+# SEC r4420960497: use the real auth middleware and verified-email check;
+# only external Firebase verification and provider transport are hermetic.
+import httpx as _httpx
+_ASGIClient = _httpx.AsyncClient
+
+@pytest.fixture
+def authenticated_orb(route,client,monkeypatch):
+    import types
+    from fastapi import FastAPI
+    from api import auth
+    monkeypatch.setattr(auth,'AUTH_MODE','firebase')
+    monkeypatch.setattr(auth,'_ensure_firebase',lambda:None)
+    monkeypatch.setattr(auth,'_is_allowed',lambda email:True)
+    class FakeAuth:
+        @staticmethod
+        def verify_id_token(token,**kwargs):
+            assert kwargs=={'clock_skew_seconds':60}
+            if token=='invalid':raise ValueError('synthetic invalid token')
+            return {'email':f'{token}@example.test','email_verified':token!='unverified'}
+    sdk=types.ModuleType('firebase_admin');sdk.auth=FakeAuth
+    monkeypatch.setitem(sys.modules,'firebase_admin',sdk)
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls,tz=None):return NOW.astimezone(tz or timezone.utc)
+    monkeypatch.setattr(route,'datetime',FixedDatetime)
+    clock=[100.0]
+    monkeypatch.setattr(route,'monotonic_time',types.SimpleNamespace(monotonic=lambda:clock[0]))
+    app=FastAPI();principals=[]
+    @app.middleware('http')
+    async def observe(request,call_next):
+        principals.append(request.state.user_email)
+        return await call_next(request)
+    app.middleware('http')(auth.auth_middleware)
+    app.include_router(route.router)
+    return app,auth,clock,principals
+
+
+def test_principal_four_then_victim_retains_global_capacity(route,client,authenticated_orb):
+    app,_,_,principals=authenticated_orb
+    async def run():
+        client.raw=b'{}'
+        async with _ASGIClient(transport=_httpx.ASGITransport(app=app),base_url='http://fixture') as http:
+            reasons=[]
+            for i in range(8):
+                r=await http.get(f'/api/live/history/A{i}?include_opening=true',headers={
+                    'authorization':'Bearer '+('attacker' if i%2==0 else 'ATTACKER'),'x-user-email':f'fake{i}@example.test',
+                    'x-goog-authenticated-user-email':f'accounts.google.com:fake{i}@example.test'})
+                assert r.status_code==200
+                reasons.append(r.json()['opening']['reason'])
+            assert reasons[:4]==['source_identity']*4
+            assert reasons[4:]==['request_budget_unavailable']*4
+            assert principals==['attacker@example.test']*8
+            assert len(client.calls)==4
+            client.raw=None
+            victim=await http.get('/api/live/history/IWM?include_opening=true',headers={'authorization':'Bearer victim'})
+            assert victim.status_code==200 and victim.json()['opening']['status']=='available'
+            assert principals[-1]=='victim@example.test'
+            assert len(client.calls)==5
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('mode,token',[('firebase',None),('firebase','invalid'),('firebase','unverified'),('open',None),('open','attacker'),('iap',None),('iap','attacker')])
+def test_principal_missing_invalid_and_identity_free_modes_refuse_before_orb(route,client,authenticated_orb,monkeypatch,mode,token):
+    app,auth,_,_=authenticated_orb
+    def forbidden(_):raise AssertionError('unverified request reached calendar')
+    async def run():
+        async with _ASGIClient(transport=_httpx.ASGITransport(app=app),base_url='http://fixture') as http:
+            url='/api/live/history/IWM?include_opening=true'
+            # A real authorized response is already cached; auth refusal must
+            # precede even a cache hit, as well as calendar/claim/provider work.
+            assert (await http.get(url,headers={'authorization':'Bearer seed'})).json()['opening']['status']=='available'
+            monkeypatch.setattr(auth,'AUTH_MODE',mode)
+            monkeypatch.setattr(route,'session_for',forbidden)
+            headers={'x-user-email':'forged@example.test','x-goog-authenticated-user-email':'accounts.google.com:forged@example.test','x-request-state-user-email':'forged@example.test'}
+            if token:headers['authorization']='Bearer '+token
+            r=await http.get(url,headers=headers)
+            assert r.status_code==(403 if token=='unverified' else 401)
+            assert len(client.calls)==1 and len(route._OPENING_ATTEMPTS)==1
+            assert route._OPENING_FLIGHT.in_flight()==0
+    asyncio.run(run())
+
+
+def test_principal_cache_hits_uncharged_but_not_anonymous(route,client,authenticated_orb,monkeypatch):
+    app,auth,_,_=authenticated_orb
+    async def run():
+        async with _ASGIClient(transport=_httpx.ASGITransport(app=app),base_url='http://fixture') as http:
+            url='/api/live/history/IWM?include_opening=true'
+            assert (await http.get(url,headers={'authorization':'Bearer owner'})).json()['opening']['status']=='available'
+            client.raw=b'{}'
+            for i in range(3):
+                assert (await http.get(f'/api/live/history/A{i}?include_opening=true',headers={'authorization':'Bearer owner'})).json()['opening']['reason']=='source_identity'
+            for i in range(4):
+                assert (await http.get(f'/api/live/history/B{i}?include_opening=true',headers={'authorization':'Bearer second'})).json()['opening']['reason']=='source_identity'
+            for who in ('owner','victim'):
+                for _ in range(6):
+                    assert (await http.get(url,headers={'authorization':'Bearer '+who})).json()['opening']['status']=='available'
+            assert len(client.calls)==8 and len(route._OPENING_ATTEMPTS)==8
+            monkeypatch.setattr(auth,'AUTH_MODE','open')
+            assert (await http.get(url)).status_code==401
+            assert len(client.calls)==8
+    asyncio.run(run())
+
+
+def test_principal_global_eight_including_failures_and_rollover(route,client,authenticated_orb):
+    app,_,clock,_=authenticated_orb
+    async def run():
+        client.raw=b'{}'
+        async with _ASGIClient(transport=_httpx.ASGITransport(app=app),base_url='http://fixture') as http:
+            async def get(who,ticker):
+                return await http.get(f'/api/live/history/{ticker}?include_opening=true',headers={'authorization':'Bearer '+who})
+            for i in range(4):
+                pair=await asyncio.gather(get('a',f'A{i}'),get('b',f'B{i}'))
+                assert all(r.json()['opening']['reason']=='source_identity' for r in pair)
+            assert len(client.calls)==8 and len(route._OPENING_ATTEMPTS)==8
+            assert (await get('c','QQQ')).json()['opening']['reason']=='request_budget_unavailable'
+            clock[0]+=59.999
+            assert (await get('a','QQQ')).json()['opening']['reason']=='request_budget_unavailable'
+            clock[0]+=.001
+            assert (await get('a','QQQ')).json()['opening']['reason']=='source_identity'
+            assert len(client.calls)==9 and len(route._OPENING_ATTEMPTS)==1
+    asyncio.run(run())
+
+
+def test_principal_many_identities_cannot_grow_budget_memory(route,client,authenticated_orb):
+    app,_,clock,_=authenticated_orb
+    async def run():
+        client.raw=b'{}'
+        async with _ASGIClient(transport=_httpx.ASGITransport(app=app),base_url='http://fixture') as http:
+            for cycle in range(3):
+                for i in range(24):
+                    r=await http.get('/api/live/history/IWM?include_opening=true',headers={'authorization':f'Bearer user{cycle}-{i}'})
+                    assert r.json()['opening']['reason']==('source_identity' if i<8 else 'request_budget_unavailable')
+                    assert len(route._OPENING_ATTEMPTS)<=8
+                clock[0]+=60
+            assert len(client.calls)==24
+    asyncio.run(run())
+
+
+def test_principal_legacy_compact_history_unchanged(route,client,authenticated_orb,monkeypatch):
+    app,auth,_,_=authenticated_orb
+    monkeypatch.setattr(auth,'AUTH_MODE','open')
+    async def run():
+        async with _ASGIClient(transport=_httpx.ASGITransport(app=app),base_url='http://fixture') as http:
+            r=await http.get('/api/live/history/IWM')
+            assert r.status_code==200 and r.json()['count']>0
+            assert len(client.calls)==1 and client.calls[0]['outputsize']=='compact'
+            assert len(route._OPENING_ATTEMPTS)==0
+    asyncio.run(run())
+
+
+def test_principal_cancelled_dispatches_remain_charged_and_release_claims(route,client):
+    async def run():
+        client.wait=asyncio.Event()
+        for i in range(4):
+            task=asyncio.create_task(route._get_opening_history('IWM',NOW,principal='a@example.test'))
+            async with asyncio.timeout(2):
+                while len(client.calls)<i+1:await asyncio.sleep(.001)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):await task
+            assert route._OPENING_FLIGHT.in_flight()==0
+        client.wait=None
+        refused=await route._get_opening_history('IWM',NOW,principal='a@example.test')
+        assert refused['opening']['reason']=='request_budget_unavailable'
+        assert len(client.calls)==4
+        accepted=await route._get_opening_history('IWM',NOW,principal='b@example.test')
+        assert accepted['opening']['status']=='available'
+        assert len(client.calls)==5 and len(route._OPENING_ATTEMPTS)==5
+        assert route._OPENING_SLOTS.acquire(blocking=False)
+        assert route._OPENING_SLOTS.acquire(blocking=False)
+        route._OPENING_SLOTS.release();route._OPENING_SLOTS.release()
+    asyncio.run(run())

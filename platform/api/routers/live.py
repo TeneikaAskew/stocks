@@ -7,6 +7,7 @@ GET /api/live/status - market open/closed status based on Eastern Time
 """
 import asyncio
 import copy
+import hashlib
 import re
 import threading
 import time as monotonic_time
@@ -28,7 +29,8 @@ from typing import Optional
 
 import httpx
 import pandas as pd
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from api import auth
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
@@ -334,14 +336,17 @@ _OPENING_PARSERS = ThreadPoolExecutor(max_workers=2, thread_name_prefix="opening
 _OPENING_RATE_LOCK = threading.Lock()
 _OPENING_ATTEMPTS = deque()
 
-def _opening_dispatch_allowed():
+def _opening_dispatch_allowed(principal):
     clock = monotonic_time.monotonic()
+    # Store fixed-size principal keys only in the existing <=8 attempt records;
+    # rejected identities cannot grow a second map or evict spent allowance.
+    principal_key = hashlib.sha256(principal.encode("utf-8")).digest()
     with _OPENING_RATE_LOCK:
-        while _OPENING_ATTEMPTS and clock - _OPENING_ATTEMPTS[0] >= 60:
+        while _OPENING_ATTEMPTS and clock - _OPENING_ATTEMPTS[0][0] >= 60:
             _OPENING_ATTEMPTS.popleft()
-        if len(_OPENING_ATTEMPTS) >= 8:
+        if len(_OPENING_ATTEMPTS) >= 8 or sum(key == principal_key for _, key in _OPENING_ATTEMPTS) >= 4:
             return False
-        _OPENING_ATTEMPTS.append(clock) # failures count; no per-key eviction reset
+        _OPENING_ATTEMPTS.append((clock, principal_key)) # every dispatch, including failures
         return True
 
 def _opening_absent(ticker, reason, now):
@@ -361,7 +366,9 @@ def _opening_cached(key, now):
     result["opening"]["comparison_age_seconds"] = age
     return result
 
-async def _get_opening_history(ticker, now):
+async def _get_opening_history(ticker, now, *, principal):
+    if not isinstance(principal, str) or not principal:
+        raise HTTPException(status_code=401, detail="Verified ORB identity is required")
     if not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,9}", ticker):
         raise HTTPException(status_code=422, detail="Invalid ticker")
     # Calendar CPU work is bounded to a single date and uses an eight-day cache.
@@ -408,7 +415,7 @@ async def _get_opening_history(ticker, now):
         owns_slot = slots.acquire(blocking=False)
         if not owns_slot:
             return _opening_absent(ticker, "capacity_unavailable", now)
-        if not _opening_dispatch_allowed():
+        if not _opening_dispatch_allowed(principal):
             return _opening_absent(ticker, "request_budget_unavailable", now)
         params = {"function": "TIME_SERIES_INTRADAY", "symbol": ticker,
                   "interval": "1min", "outputsize": "full", "adjusted": "false",
@@ -450,16 +457,25 @@ async def _get_opening_history(ticker, now):
                 slots.release()
 
 @router.get("/api/live/history/{ticker}", response_model=LiveHistoryResponse, response_model_exclude_unset=True)
-async def get_live_history(ticker: str, include_opening: bool = False):
+async def get_live_history(ticker: str, include_opening: bool = False, request: Request = None):
     """Fetch last 100 1-min bars from Alpha Vantage TIME_SERIES_INTRADAY."""
     ticker_upper = ticker.upper()
+    principal = None
+    if include_opening:
+        # Only Firebase middleware supplies an application-verified identity.
+        # Open/IAP modes do not verify a principal here; never trust their
+        # caller-supplied identity headers or create an anonymous quota bucket.
+        if auth.AUTH_MODE == "firebase" and request is not None:
+            principal = getattr(request.state, "user_email", None)
+        if not isinstance(principal, str) or not principal:
+            raise HTTPException(status_code=401, detail="Verified ORB identity is required")
 
     if not AV_API_KEY:
         raise HTTPException(status_code=503, detail="Alpha Vantage API key not configured")
 
     now_et = datetime.now(ET_TZ)
     if include_opening:
-        return await _get_opening_history(ticker_upper, now_et)
+        return await _get_opening_history(ticker_upper, now_et, principal=principal)
     is_open, session = _is_market_open(now_et)
 
     params = {
