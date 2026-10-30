@@ -156,6 +156,7 @@ def _describe_score_rows(records: list[dict], storage_source: str) -> list[dict]
             row['inserted_at'] = str(row['inserted_at'])
         row['score_explanation'] = read_score_explanation(
             row.get('score_explanation'), score=row.get('score'), strategy=row['strategy'],
+            direction=str(row.get('direction', '')).lower(),
             run_kind=row['run_kind'], storage_source=storage_source,
             inserted_at=row['inserted_at'])
     return records

@@ -701,3 +701,23 @@ def test_cancel_during_materialization_keeps_slot_then_closes_unconsumed_body(mo
         assert len(created) == 1
         assert [chunk async for chunk in created[0].body_iterator] == []
     anyio.run(exercise)
+
+
+@pytest.mark.parametrize('storage', ['cloud_sql', 'gcs_parquet'])
+def test_opposite_direction_metadata_preserves_raw_row_but_is_invalid(client, monkeypatch, native, storage):
+    monkeypatch.setattr(signals, '_CLOUD_SQL', storage == 'cloud_sql')
+    if storage == 'cloud_sql':
+        monkeypatch.setattr(signals, '_query_or_503', lambda sql, params:
+            pd.DataFrame({'n': [1]}) if 'COUNT(*)' in sql else pd.DataFrame([{
+                'time': '2024-01-02T14:39Z', 'direction': 'PUT', 'score': 6,
+                'strategy': 'momentum', 'score_explanation': native.score_explanation}]))
+    else:
+        monkeypatch.setattr(signals, '_load_ticker_df_parquet', lambda ticker: ('fixture.parquet', pd.DataFrame([{
+            'entry_time': '2024-01-02T14:39Z', 'trade_type': 'put', 'signal_strength': 6,
+            'strategy': 'momentum', 'score_explanation': native.score_explanation}])))
+    response = client.get('/api/signals/IWM')
+    assert response.status_code == 200
+    row = response.json()['signals'][0]
+    assert row['direction'] == 'PUT' and row['score'] == 6
+    assert row['score_explanation']['status'] == 'invalid_record'
+    assert row['score_explanation']['base_max'] is None

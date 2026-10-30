@@ -442,6 +442,44 @@ _SCORE_PROVENANCE_KEYS = frozenset({
 })
 
 
+
+def _score_input_bytes(frame):
+    """Lossless deterministic scalar identity; never rounded display JSON."""
+    import json
+    from datetime import date, datetime, timedelta
+
+    def scalar(value):
+        if value is pd.NA:
+            return ['missing', 'pd.NA']
+        if value is pd.NaT:
+            return ['missing', 'NaT']
+        if isinstance(value, np.generic):
+            value = value.item()
+        if isinstance(value, float):
+            return ['float', value.hex()]
+        if isinstance(value, (pd.Timestamp, datetime, date)):
+            return ['datetime', type(value).__name__, value.isoformat()]
+        if isinstance(value, (pd.Timedelta, timedelta)):
+            return ['timedelta', str(value)]
+        if value is None or isinstance(value, (str, int, bool)):
+            return value
+        if isinstance(value, bytes):
+            return ['bytes', value.hex()]
+        if isinstance(value, (tuple, list)):
+            return [type(value).__name__, [scalar(item) for item in value]]
+        raise TypeError('unsupported native score input scalar')
+
+    payload = {
+        'columns': [scalar(value) for value in frame.columns],
+        'column_names': [scalar(value) for value in frame.columns.names],
+        'dtypes': [str(dtype) for dtype in frame.dtypes],
+        'index': [scalar(value) for value in frame.index],
+        'index_names': [scalar(value) for value in frame.index.names],
+        'index_dtype': str(frame.index.dtype),
+        'data': [[scalar(value) for value in row] for row in frame.itertuples(index=False, name=None)],
+    }
+    return json.dumps(payload, sort_keys=True, allow_nan=False, separators=(',', ':')).encode()
+
 def score_execution_context(*, producer_definition, strategy, direction=None,
                             source_path, config, frame):
     """Record local generation identity, never original market availability.
@@ -467,8 +505,7 @@ def score_execution_context(*, producer_definition, strategy, direction=None,
         }, sort_keys=True).encode()).hexdigest(),
         'config_sha256': hashlib.sha256(json.dumps(config, sort_keys=True,
             allow_nan=False).encode()).hexdigest(),
-        'input_sha256': hashlib.sha256(frame.to_json(orient='split',
-            date_format='iso').encode()).hexdigest(),
+        'input_sha256': hashlib.sha256(_score_input_bytes(frame)).hexdigest(),
         'generated_at': datetime.now(timezone.utc).isoformat(), 'inserted_at': None,
     }
 
@@ -481,7 +518,7 @@ def _score_integer(value):
             and value == int(value))
 
 
-def _validate_score_explanation(value, score=None, strategy=None):
+def _validate_score_explanation(value, score=None, strategy=None, direction=None):
     """Refuse malformed/unknown data; no inferred denominator or truncation."""
     import json
     import re
@@ -506,6 +543,7 @@ def _validate_score_explanation(value, score=None, strategy=None):
     native_strategy, ids, maximum, kind = definitions[p['producer_definition']]
     if (p['corpus'] != 'historical_signals' or p['strategy'] != native_strategy
             or (strategy is not None and strategy != native_strategy)
+            or (direction is not None and direction != p['direction'])
             or p['profile'] != 'historical-default' or p['direction'] not in ids
             or value['kind'] != kind):
         raise ValueError('score_contract_profile_mismatch')
@@ -556,7 +594,7 @@ def build_score_explanation(*, base_count, matched_conditions, provenance):
     return result
 
 
-def read_score_explanation(value, *, score, strategy=None, run_kind=None,
+def read_score_explanation(value, *, score, strategy=None, direction=None, run_kind=None,
                            storage_source, inserted_at=None):
     """Allowlisted API projection; missing/invalid evidence preserves raw score.
 
@@ -586,13 +624,13 @@ def read_score_explanation(value, *, score, strategy=None, run_kind=None,
             value = json.loads(value)
             if not _score_integer(score):
                 raise ValueError('score_contract_stored_total_missing')
-            _validate_score_explanation(value, score=score, strategy=strategy)
+            _validate_score_explanation(value, score=score, strategy=strategy, direction=direction)
             result = deepcopy(value)
             p = result['provenance']
             if p['run_kind'] is not None and run_kind is not None and p['run_kind'] != run_kind:
                 raise ValueError('score_contract_run_kind_mismatch')
             p.update(run_kind=run_kind, storage_source=storage_source, inserted_at=inserted_at)
-            _validate_score_explanation(result, score=score, strategy=strategy)
+            _validate_score_explanation(result, score=score, strategy=strategy, direction=direction)
             return result
         except (ValueError, TypeError, KeyError, OverflowError):
             reason = 'score_contract_invalid'

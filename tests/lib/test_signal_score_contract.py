@@ -93,3 +93,38 @@ def test_actual_native_momentum_negative_remains_no_signal():
 def test_missing_stored_score_does_not_qualify_metadata():
     e=native_momentum().score_explanation
     assert read_score_explanation(e,score=None,strategy='momentum',storage_source='cloud_sql')['status']=='invalid_record'
+
+
+def test_input_identity_distinguishes_native_threshold_crossing_and_adjacent_float_neighbors():
+    import numpy as np
+    fixture = json.loads((Path(__file__).parents[1] / 'fixtures/historical_score_native_controls.json').read_text())['cases'][0]
+    for low, high in [(1.2 - 1e-12, 1.2 + 1e-12), (np.nextafter(1.2, -np.inf), np.nextafter(1.2, np.inf))]:
+        rows = []
+        for value in (low, high):
+            frame = pd.DataFrame(fixture['enriched_rows'])
+            frame['Time'] = pd.to_datetime(frame.Time)
+            frame['RVol_Recent_20'] = value
+            rows.append(MarketAnalyzer().generate_technical_signals(frame).iloc[-1])
+        assert [int(row.signal_strength) for row in rows] == [5, 6]
+        assert rows[0].score_explanation['provenance']['input_sha256'] != rows[1].score_explanation['provenance']['input_sha256']
+
+
+def test_mapper_rejects_opposite_direction_native_metadata():
+    from scripts.run_historical_signals import map_signals_to_table
+    row = native_momentum().copy()
+    row['trade_type'] = 'put'
+    with pytest.raises(ValueError, match='invalid native score_explanation'):
+        map_signals_to_table(pd.DataFrame([row]), 'IWM')
+
+
+def test_input_identity_preserves_nanosecond_time_index_and_dtype():
+    from lib.signals import _score_input_bytes
+    frame = pd.DataFrame({'Time': [pd.Timestamp('2026-10-30T12:00:00.000000001Z')], 'value': [1.0]})
+    original = _score_input_bytes(frame)
+    assert _score_input_bytes(frame.copy(deep=True)) == original
+    later = frame.copy(); later['Time'] += pd.Timedelta(1, unit='ns')
+    assert _score_input_bytes(later) != original
+    moved = frame.copy(); moved.index = [1]
+    assert _score_input_bytes(moved) != original
+    typed = frame.copy(); typed['value'] = typed['value'].astype('float32')
+    assert _score_input_bytes(typed) != original

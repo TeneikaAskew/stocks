@@ -292,6 +292,7 @@ def map_signals_to_table(signals_df: pd.DataFrame, ticker: str,
             if 'score_explanation' in extra and extra['score_explanation'] != value:
                 raise ValueError('reserved score_explanation collision')
             explanation = read_score_explanation(value, score=row.get('signal_strength'),
+                direction=str(row.get('trade_type', '')).lower(),
                 strategy=strategy, run_kind=signals_df.attrs.get('run_kind'),
                 storage_source=None)
             if explanation['status'] != 'recorded':
