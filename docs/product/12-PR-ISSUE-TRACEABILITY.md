@@ -1,6 +1,6 @@
 # PR, Issue, and Audit Traceability
 
-**Last reviewed:** 2026-10-08 · **Depth:** verified · **Against:** `295a8873` · **Last scanned:** 2026-09-29 · **Owner:** TBD
+**Last reviewed:** 2026-10-08 · **Depth:** verified · **Against:** `295a8873` · **Last scanned:** 2026-10-20 · **Owner:** TBD
 
 ## Coverage and method
 
@@ -341,11 +341,15 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and sol
 | [#1076](https://github.com/TeneikaAskew/stocks/issues/1076) | DEBT | `MARKET_HOLIDAYS_2026` is a single-year constant; holiday-aware checks break in 2027 |
 | [#1190](https://github.com/TeneikaAskew/stocks/issues/1190) | UNTRIAGED | Recompute tooling for bar-derived results after the intraday re-framing migration |
 
-**PR lineage:** [#204](https://github.com/TeneikaAskew/stocks/pull/204) *evolution* · [#205](https://github.com/TeneikaAskew/stocks/pull/205) *structural* · [#322](https://github.com/TeneikaAskew/stocks/pull/322) *remediation* · [#325](https://github.com/TeneikaAskew/stocks/pull/325) *evolution* · [#339](https://github.com/TeneikaAskew/stocks/pull/339) *remediation* · [#518](https://github.com/TeneikaAskew/stocks/pull/518) *remediation* · [#760](https://github.com/TeneikaAskew/stocks/pull/760) *remediation* · [#1607](https://github.com/TeneikaAskew/stocks/pull/1607) *remediation*
+**PR lineage:** [#204](https://github.com/TeneikaAskew/stocks/pull/204) *evolution* · [#205](https://github.com/TeneikaAskew/stocks/pull/205) *structural* · [#322](https://github.com/TeneikaAskew/stocks/pull/322) *remediation* · [#325](https://github.com/TeneikaAskew/stocks/pull/325) *evolution* · [#339](https://github.com/TeneikaAskew/stocks/pull/339) *remediation* · [#518](https://github.com/TeneikaAskew/stocks/pull/518) *remediation* · [#760](https://github.com/TeneikaAskew/stocks/pull/760) *remediation* · [#1607](https://github.com/TeneikaAskew/stocks/pull/1607) *remediation* · [#1606](https://github.com/TeneikaAskew/stocks/pull/1606) *remediation*
 
 Credential-safe logger lineage: [#1588](https://github.com/TeneikaAskew/stocks/pull/1588) original specification, [#1604](https://github.com/TeneikaAskew/stocks/pull/1604) unchanged-runtime source-proof successor, preserved draft [#1605](https://github.com/TeneikaAskew/stocks/pull/1605), non-stacked replacement [#1607](https://github.com/TeneikaAskew/stocks/pull/1607). Same runtime/test blobs and53-test/independent-review receipts; no acceptance or spent-review reset. Source proof/no-new audit pass; final current-head review/CI and actual logger-hardened deployment remain pending. Typed-news semantics #1600 and native connector binding remain separate.
 
+Allowance correction lineage: [#1587](https://github.com/TeneikaAskew/stocks/pull/1587) original specification, [#1604](https://github.com/TeneikaAskew/stocks/pull/1604) unchanged-runtime source-proof successor, preserved draft [#1603](https://github.com/TeneikaAskew/stocks/pull/1603), non-stacked replacement [#1606](https://github.com/TeneikaAskew/stocks/pull/1606). Same five runtime/test blobs and224-test/independent-review receipts; no acceptance or spent-review reset. Source proof and no-new audit pass; final current-head external review/CI and safe deployment remain pending. No global unused-quota or recovered-data claim.
+
 ### FEAT-OPTION-001 — Options / gamma (33 open)
+
+**PR lineage:** [#1565](https://github.com/TeneikaAskew/stocks/pull/1565) continues the isolated scheduled collector under approved successor [specification](../superpowers/specs/2026-10-29-feat-option-001-collector-source-declaration.md), admitted by #1636. Existing CLI delegates to bounded collector-only transport; threaded API behavior and financial normalization are preserved. LOCAL1/2 and CODE1–3 history remain; the explicitly approved runtime CODE4/current SEC and required checks cover the final integrated source. Specification aggregate4/CODE4 is separate. Source/test evidence is not job deployment, snapshot completeness or historical repair; seven future journal tables remain excluded.
 
 | Issue | Sev | Title |
 |---|---|---|
@@ -404,6 +408,8 @@ Credential-safe logger lineage: [#1588](https://github.com/TeneikaAskew/stocks/p
 **PR lineage:** [#355](https://github.com/TeneikaAskew/stocks/pull/355) *origin* · [#575](https://github.com/TeneikaAskew/stocks/pull/575) *verdict* · [#588](https://github.com/TeneikaAskew/stocks/pull/588) *verdict* · [#591](https://github.com/TeneikaAskew/stocks/pull/591) *origin* · [#593](https://github.com/TeneikaAskew/stocks/pull/593) *evolution* · [#594](https://github.com/TeneikaAskew/stocks/pull/594) *evolution* · [#595](https://github.com/TeneikaAskew/stocks/pull/595) *evolution* · [#597](https://github.com/TeneikaAskew/stocks/pull/597) *structural* · [#615](https://github.com/TeneikaAskew/stocks/pull/615) *evolution* · [#622](https://github.com/TeneikaAskew/stocks/pull/622) *remediation* · [#629](https://github.com/TeneikaAskew/stocks/pull/629) *remediation* · [#637](https://github.com/TeneikaAskew/stocks/pull/637) *structural* · [#638](https://github.com/TeneikaAskew/stocks/pull/638) *remediation* · [#647](https://github.com/TeneikaAskew/stocks/pull/647) *evolution* · [#698](https://github.com/TeneikaAskew/stocks/pull/698) *origin* · [#707](https://github.com/TeneikaAskew/stocks/pull/707) *origin* · [#719](https://github.com/TeneikaAskew/stocks/pull/719) *evolution* · [#735](https://github.com/TeneikaAskew/stocks/pull/735) *evolution* · [#810](https://github.com/TeneikaAskew/stocks/pull/810) *structural* · [#811](https://github.com/TeneikaAskew/stocks/pull/811) *remediation*
 
 ### FEAT-SIGNAL-001 — Signals / execution (25 open)
+
+**PR lineage:** [#1620](https://github.com/TeneikaAskew/stocks/pull/1620) implements the approved [#1619](https://github.com/TeneikaAskew/stocks/pull/1619) contract using existing JSONB, native producer-derived controls and typed SQL/parquet responses. This is source/local-test evidence pending normal review and deployment, not alert publication, original point-in-time certification or financial-performance proof. It does not close the broader issues below or rewrite legacy scores.
 
 | Issue | Sev | Title |
 |---|---|---|
@@ -634,7 +640,7 @@ Live registry continuation: [#1599](https://github.com/TeneikaAskew/stocks/pull/
 | [solyra#130](https://github.com/TeneikaAskew/solyra/issues/130) | P3 | [P3][Playbook] Unreachable empty state tells the reader to run scripts/run_pipeline.py |
 | [solyra#132](https://github.com/TeneikaAskew/solyra/issues/132) | P3 | [P3][Playbook] The setup count has no singular, so one card reads 1 setups and the spec asserts it |
 
-**PR lineage:** [#293](https://github.com/TeneikaAskew/stocks/pull/293) *audit* · [#335](https://github.com/TeneikaAskew/stocks/pull/335) *evolution* · [#336](https://github.com/TeneikaAskew/stocks/pull/336) *evolution* · [#444](https://github.com/TeneikaAskew/stocks/pull/444) *origin* · [#620](https://github.com/TeneikaAskew/stocks/pull/620) *evolution* · [#774](https://github.com/TeneikaAskew/stocks/pull/774) *remediation*
+**PR lineage:** [#1640](https://github.com/TeneikaAskew/stocks/pull/1640) *#1308 market-date runtime* · [#1637](https://github.com/TeneikaAskew/stocks/pull/1637) *market-date specification* · [#293](https://github.com/TeneikaAskew/stocks/pull/293) *audit* · [#335](https://github.com/TeneikaAskew/stocks/pull/335) *evolution* · [#336](https://github.com/TeneikaAskew/stocks/pull/336) *evolution* · [#444](https://github.com/TeneikaAskew/stocks/pull/444) *origin* · [#620](https://github.com/TeneikaAskew/stocks/pull/620) *evolution* · [#774](https://github.com/TeneikaAskew/stocks/pull/774) *remediation*
 
 ### FEAT-SETTINGS-001 — Settings (13 open)
 
@@ -759,7 +765,11 @@ Live registry continuation: [#1599](https://github.com/TeneikaAskew/stocks/pull/
 
 **Bounded event-reaction integration:** [approved spec #1593](https://github.com/TeneikaAskew/stocks/pull/1593), [implementation #1608](https://github.com/TeneikaAskew/stocks/pull/1608). Repairs the existing producer/brief and additive existing-table evidence only; no issue closure, deployed-screen or forecast claim.
 
-**PR lineage:** [#220](https://github.com/TeneikaAskew/stocks/pull/220) · [#514](https://github.com/TeneikaAskew/stocks/pull/514) · [#532](https://github.com/TeneikaAskew/stocks/pull/532) (the README's PRs column; kinds not classified)
+**PR lineage:** [#220](https://github.com/TeneikaAskew/stocks/pull/220) · [#514](https://github.com/TeneikaAskew/stocks/pull/514) · [#532](https://github.com/TeneikaAskew/stocks/pull/532) (the README's PRs column; kinds not classified) · [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) (finite nullable EPS implementation)
+
+Finite nullable estimate contract: [#1618](https://github.com/TeneikaAskew/stocks/pull/1618) (specification; merged). Implementation remains a separate normal delivery. #1301 is touched for invalid optional estimates only; its multi-source estimate-dedup behavior is not claimed fixed.
+
+Implementation draft [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) follows merged finite-nullable specification #1618. Numeric-title portion of #1301 only; no claim of fixing its source-dedup concern or broad #1269. Local full unit7719passed/51skipped/112warnings and separate realPG/API proof; current-head hosted review and actual existing API/producer rollout remain required.
 
 ### FEAT-LIVE-001 — Intraday monitoring (20 open)
 

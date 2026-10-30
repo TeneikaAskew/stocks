@@ -1,6 +1,6 @@
 # MODEL-STYLE-001 — User style mining
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-10-20 · **Owner:** TBD
 
 **Code:** `lib/style_miner.py` (301 lines), `platform/api/routers/backtest.py`
 (`/api/style/mine-and-validate`) · **Table:** `user_style_results` ·

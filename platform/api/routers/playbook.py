@@ -59,6 +59,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from lib.eastern_time import market_today
+
 from api import gcs_reader  # noqa: E402
 from api.schemas import (
     PlaybookEvaluateResponse,
@@ -321,7 +323,7 @@ def get_playbook(ticker: str, date: str | None = None):
             as_of = date_cls.fromisoformat(date)
         except ValueError:
             raise HTTPException(status_code=422, detail=f"date must be YYYY-MM-DD, got {date!r}")
-    reference = as_of or datetime.now(timezone.utc).date()
+    reference = as_of or market_today()
 
     cache_key = (ticker_upper, date or "latest")
     cached = _PLAYBOOK_CACHE.get(cache_key)
