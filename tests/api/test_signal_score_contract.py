@@ -435,6 +435,9 @@ def test_signal_slow_consumer_deadline_releases_memory_and_admission(monkeypatch
     assert not any(m['type'] == 'http.response.body' and not m.get('more_body', False)
                    for m in sent), 'timeout must not falsely finish partial JSON'
     assert response.owns_slot is False
+    # The 1 ms limit above forces a queued competing request to expire.
+    # Restore the production admission deadline for the independent cleanup check.
+    monkeypatch.setattr(signals, '_SIGNAL_QUEUE_DEADLINE_SECONDS', 35)
     monkeypatch.setattr(signals, '_query_signals_sql', lambda *a: (0, []))
     next_response = anyio.run(signals.get_signals, 'SPY', 50000, '', 0, None, None)
     async def discard(message):

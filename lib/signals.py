@@ -443,8 +443,9 @@ _SCORE_PROVENANCE_KEYS = frozenset({
 
 
 
-def _score_input_bytes(frame):
-    """Lossless deterministic scalar identity; never rounded display JSON."""
+def _score_input_sha256(frame):
+    """Lossless identity with scratch memory bounded to one input row."""
+    import hashlib
     import json
     from datetime import date, datetime, timedelta
 
@@ -469,16 +470,22 @@ def _score_input_bytes(frame):
             return [type(value).__name__, [scalar(item) for item in value]]
         raise TypeError('unsupported native score input scalar')
 
-    payload = {
+    header = {
+        'version': 1,
         'columns': [scalar(value) for value in frame.columns],
         'column_names': [scalar(value) for value in frame.columns.names],
         'dtypes': [str(dtype) for dtype in frame.dtypes],
-        'index': [scalar(value) for value in frame.index],
         'index_names': [scalar(value) for value in frame.index.names],
         'index_dtype': str(frame.index.dtype),
-        'data': [[scalar(value) for value in row] for row in frame.itertuples(index=False, name=None)],
     }
-    return json.dumps(payload, sort_keys=True, allow_nan=False, separators=(',', ':')).encode()
+    def encode(value):
+        return json.dumps(value, sort_keys=True, allow_nan=False, separators=(',', ':')).encode()
+
+    digest = hashlib.sha256(encode(header))
+    for index, row in zip(frame.index, frame.itertuples(index=False, name=None)):
+        digest.update(b'\n')
+        digest.update(encode([scalar(index), [scalar(value) for value in row]]))
+    return digest.hexdigest()
 
 def score_execution_context(*, producer_definition, strategy, direction=None,
                             source_path, config, frame):
@@ -505,7 +512,7 @@ def score_execution_context(*, producer_definition, strategy, direction=None,
         }, sort_keys=True).encode()).hexdigest(),
         'config_sha256': hashlib.sha256(json.dumps(config, sort_keys=True,
             allow_nan=False).encode()).hexdigest(),
-        'input_sha256': hashlib.sha256(_score_input_bytes(frame)).hexdigest(),
+        'input_sha256': _score_input_sha256(frame),
         'generated_at': datetime.now(timezone.utc).isoformat(), 'inserted_at': None,
     }
 

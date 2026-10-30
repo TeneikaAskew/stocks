@@ -118,13 +118,26 @@ def test_mapper_rejects_opposite_direction_native_metadata():
 
 
 def test_input_identity_preserves_nanosecond_time_index_and_dtype():
-    from lib.signals import _score_input_bytes
+    from lib.signals import _score_input_sha256
     frame = pd.DataFrame({'Time': [pd.Timestamp('2026-10-30T12:00:00.000000001Z')], 'value': [1.0]})
-    original = _score_input_bytes(frame)
-    assert _score_input_bytes(frame.copy(deep=True)) == original
+    original = _score_input_sha256(frame)
+    assert _score_input_sha256(frame.copy(deep=True)) == original
     later = frame.copy(); later['Time'] += pd.Timedelta(1, unit='ns')
-    assert _score_input_bytes(later) != original
+    assert _score_input_sha256(later) != original
     moved = frame.copy(); moved.index = [1]
-    assert _score_input_bytes(moved) != original
+    assert _score_input_sha256(moved) != original
     typed = frame.copy(); typed['value'] = typed['value'].astype('float32')
-    assert _score_input_bytes(typed) != original
+    assert _score_input_sha256(typed) != original
+
+
+def test_lossless_input_identity_retains_bounded_scratch_memory():
+    import tracemalloc
+    from lib.signals import _score_input_sha256
+    frame = pd.DataFrame({'price': [1.2345678901234567] * 10000, 'volume': range(10000)})
+    tracemalloc.start()
+    try:
+        _score_input_sha256(frame)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 2 * 1024 * 1024, 'input hashing must not retain a serialized copy of the complete frame'
