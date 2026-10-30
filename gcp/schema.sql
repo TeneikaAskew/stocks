@@ -4619,37 +4619,115 @@ CREATE INDEX idx_eeo_reported_date
 DROP MATERIALIZED VIEW IF EXISTS earnings_ticker_lean CASCADE;
 
 CREATE MATERIALIZED VIEW earnings_ticker_lean AS
-WITH ranked_daily_paths AS (
-    SELECT *, ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY reported_date DESC) AS path_rank
+WITH daily_candidates AS (
+    SELECT *,
+        CASE
+          WHEN daily_path_v1 IS NULL THEN 'missing_daily_descriptor'
+          WHEN daily_path_v1->>'version' IS DISTINCT FROM 'earnings-daily-path-v1'
+            OR daily_path_v1->>'event_id' IS DISTINCT FROM ticker || ':' || fiscal_date_ending::text || ':' || reported_date::text
+            OR daily_path_v1->>'reaction_basis' IS DISTINCT FROM reaction_basis
+            OR COALESCE(daily_path_v1->>'basis_id','') = ''
+            OR COALESCE(daily_path_v1->>'source_identity','') = ''
+            OR COALESCE(daily_path_v1->>'input_identity','') !~ '^[0-9a-f]{64}$'
+            THEN 'invalid_daily_identity'
+          WHEN COALESCE(daily_path_v1->>'status','') NOT IN ('complete','not_applicable')
+            THEN 'descriptor_not_mature'
+          WHEN daily_path_v1->>'mature_at' IS NULL
+            OR (daily_path_v1->>'mature_at')::timestamptz > NOW()
+            THEN 'feature_not_mature'
+          ELSE NULL
+        END AS daily_admission_reason
     FROM earnings_event_outcomes
+), path_candidates AS (
+    SELECT *, CASE
+          WHEN daily_admission_reason IS NOT NULL THEN daily_admission_reason
+          WHEN daily_path_v1 #>> '{per_metric,native_classifier_inputs,version}' IS DISTINCT FROM 'earnings-native-inputs-v1'
+            OR daily_path_v1 #> '{per_metric,native_classifier_inputs,available}' IS DISTINCT FROM 'true'::jsonb
+            OR daily_path_v1 #>> '{per_metric,native_classifier_inputs,event_id}' IS DISTINCT FROM daily_path_v1->>'event_id'
+            OR daily_path_v1 #>> '{per_metric,native_classifier_inputs,reaction_basis}' IS DISTINCT FROM reaction_basis
+            OR COALESCE(daily_path_v1 #>> '{per_metric,native_classifier_inputs,source_identity}','') = ''
+            OR COALESCE(daily_path_v1 #>> '{per_metric,native_classifier_inputs,input_identity}','') !~ '^[0-9a-f]{64}$'
+            OR daily_path_v1 #>> '{per_metric,native_classifier_inputs,basis_id}' IS DISTINCT FROM daily_path_v1->>'basis_id'
+            OR daily_path_v1 #>> '{per_metric,native_classifier_inputs,mature_at}' IS NULL
+            OR (daily_path_v1 #>> '{per_metric,native_classifier_inputs,mature_at}')::timestamptz IS DISTINCT FROM (daily_path_v1->>'mature_at')::timestamptz
+            OR daily_path_v1 #>> '{per_metric,native_classifier_inputs,source_observed_at}' IS NULL
+            OR (daily_path_v1 #>> '{per_metric,native_classifier_inputs,source_observed_at}')::timestamptz < (daily_path_v1->>'mature_at')::timestamptz
+            THEN 'unqualified_native_classifier_inputs'
+          WHEN reaction_gap_pct IS NULL OR pre_earnings_drift_10d_pct IS NULL
+            OR sustain_5d_pct IS NULL OR direction_consistent_5d IS NULL OR is_reversal_5d IS NULL
+            THEN 'missing_native_fields'
+          ELSE NULL
+        END AS admission_reason
+    FROM daily_candidates
+), ranked_native_paths AS (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY reported_date DESC, fiscal_date_ending DESC) AS native_rank
+    FROM path_candidates WHERE admission_reason IS NULL
+), native_rows AS (
+    SELECT * FROM ranked_native_paths WHERE native_rank <= 12
+), native_reason_counts AS (
+    SELECT ticker,jsonb_object_agg(admission_reason,n) AS reasons
+    FROM (SELECT ticker,admission_reason,COUNT(*) AS n FROM path_candidates
+          WHERE admission_reason IS NOT NULL GROUP BY ticker,admission_reason) counts GROUP BY ticker
+), native_audits AS (
+    SELECT c.ticker,COUNT(*) FILTER (WHERE admission_reason IS NULL) AS admitted_n,
+        jsonb_build_object('candidate_n',COUNT(*),
+          'admitted_n',COUNT(*) FILTER (WHERE admission_reason IS NULL),
+          'excluded_n',COUNT(*) FILTER (WHERE admission_reason IS NOT NULL),
+          'excluded_reason_counts',COALESCE(reasons,'{}'::jsonb)) AS audit
+    FROM path_candidates c LEFT JOIN native_reason_counts r ON r.ticker=c.ticker
+    GROUP BY c.ticker,reasons
+), native_summaries AS (
+    SELECT a.ticker,COUNT(n.reported_date) AS qualified_native_n,
+        100.0*COUNT(n.reported_date) FILTER (WHERE direction_consistent_5d) / NULLIF(COUNT(n.reported_date),0) AS consistency_pct,
+        100.0*COUNT(n.reported_date) FILTER (WHERE reaction_gap_pct>0) / NULLIF(COUNT(n.reported_date),0) AS upward_gap_pct,
+        a.audit || jsonb_build_object('selected_n',COUNT(n.reported_date),
+            'not_selected_older_n',GREATEST(a.admitted_n-COUNT(n.reported_date),0)) AS audit,
+        COALESCE(jsonb_agg(jsonb_build_object(
+            'event_id',daily_path_v1->>'event_id','reported_date',reported_date,'fiscal_date_ending',fiscal_date_ending,
+            'status',daily_path_v1->>'status','reason',daily_path_v1->>'reason')
+            ORDER BY reported_date DESC) FILTER (WHERE n.reported_date IS NOT NULL),'[]'::jsonb) AS events
+    FROM native_audits a LEFT JOIN native_rows n ON n.ticker=a.ticker
+    GROUP BY a.ticker,a.audit,a.admitted_n
+), ranked_daily_paths AS (
+    SELECT *, true AS path_ready,
+        ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY reported_date DESC, fiscal_date_ending DESC) AS path_rank
+    FROM path_candidates WHERE daily_admission_reason IS NULL
 ), path_rows AS (
-    SELECT *, COALESCE(daily_path_v1->>'status' IN ('complete', 'not_applicable'), false)
-              AND COALESCE((daily_path_v1->>'mature_at')::timestamptz <= NOW(), false) AS path_ready,
-           reaction_gap_pct IS NOT NULL AND pre_earnings_drift_10d_pct IS NOT NULL
-           AND sustain_5d_pct IS NOT NULL AND direction_consistent_5d IS NOT NULL
-           AND is_reversal_5d IS NOT NULL AS native_fields_present
-    FROM ranked_daily_paths WHERE path_rank <= 12
+    SELECT * FROM ranked_daily_paths WHERE path_rank <= 12
+), candidate_reason_counts AS (
+    SELECT ticker, jsonb_object_agg(daily_admission_reason,n) AS reasons
+    FROM (SELECT ticker, daily_admission_reason,COUNT(*) AS n FROM path_candidates
+          WHERE daily_admission_reason IS NOT NULL GROUP BY ticker,daily_admission_reason) counts
+    GROUP BY ticker
+), candidate_audits AS (
+    SELECT c.ticker, COUNT(*) FILTER (WHERE daily_admission_reason IS NULL) AS admitted_n,
+        jsonb_build_object('candidate_n',COUNT(*),
+          'admitted_n',COUNT(*) FILTER (WHERE daily_admission_reason IS NULL),
+          'excluded_n',COUNT(*) FILTER (WHERE daily_admission_reason IS NOT NULL),
+          'excluded_reason_counts',COALESCE(reasons,'{}'::jsonb)) AS audit
+    FROM path_candidates c LEFT JOIN candidate_reason_counts r ON r.ticker=c.ticker
+    GROUP BY c.ticker,reasons
 ), path_summaries AS (
-    SELECT ticker, jsonb_build_object(
+    SELECT audit.ticker, jsonb_build_object(
         'version', 'earnings-daily-path-summary-v1',
         'mode', 'retrospective_current_vintage',
-        'scope', 'latest_12_event_candidates_daily_closing_steps_only',
+        'scope', 'latest_12_prior_distinct_mature_admitted_events_daily_closing_steps_only',
+        'candidate_audit',audit.audit || jsonb_build_object('selected_n',COUNT(p.reported_date),
+            'not_selected_older_n',GREATEST(audit.admitted_n-COUNT(p.reported_date),0)),
         'point_in_time_verified', false,
         'step_unit', 'trading_session_close_index_zero_is_reaction_session_close',
-        'event_n', COUNT(*),
-        'qualified_native_n', COUNT(*) FILTER (WHERE path_ready AND native_fields_present),
-        'historical_direction_consistency_pct',
-            100.0 * COUNT(*) FILTER (WHERE path_ready AND native_fields_present AND direction_consistent_5d)
-            / NULLIF(COUNT(*) FILTER (WHERE path_ready AND native_fields_present), 0),
-        'historical_upward_opening_gap_pct',
-            100.0 * COUNT(*) FILTER (WHERE path_ready AND native_fields_present AND reaction_gap_pct > 0)
-            / NULLIF(COUNT(*) FILTER (WHERE path_ready AND native_fields_present), 0),
+        'event_n', COUNT(p.reported_date),
+        'qualified_native_n',ns.qualified_native_n,
+        'native_events',ns.events,
+        'native_candidate_audit',ns.audit,
+        'historical_direction_consistency_pct',ns.consistency_pct,
+        'historical_upward_opening_gap_pct',ns.upward_gap_pct,
         'first_opposite_close', jsonb_build_object(
             'eligible_n', COUNT(*) FILTER (WHERE path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,available}')::boolean, false)),
             'observed_n', COUNT(*) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,available}')::boolean, false)) AND daily_path_v1->>'first_opposite_close_step' IS NOT NULL),
             'right_censored_n', COUNT(*) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,available}')::boolean, false)) AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,censored}')::boolean, false)),
             'not_applicable_n', COUNT(*) FILTER (WHERE daily_path_v1 #>> '{per_metric,first_opposite_close,status}' = 'not_applicable'),
-            'unavailable_n', COUNT(*) FILTER (WHERE NOT (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,available}')::boolean, false)) AND NOT COALESCE(daily_path_v1 #>> '{per_metric,first_opposite_close,status}' = 'not_applicable', false)),
+            'unavailable_n', COUNT(*) FILTER (WHERE p.reported_date IS NOT NULL AND NOT (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,available}')::boolean, false)) AND NOT COALESCE(daily_path_v1 #>> '{per_metric,first_opposite_close,status}' = 'not_applicable', false)),
             'observed_rate_pct', 100.0 * COUNT(*) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,available}')::boolean, false)) AND daily_path_v1->>'first_opposite_close_step' IS NOT NULL) / NULLIF(COUNT(*) FILTER (WHERE path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,available}')::boolean, false)), 0),
             'median_first_observed_step', percentile_cont(0.5) WITHIN GROUP (ORDER BY (daily_path_v1->>'first_opposite_close_step')::double precision) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,first_opposite_close,available}')::boolean, false)) AND daily_path_v1->>'first_opposite_close_step' IS NOT NULL)
         ),
@@ -4658,18 +4736,20 @@ WITH ranked_daily_paths AS (
             'observed_n', COUNT(*) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,available}')::boolean, false)) AND daily_path_v1->>'closing_gap_fill_step' IS NOT NULL),
             'right_censored_n', COUNT(*) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,available}')::boolean, false)) AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,censored}')::boolean, false)),
             'not_applicable_n', COUNT(*) FILTER (WHERE daily_path_v1 #>> '{per_metric,closing_gap_fill,status}' = 'not_applicable'),
-            'unavailable_n', COUNT(*) FILTER (WHERE NOT (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,available}')::boolean, false)) AND NOT COALESCE(daily_path_v1 #>> '{per_metric,closing_gap_fill,status}' = 'not_applicable', false)),
+            'unavailable_n', COUNT(*) FILTER (WHERE p.reported_date IS NOT NULL AND NOT (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,available}')::boolean, false)) AND NOT COALESCE(daily_path_v1 #>> '{per_metric,closing_gap_fill,status}' = 'not_applicable', false)),
             'observed_rate_pct', 100.0 * COUNT(*) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,available}')::boolean, false)) AND daily_path_v1->>'closing_gap_fill_step' IS NOT NULL) / NULLIF(COUNT(*) FILTER (WHERE path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,available}')::boolean, false)), 0),
             'median_first_observed_step', percentile_cont(0.5) WITHIN GROUP (ORDER BY (daily_path_v1->>'closing_gap_fill_step')::double precision) FILTER (WHERE (path_ready AND COALESCE((daily_path_v1 #>> '{per_metric,closing_gap_fill,available}')::boolean, false)) AND daily_path_v1->>'closing_gap_fill_step' IS NOT NULL)
         ),
-        'events', jsonb_agg(jsonb_build_object(
-            'event_id', COALESCE(daily_path_v1->>'event_id', ticker || ':' || fiscal_date_ending::text || ':' || reported_date::text),
+        'events', COALESCE(jsonb_agg(jsonb_build_object(
+            'event_id', COALESCE(daily_path_v1->>'event_id', p.ticker || ':' || fiscal_date_ending::text || ':' || reported_date::text),
             'reported_date', reported_date, 'fiscal_date_ending', fiscal_date_ending,
             'status', COALESCE(daily_path_v1->>'status', 'unavailable'),
             'reason', COALESCE(daily_path_v1->>'reason', CASE WHEN daily_path_v1 IS NULL THEN 'missing_admitted_daily_path' ELSE NULL END))
-            ORDER BY reported_date DESC)
+            ORDER BY reported_date DESC) FILTER (WHERE p.reported_date IS NOT NULL),'[]'::jsonb)
     ) AS summary
-    FROM path_rows GROUP BY ticker
+    FROM candidate_audits audit LEFT JOIN path_rows p ON p.ticker=audit.ticker
+    JOIN native_summaries ns ON ns.ticker=audit.ticker
+    GROUP BY audit.ticker,audit.audit,audit.admitted_n,ns.qualified_native_n,ns.events,ns.audit,ns.consistency_pct,ns.upward_gap_pct
 )
 SELECT
     e.ticker,

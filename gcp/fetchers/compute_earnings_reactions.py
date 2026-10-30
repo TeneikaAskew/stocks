@@ -699,7 +699,7 @@ def fetch_daily_windows_for_ticker_dates(
     return out
 
 
-def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observation_ts=None) -> int:
+def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observation_ts=None, receipt_sink=None) -> int:
     """Build earnings_reactions rows for the given tickers, upsert.
 
     Returns the number of rows produced.
@@ -711,7 +711,7 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observati
 
     from lib.earnings_reactions import (
         local_earnings_clock, earnings_session_schedule, compute_daily_path_v1,
-        database_daily_price_evidence,
+        database_daily_price_evidence, qualify_native_classifier_inputs,
     )
     clock = local_earnings_clock(observation_ts or pd.Timestamp.now(tz='UTC'))
     dates = [_timing_event_key(row['ticker'], row['reported_date'])
@@ -762,23 +762,34 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observati
                 # No write preserves the complete previously stored event row.
                 ticker_skipped += 1
                 unknown_timing += 1
+                _emit_event_receipts([_event_receipt(eps.to_dict(), 'reaction_basis',
+                    'invalid_event_identity' if event_key is None else 'unknown_event_timing', 'write_skipped')], receipt_sink)
                 continue
             if event_key[1] not in session_closes:
                 # Never silently shift an unidentified non-session release.
                 ticker_skipped += 1
+                _emit_event_receipts([_event_receipt(eps.to_dict(),'event_identity',
+                    'report_date_is_not_exchange_session','write_skipped')],receipt_sink)
                 continue
 
             daily = windows.get(eps['reported_date'], pd.DataFrame())
             if not daily.empty:
+                # Exclude future dates before calendar/quality checks as well as
+                # before feature construction; an appended future bad bar is not evidence.
+                daily = daily[daily['date'] <= clock.tz_convert('America/New_York').date()].copy()
                 # Completed bars only; never assign a final close at interval start.
                 if any(day not in session_closes for day in daily['date']):
                     ticker_skipped += 1
+                    _emit_event_receipts([_event_receipt(eps.to_dict(),'price_inputs',
+                        'non_exchange_daily_session','write_skipped')],receipt_sink)
                     continue
                 daily = daily[daily['date'].map(lambda day: session_closes[day] <= clock)].copy()
                 daily = daily.reset_index(drop=True)
             result = compute_reaction(eps.to_dict(), daily, basis)
             if result is None:
                 ticker_skipped += 1
+                _emit_event_receipts([_event_receipt(eps.to_dict(),'native_inputs',
+                    'insufficient_surrounding_daily_bars','write_skipped')],receipt_sink)
                 continue
             event = dict(eps.to_dict(), reaction_basis=basis,
                          timing_source=('yahoo_report_time' if normalize_timing(None, None, yahoo_report_time)
@@ -792,6 +803,28 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observati
                         price_evidence=price['receipt'], schedule=schedule)
             if not price['available']:
                 path['payload']['reason'] = price['reason']
+            native_price = ({'available':True,'receipt':declared} if declared else
+                database_daily_price_evidence(event,daily,schedule=schedule,
+                    observed_at=pd.Timestamp.now(tz='UTC'),native=True))
+            native = qualify_native_classifier_inputs(event,daily,observation_ts=clock,
+                    price_evidence=native_price['receipt'],schedule=schedule)
+            if not native_price['available'] and native['reason'] not in ('missing_native_prefix_session','duplicate_native_prefix_session','native_features_not_mature'):
+                native['reason']=native_price['reason']
+            path['payload']['per_metric']['native_classifier_inputs']=native
+            if not native['available']:
+                # Never certify shifted positional prehistory as qualified.
+                for field in ('pre_earnings_drift_10d_pct','d_minus_10_close',
+                    'd_minus_5_close','d_minus_3_close','d_minus_2_close',
+                    'drift_3d_pct','drift_5d_pct','pre_drift_consistent_5d',
+                    'pre_drift_reverses_into_gap','max_high_pre_3d_pct','min_low_pre_3d_pct',
+                    'max_high_pre_5d_pct','min_low_pre_5d_pct','max_high_pre_10d_pct','min_low_pre_10d_pct'):
+                    if field in result: result[field]=None
+            import json
+            if len(json.dumps(path['payload'],allow_nan=False).encode())>4096:
+                path['payload']={'version':'earnings-daily-path-v1','event_id':native['event_id'],
+                    'status':'unavailable','reason':'daily_path_payload_exceeds_4KiB',
+                    'per_metric':{'native_classifier_inputs':{'available':False,'reason':'daily_path_payload_exceeds_4KiB'}}}
+                result['pre_earnings_drift_10d_pct']=None
             result['daily_path_v1'] = path['payload']
             rows.append(result)
             ticker_kept += 1
@@ -829,7 +862,8 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observati
         log.warning("Cloud SQL not configured — skipping persist")
         return 0
 
-    n = _persist_reaction_frame(out_df)
+    n = (_persist_reaction_frame(out_df, receipt_sink=receipt_sink)
+         if receipt_sink is not None else _persist_reaction_frame(out_df))
     log.info("✓ upserted %d rows to earnings_reactions", n)
     return n
 
@@ -986,12 +1020,71 @@ def main():
 
 
 
-def _persist_reaction_frame(frame):
+def _event_receipt(row, metric_group, reason, disposition, prior=None):
+    """Payload-free event/group accounting; retained clocks are never restamped."""
+    payload=(prior or {}).get('daily_path_v1') or {}
+    if not isinstance(payload,dict):payload={}
+    return {'event_id':f"{row.get('ticker')}:{row.get('fiscal_date_ending')}:{row.get('reported_date')}",
+        'metric_group':metric_group,'reason':reason,'disposition':disposition,
+        'retained_computed_at':payload.get('computed_at'),
+        'retained_observation_ts':payload.get('observation_ts'),
+        'retained_input_identity':payload.get('input_identity')}
+
+
+def _emit_event_receipts(events, receipt_sink=None):
+    """Bounded pages in the existing job output; no source journal or raw prices."""
+    import json
+    pending=[]
+    def send(items):
+        page={'version':'earnings-refresh-receipt-v1','events':items}
+        encoded=json.dumps(page,default=str,separators=(',',':'))
+        if len(encoded.encode())>65536:raise ValueError('earnings_receipt_event_exceeds_64KiB')
+        if receipt_sink is not None:receipt_sink(page)
+        else:log.info('earnings-refresh-receipt %s',encoded)
+    for event in events:
+        proposed=pending+[event]
+        if pending and (len(proposed)>50 or len(json.dumps({'version':'earnings-refresh-receipt-v1','events':proposed},default=str,separators=(',',':')).encode())>65536):
+            send(pending);pending=[]
+        pending.append(event)
+    if pending:send(pending)
+
+
+def _retention_receipts(row, prior, columns):
+    if prior is None:
+        return [_event_receipt(row,'persistence','retained_state_unavailable','refusal_unresolved')]
+    for field in ('reported_date','reaction_basis'):
+        if prior.get(field) is not None and prior.get(field)!=row.get(field):
+            return [_event_receipt(row,'event_identity','revision_required:'+field,'retained',prior)]
+    old=prior.get('daily_path_v1') or {};new=row.get('daily_path_v1') or {}
+    if not isinstance(old,dict):old={}
+    if not isinstance(new,dict):new={}
+    for field in ('event_id','basis_id','version'):
+        if old.get(field) is not None and new.get(field) is not None and old.get(field)!=new.get(field):
+            return [_event_receipt(row,'daily_path_v1','revision_required:'+field,'retained',prior)]
+    events=[]
+    if old and (not new or new.get('status') not in ('complete','maturing','not_applicable')
+                or old.get('status') in ('complete','not_applicable') and new.get('status')=='maturing'):
+        events.append(_event_receipt(row,'daily_path_v1','unavailable_replacement:daily_path_v1','retained',prior))
+    old_native=old.get('per_metric',{}).get('native_classifier_inputs',{})
+    new_native=new.get('per_metric',{}).get('native_classifier_inputs',{})
+    if old_native.get('available') is True and new_native.get('available') is not True:
+        events.append(_event_receipt(row,'native_classifier_inputs','unavailable_replacement:native_classifier_inputs','retained',prior))
+    missing=[name for name in columns if name not in ('ticker','fiscal_date_ending','daily_path_v1')
+             and prior.get(name) is not None and row.get(name) is None]
+    if missing:
+        event=_event_receipt(row,'legacy_fields','unavailable_replacement:legacy_fields','retained',prior)
+        event['metrics']=sorted(missing)
+        events.append(event)
+    return events or [_event_receipt(row,'persistence','incompatible_replacement','retained',prior)]
+
+
+def _persist_reaction_frame(frame, *, receipt_sink=None):
     """Atomic per-chunk PostgreSQL upsert retaining prior qualified values.
 
     Refuse identity changes and any replacement that would null an existing
     value. An incomplete/unavailable sidecar never erases a previous sidecar.
-    No previous-row/per-event SELECT is needed; conditions run at the row lock.
+    No per-event source SELECT is used; RETURNING and at most one batched
+    rejected-key read explain refusals while conflict guards retain row locks.
     """
     import sqlalchemy as sa
     from sqlalchemy.dialects.postgresql import insert, JSONB
@@ -1035,13 +1128,42 @@ def _persist_reaction_frame(frame):
             sa.or_(prior['version'].astext.is_(None),
                    prior['version'].astext == incoming['version'].astext))
         conditions.append(sa.or_(prior.is_(None), sa.func.jsonb_typeof(prior) == 'null', acceptable_payload))
+        old_native = prior['per_metric']['native_classifier_inputs']['available'].astext
+        new_native = incoming['per_metric']['native_classifier_inputs']['available'].astext
+        conditions.append(sa.or_(old_native.is_(None), old_native != 'true', new_native == 'true'))
         statement = statement.on_conflict_do_update(
             index_elements=['ticker', 'fiscal_date_ending'],
             set_={name: excluded[name] for name in columns
                   if name not in ('ticker', 'fiscal_date_ending')},
-            where=sa.and_(*conditions))
+            where=sa.and_(*conditions)).returning(table.c.ticker, table.c.fiscal_date_ending)
         with engine.begin() as conn:
-            count += conn.execute(statement).rowcount
+            accepted = {(row.ticker, row.fiscal_date_ending)
+                        for row in conn.execute(statement).all()}
+            count += len(accepted)
+            refused = [row for row in batch if (row['ticker'], row['fiscal_date_ending']) not in accepted]
+            # Conflict-WHERE rows remain locked by ON CONFLICT; one batched
+            # read in this same transaction identifies actual retained state.
+            previous = {}
+            if refused:
+                keys=[(row['ticker'],row['fiscal_date_ending']) for row in refused]
+                previous={(row['ticker'],row['fiscal_date_ending']):dict(row)
+                    for row in conn.execute(sa.select(table).where(
+                        sa.tuple_(table.c.ticker,table.c.fiscal_date_ending).in_(keys))).mappings()}
+            receipt_events=[]
+            for row in batch:
+                key=(row['ticker'],row['fiscal_date_ending'])
+                if key in accepted:
+                    receipt_events.append(_event_receipt(row,'persistence',None,'upserted'))
+                    p=row.get('daily_path_v1') or {}
+                    if p.get('status')=='unavailable':
+                        receipt_events.append(_event_receipt(row,'daily_path_v1',p.get('reason') or 'unavailable','unavailable'))
+                    native=p.get('per_metric',{}).get('native_classifier_inputs',{})
+                    if native and native.get('available') is not True:
+                        receipt_events.append(_event_receipt(row,'native_classifier_inputs',native.get('reason') or 'unavailable','unavailable'))
+                else:
+                    receipt_events.extend(_retention_receipts(row,previous.get(key),columns))
+        # Emit only after transaction commit, not a receipt for rolled-back work.
+        _emit_event_receipts(receipt_events,receipt_sink)
     if count < len(records):
         log.warning('Retained %d prior reaction rows: incompatible identity or unavailable replacement',
                     len(records) - count)

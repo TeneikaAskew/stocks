@@ -16,7 +16,7 @@ def test_default_event_predicate_refuses_unannounced_quarter(monkeypatch):
         assert 'reported_date < :before' in sql
         return pd.DataFrame([row] if row['reported_date'] < params['before'] else [])
     monkeypatch.setattr(database, 'query_to_dataframe_strict', query)
-    actual = brief.load_reaction_history(['SYNTH'], date(2026, 10, 8))
+    actual = brief.load_reaction_history(['SYNTH'], date(2026, 10, 8),observation_ts='2026-10-08T12:35:00Z')
     assert actual == {}
     assert captured
 
@@ -38,7 +38,7 @@ def test_default_recap_never_reuses_earlier_quarter(monkeypatch):
     monkeypatch.setattr(brief, 'load_reaction_history', lambda *a, **k: {'SYNTH': [earlier]})
     monkeypatch.setattr(brief, 'load_insider_net_flow', lambda *a, **k: {})
     monkeypatch.setattr(brief, 'load_exact_reactions', lambda *a, **k: {})
-    result = brief.generate_brief(date(2026, 5, 14))
+    result = brief.generate_brief(date(2026, 5, 14),observation_ts="2026-05-14T12:35:00Z")
     actual = result['last_session_contexts'][0]
     assert actual.upcoming_report_date == date(2026, 5, 13)
     assert actual.latest_reaction is None

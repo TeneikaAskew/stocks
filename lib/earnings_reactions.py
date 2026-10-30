@@ -1295,7 +1295,7 @@ def compute_daily_path_v1(event, daily, *, observation_ts, price_evidence=None,
         return {'available': False, 'reason': str(exc)[:160], 'payload': payload}
 
 
-def database_daily_price_evidence(event, frame, *, schedule, observed_at):
+def database_daily_price_evidence(event, frame, *, schedule, observed_at, native=False):
     """Conservative current-DB declaration, not original provider/PIT proof.
 
     Only the merged AV raw-OHLC writer tags and explicit equal raw/adjusted
@@ -1311,13 +1311,13 @@ def database_daily_price_evidence(event, frame, *, schedule, observed_at):
         ev = normalize_local_event_dates(event)
         from datetime import timedelta
         reported = date.fromisoformat(ev['reported_date'])
-        schedule = schedule.loc[(reported-timedelta(days=14)).isoformat():
+        schedule = schedule.loc[(reported-timedelta(days=30 if native else 14)).isoformat():
                                 (reported+timedelta(days=30)).isoformat()]
         labels = [stamp.date() for stamp in schedule.index]
         d = labels.index(reported)
         start = d if ev.get('reaction_basis') == 'BMO' else d + 1
-        required = labels[start - 1:d + 6]
-        if len(required) < (7 if ev.get('reaction_basis') == 'BMO' else 6):
+        required = labels[d-10:d+6] if native else labels[start - 1:d + 6]
+        if (native and (d<10 or len(required)!=16)) or (not native and len(required) < (7 if ev.get('reaction_basis') == 'BMO' else 6)):
             raise ValueError('insufficient_canonical_sessions')
         rows = frame[frame['date'].isin(required)].copy()
         if not {'data_source', 'adjusted_close'} <= set(rows.columns):
@@ -1392,6 +1392,18 @@ def admit_database_reaction(row, observation_ts, *, schedule=None):
             raise ValueError('reaction_features_not_mature')
         if local_earnings_clock(p.get('source_observed_at')) < expected_maturity:
             raise ValueError('price_observed_before_completed_bar')
+        native = p.get('per_metric',{}).get('native_classifier_inputs',{})
+        if (native.get('version')!='earnings-native-inputs-v1' or native.get('available') is not True
+                or native.get('event_id')!=event_id or native.get('reaction_basis')!=row.get('reaction_basis')
+                or not native.get('source_identity')
+                or not re.fullmatch('[0-9a-f]{64}',str(native.get('input_identity','')))):
+            raise ValueError('unqualified_native_classifier_inputs')
+        if native.get('basis_id')!=p.get('basis_id'):
+            raise ValueError('native_dependency_basis_mismatch')
+        if local_earnings_clock(native.get('source_observed_at'))<expected_maturity:
+            raise ValueError('native_source_observed_before_completion')
+        if local_earnings_clock(native.get('mature_at'))!=expected_maturity:
+            raise ValueError('native_dependency_maturity_mismatch')
         for key in _LOCAL_FEATURES:
             val = row.get(key)
             if key in ('direction_consistent_5d','is_reversal_5d'):
@@ -1403,3 +1415,61 @@ def admit_database_reaction(row, observation_ts, *, schedule=None):
                                            historical_publication_verified=False)}
     except (ValueError,TypeError,KeyError) as exc:
         return {'available':False,'reason':str(exc)}
+
+
+def qualify_native_classifier_inputs(event, daily, *, observation_ts, price_evidence=None,
+                                     schedule=None):
+    """Qualify D-10..D+5 inputs separately from shorter daily path evidence.
+
+    This metadata certifies only the existing five native classifier features;
+    it never changes their arithmetic or certifies post-event D+10 fields.
+    """
+    from datetime import date,timedelta
+    import hashlib,json,math
+    import pandas as pd
+    result={'version':'earnings-native-inputs-v1','available':False,'reason':None,
+            'input_identity':None,'source_identity':None,'event_id':None,
+            'prefix_start_session':None,'prefix_end_session':None,'mature_at':None}
+    try:
+        clock=local_earnings_clock(observation_ts)
+        ev=normalize_local_event_dates(event)
+        reported=date.fromisoformat(ev['reported_date'])
+        result['event_id']=f"{ev['ticker']}:{ev['fiscal_date_ending']}:{ev['reported_date']}"
+        result['reaction_basis']=ev.get('reaction_basis')
+        if ev.get('reaction_basis') not in ('BMO','AMC'):
+            raise ValueError('unknown_event_timing')
+        if schedule is None:
+            schedule=earnings_session_schedule(reported-timedelta(days=30),reported+timedelta(days=30))
+        schedule=schedule.loc[(reported-timedelta(days=30)).isoformat():(reported+timedelta(days=30)).isoformat()]
+        labels=[x.date() for x in schedule.index]
+        if reported not in labels or labels.index(reported)<10:
+            raise ValueError('missing_native_canonical_sessions')
+        d=labels.index(reported);required=labels[d-10:d+6]
+        if len(required)!=16:raise ValueError('missing_native_canonical_sessions')
+        maturity=pd.Timestamp(schedule.iloc[d+5]['market_close'])
+        result.update(prefix_start_session=required[0].isoformat(),prefix_end_session=required[-1].isoformat(),mature_at=maturity.isoformat())
+        if maturity>clock:raise ValueError('native_features_not_mature')
+        frame=daily.copy();frame['date']=[date.fromisoformat(str(v)) for v in frame['date']]
+        frame=frame[frame['date'].isin(required)].sort_values('date')
+        if frame['date'].duplicated().any():raise ValueError('duplicate_native_prefix_session')
+        if list(frame['date'])!=required:raise ValueError('missing_native_prefix_session')
+        receipt=local_source_admission(price_evidence,result['event_id'],clock,'retrospective_current_vintage')
+        basis=price_evidence.get('price_basis_id')
+        if not isinstance(basis,str) or not basis.strip() or len(basis)>256:raise ValueError('missing_native_price_basis')
+        if not isinstance(receipt['source_id'],str) or len(receipt['source_id'])>512:raise ValueError('invalid_native_source_identity')
+        if local_earnings_clock(receipt['observed_at'])<maturity:raise ValueError('native_source_observed_before_completion')
+        records=[]
+        for row in frame.to_dict('records'):
+            values={}
+            for key in ('open','high','low','close'):
+                v=row.get(key)
+                if isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or v<=0:raise ValueError('invalid_native_ohlc')
+                values[key]=float(v)
+            if values['high']<max(values.values()) or values['low']>min(values.values()):raise ValueError('incoherent_native_ohlc')
+            records.append({'date':row['date'].isoformat(),**values})
+        result.update(available=True,reason=None,source_identity=receipt['source_id'],
+                      source_observed_at=receipt['observed_at'],basis_id=basis,
+                      input_identity=hashlib.sha256(json.dumps({'event_id':result['event_id'],'reaction_basis':ev['reaction_basis'],'basis_id':basis,'prefix':records},sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest())
+    except (ValueError,KeyError,TypeError,IndexError,OverflowError) as exc:
+        result['reason']=str(exc)[:160]
+    return result

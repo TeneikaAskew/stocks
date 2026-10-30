@@ -53,13 +53,19 @@ def db(engine, monkeypatch):
 
 def payload(status='complete'):
     return {'version': 'earnings-daily-path-v1', 'event_id': 'SYNTH:2025-11-30:2026-01-05',
-            'basis_id': 'synthetic:raw', 'status': status,
+            'basis_id': 'synthetic:raw', 'status': status, 'reaction_basis':'BMO',
+            'source_identity':'synthetic-qualified-control','input_identity':'a'*64,
+            'source_observed_at':'2026-01-12T21:01:00+00:00',
             'mature_at': '2026-01-12T21:00:00+00:00',
             'observation_ts': '2026-01-12T21:01:00+00:00',
             'computed_at': '2026-01-12T21:02:00+00:00',
             'first_opposite_close_step': 2, 'closing_gap_fill_step': 4,
             'per_metric': {key: {'available': True, 'censored': False, 'status':'observed'}
-                           for key in ('first_opposite_close','closing_gap_fill')}}
+                           for key in ('first_opposite_close','closing_gap_fill')} | {'native_classifier_inputs':{
+                'version':'earnings-native-inputs-v1','available':True,'reaction_basis':'BMO','event_id':'SYNTH:2025-11-30:2026-01-05',
+                'source_identity':'synthetic-native-qualified-control','input_identity':'b'*64,
+                'basis_id':'synthetic:raw','source_observed_at':'2026-01-12T21:01:00+00:00',
+                'mature_at':'2026-01-12T21:00:00+00:00'}}}
 
 
 def record(p=None):
@@ -207,7 +213,7 @@ def test_preserved_ango_default_producer_to_storage_views_api_and_brief(db, monk
     def query(sql,params=None):
         with db.connect() as c:return pd.read_sql(sa.text(sql),c,params=params or {})
     monkeypatch.setattr(database,'query_to_dataframe_strict',query)
-    admitted=brief.load_reaction_history(['ANGO'],date(2026,10,1))['ANGO']
+    admitted=brief.load_reaction_history(['ANGO'],date(2026,10,1),observation_ts='2026-10-01T12:30:00Z')['ANGO']
     ctx=brief.build_ticker_context({'ticker':'ANGO'},admitted,None,date(2026,10,1))
     assert ctx.n_quarters==4 and ctx.hist12q_consistent_rate==.75 and ctx.hist12q_gap_up_rate==.5
     july=next(r for r in admitted if r['reported_date']==date(2026,7,14))
@@ -249,8 +255,9 @@ def test_schema_reapply_preserves_old_null_evidence_and_views_populated(db,monke
         summary=c.execute(sa.text("SELECT daily_path_summary_v1 FROM earnings_ticker_lean WHERE ticker='SYNTH'")).scalar()
         assert summary['qualified_native_n']==0
         assert summary['historical_direction_consistency_pct'] is None
-        assert summary['events'][0]['event_id']==payload()['event_id']
-        assert summary['events'][0]['status']=='unavailable'
+        assert summary['events']==[]
+        assert summary['candidate_audit']['candidate_n']==1
+        assert summary['candidate_audit']['excluded_reason_counts']=={'missing_daily_descriptor':1}
 
 
 def test_actual_event_view_does_not_attach_other_fiscal_period_eps(db):
@@ -285,3 +292,198 @@ def test_actual_daily_refresh_embeds_descriptor_without_new_upcoming_column(db,m
         assert isinstance(stored,list) and stored[0]['daily_path_v1']==payload()
         assert stored[0]['eps_surprise_pct'] is None
     with db.begin() as c:c.execute(sa.text("DELETE FROM earnings_calendar WHERE ticker='SYNTH'"))
+
+
+def test_mixed_rejections_have_exact_keyed_reasons_and_retained_clocks(db):
+    from gcp.fetchers.compute_earnings_reactions import _persist_reaction_frame
+    a=record();b=record();b['ticker']='SYNTH2';b['daily_path_v1']['event_id']='SYNTH2:2025-11-30:2026-01-05'
+    _persist_reaction_frame(pd.DataFrame([a,b]))
+    a['reported_date']=date(2026,1,6)
+    b['daily_path_v1']['status']='unavailable'
+    receipts=[];reads=[]
+    def trace(conn,cursor,statement,parameters,context,executemany):
+        if statement.lstrip().lower().startswith('select') and 'from earnings_reactions' in statement.lower():reads.append(statement)
+    sa.event.listen(db,'before_cursor_execute',trace)
+    try:
+        assert _persist_reaction_frame(pd.DataFrame([a,b]),receipt_sink=receipts.append)==0
+    finally:sa.event.remove(db,'before_cursor_execute',trace)
+    assert len(reads)==1  # One rejected-chunk read, never one per refused event.
+
+    items=[item for page in receipts for item in page['events']]
+    reasons={item['event_id']:item for item in items}
+    assert reasons['SYNTH:2025-11-30:2026-01-06']['reason']=='revision_required:reported_date'
+    retained=reasons['SYNTH2:2025-11-30:2026-01-05']
+    assert retained['reason']=='unavailable_replacement:daily_path_v1'
+    assert retained['retained_computed_at']==payload()['computed_at']
+    assert retained['retained_observation_ts']==payload()['observation_ts']
+    assert retained['disposition']=='retained'
+
+
+def test_actual_sql_selects_twelve_mature_events_and_exposes_exclusion_audit(db):
+    from datetime import timedelta
+    from lib.earnings_reactions import earnings_session_schedule
+    from gcp.fetchers.compute_earnings_reactions import _persist_reaction_frame
+    from gcp import database,earnings_reactions_brief as brief
+    records=[]
+    for year in (2022,2023,2024):
+        for month in (3,6,9,12):
+            schedule=earnings_session_schedule(date(year,month,1),date(year,month,1)+timedelta(days=30))
+            day=schedule.index[0].date();fiscal=day-timedelta(days=30)
+            row=record();row.update(reported_date=day,fiscal_date_ending=fiscal,direction_consistent_5d=len(records)>=5,
+                       is_reversal_5d=False,sustain_5d_pct=2. if len(records)>=5 else -1.)
+            p=row['daily_path_v1'];event_id=f'SYNTH:{fiscal}:{day}'
+            maturity=pd.Timestamp(schedule.iloc[5]['market_close']).isoformat()
+            p.update(event_id=event_id,mature_at=maturity,source_observed_at=maturity)
+            p['per_metric']['native_classifier_inputs'].update(event_id=event_id,mature_at=maturity,source_observed_at=maturity)
+            records.append(row)
+    current=pd.Timestamp.now(tz='UTC').date()
+    schedule=earnings_session_schedule(current,current+timedelta(days=30));day=schedule.index[0].date()
+    row=record();row.update(reported_date=day,fiscal_date_ending=day-timedelta(days=30))
+    event_id=f"SYNTH:{row['fiscal_date_ending']}:{day}"
+    maturity=pd.Timestamp(schedule.iloc[5]['market_close']).isoformat()
+    row['daily_path_v1'].update(event_id=event_id,mature_at=maturity,source_observed_at=maturity)
+    row['daily_path_v1']['per_metric']['native_classifier_inputs'].update(event_id=event_id,mature_at=maturity,source_observed_at=maturity)
+    records.append(row)
+    assert _persist_reaction_frame(pd.DataFrame(records))==13
+    with db.begin() as c:
+        c.execute(sa.text('REFRESH MATERIALIZED VIEW earnings_event_outcomes'))
+        c.execute(sa.text('REFRESH MATERIALIZED VIEW earnings_ticker_lean'))
+        summary=c.execute(sa.text("SELECT daily_path_summary_v1 FROM earnings_ticker_lean WHERE ticker='SYNTH'")).scalar_one()
+    assert summary['event_n']==12 and summary['qualified_native_n']==12 and len(summary['events'])==12
+    assert summary['historical_direction_consistency_pct']==pytest.approx(100*7/12)
+    assert summary['candidate_audit']=={'candidate_n':13,'admitted_n':12,'excluded_n':1,'selected_n':12,
+        'not_selected_older_n':0,'excluded_reason_counts':{'feature_not_mature':1}}
+    def query(sql,params=None):
+        with db.connect() as c:return pd.read_sql(sa.text(sql),c,params=params or {})
+    from unittest.mock import patch
+    with patch.object(database,'query_to_dataframe_strict',query):
+        admitted=brief.load_reaction_history(['SYNTH'],day+timedelta(days=1),observation_ts=pd.Timestamp.now(tz='UTC'))['SYNTH']
+    assert {r['daily_path_v1']['event_id'] for r in admitted}=={e['event_id'] for e in summary['events']}
+    context=brief.build_ticker_context({'ticker':'SYNTH'},admitted,None,day+timedelta(days=1))
+    assert context.classification==brief.CLASS_FAILED_GAP and context.hist12q_consistent_rate==pytest.approx(7/12)
+
+
+def _independent_metric_record(zero_gap=False, missing_pre10=False, event_day=date(2026,1,5)):
+    """Actual native/path producers on coherent synthetic canonical sessions."""
+    from lib.earnings_reactions import (earnings_session_schedule, compute_daily_path_v1,
+                                       qualify_native_classifier_inputs)
+    from gcp.fetchers.compute_earnings_reactions import compute_reaction
+    schedule=earnings_session_schedule(date(2025,12,1),date(2026,1,20))
+    labels=[x.date() for x in schedule.index]
+    d=labels.index(event_day)
+    days=labels[d-10:d+6]
+    rows=[dict(date=day,open=100.,high=102.,low=99.,close=100.) for day in days]
+    for i,close in enumerate([112.,115.,113.,105.,99.,102.]):
+        opening=(100. if zero_gap else 110.) if i==0 else close
+        rows[10+i].update(open=opening,high=max(opening,close)+1,low=min(opening,close)-1,close=close)
+    frame=pd.DataFrame(rows[9:] if missing_pre10 else rows)
+    from datetime import timedelta
+    fiscal=event_day-timedelta(days=30)
+    ev=dict(ticker='SYNTH',fiscal_date_ending=fiscal,reported_date=event_day,reaction_basis='BMO')
+    clock=(pd.Timestamp(schedule.loc[days[-1].isoformat(),'market_close'])+pd.Timedelta(minutes=1)).isoformat()
+    evidence=dict(event_id=f'SYNTH:{fiscal}:{event_day}',source_id='independent-metric-synthetic',
+                  observed_at=clock,acquired_at=clock,price_basis_id='synthetic:raw')
+    row=compute_reaction(ev,frame,'BMO')
+    p=compute_daily_path_v1(ev,frame,observation_ts=evidence['observed_at'],price_evidence=evidence)['payload']
+    p['per_metric']['native_classifier_inputs']=qualify_native_classifier_inputs(ev,frame,
+        observation_ts=evidence['observed_at'],price_evidence=evidence)
+    row['daily_path_v1']=p
+    return row
+
+
+def _raw_insert_metric_records(db, rows):
+    # Qualification under test is the actual view, independently of upsert policy.
+    import json
+    keys=('ticker','fiscal_date_ending','reported_date','reaction_basis','reaction_gap_pct',
+          'pre_earnings_drift_10d_pct','sustain_5d_pct','direction_consistent_5d','is_reversal_5d')
+    with db.begin() as c:
+        for row in rows:
+            params={k:row.get(k) for k in keys};params['p']=json.dumps(row['daily_path_v1'])
+            c.execute(sa.text('INSERT INTO earnings_reactions('+','.join(keys)+',daily_path_v1) VALUES ('+
+                ','.join(':'+k for k in keys)+',CAST(:p AS jsonb))'),params)
+        c.execute(sa.text('REFRESH MATERIALIZED VIEW earnings_event_outcomes'))
+        c.execute(sa.text('REFRESH MATERIALIZED VIEW earnings_ticker_lean'))
+        return c.execute(sa.text("SELECT daily_path_summary_v1 FROM earnings_ticker_lean WHERE ticker='SYNTH'")).scalar_one()
+
+
+@pytest.mark.parametrize('zero_gap,missing_pre10',[(True,False),(False,True)])
+def test_daily_metric_admission_is_independent_of_native_refusal(db,zero_gap,missing_pre10):
+    row=_independent_metric_record(zero_gap,missing_pre10)
+    p=row['daily_path_v1']
+    assert p['status']==('not_applicable' if zero_gap else 'complete')
+    assert p['per_metric']['native_classifier_inputs']['available'] is (not missing_pre10)
+    assert row['direction_consistent_5d'] is None if zero_gap else row['pre_earnings_drift_10d_pct'] is None
+    summary=_raw_insert_metric_records(db,[row])
+    assert summary['event_n']==1 and len(summary['events'])==1
+    assert summary['candidate_audit']['admitted_n']==1
+    assert summary['qualified_native_n']==0 and summary['native_events']==[]
+    assert summary['native_candidate_audit']['excluded_n']==1
+    for metric in ('first_opposite_close','closing_gap_fill'):
+        counts=summary[metric]
+        assert counts['unavailable_n']==0
+        assert counts['not_applicable_n']==int(zero_gap)
+        assert counts['observed_n']==int(not zero_gap)
+    assert summary['historical_direction_consistency_pct'] is None
+
+
+def test_empty_daily_cohort_never_counts_left_join_placeholder(db):
+    row=record();row['daily_path_v1']=None
+    summary=_raw_insert_metric_records(db,[row])
+    assert summary['events']==[] and summary['event_n']==0
+    for metric in ('first_opposite_close','closing_gap_fill'):
+        assert all(summary[metric][key]==0 for key in
+                   ('eligible_n','observed_n','right_censored_n','not_applicable_n','unavailable_n'))
+        assert summary[metric]['observed_rate_pct'] is None
+        assert summary[metric]['median_first_observed_step'] is None
+    assert summary['native_events']==[] and summary['qualified_native_n']==0
+
+
+def test_combined_daily_states_and_native_denominators_survive_api(db,monkeypatch):
+    a=_independent_metric_record(zero_gap=True)
+    b=_independent_metric_record(missing_pre10=True,event_day=date(2026,1,6))
+    summary=_raw_insert_metric_records(db,[a,b])
+    assert summary['candidate_audit']['candidate_n']==2
+    assert summary['event_n']==2 and summary['qualified_native_n']==0
+    for metric in ('first_opposite_close','closing_gap_fill'):
+        assert summary[metric]['not_applicable_n']==1
+        assert summary[metric]['observed_n']==1
+        assert summary[metric]['unavailable_n']==0
+    from gcp import database
+    def query(sql,params=None):
+        with db.connect() as c:return pd.read_sql(sa.text(sql),c,params=params or {})
+    monkeypatch.setattr(database,'query_to_dataframe_strict',query)
+    sys.path.insert(0,str(Path('platform').resolve()))
+    from api.routers import earnings
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(earnings,'_CLOUD_SQL',True)
+    app=FastAPI();app.include_router(earnings.router)
+    with TestClient(app) as client:
+        response=client.get('/api/earnings/ticker/SYNTH/lean')
+        assert response.status_code==200 and response.json()['daily_path_summary_v1']==summary
+
+
+def test_daily_and_native_cohorts_each_rank_after_own_admission(db):
+    from datetime import timedelta
+    from lib.earnings_reactions import earnings_session_schedule
+    rows=[]
+    for year,month in [(2021,12)]+[(y,m) for y in (2022,2023,2024) for m in (3,6,9,12)]:
+        schedule=earnings_session_schedule(date(year,month,1),date(year,month,1)+timedelta(days=30))
+        day=schedule.index[0].date();fiscal=day-timedelta(days=30)
+        row=record();row.update(reported_date=day,fiscal_date_ending=fiscal)
+        p=row['daily_path_v1'];event_id=f'SYNTH:{fiscal}:{day}'
+        maturity=pd.Timestamp(schedule.iloc[5]['market_close']).isoformat()
+        p.update(event_id=event_id,mature_at=maturity,source_observed_at=maturity)
+        p['per_metric']['native_classifier_inputs'].update(event_id=event_id,mature_at=maturity,source_observed_at=maturity)
+        rows.append(row)
+    rows[-1]['daily_path_v1']['per_metric']['native_classifier_inputs'].update(available=False,reason='missing_native_prefix_session')
+    rows[-1]['pre_earnings_drift_10d_pct']=None
+    summary=_raw_insert_metric_records(db,rows)
+    daily_ids={e['event_id'] for e in summary['events']}
+    native_ids={e['event_id'] for e in summary['native_events']}
+    ids=[r['daily_path_v1']['event_id'] for r in rows]
+    assert daily_ids==set(ids[1:]) and native_ids==set(ids[:-1])
+    assert summary['event_n']==summary['qualified_native_n']==12
+    assert summary['candidate_audit']['not_selected_older_n']==1
+    assert summary['native_candidate_audit']['excluded_reason_counts']=={'unqualified_native_classifier_inputs':1}
+    assert summary['native_candidate_audit']['not_selected_older_n']==0

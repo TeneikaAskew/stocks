@@ -228,9 +228,9 @@ def _resolve_analysis_date() -> date:
     """
     raw = os.environ.get("EARNINGS_BRIEF_AS_OF")
     if not raw or not raw.strip():
-        return date.today()
+        return pd.Timestamp.now(tz="UTC").tz_convert("America/New_York").date()
     parsed = date.fromisoformat(raw.strip())
-    if parsed > date.today():
+    if parsed > pd.Timestamp.now(tz="UTC").tz_convert("America/New_York").date():
         raise ValueError(f"EARNINGS_BRIEF_AS_OF {raw!r} is in the future")
     return parsed
 
@@ -309,9 +309,9 @@ def load_calendar_reporters(target_date: date) -> list[dict]:
 
 
 def load_reaction_history(
-    tickers: list[str], before_date: date
+    tickers: list[str], before_date: date, *, observation_ts=None, admission_sink=None
 ) -> dict[str, list[dict]]:
-    """Latest 12 event candidates, then admit distinct mature prior quarters.
+    """Admit distinct mature prior events before selecting the latest 12.
 
     Current database receipts are retrospective descriptive evidence, never an
     original historical-PIT certification. Legacy rows without admitted price
@@ -326,16 +326,15 @@ def load_reaction_history(
     params = {f"t{i}": t for i, t in enumerate(tickers)}
     params.update(before=before_date, lookback=LOOKBACK_QUARTERS)
     sql = f"""
-        WITH ranked AS (
-            SELECT *, ROW_NUMBER() OVER (
-                PARTITION BY ticker ORDER BY reported_date DESC, fiscal_date_ending DESC
-            ) AS rn FROM earnings_reactions
-            WHERE ticker IN ({placeholders}) AND reported_date < :before
-        ) SELECT * FROM ranked WHERE rn <= :lookback
+        SELECT * FROM earnings_reactions
+        WHERE ticker IN ({placeholders}) AND reported_date < :before
         ORDER BY ticker, reported_date DESC, fiscal_date_ending DESC
     """
+    from lib.earnings_reactions import local_earnings_clock
+    if observation_ts is None:
+        raise ValueError('explicit_history_observation_clock_required')
+    cutoff = local_earnings_clock(observation_ts)
     df = query_to_dataframe_strict(sql, params)
-    cutoff = min(pd.Timestamp(before_date).tz_localize("America/New_York"), pd.Timestamp.now(tz='UTC'))
     from lib.earnings_reactions import earnings_session_schedule
     schedule = None
     if not df.empty:
@@ -344,13 +343,33 @@ def load_reaction_history(
     out: dict[str, list[dict]] = {}
     duplicates = df.duplicated(['ticker','fiscal_date_ending'], keep=False) if not df.empty else []
     refused = 0
+    audits = {}
     for i, row in df.iterrows():
+        ticker=str(row['ticker']).upper()
+        audit=audits.setdefault(ticker,{'candidate_n':0,'admitted_n':0,'excluded_reason_counts':{}})
+        audit['candidate_n']+=1
         check = admit_database_reaction(row.to_dict(), cutoff, schedule=schedule)
-        if duplicates[i] or not check['available']:
+        reported=date.fromisoformat(str(row['reported_date']))
+        reason=('not_prior_target_event' if reported>=before_date else
+                'duplicate_fiscal_event' if duplicates[i] else check.get('reason') if not check['available'] else None)
+        if reason:
             refused += 1
+            audit['excluded_reason_counts'][reason]=audit['excluded_reason_counts'].get(reason,0)+1
             continue
-        out.setdefault(str(row['ticker']).upper(), []).append(check['row'])
-    logger.info('history admission candidates=%d admitted=%d refused=%d mode=retrospective_current_vintage',
+        audit['admitted_n']+=1
+        out.setdefault(ticker, []).append(check['row'])
+    # Admission and duplicate refusal precede the cohort cap, even if the
+    # source returns many ineligible recent quarters. No per-event SQL reads.
+    for ticker, rows in out.items():
+        rows.sort(key=lambda row:(str(row['reported_date']),str(row['fiscal_date_ending'])),reverse=True)
+        out[ticker] = rows[:LOOKBACK_QUARTERS]
+    for ticker,audit in audits.items():
+        selected=out.get(ticker,[])
+        audit.update(selected_n=len(selected),not_selected_older_n=audit['admitted_n']-len(selected),
+                     excluded_n=audit['candidate_n']-audit['admitted_n'],
+                     event_ids=[r['daily_path_v1']['event_id'] for r in selected])
+    if admission_sink is not None: admission_sink(audits)
+    logger.info('history admission candidates=%d selected=%d refused=%d mode=retrospective_current_vintage',
                 len(df), sum(map(len,out.values())), refused)
     return out
 
@@ -366,6 +385,7 @@ def load_exact_reactions(tickers: list[str], target: date, *, observation_ts=Non
     from lib.earnings_reactions import earnings_session_schedule, local_earnings_clock
     if not tickers:
         return {}
+    clock=local_earnings_clock(observation_ts)
     slots = ', '.join(f':t{i}' for i in range(len(tickers)))
     params = {f't{i}': t for i,t in enumerate(tickers)}; params['target']=target
     df = query_to_dataframe_strict(
@@ -375,7 +395,6 @@ def load_exact_reactions(tickers: list[str], target: date, *, observation_ts=Non
     if target not in labels:
         return {}
     d=labels.index(target)
-    clock=local_earnings_clock(observation_ts if observation_ts is not None else pd.Timestamp.now(tz='UTC'))
     out={}
     for _,row in df.iterrows():
         if row['reported_date'] != target or row.get('reaction_basis') not in ('BMO','AMC'):
@@ -384,9 +403,23 @@ def load_exact_reactions(tickers: list[str], target: date, *, observation_ts=Non
         if pd.Timestamp(schedule.iloc[reaction]['market_close']) > clock:
             continue
         item=row.to_dict()
+        if d+1>=len(schedule) or pd.Timestamp(schedule.iloc[d+1]['market_close'])>clock:
+            for key in ('d_plus_1_open','d_plus_1_high','d_plus_1_low','d_plus_1_close','post_gap_pct'):
+                item[key]=None
+        # A later stored sidecar cannot reconstruct an earlier prefix from
+        # its compact outcome-only payload. Refuse that context, not its clock.
+        path=item.get('daily_path_v1')
+        if isinstance(path,dict):
+            expected_id=f"{item['ticker']}:{item.get('fiscal_date_ending')}:{target}"
+            try:
+                if path.get('event_id')!=expected_id or local_earnings_clock(path.get('mature_at'))>clock:
+                    item['daily_path_v1']=None
+            except (ValueError,TypeError):item['daily_path_v1']=None
         for horizon in (3,5,10):
             if d+horizon >= len(schedule) or pd.Timestamp(schedule.iloc[d+horizon]['market_close']) > clock:
-                item[f'sustain_{horizon}d_pct']=None
+                for key in (f'sustain_{horizon}d_pct',f'd_plus_{horizon}_close',
+                            f'max_high_{horizon}d_pct',f'min_low_{horizon}d_pct'):
+                    item[key]=None
                 if horizon==5:
                     item['direction_consistent_5d']=None; item['is_reversal_5d']=None
         # Duplicate event identities are ambiguous, not last-write-wins.
@@ -641,7 +674,7 @@ def build_ticker_context(
     return ctx
 
 
-def generate_brief(analysis_date: Optional[date] = None) -> dict:
+def generate_brief(analysis_date: Optional[date] = None, *, observation_ts=None) -> dict:
     """Build the full brief data structure.
 
     Resolves the next session's reporters and the last session's reporters,
@@ -660,7 +693,23 @@ def generate_brief(analysis_date: Optional[date] = None) -> dict:
           'insufficient':   [TickerReactionContext, ...],
         }
     """
-    analysis_date = analysis_date or _resolve_analysis_date()
+    from lib.earnings_reactions import local_earnings_clock
+    now = pd.Timestamp.now(tz='UTC')
+    configured_date = os.environ.get('EARNINGS_BRIEF_AS_OF')
+    requested = analysis_date if analysis_date is not None else (date.fromisoformat(configured_date) if configured_date else None)
+    supplied_clock = observation_ts if observation_ts is not None else os.environ.get('EARNINGS_BRIEF_OBSERVATION_TS')
+    if supplied_clock is None:
+        if requested is not None and requested != now.tz_convert('America/New_York').date():
+            raise ValueError('explicit_observation_clock_required_for_replay')
+        clock = now
+    else:
+        clock = local_earnings_clock(supplied_clock)
+        if clock > now:
+            raise ValueError('future_observation_clock')
+    clock_date = clock.tz_convert('America/New_York').date()
+    if requested is not None and requested != clock_date:
+        raise ValueError('analysis_date_observation_clock_mismatch')
+    analysis_date = clock_date
     next_session = _next_session(analysis_date)
     last_session = _prev_session(analysis_date)
 
@@ -678,11 +727,14 @@ def generate_brief(analysis_date: Optional[date] = None) -> dict:
     all_tickers = sorted({r["ticker"] for r in next_reporters}
                          | {r["ticker"] for r in last_reporters})
 
-    next_history = load_reaction_history(all_tickers, before_date=next_session)
+    history_audits={}
+    next_history = load_reaction_history(all_tickers, before_date=next_session, observation_ts=clock,
+        admission_sink=lambda audit:history_audits.update(next_session=audit))
     next_insider = load_insider_net_flow(all_tickers, window_end=next_session)
     # Last session's reporters: history is everything strictly before the
     # last session's own report date (no look-ahead onto the print itself).
-    last_history = load_reaction_history(all_tickers, before_date=last_session)
+    last_history = load_reaction_history(all_tickers, before_date=last_session, observation_ts=clock,
+        admission_sink=lambda audit:history_audits.update(last_session=audit))
     last_insider = load_insider_net_flow(all_tickers, window_end=last_session)
 
     next_contexts = []
@@ -699,7 +751,7 @@ def generate_brief(analysis_date: Optional[date] = None) -> dict:
         )
         next_contexts.append(ctx)
 
-    exact_reactions = load_exact_reactions([r["ticker"] for r in last_reporters], last_session)
+    exact_reactions = load_exact_reactions([r["ticker"] for r in last_reporters], last_session, observation_ts=clock)
     last_contexts = []
     for r in last_reporters:
         ctx = build_ticker_context(
@@ -738,6 +790,8 @@ def generate_brief(analysis_date: Optional[date] = None) -> dict:
 
     return {
         "analysis_date": analysis_date,
+        "observation_ts": clock.isoformat(),
+        "history_admission": history_audits,
         "next_session": next_session,
         "last_session": last_session,
         "last_session_contexts": last_contexts,
@@ -890,6 +944,8 @@ def main(argv: Optional[list[str]] = None) -> int:
              "Discord is suppressed unless --force-post is also given, so a "
              "replay does not spam the live channel.",
     )
+    parser.add_argument('--observation-ts', default=None,
+                        help='Aware ISO timestamp required for historical replay; no date-only clock is invented.')
     parser.add_argument(
         "--dry-run", action="store_true",
         help="Print the Discord embed JSON to stdout instead of posting.",
@@ -904,10 +960,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         # CLI flag overrides the env var for this process.
         os.environ["EARNINGS_BRIEF_AS_OF"] = args.as_of
 
-    analysis_date = _resolve_analysis_date()
-    is_replay = bool(os.environ.get("EARNINGS_BRIEF_AS_OF"))
+    if args.observation_ts:
+        os.environ['EARNINGS_BRIEF_OBSERVATION_TS'] = args.observation_ts
+    analysis_date = _resolve_analysis_date() if os.environ.get("EARNINGS_BRIEF_AS_OF") else None
+    is_replay = bool(os.environ.get("EARNINGS_BRIEF_AS_OF") or os.environ.get("EARNINGS_BRIEF_OBSERVATION_TS"))
 
-    brief = generate_brief(analysis_date)
+    brief = generate_brief(analysis_date, observation_ts=args.observation_ts)
     message = build_discord_message(brief)
 
     if args.dry_run:

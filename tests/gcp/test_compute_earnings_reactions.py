@@ -1130,3 +1130,71 @@ class TestProductionEventTimingContract:
         assert writes[0]['reaction_basis'] == 'BMO'
         # BMO110.5open vs110previousclose; never AMC120open vs111close.
         assert writes[0]['reaction_gap_pct'] == pytest.approx((110.5 / 110 - 1) * 100)
+
+
+def test_native_pre10_prefix_is_qualified_by_actual_producer_not_short_path(monkeypatch):
+    from gcp.fetchers import compute_earnings_reactions as module
+    from lib.earnings_reactions import earnings_session_schedule
+    from datetime import date
+    schedule=earnings_session_schedule(date(2026,1,1),date(2026,2,20))
+    days=[x.date() for x in schedule.index];d=days.index(date(2026,2,2))
+    rows=[]
+    for i,day in enumerate(days[d-12:d+6]):
+        rows.append(dict(date=day,open=100.+i,high=102.+i,low=99.+i,close=101.+i,
+                         adjusted_close=101.+i,data_source='alphavantage_daily'))
+    frame=pd.DataFrame(rows)
+    frame.loc[frame['date']==date(2026,2,2),['open','high']]=[114.,115.]
+    eps=dict(ticker='SYNTH',fiscal_date_ending=date(2025,11,30),reported_date=date(2026,2,2),report_time='BMO')
+    monkeypatch.setattr(module,'fetch_earnings_history_for_tickers',lambda *a:pd.DataFrame([eps]))
+    monkeypatch.setattr(module,'fetch_calendar_timing_map',lambda *a:{})
+    monkeypatch.setattr(module,'is_cloud_sql_configured',lambda:True)
+    captured=[]
+    monkeypatch.setattr(module,'_persist_reaction_frame',lambda f,*a,**k:(captured.extend(f.to_dict('records')) or len(f)))
+    for candidate in (frame,frame[frame['date']!=date(2026,1,23)].copy()):
+        monkeypatch.setattr(module,'fetch_daily_windows_for_ticker_dates',lambda *a:{eps['reported_date']:candidate})
+        assert module.populate_for_tickers(['SYNTH'])==1
+    full,missing=captured
+    native=full['daily_path_v1']['per_metric']['native_classifier_inputs']
+    refused=missing['daily_path_v1']['per_metric']['native_classifier_inputs']
+    assert native['available'] and native['input_identity']
+    assert not refused['available'] and refused['reason']=='missing_native_prefix_session'
+    assert missing['pre_earnings_drift_10d_pct'] is None
+    assert full['daily_path_v1']['input_identity']==missing['daily_path_v1']['input_identity']
+    assert full['daily_path_v1']['status']==missing['daily_path_v1']['status']=='complete'
+    changed=frame.copy()
+    start=date.fromisoformat(native['prefix_start_session'])
+    changed.loc[changed['date']==start,['close','adjusted_close','high']]=[104.,104.,105.]
+    monkeypatch.setattr(module,'fetch_daily_windows_for_ticker_dates',lambda *a:{eps['reported_date']:changed})
+    module.populate_for_tickers(['SYNTH'])
+    corrected=captured[-1]
+    assert corrected['daily_path_v1']['per_metric']['native_classifier_inputs']['input_identity']!=native['input_identity']
+    assert corrected['daily_path_v1']['input_identity']==full['daily_path_v1']['input_identity']
+    # Future malformed non-session bars are removed before validation.
+    future=pd.concat([frame,pd.DataFrame([dict(date=date(2026,2,14),open=float('nan'),high=0,low=0,close=0,adjusted_close=0,data_source='unknown')])],ignore_index=True)
+    for sample in (frame,future):
+        monkeypatch.setattr(module,'fetch_daily_windows_for_ticker_dates',lambda *a:{eps['reported_date']:sample})
+        assert module.populate_for_tickers(['SYNTH'],observation_ts='2026-02-09T21:01:00Z')==1
+    before,after=captured[-2:]
+    assert before['daily_path_v1']['input_identity']==after['daily_path_v1']['input_identity']
+    assert before['daily_path_v1']['per_metric']['native_classifier_inputs']['input_identity']==after['daily_path_v1']['per_metric']['native_classifier_inputs']['input_identity']
+    assert before['pre_earnings_drift_10d_pct']==after['pre_earnings_drift_10d_pct']
+
+
+def test_refusal_receipt_pages_are_bounded_and_unknown_timing_is_event_keyed(monkeypatch):
+    from gcp.fetchers import compute_earnings_reactions as module
+    import json
+    events=[module._event_receipt(dict(ticker='SYNTH',fiscal_date_ending='2025-11-30',reported_date='2026-01-05'),
+        'legacy_fields','unavailable_replacement:legacy_fields','retained') | {'metrics':['x'*50]*45} for _ in range(120)]
+    pages=[];module._emit_event_receipts(events,pages.append)
+    assert sum(len(p['events']) for p in pages)==120
+    assert all(len(json.dumps(p,separators=(',',':')).encode())<=65536 for p in pages)
+    eps=_eps(date(2026,3,4));eps['report_time']=None;eps['yahoo_report_time']=None
+    monkeypatch.setattr(module,'fetch_earnings_history_for_tickers',lambda *a:pd.DataFrame([eps]))
+    monkeypatch.setattr(module,'fetch_calendar_timing_map',lambda *a:{})
+    monkeypatch.setattr(module,'fetch_daily_windows_for_ticker_dates',lambda *a:{})
+    pages=[]
+    assert module.populate_for_tickers(['TEST'],receipt_sink=pages.append)==0
+    item=pages[0]['events'][0]
+    assert item['event_id']==f"TEST:{eps['fiscal_date_ending']}:2026-03-04"
+    assert item['metric_group']=='reaction_basis' and item['reason']=='unknown_event_timing'
+    assert item['disposition']=='write_skipped' and item['retained_computed_at'] is None

@@ -1,14 +1,14 @@
 {
-  "version": "feat-catalyst-001-local-acceptance-v2",
-  "captured_at_utc": "2026-10-26T01:41:16.863666+00:00",
-  "runtime_source_commit": "9eefb77e",
+  "version": "feat-catalyst-001-local-acceptance-v3-owner-five-finding-batch",
+  "captured_at_utc": "2026-10-26T03:34:46.968068+00:00",
+  "runtime_source_commit": "290200caa3be6139306dc3e16bd35483c8e55348",
   "approved_spec_main_merge": "d30c1e4de48236dbfd26dd0b7db48e72ee3936fd",
   "implementation_pr": 1608,
   "tests": {
-    "command": "EARNINGS_TEST_DB_URL_FILE=<private loopback URL file> EARNINGS_ANGO_FIXTURE_ROOT=<private preserved delivery root> python -m pytest tests/integration/test_earnings_daily_path_persistence.py tests/research/test_earnings_new7_reproduction.py tests/gcp/test_compute_earnings_reactions.py tests/gcp/test_earnings_daily_path.py tests/gcp/test_earnings_local_admission.py tests/gcp/test_earnings_reactions_brief.py tests/api/test_earnings_router.py tests/lib/test_lib_earnings_reactions.py tests/gcp/test_earnings_upcoming_numeric_overflow.py tests/gcp/test_apply_schema.py -q",
-    "result": "327 passed in 14.76s",
-    "stdout_sha256": "6fde34d758de5dee648bd73dc85b9f483bb879a1b2918662995e4595ce75d1e7",
-    "real_local_postgresql_cases": 14,
+    "command": "EARNINGS_TEST_DB_URL_FILE=<private loopback URL file> EARNINGS_ANGO_FIXTURE_ROOT=<private preserved delivery root> python -m pytest tests/integration/test_earnings_daily_path_persistence.py tests/research/test_earnings_new7_reproduction.py tests/gcp/test_compute_earnings_reactions.py tests/gcp/test_earnings_daily_path.py tests/gcp/test_earnings_local_admission.py tests/gcp/test_earnings_reactions_brief.py tests/api/test_earnings_router.py tests/lib/test_lib_earnings_reactions.py tests/gcp/test_earnings_upcoming_numeric_overflow.py tests/gcp/test_apply_schema.py -q tests/meta/test_model_registry_consistency.py",
+    "result": "405 passed in20.56s",
+    "stdout_sha256": "180c4700c880c935e6986813fe3c59f0782ff53b37e12b9575856f6fec83066c",
+    "real_local_postgresql_cases": 16,
     "private_fixture_cases": 1,
     "synthetic_market_controls_not_predictive_evidence": true
   },
@@ -42,31 +42,25 @@
   },
   "actual_source_proof": {
     "context": "implementation-source identity matched; external CODE review under existing rules; rollout pending",
-    "counted_bytes": 8033253,
-    "document_body_sha256": "fe7bf14206324f084e333fbb7fd02abc7819ab3c05b6c8990d68f3ed63c22003",
-    "elapsed_seconds": 0.37108492600236787,
+    "counted_bytes": 8034505,
+    "document_body_sha256": "7d21b5f8a82d63daff0b87a0567e20a7bc46eaaa545dd7c8e39dfc52df58f846",
+    "elapsed_seconds": 0.3986255229974631,
     "eligible_route": "declared-note",
     "entry_count": 1452,
     "policy_identity_sha256": "061e4d117f055a8e78a37b17d1de573a7a6c049aee04e6c9d9fc9fb2600a089e",
     "reason": null,
-    "source_identity_sha256": "1948de4dbc33216ec2130e274053ee50488db621ba7e777969c86c51be6920a1",
+    "source_identity_sha256": "3750c00aafbd88ef4b1d3941084a852a514cb20853226b5bc670004b0be82852",
     "status": "identity-matched",
     "success": true
   },
   "actual_branch_main_docs_audit": {
-    "observed_at": "2026-10-26T01:30:14.520488+00:00",
     "main_head": "d30c1e4de482",
-    "branch_head": "5b9ab88cd1bd",
+    "branch_head": "b01ae91de710",
     "main_count": 290,
     "branch_count": 287,
     "new_findings": [],
     "no_new_findings_pass": true,
-    "receipt_hashes": {
-      "runtime-main-docs-audit.json": "796247a40b022122f497a8fb52d84c15bb5926aa31a140bae47c6ad5113b55d0",
-      "runtime-candidate-docs-audit.json": "bac42cddf02241b3027b890e8c1d5704f669a39eadd3a641aa8797ec1f3ba985",
-      "source-proof-candidate-verify.json": "745e38c216387fe86bf860832e835db980ab1c53b3d995413966b25812c11848",
-      "candidate-complete-affected-suite.stdout": "0be0e94af7a6933181d12291602c9d8dd3c7159580b816ef8c1a3c25103ce198"
-    }
+    "source_note_and_runtime_unchanged_after_audited_b01": "Only sanitized acceptance-receipt metadata commits follow; exact runtime source remains290200ca and verified source identity3750c00aafbd88ef4b1d3941084a852a514cb20853226b5bc670004b0be82852"
   },
   "api_contract": {
     "existing_routes_unchanged": true,
@@ -75,7 +69,9 @@
     "percentages": "0\u2013100 percentages with metric-specific count denominators",
     "sample_steps": "reaction-session close index0; not hours or continuous intraday duration",
     "unknown_numeric_values": "null; missing evidence is not zero/false",
-    "legacy_all_history_summary": "unchanged and distinct from new admitted latest12 summary"
+    "legacy_all_history_summary": "unchanged and distinct from new admitted latest12 summary",
+    "native_classifier_inputs": "Additive per_metric group with version, available/reason, event_id, reaction_basis, basis_id, source/input identities, canonical prefix start/end and mature_at. Missing group is not retroactively qualified.",
+    "candidate_audit": "candidate_n, admitted_n, excluded_n, excluded_reason_counts, selected_n, not_selected_older_n; events remains authoritative selected mature cohort, not displayed-history limit."
   },
   "remaining_gates": [
     "normal independent CODE review and current-head CI",
@@ -85,19 +81,34 @@
   ],
   "source_files": [
     {
+      "path": "docs/models/MODEL-EARN-002.md",
+      "bytes": 8049,
+      "sha256": "8f82ecdc9d99ccac52c779539736b4cc9e8ceae83c2c337c372e75f82aa1f8aa"
+    },
+    {
       "path": "docs/product/02-FEATURE-CATALOG.md",
       "bytes": 48863,
       "sha256": "5743a43887a05a8c3d79190445aef7fcc75a36994bdd939b4aa7b4a72e74eba7"
     },
     {
       "path": "docs/product/03-SITE-TRACEABILITY.md",
-      "bytes": 981746,
-      "sha256": "49a18c9bcc899f46737e5b3d92d42de275f5292910e1702ce363e4f647b58025"
+      "bytes": 981802,
+      "sha256": "0d708b8c7da8d4a2dbc58c2b7bafabb95437ee0f2486dce0ac05dfd9856753b1"
+    },
+    {
+      "path": "docs/product/07-MODEL-REGISTRY.md",
+      "bytes": 146188,
+      "sha256": "95376b05c1524077a9b1e926b461213de91e28ab959565cbf4b7a54be3554b58"
     },
     {
       "path": "docs/product/12-PR-ISSUE-TRACEABILITY.md",
       "bytes": 112888,
       "sha256": "a73c2848e19934f37b8da69912d6679e20be9130a752b0762824154e6e167f34"
+    },
+    {
+      "path": "docs/product/generated/model-registry.json",
+      "bytes": 147453,
+      "sha256": "f36983842bc9e70a3a9bc786c6cc4c5f32a57c8a05da1f71e35b63b0ca7aed2b"
     },
     {
       "path": "docs/research/2026-10-25-earnings-new7-reproduction.md",
@@ -107,7 +118,7 @@
     {
       "path": "docs/review-evidence/site-source-snapshot.json",
       "bytes": 199345,
-      "sha256": "bf2b010dec8ce979099db51097f00e53c74cd8bbb075c2d2cff4350bb4ee29af"
+      "sha256": "dd016eacebaf735640044fd13ea10c7fb060aa313c4cf3643e6f56612ad68420"
     },
     {
       "path": "docs/superpowers/plans/2026-10-25-feat-catalyst-001-event-bound-reactions.md",
@@ -116,13 +127,13 @@
     },
     {
       "path": "gcp/earnings_reactions_brief.py",
-      "bytes": 46771,
-      "sha256": "40e421484a98ee15c61f6ffc1dec40bc4f071c9a9ad5683ac94152c9473c21b8"
+      "bytes": 50637,
+      "sha256": "ba611e7d326d3a54ddafdb86ebe9d8a752a1d6d55b2316c1e5af7c00345bc605"
     },
     {
       "path": "gcp/fetchers/compute_earnings_reactions.py",
-      "bytes": 50961,
-      "sha256": "bdddc7f916f42e019e2ae9dbe4d3cbfc472aac44d2aa28334bd07cb391f7bf14"
+      "bytes": 59621,
+      "sha256": "170e9f0b323602a9af09e596e6cf1fd2cb9d13169d3750d0cdf368818d4f609d"
     },
     {
       "path": "gcp/refresh_earnings_views.py",
@@ -131,18 +142,18 @@
     },
     {
       "path": "gcp/schema.sql",
-      "bytes": 268969,
-      "sha256": "5c3e1dd1253125f4c6d161a61123cf4c7dd80bd7cf9f921e123faa541b30ec79"
+      "bytes": 272485,
+      "sha256": "e4fc6f96638992194d88e8872af068f560cf7789b8af82fcde20b45d09d2bb01"
     },
     {
       "path": "lib/earnings_reactions.py",
-      "bytes": 63517,
-      "sha256": "49e8c5e93121b1fca1ad71d9b17884c78be31c97cb4fec229a25a39a7e2aec6b"
+      "bytes": 68558,
+      "sha256": "5c0e7cc7dbe7d052bf6ed138be191adb806fe527cee6916a49ce8baecbc47d53"
     },
     {
       "path": "tests/gcp/test_compute_earnings_reactions.py",
-      "bytes": 56883,
-      "sha256": "1f219939aa7f7cc6ed6ad6a1785094e10a323ba9df28c07eb4522b8efe87f8a6"
+      "bytes": 61708,
+      "sha256": "faa3442965f119dcedd28feac9a5a8d1f0ade3dbc710a0c9f75fb08496676360"
     },
     {
       "path": "tests/gcp/test_earnings_daily_path.py",
@@ -151,18 +162,18 @@
     },
     {
       "path": "tests/gcp/test_earnings_local_admission.py",
-      "bytes": 19772,
-      "sha256": "0bb3576895993687d4ea7f6e6741ef9dcb7b01bafb22e492f9ccd898a30fc9a4"
+      "bytes": 19848,
+      "sha256": "52e145414e01f92a725c6e873fabdb49c7b62bc584af09b36a404bfa93b96b6f"
     },
     {
       "path": "tests/gcp/test_earnings_reactions_brief.py",
-      "bytes": 26716,
-      "sha256": "8553b956cf505c43a57fa59aa49f8e5fee146acb292cbf6dcde0518b1716665a"
+      "bytes": 33011,
+      "sha256": "6491f47d52aa5233ab7d8b978bb03bb4f393bac997dc238cf6f144a1ed15f839"
     },
     {
       "path": "tests/integration/test_earnings_daily_path_persistence.py",
-      "bytes": 15884,
-      "sha256": "07823130a8ce4196c3918a17f4d573bad3b99f08c9b20b00c65e0cf2af6a7dcb"
+      "bytes": 21269,
+      "sha256": "f998467cbdb1be4d14f3c0c046372eb15a8c182a8c2a4c9b9a6f2d6586c2e9a1"
     },
     {
       "path": "tests/research/test_earnings_new7_reproduction.py",
@@ -282,7 +293,7 @@
       "rows": 1,
       "network_target": "disposable loopback only"
     },
-    "source_sql_shape": "T+2 existing batched source reads plus10 actual reflection SELECTs +ceil(N/250) upsert statements",
+    "source_sql_shape": "T+2 existing source reads +10 actual reflection SELECTs +ceil(N/250) upserts +at most one rejected-key SELECT per refused chunk; brief remains7 batched reads and admits prior history before its12-event selection",
     "production_default_job_volume_walltime_cost": "not measured; no bulk-force/backfill run is admitted here",
     "production_driver_wait_estimate_for_T1_N4_seconds": [
       7,
@@ -294,13 +305,29 @@
     "new_provider_calls": 0
   },
   "independent_CODE_review_ledger": {
-    "maximum_rounds": 2,
-    "used_or_reserved_rounds": 1,
-    "completed_judgments": 0,
-    "unallocated_rounds": 1,
-    "interrupted_head": "779356c9aa230db675381dd7628a701cf2407910",
-    "interrupted_receipt": "code-review-round1/interrupted-779-accounting.json in private task evidence",
-    "actual_partial_activity": "six source-reading exec calls; no judgment, tests, probes, network, SQL or mutation; generated/remaining files not reviewed",
-    "start_stop_timestamps": "not captured"
+    "original_local_cap": 2,
+    "prior_local_used_iterations": 2,
+    "prior_partial_then_complete_retained": true,
+    "owner_authorized_additional_LOCAL_iterations": 1,
+    "current_local_maximum": 3,
+    "additional_LOCAL_iterations_not_yet_started": 1,
+    "owner_decision": "User Sentinel_95192636c3648191ada0813ccfff72d4, replying to Sentinel_150cabae19248191a534b01424616517; exact five findings, one fix batch, one additional LOCAL review only",
+    "authenticated_external_CODE_confirmed_for_PR1608": 0,
+    "authenticated_external_SEC_confirmed_for_PR1608": 0,
+    "external_allowance_extension": "NONE implied; parent must establish normal current-policy admission before any trigger",
+    "no_merge_or_deployment_claim": true
+  },
+  "owner_five_finding_batch": {
+    "previous_frozen_head": "ebffe73656b52852ed323966a1495f9712f3cf1e",
+    "complete_review_report_sha256": "056062e097333c00ea1ac7b15f301738835b837294ecad93b22378f5c1c8e014",
+    "sensitive_RED": "6 failed,1 passed in2.89s; the initially passing fourth-quarter fixture had a synthetic holiday report date and was corrected to canonical session rather than claimed sensitive",
+    "RED_stdout_sha256": "6088129dc2ed93a475c592d29a63d3b35ada9422b28287ad09bd8393b98f3620",
+    "local_controls": "Replay/live clock through actual entrypoint, future/raw recap masking; 16-session native proof, missing/changed prefix/future append; mature admission before12 with actual SQL/brief parity; bounded keyed reason/retained-clock receipts with one rejected-chunk read; actual model-registry tripwire and normal export",
+    "R1": "explicit aware observation_ts / --observation-ts / EARNINGS_BRIEF_OBSERVATION_TS; historical date alone refuses; current live clock captured once; future recap prices/sidecar masked",
+    "R2": "separate per_metric.native_classifier_inputs; version earnings-native-inputs-v1; own source/input/basis/timing identities, canonical D-10..D+5 prefix and maturity; shorter daily path identity/meaning unchanged",
+    "R3": "authoritative events is latest-at-most12 mature/admitted native cohort; separate candidate_audit counts/reasons; legacy all-history fields unchanged",
+    "R4": "actual upsert RETURNING and at most one rejected-chunk SELECT; bounded receipt pages with keyed disposition and exact retained clocks; no new table/journal",
+    "R5": "own Inputs only rationale/normal export and mechanical own-model symbol citation by name",
+    "independent_acceptance": "not yet reviewed; owner-authorized one additional LOCAL verification pending"
   }
 }
