@@ -757,7 +757,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/features/experimental/options_derived.py`](../../../lib/features/experimental/options_derived.py) — line [355](../../../lib/features/experimental/options_derived.py#L355)
 
 ### `playbook_cards`
-- [`platform/api/routers/playbook.py`](../../../platform/api/routers/playbook.py) — line [156](../../../platform/api/routers/playbook.py#L156), [161](../../../platform/api/routers/playbook.py#L161), [168](../../../platform/api/routers/playbook.py#L168)
+- [`platform/api/routers/playbook.py`](../../../platform/api/routers/playbook.py) — line [158](../../../platform/api/routers/playbook.py#L158), [163](../../../platform/api/routers/playbook.py#L163), [170](../../../platform/api/routers/playbook.py#L170)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [552](../../../scripts/audit_data_freshness.py#L552), [553](../../../scripts/audit_data_freshness.py#L553), [712](../../../scripts/audit_data_freshness.py#L712)
 
 ### `playbook_cards_staging`
