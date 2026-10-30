@@ -487,3 +487,52 @@ def test_daily_and_native_cohorts_each_rank_after_own_admission(db):
     assert summary['candidate_audit']['not_selected_older_n']==1
     assert summary['native_candidate_audit']['excluded_reason_counts']=={'unqualified_native_classifier_inputs':1}
     assert summary['native_candidate_audit']['not_selected_older_n']==0
+
+
+def _maturing_prefix_row(clock):
+    from lib.earnings_reactions import compute_daily_path_v1
+    days=[date(2026,1,d) for d in (2,5,6,7,8,9,12)]
+    closes=[100.,112.,115.,113.,105.,99.,102.]
+    frame=pd.DataFrame([dict(date=day,open=(110. if i==1 else close),
+        high=max(110. if i==1 else close,close)+1,low=min(110. if i==1 else close,close)-1,close=close)
+        for i,(day,close) in enumerate(zip(days,closes))])
+    ev=dict(ticker='SYNTH',fiscal_date_ending=date(2025,11,30),reported_date=date(2026,1,5),reaction_basis='BMO')
+    evidence=dict(event_id='SYNTH:2025-11-30:2026-01-05',source_id='synthetic-maturing-prefix',
+                  observed_at=clock,acquired_at=clock,price_basis_id='synthetic:raw')
+    p=compute_daily_path_v1(ev,frame,observation_ts=clock,price_evidence=evidence)['payload']
+    assert p['status']=='maturing'
+    row=record(p);row.update(sustain_5d_pct=None,direction_consistent_5d=None,is_reversal_5d=None)
+    return row
+
+
+def test_out_of_order_maturing_refresh_preserves_qualified_step_and_clocks(db):
+    from gcp.fetchers.compute_earnings_reactions import _persist_reaction_frame
+    newer=_maturing_prefix_row('2026-01-07T21:01:00Z')
+    older=_maturing_prefix_row('2026-01-06T21:01:00Z')
+    assert newer['daily_path_v1']['first_opposite_close_step']==2
+    assert older['daily_path_v1']['first_opposite_close_step'] is None
+    assert _persist_reaction_frame(pd.DataFrame([newer]))==1
+    before=read(db);receipts=[]
+    assert _persist_reaction_frame(pd.DataFrame([older]),receipt_sink=receipts.append)==0
+    assert read(db)==before
+    assert any(item['reason']=='regressing_daily_prefix' for page in receipts for item in page['events'])
+    # Forward arrival and exact replay remain admitted; no stale-input overwrite.
+    with db.begin() as c:c.execute(sa.text("DELETE FROM earnings_reactions WHERE ticker='SYNTH'"))
+    assert _persist_reaction_frame(pd.DataFrame([older]))==1
+    assert _persist_reaction_frame(pd.DataFrame([newer]))==1
+    assert _persist_reaction_frame(pd.DataFrame([newer]))==1
+    assert read(db)['daily_path_v1']==newer['daily_path_v1']
+
+
+@pytest.mark.parametrize('defect',['shorter_prefix','erased_metric','changed_step'])
+def test_maturing_refresh_cannot_regress_evidence_even_with_newer_clock(db,defect):
+    from gcp.fetchers.compute_earnings_reactions import _persist_reaction_frame
+    row=_maturing_prefix_row('2026-01-07T21:01:00Z')
+    assert _persist_reaction_frame(pd.DataFrame([row]))==1
+    before=read(db);bad=deepcopy(row);p=bad['daily_path_v1']
+    p['observation_ts']='2026-01-07T21:02:00Z'
+    if defect=='shorter_prefix':p['observed_steps']-=1
+    elif defect=='erased_metric':p['per_metric']['first_opposite_close']['available']=False
+    else:p['first_opposite_close_step']=1
+    assert _persist_reaction_frame(pd.DataFrame([bad]))==0
+    assert read(db)==before

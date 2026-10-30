@@ -1062,6 +1062,22 @@ def _retention_receipts(row, prior, columns):
         if old.get(field) is not None and new.get(field) is not None and old.get(field)!=new.get(field):
             return [_event_receipt(row,'daily_path_v1','revision_required:'+field,'retained',prior)]
     events=[]
+    if old and new:
+        from lib.earnings_reactions import local_earnings_clock
+        regresses = False
+        try:
+            if old.get('observation_ts') is not None:
+                regresses = local_earnings_clock(new.get('observation_ts')) < local_earnings_clock(old['observation_ts'])
+            if old.get('observed_steps') is not None:
+                regresses |= new.get('observed_steps') is None or new['observed_steps'] < old['observed_steps']
+            for metric in ('first_opposite_close','closing_gap_fill'):
+                if old.get('per_metric',{}).get(metric,{}).get('available') is True:
+                    regresses |= new.get('per_metric',{}).get(metric,{}).get('available') is not True
+                    regresses |= any(new.get(metric+suffix) != old.get(metric+suffix) for suffix in ('_step','_date'))
+        except (ValueError,TypeError):
+            regresses = True
+        if regresses:
+            events.append(_event_receipt(row,'daily_path_v1','regressing_daily_prefix','retained',prior))
     if old and (not new or new.get('status') not in ('complete','maturing','not_applicable')
                 or old.get('status') in ('complete','not_applicable') and new.get('status')=='maturing'):
         events.append(_event_receipt(row,'daily_path_v1','unavailable_replacement:daily_path_v1','retained',prior))
@@ -1127,7 +1143,24 @@ def _persist_reaction_frame(frame, *, receipt_sink=None):
                    prior['basis_id'].astext == incoming['basis_id'].astext),
             sa.or_(prior['version'].astext.is_(None),
                    prior['version'].astext == incoming['version'].astext))
-        conditions.append(sa.or_(prior.is_(None), sa.func.jsonb_typeof(prior) == 'null', acceptable_payload))
+        # Compare actual instants, never lexicographic timezone spellings.
+        prefix_guards = [
+            sa.or_(prior['observation_ts'].astext.is_(None),
+                sa.and_(incoming['observation_ts'].astext.is_not(None),
+                    sa.cast(incoming['observation_ts'].astext,sa.DateTime(timezone=True)) >=
+                    sa.cast(prior['observation_ts'].astext,sa.DateTime(timezone=True)))),
+            sa.or_(prior['observed_steps'].astext.is_(None),
+                sa.and_(incoming['observed_steps'].astext.is_not(None),
+                    sa.cast(incoming['observed_steps'].astext,sa.Integer) >=
+                    sa.cast(prior['observed_steps'].astext,sa.Integer)))]
+        for metric in ('first_opposite_close','closing_gap_fill'):
+            was_available = prior['per_metric'][metric]['available'].astext
+            prefix_guards.append(sa.or_(was_available.is_(None),was_available != 'true',
+                sa.and_(incoming['per_metric'][metric]['available'].astext == 'true',
+                    prior[metric+'_step'].astext.is_not_distinct_from(incoming[metric+'_step'].astext),
+                    prior[metric+'_date'].astext.is_not_distinct_from(incoming[metric+'_date'].astext))))
+        conditions.append(sa.or_(prior.is_(None), sa.func.jsonb_typeof(prior) == 'null',
+                                 sa.and_(acceptable_payload,*prefix_guards)))
         old_native = prior['per_metric']['native_classifier_inputs']['available'].astext
         new_native = incoming['per_metric']['native_classifier_inputs']['available'].astext
         conditions.append(sa.or_(old_native.is_(None), old_native != 'true', new_native == 'true'))

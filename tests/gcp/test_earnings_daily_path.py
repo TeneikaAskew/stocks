@@ -159,3 +159,22 @@ def test_supplied_batch_calendar_is_sliced_before_any_per_event_scan():
     bounded=compute_daily_path_v1(ev,f,observation_ts=CLOCK,price_evidence=e,schedule=BatchCalendar())['payload']
     direct.pop('computed_at');bounded.pop('computed_at')
     assert bounded==direct and len(slices)==1
+
+
+@pytest.mark.parametrize('release',[
+    'not-an-instant','2026-01-05','2026-01-05T06:00:00',
+    '2026-01-30T22:00:00Z','2026-01-04T11:00:00Z','2026-01-05T16:00:00Z'])
+def test_strict_pit_rejects_invalid_future_or_event_inconsistent_release(release):
+    ev,f,e=control('BMO');ev['release_ts']=release;e['publication_evidence_id']='synthetic-retained-publisher-receipt'
+    r=compute_daily_path_v1(ev,f,observation_ts=CLOCK,price_evidence=e,mode='strict_pit')
+    assert r['available'] is False and r['payload']['status']=='unavailable'
+    assert r['payload']['first_opposite_close_step'] is None
+
+
+@pytest.mark.parametrize('basis,release',[
+    ('BMO','2026-01-05T06:00:00-05:00'),('BMO','2026-01-05T11:00:00Z'),
+    ('AMC','2026-01-05T16:01:00-05:00')])
+def test_strict_pit_accepts_explicit_aware_same_event_basis_release(basis,release):
+    ev,f,e=control(basis);ev['release_ts']=release;e['publication_evidence_id']='synthetic-retained-publisher-receipt'
+    r=compute_daily_path_v1(ev,f,observation_ts=CLOCK,price_evidence=e,mode='strict_pit')
+    assert r['available'] is True and r['payload']['status']=='complete'

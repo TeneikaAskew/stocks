@@ -1178,8 +1178,15 @@ def compute_daily_path_v1(event, daily, *, observation_ts, price_evidence=None,
             raise ValueError('invalid_timing_source_identity')
         payload.update(event_id=event_id, reaction_basis=basis,
                        timing_source=timing_source)
-        if mode == 'strict_pit' and not ev.get('release_ts'):
-            raise ValueError('missing_exact_release_clock_for_strict_pit')
+        release = None
+        if mode == 'strict_pit':
+            if not ev.get('release_ts'):
+                raise ValueError('missing_exact_release_clock_for_strict_pit')
+            release = local_earnings_clock(ev['release_ts'])
+            if release > clock:
+                raise ValueError('event_not_released_at_cutoff')
+            if release.tz_convert('America/New_York').date().isoformat() != ev['reported_date']:
+                raise ValueError('release_report_date_mismatch')
         receipt = local_source_admission(price_evidence, event_id, clock, mode)
         basis_id = price_evidence.get('price_basis_id')
         if not isinstance(basis_id, str) or not basis_id.strip():
@@ -1201,6 +1208,11 @@ def compute_daily_path_v1(event, daily, *, observation_ts, price_evidence=None,
         if reported not in labels:
             raise ValueError('report_date_is_not_exchange_session')
         d = labels.index(reported)
+        if release is not None:
+            opening = pd.Timestamp(schedule.iloc[d]['market_open'])
+            closing = pd.Timestamp(schedule.iloc[d]['market_close'])
+            if (basis == 'BMO' and release >= opening) or (basis == 'AMC' and release < closing):
+                raise ValueError('release_clock_timing_conflict')
         start = d if basis == 'BMO' else d + 1
         stop = d + 5
         if d < 1 or stop >= len(labels):
