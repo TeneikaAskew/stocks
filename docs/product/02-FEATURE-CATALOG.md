@@ -225,6 +225,9 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Blocking issues | [solyra#112](https://github.com/TeneikaAskew/solyra/issues/112) [#1304](https://github.com/TeneikaAskew/stocks/issues/1304) [#1305](https://github.com/TeneikaAskew/stocks/issues/1305) [#1306](https://github.com/TeneikaAskew/stocks/issues/1306) [#1307](https://github.com/TeneikaAskew/stocks/issues/1307) [#1308](https://github.com/TeneikaAskew/stocks/issues/1308) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 3 |
 
+
+Current-session ORB runtime draft: [#1642](https://github.com/TeneikaAskew/stocks/pull/1642). The137-test repair, formal renderer and source identity pass. API-image calendar import, combined fleet allocation, hosted review/checks and deployed parity remain pending.
+
 ### FEAT-STRAT-001
 
 **Candle classification, FTFC, structural levels** — STRAT / levels

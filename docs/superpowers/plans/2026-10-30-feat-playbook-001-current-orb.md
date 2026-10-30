@@ -2,7 +2,7 @@
 feat_id: FEAT-PLAYBOOK-001
 spec: docs/superpowers/specs/2026-10-30-feat-playbook-001-current-orb.md
 branch: fix/feat-playbook-001-current-orb
-pr: null
+pr: 1642
 status: ready
 ---
 
