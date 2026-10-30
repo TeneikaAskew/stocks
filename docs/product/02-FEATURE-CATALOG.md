@@ -213,8 +213,8 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Priority | P0 |
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-10-07 |
-| Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
+| Last reviewed | 2026-10-30 |
+| Evidence status | Existing production needs remediation; current-session ORB consumer candidate passes 83 hermetic backend tests and 2 OpenAPI tests. Implementation-source identity is recorded for PLAYBOOK-05; external review, hosted checks, API image/fleet qualification and deployed parity remain pending. |
 | UI surface | `/playbook` |
 | Backend | `/api/playbook` |
 | Data | `premarket_analysis`, `playbook_cards` |
