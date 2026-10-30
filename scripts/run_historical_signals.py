@@ -271,6 +271,36 @@ def map_signals_to_table(signals_df: pd.DataFrame, ticker: str,
         # Cast NaN-tolerant int — keep nullable
         out['entry_volume'] = out['entry_volume'].astype('Int64')
 
+    # Preserve existing extras and validate reserved metadata BEFORE any lookup.
+    from copy import deepcopy
+    from lib.signals import read_score_explanation
+    extras = []
+    extra_cols = [c for c in signals_df.columns if c.startswith(EXTRA_PREFIXES)]
+    for _, row in signals_df.iterrows():
+        prior = row.get('extra')
+        if prior is None or (isinstance(prior, float) and pd.isna(prior)):
+            prior = {}
+        if not isinstance(prior, dict):
+            raise ValueError('historical signal extra must be an object')
+        extra = deepcopy(prior)
+        for key in extra_cols:
+            if key in extra:
+                raise ValueError('reserved extra column collision: ' + key)
+            extra[key] = row[key]
+        value = row.get('score_explanation')
+        if value is not None and not (isinstance(value, float) and pd.isna(value)):
+            if 'score_explanation' in extra and extra['score_explanation'] != value:
+                raise ValueError('reserved score_explanation collision')
+            explanation = read_score_explanation(value, score=row.get('signal_strength'),
+                direction=str(row.get('trade_type', '')).lower(),
+                strategy=strategy, run_kind=signals_df.attrs.get('run_kind'),
+                storage_source=None)
+            if explanation['status'] != 'recorded':
+                raise ValueError('invalid native score_explanation')
+            extra['score_explanation'] = explanation
+        extras.append(extra or None)
+    out['extra'] = extras
+
     # Phase 1: timeframe tagging on every research-pipeline row, by the
     # placeholder tiers in lib/strategies/timeframe.py (EMPIRICAL_LOOKUP was
     # retired in #1167). entry_rsi is passed for the helper's signature and
@@ -317,13 +347,6 @@ def map_signals_to_table(signals_df: pd.DataFrame, ticker: str,
         for k in proximity_keys:
             out[k] = None
 
-    # Bundle every "extra" column into the JSONB blob
-    extra_cols = [c for c in signals_df.columns if c.startswith(EXTRA_PREFIXES)]
-    if extra_cols:
-        extras = signals_df[extra_cols].to_dict(orient='records')
-        out['extra'] = extras
-    else:
-        out['extra'] = None
 
     return out
 
@@ -381,14 +404,25 @@ def _generate_mean_reversion_signals(enriched: pd.DataFrame) -> pd.DataFrame:
     if raw is None or len(raw) == 0:
         return pd.DataFrame()
 
+    from lib.signals import build_score_explanation, score_execution_context
+    context = score_execution_context(producer_definition='historical-mr-v1',
+        strategy='mean_reversion', source_path=__file__,
+        config={'min_conditions': 3, 'consecutive_periods': 3,
+                'indicator_config': vars(IndicatorConfig()), 'strat_bonus': 0},
+        frame=enriched_with_extras)
     out_rows = []
     for _, sig in raw.iterrows():
+        if sig['strat_bonus'] != 0 or sig['total_score'] != sig['base_score']:
+            raise ValueError('historical MR caller has unsupported bonus policy')
         out_rows.append({
             'entry_time': sig.get('time'),
             'trade_type': sig['direction'].lower(),  # 'CALL' → 'call' to match momentum schema
             'entry_price': float(sig['price']),
             'signal_strength': int(sig['total_score']),
             'conditions_met': _json.dumps(sig['conditions_met']),
+            'score_explanation': build_score_explanation(
+                base_count=int(sig['base_score']), matched_conditions=sig['conditions_met'],
+                provenance={**context, 'direction': sig['direction'].lower()}),
             'duration_minutes': None,
             'return_pct': None,
             'best_return': None,
@@ -476,6 +510,7 @@ def _process_ticker(ticker: str, args: argparse.Namespace) -> int:
     if signals_df.empty:
         return 0
 
+    signals_df.attrs['run_kind'] = window_kind
     table_df = map_signals_to_table(signals_df, ticker, strategy=args.strategy)
     if args.dry_run:
         log.info('  %s: --dry-run, would insert %d rows (strategy=%s)',
