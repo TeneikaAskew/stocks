@@ -1107,7 +1107,7 @@ class TestProductionEventTimingContract:
             writes.append(frame.to_dict('records'))
             stored.update(frame.to_dict('records')[0])
             return len(frame)
-        monkeypatch.setattr(mod, '_persist_reaction_frame', persist)
+        monkeypatch.setattr(mod, '_upsert_reaction_frame', persist)
         assert mod.populate_for_tickers(['TEST']) == 0
         assert writes == []
         assert stored == prior
@@ -1125,7 +1125,7 @@ class TestProductionEventTimingContract:
         monkeypatch.setattr(mod, 'fetch_daily_windows_for_ticker_dates', lambda *args: {
             eps['reported_date']: TestComputeReactionAMC()._build_bars()})
         monkeypatch.setattr(mod, 'is_cloud_sql_configured', lambda: True)
-        monkeypatch.setattr(mod, '_persist_reaction_frame', lambda df, *args, **kwargs: (writes.extend(df.to_dict('records')) or len(df)))
+        monkeypatch.setattr(mod, '_upsert_reaction_frame', lambda df, *args, **kwargs: (writes.extend(df.to_dict('records')) or len(df)))
         assert mod.populate_for_tickers(['TEST']) == 1
         assert writes[0]['reaction_basis'] == 'BMO'
         # BMO110.5open vs110previousclose; never AMC120open vs111close.
@@ -1149,7 +1149,7 @@ def test_native_pre10_prefix_is_qualified_by_actual_producer_not_short_path(monk
     monkeypatch.setattr(module,'fetch_calendar_timing_map',lambda *a:{})
     monkeypatch.setattr(module,'is_cloud_sql_configured',lambda:True)
     captured=[]
-    monkeypatch.setattr(module,'_persist_reaction_frame',lambda f,*a,**k:(captured.extend(f.to_dict('records')) or len(f)))
+    monkeypatch.setattr(module,'_upsert_reaction_frame',lambda f,*a,**k:(captured.extend(f.to_dict('records')) or len(f)))
     for candidate in (frame,frame[frame['date']!=date(2026,1,23)].copy()):
         monkeypatch.setattr(module,'fetch_daily_windows_for_ticker_dates',lambda *a:{eps['reported_date']:candidate})
         assert module.populate_for_tickers(['SYNTH'])==1
@@ -1198,3 +1198,26 @@ def test_refusal_receipt_pages_are_bounded_and_unknown_timing_is_event_keyed(mon
     assert item['event_id']==f"TEST:{eps['fiscal_date_ending']}:2026-03-04"
     assert item['metric_group']=='reaction_basis' and item['reason']=='unknown_event_timing'
     assert item['disposition']=='write_skipped' and item['retained_computed_at'] is None
+
+
+@pytest.mark.parametrize('table, writer, readers', [
+    ('earnings_reactions', 'gcp/fetchers/compute_earnings_reactions.py',
+     {'gcp/earnings_reactions_brief.py', 'lib/earnings_reactions.py'}),
+    ('earnings_upcoming_with_history', 'gcp/refresh_earnings_views.py', set()),
+])
+def test_generated_inventory_attributes_each_owned_write_to_its_producer_only(table, writer, readers):
+    # The table inventory behind docs/product/infrastructure/05-c reads writers
+    # from source text; a reflected-table insert it cannot see would publish
+    # the table as having no writer at all.
+    import importlib.util
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location(
+        'doc_inventory_for_reactions', root / 'scripts/maintenance/doc_inventory.py')
+    inventory = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(inventory)
+    refs = inventory.table_refs(root, [table])[table]
+    writers = {hit['file'] for hit in refs['writes']}
+    assert writers == {writer}
+    assert readers <= {hit['file'] for hit in refs['reads']}
+    assert not writers & readers

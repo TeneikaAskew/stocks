@@ -355,8 +355,10 @@ def _replace_upcoming_rows(frame: pd.DataFrame, refresh_date: date) -> int:
         raise ValueError('upcoming refresh_date partition mismatch')
     engine = get_engine()
     with engine.begin() as conn:
+        conn.execute(
+            sa.text("DELETE FROM earnings_upcoming_with_history WHERE refresh_date = :d"),
+            {"d": refresh_date})
         table = sa.Table('earnings_upcoming_with_history', sa.MetaData(), autoload_with=conn)
-        conn.execute(table.delete().where(table.c.refresh_date == refresh_date))
         if not frame.empty:
             records = frame.to_dict('records')
             for row in records:

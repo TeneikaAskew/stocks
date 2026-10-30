@@ -83,8 +83,8 @@ def read(db):
 
 @pytest.mark.parametrize('replacement', ['null','unavailable','immature','missing_native','event','basis','version'])
 def test_actual_upsert_retains_qualified_prior_and_original_clocks(db, replacement):
-    from gcp.fetchers.compute_earnings_reactions import _persist_reaction_frame
-    assert _persist_reaction_frame(pd.DataFrame([record()])) == 1
+    from gcp.fetchers.compute_earnings_reactions import _upsert_reaction_frame
+    assert _upsert_reaction_frame(pd.DataFrame([record()])) == 1
     before=read(db)
     changed=record(); changed['reaction_gap_pct']=20.
     if replacement=='null': changed['daily_path_v1']=None
@@ -94,19 +94,19 @@ def test_actual_upsert_retains_qualified_prior_and_original_clocks(db, replaceme
     elif replacement=='event': changed['reported_date']=date(2026,1,6)
     elif replacement=='basis': changed['daily_path_v1']['basis_id']='other-basis'
     elif replacement=='version': changed['daily_path_v1']['version']='v2'
-    assert _persist_reaction_frame(pd.DataFrame([changed])) == 0
+    assert _upsert_reaction_frame(pd.DataFrame([changed])) == 0
     assert read(db)==before
 
 
 def test_compatible_complete_refresh_is_atomic_and_idempotent(db):
-    from gcp.fetchers.compute_earnings_reactions import _persist_reaction_frame
-    _persist_reaction_frame(pd.DataFrame([record()]))
+    from gcp.fetchers.compute_earnings_reactions import _upsert_reaction_frame
+    _upsert_reaction_frame(pd.DataFrame([record()]))
     new=record(); new['reaction_gap_pct']=12.
     new['daily_path_v1']['computed_at']='2026-01-13T21:02:00+00:00'
-    assert _persist_reaction_frame(pd.DataFrame([new]))==1
+    assert _upsert_reaction_frame(pd.DataFrame([new]))==1
     after=read(db)
     assert after['reaction_gap_pct']==12. and after['daily_path_v1']==new['daily_path_v1']
-    assert _persist_reaction_frame(pd.DataFrame([new]))==1
+    assert _upsert_reaction_frame(pd.DataFrame([new]))==1
     assert read(db)==after
 
 
@@ -125,9 +125,9 @@ def test_failed_upcoming_insert_rolls_back_actual_prior_snapshot(db):
 
 
 def test_actual_views_and_router_keep_event_list_unknowns_and_native_fields(db,monkeypatch):
-    from gcp.fetchers.compute_earnings_reactions import _persist_reaction_frame
+    from gcp.fetchers.compute_earnings_reactions import _upsert_reaction_frame
     from gcp import database
-    _persist_reaction_frame(pd.DataFrame([record()]))
+    _upsert_reaction_frame(pd.DataFrame([record()]))
     with db.begin() as c:
         c.execute(sa.text('REFRESH MATERIALIZED VIEW earnings_event_outcomes'))
         c.execute(sa.text('REFRESH MATERIALIZED VIEW earnings_ticker_lean'))
@@ -239,9 +239,9 @@ def test_preserved_ango_default_producer_to_storage_views_api_and_brief(db, monk
 
 def test_schema_reapply_preserves_old_null_evidence_and_views_populated(db,monkeypatch):
     from gcp import apply_schema, database
-    from gcp.fetchers.compute_earnings_reactions import _persist_reaction_frame
+    from gcp.fetchers.compute_earnings_reactions import _upsert_reaction_frame
     row=record();row['daily_path_v1']=None
-    _persist_reaction_frame(pd.DataFrame([row]))
+    _upsert_reaction_frame(pd.DataFrame([row]))
     before=read(db)
     monkeypatch.setattr(database,'get_engine',lambda:db)
     def execute(sql):
@@ -261,8 +261,8 @@ def test_schema_reapply_preserves_old_null_evidence_and_views_populated(db,monke
 
 
 def test_actual_event_view_does_not_attach_other_fiscal_period_eps(db):
-    from gcp.fetchers.compute_earnings_reactions import _persist_reaction_frame
-    _persist_reaction_frame(pd.DataFrame([record()]))
+    from gcp.fetchers.compute_earnings_reactions import _upsert_reaction_frame
+    _upsert_reaction_frame(pd.DataFrame([record()]))
     with db.begin() as c:
         c.execute(sa.text("DELETE FROM earnings_history WHERE ticker='SYNTH'"))
         c.execute(sa.text("INSERT INTO earnings_history(ticker,fiscal_date_ending,reported_date,reported_eps,surprise_pct) VALUES('SYNTH','2025-08-31','2026-01-05',99,999)"))
@@ -275,8 +275,8 @@ def test_actual_event_view_does_not_attach_other_fiscal_period_eps(db):
 
 def test_actual_daily_refresh_embeds_descriptor_without_new_upcoming_column(db,monkeypatch):
     from gcp import database,refresh_earnings_views as refresh
-    from gcp.fetchers.compute_earnings_reactions import _persist_reaction_frame
-    _persist_reaction_frame(pd.DataFrame([record()]))
+    from gcp.fetchers.compute_earnings_reactions import _upsert_reaction_frame
+    _upsert_reaction_frame(pd.DataFrame([record()]))
     with db.begin() as c:
         c.execute(sa.text("DELETE FROM earnings_calendar WHERE ticker='SYNTH'"))
         c.execute(sa.text("INSERT INTO earnings_calendar(ticker,earnings_date,earnings_time,data_source) VALUES('SYNTH',CURRENT_DATE,'premarket','alphavantage')"))
@@ -295,9 +295,9 @@ def test_actual_daily_refresh_embeds_descriptor_without_new_upcoming_column(db,m
 
 
 def test_mixed_rejections_have_exact_keyed_reasons_and_retained_clocks(db):
-    from gcp.fetchers.compute_earnings_reactions import _persist_reaction_frame
+    from gcp.fetchers.compute_earnings_reactions import _upsert_reaction_frame
     a=record();b=record();b['ticker']='SYNTH2';b['daily_path_v1']['event_id']='SYNTH2:2025-11-30:2026-01-05'
-    _persist_reaction_frame(pd.DataFrame([a,b]))
+    _upsert_reaction_frame(pd.DataFrame([a,b]))
     a['reported_date']=date(2026,1,6)
     b['daily_path_v1']['status']='unavailable'
     receipts=[];reads=[]
@@ -305,7 +305,7 @@ def test_mixed_rejections_have_exact_keyed_reasons_and_retained_clocks(db):
         if statement.lstrip().lower().startswith('select') and 'from earnings_reactions' in statement.lower():reads.append(statement)
     sa.event.listen(db,'before_cursor_execute',trace)
     try:
-        assert _persist_reaction_frame(pd.DataFrame([a,b]),receipt_sink=receipts.append)==0
+        assert _upsert_reaction_frame(pd.DataFrame([a,b]),receipt_sink=receipts.append)==0
     finally:sa.event.remove(db,'before_cursor_execute',trace)
     assert len(reads)==1  # One rejected-chunk read, never one per refused event.
 
@@ -322,7 +322,7 @@ def test_mixed_rejections_have_exact_keyed_reasons_and_retained_clocks(db):
 def test_actual_sql_selects_twelve_mature_events_and_exposes_exclusion_audit(db):
     from datetime import timedelta
     from lib.earnings_reactions import earnings_session_schedule
-    from gcp.fetchers.compute_earnings_reactions import _persist_reaction_frame
+    from gcp.fetchers.compute_earnings_reactions import _upsert_reaction_frame
     from gcp import database,earnings_reactions_brief as brief
     records=[]
     for year in (2022,2023,2024):
@@ -344,7 +344,7 @@ def test_actual_sql_selects_twelve_mature_events_and_exposes_exclusion_audit(db)
     row['daily_path_v1'].update(event_id=event_id,mature_at=maturity,source_observed_at=maturity)
     row['daily_path_v1']['per_metric']['native_classifier_inputs'].update(event_id=event_id,mature_at=maturity,source_observed_at=maturity)
     records.append(row)
-    assert _persist_reaction_frame(pd.DataFrame(records))==13
+    assert _upsert_reaction_frame(pd.DataFrame(records))==13
     with db.begin() as c:
         c.execute(sa.text('REFRESH MATERIALIZED VIEW earnings_event_outcomes'))
         c.execute(sa.text('REFRESH MATERIALIZED VIEW earnings_ticker_lean'))
@@ -506,33 +506,33 @@ def _maturing_prefix_row(clock):
 
 
 def test_out_of_order_maturing_refresh_preserves_qualified_step_and_clocks(db):
-    from gcp.fetchers.compute_earnings_reactions import _persist_reaction_frame
+    from gcp.fetchers.compute_earnings_reactions import _upsert_reaction_frame
     newer=_maturing_prefix_row('2026-01-07T21:01:00Z')
     older=_maturing_prefix_row('2026-01-06T21:01:00Z')
     assert newer['daily_path_v1']['first_opposite_close_step']==2
     assert older['daily_path_v1']['first_opposite_close_step'] is None
-    assert _persist_reaction_frame(pd.DataFrame([newer]))==1
+    assert _upsert_reaction_frame(pd.DataFrame([newer]))==1
     before=read(db);receipts=[]
-    assert _persist_reaction_frame(pd.DataFrame([older]),receipt_sink=receipts.append)==0
+    assert _upsert_reaction_frame(pd.DataFrame([older]),receipt_sink=receipts.append)==0
     assert read(db)==before
     assert any(item['reason']=='regressing_daily_prefix' for page in receipts for item in page['events'])
     # Forward arrival and exact replay remain admitted; no stale-input overwrite.
     with db.begin() as c:c.execute(sa.text("DELETE FROM earnings_reactions WHERE ticker='SYNTH'"))
-    assert _persist_reaction_frame(pd.DataFrame([older]))==1
-    assert _persist_reaction_frame(pd.DataFrame([newer]))==1
-    assert _persist_reaction_frame(pd.DataFrame([newer]))==1
+    assert _upsert_reaction_frame(pd.DataFrame([older]))==1
+    assert _upsert_reaction_frame(pd.DataFrame([newer]))==1
+    assert _upsert_reaction_frame(pd.DataFrame([newer]))==1
     assert read(db)['daily_path_v1']==newer['daily_path_v1']
 
 
 @pytest.mark.parametrize('defect',['shorter_prefix','erased_metric','changed_step'])
 def test_maturing_refresh_cannot_regress_evidence_even_with_newer_clock(db,defect):
-    from gcp.fetchers.compute_earnings_reactions import _persist_reaction_frame
+    from gcp.fetchers.compute_earnings_reactions import _upsert_reaction_frame
     row=_maturing_prefix_row('2026-01-07T21:01:00Z')
-    assert _persist_reaction_frame(pd.DataFrame([row]))==1
+    assert _upsert_reaction_frame(pd.DataFrame([row]))==1
     before=read(db);bad=deepcopy(row);p=bad['daily_path_v1']
     p['observation_ts']='2026-01-07T21:02:00Z'
     if defect=='shorter_prefix':p['observed_steps']-=1
     elif defect=='erased_metric':p['per_metric']['first_opposite_close']['available']=False
     else:p['first_opposite_close_step']=1
-    assert _persist_reaction_frame(pd.DataFrame([bad]))==0
+    assert _upsert_reaction_frame(pd.DataFrame([bad]))==0
     assert read(db)==before

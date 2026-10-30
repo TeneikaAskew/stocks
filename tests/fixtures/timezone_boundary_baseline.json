@@ -68,12 +68,6 @@
    "_query_watchlist::str#d981990c2f8d"
   ]
  },
- "gcp/earnings_reactions_brief.py": {
-  "host-today": [
-   "_resolve_analysis_date::date.today()",
-   "_resolve_analysis_date::date.today()"
-  ]
- },
  "gcp/fetchers/backfill_daily_indicators.py": {
   "host-today": [
    "_filter_recent_rows::_date.today()"

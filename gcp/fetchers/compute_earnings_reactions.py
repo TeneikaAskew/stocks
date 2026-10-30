@@ -41,6 +41,8 @@ from lib.logging_config import setup_logging
 setup_logging()
 log = logging.getLogger(__name__)
 
+REACTIONS_TABLE = 'earnings_reactions'
+
 
 # ────────────────────────────────────────────────────────────
 # Pure-compute layer (testable without DB)
@@ -862,8 +864,8 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observati
         log.warning("Cloud SQL not configured — skipping persist")
         return 0
 
-    n = (_persist_reaction_frame(out_df, receipt_sink=receipt_sink)
-         if receipt_sink is not None else _persist_reaction_frame(out_df))
+    n = (_upsert_reaction_frame(out_df, REACTIONS_TABLE, receipt_sink=receipt_sink)
+         if receipt_sink is not None else _upsert_reaction_frame(out_df, REACTIONS_TABLE))
     log.info("✓ upserted %d rows to earnings_reactions", n)
     return n
 
@@ -1094,7 +1096,7 @@ def _retention_receipts(row, prior, columns):
     return events or [_event_receipt(row,'persistence','incompatible_replacement','retained',prior)]
 
 
-def _persist_reaction_frame(frame, *, receipt_sink=None):
+def _upsert_reaction_frame(frame, table_name=REACTIONS_TABLE, *, receipt_sink=None):
     """Atomic per-chunk PostgreSQL upsert retaining prior qualified values.
 
     Refuse identity changes and any replacement that would null an existing
@@ -1107,7 +1109,7 @@ def _persist_reaction_frame(frame, *, receipt_sink=None):
     from gcp.database import get_engine
     engine = get_engine()
     with engine.connect() as conn:
-        table = sa.Table('earnings_reactions', sa.MetaData(), autoload_with=conn)
+        table = sa.Table(table_name, sa.MetaData(), autoload_with=conn)
     if 'daily_path_v1' not in table.c:
         raise RuntimeError('earnings_reactions.daily_path_v1 migration is required')
     table.c.daily_path_v1.type = JSONB(none_as_null=True)
