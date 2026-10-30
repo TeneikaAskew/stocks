@@ -526,6 +526,9 @@ Finite-number slice: approved spec [#1618](https://github.com/TeneikaAskew/stock
 | Blocking issues | [#925](https://github.com/TeneikaAskew/stocks/issues/925) [#926](https://github.com/TeneikaAskew/stocks/issues/926) [#828](https://github.com/TeneikaAskew/stocks/issues/828) [#862](https://github.com/TeneikaAskew/stocks/issues/862) [#863](https://github.com/TeneikaAskew/stocks/issues/863) [#913](https://github.com/TeneikaAskew/stocks/issues/913) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
 
+
+Typed-news runtime draft: [#1643](https://github.com/TeneikaAskew/stocks/pull/1643). Final integrated96-test consumer validation and source identity pass; hosted review/CI and separately qualified retry0/image/rollback activation remain pending.
+
 ### FEAT-DEPLOY-001
 
 **76 jobs, 65 schedulers, Cloud Run** — Infrastructure / deploy

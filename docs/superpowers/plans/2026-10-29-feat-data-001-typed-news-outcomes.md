@@ -2,7 +2,7 @@
 feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-10-24-feat-data-001-news-outcomes.md
 branch: fix/feat-data-001-typed-news-outcomes
-pr: null
+pr: 1643
 status: ready
 ---
 
@@ -47,7 +47,7 @@ Provider notices alongside a feed remain errors. A malformed late member must no
 
 Consumer base: `63d1dbf7e04ba48ec73023ff0386231dcbcfb606`. The six producer afterimages were matched byte-for-byte before delivery metadata preparation. Packet SHA256: `4f4f12779cc9700e220f6ef4659ff5606982a063dbbaa19c0c6d5eeafecd8ab1` (332611 bytes, 43 records). Consumer baseline: 8 failures and 2 passes in `/tmp/news-consumer-red.log`; candidate: 92 passes and 10 deselections in `/tmp/news-consumer-green-complete.log`. These are deterministic mocked tests, not a new judgment review or deployed evidence.
 
-Historical separate CAT runtime #1430 remains unmerged at head prefix `7e002a`; specification #1600 consumed CODE3. No review allowance is reset or pooled with the separate deployment lineage. DATA hosted-review allowance reconciliation remains with the root publisher; this local draft retains `pr: null`. Deployment retry source is excluded. Exact-three-job retry0 verification must precede typed runtime activation under separate deployment admission.
+Historical separate CAT runtime #1430 remains unmerged at head prefix `7e002a`; specification #1600 consumed CODE3. No review allowance is reset or pooled with the separate deployment lineage. DATA hosted-review allowance reconciliation remains with the root publisher; runtime draft #1643 preserves this separate lineage. Deployment retry source is excluded. Exact-three-job retry0 verification must precede typed runtime activation under separate deployment admission.
 
 Local preparation covers own catalog, traceability and source-bound SHARED-07 note with committed-source proof. Full remote docs audit, independent review, hosted CODE/SEC, CI, publication and deployment remain root-owned prerequisites. Offline audit results, if recorded, do not certify remote issue state or owning-job status.
 
