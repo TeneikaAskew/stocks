@@ -37,3 +37,7 @@ Spec: Source identity/Close-out; advances done_when[2].
 Spec: Close-out; post-merge only.
 - [ ] Record MAIN and deployed immutable image/source relationship, normal build/deployment terminal outcomes and permitted live age verification.
 - [ ] Complete actual source-protocol close-out/retirement and plan done only after required evidence exists. Do not label local53tests as live acceptance.
+
+## CI fixture correction after runtime CODE1
+
+CODE1 and SEC1 completed clean on 27e7cbc2; first receipts 6514061319 and 6514061598 remain preserved. Full CI run 40995521285 exposed an older wire-shape fixture that used the runner UTC date as a market date, yielding age -1 before Eastern midnight. Consumer reproduced the exact failure, then pinned both playbook fixtures in tests/api/test_platform_api.py to a fixed market date and UTC generated timestamp. The router implementation remains byte-identical to the producer patch. Combined playbook/platform API suites pass 135 tests. This test-only correction and refreshed source evidence use the remaining runtime CODE2/current SEC; no allowance reset. Full suite and hosted checks remain required before merge.
