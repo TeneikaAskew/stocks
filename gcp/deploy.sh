@@ -3147,14 +3147,14 @@ deploy_fetch_news_sentiment() {
     # args from prior manual gcloud edits that would break argparse.
     gcloud run jobs create fetch-news-sentiment \
         --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
-        --memory 512Mi --cpu 1 --max-retries 1 \
+        --memory 512Mi --cpu 1 --max-retries 0 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-news-sentiment \
-        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" --max-retries 0 \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         --args "" \
         ${DB_SECRET_FLAG} \
@@ -3174,14 +3174,14 @@ deploy_fetch_news_sentiment_earnings() {
     # calls/day — well under the 150 RPM plan ceiling.
     gcloud run jobs create fetch-news-sentiment-earnings \
         --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
-        --memory 512Mi --cpu 1 --max-retries 1 \
+        --memory 512Mi --cpu 1 --max-retries 0 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-news-sentiment-earnings \
-        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" --max-retries 0 \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         --args "" \
         ${DB_SECRET_FLAG} \
@@ -3193,7 +3193,7 @@ deploy_fetch_news_sentiment_earnings() {
     # floor so cold-start reporters pull 48h and steady-state reporters
     # only pull deltas. MAX_TICKERS=300 caps the resolved set.
     gcloud run jobs update fetch-news-sentiment-earnings \
-        --region "${REGION}" \
+        --region "${REGION}" --max-retries 0 \
         --update-env-vars "^@^EARNINGS_WINDOW_DAYS=7@NEWS_SINCE_LAST=1@MAX_TICKERS=300" \
         --quiet
 }
@@ -3205,14 +3205,14 @@ deploy_fetch_news_sentiment_topics() {
     # defensively strips any leftover CLI args from prior manual edits.
     gcloud run jobs create fetch-news-sentiment-topics \
         --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
-        --memory 512Mi --cpu 1 --max-retries 1 \
+        --memory 512Mi --cpu 1 --max-retries 0 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-news-sentiment-topics \
-        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
+        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" --max-retries 0 \
         --command "python,-m,gcp.fetchers.fetch_news_sentiment" \
         --args "" \
         ${DB_SECRET_FLAG} \
@@ -3221,7 +3221,7 @@ deploy_fetch_news_sentiment_topics() {
 
     # 5 catalyst-rich topics — AV's hard cap per call.
     gcloud run jobs update fetch-news-sentiment-topics \
-        --region "${REGION}" \
+        --region "${REGION}" --max-retries 0 \
         --update-env-vars "^@^NEWS_TOPICS=mergers_and_acquisitions,technology,financial_markets,earnings,life_sciences" \
         --quiet
 }
