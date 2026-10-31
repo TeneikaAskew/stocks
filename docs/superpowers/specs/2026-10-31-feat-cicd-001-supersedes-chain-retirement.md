@@ -14,7 +14,7 @@ done_when:
   - "Base suite (D1): the spec-gate workflow's base-suite job, main's tests/scripts/test_spec_gate.py against the proposed spec_gate.py, is green on the implementation PR head, so no message main's suite asserts has changed."
   - "Review contract: the implementation PR records a three-role red-team pass (shell semantics; YAML/Actions structure; exporter and policy documents) on the head it pushed, each reviewer having executed the gate against a concrete snippet, findings fixed in one batch and one push; the exporter-and-policy reviewer invocation that the platform rejected on stocks#1630 before any review result (#1630 comment 6485122675) is not retried, replaced or routed around by this change, and the pass's exporter-and-policy seat is staffed under its own owner-recorded authorization on the implementation PR; current-head hosted code review and CI pass before merge."
   - "Records: the FEAT-CICD-001 record in docs/product/02-FEATURE-CATALOG.md and docs/product/12-PR-ISSUE-TRACEABILITY.md identify the implementation PR, and the record states that scripts/gate/ is owned through the gate's WORKFLOW_FEAT constant while the Code row lists .github/workflows/ and the review guidelines; no other capability's row or record changes."
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -67,8 +67,9 @@ from the news documentation-count repair." The approved basis is the Library des
 `SUPERSEDES-GATE-ACCEPTANCE-PLAN-rev2.md` (sha256
 f3e70e1df02363d64532039eaf127420ff6c6600533456c7092dfcdd05a1538f) under
 `/mnt/project-files/recovery-2026-10-30/issue1646/review/`. That approval authorizes drafting this
-spec and taking it through the normal process; it is not admission of this spec's text, which
-waits on the owner's section-by-section review (see Status), and it does not approve the separate news retry-count renderer change, a
+spec and taking it through the normal process; the owner's 18:06:02Z approval of the written
+acceptance section (`done_when` L6 to L16 at 2d69ca32) completed the admission recorded under
+Status, and neither approves the separate news retry-count renderer change, a
 hosted review trigger, a formal PR approval, ready, merge or deploy, or any gate code before this
 spec is approved and on main. This spec adds a narrow gate policy under existing requirements
 (REQ-GOV-001, REQ-GOV-003, REQ-REVIEW-001, as `2026-10-26-feat-cicd-001-metadata-successor.md`
@@ -281,6 +282,12 @@ red-team pass. Not checked: behaviour of the proposed code on any input.
 
 ## Status
 
-Spec-only draft published from main d806bfd1 for the owner's section-by-section admission
-(SKILL.md L40), which is the merge gate; `status: approved` is set only after that admission. No
-gate code, plan, hook, workflow or pinned copy changes in this PR.
+Spec-only PR from main d806bfd1. Cumulative admission (SKILL.md L40): A, the owner's 15:52:35Z
+approval of the narrow behaviour on the fixed rev2 basis, rendered by Design and Mode and
+base-advance behaviour; B, the owner's 18:06:02Z approval of the exact written `done_when` (L6 to
+L16 at 2d69ca32, spec sha256 1972365325b49acfbfbb3172b4f36cc59f237b87959d4946c82b5be4dd2023f1).
+`status: approved` records that admission and nothing else: no design, `done_when`, policy or
+test-contract text changed with it. The one independent local spec review judged the bytes at
+b787e767 (sha256 4005d69c…); the later bytes are author corrections the owner authorized. The PR
+stays a draft until the current-head hosted code review and CI; it is not a GitHub approval,
+merge or deployment. No gate code, plan, hook, workflow or pinned copy changes in this PR.
