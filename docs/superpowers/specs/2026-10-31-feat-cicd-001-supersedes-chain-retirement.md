@@ -6,14 +6,14 @@ canvases: []
 done_when:
   - "Retirement admitted (acceptance A1 to A4): tests/scripts/test_spec_gate.py::test_depth_two_retirement_pr_mode_admits_status_only_flip_with_approved_replacement, ::test_depth_two_retirement_commit_mode_admits_status_only_flip (both halves) and ::test_longer_chain_retirement_passes_and_traversal_terminates pass on the implementation and fail on main d806bfd1 with the round-eight message."
   - "Exemption unreachable (B1 to B6): ::test_new_pointer_to_superseded_target_still_refused, ::test_draft_to_approved_with_stale_pointer_refused, ::test_flip_with_changed_pointer_refused, ::test_flip_without_valid_replacement_refused_both_ways and ::test_extra_predecessor_bytes_refused (done_when word, trailing whitespace, CRLF, changed blank line) assert today's messages unchanged on main and on the implementation."
-  - "Lineage traversal (B7, B7b, B7c, C6): ::test_inherited_invalid_own_pointer_refused_on_flip, ::test_deeper_inherited_edge_refused (noncanonical, missing, cross-FEAT) and ::test_deleted_ancestor_is_not_read_from_base assert the new messages 'supersedes chain reaches', 'supersedes chain breaks at <node>, which this change deletes' and the cross-FEAT variant beside the existing refusals; each new message is absent on main."
+  - "Lineage traversal (B7, B7b, B7c, C6): ::test_inherited_invalid_own_pointer_refused_on_flip asserts today's L1512 to L1518 messages on the flipped spec's own pointer (baseline control, green on main and on the implementation); ::test_deeper_inherited_edge_refused (noncanonical, missing, cross-FEAT) asserts 'supersedes chain reaches <node>, which is not written as docs/superpowers/specs/<file>.md', 'supersedes chain breaks at <node>, which is not a spec on the base' and 'supersedes chain reaches <node>, a spec for <feat>, not <feat>'; ::test_deleted_ancestor_is_not_read_from_base asserts 'supersedes chain breaks at <node>, which this change deletes' beside the existing 'is not deleted' refusal; each of those four chain messages is absent on main (red on main)."
   - "Cycles (B8 to B11b): ::test_supersedes_cycle_refused (self-cycle, two new specs, cycle closed against the base, draft-level cycle) and ::test_simultaneous_draft_edit_cycle_uses_head_value assert 'supersedes chain revisits <node> (cycle)'; every row is red on main, including B11, which main passes today."
-  - "Base advance (C1 to C5): ::test_redundant_flip_after_base_advance_gets_merge_main_diagnostic asserts 'already superseded on the current base; merge main so the file leaves this change' (red on main); ::test_pointer_to_target_superseded_after_fork_refused, ::test_merge_of_main_carrying_the_flip_is_not_rechecked and ::test_unchanged_ancestry_is_read_at_the_current_base pass as baseline controls; A1 passes with the divergent-base fixture."
+  - "Base advance (C1 to C5): ::test_redundant_flip_after_base_advance_gets_merge_main_diagnostic asserts 'already superseded on the current base; merge main so the file leaves this change' beside the round-eight message that still applies (the new message is red on main); ::test_pointer_to_target_superseded_after_fork_refused, ::test_merge_of_main_carrying_the_flip_is_not_rechecked and ::test_unchanged_ancestry_is_read_at_the_current_base pass as baseline controls; A1 passes with the divergent-base fixture."
   - "History and plans (A5, A6, A8, B12 to B16): the existing deletion, immutability, born-superseded, depth-one flip and plan-binding tests pass unchanged; ::test_unrelated_draft_edit_beside_retirement_passes and ::test_retirement_leaves_done_plans_unbound_and_untouched pass and show no plan is read or rebound by a docs/ branch retirement."
-  - "Bounds and untouched surfaces (D2 to D4): a 60-spec chained fixture completes with look calls at most the distinct spec count on head plus base; --check-spec still calls validate_spec only; the implementation diff leaves .githooks/pre-commit, scripts/gate/pinned/* and both gate workflows byte-identical."
+  - "Bounds and untouched surfaces (D2 to D4): ::test_traversal_bound_on_sixty_chained_specs completes with look calls at most the number of distinct spec paths in the union of the head and base spec lists; --check-spec still calls validate_spec only; the implementation diff leaves .githooks/pre-commit, scripts/gate/pinned/* and both gate workflows byte-identical."
   - "Base suite (D1): the spec-gate workflow's base-suite job, main's tests/scripts/test_spec_gate.py against the proposed spec_gate.py, is green on the implementation PR head, so no message main's suite asserts has changed."
-  - "Review contract: the implementation PR records a three-role red-team pass (shell semantics; YAML/Actions structure; exporter and policy documents) on the head it pushed, each reviewer having executed the gate against a concrete snippet, findings fixed in one batch and one push; the #1630 denied reviewer operation is neither retried nor replaced; current-head hosted code review and CI pass before merge."
-  - "Records: the FEAT-CICD-001 record in docs/product/02-FEATURE-CATALOG.md and docs/product/12-PR-ISSUE-TRACEABILITY.md identify the implementation PR, and the record states that scripts/gate/ is owned through WORKFLOW_FEAT (spec_gate.py L1096) while the Code row lists .github/workflows/ and the review guidelines; no other capability's row or record changes."
+  - "Review contract: the implementation PR records a three-role red-team pass (shell semantics; YAML/Actions structure; exporter and policy documents) on the head it pushed, each reviewer having executed the gate against a concrete snippet, findings fixed in one batch and one push; the exporter-and-policy reviewer invocation that the platform rejected on stocks#1630 before any review result (#1630 comment 6485122675) is not retried, replaced or routed around by this change, and the pass's exporter-and-policy seat is staffed under its own owner-recorded authorization on the implementation PR; current-head hosted code review and CI pass before merge."
+  - "Records: the FEAT-CICD-001 record in docs/product/02-FEATURE-CATALOG.md and docs/product/12-PR-ISSUE-TRACEABILITY.md identify the implementation PR, and the record states that scripts/gate/ is owned through the gate's WORKFLOW_FEAT constant while the Code row lists .github/workflows/ and the review guidelines; no other capability's row or record changes."
 status: draft
 supersedes: null
 ---
@@ -33,9 +33,12 @@ name the spec that replaced it (round eight)`. The in-place rule for approved sp
 L1864) admits exactly this status-only flip when an approved same-FEAT replacement names P, so
 the two checks contradict each other on the one edit the process requires.
 
-Observed, executed: stocks#1649 was refused twice with that message when the FEAT-OPTION-001
-source-declaration spec tried to retire `2026-10-25-feat-option-001-realtime-transport.md`
-(issue1646 ledger section 4). Measured on main d806bfd1 (minute not retained): 60 specs, 45
+Observed, executed: stocks#1649 was refused twice with that message when it tried to retire the
+Oct 29 collector-source-declaration spec
+(`2026-10-29-feat-option-001-collector-source-declaration.md`), whose unchanged pointer names the
+already-superseded Oct 25 realtime-transport spec
+(`2026-10-25-feat-option-001-realtime-transport.md`) (issue1646 ledger sections 4 and 8: the
+pre-commit refusal and the `--pr` refusal in the scratch clone). Measured on main d806bfd1 (minute not retained): 60 specs, 45
 approved, 8 superseded, 7 legacy; 10 non-null `supersedes` pointers, all canonical, existing and
 same-FEAT; no cycle; no chain longer than one edge; 8 approved heads point at superseded targets
 and cannot be retired by the normal edit (FEAT-AUTH-001 signin-hardening-r2, FEAT-DEPLOY-001
@@ -63,8 +66,9 @@ from the news documentation-count repair." The approved basis is the Library des
 3b4a5b402832d1c05bf2d96a61ead6f4a9c40404a1b5b07ebbdb1a0aa67c7438) and acceptance plan
 `SUPERSEDES-GATE-ACCEPTANCE-PLAN-rev2.md` (sha256
 f3e70e1df02363d64532039eaf127420ff6c6600533456c7092dfcdd05a1538f) under
-`/mnt/project-files/recovery-2026-10-30/issue1646/review/`. That approval authorizes this spec
-through the normal process; it does not approve the separate news retry-count renderer change, a
+`/mnt/project-files/recovery-2026-10-30/issue1646/review/`. That approval authorizes drafting this
+spec and taking it through the normal process; it is not admission of this spec's text, which
+waits on the owner's section-by-section review (see Status), and it does not approve the separate news retry-count renderer change, a
 hosted review trigger, a formal PR approval, ready, merge or deploy, or any gate code before this
 spec is approved and on main. This spec adds a narrow gate policy under existing requirements
 (REQ-GOV-001, REQ-GOV-003, REQ-REVIEW-001, as `2026-10-26-feat-cicd-001-metadata-successor.md`
@@ -82,7 +86,7 @@ did for the previous supersession repair); no requirement amendment is proposed.
 - Changing plan binding (L2332 to L2345), deletion refusal (L1826 to L1834), born-superseded
   refusal (L1838 to L1839), the in-place rule (L1850 to L1864) or superseded immutability (L1865
   to L1869).
-- Any merge-base read of policy in PR mode; the current-base rule (L4676) stays.
+- Any merge-base read of policy in PR mode; the current-base rule (L4675 to L4678) stays.
 - The news renderer and retry-count proposal (FEAT-CICD-001, separate spec, separate branch).
 - Implementing anything here: this spec is documentation; the gate code follows on its own plan
   and `feature/feat-cicd-001-supersedes-chain-retirement` branch after this spec is approved and
@@ -126,6 +130,9 @@ text (not deleted, not legacy):
    strip(base_text)` with the L1855 lambda (`re.sub(r"^status:.*$", "", t, flags=re.M)`), so the
    only byte change is the `status:` line; and the head tree holds a spec other than S with
    `status: approved`, the same `feat_id` and `supersedes == S` (the L1859 to L1864 condition).
+   The in-place rule's `frozen` term (L1851 to L1852, `frozen_since_main` L1789 to L1810) is
+   True for any head whose status is `superseded` (its first disjunct, L1803), so hoisting
+   `base_text` above it changes nothing and the exemption stays coextensive with that rule.
    Otherwise step 3 runs as today. `check_supersedes` gains a keyword
    `allow_superseded_target=False` and returns `[]` in place of the round-eight error only when
    it is True and every other check passed.
@@ -151,8 +158,11 @@ text (not deleted, not legacy):
    by editing a draft node's pointer in the same change are all found from a changed spec.
 5. Redundant flip after base advance, fail-closed: when `base_text` is not None, its status is
    `superseded` and `text == base_text`, refuse `"{S}: already superseded on the current base;
-   merge main so the file leaves this change"`. Today this state is refused with the round-eight
-   message, which misdirects.
+   merge main so the file leaves this change"`. Today this state is refused only with the
+   round-eight message, which misdirects. After the change the new diagnostic appears beside the
+   round-eight refusals that still apply (the replacement's new pointer at the current base, and
+   the flipped spec's own pointer, since step 3 needs an approved base status), so the output
+   names the way out.
 6. Everything else is unchanged byte for byte.
 
 Edit site, L1842 to L1843, plus two helpers and hoisting `base_text` from L1850:
@@ -174,7 +184,8 @@ errs += validate_spec(...) + check_supersedes(fm, path, ch.base, allow_supersede
 
 ### Mode and base-advance behaviour
 
-- BA1, PR mode, redundant flip: refused by step 5 with the merge-main diagnostic.
+- BA1, PR mode, redundant flip: refused by step 5 with the merge-main diagnostic, beside the
+  round-eight refusals that still apply (not instead of them).
 - BA2, PR mode: the branch adds N naming P; after the fork P was superseded on main by N2. N's
   pointer is new and P is superseded at the current base, so round eight refuses, correctly.
 - BA3, commit mode with a merge of main in progress: `against = MERGE_HEAD` (L4647); a P already
@@ -227,14 +238,26 @@ no message main's suite asserts changes.
   a done_when item of `2026-10-13-feat-cicd-001-complete-generated-inventory.md` (L14), scoped to
   renderer and diff-byte parsing, which this change does not touch (`RENDERER_FILES` L82), so the
   three-role contract applies and the fourth role is not inherited.
-- The #1630 exporter and policy reviewer operation remains denied; this spec dispatches no
-  reviewer and does not retry, replace or route around it. Staffing that role for the
-  implementation PR is the owner's decision at that time.
+- On stocks#1630 the required exporter and policy reviewer invocation was rejected by the
+  platform before any review result and has not been retried or replaced through another route
+  (#1630 comment 6485122675; read here from the recovery archive's GATE-EVIDENCE-SUPPLEMENT
+  record, not re-read from GitHub). This spec dispatches no reviewer and does not retry, replace
+  or route around that invocation. That restriction is specific to the denied invocation; it is
+  not a prohibition on independently authorized invocations of the role. Staffing the exporter
+  and policy seat for the implementation PR is the owner's decision then, recorded on that PR.
 - Coordination with the news renderer proposal (also FEAT-CICD-001): it plans no `spec_gate.py`
   edit and its new spec must supersede `2026-10-13-feat-cicd-001-complete-generated-inventory.md`,
   one of the 8 blocked heads, so this repair lands first and that flip follows on its own branch.
   The only shared file is `tests/scripts/test_spec_gate.py`, each change adding its own tests;
   the second to land rebases its additions. `spec_gate.py` is this change's alone.
+
+### Capacity (CLAUDE.md rule 0)
+
+Volume: the changed specs of one change and their lineage, read as blobs of a few KB each; main
+d806bfd1 holds 60 spec files, so a lineage read touches at most that many. Velocity: zero
+provider, API or SQL calls; at most one tree read per distinct spec in a changed spec's lineage,
+locally and in CI. Wall-clock: bounded by the unchanged gate ceilings; done_when 7's 60-spec
+fixture measures the longest chain the bound allows. Cost: no new scheduled or cloud work.
 
 ## Risks
 
@@ -248,8 +271,6 @@ no message main's suite asserts changes.
 - An existing asserted message changing, which would break every open branch's pre-commit hook.
   Caught by done_when 8 (`base-suite`) and by the new-message rule.
 - Unbounded traversal. Caught by done_when 7.
-- Capacity (CLAUDE.md rule 0): no workload runs differently; the gate runs locally and in CI
-  and performs at most one tree read per distinct spec in a changed spec's lineage.
 
 ## Separation of evidence
 
