@@ -409,6 +409,8 @@ Allowance correction lineage: [#1587](https://github.com/TeneikaAskew/stocks/pul
 
 ### FEAT-SIGNAL-001 — Signals / execution (25 open)
 
+**PR lineage:** [#1620](https://github.com/TeneikaAskew/stocks/pull/1620) implements the approved [#1619](https://github.com/TeneikaAskew/stocks/pull/1619) contract using existing JSONB, native producer-derived controls and typed SQL/parquet responses. This is source/local-test evidence pending normal review and deployment, not alert publication, original point-in-time certification or financial-performance proof. It does not close the broader issues below or rewrite legacy scores.
+
 | Issue | Sev | Title |
 |---|---|---|
 | [#815](https://github.com/TeneikaAskew/stocks/issues/815) | CRITICAL | [audit] T4 — Live has no stop-loss; the validating backtest does (proposed resolution: do NOT add one) |
@@ -638,7 +640,7 @@ Live registry continuation: [#1599](https://github.com/TeneikaAskew/stocks/pull/
 | [solyra#130](https://github.com/TeneikaAskew/solyra/issues/130) | P3 | [P3][Playbook] Unreachable empty state tells the reader to run scripts/run_pipeline.py |
 | [solyra#132](https://github.com/TeneikaAskew/solyra/issues/132) | P3 | [P3][Playbook] The setup count has no singular, so one card reads 1 setups and the spec asserts it |
 
-**PR lineage:** [#293](https://github.com/TeneikaAskew/stocks/pull/293) *audit* · [#335](https://github.com/TeneikaAskew/stocks/pull/335) *evolution* · [#336](https://github.com/TeneikaAskew/stocks/pull/336) *evolution* · [#444](https://github.com/TeneikaAskew/stocks/pull/444) *origin* · [#620](https://github.com/TeneikaAskew/stocks/pull/620) *evolution* · [#774](https://github.com/TeneikaAskew/stocks/pull/774) *remediation*
+**PR lineage:** [#1640](https://github.com/TeneikaAskew/stocks/pull/1640) *#1308 market-date runtime* · [#1637](https://github.com/TeneikaAskew/stocks/pull/1637) *market-date specification* · [#293](https://github.com/TeneikaAskew/stocks/pull/293) *audit* · [#335](https://github.com/TeneikaAskew/stocks/pull/335) *evolution* · [#336](https://github.com/TeneikaAskew/stocks/pull/336) *evolution* · [#444](https://github.com/TeneikaAskew/stocks/pull/444) *origin* · [#620](https://github.com/TeneikaAskew/stocks/pull/620) *evolution* · [#774](https://github.com/TeneikaAskew/stocks/pull/774) *remediation*
 
 ### FEAT-SETTINGS-001 — Settings (13 open)
 

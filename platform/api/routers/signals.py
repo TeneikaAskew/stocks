@@ -15,22 +15,29 @@ Falls back to the legacy GCS parquet path when Cloud SQL is not
 configured (e.g. local dev without ``CLOUD_SQL_CONNECTION_NAME``).
 """
 import logging
+from functools import wraps
+from threading import Lock
+from collections import deque
+from time import monotonic
 import os
 import re
 import sys
 from pathlib import Path
 from typing import Optional
 
+import anyio
 import pandas as pd
 from cachetools import TTLCache
 from api.threadsafe_cache import MISS, ThreadSafeCache
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from api import gcs_reader  # noqa: E402
+from api import auth, gcs_reader  # noqa: E402
 from api.schemas import (
     SignalsResponse,
     SimilarResponse,
@@ -128,6 +135,7 @@ def _load_ticker_df_parquet(ticker_upper: str) -> tuple[str, pd.DataFrame]:
                     "entry_ema9", "entry_ema20", "entry_volume",
                     "signal_strength", "conditions_met", "return_pct",
                 ],
+                optional_columns=["strategy", "run_kind", "inserted_at", "score_explanation", "extra"],
             )
         except Exception as exc:
             log.error("Failed to download %s: %s", blob_name, exc)
@@ -135,6 +143,23 @@ def _load_ticker_df_parquet(ticker_upper: str) -> tuple[str, pd.DataFrame]:
 
         _DF_CACHE[ticker_upper] = (filename, df)
         return filename, df
+
+
+def _describe_score_rows(records: list[dict], storage_source: str) -> list[dict]:
+    """Add only the validated contract; raw score/condition evidence is unchanged."""
+    from lib.signals import read_score_explanation
+    for row in records:
+        for field in ('strategy', 'run_kind', 'inserted_at'):
+            value = row.get(field)
+            row[field] = None if value is None or (not isinstance(value, (dict, list)) and pd.isna(value)) else value
+        if row['inserted_at'] is not None:
+            row['inserted_at'] = str(row['inserted_at'])
+        row['score_explanation'] = read_score_explanation(
+            row.get('score_explanation'), score=row.get('score'), strategy=row['strategy'],
+            direction=str(row.get('direction', '')).lower(),
+            run_kind=row['run_kind'], storage_source=storage_source,
+            inserted_at=row['inserted_at'])
+    return records
 
 
 def _query_signals_sql(
@@ -200,7 +225,10 @@ def _query_signals_sql(
                    signal_strength AS score,
                    conditions_met,
                    return_pct,
-                   run_kind
+                   run_kind,
+                   strategy,
+                   inserted_at,
+                   extra -> 'score_explanation' AS score_explanation
             FROM historical_signals
             WHERE {where_sql}
             ORDER BY entry_time DESC
@@ -215,10 +243,156 @@ def _query_signals_sql(
         rows_df['time'] = rows_df['time'].astype(str)
     rows_df['ticker'] = ticker_upper
     records = rows_df.where(pd.notnull(rows_df), other=None).to_dict(orient='records')
-    return (total, records)
+    return (total, _describe_score_rows(records, "cloud_sql"))
+
+
+# One Uvicorn worker is configured in platform/Dockerfile. Admission is per
+# process and precedes SQL/parquet allocation, including the response lifetime.
+_SIGNAL_MAX_WAITERS = 8
+_SIGNAL_QUEUE_DEADLINE_SECONDS = 35.0
+
+
+def _signals_busy(detail):
+    return HTTPException(status_code=503, detail=detail, headers={"Retry-After": "5"})
+
+
+class _SignalAdmission:
+    """Bounded process-local FIFO; waiting allocates no rows or worker threads.
+
+    Ordering uses request tickets, never caller-supplied identity headers. A
+    returning caller joins behind existing waiters instead of racing them for
+    the released slot. Firebase's verified canonical email may hold only one
+    active-or-waiting ticket; open/IAP lack application-verified identity here
+    and use identity-free FIFO. This is not a cross-process/account rate limit.
+    """
+    def __init__(self):
+        self.lock = Lock()
+        self.waiters = deque()
+        self.active = False
+        self.active_principal = None
+        self.principals = set()
+
+    async def acquire(self, principal=None):
+        ticket = object()
+        expires = monotonic() + _SIGNAL_QUEUE_DEADLINE_SECONDS
+        with self.lock:
+            if principal is not None and principal in self.principals:
+                raise _signals_busy("This account already has an outstanding signals request.")
+            if len(self.waiters) >= _SIGNAL_MAX_WAITERS:
+                raise _signals_busy("Signals admission queue is full; retry shortly.")
+            self.waiters.append(ticket)
+            if principal is not None:
+                self.principals.add(principal)
+        granted = False
+        try:
+            while True:
+                with self.lock:
+                    if monotonic() >= expires:
+                        raise _signals_busy("Signals admission wait expired; retry shortly.")
+                    if not self.active and self.waiters[0] is ticket:
+                        self.waiters.popleft()
+                        self.active = True
+                        self.active_principal = principal
+                        granted = True
+                        return
+                # Async, bounded wait: never occupy Starlette's worker pool or
+                # the event loop while another response owns the allocation.
+                await anyio.sleep(0.01)
+        finally:
+            if not granted:
+                with self.lock:
+                    self.waiters.remove(ticket)
+                    self.principals.discard(principal)
+
+    def release(self):
+        with self.lock:
+            self.active = False
+            self.principals.discard(self.active_principal)
+            self.active_principal = None
+
+
+_SIGNAL_ADMISSION = _SignalAdmission()
+# Total delivery time, not an idle timeout that a trickling client can renew.
+# Abort a slow transport well before the service's 300-second request limit.
+_SIGNAL_STREAM_DEADLINE_SECONDS = 30.0
+
+
+class _AdmittedSignalsResponse(StreamingResponse):
+    owns_slot = False
+
+    async def __call__(self, scope, receive, send):
+        try:
+            with anyio.fail_after(_SIGNAL_STREAM_DEADLINE_SECONDS):
+                await super().__call__(scope, receive, send)
+        except TimeoutError:
+            log.warning("signals delivery deadline exceeded; aborting incomplete response")
+            # Headers may already be sent: propagate to abort the connection,
+            # never append an error body or a successful end to partial JSON.
+            raise
+        finally:
+            # Drop the serialized body BEFORE admitting another materialization.
+            # Shield cleanup from disconnect/cancellation of the response task.
+            try:
+                with anyio.CancelScope(shield=True):
+                    await self.body_iterator.aclose()
+            finally:
+                if self.owns_slot:
+                    self.owns_slot = False
+                    _SIGNAL_ADMISSION.release()
+
+
+def _admit_signal_response(handler):
+    @wraps(handler)
+    async def admitted(*args, **kwargs):
+        # Firebase middleware is the only application-verified identity here.
+        # Never read caller headers (including IAP headers) for queue ownership.
+        principal = None
+        if auth.AUTH_MODE == "firebase":
+            request = kwargs.get("request")
+            principal = getattr(request.state, "user_email", None) if request is not None else None
+            if not principal:
+                raise HTTPException(status_code=401, detail="Verified signals identity is required.")
+        await _SIGNAL_ADMISSION.acquire(principal)
+        transferred = False
+        response = None
+        try:
+            # Keep SQL/serialization off the event loop, with default
+            # non-abandoning cancellation so a live allocation retains its slot.
+            response = await run_in_threadpool(handler, *args, **kwargs)
+            # A cancellation during shielded thread work must not hand an
+            # unconsumed body/lease to an already cancelled response task.
+            await anyio.lowlevel.checkpoint_if_cancelled()
+            response.owns_slot = True
+            transferred = True
+            return response
+        finally:
+            if not transferred:
+                try:
+                    if response is not None:
+                        with anyio.CancelScope(shield=True):
+                            await response.body_iterator.aclose()
+                finally:
+                    _SIGNAL_ADMISSION.release()
+    return admitted
+
+
+def _typed_signals_response(payload: dict) -> StreamingResponse:
+    """Preserve the typed JSON wire contract without the HTTP/1 size ceiling.
+
+    Cloud Run limits non-streamed HTTP/1 responses to32MiB. The existing
+    50000-row limit can exceed it with explanations, so validate before
+    headers, serialize once and emit bounded chunks without Content-Length.
+    No query, row limit, financial computation or global middleware changes.
+    """
+    body = SignalsResponse.model_validate(payload).model_dump_json(exclude_unset=True).encode('utf-8')
+    async def chunks():
+        for i in range(0, len(body), 65536):
+            yield body[i:i + 65536]
+    return _AdmittedSignalsResponse(chunks(), media_type='application/json')
 
 
 @router.get("/api/signals/{ticker}", response_model=SignalsResponse, response_model_exclude_unset=True)
+@_admit_signal_response
 def get_signals(
     ticker: str,
     limit: int = Query(default=5000, le=50000),
@@ -226,6 +400,7 @@ def get_signals(
     min_score: int = Query(default=0, ge=0),
     end_date: Optional[str] = Query(default=None, description="YYYY-MM-DD cutoff"),
     end_time: Optional[str] = Query(default=None, description="HH:MM (24h ET)"),
+    request: Request = None,
 ):
     """Return historical signals for a ticker.
 
@@ -242,13 +417,13 @@ def get_signals(
         total, records = _query_signals_sql(
             ticker_upper, limit, direction, min_score, end_date, end_time
         )
-        return {
+        return _typed_signals_response({
             "ticker": ticker_upper,
             "count": total,
             "returned": len(records),
             "source": "cloud_sql",
             "signals": records,
-        }
+        })
 
     # ── Cloud SQL not configured: legacy GCS parquet path ───────────────
     filename, df = _load_ticker_df_parquet(ticker_upper)
@@ -274,7 +449,17 @@ def get_signals(
         "signal_strength": "score",
         "conditions_met": "conditions_met",
         "return_pct": "return_pct",
+        "strategy": "strategy",
+        "run_kind": "run_kind",
+        "inserted_at": "inserted_at",
+        "score_explanation": "score_explanation",
     }
+    if 'extra' in df.columns:
+        # No arbitrary extra keys reach the response.
+        def nested_score(value):
+            return value.get('score_explanation') if isinstance(value, dict) else None
+        if 'score_explanation' not in df.columns:
+            df['score_explanation'] = df['extra'].map(nested_score)
     available_cols = {k: v for k, v in rename_map.items() if k in df.columns}
     out = df.rename(columns=available_cols)[list(available_cols.values())].copy()
 
@@ -292,20 +477,23 @@ def get_signals(
     out = out.tail(limit)
 
     for col in out.select_dtypes(include=["datetime64[ns]", "datetime64[ns, UTC]"]).columns:
-        out[col] = out[col].astype(str)
+        if col != 'inserted_at':
+            out[col] = out[col].astype(str)
+        # Preserve nullable insertion clocks for _describe_score_rows; NaT
+        # is missing evidence, not a literal timestamp or invalid metadata.
     if "time" in out.columns:
         out["time"] = out["time"].astype(str)
 
-    records = out.where(pd.notnull(out), other=None).to_dict(orient="records")
+    records = _describe_score_rows(out.where(pd.notnull(out), other=None).to_dict(orient="records"), "gcs_parquet")
 
-    return {
+    return _typed_signals_response({
         "ticker": ticker_upper,
         "count": total_count,
         "returned": len(records),
         "source": "gcs_parquet",
         "file": filename,
         "signals": records,
-    }
+    })
 
 
 # ── /similar — "like-this-bar" historical setup lookup ─────────────────────
@@ -323,7 +511,7 @@ def get_similar_signals(
     ticker: str,
     direction: str = Query(..., description="CALL or PUT — the direction we're scouting"),
     rsi: float = Query(..., description="RSI value of the bar we're matching"),
-    score: int = Query(..., ge=3, le=5, description="Signal strength of the bar we're matching"),
+    score: int = Query(..., ge=3, description="Signal strength of the bar we're matching"),
     rsi_band: float = Query(default=5.0, ge=0.5, le=20.0, description="±RSI tolerance"),
     limit: int = Query(default=10, ge=1, le=100, description="Max recent matches to return"),
 ):
