@@ -1074,6 +1074,20 @@ class TestProductionEventTimingContract:
         assert actual[('TEST', date(2026, 6, 4))] == 'postmarket'
         assert 'GROUP BY ticker, earnings_date, earnings_time' in seen[0]
 
+    def test_calendar_query_binds_every_ticker_once_in_order(self, monkeypatch):
+        import re
+        import gcp.fetchers.compute_earnings_reactions as mod
+        seen = []
+        monkeypatch.setattr(mod, 'query_to_dataframe',
+                            lambda sql, params: (seen.append((sql, params)) or pd.DataFrame()))
+        assert mod.fetch_calendar_timing_map(['AAA', 'BBB', 'CCC']) == {}
+        sql, params = seen[0]
+        names = re.search(r'WHERE ticker IN \(([^)]*)\)', sql).group(1).split(',')
+        assert [n.lstrip(':') for n in names] == list(params)
+        assert [params[n.lstrip(':')] for n in names] == ['AAA', 'BBB', 'CCC']
+        # A bind name must not read as a table name to the generated inventory.
+        assert not any(n.lstrip(':').startswith('ticker_') for n in names)
+
     def test_same_event_calendar_tie_is_unavailable(self, monkeypatch):
         import gcp.fetchers.compute_earnings_reactions as mod
         rows = pd.DataFrame([
@@ -1221,3 +1235,22 @@ def test_generated_inventory_attributes_each_owned_write_to_its_producer_only(ta
     assert writers == {writer}
     assert readers <= {hit['file'] for hit in refs['reads']}
     assert not writers & readers
+
+
+@pytest.mark.parametrize('table', ['ticker_calibration', 'ticker_info'])
+def test_generated_inventory_does_not_read_bind_names_as_tables(table):
+    # `ticker_{i}` bind keys once matched these table names, so 05-c drew a
+    # compute-earnings-reactions read of each; the query reads earnings_calendar.
+    import importlib.util
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location(
+        'doc_inventory_for_bind_names', root / 'scripts/maintenance/doc_inventory.py')
+    inventory = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(inventory)
+    producer = 'gcp/fetchers/compute_earnings_reactions.py'
+    for refs in (inventory.table_refs(root, [table])[table],
+                 inventory.table_refs_dynamic(root, [table])[table]):
+        assert producer not in {hit['file'] for hit in refs['reads'] + refs['writes']}
+    calendar = inventory.table_refs(root, ['earnings_calendar'])['earnings_calendar']
+    assert producer in {hit['file'] for hit in calendar['reads']}

@@ -573,7 +573,7 @@ def fetch_calendar_timing_map(tickers: list[str]) -> dict[tuple[str, date], Opti
     """
     if not tickers:
         return {}
-    params = {f'ticker_{i}': ticker for i, ticker in enumerate(tickers)}
+    params = {f'tk{i}': ticker for i, ticker in enumerate(tickers)}
     placeholders = ','.join(f':{name}' for name in params)
     sql = f"""
         SELECT ticker, earnings_date, earnings_time, COUNT(*) AS c
