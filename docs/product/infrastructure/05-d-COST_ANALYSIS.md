@@ -89,7 +89,7 @@ A cost of $29.10 for Artifact Registry storage is unusually high for a project o
 **Validation:** Check the number and size of images currently stored in the repository.
 
 ### #2 — Investigate Cloud Run service performance (estimated saving: $10-20/mo)
-**Resource:** Cloud Run services, particularly `solyra-api-prod`.
+**Resource:** Cloud Run services, particularly `solyra-api-prod` in the August 2026 data. That service was retired on 2026-10-10 ([stocks#1366](https://github.com/TeneikaAskew/stocks/pull/1366)); apply this check to `solyra-api-staging`, the API service that remains.
 **Change:** The `Services CPU` is the highest cost item. This could be due to inefficient code, or the service being over-provisioned (e.g., `min-instances` set too high). Profile the application and check the service configuration.
 **Estimated saving:** Optimizing the service could lead to significant savings. A 20-40% reduction in CPU consumption is often achievable and would result in $10-20/month savings.
 **Risk:** Reducing instances or CPU could impact performance. Changes should be tested under load.
