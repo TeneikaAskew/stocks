@@ -47,7 +47,7 @@ from gcp.database import (  # noqa: E402
     execute_sql,
     get_engine,
     is_cloud_sql_configured,
-    query_to_dataframe,
+    query_to_dataframe_strict as query_to_dataframe,
     upsert_dataframe,
 )
 from lib.logging_config import setup_logging  # noqa: E402
@@ -164,10 +164,7 @@ def refresh_daily(days_ahead: int) -> None:
     upcoming = query_to_dataframe(upcoming_sql, {'days': days_ahead})
     if upcoming is None or upcoming.empty:
         log.info("  no upcoming reporters in window — clearing today's rows")
-        execute_sql(
-            "DELETE FROM earnings_upcoming_with_history WHERE refresh_date = :d",
-            {'d': today},
-        )
+        _replace_upcoming_rows(pd.DataFrame(), today)
         return
     log.info("  found %d upcoming reporters", len(upcoming))
 
@@ -191,7 +188,7 @@ def refresh_daily(days_ahead: int) -> None:
     last3_sql = f"""
         SELECT ticker, reported_date, beat_meet_miss,
                reaction_gap_pct, eps_surprise_pct,
-               realized_vs_implied_ratio
+               realized_vs_implied_ratio, daily_path_v1
         FROM (
             SELECT *,
                    ROW_NUMBER() OVER (
@@ -214,6 +211,7 @@ def refresh_daily(days_ahead: int) -> None:
                     'gap_pct': _safe_float(r['reaction_gap_pct']),
                     'eps_surprise_pct': _safe_float(r['eps_surprise_pct']),
                     'ratio': _safe_float(r['realized_vs_implied_ratio']),
+                    'daily_path_v1': r.get('daily_path_v1') if isinstance(r.get('daily_path_v1'), dict) else None,
                 }
                 for _, r in group.iterrows()
             ]
@@ -297,15 +295,8 @@ def refresh_daily(days_ahead: int) -> None:
 
     # ── Replace today's rows
     log.info("  deleting prior rows for refresh_date=%s", today)
-    execute_sql(
-        "DELETE FROM earnings_upcoming_with_history WHERE refresh_date = :d",
-        {'d': today},
-    )
     df = pd.DataFrame(rows)
-    upsert_dataframe(
-        df, 'earnings_upcoming_with_history',
-        conflict_cols=['refresh_date', 'ticker', 'earnings_date'],
-    )
+    _replace_upcoming_rows(df, today)
     log.info("  inserted %d rows", len(df))
 
 
@@ -354,6 +345,29 @@ def _safe_int(v) -> Optional[int]:
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────
+
+
+def _replace_upcoming_rows(frame: pd.DataFrame, refresh_date: date) -> int:
+    """One local transaction: a failed insert cannot erase the prior snapshot."""
+    import math
+    import sqlalchemy as sa
+    if not frame.empty and (frame['refresh_date'] != refresh_date).any():
+        raise ValueError('upcoming refresh_date partition mismatch')
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text("DELETE FROM earnings_upcoming_with_history WHERE refresh_date = :d"),
+            {"d": refresh_date})
+        table = sa.Table('earnings_upcoming_with_history', sa.MetaData(), autoload_with=conn)
+        if not frame.empty:
+            records = frame.to_dict('records')
+            for row in records:
+                for key, value in row.items():
+                    if isinstance(value, float) and not math.isfinite(value):
+                        row[key] = None
+            conn.execute(table.insert(), records)
+    return len(frame)
+
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(

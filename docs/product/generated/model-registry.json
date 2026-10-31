@@ -447,7 +447,7 @@
   {
    "job": "`compute-earnings-reactions`",
    "scheduler": "`daily-earnings-refresh-reactions` · `weekly-earnings-refresh-reactions`",
-   "why_it_is_not_model_bearing": "Derives post-earnings move statistics into `earnings_reactions`. Descriptive statistics over history, not a call on any position; MODEL-EARN-001 is the model that reads them"
+   "why_it_is_not_model_bearing": "Inputs only — derives post-event statistics and source/maturity evidence into existing `earnings_reactions`; no upcoming position decision. Its `lib.earnings_reactions` imports reach clock/calendar, price-basis/native-input qualification and sampled daily closing descriptors, not playability, lean, classifier or recommendation calls. Reproduce with the actual producer import/call sites and `tests/gcp/test_compute_earnings_reactions.py::test_native_pre10_prefix_is_qualified_by_actual_producer_not_short_path`; the separate brief is the native classifier consumer; MODEL-EARN-001 is the model that reads them. No original-PIT or forecast claim"
   },
   {
    "job": "`fetch-economic-events`",
@@ -2624,7 +2624,7 @@
  ],
  "sources": {
   "docs/EXPERIMENT_REGISTRY.md": "9752340744b8580d57910eadb6df84c536081b42",
-  "docs/product/07-MODEL-REGISTRY.md": "d8f23bc5a258f5b6408e3f70816f8139dce9a25e",
+  "docs/product/07-MODEL-REGISTRY.md": "0c3fc5f9368a2b831fb351db29cf29cf042d16ad",
   "scripts/gate/export_model_registry.py": "74e5fdc5bb2e7bf11894b3de2601c4dc8428122d"
  },
  "tables": [
