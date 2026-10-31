@@ -1,0 +1,162 @@
+---
+feat_id: FEAT-OPTION-001
+req_ids: [REQ-DATA-001, REQ-REL-001, REQ-CAP-001, REQ-CAP-003, REQ-SECRET-001]
+issues: [1547, 1552, 1562, 1572, 1576, 1646]
+canvases: []
+site_source_notes: ["OPTIONS-01"]
+done_when:
+  - "tests/gcp/test_av_options_realtime_producer.py::test_persistence_time_excluded_from_shared_source_budget runs the original scheduled entry with a fake source clock and stubbed persistence elapsed time, slow persistence (13 s and 20 s) placed on the first, the middle and the final ticker in turn: every ticker is acknowledged, exit 0, exactly one provider request and one upsert invocation per ticker; the first- and middle-position cases fail on the predecessor baseline (a later ticker is refused or interrupted), the final-position case passes on both."
+  - "tests/gcp/test_av_options_realtime_producer.py::test_source_budget_is_cumulative_never_reset_or_revived shows source time accumulating across tickers with no reset at ticker boundaries, a budget already exhausted when persistence begins staying exhausted after it, and persistence credit never restoring more than the remaining source time held at the trusted pause reading; later source work raises SourceDeadline with zero further requests."
+  - "tests/gcp/test_av_options_realtime_producer.py::test_untrusted_clock_readings_fail_later_source_closed covers raising, non-finite, non-numeric and backward (below the last trusted reading) source-clock readings at budget creation, at a source-admission checkpoint, at pause (including a backward pause reading that would otherwise inflate the remainder) and at resume, plus non-finite budget arithmetic: creation failure exits before any request or write; otherwise the current ticker's persistence runs exactly once and its acknowledged, short-acknowledgement or uncertain outcome and log are unchanged, no ticker is refetched or replayed, every later ticker fails with source_deadline and zero requests, exit 1, and no later reading revives the budget."
+  - "tests/gcp/test_av_options_realtime_producer.py::test_persistence_exception_and_short_ack_keep_outcome_and_resume_budget: an upsert that raises after partial chunks logs the uncertain-write line and fails that ticker as failed; a mismatched acknowledgement fails it as unavailable; neither is refetched; later tickers keep the source time remaining before that persistence call; exit 1."
+  - "tests/gcp/test_av_options_realtime_producer.py::test_provider_budget_exhaustion_and_retry_pacing_consume_source_budget: provider time alone summing past 15 s refuses or interrupts the later ticker even with zero persistence time; the S7 fixture (connect 0.2 s, SPY body 14 s, persistence 0.5 s excluded) makes exactly 2 provider requests and 1 upsert, IWM is admitted and ends with source_deadline 0.36 s after its request starts, QQQ is refused at pace with no request, exit 1; literal-empty retries make at most three calls per ticker, their pacing consumes the budget, and a pace that no longer fits is refused."
+  - "tests/gcp/test_av_options_collector_entry.py::test_batch_timestamp_and_delayed_session_boundary_are_explicit: every written row carries the one snapshot_ts captured before admission, preflight and budget creation; when slow earlier persistence moves a later ticker's request past the regular-session close on the fake clock, there is no mid-run re-admission or new retry, and that ticker is fetched and stamped with the batch snapshot_ts as specified."
+  - "tests/gcp/test_av_options_collector_entry.py::test_scheduled_entry_preserves_sibling_commit_on_later_failure raises an actual SourceDeadline() from the stubbed pace and asserts the deadline path (the later tickers are logged as realtime UNAVAILABLE and listed as unavailable, not failed), with a control showing a TypeError would take the generic failed path; the earlier ticker stays committed in local PostgreSQL with no deletion or replay."
+  - "These existing tests pass unmodified: test_body_time_accumulates_across_tickers_preserving_first_ack, test_literal_empty_list_still_has_exactly_three_attempts_and_no_write, test_only_literal_empty_list_is_retryable_unknown_data_is_terminal, test_actual_urllib3_wire_and_decoded_limits, test_actual_requests_bad_status_fails_with_fixed_safe_reason, test_scheduled_entry_rejects_bad_ack_without_replay, test_scheduled_entry_admits_only_due_configured_sessions, test_scheduled_entry_delegates_without_changing_threaded_api and all of tests/gcp/test_av_realtime_transport_cli.py."
+  - "git diff against the merge base shows no change to gcp/fetchers/_av_realtime_transport.py, gcp/fetchers/fetch_av_realtime_options.py, gcp/database.py or the fetch-av-options-realtime block of gcp/deploy.sh (command, --max-retries 0, --task-timeout 600, 512Mi, 1 CPU, schedule)."
+  - "Own narrow plan/product records, no-new documentation audit, current-head required Codex review and CI pass through normal gates; the job image release follows the Rollout section and is separately authorized."
+status: approved
+supersedes: docs/superpowers/specs/2026-10-29-feat-option-001-collector-source-declaration.md
+---
+
+# Realtime options collector: one cumulative source budget that excludes persistence time
+
+## Status
+
+**Approved timing policy (owner, 2026-10-31).** On 2026-10-31 at 05:55:11 UTC the owner was asked to approve one specific timing-policy change: keep the 15 second source-fetch budget, exclude database-write time from it, and keep retries, immediate per-ticker saves and no replay. The tradeoff was stated: later tickers may be fetched later, possibly after the market close, while keeping the original batch timestamp. The question also said this was a proposal, not a deployed fix, and that a 29-case acceptance plan was prepared. The owner answered "Yes" at 09:32:44 UTC.
+
+That answer approves this policy as specified here (revision 2: trusted nondecreasing clock contract; exact S7 consequence). It is not a GitHub review approval, it does not waive the required hosted review, and it is not a claim that any fix is deployed.
+
+This spec supersedes the approved `docs/superpowers/specs/2026-10-29-feat-option-001-collector-source-declaration.md` (git blob 1769de5bb868b73963e7de25d20c82e7f270d9d3, sha256 160605d013660a7ee166e9883288dd0851f0593800f7cda3468ebd12a763a706 at main d4478433). The predecessor remains the governing contract on main until this spec lands. The only edit to the predecessor is its status moving to `superseded`, in the same change that lands this spec.
+
+This spec is complete on its own. Clauses marked **carried** reproduce the predecessor text verbatim. Clauses marked **amended** replace predecessor text; the replacement table at the end lists each.
+
+## Problem
+
+stocks#1646. The approved predecessor uses one absolute 15 second window across the ticker loop and states that SQL between source operations consumes it. Persistence for one ticker can therefore deny every later ticker its source request.
+
+Local evidence (hermetic, real collector and transport code at b483989e, byte-identical to main d4478433; fake clock, fake provider, stubbed persistence time; no provider, SQL or GCP call): with the first ticker's persistence at 11 s or more the third ticker fails, and at 13 s or more the second fails too; persistence at 20 s on the first ticker leaves one request in the whole execution. Persistence is never interrupted, so the window bounds only whether the next source operation may start. The same harness shows slow persistence on the middle ticker refusing the final ticker, and on the final ticker finishing after the window with exit 0. The harness and its results are kept with the issue's recovery records and are not committed.
+
+Not established: that execution fetch-av-options-realtime-6lv9m ran this code or had the timings in issue comment 6534679587. No retained image digest, raw log or SQL count links them. The mechanism above is proven from source and a deterministic reproduction only; it is not the proven deployed cause of 6lv9m, and nothing in this spec or its acceptance depends on that claim. Exact image provenance and raw correlated logs remain missing.
+
+## Non-goals
+
+- No change to the transport module, its signal ownership, body limits, identity, redirect, netrc, status or telemetry handling.
+- No bound on SQL acquisition, statement or COMMIT time; no statement timeout; no cancellation of an uncertain commit.
+- No new mid-run calendar re-admission, new retry, refetch, replay, whole-job retry or Cloud Run retry.
+- No change to ticker scope, pacing values, provider call limits, storage, schema, upsert identity or chunking, job resources, command or schedule.
+- No historical snapshot repair, and no claim that a green job, an acknowledgement or a newer snapshot proves completeness.
+- No change to the threaded API fetch path.
+
+## Approaches considered
+
+Only the selected design has evidence of its own behaviour once implemented; outcomes for the others are arithmetic from the same phase timings and remain theoretical.
+
+- **Per-ticker 15 s window.** Fair against slow provider time too, but triples the source bound, needs a new ticker-count rule because `--tickers` is caller-controlled, and reverses the approved accumulation behaviour that `test_body_time_accumulates_across_tickers_preserving_first_ack` asserts.
+- **Fetch all tickers, then persist.** Keeps an absolute 15 s from budget creation for all requests, but holds every chain in memory, makes nothing durable until all fetches end, and conflicts with CLAUDE.md Rule 0 item 4 (write per group, durable partial progress).
+- **Wider shared window.** One constant; persistence stays inside the window, so it only moves the threshold.
+- **Selected: one shared cumulative source budget, persistence elapsed time excluded.** Removes the starvation by persistence, keeps the 15 s source bound, per-ticker durability and the transport. Provider time still accumulates across tickers, so `test_body_time_accumulates_across_tickers_preserving_first_ack` passes unmodified. Exact refusal points can still move by the excluded persistence time: with a 14 s first-ticker body, the second ticker is now admitted and then interrupted, where today it is refused.
+
+## Approved scope (carried, as recorded in the predecessor)
+
+The predecessor's approval record below is reproduced as history. It is not a new approval of this spec.
+
+The user approved the bounded finish of existing options retry/transport work,normal reviews/specification and implementation merges,and intended deployment. The user then explicitly excluded all seven future av_options_* source-journal tables and instructed this narrow repair to use existing storage. This specification is the lawful narrow publication scope for the already accepted A10 component,not an acceptance waiver or activation of the broader source-journal design. The broader A8/native source,packets and tests remain preserved separately. No future table,migration,retention protocol,COMMON/DATA factory or source-journal delivery acceptance is required unless actually called by this narrow runtime.
+
+The accepted reproduction packet has SHA256ecda596ae24b85adfc537d7203a40ce62c1ae2c241e0d4c646340ec32c4d8f87. Its A10 profile has175passing tests;the independent restore evidence is source/profile-specific,not a new current-head claim. Root is sole writer. No new research cohort or competing source implementation. Actual approved-spec MAIN and a unique ready plan still precede implementation publication. The six-minute CI implementation is MAIN at e7e74ccc (PR #1599); verifier1597 and workflow1583 remain with the existing governance owner. Own current-head checks and reviewed source documentation remain mandatory.
+
+## Exact implementation carried forward (carried)
+
+Carry the accepted A10 gcp/fetchers/fetch_av_realtime_options.py plus tests/gcp/test_fetch_av_realtime_options.py,test_av_options_incident_admission.py and test_av_options_realtime_producer.py. The current-base reconciliation receipt identifies exact file hashes and a clean unapplied patch. It contains no av_options_* reference or journal import. It consumes existing gcp.database upsert_dataframe/is_cloud_sql_configured,AlphaVantageConfig,logging,NYSE calendar and Eastern-time helpers. The five direct dependency files are byte-identical between the accepted foundation and inspected MAIN911d30a7 (unchanged runtime dependencies at MAINe7e74ccc);refresh this assertion at final publication rather than rerun unchanged accepted suites blindly.
+
+## Source budget (amended; replaces the predecessor's first sentence of the transport paragraph and its SQL paragraph)
+
+Use one shared, cumulative 15 second **source budget** across the regular ticker loop. It is created once, at the point where the predecessor created its window: after calendar admission, persistence preflight and credential presence checks, immediately before the ticker loop. It is consumed by all source work and everything else the loop does, except persistence elapsed time as defined below: request dispatch, response admission and status checks, header and body reads, decoding, provider-envelope validation, normalization, dedupe, response cleanup, telemetry, logging, local pacing between tickers and the pacing of literal-empty retries.
+
+**Persistence elapsed time** is the interval from immediately before each `upsert_dataframe` invocation in `process_ticker` to immediately after that invocation returns or raises. Only that interval is excluded. Acknowledgement validation and its logging consume the budget like other loop work.
+
+Accounting rules (a collector-level contract; the transport is unchanged):
+
+1. **One trusted, nondecreasing clock sequence.** The collector reads the transport's monotonic source clock only under the transport's validity rules: a finite `int` or `float`, read without exception. It keeps the last trusted reading `L`. Every reading the collector takes must be at least `L`. That covers budget creation, each source-admission checkpoint, pause and resume, and it includes the pause reading itself. A reading that is invalid, non-finite or below `L` exhausts the budget. So does any non-finite result of the budget arithmetic, including a sum that overflows. A reading that passes becomes the new `L`.
+2. **Creation.** The budget is created from one trusted reading `c0`: `L = c0`, deadline `D = c0 + 15`. An invalid reading, or a non-finite or non-advancing `D`, takes the existing "source deadline unavailable" exit before any provider request or write, as today.
+3. **Source-admission checkpoints.** Before admitting each ticker (its pace, or the first ticker's request) and before each literal-empty retry pace, the collector takes a checkpoint reading under rule 1. An exhausted budget, or a checkpoint that fails rule 1, makes that admission raise `SourceDeadline` before dispatch.
+4. **No reset, no replenishment.** The budget is never reset or extended at a ticker boundary. Exhaustion is terminal: no later reading, ticker boundary or persistence interval revives it.
+5. **Pause.** Immediately before the single `upsert_dataframe` invocation, take reading `p` under rule 1, so `p >= L`. Compute `r = D - p`. If the budget is already exhausted, or `p` fails rule 1, or `r` is not finite, or `r <= 0`, the budget becomes exhausted. Otherwise record `r`. Because `p >= L`, `r` can never exceed the remaining time known at the last trusted reading. A backward pause reading therefore cannot inflate the budget.
+6. **Resume.** Immediately after the invocation returns or raises (a `finally` path), take reading `q` under rule 1, so `q >= p`. If the budget is exhausted, it stays exhausted. Otherwise set the new deadline `D = q + r`. If that is not finite, or rounding would make `D - q` larger than `r`, compute it so the restored remainder does not exceed `r` (for example by rounding down), or exhaust the budget. Persistence therefore never adds source time.
+7. **Pairing.** Exactly one pause and one resume per `upsert_dataframe` invocation, at most one invocation per ticker. A resume without a pause, or a second pause before a resume, exhausts the budget.
+8. **Fail closed, never relabel.** Exhaustion makes every later admission, pace, provider request and retry raise `SourceDeadline` before dispatch. When the budget is exhausted the collector may present the transport with an invalid deadline, which the unchanged transport already refuses.
+   - Pause and resume never prevent, repeat or alter the persistence invocation. The invocation runs exactly once even when pause exhausts the budget.
+   - Its outcome is kept as is: an acknowledgement is validated exactly as today, a short or mismatched acknowledgement fails as unavailable, and an exception propagates with the existing uncertain-write log.
+   - A failure inside pause, resume or checkpoint handling is contained. It only exhausts the budget, and never replaces or relabels the current ticker's outcome.
+9. **Limits of this contract.** Clock readings taken inside the unchanged transport (its `remaining` checks) are not covered by rule 1. A backward reading there can only make an operation in progress see more remaining time before its deadline. The next collector reading below `L` then exhausts the budget, but a clock that goes back and then forward past `L` between two collector readings is not detected. This is the same property the predecessor has; the deadline `D` itself is never moved by such a reading.
+10. **Interruption.** Within the budget, network, body and pacing work stays interrupted through the accepted main-thread signal ownership controls. That includes the transport's cleanup reserve, `min(0.05 s, allowance / 10)` taken from each request's allowance. As today, uninterrupted CPU work (normalization, dedupe) may run past the deadline before the next check refuses further source work.
+
+Transport controls (carried): Network/body/pacing work is interrupted through the accepted main-thread signal ownership controls;refuse unsafe signal ownership or expired/invalid clocks before dispatch. Requests cannot consult netrc or follow response-controlled redirects. Bound both encoded and decoded bodies at10MiB. Treat malformed status/transport metadata and reader failures as controlled terminal errors. Keep the safe request/header/error telemetry allowlist;never print raw bodies,arbitrary headers,params,URLs,credential-derived values or unsafe exceptions.
+
+Persistence and failure semantics (carried): Actual-session calendar admission and persistence-configuration preflight precede source calls. Successful tickers use existing etf_options_snapshots and conflict identity(ticker,snapshot_ts,option_type,expiration,strike). Preserve successful sibling commits. An upsert exception or missing/mismatched acknowledgement may mean partial/uncertain writes;report it explicitly and do not refetch/replay or claim verified persistence. Keep nonzero aggregate task failure for failed tickers and current collector maxRetries0;no whole-job retry is added.
+
+**Persistence is not bounded by the source budget (amended; replaces the predecessor's SQL paragraph).** Persistence elapsed time no longer consumes source time, so slow persistence for one ticker does not refuse or interrupt a later ticker's source work. Persistence acquisition, statement and COMMIT duration remain unbounded by this budget. The only bound is the unchanged 600 second task timeout. A timeout during persistence leaves chunk commits partial or uncertain; it proves neither rollback nor the absence of overlap with a later execution. This source-only budget does not certify the broader 150 second native phase contract. Never cancel an uncertain commit and call it rolled back.
+
+## Retries (amended wording; behaviour unchanged except the budget they consume)
+
+Only an explicit schema-valid literal-empty list is retryable,at most2retries after the first attempt,within the same shared cumulative source budget; the retry pacing consumes that budget. Missing/null/false/string/object data,generic invalid requests,provider errors,sample chains and unknown responses do not become retryable. Sanitized Retry-After is telemetry;this slice does not silently implement a new HTTP retry/backoff policy. The maximum calls do not increase from the current3per ticker. The600purchased account ceiling and conservative local throttle are distinct;no per-worker account grant or invented account reservation API is introduced.
+
+## Batch timestamp and session boundary (new explicit statement of existing and changed behaviour)
+
+`snapshot_ts` is one common batch timestamp, read from the wall clock once per execution before calendar admission, persistence preflight, the credential check and budget creation. Every row of every ticker carries it. It labels the batch. It is not the time any provider observation was made, it is not simultaneous across tickers, and the predecessor never guaranteed a maximum acquisition skew from it: under the predecessor a request could start up to the admission, preflight and credential-check time plus 15 seconds after `snapshot_ts`, and that preflight time is not bounded by any window.
+
+**The tradeoff this spec makes.** Excluding persistence time allows later tickers to be acquired further behind `snapshot_ts`: a request can start up to the preflight time, plus 15 seconds of source time, plus the persistence time of every earlier ticker in the execution, within the 600 second task timeout. Under the predecessor those later tickers were refused instead. Rows acquired later still carry the batch `snapshot_ts`.
+
+**Session boundary.** Admission is evaluated once, on `snapshot_ts`, against the actual NYSE regular session [open, close) on its Eastern date. There is no mid-run re-admission. If slow earlier persistence moves a later ticker's request past the close, that ticker is still fetched and stamped with the batch `snapshot_ts`, with `market_session='REALTIME'`, as an admitted batch member. With the `*/5` schedule the last admitted fire is 5 minutes before the close, so this needs earlier persistence plus source time of roughly 300 seconds less the preflight time. No new admission, retry or labelling policy is added; any downstream treatment of such rows is out of scope.
+
+## Files and source identity (carried, plus this change's delta)
+
+The minimal integration keeps the scheduled and threaded API contexts separate:carry the unchanged accepted transport into a collector-only gcp/fetchers/_av_realtime_collector.py,delegate the existing job module main to it,and preserve the current API-imported fetch function. Reuse the AST-identical existing _normalize_av_response rather than duplicate financial normalization. The original job command stays unchanged. Retarget the three accepted test imports to the collector and add focused CLI/API-entry routing and normalization-parity checks. No spawned API process service or weakening of signal ownership is required. This is a separately recorded integration delta,not a claim that renamed/adapted current-head files already passed the original175tests. Runtime scope is the collector module and the original job entry;no other API behavior changes. Tests are the three focused files plus those necessary routing checks. No schema,shared helper,governance workflow,provider entitlement,credentials,security or network change. The API freshness fix,600configuration,news repairs and future journal remain separate plans/PRs. No Gamma formula,qualified-data evaluator or incomplete-data replacement logic is changed.
+
+Delta for this change: runtime change only in `gcp/fetchers/_av_realtime_collector.py` (the budget holder, the pause and resume around the single `upsert_dataframe` call, and passing the current deadline to the unchanged transport). Tests only in `tests/gcp/test_av_options_realtime_producer.py` and `tests/gcp/test_av_options_collector_entry.py`, including the correction of `test_scheduled_entry_preserves_sibling_commit_on_later_failure` to raise an actual `SourceDeadline()`: it currently raises `SourceDeadline('source_deadline')`, which is a `TypeError` because the constructor takes no argument, so it exercises the generic failure branch rather than the deadline branch it names. No transport, API, database helper, schema, deploy, workflow, gate, credential or network change.
+
+Before publication,prove the narrow patch applies to actual MAIN without broad private files and identify differences from accepted source. Run focused validation only for changed dependencies or corrections;retain original175test/real PostgreSQL receipts without relabeling them as a new head. Normal committed-source documentation and own capability records remain required;no SITE or CI bypass.
+
+## Rollout and evidence (carried)
+
+Inspect actual changed paths against live automatic build/deploy effects before source MAIN merge. No schema change is included or needed. Capture current fetch-av-options-realtime generation,immutable old image,command,args,resources,retry and scheduler metadata. Build the reviewed source with recorded dependency identity and update only that job's image;do not run broad deployment helpers,change credentials or move unrelated jobs through mutable latest. Stop on unreviewed release drift or destructive/schema surprise.
+
+Verify exact deployed digest and subsequent execution identity. Reuse STRAT's legitimate read-only packet/receipts for existing SPY,IWM,QQQ snapshot membership,side/Greek/OI and timestamp coverage. Job green,ACK and a newer snapshot are not historical repair or independent completeness proof. Roll back only to the captured intended image with configuration preserved;do not delete/rewrite snapshots or replay blindly. Saturday/Sunday admission checks do not substitute for an actual regular-session outcome. Native connector account binding/premium error remains unresolved and is not fixed by this repository patch.
+
+## Capacity (amended; replaces the predecessor's Capacity section)
+
+Measured locally (hermetic, not production): the predecessor's accepted mocked measurement of 14000 contracts per ticker was 1.36 seconds and 11.69 MiB traced peak. The characterization harness measured only control flow under assumed phase timings; it is not latency evidence.
+
+Assumed or unverified: about 12,318 SPY rows per snapshot, 2 s engine creation and 11 s upsert, from issue comment 6534679587 and not tied to any retained log; the deploy comment's ~120 MiB peak for one chain at a time.
+
+- **Volume:** three tickers, up to ~14,000 contracts each; `etf_options_snapshots` has about 27 columns, so `upsert_dataframe` keeps 2000-row chunks: about 7 committed chunk transactions per ticker.
+- **Velocity:** provider calls unchanged: three normally, at most 3 per ticker (9 for three tickers). Independently of ticker count, every call after the first is preceded by a 0.4 s pace that must fit inside the 15 s budget, so no execution can make more than 38 calls. At most one `upsert_dataframe` invocation per ticker. Compared with the predecessor, more tickers reach persistence when persistence is slow: up to ~21 chunk transactions per execution instead of ~7 in the first-ticker case.
+- **Source time:** at most 15 seconds cumulative, plus any uninterrupted CPU overrun before the next check, as today.
+- **Wall-clock:** preflight time plus at most 15 s source plus the sum of per-ticker persistence time, bounded only by the unchanged 600 s task timeout. Under the unverified figures above, about 15 + 2 + 3 x 11 = ~50 s worst plausible for three tickers, against the 300 s schedule interval and 600 s timeout. The predecessor ended the same case near 15 s with two tickers failed.
+- **Memory:** unchanged, one ticker chain at a time.
+- **Cost:** existing job, no new schedule; extra runtime only in executions where earlier persistence is slow, roughly the persistence time of tickers the predecessor would have refused. At most 78 admitted executions per regular weekday (09:30 to 15:55 at five-minute intervals); the scheduler fires 84 times, and pre-open fires exit as not due. The estimate is extra seconds x (1 vCPU price + 0.5 GiB price) x admitted executions per day x 30; current Cloud Run job prices were not checked and must be filled in before approval of the release.
+- Existing task 600 seconds, `--max-retries 0`, 512Mi and 1 CPU are unchanged. No new persistent tables, storage archive, SQL query or background worker.
+
+## Risks
+
+- **Later acquisition behind `snapshot_ts`.** Accepted explicitly above; `done_when` item 6 makes it visible in a test rather than silent.
+- **Accounting bug that revives or inflates the budget.** Caught by `done_when` items 2 and 3, including backward readings at every collector checkpoint and the pause reading itself. Backward readings inside a transport operation remain outside the collector contract (rule 9), as in the predecessor.
+- **Shifted refusal points under slow provider time.** With persistence excluded, a later ticker may be admitted and then interrupted where today it is refused before any request. That costs one more provider call within the unchanged limits and changes no acknowledgement; `done_when` item 5 pins the S7 case exactly.
+- **Persistence outcome masked by budget handling.** Caught by `done_when` items 3 and 4.
+- **Regression in transport security controls.** The transport is unchanged by diff (item 9) and its suites pass unmodified (item 8).
+- **Slow persistence itself.** Not addressed; if a real 11 s upsert of ~12k rows exists, it is a separate Rule 0 performance question to measure with EXPLAIN before tuning.
+
+## Replacement table (predecessor clause to this spec)
+
+| Predecessor clause | This spec |
+|---|---|
+| Transport paragraph, first sentence: "Use one absolute15second source-request window across the regular ticker loop." | Replaced by "Source budget", rules 1 to 10 |
+| Transport paragraph, remaining sentences | Carried verbatim under "Transport controls" |
+| Retry paragraph: "...at most2retries after the first attempt,within the original shared window and existing local pacing." | "...within the same shared cumulative source budget; the retry pacing consumes that budget." Remaining sentences carried |
+| Persistence paragraph ("Actual-session calendar admission ... no whole-job retry is added.") | Carried verbatim |
+| SQL paragraph ("SQL between source operations consumes remaining source-window time ...") | Replaced by "Persistence is not bounded by the source budget" |
+| (none) | New: "Batch timestamp and session boundary" |
+| Files paragraph | Carried, plus this change's delta |
+| Capacity: "Source window15seconds;existing task600seconds and resources remain unchanged." and the rest of that section | Replaced by the Capacity section above |
+| Approved scope, implementation, publication validation, Rollout and evidence | Carried verbatim |
+| done_when | Replaced: the predecessor's items are already met by the merged collector; this list covers the amended behaviour and the preserved controls |
