@@ -22,8 +22,8 @@ Rebinding (2026-11-01, owner direction 20:06:00Z): the 2026-10-31 spec is supers
 765fc91c5a4984bbe7f032f6558a011be3fc3c06 (stocks#1664, squash of 7df4c1df; spec blob 752ef8c5, sha256
 a8f4daab708e34ab1be312f940175044b0d29a4adc596ad6df1f10b04f780b2a). This plan's `spec` now names it; the merge of main
 that brought it is 1eb05e43. The replacement keeps the 2026-10-31 design steps 1 to 4 and 6, its line anchors (main
-d806bfd1) and done_when items 1 to 4 and 6 to 10; it changes step 5 (fail-closed over the folded-text-equal domain,
-one message that promises no merge result) and done_when item 5, whose rows C1 and C1a to C1d replace this plan's C1
+d806bfd1) and done_when[0] to done_when[3] and done_when[5] to done_when[9]; it changes step 5 (fail-closed over the
+folded-text-equal domain, one message that promises no merge result) and done_when[4], whose rows C1 and C1a to C1d replace this plan's C1
 row and govern where they differ. Tracking issue #1665 adds required controls (Task 7, RQ-2 and RQ-3). The
 entries below that predate this paragraph are kept as written; where they describe the earlier step 5 (bytes
 equality, a merge-main prediction), the "Rebinding to the replacement spec" entry in Task 10 supersedes them.
@@ -131,7 +131,7 @@ Spec: § Design step 5; § Mode and base-advance behaviour (BA1 to BA5). Advance
       `test_merge_of_main_carrying_the_flip_is_not_rechecked` (C3: `git merge --no-commit main`, then `--commit`) and
       `test_unchanged_ancestry_is_read_at_the_current_base` (C5).
 - [ ] Run against main's gate: C1 FAIL (new message); C2, C3, C5 PASS (baseline controls).
-- [ ] Replacement spec, done_when item 5, step 5 domain rows (P0 = P's path approved with `supersedes: null`, retired by
+- [ ] Replacement spec, done_when[4], step 5 domain rows (P0 = P's path approved with `supersedes: null`, retired by
       N): `test_redundant_retirement_line_ending_copy_refused` (C1a: CRLF and CR-only flips against main's LF flip),
       `test_redundant_retirement_mode_only_copy_refused` (C1b: main's byte-identical flip at the other mode, both
       directions), `test_redundant_retirement_absent_at_fork_refused` (C1c: identical add on both sides, the same with
@@ -327,6 +327,17 @@ done_when[3], done_when[4].
       `test_merge_main_advice_is_withheld_outside_regular_files_and_one_merge_base` and
       `test_redundant_flip_is_refused_whatever_the_mode_or_history` (every redundant row now asserts the one step 5
       message, and neither removed text appears).
+      Factual corrections after IMPL-CICD7 (author batch of 2026-11-01, under the standing routine repair authority as
+      directed at 22:52:47Z; the entries above are kept as written). IMPL-CICD7 ran on 1dd27e66 and found five distinct
+      P3 statements that execution contradicted; no executable verdict changed. The step 5 comment in
+      `scripts/gate/spec_gate.py` no longer says a mode-only copy stays in the change after a merge of main (it leaves
+      when only main made the mode change, IMPL-CICD7 R1 F1) or that a mode-only edit of a spec superseded at the merge
+      base is always admitted (it gets main's verdict, so round eight on its own pointer still refuses it, R3 P3-2);
+      the change is comment-only, and the module's syntax tree is unchanged. The FEAT-CICD-001 catalog and
+      traceability records name the source-note spec (#1667) instead of #1664 (R3 P3-3). This plan indexes done_when
+      from zero throughout (R3 P3-4), and Task 12 dates its review narration instead of stating a current count
+      (R3 P3-5). The PR body's byte-identity command and changed-file list (R2 F1 = R3 P3-1) are corrected in the
+      body, which is not a repository file. 1dd27e66 and its reports are kept unchanged.
 - [ ] Run the tests from Tasks 3 to 9: all PASS. Run Task 4's tests again: still PASS with today's messages.
 
 ## Task 11: suites and gates, locally
@@ -362,11 +373,15 @@ Spec: § Ownership, sequence and review roles (review roles; the #1630 invocatio
       IMPL-CICD6 (the owner's bounded extension of 2026-11-01 13:39:55Z, slot 6 of 6) ran on 4ef70d89 and was not empty
       (three P2, four P3, no P1; PR comment 6558963711), so 4ef70d89 was not pushed. All six local passes are spent; the
       sentence above that no further pass is reserved was true when written and is stale since IMPL-CICD6 ran
-      (IMPL-CICD6 R3 P3-3). The rebinding candidate in Task 10 is an unreviewed author candidate; no seventh pass is
-      reserved, and any further qualification and publication wait for the owner's explicit record.
+      (IMPL-CICD6 R3 P3-3). As of 2026-11-01 22:30Z the rebinding candidate in Task 10 (1dd27e66) was an unreviewed
+      author candidate and no seventh pass had been reserved. IMPL-CICD7 (slot 7, directed 22:33:33Z under the same
+      standing authority; reservation comment 6564897918) then ran on 1dd27e66 and was not empty (five distinct
+      findings, all P3; outcome comment 6565080501), so 1dd27e66 was not pushed. The factual corrections of those
+      findings are recorded in Task 10. Review slots, results and publication after that are recorded on the PR and in
+      the recovery ledger, not here.
 
 ## Task 13: close
-Spec: § Done when (done_when 10); § Ownership, sequence and review roles (the WORKFLOW_FEAT gap). Advances done_when[9].
+Spec: § Done when (done_when[9]); § Ownership, sequence and review roles (the WORKFLOW_FEAT gap). Advances done_when[9].
 - [ ] `docs/product/02-FEATURE-CATALOG.md`, FEAT-CICD-001 record only: Status and Last reviewed updated; the record
       states that `scripts/gate/` is owned through the gate's `WORKFLOW_FEAT` constant while the Code row lists
       `.github/workflows/` and the review guidelines; the Code row text itself is not changed.

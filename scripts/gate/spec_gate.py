@@ -1921,11 +1921,14 @@ def check_changed_specs(ch: Change) -> list[str]:
         # when the base holds the spec superseded, the head's text equals the base's as the gate reads it (so a
         # copy that differs only in line endings or file mode is equal: IMPL-CICD6 R2 F1), and the change carries
         # the retirement: the merge base (`ch.before`) does not hold the spec superseded (absent there, or in
-        # another status, draft, approved or none). Its message promises no merge result (a line-ending copy, a
-        # mode-only copy or a rename collision stays in the change after a merge of main: IMPL-CICD6 R1 F1); it
-        # names the way out. A change to a spec the merge base already holds superseded carries no retirement and
-        # is judged as on main (step 6): a mode-only or line-ending-only edit of it is admitted, including one main
-        # also made. In commit mode `ch.before` is the base, so the domain is never entered.
+        # another status, draft, approved or none). Its message promises no merge result, because whether a merge
+        # of main takes the spec out of the change depends on the histories: a line-ending copy, a mode change the
+        # branch made or a rename collision can stay in it (IMPL-CICD6 R1 F1), while a mode change only main made
+        # leaves with the merge (IMPL-CICD7 R1 F1); it names the way out. A change to a spec the merge base already
+        # holds superseded carries no retirement and is judged as on main (step 6): a mode-only or line-ending-only
+        # edit of it, including one main also made, gets main's verdict, so it passes unless another check, such
+        # as round eight on its own pointer, refuses it. In commit mode `ch.before` is the base, so the domain is
+        # never entered.
         base_text = ch.base.read(path)
         fm, base_fm = frontmatter(text), frontmatter(base_text)
         strip = lambda t: re.sub(r"^status:.*$", "", t, flags=re.M)
