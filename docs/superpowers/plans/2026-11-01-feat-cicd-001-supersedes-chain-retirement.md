@@ -199,7 +199,7 @@ done_when[3], done_when[4].
       is exceeded by the safe forms the owner's settled scope keeps on the entry line, which the code admits at depth
       two where main refuses them (plain to quoted, an added comment, added trailing whitespace on that line). That
       Risks sentence is the one spec clause those forms conflict with; the merged spec is not edited.
-      Known and recorded after IMPL-CICD3, not changed in this head: the step 5 mode conjunct compares the head's mode
+      Known and recorded after IMPL-CICD3, not changed in that head (both corrected in the IMPL-CICD4 batch below): the step 5 mode conjunct compares the head's mode
       with the current base's, so when main (not the branch) flipped P and changed its mode, the true "merge main"
       advice is dropped and round eight alone is printed (fail-closed, rc unchanged; IMPL-CICD3 R1 F1, P2); the
       `status_entry` docstring's "the way `frontmatter` finds it" does not hold for a second line starting `---`
@@ -207,7 +207,20 @@ done_when[3], done_when[4].
       R1 F1 (P2): the step 5 diagnostic also requires `ch.tree.mode(path) == ch.base.mode(path)`, because a mode
       change alone (100644 to 100755, bytes identical) keeps a superseded spec in the change after a merge of main,
       so "merge main so the file leaves this change" was false (29314273 printed it beside round eight; main prints
-      round eight alone); `test_mode_only_change_of_a_superseded_spec_is_not_called_redundant`.
+      round eight alone); `test_mode_only_change_of_a_superseded_spec_is_not_called_redundant`. (Narrowed in the
+      IMPL-CICD4 batch below: equality with the base's mode was the wrong tree.)
+      Corrections in the IMPL-CICD4 batch (owner's bounded reservation of 2026-11-01 11:27:45Z; IMPL-CICD1 to 3 spent):
+      IMPL-CICD3 R1 F1 (P2): the step 5 advice predicts what a merge of main does, and a merge takes main's mode
+      wherever the branch left the merge base's mode alone. The conjunct is now
+      `ch.tree.mode(path) in (ch.base.mode(path), ch.before.mode(path))`; `ch.before` is the merge base in PR mode and the
+      base in commit mode, so commit mode is unchanged. Bytes are still compared with the base.
+      `test_merge_main_advice_follows_the_mode_a_merge_of_main_keeps` (four rows), measured on four gates with what each
+      printed: main set +x and the branch left the mode: main round eight only (main has no advice), 29314273 advice,
+      c67bb4d0 round eight only (the finding), new advice; both set +x: advice on 29314273, c67bb4d0 and new; main kept
+      the mode and the branch set +x: advice on 29314273 only (no mode check there), none on c67bb4d0 and new; branch
+      bytes differ: no advice on any gate. The test fails on main, 29314273 and c67bb4d0 and passes on the new gate.
+      IMPL-CICD3 R3 P3-2: the `status_entry` docstring now names the one shape where it and `frontmatter` differ (a
+      second line starting `---`), with the result (None, so the flip is refused); its code is unchanged.
 - [ ] Run the tests from Tasks 3 to 9: all PASS. Run Task 4's tests again: still PASS with today's messages.
 
 ## Task 11: suites and gates, locally
@@ -232,6 +245,9 @@ Spec: § Ownership, sequence and review roles (review roles; the #1630 invocatio
       owner's authorization for the exporter and policy seat. CI (gate, base-suite, registry, tests) must be green on that
       head; hosted code review on it is recorded truthfully (requested only when the owner says so; unavailable is written
       as unavailable, never as completed).
+      Recorded: d4984f14 was pushed after IMPL-CICD3 returned findings, contrary to the empty-pass rule; that
+      deviation is disclosed on the PR. The IMPL-CICD4 batch (a merge of main 27c3c9ec, the step 5 and docstring
+      corrections, this plan and the Task 13 records) is reviewed as one head and pushed only if IMPL-CICD4 is empty.
 
 ## Task 13: close
 Spec: § Done when (done_when 10); § Ownership, sequence and review roles (the WORKFLOW_FEAT gap). Advances done_when[9].
@@ -240,6 +256,9 @@ Spec: § Done when (done_when 10); § Ownership, sequence and review roles (the 
       `.github/workflows/` and the review guidelines; the Code row text itself is not changed.
 - [ ] `docs/product/12-PR-ISSUE-TRACEABILITY.md`: add this PR under FEAT-CICD-001. No other row or record changes.
 - [ ] `python3 scripts/maintenance/docs_audit.py` on the branch and on `origin/main`: no finding the branch adds.
+      Measured on the IMPL-CICD4 batch against 27c3c9ec: no new finding; two existing 03-SITE-TRACEABILITY findings
+      carry branch-specific detail (10 content commits instead of 9, counting this branch's gate commit; source
+      identity unavailable because the branch's source is not main's), inherent to any change under scripts/ or tests/.
 - [ ] `python3 scripts/gate/spec_gate.py --pr origin/main`: `spec gate ok`.
 - [ ] Tick every done_when box in the PR body with its evidence; the Ready transition and the merge wait for the owner's
       explicit authorization (two-round review cap; no stacking; the 8 blocked flips proceed only after this merges, each

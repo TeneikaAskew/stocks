@@ -5573,6 +5573,45 @@ def test_mode_only_change_of_a_superseded_spec_is_not_called_redundant(repo):
     assert r.returncode == 0 and "spec gate ok" in r.stdout, r.stdout
 
 
+def mode_divergent_pr(repo: Path, branch_files: dict[str, str | None], branch_x: tuple[str, ...],
+                      main_files: dict[str, str | None], main_x: tuple[str, ...]) -> subprocess.CompletedProcess:
+    """`divergent_pr` with modes: the branch, cut from `base`, writes `branch_files` and sets +x on `branch_x`; main then
+    writes `main_files` and sets +x on `main_x`; the gate judges the branch against main's tip, the merge base kept."""
+    _git(repo, "reset", "-q", "--hard")
+    _git(repo, "clean", "-qfd")
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+    for path, text in branch_files.items():
+        write(repo, path, text)
+    for path in branch_x:
+        (repo / path).chmod(0o755)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", f"change on {RETIRE_BRANCH}")
+    head = _git(repo, "rev-parse", "HEAD")
+    on_base(repo, main_files, then=lambda root: [(root / path).chmod(0o755) for path in main_x])
+    return gate(repo, "--pr", _git(repo, "rev-parse", "base"), head, PR_HEAD_REF=RETIRE_BRANCH)
+
+
+def test_merge_main_advice_follows_the_mode_a_merge_of_main_keeps(repo):
+    """IMPL-CICD3 R1 F1: main retired P after the fork and the branch flipped P too. A merge of main takes main's mode
+    wherever the branch left the merge base's mode alone, so "merge main so the file leaves this change" is true when
+    the bytes equal the current base's and the head mode is the base's or still the merge base's. At c67bb4d0 the
+    advice needed the head mode to equal the base's and was dropped when only main set +x. A mode or bytes the branch
+    changed differently stay in the change, so the advice stays absent there. Round eight still refuses N's pointer."""
+    advice = f"{P_SPEC}: already superseded on the current base; merge main so the file leaves this change"
+    refused = f"{N_SPEC}: supersedes {P_SPEC}, {ROUND_EIGHT}"
+    n2 = "docs/superpowers/specs/2026-09-06-model-decisions-v4.md"
+    main = {n2: spec(supersedes=P_SPEC), P_SPEC: flipped_p()}
+    for name, branch_p, branch_x, main_x, expect in (
+            ("main set +x, branch left the mode", flipped_p(), (), (P_SPEC,), True),
+            ("both set +x", flipped_p(), (P_SPEC,), (P_SPEC,), True),
+            ("main kept the mode, branch set +x", flipped_p(), (P_SPEC,), (), False),
+            ("main set +x, branch bytes differ", flipped_p() + "\nA branch note.\n", (), (P_SPEC,), False)):
+        on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(supersedes=SPEC)},
+                then=lambda root: (root / P_SPEC).chmod(0o644))   # each row starts from P at 644 on the merge base
+        r = mode_divergent_pr(repo, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: branch_p}, branch_x, main, main_x)
+        assert r.returncode == 1 and refused in r.stdout, (name, r.stdout)
+        assert (advice in r.stdout) is expect, (name, r.stdout)
+
 def test_flip_changes_only_the_status_entry_and_hides_no_key(repo):
     """IMPL-CICD2 R1 F2 (and pass-1 R1 F4, R3 P2-2): the exemption admits a flip whose bytes outside the one physical
     line holding the frontmatter `status` entry are unchanged, in place, and whose entry line holds no second logical

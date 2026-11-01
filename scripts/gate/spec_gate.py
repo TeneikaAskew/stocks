@@ -1445,8 +1445,10 @@ def frontmatter(text: str | None) -> dict:
 
 def status_entry(raw: bytes | None) -> tuple[str, int, int] | None:
     """FEAT-CICD-001 retirement: the file's text and the span of the one physical line holding the frontmatter
-    `status` entry, found the way `frontmatter` finds it (opening `---` line, closing line starting `---`, a key
-    line not indented, key `status` before the first colon), or None. None too when the bytes are not UTF-8, when
+    `status` entry (opening `---` line, closing line starting `---`, a key line not indented, key `status` before
+    the first colon), or None. This matches `frontmatter` except in one shape: here a second line starting `---`
+    closes an empty frontmatter, where `frontmatter`'s regex reads on to the next such line, so the file gets None
+    and a flip of it is refused (IMPL-CICD3 R3 P3-2). None too when the bytes are not UTF-8, when
     `status` is keyed on more than one line, or when the entry's line holds a separator `str.splitlines` splits
     on (form feed, U+2028, ...): `frontmatter` would read a second logical line, so a key could hide inside it."""
     try:
@@ -1915,13 +1917,16 @@ def check_changed_specs(ch: Change) -> list[str]:
         # blanks every line beginning `status:`, so a body line rewritten or moved would ride the flip; and
         # `frontmatter` splits on form feed and U+2028, so a key could hide on the status line (IMPL-CICD2
         # R1 F2). A quoted or spaced value on that line is the parser's business, read as today. The
-        # redundant-flip diagnostic (step 5) is judged on bytes and mode: a file whose bytes or mode differ
-        # from the base is still in the change after a merge of main, so "merge main" would be false.
+        # redundant-flip diagnostic (step 5) predicts what a merge of main does: the file leaves the change
+        # only when its bytes equal the base's and its mode equals the base's or is still the merge base's
+        # (`ch.before`), since a merge takes main's mode where the branch left it alone. Bytes or a mode the
+        # branch changed differently stay in the change, so "merge main" would be false (IMPL-CICD2 R1 F1,
+        # IMPL-CICD3 R1 F1). In commit mode `ch.before` is the base, so this reads as equal modes.
         base_text = ch.base.read(path)
         fm, base_fm = frontmatter(text), frontmatter(base_text)
         strip = lambda t: re.sub(r"^status:.*$", "", t, flags=re.M)
         if (base_text is not None and base_fm.get("status") == "superseded" and ch.tree.raw(path) == ch.base.raw(path)
-                and ch.tree.mode(path) == ch.base.mode(path)):
+                and ch.tree.mode(path) in (ch.base.mode(path), ch.before.mode(path))):
             errs.append(f"{path}: already superseded on the current base; merge main so the file leaves this change")
         flip = (base_text is not None and base_fm.get("status") == "approved" and fm.get("status") == "superseded"
                 and base_fm.get("supersedes") == fm.get("supersedes") and strip(text) == strip(base_text)

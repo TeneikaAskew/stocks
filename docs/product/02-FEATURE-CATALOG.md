@@ -579,11 +579,11 @@ Finite-number slice: approved spec [#1618](https://github.com/TeneikaAskew/stock
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation — committed source identity and complete generated-inventory verification merged; local delivery-tool close-out checked; AV/global rollout and remediation pending; tests that fake gcloud cannot reach a real one, the deliberate `--mode=live` secret read excepted ([#1536](https://github.com/TeneikaAskew/stocks/pull/1536)); trusted registry six-minute pin prepared in #1591, live six-minute activation proposed in #1599 under measured acceptance #1594; hosted final verification pending |
+| Status | Production but needs remediation — committed source identity and complete generated-inventory verification merged; local delivery-tool close-out checked; AV/global rollout and remediation pending; tests that fake gcloud cannot reach a real one, the deliberate `--mode=live` secret read excepted ([#1536](https://github.com/TeneikaAskew/stocks/pull/1536)); trusted registry six-minute pin prepared in #1591, live six-minute activation proposed in #1599 under measured acceptance #1594; hosted final verification pending; spec-gate supersedes-chain retirement (status-only flip of a superseding spec, lineage validation) implemented in draft [#1656](https://github.com/TeneikaAskew/stocks/pull/1656) under its approved spec, local red-team passes recorded, hosted CODE review and merge pending. `scripts/gate/` is owned by this capability through the gate's `WORKFLOW_FEAT` constant, while the Code row lists `.github/workflows/` and the review guidelines |
 | Priority | P1 |
 | Target phase | Phase 6 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-10-25 |
+| Last reviewed | 2026-11-01 |
 | Evidence status | LOCAL DELIVERY TOOLING VERIFIED — [#1470](https://github.com/TeneikaAskew/stocks/pull/1470) committed-source verifier and [#1538](https://github.com/TeneikaAskew/stocks/pull/1538) complete generated-inventory tooling merged after authenticated CODE review and required CI. Fresh actual-main identity, local-tool accepted/refused checks and terminal marker/record retirement verified in this DOC close-out. AV/global rollout and product deployment/data-freshness verification remain separate. |
 | UI surface | — |
 | Backend | — |
