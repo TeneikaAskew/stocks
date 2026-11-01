@@ -186,7 +186,8 @@ done_when[3], done_when[4].
       refused, by the spec's own lambda (`^status:.*$` does not blank it) and by the in-place rule, on main too.
       At a79ac45d (this branch's base) 61 spec files, 54 with a status line, carry exactly `status: approved` (46) or
       `status: superseded` (8); at ca043892 (main when this was measured) 64 files, 57 with a status line, 48 and 9;
-      neither has a body `status:` line or a CR byte. The in-place rule, `frontmatter`, the hook, the pinned copies and the workflows are untouched: at
+      at 27c3c9ec (merged into this branch in 21a7bcb6) 65 files, 58 with a status line, 49 and 9; none of them has a
+      body `status:` line or a CR byte. The in-place rule, `frontmatter`, the hook, the pinned copies and the workflows are untouched: at
       depth one the hidden key is still admitted through the in-place rule on this gate as on main (the test's last
       case). So the exemption is a subset of what the in-place rule admits, narrower by at least these edit shapes,
       each admitted at depth one on main and refused here at depth two (IMPL-CICD3 R1 and R3, executed): a CRLF
@@ -207,9 +208,10 @@ done_when[3], done_when[4].
       R1 F1 (P2): the step 5 diagnostic also requires `ch.tree.mode(path) == ch.base.mode(path)`, because a mode
       change alone (100644 to 100755, bytes identical) keeps a superseded spec in the change after a merge of main,
       so "merge main so the file leaves this change" was false (29314273 printed it beside round eight; main prints
-      round eight alone); `test_mode_only_change_of_a_superseded_spec_is_not_called_redundant`. (Narrowed in the
-      IMPL-CICD4 batch below: equality with the base's mode was the wrong tree.)
-      Corrections in the IMPL-CICD4 batch (owner's bounded reservation of 2026-11-01 11:27:45Z; IMPL-CICD1 to 3 spent):
+      round eight alone); `test_mode_only_change_of_a_superseded_spec_is_not_called_redundant`. (Widened in the
+      IMPL-CICD4 batch below: equality with the base's mode alone was incomplete.)
+      Corrections in the IMPL-CICD4 batch, as reviewed on f60f9950 (owner's bounded reservation of 2026-11-01
+      11:27:45Z; IMPL-CICD1 to 3 spent; f60f9950 was not pushed, see Task 12):
       IMPL-CICD3 R1 F1 (P2): the step 5 advice predicts what a merge of main does, and a merge takes main's mode
       wherever the branch left the merge base's mode alone. The conjunct is now
       `ch.tree.mode(path) in (ch.base.mode(path), ch.before.mode(path))`; `ch.before` is the merge base in PR mode and the
@@ -221,6 +223,22 @@ done_when[3], done_when[4].
       bytes differ: no advice on any gate. The test fails on main, 29314273 and c67bb4d0 and passes on the new gate.
       IMPL-CICD3 R3 P3-2: the `status_entry` docstring now names the one shape where it and `frontmatter` differ (a
       second line starting `---`), with the result (None, so the flip is refused); its code is unchanged.
+      Corrections after IMPL-CICD4 (author candidate on f60f9950, owner direction of 2026-11-01 12:10:48Z; all four
+      passes spent): the merge-base mode is accepted only in PR mode, only when the base and the merge base both hold a
+      regular file (100644 or 100755) and only when there is a single merge base (`git merge-base --all`); otherwise
+      the advice needs the head's mode to equal the base's, as at c67bb4d0. IMPL-CICD4 R1 F1: main turning P into a
+      symlink whose target text is the flipped P printed the advice at f60f9950 while git's merge stops on the type
+      conflict; a gated main refuses a changed symlink, so this needs a main the gate did not judge. IMPL-CICD4 R1 F2:
+      in a criss-cross history `git merge-base` names one of two merge bases and git merges over a virtual base, so the
+      advice was wrong in one shape. Both are withheld now
+      (`test_merge_main_advice_is_withheld_outside_regular_files_and_one_merge_base`); round eight and every refusal
+      are unchanged. `test_merge_main_advice_follows_the_mode_a_merge_of_main_keeps` gains main clearing +x and the
+      branch clearing +x. The step 5 comment and the test docstrings are scoped to the redundant-flip domain (bytes
+      equal to the base's); the pre-existing missing advice when the branch's bytes differ is not changed
+      (IMPL-CICD4 R1 F3, R3 P3-1). Measured with the shell reviewer's 20-case PR matrix plus real merges: the candidate
+      prints the same lines as f60f9950 everywhere except the symlink case and the criss-cross case, where the advice
+      is gone, and the same as c67bb4d0 everywhere except a mode change made only on main (C01, C05), where it adds the
+      advice.
 - [ ] Run the tests from Tasks 3 to 9: all PASS. Run Task 4's tests again: still PASS with today's messages.
 
 ## Task 11: suites and gates, locally
@@ -248,6 +266,8 @@ Spec: § Ownership, sequence and review roles (review roles; the #1630 invocatio
       Recorded: d4984f14 was pushed after IMPL-CICD3 returned findings, contrary to the empty-pass rule; that
       deviation is disclosed on the PR. The IMPL-CICD4 batch (a merge of main 27c3c9ec, the step 5 and docstring
       corrections, this plan and the Task 13 records) is reviewed as one head and pushed only if IMPL-CICD4 is empty.
+      IMPL-CICD4 on f60f9950 was not empty (one P2, six P3, no P1), so f60f9950 was not pushed; all four local passes
+      are spent. Any further verification of the corrected head is reserved by the owner after inspecting it.
 
 ## Task 13: close
 Spec: § Done when (done_when 10); § Ownership, sequence and review roles (the WORKFLOW_FEAT gap). Advances done_when[9].
@@ -256,9 +276,10 @@ Spec: § Done when (done_when 10); § Ownership, sequence and review roles (the 
       `.github/workflows/` and the review guidelines; the Code row text itself is not changed.
 - [ ] `docs/product/12-PR-ISSUE-TRACEABILITY.md`: add this PR under FEAT-CICD-001. No other row or record changes.
 - [ ] `python3 scripts/maintenance/docs_audit.py` on the branch and on `origin/main`: no finding the branch adds.
-      Measured on the IMPL-CICD4 batch against 27c3c9ec: no new finding; two existing 03-SITE-TRACEABILITY findings
-      carry branch-specific detail (10 content commits instead of 9, counting this branch's gate commit; source
-      identity unavailable because the branch's source is not main's), inherent to any change under scripts/ or tests/.
+      Measured on the committed candidate (the commit carrying this text) against 27c3c9ec: no new finding; two existing 03-SITE-TRACEABILITY
+      findings carry branch-specific detail (12 content commits instead of 9, counting this branch's commits under
+      scripts/ and tests/; source identity unavailable because the branch's source is not main's), inherent to any change
+      there. (The receipt first recorded for f60f9950 was measured on the uncommitted tree over 21a7bcb6, which counted 10.)
 - [ ] `python3 scripts/gate/spec_gate.py --pr origin/main`: `spec gate ok`.
 - [ ] Tick every done_when box in the PR body with its evidence; the Ready transition and the merge wait for the owner's
       explicit authorization (two-round review cap; no stacking; the 8 blocked flips proceed only after this merges, each

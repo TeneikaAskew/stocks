@@ -5573,44 +5573,116 @@ def test_mode_only_change_of_a_superseded_spec_is_not_called_redundant(repo):
     assert r.returncode == 0 and "spec gate ok" in r.stdout, r.stdout
 
 
-def mode_divergent_pr(repo: Path, branch_files: dict[str, str | None], branch_x: tuple[str, ...],
-                      main_files: dict[str, str | None], main_x: tuple[str, ...]) -> subprocess.CompletedProcess:
-    """`divergent_pr` with modes: the branch, cut from `base`, writes `branch_files` and sets +x on `branch_x`; main then
-    writes `main_files` and sets +x on `main_x`; the gate judges the branch against main's tip, the merge base kept."""
+def mode_divergent_pr(repo: Path, branch_files: dict[str, str | None], branch_modes: dict[str, int],
+                      main_files: dict[str, str | None], main_modes: dict[str, int]) -> subprocess.CompletedProcess:
+    """`divergent_pr` with modes: the branch, cut from `base`, writes `branch_files` and sets `branch_modes`; main then
+    writes `main_files` and sets `main_modes`; the gate judges the branch against main's tip, the merge base kept."""
     _git(repo, "reset", "-q", "--hard")
     _git(repo, "clean", "-qfd")
     _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
     for path, text in branch_files.items():
         write(repo, path, text)
-    for path in branch_x:
-        (repo / path).chmod(0o755)
+    for path, mode in branch_modes.items():
+        (repo / path).chmod(mode)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", f"change on {RETIRE_BRANCH}")
     head = _git(repo, "rev-parse", "HEAD")
-    on_base(repo, main_files, then=lambda root: [(root / path).chmod(0o755) for path in main_x])
+    on_base(repo, main_files, then=lambda root: [(root / path).chmod(mode) for path, mode in main_modes.items()])
     return gate(repo, "--pr", _git(repo, "rev-parse", "base"), head, PR_HEAD_REF=RETIRE_BRANCH)
 
 
+MERGE_MAIN_ADVICE = f"{P_SPEC}: already superseded on the current base; merge main so the file leaves this change"
+
+
 def test_merge_main_advice_follows_the_mode_a_merge_of_main_keeps(repo):
-    """IMPL-CICD3 R1 F1: main retired P after the fork and the branch flipped P too. A merge of main takes main's mode
-    wherever the branch left the merge base's mode alone, so "merge main so the file leaves this change" is true when
-    the bytes equal the current base's and the head mode is the base's or still the merge base's. At c67bb4d0 the
-    advice needed the head mode to equal the base's and was dropped when only main set +x. A mode or bytes the branch
-    changed differently stay in the change, so the advice stays absent there. Round eight still refuses N's pointer."""
-    advice = f"{P_SPEC}: already superseded on the current base; merge main so the file leaves this change"
+    """IMPL-CICD3 R1 F1: main retired P after the fork and the branch flipped P too, to the same bytes. Within regular
+    files and a single merge base, a merge of main takes main's mode wherever the branch left the merge base's mode
+    alone, so the advice is true when the head's mode is the base's or still the merge base's, in either direction
+    (main set or cleared +x). At c67bb4d0 the advice needed the head's mode to equal the base's and was dropped when
+    only main changed it. When the branch changed the mode, or its bytes differ, the advice stays absent. Round eight
+    still refuses N's pointer in every row."""
     refused = f"{N_SPEC}: supersedes {P_SPEC}, {ROUND_EIGHT}"
     n2 = "docs/superpowers/specs/2026-09-06-model-decisions-v4.md"
     main = {n2: spec(supersedes=P_SPEC), P_SPEC: flipped_p()}
-    for name, branch_p, branch_x, main_x, expect in (
-            ("main set +x, branch left the mode", flipped_p(), (), (P_SPEC,), True),
-            ("both set +x", flipped_p(), (P_SPEC,), (P_SPEC,), True),
-            ("main kept the mode, branch set +x", flipped_p(), (P_SPEC,), (), False),
-            ("main set +x, branch bytes differ", flipped_p() + "\nA branch note.\n", (), (P_SPEC,), False)):
+    for name, merge_base_mode, branch_p, branch_mode, main_mode, expect in (
+            ("main set +x, branch left the mode", 0o644, flipped_p(), 0o644, 0o755, True),
+            ("main cleared +x, branch left the mode", 0o755, flipped_p(), 0o755, 0o644, True),
+            ("both set +x", 0o644, flipped_p(), 0o755, 0o755, True),
+            ("main kept the mode, branch set +x", 0o644, flipped_p(), 0o755, 0o644, False),
+            ("main kept the mode, branch cleared +x", 0o755, flipped_p(), 0o644, 0o755, False),
+            ("main set +x, branch bytes differ", 0o644, flipped_p() + "\nA branch note.\n", 0o644, 0o755, False)):
         on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(supersedes=SPEC)},
-                then=lambda root: (root / P_SPEC).chmod(0o644))   # each row starts from P at 644 on the merge base
-        r = mode_divergent_pr(repo, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: branch_p}, branch_x, main, main_x)
+                then=lambda root: (root / P_SPEC).chmod(merge_base_mode))   # P's mode on the merge base, per row
+        r = mode_divergent_pr(repo, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: branch_p}, {P_SPEC: branch_mode},
+                              main, {P_SPEC: main_mode})
         assert r.returncode == 1 and refused in r.stdout, (name, r.stdout)
-        assert (advice in r.stdout) is expect, (name, r.stdout)
+        assert (MERGE_MAIN_ADVICE in r.stdout) is expect, (name, r.stdout)
+
+
+def test_merge_main_advice_is_withheld_outside_regular_files_and_one_merge_base(repo):
+    """IMPL-CICD4 R1 F1 and F2: two shapes where the head's bytes equal the base's and its mode is still the merge base's,
+    but a merge of main would not take P out of the change, so the advice from the merge-base mode is withheld. (1) Main
+    turned P into a symlink whose target text is the flipped P (a gated main refuses a changed symlink, so this is
+    reachable only by a main the gate did not judge): git's merge stops on the type conflict. (2) A criss-cross history
+    with two merge bases holding P at different modes: `git merge-base` names one, git merges over a virtual base and
+    keeps the branch's mode. The gate still fails with round eight on N's pointer in both; only the advice changes."""
+    refused = f"{N_SPEC}: supersedes {P_SPEC}, {ROUND_EIGHT}"
+    n2 = "docs/superpowers/specs/2026-09-06-model-decisions-v4.md"
+    retirement_lineage(repo)
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+    write(repo, N_SPEC, spec(supersedes=P_SPEC))
+    write(repo, P_SPEC, flipped_p())
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "flip P, regular file")
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    write(repo, n2, spec(supersedes=P_SPEC))
+    (repo / P_SPEC).unlink()
+    os.symlink(flipped_p(), repo / P_SPEC)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "main: P as a symlink")
+    assert _git(repo, "ls-tree", "HEAD", "--", P_SPEC).split()[0] == "120000"
+    r = gate(repo, "--pr", _git(repo, "rev-parse", "main"), head, PR_HEAD_REF=RETIRE_BRANCH)
+    assert r.returncode == 1 and refused in r.stdout and MERGE_MAIN_ADVICE not in r.stdout, r.stdout
+    # (2) criss-cross: P at 755 on the fork point; the branch side sets 644 (X), main's side leaves 755 (Y); each
+    # merges the other's commit, so X and Y are both merge bases. The branch flips P at 755, main at 644.
+    _git(repo, "reset", "-q", "--hard")
+    _git(repo, "checkout", "-q", "-B", "main", "base")
+    (repo / P_SPEC).chmod(0o755)
+    _git(repo, "commit", "-q", "-am", "P at 755")
+    fork = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, fork)
+    write(repo, "docs/x.md", "x\n")
+    (repo / P_SPEC).chmod(0o644)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "X")
+    x = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    write(repo, "docs/y.md", "y\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "Y")
+    y = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "merge", "-q", "--no-edit", x)
+    _git(repo, "checkout", "-q", RETIRE_BRANCH)
+    _git(repo, "merge", "-q", "--no-edit", y)
+    write(repo, N_SPEC, spec(supersedes=P_SPEC))
+    write(repo, P_SPEC, flipped_p())
+    (repo / P_SPEC).chmod(0o755)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "flip P at 755")
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    write(repo, n2, spec(supersedes=P_SPEC))
+    write(repo, P_SPEC, flipped_p())
+    (repo / P_SPEC).chmod(0o644)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "main flips P at 644")
+    main_tip = _git(repo, "rev-parse", "HEAD")
+    assert len(_git(repo, "merge-base", "--all", main_tip, head).split()) == 2
+    assert _git(repo, "ls-tree", _git(repo, "merge-base", main_tip, head), "--", P_SPEC).split()[0] == "100755"
+    r = gate(repo, "--pr", main_tip, head, PR_HEAD_REF=RETIRE_BRANCH)
+    assert r.returncode == 1 and refused in r.stdout and MERGE_MAIN_ADVICE not in r.stdout, r.stdout
+
 
 def test_flip_changes_only_the_status_entry_and_hides_no_key(repo):
     """IMPL-CICD2 R1 F2 (and pass-1 R1 F4, R3 P2-2): the exemption admits a flip whose bytes outside the one physical
