@@ -56,8 +56,10 @@ Spec: done_when[27], done_when[30]; advances both and turns Task 1 green.
 
 ## Task 3: RUNBOOK and the implementation-source note
 Spec: done_when[31] (RUNBOOK), frontmatter `site_source_notes: [SHARED-07]`; advances done_when[31].
-- [ ] `RUNBOOK.md` Step 7 (L433): `ew-user / ew-pass` listed as retained and unused since this change,
-      with no job that reads them; no deletion instruction.
+- [ ] `RUNBOOK.md` Step 7 (L433): `ew-user / ew-pass` listed as retained, with this deployment source no
+      longer reading or binding them (no job in the source reads them), and the live job's existing
+      bindings stated to remain until the separately authorized redeploy and names-only check; no
+      deletion instruction, and no claim that the redeploy or the check has happened.
 - [ ] After the code and tests are committed, `python3 scripts/maintenance/doc_source_snapshot.py
       produce --policy-ref origin/main --source-ref HEAD` to write
       `docs/review-evidence/site-source-snapshot.json`, then append the `| FEAT-DEPLOY-001 | SHARED-07 |

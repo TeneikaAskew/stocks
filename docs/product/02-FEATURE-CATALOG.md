@@ -533,7 +533,7 @@ Finite-number slice: approved spec [#1618](https://github.com/TeneikaAskew/stock
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation — notifier runtime access isolated; `fetch-earnings-calendar` no longer binds the EarningsWhispers credentials `EW_USER` / `EW_PASS` ([#1659](https://github.com/TeneikaAskew/stocks/pull/1659), spec [#1654](https://github.com/TeneikaAskew/stocks/pull/1654)); the `ew-user` / `ew-pass` secrets stay as resources no job reads, and the redeploy through the new `earnings-calendar` target is the separately authorized close-out in RUNTIME-QUALIFICATION-PLAN section 1 |
+| Status | Production but needs remediation — notifier runtime access isolated; the `fetch-earnings-calendar` deployment source no longer binds the EarningsWhispers credentials `EW_USER` / `EW_PASS` ([#1659](https://github.com/TeneikaAskew/stocks/pull/1659), spec [#1654](https://github.com/TeneikaAskew/stocks/pull/1654)); the `ew-user` / `ew-pass` secrets are retained as resources this source no longer reads, and the live job keeps any `EW_USER` / `EW_PASS` value it already carries until the separately authorized redeploy through the new `earnings-calendar` target and a names-only env check (RUNTIME-QUALIFICATION-PLAN section 1), neither of which this change performs |
 | Priority | P1 |
 | Target phase | Phase 6 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
