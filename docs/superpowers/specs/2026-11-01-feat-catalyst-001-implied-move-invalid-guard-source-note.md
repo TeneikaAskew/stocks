@@ -47,6 +47,41 @@ IC mode, every other `done_when` behaviour of the 2026-10-31 spec, its test name
 and its no-deploy rollout. No code, plan, test, SITE row, sidecar or other product document changes in the
 change that lands this spec. It makes no runtime or deployment claim.
 
+## Reading of inherited `done_when` item 4 (scope clarification, not a new policy)
+
+Item 4 is kept byte for byte. Its file list ("changes only lib/earnings_reactions.py ... and the new test file")
+is read as the limit on runtime CODE and TEST files: no other code or test file changes, and the three named
+callers stay unchanged. It does not forbid the delivery records that the repository's own rules require in the
+same pull request, none of which changes runtime behaviour:
+
+- the branch's plan under `docs/superpowers/plans/` (product-delivery Phase 3; the gate refuses code without it);
+- the FEAT-CATALYST-001 catalog record and the traceability entry (Phase 5 and inherited item 6);
+- the re-rendered `inventory:reads` block of `docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md`, whose
+  `lib/earnings_reactions.py` line citations move when the function grows (REQ-GOV-004: "A pull request that
+  changes what those blocks cite SHALL carry the re-rendered blocks itself"; on #1670 this is three citation
+  lines, commit 487e7868);
+- the declared `(FEAT-CATALYST-001, CATALYSTS-04)` SITE note row and the source-identity sidecar (item 7).
+
+This reading adds no runtime policy and widens no behavioural criterion. If the owner prefers different
+wording, the change is to this section only.
+
+## Ownership and dependencies
+
+- `recommended_structure` and the new test file are reserved to the briefing implementation (draft stocks#1670)
+  by the recovery thread's ledger entry 105. Draft stocks#1608 (recovery-owned) appends to the same library file
+  only after L958 and writes the same CATALYSTS-04 row; neither PR changes the other's lines.
+- #1670 depends on this spec: it cannot clear the documentation audit until this spec is approved and on main.
+- The FEAT-PLAYBOOK-001 brief plan (spec #1651) still waits for #1670's keyword to land on main; this spec does not
+  change that order.
+
+## Textual differences from the 2026-10-31 spec
+
+- Frontmatter: `site_source_notes: [CATALYSTS-04]` added after `canvases: []`; `done_when` item 7 added after the six
+  retained items; `status: draft` (was `approved`); `supersedes:` names the 2026-10-31 spec (was `null`).
+  `feat_id`, `req_ids`, `issues`, `canvases` and items 1 to 6 are byte-identical.
+- Body: a new title and the new sections above and below, followed by the 2026-10-31 body byte for byte under
+  "Retained text of the 2026-10-31 spec".
+
 ## Choice of Chain element: CATALYSTS-04
 
 The declaration must be sorted, unique and name existing Chain IDs of the SITE body on the base
@@ -121,10 +156,18 @@ the same change as this spec's approval. Nothing else is edited in that file.
 
 ## Separation of evidence
 
-Executed by this author on 2026-11-01 in a local worktree from main 751a6c13 with the hook installed: listed in
-the briefing thread's report with the bytes they ran on. Read from source, not executed: the merge-of-main
-plan rebind behaviour, spec binding at a real merge, and the producer and verifier on #1670. Not run: PR mode
-for this spec, CI, the producer and verifier, any check against a landed successor, and any review.
+Executed by this author on 2026-11-01 against main 751a6c13, in a local worktree with the repository hook
+installed (`core.hooksPath=.githooks`; nothing bypassed):
+
+- `scripts/gate/spec_gate.py --check-spec` on this file: `spec ok`.
+- The commit of this file alone on its docs branch: the hook printed `spec gate ok`.
+- Items 1 to 6 and the retained body compared byte for byte with the 2026-10-31 spec (blob c6ec9060): equal.
+- `doc_source_snapshot.chain_ids` on main's SITE body: 222 IDs, CATALYSTS-04 among them.
+- On #1670 (not this spec): `docs_audit.py` on branch and on main with one issues snapshot: three new SITE findings.
+
+Read from source, not executed: the merge-of-main plan rebind, spec binding at a real merge, and the producer and
+verifier on #1670. Not run: CI, the producer and verifier, any check against a landed successor, and any hosted
+review. The predecessor's status flip is prepared as a one-line diff and is not applied in this draft.
 
 ## Status
 
