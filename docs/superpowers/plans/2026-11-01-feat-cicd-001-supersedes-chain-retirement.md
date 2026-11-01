@@ -17,6 +17,17 @@ The spec landed on main as a79ac45dcb82dccaa2933defe6096108f9316af8 (stocks#1653
 57b02d0b671a81389b66531d24ced0a8324ff7acda0c3e4429845f4bab7fdf6d). This branch is cut from that commit. Line anchors
 below are main d806bfd1, which the spec uses; a79ac45d adds one spec file and changes no gate line, so the anchors hold.
 
+Rebinding (2026-11-01, owner direction 20:06:00Z): the 2026-10-31 spec is superseded on main by
+`docs/superpowers/specs/2026-11-01-feat-cicd-001-truthful-redundant-retirement.md`, which landed as main
+765fc91c5a4984bbe7f032f6558a011be3fc3c06 (stocks#1664, squash of 7df4c1df; spec blob 752ef8c5, sha256
+a8f4daab708e34ab1be312f940175044b0d29a4adc596ad6df1f10b04f780b2a). This plan's `spec` now names it; the merge of main
+that brought it is 1eb05e43. The replacement keeps the 2026-10-31 design steps 1 to 4 and 6, its line anchors (main
+d806bfd1) and done_when items 1 to 4 and 6 to 10; it changes step 5 (fail-closed over the folded-text-equal domain,
+one message that promises no merge result) and done_when item 5, whose rows C1 and C1a to C1d replace this plan's C1
+row and govern where they differ. Tracking issue #1665 adds required controls (Task 7, RQ-2 and RQ-3). The
+entries below that predate this paragraph are kept as written; where they describe the earlier step 5 (bytes
+equality, a merge-main prediction), the "Rebinding to the replacement spec" entry in Task 10 supersedes them.
+
 Files this branch changes: `scripts/gate/spec_gate.py` (the edit site at L1842 to L1843, two helpers, the hoisted
 `base_text`), `tests/scripts/test_spec_gate.py` (new tests appended; no existing test or asserted message changes), this
 plan, and in the close task the owned FEAT-CICD-001 catalog record and traceability entry. Nothing else: no hook, no
@@ -104,10 +115,36 @@ Spec: § Design step 4 (revisit). Advances done_when[3].
 Spec: § Design step 5; § Mode and base-advance behaviour (BA1 to BA5). Advances done_when[4].
 - [ ] Write `test_redundant_flip_after_base_advance_gets_merge_main_diagnostic` (C1: asserts
       `already superseded on the current base; merge main so the file leaves this change` beside the round-eight
-      message), `test_pointer_to_target_superseded_after_fork_refused` (C2),
+      message; under the replacement spec, `already superseded on the current base; merge main, resolve any remaining
+      differences, and rerun the gate`), `test_pointer_to_target_superseded_after_fork_refused` (C2),
       `test_merge_of_main_carrying_the_flip_is_not_rechecked` (C3: `git merge --no-commit main`, then `--commit`) and
       `test_unchanged_ancestry_is_read_at_the_current_base` (C5).
 - [ ] Run against main's gate: C1 FAIL (new message); C2, C3, C5 PASS (baseline controls).
+- [ ] Replacement spec, done_when item 5, step 5 domain rows (P0 = P's path approved with `supersedes: null`, retired by
+      N): `test_redundant_retirement_line_ending_copy_refused` (C1a: CRLF and CR-only flips against main's LF flip),
+      `test_redundant_retirement_mode_only_copy_refused` (C1b: main's byte-identical flip at the other mode, both
+      directions), `test_redundant_retirement_absent_at_fork_refused` (C1c: identical add on both sides, the same with
+      the branch copy 100755, a rename of a near-copy onto the path main adds), each asserting the step 5 message and
+      no other refusal; `test_edit_of_spec_superseded_at_fork_keeps_main_verdict` (C1d: CRLF relabel, branch-only
+      chmod and identical chmod on both sides of P0 already superseded at the fork, admitted with no step 5 line; plus
+      the old controls on a P naming a superseded Q, refused by round eight alone). Against main's gate: C1a to C1c
+      FAIL (main admits every row, rc 0), C1d PASS.
+- [ ] Required by #1665 (RQ-2, RQ-3), not optional:
+      RQ-2, the base-status condition: `test_resave_of_an_approved_spec_is_not_called_redundant` (an ordinary approved
+      P0, text unchanged, staged and pushed with CRLF and with mode 100755, in commit mode and in PR mode: admitted with
+      no new message). It must FAIL against a gate that drops `base status == superseded` (all four rows refused) and
+      PASS on main.
+      RQ-2, the merge base's "another status" branch: `test_redundant_retirement_of_a_spec_draft_or_legacy_at_fork_refused`
+      (P0 draft at the fork, and a legacy file with no frontmatter there; main retires it with N; the branch writes the
+      identical superseded P0: refused with the step 5 message alone). It must FAIL against a gate that only reads
+      "absent at the merge base", and on main.
+      RQ-3, fixture placement, stated in the tests' shared comment and docstrings: in C1a to C1c and the RQ-2 rows N
+      exists only on main, added there with main's flip (with N on the branch too, round eight refuses N's new
+      pointer, so "no other refusal" would not hold; measured, both lines print); the C1c rename's near-copy is
+      `docs/notes/model-decisions-copy.md`, a note outside `docs/superpowers/specs/` on the base at the fork holding
+      P0's superseded text plus one note line, which the branch `git mv`s onto P0's path and main edits.
+      Kept from IMPL-CICD4 R1 F1, F2 and IMPL-CICD5 R2 F1: the symlink and criss-cross rows stay in the existing tests
+      named in Task 10's rebinding entry, now asserting the step 5 message with no merge prediction.
 
 ## Task 8: history and plan regression guards
 Spec: § Non-goals; § Mode and base-advance behaviour (plans). Advances done_when[5].
@@ -258,6 +295,27 @@ done_when[3], done_when[4].
       redundant-flip domain prints what it printed before.
       `test_redundant_flip_is_refused_whatever_the_mode_or_history` (new) fails on main, c67bb4d0, f60f9950 and
       c094edf8; the two advice tests now also assert the generic line, and fail on all four.
+      Rebinding to the replacement spec (author candidate after IMPL-CICD6; owner direction of 2026-11-01 20:06:00Z;
+      the entries above are kept as written). Step 5 is now the replacement spec's: the refusal applies when the base
+      holds the spec superseded, `text == base_text` as the gate reads it (folded line endings; file mode not compared),
+      and the merge base does not hold it superseded (absent, draft, approved or no frontmatter there); its one message
+      is `{S}: already superseded on the current base; merge main, resolve any remaining differences, and rerun the
+      gate`. The bytes and mode comparisons, the `proven` merge prediction, the `git merge-base --all` call and the
+      generic "this change repeats that retirement" text are removed. This closes IMPL-CICD6 R2 F1 (a line-ending-only
+      redundant flip was admitted: now refused), R1 F1 (the merge-main text printed on a rename collision: no text
+      predicts a merge now) and R3 P2-1 = R1 F3 (the identical chmod of a spec superseded at the fork is admitted, as
+      on main; the replacement spec's step 5 states it, and C1d asserts it), and makes R1 F2 = R3 P3-1 moot (no wording
+      depends on mode, symlink or merge-base count). R3 P3-2 and P3-4 concerned the unpublished 4ef70d89 body, which is
+      not reused; R3 P3-3 is corrected in Task 12. The flip conjuncts (`status_entry`), `check_chain`, the NUL guard
+      and the in-place rule are unchanged. Five tests already on this branch keep their names, because the gate's
+      suite only grows (the pre-commit hook refused a commit that dropped them), and now assert the replacement
+      spec's step 5: `test_crlf_relabel_of_a_superseded_spec_is_not_called_redundant` and
+      `test_mode_only_change_of_a_superseded_spec_is_not_called_redundant` (same verdicts; docstrings corrected: the
+      exclusion now comes from the merge-base condition, not a bytes comparison),
+      `test_merge_main_advice_follows_the_mode_a_merge_of_main_keeps`,
+      `test_merge_main_advice_is_withheld_outside_regular_files_and_one_merge_base` and
+      `test_redundant_flip_is_refused_whatever_the_mode_or_history` (every redundant row now asserts the one step 5
+      message, and neither removed text appears).
 - [ ] Run the tests from Tasks 3 to 9: all PASS. Run Task 4's tests again: still PASS with today's messages.
 
 ## Task 11: suites and gates, locally
@@ -290,6 +348,11 @@ Spec: § Ownership, sequence and review roles (review roles; the #1630 invocatio
       IMPL-CICD5 (the owner's one bounded extension, 2026-11-01 12:31:04Z) on c094edf8 was not empty (six P3, no P1
       or P2), so c094edf8 was not pushed; all five local passes are spent. The IMPL-CICD5 correction above is an
       unreviewed author candidate; no further pass is reserved.
+      IMPL-CICD6 (the owner's bounded extension of 2026-11-01 13:39:55Z, slot 6 of 6) ran on 4ef70d89 and was not empty
+      (three P2, four P3, no P1; PR comment 6558963711), so 4ef70d89 was not pushed. All six local passes are spent; the
+      sentence above that no further pass is reserved was true when written and is stale since IMPL-CICD6 ran
+      (IMPL-CICD6 R3 P3-3). The rebinding candidate in Task 10 is an unreviewed author candidate; no seventh pass is
+      reserved, and any further qualification and publication wait for the owner's explicit record.
 
 ## Task 13: close
 Spec: § Done when (done_when 10); § Ownership, sequence and review roles (the WORKFLOW_FEAT gap). Advances done_when[9].

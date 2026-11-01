@@ -1917,30 +1917,22 @@ def check_changed_specs(ch: Change) -> list[str]:
         # blanks every line beginning `status:`, so a body line rewritten or moved would ride the flip; and
         # `frontmatter` splits on form feed and U+2028, so a key could hide on the status line (IMPL-CICD2
         # R1 F2). A quoted or spaced value on that line is the parser's business, read as today. The
-        # redundant-flip refusal (step 5, fail-closed; spec approach 5 rejects admitting it as a no-op) applies
-        # to a retirement flip main already made after the fork: the base holds the spec superseded, the head's
-        # bytes equal the base's, and the merge base (`ch.before`) does not hold it superseded (absent there, or
-        # in another status). A mode-only change to a spec already superseded at the fork is not a flip and is
-        # judged as before (step 6). Inside that domain the refusal is always appended; only its wording
-        # varies. The exact merge-main text is used where its prediction is proven: the head's mode equals the
-        # base's (both sides identical), or, in PR mode, the base and the merge base both hold a regular file,
-        # there is a single merge base, and the head's mode is still the merge base's, so a merge of main takes
-        # main's mode and the file leaves the change (IMPL-CICD3 R1 F1). Elsewhere (a mode the branch changed, a
-        # symlink at the base or merge base, more than one merge base: IMPL-CICD2 R1 F1, IMPL-CICD4 R1 F1, F2) the
-        # refusal makes no merge prediction (IMPL-CICD5 R2 F1: c67bb4d0 to c094edf8 dropped it there instead).
-        # In commit mode `ch.before` is the base, so the domain is never entered.
+        # redundant-retirement refusal (step 5, fail-closed; approach 5 rejects admitting it as a no-op) applies
+        # when the base holds the spec superseded, the head's text equals the base's as the gate reads it (so a
+        # copy that differs only in line endings or file mode is equal: IMPL-CICD6 R2 F1), and the change carries
+        # the retirement: the merge base (`ch.before`) does not hold the spec superseded (absent there, or in
+        # another status, draft, approved or none). Its message promises no merge result (a line-ending copy, a
+        # mode-only copy or a rename collision stays in the change after a merge of main: IMPL-CICD6 R1 F1); it
+        # names the way out. A change to a spec the merge base already holds superseded carries no retirement and
+        # is judged as on main (step 6): a mode-only or line-ending-only edit of it is admitted, including one main
+        # also made. In commit mode `ch.before` is the base, so the domain is never entered.
         base_text = ch.base.read(path)
         fm, base_fm = frontmatter(text), frontmatter(base_text)
         strip = lambda t: re.sub(r"^status:.*$", "", t, flags=re.M)
         before_text = ch.before.read(path)
-        if (base_text is not None and base_fm.get("status") == "superseded" and ch.tree.raw(path) == ch.base.raw(path)
+        if (base_text is not None and base_fm.get("status") == "superseded" and text == base_text
                 and (before_text is None or frontmatter(before_text).get("status") != "superseded")):
-            proven = (ch.tree.mode(path) == ch.base.mode(path)
-                      or (ch.mode == "pr" and ch.tree.mode(path) == ch.before.mode(path)
-                          and {ch.base.mode(path), ch.before.mode(path)} <= {"100644", "100755"}
-                          and len(git("merge-base", "--all", ch.base.rev, ch.tree.rev).stdout.split()) == 1))
-            errs.append(f"{path}: already superseded on the current base; "
-                        + ("merge main so the file leaves this change" if proven else "this change repeats that retirement"))
+            errs.append(f"{path}: already superseded on the current base; merge main, resolve any remaining differences, and rerun the gate")
         flip = (base_text is not None and base_fm.get("status") == "approved" and fm.get("status") == "superseded"
                 and base_fm.get("supersedes") == fm.get("supersedes") and strip(text) == strip(base_text)
                 and (eb := status_entry(ch.base.raw(path))) is not None and (eh := status_entry(ch.tree.raw(path))) is not None

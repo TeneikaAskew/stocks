@@ -5217,6 +5217,7 @@ N_SPEC = "docs/superpowers/specs/2026-09-03-model-decisions-v3.md"
 R_SPEC = "docs/superpowers/specs/2026-08-30-model-decisions-v0.md"
 D_SPEC = "docs/superpowers/specs/2026-09-04-model-decisions-draft.md"
 ROUND_EIGHT = "which is already superseded; name the spec that replaced it (round eight)"
+REDUNDANT = "already superseded on the current base; merge main, resolve any remaining differences, and rerun the gate"
 RETIRE_BRANCH = "docs/spec-feat-model-001-v3"
 
 
@@ -5422,13 +5423,14 @@ def test_simultaneous_draft_edit_cycle_uses_head_value(repo):
 
 
 def test_redundant_flip_after_base_advance_gets_merge_main_diagnostic(repo):
-    """Spec done_when[4], C1 (BA1): main retired P after the fork; the branch's P equals the current base's P, so the
-    merge-main diagnostic appears beside the round-eight refusal that still applies to N's pointer."""
+    """Spec done_when[4], row C1 (BA1, P supersedes Q; replaces the companion plan's C1 row): main retired P after the
+    fork and the branch's P equals the current base's P, so the step 5 refusal appears beside the round-eight refusal
+    that still applies to N's pointer. Its text promises no merge result."""
     retirement_lineage(repo)
     n2 = "docs/superpowers/specs/2026-09-06-model-decisions-v4.md"
     r = divergent_pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p()},
                      {n2: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
-    assert r.returncode == 1 and f"{P_SPEC}: already superseded on the current base; merge main so the file leaves this change" in r.stdout, r.stdout
+    assert r.returncode == 1 and f"{P_SPEC}: {REDUNDANT}" in r.stdout, r.stdout
     assert f"{N_SPEC}: supersedes {P_SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
 
 
@@ -5512,12 +5514,10 @@ def test_traversal_bound_on_sixty_chained_specs(repo):
 
 
 def test_crlf_relabel_of_a_superseded_spec_is_not_called_redundant(repo):
-    """IMPL-CICD1 R1 F1: step 5 judges the file's bytes, not the folded text. A superseded spec whose only edit
-    rewrites LF to CRLF still differs from the base in bytes, so merging main would not take it out of the change,
-    and the merge-main diagnostic must not fire (at 8814e1c1 it did). What is left is main d806bfd1's behaviour,
-    executed there: the in-place rule compares text, so the null-pointer relabel is admitted (R1 2n, pre-existing and
-    not a contract this change adds) and the relabel of a spec naming a superseded one is refused by round eight alone.
-    The byte-identical redundant flip keeps the diagnostic (C1 above)."""
+    """IMPL-CICD1 R1 F1, under the replacement spec's step 5: P is already superseded at the merge base, so a CRLF
+    relabel of it carries no retirement and keeps main's verdict (step 6, row C1d's shape): the null-pointer relabel
+    is admitted, and the relabel of a P naming a superseded Q is refused by round eight alone, with no step 5 line.
+    (At 8814e1c1 the old merge-main text fired here.)"""
     on_base(repo, {P_SPEC: spec(status="superseded")})
     r = pr(repo, RETIRE_BRANCH, {P_SPEC: spec(status="superseded").replace("\n", "\r\n")})
     assert r.returncode == 0 and "already superseded on the current base" not in r.stdout, r.stdout
@@ -5559,10 +5559,9 @@ def test_nul_byte_in_an_inherited_pointer_is_refused_not_a_traceback(repo):
 
 
 def test_mode_only_change_of_a_superseded_spec_is_not_called_redundant(repo):
-    """IMPL-CICD2 R1 F1: a superseded spec whose only change is its mode (100644 to 100755, bytes identical) stays in
-    the change after a merge of main, so "merge main so the file leaves this change" would be false; the step-5
-    diagnostic needs equal modes too (at 29314273 it fired). What main does with the mode change is unchanged: a
-    null-pointer spec is admitted, one naming a superseded spec is refused by round eight alone."""
+    """IMPL-CICD2 R1 F1, under the replacement spec's step 5: a mode-only change (100644 to 100755, bytes identical)
+    to a P already superseded at the merge base carries no retirement and keeps main's verdict (step 6): a P naming
+    a superseded Q is refused by round eight alone and a null-pointer P is admitted, with no step 5 line."""
     chmod = lambda root: (root / P_SPEC).chmod(0o755)
     on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(status="superseded", supersedes=SPEC), N_SPEC: spec(supersedes=P_SPEC)})
     r = pr(repo, RETIRE_BRANCH, {}, then=chmod)
@@ -5591,47 +5590,34 @@ def mode_divergent_pr(repo: Path, branch_files: dict[str, str | None], branch_mo
     return gate(repo, "--pr", _git(repo, "rev-parse", "base"), head, PR_HEAD_REF=RETIRE_BRANCH)
 
 
-MERGE_MAIN_ADVICE = f"{P_SPEC}: already superseded on the current base; merge main so the file leaves this change"
-REPEATS_RETIREMENT = f"{P_SPEC}: already superseded on the current base; this change repeats that retirement"
-
-
 def test_merge_main_advice_follows_the_mode_a_merge_of_main_keeps(repo):
-    """IMPL-CICD3 R1 F1: main retired P after the fork and the branch flipped P too, to the same bytes. Within regular
-    files and a single merge base, a merge of main takes main's mode wherever the branch left the merge base's mode
-    alone, so the advice is true when the head's mode is the base's or still the merge base's, in either direction
-    (main set or cleared +x). At c67bb4d0 the advice needed the head's mode to equal the base's and was dropped when
-    only main changed it. When the branch's mode survives a merge of main (the branch changed the mode and main did not
-    change it the same way), the flip is still refused, with the generic text that makes no merge prediction
-    (IMPL-CICD5 R2 F1); when the head's bytes differ from the base's it is not a redundant flip and neither text
-    appears. Round eight still refuses N's pointer in every row."""
+    """IMPL-CICD3 R1 F1 rows. Name kept from the 2026-10-31 contract because the gate's suite only grows (a test on the branch is not dropped); the body asserts the 2026-11-01 replacement spec's step 5. Main retired P after the fork and the branch flipped P to the same text; whatever
+    the modes on the merge base, the branch and main, the change repeats main's retirement and step 5 refuses it with
+    its one message, which predicts no merge; when the branch's text differs it is not a redundant retirement and
+    no step 5 line appears. Round eight still refuses N's pointer in every row."""
     refused = f"{N_SPEC}: supersedes {P_SPEC}, {ROUND_EIGHT}"
     n2 = "docs/superpowers/specs/2026-09-06-model-decisions-v4.md"
     main = {n2: spec(supersedes=P_SPEC), P_SPEC: flipped_p()}
-    for name, merge_base_mode, branch_p, branch_mode, main_mode, expect in (
-            ("main set +x, branch left the mode", 0o644, flipped_p(), 0o644, 0o755, True),
-            ("main cleared +x, branch left the mode", 0o755, flipped_p(), 0o755, 0o644, True),
-            ("both set +x", 0o644, flipped_p(), 0o755, 0o755, True),
-            ("main kept the mode, branch set +x", 0o644, flipped_p(), 0o755, 0o644, False),
-            ("main kept the mode, branch cleared +x", 0o755, flipped_p(), 0o644, 0o755, False),
-            ("main set +x, branch bytes differ", 0o644, flipped_p() + "\nA branch note.\n", 0o644, 0o755, False)):
+    for name, merge_base_mode, branch_p, branch_mode, main_mode in (
+            ("main set +x, branch left the mode", 0o644, flipped_p(), 0o644, 0o755),
+            ("main cleared +x, branch left the mode", 0o755, flipped_p(), 0o755, 0o644),
+            ("both set +x", 0o644, flipped_p(), 0o755, 0o755),
+            ("main kept the mode, branch set +x", 0o644, flipped_p(), 0o755, 0o644),
+            ("main kept the mode, branch cleared +x", 0o755, flipped_p(), 0o644, 0o755),
+            ("main set +x, branch bytes differ", 0o644, flipped_p() + "\nA branch note.\n", 0o644, 0o755)):
         on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(supersedes=SPEC)},
                 then=lambda root: (root / P_SPEC).chmod(merge_base_mode))   # P's mode on the merge base, per row
         r = mode_divergent_pr(repo, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: branch_p}, {P_SPEC: branch_mode},
                               main, {P_SPEC: main_mode})
         assert r.returncode == 1 and refused in r.stdout, (name, r.stdout)
-        assert (MERGE_MAIN_ADVICE in r.stdout) is expect, (name, r.stdout)
-        assert (REPEATS_RETIREMENT in r.stdout) is (not expect and branch_p == flipped_p()), (name, r.stdout)
+        assert (f"{P_SPEC}: {REDUNDANT}" in r.stdout) is (branch_p == flipped_p()), (name, r.stdout)
+        assert "merge main so the file leaves" not in r.stdout and "repeats that retirement" not in r.stdout, (name, r.stdout)
 
 
 def test_merge_main_advice_is_withheld_outside_regular_files_and_one_merge_base(repo):
-    """IMPL-CICD4 R1 F1 and F2: two shapes where the head's bytes equal the base's and its mode is still the merge base's,
-    but a merge of main would not take P out of the change, so the merge-main prediction is withheld and the flip is
-    refused with the generic text instead (IMPL-CICD5 R2 F1). (1) Main turned P into a symlink whose target text is the
-    flipped P (a gated main refuses a changed symlink, so this is reachable only by a main the gate did not judge):
-    git's merge stops on the type conflict. (2) A criss-cross history with two merge bases holding P at different
-    modes: `git merge-base` names one of them, and in this fixture the real merge keeps the branch's 755 (measured; not
-    a general rule: in other criss-cross shapes the merge takes main's mode). Round eight still refuses N's pointer
-    in both."""
+    """IMPL-CICD4 R1 F1 and F2 shapes. Name kept from the 2026-10-31 contract because the gate's suite only grows (a test on the branch is not dropped); the body asserts the 2026-11-01 replacement spec's step 5. (1) Main turned P into a symlink whose target text is the flipped P;
+    (2) a criss-cross history with two merge bases holding P at different modes. Neither depends on a merge
+    prediction now: step 5 refuses both with its one message, beside round eight on N's pointer."""
     refused = f"{N_SPEC}: supersedes {P_SPEC}, {ROUND_EIGHT}"
     n2 = "docs/superpowers/specs/2026-09-06-model-decisions-v4.md"
     retirement_lineage(repo)
@@ -5649,8 +5635,8 @@ def test_merge_main_advice_is_withheld_outside_regular_files_and_one_merge_base(
     _git(repo, "commit", "-q", "-m", "main: P as a symlink")
     assert _git(repo, "ls-tree", "HEAD", "--", P_SPEC).split()[0] == "120000"
     r = gate(repo, "--pr", _git(repo, "rev-parse", "main"), head, PR_HEAD_REF=RETIRE_BRANCH)
-    assert r.returncode == 1 and refused in r.stdout and MERGE_MAIN_ADVICE not in r.stdout, r.stdout
-    assert REPEATS_RETIREMENT in r.stdout, r.stdout
+    assert r.returncode == 1 and refused in r.stdout and f"{P_SPEC}: {REDUNDANT}" in r.stdout, r.stdout
+    assert "merge main so the file leaves" not in r.stdout and "repeats that retirement" not in r.stdout, r.stdout
     # (2) criss-cross: P at 755 on the fork point; the branch side sets 644 (X), main's side leaves 755 (Y); each
     # merges the other's commit, so X and Y are both merge bases. The branch flips P at 755, main at 644.
     _git(repo, "reset", "-q", "--hard")
@@ -5688,8 +5674,8 @@ def test_merge_main_advice_is_withheld_outside_regular_files_and_one_merge_base(
     assert len(_git(repo, "merge-base", "--all", main_tip, head).split()) == 2
     assert _git(repo, "ls-tree", _git(repo, "merge-base", main_tip, head), "--", P_SPEC).split()[0] == "100755"
     r = gate(repo, "--pr", main_tip, head, PR_HEAD_REF=RETIRE_BRANCH)
-    assert r.returncode == 1 and refused in r.stdout and MERGE_MAIN_ADVICE not in r.stdout, r.stdout
-    assert REPEATS_RETIREMENT in r.stdout, r.stdout
+    assert r.returncode == 1 and refused in r.stdout and f"{P_SPEC}: {REDUNDANT}" in r.stdout, r.stdout
+    assert "merge main so the file leaves" not in r.stdout and "repeats that retirement" not in r.stdout, r.stdout
 
 
 def crisscross_pr(repo: Path, x_mode: int, y_mode: int, branch_files: dict[str, str], head_mode: int,
@@ -5734,34 +5720,31 @@ def crisscross_pr(repo: Path, x_mode: int, y_mode: int, branch_files: dict[str, 
 
 
 def test_redundant_flip_is_refused_whatever_the_mode_or_history(repo):
-    """IMPL-CICD5 R2 F1. Spec step 5 refuses a retirement flip main already made after the fork (head bytes equal to the
-    base's superseded copy) fail-closed, and approach 5 rejects admitting it as a no-op; the merge-main text is wording,
-    not the condition. c67bb4d0 to c094edf8 dropped the refusal wherever that wording was unproven, so a null-pointer
-    flip (no round eight to refuse it otherwise) passed with a branch-only mode change, a symlink on main, or a
-    criss-cross history. Each row is now refused: with the exact merge-main text where its prediction is proven, and
-    with the generic text elsewhere. Main has no step 5 and admits every null-pointer row (rc 0); the rc 1 here is the
-    refusal the spec adds. Outside the flip (P already superseded at the fork, only its mode changed) the result is
-    main's (step 6), and an added P identical to main's superseded copy keeps the refusal it already had."""
+    """IMPL-CICD5 R2 F1 rows, under the replacement spec's step 5. A null-pointer flip main already made after the fork
+    (no round eight to refuse it otherwise) is refused in every shape: linear with any mode combination, criss-cross
+    histories and a symlink on main, with the one step 5 message. Main admits every such row (rc 0). Outside the
+    retirement (P already superseded at the fork, only its mode changed) the result is main's (step 6, rc 0), and an
+    added P identical to main's superseded copy is refused by step 5."""
     flip = spec(status="superseded")
     main = {"docs/superpowers/specs/2026-09-06-model-decisions-v4.md": spec(supersedes=P_SPEC), P_SPEC: flip}
-    advice, generic = MERGE_MAIN_ADVICE, REPEATS_RETIREMENT
+    redundant = f"{P_SPEC}: {REDUNDANT}"
     for name, merge_base_mode, head_mode, main_mode, text in (
-            ("linear, no mode change", 0o644, 0o644, 0o644, advice),
-            ("linear, main set +x", 0o644, 0o644, 0o755, advice),
-            ("linear, both set +x", 0o644, 0o755, 0o755, advice),
-            ("linear, branch-only +x", 0o644, 0o755, 0o644, generic)):
+            ("linear, no mode change", 0o644, 0o644, 0o644, redundant),
+            ("linear, main set +x", 0o644, 0o644, 0o755, redundant),
+            ("linear, both set +x", 0o644, 0o755, 0o755, redundant),
+            ("linear, branch-only +x", 0o644, 0o755, 0o644, redundant)):
         on_base(repo, {P_SPEC: spec()}, then=lambda root: (root / P_SPEC).chmod(merge_base_mode))
         r = mode_divergent_pr(repo, {P_SPEC: flip}, {P_SPEC: head_mode}, main, {P_SPEC: main_mode})
         assert r.returncode == 1 and text in r.stdout and ROUND_EIGHT not in r.stdout, (name, r.stdout)
-        assert (advice in r.stdout) is (text == advice) and (generic in r.stdout) is (text == generic), (name, r.stdout)
+        assert "merge main so the file leaves" not in r.stdout and "repeats that retirement" not in r.stdout, (name, r.stdout)
     for name, x_mode, y_mode, head_mode, text in (
-            ("criss-cross, merge bases differ, head keeps 755", 0o644, 0o755, 0o755, generic),
-            ("criss-cross, merge bases both 755 (merge is a no-op)", 0o755, 0o755, 0o755, generic),
-            ("criss-cross, head mode equals main's", 0o644, 0o755, 0o644, advice)):
+            ("criss-cross, merge bases differ, head keeps 755", 0o644, 0o755, 0o755, redundant),
+            ("criss-cross, merge bases both 755 (merge is a no-op)", 0o755, 0o755, 0o755, redundant),
+            ("criss-cross, head mode equals main's", 0o644, 0o755, 0o644, redundant)):
         on_base(repo, {P_SPEC: spec()})
         r = crisscross_pr(repo, x_mode, y_mode, {P_SPEC: flip}, head_mode, main, 0o644)
         assert r.returncode == 1 and text in r.stdout, (name, r.stdout)
-        assert (advice in r.stdout) is (text == advice) and (generic in r.stdout) is (text == generic), (name, r.stdout)
+        assert "merge main so the file leaves" not in r.stdout and "repeats that retirement" not in r.stdout, (name, r.stdout)
     # main turns P into a symlink whose target text is the flipped P
     on_base(repo, {P_SPEC: spec()})
     _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
@@ -5774,20 +5757,20 @@ def test_redundant_flip_is_refused_whatever_the_mode_or_history(repo):
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "main: P as a symlink")
     r = gate(repo, "--pr", _git(repo, "rev-parse", "main"), head, PR_HEAD_REF=RETIRE_BRANCH)
-    assert r.returncode == 1 and generic in r.stdout and advice not in r.stdout, r.stdout
+    assert r.returncode == 1 and redundant in r.stdout, r.stdout
     _git(repo, "reset", "-q", "--hard", "HEAD~1")   # main back to a regular P before the next fixture writes it
     # outside the flip: P superseded at the fork, the branch changes only its mode (main's result, rc 0)
     on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: flip, N_SPEC: spec(supersedes=P_SPEC)})
     r = pr(repo, RETIRE_BRANCH, {}, then=lambda root: (root / P_SPEC).chmod(0o755))
     assert r.returncode == 0 and "spec gate ok" in r.stdout, r.stdout
-    # absent at the fork, both sides add the identical superseded P: refused as before, with the exact text
+    # absent at the fork, both sides add the identical superseded P: refused by step 5 alone
     _git(repo, "reset", "-q", "--hard")
     _git(repo, "checkout", "-q", "main")
     _git(repo, "rm", "-q", P_SPEC, N_SPEC)
     _git(repo, "commit", "-q", "-m", "drop P and N")
     _git(repo, "tag", "-f", "base")
     r = divergent_pr(repo, RETIRE_BRANCH, {P_SPEC: flip}, {P_SPEC: flip})
-    assert r.returncode == 1 and advice in r.stdout and generic not in r.stdout, r.stdout
+    assert r.returncode == 1 and refusals(r) == [redundant], r.stdout
 
 
 def test_flip_changes_only_the_status_entry_and_hides_no_key(repo):
@@ -5831,3 +5814,141 @@ def test_flip_changes_only_the_status_entry_and_hides_no_key(repo):
     on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec()})
     r = pr(repo, RETIRE_BRANCH, {**n, P_SPEC: spec(status="superseded").replace("status: superseded", "status: superseded\x0cissues: [4242]")})
     assert r.returncode == 0 and "spec gate ok" in r.stdout, r.stdout
+
+
+# Spec 2026-11-01-feat-cicd-001-truthful-redundant-retirement, done_when item 5, step 5 domain rows C1a to C1d, and the
+# #1665 controls (RQ-2, RQ-3). P0 is P's path written approved with `supersedes: null` and retired by N, so no
+# round-eight refusal applies. Fixture placement (#1665 RQ-3): N exists only on main, added there with main's flip of
+# P0; the branch never carries N (with N on the branch, round eight refuses N's new pointer to a spec superseded at
+# the current base, and "no other refusal" would not hold). Each row runs in a fresh fixture repository.
+
+N0_MAIN = {N_SPEC: spec(supersedes=P_SPEC)}
+
+
+def p0(**over) -> str:
+    return spec(supersedes="null", **over)
+
+
+def refusals(r: subprocess.CompletedProcess) -> list[str]:
+    """The refusal lines the gate printed, in order."""
+    return [line[3:] for line in r.stdout.splitlines() if line.startswith(" - ")]
+
+
+def fresh(tmp_path: Path, name: str) -> Path:
+    (tmp_path / name).mkdir()
+    return make_repo(tmp_path / name)
+
+
+def test_redundant_retirement_line_ending_copy_refused(tmp_path):
+    """C1a: P0 approved at the fork; main flips it with LF and adds N; the branch flips it with CRLF, and with CR-only.
+    The text the gate reads is equal, so step 5 refuses with its message and nothing else (main admits each row; at
+    4ef70d89, which compared bytes, each row passed too: IMPL-CICD6 R2 F1). A real merge of main conflicts here, which
+    is why the message promises no merge result."""
+    for name, convert in (("crlf", lambda t: t.replace("\n", "\r\n")), ("cr-only", lambda t: t.replace("\n", "\r"))):
+        repo = fresh(tmp_path, name)
+        on_base(repo, {P_SPEC: p0()})
+        r = divergent_pr(repo, RETIRE_BRANCH, {P_SPEC: convert(p0(status="superseded"))},
+                         {**N0_MAIN, P_SPEC: p0(status="superseded")})
+        assert r.returncode == 1 and refusals(r) == [f"{P_SPEC}: {REDUNDANT}"], (name, r.stdout)
+
+
+def test_redundant_retirement_mode_only_copy_refused(tmp_path):
+    """C1b: P0 approved at the fork at 100644; main flips it and adds N; the branch makes main's byte-identical flip
+    with file mode 100755 (and, reversed, main at 100755 and the branch at 100644). Refused by step 5 alone; main admits
+    both rows. A merge of main keeps the branch's mode, so the file stays in the change."""
+    for name, merge_base_mode, head_mode, main_mode in (("branch +x", 0o644, 0o755, 0o644),
+                                                        ("main +x, branch kept 644", 0o755, 0o644, 0o755)):
+        repo = fresh(tmp_path, name.replace(" ", "-").replace(",", ""))
+        on_base(repo, {P_SPEC: p0()}, then=lambda root: (root / P_SPEC).chmod(merge_base_mode))
+        r = mode_divergent_pr(repo, {P_SPEC: p0(status="superseded")}, {P_SPEC: head_mode},
+                              {**N0_MAIN, P_SPEC: p0(status="superseded")}, {P_SPEC: main_mode})
+        assert r.returncode == 1 and refusals(r) == [f"{P_SPEC}: {REDUNDANT}"], (name, r.stdout)
+
+
+NEAR_COPY = "docs/notes/model-decisions-copy.md"
+
+
+def test_redundant_retirement_absent_at_fork_refused(tmp_path):
+    """C1c: P0 absent at the fork. (1) Main and the branch each add the identical superseded P0 (main adds N too).
+    (2) The same with the branch copy at 100755. (3) A rename of a near-copy onto the path main adds. Near-copy
+    provenance (#1665 RQ-3): NEAR_COPY, a note outside docs/superpowers/specs/ (so its deletion is no spec deletion),
+    is on the base at the fork holding P0's superseded text plus one note line; the branch `git mv`s it onto P0's path
+    and writes main's superseded bytes; main adds P0 with those bytes and edits the note (a real merge reports a
+    rename collision: IMPL-CICD6 R1 F1). Each row is refused by step 5 alone; main admits every row."""
+    flip = p0(status="superseded")
+    repo = fresh(tmp_path, "both-add")
+    r = divergent_pr(repo, RETIRE_BRANCH, {P_SPEC: flip}, {**N0_MAIN, P_SPEC: flip})
+    assert r.returncode == 1 and refusals(r) == [f"{P_SPEC}: {REDUNDANT}"], r.stdout
+    repo = fresh(tmp_path, "both-add-755")
+    r = mode_divergent_pr(repo, {P_SPEC: flip}, {P_SPEC: 0o755}, {**N0_MAIN, P_SPEC: flip}, {})
+    assert r.returncode == 1 and refusals(r) == [f"{P_SPEC}: {REDUNDANT}"], r.stdout
+    repo = fresh(tmp_path, "rename")
+    on_base(repo, {NEAR_COPY: flip + "A note kept beside the copy.\n"})
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+    (repo / P_SPEC).parent.mkdir(parents=True, exist_ok=True)
+    _git(repo, "mv", NEAR_COPY, P_SPEC)
+    write(repo, P_SPEC, flip)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "move the copy onto P0")
+    head = _git(repo, "rev-parse", "HEAD")
+    assert "R" in _git(repo, "diff", "--name-status", "-M", "base", head).split()[0]
+    on_base(repo, {**N0_MAIN, P_SPEC: flip, NEAR_COPY: flip + "A note main edited.\n"})
+    r = gate(repo, "--pr", _git(repo, "rev-parse", "base"), head, PR_HEAD_REF=RETIRE_BRANCH)
+    assert r.returncode == 1 and refusals(r) == [f"{P_SPEC}: {REDUNDANT}"], r.stdout
+
+
+def test_edit_of_spec_superseded_at_fork_keeps_main_verdict(tmp_path):
+    """C1d: the merge base already holds P0 superseded (N on the base names it), so the change carries no retirement
+    and main's verdict stands (step 6): a CRLF relabel, a branch-only chmod, and the identical chmod on both sides are
+    admitted on main and here, with no step 5 line. The CRLF relabel and identical-chmod rows are refused with the step
+    5 message by a gate that drops the merge-base condition, so they discriminate it (the branch-only chmod row too).
+    The same shapes on a P naming a superseded Q: test_crlf_relabel_of_a_superseded_spec_is_not_called_redundant and
+    test_mode_only_change_of_a_superseded_spec_is_not_called_redundant."""
+    flip = p0(status="superseded")
+    for name, run in (
+            ("crlf relabel", lambda repo: pr(repo, RETIRE_BRANCH, {P_SPEC: flip.replace("\n", "\r\n")})),
+            ("branch-only chmod", lambda repo: pr(repo, RETIRE_BRANCH, {}, then=lambda root: (root / P_SPEC).chmod(0o755))),
+            ("identical chmod on both sides",
+             lambda repo: mode_divergent_pr(repo, {}, {P_SPEC: 0o755}, {"docs/notes/main.md": "main\n"}, {P_SPEC: 0o755}))):
+        repo = fresh(tmp_path, name.replace(" ", "-"))
+        on_base(repo, {**N0_MAIN, P_SPEC: flip})
+        r = run(repo)
+        assert r.returncode == 0 and "spec gate ok" in r.stdout and REDUNDANT not in r.stdout, (name, r.stdout)
+
+
+def test_resave_of_an_approved_spec_is_not_called_redundant(tmp_path):
+    """#1665 RQ-2: step 5 needs the base to hold the spec superseded. An ordinary approved P0, unchanged in text, staged
+    or pushed with CRLF line endings or with mode 100755, is admitted with no new message in commit mode and in PR
+    mode, as on main. A gate that drops the `base status == superseded` condition refuses all four rows with the step 5
+    message (in commit mode `ch.before` is the base, approved, so only that condition keeps it out)."""
+    crlf = {P_SPEC: p0().replace("\n", "\r\n")}
+    chmod = lambda root: (root / P_SPEC).chmod(0o755)
+    for name, files, then in (("crlf", crlf, None), ("chmod", {}, chmod)):
+        repo = fresh(tmp_path, "commit-" + name)
+        on_base(repo, {P_SPEC: p0()})
+        _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+        for path, text in files.items():
+            write(repo, path, text)
+        if then is not None:
+            then(repo)
+        _git(repo, "add", "-A")
+        assert _git(repo, "diff", "--cached", "--name-only") == P_SPEC
+        r = gate(repo, "--commit")
+        assert r.returncode == 0 and REDUNDANT not in r.stdout, (name, r.stdout)
+        repo = fresh(tmp_path, "pr-" + name)
+        on_base(repo, {P_SPEC: p0()})
+        r = pr(repo, RETIRE_BRANCH, files, then=then)
+        assert r.returncode == 0 and "spec gate ok" in r.stdout and REDUNDANT not in r.stdout, (name, r.stdout)
+
+
+def test_redundant_retirement_of_a_spec_draft_or_legacy_at_fork_refused(tmp_path):
+    """#1665 RQ-2, the merge base's "holds another status" branch: P0 is draft at the fork, or a legacy file with no
+    frontmatter there; main retires it (adding N) and the branch writes the identical superseded P0. The change
+    carries the retirement, so step 5 refuses with its message alone; main admits both rows. A gate that reads only
+    "absent at the merge base" admits them."""
+    flip = p0(status="superseded")
+    for name, at_fork in (("draft", p0(status="draft")), ("legacy", "# Model decisions v2\n\nWritten before the gate.\n")):
+        repo = fresh(tmp_path, name)
+        on_base(repo, {P_SPEC: at_fork})
+        r = divergent_pr(repo, RETIRE_BRANCH, {P_SPEC: flip}, {**N0_MAIN, P_SPEC: flip})
+        assert r.returncode == 1 and refusals(r) == [f"{P_SPEC}: {REDUNDANT}"], (name, r.stdout)
