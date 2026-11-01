@@ -1,6 +1,6 @@
 ---
 feat_id: FEAT-CICD-001
-spec: docs/superpowers/specs/2026-11-01-feat-cicd-001-truthful-redundant-retirement.md
+spec: docs/superpowers/specs/2026-11-01-feat-cicd-001-retirement-source-notes.md
 branch: feature/feat-cicd-001-supersedes-chain-retirement
 pr: 1656
 status: ready
@@ -28,9 +28,20 @@ row and govern where they differ. Tracking issue #1665 adds required controls (T
 entries below that predate this paragraph are kept as written; where they describe the earlier step 5 (bytes
 equality, a merge-main prediction), the "Rebinding to the replacement spec" entry in Task 10 supersedes them.
 
+Rebinding to the source-note spec (2026-11-01, owner approval 21:37:13Z and direction 21:40:29Z): the 2026-11-01
+spec above is superseded on main by `docs/superpowers/specs/2026-11-01-feat-cicd-001-retirement-source-notes.md`, which
+landed as main 38ff519301fb25ca15eac146f1b7a9a40a33fd8b (stocks#1667, squash of f8db8a33; spec blob a79a3c79, sha256
+b553f88cfa977ae5b6600fc286edb41a3ca1d60156c7446b79ca5b50daf11f03). This plan's `spec` now names it, rebound in the
+merge-of-main commit that brought it. It changes no design step, refusal, message, fixture or review role: its
+done_when items 0 to 9 are the previous spec's byte for byte, and every task below keeps its index. It adds
+`site_source_notes: [SHARED-01]` and done_when[10] (source identity on this PR's head), carried by Task 13. The
+previous spec stays approved on main: its status-only flip is owed after this PR's runtime gate lands, in its own
+spec-only change (tracking issue #1668, SQ-6), and is not made on this branch.
+
 Files this branch changes: `scripts/gate/spec_gate.py` (the edit site at L1842 to L1843, two helpers, the hoisted
 `base_text`), `tests/scripts/test_spec_gate.py` (new tests appended; no existing test or asserted message changes), this
-plan, and in the close task the owned FEAT-CICD-001 catalog record and traceability entry. Nothing else: no hook, no
+plan, and in the close task the owned FEAT-CICD-001 catalog record and traceability entry, the FEAT-CICD-001 /
+SHARED-01 row of the SITE Implementation-source notes table and its source-identity sidecar. Nothing else: no hook, no
 workflow, no pinned copy, no renderer file, no other capability's row.
 
 Push discipline (spec, Ownership, sequence and review roles; SKILL.md L66): the plan is pushed alone first and the draft
@@ -366,6 +377,16 @@ Spec: § Done when (done_when 10); § Ownership, sequence and review roles (the 
       c094edf8, counting this branch's commits under scripts/ and tests/; source identity unavailable because the
       branch's source is not main's, where main itself reports the verifier's input-byte ceiling), inherent to any change
       there. (The receipt first recorded for f60f9950 was measured on the uncommitted tree over 21a7bcb6, which counted 10.)
+      The two branch-specific 03-SITE-TRACEABILITY lines described above were a source-provenance finding, not
+      inherent detail: the bound spec declared no `site_source_notes`. The source-note spec (done_when[10]) and the
+      items below replace that description.
+- [ ] Source identity (done_when[10]; spec § Source identity and close-out): after the merge-of-main commit,
+      read the current source hash from the producer, then commit only the FEAT-CICD-001 / SHARED-01 row of the SITE
+      Implementation-source notes table with the prefix `source_identity_sha256=<hash>; ` and nonempty prose; then
+      `scripts/maintenance/doc_source_snapshot.py produce` from the final committed SITE body, commit the sidecar,
+      and `verify` with the fixed ceilings from the committed HEAD. Repeat after any later change to watched source.
+- [ ] `python3 -m pytest tests/scripts/test_doc_source_snapshot.py tests/scripts/test_docs_audit.py` pass unchanged;
+      the matched main and branch `docs_audit.py` runs report no finding main does not.
 - [ ] `python3 scripts/gate/spec_gate.py --pr origin/main`: `spec gate ok`.
 - [ ] Tick every done_when box in the PR body with its evidence; the Ready transition and the merge wait for the owner's
       explicit authorization (two-round review cap; no stacking; the 8 blocked flips proceed only after this merges, each
