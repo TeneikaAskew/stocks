@@ -2,7 +2,7 @@
 feat_id: FEAT-DEPLOY-001
 spec: docs/superpowers/specs/2026-10-31-feat-deploy-001-retire-ew-bindings.md
 branch: fix/feat-deploy-001-retire-ew-bindings
-pr: null
+pr: 1659
 status: ready
 ---
 
