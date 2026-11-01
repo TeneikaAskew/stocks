@@ -1559,3 +1559,46 @@ def test_actual_policy_minimum_accepts_true_broader_platform_ancestor(tmp_path):
     repo.git('merge', '-q', 'main')
     repo.produce_committed()
     assert repo.cli('verify').returncode == 0
+
+
+def test_terminal_source_drift_does_not_read_historical_body_for_presence(tmp_path, monkeypatch):
+    repo = Repo(tmp_path / "repo")
+    oracle, _ = normalization_oracle()
+    protocol = sys.modules[type(oracle).__module__]
+    snapshot = protocol.Snapshot(repo.path)
+    reads = []
+    original = snapshot.git.blob
+
+    def observed(ref, path, **kwargs):
+        reads.append((ref, path))
+        return original(ref, path, **kwargs)
+
+    monkeypatch.setattr(snapshot.git, "blob", observed)
+    # The introduced watched verifier creates genuine source drift. Historical
+    # SITE presence must use metadata, while the current complete body is read.
+    assert snapshot.terminal("origin/main", "HEAD") is False
+    historical = repo.git("rev-parse", repo.base + "^").stdout.strip()
+    assert (historical, SITE) not in reads
+    assert sum(path == SITE for _, path in reads) == 1
+
+
+def test_terminal_presence_optimization_keeps_oversized_current_body_refusal(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    repo.write(SITE, "x" * (8388608 + 1))
+    repo.commit("docs: oversized current SITE remains refused")
+    result = repo.cli("verify")
+    assert result.returncode != 0
+    assert "input-byte" in json.loads(result.stdout)["reason"]
+
+
+@pytest.mark.parametrize("object_format", ["sha1", "sha256"])
+def test_terminal_missing_historical_site_blob_refuses_despite_valid_newer_record(object_format, tmp_path):
+    repo = bound_note_repo(tmp_path / "repo", object_format=object_format)
+    assert repo.cli("verify").returncode == 0
+    import re
+    historical = re.search(r"Against:\*\* `([0-9a-f]+)`", (repo.path / SITE).read_text()).group(1)
+    oid = repo.git("rev-parse", historical + ":" + SITE).stdout.strip()
+    (repo.path / ".git/objects" / oid[:2] / oid[2:]).unlink()
+    refused = repo.cli("verify")
+    assert refused.returncode != 0
+    assert "missing or unsupported scoped object" in json.loads(refused.stdout)["reason"]
