@@ -308,6 +308,8 @@ def recommended_structure(
     calibration: Optional[dict] = None,
     implied_move_pct: Optional[float] = None,
     long_only: Optional[bool] = None,
+    *,
+    implied_move_invalid: bool = False,
 ) -> Optional[str]:
     """Return the brief's action tag for one earnings row.
 
@@ -339,10 +341,18 @@ def recommended_structure(
     in long_only mode. None = no filter (treat as 'unknown', keep
     the long recommendation).
 
+    Implied-move caller states: a valid number; None = absent (as above);
+    keyword-only ``implied_move_invalid=True`` with None = present but invalid,
+    'SKIP' where the long-only guard is consulted; flag plus a number = ValueError.
+
     ``long_only`` overrides the env var when explicitly passed. The
     env var fallback supports running the brief in long-only mode
     without code changes.
     """
+    if implied_move_invalid and implied_move_pct is not None:
+        raise ValueError(
+            'implied_move_invalid=True contradicts a non-None implied_move_pct')
+
     _archetype_map = {
         'bullish_trend': 'CALL',
         'bearish_trend': 'PUT',
@@ -393,6 +403,8 @@ def recommended_structure(
     # Filter by per-event implied move — when premium is rich
     # (>15% implied), even the directional long bet has historically
     # lost. Skip these instead of recommending a losing trade.
+    if implied_move_invalid:
+        return 'SKIP'
     if (implied_move_pct is not None
             and implied_move_pct > _LO_IMPLIED_HARD_MAX):
         return 'SKIP'
