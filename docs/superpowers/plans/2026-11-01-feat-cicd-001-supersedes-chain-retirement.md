@@ -77,7 +77,11 @@ Spec: § Design steps 2 and 3; § Risks (a wider exemption). Advances done_when[
       `test_draft_to_approved_with_stale_pointer_refused` (B3), `test_flip_with_changed_pointer_refused` (B4),
       `test_flip_without_valid_replacement_refused_both_ways` (B5: no N, N draft, N another FEAT) and
       `test_extra_predecessor_bytes_refused` (B6: a done_when word, trailing whitespace, CRLF, a changed blank line),
-      each asserting today's message text.
+      each asserting today's message text. Executed against main a79ac45d: `Tree.read` reads through `git(...)` in
+      text mode, which folds CRLF, so the CRLF variant is byte-equal to the base as the gate reads it and the in-place
+      rule never sees it; main refuses it with round eight alone. B6 therefore asserts round eight for all four
+      variants and the in-place message for the other three; the spec's design step 3 ("the only byte change is the
+      `status:` line") does not hold for CRLF, and Task 10 closes that with a bytes conjunct in `flip`.
 - [ ] Run against main's gate: expect PASS (baseline controls).
 
 ## Task 5: lineage traversal tests
@@ -135,8 +139,62 @@ done_when[3], done_when[4].
       spec's exact message texts; never examine target status.
 - [ ] At L1842 to L1843: hoist `base_text = ch.base.read(path)`; add the step 5 diagnostic; compute `flip` with the
       five conditions (base approved, head superseded, equal pointer, `strip` equality, approved same-FEAT replacement on
-      the head tree); call `validate_spec(...) + check_supersedes(..., allow_superseded_target=flip) + check_chain(...)`.
-      Reuse the hoisted `base_text` at L1850 and keep L1850 to L1869 otherwise byte-identical.
+      the head tree) plus one the Task 4 run showed necessary: `strip_bytes(ch.tree.raw(path)) ==
+      strip_bytes(ch.base.raw(path))` with `strip_bytes = re.sub(rb"^status:[^\r\n]*", b"", ...)`, so a relabel that
+      rewrote the line endings is not a flip (spec done_when L8, B6 CRLF; the spec's step 3 text folds CRLF without
+      saying so). This only narrows the exemption (replaced after IMPL-CICD2 by the position-preserving
+      `status_entry` conjunct, below). Call `validate_spec(...) + check_supersedes(...,
+      allow_superseded_target=flip) + check_chain(...)`. Reuse the hoisted `base_text` at L1850 and the hoisted
+      `strip` lambda (main's L1855) in the in-place block, whose only two differences from L1850 to L1869 are those two
+      removed lines; keep it otherwise byte-identical.
+- [ ] Corrections after the IMPL-CICD1 pass on 8814e1c1, each reproduced there and compared with main a79ac45d's
+      gate before the fix, each with one test (`test_crlf_relabel_of_a_superseded_spec_is_not_called_redundant`,
+      `test_cr_only_line_endings_take_the_flip_and_refuse_extra_bytes`,
+      `test_nul_byte_in_an_inherited_pointer_is_refused_not_a_traceback`):
+      R1 F1 (P1): the step 5 diagnostic is decided on `ch.tree.raw(path) == ch.base.raw(path)`, not `text ==
+      base_text` as the spec's pseudocode writes it, because a superseded spec relabelled LF to CRLF reads text-equal
+      while its bytes differ, so it stays in the change after a merge of main and "merge main so the file leaves
+      this change" was false (8814e1c1 refused it with that message; main admitted a null-pointer relabel and
+      refused one naming a superseded spec by round eight alone; after the fix the gate does what main does).
+      R1 F3 (P2): `check_chain` refuses a node containing a NUL byte as not written canonically, with the step 4
+      message, instead of handing it to `git show` (uncaught ValueError, traceback, no verdict; main admitted the
+      change because it never read the inherited edge). R1 F2 (P2): `strip_bytes` anchors on the start of the
+      bytes or after any CR or LF, so a CR-only spec takes the same flip (round eight had refused it), and the
+      status-stripped text and bytes of one are judged as an LF file's are (a done_when word is refused in place and
+      by round eight; a relabel to LF by round eight; superseded after IMPL-CICD2, below). The three edits only remove a false message, a
+      traceback and a false refusal; nothing the spec enumerates as refused is admitted.
+- [ ] Corrections after the IMPL-CICD2 pass on 29314273 (R1 F1, R1 F2; and pass 1's R3 P2-2 and R1 F4, which
+      pass 1 recorded as a prose gap and pass 2 showed to be an admission), scope settled by the owner 2026-11-01.
+      The spec's step 3 sentence "so the only byte change is the `status:` line" and its Risks entry ("any extra
+      byte in P must still be refused with today's messages") are stronger than the L1855 lambda step 3 names, which
+      blanks every physical line beginning `status:`, while `frontmatter` splits that line on every separator
+      `str.splitlines` knows. Executed on 29314273: `status: superseded\x0cissues: [4242]` (and the U+2028 form)
+      read as two keys and rode the flip at depth two (rc 0; main refuses it by round eight), so a flip could change
+      metadata; a body line beginning `status:` rewritten inside the flip, or moved between two blank lines, was
+      admitted the same way. The code keeps the spec's `strip` equality and replaces the bytes conjunct with one
+      that is position-preserving: `status_entry` finds the one physical line holding the frontmatter `status`
+      entry the way `frontmatter` finds it (opening `---`, closing line starting `---`, unindented key `status`),
+      returns None if the bytes are not UTF-8, if `status` is keyed on more than one line, or if that line holds a
+      `str.splitlines` separator; the flip then requires every byte before and after that line to be equal in base
+      and head. A check on the status lines' values alone was tried first (scratch candidate, not committed) and
+      lost position: it admitted a body `status:` line moved between blank lines, and refused quoted and spaced
+      values the parser reads. Refused by round eight now, as `test_flip_changes_only_the_status_entry_and_hides_no_key`
+      asserts: a key hidden on the entry line (form feed, U+2028), a trailing separator on it, a rewritten or moved
+      body `status:` line, a CRLF relabel. Admitted: the canonical flip on LF, CRLF-kept and CR-only files at depth
+      two and three; quoted-to-quoted, plain-to-quoted, spaced and commented values on the entry alone, which the
+      parser reads as today; an unchanged body `status:` line. `status : approved` (space before the colon) stays
+      refused, by the spec's own lambda (`^status:.*$` does not blank it) and by the in-place rule, on main too.
+      Main's 57 specs carry exactly `status: approved` (48) or `status: superseded` (9), no body `status:` line and
+      no CR byte. The in-place rule, `frontmatter`, the hook, the pinned copies and the workflows are untouched: at
+      depth one the hidden key is still admitted through the in-place rule on this gate as on main (the test's last
+      case). So the exemption is a subset of what the in-place rule admits, narrower by four edit shapes (CRLF
+      relabel, hidden key, rewritten and moved body `status:` lines); the "coextensive" sentences of step 3 and
+      Approaches 3 are not literally true for those shapes, while done_when 2 and the Risks entry are what the code
+      follows. The merged spec is not edited.
+      R1 F1 (P2): the step 5 diagnostic also requires `ch.tree.mode(path) == ch.base.mode(path)`, because a mode
+      change alone (100644 to 100755, bytes identical) keeps a superseded spec in the change after a merge of main,
+      so "merge main so the file leaves this change" was false (29314273 printed it beside round eight; main prints
+      round eight alone); `test_mode_only_change_of_a_superseded_spec_is_not_called_redundant`.
 - [ ] Run the tests from Tasks 3 to 9: all PASS. Run Task 4's tests again: still PASS with today's messages.
 
 ## Task 11: suites and gates, locally

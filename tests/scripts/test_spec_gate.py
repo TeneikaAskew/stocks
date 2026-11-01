@@ -5204,3 +5204,413 @@ def test_measure_inventory_render_preserves_formal_review_terminal_invariants(tm
     for mode,key in (('late-error','late_error'),('close-error','close_error'),('snapshot-error','snapshot_error')):
         assert results[mode]['hits'][key]==1 and not results[mode]['report']['ok'],results
     assert results['main']['codes']==[1,1] and all(x and not x['ok'] and x['reason']=='rss_limit' and 0<x['elapsed_before_emission_seconds']<.3 for x in results['main']['public_reports']),results
+
+
+# ---------------------------------------------------------------------------------------------
+# FEAT-CICD-001 spec 2026-10-31-feat-cicd-001-supersedes-chain-retirement: the status-only
+# retirement of a spec that itself superseded one, and validation of the whole supersedes lineage.
+# Fixture lineage (spec, "Acceptance fixtures"): Q = SPEC (superseded), P names Q, N names P.
+# ---------------------------------------------------------------------------------------------
+
+P_SPEC = "docs/superpowers/specs/2026-09-02-model-decisions-v2.md"
+N_SPEC = "docs/superpowers/specs/2026-09-03-model-decisions-v3.md"
+R_SPEC = "docs/superpowers/specs/2026-08-30-model-decisions-v0.md"
+D_SPEC = "docs/superpowers/specs/2026-09-04-model-decisions-draft.md"
+ROUND_EIGHT = "which is already superseded; name the spec that replaced it (round eight)"
+RETIRE_BRANCH = "docs/spec-feat-model-001-v3"
+
+
+def retirement_lineage(repo: Path, **extra: str | None) -> None:
+    """Q (SPEC) superseded with a null pointer; P approved, naming Q; plus `extra` files, on the base."""
+    on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(supersedes=SPEC), **extra})
+
+
+def flipped_p(**over) -> str:
+    """P with only its status line changed, as the retirement edit writes it."""
+    return spec(status="superseded", supersedes=SPEC, **over)
+
+
+def divergent_pr(repo: Path, branch: str, branch_files: dict[str, str | None], main_files: dict[str, str | None],
+                 **env: str) -> subprocess.CompletedProcess:
+    """A branch cut from `base` whose head keeps the old merge base while main advances (the shape of
+    test_policy_documents_are_read_at_the_current_base): policy is read at the advanced tip."""
+    _git(repo, "reset", "-q", "--hard")
+    _git(repo, "clean", "-qfd")
+    _git(repo, "checkout", "-q", "-B", branch, "base")
+    for path, text in branch_files.items():
+        if text is None:
+            (repo / path).unlink()
+        else:
+            write(repo, path, text)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", f"change on {branch}")
+    head = _git(repo, "rev-parse", "HEAD")
+    on_base(repo, main_files)
+    return gate(repo, "--pr", _git(repo, "rev-parse", "base"), head, **{"PR_HEAD_REF": branch, **env})
+
+
+def test_depth_two_retirement_pr_mode_admits_status_only_flip_with_approved_replacement(repo):
+    """Spec done_when[0], A1 and C4. The #1649 shape: N added and P flipped status-only in one PR; main
+    refuses it with the round-eight message although the in-place rule admits exactly this edit."""
+    retirement_lineage(repo)
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+    assert r.returncode == 0 and ROUND_EIGHT not in r.stdout, r.stdout
+    # C4: an unrelated approved spec lands on main after the fork; policy is read at the advanced tip and P is still approved there
+    other = "docs/superpowers/specs/2026-09-05-data-other.md"
+    r = divergent_pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p()},
+                     {other: spec(feat_id="FEAT-DATA-001", req_ids="[REQ-DATA-001]")})
+    assert r.returncode == 0 and ROUND_EIGHT not in r.stdout, r.stdout
+
+
+def test_depth_two_retirement_commit_mode_admits_status_only_flip(repo):
+    """Spec done_when[0], A2 and A3: N and P staged in one commit; then N committed first and P flipped next."""
+    retirement_lineage(repo)
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+    write(repo, N_SPEC, spec(supersedes=P_SPEC))
+    write(repo, P_SPEC, flipped_p())
+    _git(repo, "add", "-A")
+    r = gate(repo, "--commit")
+    assert r.returncode == 0 and ROUND_EIGHT not in r.stdout, r.stdout
+    _git(repo, "reset", "-q", "--hard")
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+    write(repo, N_SPEC, spec(supersedes=P_SPEC))
+    _git(repo, "add", "-A")
+    assert gate(repo, "--commit").returncode == 0
+    _git(repo, "commit", "-q", "-m", "v3 names v2")
+    write(repo, P_SPEC, flipped_p())
+    _git(repo, "add", "-A")
+    r = gate(repo, "--commit")
+    assert r.returncode == 0 and ROUND_EIGHT not in r.stdout, r.stdout
+
+
+def test_longer_chain_retirement_passes_and_traversal_terminates(repo):
+    """Spec done_when[0], A4: R superseded (null), Q superseded names R, P approved names Q; N added, P flipped."""
+    on_base(repo, {R_SPEC: spec(status="superseded"), SPEC: spec(status="superseded", supersedes=R_SPEC), P_SPEC: spec(supersedes=SPEC)})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+    assert r.returncode == 0 and "spec gate ok" in r.stdout and "chain" not in r.stdout, r.stdout
+
+
+def test_new_pointer_to_superseded_target_still_refused(repo):
+    """Spec done_when[1], B1 and B2: a new or changed pointer at an already-superseded target keeps the round-eight refusal."""
+    retirement_lineage(repo, **{D_SPEC: spec(status="draft")})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=SPEC)})
+    assert r.returncode == 1 and f"{N_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+    r = pr(repo, RETIRE_BRANCH, {D_SPEC: spec(status="draft", supersedes=SPEC)})
+    assert r.returncode == 1 and f"{D_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+
+
+def test_draft_to_approved_with_stale_pointer_refused(repo):
+    """Spec done_when[1], B3: approving a draft in place whose unchanged pointer names a superseded spec is not the exempt edit."""
+    retirement_lineage(repo, **{D_SPEC: spec(status="draft", supersedes=SPEC)})
+    r = pr(repo, RETIRE_BRANCH, {D_SPEC: spec(supersedes=SPEC)})
+    assert r.returncode == 1 and f"{D_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+
+
+def test_flip_with_changed_pointer_refused(repo):
+    """Spec done_when[1], B4: a flip that also moves the pointer is refused in place and by round eight."""
+    retirement_lineage(repo, **{R_SPEC: spec(status="superseded")})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: spec(status="superseded", supersedes=R_SPEC)})
+    assert r.returncode == 1 and f"{P_SPEC}: an approved spec does not change in place" in r.stdout, r.stdout
+    assert f"{P_SPEC}: supersedes {R_SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+
+
+def test_flip_without_valid_replacement_refused_both_ways(repo):
+    """Spec done_when[1], B5: no N, a draft N, or another FEAT's N leaves the flip refused (PR and commit modes)."""
+    retirement_lineage(repo)
+    missing = f"{P_SPEC}: marked superseded, but no approved spec for its FEAT names it in `supersedes`"
+    for files in ({P_SPEC: flipped_p()},
+                  {P_SPEC: flipped_p(), N_SPEC: spec(status="draft", supersedes=P_SPEC)},
+                  {P_SPEC: flipped_p(), N_SPEC: spec(feat_id="FEAT-DATA-001", req_ids="[REQ-DATA-001]", supersedes=P_SPEC)}):
+        r = pr(repo, RETIRE_BRANCH, files)
+        assert r.returncode == 1 and missing in r.stdout and f"{P_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, (files, r.stdout)
+        _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+        for path, text in files.items():
+            write(repo, path, text)
+        _git(repo, "add", "-A")
+        r = gate(repo, "--commit")
+        assert r.returncode == 1 and missing in r.stdout, (files, r.stdout)
+        _git(repo, "reset", "-q", "--hard")
+
+
+def test_extra_predecessor_bytes_refused(repo):
+    """Spec done_when[1], B6: the enumerated byte changes beyond the status line in P (a done_when word, trailing
+    whitespace, CRLF, a changed blank line) leave the exemption unreached, with today's messages; the status line
+    itself is covered by test_flip_changes_only_the_status_entry_and_hides_no_key. The gate reads text with CRLF folded, so
+    the in-place rule does not see the CRLF variant on main or here; it is refused by round eight on both (executed
+    against main a79ac45d: round eight alone), and the exemption judges the bytes so the flip is not admitted."""
+    retirement_lineage(repo)
+    base_flip = flipped_p()
+    variants = {
+        "done_when word": flipped_p(done_when=["something easier", DONE[1]]),
+        "trailing whitespace": base_flip.replace("# Body\n", "# Body \n", 1),
+        "CRLF": base_flip.replace("\n", "\r\n"),
+        "changed blank line": base_flip.replace("---\n\n# Body", "---\n\n\n# Body", 1),
+    }
+    for label, text in variants.items():
+        assert text != base_flip, label
+        r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: text})
+        assert r.returncode == 1, (label, r.stdout)
+        assert f"{P_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, (label, r.stdout)
+        if label != "CRLF":
+            assert f"{P_SPEC}: an approved spec does not change in place" in r.stdout, (label, r.stdout)
+
+
+def test_inherited_invalid_own_pointer_refused_on_flip(repo):
+    """Spec done_when[2], B7 (baseline control): P's own inherited pointer is bad; today's L1512 to L1518 messages hold."""
+    missing_q = "docs/superpowers/specs/2026-08-01-model-gone.md"
+    for pointer, message in ((missing_q, "which is not a spec on the base"),
+                             ("./" + SPEC, "which is not a spec on the base"),
+                             ("docs/superpowers/specs/2026-08-02-data-q.md", "a spec for FEAT-DATA-001, not FEAT-MODEL-001")):
+        extra = {"docs/superpowers/specs/2026-08-02-data-q.md": spec(feat_id="FEAT-DATA-001", req_ids="[REQ-DATA-001]")}
+        on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(supersedes=pointer), **extra})
+        r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: spec(status="superseded", supersedes=pointer)})
+        assert r.returncode == 1 and f"{P_SPEC}: supersedes" in r.stdout and message in r.stdout, (pointer, r.stdout)
+
+
+def test_deeper_inherited_edge_refused(repo):
+    """Spec done_when[2], B7b: Q's own pointer (the second edge) is noncanonical, missing or cross-FEAT. Main refuses the
+    fixture only by round eight on P's pointer and never examines Q's edge; the chain messages name the defect."""
+    data_r = "docs/superpowers/specs/2026-08-02-data-r.md"
+    missing_r = "docs/superpowers/specs/2026-08-01-model-gone.md"
+    cases = (
+        ("./" + R_SPEC, {R_SPEC: spec(status="superseded")},
+         f"{P_SPEC}: supersedes chain reaches {'./' + R_SPEC!r}, which is not written as docs/superpowers/specs/<file>.md"),
+        (missing_r, {}, f"{P_SPEC}: supersedes chain breaks at {missing_r}, which is not a spec on the base"),
+        (data_r, {data_r: spec(feat_id="FEAT-DATA-001", req_ids="[REQ-DATA-001]", status="superseded")},
+         f"{P_SPEC}: supersedes chain reaches {data_r}, a spec for FEAT-DATA-001, not FEAT-MODEL-001"),
+    )
+    for q_pointer, extra, message in cases:
+        on_base(repo, {SPEC: spec(status="superseded", supersedes=q_pointer), P_SPEC: spec(supersedes=SPEC), **extra})
+        r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+        assert r.returncode == 1 and message in r.stdout, (q_pointer, r.stdout)
+
+
+def test_deleted_ancestor_is_not_read_from_base(repo):
+    """Spec done_when[2], B7c and C6: the change flips P beside N and deletes Q; the chain refuses at Q as deleted
+    (never falling back to the base copy) beside the existing deletion refusal."""
+    retirement_lineage(repo)
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p(), SPEC: None})
+    assert r.returncode == 1 and f"{SPEC}: a superseded spec is not deleted" in r.stdout, r.stdout
+    assert f"{P_SPEC}: supersedes chain breaks at {SPEC}, which this change deletes" in r.stdout, r.stdout
+
+
+def test_supersedes_cycle_refused(repo):
+    """Spec done_when[3], B8 to B11: a self-cycle, a two-spec cycle in one change, a cycle closed against the base and a
+    draft-level cycle are each refused with the revisits message (main has no cycle check; B11 passes there)."""
+    n2 = "docs/superpowers/specs/2026-09-06-model-decisions-v4.md"
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=N_SPEC)})
+    assert r.returncode == 1 and f"{N_SPEC}: supersedes chain revisits {N_SPEC} (cycle)" in r.stdout, r.stdout
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=n2), n2: spec(supersedes=N_SPEC)})
+    assert r.returncode == 1 and f"{N_SPEC}: supersedes chain revisits {N_SPEC} (cycle)" in r.stdout, r.stdout
+    assert f"{n2}: supersedes chain revisits {n2} (cycle)" in r.stdout, r.stdout
+    a, b = P_SPEC, N_SPEC
+    on_base(repo, {a: spec(supersedes=b), b: spec()})
+    r = pr(repo, RETIRE_BRANCH, {b: spec(supersedes=a)})
+    assert r.returncode == 1 and f"{b}: supersedes chain revisits {b} (cycle)" in r.stdout, r.stdout
+    on_base(repo, {a: spec(status="draft", supersedes=b), b: spec(status="draft")})
+    r = pr(repo, RETIRE_BRANCH, {b: spec(status="draft", supersedes=a)})
+    assert r.returncode == 1 and f"{b}: supersedes chain revisits {b} (cycle)" in r.stdout, r.stdout
+
+
+def test_simultaneous_draft_edit_cycle_uses_head_value(repo):
+    """Spec done_when[3], B11b: N (new) names draft D while the same change points D at N; the overlay reads D's staged
+    pointer, so the cycle is found from N and from D."""
+    on_base(repo, {D_SPEC: spec(status="draft")})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=D_SPEC), D_SPEC: spec(status="draft", supersedes=N_SPEC)})
+    assert r.returncode == 1 and f"{N_SPEC}: supersedes chain revisits {N_SPEC} (cycle)" in r.stdout, r.stdout
+    assert f"{D_SPEC}: supersedes chain revisits {D_SPEC} (cycle)" in r.stdout, r.stdout
+
+
+def test_redundant_flip_after_base_advance_gets_merge_main_diagnostic(repo):
+    """Spec done_when[4], C1 (BA1): main retired P after the fork; the branch's P equals the current base's P, so the
+    merge-main diagnostic appears beside the round-eight refusal that still applies to N's pointer."""
+    retirement_lineage(repo)
+    n2 = "docs/superpowers/specs/2026-09-06-model-decisions-v4.md"
+    r = divergent_pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p()},
+                     {n2: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+    assert r.returncode == 1 and f"{P_SPEC}: already superseded on the current base; merge main so the file leaves this change" in r.stdout, r.stdout
+    assert f"{N_SPEC}: supersedes {P_SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+
+
+def test_pointer_to_target_superseded_after_fork_refused(repo):
+    """Spec done_when[4], C2 (BA2, baseline control): N's pointer is new and P is superseded at the current base."""
+    retirement_lineage(repo)
+    n2 = "docs/superpowers/specs/2026-09-06-model-decisions-v4.md"
+    r = divergent_pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC)}, {n2: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+    assert r.returncode == 1 and f"{N_SPEC}: supersedes {P_SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+
+
+def test_merge_of_main_carrying_the_flip_is_not_rechecked(repo):
+    """Spec done_when[4], C3 (BA3, baseline control): a merge of main in progress brings the flip of P; measured against
+    MERGE_HEAD, P is not in the change and is not re-checked."""
+    retirement_lineage(repo)
+    n2 = "docs/superpowers/specs/2026-09-06-model-decisions-v4.md"
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+    write(repo, "docs/notes.md", "notes\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "branch work")
+    on_base(repo, {n2: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+    _git(repo, "checkout", "-q", RETIRE_BRANCH)
+    _git(repo, "merge", "-q", "--no-commit", "--no-ff", "main")
+    assert (repo / ".git/MERGE_HEAD").exists()
+    r = gate(repo, "--commit")
+    assert r.returncode == 0 and ROUND_EIGHT not in r.stdout and P_SPEC not in r.stdout, r.stdout
+
+
+def test_unchanged_ancestry_is_read_at_the_current_base(repo):
+    """Spec done_when[4], C5 (BA5, baseline control): draft D names approved Q at the fork; main retires Q; approving D
+    in place is refused by round eight because Q is read at the current base, never the merge base."""
+    q2 = "docs/superpowers/specs/2026-09-06-model-decisions-q2.md"
+    on_base(repo, {D_SPEC: spec(status="draft", supersedes=SPEC)})
+    r = divergent_pr(repo, RETIRE_BRANCH, {D_SPEC: spec(supersedes=SPEC)}, {q2: spec(supersedes=SPEC), SPEC: spec(status="superseded")})
+    assert r.returncode == 1 and f"{D_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+
+
+def test_unrelated_draft_edit_beside_retirement_passes(repo):
+    """Spec done_when[5], A8: an unrelated draft's text edit rides beside N and the flip of P; its empty lineage and N's
+    lineage (N, P, Q, null) both pass."""
+    retirement_lineage(repo, **{D_SPEC: spec(status="draft")})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p(), D_SPEC: spec(status="draft") + "\nmore words\n"})
+    assert r.returncode == 0, r.stdout
+
+
+def test_retirement_leaves_done_plans_unbound_and_untouched(repo):
+    """Spec done_when[5], B15: a done plan on the base cites P; a docs/ branch retirement reads, rebinds and reports no plan."""
+    done_plan = "docs/superpowers/plans/2026-09-02-model-decisions-v2.md"
+    retirement_lineage(repo, **{done_plan: plan(spec=P_SPEC, branch="feature/feat-model-001-v2", status="done", pr=7)})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+    assert r.returncode == 0 and "plan" not in r.stdout, r.stdout
+    assert _git(repo, "show", f"HEAD:{done_plan}") == plan(spec=P_SPEC, branch="feature/feat-model-001-v2", status="done", pr=7).strip()
+
+
+def test_traversal_bound_on_sixty_chained_specs(repo):
+    """Spec done_when[6], D2 and D3: sixty chained specs; the chain walk makes at most one tree read per distinct spec in
+    the union of the head and base spec lists, the gate run completes, and --check-spec runs no chain check."""
+    chain = [f"docs/superpowers/specs/2026-07-{1 + i // 31:02d}-model-chain-{i:02d}.md" for i in range(60)]
+    files = {chain[0]: spec(status="superseded")}
+    for prev, cur in zip(chain, chain[1:-1]):
+        files[cur] = spec(status="superseded", supersedes=prev)
+    files[chain[-1]] = spec(supersedes=chain[-2])
+    on_base(repo, files)
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=chain[-1]), chain[-1]: spec(status="superseded", supersedes=chain[-2])})
+    assert r.returncode == 0 and "spec gate ok" in r.stdout, r.stdout
+    sg = load_gate(repo)
+    base, head = base_and_head(repo)
+    changed = _git(repo, "diff", "--name-only", "--no-renames", base, head).splitlines()
+    ch = sg.Change("pr", RETIRE_BRANCH, changed, sg.Tree(head), sg.Tree(base), sg.Tree(base))
+    reads: list[str] = []
+    real_read = sg.Tree.read
+    try:
+        sg.Tree.read = lambda self, path: (reads.append(path), real_read(self, path))[1]
+        errs = sg.check_chain(sg.frontmatter(real_read(sg.Tree(head), N_SPEC)), N_SPEC, ch)
+    finally:
+        sg.Tree.read = real_read
+    distinct = set(sg.Tree(head).list(sg.SPECS)) | set(sg.Tree(base).list(sg.SPECS))
+    assert errs == [] and 0 < len(reads) <= len(distinct) and len(set(reads)) == len(reads), (len(reads), len(distinct))
+    r = gate(repo, "--check-spec", N_SPEC)
+    assert r.returncode == 0 and r.stdout.strip() == "spec ok", r.stdout
+
+
+def test_crlf_relabel_of_a_superseded_spec_is_not_called_redundant(repo):
+    """IMPL-CICD1 R1 F1: step 5 judges the file's bytes, not the folded text. A superseded spec whose only edit
+    rewrites LF to CRLF still differs from the base in bytes, so merging main would not take it out of the change,
+    and the merge-main diagnostic must not fire (at 8814e1c1 it did). What is left is main d806bfd1's behaviour,
+    executed there: the in-place rule compares text, so the null-pointer relabel is admitted (R1 2n, pre-existing and
+    not a contract this change adds) and the relabel of a spec naming a superseded one is refused by round eight alone.
+    The byte-identical redundant flip keeps the diagnostic (C1 above)."""
+    on_base(repo, {P_SPEC: spec(status="superseded")})
+    r = pr(repo, RETIRE_BRANCH, {P_SPEC: spec(status="superseded").replace("\n", "\r\n")})
+    assert r.returncode == 0 and "already superseded on the current base" not in r.stdout, r.stdout
+    on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(status="superseded", supersedes=SPEC)})
+    r = pr(repo, RETIRE_BRANCH, {P_SPEC: spec(status="superseded", supersedes=SPEC).replace("\n", "\r\n")})
+    assert r.returncode == 1 and f"{P_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+    assert "already superseded on the current base" not in r.stdout, r.stdout
+
+
+def test_cr_only_line_endings_take_the_flip_and_refuse_extra_bytes(repo):
+    """IMPL-CICD1 R1 F2: the byte-level status strip treats a lone CR as a line break, as `Tree.read` does, so a
+    CR-only spec is retired by the same status-only flip (positive control; at 8814e1c1 round eight refused it), while
+    the enumerated byte changes in such a file still leave the exemption unreached with today's messages (negative
+    controls): a done_when word is refused in place and by round eight, a relabel to LF beside the flip by round
+    eight alone, since the folded text is equal. No spec in the repository carries a CR byte; this measures the
+    anchor, not a live case."""
+    cr = lambda s: s.replace("\n", "\r")
+    on_base(repo, {SPEC: cr(spec(status="superseded")), P_SPEC: cr(spec(supersedes=SPEC))})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: cr(flipped_p())})
+    assert r.returncode == 0 and "spec gate ok" in r.stdout, r.stdout
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: cr(flipped_p(done_when=["something easier", DONE[1]]))})
+    assert r.returncode == 1 and f"{P_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+    assert f"{P_SPEC}: an approved spec does not change in place" in r.stdout, r.stdout
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+    assert r.returncode == 1 and f"{P_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+    assert "does not change in place" not in r.stdout, r.stdout
+
+
+def test_nul_byte_in_an_inherited_pointer_is_refused_not_a_traceback(repo):
+    """IMPL-CICD1 R1 F3: an unchanged base spec whose pointer carries a NUL byte names no git path; the chain walk
+    refuses it as not written canonically, with the ordinary verdict and no traceback (at 8814e1c1 `git show`
+    raised an uncaught ValueError: exit 1, empty stdout). Main d806bfd1 admits the change, never reading that edge."""
+    nul = "docs/superpowers/specs/\x00x.md"
+    on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(supersedes=nul)})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC)})
+    assert r.returncode == 1 and "SPEC GATE FAILED" in r.stdout, (r.stdout, r.stderr)
+    assert f"{N_SPEC}: supersedes chain reaches {nul!r}, which is not written as docs/superpowers/specs/<file>.md" in r.stdout, r.stdout
+    assert "Traceback" not in r.stderr, r.stderr
+
+
+def test_mode_only_change_of_a_superseded_spec_is_not_called_redundant(repo):
+    """IMPL-CICD2 R1 F1: a superseded spec whose only change is its mode (100644 to 100755, bytes identical) stays in
+    the change after a merge of main, so "merge main so the file leaves this change" would be false; the step-5
+    diagnostic needs equal modes too (at 29314273 it fired). What main does with the mode change is unchanged: a
+    null-pointer spec is admitted, one naming a superseded spec is refused by round eight alone."""
+    chmod = lambda root: (root / P_SPEC).chmod(0o755)
+    on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(status="superseded", supersedes=SPEC), N_SPEC: spec(supersedes=P_SPEC)})
+    r = pr(repo, RETIRE_BRANCH, {}, then=chmod)
+    assert r.returncode == 1 and f"{P_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+    assert "already superseded on the current base" not in r.stdout, r.stdout
+    on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(status="superseded"), N_SPEC: spec(supersedes=P_SPEC)})
+    r = pr(repo, RETIRE_BRANCH, {}, then=chmod)
+    assert r.returncode == 0 and "spec gate ok" in r.stdout, r.stdout
+
+
+def test_flip_changes_only_the_status_entry_and_hides_no_key(repo):
+    """IMPL-CICD2 R1 F2 (and pass-1 R1 F4, R3 P2-2): the exemption admits a flip whose bytes outside the one physical
+    line holding the frontmatter `status` entry are unchanged, in place, and whose entry line holds no second logical
+    line. At 29314273 `status: superseded\x0cissues: [4242]` (`frontmatter` splits on form feed and U+2028, the strip
+    lambdas blank the whole physical line) and a rewritten body line beginning `status:` rode the flip (rc 0; main
+    refused both by round eight); so did a body `status:` line moved between blank lines, which a check on the
+    status lines' values alone also admits, since it loses position. Each is refused here by round eight. A quoted,
+    spaced or commented value on the entry is the parser's business and passes when only the entry changes. The
+    in-place rule is untouched: at depth one (P with a null pointer) the hidden key is still admitted on this gate as
+    on main (old-behaviour control, recorded, not changed by this exemption)."""
+    n = {N_SPEC: spec(supersedes=P_SPEC)}
+    refused = f"{P_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}"
+    p_base, p_head = spec(supersedes=SPEC), flipped_p()
+    entry = lambda doc, old, new: doc.replace(old, new, 1)
+    for base_line, head_line in (("status: approved", "status: superseded"),
+                                 ("status: 'approved'", "status: 'superseded'"),
+                                 ('status: "approved"', 'status: "superseded"'),
+                                 ("status:  approved ", "status:  superseded "),
+                                 ("status: approved", "status: superseded # retired by v3")):
+        on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: entry(p_base, "status: approved", base_line)})
+        r = pr(repo, RETIRE_BRANCH, {**n, P_SPEC: entry(p_head, "status: superseded", head_line)})
+        assert r.returncode == 0 and "spec gate ok" in r.stdout, (base_line, head_line, r.stdout)
+    # the last base above is the plain lineage (Q superseded, P approved naming Q)
+    for head_line in ("status: superseded\x0cissues: [4242]", "status: superseded\u2028issues: [4242]",
+                      "status: superseded\x0c"):
+        r = pr(repo, RETIRE_BRANCH, {**n, P_SPEC: entry(p_head, "status: superseded", head_line)})
+        assert r.returncode == 1 and refused in r.stdout, (head_line, r.stdout)
+        assert "does not change in place" not in r.stdout, (head_line, r.stdout)
+    body = lambda doc, tail: doc.rstrip("\n") + "\n" + tail
+    for base_tail, head_tail, admitted in (("status: body note\n", "status: body note\n", True),
+                                           ("\nA\n\nstatus: body note\n\nB\n", "\nA\n\n\nstatus: body note\nB\n", False),
+                                           ("status: body note\n", "status: SOMETHING ELSE\n", False)):   # each base differs from the last
+        on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: body(p_base, base_tail)})
+        r = pr(repo, RETIRE_BRANCH, {**n, P_SPEC: body(p_head, head_tail)})
+        if admitted:
+            assert r.returncode == 0 and "spec gate ok" in r.stdout, (head_tail, r.stdout)
+        else:
+            assert r.returncode == 1 and refused in r.stdout, (head_tail, r.stdout)
+    on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec()})
+    r = pr(repo, RETIRE_BRANCH, {**n, P_SPEC: spec(status="superseded").replace("status: superseded", "status: superseded\x0cissues: [4242]")})
+    assert r.returncode == 0 and "spec gate ok" in r.stdout, r.stdout
