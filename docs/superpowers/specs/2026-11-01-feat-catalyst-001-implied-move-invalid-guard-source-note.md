@@ -21,7 +21,7 @@ supersedes: docs/superpowers/specs/2026-10-31-feat-catalyst-001-implied-move-inv
 ## Why this spec replaces the 2026-10-31 spec (amendment, read first)
 
 This spec supersedes `2026-10-31-feat-catalyst-001-implied-move-invalid-guard.md` (approved, on main since
-ca043892, #1650, blob c6ec9060) and repeats its contract unchanged: `done_when` items 1 to 6 here are that
+ca043892, #1650, blob c6ec9060) and repeats its behavioural contract unchanged: `done_when` items 1 to 6 here are that
 spec's six items byte for byte, and the section "Retained text of the 2026-10-31 spec" below is its body byte
 for byte. Inside that retained text, "this spec" and "this PR" mean the 2026-10-31 spec as written on that
 date. This spec adds only:
@@ -30,8 +30,12 @@ date. This spec adds only:
   declare for their implementation-source note (selection evidence below);
 - `done_when` item 7, the pre-merge source-identity obligation the spec template requires
   (`.claude/skills/product-delivery/references/spec-template.md`, the `site_source_notes` bullets);
-- the sections "Source identity and close-out", "Retirement of the 2026-10-31 spec", "Separation of evidence"
-  and "Status".
+- a stated reading of inherited item 4's file scope (code and test files only; the delivery records the
+  repository requires are allowed), in the section "Reading of inherited `done_when` item 4"; item 4's text is
+  unchanged;
+- the sections "Ownership and dependencies", "Textual differences from the 2026-10-31 spec", "Choice of Chain
+  element: CATALYSTS-04", "Source identity and close-out", "Retirement of the 2026-10-31 spec", "Separation of
+  evidence" and "Status".
 
 Why it is needed: the implementation (draft stocks#1670) edits `lib/earnings_reactions.py` and adds a test
 under `tests/`, both inside SITE's watched scope (`platform/api, platform/deploy.sh, platform/Dockerfile, gcp,
@@ -43,8 +47,8 @@ committed head and on main 751a6c13 with one shared issues snapshot reports thre
 main does not (two `changed-since` and one `source-provenance`, all on `docs/product/03-SITE-TRACEABILITY.md`).
 
 What it does not change: the keyword, the entry-check ValueError, the guard branch, the None rule, thresholds,
-IC mode, every other `done_when` behaviour of the 2026-10-31 spec, its test names, its no-caller-change rule
-and its no-deploy rollout. No code, plan, test, SITE row, sidecar or other product document changes in the
+IC mode, every other `done_when` behaviour of the 2026-10-31 spec, the text of items 1 to 6 (including item 4),
+its test names, its no-caller-change rule and its no-deploy rollout. No code, plan, test, SITE row, sidecar or other product document changes in the
 change that lands this spec. It makes no runtime or deployment claim.
 
 ## Reading of inherited `done_when` item 4 (scope clarification, not a new policy)
@@ -79,8 +83,10 @@ wording, the change is to this section only.
 - Frontmatter: `site_source_notes: [CATALYSTS-04]` added after `canvases: []`; `done_when` item 7 added after the six
   retained items; `status: draft` (was `approved`); `supersedes:` names the 2026-10-31 spec (was `null`).
   `feat_id`, `req_ids`, `issues`, `canvases` and items 1 to 6 are byte-identical.
-- Body: a new title and the new sections above and below, followed by the 2026-10-31 body byte for byte under
-  "Retained text of the 2026-10-31 spec".
+- Body: a new title; the new sections "Why this spec replaces the 2026-10-31 spec", "Reading of inherited
+  `done_when` item 4", "Ownership and dependencies", this section, "Choice of Chain element: CATALYSTS-04",
+  "Source identity and close-out", "Retirement of the 2026-10-31 spec", "Separation of evidence" and "Status";
+  then the 2026-10-31 body byte for byte under "Retained text of the 2026-10-31 spec".
 
 ## Choice of Chain element: CATALYSTS-04
 
@@ -120,9 +126,11 @@ Pre-merge (`done_when` item 7), on the #1670 branch, after the merge of main tha
    this spec in that same merge-of-main commit, while the merge is in progress, and gains a task with a `Spec:`
    line and a checklist item for item 7. During a merge of main the commit gate reads the approved spec from
    MERGE_HEAD (`scripts/gate/spec_gate.py`, the `--commit` branch that sets `against = ["MERGE_HEAD"]`), where
-   the 2026-10-31 spec is superseded, so a plan still naming it is refused there; a plan naming this spec in a
-   later ordinary commit is instead measured against HEAD. Read from source at 751a6c13, not executed on a
-   landed successor: it is a mandatory real check at that merge, not a result.
+   the 2026-10-31 spec is superseded, so a plan still naming it is refused there. A rebind left to a later
+   ordinary commit is refused by `plan_stays_bound` ("a plan binds one spec"), because that commit is measured
+   against HEAD, whose plan already names the 2026-10-31 spec. Read from source at 751a6c13 (`plan_stays_bound`
+   and the commit-mode merge handling in `scripts/gate/spec_gate.py`), not executed on a landed successor: it is
+   a mandatory real check at that merge, not a result.
 2. This spec's blob must be the same in the actual merge base, in current main and in the branch head
    (`spec_binding` in doc_source_snapshot.py), with `status: approved` and feat FEAT-CATALYST-001.
 3. Read the producer's current source hash, commit the `(FEAT-CATALYST-001, CATALYSTS-04)` note with the prefix
