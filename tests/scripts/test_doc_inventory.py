@@ -233,7 +233,13 @@ def test_reconcile_against_snapshot_reports_the_known_deltas():
     # 14-day freshness gate assumed a weekly winners refresh nothing
     # scheduled). Repo-only until `./gcp/deploy.sh schedulers` runs against
     # the project; drop it from this list once a fresher snapshot carries it.
-    assert rec["schedulers_paused"] == [] and rec["schedulers_live_only"] == []
+    # evaluate-ew-strikes-daily and its job were retired from deploy.sh on
+    # 2026-11-01 (FEAT-DEPLOY-001, EarningsWhispers retirement); the 2026-09-07
+    # snapshot still carries both, so they read live-only until the separately
+    # authorized deletion runs and a fresher snapshot is taken.
+    assert rec["schedulers_paused"] == []
+    assert rec["schedulers_live_only"] == ["evaluate-ew-strikes-daily"]
+    assert "evaluate-ew-strikes" in rec["jobs_live_only"]
     assert rec["schedulers_repo_only"] == ["earnings-sweep-sunday"]
     assert rec["schedulers_cron_drift"] == []
     assert rec["counts"]["jobs_live"] == live["counts"]["jobs"]

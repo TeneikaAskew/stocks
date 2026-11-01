@@ -2527,15 +2527,6 @@
    "serves": "MODEL-WATCH-001 — ranks upcoming reporters by prior long-side wins, `HAVING COUNT(DISTINCT (structure, event_date)) >= :min_wins` (`gcp/earnings_long_watchlist.py:169`), Discord embed"
   },
   {
-   "cron_america_new_york": "`0 23 * * 1-5`",
-   "job": "`evaluate-ew-strikes`",
-   "models": [
-    "MODEL-EWV-001"
-   ],
-   "scheduler": "`evaluate-ew-strikes-daily`",
-   "serves": "MODEL-EWV-001 — HIT / MISS / KEPT / ASSIGNED verdicts on Earnings Whispers strike picks (`gcp/fetchers/evaluate_ew_strikes.py:101-180`), recapped by the next weekday's premarket brief (`gcp/premarket_brief.py:718`, #1168)"
-  },
-  {
    "cron_america_new_york": "`0 9 * * 6`",
    "job": "`weekend-review`",
    "models": [
@@ -2624,7 +2615,7 @@
  ],
  "sources": {
   "docs/EXPERIMENT_REGISTRY.md": "9752340744b8580d57910eadb6df84c536081b42",
-  "docs/product/07-MODEL-REGISTRY.md": "d8f23bc5a258f5b6408e3f70816f8139dce9a25e",
+  "docs/product/07-MODEL-REGISTRY.md": "05a79cb00e560b7ef313097f8f1191b344ac6c46",
   "scripts/gate/export_model_registry.py": "74e5fdc5bb2e7bf11894b3de2601c4dc8428122d"
  },
  "tables": [
@@ -2724,7 +2715,7 @@
     "Job",
     "Serves"
    ],
-   "rows": 35,
+   "rows": 34,
    "section": "Model and Algorithm Registry / Experiment traceability / Which of these actually run"
   },
   {
