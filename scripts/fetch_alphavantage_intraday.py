@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import time
 import argparse
+import math
 import sys
 import json
 import os
@@ -41,9 +42,9 @@ current_key_index = 0
 ALPHA_VANTAGE_API_KEY = ALPHA_VANTAGE_API_KEYS[current_key_index]
 BASE_URL = 'https://www.alphavantage.co/query'
 
-# Rate limiting — driven by lib.config.AlphaVantageConfig (currently 150 RPM premium plan).
-# Can be overridden at runtime with --delay argument.
-CALLS_PER_MINUTE = _av_cfg.rpm
+# Local allocation is distinct from the purchased account ceiling.
+# --delay may slow this process; it cannot allocate more account capacity.
+CALLS_PER_MINUTE = _av_cfg.batch_size
 DELAY_BETWEEN_CALLS = _av_cfg.delay_between_calls  # overridden by --delay at runtime
 
 
@@ -558,16 +559,20 @@ Examples:
     parser.add_argument('--rows', type=int, default=100,
                        help='Number of rows to display when using --show (default: 100)')
     parser.add_argument('--delay', type=float, default=None,
-                       help='Seconds between API calls (default: 12 for free tier, use 1 for premium plans)')
+                       help='Seconds between calls (default: local allocation; only slower overrides allowed)')
 
     args = parser.parse_args()
 
-    # Override rate limiting if --delay provided (premium keys support much higher RPM)
-    if args.delay is not None:
-        global DELAY_BETWEEN_CALLS, CALLS_PER_MINUTE
-        DELAY_BETWEEN_CALLS = args.delay
-        # Set CALLS_PER_MINUTE high enough that the 60s batch-wait never triggers
-        CALLS_PER_MINUTE = max(60, int(60 / args.delay)) if args.delay > 0 else 150
+    # Validate before any dispatch; a delay override is not a quota allocation.
+    if args.delay is not None and (
+        not math.isfinite(args.delay) or args.delay < _av_cfg.delay_between_calls
+    ):
+        parser.error('--delay must be finite and no faster than the local allocation')
+    global DELAY_BETWEEN_CALLS, CALLS_PER_MINUTE
+    DELAY_BETWEEN_CALLS = (
+        _av_cfg.delay_between_calls if args.delay is None else args.delay
+    )
+    CALLS_PER_MINUTE = _av_cfg.batch_size
 
     # If --show flag is set, display data and exit
     if args.show:

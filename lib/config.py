@@ -110,24 +110,41 @@ class IndicatorConfig:
 class AlphaVantageConfig:
     """AlphaVantage API rate limits, key management, and settings.
 
-    Current plan: 150 RPM premium.
-    Scripts should read AV_RPM from here rather than hardcoding a value.
+    Purchased account allowance: 600 RPM premium. Local pacing defaults to
+    a conservative 150 RPM allocation; it is not an account-wide governor
+    or proof of unused shared capacity.
 
     API keys are loaded ONLY from environment variables — never hardcoded.
     Supports multi-key rotation via comma-separated ALPHA_VANTAGE_API_KEYS,
     or single key via ALPHA_VANTAGE_API_KEY.
     """
-    rpm: int = 150                          # requests per minute (plan limit)
+    rpm: int = 600                          # purchased account ceiling
+    local_rpm: int = 150                    # conservative local allocation
+
+    def __post_init__(self) -> None:
+        for name in ("rpm", "local_rpm"):
+            value = getattr(self, name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if self.rpm > 600:
+            raise ValueError("rpm exceeds the confirmed 600 RPM account allowance")
+        if self.local_rpm > self.rpm:
+            raise ValueError("local_rpm cannot exceed the account allowance")
+
+    @property
+    def account_rpm(self) -> int:
+        """Purchased ceiling; separate from an allocation to this process."""
+        return self.rpm
 
     @property
     def delay_between_calls(self) -> float:
-        """Minimum seconds to wait between API calls to stay within RPM."""
-        return 60.0 / self.rpm
+        """Minimum local interval, without certifying aggregate account usage."""
+        return 60.0 / self.local_rpm
 
     @property
     def batch_size(self) -> int:
-        """How many calls to make per 60-second window before a forced wait."""
-        return self.rpm
+        """Local calls per 60-second batch before a forced wait."""
+        return self.local_rpm
 
     @staticmethod
     def get_api_keys() -> List[str]:

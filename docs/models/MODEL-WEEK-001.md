@@ -1,6 +1,6 @@
 # MODEL-WEEK-001 — Weekend performance review
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-10-20 · **Owner:** TBD
 
 **Code:** `gcp/weekend_review.py` ·
 **Reads:** `trades` (Cloud SQL) ·
