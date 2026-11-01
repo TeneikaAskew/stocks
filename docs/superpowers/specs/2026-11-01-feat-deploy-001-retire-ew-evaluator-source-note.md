@@ -12,7 +12,7 @@ done_when:
   - "gcp/fetchers/evaluate_ew_strikes.py is not changed by this spec"
   - "No Cloud Run job, scheduler or secret is mutated by this PR; RUNTIME-QUALIFICATION-PLAN.md section 2 (pause, delete scheduler, delete job) is linked from the PR as separately authorized close-out, and must be complete before the FEAT-DATA-001 module-shim PR's image ships"
   - "02-FEATURE-CATALOG FEAT-DEPLOY-001 record shows Status and Last reviewed, and 12-PR-ISSUE-TRACEABILITY lists this PR"
-  - "Source identity (SHARED-07): on the implementation PR head (#1658), the existing bounded producer and verifier (`scripts/maintenance/doc_source_snapshot.py produce`, then `verify` with the fixed ceilings, run from the committed HEAD) prove committed source and SITE body identity bound to this approved spec at the actual merge base, where its blob equals the one on current main; the plan binds this spec; the only SITE change is the FEAT-DEPLOY-001 / SHARED-07 row of the Implementation-source notes table, added or updated with the prefix source_identity_sha256=<current source hash> and nonempty implementation and test prose that describes only this PR's gcp/deploy.sh retirement and its tests and keeps any earlier accurate own content of that row; every other SITE byte is unchanged; the sidecar is produced from the final committed SITE body and committed, replacing the carried FEAT-PLAYBOOK-001 / PLAYBOOK-09 record; the matched main and branch `scripts/maintenance/docs_audit.py` runs report no finding that main does not; `tests/scripts/test_doc_source_snapshot.py` and `tests/scripts/test_docs_audit.py` pass unchanged; the registry `docs/DOC_REGISTRY.md` blob, mode and type equal main's; required current-head checks pass before merge under the repository's existing review rules, which this spec does not extend."
+  - "Source identity (SHARED-07): on the implementation PR head (#1658), the existing bounded producer and verifier (`scripts/maintenance/doc_source_snapshot.py produce`, then `verify` with the fixed ceilings, run from the committed HEAD) prove committed source and SITE body identity bound to this approved spec at the actual merge base, where its blob equals the one on current main; the plan binds this spec; the only SITE change is the FEAT-DEPLOY-001 / SHARED-07 row of the Implementation-source notes table, added or updated with the prefix source_identity_sha256=<current source hash> and nonempty implementation and test prose that describes only this PR's gcp/deploy.sh retirement and its tests and keeps any earlier accurate own content of that row; every other SITE byte is unchanged; the sidecar is produced from the final committed SITE body and committed, replacing the sidecar record the merge of main carries; the matched main and branch `scripts/maintenance/docs_audit.py` runs report no finding that main does not; `tests/scripts/test_doc_source_snapshot.py` and `tests/scripts/test_docs_audit.py` pass unchanged; the registry `docs/DOC_REGISTRY.md` blob, mode and type equal main's; required current-head checks pass before merge under the repository's existing review rules, which this spec does not extend."
 status: draft
 supersedes: docs/superpowers/specs/2026-10-31-feat-deploy-001-retire-ew-evaluator.md
 ---
@@ -27,8 +27,8 @@ that spec's seven items byte for byte, and the section "Retained text of the 202
 its body byte for byte. Inside that retained text, "this spec" and "this PR" mean the 2026-10-31 spec as
 written on that date. This spec adds only:
 
-- `site_source_notes: [SHARED-07]`, the existing SITE Chain element under which FEAT-DEPLOY-001 already
-  writes its `gcp/deploy.sh` implementation-source note (selection evidence below);
+- `site_source_notes: [SHARED-07]`, the existing SITE Chain element that FEAT-DEPLOY-001 specs already
+  declare for their `gcp/deploy.sh` implementation-source note (selection evidence below);
 - `done_when` item 8, the pre-merge source-identity obligation the spec template requires
   (`.claude/skills/product-delivery/references/spec-template.md`, the `site_source_notes` bullets);
 - the sections "Source identity and close-out", "Retirement of the 2026-10-31 spec" and "Status".
@@ -42,8 +42,9 @@ by its approved spec, and an implementation PR cannot add that declaration to it
 this replacement. The same gap was reported for #1658 by the native read-only source audit (relayed in the
 EW thread through the coordinator); this author read the gate and producer source and did not execute the
 documentation audit on #1658. The #1658 branch also carries a sidecar for an unrelated record
-(FEAT-PLAYBOOK-001 / PLAYBOOK-09, spec blob 3e114953, read at 9b076797); the sidecar this PR produces
-replaces it.
+(FEAT-PLAYBOOK-001 / PLAYBOOK-09, spec blob 3e114953, read at 9b076797), inherited from its merge base;
+main 765fc91c already holds a FEAT-CICD-001 / SHARED-01 record, which the merge of main carries, and the
+sidecar #1658 produces replaces whichever record that merge carries.
 
 What it does not change: the `gcp/deploy.sh` retirement and every other `done_when` behaviour of the
 2026-10-31 spec, its tests, the retirement stub, the exclusion of `gcp/fetchers/evaluate_ew_strikes.py`
@@ -65,8 +66,8 @@ source, not assumed:
   triggers it describes (`freshness-watchdog`, `freshness-watchdog-hourly`, `freshness-watchdog-nightly`).
 - The SITE rows that do mention `evaluate-ew-strikes` (CATALYSTS-01, -02, -03, -04, -06, -12 and
   DASHBOARD-06, -09 on main) mention it as an upstream writer of the `ew_*` columns on the catalyst read
-  path. They are FEAT-CATALYST-001's elements (its spec already declares CATALYSTS-04), and this change
-  touches no catalyst code or claim, so they are not declared here.
+  path. This change touches no catalyst code and makes no catalyst claim, so they are not declared here
+  (FEAT-CATALYST-001's spec declares CATALYSTS-04).
 - No Chain element describes the evaluator's own deployment. SHARED-07 is therefore the narrowest
   existing ID with FEAT-DEPLOY-001 precedent. It is an identity anchor for the `gcp/deploy.sh` source
   note, not a claim that the evaluator feeds the freshness path. The owner approves or changes this
@@ -110,7 +111,7 @@ Pre-merge (`done_when` item 8), on the #1658 branch, after the merge of main tha
    unchanged ceilings. Repeat after any later watched-code, SITE body or policy change, including every
    further merge of main.
 4. The registry `docs/DOC_REGISTRY.md` blob, mode and type stay equal to main's; the catalog record keeps
-   its date, PR, spec and plan links (the plan is re-pointed, the spec link moves to this spec); the
+   its date and PR links, and its spec reference names this spec's PR (the plan is re-pointed); the
    matched main and branch audit reports nothing new; the affected BASE suite, the normal current-head
    review under the existing rules and CI pass. The ordinary pre-commit hook and PR-mode gate judge
    every commit. Nothing is bypassed, and a clone without the hook runs `spec_gate.py --commit` by hand.
