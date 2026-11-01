@@ -14,7 +14,7 @@ done_when:
   - "Base suite (D1): the spec-gate workflow's base-suite job, main's tests/scripts/test_spec_gate.py against the proposed spec_gate.py, is green on the implementation PR head, so no message main's suite asserts has changed."
   - "Review contract: the implementation PR records a three-role red-team pass (shell semantics; YAML/Actions structure; exporter and policy documents) on the head it pushed, each reviewer having executed the gate against a concrete snippet, findings fixed in one batch and one push; the exporter-and-policy reviewer invocation that the platform rejected on stocks#1630 before any review result (#1630 comment 6485122675) is not retried, replaced or routed around by this change, and the pass's exporter-and-policy seat is staffed under its own owner-recorded authorization on the implementation PR; current-head hosted code review and CI pass before merge."
   - "Records: the FEAT-CICD-001 record in docs/product/02-FEATURE-CATALOG.md and docs/product/12-PR-ISSUE-TRACEABILITY.md identify the implementation PR, and the record states that scripts/gate/ is owned through the gate's WORKFLOW_FEAT constant while the Code row lists .github/workflows/ and the review guidelines; no other capability's row or record changes."
-status: draft
+status: approved
 supersedes: docs/superpowers/specs/2026-10-31-feat-cicd-001-supersedes-chain-retirement.md
 ---
 
@@ -320,14 +320,19 @@ red-team pass. Not checked: behaviour of the proposed code on any input.
 
 ## Status
 
-Amendment draft (`status: draft`). The owner approved this narrow replacement scope on
-2026-11-01 (receipt stocks#1656 comment 6559291354): the truthful message, refusal over the
-folded-text-equal domain including line-ending variants when the change carries a retirement since
-the fork, already-retired historical files keeping their behaviour, every status-only, lineage and
-security safeguard preserved, and the normal replacement-specification route. That receipt is not a
-formal review, Ready, merge or deployment permission. `status: approved` is set only after the owner
-approves this written text. The text below is the 2026-10-31 spec's admission record, kept as
-history.
+Approved replacement (`status: approved`). The owner answered "Yes" to this narrow replacement
+scope on 2026-11-01 (receipt stocks#1656 comment 6559291354, created 14:29:03Z): the truthful
+message, refusal over the folded-text-equal domain including line-ending variants when the change
+carries a retirement since the fork, already-retired historical files keeping their behaviour,
+every status-only, lineage and security safeguard preserved, and the normal
+replacement-specification route. The written text was admitted under the owner's standing
+routine-repair authority (sent 2026-10-30T09:40:09Z), applied by the project coordinator on
+2026-11-01 (relayed 16:47:23Z); that relay is not a new owner event. One independent local spec
+review judged the bytes at d8cd3e97; the corrections at 155f96b3 and this status record are author
+changes no review has judged. `status: approved` records that admission and nothing else: no
+design, `done_when`, policy or test-contract text changed with it. It is not a formal review,
+Ready, merge or deployment permission; current-head hosted code review and CI remain required
+before merge. The text below is the 2026-10-31 spec's admission record, kept as history.
 
 Spec-only PR from main d806bfd1. Cumulative admission (SKILL.md L40): A, the owner's 15:52:35Z
 approval of the narrow behaviour on the fixed rev2 basis, rendered by Design and Mode and
