@@ -242,7 +242,7 @@ done_when[3], done_when[4].
       relabel, a key hidden on the entry line, a separator alone at the end of that line, a rewritten, moved or
       inserted body `status:` line, any non-UTF-8 byte in the file even if unchanged, and a frontmatter whose second
       line starts `---` (`status_entry` takes it as the closing line; `frontmatter` reads on). The "coextensive"
-      sentences of step 3 and Approaches 3 are not literally true for those shapes. done_when 2 holds: its four
+      sentences of step 3 and Approaches 3 are not literally true for those shapes. done_when[1] holds: its four
       enumerated byte changes sit outside the status entry and are refused. The Risks bullet "any extra byte in P
       must still be refused" holds only read as "any byte outside the frontmatter status entry": read literally it
       is exceeded by the safe forms the owner's settled scope keeps on the entry line, which the code admits at depth
@@ -259,7 +259,7 @@ done_when[3], done_when[4].
       round eight alone); `test_mode_only_change_of_a_superseded_spec_is_not_called_redundant`. (Widened in the
       IMPL-CICD4 batch below: equality with the base's mode alone was incomplete.)
       Corrections in the IMPL-CICD4 batch, as reviewed on f60f9950 (owner's bounded reservation of 2026-11-01
-      11:27:45Z; IMPL-CICD1 to 3 spent; f60f9950 was not pushed, see Task 12):
+      11:27:45Z; IMPL-CICD1 to 3 spent; f60f9950 was not pushed as its own head, see Task 12):
       IMPL-CICD3 R1 F1 (P2): the step 5 advice predicts what a merge of main does, and a merge takes main's mode
       wherever the branch left the merge base's mode alone. The conjunct is now
       `ch.tree.mode(path) in (ch.base.mode(path), ch.before.mode(path))`; `ch.before` is the merge base in PR mode and the
@@ -338,6 +338,9 @@ done_when[3], done_when[4].
       from zero throughout (R3 P3-4), and Task 12 dates its review narration instead of stating a current count
       (R3 P3-5). The PR body's byte-identity command and changed-file list (R2 F1 = R3 P3-1) are corrected in the
       body, which is not a repository file. 1dd27e66 and its reports are kept unchanged.
+      After IMPL-CICD8 on 84ad5cbd (coordinator direction of 2026-11-01 23:27:54Z, one sweep): the last one-based index
+      (done_when[1] in the round-two record above) is zero-based, and each "was not pushed" in Task 10 and Task 12 now
+      reads "was not pushed as its own head", which stays true once a later head that contains it is pushed.
 - [ ] Run the tests from Tasks 3 to 9: all PASS. Run Task 4's tests again: still PASS with today's messages.
 
 ## Task 11: suites and gates, locally
@@ -365,18 +368,18 @@ Spec: § Ownership, sequence and review roles (review roles; the #1630 invocatio
       Recorded: d4984f14 was pushed after IMPL-CICD3 returned findings, contrary to the empty-pass rule; that
       deviation is disclosed on the PR. The IMPL-CICD4 batch (a merge of main 27c3c9ec, the step 5 and docstring
       corrections, this plan and the Task 13 records) is reviewed as one head and pushed only if IMPL-CICD4 is empty.
-      IMPL-CICD4 on f60f9950 was not empty (one P2, six P3, no P1), so f60f9950 was not pushed; all four local passes
+      IMPL-CICD4 on f60f9950 was not empty (one P2, six P3, no P1), so f60f9950 was not pushed as its own head; all four local passes
       are spent. Any further verification of the corrected head is reserved by the owner after inspecting it.
       IMPL-CICD5 (the owner's one bounded extension, 2026-11-01 12:31:04Z) on c094edf8 was not empty (six P3, no P1
-      or P2), so c094edf8 was not pushed; all five local passes are spent. The IMPL-CICD5 correction above is an
+      or P2), so c094edf8 was not pushed as its own head; all five local passes are spent. The IMPL-CICD5 correction above is an
       unreviewed author candidate; no further pass is reserved.
       IMPL-CICD6 (the owner's bounded extension of 2026-11-01 13:39:55Z, slot 6 of 6) ran on 4ef70d89 and was not empty
-      (three P2, four P3, no P1; PR comment 6558963711), so 4ef70d89 was not pushed. All six local passes are spent; the
+      (three P2, four P3, no P1; PR comment 6558963711), so 4ef70d89 was not pushed as its own head. All six local passes are spent; the
       sentence above that no further pass is reserved was true when written and is stale since IMPL-CICD6 ran
       (IMPL-CICD6 R3 P3-3). As of 2026-11-01 22:30Z the rebinding candidate in Task 10 (1dd27e66) was an unreviewed
       author candidate and no seventh pass had been reserved. IMPL-CICD7 (slot 7, directed 22:33:33Z under the same
       standing authority; reservation comment 6564897918) then ran on 1dd27e66 and was not empty (five distinct
-      findings, all P3; outcome comment 6565080501), so 1dd27e66 was not pushed. The factual corrections of those
+      findings, all P3; outcome comment 6565080501), so 1dd27e66 was not pushed as its own head. The factual corrections of those
       findings are recorded in Task 10. Review slots, results and publication after that are recorded on the PR and in
       the recovery ledger, not here.
 
