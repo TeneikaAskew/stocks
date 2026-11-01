@@ -430,17 +430,20 @@ for binding purposes: no plan may bind it once this spec is approved on main (L2
 gate clause read at 765fc91c requires the predecessor's flip before a successor's binding:
 `check_supersedes` (L1506 to L1521) refuses only a target already superseded, and the in-place
 rule's message ("get that one approved, then mark this one superseded", L1857 to L1858) orders the
-flip after the replacement. Main carries the same state today for
+flip after the replacement. Main 765fc91c carries the same state for
 `2026-10-24-feat-catalyst-001-event-bound-reaction-integration.md` and
 `2026-10-24-feat-cicd-001-registry-read-batching.md`, each still approved while an approved
 successor names it.
 
 ## Status
 
-Draft (`status: draft`). Prepared as a local docs-only proposal for one owner decision on coordinator
-directions relayed on 2026-11-01 at 20:53:32Z and 20:54:51Z under the owner's existing standing
-authority; those relays are not owner decisions or new owner events. Nothing is published or reviewed. `status: approved`
-is set only after the owner's written approval of this exact text, records that admission and
+Authoring snapshot, 2026-11-01 at about 21:15Z: this text was prepared as a local docs-only
+proposal for one owner decision, on coordinator directions relayed at 20:53:32Z and 20:54:51Z under
+the owner's existing standing authority; those relays are not owner decisions or new owner events.
+At that snapshot it was unpublished and unreviewed. This paragraph records the snapshot and is not
+kept current: the spec's admission, review, CI and merge state at any later time is its `status:`
+line read with its pull request and the recovery ledger. `status: approved` is set only after
+the owner's written approval of this exact text, records that admission and
 nothing else, and is followed by current-head hosted code review and CI before merge. It is not a
 formal review, Ready, merge or deployment permission, and no exception from another change
 transfers to it.
