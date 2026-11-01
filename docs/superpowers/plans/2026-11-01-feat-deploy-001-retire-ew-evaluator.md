@@ -1,6 +1,6 @@
 ---
 feat_id: FEAT-DEPLOY-001
-spec: docs/superpowers/specs/2026-10-31-feat-deploy-001-retire-ew-evaluator.md
+spec: docs/superpowers/specs/2026-11-01-feat-deploy-001-retire-ew-evaluator-source-note.md
 branch: fix/feat-deploy-001-retire-ew-evaluator
 pr: 1658
 status: ready
@@ -15,7 +15,8 @@ point itself. The news-owned bodies `deploy_fetch_news_sentiment`, `_topics` and
 (L3140-3227) are never edited here. P-C in RETIREMENT-DESIGN.md rev 3.9 sections 4, 6 and 7.
 
 Rules carried: commit messages without AI attribution; `scripts/gate/spec_gate.py --commit` run
-by hand before each commit (no hook is installed in this clone and none is bypassed); no Cloud
+by hand before the first three commits (no hook was installed in that clone and none was bypassed); from
+the merge of main that rebinds this plan, commits are made with the repository hook installed (`make hooks`); no Cloud
 Run job, scheduler or secret is read or mutated by this branch; `gcp/fetchers/evaluate_ew_strikes.py`,
 `docs/product/05-INFRASTRUCTURE.md` and the MODEL-EWV-001 model row are other specs' work (P-I, P-J).
 
@@ -87,3 +88,19 @@ Spec: done_when[5] (close-out linked, no live mutation), done_when[6]; advances 
       complete before the FEAT-DATA-001 module-shim image ships; the 05-a reconcile block and
       the daily verifier will report the live job and scheduler until that close-out runs.
       No hosted review is requested by this branch.
+
+## Task 6: source identity (SHARED-07)
+Spec: done_when[7]; advances done_when[7]. Rebinding: spec #1666 (merged as 751a6c13, blob 77ebcc18,
+approved) supersedes the 2026-10-31 spec and declares `site_source_notes: [SHARED-07]`; this plan is
+re-pointed to it in the same commit that merges main.
+- [ ] Add or update the `FEAT-DEPLOY-001` / `SHARED-07` row of the SITE Implementation-source notes
+      table with the prefix `source_identity_sha256=<current source hash>; ` and prose describing only
+      this PR's `gcp/deploy.sh` retirement and its tests; no other SITE byte changes.
+- [ ] From the committed HEAD, `python3 -m scripts.maintenance.doc_source_snapshot produce`, then
+      `verify` with the fixed ceilings; commit the sidecar produced from the final committed SITE body,
+      replacing the sidecar record the merge of main carries.
+- [ ] Matched main and branch `scripts/maintenance/docs_audit.py` runs report no finding main does not;
+      `pytest tests/scripts/test_doc_source_snapshot.py tests/scripts/test_docs_audit.py -q` unchanged and
+      green; `docs/DOC_REGISTRY.md` blob, mode and type equal main's.
+- [ ] Repeat after every further merge of main. The renderer (#1660 stage 3) and runtime close-out
+      (RUNTIME-QUALIFICATION-PLAN.md section 2) stay separate gates; nothing here deploys.
