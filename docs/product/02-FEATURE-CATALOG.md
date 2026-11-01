@@ -209,18 +209,18 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation |
+| Status | Production but needs remediation; issue #1308 market-date repair verified locally, rollout pending |
 | Priority | P0 |
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-10-07 |
+| Last reviewed | 2026-10-30 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/playbook` |
 | Backend | `/api/playbook` |
 | Data | `premarket_analysis`, `playbook_cards` |
 | Models | MODEL-BRIEF-001, MODEL-LEVEL-001 |
 | Code | [solyra `src/routes/PlaybookPage.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/routes/PlaybookPage.tsx), `platform/api/routers/playbook.py`, `gcp/premarket_brief.py`, `scripts/analysis/phase6_playbook.py` |
-| Tests | `playbook.spec.ts`, `tests/scripts/test_phase6_playbook.py` |
+| Tests | `playbook.spec.ts`, `tests/scripts/test_phase6_playbook.py`, `tests/api/test_playbook_evaluate.py` (53 pass; paired summer/winter midnight, cache and historical-date controls for #1308) |
 | Open issues | 19 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-playbook-001--premarket--playbook-19-open) |
 | Blocking issues | [solyra#112](https://github.com/TeneikaAskew/solyra/issues/112) [#1304](https://github.com/TeneikaAskew/stocks/issues/1304) [#1305](https://github.com/TeneikaAskew/stocks/issues/1305) [#1306](https://github.com/TeneikaAskew/stocks/issues/1306) [#1307](https://github.com/TeneikaAskew/stocks/issues/1307) [#1308](https://github.com/TeneikaAskew/stocks/issues/1308) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 3 |
@@ -582,11 +582,11 @@ Typed-news runtime draft: [#1643](https://github.com/TeneikaAskew/stocks/pull/16
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation — committed source identity and complete generated-inventory verification merged; local delivery-tool close-out checked; AV/global rollout and remediation pending; tests that fake gcloud cannot reach a real one, the deliberate `--mode=live` secret read excepted ([#1536](https://github.com/TeneikaAskew/stocks/pull/1536)); trusted registry six-minute pin prepared in #1591, live six-minute activation proposed in #1599 under measured acceptance #1594; hosted final verification pending |
+| Status | Production but needs remediation — historical SITE presence repair [#1597](https://github.com/TeneikaAskew/stocks/pull/1597) continues #1595 with original VP-01 and review history, final evidence pending; committed source identity and complete generated-inventory verification merged; local delivery-tool close-out checked; AV/global rollout and remediation pending; tests that fake gcloud cannot reach a real one, the deliberate `--mode=live` secret read excepted ([#1536](https://github.com/TeneikaAskew/stocks/pull/1536)); trusted registry six-minute pin #1591 and matching live activation #1599 merged as e7e74ccc; exact live/pin equality and all six hosted checks verified, registry144PASS/exporter-current314s/46s reserve ([receipt](https://github.com/TeneikaAskew/stocks/pull/1599#issuecomment-6400278126)) |
 | Priority | P1 |
 | Target phase | Phase 6 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-10-25 |
+| Last reviewed | 2026-11-01 |
 | Evidence status | LOCAL DELIVERY TOOLING VERIFIED — [#1470](https://github.com/TeneikaAskew/stocks/pull/1470) committed-source verifier and [#1538](https://github.com/TeneikaAskew/stocks/pull/1538) complete generated-inventory tooling merged after authenticated CODE review and required CI. Fresh actual-main identity, local-tool accepted/refused checks and terminal marker/record retirement verified in this DOC close-out. AV/global rollout and product deployment/data-freshness verification remain separate. |
 | UI surface | — |
 | Backend | — |

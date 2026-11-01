@@ -143,10 +143,10 @@ Every router mounts at the root (`prefix=""`) and carries its own `/api/...` pat
 | `GET` | `/api/options/{ticker}/{date_str}/grid` | [`platform/api/routers/grid.py:738`](../../../platform/api/routers/grid.py#L738) | Historical 2-D grid for a past date — EOD only. |
 | `GET` | `/api/options/{ticker}/{date_str}/levels` | [`platform/api/routers/options.py:809`](../../../platform/api/routers/options.py#L809) | Stratalyst-style King/Gate/Spot/Flip taxonomy for a Cloud SQL snapshot. |
 | `GET` | `/api/options/{ticker}/{date_str}/nodes` | [`platform/api/routers/grid.py:1000`](../../../platform/api/routers/grid.py#L1000) | Historical semantic taxonomy — EOD only. |
-| `POST` | `/api/playbook/evaluate` | [`platform/api/routers/playbook.py:747`](../../../platform/api/routers/playbook.py#L747) | Evaluate playbook condition strings against a live snapshot. |
-| `GET` | `/api/playbook/{ticker}` | [`platform/api/routers/playbook.py:306`](../../../platform/api/routers/playbook.py#L306) | Return structured setup cards for a ticker from ``playbook_cards``. |
-| `GET` | `/api/reports/list/{ticker}` | [`platform/api/routers/playbook.py:367`](../../../platform/api/routers/playbook.py#L367) | List available phase report files for a given ticker (from GCS). |
-| `GET` | `/api/reports/{ticker}/{phase}` | [`platform/api/routers/playbook.py:440`](../../../platform/api/routers/playbook.py#L440) | Return the raw markdown text of a specific phase report for a ticker from GCS. |
+| `POST` | `/api/playbook/evaluate` | [`platform/api/routers/playbook.py:749`](../../../platform/api/routers/playbook.py#L749) | Evaluate playbook condition strings against a live snapshot. |
+| `GET` | `/api/playbook/{ticker}` | [`platform/api/routers/playbook.py:308`](../../../platform/api/routers/playbook.py#L308) | Return structured setup cards for a ticker from ``playbook_cards``. |
+| `GET` | `/api/reports/list/{ticker}` | [`platform/api/routers/playbook.py:369`](../../../platform/api/routers/playbook.py#L369) | List available phase report files for a given ticker (from GCS). |
+| `GET` | `/api/reports/{ticker}/{phase}` | [`platform/api/routers/playbook.py:442`](../../../platform/api/routers/playbook.py#L442) | Return the raw markdown text of a specific phase report for a ticker from GCS. |
 | `GET` | `/api/signals/{ticker}` | [`platform/api/routers/signals.py:394`](../../../platform/api/routers/signals.py#L394) | Return historical signals for a ticker. |
 | `GET` | `/api/signals/{ticker}/similar` | [`platform/api/routers/signals.py:509`](../../../platform/api/routers/signals.py#L509) | Return historical signals similar to the supplied bar's conditions. |
 | `POST` | `/api/style/mine-and-validate` | [`platform/api/routers/backtest.py:690`](../../../platform/api/routers/backtest.py#L690) | Mine the caller's closed journal trades into a condition profile, |
