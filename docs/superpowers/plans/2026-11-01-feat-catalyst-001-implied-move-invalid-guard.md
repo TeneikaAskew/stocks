@@ -2,7 +2,7 @@
 feat_id: FEAT-CATALYST-001
 spec: docs/superpowers/specs/2026-10-31-feat-catalyst-001-implied-move-invalid-guard.md
 branch: fix/feat-catalyst-001-implied-move-invalid-guard
-pr: null
+pr: 1670
 status: ready
 ---
 
