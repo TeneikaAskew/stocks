@@ -319,8 +319,14 @@ red-team pass. Not checked: behaviour of the proposed code on any input.
 
 ## Status
 
-Amendment draft, not approved: it awaits the owner's approval of this written step 5 and fifth
-`done_when` item. The text below is the 2026-10-31 spec's admission record, kept as history.
+Amendment draft (`status: draft`). The owner approved this narrow replacement scope on
+2026-11-01 (receipt stocks#1656 comment 6559291354): the truthful message, refusal over the
+folded-text-equal domain including line-ending variants when the change carries a retirement since
+the fork, already-retired historical files keeping their behaviour, every status-only, lineage and
+security safeguard preserved, and the normal replacement-specification route. That receipt is not a
+formal review, Ready, merge or deployment permission. `status: approved` is set only after the owner
+approves this written text. The text below is the 2026-10-31 spec's admission record, kept as
+history.
 
 Spec-only PR from main d806bfd1. Cumulative admission (SKILL.md L40): A, the owner's 15:52:35Z
 approval of the narrow behaviour on the fixed rev2 basis, rendered by Design and Mode and
