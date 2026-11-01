@@ -765,7 +765,7 @@ Live registry continuation: [#1599](https://github.com/TeneikaAskew/stocks/pull/
 
 **Bounded event-reaction integration:** [approved spec #1593](https://github.com/TeneikaAskew/stocks/pull/1593), [implementation #1608](https://github.com/TeneikaAskew/stocks/pull/1608). Repairs the existing producer/brief and additive existing-table evidence only; no issue closure, deployed-screen or forecast claim.
 
-**PR lineage:** [#220](https://github.com/TeneikaAskew/stocks/pull/220) · [#514](https://github.com/TeneikaAskew/stocks/pull/514) · [#532](https://github.com/TeneikaAskew/stocks/pull/532) (the README's PRs column; kinds not classified) · [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) (finite nullable EPS implementation)
+**PR lineage:** [#220](https://github.com/TeneikaAskew/stocks/pull/220) · [#514](https://github.com/TeneikaAskew/stocks/pull/514) · [#532](https://github.com/TeneikaAskew/stocks/pull/532) (the README's PRs column; kinds not classified) · [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) (finite nullable EPS implementation) · [#1608](https://github.com/TeneikaAskew/stocks/pull/1608) (event-bound reaction integration; draft)
 
 Finite nullable estimate contract: [#1618](https://github.com/TeneikaAskew/stocks/pull/1618) (specification; merged). Implementation remains a separate normal delivery. #1301 is touched for invalid optional estimates only; its multi-source estimate-dedup behavior is not claimed fixed.
 
