@@ -36,6 +36,8 @@ import argparse
 import logging
 import os
 import sys
+from dataclasses import dataclass, field
+from numbers import Integral
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -69,25 +71,69 @@ COLD_START_LOOKBACK_HOURS = 48
 MAX_INCREMENTAL_HOURS = 24 * 7
 
 
-def _fetch(params: dict) -> list[dict]:
-    """Issue a single NEWS_SENTIMENT call and return the raw `feed` list."""
+@dataclass(frozen=True)
+class FetchOutcome:
+    state: str
+    error_kind: str | None = None
+    feed: tuple = field(default=(), repr=False)
+
+@dataclass(frozen=True)
+class SourceOutcome:
+    state: str
+    error_kind: str | None = None
+
+@dataclass(frozen=True)
+class BatchOutcome:
+    frame: pd.DataFrame = field(repr=False)
+    outcomes: tuple[SourceOutcome, ...] = ()
+
+def _error(kind):
+    logger.warning("NEWS_SENTIMENT unavailable category=%s", kind)
+    return FetchOutcome("error", kind)
+
+def _valid_article(article):
+    if not isinstance(article, dict):
+        return False
+    for name in ("title", "url", "summary", "source", "overall_sentiment_label"):
+        if article.get(name) is not None and not isinstance(article[name], str):
+            return False
+    ts = article.get("time_published")
+    if not isinstance(ts, str) or len(ts) > 80 or _parse_av_timestamp(ts) is None:
+        return False
+    tickers = article.get("ticker_sentiment")
+    if not isinstance(tickers, list):
+        return False
+    if any(not isinstance(t, dict) or not isinstance(t.get("ticker"), str) or not t["ticker"].strip() for t in tickers):
+        return False
+    topics = article.get("topics")
+    if topics is not None and (not isinstance(topics, list) or any(not isinstance(t, dict) or not isinstance(t.get("topic"), str) for t in topics)):
+        return False
+    return True
+
+def _fetch(params: dict) -> FetchOutcome:
+    """One unchanged request; never mistake a failure for a valid empty feed."""
     try:
         import requests
-    except ImportError:
-        logger.error("requests library not available")
-        return []
-
-    try:
         resp = requests.get(AV_BASE_URL, params=params, timeout=30)
+    except Exception:
+        return _error("transport")
+    try:
         resp.raise_for_status()
+    except Exception:
+        return _error("http")
+    try:
         data = resp.json()
     except Exception:
-        logger.warning("AV NEWS_SENTIMENT request failed")
-        return []
-
-    if "Information" in data:
-        logger.warning("AV NEWS_SENTIMENT provider Information response")
-    return data.get("feed", []) or []
+        return _error("json")
+    if not isinstance(data, dict):
+        return _error("schema")
+    for key, kind in (("Information", "provider_information"), ("Note", "provider_note"), ("Error Message", "provider_error")):
+        if key in data:
+            return _error(kind)
+    feed = data.get("feed")
+    if not isinstance(feed, list) or any(not _valid_article(a) for a in feed):
+        return _error("schema")
+    return FetchOutcome("ok" if feed else "empty", feed=tuple(feed))
 
 
 def _article_to_rows(article: dict) -> list[dict]:
@@ -168,8 +214,8 @@ def _earnings_calendar_tickers(window_days: int) -> list[str]:
     """
     try:
         df = query_to_dataframe(sql, {"w": window_days})
-    except Exception as e:
-        logger.warning("earnings_calendar lookup failed: %s", e)
+    except Exception:
+        logger.warning("NEWS_SENTIMENT unavailable category=earnings_lookup")
         return []
     if df is None or df.empty:
         return []
@@ -192,7 +238,7 @@ def _last_published_ts(ticker: str) -> Optional[datetime]:
     try:
         df = query_to_dataframe(sql, {"tk": ticker.upper()})
     except Exception:
-        logger.warning("could not read MAX(published_ts) for %s; treating as cold start", ticker)
+        logger.warning("NEWS_SENTIMENT unavailable category=cursor_lookup; treating as cold start")
         return None
     if df.empty or df.iloc[0, 0] is None:
         return None
@@ -246,7 +292,7 @@ def _resolve_incremental_time_from(
         reason = "incremental"
 
     av_str = floor.astimezone(timezone.utc).strftime("%Y%m%dT%H%M")
-    logger.info("ticker %s incremental floor=%s (%s)", ticker, av_str, reason)
+    logger.info("NEWS_SENTIMENT incremental floor=%s category=%s", av_str, reason)
     return av_str
 
 
@@ -254,7 +300,7 @@ def fetch_by_tickers(
     tickers: list[str], api_key: str, limit: int,
     time_from: str | None = None, time_to: str | None = None,
     incremental: bool = False,
-) -> pd.DataFrame:
+) -> BatchOutcome:
     """Ticker-mode pull — one AV call per ticker, exploded across all
     tickers each article mentions.
 
@@ -270,6 +316,7 @@ def fetch_by_tickers(
     AV quota on duplicate-pull bandwidth.
     """
     rows: list[dict] = []
+    outcomes: list[SourceOutcome] = []
     # Snap "now" once per batch so all tickers see the same clock.
     batch_now = datetime.now(timezone.utc) if incremental else None
 
@@ -292,24 +339,22 @@ def fetch_by_tickers(
             params["time_to"] = time_to
         if tk_time_from or time_to:
             params["sort"] = "EARLIEST"
-        feed = _fetch(params)
-        if not feed:
-            logger.info("no articles for ticker %s", tk)
-            continue
-        article_rows: list[dict] = []
-        for article in feed:
-            article_rows.extend(_article_to_rows(article))
-        logger.info(
-            "ticker %s: %d articles → %d (article, ticker) rows",
-            tk,
-            len(feed),
-            len(article_rows),
-        )
-        rows.extend(article_rows)
-    return pd.DataFrame(rows) if rows else pd.DataFrame()
+        try:
+            result = _fetch(params)
+            article_rows = []
+            if result.state == "ok":
+                for article in result.feed:
+                    article_rows.extend(_article_to_rows(article))
+            outcomes.append(SourceOutcome(result.state, result.error_kind))
+            rows.extend(article_rows)
+        except Exception:
+            # Unrecognized exceptions are errors, never retryable or valid-empty.
+            logger.warning("NEWS_SENTIMENT unavailable category=source_failure")
+            outcomes.append(SourceOutcome("error", "source_failure"))
+    return BatchOutcome(pd.DataFrame(rows), tuple(outcomes))
 
 
-def fetch_by_topics(topics: list[str], api_key: str, limit: int) -> pd.DataFrame:
+def fetch_by_topics(topics: list[str], api_key: str, limit: int) -> BatchOutcome:
     """Topic-mode pull — one AV call covering up to 5 topics, exploded
     across all tickers each article mentions."""
     if len(topics) > 5:
@@ -318,7 +363,7 @@ def fetch_by_topics(topics: list[str], api_key: str, limit: int) -> pd.DataFrame
             len(topics),
         )
         topics = topics[:5]
-    feed = _fetch(
+    result = _fetch(
         {
             "function": "NEWS_SENTIMENT",
             "topics": ",".join(topics),
@@ -326,19 +371,17 @@ def fetch_by_topics(topics: list[str], api_key: str, limit: int) -> pd.DataFrame
             "apikey": api_key,
         }
     )
-    if not feed:
-        logger.info("no articles for topics %s", topics)
-        return pd.DataFrame()
     rows: list[dict] = []
-    for article in feed:
-        rows.extend(_article_to_rows(article))
-    logger.info(
-        "topics %s: %d articles → %d (article, ticker) rows",
-        topics,
-        len(feed),
-        len(rows),
-    )
-    return pd.DataFrame(rows) if rows else pd.DataFrame()
+    try:
+        if result.state == "ok":
+            for article in result.feed:
+                rows.extend(_article_to_rows(article))
+        outcome = SourceOutcome(result.state, result.error_kind)
+    except Exception:
+        logger.warning("NEWS_SENTIMENT unavailable category=source_failure")
+        outcome = SourceOutcome("error", "source_failure")
+        rows = []
+    return BatchOutcome(pd.DataFrame(rows), (outcome,))
 
 
 def _safe_float(val) -> float | None:
@@ -360,7 +403,7 @@ def _parse_av_timestamp(ts_str: str) -> datetime | None:
         try:
             return datetime.fromisoformat(ts_str).replace(tzinfo=timezone.utc)
         except ValueError:
-            logger.debug("unparseable timestamp: %s", ts_str)
+            logger.debug("NEWS_SENTIMENT invalid article timestamp")
             return None
 
 
@@ -487,21 +530,27 @@ def main():
             tickers = tickers[: args.max_tickers]
 
     frames: list[pd.DataFrame] = []
+    outcomes: list[SourceOutcome] = []
     if tickers:
-        df = fetch_by_tickers(
+        batch = fetch_by_tickers(
             tickers, api_key, limit=args.limit,
             time_from=args.time_from, time_to=args.time_to,
             incremental=args.since_last,
         )
-        if not df.empty:
-            frames.append(df)
+        outcomes.extend(batch.outcomes)
+        if not batch.frame.empty:
+            frames.append(batch.frame)
     if topics:
-        df = fetch_by_topics(topics, api_key, limit=args.limit)
-        if not df.empty:
-            frames.append(df)
+        batch = fetch_by_topics(topics, api_key, limit=args.limit)
+        outcomes.extend(batch.outcomes)
+        if not batch.frame.empty:
+            frames.append(batch.frame)
 
+    failed = any(o.state == "error" for o in outcomes)
     if not frames:
-        logger.warning("no news data fetched from any source")
+        logger.info("NEWS_SENTIMENT terminal=%s", "failed" if failed else "valid_empty")
+        if failed:
+            raise SystemExit(1)
         return
 
     combined = pd.concat(frames, ignore_index=True)
@@ -515,10 +564,21 @@ def main():
         with pd.option_context("display.max_colwidth", 60):
             print(combined.to_string(index=False))
         print(f"\n[dry-run] {len(combined)} rows — not written to DB")
+        if failed:
+            raise SystemExit(1)
         return
 
-    n = persist_to_cloud_sql(combined)
-    print(f"Persisted {n} news sentiment rows to Cloud SQL")
+    try:
+        n = persist_to_cloud_sql(combined)
+    except Exception:
+        logger.error("NEWS_SENTIMENT terminal=write_uncertain")
+        raise SystemExit(1) from None
+    if isinstance(n, bool) or not isinstance(n, Integral) or n != len(combined):
+        logger.error("NEWS_SENTIMENT terminal=write_uncertain")
+        raise SystemExit(1)
+    logger.info("NEWS_SENTIMENT terminal=%s acknowledged_rows=%d", "partial" if failed else "complete", n)
+    if failed:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

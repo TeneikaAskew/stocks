@@ -76,7 +76,8 @@ def test_last_published_ts_naive_treated_as_utc(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_incremental_cold_start_uses_48h_lookback():
+def test_resolve_incremental_cold_start_uses_48h_lookback(monkeypatch):
+    monkeypatch.setattr(fns, "query_to_dataframe", lambda *a, **k: pd.DataFrame())
     now = datetime(2026, 4, 27, 12, 0, tzinfo=timezone.utc)
     out = fns._resolve_incremental_time_from("NEWTKR", now, last_ts=None)
     expected = (now - timedelta(hours=fns.COLD_START_LOOKBACK_HOURS)).strftime("%Y%m%dT%H%M")
@@ -134,7 +135,7 @@ def _captured_params(captured: list[dict]):
     """Return a stub for `_fetch` that records params and yields no rows."""
     def _stub(params):
         captured.append(dict(params))
-        return []  # empty feed → fetch_by_tickers continues to next ticker
+        return fns.FetchOutcome("empty")  # valid empty source continues to next ticker
     return _stub
 
 
