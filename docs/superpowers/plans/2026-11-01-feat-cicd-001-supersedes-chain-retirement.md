@@ -184,13 +184,26 @@ done_when[3], done_when[4].
       two and three; quoted-to-quoted, plain-to-quoted, spaced and commented values on the entry alone, which the
       parser reads as today; an unchanged body `status:` line. `status : approved` (space before the colon) stays
       refused, by the spec's own lambda (`^status:.*$` does not blank it) and by the in-place rule, on main too.
-      Main's 57 specs carry exactly `status: approved` (48) or `status: superseded` (9), no body `status:` line and
-      no CR byte. The in-place rule, `frontmatter`, the hook, the pinned copies and the workflows are untouched: at
+      At a79ac45d (this branch's base) 61 spec files, 54 with a status line, carry exactly `status: approved` (46) or
+      `status: superseded` (8); at ca043892 (main when this was measured) 64 files, 57 with a status line, 48 and 9;
+      neither has a body `status:` line or a CR byte. The in-place rule, `frontmatter`, the hook, the pinned copies and the workflows are untouched: at
       depth one the hidden key is still admitted through the in-place rule on this gate as on main (the test's last
-      case). So the exemption is a subset of what the in-place rule admits, narrower by four edit shapes (CRLF
-      relabel, hidden key, rewritten and moved body `status:` lines); the "coextensive" sentences of step 3 and
-      Approaches 3 are not literally true for those shapes, while done_when 2 and the Risks entry are what the code
-      follows. The merged spec is not edited.
+      case). So the exemption is a subset of what the in-place rule admits, narrower by at least these edit shapes,
+      each admitted at depth one on main and refused here at depth two (IMPL-CICD3 R1 and R3, executed): a CRLF
+      relabel, a key hidden on the entry line, a separator alone at the end of that line, a rewritten, moved or
+      inserted body `status:` line, any non-UTF-8 byte in the file even if unchanged, and a frontmatter whose second
+      line starts `---` (`status_entry` takes it as the closing line; `frontmatter` reads on). The "coextensive"
+      sentences of step 3 and Approaches 3 are not literally true for those shapes. done_when 2 holds: its four
+      enumerated byte changes sit outside the status entry and are refused. The Risks bullet "any extra byte in P
+      must still be refused" holds only read as "any byte outside the frontmatter status entry": read literally it
+      is exceeded by the safe forms the owner's settled scope keeps on the entry line, which the code admits at depth
+      two where main refuses them (plain to quoted, an added comment, added trailing whitespace on that line). That
+      Risks sentence is the one spec clause those forms conflict with; the merged spec is not edited.
+      Known and recorded after IMPL-CICD3, not changed in this head: the step 5 mode conjunct compares the head's mode
+      with the current base's, so when main (not the branch) flipped P and changed its mode, the true "merge main"
+      advice is dropped and round eight alone is printed (fail-closed, rc unchanged; IMPL-CICD3 R1 F1, P2); the
+      `status_entry` docstring's "the way `frontmatter` finds it" does not hold for a second line starting `---`
+      (IMPL-CICD3 R3 P3-2), which fails closed as above.
       R1 F1 (P2): the step 5 diagnostic also requires `ch.tree.mode(path) == ch.base.mode(path)`, because a mode
       change alone (100644 to 100755, bytes identical) keeps a superseded spec in the change after a merge of main,
       so "merge main so the file leaves this change" was false (29314273 printed it beside round eight; main prints
