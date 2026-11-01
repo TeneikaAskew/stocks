@@ -2,7 +2,7 @@
 feat_id: FEAT-DEPLOY-001
 spec: docs/superpowers/specs/2026-10-31-feat-deploy-001-retire-ew-evaluator.md
 branch: fix/feat-deploy-001-retire-ew-evaluator
-pr: null
+pr: 1658
 status: ready
 ---
 
