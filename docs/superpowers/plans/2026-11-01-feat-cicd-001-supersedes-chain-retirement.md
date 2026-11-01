@@ -1,6 +1,6 @@
 ---
 feat_id: FEAT-CICD-001
-spec: docs/superpowers/specs/2026-10-31-feat-cicd-001-supersedes-chain-retirement.md
+spec: docs/superpowers/specs/2026-11-01-feat-cicd-001-truthful-redundant-retirement.md
 branch: feature/feat-cicd-001-supersedes-chain-retirement
 pr: 1656
 status: ready
