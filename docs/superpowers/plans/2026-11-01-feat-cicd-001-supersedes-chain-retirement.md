@@ -239,6 +239,25 @@ done_when[3], done_when[4].
       prints the same lines as f60f9950 everywhere except the symlink case and the criss-cross case, where the advice
       is gone, and the same as c67bb4d0 everywhere except a mode change made only on main (C01, C05), where it adds the
       advice.
+      Correction after IMPL-CICD5 (pass on c094edf8 of 2026-11-01, not empty; owner direction of 2026-11-01
+      13:15:13Z; the entries above are kept as written). The sentence "round eight and every refusal are unchanged"
+      held only within the 20-case matrix it names and in fixtures where round eight accompanies the step 5 line.
+      IMPL-CICD5 R2 F1: the step 5 line is itself a refusal (spec step 5, fail-closed; approach 5 rejects admitting the
+      redundant flip as a no-op), and c67bb4d0 to c094edf8 made the refusal, not only its wording, depend on the merge
+      prediction, so a null-pointer flip with no round eight passed (rc 0) with a branch-only mode change, a symlink on
+      main or a criss-cross history. The refusal now applies to every redundant retirement flip: base superseded, head
+      bytes equal to the base's, and the merge base not holding the spec superseded (absent there, or in another
+      status). A mode-only change to a spec already superseded at the fork is not a flip and keeps main's result
+      (step 6). The exact merge-main text is kept where its prediction is proven (as above); elsewhere the refusal
+      reads "already superseded on the current base; this change repeats that retirement" and makes no merge
+      prediction. Measured with a 25-row fixture matrix on main 27c3c9ec, c67bb4d0, f60f9950, c094edf8 and the
+      candidate, each row checked against `git merge-tree`: deliberate rc differences are the null-pointer flips that
+      the spec's step 5 refuses and that main admits (linear with a branch-only mode change, a symlink on main, two
+      criss-cross shapes: rc 0 to 1 against c094edf8, and also the main-only mode change against c67bb4d0); the rows
+      with round eight keep rc 1 and gain the generic line where the prediction is unproven; every row outside the
+      redundant-flip domain prints what it printed before.
+      `test_redundant_flip_is_refused_whatever_the_mode_or_history` (new) fails on main, c67bb4d0, f60f9950 and
+      c094edf8; the two advice tests now also assert the generic line, and fail on all four.
 - [ ] Run the tests from Tasks 3 to 9: all PASS. Run Task 4's tests again: still PASS with today's messages.
 
 ## Task 11: suites and gates, locally
@@ -268,6 +287,9 @@ Spec: § Ownership, sequence and review roles (review roles; the #1630 invocatio
       corrections, this plan and the Task 13 records) is reviewed as one head and pushed only if IMPL-CICD4 is empty.
       IMPL-CICD4 on f60f9950 was not empty (one P2, six P3, no P1), so f60f9950 was not pushed; all four local passes
       are spent. Any further verification of the corrected head is reserved by the owner after inspecting it.
+      IMPL-CICD5 (the owner's one bounded extension, 2026-11-01 12:31:04Z) on c094edf8 was not empty (six P3, no P1
+      or P2), so c094edf8 was not pushed; all five local passes are spent. The IMPL-CICD5 correction above is an
+      unreviewed author candidate; no further pass is reserved.
 
 ## Task 13: close
 Spec: § Done when (done_when 10); § Ownership, sequence and review roles (the WORKFLOW_FEAT gap). Advances done_when[9].
@@ -277,8 +299,9 @@ Spec: § Done when (done_when 10); § Ownership, sequence and review roles (the 
 - [ ] `docs/product/12-PR-ISSUE-TRACEABILITY.md`: add this PR under FEAT-CICD-001. No other row or record changes.
 - [ ] `python3 scripts/maintenance/docs_audit.py` on the branch and on `origin/main`: no finding the branch adds.
       Measured on the committed candidate (the commit carrying this text) against 27c3c9ec: no new finding; two existing 03-SITE-TRACEABILITY
-      findings carry branch-specific detail (12 content commits instead of 9, counting this branch's commits under
-      scripts/ and tests/; source identity unavailable because the branch's source is not main's), inherent to any change
+      findings carry branch-specific detail (13 content commits instead of 9 on the IMPL-CICD5 correction commit, 12 on
+      c094edf8, counting this branch's commits under scripts/ and tests/; source identity unavailable because the
+      branch's source is not main's, where main itself reports the verifier's input-byte ceiling), inherent to any change
       there. (The receipt first recorded for f60f9950 was measured on the uncommitted tree over 21a7bcb6, which counted 10.)
 - [ ] `python3 scripts/gate/spec_gate.py --pr origin/main`: `spec gate ok`.
 - [ ] Tick every done_when box in the PR body with its evidence; the Ready transition and the merge wait for the owner's
