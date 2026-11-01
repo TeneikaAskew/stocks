@@ -2790,11 +2790,8 @@ deploy_fetch_economic_events() {
 
 deploy_fetch_earnings_calendar() {
     echo "Deploying fetch-earnings-calendar job..."
-    local ew_user ew_pass ew_env
-    ew_user="$(_secret ew-user 2>/dev/null || true)"
-    ew_pass="$(_secret ew-pass 2>/dev/null || true)"
-    ew_env="${ENV_STRING}${ew_user:+,EW_USER=${ew_user}}${ew_pass:+,EW_PASS=${ew_pass}}"
-
+    # EarningsWhispers retired 2026-10-31: the job no longer receives EW_USER /
+    # EW_PASS (the ew-user / ew-pass secrets stay as resources, read by no job).
     # task-timeout 1800s (30 min): the AV HISTORICAL_OPTIONS enrichment
     # adds 1 API call per unique earnings ticker in the today-1..today+7
     # window. At ~800–2000 unique tickers × 150 RPM ≈ 5–14 min, plus
@@ -2806,14 +2803,14 @@ deploy_fetch_earnings_calendar() {
         --service-account "${SA_EMAIL}" \
         --command "python,scripts/fetch_earnings_calendar.py,--source,all,--days,30" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${ew_env}" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update fetch-earnings-calendar \
         --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --task-timeout 1800 \
         --command "python,scripts/fetch_earnings_calendar.py,--source,all,--days,30" \
         ${DB_SECRET_FLAG} \
-        --set-env-vars "${ew_env}" \
+        --set-env-vars "${ENV_STRING}" \
         --quiet
 }
 
@@ -5424,6 +5421,7 @@ case "${1:-help}" in
     pg-dump) _run build_image deploy_weekly_pg_dump ;;
     setup-pg-dump-iam) _PIN_AFTER=0; setup_pg_dump_iam ;;
     fred-rates) _run build_image deploy_fetch_fred_rates ;;
+    earnings-calendar) _run build_image deploy_fetch_earnings_calendar ;;
     evaluate-ew-strikes) _run build_image deploy_evaluate_ew_strikes ;;
     db-query) _run build_image deploy_db_query ;;
     freshness-watchdog) _run build_image deploy_freshness_watchdog ;;
@@ -5553,6 +5551,8 @@ case "${1:-help}" in
         echo "             objectAdmin on the dump bucket, lifecycle rule sets 30d"
         echo "             retention on the sql-dumps/ prefix."
         echo "  fred-rates Deploy fetch-fred-rates job (DGS3MO daily into daily_rates)"
+        echo "  earnings-calendar"
+        echo "             Deploy fetch-earnings-calendar job alone (AV + UW + Yahoo; EW retired 2026-10-31)."
         echo "  evaluate-ew-strikes"
         echo "             Deploy evaluate-ew-strikes job alone (EW strike verdicts, 23:00 ET)."
         echo "  gamma-levels"

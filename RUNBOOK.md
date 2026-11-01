@@ -430,7 +430,9 @@ gcloud storage buckets create gs://adept-mountain-474619-d4-trading-data \
 # This is the LONG POLE. For each, get the value from the provider's portal:
 #   - av-api-key (alphavantage.co)
 #   - fred-api-key (research.stlouisfed.org)
-#   - ew-user / ew-pass (earningswhispers.com)
+#   - ew-user / ew-pass (earningswhispers.com): RETAINED, UNUSED since the
+#     2026-10-31 EarningsWhispers retirement; no job reads them, so there is
+#     nothing to re-issue for them (the resources are kept, not deleted)
 #   - benzinga-api-key (benzinga.com)
 #   - sec-user-agent (your email — required by SEC)
 #   - github-pat / gh-stocks-repo-pat (github.com/settings/tokens)
