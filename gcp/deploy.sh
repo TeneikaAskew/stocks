@@ -3047,8 +3047,8 @@ deploy_compute_earnings_reactions() {
 #   weekly: REFRESH MATERIALIZED VIEW × 2 (earnings_event_outcomes,
 #           earnings_ticker_lean). Heavy join, ~2-5 min wall-clock.
 #   daily:  Rebuilds earnings_upcoming_with_history (next 14 days,
-#           decorated with lean stats + both recommendation modes).
-#           Light query work, ~30s typical.
+#           decorated with lean stats; score and recommendation columns
+#           are NULL once the EW source retirement (#1681) lands). ~30s.
 # Single Cloud Run Job + two Scheduler entries with different --args.
 #
 # Capacity (Rule 0): weekly mode is the bottleneck — REFRESH
