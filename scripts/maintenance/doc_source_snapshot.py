@@ -26,6 +26,10 @@ SITE = "docs/product/03-SITE-TRACEABILITY.md"
 REGISTRY = "docs/DOC_REGISTRY.md"
 RECORD = "docs/review-evidence/site-source-snapshot.json"
 SPEC = "docs/superpowers/specs/2026-10-13-feat-cicd-001-source-review-verifier.md"
+# The DOC-only close-out record binds the current approved protocol spec. The
+# 2026-11-02 spec supersedes SPEC on main (#1690) and retains its acceptance items;
+# the historical initial-bootstrap route keeps binding SPEC.
+CLOSEOUT_SPEC = "docs/superpowers/specs/2026-11-02-feat-cicd-001-verifier-twelve-mib.md"
 MODULE = "scripts/maintenance/doc_source_snapshot.py"
 MAX_SECONDS = 5.0
 MAX_BYTES = 8388608
@@ -834,7 +838,7 @@ class Snapshot:
         if bootstrap:
             kind, feat, path = "initial-bootstrap", "FEAT-CICD-001", SPEC
         elif doc_pending:
-            kind, feat, path = "trunk-closeout-pending", "FEAT-CICD-001", SPEC
+            kind, feat, path = "trunk-closeout-pending", "FEAT-CICD-001", CLOSEOUT_SPEC
         else:
             kind = "declared-note"
             if record is None:
