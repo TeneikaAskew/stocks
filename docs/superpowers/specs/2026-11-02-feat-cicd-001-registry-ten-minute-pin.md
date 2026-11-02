@@ -5,11 +5,11 @@ issues: [1684]
 canvases: []
 site_source_notes: [SHARED-01]
 done_when:
-  - "The pinned `scripts/gate/pinned/registry-check.yml` has literal `jobs.registry.timeout-minutes: 10` while the live `.github/workflows/registry-check.yml` stays byte-identical to MAIN with `timeout-minutes: 6`; the pinned copy's diff is exactly one line, `    timeout-minutes: 6` to `    timeout-minutes: 10`, at the job level of `registry`. A recorded YAML load asserts the integer 10 at job level, with recorded negative controls failing for the key missing, the value only on a step and the value quoted as \"10\"; a recorded text check fails for `012`, `0xA`, `1_0`, `+10`, `!!int \"10\"`, `\"10\"`, `10.0`, a second job without a timeout, a step-level `timeout-minutes` and a change on any other line (#1684 N1)."
+  - "The pinned `scripts/gate/pinned/registry-check.yml` has literal `jobs.registry.timeout-minutes: 10` while the live `.github/workflows/registry-check.yml` stays byte-identical to MAIN with `timeout-minutes: 6`; the pinned copy's diff is exactly one line, `    timeout-minutes: 6` to `    timeout-minutes: 10`, at the job level of `registry`. A recorded YAML load asserts the integer 10 at job level, with recorded negative controls failing for the key missing, the value only on a step and the value quoted as \"10\"; a recorded text check fails for `012`, `0xA`, `1_0`, `+10`, `!!int \"10\"`, `\"10\"`, `10.0`, a second job without a timeout, a step-level `timeout-minutes` and a change on any other line (#1684 N1); no other file changes beyond this stage's plan and the named delivery records, with no other execution, permission, dependency, isolation, runner or runtime-deadline change."
   - "Existing native pin-order and workflow-contract controls pass and reject a live-only or simultaneous pin/live timeout change; every original test, assertion, native invocation and required check stays present and passes, with the suite still serial and unchanged."
   - "The exact-head registry job, still bounded at six minutes, passes with the unchanged exporter; its head and whole-job time are recorded, without claiming the ten-minute envelope is active."
   - "Own delivery records, ordinary SHARED-01 source proof, full-default main/proposed no-new audits, the gate-file red-team pass, current-head review as CLAUDE.md section 2.5 counts it (or an owner-recorded substitute for that PR), every required check and zero unresolved threads are complete; the parent's live-stage criteria stay with the live-stage PR, which binds the parent spec, and no global completion is claimed."
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -29,6 +29,10 @@ has no stage filter, so a pin PR bound to the parent cannot truthfully go Ready.
 unchanged and is the live-stage PR's spec, with every item. This primary carries only the
 achievable pin-stage obligations, as `2026-10-24-feat-cicd-001-registry-ci-envelope-pin.md` did for
 the six-minute envelope (#1591). No parent criterion is deleted, waived or marked complete here.
+
+Item 1 also carries #1684 N1's pin-stage text check, an obligation the parent does not state.
+#1684 stays open for N1's live-stage conjunct, which the live-stage PR records alongside the
+parent's items.
 
 ## Exact scope and sequence
 
