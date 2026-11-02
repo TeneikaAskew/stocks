@@ -1,7 +1,8 @@
 """FEAT-CATALYST-001: recommended_structure's implied_move_invalid keyword.
 
-Contract: docs/superpowers/specs/2026-10-31-feat-catalyst-001-implied-move-invalid-guard.md
-(approved; merged as ca043892). The keyword is an explicit invalid-state
+Contract: docs/superpowers/specs/2026-11-01-feat-catalyst-001-implied-move-invalid-guard-source-note.md
+(approved successor of the 2026-10-31 spec merged as ca043892; done_when items 1 to 6
+are byte-identical). The keyword is an explicit invalid-state
 interface for a caller that saw an implied move that was present but not a
 usable number. It is not an upstream data repair: no caller passes it yet.
 """
