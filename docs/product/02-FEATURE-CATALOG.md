@@ -301,11 +301,11 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation; finite EPS normalization verified locally, rollout pending |
+| Status | Production but needs remediation; finite EPS normalization verified locally, rollout pending; EarningsWhispers source retirement implementation in draft [#1681](https://github.com/TeneikaAskew/stocks/pull/1681), not merged, not deployed |
 | Priority | P1 |
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-10-27 |
+| Last reviewed | 2026-11-02 |
 | Evidence status | Finite EPS source/local tests verified; current-head external review, hosted checks and rollout pending; other catalyst work remains open |
 | UI surface | `/catalysts` |
 | Backend | `/api/catalysts`, `/api/earnings` |
@@ -318,6 +318,8 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Next action | Complete narrow [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) reviews/checks and existing API/producer rollout; broader Phase 3 work remains open |
 
 Finite-number slice: approved spec [#1618](https://github.com/TeneikaAskew/stocks/pull/1618) is MAIN. Implementation draft [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) preserves actual producer/API normalization,185focused checks including independent-session local PostgreSQL commit/read and the real routed response, and31API preservation checks (overlapping suite). Final hermetic unit verification at2ad639e1:7719passed,51skipped,112warnings; integration was excluded from that full unit command and the real local PG proof is separately retained. No deployment/source-equivalence, current-source freshness or complete catalyst remediation is certified. Touches #1269 and only #1301's numeric-title behavior; cross-source dedup/selection remains unchanged and unresolved.
+
+EarningsWhispers source retirement: approved spec [#1657](https://github.com/TeneikaAskew/stocks/pull/1657) is MAIN (`docs/superpowers/specs/2026-10-31-feat-catalyst-001-retire-ew-source.md`). Implementation draft [#1681](https://github.com/TeneikaAskew/stocks/pull/1681) stops the EarningsWhispers fetch, excludes its rows from the six owned `earnings_calendar` readers through the NULL-safe `EARNINGS_NOT_RETIRED_SQL` predicate, writes the five EarningsWhispers-derived recommendation fields as NULL and names each earnings event's actual sources; historical rows are kept. Local hermetic tests only; the 42 done_when items the spec carries from the 2026-10-13 AV catalysts delivery spec are not met by it, and nothing is deployed.
 
 ### FEAT-REPORT-001
 

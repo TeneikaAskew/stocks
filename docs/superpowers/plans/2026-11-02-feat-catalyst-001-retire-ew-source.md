@@ -2,7 +2,7 @@
 feat_id: FEAT-CATALYST-001
 spec: docs/superpowers/specs/2026-10-31-feat-catalyst-001-retire-ew-source.md
 branch: fix/feat-catalyst-001-retire-ew-source
-pr: null
+pr: 1681
 status: ready
 ---
 
