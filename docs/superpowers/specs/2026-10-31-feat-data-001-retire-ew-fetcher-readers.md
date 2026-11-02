@@ -77,7 +77,7 @@ FEAT-DATA-001 catalog record:
 - No open pull request changes `fetch_market_data.py`, `fetch_sec_filings.py`, `fetch_premarket_refresh.py`
   or the FEAT-DATA-001 catalog record.
 
-Rule, new in this text and offered for owner acceptance with it: the implementation adds the predicate to
+Coordination, as ordinary engineering for any two branches touching one file: the implementation adds the predicate to
 whichever form of each function is on main when its branch is cut, and edits no other pull request's
 branch. Where one of the pull requests above is still open when the implementation is cut, whichever of the
 two merges second merges main, reapplies its own lines and rebinds its own SITE row, as the shared SHARED-07
