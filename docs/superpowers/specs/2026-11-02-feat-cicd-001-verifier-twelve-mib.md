@@ -14,10 +14,10 @@ done_when:
   - "Actual producer failure/corrupt output cannot pass the verifier or audit; real CLI tests cover nonzero/partial producer output, validly formatted mismatched records and unsupported record versions instead of synthetic success dictionaries."
   - "Catalog, PR traceability, delivery skill and template distinguish source-identity-matched/review pending from authenticated CODE review and deployed-state verification; actual DOC-only body-update and terminal current-trunk stamp/sidecar-retirement tests pass, including refusal of CODE changes or premature retirement, and post-merge main/staging close-out remains mandatory."
   - "`scripts/maintenance/doc_source_snapshot.py` sets `MAX_BYTES = 12582912`, and the `Budget` bound and the CLI `--max-input-bytes` default follow it; a separate `MAX_FILE_BYTES = 8388608` is what `scripts/maintenance/docs_audit.py` compares the registry file size against, with its existing refusal message unchanged. Nothing else about what is read, hashed, admitted or refused changes: no read is removed, deduplicated or trimmed, repeated reads are still charged, and the five-second deadline and 20000-entry ceiling are unchanged."
-  - "`tests/scripts/test_doc_source_snapshot.py` controls that hard-code 8388608 name the constant they mean and still fail an over-ceiling input, with no assertion removed or weakened; new controls show a verify whose actual input totals exactly `MAX_BYTES` is admitted and one byte more is refused with the input-byte allowance reason, `--max-input-bytes` above `MAX_BYTES` is refused, and a registry file of exactly 8388608 bytes passes the audit's per-file check while 8388609 bytes is refused with the eight-MiB message, each reproduced as failing or absent on main first where main behaves differently."
-  - "The implementation PR records, from the unchanged CLI on its head, `counted_bytes` and `elapsed_seconds` for a main self-check and for the head, each inside the unchanged five-second deadline and 20000-entry ceiling, and names by SHA at least one real ref that the 8388608-byte ceiling refused with the input-byte allowance reason, with its result under the new ceiling (identity-matched, or a refusal for a different stated reason)."
+  - "`tests/scripts/test_doc_source_snapshot.py` controls that hard-code 8388608 name the constant they mean and still fail an over-ceiling input, with no assertion removed or weakened (an upper bound that means \"within the combined ceiling\" names `MAX_BYTES` and keeps that meaning); new controls show a verify whose actual input totals exactly `MAX_BYTES` is admitted and one byte more is refused with the reason `object exceeds remaining input-byte allowance`, `--max-input-bytes` above `MAX_BYTES` is refused, and a registry file of exactly 8388608 bytes passes the audit's per-file check while 8388609 bytes is refused with the eight-MiB message, each reproduced as failing or absent on main first where main behaves differently."
+  - "The implementation PR records, from the unchanged CLI on its head, `counted_bytes` and `elapsed_seconds` for a main self-check and for the head, each inside the unchanged five-second deadline and 20000-entry ceiling, and names by SHA at least one real ref that the 8388608-byte ceiling refused with the reason `object exceeds remaining input-byte allowance`, with its result under the new ceiling (identity-matched, or a refusal for a different stated reason)."
   - "`.claude/skills/product-delivery/SKILL.md` shows the verify command with `--max-input-bytes 12582912`; no other process document changes its meaning."
-  - "Source identity (SHARED-01): on the implementation PR head the existing producer and verifier, run from the committed HEAD with its fixed ceilings, prove committed source and SITE body identity bound to this approved spec at the actual merge base, where its blob equals the one on current main; the plan binds this spec; the only SITE change is the FEAT-CICD-001 / SHARED-01 row of the Implementation-source notes table with the prefix source_identity_sha256=<current source hash> and nonempty prose describing this change and its tests while keeping the earlier accurate own content of that row; the sidecar is produced from the final committed SITE body and committed; the matched main and branch `scripts/maintenance/docs_audit.py` runs report no finding that main does not; the registry `docs/DOC_REGISTRY.md` blob, mode and type equal main's; a red-team pass on the verifier surface and the required current-head checks pass before merge under the repository's existing review rules, which this spec does not extend."
+  - "Source identity (SHARED-01): on the implementation PR head the existing producer and verifier, run from the committed HEAD with its fixed ceilings, prove committed source and SITE body identity bound to this approved spec at the actual merge base, where its blob equals the one on current main; the plan binds this spec; the only SITE change is the FEAT-CICD-001 / SHARED-01 row of the Implementation-source notes table with the prefix source_identity_sha256=<current source hash> and nonempty prose describing this change and its tests while keeping the earlier accurate own content of that row; the sidecar is produced from the final committed SITE body and committed; the matched main and branch `scripts/maintenance/docs_audit.py` runs report no finding that main does not; the registry `docs/DOC_REGISTRY.md` blob, mode and type equal main's; a red-team pass on the verifier surface (an obligation this spec adds, admitted with this text) and the required current-head checks pass before merge under the repository's existing review rules, which this spec does not otherwise extend."
 status: draft
 supersedes: docs/superpowers/specs/2026-10-13-feat-cicd-001-source-review-verifier.md
 ---
@@ -78,9 +78,9 @@ implementation head with the new constant; they are not reimplemented. Items 9 t
   about 50% more bytes is not proven to fit cold runs inside five seconds; item 11 measures it, and the deadline is
   not raised here.
 - Runway (estimate, not checked): 12 MiB less the measured branch need leaves about 4.1 MB, roughly six weeks at the
-  last week's spec growth (about 690 KB a week, packet table). Revisit (manual, not code): whoever lands a spec PR
-  reads `counted_bytes` for a main self-check; under 1 MiB of headroom goes to the owner as a FEAT-CICD-001 capacity
-  question.
+  last week's spec growth (about 690 KB a week, packet table). Revisit (manual, not code, not a done_when item and not a merge
+  gate): whoever lands a spec PR may read `counted_bytes` for a main self-check; if 12,582,912 - 36,852 (the audit's
+  registry debit) - `counted_bytes` is under 1 MiB, that goes to the owner as a FEAT-CICD-001 capacity question.
 - Cost: none new.
 
 ## Durable alternative, not in scope
@@ -103,7 +103,8 @@ DOC main and staging close-out with real evidence; sidecar retirement only as th
 
 Review: `doc_source_snapshot.py` is not under `scripts/gate/`, but `docs_audit.py` and `spec_gate.py` load it as a
 trusted module, so the implementation gets a red-team pass on the verifier surface (ceiling arithmetic, per-file
-limit, CLI bounds) before its push, under the existing rules.
+limit, CLI bounds) before its push. The existing rules require that pass for gate files only; this spec adds it for
+this surface, and owner admission of this text admits it.
 
 ## Textual differences from the 2026-10-13 spec
 
@@ -111,10 +112,11 @@ limit, CLI bounds) before its push, under the existing rules.
   "combined twelve-MiB"; items 9 to 13 added after item 8; `status: draft` (was `approved`); `supersedes:` names the
   2026-10-13 spec (was `null`). `feat_id`, `req_ids`, `issues`, `canvases` and items 1 to 5, 7 and 8 are
   byte-identical.
-- Body: a new title and the sections above the retained text. In the retained text exactly three substitutions are
+- Body: a new title and the sections above the retained text. In the retained text exactly four substitutions are
   made: `--max-input-bytes 8388608` becomes `--max-input-bytes 12582912` (the verify command); "at most8388608 input
   bytes" becomes "at most12582912 input bytes"; "Eight-MiB ceiling is a deliberate" becomes "Twelve-MiB ceiling is a
-  deliberate". "The eight acceptance items" in the retained text counts the retained items 1 to 8 and is unchanged.
+  deliberate"; "against the combined eight-MiB ceiling;" becomes "against the combined twelve-MiB ceiling (the
+  registry also against the separate eight-MiB per-file limit);". "The eight acceptance items" in the retained text counts the retained items 1 to 8 and is unchanged.
 
 ## Retirement of the 2026-10-13 spec
 
@@ -128,7 +130,7 @@ when written. `status: approved` is set only after the owner's written admission
 admission and nothing else, and is followed by the normal current-head review and CI. It grants no formal review,
 Ready, merge, deployment or any other limit change. Nothing is implemented until it is approved and on main.
 
-## Retained text of the 2026-10-13 spec (three substitutions listed above)
+## Retained text of the 2026-10-13 spec (four substitutions listed above)
 
 
 # Bind implementation documentation to committed source
@@ -207,7 +209,7 @@ The eight acceptance items above must additionally exercise actual missing/empty
 
 ## Required format, policy-input and dirty-worktree controls
 
-These controls are part of the existing eight acceptance items and fourteen-task implementation plan, not a separate scope. Actual producer/verifier/audit/BASE-gate accepted controls must run in BOTH a default SHA-1 repository and a real `git init --object-format=sha256` repository. Pair SHA-256 acceptance with malformed and wrong-width OID refusals; no simulated object-format success is evidence. A committed `scripts/café.py` path must produce literal UTF-8 canonical JSON and reproducible identity; otherwise-equivalent Unicode-escaped or escaped-solidus records must fail canonical-byte comparison. Independently test oversized registry, selected plan and each required spec revision against the combined eight-MiB ceiling; genuine accepted controls below the limit use the same real commands.
+These controls are part of the existing eight acceptance items and fourteen-task implementation plan, not a separate scope. Actual producer/verifier/audit/BASE-gate accepted controls must run in BOTH a default SHA-1 repository and a real `git init --object-format=sha256` repository. Pair SHA-256 acceptance with malformed and wrong-width OID refusals; no simulated object-format success is evidence. A committed `scripts/café.py` path must produce literal UTF-8 canonical JSON and reproducible identity; otherwise-equivalent Unicode-escaped or escaped-solidus records must fail canonical-byte comparison. Independently test oversized registry, selected plan and each required spec revision against the combined twelve-MiB ceiling (the registry also against the separate eight-MiB per-file limit); genuine accepted controls below the limit use the same real commands.
 
 After producing and committing a valid matching record, separately modify SITE only in the index and only in the unstaged worktree, including staged content restored in the worktree. The actual docs-audit CLI must retain dirty-state/provenance findings and emit neither record identity-matched nor verified status in both cases. Clean controls with the identical committed record must pass the eligible route. Committed-only mutation tests do not satisfy these dirty-state controls. Implementation must examine both index-versus-HEAD and worktree-versus-index before choosing either identity or terminal verified routes.
 
