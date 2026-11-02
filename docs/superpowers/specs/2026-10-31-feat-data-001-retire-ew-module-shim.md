@@ -36,8 +36,9 @@ main b0f88b5e on 2026-11-02, this text adds only:
   its own declaration (`.claude/skills/product-delivery/references/spec-template.md`, the
   `site_source_notes` bullets). Item 8 is the template's pre-merge source-identity obligation, in the shape
   approved for FEAT-SIGNAL-001 (#1672) and FEAT-INSIGHT-001 (#1674).
-- the sections "Anchors on current main", "Choice of Chain element", "Ownership and collisions",
-  "Sequencing with #1546", "Source identity and close-out", "Separation of evidence" and "Status".
+- the sections "Changes from the local rev 3.9 draft (read first)" (this one), "Anchors on current main",
+  "Choice of Chain element: SHARED-07", "Ownership and collisions", "Sequencing with #1546", "Source
+  identity and close-out", "Separation of evidence" and "Status".
 
 Nothing else changed.
 
@@ -61,7 +62,9 @@ anchors in item 1 read the same (`2026-10-12-feat-ops-001-av-operations.md:225`,
 `2026-10-13-feat-option-001-av-source-journal.md:176`, `2026-10-12-feat-data-001-av-market-data.md:501`),
 as do `02-FEATURE-CATALOG.md:523` and `.claude/skills/product-delivery/SKILL.md:85`. One anchor moved:
 `check_product_scope`, cited in item 5 at `scripts/gate/spec_gate.py` L4176-4227, is at L4278-4339 on
-b0f88b5e.
+b0f88b5e. Item 5's list of what that check admits under `docs/product/` predates this declaration: with
+`site_source_notes` declared, the same check also admits the declared `03-SITE-TRACEABILITY.md` note row,
+through `gate_note_scope` (L4317-4323 on b0f88b5e). That row is item 8's only SITE change.
 
 Prerequisites as they stand on b0f88b5e, unchanged from the draft: the FEAT-PLAYBOOK-001 retire-ew-brief
 spec (P-D) is not on main and no open pull request carries it, so `premarket_brief.py` still consumes
@@ -72,8 +75,9 @@ recorded.
 ## Choice of Chain element: SHARED-07
 
 The module writes `earnings_calendar` verdict columns through the `evaluate-ew-strikes` job and serves no
-route. SHARED-07 (Shared table) is the Chain element whose Data cell is every tracked Cloud SQL table
-(`docs/product/03-SITE-TRACEABILITY.md:125` on main b0f88b5e), and `(FEAT-DATA-001, SHARED-07)` (L1303) is
+route. SHARED-07 (Freshness watchdog and /api/health/freshness, under "00 · Shared") is the Chain
+element whose Data cell is every tracked Cloud SQL table (`docs/product/03-SITE-TRACEABILITY.md:125` on
+main b0f88b5e), and `(FEAT-DATA-001, SHARED-07)` (L1303) is
 FEAT-DATA-001's only existing Implementation-source note row. The implementation updates that row and keeps
 its earlier own content. The FEAT-DATA-001 fetcher-reader spec (P-F, draft #1685) declares the same row;
 whichever implementation merges second merges main and rebinds the row with both descriptions kept.
@@ -81,16 +85,23 @@ whichever implementation merges second merges main and rebinds the row with both
 ## Ownership and collisions
 
 Read 2026-11-02 from the 64 open pull requests (each head fetched as `refs/pull/<n>/head`, diffed against its
-merge base with main b0f88b5e), for every file items 1 to 5 name:
+merge base with main b0f88b5e), for every file items 1 to 5 name, the FEAT-DATA-001 catalog record item 7
+changes and the SITE row item 8 changes:
 
-- #1546 (`feature/feat-data-001-market-calendar`, draft) rewrites the body of `nyse_sessions` to return
-  `lib.eastern_time.session_schedule(start, end)` and changes
-  `tests/fixtures/timezone_boundary_baseline.json`.
+- #1546 (`feature/feat-data-001-market-calendar`, draft) changes `gcp/fetchers/evaluate_ew_strikes.py` in
+  two hunks (the `lib.eastern_time` import line, which gains `session_schedule`, and the body of
+  `nyse_sessions`, which returns `session_schedule(start, end)`), and changes `lib/eastern_time.py`,
+  `tests/fixtures/timezone_boundary_baseline.json` and the FEAT-DATA-001 catalog record (Status, Last
+  reviewed and the Code field).
 - #1658 (P-C, draft) removes the `evaluate-ew-strikes-daily` scheduler row of `07-MODEL-REGISTRY.md`
-  (L370 on b0f88b5e), which names MODEL-EWV-001; this spec changes the L47 row.
-- #1682 and #1608 (drafts) change other `07-MODEL-REGISTRY.md` rows; #1681 (P-A) and #1608 change
+  (L370 on b0f88b5e), which names MODEL-EWV-001, regenerates `docs/product/generated/model-registry.json`,
+  and lowers the scheduler-count floor in `tests/meta/test_model_registry_consistency.py` from 66 to 65;
+  this spec changes the L47 row.
+- #1682 and #1608 (drafts) change other `07-MODEL-REGISTRY.md` rows and regenerate
+  `docs/product/generated/model-registry.json`; #1430, #1681 (P-A) and #1608 change
   `tests/fixtures/timezone_boundary_baseline.json`.
-- #1643 and #1564 (drafts) change the `(FEAT-DATA-001, SHARED-07)` row.
+- #1643 (draft) changes the `(FEAT-DATA-001, SHARED-07)` row and the FEAT-DATA-001 catalog record (its
+  Evidence status and an added "Typed-news runtime draft" line); #1564 (draft) changes the same row.
 - No open pull request changes `tests/gcp/test_evaluate_ew_strikes.py`,
   `gcp/fetchers/_av_realtime_collector.py`, `tests/gcp/test_av_options_collector_entry.py`,
   `docs/models/MODEL-EWV-001.md` or `tests/lib/test_av_account_allowance.py`.
@@ -103,10 +114,11 @@ and the model-registry export, and rebinds its own SITE row.
 
 Item 1 keeps `nyse_sessions` byte-identical to main's L196-206 and item 3's new shim test checks the
 library schedule, a DST date, ImportError without `pandas_market_calendars` and the module surface.
-#1546 (draft, head 5b926526, merge base 11135c4d) changes only the wrapper's body, to
-`return session_schedule(start, end)`; its `lib/eastern_time.py` imports `pandas_market_calendars` inside
-`_build_session_cache` with no `except` in it or any caller, and returns the same shape (session-date
-index, UTC `market_open` and `market_close`).
+#1546 (draft, head 5b926526, merge base 11135c4d) changes the wrapper's body, to
+`return session_schedule(start, end)` (the wrapper is L196-204 on its head), and the module's
+`from lib.eastern_time import ET, ET_NAME` line, to import `session_schedule` too; its
+`lib/eastern_time.py` imports `pandas_market_calendars` inside `_build_session_cache` with no `except` in
+it or any caller, and returns the same shape (session-date index, UTC `market_open` and `market_close`).
 
 Executed on 2026-11-02, the same probe calling `gcp.fetchers.evaluate_ew_strikes.nyse_sessions` from
 main b0f88b5e and from #1546's head, with `pandas_market_calendars` 5.6.0 in a scratch directory outside
@@ -119,10 +131,14 @@ the repository:
 | library blocked (`sys.modules['pandas_market_calendars'] = None`) | ModuleNotFoundError (an ImportError) | identical |
 
 So the item 3 cases hold for either body, and the merge order changes no calendar behaviour. The
-implementation keeps whichever body main holds when it is cut. If #1546 merges first, the kept wrapper is
-its body; if this implementation merges first, #1546's hunk lands on the kept wrapper unchanged. Whichever
-merges second merges main and regenerates the timezone baseline. The shim test resets any session cache it
-depends on before the blocked-library case, so the case does not pass or fail on cache state.
+implementation keeps whichever body main holds when it is cut. If #1546 merges first, the kept wrapper and
+its import line are #1546's, and the shim test calls `lib.eastern_time._reset_session_cache()` before the
+blocked-library case, because #1546's process-wide session cache would otherwise serve that case without
+importing the library. If this implementation merges first, #1546's wrapper hunk applies to the kept
+wrapper as it is, its import hunk is reapplied by #1546 to the stripped module's import lines, and #1546,
+merging second, adds the same cache reset to the shim test; the implementation's author tells #1546's
+owner so before the implementation is pushed. Whichever merges second merges main and regenerates the
+timezone baseline. Either way the blocked-library case does not pass or fail on cache state.
 
 ## Source identity and close-out
 
