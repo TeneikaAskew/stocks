@@ -36,8 +36,8 @@ main b0f88b5e on 2026-11-02, this text adds only:
   its own declaration (`.claude/skills/product-delivery/references/spec-template.md`, the
   `site_source_notes` bullets). Item 8 is the template's pre-merge source-identity obligation, in the shape
   approved for FEAT-SIGNAL-001 (#1672) and FEAT-INSIGHT-001 (#1674).
-- the sections "Anchors on current main", "Choice of Chain element", "Ownership and collisions", "Open
-  question for acceptance", "Source identity and close-out", "Separation of evidence" and "Status".
+- the sections "Anchors on current main", "Choice of Chain element", "Ownership and collisions",
+  "Sequencing with #1546", "Source identity and close-out", "Separation of evidence" and "Status".
 
 Nothing else changed.
 
@@ -99,16 +99,30 @@ The implementation edits no other pull request's branch. Where one of them is st
 implementation is cut, whichever of the two merges second merges main, regenerates the timezone baseline
 and the model-registry export, and rebinds its own SITE row.
 
-## Open question for acceptance
+## Sequencing with #1546
 
-Item 1 keeps `nyse_sessions` "byte-identical to main's L196-206", and item 3's new shim test expects
-ImportError when `pandas_market_calendars` is unimportable. Both were written against the current body,
-which imports `pandas_market_calendars` directly. If #1546 merges first, main's L196-206 becomes the
-`session_schedule` form, and whether the ImportError case still holds depends on `lib/eastern_time.py` at
-that time, which item 1 also requires to be unchanged by this PR. This text does not decide that case: it
-records it for the owner's acceptance. Without a written decision, the implementation keeps whatever body
-main holds when it is cut and stops before writing the ImportError test if that body does not import the
-library.
+Item 1 keeps `nyse_sessions` byte-identical to main's L196-206 and item 3's new shim test checks the
+library schedule, a DST date, ImportError without `pandas_market_calendars` and the module surface.
+#1546 (draft, head 5b926526, merge base 11135c4d) changes only the wrapper's body, to
+`return session_schedule(start, end)`; its `lib/eastern_time.py` imports `pandas_market_calendars` inside
+`_build_session_cache` with no `except` in it or any caller, and returns the same shape (session-date
+index, UTC `market_open` and `market_close`).
+
+Executed on 2026-11-02, the same probe calling `gcp.fetchers.evaluate_ew_strikes.nyse_sessions` from
+main b0f88b5e and from #1546's head, with `pandas_market_calendars` 5.6.0 in a scratch directory outside
+the repository:
+
+| Case | main b0f88b5e | #1546 5b926526 |
+|---|---|---|
+| 2026-11-23 to 2026-11-27 | 11-23, 11-24, 11-25, 11-27; 11-27 closes 18:00Z | identical |
+| 2027-03-15 open | 13:30Z | identical |
+| library blocked (`sys.modules['pandas_market_calendars'] = None`) | ModuleNotFoundError (an ImportError) | identical |
+
+So the item 3 cases hold for either body, and the merge order changes no calendar behaviour. The
+implementation keeps whichever body main holds when it is cut. If #1546 merges first, the kept wrapper is
+its body; if this implementation merges first, #1546's hunk lands on the kept wrapper unchanged. Whichever
+merges second merges main and regenerates the timezone baseline. The shim test resets any session cache it
+depends on before the blocked-library case, so the case does not pass or fail on cache state.
 
 ## Source identity and close-out
 
