@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-02-feat-cicd-001-verifier-twelve-mib.md
 branch: fix/feat-cicd-001-closeout-spec-binding
-pr: null
+pr: 1691
 status: ready
 ---
 
