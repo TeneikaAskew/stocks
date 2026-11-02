@@ -481,6 +481,9 @@ def _db_catalyst_events(
     try:
         earn_df = query_to_dataframe(earn_sql, params)
     except Exception as exc:
+        # AUDIT-2026-05-13: silent fallback — see
+        # docs/audits/FALLBACK_AUDIT_2026-05-13.md §C-38. A query failure
+        # renders as "no earnings events"; behaviour unchanged here.
         logger.warning("earnings_calendar catalyst lookup failed: %s", exc)
         earn_df = None
     if earn_df is not None and not earn_df.empty:
@@ -698,6 +701,10 @@ def get_catalyst_snapshot(
         return recs
 
     def _safe(fn):
+        # AUDIT-2026-05-13: silent fallback — a failed section query returns
+        # [] and reads as an empty section (the next_earnings query below is
+        # one of them). Not catalogued in docs/audits/FALLBACK_AUDIT_2026-05-13.md;
+        # behaviour unchanged here.
         try:
             return fn()
         except Exception as exc:

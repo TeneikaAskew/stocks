@@ -20,7 +20,7 @@ from gcp import refresh_earnings_views as rev
 from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
 from tests.fixtures.earnings_calendar_sources import (
     av, ew_only, ew_raw_alias, hydrated, make_db, null_source, run_earnings_sql,
-    unknown_source, uw, yahoo,
+    unknown_source, uw, yahoo, yahoo_bulk,
 )
 
 TODAY = date.today()
@@ -66,8 +66,13 @@ def fixture_rows() -> list[dict]:
         # E / R: EW-only tickers, both spellings.
         ew_only('E', D),
         ew_raw_alias('R', D),
-        # Non-EW controls.
+        # Non-EW controls. Y is a Yahoo row as the calendar path writes it;
+        # M mixes AV with such a Yahoo row, whose 'unknown' time wins
+        # MAX(earnings_time) on main and on this branch alike.
         yahoo('Y', D),
+        yahoo_bulk('B', D),
+        av('M', D, earnings_time='postmarket'),
+        yahoo('M', D),
         av('A', D, company_name='Beta'),
         null_source('N', D, company_name='NullCo'),
         unknown_source('K', D, company_name='UnknownCo'),
@@ -75,7 +80,7 @@ def fixture_rows() -> list[dict]:
 
 
 MARKET = [{'ticker': t, 'date': TODAY - timedelta(days=1), 'close': 100.0}
-          for t in ('T', 'Y', 'A', 'N', 'K', 'E', 'R')]
+          for t in ('T', 'Y', 'B', 'M', 'A', 'N', 'K', 'E', 'R')]
 
 
 @pytest.fixture
@@ -156,7 +161,7 @@ def test_predicated_query_returns_the_av_uw_values(refresh):
     assert (t['market_cap'], t['sector']) == (5e9, 'Tech')
     assert 'score' not in t and 'strategy' not in t
     # EW-only tickers absent; NULL and unknown sources kept.
-    assert set(got) == {'T', 'Y', 'A', 'N', 'K'}
+    assert set(got) == {'T', 'Y', 'B', 'M', 'A', 'N', 'K'}
 
 
 def test_non_ew_output_equals_main(refresh):
@@ -166,15 +171,18 @@ def test_non_ew_output_equals_main(refresh):
     new = _by_ticker(run_earnings_sql(refresh['conn'], sql, {'days': 14}, today=TODAY))
     old = _by_ticker(run_earnings_sql(refresh['conn'], MAIN_UPCOMING_SQL,
                                       {'days': 14}, today=TODAY))
-    for tk in ('Y', 'A', 'N', 'K'):
+    for tk in ('Y', 'B', 'M', 'A', 'N', 'K'):
         assert new[tk] == {k: v for k, v in old[tk].items()
                            if k not in ('score', 'strategy')}
+    # Positive control: the producer-shaped Yahoo row is really aggregated.
+    assert new['M']['earnings_time'] == 'unknown'
+    assert new['M']['company_name'] == 'Acme'
 
 
 def test_refreshed_rows_carry_no_ew_value(refresh):
     rev.refresh_daily(14)
     rows = _by_ticker(refresh['upserted'])
-    assert set(rows) == {'T', 'Y', 'A', 'N', 'K'}
+    assert set(rows) == {'T', 'Y', 'B', 'M', 'A', 'N', 'K'}
     t = rows['T']
     assert t['earnings_date'] == D
     assert t['earnings_time'] == 'postmarket'

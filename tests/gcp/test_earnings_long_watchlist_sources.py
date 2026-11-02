@@ -19,7 +19,7 @@ from gcp import earnings_long_watchlist as gwl
 from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
 from tests.fixtures.earnings_calendar_sources import (
     av, ew_only, ew_raw_alias, make_db, null_source, run_earnings_sql,
-    unknown_source, yahoo,
+    unknown_source, yahoo, yahoo_bulk,
 )
 
 TODAY = date.today()
@@ -33,6 +33,9 @@ def _rows():
         ew_only('E', D + timedelta(days=2)),
         ew_raw_alias('R', D + timedelta(days=2)),
         yahoo('Y', D + timedelta(days=4)),
+        yahoo_bulk('B', D + timedelta(days=4)),
+        av('M', D + timedelta(days=5), earnings_time='postmarket'),
+        yahoo('M', D + timedelta(days=5)),
         null_source('N', D + timedelta(days=4)),
         unknown_source('K', D + timedelta(days=4)),
     ]
@@ -83,7 +86,7 @@ def test_predicated_cte_takes_the_av_date_and_time(upcoming_cte):
     assert t['earnings_date'] == D + timedelta(days=3)
     assert t['earnings_time'] == 'postmarket'
     assert (t['market_cap'], t['sector']) == (5e9, 'Tech')   # consistency
-    assert set(got) == {'T', 'Y', 'N', 'K'}
+    assert set(got) == {'T', 'Y', 'B', 'M', 'N', 'K'}
 
 
 def test_non_ew_rows_equal_main(upcoming_cte):
@@ -91,5 +94,7 @@ def test_non_ew_rows_equal_main(upcoming_cte):
     old = _run(*upcoming_cte, strip=True)
     clean = lambda r: {k: (None if isinstance(v, float) and v != v else v)  # noqa: E731
                        for k, v in r.items()}
-    for tk in ('Y', 'N', 'K'):
+    for tk in ('Y', 'B', 'M', 'N', 'K'):
         assert clean(new[tk]) == clean(old[tk])
+    # Positive control: the producer-shaped Yahoo row is really aggregated.
+    assert new['M']['earnings_time'] == 'unknown'

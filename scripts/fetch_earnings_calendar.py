@@ -103,8 +103,9 @@ def _attach_av_date(df: pd.DataFrame, av_dates: dict) -> int:
     source-reported earnings_date.
 
     Adds an `av_earnings_date` column populated only for tickers that also
-    appear in the AV fetch. EW/UW keep their own dates for traceability —
-    consumers can compare the two and flag discrepancies downstream.
+    appear in the AV fetch. UW and Yahoo rows keep their own dates for
+    traceability — consumers can compare the two and flag discrepancies
+    downstream.
 
     Returns the number of rows that got an AV date attached.
     """
@@ -131,7 +132,7 @@ def fetch_alphavantage_earnings(horizon: str = '3month') -> pd.DataFrame:
     """Fetch AlphaVantage EARNINGS_CALENDAR (CSV) as the date-of-truth source.
 
     AV pulls from SEC filings so its reportDate is authoritative. We use this
-    to override EW and UW dates when they disagree. Returns a DataFrame with
+    to override UW and Yahoo dates when they disagree. Returns a DataFrame with
     the common earnings_calendar schema.
     """
     api_key = os.environ.get('AV_API_KEY') or os.environ.get('ALPHA_VANTAGE_API_KEY', '')
@@ -349,6 +350,9 @@ def _load_existing_options_from_db(date_keys: set) -> dict:
     try:
         df = query_to_dataframe(sql, {'dates': dates})
     except Exception as e:
+        # AUDIT-2026-05-13: silent fallback — a DB error here returns {} and
+        # reads as "no stored options", so every pair is re-fetched from AV.
+        # Behaviour unchanged by the source retirement.
         logger.warning("DB load for AV-options skip-check failed: %s", e)
         return {}
     if df.empty:
@@ -423,7 +427,7 @@ def enrich_with_av_options(df: pd.DataFrame, snapshot_date: str,
         # Overwrite every row's options_volume/open_interest with the
         # canonical (DB-stored, AV-chain-sum) value for that (ticker,
         # date). This replaces UW's per-strategy contract counts and
-        # EW's NULL placeholders with the chain-wide aggregate so every
+        # any NULL placeholder with the chain-wide aggregate so every
         # row in the DB carries the same per-(ticker, date) value.
         def _hydrate(row, key, idx):
             v = db_existing.get((row['ticker'], _to_date(row[date_col])))
@@ -496,7 +500,7 @@ def enrich_with_av_options(df: pd.DataFrame, snapshot_date: str,
         time.sleep(delay_s)
 
     # 4) Broadcast AV chain sum onto every row for the ticker —
-    #    overwrites UW per-strategy contract counts and EW NULLs.
+    #    overwrites UW per-strategy contract counts and NULLs.
     #    Only AV "error:..." responses (None, None) are left as-is so a
     #    transient rate-limit doesn't blow away an existing value.
     def _fill(row, key, idx):

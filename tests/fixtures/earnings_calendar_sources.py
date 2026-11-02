@@ -88,7 +88,25 @@ def uw(ticker: str, earnings_date: date, **values) -> dict:
 
 
 def yahoo(ticker: str, earnings_date: date, **values) -> dict:
-    return _row(ticker, earnings_date, 'yahoo', **values)
+    """A Yahoo row as the per-ticker calendar path writes it.
+
+    ``company_name`` '' and ``earnings_time`` 'unknown'
+    (``scripts/fetch_earnings_calendar.py`` ``_fetch_yahoo_one``: the
+    calendar carries no BMO/AMC), ``market_cap`` None. ``'unknown'`` sorts
+    above ``'premarket'`` and ``'postmarket'``, so a real Yahoo row can win a
+    reader's ``MAX(earnings_time)``; the mixed-ticker controls rely on that.
+    """
+    base = dict(earnings_time='unknown', company_name='', market_cap=None)
+    base.update(values)
+    return _row(ticker, earnings_date, 'yahoo', **base)
+
+
+def yahoo_bulk(ticker: str, earnings_date: date, **values) -> dict:
+    """A Yahoo row as the bulk Calendars path writes it: a company name and a
+    time bucket from ``_yahoo_time_from_row`` (never NULL)."""
+    base = dict(earnings_time='premarket', company_name='Yahoo Co')
+    base.update(values)
+    return _row(ticker, earnings_date, 'yahoo', **base)
 
 
 def hydrated(row: dict, volume: int = 30000, oi: int = 90000) -> dict:
@@ -105,11 +123,15 @@ def stale(row: dict) -> dict:
 
 
 def null_source(ticker: str, earnings_date: date, **values) -> dict:
-    """NULL ``data_source`` (the column is NOT NULL on main; fixture only)."""
+    """NULL ``data_source``: a design control, not producer-reachable (the
+    column is NOT NULL in ``gcp/schema.sql``; fixture only)."""
     return _row(ticker, earnings_date, None, **values)
 
 
 def unknown_source(ticker: str, earnings_date: date, **values) -> dict:
+    """``'unknown'`` ``data_source``: a design control, not reached by
+    ``main()``. Only ``persist_to_cloud_sql``'s branch for a frame with no
+    ``source`` column writes it, and every frame ``main()`` persists has one."""
     return _row(ticker, earnings_date, 'unknown', **values)
 
 
