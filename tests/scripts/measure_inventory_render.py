@@ -21,6 +21,7 @@ import pathlib
 import resource
 import signal
 import selectors
+import shutil
 import stat
 import statistics
 import subprocess
@@ -318,8 +319,9 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
     report = {"ok": False, "reason": "observation_failure", "argv": argv, "cwd": str(cwd),
               "max_rss_bytes": max_rss_bytes, "max_seconds": max_seconds, "peak_rss_bytes": 0,
               "monitor_rss_bytes": 0, "peak_snapshot": {}, "sample_count": 0,
-              "owned_group_gone": False, "owned_family_gone": False}
-    process = family = observer = libc = None
+              "owned_group_gone": False, "owned_family_gone": False,
+              "scratch_root": None, "scratch_root_removed": False}
+    process = family = observer = libc = scratch = None
     stop = threading.Event()
     discovery_gaps: list[float] = []
     sample_gaps: list[float] = []
@@ -351,11 +353,20 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
         if record_sample() > max_rss_bytes:
             report["reason"] = "rss_limit"
             return report
+        # Every temp file the worker family makes lands under a root this monitor creates and removes after the
+        # family is reaped, whatever the outcome; a worker killed on a limit cannot clean up after itself.
+        with defer_deadline():
+            scratch = tempfile.mkdtemp(prefix=f"measure-render-{os.getpid()}-")
+            report["scratch_root"] = scratch
+        with open(os.path.join(scratch, "CREATED-BY"), "x", encoding="utf-8") as receipt:
+            receipt.write(json.dumps({"monitor_pid": os.getpid(), "argv": argv, "cwd": str(cwd),
+                                      "created_unix": time.time()}) + "\n")
+        child_env = {**os.environ, "TMPDIR": scratch}
         with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
             with defer_deadline() as child_mask:
                 # Acquisition is atomic with respect to the deadline. The child inherits the caller's ORIGINAL mask.
                 process = subprocess.Popen(argv, cwd=cwd, stdout=stdout, stderr=stderr, start_new_session=True,
-                                           preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, child_mask))
+                                           env=child_env, preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, child_mask))
                 family.admit_root(process)
                 report["process_group"] = process.pid
             family.discover()
@@ -493,6 +504,18 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                                               retained_observer_alive=observer_live,
                                               retained_owned_pids=sorted(family.owned))
                     finally:
+                        try:
+                            # Removed only once no owned process can still write into it.
+                            if scratch is not None:
+                                if report.get("retained_ownership") or not (process is None or report["owned_family_gone"]):
+                                    report["scratch_root_retained"] = True
+                                else:
+                                    shutil.rmtree(scratch)
+                                    report["scratch_root_removed"] = not os.path.lexists(scratch)
+                                    if not report["scratch_root_removed"]:
+                                        raise OSError(f"scratch root still present after removal: {scratch}")
+                        except Exception as e:
+                            cleanup_failure(e)
                         if libc is not None and subreaper_acquired:
                             try:
                                 if libc.prctl(36, old_subreaper.value, 0, 0, 0):

@@ -4722,6 +4722,44 @@ def test_measure_inventory_render_owns_session_changing_descendants(tmp_path):
     assert all(x['owned_family_gone'] for x in (memory,accepted,timeout,failed))
 
 
+def scratch_measurement(tmp_path, mode):
+    """One run_bounded call whose child writes temp data, with the monitor's own TMPDIR pinned to a fresh dir."""
+    outer = tmp_path / f'outer-{mode}'
+    outer.mkdir()
+    record = tmp_path / f'child-{mode}.json'
+    child = ("import json,os,sys,tempfile,time;d=tempfile.mkdtemp(prefix='spec-gate-render-');"
+             "open(os.path.join(d,'blob'),'wb').write(b'x'*(1024*1024));"
+             "root=os.environ['TMPDIR'];json.dump({'dir':d,'root':root,'receipt':open(os.path.join(root,'CREATED-BY')).read()},"
+             f"open({str(record)!r},'w'));")
+    child += {'accepted': '', 'memory': 'a=bytearray(96*1024*1024);time.sleep(20)', 'stall': 'time.sleep(20)',
+              'failed': 'raise SystemExit(7)',
+              'escaped': "import subprocess;subprocess.Popen([sys.executable,'-c','import os,tempfile,time;os.setsid();"
+                         "d=tempfile.mkdtemp();open(os.path.join(d,\\'b\\'),\\'w\\').write(\\'x\\');time.sleep(20)']);time.sleep(.3)"}[mode]
+    launcher = ("import ctypes,importlib.util,json,pathlib,os,sys;ctypes.CDLL(None).prctl(36,1,0,0,0);"
+                "s=importlib.util.spec_from_file_location('inventory_scratch',sys.argv[1]);"
+                "m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m);"
+                "r=m.run_bounded([sys.executable,'-c',sys.argv[2]],pathlib.Path.cwd(),max_rss_bytes=64*1024*1024,max_seconds=1);"
+                "r['outer_after']=sorted(os.listdir(sys.argv[3]));print(json.dumps(r))")
+    r = subprocess.run([sys.executable, '-c', launcher, str(REPO/MEASURE), child, str(outer)],
+                       capture_output=True, text=True, timeout=10, env={**os.environ, 'TMPDIR': str(outer)})
+    assert r.returncode == 0, r.stdout + r.stderr
+    return json.loads(r.stdout), (json.loads(record.read_text()) if record.exists() else None), outer
+
+
+def test_measure_inventory_render_owns_and_removes_its_scratch_root(tmp_path):
+    """Every outcome removes the monitor-created temp root after the family is reaped, killed workers included."""
+    expected = {'accepted': 'completed', 'memory': 'rss_limit', 'stall': 'time_limit', 'failed': 'worker_failed',
+                'escaped': 'unexpected_descendants'}
+    for mode, reason in expected.items():
+        report, child, outer = scratch_measurement(tmp_path, mode)
+        assert report['reason'] == reason and report['owned_family_gone'], (mode, report)
+        root = report['scratch_root']
+        assert root and Path(root).parent == outer and Path(root).name.startswith('measure-render-'), (mode, report)
+        assert child and child['root'] == root and Path(child['dir']).parent == Path(root), (mode, child)
+        assert json.loads(child['receipt'])['monitor_pid'] > 0, (mode, child)
+        assert report['scratch_root_removed'] and not report.get('scratch_root_retained'), (mode, report)
+        assert report['outer_after'] == [] and not Path(root).exists(), (mode, report['outer_after'])
+
 def test_measure_inventory_render_bounds_public_output_delivery(tmp_path):
     """Real FIFO and full stdout-pipe backpressure cannot outlive the same whole public CLI bound."""
     import fcntl
