@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-02-feat-cicd-001-registry-ten-minute-pin.md
 branch: feature/feat-cicd-001-registry-pin-stage
-pr: null
+pr: 1696
 status: ready
 ---
 
