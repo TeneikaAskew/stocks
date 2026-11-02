@@ -56,7 +56,7 @@ done_when:
   - "docs/EARNINGS_PIPELINE.md, platform/GCP_DATA_DICTIONARY.md and .env.example describe EW as retired with historical rows retained"
   - "Every done_when item carried from docs/superpowers/specs/2026-10-13-feat-catalyst-001-av-catalysts-delivery.md above is reproduced verbatim and remains in force except the one amended item listed in the replacement table"
   - "02-FEATURE-CATALOG FEAT-CATALYST-001 record shows Status and Last reviewed, and 12-PR-ISSUE-TRACEABILITY lists this PR"
-status: draft
+status: approved
 supersedes: docs/superpowers/specs/2026-10-13-feat-catalyst-001-av-catalysts-delivery.md
 ---
 
