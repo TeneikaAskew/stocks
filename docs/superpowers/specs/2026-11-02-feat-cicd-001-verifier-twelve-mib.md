@@ -136,7 +136,9 @@ Ready, merge, deployment or any other limit change. Nothing is implemented until
 
 Admitted 2026-11-02 14:05:49Z: the owner answered "Yes" to a question that presented this spec's lines 7 to 20 at
 commit 207d2cc8 (the `done_when` items) and asked approval of that section. Recorded from the quoted owner reply
-relayed by the external root assistant; this record is the only change from 207d2cc8.
+relayed by the external root assistant. Since 207d2cc8 this file changes only by this record and the Retirement
+paragraph above, which moves the 2026-10-13 spec's status-only flip after the implementation PR; no `done_when` item
+changes.
 
 ## Retained text of the 2026-10-13 spec (four substitutions listed above)
 
