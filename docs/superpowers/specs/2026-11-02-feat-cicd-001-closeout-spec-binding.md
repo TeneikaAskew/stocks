@@ -7,12 +7,12 @@ site_source_notes: [SHARED-01]
 done_when:
   - "`scripts/maintenance/doc_source_snapshot.py` binds the `trunk-closeout-pending` route to a constant `CLOSEOUT_SPEC` naming `docs/superpowers/specs/2026-11-02-feat-cicd-001-verifier-twelve-mib.md`; the constant `SPEC` still names `docs/superpowers/specs/2026-10-13-feat-cicd-001-source-review-verifier.md` and the `initial-bootstrap` route still binds it; `spec_binding`, every ceiling, debit, deadline, read and route predicate is unchanged."
   - "Real Git tests in `tests/scripts/test_doc_source_snapshot.py` show a valid DOC-only close-out (sha1 and sha256 object formats) produced and verified as identity-matched with a record naming the 2026-11-02 spec and its blob, and the same tests fail on main 5f16c96e with `bound approved spec has been superseded in trusted POLICY`."
-  - "The close-out stays refused, each control asserting its exact reason, when the bound spec is missing, has the wrong FEAT, is not approved, or is superseded by a later approved FEAT-CICD-001 spec; a branch that edits the bound spec is refused by route selection with `ordinary production requires its actual named feature branch/source`."
+  - "The close-out stays refused, each control asserting its exact reason, when the bound spec is missing, has the wrong FEAT, is not approved, or is superseded by a later approved FEAT-CICD-001 spec; a DOC-only (non-feature) branch that edits the bound spec is refused by route selection with `ordinary production requires its actual named feature branch/source`."
   - "A real initial-bootstrap control still records the 2026-10-13 spec, and the existing close-out, terminal-stamp and bootstrap controls pass with their assertions unchanged."
   - "`tests/scripts/test_doc_source_snapshot.py`, `tests/scripts/test_docs_audit.py` and `tests/scripts/test_spec_gate.py` pass on the implementation head with no failure that main does not also show in the same run order."
   - "The FEAT-CICD-001 record in `docs/product/02-FEATURE-CATALOG.md` and `docs/product/12-PR-ISSUE-TRACEABILITY.md` identifies the implementation PR; no other capability's row or record changes."
   - "Source identity (SHARED-01): on the implementation PR head the existing producer and verifier, run from the committed HEAD with its fixed ceilings, prove committed source and SITE body identity bound to this approved spec at the actual merge base, where its blob equals the one on current main; the plan binds this spec; the only SITE change is the FEAT-CICD-001 / SHARED-01 row of the Implementation-source notes table with the prefix source_identity_sha256=<current source hash> and nonempty prose describing this change and its tests while keeping the earlier accurate own content of that row; the sidecar is produced from the final committed SITE body and committed; the matched main and branch `scripts/maintenance/docs_audit.py` runs report no finding that main does not; the registry `docs/DOC_REGISTRY.md` blob, mode and type equal main's; the required current-head checks pass before merge under the repository's existing review rules, which this spec does not extend."
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -51,20 +51,23 @@ Before (2026-11-02 spec, retained protocol text, unchanged on main):
 >
 > **DOC trunk-closeout-pending:** exact protocol FEAT/spec above, empty IDs, ...
 
-After (binding rule this spec adds; every other word of both paragraphs is unchanged):
+After (binding rule this spec adds; the only change is the DOC paragraph's binding, and every other
+word of both paragraphs is unchanged):
 
 > **Initial-bootstrap:** exact FEAT `FEAT-CICD-001`, exact approved spec
-> `docs/superpowers/specs/2026-10-13-feat-cicd-001-source-review-verifier.md` (historical, unchanged),
-> empty note IDs, ...
+> `docs/superpowers/specs/2026-10-13-feat-cicd-001-source-review-verifier.md`, empty note IDs, ...
 >
 > **DOC trunk-closeout-pending:** exact FEAT `FEAT-CICD-001`, exact approved spec
-> `docs/superpowers/specs/2026-11-02-feat-cicd-001-verifier-twelve-mib.md`, the current approved
-> protocol spec, empty IDs, ...
+> `docs/superpowers/specs/2026-11-02-feat-cicd-001-verifier-twelve-mib.md`, by this exact path only,
+> empty IDs, ...
 
 Every binding check still applies to the close-out route: approved status, matching FEAT, an
 identical blob/mode/type in baseline, POLICY and SOURCE, refusal of a bound spec that a later
 approved FEAT-CICD-001 spec supersedes, SOURCE equal to MAIN in full watched scope, and the
 SITE-plus-sidecar-only delta.
+
+On the DOC trunk-closeout-pending binding this spec governs over the 2026-11-02 spec's retained
+L196; on everything else the 2026-11-02 spec governs unchanged.
 
 ## Non-goals
 
@@ -87,7 +90,9 @@ SITE-plus-sidecar-only delta.
 
 `CLOSEOUT_SPEC = "docs/superpowers/specs/2026-11-02-feat-cicd-001-verifier-twelve-mib.md"` beside
 `SPEC`, and the `trunk-closeout-pending` branch of `eligibility()` binds it. Six lines. Capacity:
-n/a, one verify reads the same inputs under the same ceilings.
+the spec adds about 8 KB to every verify's POLICY spec read (main self-check 8,288,664 → 8,296,827
+bytes for this spec's first published text, against the 8,388,608 ceiling; this text is 412 bytes
+longer); the implementation adds no read.
 
 ## Risks
 
@@ -101,6 +106,7 @@ n/a, one verify reads the same inputs under the same ceilings.
 
 The implementation evidence is Draft stocks #1691 (code blob 4e3aa25c, test blob fa41b4ae). A plan
 binds one spec, so #1691's plan cannot bind this spec. The implementation lands as a separate re-cut
-PR from main after this spec is approved, with the same code and test bytes and its own plan bound to
-this spec. That PR updates only the FEAT-CICD-001 / SHARED-01 row and its sidecar (done_when item 7).
-Post-merge main close-out of that row follows the existing protocol.
+PR from main after this spec is approved, with the same code and test diff against main
+(byte-identical blobs 4e3aa25c / fa41b4ae if it lands before the twelve-MiB implementation) and its
+own plan bound to this spec. That PR updates only the FEAT-CICD-001 / SHARED-01 row and its sidecar
+(done_when item 7). Post-merge main close-out of that row follows the existing protocol.
