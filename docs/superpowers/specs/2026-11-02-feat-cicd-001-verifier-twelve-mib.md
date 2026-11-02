@@ -18,7 +18,7 @@ done_when:
   - "The implementation PR records, from the unchanged CLI on its head, `counted_bytes` and `elapsed_seconds` for a main self-check and for the head, each inside the unchanged five-second deadline and 20000-entry ceiling, and names by SHA at least one real ref that the 8388608-byte ceiling refused with the reason `object exceeds remaining input-byte allowance`, with its result under the new ceiling (identity-matched, or a refusal for a different stated reason)."
   - "`.claude/skills/product-delivery/SKILL.md` shows the verify command with `--max-input-bytes 12582912`; no other process document changes its meaning."
   - "Source identity (SHARED-01): on the implementation PR head the existing producer and verifier, run from the committed HEAD with its fixed ceilings, prove committed source and SITE body identity bound to this approved spec at the actual merge base, where its blob equals the one on current main; the plan binds this spec; the only SITE change is the FEAT-CICD-001 / SHARED-01 row of the Implementation-source notes table with the prefix source_identity_sha256=<current source hash> and nonempty prose describing this change and its tests while keeping the earlier accurate own content of that row; the sidecar is produced from the final committed SITE body and committed; the matched main and branch `scripts/maintenance/docs_audit.py` runs report no finding that main does not; the registry `docs/DOC_REGISTRY.md` blob, mode and type equal main's; the required current-head checks pass before merge under the repository's existing review rules, which this spec does not extend."
-status: draft
+status: approved
 supersedes: docs/superpowers/specs/2026-10-13-feat-cicd-001-source-review-verifier.md
 ---
 
@@ -129,6 +129,10 @@ Docs-only proposal, prepared 2026-11-02 on the owner's 12:08:50Z decision as map
 when written. `status: approved` is set only after the owner's written admission of this exact text, records that
 admission and nothing else, and is followed by the normal current-head review and CI. It grants no formal review,
 Ready, merge, deployment or any other limit change. Nothing is implemented until it is approved and on main.
+
+Admitted 2026-11-02 14:05:49Z: the owner answered "Yes" to a question that presented this spec's lines 7 to 20 at
+commit 207d2cc8 (the `done_when` items) and asked approval of that section. Recorded from the quoted owner reply
+relayed by the external root assistant; this record is the only change from 207d2cc8.
 
 ## Retained text of the 2026-10-13 spec (four substitutions listed above)
 
