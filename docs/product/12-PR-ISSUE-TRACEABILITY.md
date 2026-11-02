@@ -763,11 +763,13 @@ Live registry continuation: [#1599](https://github.com/TeneikaAskew/stocks/pull/
 | [solyra#127](https://github.com/TeneikaAskew/solyra/issues/127) | P3 | [P3][Catalysts] Expanding an event adds nothing and no row links to its article or filing |
 | [solyra#128](https://github.com/TeneikaAskew/solyra/issues/128) | P3 | [P3][Catalysts] A titleless event prints "undefined undefined" and no impact counts as Medium |
 
-**PR lineage:** [#220](https://github.com/TeneikaAskew/stocks/pull/220) · [#514](https://github.com/TeneikaAskew/stocks/pull/514) · [#532](https://github.com/TeneikaAskew/stocks/pull/532) (the README's PRs column; kinds not classified) · [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) (finite nullable EPS implementation)
+**PR lineage:** [#220](https://github.com/TeneikaAskew/stocks/pull/220) · [#514](https://github.com/TeneikaAskew/stocks/pull/514) · [#532](https://github.com/TeneikaAskew/stocks/pull/532) (the README's PRs column; kinds not classified) · [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) (finite nullable EPS implementation) · [#1670](https://github.com/TeneikaAskew/stocks/pull/1670) (recommended_structure implied_move_invalid keyword)
 
 Finite nullable estimate contract: [#1618](https://github.com/TeneikaAskew/stocks/pull/1618) (specification; merged). Implementation remains a separate normal delivery. #1301 is touched for invalid optional estimates only; its multi-source estimate-dedup behavior is not claimed fixed.
 
 Implementation draft [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) follows merged finite-nullable specification #1618. Numeric-title portion of #1301 only; no claim of fixing its source-dedup concern or broad #1269. Local full unit7719passed/51skipped/112warnings and separate realPG/API proof; current-head hosted review and actual existing API/producer rollout remain required.
+
+Implementation draft [#1670](https://github.com/TeneikaAskew/stocks/pull/1670) adds the keyword-only `implied_move_invalid` flag to `lib/earnings_reactions.py::recommended_structure` under specification #1650 and its approved successor #1675 (CATALYSTS-04 source note). It is default-off, and no caller passes it yet. Its new tests fail on main and pass on the branch, and the existing caller suites are unchanged. Current-head review and CI remain required, and nothing is deployed.
 
 ### FEAT-LIVE-001 — Intraday monitoring (20 open)
 
