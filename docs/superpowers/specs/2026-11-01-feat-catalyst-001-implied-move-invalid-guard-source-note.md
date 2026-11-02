@@ -12,7 +12,7 @@ done_when:
   - "The existing tests under tests/lib/ and tests/gcp/ that exercise recommended_structure pass unmodified."
   - "Own narrow plan and product records, the no-new documentation audit, current-head required Codex code review and CI pass through the normal gates."
   - "Source identity (CATALYSTS-04): on the implementation PR head (stocks#1670), the existing bounded producer and verifier (`scripts/maintenance/doc_source_snapshot.py produce`, then `verify` with the fixed ceilings, run from the committed HEAD) prove committed source and SITE body identity bound to this approved spec at the actual merge base, where its blob equals the one on current main; the plan binds this spec; the only SITE change is the FEAT-CATALYST-001 / CATALYSTS-04 row of the Implementation-source notes table, updated with the prefix source_identity_sha256=<current source hash> and nonempty implementation and test prose that describes this PR's recommended_structure keyword and its tests and keeps the earlier accurate own content of that row; every other SITE byte is unchanged; the sidecar is produced from the final committed SITE body and committed, replacing the sidecar record the merge of main carries; the matched main and branch `scripts/maintenance/docs_audit.py` runs report no finding that main does not; `tests/scripts/test_doc_source_snapshot.py` and `tests/scripts/test_docs_audit.py` pass unchanged; the registry `docs/DOC_REGISTRY.md` blob, mode and type equal main's; required current-head checks pass before merge under the repository's existing review rules, which this spec does not extend."
-status: draft
+status: approved
 supersedes: docs/superpowers/specs/2026-10-31-feat-catalyst-001-implied-move-invalid-guard.md
 ---
 
