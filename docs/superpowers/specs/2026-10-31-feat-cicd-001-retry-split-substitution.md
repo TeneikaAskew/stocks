@@ -11,13 +11,13 @@ done_when:
   - "Every done_when obligation of docs/superpowers/specs/2026-10-13-feat-cicd-001-complete-generated-inventory.md other than its exact enumeration of three substitutions remains in force and still passes on the PR head: the unchanged byte, marker, clean-byte, plain-file, initializer, trust-boundary, child-isolation and existing-substitution controls; the 285-second registry-equivalent suite, 600-second BASE suite and 60-second/512MiB renderer measurement; and no change to scripts/gate/spec_gate.py verdict logic, the hook, the gate workflows, their pinned copies, the snapshot or any generated document"
   - "Each new assertion is shown failing against origin/main when the PR opens; before the PR's one push, the pre-push red-team pass required for a gate-suite change ran with its four independent roles (shell; YAML/Actions; exporter and policy documents; diff and byte parsing with the render check) under the owner-reserved FEAT-CICD-001 allowance LOCAL-RENDER1 (the exporter and policy seat scoped to this change only and authorized on the implementation PR; the stopped stocks#1630 operation is not retried, replaced or routed around), each finding proven by running the gate on a concrete snippet, the last pass empty and earlier findings listed with their refusing tests"
   - "python3 scripts/gate/spec_gate.py --pr origin/main passes on the PR head; branch/main docs_audit.py reports no new findings through the declared SHARED-01 own implementation-source note and committed eligible sidecar; the FEAT-CICD-001 catalog record shows a current Status and Last reviewed and 12-PR-ISSUE-TRACEABILITY lists this PR under FEAT-CICD-001"
-status: draft
+status: approved
 supersedes: docs/superpowers/specs/2026-10-13-feat-cicd-001-complete-generated-inventory.md
 ---
 
 # Render the declared retry split as a trusted substitution
 
-Status: draft. The owner approved the narrow scope on 2026-11-01 (02:35:06 UTC): admit only the derived retry-split substitutions, keep every independent truth check and the fail-closed rejection of unrelated prose. That approval is not acceptance of this text, and this draft is not the approved spec-alone transition the predecessor requires.
+Status: approved. The owner approved the narrow scope on 2026-11-01 (02:35:06 UTC): admit only the derived retry-split substitutions, keep every independent truth check and the fail-closed rejection of unrelated prose. The owner accepted the six done_when items as written at 78dde0bd on 2026-11-01.
 
 ## Problem
 
@@ -59,6 +59,6 @@ A broad pattern could rewrite historical or unrelated retry mentions: the litera
 
 Three governance stages, as in the predecessor: (1) the requirement-only REQ-GOV-004 change, merged as 27c3c9ec (#1655); (2) this spec alone with the predecessor's retirement; (3) one fix/feat-cicd-001-retry-split-substitution implementation PR carrying its plan.
 
-This PR is a draft precursor of stage 2. It carries only this spec, at `status: draft`; it does not flip the predecessor, and it is not the approved spec-alone transition the predecessor's Validation and rollout section binds. On main today the predecessor's status-only flip is refused by the supersedes check (`scripts/gate/spec_gate.py` round-eight rejection). The repair's specification is on main (a79ac45d, #1653), but its gate implementation (stocks#1656) is not, and the specification alone does not change the gate. So this PR becomes the approved transition only after #1656 lands: then, and after the owner approves this text, it sets `status: approved`, adds the predecessor's status-only change to `superseded` and nothing else, gets its own current-head hosted review and CI, and merges. It is not merged before that, and no exemption from any gate is claimed.
+This PR is stage 2: this spec at `status: approved` and the predecessor's status-only change to `superseded`, which the supersedes-chain gate implementation (stocks#1656, cb136f3e) admits. It gets its own current-head hosted review and CI before it merges, and no exemption from any gate is claimed.
 
 Then stage 3 opens. The red-team allowance is LOCAL-RENDER1, reserved by the owner before stage 3, as the fifth done_when item states. After stage 3 lands, the FEAT-DEPLOY-001 news branch and the EW evaluator retirement base-sync and re-render with `--insert`.
