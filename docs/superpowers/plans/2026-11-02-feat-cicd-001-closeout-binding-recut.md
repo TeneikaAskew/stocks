@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-02-feat-cicd-001-closeout-spec-binding.md
 branch: fix/feat-cicd-001-closeout-binding-recut
-pr: null
+pr: 1694
 status: ready
 ---
 
