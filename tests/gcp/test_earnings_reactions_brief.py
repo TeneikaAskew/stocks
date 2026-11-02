@@ -500,3 +500,89 @@ def test_to_dict_is_json_serialisable():
     _json.dumps(d)  # must not raise
     assert d["ticker"] == "AAPL"
     assert d["insider_net_value_60d"] == 1_250_000.0
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Retired EarningsWhispers rows (FEAT-CATALYST-001; RETIREMENT-DESIGN
+# section 4.1 site 5). The rollup SQL runs in SQLite over a fixture whose
+# hydrated EW row wins MAX(company_name), MAX(earnings_time) and the
+# volume/OI maxima on main.
+# ──────────────────────────────────────────────────────────────────────
+
+_EW_DAY = date(2026, 11, 12)
+
+
+def _ew_rollup_rows():
+    from tests.fixtures.earnings_calendar_sources import (
+        av, ew_only, ew_raw_alias, hydrated, null_source, unknown_source, uw,
+    )
+    return [
+        # T: AV ∩ UW; the hydrated EW row carries larger strings and volumes.
+        av("T", _EW_DAY, company_name="Acme", earnings_time="postmarket"),
+        uw("T", _EW_DAY, options_volume=20000, open_interest=50000),
+        hydrated(ew_only("T", _EW_DAY, company_name="Zz Corp",
+                         earnings_time="premarket"), volume=30000, oi=90000),
+        # U: AV ∩ UW but UW's open interest fails the > 1000 floor; only the
+        # hydrated EW row's 90000 lifts it over on main.
+        av("U", _EW_DAY), uw("U", _EW_DAY, options_volume=20000, open_interest=500),
+        hydrated(ew_only("U", _EW_DAY)),
+        # EW-only tickers, both spellings; NULL / unknown controls.
+        hydrated(ew_only("E", _EW_DAY)),
+        hydrated(ew_raw_alias("R", _EW_DAY)),
+        null_source("N", _EW_DAY, company_name="NullCo"),
+        unknown_source("K", _EW_DAY, company_name="UnknownCo"),
+    ]
+
+
+@pytest.fixture
+def ew_rollup(monkeypatch):
+    from gcp import database
+    from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
+    from tests.fixtures.earnings_calendar_sources import make_db, run_earnings_sql
+
+    state = {"strip": False, "sqls": []}
+
+    def fake_query(sql, params=None):
+        state["sqls"].append(sql)
+        if state["strip"]:
+            assert sql.count("AND " + EARNINGS_NOT_RETIRED_SQL) == 1
+            sql = sql.replace("AND " + EARNINGS_NOT_RETIRED_SQL, "")
+        return run_earnings_sql(make_db(_ew_rollup_rows()), sql, params)
+
+    monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: True)
+    monkeypatch.setattr(database, "query_to_dataframe", fake_query)
+    monkeypatch.delenv("BRIEF_INCLUDE_UNCONFIRMED", raising=False)
+    return state
+
+
+def test_rollup_sql_carries_the_predicate_inside_the_cte(ew_rollup):
+    from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
+    erb.load_calendar_reporters(_EW_DAY)
+    (sql,) = ew_rollup["sqls"]
+    cte = sql[sql.index("FROM earnings_calendar"):sql.index("GROUP BY ticker")]
+    assert "AND " + EARNINGS_NOT_RETIRED_SQL in cte
+
+
+def test_rollup_ignores_ew_rows(ew_rollup, monkeypatch):
+    got = {r["ticker"]: r for r in erb.load_calendar_reporters(_EW_DAY)}
+    # U fails the OI floor once the EW row cannot lift MAX(open_interest).
+    assert set(got) == {"T"}
+    assert got["T"]["company_name"] == "Acme"
+    assert got["T"]["earnings_time"] == "postmarket"
+
+    monkeypatch.setenv("BRIEF_INCLUDE_UNCONFIRMED", "1")
+    unconfirmed = {r["ticker"] for r in erb.load_calendar_reporters(_EW_DAY)}
+    assert unconfirmed == {"T", "U", "N", "K"}
+
+
+def test_main_shaped_rollup_lets_the_ew_row_win(ew_rollup, monkeypatch):
+    """Negative control: main's text (the predicate stripped)."""
+    ew_rollup["strip"] = True
+    got = {r["ticker"]: r for r in erb.load_calendar_reporters(_EW_DAY)}
+    assert set(got) == {"T", "U"}
+    assert got["T"]["company_name"] == "Zz Corp"
+    assert got["T"]["earnings_time"] == "premarket"
+
+    monkeypatch.setenv("BRIEF_INCLUDE_UNCONFIRMED", "1")
+    unconfirmed = {r["ticker"] for r in erb.load_calendar_reporters(_EW_DAY)}
+    assert {"E", "R"} <= unconfirmed
