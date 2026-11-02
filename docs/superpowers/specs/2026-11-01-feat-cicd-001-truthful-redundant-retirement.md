@@ -14,7 +14,7 @@ done_when:
   - "Base suite (D1): the spec-gate workflow's base-suite job, main's tests/scripts/test_spec_gate.py against the proposed spec_gate.py, is green on the implementation PR head, so no message main's suite asserts has changed."
   - "Review contract: the implementation PR records a three-role red-team pass (shell semantics; YAML/Actions structure; exporter and policy documents) on the head it pushed, each reviewer having executed the gate against a concrete snippet, findings fixed in one batch and one push; the exporter-and-policy reviewer invocation that the platform rejected on stocks#1630 before any review result (#1630 comment 6485122675) is not retried, replaced or routed around by this change, and the pass's exporter-and-policy seat is staffed under its own owner-recorded authorization on the implementation PR; current-head hosted code review and CI pass before merge."
   - "Records: the FEAT-CICD-001 record in docs/product/02-FEATURE-CATALOG.md and docs/product/12-PR-ISSUE-TRACEABILITY.md identify the implementation PR, and the record states that scripts/gate/ is owned through the gate's WORKFLOW_FEAT constant while the Code row lists .github/workflows/ and the review guidelines; no other capability's row or record changes."
-status: approved
+status: superseded
 supersedes: docs/superpowers/specs/2026-10-31-feat-cicd-001-supersedes-chain-retirement.md
 ---
 
