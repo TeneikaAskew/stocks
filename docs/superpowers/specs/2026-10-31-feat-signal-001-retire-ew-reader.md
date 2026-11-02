@@ -39,6 +39,9 @@ Nothing else changed. Items 1 to 3 still name the two P-A artifacts that are abs
 (`lib.earnings_reactions.EARNINGS_NOT_RETIRED_SQL` and `tests/fixtures/earnings_calendar_sources.py`);
 they are created by P-A, and this dependency is why the implementation waits for P-A on main.
 
+On main cb136f3e (#1656) the one-feat_id check the paragraph cites is at `spec_gate.py:1497`; every other
+anchor and record named here reads the same on cb136f3e.
+
 ## Choice of Chain element: SIGNALS-04
 
 `_nearest_earnings` feeds `get_catalyst_context` (`lib/strategies/catalyst_proximity.py:353`). Two
@@ -46,17 +49,21 @@ producers persist that context:
 
 - `scripts/run_historical_signals.py:336-345` writes `next_catalyst_min`, `next_catalyst_type`,
   `last_catalyst_min`, `last_catalyst_type`, `catalyst_session` and `proximity_bucket` onto each research
-  signal, and `gcp/historical_signals.py:70-78` lists those columns for `historical_signals`. That job is
-  `historical-signals-watchlist` (`gcp/deploy.sh:665-688`, `--command python,-m,scripts.run_historical_signals`).
+  signal, and `gcp/historical_signals.py:70-80` lists those columns for `historical_signals`. That job is
+  `historical-signals-watchlist` (`gcp/deploy.sh:665-693`, `--command python,-m,scripts.run_historical_signals`).
 - `gcp/signal_monitor.py:1319` looks the context up for each live fire and `:1756` copies it onto the
-  `signal_alerts` row.
+  `signal_alerts` row, and L1327-1337 scale the fire's `total_score`, and so its size and strength, by the
+  bucket's multiplier.
 
 SIGNALS-04 (Signals table) is the existing SITE Chain element whose Data cell is
 `historical_signals ← historical-signals-watchlist` and whose GCP cell names the Cloud Run job
-`historical-signals-watchlist` (`docs/product/03-SITE-TRACEABILITY.md:680` on main 751a6c13), so it is
-the element whose served rows carry the catalyst fields this change corrects. FEAT-SIGNAL-001 already
-writes a SIGNALS-04 note row (L1308, from #1620, merged 2026-10-30T04:41:50Z), so the implementation
-updates that row rather than adding one. No other element is declared: a `signal_alerts` reader would
+`historical-signals-watchlist` (`docs/product/03-SITE-TRACEABILITY.md:680` on main 751a6c13). No Chain
+element serves the catalyst fields (`GET /api/signals/{ticker}` selects none of them,
+`platform/api/routers/signals.py:215-232`). SIGNALS-04 is an identity anchor that names the job writing
+them. Its Data cell is shared with DASHBOARD-05, CHARTS-06, SIGNALS-01, -03, -05, -07 and -10, and it is
+chosen as the Signals page's own table. FEAT-SIGNAL-001 already has note rows for CHARTS-06 (L1306),
+DASHBOARD-05 (L1307) and SIGNALS-04 (L1308), all from #1620, merged 2026-10-30T04:41:50Z. The
+implementation updates the SIGNALS-04 row and leaves the other two byte for byte. No other element is declared: a `signal_alerts` reader would
 describe the same predicate a second time, and one declared row is enough to bind the source identity.
 
 Ownership, read 2026-11-01 from the 58 open pull requests and their branch diffs against main: none
