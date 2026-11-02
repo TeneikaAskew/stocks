@@ -33,7 +33,7 @@ Spec: retained done_when[7].
 
 ## Task 3: refusal controls
 Spec: retained done_when[0] and [7].
-- [ ] The close-out stays refused when the bound spec is missing, has the wrong FEAT, is not approved, is superseded by a later approved FEAT-CICD-001 spec, or is changed on the branch.
+- [ ] The close-out stays refused, each with its own asserted reason, when the bound spec is missing, has the wrong FEAT, is not approved or is superseded by a later approved FEAT-CICD-001 spec; a branch that edits the bound spec is not a DOC-only close-out and is refused by route selection.
 - [ ] The initial-bootstrap record still names the 2026-10-13 spec.
 - [ ] Existing close-out, terminal stamp and bootstrap controls pass unchanged in their assertions.
 

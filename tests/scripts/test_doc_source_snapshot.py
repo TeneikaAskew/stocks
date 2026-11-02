@@ -1664,13 +1664,15 @@ def test_actual_doc_closeout_binding_negatives_retain_refusal(case, tmp_path):
         "wrong-feat": "approved immutable FEAT/spec binding failed",
         "not-approved": "approved immutable FEAT/spec binding failed",
         "superseded": "bound approved spec has been superseded in trusted POLICY",
+        # Editing the bound spec on the branch is not a DOC-only close-out: route
+        # selection refuses it before the spec binding is read.
+        "changed-in-source": "ordinary production requires its actual named feature branch/source",
     }
     refused = repo.cli("produce")
     assert refused.returncode != 0, refused.stdout
     verdict = json.loads(refused.stdout)
     assert verdict["status"] == "unverified"
-    if case in reasons:
-        assert verdict["reason"] == reasons[case]
+    assert verdict["reason"] == reasons[case]
     assert not (repo.path / RECORD).exists()
 
 
