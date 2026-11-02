@@ -32,8 +32,9 @@ main b0f88b5e on 2026-11-02, this text adds only:
   (`.claude/skills/product-delivery/references/spec-template.md`, the `site_source_notes` bullets). Item 4
   is the template's pre-merge source-identity obligation, in the shape approved for FEAT-SIGNAL-001 (#1672)
   and FEAT-INSIGHT-001 (#1674).
-- the sections "Choice of Chain element", "Ownership and collisions", "Source identity and close-out",
-  "Separation of evidence" and "Status".
+- the sections "Changes from the local rev 3.9 draft (read first)" (this one), "Choice of Chain element:
+  SHARED-07", "Ownership and collisions", "Source identity and close-out", "Separation of evidence" and
+  "Status".
 
 Nothing else changed. Items 1 to 3 still name the two P-A artifacts that are absent on main b0f88b5e
 (`lib.earnings_reactions.EARNINGS_NOT_RETIRED_SQL` and `tests/fixtures/earnings_calendar_sources.py`);
@@ -51,9 +52,9 @@ at `spec_gate.py:1465` is at L1497-1498 on b0f88b5e.
 The eleven readers choose the ticker universes and the timing fallback of fetcher jobs
 (`compute-earnings-reactions`, `fetch-market-data`, `fetch-earnings-history`, the news, insider and SEC
 fetchers and the premarket refresh); they write Cloud SQL tables and serve no route of their own. SHARED-07
-(Shared table) is the Chain element whose Data cell is every tracked Cloud SQL table and whose route,
-`GET /api/health/freshness`, reports those tables' freshness (`docs/product/03-SITE-TRACEABILITY.md:125` on
-main b0f88b5e). FEAT-DATA-001's only existing Implementation-source note row is
+(Freshness watchdog and /api/health/freshness, under "00 · Shared") is the Chain element whose Data cell
+is every tracked Cloud SQL table and whose route, `GET /api/health/freshness`, reports those tables'
+freshness (`docs/product/03-SITE-TRACEABILITY.md:125` on main b0f88b5e). FEAT-DATA-001's only existing Implementation-source note row is
 `(FEAT-DATA-001, SHARED-07)` (L1303). The implementation updates that row and keeps its earlier own
 content. No other element is declared: one declared row is enough to bind the source identity, and a second
 row would describe the same predicate again.
@@ -66,23 +67,30 @@ FEAT-DATA-001 catalog record:
 
 - #1430 (`fix/feat-catalyst-001-av-catalysts`, draft, FEAT-CATALYST-001) changes
   `compute_earnings_reactions.py`, `fetch_earnings_history.py`, `fetch_insider_transactions.py` and
-  `fetch_news_sentiment.py`, with hunks inside the `_earnings_calendar_tickers` functions of the last three
-  and around `fetch_calendar_timing_map`.
+  `fetch_news_sentiment.py`, with hunks inside `_tickers_reporting_in_window` (the L296 read site) and the
+  `_earnings_calendar_tickers` functions of the last two, and around `fetch_calendar_timing_map`. In those
+  three readers it replaces the warning and empty return with `raise av.SourceError("eligibility_query_failed")`
+  (news raises the same error through `_av_ingestion.SourceError`).
 - #1643 (`fix/feat-data-001-typed-news-outcomes`, draft, owned by the news retry work) changes
-  `fetch_news_sentiment.py`, including the warning inside `_earnings_calendar_tickers`, and the
-  `(FEAT-DATA-001, SHARED-07)` row.
+  `fetch_news_sentiment.py`, including the warning inside `_earnings_calendar_tickers`, the
+  `(FEAT-DATA-001, SHARED-07)` row, and the FEAT-DATA-001 catalog record (its Evidence status and an added
+  "Typed-news runtime draft" line).
 - #1608 (`feature/feat-catalyst-001-event-bound-reactions`, draft) rewrites `fetch_calendar_timing_map`, as
   the paragraph above already says.
 - #1564 (`fix/feat-data-001-intraday-incident-1560`, draft) changes the `(FEAT-DATA-001, SHARED-07)` row.
-- No open pull request changes `fetch_market_data.py`, `fetch_sec_filings.py`, `fetch_premarket_refresh.py`
-  or the FEAT-DATA-001 catalog record.
+- #1546 (draft, NYSE session calendar) changes the FEAT-DATA-001 catalog record: its Status, its Last
+  reviewed date and its Code field, which gains `` `lib/eastern_time.py` (NYSE sessions) `` beside the
+  `gcp/fetchers/` entry cited above. It touches none of the seven reader files.
+- No open pull request changes `fetch_market_data.py`, `fetch_sec_filings.py` or
+  `fetch_premarket_refresh.py`.
 
 Coordination, as ordinary engineering for any two branches touching one file: the implementation adds the predicate to
 whichever form of each function is on main when its branch is cut, and edits no other pull request's
 branch. Where one of the pull requests above is still open when the implementation is cut, whichever of the
 two merges second merges main, reapplies its own lines and rebinds its own SITE row, as the shared SHARED-07
-row already requires of every FEAT-DATA-001 change. The `fetch_news_sentiment.py` hunk is told to the
-owner of #1643 before the implementation is pushed.
+row already requires of every FEAT-DATA-001 change. Before the implementation is pushed, its author
+tells the owners of #1430 and #1643 which of their files it changes (for #1430 the four shared reader
+files, for #1643 `fetch_news_sentiment.py`).
 
 ## Source identity and close-out
 
@@ -124,8 +132,10 @@ never ticked before the genuine evidence exists:
 
 Kept apart, and never offered for one another: the pre-merge identity of committed source and SITE body;
 the hermetic tests of items 2 and 3, which run the real reader functions with only the query layer faked
-(several of them catch every exception and return an empty universe, an existing behaviour this spec does
-not change or extend); the current-head review and CI; and the post-merge main, staging and
+(on main b0f88b5e several of them catch every exception and return an empty universe, an existing
+behaviour this spec does not change or extend; if #1430 merges first, `_tickers_reporting_in_window` and the
+insider and news `_earnings_calendar_tickers` raise `SourceError` instead; this spec changes neither
+behaviour); the current-head review and CI; and the post-merge main, staging and
 sidecar-retirement evidence. A local identity record is not review authentication, deployment evidence or
 data freshness. Rows the fetchers wrote before the deploy are not recomputed by this spec.
 
