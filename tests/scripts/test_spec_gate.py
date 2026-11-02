@@ -4731,16 +4731,18 @@ def scratch_measurement(tmp_path, mode):
              "open(os.path.join(d,'blob'),'wb').write(b'x'*(1024*1024));"
              "root=os.environ['TMPDIR'];json.dump({'dir':d,'root':root,'receipt':open(os.path.join(root,'CREATED-BY')).read()},"
              f"open({str(record)!r},'w'));")
-    child += {'accepted': '', 'memory': 'a=bytearray(96*1024*1024);time.sleep(20)', 'stall': 'time.sleep(20)',
+    child += {'accepted': '', 'unreaped': '', 'memory': 'a=bytearray(96*1024*1024);time.sleep(20)', 'stall': 'time.sleep(20)',
               'failed': 'raise SystemExit(7)',
               'escaped': "import subprocess;subprocess.Popen([sys.executable,'-c','import os,tempfile,time;os.setsid();"
                          "d=tempfile.mkdtemp();open(os.path.join(d,\\'b\\'),\\'w\\').write(\\'x\\');time.sleep(20)']);time.sleep(.3)"}[mode]
     launcher = ("import ctypes,importlib.util,json,pathlib,os,sys;ctypes.CDLL(None).prctl(36,1,0,0,0);"
                 "s=importlib.util.spec_from_file_location('inventory_scratch',sys.argv[1]);"
                 "m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m);"
+                "real=m.OwnedFamily.terminate_and_reap\n"
+                "if sys.argv[4]=='unreaped':m.OwnedFamily.terminate_and_reap=lambda self,*a:(real(self,*a),False)[1]\n"
                 "r=m.run_bounded([sys.executable,'-c',sys.argv[2]],pathlib.Path.cwd(),max_rss_bytes=64*1024*1024,max_seconds=1);"
                 "r['outer_after']=sorted(os.listdir(sys.argv[3]));print(json.dumps(r))")
-    r = subprocess.run([sys.executable, '-c', launcher, str(REPO/MEASURE), child, str(outer)],
+    r = subprocess.run([sys.executable, '-c', launcher, str(REPO/MEASURE), child, str(outer), mode],
                        capture_output=True, text=True, timeout=10, env={**os.environ, 'TMPDIR': str(outer)})
     assert r.returncode == 0, r.stdout + r.stderr
     return json.loads(r.stdout), (json.loads(record.read_text()) if record.exists() else None), outer
@@ -4759,6 +4761,11 @@ def test_measure_inventory_render_owns_and_removes_its_scratch_root(tmp_path):
         assert json.loads(child['receipt'])['monitor_pid'] > 0, (mode, child)
         assert report['scratch_root_removed'] and not report.get('scratch_root_retained'), (mode, report)
         assert report['outer_after'] == [] and not Path(root).exists(), (mode, report['outer_after'])
+    # A family the monitor could not prove reaped keeps its root: something it owns may still be writing there.
+    report, child, outer = scratch_measurement(tmp_path, 'unreaped')
+    assert not report['ok'] and not report['owned_family_gone'] and report['scratch_root_retained'], report
+    assert not report['scratch_root_removed'] and report['outer_after'] == [Path(report['scratch_root']).name], report
+    shutil.rmtree(report['scratch_root'])   # test-owned: the root sits under this test's tmp_path
 
 def test_measure_inventory_render_bounds_public_output_delivery(tmp_path):
     """Real FIFO and full stdout-pipe backpressure cannot outlive the same whole public CLI bound."""
