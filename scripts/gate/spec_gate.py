@@ -4151,6 +4151,7 @@ def materialize(entries: list[tuple[str, str, str]], into: pathlib.Path) -> None
             if proc.poll() is None:
                 proc.kill()
                 proc.wait()
+            proc.stdout.close()   # a refusal ends git without reading on; never leave the pipe for the collector
 
 
 # The render runs main's doc_inventory in a child process: this file in a hidden mode, under `python3 -I -B`, from

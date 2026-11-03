@@ -4344,18 +4344,43 @@ FAKE_BATCH = {
     "size with an underscore": (f"{FAKE_OID} blob 1_2\n".encode() + b"z" * 12 + b"\n", 0, ["answered", "1_2", "x.bin"]),
     "size with a sign": (f"{FAKE_OID} blob +4\nabcd\n".encode(), 0, ["answered", "+4", "x.bin"]),
     "output after the last object": (f"{FAKE_OID} blob 4\nabcd\nextra\n".encode(), 0, ["after the last of 1 object"]),
+    # An answer that ends early reports git's own exit status and stderr, whichever check sees the end (QUAL2 R4 F1).
+    "early end: no answer": (b"", 128, ["failed (128)", "fatal: boom"]),
+    "early end: inside the header": (f"{FAKE_OID} blo".encode(), 128, ["failed (128)", "fatal: boom"]),
+    "early end: inside the blob": (f"{FAKE_OID} blob 10\n".encode() + b"abcd", 128, ["failed (128)", "fatal: boom"]),
+    "early end: before the separator": (f"{FAKE_OID} blob 4\nabcd".encode(), 128, ["failed (128)", "fatal: boom"]),
+    # With more than a pipe's 64 KiB still to write, a wrong separator or trailing output is named before git is
+    # ended; ending it first by closing the pipe would report its broken pipe instead (QUAL2 R4 F1).
+    "wrong separator, output pending": (f"{FAKE_OID} blob 4\nabcdX".encode(), 0, ["no separator after x.bin", FAKE_OID]),
+    "output after the last object, output pending": (f"{FAKE_OID} blob 4\nabcd\nextra".encode(), 0,
+                                                      ["after the last of 1 object"]),
 }
+# Per case, what the stand-in git does besides its answer: bytes it then keeps writing, and its stderr.
+FAKE_BATCH_EXTRA = {case: (256 * 1024 if "pending" in case else 0, "fatal: boom\n" if case.startswith("early end") else "")
+                    for case in FAKE_BATCH}
 FAKE_RUNNER = r"""
 import importlib.util,json,os,pathlib,sys
 s=importlib.util.spec_from_file_location('fake_batch_gate',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
 work,result=pathlib.Path(sys.argv[2]),{}
 for name in sorted(os.listdir(work/'answers')):
     os.environ['FAKE_GIT_ANSWER']=str(work/'answers'/name);os.environ['FAKE_GIT_EXIT']=(work/'exits'/name).read_text()
+    os.environ['FAKE_GIT_TAIL']=(work/'tails'/name).read_text();os.environ['FAKE_GIT_STDERR']=(work/'stderrs'/name).read_text()
     into=work/'into'/name;into.mkdir(parents=True)
     try:
         m.materialize([('100644','1'*40,'x.bin')],into);result[name]=['accepted','']
     except Exception as e:
         result[name]=[type(e).__name__,str(e)]
+print(json.dumps(result))
+"""
+REAL_RUNNER = r"""
+import importlib.util,json,pathlib,sys
+s=importlib.util.spec_from_file_location('real_batch_gate',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+result=[]
+for first,big,into in json.loads(sys.argv[2]):
+    try:
+        m.materialize([tuple(first),('100644',big,'after.bin')],pathlib.Path(into));result.append(['accepted',''])
+    except Exception as e:
+        result.append([type(e).__name__,str(e)])
 print(json.dumps(result))
 """
 
@@ -4370,25 +4395,44 @@ def test_materialize_names_the_refused_entry_and_checks_every_field(repo, tmp_pa
     (src / "big").write_bytes(b"\n\0" * (128 * 1024))   # 256 KiB: more than a pipe holds, so git is still writing
     big = _git(repo, "hash-object", "-w", str(src / "big")).strip()
     tree = _git(repo, "rev-parse", "HEAD^{tree}").strip()
-    for first, words in ((("100644", "0" * 40, "m.bin"), ["missing", "m.bin", "0" * 40]),
-                         (("100644", tree, "t.bin"), ["tree", "t.bin", tree])):
+    real = ((("100644", "0" * 40, "m.bin"), ["missing", "m.bin", "0" * 40]),
+            (("100644", tree, "t.bin"), ["tree", "t.bin", tree]))
+    cases = []
+    for first, _words in real:
         into = tmp_path / f"real-{first[2]}"
         into.mkdir()
-        with pytest.raises(sg.GitFailed) as refused:
-            sg.materialize([first, ("100644", big, "after.bin")], into)
-        assert all(w in str(refused.value) for w in words), str(refused.value)
+        cases.append([list(first), big, str(into)])
+    # Real git runs in a separate process with a time limit: waiting for git before ending it, while git is blocked
+    # writing the rest of a 256 KiB blob, would otherwise hang the suite instead of failing it (QUAL2 R4 F2).
+    r = subprocess.run([sys.executable, "-c", REAL_RUNNER, str(repo / "scripts/gate/spec_gate.py"), json.dumps(cases)],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stdout + r.stderr
+    for (kind, message), (_first, words) in zip(json.loads(r.stdout), real):
+        assert kind == "GitFailed" and all(w in message for w in words), message
     fake = tmp_path / "fakebin"
     fake.mkdir()
     (fake / "git").write_text(f"#!{sys.executable}\nimport os,sys\n"
-                              "sys.stdout.buffer.write(open(os.environ['FAKE_GIT_ANSWER'],'rb').read());sys.stdout.flush()\n"
+                              "try:\n"
+                              " sys.stdout.buffer.write(open(os.environ['FAKE_GIT_ANSWER'],'rb').read());sys.stdout.flush()\n"
+                              " t=memoryview(b'z'*int(os.environ['FAKE_GIT_TAIL']))\n"
+                              # Written as git writes, one write after another until done: a write cut short by the
+                              # reader closing its end is followed by one that reports the broken pipe. One buffered
+                              # write was measured returning without error there, so the stand-in exited 0 and a gate
+                              # that closed the pipe first still read as the cause (X3a, 2026-11-03).
+                              " while t:t=t[os.write(1,t):]\n"
+                              "except BrokenPipeError:\n"
+                              " sys.stderr.write('fake-git: broken pipe\\n');sys.stderr.flush();os._exit(141)\n"
+                              "sys.stderr.write(os.environ['FAKE_GIT_STDERR']);sys.stderr.flush()\n"
                               "sys.exit(int(os.environ['FAKE_GIT_EXIT']))\n")
     (fake / "git").chmod(0o755)
     work = tmp_path / "fake"
-    for sub in ("answers", "exits", "into"):
+    for sub in ("answers", "exits", "tails", "stderrs", "into"):
         (work / sub).mkdir(parents=True)
-    for n, (answer, status, _words) in enumerate(FAKE_BATCH.values()):
+    for n, (case, (answer, status, _words)) in enumerate(FAKE_BATCH.items()):
         (work / "answers" / f"case{n:02d}").write_bytes(answer)
         (work / "exits" / f"case{n:02d}").write_text(str(status))
+        (work / "tails" / f"case{n:02d}").write_text(str(FAKE_BATCH_EXTRA[case][0]))
+        (work / "stderrs" / f"case{n:02d}").write_text(FAKE_BATCH_EXTRA[case][1])
     # A separate process with a time limit: a reader that stops checking for a short read loops forever.
     r = subprocess.run([sys.executable, "-c", FAKE_RUNNER, str(repo / "scripts/gate/spec_gate.py"), str(work)],
                        capture_output=True, text=True, timeout=60,
@@ -4855,23 +4899,34 @@ if mode=='receipt-failure':
     m.append_receipt=refuse
 if mode=='prefork':
     argv=[sys.executable,'-c','pass\0']
-if mode in('unregistered','unregistered-unknown','unregistered-grandchild'):
+if mode in('unregistered','unregistered-unknown','unregistered-grandchild','unregistered-unidentified','unregistered-broken-stderr'):
     real_popen=m.subprocess.Popen
     def interrupted(*a,**kw):
         spawned.append(real_popen(*a,**kw))
         until=time.monotonic()+5
         while mode=='unregistered-grandchild' and time.monotonic()<until and not any(os.path.exists(os.path.join(outer,n,'ready')) for n in os.listdir(outer)):
             time.sleep(.01)
+        if mode=='unregistered-unidentified':
+            def unidentified(pid):raise OSError(24,'Too many open files')
+            m.os.pidfd_open=unidentified
         raise KeyboardInterrupt('after fork, before the monitor binds the child')
     m.subprocess.Popen=interrupted
+real_own_children=m.own_children
 if mode=='unregistered-unknown':
     def unknown():raise OSError('process table unreadable')
     m.own_children=unknown
 notice=io.StringIO();real_stderr=sys.stderr
-if mode in('unregistered','unregistered-unknown','unregistered-grandchild'):
+if mode in('unregistered','unregistered-unknown','unregistered-grandchild','unregistered-unidentified'):
     sys.stderr=notice
+if mode=='unregistered-broken-stderr':
+    class Unwritable:
+        def write(self,text):raise OSError(28,'No space left on device')
+        def flush(self):raise OSError(28,'No space left on device')
+    sys.stderr=Unwritable()
+    ctypes.CDLL(None).prctl(36,0,0,0,0)   # so a skipped restore is visible as 1 afterwards
 victim=os.environ.get('SCRATCH_VICTIM')
 real_unlink,real_rmdir,real_open,real_scandir=os.unlink,os.rmdir,os.open,os.scandir
+real_pidfd_open=os.pidfd_open
 if mode=='slow-removal':
     def slow(*a,**kw):time.sleep(.05);return real_unlink(*a,**kw)
     m.os.unlink=slow
@@ -4922,6 +4977,8 @@ except KeyboardInterrupt as e:
     r={'raised':type(e).__name__}
 finally:
     m.os.unlink,m.os.rmdir,m.os.open,m.os.scandir=real_unlink,real_rmdir,real_open,real_scandir
+    m.os.pidfd_open=real_pidfd_open
+    m.own_children=real_own_children   # the launcher's own observation and cleanup below read the real table
     sys.stderr=real_stderr
 r['ops']=ops
 r['notice']=notice.getvalue()
@@ -4930,13 +4987,20 @@ r['measured_elapsed']=time.monotonic()-started
 r['outer_after']=sorted(os.listdir(outer))
 roots=[os.path.join(outer,n) for n in r['outer_after'] if n.startswith('measure-render-')]
 r['receipts']=[[json.loads(line) for line in open(os.path.join(x,'CREATED-BY'))] if os.path.exists(os.path.join(x,'CREATED-BY')) else None for x in roots]
+v=ctypes.c_int();ctypes.CDLL(None).prctl(37,ctypes.byref(v),0,0,0);r['subreaper_after']=v.value
+# What is alive is read here, at assertion time, before this launcher's own cleanup below.
+r['children_at_assertion']=m.own_children()
 for p in spawned:
     r['spawned']={'pid':p.pid,'alive':p.poll() is None,'start_ticks':m.process_start(p.pid) if p.poll() is None else None}
     p.kill();p.wait()
+# Test cleanup only: each remaining PID is this launcher's own unreaped child (it is the subreaper), so it cannot
+# be recycled before the waitpid here; a PID already reaped above through its Popen is skipped.
 for events in r['receipts']:
     for e in events or []:
         for c in e.get('remaining',[]):
-            os.kill(c['pid'],signal.SIGKILL);os.waitpid(c['pid'],0)
+            if c['pid'] not in [p.pid for p in spawned]:
+                os.kill(c['pid'],signal.SIGKILL);os.waitpid(c['pid'],0)
+r['children_after_cleanup']=m.own_children()
 print(json.dumps(r))
 """
 
@@ -4961,7 +5025,7 @@ def scratch_measurement(tmp_path, mode, seconds=1):
               'slow-removal': "[open(os.path.join(root,'f%d'%n),'w').close() for n in range(60)]",
               'replaced-root': "os.rename(root,root+'.moved');os.mkdir(root);open(os.path.join(root,'keep.txt'),'w').write('keep')",
               'manyfiles': "n=0\nwhile True:\n open(os.path.join(root,'f%d'%n),'w').close();n+=1",
-              'prefork': '', 'unregistered-unknown': 'time.sleep(20)', 'rmdir-swap': '',
+              'prefork': '', 'unregistered-unknown': 'time.sleep(20)', 'unregistered-unidentified': 'time.sleep(20)', 'unregistered-broken-stderr': 'time.sleep(20)', 'rmdir-swap': '',
               'subdir-swap': f"os.mkdir({str(victim)!r});open(os.path.join({str(victim)!r},'keep.txt'),'w').write('keep');"
                              "os.mkdir(os.path.join(root,'sub'));open(os.path.join(root,'sub','a'),'w').write('a')",
               'receipt-redirect': f"os.rename(root,root+'.moved');os.mkdir({str(victim)!r});os.symlink({str(victim)!r},root)",
@@ -5019,14 +5083,29 @@ def test_measure_inventory_render_keeps_a_scratch_root_it_cannot_prove_free(tmp_
     assert report['raised'] == 'KeyboardInterrupt' and not report['spawned']['alive'], report
     assert report['outer_after'] == [], report
     assert f"killed unregistered child {report['spawned']['pid']}" in report['notice'], report
-    # A descendant the killed child left behind is adopted, seen by the relist, and keeps the root: nothing it may
-    # still be writing is removed, and the receipt and stderr say which children remain.
+    # A descendant the killed child left behind is adopted, seen by the relist with readable start ticks, and killed
+    # and reaped by the same identity-checked PIDfd pass; with no descendant left the root is removed (QUAL2 R1 F1).
     report, _, outer, _ = scratch_measurement(tmp_path, 'unregistered-grandchild', seconds=2)
     assert report['raised'] == 'KeyboardInterrupt' and not report['spawned']['alive'], report
+    assert report['children_at_assertion'] == [] and report['outer_after'] == [], report
+    killed = [line for line in report['notice'].splitlines() if 'killed unregistered child' in line]
+    assert len(killed) == 2 and f"killed unregistered child {report['spawned']['pid']}" in killed[0], report
+    # A child whose identity cannot be checked is never signalled: it is alive when this asserts, the root is kept,
+    # and the receipt and stderr name it. Only the launcher's own cleanup ends it, afterwards.
+    report, _, outer, _ = scratch_measurement(tmp_path, 'unregistered-unidentified', seconds=2)
+    pid = report['spawned']['pid']
+    assert report['raised'] == 'KeyboardInterrupt' and report['spawned']['alive'], report
+    assert [c['pid'] for c in report['children_at_assertion']] == [pid] and report['children_after_cleanup'] == [], report
     kept = report['outer_after']
     assert len(kept) == 1 and f"retained {outer / kept[0]} (spawn_not_registered)" in report['notice'], report
+    assert f"child {pid} not proven killed" in report['notice'] and 'killed unregistered' not in report['notice'], report
     spawn = [e for e in report['receipts'][0] if e['event'] == 'unregistered_spawn']
-    assert spawn and [c['pid'] for c in spawn[0]['killed']] == [report['spawned']['pid']] and spawn[0]['remaining'], report
+    assert spawn and spawn[0]['killed'] == [] and [c['pid'] for c in spawn[0]['remaining']] == [pid], report
+    # A stderr that cannot be written does not replace the interrupt or skip the kill, the removal or the restore of
+    # the caller's subreaper state (QUAL2 R1 F2).
+    report, _, outer, _ = scratch_measurement(tmp_path, 'unregistered-broken-stderr', seconds=2)
+    assert report['raised'] == 'KeyboardInterrupt' and not report['spawned']['alive'], report
+    assert report['outer_after'] == [] and report['subreaper_after'] == 0 and report['children_at_assertion'] == [], report
 
 
 KILL_AND_RECEIPT_PROBE = r"""

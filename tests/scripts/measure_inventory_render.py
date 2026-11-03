@@ -584,6 +584,7 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
         report.update(ok=False, reason="observation_failure", error=f"{type(e).__name__}: {e}")
     finally:
         cleanup_errors = []
+        notices: list[str] = []
         def cleanup_failure(e):
             cleanup_errors.append(f"{type(e).__name__}: {e}")
             report.update(ok=False, reason="cleanup_failure", owned_family_gone=False,
@@ -657,17 +658,27 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                                     retained = "spawn_children_unknown"
                                     children = own_children()
                                     report["scratch_root_unregistered_children"] = children
-                                    killed = kill_unregistered(children, started + max_seconds)
-                                    remaining = own_children() if children else []
+                                    # A killed child's own descendants are adopted by this subreaper and appear on
+                                    # the relist with readable start ticks: the same identity-checked PIDfd kill
+                                    # reaps them, pass after pass, until the relist is empty, a pass kills nothing
+                                    # (every child left could not be identified, so none is signalled) or the
+                                    # deadline passes (QUAL2 R1 F1).
+                                    killed, remaining = [], children
+                                    while remaining and time.monotonic() < started + max_seconds:
+                                        reaped_now = kill_unregistered(remaining, started + max_seconds)
+                                        killed += reaped_now
+                                        remaining = own_children()
+                                        if not reaped_now:
+                                            break
                                     report["scratch_root_unregistered_killed"] = killed
                                     retained = None
-                                    for child in killed:
-                                        print(f"measure_inventory_render: killed unregistered child {child['pid']}", file=sys.stderr)
+                                    notices += [f"killed unregistered child {child['pid']}" for child in killed]
                                     if remaining:
                                         retained = "spawn_not_registered"
                                         report["scratch_root_unregistered_remaining"] = remaining
                                         append_receipt(scratch, {"event": "unregistered_spawn", "children": children,
                                                                  "killed": killed, "remaining": remaining})
+                                        notices += [f"child {child['pid']} not proven killed: identity unverified or deadline reached" for child in remaining]
                                 elif process is not None and (not reaped or observer_live or report.get("retained_ownership")):
                                     retained = "family_not_proven_reaped"
                                 if retained is None:
@@ -684,7 +695,7 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                             report.update(ok=False, scratch_root_retained=True, scratch_root_retained_reason=retained)
                             if process is None and spawn_pending:
                                 # The exception that interrupted the spawn propagates and no report prints.
-                                print(f"measure_inventory_render: retained {report['scratch_root']} ({retained})", file=sys.stderr)
+                                notices.append(f"retained {report['scratch_root']} ({retained})")
                             if report["reason"] == "completed":
                                 report["reason"] = "scratch_cleanup_incomplete"
                         if libc is not None and subreaper_acquired:
@@ -693,6 +704,11 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                                     raise OSError("cannot restore prior child ownership state")
                             except Exception as e:
                                 cleanup_failure(e)
+                        # Notices go out last, after the receipt, removal and subreaper restore, and a stderr that
+                        # cannot be written never replaces the interrupt that is propagating (QUAL2 R1 F2).
+                        for notice in notices:
+                            with contextlib.suppress(OSError, ValueError):
+                                print(f"measure_inventory_render: {notice}", file=sys.stderr)
         except DeliveryDeadline as e:
             report.update(ok=False, reason="time_limit", error=str(e))
         report["elapsed_seconds"] = time.monotonic() - started
