@@ -4415,10 +4415,12 @@ def test_materialize_names_the_refused_entry_and_checks_every_field(repo, tmp_pa
                               "try:\n"
                               " sys.stdout.buffer.write(open(os.environ['FAKE_GIT_ANSWER'],'rb').read());sys.stdout.flush()\n"
                               " t=memoryview(b'z'*int(os.environ['FAKE_GIT_TAIL']))\n"
-                              # Written as git writes, one write after another until done: a write cut short by the
-                              # reader closing its end is followed by one that reports the broken pipe. One buffered
-                              # write was measured returning without error there, so the stand-in exited 0 and a gate
-                              # that closed the pipe first still read as the cause (X3a, 2026-11-03).
+                              # Written one write after another until done, so a write after the reader closed its
+                              # end reports the broken pipe. Real git dies of SIGPIPE there (rc -13); Python ignores
+                              # SIGPIPE, so this stand-in gets BrokenPipeError and exits 141, and no assertion
+                              # depends on which. One buffered write was measured returning without error there, so
+                              # the stand-in exited 0 and a gate that closed the pipe first still read as the cause
+                              # (X3a, 2026-11-03; wording QUAL3 R4 F1).
                               " while t:t=t[os.write(1,t):]\n"
                               "except BrokenPipeError:\n"
                               " sys.stderr.write('fake-git: broken pipe\\n');sys.stderr.flush();os._exit(141)\n"
@@ -4899,16 +4901,27 @@ if mode=='receipt-failure':
     m.append_receipt=refuse
 if mode=='prefork':
     argv=[sys.executable,'-c','pass\0']
-if mode in('unregistered','unregistered-unknown','unregistered-grandchild','unregistered-unidentified','unregistered-broken-stderr'):
+UNREGISTERED=('unregistered','unregistered-unknown','unregistered-grandchild','unregistered-unidentified',
+              'unregistered-broken-stderr','unregistered-late','unregistered-signal-refused','unregistered-unidentified-receipt')
+real_pidfd_send_signal=signal.pidfd_send_signal
+if mode in UNREGISTERED:
     real_popen=m.subprocess.Popen
     def interrupted(*a,**kw):
         spawned.append(real_popen(*a,**kw))
         until=time.monotonic()+5
         while mode=='unregistered-grandchild' and time.monotonic()<until and not any(os.path.exists(os.path.join(outer,n,'ready')) for n in os.listdir(outer)):
             time.sleep(.01)
-        if mode=='unregistered-unidentified':
+        # The child replaces its root's receipt with a directory, so the monitor's next receipt write fails.
+        while mode=='unregistered-unidentified-receipt' and time.monotonic()<until and not any(os.path.isdir(os.path.join(outer,n,'CREATED-BY')) for n in os.listdir(outer)):
+            time.sleep(.01)
+        if mode in('unregistered-unidentified','unregistered-unidentified-receipt'):
             def unidentified(pid):raise OSError(24,'Too many open files')
             m.os.pidfd_open=unidentified
+        if mode=='unregistered-signal-refused':
+            def refused(fd,sig,*a):raise PermissionError(1,'Operation not permitted')
+            m.signal.pidfd_send_signal=refused
+        if mode=='unregistered-late':
+            time.sleep(seconds+.3)   # the interrupt arrives after the command's whole deadline has passed
         raise KeyboardInterrupt('after fork, before the monitor binds the child')
     m.subprocess.Popen=interrupted
 real_own_children=m.own_children
@@ -4916,7 +4929,7 @@ if mode=='unregistered-unknown':
     def unknown():raise OSError('process table unreadable')
     m.own_children=unknown
 notice=io.StringIO();real_stderr=sys.stderr
-if mode in('unregistered','unregistered-unknown','unregistered-grandchild','unregistered-unidentified'):
+if mode in UNREGISTERED and mode!='unregistered-broken-stderr':
     sys.stderr=notice
 if mode=='unregistered-broken-stderr':
     class Unwritable:
@@ -4978,6 +4991,7 @@ except KeyboardInterrupt as e:
 finally:
     m.os.unlink,m.os.rmdir,m.os.open,m.os.scandir=real_unlink,real_rmdir,real_open,real_scandir
     m.os.pidfd_open=real_pidfd_open
+    m.signal.pidfd_send_signal=real_pidfd_send_signal
     m.own_children=real_own_children   # the launcher's own observation and cleanup below read the real table
     sys.stderr=real_stderr
 r['ops']=ops
@@ -4986,12 +5000,13 @@ r['victim_after']=sorted(os.listdir(victim)) if victim and os.path.isdir(victim)
 r['measured_elapsed']=time.monotonic()-started
 r['outer_after']=sorted(os.listdir(outer))
 roots=[os.path.join(outer,n) for n in r['outer_after'] if n.startswith('measure-render-')]
-r['receipts']=[[json.loads(line) for line in open(os.path.join(x,'CREATED-BY'))] if os.path.exists(os.path.join(x,'CREATED-BY')) else None for x in roots]
+r['receipts']=[[json.loads(line) for line in open(os.path.join(x,'CREATED-BY'))] if os.path.isfile(os.path.join(x,'CREATED-BY')) else None for x in roots]
 v=ctypes.c_int();ctypes.CDLL(None).prctl(37,ctypes.byref(v),0,0,0);r['subreaper_after']=v.value
 # What is alive is read here, at assertion time, before this launcher's own cleanup below.
 r['children_at_assertion']=m.own_children()
 for p in spawned:
-    r['spawned']={'pid':p.pid,'alive':p.poll() is None,'start_ticks':m.process_start(p.pid) if p.poll() is None else None}
+    rc=p.poll()
+    r['spawned']={'pid':p.pid,'alive':rc is None,'returncode':rc,'start_ticks':m.process_start(p.pid) if rc is None else None}
     p.kill();p.wait()
 # Test cleanup only: each remaining PID is this launcher's own unreaped child (it is the subreaper), so it cannot
 # be recycled before the waitpid here; a PID already reaped above through its Popen is skipped.
@@ -5026,6 +5041,8 @@ def scratch_measurement(tmp_path, mode, seconds=1):
               'replaced-root': "os.rename(root,root+'.moved');os.mkdir(root);open(os.path.join(root,'keep.txt'),'w').write('keep')",
               'manyfiles': "n=0\nwhile True:\n open(os.path.join(root,'f%d'%n),'w').close();n+=1",
               'prefork': '', 'unregistered-unknown': 'time.sleep(20)', 'unregistered-unidentified': 'time.sleep(20)', 'unregistered-broken-stderr': 'time.sleep(20)', 'rmdir-swap': '',
+              'unregistered-late': 'time.sleep(20)', 'unregistered-signal-refused': 'time.sleep(20)',
+              'unregistered-unidentified-receipt': "os.unlink(os.path.join(root,'CREATED-BY'));os.mkdir(os.path.join(root,'CREATED-BY'));time.sleep(20)",
               'subdir-swap': f"os.mkdir({str(victim)!r});open(os.path.join({str(victim)!r},'keep.txt'),'w').write('keep');"
                              "os.mkdir(os.path.join(root,'sub'));open(os.path.join(root,'sub','a'),'w').write('a')",
               'receipt-redirect': f"os.rename(root,root+'.moved');os.mkdir({str(victim)!r});os.symlink({str(victim)!r},root)",
@@ -5098,14 +5115,49 @@ def test_measure_inventory_render_keeps_a_scratch_root_it_cannot_prove_free(tmp_
     assert [c['pid'] for c in report['children_at_assertion']] == [pid] and report['children_after_cleanup'] == [], report
     kept = report['outer_after']
     assert len(kept) == 1 and f"retained {outer / kept[0]} (spawn_not_registered)" in report['notice'], report
-    assert f"child {pid} not proven killed" in report['notice'] and 'killed unregistered' not in report['notice'], report
+    assert f"child {pid} not proven killed: identity unverified" in report['notice'], report
+    assert 'killed unregistered' not in report['notice'], report
     spawn = [e for e in report['receipts'][0] if e['event'] == 'unregistered_spawn']
     assert spawn and spawn[0]['killed'] == [] and [c['pid'] for c in spawn[0]['remaining']] == [pid], report
+    assert spawn[0]['reasons'] == {str(pid): 'identity unverified'}, report
     # A stderr that cannot be written does not replace the interrupt or skip the kill, the removal or the restore of
     # the caller's subreaper state (QUAL2 R1 F2).
     report, _, outer, _ = scratch_measurement(tmp_path, 'unregistered-broken-stderr', seconds=2)
     assert report['raised'] == 'KeyboardInterrupt' and not report['spawned']['alive'], report
     assert report['outer_after'] == [] and report['subreaper_after'] == 0 and report['children_at_assertion'] == [], report
+
+
+def test_measure_inventory_render_signals_and_names_every_unregistered_child(tmp_path):
+    """An identified unregistered child is signalled even after the deadline, and each one left alive or unreaped is
+    named on stderr with why, before and whatever the receipt write does (QUAL3 R1 F1, R1 F2, R3 F3)."""
+    # Interrupted after the whole deadline: the first pass still sends SIGKILL; only reaping is out of time, so the
+    # root is kept and the child is named as signalled, not as unidentified.
+    report, _, outer, _ = scratch_measurement(tmp_path, 'unregistered-late', seconds=1)
+    pid = report['spawned']['pid']
+    assert report['raised'] == 'KeyboardInterrupt' and report['spawned']['returncode'] == -9, report   # SIGKILL
+    kept = report['outer_after']
+    assert len(kept) == 1 and f"retained {outer / kept[0]} (spawn_not_registered)" in report['notice'], report
+    assert f"child {pid} not proven killed: signalled, not reaped by the deadline" in report['notice'], report
+    spawn = [e for e in report['receipts'][0] if e['event'] == 'unregistered_spawn']
+    assert spawn and spawn[0]['reasons'] == {str(pid): 'signalled, not reaped by the deadline'}, report
+    # A signal the kernel refuses leaves the child alive, the root kept, and the reason named.
+    report, _, outer, _ = scratch_measurement(tmp_path, 'unregistered-signal-refused', seconds=2)
+    pid = report['spawned']['pid']
+    assert report['raised'] == 'KeyboardInterrupt' and report['spawned']['alive'], report
+    kept = report['outer_after']
+    assert len(kept) == 1 and f"retained {outer / kept[0]} (spawn_not_registered)" in report['notice'], report
+    assert f"child {pid} not proven killed: signal refused" in report['notice'], report
+    assert report['children_after_cleanup'] == [], report
+    # The child broke its root's receipt and cannot be identified: the receipt write fails, and stderr still names
+    # the live child and the kept root with that error.
+    report, _, outer, _ = scratch_measurement(tmp_path, 'unregistered-unidentified-receipt', seconds=2)
+    pid = report['spawned']['pid']
+    assert report['raised'] == 'KeyboardInterrupt' and report['spawned']['alive'], report
+    kept = report['outer_after']
+    assert len(kept) == 1 and report['receipts'] == [None], report
+    assert f"child {pid} not proven killed: identity unverified" in report['notice'], report
+    assert f"retained {outer / kept[0]} (spawn_not_registered): IsADirectoryError" in report['notice'], report
+    assert report['children_after_cleanup'] == [], report
 
 
 KILL_AND_RECEIPT_PROBE = r"""

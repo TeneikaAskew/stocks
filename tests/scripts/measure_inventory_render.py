@@ -157,25 +157,32 @@ def own_children() -> list[dict]:
     return [{"pid": pid, "start_ticks": start} for pid, (start, parent) in sorted(process_table().items()) if parent == me]
 
 
-def kill_unregistered(children: list[dict], deadline: float) -> list[dict]:
+def kill_unregistered(children: list[dict], deadline: float, outcomes: dict | None = None) -> list[dict]:
     """SIGKILL and reap direct children Popen forked but never returned (QUAL1 R1 F2). Each is signalled through a
     PIDfd opened first and then checked against its listed start ticks, so a recycled PID is never a target; a
-    child that vanished, changed identity or is not reaped by the deadline is left for the caller's relist."""
+    child that vanished, changed identity or is not reaped by the deadline is left for the caller's relist. The
+    signal is sent whatever the time; only the reap waits on the deadline. Why each child was not reaped is
+    recorded in `outcomes` by PID (QUAL3 R3 F3)."""
     killed = []
+    outcomes = {} if outcomes is None else outcomes
     for child in children:
         pid = child["pid"]
         try:
             fd = os.pidfd_open(pid)
         except OSError:
+            outcomes[pid] = "identity unverified"
             continue
         try:
             if process_start(pid) != child["start_ticks"]:
+                outcomes[pid] = "identity unverified"
                 continue
             signal.pidfd_send_signal(fd, signal.SIGKILL)
         except (OSError, ValueError):
+            outcomes[pid] = "signal refused"
             continue
         finally:
             os.close(fd)
+        outcomes[pid] = "signalled, not reaped by the deadline"
         while time.monotonic() < deadline:
             try:
                 if os.waitpid(pid, os.WNOHANG)[0] == pid:
@@ -661,11 +668,14 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                                     # A killed child's own descendants are adopted by this subreaper and appear on
                                     # the relist with readable start ticks: the same identity-checked PIDfd kill
                                     # reaps them, pass after pass, until the relist is empty, a pass kills nothing
-                                    # (every child left could not be identified, so none is signalled) or the
-                                    # deadline passes (QUAL2 R1 F1).
-                                    killed, remaining = [], children
-                                    while remaining and time.monotonic() < started + max_seconds:
-                                        reaped_now = kill_unregistered(remaining, started + max_seconds)
+                                    # (no child left could be identified, signalled and reaped) or the deadline
+                                    # passes (QUAL2 R1 F1). The first pass runs even after the deadline, so a child
+                                    # it can identify is always signalled; the deadline bounds only reaping and
+                                    # further passes (QUAL3 R1 F1).
+                                    killed, remaining, outcomes, first = [], children, {}, True
+                                    while remaining and (first or time.monotonic() < started + max_seconds):
+                                        first = False
+                                        reaped_now = kill_unregistered(remaining, started + max_seconds, outcomes)
                                         killed += reaped_now
                                         remaining = own_children()
                                         if not reaped_now:
@@ -676,9 +686,14 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                                     if remaining:
                                         retained = "spawn_not_registered"
                                         report["scratch_root_unregistered_remaining"] = remaining
+                                        reasons = {child["pid"]: outcomes.get(child["pid"], "not examined before the deadline")
+                                                   for child in remaining}
+                                        # Named before the receipt is written: the worker owns the root and can make
+                                        # that write fail, which must not also silence stderr (QUAL3 R1 F2).
+                                        notices += [f"child {pid} not proven killed: {why}" for pid, why in reasons.items()]
                                         append_receipt(scratch, {"event": "unregistered_spawn", "children": children,
-                                                                 "killed": killed, "remaining": remaining})
-                                        notices += [f"child {child['pid']} not proven killed: identity unverified or deadline reached" for child in remaining]
+                                                                 "killed": killed, "remaining": remaining,
+                                                                 "reasons": {str(pid): why for pid, why in reasons.items()}})
                                 elif process is not None and (not reaped or observer_live or report.get("retained_ownership")):
                                     retained = "family_not_proven_reaped"
                                 if retained is None:
@@ -695,7 +710,8 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                             report.update(ok=False, scratch_root_retained=True, scratch_root_retained_reason=retained)
                             if process is None and spawn_pending:
                                 # The exception that interrupted the spawn propagates and no report prints.
-                                notices.append(f"retained {report['scratch_root']} ({retained})")
+                                error = report.get("scratch_root_error")
+                                notices.append(f"retained {report['scratch_root']} ({retained})" + (f": {error}" if error else ""))
                             if report["reason"] == "completed":
                                 report["reason"] = "scratch_cleanup_incomplete"
                         if libc is not None and subreaper_acquired:
