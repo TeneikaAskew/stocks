@@ -173,13 +173,19 @@ def kill_unregistered(children: list[dict], deadline: float, outcomes: dict | No
             outcomes[pid] = "identity unverified"
             continue
         try:
-            if process_start(pid) != child["start_ticks"]:
+            # A start time that cannot be read is an unverified identity, not a refused signal (QUAL4 R1 F2).
+            try:
+                same = process_start(pid) == child["start_ticks"]
+            except (OSError, ValueError):
+                same = False
+            if not same:
                 outcomes[pid] = "identity unverified"
                 continue
-            signal.pidfd_send_signal(fd, signal.SIGKILL)
-        except (OSError, ValueError):
-            outcomes[pid] = "signal refused"
-            continue
+            try:
+                signal.pidfd_send_signal(fd, signal.SIGKILL)
+            except (OSError, ValueError):
+                outcomes[pid] = "signal refused"
+                continue
         finally:
             os.close(fd)
         outcomes[pid] = "signalled, not reaped by the deadline"
