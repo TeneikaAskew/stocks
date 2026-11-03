@@ -1,6 +1,6 @@
 # `gcp/queries/`
 
-**Last reviewed:** unknown · **Last scanned:** 2026-11-03 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-10-20 · **Owner:** TBD
 
 Reusable SQL queries for the `db-query.yml` GitHub Actions workflow.
 
