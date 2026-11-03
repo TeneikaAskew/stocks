@@ -4283,11 +4283,12 @@ def test_materialize_writes_inside_its_directory_only(repo, tmp_path_factory):
 
 
 
-def test_materialize_streams_exact_bytes_one_blob_at_a_time(repo, tmp_path_factory):
+def test_materialize_streams_exact_bytes_one_blob_at_a_time(repo, tmp_path):
     """FEAT-CICD-001 "Exact render" (done_when[1]) with the streamed batch: blobs across the 1 MiB chunk boundary,
     binary with newlines, arrive byte for byte; a missing object fails; the reader never holds a whole blob."""
     sg = load_gate(repo)
-    src = tmp_path_factory.mktemp("blobs")
+    src = tmp_path / "blobs"
+    src.mkdir()
     pattern = bytes(range(256)) + b"\n\r\n\0"
     sizes = [0, 1, (1 << 20) - 1, 1 << 20, (1 << 20) + 1, 3 * (1 << 20) + 7]
     entries, wanted = [], {}
@@ -4297,11 +4298,13 @@ def test_materialize_streams_exact_bytes_one_blob_at_a_time(repo, tmp_path_facto
         oid = _git(repo, "hash-object", "-w", str(src / f"b{n}")).strip()
         entries.append(("100644", oid, f"d{n % 2}/b{n}.bin"))
         wanted[f"d{n % 2}/b{n}.bin"] = body
-    out = tmp_path_factory.mktemp("streamed")
+    out = tmp_path / "streamed"
+    out.mkdir()
     sg.materialize(entries, out)
     assert {p: (out / p).read_bytes() == body for p, body in wanted.items()} == {p: True for p in wanted}
+    (tmp_path / "missing").mkdir()
     with pytest.raises(sg.GitFailed):
-        sg.materialize([*entries[:2], ("100644", "0" * 40, "missing.bin")], tmp_path_factory.mktemp("missing"))
+        sg.materialize([*entries[:2], ("100644", "0" * 40, "missing.bin")], tmp_path / "missing")
     # Peak RSS of a fresh process materializing one 32 MiB blob grows by far less than the blob.
     big = src / "big"
     with open(big, "wb") as f:
@@ -4317,12 +4320,14 @@ def test_materialize_streams_exact_bytes_one_blob_at_a_time(repo, tmp_path_facto
              "m.materialize([('100644',sys.argv[2],'big.bin')],pathlib.Path(sys.argv[3]));"
              "print(json.dumps({'before_kib':before,'grew_kib':hwm()-before,"
              "'size':(pathlib.Path(sys.argv[3])/'big.bin').stat().st_size}))")
-    into = tmp_path_factory.mktemp("big")
+    into = tmp_path / "big"
+    into.mkdir()
     r = subprocess.run([sys.executable, "-c", probe, str(repo / "scripts/gate/spec_gate.py"), oid, str(into)],
                        capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stdout + r.stderr
     measured = json.loads(r.stdout)
     assert measured["size"] == 32 << 20 and measured["grew_kib"] < 8 * 1024, measured
+    (into / "big.bin").unlink()
 
 # A deploy.sh job whose --args names its entrypoint: the renderer reads that file's first docstring line. Verified on
 # 2026-10-11: with an absolute path the fence exits 86, and with gcp/evil_job.py the render opens nothing outside.
