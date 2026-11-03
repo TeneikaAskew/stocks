@@ -23,7 +23,7 @@ status: ready
 ## Global constraints
 
 - Changed source: `scripts/gate/spec_gate.py` (`materialize` only), `tests/scripts/measure_inventory_render.py`, `tests/scripts/test_spec_gate.py`. Both gate workflows, their pinned copies, the hook and `.gitattributes` stay byte-identical to main.
-- Unchanged: the CLI default and maximum of 512 MiB and 60 seconds, the 513/61/nan/0/true rejections, the 1 MiB real refusal and 96 MiB-at-64 MiB allocation controls, time-limit group reaping, path containment, exact materialized bytes, and every aggregate and per-file proof budget.
+- Unchanged: the CLI default and maximum of 512 MiB and 60 seconds, the 513/61/nan/0/true rejections, the refusal controls (a 96 MiB allocation refused at a 64 MiB limit, and the 1 MiB runs, whose refusal comes from the monitor's own RSS before any worker starts), time-limit group reaping, path containment, exact materialized bytes, and every aggregate and per-file proof budget.
 - No OS pin, no Python selection in a workflow, no production cap change, no workflow timeout change.
 - No hook bypass and no history rewrite. The gate-file red-team pass runs on the frozen candidate before the one push.
 - The operation refused on stocks#1630 is not retried, replaced or routed around. No temporary tree outside this change's own fresh roots is deleted.
