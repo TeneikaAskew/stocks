@@ -4741,11 +4741,17 @@ if mode=='unregistered':
     def interrupted(*a,**kw):
         spawned.append(real_popen(*a,**kw));raise KeyboardInterrupt('after fork, before the monitor binds the child')
     m.subprocess.Popen=interrupted
+real_unlink=os.unlink
+if mode=='slow-removal':
+    def slow(*a,**kw):time.sleep(.05);return real_unlink(*a,**kw)
+    m.os.unlink=slow
 started=time.monotonic()
 try:
     r=m.run_bounded(argv,pathlib.Path.cwd(),max_rss_bytes=64*1024*1024,max_seconds=seconds)
 except KeyboardInterrupt as e:
     r={'raised':type(e).__name__}
+finally:
+    m.os.unlink=real_unlink
 r['measured_elapsed']=time.monotonic()-started
 r['outer_after']=sorted(os.listdir(outer))
 roots=[os.path.join(outer,n) for n in r['outer_after'] if n.startswith('measure-render-')]
@@ -4774,6 +4780,7 @@ def scratch_measurement(tmp_path, mode, seconds=1):
                          "d=tempfile.mkdtemp();open(os.path.join(d,\\'b\\'),\\'w\\').write(\\'x\\');time.sleep(20)']);time.sleep(.3)",
               'symlink-root': f"os.mkdir({str(victim)!r});open(os.path.join({str(victim)!r},'keep.txt'),'w').write('keep');"
                               "os.rename(root,root+'.moved');os.symlink(" + repr(str(victim)) + ",root)",
+              'slow-removal': "[open(os.path.join(root,'f%d'%n),'w').close() for n in range(60)]",
               'replaced-root': "os.rename(root,root+'.moved');os.mkdir(root);open(os.path.join(root,'keep.txt'),'w').write('keep')",
               'manyfiles': "n=0\nwhile True:\n open(os.path.join(root,'f%d'%n),'w').close();n+=1"}[mode]
     r = subprocess.run([sys.executable, '-c', SCRATCH_LAUNCHER, str(REPO/MEASURE), child, str(outer), mode, str(seconds)],
@@ -4832,6 +4839,11 @@ def test_measure_inventory_render_scratch_cleanup_before_start_and_at_deadline(t
         assert not report['ok'] and report['reason'] == 'observation_failure' and 'process_group' not in report, (mode, report)
         assert report['scratch_root'] and report['scratch_root_removed'] and report['outer_after'] == [], (mode, report)
         assert child is None, (mode, child)
+    # Removal that cannot finish in time stops at the deadline and keeps the root (and its receipt) rather than overrun.
+    report, _, outer, _ = scratch_measurement(tmp_path, 'slow-removal')
+    assert report['reason'] == 'completed' or report['reason'] == 'scratch_cleanup_incomplete', report
+    assert report['scratch_root_retained_reason'] == 'removal_deadline' and not report['scratch_root_removed'], report
+    assert report['elapsed_seconds'] <= 1 and report['measured_elapsed'] <= 1.05 and report['receipts'][0], report
     report, _, outer, _ = scratch_measurement(tmp_path, 'manyfiles')
     assert report['reason'] == 'time_limit' and report['owned_family_gone'], report
     assert report['elapsed_seconds'] <= 1 and report['measured_elapsed'] <= 1.05, report
