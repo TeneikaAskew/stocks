@@ -4774,6 +4774,7 @@ def scratch_measurement(tmp_path, mode, seconds=1):
                          "d=tempfile.mkdtemp();open(os.path.join(d,\\'b\\'),\\'w\\').write(\\'x\\');time.sleep(20)']);time.sleep(.3)",
               'symlink-root': f"os.mkdir({str(victim)!r});open(os.path.join({str(victim)!r},'keep.txt'),'w').write('keep');"
                               "os.rename(root,root+'.moved');os.symlink(" + repr(str(victim)) + ",root)",
+              'replaced-root': "os.rename(root,root+'.moved');os.mkdir(root);open(os.path.join(root,'keep.txt'),'w').write('keep')",
               'manyfiles': "n=0\nwhile True:\n open(os.path.join(root,'f%d'%n),'w').close();n+=1"}[mode]
     r = subprocess.run([sys.executable, '-c', SCRATCH_LAUNCHER, str(REPO/MEASURE), child, str(outer), mode, str(seconds)],
                        capture_output=True, text=True, timeout=15, env={**os.environ, 'TMPDIR': str(outer)})
@@ -4811,6 +4812,11 @@ def test_measure_inventory_render_keeps_a_scratch_root_it_cannot_prove_free(tmp_
     assert report['owned_family_gone'] and report['reason'] == 'scratch_cleanup_incomplete' and not report['ok'], report
     assert report['scratch_root_retained_reason'] == 'removal_failed' and 'scratch_root_error' in report, report
     assert not report['scratch_root_removed'] and (victim / 'keep.txt').read_text() == 'keep', report
+    # A different directory put in the root's place is not the one the monitor created, so nothing in it is removed.
+    report, _, outer, _ = scratch_measurement(tmp_path, 'replaced-root')
+    assert report['owned_family_gone'] and report['scratch_root_retained_reason'] == 'removal_failed', report
+    assert 'no longer the directory' in report['scratch_root_error'], report
+    assert (Path(report['scratch_root']) / 'keep.txt').read_text() == 'keep', report
     # A child that exists before the monitor binds it keeps its root, identified by PID and start ticks.
     report, _, outer, _ = scratch_measurement(tmp_path, 'unregistered', seconds=2)
     assert report['raised'] == 'KeyboardInterrupt' and report['spawned']['alive'], report
