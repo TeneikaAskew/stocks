@@ -1672,7 +1672,10 @@ def verify_total(repo) -> dict:
 
 def test_actual_verify_input_of_exactly_max_bytes_is_admitted_and_one_more_refused(tmp_path):
     # Real totals, measured and then padded to the ceiling exactly. Nothing is
-    # mocked: the CLI reads and charges every byte it reports.
+    # mocked: the CLI reads and charges every byte it reports. The ceiling is
+    # pinned to the approved value first: every padding below is derived from
+    # the module's own constant, so without the pin a lowered ceiling passes.
+    assert MAX_BYTES == 12582912
     unpadded = verify_total(padded_bootstrap_repo(tmp_path / "unpadded", 0, 0))
     assert unpadded["status"] == "identity-matched"
     near = (MAX_BYTES - unpadded["counted_bytes"]) // 3 - 4096
