@@ -140,8 +140,11 @@ class ScratchRoot:
 
 def append_receipt(root: ScratchRoot, entry: dict) -> None:
     """One durable JSON line per ownership event, so a root left by a killed monitor still says whose it is."""
-    fd = os.open(RECEIPT, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=root.fd)
+    # Never wait for a FIFO reader or follow a final symlink (QUAL1 R4 F2), as regular_output does.
+    fd = os.open(RECEIPT, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=root.fd)
     try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("the scratch receipt must be a regular file")
         os.write(fd, (json.dumps(entry, sort_keys=True) + "\n").encode("utf-8"))
         os.fsync(fd)
     finally:
@@ -152,6 +155,36 @@ def own_children() -> list[dict]:
     """Live direct children of this monitor, by PID and kernel start ticks."""
     me = os.getpid()
     return [{"pid": pid, "start_ticks": start} for pid, (start, parent) in sorted(process_table().items()) if parent == me]
+
+
+def kill_unregistered(children: list[dict], deadline: float) -> list[dict]:
+    """SIGKILL and reap direct children Popen forked but never returned (QUAL1 R1 F2). Each is signalled through a
+    PIDfd opened first and then checked against its listed start ticks, so a recycled PID is never a target; a
+    child that vanished, changed identity or is not reaped by the deadline is left for the caller's relist."""
+    killed = []
+    for child in children:
+        pid = child["pid"]
+        try:
+            fd = os.pidfd_open(pid)
+        except OSError:
+            continue
+        try:
+            if process_start(pid) != child["start_ticks"]:
+                continue
+            signal.pidfd_send_signal(fd, signal.SIGKILL)
+        except (OSError, ValueError):
+            continue
+        finally:
+            os.close(fd)
+        while time.monotonic() < deadline:
+            try:
+                if os.waitpid(pid, os.WNOHANG)[0] == pid:
+                    killed.append(child)
+                    break
+            except ChildProcessError:
+                break
+            time.sleep(.005)
+    return killed
 
 
 def clear_directory(dir_fd: int, deadline: float, keep: str | None = None) -> bool:
@@ -190,7 +223,13 @@ def remove_scratch(root: ScratchRoot, deadline: float) -> bool:
     except OSError:
         append_receipt(root, {"event": "removal_aborted"})
         raise
-    os.rmdir(root.name, dir_fd=root.parent_fd)
+    try:
+        os.rmdir(root.name, dir_fd=root.parent_fd)
+    except OSError as e:
+        # A kept root keeps its attribution (QUAL1 R4 F3). The rmdir error is what propagates.
+        with contextlib.suppress(OSError):
+            append_receipt(root, {"event": "removal_failed", "error": f"{type(e).__name__}: {e}"})
+        raise
     return True
 
 
@@ -617,11 +656,18 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                                     # As subreaper, whatever Popen forked is still a child here; none: it never forked.
                                     retained = "spawn_children_unknown"
                                     children = own_children()
-                                    retained = None
                                     report["scratch_root_unregistered_children"] = children
-                                    if children:
+                                    killed = kill_unregistered(children, started + max_seconds)
+                                    remaining = own_children() if children else []
+                                    report["scratch_root_unregistered_killed"] = killed
+                                    retained = None
+                                    for child in killed:
+                                        print(f"measure_inventory_render: killed unregistered child {child['pid']}", file=sys.stderr)
+                                    if remaining:
                                         retained = "spawn_not_registered"
-                                        append_receipt(scratch, {"event": "unregistered_spawn", "children": children})
+                                        report["scratch_root_unregistered_remaining"] = remaining
+                                        append_receipt(scratch, {"event": "unregistered_spawn", "children": children,
+                                                                 "killed": killed, "remaining": remaining})
                                 elif process is not None and (not reaped or observer_live or report.get("retained_ownership")):
                                     retained = "family_not_proven_reaped"
                                 if retained is None:
@@ -636,6 +682,9 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                                 scratch.close()
                         if retained:
                             report.update(ok=False, scratch_root_retained=True, scratch_root_retained_reason=retained)
+                            if process is None and spawn_pending:
+                                # The exception that interrupted the spawn propagates and no report prints.
+                                print(f"measure_inventory_render: retained {report['scratch_root']} ({retained})", file=sys.stderr)
                             if report["reason"] == "completed":
                                 report["reason"] = "scratch_cleanup_incomplete"
                         if libc is not None and subreaper_acquired:

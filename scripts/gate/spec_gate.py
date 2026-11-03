@@ -4087,7 +4087,9 @@ def tree_refusal(entries: list[tuple[str, str, str]]) -> str | None:
 def materialize(entries: list[tuple[str, str, str]], into: pathlib.Path) -> None:
     """Write each entry's blob, byte for byte, to into/path, from one `git cat-file --batch`, which applies no
     attributes. Raises ValueError, before writing, for a path that resolves outside `into`. The batch output is
-    streamed to the files one blob at a time, so this process never holds the whole tree in memory."""
+    streamed to the files one blob at a time, at most 1 MiB per read, so this process never holds a whole blob.
+    Every other mismatch raises GitFailed: a header whose object id, type or decimal size is not the one asked for,
+    an answer that ends early, a missing separator, any output after the last object, or a nonzero exit."""
     top = os.path.realpath(into) + os.sep
     def target(path: str) -> str:
         where = os.path.realpath(os.path.join(into, path))
@@ -4107,13 +4109,25 @@ def materialize(entries: list[tuple[str, str, str]], into: pathlib.Path) -> None
                 return GitFailed(f"git cat-file --batch failed ({proc.returncode}): "
                                  f"{err.read().decode('utf-8', 'replace').strip() or 'no output'}")
             return None
+        def ended(message: str) -> GitFailed:
+            # The answer stopped early, so git has exited or is exiting: its own status and stderr explain why.
+            return failed() or GitFailed(message)
+        def refused(message: str) -> GitFailed:
+            # The answer is wrong while git may still be writing: name the entry first, then end git, so a broken
+            # pipe never stands in for the cause (QUAL1 R1 F1).
+            proc.kill()
+            proc.wait()
+            return GitFailed(message)
         try:
             out = proc.stdout
             for _mode, oid, path in entries:
                 line = out.readline()
                 header = line.rstrip(b"\n").decode("ascii", "replace").split()
-                if not line.endswith(b"\n") or len(header) != 3 or header[0] != oid or header[1] != "blob":
-                    raise failed() or GitFailed(f"git cat-file --batch answered {' '.join(header)!r} for {path} ({oid})")
+                answered = f"git cat-file --batch answered {' '.join(header)!r} for {path} ({oid})"
+                if not line.endswith(b"\n"):
+                    raise ended(answered)
+                if len(header) != 3 or header[0] != oid or header[1] != "blob" or not re.fullmatch(r"[0-9]+", header[2]):
+                    raise refused(answered)
                 size = int(header[2])
                 where = target(path)
                 os.makedirs(os.path.dirname(where), exist_ok=True)
@@ -4122,11 +4136,15 @@ def materialize(entries: list[tuple[str, str, str]], into: pathlib.Path) -> None
                     while left:
                         chunk = out.read(min(left, 1 << 20))
                         if not chunk:
-                            raise failed() or GitFailed(f"git cat-file --batch ended inside {path} ({oid})")
+                            raise ended(f"git cat-file --batch ended inside {path} ({oid})")
                         f.write(chunk)
                         left -= len(chunk)
-                if out.read(1) != b"\n":
-                    raise failed() or GitFailed(f"git cat-file --batch answered no separator after {path} ({oid})")
+                separator = out.read(1)
+                if separator != b"\n":
+                    no_separator = f"git cat-file --batch answered no separator after {path} ({oid})"
+                    raise ended(no_separator) if not separator else refused(no_separator)
+            if out.read(1):
+                raise refused(f"git cat-file --batch wrote output after the last of {len(entries)} object(s)")
             if error := failed():
                 raise error
         finally:

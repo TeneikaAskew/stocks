@@ -4329,6 +4329,76 @@ def test_materialize_streams_exact_bytes_one_blob_at_a_time(repo, tmp_path):
     assert measured["size"] == 32 << 20 and measured["grew_kib"] < 8 * 1024, measured
     (into / "big.bin").unlink()
 
+
+# One batch answer per case, from a stand-in `git` on PATH: (stdout bytes, exit status, words the refusal names).
+FAKE_OID = "1" * 40
+FAKE_BATCH = {
+    "short read inside the blob": (f"{FAKE_OID} blob 10\n".encode() + b"abcd", 0, ["ended inside x.bin", FAKE_OID]),
+    "header without its line end": (f"{FAKE_OID} blob 12".encode(), 0, ["answered", "blob 12", "x.bin"]),
+    "another object type": (f"{FAKE_OID} tree 4\nabcd\n".encode(), 0, ["answered", "tree 4", "x.bin"]),
+    "another object id": (f"{'2' * 40} blob 4\nabcd\n".encode(), 0, ["answered", "2" * 40, "x.bin"]),
+    "no separator": (f"{FAKE_OID} blob 4\nabcdX".encode(), 0, ["no separator after x.bin", FAKE_OID]),
+    "nonzero exit after a complete answer": (f"{FAKE_OID} blob 4\nabcd\n".encode(), 3, ["failed (3)"]),
+    "size not a number": (f"{FAKE_OID} blob 12abc\n".encode() + b"z" * 13, 0, ["answered", "12abc", "x.bin"]),
+    "negative size": (f"{FAKE_OID} blob -1\n".encode() + b"z" * 4096, 0, ["answered", "blob -1", "x.bin"]),
+    "size with an underscore": (f"{FAKE_OID} blob 1_2\n".encode() + b"z" * 12 + b"\n", 0, ["answered", "1_2", "x.bin"]),
+    "size with a sign": (f"{FAKE_OID} blob +4\nabcd\n".encode(), 0, ["answered", "+4", "x.bin"]),
+    "output after the last object": (f"{FAKE_OID} blob 4\nabcd\nextra\n".encode(), 0, ["after the last of 1 object"]),
+}
+FAKE_RUNNER = r"""
+import importlib.util,json,os,pathlib,sys
+s=importlib.util.spec_from_file_location('fake_batch_gate',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+work,result=pathlib.Path(sys.argv[2]),{}
+for name in sorted(os.listdir(work/'answers')):
+    os.environ['FAKE_GIT_ANSWER']=str(work/'answers'/name);os.environ['FAKE_GIT_EXIT']=(work/'exits'/name).read_text()
+    into=work/'into'/name;into.mkdir(parents=True)
+    try:
+        m.materialize([('100644','1'*40,'x.bin')],into);result[name]=['accepted','']
+    except Exception as e:
+        result[name]=[type(e).__name__,str(e)]
+print(json.dumps(result))
+"""
+
+
+def test_materialize_names_the_refused_entry_and_checks_every_field(repo, tmp_path):
+    """FEAT-CICD-001 "Exact render" (done_when[1]) with the streamed batch: a refusal names the entry it refuses even
+    when git still has output to write (QUAL1 R1 F1); the size must be a plain decimal and nothing may follow the
+    last object (QUAL1 R4 F4); each header, length, separator and exit check has a case only it refuses (R4 F5)."""
+    sg = load_gate(repo)
+    src = tmp_path / "blobs"
+    src.mkdir()
+    (src / "big").write_bytes(b"\n\0" * (128 * 1024))   # 256 KiB: more than a pipe holds, so git is still writing
+    big = _git(repo, "hash-object", "-w", str(src / "big")).strip()
+    tree = _git(repo, "rev-parse", "HEAD^{tree}").strip()
+    for first, words in ((("100644", "0" * 40, "m.bin"), ["missing", "m.bin", "0" * 40]),
+                         (("100644", tree, "t.bin"), ["tree", "t.bin", tree])):
+        into = tmp_path / f"real-{first[2]}"
+        into.mkdir()
+        with pytest.raises(sg.GitFailed) as refused:
+            sg.materialize([first, ("100644", big, "after.bin")], into)
+        assert all(w in str(refused.value) for w in words), str(refused.value)
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    (fake / "git").write_text(f"#!{sys.executable}\nimport os,sys\n"
+                              "sys.stdout.buffer.write(open(os.environ['FAKE_GIT_ANSWER'],'rb').read());sys.stdout.flush()\n"
+                              "sys.exit(int(os.environ['FAKE_GIT_EXIT']))\n")
+    (fake / "git").chmod(0o755)
+    work = tmp_path / "fake"
+    for sub in ("answers", "exits", "into"):
+        (work / sub).mkdir(parents=True)
+    for n, (answer, status, _words) in enumerate(FAKE_BATCH.values()):
+        (work / "answers" / f"case{n:02d}").write_bytes(answer)
+        (work / "exits" / f"case{n:02d}").write_text(str(status))
+    # A separate process with a time limit: a reader that stops checking for a short read loops forever.
+    r = subprocess.run([sys.executable, "-c", FAKE_RUNNER, str(repo / "scripts/gate/spec_gate.py"), str(work)],
+                       capture_output=True, text=True, timeout=60,
+                       env={**os.environ, "PATH": f"{fake}{os.pathsep}{os.environ['PATH']}"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    seen = json.loads(r.stdout)
+    wrong = {case: seen[f"case{n:02d}"] for n, (case, (_a, _s, words)) in enumerate(FAKE_BATCH.items())
+             if seen[f"case{n:02d}"][0] != "GitFailed" or not all(w in seen[f"case{n:02d}"][1] for w in words)}
+    assert wrong == {}, wrong
+
 # A deploy.sh job whose --args names its entrypoint: the renderer reads that file's first docstring line. Verified on
 # 2026-10-11: with an absolute path the fence exits 86, and with gcp/evil_job.py the render opens nothing outside.
 JOB = "\ndeploy_evil_job() {{\n    gcloud run jobs deploy evil-job \\\n        --command python3 \\\n        --args {}\n}}\n"
@@ -4770,7 +4840,7 @@ def test_measure_inventory_render_owns_session_changing_descendants(tmp_path):
 
 
 SCRATCH_LAUNCHER = r"""
-import ctypes,importlib.util,json,os,pathlib,signal,subprocess,sys,time
+import ctypes,importlib.util,io,json,os,pathlib,signal,subprocess,sys,time
 ctypes.CDLL(None).prctl(36,1,0,0,0)
 s=importlib.util.spec_from_file_location('inventory_scratch',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
 child,outer,mode,seconds=sys.argv[2],sys.argv[3],sys.argv[4],float(sys.argv[5])
@@ -4785,14 +4855,21 @@ if mode=='receipt-failure':
     m.append_receipt=refuse
 if mode=='prefork':
     argv=[sys.executable,'-c','pass\0']
-if mode in('unregistered','unregistered-unknown'):
+if mode in('unregistered','unregistered-unknown','unregistered-grandchild'):
     real_popen=m.subprocess.Popen
     def interrupted(*a,**kw):
-        spawned.append(real_popen(*a,**kw));raise KeyboardInterrupt('after fork, before the monitor binds the child')
+        spawned.append(real_popen(*a,**kw))
+        until=time.monotonic()+5
+        while mode=='unregistered-grandchild' and time.monotonic()<until and not any(os.path.exists(os.path.join(outer,n,'ready')) for n in os.listdir(outer)):
+            time.sleep(.01)
+        raise KeyboardInterrupt('after fork, before the monitor binds the child')
     m.subprocess.Popen=interrupted
 if mode=='unregistered-unknown':
     def unknown():raise OSError('process table unreadable')
     m.own_children=unknown
+notice=io.StringIO();real_stderr=sys.stderr
+if mode in('unregistered','unregistered-unknown','unregistered-grandchild'):
+    sys.stderr=notice
 victim=os.environ.get('SCRATCH_VICTIM')
 real_unlink,real_rmdir,real_open,real_scandir=os.unlink,os.rmdir,os.open,os.scandir
 if mode=='slow-removal':
@@ -4811,7 +4888,14 @@ if mode=='subdir-swap':
             os.rename('sub','sub.orig',src_dir_fd=dir_fd,dst_dir_fd=dir_fd);os.symlink(victim,'sub',dir_fd=dir_fd)
         return real_open(path,flags,mode_,dir_fd=dir_fd)
     m.os.open=swap_subdir
-if mode=='receipt-redirect':
+if mode=='late-writer':
+    def write_after_receipt(path,*a,**kw):
+        real_unlink(path,*a,**kw)
+        if path=='CREATED-BY':
+            root=[os.path.join(outer,n) for n in os.listdir(outer) if n.startswith('measure-render-')][0]
+            open(os.path.join(root,'late-writer.txt'),'w').close()
+    m.os.unlink=write_after_receipt
+if mode in('receipt-redirect','receipt-fifo'):
     real_append=m.append_receipt
     def late(root,entry):
         if entry.get('event')=='worker':time.sleep(.5)
@@ -4838,7 +4922,9 @@ except KeyboardInterrupt as e:
     r={'raised':type(e).__name__}
 finally:
     m.os.unlink,m.os.rmdir,m.os.open,m.os.scandir=real_unlink,real_rmdir,real_open,real_scandir
+    sys.stderr=real_stderr
 r['ops']=ops
+r['notice']=notice.getvalue()
 r['victim_after']=sorted(os.listdir(victim)) if victim and os.path.isdir(victim) else None
 r['measured_elapsed']=time.monotonic()-started
 r['outer_after']=sorted(os.listdir(outer))
@@ -4847,6 +4933,10 @@ r['receipts']=[[json.loads(line) for line in open(os.path.join(x,'CREATED-BY'))]
 for p in spawned:
     r['spawned']={'pid':p.pid,'alive':p.poll() is None,'start_ticks':m.process_start(p.pid) if p.poll() is None else None}
     p.kill();p.wait()
+for events in r['receipts']:
+    for e in events or []:
+        for c in e.get('remaining',[]):
+            os.kill(c['pid'],signal.SIGKILL);os.waitpid(c['pid'],0)
 print(json.dumps(r))
 """
 
@@ -4875,6 +4965,10 @@ def scratch_measurement(tmp_path, mode, seconds=1):
               'subdir-swap': f"os.mkdir({str(victim)!r});open(os.path.join({str(victim)!r},'keep.txt'),'w').write('keep');"
                              "os.mkdir(os.path.join(root,'sub'));open(os.path.join(root,'sub','a'),'w').write('a')",
               'receipt-redirect': f"os.rename(root,root+'.moved');os.mkdir({str(victim)!r});os.symlink({str(victim)!r},root)",
+              'receipt-fifo': "os.unlink(os.path.join(root,'CREATED-BY'));os.mkfifo(os.path.join(root,'CREATED-BY'));time.sleep(20)",
+              'late-writer': '',
+              'unregistered-grandchild': "import subprocess;subprocess.Popen([sys.executable,'-c','import os,time;os.setsid();"
+                                         "open(os.path.join(os.environ[\\'TMPDIR\\'],\\'ready\\'),\\'w\\').close();time.sleep(20)']);time.sleep(20)",
               'order': "os.mkdir(os.path.join(root,'sub'));[open(os.path.join(root,n),'w').close() for n in ('a','b','sub/c')]",
               'slow-listing': "[open(os.path.join(root,'f%d'%n),'w').close() for n in range(400)]"}[mode]
     r = subprocess.run([sys.executable, '-c', SCRATCH_LAUNCHER, str(REPO/MEASURE), child, str(outer), mode, str(seconds)],
@@ -4919,12 +5013,69 @@ def test_measure_inventory_render_keeps_a_scratch_root_it_cannot_prove_free(tmp_
     assert report['owned_family_gone'] and report['scratch_root_retained_reason'] == 'removal_failed', report
     assert 'no longer the directory' in report['scratch_root_error'], report
     assert (Path(report['scratch_root']) / 'keep.txt').read_text() == 'keep', report
-    # A child that exists before the monitor binds it keeps its root, identified by PID and start ticks.
+    # A child that exists before the monitor binds it is killed and reaped through a PIDfd whose PID still has
+    # the listed start ticks, and only then is its root removed; the monitor says so on stderr (QUAL1 R1 F2).
     report, _, outer, _ = scratch_measurement(tmp_path, 'unregistered', seconds=2)
-    assert report['raised'] == 'KeyboardInterrupt' and report['spawned']['alive'], report
+    assert report['raised'] == 'KeyboardInterrupt' and not report['spawned']['alive'], report
+    assert report['outer_after'] == [], report
+    assert f"killed unregistered child {report['spawned']['pid']}" in report['notice'], report
+    # A descendant the killed child left behind is adopted, seen by the relist, and keeps the root: nothing it may
+    # still be writing is removed, and the receipt and stderr say which children remain.
+    report, _, outer, _ = scratch_measurement(tmp_path, 'unregistered-grandchild', seconds=2)
+    assert report['raised'] == 'KeyboardInterrupt' and not report['spawned']['alive'], report
+    kept = report['outer_after']
+    assert len(kept) == 1 and f"retained {outer / kept[0]} (spawn_not_registered)" in report['notice'], report
+    spawn = [e for e in report['receipts'][0] if e['event'] == 'unregistered_spawn']
+    assert spawn and [c['pid'] for c in spawn[0]['killed']] == [report['spawned']['pid']] and spawn[0]['remaining'], report
+
+
+KILL_AND_RECEIPT_PROBE = r"""
+import importlib.util,json,os,subprocess,sys,time,types
+s=importlib.util.spec_from_file_location('inventory_identity',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(20)']);time.sleep(.1)
+start=m.process_start(p.pid);r={}
+r['wrong']=m.kill_unregistered([{'pid':p.pid,'start_ticks':start+1}],time.monotonic()+2);r['alive_after_wrong']=p.poll() is None
+r['right']=m.kill_unregistered([{'pid':p.pid,'start_ticks':start}],time.monotonic()+2);r['alive_after_right']=p.poll() is None
+if p.poll() is None:p.kill();p.wait()
+d=sys.argv[2];os.mkfifo(os.path.join(d,'CREATED-BY'));reader=os.open(os.path.join(d,'CREATED-BY'),os.O_RDONLY|os.O_NONBLOCK)
+dfd=os.open(d,os.O_RDONLY|os.O_DIRECTORY)
+try:
+    m.append_receipt(types.SimpleNamespace(fd=dfd),{'event':'probe'});r['fifo']='written'
+except OSError as e:
+    r['fifo']=str(e)
+r['start']=start;r['pid']=p.pid
+print(json.dumps(r))
+"""
+
+
+def test_measure_inventory_render_kills_only_the_listed_identity_and_writes_only_a_regular_receipt(tmp_path):
+    """kill_unregistered signals a PID only while it still has the listed start ticks (QUAL1 R1 F2), and a receipt
+    that is a FIFO with a reader is refused by its file type, not written into (QUAL1 R4 F2)."""
+    (tmp_path / 'root').mkdir()
+    r = subprocess.run([sys.executable, '-c', KILL_AND_RECEIPT_PROBE, str(REPO / MEASURE), str(tmp_path / 'root')],
+                       capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stdout + r.stderr
+    seen = json.loads(r.stdout)
+    assert seen['wrong'] == [] and seen['alive_after_wrong'], seen
+    assert seen['right'] == [{'pid': seen['pid'], 'start_ticks': seen['start']}] and not seen['alive_after_right'], seen
+    assert 'regular file' in seen['fifo'], seen
+
+
+def test_measure_inventory_render_keeps_and_attributes_a_root_whose_rmdir_fails(tmp_path):
+    """A file arriving after clearing fails the final rmdir: the root is kept and its receipt says why (QUAL1 R4 F3)."""
+    report, _, outer, _ = scratch_measurement(tmp_path, 'late-writer')
+    assert report['owned_family_gone'] and report['scratch_root_retained_reason'] == 'removal_failed', report
+    assert 'Directory not empty' in report['scratch_root_error'], report
     events = report['receipts'][0]
-    unregistered = [e for e in events if e['event'] == 'unregistered_spawn']
-    assert unregistered and {'pid': report['spawned']['pid'], 'start_ticks': report['spawned']['start_ticks']} in unregistered[0]['children'], events
+    assert events and [e['event'] for e in events] == ['removal_failed'] and 'Directory not empty' in events[0]['error'], report
+
+
+def test_measure_inventory_render_refuses_a_receipt_that_is_not_a_regular_file(tmp_path):
+    """A FIFO put in the receipt's place is refused at once, never waited on (QUAL1 R4 F2)."""
+    report, _, outer, _ = scratch_measurement(tmp_path, 'receipt-fifo', seconds=2)
+    assert not report['ok'] and report['owned_family_gone'] and report['measured_elapsed'] < 4, report
+    # O_NONBLOCK: with no reader the open fails with ENXIO at once instead of waiting for one.
+    assert report['reason'] == 'observation_failure' and 'CREATED-BY' in report['error'], report
 
 
 def test_measure_inventory_render_scratch_cleanup_before_start_and_at_deadline(tmp_path):
@@ -5005,6 +5156,7 @@ def test_measure_inventory_render_scratch_spawn_failure_retention(tmp_path):
     kept = report['outer_after']
     assert len(kept) == 1 and kept[0].startswith('measure-render-'), report
     assert [e['event'] for e in report['receipts'][0]] == ['created'], report
+    assert f"retained {outer / kept[0]} (spawn_children_unknown)" in report['notice'], report
 
 
 def test_measure_inventory_render_bounds_public_output_delivery(tmp_path):
