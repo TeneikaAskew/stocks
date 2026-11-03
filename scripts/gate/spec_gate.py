@@ -4086,7 +4086,8 @@ def tree_refusal(entries: list[tuple[str, str, str]]) -> str | None:
 
 def materialize(entries: list[tuple[str, str, str]], into: pathlib.Path) -> None:
     """Write each entry's blob, byte for byte, to into/path, from one `git cat-file --batch`, which applies no
-    attributes. Raises ValueError, before writing, for a path that resolves outside `into`."""
+    attributes. Raises ValueError, before writing, for a path that resolves outside `into`. The batch output is
+    streamed to the files one blob at a time, so this process never holds the whole tree in memory."""
     top = os.path.realpath(into) + os.sep
     def target(path: str) -> str:
         where = os.path.realpath(os.path.join(into, path))
@@ -4095,22 +4096,43 @@ def materialize(entries: list[tuple[str, str, str]], into: pathlib.Path) -> None
         return where
     for _mode, _oid, path in entries:
         target(path)
-    r = subprocess.run(["git", "cat-file", "--batch"], input=b"".join(oid.encode("ascii") + b"\n" for _, oid, _ in entries),
-                       capture_output=True, cwd=ROOT)
-    if r.returncode != 0:
-        raise GitFailed(f"git cat-file --batch failed ({r.returncode}): {r.stderr.decode('utf-8', 'replace').strip() or 'no output'}")
-    out, pos = r.stdout, 0
-    for _mode, oid, path in entries:
-        eol = out.index(b"\n", pos)
-        header = out[pos:eol].decode("ascii", "replace").split()
-        if len(header) != 3 or header[0] != oid or header[1] != "blob":
-            raise GitFailed(f"git cat-file --batch answered {' '.join(header)!r} for {path} ({oid})")
-        size = int(header[2])
-        where = target(path)
-        os.makedirs(os.path.dirname(where), exist_ok=True)
-        with open(where, "wb") as f:
-            f.write(out[eol + 1:eol + 1 + size])
-        pos = eol + 1 + size + 1
+    with tempfile.TemporaryFile() as request, tempfile.TemporaryFile() as err:
+        request.write(b"".join(oid.encode("ascii") + b"\n" for _, oid, _ in entries))
+        request.seek(0)
+        proc = subprocess.Popen(["git", "cat-file", "--batch"], stdin=request, stdout=subprocess.PIPE, stderr=err, cwd=ROOT)
+        def failed() -> GitFailed | None:
+            proc.stdout.close()
+            if proc.wait() != 0:
+                err.seek(0)
+                return GitFailed(f"git cat-file --batch failed ({proc.returncode}): "
+                                 f"{err.read().decode('utf-8', 'replace').strip() or 'no output'}")
+            return None
+        try:
+            out = proc.stdout
+            for _mode, oid, path in entries:
+                line = out.readline()
+                header = line.rstrip(b"\n").decode("ascii", "replace").split()
+                if not line.endswith(b"\n") or len(header) != 3 or header[0] != oid or header[1] != "blob":
+                    raise failed() or GitFailed(f"git cat-file --batch answered {' '.join(header)!r} for {path} ({oid})")
+                size = int(header[2])
+                where = target(path)
+                os.makedirs(os.path.dirname(where), exist_ok=True)
+                with open(where, "wb") as f:
+                    left = size
+                    while left:
+                        chunk = out.read(min(left, 1 << 20))
+                        if not chunk:
+                            raise failed() or GitFailed(f"git cat-file --batch ended inside {path} ({oid})")
+                        f.write(chunk)
+                        left -= len(chunk)
+                if out.read(1) != b"\n":
+                    raise failed() or GitFailed(f"git cat-file --batch answered no separator after {path} ({oid})")
+            if error := failed():
+                raise error
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
 
 
 # The render runs main's doc_inventory in a child process: this file in a hidden mode, under `python3 -I -B`, from
