@@ -4736,22 +4736,63 @@ if mode=='prestart':
 if mode=='receipt-failure':
     def refuse(root,entry):raise OSError('receipt write refused')
     m.append_receipt=refuse
-if mode=='unregistered':
+if mode=='prefork':
+    argv=[sys.executable,'-c','pass\0']
+if mode in('unregistered','unregistered-unknown'):
     real_popen=m.subprocess.Popen
     def interrupted(*a,**kw):
         spawned.append(real_popen(*a,**kw));raise KeyboardInterrupt('after fork, before the monitor binds the child')
     m.subprocess.Popen=interrupted
-real_unlink=os.unlink
+if mode=='unregistered-unknown':
+    def unknown():raise OSError('process table unreadable')
+    m.own_children=unknown
+victim=os.environ.get('SCRATCH_VICTIM')
+real_unlink,real_rmdir,real_open,real_scandir=os.unlink,os.rmdir,os.open,os.scandir
 if mode=='slow-removal':
     def slow(*a,**kw):time.sleep(.05);return real_unlink(*a,**kw)
     m.os.unlink=slow
+if mode=='rmdir-swap':
+    def swap_after_receipt(path,*a,**kw):
+        real_unlink(path,*a,**kw)
+        if path=='CREATED-BY':
+            root=[os.path.join(outer,n) for n in os.listdir(outer) if n.startswith('measure-render-')][0]
+            os.rename(root,root+'.orig');os.mkdir(root,0o700)
+    m.os.unlink=swap_after_receipt
+if mode=='subdir-swap':
+    def swap_subdir(path,flags,mode_=0o777,*,dir_fd=None):
+        if path=='sub' and dir_fd is not None:
+            os.rename('sub','sub.orig',src_dir_fd=dir_fd,dst_dir_fd=dir_fd);os.symlink(victim,'sub',dir_fd=dir_fd)
+        return real_open(path,flags,mode_,dir_fd=dir_fd)
+    m.os.open=swap_subdir
+if mode=='receipt-redirect':
+    real_append=m.append_receipt
+    def late(root,entry):
+        if entry.get('event')=='worker':time.sleep(.5)
+        return real_append(root,entry)
+    m.append_receipt=late
+ops=[]
+if mode=='order':
+    def rec_unlink(path,*a,**kw):ops.append(['unlink',os.fspath(path)]);return real_unlink(path,*a,**kw)
+    def rec_rmdir(path,*a,**kw):ops.append(['rmdir',os.fspath(path)]);return real_rmdir(path,*a,**kw)
+    m.os.unlink,m.os.rmdir=rec_unlink,rec_rmdir
+if mode=='slow-listing':
+    class Slow:
+        def __init__(self,it):self.it=it
+        def __enter__(self):self.it.__enter__();return self
+        def __exit__(self,*a):return self.it.__exit__(*a)
+        def __iter__(self):
+            for e in self.it:
+                time.sleep(.005);yield e
+    m.os.scandir=lambda p='.':Slow(real_scandir(p)) if isinstance(p,int) else real_scandir(p)
 started=time.monotonic()
 try:
     r=m.run_bounded(argv,pathlib.Path.cwd(),max_rss_bytes=64*1024*1024,max_seconds=seconds)
 except KeyboardInterrupt as e:
     r={'raised':type(e).__name__}
 finally:
-    m.os.unlink=real_unlink
+    m.os.unlink,m.os.rmdir,m.os.open,m.os.scandir=real_unlink,real_rmdir,real_open,real_scandir
+r['ops']=ops
+r['victim_after']=sorted(os.listdir(victim)) if victim and os.path.isdir(victim) else None
 r['measured_elapsed']=time.monotonic()-started
 r['outer_after']=sorted(os.listdir(outer))
 roots=[os.path.join(outer,n) for n in r['outer_after'] if n.startswith('measure-render-')]
@@ -4782,9 +4823,16 @@ def scratch_measurement(tmp_path, mode, seconds=1):
                               "os.rename(root,root+'.moved');os.symlink(" + repr(str(victim)) + ",root)",
               'slow-removal': "[open(os.path.join(root,'f%d'%n),'w').close() for n in range(60)]",
               'replaced-root': "os.rename(root,root+'.moved');os.mkdir(root);open(os.path.join(root,'keep.txt'),'w').write('keep')",
-              'manyfiles': "n=0\nwhile True:\n open(os.path.join(root,'f%d'%n),'w').close();n+=1"}[mode]
+              'manyfiles': "n=0\nwhile True:\n open(os.path.join(root,'f%d'%n),'w').close();n+=1",
+              'prefork': '', 'unregistered-unknown': 'time.sleep(20)', 'rmdir-swap': '',
+              'subdir-swap': f"os.mkdir({str(victim)!r});open(os.path.join({str(victim)!r},'keep.txt'),'w').write('keep');"
+                             "os.mkdir(os.path.join(root,'sub'));open(os.path.join(root,'sub','a'),'w').write('a')",
+              'receipt-redirect': f"os.rename(root,root+'.moved');os.mkdir({str(victim)!r});os.symlink({str(victim)!r},root)",
+              'order': "os.mkdir(os.path.join(root,'sub'));[open(os.path.join(root,n),'w').close() for n in ('a','b','sub/c')]",
+              'slow-listing': "[open(os.path.join(root,'f%d'%n),'w').close() for n in range(400)]"}[mode]
     r = subprocess.run([sys.executable, '-c', SCRATCH_LAUNCHER, str(REPO/MEASURE), child, str(outer), mode, str(seconds)],
-                       capture_output=True, text=True, timeout=15, env={**os.environ, 'TMPDIR': str(outer)})
+                       capture_output=True, text=True, timeout=15,
+                       env={**os.environ, 'TMPDIR': str(outer), 'SCRATCH_VICTIM': str(victim)})
     assert r.returncode == 0, r.stdout + r.stderr
     return json.loads(r.stdout), (json.loads(record.read_text()) if record.exists() else None), outer, victim
 
@@ -4852,6 +4900,65 @@ def test_measure_inventory_render_scratch_cleanup_before_start_and_at_deadline(t
     else:
         assert report['scratch_root_retained_reason'] == 'removal_deadline', report
         assert report['outer_after'] == [Path(report['scratch_root']).name] and report['receipts'][0], report
+
+def test_measure_inventory_render_scratch_root_swapped_after_receipt_is_not_removed(tmp_path):
+    """The final rmdir checks the name against the held identity; a swapped name is never removed."""
+    # The name swapped for an empty decoy after the receipt goes: the decoy is not removed, the original is kept
+    # and says why in a receipt written through its own descriptor.
+    report, _, outer, _ = scratch_measurement(tmp_path, 'rmdir-swap')
+    root = Path(report['scratch_root'])
+    assert report['owned_family_gone'] and report['scratch_root_retained_reason'] == 'removal_failed', report
+    assert not report['scratch_root_removed'] and 'no longer the directory' in report['scratch_root_error'], report
+    assert root.is_dir() and os.listdir(root) == [] and report['outer_after'] == [root.name, root.name + '.orig'], report
+    aborted = [json.loads(line) for line in (outer / (root.name + '.orig') / 'CREATED-BY').read_text().splitlines()]
+    assert [e['event'] for e in aborted] == ['removal_aborted'], aborted
+
+
+def test_measure_inventory_render_scratch_receipt_follows_the_held_root(tmp_path):
+    """A root renamed and replaced by a link before the worker receipt is written: the receipt still lands in the
+    directory the monitor created, nothing is written through the link, and the root is kept."""
+    report, _, outer, victim = scratch_measurement(tmp_path, 'receipt-redirect', seconds=2)
+    root = Path(report['scratch_root'])
+    assert report['victim_after'] == [] and report['scratch_root_retained_reason'] == 'removal_failed', report
+    moved = [json.loads(line) for line in (outer / (root.name + '.moved') / 'CREATED-BY').read_text().splitlines()]
+    assert [e['event'] for e in moved] == ['created', 'worker'] and moved[1]['worker_pid'] == report['process_group'], moved
+
+
+def test_measure_inventory_render_scratch_subdirectory_swap_is_not_followed(tmp_path):
+    """A subdirectory swapped for a link to an outside directory after it was listed is never descended into."""
+    report, _, outer, victim = scratch_measurement(tmp_path, 'subdir-swap')
+    assert report['scratch_root_retained_reason'] == 'removal_failed' and report['victim_after'] == ['keep.txt'], report
+    assert (victim / 'keep.txt').read_text() == 'keep' and report['receipts'][0], report
+
+
+def test_measure_inventory_render_scratch_receipt_is_removed_last(tmp_path):
+    """The receipt is the last entry removed, immediately before the root itself."""
+    report, _, outer, _ = scratch_measurement(tmp_path, 'order')
+    assert report['scratch_root_removed'] and report['outer_after'] == [], report
+    names = [name for _, name in report['ops']]
+    assert report['ops'][-2:] == [['unlink', 'CREATED-BY'], ['rmdir', Path(report['scratch_root']).name]], report['ops']
+    assert names.count('CREATED-BY') == 1 and {'a', 'b', 'c', 'sub'} <= set(names), report['ops']
+
+
+def test_measure_inventory_render_scratch_slow_listing_keeps_the_deadline(tmp_path):
+    """A slow listing is bounded entry by entry: the deadline holds and the root is kept with its receipt."""
+    report, _, outer, _ = scratch_measurement(tmp_path, 'slow-listing')
+    assert report['scratch_root_retained_reason'] == 'removal_deadline' and report['receipts'][0], report
+    assert report['elapsed_seconds'] <= 1 and report['measured_elapsed'] <= 1.05, report
+
+
+def test_measure_inventory_render_scratch_spawn_failure_retention(tmp_path):
+    """Popen refusing before it forks leaves no child, so the root is removed; an unreadable process table keeps it."""
+    report, child, outer, _ = scratch_measurement(tmp_path, 'prefork')
+    assert report['reason'] == 'observation_failure' and 'process_group' not in report and child is None, report
+    assert report['scratch_root_unregistered_children'] == [] and report['scratch_root_removed'], report
+    assert report['outer_after'] == [], report
+    report, _, outer, _ = scratch_measurement(tmp_path, 'unregistered-unknown', seconds=2)
+    assert report['raised'] == 'KeyboardInterrupt' and report['spawned']['alive'], report
+    kept = report['outer_after']
+    assert len(kept) == 1 and kept[0].startswith('measure-render-'), report
+    assert [e['event'] for e in report['receipts'][0]] == ['created'], report
+
 
 def test_measure_inventory_render_bounds_public_output_delivery(tmp_path):
     """Real FIFO and full stdout-pipe backpressure cannot outlive the same whole public CLI bound."""
