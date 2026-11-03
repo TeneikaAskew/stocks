@@ -14,7 +14,7 @@ status: ready
 
 **Spec:** `docs/superpowers/specs/2026-11-02-feat-cicd-001-verifier-twelve-mib.md` (approved, on main since 5f16c96e, #1690).
 
-**Base:** main 1ac70bfd (fast-forwarded from 5f16c96e; none of the three commits between touch a file this plan changes), then main 1fb97576 (#1694) merged in; its appended tests and this plan's appended tests are both kept. One branch, one PR, one author. The SITE row, sidecar, catalog and lineage (Task 9) are shared with #1694 and #1696 and are produced only on the main that exists after those land.
+**Base:** main 1ac70bfd (fast-forwarded from 5f16c96e; none of the three commits between touch a file this plan changes), then main 1fb97576 (#1694) merged in; its appended tests and this plan's appended tests are both kept. One branch, one PR, one author. The SITE row and sidecar are produced on this branch against main 1fb97576, after #1694 landed. Open #1696 (5e55e3ec) and the unpublished render branch rewrite the same SHARED-01 row and sidecar; whichever lands later merges main and regenerates both, and one owner (the recovery thread) coordinates them. Catalog and lineage (Task 9) wait for those merges.
 
 ## Global constraints
 

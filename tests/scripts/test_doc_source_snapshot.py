@@ -1697,6 +1697,40 @@ def test_actual_verify_input_of_exactly_max_bytes_is_admitted_and_one_more_refus
     assert refused["counted_bytes"] <= MAX_BYTES
 
 
+
+def test_docs_audit_in_process_verify_admits_input_between_eight_and_twelve_mib(tmp_path):
+    # docs_audit verifies SITE in process with Snapshot()/Budget() defaults, not
+    # through the CLI, so the CLI boundary above does not cover it (CAP-QUAL1 R2
+    # F1). The bulk is the branch commit message, charged once by the history
+    # read in both paths; a registry padding would be charged more often by the
+    # audit than by the CLI. The message goes through a file: one argv string is
+    # limited far below eight MiB.
+    def message_bootstrap_repo(path, padding):
+        repo = Repo(path)
+        repo.git("checkout", "-q", BRANCH)
+        repo.git("reset", "--hard", repo.base)
+        repo.write(MODULE, (ROOT / MODULE).read_bytes())
+        repo.write(PLAN, (ROOT / PLAN).read_text().replace("pr: 1470", "pr: 7"))
+        message = tmp_path / (path.name + ".msg")
+        message.write_text("feat: exact bootstrap with a long subject" + "x" * padding + "\n")
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "-F", str(message))
+        produced = repo.cli("produce")
+        assert produced.returncode == 0, produced.stdout + produced.stderr
+        repo.commit("docs: bind actual committed source identity")
+        return repo
+
+    unpadded = verify_total(message_bootstrap_repo(tmp_path / "unpadded", 0))
+    assert unpadded["status"] == "identity-matched"
+    repo = message_bootstrap_repo(tmp_path / "padded", 10 * 1024 * 1024 - unpadded["counted_bytes"])
+    cli = verify_total(repo)
+    assert cli["status"] == "identity-matched", cli
+    assert MAX_FILE_BYTES < cli["counted_bytes"] < MAX_BYTES
+    report = json.loads(repo.audit().stdout)
+    identity = report["source_identities"][SITE]
+    assert identity["status"] == "identity-matched", identity
+    assert MAX_FILE_BYTES < identity["counted_bytes"] < MAX_BYTES
+
 @pytest.mark.parametrize("action", ["produce", "verify"])
 def test_actual_cli_cannot_raise_input_byte_ceiling_above_max_bytes(action, tmp_path):
     repo = bound_note_repo(tmp_path / "repo")
