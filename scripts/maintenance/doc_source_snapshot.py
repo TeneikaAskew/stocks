@@ -28,7 +28,10 @@ RECORD = "docs/review-evidence/site-source-snapshot.json"
 SPEC = "docs/superpowers/specs/2026-10-13-feat-cicd-001-source-review-verifier.md"
 MODULE = "scripts/maintenance/doc_source_snapshot.py"
 MAX_SECONDS = 5.0
-MAX_BYTES = 8388608
+MAX_BYTES = 12582912
+# Separate per-file limit: docs_audit.py refuses a registry file larger than
+# this before reading it. It is not the combined verifier input ceiling above.
+MAX_FILE_BYTES = 8388608
 MAX_ENTRIES = 20000
 PLAIN_HEADING = re.compile(r"# [A-Za-z0-9 _()/\-]+")
 PLAIN_SECTION = re.compile(r"#{2,6} [A-Za-z0-9 _()/\-]+")
