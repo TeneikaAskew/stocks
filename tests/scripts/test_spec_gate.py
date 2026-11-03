@@ -4282,6 +4282,48 @@ def test_materialize_writes_inside_its_directory_only(repo, tmp_path_factory):
     assert (out / "lib/model.py").read_bytes() == b"DECISION = 'size'\n" and not (out.parent / "escape.py").exists()
 
 
+
+def test_materialize_streams_exact_bytes_one_blob_at_a_time(repo, tmp_path_factory):
+    """FEAT-CICD-001 "Exact render" (done_when[1]) with the streamed batch: blobs across the 1 MiB chunk boundary,
+    binary with newlines, arrive byte for byte; a missing object fails; the reader never holds a whole blob."""
+    sg = load_gate(repo)
+    src = tmp_path_factory.mktemp("blobs")
+    pattern = bytes(range(256)) + b"\n\r\n\0"
+    sizes = [0, 1, (1 << 20) - 1, 1 << 20, (1 << 20) + 1, 3 * (1 << 20) + 7]
+    entries, wanted = [], {}
+    for n, size in enumerate(sizes):
+        body = (pattern * (size // len(pattern) + 1))[:size]
+        (src / f"b{n}").write_bytes(body)
+        oid = _git(repo, "hash-object", "-w", str(src / f"b{n}")).strip()
+        entries.append(("100644", oid, f"d{n % 2}/b{n}.bin"))
+        wanted[f"d{n % 2}/b{n}.bin"] = body
+    out = tmp_path_factory.mktemp("streamed")
+    sg.materialize(entries, out)
+    assert {p: (out / p).read_bytes() == body for p, body in wanted.items()} == {p: True for p in wanted}
+    with pytest.raises(sg.GitFailed):
+        sg.materialize([*entries[:2], ("100644", "0" * 40, "missing.bin")], tmp_path_factory.mktemp("missing"))
+    # Peak RSS of a fresh process materializing one 32 MiB blob grows by far less than the blob.
+    big = src / "big"
+    with open(big, "wb") as f:
+        for _ in range(32):
+            f.write((pattern * 4100)[:1 << 20])
+    oid = _git(repo, "hash-object", "-w", str(big)).strip()
+    big.unlink()
+    # VmHWM, not ru_maxrss: Linux carries ru_maxrss across exec from the forking pytest process.
+    probe = ("import importlib.util,json,pathlib,re,sys;"
+             "hwm=lambda:int(re.search(r'VmHWM:\\s+(\\d+)',open('/proc/self/status').read()).group(1));"
+             "s=importlib.util.spec_from_file_location('streamed_gate',sys.argv[1]);m=importlib.util.module_from_spec(s);"
+             "sys.modules[s.name]=m;s.loader.exec_module(m);before=hwm();"
+             "m.materialize([('100644',sys.argv[2],'big.bin')],pathlib.Path(sys.argv[3]));"
+             "print(json.dumps({'before_kib':before,'grew_kib':hwm()-before,"
+             "'size':(pathlib.Path(sys.argv[3])/'big.bin').stat().st_size}))")
+    into = tmp_path_factory.mktemp("big")
+    r = subprocess.run([sys.executable, "-c", probe, str(repo / "scripts/gate/spec_gate.py"), oid, str(into)],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stdout + r.stderr
+    measured = json.loads(r.stdout)
+    assert measured["size"] == 32 << 20 and measured["grew_kib"] < 8 * 1024, measured
+
 # A deploy.sh job whose --args names its entrypoint: the renderer reads that file's first docstring line. Verified on
 # 2026-10-11: with an absolute path the fence exits 86, and with gcp/evil_job.py the render opens nothing outside.
 JOB = "\ndeploy_evil_job() {{\n    gcloud run jobs deploy evil-job \\\n        --command python3 \\\n        --args {}\n}}\n"
