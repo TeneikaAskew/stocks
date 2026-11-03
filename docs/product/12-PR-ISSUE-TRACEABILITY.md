@@ -1,6 +1,6 @@
 # PR, Issue, and Audit Traceability
 
-**Last reviewed:** 2026-10-08 · **Depth:** verified · **Against:** `295a8873` · **Last scanned:** 2026-10-20 · **Owner:** TBD
+**Last reviewed:** 2026-10-08 · **Depth:** verified · **Against:** `295a8873` · **Last scanned:** 2026-11-03 · **Owner:** TBD
 
 ## Coverage and method
 
