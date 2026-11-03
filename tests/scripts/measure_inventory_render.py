@@ -21,7 +21,6 @@ import pathlib
 import resource
 import signal
 import selectors
-import shutil
 import stat
 import statistics
 import subprocess
@@ -102,6 +101,73 @@ def process_identity(pid: int) -> tuple[int, int]:
         return start, parent
     except (ValueError, IndexError) as e:
         raise OSError(f"invalid process identity for {pid}") from e
+
+
+RECEIPT = "CREATED-BY"
+
+
+def boot_id() -> str:
+    return (PROC / "sys/kernel/random/boot_id").read_text().strip()
+
+
+def append_receipt(root: str, entry: dict) -> None:
+    """One durable JSON line per ownership event, so a root left by a killed monitor still says whose it is."""
+    fd = os.open(os.path.join(root, RECEIPT), os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        os.write(fd, (json.dumps(entry, sort_keys=True) + "\n").encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def own_children() -> list[dict]:
+    """Live direct children of this monitor, by PID and kernel start ticks."""
+    me = os.getpid()
+    return [{"pid": pid, "start_ticks": start} for pid, (start, parent) in sorted(process_table().items()) if parent == me]
+
+
+def clear_directory(dir_fd: int, deadline: float, keep: str | None = None) -> bool:
+    """Remove a directory's contents through descriptors without following links; False once out of time."""
+    with os.scandir(dir_fd) as listing:
+        entries = list(listing)
+    for entry in entries:
+        if entry.name == keep:
+            continue
+        if time.monotonic() >= deadline:
+            return False
+        if entry.is_dir(follow_symlinks=False):
+            child = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
+            try:
+                if not clear_directory(child, deadline):
+                    return False
+            finally:
+                os.close(child)
+            os.rmdir(entry.name, dir_fd=dir_fd)
+        else:
+            os.unlink(entry.name, dir_fd=dir_fd)
+    return True
+
+
+def remove_scratch(root: str, identity: tuple[int, int], deadline: float) -> bool:
+    """Remove exactly the directory this monitor created, by device/inode identity, within the deadline.
+
+    False means time ran out first; the receipt is removed last, so a partly cleared root still names its owner.
+    """
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        st = os.fstat(fd)
+        if (st.st_dev, st.st_ino) != identity:
+            raise OSError(f"scratch root is no longer the directory this monitor created: {root}")
+        if not clear_directory(fd, deadline, keep=RECEIPT) or time.monotonic() >= deadline:
+            return False
+        try:
+            os.unlink(RECEIPT, dir_fd=fd)
+        except FileNotFoundError:
+            pass
+    finally:
+        os.close(fd)
+    os.rmdir(root)
+    return True
 
 
 class OwnedFamily:
@@ -321,7 +387,8 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
               "monitor_rss_bytes": 0, "peak_snapshot": {}, "sample_count": 0,
               "owned_group_gone": False, "owned_family_gone": False,
               "scratch_root": None, "scratch_root_removed": False}
-    process = family = observer = libc = scratch = None
+    process = family = observer = libc = scratch = scratch_identity = None
+    spawn_pending = reaped = False
     stop = threading.Event()
     discovery_gaps: list[float] = []
     sample_gaps: list[float] = []
@@ -358,17 +425,27 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
         with defer_deadline():
             scratch = tempfile.mkdtemp(prefix=f"measure-render-{os.getpid()}-")
             report["scratch_root"] = scratch
-        with open(os.path.join(scratch, "CREATED-BY"), "x", encoding="utf-8") as receipt:
-            receipt.write(json.dumps({"monitor_pid": os.getpid(), "argv": argv, "cwd": str(cwd),
-                                      "created_unix": time.time()}) + "\n")
+            created = os.lstat(scratch)
+            scratch_identity = (created.st_dev, created.st_ino)
+        append_receipt(scratch, {"event": "created", "monitor_pid": os.getpid(), "monitor_start_ticks": process_start(os.getpid()),
+                                 "boot_id": boot_id(), "argv": argv, "cwd": str(cwd), "created_unix": time.time()})
         child_env = {**os.environ, "TMPDIR": scratch}
         with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
             with defer_deadline() as child_mask:
                 # Acquisition is atomic with respect to the deadline. The child inherits the caller's ORIGINAL mask.
-                process = subprocess.Popen(argv, cwd=cwd, stdout=stdout, stderr=stderr, start_new_session=True,
-                                           env=child_env, preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, child_mask))
+                # From here until `process` is bound, a child may exist that nothing has registered yet.
+                spawn_pending = True
+                try:
+                    process = subprocess.Popen(argv, cwd=cwd, stdout=stdout, stderr=stderr, start_new_session=True,
+                                               env=child_env, preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, child_mask))
+                except (OSError, subprocess.SubprocessError):
+                    spawn_pending = False   # Popen reaps a child whose exec failed before it raises
+                    raise
+                spawn_pending = False
                 family.admit_root(process)
                 report["process_group"] = process.pid
+            append_receipt(scratch, {"event": "worker", "worker_pid": process.pid,
+                                     "worker_start_ticks": process_start(process.pid), "process_group": process.pid})
             family.discover()
 
             def discover():
@@ -423,6 +500,7 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                 complete_cleanup = family.terminate_and_reap(process, started + max_seconds)
             if not complete_cleanup:
                 raise OSError("discovery unavailable after known child cleanup")
+            reaped = not family.known_live()
             report["owned_family_gone"] = True
             report["owned_group_gone"] = not group_members(process.pid)
             report["worker_exit"] = process.returncode
@@ -473,6 +551,7 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                         # Final unwind cannot abandon an owner when observation or the timer failed.
                         report["owned_family_gone"] = family.terminate_and_reap(process, time.monotonic() + 1)
                         report["known_owned_reaped"] = not family.known_live()
+                        reaped = report["owned_family_gone"] and report["known_owned_reaped"]
                         report["owned_group_gone"] = not group_members(process.pid)
                         if not report["owned_family_gone"]:
                             report.update(ok=False, reason="cleanup_observation_failure")
@@ -504,18 +583,29 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                                               retained_observer_alive=observer_live,
                                               retained_owned_pids=sorted(family.owned))
                     finally:
-                        try:
-                            # Removed only once no owned process can still write into it.
-                            if scratch is not None:
-                                if report.get("retained_ownership") or not (process is None or report["owned_family_gone"]):
-                                    report["scratch_root_retained"] = True
+                        # The scratch root is removed only when nothing this monitor started can still write to it,
+                        # and only within the command's own deadline. Its outcome never rewrites the family verdict.
+                        if scratch is not None:
+                            retained = None
+                            try:
+                                if process is None and spawn_pending:
+                                    children = own_children()
+                                    report["scratch_root_unregistered_children"] = children
+                                    append_receipt(scratch, {"event": "unregistered_spawn", "children": children})
+                                    retained = "spawn_not_registered"
+                                elif process is not None and (not reaped or observer_live or report.get("retained_ownership")):
+                                    retained = "family_not_proven_reaped"
+                                elif remove_scratch(scratch, scratch_identity, started + max_seconds - min(.2, max_seconds * .1)):
+                                    report["scratch_root_removed"] = True
                                 else:
-                                    shutil.rmtree(scratch)
-                                    report["scratch_root_removed"] = not os.path.lexists(scratch)
-                                    if not report["scratch_root_removed"]:
-                                        raise OSError(f"scratch root still present after removal: {scratch}")
-                        except Exception as e:
-                            cleanup_failure(e)
+                                    retained = "removal_deadline"
+                            except Exception as e:
+                                retained = "removal_failed"
+                                report["scratch_root_error"] = f"{type(e).__name__}: {e}"
+                            if retained:
+                                report.update(ok=False, scratch_root_retained=True, scratch_root_retained_reason=retained)
+                                if report["reason"] == "completed":
+                                    report["reason"] = "scratch_cleanup_incomplete"
                         if libc is not None and subreaper_acquired:
                             try:
                                 if libc.prctl(36, old_subreaper.value, 0, 0, 0):

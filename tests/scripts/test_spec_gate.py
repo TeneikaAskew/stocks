@@ -4722,30 +4722,63 @@ def test_measure_inventory_render_owns_session_changing_descendants(tmp_path):
     assert all(x['owned_family_gone'] for x in (memory,accepted,timeout,failed))
 
 
-def scratch_measurement(tmp_path, mode):
+SCRATCH_LAUNCHER = r"""
+import ctypes,importlib.util,json,os,pathlib,signal,subprocess,sys,time
+ctypes.CDLL(None).prctl(36,1,0,0,0)
+s=importlib.util.spec_from_file_location('inventory_scratch',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+child,outer,mode,seconds=sys.argv[2],sys.argv[3],sys.argv[4],float(sys.argv[5])
+argv=[sys.executable,'-c',child]
+spawned=[]
+if mode=='unreaped':
+    real=m.OwnedFamily.terminate_and_reap;m.OwnedFamily.terminate_and_reap=lambda self,*a:(real(self,*a),False)[1]
+if mode=='prestart':
+    argv=[os.path.join(outer,'no-such-executable')]
+if mode=='receipt-failure':
+    def refuse(root,entry):raise OSError('receipt write refused')
+    m.append_receipt=refuse
+if mode=='unregistered':
+    real_popen=m.subprocess.Popen
+    def interrupted(*a,**kw):
+        spawned.append(real_popen(*a,**kw));raise KeyboardInterrupt('after fork, before the monitor binds the child')
+    m.subprocess.Popen=interrupted
+started=time.monotonic()
+try:
+    r=m.run_bounded(argv,pathlib.Path.cwd(),max_rss_bytes=64*1024*1024,max_seconds=seconds)
+except KeyboardInterrupt as e:
+    r={'raised':type(e).__name__}
+r['measured_elapsed']=time.monotonic()-started
+r['outer_after']=sorted(os.listdir(outer))
+roots=[os.path.join(outer,n) for n in r['outer_after'] if n.startswith('measure-render-')]
+r['receipts']=[[json.loads(line) for line in open(os.path.join(x,'CREATED-BY'))] if os.path.exists(os.path.join(x,'CREATED-BY')) else None for x in roots]
+for p in spawned:
+    r['spawned']={'pid':p.pid,'alive':p.poll() is None,'start_ticks':m.process_start(p.pid) if p.poll() is None else None}
+    p.kill();p.wait()
+print(json.dumps(r))
+"""
+
+
+def scratch_measurement(tmp_path, mode, seconds=1):
     """One run_bounded call whose child writes temp data, with the monitor's own TMPDIR pinned to a fresh dir."""
     outer = tmp_path / f'outer-{mode}'
     outer.mkdir()
     record = tmp_path / f'child-{mode}.json'
+    victim = tmp_path / f'victim-{mode}'
     child = ("import json,os,sys,tempfile,time;d=tempfile.mkdtemp(prefix='spec-gate-render-');"
              "open(os.path.join(d,'blob'),'wb').write(b'x'*(1024*1024));"
              "root=os.environ['TMPDIR'];json.dump({'dir':d,'root':root,'receipt':open(os.path.join(root,'CREATED-BY')).read()},"
              f"open({str(record)!r},'w'));")
-    child += {'accepted': '', 'unreaped': '', 'memory': 'a=bytearray(96*1024*1024);time.sleep(20)', 'stall': 'time.sleep(20)',
+    child += {'accepted': '', 'unreaped': '', 'prestart': '', 'receipt-failure': '', 'unregistered': 'time.sleep(20)',
+              'memory': 'a=bytearray(96*1024*1024);time.sleep(20)', 'stall': 'time.sleep(20)',
               'failed': 'raise SystemExit(7)',
               'escaped': "import subprocess;subprocess.Popen([sys.executable,'-c','import os,tempfile,time;os.setsid();"
-                         "d=tempfile.mkdtemp();open(os.path.join(d,\\'b\\'),\\'w\\').write(\\'x\\');time.sleep(20)']);time.sleep(.3)"}[mode]
-    launcher = ("import ctypes,importlib.util,json,pathlib,os,sys;ctypes.CDLL(None).prctl(36,1,0,0,0);"
-                "s=importlib.util.spec_from_file_location('inventory_scratch',sys.argv[1]);"
-                "m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m);"
-                "real=m.OwnedFamily.terminate_and_reap\n"
-                "if sys.argv[4]=='unreaped':m.OwnedFamily.terminate_and_reap=lambda self,*a:(real(self,*a),False)[1]\n"
-                "r=m.run_bounded([sys.executable,'-c',sys.argv[2]],pathlib.Path.cwd(),max_rss_bytes=64*1024*1024,max_seconds=1);"
-                "r['outer_after']=sorted(os.listdir(sys.argv[3]));print(json.dumps(r))")
-    r = subprocess.run([sys.executable, '-c', launcher, str(REPO/MEASURE), child, str(outer), mode],
-                       capture_output=True, text=True, timeout=10, env={**os.environ, 'TMPDIR': str(outer)})
+                         "d=tempfile.mkdtemp();open(os.path.join(d,\\'b\\'),\\'w\\').write(\\'x\\');time.sleep(20)']);time.sleep(.3)",
+              'symlink-root': f"os.mkdir({str(victim)!r});open(os.path.join({str(victim)!r},'keep.txt'),'w').write('keep');"
+                              "os.rename(root,root+'.moved');os.symlink(" + repr(str(victim)) + ",root)",
+              'manyfiles': "n=0\nwhile True:\n open(os.path.join(root,'f%d'%n),'w').close();n+=1"}[mode]
+    r = subprocess.run([sys.executable, '-c', SCRATCH_LAUNCHER, str(REPO/MEASURE), child, str(outer), mode, str(seconds)],
+                       capture_output=True, text=True, timeout=15, env={**os.environ, 'TMPDIR': str(outer)})
     assert r.returncode == 0, r.stdout + r.stderr
-    return json.loads(r.stdout), (json.loads(record.read_text()) if record.exists() else None), outer
+    return json.loads(r.stdout), (json.loads(record.read_text()) if record.exists() else None), outer, victim
 
 
 def test_measure_inventory_render_owns_and_removes_its_scratch_root(tmp_path):
@@ -4753,19 +4786,54 @@ def test_measure_inventory_render_owns_and_removes_its_scratch_root(tmp_path):
     expected = {'accepted': 'completed', 'memory': 'rss_limit', 'stall': 'time_limit', 'failed': 'worker_failed',
                 'escaped': 'unexpected_descendants'}
     for mode, reason in expected.items():
-        report, child, outer = scratch_measurement(tmp_path, mode)
+        report, child, outer, _ = scratch_measurement(tmp_path, mode)
         assert report['reason'] == reason and report['owned_family_gone'], (mode, report)
         root = report['scratch_root']
         assert root and Path(root).parent == outer and Path(root).name.startswith('measure-render-'), (mode, report)
         assert child and child['root'] == root and Path(child['dir']).parent == Path(root), (mode, child)
-        assert json.loads(child['receipt'])['monitor_pid'] > 0, (mode, child)
+        created = json.loads(child['receipt'].splitlines()[0])
+        assert created['event'] == 'created' and created['monitor_start_ticks'] > 0 and created['boot_id'], (mode, created)
         assert report['scratch_root_removed'] and not report.get('scratch_root_retained'), (mode, report)
         assert report['outer_after'] == [] and not Path(root).exists(), (mode, report['outer_after'])
-    # A family the monitor could not prove reaped keeps its root: something it owns may still be writing there.
-    report, child, outer = scratch_measurement(tmp_path, 'unreaped')
-    assert not report['ok'] and not report['owned_family_gone'] and report['scratch_root_retained'], report
+    # A family the monitor could not prove reaped keeps its root, and the receipt names the worker it started.
+    report, _, outer, _ = scratch_measurement(tmp_path, 'unreaped')
+    assert not report['ok'] and not report['owned_family_gone'], report
+    assert report['scratch_root_retained'] and report['scratch_root_retained_reason'] == 'family_not_proven_reaped', report
     assert not report['scratch_root_removed'] and report['outer_after'] == [Path(report['scratch_root']).name], report
-    shutil.rmtree(report['scratch_root'])   # test-owned: the root sits under this test's tmp_path
+    worker = [e for e in report['receipts'][0] if e['event'] == 'worker']
+    assert worker and worker[0]['worker_pid'] == report['process_group'] and worker[0]['worker_start_ticks'] > 0, report
+
+
+def test_measure_inventory_render_keeps_a_scratch_root_it_cannot_prove_free(tmp_path):
+    """Retention is reported on its own fields, never as a family failure, and never deletes through a link."""
+    # A root replaced by a link fails closed: the reaped family stays reported as gone and the target survives.
+    report, _, outer, victim = scratch_measurement(tmp_path, 'symlink-root')
+    assert report['owned_family_gone'] and report['reason'] == 'scratch_cleanup_incomplete' and not report['ok'], report
+    assert report['scratch_root_retained_reason'] == 'removal_failed' and 'scratch_root_error' in report, report
+    assert not report['scratch_root_removed'] and (victim / 'keep.txt').read_text() == 'keep', report
+    # A child that exists before the monitor binds it keeps its root, identified by PID and start ticks.
+    report, _, outer, _ = scratch_measurement(tmp_path, 'unregistered', seconds=2)
+    assert report['raised'] == 'KeyboardInterrupt' and report['spawned']['alive'], report
+    events = report['receipts'][0]
+    unregistered = [e for e in events if e['event'] == 'unregistered_spawn']
+    assert unregistered and {'pid': report['spawned']['pid'], 'start_ticks': report['spawned']['start_ticks']} in unregistered[0]['children'], events
+
+
+def test_measure_inventory_render_scratch_cleanup_before_start_and_at_deadline(tmp_path):
+    """A run that fails before any child starts removes its root; cleanup never outlasts the command's deadline."""
+    for mode in ('prestart', 'receipt-failure'):
+        report, child, outer, _ = scratch_measurement(tmp_path, mode)
+        assert not report['ok'] and report['reason'] == 'observation_failure' and 'process_group' not in report, (mode, report)
+        assert report['scratch_root'] and report['scratch_root_removed'] and report['outer_after'] == [], (mode, report)
+        assert child is None, (mode, child)
+    report, _, outer, _ = scratch_measurement(tmp_path, 'manyfiles')
+    assert report['reason'] == 'time_limit' and report['owned_family_gone'], report
+    assert report['elapsed_seconds'] <= 1 and report['measured_elapsed'] <= 1.05, report
+    if report['scratch_root_removed']:
+        assert report['outer_after'] == [], report
+    else:
+        assert report['scratch_root_retained_reason'] == 'removal_deadline', report
+        assert report['outer_after'] == [Path(report['scratch_root']).name] and report['receipts'][0], report
 
 def test_measure_inventory_render_bounds_public_output_delivery(tmp_path):
     """Real FIFO and full stdout-pipe backpressure cannot outlive the same whole public CLI bound."""
@@ -4902,7 +4970,8 @@ def test_measure_inventory_render_acquires_and_unwinds_actual_kernel_resources(t
     modes=('accepted','read-before','read-after','cleanup-control','spawn-delay','pidfd-delay','pidfd-failure','cleanup-delay','prior-state-failure')
     results={}
     for mode in modes:
-        r=subprocess.run([sys.executable,'-c',LIFECYCLE_PROBE,str(REPO/MEASURE),mode],cwd=tmp_path,
+        scratch=tmp_path/f'tmp-{mode}';scratch.mkdir()   # monitor scratch roots stay inside this test's tmp_path
+        r=subprocess.run([sys.executable,'-c',LIFECYCLE_PROBE,str(REPO/MEASURE),mode],cwd=tmp_path,env={**os.environ,'TMPDIR':str(scratch)},
                          capture_output=True,text=True,timeout=5)
         assert r.returncode==0, (mode,r.stdout,r.stderr)
         results[mode]=json.loads(r.stdout)
@@ -4989,7 +5058,8 @@ def test_measure_inventory_render_recovers_unseen_owned_descendants(tmp_path):
     results={}
     for mode in ('accepted','collector-unavailable','unrelated-unreadable','unrelated-malformed','both-unavailable'):
         directory=tmp_path/mode;directory.mkdir()
-        r=subprocess.run([sys.executable,'-c',RECOVERY_PROBE,str(REPO/MEASURE),mode],cwd=directory,
+        scratch=directory/'tmp';scratch.mkdir()   # monitor scratch roots stay inside this test's tmp_path
+        r=subprocess.run([sys.executable,'-c',RECOVERY_PROBE,str(REPO/MEASURE),mode],cwd=directory,env={**os.environ,'TMPDIR':str(scratch)},
                          capture_output=True,text=True,timeout=5)
         assert r.returncode==0,(mode,r.stdout,r.stderr)
         results[mode]=json.loads(r.stdout)
@@ -5061,7 +5131,8 @@ def test_measure_inventory_render_reads_native_process_names_as_bytes(tmp_path):
     results={}
     for mode in ('ascii','before-admission','after-admission','unrelated-native-name','parser-failure'):
         directory=tmp_path/mode;directory.mkdir()
-        r=subprocess.run([sys.executable,'-c',NATIVE_NAME_PROBE,str(REPO/MEASURE),mode],cwd=directory,
+        scratch=directory/'tmp';scratch.mkdir()   # monitor scratch roots stay inside this test's tmp_path
+        r=subprocess.run([sys.executable,'-c',NATIVE_NAME_PROBE,str(REPO/MEASURE),mode],cwd=directory,env={**os.environ,'TMPDIR':str(scratch)},
                          capture_output=True,text=True,timeout=5)
         assert r.returncode==0,(mode,r.stdout,r.stderr)
         results[mode]=json.loads(r.stdout)
@@ -5236,7 +5307,8 @@ def test_measure_inventory_render_preserves_formal_review_terminal_invariants(tm
     results={}
     for mode in ('accepted','late-error','close-error','snapshot-error','main'):
         path=tmp_path/mode;path.mkdir()
-        r=subprocess.run([sys.executable,'-c',FORMAL_OBSERVER_PROBE,str(REPO/MEASURE),mode],cwd=path,
+        scratch=path/'tmp';scratch.mkdir()   # monitor scratch roots stay inside this test's tmp_path
+        r=subprocess.run([sys.executable,'-c',FORMAL_OBSERVER_PROBE,str(REPO/MEASURE),mode],cwd=path,env={**os.environ,'TMPDIR':str(scratch)},
                          capture_output=True,text=True,timeout=5)
         assert r.returncode==0,(mode,r.stdout,r.stderr)
         results[mode]=json.loads(next(line[len('FORMAL_RESULT='):] for line in r.stdout.splitlines() if line.startswith('FORMAL_RESULT=')))
