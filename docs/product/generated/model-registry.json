@@ -437,7 +437,7 @@
   {
    "job": "`fetch-earnings-calendar`",
    "scheduler": "`daily-earnings-refresh-calendar` · `weekly-earnings-refresh-calendar`",
-   "why_it_is_not_model_bearing": "Earnings dates → `earnings_calendar`. Ingest. (The verdict columns on the same table come from `evaluate-ew-strikes-daily`, which is listed above)"
+   "why_it_is_not_model_bearing": "Inputs only — earnings dates → `earnings_calendar`. Ingest. It computes no score, label or threshold, which a reader can re-check: `grep -n \"score_quintile|recommended_structure|playability\" scripts/fetch_earnings_calendar.py` returns nothing. Any import of `lib.earnings_reactions` it makes is for the retired-source predicate `EARNINGS_NOT_RETIRED_SQL` on its own `earnings_calendar` read, not for any score. (The verdict columns on the same table come from `evaluate-ew-strikes-daily`, which is listed above)"
   },
   {
    "job": "`fetch-earnings-history`",
@@ -2615,7 +2615,7 @@
  ],
  "sources": {
   "docs/EXPERIMENT_REGISTRY.md": "9752340744b8580d57910eadb6df84c536081b42",
-  "docs/product/07-MODEL-REGISTRY.md": "05a79cb00e560b7ef313097f8f1191b344ac6c46",
+  "docs/product/07-MODEL-REGISTRY.md": "62f6337528fa0fead23ee3fe86ddaf8402e7dbcb",
   "scripts/gate/export_model_registry.py": "74e5fdc5bb2e7bf11894b3de2601c4dc8428122d"
  },
  "tables": [

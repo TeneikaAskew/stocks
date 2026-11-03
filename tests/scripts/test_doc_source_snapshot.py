@@ -262,14 +262,22 @@ def test_actual_failed_production_preserves_absent_or_valid_output(existing, lim
 
 
 NOTE_SPEC = "docs/superpowers/specs/2026-10-13-feat-cicd-001-test-source-notes.md"
+# Since 5f16c96e (#1690) trusted main holds the approved 2026-11-02 FEAT-CICD-001 spec,
+# which supersedes the 2026-10-13 protocol spec and retains its acceptance items. A
+# DOC-only close-out record binds the current approved protocol spec; the historical
+# initial-bootstrap route keeps binding the 2026-10-13 spec.
+SUCCESSOR_SPEC = "docs/superpowers/specs/2026-11-02-feat-cicd-001-verifier-twelve-mib.md"
 
 
-def installed_repo(path, object_format="sha1", declaration="[SHARED-01]", unicode_path=False, unrelated_finding=False):
+def installed_repo(path, object_format="sha1", declaration="[SHARED-01]", unicode_path=False, unrelated_finding=False,
+                   successor=None):
     repo = Repo(path, object_format)
     repo.git("checkout", "-q", "main")
     repo.write(MODULE, (ROOT / MODULE).read_bytes())
     spec = (ROOT / SPEC).read_text().replace("status: approved", "site_source_notes: " + declaration + "\nstatus: approved")
     repo.write(NOTE_SPEC, spec)
+    if successor is not False:
+        repo.write(SUCCESSOR_SPEC, (ROOT / SUCCESSOR_SPEC).read_bytes() if successor is None else successor)
     if unicode_path:
         repo.write("scripts/café.py", "LOCAL = 'literal UTF-8'\n")
     if unrelated_finding:
@@ -1602,3 +1610,75 @@ def test_terminal_missing_historical_site_blob_refuses_despite_valid_newer_recor
     refused = repo.cli("verify")
     assert refused.returncode != 0
     assert "missing or unsupported scoped object" in json.loads(refused.stdout)["reason"]
+
+
+def closeout_repo(path, successor=None, object_format="sha1"):
+    repo = installed_repo(path, object_format, successor=successor)
+    repo.git("checkout", "-q", "-b", "docs/source-closeout")
+    repo.write(SITE, (repo.path / SITE).read_text() + "\nGenuine local main body close-out evidence.\n")
+    repo.commit("docs: publish body while historical marker stays fixed")
+    return repo
+
+
+@pytest.mark.parametrize("object_format", ["sha1", "sha256"])
+def test_actual_doc_closeout_binds_current_protocol_spec_after_supersession(object_format, tmp_path):
+    repo = closeout_repo(tmp_path / "repo", object_format=object_format)
+    value = repo.produce_committed()
+    assert value["eligible_route"] == "trunk-closeout-pending"
+    record = json.loads((repo.path / RECORD).read_text())
+    assert record["eligibility"]["kind"] == "trunk-closeout-pending"
+    assert record["eligibility"]["feat_id"] == "FEAT-CICD-001"
+    assert record["eligibility"]["spec_path"] == SUCCESSOR_SPEC
+    assert record["eligibility"]["spec_blob_oid"] == repo.git("rev-parse", "HEAD:" + SUCCESSOR_SPEC).stdout.strip()
+    verified = repo.cli("verify")
+    assert verified.returncode == 0, verified.stdout + verified.stderr
+    assert "trunk documentation close-out pending" in json.loads(verified.stdout)["context"]
+
+
+def _successor_text():
+    return (ROOT / SUCCESSOR_SPEC).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("case", ["missing", "wrong-feat", "not-approved", "superseded", "changed-in-source"])
+def test_actual_doc_closeout_binding_negatives_retain_refusal(case, tmp_path):
+    text_value = _successor_text()
+    successor = {
+        "missing": False,
+        "wrong-feat": text_value.replace("feat_id: FEAT-CICD-001", "feat_id: FEAT-DATA-001", 1),
+        "not-approved": text_value.replace("\nstatus: approved\n", "\nstatus: draft\n", 1),
+    }.get(case)
+    repo = closeout_repo(tmp_path / "repo", successor=successor)
+    if case == "superseded":
+        repo.git("checkout", "-q", "main")
+        repo.write("docs/superpowers/specs/2026-11-03-feat-cicd-001-later-protocol.md",
+                   "---\nstatus: approved\nfeat_id: FEAT-CICD-001\nsupersedes: " + SUCCESSOR_SPEC + "\n---\n")
+        later = repo.commit("docs: a later approved spec supersedes the successor")
+        repo.git("update-ref", "refs/remotes/origin/main", later)
+        repo.git("checkout", "-q", "docs/source-closeout")
+        repo.git("merge", "-q", "--no-edit", "main")
+    if case == "changed-in-source":
+        repo.write(SUCCESSOR_SPEC, _successor_text() + "\nBranch-only edit to the bound spec.\n")
+        repo.commit("docs: alter the bound spec on the branch")
+    reasons = {
+        "missing": "approved spec is unavailable or changed in baseline/POLICY/SOURCE",
+        "wrong-feat": "approved immutable FEAT/spec binding failed",
+        "not-approved": "approved immutable FEAT/spec binding failed",
+        "superseded": "bound approved spec has been superseded in trusted POLICY",
+        # Editing the bound spec on the branch is not a DOC-only close-out: route
+        # selection refuses it before the spec binding is read.
+        "changed-in-source": "ordinary production requires its actual named feature branch/source",
+    }
+    refused = repo.cli("produce")
+    assert refused.returncode != 0, refused.stdout
+    verdict = json.loads(refused.stdout)
+    assert verdict["status"] == "unverified"
+    assert verdict["reason"] == reasons[case]
+    assert not (repo.path / RECORD).exists()
+
+
+def test_actual_initial_bootstrap_still_binds_historical_protocol_spec(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    value = repo.produce_committed()
+    assert value["eligible_route"] == "initial-bootstrap"
+    record = json.loads((repo.path / RECORD).read_text())
+    assert record["eligibility"]["spec_path"] == SPEC
