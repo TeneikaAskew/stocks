@@ -14,7 +14,7 @@ status: ready
 
 **Spec:** `docs/superpowers/specs/2026-11-02-feat-cicd-001-verifier-twelve-mib.md` (approved, on main since 5f16c96e, #1690).
 
-**Base:** main 1ac70bfd (fast-forwarded from 5f16c96e; none of the three commits between touch a file this plan changes). One branch, one PR, one author. The SITE row, sidecar, catalog and lineage (Task 9) are shared with #1694 and #1696 and are produced only on the main that exists after those land.
+**Base:** main 1ac70bfd (fast-forwarded from 5f16c96e; none of the three commits between touch a file this plan changes), then main 1fb97576 (#1694) merged in; its appended tests and this plan's appended tests are both kept. One branch, one PR, one author. The SITE row, sidecar, catalog and lineage (Task 9) are shared with #1694 and #1696 and are produced only on the main that exists after those land.
 
 ## Global constraints
 
@@ -60,8 +60,8 @@ Spec: § Retained done_when items. Advances done_when[0] to [7].
 
 ## Task 8: capacity measurements
 Spec: § Capacity. Advances done_when[10].
-- [ ] From the unchanged CLI on the head, record `counted_bytes` and `elapsed_seconds` for a main self-check and for the head, each inside the five-second deadline and 20000-entry ceiling.
-- [ ] Name by SHA at least one real ref the 8388608-byte ceiling refused with `object exceeds remaining input-byte allowance`, and its result under the new ceiling.
+- [x] From the unchanged CLI on the head, record `counted_bytes` and `elapsed_seconds` for a main self-check and for the head, each inside the five-second deadline and 20000-entry ceiling: main 1fb97576 under the main module 8,239,011 bytes, 0.76 to 1.23 s; under the head module 8,239,016 bytes, 0.82 to 0.87 s; 1,482 entries each.
+- [x] Name by SHA at least one real ref the 8388608-byte ceiling refused with `object exceeds remaining input-byte allowance`, and its result under the new ceiling: #1689's e355e728 against its policy base 1ac70bfd is refused at 5,807,066 counted bytes under 8388608 and identity-matched at 8,468,326 bytes (0.84 to 1.00 s) under 12582912.
 
 ## Task 9: source identity and close
 Spec: § Source identity and close-out. Advances done_when[12].
