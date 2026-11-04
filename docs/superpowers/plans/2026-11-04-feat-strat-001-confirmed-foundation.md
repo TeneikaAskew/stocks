@@ -37,8 +37,8 @@ Spec: `docs/superpowers/specs/2026-10-12-feat-strat-001-complete-state-contract.
 Spec: `docs/superpowers/specs/2026-10-12-feat-strat-001-complete-state-contract.md` done_when 3, "Continuity and weighted FTFC".
 
 - [x] Keep `TestContinuityContracts` and `TestLegacyFtfcGolden` (34 final-as-of controls) unchanged in weights
-- [ ] Repair default FTFC membership in lib/backtest.py so future rows cannot change earlier results
-- [ ] Add tests/lib/test_backtest_ftfc_causality.py with the four named tests
+- [x] Repair default FTFC membership in lib/backtest.py so future rows cannot change earlier results
+- [x] Add tests/lib/test_backtest_ftfc_causality.py with the four named tests
 
 ## Task 4: Status, history and consumer adapters
 
