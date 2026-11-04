@@ -326,9 +326,9 @@ def health_ping(response: Response):
     """Lightweight warm-up probe. NOT called by a scheduler.
 
     The keep-warm Cloud Scheduler was dropped (gcp/deploy.sh, "Platform
-    keep-warm — DROPPED"): solyra-api-prod sits behind IAP, so an
-    unauthenticated GET is rejected at IAP and never reaches the app. The
-    endpoint is kept for manual and in-cluster warm-up.
+    keep-warm — DROPPED") while the API sat behind IAP, where an
+    unauthenticated GET was rejected at the edge and never reached the app.
+    The endpoint is kept for manual and in-cluster warm-up.
 
     Returns 200 + a 1-statement Cloud SQL query so the Cloud SQL
     connector (and the FastAPI worker) stay hot during business hours.

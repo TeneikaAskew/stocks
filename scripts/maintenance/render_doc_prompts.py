@@ -71,9 +71,10 @@ def counts(live: dict, repo_inventory: dict, verify_live: dict) -> dict[str, str
         "RUNTIME_RELATIONS": runtime_relations,
     }
     # Values that are NAMES rather than counts, validated as names. Run 28 wrote
-    # `solyra-api` into 05-d twice; the live services are `solyra-api-prod` and
-    # `solyra-api-staging`, and verify_docs_against_live failed the run on a
-    # service that does not exist. The prompt already warned against inventing
+    # `solyra-api` into 05-d twice; the live services were then
+    # `solyra-api-prod` (retired 2026-10-10, #1366) and `solyra-api-staging`,
+    # and verify_docs_against_live failed the run on a service that does not
+    # exist. The prompt already warned against inventing
     # one -- it names `solyra-trader` from an earlier dry run -- and a warning
     # was not enough, exactly as it was not enough for the runtime-relation
     # count. Hand over the list and let the model copy it. Kept out of `raw` so
