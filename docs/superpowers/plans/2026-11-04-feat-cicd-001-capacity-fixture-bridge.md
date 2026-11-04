@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-10-13-feat-cicd-001-capacity-fixture-bridge.md
 branch: feature/feat-cicd-001-capacity-fixture-bridge
-pr: null
+pr: 1706
 status: ready
 ---
 
