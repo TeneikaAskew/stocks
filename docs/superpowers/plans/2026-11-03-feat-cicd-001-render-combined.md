@@ -93,6 +93,14 @@ Spec: done_when 6 and 13.
   - Both mutants had survived the R14c tests in QUAL7.
   - The table-unreadable assertion fails against 946d94d2's measurement script (blob 6db173f0), where the failing read is inside a listing.
   - The 25 focused `-k measure_inventory_render` tests passed on 3.14.6, 3.13.17 and 3.12.3: 24.46, 25.35 and 25.78 s, against R14c's 48.16, 47.63 and 47.62 s.
+  - **Correction to the timing comparison above (R14e, local17 S2 F1).**
+    - Those three runs used a minimal copy without `scripts/maintenance`. There `test_measure_inventory_render_runs_the_actual_gate` passes without running. R14c's runs did run it, so the comparison overstates the recovery.
+    - Like for like, on sparse clones where that test runs (3.14.6, local17 S2):
+      - 29.85 and 30.84 s on 5b03e267;
+      - 42.13 s on 4aff29cb;
+      - 28.01 s on 946d94d2.
+    - About 12 s recovered; the head is still about 2 to 3 s above 946d94d2.
+    - The 25 passes counted one test that did not run. The full suite on the committed head ran it.
   - Mutants N1 and N3 to N7 were caught on 3.14.6.
   - One run each.
 - [ ] For R14d: the full suite and the docs audit on the committed R14d head. R14d changes no byte the real-tree measurement executes (gate, renderer and measurement script unchanged); one real-tree measurement per interpreter is still run on the committed R14d head, as predeclared, and recorded outside this plan.
