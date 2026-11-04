@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import Optional, Dict
 import warnings
 
-from lib.eastern_time import ET_NAME, eastern_index_to_utc, stored_intraday_to_eastern
+from lib.eastern_time import (ET_NAME, eastern_index_to_utc, stored_intraday_to_eastern,
+                              session_schedule, eastern_now)
 
 
 def _eastern_bound(value) -> Optional[pd.Timestamp]:
@@ -67,7 +68,61 @@ RESAMPLE_RULES = {
     '1w':  'W-FRI',
     '1mo': 'ME',
     '1q':  'QE',
+    '1y':  'YE',
 }
+
+
+def _concat_source_frames(frames):
+    """Reconcile partition declarations before pandas can discard unequal attrs.
+
+    Only wholly unannotated contracts qualify for loader compatibility defaults.
+    A missing/conflicting field in any annotated set stays unknown. Acquisition
+    time describes the whole result only when every component declares the same
+    value; otherwise its missingness is explicit, never a latest-file timestamp.
+    Other arbitrary per-file attrs are not a contract for the combined source.
+    """
+    contract_keys = ('source_resolution', 'session_policy', 'timestamp_semantics')
+    declarations = [frame.attrs for frame in frames]
+    attrs = {}
+    reasons = [reason for declaration in declarations
+               for reason in declaration.get('source_contract_reasons', [])]
+    if any(key in declaration for declaration in declarations for key in contract_keys):
+        for key in contract_keys:
+            values = [declaration[key] for declaration in declarations if key in declaration]
+            missing = len(values) != len(declarations)
+            conflicting = any(value != values[0] for value in values[1:])
+            attrs[key] = 'unknown' if missing or conflicting else values[0]
+            if missing:
+                reasons.append('incomplete_source_contract')
+            if conflicting:
+                reasons.append('conflicting_source_contract')
+    if reasons:
+        attrs['source_contract_reasons'] = list(dict.fromkeys(reasons))
+
+    acquisitions = [declaration.get('source_acquired_at') for declaration in declarations]
+    present = [value for value in acquisitions if value not in (None, '', 'unknown')]
+    if not present:
+        acquisition_status = 'unknown'
+    elif len(present) != len(acquisitions):
+        acquisition_status = 'incomplete'
+    elif any(value != present[0] for value in present[1:]):
+        acquisition_status = 'mixed'
+    else:
+        acquisition_status = 'uniform'
+    attrs['source_acquired_at'] = present[0] if acquisition_status == 'uniform' else None
+    attrs['source_acquisition_status'] = acquisition_status
+    adjustments = [declaration.get('price_adjustment', 'unknown') for declaration in declarations]
+    attrs['price_adjustment'] = (adjustments[0] if all(value == adjustments[0]
+                                for value in adjustments) else 'unknown')
+
+    # Clear attrs on shallow copies so concat never compares unrelated metadata
+    # (nor retains whichever input happened to sort first).
+    parts = [frame.copy(deep=False) for frame in frames]
+    for part in parts:
+        part.attrs = {}
+    result = pd.concat(parts)
+    result.attrs = attrs
+    return result
 
 
 def _cloud_sql_active() -> bool:
@@ -286,7 +341,7 @@ class DataLoader:
                 monthly_files = sorted(intraday_dir.glob(f'{ticker_lower}_av_1min_*.parquet'))
                 if monthly_files:
                     frames = [pd.read_parquet(f) for f in monthly_files]
-                    df = pd.concat(frames).sort_index()
+                    df = _concat_source_frames(frames).sort_index()
                     df = self.normalize_columns(df)
                     df = self._strip_timezone(df)
                     df_out = self._filter_dates(df, start_date, end_date)
@@ -296,7 +351,7 @@ class DataLoader:
                     daily_files = sorted(minute_dir.glob(f'{ticker_lower}_minute_*.parquet'))
                     if daily_files:
                         frames = [pd.read_parquet(f) for f in daily_files]
-                        df = pd.concat(frames).sort_index()
+                        df = _concat_source_frames(frames).sort_index()
                         df = self.normalize_columns(df)
                         df = self._strip_timezone(df)
                         df_out = self._filter_dates(df, start_date, end_date)
@@ -308,6 +363,9 @@ class DataLoader:
         _check_staleness(df_out, ticker,
                          max_age_days=max_age_days, on_stale=on_stale,
                          value_col='Close')
+        df_out.attrs.setdefault('source_resolution', '1min')
+        df_out.attrs.setdefault('timestamp_semantics', 'bar_start')
+        df_out.attrs.setdefault('session_policy', 'unknown')
         return df_out
 
     def _load_intraday_from_sql(
@@ -411,7 +469,7 @@ class DataLoader:
                 files = sorted(ticker_dir.glob(f'{ticker_lower}_*.parquet'))
                 if files:
                     frames = [pd.read_parquet(f) for f in files]
-                    df = pd.concat(frames).sort_index()
+                    df = _concat_source_frames(frames).sort_index()
                     df_out = self.normalize_columns(df)
 
         # Skip staleness when caller asked for a specific year (historical query).
@@ -422,6 +480,9 @@ class DataLoader:
             _check_staleness(df_out, ticker,
                              max_age_days=max_age_days, on_stale=on_stale,
                              value_col='Close')
+        df_out.attrs.setdefault('source_resolution', '1d')
+        df_out.attrs.setdefault('session_policy', 'NYSE_regular')
+        df_out.attrs.setdefault('timestamp_semantics', 'session_label')
         return df_out
 
     def _load_daily_from_sql(
@@ -522,51 +583,78 @@ class DataLoader:
         self,
         df: pd.DataFrame,
         timeframe: str,
+        *,
+        observation_ts=None,
+        source_resolution: Optional[str] = None,
+        session_policy: Optional[str] = None,
+        aggregation_policy: str = 'legacy_v1',
     ) -> pd.DataFrame:
-        """Resample OHLCV data to a higher timeframe.
+        """Aggregate under an explicit, inspectable compatibility policy.
 
-        Parameters
-        ----------
-        timeframe : one of '5m', '15m', '30m', '1h', '4h', '12h', '1d', '1w', '1mo'
-                    (legacy 'D' / 'W' / 'M' keys removed in PR #126)
+        ``legacy_v1`` (default) retains historical pandas bins, raw OHLC
+        aggregation and no observation-clock filtering for existing numerical
+        consumers. Source attrs never opt these consumers into a new policy.
+        Its output declares only the legacy version, not strict coverage.
+        ``observed_v2`` opts into the exchange/source contract below. Clock or
+        source override keywords require that explicit policy.
+
+        ``observation_ts`` is an instant (naive means declared Eastern wall time).
+        Daily indexes are session labels, including UTC-midnight vendor labels.
+        Intraday indexes are bar-start instants; naive indexes mean Eastern.
+        Only completed source bars are admitted at the observation clock. The
+        resulting higher-period bar may still be partial.
+
+        attrs['coverage'] describes the period containing the observation clock;
+        attrs['period_coverage'] maps canonical UTC instant keys (intraday) or
+        session-label keys (D/W/M/Q/Y) to each historical period record.
+        ``partial`` describes time, while
+        ``coverage_complete`` describes expected observations through the clock.
+        ``open`` is available only when the actual period opening observation is
+        valid. ``source_cutoff`` is the last source bar's availability instant,
+        never the (possibly future) resample label or an acquisition timestamp.
+        Unknown acquisition time and price adjustment remain explicitly unknown.
+        attrs['gap_before_by_timestamp'] supplies session-aware adjacency to Strat.
         """
         rule = RESAMPLE_RULES.get(timeframe)
         if rule is None:
             raise ValueError(f"Unknown timeframe: {timeframe}. Use one of {list(RESAMPLE_RULES.keys())}")
-
-        close_col = 'Close' if 'Close' in df.columns else 'Last'
-
-        resampled = df.resample(rule).agg({
-            'Open': 'first',
-            'High': 'max',
-            'Low': 'min',
-            close_col: 'last',
-            'Volume': 'sum',
-        }).dropna()
-
-        # Normalize close column name
-        if close_col != 'Close':
-            resampled = resampled.rename(columns={close_col: 'Close'})
-
-        return resampled
+        if aggregation_policy == 'legacy_v1':
+            if any(value is not None for value in (observation_ts, source_resolution, session_policy)):
+                raise ValueError('clock/source overrides require aggregation_policy=observed_v2')
+            close_col = 'Close' if 'Close' in df.columns else 'Last'
+            result = df.resample(rule).agg({
+                'Open': 'first', 'High': 'max', 'Low': 'min',
+                close_col: 'last', 'Volume': 'sum',
+            }).dropna()
+            if close_col != 'Close':
+                result = result.rename(columns={close_col: 'Close'})
+            # Source cadence/coverage cannot describe a different output grid.
+            result.attrs = {'aggregation_policy': 'legacy_v1'}
+            return result
+        if aggregation_policy != 'observed_v2':
+            raise ValueError(f'Unknown aggregation_policy: {aggregation_policy}')
+        return _aggregate_observed_frame(df, timeframe, observation_ts,
+                                         source_resolution, session_policy)
 
     def build_multi_timeframe(
         self,
         df: pd.DataFrame,
         timeframes: list = None,
+        *,
+        observation_ts=None,
+        source_resolution: Optional[str] = None,
+        session_policy: Optional[str] = None,
+        aggregation_policy: str = 'legacy_v1',
     ) -> Dict[str, pd.DataFrame]:
-        """Build a dict of DataFrames at multiple timeframes from minute data.
-
-        Used for Strat FTFC calculation.
-        """
+        """Build frames under one explicit policy (one clock for observed_v2)."""
         if timeframes is None:
             timeframes = ['5m', '15m', '1h', '4h', '12h', '1d', '1w']
-
-        # No swallow: lib/strat.py relies on an unknown key raising here
-        # so a mistake surfaces instead of producing empty FTFC, and the
-        # `except Exception: continue` this replaced made that false
-        # (internal review of #1022; CLAUDE.md 3.7).
-        return {tf: self.aggregate_to_timeframe(df, tf) for tf in timeframes}
+        # Resolve once, so live frames cannot straddle different decisions.
+        clock = (_observation_clock(observation_ts)
+                 if aggregation_policy == 'observed_v2' else observation_ts)
+        return {tf: self.aggregate_to_timeframe(
+            df, tf, observation_ts=clock, source_resolution=source_resolution,
+            session_policy=session_policy, aggregation_policy=aggregation_policy) for tf in timeframes}
 
     def load_options(
         self,
@@ -722,3 +810,274 @@ def get_close_price(ticker: str, target_date) -> Optional[float]:
     if _DEFAULT_LOADER is None:
         _DEFAULT_LOADER = DataLoader()
     return _DEFAULT_LOADER.get_close_price(ticker, target_date)
+
+
+_PERIOD_FREQ = {'1d': 'D', '1w': 'W-FRI', '1mo': 'M', '1q': 'Q', '1y': 'Y'}
+
+
+def _observation_clock(value=None):
+    """Resolve an instant, with naive timestamps explicitly interpreted as Eastern."""
+    clock = pd.Timestamp(eastern_now() if value is None else value)
+    if clock.tzinfo is None:
+        clock = clock.tz_localize(ET_NAME, ambiguous='raise', nonexistent='raise')
+    return clock.tz_convert(ET_NAME)
+
+
+def _session_labels(index):
+    """Daily indexes are labels: remove zone without converting their date."""
+    index = pd.DatetimeIndex(index)
+    if index.tz is not None:
+        index = index.tz_localize(None)  # tz-ok: session labels, not instants
+    return index.normalize()
+
+
+def _period_schedule(stamp, timeframe):
+    day = pd.Timestamp(stamp)
+    if day.tzinfo is not None:
+        day = day.tz_convert(ET_NAME).tz_localize(None)  # tz-ok: converted to Eastern first; a session label
+    period = day.to_period(_PERIOD_FREQ.get(timeframe, 'D'))
+    return session_schedule(period.start_time.date(), period.end_time.date())
+
+
+def _intraday_grid(schedule, interval):
+    pieces = [pd.date_range(row.market_open, row.market_close, freq=interval,
+                            inclusive='left').tz_convert(ET_NAME)
+              for row in schedule.itertuples()]
+    if not pieces:
+        return pd.DatetimeIndex([], tz=ET_NAME)
+    result = pieces[0]
+    for piece in pieces[1:]:
+        result = result.append(piece)
+    return result
+
+
+def _aggregate_observed_frame(df, timeframe, observation_ts, source_resolution, session_policy):
+    from lib.strat import validate_ohlc_rows
+
+    clock = _observation_clock(observation_ts)
+    data = df.copy()
+    if not isinstance(data.index, pd.DatetimeIndex):
+        if data.empty:
+            data.index = pd.DatetimeIndex([])
+        else:
+            raise ValueError('timeframe aggregation requires a DatetimeIndex')
+    naive_source = data.index.tz is None
+    data = data.sort_index()
+    if data.index.has_duplicates:
+        raise ValueError('duplicate observation timestamps')
+    resolution = source_resolution if source_resolution is not None else data.attrs.get('source_resolution')
+    daily = resolution in ('1d', '1D', 'daily')
+    policy = session_policy if session_policy is not None else data.attrs.get('session_policy', 'unknown')
+    target_interval = None if timeframe in _PERIOD_FREQ else pd.Timedelta(RESAMPLE_RULES[timeframe])
+    base_reasons = list(data.attrs.get('source_contract_reasons', []))
+    source_interval = None
+    if resolution in (None, '', 'unknown'):
+        base_reasons.append('unknown_source_resolution')
+    elif not daily:
+        try:
+            source_interval = pd.Timedelta(resolution)
+        except (ValueError, TypeError):
+            base_reasons.append('unsupported_source_resolution')
+        if source_interval is not None and (pd.isna(source_interval) or
+                source_interval <= pd.Timedelta(0) or source_interval >= pd.Timedelta(days=1)):
+            source_interval = None
+            base_reasons.append('unsupported_source_resolution')
+    if policy != 'NYSE_regular':
+        base_reasons.append('unknown_session_policy')
+    semantics = data.attrs.get('timestamp_semantics', 'unknown')
+    if semantics != ('session_label' if daily else 'bar_start'):
+        base_reasons.append('unsupported_timestamp_semantics')
+    if ((daily and target_interval is not None) or
+            (target_interval is not None and source_interval is not None and
+             (source_interval > target_interval or target_interval % source_interval != pd.Timedelta(0)))):
+        base_reasons.append('source_resolution_too_coarse')
+    known_intraday = not daily and source_interval is not None and not base_reasons
+    # Unknown duration/policy is not permission to treat a bar start as a
+    # completed observation. No OHLC or completion timestamp can be admitted.
+    if base_reasons:
+        data = data.iloc[:0]
+
+    if daily:
+        data.index = _session_labels(data.index)
+        schedule = (session_schedule(data.index.min().date(), data.index.max().date())
+                    if len(data) else _period_schedule(clock, timeframe))
+        cutoff_by_index = schedule['market_close'].reindex(data.index)
+        eligible = cutoff_by_index.notna() & (cutoff_by_index <= clock)
+        data = data.loc[eligible.to_numpy()]
+        cutoffs = cutoff_by_index.loc[eligible].dt.tz_convert(ET_NAME)
+    else:
+        data.index = (data.index.tz_localize(ET_NAME, ambiguous='raise', nonexistent='raise')
+                      if data.index.tz is None else data.index.tz_convert(ET_NAME))
+        cutoffs = (pd.Series(data.index + source_interval, index=data.index)
+                   if source_interval is not None else
+                   pd.Series(pd.DatetimeIndex([], tz=ET_NAME), index=data.index))
+        if known_intraday and len(data):
+            schedule = session_schedule(data.index.min().date(), data.index.max().date())
+            grid = _intraday_grid(schedule, source_interval)
+            data = data.loc[data.index.isin(grid)]
+            cutoffs = cutoffs.reindex(data.index)
+            session_closes = {stamp.date(): close.tz_convert(ET_NAME)
+                              for stamp, close in schedule['market_close'].items()}
+            cutoffs = pd.Series([min(cutoff, session_closes[stamp.date()])
+                                 for stamp, cutoff in cutoffs.items()], index=data.index)
+        data = data.loc[(cutoffs <= clock).to_numpy()]
+        cutoffs = cutoffs.reindex(data.index)
+
+    if 'Close' not in data and 'Last' in data:
+        data = data.rename(columns={'Last': 'Close'})
+    for column in ['Open', 'High', 'Low', 'Close']:
+        if column not in data and data.empty:
+            data[column] = pd.Series(dtype=float)
+    valid = validate_ohlc_rows(data)
+    prices = data[['Open', 'High', 'Low', 'Close']].apply(pd.to_numeric, errors='coerce')
+    if 'Volume' in data:
+        prices['Volume'] = pd.to_numeric(data['Volume'], errors='coerce')
+    else:
+        prices['Volume'] = np.nan
+
+    session_open_cache = {}
+
+    def label_for(stamp):
+        if timeframe in _PERIOD_FREQ:
+            wall = pd.Timestamp(stamp)
+            if wall.tzinfo:
+                wall = wall.tz_localize(None)  # tz-ok: already Eastern, period label
+            return wall.to_period(_PERIOD_FREQ[timeframe]).end_time.normalize()
+        if known_intraday:
+            day = pd.Timestamp(stamp).date()
+            if day not in session_open_cache:
+                schedule = _period_schedule(stamp, '1d')
+                session_open_cache[day] = (schedule.iloc[0]['market_open'].tz_convert(ET_NAME)
+                                           if len(schedule) else None)
+            opening = session_open_cache[day]
+            if opening is None:
+                return pd.Timestamp(stamp).floor(RESAMPLE_RULES[timeframe])
+            return opening + ((stamp - opening) // target_interval) * target_interval
+        return pd.Timestamp(stamp).floor(RESAMPLE_RULES[timeframe])
+
+    def coverage(stamp, positions):
+        schedule = _period_schedule(stamp, timeframe)
+        reasons = list(base_reasons)
+        start = end = None
+        if len(schedule):
+            start = schedule.iloc[0]['market_open'].tz_convert(ET_NAME)
+            end = schedule.iloc[-1]['market_close'].tz_convert(ET_NAME)
+            if target_interval is not None:
+                start = label_for(stamp)
+                if start < schedule.iloc[0]['market_open'] or start >= end:
+                    start = end = None
+                    reasons.append('outside_regular_session')
+                else:
+                    end = min(start + target_interval, end)
+        else:
+            reasons.append('non_trading_period')
+        observed = data.iloc[positions]
+        observed_valid = valid.iloc[positions]
+        expected = pd.DatetimeIndex([])
+        opening_index = None
+        if daily and len(schedule):
+            expected = schedule.index[schedule['market_close'] <= clock]
+            opening_index = schedule.index[0]
+        elif known_intraday and len(schedule) and start is not None:
+            expected = _intraday_grid(schedule, source_interval)
+            expected = expected[(expected >= start) & (expected < end)]
+            opening_index = start
+            session_closes = {stamp.date(): close.tz_convert(ET_NAME)
+                              for stamp, close in schedule['market_close'].items()}
+            expected = expected[[min(stamp + source_interval, session_closes[stamp.date()]) <= clock
+                                 for stamp in expected]]
+        missing = expected.difference(observed.index)
+        if len(missing):
+            reasons.append('missing_observations')
+        open_observed = (opening_index in observed.index and bool(valid.loc[opening_index]))
+        if not open_observed:
+            reasons.append('missing_period_open')
+        if observed.empty:
+            reasons.append('no_observations')
+        if not observed_valid.all():
+            reasons.append('invalid_ohlc')
+        cutoff = cutoffs.reindex(observed.index).max() if len(observed) else None
+        if pd.isna(cutoff):
+            cutoff = None
+        complete = bool(end is not None and clock >= end)
+        return {
+            'timeframe': timeframe, 'aggregation_policy': 'observed_v2',
+            'period_start': start.isoformat() if start is not None else None,
+            'period_end': end.isoformat() if end is not None else None,
+            'period_open_observed': bool(open_observed),
+            'open': float(prices.loc[opening_index, 'Open']) if open_observed else None,
+            'completed': complete, 'partial': bool(end is not None and not complete),
+            'coverage_complete': bool(not base_reasons and len(expected) and not len(missing) and observed_valid.all()),
+            'available': bool(not base_reasons and len(observed) and observed_valid.all()),
+            'observed_count': len(observed), 'expected_count': len(expected),
+            'missing_count': len(missing),
+            'missing_sessions': sorted({str(value.date()) for value in missing}),
+            'source_resolution': resolution or 'unknown', 'session_policy': policy,
+            'timestamp_semantics': semantics,
+            'source_cutoff': cutoff.isoformat() if cutoff is not None else None,
+            'source_age_seconds': (clock - cutoff).total_seconds() if cutoff is not None else None,
+            'source_acquired_at': df.attrs.get('source_acquired_at'),
+            'source_acquisition_status': df.attrs.get('source_acquisition_status', 'unknown'),
+            'price_adjustment': df.attrs.get('price_adjustment', 'unknown'),
+            'reasons': reasons,
+        }
+
+    # Group source positions without pandas first/last skipping null observations.
+    groups = {}
+    for position, stamp in enumerate(data.index):
+        groups.setdefault(label_for(stamp), []).append(position)
+    records, period_coverage = [], {}
+    for label, positions in groups.items():
+        group = prices.iloc[positions]
+        record = {'Open': group['Open'].iloc[0], 'High': group['High'].max(),
+                  'Low': group['Low'].min(), 'Close': group['Close'].iloc[-1],
+                  'Volume': group['Volume'].sum(min_count=1)}
+        if not valid.iloc[positions].all():
+            # Any malformed constituent makes aggregate OHLC unavailable. Keep
+            # the position so the next bar cannot bridge an invalid observation.
+            record.update({key: np.nan for key in ('Open', 'High', 'Low', 'Close')})
+        records.append(record)
+        period_coverage[label.isoformat()] = coverage(label, positions)
+    result = pd.DataFrame(records, index=pd.DatetimeIndex(list(groups)),
+                          columns=['Open', 'High', 'Low', 'Close', 'Volume'])
+    current_label = label_for(clock)
+    current_coverage = coverage(clock, groups.get(current_label, []))
+    gaps = {label.isoformat(): False for label in result.index}
+    if len(result) > 1:
+        if timeframe in _PERIOD_FREQ:
+            schedule = session_schedule(result.index[0].date() - timedelta(days=7), result.index[-1].date())
+            labels = pd.DatetimeIndex(sorted({label_for(stamp) for stamp in schedule.index}))
+        elif known_intraday:
+            schedule = session_schedule(result.index[0].date(), result.index[-1].date())
+            labels = pd.DatetimeIndex(sorted({label_for(stamp) for stamp in _intraday_grid(schedule, source_interval)}))
+        else:
+            labels = pd.DatetimeIndex([])
+        for previous, current in zip(result.index[:-1], result.index[1:]):
+            gaps[current.isoformat()] = bool(base_reasons or not len(labels) or
+                labels.get_indexer([current])[0] - labels.get_indexer([previous])[0] != 1)
+            if daily or known_intraday:
+                # An incomplete constituent range cannot classify either side
+                # of a comparison, even when both target labels exist.
+                gaps[current.isoformat()] |= any(
+                    not period_coverage[stamp.isoformat()]['coverage_complete']
+                    for stamp in (previous, current))
+    key_semantics = 'session_label' if timeframe in _PERIOD_FREQ else 'utc_instant'
+    if target_interval is not None and result.index.tz is not None:
+        # Intraday identities are instants, independent of index display zone.
+        # A naive Eastern -> UTC adapter therefore needs no metadata mutation.
+        period_coverage = {stamp.tz_convert('UTC').isoformat(): period_coverage[stamp.isoformat()]
+                           for stamp in result.index}
+        gaps = {stamp.tz_convert('UTC').isoformat(): gaps[stamp.isoformat()]
+                for stamp in result.index}
+        if naive_source:
+            result.index = result.index.tz_localize(None)  # tz-ok: preserve naive Eastern API
+    result.attrs = {
+        'aggregation_policy': 'observed_v2',
+        'source_resolution': timeframe, 'session_policy': policy,
+        'timestamp_semantics': 'session_label' if timeframe in _PERIOD_FREQ else 'bar_start',
+        'observation_ts': clock.isoformat(), 'coverage': current_coverage,
+        'period_coverage': period_coverage, 'gap_before_by_timestamp': gaps,
+        'period_key_semantics': key_semantics, 'gap_key_semantics': key_semantics,
+        'naive_index_timezone': ET_NAME,
+    }
+    return result
