@@ -8,7 +8,7 @@ status: ready
 
 # Snapshot provenance on grid, levels and chain responses — implementation plan (S2)
 
-> **Status notes (2026-11-04 18:58 UTC, session machine clock).** Spec on `origin/main`
+> **Status notes (2026-11-04 19:10 UTC, session machine clock; consistency pass after `c7f73dac`).** Spec on `origin/main`
 > at `0b9977800c404160314e65ffaca9256908321206` (#1580 merged about 18:42 UTC, squash of
 > `b0f67dac`): `docs/superpowers/specs/2026-10-24-feat-option-001-legacy-snapshot-labels.md`,
 > `status: approved`, git blob `53b43ae5bf7cc7052c8f516cda83d9ef99fc13e0`, sha256
@@ -32,8 +32,8 @@ status: ready
 | Code baseline unchanged since the audit | **verified** | `git diff --stat 1fb97576 0b997780`: one file, the spec; all anchors re-read on `0b997780` |
 | Accepted A10 binding (done_when[5]) | **published binding recorded; not re-run** | `docs/superpowers/specs/2026-10-29-feat-option-001-collector-source-declaration.md` on `0b997780` (L23) names the accepted reproduction packet SHA256 `ecda596ae24b85adfc537d7203a40ce62c1ae2c241e0d4c646340ec32c4d8f87` with a 175-test A10 profile; `tests/gcp/test_av_options_collector_entry.py` pins the accepted transport SHA256 `af238d07c2043a0d34319dd533f6e36842e68a9ff536c37d9700e859de117284` (L144 at `a5437994`, still L144 at `0b997780`), and `gcp/fetchers/_av_realtime_transport.py` at `0b997780` hashes to exactly that value. The three current-main blob OIDs below are the identity of the A10-side files today, not a substitute for the accepted packet or member manifest, and unchanged acceptance is not re-run here |
 | A10-side files on main (identity only) | **verified** | `gcp/fetchers/fetch_av_realtime_options.py` `82d2575d`, `gcp/options_retention_job.py` `22bd2cdc`, `tests/gcp/test_av_options_realtime_producer.py` `4b1293ec` (blob OIDs at `0b997780`) |
-| Accepted A8 member manifest (done_when[5]) | **missing, explicitly** | Not on `0b997780` (`tests/gcp/test_av_options_archive.py`, `lib/av_options_admission.py` absent). Not in #1495's tree at `e641f0cd` (its plan `2026-10-13-feat-option-001-av-source-journal.md` names the old A spec SHA256 `9e634992fb089c9a00d79b31234e81ede30ad93c2c66daec1fbb31f72cbc35d4` and the `av-options-normalized/v1` codec, no A8 member hashes). #1521 comments 6204262200 and 6204262874 (2026-10-15) name the successor candidate SHA256 `94e980e5…1400`, the native gate SHA256 `aa259cfa…0bd0`, and state that the private codec and tests "remain untouched at e641 with their three previously untracked paths": untracked, so not readable here. Owner identity as recorded there: the sole A CODE owner, reviewing from `/root/options_implementation`. The manifest is not recreated or published by this plan; done_when[5] stays unticked until that owner supplies the member hashes or states the binding in writing |
-| Q/API #1528 shared boundaries | **open, coordination required** | see "Shared boundaries with the guarded-API contract" below |
+| Accepted A8 member manifest (done_when[5]) | **missing, explicitly** | Not on `0b997780` (`tests/gcp/test_av_options_archive.py`, `lib/av_options_admission.py` absent). Not in #1495's tree at `e641f0cd` (its plan `2026-10-13-feat-option-001-av-source-journal.md` names the old A spec SHA256 `9e634992fb089c9a00d79b31234e81ede30ad93c2c66daec1fbb31f72cbc35d4` and the `av-options-normalized/v1` codec, no A8 member hashes). #1521 comments 6204262200 and 6204262874 (2026-10-15) name the successor candidate SHA256 `94e980e5…1400`, the native gate SHA256 `aa259cfa…0bd0`, and state that the private codec and tests "remain untouched at e641 with their three previously untracked paths": untracked, so not readable here. Owner identity as recorded there: the sole A CODE owner, reviewing from `/root/options_implementation`. The manifest is not recreated or published by this plan; done_when[5] stays unticked until that owner supplies the actual preserved manifest and member paths with their hashes so the comparison can be run on HEAD; a written assertion without those hashes does not tick it |
+| Q/API #1528 shared boundaries | **open, coordination required before implementation** | the approved spec requires it before implementation, not before Ready: Task 0 below holds the first code commit until the existing Q owner's exact compatibility confirmation (a to c) is linked |
 | Solyra F2 spec approved on solyra main | **missing** | solyra main re-read 18:5x UTC: `e8d1df4c`, unchanged; no F2 spec and no Options PR on main or in the open list; `drafts/solyra-spec-2026-11-04-feat-option-001-snapshot-provenance-consumer.md` is a scratch proposal only; no solyra writer is verified (this session has read-only access and seeks none) |
 | Paired exact-SHA evidence for done_when[3] | **mechanism defined; cannot start** | the ordering in Task 10 stands (F2 developed against this branch's full head SHA after Task 9, hermetic run and screenshots posted on this PR before it is marked ready, F2 re-synced after merge); it cannot begin until the F2 spec is on solyra main and a writer exists. The missing writer and spec are a separate gap from the ordering, which is unchanged |
 | F2 contract pin target | not yet available | this branch's head SHA after Task 9 |
@@ -51,7 +51,7 @@ Shared boundaries recorded, not resolved here:
 
 - Files both touch: `platform/api/routers/options.py` (hit sites L534 to L547, store L626, `get_gamma_levels`), `platform/api/routers/grid.py` (hit reads L650, L662, L763, L775; stores L733, L806), `platform/api/schemas.py` (`GammaLevelsResponse`, `GammaGridResponse`), `platform/api/openapi.json`.
 - Semantics that could interact: S2 copies the cached payload on a hit and re-stamps `observed_at`; Q forbids a mutable fallback and bounds SQL round trips. S2 adds zero SQL round trips and no fallback, but the two caching rules have not been shown compatible by anyone. S2 attaches `snapshot_provenance` with statuses fixed to `unknown`; Q's `source_provenance` is a qualification result. The two objects describe different things and the spec says so, but their co-presence on one response has not been confirmed by Q's owner.
-- Confirmation needed before this plan's PR is marked ready (recorded in Task 12 as a gate, not an assumption): the existing Q owner confirms in writing, on this PR or the #1528 thread, that (a) `snapshot_provenance` may be added to `GammaLevelsResponse` and `GammaGridResponse` beside Q's planned members with no renaming on either side, (b) S2's hit-site copy and re-stamp does not conflict with Q's no-store and round-trip rules as Q will implement them, and (c) whichever of S2 and Q lands second rebases onto the other's hit-site changes. This plan does not ask the Q owner to adapt Q's contract, and does not change it.
+- Confirmation needed **before implementation starts** (the approved #1580 spec: "Coordinate any field-name collision with that contract's owner before implementation"; recorded as Task 0, a gate on the first code commit, not an assumption): the existing Q owner confirms in writing, on the #1528 thread or on this plan's draft PR before any code task begins, that (a) `snapshot_provenance` may be added to `GammaLevelsResponse` and `GammaGridResponse` beside Q's planned members with no renaming on either side, (b) S2's hit-site copy and re-stamp does not conflict with Q's no-store and round-trip rules as Q will implement them, and (c) whichever of S2 and Q lands second rebases onto the other's hit-site changes. This plan does not ask the Q owner to adapt Q's contract, and does not change it.
 
 ## What this plan delivers, and what it does not
 
@@ -133,7 +133,20 @@ the hermetic app only; production p95 is not claimed (spec § Verification).
   `datetime.now(timezone.utc)` per response. No Cloud Run job, no scheduler, so no
   task-timeout or $/run; cost delta $0.
 
-## Task 1: schema object and nullable field on three response models
+## Task 0: Q/API coordination before any code (gate, no code)
+Spec: § Problem and authority ("Coordinate any field-name collision with that contract's
+owner before implementation"); § Ownership ("API owner coordinates the wire contract with
+#1528"). Precedes Task 1.
+- [ ] Post the exact compatibility check (items a, b, c of "Shared boundaries with the
+  guarded-API contract") on the #1528 thread or on this plan's draft PR, addressed to the
+  existing Q owner. No request that Q change its contract.
+- [ ] The Q owner's written confirmation is linked here. Until it exists, no commit of
+  Tasks 1 to 9 is made on this branch. If the confirmation names a collision, the plan
+  stops and the owner decides; the field names of the approved spec are not changed by
+  this plan.
+- [ ] Commit: none (this task produces a link, recorded in the PR body and in Task 12).
+
+## Task 1: schema object and nullable field on two response models (chain conditional)
 Spec: § Design: metadata and clock rules (wire members). Advances done_when[0], [4].
 - [ ] In `platform/api/schemas.py`, add before `GammaLevelsResponse`:
   `class SnapshotProvenance(ApiModel)` with `provider: Optional[str] = None`,
@@ -293,56 +306,85 @@ payloads in place."). Advances done_when[1].
 - [ ] Run: `python -m pytest tests/api/test_grid_router.py -k warm -q` (FAIL, then PASS).
 - [ ] Commit: `feat(grid): re-stamp observation on cache hits from a copy, never in place`
 
-## Task 6: chain and levels assembly in options.py
+## Task 6: chain evidence retained internally; levels carries it; public chain shape unchanged
 Spec: § Design: metadata and clock rules; § Ownership (options.py levels and chain cache
-assembly). Advances done_when[0].
-- [ ] In `get_options`, add `market_session` to the existing SELECT list (same
-  statement). After `contracts = _df_to_contracts(df)`, build
-  `evidence = ChainEvidence("alphavantage", df["market_session"].tolist(), df["snapshot_ts"].tolist())`
-  and store `build_snapshot_provenance(evidence, _now_utc())` with the cached entry
-  before `_CHAIN_CACHE[cache_key] = response`. **X1 unresolved:** by default the object
-  is kept beside the cached payload for levels to copy and is stripped from the chain
-  HTTP response before serialisation; only an approved X1 makes it a `response` key. Existing `snapshot_timestamp`
-  computation is unchanged (it stays the legacy `max()` string; the provenance object
-  is where group validation lives).
-- [ ] Both hit sites (returns at L539 and L547, after the reads at L534 and L545) become
-  `{**cached, "cached": True, "snapshot_provenance": with_observation(cached["snapshot_provenance"], _now_utc())}`
-  (the `{**cached}` copy already exists there; the provenance copy is the addition).
-- [ ] In `get_gamma_levels`, add `"snapshot_provenance": chain_response.get("snapshot_provenance")`
-  to the returned dict. `get_options` already hands back a fresh outer dict and a fresh
-  provenance dict, so no second copy is needed; say so in a comment.
+assembly). Advances done_when[0]. X1 (publishing the object on the chain HTTP response)
+stays unresolved and default-off; nothing in this task adds a public field to the chain.
+
+Concrete data flow, chosen so levels' evidence is available without an unapproved public
+field:
+- The `_CHAIN_CACHE` entry becomes an internal wrapper
+  `{"payload": <the public response dict exactly as today>, "provenance": <dict | None>}`.
+  The payload dict is never given a `snapshot_provenance` key, so `get_options` serialises
+  the same keys as `origin/main` and `response_model_exclude_unset=True` never sees the
+  object.
+- A private module helper `_load_chain_entry(ticker: str, date_str: str) -> tuple[dict, Optional[dict], bool]`
+  holds the existing `get_options` body (validation, both cache reads, the
+  `_CHAIN_FLIGHT` claim, the single SELECT with `market_session` added to its list, the
+  404 path) and returns `(payload, provenance, cached)`. It builds the provenance once on
+  fill (`ChainEvidence("alphavantage", df["market_session"].tolist(), df["snapshot_ts"].tolist())`)
+  and stores the wrapper at the existing store site (L626). Hit returns stay claim-free;
+  both hit sites return the wrapper's parts.
+- `get_options` becomes `payload, _prov, cached = _load_chain_entry(...)`;
+  `return {**payload, "cached": cached}`: public shape unchanged.
+- `get_gamma_levels` becomes `payload, prov, _ = _load_chain_entry(...)`, computes the
+  summary from `payload["options"]` exactly as today, and adds
+  `"snapshot_provenance": with_observation(prov, _now_utc()) if prov else None` to its
+  own returned dict. `with_observation` returns a new dict, so the cache wrapper is never
+  mutated and no second copy is needed; say so in a comment.
+- Existing `snapshot_timestamp` on the chain and on levels is unchanged (the legacy
+  `max()` string); group validation lives in the provenance object.
+- Coordination: S5 (`#1212`) plans `(probe_ts, payload)` at the same cache; whichever
+  lands second rebases onto the other's entry shape. Q (#1528, Task 0) owns the same
+  sites and is consulted before this code is written.
+
 - [ ] Write failing tests in `tests/api/test_options_router.py`, new class
   `TestChainAndLevelsProvenance` with a TestClient over `routers.options.router`
   (mirror the grid file's `client` fixture: patch `is_cloud_sql_configured`, clear
-  `_CHAIN_CACHE`, monkeypatch `query_to_dataframe` to return a chain frame with
-  aware `snapshot_ts` and a `market_session` column):
-  - ASGI `GET /api/options/SPY/2026-06-01` carries the object with the row instant and
-    session; `cached` false then true on the second call.
-  - ASGI `GET /api/options/SPY/2026-06-01/levels` carries the same object values as the
-    chain response it was built from; `snapshot_timestamp`, `chain_size`, `levels`,
-    `kings`, `gates`, `total_gex`, `regime` equal a baseline captured on `origin/main`.
-  - Direct: `get_gamma_levels("SPY", "2026-06-01")` returns the key (spec: "Direct and
-    ASGI").
+  `_CHAIN_CACHE`, monkeypatch `query_to_dataframe` to return a chain frame with aware
+  `snapshot_ts` and a `market_session` column). Unconditional:
+  - `test_chain_http_shape_unchanged_no_provenance_key`: ASGI `GET /api/options/SPY/2026-06-01`
+    serialises exactly the key set captured from `origin/main` for the same fixture, with
+    no `snapshot_provenance` key; `cached` false then true on the second call.
+  - `test_chain_cache_entry_retains_provenance_internally`: after the first call,
+    `_CHAIN_CACHE[("SPY", "2026-06-01")]["provenance"]` carries the row instant as aware
+    UTC ISO, the session, both statuses `unknown`, and `["payload"]` has no
+    `snapshot_provenance` key.
+  - `test_levels_carries_chain_provenance_and_baseline_numerics`: ASGI
+    `GET /api/options/SPY/2026-06-01/levels` carries the object with the row instant and
+    session; `snapshot_timestamp`, `chain_size`, `levels`, `kings`, `gates`, `total_gex`,
+    `regime` equal a baseline captured on `origin/main`.
+  - `test_direct_levels_call_returns_key`: `get_gamma_levels("SPY", "2026-06-01")` returns
+    the key (spec: "Direct and ASGI").
+  Conditional on X1 (written only if the owner approves the chain field; not part of
+  this plan's acceptance):
+  - `test_chain_http_carries_provenance_when_x1_approved`.
 - [ ] Run: `python -m pytest tests/api/test_options_router.py tests/api/test_api_handler_dispatch.py -q`
   (FAIL, then PASS; the dispatch test must stay green: `get_gamma_levels` stays `def`).
-- [ ] Commit: `feat(options): attach snapshot_provenance on chain fill and copy it onto levels`
+- [ ] Commit: `feat(options): retain chain provenance in the cache entry and copy it onto levels; chain shape unchanged`
 
 ## Task 7: levels and chain warm-cache tests
 Spec: § Verification ("the levels 12-hour cache are exercised"). Advances done_when[1].
-- [ ] Write failing tests in `TestChainAndLevelsProvenance`: chain at T0, clock +45 s,
-  chain again → `cached` true, 0 new queries, age +45, `snapshot_ts` fixed,
-  `_CHAIN_CACHE[(ticker, date)]["snapshot_provenance"]` equals T0 values; levels at
-  T0 and T0+45 s → same properties, 0 new queries on the second call (levels has no
-  cache of its own; it rides the chain cache, and the test proves that is still true).
+- [ ] Write failing tests in `TestChainAndLevelsProvenance`. Unconditional:
+  - `test_chain_warm_hit_unchanged_shape_and_zero_queries`: chain at T0, clock +45 s,
+    chain again → `cached` true, 0 new queries, public key set identical, and
+    `_CHAIN_CACHE[(ticker, date)]["provenance"]` equals its T0 values (no mutation).
+  - `test_levels_warm_hit_rides_chain_cache_and_advances_observation`: levels at T0 and
+    at T0+45 s → `observed_at` +45 s, `snapshot_age_seconds` +45, `snapshot_ts` fixed,
+    0 new queries on the second call (levels has no cache of its own; it rides the chain
+    entry), and the cache entry's provenance is unchanged afterwards.
+  Conditional on X1: `test_chain_warm_hit_advances_public_provenance_when_x1_approved`.
 - [ ] Run: `python -m pytest tests/api/test_options_router.py -k warm -q` (FAIL, then PASS).
-- [ ] Commit: `test(options): warm chain and levels hits advance observation only`
+- [ ] Commit: `test(options): warm chain and levels hits keep shape, advance observation only`
 
 ## Task 8: timestamp edge cases through the routes
 Spec: § Design: metadata and clock rules (validation); § Verification
 ("Missing/naive/mixed/future clocks refuse invented ages; equal aware instants agree").
 Advances done_when[2].
 - [ ] Write failing ASGI tests in `tests/api/test_grid_router.py::TestProvenanceEdgeCases`
-  (grid) and `tests/api/test_options_router.py::TestChainAndLevelsProvenance` (levels):
+  (grid) and `tests/api/test_options_router.py::TestChainAndLevelsProvenance` (levels;
+  the chain response carries no object unless X1 is approved, so its edge cases are
+  asserted on the levels response and on the internal cache entry):
   - naive rows (the existing `_chain_df` default): `snapshot_ts is None`, age `None`,
     `reason=="timestamp_invalid"`, while the legacy top-level `snapshot_ts` /
     `snapshot_timestamp` strings are byte-identical to `origin/main` output.
@@ -443,7 +485,7 @@ New or extended, all hermetic, no database, network or provider call:
 
 - `tests/api/test_snapshot_provenance.py` (new): `test_aware_utc_group_is_valid`, `test_equal_instants_in_two_zones_are_valid`, `test_one_naive_among_aware_is_invalid`, `test_all_naive_is_invalid`, `test_none_or_nat_is_invalid`, `test_two_distinct_instants_are_invalid`, `test_future_instant_keeps_timestamp_and_null_age`, `test_sessions_all_realtime`, `test_sessions_all_none`, `test_sessions_mixed_is_none`, `test_with_observation_does_not_mutate_input`, `test_with_observation_advances_age_by_clock_delta`.
 - `tests/api/test_grid_router.py`: `TestSnapshotProvenanceSchema::test_null_provenance_is_emitted_when_present`; `TestLoaderEvidence::test_live_loader_returns_group_evidence`, `::test_historical_loader_returns_group_evidence`; `TestGridLive::test_cold_realtime_fixture_carries_provenance`, `::test_eod_fallback_with_null_sessions_keeps_market_session_none`, `::test_unavailable_envelope_carries_null_provenance_and_unchanged_keys`, `::test_compatibility_numerics_equal_baseline`, `::test_warm_hit_advances_observation_not_source`, `::test_concurrent_warm_readers_keep_own_observation`; `TestGridHistorical::test_dated_grid_carries_provenance`, `::test_warm_hit_advances_observation_not_source`; `TestProvenanceEdgeCases::test_naive_rows_are_timestamp_invalid`, `::test_mixed_rows_are_timestamp_invalid`, `::test_two_instants_are_timestamp_invalid`, `::test_equal_instants_two_zones_valid`, `::test_future_then_aged`, `::test_nat_row_is_timestamp_invalid`.
-- `tests/api/test_options_router.py`: `TestChainAndLevelsProvenance::test_chain_carries_provenance_and_cached_flag`, `::test_levels_carries_chain_provenance_and_baseline_numerics`, `::test_direct_levels_call_returns_key`, `::test_chain_warm_hit_advances_observation_only`, `::test_levels_warm_hit_rides_chain_cache`, `::test_levels_naive_rows_are_timestamp_invalid`.
+- `tests/api/test_options_router.py`: `TestChainAndLevelsProvenance::test_chain_http_shape_unchanged_no_provenance_key`, `::test_chain_cache_entry_retains_provenance_internally`, `::test_levels_carries_chain_provenance_and_baseline_numerics`, `::test_direct_levels_call_returns_key`, `::test_chain_warm_hit_unchanged_shape_and_zero_queries`, `::test_levels_warm_hit_rides_chain_cache_and_advances_observation`, `::test_levels_naive_rows_are_timestamp_invalid`. Conditional on X1 only, not part of this plan's acceptance: `::test_chain_http_carries_provenance_when_x1_approved`, `::test_chain_warm_hit_advances_public_provenance_when_x1_approved`.
 - Existing, must stay green unchanged: `tests/api/test_api_handler_dispatch.py::test_gamma_levels_and_its_chain_loader_agree`, every pre-existing test in both router files, `tests/api/test_openapi_snapshot.py::test_committed_openapi_snapshot_matches_app` after Task 9.
 - Cross-repo (solyra, Task 10): `tests/options/snapshot-provenance.spec.ts` hermetic run with screenshots; `tests/options/snapshot-provenance.cloud.spec.ts` is the owner's post-deploy close-out, not a pre-merge box.
 
@@ -467,10 +509,10 @@ implementation"); § Done when. Closes the records every done_when item depends 
   (test ids from Tasks 1-9, the solyra run from Task 10, the OIDs from Task 11);
   Capacity section from above; the Task 9 diff hunks; the Task 12 measurements. Open
   as draft, then set `pr:` here in the next commit.
-- [ ] Gate before marking ready: the Q/API owner's written compatibility confirmation
-  (section "Shared boundaries with the guarded-API contract", items a to c) is posted on
-  this PR or #1528 and linked here; the A8 binding (Task 11) is supplied; the solyra
-  paired evidence (Task 10) is posted. None of the three is assumed.
+- [ ] Gate before marking ready: Task 0's confirmation link is present (it was required
+  before the first code commit, so here it is only re-checked); the A8 binding (Task 11)
+  is supplied with the actual paths and hashes compared on HEAD; the solyra paired evidence
+  (Task 10) is posted. None of the three is assumed.
 - [ ] Rule 2.5: wait for Codex's first review, post the first-review comment per
   review type, resolve every thread, two review rounds at most, then merge. After the
   merge, on a `docs/<slug>` branch, set this plan's `status: done`.
