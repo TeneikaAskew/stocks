@@ -5188,7 +5188,7 @@ if mode=='prefork':
 UNREGISTERED=('unregistered','unregistered-unknown','unregistered-table-unreadable','unregistered-grandchild','unregistered-unidentified',
               'unregistered-broken-stderr','unregistered-late','unregistered-signal-refused','unregistered-unidentified-receipt',
               'unregistered-identity-unreadable','unregistered-late-grandchild',
-              'unregistered-identity-unreadable-grandchild')
+              'unregistered-identity-unreadable-grandchild','unregistered-signal-refused-grandchild')
 real_pidfd_send_signal=signal.pidfd_send_signal
 real_process_start=m.process_start
 signals=[]
@@ -5197,7 +5197,8 @@ if mode in UNREGISTERED:
     def interrupted(*a,**kw):
         spawned.append(real_popen(*a,**kw))
         until=time.monotonic()+5
-        while mode in('unregistered-grandchild','unregistered-late-grandchild','unregistered-identity-unreadable-grandchild') and time.monotonic()<until and not any(os.path.exists(os.path.join(outer,n,'ready')) for n in os.listdir(outer)):
+        while mode in('unregistered-grandchild','unregistered-late-grandchild','unregistered-identity-unreadable-grandchild',
+                      'unregistered-signal-refused-grandchild') and time.monotonic()<until and not any(os.path.exists(os.path.join(outer,n,'ready')) for n in os.listdir(outer)):
             time.sleep(.01)
         # The child replaces its root's receipt with a directory, so the monitor's next receipt write fails.
         while mode=='unregistered-unidentified-receipt' and time.monotonic()<until and not any(os.path.isdir(os.path.join(outer,n,'CREATED-BY')) for n in os.listdir(outer)):
@@ -5208,6 +5209,16 @@ if mode in UNREGISTERED:
         if mode=='unregistered-signal-refused':
             def refused(fd,sig,*a):raise PermissionError(1,'Operation not permitted')
             m.signal.pidfd_send_signal=refused
+        if mode=='unregistered-signal-refused-grandchild':
+            # Only the spawned child's signal is refused; any other signal is sent and counted. Each PIDfd is mapped to
+            # the PID it was opened for, so the refusal follows the child's identity, not a descriptor number.
+            child,opened=spawned[-1].pid,{}
+            def mapped(pid,*a):
+                fd=real_pidfd_open(pid,*a);opened[fd]=pid;return fd
+            def refuse_child(fd,sig,*a):
+                if opened.get(fd)==child:raise PermissionError(1,'Operation not permitted')
+                signals.append(sig);return real_pidfd_send_signal(fd,sig,*a)
+            m.os.pidfd_open=mapped;m.signal.pidfd_send_signal=refuse_child
         if mode in('unregistered-identity-unreadable','unregistered-identity-unreadable-grandchild'):
             # The PIDfd opens, then the child's start time cannot be read; every signal sent is counted.
             child=spawned[-1].pid
@@ -5227,15 +5238,19 @@ if mode=='unregistered-unknown':
 real_process_table=m.process_table
 if mode=='unregistered-table-unreadable':
     # Every read succeeds except the first one after the monitor's own_children() has listed the children: the kill
-    # pass's descendant snapshot. The relist after the pass reads the real table again.
-    armed=[]
+    # pass's descendant snapshot. The relist after the pass reads the real table again. Whether the failing read was
+    # that direct snapshot or one inside an own_children() listing, and how many listings ran, are recorded, so a
+    # monitor without the snapshot (its next read is the relist) is told apart (QUAL7 R4 F2).
+    armed,inside,listings=[],[],[]
     def listing():
-        children=real_own_children()
+        listings.append(1);inside.append(1)
+        try:children=real_own_children()
+        finally:inside.pop()
         if not armed:armed.append('listed')
         return children
     def fails_after_listing():
         if armed==['listed']:
-            armed.append('failed');raise OSError('process table unreadable')
+            armed.append('failed in a listing' if inside else 'failed directly');raise OSError('process table unreadable')
         return real_process_table()
     m.own_children=listing;m.process_table=fails_after_listing
 notice=io.StringIO();real_stderr=sys.stderr
@@ -5310,6 +5325,8 @@ finally:
     sys.stderr=real_stderr
 r['ops']=ops
 r['signals']=signals
+if mode=='unregistered-table-unreadable':
+    r['table_failure'],r['listings']=armed[1:],len(listings)
 r['notice']=notice.getvalue()
 r['victim_after']=sorted(os.listdir(victim)) if victim and os.path.isdir(victim) else None
 r['measured_elapsed']=time.monotonic()-started
@@ -5319,9 +5336,10 @@ r['receipts']=[[json.loads(line) for line in open(os.path.join(x,'CREATED-BY'))]
 v=ctypes.c_int();ctypes.CDLL(None).prctl(37,ctypes.byref(v),0,0,0);r['subreaper_after']=v.value
 # What is alive is read here, at assertion time, before this launcher's own cleanup below.
 r['children_at_assertion']=m.own_children()
-# Each listed child's state ('Z' once killed); a signalled child is given up to 2 s to stop running.
+# Each listed child's state ('Z' once killed); a signalled child is given up to 2 s to stop running. Read only in the
+# mode whose assertion uses it, so no other mode waits on a child it never signals (QUAL7 R2 P2).
 r['states_at_assertion']={}
-for c in r['children_at_assertion']:
+for c in (r['children_at_assertion'] if mode=='unregistered-late-grandchild' else []):
     until=time.monotonic()+2
     while True:
         try:state=open(f"/proc/{c['pid']}/stat",'rb').read().rsplit(b')',1)[1].split()[0].decode()
@@ -5329,7 +5347,7 @@ for c in r['children_at_assertion']:
         if state in('Z','X','gone') or time.monotonic()>=until:break
         time.sleep(.01)
     r['states_at_assertion'][str(c['pid'])]=state
-if mode=='unregistered-identity-unreadable-grandchild':
+if mode in('unregistered-identity-unreadable-grandchild','unregistered-signal-refused-grandchild'):
     # The grandchild named its own PID; its parent, the spawned child, is alive and never waits, so the PID stays
     # held until that child is killed below. Its state is read here, given up to .5 s to show a delivered SIGKILL.
     gpid=int([open(os.path.join(outer,n,'ready')).read() for n in os.listdir(outer) if os.path.isfile(os.path.join(outer,n,'ready'))][0])
@@ -5352,9 +5370,9 @@ for events in r['receipts']:
         for c in e.get('remaining',[]):
             if c['pid'] not in [p.pid for p in spawned]:
                 os.kill(c['pid'],signal.SIGKILL);os.waitpid(c['pid'],0)
-# The killed grandchild of the identity-unverified child is adopted by this launcher once that child is reaped above;
+# The killed grandchild of the identity-unverified (or signal-refused) child is adopted by this launcher once that child is reaped above;
 # it is then this launcher's own unreaped child, so its PID cannot be recycled before this waitpid.
-if mode=='unregistered-identity-unreadable-grandchild' and gpid in [c['pid'] for c in m.own_children()]:
+if mode in('unregistered-identity-unreadable-grandchild','unregistered-signal-refused-grandchild') and gpid in [c['pid'] for c in m.own_children()]:
     os.waitpid(gpid,0)
 r['children_after_cleanup']=m.own_children()
 print(json.dumps(r))
@@ -5386,6 +5404,8 @@ def scratch_measurement(tmp_path, mode, seconds=1):
               'unregistered-identity-unreadable': 'time.sleep(20)',
               'unregistered-identity-unreadable-grandchild': "import subprocess;subprocess.Popen([sys.executable,'-c','import os,time;os.setsid();"
                                                               "open(os.path.join(os.environ[\\'TMPDIR\\'],\\'ready\\'),\\'w\\').write(str(os.getpid()));time.sleep(20)']);time.sleep(20)",
+              'unregistered-signal-refused-grandchild': "import subprocess;subprocess.Popen([sys.executable,'-c','import os,time;os.setsid();"
+                                                         "open(os.path.join(os.environ[\\'TMPDIR\\'],\\'ready\\'),\\'w\\').write(str(os.getpid()));time.sleep(20)']);time.sleep(20)",
               'unregistered-unidentified-receipt': "os.unlink(os.path.join(root,'CREATED-BY'));os.mkdir(os.path.join(root,'CREATED-BY'));time.sleep(20)",
               'subdir-swap': f"os.mkdir({str(victim)!r});open(os.path.join({str(victim)!r},'keep.txt'),'w').write('keep');"
                              "os.mkdir(os.path.join(root,'sub'));open(os.path.join(root,'sub','a'),'w').write('a')",
@@ -5512,6 +5532,15 @@ def test_measure_inventory_render_signals_and_names_every_unregistered_child(tmp
     assert len(kept) == 1 and f"retained {outer / kept[0]} (spawn_not_registered)" in report['notice'], report
     assert f"child {pid} not proven killed: signal refused" in report['notice'], report
     assert report['children_after_cleanup'] == [], report
+    # Ownership negative control: a child whose signal alone is refused, with a live grandchild in its own session.
+    # A refused child is not a signalled one, so its subtree is never examined: no signal at all is sent, and the
+    # grandchild is still running (QUAL7 R4 F1).
+    report, _, outer, _ = scratch_measurement(tmp_path, 'unregistered-signal-refused-grandchild', seconds=2)
+    pid = report['spawned']['pid']
+    assert report['raised'] == 'KeyboardInterrupt' and report['spawned']['alive'] and report['signals'] == [], report
+    assert report['grandchild_at_assertion']['state'] not in ('Z', 'X', 'gone'), report   # not signalled
+    assert f"child {pid} not proven killed: signal refused" in report['notice'], report
+    assert report['children_after_cleanup'] == [], report
     # A start time that cannot be read after the PIDfd opens is an unverified identity: no signal is sent, the child
     # is left alive, the root kept, and the reason says so rather than "signal refused" (QUAL4 R1 F2).
     report, _, outer, _ = scratch_measurement(tmp_path, 'unregistered-identity-unreadable', seconds=2)
@@ -5560,12 +5589,16 @@ except OSError as e:
     r['fifo']=str(e)
 t={10:(100,1),11:(110,10),12:(120,11),13:(90,10),20:(200,1),21:(210,20),30:(300,1),31:(310,30)}
 r['owned_children']=m.owned_children([{'pid':10,'start_ticks':100},{'pid':20,'start_ticks':150}],t)
-# kill_descendants against fake PIDfds: `now` is each PID's current start ticks, `sent` the PIDs signalled.
-fds,sent={},[]
+# kill_descendants against fake PIDfds: `now` is each PID's current start ticks, `sent` the PIDs signalled, and a
+# signal to a PID in `refuse` raises as the kernel's refusal does.
+fds,sent,refuse={},[],set()
 def fake_open(pid):fd=os.open(os.devnull,os.O_RDONLY);fds[fd]=pid;return fd
-m.os.pidfd_open=fake_open;m.signal.pidfd_send_signal=lambda fd,sig:sent.append(fds[fd])
-for name,now in (('verified',{11:110,12:130}),('reused',{11:120,12:130})):
-    sent.clear();outcomes={}
+def fake_send(fd,sig):
+    if fds[fd] in refuse:raise PermissionError(1,'Operation not permitted')
+    sent.append(fds[fd])
+m.os.pidfd_open=fake_open;m.signal.pidfd_send_signal=fake_send
+for name,now,refused in (('verified',{11:110,12:130},()),('reused',{11:120,12:130},()),('refused',{11:110,12:130},(11,))):
+    sent.clear();outcomes={};refuse.clear();refuse.update(refused)
     m.process_start=lambda pid:now[pid]
     m.kill_descendants([{'pid':10,'start_ticks':100}],{10:(100,1),11:(110,10),12:(130,11)},time.monotonic()+1,outcomes)
     r[name]={'sent':list(sent),'outcomes':{str(k):v for k,v in outcomes.items()}}
@@ -5596,6 +5629,9 @@ def test_measure_inventory_render_kills_only_the_listed_identity_and_writes_only
     assert seen['verified'] == {'sent': [11, 12], 'outcomes': {'11': 'signalled, not reaped by the deadline',
                                                                '12': 'signalled, not reaped by the deadline'}}, seen
     assert seen['reused'] == {'sent': [], 'outcomes': {'11': 'identity unverified'}}, seen
+    # With 11 verified but its signal refused, 11 is not signalled, so 12, listed as its child, is never examined
+    # either, although 12's own start ticks still match (QUAL7 R4 F1).
+    assert seen['refused'] == {'sent': [], 'outcomes': {'11': 'signal refused'}}, seen
 
 
 def test_measure_inventory_render_keeps_and_attributes_a_root_whose_rmdir_fails(tmp_path):
@@ -5702,6 +5738,9 @@ def test_measure_inventory_render_scratch_spawn_failure_retention(tmp_path):
     assert len(kept) == 1 and kept[0].startswith('measure-render-'), report
     assert f"retained {outer / kept[0]} (spawn_children_unknown): OSError: process table unreadable" in report['notice'], report
     assert report['children_after_cleanup'] == [], report
+    # The failing read is the kill pass's own snapshot, not the relist: one listing ran, and the failure propagated
+    # before any relist (QUAL7 R4 F2).
+    assert report['table_failure'] == ['failed directly'] and report['listings'] == 1, report
 
 
 def test_measure_inventory_render_bounds_public_output_delivery(tmp_path):
