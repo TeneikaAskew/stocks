@@ -20,8 +20,8 @@ section, the watchlist UI, and the weekly long-side watchlist job.
 CLAUDE.md's "`lib/` is the shared backend spine" says every consumer should read this one
 implementation. **One does not.** The daily `earnings_upcoming_with_history` rebuild in
 `gcp/refresh_earnings_views.py` — the table `platform/api/routers/earnings.py:122` serves to
-the watchlist UI — derives its archetype through its own `_derive_archetype` (`:312-336`,
-called at `:245`) rather than `classify_archetype`. The two agree on the numeric cut-points
+the watchlist UI — derives its archetype through its own `_derive_archetype` (`:302-326`,
+called at `:241`) rather than `classify_archetype`. The two agree on the numeric cut-points
 but not on missing data:
 
 | Input state | `classify_archetype` (`lib/earnings_reactions.py`) | `_derive_archetype` (`gcp/refresh_earnings_views.py`) |
@@ -138,12 +138,12 @@ argument. So the two production consumers behave differently:
 | Consumer | Passes `long_only`? | What it publishes |
 |---|---|---|
 | The premarket brief | no — falls through to the env var | long straddle / call / put, and `SKIP` above a 15% implied move. Never `IC` |
-| `gcp/refresh_earnings_views.py:247-255` | **yes, both ways**, under a comment reading `# BOTH recommendation modes` | both `recommended_structure_long_only` and `recommended_structure_ic_mode` |
+| `gcp/refresh_earnings_views.py:257-266` | **no longer calls it** (EarningsWhispers retirement, #1681) | both `recommended_structure_long_only` and `recommended_structure_ic_mode` as NULL for every row: their score input came only from the retired EW source |
 
-`/api/earnings/upcoming` serves the whole row (`SELECT *`, `platform/api/routers/earnings.py:120-130`),
-its own docstring saying "**BOTH** recommendation modes (long-only + IC)". **So the watchlist
-can show `IC`** for a Q5 event whose calibration clears the overpricing thresholds, while the
-brief for the same event cannot — the env var never applies there.
+`/api/earnings/upcoming` serves the whole row (`SELECT *`, `platform/api/routers/earnings.py:120-130`).
+Until #1681 the refresh published both modes, so the watchlist could show `IC` where the brief
+could not. Since the EarningsWhispers retirement both columns are NULL, so the watchlist shows
+no recommendation and only the brief applies `RECOMMEND_LONG_ONLY`.
 
 Two earlier revisions were wrong in opposite directions: the first listed the knobs without
 this one at all, and the second said "production never returns the default iron condor", which
@@ -245,9 +245,9 @@ docstring; recorded as DOC-19 in
 `test_brief_two_track_redesign.py` · `tests/gcp/test_compute_earnings_reactions.py` ·
 `test_earnings_reactions_brief.py` · `tests/scripts/test_calibrate_earnings.py`
 
-**`gcp/refresh_earnings_views.py`, also on the Code line, is imported by no test.** Its only
-appearance under `tests/` is a docstring mention in
-`tests/gcp/test_earnings_upcoming_numeric_overflow.py`, which is not coverage of it. DOC-44.
+**`gcp/refresh_earnings_views.py`, also on the Code line,** is imported by two tests added
+with the EarningsWhispers retirement (#1681): `tests/gcp/test_refresh_earnings_views_sources.py`
+and `tests/gcp/test_refresh_earnings_views_retired_score.py`; an API test of the upcoming route rides with them. DOC-44.
 
 ## Known issues
 

@@ -113,8 +113,8 @@ def upcoming(
     """Next N days of earnings reporters, decorated with full history.
 
     Reads earnings_upcoming_with_history (refreshed daily 7:30am ET).
-    Each row carries: archetype, confidence_label, BOTH recommendation
-    modes (long-only + IC), lean stats, and last_3_events JSONB.
+    Each row carries archetype, lean stats and last_3_events JSONB; score,
+    quintile, confidence and both recommendation modes are null (EW retired).
     """
     _set_cache(response, 300)  # 5 min
     df = _query_or_503(

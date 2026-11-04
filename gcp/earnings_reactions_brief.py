@@ -262,6 +262,7 @@ def load_calendar_reporters(target_date: date) -> list[dict]:
     Raises on DB error -- no silent empty fallback (CLAUDE.md 3.7).
     """
     from gcp.database import is_cloud_sql_configured, query_to_dataframe
+    from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
 
     if not is_cloud_sql_configured():
         raise RuntimeError(
@@ -274,7 +275,8 @@ def load_calendar_reporters(target_date: date) -> list[dict]:
     # rolled-up flags. NULL options_volume / open_interest fail the
     # strict > comparison, so foreign/OTC names (UW leaves these NULL)
     # drop naturally -- no COALESCE(_, 0) needed (and CLAUDE.md 3.7
-    # forbids it on financial fields anyway).
+    # forbids it on financial fields anyway). Retired EarningsWhispers rows
+    # are excluded inside the rollup, so they cannot win its MAX/BOOL_OR.
     filter_clause = "" if include_unconfirmed else """
          WHERE has_av = TRUE
            AND has_uw = TRUE
@@ -292,6 +294,7 @@ def load_calendar_reporters(target_date: date) -> list[dict]:
                    BOOL_OR(data_source = 'unusual_whales') AS has_uw
               FROM earnings_calendar
              WHERE earnings_date = :d
+               AND {EARNINGS_NOT_RETIRED_SQL}
              GROUP BY ticker
         )
         SELECT ticker, company_name, earnings_time
