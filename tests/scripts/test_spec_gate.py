@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import ast
 import datetime
+import hashlib
 import importlib.util
 import types
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -210,8 +212,11 @@ def gate(repo: Path, *args: str, **env: str) -> subprocess.CompletedProcess:
     # Only what the hook and the workflow pass in: nothing leaks from the shell running pytest.
     # (stocks#1205 r4122021112: PYTEST_CURRENT_TEST would tell a gate it is under test)
     inherited = {k: v for k, v in os.environ.items() if not k.startswith(("PR_", "SPEC_GATE_", "GIT_", "PYTEST_"))}
-    return subprocess.run([sys.executable, "scripts/gate/spec_gate.py", *args], cwd=repo,
+    capacity_bridge_before_dispatch(args, env)   # capacity bridge: oracle and pair guard, a no-op outside its eight functions
+    result = subprocess.run([sys.executable, "scripts/gate/spec_gate.py", *args], cwd=repo,
                           env={**inherited, **env}, capture_output=True, text=True)
+    capacity_bridge_after_dispatch(result)
+    return result
 
 
 def cells(line: str) -> list[str]:
@@ -251,6 +256,8 @@ def pr(repo: Path, branch: str, files: dict[str, str | None], then=None, **env: 
         then(repo)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", f"change on {branch}")
+    if _CAPACITY_BRIDGE["active"] is not None:   # capacity bridge: the caller vector this case dispatches
+        _CAPACITY_BRIDGE["vector"] = capacity_bridge_vector(branch, files)
     # (stocks#1205 r4127577496: Actions passes two 40-character shas, so the suite does too)
     base, head = base_and_head(repo)
     return gate(repo, "--pr", base, head, **{"PR_HEAD_REF": branch, **env})
@@ -1294,6 +1301,244 @@ def test_a_ticked_done_when_item_may_not_defer_its_work(repo):
         assert r.returncode == 1 and "defers its work" in r.stdout, (phrase, r.stdout)
 
 
+# ---------------------------------------------------------------------------------------------
+# Capacity fixture bridge (docs/superpowers/specs/2026-10-13-feat-cicd-001-capacity-fixture-bridge.md).
+#
+# The eight capacity-bearing functions below keep their historical `$/run × runs/day × 30:` or bare
+# `30:` carrier and carry an explicit same-value `Cost:` after it on the same line, so the separately
+# approved strict Cost parser can later pass this unchanged suite. The gate under test is byte-identical
+# to main: nothing here reads the gate's labels or verdicts. CAPACITY_BRIDGE_ORACLE is a capture of
+# every original case those functions dispatched through the real CLI on the BASE below, before any
+# fixture changed. For each dispatched case the guard in gate() compares the actual caller vector and
+# the PR body (after reversing only the Cost addition) with that oracle BEFORE the subprocess, and the
+# verdict after it; the per-function finalizer proves the whole original sequence ran, in order, once.
+# Normalised: the two 40-hex `--pr` operands, and the suite's TODAY (the generated catalog-review date)
+# inside fixture files, bodies and reason lines (counts recorded for files and bodies). Nothing else is
+# normalised or sorted.
+class CapacityFixtureEquivalenceError(AssertionError):
+    """A bridged capacity case differs from its BASE oracle, or its carriers are not a same-value pair."""
+
+
+CAPACITY_BRIDGE_BASE = {
+    "main": "1fb97576cd41d9ac601888f9507cd77375922a31",
+    "suite_blob": "d486f304cdb2caec316f2f1a5900b6dba35613f1",
+    "gate_blob": "ffb1ada8efef5777e1248241bd38b68ffaa2d23a",
+    "captured": "2026-11-04",
+}
+# A legacy cost carrier: the full formula label or a bare `30:` that is not part of another token.
+# Its value runs to the Cost carrier on the same line, the end of the line or the end of the body.
+CAPACITY_BRIDGE_LEGACY = re.compile(r"(\$/run \u00d7 runs/day \u00d7 30|(?<![\w$#:])30):([^\n]*?)(?= \u00b7 Cost:|\n|$)")
+CAPACITY_BRIDGE_COST_PREFIX = " \u00b7 Cost:"
+# The only diagnostic compatibility the spec allows: the final cost label of a capacity message spelt
+# `Cost` instead of `30`, which is what the strict Cost gate prints for the same case.
+CAPACITY_BRIDGE_LABEL_ALTERNATIVES = ((", 30 blank", ", Cost blank"), (", 30;", ", Cost;"))
+_CAPACITY_BRIDGE = {"active": None, "seq": 0, "dispatched": 0, "vector": None}
+
+
+def capacity_bridge_today_hash(text: str) -> tuple[str, int]:
+    """sha256 of `text` with the suite's TODAY replaced by `{TODAY}`, and how many fields that was."""
+    return hashlib.sha256(text.replace(TODAY, "{TODAY}").encode("utf-8")).hexdigest(), text.count(TODAY)
+
+
+def capacity_bridge_vector(branch: str, files: dict[str, str | None]) -> tuple[tuple[str, ...], str]:
+    """The caller vector of a pr() case: its paths and one identity over branch, paths and contents."""
+    rows = []
+    for name in sorted(files):
+        text = files[name]
+        if text is None:
+            rows.append(f"{name}\t-\t0")
+        else:
+            digest, today = capacity_bridge_today_hash(text)
+            rows.append(f"{name}\t{digest}\t{today}")
+    return tuple(sorted(files)), hashlib.sha256((branch + "\n" + "\n".join(rows)).encode("utf-8")).hexdigest()
+
+
+def capacity_bridge_split(body: str | None) -> tuple[str | None, tuple[str, ...]]:
+    """(the body with every Cost carrier removed, the legacy carrier values in order).
+
+    Refuses, before any gate subprocess, a legacy carrier without its Cost carrier immediately after
+    it, a Cost carrier whose value differs from the legacy value, a second Cost carrier on the line,
+    and a Cost carrier that no legacy carrier precedes. A missing legacy carrier stays missing: the
+    bridge adds no helpful default."""
+    if body is None:
+        return None, ()
+    legacy, pieces, pos = [], [], 0
+    for m in CAPACITY_BRIDGE_LEGACY.finditer(body):
+        value, end = m.group(2).strip(), m.end()
+        if not body.startswith(CAPACITY_BRIDGE_COST_PREFIX, end):
+            raise CapacityFixtureEquivalenceError(f"legacy carrier {m.group(0).strip()!r} has no Cost carrier immediately after it")
+        stop = body.find("\n", end)
+        stop = len(body) if stop < 0 else stop
+        cost = body[end + len(CAPACITY_BRIDGE_COST_PREFIX):stop].strip()
+        if cost != value:
+            raise CapacityFixtureEquivalenceError(f"Cost carrier {cost!r} differs from legacy carrier value {value!r}")
+        legacy.append(value)
+        pieces.append(body[pos:end])
+        pos = stop
+    pieces.append(body[pos:])
+    reversed_body = "".join(pieces)
+    if re.search(r"\bCost:", reversed_body):
+        raise CapacityFixtureEquivalenceError("a Cost carrier stands without a legacy carrier before it on its line")
+    return reversed_body, tuple(legacy)
+
+
+def capacity_bridge_activate(name: str | None) -> None:
+    _CAPACITY_BRIDGE.update(active=name, seq=0, vector=None)
+
+
+def capacity_bridge_consumed() -> tuple[int, int]:
+    """(cases dispatched so far, cases the BASE oracle holds) for the active function."""
+    return _CAPACITY_BRIDGE["seq"], len(CAPACITY_BRIDGE_ORACLE[_CAPACITY_BRIDGE["active"]])
+
+
+def capacity_bridge_before_dispatch(args: tuple[str, ...], env: dict[str, str]) -> None:
+    """Compare the case about to be dispatched with the next BASE oracle case; raise before the gate runs."""
+    name = _CAPACITY_BRIDGE["active"]
+    if name is None:
+        return
+    vector, _CAPACITY_BRIDGE["vector"] = _CAPACITY_BRIDGE["vector"], None
+    cases, k = CAPACITY_BRIDGE_ORACLE[name], _CAPACITY_BRIDGE["seq"]
+    if k >= len(cases):
+        raise CapacityFixtureEquivalenceError(f"{name}: case {k + 1} is beyond the {len(cases)} BASE cases")
+    shape = tuple("SHA" if re.fullmatch(r"[0-9a-f]{40}", a) else a for a in args)
+    if shape != ("--pr", "SHA", "SHA"):
+        raise CapacityFixtureEquivalenceError(f"{name} case {k + 1}: unexpected gate arguments {shape!r}")
+    reversed_body, carriers = capacity_bridge_split(env.get("PR_BODY"))
+    digest, today = (None, 0) if reversed_body is None else capacity_bridge_today_hash(reversed_body)
+    actual = (tuple(sorted((key, value) for key, value in env.items() if key != "PR_BODY")),
+              None if vector is None else vector[0], None if vector is None else vector[1], digest, today, carriers)
+    expected = cases[k][:6]
+    if actual != expected:
+        fields = ("env", "files", "files identity", "body identity", "body date fields", "legacy carriers")
+        diff = "; ".join(f"{f}: {a!r} != BASE {e!r}" for f, a, e in zip(fields, actual, expected) if a != e)
+        raise CapacityFixtureEquivalenceError(f"{name} case {k + 1} differs from the BASE oracle: {diff}")
+    _CAPACITY_BRIDGE["seq"] = k + 1
+
+
+def capacity_bridge_reasons(stdout: str) -> tuple[str, ...]:
+    """The gate's reason lines, with the suite's TODAY (a generated catalog-review date) as `{TODAY}`."""
+    return tuple(line.replace(TODAY, "{TODAY}") for line in stdout.splitlines() if line.startswith(" - "))
+
+
+def capacity_bridge_alternative(line: str) -> str:
+    for old, new in CAPACITY_BRIDGE_LABEL_ALTERNATIVES:
+        if old in line:
+            return line.replace(old, new, 1)
+    return line
+
+
+def capacity_bridge_after_dispatch(result: subprocess.CompletedProcess) -> None:
+    """The dispatched case keeps its BASE verdict: returncode and reasons, the cost label spelt either way."""
+    name = _CAPACITY_BRIDGE["active"]
+    if name is None:
+        return
+    _CAPACITY_BRIDGE["dispatched"] += 1
+    expected = CAPACITY_BRIDGE_ORACLE[name][_CAPACITY_BRIDGE["seq"] - 1]
+    reasons = capacity_bridge_reasons(result.stdout)
+    alternative = tuple(capacity_bridge_alternative(line) for line in expected[7])
+    if result.returncode != expected[6] or reasons not in (expected[7], alternative):
+        raise CapacityFixtureEquivalenceError(f"{name} case {_CAPACITY_BRIDGE['seq']}: verdict {result.returncode} "
+                                              f"{reasons!r} differs from BASE {expected[6]} {expected[7]!r}")
+
+
+CAPACITY_BRIDGE_FUNCTIONS = (
+    "test_a_workload_change_carries_its_capacity_numbers",
+    "test_the_pr_body_contract_is_read_as_rendered_in_every_form",
+    "test_capacity_values_are_numbers",
+    "test_contract_commands_run_and_policy_documents_keep_their_ids",
+    "test_lockfiles_twin_workflows_pins_at_step_one_and_ownership_are_the_contract",
+    "test_html_blocks_in_bodies_registry_prose_and_catalog_columns_are_the_contract",
+    "test_indented_headings_and_less_indented_fence_closers_render_as_gfm_renders_them",
+    "test_truthy_calls_decorators_yaml_skill_names_canvas_fields_manifest_scripts_and_rendered_status",
+)
+CAPACITY_BRIDGE_CASES = 155   # gate invocations the eight functions made on BASE, captured once
+
+
+def capacity_bridge_dispatched() -> int:
+    return _CAPACITY_BRIDGE["dispatched"]
+
+
+def capacity_bridge_refused(repo: Path, name: str, originals: tuple[str, ...], files: dict[str, str | None],
+                            title: dict[str, str], stage: int, text: str, mutated_files: dict[str, str | None] | None = None) -> str:
+    """Replay the valid cases before `stage`, then dispatch `text` there: refused, zero subprocesses."""
+    capacity_bridge_activate(name)
+    for original in originals[:stage - 1]:
+        pr(repo, BRANCH, files, **title, PR_BODY=original)
+    before = capacity_bridge_dispatched()
+    with pytest.raises(CapacityFixtureEquivalenceError) as info:
+        pr(repo, BRANCH, files if mutated_files is None else mutated_files, **title, PR_BODY=text)
+    assert capacity_bridge_dispatched() == before, "a refused case reached the gate subprocess"
+    return str(info.value)
+
+
+@pytest.fixture(autouse=True)
+def capacity_bridge_guard(request):
+    """Per-function finalizer for the eight bridged functions: every BASE case dispatched, in order, once."""
+    name = getattr(request.node, "originalname", None) or request.node.name
+    if name not in CAPACITY_BRIDGE_ORACLE:
+        yield
+        return
+    capacity_bridge_activate(name)
+    try:
+        yield
+        consumed, expected = capacity_bridge_consumed()
+    finally:
+        capacity_bridge_activate(None)
+    assert consumed == expected, f"{name} dispatched {consumed} of its {expected} BASE cases"
+
+
+# One tuple per original case, in dispatch order:
+# (env name/value pairs except PR_BODY, sorted; files; files identity; body identity; body date fields;
+#  legacy carrier values; returncode; reason lines). `files` and its identity are None for the one case
+# that calls gate() directly; body identity is None when no PR_BODY was passed.
+CAPACITY_BRIDGE_ORACLE = {
+    'test_a_workload_change_carries_its_capacity_numbers': (
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/model_job.py', 'lib/model.py'), 'e565c81ec3816cbb67851dcc222bd81d56195520288d51e887be66be594b0286', '9feb9bb8df1239244c2a6d234be7e2fa623ba0fc1f1a5321ddd051deefc2d957', 0, ('',), 1, (" - PR body's Capacity section leaves Volume, Velocity, Wall-clock, 30 blank; give the numbers, or write 'n/a: <why no workload runs differently>'",)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/model_job.py', 'lib/model.py'), 'e565c81ec3816cbb67851dcc222bd81d56195520288d51e887be66be594b0286', '3aebeed7c12b17af436a7037ad1c39d973bea27239738d6f75bc0c99cd8c6b92', 0, (), 1, (' - PR body needs a Capacity section: the change touches a workload (gcp/model_job.py)',)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/model_job.py', 'lib/model.py'), 'e565c81ec3816cbb67851dcc222bd81d56195520288d51e887be66be594b0286', '68c3ab6ed24ddffdaf3263ebaa9794931a8dacd4cb2b7e12fe59298a7508623a', 0, ('$0.01',), 0, ()),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/model_job.py', 'lib/model.py'), 'e565c81ec3816cbb67851dcc222bd81d56195520288d51e887be66be594b0286', '4d87c40543d67f8e5788b7d4b538be65cfdd1b224f7334d1407a03cbc2ee01b0', 0, (), 0, ()),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/model_job.py', 'lib/model.py'), 'e565c81ec3816cbb67851dcc222bd81d56195520288d51e887be66be594b0286', '5497d7231aafde6c0adb3eb47386a9f89dc72dfaa00db3b03fc86175b00fa3a5', 0, ('$0.01',), 0, ()),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('lib/model.py',), '41fb63ef08e25e0fbcd324a1d943f84230530ce2fd2189cce8e3ecbf4584b5f0', '3aebeed7c12b17af436a7037ad1c39d973bea27239738d6f75bc0c99cd8c6b92', 0, (), 0, ()),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '8eddc3b691aaec2af763ffa59aed715ebe2f7e331ed0ac413ed8ef6136413d26', 'de4cddb51d1b15d964d8d10d4c9d8cbb9f715e6d2034231f21e268e2b0096882', 0, (), 1, (' - PR body needs a Capacity section: the change touches a workload (.github/workflows/spec-gate.yml)',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '8eddc3b691aaec2af763ffa59aed715ebe2f7e331ed0ac413ed8ef6136413d26', '7b00fd25bf9f3f04d9f330b1507609699eeabf86da6db096e1e24c33e5b95b71', 0, (), 0, ()),
+        ((('PR_HEAD_REF', 'docs/cleanup'),), ('docs/product/02-FEATURE-CATALOG.md',), '62b8cba8320a0c93e904898fc4ff7629dd1e17a7e888cb1a251281950859d32a', None, 0, (), 1, (" - docs/product/02-FEATURE-CATALOG.md: the gate's entrypoints and policy documents cannot be removed by a change; retiring the gate is a decision taken on main, not in a branch",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '517912437c881f6f8131f218722b2a3e6d3e1db6f75c857e5f872f7b996d1485', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - .github/workflows/spec-gate.yml: the gate's entrypoints and policy documents cannot be removed by a change; retiring the gate is a decision taken on main, not in a branch",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.githooks/pre-commit',), 'd8d8928f1940160f97bb4123be8e3ab95ba082540d6ff3b188629353703e87db', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - .githooks/pre-commit: the gate's entrypoints and policy documents cannot be removed by a change; retiring the gate is a decision taken on main, not in a branch",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/registry-check.yml',), '42f42f451add11b40e6518b32aa103b3877036a13f66d8be03c0072b70cc3306', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/registry-check.yml: no longer executes 3 step(s) the gate depends on (\'python3 -m py_compile "$gate"\' and more); a command in a comment, an echo, an unused scalar or a step an `if:` may skip does not count. The gate\'s workflows keep their checks',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/registry-check.yml',), '19b4cffd625164c442eae1759a77150679130d78aab028abc87f1b8d8d37d196', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/registry-check.yml: no longer executes 3 step(s) the gate depends on (\'python3 -m py_compile "$gate"\' and more); a command in a comment, an echo, an unused scalar or a step an `if:` may skip does not count. The gate\'s workflows keep their checks',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/registry-check.yml',), '5e27b15c58243233c646582261e50699517102f7f836f5d58093941e6baef47b', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 0, ()),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml-backdoor.yaml',), '92eb784c1f05ed46c1bc75900d646ed3ea975177f7b9416593e3e461928662e3', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - branch 'chore/gate-workflow' changes 1 gated file(s) (.github/workflows/spec-gate.yml-backdoor.yaml) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('scripts/gate/helper.py',), '628bc8051929eae3f79357d565c00fd73074ab7ee80852283c4bbfa9feedf252', None, 0, (), 1, (" - branch 'chore/gate-workflow' changes 1 gated file(s) (scripts/gate/helper.py) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", ' - scripts/gate/helper.py: scripts/gate/ holds scripts/gate/spec_gate.py and scripts/gate/export_model_registry.py and nothing else; a module beside them would shadow an import of the gate', " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'chore/deps'),), ('docs/product/01-PRODUCT-REQUIREMENTS.md',), '209423f92f57b54113c79ef4c6255a510580fef516ae957b070fa4db4bf443bd', None, 0, (), 1, (" - branch 'chore/deps' changes 1 gated file(s) (docs/product/01-PRODUCT-REQUIREMENTS.md) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'bot/superpowers-weekly'),), ('.claude/skills/brainstorming/SKILL.md', 'docs/notes.md'), 'c4c9b6f42cab6e83431680d24fe465b256fa9ad9a51dfdb6584a6657a882c99f', None, 0, (), 1, (" - branch 'bot/superpowers-weekly' changes 1 gated file(s) (docs/notes.md) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'chore/foo/bar'),), ('scripts/gate/helper.py',), 'ce9defe90fb993369b8d55a9243f13d0f091871aad4f53d527c9d51fabf6184c', None, 0, (), 1, (" - branch 'chore/foo/bar' changes 1 gated file(s) (scripts/gate/helper.py) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'chore/Bad'),), ('scripts/gate/helper.py',), '2b77975f1513188c38e113ae7c027fb15ec80cb71324655bea7e50ae4ed5cab0', None, 0, (), 1, (" - branch 'chore/Bad' changes 1 gated file(s) (scripts/gate/helper.py) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'bot/superpowers-x/y'),), ('scripts/gate/helper.py',), '0c052836cc82fadba32411840ac3c4a417a45cb5913d2444c1d6334a6fc70ab3', None, 0, (), 1, (" - branch 'bot/superpowers-x/y' changes 1 gated file(s) (scripts/gate/helper.py) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'bot/superpowers-weekly'),), ('.claude/skills/brainstorming/SKILL.md',), 'ada973ec360acc2b70f3ef009348aeb9e828ac103629e92332a2be70540650c4', None, 0, (), 0, ()),
+        ((('PR_HEAD_REF', 'bot/superpowers-weekly'),), ('.claude/skills/product-delivery/SKILL.md',), 'da65df0de0d3f15df345178adf146c75b6e291bcb54b2eaa59bbdf95737576ac', None, 0, (), 1, (" - branch 'bot/superpowers-weekly' changes 1 gated file(s) (.claude/skills/product-delivery/SKILL.md) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'main'),), ('docs/notes.md',), '4f42053467dc0a0ae18a1695b9982b215d4243165d4a5f05e2338357c68bf9ac', None, 0, (), 1, (" - branch 'main' is not a delivery branch; a pull request comes from feature/<feat-id>-<slug>, fix/<feat-id>-<slug>, docs/<slug>, chore/<slug> or bot/superpowers-<tag>, documentation included",)),
+        ((('PR_HEAD_REF', 'typo'),), ('docs/notes.md',), '39967100e90470cc4bb2f37e4be4253348e0550c4ff18e3869922e410c659bd8', None, 0, (), 1, (" - branch 'typo' is not a delivery branch; a pull request comes from feature/<feat-id>-<slug>, fix/<feat-id>-<slug>, docs/<slug>, chore/<slug> or bot/superpowers-<tag>, documentation included",)),
+        ((('PR_HEAD_REF', 'claude/notes'),), ('docs/notes.md',), '991eb9000a8458635c022b52cab94961c7ac30d1a1819907ec9b8baea1bb6fe1', None, 0, (), 1, (" - branch 'claude/notes' is not a delivery branch; a pull request comes from feature/<feat-id>-<slug>, fix/<feat-id>-<slug>, docs/<slug>, chore/<slug> or bot/superpowers-<tag>, documentation included",)),
+        ((('PR_HEAD_REF', 'feature/typo'),), ('docs/notes.md',), 'b47752e9473eeff91416bd77b11f44b47e81af69362bfad7944e12aa2c036292', None, 0, (), 1, (" - branch 'feature/typo' is not a delivery branch; a pull request comes from feature/<feat-id>-<slug>, fix/<feat-id>-<slug>, docs/<slug>, chore/<slug> or bot/superpowers-<tag>, documentation included",)),
+        ((('PR_HEAD_REF', 'fix/wrong'),), ('docs/notes.md',), '826fd1bdec7a6129e561ef316089afdb834607682afe42841ee330784f3f14fe', None, 0, (), 1, (" - branch 'fix/wrong' is not a delivery branch; a pull request comes from feature/<feat-id>-<slug>, fix/<feat-id>-<slug>, docs/<slug>, chore/<slug> or bot/superpowers-<tag>, documentation included",)),
+        ((('PR_HEAD_REF', 'docs/Bad_Name'),), ('docs/notes.md',), 'd520093cefec0e98775f34a0497fd0351b96c742b36fab8e5dd4bd5c61e6cc45', None, 0, (), 1, (" - branch 'docs/Bad_Name' is not a delivery branch; a pull request comes from feature/<feat-id>-<slug>, fix/<feat-id>-<slug>, docs/<slug>, chore/<slug> or bot/superpowers-<tag>, documentation included",)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-a_b'),), ('docs/notes.md',), 'e7b8530ff5a4919b8f4166be6dae6c14ce3fc652041affa8a466fc52317f4656', None, 0, (), 1, (" - branch 'feature/feat-model-001-a_b' is not a delivery branch; a pull request comes from feature/<feat-id>-<slug>, fix/<feat-id>-<slug>, docs/<slug>, chore/<slug> or bot/superpowers-<tag>, documentation included",)),
+        ((('PR_HEAD_REF', 'fix/feat-model-001-a.b'),), ('docs/notes.md',), 'e1cef4264e6c625884aa8b3d5560de793bf8217d7fe935de46990caff05d533b', None, 0, (), 1, (" - branch 'fix/feat-model-001-a.b' is not a delivery branch; a pull request comes from feature/<feat-id>-<slug>, fix/<feat-id>-<slug>, docs/<slug>, chore/<slug> or bot/superpowers-<tag>, documentation included",)),
+        ((('PR_HEAD_REF', 'docs/notes'),), ('docs/notes.md',), '67f60b3e70fff3ca94946aba41667a1ca925e198d5d7c3ea5780f634b240a307', None, 0, (), 0, ()),
+        ((('PR_DRAFT', 'false'), ('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_NUMBER', '42'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('docs/product/02-FEATURE-CATALOG.md',), '9cc08bee1bcaed0ca9a4a551b913d66445cfb734fe5f4caa0b7256adc5c1700e', '3b4f7f730d2478256a1a38710b7a61cb46b7e9ef8671a9e7eba514fa781f8e34', 0, (), 1, (" - docs/superpowers/plans/2026-09-01-model-decisions.md: set the plan's pr to 42 before marking the PR ready",)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'),), ('docs/product/02-FEATURE-CATALOG.md',), '9cc08bee1bcaed0ca9a4a551b913d66445cfb734fe5f4caa0b7256adc5c1700e', None, 0, (), 1, (" - no plan in docs/superpowers/plans names branch 'feature/feat-model-001-model-decisions'",)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('.github/workflows/ci.yml', 'lib/model.py'), 'd21a7b14eb51088cbda8403ec26b5d207e8e20bbcf9e46595ad00d577be083f2', 'bf7ca8eab6f20eb42f53cfcffa6670c18dda1a5b00bcc36a133d6b493135780a', 0, (), 1, (" - process change(s) (.github/workflows/ci.yml) belong to FEAT-CICD-001, not FEAT-MODEL-001; CI configuration, the gate and the agent instructions are that capability's work",)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('.github/workflows/ci.yml', 'lib/model.py'), 'd21a7b14eb51088cbda8403ec26b5d207e8e20bbcf9e46595ad00d577be083f2', 'bf7ca8eab6f20eb42f53cfcffa6670c18dda1a5b00bcc36a133d6b493135780a', 0, (), 0, ()),
+        ((('PR_HEAD_REF', 'docs/tweak'),), ('AGENTS.md',), '140283191b249eb55f902669754fdb675720276303b2630d2c402844d6fada12', None, 0, (), 1, (" - branch 'docs/tweak' changes 1 gated file(s) (AGENTS.md) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'docs/tweak'),), ('CLAUDE.md',), '3e3f424cfbea900869edc82afeac0a1f35575d66b56bef789bee0d898558b77b', None, 0, (), 1, (" - branch 'docs/tweak' changes 1 gated file(s) (CLAUDE.md) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'docs/skill-tweak'),), ('.claude/skills/product-delivery/SKILL.md',), 'cc0b2f8e3f684e3507f173883bcb67d06644e9b2b8e028e7136767f688c24d9b', None, 0, (), 1, (" - branch 'docs/skill-tweak' changes 1 gated file(s) (.claude/skills/product-delivery/SKILL.md) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'docs/workflow-notes'),), ('.github/workflows/README.md', 'gcp/README.md'), '08bcd199b78bd84384bda2dafbcc09d0e5e4bf85c50441e2bc3effb74db3a7e8', 'db48a9197010e0debbf2c745beaa8cad35619c4485ebebad48ebd7e6322bbd7a', 0, (), 0, ()),
+    ),
+}
+# ---------------------------------------------------------------------------------------------
+
+
+
 def test_a_workload_change_carries_its_capacity_numbers(repo):
     """stocks#1205 r4118289674 (spec_gate.py:313).
 
@@ -1304,12 +1549,12 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
     """
     title = {"PR_TITLE": "FEAT-MODEL-001: x"}
     job = {**CODE, "gcp/model_job.py": "print('run')\n"}
-    blank = body() + "\n\n## Capacity (CLAUDE.md rule 0)\nVolume: \u00b7 Velocity: \u00b7 Wall-clock: \u00b7 $/run \u00d7 runs/day \u00d7 30:\n"
+    blank = body() + "\n\n## Capacity (CLAUDE.md rule 0)\nVolume: \u00b7 Velocity: \u00b7 Wall-clock: \u00b7 $/run \u00d7 runs/day \u00d7 30: \u00b7 Cost:\n"
     r = pr(repo, BRANCH, job, **title, PR_BODY=blank)
-    assert r.returncode == 1 and "Capacity section leaves Volume, Velocity, Wall-clock, 30 blank" in r.stdout, r.stdout
+    assert r.returncode == 1 and ("Capacity section leaves Volume, Velocity, Wall-clock, 30 blank" in r.stdout or "Capacity section leaves Volume, Velocity, Wall-clock, Cost blank" in r.stdout), r.stdout
     r = pr(repo, BRANCH, job, **title, PR_BODY=body())
     assert r.returncode == 1 and "PR body needs a Capacity section" in r.stdout, r.stdout
-    filled = body() + "\n\n## Capacity\nVolume: 3 tickers \u00d7 400 B \u00b7 Velocity: 1 query \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01\n"
+    filled = body() + "\n\n## Capacity\nVolume: 3 tickers \u00d7 400 B \u00b7 Velocity: 1 query \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01 \u00b7 Cost: $0.01\n"
     assert pr(repo, BRANCH, job, **title, PR_BODY=filled).returncode == 0
     na = body() + "\n\n## Capacity\nn/a: the job's log line changes, no query or schedule does\n"
     assert pr(repo, BRANCH, job, **title, PR_BODY=na).returncode == 0
@@ -1317,7 +1562,7 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
     nested = (body() + "\n\n## Capacity\n\n### Volume\n3 tickers \u00d7 400 B\n\n### Velocity\n1 query\n\n### Wall-clock\n2 s\n\n"
               "### $/run \u00d7 runs/day \u00d7 30\n$0.01\n\n## Summary\nx\n")
     nested = nested.replace("### Volume\n3", "### Volume\nVolume: 3").replace("### Velocity\n1", "### Velocity\nVelocity: 1") \
-                   .replace("### Wall-clock\n2", "### Wall-clock\nWall-clock: 2").replace("30\n$0.01", "30\n30: $0.01")
+                   .replace("### Wall-clock\n2", "### Wall-clock\nWall-clock: 2").replace("30\n$0.01", "30\n30: $0.01 \u00b7 Cost: $0.01")
     assert pr(repo, BRANCH, job, **title, PR_BODY=nested).returncode == 0, nested
     assert pr(repo, BRANCH, CODE, **title, PR_BODY=body()).returncode == 0
     # solyra#72 r4118831965: a chore/ PR editing the gate's own workflow is untraced and
