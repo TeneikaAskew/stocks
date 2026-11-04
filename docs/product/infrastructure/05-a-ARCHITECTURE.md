@@ -490,11 +490,11 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/backtest/equity/{ticker}` | [`platform/api/routers/backtest.py:257`](../../../platform/api/routers/backtest.py#L257) | Return equity curve from the most recent equity CSV for the given ticker, |
 | `POST` | `/api/backtest/replay-trades` | [`platform/api/routers/backtest.py:512`](../../../platform/api/routers/backtest.py#L512) | Score the signed-in user's labeled journal trades against actual bars |
 | `GET` | `/api/backtest/results/{ticker}` | [`platform/api/routers/backtest.py:188`](../../../platform/api/routers/backtest.py#L188) | Return trades from the most recent backtest CSV for the given ticker, |
-| `GET` | `/api/catalysts/asof/{ticker}` | [`platform/api/routers/catalysts.py:612`](../../../platform/api/routers/catalysts.py#L612) | Unified point-in-time catalyst view for a ticker. |
-| `GET` | `/api/catalysts/events` | [`platform/api/routers/catalysts.py:158`](../../../platform/api/routers/catalysts.py#L158) | Get catalyst events grouped by date. |
-| `GET` | `/api/catalysts/snapshot/{ticker}` | [`platform/api/routers/catalysts.py:613`](../../../platform/api/routers/catalysts.py#L613) | Unified point-in-time catalyst view for a ticker. |
-| `GET` | `/api/catalysts/ticker/{ticker}` | [`platform/api/routers/catalysts.py:575`](../../../platform/api/routers/catalysts.py#L575) | Get all catalyst events for a specific ticker. |
-| `GET` | `/api/catalysts/types` | [`platform/api/routers/catalysts.py:773`](../../../platform/api/routers/catalysts.py#L773) | Return available catalyst types and WSH upgrade info. |
+| `GET` | `/api/catalysts/asof/{ticker}` | [`platform/api/routers/catalysts.py:625`](../../../platform/api/routers/catalysts.py#L625) | Unified point-in-time catalyst view for a ticker. |
+| `GET` | `/api/catalysts/events` | [`platform/api/routers/catalysts.py:160`](../../../platform/api/routers/catalysts.py#L160) | Get catalyst events grouped by date. |
+| `GET` | `/api/catalysts/snapshot/{ticker}` | [`platform/api/routers/catalysts.py:626`](../../../platform/api/routers/catalysts.py#L626) | Unified point-in-time catalyst view for a ticker. |
+| `GET` | `/api/catalysts/ticker/{ticker}` | [`platform/api/routers/catalysts.py:588`](../../../platform/api/routers/catalysts.py#L588) | Get all catalyst events for a specific ticker. |
+| `GET` | `/api/catalysts/types` | [`platform/api/routers/catalysts.py:786`](../../../platform/api/routers/catalysts.py#L786) | Return available catalyst types and WSH upgrade info. |
 | `GET` | `/api/config/firebase` | [`platform/api/routers/config.py:45`](../../../platform/api/routers/config.py#L45) | Public runtime auth config for the frontend bootstrap. |
 | `GET` | `/api/config/indicators` | [`platform/api/routers/config.py:75`](../../../platform/api/routers/config.py#L75) | Return indicator periods, signal thresholds, and zone labels. |
 | `GET` | `/api/config/market-hours` | [`platform/api/routers/config.py:131`](../../../platform/api/routers/config.py#L131) | Return US equity market session windows + 2026 holidays. |
@@ -563,12 +563,12 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/options/{ticker}/{date_str}/grid` | [`platform/api/routers/grid.py:738`](../../../platform/api/routers/grid.py#L738) | Historical 2-D grid for a past date — EOD only. |
 | `GET` | `/api/options/{ticker}/{date_str}/levels` | [`platform/api/routers/options.py:809`](../../../platform/api/routers/options.py#L809) | Stratalyst-style King/Gate/Spot/Flip taxonomy for a Cloud SQL snapshot. |
 | `GET` | `/api/options/{ticker}/{date_str}/nodes` | [`platform/api/routers/grid.py:1000`](../../../platform/api/routers/grid.py#L1000) | Historical semantic taxonomy — EOD only. |
-| `POST` | `/api/playbook/evaluate` | [`platform/api/routers/playbook.py:747`](../../../platform/api/routers/playbook.py#L747) | Evaluate playbook condition strings against a live snapshot. |
-| `GET` | `/api/playbook/{ticker}` | [`platform/api/routers/playbook.py:306`](../../../platform/api/routers/playbook.py#L306) | Return structured setup cards for a ticker from ``playbook_cards``. |
-| `GET` | `/api/reports/list/{ticker}` | [`platform/api/routers/playbook.py:367`](../../../platform/api/routers/playbook.py#L367) | List available phase report files for a given ticker (from GCS). |
-| `GET` | `/api/reports/{ticker}/{phase}` | [`platform/api/routers/playbook.py:440`](../../../platform/api/routers/playbook.py#L440) | Return the raw markdown text of a specific phase report for a ticker from GCS. |
-| `GET` | `/api/signals/{ticker}` | [`platform/api/routers/signals.py:221`](../../../platform/api/routers/signals.py#L221) | Return historical signals for a ticker. |
-| `GET` | `/api/signals/{ticker}/similar` | [`platform/api/routers/signals.py:321`](../../../platform/api/routers/signals.py#L321) | Return historical signals similar to the supplied bar's conditions. |
+| `POST` | `/api/playbook/evaluate` | [`platform/api/routers/playbook.py:749`](../../../platform/api/routers/playbook.py#L749) | Evaluate playbook condition strings against a live snapshot. |
+| `GET` | `/api/playbook/{ticker}` | [`platform/api/routers/playbook.py:308`](../../../platform/api/routers/playbook.py#L308) | Return structured setup cards for a ticker from ``playbook_cards``. |
+| `GET` | `/api/reports/list/{ticker}` | [`platform/api/routers/playbook.py:369`](../../../platform/api/routers/playbook.py#L369) | List available phase report files for a given ticker (from GCS). |
+| `GET` | `/api/reports/{ticker}/{phase}` | [`platform/api/routers/playbook.py:442`](../../../platform/api/routers/playbook.py#L442) | Return the raw markdown text of a specific phase report for a ticker from GCS. |
+| `GET` | `/api/signals/{ticker}` | [`platform/api/routers/signals.py:394`](../../../platform/api/routers/signals.py#L394) | Return historical signals for a ticker. |
+| `GET` | `/api/signals/{ticker}/similar` | [`platform/api/routers/signals.py:509`](../../../platform/api/routers/signals.py#L509) | Return historical signals similar to the supplied bar's conditions. |
 | `POST` | `/api/style/mine-and-validate` | [`platform/api/routers/backtest.py:690`](../../../platform/api/routers/backtest.py#L690) | Mine the caller's closed journal trades into a condition profile, |
 | `POST` | `/api/waitlist` | [`platform/api/routers/waitlist.py:84`](../../../platform/api/routers/waitlist.py#L84) |  |
 | `GET` | `/dev` | [`platform/api/main.py:433`](../../../platform/api/main.py#L433) |  |
@@ -920,6 +920,8 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`gcp/earnings_long_watchlist.py`](../../../gcp/earnings_long_watchlist.py) | Cloud Run Job — weekly long-side earnings watchlist ("Next NVAX"). | `earnings-long-watchlist` |
 | [`gcp/earnings_reactions_brief.py`](../../../gcp/earnings_reactions_brief.py) | Earnings-reactions brief -- Cloud Run Job triggered by Cloud Scheduler at | `earnings-reactions-brief` |
 | [`gcp/failure_notifier.py`](../../../gcp/failure_notifier.py) | GCP Cloud Run Job failure notifier. | — |
+| [`gcp/fetchers/_av_realtime_collector.py`](../../../gcp/fetchers/_av_realtime_collector.py) | Cloud Run Job: Fetch intraday AV REALTIME_OPTIONS and write to Cloud SQL. | — |
+| [`gcp/fetchers/_av_realtime_transport.py`](../../../gcp/fetchers/_av_realtime_transport.py) | Private CLI transport: bounded source I/O only, no retry or storage policy. | — |
 | [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) | Shared helper: load the configured watchlist for every consumer. | — |
 | [`gcp/fetchers/backfill_daily_indicators.py`](../../../gcp/fetchers/backfill_daily_indicators.py) | Self-healing backfill of derived indicator columns in market_data_daily. | `backfill-daily-indicators` |
 | [`gcp/fetchers/build_options_daily_features.py`](../../../gcp/fetchers/build_options_daily_features.py) | Populate the materialized `options_daily_features` table (perf fix). | `build-options-daily-features` |

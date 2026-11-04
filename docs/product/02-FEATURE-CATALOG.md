@@ -1,6 +1,6 @@
 # Feature Catalog
 
-**Last reviewed:** 2026-08-31 · **Last scanned:** 2026-09-29 · **Owner:** TBD
+**Last reviewed:** 2026-08-31 · **Last scanned:** 2026-10-20 · **Owner:** TBD
 
 The monitoring ledger. Every row carries the fields the [README](README.md) governance
 contract promises — Owner, Status, Priority, Target Phase, Last Reviewed, Blocking Issues,
@@ -163,12 +163,12 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Retest Required |
+| Status | Narrow collector repair: source review and rollout pending |
 | Priority | P0 |
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-08-30 |
-| Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
+| Last reviewed | 2026-10-30 |
+| Evidence status | Preserved isolated collector and acceptance receipts; final integrated-head review/CI and immutable job deployment remain pending. No historical-snapshot restoration claim. |
 | UI surface | `/options` |
 | Backend | `/api/options`, `/api/grid` |
 | Data | `etf_options_snapshots`, `intraday_gex_15m`, `realtime_gex_15m` |
@@ -186,11 +186,11 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation |
+| Status | Production needs remediation; historical-score contract implementation under review in #1620, not deployed |
 | Priority | P0 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-08-30 |
+| Last reviewed | 2026-10-30 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/signals`, `/live` |
 | Backend | `/api/signals` |
@@ -200,7 +200,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Tests | `signals.spec.ts`, `tests/*/test_signal*.py` |
 | Open issues | 25 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-signal-001--signals--execution-25-open) |
 | Blocking issues | [#815](https://github.com/TeneikaAskew/stocks/issues/815) [#816](https://github.com/TeneikaAskew/stocks/issues/816) [#928](https://github.com/TeneikaAskew/stocks/issues/928) [#1206](https://github.com/TeneikaAskew/stocks/issues/1206) [#915](https://github.com/TeneikaAskew/stocks/issues/915) [#1136](https://github.com/TeneikaAskew/stocks/issues/1136) |
-| Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
+| Next action | Complete normal #1620 current-head review/checks and actual staging/frontend close-out; legacy records are not reconstructed or backfilled |
 
 ### FEAT-PLAYBOOK-001
 
@@ -209,18 +209,18 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation |
+| Status | Production but needs remediation; issue #1308 market-date repair verified locally, rollout pending |
 | Priority | P0 |
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-10-07 |
+| Last reviewed | 2026-10-30 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/playbook` |
 | Backend | `/api/playbook` |
 | Data | `premarket_analysis`, `playbook_cards` |
 | Models | MODEL-BRIEF-001, MODEL-LEVEL-001 |
 | Code | [solyra `src/routes/PlaybookPage.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/routes/PlaybookPage.tsx), `platform/api/routers/playbook.py`, `gcp/premarket_brief.py`, `scripts/analysis/phase6_playbook.py` |
-| Tests | `playbook.spec.ts`, `tests/scripts/test_phase6_playbook.py` |
+| Tests | `playbook.spec.ts`, `tests/scripts/test_phase6_playbook.py`, `tests/api/test_playbook_evaluate.py` (53 pass; paired summer/winter midnight, cache and historical-date controls for #1308) |
 | Open issues | 19 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-playbook-001--premarket--playbook-19-open) |
 | Blocking issues | [solyra#112](https://github.com/TeneikaAskew/solyra/issues/112) [#1304](https://github.com/TeneikaAskew/stocks/issues/1304) [#1305](https://github.com/TeneikaAskew/stocks/issues/1305) [#1306](https://github.com/TeneikaAskew/stocks/issues/1306) [#1307](https://github.com/TeneikaAskew/stocks/issues/1307) [#1308](https://github.com/TeneikaAskew/stocks/issues/1308) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 3 |
@@ -301,21 +301,23 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation |
+| Status | Production but needs remediation; finite EPS normalization verified locally, rollout pending |
 | Priority | P1 |
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-08-30 |
-| Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
+| Last reviewed | 2026-10-27 |
+| Evidence status | Finite EPS source/local tests verified; current-head external review, hosted checks and rollout pending; other catalyst work remains open |
 | UI surface | `/catalysts` |
 | Backend | `/api/catalysts`, `/api/earnings` |
 | Data | `earnings_*`, `economic_events`, `news_sentiment`, `sec_filings` |
 | Models | MODEL-EARN-001 |
 | Code | `platform/api/routers/catalysts.py`, `earnings.py`, `lib/earnings_reactions.py` |
-| Tests | `catalysts.spec.ts` |
+| Tests | `catalysts.spec.ts`; `tests/api/test_catalyst_earnings_estimate_numbers.py`, `tests/scripts/test_earnings_calendar_finite_numbers.py`, `tests/integration/test_catalyst_earnings_estimate_numbers_pg.py` |
 | Open issues | 19 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-catalyst-001--earnings--catalysts-19-open) |
 | Blocking issues | [#1223](https://github.com/TeneikaAskew/stocks/issues/1223) [#1268](https://github.com/TeneikaAskew/stocks/issues/1268) [#1269](https://github.com/TeneikaAskew/stocks/issues/1269) [#1270](https://github.com/TeneikaAskew/stocks/issues/1270) [#1299](https://github.com/TeneikaAskew/stocks/issues/1299) [#1300](https://github.com/TeneikaAskew/stocks/issues/1300) |
-| Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 3 |
+| Next action | Complete narrow [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) reviews/checks and existing API/producer rollout; broader Phase 3 work remains open |
+
+Finite-number slice: approved spec [#1618](https://github.com/TeneikaAskew/stocks/pull/1618) is MAIN. Implementation draft [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) preserves actual producer/API normalization,185focused checks including independent-session local PostgreSQL commit/read and the real routed response, and31API preservation checks (overlapping suite). Final hermetic unit verification at2ad639e1:7719passed,51skipped,112warnings; integration was excluded from that full unit command and the real local PG proof is separately retained. No deployment/source-equivalence, current-source freshness or complete catalyst remediation is certified. Touches #1269 and only #1301's numeric-title behavior; cross-source dedup/selection remains unchanged and unresolved.
 
 ### FEAT-REPORT-001
 
@@ -508,12 +510,12 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation — news logger repair implemented in draft #1607; rollout pending |
+| Status | Production but needs remediation — logger #1607 image rollout verified; allowance #1606 source integrated, release gated |
 | Priority | P0 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-10-25 |
-| Evidence status | Logger runtime/test bytes match reviewed89ad9523,53mocked tests preserved; committed source identity and279/279no-new audit pass. Current-head external review/CI and deployment remain pending; typed-news and full data-platform health not certified. |
+| Last reviewed | 2026-10-29 |
+| Evidence status | Logger source bd8c5310/build20c56463/image ef54b4b6 deployed Ready to three jobs with projected config preserved; next scheduled outcomes unobserved. Allowance runtime/test bytes unchanged from reviewed258fb789,224 tests preserved; prior CODE/SEC/CI clean, combined source proof and owner-approved CODE7 remain required. No complete data-platform, persistence or provider-root-cause certification. |
 | UI surface | — |
 | Backend | fetcher jobs |
 | Data | 64 relations — see [06](06-DATA-ARCHITECTURE.md) |
@@ -577,11 +579,11 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation — committed source identity and complete generated-inventory verification merged; local delivery-tool close-out checked; AV/global rollout and remediation pending; tests that fake gcloud cannot reach a real one, the deliberate `--mode=live` secret read excepted ([#1536](https://github.com/TeneikaAskew/stocks/pull/1536)); trusted registry six-minute pin prepared in #1591, live six-minute activation proposed in #1599 under measured acceptance #1594; hosted final verification pending |
+| Status | Production but needs remediation — historical SITE presence repair [#1597](https://github.com/TeneikaAskew/stocks/pull/1597) continues #1595 with original VP-01 and review history, final evidence pending; committed source identity and complete generated-inventory verification merged; local delivery-tool close-out checked; AV/global rollout and remediation pending; tests that fake gcloud cannot reach a real one, the deliberate `--mode=live` secret read excepted ([#1536](https://github.com/TeneikaAskew/stocks/pull/1536)); trusted registry six-minute pin #1591 and matching live activation #1599 merged as e7e74ccc; exact live/pin equality and all six hosted checks verified, registry144PASS/exporter-current314s/46s reserve ([receipt](https://github.com/TeneikaAskew/stocks/pull/1599#issuecomment-6400278126)); spec-gate supersedes-chain retirement (status-only flip of a superseding spec, lineage validation, truthful fail-closed redundant-retirement refusal) implemented in draft [#1656](https://github.com/TeneikaAskew/stocks/pull/1656) under its approved source-note spec ([#1667](https://github.com/TeneikaAskew/stocks/pull/1667); it supersedes the merged replacement spec [#1664](https://github.com/TeneikaAskew/stocks/pull/1664)), local red-team passes recorded, hosted CODE review and merge pending; DOC-only close-out binding to the 2026-11-02 protocol spec by exact path (approved clarification spec [#1692](https://github.com/TeneikaAskew/stocks/pull/1692); close-outs had been refused as superseded) in draft re-cut [#1694](https://github.com/TeneikaAskew/stocks/pull/1694) of [#1691](https://github.com/TeneikaAskew/stocks/pull/1691) with the same code and test bytes, review coverage and merge pending. `scripts/gate/` is owned by this capability through the gate's `WORKFLOW_FEAT` constant, while the Code row lists `.github/workflows/` and the review guidelines |
 | Priority | P1 |
 | Target phase | Phase 6 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-10-25 |
+| Last reviewed | 2026-11-02 |
 | Evidence status | LOCAL DELIVERY TOOLING VERIFIED — [#1470](https://github.com/TeneikaAskew/stocks/pull/1470) committed-source verifier and [#1538](https://github.com/TeneikaAskew/stocks/pull/1538) complete generated-inventory tooling merged after authenticated CODE review and required CI. Fresh actual-main identity, local-tool accepted/refused checks and terminal marker/record retirement verified in this DOC close-out. AV/global rollout and product deployment/data-freshness verification remain separate. |
 | UI surface | — |
 | Backend | — |
