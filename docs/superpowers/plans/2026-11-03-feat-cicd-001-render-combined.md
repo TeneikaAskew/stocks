@@ -99,8 +99,8 @@ Spec: done_when 6 and 13.
       - 29.85 and 30.84 s on 5b03e267;
       - 42.13 s on 4aff29cb;
       - 28.01 s on 946d94d2.
-    - About 12 s recovered; the head is still about 2 to 3 s above 946d94d2.
-    - The 25 passes counted one test that did not run. The full suite on the committed head ran it.
+    - About 12 s recovered; 5b03e267 is still about 2 to 3 s above 946d94d2.
+    - The 25 passes counted one test that did not run. The full suite on 5b03e267 ran it.
   - Mutants N1 and N3 to N7 were caught on 3.14.6.
   - One run each.
 - [ ] For R14d: the full suite and the docs audit on the committed R14d head. R14d changes no byte the real-tree measurement executes (gate, renderer and measurement script unchanged); one real-tree measurement per interpreter is still run on the committed R14d head, as predeclared, and recorded outside this plan.
