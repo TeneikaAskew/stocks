@@ -4611,12 +4611,26 @@ class FrozenTrim(FakeTrim):
 
 
 class RaisingLib:
-    """A loaded library whose symbol lookup raises `error`."""
+    """A loaded library whose symbol lookup raises `error`, recording each name looked up in `asked`."""
     def __init__(self, error: BaseException):
-        self.error = error
+        self.error, self.asked = error, []
 
     def __getattr__(self, name):
+        self.asked.append(name)
         raise self.error
+
+
+class NoCDLL:
+    """A loaded `ctypes` without CDLL, recording each missing name asked for in `asked`."""
+    c_size_t, c_int = ctypes.c_size_t, ctypes.c_int
+
+    def __init__(self):
+        self.asked = []
+
+    def __getattr__(self, name):
+        if not name.startswith("__"):
+            self.asked.append(name)
+        raise AttributeError(name)
 
 
 class RenderOrder:
@@ -4692,7 +4706,7 @@ def test_release_freed_heap_imports_nothing_when_ctypes_is_not_loaded(heap_gate,
 
 def test_release_freed_heap_calls_int_malloc_trim_size_t_with_pad_zero(heap_gate, monkeypatch):
     """glibc's `int malloc_trim(size_t pad)`: looked up in the process's own symbols (CDLL(None)), declared with exactly
-    that ABI before the call, and called once with pad 0; 1 means memory was released."""
+    that ABI before the call, and called once with pad 0; a 1 from it is read as True."""
     answer, loads, calls = trim_once(heap_gate, monkeypatch, 1)
     assert answer is True and loads == [None] and calls == [((0,), (ctypes.c_size_t,), ctypes.c_int)]
 
@@ -4703,9 +4717,17 @@ def test_release_freed_heap_reads_a_zero_from_malloc_trim_as_nothing_released(he
     assert answer is False and loads == [None] and calls == [((0,), (ctypes.c_size_t,), ctypes.c_int)]
 
 
+def test_release_freed_heap_reads_only_a_one_from_malloc_trim_as_released(heap_gate, monkeypatch):
+    """Only 1 reads as True: any other value from malloc_trim (2, -1) reads as False, after the same one call."""
+    for returned in (2, -1):
+        answer, loads, calls = trim_once(heap_gate, monkeypatch, returned)
+        assert answer is False and loads == [None] and calls == [((0,), (ctypes.c_size_t,), ctypes.c_int)], returned
+
+
 def test_release_freed_heap_calls_the_real_symbol_when_ctypes_is_loaded(heap_gate, monkeypatch):
-    """With the real ctypes loaded, a glibc Linux process makes the real call and gets a bool; a process without
-    malloc_trim, or off Linux, gets False."""
+    """With the real ctypes loaded, a glibc Linux process runs against its real C library without error and gets a
+    bool (that the call is made, with pad 0 and the declared ABI, is shown by the stand-in tests above, not here); a
+    process without malloc_trim, or off Linux, gets False."""
     monkeypatch.setitem(sys.modules, "ctypes", ctypes)
     released = heap_gate.release_freed_heap()
     if sys.platform == "linux" and hasattr(ctypes.CDLL(None), "malloc_trim"):
@@ -4729,7 +4751,7 @@ def test_release_freed_heap_does_nothing_when_the_c_library_has_no_malloc_trim(h
 
 
 def test_release_freed_heap_does_nothing_on_windows(heap_gate, monkeypatch):
-    """Off Linux it returns before reading sys.modules or loading anything (on Windows, CDLL(None) can raise TypeError)."""
+    """Off Linux it returns before any native lookup or call (on Windows, CDLL(None) can raise TypeError)."""
     assert off_linux(heap_gate, monkeypatch, "win32") == (False, [], [])
 
 
@@ -4760,32 +4782,42 @@ def test_release_freed_heap_does_nothing_on_wasi(heap_gate, monkeypatch):
 
 def test_release_freed_heap_lets_an_interrupt_while_loading_propagate(heap_gate, monkeypatch):
     """An interrupt while the C library loads is not swallowed."""
+    loads = []
     with pytest.raises(KeyboardInterrupt):
-        release_with(heap_gate, monkeypatch, fake_ctypes(load_error=KeyboardInterrupt()))
+        release_with(heap_gate, monkeypatch, fake_ctypes(load_error=KeyboardInterrupt(), loads=loads))
+    assert loads == [None]
 
 
 def test_release_freed_heap_lets_a_type_error_while_loading_propagate(heap_gate, monkeypatch):
     """On Linux a TypeError from CDLL(None) is unexpected and is not swallowed."""
+    loads = []
     with pytest.raises(TypeError):
-        release_with(heap_gate, monkeypatch, fake_ctypes(load_error=TypeError("CDLL(None)")))
+        release_with(heap_gate, monkeypatch, fake_ctypes(load_error=TypeError("CDLL(None)"), loads=loads))
+    assert loads == [None]
 
 
 def test_release_freed_heap_lets_a_loaded_ctypes_without_cdll_propagate(heap_gate, monkeypatch):
     """An AttributeError from the loaded ctypes itself (no CDLL) is unexpected setup, not a missing symbol."""
+    module = NoCDLL()
     with pytest.raises(AttributeError):
-        release_with(heap_gate, monkeypatch, types.SimpleNamespace(c_size_t=ctypes.c_size_t, c_int=ctypes.c_int))
+        release_with(heap_gate, monkeypatch, module)
+    assert module.asked == ["CDLL"]
 
 
 def test_release_freed_heap_lets_another_symbol_lookup_failure_propagate(heap_gate, monkeypatch):
     """A lookup failure other than AttributeError is not swallowed."""
+    lib, loads = RaisingLib(RuntimeError("lookup")), []
     with pytest.raises(RuntimeError):
-        release_with(heap_gate, monkeypatch, fake_ctypes(lib=RaisingLib(RuntimeError("lookup"))))
+        release_with(heap_gate, monkeypatch, fake_ctypes(lib=lib, loads=loads))
+    assert loads == [None] and lib.asked == ["malloc_trim"]
 
 
 def test_release_freed_heap_lets_an_interrupt_during_symbol_lookup_propagate(heap_gate, monkeypatch):
     """An interrupt during the symbol lookup is not swallowed."""
+    lib, loads = RaisingLib(KeyboardInterrupt()), []
     with pytest.raises(KeyboardInterrupt):
-        release_with(heap_gate, monkeypatch, fake_ctypes(lib=RaisingLib(KeyboardInterrupt())))
+        release_with(heap_gate, monkeypatch, fake_ctypes(lib=lib, loads=loads))
+    assert loads == [None] and lib.asked == ["malloc_trim"]
 
 
 def test_release_freed_heap_lets_an_abi_that_cannot_be_declared_propagate(heap_gate, monkeypatch):

@@ -4259,22 +4259,30 @@ def render_inventory(tree: str, docs: list[str]) -> int:
 
 
 def release_freed_heap() -> bool:
-    """Hand the heap this process has freed back to the system before the render child starts. After this ~300 KB
-    file is compiled, glibc keeps much of the freed heap resident. Measured on 2026-11-04 on 3.14.6 with tracemalloc
+    """Ask glibc to hand heap this process has freed back to the system before the render child starts. After this
+    ~300 KB file is compiled, glibc keeps much of the freed heap resident. Measured on 2026-11-04 on 3.14.6 with tracemalloc
     tracing disabled in a staged diagnostic probe: compiling it added 19.34 MB of RSS, glibc's mallinfo2 then
-    reported 13.61 MB of the process heap free in total, and malloc_trim(0) took RSS down by 12.74 MB. A separate
-    run of the same probe with tracing on, which itself changes the heap, traced about 1.3 MB of new live
-    allocations after the compile.
+    reported 13.61 MB of the process heap free in total, and malloc_trim(0) took RSS down by 12.74 MB: most of the
+    free heap, not all of it, since only whole free pages and the top of the heap can go back. A separate run of the
+    same probe with tracing on, which itself changes the heap, traced about 1.3 MB of new live allocations after the
+    compile.
+
+    It acts only where ctypes is already loaded, which in practice is the render measurement's worker
+    (tests/scripts/measure_inventory_render.py imports ctypes at its start and loads this file as a module). In the
+    gate's own runs (the pre-commit hook, the spec-gate job and the registry job's verdict step) nothing loads ctypes,
+    so there it does nothing.
 
     It imports nothing: it uses ctypes only when the process already loaded it (the render observer does, at start,
     under -I), because an import here could be found through ROOT, which maintenance_modules puts first on sys.path.
     It acts only on Linux and returns before any native lookup elsewhere (on Windows, CDLL(None) can raise TypeError).
-    glibc's `int malloc_trim(size_t pad)` is called with pad 0; it returns 1 when it released memory and 0 when
-    there was none to release, which is not an error. When ctypes is not loaded, the C library cannot be loaded
+    glibc's `int malloc_trim(size_t pad)` is called with pad 0. It returns 1 when glibc trimmed the top of the heap
+    or advised free pages back to the system, which can happen with no change in RSS (on 2026-11-04 repeated calls
+    returned 1 and released nothing), and 0 otherwise; neither is an error, and no caller reads the result. When ctypes is not loaded, the C library cannot be loaded
     (OSError) or it has no malloc_trim (AttributeError), this does nothing; any other exception propagates. The
     render's verdict, which blocks it accepts and which it refuses, never depends on this call. The aggregate memory
     budget, which the render observer enforces separately from that verdict, does count what this process still
-    holds, so whether memory was released can decide that budget. True only when memory was released."""
+    holds, so whether memory was released can decide that budget. True when malloc_trim returned 1, False
+    otherwise."""
     if sys.platform != "linux":
         return False
     ctypes = sys.modules.get("ctypes")
