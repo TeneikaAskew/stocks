@@ -323,3 +323,30 @@ def test_concurrent_extensions_both_kept(schedule_calls, frozen_2026):
     assert previous_session(date(1995, 1, 3)) == date(1994, 12, 30)
     assert next_session(date(2032, 12, 31)) == date(2033, 1, 3)
     assert schedule_calls == []
+
+
+def test_extension_is_amortised_over_whole_years(monkeypatch):
+    """A date past the cached range extends the cache to the end of that year
+    plus the look-ahead, so the next date a few days later is served from the
+    cache instead of rebuilding the whole schedule again."""
+    eastern_time._reset_session_cache()
+    builds = []
+    real_build = eastern_time._build_session_cache
+
+    def counting_build(first, last):
+        builds.append((first, last))
+        return real_build(first, last)
+
+    monkeypatch.setattr(eastern_time, "_build_session_cache", counting_build)
+    try:
+        eastern_time.is_session(date(2026, 11, 4))
+        assert len(builds) == 1
+        far = date(2100, 1, 4)
+        eastern_time.is_session(far)
+        assert len(builds) == 2
+        assert builds[-1][1] >= date(2100 + eastern_time._SESSION_CACHE_YEARS_AHEAD, 12, 31)
+        for days in (11, 22, 400):
+            eastern_time.is_session(far + timedelta(days=days))
+        assert len(builds) == 2, builds
+    finally:
+        eastern_time._reset_session_cache()

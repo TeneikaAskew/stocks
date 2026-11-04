@@ -134,6 +134,51 @@ def test_freshness_ok_when_within_lag(monkeypatch):
     assert row.lag_hours == 2.0
 
 
+def _rth_check(min_rows, rth_only):
+    check = {
+        "name": "strat_features_5m", "ts_column": "ts",
+        "ts_is_date": False, "expected_lag_hours": 24,
+        "min_rows_per_day": min_rows,
+    }
+    if rth_only:
+        check["rth_only_rows"] = True
+    return check
+
+
+def test_half_day_row_floor_scales_with_session_length(monkeypatch):
+    """Black Friday 2026-11-27 closes at 13:00 ET: 3.5 h of RTH is 42 five-minute
+    bars. With `rth_only_rows` the 70-bar full-day floor scales to 38, so a
+    complete half day is ok, not stale."""
+    from scripts.audit_data_freshness import _query_freshness_one
+
+    last_dt = datetime(2026, 11, 27, 18, 5, 0)  # 18:00 UTC close, 0.1 h lag
+    _patch_query(monkeypatch, pd.DataFrame([{"last_row_at": last_dt, "row_count_recent": 42}]))
+    row = _query_freshness_one(_rth_check(70, True), date(2026, 11, 27))
+    assert row.status == "ok", row
+
+
+def test_half_day_row_floor_unscaled_without_rth_only_rows(monkeypatch):
+    """The same 42 rows against an unscaled 70-row floor are stale: the scaling
+    is opt-in per check, so writers that fill extended hours keep their floor."""
+    from scripts.audit_data_freshness import _query_freshness_one
+
+    last_dt = datetime(2026, 11, 27, 18, 5, 0)
+    _patch_query(monkeypatch, pd.DataFrame([{"last_row_at": last_dt, "row_count_recent": 42}]))
+    row = _query_freshness_one(_rth_check(70, False), date(2026, 11, 27))
+    assert row.status == "stale", row
+
+
+def test_full_day_row_floor_is_not_relaxed(monkeypatch):
+    """On an ordinary session the scaled floor equals the full-day floor, so a
+    short write (42 of 78 bars) is still stale."""
+    from scripts.audit_data_freshness import _query_freshness_one
+
+    last_dt = datetime(2026, 11, 30, 21, 5, 0)  # 21:00 UTC close under EST
+    _patch_query(monkeypatch, pd.DataFrame([{"last_row_at": last_dt, "row_count_recent": 42}]))
+    row = _query_freshness_one(_rth_check(70, True), date(2026, 11, 30))
+    assert row.status == "stale", row
+
+
 def test_freshness_warn_when_1x_to_2x_lag(monkeypatch):
     from scripts.audit_data_freshness import _query_freshness_one
 

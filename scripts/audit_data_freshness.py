@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import logging
 import sys
 from dataclasses import dataclass, field, asdict
@@ -38,6 +39,7 @@ from lib.eastern_time import (
     localize_assuming_eastern,
     previous_session,
     session_close,
+    session_schedule,
 )
 
 from gcp.database import is_cloud_sql_configured, query_to_dataframe  # noqa: E402
@@ -327,6 +329,9 @@ CHECKS: list[dict] = [
     #   5m  → 70  (RTH 6.5h × 12 bars/hr = 78, give 10% margin)
     #   15m → 24  (RTH 26 bars, give margin)
     #   30m → 12  (RTH 13 bars, give margin)
+    # `rth_only_rows` scales the floor by the expected session's real length,
+    # so a 13:00 ET half day (3.5 h: 42 / 14 / 7 bars) is not reported stale
+    # when it is complete. Only RTH-only writers carry it.
     {
         "name": "strat_features_5m",
         "ts_column": "ts",
@@ -338,6 +343,7 @@ CHECKS: list[dict] = [
         "settle_hour_et": 23,
         "tolerate_holidays": True,
         "min_rows_per_day": 70,
+        "rth_only_rows": True,
         "gap_scan_days": 5,
     },
     {
@@ -351,6 +357,7 @@ CHECKS: list[dict] = [
         "settle_hour_et": 23,
         "tolerate_holidays": True,
         "min_rows_per_day": 24,
+        "rth_only_rows": True,
         "gap_scan_days": 5,
     },
     {
@@ -364,6 +371,7 @@ CHECKS: list[dict] = [
         "settle_hour_et": 23,
         "tolerate_holidays": True,
         "min_rows_per_day": 12,
+        "rth_only_rows": True,
         "gap_scan_days": 5,
     },
 ]
@@ -423,6 +431,26 @@ def _session_close_utc(day: date) -> datetime:
     at 13:00 ET (18:00 UTC on 2026-11-27).
     """
     return _calendar(session_close, day).replace(tzinfo=None)  # tz-ok: session_close is aware UTC; drop the label only
+
+
+_FULL_SESSION = timedelta(hours=6, minutes=30)
+
+
+def _session_rth_fraction(day: date) -> float:
+    """Length of session *day*'s regular hours as a fraction of a full 6.5 h day.
+
+    1.0 for an ordinary session, about 0.54 for a 13:00 ET half day. A date
+    the calendar does not list as a session keeps 1.0: the floor is then the
+    writer's full-day count, which is what the check asked for. A calendar
+    failure raises CalendarUnavailable through _calendar, like every other
+    calendar read here.
+    """
+    frame = _calendar(session_schedule, day, day)
+    if len(frame) == 0:
+        return 1.0
+    row = frame.iloc[0]
+    length = row["market_close"] - row["market_open"]
+    return min(1.0, length / _FULL_SESSION)
 
 
 def _date_row_close_utc(day: date) -> datetime:
@@ -693,6 +721,10 @@ def _query_freshness_one(
     # Row-count floor: catches "fetcher ran but wrote 0 rows" (the exact
     # failure mode that sat silent for SPX for 4 months).
     min_rows = check.get("min_rows_per_day")
+    if min_rows is not None and check.get("rth_only_rows"):
+        # A half day holds proportionally fewer RTH bars: scale the floor by
+        # the expected session's length (13:00 ET close → 3.5 h of 6.5 h).
+        min_rows = math.ceil(min_rows * _session_rth_fraction(expected_date))
     if min_rows is not None and status == "ok" and row_count_recent < min_rows:
         status = "stale"
 

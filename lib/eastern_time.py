@@ -467,7 +467,14 @@ def _sessions_covering(first: date, last: date) -> _SessionCache:
             hi = date(market_today().year + _SESSION_CACHE_YEARS_AHEAD, 12, 31)
         else:
             lo, hi = cache.first, cache.last
-        built = _build_session_cache(min(lo, first), max(hi, last))
+        # Extend in whole years, so a run of requests for dates just past the
+        # cached range (a far-future ?date= stepping forward) builds once, not
+        # on every call; each build re-reads the whole range from the library.
+        if first < lo:
+            lo = date(first.year, 1, 1)
+        if last > hi:
+            hi = date(last.year + _SESSION_CACHE_YEARS_AHEAD, 12, 31)
+        built = _build_session_cache(lo, hi)
         _session_cache = built
         return built
 

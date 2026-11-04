@@ -182,6 +182,11 @@ def test_cold_calendar_does_not_stall_event_loop(monkeypatch, cold_calendar):
             return health, health_done, brief
 
     with TestClient(main.app):
+        # The lifespan warm-up built the schedule once, off the loop, before
+        # any request: this is what keeps the sync calendar reads inside the
+        # async quote and history handlers off a cold build. Without the
+        # lifespan the list is empty here.
+        assert builds == [False], f"lifespan warm-up builds (True = on the event loop): {builds}"
         health, health_done, brief = asyncio.run(_concurrent())
 
     assert health.status_code == 200
