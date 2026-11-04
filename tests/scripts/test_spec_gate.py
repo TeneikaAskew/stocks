@@ -14,6 +14,7 @@ finding gives.
 from __future__ import annotations
 
 import ast
+import ctypes
 import datetime
 import importlib.util
 import types
@@ -4587,6 +4588,257 @@ def test_complete_inventory_refuses_non_renderer_prose(inventory_repo):
         assert control.returncode == 0, control.stdout + control.stderr
         assert all(refused(r, "differs from main's render") for r in results.values()), {
             name: r.stdout + r.stderr for name, r in results.items() if not refused(r, "differs from main's render")}
+
+
+class FakeTrim:
+    """Stands in for a ctypes foreign function: records the ABI declared on it and every call."""
+    def __init__(self, result: int | None = None, error: BaseException | None = None):
+        self.result, self.error, self.calls = result, error, []
+
+    def __call__(self, *args):
+        self.calls.append((args, self.argtypes, self.restype))
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+class FrozenTrim(FakeTrim):
+    """A foreign function whose ABI cannot be declared."""
+    def __setattr__(self, name, value):
+        if name in ("argtypes", "restype"):
+            raise TypeError(f"{name} cannot be set")
+        super().__setattr__(name, value)
+
+
+class RaisingLib:
+    """A loaded library whose symbol lookup raises `error`."""
+    def __init__(self, error: BaseException):
+        self.error = error
+
+    def __getattr__(self, name):
+        raise self.error
+
+
+class RenderOrder:
+    """Wraps subprocess.run and records each start of the render child in `order`."""
+    def __init__(self, gate: types.ModuleType, order: list[str]):
+        self.gate, self.order, self.real = gate, order, subprocess.run
+
+    def __call__(self, command, *args, **kwargs):
+        if self.gate.RENDER_MODE in command:
+            self.order.append("render")
+        return self.real(command, *args, **kwargs)
+
+
+def fake_ctypes(*, lib=None, load_error: BaseException | None = None, loads: list | None = None) -> types.SimpleNamespace:
+    """A loaded `ctypes` whose CDLL records its argument, then raises `load_error` or returns `lib`."""
+    def CDLL(name):
+        if loads is not None:
+            loads.append(name)
+        if load_error is not None:
+            raise load_error
+        return lib
+    return types.SimpleNamespace(CDLL=CDLL, c_size_t=ctypes.c_size_t, c_int=ctypes.c_int)
+
+
+def release_with(gate: types.ModuleType, monkeypatch, module, platform: str = "linux"):
+    """The helper's answer with `module` as the loaded ctypes on `platform`."""
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setitem(sys.modules, "ctypes", module)
+    return gate.release_freed_heap()
+
+
+def trim_once(gate: types.ModuleType, monkeypatch, returned: int) -> tuple[bool, list, list]:
+    """(answer, CDLL arguments, malloc_trim calls with the ABI declared at each) when malloc_trim returns `returned`."""
+    trim, loads = FakeTrim(result=returned), []
+    answer = release_with(gate, monkeypatch, fake_ctypes(lib=types.SimpleNamespace(malloc_trim=trim), loads=loads))
+    return answer, loads, trim.calls
+
+
+def off_linux(gate: types.ModuleType, monkeypatch, platform: str) -> tuple[bool, list, list]:
+    """(answer, CDLL arguments, malloc_trim calls) on `platform`, with a ctypes whose CDLL(None) raises TypeError as
+    it can on Windows."""
+    trim, loads = FakeTrim(result=1), []
+    module = fake_ctypes(lib=types.SimpleNamespace(malloc_trim=trim), load_error=TypeError("CDLL(None)"), loads=loads)
+    return release_with(gate, monkeypatch, module, platform), loads, trim.calls
+
+
+@pytest.fixture(scope="module")
+def heap_gate() -> types.ModuleType:
+    """This checkout's gate, for the allocator helper's own tests, which read no repository."""
+    return load_gate(REPO)
+
+
+def test_release_freed_heap_imports_nothing_when_ctypes_is_not_loaded(heap_gate, tmp_path, monkeypatch):
+    """With ctypes not loaded and a root first on sys.path holding ctypes.py and _ctypes.py (maintenance_modules puts
+    ROOT first on the CLI path), the helper does nothing and executes neither shadow, although an import would have
+    found them first."""
+    shadow = tmp_path / "root"
+    shadow.mkdir()
+    for name in ("ctypes", "_ctypes"):
+        ran = tmp_path / f"{name}.ran"
+        (shadow / f"{name}.py").write_text(f"import pathlib\npathlib.Path({str(ran)!r}).write_text('ran')\n")
+    monkeypatch.setattr(sys, "platform", "linux")
+    for name in [m for m in sys.modules if m in ("ctypes", "_ctypes") or m.startswith("ctypes.")]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.syspath_prepend(str(shadow))
+    for name in ("ctypes", "_ctypes"):
+        if name not in sys.builtin_module_names:
+            assert importlib.util.find_spec(name).origin == str(shadow / f"{name}.py"), name
+    assert heap_gate.release_freed_heap() is False
+    assert sorted(p.name for p in tmp_path.glob("*.ran")) == []
+    assert "ctypes" not in sys.modules and "_ctypes" not in sys.modules
+
+
+def test_release_freed_heap_calls_int_malloc_trim_size_t_with_pad_zero(heap_gate, monkeypatch):
+    """glibc's `int malloc_trim(size_t pad)`: looked up in the process's own symbols (CDLL(None)), declared with exactly
+    that ABI before the call, and called once with pad 0; 1 means memory was released."""
+    answer, loads, calls = trim_once(heap_gate, monkeypatch, 1)
+    assert answer is True and loads == [None] and calls == [((0,), (ctypes.c_size_t,), ctypes.c_int)]
+
+
+def test_release_freed_heap_reads_a_zero_from_malloc_trim_as_nothing_released(heap_gate, monkeypatch):
+    """0 from malloc_trim means there was nothing to release, which is not an error: False, after the same one call."""
+    answer, loads, calls = trim_once(heap_gate, monkeypatch, 0)
+    assert answer is False and loads == [None] and calls == [((0,), (ctypes.c_size_t,), ctypes.c_int)]
+
+
+def test_release_freed_heap_calls_the_real_symbol_when_ctypes_is_loaded(heap_gate, monkeypatch):
+    """With the real ctypes loaded, a glibc Linux process makes the real call and gets a bool; a process without
+    malloc_trim, or off Linux, gets False."""
+    monkeypatch.setitem(sys.modules, "ctypes", ctypes)
+    released = heap_gate.release_freed_heap()
+    if sys.platform == "linux" and hasattr(ctypes.CDLL(None), "malloc_trim"):
+        assert released in (True, False) and type(released) is bool
+    else:
+        assert released is False
+
+
+def test_release_freed_heap_does_nothing_when_the_c_library_cannot_be_loaded(heap_gate, monkeypatch):
+    """An OSError from loading the C library is one of the two failures it turns into doing nothing."""
+    loads = []
+    assert release_with(heap_gate, monkeypatch, fake_ctypes(load_error=OSError("no C library"), loads=loads)) is False
+    assert loads == [None]
+
+
+def test_release_freed_heap_does_nothing_when_the_c_library_has_no_malloc_trim(heap_gate, monkeypatch):
+    """An AttributeError from looking up malloc_trim is the other failure it turns into doing nothing."""
+    loads = []
+    assert release_with(heap_gate, monkeypatch, fake_ctypes(lib=types.SimpleNamespace(), loads=loads)) is False
+    assert loads == [None]
+
+
+def test_release_freed_heap_does_nothing_on_windows(heap_gate, monkeypatch):
+    """Off Linux it returns before reading sys.modules or loading anything (on Windows, CDLL(None) can raise TypeError)."""
+    assert off_linux(heap_gate, monkeypatch, "win32") == (False, [], [])
+
+
+def test_release_freed_heap_does_nothing_on_cygwin(heap_gate, monkeypatch):
+    """Cygwin is not Linux: no lookup, no call."""
+    assert off_linux(heap_gate, monkeypatch, "cygwin") == (False, [], [])
+
+
+def test_release_freed_heap_does_nothing_on_macos(heap_gate, monkeypatch):
+    """macOS is not Linux: no lookup, no call."""
+    assert off_linux(heap_gate, monkeypatch, "darwin") == (False, [], [])
+
+
+def test_release_freed_heap_does_nothing_on_freebsd(heap_gate, monkeypatch):
+    """FreeBSD is not Linux: no lookup, no call."""
+    assert off_linux(heap_gate, monkeypatch, "freebsd14") == (False, [], [])
+
+
+def test_release_freed_heap_does_nothing_on_emscripten(heap_gate, monkeypatch):
+    """Emscripten is not Linux: no lookup, no call."""
+    assert off_linux(heap_gate, monkeypatch, "emscripten") == (False, [], [])
+
+
+def test_release_freed_heap_does_nothing_on_wasi(heap_gate, monkeypatch):
+    """WASI is not Linux: no lookup, no call."""
+    assert off_linux(heap_gate, monkeypatch, "wasi") == (False, [], [])
+
+
+def test_release_freed_heap_lets_an_interrupt_while_loading_propagate(heap_gate, monkeypatch):
+    """An interrupt while the C library loads is not swallowed."""
+    with pytest.raises(KeyboardInterrupt):
+        release_with(heap_gate, monkeypatch, fake_ctypes(load_error=KeyboardInterrupt()))
+
+
+def test_release_freed_heap_lets_a_type_error_while_loading_propagate(heap_gate, monkeypatch):
+    """On Linux a TypeError from CDLL(None) is unexpected and is not swallowed."""
+    with pytest.raises(TypeError):
+        release_with(heap_gate, monkeypatch, fake_ctypes(load_error=TypeError("CDLL(None)")))
+
+
+def test_release_freed_heap_lets_a_loaded_ctypes_without_cdll_propagate(heap_gate, monkeypatch):
+    """An AttributeError from the loaded ctypes itself (no CDLL) is unexpected setup, not a missing symbol."""
+    with pytest.raises(AttributeError):
+        release_with(heap_gate, monkeypatch, types.SimpleNamespace(c_size_t=ctypes.c_size_t, c_int=ctypes.c_int))
+
+
+def test_release_freed_heap_lets_another_symbol_lookup_failure_propagate(heap_gate, monkeypatch):
+    """A lookup failure other than AttributeError is not swallowed."""
+    with pytest.raises(RuntimeError):
+        release_with(heap_gate, monkeypatch, fake_ctypes(lib=RaisingLib(RuntimeError("lookup"))))
+
+
+def test_release_freed_heap_lets_an_interrupt_during_symbol_lookup_propagate(heap_gate, monkeypatch):
+    """An interrupt during the symbol lookup is not swallowed."""
+    with pytest.raises(KeyboardInterrupt):
+        release_with(heap_gate, monkeypatch, fake_ctypes(lib=RaisingLib(KeyboardInterrupt())))
+
+
+def test_release_freed_heap_lets_an_abi_that_cannot_be_declared_propagate(heap_gate, monkeypatch):
+    """A failure to declare argtypes or restype is not swallowed, and nothing is called."""
+    trim = FrozenTrim(result=1)
+    with pytest.raises(TypeError):
+        release_with(heap_gate, monkeypatch, fake_ctypes(lib=types.SimpleNamespace(malloc_trim=trim)))
+    assert trim.calls == []
+
+
+def test_release_freed_heap_lets_a_native_call_error_propagate(heap_gate, monkeypatch):
+    """An error from the native call itself is not swallowed."""
+    trim = FakeTrim(error=ctypes.ArgumentError("argument 1"))
+    with pytest.raises(ctypes.ArgumentError):
+        release_with(heap_gate, monkeypatch, fake_ctypes(lib=types.SimpleNamespace(malloc_trim=trim)))
+    assert trim.calls == [((0,), (ctypes.c_size_t,), ctypes.c_int)]
+
+
+def test_release_freed_heap_lets_an_interrupt_during_the_native_call_propagate(heap_gate, monkeypatch):
+    """An interrupt during the native call is not swallowed."""
+    trim = FakeTrim(error=KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        release_with(heap_gate, monkeypatch, fake_ctypes(lib=types.SimpleNamespace(malloc_trim=trim)))
+    assert trim.calls == [((0,), (ctypes.c_size_t,), ctypes.c_int)]
+
+
+def test_the_render_verdict_is_the_same_whether_the_heap_was_released(inventory_repo, monkeypatch):
+    """The actual renderer still runs, once per render and after the helper, and gives the same acceptance and the
+    same refusal whether the helper reports True or False."""
+    if RENDERER_HERE:
+        root, _moved = inventory_repo
+        gate = load_gate(root)
+        assert callable(getattr(gate, "release_freed_heap", None)), "the fixture's gate copy has no helper"
+        docs = list(gate.GENERATED_DOCS)
+        base = gate.Tree(_git(root, "rev-parse", "base"))
+        base_docs = {doc: base.raw(doc) for doc in docs}
+        _git(root, "checkout", "-q", "-b", "hand", "base")
+        write(root, API_DOC, edit((root / API_DOC).read_text(encoding="utf-8"), "Liveness probe:", "Liveness probe, hand-edited:"))
+        _git(root, "commit", "-q", "-am", "hand edit")
+        heads = {"accepted": _git(root, "rev-parse", "base"), "refused": _git(root, "rev-parse", "HEAD")}
+        order, results = [], {}
+        monkeypatch.setattr(gate.subprocess, "run", RenderOrder(gate, order))
+        for released in (True, False):
+            monkeypatch.setattr(gate, "release_freed_heap", lambda released=released: order.append("trim") or released)
+            for name, head in heads.items():
+                evidence = {}
+                refusals = gate.render_refusals(gate.head_entries(head), docs, base_docs, evidence=evidence)
+                results[released, name] = (refusals, evidence["exit"])
+        assert order == ["trim", "render"] * 4, order
+        assert results[True, "accepted"] == results[False, "accepted"] == ([], 0), results
+        assert results[True, "refused"] == results[False, "refused"], results
+        assert results[True, "refused"][1] == gate.RENDER_DIFFERS, results
+        assert any("differs from main's render" in r for r in results[True, "refused"][0]), results
 
 
 MEASURE = 'tests/scripts/measure_inventory_render.py'
