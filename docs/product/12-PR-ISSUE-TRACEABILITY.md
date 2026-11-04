@@ -1,6 +1,6 @@
 # PR, Issue, and Audit Traceability
 
-**Last reviewed:** 2026-10-08 · **Depth:** verified · **Against:** `295a8873` · **Last scanned:** 2026-09-29 · **Owner:** TBD
+**Last reviewed:** 2026-10-08 · **Depth:** verified · **Against:** `295a8873` · **Last scanned:** 2026-10-20 · **Owner:** TBD
 
 ## Coverage and method
 
@@ -341,9 +341,15 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and sol
 | [#1076](https://github.com/TeneikaAskew/stocks/issues/1076) | DEBT | `MARKET_HOLIDAYS_2026` is a single-year constant; holiday-aware checks break in 2027 |
 | [#1190](https://github.com/TeneikaAskew/stocks/issues/1190) | UNTRIAGED | Recompute tooling for bar-derived results after the intraday re-framing migration |
 
-**PR lineage:** [#204](https://github.com/TeneikaAskew/stocks/pull/204) *evolution* · [#205](https://github.com/TeneikaAskew/stocks/pull/205) *structural* · [#322](https://github.com/TeneikaAskew/stocks/pull/322) *remediation* · [#325](https://github.com/TeneikaAskew/stocks/pull/325) *evolution* · [#339](https://github.com/TeneikaAskew/stocks/pull/339) *remediation* · [#518](https://github.com/TeneikaAskew/stocks/pull/518) *remediation* · [#760](https://github.com/TeneikaAskew/stocks/pull/760) *remediation* · [#1546](https://github.com/TeneikaAskew/stocks/pull/1546) *evolution: shared NYSE session calendar*
+**PR lineage:** [#204](https://github.com/TeneikaAskew/stocks/pull/204) *evolution* · [#205](https://github.com/TeneikaAskew/stocks/pull/205) *structural* · [#322](https://github.com/TeneikaAskew/stocks/pull/322) *remediation* · [#325](https://github.com/TeneikaAskew/stocks/pull/325) *evolution* · [#339](https://github.com/TeneikaAskew/stocks/pull/339) *remediation* · [#518](https://github.com/TeneikaAskew/stocks/pull/518) *remediation* · [#760](https://github.com/TeneikaAskew/stocks/pull/760) *remediation* · [#1607](https://github.com/TeneikaAskew/stocks/pull/1607) *remediation* · [#1606](https://github.com/TeneikaAskew/stocks/pull/1606) *remediation* · [#1546](https://github.com/TeneikaAskew/stocks/pull/1546) *evolution: shared NYSE session calendar*
+
+Credential-safe logger lineage: [#1588](https://github.com/TeneikaAskew/stocks/pull/1588) original specification, [#1604](https://github.com/TeneikaAskew/stocks/pull/1604) unchanged-runtime source-proof successor, preserved draft [#1605](https://github.com/TeneikaAskew/stocks/pull/1605), non-stacked replacement [#1607](https://github.com/TeneikaAskew/stocks/pull/1607). Same runtime/test blobs and53-test/independent-review receipts; no acceptance or spent-review reset. Source proof/no-new audit pass; final current-head review/CI and actual logger-hardened deployment remain pending. Typed-news semantics #1600 and native connector binding remain separate.
+
+Allowance correction lineage: [#1587](https://github.com/TeneikaAskew/stocks/pull/1587) original specification, [#1604](https://github.com/TeneikaAskew/stocks/pull/1604) unchanged-runtime source-proof successor, preserved draft [#1603](https://github.com/TeneikaAskew/stocks/pull/1603), non-stacked replacement [#1606](https://github.com/TeneikaAskew/stocks/pull/1606). Same five runtime/test blobs and224-test/independent-review receipts; no acceptance or spent-review reset. Source proof and no-new audit pass; final current-head external review/CI and safe deployment remain pending. No global unused-quota or recovered-data claim.
 
 ### FEAT-OPTION-001 — Options / gamma (33 open)
+
+**PR lineage:** [#1565](https://github.com/TeneikaAskew/stocks/pull/1565) continues the isolated scheduled collector under approved successor [specification](../superpowers/specs/2026-10-29-feat-option-001-collector-source-declaration.md), admitted by #1636. Existing CLI delegates to bounded collector-only transport; threaded API behavior and financial normalization are preserved. LOCAL1/2 and CODE1–3 history remain; the explicitly approved runtime CODE4/current SEC and required checks cover the final integrated source. Specification aggregate4/CODE4 is separate. Source/test evidence is not job deployment, snapshot completeness or historical repair; seven future journal tables remain excluded.
 
 | Issue | Sev | Title |
 |---|---|---|
@@ -403,6 +409,8 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and sol
 
 ### FEAT-SIGNAL-001 — Signals / execution (25 open)
 
+**PR lineage:** [#1620](https://github.com/TeneikaAskew/stocks/pull/1620) implements the approved [#1619](https://github.com/TeneikaAskew/stocks/pull/1619) contract using existing JSONB, native producer-derived controls and typed SQL/parquet responses. This is source/local-test evidence pending normal review and deployment, not alert publication, original point-in-time certification or financial-performance proof. It does not close the broader issues below or rewrite legacy scores.
+
 | Issue | Sev | Title |
 |---|---|---|
 | [#815](https://github.com/TeneikaAskew/stocks/issues/815) | CRITICAL | [audit] T4 — Live has no stop-loss; the validating backtest does (proposed resolution: do NOT add one) |
@@ -450,7 +458,9 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and sol
 | [#971](https://github.com/TeneikaAskew/stocks/issues/971) | DEBT | test: restore a live API connectivity smoke test lost in the frontend split |
 | [#1017](https://github.com/TeneikaAskew/stocks/issues/1017) | DEBT | API: 17 operations still have no response model |
 
-**PR lineage:** [#502](https://github.com/TeneikaAskew/stocks/pull/502) *origin* · [#503](https://github.com/TeneikaAskew/stocks/pull/503) *origin* · [#505](https://github.com/TeneikaAskew/stocks/pull/505) *origin* · [#757](https://github.com/TeneikaAskew/stocks/pull/757) *origin* · [#1380](https://github.com/TeneikaAskew/stocks/pull/1380) *evolution* · [#1387](https://github.com/TeneikaAskew/stocks/pull/1387) *evolution* · [#1398](https://github.com/TeneikaAskew/stocks/pull/1398) *evolution* · [#1464](https://github.com/TeneikaAskew/stocks/pull/1464) *evolution* · [#1512](https://github.com/TeneikaAskew/stocks/pull/1512) *evolution* · [#1470](https://github.com/TeneikaAskew/stocks/pull/1470) *evolution: committed source identity; authenticated CODE review/CI required; rollout pending* · [#1536](https://github.com/TeneikaAskew/stocks/pull/1536) *evolution*
+**PR lineage:** [#502](https://github.com/TeneikaAskew/stocks/pull/502) *origin* · [#503](https://github.com/TeneikaAskew/stocks/pull/503) *origin* · [#505](https://github.com/TeneikaAskew/stocks/pull/505) *origin* · [#757](https://github.com/TeneikaAskew/stocks/pull/757) *origin* · [#1380](https://github.com/TeneikaAskew/stocks/pull/1380) *evolution* · [#1387](https://github.com/TeneikaAskew/stocks/pull/1387) *evolution* · [#1398](https://github.com/TeneikaAskew/stocks/pull/1398) *evolution* · [#1464](https://github.com/TeneikaAskew/stocks/pull/1464) *evolution* · [#1512](https://github.com/TeneikaAskew/stocks/pull/1512) *evolution* · [#1470](https://github.com/TeneikaAskew/stocks/pull/1470) *merged: committed-source verifier; authenticated CODE review and CI completed; actual-main/local-tool close-out checked* · [#1536](https://github.com/TeneikaAskew/stocks/pull/1536) *evolution* · [#1538](https://github.com/TeneikaAskew/stocks/pull/1538) *merged: complete generated-inventory verification; authenticated CODE review and CI completed; actual-main/local-tool close-out checked* · [#1591](https://github.com/TeneikaAskew/stocks/pull/1591) *merged pinned CI-envelope preparation; matching live activation merged in #1599* · [#1595](https://github.com/TeneikaAskew/stocks/pull/1595) *original verifier repair and VP-01 review* · [#1596](https://github.com/TeneikaAskew/stocks/pull/1596) *merged additive proof declaration* · [#1597](https://github.com/TeneikaAskew/stocks/pull/1597) *required immutable-plan continuation, same repair and review lineage* · [#1599](https://github.com/TeneikaAskew/stocks/pull/1599) *matching live six-minute implementation under merged #1594; current hosted acceptance recorded on the PR* · [#1656](https://github.com/TeneikaAskew/stocks/pull/1656) *spec-gate supersedes-chain retirement under its approved source-note spec (#1667; it supersedes the merged replacement spec #1664); draft, hosted CODE review pending* · [#1694](https://github.com/TeneikaAskew/stocks/pull/1694) *DOC-only close-out binds the 2026-11-02 protocol spec by exact path under spec #1692, merged; re-cut of draft #1691 with the same code and test bytes; draft, review coverage pending*
+
+Live registry continuation: [#1599](https://github.com/TeneikaAskew/stocks/pull/1599), bound to merged measured acceptance [#1594](https://github.com/TeneikaAskew/stocks/pull/1594), retains [#1592](https://github.com/TeneikaAskew/stocks/pull/1592) original59b9a309 timing and review history. Only live timeout5to6 matching separately merged pin6; merged e7e74ccc with all six checks passing, literal live/pin6 equality, registry144PASS/exporter-current314s/46s reserve, receipt1599#6400278126.
 
 ### FEAT-AUTH-001 — Auth / security (13 open)
 
@@ -630,7 +640,7 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and sol
 | [solyra#130](https://github.com/TeneikaAskew/solyra/issues/130) | P3 | [P3][Playbook] Unreachable empty state tells the reader to run scripts/run_pipeline.py |
 | [solyra#132](https://github.com/TeneikaAskew/solyra/issues/132) | P3 | [P3][Playbook] The setup count has no singular, so one card reads 1 setups and the spec asserts it |
 
-**PR lineage:** [#293](https://github.com/TeneikaAskew/stocks/pull/293) *audit* · [#335](https://github.com/TeneikaAskew/stocks/pull/335) *evolution* · [#336](https://github.com/TeneikaAskew/stocks/pull/336) *evolution* · [#444](https://github.com/TeneikaAskew/stocks/pull/444) *origin* · [#620](https://github.com/TeneikaAskew/stocks/pull/620) *evolution* · [#774](https://github.com/TeneikaAskew/stocks/pull/774) *remediation*
+**PR lineage:** [#1640](https://github.com/TeneikaAskew/stocks/pull/1640) *#1308 market-date runtime* · [#1637](https://github.com/TeneikaAskew/stocks/pull/1637) *market-date specification* · [#293](https://github.com/TeneikaAskew/stocks/pull/293) *audit* · [#335](https://github.com/TeneikaAskew/stocks/pull/335) *evolution* · [#336](https://github.com/TeneikaAskew/stocks/pull/336) *evolution* · [#444](https://github.com/TeneikaAskew/stocks/pull/444) *origin* · [#620](https://github.com/TeneikaAskew/stocks/pull/620) *evolution* · [#774](https://github.com/TeneikaAskew/stocks/pull/774) *remediation*
 
 ### FEAT-SETTINGS-001 — Settings (13 open)
 
@@ -753,7 +763,11 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and sol
 | [solyra#127](https://github.com/TeneikaAskew/solyra/issues/127) | P3 | [P3][Catalysts] Expanding an event adds nothing and no row links to its article or filing |
 | [solyra#128](https://github.com/TeneikaAskew/solyra/issues/128) | P3 | [P3][Catalysts] A titleless event prints "undefined undefined" and no impact counts as Medium |
 
-**PR lineage:** [#220](https://github.com/TeneikaAskew/stocks/pull/220) · [#514](https://github.com/TeneikaAskew/stocks/pull/514) · [#532](https://github.com/TeneikaAskew/stocks/pull/532) (the README's PRs column; kinds not classified)
+**PR lineage:** [#220](https://github.com/TeneikaAskew/stocks/pull/220) · [#514](https://github.com/TeneikaAskew/stocks/pull/514) · [#532](https://github.com/TeneikaAskew/stocks/pull/532) (the README's PRs column; kinds not classified) · [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) (finite nullable EPS implementation)
+
+Finite nullable estimate contract: [#1618](https://github.com/TeneikaAskew/stocks/pull/1618) (specification; merged). Implementation remains a separate normal delivery. #1301 is touched for invalid optional estimates only; its multi-source estimate-dedup behavior is not claimed fixed.
+
+Implementation draft [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) follows merged finite-nullable specification #1618. Numeric-title portion of #1301 only; no claim of fixing its source-dedup concern or broad #1269. Local full unit7719passed/51skipped/112warnings and separate realPG/API proof; current-head hosted review and actual existing API/producer rollout remain required.
 
 ### FEAT-LIVE-001 — Intraday monitoring (20 open)
 

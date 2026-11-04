@@ -13,11 +13,16 @@ finding gives.
 """
 from __future__ import annotations
 
+import ast
 import datetime
+import importlib.util
+import types
 import json
 import os
+import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -28,6 +33,7 @@ TODAY = datetime.date.today().isoformat()   # the head commit's date, which Last
 REPO = Path(__file__).resolve().parents[2]
 GATE = REPO / "scripts/gate/spec_gate.py"
 WORKFLOW = REPO / ".github/workflows/spec-gate.yml"
+RENDERER_HERE = (REPO / "scripts/maintenance/doc_inventory.py").is_file()
 
 CATALOG = "docs/product/02-FEATURE-CATALOG.md"
 REQUIREMENTS = "docs/product/01-PRODUCT-REQUIREMENTS.md"
@@ -151,25 +157,53 @@ def write(repo: Path, path: str, text: str) -> None:
         p.chmod(0o755)   # a hook is executable unless a test takes that away
 
 
-@pytest.fixture
-def repo(tmp_path):
+def configure_fixture_git(root: Path) -> None:
+    """Only Git's exact default local config can receive the fixed fixture settings directly."""
+    default = (b"[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n"
+               b"\tbare = false\n\tlogallrefupdates = true\n")
+    try:
+        if "GIT_CONFIG" in os.environ:
+            eligible = False
+        else:
+            path = root / _git(root, "rev-parse", "--git-path", "config")
+            eligible = (path == root / ".git/config" and not (root / ".git").is_symlink()
+                        and not path.is_symlink() and path.is_file() and path.read_bytes() == default)
+    except (OSError, subprocess.CalledProcessError):
+        eligible = False
+    if eligible:
+        with path.open("ab") as stream:
+            stream.write(b"[maintenance]\n\tautoDetach = false\n[gc]\n\tautoDetach = false\n"
+                         b"[user]\n\temail = t@example.com\n\tname = t\n[commit]\n\tgpgsign = false\n")
+        return
+    # Unknown templates/layouts retain Git's overwrite, include and multivalue-error semantics.
+    _git(root, "config", "maintenance.autoDetach", "false")
+    _git(root, "config", "gc.autoDetach", "false")
+    _git(root, "config", "user.email", "t@example.com")
+    _git(root, "config", "user.name", "t")
+    _git(root, "config", "commit.gpgsign", "false")
+
+
+def make_repo(root: Path):
     """`main` holds the gate, a catalog, requirements, one approved spec and its
     ready plan, and one code file. Tag `base` marks it; every change branches
     from there."""
-    _git(tmp_path, "init", "-q", "-b", "main")
-    _git(tmp_path, "config", "user.email", "t@example.com")
-    _git(tmp_path, "config", "user.name", "t")
-    _git(tmp_path, "config", "commit.gpgsign", "false")
-    write(tmp_path, "scripts/gate/spec_gate.py", GATE.read_text(encoding="utf-8"))
-    write(tmp_path, CATALOG, CATALOG_TEXT)
-    write(tmp_path, REQUIREMENTS, REQUIREMENTS_TEXT)
-    write(tmp_path, SPEC, spec())
-    write(tmp_path, PLAN, plan())
-    write(tmp_path, "lib/model.py", "DECISION = 'size'\n")
-    _git(tmp_path, "add", "-A")
-    _git(tmp_path, "commit", "-q", "-m", "base")
-    _git(tmp_path, "tag", "base")
-    return tmp_path
+    _git(root, "init", "-q", "-b", "main")
+    configure_fixture_git(root)
+    write(root, "scripts/gate/spec_gate.py", GATE.read_text(encoding="utf-8"))
+    write(root, CATALOG, CATALOG_TEXT)
+    write(root, REQUIREMENTS, REQUIREMENTS_TEXT)
+    write(root, SPEC, spec())
+    write(root, PLAN, plan())
+    write(root, "lib/model.py", "DECISION = 'size'\n")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "base")
+    _git(root, "tag", "base")
+    return root
+
+
+@pytest.fixture
+def repo(tmp_path):
+    return make_repo(tmp_path)
 
 
 def gate(repo: Path, *args: str, **env: str) -> subprocess.CompletedProcess:
@@ -184,7 +218,7 @@ def cells(line: str) -> list[str]:
     return [c.strip() for c in line.strip().strip("|").split("|")]
 
 
-def on_base(repo: Path, files: dict[str, str | None]) -> None:
+def on_base(repo: Path, files: dict[str, str | None], then=None) -> None:
     """Commit `files` on main and move the `base` tag there: what a change is measured against.
     The catalog row and the approved spec are read from the base, never from the change."""
     _git(repo, "reset", "-q", "--hard")
@@ -195,12 +229,14 @@ def on_base(repo: Path, files: dict[str, str | None]) -> None:
             (repo / path).unlink()
         else:
             write(repo, path, text)
+    if then is not None:
+        then(repo)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "on base")
     _git(repo, "tag", "-f", "base")
 
 
-def pr(repo: Path, branch: str, files: dict[str, str | None], **env: str) -> subprocess.CompletedProcess:
+def pr(repo: Path, branch: str, files: dict[str, str | None], then=None, **env: str) -> subprocess.CompletedProcess:
     """A pull request from `branch`, cut from base, that writes `files` (None deletes one),
     judged the way the spec-gate workflow judges it."""
     _git(repo, "reset", "-q", "--hard")
@@ -211,10 +247,13 @@ def pr(repo: Path, branch: str, files: dict[str, str | None], **env: str) -> sub
             (repo / path).unlink()
         else:
             write(repo, path, text)
+    if then is not None:
+        then(repo)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", f"change on {branch}")
     # (stocks#1205 r4127577496: Actions passes two 40-character shas, so the suite does too)
-    return gate(repo, "--pr", _git(repo, "rev-parse", "base"), _git(repo, "rev-parse", "HEAD"), **{"PR_HEAD_REF": branch, **env})
+    base, head = base_and_head(repo)
+    return gate(repo, "--pr", base, head, **{"PR_HEAD_REF": branch, **env})
 
 
 def test_fixture_commit_dates_survive_midnight_and_preserve_explicit_dates(repo, monkeypatch):
@@ -3835,3 +3874,2081 @@ def test_existing_root_regular_package_child_is_process_input_on_both_sides(repo
     removed = pr(repo, BRANCH, {'json/__init__.py': None, 'json/decoder.py': 'VALUE = 3\n'},
                  PR_TITLE='FEAT-MODEL-001: package removal remains process input', PR_DRAFT='true')
     assert removed.returncode == 1 and 'belong to FEAT-CICD-001' in removed.stdout
+
+
+# REQ-GOV-004 byte-scope acceptance, attributed core fd178/9ee; current governance retained.
+
+def load_gate(root: Path) -> types.ModuleType:
+    """root's copy of the gate as a module of its own: its ROOT is root, so its git calls read that repository.
+    Registered in sys.modules, where dataclasses look their module up."""
+    n = 0
+    while f"spec_gate_under_test_{n}" in sys.modules:
+        n += 1
+    name = f"spec_gate_under_test_{n}"
+    found = importlib.util.spec_from_file_location(name, root / "scripts/gate/spec_gate.py")
+    module = importlib.util.module_from_spec(found)
+    sys.modules[name] = module
+    found.loader.exec_module(module)
+    return module
+
+def base_and_head(repo: Path) -> tuple[str, str]:
+    base, head = _git(repo, "rev-parse", "base", "HEAD").splitlines()
+    return base, head
+
+def test_changed_lines_reads_the_diff_as_bytes(repo):
+    """FEAT-CICD-001 spec, the diff reader (done_when[2]).
+
+    Main's reader took a content line beginning with `---` or `+++` for a file header and split text-mode output at a
+    lone carriage return and at U+2028: the first diff read as [], the second as five lines that git never wrote.
+    """
+    sg = load_gate(repo)
+    on_base(repo, {"docs/f.md": "a\n---\n-- keep\nb\nc\nd\n"})
+    pr(repo, "docs/probe", {"docs/f.md": "a\n+++ added\n++ also\nb\nc\nd\n"})
+    assert sg.changed_lines(*base_and_head(repo), "docs/f.md") == [("-", 2, "---"), ("-", 3, "-- keep"), ("+", 2, "+++ added"), ("+", 3, "++ also")]
+    on_base(repo, {"docs/f.md": "a\nb\nc\nd\ne\nf\n"})
+    pr(repo, "docs/probe", {"docs/f.md": "a\nb-new\r+phantom\nc\nd\ne-new\u2028@@ -9 +9 @@\nf\n"})
+    assert sg.changed_lines(*base_and_head(repo), "docs/f.md") == [("-", 2, "b"), ("+", 2, "b-new\r+phantom"), ("-", 5, "e"), ("+", 5, "e-new\u2028@@ -9 +9 @@")]
+    # (red-team round 1: context lines that git's config adds between hunks, blank ones printed empty, are counted)
+    on_base(repo, {"docs/f.md": "a\nb\n\nc\nd\ne\n"})
+    pr(repo, "docs/probe", {"docs/f.md": "a\nB\n\nc\nd\nE\n"})
+    _git(repo, "config", "diff.interHunkContext", "5")
+    _git(repo, "config", "diff.suppressBlankEmpty", "true")
+    assert sg.changed_lines(*base_and_head(repo), "docs/f.md") == [("-", 2, "b"), ("+", 2, "B"), ("-", 6, "e"), ("+", 6, "E")]
+
+def test_changed_lines_raises_on_a_binary_or_hunkless_diff(repo):
+    """FEAT-CICD-001 spec, the diff reader (done_when[2]).
+
+    A NUL makes git print "Binary files differ" and a mode change prints no hunk: main's reader returned no lines for a
+    path it was asked about, which the catalog scope check read as nothing changed.
+    """
+    sg = load_gate(repo)
+    on_base(repo, {"docs/f.md": "a\n"})
+    pr(repo, "docs/probe", {"docs/f.md": "a\x00\n"})                                  # binary
+    with pytest.raises(sg.GitFailed, match="no text hunk"):
+        sg.changed_lines(*base_and_head(repo), "docs/f.md")
+    pr(repo, "docs/probe", {}, then=lambda r: (r / "docs/f.md").chmod(0o755))         # mode only
+    with pytest.raises(sg.GitFailed, match="no text hunk"):
+        sg.changed_lines(*base_and_head(repo), "docs/f.md")
+
+def test_added_lines_is_gone():
+    """FEAT-CICD-001 spec, the diff reader (done_when[2]): added_lines had no caller and read the diff as main's
+    changed_lines did."""
+    defined = {n.name for n in ast.parse(GATE.read_text(encoding="utf-8")).body if isinstance(n, ast.FunctionDef)}
+    assert "changed_lines" in defined and "added_lines" not in defined
+
+def test_feat_span_and_section_of_number_lines_as_git_does(repo):
+    """FEAT-CICD-001 spec, the diff reader (done_when[2]): git numbers lines by "\\n" alone. Main split decoded text
+    with splitlines(), which also breaks at U+2028 and a lone carriage return, so its line numbers ran ahead of git's."""
+    sg = load_gate(repo)
+    assert sg.feat_span("### FEAT-A-001\nx y\n### FEAT-B-001\nz\n", "FEAT-A-001") == {1, 2}      # main: {1, 2, 3}
+    assert sg.section_of("### FEAT-A-001\nx\ry\n### FEAT-B-001\n", "FEAT-A-001") == range(1, 3)    # main: range(1, 4)
+
+def test_the_catalog_scope_check_sees_every_changed_line(repo):
+    """FEAT-CICD-001 spec, the diff reader (done_when[2]).
+
+    Each case is an edit to FEAT-DATA-001's record by the FEAT-MODEL-001 branch that main's gate passed (measured):
+    the reader dropped the line, or numbered it inside the branch's own record.
+    """
+    own = "### FEAT-MODEL-001\n\n- Status: Production"
+    added = "### FEAT-DATA-001\nAdded by a FEAT-MODEL-001 branch.\nAnd a second line.\n"
+    ok = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body()}
+    outcomes = {}
+    on_base(repo, {CATALOG: CATALOG_TEXT + "\n---\n\n-- keep this caveat\n"})
+    outcomes["a removed '---' line"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT + "\n\n\n-- keep this caveat\n"}, **ok)
+    on_base(repo, {CATALOG: CATALOG_TEXT})
+    outcomes["a NUL in the own Status"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + "\x00").replace(
+        "### FEAT-DATA-001\n\n- Status: Production", "### FEAT-DATA-001\n\n- Status: Retired")}, **ok)
+    outcomes["U+2028 in the own record"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + " " * 4).replace("### FEAT-DATA-001\n", added)}, **ok)
+    outcomes["lone CRs in the own record"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + "\r" * 4).replace("### FEAT-DATA-001\n", added)}, **ok)
+    # (red-team round 1: with diff.interHunkContext in the config git reads, main numbered the second hunk inside the own record)
+    _git(repo, "config", "diff.interHunkContext", "5")
+    outcomes["context lines from git's config"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + "\n- Note: mine").replace(
+        "### FEAT-DATA-001\n\n- Status: Production", "### FEAT-DATA-001\n\n- Status: Retired")}, **ok)
+    _git(repo, "config", "--unset", "diff.interHunkContext")
+    missed = {k: r.stdout[-300:] for k, r in outcomes.items() if r.returncode != 1
+              or not ("lines outside FEAT-MODEL-001's row and record change" in r.stdout or "no text hunk" in r.stdout)}
+    assert missed == {}, missed
+
+
+def change(repo: Path, branch: str, files: dict[str, str | None], then: Callable[[Path], object] | None = None) -> None:
+    """Commit, on `branch` cut from base, `files` (None deletes one), after `then(repo)` if given."""
+    _git(repo, "clean", "-qfd")
+    _git(repo, "checkout", "-f", "-q", "-B", branch, "base")
+    for path, text in files.items():
+        if text is None:
+            (repo / path).unlink()
+        else:
+            write(repo, path, text)
+    if then is not None:
+        then(repo)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", f"change on {branch}")
+
+def test_the_renderer_and_its_snapshot_are_process_files(repo):
+    """FEAT-CICD-001 spec, is_process_file (done_when[4]): the gate now trusts the renderer, its package and its
+    snapshot to decide a verdict, so a change to them is FEAT-CICD-001's work, as the gate's own files are."""
+    cicd_row = CATALOG_TEXT.replace("| [FEAT-DATA-001]", "| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]", 1)
+    on_base(repo, {CATALOG: cicd_row})
+    paths = ("scripts/__init__.py", "scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
+             "scripts/maintenance/__init__.py", "tests/fixtures/live_gcp_snapshot_2026-09-07.json")
+    missed = [p for p in paths if "belong to FEAT-CICD-001" not in
+              pr(repo, BRANCH, {**CODE, p: "# x\n"}, PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body()).stdout]
+    assert missed == [], missed
+
+
+def test_the_gate_names_the_documents_and_snapshot_the_docs_test_reads():
+    """FEAT-CICD-001 spec, parity (done_when[3]): the gate's three document paths are the renderer's MARKER_DOCS
+    and its snapshot is the docs test's SNAPSHOT, so the gate checks what the docs test checks."""
+    sg = load_gate(REPO)
+    assert sg.GENERATED_RULE == "REQ-GOV-004" and sg.RENDER_INPUTS == (
+        "scripts/__init__.py", "scripts/maintenance/__init__.py",
+        "scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
+        "tests/scripts/test_check_generated_docs.py", "tests/fixtures/live_gcp_snapshot_2026-09-07.json")
+    # the renderer tests cannot be switched off in a repository that carries the documents
+    assert RENDERER_HERE == all((REPO / d).is_file() for d in sg.GENERATED_DOCS)
+    if RENDERER_HERE:
+        from scripts.maintenance import check_generated_docs as cgd
+        from tests.scripts.test_check_generated_docs import SNAPSHOT
+        assert sg.GENERATED_DOCS == cgd.MARKER_DOCS and REPO / sg.RENDER_SNAPSHOT == SNAPSHOT
+
+
+# The generated documents: a fixture tree holding scripts/maintenance/, the snapshot and only the files the three
+# documents' blocks render from, rendered once per session (inventory_template) and copied per test.
+INFRA = "docs/product/infrastructure"
+GENERATED = (f"{INFRA}/05-a-ARCHITECTURE.md", f"{INFRA}/05-c-DATA_DEPENDENCIES.md", f"{INFRA}/05-e-API.md")
+API_DOC = GENERATED[2]
+SNAPSHOT_FILE = "tests/fixtures/live_gcp_snapshot_2026-09-07.json"
+MAIN_PY = "platform/api/main.py"
+RENDER_TREE = ("scripts/maintenance/__init__.py", "scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
+               SNAPSHOT_FILE, MAIN_PY, "gcp/deploy.sh", "gcp/schema.sql", "scripts/discord/register_commands.py")
+# Representative SOURCE input, not mocked renderer output. The same four source
+# paths exercise real route/deploy/schema/command parsing and line citations.
+# Full production-tree rendering is measured separately; copying its entire ASTs
+# into every adversarial fixture needlessly multiplied test I/O/render time.
+RENDER_SOURCE = {
+    MAIN_PY: '"""Representative API.\n\nInventory fixture.\n"""\nfrom fastapi import FastAPI\nfrom gcp.database import query_to_dataframe\napp = FastAPI()\n\n@app.get("/health")\ndef health_check():\n    """Liveness probe: reports service health."""\n    return {"status": "ok"}\n\n@app.get("/api/daily")\ndef daily_rows():\n    """Read retained daily observations."""\n    return query_to_dataframe("SELECT close FROM market_data_daily")\n',
+    "gcp/deploy.sh": '#!/bin/bash\ndeploy_probe() {\n    gcloud run jobs deploy inventory-probe \\\n        --command python3 \\\n        --args gcp/probe.py\n}\n',
+    "gcp/schema.sql": "CREATE TABLE market_data_daily (\n    ticker TEXT NOT NULL,\n    date DATE NOT NULL,\n    close DOUBLE PRECISION,\n    volume BIGINT,\n    PRIMARY KEY (ticker, date)\n);\n",
+    "scripts/discord/register_commands.py": 'SUB_COMMAND = 1\nCOMMANDS = [{"name": "probe", "description": "Inventory probe", "options": []}]\n',
+}
+TRACE_TEXT = "# Traceability\n\n### FEAT-MODEL-001\n\n- #1\n"
+RULE = "REQ-GOV-004"
+DOCS_OK = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body() + "\n\n## Capacity\nn/a: x\n"}
+
+
+def skeleton(doc: str) -> str:
+    """doc with prose around every block the docs test expects in it, each block empty until rendered."""
+    from scripts.maintenance.check_generated_docs import EXPECTED_MARKERS   # stocks only: called where RENDERER_HERE
+    from scripts.maintenance.doc_inventory import MARKER_END, MARKER_START
+    parts = [f"# {Path(doc).stem}", "Prose before the blocks."]
+    for name in EXPECTED_MARKERS[doc]:
+        parts += [f"{MARKER_START.format(name=name)}\n\n{MARKER_END.format(name=name)}", f"Prose after {name}."]
+    return "\n\n".join(parts) + "\n"
+
+
+def render(root: Path, docs: tuple[str, ...] = GENERATED) -> None:
+    """Re-render docs' blocks in root's working tree with root's renderer, as a person re-renders them.
+    -B: a __pycache__ would otherwise be committed by `git add -A`."""
+    subprocess.run([sys.executable, "-B", "-m", "scripts.maintenance.doc_inventory", "--root", ".", "--snapshot", SNAPSHOT_FILE,
+                    "--insert", *docs], cwd=root, check=True)
+
+
+def moved_main() -> str:
+    """Fixture platform/api/main.py with four lines added after its docstring: every line the documents cite below
+    them moves, as stocks#1366 moved them."""
+    lines = RENDER_SOURCE[MAIN_PY].split("\n")
+    return "\n".join(lines[:4] + ["# moved by four lines, as stocks#1366 moved them", "# two", "# three", "# four"] + lines[4:])
+
+
+def edit(text: str, old: str, new: str) -> str:
+    """text with its first `old` replaced, which must be there: a case cannot silently become its control."""
+    assert old in text, old
+    return text.replace(old, new, 1)
+
+
+def refused(r: subprocess.CompletedProcess, fragment: str) -> bool:
+    return r.returncode == 1 and RULE in r.stdout and fragment in r.stdout
+
+
+@pytest.fixture(scope="session")
+def inventory_template(tmp_path_factory) -> tuple[Path, dict[str, str]] | None:
+    """make_repo plus RENDER_TREE from REPO and the three documents rendered over it, as `base`; and `moved`, the
+    files a change that moves main.py's cited lines carries: main.py and the three documents re-rendered. The render
+    runs in this whole repository, because lib/ and scripts/gate/ change its modules and table-reference blocks."""
+    if not RENDERER_HERE:
+        return None
+    root = make_repo(tmp_path_factory.mktemp("inventory"))
+    files = {p: RENDER_SOURCE[p] if p in RENDER_SOURCE else (REPO / p).read_bytes().decode("utf-8")
+             for p in RENDER_TREE}
+    on_base(root, {**files, **{d: skeleton(d) for d in GENERATED}, TRACEABILITY: TRACE_TEXT}, then=render)
+    _git(root, "checkout", "-q", "-b", "moved", "base")
+    write(root, MAIN_PY, moved_main())
+    render(root)
+    moved = {p: (root / p).read_bytes().decode("utf-8") for p in (MAIN_PY, *GENERATED)}
+    _git(root, "checkout", "-q", "-f", "main")
+    _git(root, "branch", "-q", "-D", "moved")
+    return root, moved
+
+
+@pytest.fixture
+def inventory_repo(inventory_template, tmp_path) -> tuple[Path, dict[str, str]] | None:
+    """A copy of inventory_template for one test, which may move its base."""
+    if inventory_template is None:
+        return None
+    template, moved = inventory_template
+    root = tmp_path / "repo"
+    shutil.copytree(template, root, symlinks=True)
+    return root, dict(moved)
+
+
+def test_the_gate_imports_the_renderer_only_for_a_generated_document(inventory_repo):
+    """FEAT-CICD-001 spec, the allowance (done_when[3]): the gate imports scripts/maintenance only when one of the
+    three documents changes, so every other pull request is judged without it."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        on_base(root, {"scripts/maintenance/doc_inventory.py": 'raise RuntimeError("doc_inventory imported")\n'})
+        code_only = pr(root, BRANCH, CODE, **DOCS_OK)
+        with_docs = pr(root, BRANCH, {**CODE, API_DOC: moved[API_DOC]}, **DOCS_OK)
+        assert (code_only.returncode, with_docs.returncode != 0, "doc_inventory imported" in with_docs.stderr) == (0, True, True), \
+            code_only.stdout + with_docs.stdout + with_docs.stderr
+
+
+def test_a_checkout_without_the_renderer_refuses_generated_documents_as_before(repo):
+    """FEAT-CICD-001 spec, the allowance (done_when[3]): a checkout without scripts/maintenance/ (solyra's, and this
+    suite's plain repo) gives no allowance and refuses a generated document as main does, without failing."""
+    r = pr(repo, BRANCH, {**CODE, "docs/product/infrastructure/05-e-API.md": "# API\n"}, **DOCS_OK)
+    assert r.returncode == 1 and "05-e-API.md changes in this feature change" in r.stdout and RULE in r.stdout \
+        and "Traceback" not in r.stderr, r.stdout + r.stderr
+
+
+def test_parent_renderer_initializer_cannot_enter_main_via_a_feature(inventory_repo):
+    """Real BASE-checkout first-stage refusal closes the later startup-verdict bypass."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        sentinel = root / "UNTRUSTED_PACKAGE_EXECUTED"
+        cicd_row = CATALOG_TEXT.replace("| [FEAT-DATA-001]", "| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]", 1)
+        on_base(root, {CATALOG: cicd_row})
+        initializer = (
+            "import os, sys\n"
+            "if '--pr' in sys.argv:\n"
+            f"    open({str(sentinel)!r}, 'w').write('executed')\n"
+            "    print('spec gate ok: forged by package startup', flush=True)\n"
+            "    os._exit(0)\n"
+        )
+        change(root, BRANCH, {**moved, "scripts/__init__.py": initializer})
+        base, head = base_and_head(root)
+        _git(root, "checkout", "-q", "-f", "main")
+        attempted = gate(root, "--pr", base, head, PR_HEAD_REF=BRANCH, **DOCS_OK)
+        assert attempted.returncode == 1 and "belong to FEAT-CICD-001" in attempted.stdout, attempted.stdout
+        assert RULE in attempted.stdout and "which decide the render" in attempted.stdout, attempted.stdout
+        assert not sentinel.exists(), "HEAD initializer executed before a trusted verdict"
+        # The refused first stage cannot become BASE. From the unchanged real
+        # BASE, the otherwise IDENTICAL generated movement is still accepted.
+        change(root, BRANCH, moved)
+        base, head = base_and_head(root)
+        _git(root, "checkout", "-q", "-f", "main")
+        clean = gate(root, "--pr", base, head, PR_HEAD_REF=BRANCH, **DOCS_OK)
+        assert clean.returncode == 0, clean.stdout + clean.stderr
+        assert not sentinel.exists()
+
+
+def test_the_refusal_names_the_inventory_allowance(repo):
+    """FEAT-CICD-001 spec, the allowance (done_when[7]): the refusal for every other docs/product/ path names the
+    re-rendered inventory blocks as an allowed change and cites REQ-GOV-004."""
+    r = pr(repo, BRANCH, {**CODE, "docs/product/13-ROADMAP.md": "# Roadmap\n"}, **DOCS_OK)
+    assert r.returncode == 1 and "13-ROADMAP.md changes in this feature change" in r.stdout \
+        and "re-rendered by scripts/maintenance/doc_inventory.py (REQ-GOV-004)" in r.stdout, r.stdout
+    assert "existing fixed renderer-owned count/as-of substitutions" in r.stdout, r.stdout
+    assert all(name in r.stdout for name in ('05-a-ARCHITECTURE.md', '05-c-DATA_DEPENDENCIES.md', '05-e-API.md')), r.stdout
+
+
+def test_render_inputs_and_the_documents_themselves_stay_put(inventory_repo):
+    """FEAT-CICD-001 spec, "Render inputs unchanged" and "Same file" (done_when[1]): each case differs from the
+    #1366-shaped head (moved) in one condition, and each is refused citing REQ-GOV-004."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        inputs, same = "which decide the render", "is deleted, renamed or changes file mode"
+        cases = {   # name: (files, then, fragment); each differs from the #1366 head in one condition
+            "parent scripts initializer changes": ({**moved, "scripts/__init__.py": "# touched\n"}, None, inputs),
+            "maintenance initializer changes": ({**moved, "scripts/maintenance/__init__.py": "# touched\n"}, None, inputs),
+            "doc_inventory.py changes": ({**moved, "scripts/maintenance/doc_inventory.py": (REPO / "scripts/maintenance/doc_inventory.py").read_text(encoding="utf-8") + "# touched\n"}, None, inputs),
+            "check_generated_docs.py changes": ({**moved, "scripts/maintenance/check_generated_docs.py": (REPO / "scripts/maintenance/check_generated_docs.py").read_text(encoding="utf-8") + "# touched\n"}, None, inputs),
+            "the docs test changes": ({**moved, "tests/scripts/test_check_generated_docs.py": "# touched\n"}, None, inputs),
+            "the snapshot changes": ({**moved, SNAPSHOT_FILE: (REPO / SNAPSHOT_FILE).read_text(encoding="utf-8") + "\n"}, None, inputs),
+            "05-e deleted": ({**moved, API_DOC: None}, None, same),
+            "05-e renamed": ({**moved, API_DOC: None, f"{INFRA}/05-e-API-v2.md": moved[API_DOC]}, None, same),
+            "05-e made executable": (moved, lambda r: (r / API_DOC).chmod(0o755), same),
+        }
+        outcomes = {k: pr(root, BRANCH, f, then=t, **DOCS_OK) for k, (f, t, _) in cases.items()}
+        missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, cases[k][2])}
+        assert missed == {}, missed
+
+
+def test_only_inventory_block_bodies_change(inventory_repo):
+    """FEAT-CICD-001 spec, "Exact markers" and "Only block bodies change" (done_when[1]): with every block body set
+    aside, 05-e must equal main's byte for byte, on exact marker lines in main's order. Each case is the #1366 head
+    with one change, and each is refused citing REQ-GOV-004 and naming its condition."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        t = moved[API_DOC]
+        rs, re_, ts = "<!-- inventory:routes:start -->", "<!-- inventory:routes:end -->", "<!-- inventory:routers:start -->"
+        routers = t[t.index(ts):t.index("<!-- inventory:routers:end -->") + len("<!-- inventory:routers:end -->\n")]
+        routes = t[t.index(rs):t.index(re_) + len(re_) + 1]
+        n = t.split("\n").index("Prose after routes.") + 1
+        first_body = t.index("\n", t.index(rs) + len(rs) + 1)          # the newline ending the routes block's first body line
+        cases = {
+            "a byte outside the blocks": (edit(t, "Prose after routes.", "Prose after routes!"), f"changes line {n} outside its inventory blocks"),
+            "CRLF throughout": (t.replace("\n", "\r\n"), "carriage return"),
+            "a CRLF inside a block body": (t[:first_body] + "\r" + t[first_body:], "carriage return"),
+            "a marker added": (t + re_ + "\n", "marker lines"),
+            "a marker removed": (edit(t, "<!-- inventory:routers:end -->\n", ""), "marker lines"),
+            "a block moved": (edit(t.replace(routes, ""), ts, routes + ts), "marker lines"),
+            "a marker renamed": (t.replace("inventory:routes:", "inventory:paths:"), "marker lines"),
+            "a marker re-spaced": (edit(t, rs, "<!--  inventory:routes:start -->"), "marker lines"),
+            "a block repeated": (edit(t, routers, routers + routers), "marker lines"),
+            "a name 05-e does not carry": (edit(t, "Prose after routes.", "Prose after routes.\n<!-- inventory:jobs:start -->"), "marker lines"),
+        }
+        outcomes = {k: pr(root, BRANCH, {**moved, API_DOC: text}, **DOCS_OK) for k, (text, _) in cases.items()}
+        missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, cases[k][1])}
+        assert missed == {}, missed
+
+
+# A route whose path holds an escape sequence written as source text: main's renderer renders each escape into one
+# 05-a and two 05-e block lines (verified 2026-10-11), so the bytes come from the fixture tree's own rendered text.
+ROUTE = '\n\n@app.get("/api/zz{}")\ndef zz_probe():\n    """Probe."""\n    return {{}}\n'
+
+
+def test_a_block_carries_only_bytes_the_docs_test_sees(inventory_repo):
+    """FEAT-CICD-001 spec, "Clean bytes" (done_when[1]): the docs test reads with read_text(), so a NUL, U+0085,
+    U+2028 or U+2029 inside a block body passes it unseen. Rendered from the route path, so only this rule refuses."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        outcomes = {esc: pr(root, BRANCH, {MAIN_PY: moved_main() + ROUTE.format(esc)}, then=render, **DOCS_OK)
+                    for esc in ("\\x00", "\\x85", "\\u2028", "\\u2029")}   # rendered from the route path, so only this rule refuses
+        missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, "carries a carriage return, NUL, U+0085, U+2028 or U+2029")}
+        assert missed == {}, missed
+
+
+def mktree(root: Path, lines: str) -> str:
+    """The id of the tree `git mktree` builds from ls-tree-format `lines`."""
+    return subprocess.run(["git", "mktree"], input=lines, cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def spliced(root: Path, entry: str) -> tuple[str, str]:
+    """(base, head) rebuilt with one more root entry, `vendor`, a tree made from the single ls-tree line `entry`, in
+    both commits. The head commit is parented on the base, so the entry sits in the head tree and never in the diff.
+    Called after pr(), on its HEAD."""
+    vendor = mktree(root, entry + "\n")
+    shas: list[str] = []
+    for rev in ("base", "HEAD"):
+        tree = mktree(root, _git(root, "ls-tree", f"{rev}^{{tree}}") + f"\n040000 tree {vendor}\tvendor\n")
+        parent = shas[-1] if shas else _git(root, "rev-parse", "base")
+        shas.append(_git(root, "commit-tree", tree, "-p", parent, "-m", f"{rev} with vendor"))
+    return shas[0], shas[1]
+
+
+def test_the_head_tree_is_plain_files(inventory_repo):
+    """FEAT-CICD-001 spec, "Exact render", the tree (done_when[1]): the render reads the head tree written out as plain
+    files, so a .gitattributes that changes bytes on export, a symbolic link, a submodule and a path component that
+    is empty, '.', '..' or '.git' (in any case) are each refused before anything is written."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        outcomes = {f".gitattributes {a}": (pr(root, BRANCH, {**moved, ".gitattributes": f"{API_DOC} {a}\n"}, **DOCS_OK), "a .gitattributes")
+                    for a in ("export-subst", "eol=crlf", "ident")}
+        blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], input="../gcp/schema.sql", cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+        x = mktree(root, f"100644 blob {blob}\tx\n")
+        entries = {"a symbolic link": (f"120000 blob {blob}\tlink", "a symbolic link"),
+                   "a submodule": (f"160000 commit {_git(root, 'rev-parse', 'base')}\tsub", "a submodule"),
+                   "an empty component": (f"040000 tree {x}\t", "cannot be listed"),
+                   **{f"component {c}": (f"040000 tree {x}\t{c}", "a path component") for c in (".", "..", ".git", ".GIT")},
+                   # (red-team round 1: a name the filesystem cannot hold crashed the gate with a traceback)
+                   "a 256-byte name": (f"100644 blob {blob}\t{'x' * 256}", "cannot be written out")}
+        change(root, BRANCH, moved)   # the #1366 head, which each splice extends
+        for name, (entry, fragment) in entries.items():
+            b, h = spliced(root, entry)
+            outcomes[name] = (gate(root, "--pr", b, h, PR_HEAD_REF=BRANCH, **DOCS_OK), fragment)
+        missed = {k: r.stdout[-400:] for k, (r, fragment) in outcomes.items() if not refused(r, fragment)}
+        assert missed == {}, missed
+
+
+def test_materialize_writes_inside_its_directory_only(repo, tmp_path_factory):
+    """FEAT-CICD-001 spec, "Exact render" (done_when[1]): every resolved path stays inside the directory before it is
+    written, and each blob is written byte for byte."""
+    sg = load_gate(repo)
+    oid, out = _git(repo, "rev-parse", "base:lib/model.py"), tmp_path_factory.mktemp("tree")
+    with pytest.raises(ValueError, match="outside"):
+        sg.materialize([("100644", oid, "../escape.py")], out)
+    sg.materialize([("100644", oid, "lib/model.py")], out)
+    assert (out / "lib/model.py").read_bytes() == b"DECISION = 'size'\n" and not (out.parent / "escape.py").exists()
+
+
+# A deploy.sh job whose --args names its entrypoint: the renderer reads that file's first docstring line. Verified on
+# 2026-10-11: with an absolute path the fence exits 86, and with gcp/evil_job.py the render opens nothing outside.
+JOB = "\ndeploy_evil_job() {{\n    gcloud run jobs deploy evil-job \\\n        --command python3 \\\n        --args {}\n}}\n"
+
+
+def test_a_feature_change_carries_its_re_rendered_inventory_blocks(inventory_repo):
+    """FEAT-CICD-001 spec, the allowance (done_when[0]): a feature branch that adds four lines near the top of
+    platform/api/main.py, as stocks#1366 did, passes the PR-mode gate carrying the three documents' re-rendered
+    blocks and its own catalog and traceability records."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        own = edit(CATALOG_TEXT, "### FEAT-MODEL-001\n\n- Status: Production", "### FEAT-MODEL-001\n\n- Status: Production\n- Note: cited lines moved")
+        r = pr(root, BRANCH, {**moved, CATALOG: own, TRACEABILITY: TRACE_TEXT + "- #7\n"}, **DOCS_OK)
+        changed = set(_git(root, "diff", "--name-only", "base", "HEAD").splitlines())
+        assert r.returncode == 0 and changed == {MAIN_PY, *GENERATED, CATALOG, TRACEABILITY}, r.stdout + r.stderr
+
+
+def test_a_block_must_equal_mains_render(inventory_repo):
+    """FEAT-CICD-001 spec, "Exact render" (done_when[1]): a hand-edited row is refused with the first difference and
+    the exact re-render command, and a renderer that fails on the pull request's files refuses with its exception
+    line rather than passing, reporting a difference, or crashing the gate."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        hand = pr(root, BRANCH, {**moved, API_DOC: edit(moved[API_DOC], "Liveness probe:", "Liveness probe, hand-edited:")}, **DOCS_OK)
+        broken = pr(root, BRANCH, {**moved, MAIN_PY: moved_main() + "\ndef broken(:\n"}, **DOCS_OK)
+        # (red-team round 1: the docs test's block pattern ends at the first end marker even mid-line, so main's
+        # differing_blocks read the block as ending there and passed the hand-written row after it)
+        end = "\n<!-- inventory:routes:end -->"
+        behind = pr(root, BRANCH, {**moved, API_DOC: edit(moved[API_DOC], end, end + " (hand)\n| `GET` | `/api/hand-written` | x | not rendered |" + end)}, **DOCS_OK)
+        # (red-team round 2: a blank line added at a block's end was refused as "first difference: the same lines")
+        blank = pr(root, BRANCH, {**moved, API_DOC: edit(moved[API_DOC], end, "\n" + end)}, **DOCS_OK)
+        missed = [k for k, ok in {
+            "hand edit": refused(hand, "differs from main's render") and f"--restore {API_DOC}" in hand.stdout and SNAPSHOT_FILE in hand.stdout,
+            "a hand row behind a line that begins with the end marker": refused(behind, "differs from main's render"),
+            "a blank line at a block's end, named": refused(blank, "differs from main's render") and "-'' +'<missing>'" in blank.stdout,
+            "renderer failure": refused(broken, "renderer failed") and "SyntaxError" in broken.stdout and "Traceback" not in broken.stderr,
+        }.items() if not ok]
+        assert missed == [], hand.stdout + broken.stdout + broken.stderr + behind.stdout + blank.stdout
+
+
+def test_the_render_reads_only_the_pull_requests_files(inventory_repo, tmp_path_factory):
+    """FEAT-CICD-001 spec, "Exact render" (done_when[1]): a render that opens a file outside the materialized tree
+    (a job entrypoint given as an absolute path) is refused and names the file; the same job inside the tree passes."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        outside = tmp_path_factory.mktemp("outside") / "evil_job.py"
+        outside.write_text('"""A job entrypoint outside the tree."""\n', encoding="utf-8")
+        deploy = RENDER_SOURCE["gcp/deploy.sh"]
+        escaped = pr(root, BRANCH, {MAIN_PY: moved_main(), "gcp/deploy.sh": deploy + JOB.format(outside)}, then=render, **DOCS_OK)
+        inside = pr(root, BRANCH, {MAIN_PY: moved_main(), "gcp/evil_job.py": outside.read_text(encoding="utf-8"),
+                                   "gcp/deploy.sh": deploy + JOB.format("gcp/evil_job.py")}, then=render, **DOCS_OK)
+        assert (refused(escaped, "read outside this pull request's files"), "evil_job.py" in escaped.stdout, inside.returncode) == (True, True, 0), \
+            escaped.stdout + inside.stdout
+
+
+def test_the_refused_heads_have_accepted_controls(inventory_repo):
+    """FEAT-CICD-001 spec (done_when[1]): the controls for the clean-bytes and head-tree cases, each differing only in
+    the condition under test, pass: the route without an escape, and a plain spliced entry."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        route = pr(root, BRANCH, {MAIN_PY: moved_main() + ROUTE.format("")}, then=render, **DOCS_OK)   # Task 6's route, no escape
+        change(root, BRANCH, moved)
+        blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], input="x", cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+        x = mktree(root, f"100644 blob {blob}\tx\n")
+        b, h = spliced(root, f"040000 tree {x}\tok")   # Task 7's splice, a plain entry
+        plain = gate(root, "--pr", b, h, PR_HEAD_REF=BRANCH, **DOCS_OK)
+        assert (route.returncode, plain.returncode) == (0, 0), route.stdout + plain.stdout
+
+
+def test_the_skill_names_the_inventory_allowance():
+    """FEAT-CICD-001 spec, the allowance (done_when[7]): the product-delivery skill's "Never" list names the
+    re-rendered inventory blocks as a change a feature branch may carry, and cites REQ-GOV-004."""
+    skill = (REPO / ".claude/skills/product-delivery/SKILL.md").read_text(encoding="utf-8")
+    never = next(line for line in skill.splitlines() if line.startswith("- Never edit `docs/product/` from a feature branch"))
+    assert "REQ-GOV-004" in never and "re-rendered by `scripts/maintenance/doc_inventory.py`" in never, never
+    assert "existing fixed renderer-owned count/as-of substitutions" in never, never
+    assert all(name in never for name in ('05-a-ARCHITECTURE.md', '05-c-DATA_DEPENDENCIES.md', '05-e-API.md')), never
+
+def test_inventory_budget_observer_keeps_cicd_ownership(repo):
+    """An unrelated feature cannot replace the budget verdict; the actual CICD owner can."""
+    ci_branch = "fix/feat-cicd-001-inventory-budget"
+    ci_spec = "docs/superpowers/specs/2026-09-01-inventory-budget.md"
+    ci_plan = "docs/superpowers/plans/2026-09-01-inventory-budget.md"
+    ci_catalog = CATALOG_TEXT.replace("| [FEAT-DATA-001]", "| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\\n| [FEAT-DATA-001]", 1)
+    on_base(repo, {CATALOG: ci_catalog, ci_spec: spec(feat_id="FEAT-CICD-001"),
+                   ci_plan: plan(feat_id="FEAT-CICD-001", spec=ci_spec, branch=ci_branch)})
+    payload = {"tests/scripts/measure_inventory_render.py": "print('actual fixture observer')\\n"}
+    unrelated = pr(repo, BRANCH, payload, PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body())
+    owner = pr(repo, ci_branch, payload, PR_TITLE="FEAT-CICD-001: observer", PR_BODY=body(spec_path=ci_spec, plan_path=ci_plan))
+    assert unrelated.returncode == 1 and "belong to FEAT-CICD-001" in unrelated.stdout, unrelated.stdout
+    assert owner.returncode == 0, owner.stdout + owner.stderr
+
+
+def complete_inventory_case(root: Path) -> dict[str, str]:
+    """Real BASE prose with old counter/date shapes; unchanged renderer supplies every expected byte."""
+    prose = ("\nDeclared: 999 runtime-created relations (999 tables, 999 materialized views, 999 views).\n"
+             "Live 2001-02-03; read on **2001-02-03**; from the 2001-02-03 live snapshot.\n"
+             "Historical correction: 2001-02-03. Neighbor: unchanged.\n")
+    on_base(root, {d: _git(root, 'show', f'base:{d}') + prose for d in GENERATED})
+    change(root, BRANCH, {MAIN_PY: moved_main(),
+                          'gcp/schema.sql': RENDER_SOURCE['gcp/schema.sql'] + '\nCREATE TABLE new_observations (id INTEGER);\n'}, then=render)
+    return {p: (root / p).read_text(encoding='utf-8') for p in (MAIN_PY, 'gcp/schema.sql', *GENERATED)}
+
+
+def test_complete_inventory_renders_from_merge_base_prose(inventory_repo):
+    """Full actual trusted output allows only BASE counter/asof shapes plus fresh HEAD source citations."""
+    if RENDERER_HERE:
+        root, _moved = inventory_repo
+        expected = complete_inventory_case(root)
+        assert all('999 runtime-created relations' not in expected[d] and '999 tables' not in expected[d]
+                   and 'Live 2001-02-03' not in expected[d] and 'Historical correction: 2001-02-03.' in expected[d]
+                   for d in GENERATED), expected
+        r = pr(root, BRANCH, expected, **DOCS_OK)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert set(_git(root, 'diff', '--name-only', 'base', 'HEAD').splitlines()) == {MAIN_PY, 'gcp/schema.sql', *GENERATED}
+
+
+def test_complete_inventory_refuses_non_renderer_prose(inventory_repo):
+    """Each refused head differs from the actual accepted full render in exactly its named condition."""
+    if RENDERER_HERE:
+        root, _moved = inventory_repo
+        expected = complete_inventory_case(root)
+        text = expected[API_DOC]
+        import re
+        total = re.search(r'\d+ runtime-created relations', text).group(0)
+        breakdown = re.search(r'\(\d+ tables?, \d+ materialized views?, \d+ views?\)', text).group(0)
+        live = re.search(r'Live \d{4}-\d{2}-\d{2}', text).group(0)
+        cases = {
+            'wrong total': edit(text, total, '999 runtime-created relations'),
+            'wrong breakdown': edit(text, breakdown, '(999 tables, 999 materialized views, 999 views)'),
+            'wrong snapshot date': edit(text, live, 'Live 2001-02-03'),
+            'neighbor': edit(text, 'Neighbor: unchanged.', 'Neighbor: changed.'),
+            'historical date': edit(text, 'Historical correction: 2001-02-03.', 'Historical correction: 2002-03-04.'),
+            'new count pattern': text + '\n999 runtime-created relations\n',
+            'new asof pattern': text + '\nLive 2001-02-03\n',
+            'same-valued new pattern': text + '\n' + total + '\n' + live + '\n',
+        }
+        control = pr(root, BRANCH, expected, **DOCS_OK)
+        results = {name: pr(root, BRANCH, {**expected, API_DOC: changed}, **DOCS_OK) for name, changed in cases.items()}
+        assert control.returncode == 0, control.stdout + control.stderr
+        assert all(refused(r, "differs from main's render") for r in results.values()), {
+            name: r.stdout + r.stderr for name, r in results.items() if not refused(r, "differs from main's render")}
+
+
+MEASURE = 'tests/scripts/measure_inventory_render.py'
+
+
+def measurement(root: Path, *args: str) -> tuple[subprocess.CompletedProcess, dict]:
+    r = subprocess.run([sys.executable, str(root / MEASURE), *args], cwd=root, capture_output=True, text=True)
+    return r, json.loads(r.stdout) if r.stdout.strip().startswith('{') else {}
+
+
+def test_measure_inventory_render_runs_the_actual_gate(inventory_repo):
+    """Actual committed-tree CLI uses real trusted gate; uncommitted application bytes are not its source."""
+    if RENDERER_HERE:
+        root, _moved = inventory_repo
+        assert (REPO / MEASURE).is_file(), 'approved standalone observer is missing'
+        on_base(root, {MEASURE: (REPO / MEASURE).read_text(encoding='utf-8')})
+        # A path with spaces travels through real argv, not shell interpolation.
+        spaced = root.parent / 'render repository with spaces'
+        root.rename(spaced); root = spaced
+        write(root, MAIN_PY, 'raise RuntimeError("dirty worktree must not run")\n')
+        r, report = measurement(root, '--ref', 'base', '--max-rss-mib', '128', '--max-seconds', '10', '--output', str(root.parent/'accepted-output.json'))
+        assert r.returncode == 0 and report['kind'] == 'committed-inventory-render', r.stdout + r.stderr
+        assert json.loads((root.parent/'accepted-output.json').read_text()) == report
+        assert report['worker']['ref'] == _git(root, 'rev-parse', 'base') and report['worker']['renderer_exit'] == 0
+        assert report['worker']['source_bytes'] > 0 and report['worker']['source_entries'] > 10
+        assert Path(report['worker']['renderer_argv'][5]).is_absolute() and 'spec-gate-render-' in report['worker']['renderer_argv'][5]
+        assert report['worker']['renderer_cwd'] and all('<owned' not in arg for arg in report['worker']['renderer_argv'])
+        assert report['sample_count'] > 1 and report['peak_rss_bytes'] >= report['monitor_rss_bytes'] > 0
+        assert report['sample_gap_seconds']['max'] > 0 and report['discovery_gap_seconds']['max'] > 0
+        assert report['kernel_child_peak_bytes'] > 0 and report['owned_group_gone']
+        for option, value in [('--max-rss-mib','513'),('--max-seconds','61'),('--max-seconds','nan'),
+                              ('--max-rss-mib','0'),('--max-seconds','true')]:
+            bad, _ = measurement(root, '--ref', 'base', option, value)
+            assert bad.returncode != 0, (option, value, bad.stdout)
+        # Trust checking is independent of the committed app tree and rejects forged observer/gate bytes.
+        write(root, 'scripts/gate/spec_gate.py', (root / 'scripts/gate/spec_gate.py').read_text() + '\n# forged trusted helper\n')
+        bad, evidence = measurement(root, '--ref', 'base', '--max-seconds', '10')
+        assert bad.returncode != 0 and not evidence['ok'] and 'trusted input differs' in evidence['stderr'], bad.stdout + bad.stderr
+        # An unchanged helper cannot turn an actual renderer parse/refusal into a budget success.
+        on_base(root, {MAIN_PY: RENDER_SOURCE[MAIN_PY] + '\ndef invalid(:\n'})
+        bad, evidence = measurement(root, '--ref', 'base', '--max-seconds', '10')
+        assert bad.returncode != 0 and evidence['worker']['renderer_exit'] != 0, bad.stdout + bad.stderr
+        assert 'SyntaxError' in '\n'.join(evidence['worker']['refusals']) and evidence['owned_group_gone']
+        on_base(root, {MAIN_PY: RENDER_SOURCE[MAIN_PY], SNAPSHOT_FILE: None})
+        bad, evidence = measurement(root, '--ref', 'base', '--max-seconds', '10')
+        assert bad.returncode != 0 and not evidence['ok'] and evidence['owned_group_gone'], bad.stdout + bad.stderr
+        # Source identity covers the observer itself, independently of gate identity.
+        on_base(root, {SNAPSHOT_FILE: (REPO / SNAPSHOT_FILE).read_text(encoding='utf-8')})
+        write(root, MEASURE, (root / MEASURE).read_text() + '\n# changed trusted monitor\n')
+        bad, evidence = measurement(root, '--ref', 'base', '--max-seconds', '10')
+        assert bad.returncode != 0 and 'trusted input differs' in evidence['stderr'], bad.stdout + bad.stderr
+
+
+def bounded_measurement(tmp_path: Path, code: str, *, mib: int = 128, seconds: float = 2) -> dict:
+    """Run the actual private monitor in a fresh process, with actual harmless owned child groups."""
+    assert (REPO / MEASURE).is_file(), 'approved standalone observer is missing'
+    launcher = (
+        "import importlib.util,json,pathlib,sys; "
+        "s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]); "
+        "m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m); "
+        "r=m.run_bounded([sys.executable,'-c',sys.argv[2]],pathlib.Path(sys.argv[3]),"
+        "max_rss_bytes=int(sys.argv[4]),max_seconds=float(sys.argv[5]));print(json.dumps(r))"
+    )
+    r = subprocess.run([sys.executable,'-c',launcher,str(REPO / MEASURE),code,str(tmp_path),str(mib*1024*1024),str(seconds)],
+                       capture_output=True,text=True,timeout=10)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return json.loads(r.stdout)
+
+
+def test_measure_inventory_render_real_memory_refusal(tmp_path):
+    """A sustained actual allocation, not a mocked sample, crosses a lowered combined monitor/group cap."""
+    good = bounded_measurement(tmp_path, 'import time; a=bytearray(1024*1024);time.sleep(.2)', mib=64)
+    bad = bounded_measurement(tmp_path, 'import time; a=bytearray(96*1024*1024);time.sleep(2)', mib=64)
+    assert good['ok'] and good['owned_group_gone'], good
+    assert not bad['ok'] and bad['reason'] == 'rss_limit' and bad['peak_rss_bytes'] > 64*1024*1024, bad
+    assert bad['owned_group_gone'] and bad['monitor_rss_bytes'] > 0 and bad['sample_count'] > 1
+
+
+def test_measure_inventory_render_real_timeout_reaps_group(tmp_path):
+    """Actual parent+grandchild outlive lowered deadline; entire owned group is killed and reaped."""
+    pidfile = tmp_path / 'owned-pids.json'
+    code = ("import json,os,subprocess,sys,time; "
+            "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(20)']); "
+            f"open({str(pidfile)!r},'w').write(json.dumps([os.getpid(),p.pid]));time.sleep(20)")
+    bad = bounded_measurement(tmp_path, code, seconds=1)
+    pids = json.loads(pidfile.read_text())
+    assert not bad['ok'] and bad['reason'] == 'time_limit' and bad['owned_group_gone'], bad
+    assert all(not Path(f'/proc/{p}').exists() for p in pids), (pids, bad)
+    good = bounded_measurement(tmp_path, 'import time;time.sleep(.05)', seconds=1)
+    nonzero = bounded_measurement(tmp_path, 'raise SystemExit(7)')
+    assert good['ok'] and good['owned_group_gone'], good
+    assert not nonzero['ok'] and nonzero['worker_exit'] == 7 and nonzero['owned_group_gone'], nonzero
+
+
+def test_measure_inventory_render_refuses_unavailable_proc(tmp_path):
+    """Missing actual observation files refuse before creating a child; no assumed RSS pass."""
+    assert (REPO / MEASURE).is_file()
+    launch = ("import importlib.util,json,pathlib,sys; "
+              "s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]); "
+              "m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m); "
+              "m.PROC=pathlib.Path(sys.argv[2]); "
+              "print(json.dumps(m.run_bounded([sys.executable,'-c','pass'],pathlib.Path.cwd(),"
+              "max_rss_bytes=128*1024*1024,max_seconds=1)))")
+    r = subprocess.run([sys.executable,'-c',launch,str(REPO / MEASURE),str(tmp_path/'absent-proc')],
+                       capture_output=True,text=True,timeout=5)
+    evidence = json.loads(r.stdout)
+    assert r.returncode == 0 and not evidence['ok'] and evidence['reason'] == 'observation_failure', r.stdout + r.stderr
+    assert 'process_group' not in evidence and evidence['sample_count'] == 0
+
+
+class _OneBlobShowFailure:
+    """Fail one transport operation, then delegate every call to actual git."""
+    def __init__(self, run):
+        self.run, self.failed = run, False
+
+    def __call__(self, args, *a, **kw):
+        if not self.failed and "show" in args and any(str(x).endswith(":lib/recovery.py") for x in args):
+            self.failed = True
+            return subprocess.CompletedProcess(args, 128, b"", b"transient object read failure")
+        return self.run(args, *a, **kw)
+
+
+def test_committed_blob_cache_keeps_mutable_refs_index_and_failures_fresh(repo, monkeypatch):
+    """Revision reads preserve mutation/error behavior without stale ref or failure retention."""
+    sg = load_gate(repo)
+    original = _git(repo, "rev-parse", "base")
+    immutable, moving = sg.Tree(original), sg.Tree("base")
+    assert immutable.raw("lib/model.py") == b"DECISION = 'size'\n"
+    assert moving.raw("lib/model.py") == b"DECISION = 'size'\n"
+    on_base(repo, {"lib/model.py": "DECISION = 'new'\r\n"})
+    assert moving.raw("lib/model.py") == b"DECISION = 'new'\r\n"
+    assert moving.read("lib/model.py") == "DECISION = 'new'\n"
+    assert immutable.raw("lib/model.py") == b"DECISION = 'size'\n"
+    index, worktree = sg.Tree(None), sg.Tree(sg.WORKTREE)
+    assert index.raw("lib/model.py") == b"DECISION = 'new'\r\n"
+    write(repo, "lib/model.py", "unstaged\n")
+    assert worktree.raw("lib/model.py") == b"unstaged\n"
+    _git(repo, "add", "lib/model.py")
+    assert index.raw("lib/model.py") == b"unstaged\n"
+    write(repo, "lib/model.py", "another unstaged\n")
+    assert worktree.raw("lib/model.py") == b"another unstaged\n"
+    assert index.raw("lib/model.py") == b"unstaged\n"
+
+    # A transient git-show failure cannot become cached absence. Recover through
+    # the SAME Tree and real git; the new path has no preexisting cached value.
+    on_base(repo, {"lib/recovery.py": "RECOVERED = True\n", "lib/empty.py": ""})
+    recovered = sg.Tree(_git(repo, "rev-parse", "base"))
+    transient = _OneBlobShowFailure(sg.subprocess.run)
+    monkeypatch.setattr(sg.subprocess, "run", transient)
+    assert recovered.raw("lib/recovery.py") is None
+    assert recovered.raw("lib/recovery.py") == b"RECOVERED = True\n"
+    assert transient.failed
+    assert recovered.raw("lib/empty.py") == b"", "Empty committed bytes are not an absent path"
+    assert recovered.raw("lib/missing.py") is None, "An actually absent path remains unavailable"
+
+
+class _PolicyBatchTransportFailure:
+    """Fail the actual batched transport; keep test bodies free of suite exits."""
+    def __init__(self, run):
+        self.run = run
+
+    def __call__(self, args, *a, **kw):
+        if "cat-file" in args:
+            return subprocess.CompletedProcess(args, 128, b"", b"transient batch transport failure")
+        return self.run(args, *a, **kw)
+
+
+def test_fresh_policy_batch_preserves_bytes_absence_replace_root_and_errors(repo, tmp_path, monkeypatch):
+    """Actual immutable-policy reads stay fresh across replacements, roots and Git failures."""
+    # Earlier in-process docs_audit.main() calls intentionally disable replacements.
+    # This fixture explicitly exercises enabled replacement refs, then both modes.
+    monkeypatch.delenv("GIT_NO_REPLACE_OBJECTS", raising=False)
+    sg = load_gate(repo)
+    mixed = b"first\r\nnext\rlast\x00\xff\n"
+    on_base(repo, {CATALOG: "placeholder", TRACEABILITY: ""},
+            then=lambda root: (root / CATALOG).write_bytes(mixed))
+    original = _git(repo, "rev-parse", "base")
+    queries = [(original, CATALOG), (original, TRACEABILITY)]
+    assert sg.policy_blob_bytes(queries) == [mixed, b""]
+    assert sg.close_out_policy(queries) == [sg.Tree(original).read(CATALOG), ""]
+    on_base(repo, {CATALOG: "replacement\n", TRACEABILITY: None})
+    replacement = _git(repo, "rev-parse", "base")
+    assert sg.policy_blob_bytes([(replacement, TRACEABILITY)]) == [None]
+    _git(repo, "replace", original, replacement)
+    with monkeypatch.context() as disabled:
+        disabled.setenv("GIT_NO_REPLACE_OBJECTS", "1")
+        assert sg.policy_blob_bytes(queries) == [mixed, b""]
+        assert [sg.Tree(original).raw(path) for _, path in queries] == [mixed, b""]
+    assert sg.policy_blob_bytes(queries) == [b"replacement\n", None]
+    other = tmp_path / "other"
+    shutil.copytree(repo, other)
+    on_base(other, {CATALOG: "other repository\n"})
+    _git(other, "replace", "-f", original, _git(other, "rev-parse", "base"))
+    monkeypatch.setattr(sg, "ROOT", other)
+    assert sg.policy_blob_bytes(queries) == [b"other repository\n", None]
+    monkeypatch.setattr(sg, "ROOT", repo)
+    assert sg.policy_blob_bytes(queries) == [b"replacement\n", None]
+    _git(repo, "replace", "-d", original)
+    assert sg.policy_blob_bytes(queries) == [mixed, b""]
+
+    real_run = sg.subprocess.run
+    monkeypatch.setattr(sg.subprocess, "run", _PolicyBatchTransportFailure(real_run))
+    with pytest.raises(sg.GitFailed, match="transient batch transport failure"):
+        sg.policy_blob_bytes(queries)
+    monkeypatch.setattr(sg.subprocess, "run", real_run)
+    assert sg.policy_blob_bytes(queries) == [mixed, b""]
+    with pytest.raises(sg.GitFailed, match="commit"):
+        sg.policy_blob_bytes([("0" * 40, CATALOG)])
+    for bad in (("base", CATALOG), (original, "lib/model.py")):
+        with pytest.raises(sg.GitFailed, match="fixed committed policy"):
+            sg.policy_blob_bytes([bad])
+    on_base(repo, {CATALOG: None, CATALOG + "/child.md": "not a policy blob\n"})
+    with pytest.raises(sg.GitFailed, match="blob header"):
+        sg.policy_blob_bytes([(_git(repo, "rev-parse", "base"), CATALOG)])
+
+
+def test_fresh_policy_batch_refuses_malformed_size_type_and_missing_commit(repo, monkeypatch):
+    """A transport success cannot disguise bad framing, missing objects or nonblob policy."""
+    sg = load_gate(repo)
+    revision = _git(repo, "rev-parse", "base")
+    info = f"{revision} commit 12\n".encode()
+    oid = b"1" * 40
+    good = info + oid + b" blob 3\nabc\n"
+    replies = [good, info + f"{revision}:{TRACEABILITY} missing\n".encode(),
+               info + oid + b" blob -1\n\n", info + oid + b" blob nope\n\n",
+               info + oid + b" blob 300\nabc\n", info + oid + b" blob 3\nabcX",
+               info + oid + b" tree 3\nabc\n", info + b"not a header\n",
+               good + b"extra", info + oid + b" blob 3", b"0" * 40 + b" missing\n",
+               info + oid + b" blob " + b"9" * 5000 + b"\n"]
+    def reply(value):
+        monkeypatch.setattr(sg.subprocess, "run", lambda args, **kw: subprocess.CompletedProcess(args, 0, value, b""))
+    reply(good)
+    assert sg.policy_blob_bytes([(revision, CATALOG)]) == [b"abc"]
+    reply(replies[1])
+    assert sg.policy_blob_bytes([(revision, TRACEABILITY)]) == [None]
+    for broken in replies[2:]:
+        reply(broken)
+        with pytest.raises(sg.GitFailed):
+            sg.policy_blob_bytes([(revision, CATALOG)])
+
+
+def test_close_out_batch_keeps_current_policy_base_separate_from_merge_base(repo):
+    """Real PR DAG: newly adopted BASE trace policy cannot be bypassed via older merge-base."""
+    meta = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body(ticked=True),
+            "PR_NUMBER": "42", "PR_DRAFT": "false", "PR_HEAD_REF": BRANCH}
+    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |",
+                               f"| Models | Production | {TODAY} | #42 |")
+    change(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row})
+    head, old_base = _git(repo, "rev-parse", "HEAD"), _git(repo, "rev-parse", "base")
+    control = gate(repo, "--pr", old_base, head, **meta)
+    assert control.returncode == 0, control.stdout
+    on_base(repo, {TRACEABILITY: "# Traceability\n\n## FEAT-MODEL-001\n\n- #1 prior\n"})
+    policy = _git(repo, "rev-parse", "base")
+    assert _git(repo, "merge-base", policy, head) == old_base
+    refused = gate(repo, "--pr", policy, head, **meta)
+    assert refused.returncode == 1 and "section's PR lineage" in refused.stdout, refused.stdout
+
+    sg = load_gate(repo)
+    assert sg.close_out_policy([(head, CATALOG)]) == [sg.Tree(head).read(CATALOG)]
+
+
+def escaped_measurement(tmp_path: Path, *, mib: int, parent_exit: int | None, child_seconds: float) -> dict:
+    """Native setsid child; outer supervisor rescues any old broken-monitor orphan before asserting RED."""
+    pidfile = tmp_path / f'escaped-{mib}-{parent_exit}-{child_seconds}.pid'
+    child = ("import os,time;os.setsid();" + f"open({str(pidfile)!r},'w').write(str(os.getpid()));" +
+             "a=bytearray(" + str(mib*1024*1024) + ");" +
+             f"open({str(pidfile)+'.ready'!r},'w').write('ready');time.sleep({child_seconds})")
+    parent = ("import os,subprocess,sys,time; p=subprocess.Popen([sys.executable,'-c'," + repr(child) + "]);"
+              "\nfor _ in range(1000):\n if os.path.exists(" + repr(str(pidfile)+'.ready') + "):break\n time.sleep(.001)\n")
+    parent += 'time.sleep(20)' if parent_exit is None else ('p.wait();' if child_seconds < 1 else '') + f'raise SystemExit({parent_exit})'
+    launcher = ("import ctypes,importlib.util,json,pathlib,os,signal,sys;ctypes.CDLL(None).prctl(36,1,0,0,0);"
+                "s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]);"
+                "m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m);"
+                "r=m.run_bounded([sys.executable,'-c',sys.argv[2]],pathlib.Path(sys.argv[3]),max_rss_bytes=64*1024*1024,max_seconds=1);"
+                "pid=int(pathlib.Path(sys.argv[4]).read_text());r['escaped_alive_after_monitor']=pathlib.Path('/proc',str(pid)).exists();"
+                "\ntry:os.kill(pid,signal.SIGKILL)\nexcept ProcessLookupError:pass\n"
+                "try:os.waitpid(pid,0)\nexcept ChildProcessError:pass\n"
+                "r['outer_cleanup_complete']=not pathlib.Path('/proc',str(pid)).exists();print(json.dumps(r))")
+    r = subprocess.run([sys.executable,'-c',launcher,str(REPO/MEASURE),parent,str(tmp_path),str(pidfile)],
+                       capture_output=True,text=True,timeout=5)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return json.loads(r.stdout)
+
+
+def test_measure_inventory_render_owns_session_changing_descendants(tmp_path):
+    """Stable escaped RSS is counted; root-success, timeout and error all stop/reap their actual family."""
+    memory = escaped_measurement(tmp_path,mib=96,parent_exit=0,child_seconds=20)
+    assert not memory['ok'] and memory['reason']=='rss_limit' and memory['peak_rss_bytes']>64*1024*1024, memory
+    assert not memory['escaped_alive_after_monitor'] and memory['outer_cleanup_complete'], memory
+    accepted = escaped_measurement(tmp_path,mib=1,parent_exit=0,child_seconds=.1)
+    assert accepted['ok'] and not accepted['escaped_alive_after_monitor'], accepted
+    timeout = escaped_measurement(tmp_path,mib=1,parent_exit=None,child_seconds=20)
+    failed = escaped_measurement(tmp_path,mib=1,parent_exit=7,child_seconds=20)
+    assert not timeout['ok'] and timeout['reason']=='time_limit' and not timeout['escaped_alive_after_monitor'], timeout
+    assert not failed['ok'] and failed['worker_exit']==7 and not failed['escaped_alive_after_monitor'], failed
+    assert all(x['owned_family_gone'] for x in (memory,accepted,timeout,failed))
+
+
+def test_measure_inventory_render_bounds_public_output_delivery(tmp_path):
+    """Real FIFO and full stdout-pipe backpressure cannot outlive the same whole public CLI bound."""
+    import fcntl
+    import time
+    fifo = tmp_path/'no-reader';os.mkfifo(fifo)
+    args = [sys.executable,str(REPO/MEASURE),'--max-rss-mib','1','--max-seconds','.2']
+    started=time.monotonic()
+    good=subprocess.run([*args,'--output',str(tmp_path/'ordinary.json')],capture_output=True,text=True,timeout=2)
+    assert good.returncode==1 and json.loads(good.stdout)['ok'] is False and time.monotonic()-started<1
+    started=time.monotonic()
+    blocked=subprocess.Popen([*args,'--output',str(fifo)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+    try:
+        out,err=blocked.communicate(timeout=1)
+        assert blocked.returncode!=0 and time.monotonic()-started<.8, (out,err)
+    finally:
+        if blocked.poll() is None:os.killpg(blocked.pid,9);blocked.communicate(timeout=1)
+    readfd,writefd=os.pipe();fcntl.fcntl(writefd,fcntl.F_SETPIPE_SZ,4096);os.write(writefd,b'x'*4096)
+    try:
+        started=time.monotonic();blocked=subprocess.Popen(args,stdout=writefd,stderr=subprocess.PIPE,start_new_session=True)
+        try:
+            blocked.wait(timeout=1)
+            assert blocked.returncode!=0 and time.monotonic()-started<.8
+        finally:
+            if blocked.poll() is None:os.killpg(blocked.pid,9);blocked.wait(timeout=1)
+            blocked.stderr.close()
+    finally:os.close(readfd);os.close(writefd)
+
+
+def test_measure_inventory_render_never_kills_an_existing_unrelated_child(tmp_path):
+    """Private harness refuses ambiguous ownership before launch, leaving a preexisting child untouched."""
+    launcher = ("import importlib.util,json,pathlib,subprocess,sys; "
+                "s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]); "
+                "m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m); "
+                "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(20)']); "
+                "\ntry:\n r=m.run_bounded([sys.executable,'-c','pass'],pathlib.Path.cwd(),max_rss_bytes=128*1024*1024,max_seconds=1);"
+                "r['unrelated_alive']=p.poll() is None;print(json.dumps(r))"
+                "\nfinally:p.kill();p.wait()")
+    r=subprocess.run([sys.executable,'-c',launcher,str(REPO/MEASURE)],capture_output=True,text=True,timeout=4)
+    assert r.returncode==0, r.stdout+r.stderr
+    evidence=json.loads(r.stdout)
+    assert not evidence['ok'] and evidence['unrelated_alive'] and 'process_group' not in evidence, evidence
+    assert 'exclusive descendant ownership' in evidence['error'], evidence
+
+
+def test_measure_inventory_render_bounds_startup_usage_output(tmp_path):
+    """Help and parse errors use the same deadline and unbuffered bounded delivery as the final verdict."""
+    import fcntl
+    import time
+    for option in ('--help','--unknown-option'):
+        readfd,writefd=os.pipe();fcntl.fcntl(writefd,fcntl.F_SETPIPE_SZ,4096);os.write(writefd,b'x'*4096)
+        try:
+            started=time.monotonic()
+            p=subprocess.Popen([sys.executable,str(REPO/MEASURE),'--max-seconds','.2',option],
+                               stdout=writefd,stderr=writefd,start_new_session=True)
+            try:
+                p.wait(timeout=1)
+                assert p.returncode!=0 and time.monotonic()-started<.8
+            finally:
+                if p.poll() is None:os.killpg(p.pid,9);p.wait(timeout=1)
+        finally:os.close(readfd);os.close(writefd)
+
+
+LIFECYCLE_PROBE = r'''
+import ctypes,importlib.util,json,os,pathlib,signal,subprocess,sys,time
+s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+mode=sys.argv[2];children=[];opened=[];report=None;outer=None
+hits=dict(popen=0,table_fault=0,pidfd=0,pidfd_delay=0,pidfd_failure=0,spawn_delay=0,rss_fault=0,cleanup_delay=0,prior_get_failure=0)
+handler=signal.getsignal(signal.SIGALRM);mask=signal.pthread_sigmask(signal.SIG_BLOCK,set())
+native=ctypes.CDLL(None,use_errno=True);prior=ctypes.c_int();assert native.prctl(37,ctypes.byref(prior),0,0,0)==0
+native.prctl(36,1,0,0,0)
+real_popen=m.subprocess.Popen;real_table=m.process_table;real_pidfd=m.os.pidfd_open;real_cdll=m.ctypes.CDLL;real_cleanup=m.OwnedFamily.terminate_and_reap;real_rss=m.rss
+calls=0
+
+def table():
+ global calls
+ calls+=1
+ if mode=='read-after' and calls<3:return real_table()
+ hits['table_fault']+=1
+ raise OSError('actual process-table read boundary unavailable')
+def popen(*a,**kw):
+ p=real_popen(*a,**kw);children.append(p);hits['popen']+=1
+ if mode in ('read-before','read-after'):m.process_table=table
+ if mode=='spawn-delay':hits['spawn_delay']+=1;time.sleep(.3)
+ return p
+def pidfd(*a,**kw):
+ hits['pidfd']+=1
+ if mode=='pidfd-failure':hits['pidfd_failure']+=1;raise OSError('actual descriptor acquisition boundary unavailable')
+ fd=real_pidfd(*a,**kw);opened.append(fd)
+ if mode=='pidfd-delay':hits['pidfd_delay']+=1;time.sleep(.3)
+ return fd
+def cleanup(*a,**kw):
+ if mode=='cleanup-delay':hits['cleanup_delay']+=1;time.sleep(.3)
+ return real_cleanup(*a,**kw)
+def rss(pid):
+ if mode in ('cleanup-delay','cleanup-control') and pid!=os.getpid():hits['rss_fault']+=1;raise OSError('actual child RSS read boundary unavailable')
+ return real_rss(pid)
+class NoPriorState:
+ def prctl(self,operation,*a):
+  if operation==37:hits['prior_get_failure']+=1;return -1
+  return native.prctl(operation,*a)
+m.subprocess.Popen=popen;m.os.pidfd_open=pidfd;m.OwnedFamily.terminate_and_reap=cleanup;m.rss=rss
+if mode=='prior-state-failure':m.ctypes.CDLL=lambda *a,**kw:NoPriorState()
+try:
+ try:
+  limit=1 if mode in ('accepted','cleanup-control') else .15
+  with m.deadline_guard(time.monotonic()+limit):
+   report=m.run_bounded([sys.executable,'-c','import signal,time;assert signal.SIGALRM not in signal.pthread_sigmask(signal.SIG_BLOCK,set());time.sleep(.02)' if mode=='accepted' else 'import time;time.sleep(20)'],pathlib.Path.cwd(),max_rss_bytes=128*1024*1024,max_seconds=limit)
+ except m.DeliveryDeadline as e:outer=str(e)
+ finally:
+  m.subprocess.Popen=real_popen;m.process_table=real_table;m.os.pidfd_open=real_pidfd;m.ctypes.CDLL=real_cdll;m.OwnedFamily.terminate_and_reap=real_cleanup;m.rss=real_rss
+ alive=[p.pid for p in children if p.poll() is None]
+ leaked=[]
+ for fd in opened:
+  try:os.fstat(fd);leaked.append(fd)
+  except OSError:pass
+ state=ctypes.c_int();assert native.prctl(37,ctypes.byref(state),0,0,0)==0
+ result=dict(report=report,outer_deadline=outer,native_children_alive_after_monitor=alive,pidfds_live_after_monitor=leaked,subreaper_after=state.value,mask_restored=signal.pthread_sigmask(signal.SIG_BLOCK,set())==mask,handler_restored=signal.getsignal(signal.SIGALRM)==handler,timer=signal.getitimer(signal.ITIMER_REAL),fault_boundary_hits=hits,native_children_created=len(children),native_pidfds_opened=len(opened))
+finally:
+ for p in children:
+  if p.poll() is None:p.kill()
+  p.wait()
+ for fd in opened:
+  try:os.close(fd)
+  except OSError:pass
+ native.prctl(36,prior.value,0,0,0)
+result['all_fixture_children_reaped']=all(p.returncode is not None for p in children)
+print(json.dumps(result))
+'''
+
+
+def test_measure_inventory_render_acquires_and_unwinds_actual_kernel_resources(tmp_path):
+    """Native read/acquisition/cleanup alarms preserve process, PIDfd, caller-mask and prior-state ownership."""
+    modes=('accepted','read-before','read-after','cleanup-control','spawn-delay','pidfd-delay','pidfd-failure','cleanup-delay','prior-state-failure')
+    results={}
+    for mode in modes:
+        r=subprocess.run([sys.executable,'-c',LIFECYCLE_PROBE,str(REPO/MEASURE),mode],cwd=tmp_path,
+                         capture_output=True,text=True,timeout=5)
+        assert r.returncode==0, (mode,r.stdout,r.stderr)
+        results[mode]=json.loads(r.stdout)
+    (tmp_path/'lifecycle-results.json').write_text(json.dumps(results,indent=2))
+    assert results['accepted']['report']['ok'], results['accepted']
+    assert all(not x['native_children_alive_after_monitor'] and not x['pidfds_live_after_monitor'] for x in results.values()), results
+    assert all(x['subreaper_after']==1 and x['mask_restored'] and x['handler_restored'] and x['timer']==[0,0] for x in results.values()), results
+    assert all(x['all_fixture_children_reaped'] for x in results.values())
+    assert all(not x['report'] or not x['report']['ok'] for name,x in results.items() if name!='accepted'), results
+    boundaries={'read-before':'table_fault','read-after':'table_fault','cleanup-control':'rss_fault',
+                'spawn-delay':'spawn_delay','pidfd-delay':'pidfd_delay','pidfd-failure':'pidfd_failure',
+                'cleanup-delay':'cleanup_delay','prior-state-failure':'prior_get_failure'}
+    assert all(results[name]['fault_boundary_hits'][boundary]>0 for name,boundary in boundaries.items()),results
+    assert all(x['native_children_created']==1 for name,x in results.items() if name!='prior-state-failure'),results
+    assert results['prior-state-failure']['native_children_created']==0,results
+    assert all(x['native_pidfds_opened']>0 for name,x in results.items() if name not in ('prior-state-failure','pidfd-failure')),results
+
+
+RECOVERY_PROBE = r"""
+import ctypes,importlib.util,json,os,pathlib,signal,subprocess,sys,time
+s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+mode=sys.argv[2];pidfile=pathlib.Path('recovery-pids.json');native=ctypes.CDLL(None);prior=ctypes.c_int();assert native.prctl(37,ctypes.byref(prior),0,0,0)==0;assert native.prctl(36,1,0,0,0)==0
+real_popen=m.subprocess.Popen;real_table=m.process_table;real_scandir=m.os.scandir;real_read=pathlib.Path.read_bytes;root=None;targets=[]
+code='''import os,sys,time,json
+if os.fork()==0:
+ os.setsid()
+ child=os.getpid()
+ grand=os.fork()
+ if grand==0:
+  time.sleep(20)
+  os._exit(0)
+ open(sys.argv[1],'w').write(json.dumps([child,grand]))
+ time.sleep(20)
+ os._exit(0)
+time.sleep(20)
+'''
+def lost():raise OSError('general full-table observation unavailable after native fork')
+def scan(*a,**kw):raise OSError('independent raw directory observation also unavailable')
+def read(path,*a,**kw):
+ if str(path)==f'/proc/{os.getppid()}/stat':
+  if mode=='unrelated-malformed':return b'malformed stable process identity'
+  raise OSError('unrelated stable entry inaccessible')
+ return real_read(path,*a,**kw)
+def popen(*a,**kw):
+ global root,targets
+ root=real_popen(*a,**kw)
+ if mode!='accepted':
+  for _ in range(1500):
+   if pidfile.exists():
+    try:targets=json.loads(pidfile.read_text());break
+    except ValueError:pass
+   time.sleep(.001)
+  assert len(targets)==2
+  m.process_table=lost
+  if mode=='both-unavailable':m.os.scandir=scan
+  if mode in ('unrelated-unreadable','unrelated-malformed'):pathlib.Path.read_bytes=read
+ return root
+m.subprocess.Popen=popen
+try:
+ report=m.run_bounded([sys.executable,'-I','-B','-c','import time;time.sleep(.02)' if mode=='accepted' else code,str(pidfile)],pathlib.Path.cwd(),max_rss_bytes=128*1024*1024,max_seconds=1)
+ result=dict(report=report,root_reaped=root.poll() is not None,descendants_alive=[pid for pid in targets if pathlib.Path('/proc',str(pid)).exists()])
+finally:
+ m.subprocess.Popen=real_popen;m.process_table=real_table;m.os.scandir=real_scandir;pathlib.Path.read_bytes=real_read
+ if root is not None:
+  if root.poll() is None:root.kill()
+  root.wait()
+ for pid in targets:
+  try:os.kill(pid,signal.SIGKILL)
+  except ProcessLookupError:pass
+ for _ in range(1000):
+  for pid in targets:
+   try:os.waitpid(pid,os.WNOHANG)
+   except ChildProcessError:pass
+  if not any(pathlib.Path('/proc',str(pid)).exists() for pid in targets):break
+  time.sleep(.001)
+ native.prctl(36,prior.value,0,0,0)
+result['fixture_cleanup_complete']=not any(pathlib.Path('/proc',str(pid)).exists() for pid in targets)
+print(json.dumps(result))
+"""
+
+
+def test_measure_inventory_render_recovers_unseen_owned_descendants(tmp_path):
+    """Native fork/setsid/grandchild precedes collector loss; independent relationship cleanup owns it safely."""
+    results={}
+    for mode in ('accepted','collector-unavailable','unrelated-unreadable','unrelated-malformed','both-unavailable'):
+        directory=tmp_path/mode;directory.mkdir()
+        r=subprocess.run([sys.executable,'-c',RECOVERY_PROBE,str(REPO/MEASURE),mode],cwd=directory,
+                         capture_output=True,text=True,timeout=5)
+        assert r.returncode==0,(mode,r.stdout,r.stderr)
+        results[mode]=json.loads(r.stdout)
+    (tmp_path/'recovery-results.json').write_text(json.dumps(results,indent=2))
+    assert results['accepted']['report']['ok'] and results['accepted']['report']['owned_family_gone'],results
+    assert all(x['root_reaped'] and x['fixture_cleanup_complete'] for x in results.values()),results
+    for mode in ('collector-unavailable','unrelated-unreadable','unrelated-malformed'):
+        assert not results[mode]['report']['ok'] and not results[mode]['descendants_alive'],results
+    assert results['collector-unavailable']['report']['owned_family_gone'],results
+    # Unreadable stable entries leave uncertainty, even when every actually owned process was stopped.
+    assert not results['unrelated-unreadable']['report']['owned_family_gone'],results
+    assert not results['unrelated-malformed']['report']['owned_family_gone'],results
+    # Both real observation paths can be unavailable; known root cleanup still runs, with no false family claim.
+    assert not results['both-unavailable']['report']['ok'] and not results['both-unavailable']['report']['owned_family_gone'],results
+
+
+NATIVE_NAME_PROBE = r'''
+import ctypes,importlib.util,json,os,pathlib,signal,subprocess,sys,time
+s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+mode=sys.argv[2];native=ctypes.CDLL(None);prior=ctypes.c_int();assert native.prctl(37,ctypes.byref(prior),0,0,0)==0;assert native.prctl(36,1,0,0,0)==0
+oldname=ctypes.create_string_buffer(16);assert native.prctl(16,oldname,0,0,0)==0
+real_popen=m.subprocess.Popen;real_sample=m.OwnedFamily.sample;real_identity=m.process_identity;root=None;hits=dict(native_name=False,sample_barrier=0,parser_failure=0);ready=pathlib.Path('native-name.ready');go=pathlib.Path('native-name.go')
+code="import ctypes,pathlib,sys,time;"+("\nwhile not pathlib.Path(sys.argv[2]).exists():time.sleep(.001)\n" if mode=='after-admission' else '')+"assert ctypes.CDLL(None).prctl(15,ctypes.c_char_p(b'bad-\\xff'),0,0,0)==0;pathlib.Path(sys.argv[1]).write_text('ready');time.sleep(.05)"
+def wait_name():
+ for _ in range(1000):
+  if ready.exists():break
+  time.sleep(.001)
+ assert ready.exists()
+ hits['native_name']=b'bad-\xff' in pathlib.Path('/proc',str(root.pid),'stat').read_bytes()
+ assert hits['native_name']
+def identity(pid):
+ if root is not None and pid==root.pid:hits['parser_failure']+=1;raise ValueError('ordinary identity parser boundary failure')
+ return real_identity(pid)
+def popen(*a,**kw):
+ global root
+ root=real_popen(*a,**kw)
+ if mode=='before-admission':wait_name()
+ if mode=='parser-failure':m.process_identity=identity
+ return root
+def sample(family):
+ if mode=='after-admission' and root is not None and not hits['sample_barrier']:
+  assert family.snapshot().get(root.pid) is not None
+  hits['sample_barrier']+=1;go.write_text('go');wait_name()
+ return real_sample(family)
+m.subprocess.Popen=popen;m.OwnedFamily.sample=sample
+if mode=='unrelated-native-name':
+ assert native.prctl(15,ctypes.c_char_p(b'bad-\xff'),0,0,0)==0
+ hits['native_name']=b'bad-\xff' in pathlib.Path('/proc/self/stat').read_bytes()
+try:
+ try:
+  report=m.run_bounded([sys.executable,'-I','-B','-c',code if mode in ('before-admission','after-admission') else 'import time;time.sleep(20)' if mode=='parser-failure' else 'pass',str(ready),str(go)],pathlib.Path.cwd(),max_rss_bytes=128*1024*1024,max_seconds=1)
+  result=dict(report=report,escaped_exception=None)
+ except Exception as e:result=dict(report=None,escaped_exception=type(e).__name__+': '+str(e))
+ result.update(root_created=root is not None,root_alive_after_monitor=root is not None and root.poll() is None,hits=hits)
+ state=ctypes.c_int();assert native.prctl(37,ctypes.byref(state),0,0,0)==0;result['subreaper_restored']=state.value==1
+finally:
+ m.subprocess.Popen=real_popen;m.OwnedFamily.sample=real_sample;m.process_identity=real_identity
+ if root is not None:
+  if root.poll() is None:root.kill()
+  root.wait()
+ native.prctl(15,oldname,0,0,0);native.prctl(36,prior.value,0,0,0)
+result['fixture_reaped']=root is None or root.returncode is not None
+print(json.dumps(result))
+'''
+
+
+def test_measure_inventory_render_reads_native_process_names_as_bytes(tmp_path):
+    """Real PR_SET_NAME 0xff before root admission/after sampling and outside the family needs no decoding."""
+    results={}
+    for mode in ('ascii','before-admission','after-admission','unrelated-native-name','parser-failure'):
+        directory=tmp_path/mode;directory.mkdir()
+        r=subprocess.run([sys.executable,'-c',NATIVE_NAME_PROBE,str(REPO/MEASURE),mode],cwd=directory,
+                         capture_output=True,text=True,timeout=5)
+        assert r.returncode==0,(mode,r.stdout,r.stderr)
+        results[mode]=json.loads(r.stdout)
+    (tmp_path/'native-name-results.json').write_text(json.dumps(results,indent=2))
+    assert all(x['escaped_exception'] is None and not x['root_alive_after_monitor'] and x['subreaper_restored'] and x['fixture_reaped'] for x in results.values()),results
+    for mode in ('ascii','before-admission','after-admission','unrelated-native-name'):
+        assert results[mode]['root_created'] and results[mode]['report']['ok'] and results[mode]['report']['owned_family_gone'],results
+    assert all(results[mode]['hits']['native_name'] for mode in ('before-admission','after-admission','unrelated-native-name')),results
+    assert results['after-admission']['hits']['sample_barrier']==1,results
+    assert results['parser-failure']['root_created'] and results['parser-failure']['hits']['parser_failure']>0 and not results['parser-failure']['report']['ok'],results
+
+
+def base_checkout_input_pr(repo: Path, branch: str, files: dict[str, str], **meta):
+    """Read candidate inert slots only as Git data, matching the public BASE-checkout gate job."""
+    change(repo,branch,files)
+    base,head=base_and_head(repo)
+    _git(repo,'checkout','-q','-f','main')
+    return gate(repo,'--pr',base,head,PR_HEAD_REF=branch,**meta)
+
+
+def test_effective_python_input_slots_have_inert_native_admission_controls(repo):
+    """Inert bytes prove startup-slot ownership without executing candidate cache/native artifacts."""
+    ci_branch='fix/feat-cicd-001-startup-slots';ci_spec='docs/superpowers/specs/2026-09-01-startup-slots.md';ci_plan='docs/superpowers/plans/2026-09-01-startup-slots.md'
+    row=CATALOG_TEXT.replace('| [FEAT-DATA-001]','| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]',1)
+    sources={'scripts/maintenance/doc_inventory.py','scripts/maintenance/check_generated_docs.py','scripts/maintenance/__init__.py','scripts/maintenance/doc_source_snapshot.py','tests/scripts/measure_inventory_render.py'}
+    on_base(repo,{CATALOG:row,ci_spec:spec(feat_id='FEAT-CICD-001'),ci_plan:plan(feat_id='FEAT-CICD-001',spec=ci_spec,branch=ci_branch),**{p:'# Trusted source-presence fixture; not executed.\n' for p in sources}})
+    tag=sys.implementation.cache_tag;inert='Inert admission fixture: not executable bytecode or a native library.\n'
+    slots=(f'scripts/maintenance/__pycache__/doc_inventory.{tag}.pyc',f'scripts/maintenance/__pycache__/__init__.{tag}.opt-1.pyc','scripts/maintenance/check_generated_docs.abi3.so','scripts/maintenance/doc_inventory.pyc',f'tests/scripts/__pycache__/measure_inventory_render.{tag}.pyc')
+    control=base_checkout_input_pr(repo,BRANCH,{**CODE,'scripts/maintenance/cache-notes.bin':inert},**DOCS_OK)
+    results={p:base_checkout_input_pr(repo,BRANCH,{**CODE,p:inert},**DOCS_OK) for p in slots}
+    assert control.returncode==0,control.stdout+control.stderr
+    assert all(r.returncode==1 and 'belong to FEAT-CICD-001' in r.stdout for r in results.values()),{p:r.stdout for p,r in results.items()}
+    owner=base_checkout_input_pr(repo,ci_branch,{**CODE,slots[0]:inert},PR_TITLE='FEAT-CICD-001: input ownership',PR_BODY=body(spec_path=ci_spec,plan_path=ci_plan))
+    assert owner.returncode==0,owner.stdout+owner.stderr
+    # Tagged cache without its source cannot initialize this namespace package.
+    orphan=base_checkout_input_pr(repo,BRANCH,{**CODE,f'scripts/__pycache__/__init__.{tag}.pyc':inert},**DOCS_OK)
+    assert orphan.returncode==0,orphan.stdout+orphan.stderr
+    sg=load_gate(repo)
+    effective_sources=sources|{'scripts/__init__.py','scripts/gate/spec_gate.py','json.py',
+                              'scripts/maintenance/docs_audit.py','tests/scripts/test_doc_source_snapshot.py',
+                              'tests/scripts/test_docs_audit.py','tests/scripts/test_spec_gate.py'}
+    present=types.SimpleNamespace(mode=lambda path:'100644' if path in effective_sources else None)
+    for source in effective_sources:
+        for optimization in ('','1','2'):
+            cache=importlib.util.cache_from_source(source,optimization=optimization)
+            assert sg.is_process_file(cache,(present,present)),cache
+        assert sg.is_process_file(source[:-3]+'.abi3.so',(present,present)),source
+    assert sg.is_process_file(f'tests/scripts/__pycache__/test_spec_gate.{tag}-pytest-8.3.2.pyc',(present,present))
+    assert sg.source_import_shadow(importlib.util.cache_from_source('json.py'),present={'json.py'})
+    assert not sg.source_import_shadow(importlib.util.cache_from_source('json.py'),present=set())
+
+
+def test_effective_renderer_slots_refuse_beside_generated_docs_for_the_owner(inventory_repo):
+    """The CICD owner still cannot change effective renderer/init slots alongside generated output."""
+    if RENDERER_HERE:
+        root,_=inventory_repo;ci_branch='fix/feat-cicd-001-render-inputs';ci_spec='docs/superpowers/specs/2026-09-01-render-inputs.md';ci_plan='docs/superpowers/plans/2026-09-01-render-inputs.md'
+        row=CATALOG_TEXT.replace('| [FEAT-DATA-001]','| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]',1)
+        on_base(root,{CATALOG:row,ci_spec:spec(feat_id='FEAT-CICD-001'),ci_plan:plan(feat_id='FEAT-CICD-001',spec=ci_spec,branch=ci_branch),'scripts/__init__.py':'# Trusted empty initializer.\n'},then=render)
+        change(root,ci_branch,{MAIN_PY:moved_main()},then=render)
+        expected={p:(root/p).read_text() for p in (MAIN_PY,*GENERATED)}
+        meta=dict(PR_TITLE='FEAT-CICD-001: renderer inputs',PR_BODY=body(spec_path=ci_spec,plan_path=ci_plan)+'\n\n## Capacity\nn/a: native fixture only\n')
+        tag=sys.implementation.cache_tag;inert='Inert admission fixture; never imported.\n'
+        control=base_checkout_input_pr(root,ci_branch,{**expected,'scripts/maintenance/cache-notes.bin':inert},**meta)
+        slots=(f'scripts/maintenance/__pycache__/doc_inventory.{tag}.pyc',f'scripts/maintenance/__pycache__/check_generated_docs.{tag}.opt-2.pyc',f'scripts/maintenance/__pycache__/__init__.{tag}.opt-1.pyc',f'scripts/__pycache__/__init__.{tag}.pyc','scripts/maintenance/check_generated_docs.abi3.so','scripts/maintenance/doc_inventory.pyc')
+        results={p:base_checkout_input_pr(root,ci_branch,{**expected,p:inert},**meta) for p in slots}
+        assert control.returncode==0,control.stdout+control.stderr
+        assert all(refused(r,'which decide the render') for r in results.values()),{p:r.stdout+r.stderr for p,r in results.items()}
+
+
+def test_effective_slots_include_current_policy_base_source_presence(inventory_repo):
+    """Inert cache fork predates trusted BASE's initializer: actual current BASE, HEAD and fork all matter."""
+    if RENDERER_HERE:
+        root,moved=inventory_repo;ci_branch='fix/feat-cicd-001-current-inputs';ci_spec='docs/superpowers/specs/2026-09-01-current-inputs.md';ci_plan='docs/superpowers/plans/2026-09-01-current-inputs.md'
+        row=CATALOG_TEXT.replace('| [FEAT-DATA-001]','| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]',1)
+        on_base(root,{CATALOG:row,ci_spec:spec(feat_id='FEAT-CICD-001'),ci_plan:plan(feat_id='FEAT-CICD-001',spec=ci_spec,branch=ci_branch)})
+        fork=_git(root,'rev-parse','base');slot=importlib.util.cache_from_source('scripts/__init__.py');inert='Inert source-presence admission fixture; not executable.\n'
+        change(root,BRANCH,{**CODE,slot:inert});unrelated=_git(root,'rev-parse','HEAD')
+        change(root,ci_branch,{**moved,slot:inert});owner=_git(root,'rev-parse','HEAD')
+        change(root,ci_branch,{**moved,'scripts/cache-notes.bin':inert});control=_git(root,'rev-parse','HEAD')
+        _git(root,'checkout','-q','-f','main')
+        orphan=gate(root,'--pr',fork,unrelated,PR_HEAD_REF=BRANCH,**DOCS_OK)
+        assert orphan.returncode==0,orphan.stdout+orphan.stderr
+        on_base(root,{'scripts/__init__.py':'# Newly present trusted initializer.\n'})
+        current=_git(root,'rev-parse','base');assert _git(root,'merge-base',current,owner)==fork
+        refused_owner=gate(root,'--pr',current,unrelated,PR_HEAD_REF=BRANCH,**DOCS_OK)
+        meta=dict(PR_HEAD_REF=ci_branch,PR_TITLE='FEAT-CICD-001: current renderer inputs',PR_BODY=body(spec_path=ci_spec,plan_path=ci_plan)+'\n\n## Capacity\nn/a: inert native fixture\n')
+        refused_render=gate(root,'--pr',current,owner,**meta)
+        accepted=gate(root,'--pr',current,control,**meta)
+        assert refused_owner.returncode==1 and 'belong to FEAT-CICD-001' in refused_owner.stdout,refused_owner.stdout
+        assert refused(refused_render,'which decide the render'),refused_render.stdout+refused_render.stderr
+        assert accepted.returncode==0,accepted.stdout+accepted.stderr
+
+
+FORMAL_OBSERVER_PROBE = r'''
+import ctypes,importlib.util,json,os,pathlib,subprocess,sys,threading,time
+s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+mode=sys.argv[2];native=ctypes.CDLL(None);prior=ctypes.c_int();assert native.prctl(37,ctypes.byref(prior),0,0,0)==0;assert native.prctl(36,0,0,0,0)==0
+real_popen=m.subprocess.Popen;real_discover=m.OwnedFamily.discover;real_pidfd=m.os.pidfd_open;real_close=m.os.close;real_snapshot=m.OwnedFamily.snapshot;real_cleanup=m.OwnedFamily.terminate_and_reap;real_run=m.run_bounded
+children=[];opened=[];hits=dict(late_error=0,close_error=0,snapshot_error=0);closed=[];release=threading.Event();failed=threading.Event();final_phase=False
+
+def popen(*a,**kw):
+ p=real_popen(*a,**kw);children.append(p)
+ if mode=='late-error':
+  poll=p.poll
+  def delayed_poll():
+   if not release.is_set():
+    p.wait(timeout=1);release.set();assert failed.wait(1)
+   return poll()
+  p.poll=delayed_poll
+ return p
+def discover(family,**kw):
+ if mode=='late-error' and threading.current_thread() is not threading.main_thread():
+  assert release.wait(1);hits['late_error']+=1;failed.set();raise OSError('late actual collector boundary failure')
+ return real_discover(family,**kw)
+def pidfd(*a,**kw):
+ fd=real_pidfd(*a,**kw);opened.append(fd);return fd
+def close(fd):
+ if final_phase=='ready' and fd in opened:closed.append(fd)
+ if mode in ('close-error','persistent-close') and final_phase=='ready' and fd in opened and (mode=='persistent-close' or not hits['close_error']):
+  hits['close_error']+=1;raise OSError('actual stopped PIDfd close boundary unavailable once')
+ return real_close(fd)
+def cleanup(*a,**kw):
+ global final_phase
+ result=real_cleanup(*a,**kw)
+ if final_phase:final_phase='ready'
+ else:final_phase=True
+ return result
+def snapshot(family):
+ if mode=='snapshot-error' and final_phase=='ready' and not hits['snapshot_error']:
+  hits['snapshot_error']+=1;raise OSError('final ownership snapshot boundary unavailable once')
+ return real_snapshot(family)
+m.subprocess.Popen=popen;m.OwnedFamily.discover=discover;m.os.pidfd_open=pidfd;m.os.close=close;m.OwnedFamily.terminate_and_reap=cleanup;m.OwnedFamily.snapshot=snapshot
+result={}
+try:
+ try:
+  if mode=='main':
+   codes=[];paths=[];times=[]
+   time.sleep(.35)
+   for index in range(2):
+    path=pathlib.Path(f'public-{index}.json');started=time.monotonic();codes.append(m.main(['--max-seconds','.3','--max-rss-mib','1','--output',str(path)]));times.append(time.monotonic()-started);paths.append(json.loads(path.read_text()) if path.exists() else None)
+   result.update(codes=codes,public_reports=paths,invocation_seconds=times)
+  else:
+   if mode=='accepted':
+    result['prior_high_report']=m.run_bounded([sys.executable,'-c','import time;x=bytearray(96*1024*1024);time.sleep(.02)'],pathlib.Path.cwd(),max_rss_bytes=256*1024*1024,max_seconds=2)
+   report=m.run_bounded([sys.executable,'-c','import time;time.sleep(.02)'],pathlib.Path.cwd(),max_rss_bytes=(64 if mode=='accepted' else 128)*1024*1024,max_seconds=1)
+   result['report']=report
+   if mode=='persistent-close':
+    before=len(children);result['second_report']=m.run_bounded([sys.executable,'-c','pass'],pathlib.Path.cwd(),max_rss_bytes=128*1024*1024,max_seconds=1);result['no_second_spawn']=len(children)==before;result['retained_reachable']=m.RETAINED_OWNERSHIP is not None
+  result['escaped_exception']=None
+ except Exception as e:result['escaped_exception']=type(e).__name__+': '+str(e)
+ state=ctypes.c_int();assert native.prctl(37,ctypes.byref(state),0,0,0)==0
+ leaked=[]
+ for fd in opened:
+  try:os.fstat(fd);leaked.append(fd)
+  except OSError:pass
+ result.update(hits=hits,children_created=len(children),native_children_alive=[p.pid for p in children if p.poll() is None],opened_pidfds=len(opened),live_pidfds=leaked,subreaper_after=state.value,owned_fd_close_attempts=closed)
+finally:
+ m.subprocess.Popen=real_popen;m.OwnedFamily.discover=real_discover;m.os.pidfd_open=real_pidfd;m.os.close=real_close;m.OwnedFamily.snapshot=real_snapshot;m.OwnedFamily.terminate_and_reap=real_cleanup;m.run_bounded=real_run
+ for p in children:
+  if p.poll() is None:p.kill()
+  p.wait()
+ for fd in opened:
+  try:real_close(fd)
+  except OSError:pass
+ native.prctl(36,prior.value,0,0,0)
+print('FORMAL_RESULT='+json.dumps(result))
+'''
+
+
+def test_measure_inventory_render_preserves_formal_review_terminal_invariants(tmp_path):
+    """Actual collector/close/snapshot boundaries and repeated imported public calls cannot report false success."""
+    results={}
+    for mode in ('accepted','late-error','close-error','snapshot-error','main'):
+        path=tmp_path/mode;path.mkdir()
+        r=subprocess.run([sys.executable,'-c',FORMAL_OBSERVER_PROBE,str(REPO/MEASURE),mode],cwd=path,
+                         capture_output=True,text=True,timeout=5)
+        assert r.returncode==0,(mode,r.stdout,r.stderr)
+        results[mode]=json.loads(next(line[len('FORMAL_RESULT='):] for line in r.stdout.splitlines() if line.startswith('FORMAL_RESULT=')))
+    (tmp_path/'formal-terminal-results.json').write_text(json.dumps(results,indent=2))
+    assert all(x['escaped_exception'] is None and not x['native_children_alive'] and not x['live_pidfds'] and x['subreaper_after']==0 for x in results.values()),results
+    assert all(x['children_created']>0 and x['opened_pidfds']>0 for name,x in results.items() if name!='main'),results
+    assert results['accepted']['report']['ok'] and results['accepted']['prior_high_report']['ok'],results
+    low=results['accepted']['report']
+    assert low['peak_rss_bytes']<64*1024*1024<low['kernel_child_peak_bytes'] and low['kernel_child_peak_before_bytes']>=64*1024*1024 and low['kernel_child_peak_scope']=='process-lifetime cumulative; diagnostic only',results
+    for mode,key in (('late-error','late_error'),('close-error','close_error'),('snapshot-error','snapshot_error')):
+        assert results[mode]['hits'][key]==1 and not results[mode]['report']['ok'],results
+    assert results['main']['codes']==[1,1] and all(x and not x['ok'] and x['reason']=='rss_limit' and 0<x['elapsed_before_emission_seconds']<.3 for x in results['main']['public_reports']),results
+
+
+# ---------------------------------------------------------------------------------------------
+# FEAT-CICD-001 spec 2026-10-31-feat-cicd-001-supersedes-chain-retirement: the status-only
+# retirement of a spec that itself superseded one, and validation of the whole supersedes lineage.
+# Fixture lineage (spec, "Acceptance fixtures"): Q = SPEC (superseded), P names Q, N names P.
+# ---------------------------------------------------------------------------------------------
+
+P_SPEC = "docs/superpowers/specs/2026-09-02-model-decisions-v2.md"
+N_SPEC = "docs/superpowers/specs/2026-09-03-model-decisions-v3.md"
+R_SPEC = "docs/superpowers/specs/2026-08-30-model-decisions-v0.md"
+D_SPEC = "docs/superpowers/specs/2026-09-04-model-decisions-draft.md"
+ROUND_EIGHT = "which is already superseded; name the spec that replaced it (round eight)"
+REDUNDANT = "already superseded on the current base; merge main, resolve any remaining differences, and rerun the gate"
+RETIRE_BRANCH = "docs/spec-feat-model-001-v3"
+
+
+def retirement_lineage(repo: Path, **extra: str | None) -> None:
+    """Q (SPEC) superseded with a null pointer; P approved, naming Q; plus `extra` files, on the base."""
+    on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(supersedes=SPEC), **extra})
+
+
+def flipped_p(**over) -> str:
+    """P with only its status line changed, as the retirement edit writes it."""
+    return spec(status="superseded", supersedes=SPEC, **over)
+
+
+def divergent_pr(repo: Path, branch: str, branch_files: dict[str, str | None], main_files: dict[str, str | None],
+                 **env: str) -> subprocess.CompletedProcess:
+    """A branch cut from `base` whose head keeps the old merge base while main advances (the shape of
+    test_policy_documents_are_read_at_the_current_base): policy is read at the advanced tip."""
+    _git(repo, "reset", "-q", "--hard")
+    _git(repo, "clean", "-qfd")
+    _git(repo, "checkout", "-q", "-B", branch, "base")
+    for path, text in branch_files.items():
+        if text is None:
+            (repo / path).unlink()
+        else:
+            write(repo, path, text)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", f"change on {branch}")
+    head = _git(repo, "rev-parse", "HEAD")
+    on_base(repo, main_files)
+    return gate(repo, "--pr", _git(repo, "rev-parse", "base"), head, **{"PR_HEAD_REF": branch, **env})
+
+
+def test_depth_two_retirement_pr_mode_admits_status_only_flip_with_approved_replacement(repo):
+    """Spec done_when[0], A1 and C4. The #1649 shape: N added and P flipped status-only in one PR; main
+    refuses it with the round-eight message although the in-place rule admits exactly this edit."""
+    retirement_lineage(repo)
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+    assert r.returncode == 0 and ROUND_EIGHT not in r.stdout, r.stdout
+    # C4: an unrelated approved spec lands on main after the fork; policy is read at the advanced tip and P is still approved there
+    other = "docs/superpowers/specs/2026-09-05-data-other.md"
+    r = divergent_pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p()},
+                     {other: spec(feat_id="FEAT-DATA-001", req_ids="[REQ-DATA-001]")})
+    assert r.returncode == 0 and ROUND_EIGHT not in r.stdout, r.stdout
+
+
+def test_depth_two_retirement_commit_mode_admits_status_only_flip(repo):
+    """Spec done_when[0], A2 and A3: N and P staged in one commit; then N committed first and P flipped next."""
+    retirement_lineage(repo)
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+    write(repo, N_SPEC, spec(supersedes=P_SPEC))
+    write(repo, P_SPEC, flipped_p())
+    _git(repo, "add", "-A")
+    r = gate(repo, "--commit")
+    assert r.returncode == 0 and ROUND_EIGHT not in r.stdout, r.stdout
+    _git(repo, "reset", "-q", "--hard")
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+    write(repo, N_SPEC, spec(supersedes=P_SPEC))
+    _git(repo, "add", "-A")
+    assert gate(repo, "--commit").returncode == 0
+    _git(repo, "commit", "-q", "-m", "v3 names v2")
+    write(repo, P_SPEC, flipped_p())
+    _git(repo, "add", "-A")
+    r = gate(repo, "--commit")
+    assert r.returncode == 0 and ROUND_EIGHT not in r.stdout, r.stdout
+
+
+def test_longer_chain_retirement_passes_and_traversal_terminates(repo):
+    """Spec done_when[0], A4: R superseded (null), Q superseded names R, P approved names Q; N added, P flipped."""
+    on_base(repo, {R_SPEC: spec(status="superseded"), SPEC: spec(status="superseded", supersedes=R_SPEC), P_SPEC: spec(supersedes=SPEC)})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+    assert r.returncode == 0 and "spec gate ok" in r.stdout and "chain" not in r.stdout, r.stdout
+
+
+def test_new_pointer_to_superseded_target_still_refused(repo):
+    """Spec done_when[1], B1 and B2: a new or changed pointer at an already-superseded target keeps the round-eight refusal."""
+    retirement_lineage(repo, **{D_SPEC: spec(status="draft")})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=SPEC)})
+    assert r.returncode == 1 and f"{N_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+    r = pr(repo, RETIRE_BRANCH, {D_SPEC: spec(status="draft", supersedes=SPEC)})
+    assert r.returncode == 1 and f"{D_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+
+
+def test_draft_to_approved_with_stale_pointer_refused(repo):
+    """Spec done_when[1], B3: approving a draft in place whose unchanged pointer names a superseded spec is not the exempt edit."""
+    retirement_lineage(repo, **{D_SPEC: spec(status="draft", supersedes=SPEC)})
+    r = pr(repo, RETIRE_BRANCH, {D_SPEC: spec(supersedes=SPEC)})
+    assert r.returncode == 1 and f"{D_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+
+
+def test_flip_with_changed_pointer_refused(repo):
+    """Spec done_when[1], B4: a flip that also moves the pointer is refused in place and by round eight."""
+    retirement_lineage(repo, **{R_SPEC: spec(status="superseded")})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: spec(status="superseded", supersedes=R_SPEC)})
+    assert r.returncode == 1 and f"{P_SPEC}: an approved spec does not change in place" in r.stdout, r.stdout
+    assert f"{P_SPEC}: supersedes {R_SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+
+
+def test_flip_without_valid_replacement_refused_both_ways(repo):
+    """Spec done_when[1], B5: no N, a draft N, or another FEAT's N leaves the flip refused (PR and commit modes)."""
+    retirement_lineage(repo)
+    missing = f"{P_SPEC}: marked superseded, but no approved spec for its FEAT names it in `supersedes`"
+    for files in ({P_SPEC: flipped_p()},
+                  {P_SPEC: flipped_p(), N_SPEC: spec(status="draft", supersedes=P_SPEC)},
+                  {P_SPEC: flipped_p(), N_SPEC: spec(feat_id="FEAT-DATA-001", req_ids="[REQ-DATA-001]", supersedes=P_SPEC)}):
+        r = pr(repo, RETIRE_BRANCH, files)
+        assert r.returncode == 1 and missing in r.stdout and f"{P_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, (files, r.stdout)
+        _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+        for path, text in files.items():
+            write(repo, path, text)
+        _git(repo, "add", "-A")
+        r = gate(repo, "--commit")
+        assert r.returncode == 1 and missing in r.stdout, (files, r.stdout)
+        _git(repo, "reset", "-q", "--hard")
+
+
+def test_extra_predecessor_bytes_refused(repo):
+    """Spec done_when[1], B6: the enumerated byte changes beyond the status line in P (a done_when word, trailing
+    whitespace, CRLF, a changed blank line) leave the exemption unreached, with today's messages; the status line
+    itself is covered by test_flip_changes_only_the_status_entry_and_hides_no_key. The gate reads text with CRLF folded, so
+    the in-place rule does not see the CRLF variant on main or here; it is refused by round eight on both (executed
+    against main a79ac45d: round eight alone), and the exemption judges the bytes so the flip is not admitted."""
+    retirement_lineage(repo)
+    base_flip = flipped_p()
+    variants = {
+        "done_when word": flipped_p(done_when=["something easier", DONE[1]]),
+        "trailing whitespace": base_flip.replace("# Body\n", "# Body \n", 1),
+        "CRLF": base_flip.replace("\n", "\r\n"),
+        "changed blank line": base_flip.replace("---\n\n# Body", "---\n\n\n# Body", 1),
+    }
+    for label, text in variants.items():
+        assert text != base_flip, label
+        r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: text})
+        assert r.returncode == 1, (label, r.stdout)
+        assert f"{P_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, (label, r.stdout)
+        if label != "CRLF":
+            assert f"{P_SPEC}: an approved spec does not change in place" in r.stdout, (label, r.stdout)
+
+
+def test_inherited_invalid_own_pointer_refused_on_flip(repo):
+    """Spec done_when[2], B7 (baseline control): P's own inherited pointer is bad; today's L1512 to L1518 messages hold."""
+    missing_q = "docs/superpowers/specs/2026-08-01-model-gone.md"
+    for pointer, message in ((missing_q, "which is not a spec on the base"),
+                             ("./" + SPEC, "which is not a spec on the base"),
+                             ("docs/superpowers/specs/2026-08-02-data-q.md", "a spec for FEAT-DATA-001, not FEAT-MODEL-001")):
+        extra = {"docs/superpowers/specs/2026-08-02-data-q.md": spec(feat_id="FEAT-DATA-001", req_ids="[REQ-DATA-001]")}
+        on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(supersedes=pointer), **extra})
+        r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: spec(status="superseded", supersedes=pointer)})
+        assert r.returncode == 1 and f"{P_SPEC}: supersedes" in r.stdout and message in r.stdout, (pointer, r.stdout)
+
+
+def test_deeper_inherited_edge_refused(repo):
+    """Spec done_when[2], B7b: Q's own pointer (the second edge) is noncanonical, missing or cross-FEAT. Main refuses the
+    fixture only by round eight on P's pointer and never examines Q's edge; the chain messages name the defect."""
+    data_r = "docs/superpowers/specs/2026-08-02-data-r.md"
+    missing_r = "docs/superpowers/specs/2026-08-01-model-gone.md"
+    cases = (
+        ("./" + R_SPEC, {R_SPEC: spec(status="superseded")},
+         f"{P_SPEC}: supersedes chain reaches {'./' + R_SPEC!r}, which is not written as docs/superpowers/specs/<file>.md"),
+        (missing_r, {}, f"{P_SPEC}: supersedes chain breaks at {missing_r}, which is not a spec on the base"),
+        (data_r, {data_r: spec(feat_id="FEAT-DATA-001", req_ids="[REQ-DATA-001]", status="superseded")},
+         f"{P_SPEC}: supersedes chain reaches {data_r}, a spec for FEAT-DATA-001, not FEAT-MODEL-001"),
+    )
+    for q_pointer, extra, message in cases:
+        on_base(repo, {SPEC: spec(status="superseded", supersedes=q_pointer), P_SPEC: spec(supersedes=SPEC), **extra})
+        r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+        assert r.returncode == 1 and message in r.stdout, (q_pointer, r.stdout)
+
+
+def test_deleted_ancestor_is_not_read_from_base(repo):
+    """Spec done_when[2], B7c and C6: the change flips P beside N and deletes Q; the chain refuses at Q as deleted
+    (never falling back to the base copy) beside the existing deletion refusal."""
+    retirement_lineage(repo)
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p(), SPEC: None})
+    assert r.returncode == 1 and f"{SPEC}: a superseded spec is not deleted" in r.stdout, r.stdout
+    assert f"{P_SPEC}: supersedes chain breaks at {SPEC}, which this change deletes" in r.stdout, r.stdout
+
+
+def test_supersedes_cycle_refused(repo):
+    """Spec done_when[3], B8 to B11: a self-cycle, a two-spec cycle in one change, a cycle closed against the base and a
+    draft-level cycle are each refused with the revisits message (main has no cycle check; B11 passes there)."""
+    n2 = "docs/superpowers/specs/2026-09-06-model-decisions-v4.md"
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=N_SPEC)})
+    assert r.returncode == 1 and f"{N_SPEC}: supersedes chain revisits {N_SPEC} (cycle)" in r.stdout, r.stdout
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=n2), n2: spec(supersedes=N_SPEC)})
+    assert r.returncode == 1 and f"{N_SPEC}: supersedes chain revisits {N_SPEC} (cycle)" in r.stdout, r.stdout
+    assert f"{n2}: supersedes chain revisits {n2} (cycle)" in r.stdout, r.stdout
+    a, b = P_SPEC, N_SPEC
+    on_base(repo, {a: spec(supersedes=b), b: spec()})
+    r = pr(repo, RETIRE_BRANCH, {b: spec(supersedes=a)})
+    assert r.returncode == 1 and f"{b}: supersedes chain revisits {b} (cycle)" in r.stdout, r.stdout
+    on_base(repo, {a: spec(status="draft", supersedes=b), b: spec(status="draft")})
+    r = pr(repo, RETIRE_BRANCH, {b: spec(status="draft", supersedes=a)})
+    assert r.returncode == 1 and f"{b}: supersedes chain revisits {b} (cycle)" in r.stdout, r.stdout
+
+
+def test_simultaneous_draft_edit_cycle_uses_head_value(repo):
+    """Spec done_when[3], B11b: N (new) names draft D while the same change points D at N; the overlay reads D's staged
+    pointer, so the cycle is found from N and from D."""
+    on_base(repo, {D_SPEC: spec(status="draft")})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=D_SPEC), D_SPEC: spec(status="draft", supersedes=N_SPEC)})
+    assert r.returncode == 1 and f"{N_SPEC}: supersedes chain revisits {N_SPEC} (cycle)" in r.stdout, r.stdout
+    assert f"{D_SPEC}: supersedes chain revisits {D_SPEC} (cycle)" in r.stdout, r.stdout
+
+
+def test_redundant_flip_after_base_advance_gets_merge_main_diagnostic(repo):
+    """Spec done_when[4], row C1 (BA1, P supersedes Q; replaces the companion plan's C1 row): main retired P after the
+    fork and the branch's P equals the current base's P, so the step 5 refusal appears beside the round-eight refusal
+    that still applies to N's pointer. Its text promises no merge result."""
+    retirement_lineage(repo)
+    n2 = "docs/superpowers/specs/2026-09-06-model-decisions-v4.md"
+    r = divergent_pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p()},
+                     {n2: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+    assert r.returncode == 1 and f"{P_SPEC}: {REDUNDANT}" in r.stdout, r.stdout
+    assert f"{N_SPEC}: supersedes {P_SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+
+
+def test_pointer_to_target_superseded_after_fork_refused(repo):
+    """Spec done_when[4], C2 (BA2, baseline control): N's pointer is new and P is superseded at the current base."""
+    retirement_lineage(repo)
+    n2 = "docs/superpowers/specs/2026-09-06-model-decisions-v4.md"
+    r = divergent_pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC)}, {n2: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+    assert r.returncode == 1 and f"{N_SPEC}: supersedes {P_SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+
+
+def test_merge_of_main_carrying_the_flip_is_not_rechecked(repo):
+    """Spec done_when[4], C3 (BA3, baseline control): a merge of main in progress brings the flip of P; measured against
+    MERGE_HEAD, P is not in the change and is not re-checked."""
+    retirement_lineage(repo)
+    n2 = "docs/superpowers/specs/2026-09-06-model-decisions-v4.md"
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+    write(repo, "docs/notes.md", "notes\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "branch work")
+    on_base(repo, {n2: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+    _git(repo, "checkout", "-q", RETIRE_BRANCH)
+    _git(repo, "merge", "-q", "--no-commit", "--no-ff", "main")
+    assert (repo / ".git/MERGE_HEAD").exists()
+    r = gate(repo, "--commit")
+    assert r.returncode == 0 and ROUND_EIGHT not in r.stdout and P_SPEC not in r.stdout, r.stdout
+
+
+def test_unchanged_ancestry_is_read_at_the_current_base(repo):
+    """Spec done_when[4], C5 (BA5, baseline control): draft D names approved Q at the fork; main retires Q; approving D
+    in place is refused by round eight because Q is read at the current base, never the merge base."""
+    q2 = "docs/superpowers/specs/2026-09-06-model-decisions-q2.md"
+    on_base(repo, {D_SPEC: spec(status="draft", supersedes=SPEC)})
+    r = divergent_pr(repo, RETIRE_BRANCH, {D_SPEC: spec(supersedes=SPEC)}, {q2: spec(supersedes=SPEC), SPEC: spec(status="superseded")})
+    assert r.returncode == 1 and f"{D_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+
+
+def test_unrelated_draft_edit_beside_retirement_passes(repo):
+    """Spec done_when[5], A8: an unrelated draft's text edit rides beside N and the flip of P; its empty lineage and N's
+    lineage (N, P, Q, null) both pass."""
+    retirement_lineage(repo, **{D_SPEC: spec(status="draft")})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p(), D_SPEC: spec(status="draft") + "\nmore words\n"})
+    assert r.returncode == 0, r.stdout
+
+
+def test_retirement_leaves_done_plans_unbound_and_untouched(repo):
+    """Spec done_when[5], B15: a done plan on the base cites P; a docs/ branch retirement reads, rebinds and reports no plan."""
+    done_plan = "docs/superpowers/plans/2026-09-02-model-decisions-v2.md"
+    retirement_lineage(repo, **{done_plan: plan(spec=P_SPEC, branch="feature/feat-model-001-v2", status="done", pr=7)})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+    assert r.returncode == 0 and "plan" not in r.stdout, r.stdout
+    assert _git(repo, "show", f"HEAD:{done_plan}") == plan(spec=P_SPEC, branch="feature/feat-model-001-v2", status="done", pr=7).strip()
+
+
+def test_traversal_bound_on_sixty_chained_specs(repo):
+    """Spec done_when[6], D2 and D3: sixty chained specs; the chain walk makes at most one tree read per distinct spec in
+    the union of the head and base spec lists, the gate run completes, and --check-spec runs no chain check."""
+    chain = [f"docs/superpowers/specs/2026-07-{1 + i // 31:02d}-model-chain-{i:02d}.md" for i in range(60)]
+    files = {chain[0]: spec(status="superseded")}
+    for prev, cur in zip(chain, chain[1:-1]):
+        files[cur] = spec(status="superseded", supersedes=prev)
+    files[chain[-1]] = spec(supersedes=chain[-2])
+    on_base(repo, files)
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=chain[-1]), chain[-1]: spec(status="superseded", supersedes=chain[-2])})
+    assert r.returncode == 0 and "spec gate ok" in r.stdout, r.stdout
+    sg = load_gate(repo)
+    base, head = base_and_head(repo)
+    changed = _git(repo, "diff", "--name-only", "--no-renames", base, head).splitlines()
+    ch = sg.Change("pr", RETIRE_BRANCH, changed, sg.Tree(head), sg.Tree(base), sg.Tree(base))
+    reads: list[str] = []
+    real_read = sg.Tree.read
+    try:
+        sg.Tree.read = lambda self, path: (reads.append(path), real_read(self, path))[1]
+        errs = sg.check_chain(sg.frontmatter(real_read(sg.Tree(head), N_SPEC)), N_SPEC, ch)
+    finally:
+        sg.Tree.read = real_read
+    distinct = set(sg.Tree(head).list(sg.SPECS)) | set(sg.Tree(base).list(sg.SPECS))
+    assert errs == [] and 0 < len(reads) <= len(distinct) and len(set(reads)) == len(reads), (len(reads), len(distinct))
+    r = gate(repo, "--check-spec", N_SPEC)
+    assert r.returncode == 0 and r.stdout.strip() == "spec ok", r.stdout
+
+
+def test_crlf_relabel_of_a_superseded_spec_is_not_called_redundant(repo):
+    """IMPL-CICD1 R1 F1, under the replacement spec's step 5: P is already superseded at the merge base, so a CRLF
+    relabel of it carries no retirement and keeps main's verdict (step 6, row C1d's shape): the null-pointer relabel
+    is admitted, and the relabel of a P naming a superseded Q is refused by round eight alone, with no step 5 line.
+    (At 8814e1c1 the old merge-main text fired here.)"""
+    on_base(repo, {P_SPEC: spec(status="superseded")})
+    r = pr(repo, RETIRE_BRANCH, {P_SPEC: spec(status="superseded").replace("\n", "\r\n")})
+    assert r.returncode == 0 and "already superseded on the current base" not in r.stdout, r.stdout
+    on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(status="superseded", supersedes=SPEC)})
+    r = pr(repo, RETIRE_BRANCH, {P_SPEC: spec(status="superseded", supersedes=SPEC).replace("\n", "\r\n")})
+    assert r.returncode == 1 and f"{P_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+    assert "already superseded on the current base" not in r.stdout, r.stdout
+
+
+def test_cr_only_line_endings_take_the_flip_and_refuse_extra_bytes(repo):
+    """IMPL-CICD1 R1 F2: the byte-level status strip treats a lone CR as a line break, as `Tree.read` does, so a
+    CR-only spec is retired by the same status-only flip (positive control; at 8814e1c1 round eight refused it), while
+    the enumerated byte changes in such a file still leave the exemption unreached with today's messages (negative
+    controls): a done_when word is refused in place and by round eight, a relabel to LF beside the flip by round
+    eight alone, since the folded text is equal. No spec in the repository carries a CR byte; this measures the
+    anchor, not a live case."""
+    cr = lambda s: s.replace("\n", "\r")
+    on_base(repo, {SPEC: cr(spec(status="superseded")), P_SPEC: cr(spec(supersedes=SPEC))})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: cr(flipped_p())})
+    assert r.returncode == 0 and "spec gate ok" in r.stdout, r.stdout
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: cr(flipped_p(done_when=["something easier", DONE[1]]))})
+    assert r.returncode == 1 and f"{P_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+    assert f"{P_SPEC}: an approved spec does not change in place" in r.stdout, r.stdout
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+    assert r.returncode == 1 and f"{P_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+    assert "does not change in place" not in r.stdout, r.stdout
+
+
+def test_nul_byte_in_an_inherited_pointer_is_refused_not_a_traceback(repo):
+    """IMPL-CICD1 R1 F3: an unchanged base spec whose pointer carries a NUL byte names no git path; the chain walk
+    refuses it as not written canonically, with the ordinary verdict and no traceback (at 8814e1c1 `git show`
+    raised an uncaught ValueError: exit 1, empty stdout). Main d806bfd1 admits the change, never reading that edge."""
+    nul = "docs/superpowers/specs/\x00x.md"
+    on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(supersedes=nul)})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC)})
+    assert r.returncode == 1 and "SPEC GATE FAILED" in r.stdout, (r.stdout, r.stderr)
+    assert f"{N_SPEC}: supersedes chain reaches {nul!r}, which is not written as docs/superpowers/specs/<file>.md" in r.stdout, r.stdout
+    assert "Traceback" not in r.stderr, r.stderr
+
+
+def test_mode_only_change_of_a_superseded_spec_is_not_called_redundant(repo):
+    """IMPL-CICD2 R1 F1, under the replacement spec's step 5: a mode-only change (100644 to 100755, bytes identical)
+    to a P already superseded at the merge base carries no retirement and keeps main's verdict (step 6): a P naming
+    a superseded Q is refused by round eight alone and a null-pointer P is admitted, with no step 5 line."""
+    chmod = lambda root: (root / P_SPEC).chmod(0o755)
+    on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(status="superseded", supersedes=SPEC), N_SPEC: spec(supersedes=P_SPEC)})
+    r = pr(repo, RETIRE_BRANCH, {}, then=chmod)
+    assert r.returncode == 1 and f"{P_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+    assert "already superseded on the current base" not in r.stdout, r.stdout
+    on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(status="superseded"), N_SPEC: spec(supersedes=P_SPEC)})
+    r = pr(repo, RETIRE_BRANCH, {}, then=chmod)
+    assert r.returncode == 0 and "spec gate ok" in r.stdout, r.stdout
+
+
+def mode_divergent_pr(repo: Path, branch_files: dict[str, str | None], branch_modes: dict[str, int],
+                      main_files: dict[str, str | None], main_modes: dict[str, int]) -> subprocess.CompletedProcess:
+    """`divergent_pr` with modes: the branch, cut from `base`, writes `branch_files` and sets `branch_modes`; main then
+    writes `main_files` and sets `main_modes`; the gate judges the branch against main's tip, the merge base kept."""
+    _git(repo, "reset", "-q", "--hard")
+    _git(repo, "clean", "-qfd")
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+    for path, text in branch_files.items():
+        write(repo, path, text)
+    for path, mode in branch_modes.items():
+        (repo / path).chmod(mode)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", f"change on {RETIRE_BRANCH}")
+    head = _git(repo, "rev-parse", "HEAD")
+    on_base(repo, main_files, then=lambda root: [(root / path).chmod(mode) for path, mode in main_modes.items()])
+    return gate(repo, "--pr", _git(repo, "rev-parse", "base"), head, PR_HEAD_REF=RETIRE_BRANCH)
+
+
+def test_merge_main_advice_follows_the_mode_a_merge_of_main_keeps(repo):
+    """IMPL-CICD3 R1 F1 rows. Name kept from the 2026-10-31 contract because the gate's suite only grows (a test on the branch is not dropped); the body asserts the 2026-11-01 replacement spec's step 5. Main retired P after the fork and the branch flipped P to the same text; whatever
+    the modes on the merge base, the branch and main, the change repeats main's retirement and step 5 refuses it with
+    its one message, which predicts no merge; when the branch's text differs it is not a redundant retirement and
+    no step 5 line appears. Round eight still refuses N's pointer in every row."""
+    refused = f"{N_SPEC}: supersedes {P_SPEC}, {ROUND_EIGHT}"
+    n2 = "docs/superpowers/specs/2026-09-06-model-decisions-v4.md"
+    main = {n2: spec(supersedes=P_SPEC), P_SPEC: flipped_p()}
+    for name, merge_base_mode, branch_p, branch_mode, main_mode in (
+            ("main set +x, branch left the mode", 0o644, flipped_p(), 0o644, 0o755),
+            ("main cleared +x, branch left the mode", 0o755, flipped_p(), 0o755, 0o644),
+            ("both set +x", 0o644, flipped_p(), 0o755, 0o755),
+            ("main kept the mode, branch set +x", 0o644, flipped_p(), 0o755, 0o644),
+            ("main kept the mode, branch cleared +x", 0o755, flipped_p(), 0o644, 0o755),
+            ("main set +x, branch bytes differ", 0o644, flipped_p() + "\nA branch note.\n", 0o644, 0o755)):
+        on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(supersedes=SPEC)},
+                then=lambda root: (root / P_SPEC).chmod(merge_base_mode))   # P's mode on the merge base, per row
+        r = mode_divergent_pr(repo, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: branch_p}, {P_SPEC: branch_mode},
+                              main, {P_SPEC: main_mode})
+        assert r.returncode == 1 and refused in r.stdout, (name, r.stdout)
+        assert (f"{P_SPEC}: {REDUNDANT}" in r.stdout) is (branch_p == flipped_p()), (name, r.stdout)
+        assert "merge main so the file leaves" not in r.stdout and "repeats that retirement" not in r.stdout, (name, r.stdout)
+
+
+def test_merge_main_advice_is_withheld_outside_regular_files_and_one_merge_base(repo):
+    """IMPL-CICD4 R1 F1 and F2 shapes. Name kept from the 2026-10-31 contract because the gate's suite only grows (a test on the branch is not dropped); the body asserts the 2026-11-01 replacement spec's step 5. (1) Main turned P into a symlink whose target text is the flipped P;
+    (2) a criss-cross history with two merge bases holding P at different modes. Neither depends on a merge
+    prediction now: step 5 refuses both with its one message, beside round eight on N's pointer."""
+    refused = f"{N_SPEC}: supersedes {P_SPEC}, {ROUND_EIGHT}"
+    n2 = "docs/superpowers/specs/2026-09-06-model-decisions-v4.md"
+    retirement_lineage(repo)
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+    write(repo, N_SPEC, spec(supersedes=P_SPEC))
+    write(repo, P_SPEC, flipped_p())
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "flip P, regular file")
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    write(repo, n2, spec(supersedes=P_SPEC))
+    (repo / P_SPEC).unlink()
+    os.symlink(flipped_p(), repo / P_SPEC)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "main: P as a symlink")
+    assert _git(repo, "ls-tree", "HEAD", "--", P_SPEC).split()[0] == "120000"
+    r = gate(repo, "--pr", _git(repo, "rev-parse", "main"), head, PR_HEAD_REF=RETIRE_BRANCH)
+    assert r.returncode == 1 and refused in r.stdout and f"{P_SPEC}: {REDUNDANT}" in r.stdout, r.stdout
+    assert "merge main so the file leaves" not in r.stdout and "repeats that retirement" not in r.stdout, r.stdout
+    # (2) criss-cross: P at 755 on the fork point; the branch side sets 644 (X), main's side leaves 755 (Y); each
+    # merges the other's commit, so X and Y are both merge bases. The branch flips P at 755, main at 644.
+    _git(repo, "reset", "-q", "--hard")
+    _git(repo, "checkout", "-q", "-B", "main", "base")
+    (repo / P_SPEC).chmod(0o755)
+    _git(repo, "commit", "-q", "-am", "P at 755")
+    fork = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, fork)
+    write(repo, "docs/x.md", "x\n")
+    (repo / P_SPEC).chmod(0o644)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "X")
+    x = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    write(repo, "docs/y.md", "y\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "Y")
+    y = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "merge", "-q", "--no-edit", x)
+    _git(repo, "checkout", "-q", RETIRE_BRANCH)
+    _git(repo, "merge", "-q", "--no-edit", y)
+    write(repo, N_SPEC, spec(supersedes=P_SPEC))
+    write(repo, P_SPEC, flipped_p())
+    (repo / P_SPEC).chmod(0o755)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "flip P at 755")
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    write(repo, n2, spec(supersedes=P_SPEC))
+    write(repo, P_SPEC, flipped_p())
+    (repo / P_SPEC).chmod(0o644)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "main flips P at 644")
+    main_tip = _git(repo, "rev-parse", "HEAD")
+    assert len(_git(repo, "merge-base", "--all", main_tip, head).split()) == 2
+    assert _git(repo, "ls-tree", _git(repo, "merge-base", main_tip, head), "--", P_SPEC).split()[0] == "100755"
+    r = gate(repo, "--pr", main_tip, head, PR_HEAD_REF=RETIRE_BRANCH)
+    assert r.returncode == 1 and refused in r.stdout and f"{P_SPEC}: {REDUNDANT}" in r.stdout, r.stdout
+    assert "merge main so the file leaves" not in r.stdout and "repeats that retirement" not in r.stdout, r.stdout
+
+
+def crisscross_pr(repo: Path, x_mode: int, y_mode: int, branch_files: dict[str, str], head_mode: int,
+                  main_files: dict[str, str], main_mode: int) -> subprocess.CompletedProcess:
+    """From `base`: a fork commit sets P to `y_mode`; the branch side X writes docs/x.md and sets P to `x_mode`, main's
+    side Y writes docs/y.md (both named after the fork, so every call commits); each merges the other, so X and Y are both merge bases. The branch then writes
+    `branch_files` with P at `head_mode`, main writes `main_files` with P at `main_mode`; the gate judges the branch."""
+    _git(repo, "reset", "-q", "--hard")
+    _git(repo, "checkout", "-q", "-B", "main", "base")
+    (repo / P_SPEC).chmod(y_mode)
+    _git(repo, "commit", "-q", "--allow-empty", "-am", "fork")
+    fork = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, fork)
+    write(repo, "docs/x.md", f"x {fork}\n")
+    (repo / P_SPEC).chmod(x_mode)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "X")
+    x = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    write(repo, "docs/y.md", f"y {fork}\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "Y")
+    y = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "merge", "-q", "--no-edit", x)
+    _git(repo, "checkout", "-q", RETIRE_BRANCH)
+    _git(repo, "merge", "-q", "--no-edit", y)
+    for path, text in branch_files.items():
+        write(repo, path, text)
+    (repo / P_SPEC).chmod(head_mode)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "branch change")
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    for path, text in main_files.items():
+        write(repo, path, text)
+    (repo / P_SPEC).chmod(main_mode)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "main change")
+    main_tip = _git(repo, "rev-parse", "HEAD")
+    assert len(_git(repo, "merge-base", "--all", main_tip, head).split()) == 2
+    return gate(repo, "--pr", main_tip, head, PR_HEAD_REF=RETIRE_BRANCH)
+
+
+def test_redundant_flip_is_refused_whatever_the_mode_or_history(repo):
+    """IMPL-CICD5 R2 F1 rows, under the replacement spec's step 5. A null-pointer flip main already made after the fork
+    (no round eight to refuse it otherwise) is refused in every shape: linear with any mode combination, criss-cross
+    histories and a symlink on main, with the one step 5 message. Main admits every such row (rc 0). Outside the
+    retirement (P already superseded at the fork, only its mode changed) the result is main's (step 6, rc 0), and an
+    added P identical to main's superseded copy is refused by step 5."""
+    flip = spec(status="superseded")
+    main = {"docs/superpowers/specs/2026-09-06-model-decisions-v4.md": spec(supersedes=P_SPEC), P_SPEC: flip}
+    redundant = f"{P_SPEC}: {REDUNDANT}"
+    for name, merge_base_mode, head_mode, main_mode, text in (
+            ("linear, no mode change", 0o644, 0o644, 0o644, redundant),
+            ("linear, main set +x", 0o644, 0o644, 0o755, redundant),
+            ("linear, both set +x", 0o644, 0o755, 0o755, redundant),
+            ("linear, branch-only +x", 0o644, 0o755, 0o644, redundant)):
+        on_base(repo, {P_SPEC: spec()}, then=lambda root: (root / P_SPEC).chmod(merge_base_mode))
+        r = mode_divergent_pr(repo, {P_SPEC: flip}, {P_SPEC: head_mode}, main, {P_SPEC: main_mode})
+        assert r.returncode == 1 and text in r.stdout and ROUND_EIGHT not in r.stdout, (name, r.stdout)
+        assert "merge main so the file leaves" not in r.stdout and "repeats that retirement" not in r.stdout, (name, r.stdout)
+    for name, x_mode, y_mode, head_mode, text in (
+            ("criss-cross, merge bases differ, head keeps 755", 0o644, 0o755, 0o755, redundant),
+            ("criss-cross, merge bases both 755 (merge is a no-op)", 0o755, 0o755, 0o755, redundant),
+            ("criss-cross, head mode equals main's", 0o644, 0o755, 0o644, redundant)):
+        on_base(repo, {P_SPEC: spec()})
+        r = crisscross_pr(repo, x_mode, y_mode, {P_SPEC: flip}, head_mode, main, 0o644)
+        assert r.returncode == 1 and text in r.stdout, (name, r.stdout)
+        assert "merge main so the file leaves" not in r.stdout and "repeats that retirement" not in r.stdout, (name, r.stdout)
+    # main turns P into a symlink whose target text is the flipped P
+    on_base(repo, {P_SPEC: spec()})
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+    write(repo, P_SPEC, flip)
+    _git(repo, "commit", "-q", "-am", "flip P")
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    (repo / P_SPEC).unlink()
+    os.symlink(flip, repo / P_SPEC)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "main: P as a symlink")
+    r = gate(repo, "--pr", _git(repo, "rev-parse", "main"), head, PR_HEAD_REF=RETIRE_BRANCH)
+    assert r.returncode == 1 and redundant in r.stdout, r.stdout
+    _git(repo, "reset", "-q", "--hard", "HEAD~1")   # main back to a regular P before the next fixture writes it
+    # outside the flip: P superseded at the fork, the branch changes only its mode (main's result, rc 0)
+    on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: flip, N_SPEC: spec(supersedes=P_SPEC)})
+    r = pr(repo, RETIRE_BRANCH, {}, then=lambda root: (root / P_SPEC).chmod(0o755))
+    assert r.returncode == 0 and "spec gate ok" in r.stdout, r.stdout
+    # absent at the fork, both sides add the identical superseded P: refused by step 5 alone
+    _git(repo, "reset", "-q", "--hard")
+    _git(repo, "checkout", "-q", "main")
+    _git(repo, "rm", "-q", P_SPEC, N_SPEC)
+    _git(repo, "commit", "-q", "-m", "drop P and N")
+    _git(repo, "tag", "-f", "base")
+    r = divergent_pr(repo, RETIRE_BRANCH, {P_SPEC: flip}, {P_SPEC: flip})
+    assert r.returncode == 1 and refusals(r) == [redundant], r.stdout
+
+
+def test_flip_changes_only_the_status_entry_and_hides_no_key(repo):
+    """IMPL-CICD2 R1 F2 (and pass-1 R1 F4, R3 P2-2): the exemption admits a flip whose bytes outside the one physical
+    line holding the frontmatter `status` entry are unchanged, in place, and whose entry line holds no second logical
+    line. At 29314273 `status: superseded\x0cissues: [4242]` (`frontmatter` splits on form feed and U+2028, the strip
+    lambdas blank the whole physical line) and a rewritten body line beginning `status:` rode the flip (rc 0; main
+    refused both by round eight); so did a body `status:` line moved between blank lines, which a check on the
+    status lines' values alone also admits, since it loses position. Each is refused here by round eight. A quoted,
+    spaced or commented value on the entry is the parser's business and passes when only the entry changes. The
+    in-place rule is untouched: at depth one (P with a null pointer) the hidden key is still admitted on this gate as
+    on main (old-behaviour control, recorded, not changed by this exemption)."""
+    n = {N_SPEC: spec(supersedes=P_SPEC)}
+    refused = f"{P_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}"
+    p_base, p_head = spec(supersedes=SPEC), flipped_p()
+    entry = lambda doc, old, new: doc.replace(old, new, 1)
+    for base_line, head_line in (("status: approved", "status: superseded"),
+                                 ("status: 'approved'", "status: 'superseded'"),
+                                 ('status: "approved"', 'status: "superseded"'),
+                                 ("status:  approved ", "status:  superseded "),
+                                 ("status: approved", "status: superseded # retired by v3")):
+        on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: entry(p_base, "status: approved", base_line)})
+        r = pr(repo, RETIRE_BRANCH, {**n, P_SPEC: entry(p_head, "status: superseded", head_line)})
+        assert r.returncode == 0 and "spec gate ok" in r.stdout, (base_line, head_line, r.stdout)
+    # the last base above is the plain lineage (Q superseded, P approved naming Q)
+    for head_line in ("status: superseded\x0cissues: [4242]", "status: superseded\u2028issues: [4242]",
+                      "status: superseded\x0c"):
+        r = pr(repo, RETIRE_BRANCH, {**n, P_SPEC: entry(p_head, "status: superseded", head_line)})
+        assert r.returncode == 1 and refused in r.stdout, (head_line, r.stdout)
+        assert "does not change in place" not in r.stdout, (head_line, r.stdout)
+    body = lambda doc, tail: doc.rstrip("\n") + "\n" + tail
+    for base_tail, head_tail, admitted in (("status: body note\n", "status: body note\n", True),
+                                           ("\nA\n\nstatus: body note\n\nB\n", "\nA\n\n\nstatus: body note\nB\n", False),
+                                           ("status: body note\n", "status: SOMETHING ELSE\n", False)):   # each base differs from the last
+        on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: body(p_base, base_tail)})
+        r = pr(repo, RETIRE_BRANCH, {**n, P_SPEC: body(p_head, head_tail)})
+        if admitted:
+            assert r.returncode == 0 and "spec gate ok" in r.stdout, (head_tail, r.stdout)
+        else:
+            assert r.returncode == 1 and refused in r.stdout, (head_tail, r.stdout)
+    on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec()})
+    r = pr(repo, RETIRE_BRANCH, {**n, P_SPEC: spec(status="superseded").replace("status: superseded", "status: superseded\x0cissues: [4242]")})
+    assert r.returncode == 0 and "spec gate ok" in r.stdout, r.stdout
+
+
+# Spec 2026-11-01-feat-cicd-001-truthful-redundant-retirement, done_when item 5, step 5 domain rows C1a to C1d, and the
+# #1665 controls (RQ-2, RQ-3). P0 is P's path written approved with `supersedes: null` and retired by N, so no
+# round-eight refusal applies. Fixture placement (#1665 RQ-3): N exists only on main, added there with main's flip of
+# P0; the branch never carries N (with N on the branch, round eight refuses N's new pointer to a spec superseded at
+# the current base, and "no other refusal" would not hold). Each row runs in a fresh fixture repository.
+
+N0_MAIN = {N_SPEC: spec(supersedes=P_SPEC)}
+
+
+def p0(**over) -> str:
+    return spec(supersedes="null", **over)
+
+
+def refusals(r: subprocess.CompletedProcess) -> list[str]:
+    """The refusal lines the gate printed, in order."""
+    return [line[3:] for line in r.stdout.splitlines() if line.startswith(" - ")]
+
+
+def fresh(tmp_path: Path, name: str) -> Path:
+    (tmp_path / name).mkdir()
+    return make_repo(tmp_path / name)
+
+
+def test_redundant_retirement_line_ending_copy_refused(tmp_path):
+    """C1a: P0 approved at the fork; main flips it with LF and adds N; the branch flips it with CRLF, and with CR-only.
+    The text the gate reads is equal, so step 5 refuses with its message and nothing else (main admits each row; at
+    4ef70d89, which compared bytes, each row passed too: IMPL-CICD6 R2 F1). A real merge of main conflicts here, which
+    is why the message promises no merge result."""
+    for name, convert in (("crlf", lambda t: t.replace("\n", "\r\n")), ("cr-only", lambda t: t.replace("\n", "\r"))):
+        repo = fresh(tmp_path, name)
+        on_base(repo, {P_SPEC: p0()})
+        r = divergent_pr(repo, RETIRE_BRANCH, {P_SPEC: convert(p0(status="superseded"))},
+                         {**N0_MAIN, P_SPEC: p0(status="superseded")})
+        assert r.returncode == 1 and refusals(r) == [f"{P_SPEC}: {REDUNDANT}"], (name, r.stdout)
+
+
+def test_redundant_retirement_mode_only_copy_refused(tmp_path):
+    """C1b: P0 approved at the fork at 100644; main flips it and adds N; the branch makes main's byte-identical flip
+    with file mode 100755 (and, reversed, main at 100755 and the branch at 100644). Refused by step 5 alone; main admits
+    both rows. A merge of main keeps the branch's mode, so the file stays in the change."""
+    for name, merge_base_mode, head_mode, main_mode in (("branch +x", 0o644, 0o755, 0o644),
+                                                        ("main +x, branch kept 644", 0o755, 0o644, 0o755)):
+        repo = fresh(tmp_path, name.replace(" ", "-").replace(",", ""))
+        on_base(repo, {P_SPEC: p0()}, then=lambda root: (root / P_SPEC).chmod(merge_base_mode))
+        r = mode_divergent_pr(repo, {P_SPEC: p0(status="superseded")}, {P_SPEC: head_mode},
+                              {**N0_MAIN, P_SPEC: p0(status="superseded")}, {P_SPEC: main_mode})
+        assert r.returncode == 1 and refusals(r) == [f"{P_SPEC}: {REDUNDANT}"], (name, r.stdout)
+
+
+NEAR_COPY = "docs/notes/model-decisions-copy.md"
+
+
+def test_redundant_retirement_absent_at_fork_refused(tmp_path):
+    """C1c: P0 absent at the fork. (1) Main and the branch each add the identical superseded P0 (main adds N too).
+    (2) The same with the branch copy at 100755. (3) A rename of a near-copy onto the path main adds. Near-copy
+    provenance (#1665 RQ-3): NEAR_COPY, a note outside docs/superpowers/specs/ (so its deletion is no spec deletion),
+    is on the base at the fork holding P0's superseded text plus one note line; the branch `git mv`s it onto P0's path
+    and writes main's superseded bytes; main adds P0 with those bytes and edits the note (a real merge reports a
+    rename collision: IMPL-CICD6 R1 F1). Each row is refused by step 5 alone; main admits every row."""
+    flip = p0(status="superseded")
+    repo = fresh(tmp_path, "both-add")
+    r = divergent_pr(repo, RETIRE_BRANCH, {P_SPEC: flip}, {**N0_MAIN, P_SPEC: flip})
+    assert r.returncode == 1 and refusals(r) == [f"{P_SPEC}: {REDUNDANT}"], r.stdout
+    repo = fresh(tmp_path, "both-add-755")
+    r = mode_divergent_pr(repo, {P_SPEC: flip}, {P_SPEC: 0o755}, {**N0_MAIN, P_SPEC: flip}, {})
+    assert r.returncode == 1 and refusals(r) == [f"{P_SPEC}: {REDUNDANT}"], r.stdout
+    repo = fresh(tmp_path, "rename")
+    on_base(repo, {NEAR_COPY: flip + "A note kept beside the copy.\n"})
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+    (repo / P_SPEC).parent.mkdir(parents=True, exist_ok=True)
+    _git(repo, "mv", NEAR_COPY, P_SPEC)
+    write(repo, P_SPEC, flip)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "move the copy onto P0")
+    head = _git(repo, "rev-parse", "HEAD")
+    assert "R" in _git(repo, "diff", "--name-status", "-M", "base", head).split()[0]
+    on_base(repo, {**N0_MAIN, P_SPEC: flip, NEAR_COPY: flip + "A note main edited.\n"})
+    r = gate(repo, "--pr", _git(repo, "rev-parse", "base"), head, PR_HEAD_REF=RETIRE_BRANCH)
+    assert r.returncode == 1 and refusals(r) == [f"{P_SPEC}: {REDUNDANT}"], r.stdout
+
+
+def test_edit_of_spec_superseded_at_fork_keeps_main_verdict(tmp_path):
+    """C1d: the merge base already holds P0 superseded (N on the base names it), so the change carries no retirement
+    and main's verdict stands (step 6): a CRLF relabel, a branch-only chmod, and the identical chmod on both sides are
+    admitted on main and here, with no step 5 line. The CRLF relabel and identical-chmod rows are refused with the step
+    5 message by a gate that drops the merge-base condition, so they discriminate it (the branch-only chmod row too).
+    The same shapes on a P naming a superseded Q: test_crlf_relabel_of_a_superseded_spec_is_not_called_redundant and
+    test_mode_only_change_of_a_superseded_spec_is_not_called_redundant."""
+    flip = p0(status="superseded")
+    for name, run in (
+            ("crlf relabel", lambda repo: pr(repo, RETIRE_BRANCH, {P_SPEC: flip.replace("\n", "\r\n")})),
+            ("branch-only chmod", lambda repo: pr(repo, RETIRE_BRANCH, {}, then=lambda root: (root / P_SPEC).chmod(0o755))),
+            ("identical chmod on both sides",
+             lambda repo: mode_divergent_pr(repo, {}, {P_SPEC: 0o755}, {"docs/notes/main.md": "main\n"}, {P_SPEC: 0o755}))):
+        repo = fresh(tmp_path, name.replace(" ", "-"))
+        on_base(repo, {**N0_MAIN, P_SPEC: flip})
+        r = run(repo)
+        assert r.returncode == 0 and "spec gate ok" in r.stdout and REDUNDANT not in r.stdout, (name, r.stdout)
+
+
+def test_resave_of_an_approved_spec_is_not_called_redundant(tmp_path):
+    """#1665 RQ-2: step 5 needs the base to hold the spec superseded. An ordinary approved P0, unchanged in text, staged
+    or pushed with CRLF line endings or with mode 100755, is admitted with no new message in commit mode and in PR
+    mode, as on main. A gate that drops the `base status == superseded` condition refuses all four rows with the step 5
+    message (in commit mode `ch.before` is the base, approved, so only that condition keeps it out)."""
+    crlf = {P_SPEC: p0().replace("\n", "\r\n")}
+    chmod = lambda root: (root / P_SPEC).chmod(0o755)
+    for name, files, then in (("crlf", crlf, None), ("chmod", {}, chmod)):
+        repo = fresh(tmp_path, "commit-" + name)
+        on_base(repo, {P_SPEC: p0()})
+        _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+        for path, text in files.items():
+            write(repo, path, text)
+        if then is not None:
+            then(repo)
+        _git(repo, "add", "-A")
+        assert _git(repo, "diff", "--cached", "--name-only") == P_SPEC
+        r = gate(repo, "--commit")
+        assert r.returncode == 0 and REDUNDANT not in r.stdout, (name, r.stdout)
+        repo = fresh(tmp_path, "pr-" + name)
+        on_base(repo, {P_SPEC: p0()})
+        r = pr(repo, RETIRE_BRANCH, files, then=then)
+        assert r.returncode == 0 and "spec gate ok" in r.stdout and REDUNDANT not in r.stdout, (name, r.stdout)
+
+
+def test_redundant_retirement_of_a_spec_draft_or_legacy_at_fork_refused(tmp_path):
+    """#1665 RQ-2, the merge base's "holds another status" branch: P0 is draft at the fork, or a legacy file with no
+    frontmatter there; main retires it (adding N) and the branch writes the identical superseded P0. The change
+    carries the retirement, so step 5 refuses with its message alone; main admits both rows. A gate that reads only
+    "absent at the merge base" admits them."""
+    flip = p0(status="superseded")
+    for name, at_fork in (("draft", p0(status="draft")), ("legacy", "# Model decisions v2\n\nWritten before the gate.\n")):
+        repo = fresh(tmp_path, name)
+        on_base(repo, {P_SPEC: at_fork})
+        r = divergent_pr(repo, RETIRE_BRANCH, {P_SPEC: flip}, {**N0_MAIN, P_SPEC: flip})
+        assert r.returncode == 1 and refusals(r) == [f"{P_SPEC}: {REDUNDANT}"], (name, r.stdout)
