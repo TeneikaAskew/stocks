@@ -49,6 +49,14 @@ Spec: done_when 13 ("without weakening hook/CLI assertions").
 - [x] (FIX4, QUAL4 R1 F2) A start time that cannot be read after the PIDfd opens is recorded as "identity unverified", not "signal refused"; nothing is signalled and the root is kept. Control: the unreadable-start-time case of `signals_and_names_every_unregistered_child`.
 - [x] The receipt is opened with O_NONBLOCK and must be a regular file, as `regular_output` already requires; a failed final rmdir appends a removal_failed event before the error propagates.
 - [x] (R14c, local review attempt 14 P1 and P2) After a late interrupt, each pass reads the process table once and, for each child it identified and signalled but could not reap, signals that child's descendants one generation at a time (`owned_children`, `kill_descendants`) through the same identity-checked PIDfd path, expanding only from processes the pass identified and signalled: an identity-unverified or signal-refused intermediate prunes its subtree, a PID already examined is not examined again, and a process that started before its listed parent is not taken as its child. If the table read fails, the listed children are signalled and reaped first and the error then propagates, so the root is kept as spawn_children_unknown with the error in the retained notice. Deadline, loop bound, retention and notices are unchanged; the reason text is the constant `SIGNALLED`. Controls: the late-interrupt grandchild case, the identity-unverified grandchild case and the new `unregistered-table-unreadable` mode in `signals_and_names_every_unregistered_child`, and synthetic-table checks of `owned_children` and `kill_descendants` in the existing identity probe. This narrows the FIX3 limit above for descendants present at the table read. Limits kept: a descendant forked after the table read is not listed and, if not adopted in time, is named "not examined before the deadline"; equal start ticks are accepted; a failing relist propagates as before.
+- [x] (R14d, QUAL7 R2 P2, R4 F1 and F2, R3 F1 and F2) Tests and records only. The measurement script is unchanged (blob 055e7ca8).
+  - **Correction to the R14c line above.** The pass signals the descendants of every child it identified and signalled, including one it then reaped, not only of a child it "could not reap".
+  - **Second correction to the R14c line above.** The `unregistered-table-unreadable` mode is in `scratch_spawn_failure_retention`, not in `signals_and_names_every_unregistered_child`.
+  - **New `refused` case in the identity probe.** Process 11 is verified but its signal is refused. Nothing is sent, and 12, listed as its child, is never examined.
+  - **New `unregistered-signal-refused-grandchild` mode** in `signals_and_names_every_unregistered_child`. Only the child's signal is refused. No signal at all is sent, the grandchild is still running, and the child is named "signal refused".
+  - **The table-unreadable mode now records which read failed.** It records whether the failing read was the kill pass's own snapshot or a read inside an `own_children()` listing, and how many listings ran. It asserts the snapshot failed and one listing ran.
+  - **The launcher's 2 s state wait** now runs only in `unregistered-late-grandchild`, the only mode whose assertion reads it.
+  - No assertion was removed or weakened.
 
 ## Task 3: the accepted fixture uses the contract
 Spec: done_when 13.
@@ -74,6 +82,20 @@ Spec: done_when 6 and 13.
 - [x] For R14c: the late-interrupt grandchild case shown failing on 946d94d2's source (PERF3-LATE-red1, the grandchild still running); the 25 focused `-k measure_inventory_render` tests passed once on each of 3.14.6, 3.13.17 and 3.12.3 on the final bytes (measure sha256 62ee8993, test sha256 4e2b2790; 48.16, 47.63 and 47.62 s); mutants N1, N3, N4, N5, N6 and N7 caught on 3.14.6. M1 (descendant pass removed) was caught only on an earlier candidate and is historical evidence for these bytes, not rerun. One run per interpreter; no repeat-stability run.
 - [ ] For R14c, full suite: the first full run of the uncommitted R14c bytes (3.14.6, 13:24:57Z) FAILED, 213 passed and 2 failed in 505.09 s: `test_measure_inventory_render_owns_and_removes_its_scratch_root` ('accepted' read time_limit, expected completed) and `test_measure_inventory_render_keeps_a_scratch_root_it_cannot_prove_free` ('symlink-root' read time_limit, expected scratch_cleanup_incomplete), both under the unchanged 1 s deadline; the cause is unproven. Both tests passed alone on 3.14.6, 3.12.3 and 3.13.17 (about 2 to 3 s each), and one retry of the full suite on the same bytes (3.14.6, 14:06:06Z) passed, 215 in 507.83 s. The retry does not show that the earlier failure's cause is resolved, and both receipts are kept. Head docs_audit: 290 findings, set-identical to the FIX6 head. Each over 285 s.
 - [ ] For R14c: one real-tree measurement per interpreter on the committed R14c head, 512 MiB and 60 seconds, serial, behind the 979,369,984 B free-space preflight, with each gate cache absent or stale so the gate compiles. R14c changes the measurement command itself, so no earlier real-tree receipt carries forward. Two fresh gate cache files written by diagnostic runs were moved, not deleted, under owner authority before this.
+- [x] For R14c: one real-tree measurement per interpreter on the committed R14c head 4aff29cb (2026-11-04 16:04:02Z to 16:06:20Z), 512 MiB and 60 seconds, serial, behind the same preflight. Each gate cache was absent, so the gate compiled. Results, all completed with renderer exit 0, family reaped and root removed:
+  - 3.14.6: 48.32 s, 359,649,280 B;
+  - 3.12.3: 43.04 s, 341,766,144 B;
+  - 3.13.17: 42.13 s, 342,654,976 B.
+  - The runner's SEQ_PID predecessor check was inactive for this run, because no predecessor existed. Exclusion rested on the c2batch lock, its run log and the runner's process check.
+- [x] For R14d: the new controls shown failing first, on 3.14.6.
+  - Mutant R (`kill_descendants` also expands from a refused intermediate) fails the `refused` probe case.
+  - Mutant R2 (the kill pass treats a refused child as signalled) fails the refused-grandchild mode: it sends SIGKILL to the grandchild.
+  - Both mutants had survived the R14c tests in QUAL7.
+  - The table-unreadable assertion fails against 946d94d2's measurement script (blob 6db173f0), where the failing read is inside a listing.
+  - The 25 focused `-k measure_inventory_render` tests passed on 3.14.6, 3.13.17 and 3.12.3: 24.46, 25.35 and 25.78 s, against R14c's 48.16, 47.63 and 47.62 s.
+  - Mutants N1 and N3 to N7 were caught on 3.14.6.
+  - One run each.
+- [ ] For R14d: the full suite and the docs audit on the committed R14d head. R14d changes no byte the real-tree measurement executes (gate, renderer and measurement script unchanged); one real-tree measurement per interpreter is still run on the committed R14d head, as predeclared, and recorded outside this plan.
 
 ## Task 5: gate-file red-team pass
 Spec: done_when 7, plus the CLAUDE.md gate-file rule.
@@ -87,6 +109,11 @@ Spec: done_when 7, plus the CLAUDE.md gate-file rule.
 - [ ] Earlier judgments stay counted and are listed in the PR with their findings and the test that refuses each: RENDER512-RT1 (one four-seat nonempty pass on the fixture-only head 6e98401f), IND1 (one seat on 588d94af), IND2 (one seat on 1761997f), RENDER-COMBINED-QUAL1 (four seats on f07e96cc), RENDER-COMBINED-QUAL2 (four seats on 8a3cdee6), RENDER-COMBINED-QUAL3 (four seats on 3465479b), RENDER-COMBINED-QUAL4 (four seats on a74d15f8), RENDER-COMBINED-QUAL5 (four seats on 60471687, nonempty; its one-seat closure was empty) RENDER-COMBINED-QUAL6 (four seats on c86cf79e, nonempty) and QUAL6-CLOSURE1 (four seats on 9c072a49, nonempty), each spent.
 - [x] Later local judgments, counted and never reset: QUAL6-CLOSURE2 (four seats on 946d94d2 and its frozen body, nonempty, 2 P3 in the body), QUAL6-CLOSURE3 (four seats on the body delta, empty), local review attempt 14 (an independent source review of the late-interrupt candidate archive 649756b8, nonempty: P1 flattened ancestry, P2 snapshot before the known-child kill, corrected in R14c) and local15 (one bounded delta closure of R14c: P1 and P2 closed, no correction-introduced finding; not a four-seat pass). 15 local passes in all; formal PR review rounds 0 of 2.
 - [ ] One bounded four-seat pre-push pass on the qualified R14c head finds nothing. It runs only after every required qualification and exact identity check succeeds.
+- [x] QUAL7-FINAL, the 16th counted local pass, was the four-seat pass above, run on 4aff29cb. It was nonempty: 0 P1, 1 P2 and P3 items.
+  - The P2 was the launcher's state wait, which added about 12 s to the suite.
+  - The P3 items were the untested refused-signal pruning, the table-unreadable control that did not tell the reads apart, the SITE and plan wording, stale PR body records and the SEQ_PID record.
+  - Corrected in R14d under a coordinator extension. Formal PR review rounds stay at 0 of 2.
+- [ ] local17, one focused independent closure of the R14d delta covering the four required surfaces, finds nothing.
 
 ## Task 6: source identity, records and close
 Spec: done_when 9 and 10.
