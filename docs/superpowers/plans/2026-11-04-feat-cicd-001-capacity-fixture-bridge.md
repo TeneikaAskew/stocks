@@ -16,11 +16,11 @@ status: ready
 
 **Base:** main 1fb97576cd41d9ac601888f9507cd77375922a31 (suite blob d486f304, gate blob ffb1ada8). One branch, one PR, one author: this lane, named by the owner on 2026-11-04 with the reserved-file handoff (capacity region of the gate suite, own records, SHARED-01 row, sidecar); Recovery keeps everything else, including #1700's hunks. Review route: current-head review as CLAUDE.md 2.5 counts it, or the owner-pre-authorized four-seat substitute (the #1696 pattern) if the hosted Code Review row does not pick up the Ready event within about 3 minutes. Over-285 s remedy: stop and report; the spec's own bounded fixture improvement, no cap change.
 
-**Intake evidence (2026-11-04, main 1fb97576, this clone):** 155 real gate invocations across the eight functions, 8 passed, 41.63 s local; 16 carrier-bearing cases from 12 fixture literals; pre-fix controls show the old gate accepts `Cost: $999` beside `30: $0.01` and refuses a Cost-only body as "leaves 30 blank". The intake receipt and its JSONL records are kept with the PR evidence; the oracle embedded in the suite is the capture on this exact base.
+**Intake evidence (2026-11-04, main 1fb97576, this clone):** 155 real gate invocations across the eight functions, 8 passed, 41.63 s local; 17 carrier-bearing cases from 13 fixture literals (one composed by the nested-heading fixture's replace); pre-fix controls show the old gate accepts `Cost: $999` beside `30: $0.01` and refuses a Cost-only body as "leaves 30 blank". The intake receipt and its JSONL records are kept with the PR evidence; the oracle embedded in the suite is the capture on this exact base.
 
 ## Global constraints
 
-- Only `tests/scripts/test_spec_gate.py` changes among source and test files; `scripts/gate/`, `.github/`, `.githooks/`, every other test and every other SITE/product byte equal main (asserted by `git diff --stat origin/main -- scripts/gate .github .githooks` being empty).
+- Only `tests/scripts/test_spec_gate.py` changes among source and test files (13 legacy literals: 12 inline plus the nested-heading replace on L1320); `scripts/gate/`, `.github/`, `.githooks/`, every other test and every other SITE/product byte equal main (asserted by `git diff --stat origin/main -- scripts/gate .github .githooks` being empty).
 - No new file, workflow, harness, gate call, skip, decorator, regex-accepts-anything assertion, HEAD-derived expected value, import of `CAPACITY_LABELS`, monkeypatch of the production gate or test-aware environment.
 - Every original case executes once through the existing real CLI; the oracle and pair comparison piggyback those executions.
 - New code sits beside the eight functions (between L1297 and L3830 on 1fb97576), not at end of file, to stay clear of #1700's hunks.
@@ -39,7 +39,7 @@ Spec: § Executable authoritative BASE case; § Exact design and allowed literal
 - [ ] Embed the frozen literal oracle (bounded; normalises only temp paths, BASE/HEAD operand SHAs and generated catalog-review dates, with their positions recorded).
 - [ ] Add the module-scope pre-dispatch pair guard and per-function finalizer; wire into `test_a_workload_change_carries_its_capacity_numbers` only.
 - [ ] RED: with the guard wired and the carrier absent, the guard refuses before any gate subprocess (zero subprocesses, asserted).
-- [ ] GREEN: L1312 gains ` · Cost: $0.01` after the legacy carrier; L1309 asserts the original string OR the identical string ending `, Cost blank`; the function passes with every original returncode and message.
+- [ ] GREEN: L1312 and the nested-heading replace on L1320 gain ` · Cost: $0.01` after the legacy carrier; L1309 asserts the original string OR the identical string ending `, Cost blank`; the function passes with every original returncode and message.
 - [ ] Commit locally (no push): `test(gate): bridge capacity fixture for the first workload function`.
 
 ## Task 3: the remaining seven functions (slices 2 and 3)
