@@ -36,7 +36,7 @@ Spec: § Executable authoritative BASE case and paired-carrier comparison. Advan
 
 ## Task 2: oracle, guard and the first function (slice 1)
 Spec: § Executable authoritative BASE case; § Exact design and allowed literal changes. Advances done_when[0], done_when[2].
-- [ ] Embed the frozen literal oracle (bounded; normalises only temp paths, BASE/HEAD operand SHAs and generated catalog-review dates, with their positions recorded).
+- [ ] Embed the frozen literal oracle (bounded; normalises only the two BASE/HEAD operand SHAs and the suite's generated catalog-review date, replaced by `{TODAY}` in fixture files, bodies and reason lines, with the body count recorded and the file counts folded into each case's files identity; no temp path occurs in any case).
 - [ ] Add the module-scope pre-dispatch pair guard and per-function finalizer; wire into `test_a_workload_change_carries_its_capacity_numbers` only.
 - [ ] RED: with the guard wired and the carrier absent, the guard refuses before any gate subprocess (zero subprocesses, asserted).
 - [ ] GREEN: L1307 gains ` · Cost:` (blank beside blank), L1312 and the nested-heading replace on L1320 gain ` · Cost: $0.01` after the legacy carrier; L1309 asserts the original string OR the identical string ending `, Cost blank`; the function passes with every original returncode and message.
@@ -51,7 +51,7 @@ Spec: § Exact design and allowed literal changes. Advances done_when[0].
 
 ## Task 4: the equivalence regression (slice 4)
 Spec: § `test_capacity_bridge_case_and_carrier_equivalence`. Advances done_when[2].
-- [ ] Vectors: Cost999 vs legacy 0.01 and vs 300; both carriers changed to 999; missing, duplicate, mislocated and reordered carrier; removed, replaced and duplicated original rejection or missing-label case; matching valid, blank, invalid and zero controls.
+- [ ] Vectors: Cost999 vs legacy 0.01 and vs 300; both carriers changed to 999; missing, duplicate and reordered carrier (a Cost carrier on the next line or before the legacy one is refused as unpaired); removed, replaced and duplicated original rejection or missing-label case; matching valid, blank, invalid and zero controls.
 - [ ] Assert zero gate subprocesses on every pre-dispatch failure and the exact old verdict/failure class on every valid vector through the unchanged real gate; assert the oracle's keys are exactly the eight module-level functions with no marks and that it holds the 155 BASE cases (a renamed, removed or marked function would otherwise switch its guard off silently). Helpers stay module scope: the gate refuses `return` or `raise` nested inside a test.
 - [ ] Full suite and `tests/scripts/test_export_model_registry.py` pass; local wall time and per-test durations recorded (reference only).
 
