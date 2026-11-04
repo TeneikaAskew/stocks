@@ -57,6 +57,9 @@ Spec: done_when 13 ("without weakening hook/CLI assertions").
   - **The table-unreadable mode now records which read failed.** It records whether the failing read was the kill pass's own snapshot or a read inside an `own_children()` listing, and how many listings ran. It asserts the snapshot failed and one listing ran.
   - **The launcher's 2 s state wait** now runs only in `unregistered-late-grandchild`, the only mode whose assertion reads it.
   - No assertion was removed or weakened.
+- [x] (R14h, closure20 finding 1's code cause) Every cleanup outcome in `tests/scripts/measure_inventory_render.py` is recorded and read under `outcome_key`, the PID and start ticks together: in `kill_unregistered`, in `kill_descendants`, in the cleanup loop's `signalled` filter and in the new `unproven_reasons`, which still names reasons by PID in the notices and the receipt.
+  - New control `keys_cleanup_outcomes_by_pid_and_start_ticks`: PID 12's earlier holder (start 120) has its signal refused, then a later process at PID 12 (start 200) is listed under the signalled 10. It is signalled, both outcomes are kept, and the later process is named "not examined before the deadline", the earlier one "signal refused".
+  - The identity probe reads the PID from each outcome key; no assertion changed.
 
 ## Task 3: the accepted fixture uses the contract
 Spec: done_when 13.
@@ -104,6 +107,8 @@ Spec: done_when 6 and 13.
   - Mutants N1 and N3 to N7 were caught on 3.14.6.
   - One run each.
 - [ ] For R14d: the full suite and the docs audit on the committed R14d head. R14d changes no byte the real-tree measurement executes (gate, renderer and measurement script unchanged); one real-tree measurement per interpreter is still run on the committed R14d head, as predeclared, and recorded outside this plan.
+- [x] For R14h: the new control shown failing first on the unchanged script (blob 055e7ca8), 3.14.6: nothing was sent to the later process at PID 12, and `unproven_reasons` was absent.
+- [ ] For R14h: the focused `-k measure_inventory_render` tests on 3.14.6, 3.13.17 and 3.12.3; mutants M1 to M4 (each PID-only: the descendant dedup, the reason lookup, the loop's `signalled` filter, the recording key) and the earlier mutants mutR, mutR2, N1 and N3 to N7 ported to the R14h script; the full suite and the docs audit on the committed R14h head; `verify`; one real-tree measurement per interpreter on that head, 512 MiB and 60 seconds.
 
 ## Task 5: gate-file red-team pass
 Spec: done_when 7, plus the CLAUDE.md gate-file rule.
@@ -122,6 +127,7 @@ Spec: done_when 7, plus the CLAUDE.md gate-file rule.
   - The P3 items were the untested refused-signal pruning, the table-unreadable control that did not tell the reads apart, the SITE and plan wording, stale PR body records and the SEQ_PID record.
   - Corrected in R14d under a coordinator extension. Formal PR review rounds stay at 0 of 2.
 - [ ] local17, one focused independent closure of the R14d delta covering the four required surfaces, finds nothing.
+- [ ] closure21, one four-seat pre-push closure of the R14h head after its qualification, finds nothing. local17, closure18, closure19 and closure20 were nonempty; their records and the R14h corrections are listed in the PR body.
 
 ## Task 6: source identity, records and close
 Spec: done_when 9 and 10.
