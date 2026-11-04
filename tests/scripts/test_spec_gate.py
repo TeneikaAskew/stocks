@@ -5601,7 +5601,7 @@ for name,now,refused in (('verified',{11:110,12:130},()),('reused',{11:120,12:13
     sent.clear();outcomes={};refuse.clear();refuse.update(refused)
     m.process_start=lambda pid:now[pid]
     m.kill_descendants([{'pid':10,'start_ticks':100}],{10:(100,1),11:(110,10),12:(130,11)},time.monotonic()+1,outcomes)
-    r[name]={'sent':list(sent),'outcomes':{str(k):v for k,v in outcomes.items()}}
+    r[name]={'sent':list(sent),'outcomes':{str(k[0]):v for k,v in outcomes.items()}}
 r['start']=start;r['pid']=p.pid
 print(json.dumps(r))
 """
@@ -5632,6 +5632,51 @@ def test_measure_inventory_render_kills_only_the_listed_identity_and_writes_only
     # With 11 verified but its signal refused, 11 is not signalled, so 12, listed as its child, is never examined
     # either, although 12's own start ticks still match (QUAL7 R4 F1).
     assert seen['refused'] == {'sent': [], 'outcomes': {'11': 'signal refused'}}, seen
+
+
+REUSED_IDENTITY_PROBE = r"""
+import importlib.util,json,os,sys,time
+s=importlib.util.spec_from_file_location('inventory_identity',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+# Fake PIDfds as in KILL_AND_RECEIPT_PROBE: `now` is each PID's current start ticks, `sent` the PIDs signalled.
+fds,sent,refuse,now={},[],set(),{}
+def fake_open(pid):fd=os.open(os.devnull,os.O_RDONLY);fds[fd]=pid;return fd
+def fake_send(fd,sig):
+    if fds[fd] in refuse:raise PermissionError(1,'Operation not permitted')
+    sent.append(fds[fd])
+m.os.pidfd_open=fake_open;m.signal.pidfd_send_signal=fake_send;m.process_start=lambda pid:now[pid]
+key=lambda k:f'{k[0]}@{k[1]}' if isinstance(k,tuple) else str(k)
+r={}
+# PID 12 first held by a process with start 120 whose signal is refused, then reused by a process with start 200,
+# listed as a child of the identified and signalled 10.
+outcomes={};now.update({10:100,12:120});refuse.add(12)
+m.kill_unregistered([{'pid':12,'start_ticks':120}],time.monotonic()+1,outcomes)
+refuse.clear();now[12]=200;sent.clear()
+m.kill_descendants([{'pid':10,'start_ticks':100}],{10:(100,1),12:(200,10)},time.monotonic()+1,outcomes)
+r['traversal']={'sent':list(sent),'outcomes':{key(k):v for k,v in outcomes.items()}}
+# The reason named for a remaining child is its own process's, not an earlier holder's of its PID.
+outcomes={};now[12]=120;refuse.add(12)
+m.kill_unregistered([{'pid':12,'start_ticks':120}],time.monotonic()+1,outcomes)
+reasons=getattr(m,'unproven_reasons',lambda remaining,outcomes:'unproven_reasons absent')
+r['reason_reused']=reasons([{'pid':12,'start_ticks':200}],outcomes)
+r['reason_same']=reasons([{'pid':12,'start_ticks':120}],outcomes)
+print(json.dumps(r))
+"""
+
+
+def test_measure_inventory_render_keys_cleanup_outcomes_by_pid_and_start_ticks(tmp_path):
+    """A cleanup outcome belongs to one process, its PID and start ticks together (closure20): a later process at a
+    PID an earlier one held is examined and signalled for itself, and a remaining child is named with its own
+    reason, never the earlier holder's."""
+    r = subprocess.run([sys.executable, '-c', REUSED_IDENTITY_PROBE, str(REPO / MEASURE)],
+                       capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stdout + r.stderr
+    seen = json.loads(r.stdout)
+    # The earlier holder (start 120) keeps its refused outcome; the process now at PID 12 (start 200), listed under
+    # the signalled 10, is examined and signalled.
+    assert seen['traversal'] == {'sent': [12], 'outcomes': {'12@120': 'signal refused',
+                                                            '12@200': 'signalled, not reaped by the deadline'}}, seen
+    assert seen['reason_reused'] == {'12': 'not examined before the deadline'}, seen
+    assert seen['reason_same'] == {'12': 'signal refused'}, seen
 
 
 def test_measure_inventory_render_keeps_and_attributes_a_root_whose_rmdir_fails(tmp_path):

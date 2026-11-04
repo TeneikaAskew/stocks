@@ -160,6 +160,12 @@ def own_children() -> list[dict]:
 SIGNALLED = "signalled, not reaped by the deadline"
 
 
+def outcome_key(child: dict) -> tuple[int, int]:
+    """The key every cleanup outcome is recorded and read under. A PID names a process only together with its start
+    ticks, so an outcome recorded for an earlier holder of a PID is never read for a later one (closure20)."""
+    return child["pid"], child["start_ticks"]
+
+
 def owned_children(parents: list[dict], table: dict[int, tuple[int, int]]) -> list[dict]:
     """The direct children in `table`, one process-table read taken before `parents` were signalled, of each of
     `parents` whose start ticks in `table` are still its listed ones, by PID and start ticks. A PID that `table`
@@ -179,12 +185,13 @@ def kill_descendants(signalled: list[dict], table: dict[int, tuple[int, int]], d
     """Signal, one generation at a time, the descendants in `table` of `signalled` (children this pass identified and
     signalled). A process is examined only once its parent was itself identified and signalled, so an intermediate
     PID that fails its identity check, or whose signal is refused, prunes its whole subtree (QUAL4 R1, review 14 P1).
-    A PID already examined is not examined again. Returns those reaped, as kill_unregistered does."""
+    A process already examined, by PID and start ticks, is not examined again. Returns those reaped, as
+    kill_unregistered does."""
     reaped, level = [], signalled
     while level:
-        listed = [child for child in owned_children(level, table) if child["pid"] not in outcomes]
+        listed = [child for child in owned_children(level, table) if outcome_key(child) not in outcomes]
         reaped += kill_unregistered(listed, deadline, outcomes)
-        level = [child for child in listed if outcomes.get(child["pid"]) == SIGNALLED]
+        level = [child for child in listed if outcomes.get(outcome_key(child)) == SIGNALLED]
     return reaped
 
 
@@ -194,15 +201,15 @@ def kill_unregistered(children: list[dict], deadline: float, outcomes: dict | No
     PIDfd opened first and then checked against its listed start ticks, so a recycled PID is never a target; a
     child that vanished, changed identity or is not reaped by the deadline is left for the caller's relist. The
     signal is sent whatever the time; only the reap waits on the deadline. Why each child was not reaped is
-    recorded in `outcomes` by PID (QUAL3 R3 F3)."""
+    recorded in `outcomes` by PID and start ticks (QUAL3 R3 F3, closure20)."""
     killed = []
     outcomes = {} if outcomes is None else outcomes
     for child in children:
-        pid = child["pid"]
+        pid, key = child["pid"], outcome_key(child)
         try:
             fd = os.pidfd_open(pid)
         except OSError:
-            outcomes[pid] = "identity unverified"
+            outcomes[key] = "identity unverified"
             continue
         try:
             # A start time that cannot be read is an unverified identity, not a refused signal (QUAL4 R1 F2).
@@ -211,16 +218,16 @@ def kill_unregistered(children: list[dict], deadline: float, outcomes: dict | No
             except (OSError, ValueError):
                 same = False
             if not same:
-                outcomes[pid] = "identity unverified"
+                outcomes[key] = "identity unverified"
                 continue
             try:
                 signal.pidfd_send_signal(fd, signal.SIGKILL)
             except (OSError, ValueError):
-                outcomes[pid] = "signal refused"
+                outcomes[key] = "signal refused"
                 continue
         finally:
             os.close(fd)
-        outcomes[pid] = SIGNALLED
+        outcomes[key] = SIGNALLED
         while time.monotonic() < deadline:
             try:
                 if os.waitpid(pid, os.WNOHANG)[0] == pid:
@@ -230,6 +237,12 @@ def kill_unregistered(children: list[dict], deadline: float, outcomes: dict | No
                 break
             time.sleep(.005)
     return killed
+
+
+def unproven_reasons(remaining: list[dict], outcomes: dict) -> dict[int, str]:
+    """Why each remaining child was not proven killed, by PID for the notices and receipt, looked up by PID and start
+    ticks, so a child is never named with the outcome of an earlier holder of its PID (closure20)."""
+    return {child["pid"]: outcomes.get(outcome_key(child), "not examined before the deadline") for child in remaining}
 
 
 def clear_directory(dir_fd: int, deadline: float, keep: str | None = None) -> bool:
@@ -731,7 +744,7 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                                         killed += reaped_now
                                         if table_error is not None:
                                             raise table_error
-                                        signalled = [child for child in remaining if outcomes.get(child["pid"]) == SIGNALLED]
+                                        signalled = [child for child in remaining if outcomes.get(outcome_key(child)) == SIGNALLED]
                                         descendants_reaped = kill_descendants(signalled, table, started + max_seconds, outcomes)
                                         reaped_now += descendants_reaped
                                         killed += descendants_reaped
@@ -744,8 +757,7 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                                     if remaining:
                                         retained = "spawn_not_registered"
                                         report["scratch_root_unregistered_remaining"] = remaining
-                                        reasons = {child["pid"]: outcomes.get(child["pid"], "not examined before the deadline")
-                                                   for child in remaining}
+                                        reasons = unproven_reasons(remaining, outcomes)
                                         # Named before the receipt is written: the worker owns the root and can make
                                         # that write fail, which must not also silence stderr (QUAL3 R1 F2).
                                         notices += [f"child {pid} not proven killed: {why}" for pid, why in reasons.items()]
