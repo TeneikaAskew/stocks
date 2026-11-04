@@ -430,7 +430,14 @@ gcloud storage buckets create gs://adept-mountain-474619-d4-trading-data \
 # This is the LONG POLE. For each, get the value from the provider's portal:
 #   - av-api-key (alphavantage.co)
 #   - fred-api-key (research.stlouisfed.org)
-#   - ew-user / ew-pass (earningswhispers.com)
+#   - ew-user / ew-pass (earningswhispers.com): RETAINED Secret Manager
+#     resources, not deleted. Since the 2026-10-31 EarningsWhispers
+#     retirement this deployment source no longer reads or binds them, so
+#     there is nothing to re-issue for them. A live fetch-earnings-calendar
+#     job keeps any EW_USER / EW_PASS value it already carries until a
+#     separately authorized redeploy (./gcp/deploy.sh earnings-calendar)
+#     and a names-only check of its env; this source change performs and
+#     verifies neither.
 #   - benzinga-api-key (benzinga.com)
 #   - sec-user-agent (your email — required by SEC)
 #   - github-pat / gh-stocks-repo-pat (github.com/settings/tokens)
