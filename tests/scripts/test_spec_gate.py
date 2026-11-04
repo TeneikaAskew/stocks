@@ -4200,6 +4200,87 @@ def test_truthy_calls_decorators_yaml_skill_names_canvas_fields_manifest_scripts
     assert spec_gate.plain_text("_unknown_") == "unknown" and spec_gate.plain_text("[unknown](https://x)") == "unknown"
 
 
+def test_capacity_bridge_case_and_carrier_equivalence(repo):
+    """Capacity fixture bridge spec, done_when[2]: the real harness/oracle seam.
+
+    Divergent Cost999 beside legacy 0.01 or 300, both carriers changed, a missing, duplicate or
+    reordered carrier, a Cost carrier where BASE had none, a dropped, replaced, duplicated or
+    quantity-changed case and one case too many are all refused BEFORE any gate subprocess; the
+    original vectors still run through the unchanged real gate and keep their BASE verdicts, and
+    stopping short of the sequence is visible to the finalizer. Blank, invalid, zero and valid pairs
+    reverse to their originals.
+    """
+    name = "test_capacity_values_are_numbers"
+    oracle = CAPACITY_BRIDGE_ORACLE[name]
+    title = {"PR_TITLE": "FEAT-MODEL-001: x"}
+    job = {**CODE, "gcp/model_job.py": "print('run')\n"}
+    cap = "\n\n## Capacity\n"
+    vague = body() + cap + "Volume: unknown \u00b7 Velocity: fast \u00b7 Wall-clock: later \u00b7 $/run \u00d7 runs/day \u00d7 30: TBD \u00b7 Cost: TBD\n"
+    partial = body() + cap + "Volume: 3 tickers \u00d7 400 B \u00b7 Velocity: some queries \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01 \u00b7 Cost: $0.01\n"
+    filled = body() + cap + "Volume: 30 rows \u00b7 Velocity: 1 query \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01 \u00b7 Cost: $0.01\n"
+    originals = (vague, partial, filled)
+    pair = "$/run \u00d7 runs/day \u00d7 30: $0.01 \u00b7 Cost: $0.01"
+    dispatched = capacity_bridge_dispatched
+    # the guard is on exactly for the eight functions the spec names, each a plain module-level test
+    # (a renamed, removed or marked function would switch its guard off silently), and the oracle holds
+    # every BASE case
+    assert tuple(CAPACITY_BRIDGE_ORACLE) == CAPACITY_BRIDGE_FUNCTIONS
+    for function in CAPACITY_BRIDGE_FUNCTIONS:
+        assert callable(globals().get(function)) and not getattr(globals()[function], "pytestmark", []), function
+    assert sum(len(cases) for cases in CAPACITY_BRIDGE_ORACLE.values()) == CAPACITY_BRIDGE_CASES
+    try:
+        # the original vectors still execute the unchanged real gate and keep their exact BASE verdicts
+        capacity_bridge_activate(name)
+        before = dispatched()
+        results = [pr(repo, BRANCH, job, **title, PR_BODY=text) for text in originals]
+        assert dispatched() == before + 3 and capacity_bridge_consumed() == (3, 3)
+        assert [r.returncode for r in results] == [case[6] for case in oracle] == [1, 1, 0]
+        assert ("gives no number for Volume, Velocity, Wall-clock, 30" in results[0].stdout
+                or "gives no number for Volume, Velocity, Wall-clock, Cost" in results[0].stdout), results[0].stdout
+        assert "gives no number for Velocity;" in results[1].stdout, results[1].stdout
+        # divergent Cost beside the legacy value: pair check, before dispatch
+        assert "differs from legacy carrier value" in capacity_bridge_refused(repo, name, originals, job, title, 3, filled.replace(pair, "$/run \u00d7 runs/day \u00d7 30: $0.01 \u00b7 Cost: $999"))
+        assert "differs from legacy carrier value" in capacity_bridge_refused(repo, name, originals, job, title, 3, filled.replace(pair, "$/run \u00d7 runs/day \u00d7 30: 300 \u00b7 Cost: $999"))
+        # both carriers changed: pairwise equal, so only the independently captured BASE input catches it
+        assert "body identity" in capacity_bridge_refused(repo, name, originals, job, title, 3, filled.replace(pair, "$/run \u00d7 runs/day \u00d7 30: $999 \u00b7 Cost: $999"))
+        # missing, duplicate and reordered carrier
+        assert "has no Cost carrier immediately after it" in capacity_bridge_refused(repo, name, originals, job, title, 3, filled.replace(" \u00b7 Cost: $0.01", ""))
+        assert "differs from legacy carrier value" in capacity_bridge_refused(repo, name, originals, job, title, 3, filled.replace(" \u00b7 Cost: $0.01", " \u00b7 Cost: $0.01 \u00b7 Cost: $0.01"))
+        assert "has no Cost carrier immediately after it" in capacity_bridge_refused(repo, name, originals, job, title, 3, filled.replace(pair, "Cost: $0.01 \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01"))
+        # a Cost carrier added where BASE had none
+        assert "without a legacy carrier" in capacity_bridge_refused(repo, name, originals, job, title, 1, vague + "Cost: $0.01\n")
+        # dropped negative case (the accepted body where the first rejection belongs), replaced negative case,
+        # changed quantity, duplicated case, changed caller vector
+        assert "body identity" in capacity_bridge_refused(repo, name, originals, job, title, 1, filled)
+        assert "body identity" in capacity_bridge_refused(repo, name, originals, job, title, 1, vague.replace("Volume: unknown", "Volume: 1 row"))
+        assert "body identity" in capacity_bridge_refused(repo, name, originals, job, title, 3, filled.replace("Volume: 30 rows", "Volume: 31 rows"))
+        assert "body identity" in capacity_bridge_refused(repo, name, originals, job, title, 2, vague)
+        assert "files" in capacity_bridge_refused(repo, name, originals, job, title, 1, vague, {**job, "gcp/other_job.py": "x = 1\n"})
+        # stopping short of the sequence is what the per-function finalizer refuses
+        capacity_bridge_activate(name)
+        for text in originals[:2]:
+            pr(repo, BRANCH, job, **title, PR_BODY=text)
+        assert capacity_bridge_consumed() == (2, 3)
+        # one case more than BASE recorded
+        capacity_bridge_activate(name)
+        for text in originals:
+            pr(repo, BRANCH, job, **title, PR_BODY=text)
+        before = dispatched()
+        with pytest.raises(CapacityFixtureEquivalenceError, match="beyond the 3 BASE cases"):
+            pr(repo, BRANCH, job, **title, PR_BODY=filled)
+        assert dispatched() == before
+        # matching controls: blank, invalid, zero, prose and valid pairs reverse to their originals
+        for original, bridged in (("30:\n", "30: \u00b7 Cost:\n"), ("30: TBD\n", "30: TBD \u00b7 Cost: TBD\n"),
+                                  ("30: $0\n", "30: $0 \u00b7 Cost: $0\n"), ("30: see issue 42\n", "30: see issue 42 \u00b7 Cost: see issue 42\n"),
+                                  ("$/run \u00d7 runs/day \u00d7 30: $0.01\n", "$/run \u00d7 runs/day \u00d7 30: $0.01 \u00b7 Cost: $0.01\n")):
+            assert capacity_bridge_split("## Capacity\nVolume: 1 row\n" + bridged) == ("## Capacity\nVolume: 1 row\n" + original, (original.split(":", 1)[1].strip(),))
+        assert capacity_bridge_split(None) == (None, ())
+        assert capacity_bridge_split("## Capacity\nVolume: 30 rows\n") == ("## Capacity\nVolume: 30 rows\n", ())
+    finally:
+        capacity_bridge_activate(None)
+
+
+
 def test_chained_exits_quoted_hashes_and_headings_beside_rows_are_the_contract(repo):
     """solyra#72 r4127814345 (P1), r4127814350 (P2), r4127814359 (P2) (spec_gate.py:553, :1280, :2669).
 
