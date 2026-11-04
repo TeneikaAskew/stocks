@@ -157,8 +157,40 @@ def own_children() -> list[dict]:
     return [{"pid": pid, "start_ticks": start} for pid, (start, parent) in sorted(process_table().items()) if parent == me]
 
 
+SIGNALLED = "signalled, not reaped by the deadline"
+
+
+def owned_children(parents: list[dict], table: dict[int, tuple[int, int]]) -> list[dict]:
+    """The direct children in `table`, one process-table read taken before `parents` were signalled, of each of
+    `parents` whose start ticks in `table` are still its listed ones, by PID and start ticks. A PID that `table`
+    shows as another process contributes nothing, and a listed child that started before its parent is left out:
+    an earlier holder of the parent's PID was its parent."""
+    listed = []
+    for parent in parents:
+        if table.get(parent["pid"], (None,))[0] != parent["start_ticks"]:
+            continue
+        for pid, (start, ppid) in sorted(table.items()):
+            if ppid == parent["pid"] and start >= parent["start_ticks"]:
+                listed.append({"pid": pid, "start_ticks": start})
+    return listed
+
+
+def kill_descendants(signalled: list[dict], table: dict[int, tuple[int, int]], deadline: float, outcomes: dict) -> list[dict]:
+    """Signal, one generation at a time, the descendants in `table` of `signalled` (children this pass identified and
+    signalled). A process is examined only once its parent was itself identified and signalled, so an intermediate
+    PID that fails its identity check, or whose signal is refused, prunes its whole subtree (QUAL4 R1, review 14 P1).
+    A PID already examined is not examined again. Returns those reaped, as kill_unregistered does."""
+    reaped, level = [], signalled
+    while level:
+        listed = [child for child in owned_children(level, table) if child["pid"] not in outcomes]
+        reaped += kill_unregistered(listed, deadline, outcomes)
+        level = [child for child in listed if outcomes.get(child["pid"]) == SIGNALLED]
+    return reaped
+
+
 def kill_unregistered(children: list[dict], deadline: float, outcomes: dict | None = None) -> list[dict]:
-    """SIGKILL and reap direct children Popen forked but never returned (QUAL1 R1 F2). Each is signalled through a
+    """SIGKILL and reap direct children Popen forked but never returned (QUAL1 R1 F2), and signal the descendants
+    listed with them; a descendant is reaped here only once it is this monitor's child. Each is signalled through a
     PIDfd opened first and then checked against its listed start ticks, so a recycled PID is never a target; a
     child that vanished, changed identity or is not reaped by the deadline is left for the caller's relist. The
     signal is sent whatever the time; only the reap waits on the deadline. Why each child was not reaped is
@@ -188,7 +220,7 @@ def kill_unregistered(children: list[dict], deadline: float, outcomes: dict | No
                 continue
         finally:
             os.close(fd)
-        outcomes[pid] = "signalled, not reaped by the deadline"
+        outcomes[pid] = SIGNALLED
         while time.monotonic() < deadline:
             try:
                 if os.waitpid(pid, os.WNOHANG)[0] == pid:
@@ -677,12 +709,32 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                                     # (no child left could be identified, signalled and reaped) or the deadline
                                     # passes (QUAL2 R1 F1). The first pass runs even after the deadline, so a child
                                     # it can identify is always signalled; the deadline bounds only reaping and
-                                    # further passes (QUAL3 R1 F1).
+                                    # further passes (QUAL3 R1 F1). Each pass then signals, a generation at a time,
+                                    # the descendants listed in a process-table read taken before that pass, starting
+                                    # from the children it identified and signalled; each goes through its own
+                                    # identity-checked PIDfd, and only once its parent was identified and signalled,
+                                    # so a listed descendant is not left alive unexamined when it would be adopted
+                                    # only after the deadline (QUAL4 R1). A child or intermediate not signalled
+                                    # (identity unverified, signal refused) prunes its subtree (review 14 P1).
+                                    # Limits: a descendant forked after that read is not listed, and one not adopted
+                                    # in time stays named "not examined before the deadline". That read is optional:
+                                    # if it fails, the pass still signals the children already listed, then the
+                                    # failure propagates as a failed relist does (review 14 P2).
                                     killed, remaining, outcomes, first = [], children, {}, True
                                     while remaining and (first or time.monotonic() < started + max_seconds):
                                         first = False
+                                        try:
+                                            table, table_error = process_table(), None
+                                        except Exception as e:
+                                            table, table_error = None, e
                                         reaped_now = kill_unregistered(remaining, started + max_seconds, outcomes)
                                         killed += reaped_now
+                                        if table_error is not None:
+                                            raise table_error
+                                        signalled = [child for child in remaining if outcomes.get(child["pid"]) == SIGNALLED]
+                                        descendants_reaped = kill_descendants(signalled, table, started + max_seconds, outcomes)
+                                        reaped_now += descendants_reaped
+                                        killed += descendants_reaped
                                         remaining = own_children()
                                         if not reaped_now:
                                             break
