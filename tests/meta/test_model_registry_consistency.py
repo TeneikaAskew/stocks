@@ -416,9 +416,11 @@ def test_scheduler_enumeration_matches_the_canonical_parser():
         f"audit_scheduler_coverage disagrees with doc_inventory. "
         f"missing there: {sorted(canonical - audit)}; extra there: {sorted(audit - canonical)}"
     )
-    assert len(canonical) >= 66, (
+    assert len(canonical) >= 65, (
         f"only {len(canonical)} schedulers parsed — deploy.sh declared 66 on "
-        "2026-09-22, so a sharp drop means a declaration form stopped matching"
+        "2026-09-22 and 65 since evaluate-ew-strikes-daily was retired "
+        "(FEAT-DEPLOY-001, 2026-11-01), so a sharp drop means a declaration "
+        "form stopped matching"
     )
 
 

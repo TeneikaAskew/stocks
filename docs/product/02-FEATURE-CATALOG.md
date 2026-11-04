@@ -533,18 +533,18 @@ Finite-number slice: approved spec [#1618](https://github.com/TeneikaAskew/stock
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation — notifier runtime access isolated |
+| Status | Production but needs remediation — notifier runtime access isolated; `evaluate-ew-strikes` job and `evaluate-ew-strikes-daily` scheduler retired from the declared fleet with the EarningsWhispers source ([#1658](https://github.com/TeneikaAskew/stocks/pull/1658), spec [#1666](https://github.com/TeneikaAskew/stocks/pull/1666)); the live job and scheduler are deleted by the separately authorized close-out in RUNTIME-QUALIFICATION-PLAN section 2 |
 | Priority | P1 |
 | Target phase | Phase 6 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-10-12 |
+| Last reviewed | 2026-11-01 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | — |
 | Backend | — |
 | Data | — |
 | Models | — |
 | Code | `gcp/deploy.sh`, `platform/deploy.sh` (deploys `solyra-api-staging` only; `solyra-api-prod` retired 2026-10-10, [#1366](https://github.com/TeneikaAskew/stocks/pull/1366)), `gcp/cloudbuild/` |
-| Tests | static checks; `tests/gcp/test_platform_deploy_service_config.py` runs `platform/deploy.sh` against a stub `gcloud` and asserts the staging service's auth mode, service account, environment, secrets, ingress and the `SETUP_IAM` grant ([#1350](https://github.com/TeneikaAskew/stocks/pull/1350)), and that a run without `STAGING_SERVICE=1` or with `STAGING=1` is refused before any `gcloud` call; `tests/gcp/test_staging_deploy_paths.py` asserts the retired service has no deploy path ([#1366](https://github.com/TeneikaAskew/stocks/pull/1366)) |
+| Tests | static checks; `tests/gcp/test_platform_deploy_service_config.py` runs `platform/deploy.sh` against a stub `gcloud` and asserts the staging service's auth mode, service account, environment, secrets, ingress and the `SETUP_IAM` grant ([#1350](https://github.com/TeneikaAskew/stocks/pull/1350)), and that a run without `STAGING_SERVICE=1` or with `STAGING=1` is refused before any `gcloud` call; `tests/gcp/test_staging_deploy_paths.py` asserts the retired service has no deploy path ([#1366](https://github.com/TeneikaAskew/stocks/pull/1366)); `tests/gcp/test_deploy_ew_evaluator.py` proves the retired job is deployed by no function, its scheduler is deleted and its target is a stub, and compares every other job and scheduler argv to a baseline revision ([#1658](https://github.com/TeneikaAskew/stocks/pull/1658)) |
 | Open issues | 15 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-deploy-001--infrastructure--deploy-15-open) |
 | Blocking issues | [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#832](https://github.com/TeneikaAskew/stocks/issues/832) [#851](https://github.com/TeneikaAskew/stocks/issues/851) [#855](https://github.com/TeneikaAskew/stocks/issues/855) [#856](https://github.com/TeneikaAskew/stocks/issues/856) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 6 |
