@@ -65,6 +65,11 @@ def test_aligned_is_the_same_for_the_raw_score_and_its_snapshot(direction, daily
     assert _aligned_via_planner(direction, snapshot) is True
     assert _high_conviction(direction, raw) is True
     assert _high_conviction(direction, snapshot) is True
+    # Negative control: the tolerance absorbs float error only. A helper that
+    # rounded to 2 dp before comparing would wrongly align these.
+    below = 0.499 if direction == "long" else -0.499
+    assert _aligned_via_planner(direction, below) is False
+    assert _high_conviction(direction, below) is False
 
 
 @pytest.mark.parametrize("direction,score,aligned", [
