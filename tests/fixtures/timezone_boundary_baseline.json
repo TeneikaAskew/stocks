@@ -647,8 +647,7 @@
  },
  "platform/api/routers/dashboard.py": {
   "host-today": [
-   "_apply_live_overlay::datetime.now()",
-   "dashboard_brief::datetime.now()"
+   "_apply_live_overlay::datetime.now()"
   ],
   "tz-localize-none": [
    "_build_movement_level_map::ts_col.dt.tz_localize(None)"
