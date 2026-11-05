@@ -1,7 +1,7 @@
 # STRAT foundation diagnostic (strat-foundation-diagnostic-v1)
 
 Separately versioned captured-data diagnostic for FEAT-STRAT-001 done_when 5
-([spec](../../../superpowers/specs/2026-10-12-feat-strat-001-complete-state-contract.md),
+([spec](../../../superpowers/specs/2026-11-05-feat-strat-001-foundation-tracked-docs-audit.md),
 [plan](../../../superpowers/plans/2026-11-04-feat-strat-001-confirmed-foundation.md)).
 It runs the actual producers and adapters (`lib.strat.compute_strat_status`,
 `compute_confirmed_setups`, `lib.agents.summarizers.summarize_strat_status` and
