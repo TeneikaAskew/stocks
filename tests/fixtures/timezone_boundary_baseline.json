@@ -594,12 +594,6 @@
    "reprice_intraday_option::bars['Time'].dt.tz_localize(None)"
   ]
  },
- "lib/strat.py": {
-  "tz-localize-none": [
-   "compute_strat_status::cutoff.tz_convert('UTC').tz_localize(None)",
-   "compute_strat_status::df.index.tz_localize(None)"
-  ]
- },
  "lib/strat_levels.py": {
   "tz-localize-none": [
    "compute_current_levels::ad_ts.tz_convert('UTC').tz_localize(None)"

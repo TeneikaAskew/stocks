@@ -1002,6 +1002,17 @@ def _resolve_analysis_date() -> date:
     return parsed
 
 
+def _strat_observation_clock(analysis_date: date) -> Optional[pd.Timestamp]:
+    """The Strat observation clock for this run: None (now) live, and the
+    brief's own 08:30 ET premarket clock on ``analysis_date`` for a BRIEF_AS_OF
+    replay, so a replay's weekly and monthly periods, FTFC and recorded
+    observation time describe that morning rather than the day it is rerun
+    (Codex on #1714)."""
+    if _as_of_override() is None:
+        return None
+    return pd.Timestamp(analysis_date.isoformat() + ' 08:30', tz=ET_NAME)
+
+
 def _resolve_brief_tickers(default_tickers: list[str]) -> list[str]:
     """Resolve the ticker list the brief runs against.
 
@@ -1211,8 +1222,10 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         # same helper the LLM analyst calls (lib/agents/summarizers.py),
         # so the brief and the AI report agree on candle / combo / FTFC.
         # PR #101 renamed timeframe keys to match RESAMPLE_RULES (1d/1w/1mo).
+        strat_clock = _strat_observation_clock(analysis_date)
         strat_status = compute_strat_status(
             ticker, df=df, timeframes=['1d', '1w', '1mo'], strat_config=cfg.strat,
+            as_of=strat_clock, inclusive_today=strat_clock is None,
         )
         if strat_status.get('available'):
             daily_strat = strat_status['last_candle']
@@ -1222,11 +1235,14 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             ftfc_dir = strat_status.get('ftfc_direction', 'mixed')
             ftfc_labels = strat_status.get('ftfc_labels', {}) or {}
         else:
-            daily_strat = '1'
+            # FEAT-STRAT-001: unavailable stays unavailable ('X', no score,
+            # no direction), never an inside bar with a neutral score.
+            # The signal gate below reads a None direction as mixed.
+            daily_strat = 'X'
             daily_combo = None
             daily_setup = False
-            ftfc_score = 0.0
-            ftfc_dir = 'mixed'
+            ftfc_score = None
+            ftfc_dir = None
             ftfc_labels = {}
 
         # ── Signal conditions ───────────────────────────────────────────
@@ -1278,7 +1294,10 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             'strat_candle': daily_strat,
             'strat_combo': daily_combo,
             'strat_setup': bool(daily_setup),
-            'ftfc_score': float(ftfc_score),
+            'strat_available': bool(strat_status.get('available')),
+            'strat_reason': None if strat_status.get('available') else strat_status.get('reason'),
+            'strat_observation_ts': strat_status.get('observation_ts'),
+            'ftfc_score': float(ftfc_score) if ftfc_score is not None else None,
             'ftfc_direction': ftfc_dir,
             'ftfc_labels': {k: v for k, v in ftfc_labels.items()},
             # Track B audit G.P0.5 — record which OHLCV bar the
@@ -2299,12 +2318,19 @@ def _build_ticker_fields(brief: dict) -> list:
         # previous `Daily: 2U | Combo: ...` mash-up) — the long
         # title-cased combo names overflowed visually when piped onto
         # the Daily line on mobile.
-        strat_lines = [f'Daily: {d["strat_candle"]}']
+        if d.get('strat_available') is False or d.get('strat_candle') == 'X':
+            reason = d.get('strat_reason')
+            strat_lines = ['Daily: unavailable' + (f' ({reason})' if reason else '')]
+        else:
+            strat_lines = [f'Daily: {d["strat_candle"]}']
         if d['strat_combo'] != 'none':
             strat_lines.append(f'Combo: {_fmt_combo(d["strat_combo"])}')
-        strat_lines.append(
-            f'FTFC: {d["ftfc_score"]:+.1f} ({d["ftfc_direction"]})'
-        )
+        if d.get('ftfc_score') is None:
+            strat_lines.append('FTFC: unavailable')
+        else:
+            strat_lines.append(
+                f'FTFC: {d["ftfc_score"]:+.1f} ({d["ftfc_direction"]})'
+            )
         tf_parts = ' '.join(
             f'{_fmt_timeframe(k)}:{v}'
             for k, v in d.get('ftfc_labels', {}).items()
