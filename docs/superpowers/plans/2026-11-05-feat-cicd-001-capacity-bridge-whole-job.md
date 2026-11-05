@@ -3,7 +3,7 @@ feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-04-feat-cicd-001-capacity-fixture-bridge-whole-job.md
 branch: feature/feat-cicd-001-capacity-bridge-whole-job
 pr: 1713
-status: ready
+status: done
 ---
 
 # Capacity fixture bridge (test only) implementation plan, re-cut under the whole-job spec
