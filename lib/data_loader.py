@@ -72,6 +72,24 @@ RESAMPLE_RULES = {
 }
 
 
+def _apply_contract_defaults(attrs, defaults):
+    """Loader compatibility defaults for a wholly unannotated source contract.
+
+    A partially declared contract keeps each missing field ``unknown`` with an
+    explicit reason, on single-file loads exactly as `_concat_source_frames`
+    does for multi-file ones; nothing is invented (Rule 3.7).
+    """
+    if not any(key in attrs for key in defaults):
+        attrs.update(defaults)
+        return
+    missing = [key for key in defaults if key not in attrs]
+    for key in missing:
+        attrs[key] = 'unknown'
+    if missing:
+        attrs['source_contract_reasons'] = list(dict.fromkeys(
+            list(attrs.get('source_contract_reasons', [])) + ['incomplete_source_contract']))
+
+
 def _concat_source_frames(frames):
     """Reconcile partition declarations before pandas can discard unequal attrs.
 
@@ -363,9 +381,9 @@ class DataLoader:
         _check_staleness(df_out, ticker,
                          max_age_days=max_age_days, on_stale=on_stale,
                          value_col='Close')
-        df_out.attrs.setdefault('source_resolution', '1min')
-        df_out.attrs.setdefault('timestamp_semantics', 'bar_start')
-        df_out.attrs.setdefault('session_policy', 'unknown')
+        _apply_contract_defaults(df_out.attrs, {'source_resolution': '1min',
+                                                'timestamp_semantics': 'bar_start',
+                                                'session_policy': 'unknown'})
         return df_out
 
     def _load_intraday_from_sql(
@@ -480,9 +498,9 @@ class DataLoader:
             _check_staleness(df_out, ticker,
                              max_age_days=max_age_days, on_stale=on_stale,
                              value_col='Close')
-        df_out.attrs.setdefault('source_resolution', '1d')
-        df_out.attrs.setdefault('session_policy', 'NYSE_regular')
-        df_out.attrs.setdefault('timestamp_semantics', 'session_label')
+        _apply_contract_defaults(df_out.attrs, {'source_resolution': '1d',
+                                                'session_policy': 'NYSE_regular',
+                                                'timestamp_semantics': 'session_label'})
         return df_out
 
     def _load_daily_from_sql(

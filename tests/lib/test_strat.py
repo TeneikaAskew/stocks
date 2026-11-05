@@ -317,6 +317,15 @@ class TestPatternTruthTable:
             '111_inside_compression', '11_inside_compression',
         ]
 
+    def test_legacy_rule_keeps_two_bar_compression_feature(self):
+        """legacy-pattern-v1 feeds persisted research feature tables; its
+        consecutive_1s keeps main's two-bar rolling sum (Codex r4476732524)."""
+        result = StratClassifier(rule_version='legacy-pattern-v1').detect_combos(_frame([
+            (110, 90, 99, 100), (109, 91, 99, 100), (108, 92, 99, 100),
+            (107, 93, 99, 100), (111, 94, 99, 110),
+        ]))
+        assert result['consecutive_1s'].tolist() == [0, 1, 2, 2, 1]
+
     def test_zero_range_doji_has_no_invented_close_location(self, classifier):
         row = classifier.detect_combos(_frame([(100, 90, 95, 96), (95, 95, 95, 95)])).iloc[-1]
         assert row['candle_color'] == 'doji'
@@ -1624,6 +1633,19 @@ class TestClosedCandleConfirmation:
         _, at = self._confirm('1w', pd.Timestamp('2024-11-29 13:00', tz='America/New_York'))
         assert before['state'] != 'confirmed' or before['period_start'] != at['period_start']
         assert at['state'] == 'confirmed'
+
+    @pytest.mark.parametrize('clock', ['2024-12-02 16:00', '2024-12-02 17:00', '2024-12-03 10:00',
+                                       '2024-12-05 16:30'])
+    def test_weekly_stays_confirmed_until_the_current_week_closes(self, clock):
+        # Monday to Thursday of the next week: the developing week ends at its
+        # Friday close, so the week that closed on 2024-11-29 stays the
+        # confirmed one (Codex r4476732518).
+        stamp = pd.Timestamp(clock, tz='America/New_York')
+        _, at_close = self._confirm('1w', pd.Timestamp(self.WEEKLY_CLOSE, tz='America/New_York'))
+        _, result = self._confirm('1w', stamp)
+        assert self._decision(result) == self._decision(at_close)
+        assert pd.Timestamp(result['developing']['period_end']) == pd.Timestamp(
+            '2024-12-06 16:00', tz='America/New_York')
 
     def test_shorter_final_4h_bucket_stays_unconfirmed_pending_owner(self):
         source = self._source('4h')

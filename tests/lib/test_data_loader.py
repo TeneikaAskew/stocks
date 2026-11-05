@@ -868,6 +868,33 @@ class TestRecoveredObservationContract:
             assert not observed.attrs['coverage']['available']
             assert reason in observed.attrs['coverage']['reasons']
 
+    @pytest.mark.parametrize('daily', [False, True])
+    @pytest.mark.parametrize('declared', ['partial', 'none', 'full'])
+    def test_single_file_loaders_never_invent_a_partial_contract(self, loader, tmp_path, daily, declared):
+        """The year-scoped daily and combined intraday parquet paths skip
+        _concat_source_frames; a partly declared contract must still stay
+        unknown there (Codex r4476732530)."""
+        frame = self.frame(['2024-01-02 09:30', '2024-01-03 09:30'], daily=daily)
+        if declared == 'partial':
+            frame.attrs = {'source_resolution': frame.attrs['source_resolution']}
+        elif declared == 'none':
+            frame.attrs = {}
+        directory = tmp_path / 'iwm' if daily else tmp_path / 'iwm' / 'intraday'
+        directory.mkdir(parents=True)
+        name = 'iwm_2024.parquet' if daily else 'iwm_av_1min_combined.parquet'
+        frame.to_parquet(directory / name)
+        result = loader.load_daily('IWM', year=2024) if daily else loader.load_intraday('IWM')
+        if declared == 'partial':
+            assert result.attrs['session_policy'] == 'unknown'
+            assert result.attrs['timestamp_semantics'] == 'unknown'
+            assert 'incomplete_source_contract' in result.attrs['source_contract_reasons']
+            observed = self.observed(loader, result, '1d', '2024-01-03 16:00-05:00')
+            assert not observed.attrs['coverage']['available']
+        else:
+            assert result.attrs['source_resolution'] == ('1d' if daily else '1min')
+            assert result.attrs['timestamp_semantics'] == ('session_label' if daily else 'bar_start')
+            assert 'source_contract_reasons' not in result.attrs
+
     @pytest.mark.parametrize('acquisitions,status', [
         ([None, None], 'unknown'), (['2024-01-04', None], 'incomplete'),
         (['2024-01-04', '2024-01-05'], 'mixed'),

@@ -22,7 +22,10 @@ Four cases are unavailable and kept, not dropped: `before_second_bar`,
 The capture has no rows from 2026-04-14 to 2026-04-23, so the periods that touch
 that gap are reported unconfirmed with `incomplete_coverage` and
 `missing_observations` instead of being classified. The Good Friday week
-(2026-04-03 holiday) completes at the 2026-04-02 16:00 close.
+(2026-04-03 holiday) completes at the 2026-04-02 16:00 close. A clock from
+Monday to Thursday keeps the last closed week as the confirmed one and reports
+the current week as developing until its final session close, so 22 cases carry
+a confirmed weekly setup.
 
 `weekly-confirmation.svg` draws the weekly rows (clock, judged week, state,
 candle, combo) from the same manifest; its hash is in `visual.sha256`.

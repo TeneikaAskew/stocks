@@ -407,7 +407,12 @@ class StratClassifier:
         result['strat_setup'] = (labels == '1') & (prev1.isin(['2U', '2D', '3']))
         result['pending_setup'] = result['strat_setup']
         inside = labels == '1'
-        result['consecutive_1s'] = inside.astype(int).groupby((~inside).cumsum()).cumsum()
+        if legacy:
+            # Persisted legacy feature tables carry the two-bar rolling sum;
+            # changing it would silently rewrite their historical values.
+            result['consecutive_1s'] = inside.astype(int).rolling(window=2, min_periods=1).sum()
+        else:
+            result['consecutive_1s'] = inside.astype(int).groupby((~inside).cumsum()).cumsum()
 
         # Capture masks BEFORE priority filtering so collisions retain every fact.
         patterns = [
@@ -807,7 +812,13 @@ def _period_bounds(timeframe: str, clock: pd.Timestamp):
     from lib.data_loader import RESAMPLE_RULES
 
     lookback = 21 if timeframe == '1w' else 7
-    schedule = session_schedule(clock.date() - pd.Timedelta(days=lookback), clock.date())
+    last_day = clock.date()
+    if timeframe == '1w':
+        # The current week ends at its last actual session close, which can be
+        # after the clock's date: without it, Monday's close reads as a closed
+        # week and hides the week that really closed (Codex r4476732518).
+        last_day = pd.Timestamp(last_day).to_period('W-FRI').end_time.date()
+    schedule = session_schedule(clock.date() - pd.Timedelta(days=lookback), last_day)
     periods = []
     if timeframe == '1w':
         weeks = {}
