@@ -2,7 +2,7 @@
 feat_id: FEAT-OPTION-001
 spec: docs/superpowers/specs/2026-10-24-feat-option-001-legacy-snapshot-labels.md
 branch: feature/feat-option-001-snapshot-provenance
-pr: null
+pr: 1724
 status: ready
 ---
 
@@ -147,7 +147,7 @@ owner before implementation"); § Ownership ("API owner coordinates the wire con
   sets no cache header, so Q's at-most-two-round-trip and no-store rules are neither met
   nor broken by S2; Q's implementation adds `no-store` at the hit sites when it lands, and
   item (c) (whichever lands second rebases onto the other's hit-site changes) stands.
-- [ ] Items (a) to (c) are posted on this plan's draft PR for the existing Q owner as
+- [x] Items (a) to (c) are posted on this plan's draft PR (#1724, body section "Q/API coordination") for the existing Q owner as
   information, with no request that Q change its contract. The repository owner's
   2026-11-05 instruction to proceed ("do what's needed to get done") let code commits on
   this branch follow the recorded check instead of waiting for a reply; a reply that
