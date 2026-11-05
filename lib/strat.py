@@ -59,7 +59,11 @@ COMBO_BONUS_PUT: Dict[str, float] = {k: -v for k, v in COMBO_BONUS_CALL.items()}
 
 def _numeric_prices(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     """Malformed price values become NaN and are explicitly classified invalid."""
-    prices = df[columns].apply(pd.to_numeric, errors='coerce')
+    # Shallow copy without attrs: the result never carried them, and pandas
+    # would otherwise deep-copy them on every column access below.
+    bare = df.copy(deep=False)
+    bare.attrs = {}
+    prices = bare[columns].apply(pd.to_numeric, errors='coerce')
     return pd.DataFrame(prices.to_numpy(dtype=float, na_value=np.nan),
                         index=df.index, columns=columns)
 

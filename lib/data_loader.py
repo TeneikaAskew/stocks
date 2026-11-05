@@ -892,6 +892,11 @@ def _aggregate_observed_frame(df, timeframe, observation_ts, source_resolution, 
              (source_interval > target_interval or target_interval % source_interval != pd.Timedelta(0)))):
         base_reasons.append('source_resolution_too_coarse')
     known_intraday = not daily and source_interval is not None and not base_reasons
+    # Every declaration this function reads is read above (acquisition fields
+    # come from ``df``). Dropping the working copy's attrs keeps pandas from
+    # deep-copying them on each per-period slice below; the result's attrs are
+    # rebuilt explicitly at the end.
+    data.attrs = {}
     # Unknown duration/policy is not permission to treat a bar start as a
     # completed observation. No OHLC or completion timestamp can be admitted.
     if base_reasons:
@@ -955,63 +960,143 @@ def _aggregate_observed_frame(df, timeframe, observation_ts, source_resolution, 
             return opening + ((stamp - opening) // target_interval) * target_interval
         return pd.Timestamp(stamp).floor(RESAMPLE_RULES[timeframe])
 
-    def coverage(stamp, positions):
-        schedule = _period_schedule(stamp, timeframe)
+    def labels_for(index):
+        """``label_for`` over a whole index, vectorized; same values, same order."""
+        index = pd.DatetimeIndex(index)
+        if not len(index):
+            return pd.DatetimeIndex([label_for(stamp) for stamp in index])
+        if timeframe in _PERIOD_FREQ:
+            wall = index.tz_localize(None) if index.tz is not None else index  # tz-ok: already Eastern, period labels
+            return wall.to_period(_PERIOD_FREQ[timeframe]).end_time.normalize()
+        if known_intraday:
+            days = pd.DatetimeIndex(index.date)
+            opens = session_schedule(days.min().date(), days.max().date())['market_open']
+            opens = opens.dt.tz_convert(ET_NAME)
+            missing_days = ~days.isin(opens.index)
+            if missing_days.any():
+                return pd.DatetimeIndex([label_for(stamp) for stamp in index])
+            opening = pd.DatetimeIndex(opens.reindex(days))
+            return opening + ((index - opening) // target_interval) * target_interval
+        return pd.DatetimeIndex([label_for(stamp) for stamp in index])
+
+    def period_dates(stamps):
+        """First and last calendar day of each stamp's period, as int64 day labels."""
+        stamps = pd.DatetimeIndex(stamps)
+        if stamps.tz is not None:
+            stamps = stamps.tz_convert(ET_NAME).tz_localize(None)  # tz-ok: converted to Eastern first; session labels
+        periods = stamps.to_period(_PERIOD_FREQ.get(timeframe, 'D'))
+        return (periods.start_time.normalize().as_unit('ns').asi8,
+                periods.end_time.normalize().as_unit('ns').asi8)
+
+    # Group source positions without pandas first/last skipping null observations.
+    row_labels = labels_for(data.index)
+    groups = {}
+    for position, label in enumerate(row_labels):
+        groups.setdefault(label, []).append(position)
+    current_label = label_for(clock)
+
+    # One schedule covering every period this call inspects, read as integer
+    # nanoseconds: the same rows ``_period_schedule`` returns for each period,
+    # without a calendar copy and a pandas slice per period.
+    keys = list(groups) + [clock]
+    walls = [key.tz_convert(ET_NAME).tz_localize(None) if key.tzinfo is not None else key  # tz-ok: converted to Eastern first; session labels
+             for key in keys]
+    starts, ends = period_dates(walls)
+    bounds = {key: (int(start), int(end)) for key, start, end in zip(keys, starts, ends)}
+    full_schedule = session_schedule(pd.Timestamp(int(starts.min())).date(),
+                                     pd.Timestamp(int(ends.max())).date())
+    day_ns = pd.DatetimeIndex(full_schedule.index).as_unit('ns').asi8
+    open_ns = pd.DatetimeIndex(full_schedule['market_open']).as_unit('ns').asi8
+    close_ns = pd.DatetimeIndex(full_schedule['market_close']).as_unit('ns').asi8
+    clock_ns = clock.value
+    data_index = data.index
+    data_ns = pd.DatetimeIndex(data_index).as_unit('ns').asi8
+    cutoff_ns = pd.DatetimeIndex(cutoffs).as_unit('ns').asi8 if len(cutoffs) else np.array([], dtype='int64')
+    valid_values = valid.to_numpy(dtype=bool)
+    open_values = prices['Open'].to_numpy()
+    position_of = {value: position for position, value in enumerate(data_ns.tolist())}
+    grid_cache = {}
+
+    def utc_instant(value):
+        return pd.Timestamp(int(value), tz='UTC').tz_convert(ET_NAME)
+
+    def session_grid(lo, hi):
+        if (lo, hi) not in grid_cache:
+            day_schedule = full_schedule.iloc[lo:hi]
+            grid_cache[(lo, hi)] = (_intraday_grid(day_schedule, source_interval),
+                                    {stamp.date(): close.tz_convert(ET_NAME)
+                                     for stamp, close in day_schedule['market_close'].items()})
+        return grid_cache[(lo, hi)]
+
+    def coverage(key, positions):
+        start_day, end_day = bounds[key]
+        lo = int(np.searchsorted(day_ns, start_day, side='left'))
+        hi = max(lo, int(np.searchsorted(day_ns, end_day, side='right')))
+        stamp = key
         reasons = list(base_reasons)
         start = end = None
-        if len(schedule):
-            start = schedule.iloc[0]['market_open'].tz_convert(ET_NAME)
-            end = schedule.iloc[-1]['market_close'].tz_convert(ET_NAME)
+        if hi > lo:
+            first_open = utc_instant(open_ns[lo])
+            start = first_open
+            end = utc_instant(close_ns[hi - 1])
             if target_interval is not None:
                 start = label_for(stamp)
-                if start < schedule.iloc[0]['market_open'] or start >= end:
+                if start < first_open or start >= end:
                     start = end = None
                     reasons.append('outside_regular_session')
                 else:
                     end = min(start + target_interval, end)
         else:
             reasons.append('non_trading_period')
-        observed = data.iloc[positions]
-        observed_valid = valid.iloc[positions]
-        expected = pd.DatetimeIndex([])
-        opening_index = None
-        if daily and len(schedule):
-            expected = schedule.index[schedule['market_close'] <= clock]
-            opening_index = schedule.index[0]
-        elif known_intraday and len(schedule) and start is not None:
-            expected = _intraday_grid(schedule, source_interval)
-            expected = expected[(expected >= start) & (expected < end)]
-            opening_index = start
-            session_closes = {stamp.date(): close.tz_convert(ET_NAME)
-                              for stamp, close in schedule['market_close'].items()}
-            expected = expected[[min(stamp + source_interval, session_closes[stamp.date()]) <= clock
-                                 for stamp in expected]]
-        missing = expected.difference(observed.index)
-        if len(missing):
+        observed_ns = data_ns[positions]
+        observed_valid = valid_values[positions]
+        expected_ns = np.array([], dtype='int64')
+        opening_ns = None
+        if daily and hi > lo:
+            expected_ns = day_ns[lo:hi][close_ns[lo:hi] <= clock_ns]
+            opening_ns = int(day_ns[lo])
+        elif known_intraday and hi > lo and start is not None:
+            grid, session_closes = session_grid(lo, hi)
+            expected = grid[(grid >= start) & (grid < end)]
+            expected = expected[[min(value + source_interval, session_closes[value.date()]) <= clock
+                                 for value in expected]]
+            expected_ns = expected.as_unit('ns').asi8
+            opening_ns = start.as_unit('ns').value
+        missing_ns = np.setdiff1d(expected_ns, observed_ns)
+        if len(missing_ns):
             reasons.append('missing_observations')
-        open_observed = (opening_index in observed.index and bool(valid.loc[opening_index]))
+        opening_position = position_of.get(opening_ns) if opening_ns is not None else None
+        open_observed = (opening_position is not None and opening_position in set(positions)
+                         and bool(valid_values[opening_position]))
         if not open_observed:
             reasons.append('missing_period_open')
-        if observed.empty:
+        if not len(positions):
             reasons.append('no_observations')
         if not observed_valid.all():
             reasons.append('invalid_ohlc')
-        cutoff = cutoffs.reindex(observed.index).max() if len(observed) else None
-        if pd.isna(cutoff):
-            cutoff = None
+        cutoff = None
+        if len(positions):
+            observed_cutoffs = cutoff_ns[positions]
+            observed_cutoffs = observed_cutoffs[observed_cutoffs != pd.NaT.value]
+            if len(observed_cutoffs):
+                cutoff = utc_instant(observed_cutoffs.max())
+        if daily:
+            missing_days = pd.DatetimeIndex(missing_ns)
+        else:
+            missing_days = pd.DatetimeIndex(missing_ns, tz='UTC').tz_convert(ET_NAME)
         complete = bool(end is not None and clock >= end)
         return {
             'timeframe': timeframe, 'aggregation_policy': 'observed_v2',
             'period_start': start.isoformat() if start is not None else None,
             'period_end': end.isoformat() if end is not None else None,
             'period_open_observed': bool(open_observed),
-            'open': float(prices.loc[opening_index, 'Open']) if open_observed else None,
+            'open': float(open_values[opening_position]) if open_observed else None,
             'completed': complete, 'partial': bool(end is not None and not complete),
-            'coverage_complete': bool(not base_reasons and len(expected) and not len(missing) and observed_valid.all()),
-            'available': bool(not base_reasons and len(observed) and observed_valid.all()),
-            'observed_count': len(observed), 'expected_count': len(expected),
-            'missing_count': len(missing),
-            'missing_sessions': sorted({str(value.date()) for value in missing}),
+            'coverage_complete': bool(not base_reasons and len(expected_ns) and not len(missing_ns) and observed_valid.all()),
+            'available': bool(not base_reasons and len(positions) and observed_valid.all()),
+            'observed_count': len(positions), 'expected_count': len(expected_ns),
+            'missing_count': len(missing_ns),
+            'missing_sessions': sorted({str(value.date()) for value in missing_days}),
             'source_resolution': resolution or 'unknown', 'session_policy': policy,
             'timestamp_semantics': semantics,
             'source_cutoff': cutoff.isoformat() if cutoff is not None else None,
@@ -1022,39 +1107,42 @@ def _aggregate_observed_frame(df, timeframe, observation_ts, source_resolution, 
             'reasons': reasons,
         }
 
-    # Group source positions without pandas first/last skipping null observations.
-    groups = {}
-    for position, stamp in enumerate(data.index):
-        groups.setdefault(label_for(stamp), []).append(position)
+    columns = {name: prices[name].to_numpy() for name in ('Open', 'High', 'Low', 'Close', 'Volume')}
     records, period_coverage = [], {}
-    for label, positions in groups.items():
-        group = prices.iloc[positions]
-        record = {'Open': group['Open'].iloc[0], 'High': group['High'].max(),
-                  'Low': group['Low'].min(), 'Close': group['Close'].iloc[-1],
-                  'Volume': group['Volume'].sum(min_count=1)}
-        if not valid.iloc[positions].all():
-            # Any malformed constituent makes aggregate OHLC unavailable. Keep
-            # the position so the next bar cannot bridge an invalid observation.
-            record.update({key: np.nan for key in ('Open', 'High', 'Low', 'Close')})
-        records.append(record)
-        period_coverage[label.isoformat()] = coverage(label, positions)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)  # all-NaN slices are NaN, as pandas gives
+        for label, positions in groups.items():
+            take = np.asarray(positions)
+            highs, lows, volumes = (columns['High'][take], columns['Low'][take],
+                                    columns['Volume'][take])
+            record = {'Open': columns['Open'][take[0]],
+                      'High': np.nan if np.isnan(highs).all() else np.nanmax(highs),
+                      'Low': np.nan if np.isnan(lows).all() else np.nanmin(lows),
+                      'Close': columns['Close'][take[-1]],
+                      'Volume': np.nan if np.isnan(volumes).all() else np.nansum(volumes)}
+            if not valid_values[take].all():
+                # Any malformed constituent makes aggregate OHLC unavailable. Keep
+                # the position so the next bar cannot bridge an invalid observation.
+                record.update({key: np.nan for key in ('Open', 'High', 'Low', 'Close')})
+            records.append(record)
+            period_coverage[label.isoformat()] = coverage(label, positions)
     result = pd.DataFrame(records, index=pd.DatetimeIndex(list(groups)),
                           columns=['Open', 'High', 'Low', 'Close', 'Volume'])
-    current_label = label_for(clock)
     current_coverage = coverage(clock, groups.get(current_label, []))
     gaps = {label.isoformat(): False for label in result.index}
     if len(result) > 1:
         if timeframe in _PERIOD_FREQ:
             schedule = session_schedule(result.index[0].date() - timedelta(days=7), result.index[-1].date())
-            labels = pd.DatetimeIndex(sorted({label_for(stamp) for stamp in schedule.index}))
+            labels = pd.DatetimeIndex(sorted(set(labels_for(schedule.index))))
         elif known_intraday:
             schedule = session_schedule(result.index[0].date(), result.index[-1].date())
-            labels = pd.DatetimeIndex(sorted({label_for(stamp) for stamp in _intraday_grid(schedule, source_interval)}))
+            labels = pd.DatetimeIndex(sorted(set(labels_for(_intraday_grid(schedule, source_interval)))))
         else:
             labels = pd.DatetimeIndex([])
-        for previous, current in zip(result.index[:-1], result.index[1:]):
+        label_positions = labels.get_indexer(result.index) if len(labels) else None
+        for number, (previous, current) in enumerate(zip(result.index[:-1], result.index[1:])):
             gaps[current.isoformat()] = bool(base_reasons or not len(labels) or
-                labels.get_indexer([current])[0] - labels.get_indexer([previous])[0] != 1)
+                label_positions[number + 1] - label_positions[number] != 1)
             if daily or known_intraday:
                 # An incomplete constituent range cannot classify either side
                 # of a comparison, even when both target labels exist.

@@ -882,3 +882,36 @@ class TestRecoveredObservationContract:
         assert result.attrs['source_acquisition_status'] == status
         assert result.attrs['source_acquired_at'] == (acquisitions[0] if status == 'uniform' else None)
         assert frames[0].attrs['source_acquired_at'] == acquisitions[0]
+
+
+class TestObservedAggregationScaling:
+    """observed_v2 reads one calendar per call, not one copy per period.
+
+    Building a calendar slice and a pandas frame per historical period made
+    compute_strat_status take about 36 s on 20 years of daily bars (0.06 s
+    before observed_v2). The count bounds that cost without timing anything.
+    """
+
+    @pytest.mark.parametrize('timeframe', ['1d', '1w', '1mo'])
+    def test_daily_history_reads_a_bounded_number_of_schedules(self, monkeypatch, timeframe):
+        import lib.data_loader as data_loader
+        from lib.eastern_time import session_schedule
+        days = session_schedule(date(2022, 1, 3), date(2024, 12, 31)).index
+        values = np.linspace(100, 120, len(days))
+        frame = pd.DataFrame({'Open': values, 'High': values + 1, 'Low': values - 1,
+                              'Close': values + 0.5, 'Volume': 1e6}, index=days)
+        frame.attrs = {'source_resolution': '1d', 'session_policy': 'NYSE_regular',
+                       'timestamp_semantics': 'session_label'}
+        calls = []
+
+        def counting(start, end):
+            calls.append((start, end))
+            return session_schedule(start, end)
+
+        monkeypatch.setattr(data_loader, 'session_schedule', counting)
+        result = DataLoader().aggregate_to_timeframe(
+            frame, timeframe, observation_ts=pd.Timestamp('2025-01-02 12:00', tz='America/New_York'),
+            aggregation_policy='observed_v2')
+        assert len(result.attrs['period_coverage']) == len(result) > 30
+        assert all(record['coverage_complete'] for record in result.attrs['period_coverage'].values())
+        assert len(calls) <= 4

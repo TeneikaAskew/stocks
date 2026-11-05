@@ -101,12 +101,12 @@ evidence that brief-aligned signals outperform brief-opposed ones.
 **The actionable threshold is recorded; its rationale is not.** The `(N/5)` in the
 brief's `signal_status` is the five-factor mean-reversion score from
 `lib.signals.check_call_conditions` / `check_put_conditions` (`gcp/premarket_brief.py:28`,
-`:1233-1234`), and `_resolve_signal_status` (`:1831`) turns it into text with two
+`:1236-1237`), and `_resolve_signal_status` (`:1837`) turns it into text with two
 thresholds read at `:1058-1059`:
 
 | Threshold | Default | Source | Status text | `classify` reads it as |
 |---|---|---|---|---|
-| `SignalConfig.premarket_signal_threshold` | **3** | `lib/config.py:490` | `CALL setup (N/5)` / `PUT setup (N/5)` (`premarket_brief.py:1878-1879`) | `CALL` / `PUT` (subject to the FTFC check above) |
+| `SignalConfig.premarket_signal_threshold` | **3** | `lib/config.py:490` | `CALL setup (N/5)` / `PUT setup (N/5)` (`premarket_brief.py:1884-1885`) | `CALL` / `PUT` (subject to the FTFC check above) |
 | `SignalConfig.premarket_building_threshold` | **2** | `lib/config.py:491` | `CALL building (N/5)` / `PUT building (N/5)` (`:1880-1881`) | `NEUTRAL` ("building") |
 | below both | — | — | `No signal` | `NEUTRAL` |
 
