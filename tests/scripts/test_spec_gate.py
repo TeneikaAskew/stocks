@@ -4281,6 +4281,130 @@ def test_capacity_bridge_case_and_carrier_equivalence(repo):
 
 
 
+COST_TEMPLATE = ".github/pull_request_template.md"
+COST_TEMPLATE_OLD = "- $/run × runs/day × 30: <!-- new scheduled jobs -->"
+COST_TEMPLATE_NEW = "- Cost: <!-- $/run × runs/day × 30 for new scheduled jobs -->"
+COST_JOB = {**CODE, "gcp/model_job.py": "print('run')\n"}
+COST_TITLE = {"PR_TITLE": "FEAT-MODEL-001: x"}
+
+
+def cost_capacity(*lines: str) -> str:
+    """A PR body whose Capacity section holds `lines`, one value per line."""
+    return body() + "\n\n## Capacity\n" + "\n".join(lines) + "\n"
+
+
+def cost_template_capacity(volume: str, velocity: str, wall: str, cost: str | None) -> str:
+    """The Capacity section of the real default PR template, its comments filled the way an author fills them."""
+    text = (REPO / COST_TEMPLATE).read_text(encoding="utf-8")
+    start = text.index("## Capacity")
+    section_text = text[start:text.index("\n## ", start + 1)]
+    filled = (section_text.replace("- Volume: <!-- input rows × bytes/row -->", "- Volume: " + volume)
+              .replace("- Velocity: <!-- SQL queries / API calls / round-trips per input row × total -->", "- Velocity: " + velocity)
+              .replace("- Wall-clock: <!-- queries × per-query latency", "- Wall-clock: " + wall + " <!-- queries × per-query latency"))
+    if cost is not None:
+        filled = filled.replace(COST_TEMPLATE_NEW, "- Cost: " + cost).replace(COST_TEMPLATE_OLD, "- $/run × runs/day × 30: " + cost)
+    return body() + "\n\n" + filled + "\n"
+
+
+def test_capacity_cost_label_contract(repo):
+    """FEAT-CICD-001 capacity Cost label (spec 2026-11-04-feat-cicd-001-capacity-cost-label-whole-job.md,
+    which supersedes 2026-10-13-feat-cicd-001-capacity-cost-label.md with the same done_when[0] and [1]).
+
+    On the old tuple a numeric Cost-only body was refused as leaving 30 blank, and an unrelated
+    bare `30: 0.01 samples` was taken as the cost. The cost field is now the explicit `Cost:` label,
+    with no alias for any `30`, and the default PR template names it.
+    """
+    passing = (
+        ("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "Cost: $0.01"),
+        ("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "Cost: $0.01/run x 2 runs/day x 30 = $0.60/month"),
+        ("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "Cost: $0"),
+        ("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "Cost: $0.01", "30: 0.01 unrelated samples"),
+    )
+    for lines in passing:
+        r = pr(repo, BRANCH, COST_JOB, **COST_TITLE, PR_BODY=cost_capacity(*lines))
+        assert r.returncode == 0, (lines, r.stdout + r.stderr)
+    refused = (
+        (("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s"), "leaves Cost blank"),
+        (("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "Cost:"), "leaves Cost blank"),
+        (("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "30: 0.01 samples"), "leaves Cost blank"),
+        (("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "$/run × runs/day × 30: $0.01"), "leaves Cost blank"),
+        (("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "Cost:", "30: $0.01"), "leaves Cost blank"),
+        (("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "Cost: unknown", "30: $0.01"), "gives no number for Cost;"),
+        (("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "Cost: see issue 42", "30: $0.01"), "gives no number for Cost;"),
+        (("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "Cost: TBD", "$/run × runs/day × 30: $0.01"), "gives no number for Cost;"),
+        (("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "Cost: $0.01 until the follow-up measures it", "30: $0.01"), "defers Cost"),
+    )
+    for lines, reason in refused:
+        r = pr(repo, BRANCH, COST_JOB, **COST_TITLE, PR_BODY=cost_capacity(*lines))
+        assert r.returncode == 1 and reason in r.stdout, (lines, r.stdout + r.stderr)
+    # the default template: its one cost line is the Cost label, and only that line changed
+    raw = (REPO / COST_TEMPLATE).read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == "201355b3343f7b81f22bfba8b7260406e7b246ef02948d7430a118372e574ad2"
+    template = raw.decode("utf-8")
+    assert template.count(COST_TEMPLATE_NEW) == 1 and COST_TEMPLATE_OLD not in template
+    original = template.replace(COST_TEMPLATE_NEW, COST_TEMPLATE_OLD)
+    assert hashlib.sha256(original.encode("utf-8")).hexdigest() == "496bc1e31588d4ea392559fd5ab0097bfaf4a6b5761f745d2ac1271fa498450a"
+    filled = cost_template_capacity("30 rows × 200 B", "1 query", "2 s", "$0.01/run x 2 runs/day x 30 = $0.60/month")
+    r = pr(repo, BRANCH, COST_JOB, **COST_TITLE, PR_BODY=filled)
+    assert r.returncode == 0, r.stdout + r.stderr
+    r = pr(repo, BRANCH, COST_JOB, **COST_TITLE, PR_BODY=body() + "\n\n" + template[template.index("## Capacity"):])
+    assert r.returncode == 1 and "leaves Volume, Velocity, Wall-clock, Cost blank" in r.stdout, r.stdout + r.stderr
+    hidden = cost_template_capacity("30 rows", "1 query", "2 s", None)
+    r = pr(repo, BRANCH, COST_JOB, **COST_TITLE, PR_BODY=hidden)
+    assert r.returncode == 1 and "leaves Cost blank" in r.stdout, r.stdout + r.stderr
+    r = pr(repo, BRANCH, COST_JOB, **COST_TITLE, PR_BODY=hidden.replace("- Cost: <!--", "- Cost: <!-- $0.01"))
+    assert r.returncode == 1 and "leaves Cost blank" in r.stdout, r.stdout + r.stderr
+    # the template stays a gated FEAT-CICD-001 process input: a docs/ branch or another FEAT's branch is refused
+    on_base(repo, {CATALOG: CATALOG_TEXT.replace(
+        "| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |",
+        "| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |\n| FEAT-CICD-001 | Delivery | Production | unknown | none |"),
+                   COST_TEMPLATE: template})   # the real template on base, so each case edits it
+    edited = {COST_TEMPLATE: template.replace(COST_TEMPLATE_NEW, "- Cost: <!-- per run x runs/day x 30 -->")}
+    for branch, reason in (("docs/template-tweak", "(.github/pull_request_template.md) but is not feature/"),
+                           (BRANCH, "process change(s) (.github/pull_request_template.md) belong to FEAT-CICD-001, not FEAT-MODEL-001")):
+        r = pr(repo, branch, edited, **COST_TITLE, PR_BODY=filled)
+        assert r.returncode == 1 and reason in r.stdout, (branch, r.stdout + r.stderr)
+
+
+def test_capacity_cost_rendered_budget_guards(repo):
+    """FEAT-CICD-001 capacity Cost label: the Cost field keeps every guard the other three labels have
+    (numbers lead, blank stays on its own line, deferrals, rendering, n/a, workload detection)."""
+    full = ("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s")
+    refused = (
+        (full + ("Cost: 2024 budget",), "gives no number for Cost;"),
+        (full + ("Cost: #1205",), "gives no number for Cost;"),
+        (full + ("Cost: TBD",), "gives no number for Cost;"),
+        (full + ("Cost: $0.01 future work",), "defers Cost"),
+        (("Volume: 30 rows", "Velocity: 1 query", "Cost:", "Wall-clock: 2 s"), "leaves Cost blank"),
+        (full + ("<!-- Cost: $0.01 -->",), "leaves Cost blank"),
+        (full + ("```", "Cost: $0.01", "```"), "leaves Cost blank"),
+        (full + ("- [ ] Cost: $0.01",), "leaves Cost blank"),
+        (full + ("Canvas refresh pending: Cost: $0.01",), "leaves Cost blank"),
+        (full + ("n/a: nothing runs differently",), "leaves Cost blank"),
+        (("n/a:",), "leaves Volume, Velocity, Wall-clock, Cost blank"),
+        (full[:2] + ("Cost: $0.01", "## Later", "Wall-clock: 2 s"), "leaves Wall-clock blank"),
+        (("cost: $0.01",) + full, "leaves Cost blank"),
+    )
+    for lines, reason in refused:
+        r = pr(repo, BRANCH, COST_JOB, **COST_TITLE, PR_BODY=cost_capacity(*lines))
+        assert r.returncode == 1 and reason in r.stdout, (lines, r.stdout + r.stderr)
+    passing = (
+        full + ("Cost: ~$0.02",),
+        full + ("Cost: <$1/month",),
+        full + ("Cost: about one dollar a month",),
+        full + ("**Cost:** $0.01",),
+        ("n/a: nothing runs differently",),
+        ("<p>", "", "Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "Cost: $0.01", "", "</p>"),
+    )
+    for lines in passing:
+        r = pr(repo, BRANCH, COST_JOB, **COST_TITLE, PR_BODY=cost_capacity(*lines))
+        assert r.returncode == 0, (lines, r.stdout + r.stderr)
+    # a change with no workload needs no Cost; a workflow is a workload like gcp/
+    assert pr(repo, BRANCH, CODE, **COST_TITLE, PR_BODY=cost_capacity(*full)).returncode == 0
+    r = pr(repo, BRANCH, {**CODE, ".github/workflows/job.yml": "name: job\n"}, **COST_TITLE, PR_BODY=cost_capacity(*full))
+    assert r.returncode == 1 and "leaves Cost blank" in r.stdout, r.stdout + r.stderr
+
+
 def test_chained_exits_quoted_hashes_and_headings_beside_rows_are_the_contract(repo):
     """solyra#72 r4127814345 (P1), r4127814350 (P2), r4127814359 (P2) (spec_gate.py:553, :1280, :2669).
 
