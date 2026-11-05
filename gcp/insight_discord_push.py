@@ -462,7 +462,9 @@ def format_report_embed(row: dict) -> dict:
 
     strat = r.get("strat_status") or {}
     strat_lines = []
-    if strat.get("last_candle"):
+    if strat.get("available") is False or strat.get("last_candle") == "X":
+        strat_lines.append("Strat **unavailable**")
+    elif strat.get("last_candle"):
         strat_lines.append(f"Candle **{strat['last_candle']}**")
     if strat.get("ftfc_direction"):
         score = strat.get("ftfc_score")
