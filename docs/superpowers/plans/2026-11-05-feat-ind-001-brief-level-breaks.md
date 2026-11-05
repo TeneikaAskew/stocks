@@ -13,7 +13,7 @@ status: ready
 
 ## Task 1: Produce Broke_Prev_Day_High / Broke_Prev_Day_Low on the brief path
 Spec: § Approaches considered 3 and § Design. Advances done_when[0].
-- [x] Write failing tests `tests/lib/test_brief_level_breaks.py` (definition, parity with `calculate_historical_levels`, index-only frame, no later bar read, 5 of 5 on CALL and PUT)
+- [x] Write failing tests `tests/lib/test_brief_level_breaks.py` (definition, parity with `calculate_historical_levels`, index-only frame, no later bar read, on real bars a broken level adds exactly one point and moves building to setup)
 - [x] Run: `python3 -m pytest tests/lib/test_brief_level_breaks.py` (FAIL on origin/main: the columns are absent)
 - [x] Implement `_add_prev_session_level_breaks` in `lib/indicators.py`, run last in `add_brief_indicators`
 - [x] Run again (PASS)

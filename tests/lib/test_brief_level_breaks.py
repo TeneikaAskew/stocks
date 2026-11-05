@@ -78,27 +78,37 @@ def test_brief_level_breaks_read_no_later_bar():
         assert full[col].iloc[:cut].tolist() == early[col].tolist()
 
 
+_SIDES = {
+    'call': (check_call_conditions, 'Broke_Prev_Day_High', 'level_break_pdh', 'consecutive_down',
+             ['consecutive_down', 'rsi_oversold_zone', 'below_vwap', 'stoch_rsi_oversold']),
+    'put': (check_put_conditions, 'Broke_Prev_Day_Low', 'level_break_pdl', 'consecutive_up',
+            ['consecutive_up', 'rsi_overbought_zone', 'above_vwap', 'stoch_rsi_overbought']),
+}
+
+
 @pytest.mark.parametrize('side', ['call', 'put'])
-def test_brief_row_can_score_five_of_five(side):
-    """The brief row reaches 5/5 when every condition holds; before the flags
-    existed on this path the level-break factor could never score."""
-    df = _daily()
-    last = len(df) - 1
-    if side == 'call':
-        df.iloc[last, df.columns.get_loc('Close')] = df['High'].iloc[last - 1] + 1.0
-    else:
-        df.iloc[last, df.columns.get_loc('Close')] = df['Low'].iloc[last - 1] - 1.0
-    df.iloc[last, df.columns.get_loc('High')] = max(df['High'].iloc[last], df['Close'].iloc[last])
-    df.iloc[last, df.columns.get_loc('Low')] = min(df['Low'].iloc[last], df['Close'].iloc[last])
-    row = add_brief_indicators(df, close_col='Close').iloc[-1].copy()
-    if side == 'call':
-        assert row['Broke_Prev_Day_High'] == 1
-        row[['Consecutive_Down', 'RSI14', 'Price_vs_VWAP', 'StochRSI_K']] = [3, 40.0, -1.0, 10.0]
-        score, conditions = check_call_conditions(row)
-        assert 'level_break_pdh' in conditions
-    else:
-        assert row['Broke_Prev_Day_Low'] == 1
-        row[['Consecutive_Up', 'RSI14', 'Price_vs_VWAP', 'StochRSI_K']] = [3, 60.0, 1.0, 90.0]
-        score, conditions = check_put_conditions(row)
-        assert 'level_break_pdl' in conditions
-    assert score == 5
+def test_a_broken_level_adds_exactly_one_point_on_real_bars(side):
+    """Every indicator comes from add_brief_indicators on the bars; nothing is
+    overwritten. A close above the prior high (below the prior low) is an up
+    (down) close, so it never holds with three down (up) closes and the
+    realizable maximum stays 4 of 5."""
+    check, flag, factor, consecutive, others = _SIDES[side]
+    from gcp.premarket_brief import _resolve_signal_status
+    rows = add_brief_indicators(_daily(250), close_col='Close')
+    broken = rows[rows[flag] == 1]
+    assert len(broken) > 0
+    crossed = 0
+    for _, row in broken.iterrows():
+        score, conditions = check(row)
+        without, _ = check(row, enabled_conditions=others)
+        assert factor in conditions and consecutive not in conditions
+        assert score == without + 1 <= 4
+        bias = 'bullish' if side == 'call' else 'bearish'
+        if without == 2:
+            # the default premarket thresholds: building at 2, setup at 3
+            assert 'building' in _resolve_signal_status(
+                without if side == 'call' else 0, without if side == 'put' else 0, bias, 3, 2)
+            assert 'setup' in _resolve_signal_status(
+                score if side == 'call' else 0, score if side == 'put' else 0, bias, 3, 2)
+            crossed += 1
+    assert crossed > 0
