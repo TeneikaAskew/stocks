@@ -2,7 +2,7 @@
 feat_id: FEAT-STRAT-001
 spec: docs/superpowers/specs/2026-11-05-feat-strat-001-tf-continuity-display.md
 branch: fix/feat-strat-001-tf-continuity-display
-pr: null
+pr: 1732
 status: ready
 ---
 
@@ -40,5 +40,5 @@ Spec: § Design, "Methodology"; § Risks. Advances done_when 6 and 7.
 ## Task 5: close
 Spec: § Validation and rollout. Advances done_when 8.
 - [x] FEAT-STRAT-001 catalog record (Status, Last reviewed, Next action); SITE notes rebound to the new source identity; diagnostic manifest code hashes
-- [ ] Add this PR to 12-PR-ISSUE-TRACEABILITY and set `pr` here once the PR is open
-- [ ] `python3 scripts/gate/spec_gate.py --pr origin/main` once the spec is on main
+- [x] Add this PR to 12-PR-ISSUE-TRACEABILITY and set `pr` here once the PR is open
+- [x] `python3 scripts/gate/spec_gate.py --pr origin/main` once the spec is on main
