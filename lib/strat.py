@@ -1002,6 +1002,16 @@ def compute_strat_status(
     if date_only:
         clock_value = pd.Timestamp(as_of) + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
     clock = _observation_clock(clock_value)
+    confirmation_clock = clock
+    if not inclusive_today:
+        # Every input excludes the observation session's own bars, so closed-
+        # candle confirmation stops before that session opens too: otherwise a
+        # date-only replay confirms a week that closed later that day
+        # (Codex r4480286394).
+        today = session_schedule(clock.date(), clock.date())
+        if len(today):
+            confirmation_clock = min(clock, today.iloc[0]['market_open'].tz_convert(ET_NAME)
+                                     - pd.Timedelta(microseconds=1))
     loader = DataLoader()
     if df is None:
         df = loader.load_daily(ticker)
@@ -1063,7 +1073,7 @@ def compute_strat_status(
         'bar_validity': {'valid': bool(len(valid) and valid.iloc[-1]),
                          'reasons': validity_reasons},
         'confirmed_setups': compute_confirmed_setups(
-            observation_ts=clock, intraday_df=intraday_df,
+            observation_ts=confirmation_clock, intraday_df=intraday_df,
             daily_df=confirmation_source, strat_config=strat_config),
     }
     strat = StratClassifier(strat_config=strat_config)

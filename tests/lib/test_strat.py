@@ -1647,6 +1647,25 @@ class TestClosedCandleConfirmation:
         assert pd.Timestamp(result['developing']['period_end']) == pd.Timestamp(
             '2024-12-06 16:00', tz='America/New_York')
 
+    def test_date_only_replay_excluding_the_day_confirms_before_its_open(self):
+        # inclusive_today=False drops the replay day's RTH bars, so a weekly
+        # setup that closes later that day cannot confirm (Codex r4480286394).
+        from lib.strat import compute_strat_status
+        source = self._source('1w')
+        before_open = pd.Timestamp('2024-11-29 09:29:59.999999', tz='America/New_York')
+        _, expected = self._confirm('1w', before_open, source)
+        out = compute_strat_status('TEST', df=source, as_of='2024-11-29', inclusive_today=False)
+        result = out['confirmed_setups']['timeframes']['1w']
+        assert self._decision(result) == self._decision(expected)
+        assert pd.Timestamp(result['period_end']) < pd.Timestamp(self.WEEKLY_CLOSE, tz='America/New_York')
+        moved = source.copy()
+        moved.loc['2024-11-29', ['Low', 'High', 'Open', 'Close']] = (90.0, 110.0, 100.0, 100.0)
+        again = compute_strat_status('TEST', df=moved, as_of='2024-11-29', inclusive_today=False)
+        assert again['confirmed_setups'] == out['confirmed_setups']
+        included = compute_strat_status('TEST', df=source, as_of='2024-11-29')
+        assert pd.Timestamp(included['confirmed_setups']['timeframes']['1w']['period_end']) == \
+            pd.Timestamp(self.WEEKLY_CLOSE, tz='America/New_York')
+
     def test_shorter_final_4h_bucket_stays_unconfirmed_pending_owner(self):
         source = self._source('4h')
         clipped = (source.index >= '2024-01-03 13:30') & (source.index < '2024-01-03 16:00')

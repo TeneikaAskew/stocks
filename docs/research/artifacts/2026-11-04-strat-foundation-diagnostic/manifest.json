@@ -9994,7 +9994,7 @@
   "lib/config.py": "c12be971f778ace834ce519981e0ea8d5044da6327512de6ae60f5fbee2cae5d",
   "lib/data_loader.py": "474db67891befadca3d57ff5152e2e57d95cd530080372b539d3e496444e7c42",
   "lib/eastern_time.py": "753726fb380eb32acdb988af2a9dd89dc5603e2963dfbbad998654f8f3dfe8a3",
-  "lib/strat.py": "a9ae3022b9bf31f2c38d58a7c23bd6613e886f6f44d608527eb150e0b7d146b4",
+  "lib/strat.py": "3410ff6d12959f8d87f9185fdb3cea548c92cdc22ca669c88c4eba2cc2615fdc",
   "scripts/research/strat_foundation_diagnostic.py": "7873372b677507839fe37f9cea087df724a217f90d199f8900277f60ee739ba9"
  },
  "config_sha256": "693ae966edf2a36bf225f6c7b0c828029616eb5df9cdf0fdf7ae138a597c5c31",
