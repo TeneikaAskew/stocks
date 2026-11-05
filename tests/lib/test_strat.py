@@ -1712,3 +1712,29 @@ class TestClosedCandleConfirmation:
         assert before_tf['period_end'] != end.isoformat()
         assert before_tf['developing']['period_end'] == end.isoformat()
         assert before['confirmed_setups']['observation_ts'] == before['observation_ts']
+
+
+class TestStratStatusReviewFollowups:
+    """Codex P2 findings on #1714 at 3f1bb61b, fixed after its review cap."""
+
+    def test_date_only_replay_excluding_the_day_aggregates_at_the_premarket_cutoff(self):
+        # r4481033962: coverage and FTFC must use the same cutoff as confirmation.
+        from lib.strat import compute_strat_status
+        from scripts.research.strat_foundation_diagnostic import load_fixture
+        df, _ = load_fixture()
+        out = compute_strat_status('IWM', df=df, as_of='2026-04-08',
+                                   timeframes=['1d', '1w', '1mo'], inclusive_today=False)
+        assert out['ftfc_labels'] == {'1d': '3', '1w': '2U', '1mo': '1'}
+        assert out['ftfc_score'] == 0.25
+
+    def test_legacy_last_alias_is_accepted(self):
+        # r4481033971: a frame naming its close `Last` returns a status, not a ValueError.
+        from lib.strat import compute_strat_status
+        from scripts.research.strat_foundation_diagnostic import load_fixture
+        df, _ = load_fixture()
+        cut = df.loc[df.index < pd.Timestamp('2026-04-08')].tail(40)
+        expected = compute_strat_status('IWM', df=cut, as_of='2026-04-07', timeframes=['1d'])
+        out = compute_strat_status('IWM', df=cut.rename(columns={'Close': 'Last'}),
+                                   as_of='2026-04-07', timeframes=['1d'])
+        assert out['ftfc_labels'] == expected['ftfc_labels']
+        assert out['bar_validity'] == expected['bar_validity']
