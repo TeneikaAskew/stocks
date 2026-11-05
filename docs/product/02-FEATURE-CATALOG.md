@@ -33,7 +33,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | [FEAT-HELP-001](#feat-help-001) | Help / glossary | Term reference | `/help` | `/api/glossary/gamma` | — | Production | P3 | 5 | 9 | [#1336](https://github.com/TeneikaAskew/stocks/issues/1336) [solyra#221](https://github.com/TeneikaAskew/solyra/issues/221) [solyra#222](https://github.com/TeneikaAskew/solyra/issues/222) [solyra#223](https://github.com/TeneikaAskew/solyra/issues/223) |
 | [FEAT-SETTINGS-001](#feat-settings-001) | Settings | Account-backed appearance, trading defaults and profile | `/settings` | `/api/me/preferences`, `/api/me/profile` | `user_preferences`, `user_profile` | Production but needs remediation | P3 | 5 | 13 | [solyra#117](https://github.com/TeneikaAskew/solyra/issues/117) [solyra#119](https://github.com/TeneikaAskew/solyra/issues/119) [solyra#121](https://github.com/TeneikaAskew/solyra/issues/121) [#1322](https://github.com/TeneikaAskew/stocks/issues/1322) |
 | [FEAT-DATA-001](#feat-data-001) | Data platform | Ingestion, storage, freshness | — | fetcher jobs | 64 relations — see [06](06-DATA-ARCHITECTURE.md) | Production but needs remediation | P0 | 1 | 21 | [#925](https://github.com/TeneikaAskew/stocks/issues/925) [#926](https://github.com/TeneikaAskew/stocks/issues/926) [#828](https://github.com/TeneikaAskew/stocks/issues/828) [#862](https://github.com/TeneikaAskew/stocks/issues/862) |
-| [FEAT-DEPLOY-001](#feat-deploy-001) | Infrastructure / deploy | 76 jobs, 65 schedulers, Cloud Run | — | — | — | Production but needs remediation | P1 | 6 | 15 | [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#832](https://github.com/TeneikaAskew/stocks/issues/832) [#851](https://github.com/TeneikaAskew/stocks/issues/851) |
+| [FEAT-DEPLOY-001](#feat-deploy-001) | Infrastructure / deploy | 76 jobs, 66 schedulers, Cloud Run | — | — | — | Production but needs remediation | P1 | 6 | 15 | [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#832](https://github.com/TeneikaAskew/stocks/issues/832) [#851](https://github.com/TeneikaAskew/stocks/issues/851) |
 | [FEAT-OPS-001](#feat-ops-001) | Operations / reliability | Freshness, telemetry, DR | `/admin` | `/api/health/freshness` | `job_runs` | Incomplete | P1 | 6 | 11 | [#922](https://github.com/TeneikaAskew/stocks/issues/922) [#1052](https://github.com/TeneikaAskew/stocks/issues/1052) [#1066](https://github.com/TeneikaAskew/stocks/issues/1066) [#1067](https://github.com/TeneikaAskew/stocks/issues/1067) |
 | [FEAT-CICD-001](#feat-cicd-001) | CI / testing | Build, test, deploy automation | — | — | — | Production but needs remediation | P1 | 6 | 12 | [#844](https://github.com/TeneikaAskew/stocks/issues/844) [#845](https://github.com/TeneikaAskew/stocks/issues/845) [#846](https://github.com/TeneikaAskew/stocks/issues/846) [#848](https://github.com/TeneikaAskew/stocks/issues/848) |
 | [FEAT-UI-001](#feat-ui-001) | Web / UI shell | Nav, shell, responsive, a11y | all | — | — | Production but needs remediation | P2 | 5 | 2 | [solyra#135](https://github.com/TeneikaAskew/solyra/issues/135) [solyra#95](https://github.com/TeneikaAskew/solyra/issues/95) |
@@ -236,17 +236,17 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Priority | P0 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-08-30 |
+| Last reviewed | 2026-11-05 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/charts`, `/live` |
 | Backend | via `lib/` |
 | Data | `strat_levels`, `strat_combo_results` |
 | Models | MODEL-STRAT-001, MODEL-FTFC-001, MODEL-LEVEL-001 |
-| Code | `lib/strat.py`, `lib/strat_levels.py`, `lib/exec_backtest/ftfc.py` |
-| Tests | `tests/*/test_strat*.py` |
+| Code | `lib/strat.py` (closed-candle `compute_confirmed_setups`, rule `closed-candle-v1`), `lib/strat_levels.py`, `lib/exec_backtest/ftfc.py`, `lib/backtest.py` (causal default FTFC), `lib/agents/summarizers.py`, `lib/agents/schema.py`, `lib/agents/orchestrator.py`, `gcp/premarket_brief.py`, `gcp/insight_discord_push.py`, `scripts/research/strat_foundation_diagnostic.py` |
+| Tests | `tests/*/test_strat*.py`, `tests/lib/test_strat.py::TestClosedCandleConfirmation`, `tests/lib/test_backtest_ftfc_causality.py` (append, perturbation and 34 exact legacy final-as-of controls), `tests/lib/test_exec_ftfc_contract.py::TestLegacyFtfcGolden`, `tests/agents/test_agent_summarizers.py`, `tests/gcp/test_strat_snapshot_parity.py`; captured-data diagnostic in [docs/research/artifacts/2026-11-04-strat-foundation-diagnostic](../research/artifacts/2026-11-04-strat-foundation-diagnostic/README.md) |
 | Open issues | 5 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-strat-001--levels--strat-5-open) |
 | Blocking issues | [#866](https://github.com/TeneikaAskew/stocks/issues/866) [#908](https://github.com/TeneikaAskew/stocks/issues/908) [#907](https://github.com/TeneikaAskew/stocks/issues/907) [#884](https://github.com/TeneikaAskew/stocks/issues/884) [solyra#140](https://github.com/TeneikaAskew/solyra/issues/140) |
-| Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
+| Next action | Foundation release [#1714](https://github.com/TeneikaAskew/stocks/pull/1714) merged ([spec](../superpowers/specs/2026-11-05-feat-strat-001-foundation-tracked-docs-audit.md), [plan](../superpowers/plans/2026-11-04-feat-strat-001-confirmed-foundation.md)): confirmed setups only from closed candles, causal default FTFC, explicit unavailable consumer states. Its three P2 review follow-ups are in [#1727](https://github.com/TeneikaAskew/stocks/pull/1727) ([plan](../superpowers/plans/2026-11-05-feat-strat-001-review-followups.md)): the legacy `Last` close alias, the replay cutoff for coverage and FTFC, and unknown successors in the history report. Deployed verification is recorded after release gates. Structural levels (#866, #907, #908) need their own approved contract. |
 
 ### FEAT-IND-001
 
@@ -528,7 +528,7 @@ Finite-number slice: approved spec [#1618](https://github.com/TeneikaAskew/stock
 
 ### FEAT-DEPLOY-001
 
-**76 jobs, 65 schedulers, Cloud Run** — Infrastructure / deploy
+**76 jobs, 66 schedulers, Cloud Run** — Infrastructure / deploy
 
 | Field | Value |
 |---|---|
