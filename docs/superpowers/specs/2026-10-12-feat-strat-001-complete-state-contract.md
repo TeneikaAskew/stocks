@@ -12,7 +12,7 @@ done_when:
   - "Existing shared status/history and selected consumer adapters preserve the same as-of clock, completed/developing state, source and price-basis qualification, and explicit unavailable states without external I/O in isolated acceptance"
   - "A separately versioned captured-data foundation diagnostic and retained visual evidence demonstrate actual candle, continuity and consumer arithmetic with exact code/input hashes and explicit retrospective-vintage limitations"
   - "The affected FEAT-STRAT-001 capability and PR traceability records, focused tests, docs audit and spec gate pass; actual merge and deployed verification are separately recorded after normal release gates"
-status: approved
+status: superseded
 supersedes: null
 ---
 
