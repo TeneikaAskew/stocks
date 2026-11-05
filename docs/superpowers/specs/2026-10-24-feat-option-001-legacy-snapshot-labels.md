@@ -10,7 +10,7 @@ done_when:
   - "Hermetic Playwright options-screen tests and screenshots show stored/unverified timestamps without origin-only LIVE claims while preserving unavailable/loading/error states"
   - "Compatibility tests preserve numerical outputs, source selection and nullable response fields across existing grid and levels routes"
   - "Accepted A8/A10 source hashes remain unchanged and no Q qualification evaluator is duplicated"
-status: approved
+status: superseded
 supersedes: null
 ---
 
