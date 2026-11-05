@@ -2,7 +2,7 @@
 feat_id: FEAT-STRAT-001
 spec: docs/superpowers/specs/2026-11-05-feat-strat-001-foundation-tracked-docs-audit.md
 branch: fix/feat-strat-001-review-followups
-pr: null
+pr: 1727
 status: ready
 ---
 
