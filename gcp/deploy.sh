@@ -1089,7 +1089,7 @@ _build_secret_flag() {
 case "${1:-}" in
     setup|setup-notifier-secrets|setup-pg-dump-iam|migrate|build|build-research|\
     backfill|registry-cleanup|retire-legacy-images|pin-images|pin-floating|\
-    cloudbuild-triggers|p7b-classifier|schedulers|pg-dump|audit-infra-drift|\
+    cloudbuild-triggers|p7b-classifier|schedulers|pg-dump|audit-infra-drift|notifier|\
     help|"") _NEEDS_DEPLOY_CREDS=0 ;;
     *) _NEEDS_DEPLOY_CREDS=1 ;;
 esac
@@ -3913,26 +3913,56 @@ deploy_notifier() {
         return 1
     fi
 
-    # Grant the service account access to read the notifier secrets
-    for secret in github-pat github-repo; do
+    # Log-reading access belongs to the notifier, never the shared trading
+    # runner used by ingestion and research jobs.
+    local notifier_sa="${NOTIFIER_SERVICE}@${PROJECT_ID}.iam.gserviceaccount.com"
+    gcloud iam service-accounts describe "${notifier_sa}" \
+        --project="${PROJECT_ID}" --quiet >/dev/null 2>&1 \
+        || gcloud iam service-accounts create "${NOTIFIER_SERVICE}" \
+            --project="${PROJECT_ID}" --display-name="Cloud Run failure notifier" --quiet
+
+    # Grant only the three secrets this service consumes; errors stop deploy.
+    for secret in github-pat github-repo discord-webhook-gcp; do
         gcloud secrets add-iam-policy-binding "${secret}" \
-            --member="serviceAccount:${SA_EMAIL}" \
-            --role="roles/secretmanager.secretAccessor" --quiet 2>/dev/null || true
+            --member="serviceAccount:${notifier_sa}" \
+            --role="roles/secretmanager.secretAccessor" --quiet
     done
 
+    # 7) Grant the notifier SA roles/run.viewer so reconcile_closures can
+    # list Cloud Run Job executions and detect "job has recovered → close
+    # the issue". Project-level binding is fine — read-only access to
+    # jobs/executions across the whole project.
+    #
+    # No `|| echo` swallow here: gcloud add-iam-policy-binding exits 0 on
+    # idempotent re-binding (existing binding is fine), so the only ways
+    # this command fails are REAL failures (deployer lacks setIamPolicy,
+    # API disabled, project missing). Those MUST abort deploy_notifier()
+    # so the operator notices and grants the role — otherwise the
+    # reconciler silently runs without view access, every Cloud Run
+    # execution lookup returns 403→unknown, and stale issues never close
+    # while the deploy looks "successful". Codex P2 caught the original
+    # `|| echo "already exists"` masking this critical failure mode.
+    gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+        --member="serviceAccount:${notifier_sa}" \
+        --role="roles/run.viewer" \
+        --condition=None --quiet >/dev/null
+
+    # Read the exact execution's audit report so data findings are labelled
+    # Freshness Audit Failed. IAM errors must stop deployment visibly.
+    gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+        --member="serviceAccount:${notifier_sa}" \
+        --role="roles/logging.viewer" \
+        --condition=None --quiet >/dev/null
+
     local env_string
-    env_string="${ENV_STRING}"
-    env_string="${env_string},GCP_PROJECT_ID=${PROJECT_ID},GCP_REGION=${REGION}"
+    env_string="GCP_PROJECT_ID=${PROJECT_ID},GCP_REGION=${REGION}"
 
     # The failure-notifier posts to a DEDICATED Discord channel for GCP job
     # failures (secret `discord-webhook-gcp`), not `discord-webhook-insights`
     # that the rest of the platform uses for briefs/alerts. We also fold in the
-    # GitHub PAT/repo secrets so a single --set-secrets flag carries every
-    # secret-mounted env var (a second --set-secrets on the same gcloud invoke
-    # replaces the first entirely, which previously masked the shared secrets).
-    local notifier_secrets="${DB_SECRET_FLAG#--set-secrets=}"
-    notifier_secrets="${notifier_secrets/discord-webhook-insights:latest/discord-webhook-gcp:latest}"
-    notifier_secrets="${notifier_secrets},GITHUB_PAT=github-pat:latest,GITHUB_REPO=github-repo:latest"
+    # GitHub PAT/repo secrets into one flag; no trading database credentials
+    # are needed by this service.
+    local notifier_secrets="DISCORD_WEBHOOK_URL=discord-webhook-gcp:latest,GITHUB_PAT=github-pat:latest,GITHUB_REPO=github-repo:latest"
 
     # 1) Deploy the Cloud Run service (overrides Dockerfile CMD with stdlib server)
     # Secrets are mounted from Secret Manager at runtime via --set-secrets so
@@ -3942,7 +3972,7 @@ deploy_notifier() {
     gcloud run deploy "${NOTIFIER_SERVICE}" \
         --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --memory 512Mi --cpu 1 --min-instances 0 --max-instances 3 \
-        --service-account "${SA_EMAIL}" \
+        --service-account "${notifier_sa}" \
         --command "python" --args="-m,gcp.failure_notifier" \
         --set-env-vars "${env_string}" \
         --set-secrets="${notifier_secrets}" \
@@ -4048,25 +4078,6 @@ AND NOT (protoPayload.methodName:"CreateJob" OR protoPayload.methodName:"UpdateJ
     gcloud pubsub topics add-iam-policy-binding "${NOTIFIER_TOPIC}" \
         --member="${sink_writer}" \
         --role="roles/pubsub.publisher" --quiet
-
-    # 7) Grant the notifier SA roles/run.viewer so reconcile_closures can
-    # list Cloud Run Job executions and detect "job has recovered → close
-    # the issue". Project-level binding is fine — read-only access to
-    # jobs/executions across the whole project.
-    #
-    # No `|| echo` swallow here: gcloud add-iam-policy-binding exits 0 on
-    # idempotent re-binding (existing binding is fine), so the only ways
-    # this command fails are REAL failures (deployer lacks setIamPolicy,
-    # API disabled, project missing). Those MUST abort deploy_notifier()
-    # so the operator notices and grants the role — otherwise the
-    # reconciler silently runs without view access, every Cloud Run
-    # execution lookup returns 403→unknown, and stale issues never close
-    # while the deploy looks "successful". Codex P2 caught the original
-    # `|| echo "already exists"` masking this critical failure mode.
-    gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-        --member="serviceAccount:${SA_EMAIL}" \
-        --role="roles/run.viewer" \
-        --condition=None --quiet >/dev/null
 
     # 8) Grant the scheduler's OIDC identity (SA_EMAIL) roles/run.invoker
     # on the failure-notifier service. The service is deployed with

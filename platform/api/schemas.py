@@ -266,12 +266,25 @@ class MarketHoursWindow(ApiModel):
     close: str
 
 
+class EarlyClose(ApiModel):
+    """A half-day session: its date and its Eastern close, ``HH:MM``."""
+
+    date: str
+    close: str
+
+
 class MarketHoursResponse(ApiModel):
+    """``holidays`` and ``early_closes`` cover the current and next Eastern
+    year. ``holidays_2026`` is kept for solyra's replay picker until Spec C
+    moves it to ``holidays`` and removes it."""
+
     timezone: str
     regular: MarketHoursWindow
     pre_market: MarketHoursWindow
     after_hours: MarketHoursWindow
     holidays_2026: list[str]
+    holidays: list[str]
+    early_closes: list[EarlyClose]
 
 
 # ── main.py ──────────────────────────────────────────────────────────────
@@ -604,6 +617,46 @@ class MovementStatementResponse(ApiModel):
 # ── signals.py ───────────────────────────────────────────────────────────
 
 
+class ScoreProvenance(BaseModel):
+    """Recorded computation identity, never a claim of historical availability."""
+    model_config = ConfigDict(extra="forbid")
+    corpus: Literal["historical_signals"]
+    strategy: Optional[str]
+    run_kind: Optional[str]
+    storage_source: Optional[Literal["cloud_sql", "gcs_parquet"]]
+    producer_definition: Optional[str]
+    profile: Optional[str]
+    direction: Optional[Literal["call", "put"]]
+    code_sha256: Optional[str]
+    config_sha256: Optional[str]
+    input_sha256: Optional[str]
+    generated_at: Optional[str]
+    inserted_at: Optional[str]
+
+
+class ScoreBonus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str
+    value: int
+
+
+class HistoricalScoreExplanation(BaseModel):
+    """Additive explanation; null components mean unsupported, not zero."""
+    model_config = ConfigDict(extra="forbid")
+    version: Literal["historical-score-v1"]
+    status: Literal["recorded", "legacy_unavailable", "invalid_record"]
+    kind: Literal["condition_count", "base_plus_bonus", "unknown"]
+    base_count: Optional[int]
+    base_max: Optional[int]
+    matched_conditions: Optional[list[str]]
+    bonuses: Optional[list[ScoreBonus]]
+    bonus_total: Optional[int]
+    composite_strength: Optional[int]
+    composite_max: Optional[int]
+    unavailable_reasons: list[str]
+    provenance: ScoreProvenance
+
+
 class SignalRow(ApiModel):
     # Every key is present on the Cloud SQL branch; the parquet fallback
     # only emits the columns the file carries.
@@ -621,6 +674,9 @@ class SignalRow(ApiModel):
     # 'live' | 'replay' | 'backfill' — disclosed, deliberately not filtered.
     # See the note in routers/signals.py.
     run_kind: Optional[str] = None
+    strategy: Optional[str] = None
+    inserted_at: Optional[str] = None
+    score_explanation: Optional[HistoricalScoreExplanation] = None
 
 
 class SignalsResponse(ApiModel):
@@ -1418,6 +1474,10 @@ class FreshnessRow(ApiModel):
     status: str
     row_count_recent: int
     writer_job: Optional[str] = None
+    # Why the row is what it is when the other fields cannot say it; the
+    # `nyse_calendar` row carries the calendar exception's type and message
+    # (scripts/audit_data_freshness.py, FEAT-DATA-001).
+    detail: Optional[str] = None
 
 
 class FreshnessResponse(ApiModel):

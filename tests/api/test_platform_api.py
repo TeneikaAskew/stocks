@@ -262,8 +262,8 @@ class TestSimilarSignalsAPI:
         assert "CALL or PUT" in r.json()["detail"]
 
     def test_similar_validates_score_range(self, client):
-        # FastAPI Query(ge=3, le=5) — 6 is out of range
-        r = client.get("/api/signals/IWM/similar?direction=CALL&rsi=55&score=6")
+        # FastAPI retains integer/minimum validation; native six is valid.
+        r = client.get("/api/signals/IWM/similar?direction=CALL&rsi=55&score=6.5")
         assert r.status_code == 422
         # And below the minimum
         r = client.get("/api/signals/IWM/similar?direction=CALL&rsi=55&score=2")
@@ -1144,10 +1144,13 @@ class TestPlaybookAPI:
     def test_playbook(self, client, monkeypatch):
         from datetime import date
         from gcp import database
+        from api.routers import playbook as pb_module
         self._clear_caches()
+        market_day = date(2026, 10, 29)
+        monkeypatch.setattr(pb_module, "market_today", lambda: market_day)
 
         rows = pd.DataFrame([{
-            "analysis_date": date.today(), "generated_at": pd.Timestamp.utcnow(),
+            "analysis_date": market_day, "generated_at": pd.Timestamp("2026-10-30T00:01:00Z"),
             "card_num": 1, "name": "Morning Trend Continuation",
             "description": "Price riding above EMA9", "direction": "CALL",
             "conditions": ["Price above VWAP", "RSI between 50-70"],
@@ -1168,7 +1171,7 @@ class TestPlaybookAPI:
         assert data["ticker"] == "IWM"
         assert data["source"] == "cloud_sql"
         # The age fields are what let the UI show (and refuse) stale cards.
-        assert data["analysis_date"] == date.today().isoformat()
+        assert data["analysis_date"] == market_day.isoformat()
         assert data["age_days"] == 0
         assert "cards" in data
         assert len(data["cards"]) == 1
@@ -1350,6 +1353,42 @@ class TestHealthFreshnessAPI:
         monkeypatch.setattr(audit_mod, "audit_all", lambda: rep)
         r2 = client.get("/api/health/freshness")
         assert r2.status_code == 200
+
+    def test_freshness_api_carries_calendar_detail(self, client, monkeypatch):
+        """FEAT-DATA-001 / #1542 item 4: a shared-calendar failure is one
+        `nyse_calendar` row with status unknown, and its `detail` (exception
+        type and message) reaches the API response rather than being dropped
+        by the response model. The real audit runs; only the calendar build
+        and the database are patched."""
+        import pandas as pd
+
+        from gcp import database
+        from lib import eastern_time
+
+        self._reset_cache()
+        import audit_data_freshness as audit_mod
+
+        def failing_build(first, last):
+            raise RuntimeError("calendar build failed in test")
+
+        eastern_time._reset_session_cache()
+        monkeypatch.setattr(eastern_time, "_build_session_cache", failing_build)
+        monkeypatch.setattr(audit_mod, "query_to_dataframe",
+                            lambda sql, params=None: pd.DataFrame([{"bad": 0}]))
+        monkeypatch.setattr(database, "table_exists", lambda t: False)
+        try:
+            r = client.get("/api/health/freshness")
+        finally:
+            monkeypatch.undo()
+            eastern_time._reset_session_cache()
+            self._reset_cache()
+
+        assert r.status_code == 200, r.text
+        cal = [t for t in r.json()["tables"] if t["table"] == "nyse_calendar"]
+        assert len(cal) == 1
+        assert cal[0]["status"] == "unknown"
+        assert "RuntimeError" in cal[0]["detail"]
+        assert "calendar build failed in test" in cal[0]["detail"]
 
 
 # ── Phase-report markdown fetch ─────────────────────────────────────────────
@@ -2022,8 +2061,10 @@ class TestReviewModeIntegration:
         pb_module._LIST_CACHE.clear()
         pb_module._REPORT_TEXT_CACHE.clear()
         from datetime import date as _date
+        market_day = _date(2026, 10, 29)
+        monkeypatch.setattr(pb_module, "market_today", lambda: market_day)
         playbook_rows = pd.DataFrame([{
-            "analysis_date": _date.today(), "generated_at": pd.Timestamp.utcnow(),
+            "analysis_date": market_day, "generated_at": pd.Timestamp("2026-10-30T00:01:00Z"),
             "card_num": 1, "name": "Morning Trend Continuation",
             "description": "", "direction": "CALL", "conditions": ["Above VWAP"],
             "win_rate": 0.60, "avg_return_bps": 5.0, "sample_n": 30,

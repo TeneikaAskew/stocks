@@ -1,6 +1,6 @@
 # MODEL-EARN-002 — Earnings-reaction setup classifier
 
-**Last reviewed:** unknown · **Last scanned:** 2026-09-29 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-10-20 · **Owner:** TBD
 
 **Code:** `gcp/earnings_reactions_brief.py` (`classify_context`, `:474-565`) ·
 **Output:** a Discord embed — **no table, no API surface** ·

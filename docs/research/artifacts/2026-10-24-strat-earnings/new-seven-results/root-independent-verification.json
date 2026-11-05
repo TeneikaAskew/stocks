@@ -1,0 +1,14 @@
+{
+  "method": "Independent standard-library Fraction rank arithmetic; CSV tally and first observed opposite-step/date consistency; no source helper reused",
+  "paired_n": 6,
+  "all_ticker_n": 7,
+  "TWLO": "valid-empty excluded from correlation; not imputed zero",
+  "rho_exact": {
+    "opening_gap_pct": "-1/7",
+    "native_five_day_sustain_pct": "-1/7"
+  },
+  "daily_episode_n": 35,
+  "closing_step_n": 185,
+  "publisher_primary_not_verified": true,
+  "first_opposite_step_is_not_full_move_reversal": true
+}

