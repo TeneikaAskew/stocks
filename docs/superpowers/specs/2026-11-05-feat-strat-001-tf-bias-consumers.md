@@ -83,7 +83,7 @@ direction unless the strat combo contradicts it") and `lib/strategies/gamma_prox
 
 IWM, SPY and QQQ, decision days 2015-01-02 to 2026-11-04, 8,934 ticker-days, each decision made by
 the repo's own functions on the Part A code (#1733 and #1734 applied), as in the bug-fix evidence.
-Scripts and tables: strat-verify/partb-replay/.
+Scripts and tables are in the lane's research folder strat-verify/partb-replay/ (outside this repository).
 
 | Place | What flips if TF bias is removed | Outcome on the flipped days | This spec |
 |---|---|---|---|
