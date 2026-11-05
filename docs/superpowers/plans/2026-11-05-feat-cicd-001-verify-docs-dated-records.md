@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-05-feat-cicd-001-verify-docs-dated-records.md
 branch: fix/feat-cicd-001-verify-docs-dated-records
-pr: null
+pr: 1728
 status: ready
 ---
 
