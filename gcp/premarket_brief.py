@@ -1002,6 +1002,17 @@ def _resolve_analysis_date() -> date:
     return parsed
 
 
+def _strat_observation_clock(analysis_date: date) -> Optional[pd.Timestamp]:
+    """The Strat observation clock for this run: None (now) live, and the
+    brief's own 08:30 ET premarket clock on ``analysis_date`` for a BRIEF_AS_OF
+    replay, so a replay's weekly and monthly periods, FTFC and recorded
+    observation time describe that morning rather than the day it is rerun
+    (Codex on #1714)."""
+    if _as_of_override() is None:
+        return None
+    return pd.Timestamp(analysis_date.isoformat() + ' 08:30', tz=ET_NAME)
+
+
 def _resolve_brief_tickers(default_tickers: list[str]) -> list[str]:
     """Resolve the ticker list the brief runs against.
 
@@ -1211,8 +1222,10 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         # same helper the LLM analyst calls (lib/agents/summarizers.py),
         # so the brief and the AI report agree on candle / combo / FTFC.
         # PR #101 renamed timeframe keys to match RESAMPLE_RULES (1d/1w/1mo).
+        strat_clock = _strat_observation_clock(analysis_date)
         strat_status = compute_strat_status(
             ticker, df=df, timeframes=['1d', '1w', '1mo'], strat_config=cfg.strat,
+            as_of=strat_clock, inclusive_today=strat_clock is None,
         )
         if strat_status.get('available'):
             daily_strat = strat_status['last_candle']
