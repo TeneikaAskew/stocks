@@ -2,7 +2,7 @@
 feat_id: FEAT-STRAT-001
 spec: docs/superpowers/specs/2026-10-12-feat-strat-001-complete-state-contract.md
 branch: feature/feat-strat-001-confirmed-foundation
-pr: null
+pr: 1714
 status: ready
 ---
 
@@ -60,6 +60,6 @@ Spec: `docs/superpowers/specs/2026-10-12-feat-strat-001-complete-state-contract.
 
 Spec: `docs/superpowers/specs/2026-10-12-feat-strat-001-complete-state-contract.md` done_when 6, "Records, focused tests and gates".
 
-- [ ] Update the FEAT-STRAT-001 catalog record and PR traceability
+- [x] Update the FEAT-STRAT-001 catalog record and PR traceability
 - [ ] Focused suites, docs audit (branch and main) and spec gate pass
 - [ ] Record merge and deployed verification separately after release gates

@@ -236,17 +236,17 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Priority | P0 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-08-30 |
+| Last reviewed | 2026-11-05 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/charts`, `/live` |
 | Backend | via `lib/` |
 | Data | `strat_levels`, `strat_combo_results` |
 | Models | MODEL-STRAT-001, MODEL-FTFC-001, MODEL-LEVEL-001 |
-| Code | `lib/strat.py`, `lib/strat_levels.py`, `lib/exec_backtest/ftfc.py` |
-| Tests | `tests/*/test_strat*.py` |
+| Code | `lib/strat.py` (closed-candle `compute_confirmed_setups`, rule `closed-candle-v1`), `lib/strat_levels.py`, `lib/exec_backtest/ftfc.py`, `lib/backtest.py` (causal default FTFC), `lib/agents/summarizers.py`, `lib/agents/schema.py`, `lib/agents/orchestrator.py`, `gcp/premarket_brief.py`, `gcp/insight_discord_push.py`, `scripts/research/strat_foundation_diagnostic.py` |
+| Tests | `tests/*/test_strat*.py`, `tests/lib/test_strat.py::TestClosedCandleConfirmation`, `tests/lib/test_backtest_ftfc_causality.py` (append, perturbation and 34 exact legacy final-as-of controls), `tests/lib/test_exec_ftfc_contract.py::TestLegacyFtfcGolden`, `tests/agents/test_agent_summarizers.py`, `tests/gcp/test_strat_snapshot_parity.py`; captured-data diagnostic in [docs/research/artifacts/2026-11-04-strat-foundation-diagnostic](../research/artifacts/2026-11-04-strat-foundation-diagnostic/README.md) |
 | Open issues | 5 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-strat-001--levels--strat-5-open) |
 | Blocking issues | [#866](https://github.com/TeneikaAskew/stocks/issues/866) [#908](https://github.com/TeneikaAskew/stocks/issues/908) [#907](https://github.com/TeneikaAskew/stocks/issues/907) [#884](https://github.com/TeneikaAskew/stocks/issues/884) [solyra#140](https://github.com/TeneikaAskew/solyra/issues/140) |
-| Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
+| Next action | Foundation release [#1714](https://github.com/TeneikaAskew/stocks/pull/1714) ([spec](../superpowers/specs/2026-10-12-feat-strat-001-complete-state-contract.md), [plan](../superpowers/plans/2026-11-04-feat-strat-001-confirmed-foundation.md)): confirmed setups only from closed candles, causal default FTFC, explicit unavailable consumer states. Merge and deployed verification are recorded after release gates. Structural levels (#866, #907, #908) need their own approved contract. |
 
 ### FEAT-IND-001
 
