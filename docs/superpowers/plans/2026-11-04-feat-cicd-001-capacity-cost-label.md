@@ -3,7 +3,7 @@ feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-04-feat-cicd-001-capacity-cost-label-whole-job.md
 branch: feature/feat-cicd-001-capacity-cost-label
 pr: 1716
-status: ready
+status: done
 ---
 
 # Require the documented Cost capacity field: implementation plan
