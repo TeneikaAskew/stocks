@@ -98,7 +98,8 @@ def test_strat_alignment_full_score(patch_signal_query):
     from lib.agents.ranker.signals import signal_strat_alignment
 
     patch_signal_query("market_data_daily", pd.DataFrame([{
-        "strat_setup": True, "ftfc_score": 1.0, "ftfc_direction": "bull",
+        # The stored value: calculate_ftfc writes 'bullish' / 'bearish' / 'mixed'.
+        "strat_setup": True, "ftfc_score": 1.0, "ftfc_direction": "bullish",
         "strat_combo": "2-1-2",
     }]))
     res = signal_strat_alignment("AAPL")
@@ -118,6 +119,42 @@ def test_strat_alignment_mixed_direction_loses_direction_points(patch_signal_que
     # 0 (no setup) + 0.5×0.33=0.165 (ftfc) + 0 (mixed) = 0.165
     assert res["available"] is True
     assert abs(res["score_0_to_1"] - 0.165) < 1e-3
+
+
+def _stored_ftfc_direction(label: str) -> tuple[float, str]:
+    """The (ftfc_score, ftfc_direction) pair the market_data_daily writer
+    stores for a daily+weekly vote on `label` (gcp/fetchers/fetch_market_data.py
+    calls StratClassifier.calculate_ftfc with weights 1d 0.7 / 1w 0.3)."""
+    from lib.strat import StratClassifier
+
+    if label == "2U":
+        bars = {"Open": [10.0, 10.5], "High": [11.0, 12.0], "Low": [9.0, 9.5], "Close": [10.5, 11.5]}
+    else:
+        bars = {"Open": [10.0, 9.5], "High": [11.0, 10.5], "Low": [9.0, 8.0], "Close": [10.5, 8.5]}
+    frame = pd.DataFrame(bars)
+    clf = StratClassifier(rule_version="legacy-pattern-v1")
+    score, direction, labels = clf.calculate_ftfc({"1d": frame, "1w": frame},
+                                                  weights={"1d": 0.7, "1w": 0.3})
+    assert labels == {"1d": label, "1w": label}
+    return score, direction
+
+
+@pytest.mark.parametrize("label,direction", [("2U", "bullish"), ("2D", "bearish")])
+def test_strat_alignment_stored_directions_earn_direction_points(patch_signal_query, label, direction):
+    """A clean stored direction earns the 0.33 direction points the docstring
+    promises. The writer stores 'bullish' / 'bearish', never 'bull' / 'bear'."""
+    from lib.agents.ranker.signals import signal_strat_alignment
+
+    score, stored = _stored_ftfc_direction(label)
+    assert stored == direction
+    patch_signal_query("market_data_daily", pd.DataFrame([{
+        "strat_setup": False, "ftfc_score": score, "ftfc_direction": stored,
+        "strat_combo": None,
+    }]))
+    res = signal_strat_alignment("AAPL")
+    ftfc_pts = min(max(score, 0.0), 1.0) * 0.33
+    assert res["available"] is True
+    assert res["score_0_to_1"] == round(ftfc_pts + 0.33, 3)
 
 
 def test_strat_alignment_no_data(patch_signal_query):
