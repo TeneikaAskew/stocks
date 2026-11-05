@@ -1,7 +1,7 @@
 ---
 feat_id: FEAT-STRAT-001
 req_ids: [REQ-MARKET-001, REQ-PLAYBOOK-001, REQ-REPLAY-001, REQ-VALID-001]
-issues: [866]
+issues: [884]
 done_when:
   - "The conservative persona's sizing gate in lib/agents/trade_planner.py no longer reads the direction-blind weighted candle score against +0.30; it stands aside only when 8:30 true FTFC (price vs the quarter, month and week opens, calculate_timeframe_continuity) is opposed to the trade's direction, and it takes the plan when continuity is aligned, mixed or unavailable"
   - "The conservative stand-aside rationale names the opposed continuity direction instead of the old +0.30 threshold, and the other conservative filters (catalyst damper, long below the 200-SMA) are unchanged"
