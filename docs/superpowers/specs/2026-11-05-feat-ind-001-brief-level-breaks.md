@@ -5,7 +5,7 @@ issues: []
 canvases: []
 site_source_notes: [DASHBOARD-01]
 done_when:
-  - "tests/lib/test_brief_level_breaks.py passes: add_brief_indicators produces Broke_Prev_Day_High and Broke_Prev_Day_Low equal to calculate_historical_levels' definition (a session's close above the previous session's high, below its low), changing or appending later bars leaves every earlier flag unchanged, and a brief row can score 5 of 5 on CALL and on PUT; the tests fail on origin/main"
+  - "tests/lib/test_brief_level_breaks.py passes: add_brief_indicators produces Broke_Prev_Day_High and Broke_Prev_Day_Low equal to calculate_historical_levels' definition (a session's close above the previous session's high, below its low), changing or appending later bars leaves every earlier flag unchanged, and on real daily bars every row whose close broke the prior session's high (low) gains exactly the level-break point on CALL (PUT), with at least one such row moving from building to setup at the default thresholds; the tests fail on origin/main"
   - "add_all_indicators and add_signal_indicators are unchanged: tests/lib/test_indicators.py passes, including the pinned add_all_indicators column set and the signal and brief tier parity"
   - "The PR body shows the old and new brief CALL/PUT status for IWM, SPY and QQQ on the 20 sessions through 2026-11-04 and the 2026-11-05 brief, and the count of changed days from 2015-01-02"
   - "Source identity (DASHBOARD-01): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-IND-001, DASHBOARD-01) note row carries that source_identity_sha256"
@@ -30,7 +30,7 @@ condition, `level_break_pdh` / `level_break_pdl`, from `Broke_Prev_Day_High` / `
 read with `row.get(..., 0)`. The premarket brief (`gcp/premarket_brief.py:1129-1131`, `:1249-1250`)
 scores the row returned by `add_brief_indicators` (`lib/indicators.py:1540-1569`), which does not produce
 those columns, and its SQL frame (`lib/data_loader.py:517-540`) does not select them. So the factor
-never scores and the brief's CALL and PUT scores top out at 4 of 5. The intended definition already
+never scores. The intended definition already
 exists twice: `calculate_historical_levels` (`lib/indicators.py:505-507`, close above the previous
 session's high, below its low) and `lib/trading_analysis.py:483-484`.
 
@@ -62,8 +62,9 @@ session in a frame has no break.
 
 ## Expected effect
 
-The brief's CALL and PUT scores can reach 5 of 5, and a day whose close broke the prior session's high
-(low) gains a point on CALL (PUT). The published status moves between No signal, building and setup only
+A day whose close broke the prior session's high (low) gains a point on CALL (PUT). Such a day is an up
+(down) close, so it cannot also count three down (up) closes, and on real bars both scores still top out
+at 4 of 5. The published status moves between No signal, building and setup only
 where that point crosses a threshold. The PR body carries the per-day evidence.
 
 ## Capacity and cost
