@@ -48,7 +48,8 @@ def signal_strat_alignment(ticker: str) -> dict:
     Components (each contributes up to ~0.33):
       * `strat_setup` boolean (the daily fetcher flags actionable setups)
       * `ftfc_score` magnitude (how many timeframes agree)
-      * `ftfc_direction` cleanness (bull/bear vs mixed)
+      * `ftfc_direction` cleanness (bullish/bearish vs mixed; the values
+        calculate_ftfc writes to market_data_daily)
     """
     df = _query(
         """
@@ -71,7 +72,7 @@ def signal_strat_alignment(ticker: str) -> dict:
 
     setup_pts = 0.34 if setup else 0.0
     ftfc_pts = min(max(ftfc, 0.0), 1.0) * 0.33
-    dir_pts = 0.33 if direction in ("bull", "bear") else 0.0
+    dir_pts = 0.33 if direction in ("bullish", "bearish") else 0.0
 
     score = setup_pts + ftfc_pts + dir_pts
     reason_parts = []
