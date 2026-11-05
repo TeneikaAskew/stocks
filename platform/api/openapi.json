@@ -1471,6 +1471,7 @@
             "title": "Ema 9"
           },
           "ftfc_direction": {
+            "description": "TF bias direction: bullish, bearish or mixed from the weighted candle vote.",
             "title": "Ftfc Direction"
           },
           "ftfc_score": {
@@ -1482,6 +1483,7 @@
                 "type": "null"
               }
             ],
+            "description": "TF bias: weighted vote of candle types across timeframes (2U up, 2D down, 1 and 3 zero), -1 to +1. Not price-versus-open FTFC.",
             "title": "Ftfc Score"
           },
           "macd": {
@@ -1641,6 +1643,7 @@
             ]
           },
           "ftfc_direction": {
+            "description": "TF bias direction: bullish, bearish or mixed from the weighted candle vote.",
             "title": "Ftfc Direction"
           },
           "ftfc_score": {
@@ -1652,6 +1655,7 @@
                 "type": "null"
               }
             ],
+            "description": "TF bias: weighted vote of candle types across timeframes (2U up, 2D down, 1 and 3 zero), -1 to +1. Not price-versus-open FTFC.",
             "title": "Ftfc Score"
           },
           "has_premarket": {

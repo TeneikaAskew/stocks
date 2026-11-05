@@ -23,7 +23,8 @@ from lib.eastern_time import ET, ET_NAME
 
 from lib.data_loader import DataLoader
 from lib.indicators import add_brief_indicators
-from lib.strat import StratClassifier, compute_strat_status
+from lib.strat import (CONTINUITY_DISPLAY_ORDER, StratClassifier, compute_strat_status,
+                       timeframe_continuity_record)
 from lib.strat_levels import build_level_map, format_levels_for_brief, levels_to_named_dict
 from lib.signals import check_call_conditions, check_put_conditions
 from lib.config import load_config
@@ -1222,11 +1223,21 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         # same helper the LLM analyst calls (lib/agents/summarizers.py),
         # so the brief and the AI report agree on candle / combo / FTFC.
         # PR #101 renamed timeframe keys to match RESAMPLE_RULES (1d/1w/1mo).
+        # The weighted candle vote (ftfc_score, displayed as "TF bias") is
+        # what the signal gate reads. FTFC proper, price versus each current
+        # period's open, uses the brief's own price (curr_close, the latest
+        # completed daily close) over the premarket frames: display and
+        # storage only, never a gate input.
         strat_clock = _strat_observation_clock(analysis_date)
         strat_status = compute_strat_status(
             ticker, df=df, timeframes=['1d', '1w', '1mo'], strat_config=cfg.strat,
             as_of=strat_clock, inclusive_today=strat_clock is None,
+            observed_price=curr_close, observed_price_session=last_bar_date_obj,
+            price_provenance='latest_completed_close',
+            continuity_timeframes=cfg.strat.continuity_timeframes_premarket,
         )
+        tf_continuity, tf_continuity_frames = timeframe_continuity_record(
+            strat_status.get('timeframe_continuity'))
         if strat_status.get('available'):
             daily_strat = strat_status['last_candle']
             daily_combo = strat_status.get('in_force_combo')
@@ -1300,6 +1311,9 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             'ftfc_score': float(ftfc_score) if ftfc_score is not None else None,
             'ftfc_direction': ftfc_dir,
             'ftfc_labels': {k: v for k, v in ftfc_labels.items()},
+            # FTFC proper (price-open-v1): display and storage only.
+            'tf_continuity': tf_continuity,
+            'tf_continuity_frames': tf_continuity_frames,
             # Track B audit G.P0.5 — record which OHLCV bar the
             # analysis used so freshness audits don't need joins.
             # `data_as_of_anchored` is normalized to 16:00 ET on the
@@ -1777,6 +1791,45 @@ def _fmt_combo(combo: str) -> str:
     return ' '.join(out)
 
 
+_CONTINUITY_SHORT = {'1y': 'Y', '1q': 'Q', '1mo': 'M', '1w': 'W', '1d': 'D'}
+_CONTINUITY_WORDS = {'green': 'green', 'red': 'red', 'at_open': 'at open'}
+
+
+def _fmt_tf_continuity(state: Optional[str], frames: Optional[dict]) -> str:
+    """The Strat box's FTFC line: price versus each current period open.
+
+    ``FTFC: bearish (Q red, M red, W red)`` when every frame is known. When
+    any frame is unavailable the state stays ``unavailable`` (no claim of
+    agreement) but the frames that can be judged still show:
+    ``FTFC: unavailable (Q red, M opens today, W opens today)`` on the first
+    session of a month and week, ``W: missing_period_open`` for any other
+    reason. ``FTFC: unavailable (not recorded)`` for a row written before
+    the columns existed. Frames render year, quarter, month, week, day.
+    """
+    if not state:
+        return 'FTFC: unavailable (not recorded)'
+    frames = frames or {}
+    order = [tf for tf in CONTINUITY_DISPLAY_ORDER if tf in frames]
+    order += [tf for tf in frames if tf not in order]
+    short = {tf: _CONTINUITY_SHORT.get(tf, _fmt_timeframe(tf)) for tf in order}
+    parts = [_fmt_continuity_frame(short[tf], frames[tf] or {}) for tf in order]
+    return f'FTFC: {state}' + (f' ({", ".join(parts)})' if parts else '')
+
+
+def _fmt_continuity_frame(label: str, frame: dict) -> str:
+    """One frame of the FTFC line: its color, when it opens, or why not."""
+    relation = frame.get('relation')
+    if relation in _CONTINUITY_WORDS:
+        return f'{label} {_CONTINUITY_WORDS[relation]}'
+    reasons = frame.get('reasons') or ['unavailable']
+    if reasons[0] == 'period_opens_after_clock' and frame.get('period_start'):
+        opens = pd.Timestamp(frame['period_start']).tz_convert('America/New_York').date()
+        observed = frame.get('observation_ts')
+        today = observed and pd.Timestamp(observed).tz_convert('America/New_York').date() == opens
+        return f'{label} opens ' + ('today' if today else opens.isoformat())
+    return f'{label}: {reasons[0]}'
+
+
 def _fmt_timeframe(tf: str) -> str:
     """Render a timeframe key in canonical uppercase short form.
 
@@ -2156,7 +2209,7 @@ def _build_overview_embed(brief: dict) -> dict:
             f'{sma_pos}{rvol_str}{vol_str}'
         )
 
-    # FTFC summary line
+    # TF bias summary line (the weighted candle vote, keys ftfc_*)
     ftfc_parts = []
     for ticker, d in brief.get('tickers', {}).items():
         if d.get('status') == 'NO DATA':
@@ -2168,7 +2221,7 @@ def _build_overview_embed(brief: dict) -> dict:
         ftfc_parts.append(f'{ticker}: {d["ftfc_direction"]} ({d["ftfc_score"]:+.1f})')
     if ftfc_parts:
         lines.append('')
-        lines.append('**FTFC:** ' + ' | '.join(ftfc_parts))
+        lines.append('**TF bias:** ' + ' | '.join(ftfc_parts))
 
     # \ud83d\udcca Data freshness summary (Track B audit G.P0.5). Single
     # description-suffix line so phone-only readers see the
@@ -2325,11 +2378,13 @@ def _build_ticker_fields(brief: dict) -> list:
             strat_lines = [f'Daily: {d["strat_candle"]}']
         if d['strat_combo'] != 'none':
             strat_lines.append(f'Combo: {_fmt_combo(d["strat_combo"])}')
+        # "TF bias" is the weighted candle vote stored as ftfc_score (what
+        # the gates read); "FTFC" is price versus each current period open.
         if d.get('ftfc_score') is None:
-            strat_lines.append('FTFC: unavailable')
+            strat_lines.append('TF bias: unavailable')
         else:
             strat_lines.append(
-                f'FTFC: {d["ftfc_score"]:+.1f} ({d["ftfc_direction"]})'
+                f'TF bias: {d["ftfc_score"]:+.1f} ({d["ftfc_direction"]})'
             )
         tf_parts = ' '.join(
             f'{_fmt_timeframe(k)}:{v}'
@@ -2337,6 +2392,8 @@ def _build_ticker_fields(brief: dict) -> list:
         )
         if tf_parts:
             strat_lines.append(tf_parts)
+        strat_lines.append(_fmt_tf_continuity(
+            d.get('tf_continuity'), d.get('tf_continuity_frames')))
         if d['strat_setup']:
             strat_lines.append('**SETUP FORMING**')
 
@@ -3314,6 +3371,13 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
             'ftfc_score': data.get('ftfc_score'),
             'ftfc_direction': data.get('ftfc_direction'),
             'ftfc_labels': json.dumps(data.get('ftfc_labels', {})),
+            # FTFC proper (price-open-v1), display and storage only. Both
+            # tables carry the columns once gcp/schema.sql is applied; until
+            # then upsert_dataframe and bulk_insert_dataframe drop them.
+            # The dict goes in as is: the reflected JSONB type serializes it
+            # to a JSON object (json.dumps first would store a JSON string).
+            'tf_continuity': data.get('tf_continuity'),
+            'tf_continuity_frames': data.get('tf_continuity_frames'),
             'prev_day_high': data.get('prev_day_high'),
             'prev_day_low': data.get('prev_day_low'),
             # New enriched fields (silently dropped if columns don't exist yet)
@@ -3517,6 +3581,14 @@ def fetch_premarket_analysis_row(ticker: str, analysis_date) -> Optional[dict]:
             row['ftfc_labels'] = json.loads(row['ftfc_labels'])
         except (json.JSONDecodeError, TypeError):
             row['ftfc_labels'] = {}
+    if isinstance(row.get('tf_continuity_frames'), str):
+        try:
+            row['tf_continuity_frames'] = json.loads(row['tf_continuity_frames'])
+        except (json.JSONDecodeError, TypeError):
+            # Unreadable frames: the Strat box shows FTFC unavailable.
+            logger.warning("tf_continuity_frames for %s on %s is not JSON", ticker, analysis_date)
+            row['tf_continuity'] = 'unavailable'
+            row['tf_continuity_frames'] = None
     return row
 
 
