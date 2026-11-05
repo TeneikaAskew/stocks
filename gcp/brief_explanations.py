@@ -150,9 +150,10 @@ def _tf_bias(d: dict) -> str:
 def _ftfc_state(d: dict) -> str:
     """Price-open continuity state with each period's relation."""
     state = d.get('tf_continuity')
-    if not state:
+    if not isinstance(state, str) or not state:
         return 'unavailable'
-    frames = d.get('tf_continuity_frames') or {}
+    frames = d.get('tf_continuity_frames')
+    frames = frames if isinstance(frames, dict) else {}
     detail = ', '.join(f"{tf} {f.get('relation')}" for tf, f in frames.items())
     return f"{state} ({detail})" if detail else state
 

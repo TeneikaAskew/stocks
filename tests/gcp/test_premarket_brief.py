@@ -3257,6 +3257,30 @@ class TestTfBiasAndFtfcRender:
     def test_row_written_before_the_columns_says_not_recorded(self):
         assert self._strat()[-1] == 'FTFC: unavailable (not recorded)'
 
+    @pytest.mark.parametrize('null', [None, float('nan')])
+    def test_cached_replay_of_a_migrated_null_row_says_not_recorded(self, monkeypatch, null):
+        # After ADD COLUMN with no backfill, old rows carry both keys as SQL NULL;
+        # pandas can hand the NULL back as None or NaN. /replay must still render.
+        import gcp.database as database
+        from gcp.premarket_brief import _build_ticker_fields, fetch_premarket_analysis_row
+        stored = TestTickerFieldsLayout()._ticker_data(strat_combo='none')
+        stored.update(ticker='QQQ', tf_continuity=null, tf_continuity_frames=null)
+        monkeypatch.setattr(database, 'is_cloud_sql_configured', lambda: True)
+        monkeypatch.setattr(database, 'query_to_dataframe', lambda sql, params=None: pd.DataFrame([stored]))
+        row = fetch_premarket_analysis_row('QQQ', '2026-10-20')
+        fields = _build_ticker_fields({'tickers': {'QQQ': row}})
+        strat = next(f['value'] for f in fields if f['name'] == 'QQQ Strat').split('\n')
+        assert strat[-1] == 'FTFC: unavailable (not recorded)'
+
+    def test_frames_that_are_not_an_object_render_as_no_frames(self):
+        assert self._strat(tf_continuity='mixed', tf_continuity_frames=float('nan'))[-1] == 'FTFC: mixed'
+
+    @pytest.mark.parametrize('null', [None, float('nan')])
+    def test_explanation_inputs_read_a_null_row_as_unavailable(self, null):
+        from gcp.brief_explanations import _ftfc_state
+        assert _ftfc_state({'tf_continuity': null, 'tf_continuity_frames': null}) == 'unavailable'
+        assert _ftfc_state({'tf_continuity': 'mixed', 'tf_continuity_frames': null}) == 'mixed'
+
     def test_unavailable_tf_bias_is_labelled_tf_bias(self):
         lines = self._strat(ftfc_score=None, ftfc_direction=None, ftfc_labels={})
         assert 'TF bias: unavailable' in lines

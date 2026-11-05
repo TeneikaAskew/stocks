@@ -1806,9 +1806,10 @@ def _fmt_tf_continuity(state: Optional[str], frames: Optional[dict]) -> str:
     reason. ``FTFC: unavailable (not recorded)`` for a row written before
     the columns existed. Frames render year, quarter, month, week, day.
     """
-    if not state:
+    # A migrated row with no backfill holds SQL NULL, which pandas may return as NaN.
+    if not isinstance(state, str) or not state:
         return 'FTFC: unavailable (not recorded)'
-    frames = frames or {}
+    frames = frames if isinstance(frames, dict) else {}
     order = [tf for tf in CONTINUITY_DISPLAY_ORDER if tf in frames]
     order += [tf for tf in frames if tf not in order]
     short = {tf: _CONTINUITY_SHORT.get(tf, _fmt_timeframe(tf)) for tf in order}
