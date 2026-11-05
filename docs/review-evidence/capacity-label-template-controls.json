@@ -1,0 +1,63 @@
+{
+  "controls": [
+    {
+      "changed_files": [
+        "gcp/model_job.py",
+        "lib/model.py"
+      ],
+      "control": "filled_current_template",
+      "fixture_base_sha": "84c952cc5a1503f9411da116bb32604559a16550",
+      "fixture_head_sha": "152ac50eb09e2dc2a50f837fd90cb4fea5e3f998",
+      "note": "the Capacity section (from its heading to the next ## heading) of main's default template, filled as an author fills it, under the suite's standard PR body: accepted",
+      "pr_body": "Spec: docs/superpowers/specs/2026-09-01-model-decisions.md\nPlan: docs/superpowers/plans/2026-09-01-model-decisions.md\n\n- [ ] every model states its decision\n- [ ] the registry test passes\n\n## Capacity (CLAUDE.md rule 0)\n\n<!-- REQUIRED when the PR touches gcp/ or .github/workflows/: the spec gate\n     reads the four labels below and fails on a blank one. Give the numbers\n     before merge, not as future work; otherwise write one line\n     \"n/a: <why no workload runs differently>\". -->\n\n- Volume: 30 rows × 200 B\n- Velocity: 1 query\n- Wall-clock: 2 s <!-- queries × per-query latency (pg8000 + connector ≈ 0.5–2 s);\n     task-timeout must be ≥ 4× this -->\n- $/run × runs/day × 30: $0.01/run x 2 runs/day x 30 = $0.60/month\n- [ ] Every workload this PR's runbook tells the user to run is handled by\n      the code in this PR — no \"future-work, non-blocking\" perf flags on a\n      runbook workload (Rule 0.1)\n\nCanvas refresh pending: none\n\n<!-- Keep the sections; replace the comments. Write \"n/a — <why>\" rather than\n     deleting a section, so reviewers can tell \"considered and not applicable\"\n     from \"skipped\". -->\n\n",
+      "pr_body_sha256": "faee553f6e0aa8736921ddcc99bab395e8f72a4096496f05917270176a94748b",
+      "returncode": 0,
+      "stderr": "<fixture-repo>/scripts/gate/spec_gate.py:110: SyntaxWarning: invalid escape sequence '\\/'\n  (round seven: `HTTPS://`, `https:\\/\\/` and `file:` slipped a text scan). Raises ValueError\n",
+      "stdout": "spec gate ok (branch=feature/feat-model-001-model-decisions, 2 changed file(s))\n",
+      "verdict": "accepted"
+    },
+    {
+      "changed_files": [
+        "gcp/model_job.py",
+        "lib/model.py"
+      ],
+      "control": "filled_template_with_cost_line",
+      "fixture_base_sha": "84c952cc5a1503f9411da116bb32604559a16550",
+      "fixture_head_sha": "152ac50eb09e2dc2a50f837fd90cb4fea5e3f998",
+      "note": "the same Capacity section with only the approved Cost line swapped in, filled the same way: refused as leaving 30 blank",
+      "pr_body": "Spec: docs/superpowers/specs/2026-09-01-model-decisions.md\nPlan: docs/superpowers/plans/2026-09-01-model-decisions.md\n\n- [ ] every model states its decision\n- [ ] the registry test passes\n\n## Capacity (CLAUDE.md rule 0)\n\n<!-- REQUIRED when the PR touches gcp/ or .github/workflows/: the spec gate\n     reads the four labels below and fails on a blank one. Give the numbers\n     before merge, not as future work; otherwise write one line\n     \"n/a: <why no workload runs differently>\". -->\n\n- Volume: 30 rows × 200 B\n- Velocity: 1 query\n- Wall-clock: 2 s <!-- queries × per-query latency (pg8000 + connector ≈ 0.5–2 s);\n     task-timeout must be ≥ 4× this -->\n- Cost: $0.01/run x 2 runs/day x 30 = $0.60/month\n- [ ] Every workload this PR's runbook tells the user to run is handled by\n      the code in this PR — no \"future-work, non-blocking\" perf flags on a\n      runbook workload (Rule 0.1)\n\nCanvas refresh pending: none\n\n<!-- Keep the sections; replace the comments. Write \"n/a — <why>\" rather than\n     deleting a section, so reviewers can tell \"considered and not applicable\"\n     from \"skipped\". -->\n\n",
+      "pr_body_sha256": "2dba9d6c1a28072752d864aeb6aa34400e6bbf5d458db7c9c4fd2206c1587415",
+      "returncode": 1,
+      "stderr": "<fixture-repo>/scripts/gate/spec_gate.py:110: SyntaxWarning: invalid escape sequence '\\/'\n  (round seven: `HTTPS://`, `https:\\/\\/` and `file:` slipped a text scan). Raises ValueError\n",
+      "stdout": "SPEC GATE FAILED\n - PR body's Capacity section leaves 30 blank; give the numbers, or write 'n/a: <why no workload runs differently>'\n\nRun the product-delivery skill (Phase 1 to 3) before continuing.\n",
+      "verdict": "refused"
+    }
+  ],
+  "feat_id": "FEAT-CICD-001",
+  "source": {
+    "gate": {
+      "blob_oid": "ffb1ada8efef5777e1248241bd38b68ffaa2d23a",
+      "path": "scripts/gate/spec_gate.py",
+      "sha256": "aaa698ad94bf6d633620b68d9f765c720bd4cf7a2bb18e0b5a2f201ac9a6ecc9"
+    },
+    "invocation": "python3 scripts/gate/spec_gate.py --pr <fixture_base_sha> <fixture_head_sha> (both full 40-hex, from a throwaway fixture repository built by tests/scripts/test_spec_gate.py::make_repo) using the unchanged gate of main_commit_oid below, not this PR's gate, PR_HEAD_REF=feature/feat-model-001-model-decisions, PR_TITLE='FEAT-MODEL-001: x', changing gcp/model_job.py (a workload path)",
+    "main_commit_oid": "178973b061cc65a6e9256421bf0804a41b9b182c",
+    "proposed_code_executed": false,
+    "suite": {
+      "blob_oid": "9387d37cfaff137e15984b98b357973adc549d18",
+      "path": "tests/scripts/test_spec_gate.py"
+    },
+    "template": {
+      "blob_oid": "acccdb768d2630f6a9cd8123f22199235c2e82c8",
+      "path": ".github/pull_request_template.md",
+      "sha256": "496bc1e31588d4ea392559fd5ab0097bfaf4a6b5761f745d2ac1271fa498450a"
+    }
+  },
+  "spec": "docs/superpowers/specs/2026-11-04-feat-cicd-001-capacity-cost-label-whole-job.md",
+  "template_oracle": {
+    "new_line": "- Cost: <!-- $/run × runs/day × 30 for new scheduled jobs -->",
+    "new_sha256": "201355b3343f7b81f22bfba8b7260406e7b246ef02948d7430a118372e574ad2",
+    "old_line": "- $/run × runs/day × 30: <!-- new scheduled jobs -->",
+    "old_sha256": "496bc1e31588d4ea392559fd5ab0097bfaf4a6b5761f745d2ac1271fa498450a"
+  }
+}
