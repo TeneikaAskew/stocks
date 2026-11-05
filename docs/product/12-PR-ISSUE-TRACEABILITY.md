@@ -530,7 +530,7 @@ Live registry continuation: [#1599](https://github.com/TeneikaAskew/stocks/pull/
 | [#912](https://github.com/TeneikaAskew/stocks/issues/912) | P2 | [P2][Indicators] Consolidate duplicate indicator implementations behind a metric registry |
 | [#1276](https://github.com/TeneikaAskew/stocks/issues/1276) | P2 | [P2][Shared] RVOL divides the day's volume so far by a whole-day average in two handlers |
 
-**PR lineage:** UNKNOWN / NEEDS HISTORY TRACE (the README's PRs column reads UNKNOWN for this capability)
+**PR lineage:** UNKNOWN / NEEDS HISTORY TRACE (the README's PRs column reads UNKNOWN for this capability) · [#1734](https://github.com/TeneikaAskew/stocks/pull/1734) *remediation: the brief path produces the previous-session level-break flags, so a broken level adds its point*
 
 ### FEAT-STRAT-001 — Levels / STRAT (5 open)
 
