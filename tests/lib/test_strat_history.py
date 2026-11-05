@@ -309,3 +309,18 @@ class TestHistoryObservationContract:
         frame['unsupported']=[object(),object()]
         with pytest.raises(TypeError):
             compute_strat_history('TEST',df=frame,timeframes=['1d'],**self.contract())
+
+
+class TestHistoryReportContinuation:
+    """r4481033984 on #1714: an unknown (NULL-OHLC placeholder) successor is
+    pending, not a failed continuation."""
+
+    def test_unknown_successor_is_not_scored(self):
+        from scripts.strat_history_report import _continuation
+        hist = [{'candle': '1'}, {'candle': '2U'}, {'candle': 'X'}]
+        assert _continuation(hist, 0) == (0, 0)
+
+    def test_known_successors_are_scored(self):
+        from scripts.strat_history_report import _continuation
+        hist = [{'candle': '2U'}, {'candle': '2U'}, {'candle': '2D'}, {'candle': '1'}]
+        assert _continuation(hist, 0) == (1, 3)
