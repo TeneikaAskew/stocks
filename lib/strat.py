@@ -1018,6 +1018,9 @@ def compute_strat_status(
     if df is None:
         df = pd.DataFrame()
     df = df.copy()
+    if 'Close' not in df and 'Last' in df:
+        # The legacy close alias the classifier and adapters accept (Codex r4481033971).
+        df = df.rename(columns={'Last': 'Close'})
     contract_keys = ('source_resolution', 'session_policy', 'timestamp_semantics')
     if not any(key in df.attrs for key in contract_keys):
         # The legacy call shape explicitly supplies daily session-label data.
@@ -1043,12 +1046,15 @@ def compute_strat_status(
         if not inclusive_today:
             eligible &= df.index.date < clock.date()
         df = df.loc[eligible.to_numpy()]
-    tf_dfs = loader.build_multi_timeframe(df, timeframes=timeframes, observation_ts=clock,
+    # Coverage and FTFC stop at the same cutoff as confirmation, so a date-only
+    # replay that excludes the day does not expect its candle (Codex r4481033962).
+    tf_dfs = loader.build_multi_timeframe(df, timeframes=timeframes,
+                                          observation_ts=confirmation_clock,
                                           aggregation_policy='observed_v2')
     coverage = {tf: frame.attrs['coverage'] for tf, frame in tf_dfs.items()}
     for record in coverage.values():
         record['reasons'] = list(dict.fromkeys(source_reasons + record['reasons']))
-    daily = loader.aggregate_to_timeframe(df, '1d', observation_ts=clock,
+    daily = loader.aggregate_to_timeframe(df, '1d', observation_ts=confirmation_clock,
                                           aggregation_policy='observed_v2')
     # Session adjacency supplied by the adapter must also guard daily combos.
     df.attrs['gap_before_by_timestamp'] = daily.attrs['gap_before_by_timestamp']
