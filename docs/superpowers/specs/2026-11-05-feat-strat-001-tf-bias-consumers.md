@@ -5,12 +5,12 @@ issues: []
 canvases: []
 site_source_notes: [INSIGHTS-04, INSIGHTS-07, SIGNALS-04]
 done_when:
-  - "Ranker setup points work: gcp/fetchers/fetch_market_data.py and gcp/backfill_ticker.py read the in-force combo from the strat_combo column that StratClassifier.detect_combos returns (today they read a 'combo' key that never exists, so strat_combo is never written by those paths and strat_setup is always False), treat the 'none' sentinel as no combo, and set strat_setup from the combo alone with no |ftfc_score| >= 0.3 test; a test drives the real writer function on daily bars whose last bar completes a 2-1-2 and asserts strat_combo and strat_setup True, and the test fails on origin/main"
-  - "lib/agents/ranker/signals.py signal_strat_alignment scores only the setup part (0.34 when strat_setup is true, else 0) and no longer adds points from ftfc_score or ftfc_direction; raw still carries strat_setup, ftfc_score, ftfc_direction and strat_combo; a test with a stored inside-bar day (ftfc_direction mixed) and a stored 2U day with the same strat_setup gives the same score, and fails on origin/main and on the FEAT-INSIGHT-001 consumer-gates branch"
-  - "Each signal-monitor fire records, in a new nullable signal_alerts.fire_context JSONB column added in gcp/schema.sql, the live price-open continuity at fire time (lib.strat.calculate_timeframe_continuity over Q, M, W and D at the fire price, with the period opens from the brief's tf_continuity_frames and, for a period that opens that session, the session's first regular-hours open; unavailable when an open is missing) and, for IWM, SPY and QQQ, which of the three have traded through the prior session's high (for a CALL) or low (for a PUT) by the fire's bar time; the fire still persists when the column is absent"
+  - "Ranker setup points work: gcp/fetchers/fetch_market_data.py and gcp/backfill_ticker.py write strat_combo from the strat_combo column that StratClassifier.detect_combos returns (today they read a 'combo' key that never exists, so strat_combo is never written by those paths and strat_setup is always False), with the 'none' sentinel written as null, and write strat_setup from detect_combos' own strat_setup column on the last bar (an inside bar after a 2U, 2D or 3: the next session's break is the trigger), with no |ftfc_score| test; a test drives the real writer function on daily bars whose last bar is an inside bar after a 2U and asserts strat_setup True and, on bars whose last bar is a 2U completing a 2-2 continuation, asserts strat_combo written and strat_setup False; the test fails on origin/main"
+  - "lib/agents/ranker/signals.py signal_strat_alignment scores only the setup part (0.34 when strat_setup is true, else 0) and no longer adds points from ftfc_score or ftfc_direction; raw still carries strat_setup, ftfc_score, ftfc_direction and strat_combo; a test gives a stored inside-bar setup day with ftfc_direction mixed and one with ftfc_direction bullish the same 0.34, and a stored bullish 2U day without strat_setup 0, and fails on origin/main"
+  - "Each signal-monitor fire records, in a new nullable signal_alerts.fire_context JSONB column added in gcp/schema.sql, the live price-open continuity at fire time (lib.strat.calculate_timeframe_continuity over Q, M, W and D at the fire price, with the period opens from the brief's tf_continuity_frames and, for a period that opens that session, the session's first regular-hours open; unavailable when an open is missing) and, for IWM, SPY and QQQ, which of the three have traded through the prior session's high (for a CALL) or low (for a PUT) by the fire's bar time; the fire still persists when the column is absent; a test drives the monitor's production fire and persist path (not scripts/replay_signal_monitor.py, which replaces fire_alert) and asserts the persisted fire_context for a bullish Q/M/W/D fire, an 'unavailable' state when a period open is missing, a ticker that trades through only after the fire's bar time counted as not yet, and a persisted fire with no fire_context when the column is absent; the test fails on origin/main"
   - "Fire decisions and scores are unchanged: on the existing signal-monitor replay fixtures, strat_bonus, total_score, strength_label, position_size, Discord delivery and the brief tag of every fire are byte-identical to origin/main; no gate, score or threshold reads fire_context"
-  - "The fire's Discord embed adds one line with the live continuity state and its frames (for example 'FTFC at fire: bullish (Q M W D green)' or 'FTFC at fire: unavailable'), and the existing 'Strat bonus' line is unchanged"
-  - "PersonaPlan risk_metrics gains continuity_aligned (Optional[bool]): True when the brief's 8:30 tf_continuity direction matches the trade direction, False when it is the other direction or mixed, None when the brief recorded no reading; ftfc_aligned, _calibrate_conviction and the conservative persona's minimum read exactly what they read on the FEAT-INSIGHT-001 consumer-gates branch, and tests/agents/test_ftfc_consumer_gates.py passes unchanged"
+  - "The fire's Discord embed adds one line with the live continuity state and its frames (for example 'FTFC at fire: bullish (Q M W D green)' or 'FTFC at fire: unavailable'), and the existing 'Strat bonus' line is unchanged; a test on the production embed builder asserts the line for a bullish, a mixed and an unavailable fire_context and the Strat bonus line byte-identical to origin/main, and fails on origin/main"
+  - "PersonaPlan risk_metrics gains continuity_aligned (Optional[bool]): True when the brief's 8:30 tf_continuity direction matches the trade direction, False when it is the other direction or mixed, None when the brief recorded no reading (null or NaN); a test asserts the True, False (opposite and mixed) and None cases through compute_risk_metrics and the strat snapshot, and fails on origin/main; ftfc_aligned, _calibrate_conviction and the conservative persona's minimum read exactly what they read under the FEAT-INSIGHT-001 aligned and conservative spec (#1736), and tests/agents/test_ftfc_consumer_gates.py passes unchanged"
   - "Unchanged by this spec, each pinned by an existing or added test: gcp/premarket_brief.py _resolve_signal_status (brief CALL/PUT side pick), lib/strategies/brief_bias.py classify, StratClassifier.get_strat_bonus and StratConfig values, the orchestrator's high-conviction rule, the conservative persona minimum, lib/backtest.py's FTFC filter and bonus, lib/exec_backtest/runner.py v1_ftfc, scripts/run_walk_forward.py defaults, and the TF bias score, labels and columns"
   - "The implementation PR body shows, for IWM, SPY and QQQ from 2015-01-02 to 2026-11-04, the changed-day counts in this spec's Expected effect table recomputed on the implementation head, and the before and after decision for the 20 sessions through 2026-11-04"
   - "Source identity (INSIGHTS-04, INSIGHTS-07, SIGNALS-04): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-STRAT-001, INSIGHTS-04 / INSIGHTS-07 / SIGNALS-04) note rows carry that source_identity_sha256 with implementation and test prose for this PR"
@@ -28,10 +28,10 @@ the FTFC work (stop using TF bias as a Strat setup gate, show true FTFC live as 
 cross-ticker agreement for research). It is not self-approved: it takes effect only when the owner
 authorizes the merge of the spec-only PR that adds it, and that merge is the approval its `status`
 records. It depends on the FEAT-STRAT-001 continuity spec and code (#1729, #1732: tf_continuity and
-tf_continuity_frames) and on the FEAT-INSIGHT-001 consumer-gates spec and code (#1730, #1733), and
-opens no implementation PR until those are on main.
+tf_continuity_frames) and on the FEAT-INSIGHT-001 aligned and conservative spec and code (#1736, #1737, which replace #1730
+and #1733 without their ranker item), and opens no implementation PR until those are on main.
 
-Two questions in this spec are the owner's and are not defaulted here (Open questions).
+One question in this spec is the owner's and is not defaulted here (Open questions).
 
 ## Problem
 
@@ -51,12 +51,19 @@ whether a daily Strat setup counts is the ranker, and there the setup points nev
    (checked on SPY daily bars), so `last_combo` is always None, `strat_combo` is not written by
    these paths and `strat_setup` is always False. The ranker's `strat_alignment` (weight 3.0, "the
    Strat is the primary signal") has given 0 setup points to every ticker.
-2. With that fixed, the writer would also require `|vote| >= 0.3`, which drops 95 of 7,380
-   combo-days (inside compressions, 1-3-1 and some 2-1-2 and 3-1-2 reversals).
-3. The FEAT-INSIGHT-001 fix (#1733) turns on the ranker's direction points, +0.33 whenever the vote
-   is bullish or bearish. The vote is mixed on exactly the 927 days whose prior bar is an inside bar,
-   which is the setup bar of a 2-1-2 or 3-1-2. So that fix scores a ticker about 1 ranker point
-   (0.33 x 3.0) lower precisely when it is sitting on an inside bar.
+2. Reading `strat_combo` alone would not fix it. `strat_combo` labels the pattern the last bar
+   completed, so it is in force on 7,380 of 8,934 replay days (83%), three quarters of them plain
+   2-2 continuations and reversals, and it is 'none' on 861 of the 888 days when a setup is actually
+   pending (an inside bar after a directional bar). `detect_combos` already returns that pending flag
+   as its own `strat_setup` column, the same flag the strat research builders store. With it, setup
+   points go to 888 days (9.9%).
+3. The writer also requires `|vote| >= 0.3`. The vote is mixed on every inside-bar day, so that test
+   would block the pending setups the points are meant for.
+4. The first cut of the FEAT-INSIGHT-001 fix (#1733) turned on the ranker's direction points, +0.33
+   whenever the vote is bullish or bearish. The vote is mixed on exactly the 927 days whose prior bar
+   is an inside bar, so those points would mark a ticker about 1 ranker point (0.33 x 3.0) down
+   precisely when it is sitting on an inside bar. That item was dropped: #1736 and #1737 replace
+   #1730 and #1733 without it, and this spec removes the direction points.
 
 Separately, true FTFC (price against the period opens) is now computed premarket (#1732) but is not
 shown or recorded at the moment a live signal fires, and cross-ticker agreement, the one feature
@@ -70,8 +77,8 @@ that held in both replay windows, is not recorded anywhere.
 | Signal monitor bonus | lib/strat.py:546-592, gcp/signal_monitor.py:1278-1309 | Aligned +1, opposed -1, at abs(score) >= 0.6; else 0 | 0, no penalty |
 | Planner ftfc_aligned flag | lib/agents/trade_planner.py:663-667 | Aligned at 0.5 in the trade's direction | Never aligned |
 | Orchestrator high conviction | lib/agents/orchestrator.py:883-937 | Requires aligned at 0.5 | High conviction impossible |
-| Conservative persona minimum | lib/agents/trade_planner.py:572-577 | main: score >= +0.30 for either side; #1733: aligned at 0.30 | Stands aside both ways |
-| Ranker strat_alignment | lib/agents/ranker/signals.py:45-91 + the writers above | Setup gate abs(vote) >= 0.3 (dead, see Problem 1); magnitude points bullish only; direction points (dead on main, on with #1733) | 0 direction points with #1733 |
+| Conservative persona minimum | lib/agents/trade_planner.py:572-577 | main: score >= +0.30 for either side; #1737: aligned at 0.30 | Stands aside both ways |
+| Ranker strat_alignment | lib/agents/ranker/signals.py:45-91 + the writers above | Setup gate abs(vote) >= 0.3 (dead, see Problem 1); magnitude points bullish only; direction points (dead on main: they test 'bull'/'bear', stored values are 'bullish'/'bearish') | 0 |
 | Backtest and walk-forward | lib/backtest.py:791-835, scripts/run_walk_forward.py | Not-opposed filter at 0.6 plus the bonus, on the backtest's own 7-frame intraday vote, not TF bias | Passes |
 
 Also reading the vote: the strat analyst prompt (lib/agents/prompts.py:42-47, "Bias follows from FTFC
@@ -82,7 +89,8 @@ direction unless the strat combo contradicts it") and `lib/strategies/gamma_prox
 ## Expected effect if TF bias were removed at each place (replay)
 
 IWM, SPY and QQQ, decision days 2015-01-02 to 2026-11-04, 8,934 ticker-days, each decision made by
-the repo's own functions on the Part A code (#1733 and #1734 applied), as in the bug-fix evidence.
+the repo's own functions on the Part A code (#1734 and the aligned and conservative fixes now in #1737 applied), as in the
+bug-fix evidence. The ranker row is measured against main.
 Scripts and tables are in the lane's research folder strat-verify/partb-replay/ (outside this repository).
 
 | Place | What flips if TF bias is removed | Outcome on the flipped days | This spec |
@@ -92,7 +100,7 @@ Scripts and tables are in the lane's research folder strat-verify/partb-replay/ 
 | Planner flag | Swapping to 8:30 true FTFC: long True to False 1,272, False to True 830; short 1,655 and 389; no reading on 2,091 days (new week, month or quarter) | Within noise in the FTFC replay | Keep; add continuity_aligned beside it |
 | High conviction | Dropping the FTFC condition: long high 4,032 to 8,934, short 3,118 to 8,934 (on otherwise qualifying days); reading true FTFC instead: 2,658 and 1,117 | Within noise | Keep |
 | Conservative persona | See Open question 1 | No difference in the FTFC replay | Owner's choice |
-| Ranker | Score changes on 7,861 days versus #1733; mean 0.395 to 0.281; setup points on 0 days today, 7,380 (83%) after | Neither vote version's points helped in the FTFC replay | Change |
+| Ranker | Setup points on 0 days today, 888 (9.9%) after; score changes on 5,318 days versus main; mean 0.131 to 0.034 (the magnitude points, bullish only, go) | Neither vote version's points helped in the FTFC replay | Change |
 | Backtest, walk-forward | Not replayable here: needs the 5-minute bars in Cloud SQL | Existing walk-forward runs with the filter off can be read (query below) | Keep |
 
 An earlier estimate of 2,700 to 3,550 more Strat triggers came from the setup replay's
@@ -124,11 +132,11 @@ triggers anywhere. The only live Strat setup change is the ranker's.
 
 ## Design
 
-1. Writers (fetch_market_data.py, backfill_ticker.py): `last_combo = combos['strat_combo'].iloc[-1]`,
-   None when 'none' or null; `strat_setup = bool(last_combo)`. strat_candle, ftfc_score and
-   ftfc_direction are written as today.
+1. Writers (fetch_market_data.py, backfill_ticker.py): `last = combos.iloc[-1]`;
+   `strat_combo = last['strat_combo']`, None when 'none' or null; `strat_setup =
+   bool(last['strat_setup'])`. strat_candle, ftfc_score and ftfc_direction are written as today.
 2. Ranker: `score = setup_pts` (0.34 or 0). The 0.66 previously reserved for the vote is not
-   reassigned; a follow-up may score pending setups (detect_combos `pending_setup`) once tested.
+   reassigned.
 3. Monitor: build `fire_context = {'ftfc_live': {state, frames}, 'cross_ticker': {ticker: bool,
    'same_direction_n': int}}` after scoring and before persist, from data the monitor already holds
    (brief row, session bars of IWM, SPY and QQQ). Failure to build it leaves it null and logs once
@@ -153,18 +161,15 @@ unchanged.
 
    | Option | Long takes | Short takes |
    |---|---|---|
-   | Keep the #1733 rule on TF bias (no change) | 4,032 | 3,118 |
+   | Keep the #1737 rule on TF bias (no change) | 4,032 | 3,118 |
    | A: no FTFC minimum | 8,934 | 8,934 |
    | B: 8:30 true FTFC in the trade's direction | 2,658 | 1,117 |
    | C: 8:30 true FTFC not against the trade | 7,817 | 6,276 |
 
    This spec keeps the current rule until the owner picks; a different pick is a one-line follow-up
    spec.
-2. The ranker part of #1733 (direction points) is replaced by this spec. Keeping it in #1733 means
-   the ranker scores inside-bar tickers about 1 point lower until this spec's code lands. Dropping it
-   means re-cutting #1730 and #1733 without that item (both are past their second review round, so
-   the repository's review cap requires new PRs), which delays the conservative-short and rounding
-   fixes by one review cycle.
+Decided on 2026-11-05 (reversible, not the owner's call): the ranker direction points were dropped
+from the FEAT-INSIGHT-001 fix; #1736 and #1737 replace #1730 and #1733 without them.
 
 ## Queries this spec could not run (Cloud SQL is not reachable from the lane)
 
@@ -177,11 +182,11 @@ unchanged.
 
 ## Risks
 
-- More setups at about break-even: once the writer bug is fixed, the ranker gives setup points on
-  83% of days, and the setup replay put daily setups at -0.20R to +0.02R. Ranker setup points are a
+- Setups at about break-even: once the writer bug is fixed, the ranker gives setup points on 9.9%
+  of days, and the setup replay put daily setups at -0.20R to +0.02R. Ranker setup points are a
   ranking input, not a trade; a target and stop study (the magnitude target sits a median 0.5R
   away) should come before any setup becomes a trade trigger.
-- The ranker's strat_alignment mean moves from 0.395 (with #1733) to 0.281 and stops reacting to
+- The ranker's strat_alignment mean moves from 0.131 (main) to 0.034 and stops reacting to
   direction; top-N membership can change. The implementation PR shows the before and after scores.
 - fire_context adds work to every fire; the build reuses frames the monitor holds and must not delay
   the alert (done_when 4 pins the fire outputs).
