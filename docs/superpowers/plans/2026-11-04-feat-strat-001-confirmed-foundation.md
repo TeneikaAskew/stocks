@@ -53,8 +53,8 @@ Spec: `docs/superpowers/specs/2026-10-12-feat-strat-001-complete-state-contract.
 
 Spec: `docs/superpowers/specs/2026-10-12-feat-strat-001-complete-state-contract.md` done_when 5, "Captured-data diagnostic and visual evidence".
 
-- [ ] Versioned diagnostic over captured inputs with code, config and input hashes and retrospective-vintage limits
-- [ ] `test_captured_foundation_diagnostic_matches_actual_producers`
+- [x] Versioned diagnostic over captured inputs with code, config and input hashes and retrospective-vintage limits
+- [x] `test_captured_foundation_diagnostic_matches_actual_producers`
 
 ## Task 6: Records and gates
 

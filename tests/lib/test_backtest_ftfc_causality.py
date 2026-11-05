@@ -81,6 +81,10 @@ def frame():
 
 
 CUTS = [5, 61, 389, 390, 391, 777, 1170, 1559, 1560, 1950, 2400, 3119, 3120]
+# The spec's 34 exact legacy final-as-of controls: every CUTS clock, the first
+# rows, and each remaining session's open, mid-session and close boundary.
+FINAL_ASOF_CUTS = sorted(set(CUTS + [1, 2] + [
+    s * 390 + off for s in range(8) for off in (1, 195, 389)]) - {0})
 
 
 def test_default_helper_prefix_is_unchanged_by_appending_future(engine, frame):
@@ -120,7 +124,8 @@ def test_multiple_clocks_and_sessions_ignore_future_ohlc(engine, frame):
 def test_final_asof_matches_frozen_old_production_helper(engine, frame):
     full = engine._compute_ftfc_series(frame)
     nonzero = 0
-    for k in CUTS + [2, 1]:
+    assert len(FINAL_ASOF_CUTS) == 34
+    for k in FINAL_ASOF_CUTS:
         prefix = frame.iloc[:k]
         old = _frozen_pre_repair_ftfc(engine.strat_config, engine.strat_classifier, prefix)
         new = engine._compute_ftfc_series(prefix)

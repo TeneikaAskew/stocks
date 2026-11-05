@@ -82,3 +82,55 @@ def test_foundation_brief_unavailable_is_not_inside(monkeypatch, no_network):
     assert good['strat_candle'] == '2D'
     assert isinstance(good['ftfc_score'], float)
     assert good['ftfc_direction'] in ('bullish', 'bearish', 'mixed')
+
+
+def _diagnostic_module():
+    import importlib.util
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[2] / 'scripts/research/strat_foundation_diagnostic.py'
+    spec = importlib.util.spec_from_file_location('strat_foundation_diagnostic', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_captured_foundation_diagnostic_matches_actual_producers(no_network):
+    """done_when 5: the committed diagnostic over captured IWM rows agrees
+    with the actual producers and adapters run now, binds exact input/code/
+    config hashes and the retained visual, keeps unavailable cases, and
+    states its retrospective-vintage limits."""
+    import hashlib
+    import json
+    import re
+    diag = _diagnostic_module()
+    root = diag.ROOT
+    manifest = json.loads((root / diag.ARTIFACT_DIR / 'manifest.json').read_text())
+    assert manifest['diagnostic_version'] == diag.DIAGNOSTIC_VERSION
+    assert manifest['input']['sha256'] == diag.sha256_file(root / diag.FIXTURE)
+    assert set(manifest['code_sha256']) == set(diag.CODE_FILES)
+    assert all(re.fullmatch('[0-9a-f]{64}', h) for h in manifest['code_sha256'].values())
+    assert manifest['limitations'] == diag.LIMITATIONS
+    assert any('not_point_in_time' in item for item in manifest['limitations'])
+    summary = manifest['summary']
+    assert summary['all_checks_pass'] is True
+    assert summary['unavailable_cases'], 'unavailable cases must be retained, not omitted'
+    assert summary['weekly_confirmed_cases']
+    for case in manifest['cases']:
+        assert all(case['checks'].values()), case['case']
+        assert pd.Timestamp(case['status']['observation_ts']) == pd.Timestamp(case['clock'])
+    # Retained visual is bound by hash and is exactly what the manifest renders.
+    svg = (root / manifest['visual']['path']).read_text()
+    assert hashlib.sha256(svg.encode()).hexdigest() == manifest['visual']['sha256']
+    assert svg == diag.render_svg({k: v for k, v in manifest.items() if k != 'visual'})
+
+    # Re-run a representative subset through the actual producers now.
+    frame, legacy = diag.load_fixture(root)
+    cases = {c['case']: c for c in manifest['cases']}
+    weekly = summary['weekly_confirmed_cases']
+    week_close = next(name for name in weekly if name.startswith('week_close_'))
+    picks = ['before_second_bar', summary['unavailable_cases'][-1], week_close,
+             week_close.replace('week_close_', 'week_pre_close_')]
+    with diag.isolated(frame):
+        for name in picks:
+            fresh = diag.run_case(frame, legacy, {'case': name, 'clock': cases[name]['clock']})
+            assert json.loads(json.dumps(fresh)) == cases[name], name
