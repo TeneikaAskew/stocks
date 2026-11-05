@@ -45,9 +45,9 @@ Spec: `docs/superpowers/specs/2026-10-12-feat-strat-001-complete-state-contract.
 Spec: `docs/superpowers/specs/2026-10-12-feat-strat-001-complete-state-contract.md` done_when 4, "Shared status/history and consumer adapters".
 
 - [x] History as-of contract (`TestHistoryObservationContract`)
-- [ ] Summarizer and `StratSnapshot` keep clock, completion, qualification and unavailable reasons
-- [ ] Premarket brief keeps unavailable as unavailable, never inside
-- [ ] Add the two named hermetic adapter tests
+- [x] Summarizer and `StratSnapshot` keep clock, completion, qualification and unavailable reasons
+- [x] Premarket brief keeps unavailable as unavailable, never inside
+- [x] Add the two named hermetic adapter tests
 
 ## Task 5: Captured-data foundation diagnostic
 

@@ -1222,11 +1222,14 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             ftfc_dir = strat_status.get('ftfc_direction', 'mixed')
             ftfc_labels = strat_status.get('ftfc_labels', {}) or {}
         else:
-            daily_strat = '1'
+            # FEAT-STRAT-001: unavailable stays unavailable ('X', no score,
+            # no direction), never an inside bar with a neutral score.
+            # The signal gate below reads a None direction as mixed.
+            daily_strat = 'X'
             daily_combo = None
             daily_setup = False
-            ftfc_score = 0.0
-            ftfc_dir = 'mixed'
+            ftfc_score = None
+            ftfc_dir = None
             ftfc_labels = {}
 
         # ── Signal conditions ───────────────────────────────────────────
@@ -1278,7 +1281,10 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             'strat_candle': daily_strat,
             'strat_combo': daily_combo,
             'strat_setup': bool(daily_setup),
-            'ftfc_score': float(ftfc_score),
+            'strat_available': bool(strat_status.get('available')),
+            'strat_reason': None if strat_status.get('available') else strat_status.get('reason'),
+            'strat_observation_ts': strat_status.get('observation_ts'),
+            'ftfc_score': float(ftfc_score) if ftfc_score is not None else None,
             'ftfc_direction': ftfc_dir,
             'ftfc_labels': {k: v for k, v in ftfc_labels.items()},
             # Track B audit G.P0.5 — record which OHLCV bar the
@@ -2299,12 +2305,19 @@ def _build_ticker_fields(brief: dict) -> list:
         # previous `Daily: 2U | Combo: ...` mash-up) — the long
         # title-cased combo names overflowed visually when piped onto
         # the Daily line on mobile.
-        strat_lines = [f'Daily: {d["strat_candle"]}']
+        if d.get('strat_available') is False or d.get('strat_candle') == 'X':
+            reason = d.get('strat_reason')
+            strat_lines = ['Daily: unavailable' + (f' ({reason})' if reason else '')]
+        else:
+            strat_lines = [f'Daily: {d["strat_candle"]}']
         if d['strat_combo'] != 'none':
             strat_lines.append(f'Combo: {_fmt_combo(d["strat_combo"])}')
-        strat_lines.append(
-            f'FTFC: {d["ftfc_score"]:+.1f} ({d["ftfc_direction"]})'
-        )
+        if d.get('ftfc_score') is None:
+            strat_lines.append('FTFC: unavailable')
+        else:
+            strat_lines.append(
+                f'FTFC: {d["ftfc_score"]:+.1f} ({d["ftfc_direction"]})'
+            )
         tf_parts = ' '.join(
             f'{_fmt_timeframe(k)}:{v}'
             for k, v in d.get('ftfc_labels', {}).items()
