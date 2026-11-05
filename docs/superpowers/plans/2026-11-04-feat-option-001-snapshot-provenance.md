@@ -33,7 +33,7 @@ status: ready
 | Accepted A10 binding (done_when[5]) | **published binding recorded; not re-run** | `docs/superpowers/specs/2026-10-29-feat-option-001-collector-source-declaration.md` on `0b997780` (L23) names the accepted reproduction packet SHA256 `ecda596ae24b85adfc537d7203a40ce62c1ae2c241e0d4c646340ec32c4d8f87` with a 175-test A10 profile; `tests/gcp/test_av_options_collector_entry.py` pins the accepted transport SHA256 `af238d07c2043a0d34319dd533f6e36842e68a9ff536c37d9700e859de117284` (L144 at `a5437994`, still L144 at `0b997780`), and `gcp/fetchers/_av_realtime_transport.py` at `0b997780` hashes to exactly that value. The three current-main blob OIDs below are the identity of the A10-side files today, not a substitute for the accepted packet or member manifest, and unchanged acceptance is not re-run here |
 | A10-side files on main (identity only) | **verified** | `gcp/fetchers/fetch_av_realtime_options.py` `82d2575d`, `gcp/options_retention_job.py` `22bd2cdc`, `tests/gcp/test_av_options_realtime_producer.py` `4b1293ec` (blob OIDs at `0b997780`) |
 | Accepted A8 member manifest (done_when[5]) | **missing, explicitly** | Not on `0b997780` (`tests/gcp/test_av_options_archive.py`, `lib/av_options_admission.py` absent). Not in #1495's tree at `e641f0cd` (its plan `2026-10-13-feat-option-001-av-source-journal.md` names the old A spec SHA256 `9e634992fb089c9a00d79b31234e81ede30ad93c2c66daec1fbb31f72cbc35d4` and the `av-options-normalized/v1` codec, no A8 member hashes). #1521 comments 6204262200 and 6204262874 (2026-10-15) name the successor candidate SHA256 `94e980e5…1400`, the native gate SHA256 `aa259cfa…0bd0`, and state that the private codec and tests "remain untouched at e641 with their three previously untracked paths": untracked, so not readable here. Owner identity as recorded there: the sole A CODE owner, reviewing from `/root/options_implementation`. The manifest is not recreated or published by this plan; done_when[5] stays unticked until that owner supplies the actual preserved manifest and member paths with their hashes so the comparison can be run on HEAD; a written assertion without those hashes does not tick it |
-| Q/API #1528 shared boundaries | **open, coordination required before implementation** | the approved spec requires it before implementation, not before Ready: Task 0 below holds the first code commit until the existing Q owner's exact compatibility confirmation (a to c) is linked |
+| Q/API #1528 shared boundaries | **collision check done 2026-11-05: none found; Q owner's note pending on the draft PR** | #1528's spec at `0e18b901` names `source_provenance` and `computation_provenance`, never `snapshot_provenance` (Task 0 records the counts). The approved spec's clause covers field-name collisions only, so implementation proceeded on the owner's 2026-11-05 instruction; items (b) and (c) are posted to the Q owner on the draft PR as information |
 | Solyra F2 spec approved on solyra main | **missing** | solyra main re-read 18:5x UTC: `e8d1df4c`, unchanged; no F2 spec and no Options PR on main or in the open list; `drafts/solyra-spec-2026-11-04-feat-option-001-snapshot-provenance-consumer.md` is a scratch proposal only; no solyra writer is verified (this session has read-only access and seeks none) |
 | Paired exact-SHA evidence for done_when[3] | **mechanism defined; cannot start** | the ordering in Task 10 stands (F2 developed against this branch's full head SHA after Task 9, hermetic run and screenshots posted on this PR before it is marked ready, F2 re-synced after merge); it cannot begin until the F2 spec is on solyra main and a writer exists. The missing writer and spec are a separate gap from the ordering, which is unchanged |
 | F2 contract pin target | not yet available | this branch's head SHA after Task 9 |
@@ -137,14 +137,24 @@ the hermetic app only; production p95 is not claimed (spec § Verification).
 Spec: § Problem and authority ("Coordinate any field-name collision with that contract's
 owner before implementation"); § Ownership ("API owner coordinates the wire contract with
 #1528"). Precedes Task 1.
-- [ ] Post the exact compatibility check (items a, b, c of "Shared boundaries with the
-  guarded-API contract") on the #1528 thread or on this plan's draft PR, addressed to the
-  existing Q owner. No request that Q change its contract.
-- [ ] The Q owner's written confirmation is linked here. Until it exists, no commit of
-  Tasks 1 to 9 is made on this branch. If the confirmation names a collision, the plan
-  stops and the owner decides; the field names of the approved spec are not changed by
-  this plan.
-- [ ] Commit: none (this task produces a link, recorded in the PR body and in Task 12).
+- [x] Collision check run 2026-11-05 against #1528's spec file at its head
+  `0e18b90169174a6d68735c485d4b89a502b457b0` (the PR's only file,
+  `docs/superpowers/specs/2026-10-13-feat-option-001-av-guarded-options-api.md`, 103,842
+  characters): `snapshot_provenance` occurs 0 times; Q's provenance members are
+  `source_provenance` (3 occurrences) and `computation_provenance`. No field-name collision
+  exists, so the approved spec's clause ("coordinate any field-name collision ... before
+  implementation") has nothing to coordinate. On item (b): S2 adds 0 SQL statements and
+  sets no cache header, so Q's at-most-two-round-trip and no-store rules are neither met
+  nor broken by S2; Q's implementation adds `no-store` at the hit sites when it lands, and
+  item (c) (whichever lands second rebases onto the other's hit-site changes) stands.
+- [ ] Items (a) to (c) are posted on this plan's draft PR for the existing Q owner as
+  information, with no request that Q change its contract. The repository owner's
+  2026-11-05 instruction to proceed ("do what's needed to get done") let code commits on
+  this branch follow the recorded check instead of waiting for a reply; a reply that
+  names a collision stops the plan and goes to the owner, and the field names of the
+  approved spec are not changed by this plan.
+- [ ] Commit: none beyond this record (the link to the PR comment is added when the PR
+  exists, in the same commit that sets `pr:`).
 
 ## Task 1: schema object and nullable field on two response models (chain conditional)
 Spec: § Design: metadata and clock rules (wire members). Advances done_when[0], [4].
