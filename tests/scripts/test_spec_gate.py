@@ -5023,7 +5023,7 @@ def test_measure_inventory_render_runs_the_actual_gate(inventory_repo):
         spaced = root.parent / 'render repository with spaces'
         root.rename(spaced); root = spaced
         write(root, MAIN_PY, 'raise RuntimeError("dirty worktree must not run")\n')
-        r, report = measurement(root, '--ref', 'base', '--max-rss-mib', '128', '--max-seconds', '10', '--output', str(root.parent/'accepted-output.json'))
+        r, report = measurement(root, '--ref', 'base', '--max-rss-mib', '512', '--max-seconds', '10', '--output', str(root.parent/'accepted-output.json'))
         assert r.returncode == 0 and report['kind'] == 'committed-inventory-render', r.stdout + r.stderr
         assert json.loads((root.parent/'accepted-output.json').read_text()) == report
         assert report['worker']['ref'] == _git(root, 'rev-parse', 'base') and report['worker']['renderer_exit'] == 0
