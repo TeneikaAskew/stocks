@@ -8,7 +8,10 @@ from unittest.mock import patch
 import io
 import pytest
 import pandas as pd
-from gcp.signal_monitor import SignalMonitor, _ET, get_premarket_bias
+# Names are read from the module at call time: another test reloads
+# gcp.signal_monitor, and a class imported at collection would then miss
+# every patch aimed at the module's current SignalMonitor.
+import gcp.signal_monitor as _sm
 from lib.strategies.insight_cache import InsightContext
 
 
@@ -56,13 +59,13 @@ def scenario(
                 return_value=["SYN"],
             )
         )
-        m = SignalMonitor(
+        m = _sm.SignalMonitor(
             **({"strat_rule_version": version} if version is not None else {})
         )
         m.webhook_url = "https://synthetic.invalid/refused"
         m.replay_clock_ts = pd.Timestamp("2026-01-06 15:00Z")
         m.volume_baselines["SYN"] = {
-            "date": m._now(_ET).date(),
+            "date": m._now(_sm._ET).date(),
             "baseline": {},
         }
         m.level_maps["SYN"] = object()
@@ -93,8 +96,8 @@ def scenario(
         }
         if persisted_brief:
             m._brief_bias_cache.clear()
-            get_premarket_bias.cache_clear()
-            s.callback(get_premarket_bias.cache_clear)
+            _sm.get_premarket_bias.cache_clear()
+            s.callback(_sm.get_premarket_bias.cache_clear)
             s.enter_context(
                 patch("gcp.database.is_cloud_sql_configured", return_value=True)
             )
@@ -614,10 +617,10 @@ def test_unadmitted_rule_refused_before_config_or_watchlist(version):
         raise ExternalBoundaryRefused("configuration/source work preceded admission")
 
     with patch("gcp.signal_monitor.load_config", side_effect=forbidden), patch.object(
-        SignalMonitor, "_resolve_watchlist", side_effect=forbidden
+        _sm.SignalMonitor, "_resolve_watchlist", side_effect=forbidden
     ):
         with pytest.raises(ValueError, match="not admitted"):
-            SignalMonitor(strat_rule_version=version)
+            _sm.SignalMonitor(strat_rule_version=version)
 
 
 @pytest.mark.parametrize(
@@ -627,7 +630,7 @@ def test_unadmitted_rule_refused_before_config_or_watchlist(version):
 def test_undeclared_input_or_basis_api_is_refused(migration):
     with patch("gcp.signal_monitor.load_config", side_effect=ExternalBoundaryRefused):
         with pytest.raises(TypeError):
-            SignalMonitor(**migration)
+            _sm.SignalMonitor(**migration)
 
 
 @pytest.mark.parametrize("entry", ["monitor", "replay"])
@@ -750,7 +753,7 @@ def test_legacy_monitor_keeps_actual_standalone_disabled_direction_gate(
 
     with ExitStack() as s:
         s.enter_context(
-            patch.object(SignalMonitor, "_resolve_watchlist", return_value=["SYN"])
+            patch.object(_sm.SignalMonitor, "_resolve_watchlist", return_value=["SYN"])
         )
         s.enter_context(
             patch("socket.socket.connect", side_effect=ExternalBoundaryRefused)
@@ -758,7 +761,7 @@ def test_legacy_monitor_keeps_actual_standalone_disabled_direction_gate(
         s.enter_context(
             patch("gcp.database.get_engine", side_effect=ExternalBoundaryRefused)
         )
-        m = SignalMonitor()
+        m = _sm.SignalMonitor()
         m.signal_cfg.enable_standalone_momentum = True
         for name, value in [
             ("get_call_rsi_range", (45, 70)),
