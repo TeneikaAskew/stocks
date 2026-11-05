@@ -45,8 +45,8 @@ half the picks.
 `gcp/premarket_brief.py`'s `load_ew_recap` (`:718`) finds the last NYSE session before the brief's
 date, reads the picks dated from the session before it through that one in one query, and keeps
 those that `scoring_session` scores on it, the rule this job uses. The brief attaches it on
-weekdays (`:1356`), so Monday's brief recaps Friday's session, and renders each scored pick with
-`_ew_verdict_str` (`:2467`) in its own section (`:2908`), counting the unscored ones. A failed load
+weekdays (`:1369`), so Monday's brief recaps Friday's session, and renders each scored pick with
+`_ew_verdict_str` (`:2480`) in its own section (`:2921`), counting the unscored ones. A failed load
 logs the error with its stack and puts an "unavailable" line in the embed
 (`_ew_recap_or_unavailable`, `:774`). Nothing else in the repository reads these columns; no
 router serves them.
