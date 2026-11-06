@@ -917,10 +917,11 @@ def _calibrate_conviction(
     # the sign must MATCH the trade direction — `abs(ftfc_score) >= 0.5`
     # would let a contradicting FTFC count as agreement (e.g. long with
     # ftfc_score=-0.8). Codex review on PR #351 caught this.
-    ftfc_aligned = (
-        (direction == "long" and ftfc_score >= 0.5)
-        or (direction == "short" and ftfc_score <= -0.5)
-    )
+    # Shared with compute_risk_metrics, so the raw score and its 2 dp
+    # snapshot give the same answer.
+    from .trade_planner import is_ftfc_aligned
+
+    ftfc_aligned = is_ftfc_aligned(direction, ftfc_score)
     if (
         analyst_agreement_count >= 4
         and ftfc_aligned
