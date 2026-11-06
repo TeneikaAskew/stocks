@@ -1,6 +1,6 @@
 ---
 feat_id: FEAT-OPTION-001
-spec: docs/superpowers/specs/2026-10-24-feat-option-001-legacy-snapshot-labels.md
+spec: docs/superpowers/specs/2026-11-05-feat-option-001-snapshot-labels-acceptance.md
 branch: feature/feat-option-001-snapshot-provenance
 pr: 1724
 status: ready
@@ -8,6 +8,14 @@ status: ready
 
 # Snapshot provenance on grid, levels and chain responses — implementation plan (S2)
 
+> **Spec re-pointed 2026-11-06.** The owner approved the acceptance amendment in #1738, merged to main as
+> `dfbd59fe`: `docs/superpowers/specs/2026-11-05-feat-option-001-snapshot-labels-acceptance.md` supersedes
+> the 2026-10-24 spec with the same design and five `done_when` items. The Solyra screen evidence moves to the
+> Solyra consumer PR (Task 10 below is therefore that PR's acceptance, not this one's), and the A8 manifest
+> check becomes the no-change check (transport SHA256 pinned, empty `gcp/` and `lib/` diff from the merge base,
+> single `classify_gamma_freshness` definition), which Task 11 now proves. done_when indices below refer to
+> the old six-item list; the mapping to the new list is 0,1,2 unchanged, old 4 is new 3, old 5 is new 4.
+>
 > **Status notes (2026-11-04 19:10 UTC, session machine clock; consistency pass after `c7f73dac`).** Spec on `origin/main`
 > at `0b9977800c404160314e65ffaca9256908321206` (#1580 merged about 18:42 UTC, squash of
 > `b0f67dac`): `docs/superpowers/specs/2026-10-24-feat-option-001-legacy-snapshot-labels.md`,
