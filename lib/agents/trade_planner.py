@@ -443,8 +443,38 @@ _SIZE_BY_CONVICTION = {
 # falls inside the holding window (e.g. CPI/FOMC mid-trade)
 _CONSERVATIVE_CATALYST_DAMPER = 0.6
 
-# minimum FTFC alignment for conservative to take a trade at all
+# minimum FTFC alignment for conservative to take a trade at all: a long
+# needs ftfc_score >= +0.30, a short ftfc_score <= -0.30
 _CONSERVATIVE_MIN_FTFC = 0.30
+
+# |ftfc_score| at or beyond which a trade counts as FTFC-aligned
+_FTFC_ALIGNED_MIN = 0.5
+# Floating-point slack for the aligned comparison only. The legacy weighted
+# vote (1d 0.30, 1w 0.10) scores a 2U daily with a 2D weekly as
+# (0.3 - 0.1) / 0.4 = 0.49999999999999994, which summarize_strat_status rounds
+# to 0.5; without the slack the raw score and its 2 dp snapshot disagree.
+# Stored scores are not changed (the FEAT-STRAT-001 legacy controls pin them).
+_FTFC_ALIGNED_TOLERANCE = 1e-9
+
+
+def is_ftfc_aligned(direction: str, ftfc_score: float) -> bool:
+    """True when the signed FTFC score agrees with the trade direction by at
+    least 0.5: long needs >= +0.5, short <= -0.5, flat is never aligned.
+    Shared by compute_risk_metrics and the orchestrator's conviction
+    calibration so every path gives the same answer for the same score."""
+    if direction == "long":
+        return ftfc_score >= _FTFC_ALIGNED_MIN - _FTFC_ALIGNED_TOLERANCE
+    if direction == "short":
+        return ftfc_score <= -_FTFC_ALIGNED_MIN + _FTFC_ALIGNED_TOLERANCE
+    return False
+
+
+def _fails_conservative_ftfc(ctx: "PlanContext") -> bool:
+    """The conservative persona's FTFC minimum, in the trade's direction:
+    a long stands aside below +0.30, a short above -0.30."""
+    if ctx.direction == "short":
+        return ctx.ftfc_score > -_CONSERVATIVE_MIN_FTFC
+    return ctx.ftfc_score < _CONSERVATIVE_MIN_FTFC
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -572,7 +602,7 @@ def _plan(
     size = _SIZE_BY_CONVICTION[persona][ctx.conviction]
     if persona == "conservative" and ctx.high_impact_catalyst_in_window:
         size *= _CONSERVATIVE_CATALYST_DAMPER
-    if persona == "conservative" and ctx.ftfc_score < _CONSERVATIVE_MIN_FTFC:
+    if persona == "conservative" and _fails_conservative_ftfc(ctx):
         # Trade fails the conservative trend-alignment gate; flat-zero size
         size = 0.0
     if persona == "conservative" and ctx.direction == "long" and \
@@ -661,10 +691,7 @@ def compute_risk_metrics(
                 (entry_mid - sma_200) / atr, 3
             )
     if ftfc_score is not None:
-        metrics_kwargs["ftfc_aligned"] = (
-            (direction == "long" and ftfc_score >= 0.5)
-            or (direction == "short" and ftfc_score <= -0.5)
-        )
+        metrics_kwargs["ftfc_aligned"] = is_ftfc_aligned(direction, ftfc_score)
     if invalidation_level is not None and atr > 0:
         metrics_kwargs["invalidation_distance_atr"] = round(
             abs(invalidation_level - stop) / atr, 3
@@ -746,7 +773,12 @@ def _build_rationale(
     """
     if size == 0.0:
         if persona == "conservative":
-            if ctx.ftfc_score < _CONSERVATIVE_MIN_FTFC:
+            if _fails_conservative_ftfc(ctx):
+                if ctx.direction == "short":
+                    return (
+                        f"Stand aside: FTFC alignment {ctx.ftfc_score:+.2f} above "
+                        f"-{_CONSERVATIVE_MIN_FTFC:.2f} threshold."
+                    )
                 return (
                     f"Stand aside: FTFC alignment {ctx.ftfc_score:+.2f} below "
                     f"+{_CONSERVATIVE_MIN_FTFC:.2f} threshold."
