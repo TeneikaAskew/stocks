@@ -8,7 +8,7 @@ done_when:
   - "tests/gcp/test_av_options_realtime_producer.py::test_failed_write_time_does_not_spend_the_source_window passes: a write that raises after 20 seconds still returns its time to the source window, the sibling ticker commits, and the run exits 1."
   - "The existing collector suites pass unchanged: tests/gcp/test_av_options_realtime_producer.py (including test_body_time_accumulates_across_tickers_preserving_first_ack), tests/gcp/test_av_options_collector_entry.py, tests/gcp/test_av_options_response_schema.py and tests/integration/test_options_collector_durability.py; gcp/fetchers/_av_realtime_transport.py is byte-identical (SHA256 af238d07c2043a0d34319dd533f6e36842e68a9ff536c37d9700e859de117284)."
   - "Own narrow plan/product records, no-new documentation audit, current-head required Codex review and CI pass through normal gates."
-status: draft
+status: approved
 supersedes: docs/superpowers/specs/2026-10-29-feat-option-001-collector-source-declaration.md
 ---
 
