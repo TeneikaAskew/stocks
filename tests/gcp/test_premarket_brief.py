@@ -3158,3 +3158,35 @@ def test_a_null_metric_read_back_as_nan_renders_as_absent(mock_cloud_sql):
     data['ew_recap'] = recap
     desc = _build_earnings_embed(data)['description']
     assert 'EW LC $30 HIT +18.7%' in desc and 'in ' not in desc.split('SNX')[1].split('\n')[0]
+
+
+class TestStratReplayClock:
+    """A BRIEF_AS_OF replay judges Strat at that morning's premarket clock,
+    not at the day it is rerun (Codex on #1714)."""
+
+    def test_live_run_keeps_the_now_clock(self, monkeypatch):
+        from gcp import premarket_brief as pb
+        monkeypatch.delenv('BRIEF_AS_OF', raising=False)
+        assert pb._strat_observation_clock(date(2026, 4, 8)) is None
+
+    def test_replay_uses_the_premarket_clock_of_the_replay_date(self, monkeypatch):
+        import pandas as pd
+        from gcp import premarket_brief as pb
+        monkeypatch.setenv('BRIEF_AS_OF', '2026-04-08')
+        assert pb._strat_observation_clock(date(2026, 4, 8)) == pd.Timestamp(
+            '2026-04-08 08:30', tz='America/New_York')
+
+    def test_replay_ftfc_matches_that_morning_on_the_captured_iwm_history(self, monkeypatch):
+        import pandas as pd
+        from gcp import premarket_brief as pb
+        from lib.strat import compute_strat_status
+        from scripts.research.strat_foundation_diagnostic import load_fixture
+        monkeypatch.setenv('BRIEF_AS_OF', '2026-04-08')
+        df, _ = load_fixture()
+        df = df.loc[df.index < pd.Timestamp('2026-04-08')]   # the brief's own cutoff
+        clock = pb._strat_observation_clock(date(2026, 4, 8))
+        out = compute_strat_status('IWM', df=df, timeframes=['1d', '1w', '1mo'],
+                                   as_of=clock, inclusive_today=clock is None)
+        assert out['observation_ts'] == '2026-04-08T08:30:00-04:00'
+        assert out['ftfc_labels'] == {'1d': '3', '1w': '2U', '1mo': '1'}
+        assert out['ftfc_score'] == 0.25
