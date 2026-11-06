@@ -259,7 +259,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Priority | P1 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-08-30 |
+| Last reviewed | 2026-11-05 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/live`, `/charts` |
 | Backend | via `lib/` |
@@ -269,7 +269,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Tests | `tests/lib/test_indicators*.py` |
 | Open issues | 5 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-ind-001--indicators-5-open) |
 | Blocking issues | [#870](https://github.com/TeneikaAskew/stocks/issues/870) [#892](https://github.com/TeneikaAskew/stocks/issues/892) [#894](https://github.com/TeneikaAskew/stocks/issues/894) [#912](https://github.com/TeneikaAskew/stocks/issues/912) [#1276](https://github.com/TeneikaAskew/stocks/issues/1276) |
-| Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
+| Next action | The premarket brief's level-break flags ([spec](../superpowers/specs/2026-11-05-feat-ind-001-brief-level-breaks.md), [plan](../superpowers/plans/2026-11-05-feat-ind-001-brief-level-breaks.md)): `add_brief_indicators` produces `Broke_Prev_Day_High` / `Broke_Prev_Day_Low`, so `level_break_pdh` / `level_break_pdl` can score (CALL and PUT still top out at 4 of 5 on real bars). Merge and deployed verification are recorded after release gates; otherwise sequence from [13](13-ROADMAP.md) Phase 1. |
 
 ### FEAT-INSIGHT-001
 
