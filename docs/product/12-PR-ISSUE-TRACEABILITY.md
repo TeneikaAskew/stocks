@@ -351,6 +351,8 @@ Allowance correction lineage: [#1587](https://github.com/TeneikaAskew/stocks/pul
 
 **PR lineage:** [#1565](https://github.com/TeneikaAskew/stocks/pull/1565) continues the isolated scheduled collector under approved successor [specification](../superpowers/specs/2026-10-29-feat-option-001-collector-source-declaration.md), admitted by #1636. Existing CLI delegates to bounded collector-only transport; threaded API behavior and financial normalization are preserved. LOCAL1/2 and CODE1–3 history remain; the explicitly approved runtime CODE4/current SEC and required checks cover the final integrated source. Specification aggregate4/CODE4 is separate. Source/test evidence is not job deployment, snapshot completeness or historical repair; seven future journal tables remain excluded.
 
+**PR lineage:** #1743 (pending) hands Cloud SQL write time back to the realtime source window under [specification](../superpowers/specs/2026-11-06-feat-option-001-source-window-excludes-writes.md), fixing issue #1646 (every scheduled fire failing since 2026-10-30).
+
 | Issue | Sev | Title |
 |---|---|---|
 | [#812](https://github.com/TeneikaAskew/stocks/issues/812) | CRITICAL | [audit] T1 — compute_gamma_flip_bs fabricates gamma flips out of float underflow |

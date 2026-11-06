@@ -349,8 +349,14 @@ from gcp.fetchers.fetch_av_realtime_options import _normalize_av_response
 
 
 def process_ticker(ticker: str, api_key: str, snapshot_ts: datetime, *,
-                   _source_deadline=None) -> int:
-    """Fetch one ticker and return its complete acknowledged upsert count."""
+                   _source_deadline=None, _persistence_elapsed=None) -> int:
+    """Fetch one ticker and return its complete acknowledged upsert count.
+
+    _persistence_elapsed: optional list; the seconds the Cloud SQL write took
+    are appended to it (also when the write raises), so the caller can keep
+    persistence out of the 15-second source window (spec A10: the source
+    phase is measured separately from the SQL allowance; issue #1646).
+    """
     import time
 
     _require_persistence()
@@ -395,18 +401,59 @@ def process_ticker(ticker: str, api_key: str, snapshot_ts: datetime, *,
     if len(df) < before:
         log.info("    deduped %d → %d rows", before, len(df))
 
+    write_started = _persistence_clock()
     try:
         acknowledged = upsert_dataframe(df, 'etf_options_snapshots', conflict_cols)
     except Exception:
         # The helper commits per chunk. An exception cannot prove zero writes.
         log.error("    write outcome uncertain; partial chunks may have committed")
         raise
+    finally:
+        _record_persistence(_persistence_elapsed, write_started)
     if type(acknowledged) is not int or acknowledged <= 0 or acknowledged != len(df):
         # Never format an untrusted helper result into diagnostics.
         raise RealtimeOptionsUnavailable("AV REALTIME_OPTIONS write acknowledgement unavailable")
     log.info("    ✓ upserted %d acknowledged rows to Cloud SQL", acknowledged)
 
     return acknowledged
+
+
+def _persistence_clock():
+    """The source window's own monotonic clock, or None when unreadable."""
+    try:
+        return _cli_transport._source_now()
+    except _cli_transport.SourceUnavailable:
+        return None
+
+
+def _record_persistence(sink, started):
+    """Append the finite, non-negative write duration to sink, if any."""
+    if sink is None or started is None:
+        return
+    finished = _persistence_clock()
+    if finished is None:
+        return
+    spent = finished - started
+    if math.isfinite(spent) and spent > 0:
+        sink.append(spent)
+
+
+def _exclude_persistence(source_deadline, spent):
+    """Move the source deadline past time spent writing, never backwards.
+
+    The source window bounds AV requests, bodies, pacing and empty retries.
+    Database writes have their own allowance and the job's task timeout, so
+    the time a write took is handed back to the source window.
+    """
+    total = 0.0
+    for value in spent:
+        if type(value) is float and math.isfinite(value) and value > 0:
+            total += value
+    spent.clear()
+    moved = source_deadline + total
+    if not math.isfinite(moved):
+        raise _cli_transport.SourceDeadline()
+    return moved
 
 
 def _require_persistence():
@@ -511,12 +558,15 @@ def main():
         sys.exit(1)
     errors = []
     total_rows = 0
+    persisted = []
     for i, ticker in enumerate(tickers):
         try:
             if i > 0:
+                source_deadline = _exclude_persistence(source_deadline, persisted)
                 _cli_transport.pace(source_deadline, _av_cfg.delay_between_calls)
             total_rows += process_ticker(ticker, api_key, snapshot_ts,
-                                         _source_deadline=source_deadline)
+                                         _source_deadline=source_deadline,
+                                         _persistence_elapsed=persisted)
         except (RealtimeOptionsUnavailable, _cli_transport.SourceUnavailable):
             # Track which tickers were unavailable; we still try the rest.
             # Job exits non-zero at the end if any ticker failed, which lets

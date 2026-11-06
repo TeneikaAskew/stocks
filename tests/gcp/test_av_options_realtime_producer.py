@@ -920,3 +920,90 @@ def test_actual_requests_bad_status_fails_with_fixed_safe_reason(monkeypatch):
     assert str(error.value) == 'http_error'
     assert observed == [response]
     assert response.raw.closed
+
+
+def test_persistence_time_does_not_spend_the_source_window(monkeypatch, caplog):
+    """Production incident #1646: from 2026-10-30 every scheduled fire failed.
+
+    The 15-second source window covers AV requests, bodies, pacing and empty
+    retries (spec A10: separate from the SQL allowance). A Cloud SQL upsert of
+    one ~13k-contract chain takes seconds, and while it ran inside the same
+    wall clock the later tickers were refused at pacing. Fast source calls
+    with a slow write must now commit every ticker; body time still
+    accumulates across tickers (see the test above).
+    """
+    import sys
+    from types import SimpleNamespace
+    from gcp.fetchers import _av_realtime_collector as mod
+    transport = mod._cli_transport
+    clock, calls, writes = [100.0], [], []
+    monkeypatch.setattr(transport, '_source_clock', lambda: clock[0])
+    monkeypatch.setattr(mod, '_av_cfg', SimpleNamespace(delay_between_calls=0))
+    monkeypatch.setattr(mod, '_regular_session_due', lambda stamp: True)
+    monkeypatch.setattr(mod, 'is_cloud_sql_configured', lambda: True)
+    monkeypatch.setenv('AV_API_KEY', 'offline-key')
+    monkeypatch.setattr(sys, 'argv', ['collector', '--tickers', 'SPY IWM QQQ'])
+
+    class OneSecondBody(_FakeResponse):
+        @property
+        def raw(self):
+            raw = super().raw
+            original = raw.read
+            def read(*args, **kwargs):
+                clock[0] += 0.5
+                return original(*args, **kwargs)
+            raw.read = read
+            return raw
+
+    def request(*args, **kwargs):
+        calls.append(kwargs['params']['symbol'])
+        return OneSecondBody(_good_payload())
+
+    def slow_write(df, *args):
+        clock[0] += 12.0   # one chain's Cloud SQL upsert, engine start included
+        writes.append(df['ticker'].iloc[0])
+        return len(df)
+
+    monkeypatch.setattr(mod.requests, 'get', request)
+    monkeypatch.setattr(mod, 'upsert_dataframe', slow_write)
+    caplog.set_level(logging.INFO)
+    mod.main()   # no SystemExit: every ticker acknowledged
+    assert calls == ['SPY', 'IWM', 'QQQ']
+    assert writes == ['SPY', 'IWM', 'QQQ']
+    assert '3 acknowledged contracts written, 0 errors' in caplog.text
+    assert 'source_deadline' not in caplog.text
+
+
+def test_failed_write_time_does_not_spend_the_source_window(monkeypatch, caplog):
+    """A write that raises still returns its time to the source window, so one
+    ticker's slow failed write cannot refuse its siblings' source calls."""
+    import sys
+    from types import SimpleNamespace
+    from gcp.fetchers import _av_realtime_collector as mod
+    transport = mod._cli_transport
+    clock, calls, writes = [100.0], [], []
+    monkeypatch.setattr(transport, '_source_clock', lambda: clock[0])
+    monkeypatch.setattr(mod, '_av_cfg', SimpleNamespace(delay_between_calls=0))
+    monkeypatch.setattr(mod, '_regular_session_due', lambda stamp: True)
+    monkeypatch.setattr(mod, 'is_cloud_sql_configured', lambda: True)
+    monkeypatch.setenv('AV_API_KEY', 'offline-key')
+    monkeypatch.setattr(sys, 'argv', ['collector', '--tickers', 'SPY IWM'])
+    monkeypatch.setattr(mod.requests, 'get',
+                        lambda *a, **k: calls.append(k['params']['symbol']) or _FakeResponse(_good_payload()))
+
+    def write(df, *args):
+        clock[0] += 20.0
+        ticker = df['ticker'].iloc[0]
+        if ticker == 'SPY':
+            raise RuntimeError('connection reset')
+        writes.append(ticker)
+        return len(df)
+
+    monkeypatch.setattr(mod, 'upsert_dataframe', write)
+    caplog.set_level(logging.INFO)
+    with pytest.raises(SystemExit) as result:
+        mod.main()
+    assert result.value.code == 1
+    assert calls == ['SPY', 'IWM']
+    assert writes == ['IWM']
+    assert 'source_deadline' not in caplog.text
