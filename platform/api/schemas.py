@@ -405,6 +405,13 @@ class MostActiveResponse(ApiModel):
 
 # ── dashboard.py ─────────────────────────────────────────────────────────
 
+# FEAT-STRAT-001: the field names stay ftfc_*; what they hold is displayed as
+# "TF bias". FTFC proper (price versus each current period open) is a
+# separate measure stored on premarket_analysis.tf_continuity.
+_TF_BIAS_SCORE = ("TF bias: weighted vote of candle types across timeframes (2U up, 2D down, "
+                  "1 and 3 zero), -1 to +1. Not price-versus-open FTFC.")
+_TF_BIAS_DIRECTION = "TF bias direction: bullish, bearish or mixed from the weighted candle vote."
+
 
 class DailyIndicators(ApiModel):
     """Either every key below or an empty object when the daily query failed."""
@@ -422,8 +429,8 @@ class DailyIndicators(ApiModel):
     strat_candle: Any = None
     strat_combo: Any = None
     strat_setup: Optional[bool] = None
-    ftfc_score: Optional[float] = None
-    ftfc_direction: Any = None
+    ftfc_score: Optional[float] = Field(default=None, description=_TF_BIAS_SCORE)
+    ftfc_direction: Any = Field(default=None, description=_TF_BIAS_DIRECTION)
     consecutive_up: Optional[int] = None
     consecutive_down: Optional[int] = None
     price_vs_ema9: Optional[float] = None
@@ -457,8 +464,8 @@ class DashboardBriefResponse(ApiModel):
     strat_candle: Any = None
     strat_combo: Any = None
     strat_setup: Optional[bool] = None
-    ftfc_score: Optional[float] = None
-    ftfc_direction: Any = None
+    ftfc_score: Optional[float] = Field(default=None, description=_TF_BIAS_SCORE)
+    ftfc_direction: Any = Field(default=None, description=_TF_BIAS_DIRECTION)
     daily_indicators: Optional[DailyIndicators] = None
     live: Optional[LiveOverlay] = None
 

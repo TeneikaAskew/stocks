@@ -71,7 +71,7 @@ def test_foundation_brief_unavailable_is_not_inside(monkeypatch, no_network):
     assert out['ftfc_score'] is None and out['ftfc_direction'] is None
     rendered = str(pb._build_ticker_fields(brief)).lower()
     assert 'daily: unavailable (invalid_ohlc)' in rendered
-    assert 'ftfc: unavailable' in rendered
+    assert 'tf bias: unavailable' in rendered
     assert 'daily: 1' not in rendered
 
     # Positive control through the same producer: a valid latest bar keeps
@@ -82,6 +82,94 @@ def test_foundation_brief_unavailable_is_not_inside(monkeypatch, no_network):
     assert good['strat_candle'] == '2D'
     assert isinstance(good['ftfc_score'], float)
     assert good['ftfc_direction'] in ('bullish', 'bearish', 'mixed')
+
+
+def _nov5_daily(ticker):
+    from tests.lib.test_strat import nov5_daily
+    return nov5_daily(ticker)
+
+
+@pytest.mark.parametrize('ticker, ftfc_line, tf_bias_line, labels_line, state', [
+    ('QQQ', 'FTFC: bearish (Q red, M red, W red)', 'TF bias: +0.5 (bullish)',
+     '1D:2U 1W:2D 1M:2D', 'bearish'),
+    ('IWM', 'FTFC: bullish (Q green, M green, W green)', 'TF bias: +1.0 (bullish)',
+     '1D:2U 1W:2U 1M:2U', 'bullish'),
+    ('SPY', 'FTFC: bullish (Q green, M green, W green)', 'TF bias: +1.0 (bullish)',
+     '1D:2U 1W:2U 1M:1', 'bullish'),
+])
+def test_nov5_brief_strat_box_shows_tf_bias_and_ftfc(monkeypatch, no_network, ticker,
+                                                     ftfc_line, tf_bias_line, labels_line, state):
+    """The 2026-11-05 08:30 ET brief through the actual producer on captured
+    bars: QQQ's latest close 691.95 is below the week and month open 695.315
+    (2026-11-02) and the quarter open, so FTFC is bearish while the weighted
+    vote (TF bias) reads +0.5 bullish. The signal gate follows TF bias."""
+    import json
+    pb, cfg = _brief(monkeypatch, _nov5_daily(ticker))
+    cfg.market.tickers = [ticker]
+    monkeypatch.setenv('BRIEF_AS_OF', '2026-11-05')
+    monkeypatch.setenv('BRIEF_TICKERS', ticker)
+    brief = pb.generate_premarket_brief(cfg=cfg)
+    out = brief['tickers'][ticker]
+    assert out['strat_observation_ts'] == '2026-11-05T08:30:00-05:00'
+    assert out['tf_continuity'] == state
+    assert set(out['tf_continuity_frames']) == {'1q', '1mo', '1w'}
+    for frame in out['tf_continuity_frames'].values():
+        assert frame['observed_price'] == out['price']
+        assert frame['price_provenance'] == 'latest_completed_close'
+        assert frame['price_session'] == '2026-11-04'
+        assert frame['rule_version'] == 'price-open-v1'
+    if ticker == 'QQQ':
+        assert out['price'] == 691.95
+        assert out['tf_continuity_frames']['1w']['open'] == 695.315
+        assert out['tf_continuity_frames']['1mo']['open'] == 695.315
+    strat = next(f['value'] for f in pb._build_ticker_fields(brief) if f['name'] == f'{ticker} Strat')
+    lines = strat.split('\n')
+    assert lines[lines.index(tf_bias_line) + 1] == labels_line
+    assert lines[lines.index(labels_line) + 1] == ftfc_line
+    # The gate reads the weighted vote: CALL side under bullish TF bias,
+    # even where FTFC is bearish (check_call_conditions=4, put=3 above).
+    assert out['ftfc_direction'] == 'bullish'
+    def gate(direction):
+        return pb._resolve_signal_status(
+            call_score=4, put_score=3, ftfc_direction=direction,
+            signal_threshold=cfg.signal.premarket_signal_threshold,
+            building_threshold=cfg.signal.premarket_building_threshold)
+    assert out['signal_status'] == gate('bullish')
+    assert gate('bullish') != gate('bearish')
+    json.dumps(out['tf_continuity_frames'])   # storable as JSONB
+
+
+@pytest.mark.parametrize('ticker, ftfc_line', [
+    ('QQQ', 'FTFC: unavailable (Q red, M opens today, W opens today)'),
+    ('IWM', 'FTFC: unavailable (Q green, M opens today, W opens today)'),
+    ('SPY', 'FTFC: unavailable (Q red, M opens today, W opens today)'),
+])
+def test_first_session_of_month_and_week_keeps_judged_frames(monkeypatch, no_network,
+                                                             ticker, ftfc_line):
+    """The 2026-11-02 (Monday, first session of November) 08:30 ET brief on
+    captured bars through 2026-10-30. The week and month open at 09:30, so
+    the state is unavailable and nothing claims agreement, while the quarter
+    (opened 2026-10-01) is still judged, stored and shown."""
+    import json
+    daily = _nov5_daily(ticker)
+    pb, cfg = _brief(monkeypatch, daily[daily.index <= '2026-10-30'])
+    cfg.market.tickers = [ticker]
+    monkeypatch.setenv('BRIEF_AS_OF', '2026-11-02')
+    monkeypatch.setenv('BRIEF_TICKERS', ticker)
+    brief = pb.generate_premarket_brief(cfg=cfg)
+    out = brief['tickers'][ticker]
+    assert out['strat_observation_ts'] == '2026-11-02T08:30:00-05:00'
+    assert out['tf_continuity'] == 'unavailable'
+    frames = out['tf_continuity_frames']
+    assert frames['1q']['relation'] in ('green', 'red')
+    assert frames['1q']['observed_price'] == out['price']
+    assert frames['1q']['price_session'] == '2026-10-30'
+    for tf in ('1mo', '1w'):
+        assert frames[tf]['relation'] == 'unavailable' and frames[tf]['open'] is None
+        assert frames[tf]['reasons'][0] == 'period_opens_after_clock'
+    strat = next(f['value'] for f in pb._build_ticker_fields(brief) if f['name'] == f'{ticker} Strat')
+    assert strat.split('\n')[-1] == ftfc_line
+    json.dumps(frames)   # storable as JSONB
 
 
 def _diagnostic_module():

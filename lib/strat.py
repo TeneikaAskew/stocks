@@ -687,17 +687,24 @@ def _continuity_result(version, required, frames, reasons, directions):
 
 def calculate_timeframe_continuity(
     tf_dataframes: dict[str, pd.DataFrame], observed_price: float,
-    required_timeframes: list[str],
+    required_timeframes: list[str], *, price_provenance: Optional[str] = None,
+    price_reasons: Optional[list[str]] = None,
 ) -> dict:
     """Compare ONE finite observed price to every explicitly required current open.
 
     Inputs must already share a coherent declared price basis/observation context.
     This pure helper does not acquire a quote, adjust prices, infer freshness or
     substitute a previous period. Provenance remains inspectable in coverage.
+    ``price_provenance`` names where the caller's price came from; non-empty
+    ``price_reasons`` (a caller's own check failed) make the price unusable
+    with those reasons instead of ``invalid_observed_price``.
     """
     inputs, required = _required_frames(tf_dataframes, required_timeframes)
-    price = _finite_scalar(observed_price)
-    reasons = ['invalid_observed_price'] if price is None else []
+    price_reasons = list(dict.fromkeys(price_reasons or []))
+    price = None if price_reasons else _finite_scalar(observed_price)
+    if price is None and not price_reasons:
+        price_reasons = ['invalid_observed_price']
+    reasons = list(price_reasons)
     frames, directions = {}, []
     for tf in required:
         name, frame = inputs.get(tf, (None, None))
@@ -709,7 +716,7 @@ def calculate_timeframe_continuity(
         elif open_ is None:
             missing.append('invalid_period_open')
         if price is None:
-            missing.append('invalid_observed_price')
+            missing.extend(price_reasons)
         relation = ('above' if price > open_ else 'below' if price < open_ else
                     'at_open') if not missing else 'unavailable'
         frames[tf] = {'input_timeframe': name, 'available': not missing, 'open': open_,
@@ -717,8 +724,63 @@ def calculate_timeframe_continuity(
         directions.append({'above':'bullish','below':'bearish'}.get(relation, 'mixed'))
     result = _continuity_result('price-open-v1', required, frames, reasons, directions)
     result['observed_price'] = price
-    result['price_provenance'] = 'caller_supplied' if price is not None else 'unknown'
+    result['price_provenance'] = (price_provenance or 'caller_supplied') if price is not None else 'unknown'
     return result
+
+
+# Display/storage view of price-open continuity (FTFC in Rob Smith's sense).
+# Green: price above that period's open; red: below. Never read by a gate.
+CONTINUITY_COLORS = {'above': 'green', 'below': 'red', 'at_open': 'at_open'}
+CONTINUITY_DISPLAY_ORDER = ('1y', '1q', '1mo', '1w', '1d')
+
+
+def _mark_periods_not_open(continuity: dict, clock: pd.Timestamp) -> None:
+    """Name a frame whose current period has not opened at the clock.
+
+    At 08:30 ET on the first session of a week, month or quarter that
+    period's first session opens at 09:30, so it has no open to compare
+    with. The frame stays unavailable (and so does the overall state); the
+    reason ``period_opens_after_clock`` leads its reasons so the brief can
+    say "W opens today" rather than a bare "unavailable". The frame records
+    ``period_start`` and the ``observation_ts`` it was judged at.
+    """
+    for record in continuity.get('frames', {}).values():
+        coverage = record.get('coverage') or {}
+        start = coverage.get('period_start')
+        record['observation_ts'] = clock.isoformat()
+        if start is None or record.get('available') or coverage.get('period_open_observed') is True:
+            continue
+        if pd.Timestamp(start) > clock:
+            record['reasons'] = ['period_opens_after_clock'] + list(record.get('reasons', []))
+
+
+def timeframe_continuity_record(continuity: Optional[dict]) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """``(state, frames)`` for storage and display from a price-open result.
+
+    ``state`` is bullish/bearish/mixed when every required frame is
+    available, else unavailable. ``frames`` maps each required timeframe to
+    its relation (green/red/at_open/unavailable), open, observed price,
+    provenance, period start, observation clock and reasons. A frame that
+    can be judged keeps its relation even when another frame is
+    unavailable. ``(None, None)`` when no result was computed.
+    """
+    if not continuity:
+        return None, None
+    state = continuity['direction'] if continuity.get('available') else 'unavailable'
+    price = continuity.get('observed_price')
+    frames = {}
+    for tf, record in continuity.get('frames', {}).items():
+        relation = CONTINUITY_COLORS.get(record.get('relation'), 'unavailable') if record.get('available') else 'unavailable'
+        frames[tf] = finite_snapshot({
+            'relation': relation, 'open': record.get('open'), 'observed_price': price,
+            'price_provenance': continuity.get('price_provenance'),
+            'price_session': continuity.get('observed_price_session'),
+            'rule_version': continuity.get('version'),
+            'period_start': (record.get('coverage') or {}).get('period_start'),
+            'observation_ts': record.get('observation_ts'),
+            'reasons': list(dict.fromkeys(record.get('reasons', []))),
+        })
+    return state, frames
 
 
 def calculate_directional_candle_continuity(
@@ -975,8 +1037,21 @@ def compute_strat_status(
     strat_config: Optional[StratConfig] = None,
     inclusive_today: bool = True,
     intraday_df: Optional[pd.DataFrame] = None,
+    *,
+    observed_price: Optional[float] = None,
+    observed_price_session: Optional[date_type] = None,
+    price_provenance: Optional[str] = None,
+    continuity_timeframes: Optional[list[str]] = None,
 ) -> Dict[str, Any]:
     """Snapshot at one Eastern observation clock, preserving legacy daily votes.
+
+    ``timeframe_continuity`` (price-open-v1) compares ``observed_price`` with
+    the current open of each of ``continuity_timeframes`` (default: the
+    ``timeframes``). Frames it needs beyond ``timeframes`` (such as ``1q``)
+    are built from the same filtered source at the same clock and policy and
+    feed only continuity, never the weighted vote or ``ftfc_labels``. With
+    ``observed_price_session`` the price counts only if that session closed
+    at or before the clock. Without a price, continuity is unavailable.
 
     ``confirmed_setups`` applies the closed-candle rule at the same clock:
     1w from the daily source and 5m-4h only from an explicitly supplied
@@ -1054,6 +1129,28 @@ def compute_strat_status(
     coverage = {tf: frame.attrs['coverage'] for tf, frame in tf_dfs.items()}
     for record in coverage.values():
         record['reasons'] = list(dict.fromkeys(source_reasons + record['reasons']))
+    continuity_timeframes = list(continuity_timeframes or timeframes)
+    built = {_canonical_timeframe(tf) for tf in tf_dfs}
+    extra = [tf for tf in continuity_timeframes if _canonical_timeframe(tf) not in built]
+    continuity_dfs = dict(tf_dfs)
+    if extra:
+        # Continuity-only frames: same source, clock and policy as tf_dfs.
+        extra_dfs = loader.build_multi_timeframe(df, timeframes=extra,
+                                                 observation_ts=confirmation_clock,
+                                                 aggregation_policy='observed_v2')
+        for frame in extra_dfs.values():
+            record = frame.attrs['coverage']
+            record['reasons'] = list(dict.fromkeys(source_reasons + record['reasons']))
+        continuity_dfs.update(extra_dfs)
+    price_reasons = []
+    price_session = None
+    if observed_price is not None and observed_price_session is not None:
+        price_session = pd.Timestamp(observed_price_session).date()
+        price_day = session_schedule(price_session, price_session)
+        if not len(price_day):
+            price_reasons.append('observed_price_session_not_trading_day')
+        elif price_day.iloc[0]['market_close'].tz_convert(ET_NAME) > confirmation_clock:
+            price_reasons.append('observed_price_after_clock')
     daily = loader.aggregate_to_timeframe(df, '1d', observation_ts=confirmation_clock,
                                           aggregation_policy='observed_v2')
     # Session adjacency supplied by the adapter must also guard daily combos.
@@ -1084,10 +1181,15 @@ def compute_strat_status(
     }
     strat = StratClassifier(strat_config=strat_config)
     metadata.update(
-        timeframe_continuity=calculate_timeframe_continuity(tf_dfs, None, timeframes),
+        timeframe_continuity=calculate_timeframe_continuity(
+            continuity_dfs, observed_price, continuity_timeframes,
+            price_provenance=price_provenance, price_reasons=price_reasons),
         directional_candle_continuity=calculate_directional_candle_continuity(tf_dfs, timeframes),
         weighted_candle_alignment=strat.describe_weighted_candle_alignment(tf_dfs),
     )
+    if price_session is not None:
+        metadata['timeframe_continuity']['observed_price_session'] = str(price_session)
+        _mark_periods_not_open(metadata['timeframe_continuity'], confirmation_clock)
     if source_reasons:
         return {**metadata, 'available': False, 'reason': 'unsupported_source_contract',
                 'date': '', 'last_candle': 'X'}

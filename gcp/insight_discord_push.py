@@ -469,7 +469,9 @@ def format_report_embed(row: dict) -> dict:
     if strat.get("ftfc_direction"):
         score = strat.get("ftfc_score")
         score_str = f"{float(score):+.2f}" if isinstance(score, (int, float)) else str(score)
-        strat_lines.append(f"FTFC {score_str} **{strat['ftfc_direction']}**")
+        # The weighted candle vote (key ftfc_*) is displayed as "TF bias";
+        # "FTFC" is reserved for price versus each current period open.
+        strat_lines.append(f"TF bias {score_str} **{strat['ftfc_direction']}**")
     if strat.get("in_force_combo"):
         combo_pretty = _fmt_combo(strat["in_force_combo"]) or strat["in_force_combo"]
         strat_lines.append(f"Combo **{combo_pretty}**")
@@ -493,7 +495,7 @@ def format_report_embed(row: dict) -> dict:
             "inline": True,
         },
         {
-            "name": "🎲 Strat / FTFC",
+            "name": "🎲 Strat / TF bias",
             "value": _truncate(" · ".join(strat_lines) or "—", MAX_FIELD_VALUE),
             "inline": True,
         },

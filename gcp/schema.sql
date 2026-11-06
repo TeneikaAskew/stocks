@@ -2065,6 +2065,32 @@ ALTER TABLE premarket_analysis_history
     ADD COLUMN IF NOT EXISTS puts_t3_price         DOUBLE PRECISION;
 
 
+-- FEAT-STRAT-001 (2026-11-05): FTFC in Rob Smith's sense, price above
+-- (green) or below (red) the current period's open on every timeframe,
+-- rule lib.strat price-open-v1. The brief's existing ftfc_score /
+-- ftfc_direction keep the weighted candle vote (displayed as "TF bias"),
+-- which is what the gates read; these columns are display and storage
+-- only and no gate reads them.
+--
+--   tf_continuity         'bullish' | 'bearish' | 'mixed' | 'unavailable';
+--                         NULL on rows written before this column.
+--   tf_continuity_frames  per timeframe ('1q', '1mo', '1w' premarket):
+--                         {relation: green|red|at_open|unavailable, open,
+--                          observed_price, price_provenance, price_session,
+--                          rule_version, reasons}.
+--
+-- Both tables, because the history rows are the canonical rows plus audit
+-- metadata. Additive and nullable; until this is applied, upsert_dataframe
+-- and bulk_insert_dataframe drop the two keys from the brief's rows.
+ALTER TABLE premarket_analysis
+    ADD COLUMN IF NOT EXISTS tf_continuity        VARCHAR(12),
+    ADD COLUMN IF NOT EXISTS tf_continuity_frames JSONB;
+
+ALTER TABLE premarket_analysis_history
+    ADD COLUMN IF NOT EXISTS tf_continuity        VARCHAR(12),
+    ADD COLUMN IF NOT EXISTS tf_continuity_frames JSONB;
+
+
 CREATE TABLE IF NOT EXISTS insight_reports_history (
     id                BIGSERIAL    PRIMARY KEY,
     -- Optional FK to existing insight_runs row. SET NULL on delete so
