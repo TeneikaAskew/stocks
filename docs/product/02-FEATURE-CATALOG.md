@@ -282,7 +282,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Priority | P2 |
 | Target phase | Phase 4 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-05 |
+| Last reviewed | 2026-11-06 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/insights` |
 | Backend | `/api/insights` (13) |
