@@ -292,7 +292,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Tests | `insights.spec.ts`, `tests/agents/test_agent_*.py` |
 | Open issues | 31 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-insight-001--ai-insights-31-open) |
 | Blocking issues | [#827](https://github.com/TeneikaAskew/stocks/issues/827) [#867](https://github.com/TeneikaAskew/stocks/issues/867) [#1215](https://github.com/TeneikaAskew/stocks/issues/1215) [#1216](https://github.com/TeneikaAskew/stocks/issues/1216) [#1217](https://github.com/TeneikaAskew/stocks/issues/1217) [#916](https://github.com/TeneikaAskew/stocks/issues/916) |
-| Next action | Insight planner trigger distance cap (spec in [#1745](https://github.com/TeneikaAskew/stocks/pull/1745), [plan](../superpowers/plans/2026-11-07-feat-insight-001-trigger-distance-cap.md)): a trigger only inside the brief's window (3 x the ticker's ATR(14) and 8% of price), a structural level touched to the cent counts as unbroken, and no trigger is synthesized (orb_only instead). Merge and deployed verification are recorded after release gates; otherwise sequence from [13](13-ROADMAP.md) Phase 4. |
+| Next action | Insight planner trigger distance cap ([spec](../superpowers/specs/2026-11-07-feat-insight-001-trigger-distance-cap.md), [plan](../superpowers/plans/2026-11-07-feat-insight-001-trigger-distance-cap.md)): a trigger only inside the brief's window (3 x the ticker's ATR(14) and 8% of price), a structural level touched to the cent counts as unbroken, and no trigger is synthesized (orb_only instead). Merge and deployed verification are recorded after release gates; otherwise sequence from [13](13-ROADMAP.md) Phase 4. |
 
 ### FEAT-CATALYST-001
 
