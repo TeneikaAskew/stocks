@@ -506,9 +506,10 @@ class OwnedFamily:
 
 
 NOTICE_CUT = b" [notice cut]\n"
+NOTICE_FINISH_SECONDS = 0.25   # all notices together may wait this long for a slow reader after a part write
 
 
-def write_notice(line: str) -> None:
+def write_notice(line: str, finish_by: float | None = None) -> None:
     """Write one cleanup notice to stderr without ever blocking. A stream with no descriptor (a test's StringIO, or
     an object with no fileno at all) is printed to, since it cannot block. Otherwise the line goes to the descriptor
     (fd 2 when sys.stderr is None) in non-blocking mode as one ASCII line: its text is escaped with unicode_escape,
@@ -516,10 +517,12 @@ def write_notice(line: str) -> None:
     turn into another path's name; a line over PIPE_BUF bytes is cut to PIPE_BUF and ends in NOTICE_CUT, so a pipe
     takes it whole or not at all and a cut path is never read as a whole one; a cut falls between whole escapes, so
     the kept text still decodes with unicode_escape; and the descriptor's blocking flag is restored even when an
-    interrupt arrives. Raises OSError (BlockingIOError when the pipe is full, EBADF when it is closed, EIO when the
-    descriptor took only part of the line, as a stream socket or a regular file at its size limit can; the fragment
-    is then ended with NOTICE_CUT where the descriptor still takes it) or ValueError. write_notices drops the notice
-    on any of them and writes no further notice after EIO, so none is joined to a fragment."""
+    interrupt arrives. When the descriptor takes only part of the line (a stream socket whose buffer just filled),
+    the rest is written as the descriptor becomes writable, until finish_by (monotonic; NOTICE_FINISH_SECONDS from
+    now when not given), so the line still arrives whole. Raises OSError (BlockingIOError when the pipe is full, EBADF
+    when it is closed, EIO when the rest could not be written by finish_by: a reader that does not drain, or a
+    regular file at its size limit; the fragment then stays unmarked, and later stderr text can join its line) or
+    ValueError. write_notices drops the notice on any of them and writes no further notice after EIO."""
     stream = sys.stderr
     try:
         fd = 2 if stream is None else stream.fileno()
@@ -539,20 +542,51 @@ def write_notice(line: str) -> None:
     blocking = os.get_blocking(fd)
     try:
         os.set_blocking(fd, False)                     # inside the try: an interrupt here still restores the flag
-        if os.write(fd, data) != len(data):            # a stream socket, or a regular file at its size limit
-            with contextlib.suppress(OSError):
-                os.write(fd, NOTICE_CUT)               # best effort: end the fragment and mark it cut
-            raise OSError(errno.EIO, "notice written in part")
+        sent = os.write(fd, data)
+        if sent != len(data):                          # a stream socket, or a regular file at its size limit
+            if finish_by is None:
+                finish_by = time.monotonic() + NOTICE_FINISH_SECONDS
+            if sent + finish_notice(fd, data[sent:], finish_by) != len(data):
+                raise OSError(errno.EIO, "notice written in part")
     finally:
         os.set_blocking(fd, blocking)
 
 
+def finish_notice(fd: int, rest: bytes, finish_by: float) -> int:
+    """Write the rest of a part-written notice to the non-blocking descriptor, waiting for it to become writable
+    until finish_by (monotonic), and return how many bytes of rest were written. Stops early on any error other than
+    BlockingIOError (EFBIG or ENOSPC at a size limit, EPIPE, EBADF) and on a write of 0 bytes."""
+    written = 0
+    while written < len(rest):
+        left = finish_by - time.monotonic()
+        if left <= 0:
+            break
+        try:
+            _, ready, _ = select.select([], [fd], [], left)
+        except (OSError, ValueError):
+            break
+        if not ready:
+            break
+        try:
+            n = os.write(fd, rest[written:])
+        except BlockingIOError:
+            continue
+        except OSError:
+            break
+        if n <= 0:
+            break
+        written += n
+    return written
+
+
 def write_notices(notices: list[str]) -> None:
-    """Write each cleanup notice with write_notice, dropping one that cannot be written. After a part write (EIO)
-    no further notice is written, so none can join the fragment on its line (#1700 pass 27 R1 F1)."""
+    """Write each cleanup notice with write_notice, dropping one that cannot be written. All of them share one
+    NOTICE_FINISH_SECONDS budget for finishing part writes, so a slow reader adds at most that to the cleanup. After
+    a part write that could not be finished (EIO) no further notice is written (#1700 pass 27 R1 F1)."""
+    finish_by = time.monotonic() + NOTICE_FINISH_SECONDS
     for notice in notices:
         try:
-            write_notice(f"measure_inventory_render: {notice}\n")
+            write_notice(f"measure_inventory_render: {notice}\n", finish_by)
         except OSError as e:
             if e.errno == errno.EIO:
                 return
@@ -861,7 +895,8 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                         # channel, so they go to fd 2 itself, where a closed fd is only an OSError (#1700 pass 22 R1 F1).
                         # SIGALRM is blocked here, so a write to a full stderr pipe would wait past the deadline: each
                         # notice is written to the descriptor without blocking, and one that does not fit is dropped
-                        # (#1700 pass 23 R1 F1).
+                        # (#1700 pass 23 R1 F1). A part write is finished within one shared NOTICE_FINISH_SECONDS
+                        # budget; one left in part stops the notices, so every later one is dropped (pass 28).
                         write_notices(notices)
         except DeliveryDeadline as e:
             report.update(ok=False, reason="time_limit", error=str(e))

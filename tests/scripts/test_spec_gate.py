@@ -6125,7 +6125,7 @@ def test_measure_inventory_render_notices_never_wait_on_a_full_stderr_pipe(tmp_p
 
 
 NOTICE_PROBE = r"""
-import importlib.util,json,os,select,sys
+import importlib.util,json,os,select,socket,sys,threading,time
 s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 mode=sys.argv[2];r,w=os.pipe();real_os=os;out={}
 class Interrupting:   # the real call runs, then the interrupt a second SIGINT would raise as it returns
@@ -6139,6 +6139,20 @@ class Short:          # a stream socket under pressure takes only part of the fi
     def write(self,fd,data):
         Short.calls+=1
         return real_os.write(fd,data[:len(data)//2] if Short.calls==1 else data)
+class Stuck:          # a reader that never drains: a new line goes in part, then nothing more fits
+    def __getattr__(self,name): return getattr(real_os,name)
+    def write(self,fd,data):
+        if data.startswith((b'retained',b'measure_inventory_render')): return real_os.write(fd,data[:len(data)//2])
+        raise BlockingIOError(11,'Resource temporarily unavailable')
+class Slow:           # a reader that drains 0.15 s after each part write
+    since=0.0
+    def __getattr__(self,name): return getattr(real_os,name)
+    def write(self,fd,data):
+        if data.startswith(b'measure_inventory_render'):
+            Slow.since=time.monotonic();return real_os.write(fd,data[:len(data)//2])
+        if time.monotonic()-Slow.since<.15: raise BlockingIOError(11,'Resource temporarily unavailable')
+        return real_os.write(fd,data)
+TWO=['retained /tmp/root (removal_failed)','retained /tmp/other (spawn_children_unknown)']
 stream=os.fdopen(w,'w');real_stderr=sys.stderr;sys.stderr=stream
 try:
     if mode=='flag':
@@ -6147,17 +6161,39 @@ try:
         except KeyboardInterrupt: out['interrupted']=True
         m.os=real_os
         out['blocking']=os.get_blocking(w)
-    elif mode=='short':
-        m.os=Short()
+    elif mode in('short','stuck'):
+        m.os=Short() if mode=='short' else Stuck();started=time.monotonic()
         try: m.write_notice('retained /tmp/root (removal_failed)\n')
         except OSError as e: out['raised']=e.errno
-        m.os=real_os
-    elif mode=='short-two':
-        m.os=Short()
-        m.write_notices(['retained /tmp/root (removal_failed)','retained /tmp/other (spawn_children_unknown)'])
-        m.os=real_os
+        out['seconds']=time.monotonic()-started;m.os=real_os
+    elif mode in('short-two','stuck-two','slow-three'):
+        m.os={'short-two':Short,'stuck-two':Stuck,'slow-three':Slow}[mode]();started=time.monotonic()
+        m.write_notices(TWO+['child 4242 not proven killed: signal refused'] if mode=='slow-three' else TWO)
+        out['seconds']=time.monotonic()-started;m.os=real_os
+    elif mode=='closed':  # a stream whose own write raises ValueError
+        import io;gone=io.StringIO();gone.close();sys.stderr=gone
+        try: m.write_notices(TWO);out['dropped']=True
+        except ValueError as e: out['raised']=str(e)
+        sys.stderr=stream
+    elif mode=='socket':  # a real stream socket whose send buffer has room for only part of the line, read late
+        a,b=socket.socketpair(socket.AF_UNIX,socket.SOCK_STREAM)
+        a.setsockopt(socket.SOL_SOCKET,socket.SO_SNDBUF,1);a.setblocking(False)
+        try:
+            while True: a.send(b'x'*512)
+        except BlockingIOError: pass
+        b.setblocking(False);got=0
+        while got<512: got+=len(b.recv(512-got))
+        a.setblocking(True);sock=os.fdopen(os.dup(a.fileno()),'w');sys.stderr=sock;buf=bytearray()
+        def drain():
+            time.sleep(.05);b.setblocking(True)
+            while c:=b.recv(1<<16): buf.extend(c)
+        reader=threading.Thread(target=drain);reader.start()
+        m.write_notices(['retained /tmp/scratch-'+'r'*3000+'/root (removal_failed)','child 4242 not proven killed: signal refused'])
+        sys.stderr=stream;sock.close();a.close();reader.join()
+        text=bytes(buf).lstrip(b'x');out.update(socket_lines=text.decode('ascii','replace').splitlines())
     else:
         m.write_notice({'backslash':'retained /tmp/x\\udcff/root\n','cr':'retained /tmp/keep\rx/root\n',
+                        'cut-mixed':'retained /tmp/keep\nx\\udcff\r\u00e9'+'a'*5000+'\u00e9/z\n',
                         'cut-escape':'retained /a'+'\u00e9'*2000+'\n','cut-backslash':'retained /a'+'\\'*3000+'\n',
                         'exact':'retained /'+'a'*4085+'\n','newline':'retained /tmp/keep\nx/root (spawn_children_unknown)\n','escape':'retained /tmp/x\udcff/root\n','long':'retained /'+'a'*10000+'\n',
                         'split':'retained /'+'a'*4071+'\u00e9/root'+'x'*100+'\n'}[mode])   # the cut falls inside the e acute
@@ -6205,7 +6241,7 @@ def test_measure_inventory_render_notice_cut_never_splits_a_character(tmp_path):
     """A notice is escaped to ASCII before any cut, so a cut never falls inside a character and the line still
     decodes (pass 25 R1 F1)."""
     seen = run_notice_probe(tmp_path, "split")
-    assert seen["decodes"] and seen["tail"].endswith(" [notice cut]\n") and seen["length"] <= seen["pipe_buf"], seen
+    assert seen["decodes"] and seen["tail"].endswith("a [notice cut]\n") and seen["length"] == seen["pipe_buf"] - 1, seen
 
 
 def test_measure_inventory_render_notice_cut_never_splits_an_escape(tmp_path):
@@ -6215,6 +6251,10 @@ def test_measure_inventory_render_notice_cut_never_splits_an_escape(tmp_path):
         seen = run_notice_probe(tmp_path, mode)
         assert seen["unescapes"] and seen["lines"] == 1 and seen["length"] <= seen["pipe_buf"], (mode, seen)
         assert seen["tail"].endswith(" [notice cut]\n"), (mode, seen)
+    # The cut keeps escaping every character: a line feed, a backslash and a carriage return before the cut.
+    seen = run_notice_probe(tmp_path, "cut-mixed")
+    assert seen["lines"] == 1 and seen["length"] <= seen["pipe_buf"] and seen["unescapes"], seen
+    assert seen["head"].startswith("retained /tmp/keep\\nx\\\\udcff\\r\\xe9aaa") and seen["tail"] == "aaaaaa [notice cut]\n", seen
 
 
 def test_measure_inventory_render_notice_escapes_a_backslash_and_a_carriage_return(tmp_path):
@@ -6240,18 +6280,48 @@ def test_measure_inventory_render_notice_keeps_a_line_feed_in_a_path_on_one_line
 
 
 def test_measure_inventory_render_notice_written_in_part_raises(tmp_path):
-    """A write that takes only part of a notice (a regular file at its size limit) raises, so the caller knows the
-    notice was not delivered whole (pass 26 R1 F2)."""
+    """A part write whose rest the descriptor never takes (a reader that does not drain) raises EIO once the budget
+    runs out, so write_notices writes no further notice (pass 26 R1 F2, pass 27 R3 F1)."""
     import errno
-    seen = run_notice_probe(tmp_path, "short")
-    assert seen.get("raised") == errno.EIO and seen["tail"].endswith(" [notice cut]\n") and seen["lines"] == 1, seen
+    seen = run_notice_probe(tmp_path, "stuck")
+    assert seen.get("raised") == errno.EIO and seen["lines"] == 0 and 0.2 <= seen["seconds"] < 1.5, seen
 
 
 def test_measure_inventory_render_no_notice_joins_a_part_written_one(tmp_path):
-    """After a part write the fragment is ended with the cut marker and no further notice is written, so a second
-    notice never lands on the fragment's line (pass 27 R1 F1)."""
+    """A part write is finished as the descriptor takes more, so the line arrives whole and the next notice starts
+    a line of its own (pass 27 R1 F1, pass 28 R1 F1 and F2)."""
+    seen = run_notice_probe(tmp_path, "short")
+    assert "raised" not in seen and seen["text"] == "retained /tmp/root (removal_failed)\n", seen
     seen = run_notice_probe(tmp_path, "short-two")
-    assert seen["lines"] == 1 and seen["text"].endswith(" [notice cut]\n") and "other" not in seen["text"], seen
+    assert seen["lines"] == 2 and seen["text"].endswith("retained /tmp/other (spawn_children_unknown)\n"), seen
+
+
+def test_measure_inventory_render_writes_no_notice_after_one_left_in_part(tmp_path):
+    """When the rest of a part-written notice cannot be written within the shared budget, no further notice is
+    written, so none joins the fragment, and the wait stays bounded (pass 27 R1 F1)."""
+    seen = run_notice_probe(tmp_path, "stuck-two")
+    assert seen["lines"] == 0 and seen["text"].count("measure_inventory_render") == 1 and seen["seconds"] < 1.5, seen
+
+
+def test_measure_inventory_render_notices_drop_a_stream_that_raises_value_error(tmp_path):
+    """A stream that raises ValueError on write (closed) drops each notice; nothing propagates (pass 28 R4 F3)."""
+    seen = run_notice_probe(tmp_path, "closed")
+    assert seen.get("dropped") and "raised" not in seen, seen
+
+
+def test_measure_inventory_render_notices_share_one_finishing_budget(tmp_path):
+    """Notices that each need 0.15 s to finish share one 0.25 s budget, so a slow reader cannot stretch the cleanup
+    by a wait per notice: the first is finished and the second is cut off with nothing after it."""
+    seen = run_notice_probe(tmp_path, "slow-three")
+    assert seen["lines"] == 1 and "removal_failed" in seen["text"] and "4242" not in seen["text"], seen
+
+
+def test_measure_inventory_render_notice_over_a_stream_socket_arrives_whole(tmp_path):
+    """A real stream socket takes only part of a long notice while its buffer is full; the notice is finished once
+    the reader drains, so each notice is one whole line (pass 28 R1 F1)."""
+    seen = run_notice_probe(tmp_path, "socket")
+    lines = seen["socket_lines"]
+    assert len(lines) == 2 and lines[0].endswith("/root (removal_failed)") and lines[1].endswith("signal refused"), seen
 
 
 STALLED_PROBE = r"""
