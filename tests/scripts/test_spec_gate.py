@@ -6324,6 +6324,86 @@ def test_measure_inventory_render_notice_over_a_stream_socket_arrives_whole(tmp_
     assert len(lines) == 2 and lines[0].endswith("/root (removal_failed)") and lines[1].endswith("signal refused"), seen
 
 
+FINISH_PROBE = r"""
+import fcntl,importlib.util,json,os,resource,socket,sys,time
+s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+mode=sys.argv[2];real_os=os;real_stderr=sys.stderr;out={}
+LONG='retained /tmp/scratch-'+'r'*3000+'/root (removal_failed)'
+def read_all(fd):
+    data=b''
+    while c:=os.read(fd,1<<16): data+=c
+    return data
+started=time.monotonic();cpu=time.process_time()
+if mode=='stuck-socket':   # a real stream socket whose reader never drains: part of the line fits, the rest never does
+    a,b=socket.socketpair(socket.AF_UNIX,socket.SOCK_STREAM)
+    a.setsockopt(socket.SOL_SOCKET,socket.SO_SNDBUF,1);a.setblocking(False)
+    try:
+        while True: a.send(b'x'*512)
+    except BlockingIOError: pass
+    b.setblocking(False);got=0
+    while got<512: got+=len(b.recv(512-got))
+    a.setblocking(True);sys.stderr=os.fdopen(os.dup(a.fileno()),'w')
+    m.write_notices([LONG,'child 4242 not proven killed: signal refused'])
+elif mode=='trickle':      # each write takes at most 1000 bytes, so the rest of a notice takes several writes
+    r,w=os.pipe()
+    class Trickle:
+        def __getattr__(self,name): return getattr(real_os,name)
+        def write(self,fd,data): return real_os.write(fd,data[:1000])
+    sys.stderr=os.fdopen(w,'w');m.os=Trickle()
+    m.write_notices([LONG,'child 4242 not proven killed: signal refused'])
+    m.os=real_os;sys.stderr.close();out['lines']=read_all(r).decode().splitlines()
+elif mode=='fullish':      # a pipe with 100 bytes free: the cut 4096-byte notice is refused, a short one after it fits
+    r,w=os.pipe();size=fcntl.fcntl(w,1032)   # F_GETPIPE_SZ
+    os.set_blocking(w,False);os.write(w,b'x'*(size-100));os.set_blocking(w,True)
+    sys.stderr=os.fdopen(w,'w')
+    m.write_notices(['retained /tmp/scratch-'+'r'*5000+'/root (removal_failed)','child 42 gone'])
+    sys.stderr.close();out['after']=read_all(r)[size-100:].decode()
+elif mode=='fsize':        # a regular file 100 bytes short of RLIMIT_FSIZE: one part write, then EFBIG
+    f=open(sys.argv[3],'wb');f.write(b'y'*900);f.flush()
+    resource.setrlimit(resource.RLIMIT_FSIZE,(1000,resource.RLIM_INFINITY));sys.stderr=f
+    m.write_notices(['retained /tmp/root (removal_failed) '+'q'*200,'child 4242 not proven killed: signal refused'])
+sys.stderr=real_stderr
+out.update(seconds=time.monotonic()-started,cpu=time.process_time()-cpu)
+print(json.dumps(out))
+"""
+
+
+def run_finish_probe(tmp_path, mode):
+    r = subprocess.run([sys.executable, "-c", FINISH_PROBE, str(REPO / MEASURE), mode, str(tmp_path / "stderr.out")],
+                       capture_output=True, text=True, timeout=15, cwd=tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return json.loads(r.stdout)
+
+
+def test_measure_inventory_render_notice_wait_is_bounded_on_a_socket_that_never_drains(tmp_path):
+    """The finishing wait on a real socket that never becomes writable ends with the budget (pass 29 R4 F1)."""
+    seen = run_finish_probe(tmp_path, "stuck-socket")
+    assert 0.2 <= seen["seconds"] < 1.5, seen
+
+
+def test_measure_inventory_render_notice_rest_written_in_several_parts(tmp_path):
+    """The rest of a part-written notice can itself take several writes, each continuing where the last stopped
+    (pass 29 R4 F2)."""
+    seen = run_finish_probe(tmp_path, "trickle")
+    assert len(seen["lines"]) == 2 and seen["lines"][0].endswith("r/root (removal_failed)"), seen
+    assert seen["lines"][0] == "measure_inventory_render: retained /tmp/scratch-" + "r" * 3000 + "/root (removal_failed)", seen
+    assert seen["lines"][1].endswith("signal refused"), seen
+
+
+def test_measure_inventory_render_notices_go_on_after_one_that_does_not_fit(tmp_path):
+    """A notice refused whole by a nearly full pipe is dropped and the next one is still written; only a part
+    write stops the notices (pass 29 R4 F3)."""
+    seen = run_finish_probe(tmp_path, "fullish")
+    assert seen["after"] == "measure_inventory_render: child 42 gone\n", seen
+
+
+def test_measure_inventory_render_notice_finish_stops_at_a_size_limit(tmp_path):
+    """A regular file at its size limit refuses the rest with EFBIG, and the finish stops at once instead of
+    retrying for the whole budget (pass 29 R4 F4)."""
+    seen = run_finish_probe(tmp_path, "fsize")
+    assert seen["seconds"] < 0.1, seen
+
+
 STALLED_PROBE = r"""
 import importlib.util,io,json,os,pathlib,signal,sys
 s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
