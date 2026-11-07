@@ -20,7 +20,7 @@ done_when:
   - "The implementation PR body shows, for IWM, SPY and QQQ from 2015-01-02 to 2026-11-06 through the production replay paths, the count of sessions on which the brief's trigger, the planner's trigger or the side's orb_only state changes against origin/main, per side, and the before and after picks for the 20 sessions through 2026-11-06"
   - "Source identity (DASHBOARD-01, DASHBOARD-21, INSIGHTS-01, INSIGHTS-07, INSIGHTS-08): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-STRAT-001, DASHBOARD-01 / DASHBOARD-21 / INSIGHTS-01 / INSIGHTS-07 / INSIGHTS-08) note rows carry that source_identity_sha256 with implementation and test prose for this PR"
   - "The FEAT-STRAT-001 and FEAT-INSIGHT-001 catalog records and the PR traceability entry are updated; python3 scripts/gate/spec_gate.py --pr origin/main passes; the level_basis production column apply is recorded separately after the owner's yes"
-status: approved
+status: superseded
 supersedes: null
 ---
 
