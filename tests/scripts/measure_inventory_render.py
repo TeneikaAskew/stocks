@@ -20,6 +20,7 @@ import os
 import pathlib
 import resource
 import signal
+import select
 import selectors
 import stat
 import statistics
@@ -505,8 +506,10 @@ class OwnedFamily:
 
 def write_notice(line: str) -> None:
     """Write one cleanup notice to stderr without ever blocking. A stream with no descriptor (a test's StringIO, or
-    an object with no fileno at all) is printed to, since it cannot block; otherwise the line goes to the descriptor in non-blocking mode, fd 2 when
-    sys.stderr is None, and the descriptor's blocking flag is restored. Raises OSError (BlockingIOError when the
+    an object with no fileno at all) is printed to, since it cannot block. Otherwise the line goes to the descriptor
+    (fd 2 when sys.stderr is None) in non-blocking mode, as at most PIPE_BUF bytes ending in a newline (a longer
+    notice is cut there, so a pipe takes it whole or not at all), with non-UTF-8 text backslash-escaped, and the
+    descriptor's blocking flag is restored even when an interrupt arrives. Raises OSError (BlockingIOError when the
     pipe is full, EBADF when it is closed) or ValueError; the caller drops the notice on either."""
     stream = sys.stderr
     try:
@@ -514,10 +517,13 @@ def write_notice(line: str) -> None:
     except (AttributeError, OSError, ValueError):
         print(line, end="", file=stream)
         return
+    data = line.encode("utf-8", "backslashreplace")   # a non-UTF-8 path keeps its escape, as print wrote it
+    if len(data) > select.PIPE_BUF:                    # a pipe write of at most PIPE_BUF bytes is whole or nothing
+        data = data[:select.PIPE_BUF - 1] + b"\n"
     blocking = os.get_blocking(fd)
-    os.set_blocking(fd, False)
     try:
-        os.write(fd, line.encode("utf-8", "replace"))
+        os.set_blocking(fd, False)                     # inside the try: an interrupt here still restores the flag
+        os.write(fd, data)
     finally:
         os.set_blocking(fd, blocking)
 

@@ -5072,6 +5072,9 @@ def test_materialize_names_the_refused_entry_and_checks_every_field(repo, tmp_pa
     unbounded = {case: len(seen[f"case{cases.index(case):02d}"][1]) for case, most in FAKE_BATCH_BOUNDED.items()
                  if len(seen[f"case{cases.index(case):02d}"][1]) > most}
     assert unbounded == {}, unbounded
+    # The stderr bound is exactly 4 KiB: "fatal: boom\n" and then 4084 of the megabyte's e's (pass 24 R4 F1).
+    shown = seen[f"case{cases.index('early end: a megabyte of stderr'):02d}"][1]
+    assert shown.endswith("fatal: boom\n" + "e" * 4084) and not shown.endswith("e" * 4085), shown[-80:]
 
 # A deploy.sh job whose --args names its entrypoint: the renderer reads that file's first docstring line. Verified on
 # 2026-10-11: with an absolute path the fence exits 86, and with gcp/evil_job.py the render opens nothing outside.
@@ -6117,6 +6120,61 @@ def test_measure_inventory_render_notices_never_wait_on_a_full_stderr_pipe(tmp_p
                        text=True, timeout=15, cwd=tmp_path, env={**os.environ, "TMPDIR": str(scratch)})
     assert r.returncode == 0, r.stdout + r.stderr
     assert r.stdout == "interrupt propagated\n", r.stdout
+
+
+NOTICE_PROBE = r"""
+import importlib.util,json,os,select,sys
+s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+mode=sys.argv[2];r,w=os.pipe();real_os=os;out={}
+class Interrupting:   # the real call runs, then the interrupt a second SIGINT would raise as it returns
+    def __getattr__(self,name): return getattr(real_os,name)
+    def set_blocking(self,fd,flag):
+        real_os.set_blocking(fd,flag)
+        if not flag: raise KeyboardInterrupt('just after the flag was cleared')
+stream=os.fdopen(w,'w');real_stderr=sys.stderr;sys.stderr=stream
+try:
+    if mode=='flag':
+        m.os=Interrupting()
+        try: m.write_notice('x\n')
+        except KeyboardInterrupt: out['interrupted']=True
+        m.os=real_os
+        out['blocking']=os.get_blocking(w)
+    else:
+        m.write_notice('retained /tmp/x\udcff/root\n' if mode=='escape' else 'retained /'+'a'*10000+'\n')
+finally:
+    sys.stderr=real_stderr
+stream.close();data=b''
+while chunk:=os.read(r,1<<16): data+=chunk
+out.update(length=len(data),newline=data.endswith(b'\n'),lines=data.count(b'\n'),head=data[:40].decode('ascii','replace'),
+           pipe_buf=select.PIPE_BUF)
+print(json.dumps(out))
+"""
+
+
+def run_notice_probe(tmp_path, mode):
+    r = subprocess.run([sys.executable, "-c", NOTICE_PROBE, str(REPO / MEASURE), mode], capture_output=True, text=True,
+                       timeout=15, cwd=tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    return json.loads(r.stdout)
+
+
+def test_measure_inventory_render_notice_restores_the_flag_when_interrupted(tmp_path):
+    """An interrupt arriving as the flag is cleared still restores the caller's blocking stderr (#1700 pass 24 R1 F1)."""
+    seen = run_notice_probe(tmp_path, "flag")
+    assert seen["interrupted"] is True and seen["blocking"] is True, seen
+
+
+def test_measure_inventory_render_notice_escapes_a_non_utf8_path(tmp_path):
+    """A non-UTF-8 byte in a retained root's name stays an escape, not a "?" that names another path (pass 24 R1 F2)."""
+    seen = run_notice_probe(tmp_path, "escape")
+    assert seen["head"] == "retained /tmp/x\\udcff/root\n", seen
+
+
+def test_measure_inventory_render_notice_longer_than_pipe_buf_is_one_whole_line(tmp_path):
+    """A notice over PIPE_BUF is cut to one whole line of PIPE_BUF bytes, so a pipe never takes part of it
+    (pass 24 R1 F3)."""
+    seen = run_notice_probe(tmp_path, "long")
+    assert seen["length"] == seen["pipe_buf"] and seen["newline"] and seen["lines"] == 1, seen
 
 
 STALLED_PROBE = r"""
