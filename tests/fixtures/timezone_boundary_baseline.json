@@ -504,11 +504,6 @@
   "host-today": [
    "_check_chain_freshness::date_type.today()",
    "summarize_gamma_levels::date_type.today()"
-  ],
-  "tz-localize-none": [
-   "summarize_strat_status::_ts.tz_convert('UTC').tz_localize(None)",
-   "summarize_strat_status::cutoff.tz_convert('UTC').tz_localize(None)",
-   "summarize_strat_status::df.index.tz_localize(None)"
   ]
  },
  "lib/data_loader.py": {
@@ -596,7 +591,7 @@
  },
  "lib/strat_levels.py": {
   "tz-localize-none": [
-   "compute_current_levels::ad_ts.tz_convert('UTC').tz_localize(None)"
+   "_compute_current_levels::ad_ts.tz_convert('UTC').tz_localize(None)"
   ]
  },
  "lib/strategies/calibration.py": {

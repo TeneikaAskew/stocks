@@ -1375,7 +1375,7 @@ def _normalize_daily(daily_df: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(df.index, pd.DatetimeIndex):
         df.index = pd.to_datetime(df.index)
     if df.index.tz is not None:
-        df.index = df.index.tz_localize(None)
+        df.index = df.index.tz_localize(None)  # tz-ok: daily bars are session-date labels; the wall date is kept
     rename = {}
     for c in df.columns:
         cl = str(c).lower()
@@ -1707,7 +1707,7 @@ def premarket_snapshot_from_daily(df: pd.DataFrame, session_date) -> Optional[di
     if df is None or len(df) == 0:
         return None
     frame = _normalize_daily(df) if not isinstance(df.index, pd.DatetimeIndex) else df
-    idx = frame.index.tz_localize(None) if frame.index.tz is not None else frame.index
+    idx = frame.index.tz_localize(None) if frame.index.tz is not None else frame.index  # tz-ok: session-date labels, wall date kept
     session = _to_date(session_date)
     rows = frame.loc[idx.normalize() == pd.Timestamp(session)]
     if rows.empty:
@@ -1733,7 +1733,11 @@ def build_level_map(
     notebooks and applies the same rules."""
     if analysis_date is None:
         df = _normalize_daily(daily_df)
-        analysis_date = (df.index[-1] + pd.Timedelta(days=1)).date() if len(df) else date_type.today()
+        if len(df):
+            analysis_date = (df.index[-1] + pd.Timedelta(days=1)).date()
+        else:
+            from lib.eastern_time import eastern_now
+            analysis_date = eastern_now().date()
     sl = build_session_levels(ticker, analysis_date, daily_df, atr, None,
                               reference=current_price,
                               daily_strat_class=daily_strat_class)

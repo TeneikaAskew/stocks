@@ -559,7 +559,7 @@ def _prior_session_atr(df, session_date: date_type) -> Optional[float]:
     frame = df
     idx = frame.index
     if isinstance(idx, _pd.DatetimeIndex):
-        naive = idx.tz_localize(None) if idx.tz is not None else idx
+        naive = idx.tz_localize(None) if idx.tz is not None else idx  # tz-ok: daily session-date labels, wall date kept
         frame = frame[naive.normalize() < _pd.Timestamp(session_date)]
     close_col = "Close" if "Close" in frame.columns else ("close" if "close" in frame.columns else None)
     if close_col is not None:
