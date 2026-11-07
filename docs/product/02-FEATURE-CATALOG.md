@@ -163,11 +163,11 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Realtime collector repair: write time excluded from the source window; review and job rollout pending |
+| Status | Realtime collector repair: one cumulative source budget that excludes persistence time (#1743); review and job rollout pending |
 | Priority | P0 |
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-06 |
+| Last reviewed | 2026-11-07 |
 | Evidence status | Preserved isolated collector and acceptance receipts; final integrated-head review/CI and immutable job deployment remain pending. No historical-snapshot restoration claim. |
 | UI surface | `/options` |
 | Backend | `/api/options`, `/api/grid` |
