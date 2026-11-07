@@ -1,6 +1,6 @@
 ---
 feat_id: FEAT-STRAT-001
-spec: docs/superpowers/specs/2026-11-07-feat-strat-001-one-level-source.md
+spec: docs/superpowers/specs/2026-11-07-feat-strat-001-one-level-source-r2.md
 branch: feature/feat-strat-001-one-level-source
 pr: null
 status: in-progress
@@ -12,7 +12,7 @@ status: in-progress
 > Every task cites a spec section and the done_when item it advances.
 
 Builds on the FEAT-INSIGHT-001 trigger distance cap (PR #1746), merged into this branch ahead of main.
-Every Open-question default in the spec is taken: inside bar and parent bar are both candidates (1),
+Spec revision 2 (#1750) supersedes the first spec with one rule change (Task 3). Every Open-question default in the spec is taken: inside bar and parent bar are both candidates (1),
 the Design 2 thresholds (2), no trigger with reason atr_unavailable when ATR(14) is missing (3),
 auto-refresh-top-n reports carry premarket_unavailable (4), fixtures rebuilt from real bars (5),
 R-multiple targets and ATR stops are offsets, not levels (6).
@@ -39,6 +39,8 @@ Spec: § Design 1. Advances done_when[4], done_when[5], done_when[6].
 - [ ] Write `tests/lib/test_session_levels_rules.py` (window and atr_unavailable, side-rule and touch fixtures, QQQ PDL 647.05 unbroken behind 649.62, PDL on the premarket cent is one rung named PDL)
 - [ ] Run (expect FAIL), implement, run again (expect PASS)
 - [ ] Commit: `feat(strat): one window, one side rule and one cents broken rule`
+- [ ] Revision 2: write the no-premarket reference-cent fixture (prior close and reference 100, PDC 100, PWL 103, PYH 97 give long PWL 103 and short PYH 97, in the brief and the planner) and the with-premarket control (a level on the reference's cent stays on both lists); run (expect FAIL), drop reference-cent candidates when there is no snapshot, run again (expect PASS)
+- [ ] Commit: `feat(strat): with no premarket, a level on the reference's cent is on neither side`
 
 ## Task 4: Brief and planner on the builder, parity on 2026-11-06
 Spec: § Design 4 (brief, planner), § Expected effect. Advances done_when[1].

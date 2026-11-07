@@ -661,10 +661,21 @@ class TestSessionPicks:
         assert calls['room_to_first_target'] == pytest.approx(
             (101.0 - 100.004) / 100.004 * 100, abs=1e-3)
 
-    def test_a_level_on_the_references_cent_is_on_both_lists(self):
-        """With no premarket beyond it, a level on the reference's own cent
-        is both the long and the short trigger (Design 1)."""
+    def test_no_premarket_a_level_on_the_references_cent_is_on_neither_list(self):
+        """Spec revision 2: with no premarket snapshot, a level on the
+        reference's own cent is on neither list; the trigger is the next
+        real level out."""
         sl = self._session({'PDH': 101.00, 'PDC': 100.0041, 'PWL': 98.00}, 100.004, atr=1.0)
+        assert sl.long.trigger['name'] == 'PDH'
+        assert sl.short.trigger['name'] == 'PWL'
+
+    def test_with_premarket_a_level_on_the_references_cent_is_on_both_lists(self):
+        """With a snapshot and no premarket beyond it, a level on the
+        reference's own cent is both the long and the short trigger."""
+        from tests.lib.session_levels_helpers import session
+        sl = session({'PDH': 101.00, 'PDC': 100.0041, 'PWL': 98.00}, prior_close=100.004,
+                     atr=1.0, premarket={'pre_high': 100.0, 'pre_low': 100.0,
+                                         'pre_vwap': 100.004})
         assert sl.long.trigger['name'] == 'PDC'
         assert sl.short.trigger['name'] == 'PDC'
         assert sl.long.targets[0]['name'] == 'PDH'
@@ -880,14 +891,26 @@ class TestNextLevelsLadder:
         out = self._ladder({'PWH': 292.705, 'PDH': 292.714, 'PMH': 294.0}, ref=290.0)
         assert [lv['price'] for lv in out['calls']] == [292.71, 294.0]
 
-    def test_a_level_on_the_references_cent_is_on_both_sides(self):
-        """FEAT-STRAT-001: with no premarket beyond it, a level on the
-        reference's own cent is on both lists, once, as one rung."""
-        out = self._ladder({'PDH': 100.0041, 'PDL': 100.0039, 'PWH': 101.0, 'PWL': 99.0},
-                           ref=100.004)
+    def test_with_premarket_a_level_on_the_references_cent_is_on_both_sides(self):
+        """FEAT-STRAT-001: with a snapshot and no premarket beyond it, a level
+        on the reference's own cent is on both lists, once, as one rung."""
+        from tests.lib.session_levels_helpers import session
+        lm = session({'PDH': 100.0041, 'PDL': 100.0039, 'PWH': 101.0, 'PWL': 99.0},
+                     prior_close=100.004, atr=5.0,
+                     premarket={'pre_high': 100.0, 'pre_low': 100.0,
+                                'pre_vwap': 100.004}).to_level_map()
+        out = {'calls': lm.call_levels, 'puts': lm.put_levels}
         assert [lv['price'] for lv in out['calls']] == [100.0, 101.0]
         assert [lv['price'] for lv in out['puts']] == [100.0, 99.0]
         assert out['calls'][0]['name'] == out['puts'][0]['name'] == 'PDH'
+
+    def test_no_premarket_a_level_on_the_references_cent_is_on_neither_side(self):
+        """Spec revision 2: with no snapshot the reference's own cent is on
+        neither ladder."""
+        out = self._ladder({'PDH': 100.0041, 'PDL': 100.0039, 'PWH': 101.0, 'PWL': 99.0},
+                           ref=100.004)
+        assert [lv['price'] for lv in out['calls']] == [101.0]
+        assert [lv['price'] for lv in out['puts']] == [99.0]
 
     def test_direction_is_positional_not_by_high_low(self):
         out = self._ladder(self._levels())

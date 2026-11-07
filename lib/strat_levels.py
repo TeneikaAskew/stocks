@@ -1530,6 +1530,14 @@ def _assemble(base: SessionLevels, *, premarket: Optional[dict],
     out.cleared_above = max(ref, pre_high) if pre_high is not None else ref
     out.cleared_below = min(ref, pre_low) if pre_low is not None else ref
     candidates = _candidate_rungs(out.levels)
+    if not premarket:
+        # Spec revision 2: with no premarket snapshot nothing has traded
+        # yet, so a candidate on the reference's own cent (PDC itself when
+        # the reference is the prior close, or any level sharing that cent)
+        # is on neither side list and the trigger is the next real level
+        # out. With a snapshot such a level stays on both lists.
+        ref_cents = price_cents(ref)
+        candidates = [c for c in candidates if c['cents'] != ref_cents]
     out.long = _pick_side('long', candidates, ref, out.cleared_above, out.atr)
     out.short = _pick_side('short', candidates, ref, out.cleared_below, out.atr)
     return out

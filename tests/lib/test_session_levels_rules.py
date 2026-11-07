@@ -126,10 +126,40 @@ def test_qqq_touch_fixture_unfiltered_low_on_pdl():
     assert [c["name"] for c in sl.short.candidates].count("PDL") == 1
 
 
-def test_a_level_on_the_references_cent_is_on_both_lists():
-    sl = SessionLevels.from_basis(basis({"PDC": 100.0, "PDH": 103.0, "PDL": 97.0},
-                                        prior_close=100.0, atr=ATR))
+# ── the reference's own cent (spec revision 2) ──────────────────────────
+
+def test_no_premarket_level_on_the_references_cent_is_on_neither_list():
+    """done_when 6 fixture: prior close and reference 100, PDC 100, PWL 103,
+    PYH 97 give long trigger PWL 103 and short trigger PYH 97, not PDC 100
+    on both sides, in both the brief and the planner."""
+    b = basis({"PDC": 100.0, "PWL": 103.0, "PYH": 97.0}, prior_close=100.0, atr=ATR)
+    assert _both(b, "long") == ((103.0, "PWL"), (pytest.approx(103.0), "PWL"))
+    assert _both(b, "short") == ((97.0, "PYH"), (pytest.approx(97.0), "PYH"))
+    sl = SessionLevels.from_basis(b)
+    assert sl.reference_source == "prior_close"
+    for side in (sl.long, sl.short):
+        assert all(c["cents"] != 10000 for c in side.candidates)
+    assert any(lv.name == "PDC" for lv in sl.levels)          # still a level
+
+
+def test_no_premarket_any_level_sharing_the_references_cent_is_on_neither_list():
+    b = basis({"PDC": 100.0, "PWH": 100.0, "PWL": 103.0, "PYH": 97.0},
+              prior_close=100.0, atr=ATR)
+    sl = SessionLevels.from_basis(b)
+    assert sl.long.trigger["name"] == "PWL" and sl.short.trigger["name"] == "PYH"
+    names = {c["name"] for side in (sl.long, sl.short) for c in side.candidates}
+    assert not names & {"PDC", "PWH"}
+
+
+def test_with_premarket_a_level_on_the_references_cent_is_on_both_lists():
+    """With a snapshot nothing changes: a level on the reference's own cent
+    with no premarket beyond it is on both lists."""
+    b = basis({"PDC": 100.0, "PWL": 103.0, "PYH": 97.0}, prior_close=100.0, atr=ATR,
+              premarket={"pre_high": 100.0, "pre_low": 100.0, "pre_vwap": 100.0})
+    sl = SessionLevels.from_basis(b)
+    assert sl.reference_source == "pre_vwap"
     assert sl.long.trigger["name"] == "PDC" and sl.short.trigger["name"] == "PDC"
+    assert _brief_pick(b, "long") == (100.0, "PDC")
 
 
 # ── broken rule on the real 2026-11-06 QQQ session ──────────────────────
