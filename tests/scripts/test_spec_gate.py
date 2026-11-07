@@ -4828,6 +4828,9 @@ def test_materialize_writes_inside_its_directory_only(repo, tmp_path_factory):
     oid, out = _git(repo, "rev-parse", "base:lib/model.py"), tmp_path_factory.mktemp("tree")
     with pytest.raises(ValueError, match="outside"):
         sg.materialize([("100644", oid, "../escape.py")], out)
+    with pytest.raises(ValueError, match="outside"):   # every path is checked before anything is written (pass 31 R4 F2)
+        sg.materialize([("100644", oid, "lib/first.py"), ("100644", oid, "../escape.py")], out)
+    assert not (out / "lib").exists()
     sg.materialize([("100644", oid, "lib/model.py")], out)
     assert (out / "lib/model.py").read_bytes() == b"DECISION = 'size'\n" and not (out.parent / "escape.py").exists()
 
@@ -4926,6 +4929,7 @@ FAKE_BATCH = {
     "tab between fields": (f"{FAKE_OID}\tblob 4\nabcd\n".encode(), 0, ["answered", "x.bin"]),
     "doubled space": (f"{FAKE_OID} blob  4\nabcd\n".encode(), 0, ["answered", "x.bin"]),
     "leading zero": (f"{FAKE_OID} blob 04\nabcd\n".encode(), 0, ["answered", "04", "x.bin"]),
+    "text before the id": (f"x{FAKE_OID} blob 4\nabcd\n".encode(), 0, ["answered", "x.bin"]),   # pass 31 R4 F1: the match is anchored at both ends
     "size of 5000 digits": (f"{FAKE_OID} blob {'9' * 5000}\n".encode(), 0, ["answered", "x.bin", FAKE_OID]),
     # A header with no line end is read only up to its bound, with output still pending (#1700 pass 22 R4 F1).
     "overlong header, output pending": (f"{FAKE_OID} blob ".encode() + b"1" * 4096, 0,
