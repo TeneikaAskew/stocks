@@ -4924,8 +4924,20 @@ FAKE_BATCH = {
     "size with an underscore": (f"{FAKE_OID} blob 1_2\n".encode() + b"z" * 12 + b"\n", 0, ["answered", "1_2", "x.bin"]),
     "size with a sign": (f"{FAKE_OID} blob +4\nabcd\n".encode(), 0, ["answered", "+4", "x.bin"]),
     "output after the last object": (f"{FAKE_OID} blob 4\nabcd\nextra\n".encode(), 0, ["after the last of 1 object"]),
+    # The header is matched whole: exactly three fields, one space between them, no leading zero, one line feed and
+    # at most 19 digits, so a size too long for int() is a GitFailed naming the entry (#1700 pass 22 R4 F2, F3).
+    "four fields": (f"{FAKE_OID} blob 4 extra\nabcd\n".encode(), 0, ["answered", "extra", "x.bin"]),
+    "two fields": (f"{FAKE_OID} blob\n".encode(), 0, ["answered", "blob", "x.bin"]),
+    "carriage return before the line end": (f"{FAKE_OID} blob 4\r\nabcd\n".encode(), 0, ["answered", "x.bin"]),
+    "tab between fields": (f"{FAKE_OID}\tblob 4\nabcd\n".encode(), 0, ["answered", "x.bin"]),
+    "doubled space": (f"{FAKE_OID} blob  4\nabcd\n".encode(), 0, ["answered", "x.bin"]),
+    "leading zero": (f"{FAKE_OID} blob 04\nabcd\n".encode(), 0, ["answered", "04", "x.bin"]),
+    "size of 5000 digits": (f"{FAKE_OID} blob {'9' * 5000}\n".encode(), 0, ["answered", "x.bin", FAKE_OID]),
+    # A header with no line end is read only up to its bound, with output still pending (#1700 pass 22 R4 F1).
+    "overlong header, output pending": (f"{FAKE_OID} blob ".encode() + b"1" * 4096, 0, ["answered", "x.bin", FAKE_OID]),
     # An answer that ends early reports git's own exit status and stderr, whichever check sees the end (QUAL2 R4 F1).
     "early end: no answer": (b"", 128, ["failed (128)", "fatal: boom"]),
+    "early end: a megabyte of stderr": (b"", 128, ["failed (128)", "fatal: boom"]),
     "early end: inside the header": (f"{FAKE_OID} blo".encode(), 128, ["failed (128)", "fatal: boom"]),
     "early end: inside the blob": (f"{FAKE_OID} blob 10\n".encode() + b"abcd", 128, ["failed (128)", "fatal: boom"]),
     "early end: before the separator": (f"{FAKE_OID} blob 4\nabcd".encode(), 128, ["failed (128)", "fatal: boom"]),
@@ -4938,6 +4950,9 @@ FAKE_BATCH = {
 # Per case, what the stand-in git does besides its answer: bytes it then keeps writing, and its stderr.
 FAKE_BATCH_EXTRA = {case: (256 * 1024 if "pending" in case else 0, "fatal: boom\n" if case.startswith("early end") else "")
                     for case in FAKE_BATCH}
+FAKE_BATCH_PAD = {"early end: a megabyte of stderr": 1 << 20}   # bytes of stderr written after the case's own
+FAKE_BATCH_BOUNDED = {"early end: a megabyte of stderr": 4096 + 200, "overlong header, output pending": 200 + 66,
+                      "size of 5000 digits": 200 + 66}   # most characters each refusal may hold
 FAKE_RUNNER = r"""
 import importlib.util,json,os,pathlib,sys
 s=importlib.util.spec_from_file_location('fake_batch_gate',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
@@ -4945,6 +4960,7 @@ work,result=pathlib.Path(sys.argv[2]),{}
 for name in sorted(os.listdir(work/'answers')):
     os.environ['FAKE_GIT_ANSWER']=str(work/'answers'/name);os.environ['FAKE_GIT_EXIT']=(work/'exits'/name).read_text()
     os.environ['FAKE_GIT_TAIL']=(work/'tails'/name).read_text();os.environ['FAKE_GIT_STDERR']=(work/'stderrs'/name).read_text()
+    os.environ['FAKE_GIT_PAD']=(work/'pads'/name).read_text()
     into=work/'into'/name;into.mkdir(parents=True)
     try:
         m.materialize([('100644','1'*40,'x.bin')],into);result[name]=['accepted','']
@@ -5004,17 +5020,18 @@ def test_materialize_names_the_refused_entry_and_checks_every_field(repo, tmp_pa
                               " while t:t=t[os.write(1,t):]\n"
                               "except BrokenPipeError:\n"
                               " sys.stderr.write('fake-git: broken pipe\\n');sys.stderr.flush();os._exit(141)\n"
-                              "sys.stderr.write(os.environ['FAKE_GIT_STDERR']);sys.stderr.flush()\n"
+                              "sys.stderr.write(os.environ['FAKE_GIT_STDERR']+'e'*int(os.environ['FAKE_GIT_PAD']));sys.stderr.flush()\n"
                               "sys.exit(int(os.environ['FAKE_GIT_EXIT']))\n")
     (fake / "git").chmod(0o755)
     work = tmp_path / "fake"
-    for sub in ("answers", "exits", "tails", "stderrs", "into"):
+    for sub in ("answers", "exits", "tails", "stderrs", "pads", "into"):
         (work / sub).mkdir(parents=True)
     for n, (case, (answer, status, _words)) in enumerate(FAKE_BATCH.items()):
         (work / "answers" / f"case{n:02d}").write_bytes(answer)
         (work / "exits" / f"case{n:02d}").write_text(str(status))
         (work / "tails" / f"case{n:02d}").write_text(str(FAKE_BATCH_EXTRA[case][0]))
         (work / "stderrs" / f"case{n:02d}").write_text(FAKE_BATCH_EXTRA[case][1])
+        (work / "pads" / f"case{n:02d}").write_text(str(FAKE_BATCH_PAD.get(case, 0)))
     # A separate process with a time limit: a reader that stops checking for a short read loops forever.
     r = subprocess.run([sys.executable, "-c", FAKE_RUNNER, str(repo / "scripts/gate/spec_gate.py"), str(work)],
                        capture_output=True, text=True, timeout=60,
@@ -5024,6 +5041,10 @@ def test_materialize_names_the_refused_entry_and_checks_every_field(repo, tmp_pa
     wrong = {case: seen[f"case{n:02d}"] for n, (case, (_a, _s, words)) in enumerate(FAKE_BATCH.items())
              if seen[f"case{n:02d}"][0] != "GitFailed" or not all(w in seen[f"case{n:02d}"][1] for w in words)}
     assert wrong == {}, wrong
+    cases = list(FAKE_BATCH)
+    unbounded = {case: len(seen[f"case{cases.index(case):02d}"][1]) for case, most in FAKE_BATCH_BOUNDED.items()
+                 if len(seen[f"case{cases.index(case):02d}"][1]) > most}
+    assert unbounded == {}, unbounded
 
 # A deploy.sh job whose --args names its entrypoint: the renderer reads that file's first docstring line. Verified on
 # 2026-10-11: with an absolute path the fence exits 86, and with gcp/evil_job.py the render opens nothing outside.
@@ -6025,6 +6046,33 @@ def test_measure_inventory_render_owns_and_removes_its_scratch_root(tmp_path):
     assert not report['scratch_root_removed'] and report['outer_after'] == [Path(report['scratch_root']).name], report
     worker = [e for e in report['receipts'][0] if e['event'] == 'worker']
     assert worker and worker[0]['worker_pid'] == report['process_group'] and worker[0]['worker_start_ticks'] > 0, report
+
+
+CLOSED_STDERR_PROBE = r"""
+import importlib.util,os,pathlib,sys
+s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+real_popen=m.subprocess.Popen
+def interrupted(*a,**kw):
+    real_popen(*a,**kw)
+    raise KeyboardInterrupt('after fork')
+m.subprocess.Popen=interrupted
+try:
+    m.run_bounded([sys.executable,'-c','import time;time.sleep(20)'],pathlib.Path.cwd(),max_rss_bytes=64<<20,max_seconds=2)
+except KeyboardInterrupt:
+    os.write(1,b'interrupt propagated\n')
+"""
+
+
+def test_measure_inventory_render_notices_never_reach_stdout_with_stderr_closed(tmp_path):
+    """With fd 2 closed at startup, sys.stderr is None and print(file=None) writes to stdout, the report channel:
+    the cleanup notices go to fd 2 itself, so stdout carries only what the caller wrote (#1700 pass 22 R1 F1)."""
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    r = subprocess.run(["sh", "-c", 'exec "$0" -c "$1" "$2" 2>&-', sys.executable, CLOSED_STDERR_PROBE,
+                        str(REPO / MEASURE)], capture_output=True, text=True, timeout=60, cwd=tmp_path,
+                       env={**os.environ, "TMPDIR": str(scratch)})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout == "interrupt propagated\n", r.stdout
 
 
 def test_measure_inventory_render_keeps_a_scratch_root_it_cannot_prove_free(tmp_path):

@@ -4084,12 +4084,18 @@ def tree_refusal(entries: list[tuple[str, str, str]]) -> str | None:
     return None
 
 
+BATCH_HEADER = re.compile(rb"([0-9a-f]{40}|[0-9a-f]{64}) blob (0|[1-9][0-9]{0,18})\n")   # one blob's answer line
+
+
 def materialize(entries: list[tuple[str, str, str]], into: pathlib.Path) -> None:
     """Write each entry's blob, byte for byte, to into/path, from one `git cat-file --batch`, which applies no
     attributes. Raises ValueError, before writing, for a path that resolves outside `into`. The batch output is
-    streamed to the files one blob at a time, at most 1 MiB per read, so this process never holds a whole blob.
-    Every other mismatch raises GitFailed: a header whose object id, type or decimal size is not the one asked for,
-    an answer that ends early, a missing separator, any output after the last object, or a nonzero exit."""
+    streamed to the files one blob at a time, at most 1 MiB per read, so this process never holds a whole blob; a
+    header is read up to its bounded length and git's stderr up to 4 KiB, so no malformed answer is held whole
+    either. Every other mismatch raises GitFailed: a header that is not exactly the object id asked for, `blob` and
+    a plain decimal size (no sign, separator other than one space, leading zero or more than 19 digits), each once
+    and ending in one line feed, an answer that ends early, a missing separator, any output after the last object,
+    or a nonzero exit."""
     top = os.path.realpath(into) + os.sep
     def target(path: str) -> str:
         where = os.path.realpath(os.path.join(into, path))
@@ -4107,7 +4113,7 @@ def materialize(entries: list[tuple[str, str, str]], into: pathlib.Path) -> None
             if proc.wait() != 0:
                 err.seek(0)
                 return GitFailed(f"git cat-file --batch failed ({proc.returncode}): "
-                                 f"{err.read().decode('utf-8', 'replace').strip() or 'no output'}")
+                                 f"{err.read(4096).decode('utf-8', 'replace').strip() or 'no output'}")
             return None
         def ended(message: str) -> GitFailed:
             # The answer stopped early, so git has exited or is exiting: its own status and stderr explain why.
@@ -4121,12 +4127,15 @@ def materialize(entries: list[tuple[str, str, str]], into: pathlib.Path) -> None
         try:
             out = proc.stdout
             for _mode, oid, path in entries:
-                line = out.readline()
-                header = line.rstrip(b"\n").decode("ascii", "replace").split()
-                answered = f"git cat-file --batch answered {' '.join(header)!r} for {path} ({oid})"
+                # The longest answer this entry can have: its id, " blob ", a 19-digit size and the line end.
+                bound = len(oid) + 26
+                line = out.readline(bound)
+                shown = line.rstrip(b"\n").decode("ascii", "replace")
+                answered = f"git cat-file --batch answered {shown!r} for {path} ({oid})"
                 if not line.endswith(b"\n"):
-                    raise ended(answered)
-                if len(header) != 3 or header[0] != oid or header[1] != "blob" or not re.fullmatch(r"[0-9]+", header[2]):
+                    raise refused(answered) if len(line) == bound else ended(answered)
+                header = BATCH_HEADER.fullmatch(line)
+                if header is None or header[1] != oid.encode("ascii"):
                     raise refused(answered)
                 size = int(header[2])
                 where = target(path)

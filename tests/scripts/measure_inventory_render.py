@@ -791,10 +791,15 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                             except Exception as e:
                                 cleanup_failure(e)
                         # Notices go out last, after the receipt, removal and subreaper restore, and a stderr that
-                        # cannot be written never replaces the interrupt that is propagating (QUAL2 R1 F2).
+                        # cannot be written never replaces the interrupt that is propagating (QUAL2 R1 F2). With stderr
+                        # closed at startup sys.stderr is None, and print(file=None) would write to stdout, the report's
+                        # channel, so they go to fd 2 itself, where a closed fd is only an OSError (#1700 pass 22 R1 F1).
                         for notice in notices:
                             with contextlib.suppress(OSError, ValueError):
-                                print(f"measure_inventory_render: {notice}", file=sys.stderr)
+                                if sys.stderr is None:
+                                    os.write(2, f"measure_inventory_render: {notice}\n".encode("utf-8", "replace"))
+                                else:
+                                    print(f"measure_inventory_render: {notice}", file=sys.stderr)
         except DeliveryDeadline as e:
             report.update(ok=False, reason="time_limit", error=str(e))
         report["elapsed_seconds"] = time.monotonic() - started
