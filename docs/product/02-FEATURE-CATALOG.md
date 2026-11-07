@@ -163,7 +163,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Narrow collector repair: source review and rollout pending. Snapshot provenance metadata on grid and levels responses ([spec](../superpowers/specs/2026-10-24-feat-option-001-legacy-snapshot-labels.md), approved on main) implemented on `feature/feat-option-001-snapshot-provenance`; review, solyra consumer evidence and API rollout pending |
+| Status | Realtime collector repair: one cumulative source budget that excludes persistence time (#1743); review and job rollout pending. Snapshot provenance metadata on grid and levels responses ([spec](../superpowers/specs/2026-10-24-feat-option-001-legacy-snapshot-labels.md), approved on main) implemented on `feature/feat-option-001-snapshot-provenance`; review, solyra consumer evidence and API rollout pending |
 | Priority | P0 |
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
