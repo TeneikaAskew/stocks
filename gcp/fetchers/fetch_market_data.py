@@ -449,16 +449,29 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
             {'ticker': ticker.upper(), 'start': pm_start, 'end': pm_end},
         )
         if not intraday.empty:
+            # Every input describes the last completed session (the row
+            # before fetch_date): its close, its open and its ATR(14). The
+            # fetch date's own ATR includes the session being filtered.
             prev_close = None
+            prev_open = None
             atr14 = None
-            try:
-                prev_close = float(df['Close'].iloc[-2]) if len(df) >= 2 else None
-            except Exception:
-                pass
-            try:
-                atr14 = float(last.get('atr_14')) if last.get('atr_14') is not None else None
-            except Exception:
-                pass
+            if len(df) >= 2:
+                prior_row = enriched.iloc[-2]
+                try:
+                    prev_close = float(df['Close'].iloc[-2])
+                except Exception:
+                    pass
+                try:
+                    prev_open = float(df['Open'].iloc[-2])
+                except Exception:
+                    pass
+                try:
+                    # add_all_indicators names the column ATR14 (atr_14 is
+                    # its SQL name, which this frame never carries).
+                    prior_atr = prior_row.get('ATR14')
+                    atr14 = float(prior_atr) if prior_atr is not None and pd.notna(prior_atr) else None
+                except Exception:
+                    pass
 
             pm = calculate_premarket_context(
                 times=intraday['ts'],
@@ -469,6 +482,7 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
                 volume=intraday['volume'],
                 prev_close=prev_close,
                 atr14=atr14,
+                prev_open=prev_open,
             )
             if pm['bar_count'] > 0:
                 if pm['pre_high'] is not None: row['pre_high'] = pm['pre_high']

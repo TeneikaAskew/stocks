@@ -131,32 +131,45 @@ def resolve_universe(target_date: date, max_tickers: int = 50) -> list[str]:
 
 # ── Pre-market computation ──────────────────────────────────────────────────
 
-def _prev_close_from_db(ticker: str, fetch_date: date) -> float | None:
-    """Most recent regular-session close prior to ``fetch_date``.
+def _prior_session_from_db(ticker: str, fetch_date: date) -> dict:
+    """The last completed session before ``fetch_date``: close, open, atr_14.
 
-    The 11pm-yesterday market_data_daily row has yesterday's close
-    already, so a simple backward lookup is enough.
+    The 11pm-yesterday market_data_daily row has yesterday's close and
+    ATR(14) already, so one backward lookup is enough. The premarket print
+    filter needs the prior session's ATR(14) (FEAT-STRAT-001 Design 2), never
+    the fetch date's own row, which at 08:30 holds only premarket columns.
+    Returns an empty dict when nothing is found.
     """
     try:
         from gcp.database import query_to_dataframe
     except ImportError:
-        return None
+        return {}
     sql = """
-        SELECT close
+        SELECT close, open, atr_14
           FROM market_data_daily
          WHERE ticker = :tk
            AND date < :d
+           AND close IS NOT NULL
          ORDER BY date DESC
          LIMIT 1
     """
     try:
         df = query_to_dataframe(sql, {'tk': ticker, 'd': fetch_date})
         if df.empty:
-            return None
-        v = df['close'].iloc[0]
-        return float(v) if pd.notna(v) else None
+            return {}
+        row = df.iloc[0]
+        out = {}
+        for key in ('close', 'open', 'atr_14'):
+            v = row.get(key)
+            out[key] = float(v) if v is not None and pd.notna(v) else None
+        return out
     except Exception:
-        return None
+        return {}
+
+
+def _prev_close_from_db(ticker: str, fetch_date: date) -> float | None:
+    """Most recent regular-session close prior to ``fetch_date``."""
+    return _prior_session_from_db(ticker, fetch_date).get('close')
 
 
 def compute_premarket_for_ticker(ticker: str, fetch_date: date,
@@ -177,7 +190,8 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
         log.info("  %s: no AV intraday bars for %s", ticker, iso_date)
         return None
 
-    prev_close = _prev_close_from_db(ticker, fetch_date)
+    prior = _prior_session_from_db(ticker, fetch_date)
+    prev_close = prior.get('close')
 
     # `times` must be a Series so calculate_premarket_context's tz-aware
     # path runs (DatetimeIndex falls to a per-row Python loop that builds
@@ -191,7 +205,8 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
         close=df['Close'].reset_index(drop=True),
         volume=df['Volume'].reset_index(drop=True),
         prev_close=prev_close,
-        atr14=None,  # Not needed for the brief embed; can be filled tonight
+        atr14=prior.get('atr_14'),
+        prev_open=prior.get('open'),
     )
     if pm.get('bar_count', 0) <= 0:
         log.info("  %s: 0 pre-market bars for %s (early run, weekend, or holiday)",
@@ -206,6 +221,8 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
         'pre_vwap': pm.get('pre_vwap'),
         'pre_volume': pm.get('pre_volume'),
         'gap_pct': pm.get('gap_pct'),
+        'excluded_prior_close_prints': pm.get('excluded_prior_close_prints'),
+        'excluded_spike_prints': pm.get('excluded_spike_prints'),
     }
 
 
