@@ -14,7 +14,7 @@ defaults, Literal enums everywhere an enum is expected.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -62,23 +62,46 @@ class EntryZone(BaseModel):
 
 class StratSnapshot(BaseModel):
     """Rob Smith strat state for the ticker. Emitted by
-    summarize_strat_status."""
+    summarize_strat_status.
 
-    model_config = ConfigDict(extra="forbid")
+    Unavailable evidence stays explicit: ``available`` False, candle 'X'
+    and no score, never an inside bar or a neutral 0.0 (FEAT-STRAT-001).
+    """
 
-    last_candle: Literal["1", "2U", "2D", "3"] = Field(
-        ..., description="Strat candle type of the most recent closed bar"
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    available: bool = True
+    reason: Optional[str] = None
+    last_candle: Literal["X", "1", "2U", "2D", "3"] = Field(
+        ..., description="Strat candle type of the most recent closed bar; X when unavailable"
     )
     in_force_combo: Optional[str] = Field(
         None,
         description="In-force combo pattern, e.g. '212_bull_reversal' or null",
     )
-    ftfc_score: float = Field(
-        ..., description="Full-timeframe-continuity weighted score, -1.0 to +1.0"
+    ftfc_score: Optional[float] = Field(
+        None, description="Legacy weighted candle alignment score, -1.0 to +1.0; "
+                          "not strict continuity; null when unavailable"
     )
-    ftfc_direction: Literal["bullish", "bearish", "mixed"]
+    ftfc_direction: Optional[Literal["bullish", "bearish", "mixed"]] = None
     trigger_high: Optional[float] = None
     trigger_low: Optional[float] = None
+    rule_version: Optional[str] = None
+    observation_ts: Optional[str] = None
+    data_as_of: Optional[str] = None
+    session: Optional[str] = None
+    clock_policy: Optional[str] = None
+    aggregation_policy: Optional[str] = None
+    price_adjustment: Optional[str] = None
+    source_acquired_at: Optional[str] = None
+    source_acquisition_status: Optional[str] = None
+    coverage: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Per-timeframe completed/partial/coverage state at observation_ts")
+    bar_validity: dict[str, Any] = Field(default_factory=dict)
+    confirmed_setups: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Closed-candle confirmation per 5m/15m/30m/1h/4h/1w; developing bars never confirm")
 
 
 class Catalyst(BaseModel):
