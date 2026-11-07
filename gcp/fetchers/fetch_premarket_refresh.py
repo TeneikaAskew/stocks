@@ -31,7 +31,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -186,6 +186,8 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
 
     iso_date = fetch_date.strftime('%Y-%m-%d')
     df = fetch_minute_data(ticker, iso_date, api_key)
+    # When the bars behind this snapshot were fetched (a UTC instant).
+    fetched_at = datetime.now(timezone.utc)
     if df.empty:
         log.info("  %s: no AV intraday bars for %s", ticker, iso_date)
         return None
@@ -223,6 +225,11 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
         'gap_pct': pm.get('gap_pct'),
         'excluded_prior_close_prints': pm.get('excluded_prior_close_prints'),
         'excluded_spike_prints': pm.get('excluded_spike_prints'),
+        # The provenance columns (FEAT-STRAT-001), written when the table
+        # has them (see upsert_premarket).
+        'pre_fetched_at': fetched_at,
+        'pre_excluded_stale_prints': pm.get('excluded_prior_close_prints'),
+        'pre_excluded_spikes': pm.get('excluded_spike_prints'),
     }
 
 
@@ -264,24 +271,52 @@ def upsert_premarket(rows: list[dict]) -> int:
 
     import sqlalchemy
     eng = get_engine()
-    sql = sqlalchemy.text("""
-        INSERT INTO market_data_daily
-            (ticker, date, pre_high, pre_low, pre_vwap, pre_volume, gap_pct)
-        VALUES
-            (:ticker, :date, :pre_high, :pre_low, :pre_vwap, :pre_volume, :gap_pct)
-        ON CONFLICT (ticker, date) DO UPDATE SET
-            pre_high   = COALESCE(EXCLUDED.pre_high,   market_data_daily.pre_high),
-            pre_low    = COALESCE(EXCLUDED.pre_low,    market_data_daily.pre_low),
-            pre_vwap   = COALESCE(EXCLUDED.pre_vwap,   market_data_daily.pre_vwap),
-            pre_volume = COALESCE(EXCLUDED.pre_volume, market_data_daily.pre_volume),
-            gap_pct    = COALESCE(EXCLUDED.gap_pct,    market_data_daily.gap_pct)
-    """)
+    sql = sqlalchemy.text(_upsert_premarket_sql(_has_provenance_columns(eng)))
     n = 0
     with eng.begin() as conn:
         for r in useful:
-            conn.execute(sql, r)
+            conn.execute(sql, {k: r.get(k) for k in _UPSERT_KEYS})
             n += 1
     return n
+
+
+_PROVENANCE_COLUMNS = ('pre_fetched_at', 'pre_excluded_stale_prints', 'pre_excluded_spikes')
+_UPSERT_KEYS = ('ticker', 'date', 'pre_high', 'pre_low', 'pre_vwap', 'pre_volume',
+                'gap_pct') + _PROVENANCE_COLUMNS
+
+
+def _has_provenance_columns(eng) -> bool:
+    """True when market_data_daily has the premarket provenance columns
+    (FEAT-STRAT-001). They wait on the owner's schema apply, so the writer
+    checks rather than assumes; any failure reads as absent."""
+    import sqlalchemy
+    try:
+        with eng.connect() as conn:
+            found = conn.execute(sqlalchemy.text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'market_data_daily' "
+                "AND column_name IN ('pre_fetched_at', 'pre_excluded_stale_prints', "
+                "'pre_excluded_spikes')"
+            )).fetchall()
+    except Exception:  # noqa: BLE001 absent is the safe reading
+        return False
+    return {row[0] for row in found} >= set(_PROVENANCE_COLUMNS)
+
+
+def _upsert_premarket_sql(with_provenance: bool) -> str:
+    cols = ['pre_high', 'pre_low', 'pre_vwap', 'pre_volume', 'gap_pct']
+    if with_provenance:
+        cols += list(_PROVENANCE_COLUMNS)
+    sets = ',\n            '.join(
+        f"{c} = COALESCE(EXCLUDED.{c}, market_data_daily.{c})" for c in cols)
+    return (
+        "INSERT INTO market_data_daily\n"
+        f"    (ticker, date, {', '.join(cols)})\n"
+        "VALUES\n"
+        f"    (:ticker, :date, {', '.join(':' + c for c in cols)})\n"
+        "ON CONFLICT (ticker, date) DO UPDATE SET\n"
+        f"            {sets}"
+    )
 
 
 # ── Main ────────────────────────────────────────────────────────────────────

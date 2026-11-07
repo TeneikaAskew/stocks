@@ -1752,6 +1752,19 @@ ALTER TABLE market_data_daily
     ADD COLUMN IF NOT EXISTS gap_pct        DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS pre_range_atr  DOUBLE PRECISION;
 
+-- FEAT-STRAT-001: premarket snapshot provenance. level_basis records when the
+-- premarket bars were fetched and how many prints the snapshot filter dropped
+-- (stale prior-close prints, and isolated spikes more than 0.5 x ATR(14)
+-- beyond the neighbouring bar bodies), so a level can be traced to its data. Written by
+-- gcp/fetchers/fetch_premarket_refresh.py and gcp/fetchers/fetch_market_data.py
+-- from lib.indicators.calculate_premarket_context. All NULLABLE; NULL means
+-- not recorded (rows written before this block). Writers and readers detect
+-- the columns and work without them. Idempotent.
+ALTER TABLE market_data_daily
+    ADD COLUMN IF NOT EXISTS pre_fetched_at             TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS pre_excluded_stale_prints  INTEGER,
+    ADD COLUMN IF NOT EXISTS pre_excluded_spikes        INTEGER;
+
 
 -- ============================================================================
 -- Catalyst-aware ORB recommendation + Strat playbook persisted by

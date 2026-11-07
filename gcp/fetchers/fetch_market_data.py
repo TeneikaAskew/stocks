@@ -16,7 +16,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import datetime, date, timedelta, time as dt_time
+from datetime import datetime, date, timedelta, timezone, time as dt_time
 from pathlib import Path
 
 import pandas as pd
@@ -448,6 +448,7 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
             intraday_sql,
             {'ticker': ticker.upper(), 'start': pm_start, 'end': pm_end},
         )
+        intraday_read_at = datetime.now(timezone.utc)
         if not intraday.empty:
             # Every input describes the last completed session (the row
             # before fetch_date): its close, its open and its ATR(14). The
@@ -491,6 +492,12 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
                 if pm['pre_volume'] is not None: row['pre_volume'] = pm['pre_volume']
                 if pm['gap_pct'] is not None: row['gap_pct'] = pm['gap_pct']
                 if pm['pre_range_atr'] is not None: row['pre_range_atr'] = pm['pre_range_atr']
+                # Provenance (FEAT-STRAT-001): when these bars were read and
+                # how many prints the filter dropped. upsert_dataframe drops
+                # the keys while market_data_daily lacks the columns.
+                row['pre_fetched_at'] = intraday_read_at
+                row['pre_excluded_stale_prints'] = int(pm['excluded_prior_close_prints'])
+                row['pre_excluded_spikes'] = int(pm['excluded_spike_prints'])
                 log.info("    ✓ pre-market context computed (%d bars)", pm['bar_count'])
             else:
                 log.info("    no pre-market bars for %s on %s (likely weekend / holiday)",

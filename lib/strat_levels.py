@@ -1245,6 +1245,80 @@ def _premarket_value(snap, key):
     return f if f == f and f > 0 else None
 
 
+def _premarket_count(v) -> Optional[int]:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return int(f) if f == f and f >= 0 else None
+
+
+# The premarket provenance columns on market_data_daily (FEAT-STRAT-001):
+# when the snapshot was fetched and how many prints the filter dropped. Every
+# reader tolerates their absence (the schema change waits on the owner).
+PREMARKET_PROVENANCE_COLUMNS = {
+    'pre_fetched_at': 'fetched_at',
+    'pre_excluded_stale_prints': 'excluded_stale_prints',
+    'pre_excluded_spikes': 'excluded_spikes',
+}
+
+
+SESSION_PREMARKET_SQL = (
+    "SELECT date, pre_high, pre_low, pre_vwap, gap_pct{provenance} "
+    "FROM market_data_daily WHERE ticker = :ticker AND date = :d LIMIT 1"
+)
+
+
+def read_session_premarket(query_fn, ticker: str, session_date) -> Optional[dict]:
+    """The session's own premarket snapshot from its market_data_daily row,
+    with the provenance columns when the table has them. `query_fn(sql,
+    params)` returns a DataFrame; a query that fails or comes back empty
+    with the provenance columns is retried without them, so a table that
+    lacks them (the schema change not applied yet) still gives the
+    snapshot."""
+    params = {'ticker': str(ticker).upper(), 'd': str(_to_date(session_date))}
+    extended = SESSION_PREMARKET_SQL.format(
+        provenance=''.join(f', {c}' for c in PREMARKET_PROVENANCE_COLUMNS))
+    df = None
+    try:
+        df = query_fn(extended, params)
+    except Exception:  # noqa: BLE001 provenance columns absent
+        df = None
+    if df is None or getattr(df, 'empty', True):
+        try:
+            df = query_fn(SESSION_PREMARKET_SQL.format(provenance=''), params)
+        except Exception:  # noqa: BLE001 no snapshot
+            return None
+    if df is None or getattr(df, 'empty', True):
+        return None
+    return premarket_snapshot_from_row(df.iloc[0], session_date)
+
+
+def premarket_snapshot_from_row(row, session_date) -> Optional[dict]:
+    """A premarket snapshot dated `session_date` from one market_data_daily
+    row (a dict or Series with pre_high, pre_low, pre_vwap, gap_pct and, when
+    present, the provenance columns), or None when it holds no premarket."""
+    if row is None:
+        return None
+    get = row.get if hasattr(row, 'get') else (lambda k, d=None: getattr(row, k, d))
+    snap = {'date': _to_date(session_date).isoformat()}
+    for col in ('pre_high', 'pre_low', 'pre_vwap', 'gap_pct'):
+        v = get(col, None)
+        try:
+            snap[col] = float(v) if v is not None and pd.notna(v) else None
+        except (TypeError, ValueError):
+            snap[col] = None
+    for col, key in PREMARKET_PROVENANCE_COLUMNS.items():
+        v = get(col, None)
+        try:
+            snap[key] = None if v is None or pd.isna(v) else v
+        except (TypeError, ValueError):
+            snap[key] = v
+    if snap['pre_high'] is None and snap['pre_low'] is None and snap['pre_vwap'] is None:
+        return None
+    return snap
+
+
 def _accept_premarket(premarket, session_date: date_type) -> Optional[dict]:
     """The session's own premarket snapshot as a plain dict, or None. A
     snapshot with no date, or dated any other day, is refused."""
@@ -1254,14 +1328,30 @@ def _accept_premarket(premarket, session_date: date_type) -> Optional[dict]:
     snap_date = _to_date(get('date'))
     if snap_date is None or snap_date != session_date:
         return None
+    fetched = get('fetched_at')
+    if fetched is not None:
+        try:
+            ts = pd.Timestamp(fetched)
+            fetched = None if pd.isna(ts) else (
+                ts.tz_localize('UTC') if ts.tzinfo is None else ts.tz_convert('UTC')).isoformat()
+        except (TypeError, ValueError):
+            fetched = None
+    stale = _premarket_count(get('excluded_stale_prints'))
+    spikes = _premarket_count(get('excluded_spikes'))
     out = {
         'date': snap_date.isoformat(),
-        'fetched_at': (str(get('fetched_at')) if get('fetched_at') is not None else None),
+        'fetched_at': fetched,
         'pre_high': _premarket_value(premarket, 'pre_high'),
         'pre_low': _premarket_value(premarket, 'pre_low'),
         'pre_vwap': _premarket_value(premarket, 'pre_vwap'),
         'gap_pct': None,
-        'excluded_bars': get('excluded_bars'),
+        # Prints the premarket filter dropped (lib.indicators
+        # calculate_premarket_context): stale prior-close prints and
+        # isolated spikes. None when the writer did not record them.
+        'excluded_stale_prints': stale,
+        'excluded_spikes': spikes,
+        'excluded_bars': (None if stale is None and spikes is None
+                          else (stale or 0) + (spikes or 0)),
     }
     gp = get('gap_pct')
     try:
@@ -1344,8 +1434,9 @@ def build_session_levels(
     * Previous periods come from the period filter only, never iloc[-2].
     * The parent bar is found from the last completed bar.
     * `premarket` (a dict or object with date, pre_high, pre_low, pre_vwap,
-      gap_pct, fetched_at, excluded_bars) is used only when its own date is
-      session_date; otherwise premarket_unavailable is recorded.
+      gap_pct, fetched_at, excluded_stale_prints, excluded_spikes) is used
+      only when its own date is session_date; otherwise
+      premarket_unavailable is recorded.
     * The reference is the snapshot's pre_vwap, else the prior close, unless
       the caller passes `reference`.
     * `atr` is the last completed session's ATR(14). Missing or not positive
@@ -1613,17 +1704,7 @@ def premarket_snapshot_from_daily(df: pd.DataFrame, session_date) -> Optional[di
     rows = frame.loc[idx.normalize() == pd.Timestamp(session)]
     if rows.empty:
         return None
-    row = rows.iloc[-1]
-    snap = {'date': session.isoformat()}
-    for col in ('pre_high', 'pre_low', 'pre_vwap', 'gap_pct'):
-        v = row.get(col) if col in row.index else None
-        try:
-            snap[col] = float(v) if v is not None and pd.notna(v) else None
-        except (TypeError, ValueError):
-            snap[col] = None
-    if snap['pre_high'] is None and snap['pre_low'] is None and snap['pre_vwap'] is None:
-        return None
-    return snap
+    return premarket_snapshot_from_row(rows.iloc[-1], session)
 
 
 # ─── LevelMap compatibility wrapper ───────────────────────────────────────

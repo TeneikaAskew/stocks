@@ -493,22 +493,12 @@ def _session_date_for(as_of: Optional[date_type]) -> date_type:
 
 def _session_premarket(ticker: str, session_date: date_type) -> Optional[dict]:
     """The session's own premarket snapshot from market_data_daily (the row
-    dated session_date, written by fetch-premarket-refresh at 08:20 ET), or
-    None. Never the newest row: a prior day's pre_* is not this session's."""
-    df = _query(
-        "SELECT date, pre_high, pre_low, pre_vwap, gap_pct "
-        "FROM market_data_daily WHERE ticker = :ticker AND date = :d LIMIT 1",
-        {"ticker": ticker.upper(), "d": str(session_date)},
-    )
-    if df is None or df.empty:
-        return None
-    row = df.iloc[0]
-    snap = {"date": str(session_date)}
-    for col in ("pre_high", "pre_low", "pre_vwap", "gap_pct"):
-        snap[col] = _scalar(row, col)
-    if snap["pre_high"] is None and snap["pre_low"] is None and snap["pre_vwap"] is None:
-        return None
-    return snap
+    dated session_date, written by fetch-premarket-refresh at 08:20 ET), with
+    its fetch time and excluded-print counts when the table has those
+    columns, or None. Never the newest row: a prior day's pre_* is not this
+    session's."""
+    from lib.strat_levels import read_session_premarket
+    return read_session_premarket(_query, ticker, session_date)
 
 
 def _live_level_basis(ticker: str, session_date: date_type) -> Optional[dict]:

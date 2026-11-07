@@ -121,6 +121,7 @@ def derive_level_map_from_daily(ticker: str, analysis_date: date, engine) -> Opt
     """
     from lib.strat_levels import (  # local import to keep top-level light
         SessionLevels, build_session_levels, read_live_level_basis,
+        read_session_premarket,
     )
 
     # The session's LIVE level_basis, written by the brief with the row, is
@@ -160,15 +161,10 @@ def derive_level_map_from_daily(ticker: str, analysis_date: date, engine) -> Opt
     # (reason atr_unavailable), never a percent-only window.
     atr = float(last['atr_14']) if pd.notna(last['atr_14']) else None
     strat_class = str(last.get('strat_candle') or '')
-    pm = pd.read_sql(text("""
-        SELECT pre_high, pre_low, pre_vwap, gap_pct
-        FROM market_data_daily WHERE ticker = :t AND date = :d LIMIT 1
-    """), engine, params={'t': ticker.upper(), 'd': str(analysis_date)})
-    premarket = None
-    if not pm.empty:
-        premarket = {'date': str(analysis_date),
-                     **{c: (float(pm.iloc[0][c]) if pd.notna(pm.iloc[0][c]) else None)
-                        for c in ('pre_high', 'pre_low', 'pre_vwap', 'gap_pct')}}
+    premarket = read_session_premarket(
+        lambda sql, params: pd.read_sql(text(sql), engine, params=params),
+        ticker, analysis_date,
+    )
 
     level_map = build_session_levels(
         ticker, analysis_date, df, atr, premarket,

@@ -148,6 +148,13 @@ def _cloud_sql_active() -> bool:
     return bool(os.environ.get('CLOUD_SQL_CONNECTION_NAME'))
 
 
+# None until a daily query shows whether market_data_daily has the
+# premarket provenance columns; see DataLoader._load_daily_from_sql.
+_PREMARKET_PROVENANCE_PRESENT: Optional[bool] = None
+_PROVENANCE_SELECT = (",\n                   pre_fetched_at, pre_excluded_stale_prints, "
+                      "pre_excluded_spikes")
+
+
 def _query_cloud_sql(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
     """Run a SELECT against Cloud SQL; log then return an empty DataFrame on error.
 
@@ -533,12 +540,25 @@ class DataLoader:
                    strat_candle, strat_combo, strat_setup,
                    ftfc_score, ftfc_direction,
                    pre_high, pre_low, pre_vwap, pre_volume,
-                   gap_pct, pre_range_atr
+                   gap_pct, pre_range_atr{{provenance}}
             FROM market_data_daily
             {where}
             ORDER BY date
         """
-        df = _query_cloud_sql(sql, params)
+        # The premarket provenance columns (FEAT-STRAT-001: fetch time and
+        # excluded-print counts) are read when the table has them. A query
+        # that fails or comes back empty with them is retried without them,
+        # and once that retry finds rows they are not asked for again.
+        global _PREMARKET_PROVENANCE_PRESENT
+        df = pd.DataFrame()
+        if _PREMARKET_PROVENANCE_PRESENT is not False:
+            df = _query_cloud_sql(sql.format(provenance=_PROVENANCE_SELECT), params)
+            if not df.empty:
+                _PREMARKET_PROVENANCE_PRESENT = True
+        if df.empty and _PREMARKET_PROVENANCE_PRESENT is not True:
+            df = _query_cloud_sql(sql.format(provenance=''), params)
+            if not df.empty:
+                _PREMARKET_PROVENANCE_PRESENT = False
         if df.empty:
             return df
 
