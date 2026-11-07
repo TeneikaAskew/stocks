@@ -11,7 +11,7 @@ done_when:
   - "gcp/fetchers/evaluate_ew_strikes.py is not changed by this spec"
   - "No Cloud Run job, scheduler or secret is mutated by this PR; RUNTIME-QUALIFICATION-PLAN.md section 2 (pause, delete scheduler, delete job) is linked from the PR as separately authorized close-out, and must be complete before the FEAT-DATA-001 module-shim PR's image ships"
   - "02-FEATURE-CATALOG FEAT-DEPLOY-001 record shows Status and Last reviewed, and 12-PR-ISSUE-TRACEABILITY lists this PR"
-status: approved
+status: superseded
 supersedes: null
 ---
 

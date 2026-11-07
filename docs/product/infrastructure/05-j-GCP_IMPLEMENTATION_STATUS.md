@@ -160,7 +160,7 @@
   - [x] `migrate` command
   - [x] `build` command
   - [x] `fetchers` command
-  - [x] `schedulers` command (65 cron triggers)
+  - [x] `schedulers` command (65 cron triggers) <!-- verify-docs-ok: implementation checklist record of what the command created, not today's fleet -->
 
 ### Container
 - [x] `gcp/Dockerfile` — Updated with psycopg2 deps + scripts/
@@ -385,7 +385,7 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 
 > Based on data as of 2026-02: 7.61 GiB GCS, ~14M Cloud SQL rows, 22 Cloud Scheduler
 > triggers, and 7 jobs. **The fleet has grown well past this basis** — read live
-> 2026-09-07 there are 65 scheduler entries and 76 Cloud Run Jobs, so treat the figures
+> 2026-09-07 there are 65 scheduler entries and 76 Cloud Run Jobs, so treat the figures <!-- verify-docs-ok: dated live read of 2026-09-07, not a claim about today's fleet; 66 schedulers first read live 2026-10-19 -->
 > below as a floor, not an estimate. `docs/product/infrastructure/05-d-COST_ANALYSIS.md` carries the current view.
 
 | Service | Resource | Est. Cost/mo |
@@ -396,7 +396,7 @@ GOOGLE_APPLICATION_CREDENTIALS=.gcp-key.json   # for Vertex AI
 | **Cloud Storage** | 7.6 GB standard storage | ~$0.15 |
 | **Cloud Storage** | Operations (reads/writes) | ~$0.05 |
 | **Cloud Run Jobs** | Execution time (all 76 jobs, live 2026-09-07) | see COST_ANALYSIS.md |
-| **Cloud Scheduler** | 65 triggers (live 2026-09-07; 3 free) | ~$6.20 |
+| **Cloud Scheduler** | 65 triggers (live 2026-09-07; 3 free) | ~$6.20 | <!-- verify-docs-ok: cost basis priced on the 2026-09-07 live read; 66 schedulers first read live 2026-10-19 -->
 | **Secret Manager** | Access operations | ~$0.02 |
 | **Artifact Registry** | Docker image storage | ~$0.10 |
 | **Total estimate** | | **~$17–20/mo** |
