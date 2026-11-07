@@ -6,11 +6,11 @@ canvases: []
 site_source_notes: [DASHBOARD-01, DASHBOARD-21, INSIGHTS-01, INSIGHTS-07, INSIGHTS-08]
 done_when:
   - "One builder: lib/strat_levels.py exposes build_session_levels(ticker, session_date, daily_df, atr, premarket, reference=None), which returns the level list, the per-side ordered trigger candidates, each candidate's broken or unbroken status, the window, the trigger pick, the stop, the targets and a reason code per side; a structural test (AST walk over lib/, gcp/, platform/ and scripts/) asserts that no module outside lib/strat_levels.py calls compute_previous_levels, compute_current_levels, identify_triggers, select_nearest_levels or reanchor_triggers, that lib/agents/trade_planner.py holds no level walk of its own, and that no parent-bar walk exists outside lib/strat_levels.py; the test fails on origin/main (lib/agents/summarizers.py:521 and :542, gcp/premarket_brief.py:1556, gcp/premarket_playbook_resolver.py:152, gcp/signal_monitor.py:940, platform/api/routers/dashboard.py:515)"
-  - "Brief and planner parity: a test drives the brief's production playbook path (gcp/premarket_brief.py) and the planner's production path (context_from_bundle then compute_persona_plans) on the same 2026-11-06 inputs for SPY, QQQ and IWM and asserts the same trigger per side: SPY long PWL/PML 750.36 and short PQL 729.10, QQQ long PQL 661.14 and short PDL 647.05, IWM long PWL 276.00 and short no trigger (reason next_level_outside_window: the nearest level under the 269.13 premarket low is PYH 258.20 at 3.02 ATR); a fidelity test runs origin/main's identify_triggers on the same fixture bars and reproduces the picks premarket_analysis stored that morning (SPY calls PWL 750.36 and puts PDL 732.71, QQQ calls PQL 661.14 and puts PYH 637.01, IWM calls PWL and puts PDL 270.52), so the fixture is what production saw; the parity test fails on origin/main"
+  - "Brief and planner parity: a test drives the brief's production playbook path (gcp/premarket_brief.py) and the planner's production path (context_from_bundle then compute_persona_plans) on the same 2026-11-06 inputs for SPY, QQQ and IWM and asserts the same trigger per side, each the session's filtered premarket extreme: SPY long 738.04 and short 730.64, QQQ long 660.40 and short 647.535, IWM long 272.50 and short 269.13, with first targets SPY 750.36 (PWL/PML), QQQ 661.14 (PQL) and IWM 276.00 (PWL) on the long side; a fidelity test runs origin/main's identify_triggers on the same fixture bars and reproduces the picks premarket_analysis stored that morning (SPY calls PWL 750.36 and puts PDL 732.71, QQQ calls PQL 661.14 and puts PYH 637.01, IWM calls PWL and puts PDL 270.52), so the fixture is what production saw; the parity test fails on origin/main"
   - "Session date: build_session_levels bounds daily bars to dates before session_date, drops rows with a null close, takes previous periods by period filter (never the iloc[-2] fallback), finds the parent bar from the last completed bar, and returns status stale_daily (no levels, no triggers) when the last bar is not the prior session under lib.strat_levels.daily_data_freshness; a premarket snapshot whose own date is not session_date is refused and recorded as premarket_unavailable; tests: the AVGO 2026-11-06 live run before that day's market_data_daily row exists gives PDL 290.12 (not 321.74) and no premarket (not 2026-11-05's pre_vwap 318.14), a frame ending at the prior session whose prior bar is a 2U gives that bar's high and low as the day levels (summarizers.py:578 reads the bar before it), and the brief at 08:30 reads the session's own premarket row (premarket_brief.py:1474-1481 and :1518-1521 read the prior day's); each test fails on origin/main"
-  - "Premarket prints: lib.indicators.calculate_premarket_context excludes from pre_high, pre_low and pre_vwap any one-minute bar whose high equals its low and whose price equals the prior session's close or open to the cent, and any bar whose high or low lies more than 1.0 x ATR(14) outside the 5th to 95th percentile band of that morning's premarket closes, and returns the count it excluded; on committed 2026-11-06 Alpha Vantage extended-hours fixtures it gives QQQ a pre_high below 665 and a pre_low above 648 (not 683.50 and 647.05), IWM a pre_high below 275 with pre_low 269.13 kept, SPY a pre_high below 745 (not 765.527), and AVGO neither 312.00 nor 291.53 as an extreme; the test fails on origin/main"
+  - "Premarket prints: lib.indicators.calculate_premarket_context drops, before taking pre_high, pre_low and pre_vwap, (a) every one-minute open, high, low or close equal to the prior session's close to the cent when that bar's open-close midpoint is more than 0.1 x ATR(14) away from it (a stale prior-close print), and (b) a bar's high or low that lies more than 0.5 x ATR(14) beyond both its own open-close body and the bodies of the two bars on each side (an isolated spike), and returns both counts; on committed 2026-11-06 Alpha Vantage 1-minute extended-hours fixtures it gives QQQ pre_high 660.398 and pre_low 649.62 (raw 683.50 and 647.05), IWM 272.50 and 269.13 (raw high 283.745), SPY 738.04 and 730.64 (raw high 765.5267), dropping 15, 3 and 15 prior-close prints and one 08:05 spike per ticker, and AVGO neither 312.00 nor 291.53 as an extreme; the test fails on origin/main"
   - "One window: lib.strat_levels._within_staleness_window (3 x the ticker's own ATR(14) and 8% of the reference) is the only distance rule for triggers, stops, targets, the ladder and Room to trigger in every consumer; when ATR(14) is missing or not positive the builder returns no trigger on either side with reason atr_unavailable, and PlanContext.safe_atr never feeds the level walk; tests on the brief, planner, signal-monitor refresh, playbook resolver and movement-statement paths assert the window with ATR present and the atr_unavailable result with ATR missing, and fail on origin/main (strat_levels.py:935-938 falls back to the percent axis, signal_monitor.py:940-943 passes no ATR)"
-  - "One level set and one side rule: the candidates are the prior-period highs and lows (PDH, PDL, PWH, PWL, PMH, PML, PQH, PQL, PYH, PYL) and the parent-bar high and low; a candidate is a long (call) level when price_cents(level) >= price_cents(cleared-above mark) and a short (put) level when price_cents(level) <= price_cents(cleared-below mark), whether it is a high or a low, so a level that premarket only touched to the cent stays on its side (a level on the reference's own cent with no premarket beyond it is on both lists) (a low above price is resistance, a high below price is support); opens, closes, gap levels and the premarket high and low are never triggers; the brief's ladder (NEXT LEVELS), the brief's CALLS/PUTS trigger, the planner's trigger and the movement statement's rungs are the same ordered side list; targets are the next distinct rungs on that list beyond the trigger; the stop is the nearest in-window level on the other side of the reference, high or low, or the premarket low for a long (high for a short) when that is nearer; Room to trigger is the trigger's own distance from the reference; a test on the 2026-11-06 SPY fixture asserts the planner's long trigger is PWL/PML 750.36, not PDH 765.97, and the brief's calls side leads with the same 750.36, and touch fixtures (reference 100, pre_high 101, PWH 101 gives long trigger PWH 101; reference 100, pre_low 99, PWL 99 gives short trigger PWL 99) hold in both the brief and the planner; the SPY test fails on origin/main (trade_planner.py:262-265 walks only highs for a long)"
+  - "One level set and one side rule: the candidates are the prior-period highs, lows and closes (PDH, PDL, PDC, PWH, PWL, PWC, PMH, PML, PMC, PQH, PQL, PQC, PYH, PYL, PYC), the parent-bar high and low, and the session's filtered premarket high and low (the owner's 2026-11-07 rulings: closes count as levels, and premarket levels count as a human trader uses them); at one price to the cent the structural name wins; a candidate is a long (call) level when price_cents(level) >= price_cents(cleared-above mark) and a short (put) level when price_cents(level) <= price_cents(cleared-below mark), whether it is a high or a low, so a level that premarket only touched to the cent stays on its side (a level on the reference's own cent with no premarket beyond it is on both lists) (a low above price is resistance, a high below price is support); current-period opens and gap levels are never triggers; the brief's ladder (NEXT LEVELS), the brief's CALLS/PUTS trigger, the planner's trigger and the movement statement's rungs are the same ordered side list; targets are the next distinct rungs on that list beyond the trigger; the stop is the nearest in-window candidate on the other side of the reference, of any kind; Room to trigger is the trigger's own distance from the reference; side-rule fixtures with no premarket snapshot (reference 100: PWL 103 and PDH 106 give long trigger PWL 103; PYH 97 and PDL 94 give short trigger PYH 97; PWC 102 and PDH 104 give long trigger PWC 102) and touch fixtures (reference 100, pre_high 101, PWH 101 gives long trigger 101 named PWH; reference 100, pre_low 99, PWL 99 gives short trigger 99 named PWL) hold in both the brief and the planner; the side-rule fixtures fail on origin/main (trade_planner.py:262-265 walks only highs for a long, and the planner has no closes)"
   - "One broken rule: a long candidate is broken when price_cents(max(reference, premarket high)) is above price_cents(level), a short candidate when price_cents(min(reference, premarket low)) is below it, so a level touched to the cent is unbroken, and the reference is the session premarket's pre_vwap when the snapshot is present and the prior close otherwise, in every consumer; tests assert QQQ 2026-11-06 PDL 647.05 unbroken and the trigger in both the brief and the planner (the brief's cents partition at strat_levels.py:1020-1022 drops it), and fail on origin/main"
   - "No synthesized numbers: on an orb_only side every persona plan has entry_zone null, stop null, targets [] and risk_metrics null, and the report headline entry_zone and stop are null; PersonaPlan and InsightReport accept null for both; PlanContext.trigger_for (close x 1.005 and x 0.995) and the legacy single-level walk are removed; gcp/insight_discord_push.py, the orchestrator's thesis check and the risk-reviewer input each have a test with a null plan; a test asserts that every price a plan or the brief publishes is a level price from the builder's level list or a plan offset from such a level, and fails on origin/main (trade_planner.py:702-750 publishes ref +/- 1 ATR)"
   - "One copy per reason: the orb_only text in the brief banners, the planner rationale, the Discord push and the schema field descriptions comes from one reason-keyed table in lib/strat_levels.py (all_broken_by_premarket, next_level_outside_window, no_levels, atr_unavailable, stale_daily); a test renders each reason on each surface and asserts no string 'cleared every structural' remains under lib/, gcp/ or platform/; it fails on origin/main (strat_levels.py:1346, :1427 and :1509, insight_discord_push.py:166 and :174, schema.py:313)"
@@ -33,7 +33,8 @@ ONE place and used across all. None should be built and re-rerun. The planner ma
 premarket level due to timing and that's it." With it: "We need to remove any synthetic levels."
 and "Why is there no distance limit, inconsistent." On the side rule the owner ruled: "Puts or calls
 need to look at all levels, whether it's a high or a low... it should count on whichever side of
-price it sits." It is not self-approved: it takes effect only
+price it sits." On the level set: "Yes, you should do closes as levels too", and premarket
+levels count, as the owner uses them when trading. It is not self-approved: it takes effect only
 when the owner merges the spec-only PR that adds it, and that merge is the approval its `status`
 records.
 
@@ -209,8 +210,9 @@ Each item below was checked against origin/main; corrections to the lane's start
      long list and every candidate at or below the cleared-below mark on the short list, whatever its
      kind (inclusive, so a level premarket only touched to the cent stays a candidate), by the owner's
      2026-11-07 ruling ("It's about levels, not about the high or low level that it is"). A level
-     premarket traded through sits between the two marks and is on neither list. Opens, closes, gap
-     and premarket levels are never triggers;
+     premarket traded through sits between the two marks and is on neither list. Prior-period closes
+     and the filtered premarket high and low are candidates like any level; current-period opens and
+     gap levels are never triggers (opens stay the FTFC reference);
    - marks broken status with one cents rule: broken for a long when
      price_cents(max(reference, premarket high)) > price_cents(level), mirrored for a short;
    - applies one window, `_within_staleness_window(level, reference, atr)`; when ATR is missing or
@@ -226,9 +228,16 @@ Each item below was checked against origin/main; corrections to the lane's start
    builder.
 2. Premarket filter (lib.indicators.calculate_premarket_context, used by
    gcp/fetchers/fetch_premarket_refresh.py and the nightly fetcher). Before taking the max, min and
-   VWAP, exclude a one-minute bar when its high equals its low and its price equals the prior
-   session's close or open to the cent, or when its high or low lies more than 1.0 x ATR(14) outside
-   the 5th to 95th percentile band of that morning's premarket closes. Return excluded_bars. The
+   VWAP, drop (a) any one-minute open, high, low or close equal to the prior session's close to the
+   cent when the bar's open-close midpoint is more than 0.1 x ATR(14) away, and (b) any high or low
+   more than 0.5 x ATR(14) beyond its own bar's open-close body and the bodies of the two bars on each
+   side. Return the counts. Evidence (Alpha Vantage 1-minute extended-hours bars, 2026-11-06): at
+   08:05 ET all three tickers printed one trade near the prior day's high inside an otherwise normal
+   minute (QQQ 683.50, SPY 765.5267, IWM 283.745), and QQQ and SPY printed the prior close (647.05,
+   733.00) in 15 values each through the morning while trading 10 or more points away. A 1.0 x ATR
+   band around the morning's closes, the first draft of this rule, keeps every 647.05 print, so the
+   rule is per bar. Real early moves stay: SPY's 04:04 bar closed at 731.28 on 56,757 shares and IWM's
+   04:00 and 04:01 bars both traded to 269.4 and 269.13. The
    function gains prev_open and takes atr14 (the refresh job passes None today, fetch_premarket_refresh.py:194;
    it reads the prior row's atr_14 in the same query as the prior close). Thresholds are the lane's
    default (Open question 2).
@@ -293,18 +302,17 @@ Each has a default this spec takes; a different answer is a one-line change in t
 
 ## Expected effect
 
-On 2026-11-06 (fixtures above, premarket as stored): the brief and the planner both show SPY long
-PWL/PML 750.36 and short PQL 729.10, QQQ long PQL 661.14 and short PDL 647.05, IWM long PWL 276.00 and
-no short trigger (the next level under IWM's real 269.13 premarket low is PYH 258.20, 3.02 ATR away).
-With the print filter QQQ's pre_high is 660.40 (Alpha Vantage 5-minute extended-hours bars, the 08:05
-683.50 print excluded), so PQL 661.14 is unbroken, and its pre_low moves above 647.05 (seven bars
-printed exactly 647.05), so PDL is unbroken without the touch tolerance. SPY's 04:00 low of 730.64
-is real and breaks PDL 732.71, so the short is PQL 729.10. Against Friday's session: QQQ crossed
-661.14 in the first 15 minutes and peaked at 664.52 in the 9:45 bar; IWM never reached 276.00 (high
-274.55); SPY never reached 750.36 (high 742.21) or 729.10 (low 734.58). The brief's NEXT LEVELS keep highs and lows on whichever side of price
-they sit (SPY's calls ladder leads with the low 750.36) and stop listing opens, closes, gaps and levels
-premarket already traded through; brief targets stop including opens and closes; the movement
-statement's reach rates count only rows built under the new rule. History counts come with the implementation PR (done_when).
+On 2026-11-06 (Alpha Vantage 5-minute extended-hours bars, filtered): the brief and the planner
+both show the premarket extremes as the nearest levels: calls SPY 738.04, QQQ 660.40, IWM 272.50;
+puts SPY 730.64, QQQ 647.535, IWM 269.13. The filter drops QQQ's 08:05 683.50, SPY's 765.527 and
+IWM's 283.745 prints; seven QQQ bars printed exactly 647.05 (the prior close) and are dropped too.
+The next long rungs are SPY PWL/PML 750.36, QQQ PQL 661.14 then 683.45, IWM PWL 276.00. Against
+Friday's session: SPY crossed 738.04 in the first 15 minutes and peaked at 742.21 in the 9:45 bar;
+QQQ crossed 660.40 in the first 15 minutes and peaked at 664.52 in the 9:45 bar; IWM crossed 272.50
+at 9:45 and peaked at 274.55 at 15:30; no put level traded. The brief's NEXT LEVELS keep highs, lows
+and closes on whichever side of price they sit and stop listing opens, gaps and levels premarket
+already traded through; the movement statement's reach rates count only rows built under the new
+rule. History counts come with the implementation PR (done_when).
 
 ## Capacity and cost
 
