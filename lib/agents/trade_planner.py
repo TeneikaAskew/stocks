@@ -39,6 +39,12 @@ import logging
 from dataclasses import dataclass
 from typing import Literal, Optional
 
+from lib.strat_levels import (
+    MAX_TRIGGER_DISTANCE_ATR,
+    MAX_TRIGGER_DISTANCE_PCT,
+    _within_staleness_window,
+)
+
 from .schema import EntryZone, PersonaPlan
 
 logger = logging.getLogger(__name__)
@@ -79,6 +85,13 @@ _BLUE_SKY_ATR_OFFSET = 0.20
 # threshold; SPY/IWM/QQQ uptrend days in the 2026-05-08 audit window
 # (≈0.4-0.5 ATR) sit comfortably below.
 _BLUE_SKY_MAX_GAP_ATR = 1.5
+
+# A level that pre-market only TOUCHED (pre_low or pre_high equal to the
+# level, to the cent) is not broken: price never traded through it. Without
+# this tolerance an exact tie (QQQ 2026-11-06: pre_low 647.05 == PDL 647.05,
+# from an extended-hours print at the prior close) counted the level as
+# cleared and the walk skipped to the 2025 yearly low 15 ATR away.
+_TOUCH_TOLERANCE = 0.005
 
 
 @dataclass
@@ -273,9 +286,15 @@ def select_trigger_and_regime(
 
     if direction == "long":
         # Levels strictly ABOVE the cleared mark (price hasn't broken them yet)
+        # Structural levels tied with the cleared mark count as unbroken
+        # (_TOUCH_TOLERANCE). pre_high itself keeps the strict compare: it
+        # IS the cleared mark, so it is never its own trigger.
         candidates = sorted([
-            float(lv) for lv in long_levels
-            if lv is not None and float(lv) > cleared_above
+            float(lv) for lv in structural_long
+            if lv is not None and float(lv) > cleared_above - _TOUCH_TOLERANCE
+        ] + [
+            float(ctx.pre_high) for _ in (0,)
+            if ctx.pre_high is not None and float(ctx.pre_high) > cleared_above
         ])
         # Stop anchor: closest level BELOW the reference price
         below_ref = sorted([
@@ -286,8 +305,11 @@ def select_trigger_and_regime(
         stop_anchor = below_ref[0] if below_ref else None
     else:  # short
         candidates = sorted([
-            float(lv) for lv in short_levels
-            if lv is not None and float(lv) < cleared_below
+            float(lv) for lv in structural_short
+            if lv is not None and float(lv) < cleared_below + _TOUCH_TOLERANCE
+        ] + [
+            float(ctx.pre_low) for _ in (0,)
+            if ctx.pre_low is not None and float(ctx.pre_low) < cleared_below
         ], reverse=True)
         above_ref = sorted([
             float(lv) for lv in (eff_pdh, ctx.pwh, ctx.pmh,
@@ -296,8 +318,29 @@ def select_trigger_and_regime(
         ])
         stop_anchor = above_ref[0] if above_ref else None
 
+    # Distance cap (FEAT-INSIGHT-001, 2026-11-07): an unbroken level is a
+    # trigger only when it sits within the brief's staleness window of
+    # THIS ticker's reference price, i.e. within MAX_TRIGGER_DISTANCE_ATR
+    # x this ticker's ATR(14) and MAX_TRIGGER_DISTANCE_PCT of price (the
+    # same rule lib.strat_levels applies to the brief's levels). Without
+    # it the walk kept going until it found any unbroken level, so on
+    # 2026-11-06 IWM's short trigger was the 2025 yearly low 171.73
+    # (about 22 ATR below 272) and QQQ's was 402.39. Levels past the
+    # window fall through to the no-candidate branch below: a blue-sky
+    # trigger just past the nearest cleared level, or orb_only.
+    in_window = [lv for lv in candidates if _within_staleness_window(lv, ref, atr)]
+    if candidates and not in_window:
+        logger.info(
+            "trade_planner stale_levels_dropped direction=%s ref=%.4f atr=%.4f "
+            "max_atr=%.1f max_pct=%.2f dropped=%s",
+            direction, ref, atr, MAX_TRIGGER_DISTANCE_ATR,
+            MAX_TRIGGER_DISTANCE_PCT, [round(lv, 4) for lv in candidates],
+        )
+    candidates = in_window
+
     if not candidates:
-        # No structural level survived the cleared-by-pre_high check.
+        # No structural level survived the cleared-by-pre_high check
+        # within the distance cap.
         # Three sub-cases distinguish a sustained uptrend (synthesize)
         # from a true gap-and-go (wait for ORB) from degenerate input
         # (no levels at all):
@@ -364,7 +407,8 @@ def select_trigger_and_regime(
             if direction == "long":
                 structural_below = sorted(
                     [float(lv) for lv in same_side_structural
-                     if lv is not None and float(lv) < cleared_above],
+                     if lv is not None
+                     and float(lv) <= cleared_above - _TOUCH_TOLERANCE],
                     reverse=True,
                 )
                 anchor = structural_below[0] if structural_below else cleared_above
@@ -372,7 +416,8 @@ def select_trigger_and_regime(
             else:
                 structural_above = sorted(
                     [float(lv) for lv in same_side_structural
-                     if lv is not None and float(lv) > cleared_below],
+                     if lv is not None
+                     and float(lv) >= cleared_below + _TOUCH_TOLERANCE],
                 )
                 anchor = structural_above[0] if structural_above else cleared_below
                 synthetic_trigger = anchor - offset * atr

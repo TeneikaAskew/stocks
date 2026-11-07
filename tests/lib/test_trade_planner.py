@@ -312,24 +312,30 @@ def test_select_trigger_orb_only_when_all_levels_cleared():
     assert stop_anchor is not None
 
 
-def test_select_trigger_extended_when_next_level_far_away():
-    """Distance to next unbroken level > 3 ATR → extended regime."""
+def test_select_trigger_far_level_beyond_cap_is_not_a_trigger():
+    """A next unbroken level past the distance cap is not a trigger.
+
+    PQH=$180 is 5 ATR above ref (ATR $2). Before FEAT-INSIGHT-001's
+    2026-11-07 distance cap it became an `extended` trigger; now it is
+    dropped and the walk falls through to the blue-sky synth, anchored on
+    the nearest cleared structural level (PWH $169.50) + 0.20 ATR.
+    """
     ctx = _level_ctx(
         close=170.0,
         atr=2.0,                 # tight ATR
         pre_vwap=170.0,
         pre_high=170.5, pre_low=169.5,
-        # Closest level above is PQH=$180, distance=10/2=5 ATR
         effective_pdh=169.0, effective_pdl=165.0,  # cleared
         pwh=169.5, pwl=165.0,                       # cleared
         pmh=169.0, pml=160.0,                       # cleared
-        pqh=180.0, pql=160.0,                       # this is the next level
+        pqh=180.0, pql=160.0,                       # 5 ATR away: past the cap
         pyh=200.0, pyl=120.0,
     )
-    regime, trigger, _, distance, _ = select_trigger_and_regime(ctx, "long")
-    assert regime == "extended"
-    assert trigger == pytest.approx(180.0, abs=0.01)
-    assert distance is not None and distance >= 3.0
+    regime, trigger, _, distance, is_blue_sky = select_trigger_and_regime(ctx, "long")
+    assert regime == "normal"
+    assert is_blue_sky is True
+    assert trigger == pytest.approx(169.5 + 0.20 * 2.0, abs=0.01)
+    assert distance < 3.0
 
 
 def test_select_trigger_short_mirror():
@@ -341,15 +347,16 @@ def test_select_trigger_short_mirror():
         pre_high=161.0, pre_low=157.0,
         effective_pdh=170.0, effective_pdl=160.0,
         pwh=170.0, pwl=158.0,    # both at/above pre — first unbroken below = pwl
-        pmh=180.0, pml=130.0,
+        pmh=180.0, pml=150.0,
         pqh=190.0, pql=120.0,
         pyh=200.0, pyl=95.00,
     )
     regime, trigger, stop_anchor, distance, _ = select_trigger_and_regime(ctx, "short")
     # Cleared_below = min(159, 157) = 157. Levels strictly < 157:
-    # PML=130, PQL=120, PYL=95. Closest = PML=130.
-    assert regime in ("normal", "extended")
-    assert trigger == pytest.approx(130.0, abs=0.01)
+    # PML=150, PQL=120, PYL=95. Closest = PML=150 (1.04 ATR, 5.7% of
+    # price: inside the distance cap; PQL and PYL are past it).
+    assert regime == "normal"
+    assert trigger == pytest.approx(150.0, abs=0.01)
     assert stop_anchor is not None and stop_anchor > 159.0
 
 
@@ -374,15 +381,17 @@ def test_orb_only_persona_plans_have_zero_size():
 
 
 def test_extended_regime_rationale_includes_orb_recommendation():
-    """Extended regime plans should call out ORB confirmation in rationale."""
-    ctx = _level_ctx(
-        close=170.0, atr=2.0, pre_vwap=170.0,
-        pre_high=170.5, pre_low=169.5,
-        effective_pdh=169.0, effective_pdl=165.0,
-        pwh=169.5, pwl=165.0,
-        pmh=169.0, pml=160.0,
-        pqh=180.0, pql=160.0,    # Trigger 5 ATR away
-        pyh=200.0, pyl=120.0,
+    """Extended regime plans should call out ORB confirmation in rationale.
+
+    Since the 2026-11-07 distance cap a multi-timeframe level past 3 ATR
+    is never a trigger, so `extended` comes only from the legacy
+    single-level path: here trigger_high sits 5 ATR above the close.
+    """
+    ctx = PlanContext(
+        direction="long", conviction="medium",
+        close=170.0, atr=2.0,
+        trigger_high=180.0, trigger_low=165.0,
+        ftfc_score=1.0,
     )
     plans = compute_persona_plans(ctx)
     neut = next(p for p in plans if p.persona == "neutral")
