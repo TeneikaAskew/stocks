@@ -4911,6 +4911,30 @@ def test_materialize_streams_exact_bytes_one_blob_at_a_time(repo, tmp_path):
 
 
 # One batch answer per case, from a stand-in `git` on PATH: (stdout bytes, exit status, words the refusal names).
+def test_materialize_accepts_a_sha256_repository(tmp_path):
+    """BATCH_HEADER's 64-hex branch: real git in a SHA-256 repository answers with 64-hex ids, and blobs of size 0,
+    1 and 1 MiB + 3 arrive byte for byte (#1700 pass 23 R4 F2)."""
+    repo = tmp_path / "sha256"
+    init = subprocess.run(["git", "init", "-q", "--object-format=sha256", str(repo)], capture_output=True, text=True)
+    assert init.returncode == 0, init.stderr   # git 2.29 and later; the hosted runners carry newer
+    blobs = {"empty": b"", "one": b"\n", "big.bin": bytes(range(256)) * 4096 + b"\0\n\r"}
+    entries = []
+    for name, data in blobs.items():
+        (tmp_path / name).write_bytes(data)
+        oid = _git(repo, "hash-object", "-w", str(tmp_path / name)).strip()
+        assert len(oid) == 64, oid
+        entries.append(("100644", oid, f"d/{name}"))
+    runner = ("import importlib.util,pathlib,sys;s=importlib.util.spec_from_file_location('g',sys.argv[1]);"
+              "m=importlib.util.module_from_spec(s);sys.modules['g']=m;s.loader.exec_module(m);m.ROOT=pathlib.Path(sys.argv[2]);"
+              "import json;m.materialize([tuple(e) for e in json.loads(sys.argv[3])],pathlib.Path(sys.argv[4]))")
+    into = tmp_path / "into"
+    into.mkdir()
+    r = subprocess.run([sys.executable, "-c", runner, str(REPO / "scripts/gate/spec_gate.py"), str(repo),
+                        json.dumps(entries), str(into)], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert {name: (into / "d" / name).read_bytes() for name in blobs} == blobs
+
+
 FAKE_OID = "1" * 40
 FAKE_BATCH = {
     "short read inside the blob": (f"{FAKE_OID} blob 10\n".encode() + b"abcd", 0, ["ended inside x.bin", FAKE_OID]),
@@ -4934,7 +4958,10 @@ FAKE_BATCH = {
     "leading zero": (f"{FAKE_OID} blob 04\nabcd\n".encode(), 0, ["answered", "04", "x.bin"]),
     "size of 5000 digits": (f"{FAKE_OID} blob {'9' * 5000}\n".encode(), 0, ["answered", "x.bin", FAKE_OID]),
     # A header with no line end is read only up to its bound, with output still pending (#1700 pass 22 R4 F1).
-    "overlong header, output pending": (f"{FAKE_OID} blob ".encode() + b"1" * 4096, 0, ["answered", "x.bin", FAKE_OID]),
+    "overlong header, output pending": (f"{FAKE_OID} blob ".encode() + b"1" * 4096, 0,
+                                        ["answered", f"'{FAKE_OID} blob {'1' * 20}'", "x.bin", FAKE_OID]),
+    # The longest valid header, a 19-digit size, is read whole and accepted, so the blob read is what ends (pass 23 R4 F1).
+    "a 19-digit size": (f"{FAKE_OID} blob {'9' * 19}\n".encode() + b"ab", 0, ["ended inside x.bin", FAKE_OID]),
     # An answer that ends early reports git's own exit status and stderr, whichever check sees the end (QUAL2 R4 F1).
     "early end: no answer": (b"", 128, ["failed (128)", "fatal: boom"]),
     "early end: a megabyte of stderr": (b"", 128, ["failed (128)", "fatal: boom"]),
@@ -6051,6 +6078,12 @@ def test_measure_inventory_render_owns_and_removes_its_scratch_root(tmp_path):
 CLOSED_STDERR_PROBE = r"""
 import importlib.util,os,pathlib,sys
 s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+if len(sys.argv)>2 and sys.argv[2]=='full':
+    r,w=os.pipe();os.dup2(w,2);os.close(w);os.set_blocking(2,False)
+    try:
+        while True:os.write(2,b'x'*4096)
+    except BlockingIOError:pass
+    os.set_blocking(2,True)
 real_popen=m.subprocess.Popen
 def interrupted(*a,**kw):
     real_popen(*a,**kw)
@@ -6073,6 +6106,52 @@ def test_measure_inventory_render_notices_never_reach_stdout_with_stderr_closed(
                        env={**os.environ, "TMPDIR": str(scratch)})
     assert r.returncode == 0, r.stdout + r.stderr
     assert r.stdout == "interrupt propagated\n", r.stdout
+
+
+def test_measure_inventory_render_notices_never_wait_on_a_full_stderr_pipe(tmp_path):
+    """SIGALRM is blocked while the cleanup writes its notices, so a blocking write to a stderr pipe nobody drains
+    would outlast the deadline: the notice is dropped and the interrupt propagates at once (#1700 pass 23 R1 F1)."""
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    r = subprocess.run([sys.executable, "-c", CLOSED_STDERR_PROBE, str(REPO / MEASURE), "full"], capture_output=True,
+                       text=True, timeout=15, cwd=tmp_path, env={**os.environ, "TMPDIR": str(scratch)})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout == "interrupt propagated\n", r.stdout
+
+
+STALLED_PROBE = r"""
+import importlib.util,io,json,os,pathlib,signal,sys
+s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+real_popen=m.subprocess.Popen;spawned=[]
+def interrupted(*a,**kw):
+    spawned.append(real_popen(*a,**kw).pid)
+    raise KeyboardInterrupt('after fork')
+m.subprocess.Popen=interrupted
+m.kill_unregistered=lambda children,deadline,outcomes=None:[]   # a pass that examines and reaps nothing
+notice=io.StringIO();real_stderr=sys.stderr;sys.stderr=notice
+try:
+    m.run_bounded([sys.executable,'-c','import time;time.sleep(30)'],pathlib.Path.cwd(),max_rss_bytes=64<<20,max_seconds=20)
+except KeyboardInterrupt:
+    pass
+finally:
+    sys.stderr=real_stderr
+    for pid in spawned:
+        os.kill(pid,signal.SIGKILL);os.waitpid(pid,0)
+print(json.dumps({'pid':spawned[0],'notice':notice.getvalue()}))
+"""
+
+
+def test_measure_inventory_render_names_a_child_left_after_a_pass_that_reaped_nothing(tmp_path):
+    """The passes stop after one that reaps nothing, well before the deadline; a child left unexamined then is named
+    for that, not "not examined before the deadline" (closure21 item 5)."""
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    r = subprocess.run([sys.executable, "-c", STALLED_PROBE, str(REPO / MEASURE)], capture_output=True, text=True,
+                       timeout=30, cwd=tmp_path, env={**os.environ, "TMPDIR": str(scratch)})
+    assert r.returncode == 0, r.stdout + r.stderr
+    seen = json.loads(r.stdout)
+    assert f"child {seen['pid']} not proven killed: not examined: the pass before it reaped nothing" in seen['notice'], seen
+    assert "not examined before the deadline" not in seen['notice'], seen
 
 
 def test_measure_inventory_render_keeps_a_scratch_root_it_cannot_prove_free(tmp_path):
@@ -6286,6 +6365,11 @@ m.kill_unregistered([{'pid':12,'start_ticks':120}],time.monotonic()+1,outcomes)
 reasons=getattr(m,'unproven_reasons',lambda remaining,outcomes:'unproven_reasons absent')
 r['reason_reused']=reasons([{'pid':12,'start_ticks':200}],outcomes)
 r['reason_same']=reasons([{'pid':12,'start_ticks':120}],outcomes)
+# A process already examined, by PID and start ticks, is not examined again when it is listed under another
+# signalled parent: 12@200, already found unverified, is neither re-checked nor signalled (closure21 item 4).
+outcomes={(12,200):'identity unverified'};refuse.clear();now.update({10:100,12:200});sent.clear()
+m.kill_descendants([{'pid':10,'start_ticks':100}],{10:(100,1),12:(200,10)},time.monotonic()+1,outcomes)
+r['dedup']={'sent':list(sent),'outcomes':{key(k):v for k,v in outcomes.items()}}
 print(json.dumps(r))
 """
 
@@ -6304,6 +6388,7 @@ def test_measure_inventory_render_keys_cleanup_outcomes_by_pid_and_start_ticks(t
                                                             '12@200': 'signalled, not reaped by the deadline'}}, seen
     assert seen['reason_reused'] == {'12': 'not examined before the deadline'}, seen
     assert seen['reason_same'] == {'12': 'signal refused'}, seen
+    assert seen['dedup'] == {'sent': [], 'outcomes': {'12@200': 'identity unverified'}}, seen
 
 
 def test_measure_inventory_render_keeps_and_attributes_a_root_whose_rmdir_fails(tmp_path):

@@ -239,10 +239,16 @@ def kill_unregistered(children: list[dict], deadline: float, outcomes: dict | No
     return killed
 
 
-def unproven_reasons(remaining: list[dict], outcomes: dict) -> dict[int, str]:
+STALLED = "not examined: the pass before it reaped nothing"
+
+
+def unproven_reasons(remaining: list[dict], outcomes: dict, stalled: bool = False) -> dict[int, str]:
     """Why each remaining child was not proven killed, by PID for the notices and receipt, looked up by PID and start
-    ticks, so a child is never named with the outcome of an earlier holder of its PID (closure20)."""
-    return {child["pid"]: outcomes.get(outcome_key(child), "not examined before the deadline") for child in remaining}
+    ticks, so a child is never named with the outcome of an earlier holder of its PID (closure20). A child with no
+    outcome was never examined: because the passes stopped after one that reaped nothing when `stalled`, otherwise
+    because the deadline passed (closure21 item 5)."""
+    unexamined = STALLED if stalled else "not examined before the deadline"
+    return {child["pid"]: outcomes.get(outcome_key(child), unexamined) for child in remaining}
 
 
 def clear_directory(dir_fd: int, deadline: float, keep: str | None = None) -> bool:
@@ -496,6 +502,25 @@ class OwnedFamily:
                 raise OSError("owned descriptor release failed: " + "; ".join(errors))
 
 
+
+def write_notice(line: str) -> None:
+    """Write one cleanup notice to stderr without ever blocking. A stream with no descriptor (a test's StringIO)
+    is printed to, since it cannot block; otherwise the line goes to the descriptor in non-blocking mode, fd 2 when
+    sys.stderr is None, and the descriptor's blocking flag is restored. Raises OSError (BlockingIOError when the
+    pipe is full, EBADF when it is closed) or ValueError; the caller drops the notice on either."""
+    stream = sys.stderr
+    try:
+        fd = 2 if stream is None else stream.fileno()
+    except (OSError, ValueError):
+        print(line, end="", file=stream)
+        return
+    blocking = os.get_blocking(fd)
+    os.set_blocking(fd, False)
+    try:
+        os.write(fd, line.encode("utf-8", "replace"))
+    finally:
+        os.set_blocking(fd, blocking)
+
 def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_seconds: float) -> dict:
     """Observe/reap actual descendants, including new sessions; report sampling uncertainty honestly."""
     global RETAINED_OWNERSHIP
@@ -730,10 +755,11 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                                     # only after the deadline (QUAL4 R1). A child or intermediate not signalled
                                     # (identity unverified, signal refused) prunes its subtree (review 14 P1).
                                     # Limits: a descendant forked after that read is not listed, and one not adopted
-                                    # in time stays named "not examined before the deadline". That read is optional:
+                                    # in time stays named "not examined before the deadline", or, when the passes
+                                    # stopped after one that reaped nothing, STALLED (closure21 item 5). That read is optional:
                                     # if it fails, the pass still signals the children already listed, then the
                                     # failure propagates as a failed relist does (review 14 P2).
-                                    killed, remaining, outcomes, first = [], children, {}, True
+                                    killed, remaining, outcomes, first, stalled = [], children, {}, True, False
                                     while remaining and (first or time.monotonic() < started + max_seconds):
                                         first = False
                                         try:
@@ -750,6 +776,7 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                                         killed += descendants_reaped
                                         remaining = own_children()
                                         if not reaped_now:
+                                            stalled = True
                                             break
                                     report["scratch_root_unregistered_killed"] = killed
                                     retained = None
@@ -757,7 +784,7 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                                     if remaining:
                                         retained = "spawn_not_registered"
                                         report["scratch_root_unregistered_remaining"] = remaining
-                                        reasons = unproven_reasons(remaining, outcomes)
+                                        reasons = unproven_reasons(remaining, outcomes, stalled)
                                         # Named before the receipt is written: the worker owns the root and can make
                                         # that write fail, which must not also silence stderr (QUAL3 R1 F2).
                                         notices += [f"child {pid} not proven killed: {why}" for pid, why in reasons.items()]
@@ -794,12 +821,12 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                         # cannot be written never replaces the interrupt that is propagating (QUAL2 R1 F2). With stderr
                         # closed at startup sys.stderr is None, and print(file=None) would write to stdout, the report's
                         # channel, so they go to fd 2 itself, where a closed fd is only an OSError (#1700 pass 22 R1 F1).
+                        # SIGALRM is blocked here, so a write to a full stderr pipe would wait past the deadline: each
+                        # notice is written to the descriptor without blocking, and one that does not fit is dropped
+                        # (#1700 pass 23 R1 F1).
                         for notice in notices:
                             with contextlib.suppress(OSError, ValueError):
-                                if sys.stderr is None:
-                                    os.write(2, f"measure_inventory_render: {notice}\n".encode("utf-8", "replace"))
-                                else:
-                                    print(f"measure_inventory_render: {notice}", file=sys.stderr)
+                                write_notice(f"measure_inventory_render: {notice}\n")
         except DeliveryDeadline as e:
             report.update(ok=False, reason="time_limit", error=str(e))
         report["elapsed_seconds"] = time.monotonic() - started
