@@ -504,14 +504,14 @@ class OwnedFamily:
 
 
 def write_notice(line: str) -> None:
-    """Write one cleanup notice to stderr without ever blocking. A stream with no descriptor (a test's StringIO)
-    is printed to, since it cannot block; otherwise the line goes to the descriptor in non-blocking mode, fd 2 when
+    """Write one cleanup notice to stderr without ever blocking. A stream with no descriptor (a test's StringIO, or
+    an object with no fileno at all) is printed to, since it cannot block; otherwise the line goes to the descriptor in non-blocking mode, fd 2 when
     sys.stderr is None, and the descriptor's blocking flag is restored. Raises OSError (BlockingIOError when the
     pipe is full, EBADF when it is closed) or ValueError; the caller drops the notice on either."""
     stream = sys.stderr
     try:
         fd = 2 if stream is None else stream.fileno()
-    except (OSError, ValueError):
+    except (AttributeError, OSError, ValueError):
         print(line, end="", file=stream)
         return
     blocking = os.get_blocking(fd)
