@@ -6,7 +6,7 @@ GET /api/movement-statement       - PHASE 3 feature-flagged movement read
 import os
 import sys
 import logging
-from datetime import datetime, date as _date_cls, timedelta
+from datetime import datetime, date as _date_cls
 from pathlib import Path
 
 from typing import Optional
@@ -16,6 +16,7 @@ from api.schemas import (
     DashboardBriefResponse,
     MovementStatementResponse,
 )
+from lib.eastern_time import is_session, market_today, session_count
 from lib.infra_errors import is_backend_outage, is_infrastructure_error
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -35,14 +36,13 @@ try:
 except Exception:
     pass
 
-# Reuse the same holiday calendar / market-open logic as the live router so
-# both endpoints agree on what "stale" and "open" mean.
+# Reuse the live router's market-open logic so both endpoints agree on what
+# "open" means; both read the shared NYSE calendar (lib.eastern_time).
 try:
     from platform.api.routers.live import (  # type: ignore[import-not-found]
         _is_market_open,
         get_live_quote,
         ET_TZ,
-        MARKET_HOLIDAYS_2026,
     )
 except Exception:  # pragma: no cover - import path differs when launched as `api.main`
     try:
@@ -50,33 +50,30 @@ except Exception:  # pragma: no cover - import path differs when launched as `ap
             _is_market_open,
             get_live_quote,
             ET_TZ,
-            MARKET_HOLIDAYS_2026,
         )
     except Exception:
         _is_market_open = None  # type: ignore[assignment]
         get_live_quote = None  # type: ignore[assignment]
         ET_TZ = None  # type: ignore[assignment]
-        MARKET_HOLIDAYS_2026 = set()  # type: ignore[assignment]
 
 
 def _trading_days_between(start: _date_cls, end: _date_cls) -> int:
-    """Count trading days strictly between `start` and `end` (both exclusive).
+    """Count NYSE sessions strictly between `start` and `end` (both exclusive).
 
-    Returns 0 when end <= start. Skips Sat/Sun and US market holidays. Used
+    Returns 0 when end <= start. Sessions come from the shared NYSE calendar
+    (lib.eastern_time), so weekends and every year's holidays are skipped. Used
     for staleness, so on Monday morning with Thursday's close as the most
     recent row this returns 1 (only Friday's bar is missing), not 4 calendar
     days. The end day is excluded because today's bar doesn't exist yet at
     market open.
+
+    The ``end <= start`` guard comes first: ``session_count`` counts
+    ``(start, end]``, so on a same-day session the subtraction alone gives -1.
+    A calendar failure raises; there is no weekday-only fallback.
     """
     if end <= start:
         return 0
-    count = 0
-    cur = start + timedelta(days=1)
-    while cur < end:
-        if cur.weekday() < 5 and cur not in MARKET_HOLIDAYS_2026:
-            count += 1
-        cur += timedelta(days=1)
-    return count
+    return session_count(start, end) - (1 if is_session(end) else 0)
 
 
 @router.get("/api/dashboard/brief/{ticker}", response_model=DashboardBriefResponse, response_model_exclude_unset=True)
@@ -174,10 +171,16 @@ async def dashboard_brief(
                     row_d = row_date
                 else:
                     row_d = datetime.strptime(str(row_date), "%Y-%m-%d").date()
-                ref_today = datetime.strptime(date, "%Y-%m-%d").date() if date else datetime.now().date()
-                stale_days = _trading_days_between(row_d, ref_today)
+                # The Eastern market date: the container clock is UTC, which
+                # is already tomorrow from 20:00 ET (CLAUDE.md 3.9).
+                ref_today = datetime.strptime(date, "%Y-%m-%d").date() if date else market_today()
+                # The session count may build or extend the calendar cache
+                # (seconds of CPU for a far-future ?date=): off the loop.
+                stale_days = await run_in_threadpool(_trading_days_between, row_d, ref_today)
             except Exception:
-                stale_days = 0
+                # Unknown, not fresh: 0 would read as up to date (CLAUDE.md 3.7).
+                logger.exception("stale_days for %s could not be computed; reporting null", ticker)
+                stale_days = None
             daily = {
                 "date": str(row.get("date", "")),
                 "stale_days": stale_days,

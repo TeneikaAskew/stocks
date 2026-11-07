@@ -84,6 +84,13 @@ from api.schemas import (
     GammaNodesResponse,
     GridTimeseriesResponse,
 )
+from api.snapshot_provenance import (  # noqa: E402
+    PROVIDER_ALPHAVANTAGE,
+    ChainEvidence,
+    _now_utc,
+    build_snapshot_provenance,
+    with_observation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -211,7 +218,20 @@ def _unavailable_envelope(ticker: str, reason: str) -> dict:
         "strikes": [],
         "window_pct": 0.0,
         "warnings": [reason],
+        # No selected rows to describe: the nullable contract's default, never
+        # an invented provenance object.
+        "snapshot_provenance": None,
     }
+
+
+def _serve_cached(cached: dict) -> dict:
+    """A cache hit served from a copy: the observation clock is re-stamped on a
+    new provenance dict and the cached payload is never written to. ``cells``
+    and the other lists are shared read-only, as before."""
+    prov = cached.get("snapshot_provenance")
+    if not prov:
+        return {**cached}
+    return {**cached, "snapshot_provenance": with_observation(prov, _now_utc())}
 
 
 # ─── Data loader: tiered realtime → EOD fallback ───────────────────────────
@@ -219,12 +239,15 @@ def _unavailable_envelope(ticker: str, reason: str) -> dict:
 
 def _load_chain_for_live(
     ticker: str, today: Optional[date_type] = None,
-) -> tuple[list[dict], Optional[str], Optional[date_type], str, int]:
+) -> tuple[list[dict], Optional[str], Optional[date_type], str, int, ChainEvidence]:
     """Load chain rows for the live grid endpoint.
 
-    Returns: (contracts, snapshot_ts_iso, snapshot_date, data_source, days_behind).
+    Returns: (contracts, snapshot_ts_iso, snapshot_date, data_source, days_behind, evidence).
     `data_source` ∈ {'realtime','eod_fallback','stale_fallback','unavailable'}.
     `days_behind` is 0 for realtime, N trading days for fallbacks.
+    `evidence` is the selected rows' own `market_session` and `snapshot_ts`
+    values (empty when nothing was selected); the provider identity is the
+    `data_source = 'alphavantage'` literal in the WHERE clause.
     """
     from gcp.database import query_to_dataframe
 
@@ -237,7 +260,7 @@ def _load_chain_for_live(
         SELECT contract_symbol, expiration, strike, option_type,
                bid, ask, mark, last_price, volume, open_interest,
                implied_volatility, delta, gamma, theta, vega, rho,
-               snapshot_ts, snapshot_date
+               snapshot_ts, snapshot_date, market_session
         FROM etf_options_snapshots
         WHERE ticker = :ticker
           AND data_source = 'alphavantage'
@@ -260,14 +283,15 @@ def _load_chain_for_live(
         sd = sd_raw if isinstance(sd_raw, date_type) else (
             sd_raw.date() if hasattr(sd_raw, "date") else pd.to_datetime(sd_raw).date()
         )
-        return (_df_to_contracts(df_rt), ts_iso, sd, "realtime", 0)
+        return (_df_to_contracts(df_rt), ts_iso, sd, "realtime", 0,
+                ChainEvidence.from_frame(df_rt, PROVIDER_ALPHAVANTAGE))
 
     # Phase 2: EOD fallback — most recent nightly snapshot.
     sql_eod = """
         SELECT contract_symbol, expiration, strike, option_type,
                bid, ask, mark, last_price, volume, open_interest,
                implied_volatility, delta, gamma, theta, vega, rho,
-               snapshot_ts, snapshot_date
+               snapshot_ts, snapshot_date, market_session
         FROM etf_options_snapshots
         WHERE ticker = :ticker
           AND data_source = 'alphavantage'
@@ -284,7 +308,7 @@ def _load_chain_for_live(
     """
     df_eod = query_to_dataframe(sql_eod, {"ticker": ticker, "floor": str(floor)})
     if df_eod.empty:
-        return ([], None, None, "unavailable", -1)
+        return ([], None, None, "unavailable", -1, ChainEvidence.empty())
 
     sd_raw = df_eod["snapshot_date"].iloc[0]
     sd = sd_raw if isinstance(sd_raw, date_type) else (
@@ -293,16 +317,17 @@ def _load_chain_for_live(
     days_behind = int(np.busday_count(sd, today))
     tier = classify_gamma_freshness(days_behind)
     if tier == "unavailable":
-        return ([], None, sd, "unavailable", days_behind)
+        return ([], None, sd, "unavailable", days_behind, ChainEvidence.empty())
 
     ts_raw = df_eod["snapshot_ts"].iloc[0]
     ts_iso = ts_raw.isoformat() if hasattr(ts_raw, "isoformat") else str(ts_raw)
-    return (_df_to_contracts(df_eod), ts_iso, sd, tier, days_behind)
+    return (_df_to_contracts(df_eod), ts_iso, sd, tier, days_behind,
+            ChainEvidence.from_frame(df_eod, PROVIDER_ALPHAVANTAGE))
 
 
 def _load_chain_for_historical(
     ticker: str, requested_date: date_type,
-) -> tuple[list[dict], Optional[str], Optional[date_type], str, int]:
+) -> tuple[list[dict], Optional[str], Optional[date_type], str, int, ChainEvidence]:
     """Load chain rows for a historical date — EOD only.
 
     Returns the same tuple shape as _load_chain_for_live. data_source is
@@ -314,7 +339,7 @@ def _load_chain_for_historical(
         SELECT contract_symbol, expiration, strike, option_type,
                bid, ask, mark, last_price, volume, open_interest,
                implied_volatility, delta, gamma, theta, vega, rho,
-               snapshot_ts, snapshot_date
+               snapshot_ts, snapshot_date, market_session
         FROM etf_options_snapshots
         WHERE ticker = :ticker
           AND data_source = 'alphavantage'
@@ -331,7 +356,7 @@ def _load_chain_for_historical(
     """
     df = query_to_dataframe(sql, {"ticker": ticker, "req_date": str(requested_date)})
     if df.empty:
-        return ([], None, None, "unavailable", -1)
+        return ([], None, None, "unavailable", -1, ChainEvidence.empty())
 
     sd_raw = df["snapshot_date"].iloc[0]
     sd = sd_raw if isinstance(sd_raw, date_type) else (
@@ -340,11 +365,12 @@ def _load_chain_for_historical(
     days_behind = int(np.busday_count(sd, requested_date))
     tier = classify_gamma_freshness(days_behind)
     if tier == "unavailable":
-        return ([], None, sd, "unavailable", days_behind)
+        return ([], None, sd, "unavailable", days_behind, ChainEvidence.empty())
 
     ts_raw = df["snapshot_ts"].iloc[0]
     ts_iso = ts_raw.isoformat() if hasattr(ts_raw, "isoformat") else str(ts_raw)
-    return (_df_to_contracts(df), ts_iso, sd, tier, days_behind)
+    return (_df_to_contracts(df), ts_iso, sd, tier, days_behind,
+            ChainEvidence.from_frame(df, PROVIDER_ALPHAVANTAGE))
 
 
 # ─── On-demand AV dispatch (Phase B2) ──────────────────────────────────────
@@ -653,7 +679,7 @@ def get_grid_live(
     # a peer's fill (Codex, PR #991 -- after the merge).
     if cached is not None:
         response.headers["Cache-Control"] = "public, max-age=60"
-        return cached
+        return _serve_cached(cached)
     # Coalesce cold fills. Threadpool dispatch lets concurrent misses on
     # one key each run this whole fill; the `async def` with no `await`
     # had serialised them for free (Codex, PR #991).
@@ -662,7 +688,7 @@ def get_grid_live(
         cached = _LIVE_GRID_CACHE.get(cache_key)
         if cached is not None:
             response.headers["Cache-Control"] = "public, max-age=60"
-            return cached
+            return _serve_cached(cached)
         if not mine:
             raise HTTPException(
                 status_code=503,
@@ -670,7 +696,7 @@ def get_grid_live(
                 headers={"Retry-After": "5"},
             )
 
-        contracts, ts_iso, snapshot_date, data_source, _days = _load_chain_for_live(
+        contracts, ts_iso, snapshot_date, data_source, _days, evidence = _load_chain_for_live(
             ticker_upper,
         )
 
@@ -689,12 +715,24 @@ def get_grid_live(
                 # to the `unavailable` envelope rather than parking a worker.
                 with _ONDEMAND_FLIGHT.claim(ticker_upper) as is_claimant:
                     (contracts, ts_iso, snapshot_date,
-                     data_source, _days) = _load_chain_for_live(ticker_upper)
+                     data_source, _days, evidence) = _load_chain_for_live(ticker_upper)
                     if data_source == "unavailable" and is_claimant:
                         contracts, ts_iso, snapshot_date = _fetch_on_demand(
                             ticker_upper, client_ip,
                         )
                         data_source = "realtime" if contracts else "unavailable"
+                        # Evidence for the on-demand chain: the provider was
+                        # called, and every row carries the aware receive stamp
+                        # `_fetch_on_demand` assigned. The router never reads the
+                        # persisted frame's `market_session` back, so the session
+                        # is unknown here (None); it is not written from the
+                        # `data_source = "realtime"` label.
+                        evidence = ChainEvidence(
+                            provider=PROVIDER_ALPHAVANTAGE if contracts else None,
+                            sessions=[None] * len(contracts),
+                            timestamps=[datetime.fromisoformat(ts_iso)] * len(contracts)
+                            if ts_iso else [],
+                        )
                     elif data_source == "unavailable":
                         logger.info(
                             "on-demand fetch for %s already in flight; returning "
@@ -730,6 +768,9 @@ def get_grid_live(
             expirations_filter=exp_filter,
         )
         payload = summary.to_dict()
+        # The cached payload stores the fill-time observation; hits re-stamp
+        # from a copy (`_serve_cached`), never in place.
+        payload["snapshot_provenance"] = build_snapshot_provenance(evidence, _now_utc())
         _LIVE_GRID_CACHE[cache_key] = payload
         response.headers["Cache-Control"] = "public, max-age=60"
         return payload
@@ -766,7 +807,7 @@ def get_grid_historical(
     # a peer's fill (Codex, PR #991 -- after the merge).
     if cached is not None:
         response.headers["Cache-Control"] = "public, max-age=43200"
-        return cached
+        return _serve_cached(cached)
     # Coalesce cold fills. Threadpool dispatch lets concurrent misses on
     # one key each run this whole fill; the `async def` with no `await`
     # had serialised them for free (Codex, PR #991).
@@ -775,7 +816,7 @@ def get_grid_historical(
         cached = _HIST_GRID_CACHE.get(cache_key)
         if cached is not None:
             response.headers["Cache-Control"] = "public, max-age=43200"
-            return cached
+            return _serve_cached(cached)
         if not mine:
             raise HTTPException(
                 status_code=503,
@@ -783,7 +824,7 @@ def get_grid_historical(
                 headers={"Retry-After": "5"},
             )
 
-        contracts, ts_iso, snapshot_date, data_source, _days = _load_chain_for_historical(
+        contracts, ts_iso, snapshot_date, data_source, _days, evidence = _load_chain_for_historical(
             ticker_upper, requested_date,
         )
         if data_source == "unavailable" or not contracts:
@@ -803,6 +844,7 @@ def get_grid_historical(
             expirations_filter=exp_filter,
         )
         payload = summary.to_dict()
+        payload["snapshot_provenance"] = build_snapshot_provenance(evidence, _now_utc())
         _HIST_GRID_CACHE[cache_key] = payload
         response.headers["Cache-Control"] = "public, max-age=43200"
         return payload
@@ -964,7 +1006,8 @@ def get_nodes_live(
                 headers={"Retry-After": "5"},
             )
 
-        contracts, ts_iso, snapshot_date, data_source, _ = _load_chain_for_live(ticker_upper)
+        # Nodes payloads are unchanged; the loader's evidence is not used here.
+        contracts, ts_iso, snapshot_date, data_source, _, _evidence = _load_chain_for_live(ticker_upper)
         if data_source == "unavailable" or not contracts:
             return {
                 "ticker": ticker_upper,
@@ -1033,7 +1076,7 @@ def get_nodes_historical(
                 headers={"Retry-After": "5"},
             )
 
-        contracts, ts_iso, snapshot_date, data_source, _ = _load_chain_for_historical(
+        contracts, ts_iso, snapshot_date, data_source, _, _evidence = _load_chain_for_historical(
             ticker_upper, requested_date,
         )
         if data_source == "unavailable" or not contracts:

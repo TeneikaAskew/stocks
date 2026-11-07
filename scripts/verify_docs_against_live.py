@@ -62,6 +62,12 @@ LIVE_STATE_DOCS = [
 # to that directory enrols it automatically; docs/GCP_ARCHITECTURE.md was a
 # redirect stub and is gone.
 LIVE_STATE_GLOBS = ["docs/product/*.md", f"{INFRA}/*.md", "gcp/cloudbuild/*.md"]
+# Dated evidence records that live under docs/product/ but state what was observed on a date, not what is
+# running now. They are out of scope for the same reason as every other dated record (see the header above).
+DATED_RECORD_DOCS = {
+    "docs/product/03-SITE-TRACEABILITY.md",
+    "docs/product/12-PR-ISSUE-TRACEABILITY.md",
+}
 
 # Cloud Run services deleted in the staging/prod split (2026-09-06). A
 # live-state doc naming one is describing a service that no longer exists.
@@ -417,7 +423,7 @@ def doc_paths(root: pathlib.Path) -> list[pathlib.Path]:
             seen.append(p)
     for pattern in LIVE_STATE_GLOBS:
         seen.extend(sorted(root.glob(pattern)))
-    return seen
+    return [p for p in seen if p.relative_to(root).as_posix() not in DATED_RECORD_DOCS]
 
 
 def _lines(path: pathlib.Path) -> list[tuple[int, str]]:
