@@ -1738,3 +1738,227 @@ class TestStratStatusReviewFollowups:
                                    as_of='2026-04-07', timeframes=['1d'])
         assert out['ftfc_labels'] == expected['ftfc_labels']
         assert out['bar_validity'] == expected['bar_validity']
+
+
+# ── FTFC proper vs TF bias (FEAT-STRAT-001, 2026-11-05 spec) ─────────────
+
+_NOV5_FIXTURE = 'tests/fixtures/strat_brief_2026-11-05_daily.json'
+_NOV5_CLOCK = pd.Timestamp('2026-11-05 08:30', tz='America/New_York')
+
+
+def nov5_daily(ticker):
+    """Captured unadjusted daily bars, 2026-07-01..2026-11-04, as the brief loads them."""
+    import json
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[2] / _NOV5_FIXTURE
+    rows = json.loads(path.read_text())['tickers'][ticker]
+    frame = pd.DataFrame(rows)
+    frame.index = pd.to_datetime(frame.pop('date'))
+    frame.index.name = None
+    return frame.sort_index().rename(columns=str.title)
+
+
+class TestObservedPriceContinuity:
+    """compute_strat_status publishes price-open-v1 FTFC from a supplied price."""
+
+    PREMARKET = ['1q', '1mo', '1w']
+
+    def _status(self, ticker='QQQ', df=None, **overrides):
+        from lib.strat import compute_strat_status
+        df = nov5_daily(ticker) if df is None else df
+        kwargs = dict(observed_price=float(df['Close'].iloc[-1]),
+                      observed_price_session=df.index[-1].date(),
+                      price_provenance='latest_completed_close',
+                      continuity_timeframes=self.PREMARKET)
+        kwargs.update(overrides)
+        return compute_strat_status(ticker, df=df, timeframes=['1d', '1w', '1mo'],
+                                    as_of=_NOV5_CLOCK, inclusive_today=False, **kwargs)
+
+    def test_nov5_qqq_is_bearish_below_quarter_month_and_week_opens(self):
+        from lib.strat import timeframe_continuity_record
+        out = self._status('QQQ')
+        cont = out['timeframe_continuity']
+        assert cont['version'] == 'price-open-v1'
+        assert cont['available'] is True and cont['direction'] == 'bearish'
+        assert cont['observed_price'] == 691.95
+        assert cont['price_provenance'] == 'latest_completed_close'
+        assert cont['observed_price_session'] == '2026-11-04'
+        assert {tf: (f['relation'], f['open']) for tf, f in cont['frames'].items()} == {
+            '1q': ('below', 742.51), '1mo': ('below', 695.315), '1w': ('below', 695.315)}
+        state, frames = timeframe_continuity_record(cont)
+        assert state == 'bearish'
+        assert {tf: f['relation'] for tf, f in frames.items()} == {'1q': 'red', '1mo': 'red', '1w': 'red'}
+        assert frames['1w'] == {'relation': 'red', 'open': 695.315, 'observed_price': 691.95,
+                                'price_provenance': 'latest_completed_close',
+                                'price_session': '2026-11-04', 'rule_version': 'price-open-v1',
+                                'period_start': '2026-11-02T09:30:00-05:00',
+                                'observation_ts': '2026-11-05T08:30:00-05:00',
+                                'reasons': []}
+
+    def test_tf_bias_is_unchanged_by_the_continuity_frames(self):
+        """The weighted vote still reads +0.5 bullish for QQQ, from D/W/M only."""
+        from lib.strat import compute_strat_status
+        df = nov5_daily('QQQ')
+        plain = compute_strat_status('QQQ', df=df, timeframes=['1d', '1w', '1mo'],
+                                     as_of=_NOV5_CLOCK, inclusive_today=False)
+        out = self._status('QQQ', df=df)
+        assert out['ftfc_score'] == pytest.approx(0.5) and out['ftfc_direction'] == 'bullish'
+        assert out['ftfc_labels'] == {'1d': '2U', '1w': '2D', '1mo': '2D'}
+        assert '1q' not in out['weighted_candle_alignment']['frames']
+        assert set(out['coverage']) == {'1d', '1w', '1mo'}
+        for key in plain:
+            if key != 'timeframe_continuity':
+                assert out[key] == plain[key], key
+
+    def test_without_new_arguments_continuity_keeps_its_unavailable_shape(self):
+        from lib.strat import compute_strat_status
+        out = compute_strat_status('QQQ', df=nov5_daily('QQQ'), timeframes=['1d', '1w', '1mo'],
+                                   as_of=_NOV5_CLOCK, inclusive_today=False)
+        cont = out['timeframe_continuity']
+        assert cont['required_timeframes'] == ['1d', '1w', '1mo']
+        assert cont['available'] is False and cont['direction'] == 'unavailable'
+        assert cont['reasons'][0] == 'invalid_observed_price'
+        assert cont['price_provenance'] == 'unknown' and cont['observed_price'] is None
+        assert 'observed_price_session' not in cont
+        assert all('invalid_observed_price' in f['reasons'] for f in cont['frames'].values())
+
+    def test_premarket_daily_frame_has_no_open_and_stays_unavailable(self):
+        out = self._status('QQQ', continuity_timeframes=['1q', '1mo', '1w', '1d'])
+        cont = out['timeframe_continuity']
+        assert cont['available'] is False and cont['direction'] == 'unavailable'
+        assert 'unavailable_required_frames' in cont['reasons']
+        assert cont['frames']['1d']['relation'] == 'unavailable'
+        assert 'missing_period_open' in cont['frames']['1d']['reasons']
+        assert all(cont['frames'][tf]['available'] for tf in self.PREMARKET)
+
+    def test_a_price_from_after_the_clock_is_refused(self):
+        out = self._status('QQQ', observed_price_session=pd.Timestamp('2026-11-05').date())
+        cont = out['timeframe_continuity']
+        assert cont['available'] is False and cont['observed_price'] is None
+        assert cont['reasons'][0] == 'observed_price_after_clock'
+        assert 'invalid_observed_price' not in cont['reasons']
+        assert all(f['reasons'] == ['observed_price_after_clock'] for f in cont['frames'].values())
+
+    def test_a_price_session_that_is_not_a_trading_day_is_refused(self):
+        out = self._status('QQQ', observed_price_session=pd.Timestamp('2026-11-01').date())
+        assert out['timeframe_continuity']['reasons'][0] == 'observed_price_session_not_trading_day'
+
+    def test_a_missing_quarter_open_is_unavailable_never_a_later_bar(self):
+        df = nov5_daily('QQQ')
+        df = df.drop(pd.Timestamp('2026-10-01'))
+        cont = self._status('QQQ', df=df)['timeframe_continuity']
+        assert cont['direction'] == 'unavailable'
+        assert cont['frames']['1q']['open'] is None
+        assert 'missing_period_open' in cont['frames']['1q']['reasons']
+        assert cont['frames']['1mo']['relation'] == 'below'
+
+    def test_invalid_price_is_unavailable(self):
+        cont = self._status('QQQ', observed_price=float('nan'))['timeframe_continuity']
+        assert cont['direction'] == 'unavailable' and cont['reasons'][0] == 'invalid_observed_price'
+
+    def test_price_at_an_open_is_at_open_and_mixed(self):
+        from lib.strat import timeframe_continuity_record
+        cont = self._status('QQQ', observed_price=695.315)['timeframe_continuity']
+        assert cont['available'] is True and cont['direction'] == 'mixed'
+        assert cont['frames']['1w']['relation'] == 'at_open'
+        assert cont['frames']['1q']['relation'] == 'below'
+        state, frames = timeframe_continuity_record(cont)
+        assert (state, frames['1w']['relation'], frames['1q']['relation']) == ('mixed', 'at_open', 'red')
+
+    def test_iwm_and_spy_are_bullish_above_every_open(self):
+        for ticker, price in (('IWM', 284.02), ('SPY', 766.81)):
+            cont = self._status(ticker)['timeframe_continuity']
+            assert cont['direction'] == 'bullish', ticker
+            assert cont['observed_price'] == price
+            assert {f['relation'] for f in cont['frames'].values()} == {'above'}
+
+    def test_record_of_no_result_is_none(self):
+        from lib.strat import timeframe_continuity_record
+        assert timeframe_continuity_record(None) == (None, None)
+
+
+class TestFirstSessionOfPeriod:
+    """2026-11-02 08:30 ET, the first session of November and of the week.
+
+    The week and month open at 09:30 that day, so at 08:30 they have no open:
+    the state is unavailable (no partial claim of agreement) while the
+    quarter, opened 2026-10-01, is still judged and kept.
+    """
+
+    CLOCK = pd.Timestamp('2026-11-02 08:30', tz='America/New_York')
+
+    def _status(self, ticker, frames=('1q', '1mo', '1w')):
+        from lib.strat import compute_strat_status
+        df = nov5_daily(ticker)
+        df = df[df.index <= '2026-10-30']
+        return compute_strat_status(
+            ticker, df=df, timeframes=['1d', '1w', '1mo'], as_of=self.CLOCK, inclusive_today=False,
+            observed_price=float(df['Close'].iloc[-1]), observed_price_session=df.index[-1].date(),
+            price_provenance='latest_completed_close', continuity_timeframes=list(frames))
+
+    def test_month_and_week_open_after_the_clock_and_the_quarter_is_kept(self):
+        from lib.strat import timeframe_continuity_record
+        cont = self._status('QQQ')['timeframe_continuity']
+        assert cont['available'] is False and cont['direction'] == 'unavailable'
+        assert cont['full_continuity'] is False
+        state, frames = timeframe_continuity_record(cont)
+        assert state == 'unavailable'
+        assert frames['1q']['relation'] == 'red' and frames['1q']['open'] == 742.51
+        assert frames['1q']['observed_price'] == float(nov5_daily('QQQ').loc['2026-10-30', 'Close'])
+        for tf in ('1mo', '1w'):
+            assert frames[tf]['relation'] == 'unavailable' and frames[tf]['open'] is None
+            assert frames[tf]['reasons'][0] == 'period_opens_after_clock'
+            assert 'missing_period_open' in frames[tf]['reasons']
+            assert frames[tf]['period_start'] == '2026-11-02T09:30:00-05:00'
+            assert frames[tf]['observation_ts'] == '2026-11-02T08:30:00-05:00'
+
+    def test_a_frame_missing_for_another_reason_is_not_called_not_open(self):
+        from lib.strat import timeframe_continuity_record
+        df = nov5_daily('QQQ')
+        df = df[(df.index <= '2026-10-30') & (df.index != '2026-10-01')]
+        from lib.strat import compute_strat_status
+        cont = compute_strat_status(
+            'QQQ', df=df, timeframes=['1d', '1w', '1mo'], as_of=self.CLOCK, inclusive_today=False,
+            observed_price=float(df['Close'].iloc[-1]), observed_price_session=df.index[-1].date(),
+            price_provenance='latest_completed_close',
+            continuity_timeframes=['1q', '1mo', '1w'])['timeframe_continuity']
+        _, frames = timeframe_continuity_record(cont)
+        assert frames['1q']['relation'] == 'unavailable'
+        assert 'period_opens_after_clock' not in frames['1q']['reasons']
+
+    def test_without_an_observed_price_the_frames_carry_no_new_reason(self):
+        from lib.strat import compute_strat_status
+        df = nov5_daily('QQQ')
+        df = df[df.index <= '2026-10-30']
+        cont = compute_strat_status('QQQ', df=df, timeframes=['1d', '1w', '1mo'], as_of=self.CLOCK,
+                                    inclusive_today=False)['timeframe_continuity']
+        assert all('period_opens_after_clock' not in f['reasons'] for f in cont['frames'].values())
+        assert all('observation_ts' not in f for f in cont['frames'].values())
+
+
+class TestGatesStayOnTfBias:
+    """done_when 7: no gate reads price-open continuity; the weighted vote drives them."""
+
+    GATE_SOURCES = (
+        'lib/strategies/brief_bias.py', 'gcp/signal_monitor.py',
+        'lib/agents/trade_planner.py', 'lib/agents/orchestrator.py',
+        'lib/agents/ranker/signals.py', 'lib/backtest.py', 'lib/exec_backtest/ftfc.py',
+    )
+
+    def test_gate_modules_never_name_the_continuity_fields(self):
+        from pathlib import Path
+        root = Path(__file__).resolve().parents[2]
+        for path in self.GATE_SOURCES:
+            source = (root / path).read_text()
+            for name in ('timeframe_continuity', 'tf_continuity'):
+                assert name not in source, f'{path} reads {name}'
+
+    def test_brief_signal_gate_and_strat_bonus_read_only_the_weighted_vote(self):
+        import inspect
+        from gcp.premarket_brief import _resolve_signal_status
+        source = inspect.getsource(_resolve_signal_status)
+        assert 'continuity' not in source
+        assert list(inspect.signature(_resolve_signal_status).parameters) == [
+            'call_score', 'put_score', 'ftfc_direction', 'signal_threshold', 'building_threshold']
+        assert list(inspect.signature(StratClassifier.get_strat_bonus).parameters) == [
+            'self', 'signal_direction', 'combo', 'ftfc_score', 'ftfc_threshold', 'orb_trend']
