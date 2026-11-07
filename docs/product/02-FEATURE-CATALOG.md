@@ -167,7 +167,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Priority | P0 |
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-06 |
+| Last reviewed | 2026-11-07 |
 | Evidence status | Preserved isolated collector and acceptance receipts; final integrated-head review/CI and immutable job deployment remain pending. No historical-snapshot restoration claim. Snapshot provenance: source and hermetic API tests only (`tests/api/test_snapshot_provenance.py`, grid and options router tests); no deployment, stored-row or signed-in screen claim. |
 | UI surface | `/options` |
 | Backend | `/api/options`, `/api/grid` |
