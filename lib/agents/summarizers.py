@@ -33,6 +33,8 @@ from typing import Any, Optional, TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from lib.eastern_time import ET_NAME
+
 from .embeddings import format_vector_literal
 from .schema import JournalRef
 
@@ -429,11 +431,8 @@ def summarize_strat_status(
     triplet that gets posted to Discord. No more reading stale NULL
     columns from market_data_daily.
 
-    Also surfaces the multi-timeframe level map (PDH/PDL/PWH/PWL/PMH/PML/
-    PQH/PQL/PYH/PYL) and the mother-bar walk-back ``effective_pdh`` /
-    ``effective_pdl`` for inside-of-inside compressions. The deterministic
-    trade planner uses these to walk the level hierarchy on gap days
-    instead of always anchoring entry at PDH/PDL.
+    Levels are not part of this section: summarize_session_levels carries
+    the session's SessionLevels (FEAT-STRAT-001).
 
     ``inclusive_today`` forwards to compute_strat_status — see its
     docstring. Default True for backwards-compat; the insight pipeline
@@ -472,127 +471,113 @@ def summarize_strat_status(
         **foundation,
     }
 
-    # Multi-timeframe level map. Built from the same daily history
-    # `compute_strat_status` already trimmed to the as_of cutoff (so
-    # historical replays don't see future bars). Computed best-effort —
-    # if the level builder errors on this ticker the strat dict still
-    # returns; the planner falls back to single-level PDH/PDL behaviour.
-    try:
-        from lib.data_loader import DataLoader
-        from lib.strat_levels import compute_previous_levels
-        loader = DataLoader()
-        df = loader.load_daily(ticker)
-        if df is not None and not df.empty:
-            # Apply the same as_of cutoff lib.strat.compute_strat_status
-            # uses, with the same tz normalization to avoid the leak
-            # patched in PR #135.
-            if as_of is not None:
-                import pandas as _pd
-                cutoff = _pd.Timestamp(as_of)
-                if cutoff.tz is not None:
-                    cutoff = cutoff.tz_convert('UTC').tz_localize(None)
-                if isinstance(df.index, _pd.DatetimeIndex) and df.index.tz is not None:
-                    df = df.copy()
-                    df.index = df.index.tz_localize(None)
-                # Match the cutoff semantic used inside compute_strat_status:
-                #   inclusive_today=True  → df.index <= cutoff (backtest contract)
-                #   inclusive_today=False → df.index < midnight-of-cutoff-date
-                #                          (premarket contract — exclude entire as_of date)
-                if inclusive_today:
-                    df = df[df.index <= cutoff]
-                else:
-                    df = df[df.index < cutoff.normalize()]
-            # PR #400 fix applied to this code path: pass analysis_date so
-            # compute_previous_levels uses period-filter semantics ("the
-            # period BEFORE the period containing analysis_date") instead
-            # of the legacy iloc[-2] fallback that assumes df's last row
-            # is today's in-progress bar. Without this, the bundle showed
-            # 5/4's H/L as PDH/PDL on a 2026-05-06 replay because the df
-            # had already been pre-filtered to exclude 5/6 — iloc[-2]
-            # then picked 5/4 instead of 5/5. PR #400 fixed this for the
-            # brief + playbook_resolver; this code path was missed.
-            analysis_date_for_levels = None
-            if as_of is not None:
-                import pandas as _pd
-                _ts = _pd.Timestamp(as_of)
-                if _ts.tz is not None:
-                    _ts = _ts.tz_convert('UTC').tz_localize(None)
-                analysis_date_for_levels = _ts.date()
-            level_map = compute_previous_levels(
-                df, analysis_date=analysis_date_for_levels
-            )
-            level_dict: dict[str, float] = {}
-            for name in ("PDH", "PDL", "PWH", "PWL", "PMH", "PML",
-                         "PQH", "PQL", "PYH", "PYL"):
-                lv = level_map.get(name)
-                if lv is not None:
-                    level_dict[name] = round(float(lv.price), 2)
-
-            # Mother-bar walk-back for inside-of-inside compressions.
-            # When the prior bar is a strat '1' (inside bar), price has
-            # been compressing within an outer "mother bar" — the real
-            # PDH/PDL trigger is the OUTER mother bar's H/L, not the
-            # inside bar's. Walk back through consecutive '1' bars to
-            # find the bar that contained them.
-            try:
-                from lib.strat import StratClassifier
-                clf = StratClassifier()
-                ohlc = df[['Open', 'High', 'Low', 'Close']]
-                labels = clf.classify_series(ohlc)
-                eff_pdh, eff_pdl = _walk_back_to_mother_bar(df, labels)
-                if eff_pdh is not None:
-                    level_dict["effective_PDH"] = round(float(eff_pdh), 2)
-                if eff_pdl is not None:
-                    level_dict["effective_PDL"] = round(float(eff_pdl), 2)
-            except Exception:
-                # Walk-back failed — planner will fall back to PDH/PDL
-                pass
-
-            if level_dict:
-                out["levels"] = level_dict
-    except Exception:
-        # Level map best-effort — never block the strat block from returning
-        pass
-
+    # Levels are not built here: the session's levels come from
+    # summarize_session_levels (lib.strat_levels.build_session_levels or the
+    # session's live level_basis), FEAT-STRAT-001.
     return out
 
 
-def _walk_back_to_mother_bar(df, labels) -> tuple[Optional[float], Optional[float]]:
-    """Walk back through consecutive inside bars to find the mother bar.
+def _session_date_for(as_of: Optional[date_type]) -> date_type:
+    """The session a run plans for: the as_of date on a replay, the ET date
+    of execution on a live run (FEAT-STRAT-001 done_when 3)."""
+    if as_of is not None:
+        import pandas as _pd
+        ts = _pd.Timestamp(as_of)
+        if ts.tz is not None:
+            ts = ts.tz_convert(ET_NAME)
+        return ts.date()
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+    return _dt.now(ZoneInfo(ET_NAME)).date()
 
-    Returns the H/L of the most recent bar BEFORE today whose range
-    contains every subsequent inside bar up through yesterday. Falls
-    back to yesterday's H/L when yesterday was a directional bar
-    (2U/2D/3) rather than a '1'.
 
-    Used by ``summarize_strat_status`` to populate ``effective_PDH`` /
-    ``effective_PDL`` so the trade planner uses the structural trigger
-    (the outer mother bar) on inside-of-inside compressions instead of
-    yesterday's tighter inside-bar range.
+def _session_premarket(ticker: str, session_date: date_type) -> Optional[dict]:
+    """The session's own premarket snapshot from market_data_daily (the row
+    dated session_date, written by fetch-premarket-refresh at 08:20 ET), or
+    None. Never the newest row: a prior day's pre_* is not this session's."""
+    df = _query(
+        "SELECT date, pre_high, pre_low, pre_vwap, gap_pct "
+        "FROM market_data_daily WHERE ticker = :ticker AND date = :d LIMIT 1",
+        {"ticker": ticker.upper(), "d": str(session_date)},
+    )
+    if df is None or df.empty:
+        return None
+    row = df.iloc[0]
+    snap = {"date": str(session_date)}
+    for col in ("pre_high", "pre_low", "pre_vwap", "gap_pct"):
+        snap[col] = _scalar(row, col)
+    if snap["pre_high"] is None and snap["pre_low"] is None and snap["pre_vwap"] is None:
+        return None
+    return snap
+
+
+def _live_level_basis(ticker: str, session_date: date_type) -> Optional[dict]:
+    """The session's level_basis from its LIVE premarket_analysis row, or
+    None (no row, a replay row only, or the column not applied yet)."""
+    from lib.strat_levels import read_live_level_basis
+    return read_live_level_basis(_query, ticker, session_date)
+
+
+def summarize_session_levels(
+    ticker: str, as_of: Optional[date_type] = None, *, loader=None,
+) -> dict:
+    """The session's levels for the planner (FEAT-STRAT-001 Design 4).
+
+    Reads the session's live level_basis written by the 08:30 ET brief and
+    applies the planner's own newer premarket snapshot; only when no live
+    row exists does it build with lib.strat_levels.build_session_levels.
+    Returns {available, source, session_date, premarket_status, level_basis}.
     """
-    if len(df) < 2 or len(labels) < 2:
-        return None, None
-    # iloc[-1] is "today" (the as_of cutoff bar) — we don't trigger on
-    # it. iloc[-2] is yesterday — the canonical PDH source. Walk back
-    # only when yesterday is a '1' (inside) bar.
-    i = -2
-    if str(labels.iloc[i]) != '1':
-        try:
-            return float(df.iloc[i]['High']), float(df.iloc[i]['Low'])
-        except (KeyError, ValueError, TypeError):
-            return None, None
-    # Walk further back through consecutive '1' bars
-    LOOKBACK = 10  # cap so we don't walk to the start of history
-    while i - 1 >= -min(LOOKBACK, len(df)) and str(labels.iloc[i - 1]) == '1':
-        i -= 1
-    # Mother bar = the bar BEFORE the inside-bar chain started
-    mother_idx = i - 1
-    if mother_idx < -len(df):
-        return None, None
-    try:
-        return float(df.iloc[mother_idx]['High']), float(df.iloc[mother_idx]['Low'])
-    except (KeyError, ValueError, TypeError):
-        return None, None
+    from lib.strat_levels import SessionLevels, build_session_levels
+
+    session_date = _session_date_for(as_of)
+    premarket = _session_premarket(ticker, session_date)
+    basis = _live_level_basis(ticker, session_date)
+    if basis is not None:
+        sl = SessionLevels.from_basis(basis)
+        if premarket is not None:
+            sl = sl.with_premarket(premarket)
+        source = "level_basis"
+    else:
+        if loader is None:
+            from lib.data_loader import DataLoader
+            loader = DataLoader()
+        df = loader.load_daily(ticker, on_stale="warn")
+        sl = build_session_levels(ticker, session_date, df,
+                                  _prior_session_atr(df, session_date), premarket)
+        source = "builder"
+    out = {
+        "available": sl.status == "ok",
+        "source": source,
+        "session_date": session_date.isoformat(),
+        "premarket_status": sl.premarket_status,
+        "level_basis": sl.to_basis(),
+    }
+    if sl.status != "ok":
+        out["reason"] = sl.status
+    return out
+
+
+def _prior_session_atr(df, session_date: date_type) -> Optional[float]:
+    """ATR(14) of the last completed bar before session_date, or None."""
+    import pandas as _pd
+    if df is None or len(df) == 0:
+        return None
+    col = next((c for c in ("ATR14", "atr_14") if c in df.columns), None)
+    if col is None:
+        return None
+    frame = df
+    idx = frame.index
+    if isinstance(idx, _pd.DatetimeIndex):
+        naive = idx.tz_localize(None) if idx.tz is not None else idx
+        frame = frame[naive.normalize() < _pd.Timestamp(session_date)]
+    close_col = "Close" if "Close" in frame.columns else ("close" if "close" in frame.columns else None)
+    if close_col is not None:
+        frame = frame[frame[close_col].notna()]
+    if frame.empty:
+        return None
+    v = _pd.to_numeric(frame[col].iloc[-1], errors="coerce")
+    return float(v) if v == v and v > 0 else None
 
 
 # ---------------------------------------------------------------------------
@@ -2001,6 +1986,7 @@ def build_context_bundle(
     sections = {
         "market": lambda: summarize_market_context(ticker, as_of, inclusive_today=inclusive_today),
         "strat": lambda: summarize_strat_status(ticker, as_of, inclusive_today=inclusive_today),
+        "session_levels": lambda: summarize_session_levels(ticker, as_of),
         "options": lambda: summarize_options_flow(ticker, as_of, inclusive_today=inclusive_today),
         "gamma": lambda: summarize_gamma_levels(ticker, as_of, inclusive_today=inclusive_today),
         # NOTE: `signals` (signal_alerts history) is deliberately NOT in

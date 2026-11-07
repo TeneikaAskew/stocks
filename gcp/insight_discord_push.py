@@ -152,9 +152,21 @@ def _fmt_levels_field(key_levels: dict) -> str:
     return _truncate("\n".join(lines), MAX_FIELD_VALUE) if lines else "—"
 
 
+def _orb_only_reason(report: dict) -> Optional[str]:
+    """The orb_only reason for the report's direction from its level_basis,
+    or None for a report stored before FEAT-STRAT-001."""
+    basis = report.get("level_basis") if isinstance(report, dict) else None
+    if not isinstance(basis, dict):
+        return None
+    side = "short" if report.get("direction") == "short" else "long"
+    return (basis.get(side) or {}).get("reason")
+
+
 def _fmt_targets_field(
     entry_zone: Optional[dict], stop, targets,
     regime: str = "normal",
+    reason: Optional[str] = None,
+    direction: str = "long",
 ) -> str:
     """Compact one-field summary of entry / stop / targets.
 
@@ -163,18 +175,14 @@ def _fmt_targets_field(
       * `extended`   — same fields plus a leading "⚠️ Extended gap"
                        banner reminding the trader to wait for ORB
                        confirmation before entering.
-      * `orb_only`   — pre-market cleared every structural level in
-                       the trade direction. Suppress the placeholder
-                       entry/stop numbers entirely (they're not real
-                       triggers — see lib/agents/trade_planner.py
-                       _orb_only_plan) and emit an ORB-wait callout.
+      * `orb_only`   : no trigger on this side. The plan carries no entry
+                       or stop (FEAT-STRAT-001); the field shows the one
+                       orb_only line for the side's reason
+                       (lib.strat_levels.ORB_ONLY_COPY).
     """
     if regime == "orb_only":
-        return (
-            "⚠️ **ORB-only** — pre-market cleared every structural "
-            "level. No entry trigger; wait for the 15-min opening "
-            "range to establish before sizing in."
-        )
+        from lib.strat_levels import orb_only_text  # noqa: PLC0415
+        return "⚠️ **ORB-only**: " + orb_only_text(reason, direction)
 
     parts = []
     if regime == "extended":
@@ -491,6 +499,8 @@ def format_report_embed(row: dict) -> dict:
             "value": _fmt_targets_field(
                 r.get("entry_zone"), r.get("stop"), r.get("targets"),
                 regime=regime,
+                reason=_orb_only_reason(r),
+                direction=r.get("direction") or "long",
             ),
             "inline": True,
         },

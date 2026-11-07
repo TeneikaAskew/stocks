@@ -103,8 +103,9 @@ class LegOutcome:
 
 def derive_level_map_from_daily(ticker: str, analysis_date: date, engine) -> Optional[dict]:
     """Self-healing fallback: re-derive the structured CALL/PUT setup by
-    calling the same ``lib.strat_levels.build_level_map`` the brief writer
-    uses, against daily data filtered to dates < ``analysis_date``.
+    calling the same ``lib.strat_levels.build_session_levels`` the brief
+    writer uses, against daily data before ``analysis_date`` and the
+    session's own premarket snapshot (FEAT-STRAT-001).
 
     Returns a dict of structured fields ready to UPSERT into
     premarket_analysis (calls_trigger_price / puts_trigger_price /
@@ -118,7 +119,7 @@ def derive_level_map_from_daily(ticker: str, analysis_date: date, engine) -> Opt
     same answer. CLAUDE.md §3.6 — production replay paths, no throwaway
     harnesses.
     """
-    from lib.strat_levels import build_level_map  # local import to keep top-level light
+    from lib.strat_levels import build_session_levels  # local import to keep top-level light
 
     # Load daily history for this ticker. We want everything up to and
     # NOT including analysis_date so the level map only sees data the
@@ -141,19 +142,24 @@ def derive_level_map_from_daily(ticker: str, analysis_date: date, engine) -> Opt
     })
 
     last = df.iloc[-1]
-    # current_price proxy: the most-recent close BEFORE analysis_date.
-    # This is what a live brief running at 8:30 AM would see when no
-    # premarket data has come in yet. Deterministic + reproducible.
-    current_price = float(last['Close'])
+    # The last completed session's ATR(14); missing gives no trigger
+    # (reason atr_unavailable), never a percent-only window.
     atr = float(last['atr_14']) if pd.notna(last['atr_14']) else None
     strat_class = str(last.get('strat_candle') or '')
-    combo = str(last.get('strat_combo') or '')
+    pm = pd.read_sql(text("""
+        SELECT pre_high, pre_low, pre_vwap, gap_pct
+        FROM market_data_daily WHERE ticker = :t AND date = :d LIMIT 1
+    """), engine, params={'t': ticker.upper(), 'd': str(analysis_date)})
+    premarket = None
+    if not pm.empty:
+        premarket = {'date': str(analysis_date),
+                     **{c: (float(pm.iloc[0][c]) if pd.notna(pm.iloc[0][c]) else None)
+                        for c in ('pre_high', 'pre_low', 'pre_vwap', 'gap_pct')}}
 
-    level_map = build_level_map(
-        ticker=ticker, daily_df=df, current_price=current_price,
-        daily_strat_class=strat_class, combo=combo,
-        atr=atr, analysis_date=analysis_date,
-    )
+    level_map = build_session_levels(
+        ticker, analysis_date, df, atr, premarket,
+        daily_strat_class=strat_class,
+    ).to_level_map()
 
     ct = level_map.calls_trigger or {}
     pt = level_map.puts_trigger or {}

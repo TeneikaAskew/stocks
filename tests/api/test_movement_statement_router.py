@@ -427,12 +427,12 @@ def test_level_map_reads_the_loaders_ATR14_column(monkeypatch):
     today = (df.index[-1] + _dt.timedelta(days=1)).date()
     seen = {}
 
-    def _spy(*a, **k):
-        seen.update(k)
+    def _spy(ticker, session_date, daily_df, atr, premarket=None, **k):
+        seen["atr"] = atr
         raise RuntimeError("stop here")
 
     with patch("lib.data_loader.DataLoader.load_daily", return_value=df), \
-         patch("lib.strat_levels.build_level_map", side_effect=_spy):
+         patch("lib.strat_levels.build_session_levels", side_effect=_spy):
         dashboard_router._build_movement_level_map("SPY", analysis_date=today)
     assert seen["atr"] == pytest.approx(2.5)
 
@@ -475,14 +475,14 @@ def test_level_map_defaults_analysis_date_to_today_in_eastern(monkeypatch):
 
     seen = {}
 
-    def _spy(*a, **k):
-        seen["analysis_date"] = k.get("analysis_date")
+    def _spy(ticker, session_date, *a, **k):
+        seen["analysis_date"] = session_date
         raise RuntimeError("stop here")
 
     today_et = _dt.datetime.now(ZoneInfo("America/New_York")).date()
     fresh = _synthetic_daily(end=today_et - _dt.timedelta(days=1))  # last bar = yesterday
     with patch("lib.data_loader.DataLoader.load_daily", return_value=fresh), \
-         patch("lib.strat_levels.build_level_map", side_effect=_spy):
+         patch("lib.strat_levels.build_session_levels", side_effect=_spy):
         assert dashboard_router._build_movement_level_map("SPY") is None  # RuntimeError → None
     assert seen["analysis_date"] == today_et
 

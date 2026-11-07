@@ -2065,6 +2065,23 @@ ALTER TABLE premarket_analysis_history
     ADD COLUMN IF NOT EXISTS puts_t3_price         DOUBLE PRECISION;
 
 
+-- ============================================================================
+-- FEAT-STRAT-001: the level_basis snapshot written with each brief row.
+-- lib.strat_levels.SessionLevels.to_basis(): rule_version, session_date,
+-- built_at, last daily bar date, ATR(14), the level list, the premarket
+-- snapshot with its own date, the reference, the two cleared marks and the
+-- per-side candidates, picks, stops, targets, ladder and orb_only reason.
+-- Nullable: rows written before this column, and every writer and reader
+-- while it is absent, keep working (upsert_dataframe and
+-- bulk_insert_dataframe drop unknown columns; readers fall back to
+-- build_session_levels). Live readers filter run_kind = 'live'.
+-- ============================================================================
+ALTER TABLE premarket_analysis
+    ADD COLUMN IF NOT EXISTS level_basis JSONB;
+ALTER TABLE premarket_analysis_history
+    ADD COLUMN IF NOT EXISTS level_basis JSONB;
+
+
 -- FEAT-STRAT-001 (2026-11-05): FTFC in Rob Smith's sense, price above
 -- (green) or below (red) the current period's open on every timeframe,
 -- rule lib.strat price-open-v1. The brief's existing ftfc_score /
