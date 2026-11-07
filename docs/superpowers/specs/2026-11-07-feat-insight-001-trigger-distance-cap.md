@@ -5,7 +5,7 @@ issues: []
 canvases: []
 site_source_notes: [INSIGHTS-07]
 done_when:
-  - "tests/lib/test_trade_planner_distance_cap.py passes and fails on origin/main: on the 2026-11-06 inputs rebuilt from Alpha Vantage bars, the short trigger is PDL 647.05 for QQQ (not PYL 402.39), the blue-sky trigger PML 269.875 - 0.20 x ATR for IWM (not PYL 171.73) and PQL 729.10 for SPY (unchanged); every persona entry edge lies within 3.4 x ATR of the reference price; the same price geometry gives a structural trigger at ATR 2 and a blue-sky trigger at ATR 1 (the cap uses the ticker's own ATR); a structural level equal to pre_high (long) or pre_low (short) to the cent is unbroken; pre_low is never its own short trigger"
+  - "tests/lib/test_trade_planner_distance_cap.py passes and fails on origin/main: on the 2026-11-06 inputs rebuilt from Alpha Vantage bars, the short trigger is PDL 647.05 for QQQ (not PYL 402.39), the blue-sky trigger PML 269.875 - 0.15 x ATR for IWM (not PYL 171.73; 0.15 is IWM's seeded exit_config_overrides.blue_sky_atr_offset, gcp/schema.sql:3374-3377, carried into the fixture as production's context_from_bundle carries it) and PQL 729.10 for SPY (unchanged); every persona entry edge lies within 3.4 x ATR of the reference price; with reference 100 and ATR 4 an unbroken level at 109 (2.25 ATR but 9% of price) is not the trigger, so the 8% axis of the window binds on its own; the same price geometry gives a structural trigger at ATR 2 and a blue-sky trigger at ATR 1 (the cap uses the ticker's own ATR); a structural level equal to pre_high (long) or pre_low (short) to the cent is unbroken; pre_low is never its own short trigger"
   - "tests/lib/test_trade_planner.py passes with exactly three tests changed and named in the PR body: test_select_trigger_extended_when_next_level_far_away becomes test_select_trigger_far_level_beyond_cap_is_not_a_trigger (blue-sky, normal), test_select_trigger_short_mirror moves PML from 130 to 150 so it lies inside the window, and test_extended_regime_rationale_includes_orb_recommendation reaches extended through the legacy single-level path"
   - "No other behaviour changes: lib/strat_levels.py is not in the diff (the window and its constants are imported, not copied), the legacy single-level path and the stop anchor are unchanged, and tests/agents, tests/gcp and tests/lib pass"
   - "The PR body shows the old and new short trigger and the three persona entry zones for IWM, QQQ and SPY on 2026-11-06, with whether each would have filled against that day's regular-session low"
@@ -86,8 +86,8 @@ the legacy path. The constant and the copy stay; the extended rationale test mov
 
 ## Expected effect
 
-On 2026-11-06 (local replay on Alpha Vantage bars): QQQ 402.39 to 647.05, IWM 171.73 to 268.96 (blue
-sky), SPY 729.10 unchanged. All three stay unfilled that day because price rose. Days where the nearest
+On 2026-11-06 (local replay on Alpha Vantage bars): QQQ 402.39 to 647.05, IWM 171.73 to about 269.19
+(blue sky with IWM's 0.15 offset; 268.96 with the 0.20 default), SPY 729.10 unchanged. All three stay unfilled that day because price rose. Days where the nearest
 unbroken level lies within the window are unchanged.
 
 ## Capacity and cost
