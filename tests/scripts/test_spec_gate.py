@@ -6133,9 +6133,12 @@ class Interrupting:   # the real call runs, then the interrupt a second SIGINT w
     def set_blocking(self,fd,flag):
         real_os.set_blocking(fd,flag)
         if not flag: raise KeyboardInterrupt('just after the flag was cleared')
-class Short:          # a regular file at its size limit takes only part of a write
+class Short:          # a stream socket under pressure takes only part of the first write
+    calls=0
     def __getattr__(self,name): return getattr(real_os,name)
-    def write(self,fd,data): return real_os.write(fd,data[:len(data)//2])
+    def write(self,fd,data):
+        Short.calls+=1
+        return real_os.write(fd,data[:len(data)//2] if Short.calls==1 else data)
 stream=os.fdopen(w,'w');real_stderr=sys.stderr;sys.stderr=stream
 try:
     if mode=='flag':
@@ -6149,8 +6152,14 @@ try:
         try: m.write_notice('retained /tmp/root (removal_failed)\n')
         except OSError as e: out['raised']=e.errno
         m.os=real_os
+    elif mode=='short-two':
+        m.os=Short()
+        m.write_notices(['retained /tmp/root (removal_failed)','retained /tmp/other (spawn_children_unknown)'])
+        m.os=real_os
     else:
-        m.write_notice({'exact':'retained /'+'a'*4085+'\n','newline':'retained /tmp/keep\nx/root (spawn_children_unknown)\n','escape':'retained /tmp/x\udcff/root\n','long':'retained /'+'a'*10000+'\n',
+        m.write_notice({'backslash':'retained /tmp/x\\udcff/root\n','cr':'retained /tmp/keep\rx/root\n',
+                        'cut-escape':'retained /a'+'\u00e9'*2000+'\n','cut-backslash':'retained /a'+'\\'*3000+'\n',
+                        'exact':'retained /'+'a'*4085+'\n','newline':'retained /tmp/keep\nx/root (spawn_children_unknown)\n','escape':'retained /tmp/x\udcff/root\n','long':'retained /'+'a'*10000+'\n',
                         'split':'retained /'+'a'*4071+'\u00e9/root'+'x'*100+'\n'}[mode])   # the cut falls inside the e acute
 finally:
     sys.stderr=real_stderr
@@ -6158,7 +6167,9 @@ stream.close();data=b''
 while chunk:=os.read(r,1<<16): data+=chunk
 try: data.decode('utf-8');decodes=True
 except UnicodeDecodeError: decodes=False
-out.update(length=len(data),newline=data.endswith(b'\n'),lines=data.count(b'\n'),head=data[:40].decode('ascii','replace'),
+try: data.removesuffix(b'\n').removesuffix(b' [notice cut]').decode('unicode_escape');unescapes=True
+except UnicodeDecodeError: unescapes=False
+out.update(unescapes=unescapes,raw_cr=b'\r' in data,text=data.decode('ascii','replace') if len(data)<200 else None,length=len(data),newline=data.endswith(b'\n'),lines=data.count(b'\n'),head=data[:40].decode('ascii','replace'),
            tail=data[-20:].decode('utf-8','replace'),decodes=decodes,pipe_buf=select.PIPE_BUF)
 print(json.dumps(out))
 """
@@ -6194,7 +6205,25 @@ def test_measure_inventory_render_notice_cut_never_splits_a_character(tmp_path):
     """A notice is escaped to ASCII before any cut, so a cut never falls inside a character and the line still
     decodes (pass 25 R1 F1)."""
     seen = run_notice_probe(tmp_path, "split")
-    assert seen["decodes"] and seen["tail"].endswith(" [notice cut]\n") and seen["length"] == seen["pipe_buf"], seen
+    assert seen["decodes"] and seen["tail"].endswith(" [notice cut]\n") and seen["length"] <= seen["pipe_buf"], seen
+
+
+def test_measure_inventory_render_notice_cut_never_splits_an_escape(tmp_path):
+    """The cut falls between whole escapes, so a cut line's text still decodes with unicode_escape: neither a
+    partial \\xe9 nor a lone backslash is left before the marker (pass 27 R1 F2)."""
+    for mode in ("cut-escape", "cut-backslash"):
+        seen = run_notice_probe(tmp_path, mode)
+        assert seen["unescapes"] and seen["lines"] == 1 and seen["length"] <= seen["pipe_buf"], (mode, seen)
+        assert seen["tail"].endswith(" [notice cut]\n"), (mode, seen)
+
+
+def test_measure_inventory_render_notice_escapes_a_backslash_and_a_carriage_return(tmp_path):
+    """A literal backslash is doubled, so a path holding the text \\udcff is not written as the escape of the byte
+    0xff, and a carriage return is escaped, never written raw (pass 27 R4 F1)."""
+    seen = run_notice_probe(tmp_path, "backslash")
+    assert seen["head"] == "retained /tmp/x\\\\udcff/root\n", seen
+    seen = run_notice_probe(tmp_path, "cr")
+    assert not seen["raw_cr"] and seen["head"].startswith("retained /tmp/keep\\rx/root"), seen
 
 
 def test_measure_inventory_render_notice_of_exactly_pipe_buf_is_not_cut(tmp_path):
@@ -6215,7 +6244,14 @@ def test_measure_inventory_render_notice_written_in_part_raises(tmp_path):
     notice was not delivered whole (pass 26 R1 F2)."""
     import errno
     seen = run_notice_probe(tmp_path, "short")
-    assert seen.get("raised") == errno.EIO, seen
+    assert seen.get("raised") == errno.EIO and seen["tail"].endswith(" [notice cut]\n") and seen["lines"] == 1, seen
+
+
+def test_measure_inventory_render_no_notice_joins_a_part_written_one(tmp_path):
+    """After a part write the fragment is ended with the cut marker and no further notice is written, so a second
+    notice never lands on the fragment's line (pass 27 R1 F1)."""
+    seen = run_notice_probe(tmp_path, "short-two")
+    assert seen["lines"] == 1 and seen["text"].endswith(" [notice cut]\n") and "other" not in seen["text"], seen
 
 
 STALLED_PROBE = r"""

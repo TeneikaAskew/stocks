@@ -514,26 +514,50 @@ def write_notice(line: str) -> None:
     (fd 2 when sys.stderr is None) in non-blocking mode as one ASCII line: its text is escaped with unicode_escape,
     so a line feed, a carriage return, a backslash or a non-UTF-8 byte in a path can neither split the line nor
     turn into another path's name; a line over PIPE_BUF bytes is cut to PIPE_BUF and ends in NOTICE_CUT, so a pipe
-    takes it whole or not at all and a cut path is never read as a whole one; and the descriptor's blocking flag
-    is restored even when an interrupt arrives. Raises OSError (BlockingIOError when the pipe is full, EBADF when it
-    is closed, EIO when a regular file took only part of the line, which then stays there cut) or ValueError; the
-    caller drops the notice on any of them."""
+    takes it whole or not at all and a cut path is never read as a whole one; a cut falls between whole escapes, so
+    the kept text still decodes with unicode_escape; and the descriptor's blocking flag is restored even when an
+    interrupt arrives. Raises OSError (BlockingIOError when the pipe is full, EBADF when it is closed, EIO when the
+    descriptor took only part of the line, as a stream socket or a regular file at its size limit can; the fragment
+    is then ended with NOTICE_CUT where the descriptor still takes it) or ValueError. write_notices drops the notice
+    on any of them and writes no further notice after EIO, so none is joined to a fragment."""
     stream = sys.stderr
     try:
         fd = 2 if stream is None else stream.fileno()
     except (AttributeError, OSError, ValueError):
         print(line, end="", file=stream)
         return
-    data = line.removesuffix("\n").encode("unicode_escape") + b"\n"   # ASCII, one line, every byte escaped
+    text = line.removesuffix("\n")
+    data = text.encode("unicode_escape") + b"\n"      # ASCII, one line, every byte escaped
     if len(data) > select.PIPE_BUF:                    # a pipe write of at most PIPE_BUF bytes is whole or nothing
-        data = data[:select.PIPE_BUF - len(NOTICE_CUT)] + NOTICE_CUT   # marked, so a cut path is never read whole
+        room, kept = select.PIPE_BUF - len(NOTICE_CUT), bytearray()
+        for ch in text:                                # whole escapes only, so the kept text still decodes
+            piece = ch.encode("unicode_escape")
+            if len(kept) + len(piece) > room:
+                break
+            kept += piece
+        data = bytes(kept) + NOTICE_CUT                # marked, so a cut path is never read as a whole one
     blocking = os.get_blocking(fd)
     try:
         os.set_blocking(fd, False)                     # inside the try: an interrupt here still restores the flag
-        if os.write(fd, data) != len(data):            # a regular file at its size limit or a full disk
+        if os.write(fd, data) != len(data):            # a stream socket, or a regular file at its size limit
+            with contextlib.suppress(OSError):
+                os.write(fd, NOTICE_CUT)               # best effort: end the fragment and mark it cut
             raise OSError(errno.EIO, "notice written in part")
     finally:
         os.set_blocking(fd, blocking)
+
+
+def write_notices(notices: list[str]) -> None:
+    """Write each cleanup notice with write_notice, dropping one that cannot be written. After a part write (EIO)
+    no further notice is written, so none can join the fragment on its line (#1700 pass 27 R1 F1)."""
+    for notice in notices:
+        try:
+            write_notice(f"measure_inventory_render: {notice}\n")
+        except OSError as e:
+            if e.errno == errno.EIO:
+                return
+        except ValueError:
+            pass
 
 def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_seconds: float) -> dict:
     """Observe/reap actual descendants, including new sessions; report sampling uncertainty honestly."""
@@ -838,9 +862,7 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                         # SIGALRM is blocked here, so a write to a full stderr pipe would wait past the deadline: each
                         # notice is written to the descriptor without blocking, and one that does not fit is dropped
                         # (#1700 pass 23 R1 F1).
-                        for notice in notices:
-                            with contextlib.suppress(OSError, ValueError):
-                                write_notice(f"measure_inventory_render: {notice}\n")
+                        write_notices(notices)
         except DeliveryDeadline as e:
             report.update(ok=False, reason="time_limit", error=str(e))
         report["elapsed_seconds"] = time.monotonic() - started
