@@ -741,6 +741,8 @@ Live registry continuation: [#1599](https://github.com/TeneikaAskew/stocks/pull/
 
 ### FEAT-CATALYST-001 — Earnings / catalysts (19 open)
 
+Draft source-clock contract: [2026-10-30 additive temporal projection and FF timezone specification](../superpowers/specs/2026-10-30-feat-catalyst-001-source-clocks.md), status draft; no PR number assigned or runtime implementation published. Touches #1303 for clock meaning and requested/returned/unknown coverage only, without closing it or claiming new provider history. Existing approved specs, issue counts, finite-EPS delivery and deployed-state claims remain unchanged. Local evidence lineage: source d4478433, proposal spike15deb336; parent owns written approval, hosted review and publication.
+
 | Issue | Sev | Title |
 |---|---|---|
 | [#1223](https://github.com/TeneikaAskew/stocks/issues/1223) | P2 | [P2][Catalysts] Benzinga is named as a source with no configured API key |
