@@ -5,7 +5,7 @@ issues: []
 canvases: []
 site_source_notes: [INSIGHTS-07]
 done_when:
-  - "tests/lib/test_trade_planner_distance_cap.py passes and fails on origin/main: on the 2026-11-06 inputs rebuilt from Alpha Vantage bars, the short trigger is PDL 647.05 for QQQ (not PYL 402.39), no trigger and the zero-size orb_only plan for IWM (not PYL 171.73) and PQL 729.10 for SPY (unchanged); every QQQ and SPY persona entry edge lies within 3.4 x ATR of the reference price; with reference 100 and ATR 4 an unbroken level at 109 (2.25 ATR but 9% of price) is not the trigger, so the 8% axis of the window binds on its own; the same price geometry gives a structural trigger at ATR 2 and no trigger at ATR 1 (the cap uses the ticker's own ATR); a structural level equal to pre_high (long) or pre_low (short) to the cent is unbroken; pre_low is never its own short trigger; every trigger returned is one of the context's own levels and is_blue_sky is always False"
+  - "tests/lib/test_trade_planner_distance_cap.py passes and fails on origin/main: on the 2026-11-06 inputs rebuilt from Alpha Vantage bars, the short trigger is PDL 647.05 for QQQ (not PYL 402.39), no trigger and the zero-size orb_only plan for IWM (not PYL 171.73) and PQL 729.10 for SPY (unchanged); every QQQ and SPY persona entry edge lies within 3.4 x ATR of the reference price; with reference 100 and ATR 4 an unbroken level at 109 (2.25 ATR but 9% of price) is not the trigger, so the 8% axis of the window binds on its own; the same price geometry gives a structural trigger at ATR 2 and no trigger at ATR 1 (the cap uses the ticker's own ATR); a structural level equal to pre_high (long) or pre_low (short) to the cent is unbroken; pre_low is never its own short trigger; every trigger returned is one of the context's own levels and is_blue_sky is always False; with reference 100 and ATR 1 an unbroken level at 103 (exactly 3 ATR) is the trigger and the regime is normal, with no extended-gap rationale"
   - "tests/lib/test_trade_planner.py passes with only these tests changed, each named in the PR body: test_select_trigger_extended_when_next_level_far_away becomes test_select_trigger_far_level_beyond_cap_is_not_a_trigger (orb_only), test_select_trigger_short_mirror moves PML from 130 to 150 so it lies inside the window, test_extended_regime_rationale_includes_orb_recommendation reaches extended through the legacy single-level path, the four blue-sky synthesis tests now assert orb_only on the same fixtures, test_blue_sky_per_ticker_override_used_when_set is deleted with the field it tested, and test_select_trigger_orb_only_preserved_on_large_gap only loses the removed constant from its docstring"
   - "No other behaviour changes: lib/strat_levels.py is not in the diff (the window and its constants are imported, not copied), the legacy single-level path and the stop anchor are unchanged, the exit_config_overrides.blue_sky_atr_offset column and its getter stay (no migration), and tests/agents, tests/gcp and tests/lib pass"
   - "The PR body shows the old and new short trigger and the three persona entry zones for IWM, QQQ and SPY on 2026-11-06, with whether each would have filled against that day's regular-session low"
@@ -91,8 +91,9 @@ ATR is already per ticker: `context_from_bundle` reads each ticker's `atr_14` fr
   are removed. The return tuple keeps its fifth slot, always `False`, so callers still unpack five.
 - The orb_only rationale says no unbroken level lies within 3x ATR, since that is now why it fires.
 
-Consequence: a historical level is never 3 ATR or more away, so `extended` is now reached only through
-the legacy path. The constant and the copy stay; the extended rationale test moves to the legacy path.
+Consequence: a historical level is never more than 3 ATR away. The window is inclusive, so a level
+exactly 3 ATR away is a candidate, and the multi-timeframe path always returns `normal` (today the
+planner calls 3.0 ATR `extended`). `extended` is now reached only through the legacy path. The constant and the copy stay; the extended rationale test moves to the legacy path.
 
 ## Expected effect
 
