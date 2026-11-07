@@ -3,7 +3,7 @@ feat_id: FEAT-INSIGHT-001
 spec: docs/superpowers/specs/2026-11-07-feat-insight-001-trigger-distance-cap.md
 branch: fix/feat-insight-001-trigger-distance-cap
 pr: 1746
-status: in-progress
+status: ready
 ---
 
 # Insight planner trigger distance cap implementation plan
