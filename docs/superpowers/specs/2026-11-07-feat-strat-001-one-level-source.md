@@ -31,7 +31,9 @@ supersedes: null
 Proposed on 2026-11-07 by a delivery lane after the owner's directive: "Levels should be built in
 ONE place and used across all. None should be built and re-rerun. The planner may have a different
 premarket level due to timing and that's it." With it: "We need to remove any synthetic levels."
-and "Why is there no distance limit, inconsistent." It is not self-approved: it takes effect only
+and "Why is there no distance limit, inconsistent." On the side rule the owner ruled: "Puts or calls
+need to look at all levels, whether it's a high or a low... it should count on whichever side of
+price it sits." It is not self-approved: it takes effect only
 when the owner merges the spec-only PR that adds it, and that merge is the approval its `status`
 records.
 
