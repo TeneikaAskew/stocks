@@ -36,13 +36,21 @@ except ModuleNotFoundError as exc:  # pragma: no cover
 # ─── Test fixtures ──────────────────────────────────────────────────────────
 
 
-def _chain_df(snapshot_date: date, market_session: str = "REALTIME") -> pd.DataFrame:
+def _chain_df(snapshot_date: date, market_session: str | None = "REALTIME",
+              tz: str | None = None) -> pd.DataFrame:
     """Build a realistic ~12-row chain DataFrame for one snapshot.
 
     Two strikes × two expirations × two sides — enough to exercise the
     grid math without bloating the fixture. Spot lands near 100 via
-    parity at the 100 strike (call mid ≈ put mid)."""
+    parity at the 100 strike (call mid ≈ put mid).
+
+    `market_session` fills the projected `market_session` column (`None`
+    allowed: legacy rows). `snapshot_ts` is NAIVE unless `tz` is given, which
+    keeps every pre-existing assertion byte-identical; the provenance tests
+    pass `tz="UTC"` for an aware instant."""
     snapshot_ts = pd.Timestamp(f"{snapshot_date.isoformat()}T15:55:00")
+    if tz is not None:
+        snapshot_ts = snapshot_ts.tz_localize(tz)
     rows = []
     # Near expiration — 2026-06-20 (third Friday → OPEX)
     rows.extend([
@@ -87,6 +95,7 @@ def _chain_df(snapshot_date: date, market_session: str = "REALTIME") -> pd.DataF
          "snapshot_ts": snapshot_ts, "snapshot_date": snapshot_date},
     ])
     df = pd.DataFrame(rows)
+    df["market_session"] = market_session
     return df
 
 
@@ -919,3 +928,359 @@ class TestGridTimeseriesFallbacks:
         assert r2.status_code == 200
         assert r2.json()["data_source"] == "realtime_degraded"
         assert r2.json()["strikes_resolved"] == [95.0, 100.0]
+
+
+# ─── Snapshot provenance (FEAT-OPTION-001, spec 2026-10-24 legacy snapshot labels) ──
+#
+# The grid responses carry a nullable `snapshot_provenance` object built from
+# the selected rows' own `snapshot_ts` / `market_session` values. Baselines
+# below were captured from the unchanged routes (origin/main code) for the
+# same fixture, so the compatibility tests compare against numbers, not
+# against the code under test.
+
+import threading
+from datetime import datetime, timedelta, timezone
+
+from fastapi import Response
+
+FIX_DATE = date(2026, 6, 1)
+FIX_INSTANT = datetime(2026, 6, 1, 15, 55, tzinfo=timezone.utc)
+CLOCK_T0 = datetime(2026, 6, 3, 14, 0, tzinfo=timezone.utc)          # 46h05m later
+EXPECTED_AGE_T0 = int((CLOCK_T0 - FIX_INSTANT).total_seconds())       # 165900
+
+# origin/main baseline for `_chain_df(FIX_DATE, "REALTIME", tz="UTC")`.
+BASELINE_GRID = {
+    "snapshot_date": "2026-06-01",
+    "snapshot_ts": "2026-06-01T15:55:00+00:00",
+    "spot": {"price": 100.05, "method": "parity", "note": "K=100.0 C=2.55 P=2.50 exp=2026-06-19"},
+    "gamma_balance": 98.33333333333333,
+    "gamma_flip": None,           # hermetic: no risk-free rate source, so the flip is refused
+    "regime": "positive_gamma",
+    "total_gex": 600.60015,
+    "total_vex": -75287.625,
+    "expirations": ["2026-06-19", "2026-09-18"],
+    "strikes": [95.0, 100.0],
+    "window_pct": 8.0,
+    "warnings": [],
+}
+BASELINE_CELL_GEX = [-600.60015, 1001.0002499999999, 200.20004999999998]
+BASELINE_GRID_KEYS = sorted([
+    "cells", "data_source", "expirations", "gamma_balance", "gamma_flip", "regime",
+    "snapshot_date", "snapshot_ts", "spot", "strikes", "ticker", "total_gex",
+    "total_vex", "warnings", "window_pct",
+])
+# origin/main unavailable envelope keys (before `snapshot_provenance` was added).
+BASELINE_ENVELOPE_KEYS = sorted([
+    "ticker", "snapshot_date", "snapshot_ts", "data_source", "reason", "spot",
+    "gamma_balance", "gamma_flip", "regime", "total_gex", "total_vex", "cells",
+    "expirations", "strikes", "window_pct", "warnings",
+])
+# origin/main legacy top-level string for the NAIVE fixture (unchanged by this change).
+BASELINE_NAIVE_SNAPSHOT_TS = "2026-06-01T15:55:00"
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """A controllable observation clock. `grid_router._now_utc` is the only
+    clock the router calls; `offset` is a thread-local for the concurrency test."""
+    state = {"now": CLOCK_T0, "local": threading.local()}
+
+    def fake_now():
+        return state["now"] + timedelta(seconds=getattr(state["local"], "offset", 0))
+
+    monkeypatch.setattr(grid_router, "_now_utc", fake_now)
+    return state
+
+
+def _install_counting_router(monkeypatch, realtime_df=None, eod_df=None):
+    """Like `_install_query_router`, returning the list of SQL texts executed."""
+    calls: list[str] = []
+
+    def fake_query(sql, params=None):
+        calls.append(sql)
+        if "market_session = 'REALTIME'" in sql:
+            return realtime_df if realtime_df is not None else pd.DataFrame()
+        if "market_session = 'EOD'" in sql:
+            return eod_df if eod_df is not None else pd.DataFrame()
+        return pd.DataFrame()
+
+    import gcp.database
+    monkeypatch.setattr(gcp.database, "query_to_dataframe", fake_query)
+    return calls
+
+
+def _expected_prov(session="REALTIME", observed=CLOCK_T0, age=EXPECTED_AGE_T0):
+    return {
+        "provider": "alphavantage",
+        "market_session": session,
+        "snapshot_ts": "2026-06-01T15:55:00+00:00",
+        "observed_at": observed.isoformat(),
+        "snapshot_age_seconds": age,
+        "freshness_status": "unknown",
+        "completeness_status": "unknown",
+        "reason": "legacy_snapshot_unqualified",
+    }
+
+
+class TestSnapshotProvenanceSchema:
+    """The rule the routers depend on: with `response_model_exclude_unset=True`
+    a key absent from the payload is not emitted, a key present as None is."""
+
+    def test_null_provenance_is_emitted_when_present(self):
+        from api.schemas import GammaGridResponse
+
+        envelope = grid_router._unavailable_envelope("SPY", "fixture")
+        without = {k: v for k, v in envelope.items() if k != "snapshot_provenance"}
+        app = FastAPI()
+
+        @app.get("/with", response_model=GammaGridResponse, response_model_exclude_unset=True)
+        def _with():
+            return envelope
+
+        @app.get("/without", response_model=GammaGridResponse, response_model_exclude_unset=True)
+        def _without():
+            return without
+
+        c = TestClient(app)
+        body = c.get("/with").json()
+        assert "snapshot_provenance" in body and body["snapshot_provenance"] is None
+        assert "snapshot_provenance" not in c.get("/without").json()
+
+
+class TestLoaderEvidence:
+    """Direct loader calls: a sixth tuple member carries the rows' own evidence,
+    and the first five members are unchanged (pinned from origin/main)."""
+
+    def test_live_loader_returns_group_evidence(self, monkeypatch):
+        df = _chain_df(FIX_DATE, "REALTIME", tz="UTC")
+        _install_query_router(monkeypatch, realtime_df=df)
+        out = grid_router._load_chain_for_live("SPY", today=date(2026, 6, 3))
+        assert len(out) == 6
+        contracts, ts_iso, sd, data_source, days_behind, evidence = out
+        # origin/main first five members for this fixture:
+        assert (len(contracts), ts_iso, sd, data_source, days_behind) == (
+            6, "2026-06-01T15:55:00+00:00", FIX_DATE, "realtime", 0)
+        assert evidence.provider == "alphavantage"
+        assert evidence.sessions == ["REALTIME"] * 6
+        assert evidence.timestamps == df["snapshot_ts"].tolist()
+
+    def test_historical_loader_returns_group_evidence(self, monkeypatch):
+        df = _chain_df(FIX_DATE, "EOD", tz="UTC")
+        _install_query_router(monkeypatch, eod_df=df)
+        out = grid_router._load_chain_for_historical("SPY", FIX_DATE)
+        assert len(out) == 6
+        contracts, ts_iso, sd, data_source, days_behind, evidence = out
+        assert (len(contracts), ts_iso, sd, data_source, days_behind) == (
+            6, "2026-06-01T15:55:00+00:00", FIX_DATE, "eod_fallback", 0)
+        assert evidence.sessions == ["EOD"] * 6
+        assert evidence.timestamps == df["snapshot_ts"].tolist()
+
+    def test_empty_loaders_return_empty_evidence(self, monkeypatch):
+        _install_query_router(monkeypatch)
+        live = grid_router._load_chain_for_live("SPY", today=date(2026, 6, 3))
+        hist = grid_router._load_chain_for_historical("SPY", FIX_DATE)
+        assert live[3] == hist[3] == "unavailable"
+        assert live[5].sessions == [] and live[5].timestamps == [] and live[5].provider is None
+        assert hist[5] == live[5]
+
+
+class TestGridLiveProvenance:
+    """ASGI live grid: cold assembly, EOD-null sessions, the unavailable
+    envelope, compatibility with the baseline numerics, warm hits."""
+
+    def test_cold_realtime_fixture_carries_provenance(self, client, clock, monkeypatch):
+        _install_query_router(monkeypatch, realtime_df=_chain_df(FIX_DATE, "REALTIME", tz="UTC"))
+        r = client.get("/api/options/SPY/grid")
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["snapshot_provenance"] == _expected_prov()
+        # Source selection is a non-goal: still labelled realtime.
+        assert data["data_source"] == "realtime"
+
+    def test_eod_fallback_with_null_sessions_keeps_market_session_none(self, client, clock, monkeypatch):
+        today = date.today()
+        df = _chain_df(today, None, tz="UTC")
+        _install_query_router(monkeypatch, eod_df=df)
+        clock["now"] = datetime.now(timezone.utc) + timedelta(days=1)
+        r = client.get("/api/options/IWM/grid")
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["data_source"] == "eod_fallback"
+        prov = data["snapshot_provenance"]
+        assert prov["market_session"] is None, "all-NULL legacy rows are never inferred as EOD"
+        assert prov["provider"] == "alphavantage"
+        assert prov["snapshot_ts"] == df["snapshot_ts"].iloc[0].isoformat()
+        assert prov["reason"] == "legacy_snapshot_unqualified"
+
+    def test_unavailable_envelope_carries_null_provenance_and_unchanged_keys(self, client, clock, monkeypatch):
+        _install_query_router(monkeypatch)
+        r = client.get("/api/options/SPY/grid")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["data_source"] == "unavailable"
+        assert "snapshot_provenance" in data and data["snapshot_provenance"] is None
+        assert sorted(k for k in data if k != "snapshot_provenance") == BASELINE_ENVELOPE_KEYS
+
+    def test_compatibility_numerics_equal_baseline(self, client, clock, monkeypatch):
+        _install_query_router(monkeypatch, realtime_df=_chain_df(FIX_DATE, "REALTIME", tz="UTC"))
+        data = client.get("/api/options/SPY/grid").json()
+        for key, expected in BASELINE_GRID.items():
+            assert data[key] == expected, key
+        assert [c["gex"] for c in data["cells"]] == BASELINE_CELL_GEX
+        assert sorted(k for k in data if k != "snapshot_provenance") == BASELINE_GRID_KEYS
+
+    def test_warm_hit_advances_observation_not_source(self, client, clock, monkeypatch):
+        calls = _install_counting_router(monkeypatch, realtime_df=_chain_df(FIX_DATE, "REALTIME", tz="UTC"))
+        first = client.get("/api/options/SPY/grid").json()
+        cold_queries = len(calls)
+        assert cold_queries >= 1
+        clock["now"] = CLOCK_T0 + timedelta(seconds=30)
+        second = client.get("/api/options/SPY/grid").json()
+        assert len(calls) == cold_queries, "a warm hit ran a query"
+        p1, p2 = first["snapshot_provenance"], second["snapshot_provenance"]
+        assert p2["observed_at"] == (CLOCK_T0 + timedelta(seconds=30)).isoformat()
+        assert p2["snapshot_age_seconds"] == p1["snapshot_age_seconds"] + 30
+        assert p2["snapshot_ts"] == p1["snapshot_ts"]
+        assert second["data_source"] == first["data_source"] == "realtime"
+        # The cached payload still holds the fill-time observation.
+        cached = grid_router._LIVE_GRID_CACHE[("SPY", 8.0, "")]
+        assert cached["snapshot_provenance"] == _expected_prov()
+        # Direct call: the served dict is a copy, not the cached object.
+        served = grid_router.get_grid_live(ticker="SPY", request=None, response=Response(),
+                                           strike_window_pct=8.0, expirations=None,
+                                           allow_on_demand=True)
+        assert served is not cached
+        assert served["snapshot_provenance"] is not cached["snapshot_provenance"]
+        assert served["cells"] is cached["cells"], "lists stay shared read-only"
+
+    def test_concurrent_warm_readers_keep_own_observation(self, client, clock, monkeypatch):
+        _install_query_router(monkeypatch, realtime_df=_chain_df(FIX_DATE, "REALTIME", tz="UTC"))
+        assert client.get("/api/options/SPY/grid").status_code == 200   # warm the cache
+        cached_before = dict(grid_router._LIVE_GRID_CACHE[("SPY", 8.0, "")]["snapshot_provenance"])
+        results: dict[int, dict] = {}
+        barrier = threading.Barrier(8)
+
+        def reader(i: int):
+            clock["local"].offset = 10 * i
+            barrier.wait()
+            out = grid_router.get_grid_live(ticker="SPY", request=None, response=Response(),
+                                            strike_window_pct=8.0, expirations=None,
+                                            allow_on_demand=True)
+            results[i] = out["snapshot_provenance"]
+
+        threads = [threading.Thread(target=reader, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        for i in range(8):
+            assert results[i]["observed_at"] == (CLOCK_T0 + timedelta(seconds=10 * i)).isoformat()
+            assert results[i]["snapshot_age_seconds"] == EXPECTED_AGE_T0 + 10 * i
+        assert grid_router._LIVE_GRID_CACHE[("SPY", 8.0, "")]["snapshot_provenance"] == cached_before
+
+
+class TestGridHistoricalProvenance:
+    def test_dated_grid_carries_provenance(self, client, clock, monkeypatch):
+        _install_query_router(monkeypatch, eod_df=_chain_df(FIX_DATE, "EOD", tz="UTC"))
+        r = client.get("/api/options/SPY/2026-06-01/grid")
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["snapshot_provenance"] == _expected_prov(session="EOD")
+        # origin/main baseline for the dated route on this fixture:
+        assert (data["snapshot_date"], data["snapshot_ts"], data["data_source"], data["regime"],
+                data["total_gex"], data["total_vex"]) == (
+            "2026-06-01", "2026-06-01T15:55:00+00:00", "eod_fallback", "positive_gamma",
+            600.60015, -75287.625)
+
+    def test_dated_unavailable_carries_null_provenance(self, client, clock, monkeypatch):
+        _install_query_router(monkeypatch)
+        data = client.get("/api/options/SPY/2026-06-01/grid").json()
+        assert data["data_source"] == "unavailable" and data["snapshot_provenance"] is None
+
+    def test_warm_hit_advances_observation_not_source(self, client, clock, monkeypatch):
+        calls = _install_counting_router(monkeypatch, eod_df=_chain_df(FIX_DATE, "EOD", tz="UTC"))
+        first = client.get("/api/options/SPY/2026-06-01/grid").json()
+        n = len(calls)
+        clock["now"] = CLOCK_T0 + timedelta(seconds=30)
+        second = client.get("/api/options/SPY/2026-06-01/grid").json()
+        assert len(calls) == n
+        assert second["snapshot_provenance"]["snapshot_age_seconds"] == first["snapshot_provenance"]["snapshot_age_seconds"] + 30
+        assert second["snapshot_provenance"]["snapshot_ts"] == first["snapshot_provenance"]["snapshot_ts"]
+        assert second["data_source"] == first["data_source"]
+        cached = grid_router._HIST_GRID_CACHE[("SPY", "2026-06-01", 8.0, "")]
+        assert cached["snapshot_provenance"] == _expected_prov(session="EOD")
+
+
+class TestProvenanceEdgeCases:
+    """Missing, naive, mixed, inconsistent and future clocks never manufacture
+    an age; equal aware instants in two zones agree; the legacy top-level
+    strings are untouched."""
+
+    def _get(self, client, monkeypatch, df):
+        _install_query_router(monkeypatch, realtime_df=df)
+        r = client.get("/api/options/SPY/grid")
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    def test_naive_rows_are_timestamp_invalid(self, client, clock, monkeypatch):
+        data = self._get(client, monkeypatch, _chain_df(FIX_DATE, "REALTIME"))   # naive default
+        prov = data["snapshot_provenance"]
+        assert (prov["snapshot_ts"], prov["snapshot_age_seconds"], prov["reason"]) == (
+            None, None, "timestamp_invalid")
+        assert prov["market_session"] == "REALTIME" and prov["provider"] == "alphavantage"
+        assert data["snapshot_ts"] == BASELINE_NAIVE_SNAPSHOT_TS, "legacy string unchanged"
+
+    def test_mixed_rows_are_timestamp_invalid(self, client, clock, monkeypatch):
+        df = _chain_df(FIX_DATE, "REALTIME")
+        col = df["snapshot_ts"].tolist()
+        col[0] = col[0].tz_localize("UTC")
+        df["snapshot_ts"] = pd.Series(col, dtype="object")
+        prov = self._get(client, monkeypatch, df)["snapshot_provenance"]
+        assert (prov["snapshot_ts"], prov["snapshot_age_seconds"], prov["reason"]) == (
+            None, None, "timestamp_invalid")
+
+    def test_two_instants_are_timestamp_invalid(self, client, clock, monkeypatch):
+        df = _chain_df(FIX_DATE, "REALTIME", tz="UTC")
+        col = df["snapshot_ts"].tolist()
+        col[-1] = col[-1] + pd.Timedelta(seconds=1)
+        df["snapshot_ts"] = col
+        prov = self._get(client, monkeypatch, df)["snapshot_provenance"]
+        assert (prov["snapshot_ts"], prov["snapshot_age_seconds"], prov["reason"]) == (
+            None, None, "timestamp_invalid")
+
+    def test_equal_instants_two_zones_valid(self, client, clock, monkeypatch):
+        df = _chain_df(FIX_DATE, "REALTIME", tz="UTC")
+        col = df["snapshot_ts"].tolist()
+        for i in range(0, len(col), 2):
+            col[i] = col[i].tz_convert("-04:00")
+        assert col[0].hour == 11 and col[1].hour == 15
+        df["snapshot_ts"] = pd.Series(col, dtype="object")
+        prov = self._get(client, monkeypatch, df)["snapshot_provenance"]
+        assert prov["snapshot_ts"] == "2026-06-01T15:55:00+00:00"
+        assert prov["snapshot_age_seconds"] == EXPECTED_AGE_T0
+        assert prov["reason"] == "legacy_snapshot_unqualified"
+
+    def test_future_then_aged(self, client, clock, monkeypatch):
+        clock["now"] = FIX_INSTANT - timedelta(seconds=600)
+        data = self._get(client, monkeypatch, _chain_df(FIX_DATE, "REALTIME", tz="UTC"))
+        prov = data["snapshot_provenance"]
+        assert prov["snapshot_ts"] == "2026-06-01T15:55:00+00:00", "future timestamp retained"
+        assert prov["snapshot_age_seconds"] is None, "never clamped to zero"
+        assert prov["reason"] == "timestamp_future"
+        # Warm hit after the clock passes the instant: a finite age appears.
+        clock["now"] = FIX_INSTANT + timedelta(seconds=100)
+        later = client.get("/api/options/SPY/grid").json()["snapshot_provenance"]
+        assert later["snapshot_age_seconds"] == 100
+        assert later["reason"] == "legacy_snapshot_unqualified"
+        assert later["snapshot_ts"] == prov["snapshot_ts"]
+        cached = grid_router._LIVE_GRID_CACHE[("SPY", 8.0, "")]["snapshot_provenance"]
+        assert cached["reason"] == "timestamp_future", "the cached entry was not mutated"
+
+    def test_nat_row_is_timestamp_invalid(self, client, clock, monkeypatch):
+        df = _chain_df(FIX_DATE, "REALTIME", tz="UTC")
+        col = df["snapshot_ts"].tolist()
+        col[2] = pd.NaT
+        df["snapshot_ts"] = pd.Series(col, dtype="object")
+        prov = self._get(client, monkeypatch, df)["snapshot_provenance"]
+        assert (prov["snapshot_ts"], prov["snapshot_age_seconds"], prov["reason"]) == (
+            None, None, "timestamp_invalid")
