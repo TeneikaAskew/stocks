@@ -14,13 +14,14 @@ status: in-progress
 ## Task 1: Regression tests on the 2026-11-06 inputs
 Spec: § Problem 1 and 2, § Design. Advances done_when[0].
 - [x] Write `tests/lib/test_trade_planner_distance_cap.py` on QQQ, IWM and SPY 2026-11-06 values rebuilt from Alpha Vantage bars, plus the own-ATR, long-tie and pre_low cases
-- [x] Run: `python3 -m pytest tests/lib/test_trade_planner_distance_cap.py` (FAIL on origin/main: 6 of 9)
+- [x] Run: `python3 -m pytest tests/lib/test_trade_planner_distance_cap.py` (FAIL on origin/main: 6 of 11)
 - [x] Implement `_TOUCH_TOLERANCE` and the `_within_staleness_window` filter in `select_trigger_and_regime`
 - [x] Run again (PASS)
 
 ## Task 2: Existing tests that pinned the uncapped walk
 Spec: § Design, consequence paragraph. Advances done_when[1].
-- [x] Rewrite the three tests named in done_when[1]
+- [x] Rewrite the tests named in done_when[1]
+- [x] Remove the blue-sky synthesis, its constants, the `PlanContext.blue_sky_atr_offset` field and its lookup; rewrite the four synthesis tests to expect orb_only and delete the override test
 - [x] Run `python3 -m pytest tests/lib/test_trade_planner.py` (PASS)
 
 ## Task 3: Nothing else moves

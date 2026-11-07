@@ -52,12 +52,14 @@ def test_qqq_level_touched_exactly_is_not_broken():
 
 
 def test_iwm_far_yearly_low_is_not_a_trigger():
+    """IWM broke PDL 270.52 and PML 269.875 pre-market; the next real
+    level below is PYL 171.73, about 22 ATR away. No level is
+    synthesized, so the short plan waits for the opening range."""
     regime, trigger, _, distance, blue = select_trigger_and_regime(_ctx(**IWM_2026_11_06), "short")
-    # Nearest cleared structural level above pre_low is PML 269.875;
-    # blue-sky short trigger = 269.875 - 0.20 x ATR.
-    assert blue is True
-    assert trigger == pytest.approx(269.875 - 0.20 * 4.58, abs=0.001)
-    assert regime == "normal" and distance < 1.0
+    assert trigger is None and distance is None and blue is False
+    assert regime == "orb_only"
+    for plan in compute_persona_plans(_ctx(**IWM_2026_11_06)):
+        assert plan.regime == "orb_only" and plan.position_size_pct == 0.0
 
 
 def test_spy_unchanged():
@@ -66,17 +68,18 @@ def test_spy_unchanged():
     assert regime == "normal" and blue is False
 
 
-@pytest.mark.parametrize("ticker", [QQQ_2026_11_06, IWM_2026_11_06, SPY_2026_11_06])
+@pytest.mark.parametrize("ticker", [QQQ_2026_11_06, SPY_2026_11_06])
 def test_every_persona_entry_is_within_the_cap(ticker):
     ctx = _ctx(**ticker)
     for plan in compute_persona_plans(ctx):
+        assert plan.regime == "normal"
         for edge in (plan.entry_zone.low, plan.entry_zone.high):
             assert abs(edge - ctx.reference_price()) <= 3.0 * ctx.atr + 0.40 * ctx.atr
 
 
 def test_cap_uses_this_tickers_own_atr():
     """Same prices, different ATR: a level 4 points away is a trigger at
-    ATR 2 (2 ATR) and is past the cap at ATR 1 (4 ATR)."""
+    ATR 2 (2 ATR) and is past the cap at ATR 1 (4 ATR), leaving no trigger."""
     base = dict(
         close=100.0, trigger_high=101.0, trigger_low=99.0,
         effective_pdh=101.0, effective_pdl=99.0,  # both cleared by pre-market
@@ -87,7 +90,7 @@ def test_cap_uses_this_tickers_own_atr():
     _, wide, _, _, wide_blue = select_trigger_and_regime(_ctx("long", atr=2.0, **base), "long")
     _, tight, _, _, tight_blue = select_trigger_and_regime(_ctx("long", atr=1.0, **base), "long")
     assert wide == pytest.approx(104.0) and wide_blue is False
-    assert tight_blue is True and tight == pytest.approx(101.2 + 0.20 * 1.0)
+    assert tight is None and tight_blue is False
 
 
 def test_long_level_touched_exactly_is_not_broken():
@@ -107,3 +110,31 @@ def test_pre_low_itself_is_never_the_trigger():
     levels only, so pre_low never becomes its own short trigger."""
     regime, trigger, _, _, _ = select_trigger_and_regime(_ctx(**SPY_2026_11_06), "short")
     assert trigger != pytest.approx(730.64, abs=0.001)
+
+
+def test_percent_axis_of_the_window_binds_on_its_own():
+    """Reference 100, ATR 4: a level at 109 is 2.25 ATR away (inside 3 ATR)
+    but 9% of price (outside 8%), so the shared window rejects it."""
+    ctx = _ctx(
+        "long", close=100.0, atr=4.0, trigger_high=100.5, trigger_low=98.0,
+        effective_pdh=100.5, effective_pdl=98.0,  # PDH cleared by pre_high
+        pwh=109.0, pwl=95.0, pmh=120.0, pml=90.0,
+        pqh=130.0, pql=85.0, pyh=160.0, pyl=60.0,
+        pre_high=101.0, pre_low=99.5, pre_vwap=100.0,
+    )
+    regime, trigger, _, _, blue = select_trigger_and_regime(ctx, "long")
+    assert trigger is None and blue is False and regime == "orb_only"
+
+
+@pytest.mark.parametrize("direction", ["long", "short"])
+def test_no_trigger_is_ever_synthesized(direction):
+    """Every trigger the planner returns is one of the context's own
+    levels; when none qualifies there is no trigger at all."""
+    for t in (QQQ_2026_11_06, IWM_2026_11_06, SPY_2026_11_06):
+        ctx = _ctx(direction, **t)
+        _, trigger, _, _, blue = select_trigger_and_regime(ctx, direction)
+        assert blue is False
+        if trigger is not None:
+            real = {round(float(v), 4) for k, v in t.items()
+                    if k not in ("close", "atr", "pre_vwap") and v is not None}
+            assert round(trigger, 4) in real
