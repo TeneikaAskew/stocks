@@ -6140,13 +6140,16 @@ try:
         m.os=real_os
         out['blocking']=os.get_blocking(w)
     else:
-        m.write_notice('retained /tmp/x\udcff/root\n' if mode=='escape' else 'retained /'+'a'*10000+'\n')
+        m.write_notice({'escape':'retained /tmp/x\udcff/root\n','long':'retained /'+'a'*10000+'\n',
+                        'split':'retained /'+'a'*4071+'\u00e9/root'+'x'*100+'\n'}[mode])   # the cut falls inside the e acute
 finally:
     sys.stderr=real_stderr
 stream.close();data=b''
 while chunk:=os.read(r,1<<16): data+=chunk
+try: data.decode('utf-8');decodes=True
+except UnicodeDecodeError: decodes=False
 out.update(length=len(data),newline=data.endswith(b'\n'),lines=data.count(b'\n'),head=data[:40].decode('ascii','replace'),
-           pipe_buf=select.PIPE_BUF)
+           tail=data[-20:].decode('utf-8','replace'),decodes=decodes,pipe_buf=select.PIPE_BUF)
 print(json.dumps(out))
 """
 
@@ -6172,9 +6175,16 @@ def test_measure_inventory_render_notice_escapes_a_non_utf8_path(tmp_path):
 
 def test_measure_inventory_render_notice_longer_than_pipe_buf_is_one_whole_line(tmp_path):
     """A notice over PIPE_BUF is cut to one whole line of PIPE_BUF bytes, so a pipe never takes part of it
-    (pass 24 R1 F3)."""
+    (pass 24 R1 F3), and the cut is marked, so the shortened path is never read as a whole one (pass 25 R1 F1)."""
     seen = run_notice_probe(tmp_path, "long")
-    assert seen["length"] == seen["pipe_buf"] and seen["newline"] and seen["lines"] == 1, seen
+    assert seen["length"] == seen["pipe_buf"] and seen["lines"] == 1 and seen["tail"].endswith("a [notice cut]\n"), seen
+
+
+def test_measure_inventory_render_notice_cut_never_splits_a_character(tmp_path):
+    """A cut that falls inside a multi-byte character steps back to its start, so the line still decodes
+    (pass 25 R1 F1)."""
+    seen = run_notice_probe(tmp_path, "split")
+    assert seen["decodes"] and seen["tail"].endswith("a [notice cut]\n") and seen["length"] == seen["pipe_buf"] - 1, seen
 
 
 STALLED_PROBE = r"""
