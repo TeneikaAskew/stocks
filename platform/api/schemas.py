@@ -925,6 +925,26 @@ class GammaLevel(ApiModel):
     tags: list[str]
 
 
+class SnapshotProvenance(ApiModel):
+    """Provenance of the stored options snapshot a response was built from.
+
+    Stored clock retained: ``snapshot_ts`` is the selected rows' own instant.
+    ``observed_at`` is when this response was assembled (re-stamped per response).
+    ``snapshot_age_seconds`` is a display age (observed_at minus snapshot_ts), not a
+    provider lag. ``freshness_status`` and ``completeness_status`` are always
+    ``unknown``; ``reason`` names the clock validation outcome, not a qualification.
+    """
+
+    provider: Optional[str] = None
+    market_session: Optional[str] = None
+    snapshot_ts: Optional[str] = None
+    observed_at: str
+    snapshot_age_seconds: Optional[int] = None
+    freshness_status: Literal["unknown"]
+    completeness_status: Literal["unknown"]
+    reason: Literal["legacy_snapshot_unqualified", "timestamp_invalid", "timestamp_future"]
+
+
 class GammaLevelsResponse(ApiModel):
     ticker: str
     snapshot_date: str
@@ -941,6 +961,7 @@ class GammaLevelsResponse(ApiModel):
     warnings: list[str]
     snapshot_timestamp: Optional[str] = None
     chain_size: int
+    snapshot_provenance: Optional[SnapshotProvenance] = None
 
 
 class GammaGridCell(ApiModel):
@@ -986,6 +1007,7 @@ class GammaGridResponse(ApiModel):
     strikes: list[float]
     window_pct: float
     warnings: list[str]
+    snapshot_provenance: Optional[SnapshotProvenance] = None
 
 
 class NodeLevel(ApiModel):
