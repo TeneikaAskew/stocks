@@ -335,10 +335,10 @@ def test_pending_dates_normalizes_postgres_timestamps_to_plain_date(monkeypatch)
     # the old `d if isinstance(d, date) else d.date()` check never converted
     # it. A Timestamp compares unequal to every plain `date` (different
     # classes never compare equal in Python), so classify_date_outcome's
-    # `analysis_date == now_et.date()` and `analysis_date in
-    # NYSE_FULL_CLOSURES` checks were both silently unreachable against
-    # pending_dates()'s real output — the holiday fix in this same PR would
-    # not have actually fired in production without this.
+    # `analysis_date == now_et.date()` and its holiday-set membership check
+    # (a 2026-only set then, the shared NYSE calendar now) were both silently
+    # unreachable against pending_dates()'s real output — the holiday fix in
+    # this same PR would not have actually fired in production without this.
     import gcp.premarket_playbook_resolver as mod
 
     def _fake_read_sql(sql, engine, params=None):
@@ -353,12 +353,31 @@ def test_pending_dates_normalizes_postgres_timestamps_to_plain_date(monkeypatch)
 
 
 def test_classify_black_friday_all_skipped_still_fails():
-    # Codex review on #1075: audit_data_freshness.py's MARKET_HOLIDAYS_2026
-    # marks 2026-11-27 (Black Friday) "early close, treated as closed" for
+    # Codex review on #1075: the freshness audit's old 2026-only holiday set
+    # marked 2026-11-27 (Black Friday) "early close, treated as closed" for
     # its OWN staleness-tolerance purposes, but NYSE trades an abbreviated
-    # session that day — bars do land. Blindly reusing that set here would
-    # have given a real ingestion gap on Black Friday a free pass all the
-    # way through the lookback window, the exact false-negative this
-    # resolver's sweep design exists to prevent.
+    # session that day (13:00 ET close) — bars do land. Treating it as a
+    # closure here would have given a real ingestion gap on Black Friday a
+    # free pass all the way through the lookback window, the exact
+    # false-negative this resolver's sweep design exists to prevent. The
+    # shared NYSE calendar (FEAT-DATA-001) reports it as a session.
     now = datetime(2026, 11, 30, 21, 15, tzinfo=_ET_TZ)  # next weekday sweep
     assert classify_date_outcome(_date(2026, 11, 27), 0, 3, now) == 'failed'
+
+
+# FEAT-DATA-001: the resolver reads the shared NYSE calendar
+# (lib/eastern_time.is_session), so a closure in any year is benign, not only
+# the 2026 dates the old hard-coded set listed.
+
+
+def test_classify_2025_independence_day_is_benign_holiday():
+    # A pre-2026 backfill (PLAYBOOK_RESOLVE_DATE=2025-07-04): NYSE was closed.
+    now = datetime(2025, 7, 7, 21, 15, tzinfo=_ET_TZ)
+    assert classify_date_outcome(_date(2025, 7, 4), 0, 3, now) == 'benign_holiday'
+
+
+def test_classify_2027_mlk_day_is_benign_holiday():
+    # 2027-01-18 (MLK Day): the old 2026-only set expired on 2027-01-01 and
+    # would have classified this 'failed' (the #1068 incident class, #1076).
+    now = datetime(2027, 1, 19, 21, 15, tzinfo=_ET_TZ)
+    assert classify_date_outcome(_date(2027, 1, 18), 0, 3, now) == 'benign_holiday'

@@ -10,7 +10,7 @@ done_when:
   - "git diff against the merge base changes only lib/earnings_reactions.py (the recommended_structure signature, its docstring, one entry check raising ValueError, and one branch returning 'SKIP') and the new test file. gcp/refresh_earnings_views.py, gcp/premarket_brief.py and gcp/earnings_reactions_brief.py are unchanged, and the two refresh_earnings_views call sites (L248, L252 at d806bfd1) still omit the keyword."
   - "The existing tests under tests/lib/ and tests/gcp/ that exercise recommended_structure pass unmodified."
   - "Own narrow plan and product records, the no-new documentation audit, current-head required Codex code review and CI pass through the normal gates."
-status: approved
+status: superseded
 supersedes: null
 ---
 

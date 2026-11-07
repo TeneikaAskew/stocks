@@ -8,7 +8,7 @@ captured alongside inline flags. <!-- verify-docs-ok: deliberately the repo-decl
 **67 Cloud Run jobs** and **65 Cloud Scheduler entries** are *declared in the repo* (re-parsed from `gcp/deploy.sh` on 2026-09-07 by `scripts/maintenance/doc_inventory.py`; the earlier 58 predated #1004's consolidation of the per-hour news and sec-filings entries).
 
 **VERIFIED — LIVE, 2026-09-07.** `gcloud run jobs list --region=us-east1` returns
-**76 jobs** and `gcloud scheduler jobs list --location=us-east1` returns **65 scheduler
+**76 jobs** and `gcloud scheduler jobs list --location=us-east1` returns **65 scheduler <!-- verify-docs-ok: dated live read of 2026-09-07, not a claim about today's fleet; 66 schedulers first read live 2026-10-19 -->
 entries** — and 0 in every other Cloud Scheduler location, so 65 is the whole fleet.
 This previously read 84, dated 2026-09-06, and that figure does not reproduce; only
 the reading above is vouched for here. The dated audit under
