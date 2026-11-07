@@ -6325,7 +6325,7 @@ def test_measure_inventory_render_notice_over_a_stream_socket_arrives_whole(tmp_
 
 
 FINISH_PROBE = r"""
-import fcntl,importlib.util,json,os,resource,socket,sys,time
+import fcntl,importlib.util,json,os,resource,socket,sys,threading,time
 s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 mode=sys.argv[2];real_os=os;real_stderr=sys.stderr;out={}
 LONG='retained /tmp/scratch-'+'r'*3000+'/root (removal_failed)'
@@ -6334,8 +6334,8 @@ def read_all(fd):
     while c:=os.read(fd,1<<16): data+=c
     return data
 started=time.monotonic();cpu=time.process_time()
-if mode=='stuck-socket':   # a real stream socket whose reader never drains: part of the line fits, the rest never does
-    a,b=socket.socketpair(socket.AF_UNIX,socket.SOCK_STREAM)
+if mode in ('stuck-socket','epipe'):   # a real stream socket whose reader never drains (stuck-socket) or closes
+    a,b=socket.socketpair(socket.AF_UNIX,socket.SOCK_STREAM)        # after 0.03 s (epipe): part of the line fits
     a.setsockopt(socket.SOL_SOCKET,socket.SO_SNDBUF,1);a.setblocking(False)
     try:
         while True: a.send(b'x'*512)
@@ -6343,6 +6343,7 @@ if mode=='stuck-socket':   # a real stream socket whose reader never drains: par
     b.setblocking(False);got=0
     while got<512: got+=len(b.recv(512-got))
     a.setblocking(True);sys.stderr=os.fdopen(os.dup(a.fileno()),'w')
+    if mode=='epipe': threading.Timer(0.03,b.close).start()
     m.write_notices([LONG,'child 4242 not proven killed: signal refused'])
 elif mode=='trickle':      # each write takes at most 1000 bytes, so the rest of a notice takes several writes
     r,w=os.pipe()
@@ -6360,7 +6361,7 @@ elif mode=='fullish':      # a pipe with 100 bytes free: the cut 4096-byte notic
     sys.stderr.close();out['after']=read_all(r)[size-100:].decode()
 elif mode=='fsize':        # a regular file 100 bytes short of RLIMIT_FSIZE: one part write, then EFBIG
     f=open(sys.argv[3],'wb');f.write(b'y'*900);f.flush()
-    resource.setrlimit(resource.RLIMIT_FSIZE,(1000,resource.RLIM_INFINITY));sys.stderr=f
+    resource.setrlimit(resource.RLIMIT_FSIZE,(1000,resource.getrlimit(resource.RLIMIT_FSIZE)[1]));sys.stderr=f
     m.write_notices(['retained /tmp/root (removal_failed) '+'q'*200,'child 4242 not proven killed: signal refused'])
 sys.stderr=real_stderr
 out.update(seconds=time.monotonic()-started,cpu=time.process_time()-cpu)
@@ -6376,9 +6377,17 @@ def run_finish_probe(tmp_path, mode):
 
 
 def test_measure_inventory_render_notice_wait_is_bounded_on_a_socket_that_never_drains(tmp_path):
-    """The finishing wait on a real socket that never becomes writable ends with the budget (pass 29 R4 F1)."""
+    """The finishing wait on a real socket that never becomes writable ends with the 0.25 s budget, not later
+    (pass 29 R4 F1; the upper bound tightened in pass 30 R4 F1, so a select that waits past the budget fails)."""
     seen = run_finish_probe(tmp_path, "stuck-socket")
-    assert 0.2 <= seen["seconds"] < 1.5, seen
+    assert 0.2 <= seen["seconds"] < 0.75, seen
+
+
+def test_measure_inventory_render_notice_finish_stops_when_the_reader_closes(tmp_path):
+    """A reader that closes while the rest of a notice waits makes the next write fail with EPIPE, and the finish
+    stops at once instead of retrying for the whole budget (pass 30 R4 F2)."""
+    seen = run_finish_probe(tmp_path, "epipe")
+    assert seen["seconds"] < 0.15, seen
 
 
 def test_measure_inventory_render_notice_rest_written_in_several_parts(tmp_path):

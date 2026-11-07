@@ -897,7 +897,8 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                         # notice is written to the descriptor without blocking, and one that does not fit is dropped
                         # (#1700 pass 23 R1 F1). A part write is finished within one shared NOTICE_FINISH_SECONDS
                         # budget; one left in part stops the notices, so every later one is dropped (pass 28). That
-                        # budget is its own, not the deadline's, so finishing can run up to 0.25 s past it (pass 29).
+                        # budget starts here, not at the deadline: the cleanup above can already end past the deadline (an
+                        # interrupt after it), and finishing adds up to 0.25 s after that (passes 29 and 30).
                         write_notices(notices)
         except DeliveryDeadline as e:
             report.update(ok=False, reason="time_limit", error=str(e))
