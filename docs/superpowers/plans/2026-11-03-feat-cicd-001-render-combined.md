@@ -1,6 +1,6 @@
 ---
 feat_id: FEAT-CICD-001
-spec: docs/superpowers/specs/2026-10-13-feat-cicd-001-complete-generated-inventory.md
+spec: docs/superpowers/specs/2026-11-04-feat-cicd-001-inventory-whole-job.md
 branch: fix/feat-cicd-001-render-combined
 pr: null
 status: ready
@@ -16,7 +16,7 @@ status: ready
 - The accepted fixture control runs at `--max-rss-mib 128`, a value no spec defines. Python 3.14's larger interpreter baseline reaches it on identical inputs (the ubuntu-latest 26.04 failures on #1673 and #1696).
 - A measurement whose worker family is killed leaves its `spec-gate-render-*` tree behind in the shared temporary directory. The 47 such trees under /tmp, which no record ties to an owner, are how this was found. They are not touched by this change.
 
-**Spec:** `docs/superpowers/specs/2026-10-13-feat-cicd-001-complete-generated-inventory.md` (approved, unchanged): done_when 13 (the contract and its controls), done_when 2 (exact render: bytes, refused paths), done_when 6 (suites), done_when 7 (four-seat red-team pass), done_when 9 and 10 (records). No new spec: product-delivery Phase 1.4, the approved spec covers this.
+**Spec:** `docs/superpowers/specs/2026-11-04-feat-cicd-001-inventory-whole-job.md` (approved, on main since #1702; it supersedes the 2026-10-13 spec this plan first bound, keeps its items 1 to 12 byte-identical and replaces only item 13's 285-second clause with a whole-job registry acceptance of at most 335 seconds, every attempt recorded and 285 s recorded as UNMET): done_when 13 (the contract and its controls), done_when 2 (exact render: bytes, refused paths), done_when 6 (suites), done_when 7 (four-seat red-team pass), done_when 9 and 10 (records). No new spec: product-delivery Phase 1.4, the approved spec covers this.
 
 **Base:** main 1fb97576. One branch, one PR, one author. This plan replaces the unpublished fixture-only plan of fix/feat-cicd-001-render-fixture-512 (6e98401f, never pushed), whose one-token test change is carried here unchanged.
 
