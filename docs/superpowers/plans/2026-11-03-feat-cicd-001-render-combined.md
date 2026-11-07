@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-04-feat-cicd-001-inventory-whole-job.md
 branch: fix/feat-cicd-001-render-combined
-pr: null
+pr: 1700
 status: ready
 ---
 
