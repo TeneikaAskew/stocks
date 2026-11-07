@@ -1,0 +1,40 @@
+{
+  "command": "python scripts/maintenance/docs_audit.py --json",
+  "comparison": "FAILED",
+  "main": {
+    "head": "911d30a7427a",
+    "docs": 488,
+    "findings_count": 288,
+    "output_sha256": "c7ac7879f604a6cc71501b141ddfe66fe8a96f8d8a7a9b529e1c180c7b741e10"
+  },
+  "branch": {
+    "head": "54da58031108",
+    "docs": 492,
+    "findings_count": 291,
+    "output_sha256": "80712daa68926845f1917ddcf4612f69bab80b6c4e5c91634b99031dc9298597"
+  },
+  "added_findings": [
+    {
+      "check": "changed-since",
+      "commits": [
+        "05ab15fcc762e0ce02ddd4ce654604375dbb93df\tFEAT-CICD-001: prepare pinned six-minute registry CI envelope (#1591)"
+      ],
+      "detail": "1 content commit(s) to platform/api, platform/deploy.sh, platform/Dockerfile, gcp, lib, scripts, tests since a5749d4c0b93",
+      "doc": "docs/product/03-SITE-TRACEABILITY.md",
+      "severity": "P2"
+    },
+    {
+      "check": "changed-since",
+      "detail": "the document itself changed since a5749d4c0b93, so its review covers prose that is no longer there",
+      "doc": "docs/product/03-SITE-TRACEABILITY.md",
+      "severity": "P2"
+    },
+    {
+      "check": "source-provenance",
+      "detail": "implementation-source identity unavailable: object exceeds remaining input-byte allowance",
+      "doc": "docs/product/03-SITE-TRACEABILITY.md",
+      "severity": "P2"
+    }
+  ],
+  "removed_findings": []
+}
