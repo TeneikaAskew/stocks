@@ -335,8 +335,11 @@ def select_trigger_and_regime(
 
     trigger = candidates[0]
     distance_atr = abs(trigger - ref) / atr
-    regime: Regime = "normal" if distance_atr < _EXTENDED_DISTANCE_ATR else "extended"
-    return (regime, trigger, stop_anchor, distance_atr, False)
+    # Every candidate here passed the window (distance <= 3 x ATR,
+    # inclusive), so a multi-timeframe trigger is always `normal`; a level
+    # exactly 3 ATR away is a normal trigger, not an extended one.
+    # `extended` is reached only through the legacy single-level path.
+    return ("normal", trigger, stop_anchor, distance_atr, False)
 
 
 # ─── Recipe constants — central so they're easy to audit + tune ────────────

@@ -1338,7 +1338,6 @@ flowchart LR
     T_earnings_calendar --> J_insight_pipeline
     T_economic_events --> J_insight_pipeline
     T_etf_options_snapshots --> J_insight_pipeline
-    T_exit_config_overrides --> J_insight_pipeline
     T_insight_reports --> J_insight_pipeline
     T_journal_entries --> J_insight_pipeline
     T_market_data_daily --> J_insight_pipeline

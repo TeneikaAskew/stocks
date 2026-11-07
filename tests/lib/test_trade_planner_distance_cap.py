@@ -23,15 +23,15 @@ QQQ_2026_11_06 = dict(
     close=647.05, atr=16.42, trigger_high=683.65, trigger_low=647.05,
     effective_pdh=683.65, effective_pdl=647.05,
     pwh=726.14, pwl=683.45, pmh=762.86, pml=683.45,
-    pqh=748.349, pql=661.14, pyh=640.0, pyl=402.39,
+    pqh=748.349, pql=661.14, pyh=637.01, pyl=402.39,
     # pre_low 647.05 is an extended-hours print at exactly the prior close
     pre_high=683.50, pre_low=647.05, pre_vwap=656.60,
 )
 IWM_2026_11_06 = dict(
     close=270.98, atr=4.58, trigger_high=284.70, trigger_low=270.52,
     effective_pdh=284.70, effective_pdl=270.52,
-    pwh=285.26, pwl=276.89, pmh=285.26, pml=269.875,
-    pqh=305.18, pql=277.41, pyh=255.0, pyl=171.73,
+    pwh=285.26, pwl=276.0, pmh=285.26, pml=269.875,
+    pqh=305.18, pql=277.41, pyh=258.2, pyl=171.73,
     # 4 AM print 269.13 broke PDL and PML for real
     pre_high=283.745, pre_low=269.13, pre_vwap=272.01,
 )
@@ -39,7 +39,7 @@ SPY_2026_11_06 = dict(
     close=733.00, atr=10.97, trigger_high=765.97, trigger_low=732.71,
     effective_pdh=765.97, effective_pdl=732.71,
     pwh=773.36, pwl=750.36, pmh=781.62, pml=750.36,
-    pqh=779.37, pql=729.10, pyh=690.0, pyl=481.80,
+    pqh=779.37, pql=729.10, pyh=691.66, pyl=481.80,
     pre_high=765.5267, pre_low=730.64, pre_vwap=736.45,
 )
 
@@ -138,3 +138,23 @@ def test_no_trigger_is_ever_synthesized(direction):
             real = {round(float(v), 4) for k, v in t.items()
                     if k not in ("close", "atr", "pre_vwap") and v is not None}
             assert round(trigger, 4) in real
+
+
+def test_level_exactly_at_the_cap_is_a_normal_trigger():
+    """Reference 100, ATR 1, unbroken PWH 103: exactly 3 ATR away. The
+    window is inclusive, so it is the trigger, and the regime is normal
+    (not extended with an ORB-confirmation rationale)."""
+    ctx = _ctx(
+        "long", close=100.0, atr=1.0, trigger_high=100.5, trigger_low=99.0,
+        effective_pdh=100.5, effective_pdl=99.0,  # PDH cleared by pre_high
+        pwh=103.0, pwl=95.0, pmh=110.0, pml=90.0,
+        pqh=120.0, pql=85.0, pyh=160.0, pyl=60.0,
+        pre_high=101.0, pre_low=99.5, pre_vwap=100.0,
+    )
+    regime, trigger, _, distance, blue = select_trigger_and_regime(ctx, "long")
+    assert trigger == pytest.approx(103.0) and blue is False
+    assert distance == pytest.approx(3.0)
+    assert regime == "normal"
+    for plan in compute_persona_plans(ctx):
+        assert plan.regime == "normal"
+        assert "Extended gap" not in plan.rationale

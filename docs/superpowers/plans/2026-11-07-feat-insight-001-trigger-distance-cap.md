@@ -14,7 +14,7 @@ status: in-progress
 ## Task 1: Regression tests on the 2026-11-06 inputs
 Spec: § Problem 1 and 2, § Design. Advances done_when[0].
 - [x] Write `tests/lib/test_trade_planner_distance_cap.py` on QQQ, IWM and SPY 2026-11-06 values rebuilt from Alpha Vantage bars, plus the own-ATR, long-tie and pre_low cases
-- [x] Run: `python3 -m pytest tests/lib/test_trade_planner_distance_cap.py` (FAIL on origin/main: 6 of 11)
+- [x] Run: `python3 -m pytest tests/lib/test_trade_planner_distance_cap.py` (FAIL on origin/main: 7 of 12)
 - [x] Implement `_TOUCH_TOLERANCE` and the `_within_staleness_window` filter in `select_trigger_and_regime`
 - [x] Run again (PASS)
 
