@@ -4966,6 +4966,8 @@ FAKE_BATCH = {
     "early end: no answer": (b"", 128, ["failed (128)", "fatal: boom"]),
     "early end: a megabyte of stderr": (b"", 128, ["failed (128)", "fatal: boom"]),
     "early end: inside the header": (f"{FAKE_OID} blo".encode(), 128, ["failed (128)", "fatal: boom"]),
+    "early end: a header one byte short of its bound": (f"{FAKE_OID} blob {'9' * 19}".encode(), 128,
+                                                        ["failed (128)", "fatal: boom"]),
     "early end: inside the blob": (f"{FAKE_OID} blob 10\n".encode() + b"abcd", 128, ["failed (128)", "fatal: boom"]),
     "early end: before the separator": (f"{FAKE_OID} blob 4\nabcd".encode(), 128, ["failed (128)", "fatal: boom"]),
     # With more than a pipe's 64 KiB still to write, a wrong separator or trailing output is named before git is
@@ -6131,6 +6133,9 @@ class Interrupting:   # the real call runs, then the interrupt a second SIGINT w
     def set_blocking(self,fd,flag):
         real_os.set_blocking(fd,flag)
         if not flag: raise KeyboardInterrupt('just after the flag was cleared')
+class Short:          # a regular file at its size limit takes only part of a write
+    def __getattr__(self,name): return getattr(real_os,name)
+    def write(self,fd,data): return real_os.write(fd,data[:len(data)//2])
 stream=os.fdopen(w,'w');real_stderr=sys.stderr;sys.stderr=stream
 try:
     if mode=='flag':
@@ -6139,8 +6144,13 @@ try:
         except KeyboardInterrupt: out['interrupted']=True
         m.os=real_os
         out['blocking']=os.get_blocking(w)
+    elif mode=='short':
+        m.os=Short()
+        try: m.write_notice('retained /tmp/root (removal_failed)\n')
+        except OSError as e: out['raised']=e.errno
+        m.os=real_os
     else:
-        m.write_notice({'escape':'retained /tmp/x\udcff/root\n','long':'retained /'+'a'*10000+'\n',
+        m.write_notice({'exact':'retained /'+'a'*4085+'\n','newline':'retained /tmp/keep\nx/root (spawn_children_unknown)\n','escape':'retained /tmp/x\udcff/root\n','long':'retained /'+'a'*10000+'\n',
                         'split':'retained /'+'a'*4071+'\u00e9/root'+'x'*100+'\n'}[mode])   # the cut falls inside the e acute
 finally:
     sys.stderr=real_stderr
@@ -6181,10 +6191,31 @@ def test_measure_inventory_render_notice_longer_than_pipe_buf_is_one_whole_line(
 
 
 def test_measure_inventory_render_notice_cut_never_splits_a_character(tmp_path):
-    """A cut that falls inside a multi-byte character steps back to its start, so the line still decodes
-    (pass 25 R1 F1)."""
+    """A notice is escaped to ASCII before any cut, so a cut never falls inside a character and the line still
+    decodes (pass 25 R1 F1)."""
     seen = run_notice_probe(tmp_path, "split")
-    assert seen["decodes"] and seen["tail"].endswith("a [notice cut]\n") and seen["length"] == seen["pipe_buf"] - 1, seen
+    assert seen["decodes"] and seen["tail"].endswith(" [notice cut]\n") and seen["length"] == seen["pipe_buf"], seen
+
+
+def test_measure_inventory_render_notice_of_exactly_pipe_buf_is_not_cut(tmp_path):
+    """A notice of exactly PIPE_BUF bytes fits and is written whole, with no marker (pass 26 R4 F3)."""
+    seen = run_notice_probe(tmp_path, "exact")
+    assert seen["length"] == seen["pipe_buf"] and seen["tail"] == "a" * 19 + "\n", seen
+
+
+def test_measure_inventory_render_notice_keeps_a_line_feed_in_a_path_on_one_line(tmp_path):
+    """A line feed in a scratch root's path is escaped, so the notice stays one line and its first line never names
+    another directory as the kept root (pass 26 R1 F1)."""
+    seen = run_notice_probe(tmp_path, "newline")
+    assert seen["lines"] == 1 and seen["head"].startswith("retained /tmp/keep\\nx/root (spawn_child"), seen
+
+
+def test_measure_inventory_render_notice_written_in_part_raises(tmp_path):
+    """A write that takes only part of a notice (a regular file at its size limit) raises, so the caller knows the
+    notice was not delivered whole (pass 26 R1 F2)."""
+    import errno
+    seen = run_notice_probe(tmp_path, "short")
+    assert seen.get("raised") == errno.EIO, seen
 
 
 STALLED_PROBE = r"""

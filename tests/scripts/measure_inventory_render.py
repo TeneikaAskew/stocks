@@ -11,6 +11,7 @@ import time
 STARTED = time.monotonic()
 import argparse
 import contextlib
+import errno
 import ctypes
 import hashlib
 import importlib.util
@@ -510,27 +511,27 @@ NOTICE_CUT = b" [notice cut]\n"
 def write_notice(line: str) -> None:
     """Write one cleanup notice to stderr without ever blocking. A stream with no descriptor (a test's StringIO, or
     an object with no fileno at all) is printed to, since it cannot block. Otherwise the line goes to the descriptor
-    (fd 2 when sys.stderr is None) in non-blocking mode, as at most PIPE_BUF bytes ending in a newline (a longer
-    notice is cut on a character boundary and ends in NOTICE_CUT, so a pipe takes it whole or not at all and a cut
-    path is never read as a whole one), with non-UTF-8 text backslash-escaped, and the
-    descriptor's blocking flag is restored even when an interrupt arrives. Raises OSError (BlockingIOError when the
-    pipe is full, EBADF when it is closed) or ValueError; the caller drops the notice on either."""
+    (fd 2 when sys.stderr is None) in non-blocking mode as one ASCII line: its text is escaped with unicode_escape,
+    so a line feed, a carriage return, a backslash or a non-UTF-8 byte in a path can neither split the line nor
+    turn into another path's name; a line over PIPE_BUF bytes is cut to PIPE_BUF and ends in NOTICE_CUT, so a pipe
+    takes it whole or not at all and a cut path is never read as a whole one; and the descriptor's blocking flag
+    is restored even when an interrupt arrives. Raises OSError (BlockingIOError when the pipe is full, EBADF when it
+    is closed, EIO when a regular file took only part of the line, which then stays there cut) or ValueError; the
+    caller drops the notice on any of them."""
     stream = sys.stderr
     try:
         fd = 2 if stream is None else stream.fileno()
     except (AttributeError, OSError, ValueError):
         print(line, end="", file=stream)
         return
-    data = line.encode("utf-8", "backslashreplace")   # a non-UTF-8 path keeps its escape, as print wrote it
+    data = line.removesuffix("\n").encode("unicode_escape") + b"\n"   # ASCII, one line, every byte escaped
     if len(data) > select.PIPE_BUF:                    # a pipe write of at most PIPE_BUF bytes is whole or nothing
-        cut = select.PIPE_BUF - len(NOTICE_CUT)
-        while cut and data[cut] & 0xC0 == 0x80:        # never inside a character
-            cut -= 1
-        data = data[:cut] + NOTICE_CUT                 # marked, so a cut path is never read as a whole one
+        data = data[:select.PIPE_BUF - len(NOTICE_CUT)] + NOTICE_CUT   # marked, so a cut path is never read whole
     blocking = os.get_blocking(fd)
     try:
         os.set_blocking(fd, False)                     # inside the try: an interrupt here still restores the flag
-        os.write(fd, data)
+        if os.write(fd, data) != len(data):            # a regular file at its size limit or a full disk
+            raise OSError(errno.EIO, "notice written in part")
     finally:
         os.set_blocking(fd, blocking)
 
