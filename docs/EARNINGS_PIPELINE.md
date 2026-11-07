@@ -2,6 +2,14 @@
 
 **Last updated:** 2026-05-04 — companion to PR on `claude/add-mck-earnings-atr-c6q9e` that fixed three silent-truncation gaps and added ATR-around-earnings to the reaction profile.
 
+**Plan clarification (October 24, 2026):** The May 4 sizing below predates the
+May 22 upgrade to the $199.99/month, 600-request-per-minute plan, which has no
+daily request limit ([official pricing](https://www.alphavantage.co/premium/)).
+The repository's default 150 RPM is conservative process-local pacing, not the
+purchased ceiling or an account-wide remaining allowance. Shared consumption,
+outstanding reservations and current key/market-entitlement activation need
+separate evidence; do not raise every process to 600 RPM.
+
 This doc traces every step from "an earnings event is announced" to "a trader sees it in the Discord brief," names the cron that fires each step, and lists the assumptions each step makes about its upstream inputs. Use it together with [`DATA_PIPELINE.md`](product/infrastructure/05-g-DATA_PIPELINE.md) (per-table semantics) and [`docs/CLAUDE_CODE_ON_WEB.md`](CLAUDE_CODE_ON_WEB.md) (sandbox patterns).
 
 ---
@@ -196,7 +204,7 @@ The pipeline used to silently drop tickers via numeric caps that didn't track th
 
 `fetch-market-data` daily, 500 optionable + 16 static + watchlist ≈ 530 tickers:
 - ~3 AV calls per ticker (intraday + daily + supporting) = ~1,600 calls
-- AV Premium tier: 150 RPM
+- Original sizing throttle: 150 RPM (pre-upgrade assumption; purchased plan now 600 RPM, not measured free shared capacity)
 - Wall clock: ~10–11 minutes
 - Cloud Run task-timeout: 1,800 s (30 min) → 19 min headroom
 
@@ -266,7 +274,7 @@ gcloud run jobs execute backfill-ticker \
 ## Operational notes
 
 - **The 23:00 ET window is contested.** Three jobs fire at the same minute (`fetch-market-data`, `compute-earnings-reactions`, `evaluate-ew-strikes`). They share Cloud SQL but talk to different tables. If any of them needs more time, stagger by 5 min — Cloud Scheduler precision is per-minute.
-- **AV rate limiting is the binding constraint.** All three weekday jobs share a 150 RPM budget. Raising universe size beyond ~600 tickers will start eating into the timeout. Estimate before changing.
+- **AV rate limiting is the binding constraint.** The May 4 sizing assumed 150 RPM before the May 22 plan upgrade. Separate 150-RPM process throttles do not enforce an account-wide budget. Admit requests through the existing shared guard and measure whole-cycle capacity before changing universe size or pacing; the purchased 600-RPM ceiling is not unused headroom.
 - **`has_options=true` filter depends on EW + UW running their fetches first.** If EW upload fails one day, the daily filter loses the ~454 EW-confirmed names. Mitigation: watchlist union (existing) + 7-day-window (we'll see EW data on the next run).
 - **Smoke test for any ticker change:** trigger `backfill-ticker` Cloud Run Job with `BACKFILL_TICKER=<TICKER>,BACKFILL_HISTORY_DAYS=400`, then dispatch `db-query.yml` with:
   ```sql
