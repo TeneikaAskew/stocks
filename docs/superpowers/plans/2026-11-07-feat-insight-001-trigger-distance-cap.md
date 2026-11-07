@@ -2,7 +2,7 @@
 feat_id: FEAT-INSIGHT-001
 spec: docs/superpowers/specs/2026-11-07-feat-insight-001-trigger-distance-cap.md
 branch: fix/feat-insight-001-trigger-distance-cap
-pr: null
+pr: 1746
 status: in-progress
 ---
 
@@ -39,6 +39,6 @@ Spec: § Source identity and close-out. Advances done_when[4].
 ## Task 6: close
 Spec: § Source identity and close-out. Closes done_when[5].
 - [x] Update the 02-FEATURE-CATALOG FEAT-INSIGHT-001 record (Last reviewed, Next action)
-- [ ] Add this PR to 12-PR-ISSUE-TRACEABILITY once it has a number, and set `pr` here
+- [x] Add this PR to 12-PR-ISSUE-TRACEABILITY once it has a number, and set `pr` here
 - [ ] Docs audit reports nothing new over origin/main (`python3 scripts/maintenance/docs_audit.py`, which needs read access to solyra's issues)
 - [ ] `python3 scripts/gate/spec_gate.py --pr origin/main`
