@@ -81,11 +81,60 @@ def test_backfill_gap_list_contains_atr5():
     assert "atr_5" in bdi._WARMUP_SHORT_COLS
 
 
-def test_data_loader_reads_atr5():
-    src = (ROOT / "lib" / "data_loader.py").read_text()
-    select = re.search(r"SELECT date, open AS \"Open\".*?FROM market_data_daily", src, re.S).group(0)
-    assert re.search(r"\batr_5\b", select)
-    assert "'atr_5': 'ATR5'" in src
+def _loader(monkeypatch, answer):
+    """A DataLoader whose Cloud SQL reads go to `answer(sql)`, with the
+    optional-column flags reset; returns (loader, the SQL it sent)."""
+    from lib import data_loader as dl
+    monkeypatch.setattr(dl, "_PREMARKET_PROVENANCE_PRESENT", None)
+    monkeypatch.setattr(dl, "_ATR5_PRESENT", None, raising=False)
+    calls = []
+    monkeypatch.setattr(dl, "_query_cloud_sql",
+                        lambda sql, params=None: calls.append(sql) or answer(sql))
+    return dl.DataLoader.__new__(dl.DataLoader), calls
+
+
+_ROW = {"date": "2026-11-05", "Open": 1.0, "High": 2.0, "Low": 0.5, "Close": 1.5,
+        "Volume": 10, "atr_14": 0.4, "pre_high": None}
+
+
+def test_data_loader_reads_atr5(monkeypatch):
+    loader, calls = _loader(monkeypatch, lambda sql: pd.DataFrame([{**_ROW, "atr_5": 0.3}]))
+    df = loader._load_daily_from_sql("QQQ", None)
+    assert re.search(r"\batr_5\b", calls[0])
+    assert df["ATR5"].iloc[-1] == pytest.approx(0.3) and df["ATR14"].iloc[-1] == pytest.approx(0.4)
+
+
+def test_data_loader_without_the_atr5_column_reads_null_atr5(monkeypatch):
+    """Code that ships before market_data_daily.atr_5 exists: a query naming
+    atr_5 fails (the reader answers empty), and load_daily must still return
+    the bars, with ATR5 null, not an empty frame (the provenance columns'
+    rule). Once known missing, atr_5 is not asked for again."""
+    from lib import data_loader as dl
+
+    def answer(sql):
+        return pd.DataFrame() if re.search(r"\batr_5\b", sql) else pd.DataFrame([_ROW])
+
+    loader, calls = _loader(monkeypatch, answer)
+    df = loader._load_daily_from_sql("QQQ", None)
+    assert len(df) == 1 and df["Close"].iloc[-1] == pytest.approx(1.5)
+    assert "ATR5" in df.columns and df["ATR5"].isna().all()
+    assert df["ATR14"].iloc[-1] == pytest.approx(0.4)
+    assert dl._ATR5_PRESENT is False
+    # The provenance columns were still asked for, and the table has them.
+    assert dl._PREMARKET_PROVENANCE_PRESENT is True
+    calls.clear()
+    loader._load_daily_from_sql("QQQ", None)
+    assert len(calls) == 1 and not re.search(r"\batr_5\b", calls[0])
+    assert "pre_fetched_at" in calls[0]
+
+
+def test_data_loader_empty_ticker_learns_nothing(monkeypatch):
+    """A ticker with no rows answers empty to every query: the frame is
+    empty and neither optional column is marked missing."""
+    from lib import data_loader as dl
+    loader, _calls = _loader(monkeypatch, lambda sql: pd.DataFrame())
+    assert loader._load_daily_from_sql("ZZZ", None).empty
+    assert dl._ATR5_PRESENT is None and dl._PREMARKET_PROVENANCE_PRESENT is None
 
 
 def test_schema_declares_atr5():

@@ -153,6 +153,11 @@ def _cloud_sql_active() -> bool:
 _PREMARKET_PROVENANCE_PRESENT: Optional[bool] = None
 _PROVENANCE_SELECT = (",\n                   pre_fetched_at, pre_excluded_stale_prints, "
                       "pre_excluded_spikes, pre_filter_status, pre_filter_params")
+# The same for market_data_daily.atr_5 (FEAT-STRAT-001 per-ticker params):
+# code that ships before the column exists reads ATR5 as null rather than
+# an empty frame.
+_ATR5_PRESENT: Optional[bool] = None
+_ATR5_SELECT = ", atr_5"
 
 
 def _query_cloud_sql(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
@@ -528,7 +533,7 @@ class DataLoader:
                    rsi_14, rsi_9,
                    ema_9, ema_20, ema_50,
                    ma_5, ma_10, ma_20, ma_50, sma_200,
-                   atr_14, atr_5, atr_20,
+                   atr_14{{atr5}}, atr_20,
                    macd, macd_signal, macd_histogram,
                    bb_upper, bb_lower, bb_width, bb_pct,
                    stoch_rsi_k AS "StochRSI_K", stoch_rsi_d AS "StochRSI_D",
@@ -545,22 +550,38 @@ class DataLoader:
             {where}
             ORDER BY date
         """
-        # The premarket provenance columns (FEAT-STRAT-001: fetch time and
-        # excluded-print counts) are read when the table has them. A query
-        # that fails or comes back empty with them is retried without them,
-        # and once that retry finds rows they are not asked for again.
-        global _PREMARKET_PROVENANCE_PRESENT
+        # Two optional column groups (FEAT-STRAT-001): the premarket
+        # provenance columns (fetch time, excluded-print counts, filter
+        # status) and atr_5. Each is read when the table has it. A query
+        # that fails or comes back empty with a group is retried without
+        # it, widest first; the first query that finds rows marks the
+        # groups it named present and the ones it left out missing, and a
+        # group known missing is not asked for again. A group the table
+        # lacks is read as NULL, never as an empty frame.
+        global _PREMARKET_PROVENANCE_PRESENT, _ATR5_PRESENT
+        known = {'provenance': _PREMARKET_PROVENANCE_PRESENT, 'atr5': _ATR5_PRESENT}
+        fragments = {'provenance': _PROVENANCE_SELECT, 'atr5': _ATR5_SELECT}
+        maybe = [g for g in ('provenance', 'atr5') if known[g] is None]
+        always = [g for g in ('provenance', 'atr5') if known[g] is True]
+        attempts = [always + [g for g in maybe if g not in drop]
+                    for drop in ([], ['provenance'], ['atr5'], ['provenance', 'atr5'])
+                    if all(g in maybe for g in drop)]
         df = pd.DataFrame()
-        if _PREMARKET_PROVENANCE_PRESENT is not False:
-            df = _query_cloud_sql(sql.format(provenance=_PROVENANCE_SELECT), params)
+        for groups in attempts:
+            df = _query_cloud_sql(sql.format(**{
+                g: (fragments[g] if g in groups else '') for g in ('provenance', 'atr5')
+            }), params)
             if not df.empty:
-                _PREMARKET_PROVENANCE_PRESENT = True
-        if df.empty and _PREMARKET_PROVENANCE_PRESENT is not True:
-            df = _query_cloud_sql(sql.format(provenance=''), params)
-            if not df.empty:
-                _PREMARKET_PROVENANCE_PRESENT = False
+                for g in maybe:
+                    if g == 'provenance':
+                        _PREMARKET_PROVENANCE_PRESENT = g in groups
+                    else:
+                        _ATR5_PRESENT = g in groups
+                break
         if df.empty:
             return df
+        if 'atr_5' not in df.columns:
+            df['atr_5'] = float('nan')
 
         df['date'] = pd.to_datetime(df['date'])
         df = df.set_index('date')
