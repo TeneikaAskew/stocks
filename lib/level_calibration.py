@@ -201,7 +201,9 @@ def normalize_minutes(minutes: Optional[pd.DataFrame], as_of) -> pd.DataFrame:
     m.columns = [str(c).lower() for c in m.columns]
     ts = pd.to_datetime(m['timestamp'])
     if getattr(ts.dt, 'tz', None) is not None:
-        ts = ts.dt.tz_convert('America/New_York').dt.tz_localize(None)
+        # Aware instants: converted to Eastern wall time, never relabelled.
+        from lib.eastern_time import utc_to_eastern_naive  # noqa: PLC0415
+        ts = utc_to_eastern_naive(ts)
     m['timestamp'] = ts
     for c in ('open', 'high', 'low', 'close'):
         m[c] = pd.to_numeric(m[c], errors='coerce').astype(float)
