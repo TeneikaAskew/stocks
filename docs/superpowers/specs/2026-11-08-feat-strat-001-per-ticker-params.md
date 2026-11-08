@@ -5,9 +5,9 @@ issues: []
 canvases: []
 site_source_notes: [DASHBOARD-01, DASHBOARD-21, INSIGHTS-01, INSIGHTS-07, INSIGHTS-08]
 done_when:
-  - "Parameter tables and loader: gcp/schema.sql adds level_param_policy and ticker_level_params (Design 1) with a migration that seeds the policy rows of Design 2 and no ticker values; lib/strat_levels.load_level_params(query_fn, tickers, session_date) reads every listed ticker in one query and returns, per ticker and parameter key, the row in force on session_date (the greatest effective_from on or before it) with its value, status, method_id, sample_n, input range and run id; a ticker with no row gets status params_unavailable for every key; a missing table or a failed query raises LevelParamsUnavailable; tests: two versions with a session between them read the earlier one, ten tickers issue exactly one query, a dropped table raises, an unknown ticker returns the typed status; the tests fail on origin/main (no such tables or function)"
+  - "Parameter tables and loader: gcp/schema.sql adds level_param_policy and ticker_level_params (Design 1) with a migration that seeds the policy rows of Design 2 and no ticker values; lib/strat_levels.load_level_params(query_fn, tickers, session_date) reads every listed ticker in one query and returns, per ticker and parameter key, the row in force on session_date (the greatest effective_from on or before it) with its value, status, method_id, sample_n, input range and run id; a ticker with no row gets status params_unavailable for every key; a row whose atr_basis differs from the policy atr_basis in force on session_date is never used and gives that key status params_basis_mismatch (no older row of another basis is substituted); a missing table or a failed query raises LevelParamsUnavailable; tests: two versions with a session between them read the earlier one, ten tickers issue exactly one query, a dropped table raises, an unknown ticker returns the typed status, and a partial calibration failure across a basis change (policy switches atr_basis from atr_14 to atr_5 effective D, the job writes atr_5 rows for SPY and fails for QQQ) leaves SPY on its atr_5 rows and gives QQQ params_basis_mismatch on D with both sides orb_only, never QQQ's atr_14 values multiplied by atr_5; the tests fail on origin/main (no such tables or function)"
   - "No numbers in the level and plan code: a structural test (AST) asserts that MAX_TRIGGER_DISTANCE_ATR, MAX_TRIGGER_DISTANCE_PCT, MIN_ROOM_PCT, compute_room_to_run, _ENTRY_BUFFER, _STOP_ATR_MULT, _TARGET_R_MULTIPLES and PlanContext.safe_atr no longer exist, and that build_session_levels and every function it calls in lib/strat_levels.py, lib.indicators.calculate_premarket_context and lib.agents.trade_planner.compute_persona_plans and every function it calls hold no numeric literal, int or float, other than 0, 1, -1, 2, -2 and 100 outside round() digit arguments and slice bounds, and read no module-level numeric constant other than the sizing and FTFC names in done_when 15; a behaviour test changes one ticker_level_params row (trigger_window_long_atr from 3.0 to 2.0 for a fixture with the nearest long level at 2.5 ATR) and the long side goes from that trigger to orb_only with no code change; both fail on origin/main and on the #1753 head (lib/strat_levels.py:865-866 and :851, lib/indicators.py:615 and :623, lib/agents/trade_planner.py:91, :130-148 and :289)"
-  - "Calibration methods: lib/level_calibration.py computes every parameter in the Design 2 table by its stated input, statistic, lookback and minimum sample, reading the quantile, lookback and minimum from level_param_policy; unit tests feed each method synthetic inputs with a known answer (for example 1,000 sessions whose up-excursions are 0.004 x i ATR for i in 1..1000 give trigger_window_long_atr 3.96 at coverage 0.99), assert status insufficient_history with the actual sample_n one sample below each minimum, and assert no look-ahead: appending bars dated on or after effective_from changes no value; they fail on origin/main"
+  - "Calibration methods: lib/level_calibration.py computes every parameter in the Design 2 table by its stated input, statistic, lookback and minimum sample, reading the quantile, lookback and minimum from level_param_policy; unit tests feed each method synthetic inputs with a known answer (for example 1,000 sessions whose up-excursions are 0.004 x i ATR for i in 1..1000 give trigger_window_long_atr 3.96 at coverage 0.99), assert status insufficient_history with the actual sample_n one sample below each minimum, a fixture whose breaks include ones that never trade back to the conservative entry midpoint asserts those breaks are outside the conservative stop and target populations, that every published target is greater than zero R and greater than the persona's previous target, and that a persona whose filled-break reach share cannot be met gets no_positive_target with that target and the ones after it null, and assert no look-ahead: appending bars dated on or after effective_from changes no value; they fail on origin/main"
   - "Calibrated evidence: the implementation PR body shows, for SPY, QQQ and IWM as of 2026-11-06, every parameter's calibrated value, sample size and input range beside the #1753 constant it replaces, and the evidence row Design 2 names for that parameter computed over 2015-01-02 to 2026-11-06 (for the trigger windows, the share of sessions per year whose excursion passed the window; for the premarket thresholds, every bar each threshold drops on the 20 sessions through 2026-11-06; for the break-derived values, the break counts per side and year)"
   - "Premarket fixtures under calibrated values: with the SPY, QQQ and IWM ticker_level_params rows in force on 2026-11-06, committed as a fixture written by the calibration job from production bars (run id and input range in the fixture), calculate_premarket_context on the committed 2026-11-06 Alpha Vantage 1-minute fixtures drops the 08:05 prints (SPY 765.5267, QQQ 683.50, IWM 283.745) and QQQ's prior-close prints at 647.05, keeps SPY's 04:04 close 731.28 and IWM's 269.13 low, and returns the two threshold values and their effective_from with the counts; both production callers (gcp/fetchers/fetch_market_data.py and gcp/fetchers/fetch_premarket_refresh.py) read the thresholds once per run for their whole universe and write pre_filter_status and pre_filter_params; a ticker with no calibrated thresholds gets pre_filter_status params_unavailable, its excluded counts NULL, and the builder refuses that snapshot (premarket_status premarket_unfiltered) while a reader that shows its pre_high or pre_low labels it unfiltered; the tests fail on origin/main"
   - "ATR(5) stored next to ATR(14): gcp/schema.sql adds market_data_daily.atr_5 beside atr_14, lib/config.py IndicatorConfig.atr_extra_periods includes 5, gcp/database.py DAILY_INDICATOR_TO_SQL_COLUMN maps ATR5 to atr_5, lib/data_loader.py reads atr_5 as ATR5, and gcp/fetchers/backfill_daily_indicators.py checks atr_5 for gaps in its short warmup class; tests: the nightly fetcher's row builder writes atr_5 equal to lib.indicators.calculate_atr(high, low, close, 5) on the committed daily fixture, the backfill gap list contains atr_5, and level_basis records atr_14, atr_5 and the policy's atr_basis; they fail on origin/main"
@@ -17,7 +17,7 @@ done_when:
   - "Missing table is loud: when load_level_params raises LevelParamsUnavailable the brief job exits non-zero without writing a premarket_analysis row for any ticker, the insight run records status failed with reason level_params_unavailable, and the signal monitor's level refresh logs and skips the level map for that cycle with the reason in its status; a test drives each path with the query raising and fails on origin/main"
   - "level_basis records the parameters: level_basis carries params (per key: value, status, effective_from, method_id, sample_n, input_from, input_to, run_id), the policy version, atr_14, atr_5 and atr_basis, and a new rule_version; SessionLevels.from_basis rebuilds with the recorded params and never reads the table, so changing ticker_level_params after a brief leaves the planner's and the movement statement's picks for that session unchanged; the movement statement's reach-rate population counts only rows of the new rule_version; the tests fail on origin/main"
   - "Point-in-time replays: the production replay paths (gcp/premarket_brief.py replay runs, the insight replay, signal-replay and gcp/premarket_playbook_resolver.py) read the ticker_level_params rows in force on the replayed session; a test with two versions replays a session before the second and gets the first version's picks; it fails on origin/main"
-  - "Copy states the ticker's own values: ORB_ONLY_COPY renders next_level_outside_window and atr_unavailable from the side's recorded window (for example 'No unbroken long level within 2.4 x ATR(14), the distance SPY reached on 99% of the last 750 sessions'), the schema field descriptions in lib/agents/schema.py name no ATR multiple, and a test asserts that no string literal in lib/strat_levels.py, lib/agents/schema.py, lib/agents/trade_planner.py or gcp/insight_discord_push.py contains '3x ATR', '3 ATR', '8% of price' or '0.5 x ATR'; it fails on origin/main (lib/strat_levels.py:1015 and :1024, lib/agents/schema.py:250-251 and :314-315)"
+  - "Copy states the ticker's own values: ORB_ONLY_COPY renders next_level_outside_window and atr_unavailable from the side's recorded window (for example 'No unbroken long level within 2.4 x ATR(14); SPY's daily move stayed inside that distance on 99% of the last 750 sessions and went past it on 1%'), the schema field descriptions in lib/agents/schema.py name no ATR multiple, and a test asserts that no string literal in lib/strat_levels.py, lib/agents/schema.py, lib/agents/trade_planner.py or gcp/insight_discord_push.py contains '3x ATR', '3 ATR', '8% of price' or '0.5 x ATR', and a test renders the window copy for a fixture whose window sits at coverage 0.99 and asserts it states the coverage share as sessions that stayed inside the window and the exceedance share (1 minus coverage) as sessions that went past it, each as its own figure, and never states the coverage share as a share of sessions that reached the window; the entry-zone rationale is held to the same test (a lower edge at follow-through quantile q is reached by 1 minus q of breaks); it fails on origin/main (lib/strat_levels.py:1015 and :1024, lib/agents/schema.py:250-251 and :314-315)"
   - "Pick changes against #1753: the implementation PR body shows, for SPY, QQQ and IWM from 2015-01-02 to 2026-11-06 through the production replay paths with history-mode parameters, per ticker and side, the count of sessions whose trigger, stop, T1, T2 or T3 changes and whose orb_only state changes against the #1753 head (feature/feat-strat-001-one-level-source as merged), the counts of persona plans whose entry zone, stop or any target changes, and the before and after picks for the 20 sessions through 2026-11-06"
   - "Unchanged, each pinned by an existing or added test that passes on the #1753 head and on the implementation head: signal-monitor fire decisions, scores, strength labels, Discord delivery and alert targets (lib/config.py:305-306, gcp/signal_monitor.py:1513-1522); the brief's CALL/PUT side pick (_resolve_signal_status); persona sizing, the catalyst damper and the FTFC gates (lib/agents/trade_planner.py:151-166); the side rule, the broken rule and the cents rule of the #1753 builder"
   - "Source identity (DASHBOARD-01, DASHBOARD-21, INSIGHTS-01, INSIGHTS-07, INSIGHTS-08): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-STRAT-001, DASHBOARD-01 / DASHBOARD-21 / INSIGHTS-01 / INSIGHTS-07 / INSIGHTS-08) note rows carry that source_identity_sha256 with implementation and test prose for this PR"
@@ -173,11 +173,12 @@ Design 5). The migration seeds the Design 2 rows effective 2015-01-02.
 
 `ticker_level_params`: one row per (ticker, param_key, effective_from). Columns: ticker
 VARCHAR(10), param_key VARCHAR(48), value DOUBLE PRECISION NULL, status VARCHAR(32) CHECK in (ok,
-insufficient_history, input_unavailable), method_id VARCHAR(48), policy_effective_from DATE,
+insufficient_history, input_unavailable, no_positive_target), atr_basis VARCHAR(16) NOT NULL, method_id VARCHAR(48), policy_effective_from DATE,
 sample_n INTEGER, input_from DATE, input_to DATE, effective_from DATE, run_id UUID, source
 VARCHAR(16) CHECK in (nightly, history, on_demand), calibrated_at TIMESTAMPTZ. Primary key
 (ticker, param_key, effective_from); index (ticker, effective_from DESC). value is NULL exactly when
-status is not ok. The migration seeds no ticker values: the first rows come from the history-mode
+status is not ok. Each row also carries atr_basis VARCHAR(16), the ATR column its value was
+calibrated in (Design 4). The migration seeds no ticker values: the first rows come from the history-mode
 run, applied before the code deploys (Close-out).
 
 A key/value row per parameter rather than one column per parameter, because each parameter carries
@@ -191,8 +192,13 @@ measured session. "RTH" is 09:30 to 16:00 ET, "premarket" 04:00 to 09:30 ET, fro
 market_data_intraday 1-minute bars. A "break" is the first RTH bar on a session on which the side's
 trigger, built by build_session_levels from daily bars with no premarket snapshot (reference = the
 prior close) and the parameters in force that session, trades one cent beyond it; a "held break" is
-one whose session close is beyond the trigger on the break's side. Break-derived parameters pool the
-long and short sides (Open question 3).
+one whose session close is beyond the trigger on the break's side. A persona's entry is "filled" on
+a break when an RTH bar after the break bar, on the same session, trades at the persona's entry
+midpoint (the midpoint of its calibrated entry zone); the fill bar is the first such bar. Stops,
+the floor and targets are measured only on filled breaks, from the fill bar to the close, and each
+persona's minimum sample counts that persona's filled breaks; a break the persona never filled is
+outside its population, because the trade never existed. Break-derived parameters pool the long
+and short sides (Open question 3).
 
 | param_key | Input | Statistic (policy default) | Lookback, minimum | Replaces |
 |---|---|---|---|---|
@@ -202,9 +208,9 @@ long and short sides (Open question 3).
 | pm_stale_print_atr | premarket 1-minute bars with no print on the prior close's cent and no wick the spike rule flags | quantile 0.95 of max(high minus midpoint, midpoint minus low) / ATR | 60, 40 sessions with at least 60 bars | item 6 |
 | level_cluster_atr | RTH 1-minute bars | quantile 0.50 of the absolute 15-minute close-to-close change / ATR | 60, 40 sessions | item 4 |
 | entry_buffer_{persona}_lo_atr, _hi_atr | breaks | quantiles of follow-through F (furthest beyond the trigger before the first bar that trades back to the trigger's cent, or before follow_through_minutes = 15): aggressive lo = the trigger, hi 0.75; neutral lo = the trigger, hi 0.50; conservative lo 0.20, hi 0.65 | 750, 150 breaks | item 8 |
-| stop_{persona}_atr | held breaks | quantile of maximum adverse excursion from the persona's entry midpoint to the close: aggressive 0.90, neutral 0.75, conservative 0.60 | 750, 150 held breaks | item 9 |
-| min_stop_atr | held breaks | quantile 0.50 of the same excursion from the neutral midpoint | 750, 150 | item 11 |
-| target_{persona}_{k}_r | breaks | the favourable excursion, in the persona's own R, that share p_k of breaks reached before the persona's stop or the close: aggressive 0.40, 0.25, 0.15; neutral 0.60, 0.45, 0.30; conservative 0.65, 0.50 | 750, 150 | item 10 |
+| stop_{persona}_atr | the persona's filled held breaks | quantile of maximum adverse excursion from the fill price (the entry midpoint) after the fill bar to the close: aggressive 0.90, neutral 0.75, conservative 0.60 | 750, 150 filled held breaks | item 9 |
+| min_stop_atr | the neutral persona's filled held breaks | quantile 0.50 of the same excursion from the neutral fill | 750, 150 | item 11 |
+| target_{persona}_{k}_r | the persona's filled breaks | the favourable excursion beyond the fill price after the fill bar, in the persona's own R, that share p_k of filled breaks reached before the persona's stop or the close: aggressive 0.40, 0.25, 0.15; neutral 0.60, 0.45, 0.30; conservative 0.65, 0.50; a value that is not greater than zero, or not greater than the persona's previous target, gets status no_positive_target and no target is published at that k or beyond | 750, 150 filled breaks | item 10 |
 
 Why each statistic, and the evidence available now (the implementation PR adds the 2015 to 2026
 evidence, done_when 4):
@@ -238,22 +244,29 @@ evidence, done_when 4):
 - Level cluster tolerance. Two levels closer than the ticker's typical 15-minute move trade as one
   zone. Today's 0.15% of price is about 0.14 ATR(14) for SPY (ATR(14) a median 1.08% of price on the
   fixture) and 0.09 for IWM (1.67%).
-- Entry buffers. The upper edge is how far past the trigger the persona will chase, stated as the
-  share of breaks that run at least that far before they retest; the conservative lower edge waits
-  for follow-through that a fifth of breaks reach. The persona shares are policy.
+- Entry buffers. An edge at follow-through quantile q is a distance that a share 1 minus q of breaks
+  run at least as far as before they retest. The upper edge is how far past the trigger the persona
+  will chase: aggressive 0.75 (a quarter of breaks run past it), neutral 0.50 (half do). The
+  conservative lower edge, at 0.20, waits for follow-through that about 80% of breaks reach, and its
+  upper edge, at 0.65, is passed by about 35%. Copy that explains an edge states the share that
+  reached it, never the quantile as that share. The persona shares are policy.
 - Stops and the floor. A stop inside the adverse excursion that a given share of held breaks
   survived stops out the rest of those winners. The floor at the median means no stop sits where it
   would have been hit on half of the breaks that held. This keeps today's ordering (2.0 over 1.0
   over 0.7 over 0.5) as an ordering of quantiles.
 - Targets. An R multiple is a reward-for-risk demand, not a property of the ticker. The
   ticker-derived form that is defensible is a reach probability: T_k is the excursion, in the
-  persona's own R, that share p_k of past breaks reached before the stop. This spec takes that form
+  persona's own R, that share p_k of past filled breaks reached, measured from the fill, before the
+  stop. Conditioning on the fill matters: a conservative entry about 0.4 ATR past the trigger is
+  filled by only part of the breaks, and counting the unfilled ones would ask for a reach share no
+  positive target can meet, producing a target at or below the entry. This spec takes that form
   (Open question 4 keeps the alternative: R multiples as persona policy rows, with each multiple's
   measured reach rate shown beside it). The aggressive analog day-5 stretch
   (lib/agents/trade_planner.py:299-306) stays.
 
 Calibration order per ticker and as-of date: trigger windows, then the replayed triggers and
-breaks they imply, then entry buffers, then stops and the floor, then targets; the three
+breaks they imply, then entry buffers, then each persona's fills at its entry midpoint, then stops and the
+floor, then targets; the three
 one-minute thresholds are independent. Every input is dated strictly before effective_from.
 
 Removed with no parameter: MIN_ROOM_PCT and compute_room_to_run (dead code, item 3) and
@@ -302,7 +315,13 @@ universe, same night as atr_14.
 The policy row atr_basis names the ATR column every parameter is measured in and every consumer
 multiplies by; day one is atr_14, so the unit does not change. level_basis records atr_14, atr_5
 and atr_basis. Switching to atr_5 is a policy row with a later effective_from; the next calibration
-run recomputes every value in ATR(5) units (Open question 2). Evidence: on the daily fixture ATR(5)
+run recomputes every value in ATR(5) units (Open question 2). Every ticker_level_params row records
+the atr_basis it was calibrated in, and the loader uses a row only when that basis equals the policy
+basis in force on the session. A ticker whose recalibration failed is therefore not read in the
+wrong unit: its keys get params_basis_mismatch, a non-ok status with the typed outcomes of Design 6,
+until a run in the new basis succeeds. To keep that window short, the basis switch is applied by
+running history mode for the new basis first and adding the policy row only after every universe
+ticker has rows in it. Evidence: on the daily fixture ATR(5)
 predicted the next session's true range with a mean absolute error of 2.92 against 3.13 (SPY), 3.50
 against 3.65 (QQQ) and 1.43 against 1.48 (IWM) for ATR(14); the #1747 spec's 2015 to 2026 check
 found ATR(5) about 4% sharper.
@@ -326,6 +345,8 @@ operator runs the existing bulk backfill for it.
 | pm_spike_atr or pm_stale_print_atr | the fetchers write pre_filter_status params_unavailable or insufficient_history with excluded counts NULL; the builder refuses the snapshot and builds with the prior close as reference | premarket_status premarket_unfiltered in level_basis and the brief; a reader that shows that row's pre_high or pre_low labels it unfiltered |
 | level_cluster_atr | no PMG zones | the brief's PMG line says the tolerance is not calibrated |
 | entry, stop, floor or target keys | persona plans with entry_zone, stop, targets and risk_metrics null | rationale naming the parameter; the report headline nulls as in #1753 |
+| target_{persona}_2_r or _3_r with status no_positive_target | the persona's plan publishes its earlier targets and none from that k on (no_positive_target at k = 1 nulls the plan as the row above) | rationale saying no further target met the persona's reach share on filled breaks, with the sample |
+| any key with status params_basis_mismatch | the same outcome as insufficient_history for that key, reason params_basis_mismatch | copy saying the ticker's values are being recalibrated for the new ATR basis |
 
 Every value a plan or brief publishes comes from an ok row whose version is in level_basis.
 
@@ -375,7 +396,7 @@ calibrate-level-params, and the API image.
 Each has a default this spec takes; a different answer is a policy row or a one-line change.
 
 1. Policy quantiles. Defaults as in the Design 2 table: windows cover 99% of sessions; the spike
-   threshold sits past 99.9% of regular-session wicks; stops survive 90%, 75% and 60% of held
+   threshold sits past 99.9% of regular-session wicks; stops survive 90%, 75% and 60% of filled held
    breaks; the floor 50%. These are statements of intent, not ticker values, and are rows.
 2. ATR basis. Default atr_14 (no unit change on day one). Alternative: atr_5, which the evidence
    says is slightly sharper.
