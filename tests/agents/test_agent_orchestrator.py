@@ -827,11 +827,15 @@ def test_derive_key_levels_legacy_bundle_defaults_to_eod_suffix():
 def test_build_strat_snapshot_default_when_unavailable():
     from lib.agents.orchestrator import _build_strat_snapshot
 
-    snap = _build_strat_snapshot({"available": False})
-    assert snap.last_candle == "1"
+    # FEAT-STRAT-001: unavailable is explicit, never an inside bar with a
+    # neutral score (the old default fabricated '1' / 0.0 / mixed).
+    snap = _build_strat_snapshot({"available": False, "reason": "invalid_ohlc"})
+    assert snap.available is False
+    assert snap.reason == "invalid_ohlc"
+    assert snap.last_candle == "X"
     assert snap.in_force_combo is None
-    assert snap.ftfc_score == 0.0
-    assert snap.ftfc_direction == "mixed"
+    assert snap.ftfc_score is None
+    assert snap.ftfc_direction is None
 
 
 def test_build_strat_snapshot_populates_from_section():
@@ -855,8 +859,9 @@ def test_build_strat_snapshot_populates_from_section():
 
 
 def test_build_strat_snapshot_coerces_falsy_strings_to_defaults():
-    """The summarizer can emit `last_candle=''` when classification
-    fails. Don't propagate a blank — fall back to '1' (mixed)."""
+    """A blank `last_candle` means classification failed. Don't propagate
+    a blank and don't invent an inside bar: report it unavailable
+    (FEAT-STRAT-001; the old fallback fabricated '1' / mixed)."""
     from lib.agents.orchestrator import _build_strat_snapshot
 
     snap = _build_strat_snapshot({
@@ -865,9 +870,10 @@ def test_build_strat_snapshot_coerces_falsy_strings_to_defaults():
         "ftfc_score": None,
         "ftfc_direction": None,
     })
-    assert snap.last_candle == "1"
-    assert snap.ftfc_score == 0.0
-    assert snap.ftfc_direction == "mixed"
+    assert snap.available is False
+    assert snap.last_candle == "X"
+    assert snap.ftfc_score is None
+    assert snap.ftfc_direction is None
 
 
 def test_build_catalysts_filters_malformed_events():

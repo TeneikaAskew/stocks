@@ -3,7 +3,7 @@ feat_id: FEAT-OPTION-001
 spec: docs/superpowers/specs/2026-10-29-feat-option-001-collector-source-declaration.md
 branch: fix/feat-option-001-realtime-incident-1562
 pr: 1565
-status: ready
+status: done
 ---
 
 # Narrow scheduled collector isolation integration

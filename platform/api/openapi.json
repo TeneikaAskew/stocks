@@ -1471,6 +1471,7 @@
             "title": "Ema 9"
           },
           "ftfc_direction": {
+            "description": "TF bias direction: bullish, bearish or mixed from the weighted candle vote.",
             "title": "Ftfc Direction"
           },
           "ftfc_score": {
@@ -1482,6 +1483,7 @@
                 "type": "null"
               }
             ],
+            "description": "TF bias: weighted vote of candle types across timeframes (2U up, 2D down, 1 and 3 zero), -1 to +1. Not price-versus-open FTFC.",
             "title": "Ftfc Score"
           },
           "macd": {
@@ -1641,6 +1643,7 @@
             ]
           },
           "ftfc_direction": {
+            "description": "TF bias direction: bullish, bearish or mixed from the weighted candle vote.",
             "title": "Ftfc Direction"
           },
           "ftfc_score": {
@@ -1652,6 +1655,7 @@
                 "type": "null"
               }
             ],
+            "description": "TF bias: weighted vote of candle types across timeframes (2U up, 2D down, 1 and 3 zero), -1 to +1. Not price-versus-open FTFC.",
             "title": "Ftfc Score"
           },
           "has_premarket": {
@@ -2576,6 +2580,16 @@
             ],
             "title": "Snapshot Date"
           },
+          "snapshot_provenance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SnapshotProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "snapshot_ts": {
             "anyOf": [
               {
@@ -2764,6 +2778,16 @@
           "snapshot_date": {
             "title": "Snapshot Date",
             "type": "string"
+          },
+          "snapshot_provenance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SnapshotProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "snapshot_timestamp": {
             "anyOf": [
@@ -8917,6 +8941,87 @@
           "count"
         ],
         "title": "SimilarStats",
+        "type": "object"
+      },
+      "SnapshotProvenance": {
+        "additionalProperties": true,
+        "description": "Provenance of the stored options snapshot a response was built from.\n\nStored clock retained: ``snapshot_ts`` is the selected rows' own instant.\n``observed_at`` is when this response was assembled (re-stamped per response).\n``snapshot_age_seconds`` is a display age (observed_at minus snapshot_ts), not a\nprovider lag. ``freshness_status`` and ``completeness_status`` are always\n``unknown``; ``reason`` names the clock validation outcome, not a qualification.",
+        "properties": {
+          "completeness_status": {
+            "const": "unknown",
+            "title": "Completeness Status",
+            "type": "string"
+          },
+          "freshness_status": {
+            "const": "unknown",
+            "title": "Freshness Status",
+            "type": "string"
+          },
+          "market_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market Session"
+          },
+          "observed_at": {
+            "title": "Observed At",
+            "type": "string"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "reason": {
+            "enum": [
+              "legacy_snapshot_unqualified",
+              "timestamp_invalid",
+              "timestamp_future"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "snapshot_age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Age Seconds"
+          },
+          "snapshot_ts": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Ts"
+          }
+        },
+        "required": [
+          "observed_at",
+          "freshness_status",
+          "completeness_status",
+          "reason"
+        ],
+        "title": "SnapshotProvenance",
         "type": "object"
       },
       "SpotEstimate": {

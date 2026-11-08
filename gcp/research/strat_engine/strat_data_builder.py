@@ -394,7 +394,7 @@ def _featurize_tf(df_1m: pd.DataFrame, tf_label: str, tf_arg: Optional[str]) -> 
         df_tf.index.name = df_cap.index.name
 
     # Strat classification + combo detection
-    classifier = StratClassifier()
+    classifier = StratClassifier(rule_version="legacy-pattern-v1")
     strat_df = classifier.detect_combos(df_tf)
     # strat_candle / strat_combo / strat_setup / trigger_high / trigger_low
 
@@ -554,6 +554,8 @@ def _featurize_tf(df_1m: pd.DataFrame, tf_label: str, tf_arg: Optional[str]) -> 
     # for col in ind_df.columns:
     #     if col.startswith("ORB_"):
     #         out[_snake_lower(col)] = ind_df[col].values
+
+    out.attrs["strat_rule_version"] = classifier.rule_version
 
     return out
 

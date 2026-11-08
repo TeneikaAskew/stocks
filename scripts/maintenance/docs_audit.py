@@ -7564,7 +7564,7 @@ def main(argv: list[str] | None = None) -> int:
     # reason.
     refuse_symlink(REGISTRY)
     try:
-        if reg_path.stat().st_size > protocol.MAX_BYTES:
+        if reg_path.stat().st_size > protocol.MAX_FILE_BYTES:
             raise AuditError("registry exceeds the fixed eight-MiB policy-input allowance")
         registry_text = reg_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
