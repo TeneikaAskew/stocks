@@ -83,7 +83,12 @@ def defer_deadline(*also: signal.Signals):
     try:
         yield previous
     finally:
-        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+        # A deadline that expired meanwhile goes through first, while the caller can still catch DeliveryDeadline;
+        # a Ctrl-C held back with it follows and is not replaced (Python runs SIGINT's handler before SIGALRM's).
+        try:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous | (set(also) - {signal.SIGALRM}))
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
 def process_start(pid: int) -> int:
@@ -513,7 +518,7 @@ NOTICE_FINISH_SECONDS = 0.25   # all notices together may wait this long for a s
 def write_notice(line: str, finish_by: float | None = None) -> None:
     """Write one cleanup notice to stderr without ever blocking. A stream with no descriptor (a test's StringIO, or
     an object with no fileno at all) is printed to, since it cannot block. Otherwise the line goes to the descriptor
-    (fd 2 when sys.stderr is None) in non-blocking mode as one ASCII line: its text is escaped with unicode_escape,
+    (fd 2 when sys.stderr is None) with non-blocking writes as one ASCII line: its text is escaped with unicode_escape,
     so a line feed, a carriage return, a backslash or a non-UTF-8 byte in a path can neither split the line nor
     turn into another path's name; a line over PIPE_BUF bytes is cut to PIPE_BUF and ends in NOTICE_CUT, so a pipe
     takes it whole or not at all and a cut path is never read as a whole one; a cut falls between whole escapes, so
@@ -540,21 +545,28 @@ def write_notice(line: str, finish_by: float | None = None) -> None:
                 break
             kept += piece
         data = bytes(kept) + NOTICE_CUT                # marked, so a cut path is never read as a whole one
+    sent = write_now(fd, data)
+    if sent != len(data):                              # a stream socket, or a regular file at its size limit
+        if finish_by is None:
+            finish_by = time.monotonic() + NOTICE_FINISH_SECONDS
+        if sent + finish_notice(fd, data[sent:], finish_by) != len(data):
+            raise OSError(errno.EIO, "notice written in part")
+
+
+def write_now(fd: int, data: bytes) -> int:
+    """One write that never blocks. The descriptor's open file description is shared with every process that holds
+    the same stderr, so it is non-blocking only for this one call, never while waiting (#1700 pass 33 R1 F2), and
+    the flag is restored even when an interrupt arrives."""
     blocking = os.get_blocking(fd)
     try:
         os.set_blocking(fd, False)                     # inside the try: an interrupt here still restores the flag
-        sent = os.write(fd, data)
-        if sent != len(data):                          # a stream socket, or a regular file at its size limit
-            if finish_by is None:
-                finish_by = time.monotonic() + NOTICE_FINISH_SECONDS
-            if sent + finish_notice(fd, data[sent:], finish_by) != len(data):
-                raise OSError(errno.EIO, "notice written in part")
+        return os.write(fd, data)
     finally:
         os.set_blocking(fd, blocking)
 
 
 def finish_notice(fd: int, rest: bytes, finish_by: float) -> int:
-    """Write the rest of a part-written notice to the non-blocking descriptor, waiting for it to become writable
+    """Write the rest of a part-written notice, one write_now at a time, waiting for the descriptor to become writable
     until finish_by (monotonic), and return how many bytes of rest were written. Stops early on any error other than
     BlockingIOError (EFBIG or ENOSPC at a size limit, EPIPE, EBADF) and on a write of 0 bytes."""
     written = 0
@@ -569,7 +581,7 @@ def finish_notice(fd: int, rest: bytes, finish_by: float) -> int:
         if not ready:
             break
         try:
-            n = os.write(fd, rest[written:])
+            n = write_now(fd, rest[written:])
         except BlockingIOError:
             continue
         except OSError:

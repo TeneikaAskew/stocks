@@ -4839,6 +4839,18 @@ def test_materialize_writes_inside_its_directory_only(repo, tmp_path_factory):
 
 
 
+def test_materialize_ends_git_when_a_write_fails(repo, tmp_path, monkeypatch):
+    """An error that is not a refusal (a name the filesystem cannot hold) still ends and reaps git before it
+    propagates, with git's answer to a later blob still unread in the pipe (#1700 pass 33 R4 F2)."""
+    sg = load_gate(repo)
+    (tmp_path / "big").write_bytes(b"z" * (400 * 1024))
+    big = _git(repo, "hash-object", "-w", str(tmp_path / "big")).strip()
+    started, real = [], sg.subprocess.Popen
+    monkeypatch.setattr(sg.subprocess, "Popen", lambda *a, **kw: started.append(real(*a, **kw)) or started[-1])
+    with pytest.raises(OSError):
+        sg.materialize([("100644", big, "a/" + "x" * 256), ("100644", big, "after.bin")], tmp_path / "into")
+    assert len(started) == 1 and started[0].returncode is not None, started
+
 def test_materialize_streams_exact_bytes_one_blob_at_a_time(repo, tmp_path):
     """FEAT-CICD-001 "Exact render" (done_when[1]) with the streamed batch: blobs across the 1 MiB chunk boundary,
     binary with newlines, arrive byte for byte; a missing object fails; the reader never holds a whole blob."""
@@ -5485,6 +5497,22 @@ def test_the_render_verdict_is_the_same_whether_the_heap_was_released(inventory_
         assert any("differs from main's render" in r for r in results[True, "refused"][0]), results
 
 
+def test_a_differs_exit_without_a_whole_finding_is_a_failed_render(inventory_repo, monkeypatch):
+    """RENDER_DIFFERS with no output, or with a line that is not doc, block and difference, is refused as a failed
+    render, never accepted and never a crash (#1700 pass 33 R4 F1)."""
+    if RENDERER_HERE:
+        root, _moved = inventory_repo
+        gate = load_gate(root)
+        docs = list(gate.GENERATED_DOCS)
+        base = gate.Tree(_git(root, "rev-parse", "base"))
+        base_docs = {doc: base.raw(doc) for doc in docs}
+        entries = gate.head_entries(_git(root, "rev-parse", "base"))
+        for stdout in ("", "one field\n", "two\tfields\n", f"{docs[0]}\tblock\tdiff\nstray\n"):
+            monkeypatch.setattr(gate.subprocess, "run", lambda command, stdout=stdout, **kw:
+                                subprocess.CompletedProcess(command, gate.RENDER_DIFFERS, stdout, ""))
+            refusals = gate.render_refusals(entries, docs, base_docs)
+            assert len(refusals) == 1 and "renderer failed" in refusals[0] and "(exit 3)" in refusals[0], (stdout, refusals)
+
 MEASURE = 'tests/scripts/measure_inventory_render.py'
 
 
@@ -6122,6 +6150,7 @@ def test_measure_inventory_render_notices_never_wait_on_a_full_stderr_pipe(tmp_p
 
 SECOND_INTERRUPT_PROBE = r"""
 import ctypes,importlib.util,json,os,pathlib,signal,sys,threading,time
+signal.signal(signal.SIGINT,signal.default_int_handler)   # a background job starts with SIGINT ignored (pass 33 R2)
 lib=ctypes.CDLL(None);lib.prctl(36,0,0,0,0)
 s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 mode=sys.argv[2];spawned=[];masks=[]
@@ -6139,10 +6168,12 @@ if mode=='spawn':  # the first Ctrl-C lands after fork, the second while the cle
         os.kill(os.getpid(),signal.SIGINT);return real_kill(*a)
     m.kill_unregistered=second
     argv=[sys.executable,'-c','import time;time.sleep(20)']
-else:              # one Ctrl-C while the cleanup removes the scratch root of a finished worker
+else:              # one Ctrl-C (with the deadline too, in both) while the cleanup removes a finished worker's root
     real_remove=m.remove_scratch
     def removing(*a):
-        os.kill(os.getpid(),signal.SIGINT);return real_remove(*a)
+        os.kill(os.getpid(),signal.SIGINT)
+        if mode=='both': os.kill(os.getpid(),signal.SIGALRM)
+        return real_remove(*a)
     m.remove_scratch=removing
     real_discover=m.OwnedFamily.discover
     def discover(self,**kw):
@@ -6152,9 +6183,11 @@ else:              # one Ctrl-C while the cleanup removes the scratch root of a 
     argv=[sys.executable,'-c','import time;time.sleep(.3)']
 r,w=os.pipe();real_err=sys.stderr;sys.stderr=os.fdopen(w,'w')
 try:
-    m.run_bounded(argv,pathlib.Path.cwd(),max_rss_bytes=256<<20,max_seconds=5);raised=None
-except KeyboardInterrupt as e:
-    raised=str(e)
+    with m.deadline_guard(time.monotonic()+30):
+        m.run_bounded(argv,pathlib.Path.cwd(),max_rss_bytes=256<<20,max_seconds=5)
+    raised=None
+except BaseException as e:
+    raised=f'{type(e).__name__}:{e}'
 sys.stderr.close();sys.stderr=real_err;notices=os.read(r,65536).decode()
 v=ctypes.c_int();lib.prctl(37,ctypes.byref(v),0,0,0)
 outer=os.environ['TMPDIR']
@@ -6167,15 +6200,16 @@ if spawned and spawned[0].poll() is None: spawned[0].kill();spawned[0].wait()
 
 def test_measure_inventory_render_cleanup_defers_a_second_interrupt(tmp_path):
     """The cleanup defers SIGINT as well as SIGALRM, and the discovery thread blocks both, so a Ctrl-C during the
-    kill pass or the removal is raised only after the receipt, the subreaper restore and the notices (pass 32 R1)."""
-    for mode in ("spawn", "bound"):
+    kill pass or the removal is raised only after the receipt, the subreaper restore and the notices (pass 32 R1);
+    with the deadline also expired meanwhile, the Ctrl-C is still what propagates (pass 33 R1 F1)."""
+    for mode in ("spawn", "bound", "both"):
         scratch = tmp_path / mode
         scratch.mkdir()
         r = subprocess.run([sys.executable, "-B", "-c", SECOND_INTERRUPT_PROBE, str(REPO / MEASURE), mode],
                            capture_output=True, text=True, timeout=60, cwd=tmp_path, env={**os.environ, "TMPDIR": str(scratch)})
         assert r.returncode == 0, (mode, r.stdout + r.stderr)
         report = json.loads(r.stdout)
-        assert report["raised"] == "" and report["subreaper_after"] == 0 and report["roots"] == [], (mode, report)
+        assert report["raised"] == "KeyboardInterrupt:" and report["subreaper_after"] == 0 and report["roots"] == [], (mode, report)
         if mode == "spawn":
             assert not report["child_alive"] and "killed unregistered child" in report["notices"], report
         else:
@@ -6391,7 +6425,7 @@ def read_all(fd):
     while c:=os.read(fd,1<<16): data+=c
     return data
 started=time.monotonic();cpu=time.process_time()
-if mode in ('stuck-socket','epipe'):   # a real stream socket whose reader never drains (stuck-socket) or closes
+if mode in ('stuck-socket','epipe','shared-flag'):   # a real stream socket whose reader never drains or closes
     a,b=socket.socketpair(socket.AF_UNIX,socket.SOCK_STREAM)        # after 0.03 s (epipe): part of the line fits
     a.setsockopt(socket.SOL_SOCKET,socket.SO_SNDBUF,1);a.setblocking(False)
     try:
@@ -6401,7 +6435,11 @@ if mode in ('stuck-socket','epipe'):   # a real stream socket whose reader never
     while got<512: got+=len(b.recv(512-got))
     a.setblocking(True);sys.stderr=os.fdopen(os.dup(a.fileno()),'w')
     if mode=='epipe': threading.Timer(0.03,b.close).start()
+    if mode=='shared-flag':   # another holder of the same open file description looks at it during the wait
+        other=os.dup(a.fileno());look=threading.Timer(0.1,lambda: out.__setitem__('blocking_mid_wait',os.get_blocking(other)))
+        look.start()
     m.write_notices([LONG,'child 4242 not proven killed: signal refused'])
+    if mode=='shared-flag': look.join();out['blocking_after']=os.get_blocking(other)
 elif mode=='trickle':      # each write takes at most 1000 bytes, so the rest of a notice takes several writes
     r,w=os.pipe()
     class Trickle:
@@ -6431,6 +6469,13 @@ def run_finish_probe(tmp_path, mode):
                        capture_output=True, text=True, timeout=15, cwd=tmp_path)
     assert r.returncode == 0, r.stdout + r.stderr
     return json.loads(r.stdout)
+
+
+def test_measure_inventory_render_notice_wait_leaves_a_shared_stderr_blocking(tmp_path):
+    """Stderr's open file description is shared with other processes, so it is non-blocking only for each write,
+    never during the finishing wait, and every other writer still blocks as usual (#1700 pass 33 R1 F2)."""
+    seen = run_finish_probe(tmp_path, "shared-flag")
+    assert seen["blocking_mid_wait"] is True and seen["blocking_after"] is True, seen
 
 
 def test_measure_inventory_render_notice_wait_is_bounded_on_a_socket_that_never_drains(tmp_path):
