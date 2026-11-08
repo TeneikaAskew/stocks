@@ -209,7 +209,7 @@ def normalize_minutes(minutes: Optional[pd.DataFrame], as_of) -> pd.DataFrame:
     return m.sort_values('timestamp').reset_index(drop=True)[cols]
 
 
-def _daily_before(daily: pd.DataFrame, as_of) -> pd.DataFrame:
+def daily_before(daily: pd.DataFrame, as_of) -> pd.DataFrame:
     """The caller's daily frame, unchanged in shape, cut to rows dated
     strictly before `as_of` (what build_session_levels reads)."""
     dates = pd.to_datetime(daily['date'] if 'date' in daily.columns else daily.index)
@@ -628,9 +628,18 @@ def break_params(breaks: List[Break], policy: Dict[str, dict]) -> Dict[str, Cali
 # ── one ticker, one effective date ───────────────────────────────────────
 
 
+def prepare(daily: pd.DataFrame, minutes: Optional[pd.DataFrame], policy: Dict[str, dict],
+            before) -> tuple:
+    """Normalize a ticker's bars once for several calibrations (history
+    mode): calibrate(..., prepared=...) then cuts them to each as_of."""
+    atr_basis = policy_atr_basis(policy)
+    return normalize_daily(daily, atr_basis, before), normalize_minutes(minutes, before)
+
+
 def calibrate(ticker: str, daily: pd.DataFrame, minutes: Optional[pd.DataFrame],
               policy: Dict[str, dict], as_of, *,
-              triggers: Optional[Dict[pd.Timestamp, dict]] = None) -> Dict[str, Calibrated]:
+              triggers: Optional[Dict[pd.Timestamp, dict]] = None,
+              prepared: Optional[tuple] = None) -> Dict[str, Calibrated]:
     """Every Design 2 parameter for `ticker`, effective `as_of`, from bars
     dated strictly before it. `daily` carries High, Low, Close and the
     policy's ATR column (atr_14 or atr_5, or ATR14/ATR5); `minutes` the
@@ -639,8 +648,13 @@ def calibrate(ticker: str, daily: pd.DataFrame, minutes: Optional[pd.DataFrame],
     mode computes them once); sessions on or after `as_of` are ignored."""
     as_of = pd.Timestamp(as_of).normalize()
     atr_basis = policy_atr_basis(policy)
-    d = normalize_daily(daily, atr_basis, as_of)
-    m = normalize_minutes(minutes, as_of)
+    if prepared is not None:
+        d_all, m_all = prepared
+        d = d_all[d_all.index < as_of]
+        m = m_all[m_all['session'] < as_of] if len(m_all) else m_all
+    else:
+        d = normalize_daily(daily, atr_basis, as_of)
+        m = normalize_minutes(minutes, as_of)
     out: Dict[str, Calibrated] = {}
     for side in SIDES:
         out[trigger_window_key(side)] = trigger_window(d, policy, side)
@@ -655,7 +669,7 @@ def calibrate(ticker: str, daily: pd.DataFrame, minutes: Optional[pd.DataFrame],
     minute_sessions = set(m['session'].unique()) if len(m) else set()
     sessions = [s for s in sessions if s in minute_sessions]
     if triggers is None:
-        trig = replay_triggers(ticker, _daily_before(daily, as_of), d, policy, sessions, atr_basis)
+        trig = replay_triggers(ticker, daily_before(daily, as_of), d, policy, sessions, atr_basis)
     else:
         trig = {s: triggers[s] for s in sessions if s in triggers}
     out.update(break_params(find_breaks(d, m, trig), policy))
