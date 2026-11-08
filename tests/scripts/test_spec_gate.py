@@ -6442,6 +6442,7 @@ def test_measure_inventory_render_ctrl_c_at_a_deferred_section_exit_ends_the_run
 CLEANUP_START_PROBE = r"""
 import importlib.util,linecache,os,signal,sys,time
 s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+signal.signal(signal.SIGINT,signal.default_int_handler)   # a background job starts with SIGINT ignored (pass 43 R2)
 mode=sys.argv[2];state={'armed':False,'fired':False}
 # what the main path raises, then what lands at each cleanup attempt's start (KI: a Ctrl-C raised there; ALRM: the
 # whole deadline, handled there by the real deadline_guard; BOTH: a Ctrl-C and the deadline pending together, so the
@@ -6646,6 +6647,7 @@ def test_measure_inventory_render_deadline_as_the_timer_stops_restores_the_calle
 GUARD_RESTORE_PROBE = r"""
 import ctypes,importlib.util,itertools,operator,os,signal,sys,time
 s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+signal.signal(signal.SIGINT,signal.default_int_handler)   # a background job starts with SIGINT ignored (pass 43 R2)
 mode=sys.argv[2];kill=ctypes.CDLL(None).kill;sent=[]
 def mine(_signal,_frame): print('caller handler ran')
 signal.signal(signal.SIGALRM,mine)
@@ -6654,17 +6656,18 @@ def at(signals,call,*args):   # the signals land just as the real call starts, w
     sent.append(1)
     return list(itertools.starmap(operator.call,[*((kill,os.getpid(),int(n)) for n in signals),(call,*args)]))[-1]
 def sig(signum,handler):
-    if not sent and sys._getframe(1).f_code.co_name=='deadline_guard' and handler is {'ign':signal.SIG_IGN,'previous':mine}.get(mode):
-        return at([signal.SIGINT],real_signal,signum,handler)
+    if not sent and sys._getframe(1).f_code.co_name=='deadline_guard':
+        if handler is {'ign':signal.SIG_IGN,'ign-both':signal.SIG_IGN,'previous':mine}.get(mode):
+            return at([signal.SIGINT]+([signal.SIGALRM] if mode=='ign-both' else []),real_signal,signum,handler)
     return real_signal(signum,handler)
 def itm(which,seconds,*a):
-    if mode=='both' and seconds==0 and not sent:
-        return at([signal.SIGINT,signal.SIGALRM],real_setitimer,which,seconds,*a)
+    if seconds==0 and not sent and mode in ('both','body-ctrl-c'):
+        return at({'both':[signal.SIGINT,signal.SIGALRM],'body-ctrl-c':[signal.SIGALRM]}[mode],real_setitimer,which,seconds,*a)
     return real_setitimer(which,seconds,*a)
 signal.signal,signal.setitimer=sig,itm
 try:
     with m.deadline_guard(time.monotonic()+5):
-        pass
+        if mode=='body-ctrl-c': raise KeyboardInterrupt('a Ctrl-C raised by the body')
     print('no signal')
 except KeyboardInterrupt:
     print('Ctrl-C at the restore')
@@ -6679,17 +6682,22 @@ print('handler restored' if h is mine else 'handler left: '+getattr(h,'__qualnam
 def test_measure_inventory_render_ctrl_c_at_the_guards_handler_restores_still_restores_the_callers_handler():
     """A Ctrl-C handled as either of deadline_guard's two SIGALRM handler restores starts runs before that call
     installs anything; the caller's handler is still restored, so a later SIGALRM in the caller is neither turned
-    into the deadline nor ignored (#1700 pass 42 R1 F1, R4 F1). A Ctrl-C and the deadline handled together as the
-    timer is stopped leave the Ctrl-C, not the deadline, and the handler restored too."""
-    for mode, outcome in (("ign", "Ctrl-C"), ("previous", "Ctrl-C"), ("both", "Ctrl-C"), ("none", "no signal")):
+    into the deadline nor ignored (#1700 pass 42 R1 F1, R4 F1). A Ctrl-C is kept over the deadline where both are
+    handled at the ignore restore (pass 43 R4 F1), where a Ctrl-C at the timer stop leaves the deadline to the ignore
+    restore ("both"), and where the body raised the Ctrl-C and the deadline is handled as the timer stops (pass 43
+    R3 F1, R4 F2)."""
+    modes = ("ign", "ign-both", "previous", "both", "body-ctrl-c", "none")
+    for mode in modes:
         r = subprocess.run([sys.executable, "-B", "-c", GUARD_RESTORE_PROBE, str(REPO / MEASURE), mode],
                            capture_output=True, text=True, timeout=30)
-        expected = ("no signal" if outcome == "no signal" else f"{outcome} at the restore") + "\nhandler restored\n"
+        expected = ("no signal" if mode == "none" else "Ctrl-C at the restore") + "\nhandler restored\n"
         assert r.returncode == 0 and r.stdout == expected, (mode, r.returncode, r.stdout, r.stderr[-2000:])
+
 
 TWO_CTRL_C_PROBE = r"""
 import ctypes,importlib.util,itertools,operator,os,signal,sys
 s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+signal.signal(signal.SIGINT,signal.default_int_handler)   # a background job starts with SIGINT ignored (pass 43 R2)
 kill=ctypes.CDLL(None).kill;real=signal.pthread_sigmask;n={'c':0}
 def psm(how,mask):   # a Ctrl-C lands just as each of the section's two mask restores (its 3rd and 4th calls) starts
     if sys._getframe(1).f_code.co_name=='defer_deadline':
@@ -6717,6 +6725,70 @@ def test_measure_inventory_render_two_ctrl_cs_at_a_sections_two_restores_still_r
     r = subprocess.run([sys.executable, "-B", "-c", TWO_CTRL_C_PROBE, str(REPO / MEASURE)],
                        capture_output=True, text=True, timeout=30)
     assert r.returncode == 0 and r.stdout == "Ctrl-C at the section exit\nmask restored\n", (r.returncode, r.stdout, r.stderr[-2000:])
+
+MAIN_EXIT_PROBE = r"""
+import contextlib,ctypes,importlib.util,itertools,operator,os,signal,sys
+s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+signal.signal(signal.SIGINT,signal.default_int_handler)   # a background job starts with SIGINT ignored (pass 43 R2)
+mode=sys.argv[2];kill=ctypes.CDLL(None).kill;sent=[]
+def mine(_signal,_frame): print('caller handler ran')
+signal.signal(signal.SIGALRM,mine)
+real_exit=contextlib._GeneratorContextManager.__exit__
+def ex(self,*a):   # the signal lands just as contextlib's __exit__ for main's deadline_guard starts
+    if not sent and self.gen.__name__=='deadline_guard':
+        sent.append(1)
+        calls=[(kill,os.getpid(),int(signal.SIGINT))] if mode=='ctrl-c' else [(signal.setitimer,signal.ITIMER_REAL,0),(kill,os.getpid(),int(signal.SIGALRM))]
+        return list(itertools.starmap(operator.call,[*calls,(real_exit,self,*a)]))[-1]
+    return real_exit(self,*a)
+contextlib._GeneratorContextManager.__exit__=ex
+real_run=m.run_bounded
+def body_ctrl_c(argv,cwd,**kw): raise KeyboardInterrupt('a Ctrl-C raised by the body')
+m.run_bounded=(lambda argv,cwd,**kw:real_run([sys.executable,'-c','pass'],cwd,**kw)) if mode=='ctrl-c' else body_ctrl_c
+kept=None
+try:
+    print('main returned',m.main(['--max-seconds','5']))
+except KeyboardInterrupt as e:
+    kept=e;print('main raised KeyboardInterrupt')   # the caller keeps the exception, as pytest.raises does
+h=signal.getsignal(signal.SIGALRM)
+print('timer stopped' if not any(signal.getitimer(signal.ITIMER_REAL)) else 'timer left running',
+      'handler restored' if h is mine else 'handler left: '+getattr(h,'__qualname__',repr(h)))
+"""
+
+
+def test_measure_inventory_render_signal_as_mains_guard_exit_starts_restores_the_guard_at_once():
+    """A Ctrl-C, or the deadline after a Ctrl-C raised by the body, handled as contextlib's __exit__ for main's
+    deadline_guard starts raises before the guard resumes; main() still stops the timer and restores the caller's
+    SIGALRM handler before it raises, even while the caller keeps the exception (#1700 pass 43 R1 F1)."""
+    for mode in ("ctrl-c", "body-ctrl-c-deadline"):
+        r = subprocess.run([sys.executable, "-B", "-c", MAIN_EXIT_PROBE, str(REPO / MEASURE), mode],
+                           capture_output=True, text=True, timeout=60)
+        assert r.returncode == 0 and r.stdout.endswith("main raised KeyboardInterrupt\ntimer stopped handler restored\n"), (
+            mode, r.returncode, r.stdout[-500:], r.stderr[-2000:])
+
+WRITE_RESTORE_PROBE = r"""
+import ctypes,importlib.util,itertools,operator,os,selectors,signal,sys,time
+s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+signal.signal(signal.SIGINT,signal.default_int_handler)   # a background job starts with SIGINT ignored (pass 43 R2)
+kill=ctypes.CDLL(None).kill
+class Selector(selectors.DefaultSelector):
+    def close(self):   # a Ctrl-C lands just as the selector's close runs
+        return list(itertools.starmap(operator.call,[(kill,os.getpid(),int(signal.SIGINT)),(super().close,)]))[-1]
+m.selectors=type('S',(),{'DefaultSelector':Selector,'EVENT_WRITE':selectors.EVENT_WRITE})
+r,w=os.pipe()
+try:
+    m.write_bounded(w,b'verdict\n',time.monotonic()+5);print('written')
+except KeyboardInterrupt:
+    print('Ctrl-C at the close')
+print('blocking restored' if os.get_blocking(w) else 'left non-blocking')
+"""
+
+
+def test_measure_inventory_render_ctrl_c_as_the_writer_closes_still_restores_blocking():
+    """A Ctrl-C handled as write_bounded's selector closes no longer leaves the descriptor non-blocking, so a shared
+    stdout or stderr is not left changed (#1700 pass 43 R1, older than this PR)."""
+    r = subprocess.run([sys.executable, "-B", "-c", WRITE_RESTORE_PROBE, str(REPO / MEASURE)],
+                       capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0 and r.stdout == "Ctrl-C at the close\nblocking restored\n", (r.returncode, r.stdout, r.stderr[-2000:])
 
 NOTICE_PROBE = r"""
 import importlib.util,json,os,select,socket,sys,threading,time

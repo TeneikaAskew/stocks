@@ -1170,12 +1170,16 @@ def deadline_guard(deadline: float):
             except DeliveryDeadline:
                 if not interrupted:
                     raise
+            except KeyboardInterrupt:
+                interrupted = True                     # the deadline handled with it next is dropped (pass 43 R4 F1)
+                raise
             finally:
                 try:
                     signal.signal(signal.SIGALRM, previous)
-                except BaseException:
+                except BaseException as error:
                     signal.signal(signal.SIGALRM, previous)
-                    raise
+                    if not (interrupted and isinstance(error, DeliveryDeadline)):
+                        raise
 
 
 def write_bounded(fd: int, raw: bytes, deadline: float):
@@ -1195,8 +1199,12 @@ def write_bounded(fd: int, raw: bytes, deadline: float):
                     raise DeliveryDeadline("verdict delivery deadline exceeded")
         remaining(deadline)
     finally:
-        selector.close()
-        os.set_blocking(fd, previous)
+        # The flag goes back first: a Ctrl-C handled inside the selector's close (Python code) would otherwise leave
+        # a shared stdout or stderr non-blocking (#1700 pass 43 R1, older than this PR).
+        try:
+            os.set_blocking(fd, previous)
+        finally:
+            selector.close()
 
 
 def regular_output(path: pathlib.Path, raw: bytes, deadline: float):
@@ -1238,8 +1246,9 @@ def _main(argv: list[str] | None, started: float) -> int:
     except (argparse.ArgumentError, ValueError):
         seconds = MAX_SECONDS
     deadline = started + seconds
+    guard = deadline_guard(deadline)
     try:
-        with deadline_guard(deadline):
+        with guard:
             parser = BoundedParser(deadline=deadline, description=__doc__)
             parser.add_argument("--ref", default="HEAD")
             parser.add_argument("--max-rss-mib", type=lambda s: lower_limit(s, 512), default=512)
@@ -1281,6 +1290,11 @@ def _main(argv: list[str] | None, started: float) -> int:
     except (OSError, ValueError):
         # A partial/late final verdict cannot be retracted. Never append contradictory JSON or return success.
         return 1
+    finally:
+        # A Ctrl-C or the deadline handled as contextlib's __exit__ starts raises before the guard resumes, so its
+        # restore would wait for the generator to be collected; closing it here runs that restore now (#1700 pass 43
+        # R1 F1).
+        guard.gen.close()
 
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--worker":
