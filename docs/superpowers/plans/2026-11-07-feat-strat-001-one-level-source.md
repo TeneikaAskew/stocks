@@ -2,7 +2,7 @@
 feat_id: FEAT-STRAT-001
 spec: docs/superpowers/specs/2026-11-07-feat-strat-001-one-level-source-r2.md
 branch: feature/feat-strat-001-one-level-source
-pr: null
+pr: 1753
 status: ready
 ---
 
