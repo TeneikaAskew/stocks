@@ -117,7 +117,11 @@ def rvol_gate_verdict(rvol: float, min_rvol: float, mode: str):
 class SignalMonitor:
     """Real-time signal monitor for market hours."""
 
-    def __init__(self):
+    def __init__(self, *, strat_rule_version: str = 'legacy-pattern-v1'):
+        # Live scoring retains its trained pattern semantics. Canonical state,
+        # basis and input migrations require separate admission and replay.
+        if not isinstance(strat_rule_version, str) or strat_rule_version != 'legacy-pattern-v1':
+            raise ValueError(f"signal-monitor Strat rule not admitted: {strat_rule_version!r}")
         self.cfg = load_config()
         self.risk = self.cfg.risk
         self.exit = self.cfg.exit
@@ -128,7 +132,8 @@ class SignalMonitor:
         self.market_cfg = self.cfg.market
         self.proximity_cfg = self.cfg.proximity
 
-        self.strat = StratClassifier(strat_config=self.strat_cfg)
+        self.strat = StratClassifier(strat_config=self.strat_cfg,
+                                     rule_version=strat_rule_version)
         # Signal entries, in-session exits and ORB snapshots route to the
         # dedicated signals channel when configured; fall back to the main
         # webhook so deploys without the secret behave identically.
@@ -2513,7 +2518,7 @@ class SignalMonitor:
             time_module.sleep(poll_interval)
 
 
-def run_orb_snapshot(window: str) -> int:
+def run_orb_snapshot(window: str, *, strat_rule_version: str = 'legacy-pattern-v1') -> int:
     """One-shot ORB capture mode for Cloud Scheduler (9:45 / 10:00 ET).
 
     Computes the ORB H/L/Mid for the requested window and posts a Discord
@@ -2523,7 +2528,7 @@ def run_orb_snapshot(window: str) -> int:
         logger.error("Invalid ORB window: %s (expected 5m/15m/30m)", window)
         return 2
 
-    monitor = SignalMonitor()
+    monitor = SignalMonitor(strat_rule_version=strat_rule_version)
     for ticker in monitor.tickers:
         df = monitor.fetch_latest_bar(ticker)
         if df.empty:
@@ -2564,6 +2569,9 @@ def main():
     # call removed to keep the configuration in one place.
     import argparse
     parser = argparse.ArgumentParser(description='Real-time signal monitor')
+    parser.add_argument('--strat-rule-version', choices=['legacy-pattern-v1'],
+                        default='legacy-pattern-v1',
+                        help='Scoring rule; canonical migration is not admitted')
     parser.add_argument('--mode', choices=['loop', 'orb-snapshot', 'replay'],
                         default='loop',
                         help='loop = run during market hours; '
@@ -2632,7 +2640,7 @@ def main():
         sys.exit(3)
 
     if args.mode == 'orb-snapshot':
-        sys.exit(run_orb_snapshot(args.window))
+        sys.exit(run_orb_snapshot(args.window, strat_rule_version=args.strat_rule_version))
 
     if args.mode == 'replay':
         # Dispatch to the canonical hermetic replay harness in
@@ -2643,7 +2651,7 @@ def main():
         from scripts.replay_signal_monitor import (
             main as _replay_main,
         )
-        replay_argv: list[str] = []
+        replay_argv: list[str] = ['--strat-rule-version', args.strat_rule_version]
         if args.ticker:
             replay_argv += ['--ticker', args.ticker]
         if args.tickers:
@@ -2660,7 +2668,7 @@ def main():
             replay_argv += ['--json']
         sys.exit(_replay_main(replay_argv))
 
-    monitor = SignalMonitor()
+    monitor = SignalMonitor(strat_rule_version=args.strat_rule_version)
     monitor.run_loop()
 
 

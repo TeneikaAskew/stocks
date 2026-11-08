@@ -1181,6 +1181,29 @@ def _add_price_levels(out, ind, close_col):
     return out
 
 
+def _add_prev_session_level_breaks(out, ind, close_col):
+    """Broke_Prev_Day_High / Broke_Prev_Day_Low: a bar's close above the
+    previous session's high / below its low, the calculate_historical_levels
+    definition. check_call_conditions / check_put_conditions score
+    `level_break_pdh` / `level_break_pdl` from these. Each row reads only its
+    own session and the one before it, so a replay cut at a date sees the
+    same flags it would have seen live.
+
+    Sessions come from the Time column, else a DatetimeIndex; a frame with
+    neither gets no flags (the same Time gate as VWAP and ORB).
+    """
+    if 'Time' in out.columns:
+        times = out['Time']
+    elif isinstance(out.index, pd.DatetimeIndex):
+        times = pd.Series(out.index, index=out.index)
+    else:
+        return out
+    levels = calculate_historical_levels(times, out['High'], out['Low'], out['Open'], out[close_col])
+    out['Broke_Prev_Day_High'] = levels['Broke_Prev_Day_High']
+    out['Broke_Prev_Day_Low'] = levels['Broke_Prev_Day_Low']
+    return out
+
+
 def _add_orb(out, ind, close_col):
     """Opening Range Breakout columns (~39). Deps: High, Low, close_col, Time.
 
@@ -1545,7 +1568,9 @@ def add_brief_indicators(
     """Lean indicator set for the premarket brief.
 
     Runs the blocks the brief reads: ATR, RSI, EMAs, SMAs, VWAP, StochRSI,
-    Bollinger, MACD, consecutive moves, and price levels. The price-levels block
+    Bollinger, MACD, consecutive moves, price levels, and the previous-session
+    level breaks (Broke_Prev_Day_High / Broke_Prev_Day_Low, which the brief's
+    level_break_pdh / level_break_pdl conditions read). The price-levels block
     is required because the brief's check_call/put_conditions score on
     ``Price_vs_VWAP``; VWAP must run first so that distance is computed (and, on
     Cloud-SQL daily frames carrying a pre-existing ``price_vs_vwap`` column, the
@@ -1566,6 +1591,7 @@ def add_brief_indicators(
     out = _add_macd(out, ind, close_col)
     out = _add_consecutive(out, ind, close_col)
     out = _add_price_levels(out, ind, close_col)
+    out = _add_prev_session_level_breaks(out, ind, close_col)
     return out
 
 
