@@ -2222,11 +2222,15 @@ def _pick_side(side: str, candidates: list, ref: float, cleared: float,
     if not candidates:
         out.reason = 'no_levels'
         return out
-    if atr is None:
-        out.reason = 'atr_unavailable'
-        return out
+    # No parameters at all (a level_basis written before they were
+    # recorded, rebuilt with none offered): the parameters also name the
+    # ATR basis, so without them the ATR is undefined too and the reason
+    # is the parameters, checked before the ATR.
     if own is None:
         out.reason = 'params_unavailable'
+        return out
+    if atr is None:
+        out.reason = 'atr_unavailable'
         return out
     if not own.ok:
         out.reason = PARAM_ORB_ONLY_REASONS.get(own.status, 'params_unavailable')

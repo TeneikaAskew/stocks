@@ -251,6 +251,23 @@ def test_from_basis_rebuilds_with_the_recorded_parameters(monkeypatch):
     assert offered.params.value("trigger_window_long_atr") == pytest.approx(3.0)
 
 
+def test_pre_parameter_basis_without_params_is_params_unavailable():
+    """A level_basis written before parameters were recorded (no params, no
+    atr_basis, ATR(14) as `atr`), rebuilt with no parameters offered: every
+    side with a candidate is orb_only with reason params_unavailable, as
+    from_basis documents, never atr_unavailable (the ATR it recorded is
+    fine; what is missing is the parameters that say which ATR to use)."""
+    from tests.lib.session_levels_helpers import basis
+
+    b = basis({"PDH": 101.0, "PDL": 99.0}, prior_close=100.0, atr=2.0)
+    for k in ("params", "atr_basis", "policy_effective_from", "atr_14", "atr_5"):
+        b.pop(k, None)
+    s = SessionLevels.from_basis(b)
+    assert s.params is None
+    assert (s.long.reason, s.short.reason) == ("params_unavailable", "params_unavailable")
+    assert s.long.trigger is None and s.short.trigger is None
+
+
 def test_changing_rows_after_the_brief_leaves_the_planner_picks_unchanged(monkeypatch):
     frame = fx.loader_frame("QQQ")
     brief_db = legacy_db("QQQ")
