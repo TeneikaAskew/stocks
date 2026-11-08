@@ -79,7 +79,10 @@ def process_table() -> dict[int, tuple[int, int]]:
 @contextlib.contextmanager
 def defer_deadline(*also: signal.Signals):
     """Do not lose a returned kernel resource to the deadline before its owner is registered. The cleanup also
-    defers SIGINT, so a second Ctrl-C is raised after the kill pass, receipt, restore and notices (#1700 pass 32 R1)."""
+    defers SIGINT, so a second Ctrl-C is raised after the kill pass, receipt, restore and notices (#1700 pass 32 R1).
+    A second Ctrl-C that lands after the first one is raised but before the cleanup's block takes effect (a window of
+    a few bytecodes, at the start of run_bounded's finally) is not deferred: it ends the cleanup there, and the worker,
+    the scratch root and the subreaper state can be left with no notice (#1700 pass 35 R1 F3, a known limit)."""
     previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM, *also})
     interrupted = False
     try:
@@ -91,14 +94,23 @@ def defer_deadline(*also: signal.Signals):
         # A deadline that expired meanwhile goes through first, while the caller can still catch DeliveryDeadline;
         # a Ctrl-C held back with it follows and is not replaced (Python runs SIGINT's handler before SIGALRM's).
         # When the body itself raised KeyboardInterrupt, the deadline is dropped in its favour (#1700 pass 34 R1 F1).
+        # A Ctrl-C that the first restore itself raises counts the same, so the second restore, which runs the
+        # deadline still pending behind it, does not replace it either (#1700 pass 35 R1 F1).
         try:
             try:
                 signal.pthread_sigmask(signal.SIG_SETMASK, previous | (set(also) - {signal.SIGALRM}))
             except DeliveryDeadline:
                 if not interrupted:
                     raise
+            except KeyboardInterrupt:
+                interrupted = True
+                raise
         finally:
-            signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+            try:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+            except DeliveryDeadline:
+                if not interrupted:
+                    raise
 
 
 def process_start(pid: int) -> int:
@@ -567,11 +579,15 @@ def write_now(fd: int, data: bytes) -> int:
     with every process that holds the same stderr, so toggling O_NONBLOCK there could leave another writer
     non-blocking (#1700 pass 33 R1 F2, pass 34 R1 F2). A pipe or a character device (a terminal) is written through a
     private non-blocking description of the same file, a socket with MSG_DONTWAIT on a duplicate, and a regular file,
-    which never waits for a reader, directly. Raises OSError (BlockingIOError when full; the error from reopening
-    when the descriptor cannot be reopened, and the notice is then dropped)."""
+    which never waits for a reader, directly. A pipe or terminal this process cannot reopen (one another user
+    created, as after su or sudo -u, or no /proc) falls back to toggled_write, so the notice still arrives
+    (#1700 pass 35 R1 F4). Raises OSError (BlockingIOError when full)."""
     mode = os.fstat(fd).st_mode
     if stat.S_ISFIFO(mode) or stat.S_ISCHR(mode):
-        own = os.open(f"/proc/self/fd/{fd}", os.O_WRONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOCTTY)
+        try:
+            own = os.open(f"/proc/self/fd/{fd}", os.O_WRONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOCTTY)
+        except (PermissionError, FileNotFoundError):
+            return toggled_write(fd, data)
         try:
             return os.write(own, data)
         finally:
@@ -580,6 +596,20 @@ def write_now(fd: int, data: bytes) -> int:
         with socket.socket(fileno=os.dup(fd)) as s:
             return s.send(data, socket.MSG_DONTWAIT)
     return os.write(fd, data)
+
+
+def toggled_write(fd: int, data: bytes) -> int:
+    """The fallback when write_now cannot reopen a pipe or terminal: one write with O_NONBLOCK set on the shared
+    description for that call only and cleared before returning, as before FIX22. Another process writing the same
+    stderr in that instant can see it non-blocking; that is the one case where a notice touches the flags. Its
+    callers run with SIGINT and SIGALRM blocked, so nothing interrupts it between setting and clearing the flag."""
+    if not os.get_blocking(fd):
+        return os.write(fd, data)
+    os.set_blocking(fd, False)
+    try:
+        return os.write(fd, data)
+    finally:
+        os.set_blocking(fd, True)
 
 
 def finish_notice(fd: int, rest: bytes, finish_by: float) -> int:
@@ -1031,6 +1061,10 @@ def deadline_guard(deadline: float):
         remaining(deadline)
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
+        # Ignoring SIGALRM discards one still pending behind a deferred mask (a Ctrl-C that lands as a deferred
+        # section's exit starts leaves it so), so restoring the default action cannot kill the process later
+        # (#1700 pass 35 R1 F2).
+        signal.signal(signal.SIGALRM, signal.SIG_IGN)
         signal.signal(signal.SIGALRM, previous)
 
 

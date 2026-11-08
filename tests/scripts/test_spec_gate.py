@@ -25,6 +25,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import sys
@@ -4849,7 +4850,7 @@ try:
     m.materialize([('100644',big,'a/'+'x'*256),('100644',big,'after.bin')],into);out={'raised':None}
 except OSError as e:
     out={'raised':type(e).__name__,'errno':e.errno}
-out['started']=len(started);out['returncode']=started[0].returncode if started else None
+out['started']=len(started);out['returncode']=started[0].returncode if started else None;out['closed']=started[0].stdout.closed if started else None
 print(json.dumps(out))
 """
 
@@ -4866,7 +4867,7 @@ def test_materialize_ends_git_when_a_write_fails(repo, tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     out = json.loads(r.stdout)
     assert out["raised"] == "OSError" and out["errno"] == errno.ENAMETOOLONG, out
-    assert out["started"] == 1 and out["returncode"] is not None, out
+    assert out["started"] == 1 and out["returncode"] is not None and out["closed"] is True, out
 
 def test_materialize_streams_exact_bytes_one_blob_at_a_time(repo, tmp_path):
     """FEAT-CICD-001 "Exact render" (done_when[1]) with the streamed batch: blobs across the 1 MiB chunk boundary,
@@ -4973,7 +4974,7 @@ FAKE_BATCH = {
     "a 19-digit size": (f"{FAKE_OID} blob {'9' * 19}\n".encode() + b"ab", 0, ["ended inside x.bin", FAKE_OID]),
     # An answer that ends early reports git's own exit status and stderr, whichever check sees the end (QUAL2 R4 F1).
     "early end: no answer": (b"", 128, ["failed (128)", "fatal: boom"]),
-    "early end: a megabyte of stderr": (b"", 128, ["failed (128)", "fatal: boom"]),
+    "early end: 64 MiB of stderr": (b"", 128, ["failed (128)", "fatal: boom"]),
     "early end: inside the header": (f"{FAKE_OID} blo".encode(), 128, ["failed (128)", "fatal: boom"]),
     "early end: a header one byte short of its bound": (f"{FAKE_OID} blob {'9' * 19}".encode(), 128,
                                                         ["failed (128)", "fatal: boom"]),
@@ -4986,24 +4987,26 @@ FAKE_BATCH = {
                                                       ["after the last of 1 object"]),
 }
 # Per case, what the stand-in git does besides its answer: bytes it then keeps writing, and its stderr.
-FAKE_BATCH_EXTRA = {case: (256 * 1024 if "pending" in case else 0, "fatal: boom\n" if case.startswith("early end") else "")
+FAKE_BATCH_EXTRA = {case: ((64 << 20) if case == "overlong header, output pending" else 256 * 1024 if "pending" in case else 0, "fatal: boom\n" if case.startswith("early end") else "")
                     for case in FAKE_BATCH}
-FAKE_BATCH_PAD = {"early end: a megabyte of stderr": 1 << 20}   # bytes of stderr written after the case's own
-FAKE_BATCH_BOUNDED = {"early end: a megabyte of stderr": 4096 + 200, "overlong header, output pending": 200 + 66,
+FAKE_BATCH_PAD = {"early end: 64 MiB of stderr": 64 << 20}   # bytes of stderr written after the case's own
+FAKE_BATCH_BOUNDED = {"early end: 64 MiB of stderr": 4096 + 200, "overlong header, output pending": 200 + 66,
                       "size of 5000 digits": 200 + 66}   # most characters each refusal may hold
 FAKE_RUNNER = r"""
-import importlib.util,json,os,pathlib,sys
+import importlib.util,json,os,pathlib,re,sys
+hwm=lambda:int(re.search(r'VmHWM:\s+(\d+)',open('/proc/self/status').read()).group(1))   # peak resident KiB
 s=importlib.util.spec_from_file_location('fake_batch_gate',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
 work,result=pathlib.Path(sys.argv[2]),{}
 for name in sorted(os.listdir(work/'answers')):
     os.environ['FAKE_GIT_ANSWER']=str(work/'answers'/name);os.environ['FAKE_GIT_EXIT']=(work/'exits'/name).read_text()
     os.environ['FAKE_GIT_TAIL']=(work/'tails'/name).read_text();os.environ['FAKE_GIT_STDERR']=(work/'stderrs'/name).read_text()
     os.environ['FAKE_GIT_PAD']=(work/'pads'/name).read_text()
-    into=work/'into'/name;into.mkdir(parents=True)
+    into=work/'into'/name;into.mkdir(parents=True);before=hwm()
     try:
         m.materialize([('100644','1'*40,'x.bin')],into);result[name]=['accepted','']
     except Exception as e:
         result[name]=[type(e).__name__,str(e)]
+    result[name].append(hwm()-before)
 print(json.dumps(result))
 """
 REAL_RUNNER = r"""
@@ -5085,8 +5088,13 @@ def test_materialize_names_the_refused_entry_and_checks_every_field(repo, tmp_pa
     unbounded = {case: len(seen[f"case{cases.index(case):02d}"][1]) for case, most in FAKE_BATCH_BOUNDED.items()
                  if len(seen[f"case{cases.index(case):02d}"][1]) > most}
     assert unbounded == {}, unbounded
-    # The stderr bound is exactly 4 KiB: "fatal: boom\n" and then 4084 of the megabyte's e's (pass 24 R4 F1).
-    shown = seen[f"case{cases.index('early end: a megabyte of stderr'):02d}"][1]
+    # The header and stderr reads are bounded too, not only the message: 64 MiB of either left in git's output never
+    # raises the reader's peak memory by more than 8 MiB (#1700 pass 35 R4 F1).
+    held = {case: seen[f"case{cases.index(case):02d}"][2]
+            for case in ("early end: 64 MiB of stderr", "overlong header, output pending")}
+    assert all(kib < 8 * 1024 for kib in held.values()), held
+    # The stderr bound is exactly 4 KiB: "fatal: boom\n" and then 4084 of the 64 MiB of e's (pass 24 R4 F1).
+    shown = seen[f"case{cases.index('early end: 64 MiB of stderr'):02d}"][1]
     assert shown.endswith("fatal: boom\n" + "e" * 4084) and not shown.endswith("e" * 4085), shown[-80:]
 
 # A deploy.sh job whose --args names its entrypoint: the renderer reads that file's first docstring line. Verified on
@@ -6269,6 +6277,45 @@ def test_measure_inventory_render_deadline_never_replaces_a_ctrl_c_raised_inside
     out = json.loads(r.stdout)
     assert out["raised"] == "KeyboardInterrupt" and out["mask"] == [], out
 
+EXIT_INTERRUPT_PROBE = r"""
+import contextlib,importlib.util,linecache,signal,sys,time
+s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+where=sys.argv[2];real=m.OwnedFamily.terminate_and_reap;state={'armed':False,'n':0}
+def hung(self,process,deadline):   # the main-path reap outlasts the whole deadline, so SIGALRM is held pending
+    r=real(self,process,deadline)
+    if state['n']==0:
+        state['n']=1;time.sleep(.35);state['armed']=True
+    return r
+m.OwnedFamily.terminate_and_reap=hung
+def at(frame):                     # where a Ctrl-C lands: SIGINT's default handler raises at that bytecode
+    if where=='section-exit': return frame.f_code is contextlib._GeneratorContextManager.__exit__.__code__
+    return (frame.f_code is signal.pthread_sigmask.__code__ and frame.f_back.f_code.co_name=='defer_deadline'
+            and 'previous |' in linecache.getline(frame.f_back.f_code.co_filename,frame.f_back.f_lineno))
+def prof(frame,event,arg):
+    if state['armed'] and event=='call' and at(frame):
+        state['armed']=False;sys.setprofile(None);raise KeyboardInterrupt('Ctrl-C at '+where)
+real_run=m.run_bounded
+m.run_bounded=lambda argv,cwd,**kw:real_run([sys.executable,'-c','pass'],cwd,**kw)
+sys.setprofile(prof)
+raise SystemExit(m._main(['--max-seconds','0.2'],time.monotonic()))
+"""
+
+
+def run_exit_interrupt_probe(tmp_path, where):
+    r = subprocess.run([sys.executable, "-B", "-c", EXIT_INTERRUPT_PROBE, str(REPO / MEASURE), where],
+                       capture_output=True, text=True, timeout=60, cwd=tmp_path, env={**os.environ, "TMPDIR": str(tmp_path)})
+    assert r.returncode == -signal.SIGINT, (r.returncode, r.stdout[-2000:], r.stderr[-2000:])
+
+
+def test_measure_inventory_render_ctrl_c_at_a_deferred_section_exit_ends_the_run_as_a_ctrl_c(tmp_path):
+    """A Ctrl-C landing as the first mask restore of a deferred section runs (#1700 pass 35 R1 F1), or as the
+    section's exit starts, before the mask is restored at all (F2), while the whole deadline is pending behind the
+    mask, ends the run as a Ctrl-C (killed by SIGINT, exit 130): the deadline neither replaces it (exit 1) nor kills
+    the process later with SIGALRM (exit 142)."""
+    run_exit_interrupt_probe(tmp_path, "first-restore")
+    run_exit_interrupt_probe(tmp_path, "section-exit")
+
+
 NOTICE_PROBE = r"""
 import importlib.util,json,os,select,socket,sys,threading,time
 s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
@@ -6573,6 +6620,41 @@ def test_measure_inventory_render_notice_never_changes_stderr_flags(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     for kind, seen in json.loads(r.stdout).items():
         assert seen["error"] is None and seen["unchanged"], (kind, seen)
+        assert f"measure_inventory_render: one {kind}" in seen["text"] and f"two {kind}" in seen["text"], (kind, seen)
+
+
+NO_REOPEN_PROBE = r"""
+import importlib.util,json,os,pty,select,sys
+s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+real_os=os
+class Refused:      # another user's pipe or terminal: reopening it through /proc is refused, a plain write is not
+    def __getattr__(self,name): return getattr(real_os,name)
+    def open(self,path,*a,**kw):
+        if str(path).startswith('/proc/self/fd/'): raise PermissionError(13,'Permission denied',path)
+        return real_os.open(path,*a,**kw)
+m.os=Refused();out={};saved=os.dup(2)
+def rd(fd): return os.read(fd,4096).decode() if select.select([fd],[],[],2)[0] else ''
+def run(kind,fd,read):
+    os.dup2(fd,2)
+    try: m.write_notices(['one '+kind,'two '+kind]);err=None
+    except BaseException as e: err=f'{type(e).__name__}:{e}'
+    blocking=os.get_blocking(2);os.dup2(saved,2)
+    out[kind]={'error':err,'blocking':blocking,'text':read()}
+r,w=os.pipe();run('pipe',w,lambda:rd(r))
+mfd,sfd=pty.openpty();run('terminal',sfd,lambda:rd(mfd))
+print(json.dumps(out))
+"""
+
+
+def test_measure_inventory_render_notice_arrives_when_stderr_cannot_be_reopened(tmp_path):
+    """A pipe or terminal another user created (after su or sudo -u) cannot be reopened through /proc, though a plain
+    write to it works; the notice then goes through one toggled write, so it still arrives, and the descriptor is
+    blocking again afterwards (#1700 pass 35 R1 F4, R2 F2, R3 F1)."""
+    r = subprocess.run([sys.executable, "-B", "-c", NO_REOPEN_PROBE, str(REPO / MEASURE)], capture_output=True,
+                       text=True, timeout=30, cwd=tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    for kind, seen in json.loads(r.stdout).items():
+        assert seen["error"] is None and seen["blocking"] is True, (kind, seen)
         assert f"measure_inventory_render: one {kind}" in seen["text"] and f"two {kind}" in seen["text"], (kind, seen)
 
 
