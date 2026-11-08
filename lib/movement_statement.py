@@ -538,6 +538,17 @@ def _build_levels(level_map, reach_calls: dict, reach_puts: dict, tracked: dict)
     """
     if level_map is None:
         return _unavailable("level map unavailable")
+    # A side the builder could not check against its window (no prior-session
+    # ATR) is not an empty ladder: the builder returns status ok with both
+    # sides atr_unavailable, live or from a stored level_basis, and an OK
+    # envelope with no rungs would present "could not calculate" as "nothing
+    # to calculate" (Rule 3.7; Codex P1 on #1753).
+    if "atr_unavailable" in (getattr(level_map, "reason_long", None),
+                             getattr(level_map, "reason_short", None)):
+        return _unavailable(
+            "atr_unavailable: the prior session's ATR(14) is unavailable, so no "
+            "level can be checked against the trigger window"
+        )
 
     tracked_ok = isinstance(tracked, dict) and tracked.get("status") == "OK"
     analysis_date = tracked.get("analysis_date") if tracked_ok else None

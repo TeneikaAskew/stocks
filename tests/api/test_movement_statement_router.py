@@ -620,3 +620,34 @@ def test_level_map_propagates_a_backend_outage(monkeypatch):
     monkeypatch.setattr(DataLoader, "load_daily", gap)
     assert dashboard_router._build_movement_level_map("SPY") is None
 
+
+
+def test_missing_atr_serves_levels_unavailable_not_an_empty_ladder(monkeypatch):
+    """Codex P1 on #1753: with no prior-session ATR the builder returns status
+    ok with both sides atr_unavailable. The served levels block must say so
+    (UNAVAILABLE with the atr_unavailable reason), live and from a stored
+    level_basis, never OK with empty call and put ladders."""
+    import datetime as _dt  # noqa: PLC0415
+
+    from lib.movement_statement import _build_levels  # noqa: PLC0415
+    from lib.strat_levels import SessionLevels, build_session_levels  # noqa: PLC0415
+
+    df = _synthetic_daily(end=_dt.date(2026, 11, 6))  # no ATR14 column
+    session = _dt.date(2026, 11, 7)
+    with patch("lib.data_loader.DataLoader.load_daily", return_value=df):
+        live = dashboard_router._build_movement_level_map("SPY", analysis_date=session)
+    assert live is not None
+    assert (live.reason_long, live.reason_short) == ("atr_unavailable", "atr_unavailable")
+
+    tracked = {"status": "OK", "analysis_date": str(session), "calls": [], "puts": []}
+    reach = {"status": "OK", "slots": {}}
+    out = _build_levels(live, reach, reach, tracked)
+    assert out["status"] == "UNAVAILABLE"
+    assert out["reason"].startswith("atr_unavailable")
+    assert "calls" not in out and "puts" not in out
+
+    built = build_session_levels("SPY", session, df[df.index < str(session)], None, None)
+    stored = SessionLevels.from_basis(built.to_basis()).to_level_map()
+    out_stored = _build_levels(stored, reach, reach, tracked)
+    assert out_stored["status"] == "UNAVAILABLE"
+    assert out_stored["reason"].startswith("atr_unavailable")
