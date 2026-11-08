@@ -80,9 +80,12 @@ def process_table() -> dict[int, tuple[int, int]]:
 def defer_deadline(*also: signal.Signals):
     """Do not lose a returned kernel resource to the deadline before its owner is registered. The cleanup also
     defers SIGINT, so a second Ctrl-C is raised after the kill pass, receipt, restore and notices (#1700 pass 32 R1).
-    A second Ctrl-C, or the deadline, that lands after the first Ctrl-C is raised but before the cleanup's block takes
-    effect is not deferred; run_bounded then runs the cleanup once more under the block, and raises the Ctrl-C after it
-    (#1700 pass 35 R1 F3, pass 36 R1 F1, F2). A third Ctrl-C in that rerun's own window is not handled."""
+    A Ctrl-C or the deadline that lands before the cleanup's block takes effect is not deferred; run_bounded then
+    runs the cleanup again under the block, up to twice (one held Ctrl-C and the one-shot deadline), and raises the
+    held Ctrl-C after it (#1700 pass 35 R1 F3, pass 36 R1 F1, F2, pass 37 R1 F1). Two cases are not handled, and each
+    skips the cleanup with no notice: a further Ctrl-C before a cleanup attempt starts while one is already held, which
+    is raised at once, and the deadline handled between two attempts (at the loop's back-jump, outside every try),
+    which then replaces the Ctrl-C."""
     previous = signal.pthread_sigmask(signal.SIG_BLOCK, set())
     interrupted = False
     try:
@@ -816,10 +819,12 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
         # The cleanup runs under defer_deadline(SIGINT). A Ctrl-C or the deadline handled before that block takes
         # effect (the first statements here, while the first Ctrl-C is still propagating) would otherwise skip all of
         # it: the kill pass, the scratch removal, the subreaper restore and the notices. Its first statement marks it
-        # started; a signal that lands before that reruns it once, now under the block, and a Ctrl-C is then raised
-        # after it (#1700 pass 35 R1 F3, pass 36 R1 F1, F2). The tuple keeps the loop header free of calls, so no
-        # signal handler runs between entering this finally and the first try.
-        for attempt in (0, 1):
+        # started; a signal that lands before that reruns it, now under the block, and a held Ctrl-C is raised after
+        # it. Three attempts cover one held Ctrl-C and the one-shot deadline in either order; a second held Ctrl-C is
+        # raised at once (#1700 pass 35 R1 F3, pass 36 R1 F1, F2, pass 37 R1 F1; the limits are in defer_deadline's
+        # docstring). The tuple keeps the loop header free of calls, so no signal handler runs between entering this
+        # finally and the first try.
+        for cleanup_try in (0, 1, 2):
             try:
                 with defer_deadline(signal.SIGINT):
                     cleanup_started = True
@@ -986,7 +991,7 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
             except DeliveryDeadline as e:
                 report.update(ok=False, reason="time_limit", error=str(e))
             except KeyboardInterrupt as e:
-                if cleanup_started or attempt:
+                if cleanup_started or pending_interrupt is not None:
                     raise
                 pending_interrupt = e
             if cleanup_started:

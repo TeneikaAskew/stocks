@@ -217,11 +217,13 @@ def repo(tmp_path):
 # Runs `python <gate> args` as the interpreter would, except that the gate's code object is compiled once per path and
 # bytes and kept in a session cache: a gate of about 5,000 lines takes some 60 ms to compile, on every one of the
 # suite's 1,400 gate runs (#1700, the registry job's 335 s bound). __main__ is the gate's module, __file__ its absolute
-# path, sys.argv and sys.path[0] what the interpreter gives a script; source that does not compile runs uncached, so
-# its SyntaxError reads exactly as the interpreter prints it.
+# path, sys.argv and sys.path[0] what the interpreter gives a script (none under PYTHONSAFEPATH or -P, as for `-c`);
+# source that does not compile runs uncached, so its SyntaxError reads exactly as the interpreter prints it. The
+# launcher imports hashlib (with _hashlib and _blake2) before the gate runs; the gate imports none of them itself.
 GATE_LAUNCHER = r"""
 import sys
-del sys.path[0]   # `-c` puts the working directory first; a script gets its own directory, set below
+if not sys.flags.safe_path:   # `-c` puts the working directory first; a script gets its own directory, set below
+    del sys.path[0]
 def run():
     import hashlib, marshal, os
     cache, path = sys.argv[1], sys.argv[2]
@@ -242,7 +244,8 @@ def run():
             marshal.dump(code, f)
         os.replace(tmp, key)
     del sys.argv[:2]
-    sys.path.insert(0, os.path.dirname(full))
+    if not sys.flags.safe_path:
+        sys.path.insert(0, os.path.dirname(full))
     g = sys.modules['__main__'].__dict__
     del g['run'], g['sys']
     g.update(__file__=full, __cached__=None)
@@ -286,7 +289,8 @@ def gate_seen(r: subprocess.CompletedProcess) -> tuple[int, str, str]:
 
 def test_the_suites_gate_launcher_runs_the_gate_as_the_interpreter_does(repo):
     """gate() runs a cached code object (GATE_LAUNCHER): its exit code, stdout and stderr equal `python <gate>`'s, on
-    a pass, a refusal, a module beside the gate that shadows the standard library's, and a gate that does not compile.
+    a pass, a refusal, a module beside the gate that shadows the standard library's (with and without PYTHONSAFEPATH,
+    under which neither puts the gate's directory first; #1700 pass 37 R2 F1), and a gate that does not compile.
     The differences: a compile-time SyntaxWarning, which the interpreter prints on every run and the launcher only
     when it compiles; a traceback, which starts with the launcher's own two frames; and Python 3.13's hint on an
     ImportError from such a shadowing module, worded from the start-up path (#1700, the registry job's 335 s bound)."""
@@ -305,8 +309,12 @@ def test_the_suites_gate_launcher_runs_the_gate_as_the_interpreter_does(repo):
     # a module beside the gate is imported before the standard library's, as the interpreter does for a script
     write(repo, "scripts/gate/bisect.py", "import sys\nsys.stderr.write('stray bisect\\n')\nfrom _bisect import *\n"
                                           "bisect, insort = bisect_right, insort_right\n")
+    env["PYTHONSAFEPATH"] = ""   # off, whatever the shell running pytest sets
     launched, plain = gate(repo, "--pr", base, head, **env), direct("--pr", base, head, **env)
     assert seen(launched) == seen(plain) and "stray bisect" in plain.stderr, (launched, plain)
+    safe = {**env, "PYTHONSAFEPATH": "1"}
+    launched, plain = gate(repo, "--pr", base, head, **safe), direct("--pr", base, head, **safe)
+    assert seen(launched) == seen(plain) and "stray bisect" not in plain.stderr, (launched, plain)
     # and one in the working directory is not imported at all
     (repo / "scripts/gate/bisect.py").rename(repo / "bisect.py")
     launched, plain = gate(repo, "--pr", base, head, **env), direct("--pr", base, head, **env)
@@ -6413,33 +6421,41 @@ def test_measure_inventory_render_ctrl_c_at_a_deferred_section_exit_ends_the_run
 
 
 CLEANUP_START_PROBE = r"""
-import contextlib,importlib.util,linecache,os,signal,sys,time
+import importlib.util,linecache,os,signal,sys,time
 s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 mode=sys.argv[2];state={'armed':False,'fired':False}
+# what the main path raises, then what lands at each cleanup attempt's start (KI: a Ctrl-C raised there; ALRM: the
+# whole deadline, handled there by the real deadline_guard)
+first,acts={'second-ctrl-c':('INT',['KI']),'after-block':('INT',[]),'failure-deadline':('OSError',['ALRM']),
+            'failure-ctrl-c':('OSError',['KI']),'ctrl-c-then-deadline':('INT',['KI','ALRM']),
+            'deadline-then-ctrl-c':('OSError',['ALRM','KI'])}[mode]
 real_popen=m.subprocess.Popen
 def popen(*a,**kw):                # the worker's pid, for the parent to check it is gone
     p=real_popen(*a,**kw);open(sys.argv[3],'w').write(str(p.pid));return p
 m.subprocess.Popen=popen
-def prof(frame,event,arg):         # the cleanup's first defer_deadline call, before its block takes effect
+def prof(frame,event,arg):         # after-block: just after the block takes effect, before defer_deadline yields
     if not state['armed']: return
-    if mode=='after-block':        # or just after the block takes effect, before defer_deadline yields
+    if mode=='after-block':
         up=frame.f_back
         if (event=='return' and frame.f_code is signal.pthread_sigmask.__code__ and up.f_code.co_name=='defer_deadline'
                 and up.f_back.f_back.f_code.co_name=='run_bounded'
                 and 'SIGALRM, *also' in linecache.getline(up.f_code.co_filename,up.f_lineno)):
             state['armed']=False;sys.setprofile(None);raise KeyboardInterrupt('second Ctrl-C after the block')
         return
-    if (event=='call' and frame.f_code is contextlib._GeneratorContextManager.__init__.__code__
-            and frame.f_back.f_back.f_code.co_name=='run_bounded'):
-        state['armed']=False;sys.setprofile(None)
-        if mode=='second-ctrl-c': raise KeyboardInterrupt('second Ctrl-C as the cleanup starts')
-        os.kill(os.getpid(),signal.SIGALRM)   # the whole deadline, handled there by the real deadline_guard
+real_defer=m.defer_deadline
+def defer(*a):                     # each cleanup attempt's defer_deadline call, before its block takes effect
+    if state['armed'] and acts and sys._getframe(1).f_code.co_name=='run_bounded':
+        if acts.pop(0)=='KI': raise KeyboardInterrupt('Ctrl-C as a cleanup attempt starts')
+        os.kill(os.getpid(),signal.SIGALRM)
+    return real_defer(*a)
+m.defer_deadline=defer
 real_wait=m.threading.Event.wait
 def wait(self,t=None):             # once the worker runs: a first Ctrl-C, or a main-path failure
     r=real_wait(self,t)
     if t==.005 and not state['fired']:
-        state['fired']=True;state['armed']=True;sys.setprofile(prof)
-        if mode=='failure-deadline': raise OSError('a main-path failure')
+        state['fired']=True;state['armed']=True
+        if mode=='after-block': sys.setprofile(prof)
+        if first=='OSError': raise OSError('a main-path failure')
         os.kill(os.getpid(),signal.SIGINT)
     return r
 m.threading.Event.wait=wait
@@ -6469,8 +6485,10 @@ def test_measure_inventory_render_signal_as_the_cleanup_starts_still_runs_the_cl
     """A second Ctrl-C, or the whole deadline after a main-path failure, handled as run_bounded's finally starts and
     before the cleanup's block takes effect or just after (the mask is then restored before the rerun), reruns the
     cleanup under the block: the worker is killed, the scratch root removed, and the run ends at once as a Ctrl-C, or
-    with its report (#1700 pass 35 R1 F3, pass 36 R1 F1, F2)."""
-    for mode in ("second-ctrl-c", "after-block"):
+    with its report (#1700 pass 35 R1 F3, pass 36 R1 F1, F2). So does a Ctrl-C there after a main-path failure, which
+    is still raised (pass 37 R4 F1), and a Ctrl-C and the deadline in either order at two successive attempts (pass 37
+    R1 F1)."""
+    for mode in ("second-ctrl-c", "after-block", "failure-ctrl-c", "ctrl-c-then-deadline", "deadline-then-ctrl-c"):
         r = run_cleanup_start_probe(tmp_path, mode)
         assert r.returncode == -signal.SIGINT, (mode, r.returncode, r.stderr[-2000:])
     r = run_cleanup_start_probe(tmp_path, "failure-deadline")
@@ -6834,6 +6852,47 @@ def test_measure_inventory_render_notice_arrives_when_stderr_cannot_be_reopened(
     for kind, seen in json.loads(r.stdout).items():
         assert seen["error"] is None and seen["blocking"] is True, (kind, seen)
         assert f"measure_inventory_render: one {kind}" in seen["text"] and f"two {kind}" in seen["text"], (kind, seen)
+
+
+DEV_TTY_PROBE = r"""
+import importlib.util,json,os,pty,select,sys,time
+mA,sA=pty.openpty();mB,sB=pty.openpty();r,w=os.pipe()
+if os.fork()==0:            # session 1, controlling terminal A: stderr will be /dev/tty as opened here
+    try:
+        os.setsid();os.open(os.ttyname(sA),os.O_RDWR);tty=os.open('/dev/tty',os.O_WRONLY)
+        if os.fork()==0:    # session 2, controlling terminal B: its own /dev/tty is another terminal
+            os.setsid();os.open(os.ttyname(sB),os.O_RDWR);os.dup2(tty,2)
+            s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s)
+            s.loader.exec_module(m)
+            try: m.write_notices(['one','two']);err=None
+            except BaseException as e: err=f'{type(e).__name__}:{e}'
+            os.write(w,json.dumps({'error':err,'blocking':os.get_blocking(2)}).encode());os._exit(0)
+        os.wait()
+    finally:
+        os._exit(0)
+os.wait();os.close(w);seen=json.loads(os.read(r,4096))
+def rd(fd):                 # what arrives on a terminal within 1 s
+    text,end='',time.monotonic()+1
+    while select.select([fd],[],[],max(0,end-time.monotonic()))[0]:
+        try: d=os.read(fd,4096)
+        except OSError: break
+        if not d: break
+        text+=d.decode()
+    return text
+seen.update(a=rd(mA),b=rd(mB));print(json.dumps(seen))
+"""
+
+
+def test_measure_inventory_render_notice_on_dev_tty_reaches_that_terminal(tmp_path):
+    """stderr may be /dev/tty opened under another controlling terminal; reopening /dev/tty would reach the writer's
+    own terminal, so the notice goes through the toggled write to the descriptor itself (#1700 pass 37 R4 F2)."""
+    r = subprocess.run([sys.executable, "-B", "-c", DEV_TTY_PROBE, str(REPO / MEASURE)], capture_output=True,
+                       text=True, timeout=30, cwd=tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    seen = json.loads(r.stdout)
+    assert seen["error"] is None and seen["blocking"] is True, seen
+    assert "measure_inventory_render: one" in seen["a"] and "measure_inventory_render: two" in seen["a"], seen
+    assert "measure_inventory_render" not in seen["b"], seen
 
 
 def test_measure_inventory_render_notice_wait_is_bounded_on_a_socket_that_never_drains(tmp_path):
