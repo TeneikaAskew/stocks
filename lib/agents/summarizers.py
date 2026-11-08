@@ -34,7 +34,7 @@ import numpy as np
 import pandas as pd
 
 from lib.eastern_time import ET_NAME
-from lib.strat_levels import LevelParamsUnavailable
+from lib.strat_levels import PREMARKET_UNFILTERED_NOTE, LevelParamsUnavailable
 
 from .embeddings import format_vector_literal
 from .schema import JournalRef
@@ -255,15 +255,26 @@ def summarize_market_context(
     # Replay pins that row by date, live takes the newest — which is the
     # placeholder when one exists and otherwise the same row we just
     # read, making the overlay a no-op.
-    pm_df = _query(
-        "SELECT pre_high, pre_low, pre_vwap, pre_volume, gap_pct, "
-        "       pre_range_atr "
-        "FROM market_data_daily "
-        "WHERE ticker = :ticker "
-        + ("AND date = :as_of " if as_of else "")
-        + "ORDER BY date DESC LIMIT 1",
-        params,
-    )
+    # pre_filter_status (FEAT-STRAT-001 per-ticker params) says whether the
+    # snapshot's prints were filtered with the ticker's calibrated
+    # thresholds. `_query` returns empty on any error, including a table
+    # without the column, so an empty answer is asked again without it and
+    # the snapshot is then labelled unfiltered (its status is unknown).
+    def _overlay(cols):
+        return _query(
+            f"SELECT {cols} "
+            "FROM market_data_daily "
+            "WHERE ticker = :ticker "
+            + ("AND date = :as_of " if as_of else "")
+            + "ORDER BY date DESC LIMIT 1",
+            params,
+        )
+
+    pm_cols = "pre_high, pre_low, pre_vwap, pre_volume, gap_pct, pre_range_atr"
+    pm_df = _overlay(pm_cols + ", pre_filter_status")
+    if pm_df.empty:
+        pm_df = _overlay(pm_cols)
+    pre_filter_status = None
     if not pm_df.empty:
         pm_row = pm_df.iloc[0]
         row = row.copy()
@@ -273,6 +284,8 @@ def summarize_market_context(
         ):
             if col in pm_row.index:
                 row[col] = pm_row[col]
+        status = pm_row.get("pre_filter_status") if "pre_filter_status" in pm_row.index else None
+        pre_filter_status = status if isinstance(status, str) else None
 
     close = _scalar(row, "close", digits=2)
     ema_20 = _scalar(row, "ema_20", digits=2)
@@ -344,7 +357,14 @@ def summarize_market_context(
                 else "normal" if pre_range_atr > 0.2
                 else "tight"
             )
+        # A snapshot whose prints were not filtered with the ticker's own
+        # thresholds is labelled so: its pre_high and pre_low may carry the
+        # bad prints the filter drops, and the level builder refuses it.
+        filtered = pre_filter_status == "ok"
         premarket_block = {
+            "filtered": filtered,
+            "pre_filter_status": pre_filter_status,
+            **({} if filtered else {"note": PREMARKET_UNFILTERED_NOTE}),
             "pre_high": pre_high,
             "pre_low": pre_low,
             "pre_vwap": _scalar(row, "pre_vwap", digits=2),
