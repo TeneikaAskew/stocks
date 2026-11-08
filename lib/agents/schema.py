@@ -163,7 +163,8 @@ class RiskMetrics(BaseModel):
         description=(
             "abs(entry_mid - stop) / ATR (the plan's ATR, in the policy's "
             "atr_basis) — how many ATRs of room "
-            "the stop has before it triggers. < 1.0 typically warns."
+            "the stop has before it triggers. The persona's stop and floor "
+            "are the ticker's calibrated adverse-excursion quantiles."
         ),
     )
     stop_distance_pct: Optional[float] = Field(

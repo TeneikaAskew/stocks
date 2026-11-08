@@ -51,6 +51,54 @@ def test_no_fixed_distance_in_any_string_literal(rel):
     assert hits == []
 
 
+# A number compared against an ATR distance ("< 1.0 typically warns",
+# ">= 3 ATR"): a fixed ATR threshold stated as copy.
+ATR_THRESHOLD = re.compile(r"[<>≤≥]=?\s*\d+(\.\d+)?")
+
+
+def _docstring_ids(tree):
+    out = set()
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = n.body
+            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+                out.add(id(body[0].value))
+    return out
+
+
+@pytest.mark.parametrize("rel", FILES)
+def test_no_string_literal_states_an_atr_threshold(rel):
+    """No string literal outside a docstring that mentions ATR compares it
+    with a fixed number (the RiskMetrics.stop_distance_atr description said
+    '< 1.0 typically warns'). Docstrings are developer notes that cite the
+    audits' history; the literals checked here reach a reader or a model."""
+    tree = ast.parse((ROOT / rel).read_text())
+    skip = _docstring_ids(tree)
+    hits = [(n.lineno, n.value[:100]) for n in ast.walk(tree)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in skip
+            and "ATR" in n.value and ATR_THRESHOLD.search(n.value)]
+    assert hits == []
+
+
+def test_no_schema_field_description_states_an_atr_threshold():
+    """The same rule over every pydantic field description in
+    lib/agents/schema.py, as the report JSON schema carries them."""
+    import pydantic
+
+    from lib.agents import schema
+
+    hits = []
+    for name in dir(schema):
+        model = getattr(schema, name)
+        if isinstance(model, type) and issubclass(model, pydantic.BaseModel) \
+                and model.__module__ == schema.__name__:
+            for field, info in model.model_fields.items():
+                d = info.description or ""
+                if "ATR" in d and ATR_THRESHOLD.search(d):
+                    hits.append((name, field, d))
+    assert hits == []
+
+
 def test_schema_regime_descriptions_name_no_atr_multiple():
     from lib.agents.schema import InsightReport, PersonaPlan
     for model in (PersonaPlan, InsightReport):
