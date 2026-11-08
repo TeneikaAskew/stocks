@@ -80,12 +80,15 @@ def process_table() -> dict[int, tuple[int, int]]:
 def defer_deadline(*also: signal.Signals):
     """Do not lose a returned kernel resource to the deadline before its owner is registered. The cleanup also
     defers SIGINT, so a second Ctrl-C is raised after the kill pass, receipt, restore and notices (#1700 pass 32 R1).
-    A second Ctrl-C that lands after the first one is raised but before the cleanup's block takes effect (a window of
-    a few bytecodes, at the start of run_bounded's finally) is not deferred: it ends the cleanup there, and the worker,
-    the scratch root and the subreaper state can be left with no notice (#1700 pass 35 R1 F3, a known limit)."""
-    previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM, *also})
+    A second Ctrl-C, or the deadline, that lands after the first Ctrl-C is raised but before the cleanup's block takes
+    effect is not deferred; run_bounded then runs the cleanup once more under the block, and raises the Ctrl-C after it
+    (#1700 pass 35 R1 F3, pass 36 R1 F1, F2). A third Ctrl-C in that rerun's own window is not handled."""
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, set())
     interrupted = False
     try:
+        # Blocking inside the try: a handler that runs just after the block takes effect raises here, and the
+        # finally still restores the mask, so a caller that retries starts from the original mask (pass 36 R1 F2).
+        signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM, *also})
         yield previous
     except KeyboardInterrupt:
         interrupted = True                             # a Ctrl-C raised by the body is never replaced by the deadline
@@ -574,25 +577,34 @@ def write_notice(line: str, finish_by: float | None = None) -> None:
             raise OSError(errno.EIO, "notice written in part")
 
 
+# Character devices whose path names no fixed file: reopening /dev/tty or /dev/ptmx through /proc reaches a different
+# terminal than the one stderr holds (#1700 pass 36 R1 F3).
+REOPEN_ELSEWHERE = frozenset({os.makedev(5, 0), os.makedev(5, 2)})
+
+
 def write_now(fd: int, data: bytes) -> int:
     """One write that never blocks and never changes the descriptor's flags. Its open file description is shared
     with every process that holds the same stderr, so toggling O_NONBLOCK there could leave another writer
     non-blocking (#1700 pass 33 R1 F2, pass 34 R1 F2). A pipe or a character device (a terminal) is written through a
     private non-blocking description of the same file, a socket with MSG_DONTWAIT on a duplicate, and a regular file,
     which never waits for a reader, directly. A pipe or terminal this process cannot reopen (one another user
-    created, as after su or sudo -u, or no /proc) falls back to toggled_write, so the notice still arrives
-    (#1700 pass 35 R1 F4). Raises OSError (BlockingIOError when full)."""
-    mode = os.fstat(fd).st_mode
-    if stat.S_ISFIFO(mode) or stat.S_ISCHR(mode):
+    created, as after su or sudo -u, no /proc, or /dev/tty after setsid, ENXIO) falls back to toggled_write, so the
+    notice still arrives (#1700 pass 35 R1 F4, pass 36 R1 F3); so does /dev/ptmx or /dev/tty, whose reopen opens a new
+    pty or the current controlling terminal rather than the file stderr holds. Raises OSError (BlockingIOError when
+    full)."""
+    st = os.fstat(fd)
+    if stat.S_ISCHR(st.st_mode) and st.st_rdev in REOPEN_ELSEWHERE:
+        return toggled_write(fd, data)
+    if stat.S_ISFIFO(st.st_mode) or stat.S_ISCHR(st.st_mode):
         try:
             own = os.open(f"/proc/self/fd/{fd}", os.O_WRONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOCTTY)
-        except (PermissionError, FileNotFoundError):
+        except OSError:
             return toggled_write(fd, data)
         try:
             return os.write(own, data)
         finally:
             os.close(own)
-    if stat.S_ISSOCK(mode):
+    if stat.S_ISSOCK(st.st_mode):
         with socket.socket(fileno=os.dup(fd)) as s:
             return s.send(data, socket.MSG_DONTWAIT)
     return os.write(fd, data)
@@ -665,8 +677,8 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
               "monitor_rss_bytes": 0, "peak_snapshot": {}, "sample_count": 0,
               "owned_group_gone": False, "owned_family_gone": False,
               "scratch_root": None, "scratch_root_removed": False}
-    process = family = observer = libc = scratch = None
-    spawn_pending = reaped = False
+    process = family = observer = libc = scratch = pending_interrupt = None
+    spawn_pending = reaped = cleanup_started = False
     stop = threading.Event()
     discovery_gaps: list[float] = []
     sample_gaps: list[float] = []
@@ -738,7 +750,7 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                         return
                     stop.wait(.05)
 
-            observer = threading.Thread(target=discover, name="inventory-rss-discovery")
+            observer = threading.Thread(target=discover, name="inventory-rss-discovery", daemon=True)
             with defer_deadline(signal.SIGINT):
                 # The thread inherits this mask, so the kernel sends the deadline and Ctrl-C to the main thread,
                 # which defers them in the cleanup; a signal the observer took would still raise there (pass 32 R1).
@@ -801,170 +813,186 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
     except Exception as e:
         report.update(ok=False, reason="observation_failure", error=f"{type(e).__name__}: {e}")
     finally:
-        cleanup_errors = []
-        notices: list[str] = []
-        def cleanup_failure(e):
-            cleanup_errors.append(f"{type(e).__name__}: {e}")
-            report.update(ok=False, reason="cleanup_failure", owned_family_gone=False,
-                          cleanup_error="; ".join(cleanup_errors))
-        try:
-            with defer_deadline(signal.SIGINT):
-                try:
-                    stop.set()
-                    if observer is not None:
-                        observer.join(timeout=1)
-                        if observer.is_alive():
-                            raise OSError("discovery thread did not stop during cleanup")
-                    if errors:
-                        report.update(ok=False, reason="observation_failure", error=errors[0])
-                except Exception as e:
-                    cleanup_failure(e)
-                observer_live = observer is not None and observer.is_alive()
-                try:
-                    if process is not None and family is not None:
-                        if observer_live:
-                            # Do not block on its lock or release authority it can still extend.
-                            family.signal_known()
-                            if process.poll() is None:
-                                process.kill()
-                            process.wait(timeout=1)
-                            raise OSError("active discovery retains unresolved descendant ownership")
-                        # Final unwind cannot abandon an owner when observation or the timer failed.
-                        report["owned_family_gone"] = family.terminate_and_reap(process, time.monotonic() + 1)
-                        report["known_owned_reaped"] = not family.known_live()
-                        reaped = report["owned_family_gone"] and report["known_owned_reaped"]
-                        report["owned_group_gone"] = not group_members(process.pid)
-                        if not report["owned_family_gone"]:
-                            report.update(ok=False, reason="cleanup_observation_failure")
-                except Exception as e:
-                    cleanup_failure(e)
-                try:
-                    if family is not None and not observer_live:
-                        report["discovered_process_identities"] = family.snapshot()
-                        report["discovered_pids"] = sorted(family.snapshot())
-                except Exception as e:
-                    cleanup_failure(e)
-                finally:
+        # The cleanup runs under defer_deadline(SIGINT). A Ctrl-C or the deadline handled before that block takes
+        # effect (the first statements here, while the first Ctrl-C is still propagating) would otherwise skip all of
+        # it: the kill pass, the scratch removal, the subreaper restore and the notices. Its first statement marks it
+        # started; a signal that lands before that reruns it once, now under the block, and a Ctrl-C is then raised
+        # after it (#1700 pass 35 R1 F3, pass 36 R1 F1, F2). The tuple keeps the loop header free of calls, so no
+        # signal handler runs between entering this finally and the first try.
+        for attempt in (0, 1):
+            try:
+                with defer_deadline(signal.SIGINT):
+                    cleanup_started = True
+                    cleanup_errors = []
+                    notices: list[str] = []
+                    def cleanup_failure(e):
+                        cleanup_errors.append(f"{type(e).__name__}: {e}")
+                        report.update(ok=False, reason="cleanup_failure", owned_family_gone=False,
+                                      cleanup_error="; ".join(cleanup_errors))
                     try:
-                        if family is not None:
-                            for attempt in range(0 if observer_live else 2):
+                        stop.set()
+                        if observer is not None:
+                            observer.join(timeout=1)
+                            if observer.is_alive():
+                                raise OSError("discovery thread did not stop during cleanup")
+                        if errors:
+                            report.update(ok=False, reason="observation_failure", error=errors[0])
+                    except Exception as e:
+                        cleanup_failure(e)
+                    observer_live = observer is not None and observer.is_alive()
+                    try:
+                        if process is not None and family is not None:
+                            if observer_live:
+                                # Do not block on its lock or release authority it can still extend.
+                                family.signal_known()
+                                if process.poll() is None:
+                                    process.kill()
+                                process.wait(timeout=1)
+                                raise OSError("active discovery retains unresolved descendant ownership")
+                            # Final unwind cannot abandon an owner when observation or the timer failed.
+                            report["owned_family_gone"] = family.terminate_and_reap(process, time.monotonic() + 1)
+                            report["known_owned_reaped"] = not family.known_live()
+                            reaped = report["owned_family_gone"] and report["known_owned_reaped"]
+                            report["owned_group_gone"] = not group_members(process.pid)
+                            if not report["owned_family_gone"]:
+                                report.update(ok=False, reason="cleanup_observation_failure")
+                    except Exception as e:
+                        cleanup_failure(e)
+                    try:
+                        if family is not None and not observer_live:
+                            report["discovered_process_identities"] = family.snapshot()
+                            report["discovered_pids"] = sorted(family.snapshot())
+                    except Exception as e:
+                        cleanup_failure(e)
+                    finally:
+                        try:
+                            if family is not None:
+                                for attempt in range(0 if observer_live else 2):
+                                    try:
+                                        family.close()
+                                        break
+                                    except Exception as e:
+                                        cleanup_failure(e)
+                                        if attempt == 0 and process is not None:
+                                            try:
+                                                family.terminate_and_reap(process, time.monotonic() + 1)
+                                            except Exception as e:
+                                                cleanup_failure(e)
+                                if family.owned or observer_live:
+                                    RETAINED_OWNERSHIP = (family, process, observer)
+                                    report.update(ok=False, retained_ownership=True, owned_family_gone=False,
+                                                  retained_observer_alive=observer_live,
+                                                  retained_owned_pids=sorted(family.owned))
+                        finally:
+                            # The scratch root is removed only when nothing this monitor started can still write to it,
+                            # and only within the command's own deadline. Its outcome never rewrites the family verdict.
+                            retained = None
+                            if scratch is None and report["scratch_root"] is not None:
+                                retained = "root_not_held"
+                            elif scratch is not None:
                                 try:
-                                    family.close()
-                                    break
+                                    if process is None and spawn_pending:
+                                        # As subreaper, whatever Popen forked is still a child here; none: it never forked.
+                                        retained = "spawn_children_unknown"
+                                        children = own_children()
+                                        report["scratch_root_unregistered_children"] = children
+                                        # A killed child's own descendants are adopted by this subreaper and appear on
+                                        # the relist with readable start ticks: the same identity-checked PIDfd kill
+                                        # reaps them, pass after pass, until the relist is empty, a pass kills nothing
+                                        # (no child left could be identified, signalled and reaped) or the deadline
+                                        # passes (QUAL2 R1 F1). The first pass runs even after the deadline, so a child
+                                        # it can identify is always signalled; the deadline bounds only reaping and
+                                        # further passes (QUAL3 R1 F1). Each pass then signals, a generation at a time,
+                                        # the descendants listed in a process-table read taken before that pass, starting
+                                        # from the children it identified and signalled; each goes through its own
+                                        # identity-checked PIDfd, and only once its parent was identified and signalled,
+                                        # so a listed descendant is not left alive unexamined when it would be adopted
+                                        # only after the deadline (QUAL4 R1). A child or intermediate not signalled
+                                        # (identity unverified, signal refused) prunes its subtree (review 14 P1).
+                                        # Limits: a descendant forked after that read is not listed, and one not adopted
+                                        # in time stays named "not examined before the deadline", or, when the passes
+                                        # stopped after one that reaped nothing, STALLED (closure21 item 5). That read is optional:
+                                        # if it fails, the pass still signals the children already listed, then the
+                                        # failure propagates as a failed relist does (review 14 P2).
+                                        killed, remaining, outcomes, first, stalled = [], children, {}, True, False
+                                        while remaining and (first or time.monotonic() < started + max_seconds):
+                                            first = False
+                                            try:
+                                                table, table_error = process_table(), None
+                                            except Exception as e:
+                                                table, table_error = None, e
+                                            reaped_now = kill_unregistered(remaining, started + max_seconds, outcomes)
+                                            killed += reaped_now
+                                            if table_error is not None:
+                                                raise table_error
+                                            signalled = [child for child in remaining if outcomes.get(outcome_key(child)) == SIGNALLED]
+                                            descendants_reaped = kill_descendants(signalled, table, started + max_seconds, outcomes)
+                                            reaped_now += descendants_reaped
+                                            killed += descendants_reaped
+                                            remaining = own_children()
+                                            if not reaped_now:
+                                                stalled = True
+                                                break
+                                        report["scratch_root_unregistered_killed"] = killed
+                                        retained = None
+                                        notices += [f"killed unregistered child {child['pid']}" for child in killed]
+                                        if remaining:
+                                            retained = "spawn_not_registered"
+                                            report["scratch_root_unregistered_remaining"] = remaining
+                                            reasons = unproven_reasons(remaining, outcomes, stalled)
+                                            # Named before the receipt is written: the worker owns the root and can make
+                                            # that write fail, which must not also silence stderr (QUAL3 R1 F2).
+                                            notices += [f"child {pid} not proven killed: {why}" for pid, why in reasons.items()]
+                                            append_receipt(scratch, {"event": "unregistered_spawn", "children": children,
+                                                                     "killed": killed, "remaining": remaining,
+                                                                     "reasons": {str(pid): why for pid, why in reasons.items()}})
+                                    elif process is not None and (not reaped or observer_live or report.get("retained_ownership")):
+                                        retained = "family_not_proven_reaped"
+                                    if retained is None:
+                                        if remove_scratch(scratch, started + max_seconds - min(.2, max_seconds * .1)):
+                                            report["scratch_root_removed"] = True
+                                        else:
+                                            retained = "removal_deadline"
+                                except Exception as e:
+                                    retained = retained or "removal_failed"
+                                    report["scratch_root_error"] = f"{type(e).__name__}: {e}"
+                                finally:
+                                    scratch.close()
+                            if retained:
+                                report.update(ok=False, scratch_root_retained=True, scratch_root_retained_reason=retained)
+                                if process is None and spawn_pending:
+                                    # The exception that interrupted the spawn propagates and no report prints.
+                                    error = report.get("scratch_root_error")
+                                    notices.append(f"retained {report['scratch_root']} ({retained})" + (f": {error}" if error else ""))
+                                if report["reason"] == "completed":
+                                    report["reason"] = "scratch_cleanup_incomplete"
+                            if libc is not None and subreaper_acquired:
+                                try:
+                                    if libc.prctl(36, old_subreaper.value, 0, 0, 0):
+                                        raise OSError("cannot restore prior child ownership state")
                                 except Exception as e:
                                     cleanup_failure(e)
-                                    if attempt == 0 and process is not None:
-                                        try:
-                                            family.terminate_and_reap(process, time.monotonic() + 1)
-                                        except Exception as e:
-                                            cleanup_failure(e)
-                            if family.owned or observer_live:
-                                RETAINED_OWNERSHIP = (family, process, observer)
-                                report.update(ok=False, retained_ownership=True, owned_family_gone=False,
-                                              retained_observer_alive=observer_live,
-                                              retained_owned_pids=sorted(family.owned))
-                    finally:
-                        # The scratch root is removed only when nothing this monitor started can still write to it,
-                        # and only within the command's own deadline. Its outcome never rewrites the family verdict.
-                        retained = None
-                        if scratch is None and report["scratch_root"] is not None:
-                            retained = "root_not_held"
-                        elif scratch is not None:
-                            try:
-                                if process is None and spawn_pending:
-                                    # As subreaper, whatever Popen forked is still a child here; none: it never forked.
-                                    retained = "spawn_children_unknown"
-                                    children = own_children()
-                                    report["scratch_root_unregistered_children"] = children
-                                    # A killed child's own descendants are adopted by this subreaper and appear on
-                                    # the relist with readable start ticks: the same identity-checked PIDfd kill
-                                    # reaps them, pass after pass, until the relist is empty, a pass kills nothing
-                                    # (no child left could be identified, signalled and reaped) or the deadline
-                                    # passes (QUAL2 R1 F1). The first pass runs even after the deadline, so a child
-                                    # it can identify is always signalled; the deadline bounds only reaping and
-                                    # further passes (QUAL3 R1 F1). Each pass then signals, a generation at a time,
-                                    # the descendants listed in a process-table read taken before that pass, starting
-                                    # from the children it identified and signalled; each goes through its own
-                                    # identity-checked PIDfd, and only once its parent was identified and signalled,
-                                    # so a listed descendant is not left alive unexamined when it would be adopted
-                                    # only after the deadline (QUAL4 R1). A child or intermediate not signalled
-                                    # (identity unverified, signal refused) prunes its subtree (review 14 P1).
-                                    # Limits: a descendant forked after that read is not listed, and one not adopted
-                                    # in time stays named "not examined before the deadline", or, when the passes
-                                    # stopped after one that reaped nothing, STALLED (closure21 item 5). That read is optional:
-                                    # if it fails, the pass still signals the children already listed, then the
-                                    # failure propagates as a failed relist does (review 14 P2).
-                                    killed, remaining, outcomes, first, stalled = [], children, {}, True, False
-                                    while remaining and (first or time.monotonic() < started + max_seconds):
-                                        first = False
-                                        try:
-                                            table, table_error = process_table(), None
-                                        except Exception as e:
-                                            table, table_error = None, e
-                                        reaped_now = kill_unregistered(remaining, started + max_seconds, outcomes)
-                                        killed += reaped_now
-                                        if table_error is not None:
-                                            raise table_error
-                                        signalled = [child for child in remaining if outcomes.get(outcome_key(child)) == SIGNALLED]
-                                        descendants_reaped = kill_descendants(signalled, table, started + max_seconds, outcomes)
-                                        reaped_now += descendants_reaped
-                                        killed += descendants_reaped
-                                        remaining = own_children()
-                                        if not reaped_now:
-                                            stalled = True
-                                            break
-                                    report["scratch_root_unregistered_killed"] = killed
-                                    retained = None
-                                    notices += [f"killed unregistered child {child['pid']}" for child in killed]
-                                    if remaining:
-                                        retained = "spawn_not_registered"
-                                        report["scratch_root_unregistered_remaining"] = remaining
-                                        reasons = unproven_reasons(remaining, outcomes, stalled)
-                                        # Named before the receipt is written: the worker owns the root and can make
-                                        # that write fail, which must not also silence stderr (QUAL3 R1 F2).
-                                        notices += [f"child {pid} not proven killed: {why}" for pid, why in reasons.items()]
-                                        append_receipt(scratch, {"event": "unregistered_spawn", "children": children,
-                                                                 "killed": killed, "remaining": remaining,
-                                                                 "reasons": {str(pid): why for pid, why in reasons.items()}})
-                                elif process is not None and (not reaped or observer_live or report.get("retained_ownership")):
-                                    retained = "family_not_proven_reaped"
-                                if retained is None:
-                                    if remove_scratch(scratch, started + max_seconds - min(.2, max_seconds * .1)):
-                                        report["scratch_root_removed"] = True
-                                    else:
-                                        retained = "removal_deadline"
-                            except Exception as e:
-                                retained = retained or "removal_failed"
-                                report["scratch_root_error"] = f"{type(e).__name__}: {e}"
-                            finally:
-                                scratch.close()
-                        if retained:
-                            report.update(ok=False, scratch_root_retained=True, scratch_root_retained_reason=retained)
-                            if process is None and spawn_pending:
-                                # The exception that interrupted the spawn propagates and no report prints.
-                                error = report.get("scratch_root_error")
-                                notices.append(f"retained {report['scratch_root']} ({retained})" + (f": {error}" if error else ""))
-                            if report["reason"] == "completed":
-                                report["reason"] = "scratch_cleanup_incomplete"
-                        if libc is not None and subreaper_acquired:
-                            try:
-                                if libc.prctl(36, old_subreaper.value, 0, 0, 0):
-                                    raise OSError("cannot restore prior child ownership state")
-                            except Exception as e:
-                                cleanup_failure(e)
-                        # Notices go out last, after the receipt, removal and subreaper restore, and a stderr that
-                        # cannot be written never replaces the interrupt that is propagating (QUAL2 R1 F2). With stderr
-                        # closed at startup sys.stderr is None, and print(file=None) would write to stdout, the report's
-                        # channel, so they go to fd 2 itself, where a closed fd is only an OSError (#1700 pass 22 R1 F1).
-                        # SIGALRM and SIGINT are blocked here, so a write to a full stderr pipe would wait past the deadline: each
-                        # notice is written to the descriptor without blocking, and one that does not fit is dropped
-                        # (#1700 pass 23 R1 F1). A part write is finished within one shared NOTICE_FINISH_SECONDS
-                        # budget; one left in part stops the notices, so every later one is dropped (pass 28). That
-                        # budget starts here, not at the deadline: the cleanup above can already end past the deadline (an
-                        # interrupt after it), and finishing adds up to 0.25 s after that (passes 29 and 30).
-                        write_notices(notices)
-        except DeliveryDeadline as e:
-            report.update(ok=False, reason="time_limit", error=str(e))
+                            # Notices go out last, after the receipt, removal and subreaper restore, and a stderr that
+                            # cannot be written never replaces the interrupt that is propagating (QUAL2 R1 F2). With stderr
+                            # closed at startup sys.stderr is None, and print(file=None) would write to stdout, the report's
+                            # channel, so they go to fd 2 itself, where a closed fd is only an OSError (#1700 pass 22 R1 F1).
+                            # SIGALRM and SIGINT are blocked here, so a write to a full stderr pipe would wait past the deadline: each
+                            # notice is written to the descriptor without blocking, and one that does not fit is dropped
+                            # (#1700 pass 23 R1 F1). A part write is finished within one shared NOTICE_FINISH_SECONDS
+                            # budget; one left in part stops the notices, so every later one is dropped (pass 28). That
+                            # budget starts here, not at the deadline: the cleanup above can already end past the deadline (an
+                            # interrupt after it), and finishing adds up to 0.25 s after that (passes 29 and 30).
+                            write_notices(notices)
+            except DeliveryDeadline as e:
+                report.update(ok=False, reason="time_limit", error=str(e))
+            except KeyboardInterrupt as e:
+                if cleanup_started or attempt:
+                    raise
+                pending_interrupt = e
+            if cleanup_started:
+                break
+        if pending_interrupt is not None:
+            raise pending_interrupt
         report["elapsed_seconds"] = time.monotonic() - started
         report["sample_gap_seconds"] = gaps(sample_gaps)
         report["discovery_gap_seconds"] = gaps(discovery_gaps)

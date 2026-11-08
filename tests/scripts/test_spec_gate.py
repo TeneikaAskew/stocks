@@ -14,6 +14,7 @@ finding gives.
 from __future__ import annotations
 
 import ast
+import atexit
 import concurrent.futures
 import ctypes
 import datetime
@@ -213,16 +214,107 @@ def repo(tmp_path):
     return make_repo(tmp_path)
 
 
+# Runs `python <gate> args` as the interpreter would, except that the gate's code object is compiled once per path and
+# bytes and kept in a session cache: a gate of about 5,000 lines takes some 60 ms to compile, on every one of the
+# suite's 1,400 gate runs (#1700, the registry job's 335 s bound). __main__ is the gate's module, __file__ its absolute
+# path, sys.argv and sys.path[0] what the interpreter gives a script; source that does not compile runs uncached, so
+# its SyntaxError reads exactly as the interpreter prints it.
+GATE_LAUNCHER = r"""
+import sys
+del sys.path[0]   # `-c` puts the working directory first; a script gets its own directory, set below
+def run():
+    import hashlib, marshal, os
+    cache, path = sys.argv[1], sys.argv[2]
+    full = os.path.abspath(path)
+    with open(full, 'rb') as f:
+        src = f.read()
+    key = os.path.join(cache, hashlib.sha256(os.fsencode(full) + b'\0' + src).hexdigest())
+    try:
+        with open(key, 'rb') as f:
+            code = marshal.load(f)
+    except (OSError, EOFError, ValueError, TypeError):
+        try:
+            code = compile(src, full, 'exec', dont_inherit=True)
+        except SyntaxError:
+            os.execv(sys.executable, [sys.executable, *sys.argv[2:]])
+        tmp = f'{key}.{os.getpid()}'
+        with open(tmp, 'wb') as f:
+            marshal.dump(code, f)
+        os.replace(tmp, key)
+    del sys.argv[:2]
+    sys.path.insert(0, os.path.dirname(full))
+    g = sys.modules['__main__'].__dict__
+    del g['run'], g['sys']
+    g.update(__file__=full, __cached__=None)
+    exec(code, g)
+run()
+"""
+GATE_CODE_CACHE = tempfile.mkdtemp(prefix="spec-gate-code-")
+atexit.register(shutil.rmtree, GATE_CODE_CACHE, ignore_errors=True)
+
+
 def gate(repo: Path, *args: str, **env: str) -> subprocess.CompletedProcess:
     # Only what the hook and the workflow pass in: nothing leaks from the shell running pytest.
     # (stocks#1205 r4122021112: PYTEST_CURRENT_TEST would tell a gate it is under test)
     inherited = {k: v for k, v in os.environ.items() if not k.startswith(("PR_", "SPEC_GATE_", "GIT_", "PYTEST_"))}
     capacity_bridge_before_dispatch(args, env)   # capacity bridge: oracle and pair guard, a no-op outside its eight functions
-    result = subprocess.run([sys.executable, "scripts/gate/spec_gate.py", *args], cwd=repo,
-                          env={**inherited, **env}, capture_output=True, text=True)
+    result = subprocess.run([sys.executable, "-c", GATE_LAUNCHER, GATE_CODE_CACHE, "scripts/gate/spec_gate.py", *args],
+                            cwd=repo, env={**inherited, **env}, capture_output=True, text=True)
     capacity_bridge_after_dispatch(result)
     return result
 
+
+def gate_direct(repo: Path, *args: str, **env: str) -> subprocess.CompletedProcess:
+    """`python scripts/gate/spec_gate.py args` itself, with gate()'s environment: what GATE_LAUNCHER must match."""
+    inherited = {k: v for k, v in os.environ.items() if not k.startswith(("PR_", "SPEC_GATE_", "GIT_", "PYTEST_"))}
+    return subprocess.run([sys.executable, "scripts/gate/spec_gate.py", *args], cwd=repo, env={**inherited, **env},
+                          capture_output=True, text=True)
+
+
+def gate_seen(r: subprocess.CompletedProcess) -> tuple[int, str, str]:
+    """A gate run's exit code, stdout and stderr, less a compile-time SyntaxWarning and GATE_LAUNCHER's own frames."""
+    out, dropped = [], False
+    for line in r.stderr.splitlines(keepends=True):
+        if line.startswith("  File "):
+            dropped = line.startswith('  File "<string>"')
+        elif not line.startswith(" "):
+            dropped = "SyntaxWarning: " in line
+        if not dropped:
+            out.append(line)
+    return r.returncode, r.stdout, "".join(out)
+
+
+def test_the_suites_gate_launcher_runs_the_gate_as_the_interpreter_does(repo):
+    """gate() runs a cached code object (GATE_LAUNCHER): its exit code, stdout and stderr equal `python <gate>`'s, on
+    a pass, a refusal, a module beside the gate that shadows the standard library's, and a gate that does not compile.
+    The differences: a compile-time SyntaxWarning, which the interpreter prints on every run and the launcher only
+    when it compiles; a traceback, which starts with the launcher's own two frames; and Python 3.13's hint on an
+    ImportError from such a shadowing module, worded from the start-up path (#1700, the registry job's 335 s bound)."""
+    direct = lambda *args, **env: gate_direct(repo, *args, **env)
+    seen = gate_seen
+    on_base(repo, {SPEC: spec(done_when=["the registry test passes"])})
+    base, head = cut(repo, BRANCH, CODE)
+    passing = f"Spec: {SPEC}\nPlan: {PLAN}\n\n- [ ] the registry test passes\n"
+    for body in (passing, "no spec line here"):
+        env = {"PR_HEAD_REF": BRANCH, "PR_TITLE": "FEAT-MODEL-001: x", "PR_BODY": body}
+        for _ in range(2):   # the first run compiles, the second reads the cache
+            launched, plain = gate(repo, "--pr", base, head, **env), direct("--pr", base, head, **env)
+            assert seen(launched) == seen(plain), (body, launched, plain)
+    assert [gate(repo, "--pr", base, head, PR_HEAD_REF=BRANCH, PR_TITLE="FEAT-MODEL-001: x", PR_BODY=b).returncode
+            for b in (passing, "no spec line here")] == [0, 1]
+    # a module beside the gate is imported before the standard library's, as the interpreter does for a script
+    write(repo, "scripts/gate/bisect.py", "import sys\nsys.stderr.write('stray bisect\\n')\nfrom _bisect import *\n"
+                                          "bisect, insort = bisect_right, insort_right\n")
+    launched, plain = gate(repo, "--pr", base, head, **env), direct("--pr", base, head, **env)
+    assert seen(launched) == seen(plain) and "stray bisect" in plain.stderr, (launched, plain)
+    # and one in the working directory is not imported at all
+    (repo / "scripts/gate/bisect.py").rename(repo / "bisect.py")
+    launched, plain = gate(repo, "--pr", base, head, **env), direct("--pr", base, head, **env)
+    assert seen(launched) == seen(plain) and "stray bisect" not in plain.stderr, (launched, plain)
+    (repo / "bisect.py").unlink()
+    write(repo, "scripts/gate/spec_gate.py", "def broken(:\n")
+    launched, plain = gate(repo, "--pr", base, head), direct("--pr", base, head)
+    assert seen(launched) == seen(plain) and "SyntaxError" in plain.stderr, (launched, plain)
 
 def cells(line: str) -> list[str]:
     return [c.strip() for c in line.strip().strip("|").split("|")]
@@ -266,9 +358,9 @@ def pr_each(repo: Path, branch: str, files: dict[str, str | None], bodies, **env
         return list(pool.map(judge, bodies))
 
 
-def pr_case(branch: str, files: dict[str, str | None], **env: str) -> tuple[str, dict[str, str | None], dict[str, str]]:
-    """One case for prs(): what pr(repo, branch, files, **env) is given."""
-    return branch, files, env
+def pr_case(branch: str, files: dict[str, str | None], base: dict[str, str | None] | None = None, **env: str) -> tuple:
+    """One case for prs(): what pr(repo, branch, files, **env) is given, after on_base(repo, base) when base is given."""
+    return branch, files, env, base
 
 
 def prs(repo: Path, cases) -> list[subprocess.CompletedProcess]:
@@ -277,13 +369,15 @@ def prs(repo: Path, cases) -> list[subprocess.CompletedProcess]:
     own copy, so the judgments run side by side: the registry job's 335 s bound (#1700)."""
     cases = list(cases)
     if _CAPACITY_BRIDGE["active"] is not None or len(cases) < 2:   # the bridge pairs each dispatch with its own cut
-        return [pr(repo, branch, files, **env) for branch, files, env in cases]
+        return [(base is not None and on_base(repo, base), pr(repo, branch, files, **env))[1]
+                for branch, files, env, base in cases]
     copies = []
     try:
         for _ in cases[:-1]:
             copies.append(Path(tempfile.mkdtemp(prefix=f"{repo.name}-case-", dir=repo.parent)) / "repo")
             shutil.copytree(repo, copies[-1], symlinks=True)
-        heads = [(root, branch, env, cut(root, branch, files)) for root, (branch, files, env) in zip([*copies, repo], cases)]
+        heads = [(root, branch, env, (base is not None and on_base(root, base), cut(root, branch, files))[1])
+                 for root, (branch, files, env, base) in zip([*copies, repo], cases)]
         judge = lambda h: gate(h[0], "--pr", *h[3], **{"PR_HEAD_REF": h[1], **h[2]})
         with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 1) as pool:
             return list(pool.map(judge, heads))
@@ -2070,7 +2164,7 @@ def test_a_done_when_item_matches_as_written_or_as_rendered(repo):
             assert r.returncode == 1 and "more than one checkbox line" in r.stdout, (one, second, r.stdout)
     # a link straddling the item's end shows the reader something else, so the box does not carry it;
     # read as written, a box must not go on with the item's last word or a marker either
-    for cut, box in (("ship step [", "ship step [follow](u)-up"), ("ship [fol", "ship [follow](u)-up"), ("ship [p", "ship [p](u)ending"),
+    cuts = (("ship step [", "ship step [follow](u)-up"), ("ship [fol", "ship [follow](u)-up"), ("ship [p", "ship [p](u)ending"),
                      ("ship [fol](pending", "ship [fol](pending)low-up"), ("ship *fol", "ship *follow*-up"),
                      ("ship `fol", "ship `follow`-up"), ("ship _pend", "ship _pending_"), ("ship *follow", "ship *follow*-up"),
                      ("ship *fol*", "ship *fol*low up"), ("ship *fol", "ship *fol<ins></ins>low*-up"),
@@ -2085,10 +2179,11 @@ def test_a_done_when_item_matches_as_written_or_as_rendered(repo):
                      ("the `deploy` job can roll back", "the `deploy` job can roll back[<ins></ins>](x)log"),
                      ("the `tsc` build passes, fol", "the `tsc` build passes, fol[<ins></ins>](x)low-up"),
                      ("the `tsc` build passes; fol", "the `tsc` build passes; fol[![](i.png)](x)low-up"),
-                     ("the `deploy` job can roll back!", "the `deploy` job can roll back![](x)log")):
-        on_base(repo, {SPEC: spec(done_when=[cut])})
-        r = done(f"- [x] {box}\n")
-        assert r.returncode == 1 and f"missing: {cut}" in r.stdout, (cut, r.stdout)
+                     ("the `deploy` job can roll back!", "the `deploy` job can roll back![](x)log"))
+    for (item_cut, box), r in each_pr(repo, lambda c: pr_case(BRANCH, {**CODE, PLAN: plan(pr=42), CATALOG: row},
+                                                              base={SPEC: spec(done_when=[c[0]])}, **meta,
+                                                              PR_BODY=f"Spec: {SPEC}\nPlan: {PLAN}\n\n- [x] {c[1]}\n"), cuts):
+        assert r.returncode == 1 and f"missing: {item_cut}" in r.stdout, (item_cut, r.stdout)
     # a plain item is read as main reads it: a count with markup stays a count (red-team, this PR)
     on_base(repo, {SPEC: spec(done_when=["the registry test passes"])})
     for tail, r in judged(dones, lambda tail: f"- [x] the registry test passes{tail}\n", (": 12 passed, **0** skipped", " (`12` passed, `0` skipped)", ": 12 passed, _0_ skipped")):
@@ -4987,7 +5082,7 @@ FAKE_BATCH = {
                                                       ["after the last of 1 object"]),
 }
 # Per case, what the stand-in git does besides its answer: bytes it then keeps writing, and its stderr.
-FAKE_BATCH_EXTRA = {case: ((64 << 20) if case == "overlong header, output pending" else 256 * 1024 if "pending" in case else 0, "fatal: boom\n" if case.startswith("early end") else "")
+FAKE_BATCH_EXTRA = {case: ((64 << 20) if case in ("overlong header, output pending", "output after the last object, output pending") else 256 * 1024 if "pending" in case else 0, "fatal: boom\n" if case.startswith("early end") else "")
                     for case in FAKE_BATCH}
 FAKE_BATCH_PAD = {"early end: 64 MiB of stderr": 64 << 20}   # bytes of stderr written after the case's own
 FAKE_BATCH_BOUNDED = {"early end: 64 MiB of stderr": 4096 + 200, "overlong header, output pending": 200 + 66,
@@ -5088,10 +5183,11 @@ def test_materialize_names_the_refused_entry_and_checks_every_field(repo, tmp_pa
     unbounded = {case: len(seen[f"case{cases.index(case):02d}"][1]) for case, most in FAKE_BATCH_BOUNDED.items()
                  if len(seen[f"case{cases.index(case):02d}"][1]) > most}
     assert unbounded == {}, unbounded
-    # The header and stderr reads are bounded too, not only the message: 64 MiB of either left in git's output never
-    # raises the reader's peak memory by more than 8 MiB (#1700 pass 35 R4 F1).
+    # The header, stderr and trailing-output reads are bounded too, not only the message: 64 MiB of any of them left
+    # in git's output never raises the reader's peak memory by more than 8 MiB (#1700 pass 35 R4 F1, pass 36 R4 F1).
     held = {case: seen[f"case{cases.index(case):02d}"][2]
-            for case in ("early end: 64 MiB of stderr", "overlong header, output pending")}
+            for case in ("early end: 64 MiB of stderr", "overlong header, output pending",
+                         "output after the last object, output pending")}
     assert all(kib < 8 * 1024 for kib in held.values()), held
     # The stderr bound is exactly 4 KiB: "fatal: boom\n" and then 4084 of the 64 MiB of e's (pass 24 R4 F1).
     shown = seen[f"case{cases.index('early end: 64 MiB of stderr'):02d}"][1]
@@ -6316,6 +6412,72 @@ def test_measure_inventory_render_ctrl_c_at_a_deferred_section_exit_ends_the_run
     run_exit_interrupt_probe(tmp_path, "section-exit")
 
 
+CLEANUP_START_PROBE = r"""
+import contextlib,importlib.util,linecache,os,signal,sys,time
+s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+mode=sys.argv[2];state={'armed':False,'fired':False}
+real_popen=m.subprocess.Popen
+def popen(*a,**kw):                # the worker's pid, for the parent to check it is gone
+    p=real_popen(*a,**kw);open(sys.argv[3],'w').write(str(p.pid));return p
+m.subprocess.Popen=popen
+def prof(frame,event,arg):         # the cleanup's first defer_deadline call, before its block takes effect
+    if not state['armed']: return
+    if mode=='after-block':        # or just after the block takes effect, before defer_deadline yields
+        up=frame.f_back
+        if (event=='return' and frame.f_code is signal.pthread_sigmask.__code__ and up.f_code.co_name=='defer_deadline'
+                and up.f_back.f_back.f_code.co_name=='run_bounded'
+                and 'SIGALRM, *also' in linecache.getline(up.f_code.co_filename,up.f_lineno)):
+            state['armed']=False;sys.setprofile(None);raise KeyboardInterrupt('second Ctrl-C after the block')
+        return
+    if (event=='call' and frame.f_code is contextlib._GeneratorContextManager.__init__.__code__
+            and frame.f_back.f_back.f_code.co_name=='run_bounded'):
+        state['armed']=False;sys.setprofile(None)
+        if mode=='second-ctrl-c': raise KeyboardInterrupt('second Ctrl-C as the cleanup starts')
+        os.kill(os.getpid(),signal.SIGALRM)   # the whole deadline, handled there by the real deadline_guard
+real_wait=m.threading.Event.wait
+def wait(self,t=None):             # once the worker runs: a first Ctrl-C, or a main-path failure
+    r=real_wait(self,t)
+    if t==.005 and not state['fired']:
+        state['fired']=True;state['armed']=True;sys.setprofile(prof)
+        if mode=='failure-deadline': raise OSError('a main-path failure')
+        os.kill(os.getpid(),signal.SIGINT)
+    return r
+m.threading.Event.wait=wait
+real_run=m.run_bounded
+m.run_bounded=lambda argv,cwd,**kw:real_run([sys.executable,'-c','import time;time.sleep(30)'],cwd,**kw)
+raise SystemExit(m._main(['--max-seconds','8'],time.monotonic()))
+"""
+
+
+def run_cleanup_start_probe(tmp_path, mode):
+    scratch, pid_file = tmp_path / mode, tmp_path / f"{mode}.pid"
+    scratch.mkdir()
+    r = subprocess.run([sys.executable, "-B", "-c", CLEANUP_START_PROBE, str(REPO / MEASURE), mode, str(pid_file)],
+                       capture_output=True, text=True, timeout=20, cwd=tmp_path, env={**os.environ, "TMPDIR": str(scratch)})
+    pid = int(pid_file.read_text())
+    try:
+        alive = b"time.sleep(30)" in Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        alive = False
+    if alive:
+        os.kill(pid, signal.SIGKILL)
+    assert not alive and not list(scratch.iterdir()), (mode, alive, list(scratch.iterdir()), r.stderr[-2000:])
+    return r
+
+
+def test_measure_inventory_render_signal_as_the_cleanup_starts_still_runs_the_cleanup(tmp_path):
+    """A second Ctrl-C, or the whole deadline after a main-path failure, handled as run_bounded's finally starts and
+    before the cleanup's block takes effect or just after (the mask is then restored before the rerun), reruns the
+    cleanup under the block: the worker is killed, the scratch root removed, and the run ends at once as a Ctrl-C, or
+    with its report (#1700 pass 35 R1 F3, pass 36 R1 F1, F2)."""
+    for mode in ("second-ctrl-c", "after-block"):
+        r = run_cleanup_start_probe(tmp_path, mode)
+        assert r.returncode == -signal.SIGINT, (mode, r.returncode, r.stderr[-2000:])
+    r = run_cleanup_start_probe(tmp_path, "failure-deadline")
+    report = json.loads(r.stdout)
+    assert r.returncode == 1 and report["reason"] == "time_limit" and report["scratch_root_removed"], report
+    assert report["owned_family_gone"], report
+
 NOTICE_PROBE = r"""
 import importlib.util,json,os,select,socket,sys,threading,time
 s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
@@ -6593,9 +6755,12 @@ def setter(*a):
     return real_fcntl(*a)
 real_fcntl=fcntl.fcntl;fcntl.fcntl=setter
 out={};saved=os.dup(2)
-def rd(fd):         # never waits long: a notice that was not written reads as nothing
-    import select
-    return os.read(fd,4096).decode() if select.select([fd],[],[],2)[0] else ''
+def rd(fd):         # reads until both notice lines arrive or 2 s pass: a terminal can hand them over one at a time
+    import select,time
+    text,end='',time.monotonic()+2
+    while text.count('\n')<2 and select.select([fd],[],[],max(0,end-time.monotonic()))[0]:
+        text+=os.read(fd,4096).decode()
+    return text
 def run(kind,fd,read):
     os.dup2(fd,2);before=os.get_blocking(2)
     try:
@@ -6627,29 +6792,42 @@ NO_REOPEN_PROBE = r"""
 import importlib.util,json,os,pty,select,sys
 s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 real_os=os
-class Refused:      # another user's pipe or terminal: reopening it through /proc is refused, a plain write is not
+refusal=[None]
+class Refused:      # another user's pipe or terminal (EACCES), or /dev/tty after setsid (ENXIO): the reopen is refused
     def __getattr__(self,name): return getattr(real_os,name)
     def open(self,path,*a,**kw):
-        if str(path).startswith('/proc/self/fd/'): raise PermissionError(13,'Permission denied',path)
+        if refusal[0] and str(path).startswith('/proc/self/fd/'): raise OSError(refusal[0],os.strerror(refusal[0]),path)
         return real_os.open(path,*a,**kw)
 m.os=Refused();out={};saved=os.dup(2)
-def rd(fd): return os.read(fd,4096).decode() if select.select([fd],[],[],2)[0] else ''
+def rd(fd):         # reads until both notice lines arrive or 2 s pass: a terminal can hand them over one at a time
+    import select,time
+    text,end='',time.monotonic()+2
+    while text.count('\n')<2 and select.select([fd],[],[],max(0,end-time.monotonic()))[0]:
+        text+=os.read(fd,4096).decode()
+    return text
 def run(kind,fd,read):
     os.dup2(fd,2)
     try: m.write_notices(['one '+kind,'two '+kind]);err=None
     except BaseException as e: err=f'{type(e).__name__}:{e}'
     blocking=os.get_blocking(2);os.dup2(saved,2)
     out[kind]={'error':err,'blocking':blocking,'text':read()}
+import errno
+refusal[0]=errno.EACCES
 r,w=os.pipe();run('pipe',w,lambda:rd(r))
 mfd,sfd=pty.openpty();run('terminal',sfd,lambda:rd(mfd))
+refusal[0]=errno.ENXIO
+mfd,sfd=pty.openpty();run('setsid terminal',sfd,lambda:rd(mfd))
+refusal[0]=None     # a pty master: its reopen would make a new pty that nobody reads
+mfd,sfd=pty.openpty();run('pty master',mfd,lambda:rd(sfd))
 print(json.dumps(out))
 """
 
 
 def test_measure_inventory_render_notice_arrives_when_stderr_cannot_be_reopened(tmp_path):
     """A pipe or terminal another user created (after su or sudo -u) cannot be reopened through /proc, though a plain
-    write to it works; the notice then goes through one toggled write, so it still arrives, and the descriptor is
-    blocking again afterwards (#1700 pass 35 R1 F4, R2 F2, R3 F1)."""
+    write to it works, and so can /dev/tty after setsid (ENXIO); a pty master's reopen makes a new pty. The notice then
+    goes through one toggled write, so it still arrives, and the descriptor is blocking again afterwards (#1700 pass 35
+    R1 F4, R2 F2, R3 F1, pass 36 R1 F3)."""
     r = subprocess.run([sys.executable, "-B", "-c", NO_REOPEN_PROBE, str(REPO / MEASURE)], capture_output=True,
                        text=True, timeout=30, cwd=tmp_path)
     assert r.returncode == 0, r.stdout + r.stderr
