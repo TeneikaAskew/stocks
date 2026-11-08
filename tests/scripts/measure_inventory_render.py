@@ -122,6 +122,11 @@ def defer_deadline(*also: signal.Signals):
                 signal.pthread_sigmask(signal.SIG_SETMASK, previous)
                 if not interrupted:
                     raise
+            except KeyboardInterrupt:
+                # A Ctrl-C handled as this call starts runs before the mask changes too, so the restore is done again
+                # (#1700 pass 42 R1 F2).
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+                raise
 
 
 def process_start(pid: int) -> int:
@@ -1132,22 +1137,45 @@ def deadline_guard(deadline: float):
     previous = signal.getsignal(signal.SIGALRM)
     def expired(_signal, _frame):
         raise DeliveryDeadline("whole command deadline exceeded")
+    interrupted = False
     try:
         signal.signal(signal.SIGALRM, expired)
         signal.setitimer(signal.ITIMER_REAL, remaining(deadline))
         yield
         remaining(deadline)
+    except KeyboardInterrupt:
+        interrupted = True                             # a Ctrl-C is never replaced by the deadline, as in defer_deadline
+        raise
     finally:
         try:
-            signal.setitimer(signal.ITIMER_REAL, 0)
+            try:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+            except DeliveryDeadline:
+                if not interrupted:
+                    raise
+            except KeyboardInterrupt:
+                interrupted = True
+                raise
         finally:
             # A deadline handled as the timer is stopped is raised from setitimer's call, so the caller's handler
             # is restored here as well (#1700 pass 41 R1 F1); the timer is stopped by then, so none can follow.
             # Ignoring SIGALRM discards one still pending behind a deferred mask (a Ctrl-C that lands as a
             # deferred section's exit starts leaves it so), so restoring the default action cannot kill the
-            # process later (#1700 pass 35 R1 F2).
-            signal.signal(signal.SIGALRM, signal.SIG_IGN)
-            signal.signal(signal.SIGALRM, previous)
+            # process later (#1700 pass 35 R1 F2). A Ctrl-C, or the deadline, handled as either call starts runs
+            # before that call installs anything, so the caller's handler is restored again (#1700 pass 42 R1 F1,
+            # R4 F1); a deadline handled there with a Ctrl-C does not replace it. The timer is stopped by then, so
+            # only a further Ctrl-C at that call could stop the restore.
+            try:
+                signal.signal(signal.SIGALRM, signal.SIG_IGN)
+            except DeliveryDeadline:
+                if not interrupted:
+                    raise
+            finally:
+                try:
+                    signal.signal(signal.SIGALRM, previous)
+                except BaseException:
+                    signal.signal(signal.SIGALRM, previous)
+                    raise
 
 
 def write_bounded(fd: int, raw: bytes, deadline: float):

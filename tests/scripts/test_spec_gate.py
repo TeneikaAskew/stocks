@@ -6643,6 +6643,81 @@ def test_measure_inventory_render_deadline_as_the_timer_stops_restores_the_calle
                        capture_output=True, text=True, timeout=30)
     assert r.returncode == 0 and r.stdout == "deadline as the timer stops\nhandler restored\n", (r.returncode, r.stdout, r.stderr[-2000:])
 
+GUARD_RESTORE_PROBE = r"""
+import ctypes,importlib.util,itertools,operator,os,signal,sys,time
+s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+mode=sys.argv[2];kill=ctypes.CDLL(None).kill;sent=[]
+def mine(_signal,_frame): print('caller handler ran')
+signal.signal(signal.SIGALRM,mine)
+real_signal,real_setitimer=signal.signal,signal.setitimer
+def at(signals,call,*args):   # the signals land just as the real call starts, with no check in between
+    sent.append(1)
+    return list(itertools.starmap(operator.call,[*((kill,os.getpid(),int(n)) for n in signals),(call,*args)]))[-1]
+def sig(signum,handler):
+    if not sent and sys._getframe(1).f_code.co_name=='deadline_guard' and handler is {'ign':signal.SIG_IGN,'previous':mine}.get(mode):
+        return at([signal.SIGINT],real_signal,signum,handler)
+    return real_signal(signum,handler)
+def itm(which,seconds,*a):
+    if mode=='both' and seconds==0 and not sent:
+        return at([signal.SIGINT,signal.SIGALRM],real_setitimer,which,seconds,*a)
+    return real_setitimer(which,seconds,*a)
+signal.signal,signal.setitimer=sig,itm
+try:
+    with m.deadline_guard(time.monotonic()+5):
+        pass
+    print('no signal')
+except KeyboardInterrupt:
+    print('Ctrl-C at the restore')
+except m.DeliveryDeadline:
+    print('deadline at the restore')
+signal.signal,signal.setitimer=real_signal,real_setitimer
+h=signal.getsignal(signal.SIGALRM)
+print('handler restored' if h is mine else 'handler left: '+getattr(h,'__qualname__',repr(h)))
+"""
+
+
+def test_measure_inventory_render_ctrl_c_at_the_guards_handler_restores_still_restores_the_callers_handler():
+    """A Ctrl-C handled as either of deadline_guard's two SIGALRM handler restores starts runs before that call
+    installs anything; the caller's handler is still restored, so a later SIGALRM in the caller is neither turned
+    into the deadline nor ignored (#1700 pass 42 R1 F1, R4 F1). A Ctrl-C and the deadline handled together as the
+    timer is stopped leave the Ctrl-C, not the deadline, and the handler restored too."""
+    for mode, outcome in (("ign", "Ctrl-C"), ("previous", "Ctrl-C"), ("both", "Ctrl-C"), ("none", "no signal")):
+        r = subprocess.run([sys.executable, "-B", "-c", GUARD_RESTORE_PROBE, str(REPO / MEASURE), mode],
+                           capture_output=True, text=True, timeout=30)
+        expected = ("no signal" if outcome == "no signal" else f"{outcome} at the restore") + "\nhandler restored\n"
+        assert r.returncode == 0 and r.stdout == expected, (mode, r.returncode, r.stdout, r.stderr[-2000:])
+
+TWO_CTRL_C_PROBE = r"""
+import ctypes,importlib.util,itertools,operator,os,signal,sys
+s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+kill=ctypes.CDLL(None).kill;real=signal.pthread_sigmask;n={'c':0}
+def psm(how,mask):   # a Ctrl-C lands just as each of the section's two mask restores (its 3rd and 4th calls) starts
+    if sys._getframe(1).f_code.co_name=='defer_deadline':
+        n['c']+=1
+        if n['c'] in (3,4):
+            return list(itertools.starmap(operator.call,[(kill,os.getpid(),int(signal.SIGINT)),(real,how,mask)]))[-1]
+    return real(how,mask)
+before=real(signal.SIG_BLOCK,set())
+signal.pthread_sigmask=psm
+try:
+    with m.defer_deadline():
+        pass
+    print('past the section')
+except KeyboardInterrupt:
+    print('Ctrl-C at the section exit')
+signal.pthread_sigmask=real
+print('mask restored' if real(signal.SIG_BLOCK,set())==before else 'mask left changed')
+"""
+
+
+def test_measure_inventory_render_two_ctrl_cs_at_a_sections_two_restores_still_restore_the_mask():
+    """A Ctrl-C handled as each of a deferred section's two mask restores starts (a section that does not defer
+    SIGINT) comes out, and the mask is still restored, so the deadline is not blocked for the rest of the process
+    (#1700 pass 42 R1 F2)."""
+    r = subprocess.run([sys.executable, "-B", "-c", TWO_CTRL_C_PROBE, str(REPO / MEASURE)],
+                       capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0 and r.stdout == "Ctrl-C at the section exit\nmask restored\n", (r.returncode, r.stdout, r.stderr[-2000:])
+
 NOTICE_PROBE = r"""
 import importlib.util,json,os,select,socket,sys,threading,time
 s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
