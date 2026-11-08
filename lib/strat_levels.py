@@ -971,6 +971,367 @@ def price_cents(x) -> int:
     return int(Decimal(str(float(x))).quantize(Decimal("0.01"), ROUND_HALF_UP) * 100)
 
 
+# ─── Per-ticker level parameters (FEAT-STRAT-001, 2026-11-08) ────────────
+#
+# Every distance the level and plan code decides with is a per-ticker value
+# calibrated from the ticker's own bars (lib.level_calibration) and stored in
+# ticker_level_params, under the statistic, lookback and minimum sample of
+# level_param_policy (gcp/schema.sql). load_level_params reads the rows in
+# force on a session for every ticker of a run in one query. There is no
+# default row and no constant behind it.
+
+PARAM_OK = 'ok'
+# Statuses a calibration run writes (ticker_level_params.status).
+CALIBRATION_STATUSES = ('ok', 'insufficient_history', 'input_unavailable',
+                        'no_positive_target')
+# Statuses only the loader gives: no row for the ticker and key, or rows only
+# in an ATR basis other than the policy's basis in force on the session.
+PARAMS_UNAVAILABLE = 'params_unavailable'
+PARAMS_BASIS_MISMATCH = 'params_basis_mismatch'
+LOADER_STATUSES = (PARAMS_UNAVAILABLE, PARAMS_BASIS_MISMATCH)
+
+# Policy keys that are not parameters.
+POLICY_ATR_BASIS = 'atr_basis'
+POLICY_CALIBRATION_UNIVERSE = 'calibration_universe'
+NON_PARAMETER_KEYS = (POLICY_ATR_BASIS, POLICY_CALIBRATION_UNIVERSE)
+
+# The ATR columns a basis may name, with the add_all_indicators column each
+# is read from in a DataLoader frame.
+ATR_COLUMNS = {'atr_14': 'ATR14', 'atr_5': 'ATR5'}
+
+PERSONAS = ('aggressive', 'neutral', 'conservative')
+
+
+def trigger_window_key(side: str) -> str:
+    return 'trigger_window_long_atr' if side == 'long' else 'trigger_window_short_atr'
+
+
+def entry_buffer_key(persona: str, edge: str) -> str:
+    return f'entry_buffer_{persona}_{edge}_atr'
+
+
+def stop_key(persona: str) -> str:
+    return f'stop_{persona}_atr'
+
+
+MIN_STOP_KEY = 'min_stop_atr'
+PM_SPIKE_KEY = 'pm_spike_atr'
+PM_STALE_PRINT_KEY = 'pm_stale_print_atr'
+LEVEL_CLUSTER_KEY = 'level_cluster_atr'
+
+
+def target_key(persona: str, k: int) -> str:
+    return f'target_{persona}_{k}_r'
+
+
+class LevelParamsUnavailable(RuntimeError):
+    """The parameter tables cannot be read: a missing table, a failed query,
+    or an empty policy. An INTERNAL failure (CLAUDE.md 3.7): the brief exits
+    non-zero, the insight run is marked failed with reason
+    level_params_unavailable, the signal monitor skips its level refresh."""
+
+    reason = 'level_params_unavailable'
+
+
+class LevelParamUnavailable(LookupError):
+    """A caller asked for the value of a parameter whose status is not ok.
+    Names the key, the status and the sample so the copy can say why."""
+
+    def __init__(self, param: 'LevelParam'):
+        self.param = param
+        self.key = param.key
+        self.status = param.status
+        super().__init__(
+            f"level parameter {param.key} for {param.ticker or '<ticker>'} is "
+            f"{param.status} (sample_n={param.sample_n}, min_sample={param.min_sample})")
+
+
+def _iso(v) -> Optional[str]:
+    d = _to_date(v)
+    return d.isoformat() if d is not None else None
+
+
+def _opt_float(v) -> Optional[float]:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f else None
+
+
+def _opt_int(v) -> Optional[int]:
+    f = _opt_float(v)
+    return int(f) if f is not None else None
+
+
+def _json_obj(v) -> dict:
+    import json as _json  # noqa: PLC0415
+    if v is None:
+        return {}
+    if isinstance(v, dict):
+        return dict(v)
+    if isinstance(v, str):
+        try:
+            out = _json.loads(v)
+        except ValueError:
+            return {}
+        return out if isinstance(out, dict) else {}
+    return {}
+
+
+@dataclass(frozen=True)
+class LevelParam:
+    """One parameter of one ticker as in force on one session."""
+    key: str
+    status: str
+    value: Optional[float] = None
+    ticker: str = ''
+    effective_from: Optional[str] = None
+    method_id: Optional[str] = None
+    sample_n: Optional[int] = None
+    min_sample: Optional[int] = None
+    statistic_q: Optional[float] = None
+    lookback_sessions: Optional[int] = None
+    input_from: Optional[str] = None
+    input_to: Optional[str] = None
+    run_id: Optional[str] = None
+    atr_basis: Optional[str] = None
+    policy_effective_from: Optional[str] = None
+    source: Optional[str] = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status == PARAM_OK and self.value is not None
+
+    def to_basis(self) -> dict:
+        return {
+            'value': self.value, 'status': self.status,
+            'effective_from': self.effective_from, 'method_id': self.method_id,
+            'sample_n': self.sample_n, 'min_sample': self.min_sample,
+            'statistic_q': self.statistic_q,
+            'lookback_sessions': self.lookback_sessions,
+            'input_from': self.input_from, 'input_to': self.input_to,
+            'run_id': self.run_id, 'atr_basis': self.atr_basis,
+            'policy_effective_from': self.policy_effective_from,
+            'source': self.source,
+        }
+
+    @classmethod
+    def from_basis(cls, key: str, d: dict, ticker: str = '') -> 'LevelParam':
+        status = d.get('status') or PARAMS_UNAVAILABLE
+        value = _opt_float(d.get('value')) if status == PARAM_OK else None
+        if status == PARAM_OK and value is None:
+            raise ValueError(f"level_basis records {key} as ok with no value")
+        return cls(
+            key=key, status=status, value=value, ticker=ticker,
+            effective_from=_iso(d.get('effective_from')), method_id=d.get('method_id'),
+            sample_n=_opt_int(d.get('sample_n')), min_sample=_opt_int(d.get('min_sample')),
+            statistic_q=_opt_float(d.get('statistic_q')),
+            lookback_sessions=_opt_int(d.get('lookback_sessions')),
+            input_from=_iso(d.get('input_from')), input_to=_iso(d.get('input_to')),
+            run_id=(str(d['run_id']) if d.get('run_id') is not None else None),
+            atr_basis=d.get('atr_basis'),
+            policy_effective_from=_iso(d.get('policy_effective_from')),
+            source=d.get('source'),
+        )
+
+
+@dataclass
+class LevelParams:
+    """Every level and plan parameter of one ticker in force on one session,
+    with the policy that produced them. ``value(key)`` answers only for status
+    ok and raises LevelParamUnavailable otherwise; ``status(key)`` always
+    answers."""
+    ticker: str
+    session_date: Optional[date_type]
+    atr_basis: str
+    policy_effective_from: Optional[str]
+    params: Dict[str, LevelParam] = field(default_factory=dict)
+
+    def param(self, key: str) -> LevelParam:
+        p = self.params.get(key)
+        if p is None:
+            return LevelParam(key=key, status=PARAMS_UNAVAILABLE, ticker=self.ticker)
+        return p
+
+    def status(self, key: str) -> str:
+        return self.param(key).status
+
+    def ok(self, key: str) -> bool:
+        return self.param(key).ok
+
+    def value(self, key: str) -> float:
+        p = self.param(key)
+        if not p.ok:
+            raise LevelParamUnavailable(p)
+        return float(p.value)
+
+    def first_not_ok(self, keys) -> Optional[LevelParam]:
+        for k in keys:
+            p = self.param(k)
+            if not p.ok:
+                return p
+        return None
+
+    def to_basis(self) -> dict:
+        return {
+            'atr_basis': self.atr_basis,
+            'policy_effective_from': self.policy_effective_from,
+            'params': {k: p.to_basis() for k, p in sorted(self.params.items())},
+        }
+
+    @classmethod
+    def from_basis(cls, ticker: str, session_date, d: Optional[dict]) -> Optional['LevelParams']:
+        """The parameters a level_basis recorded, or None when it recorded
+        none (a basis written before per-ticker parameters)."""
+        if not isinstance(d, dict) or not isinstance(d.get('params'), dict) or not d.get('atr_basis'):
+            return None
+        return cls(
+            ticker=ticker, session_date=_to_date(session_date),
+            atr_basis=str(d['atr_basis']),
+            policy_effective_from=_iso(d.get('policy_effective_from')),
+            params={k: LevelParam.from_basis(k, v, ticker)
+                    for k, v in d['params'].items() if isinstance(v, dict)},
+        )
+
+
+LEVEL_PARAMS_SQL = (
+    "SELECT 'policy' AS row_kind, NULL AS ticker, p.param_key, NULL AS value, "
+    "NULL AS status, NULL AS atr_basis, p.method_id, p.statistic_q, "
+    "p.lookback_sessions, p.min_sample, p.extra, p.effective_from, "
+    "NULL AS policy_effective_from, NULL AS sample_n, NULL AS input_from, "
+    "NULL AS input_to, NULL AS run_id, NULL AS source "
+    "FROM level_param_policy p WHERE p.effective_from <= :session_date "
+    "UNION ALL "
+    "SELECT 'ticker' AS row_kind, t.ticker, t.param_key, t.value, t.status, "
+    "t.atr_basis, t.method_id, NULL AS statistic_q, NULL AS lookback_sessions, "
+    "NULL AS min_sample, NULL AS extra, t.effective_from, "
+    "t.policy_effective_from, t.sample_n, t.input_from, t.input_to, t.run_id, "
+    "t.source FROM ("
+    "SELECT tp.ticker, tp.param_key, tp.value, tp.status, tp.atr_basis, "
+    "tp.method_id, tp.effective_from, tp.policy_effective_from, tp.sample_n, "
+    "tp.input_from, tp.input_to, tp.run_id, tp.source, "
+    "ROW_NUMBER() OVER (PARTITION BY tp.ticker, tp.param_key, tp.atr_basis "
+    "ORDER BY tp.effective_from DESC) AS rn "
+    "FROM ticker_level_params tp "
+    "WHERE tp.ticker IN ({tickers}) AND tp.effective_from <= :session_date"
+    ") t WHERE t.rn = 1"
+)
+
+
+def policy_in_force(rows) -> Dict[str, dict]:
+    """The policy row in force per key from policy rows already bounded to
+    effective_from on or before the session: the greatest effective_from."""
+    out: Dict[str, dict] = {}
+    for r in rows:
+        key = r['param_key']
+        eff = _iso(r.get('effective_from'))
+        if key not in out or (eff or '') > (out[key]['effective_from'] or ''):
+            out[key] = {
+                'param_key': key, 'method_id': r.get('method_id'),
+                'statistic_q': _opt_float(r.get('statistic_q')),
+                'lookback_sessions': _opt_int(r.get('lookback_sessions')),
+                'min_sample': _opt_int(r.get('min_sample')),
+                'extra': _json_obj(r.get('extra')), 'effective_from': eff,
+            }
+    return out
+
+
+def policy_atr_basis(policy: Dict[str, dict]) -> str:
+    row = policy.get(POLICY_ATR_BASIS)
+    column = (row or {}).get('extra', {}).get('column')
+    if column not in ATR_COLUMNS:
+        raise LevelParamsUnavailable(
+            f"level_param_policy has no usable atr_basis row in force (got {column!r}); "
+            f"expected one of {sorted(ATR_COLUMNS)}")
+    return column
+
+
+def load_level_params(query_fn, tickers, session_date) -> Dict[str, LevelParams]:
+    """The parameters in force on `session_date` for every ticker in
+    `tickers`, in ONE query. `query_fn(sql, params)` returns a DataFrame and
+    must raise on failure (gcp.database.query_to_dataframe_strict).
+
+    Per ticker and parameter key, the row used is, among the rows whose
+    atr_basis is the policy atr_basis in force on the session, the one with
+    the greatest effective_from on or before it. A key with rows only in
+    another basis gets status params_basis_mismatch (no row of another basis
+    is ever used); a key with no row gets params_unavailable. A missing
+    table, a failed query or an empty policy raises LevelParamsUnavailable.
+
+    Callers read once per run and pass the result to every build: the run's
+    cache is the dict this returns.
+    """
+    session = _to_date(session_date)
+    if session is None:
+        raise LevelParamsUnavailable(f"load_level_params: no session date ({session_date!r})")
+    names = sorted({str(t).upper() for t in tickers if t})
+    if not names:
+        return {}
+    placeholders = ', '.join(f':t{i}' for i in range(len(names)))
+    sql_params = {f't{i}': t for i, t in enumerate(names)}
+    sql_params['session_date'] = session.isoformat()
+    try:
+        df = query_fn(LEVEL_PARAMS_SQL.format(tickers=placeholders), sql_params)
+    except Exception as exc:  # noqa: BLE001 re-raised typed, never swallowed
+        raise LevelParamsUnavailable(f"level parameter query failed: {exc}") from exc
+    if df is None:
+        raise LevelParamsUnavailable("level parameter query returned no result set")
+    records = df.to_dict('records') if len(df) else []
+    policy = policy_in_force([r for r in records if r.get('row_kind') == 'policy'])
+    if not policy:
+        raise LevelParamsUnavailable(
+            f"level_param_policy holds no row in force on {session.isoformat()}")
+    basis = policy_atr_basis(policy)
+    policy_version = max(p['effective_from'] or '' for p in policy.values()) or None
+    keys = sorted(k for k in policy if k not in NON_PARAMETER_KEYS)
+    by_ticker: Dict[str, Dict[str, list]] = {t: {} for t in names}
+    for r in records:
+        if r.get('row_kind') != 'ticker':
+            continue
+        t = str(r.get('ticker') or '').upper()
+        if t in by_ticker:
+            by_ticker[t].setdefault(r['param_key'], []).append(r)
+    out: Dict[str, LevelParams] = {}
+    for t in names:
+        params: Dict[str, LevelParam] = {}
+        for key in keys:
+            pol = policy[key]
+            common = dict(key=key, ticker=t, min_sample=pol['min_sample'],
+                          statistic_q=pol['statistic_q'],
+                          lookback_sessions=pol['lookback_sessions'])
+            rows = by_ticker[t].get(key, [])
+            same = [r for r in rows if r.get('atr_basis') == basis]
+            if same:
+                r = max(same, key=lambda x: _iso(x.get('effective_from')) or '')
+                status = r.get('status') or PARAMS_UNAVAILABLE
+                value = _opt_float(r.get('value')) if status == PARAM_OK else None
+                if status == PARAM_OK and value is None:
+                    raise LevelParamsUnavailable(
+                        f"ticker_level_params {t} {key} is ok with no value; the table's CHECK was bypassed")
+                params[key] = LevelParam(
+                    status=status, value=value,
+                    effective_from=_iso(r.get('effective_from')), method_id=r.get('method_id'),
+                    sample_n=_opt_int(r.get('sample_n')),
+                    input_from=_iso(r.get('input_from')), input_to=_iso(r.get('input_to')),
+                    run_id=(str(r['run_id']) if r.get('run_id') is not None else None),
+                    atr_basis=basis,
+                    policy_effective_from=_iso(r.get('policy_effective_from')),
+                    source=r.get('source'), **common)
+            elif rows:
+                other = max(rows, key=lambda x: _iso(x.get('effective_from')) or '')
+                params[key] = LevelParam(
+                    status=PARAMS_BASIS_MISMATCH, method_id=pol['method_id'],
+                    atr_basis=other.get('atr_basis'),
+                    effective_from=_iso(other.get('effective_from')), **common)
+            else:
+                params[key] = LevelParam(status=PARAMS_UNAVAILABLE,
+                                         method_id=pol['method_id'], **common)
+        out[t] = LevelParams(ticker=t, session_date=session, atr_basis=basis,
+                             policy_effective_from=policy_version, params=params)
+    return out
+
+
 # ─── One level builder (FEAT-STRAT-001) ───────────────────────────────────
 #
 # build_session_levels is the only code that turns daily bars, ATR(14) and a
