@@ -2538,7 +2538,8 @@ class SignalMonitor:
                             "session_summary ticker=%s momentum_evaluated=%d "
                             "momentum_fired=%d daily_trades=%d daily_pnl=%.4f "
                             "level_refresh_success=%d level_refresh_empty_df=%d "
-                            "level_refresh_exception=%d",
+                            "level_refresh_exception=%d "
+                            "level_refresh_params_unavailable=%d",
                             t,
                             self.momentum_evaluated_count.get(t, 0),
                             self.momentum_fired_count.get(t, 0),
@@ -2547,6 +2548,9 @@ class SignalMonitor:
                             self.level_refresh_success_count.get(t, 0),
                             self.level_refresh_empty_df_count.get(t, 0),
                             self.level_refresh_exception_count.get(t, 0),
+                            # FEAT-STRAT-001: refreshes skipped because the
+                            # level parameter tables could not be read.
+                            self.level_refresh_params_unavailable_count.get(t, 0),
                         )
                     break
                 print(f"Waiting for market open ({now.strftime('%H:%M:%S %Z')})...")
