@@ -6527,8 +6527,8 @@ def run_finish_probe(tmp_path, mode):
 
 
 def test_measure_inventory_render_notice_wait_leaves_a_shared_stderr_blocking(tmp_path):
-    """Stderr's open file description is shared with other processes, so it is non-blocking only for each write,
-    never during the finishing wait, and every other writer still blocks as usual (#1700 pass 33 R1 F2)."""
+    """Stderr's open file description is shared with other processes, so it stays blocking through the finishing
+    wait and after it (#1700 pass 33 R1 F2); since FIX22 no write changes its flags at all (pass 34 R1 F2)."""
     seen = run_finish_probe(tmp_path, "shared-flag")
     assert seen["blocking_mid_wait"] is True and seen["blocking_after"] is True, seen
 
