@@ -76,6 +76,9 @@ class LevelMap:
     reason_long: Optional[str] = None
     reason_short: Optional[str] = None
     atr: Optional[float] = None
+    # 'ok' or 'premarket_unavailable' from build_session_levels; the brief
+    # prints PREMARKET_MISSING_NOTE when the snapshot was unavailable.
+    premarket_status: Optional[str] = None
 
 
 # ─── Per-leg intraday state (resolver-parity) ─────────────────────────────
@@ -1026,6 +1029,13 @@ ORB_ONLY_COPY = {
     ),
 }
 
+# Owner ruling 2026-11-08: a brief built without the session's premarket
+# snapshot points the reader to Insights, whose refresh reads it later.
+PREMARKET_MISSING_NOTE = (
+    "Premarket levels were not available when this brief ran. "
+    "Refer to Insights for premarket levels."
+)
+
 ORB_ONLY_SCHEMA_DESCRIPTION = (
     "'orb_only' = no trigger on this side; the reason is one of "
     + ", ".join(ORB_ONLY_REASONS)
@@ -1144,6 +1154,7 @@ class SessionLevels:
             reason_long=self.long.reason,
             reason_short=self.short.reason,
             atr=self.atr,
+            premarket_status=self.premarket_status,
         )
 
     def published_prices(self) -> set:
@@ -1826,6 +1837,9 @@ def format_levels_for_brief(
         regime_short = level_map.regime_short or regime
 
     lines = []
+    if level_map.premarket_status == 'premarket_unavailable':
+        lines.append(f"  {PREMARKET_MISSING_NOTE}")
+        lines.append('')
     if regime_compute_error:
         lines.append(
             f"  ⚠ regime classifier failed: {regime_compute_error} "
