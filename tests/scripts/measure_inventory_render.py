@@ -76,9 +76,10 @@ def process_table() -> dict[int, tuple[int, int]]:
 
 
 @contextlib.contextmanager
-def defer_deadline():
-    """Do not lose a returned kernel resource to the deadline before its owner is registered."""
-    previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+def defer_deadline(*also: signal.Signals):
+    """Do not lose a returned kernel resource to the deadline before its owner is registered. The cleanup also
+    defers SIGINT, so a second Ctrl-C is raised after the kill pass, receipt, restore and notices (#1700 pass 32 R1)."""
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM, *also})
     try:
         yield previous
     finally:
@@ -679,7 +680,10 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                     stop.wait(.05)
 
             observer = threading.Thread(target=discover, name="inventory-rss-discovery")
-            observer.start()
+            with defer_deadline(signal.SIGINT):
+                # The thread inherits this mask, so the kernel sends the deadline and Ctrl-C to the main thread,
+                # which defers them in the cleanup; a signal the observer took would still raise there (pass 32 R1).
+                observer.start()
             last = time.monotonic()
             work_deadline = started + max_seconds - min(.5, max_seconds * .25)
             while True:
@@ -745,7 +749,7 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
             report.update(ok=False, reason="cleanup_failure", owned_family_gone=False,
                           cleanup_error="; ".join(cleanup_errors))
         try:
-            with defer_deadline():
+            with defer_deadline(signal.SIGINT):
                 try:
                     stop.set()
                     if observer is not None:
@@ -893,7 +897,7 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                         # cannot be written never replaces the interrupt that is propagating (QUAL2 R1 F2). With stderr
                         # closed at startup sys.stderr is None, and print(file=None) would write to stdout, the report's
                         # channel, so they go to fd 2 itself, where a closed fd is only an OSError (#1700 pass 22 R1 F1).
-                        # SIGALRM is blocked here, so a write to a full stderr pipe would wait past the deadline: each
+                        # SIGALRM and SIGINT are blocked here, so a write to a full stderr pipe would wait past the deadline: each
                         # notice is written to the descriptor without blocking, and one that does not fit is dropped
                         # (#1700 pass 23 R1 F1). A part write is finished within one shared NOTICE_FINISH_SECONDS
                         # budget; one left in part stops the notices, so every later one is dropped (pass 28). That

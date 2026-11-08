@@ -4831,6 +4831,9 @@ def test_materialize_writes_inside_its_directory_only(repo, tmp_path_factory):
     with pytest.raises(ValueError, match="outside"):   # every path is checked before anything is written (pass 31 R4 F2)
         sg.materialize([("100644", oid, "lib/first.py"), ("100644", oid, "../escape.py")], out)
     assert not (out / "lib").exists()
+    with pytest.raises(ValueError, match="outside"):   # a sibling sharing the directory's name as a prefix (pass 32 R4 F1)
+        sg.materialize([("100644", oid, f"../{out.name}x/escape.py")], out)
+    assert not (out.parent / f"{out.name}x").exists()
     sg.materialize([("100644", oid, "lib/model.py")], out)
     assert (out / "lib/model.py").read_bytes() == b"DECISION = 'size'\n" and not (out.parent / "escape.py").exists()
 
@@ -4916,6 +4919,7 @@ FAKE_BATCH = {
     "another object id": (f"{'2' * 40} blob 4\nabcd\n".encode(), 0, ["answered", "2" * 40, "x.bin"]),
     "no separator": (f"{FAKE_OID} blob 4\nabcdX".encode(), 0, ["no separator after x.bin", FAKE_OID]),
     "nonzero exit after a complete answer": (f"{FAKE_OID} blob 4\nabcd\n".encode(), 3, ["failed (3)"]),
+    "killed by a signal after a complete answer": (f"{FAKE_OID} blob 4\nabcd\n".encode(), -9, ["failed (-9)"]),   # pass 32 R4 F2
     "size not a number": (f"{FAKE_OID} blob 12abc\n".encode() + b"z" * 13, 0, ["answered", "12abc", "x.bin"]),
     "negative size": (f"{FAKE_OID} blob -1\n".encode() + b"z" * 4096, 0, ["answered", "blob -1", "x.bin"]),
     "size with an underscore": (f"{FAKE_OID} blob 1_2\n".encode() + b"z" * 12 + b"\n", 0, ["answered", "1_2", "x.bin"]),
@@ -5024,7 +5028,9 @@ def test_materialize_names_the_refused_entry_and_checks_every_field(repo, tmp_pa
                               "except BrokenPipeError:\n"
                               " sys.stderr.write('fake-git: broken pipe\\n');sys.stderr.flush();os._exit(141)\n"
                               "sys.stderr.write(os.environ['FAKE_GIT_STDERR']+'e'*int(os.environ['FAKE_GIT_PAD']));sys.stderr.flush()\n"
-                              "sys.exit(int(os.environ['FAKE_GIT_EXIT']))\n")
+                              "e=int(os.environ['FAKE_GIT_EXIT'])\n"
+                              "if e<0:os.kill(os.getpid(),-e)   # a negative status is a signal the stand-in sends itself\n"
+                              "sys.exit(e)\n")
     (fake / "git").chmod(0o755)
     work = tmp_path / "fake"
     for sub in ("answers", "exits", "tails", "stderrs", "pads", "into"):
@@ -6112,6 +6118,68 @@ def test_measure_inventory_render_notices_never_wait_on_a_full_stderr_pipe(tmp_p
     assert r.returncode == 0, r.stdout + r.stderr
     assert r.stdout == "interrupt propagated\n", r.stdout
 
+
+
+SECOND_INTERRUPT_PROBE = r"""
+import ctypes,importlib.util,json,os,pathlib,signal,sys,threading,time
+lib=ctypes.CDLL(None);lib.prctl(36,0,0,0,0)
+s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+mode=sys.argv[2];spawned=[];masks=[]
+def blocked():   # this thread's blocked set, from the kernel
+    line=[l for l in pathlib.Path('/proc/thread-self/status').read_text().splitlines() if l.startswith('SigBlk:')][0]
+    bits=int(line.split()[1],16);return [n for n in (signal.SIGINT,signal.SIGALRM) if bits>>(n-1)&1]
+if mode=='spawn':  # the first Ctrl-C lands after fork, the second while the cleanup kills the child
+    real_popen=m.subprocess.Popen
+    def interrupted(*a,**kw):
+        spawned.append(real_popen(*a,**kw));time.sleep(.2)
+        raise KeyboardInterrupt('first Ctrl-C, after fork')
+    m.subprocess.Popen=interrupted
+    real_kill=m.kill_unregistered
+    def second(*a):
+        os.kill(os.getpid(),signal.SIGINT);return real_kill(*a)
+    m.kill_unregistered=second
+    argv=[sys.executable,'-c','import time;time.sleep(20)']
+else:              # one Ctrl-C while the cleanup removes the scratch root of a finished worker
+    real_remove=m.remove_scratch
+    def removing(*a):
+        os.kill(os.getpid(),signal.SIGINT);return real_remove(*a)
+    m.remove_scratch=removing
+    real_discover=m.OwnedFamily.discover
+    def discover(self,**kw):
+        if threading.current_thread() is not threading.main_thread(): masks.append(blocked())
+        return real_discover(self,**kw)
+    m.OwnedFamily.discover=discover
+    argv=[sys.executable,'-c','import time;time.sleep(.3)']
+r,w=os.pipe();real_err=sys.stderr;sys.stderr=os.fdopen(w,'w')
+try:
+    m.run_bounded(argv,pathlib.Path.cwd(),max_rss_bytes=256<<20,max_seconds=5);raised=None
+except KeyboardInterrupt as e:
+    raised=str(e)
+sys.stderr.close();sys.stderr=real_err;notices=os.read(r,65536).decode()
+v=ctypes.c_int();lib.prctl(37,ctypes.byref(v),0,0,0)
+outer=os.environ['TMPDIR']
+print(json.dumps({'raised':raised,'subreaper_after':v.value,'notices':notices,'masks':masks,
+  'roots':[n for n in os.listdir(outer) if n.startswith('measure-render-')],
+  'child_alive':bool(spawned) and spawned[0].poll() is None}))
+if spawned and spawned[0].poll() is None: spawned[0].kill();spawned[0].wait()
+"""
+
+
+def test_measure_inventory_render_cleanup_defers_a_second_interrupt(tmp_path):
+    """The cleanup defers SIGINT as well as SIGALRM, and the discovery thread blocks both, so a Ctrl-C during the
+    kill pass or the removal is raised only after the receipt, the subreaper restore and the notices (pass 32 R1)."""
+    for mode in ("spawn", "bound"):
+        scratch = tmp_path / mode
+        scratch.mkdir()
+        r = subprocess.run([sys.executable, "-B", "-c", SECOND_INTERRUPT_PROBE, str(REPO / MEASURE), mode],
+                           capture_output=True, text=True, timeout=60, cwd=tmp_path, env={**os.environ, "TMPDIR": str(scratch)})
+        assert r.returncode == 0, (mode, r.stdout + r.stderr)
+        report = json.loads(r.stdout)
+        assert report["raised"] == "" and report["subreaper_after"] == 0 and report["roots"] == [], (mode, report)
+        if mode == "spawn":
+            assert not report["child_alive"] and "killed unregistered child" in report["notices"], report
+        else:
+            assert report["masks"] and all(sorted(k) == [2, 14] for k in report["masks"]), report
 
 NOTICE_PROBE = r"""
 import importlib.util,json,os,select,socket,sys,threading,time
