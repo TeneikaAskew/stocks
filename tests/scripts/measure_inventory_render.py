@@ -116,6 +116,10 @@ def defer_deadline(*also: signal.Signals):
             try:
                 signal.pthread_sigmask(signal.SIG_SETMASK, previous)
             except DeliveryDeadline:
+                # The deadline's handler runs as the call starts, before the mask changes, so the restore is done
+                # again here; otherwise a deferred SIGINT stays blocked for the rest of the process (#1700 pass 40 R4
+                # F1). The deadline is one-shot, so it cannot fire again here.
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous)
                 if not interrupted:
                     raise
 
@@ -1192,6 +1196,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _main(argv: list[str] | None, started: float) -> int:
+    outer = sys.exc_info()[1]                          # a Ctrl-C the caller was already handling is not this run's
     # No-output preparse establishes the same lowered bound even for --help/error delivery.
     probe = argparse.ArgumentParser(add_help=False, exit_on_error=False)
     probe.add_argument("--max-seconds", type=lambda s: lower_limit(s, 60), default=60)
@@ -1236,8 +1241,9 @@ def _main(argv: list[str] | None, started: float) -> int:
     except DeliveryDeadline as e:
         # A deadline handled after the cleanup, while a Ctrl-C is propagating (at run_bounded's last calls, or as the
         # timer is stopped), does not turn that Ctrl-C into a plain failure: the run still ends as a Ctrl-C (#1700
-        # pass 39 R1 F2). Otherwise, as below, a partial/late final verdict cannot be retracted.
-        if isinstance(e.__context__, KeyboardInterrupt):
+        # pass 39 R1 F2). A Ctrl-C the caller was already handling when it called this is not one (pass 40 R1 F1).
+        # Otherwise, as below, a partial/late final verdict cannot be retracted.
+        if isinstance(e.__context__, KeyboardInterrupt) and e.__context__ is not outer:
             raise e.__context__
         return 1
     except (OSError, ValueError):

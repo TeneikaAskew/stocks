@@ -6545,6 +6545,7 @@ def prof(frame,event,arg):         # the second mask restore (the section's 4th 
     if event=='call' and frame.f_code is signal.pthread_sigmask.__code__ and frame.f_back.f_code.co_name=='defer_deadline':
         n['c']+=1
         if n['c']==4: sys.setprofile(None);time.sleep(5)
+before=signal.pthread_sigmask(signal.SIG_BLOCK,set())
 try:
     with m.deadline_guard(time.monotonic()+0.2):
         sys.setprofile(prof)
@@ -6554,15 +6555,35 @@ try:
         print('past the section')
 except m.DeliveryDeadline:
     print('deadline at the section exit')
+print('mask restored' if signal.pthread_sigmask(signal.SIG_BLOCK,set())==before else 'mask left changed')
 """
 
 
 def test_measure_inventory_render_deadline_at_a_deferred_section_second_restore_is_raised_there():
     """The whole deadline firing as a deferred section's second mask restore runs, with no Ctrl-C, is raised there,
-    so steps after the section stay bounded by the timer (#1700 pass 39 R4 F1)."""
+    so steps after the section stay bounded by the timer (#1700 pass 39 R4 F1), and the mask is still restored, so a
+    later Ctrl-C is not blocked for the rest of the process (pass 40 R4 F1)."""
     r = subprocess.run([sys.executable, "-B", "-c", SECOND_RESTORE_PROBE, str(REPO / MEASURE)],
                        capture_output=True, text=True, timeout=30)
-    assert r.returncode == 0 and r.stdout == "deadline at the section exit\n", (r.returncode, r.stdout, r.stderr[-2000:])
+    assert r.returncode == 0 and r.stdout == "deadline at the section exit\nmask restored\n", (r.returncode, r.stdout, r.stderr[-2000:])
+
+
+EARLIER_CTRL_C_PROBE = r"""
+import importlib.util,sys
+s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+try:
+    raise KeyboardInterrupt('an earlier Ctrl-C, already handled by the caller')
+except KeyboardInterrupt:
+    print(m.main(['--max-seconds','0.001']))
+"""
+
+
+def test_measure_inventory_render_deadline_does_not_raise_a_ctrl_c_the_caller_already_handled():
+    """main() called while its caller handles an earlier Ctrl-C, with no Ctrl-C during the run, still returns 1 on the
+    whole deadline: that Ctrl-C is not the run's own (#1700 pass 40 R1 F1)."""
+    r = subprocess.run([sys.executable, "-B", "-c", EARLIER_CTRL_C_PROBE, str(REPO / MEASURE)],
+                       capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0 and r.stdout == "1\n", (r.returncode, r.stdout, r.stderr[-2000:])
 
 NOTICE_PROBE = r"""
 import importlib.util,json,os,select,socket,sys,threading,time
@@ -7872,6 +7893,13 @@ def test_measure_inventory_render_preserves_formal_review_terminal_invariants(tm
     for mode,key in (('late-error','late_error'),('close-error','close_error'),('snapshot-error','snapshot_error')):
         assert results[mode]['hits'][key]==1 and not results[mode]['report']['ok'],results
     assert results['main']['codes']==[1,1] and all(x and not x['ok'] and x['reason']=='rss_limit' and 0<x['elapsed_before_emission_seconds']<.3 for x in results['main']['public_reports']),results
+    # Retained ownership reaches the module global from the nested cleanup, so a second run refuses before it spawns
+    # (#1700 pass 40 R4 F2). Run on its own: this mode keeps a pidfd open by design.
+    path=tmp_path/'persistent-close';path.mkdir();scratch=path/'tmp';scratch.mkdir()
+    r=subprocess.run([sys.executable,'-c',FORMAL_OBSERVER_PROBE,str(REPO/MEASURE),'persistent-close'],cwd=path,env={**os.environ,'TMPDIR':str(scratch)},
+                     capture_output=True,text=True,timeout=5)
+    x=json.loads(next(line[len('FORMAL_RESULT='):] for line in r.stdout.splitlines() if line.startswith('FORMAL_RESULT=')))
+    assert x['report']['retained_ownership'] and x['retained_reachable'] and x['no_second_spawn'] and not x['second_report']['ok'],x
 
 
 # ---------------------------------------------------------------------------------------------
