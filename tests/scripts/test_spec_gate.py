@@ -6435,11 +6435,13 @@ import importlib.util,linecache,os,signal,sys,time
 s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 mode=sys.argv[2];state={'armed':False,'fired':False}
 # what the main path raises, then what lands at each cleanup attempt's start (KI: a Ctrl-C raised there; ALRM: the
-# whole deadline, handled there by the real deadline_guard)
+# whole deadline, handled there by the real deadline_guard; BOTH: a Ctrl-C and the deadline pending together, so the
+# real handlers run one after the other; IN: the deadline sent once the block is in effect, so it waits for the exit)
 first,acts={'second-ctrl-c':('INT',['KI']),'after-block':('INT',[]),'failure-deadline':('OSError',['ALRM']),
             'failure-ctrl-c':('OSError',['KI']),'ctrl-c-then-deadline':('INT',['KI','ALRM']),
             'deadline-then-ctrl-c':('OSError',['ALRM','KI']),'ctrl-c-twice':('INT',['KI','KI']),
-            'ctrl-c-recording-deadline':('OSError',['ALRM'])}[mode]
+            'ctrl-c-recording-deadline':('OSError',['ALRM']),'ctrl-c-with-deadline':('OSError',['BOTH']),
+            'deadline-in-cleanup':('OSError',['IN']),'deadline-after-cleanup':('INT',[])}[mode]
 real_popen=m.subprocess.Popen
 def popen(*a,**kw):                # the worker's pid, for the parent to check it is gone
     p=real_popen(*a,**kw);open(sys.argv[3],'w').write(str(p.pid));return p
@@ -6458,13 +6460,30 @@ def prof(frame,event,arg):         # after-block: just after the block takes eff
                 and 'SIGALRM, *also' in linecache.getline(up.f_code.co_filename,up.f_lineno)):
             state['armed']=False;sys.setprofile(None);raise KeyboardInterrupt('second Ctrl-C after the block')
         return
+class Inside:                      # the deadline sent once the cleanup's block is in effect
+    def __init__(self,cm): self.cm=cm
+    def __enter__(self):
+        r=self.cm.__enter__();os.kill(os.getpid(),signal.SIGALRM);return r
+    def __exit__(self,*e): return self.cm.__exit__(*e)
 real_defer=m.defer_deadline
 def defer(*a):                     # each cleanup attempt's defer_deadline call, before its block takes effect
     if state['armed'] and acts and sys._getframe(1).f_code.co_name=='run_bounded':
-        if acts.pop(0)=='KI': raise KeyboardInterrupt('Ctrl-C as a cleanup attempt starts')
-        os.kill(os.getpid(),signal.SIGALRM)
+        act=acts.pop(0)
+        if act=='KI': raise KeyboardInterrupt('Ctrl-C as a cleanup attempt starts')
+        if act=='IN': return Inside(real_defer(*a))
+        if act=='BOTH':
+            old=signal.pthread_sigmask(signal.SIG_BLOCK,{signal.SIGINT,signal.SIGALRM})
+            os.kill(os.getpid(),signal.SIGINT);os.kill(os.getpid(),signal.SIGALRM)
+            signal.pthread_sigmask(signal.SIG_SETMASK,old)
+        else: os.kill(os.getpid(),signal.SIGALRM)
     return real_defer(*a)
 m.defer_deadline=defer
+real_gaps=m.gaps
+def gaps(v):                       # deadline-after-cleanup: the deadline lands after the cleanup, as the Ctrl-C propagates
+    if mode=='deadline-after-cleanup' and state['armed']:
+        state['armed']=False;os.kill(os.getpid(),signal.SIGALRM)
+    return real_gaps(v)
+m.gaps=gaps
 real_wait=m.threading.Event.wait
 def wait(self,t=None):             # once the worker runs: a first Ctrl-C, or a main-path failure
     r=real_wait(self,t)
@@ -6503,16 +6522,47 @@ def test_measure_inventory_render_signal_as_the_cleanup_starts_still_runs_the_cl
     cleanup under the block: the worker is killed, the scratch root removed, and the run ends at once as a Ctrl-C, or
     with its report (#1700 pass 35 R1 F3, pass 36 R1 F1, F2). So does a Ctrl-C there after a main-path failure, which
     is still raised (pass 37 R4 F1), a Ctrl-C and the deadline in either order at two successive attempts (pass 37
-    R1 F1), a Ctrl-C at two successive attempts (pass 38 R3 F1), and a Ctrl-C while the handled deadline is recorded
-    (pass 38 R1 F1)."""
+    R1 F1), a Ctrl-C at two successive attempts (pass 38 R3 F1), a Ctrl-C while the handled deadline is recorded
+    (pass 38 R1 F1), and a Ctrl-C and the deadline pending together as an attempt starts (pass 39 R1 F1). A deadline
+    handled after the cleanup, as the first Ctrl-C propagates, does not turn it into exit 1 (pass 39 R1 F2), and one
+    that expires inside the cleanup, under its block, is recorded at the block's exit (pass 39 R4 F1)."""
     for mode in ("second-ctrl-c", "after-block", "failure-ctrl-c", "ctrl-c-then-deadline", "deadline-then-ctrl-c",
-                 "ctrl-c-twice", "ctrl-c-recording-deadline"):
+                 "ctrl-c-twice", "ctrl-c-recording-deadline", "ctrl-c-with-deadline", "deadline-after-cleanup"):
         r = run_cleanup_start_probe(tmp_path, mode)
         assert r.returncode == -signal.SIGINT, (mode, r.returncode, r.stderr[-2000:])
-    r = run_cleanup_start_probe(tmp_path, "failure-deadline")
-    report = json.loads(r.stdout)
-    assert r.returncode == 1 and report["reason"] == "time_limit" and report["scratch_root_removed"], report
-    assert report["owned_family_gone"], report
+    for mode in ("failure-deadline", "deadline-in-cleanup"):
+        r = run_cleanup_start_probe(tmp_path, mode)
+        report = json.loads(r.stdout)
+        assert r.returncode == 1 and report["reason"] == "time_limit" and report["scratch_root_removed"], (mode, report)
+        assert report["owned_family_gone"], (mode, report)
+
+
+SECOND_RESTORE_PROBE = r"""
+import importlib.util,signal,sys,time
+s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+n={'c':0}
+def prof(frame,event,arg):         # the second mask restore (the section's 4th call): wait there until the timer fires
+    if event=='call' and frame.f_code is signal.pthread_sigmask.__code__ and frame.f_back.f_code.co_name=='defer_deadline':
+        n['c']+=1
+        if n['c']==4: sys.setprofile(None);time.sleep(5)
+try:
+    with m.deadline_guard(time.monotonic()+0.2):
+        sys.setprofile(prof)
+        with m.defer_deadline(signal.SIGINT):
+            pass
+        sys.setprofile(None)
+        print('past the section')
+except m.DeliveryDeadline:
+    print('deadline at the section exit')
+"""
+
+
+def test_measure_inventory_render_deadline_at_a_deferred_section_second_restore_is_raised_there():
+    """The whole deadline firing as a deferred section's second mask restore runs, with no Ctrl-C, is raised there,
+    so steps after the section stay bounded by the timer (#1700 pass 39 R4 F1)."""
+    r = subprocess.run([sys.executable, "-B", "-c", SECOND_RESTORE_PROBE, str(REPO / MEASURE)],
+                       capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0 and r.stdout == "deadline at the section exit\n", (r.returncode, r.stdout, r.stderr[-2000:])
 
 NOTICE_PROBE = r"""
 import importlib.util,json,os,select,socket,sys,threading,time
