@@ -1,0 +1,8 @@
+ticker,release_utc,coverage,returned_articles,removed_duplicates,excluded_articles,full_n,full_mean,full_label,recent_n,recent_mean,recent_label,older_n,older_mean,older_label,independently_publisher_qualified_primary_mean
+FDX,2026-06-23T20:02:00+00:00,observed_nonempty_not_proven_complete,21,1,0,20,0.0176945,neutral,13,-0.04935907692307692307692307692,neutral,7,0.1422225714285714285714285714,neutral,
+LLY,2026-08-05T10:45:00+00:00,observed_nonempty_not_proven_complete,37,3,0,34,0.2854752941176470588235294118,positive,21,0.3099833333333333333333333333,positive,13,0.2458853846153846153846153846,positive,
+STX,2026-07-28T20:05:00+00:00,observed_nonempty_not_proven_complete,26,2,0,24,0.045105125,neutral,12,-0.1187015833333333333333333333,neutral,12,0.2089118333333333333333333333,positive,
+INTC,2026-07-23T20:01:00+00:00,observed_nonempty_not_proven_complete,71,0,1,70,0.09461384285714285714285714286,neutral,38,0.08030710526315789473684210526,neutral,32,0.11160309375,neutral,
+AMD,2026-08-04T20:15:00+00:00,observed_nonempty_not_proven_complete,192,6,0,186,0.1912345,positive,95,0.1828332842105263157894736842,positive,91,0.200005,positive,
+TWLO,2026-08-06T20:05:00+00:00,valid_empty_provider_window,0,0,0,0,,,0,,,0,,,
+VLO,2026-07-30T10:30:00+00:00,observed_nonempty_not_proven_complete,18,0,0,18,0.2022641111111111111111111111,positive,11,0.2432250909090909090909090909,positive,7,0.1378968571428571428571428571,neutral,
