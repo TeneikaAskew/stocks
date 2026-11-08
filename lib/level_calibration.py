@@ -25,6 +25,8 @@ Layers:
 * ``calibrate``: every Design 2 parameter for one ticker and effective date,
   in the spec's order (windows, breaks, entry buffers, fills, stops and the
   floor, targets; the three one-minute thresholds from their own bars).
+* Evidence rows for the implementation PR (``window_exceedance_by_year``,
+  ``premarket_drops``, ``break_counts_by_year``).
 * ``load_calibration_universe``: the tickers the job calibrates.
 
 Statuses (the ticker_level_params CHECK constraint): ok,
@@ -696,6 +698,74 @@ def to_rows(ticker: str, results: Dict[str, Calibrated], policy: Dict[str, dict]
 # ── universe ─────────────────────────────────────────────────────────────
 
 UNIVERSE_KEY = 'calibration_universe'
+
+
+# ── evidence rows (done_when 4) ─────────────────────────────────────────
+#
+# What the implementation PR shows beside each calibrated value, computed
+# with the same samplers and the production print filter, never a second
+# copy of a rule.
+
+
+def window_exceedance_by_year(daily: pd.DataFrame, atr_col: str, as_of, side: str,
+                              window_atr: float) -> pd.DataFrame:
+    """Per calendar year, the sessions before `as_of` with a usable prior
+    ATR, how many of them the side's excursion from the prior close passed
+    `window_atr`, and that share. Columns: year, sessions, passed, share."""
+    x = daily_excursions(normalize_daily(daily, atr_col, as_of), side)
+    frame = pd.DataFrame({'year': x.index.year, 'passed': x.to_numpy() > float(window_atr)})
+    g = frame.groupby('year')['passed']
+    out = pd.DataFrame({'sessions': g.size(), 'passed': g.sum().astype(int)}).reset_index()
+    out['share'] = out['passed'] / out['sessions']
+    return out
+
+
+def premarket_drops(daily: pd.DataFrame, minutes: pd.DataFrame, atr_col: str,
+                    sessions: Iterable, *, stale_print_atr: Optional[float],
+                    spike_atr: Optional[float]) -> pd.DataFrame:
+    """Every premarket print lib.indicators.premarket_print_filter drops on
+    each of `sessions`, with the close and the policy-basis ATR of the last
+    daily bar before the session (what the production callers pass) and the
+    two thresholds given. Columns: session, timestamp,
+    field, price, rule ('stale_prior_close' or 'spike'). A session without
+    premarket bars or a usable prior ATR contributes no row."""
+    from lib.indicators import premarket_print_filter  # noqa: PLC0415
+
+    want = sorted(pd.Timestamp(s).normalize() for s in sessions)
+    cols = ['session', 'timestamp', 'field', 'price', 'rule']
+    if not want:
+        return pd.DataFrame(columns=cols)
+    d = normalize_daily(daily, atr_col, want[-1])
+    m = _premarket(normalize_minutes(minutes, want[-1] + pd.Timedelta(days=1)))
+    by_session = dict(tuple(m.groupby('session')))
+    rows = []
+    for s in want:
+        bars = by_session.get(s)
+        prior = d[d.index < s]
+        if bars is None or prior.empty:
+            continue
+        bars = bars.reset_index(drop=True)
+        filt = premarket_print_filter(
+            bars['open'], bars['high'], bars['low'], bars['close'],
+            prev_close=prior['close'].iloc[-1], atr=prior['atr'].iloc[-1],
+            stale_print_atr=stale_print_atr, spike_atr=spike_atr)
+        for rule, masks in (('stale_prior_close', filt['stale']), ('spike', filt['spike'])):
+            for fld, mask in masks.items():
+                for i in np.flatnonzero(mask.to_numpy()):
+                    rows.append({'session': s.date(), 'timestamp': bars.at[i, 'timestamp'],
+                                 'field': fld, 'price': float(bars.at[i, fld]), 'rule': rule})
+    return pd.DataFrame(rows, columns=cols).sort_values(['timestamp', 'rule', 'field'],
+                                                         ignore_index=True)
+
+
+def break_counts_by_year(breaks: Iterable[Break]) -> pd.DataFrame:
+    """Per side and calendar year, the breaks found and how many held to the
+    close. Columns: side, year, breaks, held."""
+    frame = pd.DataFrame([{'side': b.side, 'year': b.session.year, 'held': bool(b.held)}
+                          for b in breaks], columns=['side', 'year', 'held'])
+    g = frame.groupby(['side', 'year'])['held']
+    out = pd.DataFrame({'breaks': g.size(), 'held': g.sum()}).reset_index()
+    return out.astype({'breaks': int, 'held': int})
 
 
 def load_calibration_universe(policy: Dict[str, dict], *, market_tickers: Iterable[str],

@@ -619,37 +619,16 @@ def calculate_premarket_context(
     out['pre_open'] = float(pre_o.iloc[0]) if not pre_o.empty else None
     out['pre_close'] = float(pre_c.iloc[-1]) if not pre_c.empty else None
 
-    o, h, l, c = pre_o.copy(), pre_h.copy(), pre_l.copy(), pre_c.copy()
-
     def _positive(x) -> bool:
         return x is not None and x == x and x > 0
 
-    filter_on = _positive(atr) and _positive(stale_print_atr) and _positive(spike_atr)
-    out['filtered'] = bool(filter_on)
-    if filter_on:
-        out['excluded_prior_close_prints'] = 0
-    if filter_on and prev_close is not None and prev_close == prev_close and prev_close > 0:
-        from lib.strat_levels import price_cents  # noqa: PLC0415
-        pc_c = price_cents(prev_close)
-        mid = (pre_o + pre_c) / 2
-        away = (mid - float(prev_close)).abs() > float(stale_print_atr) * float(atr)
-        n_echo = 0
-        for ser in (o, h, l, c):
-            echo = ser.map(lambda v: v == v and price_cents(v) == pc_c) & away
-            n_echo += int(echo.sum())
-            ser[echo] = np.nan
-        out['excluded_prior_close_prints'] = n_echo
-    if filter_on:
-        k = float(spike_atr) * float(atr)
-        body_hi = pd.concat([o, c], axis=1).max(axis=1)
-        body_lo = pd.concat([o, c], axis=1).min(axis=1)
-        nb_hi = pd.concat([body_hi.shift(s) for s in (-2, -1, 1, 2)], axis=1).max(axis=1)
-        nb_lo = pd.concat([body_lo.shift(s) for s in (-2, -1, 1, 2)], axis=1).min(axis=1)
-        spike_h = ((h - body_hi) > k) & ((h - nb_hi) > k)
-        spike_l = ((body_lo - l) > k) & ((nb_lo - l) > k)
-        out['excluded_spike_prints'] = int(spike_h.sum() + spike_l.sum())
-        h[spike_h] = np.nan
-        l[spike_l] = np.nan
+    filt = premarket_print_filter(pre_o, pre_h, pre_l, pre_c, prev_close=prev_close, atr=atr,
+                                  stale_print_atr=stale_print_atr, spike_atr=spike_atr)
+    o, h, l, c = filt['open'], filt['high'], filt['low'], filt['close']
+    out['filtered'] = filt['filtered']
+    if filt['filtered']:
+        out['excluded_prior_close_prints'] = int(sum(m.sum() for m in filt['stale'].values()))
+        out['excluded_spike_prints'] = int(filt['spike']['high'].sum() + filt['spike']['low'].sum())
 
     # A bar whose high (low) was dropped still traded its surviving body.
     eff_h = h.fillna(pd.concat([o, c], axis=1).max(axis=1))
@@ -675,6 +654,55 @@ def calculate_premarket_context(
     if _positive(atr) and out['pre_high'] is not None and out['pre_low'] is not None:
         out['pre_range_atr'] = round((out['pre_high'] - out['pre_low']) / atr, 4)
 
+    return out
+
+
+def premarket_print_filter(
+    open_: pd.Series, high: pd.Series, low: pd.Series, close: pd.Series, *,
+    prev_close: Optional[float], atr: Optional[float],
+    stale_print_atr: Optional[float], spike_atr: Optional[float],
+) -> dict:
+    """The premarket print filter of calculate_premarket_context on aligned,
+    position-indexed one-minute premarket bars (rules (a) and (b) there).
+
+    Returns {'filtered', 'open', 'high', 'low', 'close', 'stale', 'spike'}:
+    the series with every dropped value set to NaN, and the masks of what
+    each rule dropped (stale: one mask per field; spike: 'high' and 'low').
+    With the ATR or either threshold not positive nothing is dropped and
+    'filtered' is False. Calibration evidence (lib.level_calibration
+    premarket_drops) reads the masks, so the evidence is the production
+    rule's own."""
+    o, h, l, c = open_.copy(), high.copy(), low.copy(), close.copy()
+    none = pd.Series(False, index=o.index)
+    out = {'filtered': False, 'open': o, 'high': h, 'low': l, 'close': c,
+           'stale': {f: none.copy() for f in ('open', 'high', 'low', 'close')},
+           'spike': {'high': none.copy(), 'low': none.copy()}}
+
+    def _positive(x) -> bool:
+        return x is not None and x == x and x > 0
+
+    if not (_positive(atr) and _positive(stale_print_atr) and _positive(spike_atr)):
+        return out
+    out['filtered'] = True
+    if _positive(prev_close):
+        from lib.strat_levels import price_cents  # noqa: PLC0415
+        pc_c = price_cents(prev_close)
+        mid = (open_ + close) / 2
+        away = (mid - float(prev_close)).abs() > float(stale_print_atr) * float(atr)
+        for field, ser in (('open', o), ('high', h), ('low', l), ('close', c)):
+            echo = ser.map(lambda v: v == v and price_cents(v) == pc_c) & away
+            out['stale'][field] = echo
+            ser[echo] = np.nan
+    k = float(spike_atr) * float(atr)
+    body_hi = pd.concat([o, c], axis=1).max(axis=1)
+    body_lo = pd.concat([o, c], axis=1).min(axis=1)
+    nb_hi = pd.concat([body_hi.shift(s) for s in (-2, -1, 1, 2)], axis=1).max(axis=1)
+    nb_lo = pd.concat([body_lo.shift(s) for s in (-2, -1, 1, 2)], axis=1).min(axis=1)
+    spike_h = ((h - body_hi) > k) & ((h - nb_hi) > k)
+    spike_l = ((body_lo - l) > k) & ((nb_lo - l) > k)
+    out['spike'] = {'high': spike_h, 'low': spike_l}
+    h[spike_h] = np.nan
+    l[spike_l] = np.nan
     return out
 
 
