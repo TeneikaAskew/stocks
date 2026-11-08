@@ -205,6 +205,43 @@ def test_no_positive_target_truncates_the_target_list():
     assert len(plans["aggressive"].targets) == 3
 
 
+@pytest.mark.parametrize("cut", ["target_aggressive_2_r", "target_aggressive_3_r"])
+def test_analog_stretch_never_moves_a_target_before_t3(cut):
+    """The aggressive day-5 analog stretch applies to the persona's top
+    target, T3. With T2 or T3 no_positive_target the plan publishes fewer
+    targets and none of them is stretched: T1 (and T2) stay at their
+    calibrated R multiples of the plan's own risk."""
+    lp = legacy_db(["SPY"], effective_from=EFF,
+                   statuses={cut: "no_positive_target"}).load(["SPY"], D)["SPY"]
+    b = basis({"PDH": 105.0, "PDL": 98.0}, prior_close=100.0, atr=2.0,
+              ticker="SPY", session_date=D, params=lp)
+    levels = SessionLevels.from_basis(b, params=lp)
+    ctx = PlanContext(direction="long", conviction="medium", close=100.0, atr=2.0,
+                      levels=levels, ftfc_score=1.0, analog_median_day_5_pct=40.0)
+    agg = {p.persona: p for p in compute_persona_plans(ctx)}["aggressive"]
+    mid = (agg.entry_zone.low + agg.entry_zone.high) / 2
+    risk = mid - agg.stop
+    multiples = []
+    for k in (1, 2, 3):
+        if not lp.ok(f"target_aggressive_{k}_r"):
+            break
+        multiples.append(lp.value(f"target_aggressive_{k}_r"))
+    assert len(agg.targets) == len(multiples) < 3
+    for t, r in zip(agg.targets, multiples):
+        assert t == pytest.approx(mid + r * risk, abs=0.01)
+    # With every target published the same analog stretches T3 only.
+    full = legacy_db(["SPY"], effective_from=EFF).load(["SPY"], D)["SPY"]
+    b = basis({"PDH": 105.0, "PDL": 98.0}, prior_close=100.0, atr=2.0,
+              ticker="SPY", session_date=D, params=full)
+    ctx = PlanContext(direction="long", conviction="medium", close=100.0, atr=2.0,
+                      levels=SessionLevels.from_basis(b, params=full), ftfc_score=1.0,
+                      analog_median_day_5_pct=40.0)
+    agg = {p.persona: p for p in compute_persona_plans(ctx)}["aggressive"]
+    mid = (agg.entry_zone.low + agg.entry_zone.high) / 2
+    assert agg.targets[0] == pytest.approx(mid + 2.0 * (mid - agg.stop), abs=0.01)
+    assert agg.targets[2] == pytest.approx(mid * 1.40, abs=0.01)
+
+
 @pytest.mark.parametrize("key", sorted(LEGACY_1753_VALUES))
 def test_no_published_price_comes_from_a_non_ok_parameter(key):
     """For every key: with that one key not ok, every price the levels and

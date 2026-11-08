@@ -307,10 +307,13 @@ def _plan(
     for r_mult in r_multiples:
         targets.append(midpoint + sign * r_mult * risk_per_unit)
 
-    # Optional: stretch the aggressive top target up to the analog
-    # day-5 median move if that's larger than 5R — analog data is the
-    # most empirical anchor we have.
-    if persona == "aggressive" and ctx.analog_median_day_5_pct is not None:
+    # Optional: stretch the aggressive top target (the persona's last
+    # target key, T3) up to the analog day-5 median move when that is
+    # further; analog data is the most empirical anchor we have. Only when
+    # every target key published: with a later target no_positive_target
+    # the last published price is T1 or T2, which the stretch never moves.
+    if persona == "aggressive" and ctx.analog_median_day_5_pct is not None \
+            and truncated_at is None and len(targets) == len(target_keys) > 1:
         analog_target = midpoint * (1 + sign * abs(ctx.analog_median_day_5_pct) / 100.0)
         if (sign > 0 and analog_target > targets[-1]) or (
             sign < 0 and analog_target < targets[-1]
