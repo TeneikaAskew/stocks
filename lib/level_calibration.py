@@ -50,8 +50,8 @@ import pandas as pd
 
 from lib.strat_levels import (
     LEVEL_CLUSTER_KEY, MIN_STOP_KEY, PARAM_OK, PM_SPIKE_KEY, PM_STALE_PRINT_KEY, LevelParam,
-    LevelParams, build_session_levels, entry_buffer_key, policy_atr_basis, price_cents, stop_key,
-    target_key, trigger_window_key,
+    LevelParams, build_session_levels, entry_buffer_key, persona_stop_price, policy_atr_basis,
+    price_cents, stop_key, target_key, trigger_window_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -163,8 +163,11 @@ def _stat(key: str, row: dict, samples: List[float], dates: Sequence, *, n: Opti
 
 def normalize_daily(daily: pd.DataFrame, atr_col: str, as_of) -> pd.DataFrame:
     """Daily bars dated strictly before `as_of`, one row per session on a
-    date index, with columns high, low, close, atr (the policy-basis ATR) and
-    prior_close and prior_atr (the previous session's close and ATR)."""
+    date index, with columns high, low, close, atr (the policy-basis ATR),
+    prior_close and prior_atr (the previous session's close and ATR) and
+    prior_sma_200 (the previous session's stored sma_200 at the two decimals
+    the planner reads it with, lib.agents.summarizers; NaN when the frame
+    carries no sma_200)."""
     df = daily.copy()
     if 'date' in df.columns:
         df = df.set_index('date')
@@ -176,6 +179,7 @@ def normalize_daily(daily: pd.DataFrame, atr_col: str, as_of) -> pd.DataFrame:
         atr_name = alias if alias in df.columns else atr_name
     if atr_name not in df.columns:
         raise KeyError(f"daily bars carry no {atr_col} column")
+    sma_name = next((c for c in ('sma_200', 'sma200') if c in df.columns), None)
     df = df[df.index < pd.Timestamp(as_of)].sort_index()
     df = df[~df.index.duplicated(keep='last')]
     out = pd.DataFrame({
@@ -184,10 +188,12 @@ def normalize_daily(daily: pd.DataFrame, atr_col: str, as_of) -> pd.DataFrame:
         'low': pd.to_numeric(df['low'], errors='coerce'),
         'close': pd.to_numeric(df['close'], errors='coerce'),
         'atr': pd.to_numeric(df[atr_name], errors='coerce'),
+        'sma_200': (pd.to_numeric(df[sma_name], errors='coerce') if sma_name else np.nan),
     }, index=df.index)
     out = out[out['close'].notna()]
     out['prior_close'] = out['close'].shift(1)
     out['prior_atr'] = out['atr'].shift(1)
+    out['prior_sma_200'] = out['sma_200'].shift(1).round(2)
     return out
 
 
@@ -408,6 +414,10 @@ class Break:
     atr: float
     held: bool
     bars: pd.DataFrame = field(repr=False)
+    # The structure the planner tightens the conservative stop to on this
+    # side: the session's 200-day SMA (as of the prior session) and the
+    # builder's stop anchor for the side (lib.strat_levels.persona_stop_price).
+    structure: tuple = ()
 
     @property
     def sign(self) -> float:
@@ -431,6 +441,9 @@ def replay_triggers(ticker: str, daily: pd.DataFrame, d: pd.DataFrame, policy: D
         sl = build_session_levels(ticker, s.date(), daily, atrs, None, lp)
         out[s] = {side: (float(sl.side(side).trigger['price']) if sl.side(side).trigger else None)
                   for side in SIDES}
+        for side in SIDES:
+            stop = sl.side(side).stop
+            out[s][f'{side}_stop'] = float(stop['price']) if stop else None
         out[s]['atr'] = atrs[atr_basis]
     return out
 
@@ -450,6 +463,8 @@ def find_breaks(d: pd.DataFrame, m: pd.DataFrame,
         if bars is None or not len(bars) or not (atr and atr > 0) or s not in d.index:
             continue
         close = d.at[s, 'close']
+        sma = d.at[s, 'prior_sma_200'] if 'prior_sma_200' in d.columns else None
+        sma = float(sma) if sma is not None and sma == sma else None
         for side in SIDES:
             t = trig.get(side)
             if t is None:
@@ -464,7 +479,8 @@ def find_breaks(d: pd.DataFrame, m: pd.DataFrame,
             i = int(np.argmax(hit))
             held = (price_cents(close) > tc) if side == 'long' else (price_cents(close) < tc)
             out.append(Break(session=s, side=side, trigger=float(t), atr=float(atr),
-                             held=bool(held), bars=bars.iloc[i:].reset_index(drop=True)))
+                             held=bool(held), bars=bars.iloc[i:].reset_index(drop=True),
+                             structure=(sma, trig.get(f'{side}_stop'))))
     return out
 
 
@@ -504,15 +520,17 @@ def persona_fill(b: Break, midpoint: float) -> Optional[int]:
     return int(np.argmax(hit)) + 1 if hit.any() else None
 
 
-def persona_outcome(b: Break, midpoint: float, risk_atr: Optional[float] = None) -> Outcome:
+def persona_outcome(b: Break, midpoint: float, risk_atr: Optional[float] = None, *,
+                    stop: Optional[float] = None) -> Outcome:
     """Fill at `midpoint`, then, from the fill bar to the close:
 
     * mae_atr: the largest adverse excursion from the fill price, the fill
       bar's adverse extreme included (taken as after the fill);
-    * reach_r (when `risk_atr` is given): the largest favourable excursion,
-      in R = risk_atr x ATR, on bars after the fill bar, before a bar that
-      touches the stop at fill - R (a stop touched on the fill bar, or on the
-      same bar as a favourable extreme, is taken as first). The fill bar's
+    * reach_r (when `stop`, a price, or `risk_atr` is given): the largest
+      favourable excursion, in R = |fill - stop| (or risk_atr x ATR, the
+      stop at fill - R), on bars after the fill bar, before a bar that
+      touches the stop (a stop touched on the fill bar, or on the same bar
+      as a favourable extreme, is taken as first). The fill bar's
       favourable extreme counts toward nothing.
     """
     j = persona_fill(b, midpoint)
@@ -522,10 +540,13 @@ def persona_outcome(b: Break, midpoint: float, risk_atr: Optional[float] = None)
     lo, hi = b.bars['low'].to_numpy()[j:], b.bars['high'].to_numpy()[j:]
     adverse = (midpoint - lo) if s > 0 else (hi - midpoint)
     mae = max(float(np.max(adverse)), 0.0) / b.atr
-    if risk_atr is None:
+    if stop is None and risk_atr is None:
         return Outcome(filled=True, mae_atr=mae)
-    risk = float(risk_atr) * b.atr
-    stop = midpoint - s * risk
+    if stop is None:
+        risk = float(risk_atr) * b.atr
+        stop = midpoint - s * risk
+    else:
+        risk = abs(midpoint - stop)
     reach = 0.0
     for k in range(len(lo)):
         stopped = (lo[k] <= stop) if s > 0 else (hi[k] >= stop)
@@ -540,6 +561,18 @@ def persona_outcome(b: Break, midpoint: float, risk_atr: Optional[float] = None)
 
 def _midpoint(b: Break, lo_atr: float, hi_atr: float) -> float:
     return b.trigger + b.sign * (lo_atr + hi_atr) / 2 * b.atr
+
+
+def planned_stop(b: Break, persona: str, lo_atr: float, hi_atr: float, stop_atr: float,
+                 min_stop_atr: float) -> tuple:
+    """(entry midpoint, stop price) the planner would publish for `persona`
+    on this break's trigger, with these calibrated values, by the planner's
+    own rule (lib.strat_levels.persona_stop_price, the conservative stop
+    tightened to the break's structure). A target's reach is measured in
+    R = |midpoint - stop|, the R the published plan carries."""
+    mid = _midpoint(b, lo_atr, hi_atr)
+    return mid, persona_stop_price(persona, b.sign, mid, b.atr, stop_atr, min_stop_atr,
+                                   b.structure)
 
 
 def _not_ok(key: str, row: dict, upstream: Calibrated) -> Calibrated:
@@ -610,12 +643,12 @@ def break_params(breaks: List[Break], policy: Dict[str, dict]) -> Dict[str, Cali
             if not (stop_c.ok and floor_c.ok):
                 out[key] = _not_ok(key, row, stop_c if not stop_c.ok else floor_c)
                 continue
-            risk_atr = max(stop_c.value, floor_c.value)
             lo = out[entry_buffer_key(persona, 'lo')].value
             hi = out[entry_buffer_key(persona, 'hi')].value
             reaches, used = [], []
             for b, _o in fills[persona]:
-                o = persona_outcome(b, _midpoint(b, lo, hi), risk_atr)
+                mid, stop = planned_stop(b, persona, lo, hi, stop_c.value, floor_c.value)
+                o = persona_outcome(b, mid, stop=stop)
                 reaches.append(o.reach_r)
                 used.append(b.session)
             share = _q(row)

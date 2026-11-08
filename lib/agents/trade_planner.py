@@ -40,7 +40,7 @@ from typing import Literal, Optional
 
 from lib.strat_levels import (
     MIN_STOP_KEY, PARAMS_BASIS_MISMATCH, LevelParam, LevelParams, SessionLevels,
-    share_text, entry_buffer_key, orb_only_text, stop_key, target_key,
+    persona_stop_price, share_text, entry_buffer_key, orb_only_text, stop_key, target_key,
 )
 
 from .schema import EntryZone, PersonaPlan
@@ -266,40 +266,19 @@ def _plan(
     midpoint = (entry_lo + entry_hi) / 2
 
     # ── 2. Stop ────────────────────────────────────────────────────
-    raw_stop = midpoint - sign * params.value(stop_key(persona)) * atr
-
-    if persona == "conservative":
-        # Conservative anchors the stop at the *closest* structural
-        # support to entry — tighter than the ATR floor whenever a
-        # real swing low, the 200-SMA, or a multi-timeframe level
-        # (PR α: stop_anchor) sits between the ATR stop and the
-        # entry. Only candidates on the correct side of entry qualify
-        # (a long stop must be BELOW the entry midpoint, even if
-        # SMA200 happens to sit above it after a recent breakout).
-        candidates = [raw_stop]
-        for level in (ctx.prior_swing_low, ctx.sma_200, stop_anchor):
-            if level is None or ctx.direction != "long":
-                continue
-            if level < midpoint:   # only below-entry levels are valid stops
-                candidates.append(level)
-        for level in (ctx.prior_swing_high, ctx.sma_200, stop_anchor):
-            if level is None or ctx.direction != "short":
-                continue
-            if level > midpoint:   # only above-entry levels are valid stops
-                candidates.append(level)
-        # Tightest valid stop = closest to entry on the correct side
-        if ctx.direction == "long":
-            stop = max(candidates)
-        else:
-            stop = min(candidates)
+    # lib.strat_levels.persona_stop_price, the rule the calibration also
+    # measures each target's R with. The conservative persona tightens to
+    # the closest structure on the stop side of the midpoint: the prior
+    # swing extreme, the 200-SMA and the builder's stop anchor (a long
+    # stop must lie BELOW the midpoint, even when the 200-SMA sits above
+    # it after a breakout). Then the floor, min_stop_atr.
+    if ctx.direction == "long":
+        structure = (ctx.prior_swing_low, ctx.sma_200, stop_anchor)
     else:
-        stop = raw_stop
-
-    # Floor: no stop closer to the entry midpoint than the ticker's
-    # min_stop_atr (the median adverse excursion of held breaks).
-    min_distance = params.value(MIN_STOP_KEY) * atr
-    if abs(midpoint - stop) < min_distance:
-        stop = midpoint - sign * min_distance
+        structure = (ctx.prior_swing_high, ctx.sma_200, stop_anchor)
+    stop = persona_stop_price(
+        persona, sign, midpoint, atr, params.value(stop_key(persona)),
+        params.value(MIN_STOP_KEY), structure)
 
     # ── 3. Targets ─────────────────────────────────────────────────
     risk_per_unit = abs(midpoint - stop)

@@ -984,6 +984,38 @@ def target_key(persona: str, k: int) -> str:
     return f'target_{persona}_{k}_r'
 
 
+# The persona whose stop tightens to the nearest structure on the stop side.
+STRUCTURAL_STOP_PERSONA = 'conservative'
+
+
+def persona_stop_price(persona: str, sign: float, midpoint: float, atr: float,
+                       stop_atr: float, min_stop_atr: float, structure=()) -> float:
+    """The persona's stop price for an entry midpoint: the one rule the
+    planner publishes (lib.agents.trade_planner) and the calibration
+    measures its targets' R with (lib.level_calibration), so a published
+    target's reach share is a share in the R the plan actually carries.
+
+    The stop sits stop_atr x ATR from the midpoint on the losing side
+    (`sign` is +1 for a long, -1 for a short). The conservative persona
+    tightens it to the closest level in `structure` (the caller's swing
+    extreme, 200-day SMA and the builder's stop anchor) that lies on the
+    stop side of the midpoint. Then the floor: no stop closer to the
+    midpoint than min_stop_atr x ATR."""
+    stop = midpoint - sign * stop_atr * atr
+    if persona == STRUCTURAL_STOP_PERSONA:
+        candidates = [stop]
+        for level in structure:
+            if level is None:
+                continue
+            if (sign > 0 and level < midpoint) or (sign < 0 and level > midpoint):
+                candidates.append(level)
+        stop = max(candidates) if sign > 0 else min(candidates)
+    min_distance = min_stop_atr * atr
+    if abs(midpoint - stop) < min_distance:
+        stop = midpoint - sign * min_distance
+    return stop
+
+
 class LevelParamsUnavailable(RuntimeError):
     """The parameter tables cannot be read: a missing table, a failed query,
     or an empty policy. An INTERNAL failure (CLAUDE.md 3.7): the brief exits

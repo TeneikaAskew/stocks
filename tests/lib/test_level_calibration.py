@@ -342,6 +342,50 @@ def test_target_share_that_cannot_be_met_is_no_positive_target_onward():
         assert out[f"target_neutral_{k}_r"].status == "no_positive_target"
 
 
+def test_conservative_targets_are_measured_in_the_planners_r():
+    """The planner tightens the conservative stop to the nearest structure
+    on the stop side of the midpoint (the builder's stop anchor here, at
+    T - 0.8), so its R is |midpoint - anchor| = 1.8 ATR, not
+    max(stop_conservative_atr, min_stop_atr) = 2.2 ATR. The calibration
+    measures each filled break's reach in the R the planner publishes for
+    that break: the two agree break by break, and the conservative targets
+    are the reach shares in that R (breaks with a >= 0.8, i >= 80, are
+    stopped at the anchor and reach nothing)."""
+    from lib.agents.trade_planner import PlanContext, compute_persona_plans
+    from tests.lib.level_params_fixtures import fixture_params
+    from tests.lib.session_levels_helpers import with_triggers
+
+    anchor = T - 0.8
+    fam = _family(200, up=lambda i: 0.03 * i)
+    for b in fam:
+        b.structure = (None, anchor)
+    pol = policy(target_conservative_1_r={"statistic_q": 0.3},
+                 target_conservative_2_r={"statistic_q": 0.2})
+    out = lc.break_params(fam, pol)
+    v = {k: c.value for k, c in out.items() if c.ok}
+    assert v["stop_conservative_atr"] == pytest.approx(2.2) and v["min_stop_atr"] == pytest.approx(1.5)
+    lp = fixture_params("TST", overrides=v)
+    reaches = []
+    for b in fam:
+        mid, stop = lc.planned_stop(b, "conservative", v["entry_buffer_conservative_lo_atr"],
+                                    v["entry_buffer_conservative_hi_atr"],
+                                    v["stop_conservative_atr"], v["min_stop_atr"])
+        ctx = PlanContext(direction="long", conviction="medium", close=T, atr=b.atr,
+                          levels=with_triggers(long=b.trigger, long_stop=anchor, atr=b.atr,
+                                               params=lp), ftfc_score=1.0)
+        plan = {p.persona: p for p in compute_persona_plans(ctx)}["conservative"]
+        plan_mid = (plan.entry_zone.low + plan.entry_zone.high) / 2
+        assert (mid, stop) == pytest.approx((plan_mid, plan.stop), abs=0.005)
+        assert mid - stop == pytest.approx(1.8)
+        reaches.append(lc.persona_outcome(b, mid, stop=stop).reach_r)
+    assert out["target_conservative_1_r"].value == pytest.approx(lc.reach_share_value(reaches, 0.3))
+    assert out["target_conservative_1_r"].value == pytest.approx((0.03 * 20 - 0.5) / 1.8)
+    assert out["target_conservative_2_r"].value == pytest.approx((0.03 * 40 - 0.5) / 1.8)
+    # The R the old rule used (max(stop, floor) x ATR = 2.2) gives other values.
+    old = [lc.persona_outcome(b, T + 1.0, risk_atr=2.2).reach_r for b in fam]
+    assert lc.reach_share_value(old, 0.3) != pytest.approx(out["target_conservative_1_r"].value)
+
+
 # ── whole ticker, no look-ahead ─────────────────────────────────────────
 
 

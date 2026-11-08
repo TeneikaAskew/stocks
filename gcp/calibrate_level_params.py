@@ -61,7 +61,7 @@ POLICY_SQL = (
 )
 
 DAILY_SQL = (
-    "SELECT date, open, high, low, close, atr_14, atr_5 FROM market_data_daily "
+    "SELECT date, open, high, low, close, atr_14, atr_5, sma_200 FROM market_data_daily "
     "WHERE ticker = :ticker AND date >= :start AND date < :before ORDER BY date"
 )
 
