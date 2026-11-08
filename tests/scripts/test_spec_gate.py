@@ -17,6 +17,7 @@ import ast
 import concurrent.futures
 import ctypes
 import datetime
+import errno
 import hashlib
 import importlib.util
 import types
@@ -4839,17 +4840,33 @@ def test_materialize_writes_inside_its_directory_only(repo, tmp_path_factory):
 
 
 
-def test_materialize_ends_git_when_a_write_fails(repo, tmp_path, monkeypatch):
+WRITE_FAIL_RUNNER = r"""
+import importlib.util,json,pathlib,sys
+s=importlib.util.spec_from_file_location('write_fail_gate',sys.argv[1]);m=importlib.util.module_from_spec(s);sys.modules[s.name]=m;s.loader.exec_module(m)
+big,into=sys.argv[2],pathlib.Path(sys.argv[3]);started,real=[],m.subprocess.Popen
+m.subprocess.Popen=lambda *a,**kw:started.append(real(*a,**kw)) or started[-1]
+try:
+    m.materialize([('100644',big,'a/'+'x'*256),('100644',big,'after.bin')],into);out={'raised':None}
+except OSError as e:
+    out={'raised':type(e).__name__,'errno':e.errno}
+out['started']=len(started);out['returncode']=started[0].returncode if started else None
+print(json.dumps(out))
+"""
+
+
+def test_materialize_ends_git_when_a_write_fails(repo, tmp_path):
     """An error that is not a refusal (a name the filesystem cannot hold) still ends and reaps git before it
-    propagates, with git's answer to a later blob still unread in the pipe (#1700 pass 33 R4 F2)."""
-    sg = load_gate(repo)
+    propagates, with git's answer to a later blob still unread in the pipe (#1700 pass 33 R4 F2). It runs in a child
+    with a time limit, so a cleanup that waits for git without ending it fails the test instead of hanging the suite
+    (pass 34 R4 F1, as QUAL2 R4 F2 for REAL_RUNNER)."""
     (tmp_path / "big").write_bytes(b"z" * (400 * 1024))
     big = _git(repo, "hash-object", "-w", str(tmp_path / "big")).strip()
-    started, real = [], sg.subprocess.Popen
-    monkeypatch.setattr(sg.subprocess, "Popen", lambda *a, **kw: started.append(real(*a, **kw)) or started[-1])
-    with pytest.raises(OSError):
-        sg.materialize([("100644", big, "a/" + "x" * 256), ("100644", big, "after.bin")], tmp_path / "into")
-    assert len(started) == 1 and started[0].returncode is not None, started
+    r = subprocess.run([sys.executable, "-c", WRITE_FAIL_RUNNER, str(repo / "scripts/gate/spec_gate.py"), big,
+                        str(tmp_path / "into")], capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stdout + r.stderr
+    out = json.loads(r.stdout)
+    assert out["raised"] == "OSError" and out["errno"] == errno.ENAMETOOLONG, out
+    assert out["started"] == 1 and out["returncode"] is not None, out
 
 def test_materialize_streams_exact_bytes_one_blob_at_a_time(repo, tmp_path):
     """FEAT-CICD-001 "Exact render" (done_when[1]) with the streamed batch: blobs across the 1 MiB chunk boundary,
@@ -4932,6 +4949,8 @@ FAKE_BATCH = {
     "no separator": (f"{FAKE_OID} blob 4\nabcdX".encode(), 0, ["no separator after x.bin", FAKE_OID]),
     "nonzero exit after a complete answer": (f"{FAKE_OID} blob 4\nabcd\n".encode(), 3, ["failed (3)"]),
     "killed by a signal after a complete answer": (f"{FAKE_OID} blob 4\nabcd\n".encode(), -9, ["failed (-9)"]),   # pass 32 R4 F2
+    "no separator, clean exit": (f"{FAKE_OID} blob 4\nabcd".encode(), 0, ["no separator after x.bin", FAKE_OID]),   # pass 34 R4 F2
+    "carriage return for a separator": (f"{FAKE_OID} blob 4\nabcd\r".encode(), 0, ["no separator after x.bin", FAKE_OID]),
     "size not a number": (f"{FAKE_OID} blob 12abc\n".encode() + b"z" * 13, 0, ["answered", "12abc", "x.bin"]),
     "negative size": (f"{FAKE_OID} blob -1\n".encode() + b"z" * 4096, 0, ["answered", "blob -1", "x.bin"]),
     "size with an underscore": (f"{FAKE_OID} blob 1_2\n".encode() + b"z" * 12 + b"\n", 0, ["answered", "1_2", "x.bin"]),
@@ -6215,15 +6234,50 @@ def test_measure_inventory_render_cleanup_defers_a_second_interrupt(tmp_path):
         else:
             assert report["masks"] and all(sorted(k) == [2, 14] for k in report["masks"]), report
 
+BODY_INTERRUPT_PROBE = r"""
+import importlib.util,json,os,pathlib,signal,sys,time
+signal.signal(signal.SIGINT,signal.default_int_handler)
+s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+real=m.OwnedFamily.terminate_and_reap;calls=[]
+def hung(self,process,deadline):   # the main-path reap runs under defer_deadline() alone and outlasts the whole deadline
+    calls.append(1)
+    if len(calls)==1:
+        end=time.monotonic()+0.6
+        while time.monotonic()<end: time.sleep(.01)
+        os.kill(os.getpid(),signal.SIGINT)   # Ctrl-C at the hung reap, raised by the body itself
+    return real(self,process,deadline)
+m.OwnedFamily.terminate_and_reap=hung
+out={'raised':None}
+try:
+    with m.deadline_guard(time.monotonic()+0.4):
+        rep=m.run_bounded([sys.executable,'-c','import time;time.sleep(.05)'],pathlib.Path.cwd(),max_rss_bytes=256<<20,max_seconds=5)
+        out['returned']=rep['reason']
+except BaseException as e:
+    out['raised']=type(e).__name__
+out['mask']=sorted(int(x) for x in signal.pthread_sigmask(signal.SIG_BLOCK,set()))
+print(json.dumps(out))
+"""
+
+
+def test_measure_inventory_render_deadline_never_replaces_a_ctrl_c_raised_inside(tmp_path):
+    """A Ctrl-C raised by the body of a deferred section (here the main-path reap, which defers only the deadline)
+    while the deadline expired meanwhile is what propagates; the deadline does not replace it, so the run exits 130,
+    not 1 (#1700 pass 34 R1 F1)."""
+    r = subprocess.run([sys.executable, "-B", "-c", BODY_INTERRUPT_PROBE, str(REPO / MEASURE)], capture_output=True,
+                       text=True, timeout=60, cwd=tmp_path, env={**os.environ, "TMPDIR": str(tmp_path)})
+    assert r.returncode == 0, r.stdout + r.stderr
+    out = json.loads(r.stdout)
+    assert out["raised"] == "KeyboardInterrupt" and out["mask"] == [], out
+
 NOTICE_PROBE = r"""
 import importlib.util,json,os,select,socket,sys,threading,time
 s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 mode=sys.argv[2];r,w=os.pipe();real_os=os;out={}
-class Interrupting:   # the real call runs, then the interrupt a second SIGINT would raise as it returns
+class Interrupting:   # the real write runs, then the interrupt a second SIGINT would raise as it returns
     def __getattr__(self,name): return getattr(real_os,name)
-    def set_blocking(self,fd,flag):
-        real_os.set_blocking(fd,flag)
-        if not flag: raise KeyboardInterrupt('just after the flag was cleared')
+    def write(self,fd,data):
+        real_os.write(fd,data)
+        raise KeyboardInterrupt('just after the write')
 class Short:          # a stream socket under pressure takes only part of the first write
     calls=0
     def __getattr__(self,name): return getattr(real_os,name)
@@ -6247,11 +6301,11 @@ TWO=['retained /tmp/root (removal_failed)','retained /tmp/other (spawn_children_
 stream=os.fdopen(w,'w');real_stderr=sys.stderr;sys.stderr=stream
 try:
     if mode=='flag':
-        m.os=Interrupting()
+        fds=len(os.listdir('/proc/self/fd'));m.os=Interrupting()
         try: m.write_notice('x\n')
         except KeyboardInterrupt: out['interrupted']=True
         m.os=real_os
-        out['blocking']=os.get_blocking(w)
+        out['blocking']=os.get_blocking(w);out['fds_kept']=len(os.listdir('/proc/self/fd'))-fds
     elif mode in('short','stuck'):
         m.os=Short() if mode=='short' else Stuck();started=time.monotonic()
         try: m.write_notice('retained /tmp/root (removal_failed)\n')
@@ -6310,9 +6364,10 @@ def run_notice_probe(tmp_path, mode):
 
 
 def test_measure_inventory_render_notice_restores_the_flag_when_interrupted(tmp_path):
-    """An interrupt arriving as the flag is cleared still restores the caller's blocking stderr (#1700 pass 24 R1 F1)."""
+    """An interrupt arriving at the write leaves the caller's stderr blocking (#1700 pass 24 R1 F1) and closes the
+    private description the notice was written through (pass 34 R1 F2)."""
     seen = run_notice_probe(tmp_path, "flag")
-    assert seen["interrupted"] is True and seen["blocking"] is True, seen
+    assert seen["interrupted"] is True and seen["blocking"] is True and seen["fds_kept"] == 0, seen
 
 
 def test_measure_inventory_render_notice_escapes_a_non_utf8_path(tmp_path):
@@ -6476,6 +6531,49 @@ def test_measure_inventory_render_notice_wait_leaves_a_shared_stderr_blocking(tm
     never during the finishing wait, and every other writer still blocks as usual (#1700 pass 33 R1 F2)."""
     seen = run_finish_probe(tmp_path, "shared-flag")
     assert seen["blocking_mid_wait"] is True and seen["blocking_after"] is True, seen
+
+
+FLAGS_PROBE = r"""
+import fcntl,importlib.util,json,os,pty,socket,sys,threading
+s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+real_os=os
+class Guarded:      # any change to a descriptor's flags fails the probe: the open file description is shared
+    def __getattr__(self,name): return getattr(real_os,name)
+    def set_blocking(self,fd,flag): raise AssertionError(f'set_blocking({fd},{flag})')
+m.os=Guarded()
+def setter(*a):
+    if len(a)>1 and a[1]==fcntl.F_SETFL: raise AssertionError('F_SETFL')
+    return real_fcntl(*a)
+real_fcntl=fcntl.fcntl;fcntl.fcntl=setter
+out={};saved=os.dup(2)
+def rd(fd):         # never waits long: a notice that was not written reads as nothing
+    import select
+    return os.read(fd,4096).decode() if select.select([fd],[],[],2)[0] else ''
+def run(kind,fd,read):
+    os.dup2(fd,2);before=os.get_blocking(2)
+    try:
+        m.write_notices(['one '+kind,'two '+kind]);err=None
+    except BaseException as e:
+        err=f'{type(e).__name__}:{e}'
+    after=os.get_blocking(2);os.dup2(saved,2)
+    out[kind]={'error':err,'unchanged':before==after,'text':read()}
+r,w=os.pipe();run('pipe',w,lambda:rd(r))
+a,b=socket.socketpair();run('socket',b.fileno(),lambda:rd(a.fileno()))
+mfd,sfd=pty.openpty();run('terminal',sfd,lambda:rd(mfd))
+print(json.dumps(out))
+"""
+
+
+def test_measure_inventory_render_notice_never_changes_stderr_flags(tmp_path):
+    """Notices go through a private non-blocking description (a pipe, a terminal) or MSG_DONTWAIT (a socket), so the
+    shared description's flags are never changed and two writers cannot leave stderr non-blocking for each other
+    (#1700 pass 34 R1 F2); each notice still arrives whole."""
+    r = subprocess.run([sys.executable, "-B", "-c", FLAGS_PROBE, str(REPO / MEASURE)], capture_output=True, text=True,
+                       timeout=30, cwd=tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    for kind, seen in json.loads(r.stdout).items():
+        assert seen["error"] is None and seen["unchanged"], (kind, seen)
+        assert f"measure_inventory_render: one {kind}" in seen["text"] and f"two {kind}" in seen["text"], (kind, seen)
 
 
 def test_measure_inventory_render_notice_wait_is_bounded_on_a_socket_that_never_drains(tmp_path):

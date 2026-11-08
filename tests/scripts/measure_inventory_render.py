@@ -23,6 +23,7 @@ import resource
 import signal
 import select
 import selectors
+import socket
 import stat
 import statistics
 import subprocess
@@ -80,13 +81,22 @@ def defer_deadline(*also: signal.Signals):
     """Do not lose a returned kernel resource to the deadline before its owner is registered. The cleanup also
     defers SIGINT, so a second Ctrl-C is raised after the kill pass, receipt, restore and notices (#1700 pass 32 R1)."""
     previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM, *also})
+    interrupted = False
     try:
         yield previous
+    except KeyboardInterrupt:
+        interrupted = True                             # a Ctrl-C raised by the body is never replaced by the deadline
+        raise
     finally:
         # A deadline that expired meanwhile goes through first, while the caller can still catch DeliveryDeadline;
         # a Ctrl-C held back with it follows and is not replaced (Python runs SIGINT's handler before SIGALRM's).
+        # When the body itself raised KeyboardInterrupt, the deadline is dropped in its favour (#1700 pass 34 R1 F1).
         try:
-            signal.pthread_sigmask(signal.SIG_SETMASK, previous | (set(also) - {signal.SIGALRM}))
+            try:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous | (set(also) - {signal.SIGALRM}))
+            except DeliveryDeadline:
+                if not interrupted:
+                    raise
         finally:
             signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
@@ -518,12 +528,11 @@ NOTICE_FINISH_SECONDS = 0.25   # all notices together may wait this long for a s
 def write_notice(line: str, finish_by: float | None = None) -> None:
     """Write one cleanup notice to stderr without ever blocking. A stream with no descriptor (a test's StringIO, or
     an object with no fileno at all) is printed to, since it cannot block. Otherwise the line goes to the descriptor
-    (fd 2 when sys.stderr is None) with non-blocking writes as one ASCII line: its text is escaped with unicode_escape,
+    (fd 2 when sys.stderr is None) with writes that never block and never change its flags (write_now) as one ASCII line: its text is escaped with unicode_escape,
     so a line feed, a carriage return, a backslash or a non-UTF-8 byte in a path can neither split the line nor
     turn into another path's name; a line over PIPE_BUF bytes is cut to PIPE_BUF and ends in NOTICE_CUT, so a pipe
     takes it whole or not at all and a cut path is never read as a whole one; a cut falls between whole escapes, so
-    the kept text still decodes with unicode_escape; and the descriptor's blocking flag is restored even when an
-    interrupt arrives. When the descriptor takes only part of the line (a stream socket whose buffer just filled),
+    the kept text still decodes with unicode_escape; and the descriptor's blocking flag is never changed. When the descriptor takes only part of the line (a stream socket whose buffer just filled),
     the rest is written as the descriptor becomes writable, until finish_by (monotonic; NOTICE_FINISH_SECONDS from
     now when not given), so the line still arrives whole. Raises OSError (BlockingIOError when the pipe is full, EBADF
     when it is closed, EIO when the rest could not be written by finish_by: a reader that does not drain, or a
@@ -554,15 +563,23 @@ def write_notice(line: str, finish_by: float | None = None) -> None:
 
 
 def write_now(fd: int, data: bytes) -> int:
-    """One write that never blocks. The descriptor's open file description is shared with every process that holds
-    the same stderr, so it is non-blocking only for this one call, never while waiting (#1700 pass 33 R1 F2), and
-    the flag is restored even when an interrupt arrives."""
-    blocking = os.get_blocking(fd)
-    try:
-        os.set_blocking(fd, False)                     # inside the try: an interrupt here still restores the flag
-        return os.write(fd, data)
-    finally:
-        os.set_blocking(fd, blocking)
+    """One write that never blocks and never changes the descriptor's flags. Its open file description is shared
+    with every process that holds the same stderr, so toggling O_NONBLOCK there could leave another writer
+    non-blocking (#1700 pass 33 R1 F2, pass 34 R1 F2). A pipe or a character device (a terminal) is written through a
+    private non-blocking description of the same file, a socket with MSG_DONTWAIT on a duplicate, and a regular file,
+    which never waits for a reader, directly. Raises OSError (BlockingIOError when full; the error from reopening
+    when the descriptor cannot be reopened, and the notice is then dropped)."""
+    mode = os.fstat(fd).st_mode
+    if stat.S_ISFIFO(mode) or stat.S_ISCHR(mode):
+        own = os.open(f"/proc/self/fd/{fd}", os.O_WRONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOCTTY)
+        try:
+            return os.write(own, data)
+        finally:
+            os.close(own)
+    if stat.S_ISSOCK(mode):
+        with socket.socket(fileno=os.dup(fd)) as s:
+            return s.send(data, socket.MSG_DONTWAIT)
+    return os.write(fd, data)
 
 
 def finish_notice(fd: int, rest: bytes, finish_by: float) -> int:
