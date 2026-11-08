@@ -1,7 +1,9 @@
 """FEAT-STRAT-001 done_when 4, caller level: both production writers of the
 premarket columns (gcp/fetchers/fetch_market_data.py nightly and
 gcp/fetchers/fetch_premarket_refresh.py at 08:20 ET) filter the session's
-prints with the LAST COMPLETED session's close, open and ATR(14).
+prints with the LAST COMPLETED session's close, open and ATR(14), and the
+ticker's own pm_stale_print_atr and pm_spike_atr (here at the #1753 values,
+level_params_fixtures.fixture_params).
 
 Each caller runs its own SQL against an in-memory SQLite market_data_daily
 and market_data_intraday loaded with the committed 2026-11-06 bars, so the
@@ -21,6 +23,7 @@ import pandas as pd
 import pytest
 
 from tests.lib import strat_2026_11_06 as fx
+from tests.lib.level_params_fixtures import fixture_params
 
 SESSION = fx.SESSION
 EXPECTED = {"SPY": (738.04, 730.64), "QQQ": (660.398, 649.62), "IWM": (272.50, 269.13)}
@@ -46,6 +49,8 @@ class _Db:
         self.conn = sqlite3.connect(":memory:")
         full = fx.daily(ticker, through=SESSION)
         atr = fx.wilder_atr(full)
+        from lib.indicators import calculate_atr
+        atr5 = calculate_atr(full["High"], full["Low"], full["Close"], 5)
         rows = []
         for ts, r in full.iterrows():
             d = ts.date()
@@ -56,10 +61,11 @@ class _Db:
                     o, h, lo, c = (session_row[k] for k in ("Open", "High", "Low", "Close"))
                 if session_atr is not None:
                     a = session_atr
-            rows.append((ticker, d.isoformat(), o, h, lo, c, float(r["Volume"]), a))
+            a5 = float(atr5.loc[ts]) if pd.notna(atr5.loc[ts]) else None
+            rows.append((ticker, d.isoformat(), o, h, lo, c, float(r["Volume"]), a, a5))
         self.conn.execute("CREATE TABLE market_data_daily (ticker TEXT, date TEXT, open REAL, "
-                          "high REAL, low REAL, close REAL, volume REAL, atr_14 REAL)")
-        self.conn.executemany("INSERT INTO market_data_daily VALUES (?,?,?,?,?,?,?,?)", rows)
+                          "high REAL, low REAL, close REAL, volume REAL, atr_14 REAL, atr_5 REAL)")
+        self.conn.executemany("INSERT INTO market_data_daily VALUES (?,?,?,?,?,?,?,?,?)", rows)
         bars = fx.premarket_bars(ticker)
         utc = bars["timestamp"].dt.tz_localize("America/New_York").dt.tz_convert("UTC").dt.tz_localize(None)
         self.conn.execute("CREATE TABLE market_data_intraday (ticker TEXT, interval TEXT, ts TEXT, "
@@ -88,7 +94,8 @@ def _run_nightly(monkeypatch, ticker, db: _Db) -> dict:
                         lambda df, table, keys: written.append((table, df.iloc[0].to_dict())))
     monkeypatch.setattr(fmd, "upsert_dataframe",
                         lambda df, table, keys: written.append((table, df.iloc[0].to_dict())))
-    fmd.compute_and_upsert_daily_indicators(ticker, SESSION.isoformat())
+    fmd.compute_and_upsert_daily_indicators(ticker, SESSION.isoformat(),
+                                            level_params=fixture_params(ticker, SESSION))
     rows = [r for t, r in written if t == "market_data_daily"]
     assert rows, "nothing written"
     return rows[-1]
@@ -107,7 +114,8 @@ def _run_refresh(monkeypatch, ticker, db: _Db) -> dict:
     )
     monkeypatch.setattr(database, "query_to_dataframe", db.query)
     monkeypatch.setattr(fmd, "fetch_minute_data", lambda tk, d, k: minute)
-    out = fpr.compute_premarket_for_ticker(ticker, SESSION, "key")
+    out = fpr.compute_premarket_for_ticker(ticker, SESSION, "key",
+                                           level_params=fixture_params(ticker, SESSION))
     assert out is not None
     return out
 

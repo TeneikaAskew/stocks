@@ -1757,8 +1757,8 @@ ALTER TABLE market_data_daily
 
 -- FEAT-STRAT-001: premarket snapshot provenance. level_basis records when the
 -- premarket bars were fetched and how many prints the snapshot filter dropped
--- (stale prior-close prints, and isolated spikes more than 0.5 x ATR(14)
--- beyond the neighbouring bar bodies), so a level can be traced to its data. Written by
+-- (stale prior-close prints, and isolated spikes beyond the neighbouring bar
+-- bodies by more than the ticker's calibrated threshold), so a level can be traced to its data. Written by
 -- gcp/fetchers/fetch_premarket_refresh.py and gcp/fetchers/fetch_market_data.py
 -- from lib.indicators.calculate_premarket_context. All NULLABLE; NULL means
 -- not recorded (rows written before this block). Writers and readers detect
@@ -1767,6 +1767,19 @@ ALTER TABLE market_data_daily
     ADD COLUMN IF NOT EXISTS pre_fetched_at             TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS pre_excluded_stale_prints  INTEGER,
     ADD COLUMN IF NOT EXISTS pre_excluded_spikes        INTEGER;
+
+-- FEAT-STRAT-001 (per-ticker level parameters, Design 8): whether the
+-- snapshot's prints were filtered with the ticker's calibrated thresholds
+-- (pm_stale_print_atr, pm_spike_atr). pre_filter_status is 'ok' when both
+-- were in force and the ATR was usable, else the parameter status that
+-- stopped it (insufficient_history, params_unavailable, ...) or
+-- atr_unavailable; the excluded counts are NULL then. pre_filter_params
+-- records each threshold's value, status and effective_from, the
+-- atr_basis and the ATR used. The level builder refuses a snapshot whose
+-- status is not 'ok' (premarket_unfiltered). Nullable; idempotent.
+ALTER TABLE market_data_daily
+    ADD COLUMN IF NOT EXISTS pre_filter_status  VARCHAR(40),
+    ADD COLUMN IF NOT EXISTS pre_filter_params  JSONB;
 
 -- FEAT-STRAT-001 (per-ticker level parameters, Design 4): ATR(5) stored
 -- beside atr_14 by the same nightly fetch-market-data path

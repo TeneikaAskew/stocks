@@ -28,6 +28,7 @@ Required env vars:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -132,20 +133,21 @@ def resolve_universe(target_date: date, max_tickers: int = 50) -> list[str]:
 # ── Pre-market computation ──────────────────────────────────────────────────
 
 def _prior_session_from_db(ticker: str, fetch_date: date) -> dict:
-    """The last completed session before ``fetch_date``: close, open, atr_14.
+    """The last completed session before ``fetch_date``: close, open, atr_14,
+    atr_5.
 
-    The 11pm-yesterday market_data_daily row has yesterday's close and
-    ATR(14) already, so one backward lookup is enough. The premarket print
-    filter needs the prior session's ATR(14) (FEAT-STRAT-001 Design 2), never
-    the fetch date's own row, which at 08:30 holds only premarket columns.
-    Returns an empty dict when nothing is found.
+    The 11pm-yesterday market_data_daily row has yesterday's close and ATRs
+    already, so one backward lookup is enough. The premarket print filter
+    needs the prior session's ATR in the policy's basis (FEAT-STRAT-001),
+    never the fetch date's own row, which at 08:30 holds only premarket
+    columns. Returns an empty dict when nothing is found.
     """
     try:
         from gcp.database import query_to_dataframe
     except ImportError:
         return {}
     sql = """
-        SELECT close, open, atr_14
+        SELECT close, open, atr_14, atr_5
           FROM market_data_daily
          WHERE ticker = :tk
            AND date < :d
@@ -159,7 +161,7 @@ def _prior_session_from_db(ticker: str, fetch_date: date) -> dict:
             return {}
         row = df.iloc[0]
         out = {}
-        for key in ('close', 'open', 'atr_14'):
+        for key in ('close', 'open', 'atr_14', 'atr_5'):
             v = row.get(key)
             out[key] = float(v) if v is not None and pd.notna(v) else None
         return out
@@ -172,14 +174,28 @@ def _prev_close_from_db(ticker: str, fetch_date: date) -> float | None:
     return _prior_session_from_db(ticker, fetch_date).get('close')
 
 
+def read_level_params_for_run(tickers, session_date):
+    """The level parameters in force on `session_date` for the whole
+    universe, in one query (FEAT-STRAT-001). Raises LevelParamsUnavailable
+    when the tables cannot be read."""
+    from gcp.database import query_to_dataframe_strict
+    from lib.strat_levels import load_level_params
+    return load_level_params(query_to_dataframe_strict, list(tickers), session_date)
+
+
 def compute_premarket_for_ticker(ticker: str, fetch_date: date,
-                                  api_key: str) -> dict | None:
+                                  api_key: str, *, level_params=None) -> dict | None:
     """Fetch today's intraday bars from AV and return pre-market metrics.
 
     Returns a dict with keys ``pre_high pre_low pre_vwap pre_volume
     gap_pct pre_range_atr`` (any of which may be None) plus ``ticker``
     and ``date``. Returns None if the AV fetch fails or no bars are in
     the pre-market window.
+
+    `level_params` is the ticker's LevelParams in force on fetch_date
+    (read once per run, read_level_params_for_run). The print filter runs
+    with its calibrated thresholds only when both are ok; otherwise the
+    snapshot carries pre_filter_status naming why and NULL excluded counts.
     """
     from gcp.fetchers.fetch_market_data import fetch_minute_data
     from lib.indicators import calculate_premarket_context
@@ -194,6 +210,13 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
 
     prior = _prior_session_from_db(ticker, fetch_date)
     prev_close = prior.get('close')
+    if level_params is None:
+        pm_filter = {'status': 'level_params_unavailable', 'atr': None,
+                     'stale_print_atr': None, 'spike_atr': None, 'params': None}
+    else:
+        from lib.strat_levels import premarket_filter_inputs
+        pm_filter = premarket_filter_inputs(
+            level_params, {'atr_14': prior.get('atr_14'), 'atr_5': prior.get('atr_5')})
 
     # `times` must be a Series so calculate_premarket_context's tz-aware
     # path runs (DatetimeIndex falls to a per-row Python loop that builds
@@ -207,8 +230,10 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
         close=df['Close'].reset_index(drop=True),
         volume=df['Volume'].reset_index(drop=True),
         prev_close=prev_close,
-        atr14=prior.get('atr_14'),
+        atr=pm_filter['atr'],
         prev_open=prior.get('open'),
+        stale_print_atr=pm_filter['stale_print_atr'],
+        spike_atr=pm_filter['spike_atr'],
     )
     if pm.get('bar_count', 0) <= 0:
         log.info("  %s: 0 pre-market bars for %s (early run, weekend, or holiday)",
@@ -226,10 +251,17 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
         'excluded_prior_close_prints': pm.get('excluded_prior_close_prints'),
         'excluded_spike_prints': pm.get('excluded_spike_prints'),
         # The provenance columns (FEAT-STRAT-001), written when the table
-        # has them (see upsert_premarket).
+        # has them (see upsert_premarket). The counts are None when the
+        # filter did not run.
         'pre_fetched_at': fetched_at,
         'pre_excluded_stale_prints': pm.get('excluded_prior_close_prints'),
         'pre_excluded_spikes': pm.get('excluded_spike_prints'),
+        # Whether the prints were filtered with the ticker's own thresholds,
+        # and which (Design 8). Not ok: the builder refuses the snapshot.
+        'pre_filter_status': 'ok' if pm.get('filtered') else (
+            pm_filter['status'] if pm_filter['status'] != 'ok' else 'atr_unavailable'),
+        'pre_filter_params': (json.dumps(pm_filter['params'], sort_keys=True)
+                              if pm_filter['params'] is not None else None),
     }
 
 
@@ -280,7 +312,8 @@ def upsert_premarket(rows: list[dict]) -> int:
     return n
 
 
-_PROVENANCE_COLUMNS = ('pre_fetched_at', 'pre_excluded_stale_prints', 'pre_excluded_spikes')
+_PROVENANCE_COLUMNS = ('pre_fetched_at', 'pre_excluded_stale_prints', 'pre_excluded_spikes',
+                       'pre_filter_status', 'pre_filter_params')
 _UPSERT_KEYS = ('ticker', 'date', 'pre_high', 'pre_low', 'pre_vwap', 'pre_volume',
                 'gap_pct') + _PROVENANCE_COLUMNS
 
@@ -296,7 +329,7 @@ def _has_provenance_columns(eng) -> bool:
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name = 'market_data_daily' "
                 "AND column_name IN ('pre_fetched_at', 'pre_excluded_stale_prints', "
-                "'pre_excluded_spikes')"
+                "'pre_excluded_spikes', 'pre_filter_status', 'pre_filter_params')"
             )).fetchall()
     except Exception:  # noqa: BLE001 absent is the safe reading
         return False
@@ -307,13 +340,20 @@ def _upsert_premarket_sql(with_provenance: bool) -> str:
     cols = ['pre_high', 'pre_low', 'pre_vwap', 'pre_volume', 'gap_pct']
     if with_provenance:
         cols += list(_PROVENANCE_COLUMNS)
+    # The filter status and its counts describe this snapshot only: they are
+    # overwritten, never COALESCEd with an earlier run's, so an unfiltered
+    # rerun cannot leave an earlier run's 'ok' beside its unfiltered prices.
+    overwrite = {'pre_excluded_stale_prints', 'pre_excluded_spikes',
+                 'pre_filter_status', 'pre_filter_params'}
     sets = ',\n            '.join(
-        f"{c} = COALESCE(EXCLUDED.{c}, market_data_daily.{c})" for c in cols)
+        f"{c} = EXCLUDED.{c}" if c in overwrite
+        else f"{c} = COALESCE(EXCLUDED.{c}, market_data_daily.{c})" for c in cols)
+    values = [f"CAST(:{c} AS JSONB)" if c == 'pre_filter_params' else f":{c}" for c in cols]
     return (
         "INSERT INTO market_data_daily\n"
         f"    (ticker, date, {', '.join(cols)})\n"
         "VALUES\n"
-        f"    (:ticker, :date, {', '.join(':' + c for c in cols)})\n"
+        f"    (:ticker, :date, {', '.join(values)})\n"
         "ON CONFLICT (ticker, date) DO UPDATE SET\n"
         f"            {sets}"
     )
@@ -360,9 +400,21 @@ def main():
         log.warning("No tickers to refresh — exiting cleanly")
         return
 
+    # FEAT-STRAT-001: the print thresholds for the whole universe, read
+    # once. Unreadable tables: every snapshot is written unfiltered
+    # (pre_filter_status level_params_unavailable) and the run exits non-zero.
+    from lib.strat_levels import LevelParamsUnavailable
+    params_failed = False
+    try:
+        run_params = read_level_params_for_run(universe, target)
+    except LevelParamsUnavailable as e:
+        log.error("level_params_unavailable: %s (premarket snapshots written unfiltered)", e)
+        run_params, params_failed = {}, True
+
     rows = []
     for tk in universe:
-        result = compute_premarket_for_ticker(tk, target, api_key)
+        result = compute_premarket_for_ticker(tk, target, api_key,
+                                              level_params=run_params.get(tk.upper()))
         if result:
             rows.append(result)
 
@@ -370,6 +422,8 @@ def main():
 
     n = upsert_premarket(rows)
     log.info("Upserted %d rows into market_data_daily for %s", n, target)
+    if params_failed:
+        sys.exit(1)
 
 
 if __name__ == '__main__':

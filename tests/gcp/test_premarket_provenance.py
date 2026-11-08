@@ -10,6 +10,10 @@ puts them in level_basis['premarket'].
 
 Production does not have the columns until the owner applies the schema
 block, so every writer and reader is also run against a table without them.
+Per-ticker parameters (2026-11-08) add pre_filter_status and
+pre_filter_params: a snapshot read from a table without pre_filter_status is
+still read, and the builder refuses it as premarket_unfiltered, because its
+prints were not shown to be filtered with the ticker's thresholds.
 """
 from __future__ import annotations
 
@@ -24,8 +28,14 @@ from lib.strat_levels import (
 )
 from tests.gcp.test_premarket_filter_callers import _Db, _run_nightly, _run_refresh
 from tests.lib import strat_2026_11_06 as fx
+from tests.lib.level_params_fixtures import fixture_params, install_level_params
 
 SESSION = fx.SESSION
+
+
+@pytest.fixture(autouse=True)
+def _level_params(monkeypatch):
+    install_level_params(monkeypatch, ["QQQ", "SPY", "IWM"])
 FETCHED = datetime(2026, 11, 6, 13, 20, 4, tzinfo=timezone.utc)   # 08:20:04 ET
 PROVENANCE = {"pre_fetched_at": FETCHED, "pre_excluded_stale_prints": 3,
               "pre_excluded_spikes": 1}
@@ -43,7 +53,8 @@ def _frame_with_provenance(ticker="QQQ", provenance=PROVENANCE):
 def _build(ticker, frame):
     d = fx.daily(ticker)
     snap = premarket_snapshot_from_daily(frame, SESSION)
-    return build_session_levels(ticker, SESSION, d, fx.prior_atr(ticker), snap)
+    return build_session_levels(ticker, SESSION, d, {"atr_14": fx.prior_atr(ticker)}, snap,
+                                fixture_params(ticker, SESSION))
 
 
 # ── the counts and fetch time reach level_basis ─────────────────────────
@@ -166,20 +177,30 @@ _REFRESH_ROW = {"ticker": "QQQ", "date": SESSION, "pre_high": 660.4, "pre_low": 
 def test_refresh_upsert_writes_provenance_when_the_columns_exist(monkeypatch):
     from gcp import database
     from gcp.fetchers import fetch_premarket_refresh as fpr
-    eng = _Engine(["pre_fetched_at", "pre_excluded_stale_prints", "pre_excluded_spikes"])
+    eng = _Engine(["pre_fetched_at", "pre_excluded_stale_prints", "pre_excluded_spikes",
+                   "pre_filter_status", "pre_filter_params"])
     monkeypatch.setattr(database, "get_engine", lambda: eng)
-    assert fpr.upsert_premarket([dict(_REFRESH_ROW)]) == 1
+    row = {**_REFRESH_ROW, "pre_filter_status": "ok", "pre_filter_params": "{}"}
+    assert fpr.upsert_premarket([row]) == 1
     sql, params = eng.log[0]
     for col in PROVENANCE:
         assert f":{col}" in sql
-        assert f"{col} = COALESCE(EXCLUDED.{col}, market_data_daily.{col})" in sql
+    assert "pre_fetched_at = COALESCE(EXCLUDED.pre_fetched_at, market_data_daily.pre_fetched_at)" in sql
+    # The filter status and its counts describe this snapshot only: overwritten.
+    for col in ("pre_excluded_stale_prints", "pre_excluded_spikes", "pre_filter_status",
+                "pre_filter_params"):
+        assert f"{col} = EXCLUDED.{col}" in sql
+    assert "CAST(:pre_filter_params AS JSONB)" in sql
+    assert params["pre_filter_status"] == "ok"
     assert params["pre_fetched_at"] == FETCHED
     assert params["pre_excluded_stale_prints"] == 3 and params["pre_excluded_spikes"] == 1
 
 
 # ── a row with the columns missing still builds ────────────────────────
 
-@pytest.mark.parametrize("columns", [[], ["pre_fetched_at"], None])
+@pytest.mark.parametrize("columns", [[], ["pre_fetched_at"], None,
+                                     ["pre_fetched_at", "pre_excluded_stale_prints",
+                                      "pre_excluded_spikes"]])
 def test_refresh_upsert_leaves_the_columns_out_when_absent(monkeypatch, columns):
     from gcp import database
     from gcp.fetchers import fetch_premarket_refresh as fpr
@@ -256,9 +277,11 @@ def test_read_session_premarket_falls_back_without_the_columns():
     assert len(calls) == 2 and "pre_fetched_at" in calls[0] and "pre_fetched_at" not in calls[1]
     assert snap["pre_low"] == pytest.approx(649.62)
     assert snap["fetched_at"] is None and snap["excluded_spikes"] is None
-    pm = build_session_levels("QQQ", SESSION, fx.daily("QQQ"), fx.prior_atr("QQQ"),
-                              snap).to_basis()["premarket"]
-    assert pm["pre_low"] == pytest.approx(649.62) and pm["fetched_at"] is None
+    assert snap.get("pre_filter_status") is None
+    sl = build_session_levels("QQQ", SESSION, fx.daily("QQQ"), {"atr_14": fx.prior_atr("QQQ")},
+                              snap, fixture_params("QQQ", SESSION))
+    assert sl.to_basis()["premarket"] is None
+    assert sl.premarket_status == "premarket_unfiltered"
 
 
 def test_read_session_premarket_falls_back_when_the_query_swallows_errors():
@@ -271,11 +294,17 @@ def test_read_session_premarket_falls_back_when_the_query_swallows_errors():
 
 
 def test_resolver_builds_from_a_table_without_the_columns():
+    """With the columns the session's filtered premarket low is the put
+    trigger; without them the resolver still builds, and the snapshot (not
+    shown to be filtered) is refused, so no premarket price is a pick."""
     from tests.gcp.test_level_basis import _AnalysisDb, _resolver_inputs
     out = _resolver_inputs(_AnalysisDb())
     assert out is not None
     assert out["puts_trigger_name"] == "PMK_L"
     assert out["puts_trigger_price"] == pytest.approx(649.62)
+    bare = _resolver_inputs(_AnalysisDb(), with_provenance=False)
+    assert bare is not None
+    assert bare["puts_trigger_name"] != "PMK_L" and bare["calls_trigger_name"] != "PMK_H"
 
 
 def test_data_loader_retries_without_the_columns(monkeypatch):

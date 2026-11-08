@@ -34,6 +34,7 @@ import numpy as np
 import pandas as pd
 
 from lib.eastern_time import ET_NAME
+from lib.strat_levels import LevelParamsUnavailable
 
 from .embeddings import format_vector_literal
 from .schema import JournalRef
@@ -510,6 +511,7 @@ def _live_level_basis(ticker: str, session_date: date_type) -> Optional[dict]:
 
 def summarize_session_levels(
     ticker: str, as_of: Optional[date_type] = None, *, loader=None,
+    level_params=None,
 ) -> dict:
     """The session's levels for the planner (FEAT-STRAT-001 Design 4).
 
@@ -517,14 +519,25 @@ def summarize_session_levels(
     applies the planner's own newer premarket snapshot; only when no live
     row exists does it build with lib.strat_levels.build_session_levels.
     Returns {available, source, session_date, premarket_status, level_basis}.
+
+    The ticker's level parameters in force on the session are read once
+    (lib.strat_levels.load_level_params, strict reader) unless the caller
+    passes them. A stored level_basis rebuilds with the parameters it
+    recorded; the table rows are used only to build, or for a basis written
+    before parameters were recorded. LevelParamsUnavailable propagates: the
+    insight run fails with reason level_params_unavailable.
     """
-    from lib.strat_levels import SessionLevels, build_session_levels
+    from lib.strat_levels import (
+        SessionLevels, atr_inputs_from_frame, build_session_levels, load_level_params,
+    )
 
     session_date = _session_date_for(as_of)
+    if level_params is None:
+        level_params = load_level_params(_query_strict, [ticker], session_date)[ticker.upper()]
     premarket = _session_premarket(ticker, session_date)
     basis = _live_level_basis(ticker, session_date)
     if basis is not None:
-        sl = SessionLevels.from_basis(basis)
+        sl = SessionLevels.from_basis(basis, params=level_params)
         if premarket is not None:
             sl = sl.with_premarket(premarket)
         source = "level_basis"
@@ -534,7 +547,8 @@ def summarize_session_levels(
             loader = DataLoader()
         df = loader.load_daily(ticker, on_stale="warn")
         sl = build_session_levels(ticker, session_date, df,
-                                  _prior_session_atr(df, session_date), premarket)
+                                  atr_inputs_from_frame(df, session_date), premarket,
+                                  level_params)
         source = "builder"
     out = {
         "available": sl.status == "ok",
@@ -2013,6 +2027,11 @@ def build_context_bundle(
                 reason = result.get("reason")
                 if isinstance(reason, str) and reason:
                     failed_reasons[name] = reason
+        except LevelParamsUnavailable:
+            # INTERNAL (CLAUDE.md 3.7): the parameter tables cannot be read.
+            # Not a degraded section: the run fails with reason
+            # level_params_unavailable.
+            raise
         except Exception as e:
             logger.exception("summarizer %s failed", name)
             bundle[name] = {"available": False, "reason": f"exception: {e}"}

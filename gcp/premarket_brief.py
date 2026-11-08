@@ -26,7 +26,8 @@ from lib.indicators import add_brief_indicators
 from lib.strat import (CONTINUITY_DISPLAY_ORDER, StratClassifier, compute_strat_status,
                        timeframe_continuity_record)
 from lib.strat_levels import (
-    build_session_levels, format_levels_for_brief, premarket_snapshot_from_daily,
+    LevelParamsUnavailable, build_session_levels,
+    format_levels_for_brief, load_level_params, premarket_snapshot_from_daily,
 )
 from lib.signals import check_call_conditions, check_put_conditions
 from lib.config import load_config
@@ -1055,6 +1056,13 @@ def _resolve_brief_tickers(default_tickers: list[str]) -> list[str]:
     return default_tickers
 
 
+def _level_params_query(sql: str, params: dict):
+    """The strict reader load_level_params runs on: a failed query or a
+    missing table raises (CLAUDE.md 3.7), never an empty frame."""
+    from gcp import database  # noqa: PLC0415
+    return database.query_to_dataframe_strict(sql, params)
+
+
 def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
     """Generate pre-market brief for all tickers.
 
@@ -1073,6 +1081,12 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
     building_threshold = cfg.signal.premarket_building_threshold
 
     analysis_date = _resolve_analysis_date()
+
+    # The per-ticker level parameters in force on the session, read once for
+    # every ticker of the run (FEAT-STRAT-001). A missing table or a failed
+    # query raises LevelParamsUnavailable here, before any ticker is built,
+    # so the brief exits non-zero without writing a row.
+    level_params = load_level_params(_level_params_query, tickers, analysis_date)
 
     loader = DataLoader(data_dir=data_dir)
     strat = StratClassifier(strat_config=cfg.strat)
@@ -1212,6 +1226,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         bb_upper = _safe_float(latest.get('BB_Upper'))
         bb_lower = _safe_float(latest.get('BB_Lower'))
         atr14 = _safe_float(latest.get('ATR14'))
+        atr5 = _safe_float(latest.get('ATR5'))
         macd = _safe_float(latest.get('MACD'))
         macd_sig = _safe_float(latest.get('MACD_Signal'))
         stoch_k = _safe_float(latest.get('StochRSI_K'))
@@ -1297,6 +1312,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             'bb_upper': bb_upper,
             'bb_lower': bb_lower,
             'atr14': atr14,
+            'atr5': atr5,
             'above_sma200': above_sma200,
             'vol_regime': _vol_regime(vol_20d),
             'volatility_20d': vol_20d,
@@ -1446,14 +1462,17 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
                     print(f"[brief:{ticker}] insufficient bars before {analysis_date}",
                           file=sys.stderr, flush=True)
                     continue
-            # The last completed session's ATR(14). Missing ATR gives no
-            # trigger on either side (reason atr_unavailable), never a
-            # percent-only window.
-            atr_for_filter = float(d.get('atr14') or 0.0) or None
+            # The last completed session's ATR(14) and ATR(5), as the brief
+            # computed them above; the policy's atr_basis picks the one every
+            # distance is measured in. Missing ATR gives no trigger on either
+            # side (reason atr_unavailable).
+            atrs = {'atr_14': d.get('atr14'), 'atr_5': d.get('atr5')}
             session_levels = build_session_levels(
-                ticker, analysis_date, df, atr_for_filter, session_premarket,
+                ticker, analysis_date, df, atrs, session_premarket,
+                level_params[ticker.upper()],
                 daily_strat_class=str(d.get('strat_candle') or ''),
             )
+            atr_for_filter = session_levels.atr
             level_map = session_levels.to_level_map()
             d['level_basis'] = session_levels.to_basis()
             d['premarket_status'] = session_levels.premarket_status
@@ -3653,7 +3672,13 @@ def main(argv: Optional[list[str]] = None):
 
     print(f"Generating pre-market brief... (allow_update={allow_update}, "
           f"run_kind={run_kind}, triggered_by={triggered_by})")
-    brief = generate_premarket_brief(cfg=cfg, data_dir=data_dir)
+    try:
+        brief = generate_premarket_brief(cfg=cfg, data_dir=data_dir)
+    except LevelParamsUnavailable as exc:
+        # INTERNAL failure (CLAUDE.md 3.7): no premarket_analysis row is
+        # written for any ticker; the job goes red.
+        logger.error("premarket brief aborted: %s (%s)", exc.reason, exc)
+        sys.exit(1)
     print(json.dumps(brief, indent=2, default=str))
 
     # Persist to Cloud SQL — always writes history; current-table

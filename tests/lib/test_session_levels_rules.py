@@ -36,6 +36,7 @@ from lib.strat_levels import (
     price_cents,
 )
 from tests.lib import strat_2026_11_06 as fx
+from tests.lib.level_params_fixtures import legacy_db
 from tests.lib.session_levels_helpers import basis
 
 ATR = 3.0          # window: min(3 x 3, 8% of 100) = 8 points around 100
@@ -255,6 +256,7 @@ def _monitor_refresh(monkeypatch, frame):
     monitor.webhook_url = ""
     monitor.replay_clock_ts = datetime(2026, 11, 6, 9, 0, tzinfo=ZoneInfo("America/New_York"))
     monkeypatch.setattr(monitor, "_live_level_basis", lambda *a, **k: None)
+    monkeypatch.setattr(monitor, "_level_params_query", legacy_db("SPY").query)
 
     class _L:
         def __init__(self, *a, **k):
@@ -285,21 +287,29 @@ def _resolver_engine(ticker, *, atr_missing=False):
     eng = create_engine("sqlite://")
     d = fx.daily(ticker)
     atr = fx.wilder_atr(d)
+    from lib.indicators import calculate_atr
+    atr5 = calculate_atr(d["High"], d["Low"], d["Close"], 5)
     rows = pd.DataFrame({
         "ticker": ticker, "date": [t.date().isoformat() for t in d.index],
         "open": d["Open"].values, "high": d["High"].values, "low": d["Low"].values,
         "close": d["Close"].values,
         "atr_14": [None] * len(d) if atr_missing else atr.values,
+        "atr_5": [None] * len(d) if atr_missing else atr5.values,
         "strat_candle": "", "strat_combo": "",
         "pre_high": None, "pre_low": None, "pre_vwap": None, "gap_pct": None,
+        "pre_fetched_at": None, "pre_excluded_stale_prints": None, "pre_excluded_spikes": None,
+        "pre_filter_status": None, "pre_filter_params": None,
     })
     snap = fx.session_premarket(ticker)
     rows = pd.concat([rows, pd.DataFrame([{
         "ticker": ticker, "date": fx.SESSION.isoformat(), "open": None, "high": None,
         "low": None, "close": None, "atr_14": None, "strat_candle": "", "strat_combo": "",
         "pre_high": snap["pre_high"], "pre_low": snap["pre_low"],
-        "pre_vwap": snap["pre_vwap"], "gap_pct": snap["gap_pct"]}])], ignore_index=True)
+        "pre_vwap": snap["pre_vwap"], "gap_pct": snap["gap_pct"],
+        "pre_filter_status": snap["pre_filter_status"]}])], ignore_index=True)
     rows.to_sql("market_data_daily", eng, index=False)
+    # The level parameter tables in the same database the resolver reads.
+    legacy_db(ticker, conn=eng.raw_connection().driver_connection)
     return eng
 
 
@@ -328,6 +338,8 @@ def _dashboard(monkeypatch):
             sys.path.insert(0, p)
     from routers import dashboard
     monkeypatch.setattr(dashboard, "_query_fn", None)     # no live level_basis row
+    import gcp.database as database
+    monkeypatch.setattr(database, "query_to_dataframe_strict", legacy_db("SPY").query)
     return dashboard
 
 

@@ -49,13 +49,16 @@ def test_filtered_extremes_and_counts(ticker):
 
 @pytest.mark.parametrize("ticker", sorted(RAW))
 def test_raw_extremes_without_an_atr(ticker):
-    """With no ATR(14) nothing is dropped: the raw extremes come back."""
+    """With no ATR and no thresholds nothing is dropped: the raw extremes
+    come back, and the counts are None (the filter did not run), never a 0
+    that reads as "nothing dropped" (per-ticker parameters, 2026-11-08)."""
     hi, lo = RAW[ticker]
     pm = fx.premarket_context(ticker, raw=True)
     assert pm["pre_high"] == pytest.approx(hi)
     assert pm["pre_low"] == pytest.approx(lo)
-    assert pm["excluded_prior_close_prints"] == 0
-    assert pm["excluded_spike_prints"] == 0
+    assert pm["filtered"] is False
+    assert pm["excluded_prior_close_prints"] is None
+    assert pm["excluded_spike_prints"] is None
 
 
 @pytest.mark.parametrize("ticker", sorted(FILTERED))
@@ -107,7 +110,8 @@ def test_pre_vwap_drops_a_bar_with_no_surviving_price():
     lo = pd.Series([100.0] * 5)
     c = pd.Series([100.0] * 5)
     v = pd.Series([1000] * 5)
-    pm = calculate_premarket_context(times, o, h, lo, c, v, prev_close=95.0, atr14=4.0)
+    pm = calculate_premarket_context(times, o, h, lo, c, v, prev_close=95.0, atr=4.0,
+                                     stale_print_atr=0.1, spike_atr=0.5)
     assert pm["excluded_spike_prints"] == 1
     assert pm["pre_high"] == pytest.approx(100.0)
     assert pm["pre_vwap"] == pytest.approx(100.00)
@@ -122,7 +126,8 @@ def test_pre_vwap_bar_with_every_price_dropped_adds_no_volume():
     lo = pd.Series([100.0, 100.0, 95.0, 100.0])
     c = pd.Series([100.0, 100.0, 95.0, 100.0])
     v = pd.Series([1000, 1000, 50000, 1000])
-    pm = calculate_premarket_context(times, o, h, lo, c, v, prev_close=95.0, atr14=4.0)
+    pm = calculate_premarket_context(times, o, h, lo, c, v, prev_close=95.0, atr=4.0,
+                                     stale_print_atr=0.1, spike_atr=0.5)
     assert pm["excluded_prior_close_prints"] == 3
     assert pm["pre_low"] == pytest.approx(100.0)
     assert pm["pre_vwap"] == pytest.approx(100.00)

@@ -152,7 +152,7 @@ def _cloud_sql_active() -> bool:
 # premarket provenance columns; see DataLoader._load_daily_from_sql.
 _PREMARKET_PROVENANCE_PRESENT: Optional[bool] = None
 _PROVENANCE_SELECT = (",\n                   pre_fetched_at, pre_excluded_stale_prints, "
-                      "pre_excluded_spikes")
+                      "pre_excluded_spikes, pre_filter_status, pre_filter_params")
 
 
 def _query_cloud_sql(sql: str, params: Optional[dict] = None) -> pd.DataFrame:

@@ -8,25 +8,24 @@ run-to-run drift the user observed across two AVGO Apr-7 invocations
 (targets shifted from $336/$349/$361 → $329/$341/$354 with no
 underlying data change).
 
-Three recipes, one per risk persona:
+Three recipes, one per risk persona. Every distance is the ticker's own
+calibrated parameter (FEAT-STRAT-001, lib.strat_levels.LevelParams, read
+from ticker_level_params and recorded in the session's level_basis):
 
-  ┌───────────────┬──────────────────────────────────────────────────────┐
-  │ aggressive    │ Wide stop (2.0 × ATR), 3 stretched targets (2R / 3.5R│
-  │               │ / 5R), 1.5× sizing on high conviction. Accepts vol.  │
-  ├───────────────┼──────────────────────────────────────────────────────┤
-  │ neutral       │ 1 ATR stop, 1R / 2R / 3R targets, 1.0× sizing       │
-  │               │ (0.7× on low conviction). Canonical base case.       │
-  ├───────────────┼──────────────────────────────────────────────────────┤
-  │ conservative  │ Tightest structural stop (prior swing low / SMA200), │
-  │               │ 1R / 1.75R targets, 0.5× sizing into catalyst window.│
-  │               │ Blocks (size=0) when trade is against SMA200 or FTFC │
-  │               │ alignment is too weak.                               │
-  └───────────────┴──────────────────────────────────────────────────────┘
+  * entry zone: entry_buffer_{persona}_lo_atr / _hi_atr beyond the trigger,
+    quantiles of the ticker's follow-through after past breaks;
+  * stop: stop_{persona}_atr from the entry midpoint, quantiles of the
+    adverse excursion the persona's filled breaks that held survived; the
+    conservative persona still anchors at the closest structure inside it;
+    min_stop_atr is the floor;
+  * targets: target_{persona}_{k}_r in the persona's own R, the excursion a
+    stated share of its filled breaks reached before the stop;
+  * sizing, the catalyst damper and the FTFC gates are allocation policy,
+    unchanged: aggressive the largest size, conservative the smallest and
+    standing aside against the 200-SMA or weak FTFC alignment.
 
-All three share the same entry-zone anchor: the strat trigger_high (for
-longs) or trigger_low (for shorts) plus a small ATR-scaled buffer. The
-buffer differs by persona — aggressive enters slightly above the
-breakout, conservative waits for confirmation, neutral splits the diff.
+A parameter that is not ok gives the persona a plan with no entry, stop,
+targets or risk metrics, and a rationale naming the parameter.
 
 The math is documented inline so a future reader (or the user reading
 the persona-plan card) can see exactly why each number came out the way
@@ -39,7 +38,10 @@ import logging
 from dataclasses import dataclass
 from typing import Literal, Optional
 
-from lib.strat_levels import SessionLevels, orb_only_text
+from lib.strat_levels import (
+    MIN_STOP_KEY, PARAMS_BASIS_MISMATCH, LevelParam, LevelParams, SessionLevels,
+    share_text, entry_buffer_key, orb_only_text, stop_key, target_key,
+)
 
 from .schema import EntryZone, PersonaPlan
 
@@ -64,7 +66,7 @@ class PlanContext:
     direction: Direction          # 'long' / 'short' / 'flat' from the PM
     conviction: Conviction        # 'low' / 'medium' / 'high'
     close: float                  # most recent close (yesterday's close at as_of)
-    atr: float                    # ATR(14) from market_data_daily
+    atr: Optional[float]          # ATR(14) from market_data_daily (context only)
     levels: Optional[SessionLevels] = None
     sma_200: Optional[float] = None
     prior_swing_low: Optional[float] = None
@@ -82,14 +84,22 @@ class PlanContext:
             return float(self.levels.reference)
         return float(self.close)
 
-    def safe_atr(self) -> float:
-        """Sanity-bounded ATR for the persona offsets (entry buffer, ATR
-        stop, R-multiples) on a side that already has a trigger. It never
-        feeds the level walk: without ATR(14) the builder returns no trigger
-        (reason atr_unavailable), so no plan is sized on this fallback."""
-        if self.atr is None or self.atr <= 0:
-            return self.close * 0.01
-        return float(self.atr)
+    @property
+    def params(self) -> Optional[LevelParams]:
+        """The ticker's level parameters, carried on the session's levels
+        (recorded in its level_basis)."""
+        return self.levels.params if self.levels is not None else None
+
+    def plan_atr(self) -> float:
+        """The ATR every persona offset is measured in: the session levels'
+        ATR in the policy's basis. A side with a trigger always has one (the
+        builder returns atr_unavailable otherwise), so a trigger without it
+        is a bug and raises."""
+        atr = self.levels.atr if self.levels is not None else None
+        if atr is None or not atr > 0:
+            raise PlanContextUnavailable(
+                "a side has a trigger but the session levels carry no positive ATR")
+        return float(atr)
 
     def orb_only_reason(self, direction: Direction) -> Optional[str]:
         if self.levels is None:
@@ -124,28 +134,7 @@ def select_trigger_and_regime(
     return ("normal", float(side.trigger["price"]), stop_anchor, side.distance_atr, False)
 
 
-# ─── Recipe constants — central so they're easy to audit + tune ────────────
-
-# entry-zone width as a fraction of ATR
-_ENTRY_BUFFER = {
-    "aggressive":   (0.00, 0.50),  # buy-strength: enter at trigger up to +0.5 ATR
-    "neutral":      (0.00, 0.25),  # canonical: at trigger up to +0.25 ATR
-    "conservative": (0.10, 0.40),  # wait for follow-through, 0.1-0.4 ATR above
-}
-
-# stop distance from entry midpoint, in ATR units
-_STOP_ATR_MULT = {
-    "aggressive":   2.00,   # accept ~2 ATR of noise
-    "neutral":      1.00,   # canonical 1-ATR stop
-    "conservative": 0.70,   # tight-but-not-stop-fishing
-}
-
-# target distances in R-multiples of risk (where R = midpoint - stop for long)
-_TARGET_R_MULTIPLES = {
-    "aggressive":   [2.0, 3.5, 5.0],
-    "neutral":      [1.0, 2.0, 3.0],
-    "conservative": [1.0, 1.75],
-}
+# ─── Allocation policy (not ticker distances) ─────────────────────────────
 
 # sizing as a fraction of normal allocation, by conviction
 _SIZE_BY_CONVICTION = {
@@ -245,10 +234,31 @@ def _plan(
         # No level, no plan: never a synthesized trigger.
         return _orb_only_plan(ctx, persona)
     sign = 1.0 if ctx.direction == "long" else -1.0
-    atr = ctx.safe_atr()
+    params = ctx.params
+    if params is None:
+        return _params_unavailable_plan(ctx, persona, None)
+    target_keys = _persona_target_keys(params, persona)
+    needed = [entry_buffer_key(persona, "lo"), entry_buffer_key(persona, "hi"),
+              stop_key(persona), MIN_STOP_KEY] + target_keys[:1]
+    blocked = params.first_not_ok(needed)
+    if blocked is not None:
+        return _params_unavailable_plan(ctx, persona, blocked)
+    r_multiples: list[float] = []
+    truncated_at = None
+    for key in target_keys:
+        p = params.param(key)
+        if p.ok:
+            r_multiples.append(p.value)
+            continue
+        if p.status == "no_positive_target":
+            truncated_at = p
+            break
+        return _params_unavailable_plan(ctx, persona, p)
+    atr = ctx.plan_atr()
 
     # ── 1. Entry zone ──────────────────────────────────────────────
-    buf_lo_mult, buf_hi_mult = _ENTRY_BUFFER[persona]
+    buf_lo_mult = params.value(entry_buffer_key(persona, "lo"))
+    buf_hi_mult = params.value(entry_buffer_key(persona, "hi"))
     entry_lo = trigger + sign * buf_lo_mult * atr
     entry_hi = trigger + sign * buf_hi_mult * atr
     if entry_lo > entry_hi:  # short side flips the order
@@ -256,7 +266,7 @@ def _plan(
     midpoint = (entry_lo + entry_hi) / 2
 
     # ── 2. Stop ────────────────────────────────────────────────────
-    raw_stop = midpoint - sign * _STOP_ATR_MULT[persona] * atr
+    raw_stop = midpoint - sign * params.value(stop_key(persona)) * atr
 
     if persona == "conservative":
         # Conservative anchors the stop at the *closest* structural
@@ -285,15 +295,16 @@ def _plan(
     else:
         stop = raw_stop
 
-    # Sanity: never let stop == entry midpoint or cross it
-    min_distance = 0.5 * atr
+    # Floor: no stop closer to the entry midpoint than the ticker's
+    # min_stop_atr (the median adverse excursion of held breaks).
+    min_distance = params.value(MIN_STOP_KEY) * atr
     if abs(midpoint - stop) < min_distance:
         stop = midpoint - sign * min_distance
 
     # ── 3. Targets ─────────────────────────────────────────────────
     risk_per_unit = abs(midpoint - stop)
     targets: list[float] = []
-    for r_mult in _TARGET_R_MULTIPLES[persona]:
+    for r_mult in r_multiples:
         targets.append(midpoint + sign * r_mult * risk_per_unit)
 
     # Optional: stretch the aggressive top target up to the analog
@@ -324,7 +335,8 @@ def _plan(
     rationale = _build_rationale(persona, ctx, atr, midpoint, stop,
                                  risk_per_unit, size,
                                  regime=regime, distance_atr=distance_atr,
-                                 trigger=trigger, is_blue_sky=is_blue_sky)
+                                 trigger=trigger, is_blue_sky=is_blue_sky,
+                                 r_multiples=r_multiples, truncated_at=truncated_at)
 
     risk_metrics = compute_risk_metrics(
         entry_lo=round(entry_lo, 2),
@@ -411,16 +423,84 @@ def _orb_only_plan(ctx: PlanContext, persona: str) -> PersonaPlan:
     """The plan for an orb_only side: no level, so no entry, no stop, no
     targets and no risk metrics. Nothing is synthesized (FEAT-STRAT-001)."""
     reason = ctx.orb_only_reason(ctx.direction)
+    window = ctx.levels.side(ctx.direction).window if ctx.levels is not None else None
     return PersonaPlan(
         persona=persona,  # type: ignore[arg-type]
         entry_zone=None,
         stop=None,
         targets=[],
         position_size_pct=0.0,
-        rationale="ORB-only: " + orb_only_text(reason, ctx.direction),
+        rationale="ORB-only: " + orb_only_text(reason, ctx.direction, window),
         regime="orb_only",
         risk_metrics=None,
     )
+
+
+def _persona_target_keys(params: LevelParams, persona: str) -> list[str]:
+    """The persona's target keys T1, T2, ... in order: as many as the
+    policy defines for it."""
+    keys = []
+    k = 1
+    while target_key(persona, k) in params.params:
+        keys.append(target_key(persona, k))
+        k += 1
+    return keys
+
+
+def param_unavailable_text(persona: str, param: Optional[LevelParam]) -> str:
+    """The rationale for a persona plan whose parameter is not ok: names the
+    parameter, its status, its sample and the minimum."""
+    if param is None:
+        return (f"No {persona} plan: the session's level parameters were not "
+                f"recorded, so no entry, stop or target is published.")
+    ticker = param.ticker or "the ticker"
+    if param.status == "no_positive_target":
+        return (f"No {persona} plan: no target met the persona's reach share on "
+                f"{ticker}'s filled breaks ({param.key}, sample {param.sample_n}).")
+    if param.status == "insufficient_history":
+        return (f"No {persona} plan: {param.key} needs {param.min_sample} samples of "
+                f"{ticker}'s history and has {param.sample_n}.")
+    if param.status == PARAMS_BASIS_MISMATCH:
+        return (f"No {persona} plan: {ticker}'s values are being recalibrated for the "
+                f"new ATR basis ({param.key}).")
+    return (f"No {persona} plan: {param.key} is {param.status} for {ticker} "
+            f"(sample {param.sample_n}, minimum {param.min_sample}).")
+
+
+def _params_unavailable_plan(ctx: PlanContext, persona: str,
+                             param: Optional[LevelParam]) -> PersonaPlan:
+    """A side with a trigger whose persona parameter is not ok: no entry,
+    stop, targets or risk metrics; nothing published from a non-ok value."""
+    return PersonaPlan(
+        persona=persona,  # type: ignore[arg-type]
+        entry_zone=None,
+        stop=None,
+        targets=[],
+        position_size_pct=0.0,
+        rationale=param_unavailable_text(persona, param),
+        regime="normal",
+        risk_metrics=None,
+    )
+
+
+def _r_text(r: float) -> str:
+    return f"{r:.2f}".rstrip("0").rstrip(".") + "R"
+
+
+def _entry_text(ctx: PlanContext, persona: str) -> str:
+    """The entry zone's edges and the share of the ticker's past breaks that
+    reached each: an edge at follow-through quantile q is reached by 1 - q
+    of breaks (never the quantile stated as that share)."""
+    params = ctx.params
+    parts = []
+    for edge in ("lo", "hi"):
+        p = params.param(entry_buffer_key(persona, edge))
+        if p.statistic_q is None:
+            parts.append("at the trigger")
+        else:
+            parts.append(f"{p.value:.2f}x ATR past the trigger, reached by "
+                         f"{share_text(1 - p.statistic_q)} of past breaks")
+    return "entry " + " to ".join(parts)
 
 
 def _build_rationale(
@@ -430,14 +510,14 @@ def _build_rationale(
     distance_atr: Optional[float] = None,
     trigger: Optional[float] = None,
     is_blue_sky: bool = False,
+    r_multiples: Optional[list] = None,
+    truncated_at: Optional[LevelParam] = None,
 ) -> str:
     """One-sentence explanation of the recipe — references the actual
-    inputs so it changes when the inputs change.
+    inputs (the ticker's calibrated parameters) so it changes when they do.
 
-    On ``regime == 'extended'`` setups (next structural level >= 3 ATR
-    away), prepends an ORB-confirmation note so the trader knows the
-    breakout is in extended territory. ``is_blue_sky`` is accepted for
-    call compatibility and ignored.
+    On ``regime == 'extended'`` setups, prepends an ORB-confirmation note.
+    ``is_blue_sky`` is accepted for call compatibility and ignored.
     """
     if size == 0.0:
         if persona == "conservative":
@@ -466,26 +546,19 @@ def _build_rationale(
         )
 
     stop_atr = abs(midpoint - stop) / atr
-    if persona == "aggressive":
-        return extended_prefix + (
-            f"{stop_atr:.1f}× ATR stop, R = ${risk:.2f}, targets at 2R/3.5R/5R; "
-            f"{size:.2f}× size on {ctx.conviction} conviction."
-        )
-    if persona == "neutral":
-        return extended_prefix + (
-            f"~1× ATR stop (${atr:.2f}), R = ${risk:.2f}, targets at 1R/2R/3R; "
-            f"{size:.2f}× size on {ctx.conviction} conviction (canonical base case)."
-        )
-    if persona == "conservative":
-        damper_note = (
-            " (catalyst damper applied)"
-            if ctx.high_impact_catalyst_in_window else ""
-        )
-        return extended_prefix + (
-            f"{stop_atr:.1f}× ATR stop anchored at structure, R = ${risk:.2f}, "
-            f"targets at 1R/1.75R; {size:.2f}× size{damper_note}."
-        )
-    return ""
+    targets = "/".join(_r_text(r) for r in (r_multiples or []))
+    tail = ""
+    if truncated_at is not None:
+        tail = (f" No further target met the persona's reach share on filled breaks "
+                f"(sample {truncated_at.sample_n}).")
+    structure = " anchored at structure" if persona == "conservative" else ""
+    damper_note = (" (catalyst damper applied)"
+                   if persona == "conservative" and ctx.high_impact_catalyst_in_window else "")
+    return extended_prefix + (
+        f"{_entry_text(ctx, persona)}; {stop_atr:.2f}x ATR stop{structure} (${atr:.2f} ATR), "
+        f"R = ${risk:.2f}, targets at {targets}; {size:.2f}× size on {ctx.conviction} "
+        f"conviction{damper_note}.{tail}"
+    )
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -529,8 +602,7 @@ def context_from_bundle(
     # may use 'last_close' / 'atr'.
     #
     # `close` is load-bearing and has no defensible default: every stop,
-    # target and distance is measured from it, and `safe_atr()` falls back
-    # to a percentage OF it. The previous `or 0.0` turned a missing price
+    # target and distance is measured from it. The previous `or 0.0` turned a missing price
     # into a plausible-looking zero that survived ~400 lines and then
     # surfaced as `ZeroDivisionError: float division by zero` at the first
     # `/ atr` — a message naming neither the field nor the ticker. Fail
@@ -551,13 +623,13 @@ def context_from_bundle(
             f"daily bar."
         )
     close = float(close_val)
-    # AUDIT-2026-05-13: silent fallback — `or 0.0` on a financial field.
-    # Left in place because `safe_atr()` rescues a zero ATR into
-    # `close * 0.01` rather than propagating it, and unwinding that
-    # fabricated default means giving every persona plan an unavailable
-    # path. Tracked separately; with `close > 0` guaranteed above, it can
-    # no longer produce a zero divisor.
-    atr = float(market.get("atr_14") or market.get("atr") or 0.0)
+    # ATR(14) for context only: every persona offset is measured in the
+    # session levels' ATR in the policy's basis (PlanContext.plan_atr), so a
+    # missing value stays None instead of a fabricated 0.0 or a percent of
+    # the close (FEAT-STRAT-001 per-ticker parameters removed safe_atr).
+    atr = _maybe_float(market.get("atr_14"))
+    if atr is None:
+        atr = _maybe_float(market.get("atr"))
 
     # The session's levels (FEAT-STRAT-001): the level_basis the bundle
     # carries, read from the session's live brief row with the planner's

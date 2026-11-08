@@ -13,7 +13,7 @@ from lib.eastern_time import ET_NAME
 import pandas as pd
 import numpy as np
 from datetime import datetime, time, timedelta
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -514,6 +514,11 @@ def calculate_historical_levels(
 # ---------------------------------------------------------------------------
 
 
+# The extended-hours window the premarket context reads, Eastern wall time.
+PREMARKET_START = time(4, 0)
+REGULAR_SESSION_OPEN = time(9, 30)
+
+
 def calculate_premarket_context(
     times: pd.Series,
     open_: pd.Series,
@@ -523,10 +528,12 @@ def calculate_premarket_context(
     volume: pd.Series,
     *,
     prev_close: float = None,
-    atr14: float = None,
+    atr: float = None,
     prev_open: float = None,
-    premarket_start: time = time(4, 0),     # 4:00 AM ET
-    market_open: time = time(9, 30),        # 9:30 AM ET
+    stale_print_atr: Optional[float],
+    spike_atr: Optional[float],
+    premarket_start: time = PREMARKET_START,
+    market_open: time = REGULAR_SESSION_OPEN,
 ) -> dict:
     """Compute pre-market H/L/VWAP/volume + gap_pct + pre_range_atr from
     extended-hours minute bars.
@@ -541,22 +548,28 @@ def calculate_premarket_context(
     Args:
         times, open_, high, low, close, volume: aligned 1-min bar series
         prev_close:  prior-day close, used to compute gap_pct. None → no gap_pct.
-        atr14:       the LAST COMPLETED session's ATR(14), never the session
+        atr:         the LAST COMPLETED session's ATR in the policy's basis
+                     (the level parameters' atr_basis), never the session
                      being filtered. Drives the print filter and normalises
                      pre_range. None → no filter, no atr-norm.
         prev_open:   prior session's open, carried on the result for the
                      excluded-print report (the 08:05 prints sit near it).
+        stale_print_atr, spike_atr: the ticker's calibrated
+                     pm_stale_print_atr and pm_spike_atr parameters
+                     (lib.strat_levels.LevelParams). Required; None when the
+                     parameter is not ok, and then no print is filtered.
 
-    Print filter (FEAT-STRAT-001 done_when 4), applied before pre_high,
-    pre_low and pre_vwap, only when atr14 is positive:
+    Print filter (FEAT-STRAT-001), applied before pre_high, pre_low and
+    pre_vwap, only when the ATR and both thresholds are positive:
       (a) a stale prior-close print: any one-minute open, high, low or close
           equal to prev_close to the cent while that bar's open-close
-          midpoint is more than 0.1 x ATR(14) away from prev_close;
-      (b) an isolated spike: a high (low) more than 0.5 x ATR(14) beyond its
-          own bar's open-close body and beyond the bodies of the two bars on
-          each side.
+          midpoint is more than stale_print_atr x ATR away from prev_close;
+      (b) an isolated spike: a high (low) more than spike_atr x ATR beyond
+          its own bar's open-close body and beyond the bodies of the two bars
+          on each side.
     Dropped values are counted in excluded_prior_close_prints and
-    excluded_spike_prints. pre_vwap takes each bar's typical price as the
+    excluded_spike_prints; both are None when the filter did not run
+    (``filtered`` False), never a 0 that reads as "nothing dropped". pre_vwap takes each bar's typical price as the
     mean of its surviving high, low and close with the bar's full volume; a
     bar with none of the three surviving adds neither price nor volume.
         premarket_start: extended-hours start (default 4:00 AM ET)
@@ -576,8 +589,8 @@ def calculate_premarket_context(
         'pre_high': None, 'pre_low': None, 'pre_vwap': None,
         'pre_volume': None, 'pre_open': None, 'pre_close': None,
         'gap_pct': None, 'pre_range_atr': None, 'bar_count': 0,
-        'excluded_prior_close_prints': 0, 'excluded_spike_prints': 0,
-        'prev_open': prev_open,
+        'excluded_prior_close_prints': None, 'excluded_spike_prints': None,
+        'filtered': False, 'prev_open': prev_open,
     }
 
     if times is None or len(times) == 0:
@@ -607,20 +620,27 @@ def calculate_premarket_context(
     out['pre_close'] = float(pre_c.iloc[-1]) if not pre_c.empty else None
 
     o, h, l, c = pre_o.copy(), pre_h.copy(), pre_l.copy(), pre_c.copy()
-    atr_ok = atr14 is not None and atr14 == atr14 and atr14 > 0
-    if atr_ok and prev_close is not None and prev_close == prev_close and prev_close > 0:
+
+    def _positive(x) -> bool:
+        return x is not None and x == x and x > 0
+
+    filter_on = _positive(atr) and _positive(stale_print_atr) and _positive(spike_atr)
+    out['filtered'] = bool(filter_on)
+    if filter_on:
+        out['excluded_prior_close_prints'] = 0
+    if filter_on and prev_close is not None and prev_close == prev_close and prev_close > 0:
         from lib.strat_levels import price_cents  # noqa: PLC0415
         pc_c = price_cents(prev_close)
-        mid = (pre_o + pre_c) / 2.0
-        away = (mid - float(prev_close)).abs() > 0.1 * float(atr14)
+        mid = (pre_o + pre_c) / 2
+        away = (mid - float(prev_close)).abs() > float(stale_print_atr) * float(atr)
         n_echo = 0
         for ser in (o, h, l, c):
             echo = ser.map(lambda v: v == v and price_cents(v) == pc_c) & away
             n_echo += int(echo.sum())
             ser[echo] = np.nan
         out['excluded_prior_close_prints'] = n_echo
-    if atr_ok:
-        k = 0.5 * float(atr14)
+    if filter_on:
+        k = float(spike_atr) * float(atr)
         body_hi = pd.concat([o, c], axis=1).max(axis=1)
         body_lo = pd.concat([o, c], axis=1).min(axis=1)
         nb_hi = pd.concat([body_hi.shift(s) for s in (-2, -1, 1, 2)], axis=1).max(axis=1)
@@ -652,8 +672,8 @@ def calculate_premarket_context(
         out['gap_pct'] = round((out['pre_open'] / prev_close - 1) * 100, 4)
 
     # Pre-market range expansion vs ATR (regime tag)
-    if atr14 is not None and atr14 > 0 and out['pre_high'] is not None and out['pre_low'] is not None:
-        out['pre_range_atr'] = round((out['pre_high'] - out['pre_low']) / atr14, 4)
+    if _positive(atr) and out['pre_high'] is not None and out['pre_low'] is not None:
+        out['pre_range_atr'] = round((out['pre_high'] - out['pre_low']) / atr, 4)
 
     return out
 

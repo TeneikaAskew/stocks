@@ -79,8 +79,10 @@ def seeded_policy() -> dict:
 
 
 class ParamsDb:
-    def __init__(self):
-        self.conn = sqlite3.connect(":memory:")
+    def __init__(self, conn: sqlite3.Connection | None = None):
+        """`conn`: an existing SQLite connection to create the tables in (for
+        a production path that queries one engine for everything)."""
+        self.conn = conn if conn is not None else sqlite3.connect(":memory:")
         for stmt in schema_statements():
             self.conn.execute(stmt)
         self.conn.commit()
@@ -146,3 +148,35 @@ def fixture_params(ticker: str = "TST", session_date: date = date(2026, 11, 6), 
         )
     return LevelParams(ticker=ticker, session_date=session_date, atr_basis=atr_basis,
                        policy_effective_from="2015-01-02", params=params)
+
+
+def legacy_db(tickers, *, effective_from: date = date(2015, 1, 2), overrides: dict | None = None,
+              statuses: dict | None = None, conn: sqlite3.Connection | None = None) -> ParamsDb:
+    """A ParamsDb whose `tickers` hold every Design 2 key at the #1753
+    values (or `overrides`), effective from `effective_from`, so a production
+    path driven offline reads them through load_level_params's own SQL."""
+    db = ParamsDb(conn)
+    for t in ([tickers] if isinstance(tickers, str) else tickers):
+        db.write(t, {**LEGACY_1753_VALUES, **(overrides or {})},
+                 effective_from=effective_from, statuses=statuses)
+    return db
+
+
+def install_level_params(monkeypatch, tickers=("SPY", "QQQ", "IWM"), *, db: ParamsDb | None = None,
+                         **legacy_kw) -> ParamsDb:
+    """Answer the level parameter query on gcp.database's strict reader
+    (the one every production consumer reads the tables through) from a
+    ParamsDb; every other strict query goes to the reader that was in place.
+    By default every listed ticker holds every key at the #1753 values."""
+    import gcp.database as database
+
+    pdb = db if db is not None else legacy_db(list(tickers), **legacy_kw)
+    previous = database.query_to_dataframe_strict
+
+    def strict(sql, params=None):
+        if "level_param_policy" in sql:
+            return pdb.query(sql, params)
+        return previous(sql, params)
+
+    monkeypatch.setattr(database, "query_to_dataframe_strict", strict)
+    return pdb

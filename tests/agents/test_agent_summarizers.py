@@ -23,7 +23,12 @@ def patch_query(monkeypatch):
     def set_result(needle: str, df: pd.DataFrame) -> None:
         store[needle] = df
 
+    from tests.lib.level_params_fixtures import ParamsDb
+    params_db = ParamsDb()   # the seeded policy, no ticker rows
+
     def fake_query(sql: str, params=None):
+        if "level_param_policy" in sql:
+            return params_db.query(sql, params)
         for needle, df in store.items():
             if needle in sql:
                 return df
@@ -446,6 +451,10 @@ def test_build_context_bundle_catches_exceptions(monkeypatch):
         raise RuntimeError("DB down")
 
     monkeypatch.setattr(summarizers, "_query", bad_query)
+    # The level parameter tables read (strict reader) succeeds here; when it
+    # fails the whole run fails (test_build_context_bundle_raises_on_level_params_unavailable).
+    from tests.lib.level_params_fixtures import ParamsDb
+    monkeypatch.setattr(summarizers, "_query_strict", ParamsDb().query)
     bundle = summarizers.build_context_bundle("SPY")
     # Every section should have failed gracefully.
     # `signals` was removed from the bundle on 2026-05-11 to break the
@@ -1013,6 +1022,7 @@ def test_build_context_bundle_forwards_inclusive_today_to_backtest(monkeypatch):
     monkeypatch.setattr(summarizers, "summarize_backtest_metrics", fake_backtest)
     monkeypatch.setattr(summarizers, "_query", lambda sql, params=None: pd.DataFrame())
     for name in ("summarize_market_context", "summarize_strat_status",
+                 "summarize_session_levels",
                  "summarize_options_flow", "summarize_gamma_levels",
                  "summarize_catalysts", "summarize_news_sentiment"):
         monkeypatch.setattr(summarizers, name,

@@ -36,8 +36,12 @@ import pytest
 
 def _make_monitor():
     from gcp.signal_monitor import SignalMonitor
+    from tests.lib.level_params_fixtures import legacy_db
     monitor = SignalMonitor()
     monitor.webhook_url = ""
+    # The level parameters in force on the session (per-ticker parameters,
+    # 2026-11-08): every key at the #1753 values for the monitored tickers.
+    monitor._level_params_query = legacy_db(monitor.tickers).query
     return monitor
 
 
@@ -243,7 +247,7 @@ def _capture_build_inputs(monitor, ticker, df):
     close)."""
     seen = {}
 
-    def _fake_build(ticker, session_date, daily_df, atr, premarket=None, **kw):
+    def _fake_build(ticker, session_date, daily_df, atr, premarket=None, params=None, **kw):
         seen["daily_df"] = daily_df
         seen["current_price"] = float(daily_df["Close"].iloc[-1])
         seen["analysis_date"] = session_date
