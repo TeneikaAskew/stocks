@@ -501,12 +501,21 @@ def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
                 {"ticker": ticker.upper(), "start": pm_start, "end": pm_end},
             )
             if not ibars.empty:
-                prev_close = float(df["Close"].iloc[-2]) if len(df) >= 2 else None
-                atr14 = float(last.get("ATR14")) if last.get("ATR14") is not None else None
+                # The prior session's close, open and ATR(14), as the nightly
+                # writer (fetch_market_data.compute_and_upsert_daily_indicators)
+                # passes them: the target date's own ATR includes the session
+                # being filtered, so the premarket filter would see the future.
+                prev_close = prev_open = atr14 = None
+                if len(df) >= 2:
+                    prev_close = float(df["Close"].iloc[-2])
+                    prev_open = float(df["Open"].iloc[-2])
+                    prior_atr = enriched.iloc[-2].get("ATR14")
+                    if prior_atr is not None and pd.notna(prior_atr):
+                        atr14 = float(prior_atr)
                 pm = calculate_premarket_context(
                     times=ibars["ts"], open_=ibars["open"], high=ibars["high"],
                     low=ibars["low"], close=ibars["close"], volume=ibars["volume"],
-                    prev_close=prev_close, atr14=atr14,
+                    prev_close=prev_close, atr14=atr14, prev_open=prev_open,
                 )
                 if pm["bar_count"] > 0:
                     for k_pm, k_db in [
