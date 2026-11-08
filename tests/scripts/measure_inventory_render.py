@@ -1138,12 +1138,16 @@ def deadline_guard(deadline: float):
         yield
         remaining(deadline)
     finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        # Ignoring SIGALRM discards one still pending behind a deferred mask (a Ctrl-C that lands as a deferred
-        # section's exit starts leaves it so), so restoring the default action cannot kill the process later
-        # (#1700 pass 35 R1 F2).
-        signal.signal(signal.SIGALRM, signal.SIG_IGN)
-        signal.signal(signal.SIGALRM, previous)
+        try:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+        finally:
+            # A deadline handled as the timer is stopped is raised from setitimer's call, so the caller's handler
+            # is restored here as well (#1700 pass 41 R1 F1); the timer is stopped by then, so none can follow.
+            # Ignoring SIGALRM discards one still pending behind a deferred mask (a Ctrl-C that lands as a
+            # deferred section's exit starts leaves it so), so restoring the default action cannot kill the
+            # process later (#1700 pass 35 R1 F2).
+            signal.signal(signal.SIGALRM, signal.SIG_IGN)
+            signal.signal(signal.SIGALRM, previous)
 
 
 def write_bounded(fd: int, raw: bytes, deadline: float):

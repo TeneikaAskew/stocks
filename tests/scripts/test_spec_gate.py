@@ -5959,6 +5959,11 @@ argv=[sys.executable,'-c',child]
 spawned=[]
 if mode=='unreaped':
     real=m.OwnedFamily.terminate_and_reap;m.OwnedFamily.terminate_and_reap=lambda self,*a:(real(self,*a),False)[1]
+if mode=='reap-refused':
+    real_reap=m.OwnedFamily.terminate_and_reap
+    def refused_reap(self,*a):
+        real_reap(self,*a);raise OSError('reap check refused')
+    m.OwnedFamily.terminate_and_reap=refused_reap
 if mode=='prestart':
     argv=[os.path.join(outer,'no-such-executable')]
 if mode=='receipt-failure':
@@ -6185,7 +6190,7 @@ def scratch_measurement(tmp_path, mode, seconds=1):
              "open(os.path.join(d,'blob'),'wb').write(b'x'*(1024*1024));"
              "root=os.environ['TMPDIR'];json.dump({'dir':d,'root':root,'receipt':open(os.path.join(root,'CREATED-BY')).read()},"
              f"open({str(record)!r},'w'));")
-    child += {'accepted': '', 'unreaped': '', 'prestart': '', 'receipt-failure': '', 'unregistered': 'time.sleep(20)',
+    child += {'accepted': '', 'unreaped': '', 'reap-refused': '', 'prestart': '', 'receipt-failure': '', 'unregistered': 'time.sleep(20)',
               'memory': 'a=bytearray(96*1024*1024);time.sleep(20)', 'stall': 'time.sleep(20)',
               'failed': 'raise SystemExit(7)',
               'escaped': "import subprocess;subprocess.Popen([sys.executable,'-c','import os,tempfile,time;os.setsid();"
@@ -6242,6 +6247,10 @@ def test_measure_inventory_render_owns_and_removes_its_scratch_root(tmp_path):
     assert not report['scratch_root_removed'] and report['outer_after'] == [Path(report['scratch_root']).name], report
     worker = [e for e in report['receipts'][0] if e['event'] == 'worker']
     assert worker and worker[0]['worker_pid'] == report['process_group'] and worker[0]['worker_start_ticks'] > 0, report
+    # A reap that raises after reaping keeps the root with the same reason, not a removal failure (#1700 pass 41 R4 F2).
+    report, _, outer, _ = scratch_measurement(tmp_path, 'reap-refused')
+    assert report['scratch_root_retained'] and report['scratch_root_retained_reason'] == 'family_not_proven_reaped', report
+    assert not report.get('scratch_root_error') and not report['scratch_root_removed'], report
 
 
 CLOSED_STDERR_PROBE = r"""
@@ -6441,7 +6450,8 @@ first,acts={'second-ctrl-c':('INT',['KI']),'after-block':('INT',[]),'failure-dea
             'failure-ctrl-c':('OSError',['KI']),'ctrl-c-then-deadline':('INT',['KI','ALRM']),
             'deadline-then-ctrl-c':('OSError',['ALRM','KI']),'ctrl-c-twice':('INT',['KI','KI']),
             'ctrl-c-recording-deadline':('OSError',['ALRM']),'ctrl-c-with-deadline':('OSError',['BOTH']),
-            'deadline-in-cleanup':('OSError',['IN']),'deadline-after-cleanup':('INT',[])}[mode]
+            'deadline-in-cleanup':('OSError',['IN']),'deadline-after-cleanup':('INT',[]),
+            'deadline-after-cleanup-in-handler':('INT',[])}[mode]
 real_popen=m.subprocess.Popen
 def popen(*a,**kw):                # the worker's pid, for the parent to check it is gone
     p=real_popen(*a,**kw);open(sys.argv[3],'w').write(str(p.pid));return p
@@ -6480,7 +6490,7 @@ def defer(*a):                     # each cleanup attempt's defer_deadline call,
 m.defer_deadline=defer
 real_gaps=m.gaps
 def gaps(v):                       # deadline-after-cleanup: the deadline lands after the cleanup, as the Ctrl-C propagates
-    if mode=='deadline-after-cleanup' and state['armed']:
+    if mode in ('deadline-after-cleanup','deadline-after-cleanup-in-handler') and state['armed']:
         state['armed']=False;os.kill(os.getpid(),signal.SIGALRM)
     return real_gaps(v)
 m.gaps=gaps
@@ -6496,6 +6506,11 @@ def wait(self,t=None):             # once the worker runs: a first Ctrl-C, or a 
 m.threading.Event.wait=wait
 real_run=m.run_bounded
 m.run_bounded=lambda argv,cwd,**kw:real_run([sys.executable,'-c','import time;time.sleep(30)'],cwd,**kw)
+if mode=='deadline-after-cleanup-in-handler':  # _main called while its caller handles an earlier Ctrl-C of its own
+    try:
+        raise KeyboardInterrupt('the caller, earlier')
+    except KeyboardInterrupt:
+        raise SystemExit(m._main(['--max-seconds','8'],time.monotonic()))
 raise SystemExit(m._main(['--max-seconds','8'],time.monotonic()))
 """
 
@@ -6524,10 +6539,12 @@ def test_measure_inventory_render_signal_as_the_cleanup_starts_still_runs_the_cl
     is still raised (pass 37 R4 F1), a Ctrl-C and the deadline in either order at two successive attempts (pass 37
     R1 F1), a Ctrl-C at two successive attempts (pass 38 R3 F1), a Ctrl-C while the handled deadline is recorded
     (pass 38 R1 F1), and a Ctrl-C and the deadline pending together as an attempt starts (pass 39 R1 F1). A deadline
-    handled after the cleanup, as the first Ctrl-C propagates, does not turn it into exit 1 (pass 39 R1 F2), and one
-    that expires inside the cleanup, under its block, is recorded at the block's exit (pass 39 R4 F1)."""
+    handled after the cleanup, as the first Ctrl-C propagates, does not turn it into exit 1 (pass 39 R1 F2), even
+    when _main's caller is handling an earlier Ctrl-C of its own (pass 41 R1 F2), and one that expires inside the
+    cleanup, under its block, is recorded at the block's exit (pass 39 R4 F1)."""
     for mode in ("second-ctrl-c", "after-block", "failure-ctrl-c", "ctrl-c-then-deadline", "deadline-then-ctrl-c",
-                 "ctrl-c-twice", "ctrl-c-recording-deadline", "ctrl-c-with-deadline", "deadline-after-cleanup"):
+                 "ctrl-c-twice", "ctrl-c-recording-deadline", "ctrl-c-with-deadline", "deadline-after-cleanup",
+                 "deadline-after-cleanup-in-handler"):
         r = run_cleanup_start_probe(tmp_path, mode)
         assert r.returncode == -signal.SIGINT, (mode, r.returncode, r.stderr[-2000:])
     for mode in ("failure-deadline", "deadline-in-cleanup"):
@@ -6540,32 +6557,43 @@ def test_measure_inventory_render_signal_as_the_cleanup_starts_still_runs_the_cl
 SECOND_RESTORE_PROBE = r"""
 import importlib.util,signal,sys,time
 s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
-n={'c':0}
+mode=sys.argv[2];n={'c':0,'fired':False}
 def prof(frame,event,arg):         # the second mask restore (the section's 4th call): wait there until the timer fires
     if event=='call' and frame.f_code is signal.pthread_sigmask.__code__ and frame.f_back.f_code.co_name=='defer_deadline':
         n['c']+=1
-        if n['c']==4: sys.setprofile(None);time.sleep(5)
+        if n['c']==4:
+            sys.setprofile(None)
+            try:
+                time.sleep(5)
+            except m.DeliveryDeadline:
+                n['fired']=True;raise
 before=signal.pthread_sigmask(signal.SIG_BLOCK,set())
 try:
     with m.deadline_guard(time.monotonic()+0.2):
         sys.setprofile(prof)
         with m.defer_deadline(signal.SIGINT):
-            pass
+            if mode=='ctrl-c': raise KeyboardInterrupt('a Ctrl-C raised by the section')
         sys.setprofile(None)
         print('past the section')
 except m.DeliveryDeadline:
     print('deadline at the section exit')
+except KeyboardInterrupt:
+    print('Ctrl-C at the section exit')
 print('mask restored' if signal.pthread_sigmask(signal.SIG_BLOCK,set())==before else 'mask left changed')
+print('fired at the second restore' if n['fired'] else 'did not fire there')
 """
 
 
 def test_measure_inventory_render_deadline_at_a_deferred_section_second_restore_is_raised_there():
     """The whole deadline firing as a deferred section's second mask restore runs, with no Ctrl-C, is raised there,
     so steps after the section stay bounded by the timer (#1700 pass 39 R4 F1), and the mask is still restored, so a
-    later Ctrl-C is not blocked for the rest of the process (pass 40 R4 F1)."""
-    r = subprocess.run([sys.executable, "-B", "-c", SECOND_RESTORE_PROBE, str(REPO / MEASURE)],
-                       capture_output=True, text=True, timeout=30)
-    assert r.returncode == 0 and r.stdout == "deadline at the section exit\nmask restored\n", (r.returncode, r.stdout, r.stderr[-2000:])
+    later Ctrl-C is not blocked for the rest of the process (pass 40 R4 F1). With a Ctrl-C raised by the section,
+    that Ctrl-C comes out and the mask is restored as well (pass 41 R4 F1)."""
+    for mode, outcome in (("none", "deadline at the section exit"), ("ctrl-c", "Ctrl-C at the section exit")):
+        r = subprocess.run([sys.executable, "-B", "-c", SECOND_RESTORE_PROBE, str(REPO / MEASURE), mode],
+                           capture_output=True, text=True, timeout=30)
+        expected = f"{outcome}\nmask restored\nfired at the second restore\n"
+        assert r.returncode == 0 and r.stdout == expected, (mode, r.returncode, r.stdout, r.stderr[-2000:])
 
 
 EARLIER_CTRL_C_PROBE = r"""
@@ -6584,6 +6612,36 @@ def test_measure_inventory_render_deadline_does_not_raise_a_ctrl_c_the_caller_al
     r = subprocess.run([sys.executable, "-B", "-c", EARLIER_CTRL_C_PROBE, str(REPO / MEASURE)],
                        capture_output=True, text=True, timeout=30)
     assert r.returncode == 0 and r.stdout == "1\n", (r.returncode, r.stdout, r.stderr[-2000:])
+
+
+GUARD_STOP_PROBE = r"""
+import importlib.util,os,signal,sys,time
+s=importlib.util.spec_from_file_location('m',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+def mine(_signal,_frame): print('caller handler ran')
+signal.signal(signal.SIGALRM,mine)
+real=signal.setitimer
+def setitimer(which,seconds,*a):   # the deadline arrives as the timer is stopped, as if during that call
+    r=real(which,seconds,*a)
+    if seconds==0: os.kill(os.getpid(),signal.SIGALRM)
+    return r
+signal.setitimer=setitimer
+try:
+    with m.deadline_guard(time.monotonic()+5):
+        pass
+    print('no deadline')
+except m.DeliveryDeadline:
+    print('deadline as the timer stops')
+h=signal.getsignal(signal.SIGALRM)
+print('handler restored' if h is mine else 'handler left: '+getattr(h,'__qualname__',repr(h)))
+"""
+
+
+def test_measure_inventory_render_deadline_as_the_timer_stops_restores_the_callers_handler():
+    """The whole deadline handled as deadline_guard stops its timer is raised there, and the caller's SIGALRM
+    handler is still restored, so a later SIGALRM in the caller is not turned into the deadline (#1700 pass 41 R1 F1)."""
+    r = subprocess.run([sys.executable, "-B", "-c", GUARD_STOP_PROBE, str(REPO / MEASURE)],
+                       capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0 and r.stdout == "deadline as the timer stops\nhandler restored\n", (r.returncode, r.stdout, r.stderr[-2000:])
 
 NOTICE_PROBE = r"""
 import importlib.util,json,os,select,socket,sys,threading,time
