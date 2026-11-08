@@ -82,10 +82,11 @@ def defer_deadline(*also: signal.Signals):
     defers SIGINT, so a second Ctrl-C is raised after the kill pass, receipt, restore and notices (#1700 pass 32 R1).
     A Ctrl-C or the deadline that lands before the cleanup's block takes effect is not deferred; run_bounded then
     runs the cleanup again under the block, up to twice (one held Ctrl-C and the one-shot deadline), and raises the
-    held Ctrl-C after it (#1700 pass 35 R1 F3, pass 36 R1 F1, F2, pass 37 R1 F1). Two cases are not handled, and each
-    skips the cleanup with no notice: a further Ctrl-C before a cleanup attempt starts while one is already held, which
-    is raised at once, and the deadline handled between two attempts (at the loop's back-jump, outside every try),
-    which then replaces the Ctrl-C."""
+    held Ctrl-C after it (#1700 pass 35 R1 F3, pass 36 R1 F1, F2, pass 37 R1 F1). A further Ctrl-C there is held too,
+    as is one raised while a handled deadline is recorded (pass 38 R1 F1, R3 F1). Two cases are not handled, and each
+    skips the cleanup with no notice: a third Ctrl-C or deadline before a cleanup attempt starts, once all three
+    attempts are used (the held Ctrl-C is then raised), and a Ctrl-C or the deadline handled between two attempts (at
+    the loop's back-jump, outside every try), which is raised at once, the deadline replacing any held Ctrl-C."""
     previous = signal.pthread_sigmask(signal.SIG_BLOCK, set())
     interrupted = False
     try:
@@ -820,9 +821,10 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
         # effect (the first statements here, while the first Ctrl-C is still propagating) would otherwise skip all of
         # it: the kill pass, the scratch removal, the subreaper restore and the notices. Its first statement marks it
         # started; a signal that lands before that reruns it, now under the block, and a held Ctrl-C is raised after
-        # it. Three attempts cover one held Ctrl-C and the one-shot deadline in either order; a second held Ctrl-C is
-        # raised at once (#1700 pass 35 R1 F3, pass 36 R1 F1, F2, pass 37 R1 F1; the limits are in defer_deadline's
-        # docstring). The tuple keeps the loop header free of calls, so no signal handler runs between entering this
+        # it. Three attempts cover any two signals, Ctrl-C or the one-shot deadline, landing as attempts start; every
+        # Ctrl-C is held and the first is raised after the cleanup. A signal handled at the loop's back-jump is not
+        # covered (#1700 pass 35 R1 F3, pass 36 R1 F1, F2, pass 37 R1 F1, pass 38 R1 F1, R3 F1, F2; the limits are in
+        # defer_deadline's docstring). The tuple keeps the loop header free of calls, so no signal handler runs between entering this
         # finally and the first try.
         for cleanup_try in (0, 1, 2):
             try:
@@ -989,11 +991,16 @@ def run_bounded(argv: list[str], cwd: pathlib.Path, *, max_rss_bytes: int, max_s
                             # interrupt after it), and finishing adds up to 0.25 s after that (passes 29 and 30).
                             write_notices(notices)
             except DeliveryDeadline as e:
-                report.update(ok=False, reason="time_limit", error=str(e))
+                try:                                   # a Ctrl-C while the deadline is recorded is held as well
+                    report.update(ok=False, reason="time_limit", error=str(e))
+                except KeyboardInterrupt as held:
+                    if cleanup_started:
+                        raise
+                    pending_interrupt = pending_interrupt or held
             except KeyboardInterrupt as e:
-                if cleanup_started or pending_interrupt is not None:
+                if cleanup_started:
                     raise
-                pending_interrupt = e
+                pending_interrupt = pending_interrupt or e
             if cleanup_started:
                 break
         if pending_interrupt is not None:
