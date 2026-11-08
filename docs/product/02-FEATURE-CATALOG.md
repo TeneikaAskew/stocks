@@ -282,7 +282,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Priority | P2 |
 | Target phase | Phase 4 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-08 |
+| Last reviewed | 2026-11-07 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/insights` |
 | Backend | `/api/insights` (13) |
@@ -292,7 +292,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Tests | `insights.spec.ts`, `tests/agents/test_agent_*.py` |
 | Open issues | 31 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-insight-001--ai-insights-31-open) |
 | Blocking issues | [#827](https://github.com/TeneikaAskew/stocks/issues/827) [#867](https://github.com/TeneikaAskew/stocks/issues/867) [#1215](https://github.com/TeneikaAskew/stocks/issues/1215) [#1216](https://github.com/TeneikaAskew/stocks/issues/1216) [#1217](https://github.com/TeneikaAskew/stocks/issues/1217) [#916](https://github.com/TeneikaAskew/stocks/issues/916) |
-| Next action | The trigger distance cap ([spec](../superpowers/specs/2026-11-07-feat-insight-001-trigger-distance-cap.md), [plan](../superpowers/plans/2026-11-07-feat-insight-001-trigger-distance-cap.md)) merged in [#1746](https://github.com/TeneikaAskew/stocks/pull/1746). The planner now takes its levels from FEAT-STRAT-001's one level source ([spec](../superpowers/specs/2026-11-07-feat-strat-001-one-level-source-r2.md)): the brief's `level_basis` for brief tickers, an orb_only side served with null entry and stop, and the report JSON carrying the basis it used. Deployed verification is recorded after release gates; otherwise sequence from [13](13-ROADMAP.md) Phase 4. |
+| Next action | Insight planner trigger distance cap ([spec](../superpowers/specs/2026-11-07-feat-insight-001-trigger-distance-cap.md), [plan](../superpowers/plans/2026-11-07-feat-insight-001-trigger-distance-cap.md)): a trigger only inside the brief's window (3 x the ticker's ATR(14) and 8% of price), a structural level touched to the cent counts as unbroken, and no trigger is synthesized (orb_only instead). Merge and deployed verification are recorded after release gates; otherwise sequence from [13](13-ROADMAP.md) Phase 4. |
 
 ### FEAT-CATALYST-001
 
