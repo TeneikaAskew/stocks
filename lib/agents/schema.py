@@ -161,7 +161,8 @@ class RiskMetrics(BaseModel):
     stop_distance_atr: Optional[float] = Field(
         None,
         description=(
-            "abs(entry_mid - stop) / atr_14 — how many ATRs of room "
+            "abs(entry_mid - stop) / ATR (the plan's ATR, in the policy's "
+            "atr_basis) — how many ATRs of room "
             "the stop has before it triggers. < 1.0 typically warns."
         ),
     )
@@ -189,7 +190,7 @@ class RiskMetrics(BaseModel):
     )
     entry_vs_sma200_atr: Optional[float] = Field(
         None,
-        description="(entry_mid - sma_200) / atr_14 — same in ATR units.",
+        description="(entry_mid - sma_200) / ATR (the plan's ATR) — same in ATR units.",
     )
     ftfc_aligned: Optional[bool] = Field(
         None,
@@ -220,7 +221,11 @@ class PersonaPlan(BaseModel):
                        OK with tighter entries on momentum.
       * conservative — tighter stops at structural levels, closer
                        targets, halved sizing into catalyst windows.
-      * neutral      — base case, ~1 ATR stop, balanced sizing.
+      * neutral      — base case, balanced sizing.
+
+    Every entry buffer, stop and target is the ticker's own calibrated
+    parameter (lib.strat_levels.load_level_params), so no persona has a
+    fixed ATR distance.
 
     Rendered as a side-by-side table in the UI so the user can pick
     which persona's plan matches their own risk profile.
@@ -246,11 +251,11 @@ class PersonaPlan(BaseModel):
     regime: Literal["normal", "extended", "orb_only"] = Field(
         default="normal",
         description=(
-            "Trigger regime classification. 'normal' = next structural "
-            "level within 3 ATR (standard breakout). 'extended' = next "
-            "level >= 3 ATR away (recommend ORB confirmation). "
-            "'orb_only' = no unbroken structural trigger; wait for the "
-            "opening range to establish before entering."
+            "Trigger regime classification. 'normal' = the next unbroken "
+            "structural level lies inside the ticker's calibrated trigger "
+            "window for this side (standard breakout). 'extended' is kept "
+            "for stored reports; the planner no longer produces it. "
+            + ORB_ONLY_SCHEMA_DESCRIPTION
         ),
     )
     risk_metrics: Optional[RiskMetrics] = Field(
@@ -311,9 +316,10 @@ class InsightReport(BaseModel):
         default="normal",
         description=(
             "Trigger regime for this setup. 'normal' = standard "
-            "breakout entry at the next structural level. 'extended' = "
-            "next level is >= 3 ATR away; 15-min ORB confirmation "
-            "recommended. " + ORB_ONLY_SCHEMA_DESCRIPTION + " "
+            "breakout entry at the next structural level inside the "
+            "ticker's calibrated trigger window. 'extended' is kept for "
+            "stored reports; the planner no longer produces it. "
+            + ORB_ONLY_SCHEMA_DESCRIPTION + " "
             "Brief / Discord push render different copy per regime."
         ),
     )
@@ -329,7 +335,8 @@ class InsightReport(BaseModel):
         default=None,
         description=(
             "The lib.strat_levels.SessionLevels snapshot (level_basis) the "
-            "deterministic plan used: levels, ATR(14), premarket snapshot "
+            "deterministic plan used: levels, ATR(14), ATR(5) and the "
+            "policy's atr_basis, the ticker's level parameters, premarket snapshot "
             "and the per-side picks."
         ),
     )
