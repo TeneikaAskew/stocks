@@ -382,6 +382,42 @@ def summarize_market_context(
 # ---------------------------------------------------------------------------
 
 
+_STRAT_CLOCK_KEYS = ("rule_version", "observation_ts", "data_as_of", "session",
+                     "clock_policy", "aggregation_policy", "price_adjustment",
+                     "source_acquired_at", "source_acquisition_status")
+_COVERAGE_KEYS = ("period_start", "period_end", "completed", "partial",
+                  "coverage_complete", "available", "source_cutoff", "reasons")
+
+
+def _strat_foundation(status: dict) -> dict:
+    """Compact clock, completion, qualification and confirmation facts.
+
+    Carried on both the available and unavailable paths so consumers can
+    tell a confirmed closed-candle setup from a developing or unknown one.
+    """
+    from lib.strat import finite_snapshot
+
+    out = {key: status.get(key) for key in _STRAT_CLOCK_KEYS if status.get(key) is not None}
+    coverage = status.get("coverage") or {}
+    if coverage:
+        out["coverage"] = {tf: {key: record.get(key) for key in _COVERAGE_KEYS}
+                           for tf, record in coverage.items()}
+    if status.get("bar_validity"):
+        out["bar_validity"] = status["bar_validity"]
+    confirmed = status.get("confirmed_setups") or {}
+    if confirmed:
+        out["confirmed_setups"] = {
+            "rule_version": confirmed.get("rule_version"),
+            "observation_ts": confirmed.get("observation_ts"),
+            "confirmed": list(confirmed.get("confirmed") or []),
+            "timeframes": {
+                tf: {key: result.get(key) for key in
+                     ("state", "candle", "combo", "setup", "period_end", "reasons", "developing")}
+                for tf, result in (confirmed.get("timeframes") or {}).items()},
+        }
+    return finite_snapshot(out)
+
+
 def summarize_strat_status(
     ticker: str, as_of: Optional[date_type] = None,
     inclusive_today: bool = True,
@@ -407,8 +443,14 @@ def summarize_strat_status(
 
     status = compute_strat_status(ticker, as_of=as_of,
                                   inclusive_today=inclusive_today)
-    if not status.get("available"):
-        return _unavailable(status.get("reason") or f"strat unavailable for {ticker}")
+    foundation = _strat_foundation(status)
+    if not status.get("available") or status.get("last_candle") in (None, "X"):
+        # FEAT-STRAT-001: unavailable stays unavailable with its clock and
+        # reasons; never an inside bar or a neutral score.
+        reason = (status.get("reason") if not status.get("available")
+                  else "unavailable_classification")
+        return {**_unavailable(reason or f"strat unavailable for {ticker}"),
+                "last_candle": "X", **foundation}
 
     # StratSnapshot in schema.py rounds scores to 2 dp.
     score = status.get("ftfc_score")
@@ -427,6 +469,7 @@ def summarize_strat_status(
         "ftfc_direction": status.get("ftfc_direction") or "mixed",
         "trigger_high": round(float(th), 2) if th is not None else None,
         "trigger_low": round(float(tl), 2) if tl is not None else None,
+        **foundation,
     }
 
     # Multi-timeframe level map. Built from the same daily history

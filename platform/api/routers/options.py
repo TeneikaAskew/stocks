@@ -66,6 +66,13 @@ from api.schemas import (
     OptionsChainResponse,
     OptionsDatesResponse,
 )
+from api.snapshot_provenance import (
+    PROVIDER_ALPHAVANTAGE,
+    ChainEvidence,
+    _now_utc,
+    build_snapshot_provenance,
+    with_observation,
+)
 
 # Project root so we can import gcp.database the same way the journal router does.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -521,10 +528,17 @@ def get_options_dates(
         }
 
 
-@router.get("/api/options/{ticker}/{date_str}", response_model=OptionsChainResponse, response_model_exclude_unset=True)
-def get_options(ticker: str, date_str: str):
-    """Return the AlphaVantage option chain for `ticker` on `date_str`
-    (YYYY-MM-DD) from Cloud SQL.
+def _load_chain_entry(ticker: str, date_str: str) -> "tuple[dict, dict | None, bool]":
+    """Load (or serve from `_CHAIN_CACHE`) the stored chain for `ticker` on
+    `date_str` and return `(payload, provenance, cached)`.
+
+    The cache entry is an internal wrapper `{"payload": <public response dict
+    exactly as before>, "provenance": <snapshot provenance dict | None>}`. The
+    payload never carries a `snapshot_provenance` key, so the chain HTTP
+    response keeps its shape; the levels route copies the provenance onto its
+    own response (`with_observation` returns a new dict, so the wrapper is never
+    mutated). Publishing the object on the chain response itself is a separate
+    decision (X1) and is not made here.
     """
     ticker_upper = _validate_ticker(ticker)
     parsed_date = _validate_date(date_str)
@@ -536,7 +550,7 @@ def get_options(ticker: str, date_str: str):
     # for a key that needs no work makes an uncontended read wait behind
     # a peer's fill (Codex, PR #991 -- after the merge).
     if cached is not None:
-        return {**cached, "cached": True}
+        return cached["payload"], cached["provenance"], True
     # Coalesce cold fills. Threadpool dispatch lets concurrent misses on
     # one key each run this whole fill; the `async def` with no `await`
     # had serialised them for free (Codex, PR #991).
@@ -544,7 +558,7 @@ def get_options(ticker: str, date_str: str):
         # Re-read inside the claim: winning it is not being first.
         cached = _CHAIN_CACHE.get(cache_key)
         if cached is not None:
-            return {**cached, "cached": True}
+            return cached["payload"], cached["provenance"], True
         if not mine:
             raise HTTPException(
                 status_code=503,
@@ -563,7 +577,7 @@ def get_options(ticker: str, date_str: str):
             SELECT contract_symbol, expiration, strike, option_type,
                    bid, ask, mark, last_price, volume, open_interest,
                    implied_volatility, delta, gamma, theta, vega, rho,
-                   snapshot_ts
+                   snapshot_ts, market_session
             FROM   etf_options_snapshots
             WHERE  ticker = :ticker
               AND  snapshot_date = :snap_date
@@ -623,8 +637,24 @@ def get_options(ticker: str, date_str: str):
                 "row_count": len(contracts),
             },
         }
-        _CHAIN_CACHE[cache_key] = response
-        return {**response, "cached": False}
+        # Group validation of the selected rows' own clocks and sessions lives
+        # in the provenance object; the legacy `snapshot_timestamp` string above
+        # is unchanged. The `data_source = 'alphavantage'` literal in the WHERE
+        # clause is the proven provider identity.
+        provenance = build_snapshot_provenance(
+            ChainEvidence.from_frame(df, PROVIDER_ALPHAVANTAGE), _now_utc(),
+        )
+        _CHAIN_CACHE[cache_key] = {"payload": response, "provenance": provenance}
+        return response, provenance, False
+
+
+@router.get("/api/options/{ticker}/{date_str}", response_model=OptionsChainResponse, response_model_exclude_unset=True)
+def get_options(ticker: str, date_str: str):
+    """Return the AlphaVantage option chain for `ticker` on `date_str`
+    (YYYY-MM-DD) from Cloud SQL.
+    """
+    payload, _provenance, cached = _load_chain_entry(ticker, date_str)
+    return {**payload, "cached": cached}
 
 
     # ── Live AlphaVantage proxy (replaces the decommissioned Cloudflare Worker) ──
@@ -829,8 +859,9 @@ def get_gamma_levels(
     parsed_date = _validate_date(date_str)
     _require_cloud_sql()
 
-    # Reuse the existing chain endpoint logic to load + normalize the chain.
-    chain_response = get_options(ticker, date_str)
+    # Reuse the existing chain loader (same validation, cache and SELECT as
+    # the chain route) to load + normalize the chain.
+    chain_response, provenance, _cached = _load_chain_entry(ticker, date_str)
     options = chain_response.get("options", [])
 
     summary = gamma.build_summary(
@@ -845,4 +876,8 @@ def get_gamma_levels(
         **summary.to_dict(),
         "snapshot_timestamp": chain_response.get("snapshot_timestamp"),
         "chain_size": len(options),
+        # `with_observation` returns a new dict stamped with this response's
+        # observation clock; the cache wrapper's provenance is never mutated,
+        # so no second copy is needed. None when the chain had no provenance.
+        "snapshot_provenance": with_observation(provenance, _now_utc()) if provenance else None,
     }

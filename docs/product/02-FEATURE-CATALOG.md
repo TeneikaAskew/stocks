@@ -33,7 +33,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | [FEAT-HELP-001](#feat-help-001) | Help / glossary | Term reference | `/help` | `/api/glossary/gamma` | — | Production | P3 | 5 | 9 | [#1336](https://github.com/TeneikaAskew/stocks/issues/1336) [solyra#221](https://github.com/TeneikaAskew/solyra/issues/221) [solyra#222](https://github.com/TeneikaAskew/solyra/issues/222) [solyra#223](https://github.com/TeneikaAskew/solyra/issues/223) |
 | [FEAT-SETTINGS-001](#feat-settings-001) | Settings | Account-backed appearance, trading defaults and profile | `/settings` | `/api/me/preferences`, `/api/me/profile` | `user_preferences`, `user_profile` | Production but needs remediation | P3 | 5 | 13 | [solyra#117](https://github.com/TeneikaAskew/solyra/issues/117) [solyra#119](https://github.com/TeneikaAskew/solyra/issues/119) [solyra#121](https://github.com/TeneikaAskew/solyra/issues/121) [#1322](https://github.com/TeneikaAskew/stocks/issues/1322) |
 | [FEAT-DATA-001](#feat-data-001) | Data platform | Ingestion, storage, freshness | — | fetcher jobs | 64 relations — see [06](06-DATA-ARCHITECTURE.md) | Production but needs remediation | P0 | 1 | 21 | [#925](https://github.com/TeneikaAskew/stocks/issues/925) [#926](https://github.com/TeneikaAskew/stocks/issues/926) [#828](https://github.com/TeneikaAskew/stocks/issues/828) [#862](https://github.com/TeneikaAskew/stocks/issues/862) |
-| [FEAT-DEPLOY-001](#feat-deploy-001) | Infrastructure / deploy | 76 jobs, 65 schedulers, Cloud Run | — | — | — | Production but needs remediation | P1 | 6 | 15 | [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#832](https://github.com/TeneikaAskew/stocks/issues/832) [#851](https://github.com/TeneikaAskew/stocks/issues/851) |
+| [FEAT-DEPLOY-001](#feat-deploy-001) | Infrastructure / deploy | 76 jobs, 66 schedulers, Cloud Run | — | — | — | Production but needs remediation | P1 | 6 | 15 | [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#832](https://github.com/TeneikaAskew/stocks/issues/832) [#851](https://github.com/TeneikaAskew/stocks/issues/851) |
 | [FEAT-OPS-001](#feat-ops-001) | Operations / reliability | Freshness, telemetry, DR | `/admin` | `/api/health/freshness` | `job_runs` | Incomplete | P1 | 6 | 11 | [#922](https://github.com/TeneikaAskew/stocks/issues/922) [#1052](https://github.com/TeneikaAskew/stocks/issues/1052) [#1066](https://github.com/TeneikaAskew/stocks/issues/1066) [#1067](https://github.com/TeneikaAskew/stocks/issues/1067) |
 | [FEAT-CICD-001](#feat-cicd-001) | CI / testing | Build, test, deploy automation | — | — | — | Production but needs remediation | P1 | 6 | 12 | [#844](https://github.com/TeneikaAskew/stocks/issues/844) [#845](https://github.com/TeneikaAskew/stocks/issues/845) [#846](https://github.com/TeneikaAskew/stocks/issues/846) [#848](https://github.com/TeneikaAskew/stocks/issues/848) |
 | [FEAT-UI-001](#feat-ui-001) | Web / UI shell | Nav, shell, responsive, a11y | all | — | — | Production but needs remediation | P2 | 5 | 2 | [solyra#135](https://github.com/TeneikaAskew/solyra/issues/135) [solyra#95](https://github.com/TeneikaAskew/solyra/issues/95) |
@@ -163,12 +163,12 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Narrow collector repair: source review and rollout pending |
+| Status | Realtime collector repair: one cumulative source budget that excludes persistence time (#1743); review and job rollout pending. Snapshot provenance metadata on grid and levels responses ([spec](../superpowers/specs/2026-10-24-feat-option-001-legacy-snapshot-labels.md), approved on main) implemented on `feature/feat-option-001-snapshot-provenance`; review, solyra consumer evidence and API rollout pending |
 | Priority | P0 |
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-10-30 |
-| Evidence status | Preserved isolated collector and acceptance receipts; final integrated-head review/CI and immutable job deployment remain pending. No historical-snapshot restoration claim. |
+| Last reviewed | 2026-11-07 |
+| Evidence status | Preserved isolated collector and acceptance receipts; final integrated-head review/CI and immutable job deployment remain pending. No historical-snapshot restoration claim. Snapshot provenance: source and hermetic API tests only (`tests/api/test_snapshot_provenance.py`, grid and options router tests); no deployment, stored-row or signed-in screen claim. |
 | UI surface | `/options` |
 | Backend | `/api/options`, `/api/grid` |
 | Data | `etf_options_snapshots`, `intraday_gex_15m`, `realtime_gex_15m` |
@@ -236,17 +236,17 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Priority | P0 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-08-30 |
+| Last reviewed | 2026-11-06 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/charts`, `/live` |
 | Backend | via `lib/` |
 | Data | `strat_levels`, `strat_combo_results` |
 | Models | MODEL-STRAT-001, MODEL-FTFC-001, MODEL-LEVEL-001 |
-| Code | `lib/strat.py`, `lib/strat_levels.py`, `lib/exec_backtest/ftfc.py` |
-| Tests | `tests/*/test_strat*.py` |
+| Code | `lib/strat.py` (closed-candle `compute_confirmed_setups`, rule `closed-candle-v1`; price-open FTFC `price-open-v1` from an observed price), `lib/config.py` (`continuity_timeframes_premarket`, `continuity_timeframes_session`), `lib/strat_levels.py`, `lib/exec_backtest/ftfc.py`, `lib/backtest.py` (causal default FTFC), `lib/agents/summarizers.py`, `lib/agents/schema.py`, `lib/agents/orchestrator.py`, `gcp/premarket_brief.py` (TF bias and FTFC lines, `tf_continuity` / `tf_continuity_frames`), `gcp/brief_explanations.py`, `gcp/insight_discord_push.py`, `gcp/schema.sql`, `scripts/research/strat_foundation_diagnostic.py` |
+| Tests | `tests/*/test_strat*.py`, `tests/lib/test_strat.py::TestClosedCandleConfirmation`, `tests/lib/test_backtest_ftfc_causality.py` (append, perturbation and 34 exact legacy final-as-of controls), `tests/lib/test_exec_ftfc_contract.py::TestLegacyFtfcGolden`, `tests/agents/test_agent_summarizers.py`, `tests/gcp/test_strat_snapshot_parity.py` (including the captured 2026-11-05 and first-session 2026-11-02 brief fixtures), `tests/lib/test_strat.py::TestObservedPriceContinuity`, `::TestFirstSessionOfPeriod`, `::TestGatesStayOnTfBias`, `tests/gcp/test_premarket_brief.py::TestTfBiasAndFtfcRender`, `::TestFtfcPersistence`; captured-data diagnostic in [docs/research/artifacts/2026-11-04-strat-foundation-diagnostic](../research/artifacts/2026-11-04-strat-foundation-diagnostic/README.md) |
 | Open issues | 5 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-strat-001--levels--strat-5-open) |
 | Blocking issues | [#866](https://github.com/TeneikaAskew/stocks/issues/866) [#908](https://github.com/TeneikaAskew/stocks/issues/908) [#907](https://github.com/TeneikaAskew/stocks/issues/907) [#884](https://github.com/TeneikaAskew/stocks/issues/884) [solyra#140](https://github.com/TeneikaAskew/solyra/issues/140) |
-| Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
+| Next action | Foundation release [#1714](https://github.com/TeneikaAskew/stocks/pull/1714) merged ([spec](../superpowers/specs/2026-11-05-feat-strat-001-foundation-tracked-docs-audit.md), [plan](../superpowers/plans/2026-11-04-feat-strat-001-confirmed-foundation.md)): confirmed setups only from closed candles, causal default FTFC, explicit unavailable consumer states. Its three P2 review follow-ups are in [#1727](https://github.com/TeneikaAskew/stocks/pull/1727) ([plan](../superpowers/plans/2026-11-05-feat-strat-001-review-followups.md)): the legacy `Last` close alias, the replay cutoff for coverage and FTFC, and unknown successors in the history report. Deployed verification is recorded after release gates. TF bias and true FTFC ([spec](../superpowers/specs/2026-11-05-feat-strat-001-tf-continuity-display.md), [plan](../superpowers/plans/2026-11-05-feat-strat-001-tf-continuity-display.md)): the weighted candle vote is displayed as TF bias and stays the gate input; the brief shows and stores price-versus-open FTFC (Q, M, W premarket) in `tf_continuity` / `tf_continuity_frames`, whose production migration the owner applies later. Structural levels (#866, #907, #908) need their own approved contract. |
 
 ### FEAT-IND-001
 
@@ -259,7 +259,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Priority | P1 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-08-30 |
+| Last reviewed | 2026-11-05 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/live`, `/charts` |
 | Backend | via `lib/` |
@@ -269,7 +269,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Tests | `tests/lib/test_indicators*.py` |
 | Open issues | 5 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-ind-001--indicators-5-open) |
 | Blocking issues | [#870](https://github.com/TeneikaAskew/stocks/issues/870) [#892](https://github.com/TeneikaAskew/stocks/issues/892) [#894](https://github.com/TeneikaAskew/stocks/issues/894) [#912](https://github.com/TeneikaAskew/stocks/issues/912) [#1276](https://github.com/TeneikaAskew/stocks/issues/1276) |
-| Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 1 |
+| Next action | The premarket brief's level-break flags ([spec](../superpowers/specs/2026-11-05-feat-ind-001-brief-level-breaks.md), [plan](../superpowers/plans/2026-11-05-feat-ind-001-brief-level-breaks.md)): `add_brief_indicators` produces `Broke_Prev_Day_High` / `Broke_Prev_Day_Low`, so `level_break_pdh` / `level_break_pdl` can score (CALL and PUT still top out at 4 of 5 on real bars). Merge and deployed verification are recorded after release gates; otherwise sequence from [13](13-ROADMAP.md) Phase 1. |
 
 ### FEAT-INSIGHT-001
 
@@ -282,7 +282,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Priority | P2 |
 | Target phase | Phase 4 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-08-30 |
+| Last reviewed | 2026-11-08 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/insights` |
 | Backend | `/api/insights` (13) |
@@ -292,7 +292,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Tests | `insights.spec.ts`, `tests/agents/test_agent_*.py` |
 | Open issues | 31 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-insight-001--ai-insights-31-open) |
 | Blocking issues | [#827](https://github.com/TeneikaAskew/stocks/issues/827) [#867](https://github.com/TeneikaAskew/stocks/issues/867) [#1215](https://github.com/TeneikaAskew/stocks/issues/1215) [#1216](https://github.com/TeneikaAskew/stocks/issues/1216) [#1217](https://github.com/TeneikaAskew/stocks/issues/1217) [#916](https://github.com/TeneikaAskew/stocks/issues/916) |
-| Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 4 |
+| Next action | The trigger distance cap merged in [#1746](https://github.com/TeneikaAskew/stocks/pull/1746) on 2026-11-08: a trigger only inside the brief's window, a level touched to the cent counts as unbroken, and no trigger is synthesized (orb_only instead). Next, under FEAT-STRAT-001: the one-level source ([#1753](https://github.com/TeneikaAskew/stocks/pull/1753), [spec](../superpowers/specs/2026-11-07-feat-strat-001-one-level-source-r2.md)) has the insight planner read the brief's session levels, recorded in `level_basis`, instead of walking levels on its own, and the per-ticker parameters spec ([#1754](https://github.com/TeneikaAskew/stocks/pull/1754)) replaces the fixed 3 x ATR(14) and 8% window with calibrated per-ticker values. Deployed verification is recorded after release gates; otherwise sequence from [13](13-ROADMAP.md) Phase 4. |
 
 ### FEAT-CATALYST-001
 
@@ -305,17 +305,17 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Priority | P1 |
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-10-27 |
-| Evidence status | Finite EPS source/local tests verified; current-head external review, hosted checks and rollout pending; other catalyst work remains open |
+| Last reviewed | 2026-11-07 |
+| Evidence status | Finite EPS source/local tests verified; event-bound reaction repairs ([#1608](https://github.com/TeneikaAskew/stocks/pull/1608)) locally validated; current-head external review, hosted checks and rollout pending; other catalyst work remains open |
 | UI surface | `/catalysts` |
 | Backend | `/api/catalysts`, `/api/earnings` |
 | Data | `earnings_*`, `economic_events`, `news_sentiment`, `sec_filings` |
 | Models | MODEL-EARN-001 |
 | Code | `platform/api/routers/catalysts.py`, `earnings.py`, `lib/earnings_reactions.py` |
-| Tests | `catalysts.spec.ts`; `tests/api/test_catalyst_earnings_estimate_numbers.py`, `tests/scripts/test_earnings_calendar_finite_numbers.py`, `tests/integration/test_catalyst_earnings_estimate_numbers_pg.py` |
+| Tests | `catalysts.spec.ts`; `tests/gcp/test_compute_earnings_reactions.py`, `test_earnings_daily_path.py`, `test_earnings_local_admission.py`, `test_earnings_reactions_brief.py`; `tests/integration/test_earnings_daily_path_persistence.py`; `tests/api/test_earnings_router.py`; `tests/research/test_earnings_new7_reproduction.py`; `tests/api/test_catalyst_earnings_estimate_numbers.py`, `tests/scripts/test_earnings_calendar_finite_numbers.py`, `tests/integration/test_catalyst_earnings_estimate_numbers_pg.py` |
 | Open issues | 19 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-catalyst-001--earnings--catalysts-19-open) |
 | Blocking issues | [#1223](https://github.com/TeneikaAskew/stocks/issues/1223) [#1268](https://github.com/TeneikaAskew/stocks/issues/1268) [#1269](https://github.com/TeneikaAskew/stocks/issues/1269) [#1270](https://github.com/TeneikaAskew/stocks/issues/1270) [#1299](https://github.com/TeneikaAskew/stocks/issues/1299) [#1300](https://github.com/TeneikaAskew/stocks/issues/1300) |
-| Next action | Complete narrow [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) reviews/checks and existing API/producer rollout; broader Phase 3 work remains open |
+| Next action | Complete narrow [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) reviews/checks and existing API/producer rollout. [#1608](https://github.com/TeneikaAskew/stocks/pull/1608): event-bound timing, mature prior-history admission and nullable descriptive daily evidence locally validated; normal source review/CI and schema-before-code rollout remain pending. Actual `/catalysts` outcome-panel binding is a separate Solyra change; no deployment or predictive-edge claim. Broader Phase 3 work remains open. |
 
 Finite-number slice: approved spec [#1618](https://github.com/TeneikaAskew/stocks/pull/1618) is MAIN. Implementation draft [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) preserves actual producer/API normalization,185focused checks including independent-session local PostgreSQL commit/read and the real routed response, and31API preservation checks (overlapping suite). Final hermetic unit verification at2ad639e1:7719passed,51skipped,112warnings; integration was excluded from that full unit command and the real local PG proof is separately retained. No deployment/source-equivalence, current-source freshness or complete catalyst remediation is certified. Touches #1269 and only #1301's numeric-title behavior; cross-source dedup/selection remains unchanged and unresolved.
 
@@ -510,17 +510,17 @@ Finite-number slice: approved spec [#1618](https://github.com/TeneikaAskew/stock
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation — logger #1607 image rollout verified; allowance #1606 source integrated, release gated |
+| Status | Production but needs remediation — logger #1607 image rollout verified; allowance #1606 source integrated, release gated; one NYSE session calendar in `lib/eastern_time.py` replaces the 2026-only holiday sets and the ad hoc library wrappers ([#1546](https://github.com/TeneikaAskew/stocks/pull/1546)) |
 | Priority | P0 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-10-29 |
+| Last reviewed | 2026-11-04 |
 | Evidence status | Logger source bd8c5310/build20c56463/image ef54b4b6 deployed Ready to three jobs with projected config preserved; next scheduled outcomes unobserved. Allowance runtime/test bytes unchanged from reviewed258fb789,224 tests preserved; prior CODE/SEC/CI clean, combined source proof and owner-approved CODE7 remain required. No complete data-platform, persistence or provider-root-cause certification. |
 | UI surface | — |
 | Backend | fetcher jobs |
 | Data | 64 relations — see [06](06-DATA-ARCHITECTURE.md) |
 | Models | — |
-| Code | `gcp/fetchers/`, `gcp/schema.sql`, `lib/data_loader.py`, `gcp/database.py` |
+| Code | `gcp/fetchers/`, `gcp/schema.sql`, `lib/data_loader.py`, `gcp/database.py`, `lib/eastern_time.py` (NYSE sessions) |
 | Tests | `tests/lib/test_data_loader*.py`, integration suite |
 | Open issues | 21 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-data-001--data-platform-21-open) |
 | Blocking issues | [#925](https://github.com/TeneikaAskew/stocks/issues/925) [#926](https://github.com/TeneikaAskew/stocks/issues/926) [#828](https://github.com/TeneikaAskew/stocks/issues/828) [#862](https://github.com/TeneikaAskew/stocks/issues/862) [#863](https://github.com/TeneikaAskew/stocks/issues/863) [#913](https://github.com/TeneikaAskew/stocks/issues/913) |
@@ -528,7 +528,7 @@ Finite-number slice: approved spec [#1618](https://github.com/TeneikaAskew/stock
 
 ### FEAT-DEPLOY-001
 
-**76 jobs, 65 schedulers, Cloud Run** — Infrastructure / deploy
+**76 jobs, 66 schedulers, Cloud Run** — Infrastructure / deploy
 
 | Field | Value |
 |---|---|
@@ -579,11 +579,11 @@ Finite-number slice: approved spec [#1618](https://github.com/TeneikaAskew/stock
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation — historical SITE presence repair [#1597](https://github.com/TeneikaAskew/stocks/pull/1597) continues #1595 with original VP-01 and review history, final evidence pending; committed source identity and complete generated-inventory verification merged; local delivery-tool close-out checked; AV/global rollout and remediation pending; tests that fake gcloud cannot reach a real one, the deliberate `--mode=live` secret read excepted ([#1536](https://github.com/TeneikaAskew/stocks/pull/1536)); trusted registry six-minute pin #1591 and matching live activation #1599 merged as e7e74ccc; exact live/pin equality and all six hosted checks verified, registry144PASS/exporter-current314s/46s reserve ([receipt](https://github.com/TeneikaAskew/stocks/pull/1599#issuecomment-6400278126)); spec-gate supersedes-chain retirement (status-only flip of a superseding spec, lineage validation, truthful fail-closed redundant-retirement refusal) implemented in draft [#1656](https://github.com/TeneikaAskew/stocks/pull/1656) under its approved source-note spec ([#1667](https://github.com/TeneikaAskew/stocks/pull/1667); it supersedes the merged replacement spec [#1664](https://github.com/TeneikaAskew/stocks/pull/1664)), local red-team passes recorded, hosted CODE review and merge pending; DOC-only close-out binding to the 2026-11-02 protocol spec by exact path (approved clarification spec [#1692](https://github.com/TeneikaAskew/stocks/pull/1692); close-outs had been refused as superseded) in draft re-cut [#1694](https://github.com/TeneikaAskew/stocks/pull/1694) of [#1691](https://github.com/TeneikaAskew/stocks/pull/1691) with the same code and test bytes, review coverage and merge pending. `scripts/gate/` is owned by this capability through the gate's `WORKFLOW_FEAT` constant, while the Code row lists `.github/workflows/` and the review guidelines |
+| Status | Production but needs remediation — historical SITE presence repair [#1597](https://github.com/TeneikaAskew/stocks/pull/1597) continues #1595 with original VP-01 and review history, final evidence pending; committed source identity and complete generated-inventory verification merged; local delivery-tool close-out checked; AV/global rollout and remediation pending; tests that fake gcloud cannot reach a real one, the deliberate `--mode=live` secret read excepted ([#1536](https://github.com/TeneikaAskew/stocks/pull/1536)); trusted registry six-minute pin #1591 and matching live activation #1599 merged as e7e74ccc; exact live/pin equality and all six hosted checks verified, registry144PASS/exporter-current314s/46s reserve ([receipt](https://github.com/TeneikaAskew/stocks/pull/1599#issuecomment-6400278126)); spec-gate supersedes-chain retirement (status-only flip of a superseding spec, lineage validation, truthful fail-closed redundant-retirement refusal) merged from [#1656](https://github.com/TeneikaAskew/stocks/pull/1656) as cb136f3e under its approved source-note spec ([#1667](https://github.com/TeneikaAskew/stocks/pull/1667); it supersedes the merged replacement spec [#1664](https://github.com/TeneikaAskew/stocks/pull/1664)), with bounded local three-role red-team review accepted in place of hosted CODE review, which was unavailable on provider quota (owner's exception for that PR only, [comment](https://github.com/TeneikaAskew/stocks/pull/1656#issuecomment-6565852104)), and required CI green on its head; the replaced spec's status-only retirement merged in [#1676](https://github.com/TeneikaAskew/stocks/pull/1676) as e9a06998; the gate change runs in the pre-commit hook and CI only and deploys nothing; DOC-only close-out binding to the 2026-11-02 protocol spec by exact path (approved clarification spec [#1692](https://github.com/TeneikaAskew/stocks/pull/1692); close-outs had been refused as superseded) in draft re-cut [#1694](https://github.com/TeneikaAskew/stocks/pull/1694) of [#1691](https://github.com/TeneikaAskew/stocks/pull/1691) with the same code and test bytes, review coverage and merge pending; capacity fixture bridge (test only: the eight capacity-bearing gate-suite functions carry an explicit same-value `Cost:` beside each historical `30:` carrier, with a frozen BASE case oracle, a pre-dispatch pair guard and `test_capacity_bridge_case_and_carrier_equivalence`; gate, template, pins, workflows and hooks byte-identical to main) merged in [#1713](https://github.com/TeneikaAskew/stocks/pull/1713) as 178973b0 after Codex code and security reviews completed on its head, no findings reported, a re-cut of [#1706](https://github.com/TeneikaAskew/stocks/pull/1706) under the whole-job successor spec ([#1710](https://github.com/TeneikaAskew/stocks/pull/1710), which supersedes the Oct 13 bridge spec [#1473](https://github.com/TeneikaAskew/stocks/pull/1473) whose 285 s clause unchanged main cannot meet, [#1707](https://github.com/TeneikaAskew/stocks/issues/1707), and tracks the matched docs audit in [#1708](https://github.com/TeneikaAskew/stocks/issues/1708)): fixture compatibility delivered; Cost predicate correction (the fourth `CAPACITY_LABELS` literal becomes `Cost` and the default PR template's one cost line becomes `- Cost:`, with `test_capacity_cost_label_contract` and `test_capacity_cost_rendered_budget_guards`) in draft [#1716](https://github.com/TeneikaAskew/stocks/pull/1716) under #1710's Cost successor spec, which supersedes the Oct 13 Cost spec [#1474](https://github.com/TeneikaAskew/stocks/pull/1474): verified in source and local tests, four-seat gate review, hosted CI, current-head review and merge pending, production rollout unchanged; its CODE is a recorded prerequisite of the deploy-side EW retirement [#1659](https://github.com/TeneikaAskew/stocks/pull/1659) and of the catalyst-side EW re-cut. Owner directive on done and autonomy (done means merged, deployed where the change ships and verified against live GCP; sessions make reversible calls themselves and stop only for irreversible steps, money or outside contact) added to `CLAUDE.md` under its approved spec (merged in [#1705](https://github.com/TeneikaAskew/stocks/pull/1705)) in [#1726](https://github.com/TeneikaAskew/stocks/pull/1726), review and merge pending; registry ten-minute pin stage (pinned copy only, the live job still bounded at six minutes) in draft [#1696](https://github.com/TeneikaAskew/stocks/pull/1696) under its pin-stage primary spec (merged, [#1693](https://github.com/TeneikaAskew/stocks/pull/1693); parent design [#1683](https://github.com/TeneikaAskew/stocks/pull/1683), merged), gate-file red-team recorded, review coverage and merge pending; SITE source verifier combined input ceiling raised from eight to twelve MiB, with the registry file's eight-MiB per-file check kept under its own constant, in draft [#1699](https://github.com/TeneikaAskew/stocks/pull/1699) under its approved spec (on main since 5f16c96e), local four-seat review recorded, current-head review and merge pending. `scripts/gate/` is owned by this capability through the gate's `WORKFLOW_FEAT` constant, while the Code row lists `.github/workflows/` and the review guidelines |
 | Priority | P1 |
 | Target phase | Phase 6 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-02 |
+| Last reviewed | 2026-11-07 |
 | Evidence status | LOCAL DELIVERY TOOLING VERIFIED — [#1470](https://github.com/TeneikaAskew/stocks/pull/1470) committed-source verifier and [#1538](https://github.com/TeneikaAskew/stocks/pull/1538) complete generated-inventory tooling merged after authenticated CODE review and required CI. Fresh actual-main identity, local-tool accepted/refused checks and terminal marker/record retirement verified in this DOC close-out. AV/global rollout and product deployment/data-freshness verification remain separate. |
 | UI surface | — |
 | Backend | — |

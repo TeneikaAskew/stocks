@@ -1265,7 +1265,7 @@ DEFERRAL = re.compile(
     r"|partial(?:ly)?|in progress|WIP|not fully|future (?:version|release)|tracked separately|later (?:in a|on))\b", re.I)
 # Changing these is changing a workload; the PR body must then carry the rule 0 capacity numbers.
 WORKLOAD_PREFIXES = ("gcp/", ".github/workflows/")
-CAPACITY_LABELS = ("Volume", "Velocity", "Wall-clock", "30")
+CAPACITY_LABELS = ("Volume", "Velocity", "Wall-clock", "Cost")
 REQUIRED_SPEC_KEYS = ("feat_id", "req_ids", "done_when", "status")
 REQUIRED_PLAN_KEYS = ("feat_id", "spec", "branch", "status")
 SPEC_STATUSES = ("draft", "approved", "superseded")

@@ -1020,3 +1020,31 @@ def test_every_gcloud_track_read_live_uses_is_installed_on_the_runner():
     assert required <= installed, (
         f"verify_docs_against_live.py calls gcloud {sorted(required)} but the workflow installs "
         f"{sorted(installed) or 'nothing'}; the live comparison will die on the runner")
+
+
+DATED_RECORDS = ("docs/product/03-SITE-TRACEABILITY.md", "docs/product/12-PR-ISSUE-TRACEABILITY.md")
+
+
+def test_dated_records_are_not_live_state_docs(tmp_path):
+    # The two traceability records hold dated evidence rows (run timestamps, execution IDs,
+    # instance names), so the checker read them as stale claims: 75 + 3 false findings.
+    for rel in (*DATED_RECORDS, "docs/product/02-FEATURE-CATALOG.md"):
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("# doc\n")
+    got = {p.relative_to(tmp_path).as_posix() for p in vd.doc_paths(tmp_path)}
+    assert got == {"docs/product/02-FEATURE-CATALOG.md"}
+
+
+def test_repository_scope_keeps_every_other_product_doc():
+    # Expand the scope independently of doc_paths(); the only difference may be the two
+    # named records, and both must still exist under those names, so a rename or a third
+    # exclusion fails here.
+    root = _SRC.parent.parent
+    expanded = {rel for rel in vd.LIVE_STATE_DOCS if (root / rel).is_file()}
+    for pattern in vd.LIVE_STATE_GLOBS:
+        expanded |= {p.relative_to(root).as_posix() for p in root.glob(pattern)}
+    assert set(DATED_RECORDS) <= expanded
+    got = {p.relative_to(root).as_posix() for p in vd.doc_paths(root)}
+    assert got == expanded - set(DATED_RECORDS)
+    assert set(vd.DATED_RECORD_DOCS) == set(DATED_RECORDS)
