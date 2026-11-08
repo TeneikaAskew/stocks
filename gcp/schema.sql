@@ -1768,6 +1768,15 @@ ALTER TABLE market_data_daily
     ADD COLUMN IF NOT EXISTS pre_excluded_stale_prints  INTEGER,
     ADD COLUMN IF NOT EXISTS pre_excluded_spikes        INTEGER;
 
+-- FEAT-STRAT-001 (per-ticker level parameters, Design 4): ATR(5) stored
+-- beside atr_14 by the same nightly fetch-market-data path
+-- (lib.config IndicatorConfig.atr_extra_periods, gcp.database
+-- DAILY_INDICATOR_TO_SQL_COLUMN). backfill-daily-indicators heals it in its
+-- short warmup class; its Sunday full sweep fills history. Nullable;
+-- idempotent.
+ALTER TABLE market_data_daily
+    ADD COLUMN IF NOT EXISTS atr_5 DOUBLE PRECISION;
+
 
 -- ============================================================================
 -- Catalyst-aware ORB recommendation + Strat playbook persisted by
