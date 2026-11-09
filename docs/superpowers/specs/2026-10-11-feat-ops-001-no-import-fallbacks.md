@@ -1157,7 +1157,11 @@ Pinned in `KNOWN_BROAD`, not fixed here; the issue in done_when item 13 lists th
   - So this change makes a missing `gcp.database`, `google.cloud.storage` or fetcher module fail loud (no
     import guard of `pandas_market_calendars` is left on `16b3fabd` after stocks#1546, Bases), but not a missing
     Cloud SQL connector below `gcp.database`, except where a fixed catch's own try calls `get_engine()`: the
-    brief's playbook persist at `:1685` (Caller catches).
+    brief's playbook persist at `:1685` (Caller catches). The brief job already fails on a missing connector on
+    `16b3fabd`: `main()` reaches `persist_to_cloud_sql`, whose `bulk_insert_dataframe` calls `get_engine()`
+    unguarded, and that raised `ImportError` (executed with the connector blocked) before any row is written or
+    any Discord post is sent. So at `:1685` this change moves that failure earlier, to the first ticker's
+    playbook block, rather than adding one; the job runs with `--max-retries 0` either way.
   - The two handlers are pre-existing §3.7 data-access swallows around work, outside this spec (Non-goals).
     stocks#1047 tracks `query_to_dataframe` (its C-01 row). Item 13's issue lists both with these outcomes, and
     every image that runs these jobs installs the connector (`requirements-gcp.txt:50`, `platform/Dockerfile:29`).
