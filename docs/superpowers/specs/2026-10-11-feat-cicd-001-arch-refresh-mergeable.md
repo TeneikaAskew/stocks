@@ -19,7 +19,7 @@ done_when:
   - "tests/scripts/test_check_generated_docs.py asserts that the committed documents give findings naming an inventory block and an as-of label when checked against a copy of the committed snapshot with read_at moved one day and one Cloud Run service removed"
   - "The TRIVIAL classes in .claude/skills/product-delivery/SKILL.md include a generated-document regeneration on a docs/ branch, list what it may change, and say that one run by hand keeps the docs_verified badge and Generated line of README.md at their dates; the branch naming list in CLAUDE.md names docs/arch-refresh-<YYYY-MM> as that pull request"
   - "The PR body shows the commands and pytest summary line of test_check_generated_docs.py and test_render_doc_prompts.py passing on a scratch copy of the head whose snapshot lost the job signal-monitor and one scheduler, secret and service, with 05-a, 05-c, 05-e and README re-rendered from it, and test_missing_job_name_is_a_finding failing on that copy with the signal-monitor literal of line 56 put back"
-  - "The gate files this PR changes are scripts/gate/spec_gate.py, where RENDER_SNAPSHOT names the path doc_inventory.COMMITTED_SNAPSHOT names and RENDER_INPUTS and RENDERER_FILES each end with the 2026-09-07 fixture followed by it, and tests/scripts/test_spec_gate.py, whose parity test again requires the gate's RENDER_SNAPSHOT to be the docs test's SNAPSHOT and accepts one RENDER_INPUTS tuple, the committed snapshot after the fixture, and whose process-file test names the committed snapshot beside the fixture; nothing under scripts/gate/pinned/, and none of .githooks/pre-commit, .github/workflows/spec-gate.yml, .github/workflows/registry-check.yml or tests/scripts/test_export_model_registry.py, changes; spec-gate / base-suite passes on the PR head within 600 seconds; the complete unchanged hosted registry-check / registry job on the PR's exact head passes within its unchanged six-minute (360 second) timeout, every hosted attempt on that head is recorded with its head, pytest and whole-job times against main's measured spread (the twelve docs/ jobs of 2026-11-03 and 2026-11-04 the capacity whole-job specs record, 235 to 350 seconds, and the 2026-11-09 jobs this spec records, 248 to 343 seconds), no retry selects a favourable sample, and a timeout on that head blocks completion without the timeout being raised in this PR; this PR adds no test function to tests/scripts/test_spec_gate.py, and the tests it changes there take at most 5 seconds in total in one local `python3 -m pytest tests/scripts/test_spec_gate.py --durations=0` run on the exact head, recorded with its machine; python3 tests/scripts/measure_inventory_render.py --ref HEAD --max-rss-mib 512 --max-seconds 60 passes on the exact head, recorded with its elapsed seconds and peak RSS; and the PR body records, for each push, the red-team pass on that head that CLAUDE.md requires before a gate file is pushed, with four reviewers (shell; YAML/Actions; the exporter and policy documents; diff and byte parsing with the render check), each finding proven by running the gate on a concrete snippet, the last pass empty and every earlier finding listed with the test that now refuses it"
+  - "The gate files this PR changes are scripts/gate/spec_gate.py, where RENDER_SNAPSHOT names the path doc_inventory.COMMITTED_SNAPSHOT names and RENDER_INPUTS and RENDERER_FILES each end with the 2026-09-07 fixture followed by it, and tests/scripts/test_spec_gate.py, whose parity test again requires the gate's RENDER_SNAPSHOT to be the docs test's SNAPSHOT and accepts one RENDER_INPUTS tuple, the committed snapshot after the fixture, and whose process-file test names the committed snapshot beside the fixture; nothing under scripts/gate/pinned/, and none of .githooks/pre-commit, .github/workflows/spec-gate.yml, .github/workflows/registry-check.yml or tests/scripts/test_export_model_registry.py, changes; spec-gate / base-suite passes on the PR head within 600 seconds; the complete unchanged hosted registry-check / registry job on the PR's exact head passes within the timeout that job has on main at the time, which this PR does not change (360 seconds at 16b3fabd), every hosted attempt on that head is recorded with its head, pytest and whole-job times against main's measured spread (the twelve docs/ jobs of 2026-11-03 and 2026-11-04 the capacity whole-job specs record, 235 to 350 seconds, and the 2026-11-09 jobs this spec records, 248 to 343 seconds), no retry selects a favourable sample, and a timeout on that head blocks completion until #1707 or the live stage of the approved ten-minute registry envelope lands, without the timeout being raised in this PR; the tests this PR adds or changes in tests/scripts/test_spec_gate.py take at most 15 seconds in total in one local `python3 -m pytest tests/scripts/test_spec_gate.py --durations=0` run on the exact head, recorded with its machine; on one machine with one Python on one day, `python3 tests/scripts/measure_inventory_render.py --ref HEAD --max-seconds 60` (its --max-rss-mib left at the default 512, the most it accepts) runs three times in a clean checkout of the PR's base on main and three times in a clean checkout of the PR's exact head, every run on the head completes within 60 seconds with the renderer accepting the committed documents, and the median peak RSS of the head's runs exceeds the median of main's by no more than 8 MiB; all six runs are recorded with the machine, Python version, elapsed seconds and peak RSS, and their absolute peaks are evidence, not a gate; if the tool stops any of the six at its 512 MiB ceiling, the delta cannot be read and completion waits until main's render has room under that ceiling (#1700 or another change outside this PR); and the PR body records, for each push, the red-team pass on that head that CLAUDE.md requires before a gate file is pushed, with four reviewers (shell; YAML/Actions; the exporter and policy documents; diff and byte parsing with the render check), each finding proven by running the gate on a concrete snippet, the last pass empty and every earlier finding listed with the test that now refuses it"
   - "python3 scripts/gate/spec_gate.py --pr origin/main passes on the PR head with PR_TITLE and PR_BODY set to the PR's title and body, and python3 scripts/maintenance/docs_audit.py on the PR head reports no finding that the same run on origin/main, made the same day, does not also report, comparing each finding's check, document and detail with line numbers and commit counts left out"
   - "The FEAT-CICD-001 record in 02-FEATURE-CATALOG shows a current Status and Last reviewed, and 12-PR-ISSUE-TRACEABILITY lists this PR under FEAT-CICD-001"
   - "tests/meta/test_refresh_open_pr_step.py records .git/config, .git/hooks and .git/info with the workflow's own git_state function, as the Freeze step does, and asserts that an insteadOf for https://github.com/<repository>.git written after that record sends nothing to the host it names, that a core.fsmonitor or a pre-commit and pre-push hook written after it is refused before any of them runs, each with a non-zero exit and nothing pushed, and that with the same fsmonitor and hooks present when the record was made the step runs neither and still pushes; each of these cases fails on the r3 prototype's push"
@@ -97,12 +97,13 @@ say what they are cited for. `refresh-architecture-docs.yml`, `doc_inventory.py`
 `backtest-pipeline.yml` and the tests this spec names are unchanged since `d0231901` (`git diff --numstat d0231901
 16b3fabd`) except two: `tests/scripts/test_spec_gate.py` (+2831/-39), which r3 cited only at #1383's lines and this spec
 cites by line at `16b3fabd`, and `tests/scripts/test_verify_docs_against_live.py` (+28/-0), which this spec names but
-cites by no line. "The leftovers PR" (L) is stocks#1384 (`feature/feat-deploy-001-retired-service-leftovers`), still
-open as a draft at head `2215223a` (read 2026-11-09), which delivers the approved
-`2026-10-11-feat-deploy-001-retired-service-leftovers.md`. That spec declares no `site_source_notes`, and on L's head
-`doc_source_snapshot.py verify` reports `unverified` ("historical record does not equal complete current MAIN
-source/body"), so L cannot pass its own docs-audit item as approved. The spec-only PR stocks#1764 (branch
-`docs/spec-feat-deploy-001-retired-service-source-note`, head `bdf833ec`, open) supersedes it with
+cites by no line. `tests/scripts/measure_inventory_render.py`, which this spec also names, is a measurement script new
+since `d0231901` (+705/-0), not a test file. "The leftovers PR" (L) is stocks#1384
+(`feature/feat-deploy-001-retired-service-leftovers`), still open as a draft at head `2215223a` (read 2026-11-09), which
+delivers the approved `2026-10-11-feat-deploy-001-retired-service-leftovers.md`. That spec declares no
+`site_source_notes`, and on L's head `doc_source_snapshot.py verify` reports `unverified` ("historical record does not
+equal complete current MAIN source/body"), so L cannot pass its own docs-audit item as approved. The spec-only PR
+stocks#1764 (branch `docs/spec-feat-deploy-001-retired-service-source-note`, head `bdf833ec`, open) supersedes it with
 `docs/superpowers/specs/2026-11-09-feat-deploy-001-retired-service-source-note.md`, which declares `site_source_notes:
 [SHARED-01]`; L merges only after it, and will merge main and add its 03 row first, so its head and fixture may move
 again.
@@ -471,9 +472,9 @@ document agrees with today. From then on each regeneration replaces it together 
       (prose updated in place)" and "regenerated by the refresh workflow from the billing digests".
 
   The other hits are left, each for a stated reason:
-  - statements about other jobs' schedules: 32 lines of 03 (for example `av-intraday-monthly`, "21:00 ET on the
-    1st"), `docs/INVESTMENT_MODELS_SUMMARY.md:666` and `:1190`, `docs/alpha-vantage-workflows.md:54`, and comments in
-    `gcp/deploy.sh` and `gcp/fetchers/fetch_alphavantage_intraday.py`;
+  - statements about other jobs' schedules: 33 lines of 03 across both searches (for example `av-intraday-monthly`,
+    "21:00 ET on the 1st"), `docs/INVESTMENT_MODELS_SUMMARY.md:666` and `:1190`, `docs/alpha-vantage-workflows.md:54`,
+    and comments in `gcp/deploy.sh` and `gcp/fetchers/fetch_alphavantage_intraday.py`;
   - dated records: `docs/audit/2026-05-08/track-F.md` and `track-A.md`, and
     `docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md:16`;
   - the class B copies under `docs/product/infrastructure/manual/`, which say they were taken on 2026-09-08;
@@ -666,7 +667,7 @@ So this PR moves the gate with the docs test, as done_when 15 states:
   Main's specs for such changes, `docs/superpowers/specs/2026-11-04-feat-cicd-001-inventory-whole-job.md` and
   `docs/superpowers/specs/2026-10-31-feat-cicd-001-retry-split-substitution.md` (read at `16b3fabd`), carry three
   obligations beyond CLAUDE.md's three-seat minimum, and done_when 15 takes all three, the second in the form main's
-  capacity specs use:
+  capacity specs use and the third bound by its change over main:
   - **A fourth red-team seat**, diff and byte parsing with the render check, beside shell, YAML/Actions and the
     exporter and policy documents: the whole-job spec's done_when 7 and the retry-split spec's done_when 5.
   - **Timing.** The whole-job spec's done_when 13 (kept in force by the retry-split spec's done_when 4) bounds the
@@ -680,19 +681,48 @@ So this PR moves the gate with the docs test, as done_when 15 states:
     (run 42625369237); the suite step alone took 294 to 315 s on the three slow runners and 215 to 236 s on the two fast
     ones. The verdict step took 31 s and 21 s on #1758's `fix/` branch, 2 s on L's feature branch and 2 to 3 s on the
     docs/ branches; what it takes on A's head is not measured. On a slow runner a head lands near or past 335 s whatever
-    it changes. So, as the bridge spec does (its done_when at line 9): the job must pass within its unchanged 360-second
-    timeout (`registry-check.yml:25`), every hosted attempt is recorded against that spread, no retry selects a
-    favourable sample, a timeout blocks completion and is not raised here, and this PR's own cost is bounded directly.
-    It adds no test function to `test_spec_gate.py`; the two tests it changes took 1.28 s together on `16b3fabd` (1.03 s
-    and 0.25 s, Linux 6.18, 4 CPUs, Python 3.11.18), so done_when 15 bounds them at 5 seconds. The 285-second pytest
-    target those specs record as unmet is not carried.
-  - **The renderer measurement**, `python3 tests/scripts/measure_inventory_render.py --ref HEAD --max-rss-mib 512
-    --max-seconds 60` (whole-job spec done_when 13). It applies here: the script loads the head's gate, checks the
-    gate's `RENDER_INPUTS` as trusted inputs and runs `render_refusals` over the committed tree, so this PR's
-    `RENDER_SNAPSHOT`, `RENDER_INPUTS` and `doc_inventory.py` are exactly what it measures. Run 2026-11-09 on main
-    `16b3fabd`: `ok`, 42.1 s and 41.8 s, peak RSS 534,142,976 and 533,168,128 bytes against the 536,870,912-byte bound;
-    on the implementation-shaped scratch head (this gate change and the committed snapshot): `ok`, 40.5 s and 40.6 s,
-    534,540,288 and 531,783,680 bytes.
+    it changes. So, as the bridge spec does (its done_when at line 9 and its Risks at line 78): the job must pass within
+    the timeout it has on main at the time, which this PR does not change. That is 360 seconds at `16b3fabd`
+    (`registry-check.yml:25`, `timeout-minutes: 6`); the approved
+    `docs/superpowers/specs/2026-11-02-feat-cicd-001-registry-ten-minute-envelope.md` raises it to ten minutes in two
+    PRs, and its pin stage is on main (#1696, `scripts/gate/pinned/registry-check.yml:25`, `timeout-minutes: 10`) while
+    its live stage has not landed, so the wording holds whichever comes first. Every hosted attempt is recorded against
+    that spread, no retry selects a favourable sample, and a timeout on the head blocks completion until #1707 (open:
+    the unchanged suite runs past the capacity specs' 285 s) or that live stage lands; the timeout is not raised here.
+    This PR's own cost is bounded directly: the two tests it changes took 1.28 s together on `16b3fabd` (1.03 s and
+    0.25 s, Linux 6.18, 4 CPUs, Python 3.11.18), and done_when 15 bounds the tests it adds or changes in
+    `test_spec_gate.py` at 15 seconds in total, the bridge spec's budget for added tests (its line 55), which leaves
+    room for a test a red-team finding needs. The 285-second pytest target those specs record as unmet is not carried.
+  - **The renderer measurement**, `python3 tests/scripts/measure_inventory_render.py --ref HEAD --max-seconds 60`
+    (whole-job spec done_when 13), bound by the head's change over main rather than by the absolute 512 MiB. It applies
+    here: the script loads the head's gate, checks the gate's `RENDER_INPUTS` against the committed ref as trusted
+    inputs and runs `render_refusals` over the committed tree (its lines 519-561), so this PR's `RENDER_SNAPSHOT`,
+    `RENDER_INPUTS` and `doc_inventory.py` are exactly what it measures. The absolute bound is not copied, because main
+    sits inside its run-to-run noise and is growing toward it:
+    - #1538, which set the bound, recorded 516,886,528 bytes (1557 entries, 197,169,394 bytes) when it merged on
+      2026-10-23, about 20 MB under 536,870,912.
+    - On 2026-11-09 (Linux 6.18, 4 CPUs, Python 3.11.18), five runs on main `16b3fabd` peaked at 532,684,800 to
+      535,048,192 bytes, five on the implementation-shaped scratch head (this gate change and the committed snapshot) at
+      531,783,680 to 534,540,288, and the re-review's run on this spec's head at 530,493,440: 1.8 to 6.4 MB under the
+      bound, with 2.4 and 2.8 MB between runs of one tree. Main grew 13.6 to 18.2 MB in 17 days, so whether a head
+      passes the absolute bound is decided by main and by the sample, not by the head.
+    - #1700 (open) records main `1fb97576`, an ancestor of `16b3fabd`, stopped at 536,920,064 bytes on Python 3.14.6,
+      so the absolute result also depends on the Python that runs it.
+
+    So done_when 15 compares the head with main as the timing clause does: three runs of each on one machine with one
+    Python on one day, the head's median peak no more than 8 MiB above main's, every head run within 60 seconds, the
+    absolute peaks recorded as evidence. Measured that way on 2026-11-09, interleaved: main 535,048,192, 532,684,800 and
+    534,405,120 bytes (38.8 to 40.2 s); the scratch head 533,643,264, 533,925,888 and 534,458,368 bytes (39.1 to
+    40.4 s); a median difference of -479,232 bytes. What the tool cannot do: it takes `--max-rss-mib` only up to 512,
+    its default (`--max-rss-mib 513` exits 2 with "limit must be finite and within (0, 512]"), and it stops a run at its
+    first sample over the limit with reason `rss_limit`, the worker killed and no verdict (with the limit lowered to 400
+    it stopped main's render after 1.3 s at 426,762,240 bytes). No value lets it record a peak above 512 MiB, so the
+    difference can be read only while all six runs fit under it; if one does not, completion waits until main's render
+    has room again, through #1700 (whose body records a real-tree peak of 351,350,784 bytes on its commit `9a442671`) or
+    another change outside this PR. No CI job or test enforces the bound on the committed tree on its own: no file under
+    `.github/` names the script at `16b3fabd`, and the suite runs it only on fixture repositories and small child
+    processes (`test_spec_gate.py:5016-5052` and the `run_bounded` tests after it), as #1700's body also says ("no CI
+    job runs the real-tree measurement"). The measurement binds A only through done_when 15.
 - **spec-gate's base-suite job runs main's suite against this PR's gate** (`spec-gate.yml:81-101`: a checkout of the
   base, the PR's `spec_gate.py` copied in). Run on 2026-11-09 that way, main's `test_spec_gate.py` against a gate with
   only this change: `12 failed, 169 passed` in 352.80 s, the parity test (its `RENDER_INPUTS` tuple) and 11 render
@@ -895,14 +925,16 @@ the diagram migration restores the schedule; while it is paused there are no sch
   `docs_audit.py:7195` and read at 7339-7342, looks at delivering runs only), and between A and C every run is a dry
   run, so it stands until the schedule is back. It is
   on main and on every branch alike, so done_when 16 is unaffected.
-- **Runner variance could push A's registry job past six minutes.** Main's slowest recorded docs/ job took 350 s, and
-  a `fix/` branch's took 343 s on 2026-11-09 with a 31 s verdict step. A slow runner can time out on A's head with no
-  fault in A. That attempt fails and is recorded; completion waits for a passing attempt that no
-  retry selected, or for a separately approved change to the timeout or the suite, and the timeout is not raised here.
-- **The renderer runs close to its memory bound.** Main's own render peaked at 534,142,976 bytes of 536,870,912 on
-  2026-11-09, and the implementation-shaped head at 534,540,288. The credential code this PR adds to
-  `doc_inventory.py` is not in that measurement. A head over 512 MiB fails done_when 15, and the bound is not raised
-  here.
+- **Runner variance could push A's registry job past its timeout.** Main's slowest recorded docs/ job took 350 s, and a
+  `fix/` branch's took 343 s on 2026-11-09 with a 31 s verdict step, against 360 s at `16b3fabd`. A slow runner can time
+  out on A's head with no fault in A. That attempt fails and is recorded, and completion waits for #1707 or the live
+  stage of the ten-minute envelope, as the bridge spec routes it (its Risks, line 78); the timeout is not raised here.
+- **Main's render is close to the measurement tool's 512 MiB ceiling.** It peaked at up to 535,048,192 bytes of
+  536,870,912 on 2026-11-09 under Python 3.11.18, and #1700 records it over the ceiling under 3.14.6. done_when 15
+  bounds this PR by its change over main, so main's growth alone does not fail it, and the credential code this PR adds
+  to `doc_inventory.py`, which the scratch head does not carry, is bounded by the 8 MiB allowance. But the tool records
+  nothing above its ceiling: if main or the head is stopped there, the difference cannot be read and completion waits
+  for #1700 or another change that gives main room. The ceiling is not raised here.
 - **A cannot open until P's spec is approved and P has merged.** P's spec does not exist yet. If P is not approved,
   this PR stays unopened, and the 1st-of-month schedule keeps running on main as today (Problem).
 - **L cannot merge as approved.** Its spec declares no 03 note and its head fails 03's identity check (measured on
