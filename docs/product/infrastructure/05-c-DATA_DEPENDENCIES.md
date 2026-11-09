@@ -17,38 +17,39 @@ This doc complements [ARCHITECTURE.md](05-a-ARCHITECTURE.md) §5 (schema by doma
 <!-- inventory:tables:start -->
 | Relation | Kind | Defined |
 |---|---|---|
-| `admin_refresh_leases` | table | [`gcp/schema.sql:5160`](../../../gcp/schema.sql#L5160) |
+| `admin_refresh_leases` | table | [`gcp/schema.sql:5284`](../../../gcp/schema.sql#L5284) |
 | `archive_yahoo_earnings_options_snapshots` | table | [`gcp/schema.sql:566`](../../../gcp/schema.sql#L566) |
 | `archive_yahoo_etf_options_snapshots` | table | [`gcp/schema.sql:563`](../../../gcp/schema.sql#L563) |
 | `archive_yahoo_market_data_daily` | table | [`gcp/schema.sql:557`](../../../gcp/schema.sql#L557) |
 | `archive_yahoo_market_data_intraday` | table | [`gcp/schema.sql:560`](../../../gcp/schema.sql#L560) |
-| `backtest_reports` | table | [`gcp/schema.sql:3969`](../../../gcp/schema.sql#L3969) |
-| `backtest_sweeps` | table | [`gcp/schema.sql:3940`](../../../gcp/schema.sql#L3940) |
-| `backtest_trades` | table | [`gcp/schema.sql:3898`](../../../gcp/schema.sql#L3898) |
-| `backtest_walk_forward_folds` | table | [`gcp/schema.sql:3995`](../../../gcp/schema.sql#L3995) |
+| `backtest_reports` | table | [`gcp/schema.sql:4093`](../../../gcp/schema.sql#L4093) |
+| `backtest_sweeps` | table | [`gcp/schema.sql:4064`](../../../gcp/schema.sql#L4064) |
+| `backtest_trades` | table | [`gcp/schema.sql:4022`](../../../gcp/schema.sql#L4022) |
+| `backtest_walk_forward_folds` | table | [`gcp/schema.sql:4119`](../../../gcp/schema.sql#L4119) |
 | `daily_rates` | table | [`gcp/schema.sql:536`](../../../gcp/schema.sql#L536) |
 | `earnings_calendar` | table | [`gcp/schema.sql:576`](../../../gcp/schema.sql#L576) |
-| `earnings_calibration` | table | [`gcp/schema.sql:4088`](../../../gcp/schema.sql#L4088) |
+| `earnings_calibration` | table | [`gcp/schema.sql:4212`](../../../gcp/schema.sql#L4212) |
 | `earnings_history` | table | [`gcp/schema.sql:737`](../../../gcp/schema.sql#L737) |
 | `earnings_options_snapshots` | table | [`gcp/schema.sql:475`](../../../gcp/schema.sql#L475) |
-| `earnings_options_strategy_insights` | table | [`gcp/schema.sql:4316`](../../../gcp/schema.sql#L4316) |
-| `earnings_options_strategy_winners` | table | [`gcp/schema.sql:4344`](../../../gcp/schema.sql#L4344) |
+| `earnings_options_strategy_insights` | table | [`gcp/schema.sql:4440`](../../../gcp/schema.sql#L4440) |
+| `earnings_options_strategy_winners` | table | [`gcp/schema.sql:4468`](../../../gcp/schema.sql#L4468) |
 | `earnings_reactions` | table | [`gcp/schema.sql:783`](../../../gcp/schema.sql#L783) |
-| `earnings_upcoming_with_history` | table | [`gcp/schema.sql:4872`](../../../gcp/schema.sql#L4872) |
+| `earnings_upcoming_with_history` | table | [`gcp/schema.sql:4996`](../../../gcp/schema.sql#L4996) |
 | `economic_events` | table | [`gcp/schema.sql:1455`](../../../gcp/schema.sql#L1455) |
 | `etf_options_daily_greeks` | table | [`gcp/schema.sql:382`](../../../gcp/schema.sql#L382) |
 | `etf_options_snapshots` | table | [`gcp/schema.sql:175`](../../../gcp/schema.sql#L175) |
-| `exit_config_overrides` | table | [`gcp/schema.sql:3317`](../../../gcp/schema.sql#L3317) |
-| `historical_signals` | table | [`gcp/schema.sql:2196`](../../../gcp/schema.sql#L2196) |
-| `indicator_correlation` | table | [`gcp/schema.sql:4157`](../../../gcp/schema.sql#L4157) |
+| `exit_config_overrides` | table | [`gcp/schema.sql:3441`](../../../gcp/schema.sql#L3441) |
+| `historical_signals` | table | [`gcp/schema.sql:2320`](../../../gcp/schema.sql#L2320) |
+| `indicator_correlation` | table | [`gcp/schema.sql:4281`](../../../gcp/schema.sql#L4281) |
 | `insider_transactions` | table | [`gcp/schema.sql:992`](../../../gcp/schema.sql#L992) |
 | `insight_reports` | table | [`gcp/schema.sql:1554`](../../../gcp/schema.sql#L1554) |
-| `insight_reports_history` | table | [`gcp/schema.sql:2127`](../../../gcp/schema.sql#L2127) |
+| `insight_reports_history` | table | [`gcp/schema.sql:2251`](../../../gcp/schema.sql#L2251) |
 | `insight_runs` | table | [`gcp/schema.sql:1590`](../../../gcp/schema.sql#L1590) |
 | `intraday_flow_15m` | table | [`gcp/schema.sql:422`](../../../gcp/schema.sql#L422) |
 | `intraday_gex_15m` | table | [`gcp/schema.sql:443`](../../../gcp/schema.sql#L443) |
-| `job_runs` | table | [`gcp/schema.sql:5009`](../../../gcp/schema.sql#L5009) |
+| `job_runs` | table | [`gcp/schema.sql:5133`](../../../gcp/schema.sql#L5133) |
 | `journal_entries` | table | [`gcp/schema.sql:1213`](../../../gcp/schema.sql#L1213) |
+| `level_param_policy` | table | [`gcp/schema.sql:2143`](../../../gcp/schema.sql#L2143) |
 | `market_data_daily` | table | [`gcp/schema.sql:37`](../../../gcp/schema.sql#L37) |
 | `market_data_intraday` | table | [`gcp/schema.sql:140`](../../../gcp/schema.sql#L140) |
 | `market_data_intraday_iwm` | partition of `market_data_intraday` | [`gcp/schema.sql:158`](../../../gcp/schema.sql#L158) |
@@ -60,34 +61,35 @@ This doc complements [ARCHITECTURE.md](05-a-ARCHITECTURE.md) §5 (schema by doma
 | `news_sentiment` | table | [`gcp/schema.sql:1632`](../../../gcp/schema.sql#L1632) |
 | `options_daily_features` | table | [`gcp/schema.sql:285`](../../../gcp/schema.sql#L285) |
 | `playbook_cards` | table | [`gcp/schema.sql:1381`](../../../gcp/schema.sql#L1381) |
-| `playbook_cards_staging` | table | [`gcp/schema.sql:4983`](../../../gcp/schema.sql#L4983) |
+| `playbook_cards_staging` | table | [`gcp/schema.sql:5107`](../../../gcp/schema.sql#L5107) |
 | `premarket_analysis` | table | [`gcp/schema.sql:1327`](../../../gcp/schema.sql#L1327) |
-| `premarket_analysis_history` | table | [`gcp/schema.sql:1969`](../../../gcp/schema.sql#L1969) |
+| `premarket_analysis_history` | table | [`gcp/schema.sql:1991`](../../../gcp/schema.sql#L1991) |
 | `ranker_runs` | table | [`gcp/schema.sql:1067`](../../../gcp/schema.sql#L1067) |
 | `realtime_gex_15m` | table | [`gcp/schema.sql:462`](../../../gcp/schema.sql#L462) |
-| `regime_combo_results` | table | [`gcp/schema.sql:4234`](../../../gcp/schema.sql#L4234) |
-| `schema_apply_history` | table | [`gcp/schema.sql:5174`](../../../gcp/schema.sql#L5174) |
+| `regime_combo_results` | table | [`gcp/schema.sql:4358`](../../../gcp/schema.sql#L4358) |
+| `schema_apply_history` | table | [`gcp/schema.sql:5298`](../../../gcp/schema.sql#L5298) |
 | `sec_filings` | table | [`gcp/schema.sql:959`](../../../gcp/schema.sql#L959) |
 | `signal_alerts` | table | [`gcp/schema.sql:1085`](../../../gcp/schema.sql#L1085) |
-| `signal_metrics` | table | [`gcp/schema.sql:3547`](../../../gcp/schema.sql#L3547) |
-| `strat_combo_results` | table | [`gcp/schema.sql:4266`](../../../gcp/schema.sql#L4266) |
+| `signal_metrics` | table | [`gcp/schema.sql:3671`](../../../gcp/schema.sql#L3671) |
+| `strat_combo_results` | table | [`gcp/schema.sql:4390`](../../../gcp/schema.sql#L4390) |
 | `strat_levels` | table | [`gcp/schema.sql:1672`](../../../gcp/schema.sql#L1672) |
-| `ticker_calibration` | table | [`gcp/schema.sql:3230`](../../../gcp/schema.sql#L3230) |
-| `ticker_info` | table | [`gcp/schema.sql:2249`](../../../gcp/schema.sql#L2249) |
+| `ticker_calibration` | table | [`gcp/schema.sql:3354`](../../../gcp/schema.sql#L3354) |
+| `ticker_info` | table | [`gcp/schema.sql:2373`](../../../gcp/schema.sql#L2373) |
+| `ticker_level_params` | table | [`gcp/schema.sql:2156`](../../../gcp/schema.sql#L2156) |
 | `top_movers_daily` | table | [`gcp/schema.sql:1018`](../../../gcp/schema.sql#L1018) |
 | `top_movers_intraday` | table | [`gcp/schema.sql:1042`](../../../gcp/schema.sql#L1042) |
 | `trades` | table | [`gcp/schema.sql:1170`](../../../gcp/schema.sql#L1170) |
-| `user_preferences` | table | [`gcp/schema.sql:5097`](../../../gcp/schema.sql#L5097) |
-| `user_profile` | table | [`gcp/schema.sql:5128`](../../../gcp/schema.sql#L5128) |
-| `user_roles` | table | [`gcp/schema.sql:5046`](../../../gcp/schema.sql#L5046) |
-| `user_style_results` | table | [`gcp/schema.sql:4965`](../../../gcp/schema.sql#L4965) |
-| `waitlist_signups` | table | [`gcp/schema.sql:4952`](../../../gcp/schema.sql#L4952) |
-| `walk_forward_results` | table | [`gcp/schema.sql:4041`](../../../gcp/schema.sql#L4041) |
-| `watchlist_history` | table | [`gcp/schema.sql:2517`](../../../gcp/schema.sql#L2517) |
-| `watchlist_history_origin` | table | [`gcp/schema.sql:3123`](../../../gcp/schema.sql#L3123) |
-| `watchlists` | table | [`gcp/schema.sql:2305`](../../../gcp/schema.sql#L2305) |
-| `earnings_event_outcomes` | materialized view | [`gcp/schema.sql:4482`](../../../gcp/schema.sql#L4482) |
-| `earnings_ticker_lean` | materialized view | [`gcp/schema.sql:4677`](../../../gcp/schema.sql#L4677) |
+| `user_preferences` | table | [`gcp/schema.sql:5221`](../../../gcp/schema.sql#L5221) |
+| `user_profile` | table | [`gcp/schema.sql:5252`](../../../gcp/schema.sql#L5252) |
+| `user_roles` | table | [`gcp/schema.sql:5170`](../../../gcp/schema.sql#L5170) |
+| `user_style_results` | table | [`gcp/schema.sql:5089`](../../../gcp/schema.sql#L5089) |
+| `waitlist_signups` | table | [`gcp/schema.sql:5076`](../../../gcp/schema.sql#L5076) |
+| `walk_forward_results` | table | [`gcp/schema.sql:4165`](../../../gcp/schema.sql#L4165) |
+| `watchlist_history` | table | [`gcp/schema.sql:2641`](../../../gcp/schema.sql#L2641) |
+| `watchlist_history_origin` | table | [`gcp/schema.sql:3247`](../../../gcp/schema.sql#L3247) |
+| `watchlists` | table | [`gcp/schema.sql:2429`](../../../gcp/schema.sql#L2429) |
+| `earnings_event_outcomes` | materialized view | [`gcp/schema.sql:4606`](../../../gcp/schema.sql#L4606) |
+| `earnings_ticker_lean` | materialized view | [`gcp/schema.sql:4801`](../../../gcp/schema.sql#L4801) |
 | `v_etf_options_node` | view | [`gcp/schema.sql:319`](../../../gcp/schema.sql#L319) |
 <!-- inventory:tables:end -->
 
@@ -192,7 +194,7 @@ This doc complements [ARCHITECTURE.md](05-a-ARCHITECTURE.md) §5 (schema by doma
 | `walk_forward_results` | 0 | 264 kB | `gcp/schema.sql` |
 | `watchlists` | 0 | 64 kB | `gcp/schema.sql` |
 
-Declared in `gcp/schema.sql` but absent live: `schema_apply_history`, `watchlist_history`, `watchlist_history_origin`
+Declared in `gcp/schema.sql` but absent live: `level_param_policy`, `schema_apply_history`, `ticker_level_params`, `watchlist_history`, `watchlist_history_origin`
 <!-- inventory:dbtables:end -->
 
 ---
@@ -293,18 +295,18 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/fetchers/fetch_insider_transactions.py`](../../../gcp/fetchers/fetch_insider_transactions.py) — line [227](../../../gcp/fetchers/fetch_insider_transactions.py#L227)
 
 ### `insight_reports`
-- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [390](../../../gcp/insight_pipeline_job.py#L390), [427](../../../gcp/insight_pipeline_job.py#L427)
+- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [391](../../../gcp/insight_pipeline_job.py#L391), [428](../../../gcp/insight_pipeline_job.py#L428)
 - [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [429](../../../platform/api/routers/insights.py#L429)
 - [`scripts/generate_historical_report.py`](../../../scripts/generate_historical_report.py) — line [72](../../../scripts/generate_historical_report.py#L72)
 
 ### `insight_reports_history`
-- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [328](../../../gcp/insight_pipeline_job.py#L328)
+- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [329](../../../gcp/insight_pipeline_job.py#L329)
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [169](../../../scripts/backfill_history_tables.py#L169)
 
 ### `insight_runs`
 - [`gcp/auto_refresh_top_n.py`](../../../gcp/auto_refresh_top_n.py) — line [123](../../../gcp/auto_refresh_top_n.py#L123), [150](../../../gcp/auto_refresh_top_n.py#L150)
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [377](../../../gcp/discord_interactions/main.py#L377)
-- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [201](../../../gcp/insight_pipeline_job.py#L201), [247](../../../gcp/insight_pipeline_job.py#L247), [257](../../../gcp/insight_pipeline_job.py#L257), [266](../../../gcp/insight_pipeline_job.py#L266)
+- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [202](../../../gcp/insight_pipeline_job.py#L202), [248](../../../gcp/insight_pipeline_job.py#L248), [258](../../../gcp/insight_pipeline_job.py#L258), [267](../../../gcp/insight_pipeline_job.py#L267)
 - [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [332](../../../platform/api/routers/insights.py#L332), [385](../../../platform/api/routers/insights.py#L385), [391](../../../platform/api/routers/insights.py#L391), [400](../../../platform/api/routers/insights.py#L400)
 
 ### `intraday_flow_15m`
@@ -314,26 +316,29 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/build_intraday_gex.py`](../../../gcp/build_intraday_gex.py) — line [187](../../../gcp/build_intraday_gex.py#L187)
 
 ### `job_runs`
-- [`gcp/database.py`](../../../gcp/database.py) — line [1124](../../../gcp/database.py#L1124)
+- [`gcp/database.py`](../../../gcp/database.py) — line [1125](../../../gcp/database.py#L1125)
 
 ### `journal_entries`
 - [`platform/api/routers/journal.py`](../../../platform/api/routers/journal.py) — line [685](../../../platform/api/routers/journal.py#L685), [1205](../../../platform/api/routers/journal.py#L1205), [1260](../../../platform/api/routers/journal.py#L1260)
 - [`scripts/backfill_journal_embeddings.py`](../../../scripts/backfill_journal_embeddings.py) — line [79](../../../scripts/backfill_journal_embeddings.py#L79)
 
+### `level_param_policy`
+- _no writer found in gcp/, lib/, scripts/, platform/api_
+
 ### `market_data_daily`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [415](../../../gcp/backfill_ticker.py#L415), [535](../../../gcp/backfill_ticker.py#L535), [604](../../../gcp/backfill_ticker.py#L604)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [415](../../../gcp/backfill_ticker.py#L415), [561](../../../gcp/backfill_ticker.py#L561), [630](../../../gcp/backfill_ticker.py#L630)
 - [`gcp/fetchers/backfill_daily_indicators.py`](../../../gcp/fetchers/backfill_daily_indicators.py) — line [415](../../../gcp/fetchers/backfill_daily_indicators.py#L415)
-- [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [508](../../../gcp/fetchers/fetch_market_data.py#L508), [583](../../../gcp/fetchers/fetch_market_data.py#L583), [632](../../../gcp/fetchers/fetch_market_data.py#L632), [1012](../../../gcp/fetchers/fetch_market_data.py#L1012)
-- [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) — line [313](../../../gcp/fetchers/fetch_premarket_refresh.py#L313)
+- [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [544](../../../gcp/fetchers/fetch_market_data.py#L544), [619](../../../gcp/fetchers/fetch_market_data.py#L619), [668](../../../gcp/fetchers/fetch_market_data.py#L668), [1048](../../../gcp/fetchers/fetch_market_data.py#L1048)
+- [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) — line [353](../../../gcp/fetchers/fetch_premarket_refresh.py#L353)
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [187](../../../gcp/migrate_to_gcp.py#L187), [676](../../../gcp/migrate_to_gcp.py#L676)
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [260](../../../gcp/premarket_brief.py#L260)
-- [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [233](../../../scripts/backfill_watchlist_data.py#L233)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [261](../../../gcp/premarket_brief.py#L261)
+- [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [236](../../../scripts/backfill_watchlist_data.py#L236)
 - [`scripts/deep_backfill_ticker.py`](../../../scripts/deep_backfill_ticker.py) — line [102](../../../scripts/deep_backfill_ticker.py#L102)
 
 ### `market_data_intraday`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [627](../../../gcp/backfill_ticker.py#L627)
-- [`gcp/fetchers/fetch_alphavantage_intraday.py`](../../../gcp/fetchers/fetch_alphavantage_intraday.py) — line [310](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L310)
-- [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [535](../../../gcp/fetchers/fetch_market_data.py#L535)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [653](../../../gcp/backfill_ticker.py#L653)
+- [`gcp/fetchers/fetch_alphavantage_intraday.py`](../../../gcp/fetchers/fetch_alphavantage_intraday.py) — line [319](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L319)
+- [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [571](../../../gcp/fetchers/fetch_market_data.py#L571)
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [249](../../../gcp/migrate_to_gcp.py#L249), [252](../../../gcp/migrate_to_gcp.py#L252)
 
 ### `market_data_intraday_iwm`
@@ -355,7 +360,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`lib/agents/model_routing.py`](../../../lib/agents/model_routing.py) — line [193](../../../lib/agents/model_routing.py#L193)
 
 ### `news_sentiment`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [640](../../../gcp/backfill_ticker.py#L640)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [666](../../../gcp/backfill_ticker.py#L666)
 - [`gcp/fetchers/fetch_news_sentiment.py`](../../../gcp/fetchers/fetch_news_sentiment.py) — line [375](../../../gcp/fetchers/fetch_news_sentiment.py#L375)
 - [`gcp/fetchers/fetch_rss_news.py`](../../../gcp/fetchers/fetch_rss_news.py) — line [710](../../../gcp/fetchers/fetch_rss_news.py#L710)
 - [`scripts/backfill_news_sentiment.py`](../../../scripts/backfill_news_sentiment.py) — line [101](../../../scripts/backfill_news_sentiment.py#L101)
@@ -370,12 +375,12 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`platform/api/routers/backtest.py`](../../../platform/api/routers/backtest.py) — line [875](../../../platform/api/routers/backtest.py#L875)
 
 ### `premarket_analysis`
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3411](../../../gcp/premarket_brief.py#L3411), [3438](../../../gcp/premarket_brief.py#L3438)
-- [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [510](../../../gcp/premarket_playbook_resolver.py#L510)
-- [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [566](../../../gcp/signal_monitor.py#L566)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3430](../../../gcp/premarket_brief.py#L3430), [3457](../../../gcp/premarket_brief.py#L3457)
+- [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [518](../../../gcp/premarket_playbook_resolver.py#L518)
+- [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [573](../../../gcp/signal_monitor.py#L573)
 
 ### `premarket_analysis_history`
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3374](../../../gcp/premarket_brief.py#L3374)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3393](../../../gcp/premarket_brief.py#L3393)
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [123](../../../scripts/backfill_history_tables.py#L123)
 
 ### `ranker_runs`
@@ -394,7 +399,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`gcp/fetchers/fetch_sec_filings.py`](../../../gcp/fetchers/fetch_sec_filings.py) — line [581](../../../gcp/fetchers/fetch_sec_filings.py#L581)
 
 ### `signal_alerts`
-- [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [1783](../../../gcp/signal_monitor.py#L1783), [2432](../../../gcp/signal_monitor.py#L2432)
+- [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [1814](../../../gcp/signal_monitor.py#L1814), [2463](../../../gcp/signal_monitor.py#L2463)
 - [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [402](../../../gcp/signal_monitor_eod_resolver.py#L402)
 - [`scripts/replay_signal_monitor.py`](../../../scripts/replay_signal_monitor.py) — line [552](../../../scripts/replay_signal_monitor.py#L552)
 
@@ -405,13 +410,16 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - _no writer found in gcp/, lib/, scripts/, platform/api_
 
 ### `strat_levels`
-- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [2107](../../../lib/strat_levels.py#L2107)
+- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [2772](../../../lib/strat_levels.py#L2772)
 
 ### `ticker_calibration`
 - [`scripts/calibrate_thresholds.py`](../../../scripts/calibrate_thresholds.py) — line [497](../../../scripts/calibrate_thresholds.py#L497)
 
 ### `ticker_info`
 - [`lib/ticker_info.py`](../../../lib/ticker_info.py) — line [66](../../../lib/ticker_info.py#L66), [629](../../../lib/ticker_info.py#L629)
+
+### `ticker_level_params`
+- [`gcp/calibrate_level_params.py`](../../../gcp/calibrate_level_params.py) — line [97](../../../gcp/calibrate_level_params.py#L97)
 
 ### `top_movers_daily`
 - [`gcp/fetchers/fetch_top_movers.py`](../../../gcp/fetchers/fetch_top_movers.py) — line [291](../../../gcp/fetchers/fetch_top_movers.py#L291)
@@ -421,7 +429,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 
 ### `trades`
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [756](../../../gcp/migrate_to_gcp.py#L756)
-- [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [2447](../../../gcp/signal_monitor.py#L2447)
+- [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [2478](../../../gcp/signal_monitor.py#L2478)
 - [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [416](../../../gcp/signal_monitor_eod_resolver.py#L416)
 - [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) — line [97](../../../gcp/trade_logger.py#L97), [100](../../../gcp/trade_logger.py#L100)
 
@@ -505,14 +513,14 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/fetchers/evaluate_ew_strikes.py`](../../../gcp/fetchers/evaluate_ew_strikes.py) — line [355](../../../gcp/fetchers/evaluate_ew_strikes.py#L355)
 - [`gcp/fetchers/fetch_earnings_history.py`](../../../gcp/fetchers/fetch_earnings_history.py) — line [252](../../../gcp/fetchers/fetch_earnings_history.py#L252), [296](../../../gcp/fetchers/fetch_earnings_history.py#L296)
 - [`gcp/fetchers/fetch_insider_transactions.py`](../../../gcp/fetchers/fetch_insider_transactions.py) — line [127](../../../gcp/fetchers/fetch_insider_transactions.py#L127)
-- [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [701](../../../gcp/fetchers/fetch_market_data.py#L701), [804](../../../gcp/fetchers/fetch_market_data.py#L804)
+- [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [737](../../../gcp/fetchers/fetch_market_data.py#L737), [840](../../../gcp/fetchers/fetch_market_data.py#L840)
 - [`gcp/fetchers/fetch_news_sentiment.py`](../../../gcp/fetchers/fetch_news_sentiment.py) — line [163](../../../gcp/fetchers/fetch_news_sentiment.py#L163)
-- [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) — line [86](../../../gcp/fetchers/fetch_premarket_refresh.py#L86), [111](../../../gcp/fetchers/fetch_premarket_refresh.py#L111)
+- [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) — line [87](../../../gcp/fetchers/fetch_premarket_refresh.py#L87), [112](../../../gcp/fetchers/fetch_premarket_refresh.py#L112)
 - [`gcp/fetchers/fetch_sec_filings.py`](../../../gcp/fetchers/fetch_sec_filings.py) — line [428](../../../gcp/fetchers/fetch_sec_filings.py#L428)
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [370](../../../gcp/premarket_brief.py#L370), [754](../../../gcp/premarket_brief.py#L754), [832](../../../gcp/premarket_brief.py#L832)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [371](../../../gcp/premarket_brief.py#L371), [755](../../../gcp/premarket_brief.py#L755), [833](../../../gcp/premarket_brief.py#L833)
 - [`gcp/refresh_earnings_views.py`](../../../gcp/refresh_earnings_views.py) — line [157](../../../gcp/refresh_earnings_views.py#L157)
 - [`lib/agents/ranker/candidates.py`](../../../lib/agents/ranker/candidates.py) — line [89](../../../lib/agents/ranker/candidates.py#L89)
-- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1632](../../../lib/agents/summarizers.py#L1632)
+- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1706](../../../lib/agents/summarizers.py#L1706)
 - [`lib/strategies/catalyst_proximity.py`](../../../lib/strategies/catalyst_proximity.py) — line [234](../../../lib/strategies/catalyst_proximity.py#L234)
 - [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [459](../../../platform/api/routers/catalysts.py#L459), [729](../../../platform/api/routers/catalysts.py#L729)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [647](../../../scripts/audit_data_freshness.py#L647), [648](../../../scripts/audit_data_freshness.py#L648), [807](../../../scripts/audit_data_freshness.py#L807)
@@ -529,14 +537,14 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 ### `earnings_history`
 - [`gcp/fetchers/compute_earnings_reactions.py`](../../../gcp/fetchers/compute_earnings_reactions.py) — line [559](../../../gcp/fetchers/compute_earnings_reactions.py#L559), [897](../../../gcp/fetchers/compute_earnings_reactions.py#L897)
 - [`gcp/fetchers/fetch_earnings_history.py`](../../../gcp/fetchers/fetch_earnings_history.py) — line [331](../../../gcp/fetchers/fetch_earnings_history.py#L331), [373](../../../gcp/fetchers/fetch_earnings_history.py#L373)
-- [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [786](../../../gcp/fetchers/fetch_market_data.py#L786), [812](../../../gcp/fetchers/fetch_market_data.py#L812)
+- [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [822](../../../gcp/fetchers/fetch_market_data.py#L822), [848](../../../gcp/fetchers/fetch_market_data.py#L848)
 - [`lib/agents/ranker/signals.py`](../../../lib/agents/ranker/signals.py) — line [356](../../../lib/agents/ranker/signals.py#L356)
 - [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [743](../../../platform/api/routers/catalysts.py#L743)
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [141](../../../scripts/backfill_watchlist_data.py#L141)
 
 ### `earnings_options_snapshots`
 - [`gcp/fetchers/fetch_av_earnings_options_backfill.py`](../../../gcp/fetchers/fetch_av_earnings_options_backfill.py) — line [189](../../../gcp/fetchers/fetch_av_earnings_options_backfill.py#L189)
-- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [736](../../../lib/data_loader.py#L736), [737](../../../lib/data_loader.py#L737)
+- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [757](../../../lib/data_loader.py#L757), [758](../../../lib/data_loader.py#L758)
 - [`scripts/backtest_playability.py`](../../../scripts/backtest_playability.py) — line [551](../../../scripts/backtest_playability.py#L551)
 
 ### `earnings_options_strategy_insights`
@@ -561,10 +569,10 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`platform/api/routers/earnings.py`](../../../platform/api/routers/earnings.py) — line [122](../../../platform/api/routers/earnings.py#L122), [124](../../../platform/api/routers/earnings.py#L124)
 
 ### `economic_events`
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [909](../../../gcp/premarket_brief.py#L909)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [910](../../../gcp/premarket_brief.py#L910)
 - [`gcp/research/magnitude_engine/mag_dataset.py`](../../../gcp/research/magnitude_engine/mag_dataset.py) — line [133](../../../gcp/research/magnitude_engine/mag_dataset.py#L133)
 - [`lib/agents/ranker/candidates.py`](../../../lib/agents/ranker/candidates.py) — line [195](../../../lib/agents/ranker/candidates.py#L195)
-- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1623](../../../lib/agents/summarizers.py#L1623)
+- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1697](../../../lib/agents/summarizers.py#L1697)
 - [`lib/strategies/catalyst_proximity.py`](../../../lib/strategies/catalyst_proximity.py) — line [194](../../../lib/strategies/catalyst_proximity.py#L194)
 - [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [429](../../../platform/api/routers/catalysts.py#L429)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [647](../../../scripts/audit_data_freshness.py#L647), [648](../../../scripts/audit_data_freshness.py#L648), [807](../../../scripts/audit_data_freshness.py#L807)
@@ -579,14 +587,14 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/fetchers/fetch_av_historical_options.py`](../../../gcp/fetchers/fetch_av_historical_options.py) — line [135](../../../gcp/fetchers/fetch_av_historical_options.py#L135), [218](../../../gcp/fetchers/fetch_av_historical_options.py#L218)
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [312](../../../gcp/migrate_to_gcp.py#L312)
 - [`gcp/options_retention_job.py`](../../../gcp/options_retention_job.py) — line [65](../../../gcp/options_retention_job.py#L65), [68](../../../gcp/options_retention_job.py#L68), [73](../../../gcp/options_retention_job.py#L73), [75](../../../gcp/options_retention_job.py#L75)
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [168](../../../gcp/premarket_brief.py#L168), [195](../../../gcp/premarket_brief.py#L195)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [169](../../../gcp/premarket_brief.py#L169), [196](../../../gcp/premarket_brief.py#L196)
 - [`gcp/research/p2_build_gamma_levels.py`](../../../gcp/research/p2_build_gamma_levels.py) — line [127](../../../gcp/research/p2_build_gamma_levels.py#L127)
 - [`gcp/research/p7_build_multi_tf_features.py`](../../../gcp/research/p7_build_multi_tf_features.py) — line [162](../../../gcp/research/p7_build_multi_tf_features.py#L162)
 - [`gcp/research/strat_engine/breakout_meta_walk_forward.py`](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py) — line [118](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py#L118), [125](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py#L125)
 - [`gcp/research/strat_engine/strat_data_builder.py`](../../../gcp/research/strat_engine/strat_data_builder.py) — line [266](../../../gcp/research/strat_engine/strat_data_builder.py#L266)
 - [`lib/agents/ranker/signals.py`](../../../lib/agents/ranker/signals.py) — line [113](../../../lib/agents/ranker/signals.py#L113), [117](../../../lib/agents/ranker/signals.py#L117)
-- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [602](../../../lib/agents/summarizers.py#L602), [607](../../../lib/agents/summarizers.py#L607), [728](../../../lib/agents/summarizers.py#L728), [734](../../../lib/agents/summarizers.py#L734), [755](../../../lib/agents/summarizers.py#L755), [761](../../../lib/agents/summarizers.py#L761)
-- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [736](../../../lib/data_loader.py#L736), [737](../../../lib/data_loader.py#L737)
+- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [676](../../../lib/agents/summarizers.py#L676), [681](../../../lib/agents/summarizers.py#L681), [802](../../../lib/agents/summarizers.py#L802), [808](../../../lib/agents/summarizers.py#L808), [829](../../../lib/agents/summarizers.py#L829), [835](../../../lib/agents/summarizers.py#L835)
+- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [757](../../../lib/data_loader.py#L757), [758](../../../lib/data_loader.py#L758)
 - [`lib/features/experimental/options_derived.py`](../../../lib/features/experimental/options_derived.py) — line [67](../../../lib/features/experimental/options_derived.py#L67), [115](../../../lib/features/experimental/options_derived.py#L115)
 - [`lib/features/flow_direction.py`](../../../lib/features/flow_direction.py) — line [408](../../../lib/features/flow_direction.py#L408), [445](../../../lib/features/flow_direction.py#L445)
 - [`lib/options_exec_backtest/iv_lookup.py`](../../../lib/options_exec_backtest/iv_lookup.py) — line [127](../../../lib/options_exec_backtest/iv_lookup.py#L127)
@@ -626,7 +634,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/auto_refresh_top_n.py`](../../../gcp/auto_refresh_top_n.py) — line [90](../../../gcp/auto_refresh_top_n.py#L90)
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [357](../../../gcp/discord_interactions/main.py#L357)
 - [`gcp/insight_discord_push.py`](../../../gcp/insight_discord_push.py) — line [86](../../../gcp/insight_discord_push.py#L86), [97](../../../gcp/insight_discord_push.py#L97)
-- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [466](../../../gcp/insight_pipeline_job.py#L466)
+- [`gcp/insight_pipeline_job.py`](../../../gcp/insight_pipeline_job.py) — line [467](../../../gcp/insight_pipeline_job.py#L467)
 - [`lib/strategies/insight_cache.py`](../../../lib/strategies/insight_cache.py) — line [284](../../../lib/strategies/insight_cache.py#L284)
 - [`platform/api/routers/insights.py`](../../../platform/api/routers/insights.py) — line [227](../../../platform/api/routers/insights.py#L227), [239](../../../platform/api/routers/insights.py#L239), [260](../../../platform/api/routers/insights.py#L260), [301](../../../platform/api/routers/insights.py#L301)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [647](../../../scripts/audit_data_freshness.py#L647), [648](../../../scripts/audit_data_freshness.py#L648), [807](../../../scripts/audit_data_freshness.py#L807)
@@ -653,22 +661,27 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [1342](../../../scripts/audit_data_freshness.py#L1342)
 
 ### `journal_entries`
-- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1916](../../../lib/agents/summarizers.py#L1916)
+- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1990](../../../lib/agents/summarizers.py#L1990)
 - [`platform/api/routers/backtest.py`](../../../platform/api/routers/backtest.py) — line [545](../../../platform/api/routers/backtest.py#L545), [717](../../../platform/api/routers/backtest.py#L717)
 - [`platform/api/routers/journal.py`](../../../platform/api/routers/journal.py) — line [862](../../../platform/api/routers/journal.py#L862), [899](../../../platform/api/routers/journal.py#L899), [994](../../../platform/api/routers/journal.py#L994), [1182](../../../platform/api/routers/journal.py#L1182)
 - [`scripts/backfill_journal_embeddings.py`](../../../scripts/backfill_journal_embeddings.py) — line [59](../../../scripts/backfill_journal_embeddings.py#L59)
 
+### `level_param_policy`
+- [`gcp/calibrate_level_params.py`](../../../gcp/calibrate_level_params.py) — line [75](../../../gcp/calibrate_level_params.py#L75)
+- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [1205](../../../lib/strat_levels.py#L1205)
+
 ### `market_data_daily`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [374](../../../gcp/backfill_ticker.py#L374), [439](../../../gcp/backfill_ticker.py#L439)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [374](../../../gcp/backfill_ticker.py#L374), [442](../../../gcp/backfill_ticker.py#L442)
 - [`gcp/build_intraday_gex.py`](../../../gcp/build_intraday_gex.py) — line [80](../../../gcp/build_intraday_gex.py#L80)
+- [`gcp/calibrate_level_params.py`](../../../gcp/calibrate_level_params.py) — line [79](../../../gcp/calibrate_level_params.py#L79)
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [332](../../../gcp/discord_interactions/main.py#L332)
 - [`gcp/fetchers/backfill_daily_indicators.py`](../../../gcp/fetchers/backfill_daily_indicators.py) — line [117](../../../gcp/fetchers/backfill_daily_indicators.py#L117), [216](../../../gcp/fetchers/backfill_daily_indicators.py#L216), [222](../../../gcp/fetchers/backfill_daily_indicators.py#L222), [252](../../../gcp/fetchers/backfill_daily_indicators.py#L252)
 - [`gcp/fetchers/compute_earnings_reactions.py`](../../../gcp/fetchers/compute_earnings_reactions.py) — line [617](../../../gcp/fetchers/compute_earnings_reactions.py#L617), [676](../../../gcp/fetchers/compute_earnings_reactions.py#L676)
-- [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [341](../../../gcp/fetchers/fetch_market_data.py#L341), [788](../../../gcp/fetchers/fetch_market_data.py#L788), [796](../../../gcp/fetchers/fetch_market_data.py#L796), [821](../../../gcp/fetchers/fetch_market_data.py#L821), [1084](../../../gcp/fetchers/fetch_market_data.py#L1084)
-- [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) — line [149](../../../gcp/fetchers/fetch_premarket_refresh.py#L149), [297](../../../gcp/fetchers/fetch_premarket_refresh.py#L297)
+- [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [359](../../../gcp/fetchers/fetch_market_data.py#L359), [824](../../../gcp/fetchers/fetch_market_data.py#L824), [832](../../../gcp/fetchers/fetch_market_data.py#L832), [857](../../../gcp/fetchers/fetch_market_data.py#L857), [1120](../../../gcp/fetchers/fetch_market_data.py#L1120)
+- [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) — line [151](../../../gcp/fetchers/fetch_premarket_refresh.py#L151), [330](../../../gcp/fetchers/fetch_premarket_refresh.py#L330)
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [148](../../../gcp/migrate_to_gcp.py#L148)
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [366](../../../gcp/premarket_brief.py#L366), [371](../../../gcp/premarket_brief.py#L371), [833](../../../gcp/premarket_brief.py#L833)
-- [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [144](../../../gcp/premarket_playbook_resolver.py#L144)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [367](../../../gcp/premarket_brief.py#L367), [372](../../../gcp/premarket_brief.py#L372), [834](../../../gcp/premarket_brief.py#L834)
+- [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [154](../../../gcp/premarket_playbook_resolver.py#L154)
 - [`gcp/refresh_earnings_views.py`](../../../gcp/refresh_earnings_views.py) — line [140](../../../gcp/refresh_earnings_views.py#L140)
 - [`gcp/research/p2_outcomes_grid.py`](../../../gcp/research/p2_outcomes_grid.py) — line [145](../../../gcp/research/p2_outcomes_grid.py#L145), [150](../../../gcp/research/p2_outcomes_grid.py#L150)
 - [`gcp/research/p45_deep_ds_job.py`](../../../gcp/research/p45_deep_ds_job.py) — line [110](../../../gcp/research/p45_deep_ds_job.py#L110), [111](../../../gcp/research/p45_deep_ds_job.py#L111)
@@ -677,15 +690,15 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/research/strat_engine/strat_data_pipeline.py`](../../../gcp/research/strat_engine/strat_data_pipeline.py) — line [127](../../../gcp/research/strat_engine/strat_data_pipeline.py#L127)
 - [`gcp/research/strat_engine/strat_leakage_audit.py`](../../../gcp/research/strat_engine/strat_leakage_audit.py) — line [112](../../../gcp/research/strat_engine/strat_leakage_audit.py#L112), [114](../../../gcp/research/strat_engine/strat_leakage_audit.py#L114), [116](../../../gcp/research/strat_engine/strat_leakage_audit.py#L116)
 - [`lib/agents/ranker/signals.py`](../../../lib/agents/ranker/signals.py) — line [56](../../../lib/agents/ranker/signals.py#L56), [134](../../../lib/agents/ranker/signals.py#L134), [310](../../../lib/agents/ranker/signals.py#L310), [357](../../../lib/agents/ranker/signals.py#L357), [360](../../../lib/agents/ranker/signals.py#L360)
-- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [227](../../../lib/agents/summarizers.py#L227), [260](../../../lib/agents/summarizers.py#L260), [1041](../../../lib/agents/summarizers.py#L1041), [1506](../../../lib/agents/summarizers.py#L1506)
-- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [544](../../../lib/data_loader.py#L544), [761](../../../lib/data_loader.py#L761)
+- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [228](../../../lib/agents/summarizers.py#L228), [266](../../../lib/agents/summarizers.py#L266), [1115](../../../lib/agents/summarizers.py#L1115), [1580](../../../lib/agents/summarizers.py#L1580)
+- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [549](../../../lib/data_loader.py#L549), [782](../../../lib/data_loader.py#L782)
 - [`lib/earnings_reactions.py`](../../../lib/earnings_reactions.py) — line [594](../../../lib/earnings_reactions.py#L594)
 - [`lib/features/experimental/cross_asset.py`](../../../lib/features/experimental/cross_asset.py) — line [45](../../../lib/features/experimental/cross_asset.py#L45)
 - [`lib/features/experimental/vol_regime.py`](../../../lib/features/experimental/vol_regime.py) — line [52](../../../lib/features/experimental/vol_regime.py#L52)
-- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [1279](../../../lib/strat_levels.py#L1279)
+- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [1784](../../../lib/strat_levels.py#L1784)
 - [`platform/api/main.py`](../../../platform/api/main.py) — line [1060](../../../platform/api/main.py#L1060), [1135](../../../platform/api/main.py#L1135), [1279](../../../platform/api/main.py#L1279), [1449](../../../platform/api/main.py#L1449), [1451](../../../platform/api/main.py#L1451)
 - [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [756](../../../platform/api/routers/catalysts.py#L756)
-- [`platform/api/routers/dashboard.py`](../../../platform/api/routers/dashboard.py) — line [149](../../../platform/api/routers/dashboard.py#L149), [284](../../../platform/api/routers/dashboard.py#L284)
+- [`platform/api/routers/dashboard.py`](../../../platform/api/routers/dashboard.py) — line [150](../../../platform/api/routers/dashboard.py#L150), [285](../../../platform/api/routers/dashboard.py#L285)
 - [`platform/api/routers/live.py`](../../../platform/api/routers/live.py) — line [391](../../../platform/api/routers/live.py#L391)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [1122](../../../scripts/audit_data_freshness.py#L1122), [1129](../../../scripts/audit_data_freshness.py#L1129), [1253](../../../scripts/audit_data_freshness.py#L1253), [1261](../../../scripts/audit_data_freshness.py#L1261), [647](../../../scripts/audit_data_freshness.py#L647), [648](../../../scripts/audit_data_freshness.py#L648), [807](../../../scripts/audit_data_freshness.py#L807)
 - [`scripts/backfill_and_replay.py`](../../../scripts/backfill_and_replay.py) — line [240](../../../scripts/backfill_and_replay.py#L240)
@@ -694,16 +707,17 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/strat_backtest.py`](../../../scripts/strat_backtest.py) — line [37](../../../scripts/strat_backtest.py#L37)
 
 ### `market_data_intraday`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [497](../../../gcp/backfill_ticker.py#L497)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [500](../../../gcp/backfill_ticker.py#L500)
 - [`gcp/build_intraday_gex.py`](../../../gcp/build_intraday_gex.py) — line [107](../../../gcp/build_intraday_gex.py#L107)
 - [`gcp/build_realtime_gex.py`](../../../gcp/build_realtime_gex.py) — line [99](../../../gcp/build_realtime_gex.py#L99)
-- [`gcp/fetchers/fetch_alphavantage_intraday.py`](../../../gcp/fetchers/fetch_alphavantage_intraday.py) — line [211](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L211), [511](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L511), [544](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L544), [770](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L770)
-- [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [440](../../../gcp/fetchers/fetch_market_data.py#L440)
+- [`gcp/calibrate_level_params.py`](../../../gcp/calibrate_level_params.py) — line [84](../../../gcp/calibrate_level_params.py#L84)
+- [`gcp/fetchers/fetch_alphavantage_intraday.py`](../../../gcp/fetchers/fetch_alphavantage_intraday.py) — line [220](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L220), [520](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L520), [553](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L553), [779](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L779)
+- [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [458](../../../gcp/fetchers/fetch_market_data.py#L458)
 - [`gcp/historical_signals.py`](../../../gcp/historical_signals.py) — line [315](../../../gcp/historical_signals.py#L315)
-- [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [394](../../../gcp/premarket_playbook_resolver.py#L394)
+- [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [402](../../../gcp/premarket_playbook_resolver.py#L402)
 - [`gcp/research/strat_engine/breakout_meta_walk_forward.py`](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py) — line [340](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py#L340)
-- [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [1970](../../../gcp/signal_monitor.py#L1970)
-- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [427](../../../lib/data_loader.py#L427)
+- [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [2001](../../../gcp/signal_monitor.py#L2001)
+- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [432](../../../lib/data_loader.py#L432)
 - [`lib/features/intraday_flow.py`](../../../lib/features/intraday_flow.py) — line [125](../../../lib/features/intraday_flow.py#L125)
 - [`lib/options_intraday.py`](../../../lib/options_intraday.py) — line [599](../../../lib/options_intraday.py#L599)
 - [`platform/api/main.py`](../../../platform/api/main.py) — line [650](../../../platform/api/main.py#L650), [786](../../../platform/api/main.py#L786), [1283](../../../platform/api/main.py#L1283), [1645](../../../platform/api/main.py#L1645), [1664](../../../platform/api/main.py#L1664)
@@ -747,9 +761,9 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `news_sentiment`
 - [`gcp/fetchers/fetch_news_sentiment.py`](../../../gcp/fetchers/fetch_news_sentiment.py) — line [191](../../../gcp/fetchers/fetch_news_sentiment.py#L191)
-- [`gcp/insight_discord_push.py`](../../../gcp/insight_discord_push.py) — line [276](../../../gcp/insight_discord_push.py#L276), [292](../../../gcp/insight_discord_push.py#L292)
+- [`gcp/insight_discord_push.py`](../../../gcp/insight_discord_push.py) — line [290](../../../gcp/insight_discord_push.py#L290), [306](../../../gcp/insight_discord_push.py#L306)
 - [`lib/agents/ranker/signals.py`](../../../lib/agents/ranker/signals.py) — line [194](../../../lib/agents/ranker/signals.py#L194), [268](../../../lib/agents/ranker/signals.py#L268)
-- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1646](../../../lib/agents/summarizers.py#L1646), [1807](../../../lib/agents/summarizers.py#L1807), [1824](../../../lib/agents/summarizers.py#L1824)
+- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1720](../../../lib/agents/summarizers.py#L1720), [1881](../../../lib/agents/summarizers.py#L1881), [1898](../../../lib/agents/summarizers.py#L1898)
 - [`lib/features/experimental/news_sentiment.py`](../../../lib/features/experimental/news_sentiment.py) — line [83](../../../lib/features/experimental/news_sentiment.py#L83)
 - [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [116](../../../platform/api/routers/catalysts.py#L116), [690](../../../platform/api/routers/catalysts.py#L690)
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [133](../../../scripts/backfill_watchlist_data.py#L133)
@@ -766,12 +780,12 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `premarket_analysis`
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [345](../../../gcp/discord_interactions/main.py#L345)
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3430](../../../gcp/premarket_brief.py#L3430), [3475](../../../gcp/premarket_brief.py#L3475)
-- [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [352](../../../gcp/premarket_playbook_resolver.py#L352), [535](../../../gcp/premarket_playbook_resolver.py#L535), [644](../../../gcp/premarket_playbook_resolver.py#L644)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3449](../../../gcp/premarket_brief.py#L3449), [3494](../../../gcp/premarket_brief.py#L3494)
+- [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [360](../../../gcp/premarket_playbook_resolver.py#L360), [543](../../../gcp/premarket_playbook_resolver.py#L543), [652](../../../gcp/premarket_playbook_resolver.py#L652)
 - [`lib/movement_statement.py`](../../../lib/movement_statement.py) — line [346](../../../lib/movement_statement.py#L346), [421](../../../lib/movement_statement.py#L421)
-- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [1677](../../../lib/strat_levels.py#L1677)
+- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [2322](../../../lib/strat_levels.py#L2322)
 - [`lib/strategies/brief_bias.py`](../../../lib/strategies/brief_bias.py) — line [83](../../../lib/strategies/brief_bias.py#L83)
-- [`platform/api/routers/dashboard.py`](../../../platform/api/routers/dashboard.py) — line [106](../../../platform/api/routers/dashboard.py#L106), [115](../../../platform/api/routers/dashboard.py#L115)
+- [`platform/api/routers/dashboard.py`](../../../platform/api/routers/dashboard.py) — line [107](../../../platform/api/routers/dashboard.py#L107), [116](../../../platform/api/routers/dashboard.py#L116)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [647](../../../scripts/audit_data_freshness.py#L647), [648](../../../scripts/audit_data_freshness.py#L648), [807](../../../scripts/audit_data_freshness.py#L807)
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [104](../../../scripts/backfill_history_tables.py#L104), [127](../../../scripts/backfill_history_tables.py#L127), [128](../../../scripts/backfill_history_tables.py#L128)
 - [`scripts/validation/validate_brief_accuracy.py`](../../../scripts/validation/validate_brief_accuracy.py) — line [351](../../../scripts/validation/validate_brief_accuracy.py#L351)
@@ -795,7 +809,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 ### `sec_filings`
 - [`lib/agents/ranker/candidates.py`](../../../lib/agents/ranker/candidates.py) — line [116](../../../lib/agents/ranker/candidates.py#L116)
 - [`lib/agents/ranker/signals.py`](../../../lib/agents/ranker/signals.py) — line [542](../../../lib/agents/ranker/signals.py#L542)
-- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1661](../../../lib/agents/summarizers.py#L1661)
+- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [1735](../../../lib/agents/summarizers.py#L1735)
 - [`lib/strategies/catalyst_proximity.py`](../../../lib/strategies/catalyst_proximity.py) — line [276](../../../lib/strategies/catalyst_proximity.py#L276)
 - [`platform/api/routers/catalysts.py`](../../../platform/api/routers/catalysts.py) — line [542](../../../platform/api/routers/catalysts.py#L542), [700](../../../platform/api/routers/catalysts.py#L700), [703](../../../platform/api/routers/catalysts.py#L703)
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [155](../../../scripts/backfill_watchlist_data.py#L155)
@@ -805,7 +819,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [142](../../../gcp/signal_monitor_eod_resolver.py#L142)
 - [`gcp/signal_quality_alarm.py`](../../../gcp/signal_quality_alarm.py) — line [209](../../../gcp/signal_quality_alarm.py#L209)
 - [`gcp/signal_replay.py`](../../../gcp/signal_replay.py) — line [118](../../../gcp/signal_replay.py#L118)
-- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [892](../../../lib/agents/summarizers.py#L892), [910](../../../lib/agents/summarizers.py#L910)
+- [`lib/agents/summarizers.py`](../../../lib/agents/summarizers.py) — line [966](../../../lib/agents/summarizers.py#L966), [984](../../../lib/agents/summarizers.py#L984)
 - [`platform/api/routers/journal.py`](../../../platform/api/routers/journal.py) — line [1048](../../../platform/api/routers/journal.py#L1048)
 - [`scripts/analysis/per_factor_walkforward.py`](../../../scripts/analysis/per_factor_walkforward.py) — line [254](../../../scripts/analysis/per_factor_walkforward.py#L254)
 - [`scripts/analysis/per_ticker_calibration.py`](../../../scripts/analysis/per_ticker_calibration.py) — line [196](../../../scripts/analysis/per_ticker_calibration.py#L196)
@@ -833,6 +847,10 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 ### `ticker_info`
 - [`lib/ticker_info.py`](../../../lib/ticker_info.py) — line [102](../../../lib/ticker_info.py#L102)
 
+### `ticker_level_params`
+- [`gcp/calibrate_level_params.py`](../../../gcp/calibrate_level_params.py) — line [89](../../../gcp/calibrate_level_params.py#L89)
+- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [1217](../../../lib/strat_levels.py#L1217)
+
 ### `top_movers_daily`
 - [`lib/agents/ranker/candidates.py`](../../../lib/agents/ranker/candidates.py) — line [169](../../../lib/agents/ranker/candidates.py#L169)
 - [`lib/agents/ranker/signals.py`](../../../lib/agents/ranker/signals.py) — line [496](../../../lib/agents/ranker/signals.py#L496)
@@ -842,7 +860,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `trades`
 - [`gcp/trade_logger.py`](../../../gcp/trade_logger.py) — line [176](../../../gcp/trade_logger.py#L176), [212](../../../gcp/trade_logger.py#L212), [243](../../../gcp/trade_logger.py#L243)
-- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [809](../../../lib/data_loader.py#L809)
+- [`lib/data_loader.py`](../../../lib/data_loader.py) — line [830](../../../lib/data_loader.py#L830)
 - [`lib/strategies/insight_cache.py`](../../../lib/strategies/insight_cache.py) — line [285](../../../lib/strategies/insight_cache.py#L285)
 - [`platform/api/routers/analytics.py`](../../../platform/api/routers/analytics.py) — line [148](../../../platform/api/routers/analytics.py#L148)
 - [`platform/api/routers/journal.py`](../../../platform/api/routers/journal.py) — line [1045](../../../platform/api/routers/journal.py#L1045), [1341](../../../platform/api/routers/journal.py#L1341)
@@ -878,7 +896,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 ### `watchlists`
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [178](../../../gcp/discord_interactions/main.py#L178), [711](../../../gcp/discord_interactions/main.py#L711)
 - [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) — line [371](../../../gcp/fetchers/_watchlist.py#L371)
-- [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [808](../../../gcp/fetchers/fetch_market_data.py#L808)
+- [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [844](../../../gcp/fetchers/fetch_market_data.py#L844)
 - [`scripts/analysis/per_ticker_calibration.py`](../../../scripts/analysis/per_ticker_calibration.py) — line [227](../../../scripts/analysis/per_ticker_calibration.py#L227)
 <!-- inventory:reads:end -->
 
@@ -931,6 +949,7 @@ Notes on the ones that matter operationally:
 | `archive_yahoo_market_data_intraday` | 0 | 0 | no writer and no reader in code |
 | `backtest_reports` | 1 | 0 | write-only (no reader in code) |
 | `indicator_correlation` | 1 | 0 | write-only (no reader in code) |
+| `level_param_policy` | 0 | 2 | read-only (no writer names it in code) |
 | `market_data_intraday_iwm` | 0 | 5 | partition of `market_data_intraday` — routed by Postgres; name built at runtime in `gcp/research/p2_outcomes_grid.py`, `scripts/analysis/per_ticker_calibration.py` |
 | `market_data_intraday_other` | 0 | 0 | partition of `market_data_intraday` — routed by Postgres, never named in code; name built at runtime in `gcp/research/p2_outcomes_grid.py`, `scripts/analysis/per_ticker_calibration.py` |
 | `market_data_intraday_qqq` | 0 | 5 | partition of `market_data_intraday` — routed by Postgres; name built at runtime in `gcp/research/p2_outcomes_grid.py`, `scripts/analysis/per_ticker_calibration.py` |
@@ -966,8 +985,8 @@ If the job stops, the listed readers lose fresh data from the tables it writes. 
 | `audit-magnitude-drift` | `gcp/audit_magnitude_drift.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 | `audit-walkforward` | `gcp/audit_job_runner.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 | `auto-refresh-top-n` | `gcp/auto_refresh_top_n.py` | `insight_runs`, `ranker_runs` | `platform/api/routers/insights.py`, `scripts/backfill_history_tables.py` |
-| `backfill-daily-indicators` | `gcp/fetchers/backfill_daily_indicators.py` | `market_data_daily` | `gcp/backfill_ticker.py`, `gcp/build_intraday_gex.py`, `gcp/discord_interactions/main.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/fetchers/fetch_market_data.py`, `gcp/fetchers/fetch_premarket_refresh.py`, `gcp/migrate_to_gcp.py`, `gcp/premarket_brief.py`, `gcp/premarket_playbook_resolver.py`, `gcp/refresh_earnings_views.py`, `gcp/research/p2_outcomes_grid.py`, `gcp/research/p45_deep_ds_job.py` (+20) |
-| `backfill-ticker` | `gcp/backfill_ticker.py` | `market_data_daily`, `market_data_intraday`, `news_sentiment`, `watchlists` | `gcp/build_intraday_gex.py`, `gcp/build_realtime_gex.py`, `gcp/discord_interactions/main.py`, `gcp/fetchers/_watchlist.py`, `gcp/fetchers/backfill_daily_indicators.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/fetchers/fetch_alphavantage_intraday.py`, `gcp/fetchers/fetch_market_data.py`, `gcp/fetchers/fetch_news_sentiment.py`, `gcp/fetchers/fetch_premarket_refresh.py`, `gcp/historical_signals.py`, `gcp/insight_discord_push.py` (+35) |
+| `backfill-daily-indicators` | `gcp/fetchers/backfill_daily_indicators.py` | `market_data_daily` | `gcp/backfill_ticker.py`, `gcp/build_intraday_gex.py`, `gcp/calibrate_level_params.py`, `gcp/discord_interactions/main.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/fetchers/fetch_market_data.py`, `gcp/fetchers/fetch_premarket_refresh.py`, `gcp/migrate_to_gcp.py`, `gcp/premarket_brief.py`, `gcp/premarket_playbook_resolver.py`, `gcp/refresh_earnings_views.py`, `gcp/research/p2_outcomes_grid.py` (+21) |
+| `backfill-ticker` | `gcp/backfill_ticker.py` | `market_data_daily`, `market_data_intraday`, `news_sentiment`, `watchlists` | `gcp/build_intraday_gex.py`, `gcp/build_realtime_gex.py`, `gcp/calibrate_level_params.py`, `gcp/discord_interactions/main.py`, `gcp/fetchers/_watchlist.py`, `gcp/fetchers/backfill_daily_indicators.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/fetchers/fetch_alphavantage_intraday.py`, `gcp/fetchers/fetch_market_data.py`, `gcp/fetchers/fetch_news_sentiment.py`, `gcp/fetchers/fetch_premarket_refresh.py`, `gcp/historical_signals.py` (+36) |
 | `backtest` | `gcp/backtest_job.py` | `backtest_trades` | `scripts/generate_backtest_report.py` |
 | `backtest-pipeline` | `scripts/run_pipeline.py` | `backtest_reports`, `backtest_sweeps`, `backtest_trades` | — |
 | `build-options-daily-features` | `gcp/fetchers/build_options_daily_features.py` | `options_daily_features` | — |
@@ -992,22 +1011,22 @@ If the job stops, the listed readers lose fresh data from the tables it writes. 
 | `fetch-av-options-backfill` | `gcp/fetchers/fetch_av_historical_options.py` | `etf_options_snapshots` | `gcp/build_intraday_gex.py`, `gcp/build_realtime_gex.py`, `gcp/migrate_to_gcp.py`, `gcp/options_retention_job.py`, `gcp/premarket_brief.py`, `gcp/research/p2_build_gamma_levels.py`, `gcp/research/p7_build_multi_tf_features.py`, `gcp/research/strat_engine/breakout_meta_walk_forward.py`, `gcp/research/strat_engine/strat_data_builder.py`, `lib/agents/ranker/signals.py`, `lib/agents/summarizers.py`, `lib/data_loader.py` (+12) |
 | `fetch-av-options-realtime` | `gcp/fetchers/fetch_av_realtime_options.py` | `etf_options_snapshots` | `gcp/build_intraday_gex.py`, `gcp/build_realtime_gex.py`, `gcp/fetchers/fetch_av_historical_options.py`, `gcp/migrate_to_gcp.py`, `gcp/options_retention_job.py`, `gcp/premarket_brief.py`, `gcp/research/p2_build_gamma_levels.py`, `gcp/research/p7_build_multi_tf_features.py`, `gcp/research/strat_engine/breakout_meta_walk_forward.py`, `gcp/research/strat_engine/strat_data_builder.py`, `lib/agents/ranker/signals.py`, `lib/agents/summarizers.py` (+13) |
 | `fetch-earnings-calendar` | `scripts/fetch_earnings_calendar.py` | `earnings_calendar` | `gcp/earnings_long_watchlist.py`, `gcp/earnings_reactions_brief.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/fetchers/evaluate_ew_strikes.py`, `gcp/fetchers/fetch_earnings_history.py`, `gcp/fetchers/fetch_insider_transactions.py`, `gcp/fetchers/fetch_market_data.py`, `gcp/fetchers/fetch_news_sentiment.py`, `gcp/fetchers/fetch_premarket_refresh.py`, `gcp/fetchers/fetch_sec_filings.py`, `gcp/premarket_brief.py`, `gcp/refresh_earnings_views.py` (+5) |
-| `fetch-earnings-history` | `gcp/fetchers/fetch_earnings_history.py` | `earnings_history`, `market_data_daily` | `gcp/backfill_ticker.py`, `gcp/build_intraday_gex.py`, `gcp/discord_interactions/main.py`, `gcp/fetchers/backfill_daily_indicators.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/fetchers/fetch_premarket_refresh.py`, `gcp/migrate_to_gcp.py`, `gcp/premarket_brief.py`, `gcp/premarket_playbook_resolver.py`, `gcp/refresh_earnings_views.py`, `gcp/research/p2_outcomes_grid.py`, `gcp/research/p45_deep_ds_job.py` (+19) |
+| `fetch-earnings-history` | `gcp/fetchers/fetch_earnings_history.py` | `earnings_history`, `market_data_daily` | `gcp/backfill_ticker.py`, `gcp/build_intraday_gex.py`, `gcp/calibrate_level_params.py`, `gcp/discord_interactions/main.py`, `gcp/fetchers/backfill_daily_indicators.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/fetchers/fetch_premarket_refresh.py`, `gcp/migrate_to_gcp.py`, `gcp/premarket_brief.py`, `gcp/premarket_playbook_resolver.py`, `gcp/refresh_earnings_views.py`, `gcp/research/p2_outcomes_grid.py` (+20) |
 | `fetch-economic-events` | `gcp/fetchers/fetch_economic_events.py` | `economic_events` | `gcp/premarket_brief.py`, `gcp/research/magnitude_engine/mag_dataset.py`, `lib/agents/ranker/candidates.py`, `lib/agents/summarizers.py`, `lib/strategies/catalyst_proximity.py`, `platform/api/routers/catalysts.py`, `scripts/audit_data_freshness.py`, `scripts/check_event_window_concentration.py` |
 | `fetch-fred-rates` | `gcp/fetchers/fetch_fred_rates.py` | `daily_rates` | `lib/options_exec_backtest/runner.py`, `lib/options_greeks.py`, `scripts/audit_data_freshness.py` |
 | `fetch-insider-transactions` | `gcp/fetchers/fetch_insider_transactions.py` | `insider_transactions` | `gcp/earnings_reactions_brief.py`, `lib/agents/ranker/candidates.py`, `lib/agents/ranker/signals.py`, `platform/api/routers/catalysts.py`, `scripts/backfill_watchlist_data.py` |
-| `fetch-market-data` | `gcp/fetchers/fetch_market_data.py` | `market_data_daily`, `market_data_intraday` | `gcp/backfill_ticker.py`, `gcp/build_intraday_gex.py`, `gcp/build_realtime_gex.py`, `gcp/discord_interactions/main.py`, `gcp/fetchers/backfill_daily_indicators.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/fetchers/fetch_premarket_refresh.py`, `gcp/historical_signals.py`, `gcp/migrate_to_gcp.py`, `gcp/premarket_brief.py`, `gcp/premarket_playbook_resolver.py`, `gcp/refresh_earnings_views.py` (+30) |
+| `fetch-market-data` | `gcp/fetchers/fetch_market_data.py` | `market_data_daily`, `market_data_intraday` | `gcp/backfill_ticker.py`, `gcp/build_intraday_gex.py`, `gcp/build_realtime_gex.py`, `gcp/calibrate_level_params.py`, `gcp/discord_interactions/main.py`, `gcp/fetchers/backfill_daily_indicators.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/fetchers/fetch_premarket_refresh.py`, `gcp/historical_signals.py`, `gcp/migrate_to_gcp.py`, `gcp/premarket_brief.py`, `gcp/premarket_playbook_resolver.py` (+31) |
 | `fetch-news-sentiment` | `gcp/fetchers/fetch_news_sentiment.py` | `news_sentiment` | `gcp/insight_discord_push.py`, `lib/agents/ranker/signals.py`, `lib/agents/summarizers.py`, `lib/features/experimental/news_sentiment.py`, `platform/api/routers/catalysts.py`, `scripts/backfill_watchlist_data.py` |
 | `fetch-news-sentiment-earnings` | `gcp/fetchers/fetch_news_sentiment.py` | `news_sentiment` | `gcp/insight_discord_push.py`, `lib/agents/ranker/signals.py`, `lib/agents/summarizers.py`, `lib/features/experimental/news_sentiment.py`, `platform/api/routers/catalysts.py`, `scripts/backfill_watchlist_data.py` |
 | `fetch-news-sentiment-topics` | `gcp/fetchers/fetch_news_sentiment.py` | `news_sentiment` | `gcp/insight_discord_push.py`, `lib/agents/ranker/signals.py`, `lib/agents/summarizers.py`, `lib/features/experimental/news_sentiment.py`, `platform/api/routers/catalysts.py`, `scripts/backfill_watchlist_data.py` |
-| `fetch-premarket-refresh` | `gcp/fetchers/fetch_premarket_refresh.py` | `market_data_daily` | `gcp/backfill_ticker.py`, `gcp/build_intraday_gex.py`, `gcp/discord_interactions/main.py`, `gcp/fetchers/backfill_daily_indicators.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/migrate_to_gcp.py`, `gcp/premarket_brief.py`, `gcp/premarket_playbook_resolver.py`, `gcp/refresh_earnings_views.py`, `gcp/research/p2_outcomes_grid.py`, `gcp/research/p45_deep_ds_job.py`, `gcp/research/p7_build_multi_tf_features.py` (+18) |
+| `fetch-premarket-refresh` | `gcp/fetchers/fetch_premarket_refresh.py` | `market_data_daily` | `gcp/backfill_ticker.py`, `gcp/build_intraday_gex.py`, `gcp/calibrate_level_params.py`, `gcp/discord_interactions/main.py`, `gcp/fetchers/backfill_daily_indicators.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/migrate_to_gcp.py`, `gcp/premarket_brief.py`, `gcp/premarket_playbook_resolver.py`, `gcp/refresh_earnings_views.py`, `gcp/research/p2_outcomes_grid.py`, `gcp/research/p45_deep_ds_job.py` (+19) |
 | `fetch-sec-filings` | `gcp/fetchers/fetch_sec_filings.py` | `sec_filings` | `lib/agents/ranker/candidates.py`, `lib/agents/ranker/signals.py`, `lib/agents/summarizers.py`, `lib/strategies/catalyst_proximity.py`, `platform/api/routers/catalysts.py`, `scripts/backfill_watchlist_data.py` |
 | `fetch-top-movers` | `gcp/fetchers/fetch_top_movers.py` | `top_movers_daily`, `top_movers_intraday` | `lib/agents/ranker/candidates.py`, `lib/agents/ranker/signals.py`, `platform/api/main.py` |
 | `freshness-watchdog` | `scripts/audit_data_freshness.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 | `historical-signals-watchlist` | `scripts/run_historical_signals.py` | `historical_signals` | `platform/api/routers/signals.py`, `scripts/analyze_timeframe_heuristic.py`, `scripts/audit_data_freshness.py`, `scripts/backfill_timeframe_tags.py`, `scripts/signal_quality_report.py` |
 | `indicator-correlation` | `gcp/indicator_correlation_job.py` | `indicator_correlation` | — |
 | `insight-discord-push` | `gcp/insight_discord_push.py` | — (Discord / GCS / no Cloud SQL write found) | — |
-| `insight-pipeline` | `gcp/insight_pipeline_job.py` | `insight_reports`, `insight_reports_history`, `insight_runs` | `gcp/auto_refresh_top_n.py`, `gcp/discord_interactions/main.py`, `gcp/insight_discord_push.py`, `lib/strategies/insight_cache.py`, `platform/api/routers/insights.py`, `scripts/audit_data_freshness.py`, `scripts/backfill_and_replay.py`, `scripts/backfill_history_tables.py`, `scripts/validation/validate_brief_accuracy.py` |
+| `insight-pipeline` | `gcp/insight_pipeline_job.py` | `insight_reports`, `insight_reports_history`, `insight_runs`, `ticker_level_params` | `gcp/auto_refresh_top_n.py`, `gcp/discord_interactions/main.py`, `gcp/insight_discord_push.py`, `lib/strategies/insight_cache.py`, `platform/api/routers/insights.py`, `scripts/audit_data_freshness.py`, `scripts/backfill_and_replay.py`, `scripts/backfill_history_tables.py`, `scripts/validation/validate_brief_accuracy.py` |
 | `intraday-bulk-backfill` | `gcp/fetchers/fetch_alphavantage_intraday.py` | `market_data_intraday` | `gcp/backfill_ticker.py`, `gcp/build_intraday_gex.py`, `gcp/build_realtime_gex.py`, `gcp/fetchers/fetch_market_data.py`, `gcp/historical_signals.py`, `gcp/premarket_playbook_resolver.py`, `gcp/research/strat_engine/breakout_meta_walk_forward.py`, `gcp/signal_monitor.py`, `lib/data_loader.py`, `lib/features/intraday_flow.py`, `lib/options_intraday.py`, `platform/api/main.py` (+7) |
 | `magnitude-engine` | `gcp/research/magnitude_engine/mag_walk_forward.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 | `magnitude-inference` | `gcp/research/magnitude_engine/mag_inference.py` | — (Discord / GCS / no Cloud SQL write found) | — |
@@ -1016,7 +1035,7 @@ If the job stops, the listed readers lose fresh data from the tables it writes. 
 | `p2-build-gamma-levels` | `gcp/research/p2_build_gamma_levels.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 | `param-sweep` | `scripts/run_param_sweep.py` | `exit_config_overrides`, `walk_forward_results` | — |
 | `phase6-playbook` | `scripts/analysis/phase6_playbook.py` | `playbook_cards` | `platform/api/routers/playbook.py`, `scripts/audit_data_freshness.py` |
-| `premarket-brief` | `gcp/premarket_brief.py` | `market_data_daily`, `premarket_analysis`, `premarket_analysis_history`, `strat_levels` | `gcp/backfill_ticker.py`, `gcp/build_intraday_gex.py`, `gcp/discord_interactions/main.py`, `gcp/fetchers/backfill_daily_indicators.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/fetchers/fetch_market_data.py`, `gcp/fetchers/fetch_premarket_refresh.py`, `gcp/migrate_to_gcp.py`, `gcp/premarket_playbook_resolver.py`, `gcp/refresh_earnings_views.py`, `gcp/research/p2_outcomes_grid.py`, `gcp/research/p45_deep_ds_job.py` (+20) |
+| `premarket-brief` | `gcp/premarket_brief.py` | `market_data_daily`, `premarket_analysis`, `premarket_analysis_history`, `strat_levels` | `gcp/backfill_ticker.py`, `gcp/build_intraday_gex.py`, `gcp/calibrate_level_params.py`, `gcp/discord_interactions/main.py`, `gcp/fetchers/backfill_daily_indicators.py`, `gcp/fetchers/compute_earnings_reactions.py`, `gcp/fetchers/fetch_market_data.py`, `gcp/fetchers/fetch_premarket_refresh.py`, `gcp/migrate_to_gcp.py`, `gcp/premarket_playbook_resolver.py`, `gcp/refresh_earnings_views.py`, `gcp/research/p2_outcomes_grid.py` (+21) |
 | `premarket-playbook-resolver` | `gcp/premarket_playbook_resolver.py` | `premarket_analysis` | `gcp/discord_interactions/main.py`, `gcp/premarket_brief.py`, `lib/movement_statement.py`, `lib/strategies/brief_bias.py`, `platform/api/routers/dashboard.py`, `scripts/audit_data_freshness.py`, `scripts/backfill_history_tables.py`, `scripts/validation/validate_brief_accuracy.py` |
 | `refresh-earnings-views` | `gcp/refresh_earnings_views.py` | `earnings_event_outcomes`, `earnings_ticker_lean`, `earnings_upcoming_with_history` | `platform/api/routers/earnings.py` |
 | `regime-combo` | `gcp/regime_combo_job.py` | `regime_combo_results` | — |
@@ -1134,6 +1153,7 @@ flowchart LR
         T_insight_runs[(insight_runs)]
         T_job_runs[(job_runs)]
         T_journal_entries[(journal_entries)]
+        T_level_param_policy[(level_param_policy)]
         T_market_data_daily[(market_data_daily)]
         T_market_data_intraday[(market_data_intraday)]
         T_market_data_intraday_iwm[(market_data_intraday_iwm)]
@@ -1154,6 +1174,7 @@ flowchart LR
         T_signal_metrics[(signal_metrics)]
         T_strat_levels[(strat_levels)]
         T_ticker_calibration[(ticker_calibration)]
+        T_ticker_level_params[(ticker_level_params)]
         T_top_movers_daily[(top_movers_daily)]
         T_top_movers_intraday[(top_movers_intraday)]
         T_trades[(trades)]
@@ -1210,6 +1231,7 @@ flowchart LR
     J_insight_pipeline ==> T_insight_reports
     J_insight_pipeline ==> T_insight_reports_history
     J_insight_pipeline ==> T_insight_runs
+    J_insight_pipeline ==> T_ticker_level_params
     J_intraday_bulk_backfill ==> T_market_data_intraday
     J_param_sweep ==> T_exit_config_overrides
     J_param_sweep ==> T_walk_forward_results
@@ -1245,8 +1267,10 @@ flowchart LR
     T_top_movers_daily --> J_auto_refresh_top_n
     T_watchlists --> J_auto_refresh_top_n
     T_market_data_daily --> J_backfill_daily_indicators
+    T_level_param_policy --> J_backfill_ticker
     T_market_data_daily --> J_backfill_ticker
     T_market_data_intraday --> J_backfill_ticker
+    T_ticker_level_params --> J_backfill_ticker
     T_exit_config_overrides --> J_backtest
     T_market_data_daily --> J_backtest
     T_market_data_intraday --> J_backtest
@@ -1286,6 +1310,7 @@ flowchart LR
     T_etf_options_snapshots --> J_etf_options_retention
     T_earnings_calendar --> J_evaluate_ew_strikes
     T_market_data_intraday --> J_fetch_alphavantage_intraday
+    T_watchlists --> J_fetch_alphavantage_intraday
     T_etf_options_snapshots --> J_fetch_av_options_backfill
     T_watchlists --> J_fetch_av_options_backfill
     T_earnings_calendar --> J_fetch_earnings_calendar
@@ -1296,8 +1321,10 @@ flowchart LR
     T_earnings_calendar --> J_fetch_insider_transactions
     T_watchlists --> J_fetch_insider_transactions
     T_earnings_calendar --> J_fetch_market_data
+    T_level_param_policy --> J_fetch_market_data
     T_market_data_daily --> J_fetch_market_data
     T_market_data_intraday --> J_fetch_market_data
+    T_ticker_level_params --> J_fetch_market_data
     T_watchlists --> J_fetch_market_data
     T_earnings_calendar --> J_fetch_news_sentiment
     T_news_sentiment --> J_fetch_news_sentiment
@@ -1309,7 +1336,9 @@ flowchart LR
     T_news_sentiment --> J_fetch_news_sentiment_topics
     T_watchlists --> J_fetch_news_sentiment_topics
     T_earnings_calendar --> J_fetch_premarket_refresh
+    T_level_param_policy --> J_fetch_premarket_refresh
     T_market_data_daily --> J_fetch_premarket_refresh
+    T_ticker_level_params --> J_fetch_premarket_refresh
     T_watchlists --> J_fetch_premarket_refresh
     T_earnings_calendar --> J_fetch_sec_filings
     T_watchlists --> J_fetch_sec_filings
@@ -1342,15 +1371,19 @@ flowchart LR
     T_etf_options_snapshots --> J_insight_pipeline
     T_insight_reports --> J_insight_pipeline
     T_journal_entries --> J_insight_pipeline
+    T_level_param_policy --> J_insight_pipeline
     T_market_data_daily --> J_insight_pipeline
+    T_market_data_intraday --> J_insight_pipeline
     T_model_routing --> J_insight_pipeline
     T_news_sentiment --> J_insight_pipeline
     T_premarket_analysis --> J_insight_pipeline
     T_sec_filings --> J_insight_pipeline
+    T_ticker_level_params --> J_insight_pipeline
     T_watchlist_history --> J_insight_pipeline
     T_watchlist_history_origin --> J_insight_pipeline
     T_watchlists --> J_insight_pipeline
     T_market_data_intraday --> J_intraday_bulk_backfill
+    T_watchlists --> J_intraday_bulk_backfill
     T_economic_events --> J_magnitude_engine
     T_etf_options_snapshots --> J_magnitude_engine
     T_options_daily_features --> J_magnitude_engine
@@ -1372,12 +1405,16 @@ flowchart LR
     T_earnings_reactions --> J_premarket_brief
     T_economic_events --> J_premarket_brief
     T_etf_options_snapshots --> J_premarket_brief
+    T_level_param_policy --> J_premarket_brief
     T_market_data_daily --> J_premarket_brief
     T_premarket_analysis --> J_premarket_brief
+    T_ticker_level_params --> J_premarket_brief
     T_watchlists --> J_premarket_brief
+    T_level_param_policy --> J_premarket_playbook_resolver
     T_market_data_daily --> J_premarket_playbook_resolver
     T_market_data_intraday --> J_premarket_playbook_resolver
     T_premarket_analysis --> J_premarket_playbook_resolver
+    T_ticker_level_params --> J_premarket_playbook_resolver
     T_earnings_calendar --> J_refresh_earnings_views
     T_earnings_calibration --> J_refresh_earnings_views
     T_earnings_event_outcomes --> J_refresh_earnings_views
@@ -1388,11 +1425,13 @@ flowchart LR
     T_economic_events --> J_signal_monitor
     T_exit_config_overrides --> J_signal_monitor
     T_insight_reports --> J_signal_monitor
+    T_level_param_policy --> J_signal_monitor
     T_market_data_daily --> J_signal_monitor
     T_market_data_intraday --> J_signal_monitor
     T_premarket_analysis --> J_signal_monitor
     T_sec_filings --> J_signal_monitor
     T_ticker_calibration --> J_signal_monitor
+    T_ticker_level_params --> J_signal_monitor
     T_trades --> J_signal_monitor
     T_watchlists --> J_signal_monitor
     T_market_data_intraday --> J_signal_monitor_eod_resolver
@@ -1417,7 +1456,7 @@ flowchart LR
     classDef job fill:#3B82F6,stroke:#1E40AF,color:#fff
     classDef tbl fill:#10B981,stroke:#065F46,color:#fff
     class J_apply_schema_migrations,J_audit_brief_bias,J_audit_walkforward,J_auto_refresh_top_n,J_backfill_daily_indicators,J_backfill_ticker,J_backtest,J_backtest_pipeline,J_build_options_daily_features,J_build_options_greeks,J_build_realtime_gex,J_calibrate_thresholds,J_compute_earnings_reactions,J_compute_spx_greeks_backfill,J_direction_baseline,J_direction_phase2,J_earnings_long_watchlist,J_earnings_options_backfill,J_earnings_reactions_brief,J_earnings_sweep,J_etf_options_retention,J_evaluate_ew_strikes,J_fetch_alphavantage_intraday,J_fetch_av_options_backfill,J_fetch_av_options_realtime,J_fetch_earnings_calendar,J_fetch_earnings_history,J_fetch_economic_events,J_fetch_fred_rates,J_fetch_insider_transactions,J_fetch_market_data,J_fetch_news_sentiment,J_fetch_news_sentiment_earnings,J_fetch_news_sentiment_topics,J_fetch_premarket_refresh,J_fetch_sec_filings,J_fetch_top_movers,J_freshness_watchdog,J_historical_signals_watchlist,J_indicator_correlation,J_insight_discord_push,J_insight_pipeline,J_intraday_bulk_backfill,J_magnitude_engine,J_magnitude_recal,J_options_exec_backtest,J_p2_build_gamma_levels,J_param_sweep,J_phase6_playbook,J_premarket_brief,J_premarket_playbook_resolver,J_refresh_earnings_views,J_regime_combo,J_signal_monitor,J_signal_monitor_eod_resolver,J_signal_quality_alarm,J_signal_quality_report,J_signal_replay,J_strat_engine,J_validate_brief,J_weekend_review job
-    class T_backtest_reports,T_backtest_sweeps,T_backtest_trades,T_backtest_walk_forward_folds,T_daily_rates,T_earnings_calendar,T_earnings_calibration,T_earnings_event_outcomes,T_earnings_history,T_earnings_options_snapshots,T_earnings_options_strategy_insights,T_earnings_options_strategy_winners,T_earnings_reactions,T_earnings_ticker_lean,T_earnings_upcoming_with_history,T_economic_events,T_etf_options_daily_greeks,T_etf_options_snapshots,T_exit_config_overrides,T_historical_signals,T_indicator_correlation,T_insider_transactions,T_insight_reports,T_insight_reports_history,T_insight_runs,T_job_runs,T_journal_entries,T_market_data_daily,T_market_data_intraday,T_market_data_intraday_iwm,T_market_data_intraday_qqq,T_market_data_intraday_spy,T_model_routing,T_news_sentiment,T_options_daily_features,T_playbook_cards,T_premarket_analysis,T_premarket_analysis_history,T_ranker_runs,T_realtime_gex_15m,T_regime_combo_results,T_schema_apply_history,T_sec_filings,T_signal_alerts,T_signal_metrics,T_strat_levels,T_ticker_calibration,T_top_movers_daily,T_top_movers_intraday,T_trades,T_walk_forward_results,T_watchlist_history,T_watchlist_history_origin,T_watchlists tbl
+    class T_backtest_reports,T_backtest_sweeps,T_backtest_trades,T_backtest_walk_forward_folds,T_daily_rates,T_earnings_calendar,T_earnings_calibration,T_earnings_event_outcomes,T_earnings_history,T_earnings_options_snapshots,T_earnings_options_strategy_insights,T_earnings_options_strategy_winners,T_earnings_reactions,T_earnings_ticker_lean,T_earnings_upcoming_with_history,T_economic_events,T_etf_options_daily_greeks,T_etf_options_snapshots,T_exit_config_overrides,T_historical_signals,T_indicator_correlation,T_insider_transactions,T_insight_reports,T_insight_reports_history,T_insight_runs,T_job_runs,T_journal_entries,T_level_param_policy,T_market_data_daily,T_market_data_intraday,T_market_data_intraday_iwm,T_market_data_intraday_qqq,T_market_data_intraday_spy,T_model_routing,T_news_sentiment,T_options_daily_features,T_playbook_cards,T_premarket_analysis,T_premarket_analysis_history,T_ranker_runs,T_realtime_gex_15m,T_regime_combo_results,T_schema_apply_history,T_sec_filings,T_signal_alerts,T_signal_metrics,T_strat_levels,T_ticker_calibration,T_ticker_level_params,T_top_movers_daily,T_top_movers_intraday,T_trades,T_walk_forward_results,T_watchlist_history,T_watchlist_history_origin,T_watchlists tbl
 ```
 <!-- inventory:graph:end -->
 
