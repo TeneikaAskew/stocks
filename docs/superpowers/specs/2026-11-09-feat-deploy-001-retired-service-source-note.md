@@ -327,8 +327,9 @@ exemption exists for (`spec_gate.py` L1939 to L1944, passed to `check_supersedes
 pointer names a spec that is already superseded. The ordinary in-place rule admits it (L1955 to L1966): a
 status-only change from `approved` to `superseded`, nothing else in that file, with an approved same-FEAT
 spec naming it in `supersedes` in the same tree. The flip is made in the change that lands this spec, as
-its own status-only commit on this spec's branch once this text's approval is recorded; the commit that
-adds this file changes no other path. Its pointer stays null. #1384 does not touch the 2026-10-11 spec: a
+its own status-only commit on this spec's branch, as stocks#1666 did for its predecessor; the commit that
+adds this file changes no other path. If this text's approval is not recorded, the flip is reverted together
+with this line's `status: approved`. Its pointer stays null. #1384 does not touch the 2026-10-11 spec: a
 feature branch that changes code and another spec at once is refused (`spec_gate.py` L2423 to L2426, "a
 spec lands alone on a docs/ branch"), so its only obligation toward it is the plan rebind in step 1 above.
 See "Separation of evidence" below for what was executed.
