@@ -6,15 +6,15 @@ canvases: [https://claude.ai/artifact/LXZ5iRtXogCyFfApfsxXVN]
 done_when:
   - "tests/meta/test_no_import_fallbacks.py::test_no_unlisted_import_fallbacks, run against origin/main's lib/, gcp/, platform/api/ and scripts/, fails listing exactly the 20 handlers in this spec's Sites removed table as path:line qualname, with no pin mismatch, and passes on the PR head"
   - "tests/meta/test_no_import_fallbacks.py keys ALLOWED, PART2 and KNOWN_BROAD by (path, qualified function name), each mapping to a reason and to the guards that function may hold, each guard pinned as its handler types, the modules its try body imports and the value it substitutes; ALLOWED's keys are exactly the 16 in this spec's Allowlist table, PART2's exactly the 24 keys (25 guards) in its Part 2 table and KNOWN_BROAD's exactly the 7 keys (14 guards) in its Broad guards table, and self-tests assert that the scan fails when a listed function holds a guard its entry does not pin or lacks one it pins: a one-for-one swap to another module, a new substitute for the same import, a widened handler type, a second guard, and a pinned guard that is gone"
-  - "tests/meta/test_no_import_fallbacks.py runs its detector on inline snippets and asserts it refuses: except Exception, except BaseException and a bare except: around a try body of only imports, and around a body calling __import__ or importlib.import_module; except ImportError and except ModuleNotFoundError each alone, in a tuple, as an attribute and through a module-level alias tuple; a handler type it cannot resolve to a builtin exception around an imports-only body (a function-local alias, a class attribute, a concatenated tuple, an imported name); an imports-only body that also assigns constants (HAVE_YAML = True) under a broad or import handler; except* ImportError; with contextlib.suppress(ImportError) around an import; a conditional raise; a raise only inside a nested try or handler; a handler that returns, yields, continues or breaks before its final raise, including a return inside a nested try within the handler; a handler that calls sys.exit, os._exit or os.abort before its raise, also through import sys as s and from sys import exit as e; a raise of another type anywhere in the handler (RuntimeError, HTTPException, SystemExit, KeyboardInterrupt), including inside an if before a final bare raise and after marking a status; a handler that rebinds or deletes the name it bound; an except ImportError: raise placed after a sibling handler of the same try that catches Exception or everything and returns; an otherwise accepted handler whose try has a finally that returns; an otherwise accepted handler wrapped in the same function by an outer try whose first handler able to catch an ImportError returns or wraps it, or by a with contextlib.suppress(Exception); an outer or earlier sibling handler whose type it cannot resolve (a function-local alias) that returns; an outer handler of an imported type that re-raises, followed by except Exception: return []; a finally that raises another type; an assert in the handler before its final bare raise, alone or inside an if, and an assert in the finally of its own try or of an enclosing try; a try with no handler, or with only handlers that cannot catch an ImportError (except ValueError), whose finally returns, breaks, continues, asserts or raises another type around an import (try: import x then finally: return []); suppress imported under another name (from contextlib import suppress as quiet); and a module-level alias tuple bound with an annotation (_E: tuple = (ImportError, OSError)) around work. It accepts a handler that ends in a raise when every raise in it is a bare raise, a raise of the name it bound, or a raise of ImportError or ModuleNotFoundError, and no return, yield, continue, break, assert or exit call appears in it outside nested function, lambda and class bodies, including an except ImportError: raise placed ahead of an outer except Exception"
-  - "tests/meta/test_no_import_fallbacks.py pins the 14 broad import guards in this spec's Broad guards table in KNOWN_BROAD, and fails on any other bare except:, except Exception or except BaseException, written as the scan resolves it (a name or attribute, alone, in a tuple or through a module-level alias), whose try body is only imports, or imports beside constant assignments, or calls a function named __import__ or import_module; and it fails on every try, whatever its handlers, whose finally holds a return, break, continue, assert or raise of another type while its body holds an import or calls __import__ or import_module, of which origin/main's code has none"
-  - "tests/meta/test_no_import_fallbacks.py pins each of the 11 rows of this spec's Caller catches table by its path, its qualified function name and a callee its try body calls, and asserts that on the PR head the handler immediately before the row's broad handler has as its type exactly the name ImportError, alone (not ModuleNotFoundError, a tuple or an alias), and ends in a bare raise; the check fails on origin/main's code, which has no such handler, and its self-tests refuse except ModuleNotFoundError: raise and except (ImportError, TypeError): raise in that place"
+  - "tests/meta/test_no_import_fallbacks.py runs its detector on inline snippets and asserts it refuses: except Exception, except BaseException and a bare except: around a try body of only imports, and around a body calling __import__ or importlib.import_module; except ImportError and except ModuleNotFoundError each alone, in a tuple, as an attribute and through a module-level alias tuple; a handler type it cannot resolve to a builtin exception around an imports-only body (a function-local alias, a class attribute, a concatenated tuple, an imported name); an imports-only body that also assigns constants (HAVE_YAML = True) under a broad or import handler; except* ImportError; with contextlib.suppress(ImportError) around an import; a conditional raise; a raise only inside a nested try or handler; a handler that returns, yields, continues or breaks before its final raise, including a return inside a nested try within the handler; a handler that calls sys.exit, os._exit or os.abort before its raise, also through import sys as s and from sys import exit as e; a raise of another type anywhere in the handler (RuntimeError, HTTPException, SystemExit, KeyboardInterrupt), including inside an if before a final bare raise and after marking a status; a handler that rebinds or deletes the name it bound; an except ImportError: raise placed after a sibling handler of the same try that catches Exception or everything and returns; an otherwise accepted handler whose try has a finally that returns; an otherwise accepted handler wrapped in the same function by an outer try whose first handler able to catch an ImportError returns or wraps it, or by a with contextlib.suppress(Exception); an outer or earlier sibling handler whose type it cannot resolve (a function-local alias) that returns; an outer handler of an imported type that re-raises, followed by except Exception: return []; a finally that raises another type; an assert in the handler before its final bare raise, alone or inside an if, and an assert in the finally of its own try or of an enclosing try; a try with no handler, or with only handlers that cannot catch an ImportError (except ValueError), whose finally returns, breaks or continues out of the finally, asserts, calls sys.exit, os._exit or os.abort, or raises another type around an import (try: import x then finally: return []); suppress imported under another name (from contextlib import suppress as quiet); and a module-level alias tuple bound with an annotation (_E: tuple = (ImportError, OSError)) around work. It accepts a handler that ends in a raise when every raise in it is a bare raise, a raise of the name it bound, or a raise of ImportError or ModuleNotFoundError, and no return, yield, continue, break, assert or exit call appears in it outside nested function, lambda and class bodies, including an except ImportError: raise placed ahead of an outer except Exception"
+  - "tests/meta/test_no_import_fallbacks.py pins the 14 broad import guards in this spec's Broad guards table in KNOWN_BROAD, and fails on any other bare except:, except Exception or except BaseException, written as the scan resolves it (a name or attribute, alone, in a tuple or through a module-level alias), whose try body is only imports, or imports beside constant assignments, or calls a function named __import__ or import_module; and it fails on every try, whatever its handlers, whose finally holds a return, a break or continue that leaves the finally, an assert, an exit call (sys.exit, os._exit, os.abort, exit or quit, under the names the file's imports give them) or a raise of another type while its body holds an import or calls __import__ or import_module, of which origin/main's code has none"
+  - "tests/meta/test_no_import_fallbacks.py pins each of the 11 rows of this spec's Caller catches table by its path, its qualified function name and a callee, and locates the row's try as the one try in that function whose own body, outside nested try statements and nested function, lambda and class bodies, calls the callee (a row that matches no try or more than one fails); it asserts that on the PR head the first handler of that try able to catch an ImportError (a type that includes ImportError, a subclass of it, Exception or BaseException, a bare except, or a type that does not resolve to a builtin exception) has as its type exactly the name ImportError, alone (not ModuleNotFoundError, a tuple or an alias), and ends in a bare raise, so it precedes the row's broad handler and, at :1685, except StaleSourceDataError; the check fails on origin/main's code, which has no such handler, and its self-tests refuse except ModuleNotFoundError: raise, except (ImportError, TypeError): raise, and except ImportError: raise placed after except StaleSourceDataError"
   - "With the import made to fail (monkeypatch.setitem(sys.modules, 'gcp.database', None) unless this item names another), pytest.raises(ImportError) holds for: gcp.signal_monitor.SignalMonitor._persist_signal_alert and SignalMonitor._persist_exit in tests/gcp/test_signal_monitor_persist.py; lib.strategies.exit_config_overrides.get_disabled_directions in tests/lib/test_exit_config_overrides.py, whose autouse fixture clears the lru_cache; lib.strategies.brief_bias.get_premarket_bias, its cache cleared, in tests/gcp/test_signal_monitor_brief_bias.py; gcp.premarket_brief.load_earnings_for_brief, load_economic_events, _delete_null_close_rows, load_yesterday_amc_reactions, persist_to_cloud_sql and fetch_premarket_analysis_row, and _playability_lines both with lib.earnings_reactions blocked and with only DEFAULT_LOOKBACK_QUARTERS removed from it, in tests/gcp/test_premarket_brief.py; and lib.earnings_reactions.get_calibration_options_metrics, get_earnings_calibration (cache cleared), query_reaction_stats, query_typical_daily_return and query_conditional_reactions in tests/lib/test_lib_earnings_reactions.py"
   - "tests/api/test_admin_users_datasources.py asserts that GET /api/admin/strat-engine/state, under TestClient(..., raise_server_exceptions=False), answers 500 when google.cloud.storage cannot be imported (None in sys.modules and the storage attribute removed from google.cloud), 503 when storage.Client() raises google.auth.exceptions.DefaultCredentialsError, 500 when storage.Client() raises TypeError, and 200 with nine cells, none available, when the client works and no model.pkl exists; origin/main's code answers 200 with cells: [] to the first three"
   - "For each of the 11 rows of this spec's Caller catches table, a test makes that row's callee raise a plain ImportError (the class a missing name raises, not ModuleNotFoundError) and asserts with pytest.raises(ImportError) that it propagates out of the function holding the catch; against origin/main's code each of the 11 fails, because the catch logs and carries on. The :1685 row has a second import test: with gcp.database.get_engine removed, ImportError leaves generate_premarket_brief. For the 7 rows marked pinned here, a second test makes the callee raise RuntimeError and asserts the row's handling today (its logged line, or the ticker's status and error, and the result it carries on with); each passes on origin/main and on the PR head, and fails when that row's new handler is widened to catch every exception. Item 5 holds each row's handler to exactly except ImportError"
   - "Tests drive each of the four job runs in this spec's Entry points table end to end, hermetically, with that row's import made to fail and its stubs: gcp.premarket_brief.main(['--no-discord']) with gcp.database blocked, gcp.premarket_brief.main(['--post-existing', 'SPY', '2026-10-08']), gcp.signal_monitor.main() in loop mode for one poll and gcp.refresh_earnings_views.main(['--mode', 'daily']). On the PR head each run raises ImportError, or exits 1 having logged it, and that ImportError's traceback passes through the function in the row's Reaches column; against origin/main's code no run produces such a traceback"
-  - "Tests assert that GET /api/catalysts/events?refresh=true, GET /api/catalysts/ticker/{ticker} and POST /api/backtest/replay-trades answer 500 under TestClient(..., raise_server_exceptions=False) with the import in this spec's Entry points table made to fail, where origin/main's code answers 200"
-  - "The PR body shows test_no_unlisted_import_fallbacks run against origin/main's code and FAILED naming the 20 removed handlers, and each test of items 5 to 10 that asserts the change's new behaviour run against origin/main's code and FAILED. The pins (item 7's 200 case, item 8's seven RuntimeError tests and tests/api/test_catalysts_news_filter.py's package-path test) are shown passing on both trees, and the detector self-tests and table checks of items 2 to 4, and item 5's self-tests, pass on any tree and are exempt. The Backtest Pipeline jobs Run Tests, Research Tests (heavy ML stack) and Integration Tests (ephemeral Postgres) are green on the PR head"
+  - "Tests assert that GET /api/catalysts/events?refresh=true, GET /api/catalysts/ticker/{ticker} and POST /api/backtest/replay-trades answer 500 under TestClient(..., raise_server_exceptions=False) with the import in this spec's Entry points table made to fail, where origin/main's code answers 200; and tests/api/test_catalysts_news_filter.py's package-path test asserts that, with BENZINGA_API_KEY set, scripts.fetch_catalyst_calendar's fetch_all_catalysts and save_catalysts stubbed and the bare module name fetch_catalyst_calendar blocked, _fetch_live_events returns the stubbed events, on origin/main's code and on the PR head"
+  - "The PR body shows test_no_unlisted_import_fallbacks run against origin/main's code and FAILED naming the 20 removed handlers, and each test of items 5 to 10 that asserts the change's new behaviour run against origin/main's code and FAILED. The pins (item 7's 200 case, item 8's seven RuntimeError tests and item 10's package-path test) are shown passing on both trees, and the detector self-tests and table checks of items 2 to 4, and item 5's self-tests, pass on any tree and are exempt. The Backtest Pipeline jobs Run Tests, Research Tests (heavy ML stack) and Integration Tests (ephemeral Postgres) are green on the PR head"
   - "git diff --numstat origin/main...HEAD -- tests/ shows 0 deleted lines in every existing test file except tests/api/test_route_coverage.py, whose one deleted line is its GET /api/admin/strat-engine/state expectation of 200, now 503"
   - "The PR body links a new issue that lists: the 14 broad import guards, lib/gamma.py:722, lib/infra_errors.py:196, :200, :204, :208, :212, :216, :220 and :643, platform/api/routers/catalysts.py:360, platform/api/routers/dashboard.py:47 and :54, scripts/backfill_watchlist_data.py:85 and :189, each with the value its handler substitutes; the 25 handlers of this spec's Part 2 table; the 16 Allowlist keys with their reasons, naming platform/api/main.py:374's misattributed cause; and the two broad handlers that still swallow the database layer's own ImportError, gcp/database.py:239-241 (query_to_dataframe) and lib/strategies/brief_bias.py:93-96, with the outcomes this spec's Risks lists. Lines are at 16b3fabd, each given with its function name. It also references #1047 for the two swallowing handlers"
   - "The PR carries the inventory blocks of docs/product/infrastructure/05-a-ARCHITECTURE.md, 05-c-DATA_DEPENDENCIES.md and 05-e-API.md exactly as python -m scripts.maintenance.doc_inventory --snapshot tests/fixtures/live_gcp_snapshot_2026-09-07.json --insert, given those three paths, renders them on the PR head, and changes no other line of those documents than that render changes; the spec gate's REQ-GOV-004 check (check_product_scope, on main since stocks#1538), which re-renders the three documents from the PR's committed tree, refuses none of them, and tests/scripts/test_check_generated_docs.py passes on the PR head"
@@ -48,9 +48,9 @@ stocks#1424 at `b299246c`. This revision, r4, answers its four findings and read
    `raise RuntimeError(...) from exc`. Executed with that variant and `pandas_market_calendars` blocked,
    `gcp.premarket_brief.main(['--no-discord'])` returned normally with every ticker marked `PLAYBOOK_FAILED`: the
    new `except ImportError` at `gcp/premarket_brief.py:1652` cannot see a `RuntimeError`, so the broad handler
-   under it swallowed it. Every removed handler now lets the ImportError itself propagate. Item 5 asserts
-   `ImportError` alone, item 9 drives the brief with the calendar library blocked (r3's item 5 and item 9's
-   calendar run; r4 drops both, What main changed since r3), and the ratchet refuses a wrapper.
+   under it swallowed it. From r1 every removed handler let the ImportError itself propagate. r3's item 5
+   asserted `ImportError` alone and its item 9 drove the brief with the calendar library blocked; r4 dropped
+   both (What main changed since r3), and the ratchet still refuses a wrapper.
 3. **The allowlist keys (P2).** A listed function could drop its justified handler and add a different silent one
    with the same count. Executed: swapping `lib/options_greeks.py:186`'s `gcp.database` guard for a `scipy.stats`
    guard that returns `(0.045, 0.0)` left stocks#1386's ratchet passing, 55 of 55. Each table entry now pins its
@@ -73,9 +73,10 @@ stocks#1424 at `b299246c`. This revision, r4, answers its four findings and read
   - `test_a_model_edited_block_is_restored_from_the_fresh_render_by_name`;
   - `tests/meta/test_model_registry_consistency.py::test_symbol_anchored_line_pointers_resolve`.
 
-  REQ-GOV-004 says the PR carries the re-rendered blocks, and main's gate refuses that until stocks#1383 merges.
-  So the PR opens after stocks#1383 is on main and carries the re-render (item 14). It also re-points the model
-  documents' pointers, which sit outside `docs/product/` (item 15). Generated and model documents explains both.
+  REQ-GOV-004 says the PR carries the re-rendered blocks, and main's gate then refused that until stocks#1383
+  merged. So r1 to r3 opened the PR only after stocks#1383 was on main, carrying the re-render (item 14); r4
+  relies on stocks#1538 instead (What main changed since r3, fact A). The PR also re-points the model documents'
+  pointers, which sit outside `docs/product/` (item 15). Generated and model documents explains both.
 - **P2, the acceptance rule.** The ratchet still accepted a wrapper or `raise SystemExit` inside an `if` before
   the final raise, `sys.exit` through an alias, a rebound caught name, and an `except ImportError: raise` behind
   a broad sibling handler. Each is refused now, with a self-test per shape (item 3).
@@ -146,21 +147,22 @@ done_when together.
    handler's own `finally` replaces the error the same way. The rule now refuses an `assert` in the handler
    and in the `finally` of its own or an enclosing `try`, and item 3 names a self-test for each place.
    On `16b3fabd` no import handler holds an `assert` (Bases).
-2. **Markers for every catch the fix edits beside (P2).** The Design puts an `except ImportError: raise`
-   immediately before each Caller catches row's broad handler, and r3's AUDIT markers table left two of those
-   out: `lib/signals.py:316`, which returns `None`, as a bar with no signal does (executed on `16b3fabd`),
-   and `gcp/signal_monitor.py:1155` (`:1160` on `16b3fabd`), which returns `(None, None)`, as for no fire.
-   Both are in the table now, and item 16 also requires a marker on every broad handler a row's new handler
-   precedes, except the two playbook catches, which mark the ticker `PLAYBOOK_FAILED` with its error (AUDIT
-   markers). The third location, `scripts/generate_historical_report.py:125`, is no longer edited: on
-   `16b3fabd` no removed site reaches it (fact C below), so it leaves the Caller catches table.
+2. **Markers for every catch the fix edits beside (P2).** The Design puts an `except ImportError: raise` ahead of
+   each Caller catches row's broad handler, and r3's AUDIT markers table left two of those out:
+   `lib/signals.py:316`, which returns `None`, as a bar with no signal does (executed on `16b3fabd`), and
+   `gcp/signal_monitor.py:1155` (`:1160` on `16b3fabd`), which returns `(None, None)`, as for no fire. Both are in
+   the table now, and item 16 also requires a marker on every broad handler a row's new handler precedes, except
+   the two playbook catches, which mark the ticker `PLAYBOOK_FAILED` with its error (AUDIT markers). The third
+   location, `scripts/generate_historical_report.py:125`, is no longer edited: on `16b3fabd` no removed site
+   reaches it (fact C below), so it leaves the Caller catches table.
 3. **Each caller guard pinned to exactly `ImportError` (P2).** r3's item 8 raised `ModuleNotFoundError`,
    which `except ModuleNotFoundError: raise` also passes, while a missing name raises a plain `ImportError`
    that such a handler lets through to the broad handler beneath (executed: the row returned its fallback).
    And `except (ImportError, TypeError): raise` passed every test while sending a `TypeError` out of the
    function (executed). Item 8's first tests now raise a plain `ImportError`, and item 5, which held the
    `_trading_days_between` test that main made redundant (fact B), now checks each row's handler by its
-   shape: its type exactly the name `ImportError`, alone, ending in a bare `raise`.
+   shape: the first handler of the row's try able to catch an `ImportError` has as its type exactly the name
+   `ImportError`, alone, and ends in a bare `raise` (Design, Handler shape).
 4. **Import suppression by a bare `try`/`finally` (P2).** No guard kind covered `try: import x` with
    `finally: return []`. Executed: it returns `[]`; `finally: raise RuntimeError(...)` replaces the error, and
    `finally: break` inside a loop discards it. Kind 4 now covers every `try` whose `finally` exits, asserts or
@@ -217,10 +219,13 @@ r4 moved the lines with these scans, each run against both commits:
 - **Kind 4 and assertions.** A second scan for a `try` whose `finally` exits, asserts or raises another type
   around a body holding an import, and for an `assert` in an import handler, finds none on `16b3fabd`; on
   r4's probe snippets it finds each shape.
-- **Callers.** A name-based caller trace over the same directories, from each removed function upward,
-  listing the `except Exception`, `except BaseException` and bare handlers each call sits under. It
-  over-approximates (any function of the same name counts). Compared with the same trace on `17bbacd3`, it
-  loses only the `get_blue_sky_atr_offset` chain (fact C) and a same-name match in `dashboard.py`.
+- **Callers.** A name-based caller trace over the same directories, seeded with the 18 removed functions and,
+  separately, with `_trading_days_between` and `persist_level_map` (r3's route to its playbook rows), listing
+  the `except Exception`, `except BaseException` and bare handlers each call sits under. It over-approximates
+  (any function of the same name counts). Compared with the same trace on `17bbacd3`, it loses only the
+  `get_blue_sky_atr_offset` chain (fact C) and a same-name match in `dashboard.py`. From the 18 removed
+  functions it reaches nine of the 11 Caller catches rows on `16b3fabd`, not `:1685` or `:1713` (Caller
+  catches).
 
 ## Problem
 
@@ -279,7 +284,8 @@ The 45 handlers are split across two specs, by the entry points they reach:
 - **This spec (part 1)** covers the decision paths. It:
   - removes 20 handlers on the signal-monitor, kill-switch, brief-bias, premarket-brief, earnings-reaction,
     admin and catalysts paths;
-  - fixes the 11 caller catches above them;
+  - fixes the 9 caller catches above them, and the 2 playbook catches whose own try imports internal modules
+    under a broad handler (Caller catches);
   - lands the ratchet.
 - **Part 2** covers the ingestion and analytics jobs and removes the other 25 handlers. It is a draft, not yet on
   any branch; its repository path will be
@@ -309,7 +315,8 @@ Seven of this spec's handlers change an alert, a recommendation or a risk contro
   The ratchet pins them so no new one lands, and the PR files an issue listing them.
 - **The other broad handlers.** Their try body does work besides a static import, a dynamic import call
   (`__import__`, `import_module`) or a constant assignment. That is the general §3.7 data-access shape, not an
-  import guard. Those this change edits beside get an `AUDIT-2026-05-13` marker (AUDIT markers table).
+  import guard. Those this change edits beside get an `AUDIT-2026-05-13` marker (AUDIT markers table). The one
+  exception is the brief's two playbook catches, whose own try imports internal modules (Caller catches).
   - Two near the admin change keep their handling, both lines of stocks#1316 and stocks#1335: the per-cell
     reads in `_strat_engine_state_cells` (`platform/api/routers/admin.py:516-522`, `:567-568`), where any storage
     error marks a cell unavailable and which get markers, and `_load_structure_brief_snapshot` (`:262-283`),
@@ -389,7 +396,10 @@ noted:
   `from scripts.fetch_catalyst_calendar import ...`.
   - That import resolves because `catalysts.py:34` puts the repository root on `sys.path`, and the API image
     copies `scripts/` to `/app/scripts`.
-  - The function drops the second-chance `sys.path` import at `:148-149` with both handlers.
+  - The function drops the second-chance `sys.path` import at `:148-149` with both handlers. Item 10's
+    package-path test pins the first import. Executed on `16b3fabd` with the bare name `fetch_catalyst_calendar`
+    blocked and the two functions stubbed: `_fetch_live_events` returned the stubbed events, with `scripts/`
+    itself not on `sys.path`.
 - `platform/api/routers/admin.py`: see the next section.
 
 A wrapper is not allowed at any of these sites: a caller's new `except ImportError` handler cannot see a
@@ -455,16 +465,28 @@ name-based caller trace on `16b3fabd` and on `17bbacd3` (Bases): the only catche
 `scripts/generate_historical_report.py:125`, since stocks#1746 removed the one call that led there (What main
 changed since r3, fact C), and it reaches no catch on `16b3fabd` that it did not reach on `17bbacd3`.
 
-The 11 catches below catch `Exception` and carry on, so each would swallow the error this spec stops
-substituting.
+That trace, seeded with the 18 removed functions, reaches nine of the 11 rows below. It does not reach `:1685` or
+`:1713`, and on `17bbacd3` it reached `:1652` and `:1680` only through `_trading_days_between`, a site that is
+no longer removed (fact B); seeded also with `_trading_days_between` and `persist_level_map`, it reaches both.
+The two playbook rows stay for their own try: try@1636 imports `get_engine` from `gcp.database` and
+`persist_level_map` and `StaleSourceDataError` from `lib.strat_levels`, and calls `get_engine()`, which raises
+`ImportError` when the Cloud SQL connector is missing (executed on `16b3fabd` with
+`google.cloud.sql.connector` blocked and Cloud SQL variables set), all under a broad handler. They are the one
+exception to the Non-goals bullet on broad handlers around work: their import errors are this spec's class,
+and r3 already pinned their order and handling.
 
-- **The default fix.** Each gets `except ImportError: raise` immediately ahead of its broad handler: the type
-  exactly the name `ImportError`, alone, which also catches its subclass `ModuleNotFoundError` and the plain
-  `ImportError` a missing name raises. `except ModuleNotFoundError` would let that plain one through to the
-  broad handler, and a tuple such as `(ImportError, TypeError)` would change the handling of a non-import
-  failure (executed as snippets, Codex's review of stocks#1424, finding 3), so item 5 checks each row's handler
-  by its shape. A database or vendor failure at the same catch keeps today's handling. Item 8's second tests pin
-  that at the seven rows marked pinned.
+The 11 catches below catch `Exception` and carry on, so each would swallow an import error: nine the error this
+spec stops substituting, and the two playbook catches their own try's.
+
+- **The default fix.** Each gets `except ImportError: raise` as the first handler of its try able to catch an
+  `ImportError`, so ahead of its broad handler (immediately ahead of it at every row but `:1685`, where it also
+  comes before `except StaleSourceDataError`): the type exactly the name `ImportError`, alone, which also catches
+  its subclass `ModuleNotFoundError` and the plain `ImportError` a missing name raises.
+  `except ModuleNotFoundError` would let that plain one through to the broad handler, and a tuple such as
+  `(ImportError, TypeError)` would change the handling of a non-import failure (executed as snippets, Codex's
+  review of stocks#1424, finding 3), so item 5 checks each row's handler by its shape. A database or vendor
+  failure at the same catch keeps today's handling. Item 8's second tests pin that at the seven rows marked
+  pinned.
 - **Two exceptions.** At `gcp/premarket_brief.py:1685` and `:1713`, the new handler sets
   `d['status'] = 'PLAYBOOK_FAILED'` and `d['playbook_error']` and then ends in a bare `raise`. The existing
   structural test
@@ -485,7 +507,7 @@ substituting.
   - With `pandas_market_calendars` missing, `_trading_days_between` would raise inside `persist_level_map`, but
     on `16b3fabd` the brief raises first, uncaught, in `compute_strat_status` (executed; What main changed since
     r3, fact C). So `:1685` meets an import error from its own imports of `gcp.database` and
-    `lib.strat_levels`, or from `persist_level_map`.
+    `lib.strat_levels`, or from `get_engine()`.
 - **Every one of these handlers ends in a bare `raise`**, which the ratchet accepts (executed on `17bbacd3`).
 
 | Catch | In | Callee that now raises | What the catch does today | Non-import pin |
@@ -494,8 +516,8 @@ substituting.
 | `gcp/premarket_brief.py:636` | `load_earnings_for_brief` | `get_earnings_calibration` (`:101`) | WARNING; `min_nq = 12` | pinned (item 8) |
 | `gcp/premarket_brief.py:883` | `load_yesterday_amc_reactions` | `conditional_lean_summary`, reaching `query_conditional_reactions` (`:682`) | WARNING; the lean is omitted | pinned (item 8) |
 | `gcp/premarket_brief.py:1383` | `generate_premarket_brief` | `load_yesterday_amc_reactions` (`:810`) | WARNING; the AMC section is omitted | pinned (item 8) |
-| `gcp/premarket_brief.py:1685` | `generate_premarket_brief` | the try's own imports of `gcp.database` and `lib.strat_levels`, and `persist_level_map` | ticker marked `PLAYBOOK_FAILED`; the run continues | pinned (item 8) |
-| `gcp/premarket_brief.py:1713` | `generate_premarket_brief` | the playbook block holding `:1685`, once that re-raises | ticker marked `PLAYBOOK_FAILED`; the run continues | pinned (item 8) |
+| `gcp/premarket_brief.py:1685` | `generate_premarket_brief` | the try's own imports of `gcp.database` and `lib.strat_levels`, and `get_engine()` (no removed site) | ticker marked `PLAYBOOK_FAILED`; the run continues | pinned (item 8) |
+| `gcp/premarket_brief.py:1713` | `generate_premarket_brief` | the playbook block holding `:1685`, once that re-raises (no removed site) | ticker marked `PLAYBOOK_FAILED`; the run continues | pinned (item 8) |
 | `gcp/premarket_brief.py:2503` | `_build_earnings_embed` | `get_calibration_options_metrics` (`:425`) | `logger.exception`; `_BRIEF_CAL_OPTS = {}`, so the Q5 override is off | existing test |
 | `lib/signals.py:316` | `evaluate_signal` | `_latest_overrides` (`exit_config_overrides.py:108`), `get_disabled_directions` | logged; `None`, no signal this bar (fail closed); the poll continues | existing test |
 | `gcp/signal_monitor.py:1160` | `SignalMonitor._evaluate_strategies_for_bar` | `get_disabled_directions`, reaching `_latest_overrides` | counted and logged; `(None, None)` | existing tests |
@@ -530,8 +552,8 @@ These callers were traced and stay unchanged. Each was read on `17bbacd3` and ag
 
 CLAUDE.md §3.7 asks for an `AUDIT-2026-05-13` marker on a silent fallback beside a touched line. The table marks:
 
-- every broad handler that a Caller catches row's new `except ImportError: raise` is placed immediately before,
-  when what it carries on with is a value its caller cannot tell from a real result: nine of the eleven. The two
+- every broad handler that a Caller catches row's new `except ImportError: raise` is placed ahead of, when what
+  it carries on with is a value its caller cannot tell from a real result: nine of the eleven. The two
   playbook catches, `gcp/premarket_brief.py:1685` and `:1713`, get none. Each sets `status = 'PLAYBOOK_FAILED'`
   and `playbook_error` on the ticker, and `persist_to_cloud_sql` writes such a row to the history table only,
   a state a reader can tell from a real playbook (`test_playbook_failed_writes_to_history_only` and its two
@@ -686,7 +708,7 @@ implementation to them, and the inventory scan above gives the counts on `16b3fa
   - fails the class test listing the 21 handlers in r3's Sites removed table and no other, with no pin
     mismatch;
   - finds 67 kind-1 guards unaccepted (21 + 21 + 25) and 14 of kind 2.
-- **On a scratch tree holding this spec's changes,** it passes 94 of 94. It accepts the 14 new caller-catch
+- **On a scratch tree holding r3's changes,** it passes 94 of 94. It accepts the 14 new caller-catch
   handlers and finds 46 kind-1 guards (21 + 25) and 14 of kind 2.
 - **The second pre-review's four gaps:** its five probes were accepted by the r3b rule; each now has a self-test,
   and the five failed against the r3b rule (`5 failed, 88 passed`) before the detector changed. On `17bbacd3` the
@@ -705,12 +727,25 @@ implementation to them, and the inventory scan above gives the counts on `16b3fa
 ### The behaviour tests
 
 - **Handler shape (done_when item 5).** The ratchet's test file keeps the 11 Caller catches rows as data, each
-  found by its path, its qualified function name and a callee its try body calls (`enrich_with_playability`,
+  found by its path, its qualified function name and a callee (`enrich_with_playability`,
   `get_earnings_calibration`, `conditional_lean_summary`, `load_yesterday_amc_reactions`, `persist_level_map`,
   `build_level_map`, `get_calibration_options_metrics`, `get_disabled_directions` twice, `get_premarket_bias`,
-  `_resolve_brief_bias`), not by line. For each it reads the handler just before the row's broad handler and
-  requires the type to be the bare name `ImportError` and the body to end in a bare `raise`. A row it cannot
-  find fails the check rather than passing.
+  `_resolve_brief_bias`), not by line. The row's try is the one try in the function whose own body, outside
+  nested try statements and nested function, lambda and class bodies, calls the callee; a row that matches no
+  try or more than one fails. That keeps `:1685` apart from `:1713`: both tries reach `persist_level_map`, but
+  only try@1636 calls it in its own body (try@1425 holds it inside try@1636). For each row the check reads the
+  first handler of the try able to catch an `ImportError` (a type that includes `ImportError`, a subclass of it,
+  `Exception` or `BaseException`, a bare `except`, or a type that does not resolve to a builtin exception, such
+  as the imported `StaleSourceDataError`) and requires its type to be the bare name `ImportError` and its body to
+  end in a bare `raise`.
+  - Executed on 2026-11-09 with a model of this check (scratchpad, not the plan's test): on `16b3fabd` each of
+    the 11 rows matches exactly one try (`:1685` try@1636, `:1713` try@1425) and fails, its first catching
+    handler being the broad one, or `StaleSourceDataError@1676` at `:1685`. On copies of the three files with the
+    Design's handlers inserted, all 11 pass, `:1685` with handlers `ImportError`, `StaleSourceDataError`,
+    `Exception`. With the `:1685` handlers swapped it fails (first catching handler `StaleSourceDataError`), and
+    on a one-row snippet it fails `except ModuleNotFoundError: raise`, `except (ImportError, TypeError): raise`
+    and `except builtins.ImportError: raise`. On the reviewer's model of the `:1685` try, the Design order passes
+    and raises `ModuleNotFoundError`, and the swapped order fails and returns normally.
 - **Helpers (done_when item 6).** Each test blocks the import and asserts `pytest.raises(ImportError)` in
   the test file of the module's own area.
   - `monkeypatch.setitem(sys.modules, 'gcp.database', None)` reaches every `from gcp.database import X`, even
@@ -1121,7 +1156,8 @@ Pinned in `KNOWN_BROAD`, not fixed here; the issue in done_when item 13 lists th
   `OverridesUnavailable` (the kill switch fails closed; the exit-target getters use Tier B with a WARNING).
   - So this change makes a missing `gcp.database`, `google.cloud.storage` or fetcher module fail loud (no
     import guard of `pandas_market_calendars` is left on `16b3fabd` after stocks#1546, Bases), but not a missing
-    Cloud SQL connector below `gcp.database`.
+    Cloud SQL connector below `gcp.database`, except where a fixed catch's own try calls `get_engine()`: the
+    brief's playbook persist at `:1685` (Caller catches).
   - The two handlers are pre-existing §3.7 data-access swallows around work, outside this spec (Non-goals).
     stocks#1047 tracks `query_to_dataframe` (its C-01 row). Item 13's issue lists both with these outcomes, and
     every image that runs these jobs installs the connector (`requirements-gcp.txt:50`, `platform/Dockerfile:29`).
@@ -1146,12 +1182,14 @@ Pinned in `KNOWN_BROAD`, not fixed here; the issue in done_when item 13 lists th
   line under `tests/`.
 - **No gate file changes.** The ratchet reads `scripts/gate/spec_gate.py` (its `valid_yaml` handler is
   allowlisted) but changes no gate file, so the gate red-team pass does not apply.
-- **Overlap with FEAT-DEPLOY-001.** The sibling FEAT-DEPLOY-001 work (stocks#1384, an open draft on
-  2026-11-09) edits the lines that are `platform/api/main.py:508` and `:557` on `16b3fabd`, and
-  `tests/api/test_dev_page_auth.py`, near the allowlisted `main.py:374`. No line overlaps, and its source edits
-  replace lines one for one (`main.py` 1 for 1, `routers/earnings.py` 3 for 3, read from its file list), so they
-  move no line the inventory blocks cite. Whichever merges second runs its CI, `test_check_generated_docs.py`
-  included, on a main that holds the first.
+- **Overlap with FEAT-DEPLOY-001.** The sibling FEAT-DEPLOY-001 work (stocks#1384, an open draft; its branch at
+  `2215223a`, merge base `16b3fabd`, fetched on 2026-11-09) edits `platform/api/main.py:557` and
+  `tests/api/test_dev_page_auth.py`, near the allowlisted `main.py:374`. No line overlaps. Its `main.py` and
+  `platform/api/routers/earnings.py` edits replace lines one for one (1 for 1 at `:557`, 3 for 3 at `:329-331`,
+  `git diff -U0`), so they move no line the inventory blocks cite. Its other source edits,
+  `scripts/maintenance/refresh_architecture_drawio.py` (+83/-34) and `scripts/maintenance/render_doc_prompts.py`
+  (+4/-3), are in files no line of 05-a, 05-c or 05-e cites (grep), and it changes no render input. Whichever
+  merges second runs its CI, `test_check_generated_docs.py` included, on a main that holds the first.
 - **Part 2 depends on part 1.** Part 2 is a draft and cannot start before this spec's PR merges, because its plan
   deletes `PART2`. Until then its 25 handlers keep substituting, as they do today, and the item 13 issue tracks
   them.
