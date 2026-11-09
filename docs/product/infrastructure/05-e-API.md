@@ -79,15 +79,15 @@ Every router mounts at the root (`prefix=""`) and carries its own `/api/...` pat
 | `GET` | `/api/config/indicators` | [`platform/api/routers/config.py:77`](../../../platform/api/routers/config.py#L77) | Return indicator periods, signal thresholds, and zone labels. |
 | `GET` | `/api/config/market-hours` | [`platform/api/routers/config.py:145`](../../../platform/api/routers/config.py#L145) | Return US equity market session windows, holidays and early closes. |
 | `GET` | `/api/dashboard/brief/{ticker}` | [`platform/api/routers/dashboard.py:79`](../../../platform/api/routers/dashboard.py#L79) | Return daily bias / strat status for the dashboard. |
-| `GET` | `/api/earnings/calibration` | [`platform/api/routers/earnings.py:304`](../../../platform/api/routers/earnings.py#L304) | The live calibration row (PR-A + PR-B headline finding). |
-| `GET` | `/api/earnings/event/{ticker}/{event_date}` | [`platform/api/routers/earnings.py:172`](../../../platform/api/routers/earnings.py#L172) | Single-event drill-down. |
-| `GET` | `/api/earnings/health/ping` | [`platform/api/routers/earnings.py:324`](../../../platform/api/routers/earnings.py#L324) | Lightweight warm-up probe. NOT called by a scheduler. |
-| `GET` | `/api/earnings/history/{ticker}` | [`platform/api/routers/earnings.py:138`](../../../platform/api/routers/earnings.py#L138) | Last N quarters for one ticker — full event timeline. |
-| `GET` | `/api/earnings/insights/grid` | [`platform/api/routers/earnings.py:255`](../../../platform/api/routers/earnings.py#L255) | The 144-row Q × bucket × structure insights table (PR-B). |
-| `GET` | `/api/earnings/insights/winners` | [`platform/api/routers/earnings.py:278`](../../../platform/api/routers/earnings.py#L278) | Top-N named winners per (structure × quintile). |
-| `GET` | `/api/earnings/lean` | [`platform/api/routers/earnings.py:197`](../../../platform/api/routers/earnings.py#L197) | Per-ticker lean leaderboard. |
-| `GET` | `/api/earnings/ticker/{ticker}/lean` | [`platform/api/routers/earnings.py:233`](../../../platform/api/routers/earnings.py#L233) | Lean stats for one ticker. |
-| `GET` | `/api/earnings/upcoming` | [`platform/api/routers/earnings.py:108`](../../../platform/api/routers/earnings.py#L108) | Next N days of earnings reporters, decorated with full history. |
+| `GET` | `/api/earnings/calibration` | [`platform/api/routers/earnings.py:322`](../../../platform/api/routers/earnings.py#L322) | The live calibration row (PR-A + PR-B headline finding). |
+| `GET` | `/api/earnings/event/{ticker}/{event_date}` | [`platform/api/routers/earnings.py:190`](../../../platform/api/routers/earnings.py#L190) | Single-event drill-down. |
+| `GET` | `/api/earnings/health/ping` | [`platform/api/routers/earnings.py:342`](../../../platform/api/routers/earnings.py#L342) | Lightweight warm-up probe. NOT called by a scheduler. |
+| `GET` | `/api/earnings/history/{ticker}` | [`platform/api/routers/earnings.py:156`](../../../platform/api/routers/earnings.py#L156) | Last N quarters for one ticker — full event timeline. |
+| `GET` | `/api/earnings/insights/grid` | [`platform/api/routers/earnings.py:273`](../../../platform/api/routers/earnings.py#L273) | The 144-row Q × bucket × structure insights table (PR-B). |
+| `GET` | `/api/earnings/insights/winners` | [`platform/api/routers/earnings.py:296`](../../../platform/api/routers/earnings.py#L296) | Top-N named winners per (structure × quintile). |
+| `GET` | `/api/earnings/lean` | [`platform/api/routers/earnings.py:215`](../../../platform/api/routers/earnings.py#L215) | Per-ticker lean leaderboard. |
+| `GET` | `/api/earnings/ticker/{ticker}/lean` | [`platform/api/routers/earnings.py:251`](../../../platform/api/routers/earnings.py#L251) | Lean stats for one ticker. |
+| `GET` | `/api/earnings/upcoming` | [`platform/api/routers/earnings.py:111`](../../../platform/api/routers/earnings.py#L111) | Next N days of earnings reporters, decorated with full history. |
 | `GET` | `/api/glossary/gamma` | [`platform/api/routers/glossary.py:30`](../../../platform/api/routers/glossary.py#L30) | Return the UI-safe gamma term dictionary. |
 | `GET` | `/api/health` | [`platform/api/main.py:298`](../../../platform/api/main.py#L298) | Liveness probe: reports the service version and its configured backends. |
 | `GET` | `/api/health/freshness` | [`platform/api/routers/health.py:158`](../../../platform/api/routers/health.py#L158) | Return the cached freshness report (see freshness_report_dict). |

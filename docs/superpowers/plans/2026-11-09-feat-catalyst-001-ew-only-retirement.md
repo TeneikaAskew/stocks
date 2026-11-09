@@ -61,3 +61,7 @@ Spec: Source identity and Done when; done_when[9,12].
 ## Separate post-merge close-out
 
 Not pre-merge acceptance: independently verify actual main in fresh clone after squash; owner-authorized staging/source/data checks and lawful sidecar retirement; plan status done on docs branch after merge. No CODE retirement or fabricated staging proof. The user separately authorized full EW removal and deployment; actual merge and release still require normal current-head review/CI and validated EW-specific steps. No production action has been performed yet.
+
+## First review repair
+
+CODE round1 on a2b68ecc raised one P2: an empty retirement refresh could resurrect prior EW-only snapshots through MAX(refresh_date). This is required for the user's full-removal outcome without changing reviewer severity. The owned earnings API now checks retained-source admission for the exact ticker/date and projects the five retired fields as null in its response, preserving the atomic writer and stored historical rows. Three real PostgreSQL/actual-route controls failed before the fix and passed afterward; existing route and daily-path controls also pass. The second ordinary review remains the last; no new round is requested until the complete repair and source proof are ready.

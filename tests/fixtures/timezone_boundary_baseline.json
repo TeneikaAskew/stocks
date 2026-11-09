@@ -643,7 +643,7 @@
  },
  "platform/api/routers/earnings.py": {
   "sql-utc-date": [
-   "upcoming::str#34ef893a84c8"
+   "upcoming::fstr#9dbb3d5e81df"
   ]
  },
  "platform/api/routers/grid.py": {
