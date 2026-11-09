@@ -19,7 +19,7 @@ done_when:
   - "tests/scripts/test_check_generated_docs.py asserts that the committed documents give findings naming an inventory block and an as-of label when checked against a copy of the committed snapshot with read_at moved one day and one Cloud Run service removed"
   - "The TRIVIAL classes in .claude/skills/product-delivery/SKILL.md include a generated-document regeneration on a docs/ branch, list what it may change, and say that one run by hand keeps the docs_verified badge and Generated line of README.md at their dates; the branch naming list in CLAUDE.md names docs/arch-refresh-<YYYY-MM> as that pull request"
   - "The PR body shows the commands and pytest summary line of test_check_generated_docs.py and test_render_doc_prompts.py passing on a scratch copy of the head whose snapshot lost the job signal-monitor and one scheduler, secret and service, with 05-a, 05-c, 05-e and README re-rendered from it, and test_missing_job_name_is_a_finding failing on that copy with the signal-monitor literal of line 56 put back"
-  - "The gate files this PR changes are scripts/gate/spec_gate.py, where RENDER_SNAPSHOT names the path doc_inventory.COMMITTED_SNAPSHOT names and RENDER_INPUTS and RENDERER_FILES carry it beside the 2026-09-07 fixture, which stays in both, and tests/scripts/test_spec_gate.py, whose parity and process-file tests and render fixture tree follow it; nothing under scripts/gate/pinned/, and none of .githooks/pre-commit, .github/workflows/spec-gate.yml, .github/workflows/registry-check.yml or tests/scripts/test_export_model_registry.py, changes; spec-gate / base-suite and registry-check pass on the PR head; and the PR body records, for each push, the red-team pass on that head that CLAUDE.md requires before a gate file is pushed"
+  - "The gate files this PR changes are scripts/gate/spec_gate.py, where RENDER_SNAPSHOT names the path doc_inventory.COMMITTED_SNAPSHOT names and RENDER_INPUTS and RENDERER_FILES carry it beside the 2026-09-07 fixture, which stays in both, and tests/scripts/test_spec_gate.py, whose parity and process-file tests and render fixture tree follow it; nothing under scripts/gate/pinned/, and none of .githooks/pre-commit, .github/workflows/spec-gate.yml, .github/workflows/registry-check.yml or tests/scripts/test_export_model_registry.py, changes; spec-gate / base-suite and registry-check pass on the PR head, the complete registry-check / registry job in at most 335 seconds of its 360-second limit with every hosted attempt on the head recorded and the base-suite job within 600 seconds; and the PR body records, for each push, the red-team pass on that head that CLAUDE.md requires before a gate file is pushed, with four reviewers (shell; YAML/Actions; the exporter and policy documents; diff and byte parsing with the render check), each finding proven by running the gate on a concrete snippet, the last pass empty and every earlier finding listed with the test that now refuses it"
   - "python3 scripts/gate/spec_gate.py --pr origin/main passes on the PR head with PR_TITLE and PR_BODY set to the PR's title and body, and python3 scripts/maintenance/docs_audit.py on the PR head reports no finding that the same run on origin/main, made the same day, does not also report, comparing each finding's check, document and detail with line numbers and commit counts left out"
   - "The FEAT-CICD-001 record in 02-FEATURE-CATALOG shows a current Status and Last reviewed, and 12-PR-ISSUE-TRACEABILITY lists this PR under FEAT-CICD-001"
   - "tests/meta/test_refresh_open_pr_step.py records .git/config, .git/hooks and .git/info with the workflow's own git_state function, as the Freeze step does, and asserts that an insteadOf for https://github.com/<repository>.git written after that record sends nothing to the host it names, that a core.fsmonitor or a pre-commit and pre-push hook written after it is refused before any of them runs, each with a non-zero exit and nothing pushed, and that with the same fsmonitor and hooks present when the record was made the step runs neither and still pushes; each of these cases fails on the r3 prototype's push"
@@ -84,7 +84,7 @@ Main moved since r3 read it at `d0231901`, and five of the moves change this spe
 | spec-gate's base-suite job runs main's gate suite against the PR's gate; against a gate with the snapshot moved, 12 of its tests failed | A gate-suite step, P, with its own spec, lands before this PR (Design, "The sequence") |
 | 03 carries a committed source-identity record (`docs/review-evidence/site-source-snapshot.json`), and the docs audit reads it in place of 03's `changed-since` entries | done_when 16 and 20 (above) |
 | The 2026-11-01 run failed at its verify step and opened no PR; #1701 and #1728 cleared that drift | Problem |
-| L's approved spec declares no 03 note, and 03's identity check fails on L's head | L merges only after a superseding FEAT-DEPLOY-001 spec, and it now comes before B, not A (Design, "The sequence") |
+| L's approved spec declares no 03 note, and 03's identity check fails on L's head | L merges only after its superseding FEAT-DEPLOY-001 spec (stocks#1764), and it now comes before B, not A (Design, "The sequence") |
 
 Line numbers are stocks main at `16b3fabd` (read 2026-11-09) unless a line says otherwise; every cited line was
 re-read there. Of the files cited by line, these changed since `d0231901`, and their citations moved:
@@ -100,10 +100,11 @@ unchanged since `d0231901`; `tests/scripts/test_spec_gate.py`, which r3 did not 
 a draft at head `2215223a` (read 2026-11-09), which delivers the approved
 `2026-10-11-feat-deploy-001-retired-service-leftovers.md`. That spec declares no `site_source_notes`, and on L's head
 `doc_source_snapshot.py verify` reports `unverified` ("historical record does not equal complete current MAIN
-source/body"), so L cannot pass its own docs-audit item as approved. Its owner is opening a spec-only PR that
-supersedes it, `docs/superpowers/specs/2026-11-09-feat-deploy-001-retired-service-source-note.md` on branch
-`docs/spec-feat-deploy-001-retired-service-source-note` (not yet on origin when read on 2026-11-09), which declares
-`site_source_notes: [SHARED-01]`; L merges only after it.
+source/body"), so L cannot pass its own docs-audit item as approved. The spec-only PR stocks#1764 (branch
+`docs/spec-feat-deploy-001-retired-service-source-note`, head `bdf833ec`, open) supersedes it with
+`docs/superpowers/specs/2026-11-09-feat-deploy-001-retired-service-source-note.md`, which declares
+`site_source_notes: [SHARED-01]`; L merges only after it, and will merge main and add its 03 row first, so its head and
+fixture may move again.
 
 ## Problem
 
@@ -632,6 +633,17 @@ So this PR moves the gate with the docs test, as done_when 15 states:
   PR follows a red-team pass on its head (CLAUDE.md "Before any change"; SKILL.md Phase 4, line 66), and the PR body
   records it. Neither is pinned: `PINNED` (`spec_gate.py:1225-1229`) names the two gate workflows and the hook, which
   this PR leaves alone, so no pinned-copy sequence applies.
+- **Four red-team seats and the whole-job envelope, as main's render-check changes have them.** This PR changes a
+  render input and `test_spec_gate.py`, which registry-check runs, so done_when 15 takes the two obligations main's
+  specs for such changes carry, beyond CLAUDE.md's three-seat minimum:
+  - a fourth seat, diff and byte parsing with the render check, beside shell, YAML/Actions and the exporter and policy
+    documents: `docs/superpowers/specs/2026-11-04-feat-cicd-001-inventory-whole-job.md` done_when 7 and
+    `docs/superpowers/specs/2026-10-31-feat-cicd-001-retry-split-substitution.md` done_when 5 (read at `16b3fabd`);
+  - the whole-job envelope: the complete registry-check / registry job in at most 335 seconds of the 360 seconds its
+    `timeout-minutes: 6` allows (`registry-check.yml:25`), every hosted attempt on the head recorded, and base-suite
+    within 600 seconds (its `timeout-minutes: 10`, `spec-gate.yml:84`): the 2026-11-04 spec's done_when 13, which the
+    retry-split spec's done_when 4 keeps in force. The 285-second pytest target those specs record as unmet is not
+    carried here.
 - **spec-gate's base-suite job runs main's suite against this PR's gate** (`spec-gate.yml:81-101`: a checkout of the
   base, the PR's `spec_gate.py` copied in). Run on 2026-11-09 that way, main's `test_spec_gate.py` against a gate with
   only this change: `12 failed, 169 passed` in 352.80 s, the parity test (its `RENDER_INPUTS` tuple) and 11 render
@@ -756,7 +768,7 @@ that a condition of done, with no exception, and done_when 16 keeps none.
 | W, `docs/refresh-schedule-wording` | on | `bot/` | as today | absent | yes, as today |
 | P, the gate-suite step (FEAT-CICD-001, own spec) | on | `bot/` | as today | absent | yes, as today |
 | A, this PR | off; a dispatch must be dry | `docs/` | docs and gate: COMMITTED_SNAPSHOT; diagrams: the diagram test's own fixture (the leftovers fixture once L lands) | 2026-09-07 bytes | no: nothing schedules a run, and a delivering dispatch is refused |
-| L, the leftovers PR (stocks#1384), after its superseding spec; it may also land before A | off; a dispatch must be dry | `docs/` | docs and gate: COMMITTED_SNAPSHOT; diagrams: leftovers fixture | 2026-09-07 bytes | no |
+| L, the leftovers PR (stocks#1384), after stocks#1764; it may also land before A | off; a dispatch must be dry | `docs/` | docs and gate: COMMITTED_SNAPSHOT; diagrams: leftovers fixture | 2026-09-07 bytes | no |
 | B, the convergence (`docs/<slug>`, TRIVIAL regeneration) | off; a dispatch must be dry | `docs/` | docs and gate: COMMITTED_SNAPSHOT; diagrams: leftovers fixture | leftovers bytes | no |
 | C, the diagram migration (FEAT-CICD-001) | on | `docs/` | all: COMMITTED_SNAPSHOT | as after B | no: a refresh re-renders every judged file from one read, which C's scratch re-render proves, and a second run's push starts Run Tests |
 | close-out (`docs/<slug>`) | on | `docs/` | as after C | as after C | no |
@@ -766,10 +778,10 @@ that a condition of done, with no exception, and done_when 16 keeps none.
   not accept a gate naming the committed snapshot. W, a TRIVIAL wording change, touches no block, test or snapshot, so
   it conflicts with neither P nor L; W and P may land in either order. This PR's branch opens only after P's spec is
   approved and P has merged.
-- **L before B, not before A.** B copies L's fixture, so B needs L; A does not. L merges only after the spec-only PR
-  that supersedes its approved spec and declares `site_source_notes: [SHARED-01]`
-  (`docs/superpowers/specs/2026-11-09-feat-deploy-001-retired-service-source-note.md`, branch
-  `docs/spec-feat-deploy-001-retired-service-source-note`): as approved, L's head fails 03's identity check. L may land
+- **L before B, not before A.** B copies L's fixture, so B needs L; A does not. L merges only after stocks#1764, the
+  spec-only PR that supersedes its approved spec and declares `site_source_notes: [SHARED-01]`
+  (`docs/superpowers/specs/2026-11-09-feat-deploy-001-retired-service-source-note.md`): as approved, L's head fails
+  03's identity check. L may land
   before or after A; the table shows it after.
 - **B is the class this PR adds, done by hand.**
   - It copies the leftovers fixture over COMMITTED_SNAPSHOT and runs the workflow's `--insert` lines for 05-a, 05-c and
@@ -833,7 +845,7 @@ the diagram migration restores the schedule; while it is paused there are no sch
 - **A cannot open until P's spec is approved and P has merged.** P's spec does not exist yet. If P is not approved,
   this PR stays unopened, and the 1st-of-month schedule keeps running on main as today (Problem).
 - **L cannot merge as approved.** Its spec declares no 03 note and its head fails 03's identity check (measured on
-  `2215223a`), so L waits for its superseding spec. Until L lands, B cannot run, so C cannot restore the schedule;
+  `2215223a`), so L waits for its superseding spec, stocks#1764. Until L lands, B cannot run, so C cannot restore the schedule;
   A's refusal of delivering runs holds for that whole time.
 - **The credential check misses a shape or flags a harmless value.** A miss is a credential that is neither a known
   token shape, a signed-query key, nor given to a secret-named parameter. A literal of the exact form
