@@ -743,7 +743,7 @@ Live registry continuation: [#1599](https://github.com/TeneikaAskew/stocks/pull/
 
 ### FEAT-CATALYST-001 — Earnings / catalysts (19 open)
 
-EW-only retirement implementation: [#1758](https://github.com/TeneikaAskew/stocks/pull/1758), fresh plan bound after approved own-scope spec [#1703](https://github.com/TeneikaAskew/stocks/pull/1703). Local source/tests and bounded identity are verified; current-head external review/CI and separately authorized release remain pending. Original consolidated51 obligations are unchanged and unclaimed; #1681 remains untouched.
+- EW-only retirement implementation: [#1758](https://github.com/TeneikaAskew/stocks/pull/1758), fresh plan bound after approved own-scope spec [#1703](https://github.com/TeneikaAskew/stocks/pull/1703). Local source/tests and bounded identity are verified; current-head external review/CI and separately authorized release remain pending. Original consolidated51 obligations are unchanged and unclaimed; #1681 remains untouched.
 
 | Issue | Sev | Title |
 |---|---|---|
