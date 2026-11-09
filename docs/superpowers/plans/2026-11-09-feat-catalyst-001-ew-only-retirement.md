@@ -2,7 +2,7 @@
 feat_id: FEAT-CATALYST-001
 spec: docs/superpowers/specs/2026-11-03-feat-catalyst-001-retire-ew-source-own-scope.md
 branch: fix/feat-catalyst-001-ew-only-retirement
-pr: null
+pr: 1758
 status: ready
 ---
 
@@ -27,24 +27,24 @@ NULL/unknown and near-alias sources stay visible; stale EW hydration cannot cont
 Spec: Design; done_when[0–1].
 - [x] Reconcile existing CLI/removal and exact shared predicate against actual main.
 - [x] Run CLI, finite-number and eight-alias controls; preserve normalize_earnings_time.
-- [ ] Verify focused tests on successor committed head.
+- [x] Verify focused tests on successor committed head:312 passed, plus25 local PostgreSQL passed/1 private capture skip.
 
 ## Task 2: six readers and nullable outputs
 Spec: Design; done_when[2–5].
 - [x] Carry per-site discriminating fixtures and non-EW equality controls; preserve historical rows.
 - [x] Verify five NULL fields, actual source labels and routed responses, including local PostgreSQL.
 - [x] Preserve #1608 calendar shim, atomic replacement and daily_path_v1;24 local PG controls pass, private ANGO capture case skipped.
-- [ ] Reverify any changes introduced by actual-main reconciliation.
+- [x] Reverify actual-main reconciliation; runtime source unchanged from tested preservation candidate.
 
 ## Task 3: retirement docs and generated inventories
 Spec: Design owned files; done_when[6,9].
 - [x] Reconcile owned retirement prose and line pointers; regenerate05-a/05-c/05-e with unchanged renderer.
 - [x] Run generated-document suite140pass and model-registry68pass.
-- [ ] Verify committed renderer output on successor.
+- [x] Verify committed renderer output on successor:140 generated checks passed.
 
 ## Task 4: own source note and delivery records
 Spec: Source identity; done_when[7,9].
-- [ ] Update only own catalog/lineage and CATALYSTS-04 note, preserving earlier accurate content.
+- [x] Update only own catalog/lineage and CATALYSTS-04 note, preserving earlier accurate content.
 - [ ] Commit source, preflight producer, commit note hash, produce final-body sidecar, commit and bounded verify.
 - [ ] Matched full docs audits report no new finding; registry blob/mode/type equals actual main.
 
@@ -60,4 +60,4 @@ Spec: Source identity and Done when; done_when[9,12].
 
 ## Separate post-merge close-out
 
-Not pre-merge acceptance: independently verify actual main in fresh clone after squash; owner-authorized staging/source/data checks and lawful sidecar retirement; plan status done on docs branch after merge. No CODE retirement or fabricated staging proof. Implementation merge/deploy/schema apply are not performed by this task.
+Not pre-merge acceptance: independently verify actual main in fresh clone after squash; owner-authorized staging/source/data checks and lawful sidecar retirement; plan status done on docs branch after merge. No CODE retirement or fabricated staging proof. The user separately authorized full EW removal and deployment; actual merge and release still require normal current-head review/CI and validated EW-specific steps. No production action has been performed yet.

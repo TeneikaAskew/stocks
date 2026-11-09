@@ -319,7 +319,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 
 Finite-number slice: approved spec [#1618](https://github.com/TeneikaAskew/stocks/pull/1618) is MAIN. Implementation draft [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) preserves actual producer/API normalization,185focused checks including independent-session local PostgreSQL commit/read and the real routed response, and31API preservation checks (overlapping suite). Final hermetic unit verification at2ad639e1:7719passed,51skipped,112warnings; integration was excluded from that full unit command and the real local PG proof is separately retained. No deployment/source-equivalence, current-source freshness or complete catalyst remediation is certified. Touches #1269 and only #1301's numeric-title behavior; cross-source dedup/selection remains unchanged and unresolved.
 
-EW-only retirement: fresh implementation bound to the approved own-scope specification merged in #1703. Six reader predicates, ingestion removal and five NULL score-dependent outputs are locally tested; historical rows and #1608 behavior remain intact. Source identity, external review/CI and production release are separate; no deployment or complete catalyst-remediation claim.
+EW-only retirement: [#1758](https://github.com/TeneikaAskew/stocks/pull/1758), fresh implementation bound to the approved own-scope specification merged in #1703. Six reader predicates, ingestion removal and five NULL score-dependent outputs are locally tested; historical rows and #1608 behavior remain intact. Source identity, external review/CI and production release are separate; no deployment or complete catalyst-remediation claim.
 
 ### FEAT-REPORT-001
 
