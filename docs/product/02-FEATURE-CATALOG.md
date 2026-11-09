@@ -301,11 +301,11 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation; finite EPS normalization verified locally, rollout pending |
+| Status | Production but needs remediation; finite EPS normalization and EW retirement verified locally, external review and rollout pending |
 | Priority | P1 |
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-07 |
+| Last reviewed | 2026-11-09 |
 | Evidence status | Finite EPS source/local tests verified; event-bound reaction repairs ([#1608](https://github.com/TeneikaAskew/stocks/pull/1608)) locally validated; current-head external review, hosted checks and rollout pending; other catalyst work remains open |
 | UI surface | `/catalysts` |
 | Backend | `/api/catalysts`, `/api/earnings` |
@@ -318,6 +318,8 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Next action | Complete narrow [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) reviews/checks and existing API/producer rollout. [#1608](https://github.com/TeneikaAskew/stocks/pull/1608): event-bound timing, mature prior-history admission and nullable descriptive daily evidence locally validated; normal source review/CI and schema-before-code rollout remain pending. Actual `/catalysts` outcome-panel binding is a separate Solyra change; no deployment or predictive-edge claim. Broader Phase 3 work remains open. |
 
 Finite-number slice: approved spec [#1618](https://github.com/TeneikaAskew/stocks/pull/1618) is MAIN. Implementation draft [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) preserves actual producer/API normalization,185focused checks including independent-session local PostgreSQL commit/read and the real routed response, and31API preservation checks (overlapping suite). Final hermetic unit verification at2ad639e1:7719passed,51skipped,112warnings; integration was excluded from that full unit command and the real local PG proof is separately retained. No deployment/source-equivalence, current-source freshness or complete catalyst remediation is certified. Touches #1269 and only #1301's numeric-title behavior; cross-source dedup/selection remains unchanged and unresolved.
+
+EW-only retirement: fresh implementation bound to the approved own-scope specification merged in #1703. Six reader predicates, ingestion removal and five NULL score-dependent outputs are locally tested; historical rows and #1608 behavior remain intact. Source identity, external review/CI and production release are separate; no deployment or complete catalyst-remediation claim.
 
 ### FEAT-REPORT-001
 

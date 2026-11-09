@@ -65,7 +65,7 @@
    "main::date.today()"
   ],
   "sql-utc-date": [
-   "_query_watchlist::str#d981990c2f8d"
+   "_query_watchlist::fstr#3c17358f2881"
   ]
  },
  "gcp/fetchers/backfill_daily_indicators.py": {
@@ -243,7 +243,7 @@
    "refresh_daily::date.today()"
   ],
   "sql-utc-date": [
-   "refresh_daily::str#c3af586845e3"
+   "refresh_daily::fstr#e2ebe6247dcf"
   ]
  },
  "gcp/regime_combo_job.py": {
@@ -818,7 +818,6 @@
    "_resolve_scope::datetime.now()",
    "_resolve_target_dates_for_av_options::datetime.now()",
    "fetch_alphavantage_earnings::datetime.now()",
-   "fetch_earnings_whispers::datetime.now()",
    "main::datetime.now()",
    "main::datetime.now()",
    "main::datetime.now()",
