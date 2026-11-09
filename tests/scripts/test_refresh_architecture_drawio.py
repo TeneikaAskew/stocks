@@ -32,7 +32,7 @@ REPO = Path(__file__).resolve().parents[2]
 # The diagrams are generated from this read (2026-10-11, after #1366 deleted
 # solyra-api-prod). live_gcp_snapshot_2026-09-07.json stays for the suites
 # that share it; this test moved to the fresh read.
-SNAPSHOT = REPO / "tests/fixtures/live_gcp_snapshot_2026-10-11.json"
+SNAPSHOT = REPO / "tests/fixtures/live_gcp_snapshot_2026-11-09.json"
 DIAGRAMS = ("Architecture.drawio", "Architecture-icons.drawio")
 RETIRED_SERVICE = "solyra-api-prod"
 RETIRED_TRIGGER = "deploy-solyra-api-prod"
