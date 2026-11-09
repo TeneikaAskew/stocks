@@ -5,7 +5,7 @@ issues: [1661]
 canvases: []
 site_source_notes: [SHARED-01]
 done_when:
-  - "tests/meta/test_refresh_architecture_docs_pr_token.py asserts that refresh-architecture-docs.yml has no schedule trigger while tests/scripts/test_refresh_architecture_drawio.py does not read doc_inventory.COMMITTED_SNAPSHOT and that workflow_dispatch keeps its dry_run input; that a dry-run refusal step before Checkout exists, and dry_run defaults to 'true', exactly when the workflow has no schedule trigger, so a change that restores the schedule fails until it also removes that step and restores the 'false' default; that the refusal step has no if: and does not set continue-on-error, the test failing with continue-on-error: true or an if: on that step; that the step's own script, run under bash -e, exits non-zero with dry_run 'false' and with an empty value and 0 with 'true'; that the Maintenance section of README.md and the opening paragraph of SETUP.md say the schedule is paused exactly when the workflow has no schedule trigger; and, while it has none, that the Monthly doc refresh row of section 14 of docs/product/infrastructure/05-a-ARCHITECTURE.md, the Trigger cell of the refresh-architecture-docs.yml row in .github/workflows/README.md, SETUP.md's sentence naming the workflows that use the Workload Identity provider and the Reference documents paragraph of docs/product/05-INFRASTRUCTURE.md each give the 1st-of-month schedule only as running while the workflow's on: lists it"
+  - "tests/meta/test_refresh_architecture_docs_pr_token.py asserts that refresh-architecture-docs.yml has a schedule trigger exactly when tests/scripts/test_refresh_architecture_drawio.py reads doc_inventory.COMMITTED_SNAPSHOT, and that workflow_dispatch keeps its dry_run input; that while the workflow has no schedule trigger, dry_run defaults to 'true' and a dry-run refusal step exists before Checkout, has no if: and does not set continue-on-error (the test failing with continue-on-error: true or an if: on that step), and its own script, run under bash -e, exits non-zero with dry_run 'false' and with an empty value and 0 with 'true'; that while the workflow has a schedule trigger, that step is absent and dry_run defaults to 'false'; that the Maintenance section of README.md and the opening paragraph of SETUP.md say the schedule is paused exactly when the workflow has no schedule trigger; and, while it has none, that README.md's Add-a-fetcher line, the Monthly doc refresh row of section 14 and the 05-d pointer of section 12 of docs/product/infrastructure/05-a-ARCHITECTURE.md, the Trigger cell of the refresh-architecture-docs.yml row in .github/workflows/README.md, SETUP.md's sentence naming the workflows that use the Workload Identity provider, and the Reference documents paragraph and table of docs/product/05-INFRASTRUCTURE.md give the refresh's 1st-of-month or monthly run only as conditional on the workflow's on: listing its schedule, or name no cadence"
   - "tests/meta/test_refresh_open_pr_step.py, the existing harness extended, takes the prefix from DOC['env']['PR_BRANCH_PREFIX'] in place of the literals at its lines 92, 107 and 237 and the snapshot path from doc_inventory.COMMITTED_SNAPSHOT, runs the Open refresh PR step with bash -e at both call sites (lines 97 and 242, the second in a fresh clone of the bare remote), and asserts the pushed commit holds the file at COMMITTED_SNAPSHOT byte-identical to the frozen refresh-inputs/live.json, that the step exits non-zero and pushes nothing when the two differ, and that it exits 0 and pushes nothing when the snapshot is the only file that changed; with COMMITTED_SNAPSHOT moved and the workflow unchanged, the harness fails"
   - "tests/meta/test_refresh_open_pr_step.py runs the step with the job's GITHUB_TOKEN persisted as the http extraheader actions/checkout@v4 leaves, and asserts that the first push and a second run's force-push each go to https://github.com/<repository>.git as HEAD:refs/heads/<branch>, send no extraheader, authenticate as x-access-token with the step's GH_TOKEN, get no credential for any other host, and leave GH_TOKEN out of .git/config, and that no git command the step runs carries GH_TOKEN in its argv; tests/meta/test_refresh_architecture_docs_pr_token.py asserts that PR_WORKFLOW_TOKEN appears in no step but Open refresh PR, which comes after every Gemini step, and in neither env block nor the checkout"
   - "tests/meta/test_refresh_open_pr_step.py asserts that the Open refresh PR step exits non-zero, pushes nothing and does not print the value when the snapshot carries a credential in a job's args, in an environment variable a job's args set, or in a scheduler's target URI"
@@ -19,7 +19,7 @@ done_when:
   - "tests/scripts/test_check_generated_docs.py asserts that the committed documents give findings naming an inventory block and an as-of label when checked against a copy of the committed snapshot with read_at moved one day and one Cloud Run service removed"
   - "The TRIVIAL classes in .claude/skills/product-delivery/SKILL.md include a generated-document regeneration on a docs/ branch, list what it may change, and say that one run by hand keeps the docs_verified badge and Generated line of README.md at their dates; the branch naming list in CLAUDE.md names docs/arch-refresh-<YYYY-MM> as that pull request"
   - "The PR body shows the commands and pytest summary line of test_check_generated_docs.py and test_render_doc_prompts.py passing on a scratch copy of the head whose snapshot lost the job signal-monitor and one scheduler, secret and service, with 05-a, 05-c, 05-e and README re-rendered from it, and test_missing_job_name_is_a_finding failing on that copy with the signal-monitor literal of line 56 put back"
-  - "The gate files this PR changes are scripts/gate/spec_gate.py, where RENDER_SNAPSHOT names the path doc_inventory.COMMITTED_SNAPSHOT names and RENDER_INPUTS and RENDERER_FILES carry it beside the 2026-09-07 fixture, which stays in both, and tests/scripts/test_spec_gate.py, whose parity and process-file tests and render fixture tree follow it; nothing under scripts/gate/pinned/, and none of .githooks/pre-commit, .github/workflows/spec-gate.yml, .github/workflows/registry-check.yml or tests/scripts/test_export_model_registry.py, changes; spec-gate / base-suite and registry-check pass on the PR head, the complete registry-check / registry job in at most 335 seconds of its 360-second limit with every hosted attempt on the head recorded and the base-suite job within 600 seconds; and the PR body records, for each push, the red-team pass on that head that CLAUDE.md requires before a gate file is pushed, with four reviewers (shell; YAML/Actions; the exporter and policy documents; diff and byte parsing with the render check), each finding proven by running the gate on a concrete snippet, the last pass empty and every earlier finding listed with the test that now refuses it"
+  - "The gate files this PR changes are scripts/gate/spec_gate.py, where RENDER_SNAPSHOT names the path doc_inventory.COMMITTED_SNAPSHOT names and RENDER_INPUTS and RENDERER_FILES each end with the 2026-09-07 fixture followed by it, and tests/scripts/test_spec_gate.py, whose parity test again requires the gate's RENDER_SNAPSHOT to be the docs test's SNAPSHOT and accepts one RENDER_INPUTS tuple, the committed snapshot after the fixture, and whose process-file test names the committed snapshot beside the fixture; nothing under scripts/gate/pinned/, and none of .githooks/pre-commit, .github/workflows/spec-gate.yml, .github/workflows/registry-check.yml or tests/scripts/test_export_model_registry.py, changes; spec-gate / base-suite passes on the PR head within 600 seconds; the complete unchanged hosted registry-check / registry job on the PR's exact head passes within its unchanged six-minute (360 second) timeout, every hosted attempt on that head is recorded with its head, pytest and whole-job times against main's measured spread (the twelve docs/ jobs of 2026-11-03 and 2026-11-04 the capacity whole-job specs record, 235 to 350 seconds, and the 2026-11-09 jobs this spec records, 248 to 343 seconds), no retry selects a favourable sample, and a timeout on that head blocks completion without the timeout being raised in this PR; this PR adds no test function to tests/scripts/test_spec_gate.py, and the tests it changes there take at most 5 seconds in total in one local `python3 -m pytest tests/scripts/test_spec_gate.py --durations=0` run on the exact head, recorded with its machine; python3 tests/scripts/measure_inventory_render.py --ref HEAD --max-rss-mib 512 --max-seconds 60 passes on the exact head, recorded with its elapsed seconds and peak RSS; and the PR body records, for each push, the red-team pass on that head that CLAUDE.md requires before a gate file is pushed, with four reviewers (shell; YAML/Actions; the exporter and policy documents; diff and byte parsing with the render check), each finding proven by running the gate on a concrete snippet, the last pass empty and every earlier finding listed with the test that now refuses it"
   - "python3 scripts/gate/spec_gate.py --pr origin/main passes on the PR head with PR_TITLE and PR_BODY set to the PR's title and body, and python3 scripts/maintenance/docs_audit.py on the PR head reports no finding that the same run on origin/main, made the same day, does not also report, comparing each finding's check, document and detail with line numbers and commit counts left out"
   - "The FEAT-CICD-001 record in 02-FEATURE-CATALOG shows a current Status and Last reviewed, and 12-PR-ISSUE-TRACEABILITY lists this PR under FEAT-CICD-001"
   - "tests/meta/test_refresh_open_pr_step.py records .git/config, .git/hooks and .git/info with the workflow's own git_state function, as the Freeze step does, and asserts that an insteadOf for https://github.com/<repository>.git written after that record sends nothing to the host it names, that a core.fsmonitor or a pre-commit and pre-push hook written after it is refused before any of them runs, each with a non-zero exit and nothing pushed, and that with the same fsmonitor and hooks present when the record was made the step runs neither and still pushes; each of these cases fails on the r3 prototype's push"
@@ -72,7 +72,7 @@ entries (r4240525982) and r2's 05-a `docs/` branch after this PR with what follo
 |---|---|
 | P2, done_when 10: the completeness test took its expected sections from the workflow guard it protects | The test names `jobs`, `services`, `schedulers`, `secrets` and `db_tables` itself and asserts the guard still names each; done_when 10 (Design, "The committed snapshot is complete") |
 | P1, done_when 16: it allowed a new `changed-since` entry on 03 or 12, which Phase 5 step 5 of the skill forbids | No allowance. 03 is kept clean by the source-identity record this spec now declares (`site_source_notes: [SHARED-01]`, done_when 20); 12's entry is the one main already reports; done_when 16 (Design, "The docs audit") |
-| P2, done_when 1: 05-a could keep describing the schedule for an unbounded interval | A `docs/` prerequisite, merged before this PR's branch opens, gives 05-a's schedule cell and the three other live statements of the schedule (the workflows index, SETUP's provider sentence, 05-INFRASTRUCTURE) a wording true in both states, and done_when 1 fails while any is missing (Design, "The documents that describe the refresh" and "The sequence") |
+| P2, done_when 1: 05-a could keep describing the schedule for an unbounded interval | A `docs/` prerequisite, merged before this PR's branch opens, gives 05-a's schedule cell and every other live statement of the schedule under `docs/product/` or `.github/` or in SETUP's provider sentence (05-a's 05-d pointer, the workflows index, 05-INFRASTRUCTURE's paragraph and table) a wording true in both states, this PR rewrites README's Add-a-fetcher line, and done_when 1 fails while any is missing (Design, "The documents that describe the refresh" and "The sequence") |
 | P2, done_when 6: the credential test omitted promised surfaces and shapes | One planted case per field, a log sink's filter and destination and a key the snapshot does not carry included, and one per known token shape; done_when 6 (Design, "Credential tests") |
 | P2, Design (the paused interval): a dispatch with the default inputs could still open a PR that cannot merge | While the schedule is off, `dry_run` defaults to `true` and a step before Checkout, with no `if:` and no `continue-on-error`, refuses a run whose `dry_run` is not `true`; done_when 1 ties both to the schedule's absence in both directions, so the diagram migration cannot restore the schedule without removing them |
 
@@ -86,25 +86,26 @@ Main moved since r3 read it at `d0231901`, and five of the moves change this spe
 | The 2026-11-01 run failed at its verify step and opened no PR; #1701 and #1728 cleared that drift | Problem |
 | L's approved spec declares no 03 note, and 03's identity check fails on L's head | L merges only after its superseding FEAT-DEPLOY-001 spec (stocks#1764), and it now comes before B, not A (Design, "The sequence") |
 
-Line numbers are stocks main at `16b3fabd` (read 2026-11-09) unless a line says otherwise; every cited line was
-re-read there. Of the files cited by line, these changed since `d0231901`, and their citations moved:
-`scripts/gate/spec_gate.py` (`OTHER_BRANCH` 158 to 176, `check_product_scope` 3714 to 4278, the
-documentation-only return 2099-2115 to 2347-2363), `CLAUDE.md` (its naming list's `docs/<description>` line 120 to
-132, "What trivial means" 136-142 to 148-154), `.claude/skills/product-delivery/SKILL.md` (its "Never" bullet on
-`docs/product/`, 83 to 85) and `scripts/maintenance/docs_audit.py` (the class-a freshness loop, 7345-7437 to
-7377-7469). `README.md:44` and `:55`, `SETUP.md:5`, `.github/workflows/README.md:16`, `AGENTS.md:4-7` and
-`05-a-ARCHITECTURE.md:869` changed files but still say what they are cited for. `refresh-architecture-docs.yml`,
-`doc_inventory.py`, `.github/prompts/architecture.md`, `backtest-pipeline.yml` and every cited test but one are
-unchanged since `d0231901`; `tests/scripts/test_spec_gate.py`, which r3 did not cite, changed since and is cited at
-`16b3fabd`. "The leftovers PR" (L) is stocks#1384 (`feature/feat-deploy-001-retired-service-leftovers`), still open as
-a draft at head `2215223a` (read 2026-11-09), which delivers the approved
+Line numbers are stocks main at `16b3fabd` (read 2026-11-09) unless a line says otherwise; every cited line was re-read
+there. Of the files cited by line, these changed since `d0231901`, and their citations moved:
+`scripts/gate/spec_gate.py` (`OTHER_BRANCH` 158 to 176, `check_product_scope` 3714 to 4278, the documentation-only
+return 2099-2115 to 2347-2363), `CLAUDE.md` (its naming list's `docs/<description>` line 120 to 132, "What trivial
+means" 136-142 to 148-154), `.claude/skills/product-delivery/SKILL.md` (its "Never" bullet on `docs/product/`, 83 to 85)
+and `scripts/maintenance/docs_audit.py` (the class-a freshness loop, 7345-7437 to 7377-7469). `README.md:44` and `:55`,
+`SETUP.md:5`, `.github/workflows/README.md:16`, `AGENTS.md:4-7` and `05-a-ARCHITECTURE.md:869` changed files but still
+say what they are cited for. `refresh-architecture-docs.yml`, `doc_inventory.py`, `.github/prompts/architecture.md`,
+`backtest-pipeline.yml` and the tests this spec names are unchanged since `d0231901` (`git diff --numstat d0231901
+16b3fabd`) except two: `tests/scripts/test_spec_gate.py` (+2831/-39), which r3 cited only at #1383's lines and this spec
+cites by line at `16b3fabd`, and `tests/scripts/test_verify_docs_against_live.py` (+28/-0), which this spec names but
+cites by no line. "The leftovers PR" (L) is stocks#1384 (`feature/feat-deploy-001-retired-service-leftovers`), still
+open as a draft at head `2215223a` (read 2026-11-09), which delivers the approved
 `2026-10-11-feat-deploy-001-retired-service-leftovers.md`. That spec declares no `site_source_notes`, and on L's head
 `doc_source_snapshot.py verify` reports `unverified` ("historical record does not equal complete current MAIN
 source/body"), so L cannot pass its own docs-audit item as approved. The spec-only PR stocks#1764 (branch
 `docs/spec-feat-deploy-001-retired-service-source-note`, head `bdf833ec`, open) supersedes it with
-`docs/superpowers/specs/2026-11-09-feat-deploy-001-retired-service-source-note.md`, which declares
-`site_source_notes: [SHARED-01]`; L merges only after it, and will merge main and add its 03 row first, so its head and
-fixture may move again.
+`docs/superpowers/specs/2026-11-09-feat-deploy-001-retired-service-source-note.md`, which declares `site_source_notes:
+[SHARED-01]`; L merges only after it, and will merge main and add its 03 row first, so its head and fixture may move
+again.
 
 ## Problem
 
@@ -441,47 +442,69 @@ document agrees with today. From then on each regeneration replaces it together 
   the diagram test reads the committed snapshot, and that a run started by hand is a dry run until then. The
   Maintenance table gains a row for `docs/generated/live-gcp-snapshot.json`. That makes nine: on main the sentence says
   nine over a table of eight, and done_when 8 now ties the number and the rows to what the step stages. Line 55's
-  "overwritten on the 1st" becomes "overwritten by each refresh", true in both states.
+  "overwritten on the 1st" becomes "overwritten by each refresh", true in both states, and line 38's "The next monthly
+  refresh picks it up" becomes "The next refresh that opens a pull request picks it up", also true in both states.
 - `SETUP.md:5` says the same about the schedule and the dry run. done_when 1 checks README's and SETUP's pause wording
   in both directions: present exactly when the schedule is off.
-- Four more places state the schedule, and W, a `docs/` PR merged before this PR's branch opens, gives each a wording
-  true whether the schedule is on or off:
-  - 05-a:869 (below);
-  - the Trigger cell of the refresh row in `.github/workflows/README.md:16` ("1st of the month 06:00 UTC, and
-    `workflow_dispatch` (`dry_run` input)"), which becomes "`workflow_dispatch` (`dry_run` input), and 06:00 UTC on the
-    1st of each month while the workflow's `on:` lists that schedule (the root README's Maintenance section says when
-    it is paused)"; this PR still changes that row's description, which names `bot/arch-refresh-YYYY-MM`;
-  - `SETUP.md:144` ("`refresh-architecture-docs.yml` on schedule/dispatch"), which becomes
-    "`refresh-architecture-docs.yml` on dispatch, and on its monthly schedule while `on:` lists one";
-  - `docs/product/05-INFRASTRUCTURE.md:41-43` ("Four of them are written on the 1st of each month by" the workflow),
-    which becomes "Four of them are written by" the workflow, "on the 1st of each month while its schedule is on (the
-    root README's Maintenance section says when it is paused)".
+- **Which statements change, and where.** A statement is rewritten when it says when the refresh runs: on the 1st,
+  at 06:00 UTC, or monthly as a fact about a document's upkeep. "The monthly refresh" used as the workflow's name (its
+  `name:` is "Monthly architecture doc refresh") is a name, not a schedule, and stays. Run on 2026-11-09 at `16b3fabd`,
+  `git grep` for `1st of (the|each|every) month`, `0 6 1 \* \*` and `on the 1st`, and separately for `monthly` beside
+  `refresh`, `generated` or `regenerated`, found these statements about this workflow:
+  - this PR changes, being documentation outside `docs/product/`: README.md:38 (above), :44, :55 and SETUP.md:5;
+  - W, a `docs/` PR merged before this PR's branch opens, changes the four files below, each to wording true whether
+    the schedule is on or off:
+    - 05-a:869, the Monthly doc refresh row of section 14 (next bullet), and 05-a:819 in section 12, whose "(regenerated
+      monthly from the BigQuery billing export)" becomes "(regenerated by the refresh workflow from the BigQuery
+      billing export)";
+    - the Trigger cell of the refresh row in `.github/workflows/README.md:16` ("1st of the month 06:00 UTC, and
+      `workflow_dispatch` (`dry_run` input)"), which becomes "`workflow_dispatch` (`dry_run` input), and 06:00 UTC on
+      the 1st of each month while the workflow's `on:` lists that schedule (the root README's Maintenance section says
+      when it is paused)"; this PR still changes that row's description, which names `bot/arch-refresh-YYYY-MM`;
+    - `SETUP.md:144` ("`refresh-architecture-docs.yml` on schedule/dispatch"), which becomes
+      "`refresh-architecture-docs.yml` on dispatch, and on its monthly schedule while `on:` lists one";
+    - `docs/product/05-INFRASTRUCTURE.md`, under `docs/product/`, so no feature branch may change it: lines 41-43
+      ("Four of them are written on the 1st of each month by" the workflow) become "Four of them are written by" the
+      workflow, "on the 1st of each month while its schedule is on (the root README's Maintenance section says when
+      it is paused)", and the Maintenance cells of its table at lines 50, 52 and 53 ("generated monthly (prose updated
+      in place)" twice, "regenerated monthly from the billing digests") become "generated by the refresh workflow
+      (prose updated in place)" and "regenerated by the refresh workflow from the billing digests".
 
-  Run on 2026-11-09, `git grep` on main for `1st of (the|each|every) month`, `0 6 1 \* \*` and `on the 1st`, and for
-  `refresh-architecture-docs` beside `month` or `schedul`, found these and README.md:44 and :55 and SETUP.md:5, which
-  this PR changes. The other hits are not live statements a person edits: a dated audit
-  (`docs/audit/2026-05-08/track-F.md`), the class B copies frozen on 2026-09-08 under
-  `docs/product/infrastructure/manual/`, generated text that calls the refresh monthly (the workflow's label in
-  `Architecture.drawio`, the calibration table's footer at `docs/INVESTMENT_MODELS_SUMMARY.md:326`), and code and test
-  comments. They are true again once C restores the schedule.
+  The other hits are left, each for a stated reason:
+  - statements about other jobs' schedules: 32 lines of 03 (for example `av-intraday-monthly`, "21:00 ET on the
+    1st"), `docs/INVESTMENT_MODELS_SUMMARY.md:666` and `:1190`, `docs/alpha-vantage-workflows.md:54`, and comments in
+    `gcp/deploy.sh` and `gcp/fetchers/fetch_alphavantage_intraday.py`;
+  - dated records: `docs/audit/2026-05-08/track-F.md` and `track-A.md`, and
+    `docs/audits/ARCHITECTURE_DOCS_AUDIT_2026-09-07.md:16`;
+  - the class B copies under `docs/product/infrastructure/manual/`, which say they were taken on 2026-09-08;
+  - generated text: the workflow's label in `Architecture.drawio`, the calibration table's footer at
+    `docs/INVESTMENT_MODELS_SUMMARY.md:326`, README's and the generated documents' `Generated` lines, and
+    `docs/product/generated/model-registry.json`;
+  - the workflow's name used as a name (README.md:13, 05-a:5, :43 and :122, 05-c:3, 05-e:5, `docs/DOC_REGISTRY.md:25`,
+    SETUP.md:207, `docs/product/07-MODEL-REGISTRY.md:475`);
+  - code, prompt, workflow and test comments.
+
+  Each left statement is about another job, dated, generated, a name, or true again once C restores the schedule.
 - `docs/product/infrastructure/05-a-ARCHITECTURE.md:869` ("1st of month 06:00 UTC + dispatch") cannot change on this
   PR's feature branch. On 2026-11-09, with main's gate in a scratch clone, a feature branch carrying a ready plan and
   only that line was refused (`inventory:document differs from main's render; first difference: changes line 869
   outside its inventory blocks`), and `docs/refresh-schedule-wording` carrying the same line gave `spec gate ok`, with
   `test_check_generated_docs.py` passing on it (140 passed). So the line changes in W (Design, "The sequence"). A W
-  carrying all four wordings also gave `spec gate ok` (4 changed files); on it `test_check_generated_docs.py` and
-  `tests/meta/test_rerun_transient_doc_refresh.py` gave 171 passed, and `test_verify_docs_against_live.py` and
-  `tests/meta/test_model_registry_consistency.py` 175 passed. 05-INFRASTRUCTURE carries no reviewed-against SHA, so
-  W's edit to it raises no `changed-since` entry. The new 05-a cell is:
+  carrying every rewording above gave `spec gate ok` (4 changed files), and on it `test_check_generated_docs.py`,
+  `tests/meta/test_rerun_transient_doc_refresh.py`, `test_verify_docs_against_live.py`,
+  `tests/meta/test_model_registry_consistency.py` and `tests/meta/test_render_doc_prompts.py` gave 379 passed.
+  05-INFRASTRUCTURE carries no reviewed-against SHA, so W's edit to it raises no `changed-since` entry. The new 05-a
+  cell is:
   "dispatch; also 06:00 UTC on the 1st of each month while the workflow's `on:` lists that schedule (README's
   Maintenance section says when it is paused)". It is model prose, and `docs/DOC_REGISTRY.md` admits a "separate
   Class-A-only PR" for model prose that cannot wait for the prompt; #1701 hand-edited 05-a on a `docs/` branch the same
   way. The prompt needs no change: no refresh publishes model prose while the schedule is off, and once it is back the
-  model's usual wording is true again. done_when 1 fails on any base where one of the four still gives the schedule
-  unconditionally, so this PR cannot pass Run Tests before W lands, and no state of main has them describing a schedule
-  that does not exist.
-- The diagram migration restores the README and SETUP pause wording with the schedule; done_when 1's two-way check
-  fails until it does. W's four wordings need nothing then: they hold in both states.
+  model's usual wording is true again. done_when 1 fails on any base where one of W's statements still gives the
+  schedule or a monthly regeneration unconditionally, so this PR cannot pass Run Tests before W lands, and no state of
+  main has them describing a schedule that does not exist.
+- When the diagram migration restores the schedule, it replaces README's and SETUP's paused wording with wording that
+  says the workflow runs on the 1st of each month; done_when 1's two-way check fails until it does. W's wordings and
+  README's Add-a-fetcher line need nothing then: they hold in both states.
 
 **The credential check** is `doc_inventory.credential_findings(snapshot)`, run by `--check-credentials`.
 
@@ -518,10 +541,15 @@ credential out of the rendered blocks and out of the failure artifact.
   `test_doc_inventory.py`, which reads `gcp/schema.sql` and the source tree but no committed document; the CLI test at
   `test_check_generated_docs.py:2244`, which writes and reads a temporary README; and the digest-section test in
   `test_render_doc_prompts.py`.
-- **The gate's tests** follow the gate's `RENDER_SNAPSHOT` (next section): in `tests/scripts/test_spec_gate.py` the
-  parity test (4578-4591) and the `RENDER_INPUTS` tuple it asserts name COMMITTED_SNAPSHOT beside the fixture, the
-  process-file test (4566-4575) adds it and keeps the fixture, and `SNAPSHOT_FILE` (4599), the path the render fixture
-  tree writes, becomes COMMITTED_SNAPSHOT.
+- **The gate's tests** follow the gate's `RENDER_SNAPSHOT` (next section). This PR edits
+  `tests/scripts/test_spec_gate.py` as P leaves it on main, not as it reads at `16b3fabd`: the parity test (4578-4591 at
+  `16b3fabd`) goes back to strict, the gate's `RENDER_SNAPSHOT` equal to the docs test's `SNAPSHOT` and one
+  `RENDER_INPUTS` tuple, the committed snapshot after the fixture; the process-file test (4566-4575) names the committed
+  snapshot beside the fixture; and `SNAPSHOT_FILE`, which P derives from the loaded gate, needs no edit. Measured
+  2026-11-09 on a scratch tree of main with the scratch P, this gate change and these test edits: `test_spec_gate.py`
+  gave 181 passed in 365.73 s, the two changed tests taking 1.15 s and 0.26 s, and `test_check_generated_docs.py` 140
+  passed; with the committed snapshot named, the process-file test refuses a change to it on another capability's
+  feature branch.
 - **New negative test.** `test_check_generated_docs.py` checks the committed documents against a copy of the committed
   snapshot with `read_at` moved one day and one service removed, and asserts `gate.run` reports a block that differs
   from a fresh render and an as-of label naming the wrong day.
@@ -633,17 +661,38 @@ So this PR moves the gate with the docs test, as done_when 15 states:
   PR follows a red-team pass on its head (CLAUDE.md "Before any change"; SKILL.md Phase 4, line 66), and the PR body
   records it. Neither is pinned: `PINNED` (`spec_gate.py:1225-1229`) names the two gate workflows and the hook, which
   this PR leaves alone, so no pinned-copy sequence applies.
-- **Four red-team seats and the whole-job envelope, as main's render-check changes have them.** This PR changes a
-  render input and `test_spec_gate.py`, which registry-check runs, so done_when 15 takes the two obligations main's
-  specs for such changes carry, beyond CLAUDE.md's three-seat minimum:
-  - a fourth seat, diff and byte parsing with the render check, beside shell, YAML/Actions and the exporter and policy
-    documents: `docs/superpowers/specs/2026-11-04-feat-cicd-001-inventory-whole-job.md` done_when 7 and
-    `docs/superpowers/specs/2026-10-31-feat-cicd-001-retry-split-substitution.md` done_when 5 (read at `16b3fabd`);
-  - the whole-job envelope: the complete registry-check / registry job in at most 335 seconds of the 360 seconds its
-    `timeout-minutes: 6` allows (`registry-check.yml:25`), every hosted attempt on the head recorded, and base-suite
-    within 600 seconds (its `timeout-minutes: 10`, `spec-gate.yml:84`): the 2026-11-04 spec's done_when 13, which the
-    retry-split spec's done_when 4 keeps in force. The 285-second pytest target those specs record as unmet is not
-    carried here.
+- **Red team, timing and the renderer, as main's render-check changes have them.** This PR changes render inputs
+  (the snapshot path and `scripts/maintenance/doc_inventory.py`) and `test_spec_gate.py`, which registry-check runs.
+  Main's specs for such changes, `docs/superpowers/specs/2026-11-04-feat-cicd-001-inventory-whole-job.md` and
+  `docs/superpowers/specs/2026-10-31-feat-cicd-001-retry-split-substitution.md` (read at `16b3fabd`), carry three
+  obligations beyond CLAUDE.md's three-seat minimum, and done_when 15 takes all three, the second in the form main's
+  capacity specs use:
+  - **A fourth red-team seat**, diff and byte parsing with the render check, beside shell, YAML/Actions and the
+    exporter and policy documents: the whole-job spec's done_when 7 and the retry-split spec's done_when 5.
+  - **Timing.** The whole-job spec's done_when 13 (kept in force by the retry-split spec's done_when 4) bounds the
+    registry job at 335 seconds and base-suite at 600. This PR keeps the 600-second base-suite bound
+    (`spec-gate.yml:84`, `timeout-minutes: 10`), but not the fixed 335 seconds, for the reason
+    `docs/superpowers/specs/2026-11-04-feat-cicd-001-capacity-fixture-bridge-whole-job.md` gives (Approaches 2, line 41;
+    its Risks, line 78): main's own unchanged suite has run past it. The capacity specs record twelve docs/ registry
+    jobs of 2026-11-03 and 2026-11-04 at 235 to 350 seconds. Five read on 2026-11-09 with `list_workflow_jobs`, job
+    start to completion: 343 s (run 42626650733, job 129192047159, a `fix/` branch whose verdict step took 31 s), 333 s
+    (run 42711196031), 330 s (run 42624846261, #1760's head `0f24ec3a`), 252 s (run 42704431999, L's head) and 248 s
+    (run 42625369237); the suite step alone took 294 to 315 s on the three slow runners and 215 to 236 s on the two fast
+    ones. The verdict step took 31 s and 21 s on #1758's `fix/` branch, 2 s on L's feature branch and 2 to 3 s on the
+    docs/ branches; what it takes on A's head is not measured. On a slow runner a head lands near or past 335 s whatever
+    it changes. So, as the bridge spec does (its done_when at line 9): the job must pass within its unchanged 360-second
+    timeout (`registry-check.yml:25`), every hosted attempt is recorded against that spread, no retry selects a
+    favourable sample, a timeout blocks completion and is not raised here, and this PR's own cost is bounded directly.
+    It adds no test function to `test_spec_gate.py`; the two tests it changes took 1.28 s together on `16b3fabd` (1.03 s
+    and 0.25 s, Linux 6.18, 4 CPUs, Python 3.11.18), so done_when 15 bounds them at 5 seconds. The 285-second pytest
+    target those specs record as unmet is not carried.
+  - **The renderer measurement**, `python3 tests/scripts/measure_inventory_render.py --ref HEAD --max-rss-mib 512
+    --max-seconds 60` (whole-job spec done_when 13). It applies here: the script loads the head's gate, checks the
+    gate's `RENDER_INPUTS` as trusted inputs and runs `render_refusals` over the committed tree, so this PR's
+    `RENDER_SNAPSHOT`, `RENDER_INPUTS` and `doc_inventory.py` are exactly what it measures. Run 2026-11-09 on main
+    `16b3fabd`: `ok`, 42.1 s and 41.8 s, peak RSS 534,142,976 and 533,168,128 bytes against the 536,870,912-byte bound;
+    on the implementation-shaped scratch head (this gate change and the committed snapshot): `ok`, 40.5 s and 40.6 s,
+    534,540,288 and 531,783,680 bytes.
 - **spec-gate's base-suite job runs main's suite against this PR's gate** (`spec-gate.yml:81-101`: a checkout of the
   base, the PR's `spec_gate.py` copied in). Run on 2026-11-09 that way, main's `test_spec_gate.py` against a gate with
   only this change: `12 failed, 169 passed` in 352.80 s, the parity test (its `RENDER_INPUTS` tuple) and 11 render
@@ -773,8 +822,8 @@ that a condition of done, with no exception, and done_when 16 keeps none.
 | C, the diagram migration (FEAT-CICD-001) | on | `docs/` | all: COMMITTED_SNAPSHOT | as after B | no: a refresh re-renders every judged file from one read, which C's scratch re-render proves, and a second run's push starts Run Tests |
 | close-out (`docs/<slug>`) | on | `docs/` | as after C | as after C | no |
 
-- **W and P before A,** because this PR's own checks fail without them: done_when 1 fails while any of W's four
-  statements gives the schedule unconditionally, and done_when 15's base-suite job fails while main's gate suite does
+- **W and P before A,** because this PR's own checks fail without them: done_when 1 fails while any of W's statements
+  gives the schedule unconditionally, and done_when 15's base-suite job fails while main's gate suite does
   not accept a gate naming the committed snapshot. W, a TRIVIAL wording change, touches no block, test or snapshot, so
   it conflicts with neither P nor L; W and P may land in either order. This PR's branch opens only after P's spec is
   approved and P has merged.
@@ -791,9 +840,9 @@ that a condition of done, with no exception, and done_when 16 keeps none.
     leftovers fixture, the same bytes.
   - B needs no spec, because Phase 0 says so; its contract, written beside this spec, goes into its PR description.
 - **C has its own spec**, approved before C's branch opens, and checks on its own base that B came first. In the PR
-  that restores the schedule it also removes the dry-run refusal step and restores the `'false'` default and the README
-  and SETUP pause wording, which done_when 1's two-way checks require; W's four wordings need nothing, because they
-  hold in both states.
+  that restores the schedule it also removes the dry-run refusal step, restores the `'false'` default and replaces
+  README's and SETUP's paused wording with wording that says the workflow runs on the 1st of each month, which done_when
+  1's two-way checks require; W's wordings need nothing, because they hold in both states.
 - **The close-out** is Phase 5 step 7 for P, A and C together (L's is FEAT-DEPLOY-001's own). It sets their plans
   `done` and stamps any document they left unreviewed, 12 included.
 - No dispatch between A and C can deliver: the refusal step fails any run whose `dry_run` is not `true`, and done_when 1
@@ -835,18 +884,30 @@ the diagram migration restores the schedule; while it is paused there are no sch
 - **A stamp of 12 lands on main before this PR's final audit.** done_when 16 is then unmet until main reports 12's
   entry again (Design, "The docs audit"). 03 cannot cause this: its record, not a stamp, keeps it clean.
 - **A maintainer dispatches with `dry_run: false` before C.** The run fails before Checkout, and `handle-failure` opens
-  an issue and a stub draft PR (`create_pr: true`). The docs audit then reports P1 "last delivering run concluded
-  failure" (`docs_audit.py:7338-7342`) and, once the stub is closed unmerged, a P2 "refresh PR #N was closed without
-  merging". That is the intended refusal, at the cost of an issue and a stub to close.
+  an issue and a stub draft PR (`create_pr: true`) titled "FEAT-CICD-001: Monthly architecture doc refresh failed"
+  (`failure_pr_title` in `scripts/handle_workflow_failure.py`), which the audit's `pr_title_re` matches
+  (`docs_audit.py:6742`). The docs audit then reports P1 "last delivering run concluded failure"
+  (`last_delivering_conclusion`, `docs_audit.py:7339-7342`), P1 "refresh PR #N open and unmerged" while the stub is
+  open (7367-7371), and P2 "refresh PR #N was closed without merging" once it is closed (7372-7375). That is the
+  intended refusal, at the cost of an issue and a stub to close.
 - **The class-a P1 on main stays until C.** Main's audit already reports "last delivering run concluded failure at
-  2026-11-01T12:30:24Z". Only a delivering run that succeeds clears it (`last_success` counts delivering runs only,
-  `docs_audit.py:7338`), and between A and C every run is a dry run, so it stands until the schedule is back. It is
+  2026-11-01T12:30:24Z". Only a delivering run that succeeds clears it (`last_delivering_conclusion`, defined at
+  `docs_audit.py:7195` and read at 7339-7342, looks at delivering runs only), and between A and C every run is a dry
+  run, so it stands until the schedule is back. It is
   on main and on every branch alike, so done_when 16 is unaffected.
+- **Runner variance could push A's registry job past six minutes.** Main's slowest recorded docs/ job took 350 s, and
+  a `fix/` branch's took 343 s on 2026-11-09 with a 31 s verdict step. A slow runner can time out on A's head with no
+  fault in A. That attempt fails and is recorded; completion waits for a passing attempt that no
+  retry selected, or for a separately approved change to the timeout or the suite, and the timeout is not raised here.
+- **The renderer runs close to its memory bound.** Main's own render peaked at 534,142,976 bytes of 536,870,912 on
+  2026-11-09, and the implementation-shaped head at 534,540,288. The credential code this PR adds to
+  `doc_inventory.py` is not in that measurement. A head over 512 MiB fails done_when 15, and the bound is not raised
+  here.
 - **A cannot open until P's spec is approved and P has merged.** P's spec does not exist yet. If P is not approved,
   this PR stays unopened, and the 1st-of-month schedule keeps running on main as today (Problem).
 - **L cannot merge as approved.** Its spec declares no 03 note and its head fails 03's identity check (measured on
-  `2215223a`), so L waits for its superseding spec, stocks#1764. Until L lands, B cannot run, so C cannot restore the schedule;
-  A's refusal of delivering runs holds for that whole time.
+  `2215223a`), so L waits for its superseding spec, stocks#1764. Until L lands, B cannot run, so C cannot restore the
+  schedule; A's refusal of delivering runs holds for that whole time.
 - **The credential check misses a shape or flags a harmless value.** A miss is a credential that is neither a known
   token shape, a signed-query key, nor given to a secret-named parameter. A literal of the exact form
   `<name>:<latest or a number>` passes as a Secret Manager reference. The check is a guard on a REQ-SECRET-001
