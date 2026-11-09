@@ -14,7 +14,7 @@ done_when:
   - "The refusal message for other docs/product/ paths in check_product_scope and the 'Never' list in .claude/skills/product-delivery/SKILL.md name the re-rendered inventory blocks as an allowed change and cite REQ-GOV-004"
   - "python3 scripts/gate/spec_gate.py --pr origin/main passes on the PR head, and python3 scripts/maintenance/docs_audit.py reports nothing new over origin/main"
   - "The FEAT-CICD-001 record in 02-FEATURE-CATALOG shows a current Status and Last reviewed, and 12-PR-ISSUE-TRACEABILITY lists this PR under FEAT-CICD-001"
-status: approved
+status: superseded
 supersedes: null
 ---
 

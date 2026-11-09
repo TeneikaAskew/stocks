@@ -7,7 +7,7 @@ timing-aware post-earnings reaction profile:
 
   - reaction_basis: 'BMO' (pre-market) or 'AMC' (post-market) from
     earnings_history.report_time. Falls back to earnings_calendar's
-    earnings_time, then to AMC default if both are missing.
+    earnings_time for the exact event; unknown timing refuses persistence.
   - reaction_gap_pct: D-open vs D-1-close (BMO) OR D+1-open vs D-close (AMC)
   - reaction_anchor_price: D close (BMO) or D+1 open (AMC)
   - sustain_{3,5,10}d_pct: anchored at reaction_anchor_price
@@ -41,6 +41,8 @@ from lib.logging_config import setup_logging
 setup_logging()
 log = logging.getLogger(__name__)
 
+REACTIONS_TABLE = 'earnings_reactions'
+
 
 # ────────────────────────────────────────────────────────────
 # Pure-compute layer (testable without DB)
@@ -50,8 +52,8 @@ def normalize_timing(
     report_time: Optional[str],
     earnings_time: Optional[str],
     yahoo_report_time: Optional[str] = None,
-) -> str:
-    """Resolve reaction_basis from up to three timing sources.
+) -> Optional[str]:
+    """Resolve reaction_basis from up to three event-matched timing sources.
 
     Precedence (verified by user 2026-05-01):
       1. yahoo_report_time (earnings_history.yahoo_report_time) — preferred,
@@ -61,7 +63,7 @@ def normalize_timing(
       2. report_time (earnings_history.report_time from AV) — fallback.
       3. earnings_time (earnings_calendar.earnings_time, majority vote
          across data_sources) — last fallback for upcoming reports.
-      4. AMC default — when nothing is known.
+      4. None — when nothing is known; callers must refuse this event.
     """
     for v in (yahoo_report_time, report_time, earnings_time):
         if v is None:
@@ -71,7 +73,15 @@ def normalize_timing(
             return 'BMO'
         if s in ('post-market', 'postmarket', 'after market', 'amc'):
             return 'AMC'
-    return 'AMC'  # default
+    return None  # Unknown timing is not an after-market observation.
+
+
+def _timing_event_key(ticker, reported_date):
+    """Normalize SQL DATE / ISO date identities without inventing a clock."""
+    try:
+        return str(ticker).upper(), date.fromisoformat(str(reported_date))
+    except (TypeError, ValueError):
+        return None
 
 
 def compute_reaction(
@@ -92,6 +102,8 @@ def compute_reaction(
     Required keys in eps_row: ticker, fiscal_date_ending, reported_date,
     reported_eps, estimated_eps, surprise_pct
     """
+    if reaction_basis not in ('BMO', 'AMC'):
+        return None
     reported = eps_row['reported_date']
     if daily.empty:
         return None
@@ -553,29 +565,34 @@ def fetch_earnings_history_for_tickers(tickers: list[str]) -> pd.DataFrame:
     return query_to_dataframe(sql)
 
 
-def fetch_calendar_timing_map(tickers: list[str]) -> dict[str, str]:
-    """Build a per-ticker fallback timing map from earnings_calendar.
+def fetch_calendar_timing_map(tickers: list[str]) -> dict[tuple[str, date], Optional[str]]:
+    """Calendar-row majority for each exact (ticker, earnings_date).
 
-    When earnings_history.report_time is NULL, fall back to whichever
-    timing the calendar majority-vote says. Returns ticker -> timing.
+    Keep the existing source precedence and vote counts, but never borrow a
+    different report's timing. A tie is unknown, not an arbitrary session.
     """
     if not tickers:
         return {}
-    placeholders = ','.join(f"'{t}'" for t in tickers)
+    params = {f'tk{i}': ticker for i, ticker in enumerate(tickers)}
+    placeholders = ','.join(f':{name}' for name in params)
     sql = f"""
-        SELECT ticker, earnings_time, COUNT(*) AS c
+        SELECT ticker, earnings_date, earnings_time, COUNT(*) AS c
         FROM earnings_calendar
         WHERE ticker IN ({placeholders})
           AND earnings_time IN ('premarket', 'postmarket')
-        GROUP BY ticker, earnings_time
+        GROUP BY ticker, earnings_date, earnings_time
     """
-    df = query_to_dataframe(sql)
+    df = query_to_dataframe(sql, params)
     if df.empty:
         return {}
-    out: dict[str, str] = {}
-    for ticker, group in df.groupby('ticker'):
-        winner = group.sort_values('c', ascending=False).iloc[0]
-        out[str(ticker)] = str(winner['earnings_time'])
+    out: dict[tuple[str, date], Optional[str]] = {}
+    for (ticker, earnings_date), group in df.groupby(['ticker', 'earnings_date']):
+        key = _timing_event_key(ticker, earnings_date)
+        if key is None:
+            continue
+        ranked = group.sort_values('c', ascending=False)
+        tied = len(ranked) > 1 and ranked.iloc[0]['c'] == ranked.iloc[1]['c']
+        out[key] = None if tied else str(ranked.iloc[0]['earnings_time'])
     return out
 
 
@@ -596,7 +613,7 @@ def fetch_daily_window(ticker: str, reported_date: date) -> pd.DataFrame:
     see issue #452 and the post-fix benchmarks in the PR description.
     """
     sql = """
-        SELECT date, open, high, low, close, volume, atr_14
+        SELECT date, open, high, low, close, volume, atr_14, adjusted_close, data_source
           FROM market_data_daily
          WHERE ticker = :t AND date BETWEEN :start AND :end
          ORDER BY date
@@ -655,7 +672,7 @@ def fetch_daily_windows_for_ticker_dates(
     min_date = min(reported_dates) - timedelta(days=90)
     max_date = max(reported_dates) + timedelta(days=25)
     sql = """
-        SELECT date, open, high, low, close, volume, atr_14
+        SELECT date, open, high, low, close, volume, atr_14, adjusted_close, data_source
           FROM market_data_daily
          WHERE ticker = :t AND date BETWEEN :start AND :end
          ORDER BY date
@@ -684,7 +701,7 @@ def fetch_daily_windows_for_ticker_dates(
     return out
 
 
-def populate_for_tickers(tickers: list[str], dry_run: bool = False) -> int:
+def populate_for_tickers(tickers: list[str], dry_run: bool = False, *, observation_ts=None, receipt_sink=None) -> int:
     """Build earnings_reactions rows for the given tickers, upsert.
 
     Returns the number of rows produced.
@@ -694,9 +711,25 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False) -> int:
         log.warning("No earnings_history rows for %s", tickers)
         return 0
 
+    from lib.earnings_reactions import (
+        local_earnings_clock, earnings_session_schedule, compute_daily_path_v1,
+        database_daily_price_evidence, qualify_native_classifier_inputs,
+    )
+    clock = local_earnings_clock(observation_ts or pd.Timestamp.now(tz='UTC'))
+    dates = [_timing_event_key(row['ticker'], row['reported_date'])
+             for row in eps_df.to_dict('records')]
+    dates = [key[1] for key in dates if key is not None]
+    if not dates:
+        log.warning('No valid reported event dates; prior reactions retained')
+        return 0
+    # One canonical calendar construction for the batch, not one per row.
+    schedule = earnings_session_schedule(min(dates) - timedelta(days=100),
+                                        max(dates) + timedelta(days=40))
+    session_closes = {stamp.date(): pd.Timestamp(row['market_close'])
+                      for stamp, row in schedule.iterrows()}
     calendar_timing = fetch_calendar_timing_map(tickers)
-    log.info("earnings_history rows: %d  /  calendar timing fallback: %s",
-             len(eps_df), calendar_timing)
+    log.info("earnings_history rows: %d / calendar timing event keys: %d",
+             len(eps_df), len(calendar_timing))
 
     # Group earnings by ticker so we issue ONE market_data_daily query
     # per ticker (covering the union of its reported_dates) instead of
@@ -707,6 +740,7 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False) -> int:
     # — never per-row when N could exceed 100."
     rows: list[dict] = []
     skipped: int = 0
+    unknown_timing: int = 0
     ticker_groups = list(eps_df.groupby('ticker', sort=False))
     n_tickers = len(ticker_groups)
     log.info("processing %d tickers × ~%d earnings rows each",
@@ -723,14 +757,77 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False) -> int:
         for _, eps in ticker_eps.iterrows():
             report_time = eps.get('report_time')
             yahoo_report_time = eps.get('yahoo_report_time')
-            cal_timing = calendar_timing.get(ticker)
+            event_key = _timing_event_key(ticker, eps['reported_date'])
+            cal_timing = calendar_timing.get(event_key)
             basis = normalize_timing(report_time, cal_timing, yahoo_report_time)
+            if event_key is None or basis is None:
+                # No write preserves the complete previously stored event row.
+                ticker_skipped += 1
+                unknown_timing += 1
+                _emit_event_receipts([_event_receipt(eps.to_dict(), 'reaction_basis',
+                    'invalid_event_identity' if event_key is None else 'unknown_event_timing', 'write_skipped')], receipt_sink)
+                continue
+            if event_key[1] not in session_closes:
+                # Never silently shift an unidentified non-session release.
+                ticker_skipped += 1
+                _emit_event_receipts([_event_receipt(eps.to_dict(),'event_identity',
+                    'report_date_is_not_exchange_session','write_skipped')],receipt_sink)
+                continue
 
             daily = windows.get(eps['reported_date'], pd.DataFrame())
+            if not daily.empty:
+                # Exclude future dates before calendar/quality checks as well as
+                # before feature construction; an appended future bad bar is not evidence.
+                daily = daily[daily['date'] <= clock.tz_convert('America/New_York').date()].copy()
+                # Completed bars only; never assign a final close at interval start.
+                if any(day not in session_closes for day in daily['date']):
+                    ticker_skipped += 1
+                    _emit_event_receipts([_event_receipt(eps.to_dict(),'price_inputs',
+                        'non_exchange_daily_session','write_skipped')],receipt_sink)
+                    continue
+                daily = daily[daily['date'].map(lambda day: session_closes[day] <= clock)].copy()
+                daily = daily.reset_index(drop=True)
             result = compute_reaction(eps.to_dict(), daily, basis)
             if result is None:
                 ticker_skipped += 1
+                _emit_event_receipts([_event_receipt(eps.to_dict(),'native_inputs',
+                    'insufficient_surrounding_daily_bars','write_skipped')],receipt_sink)
                 continue
+            event = dict(eps.to_dict(), reaction_basis=basis,
+                         timing_source=('yahoo_report_time' if normalize_timing(None, None, yahoo_report_time)
+                             else 'report_time' if normalize_timing(report_time, None)
+                             else 'same_event_calendar'))
+            declared = daily.attrs.get('earnings_price_evidence')
+            price = ({'available': True, 'receipt': declared} if declared else
+                     database_daily_price_evidence(event, daily, schedule=schedule,
+                                                   observed_at=pd.Timestamp.now(tz='UTC')))
+            path = compute_daily_path_v1(event, daily, observation_ts=clock,
+                        price_evidence=price['receipt'], schedule=schedule)
+            if not price['available']:
+                path['payload']['reason'] = price['reason']
+            native_price = ({'available':True,'receipt':declared} if declared else
+                database_daily_price_evidence(event,daily,schedule=schedule,
+                    observed_at=pd.Timestamp.now(tz='UTC'),native=True))
+            native = qualify_native_classifier_inputs(event,daily,observation_ts=clock,
+                    price_evidence=native_price['receipt'],schedule=schedule)
+            if not native_price['available'] and native['reason'] not in ('missing_native_prefix_session','duplicate_native_prefix_session','native_features_not_mature'):
+                native['reason']=native_price['reason']
+            path['payload']['per_metric']['native_classifier_inputs']=native
+            if not native['available']:
+                # Never certify shifted positional prehistory as qualified.
+                for field in ('pre_earnings_drift_10d_pct','d_minus_10_close',
+                    'd_minus_5_close','d_minus_3_close','d_minus_2_close',
+                    'drift_3d_pct','drift_5d_pct','pre_drift_consistent_5d',
+                    'pre_drift_reverses_into_gap','max_high_pre_3d_pct','min_low_pre_3d_pct',
+                    'max_high_pre_5d_pct','min_low_pre_5d_pct','max_high_pre_10d_pct','min_low_pre_10d_pct'):
+                    if field in result: result[field]=None
+            import json
+            if len(json.dumps(path['payload'],allow_nan=False).encode())>4096:
+                path['payload']={'version':'earnings-daily-path-v1','event_id':native['event_id'],
+                    'status':'unavailable','reason':'daily_path_payload_exceeds_4KiB',
+                    'per_metric':{'native_classifier_inputs':{'available':False,'reason':'daily_path_payload_exceeds_4KiB'}}}
+                result['pre_earnings_drift_10d_pct']=None
+            result['daily_path_v1'] = path['payload']
             rows.append(result)
             ticker_kept += 1
 
@@ -743,8 +840,8 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False) -> int:
                      ticker, ti, n_tickers,
                      ticker_kept, ticker_skipped, len(rows))
 
-    log.info("Computed %d reaction rows  (skipped %d for insufficient bars)",
-             len(rows), skipped)
+    log.info("Computed %d reaction rows (skipped=%d, unknown event timing=%d)",
+             len(rows), skipped, unknown_timing)
 
     if not rows:
         return 0
@@ -767,10 +864,8 @@ def populate_for_tickers(tickers: list[str], dry_run: bool = False) -> int:
         log.warning("Cloud SQL not configured — skipping persist")
         return 0
 
-    n = upsert_dataframe(
-        out_df, 'earnings_reactions',
-        ['ticker', 'fiscal_date_ending'],
-    )
+    n = (_upsert_reaction_frame(out_df, REACTIONS_TABLE, receipt_sink=receipt_sink)
+         if receipt_sink is not None else _upsert_reaction_frame(out_df, REACTIONS_TABLE))
     log.info("✓ upserted %d rows to earnings_reactions", n)
     return n
 
@@ -923,6 +1018,259 @@ def main():
              len(tickers))
     n = populate_for_tickers(tickers, dry_run=args.dry_run)
     print(f"compute_earnings_reactions: {n} rows {'computed' if args.dry_run else 'upserted'}")
+
+
+
+
+def _event_receipt(row, metric_group, reason, disposition, prior=None):
+    """Payload-free event/group accounting; retained clocks are never restamped."""
+    payload=(prior or {}).get('daily_path_v1') or {}
+    if not isinstance(payload,dict):payload={}
+    return {'event_id':f"{row.get('ticker')}:{row.get('fiscal_date_ending')}:{row.get('reported_date')}",
+        'metric_group':metric_group,'reason':reason,'disposition':disposition,
+        'retained_computed_at':payload.get('computed_at'),
+        'retained_observation_ts':payload.get('observation_ts'),
+        'retained_input_identity':payload.get('input_identity')}
+
+
+def _emit_event_receipts(events, receipt_sink=None):
+    """Bounded pages in the existing job output; no source journal or raw prices."""
+    import json
+    pending=[]
+    def send(items):
+        page={'version':'earnings-refresh-receipt-v1','events':items}
+        encoded=json.dumps(page,default=str,separators=(',',':'))
+        if len(encoded.encode())>65536:raise ValueError('earnings_receipt_event_exceeds_64KiB')
+        if receipt_sink is not None:receipt_sink(page)
+        else:log.info('earnings-refresh-receipt %s',encoded)
+    for event in events:
+        proposed=pending+[event]
+        if pending and (len(proposed)>50 or len(json.dumps({'version':'earnings-refresh-receipt-v1','events':proposed},default=str,separators=(',',':')).encode())>65536):
+            send(pending);pending=[]
+        pending.append(event)
+    if pending:send(pending)
+
+
+def _retention_receipts(row, prior, columns):
+    if prior is None:
+        return [_event_receipt(row,'persistence','retained_state_unavailable','refusal_unresolved')]
+    for field in ('reported_date','reaction_basis'):
+        if prior.get(field) is not None and prior.get(field)!=row.get(field):
+            return [_event_receipt(row,'event_identity','revision_required:'+field,'retained',prior)]
+    old=prior.get('daily_path_v1') or {};new=row.get('daily_path_v1') or {}
+    if not isinstance(old,dict):old={}
+    if not isinstance(new,dict):new={}
+    for field in ('event_id','basis_id','version'):
+        if old.get(field) is not None and new.get(field) is not None and old.get(field)!=new.get(field):
+            return [_event_receipt(row,'daily_path_v1','revision_required:'+field,'retained',prior)]
+    events=[]
+    if old and new:
+        from lib.earnings_reactions import local_earnings_clock
+        regresses = False
+        try:
+            if old.get('observation_ts') is not None:
+                regresses = local_earnings_clock(new.get('observation_ts')) < local_earnings_clock(old['observation_ts'])
+            if old.get('observed_steps') is not None:
+                regresses |= new.get('observed_steps') is None or new['observed_steps'] < old['observed_steps']
+            for metric in ('first_opposite_close','closing_gap_fill'):
+                if old.get('per_metric',{}).get(metric,{}).get('available') is True:
+                    regresses |= new.get('per_metric',{}).get(metric,{}).get('available') is not True
+                    regresses |= any(new.get(metric+suffix) != old.get(metric+suffix) for suffix in ('_step','_date'))
+        except (ValueError,TypeError):
+            regresses = True
+        if regresses:
+            events.append(_event_receipt(row,'daily_path_v1','regressing_daily_prefix','retained',prior))
+    if old and (not new or new.get('status') not in ('complete','maturing','not_applicable')
+                or old.get('status') in ('complete','not_applicable') and new.get('status')=='maturing'):
+        events.append(_event_receipt(row,'daily_path_v1','unavailable_replacement:daily_path_v1','retained',prior))
+    old_native=old.get('per_metric',{}).get('native_classifier_inputs',{})
+    new_native=new.get('per_metric',{}).get('native_classifier_inputs',{})
+    if old_native.get('available') is True and new_native.get('available') is not True:
+        events.append(_event_receipt(row,'native_classifier_inputs','unavailable_replacement:native_classifier_inputs','retained',prior))
+    missing=[name for name in columns if name not in ('ticker','fiscal_date_ending','daily_path_v1')
+             and prior.get(name) is not None and row.get(name) is None]
+    if missing:
+        event=_event_receipt(row,'legacy_fields','unavailable_replacement:legacy_fields','retained',prior)
+        event['metrics']=sorted(missing)
+        events.append(event)
+    return events or [_event_receipt(row,'persistence','incompatible_replacement','retained',prior)]
+
+
+def _upsert_reaction_frame(frame, table_name=REACTIONS_TABLE, *, receipt_sink=None):
+    """Atomic per-chunk PostgreSQL upsert retaining prior qualified values.
+
+    Refuse identity changes and any replacement that would null an existing
+    value. An incomplete/unavailable sidecar never erases a previous sidecar.
+    No per-event source SELECT is used; RETURNING and at most one batched
+    rejected-key read explain refusals while conflict guards retain row locks.
+    """
+    import sqlalchemy as sa
+    from sqlalchemy.dialects.postgresql import insert, JSONB
+    from gcp.database import get_engine
+    engine = get_engine()
+    with engine.connect() as conn:
+        table = sa.Table(table_name, sa.MetaData(), autoload_with=conn)
+    if 'daily_path_v1' not in table.c:
+        raise RuntimeError('earnings_reactions.daily_path_v1 migration is required')
+    table.c.daily_path_v1.type = JSONB(none_as_null=True)
+    columns = [name for name in frame.columns if name in table.c]
+    # Existing extra legacy calculations are not silently relabelled/stored.
+    missing = sorted(set(frame.columns) - set(columns))
+    if missing:
+        raise RuntimeError('reaction schema missing computed fields: ' + ','.join(missing))
+    records = frame[columns].to_dict('records')
+    count = 0
+    batch_size = min(250, max(1, 60000 // max(1, len(columns))))
+    for offset in range(0, len(records), batch_size):
+        batch = records[offset:offset + batch_size]
+        statement = insert(table).values(batch)
+        excluded = statement.excluded
+        conditions = [table.c.reported_date == excluded.reported_date,
+                      sa.or_(table.c.reaction_basis.is_(None),
+                             table.c.reaction_basis == excluded.reaction_basis)]
+        for name in columns:
+            if name not in ('ticker', 'fiscal_date_ending', 'daily_path_v1'):
+                conditions.append(sa.or_(table.c[name].is_(None), excluded[name].is_not(None)))
+        prior = table.c.daily_path_v1
+        incoming = excluded.daily_path_v1
+        old_status = prior['status'].astext
+        new_status = incoming['status'].astext
+        acceptable_payload = sa.and_(
+            incoming.is_not(None), new_status.in_(['complete', 'maturing', 'not_applicable']),
+            sa.or_(old_status.is_(None), old_status.notin_(['complete', 'not_applicable']),
+                   new_status.in_(['complete', 'not_applicable'])),
+            sa.or_(prior['event_id'].astext.is_(None),
+                   prior['event_id'].astext == incoming['event_id'].astext),
+            sa.or_(prior['basis_id'].astext.is_(None),
+                   prior['basis_id'].astext == incoming['basis_id'].astext),
+            sa.or_(prior['version'].astext.is_(None),
+                   prior['version'].astext == incoming['version'].astext))
+        # Compare actual instants, never lexicographic timezone spellings.
+        prefix_guards = [
+            sa.or_(prior['observation_ts'].astext.is_(None),
+                sa.and_(incoming['observation_ts'].astext.is_not(None),
+                    sa.cast(incoming['observation_ts'].astext,sa.DateTime(timezone=True)) >=
+                    sa.cast(prior['observation_ts'].astext,sa.DateTime(timezone=True)))),
+            sa.or_(prior['observed_steps'].astext.is_(None),
+                sa.and_(incoming['observed_steps'].astext.is_not(None),
+                    sa.cast(incoming['observed_steps'].astext,sa.Integer) >=
+                    sa.cast(prior['observed_steps'].astext,sa.Integer)))]
+        for metric in ('first_opposite_close','closing_gap_fill'):
+            was_available = prior['per_metric'][metric]['available'].astext
+            prefix_guards.append(sa.or_(was_available.is_(None),was_available != 'true',
+                sa.and_(incoming['per_metric'][metric]['available'].astext == 'true',
+                    prior[metric+'_step'].astext.is_not_distinct_from(incoming[metric+'_step'].astext),
+                    prior[metric+'_date'].astext.is_not_distinct_from(incoming[metric+'_date'].astext))))
+        conditions.append(sa.or_(prior.is_(None), sa.func.jsonb_typeof(prior) == 'null',
+                                 sa.and_(acceptable_payload,*prefix_guards)))
+        old_native = prior['per_metric']['native_classifier_inputs']['available'].astext
+        new_native = incoming['per_metric']['native_classifier_inputs']['available'].astext
+        conditions.append(sa.or_(old_native.is_(None), old_native != 'true', new_native == 'true'))
+        statement = statement.on_conflict_do_update(
+            index_elements=['ticker', 'fiscal_date_ending'],
+            set_={name: excluded[name] for name in columns
+                  if name not in ('ticker', 'fiscal_date_ending')},
+            where=sa.and_(*conditions)).returning(table.c.ticker, table.c.fiscal_date_ending)
+        with engine.begin() as conn:
+            accepted = {(row.ticker, row.fiscal_date_ending)
+                        for row in conn.execute(statement).all()}
+            count += len(accepted)
+            refused = [row for row in batch if (row['ticker'], row['fiscal_date_ending']) not in accepted]
+            # Conflict-WHERE rows remain locked by ON CONFLICT; one batched
+            # read in this same transaction identifies actual retained state.
+            previous = {}
+            if refused:
+                keys=[(row['ticker'],row['fiscal_date_ending']) for row in refused]
+                previous={(row['ticker'],row['fiscal_date_ending']):dict(row)
+                    for row in conn.execute(sa.select(table).where(
+                        sa.tuple_(table.c.ticker,table.c.fiscal_date_ending).in_(keys))).mappings()}
+            receipt_events=[]
+            for row in batch:
+                key=(row['ticker'],row['fiscal_date_ending'])
+                if key in accepted:
+                    receipt_events.append(_event_receipt(row,'persistence',None,'upserted'))
+                    p=row.get('daily_path_v1') or {}
+                    if p.get('status')=='unavailable':
+                        receipt_events.append(_event_receipt(row,'daily_path_v1',p.get('reason') or 'unavailable','unavailable'))
+                    native=p.get('per_metric',{}).get('native_classifier_inputs',{})
+                    if native and native.get('available') is not True:
+                        receipt_events.append(_event_receipt(row,'native_classifier_inputs',native.get('reason') or 'unavailable','unavailable'))
+                else:
+                    receipt_events.extend(_retention_receipts(row,previous.get(key),columns))
+        # Emit only after transaction commit, not a receipt for rolled-back work.
+        _emit_event_receipts(receipt_events,receipt_sink)
+    if count < len(records):
+        log.warning('Retained %d prior reaction rows: incompatible identity or unavailable replacement',
+                    len(records) - count)
+    return count
+
+
+def compute_local_reaction(*, event, daily, price_receipts, observation_ts, mode):
+    """Admit explicit local completed bars, then invoke canonical reaction math.
+
+    This returns a bounded reaction-only projection, not a history admission or
+    classifier input. Source clocks for derived history still need their own
+    field receipts. No SQL, source fetching, persistence or default timing.
+    """
+    import math
+    from lib.earnings_reactions import (
+        local_earnings_clock, local_source_admission, local_event_timing,
+    )
+    try:
+        clock = local_earnings_clock(observation_ts)
+        basis, schedule, index = local_event_timing(event, clock, mode)
+        if local_earnings_clock(event['release_ts']) > clock:
+            raise ValueError('event_not_released_at_cutoff')
+        if not isinstance(daily, pd.DataFrame) or daily.empty or len(daily) > 120:
+            raise ValueError('missing_or_oversize_local_daily')
+        if not isinstance(price_receipts, dict):
+            raise ValueError('missing_price_receipts')
+        if daily['date'].duplicated().any():
+            raise ValueError('duplicate_daily_session')
+        frame = daily.copy().sort_values('date').reset_index(drop=True)
+        labels = {stamp.date(): row for stamp, row in schedule.iterrows()}
+        basis_ids = set()
+        for _, row in frame.iterrows():
+            label = row['date']
+            if label not in labels:
+                raise ValueError('non_exchange_daily_session')
+            close = pd.Timestamp(labels[label]['market_close'])
+            if close > clock:
+                raise ValueError('daily_bar_not_complete_at_cutoff')
+            receipt = price_receipts.get(label.isoformat())
+            checked = local_source_admission(receipt, event['event_id'], clock, mode)
+            observed = local_earnings_clock(checked['observed_at'])
+            if observed < close:
+                raise ValueError('daily_observed_before_completion')
+            if not receipt.get('price_basis_id'):
+                raise ValueError('missing_price_basis')
+            basis_ids.add(receipt['price_basis_id'])
+            prices = [row.get(name) for name in ('open', 'high', 'low', 'close')]
+            if any(isinstance(v, bool) or not isinstance(v, (float, int)) or
+                   not math.isfinite(v) or v <= 0 for v in prices):
+                raise ValueError('invalid_local_ohlc')
+            opening, high, low, closing = prices
+            if high < max(opening, closing, low) or low > min(opening, closing):
+                raise ValueError('incoherent_local_ohlc')
+        if len(basis_ids) != 1:
+            raise ValueError('incoherent_price_basis')
+        # Reject gaps: canonical D+N is positional and must mean NYSE sessions.
+        expected = [label for label in labels if frame.iloc[0]['date'] <= label <= frame.iloc[-1]['date']]
+        if list(frame['date']) != expected:
+            raise ValueError('missing_daily_session')
+        eps = dict(event)
+        eps['reported_date'] = date.fromisoformat(str(event['reported_date']))
+        row = compute_reaction(eps, frame, basis)
+        if row is None:
+            raise ValueError('insufficient_surrounding_daily_bars')
+        # Allowlist excludes all later-horizon/raw financial payload fields.
+        safe = {name: row[name] for name in (
+            'ticker', 'reported_date', 'fiscal_date_ending', 'reaction_basis',
+            'reaction_gap_pct', 'reaction_anchor_price')}
+        return {'available': True, 'row': safe, 'mode': mode,
+                'historical_publication_verified': False}
+    except (ValueError, KeyError, TypeError, IndexError) as exc:
+        return {'available': False, 'reason': str(exc)}
 
 
 if __name__ == '__main__':

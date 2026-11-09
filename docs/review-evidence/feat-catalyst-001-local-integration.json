@@ -1,0 +1,333 @@
+{
+  "version": "feat-catalyst-001-local-acceptance-v3-owner-five-finding-batch",
+  "captured_at_utc": "2026-10-26T03:34:46.968068+00:00",
+  "runtime_source_commit": "290200caa3be6139306dc3e16bd35483c8e55348",
+  "approved_spec_main_merge": "d30c1e4de48236dbfd26dd0b7db48e72ee3936fd",
+  "implementation_pr": 1608,
+  "tests": {
+    "command": "EARNINGS_TEST_DB_URL_FILE=<private loopback URL file> EARNINGS_ANGO_FIXTURE_ROOT=<private preserved delivery root> python -m pytest tests/integration/test_earnings_daily_path_persistence.py tests/research/test_earnings_new7_reproduction.py tests/gcp/test_compute_earnings_reactions.py tests/gcp/test_earnings_daily_path.py tests/gcp/test_earnings_local_admission.py tests/gcp/test_earnings_reactions_brief.py tests/api/test_earnings_router.py tests/lib/test_lib_earnings_reactions.py tests/gcp/test_earnings_upcoming_numeric_overflow.py tests/gcp/test_apply_schema.py -q tests/meta/test_model_registry_consistency.py",
+    "result": "405 passed in20.56s",
+    "stdout_sha256": "180c4700c880c935e6986813fe3c59f0782ff53b37e12b9575856f6fec83066c",
+    "real_local_postgresql_cases": 16,
+    "private_fixture_cases": 1,
+    "synthetic_market_controls_not_predictive_evidence": true
+  },
+  "actual_local_database": {
+    "image_id": "sha256:4b4956e2ab1f0aec9779dfca20366a9963a3f24c34269c3a115dd838387f0734",
+    "loopback_disposable_only": true,
+    "production_credentials_or_connections_used": false,
+    "production_migration_performed": false,
+    "image_pulled": false
+  },
+  "actual_ango_acceptance": {
+    "historical_prior_quarters": 4,
+    "selected_raw_rows": 64,
+    "injected_interfaces": "source reads only; source hashes verified before use",
+    "actual_executed_components": [
+      "populate_for_tickers",
+      "compute_reaction",
+      "compute_daily_path_v1",
+      "PostgreSQL on-conflict persistence",
+      "earnings_event_outcomes",
+      "earnings_ticker_lean",
+      "earnings API router",
+      "default history admission and brief classifier"
+    ],
+    "direction_consistency_pct": 75,
+    "upward_opening_gap_pct": 50,
+    "count": 4,
+    "historical_publication_verified": false,
+    "forecast_accuracy_or_profitability_claim": false,
+    "original_frozen_evaluations_unchanged": true
+  },
+  "actual_source_proof": {
+    "context": "implementation-source identity matched; external CODE review under existing rules; rollout pending",
+    "counted_bytes": 8034505,
+    "document_body_sha256": "7d21b5f8a82d63daff0b87a0567e20a7bc46eaaa545dd7c8e39dfc52df58f846",
+    "elapsed_seconds": 0.3986255229974631,
+    "eligible_route": "declared-note",
+    "entry_count": 1452,
+    "policy_identity_sha256": "061e4d117f055a8e78a37b17d1de573a7a6c049aee04e6c9d9fc9fb2600a089e",
+    "reason": null,
+    "source_identity_sha256": "3750c00aafbd88ef4b1d3941084a852a514cb20853226b5bc670004b0be82852",
+    "status": "identity-matched",
+    "success": true
+  },
+  "actual_branch_main_docs_audit": {
+    "main_head": "d30c1e4de482",
+    "branch_head": "b01ae91de710",
+    "main_count": 290,
+    "branch_count": 287,
+    "new_findings": [],
+    "no_new_findings_pass": true,
+    "source_note_and_runtime_unchanged_after_audited_b01": "Only sanitized acceptance-receipt metadata commits follow; exact runtime source remains290200ca and verified source identity3750c00aafbd88ef4b1d3941084a852a514cb20853226b5bc670004b0be82852"
+  },
+  "api_contract": {
+    "existing_routes_unchanged": true,
+    "daily_path_v1_nullable": true,
+    "daily_path_summary_v1_events": "authoritative server latest-at-most12 event candidates; includes event_id,reported_date,fiscal_date_ending,status,reason",
+    "percentages": "0\u2013100 percentages with metric-specific count denominators",
+    "sample_steps": "reaction-session close index0; not hours or continuous intraday duration",
+    "unknown_numeric_values": "null; missing evidence is not zero/false",
+    "legacy_all_history_summary": "unchanged and distinct from new admitted latest12 summary",
+    "native_classifier_inputs": "Additive per_metric group with version, available/reason, event_id, reaction_basis, basis_id, source/input identities, canonical prefix start/end and mature_at. Missing group is not retroactively qualified.",
+    "candidate_audit": "candidate_n, admitted_n, excluded_n, excluded_reason_counts, selected_n, not_selected_older_n; events remains authoritative selected mature cohort, not displayed-history limit."
+  },
+  "remaining_gates": [
+    "normal independent CODE review and current-head CI",
+    "eligible normal merge",
+    "schema-before-code authorized rollout with verified rollback",
+    "existing-app frontend binding separately gated in Solyra"
+  ],
+  "source_files": [
+    {
+      "path": "docs/models/MODEL-EARN-002.md",
+      "bytes": 8049,
+      "sha256": "8f82ecdc9d99ccac52c779539736b4cc9e8ceae83c2c337c372e75f82aa1f8aa"
+    },
+    {
+      "path": "docs/product/02-FEATURE-CATALOG.md",
+      "bytes": 48863,
+      "sha256": "5743a43887a05a8c3d79190445aef7fcc75a36994bdd939b4aa7b4a72e74eba7"
+    },
+    {
+      "path": "docs/product/03-SITE-TRACEABILITY.md",
+      "bytes": 981802,
+      "sha256": "0d708b8c7da8d4a2dbc58c2b7bafabb95437ee0f2486dce0ac05dfd9856753b1"
+    },
+    {
+      "path": "docs/product/07-MODEL-REGISTRY.md",
+      "bytes": 146188,
+      "sha256": "95376b05c1524077a9b1e926b461213de91e28ab959565cbf4b7a54be3554b58"
+    },
+    {
+      "path": "docs/product/12-PR-ISSUE-TRACEABILITY.md",
+      "bytes": 112888,
+      "sha256": "a73c2848e19934f37b8da69912d6679e20be9130a752b0762824154e6e167f34"
+    },
+    {
+      "path": "docs/product/generated/model-registry.json",
+      "bytes": 147453,
+      "sha256": "f36983842bc9e70a3a9bc786c6cc4c5f32a57c8a05da1f71e35b63b0ca7aed2b"
+    },
+    {
+      "path": "docs/research/2026-10-25-earnings-new7-reproduction.md",
+      "bytes": 2974,
+      "sha256": "c4437b512e116aa6bf0f76c435e7ff923b196e4155a3d379478ee6e7d48de676"
+    },
+    {
+      "path": "docs/review-evidence/site-source-snapshot.json",
+      "bytes": 199345,
+      "sha256": "dd016eacebaf735640044fd13ea10c7fb060aa313c4cf3643e6f56612ad68420"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-10-25-feat-catalyst-001-event-bound-reactions.md",
+      "bytes": 6701,
+      "sha256": "2c1d0bc3fa706bfe1651b469b3f63f9dd61b5e9f1fa671eee1a84cbdf4a128e7"
+    },
+    {
+      "path": "gcp/earnings_reactions_brief.py",
+      "bytes": 50637,
+      "sha256": "ba611e7d326d3a54ddafdb86ebe9d8a752a1d6d55b2316c1e5af7c00345bc605"
+    },
+    {
+      "path": "gcp/fetchers/compute_earnings_reactions.py",
+      "bytes": 59621,
+      "sha256": "170e9f0b323602a9af09e596e6cf1fd2cb9d13169d3750d0cdf368818d4f609d"
+    },
+    {
+      "path": "gcp/refresh_earnings_views.py",
+      "bytes": 16133,
+      "sha256": "af7f0943fac9b2afaa6226b1ea65d57a2dc9bdebaeb987d58a549cda7934cbfe"
+    },
+    {
+      "path": "gcp/schema.sql",
+      "bytes": 272485,
+      "sha256": "e4fc6f96638992194d88e8872af068f560cf7789b8af82fcde20b45d09d2bb01"
+    },
+    {
+      "path": "lib/earnings_reactions.py",
+      "bytes": 68558,
+      "sha256": "5c0e7cc7dbe7d052bf6ed138be191adb806fe527cee6916a49ce8baecbc47d53"
+    },
+    {
+      "path": "tests/gcp/test_compute_earnings_reactions.py",
+      "bytes": 61708,
+      "sha256": "faa3442965f119dcedd28feac9a5a8d1f0ade3dbc710a0c9f75fb08496676360"
+    },
+    {
+      "path": "tests/gcp/test_earnings_daily_path.py",
+      "bytes": 8466,
+      "sha256": "53f57d81c619218f1e4f533307c5649975c814d7aaadc92121cd689b737143fd"
+    },
+    {
+      "path": "tests/gcp/test_earnings_local_admission.py",
+      "bytes": 19848,
+      "sha256": "52e145414e01f92a725c6e873fabdb49c7b62bc584af09b36a404bfa93b96b6f"
+    },
+    {
+      "path": "tests/gcp/test_earnings_reactions_brief.py",
+      "bytes": 33011,
+      "sha256": "6491f47d52aa5233ab7d8b978bb03bb4f393bac997dc238cf6f144a1ed15f839"
+    },
+    {
+      "path": "tests/integration/test_earnings_daily_path_persistence.py",
+      "bytes": 21269,
+      "sha256": "f998467cbdb1be4d14f3c0c046372eb15a8c182a8c2a4c9b9a6f2d6586c2e9a1"
+    },
+    {
+      "path": "tests/research/test_earnings_new7_reproduction.py",
+      "bytes": 4360,
+      "sha256": "fdbc47ffb7bd959be8da2ecf83ff9be1dd255cb73b82f5308f0e45a11ddc7e47"
+    },
+    {
+      "path": "tools/research/earnings_new7/analyze_news_once.py",
+      "bytes": 3032,
+      "sha256": "02dc9f5c59a9f9d30c0833d160a3999377a927f1564b4a381653bfe3147b5a1d"
+    },
+    {
+      "path": "tools/research/earnings_new7/examples/daily-closing-steps.csv",
+      "bytes": 44168,
+      "sha256": "d8acc0c6965661044b0b2d4a662f19ba78185f8d80696a3f91cd474dd001de8b"
+    },
+    {
+      "path": "tools/research/earnings_new7/examples/daily-episode-summary.csv",
+      "bytes": 9421,
+      "sha256": "5a732fa7c1f32a4034b30cbd5f1a98d69c4cfbfa3cd9b2adc336cbd581fadde5"
+    },
+    {
+      "path": "tools/research/earnings_new7/examples/identities.json",
+      "bytes": 3580,
+      "sha256": "2454c28da1724fe134925f0c622aa871d147aeda7a9f92ce59b1e3dd2ab5949c"
+    },
+    {
+      "path": "tools/research/earnings_new7/examples/new-seven-news-and-daily-comparison.pdf",
+      "bytes": 39366,
+      "sha256": "e1eab51be348fa330d4b56d86a463f7d6dc4f4fd59287a07d1aff072cf0d09a4"
+    },
+    {
+      "path": "tools/research/earnings_new7/examples/new-seven-news-and-daily-comparison.png",
+      "bytes": 306931,
+      "sha256": "81df7f2f04f3a1bc0e2542e1893b8cdb660e3e2daa02d6dd69c74f0578eaf3bc"
+    },
+    {
+      "path": "tools/research/earnings_new7/examples/news-full-recent-older.csv",
+      "bytes": 1428,
+      "sha256": "7f64d39c440b41ecc5d6d21ccba001c7e65f223aedf2b71144ed3631a692dc0c"
+    },
+    {
+      "path": "tools/research/earnings_new7/examples/root-independent-verification.json",
+      "bytes": 508,
+      "sha256": "135dbe709be9e53823dee06569a77ce3f6eccfcabc855f92bfc4f16b8ddbee0e"
+    },
+    {
+      "path": "tools/research/earnings_new7/examples/seven-case-comparison.csv",
+      "bytes": 1404,
+      "sha256": "f5adfaa7f5482bac32798538d22710bde7305c2e53fd02d15c06d82f437f3103"
+    },
+    {
+      "path": "tools/research/earnings_new7/frozen_news_rules.py",
+      "bytes": 10132,
+      "sha256": "d33f69305f9dd827993f605bb78c206ec291788945e34931fb3a7acacb27be4d"
+    },
+    {
+      "path": "tools/research/earnings_new7/frozen_rank_rules.py",
+      "bytes": 1163,
+      "sha256": "0fc31f2df47bc76855596d373af783621e644accd020fbd7685262e37029abd1"
+    },
+    {
+      "path": "tools/research/earnings_new7/join_and_describe_once.py",
+      "bytes": 8517,
+      "sha256": "0e8b5b4311706f723a1f2cccd21883fd0e603e897acb1012d2dc736bcb029d55"
+    },
+    {
+      "path": "tools/research/earnings_new7/protocol.json",
+      "bytes": 11253,
+      "sha256": "3b076448a53fbe89a875d1737d8e5e684aadcebf74bcd2ad8b739aac1e616d17"
+    },
+    {
+      "path": "tools/research/earnings_new7/render_delivery.py",
+      "bytes": 10538,
+      "sha256": "ecb9838cf7a5005a4d1900507862ce9d071aba7e1e64e3ccbb03a986538bd671"
+    },
+    {
+      "path": "tools/research/earnings_new7/research_io.py",
+      "bytes": 1849,
+      "sha256": "d0967ea761eeef5521620b0e902be7457fbe51fa79bc27791b6690b530bdb3e8"
+    },
+    {
+      "path": "tools/research/earnings_new7/source-identities.json",
+      "bytes": 2426,
+      "sha256": "00931131e99b389eeb3bf0b1ad7e437a7d0c2fcae4f0a334fe8e034fbae33982"
+    }
+  ],
+  "limits": [
+    "No production migration/backfill/deployment performed",
+    "No actual frontend traversal claimed; Solyra288 separately gates existing-app binding",
+    "Current-vintage ANGO sources do not certify original PIT",
+    "Native BMO/AMC financial anchors and classifier thresholds unchanged",
+    "Daily opposite closing step and closing gap fill are descriptive, not full/intraday reversal or confidence",
+    "Restricted raw captures/private manifests excluded from public PR",
+    "Finite five-script preservation does not cover all663 source versions"
+  ],
+  "capacity": {
+    "synthetic_helper": {
+      "kind": "local_synthetic_helper_capacity_only",
+      "calls": 100,
+      "calendar_batch_sessions": 7794,
+      "maximum_fragment_calendar_days": 44,
+      "maximum_price_steps": 6,
+      "elapsed_seconds": 0.18304660500143655,
+      "per_event_seconds": 0.0018304660500143655,
+      "CloudSQL_network_benchmark": false,
+      "production_volume_or_cost_measured": false,
+      "new_market_or_provider_calls": 0
+    },
+    "local_persistence_io": {
+      "scope": "local actual reflection+one persistence chunk, existing producer input-query shape independently tested",
+      "statement_count": 11,
+      "types": {
+        "INSERT": 1,
+        "SELECT": 10
+      },
+      "rows": 1,
+      "network_target": "disposable loopback only"
+    },
+    "source_sql_shape": "T+2 existing source reads +10 actual reflection SELECTs +ceil(N/250) upserts +at most one rejected-key SELECT per refused chunk; brief remains7 batched reads and admits prior history before its12-event selection",
+    "production_default_job_volume_walltime_cost": "not measured; no bulk-force/backfill run is admitted here",
+    "production_driver_wait_estimate_for_T1_N4_seconds": [
+      7,
+      28
+    ],
+    "illustrative_compute_rate_usd_per_second": 2e-05,
+    "rate_source": "existing 2026-10-13 FEAT-CATALYST-001 delivery specification; not verified tariff",
+    "new_schedulers": 0,
+    "new_provider_calls": 0
+  },
+  "independent_CODE_review_ledger": {
+    "original_local_cap": 2,
+    "prior_local_used_iterations": 2,
+    "prior_partial_then_complete_retained": true,
+    "owner_authorized_additional_LOCAL_iterations": 1,
+    "current_local_maximum": 3,
+    "additional_LOCAL_iterations_not_yet_started": 1,
+    "owner_decision": "User Sentinel_95192636c3648191ada0813ccfff72d4, replying to Sentinel_150cabae19248191a534b01424616517; exact five findings, one fix batch, one additional LOCAL review only",
+    "authenticated_external_CODE_confirmed_for_PR1608": 0,
+    "authenticated_external_SEC_confirmed_for_PR1608": 0,
+    "external_allowance_extension": "NONE implied; parent must establish normal current-policy admission before any trigger",
+    "no_merge_or_deployment_claim": true
+  },
+  "owner_five_finding_batch": {
+    "previous_frozen_head": "ebffe73656b52852ed323966a1495f9712f3cf1e",
+    "complete_review_report_sha256": "056062e097333c00ea1ac7b15f301738835b837294ecad93b22378f5c1c8e014",
+    "sensitive_RED": "6 failed,1 passed in2.89s; the initially passing fourth-quarter fixture had a synthetic holiday report date and was corrected to canonical session rather than claimed sensitive",
+    "RED_stdout_sha256": "6088129dc2ed93a475c592d29a63d3b35ada9422b28287ad09bd8393b98f3620",
+    "local_controls": "Replay/live clock through actual entrypoint, future/raw recap masking; 16-session native proof, missing/changed prefix/future append; mature admission before12 with actual SQL/brief parity; bounded keyed reason/retained-clock receipts with one rejected-chunk read; actual model-registry tripwire and normal export",
+    "R1": "explicit aware observation_ts / --observation-ts / EARNINGS_BRIEF_OBSERVATION_TS; historical date alone refuses; current live clock captured once; future recap prices/sidecar masked",
+    "R2": "separate per_metric.native_classifier_inputs; version earnings-native-inputs-v1; own source/input/basis/timing identities, canonical D-10..D+5 prefix and maturity; shorter daily path identity/meaning unchanged",
+    "R3": "authoritative events is latest-at-most12 mature/admitted native cohort; separate candidate_audit counts/reasons; legacy all-history fields unchanged",
+    "R4": "actual upsert RETURNING and at most one rejected-chunk SELECT; bounded receipt pages with keyed disposition and exact retained clocks; no new table/journal",
+    "R5": "own Inputs only rationale/normal export and mechanical own-model symbol citation by name",
+    "independent_acceptance": "not yet reviewed; owner-authorized one additional LOCAL verification pending"
+  }
+}

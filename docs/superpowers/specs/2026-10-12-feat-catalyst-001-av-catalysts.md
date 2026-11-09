@@ -32,7 +32,7 @@ done_when:
   - "Reviewed FEAT-DEPLOY-001 contract evidence includes tests/gcp/test_deploy_av_remediation.py::test_catalyst_create_update_runtime_and_secrets and ::test_all_lifecycle_writers_preserve_av_prefix_retention, tests/gcp/test_deploy_av_remediation.py::test_calendar_secret_refs_and_missing_secret_preflight, a targeted deployed-state verifier and docs/EARNINGS_PIPELINE.md staged-identity/primary-only promotion checklist; actual deployed verification is the mandatory post-merge parent milestone."
   - "docs/product/02-FEATURE-CATALOG.md FEAT-CATALYST-001 record and docs/product/12-PR-ISSUE-TRACEABILITY.md identify this implementation PR as implementation verified / rollout pending; they do not claim production rollout complete before post-merge verification."
   - "tests/gcp/test_av_catalyst_predecessor_manifests.py::test_daily_manifest_links_full_assessed_scope_and_acknowledged_sources proves full-window eligibility with bounded fetching, reused verified revisions, matching history/reactions linkage and refusal of pending, wrong-scope, missing or future acknowledgement before OPTION admission."
-status: approved
+status: superseded
 supersedes: null
 ---
 

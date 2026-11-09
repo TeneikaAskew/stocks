@@ -1,0 +1,100 @@
+# STRAT and earnings execution recovery — October 23, 2026
+
+This records recovery state, not implementation acceptance or market validation.
+
+## Objective and unchanged scope
+
+Finish accurate, consistent STRAT and earnings behavior through actual production entrypoints. Evaluate price movement, activation, invalidation, target progression and timing, not dollar returns. Baseline: October 1–9, 2026. Retrospective holdout: October 10–16; outcomes remain unscored until both repaired engines and settings freeze. Reacquired inputs must have a new manifest and explicit acquisition vintage; they cannot inherit missing capture hashes or contemporaneous-input claims.
+
+Approved specifications remain in [STRAT PR1566](https://github.com/TeneikaAskew/stocks/pull/1566) and [earnings PR1567](https://github.com/TeneikaAskew/stocks/pull/1567). Their full execution plans remain visible in [the STRAT plan comment](https://github.com/TeneikaAskew/stocks/pull/1566#issuecomment-6356505617) and [the earnings plan comment](https://github.com/TeneikaAskew/stocks/pull/1567#issuecomment-6356506152). Status history is in [issue1563](https://github.com/TeneikaAskew/stocks/issues/1563#issuecomment-6356955819).
+
+## Verified recovery state
+
+The started runtime executes commands, but initially contains an older setup checkout at eca17a65. The previous strat-engine worktree, evaluation directory, replay containers and Docker volumes are absent. Read-only recovery searches found no alternate local archive; the interrupted reviewer has no complete alternative copy. Underlying provider-storage deletion is not established.
+
+GitHub still contains the exact specification heads 0f67903f6ca0b09730f84500f283146e13f4bc20 and 4072f12585d97ee2f8814e481c43c80ba0935a3e, with green CI. Both current-head second-round reviews have now completed; their concerns are under independent reconciliation. Current fetched main is a5749d4c0b9395582181e8884d2b33af889f5f91; its changes since the prior 2e67a19f base concern generated-inventory governance, not the missing STRAT implementation. Authorized GCP credential refresh and bucket listing succeed. No original implementation archive was found among relevant GitHub artifacts. Storage source discovery continues read-only.
+
+## Prior checkpoint: historical record only
+
+Task1–4 and5A had local reviews; Task5B had a frozen20-file candidate with287 affected and97 persistence tests reported passing, including4 existing pandas warnings. Its interrupted reviewer independently checked hashes and the OpenAPI generator, but returned no final approval. These results cannot certify freshly reconstructed files.
+
+Recovery identifiers: candidate manifest SHA256 e718b33f011850426b68a048e3285d1a41f75cc9ebaadc721d0a47b08afb1e41; report a4cf24ae696e6267083070a1c6d415b86676297f4d60f2523883bd502d7b1d2d; patch 1cef3b2b60816e5127ba945cb75e4b43cb7d633bf32e37fa4fe7d9983160f3e0. Hashes identify missing artifacts; they are not recoverable copies. No patch will be reconstructed from a conversational summary and represented as the original.
+
+## Recovery execution
+
+1. Preserve the current checkout; recover published specifications/plans and inspect actual source at trusted main.
+2. Exhaust intact artifact recovery. If unavailable, reimplement from the approved specification and actual source, with fresh failing/passing regression tests and independent reviews. Replay exact previously recorded patch commands only where complete commands are available; verify any claimed recovered file against its original hash.
+3. Reacquire baseline source observations through authorized read-only GCP/Alpha Vantage access as needed, preserving original system outputs separately. Record source identity, timestamps, uncertainty and new hashes. Do not score held-out outcomes while rebuilding.
+4. Complete the existing sequential STRAT plan, then the nonstacked earnings plan, retaining genuine calendar/basis/receipt integration requirements. Unsupported custom anchors/temporal PMG remain explicit until defined; no new trading policy is selected here.
+5. Replay actual brief/insight/earnings entrypoints in a mode refusing all production persistence and notifications. Compare frozen decisions with later price movement; preserve gap-already-crossed, unavailable cases, ambiguous bar order and source coverage in denominators.
+6. Push each reviewable checkpoint to its PR under repository gates. This documentation checkpoint is published immediately. Code commits/PR publication remain subject to the approved-spec merge-base gate; no bypass, deployment, production write or new merge permission is implied. Do not accumulate another long unexported implementation.
+
+## Decision record
+
+Ruling: treat inaccessible implementation as unverified until exact files are recovered, otherwise rebuild from executable requirements with fresh tests — prior approvals certify specific missing bytes, not approximate replacements — cost if wrong: repeated implementation/review work, but no false provenance or inherited market-proof claim.
+
+Ruling: publish this documentation checkpoint immediately and use PR-backed implementation checkpoints under the normal gate — user explicitly requested durable PR publication after runtime loss — cost if wrong: additional documentation/review overhead; no code-gate waiver.
+
+## Verified recovery checkpoint
+
+Recovered72 generation-pinned GCP query-result JSON artifacts,74,322,249 bytes;232 statement metadata records. This is a remote archival subset, not the missing467-file evaluation set. The original five-table archive contains2,167 native rows, matching prior recorded totals:42brief history,37insight reports,137alerts,1,946calendar,5reactions. Baseline-only selection produces24brief rows,22insights,89alerts,1,149calendar,3reactions; no deduplication or movement scoring. Holdout outcomes remain unscored. The original AV daily/minute captures and their complete467-file manifest remain missing.
+
+Task1's19 literal original edit commands were recovered and replayed with only worktree-path translation. First17 reproduce allthree original pre-review hashes. After the two recorded review fixes, allthree finalhashes match the original reviewer's independently retained approved hashes. Fresh tests reproduce initialRED30failed/76passed, reviewRED7failed/32passed, finalGREEN158passed. This is exact-byte source restoration, not approximate reconstruction. Independent recovery verification approved the exact final bytes and scope.
+
+Task1 final source SHA256:b33fa6e0b047a1f07288a82298f4e2a537bfd95243e255bc56a40f301c905d6d; tests/lib/test_strat.py:a32be6dddc1244e3f2d0ba526f5ac97285e5bf63fb50a42e76f54f4bbd12824e; tests/lib/test_strat_history.py:9433003e6e2bafbd8fffbbb8de3bb37798c38a92af760eec13c20c1d8e4980c4. Later exact read-output recovery restored the Task2 production files with their original approved hashes. Its original full loader test additions remain missing; replacement loader tests have fresh RED/GREEN evidence and require independent review.
+
+## Durable source backups
+
+Task1 source, literal commands, test logs and independent verification are archived in [PR comment6368619566](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6368619566). The downloaded archive and all ten members were independently hash-verified after publication. Archive SHA256: `672cf13d6f1e77e8869fdc61a483344e7afb3926f0859b6eae1918f1f2967981`.
+
+A separate74-member command/read evidence snapshot is backed up in [part1](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6368805151), [part2](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6368805712) and [part3](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6368806539). Decode each part separately, concatenate decoded bytes in order, then open the tar.xz. Remote round-trip and all member checks passed. Archive SHA256: `4488c11f5c777be6b8b2fa2e8377f01ad47d7abf769ac526a284053968da864e`. This preserves actual recorded evidence, including explicitly incomplete fragments; it is not the complete missing implementation. No production result records or credentials are in these source backups.
+
+## Completed second-round review checkpoint
+
+The previously stalled second review was retried at the same unchanged heads. Both are now complete: [STRAT review5630527167](https://github.com/TeneikaAskew/stocks/pull/1566#pullrequestreview-5630527167) reports ten concerns (eight P1, two P2); [earnings review5630512966](https://github.com/TeneikaAskew/stocks/pull/1567#pullrequestreview-5630512966) reports five (three P1, two P2). These are reviewer concerns, not independently reproduced runtime defects. A read-only reconciliation checks every concern against the exact reviewed specification, published plan and actual immutable main source, distinguishing existing requirements from missing sensitive acceptance cases and new design choices.
+
+No third review, fix push or merge is being requested on these PRs. Remaining blocking concerns require a replacement specification PR under the two-round cap. Original six STRAT and eight earnings done_when items remain unchanged; no requirements are waived. Earnings publication must use a genuine landed STRAT contract rather than stack from an unmerged spec. Actual merged upstream calendar, price-basis, receipt and freshness dependencies remain mandatory where applicable.
+
+The review batch covers legacy decision/version compatibility, consumer unavailable states and labels, mother-bar/clock/session boundaries, actual resolver gap credit, coexisting persisted identities and replay capacity; earnings additionally covers the scheduled watchlist, cursor configuration generation, operational freshness metadata and coherent source reads within one request. Reconciliation determines the precise remedy for each. Opening-gap movement evidence must not fabricate an executable stale-trigger fill; this does not authorize an added spread/latency or dollar-return model.
+
+Ruling: reconcile each entire completed batch once and re-cut any still-blocked specification instead of requesting another review on the old PR — repository review cap and the owner's explicit bounded-loop instruction apply — cost if wrong: extra specification publication and approval latency; no skipped acceptance requirement.
+
+Ruling: keep exact recovery/testing and durable evidence export moving while specification reconciliation proceeds — these reversible local recovery steps do not imply implementation publication or merge approval — cost if wrong: some local test work may need amendment when the acceptance mapping is finalized.
+
+## Current recovery and critical path
+
+Tasks2–3 have six restored production files matching historical approved hashes. The six currently available covering modules passed154tests without warnings/skips; three isolated broken loader controls were detected. The final historical test_strat module was recovered exactly and its focused206tests passed; total distinct final covering cases are360, with no warnings/skips. Independent recovery review approved this bounded source/coverage checkpoint; no source-fix findings. Thirty newly written loader tests passed after28failed/two passed on the pre-change state; these are new coverage, not recovered historical test bytes. Independent review accepted their bounded coverage while documenting remaining historical test gaps.
+
+Task5A's full level-helper and planner-test text exports do not match their independently retained original hashes after bounded literal transcription correction. They remain quarantined, unverified candidates, not exact restoration or live-applied source. Task5B's234-line persistence adapter does match its historical hash; the other nineteen candidate files have not been restored. Its interrupted review never issued an approval.
+
+The immediate next checkpoint is the complete fifteen-concern reconciliation and remaining historical test recovery result. Overall completion time is unknown: remaining source reconstruction and genuine upstream/spec integration are not yet bounded. Specification replacement/approval is on the implementation critical path; source/data backup work can proceed without bypassing it. Original native records are available locally; original AV daily/minute captures are still missing and require separately manifested reacquisition if not recovered. Holdout outcomes remain unscored.
+
+## Latest durable checkpoint
+
+All11 cumulative Tasks2–3 files are frozen: six production and four historical test files match retained approved hashes; the loader test file has explicitly new coverage. [Independent recovery review](2026-10-23-strat-tasks2-3-recovery-review.md) approved this bounded checkpoint. The frozen source, baseline/diff and test evidence are archived in [part1](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6369069939), [part2](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6369071017), [part3](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6369071792). Each decoded part is concatenated in order. Archive SHA256 `9723aafda0d6be4329bc103fe1102c430226b558f2dc867378c059f61ffbb1a9`;83,820bytes;40members. Root downloaded the posted comments and verified archive/member hashes. This source archive predates the independent review document, now preserved separately in this PR.
+
+The [complete fifteen-concern reconciliation](2026-10-23-strat-earnings-review-reconciliation.md) records2valid gaps,9partially covered cases,2already explicit requirements and2contested remedies; severities remain11P1/4P2. All concerns retain named evidence and task ownership. No runtime fix is inferred from the specification analysis. STRAT replacement candidate is being checked as one complete batch; earnings clarification remains locally prepared pending genuine upstream specification publication.
+
+A brief exec-server transport disconnection occurred during this work. Supported provider status subsequently reported running/connected; pwd and saved source/reconciliation artifacts were rechecked successfully. No replacement workspace was created, no source/capture discarded, no GCP authentication/permission error or approval rejection was observed. Full delivery ETA remains unknown; the next checkpoint is consolidated replacement-spec publication plus Task4 reconstruction progress under existing gates.
+
+## Published replacement and current implementation
+
+The consolidated STRAT draft is [PR1575](https://github.com/TeneikaAskew/stocks/pull/1575), headf1b6629c5eb4292c02899ef5da4ebd88824e6e3d, based on actual main2aac64c0. [Complete plan plus acceptance mapping](https://github.com/TeneikaAskew/stocks/pull/1575#issuecomment-6369273161) and the [bounded prepublication check](2026-10-23-strat-recut-review.md) are visible. Its one rule-identity coexistence omission was corrected and verified in the complete candidate. Six done_when strings remain exact; no runtime formulas or required gates changed. Local gate/diff checks passed; GitHub gate passed at this checkpoint, other CI was still running. Draft publication does not authorize a merge or establish implementation completion.
+
+All fifteen old second-round threads received evidence-backed classifications and task/remedy mappings. None was resolved merely by naming a future test. No push or review trigger was sent to old1566/1567. [Full offline earnings candidate](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6369283058) preserves the eight original done_when strings and all five clarifications; root fetched its posted body and verified exact round-trip equality. The STRAT plan comment was likewise independently downloaded and verified. Dependent canonical publication waits for the real landed STRAT contract, and dependent implementation for real STRAT CODE/inherited acceptance.
+
+Actual upstream status rechecked: shared-calendarCODE [1546](https://github.com/TeneikaAskew/stocks/pull/1546), DATA daily-basis work [1489](https://github.com/TeneikaAskew/stocks/pull/1489), and canonical producer/receipt work [1430](https://github.com/TeneikaAskew/stocks/pull/1430) are all OPEN drafts, unmerged, at unchanged recorded heads5b926526/69ff86fc/7e002a56. Shared freshnessCODE remains unverified/absent in current main. These are integration blockers, not authentication failures.
+
+Task4 is now the sole source implementer: fresh failing structural-level/lifecycle tests preceded reconstructed source changes; no original Task4 hash/approval is claimed. Root will require a complete frozen source/test report and independent review beforeTask5A. Frozen Tasks1–3, native captures and all remote backups are preserved. The source/test scope still uses price action and explicit unavailable/ambiguous states; no PMG/custom-anchor or financial-fill decision was invented. Full delivery duration remains unknown because later source reconstruction and genuine external dependency/approval dates are not bounded.
+
+## Task4 review and private artifact close-out status
+
+Task4 reconstruction was frozen with248distinct covering passes (188level/playbook/freshness plus60legacy tracker/refresh), seven rejected mutations and24existing-code warnings. This is a new source identity, not recovered historical approval. Its [complete independent review](2026-10-23-strat-task4-review.md) did not approve it: five Important/P2 defect classes require fixes—pre-activation ambiguity, opening-gap delivery-order dependence, partial-day suppression of gap history, consumption by invalid same-frame clusters, and lost trigger-selection reasons. Root sent the complete batch to the original sole implementer for sensitive failing reproductions/fixes in round1/5; Task5A has not started.
+
+Pre-fix source/baseline/diff/test/reconstruction evidence is durably backed up in [part1](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6369647442), [part2](https://github.com/TeneikaAskew/stocks/pull/1573#issuecomment-6369648918). Archive SHA256`8bf66d54d6906102ad8a869a53bdeea902ef2a9ca2c5a3138825a7862a878114`;65,412bytes;26members. Root downloaded both posted parts and verified the combined archive and every member. It explicitly says independent review pending and is not implementation acceptance. No raw market payloads/native production rows or credentials are in that source backup.
+
+The [bounded October capture report](2026-10-23-october-source-reacquisition.md) now gives exact tickers/returned date spans, session/row denominators,24completed runtime-key requests,48.232second final23-request run, remainingzero, and unknown shared quota/marginal cost with exact dependencies. New24raw provider payloads are distinct from original missing467captures and February–MayGCSarchives. Only timestamp-label coverage was inspected for holdout; no movement/outcome scoring.
+
+The owner selected private ChatGPTLibrary for raw-data export. This session exposes no personalLibrary skill/upload/version capability; no LibraryfileID/version/save is confirmed. The parent attempted the first tar taskOutput using Filecontrols→Openoptions→Saveas and received “Could not download artifact”; zero bytes transferred and no Librarysave. At the owner's instruction, exactly one ZIP alternative was prepared:3,862,754bytes, SHA256`80c6998be52e42bcc30ab3e9be7fb351ee18c5c20dbad5209ba02cafeaa1a0e9`. All30members are byte-identical to the originaltar, including its manifest/checksums; all member hashes passed and raw payloads are unchanged. The producing executor exposed the actualZIP as a taskOutput for the parent's one Saveas attempt. Outcome remains pending. If the same generic failure recurs, all further export attempts stop. No raw blobs were pasted/publicly uploaded and no private cloud bucket/write destination was selected.
+
+No merge/deployment/settings change or production write occurred. Full completion time remains unknown; genuine upstream/spec-main integration and Task4fix/re-review are still required.

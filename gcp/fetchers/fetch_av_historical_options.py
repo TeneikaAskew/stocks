@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
 from lib.config import AlphaVantageConfig
+from lib.eastern_time import sessions_between
 
 from lib.logging_config import setup_logging
 setup_logging()
@@ -166,27 +167,12 @@ def process_ticker(ticker: str, fetch_date: str, api_key: str,
 def _trading_days(start: date, end: date) -> list[str]:
     """Return YYYY-MM-DD strings for every NYSE TRADING day in [start, end].
 
-    Uses pandas_market_calendars so weekends AND market holidays (e.g. Memorial
-    Day) are skipped — otherwise the backfill wastes an AV call fetching a chain
-    that doesn't exist for that date. Falls back to a plain Mon-Fri filter if the
-    calendar package is unavailable; that just restores the prior behaviour (a
-    holiday returns an empty chain and is skipped a step later).
+    Reads the shared NYSE calendar (`lib.eastern_time`, FEAT-DATA-001) so
+    weekends AND market holidays (e.g. Memorial Day) are skipped; otherwise
+    the backfill wastes an AV call fetching a chain that doesn't exist for
+    that date. There is no weekday fallback: a missing calendar raises.
     """
-    try:
-        import pandas_market_calendars as mcal
-    except ImportError:
-        log.warning("pandas_market_calendars unavailable — backfill will include "
-                    "market holidays (they return empty chains and are skipped)")
-        out = []
-        cur = start
-        while cur <= end:
-            if cur.weekday() < 5:  # Mon-Fri
-                out.append(cur.strftime('%Y-%m-%d'))
-            cur += timedelta(days=1)
-        return out
-
-    days = mcal.get_calendar('NYSE').valid_days(start_date=start, end_date=end)
-    return [d.strftime('%Y-%m-%d') for d in days]
+    return [d.strftime('%Y-%m-%d') for d in sessions_between(start, end)]
 
 
 def _resolve_start_from_latest(tickers: list[str]) -> date:
