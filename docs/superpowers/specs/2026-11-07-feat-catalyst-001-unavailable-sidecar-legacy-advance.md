@@ -31,14 +31,21 @@ example no recognised price-basis evidence, `missing_source_identity`), its `sus
 is refused, so those legacy outcomes are never saved even after they mature. Verified locally on f366c481: the
 item 1 test fails with the stored sustain still NULL after the January 21 refresh.
 
-Impact is bounded: nothing stored is lost, and the guard is evaluated on every refresh, so held-back rows are
-written on the first producer run after the fix is deployed.
+Impact is bounded: nothing stored is lost. After the fix is deployed, a held-back row is written the next time
+the producer selects its ticker. Scheduled runs do not select every stored ticker: `main()` passes the candidate
+list through `_filter_already_have_reactions`, which skips tickers already in `earnings_reactions` unless they
+report in the run's window (today for `daily`, the next 7 days for `weekly`) or the run has `--force`. So a
+held-back row whose ticker is outside that window stays as it is until its ticker next reports, or until a
+forced refresh selects it.
 
 ## Non-goals
 
 - No change to what counts as qualified evidence, to the prefix, clock, identity or per-metric guards, or to
   the rule that no legacy value goes back to NULL.
-- No schema, view, API, brief, `lib/` or frontend change. No backfill job; the normal producer run is enough.
+- No schema, view, API, brief, `lib/` or frontend change. No new backfill job and no change to the producer's
+  ticker selection.
+- No historical recovery in this change. Repairing held-back rows outside the reporting window needs a separately
+  authorized, bounded forced refresh (below); this spec does not authorize or claim one.
 - No change to how `compute_daily_path_v1` builds an unavailable sidecar.
 
 ## Approaches considered
@@ -71,8 +78,16 @@ Capacity: unchanged. The upsert is still one `INSERT ... ON CONFLICT DO UPDATE` 
 with at most one batched read of refused keys; the new clause adds no query or round trip. The producer's
 volume, velocity, wall-clock and cost are as on main.
 
-Rollout: none beyond the existing producer. After merge the change takes effect when the operator redeploys the
-fetcher jobs (`./gcp/deploy.sh fetchers`), and held-back rows fill on the next scheduled run.
+Rollout: after merge the change takes effect when the operator redeploys the fetcher jobs
+(`./gcp/deploy.sh fetchers`). From then on, every row the producer selects is judged by the new guard: tickers
+reporting in a scheduled run's window, and any ticker a forced run names.
+
+Historical recovery is separate and needs the owner's own authorization: a bounded forced refresh of the
+affected tickers (`compute_earnings_reactions --tickers <list> --force`), with the list of affected event keys
+taken before the run (stored sidecar `unavailable` and a NULL legacy sustain field), the persistence receipts
+from the run, and the same query after it showing which rows advanced and that no qualified sidecar or non-NULL
+legacy value changed. Its capacity is the producer's existing per-ticker cost times the size of that list. Until
+those persisted results are checked, historical recovery is open, not done.
 
 ## Risks
 
