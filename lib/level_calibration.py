@@ -22,9 +22,15 @@ Layers:
   from lib.strat_levels.build_session_levels (daily bars, no premarket
   snapshot, the trigger windows in force that session) and the first RTH bar
   that trades one cent beyond it.
+* ``BreakBatch`` and ``BreakBank``: the break outcomes (follow-through,
+  fill, adverse excursion, reach) on padded arrays for many breaks at once,
+  each break's result from its own bars only, kept per break for reuse.
 * ``calibrate``: every Design 2 parameter for one ticker and effective date,
   in the spec's order (windows, breaks, entry buffers, fills, stops and the
-  floor, targets; the three one-minute thresholds from their own bars).
+  floor, targets; the three one-minute thresholds from their own bars). The
+  reference path: everything measured afresh for that date.
+* ``HistoryCalibrator``: the same results for many effective dates (history
+  mode), each under the policy in force on it, from one pass over the bars.
 * Evidence rows for the implementation PR (``window_exceedance_by_year``,
   ``premarket_drops``, ``break_counts_by_year``).
 * ``load_calibration_universe``: the tickers the job calibrates.
@@ -325,29 +331,71 @@ def pm_spike(d: pd.DataFrame, m: pd.DataFrame, policy: Dict[str, dict]) -> Calib
     return _stat(PM_SPIKE_KEY, row, samples, used, n=len(used))
 
 
+def cents_array(values) -> np.ndarray:
+    """lib.strat_levels.price_cents of every value, as int64, computed once
+    per distinct value (prices repeat heavily across one-minute bars)."""
+    a = np.asarray(values, dtype=float)
+    if not len(a):
+        return np.zeros(0, dtype=np.int64)
+    uniq, inv = np.unique(a, return_inverse=True)
+    return np.array([price_cents(v) for v in uniq], dtype=np.int64)[inv.reshape(-1)]
+
+
+@dataclass(frozen=True)
+class SpreadParts:
+    """One session's premarket bars, measured once for the stale-print
+    population: each bar's spread around its open-close midpoint, whether it
+    printed the prior close's cent, and the four wick distances the spike
+    rule compares with its threshold (own body and neighbour bodies, high
+    and low side). clean_spreads(parts, spike_price) applies the rule."""
+    spread: np.ndarray
+    echo: np.ndarray
+    up_own: np.ndarray
+    up_nb: np.ndarray
+    dn_own: np.ndarray
+    dn_nb: np.ndarray
+
+
+def premarket_spread_parts(bars: pd.DataFrame, prior_close: float) -> SpreadParts:
+    b = bars.reset_index(drop=True)
+    pc = price_cents(prior_close)
+    echo = np.zeros(len(b), dtype=bool)
+    for col in ('open', 'high', 'low', 'close'):
+        v = b[col].to_numpy(dtype=float)
+        ok = v == v
+        c = np.zeros(len(v), dtype=np.int64)
+        c[ok] = cents_array(v[ok])
+        echo |= ok & (c == pc)
+    body_hi = b[['open', 'close']].max(axis=1)
+    body_lo = b[['open', 'close']].min(axis=1)
+    shifts = (-2, -1, 1, 2)
+    nb_hi = pd.concat([body_hi.shift(s) for s in shifts], axis=1).max(axis=1)
+    nb_lo = pd.concat([body_lo.shift(s) for s in shifts], axis=1).min(axis=1)
+    mid = (b['open'] + b['close']) / 2
+    return SpreadParts(
+        spread=np.maximum(b['high'] - mid, mid - b['low']).to_numpy(dtype=float),
+        echo=echo,
+        up_own=(b['high'] - body_hi).to_numpy(dtype=float),
+        up_nb=(b['high'] - nb_hi).to_numpy(dtype=float),
+        dn_own=(body_lo - b['low']).to_numpy(dtype=float),
+        dn_nb=(nb_lo - b['low']).to_numpy(dtype=float),
+    )
+
+
+def clean_spreads(parts: SpreadParts, spike_price: float) -> np.ndarray:
+    spike = (((parts.up_own > spike_price) & (parts.up_nb > spike_price))
+             | ((parts.dn_own > spike_price) & (parts.dn_nb > spike_price)))
+    out = parts.spread[~(parts.echo | spike)]
+    return out[np.isfinite(out)]
+
+
 def clean_premarket_spreads(bars: pd.DataFrame, prior_close: float, spike_price: float) -> np.ndarray:
     """max(high - midpoint, midpoint - low) of each premarket bar with no
     print on the prior close's cent and no wick beyond `spike_price` (the
     spike rule at the ticker's calibrated pm_spike_atr), where the midpoint
     is the bar's open-close midpoint, the one the stale-print rule measures
     from."""
-    b = bars.reset_index(drop=True)
-    pc = price_cents(prior_close)
-    echo = np.zeros(len(b), dtype=bool)
-    for col in ('open', 'high', 'low', 'close'):
-        echo |= b[col].map(lambda v: v == v and price_cents(v) == pc).to_numpy()
-    body_hi = b[['open', 'close']].max(axis=1)
-    body_lo = b[['open', 'close']].min(axis=1)
-    shifts = (-2, -1, 1, 2)
-    nb_hi = pd.concat([body_hi.shift(s) for s in shifts], axis=1).max(axis=1)
-    nb_lo = pd.concat([body_lo.shift(s) for s in shifts], axis=1).min(axis=1)
-    spike = ((((b['high'] - body_hi) > spike_price) & ((b['high'] - nb_hi) > spike_price))
-             | (((body_lo - b['low']) > spike_price) & ((nb_lo - b['low']) > spike_price))).to_numpy()
-    keep = ~(echo | spike)
-    mid = (b['open'] + b['close']) / 2
-    spread = np.maximum(b['high'] - mid, mid - b['low']).to_numpy(dtype=float)
-    out = spread[keep]
-    return out[np.isfinite(out)]
+    return clean_spreads(premarket_spread_parts(bars, prior_close), spike_price)
 
 
 def pm_stale_print(d: pd.DataFrame, m: pd.DataFrame, policy: Dict[str, dict],
@@ -418,34 +466,87 @@ class Break:
     # side: the session's 200-day SMA (as of the prior session) and the
     # builder's stop anchor for the side (lib.strat_levels.persona_stop_price).
     structure: tuple = ()
+    # (timestamps ns, high, low, high cents, low cents) of `bars`, filled by
+    # find_breaks or on first use.
+    arrays: Optional[tuple] = field(default=None, repr=False, compare=False)
 
     @property
     def sign(self) -> float:
         return 1.0 if self.side == 'long' else -1.0
 
+    def bar_arrays(self) -> tuple:
+        if self.arrays is None:
+            h = self.bars['high'].to_numpy(dtype=float)
+            lo = self.bars['low'].to_numpy(dtype=float)
+            ts = pd.DatetimeIndex(self.bars['timestamp']).asi8
+            self.arrays = (ts, h, lo, cents_array(h), cents_array(lo))
+        return self.arrays
+
+
+def replay_trigger(ticker: str, daily: pd.DataFrame, before: pd.DataFrame, policy: Dict[str, dict],
+                   session: pd.Timestamp, atr_basis: str) -> dict:
+    """One session's long and short trigger and stop as
+    lib.strat_levels.build_session_levels picks them from the daily bars
+    before the session (`daily`, cut to the session by the builder; `before`,
+    the normalized bars before it), with no premarket snapshot (reference =
+    the prior close) and the trigger windows calibrated from the excursions
+    before it."""
+    windows = {side: trigger_window(before, policy, side) for side in SIDES}
+    atr = before['atr'].iloc[-1] if len(before) else None
+    atrs = {'atr_14': None, 'atr_5': None}
+    atrs[atr_basis] = float(atr) if atr == atr and atr is not None else None
+    lp = _window_params(ticker, session, atr_basis, windows, policy)
+    sl = build_session_levels(ticker, session.date(), daily, atrs, None, lp)
+    out = {side: (float(sl.side(side).trigger['price']) if sl.side(side).trigger else None)
+           for side in SIDES}
+    for side in SIDES:
+        stop = sl.side(side).stop
+        out[f'{side}_stop'] = float(stop['price']) if stop else None
+    out['atr'] = atrs[atr_basis]
+    return out
+
 
 def replay_triggers(ticker: str, daily: pd.DataFrame, d: pd.DataFrame, policy: Dict[str, dict],
                     sessions: Iterable[pd.Timestamp], atr_basis: str) -> Dict[pd.Timestamp, dict]:
-    """Each session's long and short trigger as lib.strat_levels
-    build_session_levels picks it from daily bars before the session, with no
-    premarket snapshot (reference = the prior close) and the trigger windows
-    in force that session (calibrated from the excursions before it)."""
-    out = {}
-    for s in sessions:
-        before = d[d.index < s]
-        windows = {side: trigger_window(before, policy, side) for side in SIDES}
-        atr = before['atr'].iloc[-1] if len(before) else None
-        atrs = {'atr_14': None, 'atr_5': None}
-        atrs[atr_basis] = float(atr) if atr == atr and atr is not None else None
-        lp = _window_params(ticker, s, atr_basis, windows, policy)
-        sl = build_session_levels(ticker, s.date(), daily, atrs, None, lp)
-        out[s] = {side: (float(sl.side(side).trigger['price']) if sl.side(side).trigger else None)
-                  for side in SIDES}
-        for side in SIDES:
-            stop = sl.side(side).stop
-            out[s][f'{side}_stop'] = float(stop['price']) if stop else None
-        out[s]['atr'] = atrs[atr_basis]
+    """Each session's long and short trigger (replay_trigger), the trigger
+    windows in force that session calibrated from the excursions before it."""
+    return {s: replay_trigger(ticker, daily, d[d.index < s], policy, s, atr_basis)
+            for s in sessions}
+
+
+def session_breaks(s: pd.Timestamp, trig: dict, bars: Optional[pd.DataFrame], close: float,
+                   sma: Optional[float], cents: Optional[tuple] = None) -> List[Break]:
+    """The long and short break of one session (find_breaks for one
+    session). `cents` is (high cents, low cents) of `bars` when the caller
+    has them."""
+    atr = trig.get('atr')
+    if bars is None or not len(bars) or not (atr and atr > 0):
+        return []
+    h = bars['high'].to_numpy(dtype=float)
+    lo = bars['low'].to_numpy(dtype=float)
+    hc, lc = cents if cents is not None else (cents_array(h), cents_array(lo))
+    ts = pd.DatetimeIndex(bars['timestamp']).asi8
+    out = []
+    for side in SIDES:
+        t = trig.get(side)
+        if t is None:
+            continue
+        tc = price_cents(t)
+        hit = hc > tc if side == 'long' else lc < tc
+        if not hit.any():
+            continue
+        i = int(np.argmax(hit))
+        held = (price_cents(close) > tc) if side == 'long' else (price_cents(close) < tc)
+        out.append(Break(session=s, side=side, trigger=float(t), atr=float(atr),
+                         held=bool(held), bars=bars.iloc[i:].reset_index(drop=True),
+                         structure=(sma, trig.get(f'{side}_stop')),
+                         arrays=(ts[i:], h[i:], lo[i:], hc[i:], lc[i:])))
     return out
+
+
+def _prior_sma(d: pd.DataFrame, s) -> Optional[float]:
+    sma = d.at[s, 'prior_sma_200'] if 'prior_sma_200' in d.columns else None
+    return float(sma) if sma is not None and sma == sma else None
 
 
 def find_breaks(d: pd.DataFrame, m: pd.DataFrame,
@@ -455,52 +556,115 @@ def find_breaks(d: pd.DataFrame, m: pd.DataFrame,
     trigger's cent. A held break's session close is beyond the trigger on
     its side."""
     out = []
-    rth = _rth(m)
-    by_session = dict(tuple(rth.groupby('session')))
+    by_session = dict(tuple(_rth(m).groupby('session')))
     for s, trig in sorted(triggers.items()):
-        bars = by_session.get(s)
-        atr = trig.get('atr')
-        if bars is None or not len(bars) or not (atr and atr > 0) or s not in d.index:
+        if s not in d.index:
             continue
-        close = d.at[s, 'close']
-        sma = d.at[s, 'prior_sma_200'] if 'prior_sma_200' in d.columns else None
-        sma = float(sma) if sma is not None and sma == sma else None
-        for side in SIDES:
-            t = trig.get(side)
-            if t is None:
-                continue
-            tc = price_cents(t)
-            if side == 'long':
-                hit = bars['high'].map(price_cents).to_numpy() > tc
-            else:
-                hit = bars['low'].map(price_cents).to_numpy() < tc
-            if not hit.any():
-                continue
-            i = int(np.argmax(hit))
-            held = (price_cents(close) > tc) if side == 'long' else (price_cents(close) < tc)
-            out.append(Break(session=s, side=side, trigger=float(t), atr=float(atr),
-                             held=bool(held), bars=bars.iloc[i:].reset_index(drop=True),
-                             structure=(sma, trig.get(f'{side}_stop'))))
+        out.extend(session_breaks(s, trig, by_session.get(s), d.at[s, 'close'], _prior_sma(d, s)))
     return out
+
+
+# Break outcomes are computed for many breaks at once on padded arrays
+# (BreakBatch): row i is break i's bars from its break bar on, padded with
+# invalid cells. Every rule reads only a row's own valid cells, so a row's
+# result does not depend on which other breaks share the batch.
+
+_NS_PER_MINUTE = int(pd.Timedelta(minutes=1).value)
+
+
+class BreakBatch:
+    """Breaks as padded arrays. `rows(idx)` takes a sub-batch."""
+
+    def __init__(self, breaks: Sequence[Break] = (), *, _arrays: Optional[dict] = None):
+        if _arrays is not None:
+            self.__dict__.update(_arrays)
+            return
+        n = len(breaks)
+        arrs = [b.bar_arrays() for b in breaks]
+        w = max([len(a[0]) for a in arrs] + [1])
+        self.ts = np.zeros((n, w), dtype=np.int64)
+        self.h = np.full((n, w), np.nan)
+        self.lo = np.full((n, w), np.nan)
+        self.hc = np.zeros((n, w), dtype=np.int64)
+        self.lc = np.zeros((n, w), dtype=np.int64)
+        self.valid = np.zeros((n, w), dtype=bool)
+        for i, (ts, h, lo, hc, lc) in enumerate(arrs):
+            k = len(ts)
+            self.ts[i, :k], self.h[i, :k], self.lo[i, :k] = ts, h, lo
+            self.hc[i, :k], self.lc[i, :k] = hc, lc
+            self.valid[i, :k] = True
+        self.trigger = np.array([b.trigger for b in breaks], dtype=float)
+        self.atr = np.array([b.atr for b in breaks], dtype=float)
+        self.sign = np.array([b.sign for b in breaks], dtype=float)
+        self.long = self.sign > 0
+        self.held = np.array([b.held for b in breaks], dtype=bool)
+        self.tcents = np.array([price_cents(b.trigger) for b in breaks], dtype=np.int64)
+
+    def __len__(self) -> int:
+        return len(self.trigger)
+
+    def rows(self, idx) -> 'BreakBatch':
+        return BreakBatch(_arrays={k: v[idx] for k, v in self.__dict__.items()})
+
+    @property
+    def _col(self) -> np.ndarray:
+        return np.arange(self.h.shape[1])[None, :]
+
+    def follow_through(self, minutes: int) -> np.ndarray:
+        """F per break: the furthest beyond the trigger, in ATR, from the
+        break bar until the first later bar that trades back to the
+        trigger's cent, or until `minutes` after the break bar."""
+        col = self._col
+        late = self.ts >= (self.ts[:, :1] + int(minutes) * _NS_PER_MINUTE)
+        back = np.where(self.long[:, None], self.lc <= self.tcents[:, None],
+                        self.hc >= self.tcents[:, None]) & (col > 0)
+        end = ~self.valid | late | back
+        first = np.where(end.any(axis=1), end.argmax(axis=1), end.shape[1])
+        run = np.where(self.long[:, None], self.h - self.trigger[:, None],
+                       self.trigger[:, None] - self.lo) / self.atr[:, None]
+        keep = (col < first[:, None]) & ~np.isnan(run)
+        best = np.where(keep, run, -np.inf).max(axis=1, initial=-np.inf)
+        return np.maximum(0.0, best) + 0.0
+
+    def fill(self, midpoint: np.ndarray) -> np.ndarray:
+        """Fill bar per break (the first bar after the break bar that trades
+        at the midpoint), -1 when never filled."""
+        mid = np.asarray(midpoint, dtype=float)[:, None]
+        hit = self.valid[:, 1:] & (self.lo[:, 1:] <= mid) & (self.h[:, 1:] >= mid)
+        return np.where(hit.any(axis=1), hit.argmax(axis=1) + 1, -1)
+
+    def mae(self, midpoint: np.ndarray, j: np.ndarray) -> np.ndarray:
+        """Adverse excursion in ATR from the fill price, the fill bar's
+        adverse extreme included, to the close (filled rows)."""
+        mid = np.asarray(midpoint, dtype=float)[:, None]
+        adverse = np.where(self.long[:, None], mid - self.lo, self.h - mid)
+        keep = self.valid & (self._col >= j[:, None])
+        worst = np.where(keep, adverse, -np.inf).max(axis=1, initial=-np.inf)
+        return np.maximum(worst, 0.0) / self.atr
+
+    def reach(self, midpoint: np.ndarray, j: np.ndarray, stop: np.ndarray,
+              risk: np.ndarray) -> np.ndarray:
+        """Favourable excursion in R = `risk` (price) on bars after the fill
+        bar, before the first bar from the fill bar on that touches `stop`
+        (the fill bar's stop, or a bar touching stop and target, counts as
+        first)."""
+        col = self._col
+        mid = np.asarray(midpoint, dtype=float)[:, None]
+        stop = np.asarray(stop, dtype=float)[:, None]
+        from_fill = self.valid & (col >= j[:, None])
+        stopped = from_fill & np.where(self.long[:, None], self.lo <= stop, self.h >= stop)
+        first = np.where(stopped.any(axis=1), stopped.argmax(axis=1), stopped.shape[1])
+        fav = np.where(self.long[:, None], self.h - mid, mid - self.lo) / np.asarray(risk)[:, None]
+        keep = from_fill & (col > j[:, None]) & (col < first[:, None]) & ~np.isnan(fav)
+        best = np.where(keep, fav, -np.inf).max(axis=1, initial=-np.inf)
+        return np.maximum(0.0, best)
 
 
 def follow_through(b: Break, minutes: int) -> float:
     """F: the furthest the break ran beyond the trigger, in ATR, from the
     break bar until the first later bar that trades back to the trigger's
     cent or until `minutes` after the break bar, whichever comes first."""
-    t0 = b.bars['timestamp'].iloc[0]
-    tc = price_cents(b.trigger)
-    best = 0.0
-    for j, r in enumerate(b.bars.itertuples(index=False)):
-        if r.timestamp >= t0 + pd.Timedelta(minutes=int(minutes)):
-            break
-        if j > 0:
-            back = price_cents(r.low) <= tc if b.side == 'long' else price_cents(r.high) >= tc
-            if back:
-                break
-        run = (r.high - b.trigger) if b.side == 'long' else (b.trigger - r.low)
-        best = max(best, run / b.atr)
-    return best
+    return float(BreakBatch([b]).follow_through(minutes)[0])
 
 
 @dataclass(frozen=True)
@@ -515,9 +679,8 @@ class Outcome:
 def persona_fill(b: Break, midpoint: float) -> Optional[int]:
     """Index of the fill bar: the first bar after the break bar that trades
     at the entry midpoint."""
-    lo, hi = b.bars['low'].to_numpy(), b.bars['high'].to_numpy()
-    hit = (lo[1:] <= midpoint) & (hi[1:] >= midpoint)
-    return int(np.argmax(hit)) + 1 if hit.any() else None
+    j = int(BreakBatch([b]).fill(np.array([midpoint]))[0])
+    return j if j >= 0 else None
 
 
 def persona_outcome(b: Break, midpoint: float, risk_atr: Optional[float] = None, *,
@@ -533,29 +696,20 @@ def persona_outcome(b: Break, midpoint: float, risk_atr: Optional[float] = None,
       as a favourable extreme, is taken as first). The fill bar's
       favourable extreme counts toward nothing.
     """
-    j = persona_fill(b, midpoint)
-    if j is None:
+    batch = BreakBatch([b])
+    mid = np.array([midpoint], dtype=float)
+    j = batch.fill(mid)
+    if j[0] < 0:
         return Outcome(filled=False)
-    s = b.sign
-    lo, hi = b.bars['low'].to_numpy()[j:], b.bars['high'].to_numpy()[j:]
-    adverse = (midpoint - lo) if s > 0 else (hi - midpoint)
-    mae = max(float(np.max(adverse)), 0.0) / b.atr
+    mae = float(batch.mae(mid, j)[0])
     if stop is None and risk_atr is None:
         return Outcome(filled=True, mae_atr=mae)
     if stop is None:
         risk = float(risk_atr) * b.atr
-        stop = midpoint - s * risk
+        stop = midpoint - b.sign * risk
     else:
         risk = abs(midpoint - stop)
-    reach = 0.0
-    for k in range(len(lo)):
-        stopped = (lo[k] <= stop) if s > 0 else (hi[k] >= stop)
-        if stopped:
-            break
-        if k == 0:
-            continue
-        fav = (hi[k] - midpoint) if s > 0 else (midpoint - lo[k])
-        reach = max(reach, fav / risk)
+    reach = float(batch.reach(mid, j, np.array([stop]), np.array([risk]))[0])
     return Outcome(filled=True, mae_atr=mae, reach_r=reach)
 
 
@@ -580,12 +734,151 @@ def _not_ok(key: str, row: dict, upstream: Calibrated) -> Calibrated:
     return _result(key, row, status, None, upstream.sample_n, [])
 
 
-def break_params(breaks: List[Break], policy: Dict[str, dict]) -> Dict[str, Calibrated]:
+class BreakBank:
+    """Every break one calibration reads, with per-break results kept across
+    calibrations: follow-through per follow_through_minutes, and each
+    persona's fill, adverse excursion and reach for the last set of values
+    they were computed with (a later calibration whose values are the same
+    computes only the breaks it has not seen). Results are per break and do
+    not depend on which other breaks a calibration reads, so a calibration
+    through a bank equals one on a fresh bank of its own breaks."""
+
+    def __init__(self, breaks: Sequence[Break] = ()):
+        self.breaks: List[Break] = []
+        # Row storage with spare capacity (doubled when full), so adding a
+        # session's breaks does not copy every earlier break's bars.
+        self._store: Optional[dict] = None
+        self._ft: Dict[int, np.ndarray] = {}
+        self._fill: Dict[str, tuple] = {}
+        self._reach: Dict[str, tuple] = {}
+        self.add(breaks)
+
+    @property
+    def batch(self) -> Optional[BreakBatch]:
+        if self._store is None:
+            return None
+        n = len(self.breaks)
+        return BreakBatch(_arrays={k: v[:n] for k, v in self._store.items()})
+
+    def _reserve(self, rows: int, width: int) -> None:
+        st = self._store
+        cap, w = (0, 0) if st is None else (len(st['trigger']), st['h'].shape[1])
+        if st is not None and rows <= cap and width <= w:
+            return
+        new_cap, new_w = max(rows, 2 * cap, 64), max(width, w)
+        template = BreakBatch([])
+        out = {}
+        for k, v in template.__dict__.items():
+            if v.ndim == 2:
+                fill = np.nan if v.dtype.kind == 'f' else (False if v.dtype == bool else 0)
+                a = np.full((new_cap, new_w), fill, dtype=v.dtype)
+                if st is not None:
+                    a[:cap, :w] = st[k]
+            else:
+                a = np.zeros(new_cap, dtype=v.dtype)
+                if st is not None:
+                    a[:cap] = st[k]
+            out[k] = a
+        self._store = out
+
+    def add(self, breaks: Sequence[Break]) -> np.ndarray:
+        """Append breaks; returns their ids."""
+        start = len(self.breaks)
+        if not breaks:
+            return np.arange(start, start)
+        new = BreakBatch(breaks)
+        end = start + len(breaks)
+        self._reserve(end, new.h.shape[1])
+        for k, v in new.__dict__.items():
+            if v.ndim == 2:
+                self._store[k][start:end, :v.shape[1]] = v
+            else:
+                self._store[k][start:end] = v
+        self.breaks.extend(breaks)
+        for k in list(self._ft):
+            self._ft[k] = np.concatenate([self._ft[k], np.full(len(breaks), np.nan)])
+        for d in (self._fill, self._reach):
+            for k, (key, arrs) in list(d.items()):
+                d[k] = (key, tuple(np.concatenate([a, np.full(len(breaks), np.nan)])
+                                   for a in arrs))
+        return np.arange(start, end)
+
+    def follow_through(self, ids: np.ndarray, minutes: int) -> np.ndarray:
+        ft = self._ft.setdefault(int(minutes), np.full(len(self.breaks), np.nan))
+        todo = ids[np.isnan(ft[ids])]
+        if len(todo):
+            ft[todo] = self.batch.rows(todo).follow_through(minutes)
+        return ft[ids]
+
+    def _cached(self, store: dict, persona: str, key: tuple, ids: np.ndarray, n_out: int, compute):
+        prev = store.get(persona)
+        if prev is None or prev[0] != key:
+            prev = (key, tuple(np.full(len(self.breaks), np.nan) for _ in range(n_out)))
+            store[persona] = prev
+        arrs = prev[1]
+        todo = ids[np.isnan(arrs[0][ids])]
+        if len(todo):
+            for a, v in zip(arrs, compute(todo)):
+                a[todo] = v
+        return tuple(a[ids] for a in arrs)
+
+    def fills(self, ids: np.ndarray, persona: str, lo_atr: float, hi_atr: float) -> tuple:
+        """(midpoint, fill bar or -1, adverse excursion in ATR or NaN)."""
+        def compute(todo):
+            mid = np.array([_midpoint(self.breaks[i], lo_atr, hi_atr) for i in todo])
+            sub = self.batch.rows(todo)
+            j = sub.fill(mid)
+            mae = np.full(len(todo), np.nan)
+            ok = j >= 0
+            if ok.any():
+                mae[ok] = sub.rows(np.flatnonzero(ok)).mae(mid[ok], j[ok])
+            return mid, j.astype(float), mae
+        mid, j, mae = self._cached(self._fill, persona, (lo_atr, hi_atr), ids, 3, compute)
+        return mid, j.astype(int), mae
+
+    def reaches(self, ids: np.ndarray, persona: str, lo_atr: float, hi_atr: float,
+                stop_atr: float, min_stop_atr: float) -> np.ndarray:
+        """Reach in the planner's R for filled breaks among `ids`."""
+        def compute(todo):
+            mid, j, _mae = self.fills(todo, persona, lo_atr, hi_atr)
+            stops = np.array([planned_stop(self.breaks[i], persona, lo_atr, hi_atr, stop_atr,
+                                           min_stop_atr)[1] for i in todo])
+            risk = np.abs(mid - stops)
+            out = np.full(len(todo), np.nan)
+            ok = j >= 0
+            if ok.any():
+                out[ok] = self.batch.rows(todo[ok]).reach(mid[ok], j[ok], stops[ok], risk[ok])
+            return (out,)
+        # A filled break's reach is never NaN; an unfilled one's stays NaN,
+        # so it is recomputed (cheaply, it is never filled) on a cache hit.
+        (out,) = self._cached(self._reach, persona, (lo_atr, hi_atr, stop_atr, min_stop_atr),
+                              ids, 1, compute)
+        return out
+
+
+def _span(sessions: np.ndarray) -> list:
+    return [sessions.min(), sessions.max()] if len(sessions) else []
+
+
+def break_params(breaks: List[Break], policy: Dict[str, dict], *,
+                 bank: Optional[BreakBank] = None, ids: Optional[np.ndarray] = None
+                 ) -> Dict[str, Calibrated]:
     """Entry buffers, stops, the floor and targets from the breaks (both
     sides pooled), in the spec's order. A parameter measured with another
-    that is not ok carries that one's status."""
+    that is not ok carries that one's status. `bank` and `ids` (history
+    mode) name the breaks in a BreakBank whose per-break results are reused
+    across calibrations; without them the breaks get a bank of their own."""
+    if bank is None:
+        bank = BreakBank(breaks)
+        ids = np.arange(len(breaks))
+    ids = np.asarray(ids, dtype=int)
     out: Dict[str, Calibrated] = {}
-    dates = [b.session for b in breaks]
+    sessions = np.array([bank.breaks[i].session for i in ids], dtype='datetime64[ns]')
+    held = (bank.batch.held[ids] if len(ids) else np.zeros(0, dtype=bool))
+    n = len(ids)
+
+    def dates(mask=None) -> list:
+        return [pd.Timestamp(x) for x in _span(sessions if mask is None else sessions[mask])]
 
     # Entry buffers: quantiles of follow-through over all breaks.
     for persona in PERSONAS:
@@ -594,29 +887,27 @@ def break_params(breaks: List[Break], policy: Dict[str, dict]) -> Dict[str, Cali
             row = _policy(policy, key)
             minutes = int(row['extra'].get('follow_through_minutes') or 0)
             if row.get('method_id') == 'at_trigger':
-                out[key] = _stat(key, row, [0.0] * len(breaks), dates, value_fn=lambda _s: 0.0)
+                out[key] = _stat(key, row, [0.0] * n, dates(), value_fn=lambda _s: 0.0)
                 continue
-            ft = [follow_through(b, minutes) for b in breaks]
-            out[key] = _stat(key, row, ft, dates)
+            ft = bank.follow_through(ids, minutes) if n else np.zeros(0)
+            out[key] = _stat(key, row, ft, dates())
 
     # Fills at each persona's entry midpoint; stops on filled held breaks.
-    fills: Dict[str, List[tuple]] = {}
+    fills: Dict[str, np.ndarray] = {}
+    maes: Dict[str, np.ndarray] = {}
     for persona in PERSONAS:
         lo, hi = out[entry_buffer_key(persona, 'lo')], out[entry_buffer_key(persona, 'hi')]
         skey = stop_key(persona)
         srow = _policy(policy, skey)
         if not (lo.ok and hi.ok):
             out[skey] = _not_ok(skey, srow, lo if not lo.ok else hi)
-            fills[persona] = []
+            fills[persona] = np.zeros(n, dtype=bool)
             continue
-        fl = []
-        for b in breaks:
-            o = persona_outcome(b, _midpoint(b, lo.value, hi.value))
-            if o.filled:
-                fl.append((b, o))
-        fills[persona] = fl
-        held = [(b, o) for b, o in fl if b.held]
-        out[skey] = _stat(skey, srow, [o.mae_atr for _b, o in held], [b.session for b, _o in held])
+        _mid, j, mae = bank.fills(ids, persona, lo.value, hi.value) if n else \
+            (np.zeros(0), np.zeros(0, dtype=int), np.zeros(0))
+        fills[persona], maes[persona] = j >= 0, mae
+        sel = fills[persona] & held
+        out[skey] = _stat(skey, srow, mae[sel], dates(sel))
 
     mrow = _policy(policy, MIN_STOP_KEY)
     floor_persona = mrow['extra'].get('persona') or 'neutral'
@@ -624,15 +915,17 @@ def break_params(breaks: List[Break], policy: Dict[str, dict]) -> Dict[str, Cali
     if not (flo.ok and fhi.ok):
         out[MIN_STOP_KEY] = _not_ok(MIN_STOP_KEY, mrow, flo if not flo.ok else fhi)
     else:
-        held = [(b, o) for b, o in fills[floor_persona] if b.held]
-        out[MIN_STOP_KEY] = _stat(MIN_STOP_KEY, mrow, [o.mae_atr for _b, o in held],
-                                  [b.session for b, _o in held])
+        sel = fills[floor_persona] & held
+        out[MIN_STOP_KEY] = _stat(MIN_STOP_KEY, mrow, maes[floor_persona][sel], dates(sel))
 
-    # Targets: reach shares on filled breaks, in the persona's own R.
+    # Targets: reach shares on filled breaks, in the R the planner publishes
+    # (lib.strat_levels.persona_stop_price). The reaches do not depend on
+    # the share, so they are measured once per persona.
     for persona in PERSONAS:
         k = 1
         stop_c, floor_c = out[stop_key(persona)], out[MIN_STOP_KEY]
-        prev, blocked = None, None
+        prev, blocked, reaches = None, None, None
+        sel = fills[persona]
         while target_key(persona, k) in policy:
             key = target_key(persona, k)
             row = _policy(policy, key)
@@ -643,16 +936,15 @@ def break_params(breaks: List[Break], policy: Dict[str, dict]) -> Dict[str, Cali
             if not (stop_c.ok and floor_c.ok):
                 out[key] = _not_ok(key, row, stop_c if not stop_c.ok else floor_c)
                 continue
-            lo = out[entry_buffer_key(persona, 'lo')].value
-            hi = out[entry_buffer_key(persona, 'hi')].value
-            reaches, used = [], []
-            for b, _o in fills[persona]:
-                mid, stop = planned_stop(b, persona, lo, hi, stop_c.value, floor_c.value)
-                o = persona_outcome(b, mid, stop=stop)
-                reaches.append(o.reach_r)
-                used.append(b.session)
+            if reaches is None:
+                lo = out[entry_buffer_key(persona, 'lo')].value
+                hi = out[entry_buffer_key(persona, 'hi')].value
+                reaches = bank.reaches(ids, persona, lo, hi, stop_c.value,
+                                       floor_c.value)[sel] if n else np.zeros(0)
+            used = dates(sel)
             share = _q(row)
-            c = _stat(key, row, reaches, used, value_fn=lambda s, share=share: reach_share_value(s, share))
+            c = _stat(key, row, reaches, used,
+                      value_fn=lambda s, share=share: reach_share_value(s, share))
             if c.ok and (c.value <= 0 or (prev is not None and c.value <= prev)):
                 c = _result(key, row, NO_POSITIVE_TARGET, None, c.sample_n, used)
                 blocked = c
@@ -665,33 +957,25 @@ def break_params(breaks: List[Break], policy: Dict[str, dict]) -> Dict[str, Cali
 # ── one ticker, one effective date ───────────────────────────────────────
 
 
-def prepare(daily: pd.DataFrame, minutes: Optional[pd.DataFrame], policy: Dict[str, dict],
-            before) -> tuple:
-    """Normalize a ticker's bars once for several calibrations (history
-    mode): calibrate(..., prepared=...) then cuts them to each as_of."""
-    atr_basis = policy_atr_basis(policy)
-    return normalize_daily(daily, atr_basis, before), normalize_minutes(minutes, before)
+def _break_lookback(policy: Dict[str, dict]) -> int:
+    return max(int(_policy(policy, entry_buffer_key(p, e))['lookback_sessions'])
+               for p in PERSONAS for e in ('lo', 'hi'))
 
 
 def calibrate(ticker: str, daily: pd.DataFrame, minutes: Optional[pd.DataFrame],
-              policy: Dict[str, dict], as_of, *,
-              triggers: Optional[Dict[pd.Timestamp, dict]] = None,
-              prepared: Optional[tuple] = None) -> Dict[str, Calibrated]:
+              policy: Dict[str, dict], as_of) -> Dict[str, Calibrated]:
     """Every Design 2 parameter for `ticker`, effective `as_of`, from bars
     dated strictly before it. `daily` carries High, Low, Close and the
     policy's ATR column (atr_14 or atr_5, or ATR14/ATR5); `minutes` the
-    one-minute bars (timestamp in ET, open, high, low, close). `triggers`
-    (session -> {'long', 'short', 'atr'}) may be passed precomputed (history
-    mode computes them once); sessions on or after `as_of` are ignored."""
+    one-minute bars (timestamp in ET, open, high, low, close).
+
+    The reference path: everything is measured afresh for `as_of`.
+    HistoryCalibrator gives the same results for many effective dates from
+    one pass over the bars."""
     as_of = pd.Timestamp(as_of).normalize()
     atr_basis = policy_atr_basis(policy)
-    if prepared is not None:
-        d_all, m_all = prepared
-        d = d_all[d_all.index < as_of]
-        m = m_all[m_all['session'] < as_of] if len(m_all) else m_all
-    else:
-        d = normalize_daily(daily, atr_basis, as_of)
-        m = normalize_minutes(minutes, as_of)
+    d = normalize_daily(daily, atr_basis, as_of)
+    m = normalize_minutes(minutes, as_of)
     out: Dict[str, Calibrated] = {}
     for side in SIDES:
         out[trigger_window_key(side)] = trigger_window(d, policy, side)
@@ -700,17 +984,175 @@ def calibrate(ticker: str, daily: pd.DataFrame, minutes: Optional[pd.DataFrame],
     out[PM_STALE_PRINT_KEY] = pm_stale_print(d, m, policy, spike)
     out[LEVEL_CLUSTER_KEY] = level_cluster(d, m, policy)
 
-    lookback = max(int(_policy(policy, entry_buffer_key(p, e))['lookback_sessions'])
-                   for p in PERSONAS for e in ('lo', 'hi'))
-    sessions = _lookback_sessions(d, lookback)
+    sessions = _lookback_sessions(d, _break_lookback(policy))
     minute_sessions = set(m['session'].unique()) if len(m) else set()
     sessions = [s for s in sessions if s in minute_sessions]
-    if triggers is None:
-        trig = replay_triggers(ticker, daily_before(daily, as_of), d, policy, sessions, atr_basis)
-    else:
-        trig = {s: triggers[s] for s in sessions if s in triggers}
+    trig = replay_triggers(ticker, daily_before(daily, as_of), d, policy, sessions, atr_basis)
     out.update(break_params(find_breaks(d, m, trig), policy))
     return out
+
+
+class HistoryCalibrator:
+    """History mode for one ticker: the parameters for many effective dates,
+    each from bars strictly before it and under the policy in force on it,
+    equal to calibrate() for that date and policy, from one read of the
+    bars.
+
+    What does not depend on the effective date is measured once and reused:
+    each session's one-minute samples (wick excesses, premarket spread parts,
+    interval changes), each session's replayed trigger under a given trigger
+    window policy and ATR basis, each session's breaks, and each break's
+    follow-through, fill, adverse excursion and reach (BreakBank). Each date
+    then cuts the per-session results to its own lookback and takes its
+    statistics."""
+
+    def __init__(self, ticker: str, daily: pd.DataFrame, minutes: Optional[pd.DataFrame], before):
+        self.ticker = ticker
+        self.before = pd.Timestamp(before).normalize()
+        self.daily = daily_before(daily, self.before)
+        self.m = normalize_minutes(minutes, self.before)
+        self.rth = dict(tuple(_rth(self.m).groupby('session'))) if len(self.m) else {}
+        self.pm = dict(tuple(_premarket(self.m).groupby('session'))) if len(self.m) else {}
+        self.minute_sessions = set(self.m['session'].unique()) if len(self.m) else set()
+        self._d: Dict[str, pd.DataFrame] = {}
+        self._wick: Dict[pd.Timestamp, np.ndarray] = {}
+        self._parts: Dict[pd.Timestamp, SpreadParts] = {}
+        self._changes: Dict[tuple, np.ndarray] = {}
+        self._rth_cents: Dict[pd.Timestamp, tuple] = {}
+        # Per (trigger window policy, ATR basis): replayed triggers, the
+        # breaks of each session (ids in the bank) and the bank.
+        self._trig: Dict[tuple, Dict[pd.Timestamp, dict]] = {}
+        self._banks: Dict[tuple, BreakBank] = {}
+        self._break_ids: Dict[tuple, Dict[pd.Timestamp, np.ndarray]] = {}
+
+    def daily_frame(self, atr_basis: str) -> pd.DataFrame:
+        if atr_basis not in self._d:
+            self._d[atr_basis] = normalize_daily(self.daily, atr_basis, self.before)
+        return self._d[atr_basis]
+
+    @staticmethod
+    def _cut(d: pd.DataFrame, as_of: pd.Timestamp) -> pd.DataFrame:
+        return d.iloc[:int(d.index.searchsorted(as_of, side='left'))]
+
+    # ── one-minute thresholds ───────────────────────────────────────
+    def _pm_spike(self, d: pd.DataFrame, policy: Dict[str, dict]) -> Calibrated:
+        row = _policy(policy, PM_SPIKE_KEY)
+        min_bars = int(row['extra'].get('min_bars_per_session') or 0)
+        samples, used = [], []
+        for s in _lookback_sessions(d, row['lookback_sessions']):
+            g = self.rth.get(s)
+            if g is None:
+                continue
+            atr = d.at[s, 'prior_atr']
+            if len(g) < min_bars or not (atr == atr and atr > 0):
+                continue
+            if s not in self._wick:
+                self._wick[s] = wick_excesses(g)
+            x = self._wick[s] / atr
+            if len(x):
+                samples.append(x)
+                used.append(s)
+        return _stat(PM_SPIKE_KEY, row, np.concatenate(samples) if samples else [], used,
+                     n=len(used))
+
+    def _pm_stale_print(self, d: pd.DataFrame, policy: Dict[str, dict],
+                        spike: Calibrated) -> Calibrated:
+        row = _policy(policy, PM_STALE_PRINT_KEY)
+        if not spike.ok:
+            status = spike.status if spike.status == INSUFFICIENT_HISTORY else INPUT_UNAVAILABLE
+            return _result(PM_STALE_PRINT_KEY, row, status, None, 0, [])
+        min_bars = int(row['extra'].get('min_bars_per_session') or 0)
+        samples, used = [], []
+        for s in _lookback_sessions(d, row['lookback_sessions']):
+            g = self.pm.get(s)
+            if g is None:
+                continue
+            atr, pc = d.at[s, 'prior_atr'], d.at[s, 'prior_close']
+            if len(g) < min_bars or not (atr == atr and atr > 0) or not pc == pc:
+                continue
+            if s not in self._parts:
+                self._parts[s] = premarket_spread_parts(g, pc)
+            x = clean_spreads(self._parts[s], spike.value * atr) / atr
+            if len(x):
+                samples.append(x)
+                used.append(s)
+        return _stat(PM_STALE_PRINT_KEY, row, np.concatenate(samples) if samples else [], used,
+                     n=len(used))
+
+    def _level_cluster(self, d: pd.DataFrame, policy: Dict[str, dict]) -> Calibrated:
+        row = _policy(policy, LEVEL_CLUSTER_KEY)
+        mins = int(row['extra'].get('interval_minutes') or 0)
+        if mins <= 0:
+            raise ValueError("level_cluster_atr policy names no interval_minutes")
+        samples, used = [], []
+        for s in _lookback_sessions(d, row['lookback_sessions']):
+            g = self.rth.get(s)
+            if g is None:
+                continue
+            if (s, mins) not in self._changes:
+                self._changes[(s, mins)] = interval_changes(g, mins)
+            ch = self._changes[(s, mins)]
+            atr = d.at[s, 'prior_atr']
+            if not len(ch) or not (atr == atr and atr > 0):
+                continue
+            samples.append(ch / atr)
+            used.append(s)
+        return _stat(LEVEL_CLUSTER_KEY, row, np.concatenate(samples) if samples else [], used,
+                     n=len(used))
+
+    # ── breaks ───────────────────────────────────────────────────────
+    @staticmethod
+    def _window_signature(policy: Dict[str, dict], atr_basis: str) -> tuple:
+        sig = [atr_basis]
+        for side in SIDES:
+            r = _policy(policy, trigger_window_key(side))
+            sig.append((r.get('method_id'), r.get('statistic_q'), r.get('lookback_sessions'),
+                        r.get('min_sample')))
+        return tuple(sig)
+
+    def _break_ids_for(self, sessions, policy: Dict[str, dict], atr_basis: str,
+                       d_full: pd.DataFrame) -> tuple:
+        sig = self._window_signature(policy, atr_basis)
+        trig = self._trig.setdefault(sig, {})
+        bank = self._banks.setdefault(sig, BreakBank())
+        by_session = self._break_ids.setdefault(sig, {})
+        new = [s for s in sessions if s not in by_session]
+        for s in new:
+            if s not in trig:
+                before = self._cut(d_full, s)
+                trig[s] = replay_trigger(self.ticker, self.daily, before, policy, s, atr_basis)
+            bars = self.rth.get(s)
+            if bars is not None and s not in self._rth_cents:
+                self._rth_cents[s] = (cents_array(bars['high'].to_numpy(dtype=float)),
+                                      cents_array(bars['low'].to_numpy(dtype=float)))
+            brks = session_breaks(s, trig[s], bars, d_full.at[s, 'close'], _prior_sma(d_full, s),
+                                  self._rth_cents.get(s)) if s in d_full.index else []
+            by_session[s] = bank.add(brks)
+        parts = [by_session[s] for s in sessions]
+        ids = np.concatenate(parts) if parts else np.zeros(0, dtype=int)
+        return bank, ids
+
+    # ── one effective date ───────────────────────────────────────────
+    def calibrate(self, policy: Dict[str, dict], as_of) -> Dict[str, Calibrated]:
+        as_of = pd.Timestamp(as_of).normalize()
+        if as_of > self.before:
+            raise ValueError(f"{as_of.date()} is after the bars this calibrator read "
+                             f"(before {self.before.date()})")
+        atr_basis = policy_atr_basis(policy)
+        d_full = self.daily_frame(atr_basis)
+        d = self._cut(d_full, as_of)
+        out: Dict[str, Calibrated] = {}
+        for side in SIDES:
+            out[trigger_window_key(side)] = trigger_window(d, policy, side)
+        spike = self._pm_spike(d, policy)
+        out[PM_SPIKE_KEY] = spike
+        out[PM_STALE_PRINT_KEY] = self._pm_stale_print(d, policy, spike)
+        out[LEVEL_CLUSTER_KEY] = self._level_cluster(d, policy)
+        sessions = [s for s in _lookback_sessions(d, _break_lookback(policy))
+                    if s in self.minute_sessions]
+        bank, ids = self._break_ids_for(sessions, policy, atr_basis, d_full)
+        out.update(break_params([], policy, bank=bank, ids=ids))
+        return out
 
 
 def to_rows(ticker: str, results: Dict[str, Calibrated], policy: Dict[str, dict], effective_from,

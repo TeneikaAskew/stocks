@@ -13,7 +13,12 @@ stored as true UTC (dates after lib.eastern_time.TRUE_UTC_FROM).
 * One ticker's failed read is logged and skipped, and the run exits
   non-zero.
 * History mode writes one version per session, each from bars strictly
-  before it, equal to a nightly run for that session.
+  before it and under the policy in force on it, equal to a nightly run for
+  that session; it writes in chunks of sessions, so a failure keeps the
+  chunks written and a rerun converges.
+* A basis switch follows Design 4's order: the new-basis history run writes
+  beside the old rows, and after the policy row takes effect on D a session
+  before D still reads the old values.
 * The module is not wired into gcp/deploy.sh (Design 9).
 
 On origin/main and the #1753 head the module does not exist.
@@ -119,9 +124,9 @@ class FakeDb:
 
 
 def _run(db, tickers=TICKERS, dates=(EFF,), source="nightly"):
-    policy = job.read_policy(db.query, max(dates))
+    rows = job.read_policy_rows(db.query, max(dates))
     return job.run(list(tickers), list(dates), query=db.query, write=db.write,
-                   policy=policy, source=source)
+                   policy_rows=rows, source=source)
 
 
 def test_n_tickers_cost_n_reads_and_n_write_batches():
@@ -221,3 +226,137 @@ def test_default_universe_is_the_policy_sources(monkeypatch):
 def test_not_in_deploy_sh():
     deploy = (ROOT / "gcp" / "deploy.sh").read_text()
     assert "calibrate_level_params" not in deploy and "calibrate-level-params" not in deploy
+
+
+# ── review findings 1 and 2: per-session policy, chunks, basis switch ──
+
+HIST = ["2026-11-03", "2026-11-06"]
+SESSIONS = ["2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06"]
+KEEP = ("ticker, param_key, value, status, atr_basis, method_id, policy_effective_from, "
+        "sample_n, input_from, input_to, effective_from")
+
+
+def _main(monkeypatch, db, *args):
+    import gcp.database as database
+
+    monkeypatch.setattr(database, "query_to_dataframe_strict", db.query)
+    monkeypatch.setattr(database, "record_job_run", lambda *a, **k: True)
+    monkeypatch.setattr(job, "_engine_writer", lambda: db.write)
+    return job.main(["--tickers", "SPY", *args])
+
+
+def _add_policy(db, key, effective_from, **fields):
+    """A later policy row for `key`: the latest row's fields with `fields`
+    changed, effective `effective_from`."""
+    cols = ("method_id", "statistic_q", "lookback_sessions", "min_sample", "extra")
+    latest = db.pdb.conn.execute(
+        f"SELECT {', '.join(cols)} FROM level_param_policy WHERE param_key = ? "
+        "ORDER BY effective_from DESC LIMIT 1", (key,)).fetchone()
+    row = {**dict(zip(cols, latest)), **fields}
+    db.pdb.conn.execute(
+        f"INSERT INTO level_param_policy ({', '.join(cols)}, param_key, effective_from) "
+        "VALUES (?,?,?,?,?,?,?)", (*[row[c] for c in cols], key, effective_from))
+    db.pdb.conn.commit()
+
+
+def _on(rows, day):
+    return rows[rows["effective_from"] == day].reset_index(drop=True)
+
+
+def test_history_mode_uses_the_policy_in_force_on_each_session(monkeypatch):
+    """Two policy rows for trigger_window_long_atr, the second (coverage
+    0.95) effective 2026-11-05. A history rerun over 11-03..11-06 leaves the
+    11-03 and 11-04 rows as the first run wrote them under the old row, and
+    writes 11-05 and 11-06 under the new row, each equal to a nightly run
+    for that session."""
+    db = FakeDb()
+    assert _main(monkeypatch, db, "--history", *HIST) == 0
+    before = db.rows(KEEP)
+    _add_policy(db, "trigger_window_long_atr", "2026-11-05", statistic_q=0.95)
+    assert _main(monkeypatch, db, "--history", *HIST) == 0
+    after = db.rows(KEEP)
+    for day in SESSIONS[:2]:
+        pd.testing.assert_frame_equal(_on(after, day), _on(before, day))
+    key = after["param_key"] == "trigger_window_long_atr"
+    changed = after[key].set_index("effective_from")
+    old = before[before["param_key"] == "trigger_window_long_atr"].set_index("effective_from")
+    for day in SESSIONS[2:]:
+        assert changed.loc[day, "policy_effective_from"] == "2026-11-05"
+        assert changed.loc[day, "value"] < old.loc[day, "value"]
+        # Every other key is unchanged on those sessions.
+        pd.testing.assert_frame_equal(_on(after[~key], day), _on(before[~key], day))
+    night = FakeDb()
+    _add_policy(night, "trigger_window_long_atr", "2026-11-05", statistic_q=0.95)
+    assert _main(monkeypatch, night, "--effective-from", "2026-11-06") == 0
+    pd.testing.assert_frame_equal(_on(after, "2026-11-06"), night.rows(KEEP))
+
+
+class _FailingWrites(FakeDb):
+    def __init__(self, fail_batch):
+        super().__init__()
+        self.fail_batch = fail_batch
+
+    def write(self, rows):
+        if len(self.batches) + 1 == self.fail_batch:
+            self.batches.append(None)
+            raise RuntimeError("connection reset")
+        return super().write(rows)
+
+
+def test_history_mode_writes_in_chunks_and_a_rerun_converges(monkeypatch):
+    """Two sessions per write batch; the second batch fails. The first
+    two sessions' rows stay, the run exits non-zero, and a rerun writes the
+    rest and leaves the first two as they were."""
+    db = _FailingWrites(fail_batch=2)
+    assert _main(monkeypatch, db, "--history", *HIST, "--chunk-sessions", "2") == 1
+    partial = db.rows(KEEP)
+    assert sorted(partial["effective_from"].unique()) == SESSIONS[:2]
+    assert len(db.batches) == 2 and db.batches[0] == 2 * 23
+    db.fail_batch = 0
+    assert _main(monkeypatch, db, "--history", *HIST, "--chunk-sessions", "2") == 0
+    full = db.rows(KEEP)
+    assert sorted(full["effective_from"].unique()) == SESSIONS
+    for day in SESSIONS[:2]:
+        pd.testing.assert_frame_equal(_on(full, day), _on(partial, day))
+    # Chunked rows equal one batch's.
+    one = FakeDb()
+    assert _main(monkeypatch, one, "--history", *HIST) == 0
+    assert len(one.batches) == 1
+    pd.testing.assert_frame_equal(full, one.rows(KEEP))
+
+
+def test_basis_switch_follows_the_transition_order(monkeypatch):
+    """Design 4: history in the new basis first (--atr-basis atr_5), then
+    the policy row effective D = 2026-11-05. The preparation run overwrites
+    no atr_14 row; a session before D reads the same atr_14 values before
+    the preparation run, after it and after D; a session on or after D
+    reads the atr_5 rows."""
+    db = FakeDb()
+    assert _main(monkeypatch, db, "--history", *HIST) == 0
+    old = db.rows(KEEP)
+    early, late = date(2026, 11, 4), date(2026, 11, 6)
+
+    def values(day):
+        lp = db.pdb.load(["SPY"], day)["SPY"]
+        return lp.atr_basis, {k: (p.status, p.value) for k, p in lp.params.items()}
+
+    first = values(early)
+    assert first[0] == "atr_14"
+    assert _main(monkeypatch, db, "--history", *HIST, "--atr-basis", "atr_5") == 0
+    prepared = db.rows(KEEP)
+    pd.testing.assert_frame_equal(prepared[prepared["atr_basis"] == "atr_14"].reset_index(drop=True),
+                                  old)
+    assert sorted(prepared.loc[prepared["atr_basis"] == "atr_5", "effective_from"].unique()) == SESSIONS
+    assert values(early) == first and values(late)[0] == "atr_14"
+    db.pdb.set_policy("atr_basis", effective_from=date(2026, 11, 5), extra='{"column": "atr_5"}')
+    assert _main(monkeypatch, db, "--history", *HIST) == 0
+    switched = db.rows(KEEP)
+    pd.testing.assert_frame_equal(switched[switched["atr_basis"] == "atr_14"].reset_index(drop=True),
+                                  old)
+    assert values(early) == first
+    basis, late_values = values(late)
+    assert basis == "atr_5" and all(st != "params_basis_mismatch" for st, _ in late_values.values())
+    atr5 = switched[(switched["atr_basis"] == "atr_5") & (switched["effective_from"] == "2026-11-06")]
+    assert {k: (st, None if pd.isna(v) else v)
+            for k, st, v in zip(atr5["param_key"], atr5["status"], atr5["value"])} == late_values
+    assert late_values["trigger_window_long_atr"][0] == "ok"

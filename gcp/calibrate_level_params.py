@@ -12,12 +12,21 @@ lib.level_calibration.
   param_key, atr_basis, effective_from) DO UPDATE, so rerunning the same
   night converges.
 * History mode (--history START END): per ticker, one version per session
-  from START to END, each from bars strictly before that session; replays
-  then read the version in force on their session.
+  from START to END, each from bars strictly before that session and under
+  the policy rows in force on that session (a policy change part-way through
+  the range applies from its effective_from on); replays then read the
+  version in force on their session. The per-session samples are measured
+  once per ticker (lib.level_calibration.HistoryCalibrator) and the rows are
+  written every --chunk-sessions sessions, so a run that stops part-way
+  keeps what it wrote and a rerun (ON CONFLICT DO UPDATE) converges.
+* --atr-basis COLUMN calibrates in that ATR basis instead of the policy's:
+  the preparation run of a basis switch (Design 4), written beside the
+  old-basis rows before the policy row that switches the basis is added.
 
-Per ticker: one batched daily read, one batched one-minute read, one write
-batch. A ticker whose read or calibration fails is logged and skipped and
-the run exits non-zero; progress is logged per ticker.
+Per ticker: one batched daily read, one batched one-minute read; nightly
+mode writes one batch per ticker, history mode one batch per chunk of
+sessions. A ticker whose read or calibration fails is logged and skipped and
+the run exits non-zero; progress is logged per ticker and chunk.
 
 The job definition, its scheduler entry and the deploy wiring belong to the
 companion FEAT-DEPLOY-001 change (Design 9); this module is not in
@@ -27,6 +36,7 @@ Usage:
     python -m gcp.calibrate_level_params
     python -m gcp.calibrate_level_params --tickers SPY,QQQ --effective-from 2026-11-09
     python -m gcp.calibrate_level_params --history 2015-01-02 2026-11-06 --tickers SPY
+    python -m gcp.calibrate_level_params --history 2015-01-02 2026-11-06 --atr-basis atr_5
 """
 from __future__ import annotations
 
@@ -45,7 +55,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib import level_calibration as lc  # noqa: E402
 from lib.strat_levels import (  # noqa: E402
-    LevelParamsUnavailable, entry_buffer_key, policy_atr_basis, policy_in_force,
+    ATR_COLUMNS, POLICY_ATR_BASIS, LevelParamsUnavailable, entry_buffer_key, policy_atr_basis,
+    policy_in_force,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,6 +65,10 @@ JOB_NAME = 'calibrate-level-params'
 
 QueryFn = Callable[..., pd.DataFrame]
 WriteFn = Callable[[List[dict]], int]
+
+# History mode writes the rows of this many sessions per batch (an I/O batch
+# size, not a calibration threshold): a long run persists as it goes.
+HISTORY_CHUNK_SESSIONS = 250
 
 POLICY_SQL = (
     "SELECT param_key, method_id, statistic_q, lookback_sessions, min_sample, extra, "
@@ -89,39 +104,73 @@ UPSERT_SQL = (
 # ── inputs ───────────────────────────────────────────────────────────────
 
 
-def read_policy(query: QueryFn, as_of) -> dict:
-    """The policy rows in force on `as_of`. An empty or unreadable policy
-    raises: the job never calibrates against a missing policy."""
+def read_policy_rows(query: QueryFn, as_of) -> List[dict]:
+    """Every policy row effective on or before `as_of`. An empty or
+    unreadable policy raises: the job never calibrates against a missing
+    policy."""
     try:
         rows = query(POLICY_SQL, {'as_of': pd.Timestamp(as_of).date()})
     except Exception as exc:  # noqa: BLE001 — re-raised typed
         raise LevelParamsUnavailable(f"level_param_policy read failed: {exc}") from exc
     if rows is None or rows.empty:
         raise LevelParamsUnavailable(f"level_param_policy has no row in force on {as_of}")
-    return policy_in_force(rows.to_dict('records'))
+    return rows.to_dict('records')
+
+
+def policy_on(rows: List[dict], session, *, atr_basis: Optional[str] = None) -> dict:
+    """The policy in force on `session` from `rows` (each key's row with
+    the greatest effective_from on or before it). `atr_basis` replaces the
+    atr_basis row's column (the basis-switch preparation run); the basis is
+    checked either way, so a session with no usable basis raises."""
+    day = pd.Timestamp(session).normalize()
+    policy = policy_in_force([r for r in rows
+                              if pd.Timestamp(r['effective_from']).normalize() <= day])
+    if not policy:
+        raise LevelParamsUnavailable(f"level_param_policy has no row in force on {day.date()}")
+    if atr_basis is not None:
+        if atr_basis not in ATR_COLUMNS:
+            raise ValueError(f"--atr-basis {atr_basis!r} is not one of {sorted(ATR_COLUMNS)}")
+        row = dict(policy.get(POLICY_ATR_BASIS) or {'param_key': POLICY_ATR_BASIS,
+                                                     'effective_from': None})
+        row['extra'] = {**(row.get('extra') or {}), 'column': atr_basis}
+        policy[POLICY_ATR_BASIS] = row
+    policy_atr_basis(policy)
+    return policy
+
+
+def read_policy(query: QueryFn, as_of) -> dict:
+    """The policy rows in force on `as_of`."""
+    return policy_on(read_policy_rows(query, as_of), as_of)
 
 
 def _max_lookback(policy: dict, keys: Iterable[str]) -> int:
     return max(int(policy[k]['lookback_sessions'] or 0) for k in keys if k in policy)
 
 
-def read_windows(policy: dict, first_session, last_session) -> dict:
+def read_windows(policies: Iterable[dict], first_session, last_session) -> dict:
     """Read bounds for one ticker whose rows are effective from
-    `first_session` through `last_session`: the daily bars a trigger
-    window replayed on the earliest break session needs (two window
-    lookbacks before it, plus slack for holidays), and the one-minute bars
-    the breaks and the one-minute thresholds read."""
-    window_lb = _max_lookback(policy, ('trigger_window_long_atr', 'trigger_window_short_atr'))
-    break_lb = _max_lookback(policy, [entry_buffer_key(p, e) for p in lc.PERSONAS for e in ('lo', 'hi')])
-    minute_lb = max(break_lb, _max_lookback(policy, (lc.PM_SPIKE_KEY, lc.PM_STALE_PRINT_KEY,
-                                                     lc.LEVEL_CLUSTER_KEY)))
+    `first_session` through `last_session` under `policies` (each policy in
+    force on some of those sessions): the daily bars a trigger window
+    replayed on the earliest break session needs (two window lookbacks
+    before it, plus slack for holidays), and the one-minute bars the breaks
+    and the one-minute thresholds read, under the longest lookbacks."""
+    if isinstance(policies, dict):
+        policies = [policies]
     first = pd.Timestamp(first_session)
     slack = pd.offsets.BDay(30)
-    return {
-        'daily_start': (first - pd.offsets.BDay(break_lb + window_lb + 1) - slack).date(),
-        'minutes_start': (first - pd.offsets.BDay(minute_lb) - slack).date(),
-        'before': pd.Timestamp(last_session).date(),
-    }
+    daily_start, minutes_start = None, None
+    for policy in policies:
+        window_lb = _max_lookback(policy, ('trigger_window_long_atr', 'trigger_window_short_atr'))
+        break_lb = _max_lookback(policy, [entry_buffer_key(p, e) for p in lc.PERSONAS
+                                          for e in ('lo', 'hi')])
+        minute_lb = max(break_lb, _max_lookback(policy, (lc.PM_SPIKE_KEY, lc.PM_STALE_PRINT_KEY,
+                                                         lc.LEVEL_CLUSTER_KEY)))
+        ds = (first - pd.offsets.BDay(break_lb + window_lb + 1) - slack).date()
+        ms = (first - pd.offsets.BDay(minute_lb) - slack).date()
+        daily_start = ds if daily_start is None else min(daily_start, ds)
+        minutes_start = ms if minutes_start is None else min(minutes_start, ms)
+    return {'daily_start': daily_start, 'minutes_start': minutes_start,
+            'before': pd.Timestamp(last_session).date()}
 
 
 def read_daily(query: QueryFn, ticker: str, start, before) -> pd.DataFrame:
@@ -209,44 +258,58 @@ def _now() -> str:
 
 
 def run(tickers: List[str], effective_dates: List[date], *, query: QueryFn, write: WriteFn,
-        policy: dict, source: str, run_id: Optional[str] = None) -> RunResult:
-    """Calibrate every ticker for every effective date: per ticker one daily
-    read, one one-minute read and one write batch holding every date's rows.
-    History mode passes every session; nightly mode one date."""
+        policy_rows: List[dict], source: str, run_id: Optional[str] = None,
+        chunk_sessions: Optional[int] = None, atr_basis: Optional[str] = None) -> RunResult:
+    """Calibrate every ticker for every effective date, each date under the
+    policy in force on it (`policy_rows`, every row effective on or before
+    the last date; `atr_basis` overrides the basis for every date). Per
+    ticker one daily read and one one-minute read; the rows go out every
+    `chunk_sessions` dates (None: one batch per ticker), so a failure keeps
+    the chunks already written."""
     if not effective_dates:
         raise ValueError("no effective dates")
+    if chunk_sessions is not None and chunk_sessions < 1:
+        raise ValueError("chunk_sessions must be at least 1")
     run_id = run_id or str(uuid.uuid4())
     res = RunResult(run_id=run_id)
-    dates = sorted(pd.Timestamp(d).normalize() for d in effective_dates)
-    bounds = read_windows(policy, dates[0], dates[-1])
-    atr_basis = policy_atr_basis(policy)
+    dates = sorted({pd.Timestamp(d).normalize() for d in effective_dates})
+    policies = {eff: policy_on(policy_rows, eff, atr_basis=atr_basis) for eff in dates}
+    unique: List[dict] = []
+    for p in policies.values():
+        if p not in unique:
+            unique.append(p)
+    bounds = read_windows(unique, dates[0], dates[-1])
+    chunk = chunk_sessions or len(dates)
     for i, ticker in enumerate(tickers, 1):
+        written = ok = 0
         try:
             daily = read_daily(query, ticker, bounds['daily_start'], bounds['before'])
             minutes = read_minutes(query, ticker, bounds['minutes_start'], bounds['before'])
-            prepared = lc.prepare(daily, minutes, policy, dates[-1])
-            norm, mins = prepared
-            minute_sessions = sorted(set(mins['session'])) if len(mins) else []
-            # Each session's replayed trigger depends only on the bars before
-            # it, so history mode computes them once for every date.
-            triggers = lc.replay_triggers(ticker, lc.daily_before(daily, dates[-1]), norm, policy,
-                                          minute_sessions, atr_basis)
-            rows: List[dict] = []
-            stamp = _now()
-            for eff in dates:
-                results = lc.calibrate(ticker, daily, minutes, policy, eff, triggers=triggers,
-                                       prepared=prepared)
-                rows.extend(lc.to_rows(ticker, results, policy, eff, run_id, source, stamp))
-            n = write(rows)
+            hc = lc.HistoryCalibrator(ticker, daily, minutes, dates[-1])
+            for start in range(0, len(dates), chunk):
+                part = dates[start:start + chunk]
+                rows: List[dict] = []
+                stamp = _now()
+                for eff in part:
+                    policy = policies[eff]
+                    rows.extend(lc.to_rows(ticker, hc.calibrate(policy, eff), policy, eff, run_id,
+                                           source, stamp))
+                written += int(write(rows) or 0)
+                ok += sum(1 for r in rows if r['status'] == 'ok')
+                if len(dates) > chunk:
+                    logger.info("calibrate-level-params: %s wrote sessions %s to %s (%d/%d)",
+                                ticker, part[0].date(), part[-1].date(),
+                                start + len(part), len(dates))
         except Exception as exc:  # noqa: BLE001 — logged, ticker skipped, run exits non-zero
-            logger.error("calibrate-level-params: %s failed, skipped: %s", ticker, exc)
+            logger.error("calibrate-level-params: %s failed, skipped (%d rows written before "
+                         "the failure stay): %s", ticker, written, exc)
+            res.rows_written += written
             res.failed.append(ticker)
             continue
-        res.rows_written += int(n or 0)
+        res.rows_written += written
         res.succeeded.append(ticker)
-        ok = sum(1 for r in rows if r['status'] == 'ok')
         logger.info("calibrate-level-params: %d/%d %s wrote %d rows (%d ok) for %d date(s)",
-                    i, len(tickers), ticker, len(rows), ok, len(dates))
+                    i, len(tickers), ticker, written, ok, len(dates))
     return res
 
 
@@ -285,25 +348,35 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help='Nightly mode: YYYY-MM-DD the rows take effect (default the next session)')
     parser.add_argument('--history', nargs=2, metavar=('START', 'END'), default=None,
                         help='History mode: one version per session from START to END')
+    parser.add_argument('--chunk-sessions', type=int, default=None,
+                        help=f'History mode: sessions per write batch (default {HISTORY_CHUNK_SESSIONS})')
+    parser.add_argument('--atr-basis', default=None, choices=sorted(ATR_COLUMNS),
+                        help='Calibrate in this ATR basis instead of the policy\'s: the preparation '
+                             'run of a basis switch, before its policy row is added')
     args = parser.parse_args(argv)
 
     started = datetime.now(timezone.utc)
     if args.history:
         dates = history_sessions(args.history[0], args.history[1])
         source, policy_date = 'history', dates[-1]
+        chunk = args.chunk_sessions or HISTORY_CHUNK_SESSIONS
     else:
         eff = (pd.Timestamp(args.effective_from).date() if args.effective_from
                else default_effective_from())
         dates, source, policy_date = [eff], 'nightly', eff
-    policy = read_policy(query_to_dataframe_strict, policy_date)
+        chunk = None
+    policy_rows = read_policy_rows(query_to_dataframe_strict, policy_date)
+    policy = policy_on(policy_rows, policy_date, atr_basis=args.atr_basis)
     if args.tickers:
         tickers = [t.strip().upper() for t in args.tickers.split(',') if t.strip()]
     else:
         tickers = calibration_universe(policy, query_to_dataframe_strict)
-    logger.info("calibrate-level-params: %s mode, %d ticker(s), %d date(s) %s to %s, policy atr_basis %s",
-                source, len(tickers), len(dates), dates[0], dates[-1], policy_atr_basis(policy))
+    logger.info("calibrate-level-params: %s mode, %d ticker(s), %d date(s) %s to %s, atr_basis %s%s",
+                source, len(tickers), len(dates), dates[0], dates[-1], policy_atr_basis(policy),
+                ' (--atr-basis)' if args.atr_basis else ' (policy in force on each date)')
     res = run(tickers, dates, query=query_to_dataframe_strict, write=_engine_writer(),
-              policy=policy, source=source)
+              policy_rows=policy_rows, source=source, chunk_sessions=chunk,
+              atr_basis=args.atr_basis)
     logger.info("calibrate-level-params: run %s wrote %d rows, %d ok, %d failed %s",
                 res.run_id, res.rows_written, len(res.succeeded), len(res.failed), res.failed)
     record_job_run(JOB_NAME, started, 'failed' if res.failed else 'success', variant=source,
