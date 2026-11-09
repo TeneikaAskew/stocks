@@ -31,6 +31,7 @@ Layers:
   reference path: everything measured afresh for that date.
 * ``HistoryCalibrator``: the same results for many effective dates (history
   mode), each under the policy in force on it, from one pass over the bars.
+* ``calibrate_ticker``: on-demand calibration of one ticker (Design 3).
 * Evidence rows for the implementation PR (``window_exceedance_by_year``,
   ``premarket_drops``, ``break_counts_by_year``).
 * ``load_calibration_universe``: the tickers the job calibrates.
@@ -1243,6 +1244,32 @@ def break_counts_by_year(breaks: Iterable[Break]) -> pd.DataFrame:
     g = frame.groupby(['side', 'year'])['held']
     out = pd.DataFrame({'breaks': g.size(), 'held': g.sum()}).reset_index()
     return out.astype({'breaks': int, 'held': int})
+
+
+def calibrate_ticker(ticker: str, session_date, *, query: Callable, write: Optional[Callable] = None,
+                     run_id: Optional[str] = None):
+    """On-demand calibration (Design 3): `ticker`'s parameters effective
+    `session_date`, from its own bars strictly before it, under the policy
+    in force on it, written to ticker_level_params with source on_demand
+    through the calibration job's own reads and ON CONFLICT write
+    (gcp.calibrate_level_params). `query(sql, params)` is a strict reader;
+    `write(rows)` defaults to the job's engine writer.
+
+    A ticker without enough bars gets its rows all the same, with status
+    insufficient_history on the keys it cannot calibrate (daily parameters
+    need the policy's minimum of daily bars, one-minute parameters
+    one-minute bars), so its consumers show that state rather than
+    params_unavailable. Once written, the job's on_demand universe source
+    finds the ticker and the nightly run keeps it current. Returns the
+    job's RunResult (failed lists the ticker when its read or calibration
+    failed); a policy that cannot be read raises LevelParamsUnavailable."""
+    from gcp import calibrate_level_params as job  # noqa: PLC0415 — the job owns the I/O
+
+    session = pd.Timestamp(session_date).normalize()
+    rows = job.read_policy_rows(query, session)
+    return job.run([str(ticker).upper()], [session], query=query,
+                   write=write if write is not None else job._engine_writer(),
+                   policy_rows=rows, source='on_demand', run_id=run_id)
 
 
 def load_calibration_universe(policy: Dict[str, dict], *, market_tickers: Iterable[str],

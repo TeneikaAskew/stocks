@@ -529,6 +529,37 @@ def _live_level_basis(ticker: str, session_date: date_type) -> Optional[dict]:
     return read_live_level_basis(_query, ticker, session_date)
 
 
+def _has_no_level_param_rows(level_params) -> bool:
+    """True when the loader found no ticker_level_params row for the
+    ticker in any basis: every key is params_unavailable (a stored row never
+    carries that status)."""
+    from lib.strat_levels import PARAMS_UNAVAILABLE
+
+    params = list(level_params.params.values())
+    return bool(params) and all(p.status == PARAMS_UNAVAILABLE for p in params)
+
+
+def _calibrate_on_demand(ticker: str, session_date: date_type, level_params):
+    """Calibrate `ticker` on demand and read its parameters again; on
+    failure log and return `level_params` (params_unavailable)."""
+    from lib.level_calibration import calibrate_ticker
+    from lib.strat_levels import load_level_params
+
+    try:
+        res = calibrate_ticker(ticker, session_date, query=_query_strict)
+    except Exception as exc:  # noqa: BLE001 — the explicit unavailable state stands
+        logger.warning("session_levels: on-demand calibration of %s for %s failed: %s",
+                       ticker, session_date, exc)
+        return level_params
+    if res.failed:
+        logger.warning("session_levels: on-demand calibration of %s for %s failed (run %s)",
+                       ticker, session_date, res.run_id)
+        return level_params
+    logger.info("session_levels: calibrated %s on demand for %s (%d rows, run %s)",
+                ticker, session_date, res.rows_written, res.run_id)
+    return load_level_params(_query_strict, [ticker], session_date)[ticker.upper()]
+
+
 def summarize_session_levels(
     ticker: str, as_of: Optional[date_type] = None, *, loader=None,
     level_params=None,
@@ -546,6 +577,13 @@ def summarize_session_levels(
     recorded; the table rows are used only to build, or for a basis written
     before parameters were recorded. LevelParamsUnavailable propagates: the
     insight run fails with reason level_params_unavailable.
+
+    A ticker with no ticker_level_params row at all (every key
+    params_unavailable) is calibrated on demand first
+    (lib.level_calibration.calibrate_ticker, source on_demand, Design 3)
+    and its parameters read again; a ticker without enough bars then
+    carries insufficient_history. If the on-demand run fails, the ticker
+    keeps params_unavailable and the failure is logged.
     """
     from lib.strat_levels import (
         SessionLevels, atr_inputs_from_frame, build_session_levels, load_level_params,
@@ -554,6 +592,8 @@ def summarize_session_levels(
     session_date = _session_date_for(as_of)
     if level_params is None:
         level_params = load_level_params(_query_strict, [ticker], session_date)[ticker.upper()]
+        if _has_no_level_param_rows(level_params):
+            level_params = _calibrate_on_demand(ticker, session_date, level_params)
     premarket = _session_premarket(ticker, session_date)
     basis = _live_level_basis(ticker, session_date)
     if basis is not None:
