@@ -537,7 +537,7 @@ Finite-number slice: approved spec [#1618](https://github.com/TeneikaAskew/stock
 | Priority | P1 |
 | Target phase | Phase 6 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-10-12 |
+| Last reviewed | 2026-11-09 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | — |
 | Backend | — |
