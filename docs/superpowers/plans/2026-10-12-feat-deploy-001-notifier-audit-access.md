@@ -3,7 +3,7 @@ feat_id: FEAT-DEPLOY-001
 spec: docs/superpowers/specs/2026-10-12-feat-deploy-001-notifier-audit-access.md
 branch: fix/feat-deploy-001-notifier-audit-access
 pr: 1457
-status: ready
+status: done
 ---
 
 # Notifier Audit Access Implementation Plan

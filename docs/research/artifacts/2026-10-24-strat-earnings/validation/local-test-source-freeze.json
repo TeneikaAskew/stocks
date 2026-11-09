@@ -1,0 +1,9 @@
+{
+  "sources": {
+    "lib/strat.py": "a23de1ddb3c0312c7dfbef69ba38ba7c2a4794b9624a29147b8316f5c8e831fe",
+    "lib/data_loader.py": "428c67a9c3373dcf567f7212efc8781aefc404e81157902eca1063a89aa9833a",
+    "lib/backtest.py": "66e07cf57c6abdd22d372ed4dcc22cadf979531e92e40a8642a199bc88894376",
+    "tests/lib/test_strat.py": "05e18c73f2b4ddde3240c57c95d760c8199877628a06f26870c867ed60692709"
+  },
+  "scope": "Existing current-source focused deterministic suite only; no new forecast/outcome scoring; external I/O blocked; no changed implementation"
+}

@@ -833,7 +833,7 @@ def _build_embedding_query_text(ticker: str, bundle: dict) -> str:
     strat = bundle.get("strat") or {}
     market = bundle.get("market") or {}
     parts: list[str] = [ticker.upper()]
-    if strat.get("last_candle"):
+    if strat.get("available") is not False and strat.get("last_candle") not in (None, "", "X"):
         parts.append(f"strat candle {strat['last_candle']}")
     if strat.get("in_force_combo"):
         parts.append(f"combo {strat['in_force_combo']}")
@@ -917,10 +917,11 @@ def _calibrate_conviction(
     # the sign must MATCH the trade direction — `abs(ftfc_score) >= 0.5`
     # would let a contradicting FTFC count as agreement (e.g. long with
     # ftfc_score=-0.8). Codex review on PR #351 caught this.
-    ftfc_aligned = (
-        (direction == "long" and ftfc_score >= 0.5)
-        or (direction == "short" and ftfc_score <= -0.5)
-    )
+    # Shared with compute_risk_metrics, so the raw score and its 2 dp
+    # snapshot give the same answer.
+    from .trade_planner import is_ftfc_aligned
+
+    ftfc_aligned = is_ftfc_aligned(direction, ftfc_score)
     if (
         analyst_agreement_count >= 4
         and ftfc_aligned
@@ -1099,21 +1100,36 @@ def _derive_key_levels(bundle: dict) -> dict[str, float]:
     return levels
 
 
+_SNAPSHOT_FOUNDATION_KEYS = (
+    "rule_version", "observation_ts", "data_as_of", "session", "clock_policy",
+    "aggregation_policy", "price_adjustment", "source_acquired_at",
+    "source_acquisition_status", "coverage", "bar_validity", "confirmed_setups",
+)
+
+
 def _build_strat_snapshot(section: dict) -> StratSnapshot:
-    if not section or not section.get("available"):
+    section = section or {}
+    foundation = {key: section[key] for key in _SNAPSHOT_FOUNDATION_KEYS
+                  if section.get(key) is not None}
+    if not section.get("available") or section.get("last_candle") in (None, "", "X"):
+        # FEAT-STRAT-001: unknown is not an inside bar with a neutral score.
         return StratSnapshot(
-            last_candle="1",
+            available=False,
+            reason=section.get("reason") or "strat section unavailable",
+            last_candle="X",
             in_force_combo=None,
-            ftfc_score=0.0,
-            ftfc_direction="mixed",
+            ftfc_score=None,
+            ftfc_direction=None,
+            **foundation,
         )
     return StratSnapshot(
-        last_candle=section.get("last_candle", "1") or "1",
+        last_candle=section.get("last_candle"),
         in_force_combo=section.get("in_force_combo"),
         ftfc_score=float(section.get("ftfc_score") or 0.0),
         ftfc_direction=section.get("ftfc_direction", "mixed") or "mixed",
         trigger_high=section.get("trigger_high"),
         trigger_low=section.get("trigger_low"),
+        **foundation,
     )
 
 

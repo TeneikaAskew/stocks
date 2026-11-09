@@ -1,6 +1,6 @@
 # Failure Notifier Deployment Plan
 
-**Last reviewed:** unknown · **Last scanned:** 2026-10-13 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-10-20 · **Owner:** TBD
 
 > This guide describes the configuration proposed in PRs #1456 and #1457. Apply it after those changes merge; it does not claim a production deployment has occurred.
 

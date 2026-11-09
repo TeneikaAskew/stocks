@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Hermetic test suite tripwire (FEAT-CICD-001). tests/conftest.py puts this
+# directory first on PATH, so a test whose own fake cannot execute lands here
+# instead of on the installed CLI and its credentials. Never reaches GCP.
+echo "hermetic test suite: real $(basename "$0") refused: $*" >&2
+exit 97

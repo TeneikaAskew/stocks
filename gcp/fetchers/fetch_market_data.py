@@ -376,7 +376,7 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
         # Build OHLC frame the classifier expects.
         ohlc = enriched.rename(columns={'Open': 'Open', 'High': 'High',
                                         'Low': 'Low', 'Close': 'Close'})
-        clf = StratClassifier()
+        clf = StratClassifier(rule_version="legacy-pattern-v1")
         # Daily candle
         labels = clf.classify_series(ohlc[['Open', 'High', 'Low', 'Close']])
         last_candle = labels.iloc[-1]

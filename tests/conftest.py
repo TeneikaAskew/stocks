@@ -15,15 +15,41 @@ don't need real data (synthetic OHLCV unit tests) ignore --mode and
 keep using the existing sample_* fixtures below.
 """
 
+import atexit
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
+
+
+# ───── No real gcloud, gsutil or bq (FEAT-CICD-001) ───────────────────
+# Tests that check deploy.sh put a fake gcloud first on PATH and copy this
+# environment into it. When the fake cannot execute (a noexec temp mount),
+# bash keeps searching PATH; on 2026-10-12 it found the installed gcloud,
+# signed in with production as its default project. So, before any test
+# builds a subprocess environment: give gcloud an empty config (no account,
+# no project), drop its token, and put a tripwire ahead of the real CLIs.
+# The tripwire lives in the repo, not in a temp directory, so a noexec temp
+# mount cannot disable it. Python client credentials are left alone.
+# An empty config is not enough on GCE: gcloud would read an account from the
+# metadata server, so credentials are disabled outright. _gcloud_secret, the
+# one deliberate live path, gets the environment as it was before this.
+_PRE_GUARD_ENV = dict(os.environ)
+_GCLOUD_TRIPWIRE = Path(__file__).resolve().parent / "fixtures" / "gcloud_tripwire"
+_HERMETIC_GCLOUD_CONFIG = tempfile.mkdtemp(prefix="hermetic-gcloud-config-")
+atexit.register(shutil.rmtree, _HERMETIC_GCLOUD_CONFIG, ignore_errors=True)
+os.environ["CLOUDSDK_CONFIG"] = _HERMETIC_GCLOUD_CONFIG
+os.environ["CLOUDSDK_AUTH_DISABLE_CREDENTIALS"] = "true"
+for _var in ("CLOUDSDK_AUTH_ACCESS_TOKEN", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE"):
+    os.environ.pop(_var, None)
+os.environ["PATH"] = f"{_GCLOUD_TRIPWIRE}{os.pathsep}{os.environ.get('PATH', '')}"
 
 
 # ───── Data-backend availability marker ───────────────────────────────
@@ -73,7 +99,7 @@ def _gcloud_secret(name: str) -> str:
     return subprocess.check_output(
         [_GCLOUD, "secrets", "versions", "access", "latest",
          f"--secret={name}", f"--project={_PROJECT}"],
-        text=True, timeout=15,
+        text=True, timeout=15, env=_PRE_GUARD_ENV,
     ).rstrip("\n")
 
 

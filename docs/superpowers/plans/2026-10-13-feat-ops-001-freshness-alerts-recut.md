@@ -3,7 +3,7 @@ feat_id: FEAT-OPS-001
 spec: docs/superpowers/specs/2026-10-12-feat-ops-001-freshness-alerts.md
 branch: fix/feat-ops-001-freshness-alerts-recut
 pr: 1499
-status: ready
+status: done
 ---
 
 # Freshness Audit Alert Implementation Plan
