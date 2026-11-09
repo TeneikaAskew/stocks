@@ -430,7 +430,7 @@ def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
     from lib.indicators import add_all_indicators, calculate_premarket_context
     from lib.strat import StratClassifier
 
-    clf = StratClassifier()
+    clf = StratClassifier(rule_version="legacy-pattern-v1")
 
     for fd in sorted(target_dates):
         df = query_to_dataframe(

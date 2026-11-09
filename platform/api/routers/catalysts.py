@@ -14,6 +14,7 @@ via IBKR TWS API ($49-149/mo). See: https://www.wallstreethorizon.com/ibkr-wsh
 
 import json
 import logging
+import math
 import os
 import sys
 from datetime import datetime, timedelta
@@ -21,6 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from pandas.api.types import is_bool, is_scalar
 from api.schemas import (
     CatalystTypesResponse,
     CatalystsResponse,
@@ -331,6 +333,17 @@ def get_catalyst_events(
 # ── DB-sourced catalyst event helpers ───────────────────────────────────────
 
 
+def _finite_earnings_estimate(value: object) -> float | None:
+    """Keep optional EPS missing across SQL/pandas scalar representations."""
+    if is_bool(value) or not is_scalar(value):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _db_catalyst_events(
     d_from: str, d_to: str, ticker_list: Optional[list[str]],
 ) -> list[dict]:
@@ -465,8 +478,8 @@ def _db_catalyst_events(
                 continue
             seen_e.add(key)
             company = str(r.get("company_name") or tk)
-            est = r.get("eps_estimate")
-            est_str = f", est {float(est):.2f}" if est not in (None, "") else ""
+            est = _finite_earnings_estimate(r.get("eps_estimate"))
+            est_str = f", est {est:.2f}" if est is not None else ""
             out.append({
                 "date": str(r["date"]),
                 "ticker": tk,

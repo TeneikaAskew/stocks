@@ -21,6 +21,7 @@ Usage:
 import argparse
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -92,13 +93,13 @@ def normalize_earnings_time(val) -> str:
 # ── Shared numeric helper ───────────────────────────────────────────────────
 
 def _safe_num(val):
-    """Return float(val) or None if conversion fails / empty."""
-    if val is None or val == '' or (isinstance(val, float) and pd.isna(val)):
+    """Return a finite scalar float or None, preserving unavailable values."""
+    if pd.api.types.is_bool(val) or not pd.api.types.is_scalar(val):
         return None
     try:
         f = float(val)
-        return None if pd.isna(f) else f
-    except (ValueError, TypeError):
+        return f if math.isfinite(f) else None
+    except (ValueError, TypeError, OverflowError):
         return None
 
 

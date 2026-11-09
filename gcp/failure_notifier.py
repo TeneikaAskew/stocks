@@ -22,9 +22,12 @@ import json
 import logging
 import os
 import random
+import re
 import sys
 import time
-from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 
@@ -39,7 +42,230 @@ logging.basicConfig(
 
 GITHUB_API = "https://api.github.com"
 REQUEST_TIMEOUT = 15
+_NOTIFICATION_DEADLINE = ContextVar("notification_deadline", default=None)
+_NOTIFICATION_IO = ThreadPoolExecutor(max_workers=2, thread_name_prefix="notification-delivery")
+# Leave five seconds for response handling before the subscription's 60s ack deadline.
+_NOTIFICATION_BUDGET = 55
+
+
+def _notification_expired(_retry_state=None):
+    deadline = _NOTIFICATION_DEADLINE.get()
+    return deadline is not None and time.monotonic() >= deadline
+
+
+def _notification_wait(state):
+    delay = wait_exponential(min=1, max=10)(state)
+    deadline = _NOTIFICATION_DEADLINE.get()
+    return delay if deadline is None else min(delay, max(0, deadline - time.monotonic()))
+
+
+def _notification_request(method, *args, **kwargs):
+    deadline = _NOTIFICATION_DEADLINE.get()
+    if deadline is None:
+        return method(*args, **kwargs)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise requests.Timeout("Notification acknowledgement budget exhausted")
+    kwargs["timeout"] = min(kwargs.get("timeout", REQUEST_TIMEOUT), remaining)
+    future = _NOTIFICATION_IO.submit(method, *args, **kwargs)
+    try:
+        return future.result(timeout=remaining)
+    except TimeoutError as exc:
+        future.cancel()
+        raise requests.Timeout("Notification acknowledgement budget exhausted") from exc
+
+
+def _notification_sleep(seconds):
+    deadline = _NOTIFICATION_DEADLINE.get()
+    if deadline is not None:
+        seconds = min(seconds, max(0, deadline - time.monotonic()))
+    time.sleep(seconds)
+
+
 MAX_BODY = 1_048_576  # 1 MB — log entries are typically < 10 KB
+
+# Bound both caller latency and background concurrency. A slow ADC discovery or
+# streaming response must not hold up the original failure notification.
+_FRESHNESS_IO = ThreadPoolExecutor(max_workers=2, thread_name_prefix="freshness-evidence")
+_FRESHNESS_TIMEOUT = 5
+_FRESHNESS_MAX_BYTES = 256 * 1024
+_FRESHNESS_MAX_ENTRIES = 200
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _log_time(value: str):
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("Logging timestamp has no timezone")
+    fraction = re.search(r"\.(\d+)(?:Z|[+-]\d\d:\d\d)$", value)
+    # Preserve nanoseconds as well as differing fractional precision.
+    nanos = int(fraction.group(1).ljust(9, "0")) if fraction else 0
+    return parsed.replace(microsecond=0), nanos
+
+
+def _bounded_freshness_io(operation):
+    future = _FRESHNESS_IO.submit(operation)
+    try:
+        return future.result(timeout=_FRESHNESS_TIMEOUT)
+    except TimeoutError:
+        future.cancel()
+        raise
+
+
+def _freshness_token() -> str:
+    """Use the managed ADC identity, with bounded discovery and refresh I/O."""
+    from google.auth import default
+    from google.auth.transport.requests import Request
+
+    transport = Request()
+    deadline = time.monotonic() + _FRESHNESS_TIMEOUT
+
+    def bounded_request(*args, **kwargs):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Credential refresh deadline exceeded")
+        kwargs["timeout"] = min(_FRESHNESS_TIMEOUT, remaining)
+        try:
+            response = transport(*args, **kwargs)
+        except Exception as exc:
+            # Avoid the SDK's retries/backoff extending the refresh deadline.
+            raise RuntimeError("Credential transport unavailable") from exc
+        if response.status >= 400:
+            raise RuntimeError(f"Credential transport HTTP {response.status}")
+        return response
+
+    credentials, _ = default(
+        scopes=["https://www.googleapis.com/auth/logging.read"], request=bounded_request,
+    )
+    credentials.refresh(bounded_request)
+    if not credentials.token:
+        raise RuntimeError("Credential refresh returned no token")
+    return credentials.token
+
+
+def _freshness_evidence(details: dict[str, Any], token: str) -> dict:
+    """Read one bounded page for this execution, including its terminal output."""
+    filters = ['resource.type="cloud_run_job"']
+    for key, value in (
+        ("resource.labels.project_id", details["project_id"]),
+        ("resource.labels.location", details["location"]),
+        ("resource.labels.job_name", details["job_name"]),
+        ('labels."run.googleapis.com/execution_name"', details["execution_name"]),
+    ):
+        filters.append(f"{key}={json.dumps(value)}")
+    filters.append(f"timestamp<={json.dumps(details['timestamp'])}")
+    # The watchdog's task budget is one hour. A two-hour window allows
+    # startup/terminal-log slack and avoids scanning the project's log history.
+    cutoff = datetime.fromisoformat(details["timestamp"].replace("Z", "+00:00")) - timedelta(hours=2)
+    filters.append(f"timestamp>={json.dumps(cutoff.isoformat())}")
+    deadline = time.monotonic() + _FRESHNESS_TIMEOUT
+    response = _notification_request(requests.post,
+        "https://logging.googleapis.com/v2/entries:list",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"resourceNames": [f"projects/{details['project_id']}"],
+              "filter": " AND ".join(filters), "orderBy": "timestamp desc",
+              "pageSize": _FRESHNESS_MAX_ENTRIES},
+        timeout=_FRESHNESS_TIMEOUT, stream=True,
+    )
+    try:
+        response.raise_for_status()
+        data = bytearray()
+        for chunk in response.iter_content(chunk_size=8192):
+            if time.monotonic() > deadline:
+                raise TimeoutError("Logging evidence deadline exceeded")
+            if len(data) + len(chunk) > _FRESHNESS_MAX_BYTES:
+                raise ValueError("Logging evidence exceeds size limit")
+            data.extend(chunk)
+        return json.loads(data)
+    finally:
+        response.close()
+
+
+def _freshness_findings(payload: dict, details: dict[str, Any]) -> str:
+    """Classify only a complete, single-task audit followed by intentional exit 1."""
+    if not isinstance(payload, dict) or payload.get("nextPageToken"):
+        raise ValueError("Incomplete Logging evidence")
+    entries = payload.get("entries", [])
+    if not isinstance(entries, list) or not entries or len(entries) > _FRESHNESS_MAX_ENTRIES:
+        raise ValueError("Missing or incomplete Logging entries")
+    lines = []
+    attempts = set()
+    for entry in sorted(entries, key=lambda e: _log_time(e.get("timestamp", ""))):
+        labels = entry.get("labels") or {}
+        resource = entry.get("resource") or {}
+        resource_labels = resource.get("labels") or {}
+        if resource.get("type") != "cloud_run_job" or any(
+            resource_labels.get(key) != details[value]
+            for key, value in (("job_name", "job_name"), ("project_id", "project_id"),
+                               ("location", "location"))
+        ) or labels.get("run.googleapis.com/execution_name") != details["execution_name"]:
+            raise ValueError("Logging evidence belongs to another execution")
+        if _log_time(entry.get("timestamp", "")) > _log_time(details["timestamp"]):
+            raise ValueError("Logging evidence follows the notification")
+        if any(key in labels for key in ("run.googleapis.com/task_index", "run.googleapis.com/task_attempt")):
+            attempts.add((labels.get("run.googleapis.com/task_index"),
+                          labels.get("run.googleapis.com/task_attempt")))
+        text = entry.get("textPayload")
+        if text:
+            lines.extend(_ANSI.sub("", text).splitlines())
+        structured = entry.get("jsonPayload") or (entry.get("protoPayload") or {}).get("status") or {}
+        if structured:
+            structured_text = json.dumps(structured)
+            if re.search(r"Traceback|timed out|deadline exceeded|terminated", structured_text, re.IGNORECASE):
+                raise ValueError("Structured execution-error evidence present")
+            if entry.get("jsonPayload") and entry.get("severity") in ("ERROR", "CRITICAL", "ALERT", "EMERGENCY"):
+                raise ValueError("Structured execution-error evidence present")
+    if len(attempts) != 1:
+        raise ValueError("Ambiguous task or retry evidence")
+    stripped = [line.strip() for line in lines]
+    summaries = [line for line in stripped if line.startswith("Overall:")]
+    exits = [line for line in stripped if line.startswith("Container called exit(")]
+    if summaries != ["Overall: STALE"] or exits != ["Container called exit(1)."]:
+        raise ValueError("No confirmed stale audit with intentional exit 1")
+    if stripped.index("Overall: STALE") > stripped.index("Container called exit(1)."):
+        raise ValueError("Exit precedes audit result")
+    if any(re.search(r"Traceback \(most recent call last\)|timed out|deadline exceeded|terminated",
+                     line, re.IGNORECASE) for line in stripped):
+        raise ValueError("Execution-error evidence present")
+    findings = []
+    for index, line in enumerate(stripped):
+        if re.search(r"\s(?:●\s+)?stale$", line):
+            findings.append(line)
+            next_index = index + 1
+            while next_index < len(stripped) and stripped[next_index].startswith(("└─ writer-job:", "└─ details:")):
+                findings[-1] += "\n" + stripped[next_index]
+                next_index += 1
+    if not findings:
+        raise ValueError("Stale audit has no attributable findings")
+    return "\n".join(findings)
+
+
+def enrich_freshness_failure(details: dict[str, Any]) -> dict[str, Any]:
+    """Keep execution failures unless this exact run confirms an audit finding."""
+    if details["job_name"] != "freshness-watchdog" or "has failed to complete" not in details["message"]:
+        return details
+    result = dict(details)
+    stage = "Authentication"
+    try:
+        if not all(details.get(k) for k in ("project_id", "location", "execution_name", "timestamp")):
+            raise ValueError("Missing execution identity")
+        token = _bounded_freshness_io(_freshness_token)
+        stage = "Audit evidence"
+        payload = _bounded_freshness_io(lambda: _freshness_evidence(details, token))
+        result["audit_findings"] = _freshness_findings(payload, details)
+        result["audit_failed"] = True
+    except Exception as exc:
+        # Do not expose auth response bodies or tokens in alerts or logs.
+        cause = type(exc).__name__
+        if stage == "Audit evidence" and isinstance(exc, ValueError):
+            cause = str(exc)
+        elif isinstance(exc, requests.HTTPError) and exc.response is not None:
+            cause = f"HTTP {exc.response.status_code}"
+        reason = f"{stage} unavailable ({cause})"
+        result["audit_classification_unavailable"] = reason
+        logger.warning("Freshness audit classification unavailable (execution=%s): %s",
+                       details["execution_name"], reason)
+    return result
 
 # Innermost-frame markers for SQLAlchemy/pg8000 connection-pool cleanup
 # exceptions (pool_pre_ping/pool_recycle finding a dead socket and failing to
@@ -157,6 +383,15 @@ def extract_failure_details(log_entry: dict[str, Any]) -> dict[str, Any]:
 
 
 # ── Discord ──────────────────────────────────────────────────────────────────
+def _alert_title(details: dict[str, Any]) -> str:
+    prefix = "Freshness Audit Failed" if details.get("audit_failed") else "GCP job failed"
+    return f"{prefix}: {details['job_name']}"
+
+
+def _repeat_heading(details: dict[str, Any]) -> str:
+    return "Additional freshness audit failure" if details.get("audit_failed") else "Additional failure"
+
+
 def build_discord_payload(details: dict[str, Any]) -> dict[str, Any]:
     """Format a parsed log entry as a Discord webhook payload (single embed).
 
@@ -165,15 +400,15 @@ def build_discord_payload(details: dict[str, Any]) -> dict[str, Any]:
     full message is preserved on the GitHub issue side via
     ``format_issue_body``.
     """
-    snippet = details["message"]
+    snippet = details.get("audit_findings") or details["message"]
     if len(snippet) > 800:
         snippet = snippet[:800] + "…"
 
-    return {
+    payload = {
         "username": "GCP Job Monitor",
         "embeds": [
             {
-                "title": f"GCP job failed: {details['job_name']}",
+                "title": _alert_title(details),
                 "url": details["log_url"],
                 "color": 0xE74C3C,
                 "timestamp": details["timestamp"],
@@ -186,7 +421,7 @@ def build_discord_payload(details: dict[str, Any]) -> dict[str, Any]:
                         "inline": False,
                     },
                     {
-                        "name": "Error",
+                        "name": "Findings" if details.get("audit_failed") else "Error",
                         "value": f"```\n{snippet}\n```",
                         "inline": False,
                     },
@@ -200,12 +435,22 @@ def build_discord_payload(details: dict[str, Any]) -> dict[str, Any]:
             }
         ],
     }
+    fields = payload["embeds"][0]["fields"]
+    if details.get("audit_failed"):
+        fields.insert(-1, {"name": "Execution status", "value": details["message"][:800], "inline": False})
+    elif details.get("audit_classification_unavailable"):
+        fields.insert(-1, {
+            "name": "Audit classification",
+            "value": f"Audit classification unavailable: {details['audit_classification_unavailable']}",
+            "inline": False,
+        })
+    return payload
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+@retry(stop=stop_after_attempt(3) | _notification_expired, wait=_notification_wait, reraise=True)
 def send_discord(webhook_url: str, payload: dict[str, Any]) -> None:
     """Post to Discord webhook. Retries up to 3 times with exponential backoff."""
-    resp = requests.post(webhook_url, json=payload, timeout=REQUEST_TIMEOUT)
+    resp = _notification_request(requests.post, webhook_url, json=payload, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
     logger.info("Discord notification sent (status=%s)", resp.status_code)
 
@@ -225,7 +470,7 @@ def find_existing_issue(repo: str, labels: list[str], token: str) -> int | None:
     label_q = ",".join(labels)
     url = f"{GITHUB_API}/repos/{repo}/issues?state=open&labels={label_q}&per_page=1"
     try:
-        resp = requests.get(url, headers=_gh_headers(token), timeout=REQUEST_TIMEOUT)
+        resp = _notification_request(requests.get, url, headers=_gh_headers(token), timeout=REQUEST_TIMEOUT)
         resp.raise_for_status()
         items = resp.json()
         if items:
@@ -244,7 +489,7 @@ def find_all_open_issues(repo: str, labels: list[str], token: str) -> list[dict]
     label_q = ",".join(labels)
     url = f"{GITHUB_API}/repos/{repo}/issues?state=open&labels={label_q}&per_page=100"
     try:
-        resp = requests.get(url, headers=_gh_headers(token), timeout=REQUEST_TIMEOUT)
+        resp = _notification_request(requests.get, url, headers=_gh_headers(token), timeout=REQUEST_TIMEOUT)
         resp.raise_for_status()
         return resp.json()
     except requests.RequestException as e:
@@ -252,13 +497,13 @@ def find_all_open_issues(repo: str, labels: list[str], token: str) -> list[dict]
         return []
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+@retry(stop=stop_after_attempt(3) | _notification_expired, wait=_notification_wait, reraise=True)
 def close_issue(repo: str, issue_number: int, comment: str, token: str) -> None:
     """Add a closing comment then transition the issue to closed."""
     if comment:
         add_issue_comment(repo, issue_number, comment, token)
     url = f"{GITHUB_API}/repos/{repo}/issues/{issue_number}"
-    resp = requests.patch(
+    resp = _notification_request(requests.patch,
         url,
         headers=_gh_headers(token),
         json={"state": "closed"},
@@ -267,11 +512,11 @@ def close_issue(repo: str, issue_number: int, comment: str, token: str) -> None:
     resp.raise_for_status()
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+@retry(stop=stop_after_attempt(3) | _notification_expired, wait=_notification_wait, reraise=True)
 def create_issue(repo: str, title: str, body: str, labels: list[str], token: str) -> int:
     """POST a new issue and return its number. Retries 3× on transient errors."""
     url = f"{GITHUB_API}/repos/{repo}/issues"
-    resp = requests.post(
+    resp = _notification_request(requests.post,
         url,
         headers=_gh_headers(token),
         json={"title": title, "body": body, "labels": labels},
@@ -281,14 +526,37 @@ def create_issue(repo: str, title: str, body: str, labels: list[str], token: str
     return resp.json()["number"]
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), reraise=True)
+@retry(stop=stop_after_attempt(3) | _notification_expired, wait=_notification_wait, reraise=True)
 def add_issue_comment(repo: str, issue_number: int, body: str, token: str) -> None:
     """POST a comment on an existing issue. Retries 3× on transient errors."""
     url = f"{GITHUB_API}/repos/{repo}/issues/{issue_number}/comments"
-    resp = requests.post(
+    resp = _notification_request(requests.post,
         url, headers=_gh_headers(token), json={"body": body}, timeout=REQUEST_TIMEOUT
     )
     resp.raise_for_status()
+
+
+def _github_findings(value: str) -> str:
+    """Keep complete finding groups within GitHub's channel limit."""
+    groups = []
+    for line in value.splitlines():
+        if line.startswith(("└─ writer-job:", "└─ details:")) and groups:
+            groups[-1] += "\n" + line
+        else:
+            groups.append(line)
+    kept = []
+    size = 0
+    # Leave room for the original error, identity, links and repeat-comment prefix.
+    # UTF-8 bytes are a conservative bound for GitHub's character allowance.
+    for group in groups:
+        added = len(group.encode("utf-8")) + 1
+        if size + added <= 45000:
+            kept.append(group)
+            size += added
+    omitted = len(groups) - len(kept)
+    if omitted:
+        kept.append(f"[{omitted} findings omitted to fit GitHub; view execution logs for complete diagnostics.]")
+    return "\n".join(kept)
 
 
 def format_issue_body(details: dict[str, Any]) -> str:
@@ -298,21 +566,43 @@ def format_issue_body(details: dict[str, Any]) -> str:
     — GitHub has a 65 KB body limit and the Pub/Sub payload upstream
     already truncates to 4000 chars in ``parse_pubsub_message``.
     """
+    heading = "Freshness Audit Failed" if details.get("audit_failed") else "GCP Cloud Run Job Failed"
+    findings = ""
+    if details.get("audit_failed"):
+        findings = f"### Findings\n```\n{_github_findings(details['audit_findings'])}\n```\n\n"
+    elif details.get("audit_classification_unavailable"):
+        findings = f"**Audit classification unavailable:** {details['audit_classification_unavailable']}\n\n"
+    error_heading = "Execution status" if details.get("audit_failed") else "Error"
     return (
-        f"## GCP Cloud Run Job Failed\n\n"
+        f"## {heading}\n\n"
         f"**Job:** `{details['job_name']}`\n"
         f"**Execution:** `{details['execution_name'] or '(unknown)'}`\n"
         f"**Severity:** {details['severity']}\n"
         f"**Time:** {details['timestamp']}\n"
         f"**Project:** `{details['project_id']}`\n"
         f"**Region:** `{details['location']}`\n\n"
-        f"### Error\n```\n{details['message']}\n```\n\n"
+        f"{findings}"
+        f"### {error_heading}\n```\n{details['message']}\n```\n\n"
         f"### Links\n- [View execution logs in Cloud Console]({details['log_url']})\n\n"
         f"---\n"
         f"*Automatically created by `gcp/failure_notifier.py` from a Cloud Logging "
         f"Pub/Sub sink. Repeat failures append comments to this issue instead of "
         f"opening a new one.*\n"
     )
+
+
+def _update_freshness_title(repo, number, token, details):
+    if details["job_name"] == "freshness-watchdog":
+        try:
+            resp = _notification_request(requests.patch,
+                f"{GITHUB_API}/repos/{repo}/issues/{number}",
+                headers=_gh_headers(token), json={"title": _alert_title(details)},
+                timeout=REQUEST_TIMEOUT,
+            )
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            # Findings have already been delivered; title edits must not suppress them.
+            logger.warning("Freshness title update failed for #%s: %s", number, exc)
 
 
 def create_or_update_github_issue(
@@ -338,40 +628,42 @@ def create_or_update_github_issue(
     # Jitter: spread concurrent handlers across a 0-2s window so that the
     # second (and later) instances are more likely to find the issue already
     # created by the first when they call find_existing_issue below.
-    time.sleep(random.uniform(0, 2))
+    _notification_sleep(random.uniform(0, 2))
 
     existing = find_existing_issue(repo, label_match, token)
     if existing:
-        add_issue_comment(repo, existing, f"### Additional failure\n\n{body}", token)
+        add_issue_comment(repo, existing, f"### {_repeat_heading(details)}\n\n{body}", token)
+        _update_freshness_title(repo, existing, token, details)
         logger.info("Appended comment to existing issue #%s", existing)
         return existing, False
 
-    title = f"GCP job failed: {job_name}"
+    title = _alert_title(details)
     number = create_issue(repo, title, body, labels, token)
 
     # Race-condition dedupe: re-query and detect peers created in parallel.
     # Sleep 5s before re-querying so GitHub has time to index all concurrent
     # creates — without this delay the list endpoint can return only this
     # instance's own issue, making each instance believe it is the canonical.
-    time.sleep(5)
+    _notification_sleep(5)
     open_matches = find_all_open_issues(repo, label_match, token)
     open_numbers = sorted(int(i["number"]) for i in open_matches)
     if len(open_numbers) > 1:
         canonical = open_numbers[0]
         if number != canonical:
             try:
+                add_issue_comment(
+                    repo,
+                    canonical,
+                    f"### {_repeat_heading(details)} (from race-created #{number}, now closed)\n\n{body}",
+                    token,
+                )
+                _update_freshness_title(repo, canonical, token, details)
                 close_issue(
                     repo,
                     number,
                     f"Auto-closing race-created duplicate of #{canonical} "
                     f"(both opened within seconds for the same `{job_name}` "
                     f"failure burst). Content moved to the canonical issue.",
-                    token,
-                )
-                add_issue_comment(
-                    repo,
-                    canonical,
-                    f"### Additional failure (from race-created #{number}, now closed)\n\n{body}",
                     token,
                 )
                 logger.info(
@@ -419,7 +711,7 @@ def _get_latest_execution_status(
         f"locations/{region}/jobs/{job_name}/executions?pageSize=1"
     )
     try:
-        resp = requests.get(
+        resp = _notification_request(requests.get,
             url,
             headers={"Authorization": f"Bearer {token}"},
             timeout=REQUEST_TIMEOUT,
@@ -520,6 +812,22 @@ def reconcile_closures(
 
 # ── Handler ──────────────────────────────────────────────────────────────────
 def handle_notification(body: bytes) -> tuple[int, str]:
+    # Scope the budget to watchdog alerts; preserve other jobs' delivery behavior.
+    try:
+        entry = parse_pubsub_envelope(body)
+        watchdog = entry and extract_failure_details(entry)["job_name"] == "freshness-watchdog"
+    except (ValueError, json.JSONDecodeError):
+        watchdog = False
+    if not watchdog:
+        return _handle_notification(body)
+    context = _NOTIFICATION_DEADLINE.set(time.monotonic() + _NOTIFICATION_BUDGET)
+    try:
+        return _handle_notification(body)
+    finally:
+        _NOTIFICATION_DEADLINE.reset(context)
+
+
+def _handle_notification(body: bytes) -> tuple[int, str]:
     """Process one Pub/Sub push. Returns (http_status, message)."""
     try:
         log_entry = parse_pubsub_envelope(body)
@@ -548,6 +856,8 @@ def handle_notification(body: bytes) -> tuple[int, str]:
         )
         return 204, ""
 
+    details = enrich_freshness_failure(details)
+
     webhook = os.environ.get("DISCORD_WEBHOOK_URL")
     gh_token = os.environ.get("GITHUB_PAT")
     gh_repo = os.environ.get("GITHUB_REPO")
@@ -555,11 +865,20 @@ def handle_notification(body: bytes) -> tuple[int, str]:
     errors: list[str] = []
 
     if webhook:
+        channel_context = None
+        deadline = _NOTIFICATION_DEADLINE.get()
+        if deadline is not None and gh_token and gh_repo:
+            # A Discord outage gets at most 15s, leaving 30s for GitHub after
+            # the evidence lookup's maximum 10s within the shared 55s budget.
+            channel_context = _NOTIFICATION_DEADLINE.set(min(deadline, time.monotonic() + 15))
         try:
             send_discord(webhook, build_discord_payload(details))
         except requests.RequestException as e:
             errors.append(f"discord: {e}")
             logger.error("Discord post failed: %s", e)
+        finally:
+            if channel_context is not None:
+                _NOTIFICATION_DEADLINE.reset(channel_context)
     else:
         logger.warning("DISCORD_WEBHOOK_URL not set; skipping Discord.")
 
