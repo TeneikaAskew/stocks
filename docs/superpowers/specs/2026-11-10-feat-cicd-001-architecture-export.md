@@ -5,10 +5,13 @@ issues: [1661]
 canvases:
   - https://claude.ai/artifact/LXZ5iRtXogCyFfApfsxXVN
 done_when:
-  - "Exporter: python3 -m scripts.maintenance.architecture_export --snapshot tests/fixtures/live_gcp_snapshot_2026-09-07.json --output <path> writes one JSON object with schema 'architecture-export/1' and the top-level keys schema, sources, jobs, services, schedulers, tables, counts and drift (Design 1); tests/scripts/test_architecture_export.py asserts every key and that counts.declared equals what scripts/maintenance/doc_inventory.repo_inventory returns for jobs, schedulers, tables and routes on the same tree"
-  - "Built from the inventory, not a second parser: scripts/maintenance/architecture_export.py imports its facts from scripts/maintenance/doc_inventory.py (repo_inventory, live_snapshot, table_refs and job_table_edges) and contains no regular expression over gcp/deploy.sh, gcp/schema.sql or platform/api; a structural (AST) test asserts it compiles no re pattern and opens none of those three paths itself"
+  - "Exporter: python3 -m scripts.maintenance.architecture_export --snapshot tests/fixtures/live_gcp_snapshot_2026-09-07.json --output <path> writes one JSON object with schema 'architecture-export/1' and the top-level keys schema, sources, jobs, services, schedulers, tables, counts and drift (Design 1); tests/scripts/test_architecture_export.py asserts every key and that counts.declared equals what scripts/maintenance/doc_inventory.repo_inventory returns for jobs, schedulers, tables, routes and services on the same tree"
+  - "Built from the inventory, not a second parser: scripts/maintenance/architecture_export.py imports its facts from scripts/maintenance/doc_inventory.py (repo_inventory, deploy_services, live_snapshot, table_refs and job_table_edges) and contains no regular expression over gcp/deploy.sh, platform/deploy.sh, gcp/schema.sql or platform/api; a structural (AST) test asserts it compiles no re pattern and opens none of those four paths itself"
+  - "Declared services come from the deploy scripts: a new scripts/maintenance/doc_inventory.deploy_services returns every Cloud Run service gcp/deploy.sh and platform/deploy.sh deploy (by literal name or by the variable they deploy), repo_inventory carries it as services, and on the 2026-11-10 tree it names discord-interactions, failure-notifier and solyra-api-staging; tests/scripts/test_doc_inventory.py asserts that list, and test_architecture_export.py asserts that a snapshot lacking one declared service and holding one service no script deploys yields that service declared true with live null, the other declared false with live set, and each listed once in drift.declared_not_live and drift.live_not_declared"
+  - "Unresolved table families stay unresolved: for a job whose only evidence for a table is an unresolved run-time template (the case test_an_unresolved_template_is_marked_instead_of_asserting_every_relation builds), the export lists that table under the job's possible_reads or possible_writes with its template and not under reads or writes, and lists the job under that table's possible_readers or possible_writers and not under readers or writers (test on the same mini repo)"
+  - "Scheduler targets keep their kind: every exported scheduler has target {kind, name, uri} with kind job, service or uri; on the 2026-11-10 tree discord-warm-open and discord-warm-close export kind service naming discord-interactions and reconcile-failure-notifier-hourly exports kind service naming failure-notifier, and no scheduler with a non-empty target_job, target_service or target_uri in deploy_schedulers exports an empty target (test)"
   - "Deterministic and free of line numbers: two runs on the same commit and the same snapshot produce byte-identical files (test), and no string value in the export matches the file-and-line pattern '<path>.(py|sh|sql):<digits>' (test over the fixture export)"
-  - "Provenance: sources.commit equals git rev-parse HEAD and sources.files lists the git blob id of gcp/deploy.sh and gcp/schema.sql and the tree id of platform/api; with an uncommitted change under gcp/, lib/, scripts/ or platform/api the exporter exits non-zero and writes nothing (test using a temporary clone)"
+  - "Provenance: sources.commit equals git rev-parse HEAD and sources.files lists the git blob id of gcp/deploy.sh, platform/deploy.sh and gcp/schema.sql and the tree id of platform/api; with an uncommitted change under gcp/, lib/, scripts/, platform/api or platform/deploy.sh the exporter exits non-zero and writes nothing (test using a temporary clone)"
   - "Repo-only mode needs no cloud access: with neither --snapshot nor --live, sources.live is null, every live field is null, drift is empty, and the run exits 0 with no gcloud executable on PATH (test)"
   - "Drift is computed, not described: given a snapshot that lacks one declared job, holds one job no deploy function creates and has one paused scheduler, drift.declared_not_live, drift.live_not_declared and drift.paused_schedulers each list exactly that one name (test with a synthetic snapshot)"
   - "On-demand workflow: .github/workflows/architecture-export.yml has workflow_dispatch as its only trigger, refuses any ref other than refs/heads/main before authenticating, grants only contents: read and id-token: write, reads no database secret, installs no model CLI, runs no git push, gh pr or gh issue command, and uploads the export as the run artifact architecture-export with retention-days 30 and writes counts and drift to the job summary; tests/meta/test_architecture_export_workflow.py parses the YAML and asserts each of these"
@@ -91,25 +94,38 @@ The effect on main, read 2026-11-10:
 
 `scripts/maintenance/architecture_export.py`, run as
 `python3 -m scripts.maintenance.architecture_export [--snapshot PATH | --live] --output PATH`.
-It is a thin layer over `scripts/maintenance/doc_inventory.py` and never re-parses the repo.
+It is a thin layer over `scripts/maintenance/doc_inventory.py` and never re-parses the repo. One
+inventory gap is closed there, not in the exporter: `repo_inventory` has no services today, so a new
+`deploy_services()` in `doc_inventory.py` lists the Cloud Run services `gcp/deploy.sh` and
+`platform/deploy.sh` deploy (`discord-interactions`, `failure-notifier` through
+`NOTIFIER_SERVICE`, `solyra-api-staging` through `SERVICE`), and `repo_inventory` returns it as
+`services`.
 
 Output (`schema: "architecture-export/1"`, keys sorted, two-space indent, trailing newline):
 
-- `sources`: `commit` (HEAD), `files` (blob ids of `gcp/deploy.sh`, `gcp/schema.sql`, tree id of
-  `platform/api`), `live` (`null`, or `{read_at, project, region}` from the snapshot).
+- `sources`: `commit` (HEAD), `files` (blob ids of `gcp/deploy.sh`, `platform/deploy.sh`,
+  `gcp/schema.sql`, tree id of `platform/api`), `live` (`null`, or `{read_at, project, region}` from the snapshot).
 - `jobs[]`: `name`, `kind` (`fetcher` when the entry module is under `gcp.fetchers`, else
   `compute`), `module`, `deploy_function`, `resources` (memory, cpu, timeout, retries),
-  `schedules[]` (scheduler name, cron, time zone, args), `reads[]` and `writes[]` (table names from
-  `job_table_edges`), `live` (`null`, or `{exists, last_execution: {time, result}}`).
-- `services[]`: `name`, `declared` (boolean), `live` (`null` or `{auth, min_instances,
+  `schedules[]` (scheduler name, cron, time zone, args), `reads[]` and `writes[]` (table names
+  `job_table_edges` resolves), `possible_reads` and `possible_writes` (table name to template, from
+  its `unresolved` map: a run-time template whose family member is chosen at run time, so the
+  table may be touched but is not asserted), `live` (`null`, or `{exists, last_execution: {time, result}}`).
+- `services[]`: `name`, `declared` (boolean, from `deploy_services`), `live` (`null` or `{auth, min_instances,
   max_instances, created}`).
-- `schedulers[]`: `name`, `cron`, `time_zone`, `target_job`, `args`, `live` (`null` or `{state}`).
-- `tables[]`: `name`, `kind` (table, view, materialized view), `writers[]`, `readers[]` (job names).
+- `schedulers[]`: `name`, `cron`, `time_zone`, `target` (`{kind, name, uri}`: kind `job` from
+  `target_job`, `service` from `target_service` or from a `target_uri` whose host variable the
+  inventory already maps to a service (`service_url` is `failure-notifier`), else `uri` from
+  `target_uri`), `args`, `live`
+  (`null` or `{state}`). Service-targeting schedulers such as `discord-warm-open` keep their
+  destination.
+- `tables[]`: `name`, `kind` (table, view, materialized view), `writers[]`, `readers[]`,
+  `possible_writers[]`, `possible_readers[]` (job names, split the same way as the job lists).
 - `counts`: `declared` and `live` for jobs, services, schedulers, tables, routes.
 - `drift`: `declared_not_live`, `live_not_declared`, `paused_schedulers`, each a sorted list of names.
 
 Rules: no `file:line` citation anywhere (names only, so an unrelated edit never changes the export);
-refuse a dirty tree under `gcp/`, `lib/`, `scripts/`, `platform/api` so `sources.commit` is true;
+refuse a dirty tree under `gcp/`, `lib/`, `scripts/`, `platform/api`, `platform/deploy.sh` so `sources.commit` is true;
 `--live` raises on any failed read, as `live_snapshot` already does (CLAUDE.md Rule 3.7).
 
 ### 2. On-demand workflow
@@ -162,6 +178,8 @@ has a data board the skill can diff (Close-out), on a `docs/canvases-…` branch
 
 - The export drifts from the inventory documents. It is built from the same functions, and the
   "built from the inventory" item forbids a second parser.
+- The diagram overstates dependencies. Run-time table families stay in the possible lists, as the
+  inventory digest already marks them, so a candidate is never drawn as a confirmed edge.
 - A stale export reaches the canvas. The provenance step refuses an export not on main and reports
   how far behind main it is and when live state was read.
 - The workflow is misused as a writer. The workflow test pins its trigger, permissions and the
