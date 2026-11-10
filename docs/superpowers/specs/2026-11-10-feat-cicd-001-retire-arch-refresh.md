@@ -197,8 +197,8 @@ README, 05-e and `INVESTMENT_MODELS_SUMMARY.md` carry (line 3 of each):
 It is chosen because `Last reviewed` "is only ever moved by an actual review" (`render_marker`'s
 docstring, line 4136) and D reviews nothing. An `Against` SHA is worse: set to main's SHA it added
 "changed-since ... the document itself changed since" P2s on both documents on the D head (executed); set
-to a D commit it breaks after the squash, and on every later PR touching their declared paths it adds a
-changed-since P2 (independent review, executed there). `--stamp` inserts after the H1, which in 05-a fails
+to a D commit it breaks after the squash; and any valid `Against`, such as a post-merge stamp, adds a
+changed-since P2 to every later PR touching their declared paths (independent review, executed there). `--stamp` inserts after the H1, which in 05-a fails
 `gate_stale_asof` ("the header note carries no as-of label", executed); after the blockquote the docs test
 passes and `find_markers` reads it (executed).
 
@@ -412,8 +412,9 @@ which added two changed-since P2s instead of the P3s; that simulated D against
 `find_markers`; `refresh_calibration_table --check` without Cloud SQL (exit 2); the empty-pathspec
 `git grep` (exit 1); the SHARED-01 declaration check.
 
-From the independent review, executed there: the D-commit `Against` marker breaking after a squash and
-on later PRs; #1384's head checking clean only against its 2026-11-09 snapshot.
+From the independent review, executed there: the D-commit `Against` marker breaking after a squash; a
+trunk `Against` (a post-merge stamp) adding a changed-since P2 to a later PR; #1384's head checking clean
+only against its 2026-11-09 snapshot.
 
 Read from source, not executed: every line anchor; the roles the remaining WIF workflows need; F's
 sidecar production after D.
