@@ -1,0 +1,165 @@
+$ gcloud run jobs describe premarket-brief --region us-east1
+✔ Job premarket-brief in region us-east1
+Executed 392 times
+Last executed 2026-11-10T13:30:02.530140Z with execution premarket-brief-xr7f8
+Last updated on 2026-11-06T12:14:30.272757Z by claude-web@adept-mountain-474619-d4.iam.gserviceaccount.com
+ 
+Tasks:               1
+Parallelism:         No limit
+Container None
+  Image:             us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:cf2f1a7bde8766ddc5ee5a1abe32d4fc9534d6b210c431ffff70113514cb9f8c
+  Command:           python -m gcp.premarket_brief
+  Memory:            1Gi
+  CPU:               1
+  Env vars:
+    CLOUD_SQL_CONNECTION_NAME adept-mountain-474619-d4:us-east1:trading-db
+    DB_NAME          trading
+    DB_USER          trading_user
+    GCS_BUCKET       adept-mountain-474619-d4-trading-data
+    RECOMMEND_LONG_ONLY true
+  Secrets:
+    ALPHA_VANTAGE_API_KEY av-api-key:latest
+    AV_API_KEY       av-api-key:latest
+    BENZINGA_API_KEY benzinga-api-key:latest
+    DB_PASS          db-trading-pass:latest
+    DISCORD_WEBHOOK_EARNINGS_URL discord-webhook-earnings:latest
+    DISCORD_WEBHOOK_SIGNALS_URL discord-webhook-signals:latest
+    DISCORD_WEBHOOK_URL discord-webhook-insights:latest
+    FRED_API_KEY     fred-api-key:latest
+Task Timeout:        30m
+Max Retries:         0
+Service account:     trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+
+$ gcloud artifacts docker images describe us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:cf2f1a7bde8766ddc5ee5a1abe32d4fc9534d6b210c431ffff70113514cb9f8c
+image_summary:
+  digest: sha256:cf2f1a7bde8766ddc5ee5a1abe32d4fc9534d6b210c431ffff70113514cb9f8c
+  fully_qualified_digest: us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:cf2f1a7bde8766ddc5ee5a1abe32d4fc9534d6b210c431ffff70113514cb9f8c
+  registry: us-east1-docker.pkg.dev
+  repository: trading
+  slsa_build_level: unknown
+
+$ gcloud run jobs executions list --job premarket-brief --region us-east1 --limit 12
+   JOB              EXECUTION              REGION    RUNNING  COMPLETE  CREATED                  RUN BY
+✔  premarket-brief  premarket-brief-xr7f8  us-east1  0        1 / 1     2026-11-10 13:30:02 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  premarket-brief  premarket-brief-58nz6  us-east1  0        1 / 1     2026-11-09 13:30:02 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  premarket-brief  premarket-brief-c2wjx  us-east1  0        1 / 1     2026-11-09 02:00:03 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  premarket-brief  premarket-brief-rrxvs  us-east1  0        1 / 1     2026-11-06 13:30:10 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  premarket-brief  premarket-brief-8mpbj  us-east1  0        1 / 1     2026-11-05 13:30:03 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  premarket-brief  premarket-brief-q9r5l  us-east1  0        1 / 1     2026-11-04 13:30:13 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  premarket-brief  premarket-brief-4rn2v  us-east1  0        1 / 1     2026-11-03 13:30:02 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  premarket-brief  premarket-brief-pk6lk  us-east1  0        1 / 1     2026-11-02 13:30:02 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  premarket-brief  premarket-brief-wk7jb  us-east1  0        1 / 1     2026-11-02 02:00:06 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  premarket-brief  premarket-brief-6gzl4  us-east1  0        1 / 1     2026-10-30 12:30:15 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  premarket-brief  premarket-brief-88dn8  us-east1  0        1 / 1     2026-10-29 12:30:02 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  premarket-brief  premarket-brief-g6v26  us-east1  0        1 / 1     2026-10-28 12:30:08 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+
+$ gcloud run jobs describe signal-monitor --region us-east1
+✔ Job signal-monitor in region us-east1
+Executed 494 times
+Last executed 2026-11-10T15:00:04.925493Z with execution signal-monitor-8ldzl
+Last updated on 2026-10-22T01:25:30.052607Z by claude-web@adept-mountain-474619-d4.iam.gserviceaccount.com
+ 
+Tasks:               1
+Parallelism:         No limit
+Container None
+  Image:             us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7
+  Command:           python -m gcp.signal_monitor
+  Memory:            2Gi
+  CPU:               1
+  Env vars:
+    CLOUD_SQL_CONNECTION_NAME adept-mountain-474619-d4:us-east1:trading-db
+    DB_NAME          trading
+    DB_USER          trading_user
+    GCS_BUCKET       adept-mountain-474619-d4-trading-data
+    RECOMMEND_LONG_ONLY true
+  Secrets:
+    ALPHA_VANTAGE_API_KEY av-api-key:latest
+    AV_API_KEY       av-api-key:latest
+    BENZINGA_API_KEY benzinga-api-key:latest
+    DB_PASS          db-trading-pass:latest
+    DISCORD_WEBHOOK_EARNINGS_URL discord-webhook-earnings:latest
+    DISCORD_WEBHOOK_SIGNALS_URL discord-webhook-signals:latest
+    DISCORD_WEBHOOK_URL discord-webhook-insights:latest
+    FRED_API_KEY     fred-api-key:latest
+Task Timeout:        8h
+Max Retries:         0
+Service account:     trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+
+$ gcloud artifacts docker images describe us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7
+image_summary:
+  digest: sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7
+  fully_qualified_digest: us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7
+  registry: us-east1-docker.pkg.dev
+  repository: trading
+  slsa_build_level: unknown
+
+$ gcloud run jobs executions list --job signal-monitor --region us-east1 --limit 12
+   JOB             EXECUTION             REGION    RUNNING  COMPLETE  CREATED                  RUN BY
+✔  signal-monitor  signal-monitor-8ldzl  us-east1  0        1 / 1     2026-11-10 15:00:04 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  signal-monitor  signal-monitor-tbhtr  us-east1  0        1 / 1     2026-11-10 14:45:06 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+…  signal-monitor  signal-monitor-kccps  us-east1  1        0 / 1     2026-11-10 14:25:02 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  signal-monitor  signal-monitor-dkwrs  us-east1  0        1 / 1     2026-11-09 15:00:04 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  signal-monitor  signal-monitor-pb6vg  us-east1  0        1 / 1     2026-11-09 14:45:06 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  signal-monitor  signal-monitor-g4bkp  us-east1  0        1 / 1     2026-11-09 14:25:03 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  signal-monitor  signal-monitor-r2hbm  us-east1  0        1 / 1     2026-11-06 15:00:14 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  signal-monitor  signal-monitor-wpn8g  us-east1  0        1 / 1     2026-11-06 14:45:10 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  signal-monitor  signal-monitor-26xm4  us-east1  0        1 / 1     2026-11-06 14:25:00 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  signal-monitor  signal-monitor-rbfkq  us-east1  0        1 / 1     2026-11-05 15:00:44 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  signal-monitor  signal-monitor-5v9gj  us-east1  0        1 / 1     2026-11-05 14:45:04 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  signal-monitor  signal-monitor-xq6pn  us-east1  0        1 / 1     2026-11-04 15:00:05 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+
+$ gcloud run jobs describe signal-monitor-eod-resolver --region us-east1
+✔ Job signal-monitor-eod-resolver in region us-east1
+Executed 134 times
+Last executed 2026-11-09T21:30:03.478345Z with execution signal-monitor-eod-resolver-lvvrp
+Last updated on 2026-10-22T01:25:35.879763Z by claude-web@adept-mountain-474619-d4.iam.gserviceaccount.com
+ 
+Tasks:               1
+Parallelism:         No limit
+Container None
+  Image:             us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7
+  Command:           python -m gcp.signal_monitor_eod_resolver
+  Memory:            1Gi
+  CPU:               1
+  Env vars:
+    CLOUD_SQL_CONNECTION_NAME adept-mountain-474619-d4:us-east1:trading-db
+    DB_NAME          trading
+    DB_USER          trading_user
+    GCS_BUCKET       adept-mountain-474619-d4-trading-data
+    RECOMMEND_LONG_ONLY true
+  Secrets:
+    ALPHA_VANTAGE_API_KEY av-api-key:latest
+    AV_API_KEY       av-api-key:latest
+    BENZINGA_API_KEY benzinga-api-key:latest
+    DB_PASS          db-trading-pass:latest
+    DISCORD_WEBHOOK_EARNINGS_URL discord-webhook-earnings:latest
+    DISCORD_WEBHOOK_SIGNALS_URL discord-webhook-signals:latest
+    DISCORD_WEBHOOK_URL discord-webhook-insights:latest
+    FRED_API_KEY     fred-api-key:latest
+Task Timeout:        1h
+Max Retries:         0
+Service account:     trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+
+$ gcloud artifacts docker images describe us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7
+image_summary:
+  digest: sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7
+  fully_qualified_digest: us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7
+  registry: us-east1-docker.pkg.dev
+  repository: trading
+  slsa_build_level: unknown
+
+$ gcloud run jobs executions list --job signal-monitor-eod-resolver --region us-east1 --limit 12
+   JOB                          EXECUTION                          REGION    RUNNING  COMPLETE  CREATED                  RUN BY
+✔  signal-monitor-eod-resolver  signal-monitor-eod-resolver-lvvrp  us-east1  0        1 / 1     2026-11-09 21:30:03 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  signal-monitor-eod-resolver  signal-monitor-eod-resolver-755zq  us-east1  0        1 / 1     2026-11-06 21:30:03 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  signal-monitor-eod-resolver  signal-monitor-eod-resolver-zrxn6  us-east1  0        1 / 1     2026-11-05 21:30:47 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  signal-monitor-eod-resolver  signal-monitor-eod-resolver-tgzpj  us-east1  0        1 / 1     2026-11-04 21:30:25 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  signal-monitor-eod-resolver  signal-monitor-eod-resolver-ftkzh  us-east1  0        1 / 1     2026-11-03 21:30:03 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  signal-monitor-eod-resolver  signal-monitor-eod-resolver-mdpr8  us-east1  0        1 / 1     2026-11-02 21:30:03 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  signal-monitor-eod-resolver  signal-monitor-eod-resolver-kk7rp  us-east1  0        1 / 1     2026-10-30 20:30:03 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  signal-monitor-eod-resolver  signal-monitor-eod-resolver-rlfnz  us-east1  0        1 / 1     2026-10-29 20:30:03 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  signal-monitor-eod-resolver  signal-monitor-eod-resolver-8r7w6  us-east1  0        1 / 1     2026-10-28 20:30:17 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  signal-monitor-eod-resolver  signal-monitor-eod-resolver-4w26f  us-east1  0        1 / 1     2026-10-27 20:30:17 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  signal-monitor-eod-resolver  signal-monitor-eod-resolver-f9csp  us-east1  0        1 / 1     2026-10-26 20:30:03 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+✔  signal-monitor-eod-resolver  signal-monitor-eod-resolver-pqplw  us-east1  0        1 / 1     2026-10-23 20:30:03 UTC  trading-runner@adept-mountain-474619-d4.iam.gserviceaccount.com
+
