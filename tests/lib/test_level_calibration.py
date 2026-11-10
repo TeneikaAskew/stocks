@@ -98,23 +98,47 @@ def _minutes(session, n, start="09:30", **cols):
 
 
 def test_pm_spike_known_answer_and_session_minimum():
-    """40 sessions of 390 RTH bars with flat bodies; one bar a session has a
-    0.5 ATR wick above every body around it: the 0.999 quantile of the
-    31,200 wick excesses is 0.5. A session under 300 bars is not counted, so
-    39 full sessions are insufficient_history with sample 39."""
+    """Spec revision 2: the population is premarket bars. 40 sessions of 330
+    premarket bars with flat bodies; one bar a session has a 0.5 ATR wick
+    above every body around it: the 0.999 quantile of the 26,400 wick
+    excesses is 0.5. A session under 60 premarket bars is not counted, so 39
+    full sessions are insufficient_history with sample 39."""
     days = _bdays(41)
     d = lc.normalize_daily(_daily([100.0] * 41), "atr_14", "2026-11-06")
     frames = []
     for s in days[1:]:
-        highs = np.full(390, 100.0)
+        highs = np.full(330, 100.0)
         highs[200] = 100.5
-        frames.append(_minutes(s, 390, high=highs))
+        frames.append(_minutes(s, 330, start="04:00", high=highs))
     m = lc.normalize_minutes(pd.concat(frames), "2026-11-06")
     got = lc.pm_spike(d, m, policy())
     assert got.status == PARAM_OK and got.value == pytest.approx(0.5) and got.sample_n == 40
-    short = pd.concat(frames[:39] + [_minutes(days[-1], 299)])
+    assert got.method_id == "premarket_wick_excess_quantile"
+    short = pd.concat(frames[:39] + [_minutes(days[-1], 59, start="04:00")])
     got = lc.pm_spike(d, lc.normalize_minutes(short, "2026-11-06"), policy())
     assert got.status == "insufficient_history" and got.sample_n == 39
+
+
+def test_pm_spike_reads_premarket_wicks_not_regular_session_ones():
+    """Spec revision 2: regular-session bars are not in the population. Each
+    session has 330 flat premarket bars with one 0.5 ATR wick, and 390
+    regular-session bars with one 3 ATR wick; the answer stays 0.5, and the
+    history calibrator gives the same value as the nightly method."""
+    days = _bdays(41)
+    daily = _daily([100.0] * 41)
+    d = lc.normalize_daily(daily, "atr_14", "2026-11-06")
+    frames = []
+    for s in days[1:]:
+        pre = np.full(330, 100.0)
+        pre[200] = 100.5
+        rth = np.full(390, 100.0)
+        rth[100] = 103.0
+        frames += [_minutes(s, 330, start="04:00", high=pre), _minutes(s, 390, high=rth)]
+    raw = pd.concat(frames)
+    got = lc.pm_spike(d, lc.normalize_minutes(raw, "2026-11-06"), policy())
+    assert got.value == pytest.approx(0.5) and got.sample_n == 40
+    hist = lc.HistoryCalibrator("TST", daily, raw, "2026-11-06")
+    assert hist._pm_spike(hist.daily_frame("atr_14"), policy()).value == pytest.approx(0.5)
 
 
 def test_wick_excess_is_the_filters_rule():
@@ -145,7 +169,7 @@ def test_pm_stale_print_known_answer_drops_echo_and_spike_bars():
         low = [100 - x for x in spreads] + [97.0] * 5 + [100.0] * 5
         frames.append(_minutes(s, 70, start="04:00", high=np.array(high), low=np.array(low)))
     m = lc.normalize_minutes(pd.concat(frames), "2026-11-06")
-    spike = lc.Calibrated("pm_spike_atr", PARAM_OK, 1.0, 40, "rth_wick_excess_quantile")
+    spike = lc.Calibrated("pm_spike_atr", PARAM_OK, 1.0, 40, "premarket_wick_excess_quantile")
     got = lc.pm_stale_print(d, m, policy(), spike)
     assert got.status == PARAM_OK and got.value == pytest.approx(0.114) and got.sample_n == 40
 

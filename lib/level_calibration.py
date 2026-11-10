@@ -335,7 +335,8 @@ def pm_spike(d: pd.DataFrame, m: pd.DataFrame, policy: Dict[str, dict]) -> Calib
     min_bars = int(row['extra'].get('min_bars_per_session') or 0)
     sessions = _lookback_sessions(d, row['lookback_sessions'])
     samples, used = [], []
-    for s, g in _session_minutes(_rth(m), sessions).items():
+    # Spec revision 2: the population is the premarket bars the filter judges.
+    for s, g in _session_minutes(_premarket(m), sessions).items():
         atr = d.at[s, 'prior_atr']
         if len(g) < min_bars or not (atr == atr and atr > 0):
             continue
@@ -1089,7 +1090,7 @@ class HistoryCalibrator:
         min_bars = int(row['extra'].get('min_bars_per_session') or 0)
         samples, used = [], []
         for s in _lookback_sessions(d, row['lookback_sessions']):
-            g = self.rth.get(s)
+            g = self.pm.get(s)  # spec revision 2: premarket bars
             if g is None:
                 continue
             atr = d.at[s, 'prior_atr']
