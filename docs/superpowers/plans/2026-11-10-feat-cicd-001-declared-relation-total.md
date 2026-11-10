@@ -12,7 +12,7 @@ status: ready
 before a declared breakdown from the same three counts the breakdown renders, so a change to the
 declared relation set passes both the gate's render check and `tests/scripts/test_check_generated_docs.py`.
 
-**Spec:** `docs/superpowers/specs/2026-11-10-feat-cicd-001-declared-relation-total.md` (approved, merged by #1768).
+**Spec:** `docs/superpowers/specs/2026-11-10-feat-cicd-001-declared-relation-total.md` (merged by #1768, approved by #1782).
 
 **Requirement:** REQ-GOV-004 as amended by #1767.
 
