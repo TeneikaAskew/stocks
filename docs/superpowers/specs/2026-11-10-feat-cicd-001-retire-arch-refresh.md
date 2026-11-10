@@ -21,7 +21,7 @@ done_when:
   - "Gate files untouched: the D and F diffs leave scripts/gate/ (pinned copies included), .githooks/pre-commit, .github/workflows/spec-gate.yml, .github/workflows/registry-check.yml, tests/scripts/test_spec_gate.py and tests/scripts/test_export_model_registry.py byte-identical, so no red-team pass applies."
   - "Records (F): the FEAT-CICD-001 record in docs/product/02-FEATURE-CATALOG.md shows a current Status and Last reviewed, docs/product/12-PR-ISSUE-TRACEABILITY.md lists F under FEAT-CICD-001, and F's body closes #1118; no other capability's row or record changes."
   - "Source identity (SHARED-01): on the F head, the existing bounded producer and verifier (scripts/maintenance/doc_source_snapshot.py produce, then verify with the fixed ceilings, run from the committed HEAD) prove committed source and SITE body identity bound to this approved spec at the actual merge base, where its blob equals the one on current main; the plan binds this spec; the only SITE change is the FEAT-CICD-001 / SHARED-01 row of the Implementation-source notes table, updated with the prefix source_identity_sha256=<current source hash> and nonempty prose that describes only F's scripts and tests changes, keeping every sentence of the existing row unless it is false on the F head; every other SITE byte is unchanged; the sidecar is produced from the final committed SITE body and committed; the registry docs/DOC_REGISTRY.md blob, mode and type equal main's (D included)."
-status: draft
+status: approved
 supersedes: null
 ---
 
