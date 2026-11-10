@@ -138,12 +138,10 @@ def _prior_session_from_db(ticker: str, fetch_date: date) -> dict:
     ATR(14) already, so one backward lookup is enough. The premarket print
     filter needs the prior session's ATR(14) (FEAT-STRAT-001 Design 2), never
     the fetch date's own row, which at 08:30 holds only premarket columns.
-    Returns an empty dict when nothing is found.
+    Returns an empty dict when the query succeeds and finds no row; a failed
+    query raises, so a lookup error is never read as "no prior session".
     """
-    try:
-        from gcp.database import query_to_dataframe
-    except ImportError:
-        return {}
+    from gcp.database import query_to_dataframe
     sql = """
         SELECT close, open, atr_14
           FROM market_data_daily
@@ -153,18 +151,15 @@ def _prior_session_from_db(ticker: str, fetch_date: date) -> dict:
          ORDER BY date DESC
          LIMIT 1
     """
-    try:
-        df = query_to_dataframe(sql, {'tk': ticker, 'd': fetch_date})
-        if df.empty:
-            return {}
-        row = df.iloc[0]
-        out = {}
-        for key in ('close', 'open', 'atr_14'):
-            v = row.get(key)
-            out[key] = float(v) if v is not None and pd.notna(v) else None
-        return out
-    except Exception:
+    df = query_to_dataframe(sql, {'tk': ticker, 'd': fetch_date})
+    if df.empty:
         return {}
+    row = df.iloc[0]
+    out = {}
+    for key in ('close', 'open', 'atr_14'):
+        v = row.get(key)
+        out[key] = float(v) if v is not None and pd.notna(v) else None
+    return out
 
 
 def _prev_close_from_db(ticker: str, fetch_date: date) -> float | None:
@@ -192,8 +187,20 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
         log.info("  %s: no AV intraday bars for %s", ticker, iso_date)
         return None
 
-    prior = _prior_session_from_db(ticker, fetch_date)
+    try:
+        prior = _prior_session_from_db(ticker, fetch_date)
+    except Exception as e:  # noqa: BLE001 withheld below, never written unfiltered
+        log.error("  %s: premarket withheld for %s: prior-session lookup failed: %s",
+                  ticker, iso_date, e)
+        return None
     prev_close = prior.get('close')
+    atr14 = prior.get('atr_14')
+    if atr14 is None or not atr14 > 0:
+        # The print filter needs the prior session's ATR(14); without it the
+        # snapshot would carry the raw 08:05 prints, so none is written.
+        log.warning("  %s: premarket withheld for %s: prior-session ATR(14) "
+                    "unavailable, the print filter cannot run", ticker, iso_date)
+        return None
 
     # `times` must be a Series so calculate_premarket_context's tz-aware
     # path runs (DatetimeIndex falls to a per-row Python loop that builds
@@ -207,7 +214,7 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
         close=df['Close'].reset_index(drop=True),
         volume=df['Volume'].reset_index(drop=True),
         prev_close=prev_close,
-        atr14=prior.get('atr_14'),
+        atr14=atr14,
         prev_open=prior.get('open'),
     )
     if pm.get('bar_count', 0) <= 0:

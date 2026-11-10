@@ -236,8 +236,11 @@ def _load_gamma_freshness(ticker: str, as_of: date) -> dict:
                 "snapshot_date": None, "days_behind": None}
 
 
-def _delete_null_close_rows(ticker: str) -> int:
-    """Delete market_data_daily rows for `ticker` that have NULL close.
+def _delete_null_close_rows(ticker: str, before) -> int:
+    """Delete market_data_daily rows for `ticker` dated before `before` that
+    have NULL close. The session's own row (dated `before`, written by
+    fetch-premarket-refresh with pre_* only until the nightly close lands)
+    is never touched: the brief reads its premarket snapshot from it.
 
     Some upstream fetchers (mystery 06:44 EDT script on 2026-04-30
     inserted 43 NULL placeholder rows — see
@@ -258,8 +261,8 @@ def _delete_null_close_rows(ticker: str) -> int:
     try:
         deleted = execute_sql(
             "DELETE FROM market_data_daily "
-            "WHERE ticker = :t AND close IS NULL",
-            {'t': ticker.upper()},
+            "WHERE ticker = :t AND close IS NULL AND date < :d",
+            {'t': ticker.upper(), 'd': str(before)},
         )
         # execute_sql returns the driver rowcount as of commit 1b6b2067 —
         # use the real count instead of a hardcoded "did the cleanup
@@ -1124,7 +1127,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             )
             # Opportunistic cleanup so future runs don't re-encounter
             # these rows. Fire-and-forget — failure here is non-fatal.
-            _delete_null_close_rows(ticker)
+            _delete_null_close_rows(ticker, analysis_date)
         if df.empty or len(df) < 2:
             brief['tickers'][ticker] = {'status': 'NO DATA (all rows null)'}
             continue

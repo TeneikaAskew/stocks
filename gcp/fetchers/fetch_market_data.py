@@ -474,18 +474,27 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
                 except Exception:
                     pass
 
-            pm = calculate_premarket_context(
-                times=intraday['ts'],
-                open_=intraday['open'],
-                high=intraday['high'],
-                low=intraday['low'],
-                close=intraday['close'],
-                volume=intraday['volume'],
-                prev_close=prev_close,
-                atr14=atr14,
-                prev_open=prev_open,
-            )
-            if pm['bar_count'] > 0:
+            if atr14 is None or not atr14 > 0:
+                # The print filter needs the prior session's ATR(14); without
+                # it the pre_* columns would carry the raw prints, so none
+                # are written for this session.
+                log.warning("    premarket withheld for %s on %s: prior-session "
+                            "ATR(14) unavailable, the print filter cannot run",
+                            ticker, fetch_date)
+                pm = None
+            else:
+                pm = calculate_premarket_context(
+                    times=intraday['ts'],
+                    open_=intraday['open'],
+                    high=intraday['high'],
+                    low=intraday['low'],
+                    close=intraday['close'],
+                    volume=intraday['volume'],
+                    prev_close=prev_close,
+                    atr14=atr14,
+                    prev_open=prev_open,
+                )
+            if pm is not None and pm['bar_count'] > 0:
                 if pm['pre_high'] is not None: row['pre_high'] = pm['pre_high']
                 if pm['pre_low'] is not None: row['pre_low'] = pm['pre_low']
                 if pm['pre_vwap'] is not None: row['pre_vwap'] = pm['pre_vwap']
@@ -499,7 +508,7 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
                 row['pre_excluded_stale_prints'] = int(pm['excluded_prior_close_prints'])
                 row['pre_excluded_spikes'] = int(pm['excluded_spike_prints'])
                 log.info("    ✓ pre-market context computed (%d bars)", pm['bar_count'])
-            else:
+            elif pm is not None:
                 log.info("    no pre-market bars for %s on %s (likely weekend / holiday)",
                          ticker, fetch_date)
     except Exception as e:
