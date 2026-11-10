@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-10-feat-cicd-001-architecture-export.md
 branch: feature/feat-cicd-001-architecture-export
-pr: null
+pr: 1773
 status: ready
 ---
 
