@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-10-feat-cicd-001-retire-arch-refresh.md
 branch: feature/feat-cicd-001-retire-arch-refresh
-pr: null
+pr: 1788
 status: ready
 ---
 
