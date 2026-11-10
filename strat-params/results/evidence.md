@@ -1,4 +1,4 @@
-# #1766 calibrated evidence as of 2026-11-06 (run 2c4b324e-0e3a-42f1-bd5b-7906e3964b90)
+# #1766 calibrated evidence as of 2026-11-06 (run e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa)
 
 ## SPY
 
@@ -9,22 +9,22 @@
 | pm_spike_atr | 0.0745 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.5 |
 | pm_stale_print_atr | 0.0334 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.1 |
 | level_cluster_atr | 0.0515 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.15 |
-| entry_buffer_aggressive_lo_atr | 0.0000 | ok | 741 | 2023-11-09 to 2026-11-05 | 0.0 |
-| entry_buffer_aggressive_hi_atr | 1.1245 | ok | 741 | 2023-11-09 to 2026-11-05 | 0.5 |
-| entry_buffer_neutral_lo_atr | 0.0000 | ok | 741 | 2023-11-09 to 2026-11-05 | 0.0 |
-| entry_buffer_neutral_hi_atr | 0.4179 | ok | 741 | 2023-11-09 to 2026-11-05 | 0.25 |
-| entry_buffer_conservative_lo_atr | 0.0342 | ok | 741 | 2023-11-09 to 2026-11-05 | 0.1 |
-| entry_buffer_conservative_hi_atr | 0.8234 | ok | 741 | 2023-11-09 to 2026-11-05 | 0.4 |
+| entry_buffer_aggressive_lo_atr | 0.0000 | ok | 740 | 2023-11-09 to 2026-11-05 | 0.0 |
+| entry_buffer_aggressive_hi_atr | 1.1245 | ok | 740 | 2023-11-09 to 2026-11-05 | 0.5 |
+| entry_buffer_neutral_lo_atr | 0.0000 | ok | 740 | 2023-11-09 to 2026-11-05 | 0.0 |
+| entry_buffer_neutral_hi_atr | 0.4179 | ok | 740 | 2023-11-09 to 2026-11-05 | 0.25 |
+| entry_buffer_conservative_lo_atr | 0.0330 | ok | 740 | 2023-11-09 to 2026-11-05 | 0.1 |
+| entry_buffer_conservative_hi_atr | 0.8234 | ok | 740 | 2023-11-09 to 2026-11-05 | 0.4 |
 | stop_aggressive_atr |  | insufficient_history | 136 | 2024-07-25 to 2026-11-05 | 2.0 |
-| stop_neutral_atr | 0.3411 | ok | 165 | 2024-07-25 to 2026-11-05 | 1.0 |
+| stop_neutral_atr | 0.3299 | ok | 164 | 2024-07-25 to 2026-11-05 | 1.0 |
 | stop_conservative_atr |  | insufficient_history | 147 | 2024-07-25 to 2026-11-05 | 0.7 |
-| min_stop_atr | 0.1836 | ok | 165 | 2024-07-25 to 2026-11-05 | 0.5 |
+| min_stop_atr | 0.1780 | ok | 164 | 2024-07-25 to 2026-11-05 | 0.5 |
 | target_aggressive_1_r |  | insufficient_history | 136 | None to None | 2.0 |
 | target_aggressive_2_r |  | insufficient_history | 136 | None to None | 3.5 |
 | target_aggressive_3_r |  | insufficient_history | 136 | None to None | 5.0 |
-| target_neutral_1_r | 0.4351 | ok | 334 | 2023-11-14 to 2026-11-05 | 1.0 |
-| target_neutral_2_r | 0.6804 | ok | 334 | 2023-11-14 to 2026-11-05 | 2.0 |
-| target_neutral_3_r | 1.1435 | ok | 334 | 2023-11-14 to 2026-11-05 | 3.0 |
+| target_neutral_1_r | 0.4532 | ok | 331 | 2023-11-14 to 2026-11-05 | 1.0 |
+| target_neutral_2_r | 0.7076 | ok | 331 | 2023-11-14 to 2026-11-05 | 2.0 |
+| target_neutral_3_r | 1.1824 | ok | 331 | 2023-11-14 to 2026-11-05 | 3.0 |
 | target_conservative_1_r |  | insufficient_history | 147 | None to None | 1.0 |
 | target_conservative_2_r |  | insufficient_history | 147 | None to None | 1.75 |
 
@@ -711,7 +711,6 @@ breaks per side and year (sessions with one-minute bars):
 | side | year | breaks | held |
 |---|---|---|---|
 | long | 2022 | 1 | 1 |
-| long | 2023 | 1 | 0 |
 | long | 2024 | 6 | 6 |
 | long | 2025 | 79 | 58 |
 | long | 2026 | 110 | 77 |
@@ -723,7 +722,7 @@ breaks per side and year (sessions with one-minute bars):
 | short | 2022 | 242 | 96 |
 | short | 2023 | 240 | 72 |
 | short | 2024 | 238 | 60 |
-| short | 2025 | 149 | 50 |
+| short | 2025 | 148 | 50 |
 | short | 2026 | 126 | 62 |
 
 ## QQQ
@@ -735,24 +734,24 @@ breaks per side and year (sessions with one-minute bars):
 | pm_spike_atr | 0.0644 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.5 |
 | pm_stale_print_atr | 0.0328 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.1 |
 | level_cluster_atr | 0.0488 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.15 |
-| entry_buffer_aggressive_lo_atr | 0.0000 | ok | 779 | 2023-11-09 to 2026-11-05 | 0.0 |
-| entry_buffer_aggressive_hi_atr | 0.4803 | ok | 779 | 2023-11-09 to 2026-11-05 | 0.5 |
-| entry_buffer_neutral_lo_atr | 0.0000 | ok | 779 | 2023-11-09 to 2026-11-05 | 0.0 |
-| entry_buffer_neutral_hi_atr | 0.1298 | ok | 779 | 2023-11-09 to 2026-11-05 | 0.25 |
-| entry_buffer_conservative_lo_atr | 0.0139 | ok | 779 | 2023-11-09 to 2026-11-05 | 0.1 |
-| entry_buffer_conservative_hi_atr | 0.3378 | ok | 779 | 2023-11-09 to 2026-11-05 | 0.4 |
-| stop_aggressive_atr | 0.5493 | ok | 283 | 2023-11-09 to 2026-11-04 | 2.0 |
-| stop_neutral_atr | 0.3252 | ok | 285 | 2023-11-09 to 2026-11-04 | 1.0 |
-| stop_conservative_atr | 0.2092 | ok | 286 | 2023-11-09 to 2026-11-04 | 0.7 |
-| min_stop_atr | 0.1555 | ok | 285 | 2023-11-09 to 2026-11-04 | 0.5 |
-| target_aggressive_1_r | 0.5877 | ok | 478 | 2023-11-09 to 2026-11-04 | 2.0 |
-| target_aggressive_2_r | 0.8828 | ok | 478 | 2023-11-09 to 2026-11-04 | 3.5 |
-| target_aggressive_3_r | 1.2219 | ok | 478 | 2023-11-09 to 2026-11-04 | 5.0 |
-| target_neutral_1_r | 0.5045 | ok | 555 | 2023-11-09 to 2026-11-04 | 1.0 |
-| target_neutral_2_r | 0.8170 | ok | 555 | 2023-11-09 to 2026-11-04 | 2.0 |
-| target_neutral_3_r | 1.2046 | ok | 555 | 2023-11-09 to 2026-11-04 | 3.0 |
-| target_conservative_1_r | 0.4930 | ok | 504 | 2023-11-09 to 2026-11-04 | 1.0 |
-| target_conservative_2_r | 0.9009 | ok | 504 | 2023-11-09 to 2026-11-04 | 1.75 |
+| entry_buffer_aggressive_lo_atr | 0.0000 | ok | 777 | 2023-11-09 to 2026-11-05 | 0.0 |
+| entry_buffer_aggressive_hi_atr | 0.4796 | ok | 777 | 2023-11-09 to 2026-11-05 | 0.5 |
+| entry_buffer_neutral_lo_atr | 0.0000 | ok | 777 | 2023-11-09 to 2026-11-05 | 0.0 |
+| entry_buffer_neutral_hi_atr | 0.1281 | ok | 777 | 2023-11-09 to 2026-11-05 | 0.25 |
+| entry_buffer_conservative_lo_atr | 0.0139 | ok | 777 | 2023-11-09 to 2026-11-05 | 0.1 |
+| entry_buffer_conservative_hi_atr | 0.3370 | ok | 777 | 2023-11-09 to 2026-11-05 | 0.4 |
+| stop_aggressive_atr | 0.5481 | ok | 283 | 2023-11-09 to 2026-11-04 | 2.0 |
+| stop_neutral_atr | 0.3221 | ok | 283 | 2023-11-09 to 2026-11-04 | 1.0 |
+| stop_conservative_atr | 0.2046 | ok | 284 | 2023-11-09 to 2026-11-04 | 0.7 |
+| min_stop_atr | 0.1547 | ok | 283 | 2023-11-09 to 2026-11-04 | 0.5 |
+| target_aggressive_1_r | 0.5929 | ok | 477 | 2023-11-09 to 2026-11-04 | 2.0 |
+| target_aggressive_2_r | 0.8854 | ok | 477 | 2023-11-09 to 2026-11-04 | 3.5 |
+| target_aggressive_3_r | 1.2252 | ok | 477 | 2023-11-09 to 2026-11-04 | 5.0 |
+| target_neutral_1_r | 0.5086 | ok | 552 | 2023-11-09 to 2026-11-04 | 1.0 |
+| target_neutral_2_r | 0.8245 | ok | 552 | 2023-11-09 to 2026-11-04 | 2.0 |
+| target_neutral_3_r | 1.2147 | ok | 552 | 2023-11-09 to 2026-11-04 | 3.0 |
+| target_conservative_1_r | 0.5061 | ok | 502 | 2023-11-09 to 2026-11-04 | 1.0 |
+| target_conservative_2_r | 0.9233 | ok | 502 | 2023-11-09 to 2026-11-04 | 1.75 |
 
 long window 1.887 x ATR: share of sessions whose excursion passed it, per year (and at the #1753 3.0):
 
@@ -1565,7 +1564,7 @@ breaks per side and year (sessions with one-minute bars):
 | short | 2021 | 242 | 70 |
 | short | 2022 | 233 | 94 |
 | short | 2023 | 234 | 68 |
-| short | 2024 | 202 | 59 |
+| short | 2024 | 200 | 59 |
 | short | 2025 | 119 | 55 |
 | short | 2026 | 116 | 68 |
 
@@ -1578,24 +1577,24 @@ breaks per side and year (sessions with one-minute bars):
 | pm_spike_atr | 0.0786 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.5 |
 | pm_stale_print_atr | 0.0383 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.1 |
 | level_cluster_atr | 0.0517 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.15 |
-| entry_buffer_aggressive_lo_atr | 0.0000 | ok | 807 | 2023-11-09 to 2026-11-05 | 0.0 |
-| entry_buffer_aggressive_hi_atr | 0.6837 | ok | 807 | 2023-11-09 to 2026-11-05 | 0.5 |
-| entry_buffer_neutral_lo_atr | 0.0000 | ok | 807 | 2023-11-09 to 2026-11-05 | 0.0 |
-| entry_buffer_neutral_hi_atr | 0.2831 | ok | 807 | 2023-11-09 to 2026-11-05 | 0.25 |
-| entry_buffer_conservative_lo_atr | 0.0224 | ok | 807 | 2023-11-09 to 2026-11-05 | 0.1 |
-| entry_buffer_conservative_hi_atr | 0.4916 | ok | 807 | 2023-11-09 to 2026-11-05 | 0.4 |
-| stop_aggressive_atr | 0.5243 | ok | 234 | 2023-11-14 to 2026-11-05 | 2.0 |
-| stop_neutral_atr | 0.3230 | ok | 250 | 2023-12-01 to 2026-11-05 | 1.0 |
-| stop_conservative_atr | 0.2361 | ok | 244 | 2023-11-14 to 2026-11-05 | 0.7 |
-| min_stop_atr | 0.1845 | ok | 250 | 2023-12-01 to 2026-11-05 | 0.5 |
-| target_aggressive_1_r | 0.7273 | ok | 439 | 2023-11-13 to 2026-11-05 | 2.0 |
-| target_aggressive_2_r | 0.9820 | ok | 439 | 2023-11-13 to 2026-11-05 | 3.5 |
-| target_aggressive_3_r | 1.2641 | ok | 439 | 2023-11-13 to 2026-11-05 | 5.0 |
-| target_neutral_1_r | 0.5263 | ok | 516 | 2023-11-15 to 2026-11-05 | 1.0 |
-| target_neutral_2_r | 0.8822 | ok | 516 | 2023-11-15 to 2026-11-05 | 2.0 |
-| target_neutral_3_r | 1.3603 | ok | 516 | 2023-11-15 to 2026-11-05 | 3.0 |
-| target_conservative_1_r | 0.4915 | ok | 468 | 2023-11-14 to 2026-11-05 | 1.0 |
-| target_conservative_2_r | 0.8526 | ok | 468 | 2023-11-14 to 2026-11-05 | 1.75 |
+| entry_buffer_aggressive_lo_atr | 0.0000 | ok | 805 | 2023-11-09 to 2026-11-05 | 0.0 |
+| entry_buffer_aggressive_hi_atr | 0.6837 | ok | 805 | 2023-11-09 to 2026-11-05 | 0.5 |
+| entry_buffer_neutral_lo_atr | 0.0000 | ok | 805 | 2023-11-09 to 2026-11-05 | 0.0 |
+| entry_buffer_neutral_hi_atr | 0.2867 | ok | 805 | 2023-11-09 to 2026-11-05 | 0.25 |
+| entry_buffer_conservative_lo_atr | 0.0221 | ok | 805 | 2023-11-09 to 2026-11-05 | 0.1 |
+| entry_buffer_conservative_hi_atr | 0.4918 | ok | 805 | 2023-11-09 to 2026-11-05 | 0.4 |
+| stop_aggressive_atr | 0.5233 | ok | 234 | 2023-11-14 to 2026-11-05 | 2.0 |
+| stop_neutral_atr | 0.3212 | ok | 250 | 2023-12-01 to 2026-11-05 | 1.0 |
+| stop_conservative_atr | 0.2302 | ok | 244 | 2023-11-14 to 2026-11-05 | 0.7 |
+| min_stop_atr | 0.1812 | ok | 250 | 2023-12-01 to 2026-11-05 | 0.5 |
+| target_aggressive_1_r | 0.7287 | ok | 438 | 2023-11-13 to 2026-11-05 | 2.0 |
+| target_aggressive_2_r | 0.9839 | ok | 438 | 2023-11-13 to 2026-11-05 | 3.5 |
+| target_aggressive_3_r | 1.2665 | ok | 438 | 2023-11-13 to 2026-11-05 | 5.0 |
+| target_neutral_1_r | 0.5304 | ok | 513 | 2023-11-15 to 2026-11-05 | 1.0 |
+| target_neutral_2_r | 0.8822 | ok | 513 | 2023-11-15 to 2026-11-05 | 2.0 |
+| target_neutral_3_r | 1.3623 | ok | 513 | 2023-11-15 to 2026-11-05 | 3.0 |
+| target_conservative_1_r | 0.5045 | ok | 467 | 2023-11-14 to 2026-11-05 | 1.0 |
+| target_conservative_2_r | 0.8702 | ok | 467 | 2023-11-14 to 2026-11-05 | 1.75 |
 
 long window 2.194 x ATR: share of sessions whose excursion passed it, per year (and at the #1753 3.0):
 
@@ -2083,7 +2082,7 @@ breaks per side and year (sessions with one-minute bars):
 |---|---|---|---|
 | long | 2020 | 2 | 2 |
 | long | 2023 | 7 | 7 |
-| long | 2024 | 34 | 30 |
+| long | 2024 | 33 | 29 |
 | long | 2025 | 99 | 70 |
 | long | 2026 | 124 | 72 |
 | short | 2017 | 164 | 44 |
@@ -2094,6 +2093,6 @@ breaks per side and year (sessions with one-minute bars):
 | short | 2022 | 241 | 90 |
 | short | 2023 | 237 | 74 |
 | short | 2024 | 226 | 75 |
-| short | 2025 | 167 | 77 |
+| short | 2025 | 166 | 77 |
 | short | 2026 | 122 | 68 |
 

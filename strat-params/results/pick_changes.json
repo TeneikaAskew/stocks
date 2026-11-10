@@ -238,7 +238,7 @@
   "stored|IWM|short|conservative": {
    "plans": 2644,
    "entry": 2544,
-   "stop": 2543,
+   "stop": 2544,
    "targets": 2544,
    "any": 2544
   },
@@ -301,7 +301,7 @@
   "stored|QQQ|long|conservative": {
    "plans": 2644,
    "entry": 2533,
-   "stop": 2533,
+   "stop": 2531,
    "targets": 2533,
    "any": 2533
   },
@@ -445,6 +445,422 @@
   },
   "none|IWM|short|all": {
    "error": 0
+  }
+ },
+ "orb_only_flips": {
+  "none|IWM|long|to orb_only|params_insufficient_history": {
+   "2016": 162,
+   "2017": 77
+  },
+  "none|IWM|short|to orb_only|params_insufficient_history": {
+   "2016": 163,
+   "2017": 77
+  },
+  "stored|IWM|long|to orb_only|params_insufficient_history": {
+   "2016": 162,
+   "2017": 77
+  },
+  "stored|IWM|short|to orb_only|params_insufficient_history": {
+   "2016": 163,
+   "2017": 77
+  },
+  "none|IWM|short|to orb_only|next_level_outside_window": {
+   "2017": 1
+  },
+  "stored|IWM|short|to orb_only|next_level_outside_window": {
+   "2017": 1
+  },
+  "none|IWM|long|to orb_only|next_level_outside_window": {
+   "2018": 4,
+   "2019": 1,
+   "2020": 2,
+   "2024": 1
+  },
+  "stored|IWM|long|to orb_only|next_level_outside_window": {
+   "2018": 4,
+   "2019": 1,
+   "2020": 2,
+   "2024": 1
+  },
+  "none|IWM|short|from orb_only|next_level_outside_window": {
+   "2020": 1
+  },
+  "stored|IWM|short|from orb_only|next_level_outside_window": {
+   "2020": 1,
+   "2026": 2
+  },
+  "none|QQQ|long|to orb_only|params_insufficient_history": {
+   "2016": 163,
+   "2017": 75
+  },
+  "none|QQQ|short|to orb_only|params_insufficient_history": {
+   "2016": 163,
+   "2017": 77
+  },
+  "stored|QQQ|long|to orb_only|params_insufficient_history": {
+   "2016": 163,
+   "2017": 75
+  },
+  "stored|QQQ|short|to orb_only|params_insufficient_history": {
+   "2016": 163,
+   "2017": 77
+  },
+  "none|QQQ|long|to orb_only|next_level_outside_window": {
+   "2018": 2,
+   "2020": 1,
+   "2026": 1
+  },
+  "stored|QQQ|long|to orb_only|next_level_outside_window": {
+   "2018": 2,
+   "2020": 1,
+   "2026": 1
+  },
+  "stored|QQQ|long|to orb_only|no_levels": {
+   "2026": 1
+  },
+  "stored|QQQ|short|from orb_only|next_level_outside_window": {
+   "2026": 3
+  },
+  "none|SPY|long|to orb_only|params_insufficient_history": {
+   "2016": 163,
+   "2017": 76
+  },
+  "none|SPY|short|to orb_only|params_insufficient_history": {
+   "2016": 163,
+   "2017": 77
+  },
+  "stored|SPY|long|to orb_only|params_insufficient_history": {
+   "2016": 163,
+   "2017": 76
+  },
+  "stored|SPY|short|to orb_only|params_insufficient_history": {
+   "2016": 163,
+   "2017": 77
+  },
+  "none|SPY|long|to orb_only|next_level_outside_window": {
+   "2018": 4,
+   "2020": 1,
+   "2024": 1,
+   "2025": 1,
+   "2026": 1
+  },
+  "stored|SPY|long|to orb_only|next_level_outside_window": {
+   "2018": 4,
+   "2020": 1,
+   "2024": 1,
+   "2025": 1,
+   "2026": 1
+  },
+  "stored|SPY|short|from orb_only|next_level_outside_window": {
+   "2026": 2
+  }
+ },
+ "no_target": {
+  "none|IWM|long|#1753": 283,
+  "none|IWM|short|#1753": 122,
+  "stored|IWM|long|#1753": 286,
+  "stored|IWM|short|#1753": 128,
+  "none|IWM|long|#1766": 341,
+  "stored|IWM|long|#1766": 341,
+  "none|IWM|short|#1766": 156,
+  "stored|IWM|short|#1766": 156,
+  "none|QQQ|long|#1753": 436,
+  "none|QQQ|short|#1753": 124,
+  "stored|QQQ|long|#1753": 439,
+  "stored|QQQ|short|#1753": 129,
+  "none|QQQ|long|#1766": 477,
+  "stored|QQQ|long|#1766": 477,
+  "none|QQQ|short|#1766": 131,
+  "stored|QQQ|short|#1766": 131,
+  "none|SPY|long|#1753": 469,
+  "none|SPY|short|#1753": 126,
+  "stored|SPY|long|#1753": 464,
+  "stored|SPY|short|#1753": 126,
+  "none|SPY|long|#1766": 515,
+  "stored|SPY|long|#1766": 515,
+  "none|SPY|short|#1766": 139,
+  "stored|SPY|short|#1766": 139
+ },
+ "plan_state": {
+  "none|IWM|long|aggressive|#1753": {
+   "plan with targets": 2538,
+   "no plan": 106
+  },
+  "none|IWM|long|neutral|#1753": {
+   "plan with targets": 2538,
+   "no plan": 106
+  },
+  "none|IWM|long|conservative|#1753": {
+   "plan with targets": 2538,
+   "no plan": 106
+  },
+  "none|IWM|long|aggressive|#1766": {
+   "no plan": 2483,
+   "plan with targets": 161
+  },
+  "none|IWM|long|neutral|#1766": {
+   "no plan": 2458,
+   "plan with targets": 186
+  },
+  "none|IWM|long|conservative|#1766": {
+   "no plan": 2468,
+   "plan with targets": 176
+  },
+  "none|IWM|short|aggressive|#1753": {
+   "plan with targets": 2544,
+   "no plan": 100
+  },
+  "none|IWM|short|neutral|#1753": {
+   "plan with targets": 2544,
+   "no plan": 100
+  },
+  "none|IWM|short|conservative|#1753": {
+   "plan with targets": 2544,
+   "no plan": 100
+  },
+  "none|IWM|short|aggressive|#1766": {
+   "no plan": 2483,
+   "plan with targets": 161
+  },
+  "none|IWM|short|neutral|#1766": {
+   "no plan": 2458,
+   "plan with targets": 186
+  },
+  "none|IWM|short|conservative|#1766": {
+   "no plan": 2468,
+   "plan with targets": 176
+  },
+  "stored|IWM|long|aggressive|#1753": {
+   "plan with targets": 2538,
+   "no plan": 106
+  },
+  "stored|IWM|long|neutral|#1753": {
+   "plan with targets": 2538,
+   "no plan": 106
+  },
+  "stored|IWM|long|conservative|#1753": {
+   "plan with targets": 2538,
+   "no plan": 106
+  },
+  "stored|IWM|long|aggressive|#1766": {
+   "no plan": 2483,
+   "plan with targets": 161
+  },
+  "stored|IWM|long|neutral|#1766": {
+   "no plan": 2458,
+   "plan with targets": 186
+  },
+  "stored|IWM|long|conservative|#1766": {
+   "no plan": 2468,
+   "plan with targets": 176
+  },
+  "stored|IWM|short|aggressive|#1753": {
+   "plan with targets": 2542,
+   "no plan": 102
+  },
+  "stored|IWM|short|neutral|#1753": {
+   "plan with targets": 2542,
+   "no plan": 102
+  },
+  "stored|IWM|short|conservative|#1753": {
+   "plan with targets": 2542,
+   "no plan": 102
+  },
+  "stored|IWM|short|aggressive|#1766": {
+   "no plan": 2483,
+   "plan with targets": 161
+  },
+  "stored|IWM|short|neutral|#1766": {
+   "no plan": 2458,
+   "plan with targets": 186
+  },
+  "stored|IWM|short|conservative|#1766": {
+   "no plan": 2468,
+   "plan with targets": 176
+  },
+  "none|QQQ|long|aggressive|#1753": {
+   "plan with targets": 2532,
+   "no plan": 112
+  },
+  "none|QQQ|long|neutral|#1753": {
+   "plan with targets": 2532,
+   "no plan": 112
+  },
+  "none|QQQ|long|conservative|#1753": {
+   "plan with targets": 2532,
+   "no plan": 112
+  },
+  "none|QQQ|long|aggressive|#1766": {
+   "no plan": 2292,
+   "plan with targets": 352
+  },
+  "none|QQQ|long|neutral|#1766": {
+   "no plan": 2292,
+   "plan with targets": 352
+  },
+  "none|QQQ|long|conservative|#1766": {
+   "no plan": 2292,
+   "plan with targets": 352
+  },
+  "none|QQQ|short|aggressive|#1753": {
+   "plan with targets": 2545,
+   "no plan": 99
+  },
+  "none|QQQ|short|neutral|#1753": {
+   "plan with targets": 2545,
+   "no plan": 99
+  },
+  "none|QQQ|short|conservative|#1753": {
+   "plan with targets": 2545,
+   "no plan": 99
+  },
+  "none|QQQ|short|aggressive|#1766": {
+   "no plan": 2290,
+   "plan with targets": 354
+  },
+  "none|QQQ|short|neutral|#1766": {
+   "no plan": 2290,
+   "plan with targets": 354
+  },
+  "none|QQQ|short|conservative|#1766": {
+   "no plan": 2290,
+   "plan with targets": 354
+  },
+  "stored|QQQ|long|aggressive|#1753": {
+   "plan with targets": 2533,
+   "no plan": 111
+  },
+  "stored|QQQ|long|neutral|#1753": {
+   "plan with targets": 2533,
+   "no plan": 111
+  },
+  "stored|QQQ|long|conservative|#1753": {
+   "plan with targets": 2533,
+   "no plan": 111
+  },
+  "stored|QQQ|long|aggressive|#1766": {
+   "no plan": 2292,
+   "plan with targets": 352
+  },
+  "stored|QQQ|long|neutral|#1766": {
+   "no plan": 2292,
+   "plan with targets": 352
+  },
+  "stored|QQQ|long|conservative|#1766": {
+   "no plan": 2292,
+   "plan with targets": 352
+  },
+  "stored|QQQ|short|aggressive|#1753": {
+   "plan with targets": 2542,
+   "no plan": 102
+  },
+  "stored|QQQ|short|neutral|#1753": {
+   "plan with targets": 2542,
+   "no plan": 102
+  },
+  "stored|QQQ|short|conservative|#1753": {
+   "plan with targets": 2542,
+   "no plan": 102
+  },
+  "stored|QQQ|short|aggressive|#1766": {
+   "no plan": 2290,
+   "plan with targets": 354
+  },
+  "stored|QQQ|short|neutral|#1766": {
+   "no plan": 2290,
+   "plan with targets": 354
+  },
+  "stored|QQQ|short|conservative|#1766": {
+   "no plan": 2290,
+   "plan with targets": 354
+  },
+  "none|SPY|long|aggressive|#1753": {
+   "plan with targets": 2530,
+   "no plan": 114
+  },
+  "none|SPY|long|neutral|#1753": {
+   "plan with targets": 2530,
+   "no plan": 114
+  },
+  "none|SPY|long|conservative|#1753": {
+   "plan with targets": 2530,
+   "no plan": 114
+  },
+  "none|SPY|long|aggressive|#1766": {
+   "no plan": 2644
+  },
+  "none|SPY|long|neutral|#1766": {
+   "no plan": 2612,
+   "plan with targets": 32
+  },
+  "none|SPY|long|conservative|#1766": {
+   "no plan": 2644
+  },
+  "none|SPY|short|aggressive|#1753": {
+   "plan with targets": 2544,
+   "no plan": 100
+  },
+  "none|SPY|short|neutral|#1753": {
+   "plan with targets": 2544,
+   "no plan": 100
+  },
+  "none|SPY|short|conservative|#1753": {
+   "plan with targets": 2544,
+   "no plan": 100
+  },
+  "none|SPY|short|aggressive|#1766": {
+   "no plan": 2644
+  },
+  "none|SPY|short|neutral|#1766": {
+   "no plan": 2612,
+   "plan with targets": 32
+  },
+  "none|SPY|short|conservative|#1766": {
+   "no plan": 2644
+  },
+  "stored|SPY|long|aggressive|#1753": {
+   "plan with targets": 2530,
+   "no plan": 114
+  },
+  "stored|SPY|long|neutral|#1753": {
+   "plan with targets": 2530,
+   "no plan": 114
+  },
+  "stored|SPY|long|conservative|#1753": {
+   "plan with targets": 2530,
+   "no plan": 114
+  },
+  "stored|SPY|long|aggressive|#1766": {
+   "no plan": 2644
+  },
+  "stored|SPY|long|neutral|#1766": {
+   "no plan": 2612,
+   "plan with targets": 32
+  },
+  "stored|SPY|long|conservative|#1766": {
+   "no plan": 2644
+  },
+  "stored|SPY|short|aggressive|#1753": {
+   "plan with targets": 2542,
+   "no plan": 102
+  },
+  "stored|SPY|short|neutral|#1753": {
+   "plan with targets": 2542,
+   "no plan": 102
+  },
+  "stored|SPY|short|conservative|#1753": {
+   "plan with targets": 2542,
+   "no plan": 102
+  },
+  "stored|SPY|short|aggressive|#1766": {
+   "no plan": 2644
+  },
+  "stored|SPY|short|neutral|#1766": {
+   "no plan": 2612,
+   "plan with targets": 32
+  },
+  "stored|SPY|short|conservative|#1766": {
+   "no plan": 2644
   }
  },
  "last_20": {

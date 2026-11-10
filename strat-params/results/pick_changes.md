@@ -27,7 +27,7 @@ Persona plans that changed, per ticker, direction and persona:
 | SPY | short | conservative | 2644 | 2542 | 2542 | 2542 | 2542 |
 | QQQ | long | aggressive | 2644 | 2533 | 2533 | 2533 | 2533 |
 | QQQ | long | neutral | 2644 | 2533 | 2533 | 2533 | 2533 |
-| QQQ | long | conservative | 2644 | 2533 | 2533 | 2533 | 2533 |
+| QQQ | long | conservative | 2644 | 2533 | 2531 | 2533 | 2533 |
 | QQQ | short | aggressive | 2644 | 2545 | 2545 | 2545 | 2545 |
 | QQQ | short | neutral | 2644 | 2545 | 2545 | 2545 | 2545 |
 | QQQ | short | conservative | 2644 | 2545 | 2545 | 2545 | 2545 |
@@ -36,7 +36,60 @@ Persona plans that changed, per ticker, direction and persona:
 | IWM | long | conservative | 2644 | 2538 | 2538 | 2538 | 2538 |
 | IWM | short | aggressive | 2644 | 2544 | 2544 | 2544 | 2544 |
 | IWM | short | neutral | 2644 | 2544 | 2544 | 2544 | 2544 |
-| IWM | short | conservative | 2644 | 2544 | 2543 | 2544 | 2544 |
+| IWM | short | conservative | 2644 | 2544 | 2544 | 2544 | 2544 |
+
+orb_only flips, by direction, reason (#1766's when it became orb_only, #1753's when it stopped) and year:
+
+| ticker | side | flip | reason | sessions per year |
+|---|---|---|---|---|
+| IWM | long | to orb_only | next_level_outside_window | 2018 4, 2019 1, 2020 2, 2024 1 |
+| IWM | long | to orb_only | params_insufficient_history | 2016 162, 2017 77 |
+| IWM | short | from orb_only | next_level_outside_window | 2020 1, 2026 2 |
+| IWM | short | to orb_only | next_level_outside_window | 2017 1 |
+| IWM | short | to orb_only | params_insufficient_history | 2016 163, 2017 77 |
+| QQQ | long | to orb_only | next_level_outside_window | 2018 2, 2020 1, 2026 1 |
+| QQQ | long | to orb_only | no_levels | 2026 1 |
+| QQQ | long | to orb_only | params_insufficient_history | 2016 163, 2017 75 |
+| QQQ | short | from orb_only | next_level_outside_window | 2026 3 |
+| QQQ | short | to orb_only | params_insufficient_history | 2016 163, 2017 77 |
+| SPY | long | to orb_only | next_level_outside_window | 2018 4, 2020 1, 2024 1, 2025 1, 2026 1 |
+| SPY | long | to orb_only | params_insufficient_history | 2016 163, 2017 76 |
+| SPY | short | from orb_only | next_level_outside_window | 2026 2 |
+| SPY | short | to orb_only | params_insufficient_history | 2016 163, 2017 77 |
+
+Sides with a trigger and no level target inside the window (T none):
+
+| ticker | side | #1753 | #1766 |
+|---|---|---|---|
+| SPY | long | 464 | 515 |
+| SPY | short | 126 | 139 |
+| QQQ | long | 439 | 477 |
+| QQQ | short | 129 | 131 |
+| IWM | long | 286 | 341 |
+| IWM | short | 128 | 156 |
+
+Persona plans: no plan, a plan with no target, a plan with targets:
+
+| ticker | direction | persona | #1753 | #1766 |
+|---|---|---|---|---|
+| SPY | long | aggressive | no plan 114, plan with targets 2530 | no plan 2644 |
+| SPY | long | neutral | no plan 114, plan with targets 2530 | no plan 2612, plan with targets 32 |
+| SPY | long | conservative | no plan 114, plan with targets 2530 | no plan 2644 |
+| SPY | short | aggressive | no plan 102, plan with targets 2542 | no plan 2644 |
+| SPY | short | neutral | no plan 102, plan with targets 2542 | no plan 2612, plan with targets 32 |
+| SPY | short | conservative | no plan 102, plan with targets 2542 | no plan 2644 |
+| QQQ | long | aggressive | no plan 111, plan with targets 2533 | no plan 2292, plan with targets 352 |
+| QQQ | long | neutral | no plan 111, plan with targets 2533 | no plan 2292, plan with targets 352 |
+| QQQ | long | conservative | no plan 111, plan with targets 2533 | no plan 2292, plan with targets 352 |
+| QQQ | short | aggressive | no plan 102, plan with targets 2542 | no plan 2290, plan with targets 354 |
+| QQQ | short | neutral | no plan 102, plan with targets 2542 | no plan 2290, plan with targets 354 |
+| QQQ | short | conservative | no plan 102, plan with targets 2542 | no plan 2290, plan with targets 354 |
+| IWM | long | aggressive | no plan 106, plan with targets 2538 | no plan 2483, plan with targets 161 |
+| IWM | long | neutral | no plan 106, plan with targets 2538 | no plan 2458, plan with targets 186 |
+| IWM | long | conservative | no plan 106, plan with targets 2538 | no plan 2468, plan with targets 176 |
+| IWM | short | aggressive | no plan 102, plan with targets 2542 | no plan 2483, plan with targets 161 |
+| IWM | short | neutral | no plan 102, plan with targets 2542 | no plan 2458, plan with targets 186 |
+| IWM | short | conservative | no plan 102, plan with targets 2542 | no plan 2468, plan with targets 176 |
 
 The 20 sessions through 2026-11-06, before (#1753) and after (#1766):
 
@@ -198,6 +251,56 @@ Persona plans that changed, per ticker, direction and persona:
 | IWM | short | aggressive | 2644 | 2544 | 2544 | 2544 | 2544 |
 | IWM | short | neutral | 2644 | 2544 | 2544 | 2544 | 2544 |
 | IWM | short | conservative | 2644 | 2544 | 2544 | 2544 | 2544 |
+
+orb_only flips, by direction, reason (#1766's when it became orb_only, #1753's when it stopped) and year:
+
+| ticker | side | flip | reason | sessions per year |
+|---|---|---|---|---|
+| IWM | long | to orb_only | next_level_outside_window | 2018 4, 2019 1, 2020 2, 2024 1 |
+| IWM | long | to orb_only | params_insufficient_history | 2016 162, 2017 77 |
+| IWM | short | from orb_only | next_level_outside_window | 2020 1 |
+| IWM | short | to orb_only | next_level_outside_window | 2017 1 |
+| IWM | short | to orb_only | params_insufficient_history | 2016 163, 2017 77 |
+| QQQ | long | to orb_only | next_level_outside_window | 2018 2, 2020 1, 2026 1 |
+| QQQ | long | to orb_only | params_insufficient_history | 2016 163, 2017 75 |
+| QQQ | short | to orb_only | params_insufficient_history | 2016 163, 2017 77 |
+| SPY | long | to orb_only | next_level_outside_window | 2018 4, 2020 1, 2024 1, 2025 1, 2026 1 |
+| SPY | long | to orb_only | params_insufficient_history | 2016 163, 2017 76 |
+| SPY | short | to orb_only | params_insufficient_history | 2016 163, 2017 77 |
+
+Sides with a trigger and no level target inside the window (T none):
+
+| ticker | side | #1753 | #1766 |
+|---|---|---|---|
+| SPY | long | 469 | 515 |
+| SPY | short | 126 | 139 |
+| QQQ | long | 436 | 477 |
+| QQQ | short | 124 | 131 |
+| IWM | long | 283 | 341 |
+| IWM | short | 122 | 156 |
+
+Persona plans: no plan, a plan with no target, a plan with targets:
+
+| ticker | direction | persona | #1753 | #1766 |
+|---|---|---|---|---|
+| SPY | long | aggressive | no plan 114, plan with targets 2530 | no plan 2644 |
+| SPY | long | neutral | no plan 114, plan with targets 2530 | no plan 2612, plan with targets 32 |
+| SPY | long | conservative | no plan 114, plan with targets 2530 | no plan 2644 |
+| SPY | short | aggressive | no plan 100, plan with targets 2544 | no plan 2644 |
+| SPY | short | neutral | no plan 100, plan with targets 2544 | no plan 2612, plan with targets 32 |
+| SPY | short | conservative | no plan 100, plan with targets 2544 | no plan 2644 |
+| QQQ | long | aggressive | no plan 112, plan with targets 2532 | no plan 2292, plan with targets 352 |
+| QQQ | long | neutral | no plan 112, plan with targets 2532 | no plan 2292, plan with targets 352 |
+| QQQ | long | conservative | no plan 112, plan with targets 2532 | no plan 2292, plan with targets 352 |
+| QQQ | short | aggressive | no plan 99, plan with targets 2545 | no plan 2290, plan with targets 354 |
+| QQQ | short | neutral | no plan 99, plan with targets 2545 | no plan 2290, plan with targets 354 |
+| QQQ | short | conservative | no plan 99, plan with targets 2545 | no plan 2290, plan with targets 354 |
+| IWM | long | aggressive | no plan 106, plan with targets 2538 | no plan 2483, plan with targets 161 |
+| IWM | long | neutral | no plan 106, plan with targets 2538 | no plan 2458, plan with targets 186 |
+| IWM | long | conservative | no plan 106, plan with targets 2538 | no plan 2468, plan with targets 176 |
+| IWM | short | aggressive | no plan 100, plan with targets 2544 | no plan 2483, plan with targets 161 |
+| IWM | short | neutral | no plan 100, plan with targets 2544 | no plan 2458, plan with targets 186 |
+| IWM | short | conservative | no plan 100, plan with targets 2544 | no plan 2468, plan with targets 176 |
 
 The 20 sessions through 2026-11-06, before (#1753) and after (#1766):
 
