@@ -49,6 +49,9 @@ log "5/7 done_when 4 evidence"
 (cd "$W/branch" && PYTHONPATH=platform:. python3 "$H/evidence.py" "$W/daily.csv" "$W/export/minutes" "$W/calib") \
     > /dev/null 2>> "$OUT/run.log"
 cp "$W/calib/evidence.md" "$W/calib/evidence.json" "$OUT/"
+log "5b/7 spike threshold diagnostic (wick excess, regular session vs premarket)"
+(cd "$W/branch" && PYTHONPATH=platform:. python3 "$H/spike_diag.py" "$W/daily.csv" "$W/export/minutes" "$OUT") \
+    2>> "$OUT/run.log"
 
 log "6/7 picks through the brief path, #1766 and #1753"
 (cd "$W/branch" && PYTHONPATH=platform:. python3 "$H/picks.py" "$W/daily.csv" "$W/picks_branch.jsonl.gz" \
