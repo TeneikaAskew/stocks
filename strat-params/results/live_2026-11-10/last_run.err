@@ -1,0 +1,4 @@
+dispatching db-query CR Job (commit=false, timeout=900s, sql=242 chars)...
+execution: db-query-vvhrn
+execution finished: succeeded=1 failed=0
+results at: gs://adept-mountain-474619-d4-trading-data/query-results/db-query-vvhrn
