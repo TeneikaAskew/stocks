@@ -926,7 +926,7 @@ def price_cents(x) -> int:
     persisted raw in `premarket_analysis` and the same level rendered on the
     ladder land on the same cent.
     """
-    from decimal import Decimal, ROUND_HALF_UP  # noqa: PLC0415
+    from decimal import Decimal, ROUND_HALF_UP
 
     return int(Decimal(str(float(x))).quantize(Decimal("0.01"), ROUND_HALF_UP) * 100)
 
@@ -1057,7 +1057,7 @@ def _opt_int(v) -> Optional[int]:
 
 
 def _json_obj(v) -> dict:
-    import json as _json  # noqa: PLC0415
+    import json as _json
     if v is None:
         return {}
     if isinstance(v, dict):
@@ -1274,7 +1274,7 @@ def load_level_params(query_fn, tickers, session_date) -> Dict[str, LevelParams]
     sql_params['session_date'] = session.isoformat()
     try:
         df = query_fn(LEVEL_PARAMS_SQL.format(tickers=placeholders), sql_params)
-    except Exception as exc:  # noqa: BLE001 re-raised typed, never swallowed
+    except Exception as exc:
         raise LevelParamsUnavailable(f"level parameter query failed: {exc}") from exc
     if df is None:
         raise LevelParamsUnavailable("level parameter query returned no result set")
@@ -1730,7 +1730,7 @@ class SessionLevels:
 
 def _to_date(v) -> Optional[date_type]:
     """A date from a date, datetime, Timestamp or ISO string; None otherwise."""
-    from datetime import datetime as _dt  # noqa: PLC0415
+    from datetime import datetime as _dt
     if v is None:
         return None
     if isinstance(v, _dt):
@@ -2256,11 +2256,11 @@ def _pick_side(side: str, candidates: list, ref: float, cleared: float,
     mark_c = price_cents(cleared)
     if side == 'long':
         on_side = [c for c in candidates if c['cents'] >= ref_c]
-        broken = lambda c: c['cents'] < mark_c  # noqa: E731
+        broken = lambda c: c['cents'] < mark_c
         other = sorted((c for c in candidates if c['cents'] < ref_c), key=lambda c: -c['cents'])
     else:
         on_side = sorted((c for c in candidates if c['cents'] <= ref_c), key=lambda c: -c['cents'])
-        broken = lambda c: c['cents'] > mark_c  # noqa: E731
+        broken = lambda c: c['cents'] > mark_c
         other = [c for c in candidates if c['cents'] > ref_c]
     listed = []
     for c in on_side:
@@ -2344,7 +2344,7 @@ LIVE_LEVEL_BASIS_SQL = (
 
 def parse_level_basis(value) -> Optional[dict]:
     """A level_basis cell (JSONB dict or its JSON text) as a dict, or None."""
-    import json as _json  # noqa: PLC0415
+    import json as _json
     if value is None:
         return None
     if isinstance(value, str):
@@ -2643,8 +2643,8 @@ def daily_data_freshness(
     so it behaves identically in the API image, which does not ship
     pandas-market-calendars.
     """
-    import calendar  # noqa: PLC0415
-    from datetime import timedelta  # noqa: PLC0415
+    import calendar
+    from datetime import timedelta
 
     if last_bar_date is None:
         return False, -1, 'unknown'

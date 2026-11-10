@@ -85,7 +85,7 @@ class _Db:
 
 
 def _run_nightly(monkeypatch, ticker, db: _Db) -> dict:
-    import gcp.database as database
+    from gcp import database
     from gcp.fetchers import fetch_market_data as fmd
 
     written = []
@@ -102,7 +102,7 @@ def _run_nightly(monkeypatch, ticker, db: _Db) -> dict:
 
 
 def _run_refresh(monkeypatch, ticker, db: _Db) -> dict:
-    import gcp.database as database
+    from gcp import database
     from gcp.fetchers import fetch_market_data as fmd
     from gcp.fetchers import fetch_premarket_refresh as fpr
 
@@ -161,7 +161,7 @@ def test_refresh_values_do_not_move_with_the_fetch_dates_own_row(monkeypatch):
 
 
 def test_refresh_reads_the_prior_sessions_close_open_and_atr(monkeypatch):
-    import gcp.database as database
+    from gcp import database
     from gcp.fetchers import fetch_premarket_refresh as fpr
 
     db = _Db("IWM", session_row={"Open": 1.0, "High": 2.0, "Low": 0.5, "Close": 1.5},
@@ -216,13 +216,28 @@ def test_prior_session_lookup_raises_instead_of_returning_empty(monkeypatch):
         fpr._prior_session_from_db("SPY", SESSION)
 
 
-def test_refresh_withholds_the_snapshot_when_the_prior_atr_is_missing(monkeypatch):
+def _builder_refuses(row) -> None:
+    from lib.strat_levels import _accept_premarket
+
+    snap, why = _accept_premarket(row, SESSION)
+    assert snap is None
+    assert why == "premarket_unfiltered"
+
+
+def test_refresh_labels_the_snapshot_unfiltered_when_the_prior_atr_is_missing(monkeypatch):
+    # Per the per-ticker params spec: with no ATR the snapshot is written
+    # unfiltered, labelled atr_unavailable with NULL excluded counts, and
+    # the level builder refuses it, so its prints never reach a level.
     db = _Db("SPY")
     db.conn.execute("UPDATE market_data_daily SET atr_14 = NULL")
-    assert _refresh_out(monkeypatch, "SPY", db) is None
+    out = _run_refresh(monkeypatch, "SPY", db)
+    assert out["pre_filter_status"] == "atr_unavailable"
+    assert out.get("pre_excluded_stale_prints") is None
+    assert out.get("pre_excluded_spikes") is None
+    _builder_refuses({**out, "date": SESSION})
 
 
-def test_nightly_writes_no_premarket_when_the_prior_atr_is_missing(monkeypatch):
+def test_nightly_labels_the_premarket_unfiltered_when_the_prior_atr_is_missing(monkeypatch):
     from lib import indicators
 
     real = indicators.add_all_indicators
@@ -232,5 +247,5 @@ def test_nightly_writes_no_premarket_when_the_prior_atr_is_missing(monkeypatch):
 
     monkeypatch.setattr(indicators, "add_all_indicators", no_atr)
     row = _run_nightly(monkeypatch, "SPY", _Db("SPY"))
-    for col in ("pre_high", "pre_low", "pre_vwap"):
-        assert row.get(col) is None or pd.isna(row.get(col)), col
+    assert row["pre_filter_status"] == "atr_unavailable"
+    _builder_refuses({**row, "date": SESSION})
