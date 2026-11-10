@@ -2343,3 +2343,31 @@ def test_the_restore_path_leaves_a_wrong_breakdown_for_the_gate(tmp_path, repo, 
 ])
 def test_which_breakdowns_the_renderer_recognises(text, ok):
     assert bool(inv.RELATION_BREAKDOWN.fullmatch(text)) is ok
+
+
+def test_the_render_moves_the_declared_total_with_its_breakdown(live, repo, tmp_path):
+    """A schema change that adds tables used to get a new breakdown and the old
+    total ("72 (71 tables, 2 materialized views, 1 view)"), which the derived-
+    number gate then refused, so no committed 05-a could pass both the render
+    check and this gate. Both shapes 05-a writes the total in are rendered
+    from the same counts as the breakdown."""
+    two_more = dict(repo, tables=list(repo["tables"]) + [{"name": "x1"}, {"name": "x2"}])
+    t = len(two_more["tables"])
+    m_, v = len(repo["materialized_views"]), len(repo["views"])
+    doc = tmp_path / "05-a-ARCHITECTURE.md"
+    doc.write_text("# x\n\n`gcp/schema.sql` declares **70 relations** "
+                   "(67 tables, 2 materialized views, 1 view).\n\n"
+                   "| a | that file declares 70 (67 tables, 2 materialized views, 1 view), a set |\n")
+    inv.insert_blocks(doc, two_more, live, root=REPO, counts=True)
+    text = doc.read_text()
+    breakdown = (f"({t} tables, {m_} materialized view{'' if m_ == 1 else 's'}, "
+                 f"{v} view{'' if v == 1 else 's'})")
+    assert f"declares **{t + m_ + v} relations** {breakdown}" in text, text
+    assert f"that file declares {t + m_ + v} {breakdown}" in text, text
+
+
+def test_the_total_moves_only_beside_a_breakdown(live, repo, tmp_path):
+    doc = tmp_path / "05-a-ARCHITECTURE.md"
+    doc.write_text("# x\n\nthe live database declares 95 relations, unrelated.\n")
+    inv.insert_blocks(doc, repo, live, root=REPO, counts=True)
+    assert "declares 95 relations, unrelated." in doc.read_text()
