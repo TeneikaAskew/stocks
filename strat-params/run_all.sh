@@ -20,13 +20,14 @@ OUT="$H/results"
 mkdir -p "$W" "$OUT"
 log() { echo "[$(date -u +%H:%M:%SZ)] $*" | tee -a "$OUT/run.log"; }
 
-log "1/7 worktrees: #1766 head and origin/main (#1753 as merged)"
-git -C "$R" fetch -q origin \
-    "+refs/heads/feature/feat-strat-001-per-ticker-params:refs/remotes/origin/feature/feat-strat-001-per-ticker-params" \
-    "+refs/heads/main:refs/remotes/origin/main"
+# The branch measured: the #1766 re-cut by default (spec revision 2).
+B="${STRAT_PARAMS_BRANCH:-feature/feat-strat-001-level-params-recut}"
+log "1/7 worktrees: $B head and origin/main (#1753 as merged)"
+git -C "$R" fetch -q origin "+refs/heads/$B:refs/remotes/origin/$B" "+refs/heads/main:refs/remotes/origin/main"
 # An existing worktree (an earlier run) is moved to the fetched heads, so a
-# rerun measures the current #1766 head and main.
-for wt in "branch:origin/feature/feat-strat-001-per-ticker-params" "main:origin/main"; do
+# rerun measures the current branch head and main. Minute bars already
+# exported and checked are not read again (export_minutes.py skips them).
+for wt in "branch:origin/$B" "main:origin/main"; do
     d="$W/${wt%%:*}"; ref="${wt#*:}"
     if [[ -d "$d" ]]; then git -C "$d" checkout -q --detach "$ref"; else git -C "$R" worktree add -q --detach "$d" "$ref"; fi
 done
@@ -68,7 +69,7 @@ log "done; pushing results"
 if [[ -n "${STRAT_PARAMS_NO_PUSH:-}" ]]; then log "STRAT_PARAMS_NO_PUSH set: not committing"; exit 0; fi
 cd "$H"
 git add results
-git commit -q -m "replay: #1766 calibration evidence and pick changes from production bars ($(git -C "$W/branch" rev-parse --short HEAD))
+git commit -q -m "replay: $B calibration evidence and pick changes from production bars ($(git -C "$W/branch" rev-parse --short HEAD))
 
 Read-only (db_query_cr.sh without --commit). Not for merge."
 git push -q -u origin replay/feat-strat-001-per-ticker-params
