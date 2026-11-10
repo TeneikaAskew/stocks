@@ -1,6 +1,6 @@
 # Gamma Levels — Taxonomy, Math, and Pipeline
 
-**Last reviewed:** unknown · **Last scanned:** 2026-10-20 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-11-03 · **Owner:** TBD
 
 This is the reference for how gamma exposure analytics work in this
 codebase. Read this when you want to understand: what King/Gate/Spot/Flip
@@ -51,7 +51,7 @@ total_gex            = Σ(gex_per_strike)
 ```
 
 This matches:
-- [`options-heatseeker/js/dataLoader.js:261`](../options-heatseeker/js/dataLoader.js)
+- [`archive/old-apps/options-heatseeker/js/dataLoader.js:261`](../archive/old-apps/options-heatseeker/js/dataLoader.js)
   ("Dealer perspective: opposite of customer")
 - The deleted `platform/src/lib/greeksCalculator.ts:52-57` (call add,
   puts subtract)
@@ -208,9 +208,9 @@ config — same pattern as `/api/config/indicators`.
 - [`lib/agents/summarizers.py:summarize_gamma_levels`](../lib/agents/summarizers.py) — AI input
 - [`lib/agents/prompts.py:ANALYST_PROMPTS["gamma"]`](../lib/agents/prompts.py) — analyst directive
 - [`platform/api/routers/options.py`](../platform/api/routers/options.py) — `/greeks` and `/levels` endpoints
-- [`platform/src/hooks/useGammaLevels.ts`](../platform/src/hooks/useGammaLevels.ts) — React hook
-- [`platform/src/routes/OptionsFlowPage.tsx`](../platform/src/routes/OptionsFlowPage.tsx) — Levels panel
-- [`platform/src/routes/ChartsPage.tsx`](../platform/src/routes/ChartsPage.tsx) — chart overlay toggle
+- [`solyra: src/hooks/useGammaLevels.ts`](https://github.com/TeneikaAskew/solyra/blob/main/src/hooks/useGammaLevels.ts) — React hook
+- [`solyra: src/routes/OptionsFlowPage.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/routes/OptionsFlowPage.tsx) — Levels panel
+- [`solyra: src/routes/ChartsPage.tsx`](https://github.com/TeneikaAskew/solyra/blob/main/src/routes/ChartsPage.tsx) — chart overlay toggle
 - [`scripts/show_gamma_levels.py`](../scripts/show_gamma_levels.py) — CLI
 - [`tradingview-pine-scripts/gamma-levels-overlay-v2`](../tradingview-pine-scripts/gamma-levels-overlay-v2) — Pine companion
 - [`tests/lib/test_gamma.py`](../tests/lib/test_gamma.py) — sign convention regressions
