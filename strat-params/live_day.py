@@ -2,7 +2,7 @@
 the day's evaluation. READ-ONLY: every database read goes through
 scripts/db_query_cr.sh WITHOUT --commit (each run rolls back); the gcloud
 calls only describe and list. Nothing is written to any table, nothing is
-deployed, nothing posts. Results land in results/monday_live/.
+deployed, nothing posts. Results land in results/live_<day>/.
 
 Usage (from the root of a stocks clone, as for run_all.sh):
   python3 /tmp/strat-params/harness/strat-params/live_day.py 2026-11-10
@@ -70,7 +70,14 @@ def main() -> None:
     (out / "jobs.txt").write_text("".join(text))
     for name, sql in QUERIES.items():
         prefix = run(sql, out)
-        fetch(prefix, "result_001.csv", out / f"{name}.csv")
+        try:
+            fetch(prefix, "result_001.csv", out / f"{name}.csv")
+        except subprocess.CalledProcessError:
+            # a query with 0 rows writes no result file (the day's minutes
+            # land with the 23:00 ET fetch); keep going with an empty table
+            (out / f"{name}.csv").write_text("")
+            print(name, "0 rows (no result file)", file=sys.stderr, flush=True)
+            continue
         print(name, "ok", file=sys.stderr, flush=True)
     shutil.rmtree(out / "parts", ignore_errors=True)
     (out / "last_run.err").unlink(missing_ok=True)
