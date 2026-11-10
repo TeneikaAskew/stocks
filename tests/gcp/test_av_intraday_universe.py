@@ -20,8 +20,15 @@ from gcp.fetchers import fetch_alphavantage_intraday as av
 
 @pytest.fixture
 def stub_watchlist(monkeypatch):
-    import gcp.fetchers._watchlist as wl
-    monkeypatch.setattr(wl, "load_watchlist", lambda *a, **k: ["AAPL", "nvda", "SPY", "MSFT"])
+    """The shared watchlist, answered on the strict reader the universe
+    reads it through (a failed read raises; Codex P2 on e4bb463e)."""
+    import gcp.database as database
+    from gcp.calibrate_level_params import WATCHLIST_SQL
+
+    def query(sql, params=None):
+        assert sql == WATCHLIST_SQL and params == {"user_id": "default"}
+        return pd.DataFrame({"ticker": ["AAPL", "nvda", "SPY", "MSFT"]})
+    monkeypatch.setattr(database, "query_to_dataframe_strict", query)
 
 
 def _expected():
@@ -40,6 +47,16 @@ def test_all_resolves_to_brief_insight_and_watchlist(stub_watchlist):
     assert {"SPY", "IWM", "QQQ", "AAPL", "NVDA", "MSFT"} == set(got)
     assert len(got) == len(set(got))
     assert not hasattr(av, "SYMBOLS")
+
+
+def test_a_failed_watchlist_read_fails_all(monkeypatch):
+    import gcp.database as database
+
+    def broken(sql, params=None):
+        raise RuntimeError("connection reset")
+    monkeypatch.setattr(database, "query_to_dataframe_strict", broken)
+    with pytest.raises(RuntimeError, match="connection reset"):
+        av.resolve_all_symbols()
 
 
 def test_nightly_path_fetches_every_resolved_ticker_with_extended_hours(stub_watchlist, monkeypatch):
