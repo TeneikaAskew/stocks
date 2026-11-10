@@ -69,3 +69,17 @@ def test_insufficient_history_keys_stay_unavailable(params):
     assert not spy.ok("stop_aggressive_atr")
     assert not spy.ok("stop_conservative_atr")
     assert spy.ok("stop_neutral_atr")
+
+
+def test_calibrated_filter_keeps_spy_0404_and_drops_qqq_prior_close_prints(params):
+    """done_when 5: SPY's 04:04 bar (close 731.28, low 730.64) is a real
+    trade and stays; QQQ's prints at the prior close 647.05 never set an
+    extreme."""
+    spy = fx.premarket_context("SPY", params=params["SPY"])
+    bars = fx.premarket_bars("SPY")
+    at_0404 = bars[bars["timestamp"].dt.strftime("%H:%M") == "04:04"].iloc[0]
+    assert at_0404["close"] == pytest.approx(731.28)
+    assert spy["pre_low"] == pytest.approx(at_0404["low"])
+    qqq = fx.premarket_context("QQQ", params=params["QQQ"])
+    assert qqq["pre_low"] != pytest.approx(647.05, abs=0.005)
+    assert qqq["excluded_prior_close_prints"] > 0
