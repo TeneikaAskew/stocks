@@ -10,6 +10,7 @@ analyze_market_data_enhanced.py (Bollinger, MACD, consecutive moves).
 """
 
 from lib.eastern_time import ET_NAME
+import math
 import pandas as pd
 import numpy as np
 from datetime import datetime, time, timedelta
@@ -668,8 +669,9 @@ def premarket_print_filter(
     Returns {'filtered', 'open', 'high', 'low', 'close', 'stale', 'spike'}:
     the series with every dropped value set to NaN, and the masks of what
     each rule dropped (stale: one mask per field; spike: 'high' and 'low').
-    With the ATR or either threshold not positive nothing is dropped and
-    'filtered' is False. Calibration evidence (lib.level_calibration
+    With the ATR not positive, or either threshold missing, negative or not
+    finite, nothing is dropped and 'filtered' is False; a calibrated
+    threshold of zero is a valid value and runs its rule at zero distance. Calibration evidence (lib.level_calibration
     premarket_drops) reads the masks, so the evidence is the production
     rule's own."""
     o, h, l, c = open_.copy(), high.copy(), low.copy(), close.copy()
@@ -681,7 +683,10 @@ def premarket_print_filter(
     def _positive(x) -> bool:
         return x is not None and x == x and x > 0
 
-    if not (_positive(atr) and _positive(stale_print_atr) and _positive(spike_atr)):
+    def _threshold(x) -> bool:
+        return x is not None and math.isfinite(float(x)) and float(x) >= 0
+
+    if not (_positive(atr) and _threshold(stale_print_atr) and _threshold(spike_atr)):
         return out
     out['filtered'] = True
     if _positive(prev_close):

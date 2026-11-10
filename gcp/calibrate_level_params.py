@@ -157,26 +157,49 @@ def _max_lookback(policy: dict, keys: Iterable[str]) -> int:
     return max(int(policy[k]['lookback_sessions'] or 0) for k in keys if k in policy)
 
 
+# Extra NYSE sessions read before the computed start, so a row missing from
+# the bar tables does not cut the oldest window short.
+READ_SLACK_SESSIONS = 5
+
+
+def sessions_before(day, n: int) -> date:
+    """The NYSE session `n` sessions before `day` (`day` itself not counted),
+    from lib.eastern_time's exchange calendar, so holidays never shorten a
+    lookback."""
+    from datetime import timedelta  # noqa: PLC0415
+
+    from lib.eastern_time import sessions_between  # noqa: PLC0415
+
+    end = pd.Timestamp(day).date() - timedelta(days=1)
+    if n <= 0:
+        return pd.Timestamp(day).date()
+    span = 2 * int(n) + 30   # 252 sessions a year: 2n calendar days always hold n sessions
+    days = sessions_between(end - timedelta(days=span), end)
+    if len(days) < n:
+        raise RuntimeError(f"NYSE calendar gives {len(days)} sessions before {day}, need {n}")
+    return days[-int(n)]
+
+
 def read_windows(policies: Iterable[dict], first_session, last_session) -> dict:
     """Read bounds for one ticker whose rows are effective from
     `first_session` through `last_session` under `policies` (each policy in
-    force on some of those sessions): the daily bars a trigger window
-    replayed on the earliest break session needs (two window lookbacks
-    before it, plus slack for holidays), and the one-minute bars the breaks
-    and the one-minute thresholds read, under the longest lookbacks."""
+    force on some of those sessions), counted in NYSE sessions: the daily
+    bars a trigger window replayed on the earliest break session needs (the
+    longest break-derived lookback, lc.break_lookback, then a trigger-window
+    lookback and the prior ATR before it), and the one-minute bars the breaks
+    and the one-minute thresholds read, under the longest lookbacks; each
+    start is READ_SLACK_SESSIONS earlier still."""
     if isinstance(policies, dict):
         policies = [policies]
     first = pd.Timestamp(first_session)
-    slack = pd.offsets.BDay(30)
     daily_start, minutes_start = None, None
     for policy in policies:
         window_lb = _max_lookback(policy, ('trigger_window_long_atr', 'trigger_window_short_atr'))
-        break_lb = _max_lookback(policy, [entry_buffer_key(p, e) for p in lc.PERSONAS
-                                          for e in ('lo', 'hi')])
+        break_lb = lc.break_lookback(policy)
         minute_lb = max(break_lb, _max_lookback(policy, (lc.PM_SPIKE_KEY, lc.PM_STALE_PRINT_KEY,
                                                          lc.LEVEL_CLUSTER_KEY)))
-        ds = (first - pd.offsets.BDay(break_lb + window_lb + 1) - slack).date()
-        ms = (first - pd.offsets.BDay(minute_lb) - slack).date()
+        ds = sessions_before(first, break_lb + window_lb + 1 + READ_SLACK_SESSIONS)
+        ms = sessions_before(first, minute_lb + READ_SLACK_SESSIONS)
         daily_start = ds if daily_start is None else min(daily_start, ds)
         minutes_start = ms if minutes_start is None else min(minutes_start, ms)
     return {'daily_start': daily_start, 'minutes_start': minutes_start,

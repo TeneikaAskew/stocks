@@ -402,3 +402,41 @@ def test_the_one_minute_fetch_universe_reads_the_watchlist_strictly(monkeypatch)
     monkeypatch.setattr(database, "query_to_dataframe_strict",
                         lambda sql, params=None: pd.DataFrame({"ticker": ["NVDA"]}))
     assert job.brief_insight_watchlist_tickers()[-1] == "NVDA"
+
+
+# ── read bounds (#1780 review) ───────────────────────────────────────────
+
+
+def test_read_bounds_count_nyse_sessions_across_holidays():
+    """The seeded 750-session lookbacks for 2026-11-09 need 750 + 750 + 1
+    daily sessions before it. A fixed business-day allowance started on
+    2020-12-25 and gave 1,473 NYSE sessions; counted on the exchange
+    calendar the read holds at least 1,501, and the one-minute read at
+    least the 750 the breaks need."""
+    from lib.eastern_time import sessions_between
+    from tests.lib.level_params_fixtures import seeded_policy
+
+    b = job.read_windows(seeded_policy(), "2026-11-09", "2026-11-09")
+    held = sessions_between(b["daily_start"], date(2026, 11, 6))
+    assert len(held) >= 750 + 750 + 1
+    assert len(held) <= 750 + 750 + 1 + job.READ_SLACK_SESSIONS
+    assert len(sessions_between(b["minutes_start"], date(2026, 11, 6))) >= 750
+
+
+def test_read_bounds_cover_every_break_derived_lookback():
+    """A stop, minimum-stop or target policy with a longer lookback than
+    the entry buffers widens both reads: stop_neutral_atr at 1,000 sessions
+    moves both starts back by 250 sessions."""
+    import copy
+
+    from lib.eastern_time import sessions_between
+    from tests.lib.level_params_fixtures import seeded_policy
+
+    base = job.read_windows(seeded_policy(), "2026-11-09", "2026-11-09")
+    for key in ("stop_neutral_atr", "min_stop_atr", "target_conservative_2_r"):
+        p = copy.deepcopy(seeded_policy())
+        p[key]["lookback_sessions"] = 1000
+        wide = job.read_windows(p, "2026-11-09", "2026-11-09")
+        for k in ("daily_start", "minutes_start"):
+            extra = sessions_between(wide[k], base[k])
+            assert len(extra) - 1 == 250, (key, k)

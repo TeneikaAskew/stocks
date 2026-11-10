@@ -210,6 +210,33 @@ def test_level_cluster_known_answer():
     assert got.status == "insufficient_history" and got.sample_n == 39
 
 
+def test_interval_changes_skip_a_missing_interval():
+    """#1780 review: closes of 100 at 09:44 and 106 at 10:29 are 45 minutes
+    apart, not one 15-minute move, so no change is taken across the missing
+    10:00 interval; adjacent intervals still give theirs."""
+    ts = pd.to_datetime(["2026-11-05 09:44", "2026-11-05 09:59", "2026-11-05 10:29",
+                         "2026-11-05 10:44"])
+    bars = pd.DataFrame({"timestamp": ts, "close": [100.0, 101.0, 106.0, 104.0]})
+    assert list(lc.interval_changes(bars, 15)) == pytest.approx([1.0, 2.0])
+
+
+def test_level_cluster_sparse_minutes_do_not_inflate_the_tolerance():
+    """60 sessions whose only bars close 100 at 09:44 and 106 at 10:29 with
+    ATR 2 gave level_cluster_atr 3 before the fix; with no adjacent
+    intervals there is no 15-minute move to measure."""
+    days = _bdays(61)
+    d = lc.normalize_daily(_daily([100.0] * 61, atr=2.0), "atr_14", "2026-11-06")
+    frames = []
+    for s in days[1:]:
+        frames.append(pd.DataFrame({
+            "timestamp": pd.to_datetime([f"{s.date()} 09:44", f"{s.date()} 10:29"]),
+            "open": [100.0, 106.0], "high": [100.0, 106.0], "low": [100.0, 106.0],
+            "close": [100.0, 106.0]}))
+    m = lc.normalize_minutes(pd.concat(frames), "2026-11-06")
+    got = lc.level_cluster(d, m, policy())
+    assert got.status == "insufficient_history" and got.value is None and got.sample_n == 0
+
+
 # ── breaks ─────────────────────────────────────────────────────────────
 
 
@@ -502,9 +529,9 @@ def test_each_break_parameter_takes_its_own_lookback():
 
 
 def test_break_lookback_is_the_longest_break_parameter_lookback():
-    assert lc._break_lookback(policy()) == 750
-    assert lc._break_lookback(policy(target_aggressive_3_r={"lookback_sessions": 900})) == 900
-    assert lc._break_lookback(policy(min_stop_atr={"lookback_sessions": 800})) == 800
+    assert lc.break_lookback(policy()) == 750
+    assert lc.break_lookback(policy(target_aggressive_3_r={"lookback_sessions": 900})) == 900
+    assert lc.break_lookback(policy(min_stop_atr={"lookback_sessions": 800})) == 800
 
 
 def test_regular_session_bars_end_at_the_actual_close():

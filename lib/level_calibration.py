@@ -440,12 +440,17 @@ def pm_stale_print(d: pd.DataFrame, m: pd.DataFrame, policy: Dict[str, dict],
 
 def interval_changes(bars: pd.DataFrame, minutes: int) -> np.ndarray:
     """Absolute close-to-close change between consecutive `minutes`-minute
-    RTH intervals of one session (each interval's last close)."""
+    RTH intervals of one session (each interval's last close). Only adjacent
+    intervals give a change: across an interval with no bar the move spans
+    more than `minutes` and is left out."""
     t = bars['timestamp']
     since_open = (t - t.dt.normalize() - pd.Timedelta(hours=RTH_OPEN.hour, minutes=RTH_OPEN.minute))
     bucket = (since_open // pd.Timedelta(minutes=int(minutes))).to_numpy()
-    closes = bars.assign(_b=bucket).groupby('_b')['close'].last().to_numpy(dtype=float)
-    return np.abs(np.diff(closes))
+    last = bars.assign(_b=bucket).groupby('_b')['close'].last()
+    idx = last.index.to_numpy()
+    closes = last.to_numpy(dtype=float)
+    adjacent = np.diff(idx) == 1
+    return np.abs(np.diff(closes))[adjacent]
 
 
 def level_cluster(d: pd.DataFrame, m: pd.DataFrame, policy: Dict[str, dict]) -> Calibrated:
@@ -891,7 +896,7 @@ def break_params(breaks: List[Break], policy: Dict[str, dict], *,
     `session_index` is the daily sessions before the effective date (the
     calibrators pass it): each parameter then takes its statistic over the
     breaks in its own policy row's lookback_sessions only (the breaks given
-    cover the longest of them, _break_lookback). Without it every given
+    cover the longest of them, break_lookback). Without it every given
     break is in every parameter's window (callers that pass one window's
     breaks)."""
     if bank is None:
@@ -1006,7 +1011,7 @@ def _break_keys(policy: Dict[str, dict]) -> List[str]:
     return keys
 
 
-def _break_lookback(policy: Dict[str, dict]) -> int:
+def break_lookback(policy: Dict[str, dict]) -> int:
     """The longest lookback of any break-derived parameter: the breaks a
     calibration reads; break_params cuts each parameter to its own."""
     return max(int(_policy(policy, k)['lookback_sessions'] or 0) for k in _break_keys(policy))
@@ -1034,7 +1039,7 @@ def calibrate(ticker: str, daily: pd.DataFrame, minutes: Optional[pd.DataFrame],
     out[PM_STALE_PRINT_KEY] = pm_stale_print(d, m, policy, spike)
     out[LEVEL_CLUSTER_KEY] = level_cluster(d, m, policy)
 
-    sessions = _lookback_sessions(d, _break_lookback(policy))
+    sessions = _lookback_sessions(d, break_lookback(policy))
     minute_sessions = set(m['session'].unique()) if len(m) else set()
     sessions = [s for s in sessions if s in minute_sessions]
     trig = replay_triggers(ticker, daily_before(daily, as_of), d, policy, sessions, atr_basis)
@@ -1198,7 +1203,7 @@ class HistoryCalibrator:
         out[PM_SPIKE_KEY] = spike
         out[PM_STALE_PRINT_KEY] = self._pm_stale_print(d, policy, spike)
         out[LEVEL_CLUSTER_KEY] = self._level_cluster(d, policy)
-        sessions = [s for s in _lookback_sessions(d, _break_lookback(policy))
+        sessions = [s for s in _lookback_sessions(d, break_lookback(policy))
                     if s in self.minute_sessions]
         bank, ids = self._break_ids_for(sessions, policy, atr_basis, d_full)
         out.update(break_params([], policy, bank=bank, ids=ids, session_index=d.index))
