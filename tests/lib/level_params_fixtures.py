@@ -180,3 +180,28 @@ def install_level_params(monkeypatch, tickers=("SPY", "QQQ", "IWM"), *, db: Para
 
     monkeypatch.setattr(database, "query_to_dataframe_strict", strict)
     return pdb
+
+
+CALIBRATED_2026_11_06 = ROOT / "tests" / "fixtures" / "level_params_2026-11-06.json"
+
+
+def calibrated_db(path: Path = CALIBRATED_2026_11_06,
+                  conn: sqlite3.Connection | None = None) -> ParamsDb:
+    """A ParamsDb holding the committed production calibration rows (the
+    rows in force on 2026-11-06 for SPY, QQQ and IWM, written by the
+    calibration job in history mode), inserted as written."""
+    import json
+
+    data = json.loads(path.read_text())
+    db = ParamsDb(conn)
+    for ticker, rows in data["tickers"].items():
+        for key, r in rows.items():
+            db.conn.execute(
+                "INSERT INTO ticker_level_params (ticker, param_key, value, status, atr_basis, "
+                "method_id, policy_effective_from, sample_n, input_from, input_to, effective_from, "
+                "run_id, source, calibrated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (ticker, key, r["value"], r["status"], r["atr_basis"], r["method_id"],
+                 r["policy_effective_from"], r["sample_n"], r["input_from"], r["input_to"],
+                 r["effective_from"], r["run_id"], r["source"], None))
+    db.conn.commit()
+    return db
