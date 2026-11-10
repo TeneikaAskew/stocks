@@ -87,8 +87,10 @@ def test_aligned_thresholds_are_unchanged_away_from_the_boundary(direction, scor
 
 
 def _ctx(direction: str, score: float) -> PlanContext:
+    from tests.lib.session_levels_helpers import session
+    levels = session({"PDH": 101.0, "PDL": 99.0}, prior_close=100.0, atr=2.0)
     return PlanContext(direction=direction, conviction="medium",  # type: ignore[arg-type]
-                       close=100.0, atr=2.0, trigger_high=101.0, trigger_low=99.0,
+                       close=100.0, atr=2.0, levels=levels,
                        ftfc_score=score)
 
 

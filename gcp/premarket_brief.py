@@ -25,7 +25,9 @@ from lib.data_loader import DataLoader
 from lib.indicators import add_brief_indicators
 from lib.strat import (CONTINUITY_DISPLAY_ORDER, StratClassifier, compute_strat_status,
                        timeframe_continuity_record)
-from lib.strat_levels import build_level_map, format_levels_for_brief, levels_to_named_dict
+from lib.strat_levels import (
+    build_session_levels, format_levels_for_brief, premarket_snapshot_from_daily,
+)
 from lib.signals import check_call_conditions, check_put_conditions
 from lib.config import load_config
 
@@ -234,8 +236,11 @@ def _load_gamma_freshness(ticker: str, as_of: date) -> dict:
                 "snapshot_date": None, "days_behind": None}
 
 
-def _delete_null_close_rows(ticker: str) -> int:
-    """Delete market_data_daily rows for `ticker` that have NULL close.
+def _delete_null_close_rows(ticker: str, before) -> int:
+    """Delete market_data_daily rows for `ticker` dated before `before` that
+    have NULL close. The session's own row (dated `before`, written by
+    fetch-premarket-refresh with pre_* only until the nightly close lands)
+    is never touched: the brief reads its premarket snapshot from it.
 
     Some upstream fetchers (mystery 06:44 EDT script on 2026-04-30
     inserted 43 NULL placeholder rows — see
@@ -256,8 +261,8 @@ def _delete_null_close_rows(ticker: str) -> int:
     try:
         deleted = execute_sql(
             "DELETE FROM market_data_daily "
-            "WHERE ticker = :t AND close IS NULL",
-            {'t': ticker.upper()},
+            "WHERE ticker = :t AND close IS NULL AND date < :d",
+            {'t': ticker.upper(), 'd': str(before)},
         )
         # execute_sql returns the driver rowcount as of commit 1b6b2067 —
         # use the real count instead of a hardcoded "did the cleanup
@@ -1122,7 +1127,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             )
             # Opportunistic cleanup so future runs don't re-encounter
             # these rows. Fire-and-forget — failure here is non-fatal.
-            _delete_null_close_rows(ticker)
+            _delete_null_close_rows(ticker, analysis_date)
         if df.empty or len(df) < 2:
             brief['tickers'][ticker] = {'status': 'NO DATA (all rows null)'}
             continue
@@ -1427,6 +1432,11 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             print(f"[brief:{ticker}] load_daily → {len(df)} rows", file=sys.stderr, flush=True)
             if df.empty:
                 continue
+            # The session's OWN premarket snapshot (the row dated
+            # analysis_date, written by fetch-premarket-refresh at 08:20 ET),
+            # read before the frame is cut to prior sessions. The prior
+            # day's pre_* is never this session's (FEAT-STRAT-001).
+            session_premarket = premarket_snapshot_from_daily(df, analysis_date)
             # Same as_of cutoff applied above for the strat block — keep
             # the level map honest on historical replays so PDH/PDL/PWH
             # / etc. don't silently leak future bars (e.g. ARM 4/20
@@ -1439,143 +1449,35 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
                     print(f"[brief:{ticker}] insufficient bars before {analysis_date}",
                           file=sys.stderr, flush=True)
                     continue
-            close_col = 'Close' if 'Close' in df.columns else 'Last'
-            from lib.indicators import calculate_historical_levels
-            ts = df['Time'] if 'Time' in df.columns else pd.Series(df.index)
-            levels_df = calculate_historical_levels(
-                ts, df['High'], df['Low'], df['Open'], df[close_col],
-            )
-            for col in levels_df.columns:
-                df[col] = levels_df[col].values
-            # Pass atr_14 from the latest daily row so build_level_map
-            # can apply the ATR + % staleness filter (drops year-old
-            # crash lows like ASTX 2026-04-28 PYL=15.03 from PUT
-            # trigger selection). When atr_14 is missing/NaN the filter
-            # falls back to the percent-only axis.
+            # The last completed session's ATR(14). Missing ATR gives no
+            # trigger on either side (reason atr_unavailable), never a
+            # percent-only window.
             atr_for_filter = float(d.get('atr14') or 0.0) or None
-            print(f"[brief:{ticker}] calling build_level_map "
-                  f"(current_price={d.get('price')}, atr={atr_for_filter})",
-                  file=sys.stderr, flush=True)
-            level_map = build_level_map(
-                ticker=ticker, daily_df=df, current_price=d['price'],
-                atr=atr_for_filter,
-                analysis_date=analysis_date,
+            session_levels = build_session_levels(
+                ticker, analysis_date, df, atr_for_filter, session_premarket,
+                daily_strat_class=str(d.get('strat_candle') or ''),
             )
-            # 2026-05-10 — append intraday premarket levels (PMK_H / PMK_L)
-            # so they get persisted alongside the structural ones. Pre-fix
-            # the trade_planner had to synthesize a trigger above pre_high
-            # via ATR projection (5/6 QQQ: $695.52 = pre_high+0.20×ATR),
-            # which on tight days like 5/6 was never reached during RTH.
-            # With PMK_H persisted, the planner can use pre_high directly
-            # as a candidate trigger AND signal_monitor sees PMK_H/L as
-            # triggerable crossings live during the session.
-            try:
-                from lib.strat_levels import compute_premarket_levels
-                latest_for_pmk = df.iloc[-1] if len(df) else None
-                _pmk_h = float(latest_for_pmk.get('pre_high')) if (
-                    latest_for_pmk is not None
-                    and pd.notna(latest_for_pmk.get('pre_high'))
-                ) else None
-                _pmk_l = float(latest_for_pmk.get('pre_low')) if (
-                    latest_for_pmk is not None
-                    and pd.notna(latest_for_pmk.get('pre_low'))
-                ) else None
-                pmk_levels = compute_premarket_levels(_pmk_h, _pmk_l)
-                if pmk_levels:
-                    level_map.levels.extend(pmk_levels.values())
-                    print(f"[brief:{ticker}] appended {len(pmk_levels)} PMK levels "
-                          f"(PMK_H={_pmk_h}, PMK_L={_pmk_l})",
-                          file=sys.stderr, flush=True)
-            except Exception as exc:
-                print(f"[brief:{ticker}] PMK levels skipped: {type(exc).__name__}: {exc}",
-                      file=sys.stderr, flush=True)
-            print(f"[brief:{ticker}] build_level_map → {len(level_map.levels)} levels"
-                  f" (calls_trigger={'yes' if level_map.calls_trigger else 'NO (filtered)'}, "
-                  f"puts_trigger={'yes' if level_map.puts_trigger else 'NO (filtered)'})",
+            level_map = session_levels.to_level_map()
+            d['level_basis'] = session_levels.to_basis()
+            d['premarket_status'] = session_levels.premarket_status
+            print(f"[brief:{ticker}] build_session_levels → {len(level_map.levels)} levels"
+                  f" (calls={level_map.calls_trigger and level_map.calls_trigger['trigger_name']}"
+                  f" reason={level_map.reason_long}, puts="
+                  f"{level_map.puts_trigger and level_map.puts_trigger['trigger_name']}"
+                  f" reason={level_map.reason_short}, premarket={session_levels.premarket_status})",
                   file=sys.stderr, flush=True)
 
-            # Compute the gap regime so the playbook can flag orb_only /
-            # extended setups instead of publishing a stale level-break
-            # plan. Same algorithm the 9:15 AM insight pipeline uses
-            # (lib.agents.trade_planner.select_trigger_and_regime).
-            #
-            # We evaluate BOTH directions (long AND short) — previously
-            # only the bias direction was checked, which meant a
-            # bullish-bias ticker's bias-denial PUT setup never got
-            # filtered. The bias direction is treated as the "primary"
-            # regime that drives the playbook formatter; the
-            # opposite-side regime is logged and used downstream for
-            # per-side banners (so a denied PUT on a bullish ticker can
-            # still be flagged as 'extended' / 'orb_only').
-            regime_long = regime_short = 'normal'
-            regime_compute_error = None
-            try:
-                from lib.agents.trade_planner import (
-                    PlanContext, select_trigger_and_regime,
-                )
-                level_dict = levels_to_named_dict(level_map)
-                ftfc_dir = (d.get('ftfc_direction') or '').lower()
-                latest_row = df.iloc[-1]
-                pre_high_v = latest_row.get('pre_high')
-                pre_low_v = latest_row.get('pre_low')
-                pre_vwap_v = latest_row.get('pre_vwap')
-                gap_pct_v = latest_row.get('gap_pct')
-
-                def _ctx(direction: str) -> PlanContext:
-                    return PlanContext(
-                        direction=direction,
-                        conviction='medium',
-                        close=float(d['price']),
-                        atr=float(d.get('atr14') or 0.0),
-                        trigger_high=level_dict.get('PDH'),
-                        trigger_low=level_dict.get('PDL'),
-                        pwh=level_dict.get('PWH'), pwl=level_dict.get('PWL'),
-                        pmh=level_dict.get('PMH'), pml=level_dict.get('PML'),
-                        pqh=level_dict.get('PQH'), pql=level_dict.get('PQL'),
-                        pyh=level_dict.get('PYH'), pyl=level_dict.get('PYL'),
-                        effective_pdh=level_dict.get('PDH'),
-                        effective_pdl=level_dict.get('PDL'),
-                        pre_high=float(pre_high_v) if pd.notna(pre_high_v) else None,
-                        pre_low=float(pre_low_v) if pd.notna(pre_low_v) else None,
-                        pre_vwap=float(pre_vwap_v) if pd.notna(pre_vwap_v) else None,
-                        gap_pct=float(gap_pct_v) if pd.notna(gap_pct_v) else None,
-                    )
-
-                # `select_trigger_and_regime` returns a 5-tuple as of
-                # the synthetic-trigger refactor in
-                # `lib/agents/trade_planner.py` —
-                # `(regime, trigger, stop_anchor, distance_atr, is_synthetic)`.
-                # The brief only consumes the regime here; the rest
-                # use `*_` so future renames or extensions to the
-                # planner's return shape don't ripple back. Pre-fix
-                # this unpacked 4 elements, which produced the
-                # `regime classifier failed: ValueError: too many
-                # values to unpack (expected 4)` warning observed
-                # surfacing via the `regime_compute_error` defensive
-                # path during the 2026-05-09 brief replays.
-                regime_long, *_ = select_trigger_and_regime(_ctx('long'), 'long')
-                regime_short, *_ = select_trigger_and_regime(_ctx('short'), 'short')
-                # Bias direction = primary regime for legacy callers.
-                regime = regime_short if 'bear' in ftfc_dir else regime_long
-                d['regime'] = regime
-                d['regime_long'] = regime_long
-                d['regime_short'] = regime_short
-                print(f"[brief:{ticker}] regime_long={regime_long} "
-                      f"regime_short={regime_short} primary={regime}",
-                      file=sys.stderr, flush=True)
-            except Exception as exc:
-                # Regime compute is best-effort. Fall back to 'normal'
-                # so the playbook still renders. Surface the error in
-                # the brief so silent failures don't mask real bugs.
-                regime = 'normal'
-                regime_compute_error = f"{type(exc).__name__}: {exc}"
-                print(f"[brief:{ticker}] regime compute failed: "
-                      f"{regime_compute_error}",
-                      file=sys.stderr, flush=True)
-                d['regime'] = 'normal'
-                d['regime_long'] = 'normal'
-                d['regime_short'] = 'normal'
-                d['regime_compute_error'] = regime_compute_error
+            # Per-side regime comes from the same SessionLevels; there is no
+            # second level walk.
+            ftfc_dir = (d.get('ftfc_direction') or '').lower()
+            regime_long = level_map.regime_long
+            regime_short = level_map.regime_short
+            regime = regime_short if 'bear' in ftfc_dir else regime_long
+            d['regime'] = regime
+            d['regime_long'] = regime_long
+            d['regime_short'] = regime_short
+            d['reason_long'] = level_map.reason_long
+            d['reason_short'] = level_map.reason_short
 
             d['playbook'] = format_levels_for_brief(
                 level_map=level_map, bias=d.get('ftfc_direction', 'mixed'),
@@ -3435,6 +3337,11 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
             'llm_orb_explanation': brief.get('llm_orb_explanation'),
             'llm_analysis': data.get('llm_analysis'),
             'llm_playbook': data.get('llm_playbook'),
+            # FEAT-STRAT-001: the SessionLevels snapshot (levels, ATR(14),
+            # the last daily bar date, the session premarket snapshot and
+            # the picks). Dropped by upsert_dataframe and
+            # bulk_insert_dataframe until gcp/schema.sql adds the column.
+            'level_basis': data.get('level_basis'),
         })
 
     if not rows:

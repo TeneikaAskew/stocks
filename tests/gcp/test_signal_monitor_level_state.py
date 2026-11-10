@@ -395,9 +395,23 @@ def _level_map(prices):
     )
 
 
-def _feed_reanchor(monitor, ticker, highs_lows, level_map, mode='shadow'):
+def _session(prices, atr=2.0):
+    """The session's SessionLevels for the same prices (FEAT-STRAT-001):
+    the re-anchor reads these, with the open as the reference."""
+    from tests.lib.session_levels_helpers import session
+    return session(dict(prices), prior_close=100.0, atr=atr, ticker='QQQ')
+
+
+def _install(monitor, ticker, prices, atr=2.0):
+    monitor.level_maps[ticker] = _level_map(prices)
+    monitor.session_levels[ticker] = _session(prices, atr)
+
+
+def _feed_reanchor(monitor, ticker, highs_lows, level_map, mode='shadow', atr=2.0):
     monitor.signal_cfg.put_reanchor_mode = mode
     monitor.level_maps[ticker] = level_map
+    monitor.session_levels[ticker] = _session(
+        {lv.name: lv.price for lv in level_map.levels}, atr)
     with patch.object(monitor, '_resolve_brief_bias', return_value=_BRIEF), \
          patch.object(monitor, '_persist_put_reanchor') as persist:
         monitor.update_window(ticker, _rth_bars(highs_lows))
@@ -483,10 +497,11 @@ def test_reanchor_failure_does_not_change_what_the_monitor_tracks():
     """A broken SHADOW measurement must never alter live behavior."""
     monitor = _make_monitor()
     monitor.signal_cfg.put_reanchor_mode = 'enforce'
-    monitor.level_maps['QQQ'] = _level_map({'PDL': 99.6, 'PDH': 101.0})
+    _install(monitor, 'QQQ', {'PDL': 99.6, 'PDH': 101.0})
+    from lib.strat_levels import SessionLevels
     with patch.object(monitor, '_resolve_brief_bias', return_value=_BRIEF), \
-         patch('gcp.signal_monitor.reanchor_triggers',
-               side_effect=RuntimeError("boom")):
+         patch.object(SessionLevels, 'with_reference',
+                      side_effect=RuntimeError("boom")):
         monitor.update_window('QQQ', _rth_bars([(100.6, 99.4)]))
     assert monitor.leg_trackers['QQQ']['reanchor'] is None
     # Falls back to the published leg rather than dropping the put tracker.
@@ -586,6 +601,7 @@ def test_reanchor_refreshes_level_map_on_first_poll():
 
     def _fake_refresh(ticker):
         monitor.level_maps[ticker] = lm
+        monitor.session_levels[ticker] = _session({'PDL': 99.6, 'PWL': 98.5, 'PDH': 101.0})
 
     with patch.object(monitor, '_resolve_brief_bias', return_value=_BRIEF), \
          patch.object(monitor, 'refresh_level_map', side_effect=_fake_refresh) as refresh, \
@@ -614,7 +630,7 @@ def test_reanchor_gives_up_when_refresh_cannot_produce_a_map():
 
 
 def test_reanchor_applies_the_briefs_atr_staleness_filter():
-    """Codex P2: the brief builds its playbook with build_level_map(atr=...),
+    """Codex P2: the brief builds its playbook with the ATR(14) window,
     which drops levels beyond 3xATR. Re-anchoring without that filter lets the
     shadow leg select a stale trigger the brief deliberately excluded.
 
@@ -623,8 +639,7 @@ def test_reanchor_applies_the_briefs_atr_staleness_filter():
     """
     monitor = _make_monitor()
     monitor.signal_cfg.put_reanchor_mode = 'shadow'
-    monitor.level_maps['QQQ'] = _level_map({'PDL': 99.6, 'PDH': 101.0})
-    monitor.level_map_atr['QQQ'] = 0.05
+    _install(monitor, 'QQQ', {'PDL': 99.6, 'PDH': 101.0}, atr=0.05)
     with patch.object(monitor, '_resolve_brief_bias', return_value=_BRIEF), \
          patch.object(monitor, '_persist_put_reanchor'):
         monitor.update_window('QQQ', _rth_bars([(100.6, 99.4)]))
@@ -637,8 +652,7 @@ def test_reanchor_keeps_a_level_inside_the_atr_window():
     Pins that the filter is applied, not that it rejects everything."""
     monitor = _make_monitor()
     monitor.signal_cfg.put_reanchor_mode = 'shadow'
-    monitor.level_maps['QQQ'] = _level_map({'PDL': 99.6, 'PDH': 101.0})
-    monitor.level_map_atr['QQQ'] = 2.0        # 3xATR = 6.0, PDL is 0.4 away
+    _install(monitor, 'QQQ', {'PDL': 99.6, 'PDH': 101.0}, atr=2.0)  # 3xATR = 6.0, PDL is 0.4 away
     with patch.object(monitor, '_resolve_brief_bias', return_value=_BRIEF), \
          patch.object(monitor, '_persist_put_reanchor'):
         monitor.update_window('QQQ', _rth_bars([(100.6, 99.4)]))
@@ -663,7 +677,7 @@ def _capture_atr(monitor, ticker, daily):
     loader = MagicMock()
     loader.load_daily.return_value = daily
     with patch('lib.data_loader.DataLoader', return_value=loader), \
-         patch('lib.strat_levels.build_level_map', return_value=_level_map({'PDL': 99.6})):
+         patch('gcp.signal_monitor.build_session_levels', return_value=_session({'PDL': 99.6})):
         monitor.refresh_level_map(ticker)
     return monitor.level_map_atr.get(ticker)
 

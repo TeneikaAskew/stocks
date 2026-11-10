@@ -39,11 +39,7 @@ import logging
 from dataclasses import dataclass
 from typing import Literal, Optional
 
-from lib.strat_levels import (
-    MAX_TRIGGER_DISTANCE_ATR,
-    MAX_TRIGGER_DISTANCE_PCT,
-    _within_staleness_window,
-)
+from lib.strat_levels import SessionLevels, orb_only_text
 
 from .schema import EntryZone, PersonaPlan
 
@@ -55,291 +51,77 @@ Conviction = Literal["low", "medium", "high"]
 Regime = Literal["normal", "extended", "orb_only"]
 
 
-# Threshold (in ATRs) above which the next unbroken structural level is
-# considered "too far" for a clean breakout entry. Past this distance
-# we recommend ORB confirmation rather than firing a trigger-based plan.
-# 3.0 ATR was picked empirically: most healthy gap-and-go setups have
-# the next level <2 ATR away; anything past 3 ATR is in "extended" /
-# "blue-sky" territory where R:R is already compressed.
-_EXTENDED_DISTANCE_ATR = 3.0
-
-# A level that pre-market only TOUCHED (pre_low or pre_high equal to the
-# level, to the cent) is not broken: price never traded through it. Without
-# this tolerance an exact tie (QQQ 2026-11-06: pre_low 647.05 == PDL 647.05,
-# from an extended-hours print at the prior close) counted the level as
-# cleared and the walk skipped to the 2025 yearly low 15 ATR away.
-_TOUCH_TOLERANCE = 0.005
-
-
 @dataclass
 class PlanContext:
     """Inputs the planner needs to size a trade.
 
-    All fields are deterministic — pulled from market_data_daily,
-    summarize_strat_status, summarize_catalysts, and
-    summarize_backtest_metrics. No LLM judgement.
+    All fields are deterministic. The trigger, stop anchor and orb_only
+    reason come from ``levels`` (a lib.strat_levels.SessionLevels built by
+    build_session_levels or read from the session's level_basis); the
+    planner holds no level walk of its own (FEAT-STRAT-001).
     """
 
     direction: Direction          # 'long' / 'short' / 'flat' from the PM
     conviction: Conviction        # 'low' / 'medium' / 'high'
     close: float                  # most recent close (yesterday's close at as_of)
     atr: float                    # ATR(14) from market_data_daily
-    trigger_high: Optional[float] # prior day high (legacy single-level fallback)
-    trigger_low: Optional[float]  # prior day low (legacy single-level fallback)
+    levels: Optional[SessionLevels] = None
     sma_200: Optional[float] = None
     prior_swing_low: Optional[float] = None
     prior_swing_high: Optional[float] = None
     ftfc_score: float = 0.0       # -1.0 (bearish) to +1.0 (bullish)
     high_impact_catalyst_in_window: bool = False
     analog_median_day_5_pct: Optional[float] = None  # %
-
-    # ── Multi-timeframe levels (PR α) ─────────────────────────────────
-    # Populated from summarize_strat_status.levels. The level walk
-    # below uses these to pick the next unbroken trigger when price has
-    # already cleared PDH/PDL overnight.
-    pwh: Optional[float] = None
-    pwl: Optional[float] = None
-    pmh: Optional[float] = None
-    pml: Optional[float] = None
-    pqh: Optional[float] = None
-    pql: Optional[float] = None
-    pyh: Optional[float] = None
-    pyl: Optional[float] = None
-
-    # Mother-bar walk-back for inside-of-inside compressions. When the
-    # prior bar was a strat '1', price has been trading inside an outer
-    # mother bar — these fields hold the OUTER bar's H/L. On a normal
-    # (non-inside) prior bar these equal the regular PDH/PDL.
-    effective_pdh: Optional[float] = None
-    effective_pdl: Optional[float] = None
-
-    # Pre-market context (PR #134 surfaced this in summarize_market_context).
-    # The level walk uses pre_vwap as the "where price is sitting now"
-    # reference instead of yesterday's close, so we correctly identify
-    # which structural levels overnight action has already cleared.
-    pre_high: Optional[float] = None
-    pre_low: Optional[float] = None
-    pre_vwap: Optional[float] = None
     gap_pct: Optional[float] = None
 
     # ---- Derived helpers ----
     def reference_price(self) -> float:
-        """The "where price is sitting" anchor for the level walk.
-
-        Uses pre_vwap when pre-market context is available — pre_vwap
-        reflects whether overnight action held the gap or faded back
-        below the prior close. Falls back to yesterday's close when
-        pre-market data is missing (weekends, thinly-traded names, or
-        bars before the pre-market context backfill).
-        """
-        if self.pre_vwap is not None and self.pre_vwap > 0:
-            return float(self.pre_vwap)
+        """The builder's reference: the session premarket's pre_vwap when
+        the snapshot is present, else the prior close."""
+        if self.levels is not None and self.levels.reference is not None:
+            return float(self.levels.reference)
         return float(self.close)
 
-    def trigger_for(self, direction: Direction) -> float:
-        """Return the structural trigger level for this direction.
-
-        Legacy single-level fallback retained for callers that haven't
-        adopted ``select_trigger_and_regime``. New code should use the
-        regime-aware selector instead — it walks the multi-timeframe
-        level hierarchy and tags gap-extended setups for ORB-only
-        execution.
-        """
-        if direction == "long":
-            return self.trigger_high or self.close * 1.005
-        if direction == "short":
-            return self.trigger_low or self.close * 0.995
-        return self.close
-
     def safe_atr(self) -> float:
-        """Sanity-bounded ATR. If the upstream value is missing or
-        zero (which would collapse all stop distances to zero), fall
-        back to 1% of the last close — a reasonable mid-volatility
-        default that keeps the math well-formed."""
+        """Sanity-bounded ATR for the persona offsets (entry buffer, ATR
+        stop, R-multiples) on a side that already has a trigger. It never
+        feeds the level walk: without ATR(14) the builder returns no trigger
+        (reason atr_unavailable), so no plan is sized on this fallback."""
         if self.atr is None or self.atr <= 0:
             return self.close * 0.01
         return float(self.atr)
 
+    def orb_only_reason(self, direction: Direction) -> Optional[str]:
+        if self.levels is None:
+            return "no_levels"
+        return self.levels.side(direction).reason
+
 
 # ───────────────────────────────────────────────────────────────────────────
-# Level-aware trigger + regime selection (PR α)
+# Trigger + regime: read from the one level builder
 # ───────────────────────────────────────────────────────────────────────────
 
 
 def select_trigger_and_regime(
     ctx: PlanContext, direction: Direction,
 ) -> tuple[Regime, Optional[float], Optional[float], Optional[float], bool]:
-    """Pick the next unbroken structural level as the trigger; classify regime.
-
-    Walks the multi-timeframe level hierarchy in the trade direction
-    (longs walk above, shorts walk below the reference price) and
-    returns the closest UNBROKEN level. Three outcomes:
-
-    * ``normal``    — the next level is within ``_EXTENDED_DISTANCE_ATR``
-                      of the reference price. Standard trigger-based plan.
-                      The trigger is always a real level from the
-                      level map; none is synthesized.
-    * ``extended``  — the trigger is far away
-                      (>= ``_EXTENDED_DISTANCE_ATR``). The plan still
-                      uses that trigger but the rationale recommends
-                      15-min ORB confirmation before entering.
-    * ``orb_only``  — no unbroken level lies inside the distance window
-                      (every level cleared by pre-market, or the next
-                      one too far), or multi-timeframe levels were never
-                      populated. No trigger emitted; the brief tells the
-                      trader to wait for the ORB.
-
-    The "level cleared" logic uses the larger of (reference_price,
-    pre_high/pre_low) so a pre-market spike that touched a level still
-    counts as cleared — gap-up wicks above PDH push trigger to PWH.
+    """The side's pick from ``ctx.levels`` (lib.strat_levels.SessionLevels).
 
     Returns ``(regime, trigger, stop_anchor, distance_atr, is_blue_sky)``.
-    ``trigger`` and ``distance_atr`` are ``None`` when ``regime ==
-    'orb_only'``. ``stop_anchor`` is the closest level on the OPPOSITE
-    side of price (used by the conservative persona to tighten stops).
-    ``is_blue_sky`` is always ``False`` since 2026-11-07 (synthesized
-    triggers were removed); the slot stays so callers keep unpacking
-    five values.
+    ``trigger`` and ``distance_atr`` are None on an orb_only side; the reason
+    is ``ctx.orb_only_reason(direction)``. ``stop_anchor`` is the builder's
+    stop for the side (the nearest in-window level on the other side of the
+    reference). ``is_blue_sky`` is always False (no level is synthesized).
     """
     if direction not in ("long", "short"):
         return ("normal", None, None, None, False)
-
-    ref = ctx.reference_price()
-    atr = ctx.safe_atr()
-
-    # Backwards-compat: when NO multi-timeframe levels and no pre-market
-    # context are populated (legacy callers / unit-test fixtures that
-    # set only trigger_high/trigger_low), use the original single-level
-    # trigger directly and skip the level walk. This preserves the
-    # deterministic plan math for callers that haven't adopted the
-    # multi-tf level surface — the new gap-aware behaviour activates
-    # once `context_from_bundle` populates pwh / pmh / pre_high / etc.
-    has_multi_tf = any(lv is not None for lv in (
-        ctx.pwh, ctx.pwl, ctx.pmh, ctx.pml,
-        ctx.pqh, ctx.pql, ctx.pyh, ctx.pyl,
-        ctx.pre_high, ctx.pre_low,
-        ctx.effective_pdh, ctx.effective_pdl,
-    ))
-    if not has_multi_tf:
-        legacy_trigger = ctx.trigger_high if direction == "long" else ctx.trigger_low
-        if legacy_trigger is None:
-            return ("orb_only", None, None, None, False)
-        distance = abs(float(legacy_trigger) - ref) / atr
-        regime = "normal" if distance < _EXTENDED_DISTANCE_ATR else "extended"
-        return (regime, float(legacy_trigger), None, distance, False)
-
-    # For longs, "cleared above" means pre_high reached the level, even
-    # if pre-market subsequently faded below it. For shorts, "cleared
-    # below" means pre_low touched the level. This catches the case
-    # where overnight action wicked through a level then settled back —
-    # the level is now resistance/support, not a fresh trigger.
-    cleared_above = max(ref, ctx.pre_high or ref) if direction == "long" else None
-    cleared_below = min(ref, ctx.pre_low or ref) if direction == "short" else None
-
-    # Backwards-compat: if effective_pdh/pdl weren't populated (legacy
-    # caller built the PlanContext directly without going through
-    # context_from_bundle), fall back to the single-level trigger_high
-    # / trigger_low. Tests written before PR α exercise this path and
-    # should keep producing the same plans.
-    eff_pdh = ctx.effective_pdh if ctx.effective_pdh is not None else ctx.trigger_high
-    eff_pdl = ctx.effective_pdl if ctx.effective_pdl is not None else ctx.trigger_low
-    long_levels = (eff_pdh, ctx.pwh, ctx.pmh, ctx.pqh, ctx.pyh, ctx.pre_high)
-    short_levels = (eff_pdl, ctx.pwl, ctx.pml, ctx.pql, ctx.pyl, ctx.pre_low)
-    # `structural_*` excludes pre_high/pre_low: the multi-timeframe
-    # history levels (PDH/PWH/PMH/PQH/PYH) that the touch tolerance
-    # applies to.
-    structural_long = (eff_pdh, ctx.pwh, ctx.pmh, ctx.pqh, ctx.pyh)
-    structural_short = (eff_pdl, ctx.pwl, ctx.pml, ctx.pql, ctx.pyl)
-
-    if direction == "long":
-        # Levels strictly ABOVE the cleared mark (price hasn't broken them yet)
-        # Structural levels tied with the cleared mark count as unbroken
-        # (_TOUCH_TOLERANCE). pre_high itself keeps the strict compare: it
-        # IS the cleared mark, so it is never its own trigger.
-        candidates = sorted([
-            float(lv) for lv in structural_long
-            if lv is not None and float(lv) > cleared_above - _TOUCH_TOLERANCE
-        ] + [
-            float(ctx.pre_high) for _ in (0,)
-            if ctx.pre_high is not None and float(ctx.pre_high) > cleared_above
-        ])
-        # Stop anchor: closest level BELOW the reference price
-        below_ref = sorted([
-            float(lv) for lv in (eff_pdl, ctx.pwl, ctx.pml,
-                                 ctx.pql, ctx.pyl, ctx.pre_low)
-            if lv is not None and float(lv) < ref
-        ], reverse=True)
-        stop_anchor = below_ref[0] if below_ref else None
-    else:  # short
-        candidates = sorted([
-            float(lv) for lv in structural_short
-            if lv is not None and float(lv) < cleared_below + _TOUCH_TOLERANCE
-        ] + [
-            float(ctx.pre_low) for _ in (0,)
-            if ctx.pre_low is not None and float(ctx.pre_low) < cleared_below
-        ], reverse=True)
-        above_ref = sorted([
-            float(lv) for lv in (eff_pdh, ctx.pwh, ctx.pmh,
-                                 ctx.pqh, ctx.pyh, ctx.pre_high)
-            if lv is not None and float(lv) > ref
-        ])
-        stop_anchor = above_ref[0] if above_ref else None
-
-    # Distance cap (FEAT-INSIGHT-001, 2026-11-07): an unbroken level is a
-    # trigger only when it sits within the brief's staleness window of
-    # THIS ticker's reference price, i.e. within MAX_TRIGGER_DISTANCE_ATR
-    # x this ticker's ATR(14) and MAX_TRIGGER_DISTANCE_PCT of price (the
-    # same rule lib.strat_levels applies to the brief's levels). Without
-    # it the walk kept going until it found any unbroken level, so on
-    # 2026-11-06 IWM's short trigger was the 2025 yearly low 171.73
-    # (about 22 ATR below 272) and QQQ's was 402.39. Levels past the
-    # window fall through to the no-candidate branch below: orb_only.
-    in_window = [lv for lv in candidates if _within_staleness_window(lv, ref, atr)]
-    if candidates and not in_window:
-        logger.info(
-            "trade_planner stale_levels_dropped direction=%s ref=%.4f atr=%.4f "
-            "max_atr=%.1f max_pct=%.2f dropped=%s",
-            direction, ref, atr, MAX_TRIGGER_DISTANCE_ATR,
-            MAX_TRIGGER_DISTANCE_PCT, [round(lv, 4) for lv in candidates],
-        )
-    candidates = in_window
-
-    if not candidates:
-        # No real level inside the window: wait for the 15-min opening
-        # range. Until 2026-11-07 this branch projected a "blue-sky"
-        # trigger (nearest cleared level +/- 0.15 to 0.20 ATR) when the
-        # gap was at most 1.5 ATR. The owner ruled that no level may be
-        # synthesized: every trigger is a real level from the level map,
-        # or there is no trigger. The 2015-2026 entry replay found the
-        # synthesized triggers filled often but averaged slightly below
-        # 0R (n=734, neutral persona), so nothing measurable is lost.
-        same_side_levels = long_levels if direction == "long" else short_levels
-        same_side_structural = (
-            structural_long if direction == "long" else structural_short
-        )
-        cleared = cleared_above if direction == "long" else cleared_below
-        gap_atr = abs(cleared - ctx.close) / atr if cleared is not None else None
-        logger.info(
-            "trade_planner orb_only direction=%s ref=%.4f atr=%.4f "
-            "cleared=%s gap_atr=%s structural_populated=%s pre_only=%s",
-            direction, ref, atr,
-            f"{cleared:.4f}" if cleared is not None else None,
-            f"{gap_atr:.3f}" if gap_atr is not None else None,
-            any(lv is not None for lv in same_side_structural),
-            # True iff only pre_high/pre_low populated, no PDH/PWH/PMH/PQH/PYH
-            # (the sub-case C codex review caught).
-            any(lv is not None for lv in same_side_levels)
-            and not any(lv is not None for lv in same_side_structural),
-        )
-        return ("orb_only", None, stop_anchor, None, False)
-
-    trigger = candidates[0]
-    distance_atr = abs(trigger - ref) / atr
-    # Every candidate here passed the window (distance <= 3 x ATR,
-    # inclusive), so a multi-timeframe trigger is always `normal`; a level
-    # exactly 3 ATR away is a normal trigger, not an extended one.
-    # `extended` is reached only through the legacy single-level path.
-    return ("normal", trigger, stop_anchor, distance_atr, False)
+    if ctx.levels is None:
+        return ("orb_only", None, None, None, False)
+    side = ctx.levels.side(direction)
+    if side.trigger is None:
+        return ("orb_only", None, None, None, False)
+    stop_anchor = float(side.stop["price"]) if side.stop else None
+    return ("normal", float(side.trigger["price"]), stop_anchor, side.distance_atr, False)
 
 
 # ─── Recipe constants — central so they're easy to audit + tune ────────────
@@ -423,12 +205,10 @@ def compute_persona_plans(ctx: PlanContext) -> list[PersonaPlan]:
     trade to size. The caller (orchestrator) should still emit risk
     flags but the plan card just hides itself.
 
-    On gap-extended setups where ``select_trigger_and_regime`` returns
-    ``orb_only`` (price has cleared every structural level in the trade
-    direction), each persona's plan is replaced with a no-trigger
-    ``orb_only`` PersonaPlan whose rationale tells the trader to wait
-    for the 15-min ORB. This is the AMD 4/24 +12% gap case — the move
-    happened overnight; RTH needs its own setup.
+    On a side where ``select_trigger_and_regime`` returns ``orb_only``
+    (no trigger: see lib.strat_levels.ORB_ONLY_REASONS), each persona's
+    plan is a no-trigger ``orb_only`` PersonaPlan with null entry and stop
+    whose rationale is the side's ORB_ONLY_COPY line.
     """
     if ctx.direction == "flat":
         return []
@@ -454,23 +234,18 @@ def _plan(
     each other — for short, we flip the sign on the offsets so the
     entry/stop/targets land below the trigger instead of above.
 
-    When ``regime == 'orb_only'`` (no structural trigger available),
-    returns a placeholder plan with zero sizing and a rationale that
-    tells the trader to wait for the opening-range breakout. The
-    canonical fields (entry_zone, stop, targets) are still populated
-    with reasonable placeholders derived from the reference price ±
-    1 ATR so downstream consumers (the brief embed, the persona-plan
-    card) don't have to special-case None.
+    When ``regime == 'orb_only'`` (no trigger on this side), returns a
+    plan with zero sizing, entry_zone, stop and risk_metrics null and no
+    targets, and the side's orb_only copy as the rationale.
     """
     if regime == "orb_only":
         return _orb_only_plan(ctx, persona)
 
+    if trigger is None:
+        # No level, no plan: never a synthesized trigger.
+        return _orb_only_plan(ctx, persona)
     sign = 1.0 if ctx.direction == "long" else -1.0
     atr = ctx.safe_atr()
-    if trigger is None:
-        # Backwards-compat: caller didn't go through compute_persona_plans
-        # (e.g. legacy fixture). Fall back to the single-level trigger.
-        trigger = ctx.trigger_for(ctx.direction)
 
     # ── 1. Entry zone ──────────────────────────────────────────────
     buf_lo_mult, buf_hi_mult = _ENTRY_BUFFER[persona]
@@ -633,54 +408,18 @@ def compute_risk_metrics(
 
 
 def _orb_only_plan(ctx: PlanContext, persona: str) -> PersonaPlan:
-    """Placeholder plan for the gap-extended ``orb_only`` regime.
-
-    Sizing is zeroed because there's no structural trigger to act on —
-    the brief renders this as "wait for 15-min ORB" copy. The
-    entry/stop/target placeholders bracket the reference price ± 1 ATR
-    so downstream UIs that always read these fields don't crash.
-    """
-    sign = 1.0 if ctx.direction == "long" else -1.0
-    atr = ctx.safe_atr()
-    ref = ctx.reference_price()
-    placeholder_lo = round(ref + sign * 0.0 * atr, 2)
-    placeholder_hi = round(ref + sign * 1.0 * atr, 2)
-    if placeholder_lo > placeholder_hi:
-        placeholder_lo, placeholder_hi = placeholder_hi, placeholder_lo
-    placeholder_stop = round(ref - sign * 1.0 * atr, 2)
-    side = 'resistance' if ctx.direction == 'long' else 'support'
-    rationale = (
-        f"ORB-only: after pre-market ({ctx.gap_pct:+.2f}% gap) no unbroken "
-        f"{side} level lies within {MAX_TRIGGER_DISTANCE_ATR:.0f}x ATR of price. "
-        f"Wait for the 15-min opening range to establish before entering."
-        if ctx.gap_pct is not None else
-        f"ORB-only: no unbroken {side} level lies within "
-        f"{MAX_TRIGGER_DISTANCE_ATR:.0f}x ATR of price. "
-        "Wait for the 15-min opening range to establish before entering."
-    )
-    # ORB-only plans get computed risk_metrics too (the entry/stop are
-    # placeholders but the math is still well-defined). The reviewer
-    # rules will see the placeholder distances and fire flags as normal;
-    # the regime banner already tells the trader to wait for ORB.
-    risk_metrics = compute_risk_metrics(
-        entry_lo=placeholder_lo,
-        entry_hi=placeholder_hi,
-        stop=placeholder_stop,
-        targets=[],
-        direction=ctx.direction,
-        atr=atr,
-        sma_200=ctx.sma_200,
-        ftfc_score=ctx.ftfc_score,
-    )
+    """The plan for an orb_only side: no level, so no entry, no stop, no
+    targets and no risk metrics. Nothing is synthesized (FEAT-STRAT-001)."""
+    reason = ctx.orb_only_reason(ctx.direction)
     return PersonaPlan(
         persona=persona,  # type: ignore[arg-type]
-        entry_zone=EntryZone(low=placeholder_lo, high=placeholder_hi),
-        stop=placeholder_stop,
-        targets=[],  # ORB hasn't formed yet — no targets to publish
+        entry_zone=None,
+        stop=None,
+        targets=[],
         position_size_pct=0.0,
-        rationale=rationale,
+        rationale="ORB-only: " + orb_only_text(reason, ctx.direction),
         regime="orb_only",
-        risk_metrics=risk_metrics,
+        risk_metrics=None,
     )
 
 
@@ -820,18 +559,15 @@ def context_from_bundle(
     # no longer produce a zero divisor.
     atr = float(market.get("atr_14") or market.get("atr") or 0.0)
 
-    # Multi-timeframe levels (PR α). summarize_strat_status surfaces a
-    # `levels` sub-dict with PDH/PDL/PWH/PWL/PMH/PML/PQH/PQL/PYH/PYL
-    # plus mother-bar walk-back effective_PDH / effective_PDL.
-    levels = strat.get("levels") or {}
-    eff_pdh = _maybe_float(levels.get("effective_PDH")) or _maybe_float(levels.get("PDH"))
-    eff_pdl = _maybe_float(levels.get("effective_PDL")) or _maybe_float(levels.get("PDL"))
+    # The session's levels (FEAT-STRAT-001): the level_basis the bundle
+    # carries, read from the session's live brief row with the planner's
+    # newer premarket snapshot applied, or built by build_session_levels.
+    session_levels = None
+    basis = bundle.get("session_levels") or {}
+    if isinstance(basis, dict) and basis.get("level_basis"):
+        session_levels = SessionLevels.from_basis(basis["level_basis"])
 
-    # Pre-market block from summarize_market_context (PR #134).
     premarket = market.get("premarket") or {}
-    pre_high = _maybe_float(premarket.get("pre_high"))
-    pre_low = _maybe_float(premarket.get("pre_low"))
-    pre_vwap = _maybe_float(premarket.get("pre_vwap"))
     gap_pct = _maybe_float(premarket.get("gap_pct"))
 
     return PlanContext(
@@ -839,8 +575,7 @@ def context_from_bundle(
         conviction=conviction,
         close=close,
         atr=atr,
-        trigger_high=_maybe_float(strat.get("trigger_high")),
-        trigger_low=_maybe_float(strat.get("trigger_low")),
+        levels=session_levels,
         sma_200=_maybe_float(market.get("sma_200")),
         prior_swing_low=_maybe_float(market.get("prior_swing_low")),
         prior_swing_high=_maybe_float(market.get("prior_swing_high")),
@@ -852,21 +587,6 @@ def context_from_bundle(
         ftfc_score=float(strat.get("ftfc_score") or 0.0),
         high_impact_catalyst_in_window=high_impact_in_window,
         analog_median_day_5_pct=_maybe_float(analog_d5),
-        # Multi-timeframe levels
-        pwh=_maybe_float(levels.get("PWH")),
-        pwl=_maybe_float(levels.get("PWL")),
-        pmh=_maybe_float(levels.get("PMH")),
-        pml=_maybe_float(levels.get("PML")),
-        pqh=_maybe_float(levels.get("PQH")),
-        pql=_maybe_float(levels.get("PQL")),
-        pyh=_maybe_float(levels.get("PYH")),
-        pyl=_maybe_float(levels.get("PYL")),
-        effective_pdh=eff_pdh,
-        effective_pdl=eff_pdl,
-        # Pre-market context
-        pre_high=pre_high,
-        pre_low=pre_low,
-        pre_vwap=pre_vwap,
         gap_pct=gap_pct,
     )
 
