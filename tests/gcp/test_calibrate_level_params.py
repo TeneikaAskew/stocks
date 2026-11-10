@@ -440,3 +440,22 @@ def test_read_bounds_cover_every_break_derived_lookback():
         for k in ("daily_start", "minutes_start"):
             extra = sessions_between(wide[k], base[k])
             assert len(extra) - 1 == 250, (key, k)
+
+
+def test_daily_read_covers_the_longest_one_minute_lookback():
+    """The one-minute samplers pick their sessions from the daily frame and
+    need each session's prior ATR, so a premarket or clustering lookback
+    longer than the break replay's daily need widens the daily read too:
+    pm_spike_atr, pm_stale_print_atr or level_cluster_atr at 2,000 sessions
+    puts at least 2,001 sessions in the daily read (#1780 review round 2)."""
+    import copy
+
+    from lib.eastern_time import sessions_between
+    from tests.lib.level_params_fixtures import seeded_policy
+
+    for key in ("pm_spike_atr", "pm_stale_print_atr", "level_cluster_atr"):
+        p = copy.deepcopy(seeded_policy())
+        p[key]["lookback_sessions"] = 2000
+        b = job.read_windows(p, "2026-11-09", "2026-11-09")
+        assert len(sessions_between(b["daily_start"], date(2026, 11, 6))) >= 2000 + 1, key
+        assert len(sessions_between(b["minutes_start"], date(2026, 11, 6))) >= 2000, key

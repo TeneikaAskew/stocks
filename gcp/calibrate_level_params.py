@@ -186,9 +186,10 @@ def read_windows(policies: Iterable[dict], first_session, last_session) -> dict:
     force on some of those sessions), counted in NYSE sessions: the daily
     bars a trigger window replayed on the earliest break session needs (the
     longest break-derived lookback, lc.break_lookback, then a trigger-window
-    lookback and the prior ATR before it), and the one-minute bars the breaks
-    and the one-minute thresholds read, under the longest lookbacks; each
-    start is READ_SLACK_SESSIONS earlier still."""
+    lookback and the prior ATR before it, or the longest one-minute lookback
+    and its prior ATR when that is longer), and the one-minute bars the
+    breaks and the one-minute thresholds read, under the longest lookbacks;
+    each start is READ_SLACK_SESSIONS earlier still."""
     if isinstance(policies, dict):
         policies = [policies]
     first = pd.Timestamp(first_session)
@@ -198,7 +199,9 @@ def read_windows(policies: Iterable[dict], first_session, last_session) -> dict:
         break_lb = lc.break_lookback(policy)
         minute_lb = max(break_lb, _max_lookback(policy, (lc.PM_SPIKE_KEY, lc.PM_STALE_PRINT_KEY,
                                                          lc.LEVEL_CLUSTER_KEY)))
-        ds = sessions_before(first, break_lb + window_lb + 1 + READ_SLACK_SESSIONS)
+        # the one-minute samplers pick sessions from the daily frame and read
+        # each one's prior ATR there, so the daily read covers their lookback too
+        ds = sessions_before(first, max(break_lb + window_lb, minute_lb) + 1 + READ_SLACK_SESSIONS)
         ms = sessions_before(first, minute_lb + READ_SLACK_SESSIONS)
         daily_start = ds if daily_start is None else min(daily_start, ds)
         minutes_start = ms if minutes_start is None else min(minutes_start, ms)
