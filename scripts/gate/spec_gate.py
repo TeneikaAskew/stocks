@@ -4084,9 +4084,18 @@ def tree_refusal(entries: list[tuple[str, str, str]]) -> str | None:
     return None
 
 
+BATCH_HEADER = re.compile(rb"([0-9a-f]{40}|[0-9a-f]{64}) blob (0|[1-9][0-9]{0,18})\n")   # one blob's answer line
+
+
 def materialize(entries: list[tuple[str, str, str]], into: pathlib.Path) -> None:
     """Write each entry's blob, byte for byte, to into/path, from one `git cat-file --batch`, which applies no
-    attributes. Raises ValueError, before writing, for a path that resolves outside `into`."""
+    attributes. Raises ValueError, before writing, for a path that resolves outside `into`. The batch output is
+    streamed to the files one blob at a time, at most 1 MiB per read, so this process never holds a whole blob; a
+    header is read up to its bounded length and git's stderr up to 4 KiB, so no malformed answer is held whole
+    either. Every other mismatch raises GitFailed: a header that is not exactly the object id asked for, `blob` and
+    a plain decimal size (no sign, separator other than one space, leading zero or more than 19 digits), each once
+    and ending in one line feed, an answer that ends early, a missing separator, any output after the last object,
+    or a nonzero exit."""
     top = os.path.realpath(into) + os.sep
     def target(path: str) -> str:
         where = os.path.realpath(os.path.join(into, path))
@@ -4095,22 +4104,63 @@ def materialize(entries: list[tuple[str, str, str]], into: pathlib.Path) -> None
         return where
     for _mode, _oid, path in entries:
         target(path)
-    r = subprocess.run(["git", "cat-file", "--batch"], input=b"".join(oid.encode("ascii") + b"\n" for _, oid, _ in entries),
-                       capture_output=True, cwd=ROOT)
-    if r.returncode != 0:
-        raise GitFailed(f"git cat-file --batch failed ({r.returncode}): {r.stderr.decode('utf-8', 'replace').strip() or 'no output'}")
-    out, pos = r.stdout, 0
-    for _mode, oid, path in entries:
-        eol = out.index(b"\n", pos)
-        header = out[pos:eol].decode("ascii", "replace").split()
-        if len(header) != 3 or header[0] != oid or header[1] != "blob":
-            raise GitFailed(f"git cat-file --batch answered {' '.join(header)!r} for {path} ({oid})")
-        size = int(header[2])
-        where = target(path)
-        os.makedirs(os.path.dirname(where), exist_ok=True)
-        with open(where, "wb") as f:
-            f.write(out[eol + 1:eol + 1 + size])
-        pos = eol + 1 + size + 1
+    with tempfile.TemporaryFile() as request, tempfile.TemporaryFile() as err:
+        request.write(b"".join(oid.encode("ascii") + b"\n" for _, oid, _ in entries))
+        request.seek(0)
+        proc = subprocess.Popen(["git", "cat-file", "--batch"], stdin=request, stdout=subprocess.PIPE, stderr=err, cwd=ROOT)
+        def failed() -> GitFailed | None:
+            proc.stdout.close()
+            if proc.wait() != 0:
+                err.seek(0)
+                return GitFailed(f"git cat-file --batch failed ({proc.returncode}): "
+                                 f"{err.read(4096).decode('utf-8', 'replace').strip() or 'no output'}")
+            return None
+        def ended(message: str) -> GitFailed:
+            # The answer stopped early, so git has exited or is exiting: its own status and stderr explain why.
+            return failed() or GitFailed(message)
+        def refused(message: str) -> GitFailed:
+            # The answer is wrong while git may still be writing: name the entry first, then end git, so a broken
+            # pipe never stands in for the cause (QUAL1 R1 F1).
+            proc.kill()
+            proc.wait()
+            return GitFailed(message)
+        try:
+            out = proc.stdout
+            for _mode, oid, path in entries:
+                # The longest answer this entry can have: its id, " blob ", a 19-digit size and the line end.
+                bound = len(oid) + 26
+                line = out.readline(bound)
+                shown = line.rstrip(b"\n").decode("ascii", "replace")
+                answered = f"git cat-file --batch answered {shown!r} for {path} ({oid})"
+                if not line.endswith(b"\n"):
+                    raise refused(answered) if len(line) == bound else ended(answered)
+                header = BATCH_HEADER.fullmatch(line)
+                if header is None or header[1] != oid.encode("ascii"):
+                    raise refused(answered)
+                size = int(header[2])
+                where = target(path)
+                os.makedirs(os.path.dirname(where), exist_ok=True)
+                with open(where, "wb") as f:
+                    left = size
+                    while left:
+                        chunk = out.read(min(left, 1 << 20))
+                        if not chunk:
+                            raise ended(f"git cat-file --batch ended inside {path} ({oid})")
+                        f.write(chunk)
+                        left -= len(chunk)
+                separator = out.read(1)
+                if separator != b"\n":
+                    no_separator = f"git cat-file --batch answered no separator after {path} ({oid})"
+                    raise ended(no_separator) if not separator else refused(no_separator)
+            if out.read(1):
+                raise refused(f"git cat-file --batch wrote output after the last of {len(entries)} object(s)")
+            if error := failed():
+                raise error
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            proc.stdout.close()   # a refusal ends git without reading on; never leave the pipe for the collector
 
 
 # The render runs main's doc_inventory in a child process: this file in a hidden mode, under `python3 -I -B`, from
@@ -4217,6 +4267,48 @@ def render_inventory(tree: str, docs: list[str]) -> int:
     return RENDER_DIFFERS if differs else 0
 
 
+def release_freed_heap() -> bool:
+    """Ask glibc to hand heap this process has freed back to the system before the render child starts. After this
+    ~300 KB file is compiled, glibc keeps much of the freed heap resident. Measured on 2026-11-04 on 3.14.6 with tracemalloc
+    tracing disabled in a staged diagnostic probe: compiling it added 19.34 MB of RSS, glibc's mallinfo2 then
+    reported 13.61 MB of the process heap free in total, and malloc_trim(0) took RSS down by 12.74 MB: most of the
+    free heap, not all of it, since only whole free pages and the top of the heap can go back. A separate run of the
+    same probe with tracing on, which itself changes the heap, traced about 1.3 MB of new live allocations after the
+    compile.
+
+    It acts only where ctypes is already loaded, which in practice is the render measurement's worker
+    (tests/scripts/measure_inventory_render.py imports ctypes at its start and loads this file as a module). In the
+    gate's own runs (the pre-commit hook, the spec-gate job and the registry job's verdict step) nothing loads ctypes,
+    so there it does nothing.
+
+    It imports nothing: it uses ctypes only when the process already loaded it (the render observer does, at start,
+    under -I), because an import here could be found through ROOT, which maintenance_modules puts first on sys.path.
+    It acts only on Linux and returns before any native lookup elsewhere (on Windows, CDLL(None) can raise TypeError).
+    glibc's `int malloc_trim(size_t pad)` is called with pad 0. It returns 1 when glibc trimmed the top of the heap
+    or advised free pages back to the system, which can happen with no change in RSS (on 2026-11-04 repeated calls
+    returned 1 and released nothing), and 0 otherwise; neither is an error, and no caller reads the result. When ctypes is not loaded, the C library cannot be loaded
+    (OSError) or it has no malloc_trim (AttributeError), this does nothing; any other exception propagates. The
+    render's verdict, which blocks it accepts and which it refuses, never depends on this call. The aggregate memory
+    budget, which the render observer enforces separately from that verdict, does count what this process still
+    holds, so whether memory was released can decide that budget. True when malloc_trim returned 1, False
+    otherwise."""
+    if sys.platform != "linux":
+        return False
+    ctypes = sys.modules.get("ctypes")
+    if ctypes is None:
+        return False
+    try:
+        libc = ctypes.CDLL(None)
+    except OSError:
+        return False
+    try:
+        trim = libc.malloc_trim
+    except AttributeError:
+        return False
+    trim.argtypes, trim.restype = (ctypes.c_size_t,), ctypes.c_int
+    return trim(0) == 1
+
+
 def render_refusals(entries: list[tuple[str, str, str]], docs: list[str], base_docs: dict[str, bytes],
                     evidence: dict | None = None) -> list[str]:
     """[] when main's renderer, run over the head tree written to a temporary directory, renders every block of
@@ -4235,6 +4327,7 @@ def render_refusals(entries: list[tuple[str, str, str]], docs: list[str], base_d
             # (red-team round 1: a name the filesystem cannot hold crashed the gate with a traceback)
             return [generated_refusal(every, f"the head tree cannot be written out ({e})")]
         command = [sys.executable, "-I", "-B", str(pathlib.Path(__file__).resolve()), RENDER_MODE, str(tree), *docs]
+        release_freed_heap()   # the child's aggregate budget counts what this parent still holds
         r = subprocess.run(command, input=json.dumps(submitted), cwd=cwd, capture_output=True, encoding="utf-8", errors="replace")
         if evidence is not None:
             evidence.update(argv=command, cwd=str(cwd), exit=r.returncode)
