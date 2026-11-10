@@ -12,6 +12,7 @@ done_when:
   - "Scheduler targets keep their kind: every exported scheduler has target {kind, name, uri} with kind job, service or uri; on the 2026-11-10 tree discord-warm-open and discord-warm-close export kind service naming discord-interactions and reconcile-failure-notifier-hourly exports kind service naming failure-notifier, and no scheduler with a non-empty target_job, target_service or target_uri in deploy_schedulers exports an empty target (test)"
   - "Deterministic and free of line numbers: two runs on the same commit and the same snapshot produce byte-identical files (test), and no string value in the export matches the file-and-line pattern '<path>.(py|sh|sql):<digits>' (test over the fixture export)"
   - "Provenance: sources.commit equals git rev-parse HEAD and sources.files lists the git blob id of gcp/deploy.sh, platform/deploy.sh and gcp/schema.sql and the tree id of platform/api; with an uncommitted change under gcp/, lib/, scripts/, platform/api or platform/deploy.sh the exporter exits non-zero and writes nothing (test using a temporary clone)"
+  - "Unread live counts stay unread: live_snapshot reads no database relations and no deployed routes, so counts.live.tables and counts.live.routes are null in every mode (never a copied declared count or a zero), counts.live for jobs, services and schedulers comes from the snapshot, and the job summary shows the null counts as not read; a test runs the exporter on the 2026-09-07 fixture with db_tables removed and asserts both nulls and the summary text"
   - "Repo-only mode needs no cloud access: with neither --snapshot nor --live, sources.live is null, every live field is null, drift is empty, and the run exits 0 with no gcloud executable on PATH (test)"
   - "Drift is computed, not described: given a snapshot that lacks one declared job, holds one job no deploy function creates and has one paused scheduler, drift.declared_not_live, drift.live_not_declared and drift.paused_schedulers each list exactly that one name (test with a synthetic snapshot)"
   - "On-demand workflow: .github/workflows/architecture-export.yml has workflow_dispatch as its only trigger, refuses any ref other than refs/heads/main before authenticating, grants only contents: read and id-token: write, reads no database secret, installs no model CLI, runs no git push, gh pr or gh issue command, and uploads the export as the run artifact architecture-export with retention-days 30 and writes counts and drift to the job summary; tests/meta/test_architecture_export_workflow.py parses the YAML and asserts each of these"
@@ -121,7 +122,10 @@ Output (`schema: "architecture-export/1"`, keys sorted, two-space indent, traili
   destination.
 - `tables[]`: `name`, `kind` (table, view, materialized view), `writers[]`, `readers[]`,
   `possible_writers[]`, `possible_readers[]` (job names, split the same way as the job lists).
-- `counts`: `declared` and `live` for jobs, services, schedulers, tables, routes.
+- `counts`: `declared` for jobs, services, schedulers, tables, routes; `live` for jobs, services and
+  schedulers from the snapshot, and `null` for tables and routes, which `live_snapshot` does not read
+  (relations come from a separate database read this design excludes, and deployed routes are not
+  listed by any read). The job summary shows a `null` count as "not read".
 - `drift`: `declared_not_live`, `live_not_declared`, `paused_schedulers`, each a sorted list of names.
 
 Rules: no `file:line` citation anywhere (names only, so an unrelated edit never changes the export);
