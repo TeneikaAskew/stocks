@@ -23,7 +23,12 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from lib.strat_levels import LEVEL_RULE_VERSION, SessionLevels, read_live_level_basis
+from lib.strat_levels import (
+    LEVEL_RULE_VERSION,
+    SessionLevels,
+    read_live_level_basis,
+    read_session_premarket,
+)
 from tests.lib import strat_2026_11_06 as fx
 from tests.lib.session_levels_helpers import basis
 
@@ -389,3 +394,40 @@ def test_resolver_reads_live_basis_ignores_replay_and_builds_without_the_column(
     assert live["calls_t1_price"] != pytest.approx(661.14)        # read the live row
     absent = _resolver_inputs(_AnalysisDb([_row(bogus)], with_column=False))
     assert absent["calls_t1_price"] == pytest.approx(661.14)
+
+
+# ── A failed read is never "no premarket" (Codex review on #1753) ──────────
+
+
+def _raising(exc):
+    def q(sql, params=None):
+        raise exc
+    return q
+
+
+def test_read_session_premarket_raises_on_a_failed_query():
+    with pytest.raises(TimeoutError):
+        read_session_premarket(_raising(TimeoutError("statement timeout")), "SPY", "2026-11-06")
+
+
+def test_read_session_premarket_retries_without_provenance_on_a_missing_column():
+    calls = []
+
+    def q(sql, params=None):
+        calls.append(sql)
+        if "pre_fetched_at" in sql:
+            raise RuntimeError('column "pre_fetched_at" does not exist')
+        return pd.DataFrame([{"pre_high": 738.04, "pre_low": 730.64,
+                              "pre_vwap": 734.0, "gap_pct": -0.5}])
+
+    snap = read_session_premarket(q, "SPY", "2026-11-06")
+    assert len(calls) == 2
+    assert snap["pre_high"] == 738.04 and snap["date"] == "2026-11-06"
+
+
+def test_read_live_level_basis_raises_on_a_failed_query_and_none_on_a_missing_column():
+    with pytest.raises(ConnectionError):
+        read_live_level_basis(_raising(ConnectionError("server closed the connection")),
+                              "SPY", "2026-11-06")
+    missing = _raising(RuntimeError('column "level_basis" does not exist'))
+    assert read_live_level_basis(missing, "SPY", "2026-11-06") is None

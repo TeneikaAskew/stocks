@@ -140,12 +140,11 @@ def _prior_session_from_db(ticker: str, fetch_date: date) -> dict:
     already, so one backward lookup is enough. The premarket print filter
     needs the prior session's ATR in the policy's basis (FEAT-STRAT-001),
     never the fetch date's own row, which at 08:30 holds only premarket
-    columns. Returns an empty dict when nothing is found.
+    columns. Returns an empty dict when the query succeeds and finds no row;
+    a failed query raises, so a lookup error is never read as "no prior
+    session".
     """
-    try:
-        from gcp.database import query_to_dataframe
-    except ImportError:
-        return {}
+    from gcp.database import query_to_dataframe
     sql = """
         SELECT close, open, atr_14, atr_5
           FROM market_data_daily
@@ -155,18 +154,15 @@ def _prior_session_from_db(ticker: str, fetch_date: date) -> dict:
          ORDER BY date DESC
          LIMIT 1
     """
-    try:
-        df = query_to_dataframe(sql, {'tk': ticker, 'd': fetch_date})
-        if df.empty:
-            return {}
-        row = df.iloc[0]
-        out = {}
-        for key in ('close', 'open', 'atr_14', 'atr_5'):
-            v = row.get(key)
-            out[key] = float(v) if v is not None and pd.notna(v) else None
-        return out
-    except Exception:
+    df = query_to_dataframe(sql, {'tk': ticker, 'd': fetch_date})
+    if df.empty:
         return {}
+    row = df.iloc[0]
+    out = {}
+    for key in ('close', 'open', 'atr_14', 'atr_5'):
+        v = row.get(key)
+        out[key] = float(v) if v is not None and pd.notna(v) else None
+    return out
 
 
 def _prev_close_from_db(ticker: str, fetch_date: date) -> float | None:
@@ -208,7 +204,12 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
         log.info("  %s: no AV intraday bars for %s", ticker, iso_date)
         return None
 
-    prior = _prior_session_from_db(ticker, fetch_date)
+    try:
+        prior = _prior_session_from_db(ticker, fetch_date)
+    except Exception as e:  # noqa: BLE001 withheld: a failed lookup is never "no prior session"
+        log.error("  %s: premarket withheld for %s: prior-session lookup failed: %s",
+                  ticker, iso_date, e)
+        return None
     prev_close = prior.get('close')
     if level_params is None:
         pm_filter = {'status': 'level_params_unavailable', 'atr': None,

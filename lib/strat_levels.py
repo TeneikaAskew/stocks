@@ -1823,26 +1823,43 @@ def premarket_filter_inputs(params: 'LevelParams', atrs) -> dict:
     }
 
 
+_MISSING_SCHEMA_MARKERS = (
+    '42703', '42p01',                      # PostgreSQL undefined_column / undefined_table
+    'undefinedcolumn', 'undefinedtable',
+    'no such column', 'no such table',     # SQLite
+)
+
+
+def _is_missing_schema_error(exc: BaseException) -> bool:
+    """True when `exc` says a column or table does not exist (the schema
+    change not applied yet), and only then. A timeout, a lost connection or
+    any other failure is not a missing schema."""
+    text_ = f"{type(exc).__name__} {exc}".lower()
+    if any(m in text_ for m in _MISSING_SCHEMA_MARKERS):
+        return True
+    return 'does not exist' in text_ and ('column' in text_ or 'relation' in text_)
+
+
 def read_session_premarket(query_fn, ticker: str, session_date) -> Optional[dict]:
     """The session's own premarket snapshot from its market_data_daily row,
     with the provenance columns when the table has them. `query_fn(sql,
-    params)` returns a DataFrame; a query that fails or comes back empty
-    with the provenance columns is retried without them, so a table that
-    lacks them (the schema change not applied yet) still gives the
-    snapshot."""
+    params)` returns a DataFrame. A missing-column error (the schema change
+    not applied yet) or an empty result retries the read without the
+    provenance columns; any other raised failure propagates, so a failed
+    read is never taken for a session with no premarket."""
     params = {'ticker': str(ticker).upper(), 'd': str(_to_date(session_date))}
     extended = SESSION_PREMARKET_SQL.format(
         provenance=''.join(f', {c}' for c in PREMARKET_PROVENANCE_COLUMNS))
-    df = None
     try:
         df = query_fn(extended, params)
-    except Exception:  # noqa: BLE001 provenance columns absent
+    except Exception as exc:  # re-raised unless a missing column
+        if not _is_missing_schema_error(exc):
+            raise
         df = None
     if df is None or getattr(df, 'empty', True):
-        try:
-            df = query_fn(SESSION_PREMARKET_SQL.format(provenance=''), params)
-        except Exception:  # noqa: BLE001 no snapshot
-            return None
+        # A missing provenance column, or a query_fn that already turns its
+        # SQL errors into an empty frame: read the snapshot without them.
+        df = query_fn(SESSION_PREMARKET_SQL.format(provenance=''), params)
     if df is None or getattr(df, 'empty', True):
         return None
     return premarket_snapshot_from_row(df.iloc[0], session_date)
@@ -2342,13 +2359,15 @@ def read_live_level_basis(query_fn, ticker: str, session_date) -> Optional[dict]
     """The session's level_basis from its LIVE premarket_analysis row.
 
     `query_fn(sql, params)` returns a DataFrame. A replay row for the same
-    ticker and session is never read; a missing row, a missing column (the
-    schema not applied yet) or a failed query all give None, and the caller
-    builds with build_session_levels instead."""
+    ticker and session is never read; a missing row or a missing column
+    (the schema not applied yet) gives None, and the caller builds with
+    build_session_levels instead. Any other failed query raises."""
     try:
         df = query_fn(LIVE_LEVEL_BASIS_SQL,
                       {'ticker': str(ticker).upper(), 'd': str(_to_date(session_date))})
-    except Exception:  # noqa: BLE001 absent column or table: build instead
+    except Exception as exc:  # re-raised unless a missing column
+        if not _is_missing_schema_error(exc):
+            raise
         return None
     if df is None or getattr(df, 'empty', True) or 'level_basis' not in df.columns:
         return None

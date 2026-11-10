@@ -157,7 +157,7 @@ def test_compute_returns_none_when_no_premarket_window(monkeypatch):
                         lambda tk, d, k: bars)
     # No prev_close lookup needed for this test — short-circuit it
     from gcp.fetchers import fetch_premarket_refresh as fpr
-    monkeypatch.setattr(fpr, "_prior_session_from_db", lambda tk, d: {"close": 178.0})
+    monkeypatch.setattr(fpr, "_prior_session_from_db", lambda tk, d: {"close": 178.0, "atr_14": 10.0})
 
     result = fpr.compute_premarket_for_ticker("AAPL", date(2026, 4, 30), "key")
     assert result is None
@@ -183,7 +183,7 @@ def test_compute_returns_metrics_when_premarket_bars_present(monkeypatch):
     from gcp.fetchers import fetch_premarket_refresh as fpr
     monkeypatch.setattr(fetch_market_data, "fetch_minute_data",
                         lambda tk, d, k: bars)
-    monkeypatch.setattr(fpr, "_prior_session_from_db", lambda tk, d: {"close": 175.0})
+    monkeypatch.setattr(fpr, "_prior_session_from_db", lambda tk, d: {"close": 175.0, "atr_14": 10.0})
 
     result = fpr.compute_premarket_for_ticker("AAPL", date(2026, 4, 30), "key")
     assert result is not None

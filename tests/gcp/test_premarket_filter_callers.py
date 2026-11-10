@@ -172,3 +172,65 @@ def test_refresh_reads_the_prior_sessions_close_open_and_atr(monkeypatch):
     assert prior["close"] == pytest.approx(float(d["Close"].iloc[-1]))
     assert prior["open"] == pytest.approx(float(d["Open"].iloc[-1]))
     assert prior["atr_14"] == pytest.approx(fx.prior_atr("IWM"))
+
+
+# ── Withheld, never unfiltered (Codex review on #1753) ──────────────────────
+# A snapshot the filter could not run on is never written: on origin/main a
+# failed prior-session lookup returned {} and the refresh wrote the raw
+# 08:05 prints (SPY pre_high 765.5267) with zero excluded-print counts.
+
+
+class _FailingDb(_Db):
+    def query(self, sql, params=None):
+        if "atr_14" in sql and "date < :d" in sql:
+            raise TimeoutError("statement timeout")
+        return super().query(sql, params)
+
+
+def _refresh_out(monkeypatch, ticker, db):
+    from gcp import database
+    from gcp.fetchers import fetch_market_data as fmd
+    from gcp.fetchers import fetch_premarket_refresh as fpr
+
+    bars = fx.premarket_bars(ticker)
+    minute = pd.DataFrame(
+        {"Open": bars["open"].values, "High": bars["high"].values, "Low": bars["low"].values,
+         "Close": bars["close"].values, "Volume": bars["volume"].values},
+        index=pd.DatetimeIndex(bars["timestamp"]).tz_localize("America/New_York"),
+    )
+    monkeypatch.setattr(database, "query_to_dataframe", db.query)
+    monkeypatch.setattr(fmd, "fetch_minute_data", lambda tk, d, k: minute)
+    return fpr.compute_premarket_for_ticker(ticker, SESSION, "key")
+
+
+def test_refresh_withholds_the_snapshot_when_the_prior_lookup_fails(monkeypatch):
+    assert _refresh_out(monkeypatch, "SPY", _FailingDb("SPY")) is None
+
+
+def test_prior_session_lookup_raises_instead_of_returning_empty(monkeypatch):
+    from gcp import database
+    from gcp.fetchers import fetch_premarket_refresh as fpr
+
+    monkeypatch.setattr(database, "query_to_dataframe", _FailingDb("SPY").query)
+    with pytest.raises(TimeoutError):
+        fpr._prior_session_from_db("SPY", SESSION)
+
+
+def test_refresh_withholds_the_snapshot_when_the_prior_atr_is_missing(monkeypatch):
+    db = _Db("SPY")
+    db.conn.execute("UPDATE market_data_daily SET atr_14 = NULL")
+    assert _refresh_out(monkeypatch, "SPY", db) is None
+
+
+def test_nightly_writes_no_premarket_when_the_prior_atr_is_missing(monkeypatch):
+    from lib import indicators
+
+    real = indicators.add_all_indicators
+
+    def no_atr(df, **k):
+        return real(df, **k).drop(columns=["ATR14"], errors="ignore")
+
+    monkeypatch.setattr(indicators, "add_all_indicators", no_atr)
+    row = _run_nightly(monkeypatch, "SPY", _Db("SPY"))
+    for col in ("pre_high", "pre_low", "pre_vwap"):
+        assert row.get(col) is None or pd.isna(row.get(col)), col
