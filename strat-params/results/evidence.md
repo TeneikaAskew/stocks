@@ -1,4 +1,4 @@
-# #1766 calibrated evidence as of 2026-11-06 (run e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa)
+# #1766 calibrated evidence as of 2026-11-06 (run 84421818-74f3-40bd-929e-a9a9a7e8eed8)
 
 ## SPY
 
@@ -6,8 +6,8 @@
 |---|---|---|---|---|---|
 | trigger_window_long_atr | 1.9894 | ok | 750 | 2023-11-09 to 2026-11-05 | 3.0 |
 | trigger_window_short_atr | 2.7710 | ok | 750 | 2023-11-09 to 2026-11-05 | 3.0 |
-| pm_spike_atr | 0.0745 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.5 |
-| pm_stale_print_atr | 0.0334 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.1 |
+| pm_spike_atr | 0.9265 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.5 |
+| pm_stale_print_atr | 0.0409 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.1 |
 | level_cluster_atr | 0.0515 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.15 |
 | entry_buffer_aggressive_lo_atr | 0.0000 | ok | 740 | 2023-11-09 to 2026-11-05 | 0.0 |
 | entry_buffer_aggressive_hi_atr | 1.1245 | ok | 740 | 2023-11-09 to 2026-11-05 | 0.5 |
@@ -60,38 +60,26 @@ short window 2.771 x ATR: share of sessions whose excursion passed it, per year 
 | 2025 | 250 | 3 | 0.012 | 0.004 |
 | 2026 | 213 | 2 | 0.009 | 0.009 |
 
-premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0334, spike 0.0745 x ATR): 384 prints
+premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0409, spike 0.9265 x ATR): 288 prints
 
 | session | time ET | field | price | rule |
 |---|---|---|---|---|
-| 2026-10-12 | 04:00 | low | 779.7700 | spike |
 | 2026-10-12 | 08:12 | low | 778.5700 | stale_prior_close |
-| 2026-10-13 | 04:07 | low | 777.2700 | spike |
-| 2026-10-13 | 07:00 | high | 778.5700 | spike |
-| 2026-10-13 | 07:01 | high | 778.5700 | spike |
-| 2026-10-13 | 07:02 | high | 778.5700 | spike |
 | 2026-10-13 | 07:02 | open | 778.1000 | stale_prior_close |
 | 2026-10-13 | 07:36 | high | 778.1000 | stale_prior_close |
 | 2026-10-13 | 07:38 | high | 778.1000 | stale_prior_close |
-| 2026-10-13 | 07:39 | high | 778.1000 | stale_prior_close |
-| 2026-10-13 | 07:39 | open | 778.1000 | stale_prior_close |
 | 2026-10-13 | 07:41 | high | 778.1000 | stale_prior_close |
 | 2026-10-13 | 07:41 | open | 778.1000 | stale_prior_close |
 | 2026-10-13 | 07:42 | close | 778.1000 | stale_prior_close |
 | 2026-10-13 | 07:42 | high | 778.1000 | stale_prior_close |
 | 2026-10-13 | 07:43 | high | 778.1000 | stale_prior_close |
-| 2026-10-13 | 08:05 | high | 778.9973 | spike |
 | 2026-10-13 | 08:11 | high | 778.1000 | stale_prior_close |
-| 2026-10-13 | 08:12 | high | 778.1000 | stale_prior_close |
-| 2026-10-13 | 08:12 | open | 778.1000 | stale_prior_close |
 | 2026-10-13 | 08:47 | high | 778.1000 | stale_prior_close |
 | 2026-10-13 | 08:51 | high | 778.1000 | stale_prior_close |
 | 2026-10-13 | 08:53 | high | 778.1000 | stale_prior_close |
 | 2026-10-13 | 08:55 | high | 778.1000 | stale_prior_close |
 | 2026-10-13 | 08:57 | high | 778.1000 | stale_prior_close |
 | 2026-10-14 | 04:00 | low | 778.0100 | stale_prior_close |
-| 2026-10-14 | 04:01 | low | 778.3400 | spike |
-| 2026-10-14 | 04:02 | low | 778.2100 | spike |
 | 2026-10-14 | 07:01 | low | 778.0100 | stale_prior_close |
 | 2026-10-14 | 07:35 | low | 778.0100 | stale_prior_close |
 | 2026-10-14 | 07:38 | close | 778.0100 | stale_prior_close |
@@ -102,19 +90,12 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0334, spike
 | 2026-10-14 | 07:41 | low | 778.0100 | stale_prior_close |
 | 2026-10-14 | 07:41 | open | 778.0100 | stale_prior_close |
 | 2026-10-14 | 08:00 | low | 778.0100 | stale_prior_close |
-| 2026-10-14 | 08:05 | low | 777.0666 | spike |
 | 2026-10-14 | 08:07 | close | 778.0100 | stale_prior_close |
 | 2026-10-14 | 08:07 | low | 778.0100 | stale_prior_close |
 | 2026-10-14 | 08:08 | close | 778.0100 | stale_prior_close |
 | 2026-10-14 | 08:08 | low | 778.0100 | stale_prior_close |
 | 2026-10-14 | 08:47 | high | 778.0100 | stale_prior_close |
-| 2026-10-15 | 04:00 | low | 765.6920 | spike |
 | 2026-10-15 | 04:00 | high | 769.6000 | stale_prior_close |
-| 2026-10-15 | 04:04 | high | 767.7400 | spike |
-| 2026-10-15 | 04:06 | high | 767.6600 | spike |
-| 2026-10-15 | 04:06 | low | 765.7100 | spike |
-| 2026-10-15 | 04:07 | low | 765.9700 | spike |
-| 2026-10-15 | 04:08 | low | 765.9700 | spike |
 | 2026-10-15 | 07:00 | close | 769.6000 | stale_prior_close |
 | 2026-10-15 | 07:00 | high | 769.6000 | stale_prior_close |
 | 2026-10-15 | 07:01 | high | 769.6000 | stale_prior_close |
@@ -127,12 +108,9 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0334, spike
 | 2026-10-15 | 07:38 | high | 769.6000 | stale_prior_close |
 | 2026-10-15 | 07:39 | high | 769.6000 | stale_prior_close |
 | 2026-10-15 | 07:40 | high | 769.6000 | stale_prior_close |
-| 2026-10-15 | 08:05 | high | 770.6750 | spike |
 | 2026-10-15 | 08:08 | high | 769.6000 | stale_prior_close |
 | 2026-10-15 | 08:11 | high | 769.6000 | stale_prior_close |
 | 2026-10-15 | 08:16 | high | 769.6000 | stale_prior_close |
-| 2026-10-15 | 08:30 | low | 764.1000 | spike |
-| 2026-10-15 | 08:31 | low | 765.8000 | spike |
 | 2026-10-15 | 08:47 | high | 769.6000 | stale_prior_close |
 | 2026-10-16 | 04:00 | low | 771.7900 | stale_prior_close |
 | 2026-10-16 | 07:00 | low | 771.7900 | stale_prior_close |
@@ -144,31 +122,23 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0334, spike
 | 2026-10-16 | 07:37 | low | 771.7900 | stale_prior_close |
 | 2026-10-16 | 07:38 | low | 771.7900 | stale_prior_close |
 | 2026-10-16 | 07:38 | open | 771.7900 | stale_prior_close |
-| 2026-10-16 | 08:05 | low | 767.2361 | spike |
 | 2026-10-16 | 08:07 | low | 771.7900 | stale_prior_close |
 | 2026-10-16 | 08:08 | low | 771.7900 | stale_prior_close |
 | 2026-10-16 | 08:08 | open | 771.7900 | stale_prior_close |
 | 2026-10-16 | 08:47 | low | 771.7900 | stale_prior_close |
 | 2026-10-19 | 07:00 | close | 763.2489 | stale_prior_close |
 | 2026-10-19 | 07:00 | low | 763.2489 | stale_prior_close |
-| 2026-10-19 | 07:01 | low | 763.5714 | spike |
 | 2026-10-19 | 07:02 | low | 763.2500 | stale_prior_close |
 | 2026-10-19 | 07:35 | low | 763.2500 | stale_prior_close |
 | 2026-10-19 | 07:36 | low | 763.2500 | stale_prior_close |
 | 2026-10-19 | 07:37 | low | 763.2500 | stale_prior_close |
 | 2026-10-19 | 07:37 | open | 763.2500 | stale_prior_close |
 | 2026-10-19 | 07:38 | low | 763.2500 | stale_prior_close |
-| 2026-10-19 | 08:05 | high | 773.2000 | spike |
-| 2026-10-19 | 08:05 | low | 762.7850 | spike |
 | 2026-10-19 | 08:20 | low | 763.2500 | stale_prior_close |
 | 2026-10-19 | 08:47 | low | 763.2500 | stale_prior_close |
 | 2026-10-19 | 08:57 | low | 763.2500 | stale_prior_close |
-| 2026-10-20 | 04:00 | high | 768.1215 | spike |
-| 2026-10-20 | 04:01 | high | 768.0600 | spike |
-| 2026-10-20 | 04:02 | high | 768.1500 | spike |
 | 2026-10-20 | 07:01 | high | 766.4800 | stale_prior_close |
 | 2026-10-20 | 07:02 | high | 766.4800 | stale_prior_close |
-| 2026-10-20 | 07:03 | high | 766.4674 | spike |
 | 2026-10-20 | 07:35 | high | 766.4800 | stale_prior_close |
 | 2026-10-20 | 07:36 | high | 766.4800 | stale_prior_close |
 | 2026-10-20 | 07:36 | open | 766.4800 | stale_prior_close |
@@ -181,14 +151,10 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0334, spike
 | 2026-10-20 | 07:42 | open | 766.4800 | stale_prior_close |
 | 2026-10-20 | 08:03 | high | 766.4800 | stale_prior_close |
 | 2026-10-20 | 08:04 | high | 766.4800 | stale_prior_close |
-| 2026-10-20 | 08:05 | high | 768.5509 | spike |
 | 2026-10-20 | 08:07 | high | 766.4800 | stale_prior_close |
 | 2026-10-20 | 08:10 | high | 766.4800 | stale_prior_close |
 | 2026-10-20 | 08:47 | high | 766.4800 | stale_prior_close |
-| 2026-10-21 | 04:00 | high | 771.7722 | spike |
 | 2026-10-21 | 04:00 | low | 769.0500 | stale_prior_close |
-| 2026-10-21 | 04:01 | high | 772.1000 | spike |
-| 2026-10-21 | 04:08 | high | 771.5100 | spike |
 | 2026-10-21 | 07:00 | low | 769.0500 | stale_prior_close |
 | 2026-10-21 | 07:01 | low | 769.0454 | stale_prior_close |
 | 2026-10-21 | 07:35 | close | 769.0500 | stale_prior_close |
@@ -200,17 +166,12 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0334, spike
 | 2026-10-21 | 07:38 | open | 769.0500 | stale_prior_close |
 | 2026-10-21 | 07:39 | low | 769.0500 | stale_prior_close |
 | 2026-10-21 | 07:40 | low | 769.0500 | stale_prior_close |
-| 2026-10-21 | 08:05 | low | 768.2127 | spike |
 | 2026-10-21 | 08:07 | close | 769.0500 | stale_prior_close |
 | 2026-10-21 | 08:07 | low | 769.0500 | stale_prior_close |
 | 2026-10-21 | 08:08 | low | 769.0500 | stale_prior_close |
 | 2026-10-21 | 08:08 | open | 769.0500 | stale_prior_close |
 | 2026-10-21 | 08:47 | low | 769.0500 | stale_prior_close |
 | 2026-10-22 | 04:00 | high | 773.0900 | stale_prior_close |
-| 2026-10-22 | 04:01 | high | 768.5800 | spike |
-| 2026-10-22 | 04:04 | high | 768.1300 | spike |
-| 2026-10-22 | 04:07 | high | 768.1300 | spike |
-| 2026-10-22 | 04:08 | high | 768.0100 | spike |
 | 2026-10-22 | 07:01 | close | 773.0900 | stale_prior_close |
 | 2026-10-22 | 07:01 | high | 773.0900 | stale_prior_close |
 | 2026-10-22 | 07:02 | high | 773.0900 | stale_prior_close |
@@ -226,8 +187,6 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0334, spike
 | 2026-10-22 | 09:22 | high | 773.0900 | stale_prior_close |
 | 2026-10-22 | 09:23 | high | 773.0900 | stale_prior_close |
 | 2026-10-22 | 09:29 | high | 773.0900 | stale_prior_close |
-| 2026-10-23 | 04:06 | high | 764.5900 | spike |
-| 2026-10-23 | 07:02 | low | 760.0000 | spike |
 | 2026-10-23 | 07:35 | high | 763.9600 | stale_prior_close |
 | 2026-10-23 | 07:36 | high | 763.9600 | stale_prior_close |
 | 2026-10-23 | 07:36 | open | 763.9600 | stale_prior_close |
@@ -238,12 +197,8 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0334, spike
 | 2026-10-23 | 07:40 | high | 763.9600 | stale_prior_close |
 | 2026-10-23 | 08:05 | high | 763.9600 | stale_prior_close |
 | 2026-10-23 | 08:08 | high | 763.9600 | stale_prior_close |
-| 2026-10-23 | 08:23 | high | 763.4500 | spike |
 | 2026-10-23 | 08:47 | high | 763.9600 | stale_prior_close |
-| 2026-10-26 | 04:06 | high | 761.9600 | spike |
 | 2026-10-26 | 07:00 | low | 759.9700 | stale_prior_close |
-| 2026-10-26 | 07:01 | high | 763.9616 | spike |
-| 2026-10-26 | 07:01 | low | 759.9700 | stale_prior_close |
 | 2026-10-26 | 07:35 | low | 759.9700 | stale_prior_close |
 | 2026-10-26 | 07:36 | low | 759.9700 | stale_prior_close |
 | 2026-10-26 | 07:37 | close | 759.9700 | stale_prior_close |
@@ -252,18 +207,14 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0334, spike
 | 2026-10-26 | 07:38 | low | 759.9700 | stale_prior_close |
 | 2026-10-26 | 07:39 | low | 759.9700 | stale_prior_close |
 | 2026-10-26 | 07:40 | low | 759.9700 | stale_prior_close |
-| 2026-10-26 | 08:05 | low | 759.6801 | spike |
 | 2026-10-26 | 08:20 | low | 759.9700 | stale_prior_close |
 | 2026-10-26 | 08:39 | low | 759.9700 | stale_prior_close |
 | 2026-10-26 | 08:47 | low | 759.9700 | stale_prior_close |
-| 2026-10-27 | 04:06 | high | 765.8400 | spike |
 | 2026-10-27 | 07:00 | close | 765.3700 | stale_prior_close |
 | 2026-10-27 | 07:00 | low | 765.3700 | stale_prior_close |
-| 2026-10-27 | 07:01 | low | 765.3591 | spike |
 | 2026-10-27 | 07:01 | open | 765.3700 | stale_prior_close |
 | 2026-10-27 | 07:02 | low | 765.3700 | stale_prior_close |
 | 2026-10-27 | 07:02 | open | 765.3700 | stale_prior_close |
-| 2026-10-27 | 07:03 | low | 765.3770 | spike |
 | 2026-10-27 | 07:35 | close | 765.3700 | stale_prior_close |
 | 2026-10-27 | 07:35 | low | 765.3700 | stale_prior_close |
 | 2026-10-27 | 07:36 | low | 765.3700 | stale_prior_close |
@@ -285,7 +236,6 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0334, spike
 | 2026-10-27 | 08:47 | low | 765.3700 | stale_prior_close |
 | 2026-10-28 | 04:00 | low | 769.6600 | stale_prior_close |
 | 2026-10-28 | 04:02 | low | 769.6600 | stale_prior_close |
-| 2026-10-28 | 04:06 | low | 770.0700 | spike |
 | 2026-10-28 | 07:01 | low | 769.6563 | stale_prior_close |
 | 2026-10-28 | 07:01 | open | 769.6600 | stale_prior_close |
 | 2026-10-28 | 07:02 | low | 769.6600 | stale_prior_close |
@@ -302,7 +252,6 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0334, spike
 | 2026-10-28 | 08:05 | low | 769.6600 | stale_prior_close |
 | 2026-10-28 | 08:47 | low | 769.6600 | stale_prior_close |
 | 2026-10-29 | 04:00 | high | 772.3100 | stale_prior_close |
-| 2026-10-29 | 04:10 | high | 771.2100 | spike |
 | 2026-10-29 | 07:00 | high | 772.3100 | stale_prior_close |
 | 2026-10-29 | 07:01 | high | 772.3136 | stale_prior_close |
 | 2026-10-29 | 07:35 | high | 772.3100 | stale_prior_close |
@@ -323,18 +272,9 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0334, spike
 | 2026-10-29 | 08:16 | high | 772.3100 | stale_prior_close |
 | 2026-10-29 | 08:47 | high | 772.3100 | stale_prior_close |
 | 2026-10-30 | 04:00 | high | 769.3600 | stale_prior_close |
-| 2026-10-30 | 04:01 | high | 763.6400 | spike |
-| 2026-10-30 | 04:03 | high | 763.6500 | spike |
-| 2026-10-30 | 04:07 | high | 762.8500 | spike |
-| 2026-10-30 | 04:10 | high | 762.8800 | spike |
-| 2026-10-30 | 04:11 | high | 762.9300 | spike |
-| 2026-10-30 | 04:12 | high | 762.8700 | spike |
-| 2026-10-30 | 04:13 | high | 763.3100 | spike |
-| 2026-10-30 | 04:14 | high | 762.7900 | spike |
 | 2026-10-30 | 07:00 | high | 769.3600 | stale_prior_close |
 | 2026-10-30 | 07:01 | high | 769.3633 | stale_prior_close |
 | 2026-10-30 | 07:02 | high | 769.3642 | stale_prior_close |
-| 2026-10-30 | 07:04 | high | 762.9000 | spike |
 | 2026-10-30 | 07:35 | high | 769.3600 | stale_prior_close |
 | 2026-10-30 | 07:37 | high | 769.3600 | stale_prior_close |
 | 2026-10-30 | 07:38 | high | 769.3600 | stale_prior_close |
@@ -344,11 +284,6 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0334, spike
 | 2026-10-30 | 08:05 | high | 769.3600 | stale_prior_close |
 | 2026-10-30 | 08:39 | high | 769.3600 | stale_prior_close |
 | 2026-10-30 | 08:47 | high | 769.3600 | stale_prior_close |
-| 2026-11-02 | 04:00 | high | 760.1887 | spike |
-| 2026-11-02 | 04:00 | low | 755.6724 | spike |
-| 2026-11-02 | 04:01 | high | 760.1800 | spike |
-| 2026-11-02 | 04:02 | high | 760.1600 | spike |
-| 2026-11-02 | 07:00 | low | 755.7143 | spike |
 | 2026-11-02 | 07:00 | close | 755.7243 | stale_prior_close |
 | 2026-11-02 | 07:01 | low | 755.7200 | stale_prior_close |
 | 2026-11-02 | 07:35 | low | 755.7200 | stale_prior_close |
@@ -358,20 +293,12 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0334, spike
 | 2026-11-02 | 07:39 | low | 755.7200 | stale_prior_close |
 | 2026-11-02 | 07:40 | close | 755.7200 | stale_prior_close |
 | 2026-11-02 | 07:40 | low | 755.7200 | stale_prior_close |
-| 2026-11-02 | 08:05 | high | 759.9100 | spike |
-| 2026-11-02 | 08:05 | low | 754.7201 | spike |
 | 2026-11-02 | 08:15 | close | 755.7200 | stale_prior_close |
 | 2026-11-02 | 08:15 | low | 755.7200 | stale_prior_close |
 | 2026-11-02 | 08:24 | low | 755.7200 | stale_prior_close |
 | 2026-11-02 | 08:32 | low | 755.7200 | stale_prior_close |
 | 2026-11-02 | 08:47 | low | 755.7200 | stale_prior_close |
-| 2026-11-03 | 04:00 | low | 749.3617 | spike |
 | 2026-11-03 | 04:00 | high | 752.1000 | stale_prior_close |
-| 2026-11-03 | 04:01 | low | 749.3300 | spike |
-| 2026-11-03 | 04:05 | low | 749.5600 | spike |
-| 2026-11-03 | 04:08 | low | 750.2300 | spike |
-| 2026-11-03 | 04:09 | low | 749.4900 | spike |
-| 2026-11-03 | 04:10 | low | 749.4700 | spike |
 | 2026-11-03 | 07:00 | high | 752.1000 | stale_prior_close |
 | 2026-11-03 | 07:01 | high | 752.1000 | stale_prior_close |
 | 2026-11-03 | 07:02 | close | 752.1000 | stale_prior_close |
@@ -384,16 +311,7 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0334, spike
 | 2026-11-03 | 08:45 | low | 752.1000 | stale_prior_close |
 | 2026-11-03 | 08:47 | low | 752.1000 | stale_prior_close |
 | 2026-11-04 | 04:00 | low | 748.0000 | spike |
-| 2026-11-04 | 04:01 | high | 756.8500 | spike |
-| 2026-11-04 | 04:01 | low | 748.0000 | spike |
-| 2026-11-04 | 04:03 | low | 747.9600 | spike |
-| 2026-11-04 | 04:04 | high | 757.0000 | spike |
-| 2026-11-04 | 04:04 | low | 748.1500 | spike |
-| 2026-11-04 | 04:05 | high | 757.0000 | spike |
-| 2026-11-04 | 04:07 | low | 748.9200 | spike |
-| 2026-11-04 | 05:09 | low | 748.0500 | spike |
 | 2026-11-04 | 05:22 | low | 751.9500 | spike |
-| 2026-11-04 | 05:23 | low | 751.5500 | spike |
 | 2026-11-04 | 07:00 | low | 754.3500 | stale_prior_close |
 | 2026-11-04 | 07:02 | low | 754.3500 | stale_prior_close |
 | 2026-11-04 | 07:03 | low | 754.3500 | stale_prior_close |
@@ -410,26 +328,14 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0334, spike
 | 2026-11-04 | 08:26 | low | 754.3500 | stale_prior_close |
 | 2026-11-04 | 08:27 | low | 754.3500 | stale_prior_close |
 | 2026-11-04 | 08:47 | low | 754.3500 | stale_prior_close |
-| 2026-11-05 | 04:00 | low | 763.8300 | spike |
 | 2026-11-05 | 04:00 | high | 766.8100 | stale_prior_close |
-| 2026-11-05 | 04:01 | low | 763.8600 | spike |
-| 2026-11-05 | 04:02 | low | 763.8500 | spike |
 | 2026-11-05 | 04:03 | high | 766.8100 | stale_prior_close |
-| 2026-11-05 | 04:06 | low | 764.0100 | spike |
-| 2026-11-05 | 04:26 | low | 764.7200 | spike |
-| 2026-11-05 | 04:28 | low | 763.9800 | spike |
-| 2026-11-05 | 04:29 | low | 764.1800 | spike |
-| 2026-11-05 | 07:00 | low | 766.8182 | spike |
 | 2026-11-05 | 07:01 | low | 766.8051 | stale_prior_close |
-| 2026-11-05 | 08:05 | low | 765.4850 | spike |
 | 2026-11-05 | 08:17 | low | 766.8100 | stale_prior_close |
 | 2026-11-05 | 08:19 | low | 766.8100 | stale_prior_close |
 | 2026-11-05 | 08:20 | low | 766.8100 | stale_prior_close |
 | 2026-11-05 | 08:47 | low | 766.8100 | stale_prior_close |
-| 2026-11-06 | 04:00 | low | 730.7095 | spike |
-| 2026-11-06 | 04:01 | low | 730.7000 | spike |
 | 2026-11-06 | 04:25 | close | 733.0000 | stale_prior_close |
-| 2026-11-06 | 04:28 | low | 730.8700 | spike |
 | 2026-11-06 | 07:00 | low | 733.0000 | stale_prior_close |
 | 2026-11-06 | 07:01 | low | 733.0000 | stale_prior_close |
 | 2026-11-06 | 07:02 | low | 733.0000 | stale_prior_close |
@@ -444,10 +350,8 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0334, spike
 | 2026-11-06 | 08:05 | low | 733.0000 | stale_prior_close |
 | 2026-11-06 | 08:09 | low | 733.0000 | stale_prior_close |
 | 2026-11-06 | 08:10 | low | 733.0000 | stale_prior_close |
-| 2026-11-06 | 08:30 | low | 733.0900 | spike |
 | 2026-11-06 | 08:39 | low | 733.0000 | stale_prior_close |
 | 2026-11-06 | 08:47 | low | 733.0000 | stale_prior_close |
-| 2026-11-06 | 09:06 | low | 732.4300 | spike |
 
 premarket drops, 20 sessions through 2026-11-06, #1753 (stale 0.1000, spike 0.5000 x ATR): 252 prints
 
@@ -731,8 +635,8 @@ breaks per side and year (sessions with one-minute bars):
 |---|---|---|---|---|---|
 | trigger_window_long_atr | 1.8872 | ok | 750 | 2023-11-09 to 2026-11-05 | 3.0 |
 | trigger_window_short_atr | 2.4720 | ok | 750 | 2023-11-09 to 2026-11-05 | 3.0 |
-| pm_spike_atr | 0.0644 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.5 |
-| pm_stale_print_atr | 0.0328 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.1 |
+| pm_spike_atr | 1.0716 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.5 |
+| pm_stale_print_atr | 0.0421 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.1 |
 | level_cluster_atr | 0.0488 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.15 |
 | entry_buffer_aggressive_lo_atr | 0.0000 | ok | 777 | 2023-11-09 to 2026-11-05 | 0.0 |
 | entry_buffer_aggressive_hi_atr | 0.4796 | ok | 777 | 2023-11-09 to 2026-11-05 | 0.5 |
@@ -785,24 +689,14 @@ short window 2.472 x ATR: share of sessions whose excursion passed it, per year 
 | 2025 | 250 | 1 | 0.004 | 0.004 |
 | 2026 | 213 | 3 | 0.014 | 0.009 |
 
-premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0328, spike 0.0644 x ATR): 452 prints
+premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0421, spike 1.0716 x ATR): 312 prints
 
 | session | time ET | field | price | rule |
 |---|---|---|---|---|
-| 2026-10-12 | 04:00 | high | 756.7605 | spike |
-| 2026-10-12 | 04:00 | low | 749.1795 | spike |
 | 2026-10-12 | 08:12 | high | 751.2700 | stale_prior_close |
 | 2026-10-12 | 08:47 | high | 751.2700 | stale_prior_close |
 | 2026-10-12 | 08:47 | open | 751.2700 | stale_prior_close |
-| 2026-10-13 | 04:00 | low | 739.8085 | spike |
 | 2026-10-13 | 04:00 | high | 746.0400 | stale_prior_close |
-| 2026-10-13 | 04:01 | low | 739.8400 | spike |
-| 2026-10-13 | 04:03 | low | 739.7800 | spike |
-| 2026-10-13 | 04:04 | low | 739.7900 | spike |
-| 2026-10-13 | 04:07 | low | 739.7800 | spike |
-| 2026-10-13 | 07:00 | high | 751.2700 | spike |
-| 2026-10-13 | 07:01 | high | 751.2700 | spike |
-| 2026-10-13 | 07:02 | high | 751.2700 | spike |
 | 2026-10-13 | 07:35 | close | 746.0400 | stale_prior_close |
 | 2026-10-13 | 07:35 | high | 746.0400 | stale_prior_close |
 | 2026-10-13 | 07:36 | high | 746.0400 | stale_prior_close |
@@ -823,39 +717,18 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0328, spike
 | 2026-10-13 | 07:43 | high | 746.0400 | stale_prior_close |
 | 2026-10-13 | 07:44 | high | 746.0400 | stale_prior_close |
 | 2026-10-13 | 07:44 | open | 746.0400 | stale_prior_close |
-| 2026-10-13 | 08:05 | high | 748.0700 | spike |
 | 2026-10-13 | 08:11 | high | 746.0400 | stale_prior_close |
 | 2026-10-13 | 08:12 | high | 746.0400 | stale_prior_close |
 | 2026-10-13 | 08:12 | open | 746.0400 | stale_prior_close |
-| 2026-10-13 | 08:15 | high | 745.4810 | spike |
 | 2026-10-13 | 08:47 | high | 746.0400 | stale_prior_close |
 | 2026-10-13 | 08:50 | high | 746.0400 | stale_prior_close |
 | 2026-10-13 | 08:53 | high | 746.0400 | stale_prior_close |
-| 2026-10-14 | 04:00 | high | 747.9457 | spike |
-| 2026-10-14 | 04:00 | low | 740.5642 | spike |
-| 2026-10-14 | 04:01 | high | 746.0500 | spike |
-| 2026-10-14 | 04:01 | low | 741.7600 | spike |
-| 2026-10-14 | 04:02 | high | 745.8200 | spike |
-| 2026-10-14 | 04:02 | low | 741.8000 | spike |
-| 2026-10-14 | 06:14 | low | 742.5000 | spike |
 | 2026-10-14 | 07:01 | high | 743.5700 | stale_prior_close |
-| 2026-10-14 | 07:35 | close | 743.5700 | stale_prior_close |
-| 2026-10-14 | 07:35 | high | 743.5700 | stale_prior_close |
 | 2026-10-14 | 07:40 | high | 743.5700 | stale_prior_close |
 | 2026-10-14 | 07:41 | high | 743.5700 | stale_prior_close |
 | 2026-10-14 | 07:41 | open | 743.5700 | stale_prior_close |
-| 2026-10-14 | 08:30 | high | 745.8900 | spike |
 | 2026-10-14 | 08:47 | high | 743.5700 | stale_prior_close |
-| 2026-10-14 | 09:27 | high | 739.0000 | spike |
-| 2026-10-15 | 04:00 | low | 718.7700 | spike |
 | 2026-10-15 | 04:00 | high | 728.9500 | stale_prior_close |
-| 2026-10-15 | 04:01 | high | 724.0900 | spike |
-| 2026-10-15 | 04:01 | low | 718.8000 | spike |
-| 2026-10-15 | 04:03 | high | 724.0600 | spike |
-| 2026-10-15 | 04:04 | high | 723.2300 | spike |
-| 2026-10-15 | 04:04 | low | 718.7700 | spike |
-| 2026-10-15 | 04:06 | high | 724.0500 | spike |
-| 2026-10-15 | 04:07 | high | 723.6600 | spike |
 | 2026-10-15 | 07:00 | high | 728.9500 | stale_prior_close |
 | 2026-10-15 | 07:01 | high | 728.9500 | stale_prior_close |
 | 2026-10-15 | 07:02 | high | 728.9500 | stale_prior_close |
@@ -871,28 +744,19 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0328, spike
 | 2026-10-15 | 08:08 | high | 728.9500 | stale_prior_close |
 | 2026-10-15 | 08:09 | high | 728.9500 | stale_prior_close |
 | 2026-10-15 | 08:09 | open | 728.9500 | stale_prior_close |
-| 2026-10-15 | 08:12 | high | 728.4040 | spike |
 | 2026-10-15 | 08:16 | high | 728.9500 | stale_prior_close |
 | 2026-10-15 | 08:17 | high | 728.9500 | stale_prior_close |
-| 2026-10-15 | 08:30 | low | 715.6300 | spike |
-| 2026-10-15 | 08:35 | high | 721.7000 | spike |
 | 2026-10-15 | 08:47 | high | 728.9500 | stale_prior_close |
 | 2026-10-16 | 04:00 | low | 728.0000 | stale_prior_close |
-| 2026-10-16 | 04:06 | low | 728.2700 | spike |
 | 2026-10-16 | 07:00 | high | 728.0000 | stale_prior_close |
 | 2026-10-16 | 07:01 | high | 728.0000 | stale_prior_close |
 | 2026-10-16 | 07:35 | high | 728.0000 | stale_prior_close |
-| 2026-10-16 | 07:36 | high | 728.0000 | stale_prior_close |
-| 2026-10-16 | 07:36 | open | 728.0000 | stale_prior_close |
 | 2026-10-16 | 07:37 | high | 728.0000 | stale_prior_close |
 | 2026-10-16 | 07:38 | high | 728.0000 | stale_prior_close |
 | 2026-10-16 | 07:38 | open | 728.0000 | stale_prior_close |
 | 2026-10-16 | 07:39 | high | 728.0000 | stale_prior_close |
-| 2026-10-16 | 07:49 | high | 727.4540 | spike |
-| 2026-10-16 | 08:05 | low | 718.0400 | spike |
 | 2026-10-16 | 08:05 | high | 728.0000 | stale_prior_close |
 | 2026-10-16 | 08:47 | high | 728.0000 | stale_prior_close |
-| 2026-10-19 | 04:00 | high | 720.4000 | spike |
 | 2026-10-19 | 07:02 | low | 709.8000 | stale_prior_close |
 | 2026-10-19 | 07:02 | open | 709.8000 | stale_prior_close |
 | 2026-10-19 | 07:35 | low | 709.8000 | stale_prior_close |
@@ -903,18 +767,12 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0328, spike
 | 2026-10-19 | 07:38 | low | 709.8000 | stale_prior_close |
 | 2026-10-19 | 07:38 | open | 709.8000 | stale_prior_close |
 | 2026-10-19 | 07:39 | low | 709.8000 | stale_prior_close |
-| 2026-10-19 | 07:59 | low | 709.2680 | spike |
-| 2026-10-19 | 08:05 | low | 710.2850 | spike |
 | 2026-10-19 | 08:20 | low | 709.8000 | stale_prior_close |
 | 2026-10-19 | 08:47 | low | 709.8000 | stale_prior_close |
-| 2026-10-20 | 04:00 | high | 718.6000 | spike |
-| 2026-10-20 | 04:00 | low | 715.0392 | spike |
-| 2026-10-20 | 04:06 | high | 718.5000 | spike |
 | 2026-10-20 | 07:01 | high | 718.3600 | stale_prior_close |
 | 2026-10-20 | 07:02 | high | 718.3600 | stale_prior_close |
 | 2026-10-20 | 07:03 | high | 718.3600 | stale_prior_close |
 | 2026-10-20 | 07:03 | open | 718.3600 | stale_prior_close |
-| 2026-10-20 | 07:04 | high | 718.3673 | spike |
 | 2026-10-20 | 07:35 | close | 718.3600 | stale_prior_close |
 | 2026-10-20 | 07:35 | high | 718.3600 | stale_prior_close |
 | 2026-10-20 | 07:36 | high | 718.3600 | stale_prior_close |
@@ -929,16 +787,11 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0328, spike
 | 2026-10-20 | 08:02 | high | 718.3600 | stale_prior_close |
 | 2026-10-20 | 08:03 | high | 718.3600 | stale_prior_close |
 | 2026-10-20 | 08:04 | high | 718.3600 | stale_prior_close |
-| 2026-10-20 | 08:05 | high | 721.3400 | spike |
 | 2026-10-20 | 08:06 | high | 718.3600 | stale_prior_close |
 | 2026-10-20 | 08:07 | high | 718.3600 | stale_prior_close |
 | 2026-10-20 | 08:09 | high | 718.3600 | stale_prior_close |
-| 2026-10-20 | 08:27 | high | 717.8220 | spike |
 | 2026-10-20 | 08:47 | high | 718.3600 | stale_prior_close |
 | 2026-10-21 | 04:00 | low | 717.6300 | stale_prior_close |
-| 2026-10-21 | 04:01 | low | 719.0600 | spike |
-| 2026-10-21 | 04:09 | high | 723.3700 | spike |
-| 2026-10-21 | 04:09 | low | 720.7800 | spike |
 | 2026-10-21 | 07:00 | low | 717.6300 | stale_prior_close |
 | 2026-10-21 | 07:35 | low | 717.6300 | stale_prior_close |
 | 2026-10-21 | 07:36 | close | 717.6300 | stale_prior_close |
@@ -948,19 +801,10 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0328, spike
 | 2026-10-21 | 07:39 | close | 717.6300 | stale_prior_close |
 | 2026-10-21 | 07:39 | low | 717.6300 | stale_prior_close |
 | 2026-10-21 | 07:40 | low | 717.6300 | stale_prior_close |
-| 2026-10-21 | 08:05 | low | 715.2200 | spike |
 | 2026-10-21 | 08:07 | low | 717.6300 | stale_prior_close |
 | 2026-10-21 | 08:08 | low | 717.6300 | stale_prior_close |
-| 2026-10-21 | 08:30 | low | 717.0920 | spike |
 | 2026-10-21 | 08:47 | low | 717.6300 | stale_prior_close |
 | 2026-10-22 | 04:00 | high | 725.2000 | stale_prior_close |
-| 2026-10-22 | 04:01 | high | 716.4500 | spike |
-| 2026-10-22 | 04:02 | high | 714.8700 | spike |
-| 2026-10-22 | 04:03 | high | 716.5100 | spike |
-| 2026-10-22 | 04:04 | high | 715.9900 | spike |
-| 2026-10-22 | 04:05 | high | 714.5400 | spike |
-| 2026-10-22 | 04:06 | high | 714.2200 | spike |
-| 2026-10-22 | 04:09 | high | 716.2900 | spike |
 | 2026-10-22 | 07:01 | close | 725.2000 | stale_prior_close |
 | 2026-10-22 | 07:01 | high | 725.2000 | stale_prior_close |
 | 2026-10-22 | 07:02 | high | 725.2000 | stale_prior_close |
@@ -974,7 +818,6 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0328, spike
 | 2026-10-22 | 07:40 | high | 725.2000 | stale_prior_close |
 | 2026-10-22 | 07:40 | open | 725.2000 | stale_prior_close |
 | 2026-10-22 | 08:05 | high | 726.7050 | spike |
-| 2026-10-22 | 08:09 | high | 724.6570 | spike |
 | 2026-10-22 | 08:12 | high | 725.2000 | stale_prior_close |
 | 2026-10-22 | 08:13 | high | 725.2000 | stale_prior_close |
 | 2026-10-22 | 08:47 | high | 725.2000 | stale_prior_close |
@@ -986,23 +829,13 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0328, spike
 | 2026-10-22 | 09:26 | high | 725.2000 | stale_prior_close |
 | 2026-10-22 | 09:27 | high | 725.2000 | stale_prior_close |
 | 2026-10-22 | 09:28 | high | 725.2000 | stale_prior_close |
-| 2026-10-23 | 04:00 | high | 707.2600 | spike |
-| 2026-10-23 | 04:00 | low | 704.0100 | spike |
-| 2026-10-23 | 04:01 | high | 707.2800 | spike |
-| 2026-10-23 | 04:01 | low | 704.0000 | spike |
-| 2026-10-23 | 04:02 | high | 707.3000 | spike |
-| 2026-10-23 | 04:02 | low | 704.0000 | spike |
-| 2026-10-23 | 04:04 | low | 704.3000 | spike |
-| 2026-10-23 | 04:08 | low | 704.0000 | spike |
 | 2026-10-23 | 07:01 | high | 704.4700 | stale_prior_close |
 | 2026-10-23 | 07:02 | high | 704.4697 | stale_prior_close |
 | 2026-10-23 | 07:39 | high | 704.4700 | stale_prior_close |
 | 2026-10-23 | 07:40 | high | 704.4700 | stale_prior_close |
 | 2026-10-23 | 07:41 | high | 704.4700 | stale_prior_close |
-| 2026-10-23 | 08:05 | high | 713.2703 | spike |
 | 2026-10-23 | 08:08 | high | 704.4700 | stale_prior_close |
 | 2026-10-23 | 08:47 | high | 704.4700 | stale_prior_close |
-| 2026-10-26 | 04:06 | high | 706.3300 | spike |
 | 2026-10-26 | 07:01 | high | 704.4000 | stale_prior_close |
 | 2026-10-26 | 07:35 | close | 704.4000 | stale_prior_close |
 | 2026-10-26 | 07:35 | low | 704.4000 | stale_prior_close |
@@ -1011,13 +844,8 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0328, spike
 | 2026-10-26 | 07:38 | low | 704.4000 | stale_prior_close |
 | 2026-10-26 | 07:39 | low | 704.4000 | stale_prior_close |
 | 2026-10-26 | 07:40 | low | 704.4000 | stale_prior_close |
-| 2026-10-26 | 08:05 | low | 704.2101 | spike |
 | 2026-10-26 | 08:20 | low | 704.4000 | stale_prior_close |
-| 2026-10-26 | 08:32 | low | 704.9280 | spike |
 | 2026-10-26 | 08:47 | low | 704.4000 | stale_prior_close |
-| 2026-10-27 | 04:00 | low | 708.6600 | spike |
-| 2026-10-27 | 04:01 | low | 708.6000 | spike |
-| 2026-10-27 | 04:06 | low | 708.8800 | spike |
 | 2026-10-27 | 07:00 | close | 712.2000 | stale_prior_close |
 | 2026-10-27 | 07:00 | low | 712.2000 | stale_prior_close |
 | 2026-10-27 | 07:01 | low | 712.2000 | stale_prior_close |
@@ -1031,7 +859,6 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0328, spike
 | 2026-10-27 | 07:38 | low | 712.2000 | stale_prior_close |
 | 2026-10-27 | 07:38 | open | 712.2000 | stale_prior_close |
 | 2026-10-27 | 08:04 | low | 712.2000 | stale_prior_close |
-| 2026-10-27 | 08:05 | low | 706.2900 | spike |
 | 2026-10-27 | 08:15 | low | 712.2000 | stale_prior_close |
 | 2026-10-27 | 08:16 | low | 712.2000 | stale_prior_close |
 | 2026-10-27 | 08:17 | low | 712.2000 | stale_prior_close |
@@ -1044,10 +871,6 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0328, spike
 | 2026-10-27 | 08:23 | low | 712.2000 | stale_prior_close |
 | 2026-10-27 | 08:47 | low | 712.2000 | stale_prior_close |
 | 2026-10-28 | 04:00 | low | 721.2500 | stale_prior_close |
-| 2026-10-28 | 04:01 | low | 723.0300 | spike |
-| 2026-10-28 | 04:05 | low | 723.4400 | spike |
-| 2026-10-28 | 04:07 | low | 724.0500 | spike |
-| 2026-10-28 | 04:08 | low | 723.9400 | spike |
 | 2026-10-28 | 07:01 | low | 721.2500 | stale_prior_close |
 | 2026-10-28 | 07:02 | low | 721.2500 | stale_prior_close |
 | 2026-10-28 | 07:02 | open | 721.2500 | stale_prior_close |
@@ -1063,14 +886,8 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0328, spike
 | 2026-10-28 | 07:43 | low | 721.2500 | stale_prior_close |
 | 2026-10-28 | 07:44 | low | 721.2500 | stale_prior_close |
 | 2026-10-28 | 08:00 | low | 721.2500 | stale_prior_close |
-| 2026-10-28 | 08:05 | low | 720.4200 | spike |
-| 2026-10-28 | 08:24 | low | 720.7100 | spike |
 | 2026-10-28 | 08:47 | low | 721.2500 | stale_prior_close |
-| 2026-10-29 | 04:00 | low | 714.8500 | spike |
 | 2026-10-29 | 04:00 | high | 725.6100 | stale_prior_close |
-| 2026-10-29 | 04:01 | low | 714.8800 | spike |
-| 2026-10-29 | 04:02 | low | 714.9200 | spike |
-| 2026-10-29 | 04:08 | low | 714.9800 | spike |
 | 2026-10-29 | 07:00 | high | 725.6100 | stale_prior_close |
 | 2026-10-29 | 07:01 | high | 725.6100 | stale_prior_close |
 | 2026-10-29 | 07:01 | open | 725.6100 | stale_prior_close |
@@ -1091,13 +908,10 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0328, spike
 | 2026-10-29 | 08:12 | high | 725.6100 | stale_prior_close |
 | 2026-10-29 | 08:14 | high | 725.6100 | stale_prior_close |
 | 2026-10-29 | 08:15 | high | 725.6100 | stale_prior_close |
-| 2026-10-29 | 08:16 | high | 726.1540 | spike |
 | 2026-10-29 | 08:18 | high | 725.6100 | stale_prior_close |
 | 2026-10-29 | 08:20 | high | 725.6100 | stale_prior_close |
 | 2026-10-29 | 08:47 | high | 725.6100 | stale_prior_close |
 | 2026-10-30 | 04:00 | high | 715.3400 | stale_prior_close |
-| 2026-10-30 | 04:03 | high | 703.5000 | spike |
-| 2026-10-30 | 04:14 | high | 702.1600 | spike |
 | 2026-10-30 | 07:00 | high | 715.3400 | stale_prior_close |
 | 2026-10-30 | 07:01 | high | 715.3400 | stale_prior_close |
 | 2026-10-30 | 07:03 | high | 715.3400 | stale_prior_close |
@@ -1113,10 +927,6 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0328, spike
 | 2026-10-30 | 08:05 | high | 715.6000 | spike |
 | 2026-10-30 | 08:37 | low | 623.8900 | spike |
 | 2026-10-30 | 08:47 | high | 715.3400 | stale_prior_close |
-| 2026-11-02 | 04:00 | high | 698.0000 | spike |
-| 2026-11-02 | 04:00 | low | 690.4824 | spike |
-| 2026-11-02 | 04:01 | high | 698.0000 | spike |
-| 2026-11-02 | 04:02 | high | 698.0000 | spike |
 | 2026-11-02 | 07:01 | low | 690.4900 | stale_prior_close |
 | 2026-11-02 | 07:02 | low | 690.4900 | stale_prior_close |
 | 2026-11-02 | 07:35 | low | 690.4900 | stale_prior_close |
@@ -1126,22 +936,11 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0328, spike
 | 2026-11-02 | 07:39 | low | 690.4900 | stale_prior_close |
 | 2026-11-02 | 07:40 | low | 690.4900 | stale_prior_close |
 | 2026-11-02 | 07:41 | low | 690.4900 | stale_prior_close |
-| 2026-11-02 | 08:05 | high | 696.8800 | spike |
-| 2026-11-02 | 08:05 | low | 686.2850 | spike |
 | 2026-11-02 | 08:15 | low | 690.4900 | stale_prior_close |
 | 2026-11-02 | 08:16 | low | 690.4900 | stale_prior_close |
 | 2026-11-02 | 08:16 | open | 690.4900 | stale_prior_close |
 | 2026-11-02 | 08:24 | low | 690.4900 | stale_prior_close |
 | 2026-11-02 | 08:47 | low | 690.4900 | stale_prior_close |
-| 2026-11-03 | 04:00 | low | 678.9692 | spike |
-| 2026-11-03 | 04:01 | low | 678.9000 | spike |
-| 2026-11-03 | 04:05 | low | 680.4800 | spike |
-| 2026-11-03 | 04:06 | low | 680.0000 | spike |
-| 2026-11-03 | 04:07 | low | 679.7700 | spike |
-| 2026-11-03 | 04:08 | low | 679.6400 | spike |
-| 2026-11-03 | 04:09 | low | 679.2800 | spike |
-| 2026-11-03 | 04:10 | low | 679.3100 | spike |
-| 2026-11-03 | 07:03 | low | 681.0900 | stale_prior_close |
 | 2026-11-03 | 07:35 | low | 681.0900 | stale_prior_close |
 | 2026-11-03 | 07:36 | low | 681.0900 | stale_prior_close |
 | 2026-11-03 | 07:36 | open | 681.0900 | stale_prior_close |
@@ -1156,21 +955,6 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0328, spike
 | 2026-11-03 | 08:47 | low | 681.0900 | stale_prior_close |
 | 2026-11-03 | 08:48 | low | 681.0900 | stale_prior_close |
 | 2026-11-03 | 08:49 | low | 681.0900 | stale_prior_close |
-| 2026-11-04 | 04:00 | high | 688.1000 | spike |
-| 2026-11-04 | 04:00 | low | 676.2100 | spike |
-| 2026-11-04 | 04:01 | high | 688.3500 | spike |
-| 2026-11-04 | 04:01 | low | 676.2600 | spike |
-| 2026-11-04 | 04:03 | low | 676.2000 | spike |
-| 2026-11-04 | 04:04 | high | 688.3800 | spike |
-| 2026-11-04 | 04:04 | low | 677.0000 | spike |
-| 2026-11-04 | 04:05 | high | 688.3400 | spike |
-| 2026-11-04 | 04:07 | low | 676.4100 | spike |
-| 2026-11-04 | 05:09 | low | 676.4000 | spike |
-| 2026-11-04 | 05:15 | low | 680.4900 | spike |
-| 2026-11-04 | 05:16 | low | 681.4000 | spike |
-| 2026-11-04 | 05:26 | low | 682.3500 | spike |
-| 2026-11-04 | 05:28 | low | 683.0500 | spike |
-| 2026-11-04 | 05:34 | low | 685.6500 | spike |
 | 2026-11-04 | 07:00 | low | 685.2800 | stale_prior_close |
 | 2026-11-04 | 07:01 | low | 685.2800 | stale_prior_close |
 | 2026-11-04 | 07:02 | low | 685.2800 | stale_prior_close |
@@ -1182,16 +966,9 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0328, spike
 | 2026-11-04 | 07:38 | low | 685.2800 | stale_prior_close |
 | 2026-11-04 | 07:39 | low | 685.2800 | stale_prior_close |
 | 2026-11-04 | 07:40 | low | 685.2800 | stale_prior_close |
-| 2026-11-04 | 08:05 | high | 687.7500 | spike |
-| 2026-11-04 | 08:05 | low | 683.7100 | spike |
 | 2026-11-04 | 08:27 | low | 685.2800 | stale_prior_close |
 | 2026-11-04 | 08:47 | low | 685.2800 | stale_prior_close |
-| 2026-11-05 | 04:00 | low | 682.1700 | spike |
 | 2026-11-05 | 04:00 | high | 691.9500 | stale_prior_close |
-| 2026-11-05 | 04:01 | low | 682.2000 | spike |
-| 2026-11-05 | 04:02 | low | 682.1700 | spike |
-| 2026-11-05 | 04:07 | low | 683.1100 | spike |
-| 2026-11-05 | 04:36 | low | 684.7900 | spike |
 | 2026-11-05 | 07:01 | high | 691.9500 | stale_prior_close |
 | 2026-11-05 | 07:35 | high | 691.9500 | stale_prior_close |
 | 2026-11-05 | 07:36 | high | 691.9500 | stale_prior_close |
@@ -1201,7 +978,6 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0328, spike
 | 2026-11-05 | 07:40 | high | 691.9500 | stale_prior_close |
 | 2026-11-05 | 07:41 | high | 691.9500 | stale_prior_close |
 | 2026-11-05 | 08:05 | high | 700.8000 | spike |
-| 2026-11-05 | 08:14 | high | 691.4320 | spike |
 | 2026-11-05 | 08:15 | high | 691.9500 | stale_prior_close |
 | 2026-11-05 | 08:17 | high | 691.9500 | stale_prior_close |
 | 2026-11-05 | 08:18 | high | 691.9500 | stale_prior_close |
@@ -1213,17 +989,7 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0328, spike
 | 2026-11-05 | 09:05 | close | 691.9500 | stale_prior_close |
 | 2026-11-05 | 09:05 | high | 691.9500 | stale_prior_close |
 | 2026-11-05 | 09:06 | high | 691.9500 | stale_prior_close |
-| 2026-11-06 | 04:00 | high | 657.4100 | spike |
 | 2026-11-06 | 04:00 | low | 647.0500 | stale_prior_close |
-| 2026-11-06 | 04:01 | low | 649.6500 | spike |
-| 2026-11-06 | 04:03 | low | 652.1300 | spike |
-| 2026-11-06 | 04:04 | low | 649.6200 | spike |
-| 2026-11-06 | 04:05 | low | 649.7100 | spike |
-| 2026-11-06 | 04:08 | low | 651.7800 | spike |
-| 2026-11-06 | 04:24 | low | 653.3700 | spike |
-| 2026-11-06 | 04:25 | low | 652.7600 | spike |
-| 2026-11-06 | 04:28 | low | 649.9900 | spike |
-| 2026-11-06 | 04:29 | low | 650.5900 | spike |
 | 2026-11-06 | 07:00 | low | 647.0500 | stale_prior_close |
 | 2026-11-06 | 07:01 | low | 647.0500 | stale_prior_close |
 | 2026-11-06 | 07:35 | close | 647.0500 | stale_prior_close |
@@ -1238,8 +1004,6 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0328, spike
 | 2026-11-06 | 08:05 | low | 647.0500 | stale_prior_close |
 | 2026-11-06 | 08:09 | low | 647.0500 | stale_prior_close |
 | 2026-11-06 | 08:10 | low | 647.0500 | stale_prior_close |
-| 2026-11-06 | 08:30 | low | 655.5600 | spike |
-| 2026-11-06 | 08:32 | low | 647.5350 | spike |
 | 2026-11-06 | 08:47 | low | 647.0500 | stale_prior_close |
 
 premarket drops, 20 sessions through 2026-11-06, #1753 (stale 0.1000, spike 0.5000 x ATR): 299 prints
@@ -1574,8 +1338,8 @@ breaks per side and year (sessions with one-minute bars):
 |---|---|---|---|---|---|
 | trigger_window_long_atr | 2.1942 | ok | 750 | 2023-11-09 to 2026-11-05 | 3.0 |
 | trigger_window_short_atr | 2.2699 | ok | 750 | 2023-11-09 to 2026-11-05 | 3.0 |
-| pm_spike_atr | 0.0786 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.5 |
-| pm_stale_print_atr | 0.0383 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.1 |
+| pm_spike_atr | 0.5365 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.5 |
+| pm_stale_print_atr | 0.0408 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.1 |
 | level_cluster_atr | 0.0517 | ok | 60 | 2026-08-13 to 2026-11-05 | 0.15 |
 | entry_buffer_aggressive_lo_atr | 0.0000 | ok | 805 | 2023-11-09 to 2026-11-05 | 0.0 |
 | entry_buffer_aggressive_hi_atr | 0.6837 | ok | 805 | 2023-11-09 to 2026-11-05 | 0.5 |
@@ -1628,7 +1392,7 @@ short window 2.270 x ATR: share of sessions whose excursion passed it, per year 
 | 2025 | 250 | 2 | 0.008 | 0.004 |
 | 2026 | 213 | 2 | 0.009 | 0.005 |
 
-premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0383, spike 0.0786 x ATR): 278 prints
+premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0408, spike 0.5365 x ATR): 237 prints
 
 | session | time ET | field | price | rule |
 |---|---|---|---|---|
@@ -1662,16 +1426,13 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0383, spike
 | 2026-10-13 | 08:55 | low | 277.9000 | stale_prior_close |
 | 2026-10-13 | 08:56 | low | 277.9000 | stale_prior_close |
 | 2026-10-14 | 04:00 | low | 276.7000 | stale_prior_close |
-| 2026-10-14 | 04:02 | low | 277.0700 | spike |
 | 2026-10-14 | 07:01 | low | 276.7000 | stale_prior_close |
 | 2026-10-14 | 07:35 | close | 276.7000 | stale_prior_close |
 | 2026-10-14 | 07:35 | low | 276.7000 | stale_prior_close |
 | 2026-10-14 | 07:40 | close | 276.7000 | stale_prior_close |
 | 2026-10-14 | 07:40 | low | 276.7000 | stale_prior_close |
-| 2026-10-14 | 08:05 | low | 276.2250 | spike |
 | 2026-10-14 | 08:07 | close | 276.7000 | stale_prior_close |
 | 2026-10-14 | 08:07 | low | 276.7000 | stale_prior_close |
-| 2026-10-14 | 08:40 | low | 273.0000 | spike |
 | 2026-10-14 | 08:47 | high | 276.7000 | stale_prior_close |
 | 2026-10-15 | 07:02 | low | 271.3735 | stale_prior_close |
 | 2026-10-15 | 07:02 | open | 271.3735 | stale_prior_close |
@@ -1686,7 +1447,6 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0383, spike
 | 2026-10-15 | 08:08 | low | 271.3700 | stale_prior_close |
 | 2026-10-15 | 08:10 | low | 271.3700 | stale_prior_close |
 | 2026-10-15 | 08:16 | low | 271.3700 | stale_prior_close |
-| 2026-10-15 | 08:30 | low | 270.2800 | spike |
 | 2026-10-15 | 08:47 | low | 271.3700 | stale_prior_close |
 | 2026-10-16 | 04:00 | low | 275.0800 | stale_prior_close |
 | 2026-10-16 | 07:36 | close | 275.0800 | stale_prior_close |
@@ -1698,13 +1458,8 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0383, spike
 | 2026-10-16 | 08:08 | open | 275.0800 | stale_prior_close |
 | 2026-10-19 | 07:02 | low | 270.4400 | stale_prior_close |
 | 2026-10-19 | 07:36 | low | 270.4400 | stale_prior_close |
-| 2026-10-19 | 08:05 | high | 271.9600 | spike |
-| 2026-10-19 | 08:05 | low | 270.3701 | spike |
 | 2026-10-19 | 08:20 | low | 270.4400 | stale_prior_close |
 | 2026-10-19 | 08:47 | low | 270.4400 | stale_prior_close |
-| 2026-10-20 | 04:00 | high | 271.8300 | spike |
-| 2026-10-20 | 04:01 | high | 271.9500 | spike |
-| 2026-10-20 | 04:02 | high | 271.9900 | spike |
 | 2026-10-20 | 07:35 | close | 271.2800 | stale_prior_close |
 | 2026-10-20 | 07:35 | high | 271.2800 | stale_prior_close |
 | 2026-10-20 | 07:38 | high | 271.2800 | stale_prior_close |
@@ -1713,10 +1468,8 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0383, spike
 | 2026-10-20 | 08:03 | high | 271.2800 | stale_prior_close |
 | 2026-10-20 | 08:04 | high | 271.2800 | stale_prior_close |
 | 2026-10-20 | 08:04 | open | 271.2800 | stale_prior_close |
-| 2026-10-20 | 08:05 | high | 271.5610 | spike |
 | 2026-10-20 | 08:05 | open | 271.2800 | stale_prior_close |
 | 2026-10-20 | 08:07 | high | 271.2800 | stale_prior_close |
-| 2026-10-20 | 08:45 | high | 271.7300 | spike |
 | 2026-10-21 | 04:01 | high | 275.7800 | stale_prior_close |
 | 2026-10-21 | 07:35 | close | 275.7800 | stale_prior_close |
 | 2026-10-21 | 07:35 | low | 275.7800 | stale_prior_close |
@@ -1733,7 +1486,6 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0383, spike
 | 2026-10-21 | 08:47 | low | 275.7800 | stale_prior_close |
 | 2026-10-21 | 08:52 | low | 275.7800 | stale_prior_close |
 | 2026-10-22 | 04:00 | high | 276.4800 | stale_prior_close |
-| 2026-10-22 | 04:06 | high | 274.8800 | spike |
 | 2026-10-22 | 07:35 | close | 276.4800 | stale_prior_close |
 | 2026-10-22 | 07:35 | high | 276.4800 | stale_prior_close |
 | 2026-10-22 | 07:36 | close | 276.4800 | stale_prior_close |
@@ -1759,7 +1511,6 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0383, spike
 | 2026-10-23 | 07:35 | high | 276.6700 | stale_prior_close |
 | 2026-10-23 | 07:36 | close | 276.6700 | stale_prior_close |
 | 2026-10-23 | 07:36 | high | 276.6700 | stale_prior_close |
-| 2026-10-23 | 07:40 | low | 275.1466 | spike |
 | 2026-10-23 | 07:42 | high | 276.6700 | stale_prior_close |
 | 2026-10-23 | 07:42 | open | 276.6700 | stale_prior_close |
 | 2026-10-23 | 08:08 | high | 276.6700 | stale_prior_close |
@@ -1768,7 +1519,6 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0383, spike
 | 2026-10-26 | 07:01 | low | 275.7500 | stale_prior_close |
 | 2026-10-26 | 07:39 | low | 275.7500 | stale_prior_close |
 | 2026-10-26 | 07:39 | open | 275.7500 | stale_prior_close |
-| 2026-10-26 | 08:05 | low | 275.5700 | spike |
 | 2026-10-26 | 08:20 | low | 275.7500 | stale_prior_close |
 | 2026-10-27 | 07:35 | close | 276.9900 | stale_prior_close |
 | 2026-10-27 | 07:35 | low | 276.9900 | stale_prior_close |
@@ -1795,9 +1545,6 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0383, spike
 | 2026-10-28 | 07:35 | open | 280.1800 | stale_prior_close |
 | 2026-10-28 | 07:36 | close | 280.1800 | stale_prior_close |
 | 2026-10-28 | 07:36 | high | 280.1800 | stale_prior_close |
-| 2026-10-28 | 07:39 | low | 279.8751 | spike |
-| 2026-10-28 | 07:42 | close | 280.1800 | stale_prior_close |
-| 2026-10-28 | 07:42 | high | 280.1800 | stale_prior_close |
 | 2026-10-28 | 07:43 | high | 280.1800 | stale_prior_close |
 | 2026-10-28 | 07:44 | high | 280.1800 | stale_prior_close |
 | 2026-10-28 | 07:44 | open | 280.1800 | stale_prior_close |
@@ -1813,7 +1560,6 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0383, spike
 | 2026-10-29 | 07:40 | low | 281.2900 | stale_prior_close |
 | 2026-10-29 | 07:40 | open | 281.2900 | stale_prior_close |
 | 2026-10-29 | 07:41 | low | 281.2900 | stale_prior_close |
-| 2026-10-29 | 08:05 | low | 280.1001 | spike |
 | 2026-10-29 | 08:08 | close | 281.2900 | stale_prior_close |
 | 2026-10-29 | 08:08 | low | 281.2900 | stale_prior_close |
 | 2026-10-29 | 08:09 | low | 281.2900 | stale_prior_close |
@@ -1821,10 +1567,6 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0383, spike
 | 2026-10-29 | 08:18 | low | 281.2900 | stale_prior_close |
 | 2026-10-29 | 08:20 | low | 281.2900 | stale_prior_close |
 | 2026-10-29 | 08:47 | low | 281.2900 | stale_prior_close |
-| 2026-10-30 | 04:00 | high | 283.4800 | spike |
-| 2026-10-30 | 04:01 | high | 283.6800 | spike |
-| 2026-10-30 | 04:03 | high | 283.6300 | spike |
-| 2026-10-30 | 04:04 | high | 283.5700 | spike |
 | 2026-10-30 | 07:01 | high | 284.0100 | stale_prior_close |
 | 2026-10-30 | 07:36 | high | 284.0100 | stale_prior_close |
 | 2026-10-30 | 07:37 | high | 284.0100 | stale_prior_close |
@@ -1832,7 +1574,6 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0383, spike
 | 2026-10-30 | 07:38 | open | 284.0100 | stale_prior_close |
 | 2026-10-30 | 07:59 | high | 284.0100 | stale_prior_close |
 | 2026-10-30 | 08:00 | high | 284.0100 | stale_prior_close |
-| 2026-10-30 | 08:05 | high | 283.6850 | spike |
 | 2026-11-02 | 07:02 | low | 279.3300 | stale_prior_close |
 | 2026-11-02 | 07:35 | low | 279.3300 | stale_prior_close |
 | 2026-11-02 | 07:35 | open | 279.3300 | stale_prior_close |
@@ -1844,10 +1585,7 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0383, spike
 | 2026-11-02 | 08:15 | low | 279.3300 | stale_prior_close |
 | 2026-11-02 | 08:23 | low | 279.3300 | stale_prior_close |
 | 2026-11-02 | 08:23 | open | 279.3300 | stale_prior_close |
-| 2026-11-02 | 08:38 | high | 282.2000 | spike |
 | 2026-11-02 | 08:47 | low | 279.3300 | stale_prior_close |
-| 2026-11-03 | 04:00 | low | 278.1185 | spike |
-| 2026-11-03 | 04:01 | low | 277.9400 | spike |
 | 2026-11-03 | 07:35 | low | 279.1400 | stale_prior_close |
 | 2026-11-03 | 07:37 | low | 279.1400 | stale_prior_close |
 | 2026-11-03 | 07:37 | open | 279.1400 | stale_prior_close |
@@ -1858,13 +1596,7 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0383, spike
 | 2026-11-03 | 08:45 | low | 279.1400 | stale_prior_close |
 | 2026-11-03 | 08:46 | low | 279.1400 | stale_prior_close |
 | 2026-11-03 | 08:47 | low | 279.1400 | stale_prior_close |
-| 2026-11-04 | 04:00 | high | 282.1715 | spike |
 | 2026-11-04 | 04:00 | low | 278.5200 | spike |
-| 2026-11-04 | 04:01 | high | 282.2800 | spike |
-| 2026-11-04 | 04:01 | low | 278.4400 | spike |
-| 2026-11-04 | 04:04 | high | 282.2900 | spike |
-| 2026-11-04 | 04:05 | high | 282.4800 | spike |
-| 2026-11-04 | 05:10 | high | 283.9000 | spike |
 | 2026-11-04 | 07:02 | close | 279.7900 | stale_prior_close |
 | 2026-11-04 | 07:02 | low | 279.7900 | stale_prior_close |
 | 2026-11-04 | 07:37 | low | 279.7900 | stale_prior_close |
@@ -1875,9 +1607,6 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0383, spike
 | 2026-11-04 | 08:26 | close | 279.7900 | stale_prior_close |
 | 2026-11-04 | 08:26 | low | 279.7900 | stale_prior_close |
 | 2026-11-04 | 08:27 | low | 279.7900 | stale_prior_close |
-| 2026-11-05 | 04:00 | low | 283.8907 | spike |
-| 2026-11-05 | 04:01 | low | 283.7100 | spike |
-| 2026-11-05 | 04:02 | low | 283.7100 | spike |
 | 2026-11-05 | 07:35 | close | 284.0200 | stale_prior_close |
 | 2026-11-05 | 07:35 | low | 284.0200 | stale_prior_close |
 | 2026-11-05 | 07:36 | low | 284.0200 | stale_prior_close |
@@ -1890,14 +1619,10 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0383, spike
 | 2026-11-05 | 07:40 | open | 284.0200 | stale_prior_close |
 | 2026-11-05 | 07:41 | low | 284.0200 | stale_prior_close |
 | 2026-11-05 | 07:41 | open | 284.0200 | stale_prior_close |
-| 2026-11-05 | 08:05 | low | 282.0450 | spike |
 | 2026-11-05 | 08:07 | low | 284.0200 | stale_prior_close |
 | 2026-11-05 | 08:17 | low | 284.0200 | stale_prior_close |
 | 2026-11-05 | 08:47 | low | 284.0200 | stale_prior_close |
 | 2026-11-05 | 09:06 | low | 284.0200 | stale_prior_close |
-| 2026-11-06 | 04:00 | low | 269.4082 | spike |
-| 2026-11-06 | 04:01 | low | 269.1300 | spike |
-| 2026-11-06 | 04:04 | low | 269.3600 | spike |
 | 2026-11-06 | 07:35 | close | 270.9800 | stale_prior_close |
 | 2026-11-06 | 07:35 | low | 270.9800 | stale_prior_close |
 | 2026-11-06 | 07:37 | low | 270.9800 | stale_prior_close |
@@ -1907,8 +1632,6 @@ premarket drops, 20 sessions through 2026-11-06, calibrated (stale 0.0383, spike
 | 2026-11-06 | 07:39 | open | 270.9800 | stale_prior_close |
 | 2026-11-06 | 07:40 | low | 270.9800 | stale_prior_close |
 | 2026-11-06 | 08:05 | high | 283.7450 | spike |
-| 2026-11-06 | 08:05 | low | 270.8600 | spike |
-| 2026-11-06 | 08:30 | low | 270.3800 | spike |
 | 2026-11-06 | 08:47 | low | 270.9800 | stale_prior_close |
 
 premarket drops, 20 sessions through 2026-11-06, #1753 (stale 0.1000, spike 0.5000 x ATR): 160 prints

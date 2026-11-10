@@ -1,5 +1,5 @@
 {
- "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+ "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
  "rows_written": 205620,
  "failed": [],
  "tickers": {
@@ -14,7 +14,7 @@
     "input_from": null,
     "input_to": null,
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_aggressive_2_r": {
@@ -27,7 +27,7 @@
     "input_from": null,
     "input_to": null,
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_aggressive_3_r": {
@@ -40,7 +40,7 @@
     "input_from": null,
     "input_to": null,
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_neutral_3_r": {
@@ -53,7 +53,7 @@
     "input_from": "2023-11-14",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_conservative_2_r": {
@@ -66,7 +66,7 @@
     "input_from": null,
     "input_to": null,
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_neutral_1_r": {
@@ -79,7 +79,7 @@
     "input_from": "2023-11-14",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_neutral_2_r": {
@@ -92,7 +92,7 @@
     "input_from": "2023-11-14",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "stop_neutral_atr": {
@@ -105,7 +105,7 @@
     "input_from": "2024-07-25",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_conservative_1_r": {
@@ -118,7 +118,7 @@
     "input_from": null,
     "input_to": null,
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "stop_conservative_atr": {
@@ -131,7 +131,7 @@
     "input_from": "2024-07-25",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_neutral_lo_atr": {
@@ -144,11 +144,11 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "pm_stale_print_atr": {
-    "value": 0.03336119422790081,
+    "value": 0.04088534054955492,
     "status": "ok",
     "atr_basis": "atr_14",
     "method_id": "premarket_bar_spread_quantile",
@@ -157,20 +157,20 @@
     "input_from": "2026-08-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "pm_spike_atr": {
-    "value": 0.07451329723119897,
+    "value": 0.9264959294499225,
     "status": "ok",
     "atr_basis": "atr_14",
-    "method_id": "rth_wick_excess_quantile",
+    "method_id": "premarket_wick_excess_quantile",
     "policy_effective_from": "2015-01-02",
     "sample_n": 60,
     "input_from": "2026-08-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "min_stop_atr": {
@@ -183,7 +183,7 @@
     "input_from": "2024-07-25",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "level_cluster_atr": {
@@ -196,7 +196,7 @@
     "input_from": "2026-08-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_neutral_hi_atr": {
@@ -209,7 +209,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_conservative_lo_atr": {
@@ -222,7 +222,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_conservative_hi_atr": {
@@ -235,7 +235,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_aggressive_lo_atr": {
@@ -248,7 +248,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_aggressive_hi_atr": {
@@ -261,7 +261,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "trigger_window_long_atr": {
@@ -274,7 +274,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "stop_aggressive_atr": {
@@ -287,7 +287,7 @@
     "input_from": "2024-07-25",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "trigger_window_short_atr": {
@@ -300,7 +300,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    }
   },
@@ -315,7 +315,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_aggressive_2_r": {
@@ -328,7 +328,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_aggressive_3_r": {
@@ -341,7 +341,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_neutral_3_r": {
@@ -354,7 +354,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_conservative_2_r": {
@@ -367,7 +367,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_neutral_1_r": {
@@ -380,7 +380,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_neutral_2_r": {
@@ -393,7 +393,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "stop_neutral_atr": {
@@ -406,7 +406,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_conservative_1_r": {
@@ -419,7 +419,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "stop_conservative_atr": {
@@ -432,7 +432,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_neutral_lo_atr": {
@@ -445,11 +445,11 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "pm_stale_print_atr": {
-    "value": 0.03278274444919235,
+    "value": 0.042053098145600855,
     "status": "ok",
     "atr_basis": "atr_14",
     "method_id": "premarket_bar_spread_quantile",
@@ -458,20 +458,20 @@
     "input_from": "2026-08-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "pm_spike_atr": {
-    "value": 0.0643571419346155,
+    "value": 1.0715904925665558,
     "status": "ok",
     "atr_basis": "atr_14",
-    "method_id": "rth_wick_excess_quantile",
+    "method_id": "premarket_wick_excess_quantile",
     "policy_effective_from": "2015-01-02",
     "sample_n": 60,
     "input_from": "2026-08-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "min_stop_atr": {
@@ -484,7 +484,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "level_cluster_atr": {
@@ -497,7 +497,7 @@
     "input_from": "2026-08-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_neutral_hi_atr": {
@@ -510,7 +510,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_conservative_lo_atr": {
@@ -523,7 +523,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_conservative_hi_atr": {
@@ -536,7 +536,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_aggressive_lo_atr": {
@@ -549,7 +549,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_aggressive_hi_atr": {
@@ -562,7 +562,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "trigger_window_long_atr": {
@@ -575,7 +575,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "stop_aggressive_atr": {
@@ -588,7 +588,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "trigger_window_short_atr": {
@@ -601,7 +601,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    }
   },
@@ -616,7 +616,7 @@
     "input_from": "2023-11-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_aggressive_2_r": {
@@ -629,7 +629,7 @@
     "input_from": "2023-11-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_aggressive_3_r": {
@@ -642,7 +642,7 @@
     "input_from": "2023-11-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_neutral_3_r": {
@@ -655,7 +655,7 @@
     "input_from": "2023-11-15",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_conservative_2_r": {
@@ -668,7 +668,7 @@
     "input_from": "2023-11-14",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_neutral_1_r": {
@@ -681,7 +681,7 @@
     "input_from": "2023-11-15",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_neutral_2_r": {
@@ -694,7 +694,7 @@
     "input_from": "2023-11-15",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "stop_neutral_atr": {
@@ -707,7 +707,7 @@
     "input_from": "2023-12-01",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_conservative_1_r": {
@@ -720,7 +720,7 @@
     "input_from": "2023-11-14",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "stop_conservative_atr": {
@@ -733,7 +733,7 @@
     "input_from": "2023-11-14",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_neutral_lo_atr": {
@@ -746,11 +746,11 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "pm_stale_print_atr": {
-    "value": 0.03833941442768102,
+    "value": 0.040786329742982234,
     "status": "ok",
     "atr_basis": "atr_14",
     "method_id": "premarket_bar_spread_quantile",
@@ -759,20 +759,20 @@
     "input_from": "2026-08-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "pm_spike_atr": {
-    "value": 0.07855954479746331,
+    "value": 0.5365491180469563,
     "status": "ok",
     "atr_basis": "atr_14",
-    "method_id": "rth_wick_excess_quantile",
+    "method_id": "premarket_wick_excess_quantile",
     "policy_effective_from": "2015-01-02",
     "sample_n": 60,
     "input_from": "2026-08-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "min_stop_atr": {
@@ -785,7 +785,7 @@
     "input_from": "2023-12-01",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "level_cluster_atr": {
@@ -798,7 +798,7 @@
     "input_from": "2026-08-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_neutral_hi_atr": {
@@ -811,7 +811,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_conservative_lo_atr": {
@@ -824,7 +824,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_conservative_hi_atr": {
@@ -837,7 +837,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_aggressive_lo_atr": {
@@ -850,7 +850,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_aggressive_hi_atr": {
@@ -863,7 +863,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "trigger_window_long_atr": {
@@ -876,7 +876,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "stop_aggressive_atr": {
@@ -889,7 +889,7 @@
     "input_from": "2023-11-14",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "trigger_window_short_atr": {
@@ -902,7 +902,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    }
   }

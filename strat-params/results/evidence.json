@@ -11,7 +11,7 @@
     "input_from": null,
     "input_to": null,
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_aggressive_2_r": {
@@ -24,7 +24,7 @@
     "input_from": null,
     "input_to": null,
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_aggressive_3_r": {
@@ -37,7 +37,7 @@
     "input_from": null,
     "input_to": null,
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_neutral_3_r": {
@@ -50,7 +50,7 @@
     "input_from": "2023-11-14",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_conservative_2_r": {
@@ -63,7 +63,7 @@
     "input_from": null,
     "input_to": null,
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_neutral_1_r": {
@@ -76,7 +76,7 @@
     "input_from": "2023-11-14",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_neutral_2_r": {
@@ -89,7 +89,7 @@
     "input_from": "2023-11-14",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "stop_neutral_atr": {
@@ -102,7 +102,7 @@
     "input_from": "2024-07-25",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_conservative_1_r": {
@@ -115,7 +115,7 @@
     "input_from": null,
     "input_to": null,
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "stop_conservative_atr": {
@@ -128,7 +128,7 @@
     "input_from": "2024-07-25",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_neutral_lo_atr": {
@@ -141,11 +141,11 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "pm_stale_print_atr": {
-    "value": 0.03336119422790081,
+    "value": 0.04088534054955492,
     "status": "ok",
     "atr_basis": "atr_14",
     "method_id": "premarket_bar_spread_quantile",
@@ -154,20 +154,20 @@
     "input_from": "2026-08-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "pm_spike_atr": {
-    "value": 0.07451329723119897,
+    "value": 0.9264959294499225,
     "status": "ok",
     "atr_basis": "atr_14",
-    "method_id": "rth_wick_excess_quantile",
+    "method_id": "premarket_wick_excess_quantile",
     "policy_effective_from": "2015-01-02",
     "sample_n": 60,
     "input_from": "2026-08-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "min_stop_atr": {
@@ -180,7 +180,7 @@
     "input_from": "2024-07-25",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "level_cluster_atr": {
@@ -193,7 +193,7 @@
     "input_from": "2026-08-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_neutral_hi_atr": {
@@ -206,7 +206,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_conservative_lo_atr": {
@@ -219,7 +219,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_conservative_hi_atr": {
@@ -232,7 +232,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_aggressive_lo_atr": {
@@ -245,7 +245,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_aggressive_hi_atr": {
@@ -258,7 +258,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "trigger_window_long_atr": {
@@ -271,7 +271,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "stop_aggressive_atr": {
@@ -284,7 +284,7 @@
     "input_from": "2024-07-25",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "trigger_window_short_atr": {
@@ -297,7 +297,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    }
   },
@@ -462,45 +462,10 @@
   "premarket_drops_calibrated": [
    {
     "session": "2026-10-12",
-    "timestamp": "2026-10-12 04:00:00",
-    "field": "low",
-    "price": "779.77",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-12",
     "timestamp": "2026-10-12 08:12:00",
     "field": "low",
     "price": "778.57",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-13",
-    "timestamp": "2026-10-13 04:07:00",
-    "field": "low",
-    "price": "777.27",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-13",
-    "timestamp": "2026-10-13 07:00:00",
-    "field": "high",
-    "price": "778.57",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-13",
-    "timestamp": "2026-10-13 07:01:00",
-    "field": "high",
-    "price": "778.57",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-13",
-    "timestamp": "2026-10-13 07:02:00",
-    "field": "high",
-    "price": "778.57",
-    "rule": "spike"
    },
    {
     "session": "2026-10-13",
@@ -520,20 +485,6 @@
     "session": "2026-10-13",
     "timestamp": "2026-10-13 07:38:00",
     "field": "high",
-    "price": "778.1",
-    "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-13",
-    "timestamp": "2026-10-13 07:39:00",
-    "field": "high",
-    "price": "778.1",
-    "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-13",
-    "timestamp": "2026-10-13 07:39:00",
-    "field": "open",
     "price": "778.1",
     "rule": "stale_prior_close"
    },
@@ -574,29 +525,8 @@
    },
    {
     "session": "2026-10-13",
-    "timestamp": "2026-10-13 08:05:00",
-    "field": "high",
-    "price": "778.9973",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-13",
     "timestamp": "2026-10-13 08:11:00",
     "field": "high",
-    "price": "778.1",
-    "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-13",
-    "timestamp": "2026-10-13 08:12:00",
-    "field": "high",
-    "price": "778.1",
-    "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-13",
-    "timestamp": "2026-10-13 08:12:00",
-    "field": "open",
     "price": "778.1",
     "rule": "stale_prior_close"
    },
@@ -641,20 +571,6 @@
     "field": "low",
     "price": "778.01",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-14",
-    "timestamp": "2026-10-14 04:01:00",
-    "field": "low",
-    "price": "778.34",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-14",
-    "timestamp": "2026-10-14 04:02:00",
-    "field": "low",
-    "price": "778.21",
-    "rule": "spike"
    },
    {
     "session": "2026-10-14",
@@ -728,13 +644,6 @@
    },
    {
     "session": "2026-10-14",
-    "timestamp": "2026-10-14 08:05:00",
-    "field": "low",
-    "price": "777.0666",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-14",
     "timestamp": "2026-10-14 08:07:00",
     "field": "close",
     "price": "778.01",
@@ -771,51 +680,9 @@
    {
     "session": "2026-10-15",
     "timestamp": "2026-10-15 04:00:00",
-    "field": "low",
-    "price": "765.692",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-15",
-    "timestamp": "2026-10-15 04:00:00",
     "field": "high",
     "price": "769.6",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-15",
-    "timestamp": "2026-10-15 04:04:00",
-    "field": "high",
-    "price": "767.74",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-15",
-    "timestamp": "2026-10-15 04:06:00",
-    "field": "high",
-    "price": "767.66",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-15",
-    "timestamp": "2026-10-15 04:06:00",
-    "field": "low",
-    "price": "765.71",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-15",
-    "timestamp": "2026-10-15 04:07:00",
-    "field": "low",
-    "price": "765.97",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-15",
-    "timestamp": "2026-10-15 04:08:00",
-    "field": "low",
-    "price": "765.97",
-    "rule": "spike"
    },
    {
     "session": "2026-10-15",
@@ -903,13 +770,6 @@
    },
    {
     "session": "2026-10-15",
-    "timestamp": "2026-10-15 08:05:00",
-    "field": "high",
-    "price": "770.675",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-15",
     "timestamp": "2026-10-15 08:08:00",
     "field": "high",
     "price": "769.6",
@@ -928,20 +788,6 @@
     "field": "high",
     "price": "769.6",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-15",
-    "timestamp": "2026-10-15 08:30:00",
-    "field": "low",
-    "price": "764.1",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-15",
-    "timestamp": "2026-10-15 08:31:00",
-    "field": "low",
-    "price": "765.8",
-    "rule": "spike"
    },
    {
     "session": "2026-10-15",
@@ -1022,13 +868,6 @@
    },
    {
     "session": "2026-10-16",
-    "timestamp": "2026-10-16 08:05:00",
-    "field": "low",
-    "price": "767.2361",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-16",
     "timestamp": "2026-10-16 08:07:00",
     "field": "low",
     "price": "771.79",
@@ -1068,13 +907,6 @@
     "field": "low",
     "price": "763.2489",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-19",
-    "timestamp": "2026-10-19 07:01:00",
-    "field": "low",
-    "price": "763.5714",
-    "rule": "spike"
    },
    {
     "session": "2026-10-19",
@@ -1120,20 +952,6 @@
    },
    {
     "session": "2026-10-19",
-    "timestamp": "2026-10-19 08:05:00",
-    "field": "high",
-    "price": "773.2",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-19",
-    "timestamp": "2026-10-19 08:05:00",
-    "field": "low",
-    "price": "762.785",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-19",
     "timestamp": "2026-10-19 08:20:00",
     "field": "low",
     "price": "763.25",
@@ -1155,27 +973,6 @@
    },
    {
     "session": "2026-10-20",
-    "timestamp": "2026-10-20 04:00:00",
-    "field": "high",
-    "price": "768.1215",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-20",
-    "timestamp": "2026-10-20 04:01:00",
-    "field": "high",
-    "price": "768.06",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-20",
-    "timestamp": "2026-10-20 04:02:00",
-    "field": "high",
-    "price": "768.15",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-20",
     "timestamp": "2026-10-20 07:01:00",
     "field": "high",
     "price": "766.48",
@@ -1187,13 +984,6 @@
     "field": "high",
     "price": "766.48",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-20",
-    "timestamp": "2026-10-20 07:03:00",
-    "field": "high",
-    "price": "766.4674",
-    "rule": "spike"
    },
    {
     "session": "2026-10-20",
@@ -1281,13 +1071,6 @@
    },
    {
     "session": "2026-10-20",
-    "timestamp": "2026-10-20 08:05:00",
-    "field": "high",
-    "price": "768.5509",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-20",
     "timestamp": "2026-10-20 08:07:00",
     "field": "high",
     "price": "766.48",
@@ -1310,30 +1093,9 @@
    {
     "session": "2026-10-21",
     "timestamp": "2026-10-21 04:00:00",
-    "field": "high",
-    "price": "771.7722",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-21",
-    "timestamp": "2026-10-21 04:00:00",
     "field": "low",
     "price": "769.05",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-21",
-    "timestamp": "2026-10-21 04:01:00",
-    "field": "high",
-    "price": "772.1",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-21",
-    "timestamp": "2026-10-21 04:08:00",
-    "field": "high",
-    "price": "771.51",
-    "rule": "spike"
    },
    {
     "session": "2026-10-21",
@@ -1414,13 +1176,6 @@
    },
    {
     "session": "2026-10-21",
-    "timestamp": "2026-10-21 08:05:00",
-    "field": "low",
-    "price": "768.2127",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-21",
     "timestamp": "2026-10-21 08:07:00",
     "field": "close",
     "price": "769.05",
@@ -1460,34 +1215,6 @@
     "field": "high",
     "price": "773.09",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-22",
-    "timestamp": "2026-10-22 04:01:00",
-    "field": "high",
-    "price": "768.58",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-22",
-    "timestamp": "2026-10-22 04:04:00",
-    "field": "high",
-    "price": "768.13",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-22",
-    "timestamp": "2026-10-22 04:07:00",
-    "field": "high",
-    "price": "768.13",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-22",
-    "timestamp": "2026-10-22 04:08:00",
-    "field": "high",
-    "price": "768.01",
-    "rule": "spike"
    },
    {
     "session": "2026-10-22",
@@ -1596,20 +1323,6 @@
    },
    {
     "session": "2026-10-23",
-    "timestamp": "2026-10-23 04:06:00",
-    "field": "high",
-    "price": "764.59",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-23",
-    "timestamp": "2026-10-23 07:02:00",
-    "field": "low",
-    "price": "760.0",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-23",
     "timestamp": "2026-10-23 07:35:00",
     "field": "high",
     "price": "763.96",
@@ -1680,13 +1393,6 @@
    },
    {
     "session": "2026-10-23",
-    "timestamp": "2026-10-23 08:23:00",
-    "field": "high",
-    "price": "763.45",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-23",
     "timestamp": "2026-10-23 08:47:00",
     "field": "high",
     "price": "763.96",
@@ -1694,28 +1400,7 @@
    },
    {
     "session": "2026-10-26",
-    "timestamp": "2026-10-26 04:06:00",
-    "field": "high",
-    "price": "761.96",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-26",
     "timestamp": "2026-10-26 07:00:00",
-    "field": "low",
-    "price": "759.97",
-    "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-26",
-    "timestamp": "2026-10-26 07:01:00",
-    "field": "high",
-    "price": "763.9616",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-26",
-    "timestamp": "2026-10-26 07:01:00",
     "field": "low",
     "price": "759.97",
     "rule": "stale_prior_close"
@@ -1778,13 +1463,6 @@
    },
    {
     "session": "2026-10-26",
-    "timestamp": "2026-10-26 08:05:00",
-    "field": "low",
-    "price": "759.6801",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-26",
     "timestamp": "2026-10-26 08:20:00",
     "field": "low",
     "price": "759.97",
@@ -1806,13 +1484,6 @@
    },
    {
     "session": "2026-10-27",
-    "timestamp": "2026-10-27 04:06:00",
-    "field": "high",
-    "price": "765.84",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-27",
     "timestamp": "2026-10-27 07:00:00",
     "field": "close",
     "price": "765.37",
@@ -1828,13 +1499,6 @@
    {
     "session": "2026-10-27",
     "timestamp": "2026-10-27 07:01:00",
-    "field": "low",
-    "price": "765.3591",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-27",
-    "timestamp": "2026-10-27 07:01:00",
     "field": "open",
     "price": "765.37",
     "rule": "stale_prior_close"
@@ -1852,13 +1516,6 @@
     "field": "open",
     "price": "765.37",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-27",
-    "timestamp": "2026-10-27 07:03:00",
-    "field": "low",
-    "price": "765.377",
-    "rule": "spike"
    },
    {
     "session": "2026-10-27",
@@ -2009,13 +1666,6 @@
    },
    {
     "session": "2026-10-28",
-    "timestamp": "2026-10-28 04:06:00",
-    "field": "low",
-    "price": "770.07",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-28",
     "timestamp": "2026-10-28 07:01:00",
     "field": "low",
     "price": "769.6563",
@@ -2125,13 +1775,6 @@
     "field": "high",
     "price": "772.31",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-29",
-    "timestamp": "2026-10-29 04:10:00",
-    "field": "high",
-    "price": "771.21",
-    "rule": "spike"
    },
    {
     "session": "2026-10-29",
@@ -2275,62 +1918,6 @@
    },
    {
     "session": "2026-10-30",
-    "timestamp": "2026-10-30 04:01:00",
-    "field": "high",
-    "price": "763.64",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-30",
-    "timestamp": "2026-10-30 04:03:00",
-    "field": "high",
-    "price": "763.65",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-30",
-    "timestamp": "2026-10-30 04:07:00",
-    "field": "high",
-    "price": "762.85",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-30",
-    "timestamp": "2026-10-30 04:10:00",
-    "field": "high",
-    "price": "762.88",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-30",
-    "timestamp": "2026-10-30 04:11:00",
-    "field": "high",
-    "price": "762.93",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-30",
-    "timestamp": "2026-10-30 04:12:00",
-    "field": "high",
-    "price": "762.87",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-30",
-    "timestamp": "2026-10-30 04:13:00",
-    "field": "high",
-    "price": "763.31",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-30",
-    "timestamp": "2026-10-30 04:14:00",
-    "field": "high",
-    "price": "762.79",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-30",
     "timestamp": "2026-10-30 07:00:00",
     "field": "high",
     "price": "769.36",
@@ -2349,13 +1936,6 @@
     "field": "high",
     "price": "769.3642",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-30",
-    "timestamp": "2026-10-30 07:04:00",
-    "field": "high",
-    "price": "762.9",
-    "rule": "spike"
    },
    {
     "session": "2026-10-30",
@@ -2422,41 +2002,6 @@
    },
    {
     "session": "2026-11-02",
-    "timestamp": "2026-11-02 04:00:00",
-    "field": "high",
-    "price": "760.1887",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-02",
-    "timestamp": "2026-11-02 04:00:00",
-    "field": "low",
-    "price": "755.6724",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-02",
-    "timestamp": "2026-11-02 04:01:00",
-    "field": "high",
-    "price": "760.18",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-02",
-    "timestamp": "2026-11-02 04:02:00",
-    "field": "high",
-    "price": "760.16",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-02",
-    "timestamp": "2026-11-02 07:00:00",
-    "field": "low",
-    "price": "755.7143",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-02",
     "timestamp": "2026-11-02 07:00:00",
     "field": "close",
     "price": "755.7243",
@@ -2520,20 +2065,6 @@
    },
    {
     "session": "2026-11-02",
-    "timestamp": "2026-11-02 08:05:00",
-    "field": "high",
-    "price": "759.91",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-02",
-    "timestamp": "2026-11-02 08:05:00",
-    "field": "low",
-    "price": "754.7201",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-02",
     "timestamp": "2026-11-02 08:15:00",
     "field": "close",
     "price": "755.72",
@@ -2570,51 +2101,9 @@
    {
     "session": "2026-11-03",
     "timestamp": "2026-11-03 04:00:00",
-    "field": "low",
-    "price": "749.3617",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-03",
-    "timestamp": "2026-11-03 04:00:00",
     "field": "high",
     "price": "752.1",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-11-03",
-    "timestamp": "2026-11-03 04:01:00",
-    "field": "low",
-    "price": "749.33",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-03",
-    "timestamp": "2026-11-03 04:05:00",
-    "field": "low",
-    "price": "749.56",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-03",
-    "timestamp": "2026-11-03 04:08:00",
-    "field": "low",
-    "price": "750.23",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-03",
-    "timestamp": "2026-11-03 04:09:00",
-    "field": "low",
-    "price": "749.49",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-03",
-    "timestamp": "2026-11-03 04:10:00",
-    "field": "low",
-    "price": "749.47",
-    "rule": "spike"
    },
    {
     "session": "2026-11-03",
@@ -2702,72 +2191,9 @@
    },
    {
     "session": "2026-11-04",
-    "timestamp": "2026-11-04 04:01:00",
-    "field": "high",
-    "price": "756.85",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 04:01:00",
-    "field": "low",
-    "price": "748.0",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 04:03:00",
-    "field": "low",
-    "price": "747.96",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 04:04:00",
-    "field": "high",
-    "price": "757.0",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 04:04:00",
-    "field": "low",
-    "price": "748.15",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 04:05:00",
-    "field": "high",
-    "price": "757.0",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 04:07:00",
-    "field": "low",
-    "price": "748.92",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 05:09:00",
-    "field": "low",
-    "price": "748.05",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
     "timestamp": "2026-11-04 05:22:00",
     "field": "low",
     "price": "751.95",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 05:23:00",
-    "field": "low",
-    "price": "751.55",
     "rule": "spike"
    },
    {
@@ -2885,30 +2311,9 @@
    {
     "session": "2026-11-05",
     "timestamp": "2026-11-05 04:00:00",
-    "field": "low",
-    "price": "763.83",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-05",
-    "timestamp": "2026-11-05 04:00:00",
     "field": "high",
     "price": "766.81",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-11-05",
-    "timestamp": "2026-11-05 04:01:00",
-    "field": "low",
-    "price": "763.86",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-05",
-    "timestamp": "2026-11-05 04:02:00",
-    "field": "low",
-    "price": "763.85",
-    "rule": "spike"
    },
    {
     "session": "2026-11-05",
@@ -2919,52 +2324,10 @@
    },
    {
     "session": "2026-11-05",
-    "timestamp": "2026-11-05 04:06:00",
-    "field": "low",
-    "price": "764.01",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-05",
-    "timestamp": "2026-11-05 04:26:00",
-    "field": "low",
-    "price": "764.72",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-05",
-    "timestamp": "2026-11-05 04:28:00",
-    "field": "low",
-    "price": "763.98",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-05",
-    "timestamp": "2026-11-05 04:29:00",
-    "field": "low",
-    "price": "764.18",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-05",
-    "timestamp": "2026-11-05 07:00:00",
-    "field": "low",
-    "price": "766.8182",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-05",
     "timestamp": "2026-11-05 07:01:00",
     "field": "low",
     "price": "766.8051",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-11-05",
-    "timestamp": "2026-11-05 08:05:00",
-    "field": "low",
-    "price": "765.485",
-    "rule": "spike"
    },
    {
     "session": "2026-11-05",
@@ -2996,31 +2359,10 @@
    },
    {
     "session": "2026-11-06",
-    "timestamp": "2026-11-06 04:00:00",
-    "field": "low",
-    "price": "730.7095",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-06",
-    "timestamp": "2026-11-06 04:01:00",
-    "field": "low",
-    "price": "730.7",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-06",
     "timestamp": "2026-11-06 04:25:00",
     "field": "close",
     "price": "733.0",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-11-06",
-    "timestamp": "2026-11-06 04:28:00",
-    "field": "low",
-    "price": "730.87",
-    "rule": "spike"
    },
    {
     "session": "2026-11-06",
@@ -3122,13 +2464,6 @@
    },
    {
     "session": "2026-11-06",
-    "timestamp": "2026-11-06 08:30:00",
-    "field": "low",
-    "price": "733.09",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-06",
     "timestamp": "2026-11-06 08:39:00",
     "field": "low",
     "price": "733.0",
@@ -3140,13 +2475,6 @@
     "field": "low",
     "price": "733.0",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-11-06",
-    "timestamp": "2026-11-06 09:06:00",
-    "field": "low",
-    "price": "732.43",
-    "rule": "spike"
    }
   ],
   "premarket_drops_#1753": [
@@ -5014,7 +4342,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_aggressive_2_r": {
@@ -5027,7 +4355,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_aggressive_3_r": {
@@ -5040,7 +4368,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_neutral_3_r": {
@@ -5053,7 +4381,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_conservative_2_r": {
@@ -5066,7 +4394,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_neutral_1_r": {
@@ -5079,7 +4407,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_neutral_2_r": {
@@ -5092,7 +4420,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "stop_neutral_atr": {
@@ -5105,7 +4433,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_conservative_1_r": {
@@ -5118,7 +4446,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "stop_conservative_atr": {
@@ -5131,7 +4459,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_neutral_lo_atr": {
@@ -5144,11 +4472,11 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "pm_stale_print_atr": {
-    "value": 0.03278274444919235,
+    "value": 0.042053098145600855,
     "status": "ok",
     "atr_basis": "atr_14",
     "method_id": "premarket_bar_spread_quantile",
@@ -5157,20 +4485,20 @@
     "input_from": "2026-08-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "pm_spike_atr": {
-    "value": 0.0643571419346155,
+    "value": 1.0715904925665558,
     "status": "ok",
     "atr_basis": "atr_14",
-    "method_id": "rth_wick_excess_quantile",
+    "method_id": "premarket_wick_excess_quantile",
     "policy_effective_from": "2015-01-02",
     "sample_n": 60,
     "input_from": "2026-08-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "min_stop_atr": {
@@ -5183,7 +4511,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "level_cluster_atr": {
@@ -5196,7 +4524,7 @@
     "input_from": "2026-08-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_neutral_hi_atr": {
@@ -5209,7 +4537,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_conservative_lo_atr": {
@@ -5222,7 +4550,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_conservative_hi_atr": {
@@ -5235,7 +4563,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_aggressive_lo_atr": {
@@ -5248,7 +4576,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_aggressive_hi_atr": {
@@ -5261,7 +4589,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "trigger_window_long_atr": {
@@ -5274,7 +4602,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "stop_aggressive_atr": {
@@ -5287,7 +4615,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-04",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "trigger_window_short_atr": {
@@ -5300,7 +4628,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    }
   },
@@ -5465,20 +4793,6 @@
   "premarket_drops_calibrated": [
    {
     "session": "2026-10-12",
-    "timestamp": "2026-10-12 04:00:00",
-    "field": "high",
-    "price": "756.7605",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-12",
-    "timestamp": "2026-10-12 04:00:00",
-    "field": "low",
-    "price": "749.1795",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-12",
     "timestamp": "2026-10-12 08:12:00",
     "field": "high",
     "price": "751.27",
@@ -5501,65 +4815,9 @@
    {
     "session": "2026-10-13",
     "timestamp": "2026-10-13 04:00:00",
-    "field": "low",
-    "price": "739.8085",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-13",
-    "timestamp": "2026-10-13 04:00:00",
     "field": "high",
     "price": "746.04",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-13",
-    "timestamp": "2026-10-13 04:01:00",
-    "field": "low",
-    "price": "739.84",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-13",
-    "timestamp": "2026-10-13 04:03:00",
-    "field": "low",
-    "price": "739.78",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-13",
-    "timestamp": "2026-10-13 04:04:00",
-    "field": "low",
-    "price": "739.79",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-13",
-    "timestamp": "2026-10-13 04:07:00",
-    "field": "low",
-    "price": "739.78",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-13",
-    "timestamp": "2026-10-13 07:00:00",
-    "field": "high",
-    "price": "751.27",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-13",
-    "timestamp": "2026-10-13 07:01:00",
-    "field": "high",
-    "price": "751.27",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-13",
-    "timestamp": "2026-10-13 07:02:00",
-    "field": "high",
-    "price": "751.27",
-    "rule": "spike"
    },
    {
     "session": "2026-10-13",
@@ -5700,13 +4958,6 @@
     "field": "open",
     "price": "746.04",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-13",
-    "timestamp": "2026-10-13 08:05:00",
-    "field": "high",
-    "price": "748.07",
-    "rule": "spike"
    },
    {
     "session": "2026-10-13",
@@ -5731,13 +4982,6 @@
    },
    {
     "session": "2026-10-13",
-    "timestamp": "2026-10-13 08:15:00",
-    "field": "high",
-    "price": "745.481",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-13",
     "timestamp": "2026-10-13 08:47:00",
     "field": "high",
     "price": "746.04",
@@ -5759,70 +5003,7 @@
    },
    {
     "session": "2026-10-14",
-    "timestamp": "2026-10-14 04:00:00",
-    "field": "high",
-    "price": "747.9457",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-14",
-    "timestamp": "2026-10-14 04:00:00",
-    "field": "low",
-    "price": "740.5642",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-14",
-    "timestamp": "2026-10-14 04:01:00",
-    "field": "high",
-    "price": "746.05",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-14",
-    "timestamp": "2026-10-14 04:01:00",
-    "field": "low",
-    "price": "741.76",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-14",
-    "timestamp": "2026-10-14 04:02:00",
-    "field": "high",
-    "price": "745.82",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-14",
-    "timestamp": "2026-10-14 04:02:00",
-    "field": "low",
-    "price": "741.8",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-14",
-    "timestamp": "2026-10-14 06:14:00",
-    "field": "low",
-    "price": "742.5",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-14",
     "timestamp": "2026-10-14 07:01:00",
-    "field": "high",
-    "price": "743.57",
-    "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-14",
-    "timestamp": "2026-10-14 07:35:00",
-    "field": "close",
-    "price": "743.57",
-    "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-14",
-    "timestamp": "2026-10-14 07:35:00",
     "field": "high",
     "price": "743.57",
     "rule": "stale_prior_close"
@@ -5850,31 +5031,10 @@
    },
    {
     "session": "2026-10-14",
-    "timestamp": "2026-10-14 08:30:00",
-    "field": "high",
-    "price": "745.89",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-14",
     "timestamp": "2026-10-14 08:47:00",
     "field": "high",
     "price": "743.57",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-14",
-    "timestamp": "2026-10-14 09:27:00",
-    "field": "high",
-    "price": "739.0",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-15",
-    "timestamp": "2026-10-15 04:00:00",
-    "field": "low",
-    "price": "718.77",
-    "rule": "spike"
    },
    {
     "session": "2026-10-15",
@@ -5882,55 +5042,6 @@
     "field": "high",
     "price": "728.95",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-15",
-    "timestamp": "2026-10-15 04:01:00",
-    "field": "high",
-    "price": "724.09",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-15",
-    "timestamp": "2026-10-15 04:01:00",
-    "field": "low",
-    "price": "718.8",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-15",
-    "timestamp": "2026-10-15 04:03:00",
-    "field": "high",
-    "price": "724.06",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-15",
-    "timestamp": "2026-10-15 04:04:00",
-    "field": "high",
-    "price": "723.23",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-15",
-    "timestamp": "2026-10-15 04:04:00",
-    "field": "low",
-    "price": "718.77",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-15",
-    "timestamp": "2026-10-15 04:06:00",
-    "field": "high",
-    "price": "724.05",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-15",
-    "timestamp": "2026-10-15 04:07:00",
-    "field": "high",
-    "price": "723.66",
-    "rule": "spike"
    },
    {
     "session": "2026-10-15",
@@ -6039,13 +5150,6 @@
    },
    {
     "session": "2026-10-15",
-    "timestamp": "2026-10-15 08:12:00",
-    "field": "high",
-    "price": "728.404",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-15",
     "timestamp": "2026-10-15 08:16:00",
     "field": "high",
     "price": "728.95",
@@ -6060,20 +5164,6 @@
    },
    {
     "session": "2026-10-15",
-    "timestamp": "2026-10-15 08:30:00",
-    "field": "low",
-    "price": "715.63",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-15",
-    "timestamp": "2026-10-15 08:35:00",
-    "field": "high",
-    "price": "721.7",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-15",
     "timestamp": "2026-10-15 08:47:00",
     "field": "high",
     "price": "728.95",
@@ -6085,13 +5175,6 @@
     "field": "low",
     "price": "728.0",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-16",
-    "timestamp": "2026-10-16 04:06:00",
-    "field": "low",
-    "price": "728.27",
-    "rule": "spike"
    },
    {
     "session": "2026-10-16",
@@ -6111,20 +5194,6 @@
     "session": "2026-10-16",
     "timestamp": "2026-10-16 07:35:00",
     "field": "high",
-    "price": "728.0",
-    "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-16",
-    "timestamp": "2026-10-16 07:36:00",
-    "field": "high",
-    "price": "728.0",
-    "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-16",
-    "timestamp": "2026-10-16 07:36:00",
-    "field": "open",
     "price": "728.0",
     "rule": "stale_prior_close"
    },
@@ -6158,20 +5227,6 @@
    },
    {
     "session": "2026-10-16",
-    "timestamp": "2026-10-16 07:49:00",
-    "field": "high",
-    "price": "727.454",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-16",
-    "timestamp": "2026-10-16 08:05:00",
-    "field": "low",
-    "price": "718.04",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-16",
     "timestamp": "2026-10-16 08:05:00",
     "field": "high",
     "price": "728.0",
@@ -6183,13 +5238,6 @@
     "field": "high",
     "price": "728.0",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-19",
-    "timestamp": "2026-10-19 04:00:00",
-    "field": "high",
-    "price": "720.4",
-    "rule": "spike"
    },
    {
     "session": "2026-10-19",
@@ -6263,20 +5311,6 @@
    },
    {
     "session": "2026-10-19",
-    "timestamp": "2026-10-19 07:59:00",
-    "field": "low",
-    "price": "709.268",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-19",
-    "timestamp": "2026-10-19 08:05:00",
-    "field": "low",
-    "price": "710.285",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-19",
     "timestamp": "2026-10-19 08:20:00",
     "field": "low",
     "price": "709.8",
@@ -6288,27 +5322,6 @@
     "field": "low",
     "price": "709.8",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-20",
-    "timestamp": "2026-10-20 04:00:00",
-    "field": "high",
-    "price": "718.6",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-20",
-    "timestamp": "2026-10-20 04:00:00",
-    "field": "low",
-    "price": "715.0392",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-20",
-    "timestamp": "2026-10-20 04:06:00",
-    "field": "high",
-    "price": "718.5",
-    "rule": "spike"
    },
    {
     "session": "2026-10-20",
@@ -6337,13 +5350,6 @@
     "field": "open",
     "price": "718.36",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-20",
-    "timestamp": "2026-10-20 07:04:00",
-    "field": "high",
-    "price": "718.3673",
-    "rule": "spike"
    },
    {
     "session": "2026-10-20",
@@ -6445,13 +5451,6 @@
    },
    {
     "session": "2026-10-20",
-    "timestamp": "2026-10-20 08:05:00",
-    "field": "high",
-    "price": "721.34",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-20",
     "timestamp": "2026-10-20 08:06:00",
     "field": "high",
     "price": "718.36",
@@ -6473,13 +5472,6 @@
    },
    {
     "session": "2026-10-20",
-    "timestamp": "2026-10-20 08:27:00",
-    "field": "high",
-    "price": "717.822",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-20",
     "timestamp": "2026-10-20 08:47:00",
     "field": "high",
     "price": "718.36",
@@ -6491,27 +5483,6 @@
     "field": "low",
     "price": "717.63",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-21",
-    "timestamp": "2026-10-21 04:01:00",
-    "field": "low",
-    "price": "719.06",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-21",
-    "timestamp": "2026-10-21 04:09:00",
-    "field": "high",
-    "price": "723.37",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-21",
-    "timestamp": "2026-10-21 04:09:00",
-    "field": "low",
-    "price": "720.78",
-    "rule": "spike"
    },
    {
     "session": "2026-10-21",
@@ -6578,13 +5549,6 @@
    },
    {
     "session": "2026-10-21",
-    "timestamp": "2026-10-21 08:05:00",
-    "field": "low",
-    "price": "715.22",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-21",
     "timestamp": "2026-10-21 08:07:00",
     "field": "low",
     "price": "717.63",
@@ -6599,13 +5563,6 @@
    },
    {
     "session": "2026-10-21",
-    "timestamp": "2026-10-21 08:30:00",
-    "field": "low",
-    "price": "717.092",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-21",
     "timestamp": "2026-10-21 08:47:00",
     "field": "low",
     "price": "717.63",
@@ -6617,55 +5574,6 @@
     "field": "high",
     "price": "725.2",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-22",
-    "timestamp": "2026-10-22 04:01:00",
-    "field": "high",
-    "price": "716.45",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-22",
-    "timestamp": "2026-10-22 04:02:00",
-    "field": "high",
-    "price": "714.87",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-22",
-    "timestamp": "2026-10-22 04:03:00",
-    "field": "high",
-    "price": "716.51",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-22",
-    "timestamp": "2026-10-22 04:04:00",
-    "field": "high",
-    "price": "715.99",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-22",
-    "timestamp": "2026-10-22 04:05:00",
-    "field": "high",
-    "price": "714.54",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-22",
-    "timestamp": "2026-10-22 04:06:00",
-    "field": "high",
-    "price": "714.22",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-22",
-    "timestamp": "2026-10-22 04:09:00",
-    "field": "high",
-    "price": "716.29",
-    "rule": "spike"
    },
    {
     "session": "2026-10-22",
@@ -6760,13 +5668,6 @@
    },
    {
     "session": "2026-10-22",
-    "timestamp": "2026-10-22 08:09:00",
-    "field": "high",
-    "price": "724.657",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-22",
     "timestamp": "2026-10-22 08:12:00",
     "field": "high",
     "price": "725.2",
@@ -6844,62 +5745,6 @@
    },
    {
     "session": "2026-10-23",
-    "timestamp": "2026-10-23 04:00:00",
-    "field": "high",
-    "price": "707.26",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-23",
-    "timestamp": "2026-10-23 04:00:00",
-    "field": "low",
-    "price": "704.01",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-23",
-    "timestamp": "2026-10-23 04:01:00",
-    "field": "high",
-    "price": "707.28",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-23",
-    "timestamp": "2026-10-23 04:01:00",
-    "field": "low",
-    "price": "704.0",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-23",
-    "timestamp": "2026-10-23 04:02:00",
-    "field": "high",
-    "price": "707.3",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-23",
-    "timestamp": "2026-10-23 04:02:00",
-    "field": "low",
-    "price": "704.0",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-23",
-    "timestamp": "2026-10-23 04:04:00",
-    "field": "low",
-    "price": "704.3",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-23",
-    "timestamp": "2026-10-23 04:08:00",
-    "field": "low",
-    "price": "704.0",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-23",
     "timestamp": "2026-10-23 07:01:00",
     "field": "high",
     "price": "704.47",
@@ -6935,13 +5780,6 @@
    },
    {
     "session": "2026-10-23",
-    "timestamp": "2026-10-23 08:05:00",
-    "field": "high",
-    "price": "713.2703",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-23",
     "timestamp": "2026-10-23 08:08:00",
     "field": "high",
     "price": "704.47",
@@ -6953,13 +5791,6 @@
     "field": "high",
     "price": "704.47",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-26",
-    "timestamp": "2026-10-26 04:06:00",
-    "field": "high",
-    "price": "706.33",
-    "rule": "spike"
    },
    {
     "session": "2026-10-26",
@@ -7019,13 +5850,6 @@
    },
    {
     "session": "2026-10-26",
-    "timestamp": "2026-10-26 08:05:00",
-    "field": "low",
-    "price": "704.2101",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-26",
     "timestamp": "2026-10-26 08:20:00",
     "field": "low",
     "price": "704.4",
@@ -7033,38 +5857,10 @@
    },
    {
     "session": "2026-10-26",
-    "timestamp": "2026-10-26 08:32:00",
-    "field": "low",
-    "price": "704.928",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-26",
     "timestamp": "2026-10-26 08:47:00",
     "field": "low",
     "price": "704.4",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-27",
-    "timestamp": "2026-10-27 04:00:00",
-    "field": "low",
-    "price": "708.66",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-27",
-    "timestamp": "2026-10-27 04:01:00",
-    "field": "low",
-    "price": "708.6",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-27",
-    "timestamp": "2026-10-27 04:06:00",
-    "field": "low",
-    "price": "708.88",
-    "rule": "spike"
    },
    {
     "session": "2026-10-27",
@@ -7159,13 +5955,6 @@
    },
    {
     "session": "2026-10-27",
-    "timestamp": "2026-10-27 08:05:00",
-    "field": "low",
-    "price": "706.29",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-27",
     "timestamp": "2026-10-27 08:15:00",
     "field": "low",
     "price": "712.2",
@@ -7247,34 +6036,6 @@
     "field": "low",
     "price": "721.25",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-28",
-    "timestamp": "2026-10-28 04:01:00",
-    "field": "low",
-    "price": "723.03",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-28",
-    "timestamp": "2026-10-28 04:05:00",
-    "field": "low",
-    "price": "723.44",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-28",
-    "timestamp": "2026-10-28 04:07:00",
-    "field": "low",
-    "price": "724.05",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-28",
-    "timestamp": "2026-10-28 04:08:00",
-    "field": "low",
-    "price": "723.94",
-    "rule": "spike"
    },
    {
     "session": "2026-10-28",
@@ -7383,20 +6144,6 @@
    },
    {
     "session": "2026-10-28",
-    "timestamp": "2026-10-28 08:05:00",
-    "field": "low",
-    "price": "720.42",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-28",
-    "timestamp": "2026-10-28 08:24:00",
-    "field": "low",
-    "price": "720.71",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-28",
     "timestamp": "2026-10-28 08:47:00",
     "field": "low",
     "price": "721.25",
@@ -7405,37 +6152,9 @@
    {
     "session": "2026-10-29",
     "timestamp": "2026-10-29 04:00:00",
-    "field": "low",
-    "price": "714.85",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-29",
-    "timestamp": "2026-10-29 04:00:00",
     "field": "high",
     "price": "725.61",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-29",
-    "timestamp": "2026-10-29 04:01:00",
-    "field": "low",
-    "price": "714.88",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-29",
-    "timestamp": "2026-10-29 04:02:00",
-    "field": "low",
-    "price": "714.92",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-29",
-    "timestamp": "2026-10-29 04:08:00",
-    "field": "low",
-    "price": "714.98",
-    "rule": "spike"
    },
    {
     "session": "2026-10-29",
@@ -7579,13 +6298,6 @@
    },
    {
     "session": "2026-10-29",
-    "timestamp": "2026-10-29 08:16:00",
-    "field": "high",
-    "price": "726.154",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-29",
     "timestamp": "2026-10-29 08:18:00",
     "field": "high",
     "price": "725.61",
@@ -7611,20 +6323,6 @@
     "field": "high",
     "price": "715.34",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-30",
-    "timestamp": "2026-10-30 04:03:00",
-    "field": "high",
-    "price": "703.5",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-30",
-    "timestamp": "2026-10-30 04:14:00",
-    "field": "high",
-    "price": "702.16",
-    "rule": "spike"
    },
    {
     "session": "2026-10-30",
@@ -7733,34 +6431,6 @@
    },
    {
     "session": "2026-11-02",
-    "timestamp": "2026-11-02 04:00:00",
-    "field": "high",
-    "price": "698.0",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-02",
-    "timestamp": "2026-11-02 04:00:00",
-    "field": "low",
-    "price": "690.4824",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-02",
-    "timestamp": "2026-11-02 04:01:00",
-    "field": "high",
-    "price": "698.0",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-02",
-    "timestamp": "2026-11-02 04:02:00",
-    "field": "high",
-    "price": "698.0",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-02",
     "timestamp": "2026-11-02 07:01:00",
     "field": "low",
     "price": "690.49",
@@ -7824,20 +6494,6 @@
    },
    {
     "session": "2026-11-02",
-    "timestamp": "2026-11-02 08:05:00",
-    "field": "high",
-    "price": "696.88",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-02",
-    "timestamp": "2026-11-02 08:05:00",
-    "field": "low",
-    "price": "686.285",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-02",
     "timestamp": "2026-11-02 08:15:00",
     "field": "low",
     "price": "690.49",
@@ -7869,69 +6525,6 @@
     "timestamp": "2026-11-02 08:47:00",
     "field": "low",
     "price": "690.49",
-    "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-11-03",
-    "timestamp": "2026-11-03 04:00:00",
-    "field": "low",
-    "price": "678.9692",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-03",
-    "timestamp": "2026-11-03 04:01:00",
-    "field": "low",
-    "price": "678.9",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-03",
-    "timestamp": "2026-11-03 04:05:00",
-    "field": "low",
-    "price": "680.48",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-03",
-    "timestamp": "2026-11-03 04:06:00",
-    "field": "low",
-    "price": "680.0",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-03",
-    "timestamp": "2026-11-03 04:07:00",
-    "field": "low",
-    "price": "679.77",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-03",
-    "timestamp": "2026-11-03 04:08:00",
-    "field": "low",
-    "price": "679.64",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-03",
-    "timestamp": "2026-11-03 04:09:00",
-    "field": "low",
-    "price": "679.28",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-03",
-    "timestamp": "2026-11-03 04:10:00",
-    "field": "low",
-    "price": "679.31",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-03",
-    "timestamp": "2026-11-03 07:03:00",
-    "field": "low",
-    "price": "681.09",
     "rule": "stale_prior_close"
    },
    {
@@ -8034,111 +6627,6 @@
    },
    {
     "session": "2026-11-04",
-    "timestamp": "2026-11-04 04:00:00",
-    "field": "high",
-    "price": "688.1",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 04:00:00",
-    "field": "low",
-    "price": "676.21",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 04:01:00",
-    "field": "high",
-    "price": "688.35",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 04:01:00",
-    "field": "low",
-    "price": "676.26",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 04:03:00",
-    "field": "low",
-    "price": "676.2",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 04:04:00",
-    "field": "high",
-    "price": "688.38",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 04:04:00",
-    "field": "low",
-    "price": "677.0",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 04:05:00",
-    "field": "high",
-    "price": "688.34",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 04:07:00",
-    "field": "low",
-    "price": "676.41",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 05:09:00",
-    "field": "low",
-    "price": "676.4",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 05:15:00",
-    "field": "low",
-    "price": "680.49",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 05:16:00",
-    "field": "low",
-    "price": "681.4",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 05:26:00",
-    "field": "low",
-    "price": "682.35",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 05:28:00",
-    "field": "low",
-    "price": "683.05",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 05:34:00",
-    "field": "low",
-    "price": "685.65",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
     "timestamp": "2026-11-04 07:00:00",
     "field": "low",
     "price": "685.28",
@@ -8216,20 +6704,6 @@
    },
    {
     "session": "2026-11-04",
-    "timestamp": "2026-11-04 08:05:00",
-    "field": "high",
-    "price": "687.75",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 08:05:00",
-    "field": "low",
-    "price": "683.71",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
     "timestamp": "2026-11-04 08:27:00",
     "field": "low",
     "price": "685.28",
@@ -8245,44 +6719,9 @@
    {
     "session": "2026-11-05",
     "timestamp": "2026-11-05 04:00:00",
-    "field": "low",
-    "price": "682.17",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-05",
-    "timestamp": "2026-11-05 04:00:00",
     "field": "high",
     "price": "691.95",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-11-05",
-    "timestamp": "2026-11-05 04:01:00",
-    "field": "low",
-    "price": "682.2",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-05",
-    "timestamp": "2026-11-05 04:02:00",
-    "field": "low",
-    "price": "682.17",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-05",
-    "timestamp": "2026-11-05 04:07:00",
-    "field": "low",
-    "price": "683.11",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-05",
-    "timestamp": "2026-11-05 04:36:00",
-    "field": "low",
-    "price": "684.79",
-    "rule": "spike"
    },
    {
     "session": "2026-11-05",
@@ -8345,13 +6784,6 @@
     "timestamp": "2026-11-05 08:05:00",
     "field": "high",
     "price": "700.8",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-05",
-    "timestamp": "2026-11-05 08:14:00",
-    "field": "high",
-    "price": "691.432",
     "rule": "spike"
    },
    {
@@ -8434,79 +6866,9 @@
    {
     "session": "2026-11-06",
     "timestamp": "2026-11-06 04:00:00",
-    "field": "high",
-    "price": "657.41",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-06",
-    "timestamp": "2026-11-06 04:00:00",
     "field": "low",
     "price": "647.05",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-11-06",
-    "timestamp": "2026-11-06 04:01:00",
-    "field": "low",
-    "price": "649.65",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-06",
-    "timestamp": "2026-11-06 04:03:00",
-    "field": "low",
-    "price": "652.13",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-06",
-    "timestamp": "2026-11-06 04:04:00",
-    "field": "low",
-    "price": "649.62",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-06",
-    "timestamp": "2026-11-06 04:05:00",
-    "field": "low",
-    "price": "649.71",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-06",
-    "timestamp": "2026-11-06 04:08:00",
-    "field": "low",
-    "price": "651.78",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-06",
-    "timestamp": "2026-11-06 04:24:00",
-    "field": "low",
-    "price": "653.37",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-06",
-    "timestamp": "2026-11-06 04:25:00",
-    "field": "low",
-    "price": "652.76",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-06",
-    "timestamp": "2026-11-06 04:28:00",
-    "field": "low",
-    "price": "649.99",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-06",
-    "timestamp": "2026-11-06 04:29:00",
-    "field": "low",
-    "price": "650.59",
-    "rule": "spike"
    },
    {
     "session": "2026-11-06",
@@ -8605,20 +6967,6 @@
     "field": "low",
     "price": "647.05",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-11-06",
-    "timestamp": "2026-11-06 08:30:00",
-    "field": "low",
-    "price": "655.56",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-06",
-    "timestamp": "2026-11-06 08:32:00",
-    "field": "low",
-    "price": "647.535",
-    "rule": "spike"
    },
    {
     "session": "2026-11-06",
@@ -10840,7 +9188,7 @@
     "input_from": "2023-11-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_aggressive_2_r": {
@@ -10853,7 +9201,7 @@
     "input_from": "2023-11-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_aggressive_3_r": {
@@ -10866,7 +9214,7 @@
     "input_from": "2023-11-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_neutral_3_r": {
@@ -10879,7 +9227,7 @@
     "input_from": "2023-11-15",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_conservative_2_r": {
@@ -10892,7 +9240,7 @@
     "input_from": "2023-11-14",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_neutral_1_r": {
@@ -10905,7 +9253,7 @@
     "input_from": "2023-11-15",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_neutral_2_r": {
@@ -10918,7 +9266,7 @@
     "input_from": "2023-11-15",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "stop_neutral_atr": {
@@ -10931,7 +9279,7 @@
     "input_from": "2023-12-01",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "target_conservative_1_r": {
@@ -10944,7 +9292,7 @@
     "input_from": "2023-11-14",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "stop_conservative_atr": {
@@ -10957,7 +9305,7 @@
     "input_from": "2023-11-14",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_neutral_lo_atr": {
@@ -10970,11 +9318,11 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "pm_stale_print_atr": {
-    "value": 0.03833941442768102,
+    "value": 0.040786329742982234,
     "status": "ok",
     "atr_basis": "atr_14",
     "method_id": "premarket_bar_spread_quantile",
@@ -10983,20 +9331,20 @@
     "input_from": "2026-08-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "pm_spike_atr": {
-    "value": 0.07855954479746331,
+    "value": 0.5365491180469563,
     "status": "ok",
     "atr_basis": "atr_14",
-    "method_id": "rth_wick_excess_quantile",
+    "method_id": "premarket_wick_excess_quantile",
     "policy_effective_from": "2015-01-02",
     "sample_n": 60,
     "input_from": "2026-08-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "min_stop_atr": {
@@ -11009,7 +9357,7 @@
     "input_from": "2023-12-01",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "level_cluster_atr": {
@@ -11022,7 +9370,7 @@
     "input_from": "2026-08-13",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_neutral_hi_atr": {
@@ -11035,7 +9383,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_conservative_lo_atr": {
@@ -11048,7 +9396,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_conservative_hi_atr": {
@@ -11061,7 +9409,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_aggressive_lo_atr": {
@@ -11074,7 +9422,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "entry_buffer_aggressive_hi_atr": {
@@ -11087,7 +9435,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "trigger_window_long_atr": {
@@ -11100,7 +9448,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "stop_aggressive_atr": {
@@ -11113,7 +9461,7 @@
     "input_from": "2023-11-14",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    },
    "trigger_window_short_atr": {
@@ -11126,7 +9474,7 @@
     "input_from": "2023-11-09",
     "input_to": "2026-11-05",
     "effective_from": "2026-11-06",
-    "run_id": "e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa",
+    "run_id": "84421818-74f3-40bd-929e-a9a9a7e8eed8",
     "source": "history"
    }
   },
@@ -11501,13 +9849,6 @@
    },
    {
     "session": "2026-10-14",
-    "timestamp": "2026-10-14 04:02:00",
-    "field": "low",
-    "price": "277.07",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-14",
     "timestamp": "2026-10-14 07:01:00",
     "field": "low",
     "price": "276.7",
@@ -11543,13 +9884,6 @@
    },
    {
     "session": "2026-10-14",
-    "timestamp": "2026-10-14 08:05:00",
-    "field": "low",
-    "price": "276.225",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-14",
     "timestamp": "2026-10-14 08:07:00",
     "field": "close",
     "price": "276.7",
@@ -11561,13 +9895,6 @@
     "field": "low",
     "price": "276.7",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-14",
-    "timestamp": "2026-10-14 08:40:00",
-    "field": "low",
-    "price": "273.0",
-    "rule": "spike"
    },
    {
     "session": "2026-10-14",
@@ -11669,13 +9996,6 @@
    },
    {
     "session": "2026-10-15",
-    "timestamp": "2026-10-15 08:30:00",
-    "field": "low",
-    "price": "270.28",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-15",
     "timestamp": "2026-10-15 08:47:00",
     "field": "low",
     "price": "271.37",
@@ -11753,20 +10073,6 @@
    },
    {
     "session": "2026-10-19",
-    "timestamp": "2026-10-19 08:05:00",
-    "field": "high",
-    "price": "271.96",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-19",
-    "timestamp": "2026-10-19 08:05:00",
-    "field": "low",
-    "price": "270.3701",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-19",
     "timestamp": "2026-10-19 08:20:00",
     "field": "low",
     "price": "270.44",
@@ -11778,27 +10084,6 @@
     "field": "low",
     "price": "270.44",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-20",
-    "timestamp": "2026-10-20 04:00:00",
-    "field": "high",
-    "price": "271.83",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-20",
-    "timestamp": "2026-10-20 04:01:00",
-    "field": "high",
-    "price": "271.95",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-20",
-    "timestamp": "2026-10-20 04:02:00",
-    "field": "high",
-    "price": "271.99",
-    "rule": "spike"
    },
    {
     "session": "2026-10-20",
@@ -11859,13 +10144,6 @@
    {
     "session": "2026-10-20",
     "timestamp": "2026-10-20 08:05:00",
-    "field": "high",
-    "price": "271.561",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-20",
-    "timestamp": "2026-10-20 08:05:00",
     "field": "open",
     "price": "271.28",
     "rule": "stale_prior_close"
@@ -11876,13 +10154,6 @@
     "field": "high",
     "price": "271.28",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-20",
-    "timestamp": "2026-10-20 08:45:00",
-    "field": "high",
-    "price": "271.73",
-    "rule": "spike"
    },
    {
     "session": "2026-10-21",
@@ -11995,13 +10266,6 @@
     "field": "high",
     "price": "276.48",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-22",
-    "timestamp": "2026-10-22 04:06:00",
-    "field": "high",
-    "price": "274.88",
-    "rule": "spike"
    },
    {
     "session": "2026-10-22",
@@ -12180,13 +10444,6 @@
    },
    {
     "session": "2026-10-23",
-    "timestamp": "2026-10-23 07:40:00",
-    "field": "low",
-    "price": "275.1466",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-23",
     "timestamp": "2026-10-23 07:42:00",
     "field": "high",
     "price": "276.67",
@@ -12240,13 +10497,6 @@
     "field": "open",
     "price": "275.75",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-26",
-    "timestamp": "2026-10-26 08:05:00",
-    "field": "low",
-    "price": "275.57",
-    "rule": "spike"
    },
    {
     "session": "2026-10-26",
@@ -12432,27 +10682,6 @@
    },
    {
     "session": "2026-10-28",
-    "timestamp": "2026-10-28 07:39:00",
-    "field": "low",
-    "price": "279.8751",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-28",
-    "timestamp": "2026-10-28 07:42:00",
-    "field": "close",
-    "price": "280.18",
-    "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-28",
-    "timestamp": "2026-10-28 07:42:00",
-    "field": "high",
-    "price": "280.18",
-    "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-28",
     "timestamp": "2026-10-28 07:43:00",
     "field": "high",
     "price": "280.18",
@@ -12558,13 +10787,6 @@
    },
    {
     "session": "2026-10-29",
-    "timestamp": "2026-10-29 08:05:00",
-    "field": "low",
-    "price": "280.1001",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-29",
     "timestamp": "2026-10-29 08:08:00",
     "field": "close",
     "price": "281.29",
@@ -12614,34 +10836,6 @@
    },
    {
     "session": "2026-10-30",
-    "timestamp": "2026-10-30 04:00:00",
-    "field": "high",
-    "price": "283.48",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-30",
-    "timestamp": "2026-10-30 04:01:00",
-    "field": "high",
-    "price": "283.68",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-30",
-    "timestamp": "2026-10-30 04:03:00",
-    "field": "high",
-    "price": "283.63",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-30",
-    "timestamp": "2026-10-30 04:04:00",
-    "field": "high",
-    "price": "283.57",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-10-30",
     "timestamp": "2026-10-30 07:01:00",
     "field": "high",
     "price": "284.01",
@@ -12688,13 +10882,6 @@
     "field": "high",
     "price": "284.01",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-10-30",
-    "timestamp": "2026-10-30 08:05:00",
-    "field": "high",
-    "price": "283.685",
-    "rule": "spike"
    },
    {
     "session": "2026-11-02",
@@ -12775,31 +10962,10 @@
    },
    {
     "session": "2026-11-02",
-    "timestamp": "2026-11-02 08:38:00",
-    "field": "high",
-    "price": "282.2",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-02",
     "timestamp": "2026-11-02 08:47:00",
     "field": "low",
     "price": "279.33",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-11-03",
-    "timestamp": "2026-11-03 04:00:00",
-    "field": "low",
-    "price": "278.1185",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-03",
-    "timestamp": "2026-11-03 04:01:00",
-    "field": "low",
-    "price": "277.94",
-    "rule": "spike"
    },
    {
     "session": "2026-11-03",
@@ -12874,50 +11040,8 @@
    {
     "session": "2026-11-04",
     "timestamp": "2026-11-04 04:00:00",
-    "field": "high",
-    "price": "282.1715",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 04:00:00",
     "field": "low",
     "price": "278.52",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 04:01:00",
-    "field": "high",
-    "price": "282.28",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 04:01:00",
-    "field": "low",
-    "price": "278.44",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 04:04:00",
-    "field": "high",
-    "price": "282.29",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 04:05:00",
-    "field": "high",
-    "price": "282.48",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-04",
-    "timestamp": "2026-11-04 05:10:00",
-    "field": "high",
-    "price": "283.9",
     "rule": "spike"
    },
    {
@@ -12992,27 +11116,6 @@
    },
    {
     "session": "2026-11-05",
-    "timestamp": "2026-11-05 04:00:00",
-    "field": "low",
-    "price": "283.8907",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-05",
-    "timestamp": "2026-11-05 04:01:00",
-    "field": "low",
-    "price": "283.71",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-05",
-    "timestamp": "2026-11-05 04:02:00",
-    "field": "low",
-    "price": "283.71",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-05",
     "timestamp": "2026-11-05 07:35:00",
     "field": "close",
     "price": "284.02",
@@ -13094,13 +11197,6 @@
     "field": "open",
     "price": "284.02",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-11-05",
-    "timestamp": "2026-11-05 08:05:00",
-    "field": "low",
-    "price": "282.045",
-    "rule": "spike"
    },
    {
     "session": "2026-11-05",
@@ -13129,27 +11225,6 @@
     "field": "low",
     "price": "284.02",
     "rule": "stale_prior_close"
-   },
-   {
-    "session": "2026-11-06",
-    "timestamp": "2026-11-06 04:00:00",
-    "field": "low",
-    "price": "269.4082",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-06",
-    "timestamp": "2026-11-06 04:01:00",
-    "field": "low",
-    "price": "269.13",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-06",
-    "timestamp": "2026-11-06 04:04:00",
-    "field": "low",
-    "price": "269.36",
-    "rule": "spike"
    },
    {
     "session": "2026-11-06",
@@ -13212,20 +11287,6 @@
     "timestamp": "2026-11-06 08:05:00",
     "field": "high",
     "price": "283.745",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-06",
-    "timestamp": "2026-11-06 08:05:00",
-    "field": "low",
-    "price": "270.86",
-    "rule": "spike"
-   },
-   {
-    "session": "2026-11-06",
-    "timestamp": "2026-11-06 08:30:00",
-    "field": "low",
-    "price": "270.38",
     "rule": "spike"
    },
    {
