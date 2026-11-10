@@ -288,10 +288,10 @@ _PLAYBOOK_PROMPT = (
     "stop sits relative to the trigger in ATR-units if mentionable, and "
     "what each target represents. Always cite the specific price "
     "alongside the level name — e.g. 'PDO ($276.67)' not just 'PDO'. "
-    "When the playbook is ORB-only (price has cleared every structural "
-    "level), name the LAST cleared level with its price (e.g. 'price is "
-    "above PWH $222 and PQH $214 — every structural resistance has been "
-    "passed; only the ORB high will give a fresh trigger'). "
+    "When a side of the playbook is ORB-only, repeat its stated reason "
+    "(no unbroken level within the 3x ATR window, levels traded through "
+    "pre-market, ATR unavailable, or stale daily data) and say the 15-min "
+    "opening range gives the next setup; never invent a price. "
     "Plain text only — NO emojis, NO markdown formatting, NO bullet lists."
 )
 

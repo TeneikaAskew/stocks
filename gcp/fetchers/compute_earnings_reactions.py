@@ -1080,7 +1080,10 @@ def _retention_receipts(row, prior, columns):
             regresses = True
         if regresses:
             events.append(_event_receipt(row,'daily_path_v1','regressing_daily_prefix','retained',prior))
+    unqualified_refresh = (new.get('status')=='unavailable'
+                           and old.get('status') in (None,'unavailable'))
     if old and (not new or new.get('status') not in ('complete','maturing','not_applicable')
+                and not unqualified_refresh
                 or old.get('status') in ('complete','not_applicable') and new.get('status')=='maturing'):
         events.append(_event_receipt(row,'daily_path_v1','unavailable_replacement:daily_path_v1','retained',prior))
     old_native=old.get('per_metric',{}).get('native_classifier_inputs',{})
@@ -1100,7 +1103,8 @@ def _upsert_reaction_frame(frame, table_name=REACTIONS_TABLE, *, receipt_sink=No
     """Atomic per-chunk PostgreSQL upsert retaining prior qualified values.
 
     Refuse identity changes and any replacement that would null an existing
-    value. An incomplete/unavailable sidecar never erases a previous sidecar.
+    value. An incomplete/unavailable sidecar never erases a previous qualified
+    sidecar; it may replace an unavailable one, so legacy fields still advance.
     No per-event source SELECT is used; RETURNING and at most one batched
     rejected-key read explain refusals while conflict guards retain row locks.
     """
@@ -1135,8 +1139,15 @@ def _upsert_reaction_frame(frame, table_name=REACTIONS_TABLE, *, receipt_sink=No
         incoming = excluded.daily_path_v1
         old_status = prior['status'].astext
         new_status = incoming['status'].astext
+        # An unqualified (unavailable or status-less) prior holds no evidence to
+        # protect, so a still-unavailable refresh may replace it; that lets newly
+        # matured legacy fields land. A qualified prior is never replaced by one.
+        admissible_status = sa.or_(
+            new_status.in_(['complete', 'maturing', 'not_applicable']),
+            sa.and_(new_status == 'unavailable',
+                    sa.or_(old_status.is_(None), old_status == 'unavailable')))
         acceptable_payload = sa.and_(
-            incoming.is_not(None), new_status.in_(['complete', 'maturing', 'not_applicable']),
+            incoming.is_not(None), admissible_status,
             sa.or_(old_status.is_(None), old_status.notin_(['complete', 'not_applicable']),
                    new_status.in_(['complete', 'not_applicable'])),
             sa.or_(prior['event_id'].astext.is_(None),

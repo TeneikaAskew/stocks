@@ -18,6 +18,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from lib.strat_levels import ORB_ONLY_SCHEMA_DESCRIPTION
+
 
 # ---------------------------------------------------------------------------
 # Role identifiers — these are the keys into the model_routing table and
@@ -227,8 +229,9 @@ class PersonaPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     persona: Literal["aggressive", "conservative", "neutral"]
-    entry_zone: EntryZone
-    stop: float
+    # Null on an orb_only side: no level, no entry, no stop (FEAT-STRAT-001).
+    entry_zone: Optional[EntryZone] = None
+    stop: Optional[float] = None
     targets: list[float] = Field(
         default_factory=list,
         description="Up to 3 price targets, ordered T1 → T3.",
@@ -310,19 +313,26 @@ class InsightReport(BaseModel):
             "Trigger regime for this setup. 'normal' = standard "
             "breakout entry at the next structural level. 'extended' = "
             "next level is >= 3 ATR away; 15-min ORB confirmation "
-            "recommended. 'orb_only' = pre-market cleared every "
-            "structural level in the trade direction (extreme gap day); "
-            "wait for the opening range to establish before entering. "
+            "recommended. " + ORB_ONLY_SCHEMA_DESCRIPTION + " "
             "Brief / Discord push render different copy per regime."
         ),
     )
-    entry_zone: EntryZone
-    stop: float
+    # Null when the headline plan is orb_only (FEAT-STRAT-001).
+    entry_zone: Optional[EntryZone] = None
+    stop: Optional[float] = None
     targets: list[float] = Field(default_factory=list)
     invalidation: str = Field(
         ..., description="What observable condition would kill this trade"
     )
     time_horizon: Literal["intraday", "swing", "position"]
+    level_basis: Optional[dict] = Field(
+        default=None,
+        description=(
+            "The lib.strat_levels.SessionLevels snapshot (level_basis) the "
+            "deterministic plan used: levels, ATR(14), premarket snapshot "
+            "and the per-side picks."
+        ),
+    )
     key_levels: dict[str, float] = Field(
         default_factory=dict,
         description="Named levels (support, resistance, pivot, etc.)",
