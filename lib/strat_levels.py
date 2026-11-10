@@ -1220,21 +1220,25 @@ LEVEL_PARAMS_SQL = (
 )
 
 
+def _policy_row(r) -> dict:
+    return {
+        'param_key': r['param_key'], 'method_id': r.get('method_id'),
+        'statistic_q': _opt_float(r.get('statistic_q')),
+        'lookback_sessions': _opt_int(r.get('lookback_sessions')),
+        'min_sample': _opt_int(r.get('min_sample')),
+        'extra': _json_obj(r.get('extra')), 'effective_from': _iso(r.get('effective_from')),
+    }
+
+
 def policy_in_force(rows) -> Dict[str, dict]:
     """The policy row in force per key from policy rows already bounded to
     effective_from on or before the session: the greatest effective_from."""
     out: Dict[str, dict] = {}
     for r in rows:
-        key = r['param_key']
-        eff = _iso(r.get('effective_from'))
+        row = _policy_row(r)
+        key, eff = row['param_key'], row['effective_from']
         if key not in out or (eff or '') > (out[key]['effective_from'] or ''):
-            out[key] = {
-                'param_key': key, 'method_id': r.get('method_id'),
-                'statistic_q': _opt_float(r.get('statistic_q')),
-                'lookback_sessions': _opt_int(r.get('lookback_sessions')),
-                'min_sample': _opt_int(r.get('min_sample')),
-                'extra': _json_obj(r.get('extra')), 'effective_from': eff,
-            }
+            out[key] = row
     return out
 
 
@@ -1279,7 +1283,15 @@ def load_level_params(query_fn, tickers, session_date) -> Dict[str, LevelParams]
     if df is None:
         raise LevelParamsUnavailable("level parameter query returned no result set")
     records = df.to_dict('records') if len(df) else []
-    policy = policy_in_force([r for r in records if r.get('row_kind') == 'policy'])
+    policy_records = [r for r in records if r.get('row_kind') == 'policy']
+    policy = policy_in_force(policy_records)
+    # Every policy version on or before the session, by key and
+    # effective_from: a ticker row carries the metadata (quantile, minimum
+    # sample, lookback) of the policy version it was calibrated under, not
+    # the version in force now (Codex P2 on e4bb463e). A value retained
+    # under an older policy keeps that policy's coverage claim.
+    versions = {(row['param_key'], row['effective_from']): row
+                for row in map(_policy_row, policy_records)}
     if not policy:
         raise LevelParamsUnavailable(
             f"level_param_policy holds no row in force on {session.isoformat()}")
@@ -1305,6 +1317,16 @@ def load_level_params(query_fn, tickers, session_date) -> Dict[str, LevelParams]
             same = [r for r in rows if r.get('atr_basis') == basis]
             if same:
                 r = max(same, key=lambda x: _iso(x.get('effective_from')) or '')
+                row_policy = _iso(r.get('policy_effective_from'))
+                ver = versions.get((key, row_policy))
+                if ver is None:
+                    raise LevelParamsUnavailable(
+                        f"ticker_level_params {t} {key} (effective {_iso(r.get('effective_from'))}) "
+                        f"names policy version {row_policy!r}, which level_param_policy does not hold "
+                        f"on or before {session.isoformat()}")
+                common = dict(key=key, ticker=t, min_sample=ver['min_sample'],
+                              statistic_q=ver['statistic_q'],
+                              lookback_sessions=ver['lookback_sessions'])
                 status = r.get('status') or PARAMS_UNAVAILABLE
                 value = _opt_float(r.get('value')) if status == PARAM_OK else None
                 if status == PARAM_OK and value is None:
@@ -1717,6 +1739,15 @@ class SessionLevels:
             ) for d in (basis.get('levels') or [])],
             pmg_zones=list(basis.get('pmg_zones') or []),
         )
+        if recorded is None:
+            # A pre-parameter basis stored zones from the old percentage
+            # tolerance: they are rebuilt from its levels with the
+            # parameters supplied (or none), never carried as calibrated
+            # output (Codex P2 on e4bb463e).
+            base.pmg_zones, base.pmg_status = _pmg_zones(
+                [lv for lv in base.levels if lv.name not in (
+                    PREMARKET_HIGH, PREMARKET_LOW, PARENT_BAR_HIGH, PARENT_BAR_LOW)],
+                use, base.atr)
         if base.status != 'ok':
             return _assemble(base, premarket=None, premarket_status='premarket_unavailable',
                              reference=None, reference_source=None)
@@ -2105,16 +2136,8 @@ def build_session_levels(
     prev_levels = _compute_previous_levels(df, analysis_date=session_date)
     curr_levels = _compute_current_levels(df, anchor, analysis_date=session_date)
     gap_levels = compute_gap_levels(df.assign(Time=df.index))
-    cluster = params.param(LEVEL_CLUSTER_KEY)
-    if atr_v is None:
-        base.pmg_status = 'atr_unavailable'
-    elif not cluster.ok:
-        base.pmg_status = cluster.status
-    else:
-        base.pmg_zones = detect_level_clusters(
-            list(prev_levels.values()) + list(curr_levels.values()) + gap_levels,
-            tolerance_atr=cluster.value, atr=atr_v,
-        )
+    base.pmg_zones, base.pmg_status = _pmg_zones(
+        list(prev_levels.values()) + list(curr_levels.values()) + gap_levels, params, atr_v)
     levels = list(prev_levels.values()) + list(curr_levels.values()) + gap_levels
     parent = find_parent_bar(df)
     if parent is not None:
@@ -2126,6 +2149,23 @@ def build_session_levels(
     base.levels = levels
     return _assemble(base, premarket=snap, premarket_status=pm_status, reference=reference,
                      reference_source='caller' if reference is not None else None)
+
+
+def _pmg_zones(levels: List[StratLevel], params: Optional[LevelParams],
+               atr: Optional[float]) -> tuple:
+    """(PMG zones, pmg_status) for the clustered levels: the previous,
+    current and gap levels (never premarket or parent-bar levels), with the
+    ticker's level_cluster_atr in force. The one rule for a fresh build and
+    for a stored basis that recorded no parameters."""
+    if params is None:
+        return [], PARAMS_UNAVAILABLE
+    if atr is None:
+        return [], 'atr_unavailable'
+    cluster = params.param(LEVEL_CLUSTER_KEY)
+    if not cluster.ok:
+        return [], cluster.status
+    return detect_level_clusters(levels, tolerance_atr=cluster.value, atr=atr), 'ok'
+
 
 
 def _assemble(base: SessionLevels, *, premarket: Optional[dict], premarket_status: str,

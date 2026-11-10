@@ -171,3 +171,36 @@ def test_level_params_round_trip_through_a_basis_dict():
     assert back.to_basis() == lp.to_basis()
     assert back.value("trigger_window_long_atr") == 2.61
     assert back.status("pm_spike_atr") == PARAMS_UNAVAILABLE
+
+
+def test_a_retained_value_carries_its_own_policy_versions_metadata():
+    """Codex P2 on e4bb463e: a policy change for a key takes effect, but the
+    ticker's replacement calibration has not succeeded, so the loader keeps
+    the older value. Its quantile, minimum sample and lookback are those of
+    the policy version it was calibrated under, never the version in force;
+    a key with no calibrated row carries the version in force."""
+    db = ParamsDb()
+    db.write("SPY", {"trigger_window_long_atr": 2.61}, effective_from=date(2026, 11, 3))
+    db.conn.execute(
+        "INSERT INTO level_param_policy (param_key, method_id, statistic_q, lookback_sessions, "
+        "min_sample, extra, effective_from) SELECT param_key, method_id, 0.90, 1500, 1000, extra, "
+        "'2026-11-05' FROM level_param_policy WHERE param_key IN "
+        "('trigger_window_long_atr', 'trigger_window_short_atr') AND effective_from = '2015-01-02'")
+    db.conn.commit()
+    pol = seeded_policy()["trigger_window_long_atr"]
+    p = db.load(["SPY"], date(2026, 11, 6))["SPY"]
+    kept = p.param("trigger_window_long_atr")
+    assert kept.value == 2.61 and kept.policy_effective_from == "2015-01-02"
+    assert (kept.statistic_q, kept.min_sample, kept.lookback_sessions) == \
+        (pol["statistic_q"], pol["min_sample"], pol["lookback_sessions"])
+    missing = p.param("trigger_window_short_atr")
+    assert (missing.statistic_q, missing.min_sample, missing.lookback_sessions) == (0.90, 1000, 1500)
+
+
+def test_a_row_naming_an_absent_policy_version_raises():
+    db = ParamsDb()
+    db.write("SPY", {"trigger_window_long_atr": 2.61}, effective_from=date(2026, 11, 3))
+    db.conn.execute("UPDATE ticker_level_params SET policy_effective_from = '2020-01-02'")
+    db.conn.commit()
+    with pytest.raises(LevelParamsUnavailable, match="policy version"):
+        db.load(["SPY"], date(2026, 11, 6))

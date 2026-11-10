@@ -360,3 +360,45 @@ def test_basis_switch_follows_the_transition_order(monkeypatch):
     assert {k: (st, None if pd.isna(v) else v)
             for k, st, v in zip(atr5["param_key"], atr5["status"], atr5["value"])} == late_values
     assert late_values["trigger_window_long_atr"][0] == "ok"
+
+
+# ── Codex P2 on e4bb463e: the watchlist is read strictly ───────────────
+
+
+def _watchlist_query(db, tickers=None, fail=False):
+    def query(sql, params=None):
+        if sql == job.WATCHLIST_SQL:
+            assert params == {"user_id": "default"}
+            if fail:
+                raise RuntimeError("connection reset")
+            return pd.DataFrame({"ticker": list(tickers or [])})
+        return db.query(sql, params)
+    return query
+
+
+def test_a_failed_watchlist_read_fails_the_universe():
+    db = FakeDb()
+    policy = job.read_policy(db.query, EFF)
+    with pytest.raises(RuntimeError, match="connection reset"):
+        job.calibration_universe(policy, _watchlist_query(db, fail=True))
+
+
+def test_an_empty_watchlist_is_a_valid_universe_member():
+    db = FakeDb()
+    policy = job.read_policy(db.query, EFF)
+    empty = job.calibration_universe(policy, _watchlist_query(db, []))
+    got = job.calibration_universe(policy, _watchlist_query(db, ["AAPL", "spy"]))
+    assert "AAPL" not in empty and got[-1] == "AAPL" and got[:len(empty)] == empty
+
+
+def test_the_one_minute_fetch_universe_reads_the_watchlist_strictly(monkeypatch):
+    import gcp.database as database
+
+    def broken(sql, params=None):
+        raise RuntimeError("connection reset")
+    monkeypatch.setattr(database, "query_to_dataframe_strict", broken)
+    with pytest.raises(RuntimeError, match="connection reset"):
+        job.brief_insight_watchlist_tickers()
+    monkeypatch.setattr(database, "query_to_dataframe_strict",
+                        lambda sql, params=None: pd.DataFrame({"ticker": ["NVDA"]}))
+    assert job.brief_insight_watchlist_tickers()[-1] == "NVDA"

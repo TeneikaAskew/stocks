@@ -421,3 +421,41 @@ def test_resolver_rebuilds_a_recorded_basis_without_the_tables(monkeypatch):
     first = _resolver(lambda conn: legacy_db("QQQ", conn=conn), live_basis=b)
     # No parameter tables in the database at all: a read would raise.
     assert _resolver(lambda conn: None, live_basis=b) == first
+
+
+def _pre_parameter(b: dict, zones: list) -> dict:
+    """The same basis as a pre-parameter (feat-strat-001.v1) snapshot: no
+    params, no atr_basis, ATR(14) as `atr`, zones from the old rule."""
+    legacy = json.loads(json.dumps(b, default=str))
+    legacy["atr"] = legacy.get("atr_14")
+    for k in ("params", "atr_basis", "policy_effective_from", "atr_14", "atr_5"):
+        legacy.pop(k, None)
+    legacy["pmg_zones"], legacy["pmg_status"] = zones, "ok"
+    return legacy
+
+
+def test_pre_parameter_basis_rebuilds_pmg_zones_with_the_supplied_cluster(monkeypatch):
+    """Codex P2 on e4bb463e: a pre-parameter basis's stored zones (built with
+    the old percentage tolerance) are never carried into a parameterised
+    rebuild. With level_cluster_atr insufficient_history the rebuild has no
+    zones and says so; with it ok the zones equal a fresh build's."""
+    from tests.lib.level_params_fixtures import fixture_params
+
+    b = fx.run_brief(monkeypatch, "QQQ", fx.loader_frame("QQQ"))["level_basis"]
+    assert b["pmg_zones"], "the fixture session must have zones for this test to bite"
+    stale = [{"center_price": 1.0, "level_names": ["old"], "timeframes": ["day"],
+              "count": 2, "strength": "weak"}]
+    legacy = _pre_parameter(b, stale)
+
+    insufficient = fixture_params("QQQ", SESSION, statuses={"level_cluster_atr": "insufficient_history"})
+    s = SessionLevels.from_basis(legacy, params=insufficient)
+    assert s.pmg_zones == [] and s.pmg_status == "insufficient_history"
+
+    ok = SessionLevels.from_basis(legacy, params=fixture_params("QQQ", SESSION))
+    assert ok.pmg_status == "ok" and ok.pmg_zones == b["pmg_zones"]
+
+    none = SessionLevels.from_basis(legacy)
+    assert none.pmg_zones == [] and none.pmg_status == "params_unavailable"
+
+    # A basis that recorded its parameters keeps its own zones.
+    assert SessionLevels.from_basis(b, params=insufficient).pmg_zones == b["pmg_zones"]

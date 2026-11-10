@@ -89,6 +89,16 @@ ON_DEMAND_SQL = (
     "SELECT DISTINCT ticker FROM ticker_level_params WHERE source = 'on_demand'"
 )
 
+# The shared ('default' owner) watchlist, read through the strict query
+# function: gcp.fetchers._watchlist.load_watchlist turns a failed read into
+# the INSIGHT_TICKERS env list or [] (Codex P2 on e4bb463e), which would
+# shorten the calibration and one-minute fetch universes silently.
+WATCHLIST_SQL = (
+    "SELECT ticker FROM watchlists WHERE user_id = :user_id AND removed_at IS NULL "
+    "ORDER BY added_at"
+)
+WATCHLIST_OWNER = 'default'
+
 _ROW_COLUMNS = ('ticker', 'param_key', 'value', 'status', 'atr_basis', 'method_id',
                 'policy_effective_from', 'sample_n', 'input_from', 'input_to',
                 'effective_from', 'run_id', 'source', 'calibrated_at')
@@ -202,17 +212,26 @@ def read_minutes(query: QueryFn, ticker: str, start, before) -> pd.DataFrame:
     return out[['timestamp', 'open', 'high', 'low', 'close', 'volume']].reset_index(drop=True)
 
 
+def strict_watchlist(query: QueryFn) -> List[str]:
+    """The shared watchlist's active tickers. A failed read raises (query
+    is a strict reader); an empty result is a genuinely empty watchlist."""
+    df = query(WATCHLIST_SQL, {'user_id': WATCHLIST_OWNER})
+    return [] if df is None or not len(df) else [str(t) for t in df['ticker']]
+
+
 def brief_insight_watchlist_tickers(*, watchlist_fn: Optional[Callable[[], Iterable[str]]] = None
                                     ) -> List[str]:
     """The brief tickers (lib.config MarketConfig.tickers), the insight
     default tickers (gcp.insight_pipeline_job.DEFAULT_TICKERS) and the
-    watchlist, deduplicated: the one-minute fetch universe (Design 5)."""
+    watchlist, deduplicated: the one-minute fetch universe (Design 5). The
+    watchlist is read strictly: a failed read raises instead of shortening
+    the universe."""
     from lib.config import MarketConfig  # noqa: PLC0415
     from gcp.insight_pipeline_job import DEFAULT_TICKERS  # noqa: PLC0415
 
     if watchlist_fn is None:
-        from gcp.fetchers._watchlist import load_watchlist  # noqa: PLC0415
-        watchlist_fn = load_watchlist
+        from gcp.database import query_to_dataframe_strict  # noqa: PLC0415
+        watchlist_fn = lambda: strict_watchlist(query_to_dataframe_strict)  # noqa: E731
     out: List[str] = []
     for t in list(MarketConfig().tickers) + list(DEFAULT_TICKERS) + list(watchlist_fn() or []):
         t = str(t).strip().upper()
@@ -227,8 +246,7 @@ def calibration_universe(policy: dict, query: QueryFn, *,
     from gcp.insight_pipeline_job import DEFAULT_TICKERS  # noqa: PLC0415
 
     if watchlist_fn is None:
-        from gcp.fetchers._watchlist import load_watchlist  # noqa: PLC0415
-        watchlist_fn = load_watchlist
+        watchlist_fn = lambda: strict_watchlist(query)  # noqa: E731
 
     def on_demand():
         return list(query(ON_DEMAND_SQL, {})['ticker'])

@@ -451,3 +451,51 @@ def test_to_rows_matches_the_table():
     assert r["ticker"] == "QQQ" and r["atr_basis"] == "atr_14" and r["status"] == "insufficient_history"
     assert r["value"] is None and r["effective_from"] == "2026-11-09"
     assert r["policy_effective_from"] == "2015-01-02"
+
+
+def test_each_break_parameter_takes_its_own_lookback():
+    """Codex P2 on e4bb463e: with the daily sessions passed, a stop, the
+    floor or a target whose policy row has a shorter lookback than the entry
+    buffers is measured on the breaks inside its own window only. The
+    family's 200 breaks are one a session; stop_neutral with a 20-session
+    lookback (minimum 10) reads breaks 181..200, and a one-session target
+    lookback is insufficient_history with the one break in it."""
+    fam = _family(200)
+    idx = _bdays(200)
+    pol = policy(stop_neutral_atr={"lookback_sessions": 20, "min_sample": 10},
+                 target_neutral_1_r={"lookback_sessions": 1})
+    out = lc.break_params(fam, pol, session_index=idx)
+    s = out["stop_neutral_atr"]
+    assert s.status == PARAM_OK and s.sample_n == 20
+    assert s.input_from == idx[180].date().isoformat() and s.input_to == idx[-1].date().isoformat()
+    assert s.value == pytest.approx(lc.quantile([0.5 + 0.01 * i for i in range(181, 201)], 0.75))
+    t1 = out["target_neutral_1_r"]
+    assert t1.status == "insufficient_history" and t1.sample_n == 1
+    # The entry buffers keep their 750-session window: all 200 breaks.
+    assert out["entry_buffer_neutral_hi_atr"].sample_n == 200
+    # Without the session index every given break is in every window.
+    assert lc.break_params(fam, pol)["stop_neutral_atr"].sample_n == 200
+
+
+def test_break_lookback_is_the_longest_break_parameter_lookback():
+    assert lc._break_lookback(policy()) == 750
+    assert lc._break_lookback(policy(target_aggressive_3_r={"lookback_sessions": 900})) == 900
+    assert lc._break_lookback(policy(min_stop_atr={"lookback_sessions": 800})) == 800
+
+
+def test_regular_session_bars_end_at_the_actual_close():
+    """Codex P2 on e4bb463e: 2025-11-28 closed at 13:00 ET. Its regular
+    session is 09:30 to 12:59; a 13:01 after-hours bar is not in it, while a
+    full day keeps 09:30 to 15:59. A bar on a non-session day is none."""
+    half = pd.Timestamp("2025-11-28")
+    full = pd.Timestamp("2025-11-26")
+    holiday = pd.Timestamp("2025-11-27")
+    raw = pd.concat([_minutes(half, 300), _minutes(full, 420), _minutes(holiday, 10)])
+    m = lc.normalize_minutes(raw, "2025-12-01")
+    rth = lc._rth(m)
+    by = rth.groupby("session")["timestamp"].agg(["min", "max", "size"])
+    assert by.loc[half, "max"] == pd.Timestamp("2025-11-28 12:59")
+    assert by.loc[half, "size"] == 210
+    assert by.loc[full, "max"] == pd.Timestamp("2025-11-26 15:59")
+    assert by.loc[full, "size"] == 390
+    assert holiday not in by.index

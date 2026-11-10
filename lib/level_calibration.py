@@ -72,7 +72,6 @@ SIDES = ('long', 'short')
 
 PREMARKET_START = time(4, 0)
 RTH_OPEN = time(9, 30)
-RTH_CLOSE = time(16, 0)
 
 
 # ── results ──────────────────────────────────────────────────────────────
@@ -234,7 +233,20 @@ def daily_before(daily: pd.DataFrame, as_of) -> pd.DataFrame:
 
 
 def _rth(m: pd.DataFrame) -> pd.DataFrame:
-    return m[(m['tod'] >= RTH_OPEN) & (m['tod'] < RTH_CLOSE)]
+    """Regular-session bars, bounded by each session's actual NYSE open and
+    close (lib.eastern_time.session_schedule): 13:00 ET on half days, so
+    after-hours bars past an early close are not regular-session samples
+    (Codex P2 on e4bb463e). Bars on a day that is not a session are none."""
+    if not len(m):
+        return m
+    from lib.eastern_time import session_schedule, utc_to_eastern_naive  # noqa: PLC0415
+    sched = session_schedule(m['session'].min().date(), m['session'].max().date())
+    day = pd.DatetimeIndex(sched.index).normalize()
+    opens = pd.Series(utc_to_eastern_naive(sched['market_open']).to_numpy(), index=day)
+    closes = pd.Series(utc_to_eastern_naive(sched['market_close']).to_numpy(), index=day)
+    ts = pd.to_datetime(m['timestamp'])
+    lo, hi = m['session'].map(opens), m['session'].map(closes)
+    return m[(ts >= lo) & (ts < hi)]
 
 
 def _premarket(m: pd.DataFrame) -> pd.DataFrame:
@@ -862,13 +874,21 @@ def _span(sessions: np.ndarray) -> list:
 
 
 def break_params(breaks: List[Break], policy: Dict[str, dict], *,
-                 bank: Optional[BreakBank] = None, ids: Optional[np.ndarray] = None
+                 bank: Optional[BreakBank] = None, ids: Optional[np.ndarray] = None,
+                 session_index: Optional[pd.DatetimeIndex] = None
                  ) -> Dict[str, Calibrated]:
     """Entry buffers, stops, the floor and targets from the breaks (both
     sides pooled), in the spec's order. A parameter measured with another
     that is not ok carries that one's status. `bank` and `ids` (history
     mode) name the breaks in a BreakBank whose per-break results are reused
-    across calibrations; without them the breaks get a bank of their own."""
+    across calibrations; without them the breaks get a bank of their own.
+
+    `session_index` is the daily sessions before the effective date (the
+    calibrators pass it): each parameter then takes its statistic over the
+    breaks in its own policy row's lookback_sessions only (the breaks given
+    cover the longest of them, _break_lookback). Without it every given
+    break is in every parameter's window (callers that pass one window's
+    breaks)."""
     if bank is None:
         bank = BreakBank(breaks)
         ids = np.arange(len(breaks))
@@ -881,17 +901,28 @@ def break_params(breaks: List[Break], policy: Dict[str, dict], *,
     def dates(mask=None) -> list:
         return [pd.Timestamp(x) for x in _span(sessions if mask is None else sessions[mask])]
 
+    def window(row: dict) -> np.ndarray:
+        """The breaks inside this row's own lookback (Codex P2 on e4bb463e)."""
+        if session_index is None:
+            return np.ones(n, dtype=bool)
+        lb = _lookback_sessions(pd.DataFrame(index=session_index), row['lookback_sessions'])
+        if not len(lb):
+            return np.zeros(n, dtype=bool)
+        return sessions >= np.datetime64(pd.Timestamp(lb[0]), 'ns')
+
     # Entry buffers: quantiles of follow-through over all breaks.
     for persona in PERSONAS:
         for edge in ('lo', 'hi'):
             key = entry_buffer_key(persona, edge)
             row = _policy(policy, key)
+            win = window(row)
             minutes = int(row['extra'].get('follow_through_minutes') or 0)
             if row.get('method_id') == 'at_trigger':
-                out[key] = _stat(key, row, [0.0] * n, dates(), value_fn=lambda _s: 0.0)
+                out[key] = _stat(key, row, [0.0] * int(win.sum()), dates(win),
+                                 value_fn=lambda _s: 0.0)
                 continue
-            ft = bank.follow_through(ids, minutes) if n else np.zeros(0)
-            out[key] = _stat(key, row, ft, dates())
+            ft = bank.follow_through(ids[win], minutes) if win.any() else np.zeros(0)
+            out[key] = _stat(key, row, ft, dates(win))
 
     # Fills at each persona's entry midpoint; stops on filled held breaks.
     fills: Dict[str, np.ndarray] = {}
@@ -907,7 +938,7 @@ def break_params(breaks: List[Break], policy: Dict[str, dict], *,
         _mid, j, mae = bank.fills(ids, persona, lo.value, hi.value) if n else \
             (np.zeros(0), np.zeros(0, dtype=int), np.zeros(0))
         fills[persona], maes[persona] = j >= 0, mae
-        sel = fills[persona] & held
+        sel = fills[persona] & held & window(srow)
         out[skey] = _stat(skey, srow, mae[sel], dates(sel))
 
     mrow = _policy(policy, MIN_STOP_KEY)
@@ -916,7 +947,7 @@ def break_params(breaks: List[Break], policy: Dict[str, dict], *,
     if not (flo.ok and fhi.ok):
         out[MIN_STOP_KEY] = _not_ok(MIN_STOP_KEY, mrow, flo if not flo.ok else fhi)
     else:
-        sel = fills[floor_persona] & held
+        sel = fills[floor_persona] & held & window(mrow)
         out[MIN_STOP_KEY] = _stat(MIN_STOP_KEY, mrow, maes[floor_persona][sel], dates(sel))
 
     # Targets: reach shares on filled breaks, in the R the planner publishes
@@ -941,10 +972,11 @@ def break_params(breaks: List[Break], policy: Dict[str, dict], *,
                 lo = out[entry_buffer_key(persona, 'lo')].value
                 hi = out[entry_buffer_key(persona, 'hi')].value
                 reaches = bank.reaches(ids, persona, lo, hi, stop_c.value,
-                                       floor_c.value)[sel] if n else np.zeros(0)
-            used = dates(sel)
+                                       floor_c.value) if n else np.zeros(0)
+            in_win = sel & window(row)
+            used = dates(in_win)
             share = _q(row)
-            c = _stat(key, row, reaches, used,
+            c = _stat(key, row, reaches[in_win], used,
                       value_fn=lambda s, share=share: reach_share_value(s, share))
             if c.ok and (c.value <= 0 or (prev is not None and c.value <= prev)):
                 c = _result(key, row, NO_POSITIVE_TARGET, None, c.sample_n, used)
@@ -958,9 +990,21 @@ def break_params(breaks: List[Break], policy: Dict[str, dict], *,
 # ── one ticker, one effective date ───────────────────────────────────────
 
 
+def _break_keys(policy: Dict[str, dict]) -> List[str]:
+    keys = [entry_buffer_key(p, e) for p in PERSONAS for e in ('lo', 'hi')]
+    keys += [stop_key(p) for p in PERSONAS] + [MIN_STOP_KEY]
+    for p in PERSONAS:
+        k = 1
+        while target_key(p, k) in policy:
+            keys.append(target_key(p, k))
+            k += 1
+    return keys
+
+
 def _break_lookback(policy: Dict[str, dict]) -> int:
-    return max(int(_policy(policy, entry_buffer_key(p, e))['lookback_sessions'])
-               for p in PERSONAS for e in ('lo', 'hi'))
+    """The longest lookback of any break-derived parameter: the breaks a
+    calibration reads; break_params cuts each parameter to its own."""
+    return max(int(_policy(policy, k)['lookback_sessions'] or 0) for k in _break_keys(policy))
 
 
 def calibrate(ticker: str, daily: pd.DataFrame, minutes: Optional[pd.DataFrame],
@@ -989,7 +1033,7 @@ def calibrate(ticker: str, daily: pd.DataFrame, minutes: Optional[pd.DataFrame],
     minute_sessions = set(m['session'].unique()) if len(m) else set()
     sessions = [s for s in sessions if s in minute_sessions]
     trig = replay_triggers(ticker, daily_before(daily, as_of), d, policy, sessions, atr_basis)
-    out.update(break_params(find_breaks(d, m, trig), policy))
+    out.update(break_params(find_breaks(d, m, trig), policy, session_index=d.index))
     return out
 
 
@@ -1152,7 +1196,7 @@ class HistoryCalibrator:
         sessions = [s for s in _lookback_sessions(d, _break_lookback(policy))
                     if s in self.minute_sessions]
         bank, ids = self._break_ids_for(sessions, policy, atr_basis, d_full)
-        out.update(break_params([], policy, bank=bank, ids=ids))
+        out.update(break_params([], policy, bank=bank, ids=ids, session_index=d.index))
         return out
 
 
