@@ -9,7 +9,7 @@ done_when:
   - "On the PR head, scripts/maintenance/doc_inventory.py --insert over the committed 05-a, 05-c and 05-e changes no byte, tests/scripts/test_check_generated_docs.py passes in full, and python3 tests/scripts/measure_inventory_render.py --ref HEAD --max-rss-mib 512 --max-seconds 60 passes"
   - "With this change on main, the FEAT-STRAT-001 per-ticker parameters branch (two tables added to gcp/schema.sql, 05-a stating 74 relations, 71 tables, 2 materialized views, 1 view) passes the PR-mode render check of python3 scripts/gate/spec_gate.py --pr origin/main and tests/scripts/test_check_generated_docs.py, and the implementation PR records both runs"
   - "python3 scripts/gate/spec_gate.py --pr origin/main passes on the PR head; the FEAT-CICD-001 catalog record shows a current Last reviewed and 12-PR-ISSUE-TRACEABILITY lists this PR under FEAT-CICD-001"
-status: draft
+status: approved
 supersedes: null
 ---
 
