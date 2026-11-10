@@ -1,0 +1,5638 @@
+{
+ "sides": {
+  "none|IWM|long": {
+   "sessions": 2644,
+   "trigger": 247,
+   "stop": 249,
+   "t1": 311,
+   "t2": 406,
+   "t3": 475,
+   "orb_only": 247,
+   "any": 836,
+   "orb_only_main": 106,
+   "orb_only_branch": 353
+  },
+  "none|IWM|short": {
+   "sessions": 2644,
+   "trigger": 242,
+   "stop": 249,
+   "t1": 288,
+   "t2": 356,
+   "t3": 424,
+   "orb_only": 242,
+   "any": 707,
+   "orb_only_main": 100,
+   "orb_only_branch": 340
+  },
+  "stored|IWM|long": {
+   "sessions": 2644,
+   "trigger": 387,
+   "stop": 371,
+   "t1": 412,
+   "t2": 488,
+   "t3": 538,
+   "orb_only": 247,
+   "any": 964,
+   "orb_only_main": 106,
+   "orb_only_branch": 353
+  },
+  "stored|IWM|short": {
+   "sessions": 2644,
+   "trigger": 382,
+   "stop": 371,
+   "t1": 393,
+   "t2": 433,
+   "t3": 472,
+   "orb_only": 244,
+   "any": 822,
+   "orb_only_main": 102,
+   "orb_only_branch": 340
+  },
+  "stored|IWM|premarket": {
+   "ok -> premarket_unfiltered": 140
+  },
+  "none|QQQ|long": {
+   "sessions": 2644,
+   "trigger": 242,
+   "stop": 242,
+   "t1": 287,
+   "t2": 331,
+   "t3": 359,
+   "orb_only": 242,
+   "any": 731,
+   "orb_only_main": 112,
+   "orb_only_branch": 354
+  },
+  "none|QQQ|short": {
+   "sessions": 2644,
+   "trigger": 240,
+   "stop": 242,
+   "t1": 261,
+   "t2": 284,
+   "t3": 325,
+   "orb_only": 240,
+   "any": 546,
+   "orb_only_main": 99,
+   "orb_only_branch": 339
+  },
+  "stored|QQQ|long": {
+   "sessions": 2644,
+   "trigger": 381,
+   "stop": 362,
+   "t1": 365,
+   "t2": 398,
+   "t3": 393,
+   "orb_only": 243,
+   "any": 829,
+   "orb_only_main": 111,
+   "orb_only_branch": 354
+  },
+  "stored|QQQ|short": {
+   "sessions": 2644,
+   "trigger": 379,
+   "stop": 355,
+   "t1": 358,
+   "t2": 367,
+   "t3": 367,
+   "orb_only": 243,
+   "any": 660,
+   "orb_only_main": 102,
+   "orb_only_branch": 339
+  },
+  "stored|QQQ|premarket": {
+   "ok -> premarket_unfiltered": 140
+  },
+  "none|SPY|long": {
+   "sessions": 2644,
+   "trigger": 247,
+   "stop": 247,
+   "t1": 295,
+   "t2": 346,
+   "t3": 365,
+   "orb_only": 247,
+   "any": 680,
+   "orb_only_main": 114,
+   "orb_only_branch": 361
+  },
+  "none|SPY|short": {
+   "sessions": 2644,
+   "trigger": 240,
+   "stop": 247,
+   "t1": 257,
+   "t2": 266,
+   "t3": 255,
+   "orb_only": 240,
+   "any": 453,
+   "orb_only_main": 100,
+   "orb_only_branch": 340
+  },
+  "stored|SPY|long": {
+   "sessions": 2644,
+   "trigger": 386,
+   "stop": 368,
+   "t1": 377,
+   "t2": 406,
+   "t3": 402,
+   "orb_only": 247,
+   "any": 794,
+   "orb_only_main": 114,
+   "orb_only_branch": 361
+  },
+  "stored|SPY|short": {
+   "sessions": 2644,
+   "trigger": 379,
+   "stop": 359,
+   "t1": 350,
+   "t2": 352,
+   "t3": 320,
+   "orb_only": 242,
+   "any": 568,
+   "orb_only_main": 102,
+   "orb_only_branch": 340
+  },
+  "stored|SPY|premarket": {
+   "ok -> premarket_unfiltered": 140
+  },
+  "none|SPY|premarket": {},
+  "none|QQQ|premarket": {},
+  "none|IWM|premarket": {}
+ },
+ "plans": {
+  "none|IWM|long|aggressive": {
+   "plans": 2644,
+   "entry": 2538,
+   "stop": 2538,
+   "targets": 2538,
+   "any": 2538
+  },
+  "none|IWM|long|neutral": {
+   "plans": 2644,
+   "entry": 2538,
+   "stop": 2538,
+   "targets": 2538,
+   "any": 2538
+  },
+  "none|IWM|long|conservative": {
+   "plans": 2644,
+   "entry": 2538,
+   "stop": 2538,
+   "targets": 2538,
+   "any": 2538
+  },
+  "none|IWM|short|aggressive": {
+   "plans": 2644,
+   "entry": 2544,
+   "stop": 2544,
+   "targets": 2544,
+   "any": 2544
+  },
+  "none|IWM|short|neutral": {
+   "plans": 2644,
+   "entry": 2544,
+   "stop": 2544,
+   "targets": 2544,
+   "any": 2544
+  },
+  "none|IWM|short|conservative": {
+   "plans": 2644,
+   "entry": 2544,
+   "stop": 2544,
+   "targets": 2544,
+   "any": 2544
+  },
+  "stored|IWM|long|aggressive": {
+   "plans": 2644,
+   "entry": 2538,
+   "stop": 2538,
+   "targets": 2538,
+   "any": 2538
+  },
+  "stored|IWM|long|neutral": {
+   "plans": 2644,
+   "entry": 2538,
+   "stop": 2538,
+   "targets": 2538,
+   "any": 2538
+  },
+  "stored|IWM|long|conservative": {
+   "plans": 2644,
+   "entry": 2538,
+   "stop": 2538,
+   "targets": 2538,
+   "any": 2538
+  },
+  "stored|IWM|short|aggressive": {
+   "plans": 2644,
+   "entry": 2544,
+   "stop": 2544,
+   "targets": 2544,
+   "any": 2544
+  },
+  "stored|IWM|short|neutral": {
+   "plans": 2644,
+   "entry": 2544,
+   "stop": 2544,
+   "targets": 2544,
+   "any": 2544
+  },
+  "stored|IWM|short|conservative": {
+   "plans": 2644,
+   "entry": 2544,
+   "stop": 2543,
+   "targets": 2544,
+   "any": 2544
+  },
+  "none|QQQ|long|aggressive": {
+   "plans": 2644,
+   "entry": 2532,
+   "stop": 2532,
+   "targets": 2532,
+   "any": 2532
+  },
+  "none|QQQ|long|neutral": {
+   "plans": 2644,
+   "entry": 2532,
+   "stop": 2532,
+   "targets": 2532,
+   "any": 2532
+  },
+  "none|QQQ|long|conservative": {
+   "plans": 2644,
+   "entry": 2532,
+   "stop": 2532,
+   "targets": 2532,
+   "any": 2532
+  },
+  "none|QQQ|short|aggressive": {
+   "plans": 2644,
+   "entry": 2545,
+   "stop": 2545,
+   "targets": 2545,
+   "any": 2545
+  },
+  "none|QQQ|short|neutral": {
+   "plans": 2644,
+   "entry": 2545,
+   "stop": 2545,
+   "targets": 2545,
+   "any": 2545
+  },
+  "none|QQQ|short|conservative": {
+   "plans": 2644,
+   "entry": 2545,
+   "stop": 2545,
+   "targets": 2545,
+   "any": 2545
+  },
+  "stored|QQQ|long|aggressive": {
+   "plans": 2644,
+   "entry": 2533,
+   "stop": 2533,
+   "targets": 2533,
+   "any": 2533
+  },
+  "stored|QQQ|long|neutral": {
+   "plans": 2644,
+   "entry": 2533,
+   "stop": 2533,
+   "targets": 2533,
+   "any": 2533
+  },
+  "stored|QQQ|long|conservative": {
+   "plans": 2644,
+   "entry": 2533,
+   "stop": 2533,
+   "targets": 2533,
+   "any": 2533
+  },
+  "stored|QQQ|short|aggressive": {
+   "plans": 2644,
+   "entry": 2545,
+   "stop": 2545,
+   "targets": 2545,
+   "any": 2545
+  },
+  "stored|QQQ|short|neutral": {
+   "plans": 2644,
+   "entry": 2545,
+   "stop": 2545,
+   "targets": 2545,
+   "any": 2545
+  },
+  "stored|QQQ|short|conservative": {
+   "plans": 2644,
+   "entry": 2545,
+   "stop": 2545,
+   "targets": 2545,
+   "any": 2545
+  },
+  "none|SPY|long|aggressive": {
+   "plans": 2644,
+   "entry": 2530,
+   "stop": 2530,
+   "targets": 2530,
+   "any": 2530
+  },
+  "none|SPY|long|neutral": {
+   "plans": 2644,
+   "entry": 2530,
+   "stop": 2530,
+   "targets": 2530,
+   "any": 2530
+  },
+  "none|SPY|long|conservative": {
+   "plans": 2644,
+   "entry": 2530,
+   "stop": 2530,
+   "targets": 2530,
+   "any": 2530
+  },
+  "none|SPY|short|aggressive": {
+   "plans": 2644,
+   "entry": 2544,
+   "stop": 2544,
+   "targets": 2544,
+   "any": 2544
+  },
+  "none|SPY|short|neutral": {
+   "plans": 2644,
+   "entry": 2544,
+   "stop": 2544,
+   "targets": 2544,
+   "any": 2544
+  },
+  "none|SPY|short|conservative": {
+   "plans": 2644,
+   "entry": 2544,
+   "stop": 2544,
+   "targets": 2544,
+   "any": 2544
+  },
+  "stored|SPY|long|aggressive": {
+   "plans": 2644,
+   "entry": 2530,
+   "stop": 2530,
+   "targets": 2530,
+   "any": 2530
+  },
+  "stored|SPY|long|neutral": {
+   "plans": 2644,
+   "entry": 2530,
+   "stop": 2530,
+   "targets": 2530,
+   "any": 2530
+  },
+  "stored|SPY|long|conservative": {
+   "plans": 2644,
+   "entry": 2530,
+   "stop": 2530,
+   "targets": 2530,
+   "any": 2530
+  },
+  "stored|SPY|short|aggressive": {
+   "plans": 2644,
+   "entry": 2542,
+   "stop": 2542,
+   "targets": 2542,
+   "any": 2542
+  },
+  "stored|SPY|short|neutral": {
+   "plans": 2644,
+   "entry": 2542,
+   "stop": 2542,
+   "targets": 2542,
+   "any": 2542
+  },
+  "stored|SPY|short|conservative": {
+   "plans": 2644,
+   "entry": 2542,
+   "stop": 2542,
+   "targets": 2542,
+   "any": 2542
+  },
+  "stored|SPY|long|all": {
+   "error": 0
+  },
+  "stored|SPY|short|all": {
+   "error": 0
+  },
+  "stored|QQQ|long|all": {
+   "error": 0
+  },
+  "stored|QQQ|short|all": {
+   "error": 0
+  },
+  "stored|IWM|long|all": {
+   "error": 0
+  },
+  "stored|IWM|short|all": {
+   "error": 0
+  },
+  "none|SPY|long|all": {
+   "error": 0
+  },
+  "none|SPY|short|all": {
+   "error": 0
+  },
+  "none|QQQ|long|all": {
+   "error": 0
+  },
+  "none|QQQ|short|all": {
+   "error": 0
+  },
+  "none|IWM|long|all": {
+   "error": 0
+  },
+  "none|IWM|short|all": {
+   "error": 0
+  }
+ },
+ "last_20": {
+  "SPY|stored": [
+   {
+    "session": "2026-10-12",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 781.08",
+      "reason": null,
+      "stop": 778.57,
+      "targets": [
+       781.62
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 778.24",
+      "reason": null,
+      "stop": 779.37,
+      "targets": [
+       775.14,
+       769.63,
+       762.63
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PQH 779.37",
+      "reason": null,
+      "stop": 775.14,
+      "targets": [
+       779.42,
+       781.62
+      ]
+     },
+     "short": {
+      "trigger": "PDL 775.14",
+      "reason": null,
+      "stop": 779.37,
+      "targets": [
+       769.63,
+       762.63
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-13",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 779.00",
+      "reason": null,
+      "stop": 777.05,
+      "targets": [
+       779.37,
+       779.4,
+       779.42
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 776.49",
+      "reason": null,
+      "stop": 778.1,
+      "targets": [
+       775.14,
+       769.63,
+       762.63
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWC 778.57",
+      "reason": null,
+      "stop": 777.05,
+      "targets": [
+       779.37,
+       779.4,
+       779.42
+      ]
+     },
+     "short": {
+      "trigger": "PDL 777.05",
+      "reason": null,
+      "stop": 778.57,
+      "targets": [
+       775.14,
+       769.63,
+       762.63
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-14",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 780.50",
+      "reason": null,
+      "stop": 775.95,
+      "targets": [
+       781.62
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 774.72",
+      "reason": null,
+      "stop": 778.01,
+      "targets": [
+       769.63,
+       762.63
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWC 778.57",
+      "reason": null,
+      "stop": 775.95,
+      "targets": [
+       778.75,
+       779.37,
+       781.62
+      ]
+     },
+     "short": {
+      "trigger": "PDL 775.95",
+      "reason": null,
+      "stop": 778.57,
+      "targets": [
+       775.14,
+       769.63,
+       762.63
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-15",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 770.68",
+      "reason": null,
+      "stop": 766.71,
+      "targets": [
+       775.14,
+       776.35,
+       778.57
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 764.10",
+      "reason": null,
+      "stop": 769.6,
+      "targets": [
+       762.63,
+       749.6
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWL 769.63",
+      "reason": null,
+      "stop": 766.71,
+      "targets": [
+       775.14,
+       776.35,
+       778.57
+      ]
+     },
+     "short": {
+      "trigger": "PDL 766.71",
+      "reason": null,
+      "stop": 769.63,
+      "targets": [
+       762.63
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-16",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 773.92",
+      "reason": null,
+      "stop": 772.87,
+      "targets": [
+       775.14,
+       778.57,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 767.24",
+      "reason": null,
+      "stop": 773.92,
+      "targets": [
+       764.43,
+       762.63
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 772.87",
+      "reason": null,
+      "stop": 769.63,
+      "targets": [
+       775.14,
+       778.57,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PWL 769.63",
+      "reason": null,
+      "stop": 772.87,
+      "targets": [
+       764.43,
+       762.63
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-19",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 773.20",
+      "reason": null,
+      "stop": 763.25,
+      "targets": [
+       773.25,
+       775.14,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 762.79",
+      "reason": null,
+      "stop": 773.2,
+      "targets": [
+       762.63,
+       760.64,
+       749.6
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 773.25",
+      "reason": null,
+      "stop": 762.63,
+      "targets": [
+       775.14
+      ]
+     },
+     "short": {
+      "trigger": "PMC 762.63",
+      "reason": null,
+      "stop": 773.25,
+      "targets": [
+       760.64,
+       749.6
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-20",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 768.55",
+      "reason": null,
+      "stop": 763.71,
+      "targets": [
+       770.46,
+       773.25,
+       775.14
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 763.71",
+      "reason": null,
+      "stop": 765.82,
+      "targets": [
+       763.25,
+       762.63,
+       760.64
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 770.46",
+      "reason": null,
+      "stop": 765.82,
+      "targets": [
+       773.25,
+       775.14,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PDL 765.82",
+      "reason": null,
+      "stop": 770.46,
+      "targets": [
+       763.25,
+       762.63,
+       760.64
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-21",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 772.10",
+      "reason": null,
+      "stop": 769.05,
+      "targets": [
+       772.29,
+       775.14,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 768.21",
+      "reason": null,
+      "stop": 772.1,
+      "targets": [
+       764.25,
+       763.25,
+       762.63
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 772.29",
+      "reason": null,
+      "stop": 764.25,
+      "targets": [
+       775.14,
+       779.37,
+       779.4
+      ]
+     },
+     "short": {
+      "trigger": "PDL 764.25",
+      "reason": null,
+      "stop": 772.29,
+      "targets": [
+       763.25,
+       762.63,
+       760.64
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-22",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 774.08",
+      "reason": null,
+      "stop": 764.54,
+      "targets": [
+       774.44,
+       775.14,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 764.54",
+      "reason": null,
+      "stop": 768.4,
+      "targets": [
+       763.25,
+       762.63,
+       760.64
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 774.44",
+      "reason": null,
+      "stop": 768.4,
+      "targets": [
+       775.14,
+       779.37,
+       779.4
+      ]
+     },
+     "short": {
+      "trigger": "PDL 768.40",
+      "reason": null,
+      "stop": 774.44,
+      "targets": [
+       763.25,
+       762.63,
+       760.64
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-23",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 764.95",
+      "reason": null,
+      "stop": 761.17,
+      "targets": [
+       767.71,
+       775.14,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 759.81",
+      "reason": null,
+      "stop": 762.63,
+      "targets": [
+       749.6
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 767.71",
+      "reason": null,
+      "stop": 763.25,
+      "targets": [
+       775.14
+      ]
+     },
+     "short": {
+      "trigger": "PWC 763.25",
+      "reason": null,
+      "stop": 767.71,
+      "targets": [
+       762.63,
+       761.17,
+       760.64
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-26",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 763.96",
+      "reason": null,
+      "stop": 759.97,
+      "targets": [
+       774.44,
+       775.14,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 759.68",
+      "reason": null,
+      "stop": 762.63,
+      "targets": [
+       758.68,
+       749.6
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PMC 762.63",
+      "reason": null,
+      "stop": 758.68,
+      "targets": [
+       763.47
+      ]
+     },
+     "short": {
+      "trigger": "PDL 758.68",
+      "reason": null,
+      "stop": 762.63,
+      "targets": [
+       749.6
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-27",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 769.00",
+      "reason": null,
+      "stop": 765.37,
+      "targets": [
+       774.44,
+       775.14,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 763.91",
+      "reason": null,
+      "stop": 767.73,
+      "targets": [
+       762.63,
+       761.63,
+       759.97
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 767.73",
+      "reason": null,
+      "stop": 762.63,
+      "targets": [
+       774.44,
+       775.14,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PMC 762.63",
+      "reason": null,
+      "stop": 767.73,
+      "targets": [
+       761.63,
+       759.97,
+       758.68
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-28",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 771.82",
+      "reason": null,
+      "stop": 769.66,
+      "targets": [
+       774.44,
+       775.14,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PDC 769.66",
+      "reason": null,
+      "stop": 771.14,
+      "targets": [
+       765.21,
+       762.63,
+       759.97
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 771.14",
+      "reason": null,
+      "stop": 765.21,
+      "targets": [
+       774.44,
+       775.14,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PDL 765.21",
+      "reason": null,
+      "stop": 771.14,
+      "targets": [
+       762.63,
+       759.97,
+       758.68
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-29",
+    "main": {
+     "long": {
+      "trigger": "PDC 772.31",
+      "reason": null,
+      "stop": 769.24,
+      "targets": [
+       773.36,
+       774.44,
+       775.14
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 768.41",
+      "reason": null,
+      "stop": 772.31,
+      "targets": [
+       762.63,
+       759.97,
+       758.68
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 773.36",
+      "reason": null,
+      "stop": 769.24,
+      "targets": [
+       774.44,
+       775.14,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PDL 769.24",
+      "reason": null,
+      "stop": 773.36,
+      "targets": [
+       762.63,
+       759.97,
+       758.68
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-30",
+    "main": {
+     "long": {
+      "trigger": "PDC 769.36",
+      "reason": null,
+      "stop": 760.9,
+      "targets": [
+       770.76,
+       774.44,
+       775.14
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 760.90",
+      "reason": null,
+      "stop": 762.63,
+      "targets": [
+       759.97,
+       758.68,
+       749.6
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 770.76",
+      "reason": null,
+      "stop": 766.62,
+      "targets": [
+       774.44,
+       775.14,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PDL 766.62",
+      "reason": null,
+      "stop": 770.76,
+      "targets": [
+       762.63,
+       759.97,
+       758.68
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-02",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 760.99",
+      "reason": null,
+      "stop": 755.72,
+      "targets": [
+       761.46,
+       762.63,
+       773.36
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 754.72",
+      "reason": null,
+      "stop": 760.99,
+      "targets": [
+       750.36
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 761.46",
+      "reason": null,
+      "stop": 750.36,
+      "targets": [
+       762.63
+      ]
+     },
+     "short": {
+      "trigger": "PDL 750.36",
+      "reason": null,
+      "stop": 761.46,
+      "targets": []
+     }
+    }
+   },
+   {
+    "session": "2026-11-03",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 760.62",
+      "reason": null,
+      "stop": 752.1,
+      "targets": [
+       762.63,
+       763.86,
+       773.36
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 749.33",
+      "reason": null,
+      "stop": 755.72,
+      "targets": [
+       729.1
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWC 755.72",
+      "reason": null,
+      "stop": 751.6,
+      "targets": [
+       762.63,
+       763.86
+      ]
+     },
+     "short": {
+      "trigger": "PDL 751.60",
+      "reason": null,
+      "stop": 755.72,
+      "targets": [
+       750.36
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-04",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 763.89",
+      "reason": null,
+      "stop": 757.07,
+      "targets": [
+       773.36,
+       779.37,
+       781.62
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 747.96",
+      "reason": null,
+      "stop": 762.63,
+      "targets": []
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWC 755.72",
+      "reason": null,
+      "stop": 752.39,
+      "targets": [
+       757.07,
+       762.63,
+       763.86
+      ]
+     },
+     "short": {
+      "trigger": "PDL 752.39",
+      "reason": null,
+      "stop": 755.72,
+      "targets": [
+       751.6,
+       750.36
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-05",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 768.56",
+      "reason": null,
+      "stop": 766.81,
+      "targets": [
+       773.36,
+       775.64,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 763.83",
+      "reason": null,
+      "stop": 768.56,
+      "targets": [
+       762.64,
+       762.63,
+       755.72
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWH 773.36",
+      "reason": null,
+      "stop": 762.64,
+      "targets": [
+       775.64,
+       779.37,
+       781.62
+      ]
+     },
+     "short": {
+      "trigger": "PDL 762.64",
+      "reason": null,
+      "stop": 773.36,
+      "targets": [
+       762.63,
+       755.72,
+       750.36
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-06",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 765.53",
+      "reason": null,
+      "stop": 733.0,
+      "targets": [
+       765.97
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 730.64",
+      "reason": null,
+      "stop": 750.36,
+      "targets": [
+       729.1
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWL 750.36",
+      "reason": null,
+      "stop": 732.71,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PDL 732.71",
+      "reason": null,
+      "stop": 750.36,
+      "targets": [
+       729.1
+      ]
+     }
+    }
+   }
+  ],
+  "SPY|none": [
+   {
+    "session": "2026-10-12",
+    "main": {
+     "long": {
+      "trigger": "PQH 779.37",
+      "reason": null,
+      "stop": 775.14,
+      "targets": [
+       779.42,
+       781.62
+      ]
+     },
+     "short": {
+      "trigger": "PDL 775.14",
+      "reason": null,
+      "stop": 779.37,
+      "targets": [
+       769.63,
+       762.63
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PQH 779.37",
+      "reason": null,
+      "stop": 775.14,
+      "targets": [
+       779.42,
+       781.62
+      ]
+     },
+     "short": {
+      "trigger": "PDL 775.14",
+      "reason": null,
+      "stop": 779.37,
+      "targets": [
+       769.63,
+       762.63
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-13",
+    "main": {
+     "long": {
+      "trigger": "PWC 778.57",
+      "reason": null,
+      "stop": 777.05,
+      "targets": [
+       779.37,
+       779.4,
+       779.42
+      ]
+     },
+     "short": {
+      "trigger": "PDL 777.05",
+      "reason": null,
+      "stop": 778.57,
+      "targets": [
+       775.14,
+       769.63,
+       762.63
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWC 778.57",
+      "reason": null,
+      "stop": 777.05,
+      "targets": [
+       779.37,
+       779.4,
+       779.42
+      ]
+     },
+     "short": {
+      "trigger": "PDL 777.05",
+      "reason": null,
+      "stop": 778.57,
+      "targets": [
+       775.14,
+       769.63,
+       762.63
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-14",
+    "main": {
+     "long": {
+      "trigger": "PWC 778.57",
+      "reason": null,
+      "stop": 775.95,
+      "targets": [
+       778.75,
+       779.37,
+       781.62
+      ]
+     },
+     "short": {
+      "trigger": "PDL 775.95",
+      "reason": null,
+      "stop": 778.57,
+      "targets": [
+       775.14,
+       769.63,
+       762.63
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWC 778.57",
+      "reason": null,
+      "stop": 775.95,
+      "targets": [
+       778.75,
+       779.37,
+       781.62
+      ]
+     },
+     "short": {
+      "trigger": "PDL 775.95",
+      "reason": null,
+      "stop": 778.57,
+      "targets": [
+       775.14,
+       769.63,
+       762.63
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-15",
+    "main": {
+     "long": {
+      "trigger": "PWL 769.63",
+      "reason": null,
+      "stop": 766.71,
+      "targets": [
+       775.14,
+       776.35,
+       778.57
+      ]
+     },
+     "short": {
+      "trigger": "PDL 766.71",
+      "reason": null,
+      "stop": 769.63,
+      "targets": [
+       762.63
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWL 769.63",
+      "reason": null,
+      "stop": 766.71,
+      "targets": [
+       775.14,
+       776.35,
+       778.57
+      ]
+     },
+     "short": {
+      "trigger": "PDL 766.71",
+      "reason": null,
+      "stop": 769.63,
+      "targets": [
+       762.63
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-16",
+    "main": {
+     "long": {
+      "trigger": "PDH 772.87",
+      "reason": null,
+      "stop": 769.63,
+      "targets": [
+       775.14,
+       778.57,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PWL 769.63",
+      "reason": null,
+      "stop": 772.87,
+      "targets": [
+       764.43,
+       762.63
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 772.87",
+      "reason": null,
+      "stop": 769.63,
+      "targets": [
+       775.14,
+       778.57,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PWL 769.63",
+      "reason": null,
+      "stop": 772.87,
+      "targets": [
+       764.43,
+       762.63
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-19",
+    "main": {
+     "long": {
+      "trigger": "PDH 773.25",
+      "reason": null,
+      "stop": 762.63,
+      "targets": [
+       775.14,
+       779.37,
+       779.4
+      ]
+     },
+     "short": {
+      "trigger": "PMC 762.63",
+      "reason": null,
+      "stop": 773.25,
+      "targets": [
+       760.64,
+       749.6
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 773.25",
+      "reason": null,
+      "stop": 762.63,
+      "targets": [
+       775.14
+      ]
+     },
+     "short": {
+      "trigger": "PMC 762.63",
+      "reason": null,
+      "stop": 773.25,
+      "targets": [
+       760.64,
+       749.6
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-20",
+    "main": {
+     "long": {
+      "trigger": "PDH 770.46",
+      "reason": null,
+      "stop": 765.82,
+      "targets": [
+       773.25,
+       775.14,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PDL 765.82",
+      "reason": null,
+      "stop": 770.46,
+      "targets": [
+       763.25,
+       762.63,
+       760.64
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 770.46",
+      "reason": null,
+      "stop": 765.82,
+      "targets": [
+       773.25,
+       775.14,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PDL 765.82",
+      "reason": null,
+      "stop": 770.46,
+      "targets": [
+       763.25,
+       762.63,
+       760.64
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-21",
+    "main": {
+     "long": {
+      "trigger": "PDH 772.29",
+      "reason": null,
+      "stop": 764.25,
+      "targets": [
+       775.14,
+       779.37,
+       779.4
+      ]
+     },
+     "short": {
+      "trigger": "PDL 764.25",
+      "reason": null,
+      "stop": 772.29,
+      "targets": [
+       763.25,
+       762.63,
+       760.64
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 772.29",
+      "reason": null,
+      "stop": 764.25,
+      "targets": [
+       775.14,
+       779.37,
+       779.4
+      ]
+     },
+     "short": {
+      "trigger": "PDL 764.25",
+      "reason": null,
+      "stop": 772.29,
+      "targets": [
+       763.25,
+       762.63,
+       760.64
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-22",
+    "main": {
+     "long": {
+      "trigger": "PDH 774.44",
+      "reason": null,
+      "stop": 768.4,
+      "targets": [
+       775.14,
+       779.37,
+       779.4
+      ]
+     },
+     "short": {
+      "trigger": "PDL 768.40",
+      "reason": null,
+      "stop": 774.44,
+      "targets": [
+       763.25,
+       762.63,
+       760.64
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 774.44",
+      "reason": null,
+      "stop": 768.4,
+      "targets": [
+       775.14,
+       779.37,
+       779.4
+      ]
+     },
+     "short": {
+      "trigger": "PDL 768.40",
+      "reason": null,
+      "stop": 774.44,
+      "targets": [
+       763.25,
+       762.63,
+       760.64
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-23",
+    "main": {
+     "long": {
+      "trigger": "PDH 767.71",
+      "reason": null,
+      "stop": 763.25,
+      "targets": [
+       775.14,
+       779.37,
+       779.4
+      ]
+     },
+     "short": {
+      "trigger": "PWC 763.25",
+      "reason": null,
+      "stop": 767.71,
+      "targets": [
+       762.63,
+       761.17,
+       760.64
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 767.71",
+      "reason": null,
+      "stop": 763.25,
+      "targets": [
+       775.14
+      ]
+     },
+     "short": {
+      "trigger": "PWC 763.25",
+      "reason": null,
+      "stop": 767.71,
+      "targets": [
+       762.63,
+       761.17,
+       760.64
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-26",
+    "main": {
+     "long": {
+      "trigger": "PMC 762.63",
+      "reason": null,
+      "stop": 758.68,
+      "targets": [
+       763.47,
+       774.44,
+       775.14
+      ]
+     },
+     "short": {
+      "trigger": "PDL 758.68",
+      "reason": null,
+      "stop": 762.63,
+      "targets": [
+       749.6
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PMC 762.63",
+      "reason": null,
+      "stop": 758.68,
+      "targets": [
+       763.47
+      ]
+     },
+     "short": {
+      "trigger": "PDL 758.68",
+      "reason": null,
+      "stop": 762.63,
+      "targets": [
+       749.6
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-27",
+    "main": {
+     "long": {
+      "trigger": "PDH 767.73",
+      "reason": null,
+      "stop": 762.63,
+      "targets": [
+       774.44,
+       775.14,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PMC 762.63",
+      "reason": null,
+      "stop": 767.73,
+      "targets": [
+       761.63,
+       759.97,
+       758.68
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 767.73",
+      "reason": null,
+      "stop": 762.63,
+      "targets": [
+       774.44,
+       775.14,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PMC 762.63",
+      "reason": null,
+      "stop": 767.73,
+      "targets": [
+       761.63,
+       759.97,
+       758.68
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-28",
+    "main": {
+     "long": {
+      "trigger": "PDH 771.14",
+      "reason": null,
+      "stop": 765.21,
+      "targets": [
+       774.44,
+       775.14,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PDL 765.21",
+      "reason": null,
+      "stop": 771.14,
+      "targets": [
+       762.63,
+       759.97,
+       758.68
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 771.14",
+      "reason": null,
+      "stop": 765.21,
+      "targets": [
+       774.44,
+       775.14,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PDL 765.21",
+      "reason": null,
+      "stop": 771.14,
+      "targets": [
+       762.63,
+       759.97,
+       758.68
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-29",
+    "main": {
+     "long": {
+      "trigger": "PDH 773.36",
+      "reason": null,
+      "stop": 769.24,
+      "targets": [
+       774.44,
+       775.14,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PDL 769.24",
+      "reason": null,
+      "stop": 773.36,
+      "targets": [
+       762.63,
+       759.97,
+       758.68
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 773.36",
+      "reason": null,
+      "stop": 769.24,
+      "targets": [
+       774.44,
+       775.14,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PDL 769.24",
+      "reason": null,
+      "stop": 773.36,
+      "targets": [
+       762.63,
+       759.97,
+       758.68
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-30",
+    "main": {
+     "long": {
+      "trigger": "PDH 770.76",
+      "reason": null,
+      "stop": 766.62,
+      "targets": [
+       774.44,
+       775.14,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PDL 766.62",
+      "reason": null,
+      "stop": 770.76,
+      "targets": [
+       762.63,
+       759.97,
+       758.68
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 770.76",
+      "reason": null,
+      "stop": 766.62,
+      "targets": [
+       774.44,
+       775.14,
+       779.37
+      ]
+     },
+     "short": {
+      "trigger": "PDL 766.62",
+      "reason": null,
+      "stop": 770.76,
+      "targets": [
+       762.63,
+       759.97,
+       758.68
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-02",
+    "main": {
+     "long": {
+      "trigger": "PDH 761.46",
+      "reason": null,
+      "stop": 750.36,
+      "targets": [
+       762.63,
+       773.36
+      ]
+     },
+     "short": {
+      "trigger": "PDL 750.36",
+      "reason": null,
+      "stop": 761.46,
+      "targets": []
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 761.46",
+      "reason": null,
+      "stop": 750.36,
+      "targets": [
+       762.63
+      ]
+     },
+     "short": {
+      "trigger": "PDL 750.36",
+      "reason": null,
+      "stop": 761.46,
+      "targets": []
+     }
+    }
+   },
+   {
+    "session": "2026-11-03",
+    "main": {
+     "long": {
+      "trigger": "PWC 755.72",
+      "reason": null,
+      "stop": 751.6,
+      "targets": [
+       762.63,
+       763.86,
+       773.36
+      ]
+     },
+     "short": {
+      "trigger": "PDL 751.60",
+      "reason": null,
+      "stop": 755.72,
+      "targets": [
+       750.36,
+       729.1
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWC 755.72",
+      "reason": null,
+      "stop": 751.6,
+      "targets": [
+       762.63,
+       763.86
+      ]
+     },
+     "short": {
+      "trigger": "PDL 751.60",
+      "reason": null,
+      "stop": 755.72,
+      "targets": [
+       750.36
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-04",
+    "main": {
+     "long": {
+      "trigger": "PWC 755.72",
+      "reason": null,
+      "stop": 752.39,
+      "targets": [
+       757.07,
+       762.63,
+       763.86
+      ]
+     },
+     "short": {
+      "trigger": "PDL 752.39",
+      "reason": null,
+      "stop": 755.72,
+      "targets": [
+       751.6,
+       750.36
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWC 755.72",
+      "reason": null,
+      "stop": 752.39,
+      "targets": [
+       757.07,
+       762.63,
+       763.86
+      ]
+     },
+     "short": {
+      "trigger": "PDL 752.39",
+      "reason": null,
+      "stop": 755.72,
+      "targets": [
+       751.6,
+       750.36
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-05",
+    "main": {
+     "long": {
+      "trigger": "PWH 773.36",
+      "reason": null,
+      "stop": 762.64,
+      "targets": [
+       775.64,
+       779.37,
+       781.62
+      ]
+     },
+     "short": {
+      "trigger": "PDL 762.64",
+      "reason": null,
+      "stop": 773.36,
+      "targets": [
+       762.63,
+       755.72,
+       750.36
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWH 773.36",
+      "reason": null,
+      "stop": 762.64,
+      "targets": [
+       775.64,
+       779.37,
+       781.62
+      ]
+     },
+     "short": {
+      "trigger": "PDL 762.64",
+      "reason": null,
+      "stop": 773.36,
+      "targets": [
+       762.63,
+       755.72,
+       750.36
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-06",
+    "main": {
+     "long": {
+      "trigger": "PWL 750.36",
+      "reason": null,
+      "stop": 732.71,
+      "targets": [
+       755.72,
+       762.63
+      ]
+     },
+     "short": {
+      "trigger": "PDL 732.71",
+      "reason": null,
+      "stop": 750.36,
+      "targets": [
+       729.1
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWL 750.36",
+      "reason": null,
+      "stop": 732.71,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PDL 732.71",
+      "reason": null,
+      "stop": 750.36,
+      "targets": [
+       729.1
+      ]
+     }
+    }
+   }
+  ],
+  "QQQ|stored": [
+   {
+    "session": "2026-10-12",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 756.76",
+      "reason": null,
+      "stop": 749.01,
+      "targets": [
+       757.18,
+       762.86
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 749.01",
+      "reason": null,
+      "stop": 751.27,
+      "targets": [
+       748.37,
+       748.35,
+       743.23
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 752.87",
+      "reason": null,
+      "stop": 748.37,
+      "targets": [
+       757.18,
+       762.86
+      ]
+     },
+     "short": {
+      "trigger": "PDL 748.37",
+      "reason": null,
+      "stop": 752.87,
+      "targets": [
+       748.35,
+       743.23,
+       739.77
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-13",
+    "main": {
+     "long": {
+      "trigger": "PWC 751.27",
+      "reason": null,
+      "stop": 739.77,
+      "targets": [
+       762.86
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 739.50",
+      "reason": null,
+      "stop": 743.23,
+      "targets": []
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PMH 748.35",
+      "reason": null,
+      "stop": 744.85,
+      "targets": [
+       749.79,
+       751.27,
+       762.86
+      ]
+     },
+     "short": {
+      "trigger": "PDL 744.85",
+      "reason": null,
+      "stop": 748.35,
+      "targets": [
+       743.23,
+       739.77
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-14",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 747.95",
+      "reason": null,
+      "stop": 739.77,
+      "targets": [
+       748.35,
+       751.27,
+       762.86
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 737.69",
+      "reason": null,
+      "stop": 743.23,
+      "targets": []
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 744.20",
+      "reason": null,
+      "stop": 743.23,
+      "targets": [
+       748.35,
+       751.27
+      ]
+     },
+     "short": {
+      "trigger": "PWL 743.23",
+      "reason": null,
+      "stop": 744.2,
+      "targets": [
+       739.77,
+       738.83
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-15",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 738.06",
+      "reason": null,
+      "stop": 715.63,
+      "targets": [
+       739.77,
+       740.53,
+       743.23
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 715.63",
+      "reason": null,
+      "stop": 726.39,
+      "targets": [
+       700.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PMC 739.77",
+      "reason": null,
+      "stop": 726.39,
+      "targets": [
+       740.53,
+       743.23
+      ]
+     },
+     "short": {
+      "trigger": "PDL 726.39",
+      "reason": null,
+      "stop": 739.77,
+      "targets": []
+     }
+    }
+   },
+   {
+    "session": "2026-10-16",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 730.34",
+      "reason": null,
+      "stop": 718.04,
+      "targets": [
+       739.77,
+       743.23,
+       748.35
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 718.04",
+      "reason": null,
+      "stop": 728.0,
+      "targets": [
+       715.44,
+       700.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 729.43",
+      "reason": null,
+      "stop": 715.44,
+      "targets": [
+       739.77,
+       743.23
+      ]
+     },
+     "short": {
+      "trigger": "PDL 715.44",
+      "reason": null,
+      "stop": 729.43,
+      "targets": []
+     }
+    }
+   },
+   {
+    "session": "2026-10-19",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 720.41",
+      "reason": null,
+      "stop": 709.8,
+      "targets": [
+       725.96,
+       739.77,
+       748.35
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 709.27",
+      "reason": null,
+      "stop": 720.41,
+      "targets": [
+       707.23,
+       700.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 725.96",
+      "reason": null,
+      "stop": 707.23,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PDL 707.23",
+      "reason": null,
+      "stop": 725.96,
+      "targets": [
+       700.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-20",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 721.34",
+      "reason": null,
+      "stop": 712.5,
+      "targets": [
+       724.55,
+       725.96,
+       739.77
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 712.50",
+      "reason": null,
+      "stop": 716.57,
+      "targets": [
+       709.8,
+       707.23,
+       700.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 724.55",
+      "reason": null,
+      "stop": 716.57,
+      "targets": [
+       725.96
+      ]
+     },
+     "short": {
+      "trigger": "PDL 716.57",
+      "reason": null,
+      "stop": 724.55,
+      "targets": [
+       709.8,
+       707.23,
+       700.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-21",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 724.87",
+      "reason": null,
+      "stop": 717.63,
+      "targets": [
+       739.77,
+       748.35,
+       749.79
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 715.22",
+      "reason": null,
+      "stop": 722.75,
+      "targets": [
+       710.39,
+       709.8,
+       707.23
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 722.75",
+      "reason": null,
+      "stop": 710.39,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PDL 710.39",
+      "reason": null,
+      "stop": 722.75,
+      "targets": [
+       709.8,
+       707.23,
+       700.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-22",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 726.71",
+      "reason": null,
+      "stop": 711.29,
+      "targets": [
+       727.95,
+       739.77
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 711.29",
+      "reason": null,
+      "stop": 719.71,
+      "targets": [
+       709.8,
+       707.23,
+       700.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 727.95",
+      "reason": null,
+      "stop": 719.71,
+      "targets": [
+       739.77
+      ]
+     },
+     "short": {
+      "trigger": "PDL 719.71",
+      "reason": null,
+      "stop": 727.95,
+      "targets": [
+       709.8,
+       707.23,
+       700.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-23",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 713.27",
+      "reason": null,
+      "stop": 701.9,
+      "targets": [
+       715.43
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 701.63",
+      "reason": null,
+      "stop": 704.47,
+      "targets": [
+       700.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWL 707.23",
+      "reason": null,
+      "stop": 701.9,
+      "targets": [
+       709.8,
+       715.43
+      ]
+     },
+     "short": {
+      "trigger": "PDL 701.90",
+      "reason": null,
+      "stop": 707.23,
+      "targets": [
+       700.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-26",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 710.08",
+      "reason": null,
+      "stop": 704.4,
+      "targets": [
+       727.95,
+       739.77
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 702.09",
+      "reason": null,
+      "stop": 709.3,
+      "targets": [
+       701.16,
+       700.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 709.30",
+      "reason": null,
+      "stop": 701.16,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PDL 701.16",
+      "reason": null,
+      "stop": 709.3,
+      "targets": [
+       700.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-27",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 716.68",
+      "reason": null,
+      "stop": 712.2,
+      "targets": [
+       727.95,
+       739.77
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 706.29",
+      "reason": null,
+      "stop": 715.25,
+      "targets": [
+       705.58,
+       704.4,
+       701.16
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 715.25",
+      "reason": null,
+      "stop": 705.58,
+      "targets": [
+       727.95
+      ]
+     },
+     "short": {
+      "trigger": "PDL 705.58",
+      "reason": null,
+      "stop": 715.25,
+      "targets": [
+       704.4,
+       701.16,
+       700.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-28",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 725.57",
+      "reason": null,
+      "stop": 722.87,
+      "targets": [
+       727.95,
+       739.77,
+       748.35
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 720.42",
+      "reason": null,
+      "stop": 725.57,
+      "targets": [
+       713.59,
+       704.4,
+       701.16
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 722.87",
+      "reason": null,
+      "stop": 713.59,
+      "targets": [
+       727.95,
+       739.77
+      ]
+     },
+     "short": {
+      "trigger": "PDL 713.59",
+      "reason": null,
+      "stop": 722.87,
+      "targets": [
+       704.4,
+       701.16,
+       700.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-29",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 726.15",
+      "reason": null,
+      "stop": 714.85,
+      "targets": [
+       727.95,
+       739.77,
+       748.35
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 714.85",
+      "reason": null,
+      "stop": 720.3,
+      "targets": [
+       704.4,
+       701.16,
+       700.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 726.14",
+      "reason": null,
+      "stop": 720.3,
+      "targets": [
+       727.95,
+       739.77
+      ]
+     },
+     "short": {
+      "trigger": "PDL 720.30",
+      "reason": null,
+      "stop": 726.14,
+      "targets": [
+       704.4,
+       701.16,
+       700.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-30",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 715.60",
+      "reason": null,
+      "stop": null,
+      "targets": [
+       718.07,
+       727.95
+      ]
+     },
+     "short": {
+      "trigger": null,
+      "reason": "next_level_outside_window",
+      "stop": null,
+      "targets": []
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 718.07",
+      "reason": null,
+      "stop": 711.62,
+      "targets": [
+       727.95
+      ]
+     },
+     "short": {
+      "trigger": "PDL 711.62",
+      "reason": null,
+      "stop": 718.07,
+      "targets": [
+       704.4,
+       701.16,
+       700.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-02",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 698.26",
+      "reason": null,
+      "stop": 690.49,
+      "targets": [
+       698.63,
+       726.14
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 686.29",
+      "reason": null,
+      "stop": 698.26,
+      "targets": [
+       683.45,
+       661.14
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 698.63",
+      "reason": null,
+      "stop": 683.45,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PDL 683.45",
+      "reason": null,
+      "stop": 698.63,
+      "targets": [
+       661.14
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-03",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 698.23",
+      "reason": null,
+      "stop": 683.45,
+      "targets": [
+       699.43
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 678.90",
+      "reason": null,
+      "stop": 690.49,
+      "targets": [
+       661.14
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWL 683.45",
+      "reason": null,
+      "stop": 680.33,
+      "targets": [
+       690.49,
+       699.43
+      ]
+     },
+     "short": {
+      "trigger": "PDL 680.33",
+      "reason": null,
+      "stop": 683.45,
+      "targets": [
+       661.14
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-04",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 694.13",
+      "reason": null,
+      "stop": 685.28,
+      "targets": [
+       699.43
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 676.20",
+      "reason": null,
+      "stop": 688.69,
+      "targets": [
+       661.14
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 688.69",
+      "reason": null,
+      "stop": 683.45,
+      "targets": [
+       690.49,
+       699.43
+      ]
+     },
+     "short": {
+      "trigger": "PWL 683.45",
+      "reason": null,
+      "stop": 688.69,
+      "targets": [
+       683.18,
+       680.33,
+       661.14
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-05",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 700.80",
+      "reason": null,
+      "stop": 683.45,
+      "targets": [
+       701.45
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 682.17",
+      "reason": null,
+      "stop": 687.87,
+      "targets": [
+       661.14
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 701.45",
+      "reason": null,
+      "stop": 690.49,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PWC 690.49",
+      "reason": null,
+      "stop": 701.45,
+      "targets": [
+       687.87,
+       683.45,
+       661.14
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-06",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 683.50",
+      "reason": null,
+      "stop": 647.05,
+      "targets": [
+       683.65,
+       690.49
+      ]
+     },
+     "short": {
+      "trigger": "PDL 647.05",
+      "reason": null,
+      "stop": 661.14,
+      "targets": [
+       637.01,
+       614.31
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PQL 661.14",
+      "reason": null,
+      "stop": 637.01,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PYH 637.01",
+      "reason": null,
+      "stop": 661.14,
+      "targets": [
+       614.31
+      ]
+     }
+    }
+   }
+  ],
+  "QQQ|none": [
+   {
+    "session": "2026-10-12",
+    "main": {
+     "long": {
+      "trigger": "PDH 752.87",
+      "reason": null,
+      "stop": 748.37,
+      "targets": [
+       757.18,
+       762.86
+      ]
+     },
+     "short": {
+      "trigger": "PDL 748.37",
+      "reason": null,
+      "stop": 752.87,
+      "targets": [
+       748.35,
+       743.23,
+       739.77
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 752.87",
+      "reason": null,
+      "stop": 748.37,
+      "targets": [
+       757.18,
+       762.86
+      ]
+     },
+     "short": {
+      "trigger": "PDL 748.37",
+      "reason": null,
+      "stop": 752.87,
+      "targets": [
+       748.35,
+       743.23,
+       739.77
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-13",
+    "main": {
+     "long": {
+      "trigger": "PMH 748.35",
+      "reason": null,
+      "stop": 744.85,
+      "targets": [
+       749.79,
+       751.27,
+       762.86
+      ]
+     },
+     "short": {
+      "trigger": "PDL 744.85",
+      "reason": null,
+      "stop": 748.35,
+      "targets": [
+       743.23,
+       739.77
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PMH 748.35",
+      "reason": null,
+      "stop": 744.85,
+      "targets": [
+       749.79,
+       751.27,
+       762.86
+      ]
+     },
+     "short": {
+      "trigger": "PDL 744.85",
+      "reason": null,
+      "stop": 748.35,
+      "targets": [
+       743.23,
+       739.77
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-14",
+    "main": {
+     "long": {
+      "trigger": "PDH 744.20",
+      "reason": null,
+      "stop": 743.23,
+      "targets": [
+       748.35,
+       751.27,
+       762.86
+      ]
+     },
+     "short": {
+      "trigger": "PWL 743.23",
+      "reason": null,
+      "stop": 744.2,
+      "targets": [
+       739.77,
+       738.83
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 744.20",
+      "reason": null,
+      "stop": 743.23,
+      "targets": [
+       748.35,
+       751.27
+      ]
+     },
+     "short": {
+      "trigger": "PWL 743.23",
+      "reason": null,
+      "stop": 744.2,
+      "targets": [
+       739.77,
+       738.83
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-15",
+    "main": {
+     "long": {
+      "trigger": "PMC 739.77",
+      "reason": null,
+      "stop": 726.39,
+      "targets": [
+       740.53,
+       743.23,
+       748.35
+      ]
+     },
+     "short": {
+      "trigger": "PDL 726.39",
+      "reason": null,
+      "stop": 739.77,
+      "targets": []
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PMC 739.77",
+      "reason": null,
+      "stop": 726.39,
+      "targets": [
+       740.53,
+       743.23
+      ]
+     },
+     "short": {
+      "trigger": "PDL 726.39",
+      "reason": null,
+      "stop": 739.77,
+      "targets": []
+     }
+    }
+   },
+   {
+    "session": "2026-10-16",
+    "main": {
+     "long": {
+      "trigger": "PDH 729.43",
+      "reason": null,
+      "stop": 715.44,
+      "targets": [
+       739.77,
+       743.23,
+       748.35
+      ]
+     },
+     "short": {
+      "trigger": "PDL 715.44",
+      "reason": null,
+      "stop": 729.43,
+      "targets": [
+       700.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 729.43",
+      "reason": null,
+      "stop": 715.44,
+      "targets": [
+       739.77,
+       743.23
+      ]
+     },
+     "short": {
+      "trigger": "PDL 715.44",
+      "reason": null,
+      "stop": 729.43,
+      "targets": []
+     }
+    }
+   },
+   {
+    "session": "2026-10-19",
+    "main": {
+     "long": {
+      "trigger": "PDH 725.96",
+      "reason": null,
+      "stop": 707.23,
+      "targets": [
+       739.77
+      ]
+     },
+     "short": {
+      "trigger": "PDL 707.23",
+      "reason": null,
+      "stop": 725.96,
+      "targets": [
+       700.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 725.96",
+      "reason": null,
+      "stop": 707.23,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PDL 707.23",
+      "reason": null,
+      "stop": 725.96,
+      "targets": [
+       700.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-20",
+    "main": {
+     "long": {
+      "trigger": "PDH 724.55",
+      "reason": null,
+      "stop": 716.57,
+      "targets": [
+       725.96,
+       739.77,
+       748.35
+      ]
+     },
+     "short": {
+      "trigger": "PDL 716.57",
+      "reason": null,
+      "stop": 724.55,
+      "targets": [
+       709.8,
+       707.23,
+       700.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 724.55",
+      "reason": null,
+      "stop": 716.57,
+      "targets": [
+       725.96
+      ]
+     },
+     "short": {
+      "trigger": "PDL 716.57",
+      "reason": null,
+      "stop": 724.55,
+      "targets": [
+       709.8,
+       707.23,
+       700.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-21",
+    "main": {
+     "long": {
+      "trigger": "PDH 722.75",
+      "reason": null,
+      "stop": 710.39,
+      "targets": [
+       739.77,
+       748.35,
+       749.79
+      ]
+     },
+     "short": {
+      "trigger": "PDL 710.39",
+      "reason": null,
+      "stop": 722.75,
+      "targets": [
+       709.8,
+       707.23,
+       700.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 722.75",
+      "reason": null,
+      "stop": 710.39,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PDL 710.39",
+      "reason": null,
+      "stop": 722.75,
+      "targets": [
+       709.8,
+       707.23,
+       700.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-22",
+    "main": {
+     "long": {
+      "trigger": "PDH 727.95",
+      "reason": null,
+      "stop": 719.71,
+      "targets": [
+       739.77,
+       748.35,
+       749.79
+      ]
+     },
+     "short": {
+      "trigger": "PDL 719.71",
+      "reason": null,
+      "stop": 727.95,
+      "targets": [
+       709.8,
+       707.23,
+       700.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 727.95",
+      "reason": null,
+      "stop": 719.71,
+      "targets": [
+       739.77
+      ]
+     },
+     "short": {
+      "trigger": "PDL 719.71",
+      "reason": null,
+      "stop": 727.95,
+      "targets": [
+       709.8,
+       707.23,
+       700.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-23",
+    "main": {
+     "long": {
+      "trigger": "PWL 707.23",
+      "reason": null,
+      "stop": 701.9,
+      "targets": [
+       709.8,
+       715.43,
+       739.77
+      ]
+     },
+     "short": {
+      "trigger": "PDL 701.90",
+      "reason": null,
+      "stop": 707.23,
+      "targets": [
+       700.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWL 707.23",
+      "reason": null,
+      "stop": 701.9,
+      "targets": [
+       709.8,
+       715.43
+      ]
+     },
+     "short": {
+      "trigger": "PDL 701.90",
+      "reason": null,
+      "stop": 707.23,
+      "targets": [
+       700.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-26",
+    "main": {
+     "long": {
+      "trigger": "PDH 709.30",
+      "reason": null,
+      "stop": 701.16,
+      "targets": [
+       727.95
+      ]
+     },
+     "short": {
+      "trigger": "PDL 701.16",
+      "reason": null,
+      "stop": 709.3,
+      "targets": [
+       700.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 709.30",
+      "reason": null,
+      "stop": 701.16,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PDL 701.16",
+      "reason": null,
+      "stop": 709.3,
+      "targets": [
+       700.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-27",
+    "main": {
+     "long": {
+      "trigger": "PDH 715.25",
+      "reason": null,
+      "stop": 705.58,
+      "targets": [
+       727.95,
+       739.77
+      ]
+     },
+     "short": {
+      "trigger": "PDL 705.58",
+      "reason": null,
+      "stop": 715.25,
+      "targets": [
+       704.4,
+       701.16,
+       700.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 715.25",
+      "reason": null,
+      "stop": 705.58,
+      "targets": [
+       727.95
+      ]
+     },
+     "short": {
+      "trigger": "PDL 705.58",
+      "reason": null,
+      "stop": 715.25,
+      "targets": [
+       704.4,
+       701.16,
+       700.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-28",
+    "main": {
+     "long": {
+      "trigger": "PDH 722.87",
+      "reason": null,
+      "stop": 713.59,
+      "targets": [
+       727.95,
+       739.77,
+       748.35
+      ]
+     },
+     "short": {
+      "trigger": "PDL 713.59",
+      "reason": null,
+      "stop": 722.87,
+      "targets": [
+       704.4,
+       701.16,
+       700.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 722.87",
+      "reason": null,
+      "stop": 713.59,
+      "targets": [
+       727.95,
+       739.77
+      ]
+     },
+     "short": {
+      "trigger": "PDL 713.59",
+      "reason": null,
+      "stop": 722.87,
+      "targets": [
+       704.4,
+       701.16,
+       700.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-29",
+    "main": {
+     "long": {
+      "trigger": "PDH 726.14",
+      "reason": null,
+      "stop": 720.3,
+      "targets": [
+       727.95,
+       739.77,
+       748.35
+      ]
+     },
+     "short": {
+      "trigger": "PDL 720.30",
+      "reason": null,
+      "stop": 726.14,
+      "targets": [
+       704.4,
+       701.16,
+       700.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 726.14",
+      "reason": null,
+      "stop": 720.3,
+      "targets": [
+       727.95,
+       739.77
+      ]
+     },
+     "short": {
+      "trigger": "PDL 720.30",
+      "reason": null,
+      "stop": 726.14,
+      "targets": [
+       704.4,
+       701.16,
+       700.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-30",
+    "main": {
+     "long": {
+      "trigger": "PDH 718.07",
+      "reason": null,
+      "stop": 711.62,
+      "targets": [
+       727.95,
+       739.77,
+       748.35
+      ]
+     },
+     "short": {
+      "trigger": "PDL 711.62",
+      "reason": null,
+      "stop": 718.07,
+      "targets": [
+       704.4,
+       701.16,
+       700.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 718.07",
+      "reason": null,
+      "stop": 711.62,
+      "targets": [
+       727.95
+      ]
+     },
+     "short": {
+      "trigger": "PDL 711.62",
+      "reason": null,
+      "stop": 718.07,
+      "targets": [
+       704.4,
+       701.16,
+       700.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-02",
+    "main": {
+     "long": {
+      "trigger": "PDH 698.63",
+      "reason": null,
+      "stop": 683.45,
+      "targets": [
+       726.14
+      ]
+     },
+     "short": {
+      "trigger": "PDL 683.45",
+      "reason": null,
+      "stop": 698.63,
+      "targets": [
+       661.14
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 698.63",
+      "reason": null,
+      "stop": 683.45,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PDL 683.45",
+      "reason": null,
+      "stop": 698.63,
+      "targets": [
+       661.14
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-03",
+    "main": {
+     "long": {
+      "trigger": "PWL 683.45",
+      "reason": null,
+      "stop": 680.33,
+      "targets": [
+       690.49,
+       699.43
+      ]
+     },
+     "short": {
+      "trigger": "PDL 680.33",
+      "reason": null,
+      "stop": 683.45,
+      "targets": [
+       661.14
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWL 683.45",
+      "reason": null,
+      "stop": 680.33,
+      "targets": [
+       690.49,
+       699.43
+      ]
+     },
+     "short": {
+      "trigger": "PDL 680.33",
+      "reason": null,
+      "stop": 683.45,
+      "targets": [
+       661.14
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-04",
+    "main": {
+     "long": {
+      "trigger": "PDH 688.69",
+      "reason": null,
+      "stop": 683.45,
+      "targets": [
+       690.49,
+       699.43
+      ]
+     },
+     "short": {
+      "trigger": "PWL 683.45",
+      "reason": null,
+      "stop": 688.69,
+      "targets": [
+       683.18,
+       680.33,
+       661.14
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 688.69",
+      "reason": null,
+      "stop": 683.45,
+      "targets": [
+       690.49,
+       699.43
+      ]
+     },
+     "short": {
+      "trigger": "PWL 683.45",
+      "reason": null,
+      "stop": 688.69,
+      "targets": [
+       683.18,
+       680.33,
+       661.14
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-05",
+    "main": {
+     "long": {
+      "trigger": "PDH 701.45",
+      "reason": null,
+      "stop": 690.49,
+      "targets": [
+       726.14
+      ]
+     },
+     "short": {
+      "trigger": "PWC 690.49",
+      "reason": null,
+      "stop": 701.45,
+      "targets": [
+       687.87,
+       683.45,
+       661.14
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 701.45",
+      "reason": null,
+      "stop": 690.49,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PWC 690.49",
+      "reason": null,
+      "stop": 701.45,
+      "targets": [
+       687.87,
+       683.45,
+       661.14
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-06",
+    "main": {
+     "long": {
+      "trigger": "PQL 661.14",
+      "reason": null,
+      "stop": 637.01,
+      "targets": [
+       683.45,
+       683.65,
+       690.49
+      ]
+     },
+     "short": {
+      "trigger": "PYH 637.01",
+      "reason": null,
+      "stop": 661.14,
+      "targets": [
+       614.31
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PQL 661.14",
+      "reason": null,
+      "stop": 637.01,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PYH 637.01",
+      "reason": null,
+      "stop": 661.14,
+      "targets": [
+       614.31
+      ]
+     }
+    }
+   }
+  ],
+  "IWM|stored": [
+   {
+    "session": "2026-10-12",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 279.90",
+      "reason": null,
+      "stop": 278.94,
+      "targets": [
+       284.64
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 278.35",
+      "reason": null,
+      "stop": 279.88,
+      "targets": [
+       277.89,
+       277.46,
+       277.41
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 279.88",
+      "reason": null,
+      "stop": 277.89,
+      "targets": [
+       284.64
+      ]
+     },
+     "short": {
+      "trigger": "PMC 277.89",
+      "reason": null,
+      "stop": 279.88,
+      "targets": [
+       277.46,
+       277.41,
+       274.52
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-13",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 279.29",
+      "reason": null,
+      "stop": 277.9,
+      "targets": [
+       279.88,
+       284.64
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 277.86",
+      "reason": null,
+      "stop": 278.94,
+      "targets": [
+       277.79,
+       277.46,
+       277.41
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWC 278.94",
+      "reason": null,
+      "stop": 277.89,
+      "targets": [
+       279.14,
+       279.88,
+       284.64
+      ]
+     },
+     "short": {
+      "trigger": "PMC 277.89",
+      "reason": null,
+      "stop": 278.94,
+      "targets": [
+       277.79,
+       277.46,
+       277.41
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-14",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 278.18",
+      "reason": null,
+      "stop": 274.52,
+      "targets": [
+       278.7,
+       278.94,
+       284.64
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 272.86",
+      "reason": null,
+      "stop": 275.47,
+      "targets": []
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PML 277.41",
+      "reason": null,
+      "stop": 275.47,
+      "targets": [
+       277.89,
+       278.7,
+       278.94
+      ]
+     },
+     "short": {
+      "trigger": "PDL 275.47",
+      "reason": null,
+      "stop": 277.41,
+      "targets": [
+       274.52
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-15",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 272.63",
+      "reason": null,
+      "stop": 271.37,
+      "targets": [
+       274.46,
+       274.52,
+       277.41
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 270.28",
+      "reason": null,
+      "stop": 272.63,
+      "targets": []
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 274.46",
+      "reason": null,
+      "stop": 270.35,
+      "targets": [
+       274.52,
+       277.41,
+       277.89
+      ]
+     },
+     "short": {
+      "trigger": "PDL 270.35",
+      "reason": null,
+      "stop": 274.46,
+      "targets": []
+     }
+    }
+   },
+   {
+    "session": "2026-10-16",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 276.42",
+      "reason": null,
+      "stop": 275.19,
+      "targets": [
+       277.41,
+       277.89,
+       278.94
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 273.45",
+      "reason": null,
+      "stop": 276.42,
+      "targets": [
+       270.85
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 275.19",
+      "reason": null,
+      "stop": 274.52,
+      "targets": [
+       277.41,
+       277.89,
+       278.94
+      ]
+     },
+     "short": {
+      "trigger": "PWL 274.52",
+      "reason": null,
+      "stop": 275.19,
+      "targets": [
+       270.85
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-19",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 272.76",
+      "reason": null,
+      "stop": 270.44,
+      "targets": [
+       275.91,
+       277.41,
+       277.89
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 270.37",
+      "reason": null,
+      "stop": 272.76,
+      "targets": [
+       269.88
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 275.91",
+      "reason": null,
+      "stop": 269.88,
+      "targets": [
+       277.41,
+       277.89
+      ]
+     },
+     "short": {
+      "trigger": "PDL 269.88",
+      "reason": null,
+      "stop": 275.91,
+      "targets": []
+     }
+    }
+   },
+   {
+    "session": "2026-10-20",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 271.99",
+      "reason": null,
+      "stop": 270.71,
+      "targets": [
+       272.66,
+       275.91,
+       277.41
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 270.40",
+      "reason": null,
+      "stop": 271.28,
+      "targets": [
+       269.88
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 272.66",
+      "reason": null,
+      "stop": 270.71,
+      "targets": [
+       275.91,
+       277.41,
+       277.89
+      ]
+     },
+     "short": {
+      "trigger": "PDL 270.71",
+      "reason": null,
+      "stop": 272.66,
+      "targets": [
+       270.44,
+       269.88
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-21",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 277.05",
+      "reason": null,
+      "stop": 275.78,
+      "targets": [
+       277.41,
+       277.89,
+       279.14
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 271.55",
+      "reason": null,
+      "stop": 276.9,
+      "targets": [
+       271.29,
+       270.44,
+       269.88
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 276.90",
+      "reason": null,
+      "stop": 271.29,
+      "targets": [
+       277.41,
+       277.89,
+       279.14
+      ]
+     },
+     "short": {
+      "trigger": "PDL 271.29",
+      "reason": null,
+      "stop": 276.9,
+      "targets": [
+       270.44,
+       269.88
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-22",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 277.26",
+      "reason": null,
+      "stop": 273.7,
+      "targets": [
+       277.41,
+       277.7,
+       277.89
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 273.70",
+      "reason": null,
+      "stop": 275.3,
+      "targets": [
+       270.44,
+       269.88
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PML 277.41",
+      "reason": null,
+      "stop": 275.3,
+      "targets": [
+       277.7,
+       277.89,
+       279.14
+      ]
+     },
+     "short": {
+      "trigger": "PDL 275.30",
+      "reason": null,
+      "stop": 277.41,
+      "targets": [
+       270.44,
+       269.88
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-23",
+    "main": {
+     "long": {
+      "trigger": "PDC 276.67",
+      "reason": null,
+      "stop": 274.76,
+      "targets": [
+       277.28,
+       277.41,
+       277.89
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 274.76",
+      "reason": null,
+      "stop": 276.67,
+      "targets": [
+       274.49,
+       270.44,
+       269.88
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 277.28",
+      "reason": null,
+      "stop": 274.49,
+      "targets": [
+       277.41,
+       277.89,
+       279.14
+      ]
+     },
+     "short": {
+      "trigger": "PDL 274.49",
+      "reason": null,
+      "stop": 277.28,
+      "targets": [
+       270.44,
+       269.88
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-26",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 276.94",
+      "reason": null,
+      "stop": 276.24,
+      "targets": [
+       277.41,
+       277.7,
+       277.89
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 275.57",
+      "reason": null,
+      "stop": 276.94,
+      "targets": [
+       273.35,
+       270.71
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 276.24",
+      "reason": null,
+      "stop": 273.35,
+      "targets": [
+       277.41,
+       277.7,
+       277.89
+      ]
+     },
+     "short": {
+      "trigger": "PDL 273.35",
+      "reason": null,
+      "stop": 276.24,
+      "targets": [
+       270.71
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-27",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 278.46",
+      "reason": null,
+      "stop": 277.7,
+      "targets": [
+       278.77
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 276.29",
+      "reason": null,
+      "stop": 277.89,
+      "targets": [
+       276.0,
+       275.75,
+       270.71
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PML 277.41",
+      "reason": null,
+      "stop": 276.0,
+      "targets": [
+       277.7,
+       277.89,
+       278.77
+      ]
+     },
+     "short": {
+      "trigger": "PDL 276.00",
+      "reason": null,
+      "stop": 277.41,
+      "targets": [
+       275.75,
+       270.71
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-28",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 280.60",
+      "reason": null,
+      "stop": 279.34,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PMK_L 279.34",
+      "reason": null,
+      "stop": 280.18,
+      "targets": [
+       277.89,
+       277.7,
+       277.41
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 280.40",
+      "reason": null,
+      "stop": 277.89,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PMC 277.89",
+      "reason": null,
+      "stop": 280.4,
+      "targets": [
+       277.7,
+       277.41,
+       276.89
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-29",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 283.32",
+      "reason": null,
+      "stop": 281.48,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PMK_L 280.10",
+      "reason": null,
+      "stop": 283.32,
+      "targets": [
+       279.05,
+       277.89,
+       277.7
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 281.48",
+      "reason": null,
+      "stop": 279.05,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PDL 279.05",
+      "reason": null,
+      "stop": 281.48,
+      "targets": [
+       277.89,
+       277.7,
+       277.41
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-30",
+    "main": {
+     "long": {
+      "trigger": "PDC 284.01",
+      "reason": null,
+      "stop": 282.15,
+      "targets": [
+       285.26
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 281.84",
+      "reason": null,
+      "stop": 284.01,
+      "targets": [
+       277.89,
+       277.7,
+       277.41
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 285.26",
+      "reason": null,
+      "stop": 282.15,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PDL 282.15",
+      "reason": null,
+      "stop": 285.26,
+      "targets": [
+       277.89,
+       277.7,
+       277.41
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-02",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 282.20",
+      "reason": null,
+      "stop": 279.33,
+      "targets": [
+       282.71,
+       285.26
+      ]
+     },
+     "short": {
+      "trigger": "PDC 279.33",
+      "reason": null,
+      "stop": 282.2,
+      "targets": [
+       277.89,
+       277.41,
+       276.91
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 282.71",
+      "reason": null,
+      "stop": 277.89,
+      "targets": [
+       285.26
+      ]
+     },
+     "short": {
+      "trigger": "PQC 277.89",
+      "reason": null,
+      "stop": 282.71,
+      "targets": [
+       277.41,
+       276.91,
+       276.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-03",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 281.48",
+      "reason": null,
+      "stop": 279.33,
+      "targets": [
+       283.19,
+       285.26
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 277.94",
+      "reason": null,
+      "stop": 281.48,
+      "targets": [
+       277.89,
+       277.41,
+       276.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWC 279.33",
+      "reason": null,
+      "stop": 278.88,
+      "targets": [
+       283.19,
+       285.26
+      ]
+     },
+     "short": {
+      "trigger": "PDL 278.88",
+      "reason": null,
+      "stop": 279.33,
+      "targets": [
+       277.89,
+       277.41,
+       276.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-04",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 285.08",
+      "reason": null,
+      "stop": 283.19,
+      "targets": [
+       285.26
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 278.44",
+      "reason": null,
+      "stop": 285.08,
+      "targets": [
+       277.89,
+       277.41,
+       276.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 282.00",
+      "reason": null,
+      "stop": 279.34,
+      "targets": [
+       283.19,
+       285.26
+      ]
+     },
+     "short": {
+      "trigger": "PDL 279.34",
+      "reason": null,
+      "stop": 282.0,
+      "targets": [
+       279.33,
+       278.88,
+       277.89
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-05",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 286.13",
+      "reason": null,
+      "stop": 284.02,
+      "targets": [
+       286.17
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 282.05",
+      "reason": null,
+      "stop": 285.26,
+      "targets": [
+       281.31,
+       279.33,
+       277.89
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWH 285.26",
+      "reason": null,
+      "stop": 281.31,
+      "targets": [
+       286.17
+      ]
+     },
+     "short": {
+      "trigger": "PDL 281.31",
+      "reason": null,
+      "stop": 285.26,
+      "targets": [
+       279.33,
+       277.89,
+       277.41
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-06",
+    "main": {
+     "long": {
+      "trigger": "PMK_H 283.75",
+      "reason": null,
+      "stop": 270.98,
+      "targets": [
+       284.7,
+       285.26
+      ]
+     },
+     "short": {
+      "trigger": "PMK_L 269.13",
+      "reason": null,
+      "stop": 276.0,
+      "targets": [
+       258.2
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWL 276.00",
+      "reason": null,
+      "stop": 270.52,
+      "targets": [
+       277.41,
+       277.89,
+       279.33
+      ]
+     },
+     "short": {
+      "trigger": "PDL 270.52",
+      "reason": null,
+      "stop": 276.0,
+      "targets": [
+       269.88
+      ]
+     }
+    }
+   }
+  ],
+  "IWM|none": [
+   {
+    "session": "2026-10-12",
+    "main": {
+     "long": {
+      "trigger": "PDH 279.88",
+      "reason": null,
+      "stop": 277.89,
+      "targets": [
+       284.64
+      ]
+     },
+     "short": {
+      "trigger": "PMC 277.89",
+      "reason": null,
+      "stop": 279.88,
+      "targets": [
+       277.46,
+       277.41,
+       274.52
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 279.88",
+      "reason": null,
+      "stop": 277.89,
+      "targets": [
+       284.64
+      ]
+     },
+     "short": {
+      "trigger": "PMC 277.89",
+      "reason": null,
+      "stop": 279.88,
+      "targets": [
+       277.46,
+       277.41,
+       274.52
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-13",
+    "main": {
+     "long": {
+      "trigger": "PWC 278.94",
+      "reason": null,
+      "stop": 277.89,
+      "targets": [
+       279.14,
+       279.88,
+       284.64
+      ]
+     },
+     "short": {
+      "trigger": "PMC 277.89",
+      "reason": null,
+      "stop": 278.94,
+      "targets": [
+       277.79,
+       277.46,
+       277.41
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWC 278.94",
+      "reason": null,
+      "stop": 277.89,
+      "targets": [
+       279.14,
+       279.88,
+       284.64
+      ]
+     },
+     "short": {
+      "trigger": "PMC 277.89",
+      "reason": null,
+      "stop": 278.94,
+      "targets": [
+       277.79,
+       277.46,
+       277.41
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-14",
+    "main": {
+     "long": {
+      "trigger": "PML 277.41",
+      "reason": null,
+      "stop": 275.47,
+      "targets": [
+       277.89,
+       278.7,
+       278.94
+      ]
+     },
+     "short": {
+      "trigger": "PDL 275.47",
+      "reason": null,
+      "stop": 277.41,
+      "targets": [
+       274.52
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PML 277.41",
+      "reason": null,
+      "stop": 275.47,
+      "targets": [
+       277.89,
+       278.7,
+       278.94
+      ]
+     },
+     "short": {
+      "trigger": "PDL 275.47",
+      "reason": null,
+      "stop": 277.41,
+      "targets": [
+       274.52
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-15",
+    "main": {
+     "long": {
+      "trigger": "PDH 274.46",
+      "reason": null,
+      "stop": 270.35,
+      "targets": [
+       274.52,
+       277.41,
+       277.89
+      ]
+     },
+     "short": {
+      "trigger": "PDL 270.35",
+      "reason": null,
+      "stop": 274.46,
+      "targets": []
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 274.46",
+      "reason": null,
+      "stop": 270.35,
+      "targets": [
+       274.52,
+       277.41,
+       277.89
+      ]
+     },
+     "short": {
+      "trigger": "PDL 270.35",
+      "reason": null,
+      "stop": 274.46,
+      "targets": []
+     }
+    }
+   },
+   {
+    "session": "2026-10-16",
+    "main": {
+     "long": {
+      "trigger": "PDH 275.19",
+      "reason": null,
+      "stop": 274.52,
+      "targets": [
+       277.41,
+       277.89,
+       278.94
+      ]
+     },
+     "short": {
+      "trigger": "PWL 274.52",
+      "reason": null,
+      "stop": 275.19,
+      "targets": [
+       270.85
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 275.19",
+      "reason": null,
+      "stop": 274.52,
+      "targets": [
+       277.41,
+       277.89,
+       278.94
+      ]
+     },
+     "short": {
+      "trigger": "PWL 274.52",
+      "reason": null,
+      "stop": 275.19,
+      "targets": [
+       270.85
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-19",
+    "main": {
+     "long": {
+      "trigger": "PDH 275.91",
+      "reason": null,
+      "stop": 269.88,
+      "targets": [
+       277.41,
+       277.89,
+       279.14
+      ]
+     },
+     "short": {
+      "trigger": "PDL 269.88",
+      "reason": null,
+      "stop": 275.91,
+      "targets": []
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 275.91",
+      "reason": null,
+      "stop": 269.88,
+      "targets": [
+       277.41,
+       277.89
+      ]
+     },
+     "short": {
+      "trigger": "PDL 269.88",
+      "reason": null,
+      "stop": 275.91,
+      "targets": []
+     }
+    }
+   },
+   {
+    "session": "2026-10-20",
+    "main": {
+     "long": {
+      "trigger": "PDH 272.66",
+      "reason": null,
+      "stop": 270.71,
+      "targets": [
+       275.91,
+       277.41,
+       277.89
+      ]
+     },
+     "short": {
+      "trigger": "PDL 270.71",
+      "reason": null,
+      "stop": 272.66,
+      "targets": [
+       270.44,
+       269.88
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 272.66",
+      "reason": null,
+      "stop": 270.71,
+      "targets": [
+       275.91,
+       277.41,
+       277.89
+      ]
+     },
+     "short": {
+      "trigger": "PDL 270.71",
+      "reason": null,
+      "stop": 272.66,
+      "targets": [
+       270.44,
+       269.88
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-21",
+    "main": {
+     "long": {
+      "trigger": "PDH 276.90",
+      "reason": null,
+      "stop": 271.29,
+      "targets": [
+       277.41,
+       277.89,
+       279.14
+      ]
+     },
+     "short": {
+      "trigger": "PDL 271.29",
+      "reason": null,
+      "stop": 276.9,
+      "targets": [
+       270.44,
+       269.88
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 276.90",
+      "reason": null,
+      "stop": 271.29,
+      "targets": [
+       277.41,
+       277.89,
+       279.14
+      ]
+     },
+     "short": {
+      "trigger": "PDL 271.29",
+      "reason": null,
+      "stop": 276.9,
+      "targets": [
+       270.44,
+       269.88
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-22",
+    "main": {
+     "long": {
+      "trigger": "PML 277.41",
+      "reason": null,
+      "stop": 275.3,
+      "targets": [
+       277.7,
+       277.89,
+       279.14
+      ]
+     },
+     "short": {
+      "trigger": "PDL 275.30",
+      "reason": null,
+      "stop": 277.41,
+      "targets": [
+       270.44,
+       269.88
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PML 277.41",
+      "reason": null,
+      "stop": 275.3,
+      "targets": [
+       277.7,
+       277.89,
+       279.14
+      ]
+     },
+     "short": {
+      "trigger": "PDL 275.30",
+      "reason": null,
+      "stop": 277.41,
+      "targets": [
+       270.44,
+       269.88
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-23",
+    "main": {
+     "long": {
+      "trigger": "PDH 277.28",
+      "reason": null,
+      "stop": 274.49,
+      "targets": [
+       277.41,
+       277.89,
+       279.14
+      ]
+     },
+     "short": {
+      "trigger": "PDL 274.49",
+      "reason": null,
+      "stop": 277.28,
+      "targets": [
+       270.44,
+       269.88
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 277.28",
+      "reason": null,
+      "stop": 274.49,
+      "targets": [
+       277.41,
+       277.89,
+       279.14
+      ]
+     },
+     "short": {
+      "trigger": "PDL 274.49",
+      "reason": null,
+      "stop": 277.28,
+      "targets": [
+       270.44,
+       269.88
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-26",
+    "main": {
+     "long": {
+      "trigger": "PDH 276.24",
+      "reason": null,
+      "stop": 273.35,
+      "targets": [
+       277.41,
+       277.7,
+       277.89
+      ]
+     },
+     "short": {
+      "trigger": "PDL 273.35",
+      "reason": null,
+      "stop": 276.24,
+      "targets": [
+       270.71
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 276.24",
+      "reason": null,
+      "stop": 273.35,
+      "targets": [
+       277.41,
+       277.7,
+       277.89
+      ]
+     },
+     "short": {
+      "trigger": "PDL 273.35",
+      "reason": null,
+      "stop": 276.24,
+      "targets": [
+       270.71
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-27",
+    "main": {
+     "long": {
+      "trigger": "PML 277.41",
+      "reason": null,
+      "stop": 276.0,
+      "targets": [
+       277.7,
+       277.89,
+       278.77
+      ]
+     },
+     "short": {
+      "trigger": "PDL 276.00",
+      "reason": null,
+      "stop": 277.41,
+      "targets": [
+       275.75,
+       270.71
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PML 277.41",
+      "reason": null,
+      "stop": 276.0,
+      "targets": [
+       277.7,
+       277.89,
+       278.77
+      ]
+     },
+     "short": {
+      "trigger": "PDL 276.00",
+      "reason": null,
+      "stop": 277.41,
+      "targets": [
+       275.75,
+       270.71
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-28",
+    "main": {
+     "long": {
+      "trigger": "PDH 280.40",
+      "reason": null,
+      "stop": 277.89,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PMC 277.89",
+      "reason": null,
+      "stop": 280.4,
+      "targets": [
+       277.7,
+       277.41,
+       276.89
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 280.40",
+      "reason": null,
+      "stop": 277.89,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PMC 277.89",
+      "reason": null,
+      "stop": 280.4,
+      "targets": [
+       277.7,
+       277.41,
+       276.89
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-29",
+    "main": {
+     "long": {
+      "trigger": "PDH 281.48",
+      "reason": null,
+      "stop": 279.05,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PDL 279.05",
+      "reason": null,
+      "stop": 281.48,
+      "targets": [
+       277.89,
+       277.7,
+       277.41
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 281.48",
+      "reason": null,
+      "stop": 279.05,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PDL 279.05",
+      "reason": null,
+      "stop": 281.48,
+      "targets": [
+       277.89,
+       277.7,
+       277.41
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-10-30",
+    "main": {
+     "long": {
+      "trigger": "PDH 285.26",
+      "reason": null,
+      "stop": 282.15,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PDL 282.15",
+      "reason": null,
+      "stop": 285.26,
+      "targets": [
+       277.89,
+       277.7,
+       277.41
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 285.26",
+      "reason": null,
+      "stop": 282.15,
+      "targets": []
+     },
+     "short": {
+      "trigger": "PDL 282.15",
+      "reason": null,
+      "stop": 285.26,
+      "targets": [
+       277.89,
+       277.7,
+       277.41
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-02",
+    "main": {
+     "long": {
+      "trigger": "PDH 282.71",
+      "reason": null,
+      "stop": 277.89,
+      "targets": [
+       285.26
+      ]
+     },
+     "short": {
+      "trigger": "PQC 277.89",
+      "reason": null,
+      "stop": 282.71,
+      "targets": [
+       277.41,
+       276.91,
+       276.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 282.71",
+      "reason": null,
+      "stop": 277.89,
+      "targets": [
+       285.26
+      ]
+     },
+     "short": {
+      "trigger": "PQC 277.89",
+      "reason": null,
+      "stop": 282.71,
+      "targets": [
+       277.41,
+       276.91,
+       276.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-03",
+    "main": {
+     "long": {
+      "trigger": "PWC 279.33",
+      "reason": null,
+      "stop": 278.88,
+      "targets": [
+       283.19,
+       285.26
+      ]
+     },
+     "short": {
+      "trigger": "PDL 278.88",
+      "reason": null,
+      "stop": 279.33,
+      "targets": [
+       277.89,
+       277.41,
+       276.0
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWC 279.33",
+      "reason": null,
+      "stop": 278.88,
+      "targets": [
+       283.19,
+       285.26
+      ]
+     },
+     "short": {
+      "trigger": "PDL 278.88",
+      "reason": null,
+      "stop": 279.33,
+      "targets": [
+       277.89,
+       277.41,
+       276.0
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-04",
+    "main": {
+     "long": {
+      "trigger": "PDH 282.00",
+      "reason": null,
+      "stop": 279.34,
+      "targets": [
+       283.19,
+       285.26
+      ]
+     },
+     "short": {
+      "trigger": "PDL 279.34",
+      "reason": null,
+      "stop": 282.0,
+      "targets": [
+       279.33,
+       278.88,
+       277.89
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PDH 282.00",
+      "reason": null,
+      "stop": 279.34,
+      "targets": [
+       283.19,
+       285.26
+      ]
+     },
+     "short": {
+      "trigger": "PDL 279.34",
+      "reason": null,
+      "stop": 282.0,
+      "targets": [
+       279.33,
+       278.88,
+       277.89
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-05",
+    "main": {
+     "long": {
+      "trigger": "PWH 285.26",
+      "reason": null,
+      "stop": 281.31,
+      "targets": [
+       286.17
+      ]
+     },
+     "short": {
+      "trigger": "PDL 281.31",
+      "reason": null,
+      "stop": 285.26,
+      "targets": [
+       279.33,
+       277.89,
+       277.41
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWH 285.26",
+      "reason": null,
+      "stop": 281.31,
+      "targets": [
+       286.17
+      ]
+     },
+     "short": {
+      "trigger": "PDL 281.31",
+      "reason": null,
+      "stop": 285.26,
+      "targets": [
+       279.33,
+       277.89,
+       277.41
+      ]
+     }
+    }
+   },
+   {
+    "session": "2026-11-06",
+    "main": {
+     "long": {
+      "trigger": "PWL 276.00",
+      "reason": null,
+      "stop": 270.52,
+      "targets": [
+       277.41,
+       277.89,
+       279.33
+      ]
+     },
+     "short": {
+      "trigger": "PDL 270.52",
+      "reason": null,
+      "stop": 276.0,
+      "targets": [
+       269.88,
+       258.2
+      ]
+     }
+    },
+    "branch": {
+     "long": {
+      "trigger": "PWL 276.00",
+      "reason": null,
+      "stop": 270.52,
+      "targets": [
+       277.41,
+       277.89,
+       279.33
+      ]
+     },
+     "short": {
+      "trigger": "PDL 270.52",
+      "reason": null,
+      "stop": 276.0,
+      "targets": [
+       269.88
+      ]
+     }
+    }
+   }
+  ]
+ }
+}
