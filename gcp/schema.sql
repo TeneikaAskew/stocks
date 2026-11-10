@@ -1755,6 +1755,19 @@ ALTER TABLE market_data_daily
     ADD COLUMN IF NOT EXISTS gap_pct        DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS pre_range_atr  DOUBLE PRECISION;
 
+-- FEAT-STRAT-001: premarket snapshot provenance. level_basis records when the
+-- premarket bars were fetched and how many prints the snapshot filter dropped
+-- (stale prior-close prints, and isolated spikes more than 0.5 x ATR(14)
+-- beyond the neighbouring bar bodies), so a level can be traced to its data. Written by
+-- gcp/fetchers/fetch_premarket_refresh.py and gcp/fetchers/fetch_market_data.py
+-- from lib.indicators.calculate_premarket_context. All NULLABLE; NULL means
+-- not recorded (rows written before this block). Writers and readers detect
+-- the columns and work without them. Idempotent.
+ALTER TABLE market_data_daily
+    ADD COLUMN IF NOT EXISTS pre_fetched_at             TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS pre_excluded_stale_prints  INTEGER,
+    ADD COLUMN IF NOT EXISTS pre_excluded_spikes        INTEGER;
+
 
 -- ============================================================================
 -- Catalyst-aware ORB recommendation + Strat playbook persisted by
@@ -2066,6 +2079,23 @@ ALTER TABLE premarket_analysis_history
     ADD COLUMN IF NOT EXISTS puts_t1_price         DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_t2_price         DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_t3_price         DOUBLE PRECISION;
+
+
+-- ============================================================================
+-- FEAT-STRAT-001: the level_basis snapshot written with each brief row.
+-- lib.strat_levels.SessionLevels.to_basis(): rule_version, session_date,
+-- built_at, last daily bar date, ATR(14), the level list, the premarket
+-- snapshot with its own date, the reference, the two cleared marks and the
+-- per-side candidates, picks, stops, targets, ladder and orb_only reason.
+-- Nullable: rows written before this column, and every writer and reader
+-- while it is absent, keep working (upsert_dataframe and
+-- bulk_insert_dataframe drop unknown columns; readers fall back to
+-- build_session_levels). Live readers filter run_kind = 'live'.
+-- ============================================================================
+ALTER TABLE premarket_analysis
+    ADD COLUMN IF NOT EXISTS level_basis JSONB;
+ALTER TABLE premarket_analysis_history
+    ADD COLUMN IF NOT EXISTS level_basis JSONB;
 
 
 -- FEAT-STRAT-001 (2026-11-05): FTFC in Rob Smith's sense, price above

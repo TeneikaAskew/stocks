@@ -110,7 +110,7 @@ def test_refresh_level_map_exception_increments_counter_and_logs_traceback(caplo
 
 def test_refresh_level_map_success_increments_success_counter():
     """When the full path completes (load_daily returns data,
-    calculate_historical_levels and build_level_map succeed), the
+    and build_session_levels succeed), the
     success counter must increment and level_maps[ticker] must be
     populated (not None)."""
     monitor = _make_monitor()
@@ -125,11 +125,12 @@ def test_refresh_level_map_success_increments_success_counter():
     }, index=idx)
     df.index.name = "Time"
 
-    # Patch the LevelMap constructor so we don't have to mock the
-    # entire build_level_map plumbing.
+    # Patch the builder so we don't have to mock the level plumbing.
     fake_level_map = MagicMock()
+    fake_session = MagicMock()
+    fake_session.to_level_map.return_value = fake_level_map
     with patch("lib.data_loader.DataLoader") as mock_dl_class, \
-         patch("gcp.signal_monitor.build_level_map", return_value=fake_level_map):
+         patch("gcp.signal_monitor.build_session_levels", return_value=fake_session):
         mock_dl_class.return_value.load_daily.return_value = df
         monitor.refresh_level_map(ticker)
     assert monitor.level_refresh_success_count[ticker] == 1
@@ -206,8 +207,8 @@ def test_session_summary_includes_level_refresh_counters():
 #
 # DataLoader.load_daily has no upper date bound (lib/data_loader.py
 # _load_daily_from_sql filters on ticker and optional year only), so the
-# frame refresh_level_map hands to calculate_historical_levels and
-# build_level_map ends at whatever market_data_daily holds:
+# frame refresh_level_map hands to build_session_levels ends at whatever
+# market_data_daily holds:
 #   * live: fetch-premarket-refresh INSERTs today's row at 08:20 ET with
 #     pre_* fields only (OHLC NULL until the 23:00 ET fill) — verified
 #     2026-09-07 on production: every session date's first row lands at
@@ -236,26 +237,21 @@ def _daily_frame_through(last_day: str) -> pd.DataFrame:
 
 
 def _capture_build_inputs(monitor, ticker, df):
-    """Run refresh_level_map over `df` and return (daily_df, current_price)
-    as passed to build_level_map, plus the frame calculate_historical_levels
-    received (via the length of its `times` argument)."""
+    """Run refresh_level_map over `df` and return the daily frame and the
+    session date passed to build_session_levels, plus the reference the
+    builder anchors to without a premarket snapshot (the frame's last
+    close)."""
     seen = {}
 
-    def _fake_build(**kw):
-        seen["daily_df"] = kw["daily_df"]
-        seen["current_price"] = kw["current_price"]
-        seen["analysis_date"] = kw["analysis_date"]
+    def _fake_build(ticker, session_date, daily_df, atr, premarket=None, **kw):
+        seen["daily_df"] = daily_df
+        seen["current_price"] = float(daily_df["Close"].iloc[-1])
+        seen["analysis_date"] = session_date
+        seen["atr"] = atr
         return MagicMock()
 
-    real_hist = __import__("lib.indicators", fromlist=["calculate_historical_levels"]).calculate_historical_levels
-
-    def _spy_hist(ts, high, low, open_, close):
-        seen["hist_last_ts"] = pd.Timestamp(pd.Series(ts).iloc[-1])
-        return real_hist(ts, high, low, open_, close)
-
     with patch("lib.data_loader.DataLoader") as mock_dl_class, \
-         patch("gcp.signal_monitor.build_level_map", side_effect=_fake_build), \
-         patch("lib.indicators.calculate_historical_levels", side_effect=_spy_hist):
+         patch("gcp.signal_monitor.build_session_levels", side_effect=_fake_build):
         mock_dl_class.return_value.load_daily.return_value = df
         monitor.refresh_level_map(ticker)
     return seen
@@ -263,7 +259,7 @@ def _capture_build_inputs(monitor, ticker, df):
 
 def test_refresh_level_map_excludes_the_analysis_date_row_and_everything_after():
     """A row dated exactly analysis_date (and any later row) must not reach
-    calculate_historical_levels, build_level_map or current_price."""
+    build_session_levels or the reference it anchors to."""
     monitor = _make_monitor()
     ticker = monitor.tickers[0]
     monitor.replay_clock_ts = pd.Timestamp("2026-09-03 09:31:00")
@@ -274,7 +270,6 @@ def test_refresh_level_map_excludes_the_analysis_date_row_and_everything_after()
     passed = seen["daily_df"]
     assert passed.index.max() == pd.Timestamp("2026-09-02"), \
         f"frame must end BEFORE analysis_date; got {passed.index.max()}"
-    assert seen["hist_last_ts"] == pd.Timestamp("2026-09-02")
     expected_close = float(df.loc[pd.Timestamp("2026-09-02"), "Close"])
     assert seen["current_price"] == expected_close, \
         "current_price must be the last close BEFORE analysis_date, not the as-of bar"
@@ -311,7 +306,7 @@ def test_frame_empty_after_the_bound_is_the_empty_df_path():
     monitor.replay_clock_ts = pd.Timestamp("2026-08-03 09:31:00")
     df = _daily_frame_through("2026-08-05")   # all rows >= 08-03
     with patch("lib.data_loader.DataLoader") as mock_dl_class, \
-         patch("gcp.signal_monitor.build_level_map") as build:
+         patch("gcp.signal_monitor.build_session_levels") as build:
         mock_dl_class.return_value.load_daily.return_value = df
         monitor.refresh_level_map(ticker)
     build.assert_not_called()
@@ -352,7 +347,7 @@ def test_single_row_after_the_bound_is_not_a_successful_map():
     monitor.replay_clock_ts = pd.Timestamp("2026-08-04 09:31:00")
     df = _daily_frame_through("2026-08-05")   # exactly one row (08-03) before the bound
     with patch("lib.data_loader.DataLoader") as mock_dl_class, \
-         patch("gcp.signal_monitor.build_level_map") as build:
+         patch("gcp.signal_monitor.build_session_levels") as build:
         mock_dl_class.return_value.load_daily.return_value = df
         monitor.refresh_level_map(ticker)
     build.assert_not_called()
@@ -370,7 +365,7 @@ def test_frame_without_a_date_axis_fails_loud_not_unbounded():
     monitor = _make_monitor()
     ticker = monitor.tickers[0]
     with patch("lib.data_loader.DataLoader") as mock_dl_class, \
-         patch("gcp.signal_monitor.build_level_map") as build:
+         patch("gcp.signal_monitor.build_session_levels") as build:
         mock_dl_class.return_value.load_daily.return_value = pd.DataFrame(
             {"Open": [1.0, 2.0], "High": [1.0, 2.0], "Low": [1.0, 2.0], "Close": [1.0, 2.0]})
         monitor.refresh_level_map(ticker)
