@@ -19,7 +19,7 @@ done_when:
   - "Canvas skill reads the export: .claude/skills/refresh-canvas/SKILL.md describes a canvas fed by an architecture export (Design 4): it takes the JSON from the latest successful Architecture export run on main or from the exporter run on a fresh clone of main, refuses an export whose sources.commit is not on main, reports how many commits main has moved since that commit, and keeps the diff-first, write-on-approval steps unchanged"
   - "python3 scripts/gate/spec_gate.py --pr origin/main passes on the PR head and python3 scripts/maintenance/docs_audit.py reports nothing on the branch that it does not report on origin/main"
   - "The FEAT-CICD-001 record in 02-FEATURE-CATALOG shows a current Status and Last reviewed, and 12-PR-ISSUE-TRACEABILITY lists this PR under FEAT-CICD-001"
-status: draft
+status: approved
 supersedes: null
 ---
 
