@@ -19,6 +19,8 @@ the JSON that feeds it, which board file and JS constant hold the data, and whic
    If the user points at a branch or an open PR, refuse: "Canvases track main. Merge first."
    If the canvas is `mode: report-only` (its `source_json` is null), no exporter exists: compare the
    canvas against `source_docs` by hand and report the differences. Never write a report-only canvas.
+   If the entry names `source_export: architecture` instead of `source_json`, take step 1 from
+   "Canvases fed by an architecture export" below, then continue at step 2.
 
 2. **Read the canvas.** Artifact tool, action `read`, with the canvas `url`. Open each board file listed
    under `boards`. Locate the `var <constant> = [...]` line. Parse the JSON array that follows it.
@@ -60,6 +62,30 @@ the JSON that feeds it, which board file and JS constant hold the data, and whic
 
 7. **Report.** One line per board: what changed, the source blob ids, and that layout was not touched.
 
+## Canvases fed by an architecture export
+
+A canvas whose entry names `source_export: architecture` is fed by
+`scripts/maintenance/architecture_export.py` (FEAT-CICD-001), not by a JSON committed to main. Nothing
+is committed for it, so step 1 is different; steps 2 to 7 are unchanged.
+
+1. **Get the export**, either way:
+   - Download artifact `architecture-export` from the latest successful run of the "Architecture
+     export" workflow on main (`gh run list --workflow architecture-export.yml --branch main --status
+     success --limit 1`, then `gh run download <id> -n architecture-export`). If there is no run in the
+     last 30 days, ask the user to start one from the Actions tab; do not start it yourself.
+   - Or run the exporter on a fresh clone of main:
+     `python3 -m scripts.maintenance.architecture_export --live --output export.json`
+     (`--snapshot <file>` instead of `--live` where there is no GCP access; without either, the export
+     is repo-only and every live field is null). It refuses a tree with uncommitted changes.
+2. **Check provenance.** `schema` must be `architecture-export/1`. `sources.commit` must be main or an
+   ancestor of main (`git merge-base --is-ancestor <commit> origin/main`); otherwise refuse: "Canvases
+   track main. This export was built from another commit." Report how many commits main has moved since
+   (`git rev-list --count <commit>..origin/main`) and `sources.live.read_at` (or "repo only").
+3. Continue at step 2 of the skill. In the diff header, name the export's commit and its live read
+   time in place of the registry blob and review date. `counts.live.tables` and `counts.live.routes`
+   are always null: the export reads no database and no deployed route list, so report them as "not
+   read", never as zero.
+
 ## Guardrails
 
 - One canvas per run. If the user asks for all three, run them one after another with a diff and an
@@ -68,7 +94,7 @@ the JSON that feeds it, which board file and JS constant hold the data, and whic
   `bucket`, `flow`, `stage`, `short`, `alert`) are curation; a regeneration destroys them. `sched` membership
   comes from the repo and is merged as an ordered set, so its order survives.
 - Never edit `index.html`, `canvas.json`, `artifact-type/`, or any CSS/HTML outside the data line.
-- Provenance is the URL: fetch only from `raw.githubusercontent.com/<repo>/main/...`, never a local file,
+- Provenance is the URL (for an architecture export, the commit check above): fetch only from `raw.githubusercontent.com/<repo>/main/...`, never a local file,
   never a branch URL. If in doubt, compare each blob id in the JSON's `sources` with the same file on main
   (`git ls-tree origin/main <path>`, or the blob `sha` the GitHub contents API returns); a mismatch means
   the exporter was not re-run for the registry now on main. CI's `--check` step makes that rare.

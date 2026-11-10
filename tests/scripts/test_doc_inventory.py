@@ -180,6 +180,38 @@ def test_deploy_targets_from_case_block(mini_repo):
     assert inv.deploy_targets(mini_repo) == ["alpha", "beta", "schedulers"]
 
 
+def test_deploy_services_by_literal_name_and_by_variable(mini_repo):
+    """Cloud Run services come from `gcloud run deploy` lines in either deploy
+    script, by literal name or through a variable the script assigns; a
+    comment that mentions the command is not a deploy (FEAT-CICD-001)."""
+    assert inv.deploy_services(mini_repo) == [], "the snippet deploys no service"
+    (mini_repo / "gcp/deploy.sh").write_text(DEPLOY_SNIPPET + (
+        '\nNOTIFIER_SERVICE="notifier"\n'
+        "# gcloud run deploy commented-out --image x\n"
+        'deploy_notifier() {\n    gcloud run deploy "${NOTIFIER_SERVICE}" --image "${IMAGE}"\n}\n'
+        "deploy_bot() {\n    gcloud run deploy bot-svc \\\n        --image \"${IMAGE}\"\n}\n"))
+    _write(mini_repo, "platform/deploy.sh",
+           "# Re-run with: gcloud run deploy --image ...\n"
+           'SERVICE="api-staging"\ngcloud run deploy ${SERVICE} --source .\n')
+    assert inv.deploy_services(mini_repo) == [
+        {"name": "api-staging", "script": "platform/deploy.sh"},
+        {"name": "bot-svc", "script": "gcp/deploy.sh"},
+        {"name": "notifier", "script": "gcp/deploy.sh"},
+    ]
+    assert inv.repo_inventory(mini_repo)["counts"]["services"] == 3
+
+
+def test_deploy_services_refuses_an_unassigned_variable(mini_repo):
+    _write(mini_repo, "platform/deploy.sh", 'gcloud run deploy "${NOWHERE}" --image x\n')
+    with pytest.raises(ValueError, match="NOWHERE"):
+        inv.deploy_services(mini_repo)
+
+
+def test_real_repo_declares_three_services():
+    assert [s["name"] for s in inv.deploy_services(REPO)] == [
+        "discord-interactions", "failure-notifier", "solyra-api-staging"]
+
+
 # ── the real repo: the numbers the docs embed ───────────────────────────────
 
 def test_real_repo_counts_match_the_workflow_gate():

@@ -395,6 +395,44 @@ def deploy_schedulers(root: pathlib.Path = REPO) -> list[dict[str, Any]]:
     return sorted(rows.values(), key=lambda r: r["name"])
 
 
+# The two scripts that deploy Cloud Run services. gcp/deploy.sh deploys
+# discord-interactions and the failure notifier; platform/deploy.sh deploys the
+# website API. A service no script deploys is drift the architecture export
+# reports, so the declared set has to come from both.
+SERVICE_DEPLOY_SCRIPTS = ("gcp/deploy.sh", "platform/deploy.sh")
+
+
+def deploy_services(root: pathlib.Path = REPO) -> list[dict[str, Any]]:
+    """Every Cloud Run service `gcp/deploy.sh` or `platform/deploy.sh` deploys.
+
+    A `gcloud run deploy NAME` line names the service literally
+    (`discord-interactions`) or through a variable the same script assigns
+    once (`NOTIFIER_SERVICE="failure-notifier"`, `SERVICE="solyra-api-staging"`).
+    Comment lines are dropped first, as for jobs: platform/deploy.sh mentions
+    `gcloud run deploy --image` in prose. A variable the script never assigns
+    raises rather than guessing a name (CLAUDE.md Rule 3.7). A tree without one
+    of the two scripts declares no service there.
+    """
+    rows: dict[str, dict[str, Any]] = {}
+    for rel in SERVICE_DEPLOY_SCRIPTS:
+        path = root / rel
+        if not path.exists():
+            continue
+        text = _strip_comments(path.read_text())
+        assigns = dict(re.findall(r'^\s*(?:readonly\s+|local\s+)?([A-Z_][A-Z0-9_]*)="?([a-z0-9][a-z0-9-]*)"?\s*$',
+                                  text, re.M))
+        for m in re.finditer(r'gcloud run deploy\s+("?\$\{([A-Z_][A-Z0-9_]*)\}"?|[a-z0-9][a-z0-9-]*)', text):
+            var = m.group(2)
+            if var:
+                if var not in assigns:
+                    raise ValueError(f"{rel}: gcloud run deploy uses ${{{var}}}, which {rel} never assigns")
+                name = assigns[var]
+            else:
+                name = m.group(1)
+            rows.setdefault(name, {"name": name, "script": rel})
+    return sorted(rows.values(), key=lambda r: r["name"])
+
+
 def deploy_targets(root: pathlib.Path = REPO) -> list[str]:
     """The `./gcp/deploy.sh <target>` dispatch names (the `case` at the end)."""
     raw = (root / "gcp/deploy.sh").read_text()
@@ -603,6 +641,7 @@ def discord_commands(root: pathlib.Path = REPO) -> list[dict[str, Any]]:
 def repo_inventory(root: pathlib.Path = REPO) -> dict[str, Any]:
     jobs = deploy_jobs(root)
     sched = deploy_schedulers(root)
+    services = deploy_services(root)
     schema = schema_tables(root)
     routes = api_routes(root)
     declared = [x["name"] for x in schema["tables"]] \
@@ -627,6 +666,7 @@ def repo_inventory(root: pathlib.Path = REPO) -> dict[str, Any]:
         "root": str(root),
         "jobs": jobs,
         "schedulers": sched,
+        "services": services,
         "deploy_targets": deploy_targets(root),
         "tables": schema["tables"],
         "materialized_views": schema["materialized_views"],
@@ -641,6 +681,7 @@ def repo_inventory(root: pathlib.Path = REPO) -> dict[str, Any]:
         "counts": {
             "jobs": len(jobs),
             "schedulers": len(sched),
+            "services": len(services),
             "tables": len(schema["tables"]),
             "routes": len(routes),
             "routers": len({r["router"] for r in routes if r["router"] != "main"}),
