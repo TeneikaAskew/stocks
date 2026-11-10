@@ -24,8 +24,12 @@ log "1/7 worktrees: #1766 head and origin/main (#1753 as merged)"
 git -C "$R" fetch -q origin \
     "+refs/heads/feature/feat-strat-001-per-ticker-params:refs/remotes/origin/feature/feat-strat-001-per-ticker-params" \
     "+refs/heads/main:refs/remotes/origin/main"
-[[ -d "$W/branch" ]] || git -C "$R" worktree add -q --detach "$W/branch" origin/feature/feat-strat-001-per-ticker-params
-[[ -d "$W/main" ]] || git -C "$R" worktree add -q --detach "$W/main" origin/main
+# An existing worktree (an earlier run) is moved to the fetched heads, so a
+# rerun measures the current #1766 head and main.
+for wt in "branch:origin/feature/feat-strat-001-per-ticker-params" "main:origin/main"; do
+    d="$W/${wt%%:*}"; ref="${wt#*:}"
+    if [[ -d "$d" ]]; then git -C "$d" checkout -q --detach "$ref"; else git -C "$R" worktree add -q --detach "$d" "$ref"; fi
+done
 log "branch $(git -C "$W/branch" rev-parse --short HEAD), main $(git -C "$W/main" rev-parse --short HEAD)"
 
 log "2/7 daily export (already in GCS from the #1753 replay)"
@@ -56,11 +60,12 @@ grep -hv "days old" "$W/picks_branch.log" "$W/picks_main.log" | tee -a "$OUT/run
 
 log "7/7 done_when 14 comparison"
 python3 -I "$H/diff.py" "$W/picks_main.jsonl.gz" "$W/picks_branch.jsonl.gz" "$OUT" > /dev/null
+cp "$W/picks_main.jsonl.gz" "$W/picks_branch.jsonl.gz" "$W/calib/ticker_level_params.csv.gz" "$OUT/"
 log "done; pushing results"
 if [[ -n "${STRAT_PARAMS_NO_PUSH:-}" ]]; then log "STRAT_PARAMS_NO_PUSH set: not committing"; exit 0; fi
 cd "$H"
 git add results
-git commit -q -m "replay: #1766 calibration evidence and pick changes from production bars
+git commit -q -m "replay: #1766 calibration evidence and pick changes from production bars ($(git -C "$W/branch" rev-parse --short HEAD))
 
 Read-only (db_query_cr.sh without --commit). Not for merge."
 git push -q -u origin replay/feat-strat-001-per-ticker-params

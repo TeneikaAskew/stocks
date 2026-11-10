@@ -59,6 +59,9 @@ def main(main_path: Path, branch_path: Path, out_dir: Path) -> None:
     missing = sorted(set(old) ^ set(new))
     counts = defaultdict(lambda: defaultdict(int))
     plans = defaultdict(lambda: defaultdict(int))
+    flips = defaultdict(lambda: defaultdict(int))
+    no_target = defaultdict(int)
+    plan_state = defaultdict(lambda: defaultdict(int))
     for k in keys:
         t, s, mode = k
         a, b = old[k], new[k]
@@ -84,6 +87,29 @@ def main(main_path: Path, branch_path: Path, out_dir: Path) -> None:
                 row["any"] += int(any(c.values()))
         if a["premarket"] != b["premarket"]:
             counts[(mode, t, "premarket")][f"{a['premarket']} -> {b['premarket']}"] += 1
+        year = s[:4]
+        for side in SIDES:
+            x, y = a[side], b[side]
+            if (x["trigger"] is None) != (y["trigger"] is None):
+                way = "to orb_only" if y["trigger"] is None else "from orb_only"
+                why = y["reason"] if y["trigger"] is None else x["reason"]
+                flips[(mode, t, side, way, why)][year] += 1
+            for ver, z in (("#1753", x), ("#1766", y)):
+                if z["trigger"] is not None and not z["targets"]:
+                    no_target[(mode, t, side, ver)] += 1
+        for direction in SIDES:
+            for ver, rec in (("#1753", a), ("#1766", b)):
+                pl = rec["plans"][direction]
+                if "error" in pl:
+                    continue
+                for persona in PERSONAS:
+                    q = pl.get(persona) or {}
+                    if q.get("entry") is None:
+                        plan_state[(mode, t, direction, persona, ver)]["no plan"] += 1
+                    elif not q.get("targets"):
+                        plan_state[(mode, t, direction, persona, ver)]["plan, no target"] += 1
+                    else:
+                        plan_state[(mode, t, direction, persona, ver)]["plan with targets"] += 1
 
     md = ["# #1766 pick changes against #1753 (origin/main), 2015-01-02 to 2026-11-06", ""]
     if missing:
@@ -113,6 +139,24 @@ def main(main_path: Path, branch_path: Path, out_dir: Path) -> None:
                               f"{r['targets']} | {r['any']} |")
                 if err:
                     md.append(f"| {t} | {direction} | (planner raised on either side) | {err} | | | | |")
+        md += ["", "orb_only flips, by direction, reason (#1766's when it became orb_only, #1753's when it stopped) "
+               "and year:", "", "| ticker | side | flip | reason | sessions per year |", "|---|---|---|---|---|"]
+        for k in sorted(k for k in flips if k[0] == mode):
+            yrs = ", ".join(f"{y} {n}" for y, n in sorted(flips[k].items()))
+            md.append(f"| {k[1]} | {k[2]} | {k[3]} | {k[4]} | {yrs} |")
+        md += ["", "Sides with a trigger and no level target inside the window (T none):", "",
+               "| ticker | side | #1753 | #1766 |", "|---|---|---|---|"]
+        for t in TICKERS:
+            for side in SIDES:
+                md.append(f"| {t} | {side} | {no_target[(mode, t, side, '#1753')]} | "
+                          f"{no_target[(mode, t, side, '#1766')]} |")
+        md += ["", "Persona plans: no plan, a plan with no target, a plan with targets:", "",
+               "| ticker | direction | persona | #1753 | #1766 |", "|---|---|---|---|---|"]
+        for t in TICKERS:
+            for direction in SIDES:
+                for p in PERSONAS:
+                    cell = lambda v: ", ".join(f"{k} {n}" for k, n in sorted(plan_state[(mode, t, direction, p, v)].items()))
+                    md.append(f"| {t} | {direction} | {p} | {cell('#1753')} | {cell('#1766')} |")
         md += ["", "The 20 sessions through 2026-11-06, before (#1753) and after (#1766):", "",
                "| ticker | session | side | #1753 | #1766 |", "|---|---|---|---|---|"]
         for t in TICKERS:
@@ -126,6 +170,9 @@ def main(main_path: Path, branch_path: Path, out_dir: Path) -> None:
     (out_dir / "pick_changes.json").write_text(json.dumps({
         "sides": {"|".join(k): v for k, v in counts.items()},
         "plans": {"|".join(k): v for k, v in plans.items()},
+        "orb_only_flips": {"|".join(k): v for k, v in flips.items()},
+        "no_target": {"|".join(k): v for k, v in no_target.items()},
+        "plan_state": {"|".join(k): v for k, v in plan_state.items()},
         "last_20": {f"{t}|{mode}": [{"session": k[1], "main": {s: old[k][s] for s in SIDES},
                                       "branch": {s: new[k][s] for s in SIDES}}
                                      for k in [k for k in keys if k[0] == t and k[2] == mode][-20:]]
