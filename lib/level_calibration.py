@@ -275,7 +275,9 @@ def daily_excursions(d: pd.DataFrame, side: str) -> pd.Series:
 def trigger_window(d: pd.DataFrame, policy: Dict[str, dict], side: str) -> Calibrated:
     key = trigger_window_key(side)
     row = _policy(policy, key)
-    exc = daily_excursions(d, side).iloc[-int(row['lookback_sessions']):]
+    # Bound to the lookback's sessions first, so a session with no usable
+    # prior ATR inside it is a missing sample, not replaced by an older one.
+    exc = daily_excursions(d.iloc[-int(row['lookback_sessions']):], side)
     if len(d) > 1 and exc.empty and d['prior_atr'].notna().sum() == 0:
         return _result(key, row, INPUT_UNAVAILABLE, None, 0, [])
     return _stat(key, row, list(exc.values), list(exc.index))
@@ -644,6 +646,8 @@ class BreakBatch:
         at the midpoint), -1 when never filled."""
         mid = np.asarray(midpoint, dtype=float)[:, None]
         hit = self.valid[:, 1:] & (self.lo[:, 1:] <= mid) & (self.h[:, 1:] >= mid)
+        if hit.shape[1] == 0:  # only break bars: nothing after them to fill on
+            return np.full(hit.shape[0], -1)
         return np.where(hit.any(axis=1), hit.argmax(axis=1) + 1, -1)
 
     def mae(self, midpoint: np.ndarray, j: np.ndarray) -> np.ndarray:

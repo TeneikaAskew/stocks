@@ -499,3 +499,26 @@ def test_regular_session_bars_end_at_the_actual_close():
     assert by.loc[full, "max"] == pd.Timestamp("2025-11-26 15:59")
     assert by.loc[full, "size"] == 390
     assert holiday not in by.index
+
+
+def test_trigger_window_counts_sessions_not_valid_samples():
+    """Codex P2 on c5c70a2d: sessions inside the lookback whose prior ATR is
+    missing are not replaced by older sessions. 1,000 sessions, ATR missing
+    on the latest 750 but the last two: the window's first session (its prior
+    ATR is the older row's) and its last are the only samples, not 252."""
+    highs = [100.0] + [100.0 + 0.004 * i for i in range(1, 1001)]
+    raw = _daily(highs)
+    raw.loc[raw.index[-750:-2], "atr_14"] = np.nan
+    d = lc.normalize_daily(raw, "atr_14", "2026-11-06")
+    got = lc.trigger_window(d, policy(), "long")
+    assert got.status == "insufficient_history" and got.value is None
+    assert got.sample_n == 2
+
+
+def test_a_break_on_the_last_bar_is_unfilled():
+    """Codex P2 on c5c70a2d: a break with no later bar has nothing to fill
+    on; a batch of only such breaks returns -1, it does not raise."""
+    b = mk_break([(T, T + 0.3, T, T + 0.3)])
+    assert lc.BreakBatch([b, b]).fill(np.array([T + 0.1, T + 0.1])).tolist() == [-1, -1]
+    assert lc.persona_fill(b, T + 0.1) is None
+    assert lc.persona_outcome(b, T + 0.1, risk_atr=1.0) == lc.Outcome(filled=False)
