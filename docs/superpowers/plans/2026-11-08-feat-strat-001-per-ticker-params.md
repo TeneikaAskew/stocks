@@ -2,7 +2,7 @@
 feat_id: FEAT-STRAT-001
 spec: docs/superpowers/specs/2026-11-08-feat-strat-001-per-ticker-params.md
 branch: feature/feat-strat-001-per-ticker-params
-pr: null
+pr: 1766
 status: ready
 ---
 
