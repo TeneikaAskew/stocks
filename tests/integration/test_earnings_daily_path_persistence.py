@@ -536,3 +536,59 @@ def test_maturing_refresh_cannot_regress_evidence_even_with_newer_clock(db,defec
     else:p['first_opposite_close_step']=1
     assert _upsert_reaction_frame(pd.DataFrame([bad]))==0
     assert read(db)==before
+
+
+def _unavailable_row(clock, *, sustain):
+    """The producer's own unavailable sidecar (no price-basis evidence) at clock."""
+    from lib.earnings_reactions import compute_daily_path_v1
+    days=[date(2026,1,d) for d in (2,5,6,7,8,9,12)]
+    closes=[100.,112.,115.,113.,105.,99.,102.]
+    frame=pd.DataFrame([dict(date=day,open=(110. if i==1 else close),
+        high=max(110. if i==1 else close,close)+1,low=min(110. if i==1 else close,close)-1,close=close)
+        for i,(day,close) in enumerate(zip(days,closes))])
+    ev=dict(ticker='SYNTH',fiscal_date_ending=date(2025,11,30),reported_date=date(2026,1,5),reaction_basis='BMO')
+    p=compute_daily_path_v1(ev,frame,observation_ts=clock,price_evidence=None)['payload']
+    assert p['status']=='unavailable'
+    row=record(p)
+    if not sustain:
+        row.update(sustain_5d_pct=None,direction_consistent_5d=None,is_reversal_5d=None)
+    return row
+
+
+def test_unavailable_sidecar_lets_matured_legacy_fields_advance(db):
+    """Codex P2 on #1608 (r4503329917): an unavailable prior sidecar must not freeze legacy outcomes."""
+    from gcp.fetchers.compute_earnings_reactions import _upsert_reaction_frame
+    first=_unavailable_row('2026-01-06T21:01:00Z',sustain=False)
+    assert _upsert_reaction_frame(pd.DataFrame([first]))==1
+    assert read(db)['sustain_5d_pct'] is None
+    later=_unavailable_row('2026-01-21T21:01:00Z',sustain=True)
+    receipts=[]
+    assert _upsert_reaction_frame(pd.DataFrame([later]),receipt_sink=receipts.append)==1
+    stored=read(db)
+    assert stored['sustain_5d_pct']==later['sustain_5d_pct'] and stored['is_reversal_5d'] is True
+    assert stored['daily_path_v1']==later['daily_path_v1']
+    assert any(item['metric_group']=='persistence' and item['disposition']=='upserted'
+               for page in receipts for item in page['events'])
+    # Legacy values still never go back to NULL, and the sidecar clock still never regresses.
+    before=read(db)
+    assert _upsert_reaction_frame(pd.DataFrame([_unavailable_row('2026-01-22T21:01:00Z',sustain=False)]))==0
+    assert _upsert_reaction_frame(pd.DataFrame([_unavailable_row('2026-01-07T21:01:00Z',sustain=True)]))==0
+    assert read(db)==before
+    # A later qualified sidecar still replaces the unavailable one.
+    qualified=payload();qualified.update(observation_ts='2026-01-22T21:01:00+00:00',
+                                        computed_at='2026-01-22T21:02:00+00:00')
+    assert _upsert_reaction_frame(pd.DataFrame([record(qualified)]))==1
+    assert read(db)['daily_path_v1']==qualified
+
+
+@pytest.mark.parametrize('prior',['complete','maturing'])
+def test_unavailable_sidecar_still_never_replaces_qualified_evidence(db,prior):
+    from gcp.fetchers.compute_earnings_reactions import _upsert_reaction_frame
+    first=record() if prior=='complete' else _maturing_prefix_row('2026-01-07T21:01:00Z')
+    assert _upsert_reaction_frame(pd.DataFrame([first]))==1
+    before=read(db);receipts=[]
+    later=_unavailable_row('2026-01-21T21:01:00Z',sustain=True)
+    assert _upsert_reaction_frame(pd.DataFrame([later]),receipt_sink=receipts.append)==0
+    assert read(db)==before
+    assert any(item['reason']=='unavailable_replacement:daily_path_v1'
+               for page in receipts for item in page['events'])
