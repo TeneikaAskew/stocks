@@ -42,7 +42,7 @@ half the picks.
 ## Where the verdict goes
 
 **The weekday premarket brief recaps the last session's verdicts** (#1168).
-`gcp/premarket_brief.py`'s `load_ew_recap` (`:718`) finds the last NYSE session before the brief's
+`gcp/premarket_brief.py`'s `load_ew_recap` (`:724`) finds the last NYSE session before the brief's
 date, reads the picks dated from the session before it through that one in one query, and keeps
 those that `scoring_session` scores on it, the rule this job uses. The brief attaches it on
 weekdays (`:1369`), so Monday's brief recaps Friday's session, and renders each scored pick with
