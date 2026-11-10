@@ -414,19 +414,14 @@ def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = 
     """Best-effort LevelMap for the movement statement, or None.
 
     `analysis_date` (default: today in America/New_York) is passed through to
-    build_level_map so compute_previous_levels anchors PDH/PDL to the session
-    BEFORE it. Without it that function assumes df's LAST row is today's
-    in-progress bar and reads iloc[-2]; this helper drops the NULL-close
-    premarket placeholder, so the last retained row is already yesterday's
-    complete bar and iloc[-2] is the day before — a ladder one session stale,
-    which the premarket playbook (built with analysis_date) never matched
-    (Codex P1 on #1030).
+    build_session_levels, which anchors PDH/PDL to the session BEFORE it by
+    period filter, so the ladder is never one session stale (Codex P1 on #1030).
 
     The assembler degrades the levels block to an explicit UNAVAILABLE
     envelope when level_map is None (Rule 3.7 — never a fabricated ladder),
     so this helper is allowed to return None on any data gap. It builds the
-    SAME LevelMap the premarket brief builds (lib.strat_levels.build_level_map
-    over the daily bars + computed historical levels) so the levels-to-go
+    SAME LevelMap the premarket brief builds (lib.strat_levels.build_session_levels
+    over the daily bars) so the levels-to-go
     ladder matches the rest of the platform — no duplicated math.
 
     Returns None (→ levels UNAVAILABLE) rather than raising, because a
@@ -438,20 +433,33 @@ def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = 
     try:
         import pandas as pd  # noqa: PLC0415
         from lib.data_loader import DataLoader  # noqa: PLC0415
-        from lib.indicators import calculate_historical_levels  # noqa: PLC0415
-        from lib.strat_levels import build_level_map, daily_data_freshness  # noqa: PLC0415
+        from lib.strat_levels import (  # noqa: PLC0415
+            SessionLevels, build_session_levels, daily_data_freshness,
+            premarket_snapshot_from_daily, read_live_level_basis,
+        )
+
+        # One level source (FEAT-STRAT-001): the session's LIVE level_basis
+        # written by the brief, so the ladder is the brief's own side lists
+        # and the stored trigger is rung one. Only without one is it built.
+        session = analysis_date or _movement_analysis_date()
+        if _query_fn is not None:
+            basis = read_live_level_basis(_query_fn, ticker, session)
+            if basis is not None:
+                stored = SessionLevels.from_basis(basis)
+                return stored.to_level_map() if stored.status == "ok" else None
 
         loader = DataLoader()
         df = loader.load_daily(ticker, on_stale="warn")
         if df is None or df.empty or len(df) < 2:
             return None
+        session_premarket = premarket_snapshot_from_daily(df, session)
         close_col = "Close" if "Close" in df.columns else "Last"
         if close_col not in df.columns:
             return None
         # Rule 3.7 — never anchor levels to a NaN/NULL close. market_data_daily
         # can carry a same-day PREMARKET PLACEHOLDER row (close NULL/NaN) that
         # DataLoader.load_daily keeps; float(NaN) does NOT raise, so an
-        # unfiltered df[close_col].iloc[-1] would push NaN into build_level_map →
+        # unfiltered df[close_col].iloc[-1] would push NaN into the level builder →
         # level_map.current_price = NaN → Starlette rejects NaN at JSON render →
         # 500 on an otherwise-valid request. Filter to rows whose OHLC quad is
         # fully real (non-null, non-NaN) and anchor to the LAST VALID close. If no
@@ -467,7 +475,6 @@ def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = 
         # a level crossed during the session flips between the call and put
         # ladders relative to the playbook's sides, losing its slot (Codex P2
         # on #1030, round 4).
-        session = analysis_date or _movement_analysis_date()
         ts_col = pd.to_datetime(df["Time"] if "Time" in df.columns else pd.Series(df.index, index=df.index))
         if getattr(ts_col.dt, "tz", None) is not None:
             ts_col = ts_col.dt.tz_localize(None)
@@ -493,32 +500,16 @@ def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = 
             return None
         if df.empty or len(df) < 2:
             return None
-        ts = df["Time"] if "Time" in df.columns else pd.Series(df.index)
-        levels_df = calculate_historical_levels(
-            ts, df["High"], df["Low"], df["Open"], df[close_col],
-        )
-        for col in levels_df.columns:
-            df[col] = levels_df[col].values
-        current_price = float(df[close_col].iloc[-1])
-        # Defensive second guard: if the last valid close is somehow still not a
-        # finite number, refuse to build levels rather than ship NaN downstream.
-        if not pd.notna(current_price):
+        if not pd.notna(float(df[close_col].iloc[-1])):
             return None
         # DataLoader renames atr_14 → ATR14 (lib/data_loader.py) and the brief
-        # reads ATR14; checking only the lowercase name left this path on the
-        # percent-only staleness filter, showing lines >3 ATR away that the
-        # playbook it is matched against had excluded (Codex P2 on #1030).
+        # reads ATR14. Missing ATR gives no rung (reason atr_unavailable).
         atr_col = next((c for c in ("ATR14", "atr_14") if c in df.columns), None)
         atr_for_filter = None
         if atr_col is not None and pd.notna(df[atr_col].iloc[-1]):
             atr_for_filter = float(df[atr_col].iloc[-1]) or None
-        return build_level_map(
-            ticker=ticker,
-            daily_df=df,
-            current_price=current_price,
-            atr=atr_for_filter,
-            analysis_date=session,
-        )
+        built = build_session_levels(ticker, session, df, atr_for_filter, session_premarket)
+        return built.to_level_map() if built.status == "ok" else None
     except Exception as exc:  # data gap → None → levels UNAVAILABLE (Rule 3.7)
         # A backend OUTAGE is not a data gap. It propagates to the route
         # guard, which answers 503 for it; swallowed here it became a None

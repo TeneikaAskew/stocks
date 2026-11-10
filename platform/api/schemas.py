@@ -507,7 +507,7 @@ class ReachRate(ApiModel):
 
 
 class MovementLevel(ApiModel):
-    # select_nearest_levels emits all five keys; the endpoint passes the
+    # SessionLevels.to_level_map emits all five keys; the endpoint passes the
     # assembler's output through unchanged, so only what every producer
     # (the router tests' stub assembler included) guarantees is required.
     price: float

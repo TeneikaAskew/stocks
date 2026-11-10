@@ -2890,7 +2890,27 @@ class TestDeleteNullCloseRows:
         monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: True)
         monkeypatch.setattr(database, "execute_sql", lambda sql, params=None: 3)
 
-        assert _delete_null_close_rows("SPY") == 3
+        assert _delete_null_close_rows("SPY", "2026-11-06") == 3
+
+    def test_never_deletes_the_sessions_own_premarket_row(self, monkeypatch):
+        """The session's row carries pre_* with a NULL close until the
+        nightly job; the cleanup is bounded to dates before the session
+        (Codex review on #1753: an older NULL-close row made the brief
+        delete the session's premarket row and publish premarket_unavailable)."""
+        from gcp import database
+        from gcp.premarket_brief import _delete_null_close_rows
+
+        seen = {}
+
+        def _exec(sql, params=None):
+            seen["sql"], seen["params"] = sql, params
+            return 1
+
+        monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: True)
+        monkeypatch.setattr(database, "execute_sql", _exec)
+        _delete_null_close_rows("QQQ", "2026-11-06")
+        assert "date < :d" in seen["sql"]
+        assert seen["params"] == {"t": "QQQ", "d": "2026-11-06"}
 
     def test_returns_zero_when_no_rows_matched(self, monkeypatch):
         from gcp import database
@@ -2899,7 +2919,7 @@ class TestDeleteNullCloseRows:
         monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: True)
         monkeypatch.setattr(database, "execute_sql", lambda sql, params=None: 0)
 
-        assert _delete_null_close_rows("SPY") == 0
+        assert _delete_null_close_rows("SPY", "2026-11-06") == 0
 
     def test_returns_zero_when_cloud_sql_not_configured(self, monkeypatch):
         from gcp import database
@@ -2907,7 +2927,7 @@ class TestDeleteNullCloseRows:
 
         monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: False)
 
-        assert _delete_null_close_rows("SPY") == 0
+        assert _delete_null_close_rows("SPY", "2026-11-06") == 0
 
     def test_returns_zero_and_swallows_on_execute_error(self, monkeypatch):
         from gcp import database
@@ -2920,7 +2940,7 @@ class TestDeleteNullCloseRows:
 
         monkeypatch.setattr(database, "execute_sql", _boom)
 
-        assert _delete_null_close_rows("SPY") == 0
+        assert _delete_null_close_rows("SPY", "2026-11-06") == 0
 
 
 # ──────────────────────────────────────────────────────────────────────

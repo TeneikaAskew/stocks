@@ -103,8 +103,9 @@ class LegOutcome:
 
 def derive_level_map_from_daily(ticker: str, analysis_date: date, engine) -> Optional[dict]:
     """Self-healing fallback: re-derive the structured CALL/PUT setup by
-    calling the same ``lib.strat_levels.build_level_map`` the brief writer
-    uses, against daily data filtered to dates < ``analysis_date``.
+    calling the same ``lib.strat_levels.build_session_levels`` the brief
+    writer uses, against daily data before ``analysis_date`` and the
+    session's own premarket snapshot (FEAT-STRAT-001).
 
     Returns a dict of structured fields ready to UPSERT into
     premarket_analysis (calls_trigger_price / puts_trigger_price /
@@ -118,7 +119,22 @@ def derive_level_map_from_daily(ticker: str, analysis_date: date, engine) -> Opt
     same answer. CLAUDE.md §3.6 — production replay paths, no throwaway
     harnesses.
     """
-    from lib.strat_levels import build_level_map  # local import to keep top-level light
+    from lib.strat_levels import (  # local import to keep top-level light
+        SessionLevels, build_session_levels, read_live_level_basis,
+        read_session_premarket,
+    )
+
+    # The session's LIVE level_basis, written by the brief with the row, is
+    # the source when present (a replay row is never read); only without
+    # one are the levels built from daily bars.
+    basis = read_live_level_basis(
+        lambda sql, params: pd.read_sql(text(sql), engine, params=params),
+        ticker, analysis_date,
+    )
+    if basis is not None:
+        stored = SessionLevels.from_basis(basis)
+        if stored.status == 'ok':
+            return _structured_inputs(stored.to_level_map())
 
     # Load daily history for this ticker. We want everything up to and
     # NOT including analysis_date so the level map only sees data the
@@ -141,20 +157,24 @@ def derive_level_map_from_daily(ticker: str, analysis_date: date, engine) -> Opt
     })
 
     last = df.iloc[-1]
-    # current_price proxy: the most-recent close BEFORE analysis_date.
-    # This is what a live brief running at 8:30 AM would see when no
-    # premarket data has come in yet. Deterministic + reproducible.
-    current_price = float(last['Close'])
+    # The last completed session's ATR(14); missing gives no trigger
+    # (reason atr_unavailable), never a percent-only window.
     atr = float(last['atr_14']) if pd.notna(last['atr_14']) else None
     strat_class = str(last.get('strat_candle') or '')
-    combo = str(last.get('strat_combo') or '')
-
-    level_map = build_level_map(
-        ticker=ticker, daily_df=df, current_price=current_price,
-        daily_strat_class=strat_class, combo=combo,
-        atr=atr, analysis_date=analysis_date,
+    premarket = read_session_premarket(
+        lambda sql, params: pd.read_sql(text(sql), engine, params=params),
+        ticker, analysis_date,
     )
 
+    level_map = build_session_levels(
+        ticker, analysis_date, df, atr, premarket,
+        daily_strat_class=strat_class,
+    ).to_level_map()
+    return _structured_inputs(level_map)
+
+
+def _structured_inputs(level_map) -> dict:
+    """The structured CALL/PUT columns of one LevelMap."""
     ct = level_map.calls_trigger or {}
     pt = level_map.puts_trigger or {}
     ct_targets = ct.get('targets', []) if ct else []
