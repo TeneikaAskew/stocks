@@ -46,6 +46,7 @@ SOURCE_TREES = ("platform/api",)
 
 DRIFT_KEYS = ("declared_not_live", "live_not_declared", "paused_schedulers")
 COUNT_KEYS = ("jobs", "services", "schedulers", "tables", "routes")
+LIVE_MAPS = ("jobs", "services", "schedulers")   # what a live snapshot must have read
 
 
 class DirtyTree(RuntimeError):
@@ -132,10 +133,27 @@ def build_export(repo: dict[str, Any], live: dict[str, Any] | None,
                  sources: dict[str, Any]) -> dict[str, Any]:
     """The export document, from a `doc_inventory.repo_inventory` result and an
     optional live snapshot. Pure: no file, git or gcloud access."""
+    if live is not None:
+        # A snapshot without one of these maps did not read that part of the
+        # fleet; treating it as an empty fleet would report every declared
+        # resource as gone (CLAUDE.md Rule 3.7). (Codex, PR #1773.)
+        missing = [k for k in LIVE_MAPS if not isinstance(live.get(k), dict)]
+        if missing:
+            raise ValueError("live snapshot has no " + ", ".join(missing) + " map; refusing to export it as empty")
     edges = {e["job"]: e for e in inv.job_table_edges(repo, repo["table_refs"])}
-    live_jobs = (live or {}).get("jobs", {}) if live is not None else None
-    live_services = (live or {}).get("services", {}) if live is not None else None
-    live_sched = (live or {}).get("schedulers", {}) if live is not None else None
+    # Live-only jobs are attributed by the module their live command names,
+    # exactly as the inventory's digest does. One whose module is not in this
+    # checkout has unknown edges, exported as null rather than as no tables.
+    # (Codex, PR #1773.)
+    unknown_edges: set[str] = set()
+    if live is not None:
+        for e in inv.hand_created_job_edges(repo, repo["table_refs"], live):
+            edges[e["job"]] = e
+            if not e["in_repo"]:
+                unknown_edges.add(e["job"])
+    live_jobs = live["jobs"] if live is not None else None
+    live_services = live["services"] if live is not None else None
+    live_sched = live["schedulers"] if live is not None else None
 
     declared_jobs = {j["name"]: j for j in repo["jobs"]}
     sched_by_job: dict[str, list[dict[str, Any]]] = {}
@@ -150,8 +168,11 @@ def build_export(repo: dict[str, Any], live: dict[str, Any] | None,
         j = declared_jobs.get(name)
         lj = (live_jobs or {}).get(name)
         src = j or lj
-        reads, possible_reads = _edge_lists(edges.get(name), "reads")
-        writes, possible_writes = _edge_lists(edges.get(name), "writes")
+        if name in unknown_edges:
+            reads = writes = possible_reads = possible_writes = None
+        else:
+            reads, possible_reads = _edge_lists(edges.get(name), "reads")
+            writes, possible_writes = _edge_lists(edges.get(name), "writes")
         module = _module(src) if src and "command" in src else None
         jobs.append({
             "name": name,
@@ -205,6 +226,8 @@ def build_export(repo: dict[str, Any], live: dict[str, Any] | None,
     possible_readers: dict[str, set[str]] = {}
     possible_writers: dict[str, set[str]] = {}
     for j in jobs:
+        if j["reads"] is None:
+            continue
         for t in j["reads"]:
             readers.setdefault(t, set()).add(j["name"])
         for t in j["writes"]:
@@ -235,10 +258,15 @@ def build_export(repo: dict[str, Any], live: dict[str, Any] | None,
     if live is not None:
         live_counts.update(jobs=len(live_jobs), services=len(live_services),
                            schedulers=len(live_sched))
+        # Jobs, services and schedulers, as doc_inventory.reconcile compares
+        # them: one missing and one extra scheduler cancel out in the counts,
+        # so only the names show the difference. (Codex, PR #1773.)
         drift["declared_not_live"] = sorted((set(declared_jobs) - set(live_jobs))
-                                            | (declared_services - set(live_services)))
+                                            | (declared_services - set(live_services))
+                                            | (set(declared_sched) - set(live_sched)))
         drift["live_not_declared"] = sorted((set(live_jobs) - set(declared_jobs))
-                                            | (set(live_services) - declared_services))
+                                            | (set(live_services) - declared_services)
+                                            | (set(live_sched) - set(declared_sched)))
         drift["paused_schedulers"] = sorted(n for n, s in live_sched.items()
                                             if s.get("state") != "ENABLED")
 
@@ -314,7 +342,11 @@ def main(argv: list[str] | None = None) -> int:
         live = json.loads(pathlib.Path(args.snapshot).read_text())
     elif args.live:
         live = inv.live_snapshot()
-    export = build_export(repo, live, sources)
+    try:
+        export = build_export(repo, live, sources)
+    except ValueError as e:
+        print(f"refusing to export: {e}", file=sys.stderr)
+        return 3
     pathlib.Path(args.output).write_text(dumps(export))
     if args.summary:
         pathlib.Path(args.summary).write_text(summary_markdown(export))

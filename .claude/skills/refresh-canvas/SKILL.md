@@ -84,7 +84,8 @@ is committed for it, so step 1 is different; steps 2 to 7 are unchanged.
 3. Continue at step 2 of the skill. In the diff header, name the export's commit and its live read
    time in place of the registry blob and review date. `counts.live.tables` and `counts.live.routes`
    are always null: the export reads no database and no deployed route list, so report them as "not
-   read", never as zero.
+   read", never as zero. A job whose `reads` is null runs a module that is not in this checkout, so its
+   tables are unknown: show its table edges as unknown, never as none.
 
 ## Guardrails
 

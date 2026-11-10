@@ -16,7 +16,6 @@ one inventory per module because an inventory of the real tree takes ~17s.
 from __future__ import annotations
 
 import ast
-import copy
 import json
 import os
 import pathlib
@@ -36,6 +35,13 @@ FIXTURE = REPO / "tests/fixtures/live_gcp_snapshot_2026-09-07.json"
 MODULE = REPO / "scripts/maintenance/architecture_export.py"
 STUB_SOURCES = {"commit": "0" * 40, "files": {}}
 LINE_CITE = re.compile(r"[\w./-]+\.(py|sh|sql):\d+")
+
+
+def _live_schedulers(repo):
+    """A live schedulers map holding exactly the declared schedulers, all enabled."""
+    return {s["name"]: {"cron": s["cron"], "state": "ENABLED", "time_zone": "America/New_York",
+                        "target_job": s.get("target_job", ""), "target_service": s.get("target_service", ""),
+                        "target_uri": s.get("target_uri", "")} for s in repo["schedulers"]}
 
 
 def _git(root: pathlib.Path, *args: str) -> str:
@@ -148,7 +154,8 @@ def test_declared_and_live_services_are_both_kept_and_drift_names_each_once(mini
                                        "gcloud run deploy svc-b \\\n  --image x\n")
     repo = inv.repo_inventory(mini)
     assert [s["name"] for s in repo["services"]] == ["svc-a", "svc-b"]
-    e = ax.build_export(repo, _live(jobs=("alpha", "beta", "gamma"), services=("svc-b", "svc-x")), STUB_SOURCES)
+    e = ax.build_export(repo, _live(jobs=("alpha", "beta", "gamma"), services=("svc-b", "svc-x"),
+                                    schedulers=_live_schedulers(repo)), STUB_SOURCES)
     s = {x["name"]: x for x in e["services"]}
     assert s["svc-a"]["declared"] is True and s["svc-a"]["live"] is None
     assert s["svc-x"]["declared"] is False and s["svc-x"]["live"]["max_instances"] == "1"
@@ -281,8 +288,8 @@ def test_unread_live_counts_are_null_and_the_summary_says_not_read(clone, clone_
     assert live["jobs"] == len(snap["jobs"]) == 76
     assert live["services"] == len(snap["services"]) and live["schedulers"] == len(snap["schedulers"])
     md = ax.summary_markdown(e)
-    assert re.search(r"^\| tables \| \d+ \| not read \|$", md, re.M), md
-    assert re.search(r"^\| routes \| \d+ \| not read \|$", md, re.M), md
+    assert re.search(r"^\| tables \| \d+ \| not read \|$", md, re.MULTILINE), md
+    assert re.search(r"^\| routes \| \d+ \| not read \|$", md, re.MULTILINE), md
     assert "not read" not in md.split("| routes |")[1].split("\n", 1)[1], "drift was read"
 
 
@@ -305,7 +312,7 @@ def test_repo_only_mode_needs_no_gcloud(clone, tmp_path):
     summary = tmp_path / "summary.md"
     r = subprocess.run([sys.executable, "-m", "scripts.maintenance.architecture_export", "--root", str(clone),
                         "--output", str(out), "--summary", str(summary)],
-                       cwd=REPO, env=env, capture_output=True, text=True)
+                       cwd=REPO, env=env, capture_output=True, text=True, check=False)
     assert r.returncode == 0, r.stderr
     assert shutil.which("gcloud", path=env["PATH"]) is None
     e = json.loads(out.read_text())
@@ -323,10 +330,7 @@ def test_drift_names_exactly_the_synthetic_differences(mini):
     repo = inv.repo_inventory(mini)
     declared_jobs = [j["name"] for j in repo["jobs"]]
     assert declared_jobs == ["alpha", "beta", "gamma"]
-    sched = {s["name"]: {"cron": s["cron"], "state": "ENABLED", "time_zone": "America/New_York",
-                         "target_job": s.get("target_job", ""), "target_service": s.get("target_service", ""),
-                         "target_uri": s.get("target_uri", "")} for s in repo["schedulers"]}
-    sched = copy.deepcopy(sched)
+    sched = _live_schedulers(repo)
     sched["orb-15m"]["state"] = "PAUSED"
     live = _live(jobs=("alpha", "beta", "hand-made"), schedulers=sched)
     e = ax.build_export(repo, live, STUB_SOURCES)
@@ -336,3 +340,45 @@ def test_drift_names_exactly_the_synthetic_differences(mini):
     assert hand["declared"] is False and hand["live"]["exists"] is True
     gamma = next(j for j in e["jobs"] if j["name"] == "gamma")
     assert gamma["declared"] is True and gamma["live"] == {"exists": False, "last_execution": None}
+
+
+# ── review round one (Codex, PR #1773) ──────────────────────────────────────
+
+@pytest.mark.parametrize("key", ["jobs", "services", "schedulers"])
+def test_a_snapshot_missing_a_live_map_is_refused_not_read_as_empty(clone, tmp_path, key):
+    snap = json.loads(FIXTURE.read_text())
+    snap.pop(key)
+    p = tmp_path / "snap.json"
+    p.write_text(json.dumps(snap))
+    out = tmp_path / "export.json"
+    assert ax.main(["--root", str(clone), "--snapshot", str(p), "--output", str(out)]) == 3
+    assert not out.exists()
+
+
+def test_scheduler_presence_drift_is_named_even_when_counts_cancel(mini):
+    repo = inv.repo_inventory(mini)
+    sched = _live_schedulers(repo)
+    sched["hand-made-daily"] = sched.pop("orb-15m")
+    e = ax.build_export(repo, _live(jobs=("alpha", "beta", "gamma"), schedulers=sched), STUB_SOURCES)
+    assert e["counts"]["live"]["schedulers"] == e["counts"]["declared"]["schedulers"]
+    assert e["drift"]["declared_not_live"] == ["orb-15m"]
+    assert e["drift"]["live_not_declared"] == ["hand-made-daily"]
+
+
+def test_live_only_jobs_get_their_edges_or_null_when_unknowable(fixture_export):
+    jobs = {j["name"]: j for j in fixture_export["jobs"]}
+    p2 = jobs["p2-outcomes-grid"]
+    assert p2["declared"] is False
+    assert "market_data_daily" in p2["reads"], p2
+    t = {x["name"]: x for x in fixture_export["tables"]}
+    assert "p2-outcomes-grid" in t["market_data_daily"]["readers"]
+    for j in fixture_export["jobs"]:
+        if j["reads"] is None:
+            assert j["declared"] is False and j["writes"] is None and j["possible_reads"] is None
+
+
+def test_a_live_only_job_with_no_module_here_has_null_edges(mini):
+    e = ax.build_export(inv.repo_inventory(mini), _live(jobs=("alpha", "beta", "gamma", "hand-made")), STUB_SOURCES)
+    hand = next(j for j in e["jobs"] if j["name"] == "hand-made")
+    assert hand["reads"] is None and hand["writes"] is None
+    assert hand["possible_reads"] is None and hand["possible_writes"] is None
