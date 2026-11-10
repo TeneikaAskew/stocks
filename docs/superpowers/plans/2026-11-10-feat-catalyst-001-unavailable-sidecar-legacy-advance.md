@@ -2,7 +2,7 @@
 feat_id: FEAT-CATALYST-001
 spec: docs/superpowers/specs/2026-11-07-feat-catalyst-001-unavailable-sidecar-legacy-advance.md
 branch: fix/feat-catalyst-001-unavailable-sidecar-legacy-advance
-pr: null
+pr: 1769
 status: ready
 ---
 
