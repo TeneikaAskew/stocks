@@ -22,7 +22,7 @@ done_when:
   - "Unchanged, each pinned by an existing or added test that passes on the #1753 head and on the implementation head: signal-monitor fire decisions, scores, strength labels, Discord delivery and alert targets (lib/config.py:305-306, gcp/signal_monitor.py:1513-1522); the brief's CALL/PUT side pick (_resolve_signal_status); persona sizing, the catalyst damper and the FTFC gates (lib/agents/trade_planner.py:151-166); the side rule, the broken rule and the cents rule of the #1753 builder"
   - "Source identity (DASHBOARD-01, DASHBOARD-21, INSIGHTS-01, INSIGHTS-07, INSIGHTS-08): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-STRAT-001, DASHBOARD-01 / DASHBOARD-21 / INSIGHTS-01 / INSIGHTS-07 / INSIGHTS-08) note rows carry that source_identity_sha256 with implementation and test prose for this PR"
   - "The FEAT-STRAT-001 and FEAT-INSIGHT-001 catalog records and the PR traceability entry are updated; python3 scripts/gate/spec_gate.py --pr origin/main passes; the two parameter tables, the atr_5 column, the history-mode calibration run, the atr_5 history backfill, the calibration job and its scheduler, and the av-intraday-nightly universe change are applied to production only after the owner's yes and recorded separately"
-status: approved
+status: superseded
 supersedes: null
 ---
 
