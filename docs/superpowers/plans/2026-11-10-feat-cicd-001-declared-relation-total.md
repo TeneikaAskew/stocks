@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-10-feat-cicd-001-declared-relation-total.md
 branch: fix/feat-cicd-001-declared-relation-total
-pr: PRNUM
+pr: 1783
 status: ready
 ---
 
