@@ -47,8 +47,9 @@ from lib.indicators import add_signal_indicators
 from lib.signals import evaluate_signal
 from lib.strategies.exit_config_overrides import get_consecutive_periods
 from lib.strat import StratClassifier
-from lib.strat_levels import (LegStateTracker, LevelMap, build_level_map,
-                             reanchor_triggers)
+from lib.strat_levels import (LegStateTracker, LevelMap, SessionLevels,
+                             build_session_levels, premarket_snapshot_from_daily,
+                             read_live_level_basis)
 from lib.config import load_config, get_position_size, get_signal_strength_label
 from lib.strategies import MOMENTUM
 from lib.strategies.agreement import AGREEMENT_BONUS, detect_agreement
@@ -226,6 +227,10 @@ class SignalMonitor:
         # Daily ATR-14 used when each ticker's level map was built, so the
         # put re-anchor can re-apply the brief's 3xATR staleness filter.
         self.level_map_atr: dict = {}
+        # The session's SessionLevels per ticker (FEAT-STRAT-001): read from
+        # the brief's live level_basis, else built with ATR(14) and the
+        # session's premarket snapshot.
+        self.session_levels: dict = {}
         # Last seen price per ticker, for crossing detection. Avoids firing
         # the same level-break alert on every tick after the break.
         self.last_prices: dict = {t: None for t in self.tickers}
@@ -469,8 +474,8 @@ class SignalMonitor:
         comparison compare a leg against itself (Rule 3.7).
 
         One aggregate-free, in-memory computation per ticker per day: the
-        structural levels are already in the cached LevelMap and
-        `identify_triggers` is pure. The single DB write is the shadow persist.
+        session's SessionLevels are cached and SessionLevels.with_reference
+        is pure. The single DB write is the shadow persist.
         """
         if self.signal_cfg.put_reanchor_mode == 'off':
             return None
@@ -504,23 +509,26 @@ class SignalMonitor:
                 logger.info("put_reanchor: %s skipped — no usable open", ticker)
                 return None
 
-            # Codex P2 on PR #810: the published playbook is built with
-            # build_level_map(atr=atr_for_filter), which drops levels beyond
-            # 3xATR. Re-anchoring with atr=None applies only identify_triggers'
-            # looser 8% bound, so on a low-volatility ticker the re-anchored leg
-            # could select a stale trigger the brief deliberately excluded —
-            # making the shadow comparison non-equivalent and, under enforce,
-            # arming an invalid leg. Pass the same daily ATR the level map was
-            # refreshed with; None only when the daily row carries no ATR, which
-            # is the same state the brief would have seen.
-            legs = reanchor_triggers(
-                level_map, open_px, atr=self.level_map_atr.get(ticker))
-            put = legs.get('puts')
-            if not put or put.get('trigger_level') is None:
+            # The put re-anchor is the one builder with reference = open:
+            # same levels, same window and same ATR(14) as the published
+            # playbook (FEAT-STRAT-001).
+            session = self.session_levels.get(ticker)
+            if session is None:
+                logger.info("put_reanchor: %s skipped, session levels "
+                            "unavailable", ticker)
+                return None
+            put_side = session.with_reference(open_px).short
+            if put_side.trigger is None:
                 logger.info(
                     "put_reanchor: %s skipped — no fresh structural level "
-                    "below open=%.4f", ticker, open_px)
+                    "below open=%.4f (%s)", ticker, open_px, put_side.reason)
                 return None
+            put = {
+                'trigger_level': put_side.trigger['price'],
+                'trigger_name': put_side.trigger['name'],
+                'stop': put_side.stop['price'] if put_side.stop else None,
+                'targets': put_side.targets,
+            }
             tgts = [t.get('price') for t in (put.get('targets') or [])]
             out = {
                 'open': open_px,
@@ -814,6 +822,7 @@ class SignalMonitor:
         self.volume_baselines[ticker] = {}
         self.level_maps[ticker] = None
         self.level_map_atr.pop(ticker, None)
+        self.session_levels.pop(ticker, None)
         self.last_prices[ticker] = None
         self.fired_breaks = {k for k in self.fired_breaks if k[0] != ticker}
         self._brief_bias_cache.pop(ticker, None)
@@ -831,6 +840,17 @@ class SignalMonitor:
         from lib.strategies import catalyst_proximity  # noqa: PLC0415
         catalyst_proximity.reset_cache()
 
+    def _live_level_basis(self, ticker: str, session_date):
+        """The session's live level_basis, or None (Cloud SQL not configured,
+        no live row, or the column not applied yet)."""
+        try:
+            from gcp.database import is_cloud_sql_configured, query_to_dataframe
+            if not is_cloud_sql_configured():
+                return None
+        except Exception:  # noqa: BLE001
+            return None
+        return read_live_level_basis(query_to_dataframe, ticker, session_date)
+
     def refresh_level_map(self, ticker: str) -> None:
         """Load the latest market_data_daily row + indicators and rebuild
         the LevelMap for this ticker. Called at startup and periodically
@@ -839,7 +859,6 @@ class SignalMonitor:
         """
         try:
             from lib.data_loader import DataLoader
-            from lib.indicators import calculate_historical_levels
             loader = DataLoader(data_dir=self.market_cfg.data_dir)
             df = loader.load_daily(ticker, on_stale='warn')
             if df.empty:
@@ -881,12 +900,13 @@ class SignalMonitor:
             # ET evening of D-1, and a map anchored on D there would
             # admit a daily bar the rest of the bar's state excludes.
             _analysis_date = self._now(_ET).date()
+            session_premarket = premarket_snapshot_from_daily(df, _analysis_date)
             df = self._bound_daily_frame(df, _analysis_date)
             # Same defensive drop as the brief (premarket_brief.py, the
             # 2026-04-30 NULL-OHLCV placeholder incident): a prior-day
             # placeholder row survives the bound and would become
             # iloc[-1] -> current_price NaN. Fewer than 2 rows cannot
-            # produce previous-period levels (compute_current_levels
+            # produce previous-period levels (the builder
             # returns {} for a 1-row frame), so treat it as no data
             # rather than a successful, empty map.
             close_col = 'Close' if 'Close' in df.columns else 'Last'
@@ -904,16 +924,6 @@ class SignalMonitor:
                 )
                 self.level_maps[ticker] = None
                 return
-            ts = df['Time'] if 'Time' in df.columns else pd.Series(df.index)
-            levels_df = calculate_historical_levels(
-                ts, df['High'], df['Low'], df['Open'], df[close_col],
-            )
-            for col in levels_df.columns:
-                df[col] = levels_df[col].values
-
-            # Use the latest live close as current_price; the actual price
-            # will be passed in check_level_breaks for crossing detection.
-            current_price = float(df[close_col].iloc[-1])
             # Daily ATR-14 for the level-staleness filter, kept alongside the
             # map so the put re-anchor can apply the SAME filter the premarket
             # brief applied when it published the playbook. None when the
@@ -932,15 +942,19 @@ class SignalMonitor:
                 if _a is not None and _a == _a and float(_a) > 0:
                     _atr = float(_a)
             self.level_map_atr[ticker] = _atr
-            # PR #400 fix applied to this code path: pass analysis_date
-            # so build_level_map → compute_previous_levels uses period-
-            # filter semantics. Without this, replay runs picked
-            # day-before-yesterday's PDH/PDL. Same date the frame was
-            # bounded with above.
-            self.level_maps[ticker] = build_level_map(
-                ticker=ticker, daily_df=df, current_price=current_price,
-                analysis_date=_analysis_date,
-            )
+            # One builder (FEAT-STRAT-001): the session's live level_basis
+            # when the brief wrote one, else build_session_levels with this
+            # ATR(14) and the session's own premarket snapshot. The map the
+            # level-break check reads keeps the structural, open and gap
+            # levels it always had.
+            basis = self._live_level_basis(ticker, _analysis_date)
+            if basis is not None:
+                session = SessionLevels.from_basis(basis)
+            else:
+                session = build_session_levels(
+                    ticker, _analysis_date, df, _atr, session_premarket)
+            self.session_levels[ticker] = session
+            self.level_maps[ticker] = session.to_level_map(include_premarket=False)
             self.level_refresh_success_count[ticker] = (
                 self.level_refresh_success_count.get(ticker, 0) + 1
             )

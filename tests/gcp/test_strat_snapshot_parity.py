@@ -52,7 +52,7 @@ def _brief(monkeypatch, frame):
     monkeypatch.setattr(pb, '_load_gamma_freshness', lambda *a, **k: dict(
         data_source='unavailable', snapshot_ts=None, snapshot_date=None, days_behind=None))
     # Stop the unrelated playbook/persistence branch at its isolated boundary.
-    monkeypatch.setattr(pb, 'build_level_map', lambda **k: (_ for _ in ()).throw(
+    monkeypatch.setattr(pb, 'build_session_levels', lambda *a, **k: (_ for _ in ()).throw(
         ValueError('isolated playbook boundary')))
     monkeypatch.setattr(pb, '_delete_null_close_rows',
                         lambda *a: pytest.fail('STRAT must not delete invalid observations'))

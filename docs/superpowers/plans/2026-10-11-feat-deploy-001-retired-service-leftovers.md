@@ -1,6 +1,6 @@
 ---
 feat_id: FEAT-DEPLOY-001
-spec: docs/superpowers/specs/2026-10-11-feat-deploy-001-retired-service-leftovers.md
+spec: docs/superpowers/specs/2026-11-09-feat-deploy-001-retired-service-source-note.md
 branch: feature/feat-deploy-001-retired-service-leftovers
 pr: 1384
 status: ready
@@ -675,3 +675,30 @@ Read every review thread before CI and resolve each per CLAUDE.md §2.5.
 
 On a `docs/` branch set this plan's `status: done`. Tell the solyra PR's author to re-run its CI. The
 canvas check runs from chat with the refresh-canvas skill.
+
+## Task 9: source identity (SHARED-01)
+
+Spec: `docs/superpowers/specs/2026-11-09-feat-deploy-001-retired-service-source-note.md` (#1764, merged
+as 57dff022, blob 43708b4d, approved), § "Source identity and close-out"; advances done_when[12]
+(item 13). That spec supersedes the 2026-10-11 spec, repeats its done_when[0] to done_when[11] byte for
+byte and declares `site_source_notes: [SHARED-01]`; this plan is re-pointed to it in the same commit
+that merges main. Tasks 1 to 8 are unchanged.
+
+- [ ] Add the `FEAT-DEPLOY-001` / `SHARED-01` row to the existing Implementation-source notes table of
+      `docs/product/03-SITE-TRACEABILITY.md` (between the `FEAT-DATA-001` and `FEAT-IND-001` rows), with
+      the prefix `source_identity_sha256=<current source hash>; ` read from the producer, and prose that
+      describes only this PR's `platform/api`, `scripts/maintenance` and `tests` source: the `/dev` proxy
+      line, the earnings ping docstring and its OpenAPI description, the drawio generator and the Run 28
+      comment. No deployment, staging, diagram refresh, solyra sync, frontend effect or external review
+      is claimed, and no other SITE byte changes.
+- [ ] From the committed HEAD, `python3 scripts/maintenance/doc_source_snapshot.py produce`, then commit
+      `docs/review-evidence/site-source-snapshot.json` produced from the final committed SITE body,
+      replacing the record the merge of main carries; `verify` with the fixed ceilings on the final HEAD
+      reports identity-matched.
+- [ ] Matched main and branch `scripts/maintenance/docs_audit.py` runs report no finding main does not;
+      `tests/scripts/test_doc_source_snapshot.py` and `tests/scripts/test_docs_audit.py` pass unchanged;
+      `docs/DOC_REGISTRY.md` blob, mode and type equal main's; the FEAT-DEPLOY-001 catalog record's Last
+      reviewed equals the head commit date and 12-PR-ISSUE-TRACEABILITY lists #1384.
+- [ ] Repeat after every further merge of main, and after any later watched-code, SITE body or policy
+      change. The post-merge steps of that spec section (fresh-clone identity check, DOC main and staging
+      close-out, sidecar retirement, plan `status: done`) are separate work after the merge.

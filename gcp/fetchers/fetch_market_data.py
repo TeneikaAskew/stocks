@@ -16,7 +16,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import datetime, date, timedelta, time as dt_time
+from datetime import datetime, date, timedelta, timezone, time as dt_time
 from pathlib import Path
 
 import pandas as pd
@@ -448,37 +448,67 @@ def compute_and_upsert_daily_indicators(ticker: str, fetch_date: str):
             intraday_sql,
             {'ticker': ticker.upper(), 'start': pm_start, 'end': pm_end},
         )
+        intraday_read_at = datetime.now(timezone.utc)
         if not intraday.empty:
+            # Every input describes the last completed session (the row
+            # before fetch_date): its close, its open and its ATR(14). The
+            # fetch date's own ATR includes the session being filtered.
             prev_close = None
+            prev_open = None
             atr14 = None
-            try:
-                prev_close = float(df['Close'].iloc[-2]) if len(df) >= 2 else None
-            except Exception:
-                pass
-            try:
-                atr14 = float(last.get('atr_14')) if last.get('atr_14') is not None else None
-            except Exception:
-                pass
+            if len(df) >= 2:
+                prior_row = enriched.iloc[-2]
+                try:
+                    prev_close = float(df['Close'].iloc[-2])
+                except Exception:
+                    pass
+                try:
+                    prev_open = float(df['Open'].iloc[-2])
+                except Exception:
+                    pass
+                try:
+                    # add_all_indicators names the column ATR14 (atr_14 is
+                    # its SQL name, which this frame never carries).
+                    prior_atr = prior_row.get('ATR14')
+                    atr14 = float(prior_atr) if prior_atr is not None and pd.notna(prior_atr) else None
+                except Exception:
+                    pass
 
-            pm = calculate_premarket_context(
-                times=intraday['ts'],
-                open_=intraday['open'],
-                high=intraday['high'],
-                low=intraday['low'],
-                close=intraday['close'],
-                volume=intraday['volume'],
-                prev_close=prev_close,
-                atr14=atr14,
-            )
-            if pm['bar_count'] > 0:
+            if atr14 is None or not atr14 > 0:
+                # The print filter needs the prior session's ATR(14); without
+                # it the pre_* columns would carry the raw prints, so none
+                # are written for this session.
+                log.warning("    premarket withheld for %s on %s: prior-session "
+                            "ATR(14) unavailable, the print filter cannot run",
+                            ticker, fetch_date)
+                pm = None
+            else:
+                pm = calculate_premarket_context(
+                    times=intraday['ts'],
+                    open_=intraday['open'],
+                    high=intraday['high'],
+                    low=intraday['low'],
+                    close=intraday['close'],
+                    volume=intraday['volume'],
+                    prev_close=prev_close,
+                    atr14=atr14,
+                    prev_open=prev_open,
+                )
+            if pm is not None and pm['bar_count'] > 0:
                 if pm['pre_high'] is not None: row['pre_high'] = pm['pre_high']
                 if pm['pre_low'] is not None: row['pre_low'] = pm['pre_low']
                 if pm['pre_vwap'] is not None: row['pre_vwap'] = pm['pre_vwap']
                 if pm['pre_volume'] is not None: row['pre_volume'] = pm['pre_volume']
                 if pm['gap_pct'] is not None: row['gap_pct'] = pm['gap_pct']
                 if pm['pre_range_atr'] is not None: row['pre_range_atr'] = pm['pre_range_atr']
+                # Provenance (FEAT-STRAT-001): when these bars were read and
+                # how many prints the filter dropped. upsert_dataframe drops
+                # the keys while market_data_daily lacks the columns.
+                row['pre_fetched_at'] = intraday_read_at
+                row['pre_excluded_stale_prints'] = int(pm['excluded_prior_close_prints'])
+                row['pre_excluded_spikes'] = int(pm['excluded_spike_prints'])
                 log.info("    ✓ pre-market context computed (%d bars)", pm['bar_count'])
-            else:
+            elif pm is not None:
                 log.info("    no pre-market bars for %s on %s (likely weekend / holiday)",
                          ticker, fetch_date)
     except Exception as e:

@@ -31,7 +31,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -131,32 +131,40 @@ def resolve_universe(target_date: date, max_tickers: int = 50) -> list[str]:
 
 # ── Pre-market computation ──────────────────────────────────────────────────
 
-def _prev_close_from_db(ticker: str, fetch_date: date) -> float | None:
-    """Most recent regular-session close prior to ``fetch_date``.
+def _prior_session_from_db(ticker: str, fetch_date: date) -> dict:
+    """The last completed session before ``fetch_date``: close, open, atr_14.
 
-    The 11pm-yesterday market_data_daily row has yesterday's close
-    already, so a simple backward lookup is enough.
+    The 11pm-yesterday market_data_daily row has yesterday's close and
+    ATR(14) already, so one backward lookup is enough. The premarket print
+    filter needs the prior session's ATR(14) (FEAT-STRAT-001 Design 2), never
+    the fetch date's own row, which at 08:30 holds only premarket columns.
+    Returns an empty dict when the query succeeds and finds no row; a failed
+    query raises, so a lookup error is never read as "no prior session".
     """
-    try:
-        from gcp.database import query_to_dataframe
-    except ImportError:
-        return None
+    from gcp.database import query_to_dataframe
     sql = """
-        SELECT close
+        SELECT close, open, atr_14
           FROM market_data_daily
          WHERE ticker = :tk
            AND date < :d
+           AND close IS NOT NULL
          ORDER BY date DESC
          LIMIT 1
     """
-    try:
-        df = query_to_dataframe(sql, {'tk': ticker, 'd': fetch_date})
-        if df.empty:
-            return None
-        v = df['close'].iloc[0]
-        return float(v) if pd.notna(v) else None
-    except Exception:
-        return None
+    df = query_to_dataframe(sql, {'tk': ticker, 'd': fetch_date})
+    if df.empty:
+        return {}
+    row = df.iloc[0]
+    out = {}
+    for key in ('close', 'open', 'atr_14'):
+        v = row.get(key)
+        out[key] = float(v) if v is not None and pd.notna(v) else None
+    return out
+
+
+def _prev_close_from_db(ticker: str, fetch_date: date) -> float | None:
+    """Most recent regular-session close prior to ``fetch_date``."""
+    return _prior_session_from_db(ticker, fetch_date).get('close')
 
 
 def compute_premarket_for_ticker(ticker: str, fetch_date: date,
@@ -173,11 +181,26 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
 
     iso_date = fetch_date.strftime('%Y-%m-%d')
     df = fetch_minute_data(ticker, iso_date, api_key)
+    # When the bars behind this snapshot were fetched (a UTC instant).
+    fetched_at = datetime.now(timezone.utc)
     if df.empty:
         log.info("  %s: no AV intraday bars for %s", ticker, iso_date)
         return None
 
-    prev_close = _prev_close_from_db(ticker, fetch_date)
+    try:
+        prior = _prior_session_from_db(ticker, fetch_date)
+    except Exception as e:  # noqa: BLE001 withheld below, never written unfiltered
+        log.error("  %s: premarket withheld for %s: prior-session lookup failed: %s",
+                  ticker, iso_date, e)
+        return None
+    prev_close = prior.get('close')
+    atr14 = prior.get('atr_14')
+    if atr14 is None or not atr14 > 0:
+        # The print filter needs the prior session's ATR(14); without it the
+        # snapshot would carry the raw 08:05 prints, so none is written.
+        log.warning("  %s: premarket withheld for %s: prior-session ATR(14) "
+                    "unavailable, the print filter cannot run", ticker, iso_date)
+        return None
 
     # `times` must be a Series so calculate_premarket_context's tz-aware
     # path runs (DatetimeIndex falls to a per-row Python loop that builds
@@ -191,7 +214,8 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
         close=df['Close'].reset_index(drop=True),
         volume=df['Volume'].reset_index(drop=True),
         prev_close=prev_close,
-        atr14=None,  # Not needed for the brief embed; can be filled tonight
+        atr14=atr14,
+        prev_open=prior.get('open'),
     )
     if pm.get('bar_count', 0) <= 0:
         log.info("  %s: 0 pre-market bars for %s (early run, weekend, or holiday)",
@@ -206,6 +230,13 @@ def compute_premarket_for_ticker(ticker: str, fetch_date: date,
         'pre_vwap': pm.get('pre_vwap'),
         'pre_volume': pm.get('pre_volume'),
         'gap_pct': pm.get('gap_pct'),
+        'excluded_prior_close_prints': pm.get('excluded_prior_close_prints'),
+        'excluded_spike_prints': pm.get('excluded_spike_prints'),
+        # The provenance columns (FEAT-STRAT-001), written when the table
+        # has them (see upsert_premarket).
+        'pre_fetched_at': fetched_at,
+        'pre_excluded_stale_prints': pm.get('excluded_prior_close_prints'),
+        'pre_excluded_spikes': pm.get('excluded_spike_prints'),
     }
 
 
@@ -247,24 +278,52 @@ def upsert_premarket(rows: list[dict]) -> int:
 
     import sqlalchemy
     eng = get_engine()
-    sql = sqlalchemy.text("""
-        INSERT INTO market_data_daily
-            (ticker, date, pre_high, pre_low, pre_vwap, pre_volume, gap_pct)
-        VALUES
-            (:ticker, :date, :pre_high, :pre_low, :pre_vwap, :pre_volume, :gap_pct)
-        ON CONFLICT (ticker, date) DO UPDATE SET
-            pre_high   = COALESCE(EXCLUDED.pre_high,   market_data_daily.pre_high),
-            pre_low    = COALESCE(EXCLUDED.pre_low,    market_data_daily.pre_low),
-            pre_vwap   = COALESCE(EXCLUDED.pre_vwap,   market_data_daily.pre_vwap),
-            pre_volume = COALESCE(EXCLUDED.pre_volume, market_data_daily.pre_volume),
-            gap_pct    = COALESCE(EXCLUDED.gap_pct,    market_data_daily.gap_pct)
-    """)
+    sql = sqlalchemy.text(_upsert_premarket_sql(_has_provenance_columns(eng)))
     n = 0
     with eng.begin() as conn:
         for r in useful:
-            conn.execute(sql, r)
+            conn.execute(sql, {k: r.get(k) for k in _UPSERT_KEYS})
             n += 1
     return n
+
+
+_PROVENANCE_COLUMNS = ('pre_fetched_at', 'pre_excluded_stale_prints', 'pre_excluded_spikes')
+_UPSERT_KEYS = ('ticker', 'date', 'pre_high', 'pre_low', 'pre_vwap', 'pre_volume',
+                'gap_pct') + _PROVENANCE_COLUMNS
+
+
+def _has_provenance_columns(eng) -> bool:
+    """True when market_data_daily has the premarket provenance columns
+    (FEAT-STRAT-001). They wait on the owner's schema apply, so the writer
+    checks rather than assumes; any failure reads as absent."""
+    import sqlalchemy
+    try:
+        with eng.connect() as conn:
+            found = conn.execute(sqlalchemy.text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'market_data_daily' "
+                "AND column_name IN ('pre_fetched_at', 'pre_excluded_stale_prints', "
+                "'pre_excluded_spikes')"
+            )).fetchall()
+    except Exception:  # noqa: BLE001 absent is the safe reading
+        return False
+    return {row[0] for row in found} >= set(_PROVENANCE_COLUMNS)
+
+
+def _upsert_premarket_sql(with_provenance: bool) -> str:
+    cols = ['pre_high', 'pre_low', 'pre_vwap', 'pre_volume', 'gap_pct']
+    if with_provenance:
+        cols += list(_PROVENANCE_COLUMNS)
+    sets = ',\n            '.join(
+        f"{c} = COALESCE(EXCLUDED.{c}, market_data_daily.{c})" for c in cols)
+    return (
+        "INSERT INTO market_data_daily\n"
+        f"    (ticker, date, {', '.join(cols)})\n"
+        "VALUES\n"
+        f"    (:ticker, :date, {', '.join(':' + c for c in cols)})\n"
+        "ON CONFLICT (ticker, date) DO UPDATE SET\n"
+        f"            {sets}"
+    )
 
 
 # ── Main ────────────────────────────────────────────────────────────────────

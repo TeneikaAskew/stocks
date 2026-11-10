@@ -524,6 +524,7 @@ def calculate_premarket_context(
     *,
     prev_close: float = None,
     atr14: float = None,
+    prev_open: float = None,
     premarket_start: time = time(4, 0),     # 4:00 AM ET
     market_open: time = time(9, 30),        # 9:30 AM ET
 ) -> dict:
@@ -540,7 +541,24 @@ def calculate_premarket_context(
     Args:
         times, open_, high, low, close, volume: aligned 1-min bar series
         prev_close:  prior-day close, used to compute gap_pct. None → no gap_pct.
-        atr14:       14-day ATR, used to normalise pre_range. None → no atr-norm.
+        atr14:       the LAST COMPLETED session's ATR(14), never the session
+                     being filtered. Drives the print filter and normalises
+                     pre_range. None → no filter, no atr-norm.
+        prev_open:   prior session's open, carried on the result for the
+                     excluded-print report (the 08:05 prints sit near it).
+
+    Print filter (FEAT-STRAT-001 done_when 4), applied before pre_high,
+    pre_low and pre_vwap, only when atr14 is positive:
+      (a) a stale prior-close print: any one-minute open, high, low or close
+          equal to prev_close to the cent while that bar's open-close
+          midpoint is more than 0.1 x ATR(14) away from prev_close;
+      (b) an isolated spike: a high (low) more than 0.5 x ATR(14) beyond its
+          own bar's open-close body and beyond the bodies of the two bars on
+          each side.
+    Dropped values are counted in excluded_prior_close_prints and
+    excluded_spike_prints. pre_vwap takes each bar's typical price as the
+    mean of its surviving high, low and close with the bar's full volume; a
+    bar with none of the three surviving adds neither price nor volume.
         premarket_start: extended-hours start (default 4:00 AM ET)
         market_open: regular-session open (default 9:30 AM ET)
 
@@ -558,6 +576,8 @@ def calculate_premarket_context(
         'pre_high': None, 'pre_low': None, 'pre_vwap': None,
         'pre_volume': None, 'pre_open': None, 'pre_close': None,
         'gap_pct': None, 'pre_range_atr': None, 'bar_count': 0,
+        'excluded_prior_close_prints': 0, 'excluded_spike_prints': 0,
+        'prev_open': prev_open,
     }
 
     if times is None or len(times) == 0:
@@ -576,22 +596,55 @@ def calculate_premarket_context(
     if not pre_mask.any():
         return out
 
-    pre_h = high[pre_mask]
-    pre_l = low[pre_mask]
-    pre_c = close[pre_mask]
-    pre_o = open_[pre_mask]
-    pre_v = volume[pre_mask]
+    pre_o = pd.to_numeric(open_[pre_mask], errors='coerce').astype(float).reset_index(drop=True)
+    pre_h = pd.to_numeric(high[pre_mask], errors='coerce').astype(float).reset_index(drop=True)
+    pre_l = pd.to_numeric(low[pre_mask], errors='coerce').astype(float).reset_index(drop=True)
+    pre_c = pd.to_numeric(close[pre_mask], errors='coerce').astype(float).reset_index(drop=True)
+    pre_v = pd.to_numeric(volume[pre_mask], errors='coerce').astype(float).reset_index(drop=True)
 
     out['bar_count'] = int(pre_mask.sum())
-    out['pre_high'] = float(pre_h.max()) if not pre_h.empty else None
-    out['pre_low']  = float(pre_l.min()) if not pre_l.empty else None
     out['pre_open'] = float(pre_o.iloc[0]) if not pre_o.empty else None
     out['pre_close'] = float(pre_c.iloc[-1]) if not pre_c.empty else None
 
-    # VWAP — typical price weighted by volume
-    typical = (pre_h + pre_l + pre_c) / 3.0
+    o, h, l, c = pre_o.copy(), pre_h.copy(), pre_l.copy(), pre_c.copy()
+    atr_ok = atr14 is not None and atr14 == atr14 and atr14 > 0
+    if atr_ok and prev_close is not None and prev_close == prev_close and prev_close > 0:
+        from lib.strat_levels import price_cents  # noqa: PLC0415
+        pc_c = price_cents(prev_close)
+        mid = (pre_o + pre_c) / 2.0
+        away = (mid - float(prev_close)).abs() > 0.1 * float(atr14)
+        n_echo = 0
+        for ser in (o, h, l, c):
+            echo = ser.map(lambda v: v == v and price_cents(v) == pc_c) & away
+            n_echo += int(echo.sum())
+            ser[echo] = np.nan
+        out['excluded_prior_close_prints'] = n_echo
+    if atr_ok:
+        k = 0.5 * float(atr14)
+        body_hi = pd.concat([o, c], axis=1).max(axis=1)
+        body_lo = pd.concat([o, c], axis=1).min(axis=1)
+        nb_hi = pd.concat([body_hi.shift(s) for s in (-2, -1, 1, 2)], axis=1).max(axis=1)
+        nb_lo = pd.concat([body_lo.shift(s) for s in (-2, -1, 1, 2)], axis=1).min(axis=1)
+        spike_h = ((h - body_hi) > k) & ((h - nb_hi) > k)
+        spike_l = ((body_lo - l) > k) & ((nb_lo - l) > k)
+        out['excluded_spike_prints'] = int(spike_h.sum() + spike_l.sum())
+        h[spike_h] = np.nan
+        l[spike_l] = np.nan
+
+    # A bar whose high (low) was dropped still traded its surviving body.
+    eff_h = h.fillna(pd.concat([o, c], axis=1).max(axis=1))
+    eff_l = l.fillna(pd.concat([o, c], axis=1).min(axis=1))
+    out['pre_high'] = float(eff_h.max()) if eff_h.notna().any() else None
+    out['pre_low'] = float(eff_l.min()) if eff_l.notna().any() else None
+
+    # VWAP: typical price = mean of the bar's SURVIVING high, low and close,
+    # weighted by the bar's full volume; a bar with none surviving drops from
+    # numerator and denominator alike.
+    typical = pd.concat([h, l, c], axis=1).mean(axis=1, skipna=True)
+    keep = typical.notna() & pre_v.notna()
+    if keep.any() and pre_v[keep].sum() > 0:
+        out['pre_vwap'] = float((typical[keep] * pre_v[keep]).sum() / pre_v[keep].sum())
     if pre_v.notna().any() and pre_v.sum() > 0:
-        out['pre_vwap'] = float((typical * pre_v).sum() / pre_v.sum())
         out['pre_volume'] = int(pre_v.fillna(0).sum())
 
     # Gap %: today's pre-market open vs yesterday's close
