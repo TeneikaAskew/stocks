@@ -430,7 +430,14 @@ gcloud storage buckets create gs://adept-mountain-474619-d4-trading-data \
 # This is the LONG POLE. For each, get the value from the provider's portal:
 #   - av-api-key (alphavantage.co)
 #   - fred-api-key (research.stlouisfed.org)
-#   - ew-user / ew-pass (earningswhispers.com)
+#   - ew-user / ew-pass (earningswhispers.com): RETAINED Secret Manager
+#     resources, not deleted. Since the 2026-10-31 EarningsWhispers
+#     retirement this deployment source no longer reads or binds them, so
+#     there is nothing to re-issue for them. A live fetch-earnings-calendar
+#     job keeps any EW_USER / EW_PASS value it already carries until a
+#     separately authorized redeploy (./gcp/deploy.sh earnings-calendar)
+#     and a names-only check of its env; this source change performs and
+#     verifies neither.
 #   - benzinga-api-key (benzinga.com)
 #   - sec-user-agent (your email — required by SEC)
 #   - github-pat / gh-stocks-repo-pat (github.com/settings/tokens)
@@ -565,3 +572,10 @@ When something breaks at 3 AM, the order is:
 6. **Manually run the job** — `gcloud run jobs execute <NAME> --wait` before resuming the cron
 7. **Resume schedulers** — `gcloud scheduler jobs resume <NAME>`
 8. **Open a postmortem** — `docs/incidents/<date>-<title>.md` with what broke, what you did, and what to monitor next time
+
+## EW calendar binding retirement: release and close-out
+The source change removes EW_USER/EW_PASS and ew-user/ew-pass reads from fetch-earnings-calendar. Secret resources ew-user and ew-pass are retained, unused by the changed source; they are not read, rotated or deleted. Historical earnings and shared NYSE calendar behavior remain intact. This source statement does not certify the deployed job.
+
+Main and staging close-out are unfinished post-merge steps. After the reviewed source merge and coordinator release clearance, use only ./gcp/deploy.sh earnings-calendar. Do not run broad fetchers or schedulers deployment. Verify the deployed job through names-only environment inspection showing no EW_USER/EW_PASS; retain release identity and actual staging evidence without credential values. No historical refresh or data deletion is implied.
+
+Independently verify actual squashed main source and SITE body in a fresh clone. Retire the sidecar only on a separate DOC branch through the existing trunk-only --stamp --verify route after real checks, or the BODY-first trunk-closeout-pending route followed by actual source/body/staging verification and a separate final stamp. No CODE retirement or fabricated staging proof. Set the implementation plan done only after merge on a docs branch.

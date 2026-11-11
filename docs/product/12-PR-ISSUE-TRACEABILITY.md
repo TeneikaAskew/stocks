@@ -295,6 +295,8 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and sol
 
 ### FEAT-DEPLOY-001 — Infrastructure / deploy (15 open)
 
+**PR lineage:** EW calendar binding source retirement [#1789](https://github.com/TeneikaAskew/stocks/pull/1789), bound to the approved November 9 own-scope spec and [fresh plan](../superpowers/plans/2026-11-10-feat-deploy-001-ew-calendar-bindings-own-scope.md). Preserves #1659 lineage and all original 34 obligations unclaimed; original items 28/31 need a separate owner-approved AV successor after merge. Source qualification is separate from unfinished main/staging close-out and coordinated release after P-A.
+
 | Issue | Sev | Title |
 |---|---|---|
 | [#834](https://github.com/TeneikaAskew/stocks/issues/834) | CRITICAL | [audit] D2 — p2-build-gamma-levels: daily production job with zero infra-as-code |
@@ -313,7 +315,7 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and sol
 | [#1140](https://github.com/TeneikaAskew/stocks/issues/1140) | ops | [ESCALATED] magnitude-inference: fix in #1122 merged 2026-09-16 but never deployed — job still failing nightly, auto-closed each time |
 | [solyra#12](https://github.com/TeneikaAskew/solyra/issues/12) | ops | GCP billing follow-ups: Detailed export, stalled backfill, account-wide budget |
 
-**PR lineage:** [#507](https://github.com/TeneikaAskew/stocks/pull/507) *remediation* · [#1350](https://github.com/TeneikaAskew/stocks/pull/1350) *remediation* · [#1366](https://github.com/TeneikaAskew/stocks/pull/1366) *remediation* · [#1457](https://github.com/TeneikaAskew/stocks/pull/1457) *remediation*
+**PR lineage:** [#507](https://github.com/TeneikaAskew/stocks/pull/507) *remediation* · [#1350](https://github.com/TeneikaAskew/stocks/pull/1350) *remediation* · [#1366](https://github.com/TeneikaAskew/stocks/pull/1366) *remediation* · [#1457](https://github.com/TeneikaAskew/stocks/pull/1457) *remediation* · [#1384](https://github.com/TeneikaAskew/stocks/pull/1384) *remediation*
 
 ### FEAT-DATA-001 — Data platform (21 open)
 
@@ -742,6 +744,8 @@ Live registry continuation: [#1599](https://github.com/TeneikaAskew/stocks/pull/
 **PR lineage:** [#649](https://github.com/TeneikaAskew/stocks/pull/649) · [#732](https://github.com/TeneikaAskew/stocks/pull/732) · [#729](https://github.com/TeneikaAskew/stocks/pull/729) · [#733](https://github.com/TeneikaAskew/stocks/pull/733) (the README's PRs column; kinds not classified)
 
 ### FEAT-CATALYST-001 — Earnings / catalysts (19 open)
+
+- EW-only retirement implementation: [#1758](https://github.com/TeneikaAskew/stocks/pull/1758), fresh plan bound after approved own-scope spec [#1703](https://github.com/TeneikaAskew/stocks/pull/1703). Local source/tests and bounded identity are verified; current-head external review/CI and separately authorized release remain pending. Original consolidated51 obligations are unchanged and unclaimed; #1681 remains untouched.
 
 | Issue | Sev | Title |
 |---|---|---|

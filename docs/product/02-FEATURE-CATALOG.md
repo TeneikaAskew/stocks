@@ -301,11 +301,11 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation; finite EPS normalization verified locally, rollout pending |
+| Status | Production but needs remediation; finite EPS normalization and EW retirement verified locally, external review and rollout pending |
 | Priority | P1 |
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-10 |
+| Last reviewed | 2026-11-11 |
 | Evidence status | Finite EPS source/local tests verified; event-bound reaction repairs ([#1608](https://github.com/TeneikaAskew/stocks/pull/1608)) locally validated; current-head external review, hosted checks and rollout pending; other catalyst work remains open |
 | UI surface | `/catalysts` |
 | Backend | `/api/catalysts`, `/api/earnings` |
@@ -318,6 +318,8 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Next action | Complete narrow [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) reviews/checks and existing API/producer rollout. [#1608](https://github.com/TeneikaAskew/stocks/pull/1608): event-bound timing, mature prior-history admission and nullable descriptive daily evidence locally validated; normal source review/CI and schema-before-code rollout remain pending. Actual `/catalysts` outcome-panel binding is a separate Solyra change; no deployment or predictive-edge claim. Broader Phase 3 work remains open. |
 
 Finite-number slice: approved spec [#1618](https://github.com/TeneikaAskew/stocks/pull/1618) is MAIN. Implementation draft [#1621](https://github.com/TeneikaAskew/stocks/pull/1621) preserves actual producer/API normalization,185focused checks including independent-session local PostgreSQL commit/read and the real routed response, and31API preservation checks (overlapping suite). Final hermetic unit verification at2ad639e1:7719passed,51skipped,112warnings; integration was excluded from that full unit command and the real local PG proof is separately retained. No deployment/source-equivalence, current-source freshness or complete catalyst remediation is certified. Touches #1269 and only #1301's numeric-title behavior; cross-source dedup/selection remains unchanged and unresolved.
+
+EW-only retirement: [#1758](https://github.com/TeneikaAskew/stocks/pull/1758), fresh implementation bound to the approved own-scope specification merged in #1703. Six reader predicates, ingestion removal and five NULL score-dependent outputs are locally tested; historical rows and #1608 behavior remain intact. Source identity, external review/CI and production release are separate; no deployment or complete catalyst-remediation claim.
 
 ### FEAT-REPORT-001
 
@@ -533,18 +535,18 @@ Finite-number slice: approved spec [#1618](https://github.com/TeneikaAskew/stock
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation — notifier runtime access isolated |
+| Status | Production but needs remediation — notifier runtime access isolated; EW calendar binding source retirement prepared, rollout pending |
 | Priority | P1 |
 | Target phase | Phase 6 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-10-12 |
+| Last reviewed | 2026-11-11 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | — |
 | Backend | — |
 | Data | — |
 | Models | — |
 | Code | `gcp/deploy.sh`, `platform/deploy.sh` (deploys `solyra-api-staging` only; `solyra-api-prod` retired 2026-10-10, [#1366](https://github.com/TeneikaAskew/stocks/pull/1366)), `gcp/cloudbuild/` |
-| Tests | static checks; `tests/gcp/test_platform_deploy_service_config.py` runs `platform/deploy.sh` against a stub `gcloud` and asserts the staging service's auth mode, service account, environment, secrets, ingress and the `SETUP_IAM` grant ([#1350](https://github.com/TeneikaAskew/stocks/pull/1350)), and that a run without `STAGING_SERVICE=1` or with `STAGING=1` is refused before any `gcloud` call; `tests/gcp/test_staging_deploy_paths.py` asserts the retired service has no deploy path ([#1366](https://github.com/TeneikaAskew/stocks/pull/1366)) |
+| Tests | static checks; `tests/gcp/test_platform_deploy_service_config.py` runs `platform/deploy.sh` against a stub `gcloud` and asserts the staging service's auth mode, service account, environment, secrets, ingress and the `SETUP_IAM` grant ([#1350](https://github.com/TeneikaAskew/stocks/pull/1350)), and that a run without `STAGING_SERVICE=1` or with `STAGING=1` is refused before any `gcloud` call; `tests/gcp/test_staging_deploy_paths.py` asserts the retired service has no deploy path ([#1366](https://github.com/TeneikaAskew/stocks/pull/1366)); `tests/scripts/test_refresh_architecture_drawio.py` asserts the diagrams and their generator draw no retired service and refuse a snapshot without table statistics, and `tests/api/test_dev_page_auth.py` covers the `/dev` proxy line ([#1384](https://github.com/TeneikaAskew/stocks/pull/1384)) |
 | Open issues | 15 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-deploy-001--infrastructure--deploy-15-open) |
 | Blocking issues | [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#832](https://github.com/TeneikaAskew/stocks/issues/832) [#851](https://github.com/TeneikaAskew/stocks/issues/851) [#855](https://github.com/TeneikaAskew/stocks/issues/855) [#856](https://github.com/TeneikaAskew/stocks/issues/856) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 6 |

@@ -22,12 +22,14 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from pandas import isna
 from pandas.api.types import is_bool, is_scalar
 from api.schemas import (
     CatalystTypesResponse,
     CatalystsResponse,
 )
 
+from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
 from lib.single_flight import SingleFlight
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -344,6 +346,19 @@ def _finite_earnings_estimate(value: object) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _earnings_source_label(sources: list) -> str:
+    """Name the earnings_calendar rows an event came from:
+    ``earnings_calendar (alphavantage, unusual_whales)``, sorted. A NULL
+    data_source is named as not recorded rather than attributed to a vendor."""
+    def _missing(s) -> bool:
+        return s is None or (is_scalar(s) and isna(s))
+
+    named = sorted({str(s) for s in sources if not _missing(s)})
+    if any(_missing(s) for s in sources):
+        named.append("source not recorded")
+    return f"earnings_calendar ({', '.join(named)})"
+
+
 def _db_catalyst_events(
     d_from: str, d_to: str, ticker_list: Optional[list[str]],
 ) -> list[dict]:
@@ -453,30 +468,40 @@ def _db_catalyst_events(
             })
 
     # ── 3. Earnings calendar ──────────────────────────────────────────
+    # Retired EarningsWhispers rows are excluded; data_source is selected so
+    # each event names the sources it actually came from.
     earn_sql = (
         "SELECT ticker, earnings_date AS date, company_name, "
-        "       earnings_time, eps_estimate "
+        "       earnings_time, eps_estimate, data_source "
         "FROM earnings_calendar "
         "WHERE earnings_date BETWEEN CAST(:d_from AS date) "
-        "                         AND CAST(:d_to AS date)"
+        "                         AND CAST(:d_to AS date) "
+        f"  AND {EARNINGS_NOT_RETIRED_SQL}"
     )
     try:
         earn_df = query_to_dataframe(earn_sql, params)
     except Exception as exc:
+        # AUDIT-2026-05-13: silent fallback — see
+        # docs/audits/FALLBACK_AUDIT_2026-05-13.md §C-38. A query failure
+        # renders as "no earnings events"; behaviour unchanged here.
         logger.warning("earnings_calendar catalyst lookup failed: %s", exc)
         earn_df = None
     if earn_df is not None and not earn_df.empty:
         if ticker_list:
             earn_df = earn_df[earn_df["ticker"].str.upper().isin(ticker_list)]
-        seen_e: set[tuple] = set()
+        # One event per (ticker, date), from its first row; its source
+        # names every data_source the pair has.
+        first_e: dict[tuple, object] = {}
+        sources_e: dict[tuple, list] = {}
         for _, r in earn_df.iterrows():
             tk = str(r.get("ticker") or "").upper()
             if not tk:
                 continue
             key = (tk, str(r["date"]))
-            if key in seen_e:
-                continue
-            seen_e.add(key)
+            first_e.setdefault(key, r)
+            sources_e.setdefault(key, []).append(r["data_source"])
+        for key, r in first_e.items():
+            tk = key[0]
             company = str(r.get("company_name") or tk)
             est = _finite_earnings_estimate(r.get("eps_estimate"))
             est_str = f", est {est:.2f}" if est is not None else ""
@@ -486,7 +511,7 @@ def _db_catalyst_events(
                 "catalyst_type": "EARNINGS",
                 "title": f"{company} earnings ({r.get('earnings_time') or 'unknown'}{est_str})",
                 "impact": "High",
-                "source": "AV earnings_calendar",
+                "source": _earnings_source_label(sources_e[key]),
             })
 
     # ── 4. Insider clusters (≥3 distinct insiders, same ticker, ──────
@@ -676,6 +701,10 @@ def get_catalyst_snapshot(
         return recs
 
     def _safe(fn):
+        # AUDIT-2026-05-13: silent fallback — a failed section query returns
+        # [] and reads as an empty section (the next_earnings query below is
+        # one of them). Not catalogued in docs/audits/FALLBACK_AUDIT_2026-05-13.md;
+        # behaviour unchanged here.
         try:
             return fn()
         except Exception as exc:
@@ -724,12 +753,13 @@ def get_catalyst_snapshot(
     )))
 
     next_earnings = _safe(lambda: _df_to_records(query_to_dataframe(
-        """
+        f"""
         SELECT earnings_date, earnings_time, eps_estimate
         FROM earnings_calendar
         WHERE ticker = :tk
           AND earnings_date >= CAST(:cutoff AS date)
           AND earnings_date <= CAST(:cutoff AS date) + INTERVAL '90 days'
+          AND {EARNINGS_NOT_RETIRED_SQL}
         ORDER BY earnings_date
         LIMIT 1
         """,

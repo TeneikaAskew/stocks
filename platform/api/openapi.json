@@ -12017,7 +12017,7 @@
     },
     "/api/earnings/health/ping": {
       "get": {
-        "description": "Lightweight warm-up probe. NOT called by a scheduler.\n\nThe keep-warm Cloud Scheduler was dropped (gcp/deploy.sh, \"Platform\nkeep-warm — DROPPED\"): solyra-api-prod sits behind IAP, so an\nunauthenticated GET is rejected at IAP and never reaches the app. The\nendpoint is kept for manual and in-cluster warm-up.\n\nReturns 200 + a 1-statement Cloud SQL query so the Cloud SQL\nconnector (and the FastAPI worker) stay hot during business hours.\nCache-Control set to 0 so intermediaries never serve a stale 200.",
+        "description": "Lightweight warm-up probe. NOT called by a scheduler.\n\nThe keep-warm Cloud Scheduler was dropped (gcp/deploy.sh, \"Platform\nkeep-warm — DROPPED\") while the API sat behind IAP, where an\nunauthenticated GET was rejected at the edge and never reached the app.\nThe endpoint is kept for manual and in-cluster warm-up.\n\nReturns 200 + a 1-statement Cloud SQL query so the Cloud SQL\nconnector (and the FastAPI worker) stay hot during business hours.\nCache-Control set to 0 so intermediaries never serve a stale 200.",
         "operationId": "health_ping_api_earnings_health_ping_get",
         "responses": {
           "200": {
@@ -12318,7 +12318,7 @@
     },
     "/api/earnings/upcoming": {
       "get": {
-        "description": "Next N days of earnings reporters, decorated with full history.\n\nReads earnings_upcoming_with_history (refreshed daily 7:30am ET).\nEach row carries: archetype, confidence_label, BOTH recommendation\nmodes (long-only + IC), lean stats, and last_3_events JSONB.",
+        "description": "Next N days of earnings reporters, decorated with full history.\n\nReads earnings_upcoming_with_history (refreshed daily 7:30am ET).\nEach row carries archetype, lean stats and last_3_events JSONB; score,\nquintile, confidence and both recommendation modes are null (EW retired).",
         "operationId": "upcoming_api_earnings_upcoming_get",
         "parameters": [
           {
