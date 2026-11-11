@@ -488,6 +488,8 @@ Live registry continuation: [#1599](https://github.com/TeneikaAskew/stocks/pull/
 
 ### FEAT-INSIGHT-001 — AI insights (31 open)
 
+**PR lineage:** [#1800](https://github.com/TeneikaAskew/stocks/pull/1800) implements the approved 2026-10-31 FEAT-INSIGHT-001 retirement-reader spec with the shared SQL predicate and actual-reader adversarial tests. Source/local-test and committed identity evidence only; hosted current-head review/checks and deployed verification remain separate and pending. No legacy stored rows are rewritten and no broader issue is closed.
+
 | Issue | Sev | Title |
 |---|---|---|
 | [#827](https://github.com/TeneikaAskew/stocks/issues/827) | HIGH | [audit] H1 — Silent fallback in lib/agents/summarizers.py:547-565 |
