@@ -987,3 +987,59 @@ class TestDailyDataFreshness:
         from lib.strat_levels import daily_data_freshness
         for last, ad in ((date(2026, 9, 10), date(2026, 9, 14)), (date(2026, 9, 11), date(2026, 9, 14)), (None, date(2026, 9, 14))):
             assert _resolve_data_freshness(last, ad) == daily_data_freshness(last, ad)
+
+    # FEAT-DATA-001 (2026-11-11 spec): the rule counts NYSE sessions, so a
+    # session that follows only weekend days and holidays reads its previous
+    # session as fresh. On origin/main every one of these was STALE_DAILY_DATA
+    # and the brief skipped the ticker.
+    @pytest.mark.parametrize('last, session, gap', [
+        ((2026, 5, 22), (2026, 5, 26), 4),   # Memorial Day Monday
+        ((2026, 6, 18), (2026, 6, 22), 4),   # Juneteenth Friday
+        ((2026, 7, 2), (2026, 7, 6), 4),     # Independence Day observed Friday
+        ((2026, 9, 4), (2026, 9, 8), 4),     # Labor Day Monday
+        ((2026, 11, 25), (2026, 11, 27), 2), # Thanksgiving Thursday
+        ((2026, 4, 2), (2026, 4, 5), 3),     # Sunday weekly brief across Good Friday
+    ])
+    def test_previous_session_across_holidays_is_fresh(self, last, session, gap):
+        from datetime import date
+        from lib.strat_levels import daily_data_freshness
+        assert daily_data_freshness(date(*last), date(*session)) == (False, gap, 'fresh')
+
+    @pytest.mark.parametrize('last, session, gap', [
+        ((2026, 5, 21), (2026, 5, 26), 5),   # Friday 05-22 missing
+        ((2026, 11, 24), (2026, 11, 27), 3), # Wednesday 11-25 missing
+        ((2026, 9, 10), (2026, 9, 14), 4),   # Friday 09-11 missing
+        ((2026, 9, 11), (2026, 9, 15), 4),   # Monday 09-14 missing
+    ])
+    def test_a_missing_session_is_still_stale(self, last, session, gap):
+        from datetime import date
+        from lib.strat_levels import daily_data_freshness
+        assert daily_data_freshness(date(*last), date(*session)) == (True, gap, 'STALE_DAILY_DATA')
+
+    def test_short_gap_never_reads_the_calendar(self, monkeypatch):
+        from datetime import date
+        from lib import eastern_time
+        from lib.strat_levels import daily_data_freshness
+
+        def boom(*_a, **_k):
+            raise AssertionError('calendar consulted for a gap of 0 or 1 day')
+        monkeypatch.setattr(eastern_time, 'previous_session', boom)
+        assert daily_data_freshness(date(2026, 11, 25), date(2026, 11, 25)) == (False, 0, 'fresh')
+        assert daily_data_freshness(date(2026, 11, 25), date(2026, 11, 26)) == (False, 1, 'fresh')
+
+    def test_calendar_failure_raises(self, monkeypatch):
+        from datetime import date
+        import pandas_market_calendars as mcal
+        from lib import eastern_time
+        from lib.strat_levels import daily_data_freshness
+
+        def no_calendar(name, *a, **k):
+            raise RuntimeError('calendar down')
+        eastern_time._reset_session_cache()
+        monkeypatch.setattr(mcal, 'get_calendar', no_calendar)
+        try:
+            with pytest.raises(RuntimeError, match='calendar down'):
+                daily_data_freshness(date(2026, 11, 25), date(2026, 11, 27))
+        finally:
+            monkeypatch.undo()
+            eastern_time._reset_session_cache()
