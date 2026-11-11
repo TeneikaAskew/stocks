@@ -421,7 +421,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`lib/ticker_info.py`](../../../lib/ticker_info.py) — line [66](../../../lib/ticker_info.py#L66), [629](../../../lib/ticker_info.py#L629)
 
 ### `ticker_level_params`
-- [`gcp/calibrate_level_params.py`](../../../gcp/calibrate_level_params.py) — line [107](../../../gcp/calibrate_level_params.py#L107)
+- [`gcp/calibrate_level_params.py`](../../../gcp/calibrate_level_params.py) — line [113](../../../gcp/calibrate_level_params.py#L113)
 
 ### `top_movers_daily`
 - [`gcp/fetchers/fetch_top_movers.py`](../../../gcp/fetchers/fetch_top_movers.py) — line [291](../../../gcp/fetchers/fetch_top_movers.py#L291)
