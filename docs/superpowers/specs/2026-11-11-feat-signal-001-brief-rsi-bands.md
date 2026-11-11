@@ -106,8 +106,9 @@ Method: for each session D, the brief's own code on bars before D: `add_brief_in
 `check_call_conditions` / `check_put_conditions` on the last row, `compute_strat_status` at 08:30 ET
 on D (FTFC gate), `_resolve_signal_status` at the default thresholds. Variants differ only in the RSI
 band: H hard-coded; A Tier A rebuilt point in time as `calibrate_thresholds.py` computes it (60
-calendar days of 1-minute closes ending on each quarterly run date whose window the local history
-covers: 2025-07-01 to 2026-10-01; the latest run on or before D, at most 180 days old, else Tier B,
+calendar days of 1-minute closes ending at 02:00 ET on each quarterly run date, the clock of the
+`calibrate-thresholds-quarterly` scheduler in `gcp/deploy.sh`, so no bar the live job could not yet read
+enters the band; run dates whose window the local history covers: 2025-07-01 to 2026-10-01; the latest run on or before D, at most 180 days old, else Tier B,
 which equals H); D the same percentile rule over the ticker's own daily RSI for the 252 sessions
 before D. A call is any status other than `No signal`. Same-day agreement: D's close versus D-1's
 close in the called direction (CALL up, PUT down). Next-day agreement: D+1's close versus D's close.
@@ -127,21 +128,21 @@ Result (calls, same-day agreement %, next-day agreement %):
 |---|---|---|---|---|
 | 2026-05-01 to 2026-11-04 | SPY | 51, 62.7, 54.9 | 45, 64.4, 53.3 | 48, 62.5, 50.0 |
 | 2026-05-01 to 2026-11-04 | QQQ | 46, 65.2, 54.3 | 48, 62.5, 50.0 | 51, 56.9, 51.0 |
-| 2026-05-01 to 2026-11-04 | IWM | 54, 57.4, 40.7 | 48, 58.3, 37.5 | 52, 53.8, 42.3 |
-| 2026-05-01 to 2026-11-04 | all | 151, 61.6, 49.7 | 141, 61.7, 46.8 | 151, 57.6, 47.7 |
-| 2025-03-03 to 2026-04-30 | SPY | 108, 47.2, 44.4 | 93, 47.3, 45.2 | 103, 56.3, 45.6 |
+| 2026-05-01 to 2026-11-04 | IWM | 54, 57.4, 40.7 | 47, 57.4, 38.3 | 52, 53.8, 42.3 |
+| 2026-05-01 to 2026-11-04 | all | 151, 61.6, 49.7 | 140, 61.4, 47.1 | 151, 57.6, 47.7 |
+| 2025-03-03 to 2026-04-30 | SPY | 108, 47.2, 44.4 | 94, 47.9, 45.7 | 103, 56.3, 45.6 |
 | 2025-03-03 to 2026-04-30 | QQQ | 106, 49.1, 56.6 | 93, 49.5, 55.9 | 106, 52.8, 54.7 |
 | 2025-03-03 to 2026-04-30 | IWM | 122, 44.3, 45.9 | 113, 44.2, 46.0 | 105, 43.8, 44.8 |
-| 2025-03-03 to 2026-04-30 | all | 336, 46.7, 48.8 | 299, 46.8, 48.8 | 314, 51.0, 48.4 |
+| 2025-03-03 to 2026-04-30 | all | 336, 46.7, 48.8 | 300, 47.0, 49.0 | 314, 51.0, 48.4 |
 
-Tier A changes the published status on 25 of 387 primary ticker-sessions and 61 of 879 holdout
+Tier A changes the published status on 26 of 387 primary ticker-sessions and 60 of 879 holdout
 ticker-sessions. The rebuilt Tier-A bands are nearly the same for all three tickers (p10 34.8 to
-37.1, p50 49.7 to 51.1, p90 63.5 to 65.6), so they narrow both bands rather than tailor them.
+37.1, p50 49.6 to 51.2, p90 63.3 to 65.7), so they narrow both bands rather than tailor them.
 
-Reading: the hypothesis is not supported. Tier A makes fewer calls (151 to 141, 336 to 299) with
-unchanged same-day agreement (61.6 to 61.7, 46.7 to 46.8); next-day agreement is equal in the holdout
-(48.8) and 2.9 points lower in the primary window (49.7 to 46.8, about one binomial standard error at
-140 calls). The owner decides whether that is "worse".
+Reading: the hypothesis is not supported. Tier A makes fewer calls (151 to 140, 336 to 300) with
+unchanged same-day agreement (61.6 to 61.4, 46.7 to 47.0); next-day agreement is about equal in the
+holdout (48.8 to 49.0) and 2.6 points lower in the primary window (49.7 to 47.1, about one binomial
+standard error at 140 calls). The owner decides whether that is "worse".
 
 ## Capacity and cost
 
