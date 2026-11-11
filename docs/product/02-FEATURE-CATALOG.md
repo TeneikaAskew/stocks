@@ -535,7 +535,7 @@ EW-only retirement: [#1758](https://github.com/TeneikaAskew/stocks/pull/1758), f
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation — notifier runtime access isolated; EW calendar binding source retirement prepared, rollout pending |
+| Status | Production but needs remediation — notifier runtime access isolated; EW calendar binding source retirement prepared, rollout pending; 03-SITE citation of the deleted prompt renderer retired (#1794) |
 | Priority | P1 |
 | Target phase | Phase 6 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
