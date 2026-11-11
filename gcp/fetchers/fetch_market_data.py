@@ -25,6 +25,7 @@ import requests
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from lib.eastern_time import ET, eastern_bounds_utc, eastern_index_to_utc
 
+from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
 from gcp.database import upsert_dataframe, is_cloud_sql_configured
 
 from lib.logging_config import setup_logging
@@ -727,7 +728,7 @@ def _earnings_tickers_in_window(
     # "tradeable earnings ticker" — exactly what we want the daily
     # fetcher to backfill. NULLS LAST on every signal so AV-only /
     # EW-only rows sink without disappearing entirely.
-    sql = """
+    sql = f"""
         SELECT ticker,
                BOOL_OR(COALESCE(has_options, false))   AS optionable,
                BOOL_OR(COALESCE(is_s_p_500, false))    AS sp500,
@@ -735,7 +736,7 @@ def _earnings_tickers_in_window(
                MAX(options_volume)                     AS options_volume,
                MAX(market_cap)                         AS market_cap
         FROM earnings_calendar
-        WHERE earnings_date BETWEEN
+        WHERE {EARNINGS_NOT_RETIRED_SQL} AND earnings_date BETWEEN
             CURRENT_DATE - (:back || ' days')::interval AND
             CURRENT_DATE + (:ahead || ' days')::interval
         GROUP BY ticker
@@ -835,10 +836,10 @@ def _backfill_targets() -> list:
              ORDER BY t.ticker
         """
     else:
-        sql = """
+        sql = f"""
             WITH eligible AS (
                 SELECT DISTINCT ticker FROM earnings_calendar
-                 WHERE COALESCE(options_volume, 0) > 0
+                 WHERE {EARNINGS_NOT_RETIRED_SQL} AND COALESCE(options_volume, 0) > 0
                    AND COALESCE(stock_volume,   0) >= 500000
               UNION
                 SELECT ticker FROM watchlists

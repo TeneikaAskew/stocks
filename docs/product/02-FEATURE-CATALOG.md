@@ -515,12 +515,12 @@ EW-only retirement: [#1758](https://github.com/TeneikaAskew/stocks/pull/1758), f
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation — logger #1607 image rollout verified; allowance #1606 source integrated, release gated; one NYSE session calendar in `lib/eastern_time.py` replaces the 2026-only holiday sets and the ad hoc library wrappers ([#1546](https://github.com/TeneikaAskew/stocks/pull/1546)) |
+| Status | Production but needs remediation — logger #1607 image rollout verified; allowance #1606 source integrated, release gated; one NYSE session calendar in `lib/eastern_time.py` replaces the 2026-only holiday sets and the ad hoc library wrappers ([#1546](https://github.com/TeneikaAskew/stocks/pull/1546)); eleven fetcher readers exclude retired EW aliases in prepared source, rollout pending |
 | Priority | P0 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-04 |
-| Evidence status | Logger source bd8c5310/build20c56463/image ef54b4b6 deployed Ready to three jobs with projected config preserved; next scheduled outcomes unobserved. Allowance runtime/test bytes unchanged from reviewed258fb789,224 tests preserved; prior CODE/SEC/CI clean, combined source proof and owner-approved CODE7 remain required. No complete data-platform, persistence or provider-root-cause certification. |
+| Last reviewed | 2026-11-11 |
+| Evidence status | EW reader retirement is scoped to eleven actual-query boundaries and hermetic controls; current-head review/CI and deployed-job evidence remain separate.  Logger source bd8c5310/build20c56463/image ef54b4b6 deployed Ready to three jobs with projected config preserved; next scheduled outcomes unobserved. Allowance runtime/test bytes unchanged from reviewed258fb789,224 tests preserved; prior CODE/SEC/CI clean, combined source proof and owner-approved CODE7 remain required. No complete data-platform, persistence or provider-root-cause certification. |
 | UI surface | — |
 | Backend | fetcher jobs |
 | Data | 64 relations — see [06](06-DATA-ARCHITECTURE.md) |

@@ -42,6 +42,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
+
 log = logging.getLogger(__name__)
 
 
@@ -81,11 +83,11 @@ def resolve_universe(target_date: date, max_tickers: int = 50) -> list[str]:
 
     # Today's earnings tickers with options flow (priority 1)
     try:
-        sql = """
+        sql = f"""
             SELECT ticker, MAX(options_volume) AS opt_vol,
                    MAX(market_cap)            AS mcap
               FROM earnings_calendar
-             WHERE earnings_date = :d
+             WHERE {EARNINGS_NOT_RETIRED_SQL} AND earnings_date = :d
                AND COALESCE(options_volume, 0) > 0
              GROUP BY ticker
              ORDER BY (COALESCE(MAX(options_volume), 0) + 1)
@@ -108,9 +110,9 @@ def resolve_universe(target_date: date, max_tickers: int = 50) -> list[str]:
         # Walk back over weekends/holidays — find most recent weekday
         while prior.weekday() >= 5:
             prior -= timedelta(days=1)
-        sql_amc = """
+        sql_amc = f"""
             SELECT DISTINCT ticker FROM earnings_calendar
-             WHERE earnings_date = :d
+             WHERE {EARNINGS_NOT_RETIRED_SQL} AND earnings_date = :d
                AND earnings_time = 'postmarket'
                AND COALESCE(options_volume, 0) > 0
         """
