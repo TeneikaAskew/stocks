@@ -34,6 +34,7 @@ import numpy as np
 import pandas as pd
 
 from lib.eastern_time import ET_NAME
+from lib.strat_levels import PREMARKET_UNFILTERED_NOTE, LevelParamsUnavailable
 
 from .embeddings import format_vector_literal
 from .schema import JournalRef
@@ -254,15 +255,26 @@ def summarize_market_context(
     # Replay pins that row by date, live takes the newest — which is the
     # placeholder when one exists and otherwise the same row we just
     # read, making the overlay a no-op.
-    pm_df = _query(
-        "SELECT pre_high, pre_low, pre_vwap, pre_volume, gap_pct, "
-        "       pre_range_atr "
-        "FROM market_data_daily "
-        "WHERE ticker = :ticker "
-        + ("AND date = :as_of " if as_of else "")
-        + "ORDER BY date DESC LIMIT 1",
-        params,
-    )
+    # pre_filter_status (FEAT-STRAT-001 per-ticker params) says whether the
+    # snapshot's prints were filtered with the ticker's calibrated
+    # thresholds. `_query` returns empty on any error, including a table
+    # without the column, so an empty answer is asked again without it and
+    # the snapshot is then labelled unfiltered (its status is unknown).
+    def _overlay(cols):
+        return _query(
+            f"SELECT {cols} "
+            "FROM market_data_daily "
+            "WHERE ticker = :ticker "
+            + ("AND date = :as_of " if as_of else "")
+            + "ORDER BY date DESC LIMIT 1",
+            params,
+        )
+
+    pm_cols = "pre_high, pre_low, pre_vwap, pre_volume, gap_pct, pre_range_atr"
+    pm_df = _overlay(pm_cols + ", pre_filter_status")
+    if pm_df.empty:
+        pm_df = _overlay(pm_cols)
+    pre_filter_status = None
     if not pm_df.empty:
         pm_row = pm_df.iloc[0]
         row = row.copy()
@@ -272,6 +284,8 @@ def summarize_market_context(
         ):
             if col in pm_row.index:
                 row[col] = pm_row[col]
+        status = pm_row.get("pre_filter_status") if "pre_filter_status" in pm_row.index else None
+        pre_filter_status = status if isinstance(status, str) else None
 
     close = _scalar(row, "close", digits=2)
     ema_20 = _scalar(row, "ema_20", digits=2)
@@ -343,7 +357,14 @@ def summarize_market_context(
                 else "normal" if pre_range_atr > 0.2
                 else "tight"
             )
+        # A snapshot whose prints were not filtered with the ticker's own
+        # thresholds is labelled so: its pre_high and pre_low may carry the
+        # bad prints the filter drops, and the level builder refuses it.
+        filtered = pre_filter_status == "ok"
         premarket_block = {
+            "filtered": filtered,
+            "pre_filter_status": pre_filter_status,
+            **({} if filtered else {"note": PREMARKET_UNFILTERED_NOTE}),
             "pre_high": pre_high,
             "pre_low": pre_low,
             "pre_vwap": _scalar(row, "pre_vwap", digits=2),
@@ -508,8 +529,40 @@ def _live_level_basis(ticker: str, session_date: date_type) -> Optional[dict]:
     return read_live_level_basis(_query, ticker, session_date)
 
 
+def _has_no_level_param_rows(level_params) -> bool:
+    """True when the loader found no ticker_level_params row for the
+    ticker in any basis: every key is params_unavailable (a stored row never
+    carries that status)."""
+    from lib.strat_levels import PARAMS_UNAVAILABLE
+
+    params = list(level_params.params.values())
+    return bool(params) and all(p.status == PARAMS_UNAVAILABLE for p in params)
+
+
+def _calibrate_on_demand(ticker: str, session_date: date_type, level_params):
+    """Calibrate `ticker` on demand and read its parameters again; on
+    failure log and return `level_params` (params_unavailable)."""
+    from lib.level_calibration import calibrate_ticker
+    from lib.strat_levels import load_level_params
+
+    try:
+        res = calibrate_ticker(ticker, session_date, query=_query_strict)
+    except Exception as exc:  # noqa: BLE001 — the explicit unavailable state stands
+        logger.warning("session_levels: on-demand calibration of %s for %s failed: %s",
+                       ticker, session_date, exc)
+        return level_params
+    if res.failed:
+        logger.warning("session_levels: on-demand calibration of %s for %s failed (run %s)",
+                       ticker, session_date, res.run_id)
+        return level_params
+    logger.info("session_levels: calibrated %s on demand for %s (%d rows, run %s)",
+                ticker, session_date, res.rows_written, res.run_id)
+    return load_level_params(_query_strict, [ticker], session_date)[ticker.upper()]
+
+
 def summarize_session_levels(
     ticker: str, as_of: Optional[date_type] = None, *, loader=None,
+    level_params=None,
 ) -> dict:
     """The session's levels for the planner (FEAT-STRAT-001 Design 4).
 
@@ -517,14 +570,34 @@ def summarize_session_levels(
     applies the planner's own newer premarket snapshot; only when no live
     row exists does it build with lib.strat_levels.build_session_levels.
     Returns {available, source, session_date, premarket_status, level_basis}.
+
+    The ticker's level parameters in force on the session are read once
+    (lib.strat_levels.load_level_params, strict reader) unless the caller
+    passes them. A stored level_basis rebuilds with the parameters it
+    recorded; the table rows are used only to build, or for a basis written
+    before parameters were recorded. LevelParamsUnavailable propagates: the
+    insight run fails with reason level_params_unavailable.
+
+    A ticker with no ticker_level_params row at all (every key
+    params_unavailable) is calibrated on demand first
+    (lib.level_calibration.calibrate_ticker, source on_demand, Design 3)
+    and its parameters read again; a ticker without enough bars then
+    carries insufficient_history. If the on-demand run fails, the ticker
+    keeps params_unavailable and the failure is logged.
     """
-    from lib.strat_levels import SessionLevels, build_session_levels
+    from lib.strat_levels import (
+        SessionLevels, atr_inputs_from_frame, build_session_levels, load_level_params,
+    )
 
     session_date = _session_date_for(as_of)
+    if level_params is None:
+        level_params = load_level_params(_query_strict, [ticker], session_date)[ticker.upper()]
+        if _has_no_level_param_rows(level_params):
+            level_params = _calibrate_on_demand(ticker, session_date, level_params)
     premarket = _session_premarket(ticker, session_date)
     basis = _live_level_basis(ticker, session_date)
     if basis is not None:
-        sl = SessionLevels.from_basis(basis)
+        sl = SessionLevels.from_basis(basis, params=level_params)
         if premarket is not None:
             sl = sl.with_premarket(premarket)
         source = "level_basis"
@@ -534,7 +607,8 @@ def summarize_session_levels(
             loader = DataLoader()
         df = loader.load_daily(ticker, on_stale="warn")
         sl = build_session_levels(ticker, session_date, df,
-                                  _prior_session_atr(df, session_date), premarket)
+                                  atr_inputs_from_frame(df, session_date), premarket,
+                                  level_params)
         source = "builder"
     out = {
         "available": sl.status == "ok",
@@ -2013,6 +2087,11 @@ def build_context_bundle(
                 reason = result.get("reason")
                 if isinstance(reason, str) and reason:
                     failed_reasons[name] = reason
+        except LevelParamsUnavailable:
+            # INTERNAL (CLAUDE.md 3.7): the parameter tables cannot be read.
+            # Not a degraded section: the run fails with reason
+            # level_params_unavailable.
+            raise
         except Exception as e:
             logger.exception("summarizer %s failed", name)
             bundle[name] = {"available": False, "reason": f"exception: {e}"}

@@ -346,6 +346,17 @@ def _synthetic_daily(n: int = 40, *, nan_last: bool = False, end=None):
     return df
 
 
+@pytest.fixture(autouse=True)
+def _level_params(monkeypatch):
+    """The level parameter tables (per-ticker parameters, 2026-11-08) read
+    through the strict reader: every key at the #1753 values for the index
+    ETFs, through load_level_params's own SQL."""
+    import gcp.database as database  # noqa: PLC0415
+    from tests.lib.level_params_fixtures import legacy_db  # noqa: PLC0415
+    monkeypatch.setattr(database, "query_to_dataframe_strict",
+                        legacy_db(["SPY", "QQQ", "IWM"]).query)
+
+
 def test_level_map_anchors_to_last_valid_close_not_nan(monkeypatch):
     """REAL _build_movement_level_map: a NaN-close premarket placeholder as the
     LAST row must be dropped, and the LevelMap anchored to the last VALID close
@@ -427,14 +438,14 @@ def test_level_map_reads_the_loaders_ATR14_column(monkeypatch):
     today = (df.index[-1] + _dt.timedelta(days=1)).date()
     seen = {}
 
-    def _spy(ticker, session_date, daily_df, atr, premarket=None, **k):
+    def _spy(ticker, session_date, daily_df, atr, premarket=None, params=None, **k):
         seen["atr"] = atr
         raise RuntimeError("stop here")
 
     with patch("lib.data_loader.DataLoader.load_daily", return_value=df), \
          patch("lib.strat_levels.build_session_levels", side_effect=_spy):
         dashboard_router._build_movement_level_map("SPY", analysis_date=today)
-    assert seen["atr"] == pytest.approx(2.5)
+    assert seen["atr"]["atr_14"] == pytest.approx(2.5)
 
 
 def test_level_map_refuses_a_frame_missing_the_prior_session(monkeypatch):
@@ -646,7 +657,9 @@ def test_missing_atr_serves_levels_unavailable_not_an_empty_ladder(monkeypatch):
     assert out["reason"].startswith("atr_unavailable")
     assert "calls" not in out and "puts" not in out
 
-    built = build_session_levels("SPY", session, df[df.index < str(session)], None, None)
+    from tests.lib.level_params_fixtures import fixture_params  # noqa: PLC0415
+    built = build_session_levels("SPY", session, df[df.index < str(session)], {}, None,
+                                 fixture_params("SPY", session))
     stored = SessionLevels.from_basis(built.to_basis()).to_level_map()
     out_stored = _build_levels(stored, reach, reach, tracked)
     assert out_stored["status"] == "UNAVAILABLE"

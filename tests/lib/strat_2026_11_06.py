@@ -60,19 +60,29 @@ def premarket_bars(ticker: str) -> pd.DataFrame:
     return df
 
 
-def premarket_context(ticker: str, *, atr14: float | None = "prior", raw: bool = False) -> dict:
+def premarket_context(ticker: str, *, atr14: float | None = "prior", raw: bool = False,
+                      params=None) -> dict:
     """calculate_premarket_context on the session's committed bars, with
-    the prior session's close and ATR(14). raw=True passes no ATR (no
-    filter)."""
+    the prior session's close and ATR(14) and the ticker's pm_stale_print_atr
+    and pm_spike_atr from `params` (default: fixture_params at the #1753
+    values). raw=True passes no ATR and no thresholds (no filter)."""
     from lib.indicators import calculate_premarket_context
+    from tests.lib.level_params_fixtures import fixture_params
     bars = premarket_bars(ticker)
     d = daily(ticker)
+    lp = params if params is not None else fixture_params(ticker, SESSION)
     atr = None if raw else (prior_atr(ticker) if atr14 == "prior" else atr14)
+
+    def threshold(key):
+        return None if raw or not lp.ok(key) else lp.value(key)
+
     return calculate_premarket_context(
         times=bars["timestamp"], open_=bars["open"], high=bars["high"],
         low=bars["low"], close=bars["close"], volume=bars["volume"],
-        prev_close=float(d["Close"].iloc[-1]), atr14=atr,
+        prev_close=float(d["Close"].iloc[-1]), atr=atr,
         prev_open=float(d["Open"].iloc[-1]),
+        stale_print_atr=threshold("pm_stale_print_atr"),
+        spike_atr=threshold("pm_spike_atr"),
     )
 
 
@@ -80,32 +90,43 @@ def session_premarket(ticker: str) -> dict:
     pm = premarket_context(ticker)
     return {"date": SESSION.isoformat(), "pre_high": pm["pre_high"],
             "pre_low": pm["pre_low"], "pre_vwap": pm["pre_vwap"],
-            "gap_pct": pm["gap_pct"]}
+            "gap_pct": pm["gap_pct"],
+            "pre_filter_status": "ok" if pm["filtered"] else "atr_unavailable"}
 
 
 def loader_frame(ticker: str) -> pd.DataFrame:
     """What DataLoader.load_daily returns at 08:30 ET on 2026-11-06: bars
     through 2026-11-05 with ATR14, plus the session's own row carrying only
     the premarket columns written by fetch-premarket-refresh at 08:20 ET."""
+    from lib.indicators import calculate_atr
     df = daily(ticker).copy()
     df["ATR14"] = wilder_atr(df)
+    df["ATR5"] = calculate_atr(df["High"], df["Low"], df["Close"], 5)
     for col in ("pre_high", "pre_low", "pre_vwap", "gap_pct"):
         df[col] = float("nan")
+    df["pre_filter_status"] = None
     snap = session_premarket(ticker)
     row = pd.DataFrame(
         {"Open": [float("nan")], "High": [float("nan")], "Low": [float("nan")],
          "Close": [float("nan")], "Volume": [float("nan")], "ATR14": [float("nan")],
+         "ATR5": [float("nan")],
          "pre_high": [snap["pre_high"]], "pre_low": [snap["pre_low"]],
-         "pre_vwap": [snap["pre_vwap"]], "gap_pct": [snap["gap_pct"]]},
+         "pre_vwap": [snap["pre_vwap"]], "gap_pct": [snap["gap_pct"]],
+         "pre_filter_status": [snap["pre_filter_status"]]},
         index=pd.DatetimeIndex([pd.Timestamp(SESSION)], name="Time"),
     )
     row["Time"] = row.index
     return pd.concat([df, row])
 
 
-def run_brief(monkeypatch, ticker: str, frame: pd.DataFrame, as_of: str = "2026-11-06") -> dict:
+def run_brief(monkeypatch, ticker: str, frame: pd.DataFrame, as_of: str = "2026-11-06",
+              *, params_db=None) -> dict:
     """Drive gcp.premarket_brief.generate_premarket_brief (the production
-    playbook path) offline on `frame` and return the ticker's entry."""
+    playbook path) offline on `frame` and return the ticker's entry. The
+    level parameters come from `params_db` (a level_params_fixtures.ParamsDb)
+    through load_level_params's own SQL; by default every key at the #1753
+    values."""
+    from tests.lib.level_params_fixtures import legacy_db
     import socket
 
     import gcp.database as database
@@ -133,6 +154,8 @@ def run_brief(monkeypatch, ticker: str, frame: pd.DataFrame, as_of: str = "2026-
     monkeypatch.setattr(pb, "_load_gamma_freshness", lambda *a, **k: dict(
         data_source="unavailable", snapshot_ts=None, snapshot_date=None, days_behind=None))
     monkeypatch.setattr(pb, "_delete_null_close_rows", lambda *a: None)
+    db = params_db if params_db is not None else legacy_db(ticker)
+    monkeypatch.setattr(pb, "_level_params_query", db.query)
 
     persisted = []
 
@@ -163,13 +186,18 @@ def run_brief(monkeypatch, ticker: str, frame: pd.DataFrame, as_of: str = "2026-
 
 
 def run_planner(monkeypatch, ticker: str, frame: pd.DataFrame, direction: str,
-                *, live_basis: dict | None = None, conviction: str = "medium"):
+                *, live_basis: dict | None = None, conviction: str = "medium",
+                params_db=None):
     """The planner's production path: summarize_session_levels (through
     summarizers._query for the session premarket row and the live
-    level_basis) into a bundle, then context_from_bundle and
-    compute_persona_plans. Returns (bundle_section, ctx, plans)."""
+    level_basis, and summarizers._query_strict for the level parameters)
+    into a bundle, then context_from_bundle and compute_persona_plans.
+    Returns (bundle_section, ctx, plans)."""
     from lib.agents import summarizers
     from lib.agents.trade_planner import compute_persona_plans, context_from_bundle
+    from tests.lib.level_params_fixtures import legacy_db
+
+    db = params_db if params_db is not None else legacy_db(ticker)
 
     snap = premarket_snapshot_row(frame)
 
@@ -190,6 +218,7 @@ def run_planner(monkeypatch, ticker: str, frame: pd.DataFrame, direction: str,
             return frame.copy()
 
     monkeypatch.setattr(summarizers, "_query", fake_query)
+    monkeypatch.setattr(summarizers, "_query_strict", db.query)
     section = summarizers.summarize_session_levels(ticker, as_of=SESSION, loader=_Loader())
     d = daily(ticker)
     bundle = {
@@ -213,4 +242,5 @@ def premarket_snapshot_row(frame: pd.DataFrame) -> pd.DataFrame:
     r = rows.iloc[-1]
     return pd.DataFrame([{"date": SESSION, "pre_high": r.get("pre_high"),
                           "pre_low": r.get("pre_low"), "pre_vwap": r.get("pre_vwap"),
-                          "gap_pct": r.get("gap_pct")}])
+                          "gap_pct": r.get("gap_pct"),
+                          "pre_filter_status": r.get("pre_filter_status")}])
