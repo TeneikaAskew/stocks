@@ -36,13 +36,13 @@ status: ready
 Spec: done_when[0], done_when[1], done_when[2] and Separation of evidence.
 Files: `lib/strategies/catalyst_proximity.py::_nearest_earnings`; tests: `tests/lib/test_catalyst_proximity.py`.
 Interfaces: consume lib.earnings_reactions.EARNINGS_NOT_RETIRED_SQL and tests.fixtures.earnings_calendar_sources; preserve reader signatures and outputs.
-- [ ] Run existing focused test files on the clean baseline (expect PASS).
-- [ ] Add actual-reader tests with explicit main-shaped negative controls and shared fixture rows. At 10:00 ET, AV premarket plus EW postmarket gives main (390, earnings_post, 120, earnings_pre), then predicated (None, None, 120, earnings_pre). Historical EW-only yields four None values.
-- [ ] Assert aliases removed, NULL/unknown/nonalias kept, EW-only absent, and byte-identical accepted-source serialized results.
-- [ ] Run added tests before source edits (expect FAIL on retired values).
-- [ ] Import shared EARNINGS_NOT_RETIRED_SQL and add it inside existing WHERE, with no other query change.
-- [ ] Run complete focused test files (expect PASS).
-- [ ] Run python3 scripts/gate/spec_gate.py --commit, then commit with normal hook.
+- [x] Run existing focused test files on the clean baseline (expect PASS).
+- [x] Add actual-reader tests with explicit main-shaped negative controls and shared fixture rows. At 10:00 ET, AV premarket plus EW postmarket gives main (390, earnings_post, 120, earnings_pre), then predicated (None, None, 120, earnings_pre). Historical EW-only yields four None values.
+- [x] Assert aliases removed, NULL/unknown/nonalias kept, EW-only absent, and byte-identical accepted-source serialized results.
+- [x] Run added tests before source edits (expect FAIL on retired values).
+- [x] Import shared EARNINGS_NOT_RETIRED_SQL and add it inside existing WHERE, with no other query change.
+- [x] Run complete focused test files (expect PASS).
+- [x] Run python3 scripts/gate/spec_gate.py --commit, then commit with normal hook.
 
 ## Task 2: Bound source identity and unchanged governance tests
 Spec: done_when[3], Source identity and close-out pre-merge steps 1-4.
