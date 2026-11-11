@@ -4183,7 +4183,8 @@ ASOF_LABELS = (re.compile(r"\bLive (\d{4}-\d{2}-\d{2})\b"),
 # with `replace` and never to regenerate it; the model regenerated it anyway
 # (52% churn). Same conclusion as the as-of labels and the runtime-relation
 # count: render what is inventory and stop asking. (Run 32.)
-# The five badges this renderer owns, by identity. Anything else in README
+# The four badges this renderer renders, by identity. OWNED_BADGE still claims
+# the retired workflow badge too, so a render over an older README removes it. Anything else in README
 # belongs to a maintainer and is never rewritten. Anchoring on "the first
 # contiguous run of badge-shaped lines" was wrong twice over: it could pick a
 # run that is not ours at all, and -- once that was fixed by looking for the
@@ -4210,7 +4211,7 @@ OWNED_BADGE = re.compile(
 
 
 def readme_badges(repo: dict[str, Any], live: dict[str, Any] | None, day: str) -> str:
-    """The five badge lines, rendered from the same inventory as everything else.
+    """The four badge lines, rendered from the same inventory as everything else.
 
     Refuses without a live snapshot. `--readme-badges` with no `--snapshot` or
     `--live` left `live` as None, and the counts fell back to 0: the badges
@@ -4248,8 +4249,6 @@ def readme_badges(repo: dict[str, Any], live: dict[str, Any] | None, day: str) -
         # (Codex, PR #1070.)
         f"![Cloud SQL relations](https://img.shields.io/badge/schema_relations-"
         f"{declared_relations}_declared_%2F_{live_relations}_live-blue)",
-        "![Architecture refresh](https://github.com/TeneikaAskew/stocks/actions/"
-        "workflows/refresh-architecture-docs.yml/badge.svg)",
     ])
 
 

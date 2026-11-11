@@ -2072,9 +2072,8 @@ def test_the_readme_badges_are_rendered_not_asked_for(tmp_path, repo, live):
     assert f"cloud_run_jobs-{live['counts']['jobs']}_live_%2F_{len(repo['jobs'])}_declared" in body
     assert f"schedulers-{live['counts']['schedulers']}_live" in body
     assert f"schema_relations-{declared}_declared_%2F_{len(live['db_tables'])}_live" in body
-    # the workflow badge names the workflow that actually exists
-    assert "refresh-architecture-docs.yml/badge.svg" in body
-    assert (REPO / ".github/workflows/refresh-architecture-docs.yml").exists()
+    # no workflow badge is rendered, and a README that carried one loses it
+    assert "/actions/workflows/" not in body
     assert "refresh-documentation.yml" not in body
     # idempotent, and it leaves the rest of the file alone
     assert not inv.insert_readme_badges(readme, repo, live, "2026-11-02")
@@ -2082,7 +2081,10 @@ def test_the_readme_badges_are_rendered_not_asked_for(tmp_path, repo, live):
 
 
 def _readme_with(*extra_lines, day="2020-01-01") -> str:
-    """README carrying the five owned badges plus whatever else is given."""
+    """README carrying the five owned badges plus whatever else is given.
+
+    Five lines, not four: this models a README rendered before the workflow
+    badge was retired, which the render must still claim and remove."""
     owned = [
         f"![Last audit](https://img.shields.io/badge/docs_verified-{day.replace('-', '--')}-blue)",
         "![Cloud Run Jobs](https://img.shields.io/badge/cloud_run_jobs-1_live_%2F_1_declared-blue)",
@@ -2096,6 +2098,17 @@ def _readme_with(*extra_lines, day="2020-01-01") -> str:
             + f"\nGenerated {day} by the monthly documentation refresh.\n")
 
 
+def test_the_readme_carries_no_workflow_badge(tmp_path, repo, live):
+    lines = inv.readme_badges(repo, live, "2026-11-02").split("\n")
+    assert len(lines) == 4 and all("](https://img.shields.io/badge/" in l for l in lines), lines
+    assert not any("/actions/workflows/" in l for l in lines)
+    readme = tmp_path / "README.md"
+    readme.write_text(_readme_with())                    # still carries the Architecture refresh badge
+    inv.insert_readme_badges(readme, repo, live, "2026-11-02")
+    assert "/actions/workflows/" not in readme.read_text()
+    assert "/actions/workflows/" not in (REPO / "README.md").read_text(encoding="utf-8")
+
+
 def test_the_badge_render_does_not_swallow_later_shield_links(tmp_path, repo, live):
     """A shields.io link further down the document is content, not a badge to
     overwrite."""
@@ -2106,7 +2119,7 @@ def test_the_badge_render_does_not_swallow_later_shield_links(tmp_path, repo, li
     body = readme.read_text()
     assert "keep--me-9-red" in body, "a later shields link was swallowed"
     assert "docs_verified-2026--11--02-blue" in body
-    assert body.count("refresh-architecture-docs.yml/badge.svg") == 1
+    assert body.count("refresh-architecture-docs.yml/badge.svg") == 0
 
 
 def test_a_maintainer_badge_beside_the_block_survives(tmp_path, repo, live):
@@ -2130,7 +2143,7 @@ def test_a_maintainer_badge_beside_the_block_survives(tmp_path, repo, live):
         assert "build-passing-green" in body, \
             f"a maintainer's badge {placement} the block was deleted"
         assert "docs_verified-2026--11--02-blue" in body
-        assert body.count("refresh-architecture-docs.yml/badge.svg") == 1
+        assert body.count("refresh-architecture-docs.yml/badge.svg") == 0
 
 
 def test_a_foreign_line_inside_the_block_is_an_error_not_a_deletion(tmp_path, repo, live):
@@ -2281,7 +2294,7 @@ def test_which_workflow_badges_this_renderer_owns(line, owned, why):
 
 
 def test_a_dead_workflow_badge_is_replaced_not_duplicated(tmp_path, repo, live):
-    """End to end: the render must leave exactly one workflow badge."""
+    """End to end: the dead badge is removed, not replaced."""
     readme = tmp_path / "README.md"
     readme.write_text(_readme_with().replace(
         "workflows/refresh-architecture-docs.yml/badge.svg",
@@ -2289,7 +2302,7 @@ def test_a_dead_workflow_badge_is_replaced_not_duplicated(tmp_path, repo, live):
     inv.insert_readme_badges(readme, repo, live, "2026-11-02")
     body = readme.read_text()
     assert "refresh-documentation.yml" not in body, "the dead badge survived"
-    assert body.count("/actions/workflows/") == 1, "the workflow badge was duplicated"
+    assert body.count("/actions/workflows/") == 0, "the dead badge is removed, not replaced"
 
 
 def test_a_second_generated_line_is_refused_not_restamped(tmp_path, repo, live):
