@@ -1032,23 +1032,38 @@ def complex_body_repo(path, line_count, existing=False):
 @pytest.mark.parametrize("existing", [False, True])
 def test_actual_fallback_parser_cpu_deadline_preserves_absent_or_valid_record(existing, tmp_path):
     repo, body, old = complex_body_repo(tmp_path / "repo", 80000, existing)
-    refused = repo.cli("produce", "--max-seconds", "0.75")
-    verdict = json.loads(refused.stdout)
-    assert refused.returncode != 0, refused.stdout + refused.stderr
-    assert verdict["status"] == "unverified"
+    # The caps escalate because hosts differ by more than the read-to-finish
+    # ratio of any one run. A fast host stops at 0.75 s, far below the fastest
+    # runner's completion (1.91 s for 40,000 lines, #1796), and a loaded host
+    # moves on to a later cap, since 0.75 s can fire while the body is still
+    # being read (Codex review on #1814). The body is 80,000 lines so that
+    # even the fastest runner needs several times the first cap to finish,
+    # and counted input stays well under MAX_BYTES. The 0.1 s allowance
+    # covers the alarm handler, the unwinding and cpu_guard's cleanup, which
+    # all run before elapsed_seconds is taken.
+    for cap in ("0.75", "1.5", "3", "5"):
+        refused = repo.cli("produce", "--max-seconds", cap)
+        verdict = json.loads(refused.stdout)
+        assert refused.returncode != 0, refused.stdout + refused.stderr
+        assert verdict["status"] == "unverified"
+        assert verdict["reason"] in (
+            "whole verification CPU deadline exceeded",
+            "whole verification deadline exceeded",
+        )
+        if old is None:
+            assert not (repo.path / RECORD).exists()
+        else:
+            assert (repo.path / RECORD).read_bytes() == old
+        if (
+            verdict["source_identity_sha256"] is not None
+            and verdict["counted_bytes"] >= len(body.encode("utf-8"))
+        ):
+            break
+    else:
+        pytest.fail(f"no cap up to 5 s landed after the body was read: {verdict}")
     assert verdict["reason"] == "whole verification CPU deadline exceeded"
-    assert verdict["source_identity_sha256"] is not None
-    assert verdict["counted_bytes"] >= len(body.encode("utf-8"))
     assert verdict["counted_bytes"] <= MAX_BYTES
-    # The cap must fall after the source identity is computed and before the
-    # bounded work can finish on a fast host. In the sandbox the identity is
-    # set by 0.2 s at 80,000 lines, while the fastest runner seen finished
-    # 40,000 lines in 1.91 s (#1796). 80,000 lines roughly doubles that work,
-    # so even that runner needs several times the 0.75 s cap to finish, and
-    # counted input stays well under MAX_BYTES. The 0.1 s allowance covers
-    # the alarm handler, the unwinding and cpu_guard's cleanup, which all run
-    # before elapsed_seconds is taken.
-    assert verdict["elapsed_seconds"] < 0.85
+    assert verdict["elapsed_seconds"] < float(cap) + 0.1
     if old is None:
         assert not (repo.path / RECORD).exists()
     else:
