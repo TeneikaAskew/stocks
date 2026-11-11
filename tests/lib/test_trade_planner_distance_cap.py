@@ -5,7 +5,7 @@ for IWM (171.73) and QQQ (402.39) were the 2025 yearly lows, 15 to 22
 ATR below price. FEAT-STRAT-001 moved the walk into
 lib.strat_levels.build_session_levels and made the session's premarket
 high and low candidates, so the picks below follow those rules: the
-window (3 x ATR(14) and 8% of the reference) still keeps far levels out,
+ticker's window (trigger_window_{long,short}_atr x ATR, here the #1753 value 3) still keeps far levels out,
 and nothing is ever synthesized. Inputs are that morning's values with the
 UNFILTERED premarket extremes the FEAT-INSIGHT-001 tests used.
 """
@@ -17,6 +17,7 @@ from lib.agents.trade_planner import (
     compute_persona_plans,
     select_trigger_and_regime,
 )
+from tests.lib.level_params_fixtures import fixture_params
 from tests.lib.session_levels_helpers import session
 
 _NAMES = {"effective_pdh": "PDH", "effective_pdl": "PDL", "pwh": "PWH", "pwl": "PWL",
@@ -120,12 +121,22 @@ def test_long_level_touched_exactly_is_not_broken():
     assert ctx.levels.long.trigger["name"] == "PDH"
 
 
-def test_percent_axis_of_the_window_binds_on_its_own():
-    """Reference 100, ATR 4: a level at 109 is 2.25 ATR away (inside 3 ATR)
-    but 9% of price (outside 8%), so the shared window rejects it."""
+def test_the_tickers_window_is_the_only_axis():
+    """Reference 100, ATR 4: a level at 109 is 2.25 ATR away and 9% of
+    price. The percent-of-price axis is gone (per-ticker parameters,
+    2026-11-08): inside the ticker's 3 x ATR window it is the trigger, and
+    with a 2 x ATR window it is not."""
     ctx = _ctx("long", close=100.0, atr=4.0, effective_pdl=98.0, pwh=109.0, pwl=95.0)
     regime, trigger, _, _, blue = select_trigger_and_regime(ctx, "long")
+    assert trigger == pytest.approx(109.0) and blue is False and regime == "normal"
+    named = {"PDL": 98.0, "PWH": 109.0, "PWL": 95.0}
+    sl = session(named, prior_close=100.0, atr=4.0,
+                 params=fixture_params("TST", overrides={"trigger_window_long_atr": 2.0}))
+    narrow = PlanContext(direction="long", conviction="medium", close=100.0, atr=4.0,
+                         levels=sl, ftfc_score=0.75)
+    regime, trigger, _, _, blue = select_trigger_and_regime(narrow, "long")
     assert trigger is None and blue is False and regime == "orb_only"
+    assert narrow.orb_only_reason("long") == "next_level_outside_window"
 
 
 @pytest.mark.parametrize("direction", ["long", "short"])

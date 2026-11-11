@@ -120,19 +120,29 @@ def derive_level_map_from_daily(ticker: str, analysis_date: date, engine) -> Opt
     harnesses.
     """
     from lib.strat_levels import (  # local import to keep top-level light
-        SessionLevels, build_session_levels, read_live_level_basis,
+        SessionLevels, atr_inputs_from_frame, basis_records_params,
+        build_session_levels, load_level_params, read_live_level_basis,
         read_session_premarket,
     )
 
+    def _query(sql, params):
+        return pd.read_sql(text(sql), engine, params=params)
+
+    def _params():
+        # The ticker's level parameters in force on analysis_date (a replay
+        # of session D reads the rows effective on D). A failed read raises
+        # LevelParamsUnavailable (CLAUDE.md 3.7); pd.read_sql does not
+        # swallow errors.
+        return load_level_params(_query, [ticker], analysis_date)[ticker.upper()]
+
     # The session's LIVE level_basis, written by the brief with the row, is
     # the source when present (a replay row is never read); only without
-    # one are the levels built from daily bars.
-    basis = read_live_level_basis(
-        lambda sql, params: pd.read_sql(text(sql), engine, params=params),
-        ticker, analysis_date,
-    )
+    # one are the levels built from daily bars. A basis that recorded its
+    # parameters rebuilds with them and never reads the tables.
+    basis = read_live_level_basis(_query, ticker, analysis_date)
     if basis is not None:
-        stored = SessionLevels.from_basis(basis)
+        stored = SessionLevels.from_basis(
+            basis, params=None if basis_records_params(basis) else _params())
         if stored.status == 'ok':
             return _structured_inputs(stored.to_level_map())
 
@@ -140,7 +150,7 @@ def derive_level_map_from_daily(ticker: str, analysis_date: date, engine) -> Opt
     # NOT including analysis_date so the level map only sees data the
     # brief could have known about premarket.
     daily_sql = text("""
-        SELECT date, open, high, low, close, atr_14, strat_candle, strat_combo
+        SELECT date, open, high, low, close, atr_14, atr_5, strat_candle, strat_combo
         FROM market_data_daily
         WHERE ticker = :t AND date < :d
         ORDER BY date
@@ -157,17 +167,15 @@ def derive_level_map_from_daily(ticker: str, analysis_date: date, engine) -> Opt
     })
 
     last = df.iloc[-1]
-    # The last completed session's ATR(14); missing gives no trigger
-    # (reason atr_unavailable), never a percent-only window.
-    atr = float(last['atr_14']) if pd.notna(last['atr_14']) else None
+    # The last completed session's ATR columns; the policy's basis picks
+    # one. Missing gives no trigger (reason atr_unavailable), never a
+    # percent-only window.
+    atrs = atr_inputs_from_frame(df, analysis_date)
     strat_class = str(last.get('strat_candle') or '')
-    premarket = read_session_premarket(
-        lambda sql, params: pd.read_sql(text(sql), engine, params=params),
-        ticker, analysis_date,
-    )
+    premarket = read_session_premarket(_query, ticker, analysis_date)
 
     level_map = build_session_levels(
-        ticker, analysis_date, df, atr, premarket,
+        ticker, analysis_date, df, atrs, premarket, _params(),
         daily_strat_class=strat_class,
     ).to_level_map()
     return _structured_inputs(level_map)
