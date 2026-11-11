@@ -1005,11 +1005,9 @@ def test_every_gcloud_track_read_live_uses_is_installed_on_the_runner():
     command group installed: [beta]" before it reads anything past the
     domain-mappings call. Failed this way twice (2026-09-09, 2026-09-10)
     because the workflow's setup-gcloud step never requested the component.
-    refresh-architecture-docs.yml hit the identical gap in doc_inventory.py
-    (run 14) and has its own version of this test
-    (tests/meta/test_refresh_architecture_docs_pr_token.py); this is the
-    same check against the sibling script/workflow pair so a new alpha/beta
-    call here fails hermetically instead of on the next scheduled run."""
+    The retired architecture refresh hit the identical gap in doc_inventory.py
+    (run 14); this check keeps a new alpha/beta call here failing
+    hermetically instead of on the next scheduled run."""
     required = _required_gcloud_components()
     assert required, "the AST scan found no alpha/beta calls; the scan is broken, not the script"
     doc = yaml.safe_load(_WORKFLOW_PATH.read_text())
