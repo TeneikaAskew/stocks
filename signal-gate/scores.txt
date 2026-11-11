@@ -1,0 +1,29 @@
+rows with exits 3102 | level-tagged since 2026-08-28
+
+== explore 2026-08-28 to 2026-10-16: all fires n= 395 days= 34 mean=+0.000% [-0.037,+0.036] win=49% sum=+0.11%
+  C1 brief opposed               blocked n=  39 days=  7 mean=+0.083% [+0.006,+0.171] win=67% sum=+3.25%
+                                 kept    n= 356 days= 33 mean=-0.009% [-0.048,+0.029] win=47% sum=-3.14%
+  C2 fades a leg past T1         blocked n= 122 days= 23 mean=+0.017% [-0.035,+0.067] win=47% sum=+2.07%
+                                 kept    n= 273 days= 31 mean=-0.007% [-0.048,+0.036] win=50% sum=-1.96%
+  C2n same, brief neutral/none   blocked n=  95 days= 19 mean=+0.016% [-0.038,+0.079] win=45% sum=+1.51%
+                                 kept    n= 300 days= 33 mean=-0.005% [-0.044,+0.035] win=50% sum=-1.40%
+  C3 own leg past T1/invalid     blocked n= 119 days= 24 mean=+0.001% [-0.065,+0.058] win=54% sum=+0.15%
+                                 kept    n= 276 days= 33 mean=-0.000% [-0.046,+0.045] win=47% sum=-0.04%
+  C4 RVOL below                  blocked n= 271 days= 34 mean=+0.004% [-0.040,+0.047] win=52% sum=+0.99%
+                                 kept    n= 124 days= 34 mean=-0.007% [-0.048,+0.031] win=44% sum=-0.88%
+  C5 C1 or C2                    blocked n= 143 days= 26 mean=+0.035% [-0.014,+0.080] win=51% sum=+4.94%
+                                 kept    n= 252 days= 30 mean=-0.019% [-0.066,+0.028] win=48% sum=-4.83%
+
+== holdout 2026-10-16 to 9999: all fires n= 221 days= 17 mean=-0.079% [-0.160,-0.000] win=42% sum=-17.46%
+  C1 brief opposed               blocked n=  30 days=  6 mean=-0.363% [-0.633,-0.094] win=13% sum=-10.89%
+                                 kept    n= 191 days= 17 mean=-0.034% [-0.111,+0.039] win=46% sum=-6.57%
+  C2 fades a leg past T1         blocked n=  43 days=  7 mean=-0.227% [-0.432,+0.011] win=28% sum=-9.78%
+                                 kept    n= 178 days= 17 mean=-0.043% [-0.122,+0.030] win=45% sum=-7.68%
+  C2n same, brief neutral/none   blocked n=  33 days=  6 mean=-0.130% [-0.306,+0.057] win=36% sum=-4.28%
+                                 kept    n= 188 days= 17 mean=-0.070% [-0.154,+0.013] win=43% sum=-13.18%
+  C3 own leg past T1/invalid     blocked n=  48 days= 11 mean=-0.007% [-0.094,+0.106] win=56% sum=-0.33%
+                                 kept    n= 173 days= 17 mean=-0.099% [-0.202,-0.009] win=38% sum=-17.13%
+  C4 RVOL below                  blocked n= 157 days= 17 mean=-0.057% [-0.143,+0.029] win=45% sum=-8.92%
+                                 kept    n=  64 days= 16 mean=-0.133% [-0.239,-0.039] win=34% sum=-8.54%
+  C5 C1 or C2                    blocked n=  63 days= 10 mean=-0.241% [-0.419,-0.058] win=25% sum=-15.18%
+                                 kept    n= 158 days= 17 mean=-0.014% [-0.102,+0.066] win=48% sum=-2.28%
