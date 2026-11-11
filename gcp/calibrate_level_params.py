@@ -47,7 +47,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional
 
 import pandas as pd
 
@@ -103,11 +103,18 @@ _ROW_COLUMNS = ('ticker', 'param_key', 'value', 'status', 'atr_basis', 'method_i
                 'policy_effective_from', 'sample_n', 'input_from', 'input_to',
                 'effective_from', 'run_id', 'source', 'calibrated_at')
 _CONFLICT = ('ticker', 'param_key', 'atr_basis', 'effective_from')
+# source 'on_demand' is also the ticker's enrollment in the nightly universe
+# (ON_DEMAND_SQL). A nightly or manual rerun for the same effective date
+# overwrites the values but keeps that mark, so a ticker first calibrated on
+# demand before the 04:00 ET run stays in the universe (Codex P2 on 7b12114b).
+_KEEP_ON_DEMAND = ("source = CASE WHEN ticker_level_params.source = 'on_demand' "
+                   "THEN 'on_demand' ELSE EXCLUDED.source END")
 UPSERT_SQL = (
     f"INSERT INTO ticker_level_params ({', '.join(_ROW_COLUMNS)}) VALUES "
     f"({', '.join(':' + c for c in _ROW_COLUMNS)}) "
     f"ON CONFLICT ({', '.join(_CONFLICT)}) DO UPDATE SET "
-    + ", ".join(f"{c} = EXCLUDED.{c}" for c in _ROW_COLUMNS if c not in _CONFLICT)
+    + ", ".join(f"{c} = EXCLUDED.{c}" if c != 'source' else _KEEP_ON_DEMAND
+                for c in _ROW_COLUMNS if c not in _CONFLICT)
 )
 
 
@@ -146,6 +153,30 @@ def policy_on(rows: List[dict], session, *, atr_basis: Optional[str] = None) -> 
         policy[POLICY_ATR_BASIS] = row
     policy_atr_basis(policy)
     return policy
+
+
+def window_policy_resolver(rows: List[dict], policy: dict) -> Callable[[pd.Timestamp], dict]:
+    """For a historical break session `s`, `policy` with its trigger window
+    rows replaced by the ones in force on `s` (Design 2: a break uses the
+    parameters in force on its own session). Every other row, the ATR basis
+    included, stays the calibration date's, so the break population keeps
+    one unit; a session before the first policy row keeps `policy`."""
+    keys = [lc.trigger_window_key(side) for side in lc.SIDES]
+    dated = sorted(((pd.Timestamp(r['effective_from']).normalize(), r) for r in rows),
+                   key=lambda x: x[0])
+    cache: Dict[pd.Timestamp, dict] = {}
+
+    def at(session) -> dict:
+        day = pd.Timestamp(session).normalize()
+        if day not in cache:
+            then = policy_in_force([r for eff, r in dated if eff <= day])
+            out = dict(policy)
+            for k in keys:
+                if then and k in then:
+                    out[k] = then[k]
+            cache[day] = out
+        return cache[day]
+    return at
 
 
 def read_policy(query: QueryFn, as_of) -> dict:
@@ -322,6 +353,8 @@ def run(tickers: List[str], effective_dates: List[date], *, query: QueryFn, writ
     for p in policies.values():
         if p not in unique:
             unique.append(p)
+    resolvers = [window_policy_resolver(policy_rows, p) for p in unique]
+    window_at = {eff: resolvers[unique.index(policies[eff])] for eff in dates}
     bounds = read_windows(unique, dates[0], dates[-1])
     chunk = chunk_sessions or len(dates)
     for i, ticker in enumerate(tickers, 1):
@@ -336,8 +369,9 @@ def run(tickers: List[str], effective_dates: List[date], *, query: QueryFn, writ
                 stamp = _now()
                 for eff in part:
                     policy = policies[eff]
-                    rows.extend(lc.to_rows(ticker, hc.calibrate(policy, eff), policy, eff, run_id,
-                                           source, stamp))
+                    rows.extend(lc.to_rows(ticker, hc.calibrate(policy, eff, window_at[eff]),
+                                           policy, eff,
+                                           run_id, source, stamp))
                 written += int(write(rows) or 0)
                 ok += sum(1 for r in rows if r['status'] == 'ok')
                 if len(dates) > chunk:

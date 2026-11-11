@@ -528,10 +528,17 @@ def replay_trigger(ticker: str, daily: pd.DataFrame, before: pd.DataFrame, polic
 
 
 def replay_triggers(ticker: str, daily: pd.DataFrame, d: pd.DataFrame, policy: Dict[str, dict],
-                    sessions: Iterable[pd.Timestamp], atr_basis: str) -> Dict[pd.Timestamp, dict]:
+                    sessions: Iterable[pd.Timestamp], atr_basis: str,
+                    window_policy_at: Optional[Callable[[pd.Timestamp], Dict[str, dict]]] = None
+                    ) -> Dict[pd.Timestamp, dict]:
     """Each session's long and short trigger (replay_trigger), the trigger
-    windows in force that session calibrated from the excursions before it."""
-    return {s: replay_trigger(ticker, daily, d[d.index < s], policy, s, atr_basis)
+    windows in force that session calibrated from the excursions before it
+    under the policy in force that session (`window_policy_at(session)`;
+    None: `policy` for every session). Design 2 defines a break by the
+    parameters in force on its own session, so a policy change effective D
+    never rewrites the breaks of the sessions before D."""
+    return {s: replay_trigger(ticker, daily, d[d.index < s],
+                              window_policy_at(s) if window_policy_at else policy, s, atr_basis)
             for s in sessions}
 
 
@@ -1018,7 +1025,9 @@ def break_lookback(policy: Dict[str, dict]) -> int:
 
 
 def calibrate(ticker: str, daily: pd.DataFrame, minutes: Optional[pd.DataFrame],
-              policy: Dict[str, dict], as_of) -> Dict[str, Calibrated]:
+              policy: Dict[str, dict], as_of,
+              window_policy_at: Optional[Callable[[pd.Timestamp], Dict[str, dict]]] = None
+              ) -> Dict[str, Calibrated]:
     """Every Design 2 parameter for `ticker`, effective `as_of`, from bars
     dated strictly before it. `daily` carries High, Low, Close and the
     policy's ATR column (atr_14 or atr_5, or ATR14/ATR5); `minutes` the
@@ -1042,7 +1051,8 @@ def calibrate(ticker: str, daily: pd.DataFrame, minutes: Optional[pd.DataFrame],
     sessions = _lookback_sessions(d, break_lookback(policy))
     minute_sessions = set(m['session'].unique()) if len(m) else set()
     sessions = [s for s in sessions if s in minute_sessions]
-    trig = replay_triggers(ticker, daily_before(daily, as_of), d, policy, sessions, atr_basis)
+    trig = replay_triggers(ticker, daily_before(daily, as_of), d, policy, sessions, atr_basis,
+                           window_policy_at)
     out.update(break_params(find_breaks(d, m, trig), policy, session_index=d.index))
     return out
 
@@ -1074,11 +1084,13 @@ class HistoryCalibrator:
         self._parts: Dict[pd.Timestamp, SpreadParts] = {}
         self._changes: Dict[tuple, np.ndarray] = {}
         self._rth_cents: Dict[pd.Timestamp, tuple] = {}
-        # Per (trigger window policy, ATR basis): replayed triggers, the
-        # breaks of each session (ids in the bank) and the bank.
-        self._trig: Dict[tuple, Dict[pd.Timestamp, dict]] = {}
-        self._banks: Dict[tuple, BreakBank] = {}
-        self._break_ids: Dict[tuple, Dict[pd.Timestamp, np.ndarray]] = {}
+        # Per (trigger window policy, ATR basis) and session: the replayed
+        # trigger and the session's breaks (ids in the bank of that basis).
+        # One bank per basis, so sessions replayed under different window
+        # policies pool into one population.
+        self._trig: Dict[tuple, dict] = {}
+        self._banks: Dict[str, BreakBank] = {}
+        self._break_ids: Dict[tuple, np.ndarray] = {}
 
     def daily_frame(self, atr_basis: str) -> pd.DataFrame:
         if atr_basis not in self._d:
@@ -1166,29 +1178,33 @@ class HistoryCalibrator:
         return tuple(sig)
 
     def _break_ids_for(self, sessions, policy: Dict[str, dict], atr_basis: str,
-                       d_full: pd.DataFrame) -> tuple:
-        sig = self._window_signature(policy, atr_basis)
-        trig = self._trig.setdefault(sig, {})
-        bank = self._banks.setdefault(sig, BreakBank())
-        by_session = self._break_ids.setdefault(sig, {})
-        new = [s for s in sessions if s not in by_session]
-        for s in new:
-            if s not in trig:
-                before = self._cut(d_full, s)
-                trig[s] = replay_trigger(self.ticker, self.daily, before, policy, s, atr_basis)
-            bars = self.rth.get(s)
-            if bars is not None and s not in self._rth_cents:
-                self._rth_cents[s] = (cents_array(bars['high'].to_numpy(dtype=float)),
-                                      cents_array(bars['low'].to_numpy(dtype=float)))
-            brks = session_breaks(s, trig[s], bars, d_full.at[s, 'close'], _prior_sma(d_full, s),
-                                  self._rth_cents.get(s)) if s in d_full.index else []
-            by_session[s] = bank.add(brks)
-        parts = [by_session[s] for s in sessions]
+                       d_full: pd.DataFrame, window_policy_at=None) -> tuple:
+        bank = self._banks.setdefault(atr_basis, BreakBank())
+        parts = []
+        for s in sessions:
+            pol = window_policy_at(s) if window_policy_at else policy
+            key = (self._window_signature(pol, atr_basis), s)
+            if key not in self._break_ids:
+                if key not in self._trig:
+                    before = self._cut(d_full, s)
+                    self._trig[key] = replay_trigger(self.ticker, self.daily, before, pol, s,
+                                                     atr_basis)
+                bars = self.rth.get(s)
+                if bars is not None and s not in self._rth_cents:
+                    self._rth_cents[s] = (cents_array(bars['high'].to_numpy(dtype=float)),
+                                          cents_array(bars['low'].to_numpy(dtype=float)))
+                brks = session_breaks(s, self._trig[key], bars, d_full.at[s, 'close'],
+                                      _prior_sma(d_full, s),
+                                      self._rth_cents.get(s)) if s in d_full.index else []
+                self._break_ids[key] = bank.add(brks)
+            parts.append(self._break_ids[key])
         ids = np.concatenate(parts) if parts else np.zeros(0, dtype=int)
         return bank, ids
 
     # ── one effective date ───────────────────────────────────────────
-    def calibrate(self, policy: Dict[str, dict], as_of) -> Dict[str, Calibrated]:
+    def calibrate(self, policy: Dict[str, dict], as_of,
+                  window_policy_at: Optional[Callable[[pd.Timestamp], Dict[str, dict]]] = None
+                  ) -> Dict[str, Calibrated]:
         as_of = pd.Timestamp(as_of).normalize()
         if as_of > self.before:
             raise ValueError(f"{as_of.date()} is after the bars this calibrator read "
@@ -1205,7 +1221,7 @@ class HistoryCalibrator:
         out[LEVEL_CLUSTER_KEY] = self._level_cluster(d, policy)
         sessions = [s for s in _lookback_sessions(d, break_lookback(policy))
                     if s in self.minute_sessions]
-        bank, ids = self._break_ids_for(sessions, policy, atr_basis, d_full)
+        bank, ids = self._break_ids_for(sessions, policy, atr_basis, d_full, window_policy_at)
         out.update(break_params([], policy, bank=bank, ids=ids, session_index=d.index))
         return out
 

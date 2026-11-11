@@ -223,6 +223,31 @@ def test_default_universe_is_the_policy_sources(monkeypatch):
     assert got[:3] == ["IWM", "SPY", "QQQ"] and got[-2:] == ["AAPL", "ZZZ"]
 
 
+def test_same_date_nightly_run_keeps_on_demand_enrollment(monkeypatch):
+    """A ticker first calibrated on demand for EFF, then recalibrated by the
+    nightly run for the same EFF, stays in the on-demand universe."""
+    db = FakeDb()
+    db.write([{**dict(ticker="ZZZ", param_key="trigger_window_long_atr", value=2.0, status="ok",
+                      atr_basis="atr_14", method_id="m", policy_effective_from="2015-01-02",
+                      sample_n=750, input_from="2023-01-03", input_to=str(EFF),
+                      effective_from=str(EFF), run_id="r1", calibrated_at="2026-11-05T15:00:00Z"),
+               "source": "on_demand"}])
+    db.write([{**dict(ticker="ZZZ", param_key="trigger_window_long_atr", value=2.5, status="ok",
+                      atr_basis="atr_14", method_id="m", policy_effective_from="2015-01-02",
+                      sample_n=751, input_from="2023-01-03", input_to=str(EFF),
+                      effective_from=str(EFF), run_id="r2", calibrated_at="2026-11-06T09:00:00Z"),
+               "source": "nightly"}])
+    assert list(db.query(job.ON_DEMAND_SQL, {})["ticker"]) == ["ZZZ"]
+    row = db.rows("value, run_id, source").iloc[0]
+    assert (row.value, row.run_id, row.source) == (2.5, "r2", "on_demand")
+    db.write([{**dict(ticker="AAA", param_key="trigger_window_long_atr", value=1.0, status="ok",
+                      atr_basis="atr_14", method_id="m", policy_effective_from="2015-01-02",
+                      sample_n=750, input_from="2023-01-03", input_to=str(EFF),
+                      effective_from=str(EFF), run_id="r3", calibrated_at="2026-11-06T09:00:00Z"),
+               "source": "nightly"}])
+    assert list(db.query(job.ON_DEMAND_SQL, {})["ticker"]) == ["ZZZ"]
+
+
 def test_not_in_deploy_sh():
     deploy = (ROOT / "gcp" / "deploy.sh").read_text()
     assert "calibrate_level_params" not in deploy and "calibrate-level-params" not in deploy
@@ -289,6 +314,26 @@ def test_history_mode_uses_the_policy_in_force_on_each_session(monkeypatch):
     _add_policy(night, "trigger_window_long_atr", "2026-11-05", statistic_q=0.95)
     assert _main(monkeypatch, night, "--effective-from", "2026-11-06") == 0
     pd.testing.assert_frame_equal(_on(after, "2026-11-06"), night.rows(KEEP))
+
+
+def test_break_sessions_use_the_window_policy_in_force_on_them():
+    """Codex P2 on 7b12114b: calibrating 11-06 under a long trigger row
+    effective 11-05, a break session before 11-05 is replayed with the old
+    trigger window row and every other row of the 11-06 policy; a session on
+    or after 11-05 with the new row."""
+    db = FakeDb()
+    _add_policy(db, "trigger_window_long_atr", "2026-11-05", statistic_q=0.95)
+    rows = job.read_policy_rows(db.query, "2026-11-06")
+    policy = job.policy_on(rows, "2026-11-06")
+    at = job.window_policy_resolver(rows, policy)
+    early, late = at("2026-11-04"), at("2026-11-05")
+    old = job.policy_on(rows, "2026-11-04")
+    assert early["trigger_window_long_atr"] == old["trigger_window_long_atr"]
+    assert early["trigger_window_long_atr"]["statistic_q"] != 0.95
+    assert late["trigger_window_long_atr"]["statistic_q"] == 0.95
+    assert {k: v for k, v in early.items() if k != "trigger_window_long_atr"} == \
+        {k: v for k, v in policy.items() if k != "trigger_window_long_atr"}
+    assert at("2014-06-02") == policy
 
 
 class _FailingWrites(FakeDb):

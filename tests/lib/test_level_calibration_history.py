@@ -148,3 +148,45 @@ def test_history_calibrator_reads_no_bar_on_or_after_its_date(ticker):
     hc = lc.HistoryCalibrator("TST", daily, minutes, last)
     with pytest.raises(ValueError):
         hc.calibrate(small_policy(), last + pd.offsets.BDay(1))
+
+
+def test_a_window_policy_change_keeps_the_breaks_before_it(ticker):
+    """Codex P2 on 7b12114b. The long trigger quantile changes effective D
+    (half way). Calibrating a date after D with each break session replayed
+    under the window policy in force on it (window_policy_at): the triggers
+    of the sessions before D equal the old policy's and those on or after D
+    the new one's, HistoryCalibrator equals the reference calibrate() for
+    every date, and the break population differs from replaying every
+    session under the new policy."""
+    daily, minutes = ticker
+    first = pd.Timestamp(minutes["timestamp"].iloc[0]).normalize()
+    last = pd.Timestamp(daily["date"].iloc[-1]) + pd.offsets.BDay(1)
+    dates = list(pd.bdate_range(first, last))
+    change = dates[len(dates) // 2]
+    old = small_policy()
+    new = small_policy(long_q=0.6, effective_from=change.date().isoformat())
+
+    def at(s):
+        return new if pd.Timestamp(s) >= change else old
+
+    basis = lc.policy_atr_basis(new)
+    d = lc.normalize_daily(daily, basis, last)
+    sessions = [s for s in d.index if s >= first]
+    before = lc.daily_before(daily, last)
+    got = lc.replay_triggers("TST", before, d, new, sessions, basis, at)
+    want_old = lc.replay_triggers("TST", before, d, old, sessions, basis)
+    want_new = lc.replay_triggers("TST", before, d, new, sessions, basis)
+    pre = [s for s in sessions if s < change]
+    post = [s for s in sessions if s >= change]
+    assert all(got[s] == want_old[s] for s in pre) and all(got[s] == want_new[s] for s in post)
+    assert any(want_old[s]["long"] != want_new[s]["long"] for s in pre)
+
+    hc = lc.HistoryCalibrator("TST", daily, minutes, last)
+    differs = False
+    for eff in dates:
+        policy = at(eff)
+        want = lc.calibrate("TST", daily, minutes, policy, eff, window_policy_at=at)
+        assert hc.calibrate(policy, eff, at) == want, eff
+        if eff > change:
+            differs |= want != lc.calibrate("TST", daily, minutes, policy, eff)
+    assert differs
