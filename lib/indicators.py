@@ -10,10 +10,11 @@ analyze_market_data_enhanced.py (Bollinger, MACD, consecutive moves).
 """
 
 from lib.eastern_time import ET_NAME
+import math
 import pandas as pd
 import numpy as np
 from datetime import datetime, time, timedelta
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -514,6 +515,11 @@ def calculate_historical_levels(
 # ---------------------------------------------------------------------------
 
 
+# The extended-hours window the premarket context reads, Eastern wall time.
+PREMARKET_START = time(4, 0)
+REGULAR_SESSION_OPEN = time(9, 30)
+
+
 def calculate_premarket_context(
     times: pd.Series,
     open_: pd.Series,
@@ -523,9 +529,12 @@ def calculate_premarket_context(
     volume: pd.Series,
     *,
     prev_close: float = None,
-    atr14: float = None,
-    premarket_start: time = time(4, 0),     # 4:00 AM ET
-    market_open: time = time(9, 30),        # 9:30 AM ET
+    atr: float = None,
+    prev_open: float = None,
+    stale_print_atr: Optional[float],
+    spike_atr: Optional[float],
+    premarket_start: time = PREMARKET_START,
+    market_open: time = REGULAR_SESSION_OPEN,
 ) -> dict:
     """Compute pre-market H/L/VWAP/volume + gap_pct + pre_range_atr from
     extended-hours minute bars.
@@ -540,7 +549,30 @@ def calculate_premarket_context(
     Args:
         times, open_, high, low, close, volume: aligned 1-min bar series
         prev_close:  prior-day close, used to compute gap_pct. None → no gap_pct.
-        atr14:       14-day ATR, used to normalise pre_range. None → no atr-norm.
+        atr:         the LAST COMPLETED session's ATR in the policy's basis
+                     (the level parameters' atr_basis), never the session
+                     being filtered. Drives the print filter and normalises
+                     pre_range. None → no filter, no atr-norm.
+        prev_open:   prior session's open, carried on the result for the
+                     excluded-print report (the 08:05 prints sit near it).
+        stale_print_atr, spike_atr: the ticker's calibrated
+                     pm_stale_print_atr and pm_spike_atr parameters
+                     (lib.strat_levels.LevelParams). Required; None when the
+                     parameter is not ok, and then no print is filtered.
+
+    Print filter (FEAT-STRAT-001), applied before pre_high, pre_low and
+    pre_vwap, only when the ATR and both thresholds are positive:
+      (a) a stale prior-close print: any one-minute open, high, low or close
+          equal to prev_close to the cent while that bar's open-close
+          midpoint is more than stale_print_atr x ATR away from prev_close;
+      (b) an isolated spike: a high (low) more than spike_atr x ATR beyond
+          its own bar's open-close body and beyond the bodies of the two bars
+          on each side.
+    Dropped values are counted in excluded_prior_close_prints and
+    excluded_spike_prints; both are None when the filter did not run
+    (``filtered`` False), never a 0 that reads as "nothing dropped". pre_vwap takes each bar's typical price as the
+    mean of its surviving high, low and close with the bar's full volume; a
+    bar with none of the three surviving adds neither price nor volume.
         premarket_start: extended-hours start (default 4:00 AM ET)
         market_open: regular-session open (default 9:30 AM ET)
 
@@ -558,6 +590,8 @@ def calculate_premarket_context(
         'pre_high': None, 'pre_low': None, 'pre_vwap': None,
         'pre_volume': None, 'pre_open': None, 'pre_close': None,
         'gap_pct': None, 'pre_range_atr': None, 'bar_count': 0,
+        'excluded_prior_close_prints': None, 'excluded_spike_prints': None,
+        'filtered': False, 'prev_open': prev_open,
     }
 
     if times is None or len(times) == 0:
@@ -576,22 +610,41 @@ def calculate_premarket_context(
     if not pre_mask.any():
         return out
 
-    pre_h = high[pre_mask]
-    pre_l = low[pre_mask]
-    pre_c = close[pre_mask]
-    pre_o = open_[pre_mask]
-    pre_v = volume[pre_mask]
+    pre_o = pd.to_numeric(open_[pre_mask], errors='coerce').astype(float).reset_index(drop=True)
+    pre_h = pd.to_numeric(high[pre_mask], errors='coerce').astype(float).reset_index(drop=True)
+    pre_l = pd.to_numeric(low[pre_mask], errors='coerce').astype(float).reset_index(drop=True)
+    pre_c = pd.to_numeric(close[pre_mask], errors='coerce').astype(float).reset_index(drop=True)
+    pre_v = pd.to_numeric(volume[pre_mask], errors='coerce').astype(float).reset_index(drop=True)
 
     out['bar_count'] = int(pre_mask.sum())
-    out['pre_high'] = float(pre_h.max()) if not pre_h.empty else None
-    out['pre_low']  = float(pre_l.min()) if not pre_l.empty else None
     out['pre_open'] = float(pre_o.iloc[0]) if not pre_o.empty else None
     out['pre_close'] = float(pre_c.iloc[-1]) if not pre_c.empty else None
 
-    # VWAP — typical price weighted by volume
-    typical = (pre_h + pre_l + pre_c) / 3.0
+    def _positive(x) -> bool:
+        return x is not None and x == x and x > 0
+
+    filt = premarket_print_filter(pre_o, pre_h, pre_l, pre_c, prev_close=prev_close, atr=atr,
+                                  stale_print_atr=stale_print_atr, spike_atr=spike_atr)
+    o, h, l, c = filt['open'], filt['high'], filt['low'], filt['close']
+    out['filtered'] = filt['filtered']
+    if filt['filtered']:
+        out['excluded_prior_close_prints'] = int(sum(m.sum() for m in filt['stale'].values()))
+        out['excluded_spike_prints'] = int(filt['spike']['high'].sum() + filt['spike']['low'].sum())
+
+    # A bar whose high (low) was dropped still traded its surviving body.
+    eff_h = h.fillna(pd.concat([o, c], axis=1).max(axis=1))
+    eff_l = l.fillna(pd.concat([o, c], axis=1).min(axis=1))
+    out['pre_high'] = float(eff_h.max()) if eff_h.notna().any() else None
+    out['pre_low'] = float(eff_l.min()) if eff_l.notna().any() else None
+
+    # VWAP: typical price = mean of the bar's SURVIVING high, low and close,
+    # weighted by the bar's full volume; a bar with none surviving drops from
+    # numerator and denominator alike.
+    typical = pd.concat([h, l, c], axis=1).mean(axis=1, skipna=True)
+    keep = typical.notna() & pre_v.notna()
+    if keep.any() and pre_v[keep].sum() > 0:
+        out['pre_vwap'] = float((typical[keep] * pre_v[keep]).sum() / pre_v[keep].sum())
     if pre_v.notna().any() and pre_v.sum() > 0:
-        out['pre_vwap'] = float((typical * pre_v).sum() / pre_v.sum())
         out['pre_volume'] = int(pre_v.fillna(0).sum())
 
     # Gap %: today's pre-market open vs yesterday's close
@@ -599,9 +652,62 @@ def calculate_premarket_context(
         out['gap_pct'] = round((out['pre_open'] / prev_close - 1) * 100, 4)
 
     # Pre-market range expansion vs ATR (regime tag)
-    if atr14 is not None and atr14 > 0 and out['pre_high'] is not None and out['pre_low'] is not None:
-        out['pre_range_atr'] = round((out['pre_high'] - out['pre_low']) / atr14, 4)
+    if _positive(atr) and out['pre_high'] is not None and out['pre_low'] is not None:
+        out['pre_range_atr'] = round((out['pre_high'] - out['pre_low']) / atr, 4)
 
+    return out
+
+
+def premarket_print_filter(
+    open_: pd.Series, high: pd.Series, low: pd.Series, close: pd.Series, *,
+    prev_close: Optional[float], atr: Optional[float],
+    stale_print_atr: Optional[float], spike_atr: Optional[float],
+) -> dict:
+    """The premarket print filter of calculate_premarket_context on aligned,
+    position-indexed one-minute premarket bars (rules (a) and (b) there).
+
+    Returns {'filtered', 'open', 'high', 'low', 'close', 'stale', 'spike'}:
+    the series with every dropped value set to NaN, and the masks of what
+    each rule dropped (stale: one mask per field; spike: 'high' and 'low').
+    With the ATR not positive, or either threshold missing, negative or not
+    finite, nothing is dropped and 'filtered' is False; a calibrated
+    threshold of zero is a valid value and runs its rule at zero distance. Calibration evidence (lib.level_calibration
+    premarket_drops) reads the masks, so the evidence is the production
+    rule's own."""
+    o, h, l, c = open_.copy(), high.copy(), low.copy(), close.copy()
+    none = pd.Series(False, index=o.index)
+    out = {'filtered': False, 'open': o, 'high': h, 'low': l, 'close': c,
+           'stale': {f: none.copy() for f in ('open', 'high', 'low', 'close')},
+           'spike': {'high': none.copy(), 'low': none.copy()}}
+
+    def _positive(x) -> bool:
+        return x is not None and x == x and x > 0
+
+    def _threshold(x) -> bool:
+        return x is not None and math.isfinite(float(x)) and float(x) >= 0
+
+    if not (_positive(atr) and _threshold(stale_print_atr) and _threshold(spike_atr)):
+        return out
+    out['filtered'] = True
+    if _positive(prev_close):
+        from lib.strat_levels import price_cents  # noqa: PLC0415
+        pc_c = price_cents(prev_close)
+        mid = (open_ + close) / 2
+        away = (mid - float(prev_close)).abs() > float(stale_print_atr) * float(atr)
+        for field, ser in (('open', o), ('high', h), ('low', l), ('close', c)):
+            echo = ser.map(lambda v: v == v and price_cents(v) == pc_c) & away
+            out['stale'][field] = echo
+            ser[echo] = np.nan
+    k = float(spike_atr) * float(atr)
+    body_hi = pd.concat([o, c], axis=1).max(axis=1)
+    body_lo = pd.concat([o, c], axis=1).min(axis=1)
+    nb_hi = pd.concat([body_hi.shift(s) for s in (-2, -1, 1, 2)], axis=1).max(axis=1)
+    nb_lo = pd.concat([body_lo.shift(s) for s in (-2, -1, 1, 2)], axis=1).min(axis=1)
+    spike_h = ((h - body_hi) > k) & ((h - nb_hi) > k)
+    spike_l = ((body_lo - l) > k) & ((nb_lo - l) > k)
+    out['spike'] = {'high': spike_h, 'low': spike_l}
+    h[spike_h] = np.nan
+    l[spike_l] = np.nan
     return out
 
 
@@ -1181,6 +1287,29 @@ def _add_price_levels(out, ind, close_col):
     return out
 
 
+def _add_prev_session_level_breaks(out, ind, close_col):
+    """Broke_Prev_Day_High / Broke_Prev_Day_Low: a bar's close above the
+    previous session's high / below its low, the calculate_historical_levels
+    definition. check_call_conditions / check_put_conditions score
+    `level_break_pdh` / `level_break_pdl` from these. Each row reads only its
+    own session and the one before it, so a replay cut at a date sees the
+    same flags it would have seen live.
+
+    Sessions come from the Time column, else a DatetimeIndex; a frame with
+    neither gets no flags (the same Time gate as VWAP and ORB).
+    """
+    if 'Time' in out.columns:
+        times = out['Time']
+    elif isinstance(out.index, pd.DatetimeIndex):
+        times = pd.Series(out.index, index=out.index)
+    else:
+        return out
+    levels = calculate_historical_levels(times, out['High'], out['Low'], out['Open'], out[close_col])
+    out['Broke_Prev_Day_High'] = levels['Broke_Prev_Day_High']
+    out['Broke_Prev_Day_Low'] = levels['Broke_Prev_Day_Low']
+    return out
+
+
 def _add_orb(out, ind, close_col):
     """Opening Range Breakout columns (~39). Deps: High, Low, close_col, Time.
 
@@ -1545,7 +1674,9 @@ def add_brief_indicators(
     """Lean indicator set for the premarket brief.
 
     Runs the blocks the brief reads: ATR, RSI, EMAs, SMAs, VWAP, StochRSI,
-    Bollinger, MACD, consecutive moves, and price levels. The price-levels block
+    Bollinger, MACD, consecutive moves, price levels, and the previous-session
+    level breaks (Broke_Prev_Day_High / Broke_Prev_Day_Low, which the brief's
+    level_break_pdh / level_break_pdl conditions read). The price-levels block
     is required because the brief's check_call/put_conditions score on
     ``Price_vs_VWAP``; VWAP must run first so that distance is computed (and, on
     Cloud-SQL daily frames carrying a pre-existing ``price_vs_vwap`` column, the
@@ -1566,6 +1697,7 @@ def add_brief_indicators(
     out = _add_macd(out, ind, close_col)
     out = _add_consecutive(out, ind, close_col)
     out = _add_price_levels(out, ind, close_col)
+    out = _add_prev_session_level_breaks(out, ind, close_col)
     return out
 
 

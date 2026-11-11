@@ -437,7 +437,7 @@
   {
    "job": "`fetch-earnings-calendar`",
    "scheduler": "`daily-earnings-refresh-calendar` · `weekly-earnings-refresh-calendar`",
-   "why_it_is_not_model_bearing": "Earnings dates → `earnings_calendar`. Ingest. (The verdict columns on the same table come from `evaluate-ew-strikes-daily`, which is listed above)"
+   "why_it_is_not_model_bearing": "Inputs only — earnings dates → `earnings_calendar`. Ingest. It computes no score, label or threshold, which a reader can re-check: `grep -n \"score_quintile|recommended_structure|playability\" scripts/fetch_earnings_calendar.py` returns nothing. Any import of `lib.earnings_reactions` it makes is for the retired-source predicate `EARNINGS_NOT_RETIRED_SQL` on its own `earnings_calendar` read, not for any score. (The verdict columns on the same table come from `evaluate-ew-strikes-daily`, which is listed above)"
   },
   {
    "job": "`fetch-earnings-history`",
@@ -447,7 +447,7 @@
   {
    "job": "`compute-earnings-reactions`",
    "scheduler": "`daily-earnings-refresh-reactions` · `weekly-earnings-refresh-reactions`",
-   "why_it_is_not_model_bearing": "Derives post-earnings move statistics into `earnings_reactions`. Descriptive statistics over history, not a call on any position; MODEL-EARN-001 is the model that reads them"
+   "why_it_is_not_model_bearing": "Inputs only — derives post-event statistics and source/maturity evidence into existing `earnings_reactions`; no upcoming position decision. Its `lib.earnings_reactions` imports reach clock/calendar, price-basis/native-input qualification and sampled daily closing descriptors, not playability, lean, classifier or recommendation calls. Reproduce with the actual producer import/call sites and `tests/gcp/test_compute_earnings_reactions.py::test_native_pre10_prefix_is_qualified_by_actual_producer_not_short_path`; the separate brief is the native classifier consumer; MODEL-EARN-001 is the model that reads them. No original-PIT or forecast claim"
   },
   {
    "job": "`fetch-economic-events`",
@@ -2623,8 +2623,8 @@
   }
  ],
  "sources": {
-  "docs/EXPERIMENT_REGISTRY.md": "928c447f336fc10a2a08d2e69b5e1ec5c1eddb7c",
-  "docs/product/07-MODEL-REGISTRY.md": "d8f23bc5a258f5b6408e3f70816f8139dce9a25e",
+  "docs/EXPERIMENT_REGISTRY.md": "9752340744b8580d57910eadb6df84c536081b42",
+  "docs/product/07-MODEL-REGISTRY.md": "5d17bccdc83c1a70ddf8f81d1d7d8f6d41aee708",
   "scripts/gate/export_model_registry.py": "74e5fdc5bb2e7bf11894b3de2601c4dc8428122d"
  },
  "tables": [

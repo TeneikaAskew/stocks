@@ -57,6 +57,7 @@ from gcp.database import (  # noqa: E402
     is_cloud_sql_configured,
     query_to_dataframe_strict,
 )
+from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL  # noqa: E402
 from lib.logging_config import setup_logging  # noqa: E402
 
 setup_logging()
@@ -118,9 +119,10 @@ def _query_watchlist(days_ahead: int, min_prior_wins: int = 2) -> "pd.DataFrame"
     Returns DataFrame with one row per (ticker, earnings_date) — duplicates
     from competing earnings_calendar data sources are collapsed via
     GROUP BY. Sorted by prior_wins DESC then best_prior_pnl DESC so the
-    most-established names lead.
+    most-established names lead. Retired EarningsWhispers rows are excluded
+    inside the ``upcoming`` CTE, so they cannot win its MIN/MAX.
     """
-    sql = """
+    sql = f"""
         WITH long_wins AS (
             SELECT ticker,
                    structure,
@@ -149,6 +151,7 @@ def _query_watchlist(days_ahead: int, min_prior_wins: int = 2) -> "pd.DataFrame"
             FROM earnings_calendar
             WHERE earnings_date BETWEEN CURRENT_DATE
                                     AND CURRENT_DATE + (:days_ahead)::int
+              AND {EARNINGS_NOT_RETIRED_SQL}
             GROUP BY ticker
         )
         SELECT u.ticker,
