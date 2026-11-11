@@ -46,11 +46,11 @@ Interfaces: consume lib.earnings_reactions.EARNINGS_NOT_RETIRED_SQL and tests.fi
 
 ## Task 2: Bound source identity and unchanged governance tests
 Spec: done_when[3], Source identity and close-out pre-merge steps 1-4.
-- [ ] Read producer preflight source hash and update only approved own SITE implementation-source rows, retaining earlier own prose.
-- [ ] Commit final SITE body; produce and commit docs/review-evidence/site-source-snapshot.json from committed HEAD.
-- [ ] Verify with --max-seconds 5 --max-input-bytes 12582912 --max-entries 20000.
-- [ ] Prove registry blob/mode/type equals current main and all foreign SITE bytes unchanged.
-- [ ] Run matched main/head docs_audit.py; require no new findings.
+- [x] Read producer preflight source hash and update only approved own SITE implementation-source rows, retaining earlier own prose.
+- [x] Commit final SITE body; produce and commit docs/review-evidence/site-source-snapshot.json from committed HEAD.
+- [x] Verify with --max-seconds 5 --max-input-bytes 12582912 --max-entries 20000.
+- [x] Prove registry blob/mode/type equals current main and all foreign SITE bytes unchanged.
+- [x] Run matched main/head docs_audit.py; require no new findings.
 - [ ] Run unchanged tests/scripts/test_doc_source_snapshot.py and tests/scripts/test_docs_audit.py (expect PASS).
 
 ## Task 3: Normal Draft publication
@@ -66,3 +66,7 @@ Spec: Source identity and close-out post-merge obligations.
 - [ ] Obtain real job/service deployment evidence named by the spec; do not infer it from source tests or sidecar.
 - [ ] Retire sidecar only through ordinary trunk --stamp --verify or fixed trunk-closeout-pending protocol.
 - [ ] Set this plan status to done on a separate docs branch after merge.
+
+## Local evidence checkpoint
+
+Source/test review: fresh local reviewer, first source review, no findings. This is not hosted current-head review. Focused reader tests passed (75). Committed identity verifier passed with the fixed ceilings; matched main/head audit has zero new findings. Unchanged governance suites are still being qualified against exact main. Initial concurrent identity verification timed out; sequential retries passed without changing the ceiling or source. No merge or production action.
