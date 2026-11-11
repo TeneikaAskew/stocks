@@ -8,8 +8,9 @@ Data sources (all in Cloud SQL):
   - earnings_options_strategy_winners  (top-10 named winners)
   - earnings_calibration                (the live calibration row)
 
-All endpoints return a 5-table JOIN's worth of data in <10ms by reading
-from the pre-computed mat views instead of joining on every request.
+Endpoints read pre-computed history rather than rebuilding it per request.
+The upcoming route also checks that each event still has a non-retired calendar
+source, so historical snapshots cannot resurrect retired-only events.
 
 HTTP `Cache-Control` headers are set per endpoint based on how often the
 underlying data actually changes. Repeat visits within TTL hit the
@@ -31,6 +32,8 @@ from fastapi import APIRouter, HTTPException, Query, Response
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL  # noqa: E402
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -113,22 +116,37 @@ def upcoming(
     """Next N days of earnings reporters, decorated with full history.
 
     Reads earnings_upcoming_with_history (refreshed daily 7:30am ET).
-    Each row carries: archetype, confidence_label, BOTH recommendation
-    modes (long-only + IC), lean stats, and last_3_events JSONB.
+    Each row carries archetype, lean stats and last_3_events JSONB; score,
+    quintile, confidence and both recommendation modes are null (EW retired).
     """
     _set_cache(response, 300)  # 5 min
     df = _query_or_503(
-        """
-        SELECT * FROM earnings_upcoming_with_history
-        WHERE refresh_date = (
+        f"""
+        SELECT snapshot.* FROM earnings_upcoming_with_history snapshot
+        WHERE snapshot.refresh_date = (
             SELECT MAX(refresh_date) FROM earnings_upcoming_with_history
         )
-          AND earnings_date BETWEEN CURRENT_DATE AND CURRENT_DATE + (:days)::int
-        ORDER BY earnings_date, ticker
+          AND snapshot.earnings_date BETWEEN CURRENT_DATE AND CURRENT_DATE + (:days)::int
+          AND EXISTS (
+              SELECT 1 FROM earnings_calendar calendar
+              WHERE calendar.ticker = snapshot.ticker
+                AND calendar.earnings_date = snapshot.earnings_date
+                AND {EARNINGS_NOT_RETIRED_SQL}
+          )
+        ORDER BY snapshot.earnings_date, snapshot.ticker
         """,
         {'days': days},
     )
-    return {'rows': _df_to_records(df), 'count': 0 if df is None else len(df)}
+    # An empty daily replacement leaves historical partitions intact. Do not
+    # resurrect an EW-only event when MAX(refresh_date) selects such a partition.
+    # Retired scores also remain unavailable on retained, pre-retirement rows;
+    # this changes only the response, never the stored audit/history snapshot.
+    rows = _df_to_records(df)
+    for row in rows:
+        for field in ('playability_score', 'quintile', 'confidence_label',
+                      'recommended_structure_long_only', 'recommended_structure_ic_mode'):
+            row[field] = None
+    return {'rows': rows, 'count': len(rows)}
 
 
 # ╭─────────────────────────────────────────────────────────────────────╮
@@ -326,9 +344,9 @@ def health_ping(response: Response):
     """Lightweight warm-up probe. NOT called by a scheduler.
 
     The keep-warm Cloud Scheduler was dropped (gcp/deploy.sh, "Platform
-    keep-warm — DROPPED"): solyra-api-prod sits behind IAP, so an
-    unauthenticated GET is rejected at IAP and never reaches the app. The
-    endpoint is kept for manual and in-cluster warm-up.
+    keep-warm — DROPPED") while the API sat behind IAP, where an
+    unauthenticated GET was rejected at the edge and never reached the app.
+    The endpoint is kept for manual and in-cluster warm-up.
 
     Returns 200 + a 1-statement Cloud SQL query so the Cloud SQL
     connector (and the FastAPI worker) stay hot during business hours.

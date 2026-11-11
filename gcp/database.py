@@ -1046,6 +1046,7 @@ DAILY_INDICATOR_TO_SQL_COLUMN: dict[str, str] = {
     'RSI9':           'rsi_9',
     'RSI30':          'rsi_30',
     'ATR14':          'atr_14',
+    'ATR5':           'atr_5',
     'ATR20':          'atr_20',
     'EMA9':           'ema_9',
     'EMA20':          'ema_20',

@@ -1,6 +1,6 @@
 # Backend and API Product Plan
 
-**Last reviewed:** 2026-08-31 · **Last scanned:** 2026-10-20 · **Owner:** TBD
+**Last reviewed:** 2026-08-31 · **Last scanned:** 2026-11-03 · **Owner:** TBD
 
 **VERIFIED — CODE.** Extracted from FastAPI decorators in `platform/api` using Python AST parsing of all `@router|@app.<method>(...)` calls, including decorators whose path is declared on a later line. The inventory also inspects the enclosing handler, docstring, and SQL identifiers. **101 platform API endpoints** resolved this way; the Discord service contributes 2 additional HTTP endpoints.
 
@@ -31,7 +31,7 @@ Auth is **global ASGI middleware**, not a per-handler dependency — see
 | Capability | Entry points | Trigger | Data | Target gap |
 |---|---|---|---|---|
 | Platform API | `platform/api/main.py` + 20 routers | HTTPS | Cloud SQL via `lib/data_loader.py`, GCS | consistent contracts, ownership, telemetry |
-| Ingestion / analysis jobs | 76 Cloud Run jobs live (67 declared in `gcp/**`) | Cloud Scheduler (65 live) / manual | vendors → SQL/artifacts | idempotency, freshness, provenance, and 8 undeclared jobs — see [05](05-INFRASTRUCTURE.md) |
+| Ingestion / analysis jobs | 76 Cloud Run jobs live (67 declared in `gcp/**`) | Cloud Scheduler (66 live) / manual | vendors → SQL/artifacts | idempotency, freshness, provenance, and 8 undeclared jobs — see [05](05-INFRASTRUCTURE.md) |
 | Discord interactions | `gcp/discord_interactions/main.py` | Discord HTTPS | interaction validation | secrets via env not Secret Manager ([#830](https://github.com/TeneikaAskew/stocks/issues/830)) |
 
 ## Endpoint inventory

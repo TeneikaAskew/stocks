@@ -22,7 +22,7 @@ document live under `docs/` and each one fails differently:
 
 | Class | Meaning | What the audit does |
 |---|---|---|
-| **A** | **Machine-owned.** A job regenerates it (the monthly refresh, `doc_inventory.py`). | Audits it, writes nothing into it, and **routes** the fix. Also checks the owning job actually **delivered** — see below. |
+| **A** | **Machine-owned.** A renderer regenerates the region (`doc_inventory.py`, `refresh_calibration_table.py`, `refresh_architecture_drawio.py`, the registry exporter). | Audits it, writes nothing into it, and **routes** the fix. |
 | **B** | **Frozen.** A deliberate hand-maintained snapshot. | Nothing. Never read as current, never written. |
 | **X** | **Out of scope.** Agent and command instructions, templates. Not product documentation. | Nothing. Distinct from unclassified, which means the registry has a gap. |
 | **C** | **Dated record.** An audit, incident, changelog, research write-up or design record whose whole purpose is to state what was true on its date. | Read for cross-references only. **Never re-dated, never rewritten** — rewriting a dated record destroys the record. May receive an *appended*, dated status block. |
@@ -32,15 +32,15 @@ document live under `docs/` and each one fails differently:
 
 An owning job existing is not evidence the doc is current. On 2026-09-16 the
 September refresh PR (#1060) had been open and unmerged for 8 days, three
-earlier "Monthly architecture doc refresh failed" PRs (#963, #1012, #1021) were
+earlier refresh-failure PRs (#963, #1012, #1021) were
 closed without merging, and the workflow had failed five consecutive runs on
 2026-09-09 — while `05-a`/`05-c` still advertised `Generated 2026-09-07`. A
 `Generated` stamp records when a job *ran*, not that its output ever landed.
 
-And a job that succeeds still proves nothing about truth: the refresh
-regenerates counts from live GCP and has a model rewrite prose **in place**,
-while `check_generated_docs.py` gates churn, headings, links and marker-block
-byte-equality. None of that reads the code. Class A prose gets the same scrutiny
+And a job that succeeded still proved nothing about truth: the refresh
+regenerated counts from live GCP and had a model rewrite prose **in place**,
+while `check_generated_docs.py` gated churn, headings, links and marker-block
+byte-equality. None of that read the code. Class A prose gets the same scrutiny
 as Class D; only the write path differs.
 
 ### Class A is a property of a region, not of a file
@@ -59,13 +59,14 @@ by the `Generated regions` column below:
 | `05-d-COST_ANALYSIS.md` | 107 | 0 | 107 | 0 |
 
 The repository already said so and nothing acted on it. `README.md`, in the
-table of what the refresh writes:
+table of what the refresh wrote:
 "badges and the closing date rendered from the live inventory; **the prose and
 the documentation map are hand-written and no model touches them**".
-`refresh-architecture-docs.yml`, in its `Freeze gate inputs` step:
+`refresh-architecture-docs.yml`, whose retirement the owner decided on 2026-11-10,
+in its `Freeze gate inputs` step:
 "`05-e-API.md` and `INVESTMENT_MODELS_SUMMARY.md` are deterministic too: **NO
-prompt writes either**" — they enter the run only as frozen copies so the
-stray-write scan can catch a model touching them. And
+prompt writes either**" — they entered the run only as frozen copies so the
+stray-write scan could catch a model touching them. And
 `scripts/refresh_calibration_table.py`, whose `BEGIN_MARK` replaces exactly one
 marked table inside a file merged by hand on 2026-06-10.
 
@@ -102,16 +103,7 @@ Route a Class A fix by the region it is in, never by the filename:
 | Region | Fix goes to | Writable in a freshness PR? |
 |---|---|---|
 | Rendered (`inventory:*`, `mark:`, `line:`, `all`) | the renderer script + its tests (`doc_inventory.py`, `refresh_calibration_table.py`, `refresh_architecture_drawio.py`) | **No** — byte-equality gate |
-| Model prose (`prose:`) | `.github/prompts/{architecture,data-dependencies,cost-analysis}.md`, so the next refresh stops reproducing it | **No** — a separate Class-A-only PR if it cannot wait |
 | Unowned (the complement) | the document itself | **Yes** |
-| Job ran but its PR never merged | Land the PR. Never hand-stamp a `Generated` footer. | n/a |
-
-Never edit inside a generated region and never bump a `Generated <date>` footer:
-that is the job's signature, not a review marker. The stray-write scan that
-refuses edits outside `05-a 05-c 05-d` runs **inside the refresh workflow**,
-against a snapshot frozen before Gemini starts
-(`refresh-architecture-docs.yml`, its `Freeze gate inputs` step); it constrains
-the model during a refresh, not a contributor fixing prose no prompt writes.
 
 Stamping these files is safe, and that was checked rather than assumed. The
 load-bearing case is `README.md`, whose H1 sits above a rendered badge block:
@@ -161,12 +153,12 @@ point: somebody decides its class rather than inheriting a directory's.
 
 | Class | Path glob | Declared code paths | Generated regions |
 |---|---|---|---|
-| A | README.md | gcp/deploy.sh, gcp/schema.sql | line:img\.shields\.io; line:^Generated \d{4}-\d{2}-\d{2} by the monthly |
+| A | README.md | gcp/deploy.sh, gcp/schema.sql | line:img\.shields\.io; line:^Generated \d{4}-\d{2}-\d{2}\b |
 | A | Architecture.drawio | gcp/deploy.sh | all |
 | A | Architecture-icons.drawio | gcp/deploy.sh | all |
-| A | docs/product/infrastructure/05-a-ARCHITECTURE.md | gcp/deploy.sh, gcp/schema.sql, platform/api | inventory:*; inventory:tables; inventory:dbtables; inventory:jobs; inventory:services; inventory:routes; inventory:schedulers; inventory:reconcile; inventory:modules; prose:.github/prompts/architecture.md |
-| A | docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md | gcp/schema.sql, gcp/fetchers | inventory:*; inventory:tables; inventory:dbtables; inventory:writes; inventory:reads; inventory:multiwriter; inventory:orphans; inventory:blast; inventory:graph; prose:.github/prompts/data-dependencies.md |
-| A | docs/product/infrastructure/05-d-COST_ANALYSIS.md | gcp/deploy.sh | prose:.github/prompts/cost-analysis.md |
+| A | docs/product/infrastructure/05-a-ARCHITECTURE.md | gcp/deploy.sh, gcp/schema.sql, platform/api | inventory:*; inventory:tables; inventory:dbtables; inventory:jobs; inventory:services; inventory:routes; inventory:schedulers; inventory:reconcile; inventory:modules |
+| A | docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md | gcp/schema.sql, gcp/fetchers | inventory:*; inventory:tables; inventory:dbtables; inventory:writes; inventory:reads; inventory:multiwriter; inventory:orphans; inventory:blast; inventory:graph |
+| C | docs/product/infrastructure/05-d-COST_ANALYSIS.md | | |
 | A | docs/product/infrastructure/05-e-API.md | platform/api | inventory:*; inventory:routers; inventory:routes |
 | A | docs/INVESTMENT_MODELS_SUMMARY.md | lib/strategies | mark:ticker_calibration_resolved_values |
 | A | docs/product/generated/model-registry.json | docs/product/07-MODEL-REGISTRY.md, docs/EXPERIMENT_REGISTRY.md, scripts/gate/export_model_registry.py | all |
@@ -276,7 +268,7 @@ point: somebody decides its class rather than inheriting a directory's.
 | D | docs/FEATURE_ADOPTION_ROADMAP.md | |  |
 | D | docs/HARDCODED_VALUES_REMEDIATION.md | lib |  |
 | D | .github/workflows/README.md | .github/workflows |  |
-| D | .github/prompts/*.md | scripts/maintenance/doc_inventory.py |  |
+| X | .github/*.md | | |
 | D | platform/GCP_DATA_DICTIONARY.md | platform/api |  |
 | D | platform/PLATFORM_PLAN.md | platform/api |  |
 | D | gcp/cloudbuild/README.md | gcp/cloudbuild |  |
