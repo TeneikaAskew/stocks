@@ -7,6 +7,7 @@ done_when:
   - "tests/gcp/test_signal_monitor_gate_record.py proves the persisted signal_alerts row carries gate_action, gate_reason, insight_direction, insight_conviction and insight_regime for each direction-gate outcome that fires (pass, downgrade, tag, annotate), with and without an insight row."
   - "The same suite proves no stale decision leaks: a fire for one ticker after another ticker's gate decision records its own decision; with INSIGHT_GATE_MODE=disabled all gate and insight columns are NULL; when the gate raises, the columns are NULL and the fire proceeds unchanged."
   - "The same suite proves shadow mode records the decision it would have applied, with gate_reason prefixed 'shadow:', while the fire's strength and firing are unchanged."
+  - "The same suite proves that an insight whose direction, conviction or regime is longer than its column (VARCHAR(8), VARCHAR(8), VARCHAR(20)) is persisted truncated to that width with one warning log line, and the signal_alerts row is still written."
   - "The same suite proves thesis_invalidated is persisted as NULL when the insight carries no invalidation level, never a fabricated FALSE."
   - "Every existing tests/gcp/test_signal_monitor*.py and tests/scripts/test_replay_signal_monitor.py test passes unchanged, showing no fire, score, strength or delivery decision changed."
   - "02-FEATURE-CATALOG FEAT-SIGNAL-001 record and 12-PR-ISSUE-TRACEABILITY carry this PR; docs audit shows no new finding versus main and spec_gate --pr passes."
