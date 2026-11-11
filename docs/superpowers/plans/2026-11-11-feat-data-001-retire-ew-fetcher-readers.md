@@ -113,3 +113,11 @@ source identity and local tests do not certify deployed removal or data recovery
 No schema/data/secret/calendar/evaluator changes or production action occur here.
 
 First implementation review covered87409f21..ac48d9b0, noP0/P1/runtime findings. TwoP3description/receipt corrections: market fetcher docstring/comment/CLIhelp now describe retained-source eligibility; market_eligible fixture size is2844bytes with its twoNULLstock-volume controls. No SQL changes in this correction. Exact full-file reversal proof above describes pre-correction source d949df4d; subsequent differences are only these descriptions. Prior review accounting is retained; no extra local judgment review is dispatched.
+
+## Owner notice and current-main reconciliation
+
+At2026-11-11T18:55UTC the coordinator reported delivering the required overlap notices directly to verified PR author Teneika Askew in ChatGPT: #1430 four shared fetchers with typed-source-error preservation; #1643 news filtering with warning/exception/return preservation; later merger reconciles actual main and regenerates identity. This author did not contact an external agent or claim an agent acknowledgment. The specification requires notice before push, not recipient acceptance.
+
+Current source base522c20366fefc5afbc5804785a0d7344b83709e7 includes merged#1820 ingest explanations and preserves incoming#1814/#1569/#1790/#1799. Fresh82reader/model tests pass5.32s; source proof passes unchanged fixedlimits; main/branch audits have zero new findings; Draftgate passes. Fetcher/test/timezone bytes equal026c938a, retaining prior270-test receipt as historical unchanged-byte coverage.
+
+Shared-file handoff remains with coordinator and active internal#1800/#1801 reader lane: no runtime overlap; serialize catalog/lineage/SITE/generated05-c/timezone/sidecar merges, preserve each lane own records, and regenerate from actual main. Draft publication does not authorize simultaneous main merges.
