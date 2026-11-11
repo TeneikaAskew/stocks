@@ -74,7 +74,11 @@ def load_daily(d: str, t: str) -> pd.DataFrame:
     df.index.name = None
     out = df.rename(columns={"open": "Open", "high": "High", "low": "Low",
                              "close": "Close", "volume": "Volume"})
-    return out[["Open", "High", "Low", "Close", "Volume"]].astype(float)
+    out = out[["Open", "High", "Low", "Close", "Volume"]].astype(float)
+    # lib.data_loader.load_daily carries Time, and lib.indicators adds VWAP
+    # (so Price_vs_VWAP, the scorers' fifth factor) only when Time is present.
+    out["Time"] = out.index
+    return out
 
 
 # The live calibrate-thresholds job runs at 02:00 ET on the run date
