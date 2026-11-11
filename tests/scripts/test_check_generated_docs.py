@@ -1536,11 +1536,11 @@ def test_a_quote_under_a_section_heading_is_not_the_header_note(tmp_path, live):
 
 
 def test_the_provenance_citations_carry_file_line_links(tmp_path):
-    """`.github/prompts/architecture.md:74` requires every claim about code to
-    carry a `file:line` markdown link, and I wrote the creation-path inventory
-    with bare code spans — a document breaking the rule its own prompt states,
-    which the next refresh would read as an example. `gate_links` cannot see the
-    omission because it only validates links that exist. (Codex, PR #1064.)"""
+    """Every claim about code in the architecture document carries a
+    `file:line` markdown link. The creation-path inventory was once written
+    with bare code spans, a document breaking its own rule. `gate_links` cannot
+    see the omission because it only validates links that exist.
+    (Codex, PR #1064.)"""
     body = (REPO / gate.ARCH).read_text()
     for path, line in (("gcp/research/p2_build_gamma_levels.py", 81),
                        ("gcp/research/p2_outcomes_grid.py", 72),
@@ -2123,3 +2123,81 @@ def test_marker_names_agree_between_module_docs_and_gate():
     for name in ("routers", "routes"):
         assert inv.MARKER_START.format(name=name) in api, name
     assert set(gate.MARKER_DOCS) == {gate.ARCH, gate.DEPS, gate.API}
+
+
+# --- final-review fixes: SETUP anchors, manual/ link guard, kept helpers ----
+
+
+def test_every_link_into_setup_resolves_to_an_anchor_setup_defines():
+    """05-a links `SETUP.md#3-grant-the-iam-roles`; the roles section was
+    renumbered to 2, so the link was dead until the old id was kept as an
+    explicit anchor. Every relative link into SETUP.md from the docs and the
+    README must land on a heading slug or an explicit `id=` it defines."""
+    from scripts.maintenance import docs_audit as audit
+
+    anchors = audit.heading_anchors((REPO / "SETUP.md").read_text())
+    skipped = ("docs/product/infrastructure/manual/", "docs/audit/",
+               "docs/audits/", "docs/superpowers/")
+    sources = [REPO / "README.md"] + sorted((REPO / "docs").rglob("*.md"))
+    link = re.compile(r"\]\(([^)\s]*SETUP\.md)#([^)\s]+)\)")
+    dead = []
+    for src in sources:
+        rel = src.relative_to(REPO).as_posix()
+        if rel.startswith(skipped):
+            continue
+        for m in link.finditer(src.read_text()):
+            if (src.parent / m.group(1)).resolve() != (REPO / "SETUP.md"):
+                continue
+            if m.group(2) not in anchors:
+                dead.append((rel, m.group(2)))
+    assert not dead, dead
+
+
+# These three links point at the workflow retired on 2026-11-10. The copies
+# under manual/ are frozen 2026-09-08 snapshots and are not edited, so the
+# links stay dead on purpose; any other dead link there is a real defect.
+_MANUAL_RETIRED_WORKFLOW_LINKS = {
+    ("05-a-ARCHITECTURE.md",
+     "../../../../.github/workflows/refresh-architecture-docs.yml"): 2,
+    ("ROOT-README.md",
+     "../../../../.github/workflows/refresh-architecture-docs.yml"): 1,
+}
+
+
+def test_the_hand_maintained_copies_exist_and_link_correctly():
+    manual = REPO / "docs/product/infrastructure/manual"
+    for doc in ("05-a-ARCHITECTURE.md", "05-c-DATA_DEPENDENCIES.md",
+                "05-d-COST_ANALYSIS.md", "ROOT-README.md", "README.md"):
+        assert (manual / doc).exists(), doc
+    seen: dict[tuple[str, str], int] = {}
+    dead = []
+    for f in sorted(manual.glob("*.md")):
+        for m in re.finditer(r"\]\(([^)\s#`]+)", f.read_text()):
+            target = m.group(1)
+            if target.startswith(("http", "mailto:")):
+                continue
+            if (f.parent / target).resolve().exists():
+                continue
+            key = (f.name, target)
+            seen[key] = seen.get(key, 0) + 1
+            dead.append(key)
+    unexpected = [k for k in dead if k not in _MANUAL_RETIRED_WORKFLOW_LINKS]
+    assert not unexpected, unexpected
+    assert seen == _MANUAL_RETIRED_WORKFLOW_LINKS, (
+        "an allowlisted dead link no longer occurs (or occurs a different "
+        "number of times): trim the allowlist", seen)
+
+
+def test_a_delimiter_row_needs_hyphens_in_every_cell():
+    """`: | :` and `| | |` satisfy a character class while containing no
+    hyphen. A delimiter cell is `-`, `:-`, `-:` or `:-:`."""
+    for good in ("--- | ---", ":--- | ---:", "|---|---|", "-|-", "| :-: |"):
+        assert gate._is_table_sep(good), good
+    for bad in (": | :", "| | |", "a | b", "   |   ", ""):
+        assert not gate._is_table_sep(bad), bad
+
+
+def test_an_escaped_pipe_is_content_not_a_column():
+    r"""`\|` inside a cell is a literal pipe; splitting on it invented a
+    column and changed the row's width."""
+    assert gate._table_cells(r"| a \| b | 222.71 |") == ["a | b", "222.71"]

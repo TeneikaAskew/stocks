@@ -32,9 +32,10 @@ echo "SA_EMAIL=${SA_EMAIL}"   # save this, you'll need it as a GitHub secret
 
 ---
 
+<a id="3-grant-the-iam-roles"></a>
 ## 2. Grant the read-only roles
 
-`verify-docs-against-live.yml` reads Cloud Run, Cloud Scheduler, Cloud Build, Cloud SQL, Secret Manager, Pub/Sub, Logging, Cloud Tasks and Artifact Registry through `scripts/maintenance/doc_inventory.py`, so the identity needs viewer roles on each. The loop is idempotent; re-run it whenever the service account is rebuilt:
+`verify-docs-against-live.yml` runs `scripts/verify_docs_against_live.py`, whose `read_live` calls `gcloud` for Cloud Scheduler jobs, Cloud Run jobs, Cloud Run services and domain mappings, Secret Manager secrets and Cloud Tasks queues, and nothing else, so the verifier needs `roles/run.viewer`, `roles/cloudscheduler.viewer`, `roles/secretmanager.viewer` and `roles/cloudtasks.viewer`. The loop's other roles and the trading-data bucket binding were granted for the retired refresh's live snapshot (2026-09-07). No remaining workflow reads with them, but `deploy-staging.yml`'s own role list was proven on top of this loop, so whether the deploy needs any of them is not checked; revoking any is the owner's step. The loop is idempotent; re-run it whenever the service account is rebuilt:
 
 ```bash
 for ROLE in roles/run.viewer roles/cloudscheduler.viewer roles/cloudbuild.builds.viewer \

@@ -46,7 +46,7 @@ The monthly refresh of the generated documents was retired on 2026-11-10, and no
 
    `python -m scripts.maintenance.doc_inventory --snapshot tests/fixtures/live_gcp_snapshot_2026-09-07.json --insert docs/product/infrastructure/05-a-ARCHITECTURE.md docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md docs/product/infrastructure/05-e-API.md`
 
-2. Run the tests that compare the committed diagrams and generated blocks with that snapshot:
+2. Run the tests that compare the committed diagrams and generated blocks, each against the snapshot its test names:
 
    `python -m pytest tests/scripts/test_check_generated_docs.py tests/scripts/test_refresh_architecture_drawio.py -k committed`
 
