@@ -89,3 +89,32 @@ def with_triggers(*, long: float | None = None, short: float | None = None,
     sl.long = _side("PDH", "long", long, long_stop)
     sl.short = _side("PDL", "short", short, short_stop)
     return sl
+
+
+# ── Exits in thirds spec, Design 8: the golden fixture ─────────────────
+
+D8_LEVELS = {'PDH': 253.00, 'PMH': 275.00, 'PQH': 280.00, 'PYH': 285.00,
+             'PDL': 247.50, 'PDC': 247.00, 'PML': 225.00, 'PQL': 220.00, 'PYL': 215.00}
+D8_PREMARKET = {'pre_high': 252.10, 'pre_low': 248.20, 'pre_vwap': 250.00}
+
+
+def d8_params(*, window=2.6, spacing=0.25, statuses=None, **overrides):
+    """The Design 8 ticker's LevelParams: both windows `window`, the spacing
+    `spacing`, every other key ok; `statuses` marks keys not ok."""
+    return fixture_params('TST', overrides={'trigger_window_long_atr': window,
+                                            'trigger_window_short_atr': window,
+                                            'target_min_spacing_atr': spacing, **overrides},
+                          statuses=statuses)
+
+
+def d8_basis(levels=None, *, atr=14.0, params=None, **kw) -> dict:
+    """The Design 8 level_basis: reference 250.00 (the premarket VWAP),
+    premarket 252.10 / 248.20, prior close 247.00, ATR(14) 14.00."""
+    return basis(levels or D8_LEVELS, prior_close=247.00, atr=atr, premarket=D8_PREMARKET,
+                 params=params if params is not None else d8_params(**kw))
+
+
+def d8_session(levels=None, **kw) -> SessionLevels:
+    """The Design 8 fixture through SessionLevels.from_basis, the path every
+    live consumer uses."""
+    return SessionLevels.from_basis(d8_basis(levels, **kw))

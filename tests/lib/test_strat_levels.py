@@ -19,6 +19,7 @@ from lib.strat_levels import (
 )
 from lib.strat_levels import build_level_map as _build_level_map
 from tests.lib.level_params_fixtures import fixture_params
+from tests.lib.session_levels_helpers import D8_LEVELS, d8_session
 
 
 def build_level_map(ticker, df, price, *args, atr=None, **kw):
@@ -1011,3 +1012,151 @@ class TestDailyDataFreshness:
         finally:
             monkeypatch.undo()
             eastern_time._reset_session_cache()
+
+
+# ─── Exits in thirds (docs/superpowers/specs/2026-11-11-feat-strat-001-brief-exits-in-thirds.md)
+
+
+def _prices(rungs):
+    return [round(r['price'], 2) for r in rungs]
+
+
+class TestTargetSpacing:
+    """Design 1: a target is at least target_min_spacing_atr x ATR past the
+    trigger or the target before it; the gating targets keep origin/main's
+    meaning."""
+
+    def test_design_8_fixture(self):
+        sl = d8_session()
+        assert (sl.long.trigger['name'], sl.long.trigger['price']) == ('PMK_H', 252.10)
+        assert _prices(sl.long.targets) == [275.00, 280.00, 285.00]
+        assert _prices(sl.long.skipped) == [253.00]
+        assert (sl.short.trigger['name'], sl.short.trigger['price']) == ('PMK_L', 248.20)
+        assert _prices(sl.short.targets) == [225.00, 220.00, 215.00]
+        assert _prices(sl.short.skipped) == [247.50, 247.00]
+        assert sl.long.stop['price'] == 248.20 and sl.short.stop['price'] == 252.10
+        assert _prices(sl.long.gate_targets) == [253.00, 275.00, 280.00]
+        assert sl.long.target_status == sl.short.target_status == 'ok'
+
+    def test_a_wider_atr_spaces_the_targets_further(self):
+        sl = d8_session(atr=24.0, window=1.6)
+        assert _prices(sl.long.targets) == [275.00, 285.00]
+        assert _prices(sl.long.skipped) == [253.00, 280.00]
+        assert _prices(sl.long.gate_targets) == [253.00, 275.00, 280.00]
+
+    def test_the_ticker_row_sets_the_spacing(self):
+        """A ticker_level_params row of 0.05 publishes 253.00 with no code change."""
+        sl = d8_session(spacing=0.05)
+        assert _prices(sl.long.targets) == [253.00, 275.00, 280.00]
+        assert sl.long.skipped == []
+        assert _prices(sl.long.gate_targets) == [253.00, 275.00, 280.00]
+
+    @pytest.mark.parametrize('first, kept', [(255.61, True), (255.60, False)])
+    def test_a_distance_equal_to_the_spacing_in_cents_is_kept(self, first, kept):
+        """0.25 x 14.02 = 3.505, which price_cents rounds half-up to 351
+        cents: 255.61 (351 cents past 252.10) is kept, 255.60 is skipped."""
+        from lib.strat_levels import price_cents
+        assert price_cents(0.25 * 14.02) == 351
+        levels = {**D8_LEVELS, 'PDH': first}
+        sl = d8_session(levels, atr=14.02)
+        assert (first in _prices(sl.long.targets)) is kept
+        assert (first in _prices(sl.long.skipped)) is not kept
+
+    def test_a_spacing_not_ok_publishes_no_target(self):
+        sl = d8_session(statuses={'target_min_spacing_atr': 'insufficient_history'})
+        for side in (sl.long, sl.short):
+            assert side.trigger is not None and side.stop is not None
+            assert side.targets == [] and side.skipped == []
+            assert side.target_status == 'insufficient_history'
+        assert _prices(sl.long.gate_targets) == [253.00, 275.00, 280.00]
+
+    def test_exit_legs_not_ok_publishes_no_target(self):
+        sl = d8_session(statuses={'exit_legs': 'input_unavailable'})
+        assert sl.long.targets == [] and sl.long.target_status == 'input_unavailable'
+
+    def test_the_legs_bound_the_targets(self):
+        sl = d8_session(spacing=0.05, exit_legs=2)
+        assert _prices(sl.long.targets) == [253.00, 275.00]
+
+    def test_the_brief_columns_hold_gate_and_plan_targets(self):
+        from gcp.premarket_brief import structured_playbook_columns
+        for kw in ({}, {'atr': 24.0, 'window': 1.6}, {'spacing': 0.05}):
+            sl = d8_session(**kw)
+            cols = structured_playbook_columns(sl.to_level_map())
+            assert [cols[f'calls_t{k}_price'] for k in (1, 2, 3)] == [253.00, 275.00, 280.00]
+            plan = _prices(sl.long.targets) + [None] * (3 - len(sl.long.targets))
+            assert [cols[f'calls_plan_t{k}_price'] for k in (1, 2, 3)] == plan
+            assert cols['calls_trigger_price'] == 252.10 and cols['calls_stop_price'] == 248.20
+
+
+D8_CALLS = """  CALLS above 252.10 (PMK_H), new entries 09:30 to 10:00 ET
+    No entry if the open is at or above 252.10.
+    Stop: 248.20 (PMK_L)
+    T1: 275.00 (PMH), sell 1/3
+    T2: 280.00 (PQH), sell 1/3
+    T3: 285.00 (PYH), sell the last 1/3, or hold to the close or the stop
+    Skipped, closer than 0.25 x ATR(14) = 3.50: 253.00 (PDH)
+    Room to trigger: 0.84%"""
+
+D8_PUTS = """  PUTS below 248.20 (PMK_L), new entries 09:30 to 10:00 ET
+    No entry if the open is at or below 248.20.
+    Stop: 252.10 (PMK_H)
+    T1: 225.00 (PML), sell 1/3
+    T2: 220.00 (PQL), sell 1/3
+    T3: 215.00 (PYL), sell the last 1/3, or hold to the close or the stop
+    Skipped, closer than 0.25 x ATR(14) = 3.50: 247.50 (PDL), 247.00 (PDC)
+    Room to trigger: 0.72%"""
+
+
+class TestExitPlanCopy:
+    """Designs 2 to 5 and 8: the brief's exit plan copy."""
+
+    def _text(self, **kw):
+        return format_levels_for_brief(d8_session(**kw).to_level_map(), 'neutral')
+
+    def test_design_8_text(self):
+        text = self._text()
+        assert D8_CALLS in text
+        assert D8_PUTS in text
+
+    def test_fewer_targets_than_legs_hold_the_rest(self):
+        text = self._text(atr=24.0, window=1.6)
+        assert "    T1: 275.00 (PMH), sell 1/3\n" in text
+        assert ("    T2: 285.00 (PYH), sell 1/3, hold the last 1/3 to the close or the stop\n"
+                in text)
+
+    def test_no_target_past_the_spacing(self):
+        text = self._text(spacing=5.0)
+        assert ("    No target at least 5 x ATR(14) = 70.00 past the trigger: "
+                "hold to the close or the stop.") in text
+        assert "    T1:" not in text
+
+    def test_targets_unavailable(self):
+        text = self._text(statuses={'target_min_spacing_atr': 'insufficient_history'})
+        assert "    Targets unavailable (insufficient_history): no exit plan for this side." in text
+        assert "No target at least" not in text and "    T1:" not in text
+        assert "Skipped" not in text
+
+    @pytest.mark.parametrize('flag, label', [
+        (0.2, "    T2: 247.00 (PDC, gap fill: gap 0.21 x ATR), sell 1/3\n"),
+        (0.5, "    T2: 247.00 (PDC), sell 1/3\n"),
+    ])
+    def test_prior_close_gap_fill_label(self, flag, label):
+        """The gap is |250.00 - 247.00| / 14.00 = 0.21 ATR: labelled a gap
+        fill when the ticker's flag is 0.2, plain when it is 0.5."""
+        text = self._text(spacing=0.0, gap_fill_flag_atr=flag)
+        assert label in text
+
+    def test_the_cutoff_and_legs_come_from_the_policy(self):
+        text = self._text(exit_legs=2, spacing=0.05)
+        assert "    T1: 253.00 (PDH), sell 1/2\n" in text
+        assert "    T2: 275.00 (PMH), sell the last 1/2, or hold to the close or the stop\n" in text
+
+    def test_orb_only_copy_is_unchanged(self):
+        from lib.strat_levels import orb_only_text
+        from tests.lib.session_levels_helpers import session
+        sl = session({'PDH': 220.0, 'PWH': 225.0, 'PMH': 228.0, 'PDL': 215.0},
+                     prior_close=218.0, atr=2.0,
+                     premarket={'pre_high': 240.0, 'pre_low': 216.0, 'pre_vwap': 219.0})
+        text = format_levels_for_brief(sl.to_level_map(), 'bullish')
+        assert '  CALLS: ' + orb_only_text('all_broken_by_premarket', 'long') + '\n' in text

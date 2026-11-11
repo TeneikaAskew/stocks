@@ -25,7 +25,8 @@ D = date(2026, 11, 9)
 def test_schema_seeds_the_design_2_policy_and_no_ticker_values():
     db = ParamsDb()
     policy = seeded_policy()
-    assert set(policy) == DESIGN_2_KEYS | {"atr_basis", "calibration_universe"}
+    assert set(policy) == DESIGN_2_KEYS | {"atr_basis", "calibration_universe",
+                                           "exit_legs", "entry_cutoff_et"}
     assert policy["atr_basis"]["extra"] == {"column": "atr_14"}
     assert {p["effective_from"] for p in policy.values()} == {"2015-01-02"}
     assert policy["trigger_window_long_atr"]["statistic_q"] == 0.99
@@ -35,7 +36,8 @@ def test_schema_seeds_the_design_2_policy_and_no_ticker_values():
     assert policy["stop_aggressive_atr"]["statistic_q"] == 0.90
     assert policy["target_conservative_2_r"]["statistic_q"] == 0.50
     assert db.query("SELECT COUNT(*) AS n FROM ticker_level_params")["n"].iloc[0] == 0
-    assert len(DESIGN_2_KEYS) == 23
+    # The 23 Design 2 keys plus the exits spec's two policy_seed keys.
+    assert len(DESIGN_2_KEYS) == 25
 
 
 def test_two_versions_a_session_between_them_reads_the_earlier():

@@ -1523,24 +1523,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             # "trigger hit at HH:MM, T1 hit at HH:MM, stop never touched,
             # EOD pnl +0.97%". Without them, brief-playbook-outcome analytics
             # would have to parse the LLM prose — fragile and brittle.
-            ct = level_map.calls_trigger or {}
-            pt = level_map.puts_trigger or {}
-            ct_targets = ct.get('targets', []) if ct else []
-            pt_targets = pt.get('targets', []) if pt else []
-            d['calls_trigger_price'] = ct.get('trigger_level') if ct else None
-            d['calls_trigger_name']  = ct.get('trigger_name')  if ct else None
-            d['calls_stop_price']    = ct.get('stop')          if ct else None
-            d['calls_stop_name']     = ct.get('stop_name')     if ct else None
-            d['calls_t1_price'] = ct_targets[0]['price'] if len(ct_targets) >= 1 else None
-            d['calls_t2_price'] = ct_targets[1]['price'] if len(ct_targets) >= 2 else None
-            d['calls_t3_price'] = ct_targets[2]['price'] if len(ct_targets) >= 3 else None
-            d['puts_trigger_price'] = pt.get('trigger_level') if pt else None
-            d['puts_trigger_name']  = pt.get('trigger_name')  if pt else None
-            d['puts_stop_price']    = pt.get('stop')          if pt else None
-            d['puts_stop_name']     = pt.get('stop_name')     if pt else None
-            d['puts_t1_price'] = pt_targets[0]['price'] if len(pt_targets) >= 1 else None
-            d['puts_t2_price'] = pt_targets[1]['price'] if len(pt_targets) >= 2 else None
-            d['puts_t3_price'] = pt_targets[2]['price'] if len(pt_targets) >= 3 else None
+            d.update(structured_playbook_columns(level_map))
 
             # Persist level map to Cloud SQL so the realtime signal_monitor
             # (which doesn't itself recompute) can query it for level-break
@@ -1663,6 +1646,26 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
 
 
 # ── Discord Formatting (3 embeds) ───────────────────────────────────────────
+
+def structured_playbook_columns(level_map) -> dict:
+    """The premarket_analysis structured playbook columns for one ticker's
+    LevelMap: trigger, stop, the gating targets in t1..t3 (what the signal
+    monitor and the existing outcome read) and, from the exits in thirds
+    spec, the spaced plan targets the brief prints in plan_t1..plan_t3."""
+    d = {}
+    for side, trig in (('calls', level_map.calls_trigger or {}),
+                       ('puts', level_map.puts_trigger or {})):
+        d[f'{side}_trigger_price'] = trig.get('trigger_level')
+        d[f'{side}_trigger_name'] = trig.get('trigger_name')
+        d[f'{side}_stop_price'] = trig.get('stop')
+        d[f'{side}_stop_name'] = trig.get('stop_name')
+        for prefix, targets in (('t', trig.get('targets') or []),
+                                ('plan_t', trig.get('plan_targets') or [])):
+            for k in (1, 2, 3):
+                d[f'{side}_{prefix}{k}_price'] = (targets[k - 1]['price']
+                                                  if len(targets) >= k else None)
+    return d
+
 
 def _fmt_price(val):
     return f'${val:,.2f}' if val is not None else 'N/A'
@@ -3342,6 +3345,14 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
             'puts_t1_price':       data.get('puts_t1_price'),
             'puts_t2_price':       data.get('puts_t2_price'),
             'puts_t3_price':       data.get('puts_t3_price'),
+            # Exits in thirds: the spaced plan targets (t1..t3 above stay the
+            # gating targets).
+            'calls_plan_t1_price': data.get('calls_plan_t1_price'),
+            'calls_plan_t2_price': data.get('calls_plan_t2_price'),
+            'calls_plan_t3_price': data.get('calls_plan_t3_price'),
+            'puts_plan_t1_price':  data.get('puts_plan_t1_price'),
+            'puts_plan_t2_price':  data.get('puts_plan_t2_price'),
+            'puts_plan_t3_price':  data.get('puts_plan_t3_price'),
             # Track B audit G.P2.11 — persist LLM-generated brief
             # commentary for audit trail. The four strings are
             # non-deterministic Gemini-Flash outputs (gcp/brief_explanations.py)

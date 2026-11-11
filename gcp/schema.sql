@@ -1895,6 +1895,14 @@ ALTER TABLE premarket_analysis
     ADD COLUMN IF NOT EXISTS puts_t1_price         DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_t2_price         DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_t3_price         DOUBLE PRECISION,
+    -- Exits in thirds: the spaced plan targets (t1..t3 above keep the
+    -- gating targets the monitor and the existing outcome read).
+    ADD COLUMN IF NOT EXISTS calls_plan_t1_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_plan_t2_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_plan_t3_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_t1_price    DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_t2_price    DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_t3_price    DOUBLE PRECISION,
 
     -- ── SHADOW: put leg re-anchored on the 9:31 open (audit §15.5) ───
     -- The brief anchors the playbook on the 8:31 price (yesterday's close).
@@ -2101,7 +2109,13 @@ ALTER TABLE premarket_analysis_history
     ADD COLUMN IF NOT EXISTS puts_stop_name        VARCHAR(20),
     ADD COLUMN IF NOT EXISTS puts_t1_price         DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_t2_price         DOUBLE PRECISION,
-    ADD COLUMN IF NOT EXISTS puts_t3_price         DOUBLE PRECISION;
+    ADD COLUMN IF NOT EXISTS puts_t3_price         DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_plan_t1_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_plan_t2_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_plan_t3_price   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_t1_price    DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_t2_price    DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_t3_price    DOUBLE PRECISION;
 
 
 -- ============================================================================
@@ -2219,7 +2233,19 @@ INSERT INTO level_param_policy (
     ('target_neutral_2_r', 'filled_reach_share', 0.45, 750, 150, '{"persona": "neutral", "k": 2}', '2015-01-02', NULL),
     ('target_neutral_3_r', 'filled_reach_share', 0.30, 750, 150, '{"persona": "neutral", "k": 3}', '2015-01-02', NULL),
     ('target_conservative_1_r', 'filled_reach_share', 0.65, 750, 150, '{"persona": "conservative", "k": 1}', '2015-01-02', NULL),
-    ('target_conservative_2_r', 'filled_reach_share', 0.50, 750, 150, '{"persona": "conservative", "k": 2}', '2015-01-02', NULL)
+    ('target_conservative_2_r', 'filled_reach_share', 0.50, 750, 150, '{"persona": "conservative", "k": 2}', '2015-01-02', NULL),
+    -- Exits in thirds (docs/superpowers/specs/2026-11-11-feat-strat-001-brief-exits-in-thirds.md).
+    -- policy_seed: lib.level_calibration writes one ticker_level_params row
+    -- per ticker at the seed in force; a later per-ticker method replaces it
+    -- without a code change. policy: one value for every ticker.
+    ('target_min_spacing_atr', 'policy_seed', NULL, NULL, NULL, '{"seed": 0.25}', '2015-01-02',
+     'least distance from the trigger, or the target before, a published target keeps / ATR'),
+    ('gap_fill_flag_atr', 'policy_seed', NULL, NULL, NULL, '{"seed": 0.5}', '2015-01-02',
+     '|reference - prior close| / ATR at which a prior-close target is labelled a gap fill'),
+    ('exit_legs', 'policy', NULL, NULL, NULL, '{"legs": 3}', '2015-01-02',
+     'equal legs the exit plan sells, one at each spaced target'),
+    ('entry_cutoff_et', 'policy', NULL, NULL, NULL, '{"time_et": "10:00"}', '2015-01-02',
+     'last minute (ET, exclusive) a first cross of the trigger is an entry')
 ON CONFLICT (param_key, effective_from) DO NOTHING;
 
 

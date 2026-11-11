@@ -979,6 +979,17 @@ MIN_STOP_KEY = 'min_stop_atr'
 PM_SPIKE_KEY = 'pm_spike_atr'
 PM_STALE_PRINT_KEY = 'pm_stale_print_atr'
 LEVEL_CLUSTER_KEY = 'level_cluster_atr'
+# FEAT-STRAT-001 exits in thirds (2026-11-11 spec). Two per-ticker keys
+# seeded by policy (method policy_seed) and two policy-wide keys: the leg
+# count and the entry cutoff are plan shape and clock, read from the policy
+# row in force, never from a ticker row.
+TARGET_SPACING_KEY = 'target_min_spacing_atr'
+GAP_FILL_FLAG_KEY = 'gap_fill_flag_atr'
+EXIT_LEGS_KEY = 'exit_legs'
+ENTRY_CUTOFF_KEY = 'entry_cutoff_et'
+POLICY_SEED_METHOD = 'policy_seed'
+POLICY_SEEDED_KEYS = (TARGET_SPACING_KEY, GAP_FILL_FLAG_KEY)
+POLICY_WIDE_KEYS = (EXIT_LEGS_KEY, ENTRY_CUTOFF_KEY)
 
 
 def target_key(persona: str, k: int) -> str:
@@ -1091,6 +1102,9 @@ class LevelParam:
     atr_basis: Optional[str] = None
     policy_effective_from: Optional[str] = None
     source: Optional[str] = None
+    # A policy-wide key's policy extra (exit_legs {"legs": n},
+    # entry_cutoff_et {"time_et": "HH:MM"}); None for a ticker parameter.
+    extra: Optional[dict] = None
 
     @property
     def ok(self) -> bool:
@@ -1107,6 +1121,7 @@ class LevelParam:
             'run_id': self.run_id, 'atr_basis': self.atr_basis,
             'policy_effective_from': self.policy_effective_from,
             'source': self.source,
+            **({'extra': dict(self.extra)} if self.extra is not None else {}),
         }
 
     @classmethod
@@ -1126,6 +1141,7 @@ class LevelParam:
             atr_basis=d.get('atr_basis'),
             policy_effective_from=_iso(d.get('policy_effective_from')),
             source=d.get('source'),
+            extra=(dict(d['extra']) if isinstance(d.get('extra'), dict) else None),
         )
 
 
@@ -1253,6 +1269,38 @@ def policy_atr_basis(policy: Dict[str, dict]) -> str:
     return column
 
 
+def policy_time_minutes(text) -> Optional[int]:
+    """Minutes after midnight of an 'HH:MM' clock time, or None."""
+    m = re.fullmatch(r'(\d{1,2}):(\d{2})', str(text or '').strip())
+    if not m:
+        return None
+    h, mi = int(m.group(1)), int(m.group(2))
+    if h >= 24 or mi >= 60:
+        return None
+    return h * 60 + mi
+
+
+def policy_wide_param(key: str, pol: dict, ticker: str, atr_basis: str) -> LevelParam:
+    """A policy-wide key (exit_legs, entry_cutoff_et) as a LevelParam for
+    one ticker: the policy row in force is the value, the same for every
+    ticker. A row whose extra does not hold a usable value is
+    input_unavailable, so the plan that needs it is not published."""
+    extra = dict(pol.get('extra') or {})
+    value = None
+    if key == EXIT_LEGS_KEY:
+        legs = extra.get('legs')
+        if isinstance(legs, int) and not isinstance(legs, bool) and legs >= 1:
+            value = float(legs)
+    elif key == ENTRY_CUTOFF_KEY:
+        mins = policy_time_minutes(extra.get('time_et'))
+        value = float(mins) if mins is not None else None
+    return LevelParam(
+        key=key, status=PARAM_OK if value is not None else 'input_unavailable',
+        value=value, ticker=ticker, effective_from=pol.get('effective_from'),
+        method_id=pol.get('method_id'), atr_basis=atr_basis,
+        policy_effective_from=pol.get('effective_from'), source='policy', extra=extra)
+
+
 def load_level_params(query_fn, tickers, session_date) -> Dict[str, LevelParams]:
     """The parameters in force on `session_date` for every ticker in
     `tickers`, in ONE query. `query_fn(sql, params)` returns a DataFrame and
@@ -1311,6 +1359,9 @@ def load_level_params(query_fn, tickers, session_date) -> Dict[str, LevelParams]
         params: Dict[str, LevelParam] = {}
         for key in keys:
             pol = policy[key]
+            if key in POLICY_WIDE_KEYS:
+                params[key] = policy_wide_param(key, pol, t, basis)
+                continue
             common = dict(key=key, ticker=t, min_sample=pol['min_sample'],
                           statistic_q=pol['statistic_q'],
                           lookback_sessions=pol['lookback_sessions'])
@@ -1365,7 +1416,12 @@ def load_level_params(query_fn, tickers, session_date) -> Dict[str, LevelParams]
 
 # v2 (2026-11-08): every distance is a per-ticker calibrated parameter
 # recorded in level_basis.params; reach rates count only v2 rows.
-LEVEL_RULE_VERSION = 'feat-strat-001.v2'
+# v3 (2026-11-11 exits in thirds): targets are spaced by the ticker's
+# target_min_spacing_atr and planned in exit_legs legs; gate_targets keep the
+# v2 targets for the signal monitor and the structured t1..t3 columns. A
+# stored v2 basis is rebuilt with the v2 rule.
+LEVEL_RULE_V2 = 'feat-strat-001.v2'
+LEVEL_RULE_VERSION = 'feat-strat-001.v3'
 
 # Trigger candidates in tie-break priority: at one price to the cent the
 # earlier name wins, so a structural level beats the parent bar and both beat
@@ -1540,6 +1596,19 @@ class SideLevels:
     # The side's trigger-window parameter as used (LevelParam.to_basis()
     # plus key and ticker); the copy states the ticker's own window from it.
     window: Optional[dict] = None
+    # v3 (exits in thirds): `targets` are the spaced plan targets; the first
+    # three rungs past the trigger with no spacing (the v2 targets) are kept
+    # as `gate_targets`, which the signal monitor's leg trackers and the
+    # structured t1..t3 columns read. `skipped` lists the candidates the
+    # spacing walk passed over (with their distance in ATR from the level
+    # before them); `target_status` is ok or the spacing or leg parameter's
+    # status, in which case the side publishes no target and no plan.
+    gate_targets: list = field(default_factory=list)
+    skipped: list = field(default_factory=list)
+    target_status: str = PARAM_OK
+    # The plan: spacing (multiple and price), legs and the entry cutoff,
+    # recorded so the copy and the resolver read one source.
+    plan: Optional[dict] = None
 
     @property
     def rungs(self) -> list:
@@ -1553,6 +1622,8 @@ class SideLevels:
             'reason': self.reason, 'targets': self.targets, 'stop': self.stop,
             'ladder': self.ladder, 'room_pct': self.room_pct,
             'distance_atr': self.distance_atr, 'window': self.window,
+            'gate_targets': self.gate_targets, 'skipped': self.skipped,
+            'target_status': self.target_status, 'plan': self.plan,
         }
 
 
@@ -1721,9 +1792,15 @@ class SessionLevels:
             atr_14 = _opt_float(basis.get('atr'))
         atrs = {'atr_14': atr_14, 'atr_5': atr_5}
         basis_atr = atrs.get(atr_basis) if atr_basis else None
+        # A v3 basis is rebuilt with the v3 rule and its recorded values; any
+        # earlier basis with the v2 rule (no spacing, three targets), so a
+        # stored brief and its replay do not change.
+        rule = (LEVEL_RULE_VERSION if basis.get('rule_version') == LEVEL_RULE_VERSION
+                else LEVEL_RULE_V2)
         base = cls(
             ticker=ticker,
             session_date=session,
+            rule_version=rule,
             status=basis.get('status') or 'ok',
             built_at=basis.get('built_at') or '',
             last_bar_date=_to_date(basis.get('last_bar_date')),
@@ -2173,9 +2250,10 @@ def _assemble(base: SessionLevels, *, premarket: Optional[dict], premarket_statu
               reference: Optional[float], reference_source: Optional[str]) -> SessionLevels:
     """Recompute reference, cleared marks, broken status and picks from a
     SessionLevels' structural levels plus a premarket snapshot."""
+    rule = base.rule_version if base.rule_version == LEVEL_RULE_V2 else LEVEL_RULE_VERSION
     out = SessionLevels(
         ticker=base.ticker, session_date=base.session_date, status=base.status,
-        rule_version=LEVEL_RULE_VERSION, built_at=base.built_at,
+        rule_version=rule, built_at=base.built_at,
         last_bar_date=base.last_bar_date, atr=base.atr, atr_14=base.atr_14,
         atr_5=base.atr_5, atr_basis=base.atr_basis, params=base.params,
         pmg_status=base.pmg_status,
@@ -2223,8 +2301,10 @@ def _assemble(base: SessionLevels, *, premarket: Optional[dict], premarket_statu
         # out. With a snapshot such a level stays on both lists.
         ref_cents = price_cents(ref)
         candidates = [c for c in candidates if c['cents'] != ref_cents]
-    out.long = _pick_side('long', candidates, ref, out.cleared_above, out.atr, out.params)
-    out.short = _pick_side('short', candidates, ref, out.cleared_below, out.atr, out.params)
+    out.long = _pick_side('long', candidates, ref, out.cleared_above, out.atr, out.params,
+                          rule_version=rule, prior_close=out.prior_close)
+    out.short = _pick_side('short', candidates, ref, out.cleared_below, out.atr, out.params,
+                           rule_version=rule, prior_close=out.prior_close)
     return out
 
 
@@ -2274,7 +2354,9 @@ def _window_detail(params: Optional[LevelParams], side: str) -> Optional[dict]:
 
 
 def _pick_side(side: str, candidates: list, ref: float, cleared: float,
-               atr: Optional[float], params: Optional[LevelParams]) -> SideLevels:
+               atr: Optional[float], params: Optional[LevelParams], *,
+               rule_version: str = LEVEL_RULE_VERSION,
+               prior_close: Optional[float] = None) -> SideLevels:
     """One side rule, one broken rule, one window.
 
     A candidate is on the long list when its cent is at or above the
@@ -2347,7 +2429,11 @@ def _pick_side(side: str, candidates: list, ref: float, cleared: float,
     out.trigger = _rung(trig, ref)
     out.regime = 'normal'
     out.reason = None
-    out.targets = [_rung(c, ref) for c in rungs[1:4]]
+    out.gate_targets = [_rung(c, ref) for c in rungs[1:4]]
+    if rule_version == LEVEL_RULE_V2:
+        out.targets = list(out.gate_targets)
+    else:
+        _plan_targets(out, rungs, ref, atr, params, prior_close)
     stop = next((c for c in other if _within_staleness_window(c['price'], ref, atr, stop_window)), None)
     out.stop = _rung(stop, ref) if stop else None
     out.ladder = [_ladder_entry(c, ref) for c in rungs[:2]]
@@ -2356,17 +2442,74 @@ def _pick_side(side: str, candidates: list, ref: float, cleared: float,
     return out
 
 
+def _plan_targets(out: SideLevels, rungs: list, ref: float, atr: float,
+                  params: LevelParams, prior_close: Optional[float]) -> None:
+    """Design 1 and 2 of the exits spec: walk the side's rungs past the
+    trigger in order, keeping a candidate only when it is at least the
+    ticker's spacing (target_min_spacing_atr x ATR, to the cent, equal kept)
+    past the trigger or the target before it, until exit_legs targets are
+    kept. A spacing or leg parameter that is not ok publishes no target and
+    records its status: there is no unspaced fallback (CLAUDE.md 3.7)."""
+    missing = params.first_not_ok((TARGET_SPACING_KEY, EXIT_LEGS_KEY))
+    cutoff = params.param(ENTRY_CUTOFF_KEY)
+    flag = params.param(GAP_FILL_FLAG_KEY)
+    out.plan = {
+        'spacing_atr': params.param(TARGET_SPACING_KEY).value,
+        'spacing_price': None,
+        'atr_basis': params.param(TARGET_SPACING_KEY).atr_basis,
+        'legs': int(params.value(EXIT_LEGS_KEY)) if params.ok(EXIT_LEGS_KEY) else None,
+        'entry_cutoff_et': (cutoff.extra or {}).get('time_et') if cutoff.ok else None,
+        'entry_cutoff_status': cutoff.status,
+        'gap_fill_flag_atr': flag.value if flag.ok else None,
+        'gap_fill_flag_status': flag.status,
+    }
+    if missing is not None:
+        out.target_status = missing.status
+        out.targets = []
+        return
+    spacing = params.value(TARGET_SPACING_KEY)
+    legs = int(params.value(EXIT_LEGS_KEY))
+    spacing_cents = price_cents(spacing * atr)
+    out.plan['spacing_price'] = spacing_cents / 100.0
+    prev = rungs[0]
+    targets, skipped = [], []
+    for c in rungs[1:]:
+        if len(targets) == legs:
+            break
+        if abs(c['cents'] - prev['cents']) >= spacing_cents:
+            targets.append(c)
+            prev = c
+        else:
+            skipped.append({**_rung(c, ref),
+                            'distance_atr': round(abs(c['cents'] - prev['cents']) / 100.0 / atr, 3)})
+    gap_atr = (abs(ref - prior_close) / atr) if prior_close is not None else None
+    pdc_cents = price_cents(prior_close) if prior_close is not None else None
+    out.targets = []
+    for c in targets:
+        r = _rung(c, ref)
+        is_pdc = c['name'] == 'PDC' or 'PDC' in c['aliases'] or c['cents'] == pdc_cents
+        if (is_pdc and flag.ok and gap_atr is not None
+                and gap_atr >= flag.value):
+            r['gap_fill_atr'] = round(gap_atr, 2)
+        out.targets.append(r)
+    out.skipped = skipped
+    out.target_status = PARAM_OK
+
+
 def _legacy_trigger_dict(s: SideLevels) -> Optional[dict]:
     """A side pick in the {trigger_level, trigger_name, targets, stop, ...}
     shape persisted to premarket_analysis and read by the formatter."""
     if s.trigger is None:
         return None
     t = s.trigger
+    # `targets` keep the v2 meaning (the gating targets the structured
+    # t1..t3 columns, the resolver's existing outcome and the monitor read);
+    # `plan_targets` are the spaced plan the brief prints (exits spec).
     targets = [{'price': x['price'], 'name': x['name'], 'timeframe': x['timeframe']}
-               for x in s.targets]
+               for x in s.gate_targets]
     room_t1 = (round(abs(targets[0]['price'] - t['price']) / t['price'] * 100, 3)
                if targets else 0)
-    return {
+    out = {
         'trigger_level': t['price'], 'trigger_name': t['name'],
         'targets': targets,
         'stop': s.stop['price'] if s.stop else None,
@@ -2374,6 +2517,17 @@ def _legacy_trigger_dict(s: SideLevels) -> Optional[dict]:
         'room_to_first_target': room_t1,
         'reasoning': '',
     }
+    if s.plan is not None:
+        out.update({
+            'plan_targets': [{'price': x['price'], 'name': x['name'],
+                              'timeframe': x['timeframe'],
+                              **({'gap_fill_atr': x['gap_fill_atr']} if 'gap_fill_atr' in x else {})}
+                             for x in s.targets],
+            'skipped': [{'price': x['price'], 'name': x['name']} for x in s.skipped],
+            'target_status': s.target_status,
+            'plan': dict(s.plan),
+        })
+    return out
 
 
 LIVE_LEVEL_BASIS_SQL = (
@@ -2568,6 +2722,9 @@ def format_levels_for_brief(
         line = f"  {label} {word} {trig['trigger_level']:.2f} ({_display_level_name(trig['trigger_name'])})"
         if bias == denied_bias:
             line += ' -- only if bias denied'
+        plan = trig.get('plan')
+        if plan is not None:
+            return _plan_block(line, side, trig, plan, room, plan.get('atr_basis') or atr_basis)
         out = [line]
         if trig.get('stop') is not None:
             out.append(f"    Stop: {trig['stop']:.2f} ({_display_level_name(trig['stop_name'])})")
@@ -2576,6 +2733,9 @@ def format_levels_for_brief(
         if room is not None:
             out.append(f"    Room to trigger: {room:.2f}%")
         return out
+
+    atr_basis = next(((w or {}).get('atr_basis') for w in (level_map.window_long,
+                                                           level_map.window_short) if w), None)
 
     lines.extend(_side_block('CALLS', 'long', level_map.calls_trigger,
                              level_map.reason_long, level_map.room_to_run_up, 'bearish',
@@ -2608,6 +2768,63 @@ def format_levels_for_brief(
             )
 
     return '\n'.join(lines)
+
+
+def _clock_text(t) -> str:
+    return f"{t.hour:02d}:{t.minute:02d}"
+
+
+def _plan_block(line: str, side: str, trig: dict, plan: dict, room: Optional[float],
+                atr_basis: Optional[str]) -> list:
+    """A side's exit plan (exits in thirds spec, Design 8): the entry
+    window, the opened-through rule, the stop, up to `legs` spaced targets
+    each selling 1/legs, the legs left over held to the close or the stop,
+    the candidates skipped for the spacing, and the room to the trigger."""
+    from lib.indicators import REGULAR_SESSION_OPEN  # noqa: PLC0415
+
+    cutoff = plan.get('entry_cutoff_et')
+    if cutoff:
+        line += f", new entries {_clock_text(REGULAR_SESSION_OPEN)} to {cutoff} ET"
+    out = [line]
+    price = trig['trigger_level']
+    past = 'at or above' if side == 'long' else 'at or below'
+    out.append(f"    No entry if the open is {past} {price:.2f}.")
+    if trig.get('stop') is not None:
+        out.append(f"    Stop: {trig['stop']:.2f} ({_display_level_name(trig['stop_name'])})")
+    status = trig.get('target_status') or PARAM_OK
+    legs = plan.get('legs')
+    spacing = plan.get('spacing_atr')
+    spacing_text = (f"{multiple_text(spacing)} x ATR({atr_length(atr_basis)}) = "
+                    f"{plan['spacing_price']:.2f}"
+                    if spacing is not None and plan.get('spacing_price') is not None else None)
+    if status != PARAM_OK or not legs:
+        out.append(f"    Targets unavailable ({status}): no exit plan for this side.")
+    else:
+        targets = trig.get('plan_targets') or []
+        if not targets:
+            out.append(f"    No target at least {spacing_text} past the trigger: "
+                       f"hold to the close or the stop.")
+        share = f"1/{legs}"
+        for i, tg in enumerate(targets, 1):
+            name = _display_level_name(tg['name'])
+            if tg.get('gap_fill_atr') is not None:
+                name += f", gap fill: gap {tg['gap_fill_atr']:.2f} x ATR"
+            text = f"    T{i}: {tg['price']:.2f} ({name}), "
+            left = legs - len(targets)
+            if i < len(targets):
+                text += f"sell {share}"
+            elif left == 0:
+                text += f"sell the last {share}, or hold to the close or the stop"
+            else:
+                text += f"sell {share}, hold the last {left}/{legs} to the close or the stop"
+            out.append(text)
+        skipped = trig.get('skipped') or []
+        if skipped:
+            out.append(f"    Skipped, closer than {spacing_text}: " + ', '.join(
+                f"{s['price']:.2f} ({_display_level_name(s['name'])})" for s in skipped))
+    if room is not None:
+        out.append(f"    Room to trigger: {room:.2f}%")
+    return out
 
 
 def _format_next_levels(level_map: LevelMap) -> list:

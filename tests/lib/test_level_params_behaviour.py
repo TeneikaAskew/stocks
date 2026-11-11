@@ -274,5 +274,7 @@ def test_no_published_price_comes_from_a_non_ok_parameter(key):
     assert lp.status(key) != PARAM_OK
     bad = published(lp)
     assert bad <= ok, sorted(bad - ok)
-    assert bad != ok or key in ("level_cluster_atr", "pm_spike_atr", "pm_stale_print_atr"), \
+    # gap_fill_flag_atr only labels a prior-close target; it moves no price.
+    assert bad != ok or key in ("level_cluster_atr", "pm_spike_atr", "pm_stale_print_atr",
+                                "gap_fill_flag_atr"), \
         f"{key} not ok changed nothing it publishes"

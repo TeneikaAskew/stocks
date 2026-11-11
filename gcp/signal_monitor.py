@@ -534,7 +534,9 @@ class SignalMonitor:
                 'trigger_level': put_side.trigger['price'],
                 'trigger_name': put_side.trigger['name'],
                 'stop': put_side.stop['price'] if put_side.stop else None,
-                'targets': put_side.targets,
+                # The gating targets (exits spec): the monitor's tracker and
+                # alert targets keep their pre-spacing meaning.
+                'targets': put_side.gate_targets,
             }
             tgts = [t.get('price') for t in (put.get('targets') or [])]
             out = {
