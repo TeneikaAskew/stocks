@@ -13,15 +13,15 @@ done_when:
   - "The exact base/head collected-node reconciliation follows docs/review-evidence/ew-first/test-node-inventory.md, refreshed against the actual implementation base. Every unchanged non-EW test remains unchanged; each intentionally retired EW assertion has its named replacement and preserved independent non-EW obligation. The three caller-test/helper files only lose obsolete recap stubs: tests/gcp/test_strat_snapshot_parity.py, tests/api/test_brief_level_break_response.py and tests/lib/strat_2026_11_06.py. Preserve all collected caller nodes, fixture setup, assertions and parametrization; execute the actual affected shared-level caller suites. All brief, affected caller, shared-calendar/vendor and model-pointer tests pass without skip/xfail or unrelated deletion. Finite-value coverage and all 13 accepted successor obligations remain required under the separately admitted sequencing amendment; filtering an invalid EW input is never numeric-validation evidence."
   - "Source/test changes are confined to gcp/premarket_brief.py, tests/gcp/test_premarket_brief.py, tests/gcp/test_strat_snapshot_parity.py, tests/api/test_brief_level_break_response.py and tests/lib/strat_2026_11_06.py; the latter three permit only removal of their obsolete _ew_recap_or_unavailable stubs. lib/earnings_reactions.py, gcp/fetchers/evaluate_ew_strikes.py, lib/eastern_time.py, schema, deployment scripts and schedules remain unchanged. No historical rows, verdict columns or secrets are removed. Own ready plan, FEAT-PLAYBOOK-001 catalog/traceability and relevant MODEL-BRIEF-001 references are updated; MODEL-EWV-001 changes only its brief-consumer/recap claims and their tests/pointers, preserving evaluator and audit history. That cross-model documentation scope requires explicit owner admission before implementation."
   - "The committed implementation head passes existing bounded source/SITE produce and verify with the approved merge-base spec binding and unchanged fixed ceilings, using only the FEAT-PLAYBOOK-001 / PLAYBOOK-09 implementation-source note and its sidecar. Earlier accurate own prose and all other SITE bytes are preserved; no frontend/deployment claim is added. Matched main/head docs_audit reports no new finding; unchanged source-snapshot, docs-audit and model-registry tests pass; DOC_REGISTRY blob/mode/type is unchanged. Required current-head review and CI pass, all conversations are resolved, and existing review limits are respected. These are admission checks, not runtime release evidence."
-status: draft
+status: approved
 supersedes: docs/superpowers/specs/2026-11-09-feat-playbook-001-retire-ew-brief.md
 ---
 
-# Caller-scope successor proposal for EW brief retirement
+# Caller-scope successor for EW brief retirement
 
-## Proposed amendment and admission status
+## Narrow amendment and admission status
 
-This successor is **draft**, not a claim that the user approved every revised technical sentence. On November 11 the user renewed the full-removal direction after being told that a newer STRAT fixture still patches the deleted recap helper. Existing substantive EW-retirement and finite-values-preservation approvals remain recorded below. The added file allowance is presented explicitly for normal specification admission; no source expansion is published by this proposal. The predecessor remains approved until an admitted successor replaces it through the permitted status-only flip.
+This successor is admitted on November 11 under the coordinator's explicit interpretation of the user's full EarningsWhispers removal/deployment direction and subsequent “Yes and Fix the required check” instruction. The coordinator determined that removal of the one obsolete recap stub, while preserving every assertion, is necessary maintenance within the approved retirement. This records that authorization basis; it does not claim the user literally approved #1799 or every technical sentence. Only the already-published narrow caller-file allowance is admitted. The predecessor receives only its approved-to-superseded status flip. This specification remains a Draft PR pending normal review and merge; no implementation is published by it.
 
 Only `done_when` items 6 and 7 and the Design-and-caller-scope paragraph change the inherited contract. The additional permission is removal of exactly this obsolete line in `tests/lib/strat_2026_11_06.py::run_brief` (line 152 on main `3991c628ff2a614ce5f74a1aa9ca1843d1faca80`):
 
@@ -70,7 +70,7 @@ Remove recap definitions, weekday wiring, verdict/Whispers/recap formatting and 
 
 Three existing caller fixtures monkeypatch the function being deleted: `tests/gcp/test_strat_snapshot_parity.py::_brief`, `tests/api/test_brief_level_break_response.py::_run_brief_and_persist` and `tests/lib/strat_2026_11_06.py::run_brief`. The third fixture landed with #1753 after the original caller inventory and remains in current main after #1784. Delete only these obsolete stubs, preserving every assertion, parametrized node and all session-own premarket/level-basis/provenance and calibrated-level behavior. The admitted source/test scope is these five files. This specification changes no source/test file.
 
-`docs/models/MODEL-EWV-001.md` lines 44–66 assert the current recap consumer and tests. Replace only those present-tense claims with accurately scoped retirement/historical context; leave evaluator behavior, past verdict evidence, shared calendar and ingestion details intact. This semantic documentation update is explicitly part of proposed admission, not hidden as a line-number repair or permission to edit another capability's product row.
+`docs/models/MODEL-EWV-001.md` lines 44–66 assert the current recap consumer and tests. Replace only those present-tense claims with accurately scoped retirement/historical context; leave evaluator behavior, past verdict evidence, shared calendar and ingestion details intact. This semantic documentation update remains part of the inherited admitted contract, not hidden as a line-number repair or permission to edit another capability's product row.
 
 ## Acceptance implementation details
 
@@ -88,6 +88,11 @@ Risks are aggregation before filtering, inactive invalid-sibling fixtures, stale
 
 This source/spec change does not implement the finite-values repair, delete data/schema/secrets or change the evaluator/shared calendar. This specification PR does not deploy, execute Cloud Run or send notifications. No release is certified by CI. After the authorized deployment proceeds through its applicable release gates with a pinned digest, the release owner must record real weekday and supported replay output, deployed image and query/call evidence without secrets. P-F evaluator stripping still waits for its own consumer and live-job retirement prerequisites. Historical d4478433/d806bfd1 receipts remain historical.
 
-## Publication base
+## Historical publication base
 
 Prepared from main `59bfb52a779e366083e9f47c158c4328311d8a78`, after #1703's P-A own-scope specification merged. Source/test/model anchors are unchanged from `02f6df9b`. P-A's helper implementation is separately pending in #1758; a specification merge is not proof that helper code has landed. Revalidate prerequisites against actual main before implementation.
+
+
+## Successor admission base
+
+Admission reconciles current main `7322f23691e4f6ed8c4836338b7fa6d53c2d581f`. P-A helper implementation landed through #1758 at `82967a88`; its prior pending status above is historical. The 45-node caller inventory and qualification remain bound to `3991c628`, whose relevant runtime/test bytes are unchanged at this admission base. Revalidate the actual implementation base after the specification merges. #1685 is sequenced first; this PR stays Draft until the coordinated final base sync and normal review. No review history or allowance is reset.
