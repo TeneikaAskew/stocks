@@ -8,7 +8,8 @@ We need a per-trigger-bar FTFC alignment score in [-1, +1] that:
 The classification rule matches `lib/strat.py:StratClassifier.classify_series`:
   2U if higher_high & ~lower_low → +1
   2D if ~higher_high & lower_low → -1
-  1 / 3 / X → 0
+  1 / 3 → 0; invalid/unknown → NaN (excluded from the denominator).
+  The first valid completed observation retains its legacy neutral vote.
 
 This is intentionally simpler than `strat_ftfc_assemble.py` (which uses
 per-TF calibrated probabilities) because:
@@ -27,26 +28,38 @@ import numpy as np
 import pandas as pd
 
 from gcp.research.strat_engine.strat_config import FTFC_WEIGHTS
+from lib.strat import StratClassifier, validate_ohlc_rows, _valid_price_rows
 
 log = logging.getLogger(__name__)
 
 
 # Resample rules for pandas .resample on a UTC DatetimeIndex.
-# Use ET origin so 4h aligns to 09:30 ET sessions — though for FTFC we
-# only need 15m, 30m, 60m, and 4h here. 5m is the trigger cell and would
-# self-reference.
+# Preserve the historical UTC-origin pandas grid. This compatibility path
+# does not claim exchange-open anchoring; changing it requires a model replay.
 RESAMPLE_RULES = {
     "5m": "5min", "15m": "15min", "30m": "30min", "60m": "60min", "4h": "4h",
 }
 
 
-def _classify(o: pd.Series, h: pd.Series, l: pd.Series) -> pd.Series:
-    """Per-bar Strat classification → numeric: +1 (2U) / -1 (2D) / 0 else."""
-    higher_high = h > h.shift(1)
-    lower_low = l < l.shift(1)
-    out = pd.Series(0, index=h.index, dtype=float)
-    out[higher_high & ~lower_low] = 1.0
-    out[~higher_high & lower_low] = -1.0
+def _classify(o: pd.Series, h: pd.Series, l: pd.Series,
+              c: Optional[pd.Series] = None) -> pd.Series:
+    """Shared valid-bar classes; preserve the legacy first valid neutral vote.
+
+    Invalid observations and comparisons after them are unknown (NaN), never
+    inside/neutral votes. The optional Close preserves the prior private call
+    shape while build_ftfc_lookup supplies full OHLC for validation.
+    """
+    frame = pd.DataFrame({'Open': o, 'High': h, 'Low': l})
+    if c is not None:
+        frame['Close'] = c
+    classifier = StratClassifier()
+    labels = classifier.classify_series(frame)
+    out = labels.map({'2U': 1.0, '2D': -1.0, '1': 0.0, '3': 0.0})
+    # The old lookup used a neutral first bar once completed. Keep that
+    # denominator only when the first observation is actually valid.
+    if len(frame):
+        if _valid_price_rows(frame.iloc[:1], list(frame.columns)).iloc[0]:
+            out.iloc[0] = 0.0
     return out
 
 
@@ -66,16 +79,30 @@ def build_ftfc_lookup(m1_bars: pd.DataFrame,
     the bar starting at T-TF).
     """
     res = {}
+    valid_source = validate_ohlc_rows(m1_bars)
     for tf in timeframes:
         rule = RESAMPLE_RULES[tf]
         agg = m1_bars.resample(rule, label="left", closed="left").agg({
             "Open": "first", "High": "max", "Low": "min", "Close": "last",
-        }).dropna()
-        cls = _classify(agg["Open"], agg["High"], agg["Low"])
+        })
+        # Keep observed invalid buckets in position. Empty legacy bins (e.g.
+        # overnight) retain the original drop behavior and bucket grid.
+        counts = m1_bars['High'].resample(rule, label="left", closed="left").size()
+        valid_buckets = valid_source.resample(rule, label="left", closed="left").min()
+        agg = agg.loc[counts > 0]
+        agg.loc[~valid_buckets.reindex(agg.index).eq(True), :] = np.nan
+        cls = _classify(agg["Open"], agg["High"], agg["Low"], agg["Close"])
         cls = cls.shift(1)  # ONLY use completed bars
         # Forward-fill into the 1m clock
         res[tf] = cls.reindex(m1_bars.index, method="ffill")
-    return pd.DataFrame(res, index=m1_bars.index)
+    result = pd.DataFrame(res, index=m1_bars.index)
+    result.attrs.update(aggregation_policy='legacy_v1',
+                        classification_version='shared-valid-bars-v2',
+                        alignment_version='legacy-candle-v1',
+                        invalid_observation_policy='unknown_excluded_from_denominator',
+                        availability_policy='completed_bar_shift_1',
+                        weights=dict(FTFC_WEIGHTS))
+    return result
 
 
 def ftfc_score_at(lookup: pd.DataFrame, ts: pd.Timestamp,

@@ -109,6 +109,15 @@ def test_sql_null_dataframe_roundtrip_preserves_missing(local_calendar_database,
     assert len(retrieved) == 3
     assert str(retrieved["eps_estimate"].dtype) == "float64"
     assert pd.isna(retrieved.iloc[0]["eps_estimate"])
+    # Retired EarningsWhispers rows, both spellings, stay stored and are
+    # excluded from every catalyst event.
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO earnings_calendar (ticker, earnings_date, company_name, "
+            "earnings_time, eps_estimate, strategy, data_source) VALUES "
+            "('EWO', '2026-10-27', 'Zz Corp', 'premarket', NULL, 'Long Calls', 'earnings_whispers'), "
+            "('EWR', '2026-10-27', 'Zz Corp', 'premarket', NULL, 'Long Calls', 'EarningsWhispers')"
+        )
 
     def relevant_real_query(sql, params):
         if "FROM earnings_calendar " in sql:
@@ -128,7 +137,7 @@ def test_sql_null_dataframe_roundtrip_preserves_missing(local_calendar_database,
         ("SPY", "NegativeCo earnings (BMO, est -1.25)"),
     ]
     assert sorted((e["ticker"], e["title"]) for e in events) == expected_titles
-    assert all(e["source"] == "AV earnings_calendar" and e["date"] == "2026-10-27" for e in events)
+    assert all(e["source"] == "earnings_calendar (alphavantage)" and e["date"] == "2026-10-27" for e in events)
 
     # Complete the existing real router/response path over that same local SQL.
     def forbidden(*args, **kwargs):
