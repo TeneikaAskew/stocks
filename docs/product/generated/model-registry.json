@@ -437,17 +437,17 @@
   {
    "job": "`fetch-earnings-calendar`",
    "scheduler": "`daily-earnings-refresh-calendar` · `weekly-earnings-refresh-calendar`",
-   "why_it_is_not_model_bearing": "Earnings dates → `earnings_calendar`. Ingest. (The verdict columns on the same table come from `evaluate-ew-strikes-daily`, which is listed above)"
+   "why_it_is_not_model_bearing": "Inputs only — earnings dates → `earnings_calendar`. Ingest. It computes no score, label or threshold, which a reader can re-check: `grep -n \"score_quintile|recommended_structure|playability\" scripts/fetch_earnings_calendar.py` returns nothing. Any import of `lib.earnings_reactions` it makes is for the retired-source predicate `EARNINGS_NOT_RETIRED_SQL` on its own `earnings_calendar` read, not for any score. (The verdict columns on the same table come from `evaluate-ew-strikes-daily`, which is listed above)"
   },
   {
    "job": "`fetch-earnings-history`",
    "scheduler": "`daily-earnings-refresh-history` · `weekly-earnings-refresh-history`",
-   "why_it_is_not_model_bearing": "Reported EPS / surprise → `earnings_history`. Ingest"
+   "why_it_is_not_model_bearing": "Inputs only — Reported EPS / surprise → `earnings_history`. Ingest. A predicate-only import of `EARNINGS_NOT_RETIRED_SQL` from `lib.earnings_reactions` excludes retired calendar sources; it does not call scoring, classification or recommendation functions and does not make this ingest job a model."
   },
   {
    "job": "`compute-earnings-reactions`",
    "scheduler": "`daily-earnings-refresh-reactions` · `weekly-earnings-refresh-reactions`",
-   "why_it_is_not_model_bearing": "Derives post-earnings move statistics into `earnings_reactions`. Descriptive statistics over history, not a call on any position; MODEL-EARN-001 is the model that reads them"
+   "why_it_is_not_model_bearing": "Inputs only — derives post-event statistics and source/maturity evidence into existing `earnings_reactions`; no upcoming position decision. Its `lib.earnings_reactions` imports reach clock/calendar, price-basis/native-input qualification and sampled daily closing descriptors, not playability, lean, classifier or recommendation calls. Reproduce with the actual producer import/call sites and `tests/gcp/test_compute_earnings_reactions.py::test_native_pre10_prefix_is_qualified_by_actual_producer_not_short_path`; the separate brief is the native classifier consumer; MODEL-EARN-001 is the model that reads them. No original-PIT or forecast claim"
   },
   {
    "job": "`fetch-economic-events`",
@@ -462,17 +462,17 @@
   {
    "job": "`fetch-insider-transactions`",
    "scheduler": "`insider-transactions-daily`",
-   "why_it_is_not_model_bearing": "Form 4 filings → `insider_transactions`. Ingest"
+   "why_it_is_not_model_bearing": "Inputs only — Form 4 filings → `insider_transactions`. Ingest. A predicate-only import of `EARNINGS_NOT_RETIRED_SQL` from `lib.earnings_reactions` excludes retired calendar sources; it does not call scoring, classification or recommendation functions and does not make this ingest job a model."
   },
   {
    "job": "`fetch-sec-filings`",
    "scheduler": "`sec-filings-intraday`",
-   "why_it_is_not_model_bearing": "EDGAR filings → `sec_filings`. Ingest"
+   "why_it_is_not_model_bearing": "Inputs only — EDGAR filings → `sec_filings`. Ingest. A predicate-only import of `EARNINGS_NOT_RETIRED_SQL` from `lib.earnings_reactions` excludes retired calendar sources; it does not call scoring, classification or recommendation functions and does not make this ingest job a model."
   },
   {
    "job": "`fetch-news-sentiment` · `fetch-news-sentiment-earnings` · `fetch-news-sentiment-topics`",
    "scheduler": "`news-sentiment-hourly` · `news-sentiment-earnings-0600` · `news-topics-hourly`",
-   "why_it_is_not_model_bearing": "Vendor-scored sentiment → `news_sentiment`. The score is the vendor's; this job stores it"
+   "why_it_is_not_model_bearing": "Inputs only — Vendor-scored sentiment → `news_sentiment`. The score is the vendor's; this job stores it. A predicate-only import of `EARNINGS_NOT_RETIRED_SQL` from `lib.earnings_reactions` excludes retired calendar sources; it does not call scoring, classification or recommendation functions and does not make this ingest job a model."
   },
   {
    "job": "`fetch-top-movers`",
@@ -2624,7 +2624,7 @@
  ],
  "sources": {
   "docs/EXPERIMENT_REGISTRY.md": "9752340744b8580d57910eadb6df84c536081b42",
-  "docs/product/07-MODEL-REGISTRY.md": "d8f23bc5a258f5b6408e3f70816f8139dce9a25e",
+  "docs/product/07-MODEL-REGISTRY.md": "e6e7faa79193ad4a928df49e6ecba4ff583daae4",
   "scripts/gate/export_model_registry.py": "74e5fdc5bb2e7bf11894b3de2601c4dc8428122d"
  },
  "tables": [

@@ -1,0 +1,138 @@
+---
+feat_id: FEAT-INSIGHT-001
+req_ids: [REQ-PLAYBOOK-001, REQ-REL-001, REQ-DATA-001]
+issues: []
+canvases: []
+site_source_notes: [INSIGHTS-07]
+done_when:
+  - "tests/lib/test_trade_planner_distance_cap.py passes and fails on origin/main: on the 2026-11-06 inputs rebuilt from Alpha Vantage bars, the short trigger is PDL 647.05 for QQQ (not PYL 402.39), no trigger and the zero-size orb_only plan for IWM (not PYL 171.73) and PQL 729.10 for SPY (unchanged); every QQQ and SPY persona entry edge lies within 3.4 x ATR of the reference price; with reference 100 and ATR 4 an unbroken level at 109 (2.25 ATR but 9% of price) is not the trigger, so the 8% axis of the window binds on its own; the same price geometry gives a structural trigger at ATR 2 and no trigger at ATR 1 (the cap uses the ticker's own ATR); a structural level equal to pre_high (long) or pre_low (short) to the cent is unbroken; pre_low is never its own short trigger; every trigger returned is one of the context's own levels and is_blue_sky is always False; with reference 100 and ATR 1 an unbroken level at 103 (exactly 3 ATR) is the trigger and the regime is normal, with no extended-gap rationale"
+  - "tests/lib/test_trade_planner.py passes with only these tests changed, each named in the PR body: test_select_trigger_extended_when_next_level_far_away becomes test_select_trigger_far_level_beyond_cap_is_not_a_trigger (orb_only), test_select_trigger_short_mirror moves PML from 130 to 150 so it lies inside the window, test_extended_regime_rationale_includes_orb_recommendation reaches extended through the legacy single-level path, the four blue-sky synthesis tests now assert orb_only on the same fixtures, test_blue_sky_per_ticker_override_used_when_set is deleted with the field it tested, and test_select_trigger_orb_only_preserved_on_large_gap only loses the removed constant from its docstring"
+  - "No other behaviour changes: lib/strat_levels.py is not in the diff (the window and its constants are imported, not copied), the legacy single-level path and the stop anchor are unchanged, the exit_config_overrides.blue_sky_atr_offset column and its getter stay (no migration), and tests/agents, tests/gcp and tests/lib pass"
+  - "The PR body shows the old and new short trigger and the three persona entry zones for IWM, QQQ and SPY on 2026-11-06, with whether each would have filled against that day's regular-session low"
+  - "Source identity (INSIGHTS-07): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-INSIGHT-001, INSIGHTS-07) note row carries that source_identity_sha256"
+  - "The FEAT-INSIGHT-001 catalog record and the PR traceability entry are updated, the matched current-main-versus-branch docs_audit.py run reports nothing new, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
+status: approved
+supersedes: null
+---
+
+# Cap the insight planner's trigger walk at the brief's distance window and stop synthesizing triggers
+
+## Authority
+
+Proposed on 2026-11-07 by a FEAT-INSIGHT-001 delivery lane after the owner reported that the
+2026-11-06 insight entries for QQQ and IWM sat "extremely far" from price and asked for a fix, a rerun
+of Friday and a per-ticker ATR. On review the owner also ruled, in their words, "We need to remove any
+synthetic levels". It is not self-approved: it takes effect only when the owner authorizes
+the merge of the spec-only PR that adds it, and that merge is the approval its `status` records.
+
+The owner's GCP session had diagnosed the same defect on 2026-11-06 and asked for a cap of 3 ATR, 5 ATR
+or a per-ticker cap. This spec answers with the window the premarket brief already applies, measured in
+each ticker's own ATR(14), so the brief and the planner share one rule.
+
+## Problem
+
+Read in the code at origin/main bd88fa45.
+
+1. **No distance cap.** `select_trigger_and_regime` (`lib/agents/trade_planner.py:185-410`) returns
+   the nearest unbroken level in the trade direction however far away it is. On 2026-11-06 IWM's 4 AM
+   print of 269.13 broke PDL 270.52 and PML 269.875, so the short trigger became the 2025 yearly low
+   171.73, about 22 ATR below price; QQQ's became 402.39, about 15 ATR below. The 11-06 GCP read found
+   AVGO at 138.10 the same way. IWM's largest one-session move in the last two years was 3.79 ATR, so
+   these plans could not fill. The brief already drops such levels with `_within_staleness_window`
+   (`lib/strat_levels.py:926-942`: at most `MAX_TRIGGER_DISTANCE_ATR` 3.0 x ATR and
+   `MAX_TRIGGER_DISTANCE_PCT` 8% of price).
+2. **A touched level counts as broken.** Short candidates are levels strictly below
+   `min(ref, pre_low)` (`:288-291`), longs strictly above `max(ref, pre_high)` (`:276-279`). QQQ's
+   pre_low on 11-06 was 647.05, an extended-hours print at exactly the prior close and equal to PDL, so
+   PDL was skipped although price never traded through it.
+3. **The planner invents levels.** When no unbroken level is left and the gap is at most 1.5 ATR,
+   `select_trigger_and_regime` projects a "blue-sky" trigger at the nearest cleared level +/- 0.15 to
+   0.20 ATR (`:330-430`). That price is not on any chart or level map, and no other surface produces
+   it; the brief shows the ORB banner for the same state.
+
+ATR is already per ticker: `context_from_bundle` reads each ticker's `atr_14` from market_data_daily
+(`:912`). The defect is the uncapped walk, not the ATR.
+
+## Non-goals
+
+- No change to `lib/strat_levels.py`, the brief, the signal monitor or any threshold, weight or recipe.
+  The other inconsistencies the 2026-11-07 survey found between the brief and the planner (reference
+  price, level set, the brief reading a prior-day premarket row, fallback copy, the unwindowed stop
+  anchor) are separate specs.
+- No change to the legacy single-level path (no multi-timeframe levels) or to the stop anchor.
+- No filtering of Alpha Vantage echo prints in the premarket data; the tie rule makes an echo at a
+  level harmless here, and the data fix is its own change.
+- No rewrite of stored `insight_reports`.
+
+## Approaches considered
+
+1. Cap at 5 ATR, keeping 3 to 5 ATR as `extended`. Rejected: it keeps a second, looser rule beside the
+   brief's, and none of SPY, QQQ or IWM moved 5 ATR from the prior close in a session in two years.
+2. A per-ticker cap from each ticker's own move percentiles. Rejected for now: a new query in the
+   pipeline and a rule the brief does not share. The entry experiment that follows this fix can test it.
+3. Keep the blue-sky synth for levels dropped by the cap. Rejected by the owner's ruling, and the
+   2015-2026 replay below shows the synthesized triggers averaged slightly below 0R.
+4. Chosen: reuse the brief's window, imported from `lib.strat_levels`, on each ticker's own ATR, plus a
+   one-cent touch tolerance for structural levels, and no synthesized trigger: no level in the window
+   means `orb_only`.
+
+## Design
+
+`lib/agents/trade_planner.py`, `select_trigger_and_regime`, multi-timeframe path only:
+
+- `_TOUCH_TOLERANCE = 0.005`. A structural level (effective PDH/PDL, PW, PM, PQ, PY) counts as unbroken
+  when it is within the tolerance of the cleared mark; `pre_high` / `pre_low` keep the strict compare,
+  because each is the cleared mark itself.
+- Candidates are filtered with `_within_staleness_window(level, ref, atr)` around the reference price
+  (`pre_vwap`, else the close) with the ticker's ATR (`safe_atr()`). Dropped levels are logged.
+- With no candidate left the planner returns `orb_only` (zero size, "wait for the 15-min opening
+  range"). The blue-sky synthesis, `_BLUE_SKY_ATR_OFFSET`, `_BLUE_SKY_MAX_GAP_ATR`,
+  `PlanContext.blue_sky_atr_offset`, its lookup in `context_from_bundle` and the "Blue-sky" rationale
+  are removed. The return tuple keeps its fifth slot, always `False`, so callers still unpack five.
+- The orb_only rationale says no unbroken level lies within 3x ATR, since that is now why it fires.
+
+Consequence: a historical level is never more than 3 ATR away. The window is inclusive, so a level
+exactly 3 ATR away is a candidate, and the multi-timeframe path always returns `normal` (today the
+planner calls 3.0 ATR `extended`). `extended` is now reached only through the legacy path. The constant and the copy stay; the extended rationale test moves to the legacy path.
+
+## Expected effect
+
+On 2026-11-06 (local replay on Alpha Vantage bars): QQQ 402.39 to 647.05, IWM 171.73 to no trigger
+(orb_only), SPY 729.10 unchanged. QQQ and SPY stay unfilled that day because price rose. Days where the
+nearest unbroken level lies within the window are unchanged.
+
+Replay of 2015-02 to 2026-11 on SPY, QQQ and IWM 1-minute bars (17,128 plans per persona, both
+directions): the cap moves the 99th percentile trigger distance from 4.8 to 2.5 ATR and the worst
+from 31.8 to 4.2 ATR. Neutral-persona fill rate goes from 38% to 41% with mean R unchanged (+0.017 vs
++0.016, 95% CI about +/-0.015). The 870 blue-sky plans (5%) filled 84% of the time at -0.006R; they
+become orb_only. No entry method tested (persona zones, 15-min ORB break, prior-day break) shows an
+edge distinguishable from zero.
+
+## Capacity and cost
+
+- **Volume and velocity:** unchanged; no new query, row or call.
+- **Wall-clock:** unchanged.
+- **Cost:** $0 new GCP workload, schedule or resource.
+
+## Source identity and close-out
+
+`lib/` and `tests/` are inside SITE's watched scope (`docs/DOC_REGISTRY.md`, the row for
+`docs/product/03-SITE-TRACEABILITY.md`). INSIGHTS-07 names `lib/agents/trade_planner.py`. Only the
+`(FEAT-INSIGHT-001, INSIGHTS-07)` row of the Implementation-source notes table may describe this
+implementation, as backend source and local tests only, with no claim of deployment or review. Every
+other SITE byte stays unchanged.
+
+After the merge, separately and never as a pre-merge box: deploy the insight jobs, rerun 2026-11-06 in
+production as a replay, verify main's source and body identity in a fresh clone, complete the DOC main
+and staging close-out with real evidence, retire the sidecar as the product-delivery skill prescribes,
+and set the plan to `status: done` on a `docs/` branch.
+
+## Risks
+
+- **More plans fire near price.** Tickers that used to get an unreachable plan now get a reachable
+  structural one, so sizing applies on days it did not before.
+- **More orb_only at highs and lows.** Symbols at all-time highs, which got a blue-sky trigger since
+  the 2026-05-08 audit, now get the wait-for-ORB plan, as the brief already shows them. The entry experiment that
+  follows measures fill rate and R for this rule against the alternatives.
+- **The docs audit reads solyra's issues**; a session without solyra access cannot run it, so the owner
+  or a session with that access runs the matched pair before the PR is marked ready.

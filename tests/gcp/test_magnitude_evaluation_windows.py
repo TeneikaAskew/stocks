@@ -774,6 +774,31 @@ def test_expected_session_bars_follows_the_nyse_schedule():
     assert min(exp) == date(2026, 1, 2) and max(exp) == date(2026, 12, 31)
 
 
+def test_expected_session_bars_delayed_open():
+    """2002-09-11 opened at 12:00 ET (delayed open, 16:00 close): 4 hours is 16
+    fifteen-minute bars, not the 26 a 09:30 open would expect."""
+    from gcp.research.magnitude_engine import evaluation_windows as ew
+    window = ew.EvaluationWindow("sept11", date(2002, 9, 11), date(2002, 9, 12), "delayed open")
+    assert ew.expected_session_bars(window, 15) == {date(2002, 9, 11): 16}
+
+
+def test_window_calendar_raises_when_the_library_is_unimportable(monkeypatch):
+    """No BDay fallback and no RuntimeError rewording: the shared calendar's
+    ImportError reaches the caller (CLAUDE.md 3.7)."""
+    from gcp.research.magnitude_engine import evaluation_windows as ew
+    from lib import eastern_time
+    eastern_time._reset_session_cache()
+    monkeypatch.setitem(sys.modules, "pandas_market_calendars", None)
+    try:
+        with pytest.raises(ImportError):
+            ew.last_expected_session(WINDOWS["final_test"])
+        with pytest.raises(ImportError):
+            ew.expected_session_bars(WINDOWS["final_test"], 5)
+    finally:
+        monkeypatch.undo()
+        eastern_time._reset_session_cache()
+
+
 def test_a_failed_final_staging_is_recovered_from_the_recorded_verdict(monkeypatch):
     """A staging failure after the claim left no candidate and every rerun
     refused (Codex P1, round 7). Round 8: the same-run resume re-evaluated

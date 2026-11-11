@@ -199,6 +199,42 @@ class TestComputePass:
                     )
 
 
+    def test_persisted_strat_columns_keep_the_legacy_rule(self):
+        """market_data_daily.strat_candle / strat_combo are unversioned and
+        feed research features, so the backfill keeps legacy-pattern-v1
+        until a versioned migration exists (Codex r4480286402)."""
+        from lib.strat import StratClassifier
+        bars = _synth_bars(40)
+        last = bars['date'].iloc[-1]
+        tail = pd.DataFrame(
+            [(o, h, l, c) for (o, h, l, c) in
+             [(10, 12, 8, 11), (10, 11, 7, 8), (10, 13, 6, 12), (11, 14, 7, 13)]],
+            columns=['Open', 'High', 'Low', 'Close'])
+        tail['date'] = [last + timedelta(days=i + 1) for i in range(len(tail))]
+        tail['Volume'] = 2_000_000
+        bars = pd.concat([bars, tail[bars.columns]], ignore_index=True)
+        rows = {r['date']: r for r in mod._build_indicator_rows('TEST', bars)}
+        assert rows[tail['date'].iloc[-1]].get('strat_combo') == 'clean_2u_bull'
+        ohlc = bars.set_index('date')[['Open', 'High', 'Low', 'Close']].astype(float)
+        legacy = StratClassifier(rule_version='legacy-pattern-v1')
+        combos = legacy.detect_combos(ohlc, legacy.classify_series(ohlc))['strat_combo']
+        for day, combo in combos.items():
+            if day in rows:
+                assert rows[day].get('strat_combo') == (None if combo == 'none' else combo)
+
+
+    @pytest.mark.parametrize('path', ['gcp/fetchers/backfill_daily_indicators.py',
+                                      'gcp/fetchers/fetch_market_data.py',
+                                      'gcp/backfill_ticker.py'])
+    def test_every_market_data_daily_strat_writer_pins_the_legacy_rule(self, path):
+        """The live writer and both backfills write the same unversioned
+        columns; one of them on the new rule would mix semantics there."""
+        from pathlib import Path
+        source = Path(__file__).resolve().parents[2].joinpath(path).read_text()
+        assert 'StratClassifier(rule_version="legacy-pattern-v1")' in source
+        assert 'StratClassifier()' not in source
+
+
 class TestBackfillTicker:
     def test_backfill_ticker_upserts_rows(self):
         bars = _synth_bars(40)

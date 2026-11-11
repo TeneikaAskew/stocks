@@ -95,7 +95,29 @@ class LiveBar(ApiModel):
     volume: int
 
 
+class OpeningProjection(ApiModel):
+    status: str
+    reason: Optional[str] = None
+    ticker: str
+    session: Optional[str] = None
+    window_minutes: Optional[int] = None
+    window_start: Optional[str] = None
+    window_end: Optional[str] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
+    comparison_price: Optional[float] = None
+    comparison_as_of: Optional[str] = None
+    comparison_age_seconds: Optional[float] = None
+    price_basis: Optional[str] = None
+    source: Optional[str] = None
+    fetched_at: str
+    source_last_refreshed: Optional[str] = None
+    body_sha256: Optional[str] = None
+    calendar_version: Optional[str] = None
+
+
 class LiveHistoryResponse(ApiModel):
+    opening: Optional[OpeningProjection] = None
     ticker: str
     interval: str
     count: int
@@ -266,12 +288,25 @@ class MarketHoursWindow(ApiModel):
     close: str
 
 
+class EarlyClose(ApiModel):
+    """A half-day session: its date and its Eastern close, ``HH:MM``."""
+
+    date: str
+    close: str
+
+
 class MarketHoursResponse(ApiModel):
+    """``holidays`` and ``early_closes`` cover the current and next Eastern
+    year. ``holidays_2026`` is kept for solyra's replay picker until Spec C
+    moves it to ``holidays`` and removes it."""
+
     timezone: str
     regular: MarketHoursWindow
     pre_market: MarketHoursWindow
     after_hours: MarketHoursWindow
     holidays_2026: list[str]
+    holidays: list[str]
+    early_closes: list[EarlyClose]
 
 
 # ── main.py ──────────────────────────────────────────────────────────────
@@ -392,6 +427,13 @@ class MostActiveResponse(ApiModel):
 
 # ── dashboard.py ─────────────────────────────────────────────────────────
 
+# FEAT-STRAT-001: the field names stay ftfc_*; what they hold is displayed as
+# "TF bias". FTFC proper (price versus each current period open) is a
+# separate measure stored on premarket_analysis.tf_continuity.
+_TF_BIAS_SCORE = ("TF bias: weighted vote of candle types across timeframes (2U up, 2D down, "
+                  "1 and 3 zero), -1 to +1. Not price-versus-open FTFC.")
+_TF_BIAS_DIRECTION = "TF bias direction: bullish, bearish or mixed from the weighted candle vote."
+
 
 class DailyIndicators(ApiModel):
     """Either every key below or an empty object when the daily query failed."""
@@ -409,8 +451,8 @@ class DailyIndicators(ApiModel):
     strat_candle: Any = None
     strat_combo: Any = None
     strat_setup: Optional[bool] = None
-    ftfc_score: Optional[float] = None
-    ftfc_direction: Any = None
+    ftfc_score: Optional[float] = Field(default=None, description=_TF_BIAS_SCORE)
+    ftfc_direction: Any = Field(default=None, description=_TF_BIAS_DIRECTION)
     consecutive_up: Optional[int] = None
     consecutive_down: Optional[int] = None
     price_vs_ema9: Optional[float] = None
@@ -444,8 +486,8 @@ class DashboardBriefResponse(ApiModel):
     strat_candle: Any = None
     strat_combo: Any = None
     strat_setup: Optional[bool] = None
-    ftfc_score: Optional[float] = None
-    ftfc_direction: Any = None
+    ftfc_score: Optional[float] = Field(default=None, description=_TF_BIAS_SCORE)
+    ftfc_direction: Any = Field(default=None, description=_TF_BIAS_DIRECTION)
     daily_indicators: Optional[DailyIndicators] = None
     live: Optional[LiveOverlay] = None
 
@@ -487,7 +529,7 @@ class ReachRate(ApiModel):
 
 
 class MovementLevel(ApiModel):
-    # select_nearest_levels emits all five keys; the endpoint passes the
+    # SessionLevels.to_level_map emits all five keys; the endpoint passes the
     # assembler's output through unchanged, so only what every producer
     # (the router tests' stub assembler included) guarantees is required.
     price: float
@@ -905,6 +947,26 @@ class GammaLevel(ApiModel):
     tags: list[str]
 
 
+class SnapshotProvenance(ApiModel):
+    """Provenance of the stored options snapshot a response was built from.
+
+    Stored clock retained: ``snapshot_ts`` is the selected rows' own instant.
+    ``observed_at`` is when this response was assembled (re-stamped per response).
+    ``snapshot_age_seconds`` is a display age (observed_at minus snapshot_ts), not a
+    provider lag. ``freshness_status`` and ``completeness_status`` are always
+    ``unknown``; ``reason`` names the clock validation outcome, not a qualification.
+    """
+
+    provider: Optional[str] = None
+    market_session: Optional[str] = None
+    snapshot_ts: Optional[str] = None
+    observed_at: str
+    snapshot_age_seconds: Optional[int] = None
+    freshness_status: Literal["unknown"]
+    completeness_status: Literal["unknown"]
+    reason: Literal["legacy_snapshot_unqualified", "timestamp_invalid", "timestamp_future"]
+
+
 class GammaLevelsResponse(ApiModel):
     ticker: str
     snapshot_date: str
@@ -921,6 +983,7 @@ class GammaLevelsResponse(ApiModel):
     warnings: list[str]
     snapshot_timestamp: Optional[str] = None
     chain_size: int
+    snapshot_provenance: Optional[SnapshotProvenance] = None
 
 
 class GammaGridCell(ApiModel):
@@ -966,6 +1029,7 @@ class GammaGridResponse(ApiModel):
     strikes: list[float]
     window_pct: float
     warnings: list[str]
+    snapshot_provenance: Optional[SnapshotProvenance] = None
 
 
 class NodeLevel(ApiModel):
@@ -1461,6 +1525,10 @@ class FreshnessRow(ApiModel):
     status: str
     row_count_recent: int
     writer_job: Optional[str] = None
+    # Why the row is what it is when the other fields cannot say it; the
+    # `nyse_calendar` row carries the calendar exception's type and message
+    # (scripts/audit_data_freshness.py, FEAT-DATA-001).
+    detail: Optional[str] = None
 
 
 class FreshnessResponse(ApiModel):
