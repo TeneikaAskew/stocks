@@ -60,3 +60,14 @@ def test_snapshot_is_canonical_json():
     exporter = _load_exporter()
     text = exporter.SNAPSHOT.read_text(encoding="utf-8")
     assert text == exporter.render(json.loads(text))
+
+
+def test_the_ping_description_does_not_name_the_retired_service():
+    """solyra-api-prod was deleted on 2026-10-10 (#1366); the ping docstring
+    is part of the contract solyra vendors, so it must not describe that
+    service as the live one."""
+    spec = json.loads(_load_exporter().SNAPSHOT.read_text(encoding="utf-8"))
+    description = spec["paths"]["/api/earnings/health/ping"]["get"]["description"]
+    assert "solyra-api-prod" not in description
+    assert "sits behind IAP" not in description
+    assert "kept for manual and in-cluster warm-up" in description

@@ -4145,6 +4145,16 @@ RUNTIME_RELATION_COUNT = re.compile(r"(\d+)( runtime[- ](?:created )?relations)"
 RELATION_BREAKDOWN = re.compile(
     r"\((\d+) tables?, (\d+) materialized views?, (\d+) views?\)")
 
+# The total written just before that breakdown, in 05-a's two shapes:
+# "declares **70 relations** (67 tables, ...)" and "that file declares 70
+# (67 tables, ...)". Rendering the breakdown alone left the total behind: a
+# pull request adding two tables to gcp/schema.sql got "72 (71 tables, ...)"
+# from the render, while check_generated_docs requires the total to equal
+# the parts, so no committed text could satisfy both. The total is the sum of
+# the same three counts, so it is rendered with them.
+RELATION_TOTAL = re.compile(
+    r"(declares (?:\*\*)?)(\d+)((?: relations\*\*)? )(?=\(\d+ tables?, \d+ materialized views?, \d+ views?\))")
+
 
 # The three "as of" labels a human wrote into the prose, every one of which has
 # to track the snapshot the run was taken from. Deliberately literal: a looser
@@ -4345,6 +4355,7 @@ def insert_blocks(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str, 
             lambda _m: f"({t} table{'' if t == 1 else 's'}, "
                        f"{m_} materialized view{'' if m_ == 1 else 's'}, "
                        f"{v} view{'' if v == 1 else 's'})", new)
+        new = RELATION_TOTAL.sub(lambda m: f"{m.group(1)}{t + m_ + v}{m.group(3)}", new)
     # The as-of labels are inventory too, for exactly the same reason. Run 31
     # updated the header note and the closing line and left §3's table column
     # at the previous snapshot's date, failing the run on one stale label --

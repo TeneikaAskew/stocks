@@ -282,7 +282,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Priority | P2 |
 | Target phase | Phase 4 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-08 |
+| Last reviewed | 2026-11-10 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/insights` |
 | Backend | `/api/insights` (13) |
@@ -292,7 +292,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Tests | `insights.spec.ts`, `tests/agents/test_agent_*.py` |
 | Open issues | 31 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-insight-001--ai-insights-31-open) |
 | Blocking issues | [#827](https://github.com/TeneikaAskew/stocks/issues/827) [#867](https://github.com/TeneikaAskew/stocks/issues/867) [#1215](https://github.com/TeneikaAskew/stocks/issues/1215) [#1216](https://github.com/TeneikaAskew/stocks/issues/1216) [#1217](https://github.com/TeneikaAskew/stocks/issues/1217) [#916](https://github.com/TeneikaAskew/stocks/issues/916) |
-| Next action | The trigger distance cap merged in [#1746](https://github.com/TeneikaAskew/stocks/pull/1746) on 2026-11-08: a trigger only inside the brief's window, a level touched to the cent counts as unbroken, and no trigger is synthesized (orb_only instead). Next, under FEAT-STRAT-001: the one-level source ([#1753](https://github.com/TeneikaAskew/stocks/pull/1753), [spec](../superpowers/specs/2026-11-07-feat-strat-001-one-level-source-r2.md)) has the insight planner read the brief's session levels, recorded in `level_basis`, instead of walking levels on its own, and the per-ticker parameters spec ([#1754](https://github.com/TeneikaAskew/stocks/pull/1754)) replaces the fixed 3 x ATR(14) and 8% window with calibrated per-ticker values. Deployed verification is recorded after release gates; otherwise sequence from [13](13-ROADMAP.md) Phase 4. |
+| Next action | The one-level source merged in [#1753](https://github.com/TeneikaAskew/stocks/pull/1753): the insight planner reads the brief's session levels, recorded in `level_basis`, instead of walking levels on its own. Next, under FEAT-STRAT-001: the per-ticker parameters ([#1784](https://github.com/TeneikaAskew/stocks/pull/1784), [spec](../superpowers/specs/2026-11-10-feat-strat-001-per-ticker-params-r2.md)) replace the fixed 3 x ATR(14) and 8% window, entry buffers, stops and targets with values calibrated from each ticker's own history, and the insight planner and report read the same row the brief does. Deployed verification is recorded after release gates; otherwise sequence from [13](13-ROADMAP.md) Phase 4. |
 
 ### FEAT-CATALYST-001
 
@@ -305,7 +305,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Priority | P1 |
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-10 |
+| Last reviewed | 2026-11-11 |
 | Evidence status | Finite EPS source/local tests verified; event-bound reaction repairs ([#1608](https://github.com/TeneikaAskew/stocks/pull/1608)) locally validated; current-head external review, hosted checks and rollout pending; other catalyst work remains open |
 | UI surface | `/catalysts` |
 | Backend | `/api/catalysts`, `/api/earnings` |
@@ -539,14 +539,14 @@ EW-only retirement: [#1758](https://github.com/TeneikaAskew/stocks/pull/1758), f
 | Priority | P1 |
 | Target phase | Phase 6 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-10-12 |
+| Last reviewed | 2026-11-10 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | — |
 | Backend | — |
 | Data | — |
 | Models | — |
 | Code | `gcp/deploy.sh`, `platform/deploy.sh` (deploys `solyra-api-staging` only; `solyra-api-prod` retired 2026-10-10, [#1366](https://github.com/TeneikaAskew/stocks/pull/1366)), `gcp/cloudbuild/` |
-| Tests | static checks; `tests/gcp/test_platform_deploy_service_config.py` runs `platform/deploy.sh` against a stub `gcloud` and asserts the staging service's auth mode, service account, environment, secrets, ingress and the `SETUP_IAM` grant ([#1350](https://github.com/TeneikaAskew/stocks/pull/1350)), and that a run without `STAGING_SERVICE=1` or with `STAGING=1` is refused before any `gcloud` call; `tests/gcp/test_staging_deploy_paths.py` asserts the retired service has no deploy path ([#1366](https://github.com/TeneikaAskew/stocks/pull/1366)) |
+| Tests | static checks; `tests/gcp/test_platform_deploy_service_config.py` runs `platform/deploy.sh` against a stub `gcloud` and asserts the staging service's auth mode, service account, environment, secrets, ingress and the `SETUP_IAM` grant ([#1350](https://github.com/TeneikaAskew/stocks/pull/1350)), and that a run without `STAGING_SERVICE=1` or with `STAGING=1` is refused before any `gcloud` call; `tests/gcp/test_staging_deploy_paths.py` asserts the retired service has no deploy path ([#1366](https://github.com/TeneikaAskew/stocks/pull/1366)); `tests/scripts/test_refresh_architecture_drawio.py` asserts the diagrams and their generator draw no retired service and refuse a snapshot without table statistics, and `tests/api/test_dev_page_auth.py` covers the `/dev` proxy line ([#1384](https://github.com/TeneikaAskew/stocks/pull/1384)) |
 | Open issues | 15 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-deploy-001--infrastructure--deploy-15-open) |
 | Blocking issues | [#834](https://github.com/TeneikaAskew/stocks/issues/834) [#835](https://github.com/TeneikaAskew/stocks/issues/835) [#832](https://github.com/TeneikaAskew/stocks/issues/832) [#851](https://github.com/TeneikaAskew/stocks/issues/851) [#855](https://github.com/TeneikaAskew/stocks/issues/855) [#856](https://github.com/TeneikaAskew/stocks/issues/856) |
 | Next action | TBD — sequence from [13](13-ROADMAP.md) Phase 6 |
@@ -585,7 +585,7 @@ EW-only retirement: [#1758](https://github.com/TeneikaAskew/stocks/pull/1758), f
 | Priority | P1 |
 | Target phase | Phase 6 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-07 |
+| Last reviewed | 2026-11-10 |
 | Evidence status | LOCAL DELIVERY TOOLING VERIFIED — [#1470](https://github.com/TeneikaAskew/stocks/pull/1470) committed-source verifier and [#1538](https://github.com/TeneikaAskew/stocks/pull/1538) complete generated-inventory tooling merged after authenticated CODE review and required CI. Fresh actual-main identity, local-tool accepted/refused checks and terminal marker/record retirement verified in this DOC close-out. AV/global rollout and product deployment/data-freshness verification remain separate. |
 | UI surface | — |
 | Backend | — |
