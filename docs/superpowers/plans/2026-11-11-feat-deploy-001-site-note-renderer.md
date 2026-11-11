@@ -3,7 +3,7 @@ feat_id: FEAT-DEPLOY-001
 spec: docs/superpowers/specs/2026-11-11-feat-deploy-001-site-note-retired-renderer.md
 branch: fix/feat-deploy-001-site-note-renderer
 pr: 1794
-status: ready
+status: done
 ---
 
 # Retire the 03-SITE dead path left by the deleted prompt renderer: implementation plan
