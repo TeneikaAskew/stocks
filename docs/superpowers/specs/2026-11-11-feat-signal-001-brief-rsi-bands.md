@@ -11,7 +11,7 @@ done_when:
   - "scripts/analysis/brief_rsi_band_experiment.py, run as this spec's Experiment section states, reproduces the Experiment table to the digit, and the implementation PR body carries that table and the per-ticker Tier-A rows it rebuilt"
   - "Source identity (DASHBOARD-01): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-SIGNAL-001, DASHBOARD-01) note row carries that source_identity_sha256"
   - "The FEAT-SIGNAL-001 catalog record and the PR traceability entry are updated, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
-status: approved
+status: superseded
 supersedes: null
 ---
 
