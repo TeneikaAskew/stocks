@@ -14,6 +14,7 @@ from pathlib import Path
 import pandas as pd
 
 from lib.strat_levels import PARENT_BAR_HIGH, PARENT_BAR_LOW, build_session_levels
+from tests.lib.level_params_fixtures import fixture_params
 from tests.lib.session_levels_helpers import basis
 
 REPO = Path(__file__).resolve().parents[2]
@@ -39,7 +40,8 @@ def test_level_keys_are_parent_bar():
     idx = pd.bdate_range("2026-10-26", periods=3)
     df = pd.DataFrame([(100, 110, 90, 105), (104, 108, 95, 100), (100, 107, 96, 101)],
                       columns=["Open", "High", "Low", "Close"], index=idx, dtype=float)
-    sl = build_session_levels("TST", (idx[-1] + pd.offsets.BDay(1)).date(), df, 2.0)
+    sl = build_session_levels("TST", (idx[-1] + pd.offsets.BDay(1)).date(), df,
+                              {"atr_14": 2.0}, None, fixture_params("TST"))
     assert sl.level_named("parent_bar_high").price == 110.0
     assert sl.level_named("parent_bar_low").price == 90.0
     assert sl.level_named("effective_PDH") is None

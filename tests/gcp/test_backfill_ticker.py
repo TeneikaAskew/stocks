@@ -372,6 +372,10 @@ def _backfill_premarket_row(monkeypatch, target_high: float, target_low: float) 
     written = []
     monkeypatch.setattr(db, "query_to_dataframe", fake_query)
     monkeypatch.setattr(db, "upsert_dataframe", lambda frame, *a, **k: written.append(frame))
+    # SPY's print thresholds in force on fd (per-ticker parameters,
+    # 2026-11-08), here at the #1753 values.
+    from tests.lib.level_params_fixtures import install_level_params
+    install_level_params(monkeypatch, ["SPY"])
     mod.compute_indicators_for_dates("SPY", [fd])
     assert len(written) == 1
     return written[0].iloc[0].to_dict()
@@ -406,4 +410,5 @@ def test_backfill_premarket_passes_the_prior_session_inputs(monkeypatch):
     # ATR(14) is about 1.0, far below the target day's 80-point bar.
     assert seen["prev_close"] == pytest.approx(100.58)
     assert seen["prev_open"] == pytest.approx(100.58)
-    assert seen["atr14"] == pytest.approx(1.0, abs=0.05)
+    assert seen["atr"] == pytest.approx(1.0, abs=0.05)
+    assert seen["stale_print_atr"] == 0.1 and seen["spike_atr"] == 0.5

@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from datetime import date
 
-from lib.strat_levels import LEVEL_RULE_VERSION, SessionLevels, SideLevels
+from lib.strat_levels import LEVEL_RULE_VERSION, LevelParams, SessionLevels, SideLevels
+from tests.lib.level_params_fixtures import fixture_params
 
 _TF = {"D": "day", "W": "week", "M": "month", "Q": "quarter", "Y": "year"}
 _KIND = {"H": "high", "L": "low", "C": "close", "O": "open"}
@@ -26,10 +27,15 @@ def _level(name: str, price: float) -> dict:
 
 def basis(levels: dict, *, prior_close: float, atr, premarket: dict | None = None,
           session_date: date = date(2026, 11, 6), reference: float | None = None,
-          ticker: str = "TST") -> dict:
+          ticker: str = "TST", params: LevelParams | None = None) -> dict:
+    """`params` defaults to fixture_params (every key ok at the #1753
+    values), recorded on the basis as the brief records them; `atr` is the
+    ATR(14), the policy's day-one basis. A premarket snapshot is recorded as
+    filtered unless it says otherwise."""
     pm = None
     if premarket is not None:
-        pm = {"date": session_date.isoformat(), **premarket}
+        pm = {"date": session_date.isoformat(), "pre_filter_status": "ok", **premarket}
+    lp = params if params is not None else fixture_params(ticker, session_date)
     out = {
         "rule_version": LEVEL_RULE_VERSION,
         "ticker": ticker,
@@ -37,6 +43,9 @@ def basis(levels: dict, *, prior_close: float, atr, premarket: dict | None = Non
         "status": "ok",
         "last_bar_date": None,
         "atr": atr,
+        "atr_14": atr,
+        "atr_5": None,
+        **lp.to_basis(),
         "prior_close": prior_close,
         "premarket": pm,
         "levels": [_level(n, p) for n, p in levels.items()],
@@ -54,11 +63,17 @@ def session(levels: dict, **kw) -> SessionLevels:
 
 def with_triggers(*, long: float | None = None, short: float | None = None,
                   long_stop: float | None = None, short_stop: float | None = None,
-                  reference: float | None = None) -> SessionLevels:
+                  reference: float | None = None, atr: float | None = None,
+                  params: LevelParams | None = None) -> SessionLevels:
     """A SessionLevels whose sides carry exactly these picks, for the
     planner's offset arithmetic (entry buffers, ATR stops, R multiples),
-    which is the same whatever level the trigger came from."""
-    sl = SessionLevels(ticker="TST", session_date=date(2026, 4, 7), reference=reference)
+    which is the same whatever level the trigger came from. `atr` is the
+    ATR(14) the offsets are measured in; `params` defaults to fixture_params
+    (every key ok at the #1753 values)."""
+    session_date = date(2026, 4, 7)
+    lp = params if params is not None else fixture_params("TST", session_date)
+    sl = SessionLevels(ticker="TST", session_date=session_date, reference=reference,
+                       atr=atr, atr_14=atr, atr_basis=lp.atr_basis, params=lp)
 
     def _side(name, side, price, stop):
         if price is None:
