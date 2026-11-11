@@ -355,7 +355,20 @@ def run(tickers: List[str], effective_dates: List[date], *, query: QueryFn, writ
             unique.append(p)
     resolvers = [window_policy_resolver(policy_rows, p) for p in unique]
     window_at = {eff: resolvers[unique.index(policies[eff])] for eff in dates}
-    bounds = read_windows(unique, dates[0], dates[-1])
+    # A break session replays under the trigger window rows in force on it,
+    # so the daily read covers each calibration policy combined with every
+    # trigger window version in policy_rows (Codex P2 on 2a53b166: a
+    # shortened window lookback must not truncate older break sessions).
+    window_keys = {lc.trigger_window_key(side) for side in lc.SIDES}
+    versions = sorted({pd.Timestamp(r['effective_from']).normalize() for r in policy_rows
+                       if r.get('param_key') in window_keys})
+    bound_policies = list(unique)
+    for at in resolvers:
+        for v in versions:
+            q = at(v)
+            if q not in bound_policies:
+                bound_policies.append(q)
+    bounds = read_windows(bound_policies, dates[0], dates[-1])
     chunk = chunk_sessions or len(dates)
     for i, ticker in enumerate(tickers, 1):
         written = ok = 0

@@ -336,6 +336,32 @@ def test_break_sessions_use_the_window_policy_in_force_on_them():
     assert at("2014-06-02") == policy
 
 
+def test_daily_read_covers_an_older_longer_window_lookback(monkeypatch):
+    """Codex P2 on 2a53b166: the long trigger window lookback shortens
+    effective 2026-11-05. A nightly run for 11-06 still reads the daily bars
+    the older, longer window needs for break sessions before 11-05."""
+    db = FakeDb()
+    lb = int(job.read_policy(db.query, "2026-11-04")["trigger_window_long_atr"]["lookback_sessions"])
+    _add_policy(db, "trigger_window_long_atr", "2015-01-05", lookback_sessions=lb * 4)
+    _add_policy(db, "trigger_window_long_atr", "2026-11-05", lookback_sessions=lb)
+    old = job.read_policy(db.query, "2026-11-04")
+    rows = job.read_policy_rows(db.query, "2026-11-06")
+    starts = []
+    real = job.read_daily
+
+    def spy(query, ticker, start, before):
+        starts.append(start)
+        return real(query, ticker, start, before)
+
+    monkeypatch.setattr(job, "read_daily", spy)
+    job.run(["SPY"], [date(2026, 11, 6)], query=db.query, write=db.write, policy_rows=rows,
+            source="nightly")
+    new_only = job.read_windows(job.policy_on(rows, "2026-11-06"), "2026-11-06", "2026-11-06")
+    with_old = job.read_windows(old, "2026-11-06", "2026-11-06")
+    assert with_old["daily_start"] < new_only["daily_start"]
+    assert starts == [with_old["daily_start"]]
+
+
 class _FailingWrites(FakeDb):
     def __init__(self, fail_batch):
         super().__init__()
