@@ -2,7 +2,7 @@
 feat_id: FEAT-DEPLOY-001
 spec: docs/superpowers/specs/2026-11-01-feat-deploy-001-retire-ew-evaluator-source-note.md
 branch: fix/feat-deploy-001-retire-ew-strike-job
-pr: null
+pr: 1834
 status: ready
 ---
 
