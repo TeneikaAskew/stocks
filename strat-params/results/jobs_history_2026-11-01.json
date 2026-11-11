@@ -1,0 +1,326 @@
+{
+ "start": "2026-11-01",
+ "end": "2026-11-08",
+ "jobs": {
+  "premarket-brief": [
+   {
+    "name": "premarket-brief-rrxvs",
+    "created": "2026-11-06T13:30:10.362761Z",
+    "completed": "2026-11-06T13:31:26.605258Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:cf2f1a7bde8766ddc5ee5a1abe32d4fc9534d6b210c431ffff70113514cb9f8c"
+    ]
+   },
+   {
+    "name": "premarket-brief-8mpbj",
+    "created": "2026-11-05T13:30:03.950882Z",
+    "completed": "2026-11-05T13:30:56.890099Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "premarket-brief-q9r5l",
+    "created": "2026-11-04T13:30:13.730941Z",
+    "completed": "2026-11-04T13:31:04.495906Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "premarket-brief-4rn2v",
+    "created": "2026-11-03T13:30:02.632512Z",
+    "completed": "2026-11-03T13:30:50.642592Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "premarket-brief-pk6lk",
+    "created": "2026-11-02T13:30:02.558778Z",
+    "completed": "2026-11-02T13:31:02.600666Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "premarket-brief-wk7jb",
+    "created": "2026-11-02T02:00:06.314684Z",
+    "completed": "2026-11-02T02:01:14.785688Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   }
+  ],
+  "signal-monitor": [
+   {
+    "name": "signal-monitor-r2hbm",
+    "created": "2026-11-06T15:00:14.111979Z",
+    "completed": "2026-11-06T15:00:46.191757Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "signal-monitor-wpn8g",
+    "created": "2026-11-06T14:45:10.615070Z",
+    "completed": "2026-11-06T14:45:40.689334Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "signal-monitor-26xm4",
+    "created": "2026-11-06T14:25:00.295876Z",
+    "completed": "2026-11-06T21:00:45.787599Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "signal-monitor-rbfkq",
+    "created": "2026-11-05T15:00:44.186788Z",
+    "completed": "2026-11-05T15:01:09.498046Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "signal-monitor-5v9gj",
+    "created": "2026-11-05T14:45:04.335129Z",
+    "completed": "2026-11-05T14:45:42.146683Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "signal-monitor-xq6pn",
+    "created": "2026-11-04T15:00:05.659603Z",
+    "completed": "2026-11-04T15:00:52.607834Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "signal-monitor-8v6jx",
+    "created": "2026-11-04T14:45:04.059539Z",
+    "completed": "2026-11-04T14:45:29.568989Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "signal-monitor-49vwf",
+    "created": "2026-11-04T14:25:03.592803Z",
+    "completed": "2026-11-04T21:00:55.385292Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "signal-monitor-n2d8q",
+    "created": "2026-11-03T15:00:05.871399Z",
+    "completed": "2026-11-03T15:00:46.182717Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "signal-monitor-xzcbf",
+    "created": "2026-11-03T14:45:10.629162Z",
+    "completed": "2026-11-03T14:45:43.804468Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "signal-monitor-wjjnf",
+    "created": "2026-11-03T14:25:04.451547Z",
+    "completed": "2026-11-03T21:00:16.940581Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "signal-monitor-nbhnj",
+    "created": "2026-11-02T15:00:05.624361Z",
+    "completed": "2026-11-02T15:00:34.126790Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "signal-monitor-xjgt9",
+    "created": "2026-11-02T14:45:03.954460Z",
+    "completed": "2026-11-02T14:45:33.830365Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "signal-monitor-gmsc7",
+    "created": "2026-11-02T14:25:04.600498Z",
+    "completed": "2026-11-02T21:00:23.375204Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   }
+  ],
+  "signal-monitor-eod-resolver": [
+   {
+    "name": "signal-monitor-eod-resolver-755zq",
+    "created": "2026-11-06T21:30:03.706340Z",
+    "completed": "2026-11-06T21:30:36.967550Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "signal-monitor-eod-resolver-zrxn6",
+    "created": "2026-11-05T21:30:47.694489Z",
+    "completed": "2026-11-05T21:31:23.299266Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "signal-monitor-eod-resolver-tgzpj",
+    "created": "2026-11-04T21:30:25.818414Z",
+    "completed": "2026-11-04T21:30:55.046023Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "signal-monitor-eod-resolver-ftkzh",
+    "created": "2026-11-03T21:30:03.363469Z",
+    "completed": "2026-11-03T21:30:32.349665Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "signal-monitor-eod-resolver-mdpr8",
+    "created": "2026-11-02T21:30:03.546772Z",
+    "completed": "2026-11-02T21:30:24.099263Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   }
+  ],
+  "fetch-premarket-refresh": [
+   {
+    "name": "fetch-premarket-refresh-gmxlp",
+    "created": "2026-11-06T13:20:04.941739Z",
+    "completed": "2026-11-06T13:20:53.009713Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "fetch-premarket-refresh-5mpgk",
+    "created": "2026-11-05T13:20:03.876462Z",
+    "completed": "2026-11-05T13:20:40.048039Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "fetch-premarket-refresh-g5lld",
+    "created": "2026-11-04T13:20:05.743880Z",
+    "completed": "2026-11-04T13:20:35.904185Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "fetch-premarket-refresh-2kh2d",
+    "created": "2026-11-03T13:20:03.915209Z",
+    "completed": "2026-11-03T13:20:38.279162Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   },
+   {
+    "name": "fetch-premarket-refresh-89h6g",
+    "created": "2026-11-02T13:20:04.076027Z",
+    "completed": "2026-11-02T13:21:14.063372Z",
+    "succeeded": 1,
+    "failed": null,
+    "images": [
+     "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7"
+    ]
+   }
+  ]
+ },
+ "images": {
+  "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7": {
+   "upload": null,
+   "digest": "sha256:a8af7bc74f281c7d7de4c384e942b58690931cca380467119ec2447fe891c9a7",
+   "tags": null
+  },
+  "us-east1-docker.pkg.dev/adept-mountain-474619-d4/trading/trading-system@sha256:cf2f1a7bde8766ddc5ee5a1abe32d4fc9534d6b210c431ffff70113514cb9f8c": {
+   "upload": null,
+   "digest": "sha256:cf2f1a7bde8766ddc5ee5a1abe32d4fc9534d6b210c431ffff70113514cb9f8c",
+   "tags": null
+  }
+ }
+}

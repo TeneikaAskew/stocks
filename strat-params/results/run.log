@@ -1,0 +1,149 @@
+[04:45:01Z] 1/7 worktrees: #1766 head and origin/main (#1753 as merged)
+[04:45:03Z] branch e4bb463e, main e851aef6
+[04:45:03Z] 2/7 daily export (already in GCS from the #1753 replay)
+[04:45:12Z] daily rows: 7938
+[04:45:12Z] 3/7 one-minute bars, read-only, chunked under the 50,000-row cap
+SPY months 142 bars 2479158 from 2015-01 to 2026-11
+QQQ months 142 bars 2326186 from 2015-01 to 2026-11
+IWM months 143 bars 2046223 from 2015-01 to 2026-11
+193 statements, 193 to fetch
+run 1: SPY 2015-01, SPY 2015-03, SPY 2015-05, SPY 2015-07, SPY 2015-09, SPY 2015-11 ok
+run 2: SPY 2016-01, SPY 2016-03, SPY 2016-05, SPY 2016-07, SPY 2016-09, SPY 2016-11 ok
+run 3: SPY 2017-02, SPY 2017-05, SPY 2017-08, SPY 2017-11, SPY 2018-02, SPY 2018-04 ok
+run 4: SPY 2018-06, SPY 2018-08, SPY 2018-10, SPY 2018-12, SPY 2019-02, SPY 2019-04 ok
+run 5: SPY 2019-06, SPY 2019-08, SPY 2019-10, SPY 2019-12, SPY 2020-02, SPY 2020-04 ok
+run 6: SPY 2020-06, SPY 2020-08, SPY 2020-10, SPY 2020-12, SPY 2021-02, SPY 2021-04 ok
+run 7: SPY 2021-06, SPY 2021-08, SPY 2021-10, SPY 2021-12, SPY 2022-02, SPY 2022-04 ok
+run 8: SPY 2022-06, SPY 2022-08, SPY 2022-10, SPY 2022-12, SPY 2023-02, SPY 2023-04 ok
+run 9: SPY 2023-06, SPY 2023-08, SPY 2023-10, SPY 2023-12, SPY 2024-02, SPY 2024-04 ok
+run 10: SPY 2024-06, SPY 2024-08, SPY 2024-10, SPY 2024-12, SPY 2025-02, SPY 2025-04 ok
+run 11: SPY 2025-06, SPY 2025-08, SPY 2025-10, SPY 2026-01, SPY 2026-03, SPY 2026-04 ok
+run 12: SPY 2026-05, SPY 2026-06, SPY 2026-07, SPY 2026-08, SPY 2026-09, SPY 2026-10 ok
+run 13: QQQ 2015-01, QQQ 2015-04, QQQ 2015-07, QQQ 2015-10, QQQ 2016-01, QQQ 2016-04 ok
+run 14: QQQ 2016-07, QQQ 2016-10, QQQ 2017-02, QQQ 2017-06, QQQ 2017-09, QQQ 2017-12 ok
+run 15: QQQ 2018-03, QQQ 2018-05, QQQ 2018-08, QQQ 2018-10, QQQ 2018-12, QQQ 2019-02 ok
+run 16: QQQ 2019-05, QQQ 2019-07, QQQ 2019-09, QQQ 2019-12, QQQ 2020-02, QQQ 2020-04 ok
+run 17: QQQ 2020-06, QQQ 2020-08, QQQ 2020-10, QQQ 2020-12, QQQ 2021-02, QQQ 2021-04 ok
+run 18: QQQ 2021-06, QQQ 2021-08, QQQ 2021-10, QQQ 2021-12, QQQ 2022-02, QQQ 2022-04 ok
+run 19: QQQ 2022-06, QQQ 2022-08, QQQ 2022-10, QQQ 2022-12, QQQ 2023-02, QQQ 2023-04 ok
+run 20: QQQ 2023-06, QQQ 2023-08, QQQ 2023-10, QQQ 2023-12, QQQ 2024-02, QQQ 2024-04 ok
+run 21: QQQ 2024-06, QQQ 2024-08, QQQ 2024-10, QQQ 2024-12, QQQ 2025-02, QQQ 2025-04 ok
+run 22: QQQ 2025-06, QQQ 2025-08, QQQ 2025-10, QQQ 2026-01, QQQ 2026-03, QQQ 2026-04 ok
+run 23: QQQ 2026-05, QQQ 2026-06, QQQ 2026-07, QQQ 2026-08, QQQ 2026-09, QQQ 2026-10 ok
+run 24: IWM 2015-01, IWM 2015-05, IWM 2015-09, IWM 2016-01, IWM 2016-05, IWM 2016-09 ok
+run 25: IWM 2017-01, IWM 2017-05, IWM 2017-08, IWM 2017-12, IWM 2018-04, IWM 2018-08 ok
+run 26: IWM 2018-11, IWM 2019-03, IWM 2019-07, IWM 2019-11, IWM 2020-03, IWM 2020-06 ok
+run 27: IWM 2020-09, IWM 2020-12, IWM 2021-03, IWM 2021-06, IWM 2021-09, IWM 2021-11 ok
+run 28: IWM 2022-01, IWM 2022-03, IWM 2022-05, IWM 2022-07, IWM 2022-09, IWM 2022-11 ok
+run 29: IWM 2023-01, IWM 2023-03, IWM 2023-05, IWM 2023-07, IWM 2023-09, IWM 2023-11 ok
+run 30: IWM 2024-01, IWM 2024-03, IWM 2024-05, IWM 2024-07, IWM 2024-09, IWM 2024-11 ok
+run 31: IWM 2025-01, IWM 2025-03, IWM 2025-05, IWM 2025-07, IWM 2025-09, IWM 2025-11 ok
+run 32: IWM 2026-01, IWM 2026-03, IWM 2026-05, IWM 2026-06, IWM 2026-07, IWM 2026-08 ok
+run 33: IWM 2026-10 ok
+SPY wrote 2479158 bars
+QQQ wrote 2326186 bars
+IWM wrote 2046223 bars
+[05:21:24Z] 4/7 history-mode calibration through the job's own run() (#1766 worktree)
+SPY daily 2646 2016-05-02 2026-11-06 minutes 2479158 2015-01-02 09:05:00+00:00 2026-11-10 01:00:00+00:00
+QQQ daily 2646 2016-05-02 2026-11-06 minutes 2326186 2015-01-02 09:36:00+00:00 2026-11-10 00:59:00+00:00
+IWM daily 2646 2016-05-02 2026-11-06 minutes 2046223 2015-01-02 11:29:00+00:00 2026-11-10 01:00:00+00:00
+run 2c4b324e-0e3a-42f1-bd5b-7906e3964b90: 205620 rows, ok ['SPY', 'QQQ', 'IWM'], failed [], 505 s
+status  insufficient_history     ok
+ticker                             
+IWM                    40716  27824
+QQQ                    38224  30316
+SPY                    42514  26026
+[05:30:12Z] 5/7 done_when 4 evidence
+SPY done
+QQQ done
+IWM done
+[05:35:05Z] 6/7 picks through the brief path, #1766 and #1753
+version #1766 rows 7938
+SPY done 2644 228 s
+QQQ done 5288 455 s
+IWM done 7932 680 s
+version #1753 rows 7938
+SPY done 2644 182 s
+QQQ done 5288 365 s
+IWM done 7932 549 s
+[05:46:33Z] 7/7 done_when 14 comparison
+[05:46:34Z] done; pushing results
+[05:46:37Z] pushed 68a39759
+[16:06:06Z] 1/7 worktrees: #1766 head and origin/main (#1753 as merged)
+[16:06:22Z] branch c5c70a2d, main 47f77f49
+[16:06:22Z] 2/7 daily export (already in GCS from the #1753 replay)
+[16:06:22Z] daily rows: 7938
+[16:06:22Z] 3/7 one-minute bars, read-only, chunked under the 50,000-row cap
+SPY months 142 bars 2479158 from 2015-01 to 2026-11
+QQQ months 142 bars 2326186 from 2015-01 to 2026-11
+IWM months 143 bars 2046223 from 2015-01 to 2026-11
+193 statements, 0 to fetch
+SPY wrote 2479158 bars
+QQQ wrote 2326186 bars
+IWM wrote 2046223 bars
+[16:06:28Z] 4/7 history-mode calibration through the job's own run() (#1766 worktree)
+SPY daily 2646 2016-05-02 2026-11-06 minutes 2479158 2015-01-02 09:05:00+00:00 2026-11-10 01:00:00+00:00
+QQQ daily 2646 2016-05-02 2026-11-06 minutes 2326186 2015-01-02 09:36:00+00:00 2026-11-10 00:59:00+00:00
+IWM daily 2646 2016-05-02 2026-11-06 minutes 2046223 2015-01-02 11:29:00+00:00 2026-11-10 01:00:00+00:00
+run e72dbb7f-fb61-48ae-9ca5-cf00aebc9cfa: 205620 rows, ok ['SPY', 'QQQ', 'IWM'], failed [], 440 s
+status  insufficient_history     ok
+ticker                             
+IWM                    40735  27805
+QQQ                    38228  30312
+SPY                    42521  26019
+[16:14:10Z] 5/7 done_when 4 evidence
+SPY done
+QQQ done
+IWM done
+[16:18:18Z] 5b/7 spike threshold diagnostic (wick excess, regular session vs premarket)
+[16:18:37Z] 6/7 picks through the brief path, #1766 and #1753
+version #1766 rows 7938
+SPY done 2644 201 s
+QQQ done 5288 394 s
+IWM done 7932 592 s
+version #1753 rows 7938
+SPY done 2644 166 s
+QQQ done 5288 329 s
+IWM done 7932 492 s
+[16:28:37Z] 7/7 done_when 14 comparison
+[16:28:38Z] done; pushing results
+[16:28:42Z] pushed 2d94b634
+[19:05:17Z] 1/7 worktrees: feature/feat-strat-001-level-params-recut head and origin/main (#1753 as merged)
+[19:05:20Z] branch 7ddf66c6, main 4f552e93
+[19:05:20Z] 2/7 daily export (already in GCS from the #1753 replay)
+[19:05:20Z] daily rows: 7938
+[19:05:20Z] 3/7 one-minute bars, read-only, chunked under the 50,000-row cap
+SPY months 142 bars 2479158 from 2015-01 to 2026-11
+QQQ months 142 bars 2326186 from 2015-01 to 2026-11
+IWM months 143 bars 2046223 from 2015-01 to 2026-11
+193 statements, 0 to fetch
+SPY wrote 2479158 bars
+QQQ wrote 2326186 bars
+IWM wrote 2046223 bars
+[19:05:29Z] 4/7 history-mode calibration through the job's own run() (#1766 worktree)
+SPY daily 2646 2016-05-02 2026-11-06 minutes 2479158 2015-01-02 09:05:00+00:00 2026-11-10 01:00:00+00:00
+QQQ daily 2646 2016-05-02 2026-11-06 minutes 2326186 2015-01-02 09:36:00+00:00 2026-11-10 00:59:00+00:00
+IWM daily 2646 2016-05-02 2026-11-06 minutes 2046223 2015-01-02 11:29:00+00:00 2026-11-10 01:00:00+00:00
+run 84421818-74f3-40bd-929e-a9a9a7e8eed8: 205620 rows, ok ['SPY', 'QQQ', 'IWM'], failed [], 436 s
+status  insufficient_history     ok
+ticker                             
+IWM                    41145  27395
+QQQ                    38208  30332
+SPY                    42479  26061
+[19:13:07Z] 5/7 done_when 4 evidence
+SPY done
+QQQ done
+IWM done
+[19:17:17Z] 5b/7 spike threshold diagnostic (wick excess, regular session vs premarket)
+[19:17:36Z] 6/7 picks through the brief path, #1766 and #1753
+version #1766 rows 7938
+SPY done 2644 196 s
+QQQ done 5288 392 s
+IWM done 7932 597 s
+version #1753 rows 7938
+SPY done 2644 155 s
+QQQ done 5288 316 s
+IWM done 7932 478 s
+[19:27:41Z] 7/7 done_when 14 comparison
+[19:27:42Z] done; pushing results
+[19:27:51Z] pushed ce17dbdc
