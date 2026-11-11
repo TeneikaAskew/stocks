@@ -1,0 +1,311 @@
+{
+ "label": "main",
+ "sha": "d7a0100e",
+ "day": "2026-11-05",
+ "exit": 0,
+ "summary": "\n======================================================================\nREPLAY SUMMARY\n======================================================================\nWindow: 2026-11-05 -> 2026-11-06\nTickers: SPY, QQQ, IWM\n\nTicker  Bars      Fires   \nSPY     390       5       \nQQQ     390       5       \nIWM     390       5       \n\nDirection:  CALL=7  PUT=8\nBrief alignment: untagged=10  invalidated=1  opposed=4\nLevel state:     fresh=10  post_t1_open=4  triggered=1\nCorrected RVOL:  n=15/15 median 2.31  below 1.0 0%\nTimeframe distribution:\n  15m          3  ( 20.0%)\n  30m          9  ( 60.0%)\n  60m          3  ( 20.0%)\n\nStacked agreements: 0 (0.0% of fires)\n\nSample fires (first 5):\n  2026-11-05 14:31:00+00:00 SPY CALL score=3 tf=30m | 'CALL SIGNAL [30m] @ $763.86'\n  2026-11-05 14:32:00+00:00 SPY CALL score=3 tf=30m | 'CALL SIGNAL [30m] @ $763.53'\n  2026-11-05 14:33:00+00:00 SPY CALL score=3 tf=30m | 'CALL SIGNAL [30m] @ $763.20'\n  2026-11-05 14:34:00+00:00 SPY CALL score=3 tf=30m | 'CALL SIGNAL [30m] @ $762.25'\n  2026-11-05 14:38:00+00:00 SPY CALL score=3 tf=30m | 'CALL SIGNAL [30m] @ $760.51'\n",
+ "fires": [
+  {
+   "timestamp": "2026-11-05T14:31:00+00:00",
+   "ticker": "SPY",
+   "direction": "CALL",
+   "base_score": 3,
+   "total_score": 3.575,
+   "brief_alignment": null,
+   "level_state": "fresh",
+   "opp_level_state": "fresh",
+   "rvol_mod": 1.0545492011127304,
+   "timeframe_tag": "30m",
+   "expected_hold_min": 30,
+   "strategy_agreement": null,
+   "conditions_met": [
+    "consecutive_down",
+    "below_vwap",
+    "stoch_rsi_oversold"
+   ],
+   "embed_title": "CALL SIGNAL [30m] @ $763.86"
+  },
+  {
+   "timestamp": "2026-11-05T14:32:00+00:00",
+   "ticker": "SPY",
+   "direction": "CALL",
+   "base_score": 3,
+   "total_score": 4.4,
+   "brief_alignment": null,
+   "level_state": "fresh",
+   "opp_level_state": "fresh",
+   "rvol_mod": 2.313649691066732,
+   "timeframe_tag": "30m",
+   "expected_hold_min": 30,
+   "strategy_agreement": null,
+   "conditions_met": [
+    "consecutive_down",
+    "below_vwap",
+    "stoch_rsi_oversold"
+   ],
+   "embed_title": "CALL SIGNAL [30m] @ $763.53"
+  },
+  {
+   "timestamp": "2026-11-05T14:33:00+00:00",
+   "ticker": "SPY",
+   "direction": "CALL",
+   "base_score": 3,
+   "total_score": 3.3000000000000003,
+   "brief_alignment": null,
+   "level_state": "fresh",
+   "opp_level_state": "triggered",
+   "rvol_mod": 1.4423587985217299,
+   "timeframe_tag": "30m",
+   "expected_hold_min": 30,
+   "strategy_agreement": null,
+   "conditions_met": [
+    "consecutive_down",
+    "below_vwap",
+    "stoch_rsi_oversold"
+   ],
+   "embed_title": "CALL SIGNAL [30m] @ $763.20"
+  },
+  {
+   "timestamp": "2026-11-05T14:34:00+00:00",
+   "ticker": "SPY",
+   "direction": "CALL",
+   "base_score": 3,
+   "total_score": 3.575,
+   "brief_alignment": null,
+   "level_state": "fresh",
+   "opp_level_state": "post_t1",
+   "rvol_mod": 2.7437060806515956,
+   "timeframe_tag": "30m",
+   "expected_hold_min": 30,
+   "strategy_agreement": null,
+   "conditions_met": [
+    "consecutive_down",
+    "below_vwap",
+    "stoch_rsi_oversold"
+   ],
+   "embed_title": "CALL SIGNAL [30m] @ $762.25"
+  },
+  {
+   "timestamp": "2026-11-05T14:38:00+00:00",
+   "ticker": "SPY",
+   "direction": "CALL",
+   "base_score": 3,
+   "total_score": 3.575,
+   "brief_alignment": null,
+   "level_state": "fresh",
+   "opp_level_state": "post_t1",
+   "rvol_mod": 3.1911917036754813,
+   "timeframe_tag": "30m",
+   "expected_hold_min": 30,
+   "strategy_agreement": null,
+   "conditions_met": [
+    "consecutive_down",
+    "below_vwap",
+    "stoch_rsi_oversold"
+   ],
+   "embed_title": "CALL SIGNAL [30m] @ $760.51"
+  },
+  {
+   "timestamp": "2026-11-05T15:12:00+00:00",
+   "ticker": "QQQ",
+   "direction": "CALL",
+   "base_score": 3,
+   "total_score": 4.5,
+   "brief_alignment": "invalidated",
+   "level_state": "fresh",
+   "opp_level_state": "post_t1_open",
+   "rvol_mod": 4.5531325329401575,
+   "timeframe_tag": "30m",
+   "expected_hold_min": 30,
+   "strategy_agreement": null,
+   "conditions_met": [
+    "rsi_oversold_zone",
+    "below_vwap",
+    "stoch_rsi_oversold"
+   ],
+   "embed_title": "CALL SIGNAL [30m] [brief:invalidated] @ $662.03"
+  },
+  {
+   "timestamp": "2026-11-05T15:35:00+00:00",
+   "ticker": "QQQ",
+   "direction": "PUT",
+   "base_score": 3,
+   "total_score": 4.0,
+   "brief_alignment": "opposed",
+   "level_state": "post_t1_open",
+   "opp_level_state": "fresh",
+   "rvol_mod": 8.635487894035178,
+   "timeframe_tag": "60m",
+   "expected_hold_min": 60,
+   "strategy_agreement": null,
+   "conditions_met": [
+    "consecutive_up",
+    "rsi_overbought_zone",
+    "stoch_rsi_overbought"
+   ],
+   "embed_title": "PUT SIGNAL [60m] [brief:opposed] @ $661.74"
+  },
+  {
+   "timestamp": "2026-11-05T16:09:00+00:00",
+   "ticker": "QQQ",
+   "direction": "PUT",
+   "base_score": 3,
+   "total_score": 3.25,
+   "brief_alignment": "opposed",
+   "level_state": "post_t1_open",
+   "opp_level_state": "fresh",
+   "rvol_mod": 9.696337779087761,
+   "timeframe_tag": "60m",
+   "expected_hold_min": 60,
+   "strategy_agreement": null,
+   "conditions_met": [
+    "consecutive_up",
+    "rsi_overbought_zone",
+    "stoch_rsi_overbought"
+   ],
+   "embed_title": "PUT SIGNAL [60m] [brief:opposed] @ $654.21"
+  },
+  {
+   "timestamp": "2026-11-05T16:10:00+00:00",
+   "ticker": "QQQ",
+   "direction": "PUT",
+   "base_score": 3,
+   "total_score": 3.25,
+   "brief_alignment": "opposed",
+   "level_state": "post_t1_open",
+   "opp_level_state": "fresh",
+   "rvol_mod": 5.994700306038665,
+   "timeframe_tag": "15m",
+   "expected_hold_min": 15,
+   "strategy_agreement": null,
+   "conditions_met": [
+    "consecutive_up",
+    "rsi_overbought_zone",
+    "stoch_rsi_overbought"
+   ],
+   "embed_title": "PUT SIGNAL [15m] [brief:opposed] @ $655.62"
+  },
+  {
+   "timestamp": "2026-11-05T16:11:00+00:00",
+   "ticker": "QQQ",
+   "direction": "PUT",
+   "base_score": 3,
+   "total_score": 3.25,
+   "brief_alignment": "opposed",
+   "level_state": "post_t1_open",
+   "opp_level_state": "fresh",
+   "rvol_mod": 10.055376158363497,
+   "timeframe_tag": "60m",
+   "expected_hold_min": 60,
+   "strategy_agreement": null,
+   "conditions_met": [
+    "consecutive_up",
+    "rsi_overbought_zone",
+    "stoch_rsi_overbought"
+   ],
+   "embed_title": "PUT SIGNAL [60m] [brief:opposed] @ $656.10"
+  },
+  {
+   "timestamp": "2026-11-05T14:32:00+00:00",
+   "ticker": "IWM",
+   "direction": "PUT",
+   "base_score": 3,
+   "total_score": 1.375,
+   "brief_alignment": null,
+   "level_state": "fresh",
+   "opp_level_state": "triggered",
+   "rvol_mod": 1.0791529667280022,
+   "timeframe_tag": "30m",
+   "expected_hold_min": 30,
+   "strategy_agreement": null,
+   "conditions_met": [
+    "consecutive_up",
+    "above_vwap",
+    "stoch_rsi_overbought"
+   ],
+   "embed_title": "PUT SIGNAL [30m] @ $284.10"
+  },
+  {
+   "timestamp": "2026-11-05T14:33:00+00:00",
+   "ticker": "IWM",
+   "direction": "PUT",
+   "base_score": 4,
+   "total_score": 3.3000000000000003,
+   "brief_alignment": null,
+   "level_state": "fresh",
+   "opp_level_state": "triggered",
+   "rvol_mod": 1.4271817638753124,
+   "timeframe_tag": "15m",
+   "expected_hold_min": 15,
+   "strategy_agreement": null,
+   "conditions_met": [
+    "consecutive_up",
+    "rsi_overbought_zone",
+    "above_vwap",
+    "stoch_rsi_overbought"
+   ],
+   "embed_title": "PUT SIGNAL [15m] @ $284.60"
+  },
+  {
+   "timestamp": "2026-11-05T14:34:00+00:00",
+   "ticker": "IWM",
+   "direction": "PUT",
+   "base_score": 3,
+   "total_score": 2.75,
+   "brief_alignment": null,
+   "level_state": "fresh",
+   "opp_level_state": "triggered",
+   "rvol_mod": 1.637338850735169,
+   "timeframe_tag": "15m",
+   "expected_hold_min": 15,
+   "strategy_agreement": null,
+   "conditions_met": [
+    "rsi_overbought_zone",
+    "above_vwap",
+    "stoch_rsi_overbought"
+   ],
+   "embed_title": "PUT SIGNAL [15m] @ $284.37"
+  },
+  {
+   "timestamp": "2026-11-05T14:35:00+00:00",
+   "ticker": "IWM",
+   "direction": "PUT",
+   "base_score": 3,
+   "total_score": 2.2,
+   "brief_alignment": null,
+   "level_state": "fresh",
+   "opp_level_state": "triggered",
+   "rvol_mod": 1.0970541354271208,
+   "timeframe_tag": "30m",
+   "expected_hold_min": 30,
+   "strategy_agreement": null,
+   "conditions_met": [
+    "rsi_overbought_zone",
+    "above_vwap",
+    "stoch_rsi_overbought"
+   ],
+   "embed_title": "PUT SIGNAL [30m] @ $284.60"
+  },
+  {
+   "timestamp": "2026-11-05T14:39:00+00:00",
+   "ticker": "IWM",
+   "direction": "CALL",
+   "base_score": 4,
+   "total_score": 4.675000000000001,
+   "brief_alignment": null,
+   "level_state": "triggered",
+   "opp_level_state": "fresh",
+   "rvol_mod": 1.6335031777004336,
+   "timeframe_tag": "30m",
+   "expected_hold_min": 30,
+   "strategy_agreement": null,
+   "conditions_met": [
+    "consecutive_down",
+    "rsi_oversold_zone",
+    "below_vwap",
+    "stoch_rsi_oversold"
+   ],
+   "embed_title": "CALL SIGNAL [30m] @ $282.96"
+  }
+ ]
+}

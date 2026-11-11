@@ -1,0 +1,101 @@
+[
+ {
+  "table": "earnings_calendar",
+  "rows": 0,
+  "extra_keys": [],
+  "unfilled_columns": []
+ },
+ {
+  "table": "economic_events",
+  "rows": 58,
+  "extra_keys": [],
+  "unfilled_columns": []
+ },
+ {
+  "table": "exit_config_overrides",
+  "rows": 3,
+  "extra_keys": [],
+  "unfilled_columns": []
+ },
+ {
+  "table": "insight_reports",
+  "rows": 35,
+  "extra_keys": [],
+  "unfilled_columns": []
+ },
+ {
+  "table": "market_data_intraday",
+  "file": "intraday_IWM_2026-10.csv",
+  "rows": 19200
+ },
+ {
+  "table": "market_data_intraday",
+  "file": "intraday_IWM_2026-11.csv",
+  "rows": 6096
+ },
+ {
+  "table": "market_data_intraday",
+  "file": "intraday_QQQ_2026-10.csv",
+  "rows": 21120
+ },
+ {
+  "table": "market_data_intraday",
+  "file": "intraday_QQQ_2026-11.csv",
+  "rows": 6720
+ },
+ {
+  "table": "market_data_intraday",
+  "file": "intraday_SPY_2026-10.csv",
+  "rows": 21130
+ },
+ {
+  "table": "market_data_intraday",
+  "file": "intraday_SPY_2026-11.csv",
+  "rows": 6725
+ },
+ {
+  "table": "market_data_daily",
+  "rows": 2154,
+  "extra_keys": [
+   "intraday_return",
+   "return",
+   "rvol_10",
+   "volatility_30min",
+   "volatility_day",
+   "volume_ma_10",
+   "volume_ma_20",
+   "volume_usd"
+  ],
+  "unfilled_columns": []
+ },
+ {
+  "table": "premarket_analysis",
+  "rows": 36,
+  "extra_keys": [],
+  "unfilled_columns": []
+ },
+ {
+  "table": "premarket_analysis_history",
+  "rows": 48,
+  "extra_keys": [],
+  "unfilled_columns": []
+ },
+ {
+  "table": "sec_filings",
+  "rows": 0,
+  "extra_keys": [],
+  "unfilled_columns": []
+ },
+ {
+  "table": "strat_levels",
+  "rows": 824,
+  "extra_keys": [],
+  "unfilled_columns": []
+ },
+ {
+  "table": "ticker_calibration",
+  "rows": 13,
+  "extra_keys": [],
+  "unfilled_columns": []
+ }
+]
