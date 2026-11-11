@@ -281,11 +281,11 @@ Current-session ORB runtime draft: [#1642](https://github.com/TeneikaAskew/stock
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Experimental |
+| Status | Experimental; EW reader retirement source and local tests in Draft [#1800](https://github.com/TeneikaAskew/stocks/pull/1800) under the approved 2026-10-31 spec; external current-head review, hosted checks and rollout pending |
 | Priority | P2 |
 | Target phase | Phase 4 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-10 |
+| Last reviewed | 2026-11-11 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/insights` |
 | Backend | `/api/insights` (13) |
@@ -515,7 +515,7 @@ EW-only retirement: [#1758](https://github.com/TeneikaAskew/stocks/pull/1758), f
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation — logger #1607 image rollout verified; allowance #1606 source integrated, release gated; one NYSE session calendar in `lib/eastern_time.py` replaces the 2026-only holiday sets and the ad hoc library wrappers ([#1546](https://github.com/TeneikaAskew/stocks/pull/1546)); eleven fetcher readers exclude retired EW aliases in prepared source, rollout pending |
+| Status | Production but needs remediation — logger #1607 image rollout verified; allowance #1606 source integrated, release gated; one NYSE session calendar in `lib/eastern_time.py` replaces the 2026-only holiday sets and the ad hoc library wrappers ([#1546](https://github.com/TeneikaAskew/stocks/pull/1546)); the premarket brief's daily-data freshness check counts NYSE sessions, so sessions after an NYSE holiday are no longer skipped as STALE_DAILY_DATA (implementation under review, not deployed); eleven fetcher readers exclude retired EW aliases in prepared source, rollout pending |
 | Priority | P0 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |

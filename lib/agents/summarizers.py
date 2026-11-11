@@ -34,6 +34,7 @@ import numpy as np
 import pandas as pd
 
 from lib.eastern_time import ET_NAME
+from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
 from lib.strat_levels import PREMARKET_UNFILTERED_NOTE, LevelParamsUnavailable
 
 from .embeddings import format_vector_literal
@@ -1706,6 +1707,7 @@ def summarize_catalysts(
         "FROM earnings_calendar "
         "WHERE ticker = :ticker "
         "  AND earnings_date BETWEEN :start AND :end "
+        f"  AND {EARNINGS_NOT_RETIRED_SQL} "
         "ORDER BY earnings_date ASC LIMIT 5"
     )
     earn_df = _query(

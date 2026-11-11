@@ -726,6 +726,47 @@ class TestResolveDataFreshness:
         assert status == 'unknown'
 
 
+from tests.gcp.test_strat_snapshot_parity import no_network  # noqa: E402,F401  (fixture)
+
+
+class TestBriefAfterHoliday:
+    """FEAT-DATA-001 (2026-11-11 spec): the brief on Friday 2026-11-27, the
+    session after Thanksgiving, reads Wednesday 2026-11-25. It must score the
+    ticker, not skip it as STALE_DAILY_DATA (it skipped 2026-05-26, 06-22,
+    07-06 and 09-08 that way). A frame missing Wednesday is still stale."""
+
+    @staticmethod
+    def _bars(last_day):
+        import pandas as pd
+        idx = pd.bdate_range(end=pd.Timestamp(last_day), periods=60)
+        idx = idx[idx != pd.Timestamp('2026-11-26')]   # Thanksgiving, no bar
+        base = [100.0 + 0.3 * i for i in range(len(idx))]
+        return pd.DataFrame({'Open': base, 'High': [b + 1 for b in base],
+                             'Low': [b - 1 for b in base], 'Close': [b + 0.2 for b in base],
+                             'Volume': 1000.0}, index=idx)
+
+    def _run(self, monkeypatch, last_day):
+        from tests.gcp.test_strat_snapshot_parity import _brief
+        pb, cfg = _brief(monkeypatch, self._bars(last_day))
+        monkeypatch.setenv('BRIEF_AS_OF', '2026-11-27')
+        # 2026-11-27 is after the day this test was written; pin the
+        # analysis date instead of the replay guard's wall clock.
+        monkeypatch.setattr(pb, '_resolve_analysis_date', lambda: date(2026, 11, 27))
+        return pb.generate_premarket_brief(cfg=cfg)['tickers']['IWM']
+
+    def test_friday_after_thanksgiving_is_scored(self, monkeypatch, no_network):
+        out = self._run(monkeypatch, '2026-11-25')
+        assert out.get('status') != 'STALE_DAILY_DATA'
+        assert out['data_freshness_status'] == 'fresh'
+        assert out['freshness_gap_days'] == 2
+        assert out['signal_status'].startswith(('CALL', 'PUT', 'No signal'))
+
+    def test_missing_wednesday_is_still_stale(self, monkeypatch, no_network):
+        out = self._run(monkeypatch, '2026-11-24')
+        assert out['status'] == 'STALE_DAILY_DATA'
+        assert out['freshness_gap_days'] == 3
+
+
 class TestDataAsOfAnchor:
     """W11 — `data_as_of` should be anchored to 16:00 ET (US/Eastern
     market close) on the bar's date, regardless of how the daily
