@@ -158,6 +158,31 @@ _PROVENANCE_SELECT = (",\n                   pre_fetched_at, pre_excluded_stale_
 # an empty frame.
 _ATR5_PRESENT: Optional[bool] = None
 _ATR5_SELECT = ", atr_5"
+# The column each optional group is known by in information_schema.
+_OPTIONAL_GROUP_COLUMN = {'provenance': 'pre_fetched_at', 'atr5': 'atr_5'}
+
+
+def _optional_groups_missing(groups) -> set:
+    """Return the optional column groups that market_data_daily lacks.
+
+    Reads the table's column list, with `date` in the probe so an answer
+    with no rows (the probe itself failed) is told apart from a table that
+    lacks every group asked about. When the probe fails, nothing is
+    reported missing and the groups stay unknown, to be tried again on the
+    next read.
+    """
+    cols = ['date'] + [_OPTIONAL_GROUP_COLUMN[g] for g in groups]
+    names = ', '.join(f"'{c}'" for c in cols)
+    probe = _query_cloud_sql(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name = 'market_data_daily' "
+        f"AND column_name IN ({names})")
+    if probe.empty or 'column_name' not in probe.columns:
+        return set()
+    found = set(probe['column_name'].astype(str))
+    if 'date' not in found:
+        return set()
+    return {g for g in groups if _OPTIONAL_GROUP_COLUMN[g] not in found}
 
 
 def _query_cloud_sql(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
@@ -555,8 +580,9 @@ class DataLoader:
         # status) and atr_5. Each is read when the table has it. A query
         # that fails or comes back empty with a group is retried without
         # it, widest first; the first query that finds rows marks the
-        # groups it named present and the ones it left out missing, and a
-        # group known missing is not asked for again. A group the table
+        # groups it named present, and the ones it left out missing only
+        # when the table's column list confirms it. A group known missing
+        # is not asked for again. A group the table
         # lacks is read as NULL, never as an empty frame.
         global _PREMARKET_PROVENANCE_PRESENT, _ATR5_PRESENT
         known = {'provenance': _PREMARKET_PROVENANCE_PRESENT, 'atr5': _ATR5_PRESENT}
@@ -572,11 +598,20 @@ class DataLoader:
                 g: (fragments[g] if g in groups else '') for g in ('provenance', 'atr5')
             }), params)
             if not df.empty:
+                # A group the successful query named is present. A group it
+                # left out is only marked missing once the table's own column
+                # list says so: _query_cloud_sql answers empty for every
+                # error, so a timeout on the wider query looks the same as a
+                # missing column, and caching that would drop the group for
+                # the life of the process (Codex P2 on #1784).
+                left_out = [g for g in maybe if g not in groups]
+                missing = _optional_groups_missing(left_out) if left_out else set()
                 for g in maybe:
+                    present = True if g in groups else (False if g in missing else None)
                     if g == 'provenance':
-                        _PREMARKET_PROVENANCE_PRESENT = g in groups
+                        _PREMARKET_PROVENANCE_PRESENT = present
                     else:
-                        _ATR5_PRESENT = g in groups
+                        _ATR5_PRESENT = present
                 break
         if df.empty:
             return df

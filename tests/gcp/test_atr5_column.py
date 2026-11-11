@@ -112,10 +112,14 @@ def test_data_loader_without_the_atr5_column_reads_null_atr5(monkeypatch):
     from lib import data_loader as dl
 
     def answer(sql):
+        if "information_schema" in sql:
+            # The table's column list: provenance yes, atr_5 no.
+            return pd.DataFrame({"column_name": ["date", "pre_fetched_at"]})
         return pd.DataFrame() if re.search(r"\batr_5\b", sql) else pd.DataFrame([_ROW])
 
     loader, calls = _loader(monkeypatch, answer)
     df = loader._load_daily_from_sql("QQQ", None)
+    calls[:] = [c for c in calls if "information_schema" not in c]
     assert len(df) == 1 and df["Close"].iloc[-1] == pytest.approx(1.5)
     assert "ATR5" in df.columns and df["ATR5"].isna().all()
     assert df["ATR14"].iloc[-1] == pytest.approx(0.4)
@@ -126,6 +130,37 @@ def test_data_loader_without_the_atr5_column_reads_null_atr5(monkeypatch):
     loader._load_daily_from_sql("QQQ", None)
     assert len(calls) == 1 and not re.search(r"\batr_5\b", calls[0])
     assert "pre_fetched_at" in calls[0]
+
+
+def test_data_loader_transient_error_keeps_atr5_unknown(monkeypatch):
+    """Codex P2 on #1784: the queries naming atr_5 hit a transient error
+    (the reader answers empty for every error) and the narrower one
+    succeeds. With the column-list probe failing too, atr_5 must stay
+    unknown, not cached missing, so the next read asks for it again and
+    gets ATR5 once the database recovers."""
+    from lib import data_loader as dl
+    outage = {"on": True}
+
+    def answer(sql):
+        if outage["on"] and (re.search(r"\batr_5\b", sql) or "information_schema" in sql):
+            return pd.DataFrame()
+        if "information_schema" in sql:
+            return pd.DataFrame({"column_name": ["date", "pre_fetched_at", "atr_5"]})
+        row = dict(_ROW)
+        if re.search(r"\batr_5\b", sql):
+            row["atr_5"] = 0.3
+        return pd.DataFrame([row])
+
+    loader, calls = _loader(monkeypatch, answer)
+    df = loader._load_daily_from_sql("QQQ", None)
+    assert len(df) == 1 and df["ATR5"].isna().all()
+    assert dl._ATR5_PRESENT is None
+    outage["on"] = False
+    calls.clear()
+    df = loader._load_daily_from_sql("QQQ", None)
+    assert len(calls) == 1 and re.search(r"\batr_5\b", calls[0])
+    assert df["ATR5"].iloc[-1] == pytest.approx(0.3)
+    assert dl._ATR5_PRESENT is True
 
 
 def test_data_loader_empty_ticker_learns_nothing(monkeypatch):

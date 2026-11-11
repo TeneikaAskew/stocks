@@ -315,9 +315,14 @@ def test_data_loader_retries_without_the_columns(monkeypatch):
     calls = []
 
     def fake(sql, params=None):
+        if "information_schema" in sql:
+            # The table's column list: it has date and atr_5, not the
+            # provenance columns.
+            return pd.DataFrame({"column_name": ["date", "atr_5"]})
         calls.append(sql)
         return pd.DataFrame() if "pre_fetched_at" in sql else rows.copy()
 
+    monkeypatch.setattr(dl, "_ATR5_PRESENT", True)
     monkeypatch.setattr(dl, "_query_cloud_sql", fake)
     loader = dl.DataLoader.__new__(dl.DataLoader)
     df = loader._load_daily_from_sql("QQQ", None)
@@ -329,9 +334,42 @@ def test_data_loader_retries_without_the_columns(monkeypatch):
     assert len(calls) == 1 and "pre_fetched_at" not in calls[0]
 
 
+def test_data_loader_transient_error_does_not_mark_the_columns_missing(monkeypatch):
+    """The wider query fails for a reason other than the schema (the
+    reader answers empty for every error) and the column-list probe fails
+    too: the narrower read still returns the bars, and the provenance
+    columns stay unknown, so the next read asks for them again."""
+    from lib import data_loader as dl
+    monkeypatch.setattr(dl, "_PREMARKET_PROVENANCE_PRESENT", None)
+    monkeypatch.setattr(dl, "_ATR5_PRESENT", True)
+    rows = pd.DataFrame([{"date": "2026-11-05", "Open": 1.0, "High": 2.0, "Low": 0.5,
+                          "Close": 1.5, "Volume": 10, "atr_14": 0.4, "pre_high": None}])
+    outage = {"on": True}
+    calls = []
+
+    def fake(sql, params=None):
+        calls.append(sql)
+        if outage["on"] and ("pre_fetched_at" in sql or "information_schema" in sql):
+            return pd.DataFrame()
+        if "information_schema" in sql:
+            return pd.DataFrame({"column_name": ["date", "pre_fetched_at", "atr_5"]})
+        return rows.assign(pre_fetched_at=FETCHED) if "pre_fetched_at" in sql else rows.copy()
+
+    monkeypatch.setattr(dl, "_query_cloud_sql", fake)
+    loader = dl.DataLoader.__new__(dl.DataLoader)
+    assert len(loader._load_daily_from_sql("QQQ", None)) == 1
+    assert dl._PREMARKET_PROVENANCE_PRESENT is None
+    outage["on"] = False
+    calls.clear()
+    loader._load_daily_from_sql("QQQ", None)
+    assert len(calls) == 1 and "pre_fetched_at" in calls[0]
+    assert dl._PREMARKET_PROVENANCE_PRESENT is True
+
+
 def test_data_loader_reads_the_columns_when_present(monkeypatch):
     from lib import data_loader as dl
     monkeypatch.setattr(dl, "_PREMARKET_PROVENANCE_PRESENT", None)
+    monkeypatch.setattr(dl, "_ATR5_PRESENT", True)
     rows = pd.DataFrame([{"date": "2026-11-06", "Open": None, "pre_high": 660.4,
                           "pre_low": 649.62, "pre_vwap": 655.0, "gap_pct": -0.3,
                           **PROVENANCE}])
