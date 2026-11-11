@@ -36,8 +36,9 @@ from the final committed SITE body.
   (FEAT-DEPLOY-001 lineage only) and this plan, plus the generated `inventory:` blocks of
   `docs/product/infrastructure/05-a-ARCHITECTURE.md` and `05-c-DATA_DEPENDENCIES.md` exactly as main's
   `scripts/maintenance/doc_inventory.py` re-renders them from this branch (found by CI on the first head: 05-a cites
-  `deploy.sh` line numbers). Main's env reader splits values on commas, so its render drops the two audit jobs from
-  the 05-c graph; teaching it the `^X^` delimiter is FEAT-CICD-001 work for its own spec and PR.
+  `deploy.sh` line numbers). Main's env reader splits values on commas, so each audit function keeps
+  `AUDIT_SCRIPT_MODULE` in its own `module_env` assignment, which that reader parses; the 05-c graph and main's
+  `tests/scripts/test_doc_inventory.py` stay as on main. Teaching the reader the `^X^` delimiter is FEAT-CICD-001 work.
 - No Cloud Run job, scheduler, secret or database row is created, changed or executed by this PR or its tests. The
   operator redeploy (`./gcp/deploy.sh fetchers`, then `audit-walkforward`, `audit-brief-bias`) runs after merge,
   with the owner's explicit yes.

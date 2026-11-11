@@ -2676,7 +2676,10 @@ deploy_audit_walkforward() {
     non_secret_env="${non_secret_env}@DB_USER=$(_secret db-trading-user)"
     non_secret_env="${non_secret_env}@DB_NAME=trading"
     non_secret_env="${non_secret_env}@PROJECT_ID=${PROJECT_ID}"
-    non_secret_env="${non_secret_env}@AUDIT_SCRIPT_MODULE=scripts.analysis.per_factor_walkforward"
+    # The module is its own assignment so scripts/maintenance/doc_inventory.py,
+    # which reads env chains split on commas, still finds this job's workload.
+    local module_env="AUDIT_SCRIPT_MODULE=scripts.analysis.per_factor_walkforward"
+    non_secret_env="${non_secret_env}@${module_env}"
     non_secret_env="${non_secret_env}@AUDIT_SCRIPT_ARGS=--folds 4"
     non_secret_env="${non_secret_env}@AUDIT_WINDOW_DAYS=30"
     non_secret_env="${non_secret_env}@AUDIT_ALLOWED_EXIT_CODES=0,3"
@@ -2714,7 +2717,10 @@ deploy_audit_brief_bias() {
     non_secret_env="${non_secret_env}@DB_USER=$(_secret db-trading-user)"
     non_secret_env="${non_secret_env}@DB_NAME=trading"
     non_secret_env="${non_secret_env}@PROJECT_ID=${PROJECT_ID}"
-    non_secret_env="${non_secret_env}@AUDIT_SCRIPT_MODULE=scripts.analysis.verify_brief_bias"
+    # The module is its own assignment so scripts/maintenance/doc_inventory.py,
+    # which reads env chains split on commas, still finds this job's workload.
+    local module_env="AUDIT_SCRIPT_MODULE=scripts.analysis.verify_brief_bias"
+    non_secret_env="${non_secret_env}@${module_env}"
     # Pass --since via AUDIT_SCRIPT_ARGS (defaults to 2026-05-12 per the
     # script's docstring). The wrapper's auto-window logic only fires
     # when --since / --start aren't already in args.
