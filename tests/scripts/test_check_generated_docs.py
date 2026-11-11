@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import datetime
+import itertools
 import json
 import pathlib
 import re
@@ -2090,3 +2091,35 @@ def test_the_readme_maintenance_section_is_the_on_demand_procedure():
     assert RETIRE_WORD.search(section) and re.search(r"\boptional\b", section, re.I)
     assert re.findall(r"`(python3? -m [^`]+)`", section) == list(STEPS)
     assert "live_gcp_snapshot_" not in section.replace(STEPS[0], "")
+
+
+SPEC_PATH = "docs/superpowers/specs/2026-11-10-feat-cicd-001-retire-arch-refresh.md"
+
+
+def test_the_monthly_refresh_is_retired():
+    wf = REPO / ".github/workflows"
+    for name in ("refresh-architecture-docs.yml", "rerun-transient-doc-refresh.yml"):
+        assert not (wf / name).exists(), name
+        lines = (wf / f"{name}.disabled").read_text(encoding="utf-8").splitlines()
+        assert lines and lines[0].startswith("#"), name
+        header = "\n".join(itertools.takewhile(lambda l: l.startswith("#"), lines))
+        assert "2026-11-10" in header and SPEC_PATH in header, header
+    prompts = REPO / ".github/prompts"
+    assert not (prompts.exists() and any(p.is_file() for p in prompts.rglob("*")))
+    assert not (REPO / ".github/scripts/is_transient_gemini_failure.sh").exists()
+    assert not (REPO / "scripts/maintenance/render_doc_prompts.py").exists()
+
+
+def test_marker_names_agree_between_module_docs_and_gate():
+    from scripts.maintenance import doc_inventory as inv
+    from scripts.maintenance import check_generated_docs as gate
+    arch = (REPO / gate.ARCH).read_text()
+    deps = (REPO / gate.DEPS).read_text()
+    for name in ("jobs", "schedulers", "tables", "routes", "services", "reconcile", "modules", "dbtables"):
+        assert inv.MARKER_START.format(name=name) in arch, name
+    for name in ("tables", "dbtables", "writes", "reads", "multiwriter", "orphans", "blast"):
+        assert inv.MARKER_START.format(name=name) in deps, name
+    api = (REPO / gate.API).read_text()
+    for name in ("routers", "routes"):
+        assert inv.MARKER_START.format(name=name) in api, name
+    assert set(gate.MARKER_DOCS) == {gate.ARCH, gate.DEPS, gate.API}

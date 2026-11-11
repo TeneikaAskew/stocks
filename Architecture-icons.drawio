@@ -546,7 +546,7 @@
         <mxCell id="fn_txt" value="Pub/Sub-driven&#10;GitHub-issue creator&#10;close-on-success (PR #493)" style="rounded=1;arcSize=14;whiteSpace=wrap;html=1;fillColor=#eef2fb;strokeColor=#6b83c9;strokeWidth=1;fontSize=9;fontColor=#1f2933;align=left;verticalAlign=top;spacingLeft=8;spacingTop=5;" parent="1" vertex="1">
           <mxGeometry x="2160" y="866" width="160" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="g_cicd" value="GitHub Actions  (6 workflows: CI · deploys · bridges · docs check)" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#f0f0f2;strokeColor=#8a90a0;dashed=0;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#1f2933;spacingTop=6;spacingLeft=10;" parent="1" vertex="1">
+        <mxCell id="g_cicd" value="GitHub Actions  (8 workflows: CI · deploys · bridges · docs check)" style="rounded=1;arcSize=6;whiteSpace=wrap;html=1;fillColor=#f0f0f2;strokeColor=#8a90a0;dashed=0;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#1f2933;spacingTop=6;spacingLeft=10;" parent="1" vertex="1">
           <mxGeometry x="40" y="1030" width="2320" height="90" as="geometry" />
         </mxCell>
         <mxCell id="gh" value="GitHub Actions" style="rounded=1;arcSize=18;whiteSpace=wrap;html=1;fillColor=#eef0f2;strokeColor=#24292f;strokeWidth=1.5;fontSize=10;fontStyle=1;fontColor=#1f2933;align=center;verticalAlign=middle;" parent="1" vertex="1">
