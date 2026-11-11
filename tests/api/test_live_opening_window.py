@@ -242,13 +242,13 @@ def test_repair_cold_calendar_burst_has_one_builder(monkeypatch):
     import threading
     from concurrent.futures import ThreadPoolExecutor
     from lib import opening_window as ow
-    original=ow.mcal.get_calendar
+    original=ow.session_schedule
     gate=threading.Barrier(6); release=threading.Event(); entered=threading.Event(); calls=[]
     def slow_calendar(*args, **kwargs):
         calls.append(1); entered.set()
         assert release.wait(2)
         return original(*args, **kwargs)
-    monkeypatch.setattr(ow.mcal,'get_calendar',slow_calendar)
+    monkeypatch.setattr(ow,'session_schedule',slow_calendar)
     ow._SCHEDULE_CACHE.clear()
     def ask():
         gate.wait()
@@ -349,11 +349,11 @@ def test_repair_warm_calendar_survives_other_day_build(monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from lib import opening_window as ow
     ow._SCHEDULE_CACHE.clear();expected=ow.session_for(NOW)
-    original=ow.mcal.get_calendar;started=threading.Event();release=threading.Event()
+    original=ow.session_schedule;started=threading.Event();release=threading.Event()
     def slow(*args,**kwargs):
         started.set();assert release.wait(2)
         return original(*args,**kwargs)
-    monkeypatch.setattr(ow.mcal,'get_calendar',slow)
+    monkeypatch.setattr(ow,'session_schedule',slow)
     with ThreadPoolExecutor(max_workers=1) as pool:
         cold=pool.submit(ow.session_for,NOW+timedelta(days=1))
         try:

@@ -11,8 +11,8 @@ import math
 import re
 import threading
 from collections import OrderedDict
-import pandas_market_calendars as mcal
-from lib.eastern_time import as_utc_instant, localize_assuming_eastern, market_date
+from importlib.metadata import version as _distribution_version
+from lib.eastern_time import as_utc_instant, localize_assuming_eastern, market_date, session_schedule
 
 MAX_BYTES = 8 * 1024 * 1024
 MAX_ROWS = 50_000
@@ -37,11 +37,11 @@ def _schedule(day):
         with _SCHEDULE_LOCK:
             if day in _SCHEDULE_CACHE:
                 return _SCHEDULE_CACHE[day]
-        frame=mcal.get_calendar('NYSE').schedule(start_date=day,end_date=day)
+        frame=session_schedule(day,day)
         result=None
         if not frame.empty:
             row=frame.iloc[0]
-            result={'label':day.isoformat(),'open':row.market_open.to_pydatetime(),'close':row.market_close.to_pydatetime(),'calendar':'NYSE','calendar_version':mcal.__version__}
+            result={'label':day.isoformat(),'open':row.market_open.to_pydatetime(),'close':row.market_close.to_pydatetime(),'calendar':'NYSE','calendar_version':_distribution_version('pandas-market-calendars')}
         with _SCHEDULE_LOCK:
             _SCHEDULE_CACHE[day]=result
             if len(_SCHEDULE_CACHE)>8:
