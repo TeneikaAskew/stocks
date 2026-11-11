@@ -2,7 +2,7 @@
 feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-10-31-feat-data-001-retire-ew-fetcher-readers.md
 branch: fix/feat-data-001-retire-ew-fetcher-readers
-pr: null
+pr: 1824
 status: ready
 ---
 
