@@ -11,7 +11,7 @@ done_when:
   - "The same suite proves thesis_invalidated is persisted as NULL when the insight carries no invalidation level, never a fabricated FALSE."
   - "Every existing tests/gcp/test_signal_monitor*.py and tests/scripts/test_replay_signal_monitor.py test passes unchanged, showing no fire, score, strength or delivery decision changed."
   - "02-FEATURE-CATALOG FEAT-SIGNAL-001 record and 12-PR-ISSUE-TRACEABILITY carry this PR; docs audit shows no new finding versus main and spec_gate --pr passes."
-status: draft
+status: approved
 supersedes: null
 ---
 
