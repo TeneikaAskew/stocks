@@ -149,13 +149,6 @@ def _is_solyra_owned(path: str) -> bool:
 #: is gated the day it lands rather than the day someone remembers to add it.
 KNOWN_BACKLOG = {
     "14-WORK-BREAKDOWN.md": 2,
-    # The FEAT-DEPLOY-001 / SHARED-01 implementation-source note (#1384) names
-    # `scripts/maintenance/render_doc_prompts.py`, which the monthly-refresh
-    # retirement (#1788) deletes. A feature branch may not edit another
-    # capability's note row, so the row is reworded by #1384's SITE close-out,
-    # which must then lower this to 0 (the equality assert below refuses a stale
-    # pin). Owner decision on #1788, 2026-11-11.
-    "03-SITE-TRACEABILITY.md": 1,
 }
 
 
