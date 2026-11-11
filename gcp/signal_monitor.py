@@ -1398,6 +1398,13 @@ class SignalMonitor:
         # decision but always pass (for counterfactual logging).
         gate_action = 'pass'
         gate_reason = ''
+        # FEAT-SIGNAL-001 gate decision record: reset the per-fire stash
+        # so a fire never persists another ticker's (or an earlier fire's)
+        # decision. Stays None when the gate is disabled or raises.
+        self._latest_insight_ctx = None
+        self._latest_gate_action = None
+        self._latest_gate_reason = None
+        self._latest_thesis_invalidated = None
         if self.insight_gate_mode != 'disabled':
             try:
                 today = self._now(_ET).date()
@@ -1415,10 +1422,22 @@ class SignalMonitor:
                 )
                 gate_action = decision.action
                 gate_reason = decision.reason
-                # Stash for fire_alert / persist (visibility into gate decision)
+                # Stash for persist (visibility into gate decision). In
+                # shadow mode the reason is prefixed so a reader can tell
+                # an applied decision from a would-have decision.
                 self._latest_insight_ctx = ctx
                 self._latest_gate_action = gate_action
-                self._latest_gate_reason = gate_reason
+                self._latest_gate_reason = (
+                    f'shadow:{gate_reason}'
+                    if self.insight_gate_mode == 'shadow' else gate_reason
+                )
+                # Only meaningful when the insight carries a level; NULL
+                # otherwise rather than a fabricated FALSE.
+                self._latest_thesis_invalidated = (
+                    bool(self.insight_invalidated.get(ticker, False))
+                    if ctx is not None and getattr(ctx, 'invalidation_level', None) is not None
+                    else None
+                )
                 # Apply the gate (unless shadow mode)
                 if self.insight_gate_mode != 'shadow':
                     if gate_action == 'suppress':
@@ -1438,6 +1457,11 @@ class SignalMonitor:
                     # 'pass', 'tag', 'annotate' all proceed to fire as-is
             except Exception as exc:
                 # Gate must never crash the monitor — fall through to fire.
+                # Its decision is unknown, so persist none of it.
+                self._latest_insight_ctx = None
+                self._latest_gate_action = None
+                self._latest_gate_reason = None
+                self._latest_thesis_invalidated = None
                 logger.warning(
                     "direction gate raised for %s: %s — fire proceeds as-is",
                     ticker, exc,
@@ -1692,6 +1716,18 @@ class SignalMonitor:
             ticker, self.daily_trades[ticker], self.risk.max_daily_trades,
         )
 
+    @staticmethod
+    def _fit_width(value, width, column, ticker):
+        """Truncate a string to its VARCHAR width with a warning, so an
+        over-long value never loses the whole signal_alerts write."""
+        if isinstance(value, str) and len(value) > width:
+            logger.warning(
+                "signal_alerts %s for %s truncated to %d chars: %r",
+                column, ticker, width, value,
+            )
+            return value[:width]
+        return value
+
     def _persist_signal_alert(self, ticker, sig, total_score, strength, size,
                               strat_bonus, latest, target, time_stop):
         """Write signal alert row to Cloud SQL signal_alerts table."""
@@ -1797,6 +1833,23 @@ class SignalMonitor:
             'fire_seq':          self.daily_trades.get(ticker, 0) + 1,
             'min_since_prev_fire': self._minutes_since_prev_fire(ticker),
         }
+
+        # FEAT-SIGNAL-001: the live direction gate's decision and the
+        # insight it read. NULL when the gate is disabled, raised, or (for
+        # the insight columns) no insight row exists today.
+        ctx = getattr(self, '_latest_insight_ctx', None)
+        row.update({
+            'gate_action':        self._fit_width(
+                getattr(self, '_latest_gate_action', None), 16, 'gate_action', ticker),
+            'gate_reason':        getattr(self, '_latest_gate_reason', None),
+            'insight_direction':  self._fit_width(
+                getattr(ctx, 'direction', None), 8, 'insight_direction', ticker),
+            'insight_conviction': self._fit_width(
+                getattr(ctx, 'conviction', None), 8, 'insight_conviction', ticker),
+            'insight_regime':     self._fit_width(
+                getattr(ctx, 'regime', None), 20, 'insight_regime', ticker),
+            'thesis_invalidated': getattr(self, '_latest_thesis_invalidated', None),
+        })
 
         # Phase 1.5: catalyst proximity — already looked up + stashed
         # in the upstream signal-evaluation block (so the multiplier
