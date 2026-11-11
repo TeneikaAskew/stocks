@@ -1,6 +1,6 @@
 ---
 feat_id: FEAT-CICD-001
-spec: docs/superpowers/specs/2026-11-11-feat-cicd-001-cpu-deadline-test-margin.md
+spec: docs/superpowers/specs/2026-11-11-feat-cicd-001-cpu-deadline-test-margin-r2.md
 branch: fix/feat-cicd-001-cpu-deadline-margin
 pr: 1814
 status: ready
@@ -21,7 +21,7 @@ produced from the final committed SITE body.
 **Tech stack:** pytest, `scripts/maintenance/doc_source_snapshot.py`, `scripts/maintenance/docs_audit.py`,
 `scripts/gate/spec_gate.py`.
 
-**Spec:** docs/superpowers/specs/2026-11-11-feat-cicd-001-cpu-deadline-test-margin.md
+**Spec:** docs/superpowers/specs/2026-11-11-feat-cicd-001-cpu-deadline-test-margin-r2.md (revision 2, merged in #1817, superseding docs/superpowers/specs/2026-11-11-feat-cicd-001-cpu-deadline-test-margin.md)
 
 **Preconditions:** the spec is on main; the branch is cut from that main.
 
@@ -101,3 +101,46 @@ Spec: § Done when. Advances done_when 5, 6 and 7.
 - [ ] `python3 -m pytest tests/scripts/test_doc_source_snapshot.py tests/meta -q` passes.
       `python3 scripts/gate/spec_gate.py --pr origin/main` in ready mode passes; tick every done_when box in the PR
       body with its evidence; the body closes #1795 and #1796.
+
+## Revision 2 (spec 2026-11-11-feat-cicd-001-cpu-deadline-test-margin-r2.md, merged in #1817)
+
+Codex's code review of `f780118c` (thread 4540511662) showed the fixed 0.75-second cap failing on a loaded host. Tasks 1 to 5 above stand as done; Tasks 6 to 8 move the test to escalating caps and refresh the evidence, the note and the records.
+
+## Task 6: escalating caps, red first
+Spec: § Design (revision 2). Advances done_when 1 and 2.
+- [ ] Red, at `f780118c`'s test: pinned to one CPU core beside six busy loops
+      (`taskset -c 0` for the test and each `sh -c 'while :; do :; done'`), both parameters fail at
+      `assert verdict["source_identity_sha256"] is not None`. Beside three busy loops, record every run, passes included,
+      and the driver runs of the same `produce` call (counted 4,255,572 and 715,630, below the 4,960,282-byte body).
+- [ ] In the one test, replace the single `produce --max-seconds 0.75` call and its reason, source-identity,
+      counted-bytes and elapsed assertions with the loop in spec r2 § Design. Exact behaviour:
+      - caps `("0.75", "1.5", "3", "5")`, in that order;
+      - each attempt asserts a nonzero exit, `status == "unverified"`, and a reason in
+        (`whole verification CPU deadline exceeded`, `whole verification deadline exceeded`);
+      - each attempt checks the record: absent when `old is None`, else byte-equal to `old`;
+      - stop at the first verdict with a source identity and `counted_bytes >= len(body.encode("utf-8"))`;
+      - with no stop, `pytest.fail` with the last verdict;
+      - after the loop, assert the CPU-deadline reason, `counted_bytes <= MAX_BYTES` and
+        `elapsed_seconds < float(cap) + 0.1`, then the unchanged no-leftover check.
+      The comment says the caps escalate because hosts differ by more than the read-to-finish ratio of one run, and keeps
+      why the body is 80,000 lines. No other test changes.
+- [ ] Green:
+      - six busy loops: both parameters pass (stopping at 1.5 s);
+      - unloaded: the fast-host stand-ins at 20000 and 40000 lines pass;
+      - ten consecutive unloaded runs pass;
+      - the whole file passes.
+- [ ] Commit: `test(snapshot): escalate the CPU-deadline cap until it lands after the body read`.
+
+## Task 7: note and sidecar
+Spec: § Design (revision 2). Advances done_when 3 and 4.
+- [ ] Margins on the head's CLI: 80,000 lines at caps 0.75, 1.5, 3 and 5, unloaded and beside six busy loops, and at which
+      step each stops. The unloaded completions for 20000, 40000 and 60000 lines stand from Task 3.
+- [ ] In the FEAT-CICD-001 / SHARED-01 row, replace this PR's prose (between the prefix and ` Earlier: `) with prose
+      naming the escalation; keep ` Earlier: ` and everything after it byte for byte. Take the source hash from
+      `produce`, rebind the prefix, commit, `produce` again, commit the sidecar alone, `verify` with the fixed ceilings.
+
+## Task 8: records and close
+Spec: § Done when (revision 2). Advances done_when 5, 6 and 7.
+- [ ] Catalog Status clause and lineage entry name the revised spec (#1817); Last reviewed the head commit's date.
+- [ ] Audit pair with one fresh capture: `NEW 0`. Suites on the head pass. The ready-mode gate passes with every r2
+      done_when box ticked and its evidence. Reply on thread 4540511662 with the fix commit and resolve it.
