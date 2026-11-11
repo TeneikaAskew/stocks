@@ -3,7 +3,7 @@ feat_id: FEAT-DEPLOY-001
 spec: docs/superpowers/specs/2026-11-09-feat-deploy-001-retired-service-source-note.md
 branch: feature/feat-deploy-001-retired-service-leftovers
 pr: 1384
-status: ready
+status: done
 ---
 
 # Stop drawing and describing the retired API service: implementation plan

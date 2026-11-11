@@ -185,7 +185,10 @@ def backfill_daily(ticker: str) -> bool:
         import requests
         import pandas as pd
         from gcp.database import upsert_dataframe
-        from gcp.fetchers.fetch_market_data import compute_and_upsert_daily_indicators
+        from gcp.fetchers.fetch_market_data import (
+            compute_and_upsert_daily_indicators, read_level_params_for_run,
+        )
+        from lib.strat_levels import LevelParamsUnavailable
     except Exception as exc:
         log.warning("    skipped (import failed): %s", exc)
         return False
@@ -234,8 +237,19 @@ def backfill_daily(ticker: str) -> bool:
     log.info("    ✓ upserted %d daily bars", len(df))
 
     last_date = str(df["date"].iloc[-1])
-    compute_and_upsert_daily_indicators(ticker, last_date)
-    return True
+    # The ticker's level parameters in force on that date, read as the
+    # nightly fetcher reads them (FEAT-STRAT-001), so the premarket print
+    # filter runs with its calibrated thresholds. Unreadable tables: the
+    # snapshot is written unfiltered with that reason, as the fetcher does,
+    # and the backfill reports failure.
+    try:
+        level_params = read_level_params_for_run([ticker], last_date).get(ticker.upper())
+        params_ok = True
+    except LevelParamsUnavailable as exc:
+        log.error("    level_params_unavailable: %s (premarket snapshot written unfiltered)", exc)
+        level_params, params_ok = None, False
+    compute_and_upsert_daily_indicators(ticker, last_date, level_params=level_params)
+    return params_ok
 
 
 def backfill_intraday(ticker: str) -> bool:

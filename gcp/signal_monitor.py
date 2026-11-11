@@ -47,9 +47,10 @@ from lib.indicators import add_signal_indicators
 from lib.signals import evaluate_signal
 from lib.strategies.exit_config_overrides import get_consecutive_periods
 from lib.strat import StratClassifier
-from lib.strat_levels import (LegStateTracker, LevelMap, SessionLevels,
-                             build_session_levels, premarket_snapshot_from_daily,
-                             read_live_level_basis)
+from lib.strat_levels import (LegStateTracker, LevelMap, LevelParamsUnavailable,
+                             SessionLevels, atr_inputs_from_frame,
+                             build_session_levels, load_level_params,
+                             premarket_snapshot_from_daily, read_live_level_basis)
 from lib.config import load_config, get_position_size, get_signal_strength_label
 from lib.strategies import MOMENTUM
 from lib.strategies.agreement import AGREEMENT_BONUS, detect_agreement
@@ -184,6 +185,12 @@ class SignalMonitor:
         self.level_refresh_success_count: dict = {t: 0 for t in self.tickers}
         self.level_refresh_empty_df_count: dict = {t: 0 for t in self.tickers}
         self.level_refresh_exception_count: dict = {t: 0 for t in self.tickers}
+        # FEAT-STRAT-001: refreshes skipped because the level parameter
+        # tables could not be read (reason level_params_unavailable).
+        self.level_refresh_params_unavailable_count: dict = {t: 0 for t in self.tickers}
+        # The per-ticker level parameters in force on the session, read once
+        # per session for every ticker (lib.strat_levels.load_level_params).
+        self._level_params_by_session: dict = {}
         # Persist-path failures (signal_alerts upsert, trades log). They were
         # logged at WARNING with no counter, so a day of silent write
         # failures looked like a quiet day (the 4/14-4/30 gap shape).
@@ -779,6 +786,7 @@ class SignalMonitor:
         'momentum_evaluated_count', 'momentum_fired_count',
         'level_refresh_success_count', 'level_refresh_empty_df_count',
         'level_refresh_exception_count',
+        'level_refresh_params_unavailable_count',
         'persist_alert_failure_count', 'persist_trade_failure_count',
         'kill_switch_failure_count',
     })
@@ -850,6 +858,25 @@ class SignalMonitor:
         except Exception:  # noqa: BLE001
             return None
         return read_live_level_basis(query_to_dataframe, ticker, session_date)
+
+    @staticmethod
+    def _level_params_query(sql, params=None):
+        """The strict reader: a failed query raises (CLAUDE.md 3.7)."""
+        from gcp.database import query_to_dataframe_strict
+        return query_to_dataframe_strict(sql, params)
+
+    def _level_params_for(self, ticker: str, session_date):
+        """The ticker's level parameters in force on `session_date`. One query
+        per session for every monitored ticker; LevelParamsUnavailable when
+        the tables cannot be read."""
+        by_ticker = self._level_params_by_session.get(session_date)
+        if by_ticker is None:
+            tickers = sorted({t.upper() for t in self.tickers} | {ticker.upper()})
+            by_ticker = load_level_params(self._level_params_query, tickers, session_date)
+            self._level_params_by_session = {session_date: by_ticker}
+        if ticker.upper() not in by_ticker:
+            by_ticker.update(load_level_params(self._level_params_query, [ticker], session_date))
+        return by_ticker[ticker.upper()]
 
     def refresh_level_map(self, ticker: str) -> None:
         """Load the latest market_data_daily row + indicators and rebuild
@@ -924,35 +951,39 @@ class SignalMonitor:
                 )
                 self.level_maps[ticker] = None
                 return
-            # Daily ATR-14 for the level-staleness filter, kept alongside the
-            # map so the put re-anchor can apply the SAME filter the premarket
-            # brief applied when it published the playbook. None when the
-            # column is absent or non-finite — never a fabricated ATR (§3.7).
-            # Codex P2 on PR #811: read the LATEST row's scalar, never
-            # dropna().iloc[-1]. The brief takes atr14 from that one row
-            # (`_safe_float(latest.get('ATR14'))`) and disables the ATR axis
-            # entirely when it is missing. Falling back to an older row's ATR
-            # would apply a staleness filter the published playbook did not,
-            # so the re-anchor could REJECT levels the brief accepted — the
-            # same non-equivalence this filter exists to prevent, just
-            # inverted. Unusable latest ATR -> None, matching the brief.
-            _atr = None
-            if 'ATR14' in df.columns:
-                _a = pd.to_numeric(df['ATR14'].iloc[-1], errors='coerce')
-                if _a is not None and _a == _a and float(_a) > 0:
-                    _atr = float(_a)
-            self.level_map_atr[ticker] = _atr
+            # FEAT-STRAT-001: the ticker's level parameters in force on the
+            # session. Unreadable tables skip the refresh with the reason
+            # named; no map is built from absent parameters (CLAUDE.md 3.7).
+            try:
+                params = self._level_params_for(ticker, _analysis_date)
+            except LevelParamsUnavailable as exc:
+                self.level_refresh_params_unavailable_count[ticker] = (
+                    self.level_refresh_params_unavailable_count.get(ticker, 0) + 1
+                )
+                logger.error(
+                    "refresh_level_map(%s): level refresh skipped, reason=%s (%s)",
+                    ticker, exc.reason, exc,
+                )
+                self.level_maps[ticker] = None
+                self.level_map_atr.pop(ticker, None)
+                return
             # One builder (FEAT-STRAT-001): the session's live level_basis
-            # when the brief wrote one, else build_session_levels with this
-            # ATR(14) and the session's own premarket snapshot. The map the
-            # level-break check reads keeps the structural, open and gap
-            # levels it always had.
+            # when the brief wrote one (rebuilt with the parameters it
+            # recorded), else build_session_levels with the last completed
+            # session's ATR columns, the session's own premarket snapshot and
+            # the parameters in force. The map the level-break check reads
+            # keeps the structural, open and gap levels it always had.
             basis = self._live_level_basis(ticker, _analysis_date)
             if basis is not None:
-                session = SessionLevels.from_basis(basis)
+                session = SessionLevels.from_basis(basis, params=params)
             else:
                 session = build_session_levels(
-                    ticker, _analysis_date, df, _atr, session_premarket)
+                    ticker, _analysis_date, df, atr_inputs_from_frame(df, _analysis_date),
+                    session_premarket, params)
+            # The ATR in the policy's basis, kept alongside the map so the put
+            # re-anchor applies the SAME window the brief applied when it
+            # published the playbook. None when unusable, never fabricated.
+            self.level_map_atr[ticker] = session.atr
             self.session_levels[ticker] = session
             self.level_maps[ticker] = session.to_level_map(include_premarket=False)
             self.level_refresh_success_count[ticker] = (
@@ -2507,7 +2538,8 @@ class SignalMonitor:
                             "session_summary ticker=%s momentum_evaluated=%d "
                             "momentum_fired=%d daily_trades=%d daily_pnl=%.4f "
                             "level_refresh_success=%d level_refresh_empty_df=%d "
-                            "level_refresh_exception=%d",
+                            "level_refresh_exception=%d "
+                            "level_refresh_params_unavailable=%d",
                             t,
                             self.momentum_evaluated_count.get(t, 0),
                             self.momentum_fired_count.get(t, 0),
@@ -2516,6 +2548,9 @@ class SignalMonitor:
                             self.level_refresh_success_count.get(t, 0),
                             self.level_refresh_empty_df_count.get(t, 0),
                             self.level_refresh_exception_count.get(t, 0),
+                            # FEAT-STRAT-001: refreshes skipped because the
+                            # level parameter tables could not be read.
+                            self.level_refresh_params_unavailable_count.get(t, 0),
                         )
                     break
                 print(f"Waiting for market open ({now.strftime('%H:%M:%S %Z')})...")

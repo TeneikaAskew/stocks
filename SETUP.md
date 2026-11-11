@@ -1,38 +1,22 @@
-# Setup — auto-doc refresh workflow
+# Setup: Workload Identity Federation for the deploy and verify workflows
 
 **Last reviewed:** unknown · **Last scanned:** 2026-11-03 · **Owner:** TBD
 
-One-time setup for `.github/workflows/refresh-architecture-docs.yml`. After this is done, the workflow runs itself on the 1st of every month and opens a PR if anything substantive changed.
-
-> **Skip this if you don't care about auto-docs.** The repo works fine without the workflow firing — you'd just have to regenerate the docs manually using the prompts in `.github/prompts/`.
+One-time setup of the Workload Identity Federation (WIF) trust that `.github/workflows/deploy-staging.yml` and `.github/workflows/verify-docs-against-live.yml` use to reach GCP without a long-lived JSON key. The monthly documentation refresh this file was first written for was retired on 2026-11-10; its Vertex AI, Gemini and billing-export steps are gone, and what remains is the identity both workflows still share.
 
 ---
 
-## What the workflow needs
+## What the workflows need
 
-1. **A GCP service account** with read-only access to: Cloud Asset Inventory, IAM, BigQuery (for the billing-export query), and Vertex AI (for the Gemini doc-generation calls)
-2. **Workload Identity Federation (WIF)** so GitHub Actions can impersonate that service account without a long-lived JSON key
-3. **Two GitHub repository secrets** holding the WIF config — no separate `GEMINI_API_KEY` is needed because the workflow uses Vertex AI, which authenticates via the same WIF-derived ADC
-4. **Two enabled APIs** (Cloud Asset + Vertex AI) — the rest are typically already on for any GCP project
-
-Total operator time: ~30 minutes for a first-time WIF setup, ~10 minutes if you've done WIF before.
+1. **A GCP service account** the workflows impersonate, with read access to the live project (the verifier) and the deploy grants listed in the header of `deploy-staging.yml`
+2. **Workload Identity Federation** so GitHub Actions can impersonate that service account without a JSON key
+3. **Two GitHub repository secrets** holding the WIF config
 
 ---
 
-## 1. Enable the Cloud Asset + Vertex AI APIs
+## 1. Create the service account
 
-```bash
-gcloud services enable cloudasset.googleapis.com aiplatform.googleapis.com \
-  --project=adept-mountain-474619-d4
-```
-
-The other APIs the workflow uses (`iam.googleapis.com`, `bigquery.googleapis.com`, `iamcredentials.googleapis.com`) are typically already on. If a step fails with a `... API has not been used in project ...` error, enable the named API the same way.
-
----
-
-## 2. Create the dedicated service account
-
-This SA only exists to run the doc refresh. Don't reuse `trading-system` — least-privilege is worth the 30 seconds.
+Don't reuse `trading-system`; least privilege is worth the 30 seconds.
 
 ```bash
 PROJECT=adept-mountain-474619-d4
@@ -40,45 +24,18 @@ SA_NAME=arch-refresh-bot
 
 gcloud iam service-accounts create "${SA_NAME}" \
   --project="${PROJECT}" \
-  --display-name="Architecture doc refresh bot"
+  --display-name="GitHub Actions WIF identity"
 
 SA_EMAIL="${SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
-echo "SA_EMAIL=${SA_EMAIL}"   # save this — you'll need it as a GitHub secret
+echo "SA_EMAIL=${SA_EMAIL}"   # save this, you'll need it as a GitHub secret
 ```
 
 ---
 
-## 3. Grant the IAM roles
+<a id="3-grant-the-iam-roles"></a>
+## 2. Grant the read-only roles
 
-Five roles cover the original workflow (asset inventory, IAM dump, billing rollup, Gemini). The 2026-09-07 rebuild added a live snapshot of Cloud Run, Cloud Scheduler, Cloud Build, Cloud SQL, Secret Manager, Pub/Sub, Logging, Cloud Tasks and Artifact Registry through `scripts/maintenance/doc_inventory.py`, plus a `pg_stat_user_tables` read for live table sizes; the block after this one grants those.
-
-```bash
-# Read asset inventory
-gcloud projects add-iam-policy-binding "${PROJECT}" \
-  --member="serviceAccount:${SA_EMAIL}" \
-  --role="roles/cloudasset.viewer"
-
-# Read IAM policy (needed to dump gcp_iam.json)
-gcloud projects add-iam-policy-binding "${PROJECT}" \
-  --member="serviceAccount:${SA_EMAIL}" \
-  --role="roles/iam.securityReviewer"
-
-# Run the BigQuery billing-export rollup
-gcloud projects add-iam-policy-binding "${PROJECT}" \
-  --member="serviceAccount:${SA_EMAIL}" \
-  --role="roles/bigquery.dataViewer"
-
-gcloud projects add-iam-policy-binding "${PROJECT}" \
-  --member="serviceAccount:${SA_EMAIL}" \
-  --role="roles/bigquery.jobUser"
-
-# Call Vertex AI Gemini for doc generation
-gcloud projects add-iam-policy-binding "${PROJECT}" \
-  --member="serviceAccount:${SA_EMAIL}" \
-  --role="roles/aiplatform.user"
-```
-
-Read-only roles for the live snapshot. **Applied 2026-09-07 04:28Z** (verified against the live project policy afterwards: `arch-refresh-bot@` holds sixteen project roles, and `storage.objectViewer` on the trading-data bucket). `run.viewer`, `cloudbuild.builds.viewer`, `cloudsql.client` and `secretmanager.viewer` in the loop below are already implied by the `run.admin`, `cloudbuild.builds.editor`, `cloudsql.client` and `secretmanager.viewer` bindings the deploy path added, so on this project the loop only adds `cloudscheduler.viewer`, `cloudsql.viewer`, `pubsub.viewer`, `logging.viewer`, `cloudtasks.viewer` and `artifactregistry.reader`. It is idempotent; re-run it whenever the SA is rebuilt:
+`verify-docs-against-live.yml` runs `scripts/verify_docs_against_live.py`, whose `read_live` calls `gcloud` for Cloud Scheduler jobs, Cloud Run jobs, Cloud Run services and domain mappings, Secret Manager secrets and Cloud Tasks queues, and nothing else, so the verifier needs `roles/run.viewer`, `roles/cloudscheduler.viewer`, `roles/secretmanager.viewer` and `roles/cloudtasks.viewer`. The loop's other roles and the trading-data bucket binding were granted for the retired refresh's live snapshot (2026-09-07). `deploy-staging.yml` keeps its own role list (it repeats `roles/cloudsql.client`), proven end to end on 2026-09-04, before this loop existed. No other remaining workflow reads with these roles; that is read from the workflow files, not checked against live IAM. Revoking any is the owner's step. The loop is idempotent; re-run it whenever the service account is rebuilt:
 
 ```bash
 for ROLE in roles/run.viewer roles/cloudscheduler.viewer roles/cloudbuild.builds.viewer \
@@ -93,24 +50,15 @@ gcloud storage buckets add-iam-policy-binding "gs://${PROJECT}-trading-data" \
   --member="serviceAccount:${SA_EMAIL}" --role="roles/storage.objectViewer"
 ```
 
-The workflow also needs the four Cloud SQL GitHub secrets (`CLOUD_SQL_CONNECTION_NAME`, `DB_USER`, `DB_PASS`, `DB_NAME`) that `deploy-staging.yml` and the calibration step already use; nothing new is stored.
-
-> **Note on `roles/bigquery.dataViewer`:** This grant is project-wide. If you'd rather scope tighter, grant it on the `billing_export` dataset specifically:
-> ```bash
-> bq add-iam-policy-binding \
->   --member="serviceAccount:${SA_EMAIL}" \
->   --role="roles/bigquery.dataViewer" \
->   "${PROJECT}:billing_export"
-> ```
-> Either works. Project-wide is simpler; dataset-scoped is more paranoid.
+The deploy path needs more than viewer roles; the header of `deploy-staging.yml` lists them. The Cloud SQL GitHub secrets (`CLOUD_SQL_CONNECTION_NAME`, `DB_USER`, `DB_PASS`, `DB_NAME`) that `deploy-staging.yml` uses are stored separately; nothing here adds to them.
 
 ---
 
-## 4. Set up Workload Identity Federation
+## 3. Set up Workload Identity Federation
 
 WIF lets GitHub Actions impersonate the SA without a JSON key. Two steps: create the pool/provider, then bind it to the SA.
 
-### 4a. Create the WIF pool + provider
+### 3a. Create the WIF pool + provider
 
 ```bash
 PROJECT=adept-mountain-474619-d4
@@ -141,8 +89,8 @@ whose workflow drops its own in-file ref guard and dispatch that (Codex,
 PR #983). `assertion.ref` is only issued for branch/tag refs, so this
 condition also inherently blocks `pull_request`-triggered tokens. Every
 workflow using this provider must run from `main` (both current ones do:
-`refresh-architecture-docs.yml` on schedule/dispatch, `deploy-staging.yml`
-dispatch-only with a fail-loud main guard as its UX rail).
+`verify-docs-against-live.yml`, and `deploy-staging.yml` dispatch-only with a
+fail-loud main guard as its UX rail).
 
 If the provider already exists (it does in this project), roll the condition
 forward instead of recreating:
@@ -154,7 +102,7 @@ gcloud iam workload-identity-pools providers update-oidc "github-provider" \
   --attribute-condition="assertion.repository=='${GH_REPO}' && assertion.ref=='refs/heads/main'"
 ```
 
-### 4b. Bind the SA to the provider
+### 3b. Bind the SA to the provider
 
 ```bash
 gcloud iam service-accounts add-iam-policy-binding "${SA_EMAIL}" \
@@ -163,7 +111,7 @@ gcloud iam service-accounts add-iam-policy-binding "${SA_EMAIL}" \
   --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github-pool/attribute.repository/${GH_REPO}"
 ```
 
-### 4c. Get the WIF provider name (you'll need this)
+### 3c. Get the WIF provider name (you'll need this)
 
 ```bash
 WIF_PROVIDER="projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
@@ -174,93 +122,30 @@ Save both `WIF_PROVIDER` and `SA_EMAIL` — they go in GitHub secrets next.
 
 ---
 
-## 5. Add two GitHub repository secrets
-
-The workflow calls Vertex AI Gemini using the same WIF-derived ADC it already has — there is **no `GEMINI_API_KEY` secret to create.** That's the whole point of routing Gemini through Vertex instead of the public Generative Language API. Just two secrets:
+## 4. Add two GitHub repository secrets
 
 Repo → Settings → Secrets and variables → Actions → New repository secret. Add:
 
 | Secret name | Value |
 |---|---|
-| `GCP_WIF_PROVIDER` | The `WIF_PROVIDER` string from step 4c |
-| `GCP_WIF_SA_EMAIL` | The `SA_EMAIL` from step 2 |
-
-> **Why no API key?** Gemini is invoked with `GOOGLE_GENAI_USE_VERTEXAI=true`, which makes the Gemini CLI / SDK use Vertex AI as the provider. Vertex authenticates with Application Default Credentials, and the WIF auth step already populates ADC for the runner. One auth path covers asset inventory, BigQuery, and Gemini — strictly less secret sprawl than the previous Anthropic-key flow.
+| `GCP_WIF_PROVIDER` | The `WIF_PROVIDER` string from step 3c |
+| `GCP_WIF_SA_EMAIL` | The `SA_EMAIL` from step 1 |
 
 ---
 
-## 6. Test the workflow end-to-end before relying on it
+## 5. Rotation and ongoing maintenance
 
-The workflow has a `dry_run` input that generates the docs but skips the PR. Use it for the first run.
+| Resource | Rotation cadence | How |
+|---|---|---|
+| WIF provider trust | Never (the OIDC issuer is Google's) | n/a |
+| Service account roles | Audit annually | `gcloud projects get-iam-policy ${PROJECT} --flatten=bindings --filter=bindings.members:serviceAccount:${SA_EMAIL}` |
 
-### Trigger a dry-run manually
-
-> **Dispatch from `main` only.** The WIF provider's attribute condition is
-> `assertion.repository=='TeneikaAskew/stocks' && assertion.ref=='refs/heads/main'`
-> (SETUP.md §4a, verified live 2026-09-05), so a dispatch of this workflow on
-> any other branch fails at "Authenticate to GCP (WIF)" with
-> `The given credential is rejected by the attribute condition` before a
-> single read happens (run 34083279855 on 2026-09-07 did exactly that from a PR
-> branch, and `handle-failure` opened issue #1011 for it). Merge first, then
-> dispatch with `dry_run=true`.
-
-GitHub UI: Repo → Actions → "Monthly architecture doc refresh" → Run workflow → set `dry_run=true` → Run.
-
-CLI:
-```bash
-gh workflow run refresh-architecture-docs.yml -f dry_run=true
-gh run watch
-```
-
-### What "passing" looks like
-
-1. **Job completes in 10-25 minutes.** First run is at the high end (Gemini CLI cold-start + first BigQuery query authorization + Vertex AI cold-call).
-2. **Step "Dump asset inventory" prints** `Inventory rows: 700-1000ish`. If it fails with permission errors → re-check the `cloudasset.viewer` grant.
-3. **Step "Dump 90-day billing rollup" prints** `wrote billing_90d.json with N rows`. If it fails with `404 Not found: Dataset billing_export` → BigQuery billing export isn't enabled for this project; turn it on at Cloud Console → Billing → Billing Export → BigQuery → choose dataset `billing_export`. It needs ~24 hours of warmup before the first row appears.
-4. **Steps "Regenerate 05-a-ARCHITECTURE.md / 05-c-DATA_DEPENDENCIES.md / 05-d-COST_ANALYSIS.md / README.md" each take 1-6 minutes** and write the file. README runs last so it can read the freshly-regenerated other docs to populate its doc-map table + Mermaid embed + cost headlines. If a step fails with `403 PERMISSION_DENIED ... Vertex AI` → re-check the `roles/aiplatform.user` grant. If it fails with `404 model not found: gemini-2.5-pro` → confirm the model is available in `GCP_LOCATION` (`us-east1`); falling back to `us-central1` is safe.
-5. **Step "Detect meaningful changes" reports** which files changed. On the first run after this PR lands, the docs are already current → expect "no meaningful changes" or only minor wording shifts.
-
-### Validate the dry-run output
-
-Even though the dry-run skips the PR, the regenerated files exist on the runner. To inspect:
-
-```bash
-# Pull the artifacts (you'd need to add an `actions/upload-artifact` step
-# to the workflow if you want artifacts available — by default they aren't)
-```
-
-In practice: run `dry_run=false` once after dry-run passes, review the resulting PR carefully, merge it, then trust the monthly cadence.
+The workflows are checked into git; changes to their behavior go through the normal PR flow.
 
 ### Failure modes you'll hit
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `Permission denied on resource project ${PROJECT}` (asset step) | `cloudasset.viewer` not granted | Step 3, first command |
-| `403 ... iamcredentials.generateAccessToken` | WIF binding wrong | Step 4b — verify `attribute.repository` matches your repo |
-| `404 Not found: Dataset billing_export` | Billing export not enabled | Cloud Console → Billing → Billing Export |
-| `403 PERMISSION_DENIED ... aiplatform.googleapis.com` | `roles/aiplatform.user` not granted, or Vertex AI API not enabled | Step 1 + Step 3 last command |
-| `404 model not found: gemini-2.5-pro` | Model not available in `GCP_LOCATION` | Edit the workflow to set `GCP_LOCATION: us-central1` |
-| Workflow runs but docs don't change | Gemini returned text without writing the file | Check the Gemini CLI logs in the step output — usually the model added preamble before the markdown instead of calling the Write tool. Tighten the relevant prompt under `.github/prompts/`. |
-
----
-
-## 7. Rotation + ongoing maintenance
-
-| Resource | Rotation cadence | How |
-|---|---|---|
-| WIF provider trust | Never (the OIDC issuer is Google's) | n/a |
-| Service account roles | Audit annually — confirm the 5 grants in step 3 are the only ones | `gcloud projects get-iam-policy ${PROJECT} --flatten=bindings --filter=bindings.members:serviceAccount:${SA_EMAIL}` |
-| Gemini model pin | Bump when a newer GA model lands (Gemini 2.5 Pro → 2.6 Pro etc.) | Edit `GEMINI_MODEL` in the workflow `env:` block, run a `dry_run=true`, merge if the diff looks reasonable |
-
-The workflow itself is checked into git — changes to its behavior go through the normal PR flow. Same for the prompts under `.github/prompts/` (edit a prompt, the next refresh picks it up).
-
----
-
-## Costs
-
-The workflow runs once per month plus any manual triggers. Per run:
-- **GitHub Actions**: ~15-30 min on `ubuntu-latest` (free tier covers ~2000 min/month; this is rounding error)
-- **GCP (non-AI)**: cents (asset inventory + IAM read + one BigQuery query against ~1k rows)
-- **Vertex AI Gemini 2.5 Pro**: ~$0.50–$1.00 per run for 4 doc regenerations. Pricing at the time of this writing is $1.25/M input tokens (≤200K context) and $10/M output tokens; a typical run reads ~200K context tokens (gcp_inventory.json + IAM dump + repo source files) and writes ~40K output tokens across all four files
-
-Total: **~$0.50–$1.00/month** in Vertex AI spend on a monthly cadence, $0-1/month in GCP infra, $0 in GitHub Actions. Roughly half the cost of the previous Anthropic-keyed flow at comparable quality. Verify current pricing at [`ai.google.dev/pricing`](https://ai.google.dev/pricing) before assuming this is still accurate.
+| `403 ... iamcredentials.generateAccessToken` | WIF binding wrong | Step 3b: verify `attribute.repository` matches your repo |
+| `The given credential is rejected by the attribute condition` | Dispatched from a branch other than `main` | Merge first, then dispatch from `main` |
+| `Permission denied on resource project ${PROJECT}` | A viewer role from step 2 is missing | Re-run the step 2 loop |
