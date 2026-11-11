@@ -329,3 +329,86 @@ def test_a_non_mapping_feed_entry_is_dropped_not_raised():
     feed = [None, 42, "AMD", ["AMD"], good]
     rows = av_news_to_rows(feed)
     assert [r["ticker"] for r in rows] == ["AMD"], rows
+
+
+# ── Premarket filter reads the prior session's ATR (no look-ahead) ──────
+
+
+def _backfill_premarket_row(monkeypatch, target_high: float, target_low: float) -> dict:
+    """Run compute_indicators_for_dates for one date on stubbed reads and
+    return the row it upserts. Only the target date's daily high and low
+    vary between calls."""
+    import pandas as pd
+    import gcp.database as db
+    from gcp import backfill_ticker as mod
+
+    fd = date(2026, 11, 6)
+    days = pd.bdate_range(end=pd.Timestamp(fd), periods=60)
+    rows = []
+    for i, d in enumerate(days):
+        base = 100.0 + 0.01 * i
+        hi, lo = (target_high, target_low) if d.date() == fd else (base + 0.5, base - 0.5)
+        rows.append({"date": d.date(), "Open": base, "High": hi, "Low": lo,
+                     "Close": base, "Volume": 1_000_000})
+    daily_asc = pd.DataFrame(rows)
+    daily_desc = daily_asc.iloc[::-1].reset_index(drop=True)
+
+    # 08:00 to 08:29 ET premarket bars near the prior close, one of which
+    # wicks 1.5 above its body: past half the prior ATR (about 1.0), inside
+    # half of an ATR the target day's own wide range inflates.
+    start = pd.Timestamp("2026-11-06 08:00", tz="America/New_York").tz_convert("UTC")
+    ts = pd.Series([start + pd.Timedelta(minutes=m) for m in range(30)])
+    o = pd.Series([100.6] * 30)
+    c = pd.Series([100.62] * 30)
+    h = pd.Series([100.65] * 30)
+    lw = pd.Series([100.55] * 30)
+    h.iloc[15] = 102.2
+    ibars = pd.DataFrame({"ts": ts, "open": o, "high": h, "low": lw,
+                          "close": c, "volume": [1000] * 30})
+
+    def fake_query(sql, params=None):
+        return daily_desc.copy() if "market_data_daily" in sql else ibars.copy()
+
+    written = []
+    monkeypatch.setattr(db, "query_to_dataframe", fake_query)
+    monkeypatch.setattr(db, "upsert_dataframe", lambda frame, *a, **k: written.append(frame))
+    # SPY's print thresholds in force on fd (per-ticker parameters,
+    # 2026-11-08), here at the #1753 values.
+    from tests.lib.level_params_fixtures import install_level_params
+    install_level_params(monkeypatch, ["SPY"])
+    mod.compute_indicators_for_dates("SPY", [fd])
+    assert len(written) == 1
+    return written[0].iloc[0].to_dict()
+
+
+def test_backfill_premarket_ignores_the_target_sessions_own_range(monkeypatch):
+    """stocks#1753 review: the backfill passed the target date's completed
+    ATR(14) to the premarket filter, so that session's regular-hours range
+    decided which premarket prints survived. With the prior session's ATR,
+    the persisted premarket extremes and VWAP do not depend on it."""
+    calm = _backfill_premarket_row(monkeypatch, 100.6 + 0.5, 100.6 - 0.5)
+    wild = _backfill_premarket_row(monkeypatch, 100.6 + 40.0, 100.6 - 40.0)
+    for key in ("pre_high", "pre_low", "pre_vwap"):
+        assert calm.get(key) == wild.get(key), key
+    # The 102.2 wick is a spike under the prior ATR, so it never sets pre_high.
+    assert calm["pre_high"] < 101.0
+
+
+def test_backfill_premarket_passes_the_prior_session_inputs(monkeypatch):
+    import lib.indicators as ind
+
+    seen = {}
+    real = ind.calculate_premarket_context
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ind, "calculate_premarket_context", spy)
+    _backfill_premarket_row(monkeypatch, 100.6 + 40.0, 100.6 - 40.0)
+    # The prior session: open and close 100.58, a one-point range, so its
+    # ATR(14) is about 1.0, far below the target day's 80-point bar.
+    assert seen["prev_close"] == pytest.approx(100.58)
+    assert seen["prev_open"] == pytest.approx(100.58)
+    assert seen["atr"] == pytest.approx(1.0, abs=0.05)
+    assert seen["stale_print_atr"] == 0.1 and seen["spike_atr"] == 0.5

@@ -1,6 +1,6 @@
 # MODEL-EWV-001 — Earnings Whispers strike verdicts
 
-**Last reviewed:** unknown · **Last scanned:** 2026-10-20 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-11-03 · **Owner:** TBD
 
 **Code:** `gcp/fetchers/evaluate_ew_strikes.py` ·
 **Writes:** `earnings_calendar.ew_*` columns ·
@@ -42,11 +42,11 @@ half the picks.
 ## Where the verdict goes
 
 **The weekday premarket brief recaps the last session's verdicts** (#1168).
-`gcp/premarket_brief.py`'s `load_ew_recap` (`:718`) finds the last NYSE session before the brief's
+`gcp/premarket_brief.py`'s `load_ew_recap` (`:724`) finds the last NYSE session before the brief's
 date, reads the picks dated from the session before it through that one in one query, and keeps
 those that `scoring_session` scores on it, the rule this job uses. The brief attaches it on
-weekdays (`:1356`), so Monday's brief recaps Friday's session, and renders each scored pick with
-`_ew_verdict_str` (`:2454`) in its own section (`:2895`), counting the unscored ones. A failed load
+weekdays (`:1407`), so Monday's brief recaps Friday's session, and renders each scored pick with
+`_ew_verdict_str` (`:2456`) in its own section (`:2940`), counting the unscored ones. A failed load
 logs the error with its stack and puts an "unavailable" line in the embed
 (`_ew_recap_or_unavailable`, `:774`). Nothing else in the repository reads these columns; no
 router serves them.

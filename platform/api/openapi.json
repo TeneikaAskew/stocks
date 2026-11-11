@@ -1471,6 +1471,7 @@
             "title": "Ema 9"
           },
           "ftfc_direction": {
+            "description": "TF bias direction: bullish, bearish or mixed from the weighted candle vote.",
             "title": "Ftfc Direction"
           },
           "ftfc_score": {
@@ -1482,6 +1483,7 @@
                 "type": "null"
               }
             ],
+            "description": "TF bias: weighted vote of candle types across timeframes (2U up, 2D down, 1 and 3 zero), -1 to +1. Not price-versus-open FTFC.",
             "title": "Ftfc Score"
           },
           "macd": {
@@ -1641,6 +1643,7 @@
             ]
           },
           "ftfc_direction": {
+            "description": "TF bias direction: bullish, bearish or mixed from the weighted candle vote.",
             "title": "Ftfc Direction"
           },
           "ftfc_score": {
@@ -1652,6 +1655,7 @@
                 "type": "null"
               }
             ],
+            "description": "TF bias: weighted vote of candle types across timeframes (2U up, 2D down, 1 and 3 zero), -1 to +1. Not price-versus-open FTFC.",
             "title": "Ftfc Score"
           },
           "has_premarket": {
@@ -1898,6 +1902,26 @@
           "status"
         ],
         "title": "Degeneracy",
+        "type": "object"
+      },
+      "EarlyClose": {
+        "additionalProperties": true,
+        "description": "A half-day session: its date and its Eastern close, ``HH:MM``.",
+        "properties": {
+          "close": {
+            "title": "Close",
+            "type": "string"
+          },
+          "date": {
+            "title": "Date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "date",
+          "close"
+        ],
+        "title": "EarlyClose",
         "type": "object"
       },
       "EmaConfig": {
@@ -2291,6 +2315,17 @@
       "FreshnessRow": {
         "additionalProperties": true,
         "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
           "expected_latest": {
             "title": "Expected Latest",
             "type": "string"
@@ -2545,6 +2580,16 @@
             ],
             "title": "Snapshot Date"
           },
+          "snapshot_provenance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SnapshotProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "snapshot_ts": {
             "anyOf": [
               {
@@ -2733,6 +2778,16 @@
           "snapshot_date": {
             "title": "Snapshot Date",
             "type": "string"
+          },
+          "snapshot_provenance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SnapshotProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "snapshot_timestamp": {
             "anyOf": [
@@ -4870,9 +4925,24 @@
       },
       "MarketHoursResponse": {
         "additionalProperties": true,
+        "description": "``holidays`` and ``early_closes`` cover the current and next Eastern\nyear. ``holidays_2026`` is kept for solyra's replay picker until Spec C\nmoves it to ``holidays`` and removes it.",
         "properties": {
           "after_hours": {
             "$ref": "#/components/schemas/MarketHoursWindow"
+          },
+          "early_closes": {
+            "items": {
+              "$ref": "#/components/schemas/EarlyClose"
+            },
+            "title": "Early Closes",
+            "type": "array"
+          },
+          "holidays": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Holidays",
+            "type": "array"
           },
           "holidays_2026": {
             "items": {
@@ -4897,7 +4967,9 @@
           "regular",
           "pre_market",
           "after_hours",
-          "holidays_2026"
+          "holidays_2026",
+          "holidays",
+          "early_closes"
         ],
         "title": "MarketHoursResponse",
         "type": "object"
@@ -9070,6 +9142,87 @@
         "title": "SimilarStats",
         "type": "object"
       },
+      "SnapshotProvenance": {
+        "additionalProperties": true,
+        "description": "Provenance of the stored options snapshot a response was built from.\n\nStored clock retained: ``snapshot_ts`` is the selected rows' own instant.\n``observed_at`` is when this response was assembled (re-stamped per response).\n``snapshot_age_seconds`` is a display age (observed_at minus snapshot_ts), not a\nprovider lag. ``freshness_status`` and ``completeness_status`` are always\n``unknown``; ``reason`` names the clock validation outcome, not a qualification.",
+        "properties": {
+          "completeness_status": {
+            "const": "unknown",
+            "title": "Completeness Status",
+            "type": "string"
+          },
+          "freshness_status": {
+            "const": "unknown",
+            "title": "Freshness Status",
+            "type": "string"
+          },
+          "market_session": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market Session"
+          },
+          "observed_at": {
+            "title": "Observed At",
+            "type": "string"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "reason": {
+            "enum": [
+              "legacy_snapshot_unqualified",
+              "timestamp_invalid",
+              "timestamp_future"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "snapshot_age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Age Seconds"
+          },
+          "snapshot_ts": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Ts"
+          }
+        },
+        "required": [
+          "observed_at",
+          "freshness_status",
+          "completeness_status",
+          "reason"
+        ],
+        "title": "SnapshotProvenance",
+        "type": "object"
+      },
       "SpotEstimate": {
         "additionalProperties": true,
         "properties": {
@@ -11943,7 +12096,7 @@
     },
     "/api/config/market-hours": {
       "get": {
-        "description": "Return US equity market session windows + 2026 holidays.",
+        "description": "Return US equity market session windows, holidays and early closes.\n\n``holidays`` and ``early_closes`` cover the current and next year by the\nEastern date, so the window rolls at 00:00 ET on 1 January. Half days\nare sessions, so they are in ``early_closes`` and never in ``holidays``.\n``holidays_2026`` is kept, filled from the same calendar, for solyra's\nreplay picker until Spec C moves it to ``holidays`` and removes it.\nA calendar failure raises (CLAUDE.md 3.7); nothing is filled in.",
         "operationId": "get_market_hours_api_config_market_hours_get",
         "responses": {
           "200": {
@@ -12084,7 +12237,7 @@
     },
     "/api/earnings/health/ping": {
       "get": {
-        "description": "Lightweight warm-up probe. NOT called by a scheduler.\n\nThe keep-warm Cloud Scheduler was dropped (gcp/deploy.sh, \"Platform\nkeep-warm — DROPPED\"): solyra-api-prod sits behind IAP, so an\nunauthenticated GET is rejected at IAP and never reaches the app. The\nendpoint is kept for manual and in-cluster warm-up.\n\nReturns 200 + a 1-statement Cloud SQL query so the Cloud SQL\nconnector (and the FastAPI worker) stay hot during business hours.\nCache-Control set to 0 so intermediaries never serve a stale 200.",
+        "description": "Lightweight warm-up probe. NOT called by a scheduler.\n\nThe keep-warm Cloud Scheduler was dropped (gcp/deploy.sh, \"Platform\nkeep-warm — DROPPED\") while the API sat behind IAP, where an\nunauthenticated GET was rejected at the edge and never reached the app.\nThe endpoint is kept for manual and in-cluster warm-up.\n\nReturns 200 + a 1-statement Cloud SQL query so the Cloud SQL\nconnector (and the FastAPI worker) stay hot during business hours.\nCache-Control set to 0 so intermediaries never serve a stale 200.",
         "operationId": "health_ping_api_earnings_health_ping_get",
         "responses": {
           "200": {
@@ -12385,7 +12538,7 @@
     },
     "/api/earnings/upcoming": {
       "get": {
-        "description": "Next N days of earnings reporters, decorated with full history.\n\nReads earnings_upcoming_with_history (refreshed daily 7:30am ET).\nEach row carries: archetype, confidence_label, BOTH recommendation\nmodes (long-only + IC), lean stats, and last_3_events JSONB.",
+        "description": "Next N days of earnings reporters, decorated with full history.\n\nReads earnings_upcoming_with_history (refreshed daily 7:30am ET).\nEach row carries archetype, lean stats and last_3_events JSONB; score,\nquintile, confidence and both recommendation modes are null (EW retired).",
         "operationId": "upcoming_api_earnings_upcoming_get",
         "parameters": [
           {

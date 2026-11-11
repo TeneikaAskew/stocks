@@ -318,7 +318,7 @@ def _build_indicator_rows(ticker: str, df: pd.DataFrame) -> list[dict]:
     # deterministically since they're a function of OHLC at that bar.
     try:
         from lib.strat import StratClassifier
-        clf = StratClassifier()
+        clf = StratClassifier(rule_version="legacy-pattern-v1")
         labels = clf.classify_series(
             enriched[['Open', 'High', 'Low', 'Close']]
         )

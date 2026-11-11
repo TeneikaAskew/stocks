@@ -46,7 +46,7 @@ def invoke(monkeypatch):
    return len(df)
   monkeypatch.setattr(m,'fetch_av_realtime_options',fetch);monkeypatch.setattr(m,'upsert_dataframe',upsert)
   if deadline_exhausted and hasattr(m,'_cli_transport'):
-   def exhausted(*a,**k):raise m._cli_transport.SourceDeadline('source_deadline')
+   def exhausted(*a,**k):raise m._cli_transport.SourceDeadline()
    monkeypatch.setattr(m._cli_transport,'pace',exhausted)
   try:r=api.main();code=0 if r is None else r
   except SystemExit as e:code=e.code
@@ -220,11 +220,27 @@ def test_scheduled_entry_preserves_sibling_commit_on_later_failure(monkeypatch, 
   return collector._normalize_av_response(pd.DataFrame(raw_rows()), ticker, stamp)
  monkeypatch.setattr(collector, 'fetch_av_realtime_options', fetch)
  def expired(*args, **kwargs):
-  raise collector._cli_transport.SourceDeadline('source_deadline')
+  raise collector._cli_transport.SourceDeadline()
  monkeypatch.setattr(collector._cli_transport, 'pace', expired)
- with pytest.raises(SystemExit) as failure:
-  api.main()
+ # The integration wrapper passes exactly (monkeypatch, engine), so capture the
+ # collector logger here rather than through a caplog fixture.
+ class Lines(logging.Handler):
+  def __init__(self):
+   super().__init__(logging.INFO);self.lines=[]
+  def emit(self, record):
+   self.lines.append(record.getMessage())
+ lines = Lines()
+ collector.log.addHandler(lines);previous = collector.log.level;collector.log.setLevel(logging.INFO)
+ try:
+  with pytest.raises(SystemExit) as failure:
+   api.main()
+ finally:
+  collector.log.removeHandler(lines);collector.log.setLevel(previous)
  assert failure.value.code == 1 and calls == ['SPY']
+ # Deadline path: later tickers are realtime UNAVAILABLE, listed unavailable.
+ assert '  ✗ IWM realtime UNAVAILABLE' in lines.lines and '  ✗ QQQ realtime UNAVAILABLE' in lines.lines
+ assert "Failed (2): ['IWM: unavailable', 'QQQ: unavailable']" in lines.lines
+ assert not any(line.endswith(' failed') for line in lines.lines)
  # A separate engine/physical connection cannot see uncommitted writer-local rows.
  from sqlalchemy import create_engine
  from sqlalchemy.pool import NullPool
@@ -238,3 +254,69 @@ def test_scheduled_entry_preserves_sibling_commit_on_later_failure(monkeypatch, 
  assert {r.ticker for r in rows} == {'SPY'}
  assert {r.option_type for r in rows} == {'calls', 'puts'}
  assert all(r.snapshot_ts == FIXED for r in rows)
+ # Control: the old SourceDeadline('source_deadline') call is a TypeError, and a
+ # TypeError takes the generic failed path, not the deadline path. No SQL here.
+ with pytest.raises(TypeError):
+  collector._cli_transport.SourceDeadline('source_deadline')
+ def mistyped(*args, **kwargs):
+  raise TypeError('not a source deadline')
+ monkeypatch.setattr(collector._cli_transport, 'pace', mistyped)
+ monkeypatch.setattr(collector, 'upsert_dataframe', lambda df, *a: len(df))
+ control = Lines();collector.log.addHandler(control);collector.log.setLevel(logging.INFO)
+ try:
+  with pytest.raises(SystemExit):
+   api.main()
+ finally:
+  collector.log.removeHandler(control);collector.log.setLevel(previous)
+ assert '  ✗ IWM failed' in control.lines and '  ✗ QQQ failed' in control.lines
+ assert "Failed (2): ['IWM: failed', 'QQQ: failed']" in control.lines
+
+
+def test_batch_timestamp_and_delayed_session_boundary_are_explicit(monkeypatch):
+ """One snapshot_ts before admission, preflight and budget; no mid-run re-admission."""
+ from gcp.fetchers import evaluate_ew_strikes as ew
+ transport = m._cli_transport
+ near_close = datetime(2026, 10, 27, 19, 57, tzinfo=timezone.utc)   # 15:57 ET, close 16:00
+ close = pd.Timestamp('2026-10-27T20:00:00Z')
+ order, source_clock, requests = [], [5000.0], []
+ class Clock(datetime):
+  @classmethod
+  def now(cls, tz=None):
+   order.append('snapshot_ts');return near_close
+ monkeypatch.setattr(m, 'datetime', Clock)
+ def sessions(start, end):
+  order.append('admission')
+  return pd.DataFrame({'market_open': [pd.Timestamp('2026-10-27T13:30:00Z')], 'market_close': [close]},
+   index=pd.DatetimeIndex([pd.Timestamp('2026-10-27')]))
+ monkeypatch.setattr(ew, 'nyse_sessions', sessions)
+ monkeypatch.setattr(m, 'is_cloud_sql_configured', lambda: order.append('preflight') or True)
+ original_init = m._SourceBudget.__init__
+ def budget(self):
+  order.append('budget');original_init(self)
+ monkeypatch.setattr(m._SourceBudget, '__init__', budget)
+ monkeypatch.setattr(transport, '_source_clock', lambda: source_clock[0])
+ monkeypatch.setattr(transport.time, 'sleep', lambda seconds: source_clock.__setitem__(0, source_clock[0] + seconds))
+ monkeypatch.setattr(m, '_av_cfg', SimpleNamespace(delay_between_calls=0.4))
+ monkeypatch.setenv('AV_API_KEY', KEY)
+ monkeypatch.setattr(sys, 'argv', ['fetch_av_realtime_options', '--tickers', 'SPY IWM QQQ'])
+ def fetch(ticker, key, stamp, **kwargs):
+  # The wall time this request starts, on the fake source clock.
+  requests.append((ticker, near_close.timestamp() + source_clock[0] - 5000.0, stamp))
+  source_clock[0] += 1.0
+  return m._normalize_av_response(pd.DataFrame(raw_rows()), ticker, stamp)
+ monkeypatch.setattr(m, 'fetch_av_realtime_options', fetch)
+ writes = []
+ def upsert(df, table, keys):
+  writes.append(df.copy());source_clock[0] += 150.0   # slow persistence, excluded
+  return len(df)
+ monkeypatch.setattr(m, 'upsert_dataframe', upsert)
+ assert api.main() is None   # exit 0
+ assert order[:4] == ['snapshot_ts', 'admission', 'preflight', 'budget']
+ assert order.count('snapshot_ts') == 1 and order.count('admission') == 1   # no re-admission
+ assert [t for t, _, _ in requests] == ['SPY', 'IWM', 'QQQ']   # no new retry
+ qqq_started = requests[2][1]
+ assert qqq_started > close.timestamp()   # fetched after the regular-session close
+ assert {stamp for _, _, stamp in requests} == {near_close}
+ for df in writes:
+  assert set(df['snapshot_ts']) == {pd.Timestamp(near_close)}
+  assert set(df['market_session']) == {'REALTIME'}

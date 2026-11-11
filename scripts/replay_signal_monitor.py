@@ -682,6 +682,9 @@ def make_capturing_fire_alert(captured: list[FireRecord], monitor):
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument('--strat-rule-version', choices=['legacy-pattern-v1'],
+                   default='legacy-pattern-v1',
+                   help='Scoring rule; canonical migration is not admitted')
     p.add_argument("--ticker", help="Single ticker to replay (alias for --tickers TICKER)")
     p.add_argument("--tickers", help="Comma-separated tickers (overrides --ticker)")
     p.add_argument("--date", help="Single trading date YYYY-MM-DD (alias for --start = --end)")
@@ -770,7 +773,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     with patch("gcp.fetchers._watchlist.load_watchlist", return_value=tickers):
         from gcp.signal_monitor import SignalMonitor
-        monitor = SignalMonitor()
+        monitor = SignalMonitor(strat_rule_version=args.strat_rule_version)
         monitor.webhook_url = ""           # disable Discord
         # Replace fire_alert with the capturing stub. Persist path is
         # also bypassed since fire_alert calls _persist_signal_alert.
