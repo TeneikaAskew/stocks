@@ -82,7 +82,7 @@ A full-stack equity trading research and execution platform centered on four pri
                     │  External Sources                      │
                     │  AlphaVantage  Yahoo  FRED  Benzinga   │
                     │  SEC Edgar     Form 4  AV News         │
-                    │  Unusual Whales  Earnings Whispers     │
+                    │  Unusual Whales  Yahoo Finance         │
                     │  ForexFactory                          │
                     └──────────────────┬─────────────────────┘
                                        │
@@ -367,7 +367,7 @@ Files in `lib/`. Pure-Python, no FastAPI/database imports — testable in isolat
 | **Form 4** | Insider transactions (buy/sell, executive, value) | `insider_transactions` table, ranker signal |
 | **AV News** | Article-level sentiment scoring with topics | `news_sentiment` table, catalysts feed, ranker |
 | **Unusual Whales** | Earnings calendar (fundamentals) | Earnings calendar tier 2/3 |
-| **Earnings Whispers** | Earnings calendar with strategy picks (strike, expiration, premium) | Earnings calendar tier 2/3, strategy attachment |
+| **Earnings Whispers (retired)** | Historical earnings calendar and strategy picks retained | No ingestion; the six FEAT-CATALYST-001 readers exclude the two retired aliases |
 | **ForexFactory** | Economic events with **release times** + forecast/previous values | Primary economic events source (FRED has dates only) |
 
 ### 6.2 GCP Fetchers (`gcp/fetchers/`)
@@ -385,7 +385,7 @@ Files in `lib/`. Pure-Python, no FastAPI/database imports — testable in isolat
 | `fetch_insider_transactions.py` | AlphaVantage / Form 4 | `insider_transactions` | Daily |
 | `fetch_top_movers.py` | AlphaVantage `TOP_GAINERS_LOSERS` | `top_movers_daily` | Daily |
 | `_watchlist.py` | (utility) | Shared watchlist loader unioning to ticker pool | (imported by others) |
-| `scripts/fetch_earnings_calendar.py` (CLI) | UnusualWhales `upcoming_earnings_v2` + Earnings Whispers + AlphaVantage `EARNINGS_CALENDAR` | `earnings_calendar` (incl. UW liquidity enrichments — `is_s_p_500`, `stock_volume`, `options_volume`, `open_interest`, `rv_1d_last_12q`, `last_1d_reactions`) | Daily Cloud Run via `fetch-earnings-calendar` |
+| `scripts/fetch_earnings_calendar.py` (CLI) | UnusualWhales `upcoming_earnings_v2` + AlphaVantage `EARNINGS_CALENDAR` + Yahoo (Earnings Whispers retired 2026-10-31; its historical rows are kept) | `earnings_calendar` (incl. UW liquidity enrichments — `is_s_p_500`, `stock_volume`, `options_volume`, `open_interest`, `rv_1d_last_12q`, `last_1d_reactions`) | Daily Cloud Run via `fetch-earnings-calendar` |
 
 The legacy `gcp/fetchers/fetch_earnings_options.py` was removed (commit `5abfc89`); earnings options now flow through `fetch_av_historical_options.py`. The legacy `gcp/fetchers/fetch_etf_options.py` (intraday yahooquery) was removed in PR #95 (commit `aea5a7c`); historical AV is the sole options writer.
 
@@ -485,7 +485,7 @@ GCP project: `adept-mountain-474619-d4`. Region: `us-east1`.
 | `fetch-av-options-backfill` | Historical options backfill (AV) | Manual / one-shot |
 | `fetch-alphavantage-intraday` | 1-min bars monthly | Cloud Scheduler — monthly + manual |
 | `fetch-economic-events` | ForexFactory + FRED → `economic_events` | Cloud Scheduler — daily |
-| `fetch-earnings-calendar` | UW + EW + AV → `earnings_calendar` | Cloud Scheduler — daily |
+| `fetch-earnings-calendar` | UW + AV + Yahoo → `earnings_calendar` (EW retired 2026-10-31) | Cloud Scheduler — daily |
 | `fetch-news-sentiment` | AV news + topics → `news_sentiment` | Cloud Scheduler — hourly (in-window catalysts) |
 | `fetch-sec-filings` | SEC EDGAR 8-K → `sec_filings` | Cloud Scheduler — daily |
 | `fetch-insider-transactions` | Form 4 → `insider_transactions` | Cloud Scheduler — daily |
