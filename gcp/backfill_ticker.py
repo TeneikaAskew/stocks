@@ -426,9 +426,12 @@ def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
     context from the data we just loaded. Mirrors gcp.fetchers.
     fetch_market_data.compute_and_upsert_daily_indicators so the
     backfilled rows look identical to a live-fetched row."""
-    from gcp.database import query_to_dataframe, upsert_dataframe
+    from gcp.database import query_to_dataframe, query_to_dataframe_strict, upsert_dataframe
     from lib.indicators import add_all_indicators, calculate_premarket_context
     from lib.strat import StratClassifier
+    from lib.strat_levels import (
+        LevelParamsUnavailable, load_level_params, premarket_filter_inputs,
+    )
 
     clf = StratClassifier(rule_version="legacy-pattern-v1")
 
@@ -501,21 +504,34 @@ def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
                 {"ticker": ticker.upper(), "start": pm_start, "end": pm_end},
             )
             if not ibars.empty:
-                # The prior session's close, open and ATR(14), as the nightly
-                # writer (fetch_market_data.compute_and_upsert_daily_indicators)
+                # The prior session's close, open and ATR columns, as the
+                # nightly writer (fetch_market_data.compute_and_upsert_daily_indicators)
                 # passes them: the target date's own ATR includes the session
                 # being filtered, so the premarket filter would see the future.
-                prev_close = prev_open = atr14 = None
+                prev_close = prev_open = None
+                atrs = {"atr_14": None, "atr_5": None}
                 if len(df) >= 2:
                     prev_close = float(df["Close"].iloc[-2])
                     prev_open = float(df["Open"].iloc[-2])
-                    prior_atr = enriched.iloc[-2].get("ATR14")
-                    if prior_atr is not None and pd.notna(prior_atr):
-                        atr14 = float(prior_atr)
+                    for col, frame_col in (("atr_14", "ATR14"), ("atr_5", "ATR5")):
+                        v = enriched.iloc[-2].get(frame_col)
+                        if v is not None and pd.notna(v):
+                            atrs[col] = float(v)
+                # The ticker's print thresholds in force on fd (FEAT-STRAT-001).
+                try:
+                    params = load_level_params(query_to_dataframe_strict, [ticker], fd)
+                    pm_filter = premarket_filter_inputs(params[ticker.upper()], atrs)
+                except LevelParamsUnavailable as exc:
+                    log.error("level_params_unavailable for %s @ %s: %s "
+                              "(premarket snapshot written unfiltered)", ticker, fd, exc)
+                    pm_filter = {"status": "level_params_unavailable", "atr": None,
+                                 "stale_print_atr": None, "spike_atr": None, "params": None}
                 pm = calculate_premarket_context(
                     times=ibars["ts"], open_=ibars["open"], high=ibars["high"],
                     low=ibars["low"], close=ibars["close"], volume=ibars["volume"],
-                    prev_close=prev_close, atr14=atr14, prev_open=prev_open,
+                    prev_close=prev_close, atr=pm_filter["atr"], prev_open=prev_open,
+                    stale_print_atr=pm_filter["stale_print_atr"],
+                    spike_atr=pm_filter["spike_atr"],
                 )
                 if pm["bar_count"] > 0:
                     for k_pm, k_db in [
@@ -526,6 +542,16 @@ def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
                     ]:
                         if pm[k_pm] is not None:
                             row[k_db] = pm[k_pm]
+                    # Whether the prints were filtered with the ticker's own
+                    # thresholds (Design 8); counts NULL when not.
+                    filtered = bool(pm.get("filtered"))
+                    row["pre_excluded_stale_prints"] = (
+                        int(pm["excluded_prior_close_prints"]) if filtered else None)
+                    row["pre_excluded_spikes"] = (
+                        int(pm["excluded_spike_prints"]) if filtered else None)
+                    row["pre_filter_status"] = "ok" if filtered else (
+                        pm_filter["status"] if pm_filter["status"] != "ok" else "atr_unavailable")
+                    row["pre_filter_params"] = pm_filter["params"]
                     log.info("  ✓ pre-market %s @ %s: pre_high=%s gap=%s",
                              ticker, fd, pm["pre_high"], pm["gap_pct"])
         except Exception as exc:

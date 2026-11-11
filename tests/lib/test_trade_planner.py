@@ -30,7 +30,7 @@ def _avgo_apr7_ctx(direction: str = "long", conviction: str = "medium") -> PlanC
         conviction=conviction,  # type: ignore[arg-type]
         close=333.97,
         atr=12.6,
-        levels=with_triggers(long=316.40, short=310.28),
+        levels=with_triggers(long=316.40, short=310.28, atr=12.6),
         sma_200=328.59,
         prior_swing_low=310.28,
         ftfc_score=1.0,
@@ -279,9 +279,10 @@ def test_select_trigger_skips_levels_premarket_broke():
 
 
 def test_select_trigger_orb_only_when_every_long_level_is_broken():
-    # Premarket ran to 190 through every long level up to PQH 183.16; the
-    # premarket high itself is past the window (8% of 170 is 13.60).
-    ctx = _ctx(_arm_levels(pre_high=190.0, pre_low=165.0, pre_vwap=170.0))
+    # Premarket ran to 200 through every long level up to PQH 183.16; the
+    # premarket high itself is past the window (3 x ATR 8.64 is 25.92 from
+    # the prior close 166.73; 200 is 33.27 away).
+    ctx = _ctx(_arm_levels(pre_high=200.0, pre_low=165.0, pre_vwap=170.0))
     regime, trigger, _s, distance, _b = select_trigger_and_regime(ctx, "long")
     assert (regime, trigger, distance) == ("orb_only", None, None)
     assert ctx.orb_only_reason("long") == "all_broken_by_premarket"
@@ -323,7 +324,7 @@ def test_parent_bar_high_is_a_long_candidate():
 
 
 def test_orb_only_persona_plans_carry_no_numbers():
-    ctx = _ctx(_arm_levels(pre_high=190.0, pre_low=165.0, pre_vwap=170.0))
+    ctx = _ctx(_arm_levels(pre_high=200.0, pre_low=165.0, pre_vwap=170.0))
     plans = compute_persona_plans(ctx)
     assert len(plans) == 3
     for p in plans:
@@ -426,12 +427,15 @@ def test_context_from_bundle_error_names_the_ticker_and_the_value():
     assert "summarize_market_context" in message
 
 
-def test_context_from_bundle_still_accepts_a_zero_atr_with_a_real_close():
-    """Only `close` is load-bearing. A missing ATR is still rescued by
-    safe_atr(), which needs a non-zero close to be meaningful."""
+def test_context_from_bundle_still_accepts_a_missing_atr_with_a_real_close():
+    """Only `close` is load-bearing for the context. A missing ATR stays
+    None (no percent-of-close stand-in, per-ticker parameters 2026-11-08);
+    with no session levels every plan is orb_only and publishes no price."""
     bundle = _placeholder_bundle()
     bundle["market"]["close"] = 764.29
     ctx = context_from_bundle(bundle, direction="long", conviction="medium")
     assert ctx.close == 764.29
-    assert ctx.safe_atr() > 0
-    assert compute_persona_plans(ctx)
+    assert ctx.atr is None
+    assert not hasattr(ctx, "safe_atr")
+    plans = compute_persona_plans(ctx)
+    assert plans and all(p.entry_zone is None and p.stop is None for p in plans)

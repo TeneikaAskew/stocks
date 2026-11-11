@@ -19,6 +19,10 @@ def no_network(monkeypatch):
     monkeypatch.setattr(socket, 'create_connection', refuse)
     import gcp.database as database
     monkeypatch.setattr(database, 'is_cloud_sql_configured', lambda: False)
+    # The level parameter tables (per-ticker parameters, 2026-11-08), read
+    # once per brief run: every key at the #1753 values.
+    from tests.lib.level_params_fixtures import install_level_params
+    install_level_params(monkeypatch)
 
 
 def _daily(invalid=False):

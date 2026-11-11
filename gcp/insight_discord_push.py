@@ -152,14 +152,27 @@ def _fmt_levels_field(key_levels: dict) -> str:
     return _truncate("\n".join(lines), MAX_FIELD_VALUE) if lines else "—"
 
 
+def _orb_only_side(report: dict) -> dict:
+    """The report direction's side from its level_basis, or {} for a report
+    stored before FEAT-STRAT-001."""
+    basis = report.get("level_basis") if isinstance(report, dict) else None
+    if not isinstance(basis, dict):
+        return {}
+    side = "short" if report.get("direction") == "short" else "long"
+    return basis.get(side) or {}
+
+
 def _orb_only_reason(report: dict) -> Optional[str]:
     """The orb_only reason for the report's direction from its level_basis,
     or None for a report stored before FEAT-STRAT-001."""
-    basis = report.get("level_basis") if isinstance(report, dict) else None
-    if not isinstance(basis, dict):
-        return None
-    side = "short" if report.get("direction") == "short" else "long"
-    return (basis.get(side) or {}).get("reason")
+    return _orb_only_side(report).get("reason")
+
+
+def _orb_only_window(report: dict) -> Optional[dict]:
+    """The side's recorded trigger-window parameter (per-ticker parameters,
+    2026-11-08), or None for a basis that recorded none."""
+    window = _orb_only_side(report).get("window")
+    return window if isinstance(window, dict) else None
 
 
 def _fmt_targets_field(
@@ -167,6 +180,7 @@ def _fmt_targets_field(
     regime: str = "normal",
     reason: Optional[str] = None,
     direction: str = "long",
+    window: Optional[dict] = None,
 ) -> str:
     """Compact one-field summary of entry / stop / targets.
 
@@ -182,7 +196,7 @@ def _fmt_targets_field(
     """
     if regime == "orb_only":
         from lib.strat_levels import orb_only_text  # noqa: PLC0415
-        return "⚠️ **ORB-only**: " + orb_only_text(reason, direction)
+        return "⚠️ **ORB-only**: " + orb_only_text(reason, direction, window)
 
     parts = []
     if regime == "extended":
@@ -501,6 +515,7 @@ def format_report_embed(row: dict) -> dict:
                 regime=regime,
                 reason=_orb_only_reason(r),
                 direction=r.get("direction") or "long",
+                window=_orb_only_window(r),
             ),
             "inline": True,
         },

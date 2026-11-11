@@ -35,6 +35,14 @@ from tests.lib.session_levels_helpers import basis
 SESSION = fx.SESSION
 
 
+@pytest.fixture(autouse=True)
+def _level_params(monkeypatch):
+    """The level parameter tables (per-ticker parameters, 2026-11-08) behind
+    the strict reader every consumer uses: every key at the #1753 values."""
+    from tests.lib.level_params_fixtures import install_level_params
+    install_level_params(monkeypatch, ["QQQ", "SPY", "IWM", "TST"])
+
+
 @pytest.fixture
 def brief_basis(monkeypatch) -> dict:
     """The level_basis the 08:30 ET brief writes for QQQ on 2026-11-06."""
@@ -224,7 +232,8 @@ def test_planner_applies_a_newer_premarket_snapshot(monkeypatch):
             return pd.DataFrame([{"ticker": "TST", "level_basis": json.dumps(stored)}])
         if "pre_high" in sql:
             return pd.DataFrame([{"date": SESSION, "pre_high": 102.0, "pre_low": 99.5,
-                                  "pre_vwap": 100.5, "gap_pct": 0.0}])
+                                  "pre_vwap": 100.5, "gap_pct": 0.0,
+                                  "pre_filter_status": "ok"}])
         return pd.DataFrame()
 
     monkeypatch.setattr(summarizers, "_query", q)
@@ -241,7 +250,7 @@ def test_a_declining_low_replaces_the_short_candidate():
     sl = SessionLevels.from_basis(stored)
     assert sl.short.trigger["price"] == 99.0
     newer = sl.with_premarket({"date": SESSION.isoformat(), "pre_high": 100.5,
-                               "pre_low": 98.0, "pre_vwap": 99.5})
+                               "pre_low": 98.0, "pre_vwap": 99.5, "pre_filter_status": "ok"})
     assert newer.short.trigger["price"] == 98.0 and newer.short.trigger["name"] == "PMK_L"
     assert [lv.price for lv in newer.levels if lv.name == "PMK_L"] == [98.0]
 
@@ -315,23 +324,35 @@ def _movement_map(monkeypatch, db):
     return dashboard._build_movement_level_map("QQQ", analysis_date=SESSION)
 
 
-def _resolver_inputs(db):
+def _resolver_inputs(db, *, with_provenance=True):
     import sqlalchemy as sa
     from gcp.premarket_playbook_resolver import derive_level_map_from_daily
+    from lib.indicators import calculate_atr
+    from tests.lib.level_params_fixtures import legacy_db
     eng = sa.create_engine("sqlite://", creator=lambda: db.conn)
+    legacy_db("QQQ", conn=db.conn)   # the level parameter tables, same database
     d = fx.daily("QQQ")
     daily = pd.DataFrame({
         "ticker": "QQQ", "date": [t.date().isoformat() for t in d.index],
         "open": d["Open"].values, "high": d["High"].values, "low": d["Low"].values,
         "close": d["Close"].values, "atr_14": fx.wilder_atr(d).values,
+        "atr_5": calculate_atr(d["High"], d["Low"], d["Close"], 5).values,
         "strat_candle": "", "strat_combo": "",
-        "pre_high": None, "pre_low": None, "pre_vwap": None, "gap_pct": None})
+        "pre_high": None, "pre_low": None, "pre_vwap": None, "gap_pct": None,
+        "pre_fetched_at": None, "pre_excluded_stale_prints": None, "pre_excluded_spikes": None,
+        "pre_filter_status": None, "pre_filter_params": None})
     snap = fx.session_premarket("QQQ")
     daily = pd.concat([daily, pd.DataFrame([{
         "ticker": "QQQ", "date": SESSION.isoformat(), "open": None, "high": None, "low": None,
-        "close": None, "atr_14": None, "strat_candle": "", "strat_combo": "",
-        **{k: snap[k] for k in ("pre_high", "pre_low", "pre_vwap", "gap_pct")}}])],
+        "close": None, "atr_14": None, "atr_5": None, "strat_candle": "", "strat_combo": "",
+        **{k: snap[k] for k in ("pre_high", "pre_low", "pre_vwap", "gap_pct",
+                                "pre_filter_status")}}])],
         ignore_index=True)
+    if not with_provenance:
+        # market_data_daily before the provenance and filter-status columns.
+        daily = daily.drop(columns=["pre_fetched_at", "pre_excluded_stale_prints",
+                                    "pre_excluded_spikes", "pre_filter_status",
+                                    "pre_filter_params"])
     daily.to_sql("market_data_daily", eng, index=False, if_exists="replace")
     return derive_level_map_from_daily("QQQ", SESSION, eng)
 

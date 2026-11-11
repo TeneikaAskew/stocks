@@ -18,7 +18,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from lib.indicators import calculate_premarket_context
+from lib.indicators import calculate_premarket_context, premarket_print_filter
 from tests.lib import strat_2026_11_06 as fx
 
 # Values computed from the committed bars (the spec's figures, except the
@@ -49,13 +49,16 @@ def test_filtered_extremes_and_counts(ticker):
 
 @pytest.mark.parametrize("ticker", sorted(RAW))
 def test_raw_extremes_without_an_atr(ticker):
-    """With no ATR(14) nothing is dropped: the raw extremes come back."""
+    """With no ATR and no thresholds nothing is dropped: the raw extremes
+    come back, and the counts are None (the filter did not run), never a 0
+    that reads as "nothing dropped" (per-ticker parameters, 2026-11-08)."""
     hi, lo = RAW[ticker]
     pm = fx.premarket_context(ticker, raw=True)
     assert pm["pre_high"] == pytest.approx(hi)
     assert pm["pre_low"] == pytest.approx(lo)
-    assert pm["excluded_prior_close_prints"] == 0
-    assert pm["excluded_spike_prints"] == 0
+    assert pm["filtered"] is False
+    assert pm["excluded_prior_close_prints"] is None
+    assert pm["excluded_spike_prints"] is None
 
 
 @pytest.mark.parametrize("ticker", sorted(FILTERED))
@@ -107,7 +110,8 @@ def test_pre_vwap_drops_a_bar_with_no_surviving_price():
     lo = pd.Series([100.0] * 5)
     c = pd.Series([100.0] * 5)
     v = pd.Series([1000] * 5)
-    pm = calculate_premarket_context(times, o, h, lo, c, v, prev_close=95.0, atr14=4.0)
+    pm = calculate_premarket_context(times, o, h, lo, c, v, prev_close=95.0, atr=4.0,
+                                     stale_print_atr=0.1, spike_atr=0.5)
     assert pm["excluded_spike_prints"] == 1
     assert pm["pre_high"] == pytest.approx(100.0)
     assert pm["pre_vwap"] == pytest.approx(100.00)
@@ -122,7 +126,31 @@ def test_pre_vwap_bar_with_every_price_dropped_adds_no_volume():
     lo = pd.Series([100.0, 100.0, 95.0, 100.0])
     c = pd.Series([100.0, 100.0, 95.0, 100.0])
     v = pd.Series([1000, 1000, 50000, 1000])
-    pm = calculate_premarket_context(times, o, h, lo, c, v, prev_close=95.0, atr14=4.0)
+    pm = calculate_premarket_context(times, o, h, lo, c, v, prev_close=95.0, atr=4.0,
+                                     stale_print_atr=0.1, spike_atr=0.5)
     assert pm["excluded_prior_close_prints"] == 3
     assert pm["pre_low"] == pytest.approx(100.0)
     assert pm["pre_vwap"] == pytest.approx(100.00)
+
+
+def test_zero_calibrated_thresholds_still_filter():
+    """#1780 review: a ticker whose premarket bars show no wick or midpoint
+    spread calibrates both thresholds to 0 with status ok. Zero is a valid
+    distance, so the filter runs (a wick above every neighbouring body is
+    dropped) rather than switching itself off; a negative or non-finite
+    threshold, or a non-positive ATR, still turns it off."""
+    o = pd.Series([100.0] * 5)
+    h = pd.Series([100.0, 100.0, 100.5, 100.0, 100.0])
+    lo = pd.Series([100.0] * 5)
+    c = pd.Series([100.0] * 5)
+    out = premarket_print_filter(o, h, lo, c, prev_close=95.0, atr=2.0,
+                                 stale_print_atr=0.0, spike_atr=0.0)
+    assert out["filtered"] is True
+    assert list(out["spike"]["high"]) == [False, False, True, False, False]
+    for bad in (-0.1, float("nan"), float("inf"), None):
+        off = premarket_print_filter(o, h, lo, c, prev_close=95.0, atr=2.0,
+                                     stale_print_atr=0.0, spike_atr=bad)
+        assert off["filtered"] is False
+    off = premarket_print_filter(o, h, lo, c, prev_close=95.0, atr=0.0,
+                                 stale_print_atr=0.0, spike_atr=0.0)
+    assert off["filtered"] is False
