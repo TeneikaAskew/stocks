@@ -5,14 +5,14 @@ issues: []
 canvases: []
 site_source_notes: [DASHBOARD-01, DASHBOARD-21, INSIGHTS-07, INSIGHTS-08]
 done_when:
-  - "Target spacing: tests/lib/test_strat_levels.py passes a TestTargetSpacing class built on the Design 8 fixture (reference 250.00, premarket high 252.10 and low 248.20, prior close 247.00, PDH 253.00, PMH 275.00, PQH 280.00, PYH 285.00, PDL 247.50, PML 225.00, PQL 220.00, PYL 215.00, both windows 2.6, ATR(14) 14.00, target_min_spacing_atr 0.25): build_session_levels gives calls trigger 252.10 (PMK_H), targets 275.00, 280.00, 285.00 and skipped [253.00]; puts trigger 248.20 (PMK_L), targets 225.00, 220.00, 215.00 and skipped [247.50, 247.00]; stops 248.20 and 252.10 as on origin/main; with ATR(14) 24.00 (windows 1.6) calls targets are 275.00 and 285.00 with skipped [253.00, 280.00]; with the ticker_level_params row changed to 0.05 the calls targets are 253.00, 275.00, 280.00 with no code change; a candidate whose distance in cents equals the spacing in cents (price_cents half-up) is kept and one cent less is skipped; a ticker whose target_min_spacing_atr status is not ok keeps its trigger and stop, publishes no target and carries target_status equal to that status; the first, second and third cases fail on origin/main, where the calls targets are 253.00, 275.00, 280.00"
+  - "Target spacing: tests/lib/test_strat_levels.py passes a TestTargetSpacing class built on the Design 8 fixture (reference 250.00, premarket high 252.10 and low 248.20, prior close 247.00, PDH 253.00, PMH 275.00, PQH 280.00, PYH 285.00, PDL 247.50, PML 225.00, PQL 220.00, PYL 215.00, both windows 2.6, ATR(14) 14.00, target_min_spacing_atr 0.25): build_session_levels gives calls trigger 252.10 (PMK_H), targets 275.00, 280.00, 285.00 and skipped [253.00]; puts trigger 248.20 (PMK_L), targets 225.00, 220.00, 215.00 and skipped [247.50, 247.00]; stops 248.20 and 252.10 as on origin/main; with ATR(14) 24.00 (windows 1.6) calls targets are 275.00 and 285.00 with skipped [253.00, 280.00]; with the ticker_level_params row changed to 0.05 the calls targets are 253.00, 275.00, 280.00 with no code change; a candidate whose distance in cents equals the spacing in cents (price_cents half-up) is kept and one cent less is skipped; a ticker whose target_min_spacing_atr status is not ok keeps its trigger and stop, publishes no target and carries target_status equal to that status; in every case gate_targets equal origin/main's targets (calls 253.00, 275.00, 280.00) and the brief's calls_t1_price to calls_t3_price columns hold them while calls_plan_t1_price to calls_plan_t3_price hold the spaced targets; the first, second and third cases fail on origin/main, where the calls targets are 253.00, 275.00, 280.00"
   - "No numbers: tests/lib/test_level_params_structure.py passes unchanged (no new literal or module constant on the build_session_levels walk), test_the_walk_reaches_the_rules_it_must_cover also asserts that the spacing function is reached from build_session_levels, and tests/lib/test_level_params_copy.py asserts that no string literal in lib/strat_levels.py or gcp/premarket_playbook_resolver.py contains '0.25 x ATR', '0.5 x ATR', '10:00' or '1/3'; the spacing, the gap-fill threshold, the leg count and the cutoff are read only from LevelParams and level_param_policy"
   - "Policy and calibration: gcp/schema.sql seeds level_param_policy rows target_min_spacing_atr (method_id policy_seed, extra {\"seed\": 0.25}), gap_fill_flag_atr (policy_seed, extra {\"seed\": 0.5}), exit_legs (policy, extra {\"legs\": 3}) and entry_cutoff_et (policy, extra {\"time_et\": \"10:00\"}), each effective 2015-01-02 with ON CONFLICT DO NOTHING; lib.level_calibration.calibrate and HistoryCalibrator write one ticker_level_params row per ticker for each policy_seed key with value equal to the policy seed in force on effective_from, status ok, method_id policy_seed and the run's run_id; tests: a calibration of a fixture ticker returns both keys at their seeds, a later policy row with seed 0.30 effective D gives 0.30 from D and 0.25 before it, and a policy with no such row raises LevelParamsUnavailable naming the key; they fail on origin/main"
   - "Exit plan and copy: format_levels_for_brief renders the Design 8 fixture to exactly the Design 8 text (a golden-string test in tests/lib/test_strat_levels.py), including the cutoff line, the opened-through line, the thirds read from exit_legs, the skipped line with the spacing in dollars, and a side with fewer targets than legs ending in 'hold to the close or the stop'; a side with no target past the spacing renders 'No target at least {spacing} past the trigger: hold to the close or the stop.'; a prior close published as a target on a session whose absolute gap (reference minus prior close) is at least gap_fill_flag_atr x ATR renders '(PDC, gap fill: gap {g} x ATR)' and a smaller gap renders '(PDC)'; the orb_only copy is unchanged; the tests fail on origin/main"
-  - "Resolver scores the plan: tests/gcp/test_premarket_playbook_resolver.py passes a TestPlanOutcome class on synthetic 1-minute RTH bars for a call with trigger 100.00, stop 99.00, targets 101.00, 102.00, 103.00, cutoff 10:00 ET and three legs: an open at 100.05 gives plan_entry_status opened_through and plan_r NULL even when later bars trade 100.00 and 103.00; a first cross in the 10:00 bar gives late_cross and plan_r NULL, and in the 09:59 bar gives entered with plan_fill_price 100.00; entered then T1, T2 and a 15:59 close of 102.50 gives plan_r 1.8333 (one third each of 1, 2 and 2.5 R) and plan_exit 't1,t2,close'; entered then T1 then the stop gives plan_r -0.3333 and plan_exit 't1,stop'; a bar that touches both the stop and a target counts the stop first; a leg with one target gives one third at T1 and two thirds to the stop or close; the existing columns (trigger_hit_ts, t1_hit_ts to t3_hit_ts, stop_hit_ts, eod_pnl_pct) are written exactly as on origin/main for the same bars; RESOLVER_VERSION changes; the TestPlanOutcome cases fail on origin/main (no plan columns)"
-  - "level_basis and replay: level_basis records target_min_spacing_atr, gap_fill_flag_atr, exit_legs and entry_cutoff_et (value, status, method_id, effective_from) and a new LEVEL_RULE_VERSION feat-strat-001.v3; SessionLevels.from_basis on a v3 basis rebuilds the same targets and skipped list after the ticker_level_params row changes; from_basis on a stored feat-strat-001.v2 basis (which records no spacing) rebuilds the v2 targets unchanged; a replay of a session before the policy rows' effective_from that the history run did not cover gives target_status params_unavailable rather than unspaced targets; the tests fail on origin/main"
+  - "Resolver scores the plan: tests/gcp/test_premarket_playbook_resolver.py passes a TestPlanOutcome class on synthetic 1-minute RTH bars for a call with trigger 100.00, stop 99.00, targets 101.00, 102.00, 103.00, cutoff 10:00 ET and three legs: an open at 100.05 gives plan_entry_status opened_through and plan_r NULL even when later bars trade 100.00 and 103.00; a first cross in the 10:00 bar gives late_cross and plan_r NULL, and in the 09:59 bar gives entered with plan_fill_price 100.00; entered then T1, T2 and a 15:59 close of 102.50 gives plan_r 1.8333 (one third each of 1, 2 and 2.5 R) and plan_exit 't1,t2,close'; entered then T1 then the stop gives plan_r -0.3333 and plan_exit 't1,stop'; a bar that touches both the stop and a target counts the stop first; a leg with one target gives one third at T1 and two thirds to the stop or close; a leg with a trigger and targets but stop None (the state test_no_stop_when_no_fresh_opposite builds) resolves without raising to plan_entry_status entered, plan_r NULL, plan_r_status stop_unavailable and a plan_exit, while its trigger_hit_ts, t1_hit_ts to t3_hit_ts, mae_pct, mfe_pct and eod_pnl_pct equal origin/main's for the same bars; the existing columns (trigger_hit_ts, t1_hit_ts to t3_hit_ts, stop_hit_ts, eod_pnl_pct) are written exactly as on origin/main for the same bars; RESOLVER_VERSION changes; the TestPlanOutcome cases fail on origin/main (no plan columns)"
+  - "level_basis and replay: level_basis records target_min_spacing_atr, gap_fill_flag_atr, exit_legs and entry_cutoff_et (value, status, method_id, effective_from) and a new LEVEL_RULE_VERSION feat-strat-001.v3; SessionLevels.from_basis on a v3 basis rebuilds the same targets, gate_targets and skipped list after the ticker_level_params row changes; from_basis on a stored feat-strat-001.v2 basis (which records no spacing) rebuilds the v2 targets unchanged; a replay of a session before the policy rows' effective_from that the history run did not cover gives target_status params_unavailable rather than unspaced targets; the tests fail on origin/main"
   - "Experiment through the production paths, before any production change: the implementation PR body shows, for SPY, QQQ and IWM over every session from 2025-03-03 to 2026-11-10 replayed through gcp/premarket_brief.py (BRIEF_AS_OF) with history-mode parameters and scored by the updated resolver, the count of ticker-days whose T1, T2 or T3 changes against origin/main, and, with one trade per ticker-day (the side whose plan_fill_ts is earlier; a tie is no trade), total plan_r against today's rule (brief T1 all out, all day, gross R) per window (2026-05-01 to 2026-11-10 and 2025-03-03 to 2026-04-30), with the 90% day-resampled range (seed 7, 2,000 draws); the plan minus today must be above zero in both windows, as the Experiment section's +31.7 R and +63.9 R are; if either is not, the PR stays draft and the owner decides"
-  - "Unchanged, each pinned by an existing or added test that passes on origin/main and on the implementation head: the trigger (side rule, broken rule, cents rule, window), the stop pick, the NEXT LEVELS ladder, orb_only reasons and copy, the CALL/PUT pick (_resolve_signal_status), signal-monitor fire decisions and alert targets, persona plans (lib/agents/trade_planner.py target_{persona}_{k}_r), and the 15-minute opening-range choice"
+  - "Unchanged, each pinned by an existing or added test that passes on origin/main and on the implementation head: the trigger (side rule, broken rule, cents rule, window), the stop pick, the NEXT LEVELS ladder, orb_only reasons and copy, the CALL/PUT pick (_resolve_signal_status), signal-monitor fire decisions and alert targets (including an end-to-end test in tests/gcp/test_signal_monitor.py that builds the brief row from the Design 8 fixture and runs the monitor with level_gate_mode enforce and put_reanchor_mode enforce: a call bar reaching 254.00 leaves the leg post_t1 and the fire suppressed, as on origin/main, and the enforced put re-anchor's tracker T1 equals origin/main's), persona plans (lib/agents/trade_planner.py target_{persona}_{k}_r), and the 15-minute opening-range choice"
   - "Source identity (DASHBOARD-01, DASHBOARD-21, INSIGHTS-07, INSIGHTS-08): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-STRAT-001, DASHBOARD-01 / DASHBOARD-21 / INSIGHTS-07 / INSIGHTS-08) note rows carry that source_identity_sha256 with implementation and test prose for this PR"
   - "The FEAT-STRAT-001 catalog record and the PR traceability entry are updated; python3 scripts/gate/spec_gate.py --pr origin/main passes; the four policy rows, the history-mode run for the two seeded keys and the new premarket_analysis columns are applied to production only after the owner's yes and recorded separately"
 status: approved
@@ -113,6 +113,26 @@ its trigger and stop, publishes no target and records the status; there is no un
 (CLAUDE.md 3.7). A level the walk skips stays on NEXT LEVELS and on the candidate list, so the brief
 still shows it.
 
+`SideLevels` also keeps `gate_targets`, the first three rungs past the trigger with no spacing, exactly
+origin/main's `targets` (`rungs[1:4]`). They are not shown as targets in the brief. They exist because
+the signal monitor's leg trackers gate fires on T1: `gcp/signal_monitor.py:648-672` builds each
+`LegStateTracker` from the brief's `calls_t1_price` / `puts_t1_price` (or, with `put_reanchor_mode`
+enforce, the re-anchor's `t1`), and with `level_gate_mode` enforce `:1533-1539` suppresses fires once a
+leg is `post_t1`. On the Design 8 fixture a bar reaching 254.00 is `post_t1` with origin/main's T1 of
+253.00 but only `triggered` with a spaced T1 of 275.00, which would let a suppressed alert fire. So:
+
+- The structured columns `{calls,puts}_t1_price`, `_t2_price`, `_t3_price` (`gcp/premarket_brief.py:1526-1543`)
+  keep origin/main's meaning and are written from `gate_targets`; the monitor's trackers, the resolver's
+  existing outcome columns and every other reader of those columns see the same prices as today.
+- The spaced targets are written to new columns `{calls,puts}_plan_t1_price`, `_plan_t2_price`,
+  `_plan_t3_price` and recorded in level_basis; the brief text, the resolver's plan columns (Design 6),
+  the insight report and the movement statement read them.
+- `_reanchor_put_leg` (`gcp/signal_monitor.py:527-547`) takes its `t1` to `t3` from the re-anchored
+  side's `gate_targets`, so `puts_reanchor_t1` to `_t3` and an enforced re-anchor's tracker T1 are
+  unchanged.
+
+Changing what the monitor gates on is not part of this spec; it needs its own experiment.
+
 Calibration: a new method `policy_seed`. `lib.level_calibration` writes, for every ticker it calibrates,
 one row whose value is the seed in the policy row in force on `effective_from` (0.25 on day one), status
 ok, `method_id` policy_seed. The value is per ticker in the table, so a later per-ticker method replaces
@@ -171,8 +191,16 @@ and writes, per side, new nullable `premarket_analysis` columns:
 |---|---|
 | `{calls,puts}_plan_entry_status` | `entered`, `opened_through`, `late_cross`, `no_cross`, `no_trigger` |
 | `{calls,puts}_plan_fill_price`, `_plan_fill_ts` | the trigger, or the bar's open when a later bar gaps past it |
-| `{calls,puts}_plan_r` | sum over legs of share x (exit minus fill) x sign / abs(fill minus stop), gross |
+| `{calls,puts}_plan_r` | sum over legs of share x (exit minus fill) x sign / abs(fill minus stop), gross; NULL unless `_plan_r_status` is `ok` |
+| `{calls,puts}_plan_r_status` | `ok`, `stop_unavailable` (the side published no stop), `not_entered` (entry status other than `entered`) |
 | `{calls,puts}_plan_exit` | the legs' exits in order, for example `t1,t2,close` |
+
+A side can have a trigger and targets but no stop: `_pick_side` leaves `stop` None when no candidate on
+the other side passes the stop window (pinned by
+`tests/lib/test_strat_levels_playbook.py::test_no_stop_when_no_fresh_opposite`). Its risk is undefined,
+so the resolver writes the entry status, fill and `plan_exit` (each leg exiting at its target or the
+close, with no stop) as usual, `plan_r` NULL and `plan_r_status` `stop_unavailable`, never raises, and
+still writes the existing outcome columns for that side as origin/main does.
 
 Within the trade a target fills at its price, the stop at its price or the bar's open on a gap through
 it, and a bar touching both counts the stop first, as in the Experiment. The scorer spec's rules for
@@ -182,7 +210,8 @@ can be told apart.
 
 ### 7. level_basis and rule version
 
-`LEVEL_RULE_VERSION` becomes `feat-strat-001.v3`. level_basis records the four new parameters with value,
+`LEVEL_RULE_VERSION` becomes `feat-strat-001.v3`. level_basis records the spaced targets, the skipped
+levels and `gate_targets` per side, and the four new parameters with value,
 status, method_id and effective_from. `SessionLevels.from_basis` rebuilds a v3 basis with its recorded
 values and a v2 basis with the v2 rule (no spacing, three targets), so stored briefs and their replays do
 not change. The movement statement's reach rates count rows of the current rule version only, as #1784
@@ -326,15 +355,15 @@ Every brief side with a trigger shows up to three targets at least 0.25 x its ow
 exit, the 09:30 to 10:00 entry window and the opened-through rule. T1 changes on most ticker-days
 because the premarket extreme's nearest neighbour is usually inside the spacing (counted in
 done_when 7). The insight report's key levels and the movement statement read the same targets through
-level_basis. The signal monitor's shadow put re-anchor (`gcp/signal_monitor.py:527-547`) goes through
-`_pick_side` and gets spaced targets too; its fire decisions do not change. The resolver reports a plan
-R per side.
+level_basis. The signal monitor keeps gating on the unspaced T1 (`gate_targets`, Design 1), so its
+fire decisions and its put re-anchor do not change in any `level_gate_mode` or `put_reanchor_mode`. The
+resolver reports a plan R per side.
 
 ## Capacity and cost
 
 - **Volume:** four more policy rows, two more `ticker_level_params` rows per calibrated ticker per
   effective date (the history run writes them for every session from 2015-01-02, about 2,980 rows per
-  ticker per key), and eight nullable columns on `premarket_analysis`.
+  ticker per key), and eighteen nullable columns on `premarket_analysis` (six plan target prices from Design 1, twelve plan outcome columns from Design 6).
 - **Velocity:** no new query: the policy rows ride the one `load_level_params` query per run, and the
   resolver already reads each row's level_basis and the day's bars.
 - **Wall-clock:** in-process walks over at most a few dozen candidates per side; the history run adds
