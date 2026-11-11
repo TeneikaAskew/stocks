@@ -413,7 +413,7 @@ Allowance correction lineage: [#1587](https://github.com/TeneikaAskew/stocks/pul
 
 ### FEAT-SIGNAL-001 — Signals / execution (25 open)
 
-**PR lineage:** [#1620](https://github.com/TeneikaAskew/stocks/pull/1620) implements the approved [#1619](https://github.com/TeneikaAskew/stocks/pull/1619) contract using existing JSONB, native producer-derived controls and typed SQL/parquet responses. This is source/local-test evidence pending normal review and deployment, not alert publication, original point-in-time certification or financial-performance proof. It does not close the broader issues below or rewrite legacy scores. · [#1808](https://github.com/TeneikaAskew/stocks/pull/1808) *remediation: the premarket brief scores RSI against the ticker's calibrated band, spec [#1798](https://github.com/TeneikaAskew/stocks/pull/1798)*
+**PR lineage:** [#1620](https://github.com/TeneikaAskew/stocks/pull/1620) implements the approved [#1619](https://github.com/TeneikaAskew/stocks/pull/1619) contract using existing JSONB, native producer-derived controls and typed SQL/parquet responses. This is source/local-test evidence pending normal review and deployment, not alert publication, original point-in-time certification or financial-performance proof. It does not close the broader issues below or rewrite legacy scores. · [#1808](https://github.com/TeneikaAskew/stocks/pull/1808) *remediation: the premarket brief scores RSI against the ticker's calibrated band, spec [#1798](https://github.com/TeneikaAskew/stocks/pull/1798), revision 2 [#1810](https://github.com/TeneikaAskew/stocks/pull/1810)*
 
 | Issue | Sev | Title |
 |---|---|---|
