@@ -33,7 +33,11 @@ from the final committed SITE body.
   (new), `tests/scripts/test_deploy_flag_syntax_delivery_contract.py` (new), `docs/product/03-SITE-TRACEABILITY.md`
   (the FEAT-DEPLOY-001 / SHARED-07 row only), `docs/review-evidence/site-source-snapshot.json`,
   `docs/product/02-FEATURE-CATALOG.md` (FEAT-DEPLOY-001 record only), `docs/product/12-PR-ISSUE-TRACEABILITY.md`
-  (FEAT-DEPLOY-001 lineage only) and this plan.
+  (FEAT-DEPLOY-001 lineage only) and this plan. Consequential, found by CI on the first head: the generated
+  architecture docs read `deploy.sh`, so `scripts/maintenance/doc_inventory.py`'s env reader learns gcloud's `^X^`
+  delimiter (with a case in `tests/scripts/test_doc_inventory.py`), or the two audit jobs drop out of the 05-c
+  dependency graph; and the `inventory:jobs` block of `docs/product/infrastructure/05-a-ARCHITECTURE.md` is
+  restored from the committed fixture snapshot, which moves only its `deploy.sh` line numbers.
 - No Cloud Run job, scheduler, secret or database row is created, changed or executed by this PR or its tests. The
   operator redeploy (`./gcp/deploy.sh fetchers`, then `audit-walkforward`, `audit-brief-bias`) runs after merge,
   with the owner's explicit yes.
@@ -70,6 +74,10 @@ Spec: Design (`gcp/deploy.sh` bullets). Advances done_when items 1, 3 to 7.
 - [ ] `bash -n gcp/deploy.sh`; shellcheck on head and merge base report the same findings.
 - [ ] `python3 -m pytest tests/gcp -q` passes, including main's `test_deploy_reachability.py` unchanged.
 - [ ] Commit the script, the test and this plan.
+- [ ] Restore the generated `inventory:` blocks with
+      `doc_inventory.py --snapshot tests/fixtures/live_gcp_snapshot_2026-09-07.json --restore`; teach `_env_vars` the
+      `^X^` delimiter so the restore changes only line numbers; `tests/scripts/test_doc_inventory.py` and
+      `tests/scripts/test_check_generated_docs.py` pass.
 
 ## Task 3: real gcloud cross-check (local, outside CI)
 Spec: Design (cross-check paragraph). Advances done_when item 2.

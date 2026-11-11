@@ -133,6 +133,23 @@ def mini_repo(tmp_path: pathlib.Path) -> pathlib.Path:
     return tmp_path
 
 
+def test_env_vars_read_a_caret_delimited_chain():
+    """gcp/deploy.sh's audit jobs build --set-env-vars with gcloud's `^@^`
+    delimiter, because a value holds commas (FEAT-DEPLOY-001, #1813). Split
+    on commas, the chain lost AUDIT_SCRIPT_MODULE and the jobs dropped out of
+    the dependency graph."""
+    body = (
+        'deploy_delta() {\n'
+        '    local non_secret_env\n'
+        '    non_secret_env="PROJECT_ID=${PROJECT_ID}"\n'
+        '    non_secret_env="${non_secret_env}@AUDIT_SCRIPT_MODULE=gcp.fetchers.beta"\n'
+        '    non_secret_env="${non_secret_env}@AUDIT_ALLOWED_EXIT_CODES=0,3"\n'
+        '    gcloud run jobs create delta --set-env-vars "^@^${non_secret_env}" --quiet\n'
+        '}\n')
+    assert inv._env_vars(body) == {"AUDIT_SCRIPT_MODULE": "gcp.fetchers.beta",
+                                   "AUDIT_ALLOWED_EXIT_CODES": "0,3"}
+
+
 def test_jobs_ignore_comments_and_read_common_flags_arrays(mini_repo):
     jobs = {j["name"]: j for j in inv.deploy_jobs(mini_repo)}
     assert set(jobs) == {"alpha", "beta", "gamma"}, "the comment's `update leaves` must not count as a job"

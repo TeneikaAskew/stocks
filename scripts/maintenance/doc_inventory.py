@@ -252,8 +252,17 @@ def _env_vars(body: str) -> dict[str, str]:
     gcp/audit_job_runner.py in a subprocess. (Codex, PR #1044.)"""
     out: dict[str, str] = {}
     body = _expand_shell_locals(body)
-    for m in re.finditer(r'(?:_env="\$\{[a-z_]+\},|_env="|--(?:set|update)-env-vars[ =]"?)([^"\n]*)', body):
-        for pair in m.group(1).split(","):
+    # A value written with gcloud's alternate delimiter (`^@^A=1@B=2,3`, see
+    # `gcloud topic escaping`) splits on that delimiter, and so does a
+    # `non_secret_env` chain whose flag passes it that way (`${var}@KEY=v`):
+    # deploy.sh's audit jobs do, because a value holds commas (#1813).
+    chain = re.search(r'--(?:set|update)-env-vars[ =]"?\^([^\w\s"^])\^\$\{[a-z_]+\}', body)
+    chain_sep = chain.group(1) if chain else ","
+    for m in re.finditer(r'(_env="\$\{[a-z_]+\}' + re.escape(chain_sep) + r'|_env="|--(?:set|update)-env-vars[ =]"?)([^"\n]*)', body):
+        value, sep = m.group(2), (chain_sep if m.group(1).startswith("_env") else ",")
+        if (alt := re.match(r"\^([^\w\s^])\^", value)):
+            value, sep = value[alt.end():], alt.group(1)
+        for pair in value.split(sep):
             k, eq, v = pair.partition("=")
             if eq and re.fullmatch(r"[A-Z][A-Z0-9_]*", k.strip()) and "${" not in v:
                 out.setdefault(k.strip(), v.strip())
