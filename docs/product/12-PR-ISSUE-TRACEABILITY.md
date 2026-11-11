@@ -413,7 +413,7 @@ Allowance correction lineage: [#1587](https://github.com/TeneikaAskew/stocks/pul
 
 ### FEAT-SIGNAL-001 — Signals / execution (25 open)
 
-**PR lineage:** [#1620](https://github.com/TeneikaAskew/stocks/pull/1620) implements the approved [#1619](https://github.com/TeneikaAskew/stocks/pull/1619) contract using existing JSONB, native producer-derived controls and typed SQL/parquet responses. This is source/local-test evidence pending normal review and deployment, not alert publication, original point-in-time certification or financial-performance proof. It does not close the broader issues below or rewrite legacy scores.
+**PR lineage:** [#1620](https://github.com/TeneikaAskew/stocks/pull/1620) implements the approved [#1619](https://github.com/TeneikaAskew/stocks/pull/1619) contract using existing JSONB, native producer-derived controls and typed SQL/parquet responses. This is source/local-test evidence pending normal review and deployment, not alert publication, original point-in-time certification or financial-performance proof. It does not close the broader issues below or rewrite legacy scores. [#1823](https://github.com/TeneikaAskew/stocks/pull/1823) records the live direction gate's decision (`gate_action`, `gate_reason`, insight direction, conviction and regime, `thesis_invalidated`) on every persisted `signal_alerts` row under the approved spec [#1790](https://github.com/TeneikaAskew/stocks/pull/1790); no fire, score, strength or delivery change; deployment and the first-session close-out query pending.
 
 | Issue | Sev | Title |
 |---|---|---|

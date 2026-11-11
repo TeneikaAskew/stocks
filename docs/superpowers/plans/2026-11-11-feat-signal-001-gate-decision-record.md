@@ -2,7 +2,7 @@
 feat_id: FEAT-SIGNAL-001
 spec: docs/superpowers/specs/2026-11-11-feat-signal-001-gate-decision-record.md
 branch: feature/feat-signal-001-gate-decision-record
-pr: null
+pr: 1823
 status: ready
 ---
 
