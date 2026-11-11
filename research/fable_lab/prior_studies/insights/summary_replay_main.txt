@@ -1,0 +1,26 @@
+
+### main: day rule. group | plans | filled | t1 | stop | close | sum R | avg R
+LLM direction, aggressive | 30 | 12 | 0 | 0 | 12 | +3.92 | +0.33
+LLM direction, neutral | 30 | 12 | 5 | 1 | 6 | +4.30 | +0.36
+LLM direction, conservative | 30 | 10 | 5 | 2 | 3 | +5.57 | +0.56
+opposite direction, aggressive | 30 | 21 | 0 | 0 | 21 | +3.68 | +0.18
+opposite direction, neutral | 30 | 21 | 5 | 0 | 16 | +6.23 | +0.30
+opposite direction, conservative | 30 | 18 | 5 | 1 | 12 | +5.37 | +0.30
+both sides, long, neutral | 30 | 20 | 4 | 1 | 15 | +5.35 | +0.27
+both sides, short, neutral | 30 | 13 | 6 | 0 | 7 | +5.17 | +0.40
+LLM direction, neutral, SPY | 10 | 5 | 2 | 0 | 3 | +2.96 | +0.59
+LLM direction, neutral, QQQ | 10 | 4 | 2 | 0 | 2 | +1.66 | +0.41
+LLM direction, neutral, IWM | 10 | 3 | 1 | 1 | 1 | -0.32 | -0.11
+
+### main: swing rule. group | plans | filled | t1 | stop | close | sum R | avg R
+LLM direction, aggressive | 30 | 12 | 1 | 5 | 6 | +0.06 | +0.00
+LLM direction, neutral | 30 | 12 | 7 | 4 | 1 | +4.76 | +0.40
+LLM direction, conservative | 30 | 10 | 6 | 3 | 1 | +4.89 | +0.49
+opposite direction, aggressive | 30 | 21 | 0 | 6 | 15 | +1.72 | +0.08
+opposite direction, neutral | 30 | 21 | 15 | 4 | 2 | +14.31 | +0.68
+opposite direction, conservative | 30 | 18 | 13 | 4 | 1 | +17.20 | +0.96
+both sides, long, neutral | 30 | 20 | 12 | 7 | 1 | +6.38 | +0.32
+both sides, short, neutral | 30 | 13 | 10 | 1 | 2 | +12.70 | +0.98
+LLM direction, neutral, SPY | 10 | 5 | 3 | 2 | 0 | +0.99 | +0.20
+LLM direction, neutral, QQQ | 10 | 4 | 3 | 0 | 1 | +4.48 | +1.12
+LLM direction, neutral, IWM | 10 | 3 | 1 | 2 | 0 | -0.72 | -0.24

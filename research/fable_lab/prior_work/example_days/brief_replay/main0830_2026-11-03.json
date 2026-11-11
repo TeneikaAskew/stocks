@@ -1,0 +1,3021 @@
+{
+ "session": "2026-11-03",
+ "cutoff": "08:30",
+ "code": "constants",
+ "params_file": null,
+ "stub_conditions": false,
+ "tickers": {
+  "SPY": {
+   "price": 752.1,
+   "change_pct": -0.4790133912030917,
+   "prev_day_high": 763.86,
+   "prev_day_low": 751.6,
+   "prev_day_open": 759.45,
+   "prev_day_close": 752.1,
+   "prev_day_volume": 50804340.0,
+   "rvol": 1.2853562928821827,
+   "rsi": 37.97832349197683,
+   "rsi_direction": "down",
+   "stoch_k": 16.39055576910239,
+   "stoch_d": 36.046935164803266,
+   "macd": -2.108919564052144,
+   "macd_signal_val": -0.3410193304459875,
+   "macd_cross": "Bearish",
+   "sma200": 729.1534000000001,
+   "ema9": 763.3078521079206,
+   "ema20": 766.2452652345992,
+   "bb_upper": 784.1972677567549,
+   "bb_lower": 754.4657322432452,
+   "atr14": 8.048021703474932,
+   "above_sma200": true,
+   "vol_regime": "Low",
+   "volatility_20d": 0.11306756965020756,
+   "consecutive_up": 0,
+   "consecutive_down": 3,
+   "signal_status": "CALL setup (4/5)",
+   "strat_candle": "2U",
+   "strat_combo": "22_bull_reversal",
+   "strat_setup": false,
+   "strat_available": true,
+   "strat_reason": null,
+   "strat_observation_ts": "2026-11-03T08:30:00-05:00",
+   "ftfc_score": 0.7499999999999999,
+   "ftfc_direction": "bullish",
+   "ftfc_labels": {
+    "1d": "2U",
+    "1w": "1",
+    "1mo": "1"
+   },
+   "tf_continuity": "bearish",
+   "tf_continuity_frames": {
+    "1q": {
+     "relation": "red",
+     "open": 764.36,
+     "observed_price": 752.1,
+     "price_provenance": "latest_completed_close",
+     "price_session": "2026-11-02",
+     "rule_version": "price-open-v1",
+     "period_start": "2026-10-01T09:30:00-04:00",
+     "observation_ts": "2026-11-03T08:30:00-05:00",
+     "reasons": []
+    },
+    "1mo": {
+     "relation": "red",
+     "open": 759.45,
+     "observed_price": 752.1,
+     "price_provenance": "latest_completed_close",
+     "price_session": "2026-11-02",
+     "rule_version": "price-open-v1",
+     "period_start": "2026-11-02T09:30:00-05:00",
+     "observation_ts": "2026-11-03T08:30:00-05:00",
+     "reasons": []
+    },
+    "1w": {
+     "relation": "red",
+     "open": 759.45,
+     "observed_price": 752.1,
+     "price_provenance": "latest_completed_close",
+     "price_session": "2026-11-02",
+     "rule_version": "price-open-v1",
+     "period_start": "2026-11-02T09:30:00-05:00",
+     "observation_ts": "2026-11-03T08:30:00-05:00",
+     "reasons": []
+    }
+   },
+   "data_as_of": "2026-11-02 16:00:00-05:00",
+   "data_freshness_status": "fresh",
+   "freshness_gap_days": 1,
+   "gamma_data_source": "unavailable",
+   "gamma_snapshot_ts": null,
+   "gamma_snapshot_date": null,
+   "gamma_days_behind": null,
+   "level_basis": {
+    "rule_version": "feat-strat-001.v1",
+    "ticker": "SPY",
+    "session_date": "2026-11-03",
+    "built_at": "2026-11-11T08:26:58.818324-05:00",
+    "status": "ok",
+    "last_bar_date": "2026-11-02",
+    "atr": 8.048021703474932,
+    "prior_close": 752.1,
+    "reference": 751.2711553440192,
+    "reference_source": "pre_vwap",
+    "premarket": {
+     "date": "2026-11-03",
+     "fetched_at": null,
+     "pre_high": 753.68,
+     "pre_low": 749.33,
+     "pre_vwap": 751.2711553440192,
+     "gap_pct": -0.2393,
+     "excluded_stale_prints": null,
+     "excluded_spikes": null,
+     "excluded_bars": null
+    },
+    "premarket_status": "ok",
+    "cleared_above": 753.68,
+    "cleared_below": 749.33,
+    "strat_class": "2U",
+    "levels": [
+     {
+      "name": "PDH",
+      "price": 763.86,
+      "timeframe": "day",
+      "level_type": "high",
+      "period_label": "2026-11-02",
+      "strat_class": "Failed_2U",
+      "is_current": false
+     },
+     {
+      "name": "PDL",
+      "price": 751.6,
+      "timeframe": "day",
+      "level_type": "low",
+      "period_label": "2026-11-02",
+      "strat_class": "Failed_2U",
+      "is_current": false
+     },
+     {
+      "name": "PDC",
+      "price": 752.1,
+      "timeframe": "day",
+      "level_type": "close",
+      "period_label": "2026-11-02",
+      "strat_class": "Failed_2U",
+      "is_current": false
+     },
+     {
+      "name": "PWH",
+      "price": 773.36,
+      "timeframe": "week",
+      "level_type": "high",
+      "period_label": "2026-10-26/2026-11-01",
+      "strat_class": "2D",
+      "is_current": false
+     },
+     {
+      "name": "PWL",
+      "price": 750.36,
+      "timeframe": "week",
+      "level_type": "low",
+      "period_label": "2026-10-26/2026-11-01",
+      "strat_class": "2D",
+      "is_current": false
+     },
+     {
+      "name": "PWC",
+      "price": 755.72,
+      "timeframe": "week",
+      "level_type": "close",
+      "period_label": "2026-10-26/2026-11-01",
+      "strat_class": "2D",
+      "is_current": false
+     },
+     {
+      "name": "PMH",
+      "price": 781.62,
+      "timeframe": "month",
+      "level_type": "high",
+      "period_label": "2026-10",
+      "strat_class": "Failed_2U",
+      "is_current": false
+     },
+     {
+      "name": "PML",
+      "price": 750.36,
+      "timeframe": "month",
+      "level_type": "low",
+      "period_label": "2026-10",
+      "strat_class": "Failed_2U",
+      "is_current": false
+     },
+     {
+      "name": "PMC",
+      "price": 755.72,
+      "timeframe": "month",
+      "level_type": "close",
+      "period_label": "2026-10",
+      "strat_class": "Failed_2U",
+      "is_current": false
+     },
+     {
+      "name": "PQH",
+      "price": 779.37,
+      "timeframe": "quarter",
+      "level_type": "high",
+      "period_label": "2026Q3",
+      "strat_class": "2U",
+      "is_current": false
+     },
+     {
+      "name": "PQL",
+      "price": 729.1,
+      "timeframe": "quarter",
+      "level_type": "low",
+      "period_label": "2026Q3",
+      "strat_class": "2U",
+      "is_current": false
+     },
+     {
+      "name": "PQC",
+      "price": 762.63,
+      "timeframe": "quarter",
+      "level_type": "close",
+      "period_label": "2026Q3",
+      "strat_class": "2U",
+      "is_current": false
+     },
+     {
+      "name": "PYH",
+      "price": 691.66,
+      "timeframe": "year",
+      "level_type": "high",
+      "period_label": "2025",
+      "strat_class": "3",
+      "is_current": false
+     },
+     {
+      "name": "PYL",
+      "price": 481.8,
+      "timeframe": "year",
+      "level_type": "low",
+      "period_label": "2025",
+      "strat_class": "3",
+      "is_current": false
+     },
+     {
+      "name": "PYC",
+      "price": 681.92,
+      "timeframe": "year",
+      "level_type": "close",
+      "period_label": "2025",
+      "strat_class": "3",
+      "is_current": false
+     },
+     {
+      "name": "PDO",
+      "price": 759.45,
+      "timeframe": "day",
+      "level_type": "open",
+      "period_label": "2026-11-02",
+      "strat_class": "Failed_2U",
+      "is_current": false
+     },
+     {
+      "name": "CWO",
+      "price": 759.45,
+      "timeframe": "week",
+      "level_type": "open",
+      "period_label": "2026-11-02/2026-11-08",
+      "strat_class": "1",
+      "is_current": true
+     },
+     {
+      "name": "CMO",
+      "price": 759.45,
+      "timeframe": "month",
+      "level_type": "open",
+      "period_label": "2026-11",
+      "strat_class": "1",
+      "is_current": true
+     },
+     {
+      "name": "GAP_H_2026-10-30",
+      "price": 766.62,
+      "timeframe": "day",
+      "level_type": "gap_high",
+      "period_label": "2026-10-30",
+      "strat_class": "gap_down",
+      "is_current": false
+     },
+     {
+      "name": "GAP_L_2026-10-30",
+      "price": 761.46,
+      "timeframe": "day",
+      "level_type": "gap_low",
+      "period_label": "2026-10-30",
+      "strat_class": "gap_down",
+      "is_current": false
+     },
+     {
+      "name": "parent_bar_high",
+      "price": 763.86,
+      "timeframe": "day",
+      "level_type": "high",
+      "period_label": "2026-11-02",
+      "strat_class": "",
+      "is_current": false
+     },
+     {
+      "name": "parent_bar_low",
+      "price": 751.6,
+      "timeframe": "day",
+      "level_type": "low",
+      "period_label": "2026-11-02",
+      "strat_class": "",
+      "is_current": false
+     },
+     {
+      "name": "PMK_H",
+      "price": 753.68,
+      "timeframe": "intraday",
+      "level_type": "high",
+      "period_label": "premarket",
+      "strat_class": "",
+      "is_current": true
+     },
+     {
+      "name": "PMK_L",
+      "price": 749.33,
+      "timeframe": "intraday",
+      "level_type": "low",
+      "period_label": "premarket",
+      "strat_class": "",
+      "is_current": true
+     }
+    ],
+    "pmg_zones": [
+     {
+      "center_price": 759.45,
+      "level_names": [
+       "PDO",
+       "CWO",
+       "CMO"
+      ],
+      "timeframes": [
+       "day",
+       "month",
+       "week"
+      ],
+      "count": 3,
+      "strength": 4.0
+     },
+     {
+      "center_price": 750.36,
+      "level_names": [
+       "PWL",
+       "PML"
+      ],
+      "timeframes": [
+       "month",
+       "week"
+      ],
+      "count": 2,
+      "strength": 2.5
+     },
+     {
+      "center_price": 755.72,
+      "level_names": [
+       "PWC",
+       "PMC"
+      ],
+      "timeframes": [
+       "month",
+       "week"
+      ],
+      "count": 2,
+      "strength": 2.5
+     },
+     {
+      "center_price": 751.85,
+      "level_names": [
+       "PDL",
+       "PDC"
+      ],
+      "timeframes": [
+       "day"
+      ],
+      "count": 2,
+      "strength": 2.0
+     }
+    ],
+    "long": {
+     "side": "long",
+     "candidates": [
+      {
+       "name": "PDL",
+       "price": 751.6,
+       "level_type": "low",
+       "timeframe": "day",
+       "period": "2026-11-02",
+       "aliases": [
+        "parent_bar_low"
+       ],
+       "cents": 75160,
+       "broken": true,
+       "in_window": true,
+       "distance_atr": 0.041
+      },
+      {
+       "name": "PDC",
+       "price": 752.1,
+       "level_type": "close",
+       "timeframe": "day",
+       "period": "2026-11-02",
+       "aliases": [],
+       "cents": 75210,
+       "broken": true,
+       "in_window": true,
+       "distance_atr": 0.103
+      },
+      {
+       "name": "PMK_H",
+       "price": 753.68,
+       "level_type": "high",
+       "timeframe": "intraday",
+       "period": "premarket",
+       "aliases": [],
+       "cents": 75368,
+       "broken": false,
+       "in_window": true,
+       "distance_atr": 0.299
+      },
+      {
+       "name": "PWC",
+       "price": 755.72,
+       "level_type": "close",
+       "timeframe": "week",
+       "period": "2026-10-26/2026-11-01",
+       "aliases": [
+        "PMC"
+       ],
+       "cents": 75572,
+       "broken": false,
+       "in_window": true,
+       "distance_atr": 0.553
+      },
+      {
+       "name": "PQC",
+       "price": 762.63,
+       "level_type": "close",
+       "timeframe": "quarter",
+       "period": "2026Q3",
+       "aliases": [],
+       "cents": 76263,
+       "broken": false,
+       "in_window": true,
+       "distance_atr": 1.411
+      },
+      {
+       "name": "PDH",
+       "price": 763.86,
+       "level_type": "high",
+       "timeframe": "day",
+       "period": "2026-11-02",
+       "aliases": [
+        "parent_bar_high"
+       ],
+       "cents": 76386,
+       "broken": false,
+       "in_window": true,
+       "distance_atr": 1.564
+      },
+      {
+       "name": "PWH",
+       "price": 773.36,
+       "level_type": "high",
+       "timeframe": "week",
+       "period": "2026-10-26/2026-11-01",
+       "aliases": [],
+       "cents": 77336,
+       "broken": false,
+       "in_window": true,
+       "distance_atr": 2.745
+      },
+      {
+       "name": "PQH",
+       "price": 779.37,
+       "level_type": "high",
+       "timeframe": "quarter",
+       "period": "2026Q3",
+       "aliases": [],
+       "cents": 77937,
+       "broken": false,
+       "in_window": false,
+       "distance_atr": 3.491
+      },
+      {
+       "name": "PMH",
+       "price": 781.62,
+       "level_type": "high",
+       "timeframe": "month",
+       "period": "2026-10",
+       "aliases": [],
+       "cents": 78162,
+       "broken": false,
+       "in_window": false,
+       "distance_atr": 3.771
+      }
+     ],
+     "trigger": {
+      "name": "PMK_H",
+      "price": 753.68,
+      "level_type": "high",
+      "timeframe": "intraday",
+      "period": "premarket",
+      "aliases": []
+     },
+     "regime": "normal",
+     "reason": null,
+     "targets": [
+      {
+       "name": "PWC",
+       "price": 755.72,
+       "level_type": "close",
+       "timeframe": "week",
+       "period": "2026-10-26/2026-11-01",
+       "aliases": [
+        "PMC"
+       ]
+      },
+      {
+       "name": "PQC",
+       "price": 762.63,
+       "level_type": "close",
+       "timeframe": "quarter",
+       "period": "2026Q3",
+       "aliases": []
+      },
+      {
+       "name": "PDH",
+       "price": 763.86,
+       "level_type": "high",
+       "timeframe": "day",
+       "period": "2026-11-02",
+       "aliases": [
+        "parent_bar_high"
+       ]
+      }
+     ],
+     "stop": {
+      "name": "PWL",
+      "price": 750.36,
+      "level_type": "low",
+      "timeframe": "week",
+      "period": "2026-10-26/2026-11-01",
+      "aliases": [
+       "PML"
+      ]
+     },
+     "ladder": [
+      {
+       "price": 753.68,
+       "name": "PMK_H",
+       "period": "intraday",
+       "level_type": "high",
+       "distance_pct": 0.32
+      },
+      {
+       "price": 755.72,
+       "name": "PWC",
+       "period": "week",
+       "level_type": "close",
+       "distance_pct": 0.59
+      }
+     ],
+     "room_pct": 0.321,
+     "distance_atr": 0.299
+    },
+    "short": {
+     "side": "short",
+     "candidates": [
+      {
+       "name": "PWL",
+       "price": 750.36,
+       "level_type": "low",
+       "timeframe": "week",
+       "period": "2026-10-26/2026-11-01",
+       "aliases": [
+        "PML"
+       ],
+       "cents": 75036,
+       "broken": true,
+       "in_window": true,
+       "distance_atr": 0.113
+      },
+      {
+       "name": "PMK_L",
+       "price": 749.33,
+       "level_type": "low",
+       "timeframe": "intraday",
+       "period": "premarket",
+       "aliases": [],
+       "cents": 74933,
+       "broken": false,
+       "in_window": true,
+       "distance_atr": 0.241
+      },
+      {
+       "name": "PQL",
+       "price": 729.1,
+       "level_type": "low",
+       "timeframe": "quarter",
+       "period": "2026Q3",
+       "aliases": [],
+       "cents": 72910,
+       "broken": false,
+       "in_window": true,
+       "distance_atr": 2.755
+      },
+      {
+       "name": "PYH",
+       "price": 691.66,
+       "level_type": "high",
+       "timeframe": "year",
+       "period": "2025",
+       "aliases": [],
+       "cents": 69166,
+       "broken": false,
+       "in_window": false,
+       "distance_atr": 7.407
+      },
+      {
+       "name": "PYC",
+       "price": 681.92,
+       "level_type": "close",
+       "timeframe": "year",
+       "period": "2025",
+       "aliases": [],
+       "cents": 68192,
+       "broken": false,
+       "in_window": false,
+       "distance_atr": 8.617
+      },
+      {
+       "name": "PYL",
+       "price": 481.8,
+       "level_type": "low",
+       "timeframe": "year",
+       "period": "2025",
+       "aliases": [],
+       "cents": 48180,
+       "broken": false,
+       "in_window": false,
+       "distance_atr": 33.483
+      }
+     ],
+     "trigger": {
+      "name": "PMK_L",
+      "price": 749.33,
+      "level_type": "low",
+      "timeframe": "intraday",
+      "period": "premarket",
+      "aliases": []
+     },
+     "regime": "normal",
+     "reason": null,
+     "targets": [
+      {
+       "name": "PQL",
+       "price": 729.1,
+       "level_type": "low",
+       "timeframe": "quarter",
+       "period": "2026Q3",
+       "aliases": []
+      }
+     ],
+     "stop": {
+      "name": "PDL",
+      "price": 751.6,
+      "level_type": "low",
+      "timeframe": "day",
+      "period": "2026-11-02",
+      "aliases": [
+       "parent_bar_low"
+      ]
+     },
+     "ladder": [
+      {
+       "price": 749.33,
+       "name": "PMK_L",
+       "period": "intraday",
+       "level_type": "low",
+       "distance_pct": -0.26
+      },
+      {
+       "price": 729.1,
+       "name": "PQL",
+       "period": "quarter",
+       "level_type": "low",
+       "distance_pct": -2.95
+      }
+     ],
+     "room_pct": 0.258,
+     "distance_atr": 0.241
+    }
+   },
+   "premarket_status": "ok",
+   "regime": "normal",
+   "regime_long": "normal",
+   "regime_short": "normal",
+   "reason_long": null,
+   "reason_short": null,
+   "playbook": "  CALLS above 753.68 (PMK_H)\n    Stop: 750.36 (PWL)\n    T1: 755.72 (PWC)\n    T2: 762.63 (PQC)\n    T3: 763.86 (PDH)\n    Room to trigger: 0.32%\n\n  PUTS below 749.33 (PMK_L) -- only if bias denied\n    Stop: 751.60 (PDL)\n    T1: 729.10 (PQL)\n    Room to trigger: 0.26%\n\n  NEXT LEVELS:\n    Calls (up):  753.68 PMK_H (intraday) +0.32%, 755.72 PWC (week) +0.59%\n    Puts (down): 749.33 PMK_L (intraday) -0.26%, 729.10 PQL (quarter) -2.95%\n\n  PMG ZONES:\n    759.45 (PDO, CWO, CMO) [strength: 4.0]\n    750.36 (PWL, PML) [strength: 2.5]\n    755.72 (PWC, PMC) [strength: 2.5]",
+   "recommended_orb_window": "5m",
+   "recommended_orb_reason": "5-min ORB (default scalp window, no high-impact catalyst)",
+   "calls_trigger_price": 753.68,
+   "calls_trigger_name": "PMK_H",
+   "calls_stop_price": 750.36,
+   "calls_stop_name": "PWL",
+   "calls_t1_price": 755.72,
+   "calls_t2_price": 762.63,
+   "calls_t3_price": 763.86,
+   "puts_trigger_price": 749.33,
+   "puts_trigger_name": "PMK_L",
+   "puts_stop_price": 751.6,
+   "puts_stop_name": "PDL",
+   "puts_t1_price": 729.1,
+   "puts_t2_price": null,
+   "puts_t3_price": null,
+   "_levels": [
+    {
+     "name": "PYL",
+     "level_name": null,
+     "price": 481.8,
+     "timeframe": "year",
+     "level_type": "low"
+    },
+    {
+     "name": "PYC",
+     "level_name": null,
+     "price": 681.92,
+     "timeframe": "year",
+     "level_type": "close"
+    },
+    {
+     "name": "PYH",
+     "level_name": null,
+     "price": 691.66,
+     "timeframe": "year",
+     "level_type": "high"
+    },
+    {
+     "name": "PQL",
+     "level_name": null,
+     "price": 729.1,
+     "timeframe": "quarter",
+     "level_type": "low"
+    },
+    {
+     "name": "PMK_L",
+     "level_name": null,
+     "price": 749.33,
+     "timeframe": "intraday",
+     "level_type": "low"
+    },
+    {
+     "name": "PWL",
+     "level_name": null,
+     "price": 750.36,
+     "timeframe": "week",
+     "level_type": "low"
+    },
+    {
+     "name": "PML",
+     "level_name": null,
+     "price": 750.36,
+     "timeframe": "month",
+     "level_type": "low"
+    },
+    {
+     "name": "PDL",
+     "level_name": null,
+     "price": 751.6,
+     "timeframe": "day",
+     "level_type": "low"
+    },
+    {
+     "name": "PDC",
+     "level_name": null,
+     "price": 752.1,
+     "timeframe": "day",
+     "level_type": "close"
+    },
+    {
+     "name": "PMK_H",
+     "level_name": null,
+     "price": 753.68,
+     "timeframe": "intraday",
+     "level_type": "high"
+    },
+    {
+     "name": "PWC",
+     "level_name": null,
+     "price": 755.72,
+     "timeframe": "week",
+     "level_type": "close"
+    },
+    {
+     "name": "PMC",
+     "level_name": null,
+     "price": 755.72,
+     "timeframe": "month",
+     "level_type": "close"
+    },
+    {
+     "name": "PDO",
+     "level_name": null,
+     "price": 759.45,
+     "timeframe": "day",
+     "level_type": "open"
+    },
+    {
+     "name": "CWO",
+     "level_name": null,
+     "price": 759.45,
+     "timeframe": "week",
+     "level_type": "open"
+    },
+    {
+     "name": "CMO",
+     "level_name": null,
+     "price": 759.45,
+     "timeframe": "month",
+     "level_type": "open"
+    },
+    {
+     "name": "GAP_L_2026-10-30",
+     "level_name": null,
+     "price": 761.46,
+     "timeframe": "day",
+     "level_type": "gap_low"
+    },
+    {
+     "name": "PQC",
+     "level_name": null,
+     "price": 762.63,
+     "timeframe": "quarter",
+     "level_type": "close"
+    },
+    {
+     "name": "PDH",
+     "level_name": null,
+     "price": 763.86,
+     "timeframe": "day",
+     "level_type": "high"
+    },
+    {
+     "name": "GAP_H_2026-10-30",
+     "level_name": null,
+     "price": 766.62,
+     "timeframe": "day",
+     "level_type": "gap_high"
+    },
+    {
+     "name": "PWH",
+     "level_name": null,
+     "price": 773.36,
+     "timeframe": "week",
+     "level_type": "high"
+    },
+    {
+     "name": "PQH",
+     "level_name": null,
+     "price": 779.37,
+     "timeframe": "quarter",
+     "level_type": "high"
+    },
+    {
+     "name": "PMH",
+     "level_name": null,
+     "price": 781.62,
+     "timeframe": "month",
+     "level_type": "high"
+    }
+   ],
+   "_plans": {
+    "long": [
+     {
+      "persona": "aggressive",
+      "entry": [
+       753.68,
+       757.7
+      ],
+      "stop": 739.6,
+      "targets": [
+       787.88,
+       812.03,
+       836.17
+      ],
+      "regime": "normal",
+      "size": 1.2
+     },
+     {
+      "persona": "neutral",
+      "entry": [
+       753.68,
+       755.69
+      ],
+      "stop": 746.64,
+      "targets": [
+       762.73,
+       770.78,
+       778.83
+      ],
+      "regime": "normal",
+      "size": 1.0
+     },
+     {
+      "persona": "conservative",
+      "entry": [
+       754.48,
+       756.9
+      ],
+      "stop": 750.36,
+      "targets": [
+       761.02,
+       765.02
+      ],
+      "regime": "normal",
+      "size": 0.5
+     }
+    ],
+    "short": [
+     {
+      "persona": "aggressive",
+      "entry": [
+       745.31,
+       749.33
+      ],
+      "stop": 763.41,
+      "targets": [
+       715.13,
+       690.98,
+       666.84
+      ],
+      "regime": "normal",
+      "size": 1.2
+     },
+     {
+      "persona": "neutral",
+      "entry": [
+       747.32,
+       749.33
+      ],
+      "stop": 756.37,
+      "targets": [
+       740.28,
+       732.23,
+       724.18
+      ],
+      "regime": "normal",
+      "size": 1.0
+     },
+     {
+      "persona": "conservative",
+      "entry": [
+       746.11,
+       748.53
+      ],
+      "stop": 751.6,
+      "targets": [
+       743.04,
+       739.82
+      ],
+      "regime": "normal",
+      "size": 0.5
+     }
+    ]
+   }
+  },
+  "QQQ": {
+   "price": 681.09,
+   "change_pct": -1.3613520833031583,
+   "prev_day_high": 699.43,
+   "prev_day_low": 680.33,
+   "prev_day_open": 695.315,
+   "prev_day_close": 681.09,
+   "prev_day_volume": 54743721.0,
+   "rvol": 1.3456639904972787,
+   "rsi": 32.08211312856271,
+   "rsi_direction": "down",
+   "stoch_k": 14.528065633581527,
+   "stoch_d": 32.265303447781356,
+   "macd": -8.963507346557776,
+   "macd_signal_val": -4.643642227167137,
+   "macd_cross": "Bearish",
+   "sma200": 679.81585,
+   "ema9": 706.9101336011634,
+   "ema20": 717.312530694549,
+   "bb_upper": 766.4894847559691,
+   "bb_lower": 682.3745152440309,
+   "atr14": 13.169995446617591,
+   "above_sma200": true,
+   "vol_regime": "High",
+   "volatility_20d": 0.22352800297869505,
+   "consecutive_up": 0,
+   "consecutive_down": 3,
+   "signal_status": "CALL setup (4/5)",
+   "strat_candle": "3",
+   "strat_combo": "none",
+   "strat_setup": false,
+   "strat_available": true,
+   "strat_reason": null,
+   "strat_observation_ts": "2026-11-03T08:30:00-05:00",
+   "ftfc_score": -0.25,
+   "ftfc_direction": "mixed",
+   "ftfc_labels": {
+    "1d": "3",
+    "1w": "2D",
+    "1mo": "2D"
+   },
+   "tf_continuity": "bearish",
+   "tf_continuity_frames": {
+    "1q": {
+     "relation": "red",
+     "open": 742.51,
+     "observed_price": 681.09,
+     "price_provenance": "latest_completed_close",
+     "price_session": "2026-11-02",
+     "rule_version": "price-open-v1",
+     "period_start": "2026-10-01T09:30:00-04:00",
+     "observation_ts": "2026-11-03T08:30:00-05:00",
+     "reasons": []
+    },
+    "1mo": {
+     "relation": "red",
+     "open": 695.315,
+     "observed_price": 681.09,
+     "price_provenance": "latest_completed_close",
+     "price_session": "2026-11-02",
+     "rule_version": "price-open-v1",
+     "period_start": "2026-11-02T09:30:00-05:00",
+     "observation_ts": "2026-11-03T08:30:00-05:00",
+     "reasons": []
+    },
+    "1w": {
+     "relation": "red",
+     "open": 695.315,
+     "observed_price": 681.09,
+     "price_provenance": "latest_completed_close",
+     "price_session": "2026-11-02",
+     "rule_version": "price-open-v1",
+     "period_start": "2026-11-02T09:30:00-05:00",
+     "observation_ts": "2026-11-03T08:30:00-05:00",
+     "reasons": []
+    }
+   },
+   "data_as_of": "2026-11-02 16:00:00-05:00",
+   "data_freshness_status": "fresh",
+   "freshness_gap_days": 1,
+   "gamma_data_source": "unavailable",
+   "gamma_snapshot_ts": null,
+   "gamma_snapshot_date": null,
+   "gamma_days_behind": null,
+   "level_basis": {
+    "rule_version": "feat-strat-001.v1",
+    "ticker": "QQQ",
+    "session_date": "2026-11-03",
+    "built_at": "2026-11-11T08:27:00.076970-05:00",
+    "status": "ok",
+    "last_bar_date": "2026-11-02",
+    "atr": 13.169995446617591,
+    "prior_close": 681.09,
+    "reference": 682.8306089996099,
+    "reference_source": "pre_vwap",
+    "premarket": {
+     "date": "2026-11-03",
+     "fetched_at": null,
+     "pre_high": 686.88,
+     "pre_low": 678.9,
+     "pre_vwap": 682.8306089996099,
+     "gap_pct": 0.1659,
+     "excluded_stale_prints": null,
+     "excluded_spikes": null,
+     "excluded_bars": null
+    },
+    "premarket_status": "ok",
+    "cleared_above": 686.88,
+    "cleared_below": 678.9,
+    "strat_class": "3",
+    "levels": [
+     {
+      "name": "PDH",
+      "price": 699.43,
+      "timeframe": "day",
+      "level_type": "high",
+      "period_label": "2026-11-02",
+      "strat_class": "3",
+      "is_current": false
+     },
+     {
+      "name": "PDL",
+      "price": 680.33,
+      "timeframe": "day",
+      "level_type": "low",
+      "period_label": "2026-11-02",
+      "strat_class": "3",
+      "is_current": false
+     },
+     {
+      "name": "PDC",
+      "price": 681.09,
+      "timeframe": "day",
+      "level_type": "close",
+      "period_label": "2026-11-02",
+      "strat_class": "3",
+      "is_current": false
+     },
+     {
+      "name": "PWH",
+      "price": 726.14,
+      "timeframe": "week",
+      "level_type": "high",
+      "period_label": "2026-10-26/2026-11-01",
+      "strat_class": "2D",
+      "is_current": false
+     },
+     {
+      "name": "PWL",
+      "price": 683.45,
+      "timeframe": "week",
+      "level_type": "low",
+      "period_label": "2026-10-26/2026-11-01",
+      "strat_class": "2D",
+      "is_current": false
+     },
+     {
+      "name": "PWC",
+      "price": 690.49,
+      "timeframe": "week",
+      "level_type": "close",
+      "period_label": "2026-10-26/2026-11-01",
+      "strat_class": "2D",
+      "is_current": false
+     },
+     {
+      "name": "PMH",
+      "price": 762.86,
+      "timeframe": "month",
+      "level_type": "high",
+      "period_label": "2026-10",
+      "strat_class": "3",
+      "is_current": false
+     },
+     {
+      "name": "PML",
+      "price": 683.45,
+      "timeframe": "month",
+      "level_type": "low",
+      "period_label": "2026-10",
+      "strat_class": "3",
+      "is_current": false
+     },
+     {
+      "name": "PMC",
+      "price": 690.49,
+      "timeframe": "month",
+      "level_type": "close",
+      "period_label": "2026-10",
+      "strat_class": "3",
+      "is_current": false
+     },
+     {
+      "name": "PQH",
+      "price": 748.349,
+      "timeframe": "quarter",
+      "level_type": "high",
+      "period_label": "2026Q3",
+      "strat_class": "1",
+      "is_current": false
+     },
+     {
+      "name": "PQL",
+      "price": 661.14,
+      "timeframe": "quarter",
+      "level_type": "low",
+      "period_label": "2026Q3",
+      "strat_class": "1",
+      "is_current": false
+     },
+     {
+      "name": "PQC",
+      "price": 739.77,
+      "timeframe": "quarter",
+      "level_type": "close",
+      "period_label": "2026Q3",
+      "strat_class": "1",
+      "is_current": false
+     },
+     {
+      "name": "PYH",
+      "price": 637.01,
+      "timeframe": "year",
+      "level_type": "high",
+      "period_label": "2025",
+      "strat_class": "3",
+      "is_current": false
+     },
+     {
+      "name": "PYL",
+      "price": 402.39,
+      "timeframe": "year",
+      "level_type": "low",
+      "period_label": "2025",
+      "strat_class": "3",
+      "is_current": false
+     },
+     {
+      "name": "PYC",
+      "price": 614.31,
+      "timeframe": "year",
+      "level_type": "close",
+      "period_label": "2025",
+      "strat_class": "3",
+      "is_current": false
+     },
+     {
+      "name": "PDO",
+      "price": 695.315,
+      "timeframe": "day",
+      "level_type": "open",
+      "period_label": "2026-11-02",
+      "strat_class": "3",
+      "is_current": false
+     },
+     {
+      "name": "CWO",
+      "price": 695.315,
+      "timeframe": "week",
+      "level_type": "open",
+      "period_label": "2026-11-02/2026-11-08",
+      "strat_class": "2D",
+      "is_current": true
+     },
+     {
+      "name": "CMO",
+      "price": 695.315,
+      "timeframe": "month",
+      "level_type": "open",
+      "period_label": "2026-11",
+      "strat_class": "2D",
+      "is_current": true
+     },
+     {
+      "name": "GAP_H_2026-10-07",
+      "price": 759.1,
+      "timeframe": "day",
+      "level_type": "gap_high",
+      "period_label": "2026-10-07",
+      "strat_class": "gap_down",
+      "is_current": false
+     },
+     {
+      "name": "GAP_L_2026-10-07",
+      "price": 758.3,
+      "timeframe": "day",
+      "level_type": "gap_low",
+      "period_label": "2026-10-07",
+      "strat_class": "gap_down",
+      "is_current": false
+     },
+     {
+      "name": "GAP_H_2026-10-13",
+      "price": 744.845,
+      "timeframe": "day",
+      "level_type": "gap_high",
+      "period_label": "2026-10-13",
+      "strat_class": "gap_down",
+      "is_current": false
+     },
+     {
+      "name": "GAP_L_2026-10-13",
+      "price": 744.2,
+      "timeframe": "day",
+      "level_type": "gap_low",
+      "period_label": "2026-10-13",
+      "strat_class": "gap_down",
+      "is_current": false
+     },
+     {
+      "name": "GAP_H_2026-10-29",
+      "price": 720.3,
+      "timeframe": "day",
+      "level_type": "gap_high",
+      "period_label": "2026-10-29",
+      "strat_class": "gap_down",
+      "is_current": false
+     },
+     {
+      "name": "GAP_L_2026-10-29",
+      "price": 718.07,
+      "timeframe": "day",
+      "level_type": "gap_low",
+      "period_label": "2026-10-29",
+      "strat_class": "gap_down",
+      "is_current": false
+     },
+     {
+      "name": "GAP_H_2026-10-30",
+      "price": 711.62,
+      "timeframe": "day",
+      "level_type": "gap_high",
+      "period_label": "2026-10-30",
+      "strat_class": "gap_down",
+      "is_current": false
+     },
+     {
+      "name": "GAP_L_2026-10-30",
+      "price": 698.63,
+      "timeframe": "day",
+      "level_type": "gap_low",
+      "period_label": "2026-10-30",
+      "strat_class": "gap_down",
+      "is_current": false
+     },
+     {
+      "name": "parent_bar_high",
+      "price": 699.43,
+      "timeframe": "day",
+      "level_type": "high",
+      "period_label": "2026-11-02",
+      "strat_class": "",
+      "is_current": false
+     },
+     {
+      "name": "parent_bar_low",
+      "price": 680.33,
+      "timeframe": "day",
+      "level_type": "low",
+      "period_label": "2026-11-02",
+      "strat_class": "",
+      "is_current": false
+     },
+     {
+      "name": "PMK_H",
+      "price": 686.88,
+      "timeframe": "intraday",
+      "level_type": "high",
+      "period_label": "premarket",
+      "strat_class": "",
+      "is_current": true
+     },
+     {
+      "name": "PMK_L",
+      "price": 678.9,
+      "timeframe": "intraday",
+      "level_type": "low",
+      "period_label": "premarket",
+      "strat_class": "",
+      "is_current": true
+     }
+    ],
+    "pmg_zones": [
+     {
+      "center_price": 695.32,
+      "level_names": [
+       "PDO",
+       "CWO",
+       "CMO"
+      ],
+      "timeframes": [
+       "day",
+       "month",
+       "week"
+      ],
+      "count": 3,
+      "strength": 4.0
+     },
+     {
+      "center_price": 683.45,
+      "level_names": [
+       "PWL",
+       "PML"
+      ],
+      "timeframes": [
+       "month",
+       "week"
+      ],
+      "count": 2,
+      "strength": 2.5
+     },
+     {
+      "center_price": 690.49,
+      "level_names": [
+       "PWC",
+       "PMC"
+      ],
+      "timeframes": [
+       "month",
+       "week"
+      ],
+      "count": 2,
+      "strength": 2.5
+     },
+     {
+      "center_price": 680.71,
+      "level_names": [
+       "PDL",
+       "PDC"
+      ],
+      "timeframes": [
+       "day"
+      ],
+      "count": 2,
+      "strength": 2.0
+     },
+     {
+      "center_price": 699.03,
+      "level_names": [
+       "GAP_L_2026-10-30",
+       "PDH"
+      ],
+      "timeframes": [
+       "day"
+      ],
+      "count": 2,
+      "strength": 2.0
+     },
+     {
+      "center_price": 744.52,
+      "level_names": [
+       "GAP_L_2026-10-13",
+       "GAP_H_2026-10-13"
+      ],
+      "timeframes": [
+       "day"
+      ],
+      "count": 2,
+      "strength": 2.0
+     },
+     {
+      "center_price": 758.7,
+      "level_names": [
+       "GAP_L_2026-10-07",
+       "GAP_H_2026-10-07"
+      ],
+      "timeframes": [
+       "day"
+      ],
+      "count": 2,
+      "strength": 2.0
+     }
+    ],
+    "long": {
+     "side": "long",
+     "candidates": [
+      {
+       "name": "PWL",
+       "price": 683.45,
+       "level_type": "low",
+       "timeframe": "week",
+       "period": "2026-10-26/2026-11-01",
+       "aliases": [
+        "PML"
+       ],
+       "cents": 68345,
+       "broken": true,
+       "in_window": true,
+       "distance_atr": 0.047
+      },
+      {
+       "name": "PMK_H",
+       "price": 686.88,
+       "level_type": "high",
+       "timeframe": "intraday",
+       "period": "premarket",
+       "aliases": [],
+       "cents": 68688,
+       "broken": false,
+       "in_window": true,
+       "distance_atr": 0.307
+      },
+      {
+       "name": "PWC",
+       "price": 690.49,
+       "level_type": "close",
+       "timeframe": "week",
+       "period": "2026-10-26/2026-11-01",
+       "aliases": [
+        "PMC"
+       ],
+       "cents": 69049,
+       "broken": false,
+       "in_window": true,
+       "distance_atr": 0.582
+      },
+      {
+       "name": "PDH",
+       "price": 699.43,
+       "level_type": "high",
+       "timeframe": "day",
+       "period": "2026-11-02",
+       "aliases": [
+        "parent_bar_high"
+       ],
+       "cents": 69943,
+       "broken": false,
+       "in_window": true,
+       "distance_atr": 1.26
+      },
+      {
+       "name": "PWH",
+       "price": 726.14,
+       "level_type": "high",
+       "timeframe": "week",
+       "period": "2026-10-26/2026-11-01",
+       "aliases": [],
+       "cents": 72614,
+       "broken": false,
+       "in_window": false,
+       "distance_atr": 3.288
+      },
+      {
+       "name": "PQC",
+       "price": 739.77,
+       "level_type": "close",
+       "timeframe": "quarter",
+       "period": "2026Q3",
+       "aliases": [],
+       "cents": 73977,
+       "broken": false,
+       "in_window": false,
+       "distance_atr": 4.323
+      },
+      {
+       "name": "PQH",
+       "price": 748.349,
+       "level_type": "high",
+       "timeframe": "quarter",
+       "period": "2026Q3",
+       "aliases": [],
+       "cents": 74835,
+       "broken": false,
+       "in_window": false,
+       "distance_atr": 4.975
+      },
+      {
+       "name": "PMH",
+       "price": 762.86,
+       "level_type": "high",
+       "timeframe": "month",
+       "period": "2026-10",
+       "aliases": [],
+       "cents": 76286,
+       "broken": false,
+       "in_window": false,
+       "distance_atr": 6.077
+      }
+     ],
+     "trigger": {
+      "name": "PMK_H",
+      "price": 686.88,
+      "level_type": "high",
+      "timeframe": "intraday",
+      "period": "premarket",
+      "aliases": []
+     },
+     "regime": "normal",
+     "reason": null,
+     "targets": [
+      {
+       "name": "PWC",
+       "price": 690.49,
+       "level_type": "close",
+       "timeframe": "week",
+       "period": "2026-10-26/2026-11-01",
+       "aliases": [
+        "PMC"
+       ]
+      },
+      {
+       "name": "PDH",
+       "price": 699.43,
+       "level_type": "high",
+       "timeframe": "day",
+       "period": "2026-11-02",
+       "aliases": [
+        "parent_bar_high"
+       ]
+      }
+     ],
+     "stop": {
+      "name": "PDC",
+      "price": 681.09,
+      "level_type": "close",
+      "timeframe": "day",
+      "period": "2026-11-02",
+      "aliases": []
+     },
+     "ladder": [
+      {
+       "price": 686.88,
+       "name": "PMK_H",
+       "period": "intraday",
+       "level_type": "high",
+       "distance_pct": 0.59
+      },
+      {
+       "price": 690.49,
+       "name": "PWC",
+       "period": "week",
+       "level_type": "close",
+       "distance_pct": 1.12
+      }
+     ],
+     "room_pct": 0.593,
+     "distance_atr": 0.307
+    },
+    "short": {
+     "side": "short",
+     "candidates": [
+      {
+       "name": "PDC",
+       "price": 681.09,
+       "level_type": "close",
+       "timeframe": "day",
+       "period": "2026-11-02",
+       "aliases": [],
+       "cents": 68109,
+       "broken": true,
+       "in_window": true,
+       "distance_atr": 0.132
+      },
+      {
+       "name": "PDL",
+       "price": 680.33,
+       "level_type": "low",
+       "timeframe": "day",
+       "period": "2026-11-02",
+       "aliases": [
+        "parent_bar_low"
+       ],
+       "cents": 68033,
+       "broken": true,
+       "in_window": true,
+       "distance_atr": 0.19
+      },
+      {
+       "name": "PMK_L",
+       "price": 678.9,
+       "level_type": "low",
+       "timeframe": "intraday",
+       "period": "premarket",
+       "aliases": [],
+       "cents": 67890,
+       "broken": false,
+       "in_window": true,
+       "distance_atr": 0.298
+      },
+      {
+       "name": "PQL",
+       "price": 661.14,
+       "level_type": "low",
+       "timeframe": "quarter",
+       "period": "2026Q3",
+       "aliases": [],
+       "cents": 66114,
+       "broken": false,
+       "in_window": true,
+       "distance_atr": 1.647
+      },
+      {
+       "name": "PYH",
+       "price": 637.01,
+       "level_type": "high",
+       "timeframe": "year",
+       "period": "2025",
+       "aliases": [],
+       "cents": 63701,
+       "broken": false,
+       "in_window": false,
+       "distance_atr": 3.479
+      },
+      {
+       "name": "PYC",
+       "price": 614.31,
+       "level_type": "close",
+       "timeframe": "year",
+       "period": "2025",
+       "aliases": [],
+       "cents": 61431,
+       "broken": false,
+       "in_window": false,
+       "distance_atr": 5.203
+      },
+      {
+       "name": "PYL",
+       "price": 402.39,
+       "level_type": "low",
+       "timeframe": "year",
+       "period": "2025",
+       "aliases": [],
+       "cents": 40239,
+       "broken": false,
+       "in_window": false,
+       "distance_atr": 21.294
+      }
+     ],
+     "trigger": {
+      "name": "PMK_L",
+      "price": 678.9,
+      "level_type": "low",
+      "timeframe": "intraday",
+      "period": "premarket",
+      "aliases": []
+     },
+     "regime": "normal",
+     "reason": null,
+     "targets": [
+      {
+       "name": "PQL",
+       "price": 661.14,
+       "level_type": "low",
+       "timeframe": "quarter",
+       "period": "2026Q3",
+       "aliases": []
+      }
+     ],
+     "stop": {
+      "name": "PWL",
+      "price": 683.45,
+      "level_type": "low",
+      "timeframe": "week",
+      "period": "2026-10-26/2026-11-01",
+      "aliases": [
+       "PML"
+      ]
+     },
+     "ladder": [
+      {
+       "price": 678.9,
+       "name": "PMK_L",
+       "period": "intraday",
+       "level_type": "low",
+       "distance_pct": -0.58
+      },
+      {
+       "price": 661.14,
+       "name": "PQL",
+       "period": "quarter",
+       "level_type": "low",
+       "distance_pct": -3.18
+      }
+     ],
+     "room_pct": 0.576,
+     "distance_atr": 0.298
+    }
+   },
+   "premarket_status": "ok",
+   "regime": "normal",
+   "regime_long": "normal",
+   "regime_short": "normal",
+   "reason_long": null,
+   "reason_short": null,
+   "playbook": "  CALLS above 686.88 (PMK_H)\n    Stop: 681.09 (PDC)\n    T1: 690.49 (PWC)\n    T2: 699.43 (PDH)\n    Room to trigger: 0.59%\n\n  PUTS below 678.90 (PMK_L)\n    Stop: 683.45 (PWL)\n    T1: 661.14 (PQL)\n    Room to trigger: 0.58%\n\n  NEXT LEVELS:\n    Calls (up):  686.88 PMK_H (intraday) +0.59%, 690.49 PWC (week) +1.12%\n    Puts (down): 678.90 PMK_L (intraday) -0.58%, 661.14 PQL (quarter) -3.18%\n\n  PMG ZONES:\n    695.32 (PDO, CWO, CMO) [strength: 4.0]\n    683.45 (PWL, PML) [strength: 2.5]\n    690.49 (PWC, PMC) [strength: 2.5]",
+   "recommended_orb_window": "5m",
+   "recommended_orb_reason": "5-min ORB (default scalp window, no high-impact catalyst)",
+   "calls_trigger_price": 686.88,
+   "calls_trigger_name": "PMK_H",
+   "calls_stop_price": 681.09,
+   "calls_stop_name": "PDC",
+   "calls_t1_price": 690.49,
+   "calls_t2_price": 699.43,
+   "calls_t3_price": null,
+   "puts_trigger_price": 678.9,
+   "puts_trigger_name": "PMK_L",
+   "puts_stop_price": 683.45,
+   "puts_stop_name": "PWL",
+   "puts_t1_price": 661.14,
+   "puts_t2_price": null,
+   "puts_t3_price": null,
+   "_levels": [
+    {
+     "name": "PYL",
+     "level_name": null,
+     "price": 402.39,
+     "timeframe": "year",
+     "level_type": "low"
+    },
+    {
+     "name": "PYC",
+     "level_name": null,
+     "price": 614.31,
+     "timeframe": "year",
+     "level_type": "close"
+    },
+    {
+     "name": "PYH",
+     "level_name": null,
+     "price": 637.01,
+     "timeframe": "year",
+     "level_type": "high"
+    },
+    {
+     "name": "PQL",
+     "level_name": null,
+     "price": 661.14,
+     "timeframe": "quarter",
+     "level_type": "low"
+    },
+    {
+     "name": "PMK_L",
+     "level_name": null,
+     "price": 678.9,
+     "timeframe": "intraday",
+     "level_type": "low"
+    },
+    {
+     "name": "PDL",
+     "level_name": null,
+     "price": 680.33,
+     "timeframe": "day",
+     "level_type": "low"
+    },
+    {
+     "name": "PDC",
+     "level_name": null,
+     "price": 681.09,
+     "timeframe": "day",
+     "level_type": "close"
+    },
+    {
+     "name": "PWL",
+     "level_name": null,
+     "price": 683.45,
+     "timeframe": "week",
+     "level_type": "low"
+    },
+    {
+     "name": "PML",
+     "level_name": null,
+     "price": 683.45,
+     "timeframe": "month",
+     "level_type": "low"
+    },
+    {
+     "name": "PMK_H",
+     "level_name": null,
+     "price": 686.88,
+     "timeframe": "intraday",
+     "level_type": "high"
+    },
+    {
+     "name": "PWC",
+     "level_name": null,
+     "price": 690.49,
+     "timeframe": "week",
+     "level_type": "close"
+    },
+    {
+     "name": "PMC",
+     "level_name": null,
+     "price": 690.49,
+     "timeframe": "month",
+     "level_type": "close"
+    },
+    {
+     "name": "PDO",
+     "level_name": null,
+     "price": 695.315,
+     "timeframe": "day",
+     "level_type": "open"
+    },
+    {
+     "name": "CWO",
+     "level_name": null,
+     "price": 695.315,
+     "timeframe": "week",
+     "level_type": "open"
+    },
+    {
+     "name": "CMO",
+     "level_name": null,
+     "price": 695.315,
+     "timeframe": "month",
+     "level_type": "open"
+    },
+    {
+     "name": "GAP_L_2026-10-30",
+     "level_name": null,
+     "price": 698.63,
+     "timeframe": "day",
+     "level_type": "gap_low"
+    },
+    {
+     "name": "PDH",
+     "level_name": null,
+     "price": 699.43,
+     "timeframe": "day",
+     "level_type": "high"
+    },
+    {
+     "name": "GAP_H_2026-10-30",
+     "level_name": null,
+     "price": 711.62,
+     "timeframe": "day",
+     "level_type": "gap_high"
+    },
+    {
+     "name": "GAP_L_2026-10-29",
+     "level_name": null,
+     "price": 718.07,
+     "timeframe": "day",
+     "level_type": "gap_low"
+    },
+    {
+     "name": "GAP_H_2026-10-29",
+     "level_name": null,
+     "price": 720.3,
+     "timeframe": "day",
+     "level_type": "gap_high"
+    },
+    {
+     "name": "PWH",
+     "level_name": null,
+     "price": 726.14,
+     "timeframe": "week",
+     "level_type": "high"
+    },
+    {
+     "name": "PQC",
+     "level_name": null,
+     "price": 739.77,
+     "timeframe": "quarter",
+     "level_type": "close"
+    },
+    {
+     "name": "GAP_L_2026-10-13",
+     "level_name": null,
+     "price": 744.2,
+     "timeframe": "day",
+     "level_type": "gap_low"
+    },
+    {
+     "name": "GAP_H_2026-10-13",
+     "level_name": null,
+     "price": 744.845,
+     "timeframe": "day",
+     "level_type": "gap_high"
+    },
+    {
+     "name": "PQH",
+     "level_name": null,
+     "price": 748.349,
+     "timeframe": "quarter",
+     "level_type": "high"
+    },
+    {
+     "name": "GAP_L_2026-10-07",
+     "level_name": null,
+     "price": 758.3,
+     "timeframe": "day",
+     "level_type": "gap_low"
+    },
+    {
+     "name": "GAP_H_2026-10-07",
+     "level_name": null,
+     "price": 759.1,
+     "timeframe": "day",
+     "level_type": "gap_high"
+    },
+    {
+     "name": "PMH",
+     "level_name": null,
+     "price": 762.86,
+     "timeframe": "month",
+     "level_type": "high"
+    }
+   ],
+   "_plans": {
+    "long": [
+     {
+      "persona": "aggressive",
+      "entry": [
+       686.88,
+       693.46
+      ],
+      "stop": 663.83,
+      "targets": [
+       742.85,
+       782.36,
+       821.87
+      ],
+      "regime": "normal",
+      "size": 1.2
+     },
+     {
+      "persona": "neutral",
+      "entry": [
+       686.88,
+       690.17
+      ],
+      "stop": 675.36,
+      "targets": [
+       701.7,
+       714.87,
+       728.04
+      ],
+      "regime": "normal",
+      "size": 1.0
+     },
+     {
+      "persona": "conservative",
+      "entry": [
+       688.2,
+       692.15
+      ],
+      "stop": 681.09,
+      "targets": [
+       699.25,
+       706.07
+      ],
+      "regime": "normal",
+      "size": 0.5
+     }
+    ],
+    "short": [
+     {
+      "persona": "aggressive",
+      "entry": [
+       672.32,
+       678.9
+      ],
+      "stop": 701.95,
+      "targets": [
+       622.93,
+       583.42,
+       543.91
+      ],
+      "regime": "normal",
+      "size": 1.2
+     },
+     {
+      "persona": "neutral",
+      "entry": [
+       675.61,
+       678.9
+      ],
+      "stop": 690.42,
+      "targets": [
+       664.08,
+       650.91,
+       637.74
+      ],
+      "regime": "normal",
+      "size": 1.0
+     },
+     {
+      "persona": "conservative",
+      "entry": [
+       673.63,
+       677.58
+      ],
+      "stop": 683.45,
+      "targets": [
+       667.77,
+       661.88
+      ],
+      "regime": "normal",
+      "size": 0.5
+     }
+    ]
+   }
+  },
+  "IWM": {
+   "price": 279.14,
+   "change_pct": -0.0680199047721325,
+   "prev_day_high": 283.19,
+   "prev_day_low": 278.88,
+   "prev_day_open": 281.64,
+   "prev_day_close": 279.14,
+   "prev_day_volume": 24296866.0,
+   "rvol": 1.010292264190593,
+   "rsi": 49.05163167055877,
+   "rsi_direction": "down",
+   "stoch_k": 80.03621691782094,
+   "stoch_d": 90.07829315905803,
+   "macd": -0.8185787944133835,
+   "macd_signal_val": -1.9344022978886277,
+   "macd_cross": "Bullish",
+   "sma200": 278.7885,
+   "ema9": 279.0300615730689,
+   "ema20": 278.84966518359755,
+   "bb_upper": 283.91665207431794,
+   "bb_lower": 270.47734792568207,
+   "atr14": 3.85384801245335,
+   "above_sma200": true,
+   "vol_regime": "Normal",
+   "volatility_20d": 0.16064400795285977,
+   "consecutive_up": 1,
+   "consecutive_down": 2,
+   "signal_status": "CALL building (2/5)",
+   "strat_candle": "2U",
+   "strat_combo": "22_bull_reversal",
+   "strat_setup": false,
+   "strat_available": true,
+   "strat_reason": null,
+   "strat_observation_ts": "2026-11-03T08:30:00-05:00",
+   "ftfc_score": 0.7499999999999999,
+   "ftfc_direction": "bullish",
+   "ftfc_labels": {
+    "1d": "2U",
+    "1w": "1",
+    "1mo": "1"
+   },
+   "tf_continuity": "mixed",
+   "tf_continuity_frames": {
+    "1q": {
+     "relation": "green",
+     "open": 277.36,
+     "observed_price": 279.14,
+     "price_provenance": "latest_completed_close",
+     "price_session": "2026-11-02",
+     "rule_version": "price-open-v1",
+     "period_start": "2026-10-01T09:30:00-04:00",
+     "observation_ts": "2026-11-03T08:30:00-05:00",
+     "reasons": []
+    },
+    "1mo": {
+     "relation": "red",
+     "open": 281.64,
+     "observed_price": 279.14,
+     "price_provenance": "latest_completed_close",
+     "price_session": "2026-11-02",
+     "rule_version": "price-open-v1",
+     "period_start": "2026-11-02T09:30:00-05:00",
+     "observation_ts": "2026-11-03T08:30:00-05:00",
+     "reasons": []
+    },
+    "1w": {
+     "relation": "red",
+     "open": 281.64,
+     "observed_price": 279.14,
+     "price_provenance": "latest_completed_close",
+     "price_session": "2026-11-02",
+     "rule_version": "price-open-v1",
+     "period_start": "2026-11-02T09:30:00-05:00",
+     "observation_ts": "2026-11-03T08:30:00-05:00",
+     "reasons": []
+    }
+   },
+   "data_as_of": "2026-11-02 16:00:00-05:00",
+   "data_freshness_status": "fresh",
+   "freshness_gap_days": 1,
+   "gamma_data_source": "unavailable",
+   "gamma_snapshot_ts": null,
+   "gamma_snapshot_date": null,
+   "gamma_days_behind": null,
+   "level_basis": {
+    "rule_version": "feat-strat-001.v1",
+    "ticker": "IWM",
+    "session_date": "2026-11-03",
+    "built_at": "2026-11-11T08:27:01.222986-05:00",
+    "status": "ok",
+    "last_bar_date": "2026-11-02",
+    "atr": 3.85384801245335,
+    "prior_close": 279.14,
+    "reference": 278.8416702481893,
+    "reference_source": "pre_vwap",
+    "premarket": {
+     "date": "2026-11-03",
+     "fetched_at": null,
+     "pre_high": 280.6,
+     "pre_low": 277.94,
+     "pre_vwap": 278.8416702481893,
+     "gap_pct": -0.1935,
+     "excluded_stale_prints": null,
+     "excluded_spikes": null,
+     "excluded_bars": null
+    },
+    "premarket_status": "ok",
+    "cleared_above": 280.6,
+    "cleared_below": 277.94,
+    "strat_class": "2U",
+    "levels": [
+     {
+      "name": "PDH",
+      "price": 283.19,
+      "timeframe": "day",
+      "level_type": "high",
+      "period_label": "2026-11-02",
+      "strat_class": "Failed_2U",
+      "is_current": false
+     },
+     {
+      "name": "PDL",
+      "price": 278.88,
+      "timeframe": "day",
+      "level_type": "low",
+      "period_label": "2026-11-02",
+      "strat_class": "Failed_2U",
+      "is_current": false
+     },
+     {
+      "name": "PDC",
+      "price": 279.14,
+      "timeframe": "day",
+      "level_type": "close",
+      "period_label": "2026-11-02",
+      "strat_class": "Failed_2U",
+      "is_current": false
+     },
+     {
+      "name": "PWH",
+      "price": 285.26,
+      "timeframe": "week",
+      "level_type": "high",
+      "period_label": "2026-10-26/2026-11-01",
+      "strat_class": "2U",
+      "is_current": false
+     },
+     {
+      "name": "PWL",
+      "price": 276.0,
+      "timeframe": "week",
+      "level_type": "low",
+      "period_label": "2026-10-26/2026-11-01",
+      "strat_class": "2U",
+      "is_current": false
+     },
+     {
+      "name": "PWC",
+      "price": 279.33,
+      "timeframe": "week",
+      "level_type": "close",
+      "period_label": "2026-10-26/2026-11-01",
+      "strat_class": "2U",
+      "is_current": false
+     },
+     {
+      "name": "PMH",
+      "price": 285.26,
+      "timeframe": "month",
+      "level_type": "high",
+      "period_label": "2026-10",
+      "strat_class": "Failed_2D",
+      "is_current": false
+     },
+     {
+      "name": "PML",
+      "price": 269.875,
+      "timeframe": "month",
+      "level_type": "low",
+      "period_label": "2026-10",
+      "strat_class": "Failed_2D",
+      "is_current": false
+     },
+     {
+      "name": "PMC",
+      "price": 279.33,
+      "timeframe": "month",
+      "level_type": "close",
+      "period_label": "2026-10",
+      "strat_class": "Failed_2D",
+      "is_current": false
+     },
+     {
+      "name": "PQH",
+      "price": 305.18,
+      "timeframe": "quarter",
+      "level_type": "high",
+      "period_label": "2026Q3",
+      "strat_class": "Failed_2U",
+      "is_current": false
+     },
+     {
+      "name": "PQL",
+      "price": 277.41,
+      "timeframe": "quarter",
+      "level_type": "low",
+      "period_label": "2026Q3",
+      "strat_class": "Failed_2U",
+      "is_current": false
+     },
+     {
+      "name": "PQC",
+      "price": 277.89,
+      "timeframe": "quarter",
+      "level_type": "close",
+      "period_label": "2026Q3",
+      "strat_class": "Failed_2U",
+      "is_current": false
+     },
+     {
+      "name": "PYH",
+      "price": 258.2,
+      "timeframe": "year",
+      "level_type": "high",
+      "period_label": "2025",
+      "strat_class": "3",
+      "is_current": false
+     },
+     {
+      "name": "PYL",
+      "price": 171.73,
+      "timeframe": "year",
+      "level_type": "low",
+      "period_label": "2025",
+      "strat_class": "3",
+      "is_current": false
+     },
+     {
+      "name": "PYC",
+      "price": 246.16,
+      "timeframe": "year",
+      "level_type": "close",
+      "period_label": "2025",
+      "strat_class": "3",
+      "is_current": false
+     },
+     {
+      "name": "PDO",
+      "price": 281.64,
+      "timeframe": "day",
+      "level_type": "open",
+      "period_label": "2026-11-02",
+      "strat_class": "Failed_2U",
+      "is_current": false
+     },
+     {
+      "name": "CWO",
+      "price": 281.64,
+      "timeframe": "week",
+      "level_type": "open",
+      "period_label": "2026-11-02/2026-11-08",
+      "strat_class": "1",
+      "is_current": true
+     },
+     {
+      "name": "CMO",
+      "price": 281.64,
+      "timeframe": "month",
+      "level_type": "open",
+      "period_label": "2026-11",
+      "strat_class": "1",
+      "is_current": true
+     },
+     {
+      "name": "parent_bar_high",
+      "price": 283.19,
+      "timeframe": "day",
+      "level_type": "high",
+      "period_label": "2026-11-02",
+      "strat_class": "",
+      "is_current": false
+     },
+     {
+      "name": "parent_bar_low",
+      "price": 278.88,
+      "timeframe": "day",
+      "level_type": "low",
+      "period_label": "2026-11-02",
+      "strat_class": "",
+      "is_current": false
+     },
+     {
+      "name": "PMK_H",
+      "price": 280.6,
+      "timeframe": "intraday",
+      "level_type": "high",
+      "period_label": "premarket",
+      "strat_class": "",
+      "is_current": true
+     },
+     {
+      "name": "PMK_L",
+      "price": 277.94,
+      "timeframe": "intraday",
+      "level_type": "low",
+      "period_label": "premarket",
+      "strat_class": "",
+      "is_current": true
+     }
+    ],
+    "pmg_zones": [
+     {
+      "center_price": 281.64,
+      "level_names": [
+       "PDO",
+       "CWO",
+       "CMO"
+      ],
+      "timeframes": [
+       "day",
+       "month",
+       "week"
+      ],
+      "count": 3,
+      "strength": 4.0
+     },
+     {
+      "center_price": 279.33,
+      "level_names": [
+       "PWC",
+       "PMC"
+      ],
+      "timeframes": [
+       "month",
+       "week"
+      ],
+      "count": 2,
+      "strength": 2.5
+     },
+     {
+      "center_price": 285.26,
+      "level_names": [
+       "PWH",
+       "PMH"
+      ],
+      "timeframes": [
+       "month",
+       "week"
+      ],
+      "count": 2,
+      "strength": 2.5
+     },
+     {
+      "center_price": 279.01,
+      "level_names": [
+       "PDL",
+       "PDC"
+      ],
+      "timeframes": [
+       "day"
+      ],
+      "count": 2,
+      "strength": 2.0
+     }
+    ],
+    "long": {
+     "side": "long",
+     "candidates": [
+      {
+       "name": "PDL",
+       "price": 278.88,
+       "level_type": "low",
+       "timeframe": "day",
+       "period": "2026-11-02",
+       "aliases": [
+        "parent_bar_low"
+       ],
+       "cents": 27888,
+       "broken": true,
+       "in_window": true,
+       "distance_atr": 0.01
+      },
+      {
+       "name": "PDC",
+       "price": 279.14,
+       "level_type": "close",
+       "timeframe": "day",
+       "period": "2026-11-02",
+       "aliases": [],
+       "cents": 27914,
+       "broken": true,
+       "in_window": true,
+       "distance_atr": 0.077
+      },
+      {
+       "name": "PWC",
+       "price": 279.33,
+       "level_type": "close",
+       "timeframe": "week",
+       "period": "2026-10-26/2026-11-01",
+       "aliases": [
+        "PMC"
+       ],
+       "cents": 27933,
+       "broken": true,
+       "in_window": true,
+       "distance_atr": 0.127
+      },
+      {
+       "name": "PMK_H",
+       "price": 280.6,
+       "level_type": "high",
+       "timeframe": "intraday",
+       "period": "premarket",
+       "aliases": [],
+       "cents": 28060,
+       "broken": false,
+       "in_window": true,
+       "distance_atr": 0.456
+      },
+      {
+       "name": "PDH",
+       "price": 283.19,
+       "level_type": "high",
+       "timeframe": "day",
+       "period": "2026-11-02",
+       "aliases": [
+        "parent_bar_high"
+       ],
+       "cents": 28319,
+       "broken": false,
+       "in_window": true,
+       "distance_atr": 1.128
+      },
+      {
+       "name": "PWH",
+       "price": 285.26,
+       "level_type": "high",
+       "timeframe": "week",
+       "period": "2026-10-26/2026-11-01",
+       "aliases": [
+        "PMH"
+       ],
+       "cents": 28526,
+       "broken": false,
+       "in_window": true,
+       "distance_atr": 1.665
+      },
+      {
+       "name": "PQH",
+       "price": 305.18,
+       "level_type": "high",
+       "timeframe": "quarter",
+       "period": "2026Q3",
+       "aliases": [],
+       "cents": 30518,
+       "broken": false,
+       "in_window": false,
+       "distance_atr": 6.834
+      }
+     ],
+     "trigger": {
+      "name": "PMK_H",
+      "price": 280.6,
+      "level_type": "high",
+      "timeframe": "intraday",
+      "period": "premarket",
+      "aliases": []
+     },
+     "regime": "normal",
+     "reason": null,
+     "targets": [
+      {
+       "name": "PDH",
+       "price": 283.19,
+       "level_type": "high",
+       "timeframe": "day",
+       "period": "2026-11-02",
+       "aliases": [
+        "parent_bar_high"
+       ]
+      },
+      {
+       "name": "PWH",
+       "price": 285.26,
+       "level_type": "high",
+       "timeframe": "week",
+       "period": "2026-10-26/2026-11-01",
+       "aliases": [
+        "PMH"
+       ]
+      }
+     ],
+     "stop": {
+      "name": "PMK_L",
+      "price": 277.94,
+      "level_type": "low",
+      "timeframe": "intraday",
+      "period": "premarket",
+      "aliases": []
+     },
+     "ladder": [
+      {
+       "price": 280.6,
+       "name": "PMK_H",
+       "period": "intraday",
+       "level_type": "high",
+       "distance_pct": 0.63
+      },
+      {
+       "price": 283.19,
+       "name": "PDH",
+       "period": "day",
+       "level_type": "high",
+       "distance_pct": 1.56
+      }
+     ],
+     "room_pct": 0.631,
+     "distance_atr": 0.456
+    },
+    "short": {
+     "side": "short",
+     "candidates": [
+      {
+       "name": "PMK_L",
+       "price": 277.94,
+       "level_type": "low",
+       "timeframe": "intraday",
+       "period": "premarket",
+       "aliases": [],
+       "cents": 27794,
+       "broken": false,
+       "in_window": true,
+       "distance_atr": 0.234
+      },
+      {
+       "name": "PQC",
+       "price": 277.89,
+       "level_type": "close",
+       "timeframe": "quarter",
+       "period": "2026Q3",
+       "aliases": [],
+       "cents": 27789,
+       "broken": false,
+       "in_window": true,
+       "distance_atr": 0.247
+      },
+      {
+       "name": "PQL",
+       "price": 277.41,
+       "level_type": "low",
+       "timeframe": "quarter",
+       "period": "2026Q3",
+       "aliases": [],
+       "cents": 27741,
+       "broken": false,
+       "in_window": true,
+       "distance_atr": 0.371
+      },
+      {
+       "name": "PWL",
+       "price": 276.0,
+       "level_type": "low",
+       "timeframe": "week",
+       "period": "2026-10-26/2026-11-01",
+       "aliases": [],
+       "cents": 27600,
+       "broken": false,
+       "in_window": true,
+       "distance_atr": 0.737
+      },
+      {
+       "name": "PML",
+       "price": 269.875,
+       "level_type": "low",
+       "timeframe": "month",
+       "period": "2026-10",
+       "aliases": [],
+       "cents": 26988,
+       "broken": false,
+       "in_window": true,
+       "distance_atr": 2.327
+      },
+      {
+       "name": "PYH",
+       "price": 258.2,
+       "level_type": "high",
+       "timeframe": "year",
+       "period": "2025",
+       "aliases": [],
+       "cents": 25820,
+       "broken": false,
+       "in_window": false,
+       "distance_atr": 5.356
+      },
+      {
+       "name": "PYC",
+       "price": 246.16,
+       "level_type": "close",
+       "timeframe": "year",
+       "period": "2025",
+       "aliases": [],
+       "cents": 24616,
+       "broken": false,
+       "in_window": false,
+       "distance_atr": 8.48
+      },
+      {
+       "name": "PYL",
+       "price": 171.73,
+       "level_type": "low",
+       "timeframe": "year",
+       "period": "2025",
+       "aliases": [],
+       "cents": 17173,
+       "broken": false,
+       "in_window": false,
+       "distance_atr": 27.793
+      }
+     ],
+     "trigger": {
+      "name": "PMK_L",
+      "price": 277.94,
+      "level_type": "low",
+      "timeframe": "intraday",
+      "period": "premarket",
+      "aliases": []
+     },
+     "regime": "normal",
+     "reason": null,
+     "targets": [
+      {
+       "name": "PQC",
+       "price": 277.89,
+       "level_type": "close",
+       "timeframe": "quarter",
+       "period": "2026Q3",
+       "aliases": []
+      },
+      {
+       "name": "PQL",
+       "price": 277.41,
+       "level_type": "low",
+       "timeframe": "quarter",
+       "period": "2026Q3",
+       "aliases": []
+      },
+      {
+       "name": "PWL",
+       "price": 276.0,
+       "level_type": "low",
+       "timeframe": "week",
+       "period": "2026-10-26/2026-11-01",
+       "aliases": []
+      }
+     ],
+     "stop": {
+      "name": "PDL",
+      "price": 278.88,
+      "level_type": "low",
+      "timeframe": "day",
+      "period": "2026-11-02",
+      "aliases": [
+       "parent_bar_low"
+      ]
+     },
+     "ladder": [
+      {
+       "price": 277.94,
+       "name": "PMK_L",
+       "period": "intraday",
+       "level_type": "low",
+       "distance_pct": -0.32
+      },
+      {
+       "price": 277.89,
+       "name": "PQC",
+       "period": "quarter",
+       "level_type": "close",
+       "distance_pct": -0.34
+      }
+     ],
+     "room_pct": 0.323,
+     "distance_atr": 0.234
+    }
+   },
+   "premarket_status": "ok",
+   "regime": "normal",
+   "regime_long": "normal",
+   "regime_short": "normal",
+   "reason_long": null,
+   "reason_short": null,
+   "playbook": "  CALLS above 280.60 (PMK_H)\n    Stop: 277.94 (PMK_L)\n    T1: 283.19 (PDH)\n    T2: 285.26 (PWH)\n    Room to trigger: 0.63%\n\n  PUTS below 277.94 (PMK_L) -- only if bias denied\n    Stop: 278.88 (PDL)\n    T1: 277.89 (PQC)\n    T2: 277.41 (PQL)\n    T3: 276.00 (PWL)\n    Room to trigger: 0.32%\n\n  NEXT LEVELS:\n    Calls (up):  280.60 PMK_H (intraday) +0.63%, 283.19 PDH (day) +1.56%\n    Puts (down): 277.94 PMK_L (intraday) -0.32%, 277.89 PQC (quarter) -0.34%\n\n  PMG ZONES:\n    281.64 (PDO, CWO, CMO) [strength: 4.0]\n    279.33 (PWC, PMC) [strength: 2.5]\n    285.26 (PWH, PMH) [strength: 2.5]",
+   "recommended_orb_window": "5m",
+   "recommended_orb_reason": "5-min ORB (default scalp window, no high-impact catalyst)",
+   "calls_trigger_price": 280.6,
+   "calls_trigger_name": "PMK_H",
+   "calls_stop_price": 277.94,
+   "calls_stop_name": "PMK_L",
+   "calls_t1_price": 283.19,
+   "calls_t2_price": 285.26,
+   "calls_t3_price": null,
+   "puts_trigger_price": 277.94,
+   "puts_trigger_name": "PMK_L",
+   "puts_stop_price": 278.88,
+   "puts_stop_name": "PDL",
+   "puts_t1_price": 277.89,
+   "puts_t2_price": 277.41,
+   "puts_t3_price": 276.0,
+   "_levels": [
+    {
+     "name": "PYL",
+     "level_name": null,
+     "price": 171.73,
+     "timeframe": "year",
+     "level_type": "low"
+    },
+    {
+     "name": "PYC",
+     "level_name": null,
+     "price": 246.16,
+     "timeframe": "year",
+     "level_type": "close"
+    },
+    {
+     "name": "PYH",
+     "level_name": null,
+     "price": 258.2,
+     "timeframe": "year",
+     "level_type": "high"
+    },
+    {
+     "name": "PML",
+     "level_name": null,
+     "price": 269.875,
+     "timeframe": "month",
+     "level_type": "low"
+    },
+    {
+     "name": "PWL",
+     "level_name": null,
+     "price": 276.0,
+     "timeframe": "week",
+     "level_type": "low"
+    },
+    {
+     "name": "PQL",
+     "level_name": null,
+     "price": 277.41,
+     "timeframe": "quarter",
+     "level_type": "low"
+    },
+    {
+     "name": "PQC",
+     "level_name": null,
+     "price": 277.89,
+     "timeframe": "quarter",
+     "level_type": "close"
+    },
+    {
+     "name": "PMK_L",
+     "level_name": null,
+     "price": 277.94,
+     "timeframe": "intraday",
+     "level_type": "low"
+    },
+    {
+     "name": "PDL",
+     "level_name": null,
+     "price": 278.88,
+     "timeframe": "day",
+     "level_type": "low"
+    },
+    {
+     "name": "PDC",
+     "level_name": null,
+     "price": 279.14,
+     "timeframe": "day",
+     "level_type": "close"
+    },
+    {
+     "name": "PWC",
+     "level_name": null,
+     "price": 279.33,
+     "timeframe": "week",
+     "level_type": "close"
+    },
+    {
+     "name": "PMC",
+     "level_name": null,
+     "price": 279.33,
+     "timeframe": "month",
+     "level_type": "close"
+    },
+    {
+     "name": "PMK_H",
+     "level_name": null,
+     "price": 280.6,
+     "timeframe": "intraday",
+     "level_type": "high"
+    },
+    {
+     "name": "PDO",
+     "level_name": null,
+     "price": 281.64,
+     "timeframe": "day",
+     "level_type": "open"
+    },
+    {
+     "name": "CWO",
+     "level_name": null,
+     "price": 281.64,
+     "timeframe": "week",
+     "level_type": "open"
+    },
+    {
+     "name": "CMO",
+     "level_name": null,
+     "price": 281.64,
+     "timeframe": "month",
+     "level_type": "open"
+    },
+    {
+     "name": "PDH",
+     "level_name": null,
+     "price": 283.19,
+     "timeframe": "day",
+     "level_type": "high"
+    },
+    {
+     "name": "PWH",
+     "level_name": null,
+     "price": 285.26,
+     "timeframe": "week",
+     "level_type": "high"
+    },
+    {
+     "name": "PMH",
+     "level_name": null,
+     "price": 285.26,
+     "timeframe": "month",
+     "level_type": "high"
+    },
+    {
+     "name": "PQH",
+     "level_name": null,
+     "price": 305.18,
+     "timeframe": "quarter",
+     "level_type": "high"
+    }
+   ],
+   "_plans": {
+    "long": [
+     {
+      "persona": "aggressive",
+      "entry": [
+       280.6,
+       282.53
+      ],
+      "stop": 273.86,
+      "targets": [
+       296.98,
+       308.54,
+       320.1
+      ],
+      "regime": "normal",
+      "size": 1.2
+     },
+     {
+      "persona": "neutral",
+      "entry": [
+       280.6,
+       281.56
+      ],
+      "stop": 277.23,
+      "targets": [
+       284.94,
+       288.79,
+       292.64
+      ],
+      "regime": "normal",
+      "size": 1.0
+     },
+     {
+      "persona": "conservative",
+      "entry": [
+       280.99,
+       282.14
+      ],
+      "stop": 278.87,
+      "targets": [
+       284.26,
+       286.28
+      ],
+      "regime": "normal",
+      "size": 0.5
+     }
+    ],
+    "short": [
+     {
+      "persona": "aggressive",
+      "entry": [
+       276.01,
+       277.94
+      ],
+      "stop": 284.68,
+      "targets": [
+       261.56,
+       250.0,
+       238.44
+      ],
+      "regime": "normal",
+      "size": 1.2
+     },
+     {
+      "persona": "neutral",
+      "entry": [
+       276.98,
+       277.94
+      ],
+      "stop": 281.31,
+      "targets": [
+       273.6,
+       269.75,
+       265.9
+      ],
+      "regime": "normal",
+      "size": 1.0
+     },
+     {
+      "persona": "conservative",
+      "entry": [
+       276.4,
+       277.55
+      ],
+      "stop": 278.9,
+      "targets": [
+       275.05,
+       273.6
+      ],
+      "regime": "normal",
+      "size": 0.5
+     }
+    ]
+   }
+  }
+ }
+}

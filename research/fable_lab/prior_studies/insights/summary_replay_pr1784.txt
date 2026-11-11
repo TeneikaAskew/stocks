@@ -1,0 +1,26 @@
+
+### pr1784: day rule. group | plans | filled | t1 | stop | close | sum R | avg R
+LLM direction, aggressive | 30 | 0 | 0 | 0 | 0 | +0.00 | +0.00
+LLM direction, neutral | 30 | 1 | 1 | 0 | 0 | +2.96 | +2.96
+LLM direction, conservative | 30 | 0 | 0 | 0 | 0 | +0.00 | +0.00
+opposite direction, aggressive | 30 | 5 | 2 | 3 | 0 | +2.81 | +0.56
+opposite direction, neutral | 30 | 7 | 4 | 3 | 0 | +3.50 | +0.50
+opposite direction, conservative | 30 | 3 | 0 | 3 | 0 | -4.37 | -1.46
+both sides, long, neutral | 30 | 7 | 5 | 2 | 0 | +7.46 | +1.07
+both sides, short, neutral | 30 | 1 | 0 | 1 | 0 | -1.00 | -1.00
+LLM direction, neutral, SPY | 10 | 1 | 1 | 0 | 0 | +2.96 | +2.96
+LLM direction, neutral, QQQ | 10 | 0 | 0 | 0 | 0 | +0.00 | +0.00
+LLM direction, neutral, IWM | 10 | 0 | 0 | 0 | 0 | +0.00 | +0.00
+
+### pr1784: swing rule. group | plans | filled | t1 | stop | close | sum R | avg R
+LLM direction, aggressive | 30 | 0 | 0 | 0 | 0 | +0.00 | +0.00
+LLM direction, neutral | 30 | 1 | 1 | 0 | 0 | +2.96 | +2.96
+LLM direction, conservative | 30 | 0 | 0 | 0 | 0 | +0.00 | +0.00
+opposite direction, aggressive | 30 | 5 | 2 | 3 | 0 | +2.81 | +0.56
+opposite direction, neutral | 30 | 7 | 4 | 3 | 0 | +3.50 | +0.50
+opposite direction, conservative | 30 | 3 | 0 | 3 | 0 | -4.37 | -1.46
+both sides, long, neutral | 30 | 7 | 5 | 2 | 0 | +7.46 | +1.07
+both sides, short, neutral | 30 | 1 | 0 | 1 | 0 | -1.00 | -1.00
+LLM direction, neutral, SPY | 10 | 1 | 1 | 0 | 0 | +2.96 | +2.96
+LLM direction, neutral, QQQ | 10 | 0 | 0 | 0 | 0 | +0.00 | +0.00
+LLM direction, neutral, IWM | 10 | 0 | 0 | 0 | 0 | +0.00 | +0.00

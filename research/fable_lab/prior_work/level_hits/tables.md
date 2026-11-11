@@ -1,0 +1,735 @@
+
+### A. Crossed the trigger and held (SPY+QQQ+IWM): share of call days
+
+| Window | Measure | Called side | Opposite side | Called minus opposite |
+|---|---|---|---|---|
+| Holdout (Mar 2025 to Apr 2026) | Touched the trigger | 62.4% [57.3, 67.0] n=447 | 68.5% [63.8, 73.3] n=448 | -6.1 pts [-14.6, +1.8] |
+| Holdout (Mar 2025 to Apr 2026) | Closed 1 minute beyond | 58.2% [53.0, 63.0] n=447 | 66.1% [61.2, 70.8] n=448 | -7.9 pts [-16.6, +0.4] |
+| Holdout (Mar 2025 to Apr 2026) | Held 5 minutes | 53.0% [47.9, 58.0] n=447 | 59.6% [54.4, 64.9] n=448 | -6.6 pts [-15.8, +2.5] |
+| Holdout (Mar 2025 to Apr 2026) | Held 15 minutes | 45.0% [39.7, 50.1] n=447 | 56.2% [51.0, 61.5] n=448 | -11.3 pts [-21.1, -2.0] * |
+| Holdout (Mar 2025 to Apr 2026) | Held 30 minutes | 39.8% [34.8, 44.7] n=447 | 50.9% [45.6, 56.5] n=448 | -11.1 pts [-20.7, -1.9] * |
+| Holdout (Mar 2025 to Apr 2026) | Day closed beyond trigger | 30.4% [25.9, 35.2] n=447 | 38.2% [33.1, 43.3] n=448 | -7.7 pts [-16.5, +0.7] |
+| Primary (May to Nov 10 2026) | Touched the trigger | 66.2% [59.7, 72.4] n=210 | 58.1% [51.4, 65.0] n=210 | +8.1 pts [-4.1, +19.6] |
+| Primary (May to Nov 10 2026) | Closed 1 minute beyond | 64.3% [57.8, 70.7] n=210 | 55.7% [49.1, 62.5] n=210 | +8.6 pts [-3.0, +19.8] |
+| Primary (May to Nov 10 2026) | Held 5 minutes | 59.0% [52.4, 65.4] n=210 | 47.6% [40.9, 54.6] n=210 | +11.4 pts [-0.5, +23.1] |
+| Primary (May to Nov 10 2026) | Held 15 minutes | 51.0% [44.1, 57.6] n=210 | 39.5% [33.0, 46.4] n=210 | +11.4 pts [-1.1, +23.4] |
+| Primary (May to Nov 10 2026) | Held 30 minutes | 46.7% [39.8, 53.5] n=210 | 33.8% [27.7, 40.4] n=210 | +12.9 pts [+0.6, +24.7] * |
+| Primary (May to Nov 10 2026) | Day closed beyond trigger | 33.8% [27.3, 40.5] n=210 | 26.2% [20.7, 31.9] n=210 | +7.6 pts [-3.1, +18.4] |
+| All | Touched the trigger | 63.6% [59.5, 67.3] n=657 | 65.2% [61.3, 69.0] n=658 | -1.6 pts [-8.5, +5.2] |
+| All | Closed 1 minute beyond | 60.1% [56.0, 64.0] n=657 | 62.8% [58.9, 66.5] n=658 | -2.6 pts [-9.6, +4.3] |
+| All | Held 5 minutes | 54.9% [50.9, 58.9] n=657 | 55.8% [51.6, 59.9] n=658 | -0.8 pts [-8.1, +6.4] |
+| All | Held 15 minutes | 46.9% [42.8, 50.8] n=657 | 50.9% [46.6, 55.3] n=658 | -4.0 pts [-11.8, +3.4] |
+| All | Held 30 minutes | 42.0% [38.0, 45.9] n=657 | 45.4% [41.3, 49.9] n=658 | -3.4 pts [-11.2, +3.9] |
+| All | Day closed beyond trigger | 31.5% [27.8, 35.3] n=657 | 34.3% [30.5, 38.4] n=658 | -2.8 pts [-9.5, +3.9] |
+
+### A. Crossed the trigger and held (SPY): share of call days
+
+| Window | Measure | Called side | Opposite side | Called minus opposite |
+|---|---|---|---|---|
+| Holdout (Mar 2025 to Apr 2026) | Touched the trigger | 58.7% [51.9, 65.3] n=138 | 70.3% [64.1, 76.4] n=138 | -11.6 pts [-22.8, +0.0] |
+| Holdout (Mar 2025 to Apr 2026) | Closed 1 minute beyond | 54.3% [47.5, 61.0] n=138 | 65.9% [59.2, 72.2] n=138 | -11.6 pts [-23.1, +0.0] |
+| Holdout (Mar 2025 to Apr 2026) | Held 5 minutes | 49.3% [42.3, 56.0] n=138 | 60.1% [53.4, 66.9] n=138 | -10.9 pts [-23.1, +1.5] |
+| Holdout (Mar 2025 to Apr 2026) | Held 15 minutes | 44.2% [37.2, 51.1] n=138 | 55.8% [48.9, 62.9] n=138 | -11.6 pts [-24.6, +0.8] |
+| Holdout (Mar 2025 to Apr 2026) | Held 30 minutes | 41.3% [34.5, 48.3] n=138 | 50.7% [44.1, 57.9] n=138 | -9.4 pts [-22.2, +2.9] |
+| Holdout (Mar 2025 to Apr 2026) | Day closed beyond trigger | 29.7% [23.6, 36.3] n=138 | 37.7% [31.1, 44.3] n=138 | -8.0 pts [-19.2, +3.2] |
+| Primary (May to Nov 10 2026) | Touched the trigger | 66.7% [57.1, 76.2] n=69 | 59.4% [50.0, 68.8] n=69 | +7.2 pts [-9.3, +24.2] |
+| Primary (May to Nov 10 2026) | Closed 1 minute beyond | 63.8% [54.1, 73.2] n=69 | 58.0% [48.3, 67.6] n=69 | +5.8 pts [-10.4, +21.7] |
+| Primary (May to Nov 10 2026) | Held 5 minutes | 58.0% [48.0, 67.6] n=69 | 52.2% [42.4, 62.0] n=69 | +5.8 pts [-11.3, +22.5] |
+| Primary (May to Nov 10 2026) | Held 15 minutes | 50.7% [40.9, 60.3] n=69 | 42.0% [32.0, 51.6] n=69 | +8.7 pts [-7.1, +25.0] |
+| Primary (May to Nov 10 2026) | Held 30 minutes | 43.5% [34.2, 53.4] n=69 | 36.2% [26.9, 45.9] n=69 | +7.2 pts [-8.4, +23.1] |
+| Primary (May to Nov 10 2026) | Day closed beyond trigger | 33.3% [24.6, 42.9] n=69 | 29.0% [20.2, 38.3] n=69 | +4.3 pts [-11.1, +19.7] |
+| All | Touched the trigger | 61.4% [55.8, 66.7] n=207 | 66.7% [61.3, 71.8] n=207 | -5.3 pts [-14.6, +3.8] |
+| All | Closed 1 minute beyond | 57.5% [51.9, 63.1] n=207 | 63.3% [57.9, 68.8] n=207 | -5.8 pts [-15.7, +3.3] |
+| All | Held 5 minutes | 52.2% [46.5, 57.7] n=207 | 57.5% [51.9, 63.1] n=207 | -5.3 pts [-15.4, +4.6] |
+| All | Held 15 minutes | 46.4% [40.7, 52.1] n=207 | 51.2% [45.6, 57.1] n=207 | -4.8 pts [-15.0, +5.3] |
+| All | Held 30 minutes | 42.0% [36.7, 47.7] n=207 | 45.9% [40.4, 51.9] n=207 | -3.9 pts [-13.8, +5.8] |
+| All | Day closed beyond trigger | 30.9% [25.9, 36.3] n=207 | 34.8% [29.6, 40.3] n=207 | -3.9 pts [-12.5, +5.3] |
+
+### A. Crossed the trigger and held (QQQ): share of call days
+
+| Window | Measure | Called side | Opposite side | Called minus opposite |
+|---|---|---|---|---|
+| Holdout (Mar 2025 to Apr 2026) | Touched the trigger | 62.5% [55.6, 69.0] n=144 | 62.1% [55.4, 68.4] n=145 | +0.4 pts [-10.7, +11.2] |
+| Holdout (Mar 2025 to Apr 2026) | Closed 1 minute beyond | 61.1% [54.0, 67.7] n=144 | 61.4% [54.7, 67.8] n=145 | -0.3 pts [-11.9, +10.9] |
+| Holdout (Mar 2025 to Apr 2026) | Held 5 minutes | 58.3% [51.3, 65.0] n=144 | 55.9% [49.0, 62.6] n=145 | +2.5 pts [-9.6, +14.2] |
+| Holdout (Mar 2025 to Apr 2026) | Held 15 minutes | 47.2% [40.1, 53.8] n=144 | 53.1% [46.5, 59.9] n=145 | -5.9 pts [-18.3, +5.8] |
+| Holdout (Mar 2025 to Apr 2026) | Held 30 minutes | 40.3% [33.6, 46.9] n=144 | 46.9% [40.1, 53.9] n=145 | -6.6 pts [-18.5, +4.8] |
+| Holdout (Mar 2025 to Apr 2026) | Day closed beyond trigger | 33.3% [27.1, 39.9] n=144 | 32.4% [26.1, 39.0] n=145 | +0.9 pts [-9.9, +11.8] |
+| Primary (May to Nov 10 2026) | Touched the trigger | 71.2% [61.8, 81.0] n=66 | 51.5% [40.8, 62.0] n=66 | +19.7 pts [+2.8, +36.4] * |
+| Primary (May to Nov 10 2026) | Closed 1 minute beyond | 71.2% [61.8, 81.0] n=66 | 47.0% [36.8, 57.1] n=66 | +24.2 pts [+7.8, +40.5] * |
+| Primary (May to Nov 10 2026) | Held 5 minutes | 65.2% [55.7, 75.0] n=66 | 37.9% [27.8, 48.2] n=66 | +27.3 pts [+10.7, +44.8] * |
+| Primary (May to Nov 10 2026) | Held 15 minutes | 54.5% [44.6, 64.9] n=66 | 30.3% [21.0, 39.8] n=66 | +24.2 pts [+6.2, +42.6] * |
+| Primary (May to Nov 10 2026) | Held 30 minutes | 53.0% [42.9, 63.5] n=66 | 22.7% [14.5, 31.7] n=66 | +30.3 pts [+13.6, +46.9] * |
+| Primary (May to Nov 10 2026) | Day closed beyond trigger | 36.4% [26.7, 46.4] n=66 | 19.7% [12.1, 28.2] n=66 | +16.7 pts [+1.5, +31.2] * |
+| All | Touched the trigger | 65.2% [59.6, 70.5] n=210 | 58.8% [53.4, 64.1] n=211 | +6.5 pts [-2.8, +15.6] |
+| All | Closed 1 minute beyond | 64.3% [58.5, 69.6] n=210 | 56.9% [51.5, 62.2] n=211 | +7.4 pts [-1.9, +16.7] |
+| All | Held 5 minutes | 60.5% [54.8, 66.0] n=210 | 50.2% [44.6, 55.8] n=211 | +10.2 pts [+0.6, +20.1] * |
+| All | Held 15 minutes | 49.5% [43.8, 55.1] n=210 | 46.0% [40.5, 51.8] n=211 | +3.6 pts [-6.8, +13.3] |
+| All | Held 30 minutes | 44.3% [38.9, 49.8] n=210 | 39.3% [34.0, 45.0] n=211 | +4.9 pts [-4.9, +14.5] |
+| All | Day closed beyond trigger | 34.3% [29.2, 39.8] n=210 | 28.4% [23.4, 33.8] n=211 | +5.8 pts [-3.0, +14.6] |
+
+### A. Crossed the trigger and held (IWM): share of call days
+
+| Window | Measure | Called side | Opposite side | Called minus opposite |
+|---|---|---|---|---|
+| Holdout (Mar 2025 to Apr 2026) | Touched the trigger | 65.5% [59.2, 71.3] n=165 | 72.7% [66.9, 78.3] n=165 | -7.3 pts [-17.1, +1.9] |
+| Holdout (Mar 2025 to Apr 2026) | Closed 1 minute beyond | 58.8% [52.3, 65.0] n=165 | 70.3% [64.2, 76.0] n=165 | -11.5 pts [-22.0, -1.2] * |
+| Holdout (Mar 2025 to Apr 2026) | Held 5 minutes | 51.5% [45.2, 57.9] n=165 | 62.4% [56.1, 68.7] n=165 | -10.9 pts [-21.8, +0.0] |
+| Holdout (Mar 2025 to Apr 2026) | Held 15 minutes | 43.6% [37.4, 50.0] n=165 | 59.4% [52.9, 65.9] n=165 | -15.8 pts [-27.3, -4.3] * |
+| Holdout (Mar 2025 to Apr 2026) | Held 30 minutes | 38.2% [31.9, 44.1] n=165 | 54.5% [48.0, 60.9] n=165 | -16.4 pts [-28.0, -5.0] * |
+| Holdout (Mar 2025 to Apr 2026) | Day closed beyond trigger | 28.5% [22.8, 34.3] n=165 | 43.6% [37.2, 50.3] n=165 | -15.2 pts [-25.8, -3.9] * |
+| Primary (May to Nov 10 2026) | Touched the trigger | 61.3% [51.9, 70.5] n=75 | 62.7% [53.4, 71.7] n=75 | -1.3 pts [-17.2, +14.3] |
+| Primary (May to Nov 10 2026) | Closed 1 minute beyond | 58.7% [49.3, 67.6] n=75 | 61.3% [52.1, 70.4] n=75 | -2.7 pts [-18.9, +13.3] |
+| Primary (May to Nov 10 2026) | Held 5 minutes | 54.7% [45.2, 64.2] n=75 | 52.0% [42.5, 61.3] n=75 | +2.7 pts [-14.3, +19.7] |
+| Primary (May to Nov 10 2026) | Held 15 minutes | 48.0% [38.7, 57.6] n=75 | 45.3% [35.7, 55.0] n=75 | +2.7 pts [-14.3, +19.5] |
+| Primary (May to Nov 10 2026) | Held 30 minutes | 44.0% [34.4, 53.4] n=75 | 41.3% [31.9, 50.8] n=75 | +2.7 pts [-14.8, +20.0] |
+| Primary (May to Nov 10 2026) | Day closed beyond trigger | 32.0% [23.3, 40.6] n=75 | 29.3% [21.1, 38.3] n=75 | +2.7 pts [-11.6, +17.5] |
+| All | Touched the trigger | 64.2% [59.0, 69.2] n=240 | 69.6% [64.6, 74.4] n=240 | -5.4 pts [-13.6, +3.0] |
+| All | Closed 1 minute beyond | 58.8% [53.5, 63.7] n=240 | 67.5% [62.3, 72.4] n=240 | -8.8 pts [-17.4, +0.0] |
+| All | Held 5 minutes | 52.5% [47.3, 57.8] n=240 | 59.2% [53.7, 64.3] n=240 | -6.7 pts [-15.7, +3.0] |
+| All | Held 15 minutes | 45.0% [39.9, 50.2] n=240 | 55.0% [49.4, 60.4] n=240 | -10.0 pts [-19.5, +0.0] |
+| All | Held 30 minutes | 40.0% [34.7, 45.2] n=240 | 50.4% [45.1, 55.7] n=240 | -10.4 pts [-20.2, -0.4] * |
+| All | Day closed beyond trigger | 29.6% [24.9, 34.3] n=240 | 39.2% [33.9, 44.4] n=240 | -9.6 pts [-18.3, -0.9] * |
+
+### A2. Days with no call: the same triggers
+
+| Window | Measure | Calls trigger | Puts trigger |
+|---|---|---|---|
+| Holdout (Mar 2025 to Apr 2026) | Touched | 74.1% [69.5, 78.6] n=398 | 64.1% [58.9, 69.1] n=398 |
+| Holdout (Mar 2025 to Apr 2026) | Held 5 minutes | 62.6% [57.4, 67.3] n=398 | 50.5% [45.3, 56.1] n=398 |
+| Holdout (Mar 2025 to Apr 2026) | Held 30 minutes | 50.5% [44.9, 55.7] n=398 | 39.9% [34.8, 45.2] n=398 |
+| Primary (May to Nov 10 2026) | Touched | 59.4% [52.2, 66.3] n=180 | 59.2% [51.6, 67.1] n=179 |
+| Primary (May to Nov 10 2026) | Held 5 minutes | 53.3% [45.8, 60.5] n=180 | 49.7% [41.7, 57.7] n=179 |
+| Primary (May to Nov 10 2026) | Held 30 minutes | 45.6% [38.3, 52.7] n=180 | 41.9% [34.1, 50.0] n=179 |
+| All | Touched | 69.6% [65.5, 73.3] n=578 | 62.6% [58.4, 66.7] n=577 |
+| All | Held 5 minutes | 59.7% [55.3, 63.6] n=578 | 50.3% [46.0, 54.8] n=577 |
+| All | Held 30 minutes | 49.0% [44.6, 53.2] n=578 | 40.6% [36.3, 45.1] n=577 |
+
+### B. After a 5 minute hold: targets reached (SPY+QQQ+IWM); base = sides that held 5 minutes
+
+| Window | Target | Called: reached | Called: reached before stop | Of those reached: already inside the 5 min hold | Median minutes from hold start | Opposite: reached | Opposite: before stop | Before stop, called minus opposite |
+|---|---|---|---|---|---|---|---|---|
+| Holdout (Mar 2025 to Apr 2026) | T1 | 67.5% [62.1, 73.1] n=234 | 64.5% [59.0, 70.5] n=234 | 47.5% [40.6, 54.3] n=158 | 5 | 69.3% [64.1, 74.6] n=244 | 67.6% [62.5, 73.0] n=244 | -3.1 pts [-10.8, +4.7] |
+| Holdout (Mar 2025 to Apr 2026) | T2 | 31.4% [25.6, 37.6] n=220 | 29.5% [23.9, 35.8] n=220 | 21.7% [13.4, 30.8] n=69 | 41 | 43.5% [37.4, 49.8] n=223 | 42.2% [35.9, 48.5] n=223 | -12.6 pts [-20.6, -4.2] * |
+| Holdout (Mar 2025 to Apr 2026) | T3 | 17.6% [13.0, 22.7] n=193 | 16.6% [12.3, 21.3] n=193 | 14.7% [5.4, 25.8] n=34 | 52 | 27.6% [21.4, 34.2] n=174 | 27.0% [20.9, 33.5] n=174 | -10.4 pts [-18.0, -2.5] * |
+| Holdout (Mar 2025 to Apr 2026) | next rung after T3 | 5.5% [2.7, 8.8] n=201 | 5.0% [2.5, 7.9] n=201 | 0.0% [0.0, 0.0] n=11 | 177 | 8.8% [5.2, 12.8] n=170 | 8.2% [5.0, 11.8] n=170 | -3.3 pts [-7.9, +1.0] |
+| Holdout (Mar 2025 to Apr 2026) | trigger + 0.25 ATR | 65.0% [58.8, 71.1] n=237 | 60.8% [54.7, 66.7] n=237 | 14.9% [9.6, 20.8] n=154 | 22 | 68.9% [63.3, 74.7] n=267 | 65.5% [59.8, 71.2] n=267 | -4.8 pts [-12.7, +2.9] |
+| Holdout (Mar 2025 to Apr 2026) | trigger + 0.5 ATR | 36.7% [30.6, 43.1] n=237 | 33.8% [27.8, 40.3] n=237 | 4.6% [1.2, 8.8] n=87 | 87 | 38.2% [32.5, 44.4] n=267 | 35.6% [29.8, 41.8] n=267 | -1.8 pts [-9.8, +6.1] |
+| Holdout (Mar 2025 to Apr 2026) | trigger + 1.0 ATR | 11.0% [6.6, 15.4] n=237 | 10.5% [6.5, 14.8] n=237 | 3.8% [0.0, 11.8] n=26 | 156 | 7.9% [5.0, 11.2] n=267 | 7.9% [5.0, 11.2] n=267 | +2.7 pts [-2.2, +7.6] |
+| Holdout (Mar 2025 to Apr 2026) | stop touched after the hold | 32.1% [26.2, 38.1] n=237 |  |  |  | 33.3% [27.2, 39.5] n=267 |  | -1.3 pts [-9.8, +7.3] |
+| Primary (May to Nov 10 2026) | T1 | 61.2% [53.3, 68.6] n=121 | 59.5% [51.6, 66.7] n=121 | 63.5% [53.7, 72.7] n=74 | 2 | 62.8% [54.0, 71.1] n=94 | 60.6% [52.4, 68.8] n=94 | -1.1 pts [-12.3, +9.4] |
+| Primary (May to Nov 10 2026) | T2 | 40.2% [30.7, 49.5] n=97 | 40.2% [30.7, 49.5] n=97 | 28.2% [15.8, 41.0] n=39 | 25 | 37.8% [28.9, 46.4] n=82 | 37.8% [28.9, 46.4] n=82 | +2.4 pts [-10.8, +15.4] |
+| Primary (May to Nov 10 2026) | T3 | 15.2% [7.1, 23.5] n=79 | 15.2% [7.1, 23.5] n=79 | 8.3% [0.0, 27.3] n=12 | 136 | 25.4% [15.8, 35.7] n=59 | 25.4% [15.8, 35.7] n=59 | -10.2 pts [-23.1, +2.2] |
+| Primary (May to Nov 10 2026) | next rung after T3 | 0.0% [0.0, 0.0] n=103 | 0.0% [0.0, 0.0] n=103 | n/a |  | 5.5% [1.4, 10.1] n=73 | 5.5% [1.4, 10.1] n=73 | -5.5 pts [-10.1, -1.4] * |
+| Primary (May to Nov 10 2026) | trigger + 0.25 ATR | 68.5% [61.1, 75.6] n=124 | 65.3% [57.8, 72.2] n=124 | 16.5% [9.2, 23.7] n=85 | 32 | 65.0% [56.8, 72.9] n=100 | 62.0% [53.7, 70.3] n=100 | +3.3 pts [-7.3, +13.5] |
+| Primary (May to Nov 10 2026) | trigger + 0.5 ATR | 32.3% [23.8, 40.2] n=124 | 30.6% [22.3, 38.5] n=124 | 2.5% [0.0, 6.7] n=40 | 33 | 30.0% [21.7, 38.2] n=100 | 30.0% [21.7, 38.2] n=100 | +0.6 pts [-10.4, +11.6] |
+| Primary (May to Nov 10 2026) | trigger + 1.0 ATR | 12.1% [6.2, 18.6] n=124 | 12.1% [6.2, 18.6] n=124 | 0.0% [0.0, 0.0] n=15 | 160 | 10.0% [4.8, 16.1] n=100 | 10.0% [4.8, 16.1] n=100 | +2.1 pts [-6.3, +10.1] |
+| Primary (May to Nov 10 2026) | stop touched after the hold | 25.8% [19.0, 32.8] n=124 |  |  |  | 29.0% [21.6, 37.0] n=100 |  | -3.2 pts [-13.7, +6.8] |
+| All | T1 | 65.4% [61.0, 69.7] n=355 | 62.8% [58.6, 67.3] n=355 | 52.6% [47.0, 58.0] n=232 | 4 | 67.5% [63.3, 72.0] n=338 | 65.7% [61.4, 70.3] n=338 | -2.9 pts [-8.9, +3.5] |
+| All | T2 | 34.1% [28.9, 39.1] n=317 | 32.8% [27.9, 37.9] n=317 | 24.1% [16.9, 31.1] n=108 | 36 | 42.0% [37.1, 47.2] n=305 | 41.0% [36.1, 46.3] n=305 | -8.2 pts [-15.2, -1.4] * |
+| All | T3 | 16.9% [12.7, 21.1] n=272 | 16.2% [12.2, 20.3] n=272 | 13.0% [5.4, 22.6] n=46 | 71 | 27.0% [21.8, 32.8] n=233 | 26.6% [21.4, 32.4] n=233 | -10.4 pts [-17.0, -3.9] * |
+| All | next rung after T3 | 3.6% [1.7, 5.8] n=304 | 3.3% [1.6, 5.3] n=304 | 0.0% [0.0, 0.0] n=11 | 177 | 7.8% [5.0, 10.9] n=243 | 7.4% [4.8, 10.3] n=243 | -4.1 pts [-7.7, -0.8] * |
+| All | trigger + 0.25 ATR | 66.2% [61.5, 70.8] n=361 | 62.3% [57.7, 67.1] n=361 | 15.5% [11.2, 19.9] n=239 | 24 | 67.8% [63.2, 72.7] n=367 | 64.6% [59.9, 69.5] n=367 | -2.3 pts [-8.5, +3.9] |
+| All | trigger + 0.5 ATR | 35.2% [30.2, 40.1] n=361 | 32.7% [28.0, 37.6] n=361 | 3.9% [1.4, 7.0] n=127 | 65 | 36.0% [31.2, 41.0] n=367 | 34.1% [29.3, 39.2] n=367 | -1.4 pts [-8.0, +5.0] |
+| All | trigger + 1.0 ATR | 11.4% [7.9, 14.8] n=361 | 11.1% [7.7, 14.5] n=361 | 2.4% [0.0, 7.0] n=41 | 158 | 8.4% [5.8, 11.4] n=367 | 8.4% [5.8, 11.4] n=367 | +2.6 pts [-1.5, +6.8] |
+| All | stop touched after the hold | 29.9% [25.3, 34.4] n=361 |  |  |  | 32.2% [27.3, 37.1] n=367 |  | -2.2 pts [-8.9, +4.2] |
+
+### C. Share of call days where the side held 5 minutes and then reached the target before its stop (SPY+QQQ+IWM)
+
+| Window | Target | Called side | Opposite side | Called minus opposite |
+|---|---|---|---|---|
+| Holdout (Mar 2025 to Apr 2026) | T1 | 34.4% [29.8, 39.0] n=439 | 40.1% [35.5, 45.2] n=411 | -5.7 pts [-13.8, +2.3] |
+| Holdout (Mar 2025 to Apr 2026) | T2 | 15.9% [12.4, 19.6] n=409 | 25.0% [20.7, 29.7] n=376 | -9.1 pts [-15.3, -3.3] * |
+| Holdout (Mar 2025 to Apr 2026) | T3 | 9.0% [6.4, 11.9] n=354 | 16.5% [12.5, 20.9] n=285 | -7.5 pts [-12.6, -2.5] * |
+| Holdout (Mar 2025 to Apr 2026) | trigger + 0.25 ATR | 32.2% [27.4, 37.1] n=447 | 39.1% [34.1, 44.2] n=448 | -6.8 pts [-15.3, +1.1] |
+| Holdout (Mar 2025 to Apr 2026) | trigger + 0.5 ATR | 17.9% [14.2, 21.7] n=447 | 21.2% [17.2, 25.2] n=448 | -3.3 pts [-9.4, +2.9] |
+| Holdout (Mar 2025 to Apr 2026) | trigger + 1.0 ATR | 5.6% [3.4, 7.9] n=447 | 4.7% [2.9, 6.7] n=448 | +0.9 pts [-1.9, +3.8] |
+| Primary (May to Nov 10 2026) | T1 | 35.1% [28.9, 41.5] n=205 | 28.2% [22.8, 34.2] n=202 | +6.9 pts [-3.1, +16.5] |
+| Primary (May to Nov 10 2026) | T2 | 22.8% [16.4, 29.3] n=171 | 17.7% [12.7, 23.2] n=175 | +5.1 pts [-4.5, +14.2] |
+| Primary (May to Nov 10 2026) | T3 | 9.0% [4.1, 14.3] n=133 | 11.6% [6.8, 17.0] n=129 | -2.6 pts [-10.4, +4.8] |
+| Primary (May to Nov 10 2026) | trigger + 0.25 ATR | 38.6% [32.2, 45.1] n=210 | 29.5% [23.6, 36.0] n=210 | +9.0 pts [-1.8, +19.9] |
+| Primary (May to Nov 10 2026) | trigger + 0.5 ATR | 18.1% [12.6, 23.5] n=210 | 14.3% [9.8, 18.9] n=210 | +3.8 pts [-4.1, +11.6] |
+| Primary (May to Nov 10 2026) | trigger + 1.0 ATR | 7.1% [3.6, 11.2] n=210 | 4.8% [2.2, 7.9] n=210 | +2.4 pts [-2.3, +7.3] |
+| All | T1 | 34.6% [31.0, 38.4] n=644 | 36.2% [32.6, 40.1] n=613 | -1.6 pts [-8.1, +4.6] |
+| All | T2 | 17.9% [14.8, 21.2] n=580 | 22.7% [19.5, 26.2] n=551 | -4.8 pts [-10.0, +0.1] |
+| All | T3 | 9.0% [6.7, 11.5] n=487 | 15.0% [11.8, 18.4] n=414 | -5.9 pts [-10.2, -1.9] * |
+| All | trigger + 0.25 ATR | 34.2% [30.5, 38.0] n=657 | 36.0% [32.2, 40.2] n=658 | -1.8 pts [-8.5, +4.6] |
+| All | trigger + 0.5 ATR | 18.0% [14.9, 21.1] n=657 | 19.0% [15.9, 22.2] n=658 | -1.0 pts [-6.0, +3.8] |
+| All | trigger + 1.0 ATR | 6.1% [4.1, 8.1] n=657 | 4.7% [3.2, 6.5] n=658 | +1.4 pts [-1.1, +3.9] |
+
+### C. Share of call days where the side held 5 minutes and then reached the target before its stop (SPY)
+
+| Window | Target | Called side | Opposite side | Called minus opposite |
+|---|---|---|---|---|
+| Holdout (Mar 2025 to Apr 2026) | T1 | 32.8% [26.1, 39.5] n=134 | 40.3% [33.3, 47.5] n=124 | -7.5 pts [-19.2, +3.9] |
+| Holdout (Mar 2025 to Apr 2026) | T2 | 14.5% [9.4, 20.0] n=124 | 30.7% [23.9, 38.1] n=114 | -16.2 pts [-25.8, -6.5] * |
+| Holdout (Mar 2025 to Apr 2026) | T3 | 7.5% [3.7, 12.3] n=107 | 18.6% [12.2, 26.0] n=86 | -11.1 pts [-19.7, -2.9] * |
+| Holdout (Mar 2025 to Apr 2026) | trigger + 0.25 ATR | 31.9% [25.5, 38.6] n=138 | 38.4% [31.7, 45.5] n=138 | -6.5 pts [-18.6, +4.6] |
+| Holdout (Mar 2025 to Apr 2026) | trigger + 0.5 ATR | 20.3% [15.0, 26.2] n=138 | 22.5% [16.9, 28.2] n=138 | -2.2 pts [-11.3, +7.1] |
+| Holdout (Mar 2025 to Apr 2026) | trigger + 1.0 ATR | 3.6% [1.4, 6.5] n=138 | 2.9% [0.7, 5.3] n=138 | +0.7 pts [-2.7, +4.3] |
+| Primary (May to Nov 10 2026) | T1 | 36.2% [27.0, 45.8] n=69 | 26.9% [18.1, 35.9] n=67 | +9.4 pts [-6.0, +24.8] |
+| Primary (May to Nov 10 2026) | T2 | 23.8% [15.6, 32.9] n=63 | 15.5% [7.9, 24.1] n=58 | +8.3 pts [-4.4, +21.4] |
+| Primary (May to Nov 10 2026) | T3 | 7.7% [2.0, 14.0] n=52 | 10.9% [4.0, 19.2] n=46 | -3.2 pts [-13.6, +6.7] |
+| Primary (May to Nov 10 2026) | trigger + 0.25 ATR | 37.7% [28.4, 47.2] n=69 | 27.5% [19.1, 36.9] n=69 | +10.1 pts [-4.1, +24.6] |
+| Primary (May to Nov 10 2026) | trigger + 0.5 ATR | 15.9% [9.0, 23.5] n=69 | 11.6% [5.4, 18.4] n=69 | +4.3 pts [-6.1, +14.5] |
+| Primary (May to Nov 10 2026) | trigger + 1.0 ATR | 11.6% [5.7, 18.5] n=69 | 5.8% [1.5, 10.8] n=69 | +5.8 pts [-1.8, +14.0] |
+| All | T1 | 34.0% [28.7, 39.7] n=203 | 35.6% [30.1, 41.3] n=191 | -1.6 pts [-11.0, +7.5] |
+| All | T2 | 17.6% [13.3, 22.6] n=187 | 25.6% [20.3, 31.3] n=172 | -7.9 pts [-15.8, +0.1] |
+| All | T3 | 7.5% [4.2, 11.2] n=159 | 15.9% [11.0, 21.4] n=132 | -8.4 pts [-14.9, -2.0] * |
+| All | trigger + 0.25 ATR | 33.8% [28.8, 39.1] n=207 | 34.8% [29.7, 40.2] n=207 | -1.0 pts [-9.9, +7.5] |
+| All | trigger + 0.5 ATR | 18.8% [14.6, 23.3] n=207 | 18.8% [14.4, 23.4] n=207 | +0.0 pts [-7.0, +7.0] |
+| All | trigger + 1.0 ATR | 6.3% [3.6, 9.2] n=207 | 3.9% [1.8, 6.2] n=207 | +2.4 pts [-1.0, +6.1] |
+
+### C. Share of call days where the side held 5 minutes and then reached the target before its stop (QQQ)
+
+| Window | Target | Called side | Opposite side | Called minus opposite |
+|---|---|---|---|---|
+| Holdout (Mar 2025 to Apr 2026) | T1 | 35.7% [29.1, 42.2] n=143 | 33.8% [27.5, 40.9] n=130 | +1.8 pts [-9.8, +12.5] |
+| Holdout (Mar 2025 to Apr 2026) | T2 | 14.8% [9.8, 19.9] n=135 | 17.1% [11.7, 23.3] n=117 | -2.3 pts [-10.6, +5.3] |
+| Holdout (Mar 2025 to Apr 2026) | T3 | 10.3% [5.8, 15.0] n=117 | 11.2% [6.2, 17.2] n=89 | -1.0 pts [-8.4, +5.8] |
+| Holdout (Mar 2025 to Apr 2026) | trigger + 0.25 ATR | 32.6% [26.2, 39.3] n=144 | 32.4% [26.1, 38.7] n=145 | +0.2 pts [-10.3, +10.3] |
+| Holdout (Mar 2025 to Apr 2026) | trigger + 0.5 ATR | 18.1% [12.8, 23.4] n=144 | 16.6% [11.6, 22.0] n=145 | +1.5 pts [-6.9, +9.5] |
+| Holdout (Mar 2025 to Apr 2026) | trigger + 1.0 ATR | 9.0% [5.3, 13.1] n=144 | 2.8% [0.7, 5.1] n=145 | +6.3 pts [+1.6, +11.0] * |
+| Primary (May to Nov 10 2026) | T1 | 35.9% [25.7, 45.8] n=64 | 17.2% [9.8, 25.0] n=64 | +18.8 pts [+5.2, +32.5] * |
+| Primary (May to Nov 10 2026) | T2 | 21.2% [11.7, 30.6] n=52 | 10.9% [4.3, 18.4] n=55 | +10.2 pts [-2.8, +22.7] |
+| Primary (May to Nov 10 2026) | T3 | 15.8% [6.2, 25.8] n=38 | 9.8% [2.6, 18.2] n=41 | +6.0 pts [-6.6, +18.9] |
+| Primary (May to Nov 10 2026) | trigger + 0.25 ATR | 39.4% [29.4, 50.0] n=66 | 22.7% [14.5, 31.7] n=66 | +16.7 pts [+1.2, +31.8] * |
+| Primary (May to Nov 10 2026) | trigger + 0.5 ATR | 19.7% [11.6, 27.9] n=66 | 13.6% [6.9, 20.6] n=66 | +6.1 pts [-5.3, +17.7] |
+| Primary (May to Nov 10 2026) | trigger + 1.0 ATR | 7.6% [2.7, 13.0] n=66 | 3.0% [0.0, 6.8] n=66 | +4.5 pts [-1.7, +11.1] |
+| All | T1 | 35.7% [30.2, 41.2] n=207 | 28.4% [23.2, 33.9] n=194 | +7.4 pts [-1.8, +15.6] |
+| All | T2 | 16.6% [12.2, 21.1] n=187 | 15.1% [10.9, 20.0] n=172 | +1.5 pts [-5.5, +7.9] |
+| All | T3 | 11.6% [7.6, 16.0] n=155 | 10.8% [6.5, 15.3] n=130 | +0.8 pts [-5.4, +7.1] |
+| All | trigger + 0.25 ATR | 34.8% [29.4, 40.1] n=210 | 29.4% [24.4, 34.6] n=211 | +5.4 pts [-3.2, +14.0] |
+| All | trigger + 0.5 ATR | 18.6% [14.1, 22.8] n=210 | 15.6% [11.7, 20.0] n=211 | +2.9 pts [-3.8, +9.6] |
+| All | trigger + 1.0 ATR | 8.6% [5.4, 11.9] n=210 | 2.8% [1.0, 4.8] n=211 | +5.7 pts [+2.0, +9.6] * |
+
+### C. Share of call days where the side held 5 minutes and then reached the target before its stop (IWM)
+
+| Window | Target | Called side | Opposite side | Called minus opposite |
+|---|---|---|---|---|
+| Holdout (Mar 2025 to Apr 2026) | T1 | 34.6% [28.5, 40.7] n=162 | 45.2% [38.9, 51.7] n=157 | -10.7 pts [-20.6, -0.2] * |
+| Holdout (Mar 2025 to Apr 2026) | T2 | 18.0% [13.0, 23.2] n=150 | 26.9% [21.1, 32.9] n=145 | -8.9 pts [-17.2, -0.7] * |
+| Holdout (Mar 2025 to Apr 2026) | T3 | 9.2% [5.2, 13.5] n=130 | 19.1% [13.0, 25.4] n=110 | -9.9 pts [-17.3, -2.4] * |
+| Holdout (Mar 2025 to Apr 2026) | trigger + 0.25 ATR | 32.1% [26.2, 38.4] n=165 | 45.5% [39.3, 51.8] n=165 | -13.3 pts [-23.9, -3.0] * |
+| Holdout (Mar 2025 to Apr 2026) | trigger + 0.5 ATR | 15.8% [11.1, 20.5] n=165 | 24.2% [18.7, 29.8] n=165 | -8.5 pts [-16.4, -0.6] * |
+| Holdout (Mar 2025 to Apr 2026) | trigger + 1.0 ATR | 4.2% [1.8, 6.9] n=165 | 7.9% [4.5, 11.5] n=165 | -3.6 pts [-8.1, +0.6] |
+| Primary (May to Nov 10 2026) | T1 | 33.3% [24.2, 42.4] n=72 | 39.4% [29.7, 48.8] n=71 | -6.1 pts [-21.5, +8.7] |
+| Primary (May to Nov 10 2026) | T2 | 23.2% [14.3, 32.8] n=56 | 25.8% [16.9, 34.9] n=62 | -2.6 pts [-17.0, +12.2] |
+| Primary (May to Nov 10 2026) | T3 | 4.7% [0.0, 10.3] n=43 | 14.3% [6.1, 23.5] n=42 | -9.6 pts [-20.4, +0.6] |
+| Primary (May to Nov 10 2026) | trigger + 0.25 ATR | 38.7% [29.4, 48.1] n=75 | 37.3% [28.1, 46.8] n=75 | +1.3 pts [-15.1, +18.0] |
+| Primary (May to Nov 10 2026) | trigger + 0.5 ATR | 18.7% [11.4, 25.7] n=75 | 17.3% [10.4, 24.4] n=75 | +1.3 pts [-9.8, +12.2] |
+| Primary (May to Nov 10 2026) | trigger + 1.0 ATR | 2.7% [0.0, 6.1] n=75 | 5.3% [1.4, 9.8] n=75 | -2.7 pts [-7.8, +2.8] |
+| All | T1 | 34.2% [28.9, 39.3] n=234 | 43.4% [38.0, 48.9] n=228 | -9.2 pts [-17.9, -0.3] * |
+| All | T2 | 19.4% [14.9, 24.0] n=206 | 26.6% [21.8, 31.5] n=207 | -7.2 pts [-14.5, -0.1] * |
+| All | T3 | 8.1% [4.8, 11.4] n=173 | 17.8% [12.8, 22.9] n=152 | -9.7 pts [-16.0, -3.7] * |
+| All | trigger + 0.25 ATR | 34.2% [29.3, 39.4] n=240 | 42.9% [37.7, 48.2] n=240 | -8.7 pts [-17.4, +0.4] |
+| All | trigger + 0.5 ATR | 16.7% [12.7, 20.7] n=240 | 22.1% [17.7, 26.4] n=240 | -5.4 pts [-11.8, +0.9] |
+| All | trigger + 1.0 ATR | 3.8% [1.9, 5.8] n=240 | 7.1% [4.6, 9.9] n=240 | -3.3 pts [-6.7, +0.0] |
+
+### C2. Which side delivered (held 5 min, then target before stop), per call day
+
+| Window | Target | n | Only the called side | Only the opposite side | Both | Neither |
+|---|---|---|---|---|---|---|
+| Holdout (Mar 2025 to Apr 2026) | t1 | 402 | 29.1% | 35.1% | 4.7% | 31.1% |
+| Holdout (Mar 2025 to Apr 2026) | a0.5 | 447 | 17.7% | 21.0% | 0.2% | 61.1% |
+| Primary (May to Nov 10 2026) | t1 | 197 | 31.0% | 24.9% | 3.6% | 40.6% |
+| Primary (May to Nov 10 2026) | a0.5 | 210 | 18.1% | 14.3% | 0.0% | 67.6% |
+| All | t1 | 599 | 29.7% | 31.7% | 4.3% | 34.2% |
+| All | a0.5 | 657 | 17.8% | 18.9% | 0.2% | 63.2% |
+
+### D. Trade view (R = profit in units of the risk from entry to stop)
+
+| Window | Side | Rule | Trades | Win % | Total R | Avg R [90% range] |
+|---|---|---|---|---|---|---|
+| Holdout (Mar 2025 to Apr 2026) | called | Enter on first touch, exit T1 (old rule) | 262 | 58% | -16.82 | -0.064 [-0.155, 0.032] |
+| Holdout (Mar 2025 to Apr 2026) | called | Enter after 5 min hold, exit T1 | 178 | 59% | -8.28 | -0.047 [-0.141, 0.053] |
+| Holdout (Mar 2025 to Apr 2026) | called | Enter after 5 min hold, exit T2 | 206 | 43% | -23.54 | -0.114 [-0.226, 0.005] |
+| Holdout (Mar 2025 to Apr 2026) | called | Enter after 5 min hold, exit T3 | 189 | 41% | -18.76 | -0.099 [-0.227, 0.032] |
+| Holdout (Mar 2025 to Apr 2026) | called | Enter after 5 min hold, no target, exit stop or close | 237 | 40% | -2.0 | -0.008 [-0.156, 0.154] |
+| Holdout (Mar 2025 to Apr 2026) | called | Enter after 5 min hold, stop 0.25 ATR back through trigger, target trigger + 0.5 ATR | 235 | 43% | -16.89 | -0.072 [-0.193, 0.059] |
+| Holdout (Mar 2025 to Apr 2026) | opposite | Enter on first touch, exit T1 (old rule) | 265 | 65% | 2.01 | 0.008 [-0.086, 0.107] |
+| Holdout (Mar 2025 to Apr 2026) | opposite | Enter after 5 min hold, exit T1 | 169 | 66% | -2.11 | -0.012 [-0.115, 0.1] |
+| Holdout (Mar 2025 to Apr 2026) | opposite | Enter after 5 min hold, exit T2 | 211 | 61% | 12.39 | 0.059 [-0.055, 0.172] |
+| Holdout (Mar 2025 to Apr 2026) | opposite | Enter after 5 min hold, exit T3 | 173 | 57% | 25.15 | 0.145 [0.007, 0.292] |
+| Holdout (Mar 2025 to Apr 2026) | opposite | Enter after 5 min hold, no target, exit stop or close | 267 | 51% | 28.13 | 0.105 [-0.051, 0.265] |
+| Holdout (Mar 2025 to Apr 2026) | opposite | Enter after 5 min hold, stop 0.25 ATR back through trigger, target trigger + 0.5 ATR | 266 | 53% | 25.84 | 0.097 [-0.028, 0.221] |
+| Primary (May to Nov 10 2026) | called | Enter on first touch, exit T1 (old rule) | 129 | 58% | -9.17 | -0.071 [-0.164, 0.016] |
+| Primary (May to Nov 10 2026) | called | Enter after 5 min hold, exit T1 | 91 | 54% | -9.29 | -0.102 [-0.201, -0.008] |
+| Primary (May to Nov 10 2026) | called | Enter after 5 min hold, exit T2 | 90 | 51% | -0.31 | -0.003 [-0.163, 0.149] |
+| Primary (May to Nov 10 2026) | called | Enter after 5 min hold, exit T3 | 79 | 47% | 2.54 | 0.032 [-0.158, 0.223] |
+| Primary (May to Nov 10 2026) | called | Enter after 5 min hold, no target, exit stop or close | 124 | 43% | 3.71 | 0.03 [-0.169, 0.246] |
+| Primary (May to Nov 10 2026) | called | Enter after 5 min hold, stop 0.25 ATR back through trigger, target trigger + 0.5 ATR | 124 | 41% | -22.03 | -0.178 [-0.326, -0.04] |
+| Primary (May to Nov 10 2026) | opposite | Enter on first touch, exit T1 (old rule) | 106 | 55% | -6.98 | -0.066 [-0.205, 0.087] |
+| Primary (May to Nov 10 2026) | opposite | Enter after 5 min hold, exit T1 | 71 | 55% | -8.95 | -0.126 [-0.241, -0.006] |
+| Primary (May to Nov 10 2026) | opposite | Enter after 5 min hold, exit T2 | 75 | 49% | -6.44 | -0.086 [-0.24, 0.062] |
+| Primary (May to Nov 10 2026) | opposite | Enter after 5 min hold, exit T3 | 57 | 44% | -8.39 | -0.147 [-0.322, 0.039] |
+| Primary (May to Nov 10 2026) | opposite | Enter after 5 min hold, no target, exit stop or close | 100 | 39% | -6.31 | -0.063 [-0.238, 0.131] |
+| Primary (May to Nov 10 2026) | opposite | Enter after 5 min hold, stop 0.25 ATR back through trigger, target trigger + 0.5 ATR | 100 | 49% | -8.65 | -0.086 [-0.235, 0.066] |
+| All | called | Enter on first touch, exit T1 (old rule) | 391 | 58% | -25.99 | -0.066 [-0.131, 0.004] |
+| All | called | Enter after 5 min hold, exit T1 | 269 | 57% | -17.57 | -0.065 [-0.135, 0.007] |
+| All | called | Enter after 5 min hold, exit T2 | 296 | 45% | -23.85 | -0.081 [-0.171, 0.011] |
+| All | called | Enter after 5 min hold, exit T3 | 268 | 43% | -16.23 | -0.061 [-0.167, 0.05] |
+| All | called | Enter after 5 min hold, no target, exit stop or close | 361 | 41% | 1.71 | 0.005 [-0.111, 0.136] |
+| All | called | Enter after 5 min hold, stop 0.25 ATR back through trigger, target trigger + 0.5 ATR | 359 | 43% | -38.92 | -0.108 [-0.2, -0.008] |
+| All | opposite | Enter on first touch, exit T1 (old rule) | 371 | 62% | -4.97 | -0.013 [-0.091, 0.07] |
+| All | opposite | Enter after 5 min hold, exit T1 | 240 | 62% | -11.06 | -0.046 [-0.128, 0.038] |
+| All | opposite | Enter after 5 min hold, exit T2 | 286 | 58% | 5.95 | 0.021 [-0.071, 0.113] |
+| All | opposite | Enter after 5 min hold, exit T3 | 230 | 53% | 16.76 | 0.073 [-0.039, 0.196] |
+| All | opposite | Enter after 5 min hold, no target, exit stop or close | 367 | 47% | 21.82 | 0.059 [-0.062, 0.181] |
+| All | opposite | Enter after 5 min hold, stop 0.25 ATR back through trigger, target trigger + 0.5 ATR | 366 | 52% | 17.2 | 0.047 [-0.05, 0.149] |
+
+### E. 5 minute holds that started before 10:00 vs at or after 10:00
+
+| Window | Side | Measure | Before 10:00 | 10:00 or later | Before minus after |
+|---|---|---|---|---|---|
+| Holdout (Mar 2025 to Apr 2026) | called | T1 before stop | 70.8% [63.7, 77.9] n=130 | 56.7% [48.7, 64.8] n=104 | +14.0 pts [+4.0, +24.6] * |
+| Holdout (Mar 2025 to Apr 2026) | called | trigger + 0.5 ATR before stop | 41.2% [32.5, 49.6] n=131 | 24.5% [17.4, 32.0] n=106 | +16.7 pts [+6.1, +27.5] * |
+| Holdout (Mar 2025 to Apr 2026) | called | trigger + 0.5 ATR reached | 43.5% [34.9, 52.1] n=131 | 28.3% [20.7, 36.4] n=106 | +15.2 pts [+4.0, +26.2] * |
+| Holdout (Mar 2025 to Apr 2026) | called | stop touched | 36.6% [28.2, 45.4] n=131 | 26.4% [18.9, 34.0] n=106 | +10.2 pts [-1.1, +21.6] |
+| Holdout (Mar 2025 to Apr 2026) | called | avg R, exit T2 | -0.067 [-0.237, 0.121] n=114 | -0.173 [-0.286, -0.049] n=92 | +0.105 [-0.103, +0.321] |
+| Holdout (Mar 2025 to Apr 2026) | called | avg R, hold to close | 0.054 [-0.163, 0.286] n=131 | -0.085 [-0.239, 0.088] n=106 | +0.139 [-0.117, +0.402] |
+| Holdout (Mar 2025 to Apr 2026) | called | avg R, ATR sized | -0.006 [-0.177, 0.167] n=131 | -0.155 [-0.32, 0.026] n=104 | +0.149 [-0.091, +0.391] |
+| Holdout (Mar 2025 to Apr 2026) | opposite | T1 before stop | 79.5% [73.9, 85.1] n=122 | 55.7% [47.7, 63.8] n=122 | +23.8 pts [+14.2, +33.4] * |
+| Holdout (Mar 2025 to Apr 2026) | opposite | trigger + 0.5 ATR before stop | 46.9% [38.3, 55.6] n=130 | 24.8% [17.7, 32.4] n=137 | +22.1 pts [+11.3, +32.8] * |
+| Holdout (Mar 2025 to Apr 2026) | opposite | trigger + 0.5 ATR reached | 51.5% [42.9, 60.0] n=130 | 25.5% [18.5, 33.1] n=137 | +26.0 pts [+15.5, +36.3] * |
+| Holdout (Mar 2025 to Apr 2026) | opposite | stop touched | 35.4% [26.9, 43.9] n=130 | 31.4% [23.4, 39.6] n=137 | +4.0 pts [-7.5, +14.8] |
+| Holdout (Mar 2025 to Apr 2026) | opposite | avg R, exit T2 | 0.228 [0.078, 0.386] n=101 | -0.097 [-0.238, 0.041] n=110 | +0.325 [+0.141, +0.515] * |
+| Holdout (Mar 2025 to Apr 2026) | opposite | avg R, hold to close | 0.239 [0.02, 0.482] n=130 | -0.021 [-0.203, 0.17] n=137 | +0.26 [-0.001, +0.546] |
+| Holdout (Mar 2025 to Apr 2026) | opposite | avg R, ATR sized | 0.162 [-0.005, 0.335] n=130 | 0.035 [-0.133, 0.198] n=136 | +0.127 [-0.096, +0.361] |
+| Holdout (Mar 2025 to Apr 2026) | both sides, all days | T1 before stop | 75.2% [71.8, 78.8] n=440 | 56.8% [52.6, 61.1] n=437 | +18.5 pts [+13.1, +23.8] * |
+| Holdout (Mar 2025 to Apr 2026) | both sides, all days | trigger + 0.5 ATR before stop | 44.8% [40.0, 49.5] n=475 | 23.4% [19.6, 27.7] n=479 | +21.5 pts [+15.4, +27.0] * |
+| Holdout (Mar 2025 to Apr 2026) | both sides, all days | trigger + 0.5 ATR reached | 48.4% [43.6, 53.1] n=475 | 24.8% [20.9, 29.1] n=479 | +23.6 pts [+17.7, +29.1] * |
+| Holdout (Mar 2025 to Apr 2026) | both sides, all days | stop touched | 38.7% [34.2, 43.1] n=475 | 29.0% [24.8, 33.1] n=479 | +9.7 pts [+4.4, +15.4] * |
+| Holdout (Mar 2025 to Apr 2026) | both sides, all days | avg R, exit T2 | 0.071 [-0.019, 0.163] n=357 | -0.108 [-0.176, -0.039] n=371 | +0.179 [+0.076, +0.282] * |
+| Holdout (Mar 2025 to Apr 2026) | both sides, all days | avg R, hold to close | 0.06 [-0.052, 0.176] n=475 | -0.083 [-0.166, 0.01] n=479 | +0.144 [+0.015, +0.274] * |
+| Holdout (Mar 2025 to Apr 2026) | both sides, all days | avg R, ATR sized | 0.049 [-0.036, 0.141] n=474 | -0.099 [-0.185, -0.008] n=471 | +0.149 [+0.03, +0.271] * |
+| Primary (May to Nov 10 2026) | called | T1 before stop | 79.7% [69.8, 89.0] n=59 | 40.3% [29.9, 50.7] n=62 | +39.3 pts [+24.3, +54.0] * |
+| Primary (May to Nov 10 2026) | called | trigger + 0.5 ATR before stop | 50.0% [36.8, 62.5] n=60 | 12.5% [5.4, 19.6] n=64 | +37.5 pts [+23.5, +51.1] * |
+| Primary (May to Nov 10 2026) | called | trigger + 0.5 ATR reached | 51.7% [38.6, 64.5] n=60 | 14.1% [6.7, 21.5] n=64 | +37.6 pts [+23.2, +51.2] * |
+| Primary (May to Nov 10 2026) | called | stop touched | 26.7% [16.7, 38.0] n=60 | 25.0% [16.4, 34.1] n=64 | +1.7 pts [-12.1, +16.6] |
+| Primary (May to Nov 10 2026) | called | avg R, exit T2 | 0.23 [-0.037, 0.496] n=43 | -0.217 [-0.362, -0.084] n=47 | +0.447 [+0.162, +0.729] * |
+| Primary (May to Nov 10 2026) | called | avg R, hold to close | 0.294 [-0.061, 0.705] n=60 | -0.217 [-0.364, -0.075] n=64 | +0.511 [+0.152, +0.93] * |
+| Primary (May to Nov 10 2026) | called | avg R, ATR sized | 0.029 [-0.192, 0.248] n=60 | -0.371 [-0.534, -0.205] n=64 | +0.4 [+0.127, +0.674] * |
+| Primary (May to Nov 10 2026) | opposite | T1 before stop | 64.3% [53.8, 74.2] n=56 | 55.3% [41.7, 68.6] n=38 | +9.0 pts [-7.8, +25.8] |
+| Primary (May to Nov 10 2026) | opposite | trigger + 0.5 ATR before stop | 36.2% [25.5, 46.9] n=58 | 21.4% [9.8, 34.1] n=42 | +14.8 pts [-2.0, +30.6] |
+| Primary (May to Nov 10 2026) | opposite | trigger + 0.5 ATR reached | 36.2% [25.5, 46.9] n=58 | 21.4% [9.8, 34.1] n=42 | +14.8 pts [-2.0, +30.6] |
+| Primary (May to Nov 10 2026) | opposite | stop touched | 31.0% [21.7, 40.8] n=58 | 26.2% [15.0, 38.5] n=42 | +4.8 pts [-10.0, +19.2] |
+| Primary (May to Nov 10 2026) | opposite | avg R, exit T2 | -0.088 [-0.265, 0.109] n=46 | -0.083 [-0.351, 0.188] n=29 | -0.004 [-0.346, +0.336] |
+| Primary (May to Nov 10 2026) | opposite | avg R, hold to close | -0.041 [-0.291, 0.245] n=58 | -0.094 [-0.293, 0.117] n=42 | +0.053 [-0.271, +0.4] |
+| Primary (May to Nov 10 2026) | opposite | avg R, ATR sized | -0.044 [-0.236, 0.153] n=58 | -0.145 [-0.369, 0.075] n=42 | +0.1 [-0.191, +0.395] |
+| Primary (May to Nov 10 2026) | both sides, all days | T1 before stop | 68.5% [62.6, 74.4] n=200 | 50.9% [44.0, 57.5] n=175 | +17.6 pts [+9.0, +26.4] * |
+| Primary (May to Nov 10 2026) | both sides, all days | trigger + 0.5 ATR before stop | 40.1% [33.2, 46.8] n=217 | 19.8% [14.3, 25.8] n=192 | +20.3 pts [+11.9, +29.0] * |
+| Primary (May to Nov 10 2026) | both sides, all days | trigger + 0.5 ATR reached | 41.5% [34.7, 48.2] n=217 | 20.3% [14.6, 26.3] n=192 | +21.2 pts [+12.6, +30.0] * |
+| Primary (May to Nov 10 2026) | both sides, all days | stop touched | 30.9% [24.5, 37.2] n=217 | 23.4% [18.2, 28.9] n=192 | +7.4 pts [-0.2, +15.0] |
+| Primary (May to Nov 10 2026) | both sides, all days | avg R, exit T2 | 0.096 [-0.06, 0.264] n=152 | -0.111 [-0.217, -0.005] n=137 | +0.208 [+0.037, +0.392] * |
+| Primary (May to Nov 10 2026) | both sides, all days | avg R, hold to close | 0.091 [-0.086, 0.288] n=217 | -0.133 [-0.228, -0.032] n=192 | +0.224 [+0.025, +0.44] * |
+| Primary (May to Nov 10 2026) | both sides, all days | avg R, ATR sized | -0.008 [-0.123, 0.114] n=216 | -0.191 [-0.306, -0.074] n=192 | +0.183 [+0.02, +0.357] * |
+| All | called | T1 before stop | 73.5% [67.8, 79.3] n=189 | 50.6% [44.2, 56.8] n=166 | +22.9 pts [+14.6, +31.8] * |
+| All | called | trigger + 0.5 ATR before stop | 44.0% [36.8, 51.1] n=191 | 20.0% [14.7, 25.2] n=170 | +24.0 pts [+15.3, +32.7] * |
+| All | called | trigger + 0.5 ATR reached | 46.1% [39.0, 53.3] n=191 | 22.9% [17.2, 28.6] n=170 | +23.1 pts [+14.2, +32.1] * |
+| All | called | stop touched | 33.5% [26.9, 40.4] n=191 | 25.9% [20.2, 31.6] n=170 | +7.6 pts [-1.1, +16.6] |
+| All | called | avg R, exit T2 | 0.014 [-0.136, 0.164] n=157 | -0.188 [-0.276, -0.094] n=139 | +0.202 [+0.034, +0.372] * |
+| All | called | avg R, hold to close | 0.129 [-0.065, 0.329] n=191 | -0.135 [-0.24, -0.019] n=170 | +0.264 [+0.053, +0.481] * |
+| All | called | avg R, ATR sized | 0.005 [-0.13, 0.144] n=191 | -0.237 [-0.356, -0.111] n=168 | +0.242 [+0.058, +0.42] * |
+| All | opposite | T1 before stop | 74.7% [69.5, 79.9] n=178 | 55.6% [48.9, 62.4] n=160 | +19.1 pts [+10.4, +27.4] * |
+| All | opposite | trigger + 0.5 ATR before stop | 43.6% [36.6, 50.5] n=188 | 24.0% [18.2, 30.6] n=179 | +19.6 pts [+10.5, +28.5] * |
+| All | opposite | trigger + 0.5 ATR reached | 46.8% [39.7, 53.6] n=188 | 24.6% [18.7, 31.0] n=179 | +22.2 pts [+12.8, +30.9] * |
+| All | opposite | stop touched | 34.0% [27.7, 40.8] n=188 | 30.2% [23.4, 37.2] n=179 | +3.9 pts [-5.0, +12.7] |
+| All | opposite | avg R, exit T2 | 0.129 [0.011, 0.258] n=147 | -0.094 [-0.22, 0.027] n=139 | +0.223 [+0.067, +0.393] * |
+| All | opposite | avg R, hold to close | 0.152 [-0.018, 0.337] n=188 | -0.038 [-0.185, 0.115] n=179 | +0.19 [-0.021, +0.422] |
+| All | opposite | avg R, ATR sized | 0.098 [-0.032, 0.233] n=188 | -0.007 [-0.145, 0.133] n=178 | +0.106 [-0.075, +0.291] |
+| All | both sides, all days | T1 before stop | 73.1% [70.0, 76.3] n=640 | 55.1% [51.6, 58.7] n=612 | +18.1 pts [+13.5, +22.6] * |
+| All | both sides, all days | trigger + 0.5 ATR before stop | 43.4% [39.4, 47.2] n=692 | 22.4% [19.1, 25.8] n=671 | +21.0 pts [+16.0, +25.6] * |
+| All | both sides, all days | trigger + 0.5 ATR reached | 46.2% [42.3, 50.1] n=692 | 23.5% [20.3, 27.1] n=671 | +22.7 pts [+17.8, +27.3] * |
+| All | both sides, all days | stop touched | 36.3% [32.5, 39.9] n=692 | 27.4% [24.1, 30.7] n=671 | +8.8 pts [+4.4, +13.4] * |
+| All | both sides, all days | avg R, exit T2 | 0.078 [-0.0, 0.159] n=509 | -0.109 [-0.166, -0.048] n=508 | +0.187 [+0.101, +0.28] * |
+| All | both sides, all days | avg R, hold to close | 0.07 [-0.026, 0.176] n=692 | -0.097 [-0.162, -0.025] n=671 | +0.167 [+0.056, +0.279] * |
+| All | both sides, all days | avg R, ATR sized | 0.031 [-0.038, 0.103] n=690 | -0.126 [-0.198, -0.051] n=663 | +0.157 [+0.062, +0.252] * |
+
+### E2. When the called side 5 minute hold started
+
+| Start | Holds | Share |
+|---|---|---|
+| 09:30 (open already through) | 57 | 16% |
+| 09:31 to 09:59 | 134 | 37% |
+| 10:00 to 10:59 | 83 | 23% |
+| 11:00 to 12:59 | 50 | 14% |
+| 13:00 to 15:55 | 37 | 10% |
+
+### F. Timeframe continuity when the 5 minute hold confirmed (price vs day, week, month, quarter opens all agreeing with the side)
+
+| Window | Side | Measure | All four agree | Not all agree | Agree minus not |
+|---|---|---|---|---|---|
+| Holdout (Mar 2025 to Apr 2026) | called | T1 before stop | 53.8% [40.9, 66.7] n=52 | 67.6% [61.0, 74.2] n=182 | -13.7 pts [-28.7, +1.4] |
+| Holdout (Mar 2025 to Apr 2026) | called | trigger + 0.5 ATR before stop | 34.5% [22.6, 48.2] n=55 | 33.5% [26.3, 40.5] n=182 | +1.0 pts [-13.5, +16.9] |
+| Holdout (Mar 2025 to Apr 2026) | called | stop touched | 23.6% [12.1, 35.8] n=55 | 34.6% [28.1, 41.5] n=182 | -11.0 pts [-23.6, +2.2] |
+| Holdout (Mar 2025 to Apr 2026) | called | avg R, hold to close | 0.212 [-0.093, 0.551] n=55 | -0.075 [-0.242, 0.099] n=182 | +0.287 [-0.071, +0.661] |
+| Holdout (Mar 2025 to Apr 2026) | called | avg R, ATR sized | 0.056 [-0.199, 0.33] n=54 | -0.11 [-0.248, 0.033] n=181 | +0.166 [-0.119, +0.475] |
+| Holdout (Mar 2025 to Apr 2026) | opposite | T1 before stop | 69.7% [62.2, 77.8] n=109 | 65.9% [59.0, 73.2] n=135 | +3.8 pts [-6.4, +14.8] |
+| Holdout (Mar 2025 to Apr 2026) | opposite | trigger + 0.5 ATR before stop | 36.2% [28.4, 44.4] n=130 | 35.0% [27.0, 43.4] n=137 | +1.1 pts [-10.0, +12.3] |
+| Holdout (Mar 2025 to Apr 2026) | opposite | stop touched | 33.1% [24.6, 41.5] n=130 | 33.6% [26.4, 41.5] n=137 | -0.5 pts [-11.4, +9.4] |
+| Holdout (Mar 2025 to Apr 2026) | opposite | avg R, hold to close | 0.15 [-0.053, 0.384] n=130 | 0.063 [-0.125, 0.261] n=137 | +0.087 [-0.168, +0.364] |
+| Holdout (Mar 2025 to Apr 2026) | opposite | avg R, ATR sized | 0.113 [-0.058, 0.284] n=130 | 0.082 [-0.094, 0.249] n=136 | +0.031 [-0.2, +0.263] |
+| Holdout (Mar 2025 to Apr 2026) | both sides, all days | T1 before stop | 64.6% [59.8, 69.7] n=322 | 66.8% [63.3, 70.6] n=555 | -2.3 pts [-8.4, +4.0] |
+| Holdout (Mar 2025 to Apr 2026) | both sides, all days | trigger + 0.5 ATR before stop | 31.6% [27.1, 36.5] n=395 | 35.8% [31.2, 40.3] n=559 | -4.1 pts [-10.2, +2.2] |
+| Holdout (Mar 2025 to Apr 2026) | both sides, all days | stop touched | 36.2% [30.8, 41.6] n=395 | 32.2% [28.4, 36.0] n=559 | +4.0 pts [-2.7, +10.5] |
+| Holdout (Mar 2025 to Apr 2026) | both sides, all days | avg R, hold to close | -0.011 [-0.128, 0.116] n=395 | -0.012 [-0.105, 0.085] n=559 | +0.001 [-0.138, +0.14] |
+| Holdout (Mar 2025 to Apr 2026) | both sides, all days | avg R, ATR sized | -0.027 [-0.121, 0.074] n=394 | -0.023 [-0.11, 0.065] n=551 | -0.004 [-0.131, +0.124] |
+| Primary (May to Nov 10 2026) | called | T1 before stop | 58.3% [45.0, 73.3] n=36 | 60.0% [50.6, 68.5] n=85 | -1.7 pts [-17.8, +15.8] |
+| Primary (May to Nov 10 2026) | called | trigger + 0.5 ATR before stop | 28.2% [16.7, 39.5] n=39 | 31.8% [21.8, 41.2] n=85 | -3.6 pts [-16.7, +9.8] |
+| Primary (May to Nov 10 2026) | called | stop touched | 23.1% [12.9, 34.3] n=39 | 27.1% [18.1, 36.3] n=85 | -4.0 pts [-18.2, +10.3] |
+| Primary (May to Nov 10 2026) | called | avg R, hold to close | -0.002 [-0.213, 0.191] n=39 | 0.045 [-0.218, 0.341] n=85 | -0.047 [-0.4, +0.272] |
+| Primary (May to Nov 10 2026) | called | avg R, ATR sized | -0.107 [-0.361, 0.14] n=39 | -0.21 [-0.372, -0.052] n=85 | +0.103 [-0.166, +0.39] |
+| Primary (May to Nov 10 2026) | opposite | T1 before stop | 73.7% [61.5, 85.2] n=38 | 51.8% [40.0, 63.2] n=56 | +21.9 pts [+5.4, +38.0] * |
+| Primary (May to Nov 10 2026) | opposite | trigger + 0.5 ATR before stop | 31.0% [19.4, 43.2] n=42 | 29.3% [18.5, 39.7] n=58 | +1.6 pts [-13.5, +17.3] |
+| Primary (May to Nov 10 2026) | opposite | stop touched | 31.0% [19.6, 42.5] n=42 | 27.6% [17.5, 39.0] n=58 | +3.4 pts [-12.2, +18.7] |
+| Primary (May to Nov 10 2026) | opposite | avg R, hold to close | 0.033 [-0.225, 0.302] n=42 | -0.132 [-0.331, 0.076] n=58 | +0.165 [-0.122, +0.45] |
+| Primary (May to Nov 10 2026) | opposite | avg R, ATR sized | 0.007 [-0.201, 0.21] n=42 | -0.154 [-0.362, 0.047] n=58 | +0.161 [-0.131, +0.447] |
+| Primary (May to Nov 10 2026) | both sides, all days | T1 before stop | 66.4% [58.9, 73.8] n=125 | 57.2% [51.4, 62.8] n=250 | +9.2 pts [+0.2, +18.3] * |
+| Primary (May to Nov 10 2026) | both sides, all days | trigger + 0.5 ATR before stop | 31.2% [25.0, 37.4] n=154 | 30.2% [24.2, 35.8] n=255 | +1.0 pts [-6.7, +8.8] |
+| Primary (May to Nov 10 2026) | both sides, all days | stop touched | 27.9% [22.2, 33.6] n=154 | 27.1% [21.3, 32.6] n=255 | +0.9 pts [-7.0, +8.4] |
+| Primary (May to Nov 10 2026) | both sides, all days | avg R, hold to close | -0.006 [-0.131, 0.13] n=154 | -0.019 [-0.156, 0.139] n=255 | +0.012 [-0.153, +0.17] |
+| Primary (May to Nov 10 2026) | both sides, all days | avg R, ATR sized | -0.034 [-0.154, 0.085] n=154 | -0.131 [-0.237, -0.019] n=254 | +0.097 [-0.054, +0.249] |
+| All | called | T1 before stop | 55.7% [46.4, 65.1] n=88 | 65.2% [59.8, 70.2] n=267 | -9.5 pts [-20.4, +1.7] |
+| All | called | trigger + 0.5 ATR before stop | 31.9% [23.6, 41.2] n=94 | 33.0% [27.4, 38.7] n=267 | -1.0 pts [-11.2, +9.7] |
+| All | called | stop touched | 23.4% [15.3, 31.2] n=94 | 32.2% [27.0, 37.6] n=267 | -8.8 pts [-18.5, +0.5] |
+| All | called | avg R, hold to close | 0.123 [-0.065, 0.341] n=94 | -0.037 [-0.18, 0.119] n=267 | +0.16 [-0.085, +0.412] |
+| All | called | avg R, ATR sized | -0.012 [-0.188, 0.181] n=93 | -0.142 [-0.246, -0.035] n=266 | +0.13 [-0.071, +0.339] |
+| All | opposite | T1 before stop | 70.7% [64.5, 77.3] n=147 | 61.8% [55.7, 67.9] n=191 | +9.0 pts [+0.3, +17.8] * |
+| All | opposite | trigger + 0.5 ATR before stop | 34.9% [28.3, 41.7] n=172 | 33.3% [26.7, 40.3] n=195 | +1.6 pts [-7.5, +10.8] |
+| All | opposite | stop touched | 32.6% [25.5, 39.5] n=172 | 31.8% [25.9, 38.0] n=195 | +0.8 pts [-8.2, +8.9] |
+| All | opposite | avg R, hold to close | 0.122 [-0.041, 0.304] n=172 | 0.005 [-0.142, 0.152] n=195 | +0.117 [-0.08, +0.332] |
+| All | opposite | avg R, ATR sized | 0.087 [-0.047, 0.225] n=172 | 0.011 [-0.124, 0.149] n=194 | +0.076 [-0.105, +0.26] |
+| All | both sides, all days | T1 before stop | 65.1% [61.0, 69.2] n=447 | 63.9% [60.7, 67.1] n=805 | +1.2 pts [-3.9, +6.4] |
+| All | both sides, all days | trigger + 0.5 ATR before stop | 31.5% [27.8, 35.5] n=549 | 34.0% [30.4, 37.6] n=814 | -2.5 pts [-7.3, +2.5] |
+| All | both sides, all days | stop touched | 33.9% [29.6, 38.0] n=549 | 30.6% [27.4, 34.0] n=814 | +3.3 pts [-2.2, +8.7] |
+| All | both sides, all days | avg R, hold to close | -0.01 [-0.103, 0.089] n=549 | -0.014 [-0.093, 0.069] n=814 | +0.005 [-0.106, +0.112] |
+| All | both sides, all days | avg R, ATR sized | -0.029 [-0.108, 0.054] n=548 | -0.057 [-0.124, 0.013] n=805 | +0.028 [-0.075, +0.127] |
+
+### G. Strat level taps in the regular session, Holdout (Mar 2025 to Apr 2026)
+
+| Level | Ticker days | Open already beyond | Tapped in session | Of taps: held 5 min beyond (starting within 10 min) | Ran 0.25 ATR beyond before 0.25 back | Came back 0.25 first | Ran 0.5 ATR before 0.5 back | Came back 0.5 first | Day closed beyond |
+|---|---|---|---|---|---|---|---|---|---|
+| Prior day high | 846 | 24.3% [21.0, 28.1] | 33.0% [29.5, 36.5] | 54.1% [48.9, 59.0] | 38.4% [32.3, 43.8] | 38.7% [33.3, 44.5] | 18.3% [13.6, 22.9] | 21.9% [16.9, 27.2] | 57.3% [50.9, 63.5] |
+| Prior day low | 846 | 16.3% [13.0, 19.7] | 28.0% [24.4, 31.9] | 56.5% [50.6, 62.3] | 48.5% [42.2, 54.5] | 44.7% [38.7, 50.9] | 32.1% [25.9, 38.3] | 23.2% [17.9, 28.7] | 46.8% [40.1, 53.8] |
+| Prior week high | 846 | 26.8% [23.3, 30.3] | 16.0% [13.4, 18.7] | 46.7% [39.2, 53.9] | 31.9% [24.2, 38.8] | 40.7% [33.8, 48.5] | 10.4% [6.5, 14.6] | 23.0% [16.9, 30.4] | 52.6% [44.2, 60.4] |
+| Prior week low | 846 | 12.5% [9.8, 15.4] | 9.3% [7.2, 11.7] | 46.8% [35.8, 57.5] | 43.0% [31.9, 53.3] | 54.4% [44.0, 65.6] | 36.7% [25.8, 47.8] | 36.7% [25.4, 47.1] | 53.2% [41.3, 64.5] |
+| 12HR overnight candle high | 843 | 39.7% [36.0, 44.0] | 34.8% [31.2, 38.3] | 54.3% [49.3, 59.3] | 38.6% [32.8, 44.2] | 45.4% [39.7, 51.1] | 23.9% [19.1, 29.0] | 22.9% [18.2, 27.7] | 55.6% [49.3, 61.8] |
+| 12HR overnight candle low | 843 | 26.5% [22.6, 30.0] | 35.0% [31.4, 39.0] | 53.6% [48.3, 58.9] | 46.4% [40.7, 52.2] | 42.7% [37.5, 48.0] | 29.2% [23.2, 35.1] | 23.4% [18.4, 28.7] | 46.1% [40.0, 52.1] |
+| 12HR overnight candle 50% | 843 | 0.0% [0.0, 0.0] | 62.3% [58.4, 66.2] | 49.1% [45.0, 53.0] | 45.3% [41.3, 49.4] | 45.5% [41.4, 49.6] | 29.7% [25.6, 34.0] | 25.3% [21.5, 29.5] | 52.4% [48.2, 56.9] |
+| 12HR prior day candle high | 843 | 22.8% [19.5, 26.4] | 30.0% [26.6, 33.6] | 54.2% [48.3, 59.8] | 39.1% [32.9, 44.9] | 39.1% [33.6, 45.0] | 18.2% [13.4, 22.9] | 21.7% [16.7, 27.5] | 56.1% [49.4, 62.2] |
+| 12HR prior day candle low | 843 | 13.9% [10.8, 17.0] | 26.6% [23.0, 30.3] | 59.8% [53.8, 65.6] | 50.0% [43.7, 56.3] | 42.9% [36.7, 48.9] | 30.8% [24.4, 37.3] | 25.4% [20.0, 31.1] | 46.4% [39.3, 54.0] |
+| 12HR prior day candle 50% | 843 | 0.1% [0.0, 0.4] | 51.8% [47.9, 55.8] | 51.9% [47.9, 56.2] | 44.6% [39.9, 49.5] | 43.0% [38.5, 47.5] | 29.5% [25.2, 33.9] | 25.2% [21.0, 29.2] | 51.9% [47.1, 56.8] |
+| All levels | 8442 | 18.3% [17.2, 19.4] | 32.7% [30.9, 34.4] | 52.9% [50.8, 54.9] | 43.3% [40.6, 46.0] | 43.3% [40.6, 45.9] | 26.3% [23.4, 29.3] | 24.2% [21.8, 26.7] | 51.9% [48.9, 54.9] |
+
+### G. Strat level taps in the regular session, Primary (May to Nov 10 2026)
+
+| Level | Ticker days | Open already beyond | Tapped in session | Of taps: held 5 min beyond (starting within 10 min) | Ran 0.25 ATR beyond before 0.25 back | Came back 0.25 first | Ran 0.5 ATR before 0.5 back | Came back 0.5 first | Day closed beyond |
+|---|---|---|---|---|---|---|---|---|---|
+| Prior day high | 390 | 23.3% [18.2, 28.6] | 29.5% [24.3, 34.8] | 60.9% [52.9, 68.6] | 45.2% [36.2, 53.9] | 39.1% [30.8, 47.9] | 22.6% [14.7, 31.0] | 22.6% [14.5, 31.3] | 55.7% [46.0, 64.9] |
+| Prior day low | 390 | 19.0% [14.3, 23.8] | 24.6% [20.0, 29.2] | 60.4% [52.5, 68.6] | 56.2% [47.8, 64.6] | 33.3% [25.5, 41.8] | 29.2% [20.2, 38.2] | 21.9% [14.6, 29.7] | 52.1% [42.4, 61.4] |
+| Prior week high | 390 | 20.0% [15.3, 24.9] | 10.5% [7.6, 13.7] | 56.1% [43.2, 68.8] | 39.0% [23.7, 55.2] | 39.0% [23.7, 55.3] | 4.9% [0.0, 11.1] | 24.4% [11.1, 39.2] | 39.0% [23.7, 54.5] |
+| Prior week low | 390 | 14.1% [10.6, 17.6] | 15.1% [11.7, 18.8] | 52.5% [41.1, 64.0] | 42.4% [31.2, 53.8] | 54.2% [42.9, 65.6] | 33.9% [22.1, 46.3] | 32.2% [21.2, 43.2] | 52.5% [39.3, 66.0] |
+| 12HR overnight candle high | 390 | 41.3% [35.3, 47.4] | 28.5% [23.8, 33.1] | 61.3% [53.3, 69.4] | 44.1% [36.1, 52.6] | 47.7% [39.6, 55.7] | 24.3% [17.8, 31.2] | 22.5% [15.6, 30.4] | 51.4% [41.9, 61.2] |
+| 12HR overnight candle low | 390 | 29.0% [23.3, 34.7] | 32.1% [26.8, 37.4] | 57.6% [50.4, 64.4] | 47.2% [38.5, 55.4] | 41.6% [34.1, 50.0] | 31.2% [23.6, 38.5] | 24.0% [16.8, 31.9] | 51.2% [42.9, 59.2] |
+| 12HR overnight candle 50% | 390 | 0.0% [0.0, 0.0] | 51.0% [45.1, 56.9] | 46.2% [40.4, 51.7] | 43.7% [38.1, 49.7] | 50.8% [44.5, 56.8] | 25.1% [19.4, 31.4] | 30.7% [24.9, 36.6] | 47.2% [40.6, 53.6] |
+| 12HR prior day candle high | 390 | 20.3% [15.5, 25.2] | 26.2% [21.3, 31.3] | 63.7% [54.8, 72.4] | 43.1% [33.3, 52.8] | 43.1% [34.5, 52.5] | 19.6% [12.4, 27.1] | 18.6% [11.1, 26.8] | 58.8% [48.8, 68.5] |
+| 12HR prior day candle low | 390 | 16.7% [12.1, 21.3] | 24.4% [19.6, 29.1] | 57.9% [50.0, 65.8] | 55.8% [46.9, 64.5] | 35.8% [28.2, 44.1] | 34.7% [25.4, 44.3] | 21.1% [13.4, 29.7] | 54.7% [45.3, 63.5] |
+| 12HR prior day candle 50% | 390 | 0.0% [0.0, 0.0] | 45.6% [40.1, 50.9] | 50.6% [44.6, 56.6] | 39.3% [32.3, 46.6] | 48.3% [40.8, 55.6] | 23.0% [16.9, 29.5] | 28.1% [21.6, 34.8] | 44.9% [37.6, 52.3] |
+| All levels | 3900 | 18.4% [16.8, 19.9] | 28.7% [26.1, 31.5] | 55.7% [52.4, 58.8] | 45.4% [41.4, 49.5] | 44.2% [40.2, 48.1] | 25.5% [21.5, 29.8] | 25.1% [21.6, 28.7] | 50.7% [46.7, 54.6] |
+
+### G. Strat level taps in the regular session, All
+
+| Level | Ticker days | Open already beyond | Tapped in session | Of taps: held 5 min beyond (starting within 10 min) | Ran 0.25 ATR beyond before 0.25 back | Came back 0.25 first | Ran 0.5 ATR before 0.5 back | Came back 0.5 first | Day closed beyond |
+|---|---|---|---|---|---|---|---|---|---|
+| Prior day high | 1236 | 24.0% [21.3, 26.9] | 31.9% [29.1, 34.7] | 56.1% [51.8, 60.2] | 40.4% [35.5, 44.9] | 38.8% [34.1, 43.6] | 19.5% [15.6, 23.6] | 22.1% [17.8, 26.9] | 56.9% [51.4, 62.1] |
+| Prior day low | 1236 | 17.2% [14.4, 19.9] | 26.9% [24.1, 30.0] | 57.7% [53.0, 62.4] | 50.8% [45.6, 55.9] | 41.4% [36.5, 46.3] | 31.2% [26.2, 36.4] | 22.8% [18.6, 27.5] | 48.3% [42.9, 53.9] |
+| Prior week high | 1236 | 24.7% [21.8, 27.6] | 14.2% [12.1, 16.3] | 48.9% [42.5, 55.0] | 33.5% [26.6, 39.9] | 40.3% [34.0, 47.6] | 9.1% [6.0, 12.7] | 23.3% [17.8, 29.9] | 49.4% [42.0, 56.6] |
+| Prior week low | 1236 | 13.0% [10.7, 15.4] | 11.2% [9.4, 13.1] | 49.3% [41.6, 57.1] | 42.8% [35.2, 50.5] | 54.3% [46.4, 62.0] | 35.5% [27.7, 44.1] | 34.8% [26.8, 42.6] | 52.9% [44.4, 61.6] |
+| 12HR overnight candle high | 1233 | 40.2% [36.9, 43.8] | 32.8% [29.9, 35.6] | 56.2% [52.0, 60.3] | 40.1% [35.7, 44.7] | 46.0% [41.5, 50.7] | 24.0% [20.3, 28.0] | 22.8% [18.8, 26.8] | 54.5% [49.2, 59.6] |
+| 12HR overnight candle low | 1233 | 27.3% [23.9, 30.3] | 34.1% [31.1, 37.3] | 54.8% [50.6, 59.0] | 46.7% [42.0, 51.4] | 42.4% [38.1, 47.0] | 29.8% [24.9, 34.5] | 23.6% [19.5, 28.0] | 47.6% [42.6, 52.5] |
+| 12HR overnight candle 50% | 1233 | 0.0% [0.0, 0.0] | 58.7% [55.6, 61.9] | 48.3% [44.9, 51.5] | 44.9% [41.5, 48.3] | 47.0% [43.5, 50.5] | 28.5% [25.1, 32.0] | 26.8% [23.5, 30.2] | 51.0% [47.3, 54.6] |
+| 12HR prior day candle high | 1233 | 22.0% [19.4, 24.8] | 28.8% [26.0, 31.6] | 56.9% [51.9, 61.4] | 40.3% [35.0, 45.3] | 40.3% [35.7, 45.1] | 18.6% [14.7, 22.4] | 20.8% [16.5, 25.5] | 56.9% [51.2, 62.0] |
+| 12HR prior day candle low | 1233 | 14.8% [12.2, 17.3] | 25.9% [22.9, 28.9] | 59.2% [54.7, 63.9] | 51.7% [46.4, 56.8] | 40.8% [35.9, 45.6] | 32.0% [26.8, 37.6] | 24.1% [19.7, 28.9] | 48.9% [43.2, 54.9] |
+| 12HR prior day candle 50% | 1233 | 0.1% [0.0, 0.2] | 49.9% [46.8, 52.9] | 51.5% [48.2, 55.0] | 43.1% [39.3, 47.3] | 44.6% [40.6, 48.6] | 27.6% [24.2, 31.3] | 26.0% [22.4, 29.5] | 49.9% [46.0, 54.0] |
+| All levels | 12342 | 18.3% [17.4, 19.2] | 31.4% [29.9, 32.9] | 53.7% [51.9, 55.3] | 43.9% [41.7, 46.2] | 43.5% [41.3, 45.7] | 26.1% [23.8, 28.5] | 24.4% [22.4, 26.5] | 51.5% [49.2, 53.9] |
+
+### G2. Taps with full timeframe continuity (day, week, month, quarter opens all on the tap side) vs not
+
+| Window | Levels | Outcome | Continuity agrees | Does not | Continuity agrees minus Does not |
+|---|---|---|---|---|---|
+| Holdout (Mar 2025 to Apr 2026) | All levels | ran 0.25 ATR first | 40.3% [35.3, 45.1] n=1060 | 45.1% [41.8, 48.4] n=1697 | -4.9 pts [-10.8, +1.1] |
+| Holdout (Mar 2025 to Apr 2026) | All levels | ran 0.5 ATR first | 20.8% [16.8, 25.0] n=1060 | 29.8% [25.9, 33.4] n=1697 | -8.9 pts [-14.2, -3.6] * |
+| Holdout (Mar 2025 to Apr 2026) | All levels | held 5 min | 51.1% [47.7, 54.3] n=1060 | 54.0% [51.2, 56.7] n=1697 | -2.8 pts [-7.3, +1.5] |
+| Holdout (Mar 2025 to Apr 2026) | All levels | closed beyond | 55.2% [49.5, 60.4] n=1060 | 49.9% [45.9, 53.8] n=1697 | +5.3 pts [-2.2, +12.1] |
+| Holdout (Mar 2025 to Apr 2026) | Prior day high/low | ran 0.25 ATR first | 40.9% [34.8, 46.8] n=235 | 44.8% [39.1, 50.4] n=281 | -4.0 pts [-12.0, +4.3] |
+| Holdout (Mar 2025 to Apr 2026) | Prior day high/low | ran 0.5 ATR first | 19.6% [14.6, 24.7] n=235 | 28.8% [23.1, 34.8] n=281 | -9.3 pts [-16.8, -1.5] * |
+| Holdout (Mar 2025 to Apr 2026) | Prior day high/low | held 5 min | 56.2% [50.8, 61.3] n=235 | 54.4% [49.0, 59.6] n=281 | +1.7 pts [-6.0, +9.3] |
+| Holdout (Mar 2025 to Apr 2026) | Prior day high/low | closed beyond | 55.7% [49.0, 62.2] n=235 | 49.8% [43.4, 55.9] n=281 | +5.9 pts [-3.5, +15.4] |
+| Holdout (Mar 2025 to Apr 2026) | Prior week high/low | ran 0.25 ATR first | 37.5% [29.7, 45.0] n=136 | 33.3% [23.3, 43.5] n=78 | +4.2 pts [-8.8, +17.0] |
+| Holdout (Mar 2025 to Apr 2026) | Prior week high/low | ran 0.5 ATR first | 16.9% [11.0, 23.0] n=136 | 25.6% [16.4, 35.9] n=78 | -8.7 pts [-20.4, +2.7] |
+| Holdout (Mar 2025 to Apr 2026) | Prior week high/low | held 5 min | 45.6% [38.1, 52.7] n=136 | 48.7% [38.7, 58.7] n=78 | -3.1 pts [-15.1, +8.7] |
+| Holdout (Mar 2025 to Apr 2026) | Prior week high/low | closed beyond | 55.1% [46.4, 63.2] n=136 | 48.7% [37.9, 59.5] n=78 | +6.4 pts [-7.4, +19.4] |
+| Holdout (Mar 2025 to Apr 2026) | 12HR overnight high/low | ran 0.25 ATR first | 40.3% [33.6, 47.2] n=206 | 43.7% [39.0, 49.0] n=382 | -3.4 pts [-12.3, +5.0] |
+| Holdout (Mar 2025 to Apr 2026) | 12HR overnight high/low | ran 0.5 ATR first | 21.8% [16.7, 27.6] n=206 | 29.1% [24.3, 34.1] n=382 | -7.2 pts [-14.3, +0.4] |
+| Holdout (Mar 2025 to Apr 2026) | 12HR overnight high/low | held 5 min | 53.9% [47.8, 60.1] n=206 | 53.9% [49.5, 58.5] n=382 | -0.0 pts [-8.4, +8.1] |
+| Holdout (Mar 2025 to Apr 2026) | 12HR overnight high/low | closed beyond | 55.8% [48.3, 62.7] n=206 | 48.2% [43.3, 53.2] n=382 | +7.7 pts [-2.3, +17.2] |
+| Holdout (Mar 2025 to Apr 2026) | 12HR overnight 50% | ran 0.25 ATR first | 41.4% [33.6, 49.0] n=145 | 46.8% [42.3, 51.5] n=380 | -5.5 pts [-13.9, +3.3] |
+| Holdout (Mar 2025 to Apr 2026) | 12HR overnight 50% | ran 0.5 ATR first | 26.2% [18.8, 33.9] n=145 | 31.1% [26.0, 36.1] n=380 | -4.8 pts [-13.9, +4.2] |
+| Holdout (Mar 2025 to Apr 2026) | 12HR overnight 50% | held 5 min | 42.1% [35.1, 48.5] n=145 | 51.8% [47.0, 56.5] n=380 | -9.8 pts [-18.0, -1.9] * |
+| Holdout (Mar 2025 to Apr 2026) | 12HR overnight 50% | closed beyond | 53.8% [44.8, 62.0] n=145 | 51.8% [47.1, 56.9] n=380 | +2.0 pts [-8.1, +11.6] |
+| Holdout (Mar 2025 to Apr 2026) | 12HR prior day high/low | ran 0.25 ATR first | 43.6% [37.4, 49.5] n=227 | 44.8% [38.8, 50.4] n=250 | -1.2 pts [-9.1, +6.7] |
+| Holdout (Mar 2025 to Apr 2026) | 12HR prior day high/low | ran 0.5 ATR first | 18.9% [13.9, 24.2] n=227 | 28.8% [22.6, 35.2] n=250 | -9.9 pts [-17.9, -1.8] * |
+| Holdout (Mar 2025 to Apr 2026) | 12HR prior day high/low | held 5 min | 54.2% [48.5, 59.5] n=227 | 59.2% [53.3, 64.7] n=250 | -5.0 pts [-13.1, +2.7] |
+| Holdout (Mar 2025 to Apr 2026) | 12HR prior day high/low | closed beyond | 54.2% [47.3, 60.9] n=227 | 49.2% [42.5, 55.9] n=250 | +5.0 pts [-4.8, +14.7] |
+| Holdout (Mar 2025 to Apr 2026) | 12HR prior day 50% | ran 0.25 ATR first | 34.2% [25.0, 43.0] n=111 | 48.2% [42.9, 53.5] n=326 | -13.9 pts [-24.4, -3.6] * |
+| Holdout (Mar 2025 to Apr 2026) | 12HR prior day 50% | ran 0.5 ATR first | 23.4% [15.0, 32.6] n=111 | 31.6% [27.0, 36.7] n=326 | -8.2 pts [-17.4, +1.5] |
+| Holdout (Mar 2025 to Apr 2026) | 12HR prior day 50% | held 5 min | 47.7% [39.3, 55.2] n=111 | 53.4% [48.8, 58.2] n=326 | -5.6 pts [-15.2, +3.1] |
+| Holdout (Mar 2025 to Apr 2026) | 12HR prior day 50% | closed beyond | 56.8% [46.0, 66.4] n=111 | 50.3% [44.8, 55.9] n=326 | +6.5 pts [-5.4, +17.9] |
+| Primary (May to Nov 10 2026) | All levels | ran 0.25 ATR first | 49.7% [43.2, 55.9] n=429 | 42.8% [37.9, 47.7] n=692 | +6.9 pts [-1.5, +14.8] |
+| Primary (May to Nov 10 2026) | All levels | ran 0.5 ATR first | 23.5% [18.0, 28.8] n=429 | 26.7% [21.1, 32.5] n=692 | -3.2 pts [-11.1, +4.4] |
+| Primary (May to Nov 10 2026) | All levels | held 5 min | 59.7% [54.3, 64.7] n=429 | 53.2% [49.2, 57.2] n=692 | +6.5 pts [-0.1, +13.1] |
+| Primary (May to Nov 10 2026) | All levels | closed beyond | 54.3% [46.3, 61.9] n=429 | 48.4% [43.3, 53.6] n=692 | +5.9 pts [-4.9, +15.8] |
+| Primary (May to Nov 10 2026) | Prior day high/low | ran 0.25 ATR first | 53.5% [43.5, 62.8] n=86 | 48.0% [40.9, 55.3] n=125 | +5.5 pts [-7.2, +17.3] |
+| Primary (May to Nov 10 2026) | Prior day high/low | ran 0.5 ATR first | 18.6% [12.1, 25.4] n=86 | 30.4% [22.0, 39.3] n=125 | -11.8 pts [-22.9, -1.0] * |
+| Primary (May to Nov 10 2026) | Prior day high/low | held 5 min | 67.4% [59.4, 75.5] n=86 | 56.0% [48.6, 63.7] n=125 | +11.4 pts [+0.1, +22.0] * |
+| Primary (May to Nov 10 2026) | Prior day high/low | closed beyond | 58.1% [48.2, 67.9] n=86 | 51.2% [43.1, 59.7] n=125 | +6.9 pts [-6.7, +19.6] |
+| Primary (May to Nov 10 2026) | Prior week high/low | ran 0.25 ATR first | 41.3% [30.3, 53.2] n=63 | 40.5% [25.6, 54.8] n=37 | +0.7 pts [-17.1, +19.5] |
+| Primary (May to Nov 10 2026) | Prior week high/low | ran 0.5 ATR first | 15.9% [8.6, 24.6] n=63 | 32.4% [17.9, 47.8] n=37 | -16.6 pts [-33.4, -0.1] * |
+| Primary (May to Nov 10 2026) | Prior week high/low | held 5 min | 52.4% [41.2, 62.7] n=63 | 56.8% [43.2, 69.8] n=37 | -4.4 pts [-20.7, +12.7] |
+| Primary (May to Nov 10 2026) | Prior week high/low | closed beyond | 42.9% [30.9, 55.0] n=63 | 54.1% [37.9, 69.7] n=37 | -11.2 pts [-32.0, +9.3] |
+| Primary (May to Nov 10 2026) | 12HR overnight high/low | ran 0.25 ATR first | 50.6% [41.7, 60.2] n=81 | 43.2% [36.0, 50.3] n=155 | +7.4 pts [-3.9, +19.1] |
+| Primary (May to Nov 10 2026) | 12HR overnight high/low | ran 0.5 ATR first | 30.9% [22.7, 39.7] n=81 | 26.5% [20.5, 32.3] n=155 | +4.4 pts [-5.5, +15.1] |
+| Primary (May to Nov 10 2026) | 12HR overnight high/low | held 5 min | 64.2% [55.4, 72.7] n=81 | 56.8% [50.3, 63.1] n=155 | +7.4 pts [-2.8, +18.1] |
+| Primary (May to Nov 10 2026) | 12HR overnight high/low | closed beyond | 56.8% [46.1, 67.7] n=81 | 48.4% [41.8, 55.4] n=155 | +8.4 pts [-5.9, +22.6] |
+| Primary (May to Nov 10 2026) | 12HR overnight 50% | ran 0.25 ATR first | 52.5% [42.4, 63.2] n=59 | 40.0% [32.7, 47.3] n=140 | +12.5 pts [-0.2, +25.9] |
+| Primary (May to Nov 10 2026) | 12HR overnight 50% | ran 0.5 ATR first | 28.8% [18.8, 39.3] n=59 | 23.6% [16.3, 30.8] n=140 | +5.2 pts [-6.7, +17.6] |
+| Primary (May to Nov 10 2026) | 12HR overnight 50% | held 5 min | 49.2% [36.7, 60.6] n=59 | 45.0% [38.4, 52.0] n=140 | +4.2 pts [-10.6, +18.0] |
+| Primary (May to Nov 10 2026) | 12HR overnight 50% | closed beyond | 47.5% [36.2, 58.9] n=59 | 47.1% [39.0, 54.7] n=140 | +0.3 pts [-13.2, +14.4] |
+| Primary (May to Nov 10 2026) | 12HR prior day high/low | ran 0.25 ATR first | 52.3% [41.6, 62.5] n=86 | 46.8% [39.3, 54.5] n=111 | +5.5 pts [-8.1, +18.3] |
+| Primary (May to Nov 10 2026) | 12HR prior day high/low | ran 0.5 ATR first | 20.9% [13.6, 28.7] n=86 | 31.5% [23.0, 40.4] n=111 | -10.6 pts [-22.4, +1.1] |
+| Primary (May to Nov 10 2026) | 12HR prior day high/low | held 5 min | 67.4% [58.9, 75.9] n=86 | 55.9% [47.7, 64.0] n=111 | +11.6 pts [-0.9, +22.8] |
+| Primary (May to Nov 10 2026) | 12HR prior day high/low | closed beyond | 62.8% [53.3, 72.4] n=86 | 52.3% [43.3, 61.3] n=111 | +10.5 pts [-2.6, +23.1] |
+| Primary (May to Nov 10 2026) | 12HR prior day 50% | ran 0.25 ATR first | 44.4% [32.2, 56.0] n=54 | 37.1% [29.1, 45.1] n=124 | +7.3 pts [-6.8, +21.0] |
+| Primary (May to Nov 10 2026) | 12HR prior day 50% | ran 0.5 ATR first | 27.8% [15.6, 39.5] n=54 | 21.0% [13.4, 28.3] n=124 | +6.8 pts [-7.4, +21.0] |
+| Primary (May to Nov 10 2026) | 12HR prior day 50% | held 5 min | 48.1% [36.9, 58.8] n=54 | 51.6% [44.1, 59.4] n=124 | -3.5 pts [-17.6, +10.8] |
+| Primary (May to Nov 10 2026) | 12HR prior day 50% | closed beyond | 51.9% [37.8, 64.3] n=54 | 41.9% [33.7, 50.0] n=124 | +9.9 pts [-5.8, +23.7] |
+| All | All levels | ran 0.25 ATR first | 43.0% [39.0, 46.9] n=1489 | 44.5% [41.7, 47.2] n=2389 | -1.5 pts [-6.4, +3.2] |
+| All | All levels | ran 0.5 ATR first | 21.6% [18.4, 25.0] n=1489 | 28.9% [25.8, 32.1] n=2389 | -7.3 pts [-11.7, -2.6] * |
+| All | All levels | held 5 min | 53.6% [50.7, 56.2] n=1489 | 53.7% [51.4, 56.0] n=2389 | -0.2 pts [-4.0, +3.4] |
+| All | All levels | closed beyond | 54.9% [50.4, 59.3] n=1489 | 49.4% [46.2, 52.6] n=2389 | +5.5 pts [-0.4, +11.3] |
+| All | Prior day high/low | ran 0.25 ATR first | 44.2% [39.0, 49.2] n=321 | 45.8% [41.2, 50.0] n=406 | -1.6 pts [-8.6, +5.1] |
+| All | Prior day high/low | ran 0.5 ATR first | 19.3% [15.3, 23.5] n=321 | 29.3% [24.6, 34.0] n=406 | -10.0 pts [-16.4, -3.7] * |
+| All | Prior day high/low | held 5 min | 59.2% [54.8, 63.5] n=321 | 54.9% [50.4, 59.3] n=406 | +4.3 pts [-2.0, +10.4] |
+| All | Prior day high/low | closed beyond | 56.4% [50.9, 62.0] n=321 | 50.2% [45.1, 55.2] n=406 | +6.1 pts [-1.4, +13.6] |
+| All | Prior week high/low | ran 0.25 ATR first | 38.7% [32.0, 45.1] n=199 | 35.7% [27.2, 44.1] n=115 | +3.0 pts [-7.1, +13.5] |
+| All | Prior week high/low | ran 0.5 ATR first | 16.6% [12.0, 21.4] n=199 | 27.8% [19.8, 36.6] n=115 | -11.2 pts [-21.1, -2.3] * |
+| All | Prior week high/low | held 5 min | 47.7% [41.9, 53.4] n=199 | 51.3% [43.3, 59.2] n=115 | -3.6 pts [-13.3, +6.2] |
+| All | Prior week high/low | closed beyond | 51.3% [44.1, 58.3] n=199 | 50.4% [41.8, 59.3] n=115 | +0.8 pts [-10.6, +11.9] |
+| All | 12HR overnight high/low | ran 0.25 ATR first | 43.2% [37.9, 49.0] n=287 | 43.6% [39.7, 47.8] n=537 | -0.4 pts [-7.5, +6.6] |
+| All | 12HR overnight high/low | ran 0.5 ATR first | 24.4% [20.0, 29.0] n=287 | 28.3% [24.5, 32.1] n=537 | -3.9 pts [-9.9, +2.2] |
+| All | 12HR overnight high/low | held 5 min | 56.8% [51.7, 61.8] n=287 | 54.7% [51.2, 58.5] n=537 | +2.0 pts [-4.4, +8.7] |
+| All | 12HR overnight high/low | closed beyond | 56.1% [50.0, 61.9] n=287 | 48.2% [44.2, 52.3] n=537 | +7.9 pts [-0.3, +15.5] |
+| All | 12HR overnight 50% | ran 0.25 ATR first | 44.6% [38.4, 50.9] n=204 | 45.0% [41.1, 49.0] n=520 | -0.4 pts [-7.5, +6.9] |
+| All | 12HR overnight 50% | ran 0.5 ATR first | 27.0% [21.1, 33.0] n=204 | 29.0% [24.9, 33.3] n=520 | -2.1 pts [-9.3, +5.1] |
+| All | 12HR overnight 50% | held 5 min | 44.1% [38.1, 50.0] n=204 | 50.0% [45.8, 53.9] n=520 | -5.9 pts [-12.9, +1.4] |
+| All | 12HR overnight 50% | closed beyond | 52.0% [44.8, 58.8] n=204 | 50.6% [46.2, 54.8] n=520 | +1.4 pts [-6.8, +9.2] |
+| All | 12HR prior day high/low | ran 0.25 ATR first | 46.0% [40.4, 51.2] n=313 | 45.4% [40.6, 49.9] n=361 | +0.6 pts [-6.4, +7.3] |
+| All | 12HR prior day high/low | ran 0.5 ATR first | 19.5% [15.3, 23.8] n=313 | 29.6% [24.7, 34.9] n=361 | -10.2 pts [-17.0, -3.6] * |
+| All | 12HR prior day high/low | held 5 min | 57.8% [53.0, 62.5] n=313 | 58.2% [53.4, 62.8] n=361 | -0.3 pts [-7.0, +6.2] |
+| All | 12HR prior day high/low | closed beyond | 56.5% [50.9, 62.1] n=313 | 50.1% [44.8, 55.3] n=361 | +6.4 pts [-1.4, +14.0] |
+| All | 12HR prior day 50% | ran 0.25 ATR first | 37.6% [30.2, 44.9] n=165 | 45.1% [40.7, 49.8] n=450 | -7.5 pts [-15.9, +0.6] |
+| All | 12HR prior day 50% | ran 0.5 ATR first | 24.8% [18.0, 32.0] n=165 | 28.7% [24.7, 33.0] n=450 | -3.8 pts [-11.7, +4.2] |
+| All | 12HR prior day 50% | held 5 min | 47.9% [41.5, 54.2] n=165 | 52.9% [48.8, 57.1] n=450 | -5.0 pts [-12.9, +2.4] |
+| All | 12HR prior day 50% | closed beyond | 55.2% [46.9, 62.8] n=165 | 48.0% [43.4, 52.7] n=450 | +7.2 pts [-1.9, +16.1] |
+
+### G3. Taps before 10:00 vs at or after 10:00
+
+| Window | Levels | Outcome | Before 10:00 | 10:00 or later | Before 10:00 minus 10:00 or later |
+|---|---|---|---|---|---|
+| Holdout (Mar 2025 to Apr 2026) | All levels | ran 0.25 ATR first | 48.9% [45.4, 52.4] n=1288 | 38.3% [34.6, 42.0] n=1469 | +10.6 pts [+5.9, +15.2] * |
+| Holdout (Mar 2025 to Apr 2026) | All levels | ran 0.5 ATR first | 33.2% [29.4, 37.1] n=1288 | 20.3% [16.6, 24.0] n=1469 | +12.9 pts [+8.2, +17.6] * |
+| Holdout (Mar 2025 to Apr 2026) | All levels | held 5 min | 54.6% [51.7, 57.6] n=1288 | 51.4% [48.4, 54.3] n=1469 | +3.2 pts [-1.1, +7.4] |
+| Holdout (Mar 2025 to Apr 2026) | All levels | closed beyond | 53.6% [50.3, 57.0] n=1288 | 50.4% [46.2, 54.8] n=1469 | +3.1 pts [-1.8, +8.1] |
+| Holdout (Mar 2025 to Apr 2026) | Prior day high/low | ran 0.25 ATR first | 48.4% [41.7, 54.5] n=221 | 39.0% [33.6, 44.3] n=295 | +9.4 pts [+0.7, +17.8] * |
+| Holdout (Mar 2025 to Apr 2026) | Prior day high/low | ran 0.5 ATR first | 30.8% [24.5, 37.1] n=221 | 20.0% [15.3, 24.7] n=295 | +10.8 pts [+3.0, +18.2] * |
+| Holdout (Mar 2025 to Apr 2026) | Prior day high/low | held 5 min | 55.2% [49.5, 60.7] n=221 | 55.3% [50.3, 60.2] n=295 | -0.1 pts [-8.0, +7.6] |
+| Holdout (Mar 2025 to Apr 2026) | Prior day high/low | closed beyond | 52.5% [45.8, 59.2] n=221 | 52.5% [46.8, 58.1] n=295 | -0.1 pts [-8.3, +8.2] |
+| Holdout (Mar 2025 to Apr 2026) | Prior week high/low | ran 0.25 ATR first | 44.0% [34.0, 53.8] n=75 | 31.7% [24.0, 38.9] n=139 | +12.3 pts [+0.5, +24.0] * |
+| Holdout (Mar 2025 to Apr 2026) | Prior week high/low | ran 0.5 ATR first | 22.7% [14.3, 31.9] n=75 | 18.7% [12.8, 24.8] n=139 | +4.0 pts [-6.1, +14.0] |
+| Holdout (Mar 2025 to Apr 2026) | Prior week high/low | held 5 min | 44.0% [33.8, 53.9] n=75 | 48.2% [40.4, 55.4] n=139 | -4.2 pts [-16.9, +8.5] |
+| Holdout (Mar 2025 to Apr 2026) | Prior week high/low | closed beyond | 52.0% [41.7, 62.2] n=75 | 53.2% [44.9, 61.1] n=139 | -1.2 pts [-13.3, +11.7] |
+| Holdout (Mar 2025 to Apr 2026) | 12HR overnight high/low | ran 0.25 ATR first | 45.3% [39.8, 50.8] n=285 | 39.9% [34.3, 45.9] n=303 | +5.3 pts [-2.8, +13.4] |
+| Holdout (Mar 2025 to Apr 2026) | 12HR overnight high/low | ran 0.5 ATR first | 33.0% [28.1, 38.3] n=285 | 20.5% [15.6, 25.6] n=303 | +12.5 pts [+5.7, +19.4] * |
+| Holdout (Mar 2025 to Apr 2026) | 12HR overnight high/low | held 5 min | 56.1% [51.3, 61.2] n=285 | 51.8% [46.6, 57.0] n=303 | +4.3 pts [-3.1, +11.6] |
+| Holdout (Mar 2025 to Apr 2026) | 12HR overnight high/low | closed beyond | 53.0% [47.9, 58.2] n=285 | 48.8% [43.2, 54.8] n=303 | +4.1 pts [-3.8, +12.2] |
+| Holdout (Mar 2025 to Apr 2026) | 12HR overnight 50% | ran 0.25 ATR first | 49.3% [43.8, 54.6] n=298 | 40.1% [34.7, 45.6] n=227 | +9.2 pts [+1.8, +16.4] * |
+| Holdout (Mar 2025 to Apr 2026) | 12HR overnight 50% | ran 0.5 ATR first | 34.2% [28.9, 39.7] n=298 | 23.8% [18.1, 29.7] n=227 | +10.4 pts [+2.8, +17.8] * |
+| Holdout (Mar 2025 to Apr 2026) | 12HR overnight 50% | held 5 min | 50.0% [44.8, 55.2] n=298 | 48.0% [42.2, 53.7] n=227 | +2.0 pts [-5.7, +9.7] |
+| Holdout (Mar 2025 to Apr 2026) | 12HR overnight 50% | closed beyond | 54.7% [49.3, 60.0] n=298 | 49.3% [43.4, 55.7] n=227 | +5.4 pts [-2.7, +12.7] |
+| Holdout (Mar 2025 to Apr 2026) | 12HR prior day high/low | ran 0.25 ATR first | 46.7% [39.5, 53.1] n=195 | 42.6% [36.9, 48.3] n=282 | +4.1 pts [-4.8, +13.1] |
+| Holdout (Mar 2025 to Apr 2026) | 12HR prior day high/low | ran 0.5 ATR first | 29.7% [23.0, 36.2] n=195 | 20.2% [15.3, 25.3] n=282 | +9.5 pts [+1.3, +17.3] * |
+| Holdout (Mar 2025 to Apr 2026) | 12HR prior day high/low | held 5 min | 59.0% [52.2, 65.1] n=195 | 55.3% [49.8, 60.7] n=282 | +3.7 pts [-4.8, +12.5] |
+| Holdout (Mar 2025 to Apr 2026) | 12HR prior day high/low | closed beyond | 48.2% [41.1, 55.1] n=195 | 53.9% [48.0, 59.8] n=282 | -5.7 pts [-14.2, +3.1] |
+| Holdout (Mar 2025 to Apr 2026) | 12HR prior day 50% | ran 0.25 ATR first | 57.5% [51.4, 63.5] n=214 | 32.3% [26.2, 38.6] n=223 | +25.2 pts [+17.1, +33.2] * |
+| Holdout (Mar 2025 to Apr 2026) | 12HR prior day 50% | ran 0.5 ATR first | 41.6% [35.5, 47.9] n=214 | 17.9% [12.9, 23.6] n=223 | +23.7 pts [+15.9, +31.4] * |
+| Holdout (Mar 2025 to Apr 2026) | 12HR prior day 50% | held 5 min | 57.9% [52.2, 63.8] n=214 | 46.2% [40.5, 51.7] n=223 | +11.8 pts [+3.8, +19.7] * |
+| Holdout (Mar 2025 to Apr 2026) | 12HR prior day 50% | closed beyond | 59.3% [53.4, 65.5] n=214 | 44.8% [38.4, 51.7] n=223 | +14.5 pts [+5.4, +22.9] * |
+| Primary (May to Nov 10 2026) | All levels | ran 0.25 ATR first | 49.2% [44.2, 53.8] n=598 | 41.1% [35.0, 47.1] n=523 | +8.1 pts [+1.1, +14.9] * |
+| Primary (May to Nov 10 2026) | All levels | ran 0.5 ATR first | 32.8% [27.7, 37.9] n=598 | 17.2% [11.2, 23.9] n=523 | +15.6 pts [+7.7, +23.1] * |
+| Primary (May to Nov 10 2026) | All levels | held 5 min | 58.0% [53.7, 61.9] n=598 | 53.0% [48.3, 57.4] n=523 | +5.1 pts [-0.7, +10.8] |
+| Primary (May to Nov 10 2026) | All levels | closed beyond | 54.0% [49.2, 58.8] n=598 | 46.8% [40.5, 53.6] n=523 | +7.2 pts [-1.2, +15.3] |
+| Primary (May to Nov 10 2026) | Prior day high/low | ran 0.25 ATR first | 49.5% [41.2, 57.7] n=107 | 51.0% [42.4, 59.8] n=104 | -1.4 pts [-13.2, +10.3] |
+| Primary (May to Nov 10 2026) | Prior day high/low | ran 0.5 ATR first | 32.7% [24.3, 42.0] n=107 | 18.3% [11.7, 25.8] n=104 | +14.4 pts [+2.8, +25.5] * |
+| Primary (May to Nov 10 2026) | Prior day high/low | held 5 min | 60.7% [53.4, 68.1] n=107 | 60.6% [52.9, 68.4] n=104 | +0.2 pts [-10.0, +10.7] |
+| Primary (May to Nov 10 2026) | Prior day high/low | closed beyond | 56.1% [46.6, 65.8] n=107 | 51.9% [43.0, 61.5] n=104 | +4.2 pts [-10.2, +17.8] |
+| Primary (May to Nov 10 2026) | Prior week high/low | ran 0.25 ATR first | 41.0% [27.6, 55.3] n=39 | 41.0% [29.2, 53.0] n=61 | +0.0 pts [-17.0, +17.9] |
+| Primary (May to Nov 10 2026) | Prior week high/low | ran 0.5 ATR first | 28.2% [16.0, 42.9] n=39 | 18.0% [8.8, 27.6] n=61 | +10.2 pts [-4.5, +26.6] |
+| Primary (May to Nov 10 2026) | Prior week high/low | held 5 min | 56.4% [41.5, 70.7] n=39 | 52.5% [41.4, 62.9] n=61 | +4.0 pts [-14.1, +22.3] |
+| Primary (May to Nov 10 2026) | Prior week high/low | closed beyond | 46.2% [30.8, 60.5] n=39 | 47.5% [34.4, 60.5] n=61 | -1.4 pts [-22.1, +17.2] |
+| Primary (May to Nov 10 2026) | 12HR overnight high/low | ran 0.25 ATR first | 50.4% [43.0, 58.2] n=125 | 40.5% [32.0, 49.1] n=111 | +9.9 pts [-0.6, +20.9] |
+| Primary (May to Nov 10 2026) | 12HR overnight high/low | ran 0.5 ATR first | 37.6% [31.2, 44.3] n=125 | 17.1% [9.9, 25.2] n=111 | +20.5 pts [+10.0, +30.6] * |
+| Primary (May to Nov 10 2026) | 12HR overnight high/low | held 5 min | 63.2% [56.3, 70.0] n=125 | 55.0% [47.9, 62.4] n=111 | +8.2 pts [-1.9, +17.7] |
+| Primary (May to Nov 10 2026) | 12HR overnight high/low | closed beyond | 55.2% [49.0, 61.5] n=125 | 46.8% [38.8, 54.9] n=111 | +8.4 pts [-2.4, +18.8] |
+| Primary (May to Nov 10 2026) | 12HR overnight 50% | ran 0.25 ATR first | 48.5% [42.1, 55.3] n=132 | 34.3% [23.4, 45.1] n=67 | +14.2 pts [+1.7, +26.7] * |
+| Primary (May to Nov 10 2026) | 12HR overnight 50% | ran 0.5 ATR first | 28.8% [21.8, 36.4] n=132 | 17.9% [6.8, 29.6] n=67 | +10.9 pts [-3.0, +24.1] |
+| Primary (May to Nov 10 2026) | 12HR overnight 50% | held 5 min | 45.5% [38.7, 52.0] n=132 | 47.8% [37.5, 57.6] n=67 | -2.3 pts [-14.3, +9.0] |
+| Primary (May to Nov 10 2026) | 12HR overnight 50% | closed beyond | 49.2% [41.6, 56.5] n=132 | 43.3% [30.4, 55.7] n=67 | +6.0 pts [-8.6, +20.0] |
+| Primary (May to Nov 10 2026) | 12HR prior day high/low | ran 0.25 ATR first | 50.5% [41.0, 59.4] n=101 | 47.9% [39.3, 57.0] n=96 | +2.6 pts [-11.1, +15.4] |
+| Primary (May to Nov 10 2026) | 12HR prior day high/low | ran 0.5 ATR first | 35.6% [26.7, 45.0] n=101 | 17.7% [11.1, 25.2] n=96 | +17.9 pts [+6.2, +28.9] * |
+| Primary (May to Nov 10 2026) | 12HR prior day high/low | held 5 min | 64.4% [56.4, 72.0] n=101 | 57.3% [49.4, 65.6] n=96 | +7.1 pts [-4.3, +17.9] |
+| Primary (May to Nov 10 2026) | 12HR prior day high/low | closed beyond | 62.4% [53.3, 70.9] n=101 | 51.0% [41.9, 60.9] n=96 | +11.3 pts [-2.0, +23.6] |
+| Primary (May to Nov 10 2026) | 12HR prior day 50% | ran 0.25 ATR first | 50.0% [40.4, 59.8] n=94 | 27.4% [18.1, 36.7] n=84 | +22.6 pts [+9.8, +35.7] * |
+| Primary (May to Nov 10 2026) | 12HR prior day 50% | ran 0.5 ATR first | 30.9% [22.3, 39.8] n=94 | 14.3% [7.2, 21.7] n=84 | +16.6 pts [+6.6, +27.0] * |
+| Primary (May to Nov 10 2026) | 12HR prior day 50% | held 5 min | 59.6% [51.5, 67.7] n=94 | 40.5% [31.5, 49.4] n=84 | +19.1 pts [+6.1, +31.8] * |
+| Primary (May to Nov 10 2026) | 12HR prior day 50% | closed beyond | 51.1% [41.7, 60.0] n=94 | 38.1% [27.7, 49.3] n=84 | +13.0 pts [-0.9, +25.8] |
+| All | All levels | ran 0.25 ATR first | 49.0% [46.2, 51.8] n=1886 | 39.1% [36.0, 42.2] n=1992 | +9.9 pts [+6.0, +13.7] * |
+| All | All levels | ran 0.5 ATR first | 33.1% [30.0, 36.2] n=1886 | 19.5% [16.4, 22.7] n=1992 | +13.6 pts [+9.7, +17.4] * |
+| All | All levels | held 5 min | 55.7% [53.3, 58.1] n=1886 | 51.8% [49.2, 54.3] n=1992 | +3.9 pts [+0.5, +7.3] * |
+| All | All levels | closed beyond | 53.7% [51.1, 56.5] n=1886 | 49.5% [46.0, 53.1] n=1992 | +4.2 pts [-0.0, +8.5] |
+| All | Prior day high/low | ran 0.25 ATR first | 48.8% [43.7, 53.8] n=328 | 42.1% [37.4, 46.9] n=399 | +6.7 pts [-0.5, +13.5] |
+| All | Prior day high/low | ran 0.5 ATR first | 31.4% [26.3, 36.7] n=328 | 19.5% [15.6, 23.4] n=399 | +11.9 pts [+5.3, +18.1] * |
+| All | Prior day high/low | held 5 min | 57.0% [52.4, 61.6] n=328 | 56.6% [52.6, 60.9] n=399 | +0.4 pts [-6.0, +6.5] |
+| All | Prior day high/low | closed beyond | 53.7% [48.2, 59.2] n=328 | 52.4% [47.5, 57.1] n=399 | +1.3 pts [-5.7, +8.1] |
+| All | Prior week high/low | ran 0.25 ATR first | 43.0% [34.9, 50.9] n=114 | 34.5% [27.9, 40.5] n=200 | +8.5 pts [-1.1, +18.1] |
+| All | Prior week high/low | ran 0.5 ATR first | 24.6% [17.6, 32.2] n=114 | 18.5% [13.7, 23.7] n=200 | +6.1 pts [-2.2, +14.4] |
+| All | Prior week high/low | held 5 min | 48.2% [39.8, 55.9] n=114 | 49.5% [43.3, 55.5] n=200 | -1.3 pts [-11.8, +9.2] |
+| All | Prior week high/low | closed beyond | 50.0% [41.5, 58.5] n=114 | 51.5% [44.5, 58.0] n=200 | -1.5 pts [-11.8, +8.9] |
+| All | 12HR overnight high/low | ran 0.25 ATR first | 46.8% [42.7, 51.3] n=410 | 40.1% [35.6, 45.0] n=414 | +6.7 pts [+0.2, +13.2] * |
+| All | 12HR overnight high/low | ran 0.5 ATR first | 34.4% [30.4, 38.5] n=410 | 19.6% [15.5, 23.7] n=414 | +14.8 pts [+9.2, +20.3] * |
+| All | 12HR overnight high/low | held 5 min | 58.3% [54.3, 62.3] n=410 | 52.7% [48.4, 56.9] n=414 | +5.6 pts [-0.3, +11.4] |
+| All | 12HR overnight high/low | closed beyond | 53.7% [49.8, 57.7] n=410 | 48.3% [43.7, 53.3] n=414 | +5.3 pts [-1.0, +11.7] |
+| All | 12HR overnight 50% | ran 0.25 ATR first | 49.1% [44.7, 53.4] n=430 | 38.8% [33.9, 43.8] n=294 | +10.3 pts [+4.0, +16.4] * |
+| All | 12HR overnight 50% | ran 0.5 ATR first | 32.6% [28.1, 37.0] n=430 | 22.4% [17.5, 27.6] n=294 | +10.1 pts [+3.6, +16.1] * |
+| All | 12HR overnight 50% | held 5 min | 48.6% [44.3, 52.7] n=430 | 48.0% [42.9, 53.0] n=294 | +0.6 pts [-5.8, +7.0] |
+| All | 12HR overnight 50% | closed beyond | 53.0% [48.5, 57.2] n=430 | 48.0% [42.7, 53.7] n=294 | +5.1 pts [-1.6, +11.6] |
+| All | 12HR prior day high/low | ran 0.25 ATR first | 48.0% [42.5, 53.4] n=296 | 43.9% [39.2, 48.8] n=378 | +4.1 pts [-3.5, +11.6] |
+| All | 12HR prior day high/low | ran 0.5 ATR first | 31.8% [26.3, 37.1] n=296 | 19.6% [15.5, 23.7] n=378 | +12.2 pts [+5.4, +18.7] * |
+| All | 12HR prior day high/low | held 5 min | 60.8% [55.9, 65.5] n=296 | 55.8% [51.2, 60.2] n=378 | +5.0 pts [-1.9, +11.6] |
+| All | 12HR prior day high/low | closed beyond | 53.0% [47.5, 58.5] n=296 | 53.2% [48.1, 58.3] n=378 | -0.1 pts [-7.3, +7.0] |
+| All | 12HR prior day 50% | ran 0.25 ATR first | 55.2% [50.0, 60.3] n=308 | 30.9% [26.0, 36.3] n=307 | +24.3 pts [+17.3, +31.0] * |
+| All | 12HR prior day 50% | ran 0.5 ATR first | 38.3% [33.3, 43.5] n=308 | 16.9% [12.9, 21.4] n=307 | +21.4 pts [+15.2, +27.9] * |
+| All | 12HR prior day 50% | held 5 min | 58.4% [53.5, 63.1] n=308 | 44.6% [39.7, 49.4] n=307 | +13.8 pts [+7.0, +20.8] * |
+| All | 12HR prior day 50% | closed beyond | 56.8% [51.8, 61.8] n=308 | 43.0% [37.6, 48.8] n=307 | +13.8 pts [+6.2, +20.8] * |
+
+### G4. Taps by time and continuity together (all levels)
+
+| Window | Group | Ran 0.25 ATR first | Ran 0.5 ATR first | Closed beyond |
+|---|---|---|---|---|
+| Holdout (Mar 2025 to Apr 2026) | Before 10:00, continuity agrees | 45.9% [39.7, 52.0] n=466 | 26.2% [20.6, 32.2] n=466 | 54.9% [47.5, 62.1] n=466 |
+| Holdout (Mar 2025 to Apr 2026) | Before 10:00, not | 50.6% [46.2, 55.0] n=822 | 37.2% [32.3, 42.0] n=822 | 52.8% [48.0, 57.5] n=822 |
+| Holdout (Mar 2025 to Apr 2026) | 10:00 or later, continuity agrees | 35.9% [29.5, 42.0] n=594 | 16.7% [11.5, 21.8] n=594 | 55.4% [48.3, 61.8] n=594 |
+| Holdout (Mar 2025 to Apr 2026) | 10:00 or later, not | 40.0% [35.8, 44.3] n=875 | 22.7% [18.2, 27.6] n=875 | 47.1% [41.7, 52.6] n=875 |
+| Primary (May to Nov 10 2026) | Before 10:00, continuity agrees | 53.8% [45.6, 60.8] n=212 | 31.6% [22.8, 40.9] n=212 | 56.1% [46.3, 65.0] n=212 |
+| Primary (May to Nov 10 2026) | Before 10:00, not | 46.6% [40.4, 52.5] n=386 | 33.4% [26.6, 40.2] n=386 | 52.8% [46.3, 59.0] n=386 |
+| Primary (May to Nov 10 2026) | 10:00 or later, continuity agrees | 45.6% [36.6, 54.4] n=217 | 15.7% [9.3, 22.2] n=217 | 52.5% [41.7, 62.8] n=217 |
+| Primary (May to Nov 10 2026) | 10:00 or later, not | 37.9% [30.1, 45.6] n=306 | 18.3% [9.6, 27.7] n=306 | 42.8% [34.8, 51.2] n=306 |
+| All | Before 10:00, continuity agrees | 48.4% [43.5, 53.1] n=678 | 27.9% [23.2, 32.9] n=678 | 55.3% [49.3, 61.0] n=678 |
+| All | Before 10:00, not | 49.3% [45.7, 53.0] n=1208 | 36.0% [32.1, 39.9] n=1208 | 52.8% [49.0, 56.5] n=1208 |
+| All | 10:00 or later, continuity agrees | 38.5% [33.0, 43.7] n=811 | 16.4% [12.3, 20.6] n=811 | 54.6% [48.9, 60.2] n=811 |
+| All | 10:00 or later, not | 39.5% [35.8, 43.2] n=1181 | 21.6% [17.6, 25.9] n=1181 | 46.0% [41.5, 50.4] n=1181 |
+
+### H. Report days vs other days
+
+| Window | Side | Days | Sessions | Touched trigger | Held 5 min | Held + T1 before stop | Held + 0.5 ATR before stop | Avg R hold to close | Avg R touch to T1 |
+|---|---|---|---|---|---|---|---|---|---|
+| Holdout (Mar 2025 to Apr 2026) | called | 08:30 release days (CPI, jobs, PCE) | 21 | 63.4% [45.8, 82.2] n=41 | 56.1% [38.2, 74.2] n=41 | 39.0% [22.9, 56.5] n=41 | 22.0% [9.8, 36.2] n=41 | 0.215 [-0.454, 0.925] n=23 | -0.073 [-0.402, 0.287] n=22 |
+| Holdout (Mar 2025 to Apr 2026) | called | FOMC and 10:00 release days | 11 | 76.9% [57.1, 93.8] n=26 | 53.8% [35.0, 73.9] n=26 | 46.2% [24.2, 68.4] n=26 | 11.5% [0.0, 22.7] n=26 | -0.489 [-0.749, -0.238] n=14 | 0.094 [-0.298, 0.516] n=20 |
+| Holdout (Mar 2025 to Apr 2026) | called | Other days | 178 | 61.3% [55.8, 66.3] n=380 | 52.6% [47.2, 58.0] n=380 | 33.1% [28.3, 38.1] n=372 | 17.9% [13.9, 22.3] n=380 | -0.0 [-0.152, 0.167] n=200 | -0.078 [-0.173, 0.025] n=220 |
+| Holdout (Mar 2025 to Apr 2026) | opposite | 08:30 release days (CPI, jobs, PCE) | 21 | 78.0% [62.1, 91.7] n=41 | 65.9% [48.8, 81.1] n=41 | 40.5% [24.1, 55.6] n=37 | 36.6% [20.0, 52.5] n=41 | 0.287 [-0.305, 0.929] n=27 | -0.011 [-0.236, 0.202] n=28 |
+| Holdout (Mar 2025 to Apr 2026) | opposite | FOMC and 10:00 release days | 11 | 80.8% [63.6, 96.2] n=26 | 69.2% [42.9, 93.3] n=26 | 48.0% [25.0, 70.8] n=25 | 34.6% [15.5, 53.3] n=26 | 0.03 [-0.695, 0.685] n=18 | -0.287 [-0.549, 0.072] n=18 |
+| Holdout (Mar 2025 to Apr 2026) | opposite | Other days | 178 | 66.7% [61.3, 71.9] n=381 | 58.3% [52.7, 64.0] n=381 | 39.5% [34.5, 44.9] n=349 | 18.6% [14.7, 22.7] n=381 | 0.089 [-0.068, 0.254] n=222 | 0.034 [-0.078, 0.15] n=219 |
+| Primary (May to Nov 10 2026) | called | 08:30 release days (CPI, jobs, PCE) | 17 | 44.8% [26.8, 62.5] n=29 | 41.4% [22.2, 60.5] n=29 | 31.0% [13.8, 50.0] n=29 | 24.1% [5.9, 44.0] n=29 | 0.72 [-0.802, 2.159] n=12 | -0.131 [-0.706, 0.313] n=10 |
+| Primary (May to Nov 10 2026) | called | FOMC and 10:00 release days | 4 | 87.5% [62.5, 100.0] n=8 | 75.0% [50.0, 100.0] n=8 | 62.5% [20.0, 100.0] n=8 | 25.0% [0.0, 54.5] n=8 | 0.075 [-1.0, 0.659] n=6 | -0.215 [-0.779, 0.119] n=7 |
+| Primary (May to Nov 10 2026) | called | Other days | 91 | 68.8% [61.6, 75.4] n=173 | 61.3% [53.9, 68.3] n=173 | 34.5% [28.0, 41.4] n=168 | 16.8% [11.0, 22.4] n=173 | -0.051 [-0.204, 0.101] n=106 | -0.057 [-0.148, 0.036] n=112 |
+| Primary (May to Nov 10 2026) | opposite | 08:30 release days (CPI, jobs, PCE) | 17 | 75.9% [56.0, 94.1] n=29 | 65.5% [44.7, 85.2] n=29 | 28.6% [14.3, 44.4] n=28 | 17.2% [6.7, 30.0] n=29 | -0.171 [-0.425, 0.082] n=19 | 0.17 [-0.219, 0.714] n=17 |
+| Primary (May to Nov 10 2026) | opposite | FOMC and 10:00 release days | 4 | 75.0% [45.5, 100.0] n=8 | 37.5% [14.3, 66.7] n=8 | 37.5% [14.3, 66.7] n=8 | 25.0% [0.0, 66.7] n=8 | 0.017 [-1.0, 1.397] n=3 | 0.15 [-0.633, 1.387] n=6 |
+| Primary (May to Nov 10 2026) | opposite | Other days | 91 | 54.3% [47.0, 62.2] n=173 | 45.1% [37.6, 52.7] n=173 | 27.7% [21.7, 34.3] n=166 | 13.3% [8.5, 18.6] n=173 | -0.04 [-0.25, 0.194] n=78 | -0.13 [-0.278, 0.022] n=83 |
+| All | called | 08:30 release days (CPI, jobs, PCE) | 38 | 55.7% [42.3, 68.5] n=70 | 50.0% [36.8, 62.3] n=70 | 35.7% [24.6, 48.5] n=70 | 22.9% [12.5, 34.3] n=70 | 0.388 [-0.295, 1.104] n=35 | -0.092 [-0.372, 0.186] n=32 |
+| All | called | FOMC and 10:00 release days | 15 | 79.4% [63.6, 93.1] n=34 | 58.8% [42.9, 75.0] n=34 | 50.0% [31.0, 69.0] n=34 | 14.7% [4.1, 25.9] n=34 | -0.32 [-0.673, 0.035] n=20 | 0.014 [-0.297, 0.337] n=27 |
+| All | called | Other days | 269 | 63.7% [59.2, 67.5] n=553 | 55.3% [50.8, 59.5] n=553 | 33.5% [29.6, 37.4] n=540 | 17.5% [14.3, 20.9] n=553 | -0.018 [-0.129, 0.105] n=306 | -0.071 [-0.142, 0.004] n=332 |
+| All | opposite | 08:30 release days (CPI, jobs, PCE) | 38 | 77.1% [65.3, 87.9] n=70 | 65.7% [52.8, 77.8] n=70 | 35.4% [24.1, 46.6] n=65 | 28.6% [17.9, 40.0] n=70 | 0.098 [-0.265, 0.522] n=46 | 0.058 [-0.14, 0.283] n=45 |
+| All | opposite | FOMC and 10:00 release days | 15 | 79.4% [64.5, 93.9] n=34 | 61.8% [40.7, 81.8] n=34 | 45.5% [27.6, 64.5] n=33 | 32.4% [16.7, 48.5] n=34 | 0.028 [-0.583, 0.584] n=21 | -0.178 [-0.456, 0.205] n=24 |
+| All | opposite | Other days | 269 | 62.8% [58.6, 67.1] n=554 | 54.2% [49.7, 58.7] n=554 | 35.7% [31.7, 40.0] n=515 | 17.0% [13.8, 20.4] n=554 | 0.056 [-0.074, 0.191] n=300 | -0.011 [-0.102, 0.082] n=302 |
+
+### H2. Report days: called minus opposite
+
+| Window | Days | Measure | Difference |
+|---|---|---|---|
+| Holdout (Mar 2025 to Apr 2026) | 08:30 release days | Held 5 min | -9.8 pts [-39.1, +21.6] |
+| Holdout (Mar 2025 to Apr 2026) | 08:30 release days | Held + T1 before stop | -1.5 pts [-29.9, +30.0] |
+| Holdout (Mar 2025 to Apr 2026) | 08:30 release days | Held + 0.5 ATR before stop | -14.6 pts [-37.2, +11.1] |
+| Holdout (Mar 2025 to Apr 2026) | Other days | Held 5 min | -5.6 pts [-15.9, +4.0] |
+| Holdout (Mar 2025 to Apr 2026) | Other days | Held + T1 before stop | -6.5 pts [-15.0, +2.0] |
+| Holdout (Mar 2025 to Apr 2026) | Other days | Held + 0.5 ATR before stop | -0.7 pts [-7.2, +5.5] |
+| Holdout (Mar 2025 to Apr 2026) | called side: release days minus other days | Held 5 min | +3.5 pts [-14.8, +23.0] |
+| Holdout (Mar 2025 to Apr 2026) | called side: release days minus other days | Held + 0.5 ATR before stop | +4.1 pts [-8.8, +18.6] |
+| Primary (May to Nov 10 2026) | 08:30 release days | Held 5 min | -24.1 pts [-58.1, +10.3] |
+| Primary (May to Nov 10 2026) | 08:30 release days | Held + T1 before stop | +2.5 pts [-26.0, +30.4] |
+| Primary (May to Nov 10 2026) | 08:30 release days | Held + 0.5 ATR before stop | +6.9 pts [-16.7, +32.0] |
+| Primary (May to Nov 10 2026) | Other days | Held 5 min | +16.2 pts [+3.2, +28.8] * |
+| Primary (May to Nov 10 2026) | Other days | Held + T1 before stop | +6.8 pts [-4.4, +17.1] |
+| Primary (May to Nov 10 2026) | Other days | Held + 0.5 ATR before stop | +3.5 pts [-5.0, +11.5] |
+| Primary (May to Nov 10 2026) | called side: release days minus other days | Held 5 min | -19.9 pts [-40.7, +0.1] |
+| Primary (May to Nov 10 2026) | called side: release days minus other days | Held + 0.5 ATR before stop | +7.4 pts [-11.1, +28.1] |
+| All | 08:30 release days | Held 5 min | -15.7 pts [-37.3, +7.0] |
+| All | 08:30 release days | Held + T1 before stop | +0.3 pts [-19.5, +20.9] |
+| All | 08:30 release days | Held + 0.5 ATR before stop | -5.7 pts [-23.3, +13.1] |
+| All | Other days | Held 5 min | +1.2 pts [-7.0, +9.2] |
+| All | Other days | Held + T1 before stop | -2.2 pts [-9.2, +4.5] |
+| All | Other days | Held + 0.5 ATR before stop | +0.6 pts [-4.6, +5.6] |
+| All | called side: release days minus other days | Held 5 min | -5.3 pts [-18.8, +8.3] |
+| All | called side: release days minus other days | Held + 0.5 ATR before stop | +5.3 pts [-5.9, +17.0] |
+
+### H3. Strat level taps on 08:30 release days vs other days
+
+| Window | Outcome | Release days | Other days | Difference |
+|---|---|---|---|---|
+| Holdout (Mar 2025 to Apr 2026) | ran 0.25 ATR first | 46.5% [37.2, 55.4] n=325 | 42.9% [40.0, 45.9] n=2261 | +3.5 pts [-6.2, +12.9] |
+| Holdout (Mar 2025 to Apr 2026) | ran 0.5 ATR first | 30.2% [21.5, 39.5] n=325 | 25.8% [22.6, 29.0] n=2261 | +4.3 pts [-5.0, +13.9] |
+| Holdout (Mar 2025 to Apr 2026) | closed beyond | 49.5% [39.4, 59.6] n=325 | 53.2% [50.0, 56.5] n=2261 | -3.6 pts [-13.9, +7.3] |
+| Primary (May to Nov 10 2026) | ran 0.25 ATR first | 40.9% [31.3, 48.8] n=149 | 45.9% [41.2, 50.6] n=911 | -4.9 pts [-15.8, +4.2] |
+| Primary (May to Nov 10 2026) | ran 0.5 ATR first | 22.8% [12.9, 33.6] n=149 | 24.8% [20.3, 29.9] n=911 | -2.0 pts [-13.5, +9.3] |
+| Primary (May to Nov 10 2026) | closed beyond | 48.3% [39.8, 58.1] n=149 | 50.1% [45.5, 54.5] n=911 | -1.7 pts [-11.2, +9.0] |
+| All | ran 0.25 ATR first | 44.7% [37.5, 51.4] n=474 | 43.8% [41.2, 46.5] n=3172 | +0.9 pts [-6.7, +7.8] |
+| All | ran 0.5 ATR first | 27.8% [20.9, 34.9] n=474 | 25.5% [22.9, 28.3] n=3172 | +2.3 pts [-5.5, +9.7] |
+| All | closed beyond | 49.2% [42.2, 56.9] n=474 | 52.3% [49.6, 55.0] n=3172 | -3.1 pts [-10.8, +4.9] |
+
+### I. Where the brief puts its levels
+
+| Side | Distance | n | Median | Middle half |
+|---|---|---|---|---|
+| called | Open to trigger (ATR) | 657 | 0.26 | 0.09 to 0.44 |
+| called | Trigger to stop (ATR) | 657 | 0.39 | 0.27 to 0.55 |
+| called | Trigger to T1 (ATR) | 644 | 0.21 | 0.08 to 0.42 |
+| called | Trigger to T2 (ATR) | 580 | 0.56 | 0.32 to 1.01 |
+| called | Trigger to T3 (ATR) | 487 | 1.03 | 0.65 to 1.51 |
+| called | Has no T1 / no T2 / no T3 | 657 | 2% / 12% / 26% |  |
+| called | T1 closer than 0.1 ATR to the trigger | 644 | 30% |  |
+| opposite | Open to trigger (ATR) | 658 | 0.21 | 0.09 to 0.37 |
+| opposite | Trigger to stop (ATR) | 658 | 0.37 | 0.25 to 0.52 |
+| opposite | Trigger to T1 (ATR) | 613 | 0.17 | 0.07 to 0.37 |
+| opposite | Trigger to T2 (ATR) | 551 | 0.47 | 0.26 to 0.88 |
+| opposite | Trigger to T3 (ATR) | 414 | 0.91 | 0.55 to 1.38 |
+| opposite | Has no T1 / no T2 / no T3 | 658 | 7% / 16% / 37% |  |
+| opposite | T1 closer than 0.1 ATR to the trigger | 613 | 33% |  |

@@ -1,0 +1,538 @@
+{
+ "window": "holdout_minsample40_2025-03-03_2026-04-30",
+ "sessions": 293,
+ "by": {
+  "SPY": {
+   "trig": {
+    "atr14_R": -33.57,
+    "atr5_R": -34.53,
+    "diff_R": -0.96,
+    "ci90": [
+     -4.16,
+     1.88
+    ],
+    "fills_atr14": 359,
+    "fills_atr5": 357,
+    "avg_atr14": -0.094,
+    "avg_atr5": -0.097
+   },
+   "plan": {
+    "atr14_R": -11.97,
+    "atr5_R": -13.94,
+    "diff_R": -1.97,
+    "ci90": [
+     -13.96,
+     9.5
+    ],
+    "fills_atr14": 676,
+    "fills_atr5": 676,
+    "avg_atr14": -0.018,
+    "avg_atr5": -0.021
+   },
+   "levels": {
+    "calls_trigger_price": {
+     "n": 282,
+     "changed": 2,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 3.85
+    },
+    "puts_trigger_price": {
+     "n": 281,
+     "changed": 3,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 0.24
+    },
+    "calls_stop_price": {
+     "n": 281,
+     "changed": 0,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": null
+    },
+    "puts_stop_price": {
+     "n": 281,
+     "changed": 2,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 3.85
+    },
+    "calls_t1_price": {
+     "n": 237,
+     "changed": 0,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": null
+    },
+    "puts_t1_price": {
+     "n": 258,
+     "changed": 1,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 9.06
+    },
+    "plan_entry_mid_absdiff_med": 0.045,
+    "plan_stop_absdiff_med": 0.16,
+    "plan_t1_absdiff_med": 0.13,
+    "atr5_over_atr14_median": 0.978,
+    "atr5_over_atr14_p10_p90": [
+     0.792,
+     1.222
+    ],
+    "premarket_high_low_changed_sessions": 5
+   },
+   "ticker_sessions": 293
+  },
+  "QQQ": {
+   "trig": {
+    "atr14_R": -8.12,
+    "atr5_R": -7.74,
+    "diff_R": 0.38,
+    "ci90": [
+     -0.05,
+     0.93
+    ],
+    "fills_atr14": 347,
+    "fills_atr5": 347,
+    "avg_atr14": -0.023,
+    "avg_atr5": -0.022
+   },
+   "plan": {
+    "atr14_R": -6.7,
+    "atr5_R": -25.61,
+    "diff_R": -18.91,
+    "ci90": [
+     -35.48,
+     -2.59
+    ],
+    "fills_atr14": 628,
+    "fills_atr5": 638,
+    "avg_atr14": -0.011,
+    "avg_atr5": -0.04
+   },
+   "levels": {
+    "calls_trigger_price": {
+     "n": 281,
+     "changed": 4,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 0.844
+    },
+    "puts_trigger_price": {
+     "n": 281,
+     "changed": 2,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 4.211
+    },
+    "calls_stop_price": {
+     "n": 280,
+     "changed": 1,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 1.375
+    },
+    "puts_stop_price": {
+     "n": 281,
+     "changed": 1,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 0.52
+    },
+    "calls_t1_price": {
+     "n": 236,
+     "changed": 1,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 6.76
+    },
+    "puts_t1_price": {
+     "n": 263,
+     "changed": 2,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 3.355
+    },
+    "plan_entry_mid_absdiff_med": 0.075,
+    "plan_stop_absdiff_med": 0.133,
+    "plan_t1_absdiff_med": 0.19,
+    "atr5_over_atr14_median": 0.986,
+    "atr5_over_atr14_p10_p90": [
+     0.819,
+     1.208
+    ],
+    "premarket_high_low_changed_sessions": 6
+   },
+   "ticker_sessions": 293
+  },
+  "IWM": {
+   "trig": {
+    "atr14_R": 0.42,
+    "atr5_R": 0.52,
+    "diff_R": 0.1,
+    "ci90": [
+     -0.01,
+     0.24
+    ],
+    "fills_atr14": 384,
+    "fills_atr5": 384,
+    "avg_atr14": 0.001,
+    "avg_atr5": 0.001
+   },
+   "plan": {
+    "atr14_R": 4.14,
+    "atr5_R": 12.04,
+    "diff_R": 7.9,
+    "ci90": [
+     -4.61,
+     21.49
+    ],
+    "fills_atr14": 651,
+    "fills_atr5": 647,
+    "avg_atr14": 0.006,
+    "avg_atr5": 0.019
+   },
+   "levels": {
+    "calls_trigger_price": {
+     "n": 282,
+     "changed": 4,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 0.535
+    },
+    "puts_trigger_price": {
+     "n": 282,
+     "changed": 2,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 0.692
+    },
+    "calls_stop_price": {
+     "n": 282,
+     "changed": 1,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 0.19
+    },
+    "puts_stop_price": {
+     "n": 282,
+     "changed": 2,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 1.205
+    },
+    "calls_t1_price": {
+     "n": 261,
+     "changed": 0,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": null
+    },
+    "puts_t1_price": {
+     "n": 262,
+     "changed": 0,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": null
+    },
+    "plan_entry_mid_absdiff_med": 0.035,
+    "plan_stop_absdiff_med": 0.05,
+    "plan_t1_absdiff_med": 0.08,
+    "atr5_over_atr14_median": 0.987,
+    "atr5_over_atr14_p10_p90": [
+     0.831,
+     1.164
+    ],
+    "premarket_high_low_changed_sessions": 6
+   },
+   "ticker_sessions": 293
+  },
+  "total": {
+   "trig": {
+    "atr14_R": -41.27,
+    "atr5_R": -41.75,
+    "diff_R": -0.48,
+    "ci90": [
+     -3.63,
+     2.45
+    ],
+    "fills_atr14": 1090,
+    "fills_atr5": 1088,
+    "avg_atr14": -0.038,
+    "avg_atr5": -0.038
+   },
+   "plan": {
+    "atr14_R": -14.53,
+    "atr5_R": -27.51,
+    "diff_R": -12.98,
+    "ci90": [
+     -39.29,
+     13.64
+    ],
+    "fills_atr14": 1955,
+    "fills_atr5": 1961,
+    "avg_atr14": -0.007,
+    "avg_atr5": -0.014
+   },
+   "levels": {
+    "calls_trigger_price": {
+     "n": 845,
+     "changed": 10,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 1.01
+    },
+    "puts_trigger_price": {
+     "n": 844,
+     "changed": 7,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 1.193
+    },
+    "calls_stop_price": {
+     "n": 843,
+     "changed": 2,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 0.782
+    },
+    "puts_stop_price": {
+     "n": 844,
+     "changed": 5,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 1.52
+    },
+    "calls_t1_price": {
+     "n": 734,
+     "changed": 1,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 6.76
+    },
+    "puts_t1_price": {
+     "n": 783,
+     "changed": 3,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 5.29
+    },
+    "plan_entry_mid_absdiff_med": 0.05,
+    "plan_stop_absdiff_med": 0.11,
+    "plan_t1_absdiff_med": 0.12,
+    "atr5_over_atr14_median": 0.985,
+    "atr5_over_atr14_p10_p90": [
+     0.816,
+     1.2
+    ],
+    "premarket_high_low_changed_sessions": 17
+   },
+   "ticker_sessions": 879
+  },
+  "vol rising (ATR5/ATR14 > 1.15)": {
+   "trig": {
+    "atr14_R": -7.41,
+    "atr5_R": -9.68,
+    "diff_R": -2.27,
+    "ci90": [
+     -5.34,
+     -0.03
+    ],
+    "fills_atr14": 149,
+    "fills_atr5": 149,
+    "avg_atr14": -0.05,
+    "avg_atr5": -0.065
+   },
+   "plan": {
+    "atr14_R": 8.09,
+    "atr5_R": -0.48,
+    "diff_R": -8.57,
+    "ci90": [
+     -23.41,
+     5.63
+    ],
+    "fills_atr14": 245,
+    "fills_atr5": 233,
+    "avg_atr14": 0.033,
+    "avg_atr5": -0.002
+   },
+   "levels": {
+    "calls_trigger_price": {
+     "n": 126,
+     "changed": 2,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 2.229
+    },
+    "puts_trigger_price": {
+     "n": 124,
+     "changed": 2,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 1.07
+    },
+    "calls_stop_price": {
+     "n": 124,
+     "changed": 1,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 0.19
+    },
+    "puts_stop_price": {
+     "n": 124,
+     "changed": 1,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 3.9
+    },
+    "calls_t1_price": {
+     "n": 120,
+     "changed": 0,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": null
+    },
+    "puts_t1_price": {
+     "n": 93,
+     "changed": 1,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 9.06
+    },
+    "plan_entry_mid_absdiff_med": 0.203,
+    "plan_stop_absdiff_med": 0.34,
+    "plan_t1_absdiff_med": 0.39,
+    "atr5_over_atr14_median": 1.237,
+    "atr5_over_atr14_p10_p90": [
+     1.164,
+     1.422
+    ],
+    "premarket_high_low_changed_sessions": 4
+   },
+   "ticker_sessions": 126
+  },
+  "vol falling (ATR5/ATR14 < 0.85)": {
+   "trig": {
+    "atr14_R": -25.37,
+    "atr5_R": -24.89,
+    "diff_R": 0.48,
+    "ci90": [
+     0.05,
+     1.03
+    ],
+    "fills_atr14": 196,
+    "fills_atr5": 196,
+    "avg_atr14": -0.129,
+    "avg_atr5": -0.127
+   },
+   "plan": {
+    "atr14_R": -29.85,
+    "atr5_R": -25.93,
+    "diff_R": 3.92,
+    "ci90": [
+     -3.01,
+     11.17
+    ],
+    "fills_atr14": 209,
+    "fills_atr5": 215,
+    "avg_atr14": -0.143,
+    "avg_atr5": -0.121
+   },
+   "levels": {
+    "calls_trigger_price": {
+     "n": 147,
+     "changed": 4,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 0.535
+    },
+    "puts_trigger_price": {
+     "n": 147,
+     "changed": 3,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 1.193
+    },
+    "calls_stop_price": {
+     "n": 147,
+     "changed": 1,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 1.375
+    },
+    "puts_stop_price": {
+     "n": 147,
+     "changed": 2,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 0.705
+    },
+    "calls_t1_price": {
+     "n": 126,
+     "changed": 1,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 6.76
+    },
+    "puts_t1_price": {
+     "n": 146,
+     "changed": 1,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 5.29
+    },
+    "plan_entry_mid_absdiff_med": 0.08,
+    "plan_stop_absdiff_med": 0.185,
+    "plan_t1_absdiff_med": 0.15,
+    "atr5_over_atr14_median": 0.805,
+    "atr5_over_atr14_p10_p90": [
+     0.729,
+     0.841
+    ],
+    "premarket_high_low_changed_sessions": 7
+   },
+   "ticker_sessions": 147
+  },
+  "vol steady (0.85 to 1.15)": {
+   "trig": {
+    "atr14_R": -8.49,
+    "atr5_R": -7.18,
+    "diff_R": 1.31,
+    "ci90": [
+     0.0,
+     3.19
+    ],
+    "fills_atr14": 745,
+    "fills_atr5": 743,
+    "avg_atr14": -0.011,
+    "avg_atr5": -0.01
+   },
+   "plan": {
+    "atr14_R": 7.23,
+    "atr5_R": -1.1,
+    "diff_R": -8.33,
+    "ci90": [
+     -27.81,
+     11.68
+    ],
+    "fills_atr14": 1501,
+    "fills_atr5": 1513,
+    "avg_atr14": 0.005,
+    "avg_atr5": -0.001
+   },
+   "levels": {
+    "calls_trigger_price": {
+     "n": 572,
+     "changed": 4,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 1.325
+    },
+    "puts_trigger_price": {
+     "n": 573,
+     "changed": 2,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 1.025
+    },
+    "calls_stop_price": {
+     "n": 572,
+     "changed": 0,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": null
+    },
+    "puts_stop_price": {
+     "n": 573,
+     "changed": 2,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 2.66
+    },
+    "calls_t1_price": {
+     "n": 488,
+     "changed": 0,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": null
+    },
+    "puts_t1_price": {
+     "n": 544,
+     "changed": 1,
+     "median_abs_pts": 0.0,
+     "median_abs_pts_when_changed": 1.42
+    },
+    "plan_entry_mid_absdiff_med": 0.04,
+    "plan_stop_absdiff_med": 0.09,
+    "plan_t1_absdiff_med": 0.1,
+    "atr5_over_atr14_median": 0.987,
+    "atr5_over_atr14_p10_p90": [
+     0.888,
+     1.1
+    ],
+    "premarket_high_low_changed_sessions": 6
+   },
+   "ticker_sessions": 573
+  }
+ }
+}

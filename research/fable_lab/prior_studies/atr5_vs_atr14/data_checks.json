@@ -1,0 +1,41 @@
+{
+ "SPY": {
+  "fixture_overlap_days": 483,
+  "fixture_max_abs_diff": 1.1368683772161603e-13,
+  "adjusted_vs_raw_close_max_pct_since_2023": 4.625481539532739,
+  "minute_overlap_days": 423,
+  "minute_close_err_pct_median": 0.006744793862234477,
+  "minute_close_err_pct_max": 0.9569465203601801,
+  "minute_high_err_pct_p95": 0.0,
+  "minute_low_err_pct_p95": 0.0,
+  "daily_rows": 2981,
+  "daily_first": "2015-01-02",
+  "daily_last": "2026-11-09"
+ },
+ "QQQ": {
+  "fixture_overlap_days": 483,
+  "fixture_max_abs_diff": 1.1368683772161603e-13,
+  "adjusted_vs_raw_close_max_pct_since_2023": 2.0917585538264505,
+  "minute_overlap_days": 423,
+  "minute_close_err_pct_median": 0.006982557571200143,
+  "minute_close_err_pct_max": 0.1845493562231737,
+  "minute_high_err_pct_p95": 0.0,
+  "minute_low_err_pct_p95": 0.0,
+  "daily_rows": 2981,
+  "daily_first": "2015-01-02",
+  "daily_last": "2026-11-09"
+ },
+ "IWM": {
+  "fixture_overlap_days": 483,
+  "fixture_max_abs_diff": 0.0,
+  "adjusted_vs_raw_close_max_pct_since_2023": 4.360078076863749,
+  "minute_overlap_days": 423,
+  "minute_close_err_pct_median": 0.007395355716610652,
+  "minute_close_err_pct_max": 0.7404195710902783,
+  "minute_high_err_pct_p95": 0.0,
+  "minute_low_err_pct_p95": 0.0,
+  "daily_rows": 2981,
+  "daily_first": "2015-01-02",
+  "daily_last": "2026-11-09"
+ }
+}

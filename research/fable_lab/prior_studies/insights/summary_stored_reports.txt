@@ -1,0 +1,72 @@
+
+## By persona (day rule)
+group | plans | filled | t1 | stop | close | sum R | avg R/fill | size-wtd sum R
+aggressive | 30 | 4 | 0 | 0 | 4 | +2.12 | +0.53 | +1.70
+conservative | 30 | 4 | 3 | 1 | 0 | +3.63 | +0.91 | +0.56
+neutral | 30 | 4 | 2 | 1 | 1 | +2.75 | +0.69 | +1.92
+
+## By ticker (day rule)
+group | plans | filled | t1 | stop | close | sum R | avg R/fill | size-wtd sum R
+IWM | 30 | 6 | 2 | 2 | 2 | +2.11 | +0.35 | +1.51
+QQQ | 30 | 3 | 1 | 0 | 2 | +3.31 | +1.10 | +1.57
+SPY | 30 | 3 | 2 | 0 | 1 | +3.08 | +1.03 | +1.10
+
+## By direction (day rule)
+group | plans | filled | t1 | stop | close | sum R | avg R/fill | size-wtd sum R
+long | 30 | 3 | 0 | 2 | 1 | -2.19 | -0.73 | -0.85
+short | 60 | 9 | 5 | 0 | 4 | +10.69 | +1.19 | +5.03
+
+## By day, neutral persona only (day rule)
+group | plans | filled | t1 | stop | close | sum R | avg R/fill | size-wtd sum R
+2026-10-26 | 3 | 0 | 0 | 0 | 0 | +0.00 | +0.00 | +0.00
+2026-10-27 | 3 | 0 | 0 | 0 | 0 | +0.00 | +0.00 | +0.00
+2026-10-28 | 3 | 0 | 0 | 0 | 0 | +0.00 | +0.00 | +0.00
+2026-10-29 | 3 | 0 | 0 | 0 | 0 | +0.00 | +0.00 | +0.00
+2026-10-30 | 3 | 1 | 1 | 0 | 0 | +1.29 | +1.29 | +0.90
+2026-11-04 | 3 | 1 | 0 | 1 | 0 | -1.00 | -1.00 | -0.70
+2026-11-05 | 3 | 2 | 1 | 0 | 1 | +2.46 | +1.23 | +1.72
+2026-11-06 | 3 | 0 | 0 | 0 | 0 | +0.00 | +0.00 | +0.00
+2026-11-09 | 3 | 0 | 0 | 0 | 0 | +0.00 | +0.00 | +0.00
+2026-11-10 | 3 | 0 | 0 | 0 | 0 | +0.00 | +0.00 | +0.00
+
+## By persona (swing rule)
+group | plans | filled | t1 | stop | close | sum R | avg R/fill | size-wtd sum R
+aggressive | 30 | 4 | 0 | 2 | 2 | -2.49 | -0.62 | -1.99
+conservative | 30 | 4 | 3 | 1 | 0 | +3.63 | +0.91 | +0.56
+neutral | 30 | 4 | 2 | 2 | 0 | +0.57 | +0.14 | +0.40
+
+## By ticker (swing rule)
+group | plans | filled | t1 | stop | close | sum R | avg R/fill | size-wtd sum R
+IWM | 30 | 6 | 2 | 3 | 1 | -0.07 | -0.01 | -0.23
+QQQ | 30 | 3 | 1 | 1 | 1 | -0.05 | -0.02 | -0.90
+SPY | 30 | 3 | 2 | 1 | 0 | +1.83 | +0.61 | +0.10
+
+## By direction (swing rule)
+group | plans | filled | t1 | stop | close | sum R | avg R/fill | size-wtd sum R
+long | 30 | 3 | 0 | 3 | 0 | -3.00 | -1.00 | -1.50
+short | 60 | 9 | 5 | 2 | 2 | +4.71 | +0.52 | +0.46
+
+## By persona (fill5 rule)
+group | plans | filled | t1 | stop | close | sum R | avg R/fill | size-wtd sum R
+aggressive | 30 | 12 | 0 | 4 | 8 | -3.66 | -0.30 | -2.92
+conservative | 30 | 12 | 7 | 5 | 0 | +3.76 | +0.31 | -0.11
+neutral | 30 | 12 | 5 | 7 | 0 | -1.06 | -0.09 | -0.74
+
+## By ticker (fill5 rule)
+group | plans | filled | t1 | stop | close | sum R | avg R/fill | size-wtd sum R
+IWM | 30 | 15 | 2 | 11 | 2 | -10.15 | -0.68 | -5.26
+QQQ | 30 | 15 | 8 | 2 | 5 | +10.69 | +0.71 | +2.83
+SPY | 30 | 6 | 2 | 3 | 1 | -1.49 | -0.25 | -1.36
+
+## By direction (fill5 rule)
+group | plans | filled | t1 | stop | close | sum R | avg R/fill | size-wtd sum R
+long | 30 | 9 | 0 | 8 | 1 | -9.32 | -1.04 | -4.64
+short | 60 | 27 | 12 | 8 | 7 | +8.37 | +0.31 | +0.86
+
+## Direction call accuracy (canonical, one per ticker-day)
+dir_correct_vs_prev_close: 11/30
+dir_correct_5d: 14/30
+  long: 5/10 right on the day
+  short: 6/20 right on the day
+no-fill ticker-days: 26/30; of those the call was wrong on the day: 19
+entry distance from prior close in ATR: median 0.88, >1 ATR 13/30, >3 ATR 5/30
