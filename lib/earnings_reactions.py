@@ -1485,3 +1485,30 @@ def qualify_native_classifier_inputs(event, daily, *, observation_ts, price_evid
     except (ValueError,KeyError,TypeError,IndexError,OverflowError) as exc:
         result['reason']=str(exc)[:160]
     return result
+
+
+# ────────────────────────────────────────────────────────────
+# Retired earnings_calendar sources (EarningsWhispers, retired
+# 2026-10-31). Historical rows stay in the table; readers exclude
+# them. 'earnings_whispers' is the persisted value; 'EarningsWhispers'
+# is the raw writer literal, reachable only from an unmapped frame.
+# Null-safe: NULL NOT IN (...) is NULL and would drop the row, so a
+# NULL or 'unknown' non-EW row stays visible. Parenthesised so it can
+# be appended with AND to any existing WHERE without changing
+# precedence.
+# ────────────────────────────────────────────────────────────
+
+RETIRED_EARNINGS_SOURCES = ('earnings_whispers', 'EarningsWhispers')
+
+
+def earnings_not_retired_sql(alias: Optional[str] = None) -> str:
+    """The retired-source predicate, optionally qualified by a table alias
+    (``earnings_not_retired_sql('ec')`` reads ``ec.data_source``)."""
+    if alias is not None and not alias.isidentifier():
+        raise ValueError(f"table alias must be an identifier, got {alias!r}")
+    col = f"{alias}.data_source" if alias else "data_source"
+    retired = ", ".join(f"'{s}'" for s in RETIRED_EARNINGS_SOURCES)
+    return f"({col} IS NULL OR {col} NOT IN ({retired}))"
+
+
+EARNINGS_NOT_RETIRED_SQL = earnings_not_retired_sql()

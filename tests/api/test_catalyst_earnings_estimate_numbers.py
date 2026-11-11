@@ -28,6 +28,7 @@ def earnings_frame(values, *, dtype=object):
         "company_name": ["ExampleCo", "SiblingCo"],
         "earnings_time": ["BMO", "AMC"],
         "eps_estimate": pd.Series(values, dtype=dtype),
+        "data_source": ["alphavantage", "alphavantage"],
     })
 
 
@@ -91,7 +92,7 @@ def test_nullable_estimate_contract_at_actual_response(event_client, case):
     assert iwms == [{
         "date": DAY, "ticker": "IWM", "catalyst_type": "EARNINGS",
         "title": "ExampleCo earnings (BMO" + case["suffix"] + ")",
-        "impact": "High", "source": "AV earnings_calendar",
+        "impact": "High", "source": "earnings_calendar (alphavantage)",
     }]
     assert result["total"] == 4
     assert any(e.get("title") == "SiblingCo earnings (AMC, est -1.25)" for e in events)
@@ -141,7 +142,7 @@ def test_nullable_estimate_preserves_duplicate_and_non_earnings_events(event_cli
     assert [e for e in events if e.get("ticker") == "IWM"] == [{
         "date": DAY, "ticker": "IWM", "catalyst_type": "EARNINGS",
         "title": "ExampleCo earnings (BMO)", "impact": "High",
-        "source": "AV earnings_calendar",
+        "source": "earnings_calendar (alphavantage)",
     }]
     assert next(e for e in events if e.get("ticker") == "NVDA") == {
         "date": DAY, "ticker": "NVDA", "catalyst_type": "INSIDER_BUY",
