@@ -42,7 +42,16 @@ from lib.logging_config import setup_logging
 setup_logging()
 log = logging.getLogger(__name__)
 
-SYMBOLS = ['SPY', 'IWM', 'QQQ']
+
+
+def resolve_all_symbols() -> list:
+    """--symbol=ALL: the brief tickers (lib.config MarketConfig.tickers), the
+    insight default tickers (gcp.insight_pipeline_job.DEFAULT_TICKERS) and
+    the watchlist, deduplicated, resolved at run time, so av-intraday-nightly
+    stores one-minute bars for every ticker the level parameters are
+    calibrated for (FEAT-STRAT-001 per-ticker params, Design 5)."""
+    from gcp.calibrate_level_params import brief_insight_watchlist_tickers  # noqa: PLC0415
+    return brief_insight_watchlist_tickers()
 AV_BASE_URL = 'https://www.alphavantage.co/query'
 
 # Watchlist data-quality issue routing — see _file_data_quality_issue().
@@ -898,7 +907,8 @@ def main():
     parser = argparse.ArgumentParser(description='Fetch AV intraday → Cloud SQL')
     parser.add_argument('--symbol', default='ALL',
                         help='Single symbol, comma- or space-separated list, or ALL '
-                             '(SPY IWM QQQ). Examples: --symbol AMD, '
+                             '(the brief tickers, the insight default tickers and the '
+                             'watchlist, resolved at run time). Examples: --symbol AMD, '
                              '--symbol "AMD NVDA QCOM", --symbol AMD,NVDA,QCOM')
     parser.add_argument('--symbols-file', default=None,
                         help='Path to text file with one ticker per line. Lines '
@@ -945,7 +955,7 @@ def main():
         log.error("No ALPHA_VANTAGE_API_KEY set. Exiting.")
         sys.exit(1)
 
-    # Resolve symbols: ALL → SYMBOLS; file → parse; otherwise split on
+    # Resolve symbols: ALL → resolve_all_symbols(); file → parse; otherwise split on
     # comma/whitespace to support "AMD,NVDA,QCOM" and "AMD NVDA QCOM"
     # uniformly. Allows the Cloud Run job to take a long list via
     # --args="--symbol,AMD NVDA QCOM" without quoting headaches.
@@ -956,7 +966,7 @@ def main():
                 if line.strip() and not line.strip().startswith('#')
             ]
     elif args.symbol == 'ALL':
-        symbols = SYMBOLS
+        symbols = resolve_all_symbols()
     else:
         raw = args.symbol.replace(',', ' ')
         symbols = [s.strip().upper() for s in raw.split() if s.strip()]

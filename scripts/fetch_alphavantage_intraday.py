@@ -14,19 +14,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import time
 import argparse
+import math
 import sys
 import json
 import os
+from calendar import monthrange
 from dotenv import load_dotenv
 
-# Try to import market calendar for holiday detection
-try:
-    import pandas_market_calendars as mcal
-    CALENDAR_AVAILABLE = True
-except ImportError:
-    CALENDAR_AVAILABLE = False
-    print("Note: pandas_market_calendars not installed. Install with: pip install pandas_market_calendars")
-    print("      Holiday detection will be disabled.\n")
+from lib.eastern_time import sessions_between
 
 # Load environment variables
 load_dotenv()
@@ -41,9 +36,9 @@ current_key_index = 0
 ALPHA_VANTAGE_API_KEY = ALPHA_VANTAGE_API_KEYS[current_key_index]
 BASE_URL = 'https://www.alphavantage.co/query'
 
-# Rate limiting — driven by lib.config.AlphaVantageConfig (currently 150 RPM premium plan).
-# Can be overridden at runtime with --delay argument.
-CALLS_PER_MINUTE = _av_cfg.rpm
+# Local allocation is distinct from the purchased account ceiling.
+# --delay may slow this process; it cannot allocate more account capacity.
+CALLS_PER_MINUTE = _av_cfg.batch_size
 DELAY_BETWEEN_CALLS = _av_cfg.delay_between_calls  # overridden by --delay at runtime
 
 
@@ -51,35 +46,19 @@ def is_month_all_non_trading_days(month_str):
     """
     Check if an entire month has no trading days (unlikely but possible for future months).
 
+    Reads the shared NYSE calendar (`lib.eastern_time`); a missing calendar or
+    a malformed month raises rather than assuming the month trades.
+
     Args:
         month_str: Month in YYYY-MM format
 
     Returns:
         True if entire month is non-trading days, False otherwise
     """
-    if not CALENDAR_AVAILABLE:
-        return False  # Can't determine, assume it has trading days
-
-    try:
-        # Parse month
-        year, month = map(int, month_str.split('-'))
-        # Get first and last day of month
-        from calendar import monthrange
-        _, last_day = monthrange(year, month)
-
-        start = pd.Timestamp(year, month, 1)
-        end = pd.Timestamp(year, month, last_day)
-
-        # Get NYSE calendar (covers most US stocks including ETFs)
-        nyse = mcal.get_calendar('NYSE')
-        schedule = nyse.schedule(start_date=start, end_date=end)
-
-        # If schedule is empty, no trading days in this month
-        return len(schedule) == 0
-
-    except Exception as e:
-        # If any error, assume it has trading days
-        return False
+    year, month = map(int, month_str.split('-'))
+    _, last_day = monthrange(year, month)
+    first, last = f'{year:04d}-{month:02d}-01', f'{year:04d}-{month:02d}-{last_day:02d}'
+    return len(sessions_between(first, last)) == 0
 
 
 def get_trading_months(start_date, end_date):
@@ -558,16 +537,20 @@ Examples:
     parser.add_argument('--rows', type=int, default=100,
                        help='Number of rows to display when using --show (default: 100)')
     parser.add_argument('--delay', type=float, default=None,
-                       help='Seconds between API calls (default: 12 for free tier, use 1 for premium plans)')
+                       help='Seconds between calls (default: local allocation; only slower overrides allowed)')
 
     args = parser.parse_args()
 
-    # Override rate limiting if --delay provided (premium keys support much higher RPM)
-    if args.delay is not None:
-        global DELAY_BETWEEN_CALLS, CALLS_PER_MINUTE
-        DELAY_BETWEEN_CALLS = args.delay
-        # Set CALLS_PER_MINUTE high enough that the 60s batch-wait never triggers
-        CALLS_PER_MINUTE = max(60, int(60 / args.delay)) if args.delay > 0 else 150
+    # Validate before any dispatch; a delay override is not a quota allocation.
+    if args.delay is not None and (
+        not math.isfinite(args.delay) or args.delay < _av_cfg.delay_between_calls
+    ):
+        parser.error('--delay must be finite and no faster than the local allocation')
+    global DELAY_BETWEEN_CALLS, CALLS_PER_MINUTE
+    DELAY_BETWEEN_CALLS = (
+        _av_cfg.delay_between_calls if args.delay is None else args.delay
+    )
+    CALLS_PER_MINUTE = _av_cfg.batch_size
 
     # If --show flag is set, display data and exit
     if args.show:

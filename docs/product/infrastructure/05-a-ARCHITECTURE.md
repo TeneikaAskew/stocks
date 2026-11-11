@@ -2,9 +2,11 @@
 
 > The single architecture reference for this repo: every Cloud Run job and service, scheduler, table, API route, deploy path, data flow and failure path, with each claim cited to a file:line, a live `gcloud` read, or a pull request. The visual companion is [`Architecture.drawio`](../../../Architecture.drawio); the per-table write/read graph is [`05-c-DATA_DEPENDENCIES.md`](05-c-DATA_DEPENDENCIES.md); cost is [`05-d-COST_ANALYSIS.md`](05-d-COST_ANALYSIS.md).
 >
-> **How this file is maintained.** The tables between `<!-- inventory:*:start/end -->` markers are rendered by [`scripts/maintenance/doc_inventory.py`](../../../scripts/maintenance/doc_inventory.py) from `gcp/deploy.sh`, `gcp/schema.sql`, `platform/api` and a live `gcloud` snapshot; the monthly refresh workflow re-renders them and updates the prose around them in place. Edit prose freely; never hand-edit inside a marker block (it is overwritten). `docs/GCP_ARCHITECTURE.md` was merged into this file on 2026-09-07; its redirect stub was deleted when this document moved to `docs/product/infrastructure/` on the same day.
+> **How this file is maintained.** The tables between `<!-- inventory:*:start/end -->` markers are rendered by [`scripts/maintenance/doc_inventory.py`](../../../scripts/maintenance/doc_inventory.py) from `gcp/deploy.sh`, `gcp/schema.sql`, `platform/api` and a live `gcloud` snapshot; the pull request that changes what they cite carries the new render (REQ-GOV-004), and the prose around them is maintained by hand. Edit prose freely; never hand-edit inside a marker block (it is overwritten). `docs/GCP_ARCHITECTURE.md` was merged into this file on 2026-09-07; its redirect stub was deleted when this document moved to `docs/product/infrastructure/` on the same day.
 >
 > Live state below was read on **2026-09-07** with `gcloud` as `claude-web@` (jobs, schedulers, services, Cloud SQL, IAM, Cloud Build, domain mappings) and `scripts/db_query_cr.sh` (table stats). Everything below is written against `main`. The pull requests that moved this fleet during the audit have all merged: [#990](https://github.com/TeneikaAskew/stocks/pull/990) (service rename to `solyra-api-prod` / `-staging`, Cloud Build deploy triggers), [#1004](https://github.com/TeneikaAskew/stocks/pull/1004) (scheduler consolidation, image pinning, Discord warm window), [#1005](https://github.com/TeneikaAskew/stocks/pull/1005) (`phase6-playbook` schedule, hourly quality report retired), [#1006](https://github.com/TeneikaAskew/stocks/pull/1006) (branded auth emails), [#1007](https://github.com/TeneikaAskew/stocks/pull/1007) (legacy image retirement) and [#1010](https://github.com/TeneikaAskew/stocks/pull/1010) / [#1013](https://github.com/TeneikaAskew/stocks/pull/1013) (the committed OpenAPI snapshot and its response models). Where the repo and the live fleet still disagree, §15 says so rather than this paragraph.
+
+**Last reviewed:** unknown · **Last scanned:** 2026-11-10 · **Owner:** TBD
 
 ## Table of contents
 
@@ -40,7 +42,7 @@
 | GCS buckets | `gs://adept-mountain-474619-d4-trading-data` (data lake, query results, `sql-dumps/`), `…-cloudbuild` and `…_cloudbuild` (Cloud Build staging) | live `gcloud storage ls` |
 | Container images | `us-east1-docker.pkg.dev/…/trading/trading-system` (every job, `discord-interactions`, `failure-notifier`; tags `latest`, `research`, `research-*`, `inuse-job-*` pins) and the API image `gcr.io/…/solyra-api` (both API services; the legacy `gcr.io/…/trading-platform` and `-staging` packages were deleted by `retire-legacy-images` on 2026-09-07 after prod was promoted to `solyra-api`, #1007) | [`gcp/deploy.sh:25`](../../../gcp/deploy.sh#L25), [`platform/deploy.sh:19-25`](../../../platform/deploy.sh#L19), live tag list (85 tags) |
 | Runtime service accounts | `trading-runner@` (jobs, `discord-interactions`, `failure-notifier`): `aiplatform.user`, `artifactregistry.writer`, `cloudbuild.builds.editor`, `cloudsql.client`, `cloudsql.editor`, `logging.logWriter`, `run.developer`, `run.invoker`, `secretmanager.secretAccessor`, `serviceusage.serviceUsageConsumer`, `storage.objectAdmin`. `trading-platform-svc@` (both API services): `aiplatform.user`, `cloudsql.client`, `firebaseauth.admin`. | live `gcloud projects get-iam-policy` 2026-09-07 |
-| Automation identities | `arch-refresh-bot@` (the WIF identity of both the monthly doc refresh and `deploy-staging.yml`; project roles read live 2026-09-07 04:28Z: `aiplatform.user`, `artifactregistry.reader`, `bigquery.dataViewer`, `bigquery.jobUser`, `cloudasset.viewer`, `cloudbuild.builds.editor`, `cloudscheduler.viewer`, `cloudsql.client`, `cloudsql.viewer`, `cloudtasks.viewer`, `iam.securityReviewer`, `logging.viewer`, `pubsub.viewer`, `run.admin`, `secretmanager.viewer`, `serviceusage.serviceUsageConsumer`; the six viewer roles were granted 2026-09-07 for the rebuilt live-snapshot step, see [SETUP.md §3](../../../SETUP.md#3-grant-the-iam-roles). Resource-level: `storage.objectViewer` on the trading-data bucket (sql-dumps listing), `artifactregistry.writer` on both image repos and `artifactregistry.reader` on `gcr.io` (#1007, for `pin-images` from the deploy workflow), `iam.serviceAccountUser` on `trading-platform-svc@` and the default compute SA (deploys). The full deploy-side rationale and the least-privilege hazard it carries are in [`docs/product/09-SECURITY-AUTH.md`](../09-SECURITY-AUTH.md)), `claude-web@` (Claude Code sandbox: `editor`, `iam.serviceAccountUser`, `logging.configWriter`, `secretmanager.secretAccessor`), `playwright-tester@`, `github-actions-sheets@` (legacy), `firebase-adminsdk-fbsvc@`, default compute SA | same IAM read |
+| Automation identities | `arch-refresh-bot@` (the identity behind the `GCP_WIF_PROVIDER` and `GCP_WIF_SA_EMAIL` secrets that `deploy-staging.yml` and `verify-docs-against-live.yml` authenticate with; project roles read live 2026-09-07 04:28Z: `aiplatform.user`, `artifactregistry.reader`, `bigquery.dataViewer`, `bigquery.jobUser`, `cloudasset.viewer`, `cloudbuild.builds.editor`, `cloudscheduler.viewer`, `cloudsql.client`, `cloudsql.viewer`, `cloudtasks.viewer`, `iam.securityReviewer`, `logging.viewer`, `pubsub.viewer`, `run.admin`, `secretmanager.viewer`, `serviceusage.serviceUsageConsumer`; the six viewer roles were granted 2026-09-07 for the rebuilt live-snapshot step, see [SETUP.md's roles section](../../../SETUP.md#3-grant-the-iam-roles). Resource-level: `storage.objectViewer` on the trading-data bucket (sql-dumps listing), `artifactregistry.writer` on both image repos and `artifactregistry.reader` on `gcr.io` (#1007, for `pin-images` from the deploy workflow), `iam.serviceAccountUser` on `trading-platform-svc@` and the default compute SA (deploys). The full deploy-side rationale and the least-privilege hazard it carries are in [`docs/product/09-SECURITY-AUTH.md`](../09-SECURITY-AUTH.md)), `claude-web@` (Claude Code sandbox: `editor`, `iam.serviceAccountUser`, `logging.configWriter`, `secretmanager.secretAccessor`), `playwright-tester@`, `github-actions-sheets@` (legacy), `firebase-adminsdk-fbsvc@`, default compute SA | same IAM read |
 | Secrets (22) | `admin-token`, `av-api-key`, `benzinga-api-key`, `cloud-sql-connection-name`, `db-trading-pass`, `db-trading-user`, `discord-app-id`, `discord-bot-token`, `discord-public-key`, `discord-webhook-earnings`, `discord-webhook-gcp`, `discord-webhook-insights`, `discord-webhook-signals`, `ew-pass`, `ew-user`, `fred-api-key`, `gh-stocks-repo-pat`, `github-pat`, `github-repo`, `sec-user-agent`, `staging-e2e-login`, `trading-db-pass` | live `gcloud secrets list` |
 | Pub/Sub | topic `gcp-job-failures`, DLQ `gcp-job-failures-dlq`, push subscription `gcp-job-failures-push` → `failure-notifier` | live; [`gcp/deploy.sh:2851`](../../../gcp/deploy.sh#L2851) |
 | Cloud Tasks | queue `insight-pipeline-queue`, max 5 concurrent dispatches, 2 attempts | live `gcloud tasks queues describe`; [`gcp/deploy.sh:388`](../../../gcp/deploy.sh#L388) |
@@ -106,10 +108,10 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 
 | Service | Role | Live 2026-09-07 |
 |---|---|---|
-| Cloud SQL (PostgreSQL 15) | single source of truth for all structured data | 95 relations live, of which **26 runtime relations** are created by research and analytics jobs and are not declared in `gcp/schema.sql`; that file declares 72 (69 tables, 2 materialized views, 1 view), a set that overlaps the live one without equalling it (§5) |
+| Cloud SQL (PostgreSQL 15) | single source of truth for all structured data | 95 relations live, of which **26 runtime relations** are created by research and analytics jobs and are not declared in `gcp/schema.sql`; that file declares 74 (71 tables, 2 materialized views, 1 view), a set that overlaps the live one without equalling it (§5) |
 | Cloud Run Jobs | every fetcher, analyzer, backfill, audit and research run | 76 jobs; 68 declared in [`gcp/deploy.sh`](../../../gcp/deploy.sh) |
-| Cloud Run Services | 4 long-lived HTTP services | `solyra-api-prod`, `solyra-api-staging`, `discord-interactions` (min-instances 1 only inside the weekday warm window, 0 otherwise — §7.4), `failure-notifier` |
-| Cloud Scheduler | cron triggers, all `America/New_York` | 65 entries, none paused (`signal-quality-report-hourly` deleted 2026-09-07) |
+| Cloud Run Services | 3 long-lived HTTP services | `solyra-api-staging`, `discord-interactions` (min-instances 1 only inside the weekday warm window, 0 otherwise — §7.4), `failure-notifier` |
+| Cloud Scheduler | cron triggers, all `America/New_York` | 66 entries, none paused (`signal-quality-report-hourly` deleted 2026-09-07) |
 | Cloud Build | image builds and the API deploy triggers | triggers `deploy-solyra-api-staging` (push to `main`), `deploy-solyra-api-prod` (manual), `apply-schema-on-change` (push to `main`) |
 | Artifact Registry + GCR | `trading/trading-system` (448 versions, cleanup policy applied live per #1004) and the single `gcr.io/…/solyra-api` API image (legacy packages retired 2026-09-07, #1007) | live tag list, `gcloud container images list` 2026-09-07 |
 | Cloud Storage | parquet snapshots, `query-results/`, `sql-dumps/` (5 weekly dumps, latest 2026-09-06), reports | live listing |
@@ -119,7 +121,7 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 | Identity Platform / Firebase Auth | per-request ID-token verification on `solyra-api-staging` (`AUTH_MODE=firebase`) | service env |
 | Cloud Tasks | on-demand insight refresh fan-out | queue `insight-pipeline-queue` |
 | Vertex AI | Gemini for briefs and the insight agents; `text-embedding-005` for journal embeddings | [`gcp/schema.sql:1424`](../../../gcp/schema.sql#L1424) seeds every role to `gemini-3.1-flash-lite`; [`lib/agents/embeddings.py:16`](../../../lib/agents/embeddings.py#L16) |
-| BigQuery | billing export dataset `billing_export` read by the monthly doc refresh | [`.github/workflows/refresh-architecture-docs.yml`](../../../.github/workflows/refresh-architecture-docs.yml) |
+| BigQuery | billing export dataset `billing_export`; its tables end on 2026-09-02, when the project moved to a billing account with no export | [`docs/audits/COST_AUDIT_2026-09-06.md`](../../audits/COST_AUDIT_2026-09-06.md) §1, [#1409](https://github.com/TeneikaAskew/stocks/issues/1409) |
 
 ## 4. Cloud SQL
 
@@ -138,7 +140,7 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 
 ## 5. Schema catalog
 
-`gcp/schema.sql` declares **72 relations** (69 tables, 2 materialized views, 1 view); the live database holds **95**, of which **26 runtime relations** are live but **not declared in this file** (the `strat_features_*` family, `magnitude_*`, `gamma_levels_eod`, `daily_vex`, `gamma_events`, the `*_30m_predictions` tables, `market_data_indicators*`, `market_data_cross_asset`). That is a statement about `gcp/schema.sql`, not about where they come from: none is applied by `apply-schema-migrations`, and they are created three different ways.
+`gcp/schema.sql` declares **74 relations** (71 tables, 2 materialized views, 1 view); the live database holds **95**, of which **26 runtime relations** are live but **not declared in this file** (the `strat_features_*` family, `magnitude_*`, `gamma_levels_eod`, `daily_vex`, `gamma_events`, the `*_30m_predictions` tables, `market_data_indicators*`, `market_data_cross_asset`). That is a statement about `gcp/schema.sql`, not about where they come from: none is applied by `apply-schema-migrations`, and they are created three different ways.
 
 1. **DDL embedded in the job that owns the table**, applied just-in-time on each run — `gamma_levels_eod` ([`gcp/research/p2_build_gamma_levels.py:81`](../../../gcp/research/p2_build_gamma_levels.py#L81)), `gamma_events` ([`gcp/research/p2_outcomes_grid.py:72`](../../../gcp/research/p2_outcomes_grid.py#L72)), `magnitude_walk_forward_results` and `magnitude_per_bar_predictions` ([`gcp/research/magnitude_engine/mag_walk_forward.py:88`](../../../gcp/research/magnitude_engine/mag_walk_forward.py#L88)), and `strat_features_4h` ([`gcp/research/strat_engine/strat_data_builder.py:96`](../../../gcp/research/strat_engine/strat_data_builder.py#L96), executed at [`:906`](../../../gcp/research/strat_engine/strat_data_builder.py#L906), whose comment notes the other timeframes are not its to apply), and all six `strat_features_levels_*` tables, whose DDL is **generated at runtime** from the enrichment columns discovered for that timeframe ([`gcp/research/strat_engine/strat_enrich_levels.py:130`](../../../gcp/research/strat_engine/strat_enrich_levels.py#L130)) and executed as it is built ([`:138`](../../../gcp/research/strat_engine/strat_enrich_levels.py#L138)) — so their column list exists in no file at all.
 2. **A dedicated DDL file under `gcp/queries/`, applied by hand** — [`gcp/queries/p7_schema.sql:7`](../../../gcp/queries/p7_schema.sql#L7) for the five `strat_features_{1m,5m,15m,30m,60m}` tables, and only those, [`gcp/queries/magnitude_engine_schema.sql:3`](../../../gcp/queries/magnitude_engine_schema.sql#L3) for `market_data_indicators*` and `market_data_cross_asset`, [`gcp/queries/p7_vex_cache.sql:9`](../../../gcp/queries/p7_vex_cache.sql#L9) for `daily_vex`. No job runs these. The first two still instruct an operator to dispatch `db-query.yml`, a workflow deleted on 2026-05-30 and replaced by `./scripts/db_query_cr.sh`, so those instructions are stale.
@@ -148,38 +150,39 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 <!-- inventory:tables:start -->
 | Relation | Kind | Defined |
 |---|---|---|
-| `admin_refresh_leases` | table | [`gcp/schema.sql:4963`](../../../gcp/schema.sql#L4963) |
+| `admin_refresh_leases` | table | [`gcp/schema.sql:5284`](../../../gcp/schema.sql#L5284) |
 | `archive_yahoo_earnings_options_snapshots` | table | [`gcp/schema.sql:566`](../../../gcp/schema.sql#L566) |
 | `archive_yahoo_etf_options_snapshots` | table | [`gcp/schema.sql:563`](../../../gcp/schema.sql#L563) |
 | `archive_yahoo_market_data_daily` | table | [`gcp/schema.sql:557`](../../../gcp/schema.sql#L557) |
 | `archive_yahoo_market_data_intraday` | table | [`gcp/schema.sql:560`](../../../gcp/schema.sql#L560) |
-| `backtest_reports` | table | [`gcp/schema.sql:3910`](../../../gcp/schema.sql#L3910) |
-| `backtest_sweeps` | table | [`gcp/schema.sql:3881`](../../../gcp/schema.sql#L3881) |
-| `backtest_trades` | table | [`gcp/schema.sql:3839`](../../../gcp/schema.sql#L3839) |
-| `backtest_walk_forward_folds` | table | [`gcp/schema.sql:3936`](../../../gcp/schema.sql#L3936) |
+| `backtest_reports` | table | [`gcp/schema.sql:4093`](../../../gcp/schema.sql#L4093) |
+| `backtest_sweeps` | table | [`gcp/schema.sql:4064`](../../../gcp/schema.sql#L4064) |
+| `backtest_trades` | table | [`gcp/schema.sql:4022`](../../../gcp/schema.sql#L4022) |
+| `backtest_walk_forward_folds` | table | [`gcp/schema.sql:4119`](../../../gcp/schema.sql#L4119) |
 | `daily_rates` | table | [`gcp/schema.sql:536`](../../../gcp/schema.sql#L536) |
 | `earnings_calendar` | table | [`gcp/schema.sql:576`](../../../gcp/schema.sql#L576) |
-| `earnings_calibration` | table | [`gcp/schema.sql:4029`](../../../gcp/schema.sql#L4029) |
+| `earnings_calibration` | table | [`gcp/schema.sql:4212`](../../../gcp/schema.sql#L4212) |
 | `earnings_history` | table | [`gcp/schema.sql:737`](../../../gcp/schema.sql#L737) |
 | `earnings_options_snapshots` | table | [`gcp/schema.sql:475`](../../../gcp/schema.sql#L475) |
-| `earnings_options_strategy_insights` | table | [`gcp/schema.sql:4257`](../../../gcp/schema.sql#L4257) |
-| `earnings_options_strategy_winners` | table | [`gcp/schema.sql:4285`](../../../gcp/schema.sql#L4285) |
+| `earnings_options_strategy_insights` | table | [`gcp/schema.sql:4440`](../../../gcp/schema.sql#L4440) |
+| `earnings_options_strategy_winners` | table | [`gcp/schema.sql:4468`](../../../gcp/schema.sql#L4468) |
 | `earnings_reactions` | table | [`gcp/schema.sql:783`](../../../gcp/schema.sql#L783) |
-| `earnings_upcoming_with_history` | table | [`gcp/schema.sql:4675`](../../../gcp/schema.sql#L4675) |
-| `economic_events` | table | [`gcp/schema.sql:1452`](../../../gcp/schema.sql#L1452) |
+| `earnings_upcoming_with_history` | table | [`gcp/schema.sql:4996`](../../../gcp/schema.sql#L4996) |
+| `economic_events` | table | [`gcp/schema.sql:1455`](../../../gcp/schema.sql#L1455) |
 | `etf_options_daily_greeks` | table | [`gcp/schema.sql:382`](../../../gcp/schema.sql#L382) |
 | `etf_options_snapshots` | table | [`gcp/schema.sql:175`](../../../gcp/schema.sql#L175) |
-| `exit_config_overrides` | table | [`gcp/schema.sql:3258`](../../../gcp/schema.sql#L3258) |
-| `historical_signals` | table | [`gcp/schema.sql:2137`](../../../gcp/schema.sql#L2137) |
-| `indicator_correlation` | table | [`gcp/schema.sql:4098`](../../../gcp/schema.sql#L4098) |
-| `insider_transactions` | table | [`gcp/schema.sql:989`](../../../gcp/schema.sql#L989) |
-| `insight_reports` | table | [`gcp/schema.sql:1551`](../../../gcp/schema.sql#L1551) |
-| `insight_reports_history` | table | [`gcp/schema.sql:2068`](../../../gcp/schema.sql#L2068) |
-| `insight_runs` | table | [`gcp/schema.sql:1587`](../../../gcp/schema.sql#L1587) |
+| `exit_config_overrides` | table | [`gcp/schema.sql:3441`](../../../gcp/schema.sql#L3441) |
+| `historical_signals` | table | [`gcp/schema.sql:2320`](../../../gcp/schema.sql#L2320) |
+| `indicator_correlation` | table | [`gcp/schema.sql:4281`](../../../gcp/schema.sql#L4281) |
+| `insider_transactions` | table | [`gcp/schema.sql:992`](../../../gcp/schema.sql#L992) |
+| `insight_reports` | table | [`gcp/schema.sql:1554`](../../../gcp/schema.sql#L1554) |
+| `insight_reports_history` | table | [`gcp/schema.sql:2251`](../../../gcp/schema.sql#L2251) |
+| `insight_runs` | table | [`gcp/schema.sql:1590`](../../../gcp/schema.sql#L1590) |
 | `intraday_flow_15m` | table | [`gcp/schema.sql:422`](../../../gcp/schema.sql#L422) |
 | `intraday_gex_15m` | table | [`gcp/schema.sql:443`](../../../gcp/schema.sql#L443) |
-| `job_runs` | table | [`gcp/schema.sql:4812`](../../../gcp/schema.sql#L4812) |
-| `journal_entries` | table | [`gcp/schema.sql:1210`](../../../gcp/schema.sql#L1210) |
+| `job_runs` | table | [`gcp/schema.sql:5133`](../../../gcp/schema.sql#L5133) |
+| `journal_entries` | table | [`gcp/schema.sql:1213`](../../../gcp/schema.sql#L1213) |
+| `level_param_policy` | table | [`gcp/schema.sql:2143`](../../../gcp/schema.sql#L2143) |
 | `market_data_daily` | table | [`gcp/schema.sql:37`](../../../gcp/schema.sql#L37) |
 | `market_data_intraday` | table | [`gcp/schema.sql:140`](../../../gcp/schema.sql#L140) |
 | `market_data_intraday_iwm` | partition of `market_data_intraday` | [`gcp/schema.sql:158`](../../../gcp/schema.sql#L158) |
@@ -187,38 +190,39 @@ Three lanes: **ingest** (Scheduler → jobs → Cloud SQL/GCS), **serve** (the t
 | `market_data_intraday_qqq` | partition of `market_data_intraday` | [`gcp/schema.sql:160`](../../../gcp/schema.sql#L160) |
 | `market_data_intraday_spx` | partition of `market_data_intraday` | [`gcp/schema.sql:162`](../../../gcp/schema.sql#L162) |
 | `market_data_intraday_spy` | partition of `market_data_intraday` | [`gcp/schema.sql:156`](../../../gcp/schema.sql#L156) |
-| `model_routing` | table | [`gcp/schema.sql:1519`](../../../gcp/schema.sql#L1519) |
-| `news_sentiment` | table | [`gcp/schema.sql:1629`](../../../gcp/schema.sql#L1629) |
+| `model_routing` | table | [`gcp/schema.sql:1522`](../../../gcp/schema.sql#L1522) |
+| `news_sentiment` | table | [`gcp/schema.sql:1632`](../../../gcp/schema.sql#L1632) |
 | `options_daily_features` | table | [`gcp/schema.sql:285`](../../../gcp/schema.sql#L285) |
-| `playbook_cards` | table | [`gcp/schema.sql:1378`](../../../gcp/schema.sql#L1378) |
-| `playbook_cards_staging` | table | [`gcp/schema.sql:4786`](../../../gcp/schema.sql#L4786) |
-| `premarket_analysis` | table | [`gcp/schema.sql:1324`](../../../gcp/schema.sql#L1324) |
-| `premarket_analysis_history` | table | [`gcp/schema.sql:1953`](../../../gcp/schema.sql#L1953) |
-| `ranker_runs` | table | [`gcp/schema.sql:1064`](../../../gcp/schema.sql#L1064) |
+| `playbook_cards` | table | [`gcp/schema.sql:1381`](../../../gcp/schema.sql#L1381) |
+| `playbook_cards_staging` | table | [`gcp/schema.sql:5107`](../../../gcp/schema.sql#L5107) |
+| `premarket_analysis` | table | [`gcp/schema.sql:1327`](../../../gcp/schema.sql#L1327) |
+| `premarket_analysis_history` | table | [`gcp/schema.sql:1991`](../../../gcp/schema.sql#L1991) |
+| `ranker_runs` | table | [`gcp/schema.sql:1067`](../../../gcp/schema.sql#L1067) |
 | `realtime_gex_15m` | table | [`gcp/schema.sql:462`](../../../gcp/schema.sql#L462) |
-| `regime_combo_results` | table | [`gcp/schema.sql:4175`](../../../gcp/schema.sql#L4175) |
-| `schema_apply_history` | table | [`gcp/schema.sql:4977`](../../../gcp/schema.sql#L4977) |
-| `sec_filings` | table | [`gcp/schema.sql:956`](../../../gcp/schema.sql#L956) |
-| `signal_alerts` | table | [`gcp/schema.sql:1082`](../../../gcp/schema.sql#L1082) |
-| `signal_metrics` | table | [`gcp/schema.sql:3488`](../../../gcp/schema.sql#L3488) |
-| `strat_combo_results` | table | [`gcp/schema.sql:4207`](../../../gcp/schema.sql#L4207) |
-| `strat_levels` | table | [`gcp/schema.sql:1669`](../../../gcp/schema.sql#L1669) |
-| `ticker_calibration` | table | [`gcp/schema.sql:3171`](../../../gcp/schema.sql#L3171) |
-| `ticker_info` | table | [`gcp/schema.sql:2190`](../../../gcp/schema.sql#L2190) |
-| `top_movers_daily` | table | [`gcp/schema.sql:1015`](../../../gcp/schema.sql#L1015) |
-| `top_movers_intraday` | table | [`gcp/schema.sql:1039`](../../../gcp/schema.sql#L1039) |
-| `trades` | table | [`gcp/schema.sql:1167`](../../../gcp/schema.sql#L1167) |
-| `user_preferences` | table | [`gcp/schema.sql:4900`](../../../gcp/schema.sql#L4900) |
-| `user_profile` | table | [`gcp/schema.sql:4931`](../../../gcp/schema.sql#L4931) |
-| `user_roles` | table | [`gcp/schema.sql:4849`](../../../gcp/schema.sql#L4849) |
-| `user_style_results` | table | [`gcp/schema.sql:4768`](../../../gcp/schema.sql#L4768) |
-| `waitlist_signups` | table | [`gcp/schema.sql:4755`](../../../gcp/schema.sql#L4755) |
-| `walk_forward_results` | table | [`gcp/schema.sql:3982`](../../../gcp/schema.sql#L3982) |
-| `watchlist_history` | table | [`gcp/schema.sql:2458`](../../../gcp/schema.sql#L2458) |
-| `watchlist_history_origin` | table | [`gcp/schema.sql:3064`](../../../gcp/schema.sql#L3064) |
-| `watchlists` | table | [`gcp/schema.sql:2246`](../../../gcp/schema.sql#L2246) |
-| `earnings_event_outcomes` | materialized view | [`gcp/schema.sql:4423`](../../../gcp/schema.sql#L4423) |
-| `earnings_ticker_lean` | materialized view | [`gcp/schema.sql:4614`](../../../gcp/schema.sql#L4614) |
+| `regime_combo_results` | table | [`gcp/schema.sql:4358`](../../../gcp/schema.sql#L4358) |
+| `schema_apply_history` | table | [`gcp/schema.sql:5298`](../../../gcp/schema.sql#L5298) |
+| `sec_filings` | table | [`gcp/schema.sql:959`](../../../gcp/schema.sql#L959) |
+| `signal_alerts` | table | [`gcp/schema.sql:1085`](../../../gcp/schema.sql#L1085) |
+| `signal_metrics` | table | [`gcp/schema.sql:3671`](../../../gcp/schema.sql#L3671) |
+| `strat_combo_results` | table | [`gcp/schema.sql:4390`](../../../gcp/schema.sql#L4390) |
+| `strat_levels` | table | [`gcp/schema.sql:1672`](../../../gcp/schema.sql#L1672) |
+| `ticker_calibration` | table | [`gcp/schema.sql:3354`](../../../gcp/schema.sql#L3354) |
+| `ticker_info` | table | [`gcp/schema.sql:2373`](../../../gcp/schema.sql#L2373) |
+| `ticker_level_params` | table | [`gcp/schema.sql:2156`](../../../gcp/schema.sql#L2156) |
+| `top_movers_daily` | table | [`gcp/schema.sql:1018`](../../../gcp/schema.sql#L1018) |
+| `top_movers_intraday` | table | [`gcp/schema.sql:1042`](../../../gcp/schema.sql#L1042) |
+| `trades` | table | [`gcp/schema.sql:1170`](../../../gcp/schema.sql#L1170) |
+| `user_preferences` | table | [`gcp/schema.sql:5221`](../../../gcp/schema.sql#L5221) |
+| `user_profile` | table | [`gcp/schema.sql:5252`](../../../gcp/schema.sql#L5252) |
+| `user_roles` | table | [`gcp/schema.sql:5170`](../../../gcp/schema.sql#L5170) |
+| `user_style_results` | table | [`gcp/schema.sql:5089`](../../../gcp/schema.sql#L5089) |
+| `waitlist_signups` | table | [`gcp/schema.sql:5076`](../../../gcp/schema.sql#L5076) |
+| `walk_forward_results` | table | [`gcp/schema.sql:4165`](../../../gcp/schema.sql#L4165) |
+| `watchlist_history` | table | [`gcp/schema.sql:2641`](../../../gcp/schema.sql#L2641) |
+| `watchlist_history_origin` | table | [`gcp/schema.sql:3247`](../../../gcp/schema.sql#L3247) |
+| `watchlists` | table | [`gcp/schema.sql:2429`](../../../gcp/schema.sql#L2429) |
+| `earnings_event_outcomes` | materialized view | [`gcp/schema.sql:4606`](../../../gcp/schema.sql#L4606) |
+| `earnings_ticker_lean` | materialized view | [`gcp/schema.sql:4801`](../../../gcp/schema.sql#L4801) |
 | `v_etf_options_node` | view | [`gcp/schema.sql:319`](../../../gcp/schema.sql#L319) |
 <!-- inventory:tables:end -->
 
@@ -338,7 +342,7 @@ There are **no foreign keys between domain tables** other than `insight_runs.rep
 | `walk_forward_results` | 0 | 264 kB | `gcp/schema.sql` |
 | `watchlists` | 0 | 64 kB | `gcp/schema.sql` |
 
-Declared in `gcp/schema.sql` but absent live: `schema_apply_history`, `watchlist_history`, `watchlist_history_origin`
+Declared in `gcp/schema.sql` but absent live: `level_param_policy`, `schema_apply_history`, `ticker_level_params`, `watchlist_history`, `watchlist_history_origin`
 <!-- inventory:dbtables:end -->
 
 ## 6. Cloud Run Jobs
@@ -490,26 +494,26 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/backtest/equity/{ticker}` | [`platform/api/routers/backtest.py:257`](../../../platform/api/routers/backtest.py#L257) | Return equity curve from the most recent equity CSV for the given ticker, |
 | `POST` | `/api/backtest/replay-trades` | [`platform/api/routers/backtest.py:512`](../../../platform/api/routers/backtest.py#L512) | Score the signed-in user's labeled journal trades against actual bars |
 | `GET` | `/api/backtest/results/{ticker}` | [`platform/api/routers/backtest.py:188`](../../../platform/api/routers/backtest.py#L188) | Return trades from the most recent backtest CSV for the given ticker, |
-| `GET` | `/api/catalysts/asof/{ticker}` | [`platform/api/routers/catalysts.py:612`](../../../platform/api/routers/catalysts.py#L612) | Unified point-in-time catalyst view for a ticker. |
-| `GET` | `/api/catalysts/events` | [`platform/api/routers/catalysts.py:158`](../../../platform/api/routers/catalysts.py#L158) | Get catalyst events grouped by date. |
-| `GET` | `/api/catalysts/snapshot/{ticker}` | [`platform/api/routers/catalysts.py:613`](../../../platform/api/routers/catalysts.py#L613) | Unified point-in-time catalyst view for a ticker. |
-| `GET` | `/api/catalysts/ticker/{ticker}` | [`platform/api/routers/catalysts.py:575`](../../../platform/api/routers/catalysts.py#L575) | Get all catalyst events for a specific ticker. |
-| `GET` | `/api/catalysts/types` | [`platform/api/routers/catalysts.py:773`](../../../platform/api/routers/catalysts.py#L773) | Return available catalyst types and WSH upgrade info. |
-| `GET` | `/api/config/firebase` | [`platform/api/routers/config.py:45`](../../../platform/api/routers/config.py#L45) | Public runtime auth config for the frontend bootstrap. |
-| `GET` | `/api/config/indicators` | [`platform/api/routers/config.py:75`](../../../platform/api/routers/config.py#L75) | Return indicator periods, signal thresholds, and zone labels. |
-| `GET` | `/api/config/market-hours` | [`platform/api/routers/config.py:131`](../../../platform/api/routers/config.py#L131) | Return US equity market session windows + 2026 holidays. |
-| `GET` | `/api/dashboard/brief/{ticker}` | [`platform/api/routers/dashboard.py:82`](../../../platform/api/routers/dashboard.py#L82) | Return daily bias / strat status for the dashboard. |
-| `GET` | `/api/earnings/calibration` | [`platform/api/routers/earnings.py:304`](../../../platform/api/routers/earnings.py#L304) | The live calibration row (PR-A + PR-B headline finding). |
-| `GET` | `/api/earnings/event/{ticker}/{event_date}` | [`platform/api/routers/earnings.py:172`](../../../platform/api/routers/earnings.py#L172) | Single-event drill-down. |
-| `GET` | `/api/earnings/health/ping` | [`platform/api/routers/earnings.py:324`](../../../platform/api/routers/earnings.py#L324) | Lightweight warm-up probe. NOT called by a scheduler. |
-| `GET` | `/api/earnings/history/{ticker}` | [`platform/api/routers/earnings.py:138`](../../../platform/api/routers/earnings.py#L138) | Last N quarters for one ticker — full event timeline. |
-| `GET` | `/api/earnings/insights/grid` | [`platform/api/routers/earnings.py:255`](../../../platform/api/routers/earnings.py#L255) | The 144-row Q × bucket × structure insights table (PR-B). |
-| `GET` | `/api/earnings/insights/winners` | [`platform/api/routers/earnings.py:278`](../../../platform/api/routers/earnings.py#L278) | Top-N named winners per (structure × quintile). |
-| `GET` | `/api/earnings/lean` | [`platform/api/routers/earnings.py:197`](../../../platform/api/routers/earnings.py#L197) | Per-ticker lean leaderboard. |
-| `GET` | `/api/earnings/ticker/{ticker}/lean` | [`platform/api/routers/earnings.py:233`](../../../platform/api/routers/earnings.py#L233) | Lean stats for one ticker. |
-| `GET` | `/api/earnings/upcoming` | [`platform/api/routers/earnings.py:108`](../../../platform/api/routers/earnings.py#L108) | Next N days of earnings reporters, decorated with full history. |
+| `GET` | `/api/catalysts/asof/{ticker}` | [`platform/api/routers/catalysts.py:650`](../../../platform/api/routers/catalysts.py#L650) | Unified point-in-time catalyst view for a ticker. |
+| `GET` | `/api/catalysts/events` | [`platform/api/routers/catalysts.py:162`](../../../platform/api/routers/catalysts.py#L162) | Get catalyst events grouped by date. |
+| `GET` | `/api/catalysts/snapshot/{ticker}` | [`platform/api/routers/catalysts.py:651`](../../../platform/api/routers/catalysts.py#L651) | Unified point-in-time catalyst view for a ticker. |
+| `GET` | `/api/catalysts/ticker/{ticker}` | [`platform/api/routers/catalysts.py:613`](../../../platform/api/routers/catalysts.py#L613) | Get all catalyst events for a specific ticker. |
+| `GET` | `/api/catalysts/types` | [`platform/api/routers/catalysts.py:816`](../../../platform/api/routers/catalysts.py#L816) | Return available catalyst types and WSH upgrade info. |
+| `GET` | `/api/config/firebase` | [`platform/api/routers/config.py:47`](../../../platform/api/routers/config.py#L47) | Public runtime auth config for the frontend bootstrap. |
+| `GET` | `/api/config/indicators` | [`platform/api/routers/config.py:77`](../../../platform/api/routers/config.py#L77) | Return indicator periods, signal thresholds, and zone labels. |
+| `GET` | `/api/config/market-hours` | [`platform/api/routers/config.py:145`](../../../platform/api/routers/config.py#L145) | Return US equity market session windows, holidays and early closes. |
+| `GET` | `/api/dashboard/brief/{ticker}` | [`platform/api/routers/dashboard.py:80`](../../../platform/api/routers/dashboard.py#L80) | Return daily bias / strat status for the dashboard. |
+| `GET` | `/api/earnings/calibration` | [`platform/api/routers/earnings.py:322`](../../../platform/api/routers/earnings.py#L322) | The live calibration row (PR-A + PR-B headline finding). |
+| `GET` | `/api/earnings/event/{ticker}/{event_date}` | [`platform/api/routers/earnings.py:190`](../../../platform/api/routers/earnings.py#L190) | Single-event drill-down. |
+| `GET` | `/api/earnings/health/ping` | [`platform/api/routers/earnings.py:342`](../../../platform/api/routers/earnings.py#L342) | Lightweight warm-up probe. NOT called by a scheduler. |
+| `GET` | `/api/earnings/history/{ticker}` | [`platform/api/routers/earnings.py:156`](../../../platform/api/routers/earnings.py#L156) | Last N quarters for one ticker — full event timeline. |
+| `GET` | `/api/earnings/insights/grid` | [`platform/api/routers/earnings.py:273`](../../../platform/api/routers/earnings.py#L273) | The 144-row Q × bucket × structure insights table (PR-B). |
+| `GET` | `/api/earnings/insights/winners` | [`platform/api/routers/earnings.py:296`](../../../platform/api/routers/earnings.py#L296) | Top-N named winners per (structure × quintile). |
+| `GET` | `/api/earnings/lean` | [`platform/api/routers/earnings.py:215`](../../../platform/api/routers/earnings.py#L215) | Per-ticker lean leaderboard. |
+| `GET` | `/api/earnings/ticker/{ticker}/lean` | [`platform/api/routers/earnings.py:251`](../../../platform/api/routers/earnings.py#L251) | Lean stats for one ticker. |
+| `GET` | `/api/earnings/upcoming` | [`platform/api/routers/earnings.py:111`](../../../platform/api/routers/earnings.py#L111) | Next N days of earnings reporters, decorated with full history. |
 | `GET` | `/api/glossary/gamma` | [`platform/api/routers/glossary.py:30`](../../../platform/api/routers/glossary.py#L30) | Return the UI-safe gamma term dictionary. |
-| `GET` | `/api/health` | [`platform/api/main.py:270`](../../../platform/api/main.py#L270) | Liveness probe: reports the service version and its configured backends. |
+| `GET` | `/api/health` | [`platform/api/main.py:298`](../../../platform/api/main.py#L298) | Liveness probe: reports the service version and its configured backends. |
 | `GET` | `/api/health/freshness` | [`platform/api/routers/health.py:158`](../../../platform/api/routers/health.py#L158) | Return the cached freshness report (see freshness_report_dict). |
 | `POST` | `/api/insights/chat` | [`platform/api/routers/insights.py:1062`](../../../platform/api/routers/insights.py#L1062) | Stream a Gemini response for the given mode and message. |
 | `GET` | `/api/insights/report/{ticker}` | [`platform/api/routers/insights.py:764`](../../../platform/api/routers/insights.py#L764) | Return the most recent InsightReport for the ticker. |
@@ -533,45 +537,45 @@ Staging is therefore the service users actually hit, with open self-signup over 
 | `GET` | `/api/journal/trades/{ticker}` | [`platform/api/routers/journal.py:882`](../../../platform/api/routers/journal.py#L882) | Return the signed-in user's journal entries for the ticker, newest first. |
 | `DELETE` | `/api/journal/trades/{trade_id}` | [`platform/api/routers/journal.py:1253`](../../../platform/api/routers/journal.py#L1253) | Delete one of the signed-in user's journal entries by UUID. |
 | `PATCH` | `/api/journal/trades/{trade_id}` | [`platform/api/routers/journal.py:1166`](../../../platform/api/routers/journal.py#L1166) | Close an ACTIVE trade: sets exit_ts/exit_price, computes return_pct |
-| `GET` | `/api/live/avg-volume/{ticker}` | [`platform/api/routers/live.py:385`](../../../platform/api/routers/live.py#L385) | Return the 20-day average daily volume for RVOL calculation. |
-| `GET` | `/api/live/history/{ticker}` | [`platform/api/routers/live.py:315`](../../../platform/api/routers/live.py#L315) | Fetch last 100 1-min bars from Alpha Vantage TIME_SERIES_INTRADAY. |
-| `POST` | `/api/live/indicators` | [`platform/api/routers/live.py:527`](../../../platform/api/routers/live.py#L527) | Compute indicators and CALL/PUT signals from a bar series. |
-| `GET` | `/api/live/quote/{ticker}` | [`platform/api/routers/live.py:189`](../../../platform/api/routers/live.py#L189) | Fetch real-time quote from Alpha Vantage GLOBAL_QUOTE. |
-| `POST` | `/api/live/signal-series` | [`platform/api/routers/live.py:610`](../../../platform/api/routers/live.py#L610) | Per-bar CALL/PUT signal fires for the Charts page "Sig" overlay. |
-| `GET` | `/api/live/status` | [`platform/api/routers/live.py:174`](../../../platform/api/routers/live.py#L174) | Return current market open/closed status based on Eastern Time. |
+| `GET` | `/api/live/avg-volume/{ticker}` | [`platform/api/routers/live.py:523`](../../../platform/api/routers/live.py#L523) | Return the 20-day average daily volume for RVOL calculation. |
+| `GET` | `/api/live/history/{ticker}` | [`platform/api/routers/live.py:442`](../../../platform/api/routers/live.py#L442) | Fetch last 100 1-min bars from Alpha Vantage TIME_SERIES_INTRADAY. |
+| `POST` | `/api/live/indicators` | [`platform/api/routers/live.py:665`](../../../platform/api/routers/live.py#L665) | Compute indicators and CALL/PUT signals from a bar series. |
+| `GET` | `/api/live/quote/{ticker}` | [`platform/api/routers/live.py:187`](../../../platform/api/routers/live.py#L187) | Fetch real-time quote from Alpha Vantage GLOBAL_QUOTE. |
+| `POST` | `/api/live/signal-series` | [`platform/api/routers/live.py:748`](../../../platform/api/routers/live.py#L748) | Per-bar CALL/PUT signal fires for the Charts page "Sig" overlay. |
+| `GET` | `/api/live/status` | [`platform/api/routers/live.py:172`](../../../platform/api/routers/live.py#L172) | Return current market open/closed status based on Eastern Time. |
 | `GET` | `/api/magnitude/{ticker}/{tf}/at/{ts}` | [`platform/api/routers/magnitude.py:183`](../../../platform/api/routers/magnitude.py#L183) | Return the prediction for exactly this (ticker, tf, ts). |
 | `GET` | `/api/magnitude/{ticker}/{tf}/latest` | [`platform/api/routers/magnitude.py:129`](../../../platform/api/routers/magnitude.py#L129) | Return the most-recent prediction for this (ticker, tf). |
-| `GET` | `/api/market/coverage` | [`platform/api/main.py:1231`](../../../platform/api/main.py#L1231) | Data coverage per symbol — drives the type-ahead's full/daily/new badges. |
-| `GET` | `/api/market/data/{ticker}/{date}` | [`platform/api/main.py:905`](../../../platform/api/main.py#L905) | Load intraday OHLCV data for a specific ticker and date. |
-| `GET` | `/api/market/dates/{ticker}` | [`platform/api/main.py:607`](../../../platform/api/main.py#L607) | List available trading dates for a ticker (Cloud SQL → local fallback). |
-| `GET` | `/api/market/most-active` | [`platform/api/main.py:1510`](../../../platform/api/main.py#L1510) | Most-active tickers snapshot, with per-ticker snapshot sparklines. |
-| `GET` | `/api/market/reference/{ticker}/{date}` | [`platform/api/main.py:1061`](../../../platform/api/main.py#L1061) | Get previous day OHLC reference levels for support/resistance. |
-| `GET` | `/api/market/sectors` | [`platform/api/main.py:1402`](../../../platform/api/main.py#L1402) | Sector rotation snapshot computed from SPDR sector ETF daily closes. |
-| `GET` | `/api/me` | [`platform/api/main.py:282`](../../../platform/api/main.py#L282) | Return the authenticated identity + role flags. |
+| `GET` | `/api/market/coverage` | [`platform/api/main.py:1259`](../../../platform/api/main.py#L1259) | Data coverage per symbol — drives the type-ahead's full/daily/new badges. |
+| `GET` | `/api/market/data/{ticker}/{date}` | [`platform/api/main.py:933`](../../../platform/api/main.py#L933) | Load intraday OHLCV data for a specific ticker and date. |
+| `GET` | `/api/market/dates/{ticker}` | [`platform/api/main.py:635`](../../../platform/api/main.py#L635) | List available trading dates for a ticker (Cloud SQL → local fallback). |
+| `GET` | `/api/market/most-active` | [`platform/api/main.py:1538`](../../../platform/api/main.py#L1538) | Most-active tickers snapshot, with per-ticker snapshot sparklines. |
+| `GET` | `/api/market/reference/{ticker}/{date}` | [`platform/api/main.py:1089`](../../../platform/api/main.py#L1089) | Get previous day OHLC reference levels for support/resistance. |
+| `GET` | `/api/market/sectors` | [`platform/api/main.py:1430`](../../../platform/api/main.py#L1430) | Sector rotation snapshot computed from SPDR sector ETF daily closes. |
+| `GET` | `/api/me` | [`platform/api/main.py:310`](../../../platform/api/main.py#L310) | Return the authenticated identity + role flags. |
 | `GET` | `/api/me/preferences` | [`platform/api/routers/preferences.py:132`](../../../platform/api/routers/preferences.py#L132) |  |
 | `PUT` | `/api/me/preferences` | [`platform/api/routers/preferences.py:149`](../../../platform/api/routers/preferences.py#L149) | Upsert the provided subset of fields and return the full stored row. |
 | `GET` | `/api/me/profile` | [`platform/api/routers/profile.py:145`](../../../platform/api/routers/profile.py#L145) |  |
 | `PUT` | `/api/me/profile` | [`platform/api/routers/profile.py:162`](../../../platform/api/routers/profile.py#L162) | Upsert the provided subset of fields and return the full stored row. |
-| `GET` | `/api/movement-statement` | [`platform/api/routers/dashboard.py:530`](../../../platform/api/routers/dashboard.py#L530) | PHASE 3 — read-only, feature-flagged movement statement. |
-| `GET` | `/api/options/dates/{ticker}` | [`platform/api/routers/options.py:318`](../../../platform/api/routers/options.py#L318) | Return the `limit` most-recent snapshot dates with AlphaVantage data. |
-| `POST` | `/api/options/greeks` | [`platform/api/routers/options.py:753`](../../../platform/api/routers/options.py#L753) | Single source of truth for GEX/VEX/max-pain/implied-move/nodes. |
-| `GET` | `/api/options/live/{ticker}/{date_str}` | [`platform/api/routers/options.py:633`](../../../platform/api/routers/options.py#L633) | Fetch the AlphaVantage HISTORICAL_OPTIONS chain live, with the same |
-| `GET` | `/api/options/{ticker}/grid` | [`platform/api/routers/grid.py:618`](../../../platform/api/routers/grid.py#L618) | Live 2-D strike × expiration grid. |
-| `GET` | `/api/options/{ticker}/grid/timeseries` | [`platform/api/routers/grid.py:1076`](../../../platform/api/routers/grid.py#L1076) | Per-strike GEX time-series for a single expiration over the last |
-| `GET` | `/api/options/{ticker}/nodes` | [`platform/api/routers/grid.py:932`](../../../platform/api/routers/grid.py#L932) | Live semantic taxonomy — King / Gates / Midpoints / Hedge Nodes / |
-| `GET` | `/api/options/{ticker}/{date_str}` | [`platform/api/routers/options.py:524`](../../../platform/api/routers/options.py#L524) | Return the AlphaVantage option chain for `ticker` on `date_str` |
-| `GET` | `/api/options/{ticker}/{date_str}/grid` | [`platform/api/routers/grid.py:738`](../../../platform/api/routers/grid.py#L738) | Historical 2-D grid for a past date — EOD only. |
-| `GET` | `/api/options/{ticker}/{date_str}/levels` | [`platform/api/routers/options.py:809`](../../../platform/api/routers/options.py#L809) | Stratalyst-style King/Gate/Spot/Flip taxonomy for a Cloud SQL snapshot. |
-| `GET` | `/api/options/{ticker}/{date_str}/nodes` | [`platform/api/routers/grid.py:1000`](../../../platform/api/routers/grid.py#L1000) | Historical semantic taxonomy — EOD only. |
-| `POST` | `/api/playbook/evaluate` | [`platform/api/routers/playbook.py:747`](../../../platform/api/routers/playbook.py#L747) | Evaluate playbook condition strings against a live snapshot. |
-| `GET` | `/api/playbook/{ticker}` | [`platform/api/routers/playbook.py:306`](../../../platform/api/routers/playbook.py#L306) | Return structured setup cards for a ticker from ``playbook_cards``. |
-| `GET` | `/api/reports/list/{ticker}` | [`platform/api/routers/playbook.py:367`](../../../platform/api/routers/playbook.py#L367) | List available phase report files for a given ticker (from GCS). |
-| `GET` | `/api/reports/{ticker}/{phase}` | [`platform/api/routers/playbook.py:440`](../../../platform/api/routers/playbook.py#L440) | Return the raw markdown text of a specific phase report for a ticker from GCS. |
-| `GET` | `/api/signals/{ticker}` | [`platform/api/routers/signals.py:221`](../../../platform/api/routers/signals.py#L221) | Return historical signals for a ticker. |
-| `GET` | `/api/signals/{ticker}/similar` | [`platform/api/routers/signals.py:321`](../../../platform/api/routers/signals.py#L321) | Return historical signals similar to the supplied bar's conditions. |
+| `GET` | `/api/movement-statement` | [`platform/api/routers/dashboard.py:538`](../../../platform/api/routers/dashboard.py#L538) | PHASE 3 — read-only, feature-flagged movement statement. |
+| `GET` | `/api/options/dates/{ticker}` | [`platform/api/routers/options.py:325`](../../../platform/api/routers/options.py#L325) | Return the `limit` most-recent snapshot dates with AlphaVantage data. |
+| `POST` | `/api/options/greeks` | [`platform/api/routers/options.py:783`](../../../platform/api/routers/options.py#L783) | Single source of truth for GEX/VEX/max-pain/implied-move/nodes. |
+| `GET` | `/api/options/live/{ticker}/{date_str}` | [`platform/api/routers/options.py:663`](../../../platform/api/routers/options.py#L663) | Fetch the AlphaVantage HISTORICAL_OPTIONS chain live, with the same |
+| `GET` | `/api/options/{ticker}/grid` | [`platform/api/routers/grid.py:644`](../../../platform/api/routers/grid.py#L644) | Live 2-D strike × expiration grid. |
+| `GET` | `/api/options/{ticker}/grid/timeseries` | [`platform/api/routers/grid.py:1119`](../../../platform/api/routers/grid.py#L1119) | Per-strike GEX time-series for a single expiration over the last |
+| `GET` | `/api/options/{ticker}/nodes` | [`platform/api/routers/grid.py:974`](../../../platform/api/routers/grid.py#L974) | Live semantic taxonomy — King / Gates / Midpoints / Hedge Nodes / |
+| `GET` | `/api/options/{ticker}/{date_str}` | [`platform/api/routers/options.py:651`](../../../platform/api/routers/options.py#L651) | Return the AlphaVantage option chain for `ticker` on `date_str` |
+| `GET` | `/api/options/{ticker}/{date_str}/grid` | [`platform/api/routers/grid.py:779`](../../../platform/api/routers/grid.py#L779) | Historical 2-D grid for a past date — EOD only. |
+| `GET` | `/api/options/{ticker}/{date_str}/levels` | [`platform/api/routers/options.py:839`](../../../platform/api/routers/options.py#L839) | Stratalyst-style King/Gate/Spot/Flip taxonomy for a Cloud SQL snapshot. |
+| `GET` | `/api/options/{ticker}/{date_str}/nodes` | [`platform/api/routers/grid.py:1043`](../../../platform/api/routers/grid.py#L1043) | Historical semantic taxonomy — EOD only. |
+| `POST` | `/api/playbook/evaluate` | [`platform/api/routers/playbook.py:785`](../../../platform/api/routers/playbook.py#L785) | Evaluate playbook condition strings against a live snapshot. |
+| `GET` | `/api/playbook/{ticker}` | [`platform/api/routers/playbook.py:312`](../../../platform/api/routers/playbook.py#L312) | Return structured setup cards for a ticker from ``playbook_cards``. |
+| `GET` | `/api/reports/list/{ticker}` | [`platform/api/routers/playbook.py:373`](../../../platform/api/routers/playbook.py#L373) | List available phase report files for a given ticker (from GCS). |
+| `GET` | `/api/reports/{ticker}/{phase}` | [`platform/api/routers/playbook.py:446`](../../../platform/api/routers/playbook.py#L446) | Return the raw markdown text of a specific phase report for a ticker from GCS. |
+| `GET` | `/api/signals/{ticker}` | [`platform/api/routers/signals.py:394`](../../../platform/api/routers/signals.py#L394) | Return historical signals for a ticker. |
+| `GET` | `/api/signals/{ticker}/similar` | [`platform/api/routers/signals.py:509`](../../../platform/api/routers/signals.py#L509) | Return historical signals similar to the supplied bar's conditions. |
 | `POST` | `/api/style/mine-and-validate` | [`platform/api/routers/backtest.py:690`](../../../platform/api/routers/backtest.py#L690) | Mine the caller's closed journal trades into a condition profile, |
 | `POST` | `/api/waitlist` | [`platform/api/routers/waitlist.py:84`](../../../platform/api/routers/waitlist.py#L84) |  |
-| `GET` | `/dev` | [`platform/api/main.py:433`](../../../platform/api/main.py#L433) |  |
+| `GET` | `/dev` | [`platform/api/main.py:461`](../../../platform/api/main.py#L461) |  |
 <!-- inventory:routes:end -->
 
 ### 7.4 `discord-interactions`
@@ -816,7 +820,7 @@ Job logs `severity>=ERROR` → sink `gcp-job-failures-sink` (filter excludes `fa
 
 ## 12. Cost
 
-See [`05-d-COST_ANALYSIS.md`](05-d-COST_ANALYSIS.md) (regenerated monthly from the BigQuery billing export) and the 2026-09-06 audit [`docs/audits/COST_AUDIT_2026-09-06.md`](../../audits/COST_AUDIT_2026-09-06.md) (#1004): run rate about $6.50/day list, dominated by Cloud SQL, Cloud Run job CPU and, until the cleanup policy took effect, Artifact Registry storage.
+See [`05-d-COST_ANALYSIS.md`](05-d-COST_ANALYSIS.md) (a dated record of the billing export data, which ends on 2026-09-02) and the 2026-09-06 audit [`docs/audits/COST_AUDIT_2026-09-06.md`](../../audits/COST_AUDIT_2026-09-06.md) (#1004): run rate about $6.50/day list, dominated by Cloud SQL, Cloud Run job CPU and, until the cleanup policy took effect, Artifact Registry storage.
 
 ## 13. Runbook anchors
 
@@ -866,7 +870,6 @@ Backup and restore procedures are in [CLAUDE.md → Backup and disaster recovery
 | GitHub REST bridge | [`.github/workflows/gh-api.yml`](../../../.github/workflows/gh-api.yml) | `workflow_dispatch` | runs a GitHub REST call on a runner for sandboxes whose `api.github.com` access is fenced |
 | Failure handler | [`.github/workflows/handle-workflow-failure.yml`](../../../.github/workflows/handle-workflow-failure.yml) | `workflow_call` | opens/updates an issue and draft PR on any workflow failure |
 | Daily docs-vs-live check | [`.github/workflows/verify-docs-against-live.yml`](../../../.github/workflows/verify-docs-against-live.yml) | weekdays 09:00 ET, dispatch, push to `main` touching the verifier | runs `scripts/verify_docs_against_live.py` against live GCP over WIF; a drifted schedule, count or service name in any of the 41 operational docs fails the run (#990) |
-| Monthly doc refresh | [`.github/workflows/refresh-architecture-docs.yml`](../../../.github/workflows/refresh-architecture-docs.yml) | 1st of month 06:00 UTC + dispatch | snapshots live GCP, renders the inventory blocks in this file and `05-c-DATA_DEPENDENCIES.md`, has Gemini update the prose, gates the result, opens a PR |
 | Retired | `fetch-market-data.yml.disabled` | — | superseded by the `fetch-market-data` job |
 | Cloud Build | [`gcp/cloudbuild/`](../../../gcp/cloudbuild) | `deploy-solyra-api-staging` (push to `main`), `deploy-solyra-api-prod` (manual), `apply-schema-on-change` (push to `main`) | the API and schema deploy paths (§10.9) <!-- verify-docs-ok: Cloud Build trigger names, read live with gcloud builds triggers list 2026-09-07 --> |
 
@@ -912,6 +915,7 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`gcp/build_intraday_gex.py`](../../../gcp/build_intraday_gex.py) | Build / refresh `intraday_gex_15m` — MATERIALIZED reconstructed intraday | — |
 | [`gcp/build_options_daily_greeks.py`](../../../gcp/build_options_daily_greeks.py) | Build / refresh `etf_options_daily_greeks` — the MATERIALIZED daily | `build-options-greeks` |
 | [`gcp/build_realtime_gex.py`](../../../gcp/build_realtime_gex.py) | Build / refresh `realtime_gex_15m` — MATERIALIZED per-15m-bucket REAL intraday | `build-realtime-gex` |
+| [`gcp/calibrate_level_params.py`](../../../gcp/calibrate_level_params.py) | Cloud Run Job module: calibrate-level-params (FEAT-STRAT-001, | — |
 | [`gcp/cloudbuild/serving_revision.py`](../../../gcp/cloudbuild/serving_revision.py) | Print the Cloud Run revision that is actually SERVING TRAFFIC. | — |
 | [`gcp/database.py`](../../../gcp/database.py) | Cloud SQL (PostgreSQL) connection utilities. | — |
 | [`gcp/db_maintenance.py`](../../../gcp/db_maintenance.py) | Non-transactional DB maintenance (VACUUM / ANALYZE / REINDEX). | — |
@@ -920,6 +924,8 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`gcp/earnings_long_watchlist.py`](../../../gcp/earnings_long_watchlist.py) | Cloud Run Job — weekly long-side earnings watchlist ("Next NVAX"). | `earnings-long-watchlist` |
 | [`gcp/earnings_reactions_brief.py`](../../../gcp/earnings_reactions_brief.py) | Earnings-reactions brief -- Cloud Run Job triggered by Cloud Scheduler at | `earnings-reactions-brief` |
 | [`gcp/failure_notifier.py`](../../../gcp/failure_notifier.py) | GCP Cloud Run Job failure notifier. | — |
+| [`gcp/fetchers/_av_realtime_collector.py`](../../../gcp/fetchers/_av_realtime_collector.py) | Cloud Run Job: Fetch intraday AV REALTIME_OPTIONS and write to Cloud SQL. | — |
+| [`gcp/fetchers/_av_realtime_transport.py`](../../../gcp/fetchers/_av_realtime_transport.py) | Private CLI transport: bounded source I/O only, no retry or storage policy. | — |
 | [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) | Shared helper: load the configured watchlist for every consumer. | — |
 | [`gcp/fetchers/backfill_daily_indicators.py`](../../../gcp/fetchers/backfill_daily_indicators.py) | Self-healing backfill of derived indicator columns in market_data_daily. | `backfill-daily-indicators` |
 | [`gcp/fetchers/build_options_daily_features.py`](../../../gcp/fetchers/build_options_daily_features.py) | Populate the materialized `options_daily_features` table (perf fix). | `build-options-daily-features` |
@@ -1051,8 +1057,10 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`lib/indicators.py`](../../../lib/indicators.py) | Consolidated technical indicator functions. | — |
 | [`lib/infra_errors.py`](../../../lib/infra_errors.py) | What counts as an INFRASTRUCTURE failure, in one place. | — |
 | [`lib/insights.py`](../../../lib/insights.py) | Template-driven insight generator for backtest results. | — |
+| [`lib/level_calibration.py`](../../../lib/level_calibration.py) | Per-ticker level and plan parameter calibration (FEAT-STRAT-001, | — |
 | [`lib/logging_config.py`](../../../lib/logging_config.py) | Centralized logging configuration for the trading system. | — |
 | [`lib/movement_statement.py`](../../../lib/movement_statement.py) | Movement-statement assembler — PHASE 2 (feature-flagged, NOT user-facing). | — |
+| [`lib/opening_window.py`](../../../lib/opening_window.py) | Clocked thirty-minute opening projection; no acquisition or client math. | — |
 | [`lib/options_exec_backtest/cli.py`](../../../lib/options_exec_backtest/cli.py) | Options exec backtest — Cloud Run Job entry point. | `options-exec-backtest` |
 | [`lib/options_exec_backtest/engine.py`](../../../lib/options_exec_backtest/engine.py) | Trade-lifecycle simulator — options edition. | — |
 | [`lib/options_exec_backtest/iv_lookup.py`](../../../lib/options_exec_backtest/iv_lookup.py) | IV-lookup layer for the options exec backtest. | — |
@@ -1105,6 +1113,7 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`platform/api/routers/signals.py`](../../../platform/api/routers/signals.py) | Signals router — reads from Cloud SQL ``historical_signals``. | — |
 | [`platform/api/routers/waitlist.py`](../../../platform/api/routers/waitlist.py) | Waitlist router — public signup capture for the Solyra landing page. | — |
 | [`platform/api/schemas.py`](../../../platform/api/schemas.py) | Response models for every JSON route the frontend consumes. | — |
+| [`platform/api/snapshot_provenance.py`](../../../platform/api/snapshot_provenance.py) | Snapshot provenance for stored options chains (FEAT-OPTION-001, spec | — |
 | [`platform/api/threadsafe_cache.py`](../../../platform/api/threadsafe_cache.py) | A `cachetools` cache that survives threadpool dispatch. | — |
 <!-- inventory:modules:end -->
 
@@ -1140,4 +1149,4 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 
 ---
 
-Generated 2026-09-07 by the monthly documentation refresh; inventory blocks rendered by `scripts/maintenance/doc_inventory.py` from the 2026-09-07 live snapshot. The audits that established this layout are in [`docs/audits/`](../../audits). The monthly refresh updates this line.
+Generated 2026-09-07; inventory blocks rendered by `scripts/maintenance/doc_inventory.py` from the 2026-09-07 live snapshot. The audits that established this layout are in [`docs/audits/`](../../audits).
