@@ -72,3 +72,21 @@ Spec: Source identity and close-out post-merge obligations.
 Source/test review: fresh local reviewer, first source review, no findings. This is not hosted current-head review. Focused reader tests passed (75). Committed identity verifier passed with the fixed ceilings; matched main/head audit has zero new findings. Unchanged source/docs suite: 804 passed on this branch. Exact main initially returned 803 passed / 1 failed (exit 1): the slow-True timeout control asserted a nonempty reaped-grandchild list; no escaped or remaining children were reported. Its unchanged isolated rerun passed (exit 0). Original traceback retained; no governance code/tests changed. Fresh whole-candidate local review found no introduced defects. This is not hosted current-head review. Initial concurrent identity verification timed out; sequential retries passed without changing the ceiling or source. No merge or production action.
 
 Draft PR: #1801. Before publication, the exact branch had no prior PR or review history; first hosted read after opening showed no submitted reviews. No hosted review requested; two-round cap remains intact. Main sequencing coordinated under the parent task; no merge authorized.
+
+## Authorized required-check repair (2026-11-11)
+
+Exact new permission retained, without resetting the three local passes:
+
+> Assistant: “To finish these readers and the remaining fetcher spec #1685, may I allow the necessary additional current-head reviews for those three PRs, while retaining all prior review history and requiring their normal checks before merge?”
+> User: “Yes and Fix the required check”
+
+Spec: done_when[0..3], normal current-head review/checks and AGENTS.md API-response proof.
+- [ ] Reproduce required-check failures, preserve baseline evidence, and repair only scoped source/test/generated evidence.
+- [ ] P-G: prove actual earnings readers through watchlist and generated-report API responses; retain existing timezone debt with its new SQL fingerprint, without a timezone exemption or query semantics change.
+- [ ] P-H and P-G: render affected inventories from committed source with the existing renderer; preserve foreign prose.
+- [ ] Correct owned PR lineage syntax; regenerate only declared SITE notes and sidecar against coordinated main.
+- [ ] Run source, timezone, generated-docs and API regressions, ordinary gates and matched audits.
+- [ ] Complete repair candidate before necessary hosted current-head review; no new local judgment pass.
+- [ ] Preserve all prior local/hosted reviews and findings; no merge/deploy until explicit sequencing handoff.
+
+Temporary publication hold: both PRs had externally been made Ready and auto-merge enabled. Auto-merge was disabled and both were converted to Draft at 14:07:30 / 14:07:34 UTC, before the subsequent no-Draft-conversion instruction arrived. Do not blindly reverse status. Restore only through coordinated sequencing; #1685 precedes #1800, then #1801 final mechanical sync.
