@@ -5,14 +5,14 @@ issues: []
 canvases: []
 site_source_notes: [CHARTS-06]
 done_when:
-  - "tests/lib/test_trading_analysis_realized_outcome.py passes: on a synthetic one-minute frame with tz-aware UTC Time, generate_technical_signals gives every signal realized_return_pct and realized_rule 'next-open-20m-1c-v1'; a call fired on the 10:00 ET bar whose next 20 closes include one above its close, but whose exit open (the open 20 bars after the 10:01 entry open) is below that entry open, has return_pct above 0 and realized_return_pct below 0, equal to (exit open - entry open - 0.01) / entry open * 100; a put is the mirror; a signal on a bar before 09:30 ET or after 15:34 ET, or whose entry or exit bar falls outside the same session's regular hours (a 13:00 half-day close from lib.eastern_time.session_close included), has realized_return_pct NULL; return_pct, best_return and the return_Nmin columns are unchanged from origin/main on the same frame; the realized cases fail on origin/main"
+  - "tests/lib/test_trading_analysis_realized_outcome.py passes: on a synthetic one-minute frame whose Time is naive Eastern wall time (what scripts/run_historical_signals.py passes after utc_to_eastern_naive), generate_technical_signals gives every signal realized_return_pct and realized_rule 'next-open-20m-1c-v1'; a call fired on the 10:00 ET bar whose next 20 closes include one above its close, but whose exit open (the open 20 bars after the 10:01 entry open) is below that entry open, has return_pct above 0 and realized_return_pct below 0, equal to (exit open - entry open - 0.01) / entry open * 100; a put is the mirror; a signal on a bar before 09:30 ET or after 15:34 ET, or whose entry or exit bar falls outside the same session's regular hours (a 13:00 half-day close from lib.eastern_time.session_close included), has realized_return_pct NULL; a tz-aware frame is read in Eastern time and scores the same signals the same way; return_pct, best_return, the return_Nmin columns and the set of signals are unchanged from origin/main on the same frame; and tests/scripts/test_run_historical_signals_strategy.py passes a regression through the production caller (load_intraday_bars stubbed to return UTC instants, the momentum path run unchanged) in which a signal on the 10:00 ET bar is scored from the 10:01 ET entry open and a 05:00 ET premarket signal is NULL; the realized cases fail on origin/main"
   - "tests/lib/test_trading_analysis_feature_ranking.py passes: analyze_feature_importance ranks no column whose name starts with exit_, realized_, return_ or best_, and no duration_minutes, even when exit_rsi is a copy of the target; its printed model score is labelled out of sample and is computed on the chronologically last 20% of signals by entry_time after fitting on the first 80%; the summary print no longer calls the best-of-20 share profitable (it prints 'moved in favour within 20 bars' and, beside it, the realized win share); the exit_rsi case fails on origin/main"
   - "tests/api/test_platform_api.py passes: GET /api/signals/{ticker}/similar serves pct_profitable as the share of realized_return_pct > 0 among matched rows with a realized value, realized_count as that number of rows, and pct_moved_in_favor as the origin/main share of return_pct > 0; a match set whose rows all have realized_return_pct NULL serves pct_profitable null and realized_count 0, never 0.0; the statistics are still one query; the realized cases fail on origin/main; tests/api/test_openapi_snapshot.py passes on the regenerated platform/api/openapi.json"
-  - "tests/gcp/test_premarket_playbook_resolver.py passes: a call whose first RTH bar opens at or above the trigger is entry_status gap_through with fill_price, exit_reason, eod_pnl_pct and eod_pnl_dollar None while trigger_hit_ts is still that bar; a later bar that opens above the trigger after bars below it fills at its own open; a target touched on the fill bar is not hit for the exit (T1 counts only from the next bar); T1 then T2 then the stop realizes at T1 (all out at the first exit); the stop and T1 on the same later bar realize at the stop; a stop touched on the fill bar realizes at the stop; a target at or behind the fill is skipped; puts are the mirror; eod_pnl_pct is measured from fill_price; every *_hit_ts, mfe_pct, mae_pct and reversal_after_trigger expectation that exists on origin/main is unchanged; test_call_hits_all_targets_realized_at_t3 and test_call_t2_then_stop_realizes_at_t2_not_stop now expect T1, a recorded change of rule; the gap-through, later-gap, fill-bar-target and T1-then-T2 cases fail on origin/main"
-  - "gcp/schema.sql adds, with ADD COLUMN IF NOT EXISTS and no default, historical_signals.realized_return_pct and realized_rule, and premarket_analysis calls_ and puts_ entry_status, fill_price and exit_reason plus outcome_rule; the comments on return_pct and on calls_t1_hit_ts and calls_eod_pnl_pct state the rules of this spec; scripts/run_historical_signals.py and gcp/historical_signals.py carry the two new historical_signals columns, and a test in tests/gcp/test_historical_signals.py shows both reach the INSERT column list"
+  - "tests/gcp/test_premarket_playbook_resolver.py passes: a call whose first RTH bar opens at or above the trigger is entry_status gap_through with fill_price, exit_reason, eod_pnl_pct and eod_pnl_dollar None while trigger_hit_ts is still that bar; a later bar that opens above the trigger after bars below it fills at its own open; a target touched on the fill bar is not hit for the exit (T1 counts only from the next bar); T1 then T2 then the stop realizes at T1 (all out at the first exit); the stop and T1 on the same later bar realize at the stop; a stop touched on the fill bar realizes at the stop; a target at or behind the fill is skipped; puts are the mirror; eod_pnl_pct is measured from fill_price; every *_hit_ts, mfe_pct, mae_pct and reversal_after_trigger expectation that exists on origin/main is unchanged; test_call_hits_all_targets_realized_at_t3 and test_call_t2_then_stop_realizes_at_t2_not_stop now expect T1, a recorded change of rule; the gap-through, later-gap, fill-bar-target and T1-then-T2 cases fail on origin/main; and a resolve_one test with a stubbed engine inspects the executed UPDATE and its bound values: calls_entry_status, calls_fill_price, calls_exit_reason, puts_entry_status, puts_fill_price and puts_exit_reason are SET and bound from the two legs (a gap_through leg binds its status with NULL fill, exit and P&L), and outcome_resolver_version is bound to the new RESOLVER_VERSION '2026-11-11.v2'; this test fails on origin/main"
+  - "gcp/schema.sql adds, with ADD COLUMN IF NOT EXISTS and no default, historical_signals.realized_return_pct and realized_rule, and premarket_analysis calls_ and puts_ entry_status, fill_price and exit_reason; the comments on return_pct and on calls_t1_hit_ts and calls_eod_pnl_pct state the rules of this spec; scripts/run_historical_signals.py and gcp/historical_signals.py carry the two new historical_signals columns, and a test in tests/gcp/test_historical_signals.py shows both reach the INSERT column list"
   - "scripts/analysis/honest_scoring_experiment.py, run as this spec's Experiment section states, reproduces both Experiment tables to the digit, with the spec-rule rows of the resolver table produced by the implemented resolve_leg, and the implementation PR body carries both tables"
   - "Source identity (CHARTS-06): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-SIGNAL-001, CHARTS-06) note row carries that source_identity_sha256"
-  - "The FEAT-SIGNAL-001 catalog record, the FEAT-PLAYBOOK-001 record's Next action and the PR traceability entry are updated, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
+  - "The FEAT-SIGNAL-001 catalog record and its PR traceability entry are updated (no other capability's row or record is edited, as the gate's product-scope check requires), and python3 scripts/gate/spec_gate.py --pr origin/main passes"
 status: approved
 supersedes: null
 ---
@@ -104,7 +104,7 @@ to 2026-11-10. It is aligned to this rule as a close-out step outside the repo.
   scaled targets (the triggers_levels lane's main finding) are a separate decision; the Experiment shows
   them for information only.
 - No backfill. Legacy `historical_signals` rows keep `realized_return_pct` NULL and resolved
-  `premarket_analysis` rows keep their values with `outcome_rule` NULL; recomputing either is a separate
+  `premarket_analysis` rows keep their values and `outcome_resolver_version` `2026-05-11.v1`; recomputing either is a separate
   owner-authorized run. No cost model in the resolver (it books none today).
 - No frontend change in this repo. The solyra Similar setups card (CHARTS-06) reads the new fields in its
   own PR.
@@ -134,9 +134,14 @@ to 2026-11-10. It is aligned to this rule as a close-out step outside the repo.
 
 - A pure helper `realized_outcome(bars, signal_idx, direction, hold=20, cost=0.01)` (vectorised, as in
   the research's `realized_outcomes`, rule `next-open-20m-1c-v1`):
-  - scoreable only when the signal bar is inside 09:30 to 15:34 ET of a session, with ET from
-    `lib.eastern_time` (the producer's `Time` is tz-aware UTC), and the entry bar and the exit bar are in
-    the same session before `lib.eastern_time.session_close` of that day;
+  - the frame's `Time` is read as naive Eastern wall time, which is what the production caller passes
+    (`scripts/run_historical_signals.py:484` converts `load_intraday_bars`' UTC instants with
+    `utc_to_eastern_naive` before `add_technical_indicators`, because the analyzer's opening range,
+    VWAP and relative volume read the market clock off `Time`); a tz-aware `Time` is converted to
+    Eastern first, never localized as UTC; the indicator frame itself is not changed;
+  - scoreable only when the signal bar is inside 09:30 to 15:34 Eastern of a session, and the entry bar
+    and the exit bar are in the same session and open before `lib.eastern_time.session_close` of that day
+    (compared in Eastern wall time);
   - entry at the open of the bar after the signal bar; exit at the open `hold` bars after the entry;
   - `realized_return_pct = direction * (exit_open - entry_open) - cost`, over `entry_open`, times 100;
   - not scoreable gives NULL, never 0.
@@ -186,8 +191,11 @@ otherwise                                          -> exit at the last RTH close
 eod_pnl_pct = direction * (exit - fill) / fill * 100; eod_pnl_dollar as today
 ```
 
-New columns per side: `entry_status`, `fill_price`, `exit_reason` (`stop`, `t1`, `close`), and one
-`outcome_rule` per row. Touch timestamps, excursions and the reversal flag are computed exactly as on
+New columns per side: `entry_status`, `fill_price`, `exit_reason` (`stop`, `t1`, `close`). The rule is
+stamped in the existing `outcome_resolver_version` column (`VARCHAR(20)`, `gcp/schema.sql:1946`) by
+bumping `RESOLVER_VERSION` (`gcp/premarket_playbook_resolver.py:81`) from `2026-05-11.v1` to
+`2026-11-11.v2`; no new rule column. `resolve_one` adds the six fields to its `updates` payload and to
+its explicit `SET` list (`:440-499`), so the helper's values reach the row. Touch timestamps, excursions and the reversal flag are computed exactly as on
 origin/main. The schema comments are updated to these rules.
 
 ### `week_summary.py` (outside the repo)
@@ -296,7 +304,7 @@ a defect of the fix.
 - `/similar` `pct_profitable` drops from about 85% to about 49% for matches with realized rows; for
   matches with only legacy rows it is null with `realized_count` 0 until new rows accumulate or an
   authorized backfill runs. `pct_moved_in_favor` carries the old number.
-- `premarket_analysis` rows resolved after the deploy carry `outcome_rule` `cross-fill-t1-v1`, no P&L on
+- `premarket_analysis` rows resolved after the deploy carry `outcome_resolver_version` `2026-11-11.v2` (rule `cross-fill-t1-v1`), no P&L on
   gap-through legs, P&L from the real fill, and T1 as the only target exit. Touch timestamps and the
   movement-statement reach rates are unchanged.
 
@@ -304,7 +312,7 @@ a defect of the fix.
 
 - **Volume:** `historical_signals` gains two nullable columns on about 1.7 million rows (1,708,932 at
   the 2026-09-14 audit noted in `gcp/historical_signals.py`; metadata-only
-  `ALTER`, no rewrite); `premarket_analysis` gains seven nullable columns. New rows add 8 to 40 bytes.
+  `ALTER`, no rewrite); `premarket_analysis` gains six nullable columns. New rows add 8 to 40 bytes.
 - **Velocity:** the realized outcome is two array lookups per signal inside the producer's existing pass;
   `/similar` keeps one statistics query with two more aggregates; the resolver keeps one walk per leg.
 - **Wall-clock:** the producer's run is dominated by the voter's row loop (minutes per ticker); the added
@@ -322,16 +330,19 @@ timestamps. Every other SITE byte stays unchanged.
 After the merge, separately and never as a pre-merge box: verify main's source and body identity in a
 fresh clone; complete the DOC main and staging close-out with real evidence (the schema columns exist in
 Cloud SQL, the next `historical-signals-watchlist` run writes `realized_return_pct`, the next
-`premarket-playbook-resolver` run writes `outcome_rule`); align `stocks-scorecard/week_summary.py` to
+`premarket-playbook-resolver` run writes `2026-11-11.v2` and the six new columns); align `stocks-scorecard/week_summary.py` to
 the same rule; retire the sidecar as the product-delivery skill prescribes; and set the plan to
-`status: done` on a `docs/` branch.
+`status: done` on a `docs/` branch. The FEAT-PLAYBOOK-001 record's Next action, which should mention the
+new resolver rule, is updated in its own `docs/` change after the merge, because a FEAT-SIGNAL-001
+branch may edit only its own catalog record and traceability section
+(`scripts/gate/spec_gate.py:4278-4320`, `check_product_scope`).
 
 ## Risks
 
 - **The Similar card shows null or a lower number.** Correct, but a visible change; the solyra card must
   show `realized_count` and the unavailable state (CHARTS-06, its own PR).
 - **Mixed history.** Old and new resolver rows differ in meaning; any reader of `eod_pnl_pct` must
-  filter on `outcome_rule`. No in-repo reader exists today (searched `lib/`, `gcp/`, `platform/`,
+  filter on `outcome_resolver_version`. No in-repo reader exists today (searched `lib/`, `gcp/`, `platform/`,
   `scripts/`); solyra was not searched from this session.
 - **One-minute bars.** The fill bar's order of prints is unknown. The rule takes the stop and never the
   target on that bar; against `week_summary`'s rule on the same 1,311 legs that costs 2.71 R
