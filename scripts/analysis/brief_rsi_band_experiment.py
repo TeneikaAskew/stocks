@@ -77,6 +77,11 @@ def load_daily(d: str, t: str) -> pd.DataFrame:
     return out[["Open", "High", "Low", "Close", "Volume"]].astype(float)
 
 
+# The live calibrate-thresholds job runs at 02:00 ET on the run date
+# (gcp/deploy.sh, Phase 0.6), so it can only read bars stamped before then.
+RUN_CLOCK = pd.Timedelta(hours=2)
+
+
 def tier_a_rows(d: str, t: str) -> dict:
     """ticker_calibration rows rebuilt as scripts/calibrate_thresholds.py
     writes them on each quarterly run date the local history covers."""
@@ -90,7 +95,7 @@ def tier_a_rows(d: str, t: str) -> dict:
         if start < first:
             continue  # 60-day window not covered by the local 1-min history
         w = bars[(bars["timestamp"] >= pd.Timestamp(start))
-                 & (bars["timestamp"] < pd.Timestamp(run + timedelta(days=1)))]
+                 & (bars["timestamp"] < pd.Timestamp(run) + RUN_CLOCK)]
         if w.empty:
             continue
         rsi = compute_rsi(w["close"].reset_index(drop=True)).dropna()
