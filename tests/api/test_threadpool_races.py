@@ -1845,7 +1845,9 @@ def test_a_concurrent_options_chain_hit_is_served_not_503ed():
     key = ("SPY", "2026-09-04")
     payload = {"ticker": "SPY", "date": "2026-09-04", "contracts": [],
                "source": "cloud_sql"}
-    opt._CHAIN_CACHE[key] = payload
+    # The chain cache entry is the internal {"payload", "provenance"} wrapper
+    # (FEAT-OPTION-001 snapshot provenance); the hit returns its payload.
+    opt._CHAIN_CACHE[key] = {"payload": payload, "provenance": None}
     queries = []
     try:
         with patch.object(opt, "_require_cloud_sql", lambda: None), \
