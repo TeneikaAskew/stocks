@@ -2,7 +2,7 @@
 feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-11-11-feat-data-001-brief-holiday-freshness.md
 branch: fix/feat-data-001-brief-holiday-freshness
-pr: null
+pr: 1803
 status: ready
 ---
 
