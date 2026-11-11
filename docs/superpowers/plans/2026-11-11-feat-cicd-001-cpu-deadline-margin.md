@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-11-feat-cicd-001-cpu-deadline-test-margin.md
 branch: fix/feat-cicd-001-cpu-deadline-margin
-pr: null
+pr: 1814
 status: ready
 ---
 
