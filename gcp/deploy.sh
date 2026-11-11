@@ -2792,6 +2792,9 @@ deploy_fetch_earnings_calendar() {
     echo "Deploying fetch-earnings-calendar job..."
     # EarningsWhispers retired 2026-10-31: the job no longer receives EW_USER /
     # EW_PASS (the ew-user / ew-pass secrets stay as resources, read by no job).
+    # Keep the shared AV/database bindings and ENV_STRING unchanged.
+    # Create and update both replace the calendar job environment.
+    # Release uses only the earnings-calendar dispatcher after review.
     # task-timeout 1800s (30 min): the AV HISTORICAL_OPTIONS enrichment
     # adds 1 API call per unique earnings ticker in the today-1..today+7
     # window. At ~800–2000 unique tickers × 150 RPM ≈ 5–14 min, plus
