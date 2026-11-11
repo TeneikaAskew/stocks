@@ -479,7 +479,7 @@
  "lib/agents/ranker/candidates.py": {
   "sql-utc-date": [
    "_candidates_from_8k::str#9217b328cc62",
-   "_candidates_from_earnings::str#c40c97687812",
+   "_candidates_from_earnings::fstr#0f0d3d5b42de",
    "_candidates_from_economic::str#4697442839ec",
    "_candidates_from_insiders::str#d40735d495cf",
    "_candidates_from_top_movers::str#c692cfa35034"
