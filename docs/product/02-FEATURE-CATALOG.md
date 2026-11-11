@@ -278,7 +278,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Experimental; EW reader retirement source and local tests prepared under the approved 2026-10-31 spec; external current-head review, hosted checks and rollout pending |
+| Status | Experimental; EW reader retirement source and local tests in Draft [#1800](https://github.com/TeneikaAskew/stocks/pull/1800) under the approved 2026-10-31 spec; external current-head review, hosted checks and rollout pending |
 | Priority | P2 |
 | Target phase | Phase 4 — see [13](13-ROADMAP.md) |
 | Target release | TBD |

@@ -2,7 +2,7 @@
 feat_id: FEAT-INSIGHT-001
 spec: docs/superpowers/specs/2026-10-31-feat-insight-001-retire-ew-reader.md
 branch: fix/feat-insight-001-retire-ew-reader
-pr: null
+pr: 1800
 status: ready
 ---
 
@@ -55,9 +55,9 @@ Spec: done_when[3], Source identity and close-out pre-merge steps 1-4.
 
 ## Task 3: Normal Draft publication
 Spec: done_when[3], Source identity and close-out pre-merge step 4.
-- [ ] Coordinate current-main sequencing before publication; regenerate identity after watched source/body/policy changes.
-- [ ] Update only owned capability record and PR traceability, preserving earlier prose; open one Draft PR under normal gates.
-- [ ] Record PR number in this plan, actual review budget and retained findings; do not request a third round.
+- [x] Coordinate current-main sequencing before publication; regenerate identity after watched source/body/policy changes.
+- [x] Update only owned capability record and PR traceability, preserving earlier prose; open one Draft PR under normal gates.
+- [x] Record PR number in this plan, actual review budget and retained findings; do not request a third round.
 - [ ] Run PR-mode gate and record source tests separately from hosted current-head checks and review.
 
 ## Task 4: Post-merge owner close-out (not performed by this task)
@@ -70,3 +70,5 @@ Spec: Source identity and close-out post-merge obligations.
 ## Local evidence checkpoint
 
 Source/test review: fresh local reviewer, first source review, no findings. This is not hosted current-head review. Focused reader tests passed (88). Committed identity verifier passed with the fixed ceilings; matched main/head audit has zero new findings. Unchanged source/docs suite: 804 passed on this branch. Exact main initially returned 803 passed / 1 failed (exit 1): the slow-True timeout control asserted a nonempty reaped-grandchild list; no escaped or remaining children were reported. Its unchanged isolated rerun passed (exit 0). Original traceback retained; no governance code/tests changed. Fresh whole-candidate local review found no introduced defects. This is not hosted current-head review. Initial concurrent identity verification timed out; sequential retries passed without changing the ceiling or source. No merge or production action.
+
+Draft PR: #1800. Before publication, the exact branch had no prior PR or review history; first hosted read after opening showed no submitted reviews. No hosted review requested; two-round cap remains intact. Main sequencing coordinated under the parent task; no merge authorized.
