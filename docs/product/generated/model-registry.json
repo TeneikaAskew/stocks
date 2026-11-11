@@ -442,7 +442,7 @@
   {
    "job": "`fetch-earnings-history`",
    "scheduler": "`daily-earnings-refresh-history` · `weekly-earnings-refresh-history`",
-   "why_it_is_not_model_bearing": "Reported EPS / surprise → `earnings_history`. Ingest"
+   "why_it_is_not_model_bearing": "Inputs only — Reported EPS / surprise → `earnings_history`. Ingest. A predicate-only import of `EARNINGS_NOT_RETIRED_SQL` from `lib.earnings_reactions` excludes retired calendar sources; it does not call scoring, classification or recommendation functions and does not make this ingest job a model."
   },
   {
    "job": "`compute-earnings-reactions`",
@@ -462,17 +462,17 @@
   {
    "job": "`fetch-insider-transactions`",
    "scheduler": "`insider-transactions-daily`",
-   "why_it_is_not_model_bearing": "Form 4 filings → `insider_transactions`. Ingest"
+   "why_it_is_not_model_bearing": "Inputs only — Form 4 filings → `insider_transactions`. Ingest. A predicate-only import of `EARNINGS_NOT_RETIRED_SQL` from `lib.earnings_reactions` excludes retired calendar sources; it does not call scoring, classification or recommendation functions and does not make this ingest job a model."
   },
   {
    "job": "`fetch-sec-filings`",
    "scheduler": "`sec-filings-intraday`",
-   "why_it_is_not_model_bearing": "EDGAR filings → `sec_filings`. Ingest"
+   "why_it_is_not_model_bearing": "Inputs only — EDGAR filings → `sec_filings`. Ingest. A predicate-only import of `EARNINGS_NOT_RETIRED_SQL` from `lib.earnings_reactions` excludes retired calendar sources; it does not call scoring, classification or recommendation functions and does not make this ingest job a model."
   },
   {
    "job": "`fetch-news-sentiment` · `fetch-news-sentiment-earnings` · `fetch-news-sentiment-topics`",
    "scheduler": "`news-sentiment-hourly` · `news-sentiment-earnings-0600` · `news-topics-hourly`",
-   "why_it_is_not_model_bearing": "Vendor-scored sentiment → `news_sentiment`. The score is the vendor's; this job stores it"
+   "why_it_is_not_model_bearing": "Inputs only — Vendor-scored sentiment → `news_sentiment`. The score is the vendor's; this job stores it. A predicate-only import of `EARNINGS_NOT_RETIRED_SQL` from `lib.earnings_reactions` excludes retired calendar sources; it does not call scoring, classification or recommendation functions and does not make this ingest job a model."
   },
   {
    "job": "`fetch-top-movers`",
@@ -2624,7 +2624,7 @@
  ],
  "sources": {
   "docs/EXPERIMENT_REGISTRY.md": "9752340744b8580d57910eadb6df84c536081b42",
-  "docs/product/07-MODEL-REGISTRY.md": "5d17bccdc83c1a70ddf8f81d1d7d8f6d41aee708",
+  "docs/product/07-MODEL-REGISTRY.md": "e6e7faa79193ad4a928df49e6ecba4ff583daae4",
   "scripts/gate/export_model_registry.py": "74e5fdc5bb2e7bf11894b3de2601c4dc8428122d"
  },
  "tables": [
