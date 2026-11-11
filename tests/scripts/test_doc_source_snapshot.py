@@ -1043,8 +1043,11 @@ def test_actual_fallback_parser_cpu_deadline_preserves_absent_or_valid_record(ex
     # The cap must fall after the source identity is computed and before the
     # bounded work can finish on a fast host. In the sandbox the identity is
     # set by 0.2 s at 80,000 lines, while the fastest runner seen finished
-    # 40,000 lines in 1.91 s (#1796). A 0.75 s cap sits between the two; this
-    # measures only the handler restoration and refusal serialization.
+    # 40,000 lines in 1.91 s (#1796). 80,000 lines roughly doubles that work,
+    # so even that runner needs several times the 0.75 s cap to finish, and
+    # counted input stays well under MAX_BYTES. The 0.1 s allowance covers
+    # the alarm handler, the unwinding and cpu_guard's cleanup, which all run
+    # before elapsed_seconds is taken.
     assert verdict["elapsed_seconds"] < 0.85
     if old is None:
         assert not (repo.path / RECORD).exists()
