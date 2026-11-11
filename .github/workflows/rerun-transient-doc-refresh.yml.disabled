@@ -1,3 +1,9 @@
+# RETIRED 2026-11-10 (FEAT-CICD-001): retired with the monthly refresh it re-ran.
+# Why and what replaced it: docs/superpowers/specs/2026-11-10-feat-cicd-001-retire-arch-refresh.md
+# GitHub Actions runs only *.yml files, so this one no longer runs. The body
+# below is kept unchanged for archaeology. The docs are now regenerated on
+# demand, see README "Maintenance".
+
 name: Re-run a doc refresh that died on a Vertex transport stall or quota exhaustion
 
 # Run 20 of the monthly refresh (2026-09-07) died at
