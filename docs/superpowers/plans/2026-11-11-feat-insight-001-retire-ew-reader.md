@@ -51,7 +51,7 @@ Spec: done_when[3], Source identity and close-out pre-merge steps 1-4.
 - [x] Verify with --max-seconds 5 --max-input-bytes 12582912 --max-entries 20000.
 - [x] Prove registry blob/mode/type equals current main and all foreign SITE bytes unchanged.
 - [x] Run matched main/head docs_audit.py; require no new findings.
-- [ ] Run unchanged tests/scripts/test_doc_source_snapshot.py and tests/scripts/test_docs_audit.py (expect PASS).
+- [x] Run unchanged tests/scripts/test_doc_source_snapshot.py and tests/scripts/test_docs_audit.py (expect PASS).
 
 ## Task 3: Normal Draft publication
 Spec: done_when[3], Source identity and close-out pre-merge step 4.
@@ -69,4 +69,4 @@ Spec: Source identity and close-out post-merge obligations.
 
 ## Local evidence checkpoint
 
-Source/test review: fresh local reviewer, first source review, no findings. This is not hosted current-head review. Focused reader tests passed (88). Committed identity verifier passed with the fixed ceilings; matched main/head audit has zero new findings. Unchanged governance suites are still being qualified against exact main. Initial concurrent identity verification timed out; sequential retries passed without changing the ceiling or source. No merge or production action.
+Source/test review: fresh local reviewer, first source review, no findings. This is not hosted current-head review. Focused reader tests passed (88). Committed identity verifier passed with the fixed ceilings; matched main/head audit has zero new findings. Unchanged source/docs suite: 804 passed on this branch. Exact main initially returned 803 passed / 1 failed (exit 1): the slow-True timeout control asserted a nonempty reaped-grandchild list; no escaped or remaining children were reported. Its unchanged isolated rerun passed (exit 0). Original traceback retained; no governance code/tests changed. Fresh whole-candidate local review found no introduced defects. This is not hosted current-head review. Initial concurrent identity verification timed out; sequential retries passed without changing the ceiling or source. No merge or production action.
