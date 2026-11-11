@@ -278,11 +278,11 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Experimental |
+| Status | Experimental; EW reader retirement source and local tests prepared under the approved 2026-10-31 spec; external current-head review, hosted checks and rollout pending |
 | Priority | P2 |
 | Target phase | Phase 4 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-10 |
+| Last reviewed | 2026-11-11 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/insights` |
 | Backend | `/api/insights` (13) |
