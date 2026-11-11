@@ -32,14 +32,14 @@ implementation follows the existing two-round limit; no judgment review yet spen
 
 ## Task 1: actual-reader predicates and tests
 Spec: done_when items1–3; Ownership and collisions.
-- [ ] Replay the prepared test file on the actual base; record failing controls.
-- [ ] Apply only seven fetcher diffs and the actual-reader test file from preserved
+- [x] Replay the prepared test file on the actual base; record failing controls.
+- [x] Apply only seven fetcher diffs and the actual-reader test file from preserved
   /workspace/ew-pf-uncommitted-preparation.patch, excluding its historical spike note.
-- [ ] Verify eleven predicate sites, both aliases removed and six retained controls.
-- [ ] Run14actual-reader cases and scoped fetcher suites; preserve event-specific
+- [x] Verify eleven predicate sites, both aliases removed and six retained controls.
+- [x] Run14actual-reader cases and scoped fetcher suites; preserve event-specific
   timing ties, hydrated AMC and refresh LIMIT negative controls.
-- [ ] Prove removing only import/predicate/f-string additions restores base bytes.
-- [ ] Record exact node inventory, elapsed/RSS and row/query envelope. No production
+- [x] Prove removing only import/predicate/f-string additions restores base bytes.
+- [x] Record exact node inventory, elapsed/RSS and row/query envelope. No production
   performance or PostgreSQL claim follows from the SQLite adapter.
 
 ## Task 2: generated records and truthful source evidence
@@ -64,3 +64,5 @@ Spec: done_when item4; Ownership and collisions; post-merge obligations.
 - [ ] Normal current-head review/CI, resolved threads and coordinated merge follow.
 - [ ] Fresh actual-main source verification and separate deployed-job image evidence
   follow merge; never mark plan done or remove sidecar before genuine close-out.
+
+Qualification receipt:14 red on87409f21, then270 scoped tests passed65.71s, measured67.239s wall/439832KiB peak child RSS. Source changes restore exactly to base after removal of predicate/import additions. Shared fixture/helper and all seven original reader date expressions remain unchanged. Original scratch receipts are historical; these are fresh-base runs.
