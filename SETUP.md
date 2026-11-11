@@ -121,8 +121,6 @@ Save both `WIF_PROVIDER` and `SA_EMAIL` — they go in GitHub secrets next.
 
 ---
 
----
-
 ## 4. Add two GitHub repository secrets
 
 Repo → Settings → Secrets and variables → Actions → New repository secret. Add:

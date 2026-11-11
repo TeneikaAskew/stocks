@@ -58,7 +58,7 @@ name: Deploy staging
 #   GCP_WIF_PROVIDER, GCP_WIF_SA_EMAIL, DB_USER, DB_PASS, DB_NAME,
 #   CLOUD_SQL_CONNECTION_NAME, PR_WORKFLOW_TOKEN (failure handler)
 #
-# Roles the WIF service account needs BEYOND the doc-refresh set (one-time,
+# Roles the WIF service account needs BEYOND SETUP.md section 2's (one-time,
 # granted by an operator with project IAM admin — not the CI SA):
 # Every entry below was proven necessary by a real failed run on 2026-09-04
 # (runs #1-#13 each failed one layer deeper; #14 was the first to deploy end
