@@ -313,7 +313,7 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and sol
 | [#1140](https://github.com/TeneikaAskew/stocks/issues/1140) | ops | [ESCALATED] magnitude-inference: fix in #1122 merged 2026-09-16 but never deployed — job still failing nightly, auto-closed each time |
 | [solyra#12](https://github.com/TeneikaAskew/solyra/issues/12) | ops | GCP billing follow-ups: Detailed export, stalled backfill, account-wide budget |
 
-**PR lineage:** [#507](https://github.com/TeneikaAskew/stocks/pull/507) *remediation* · [#1350](https://github.com/TeneikaAskew/stocks/pull/1350) *remediation* · [#1366](https://github.com/TeneikaAskew/stocks/pull/1366) *remediation* · [#1457](https://github.com/TeneikaAskew/stocks/pull/1457) *remediation*
+**PR lineage:** [#507](https://github.com/TeneikaAskew/stocks/pull/507) *remediation* · [#1350](https://github.com/TeneikaAskew/stocks/pull/1350) *remediation* · [#1366](https://github.com/TeneikaAskew/stocks/pull/1366) *remediation* · [#1457](https://github.com/TeneikaAskew/stocks/pull/1457) *remediation* · [#1384](https://github.com/TeneikaAskew/stocks/pull/1384) *remediation*
 
 ### FEAT-DATA-001 — Data platform (21 open)
 
