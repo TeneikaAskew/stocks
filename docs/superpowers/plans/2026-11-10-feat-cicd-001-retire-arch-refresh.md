@@ -3,7 +3,7 @@ feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-10-feat-cicd-001-retire-arch-refresh.md
 branch: feature/feat-cicd-001-retire-arch-refresh
 pr: 1788
-status: ready
+status: done
 ---
 
 # Retire the monthly architecture-doc refresh: implementation plan (F)
