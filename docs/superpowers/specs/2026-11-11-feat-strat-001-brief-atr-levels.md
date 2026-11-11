@@ -98,6 +98,10 @@ shares are lower than the level study's):
   +10.4 up and +8.1 down; against the gap +1.2 to +1.6.
 - Anchors on the open (-2.4 pp long) or the trigger were not better than the prior close, and on every
   session the trigger anchor was worse (-2.0 pp long).
+- Week and month high/low anchors were also tested (long window, opened-through, spaced rule): week alone
+  held the 2nd level 12.7% vs 16.3% for the four anchors; adding week and month on top raised it to 19.5%
+  but needed 39 lines within 3 ATR instead of 26, and in the recent window the gain was +0.7 pp
+  [0.0, +1.4]. Not adopted; the anchor list stays a policy row so it can be added later.
 - With these four anchors there are about 25 to 30 levels within 3 x ATR of the open in a direction,
   against 9 to 14 for prior close or structural only, which is why this spec thins the rungs (Design 3).
 
