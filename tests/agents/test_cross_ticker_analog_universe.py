@@ -331,6 +331,7 @@ def test_the_bundle_forwards_the_universe_to_the_backtest_section(monkeypatch):
 
     monkeypatch.setattr(summarizers, "summarize_backtest_metrics", fake_backtest)
     for name in ("summarize_market_context", "summarize_strat_status",
+                 "summarize_session_levels",
                  "summarize_options_flow", "summarize_gamma_levels",
                  "summarize_catalysts", "summarize_news_sentiment"):
         monkeypatch.setattr(summarizers, name,

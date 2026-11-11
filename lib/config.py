@@ -29,8 +29,10 @@ class IndicatorConfig:
     ema_periods: List[int] = field(default_factory=lambda: [9, 20, 50])
     sma_periods: List[int] = field(default_factory=lambda: [5, 10, 20, 50, 200])
     atr_period: int = 14
-    # Additional ATR windows. Schema declares `atr_20`; same reasoning.
-    atr_extra_periods: List[int] = field(default_factory=lambda: [20])
+    # Additional ATR windows. Schema declares `atr_5` and `atr_20`; same
+    # reasoning. ATR(5) is stored beside ATR(14) for the per-ticker level
+    # parameters' ATR basis (FEAT-STRAT-001, owner ruling 2026-11-07).
+    atr_extra_periods: List[int] = field(default_factory=lambda: [5, 20])
     # Annualised historical-volatility windows. Each entry N produces a
     # `volatility_{N}d` series (std of pct_change × sqrt(252)).
     volatility_periods: List[int] = field(default_factory=lambda: [5, 20])
