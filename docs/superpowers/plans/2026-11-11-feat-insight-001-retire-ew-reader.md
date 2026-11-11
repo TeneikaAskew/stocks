@@ -36,13 +36,13 @@ status: ready
 Spec: done_when[0], done_when[1], done_when[2] and Separation of evidence.
 Files: `lib/agents/ranker/candidates.py::_candidates_from_earnings` and the earnings query in `lib/agents/summarizers.py::summarize_catalysts`; tests: `tests/agents/test_ranker.py` and `tests/agents/test_agent_summarizers.py`.
 Interfaces: consume lib.earnings_reactions.EARNINGS_NOT_RETIRED_SQL and tests.fixtures.earnings_calendar_sources; preserve reader signatures and outputs.
-- [ ] Run existing focused test files on the clean baseline (expect PASS).
-- [ ] Add actual-reader tests with explicit main-shaped negative controls and shared fixture rows. Earlier EW postmarket wins MIN(date)/MIN(time); earlier EW leads the LIMIT 5 summarizer list. AV premarket must replace the retired values.
-- [ ] Assert aliases removed, NULL/unknown/nonalias kept, EW-only absent, and byte-identical accepted-source serialized results.
-- [ ] Run added tests before source edits (expect FAIL on retired values).
-- [ ] Import shared EARNINGS_NOT_RETIRED_SQL and add it inside existing WHERE, with no other query change.
-- [ ] Run complete focused test files (expect PASS).
-- [ ] Run python3 scripts/gate/spec_gate.py --commit, then commit with normal hook.
+- [x] Run existing focused test files on the clean baseline (expect PASS).
+- [x] Add actual-reader tests with explicit main-shaped negative controls and shared fixture rows. Earlier EW postmarket wins MIN(date)/MIN(time); earlier EW leads the LIMIT 5 summarizer list. AV premarket must replace the retired values.
+- [x] Assert aliases removed, NULL/unknown/nonalias kept, EW-only absent, and byte-identical accepted-source serialized results.
+- [x] Run added tests before source edits (expect FAIL on retired values).
+- [x] Import shared EARNINGS_NOT_RETIRED_SQL and add it inside existing WHERE, with no other query change.
+- [x] Run complete focused test files (expect PASS).
+- [x] Run python3 scripts/gate/spec_gate.py --commit, then commit with normal hook.
 
 ## Task 2: Bound source identity and unchanged governance tests
 Spec: done_when[3], Source identity and close-out pre-merge steps 1-4.
