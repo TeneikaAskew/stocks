@@ -5,11 +5,11 @@ issues: []
 canvases: []
 site_source_notes: [SHARED-07]
 done_when:
-  - "gcp/fetchers/evaluate_ew_strikes.py contains only the existing nyse_sessions pandas_market_calendars wrapper, byte-identical to main's L196-206, its imports, and a docstring naming the OPS, OPTION and DATA specs that still bind the import (2026-10-12-feat-ops-001-av-operations.md:225, 2026-10-13 av-source-journal.md:176, 2026-10-12 av-market-data.md:501); it exports no scoring_session, evaluate_range or main, contains no earnings_whispers literal and no AlphaVantageConfig import; no new calendar helper is introduced and lib/eastern_time.py is unchanged"
-  - "gcp/fetchers/_av_realtime_collector.py is unchanged and its import from gcp.fetchers.evaluate_ew_strikes import nyse_sessions still resolves; tests/gcp/test_av_options_collector_entry.py passes unchanged, still patching ew.nyse_sessions"
-  - "scoring_session (L208-234) and the Session dataclass (L185-193) are removed with the scorer: at d806bfd1 their only consumers are evaluate_range (L377, removed here) and gcp/premarket_brief.py load_ew_recap (L738, L762, removed by the FEAT-PLAYBOOK-001 retire-ew-brief PR, which is why this PR waits for it), and the PR description shows the repo-wide grep for scoring_session and nyse_sessions proving no other consumer; tests/gcp/test_evaluate_ew_strikes.py is split, not deleted: its 28 scorer functions (49 collected cases at L142-477 and L597-604, each calling evaluate_range, main, scoring_session or _compute_verdict, including test_intraday_on_a_closed_day_has_no_session and test_an_early_close_session_ends_at_one_pm) are removed with the code they test, and its seven fetch_market_data vendor-contract functions (22 collected cases at L513-594, with the helpers _Resp, _month and _daily and the fetch_market_data import at L31; #1181, #1188, #1202) move verbatim to a new tests/gcp/test_fetch_market_data_vendor_answers.py, whose collected node ids equal the 22 recorded at d806bfd1 and all pass; the PR description shows, as executed on its base and its head, the repository's collected totals, where head minus base equals minus 49 (the 71 cases of the old file leave, the 22 vendor cases arrive in the new file) plus the collected count of the new tests/gcp/test_nyse_sessions_shim.py, with no other file's count changed; a new tests/gcp/test_nyse_sessions_shim.py, labelled new, tests the kept wrapper itself: the library schedule with UTC open/close for a holiday week (2026-11-26 absent, 2026-11-27 closes 18:00Z) and a DST date (2027-03-15 opens 13:30Z), ImportError when pandas_market_calendars is unimportable (no weekday fallback), and the module surface (no scoring_session, Session, evaluate_range, main, _compute_verdict, _UPDATE_SQL, _CLEAR_SQL; L196-206 byte-identical to main)"
+  - "gcp/fetchers/evaluate_ew_strikes.py contains only the existing nyse_sessions wrapper over the shared NYSE calendar (on main since #1546 its body is return session_schedule(start, end) from lib.eastern_time, which reads pandas_market_calendars), byte-identical to main's L196-205, its imports, and a docstring naming the OPS, OPTION and DATA specs that still bind the import (2026-10-12-feat-ops-001-av-operations.md:225, 2026-10-13 av-source-journal.md:176, 2026-10-12 av-market-data.md:501); it exports no scoring_session, evaluate_range or main, contains no earnings_whispers literal and no AlphaVantageConfig import; no new calendar helper is introduced and lib/eastern_time.py is unchanged"
+  - "gcp/fetchers/_av_realtime_collector.py is unchanged and its import from gcp.fetchers.evaluate_ew_strikes import nyse_sessions still resolves; tests/gcp/test_av_options_collector_entry.py passes unchanged, still patching ew.nyse_sessions; lib/earnings_reactions.py earnings_session_schedule (L961-964 on main 028acf38) also imports nyse_sessions from the module, is unchanged, and its import still resolves"
+  - "scoring_session (L207-232 on main 028acf38, L208-234 at d806bfd1) and the Session dataclass (L185-193) are removed with the scorer: at d806bfd1 and on main 028acf38 their only consumers are evaluate_range (L377 at d806bfd1, L376 on main, removed here) and gcp/premarket_brief.py load_ew_recap (L738 and L762 at d806bfd1, L745 and L769 on main, removed by the FEAT-PLAYBOOK-001 retire-ew-brief PR, which is why this PR waits for it), and the PR description shows the repo-wide grep for scoring_session and nyse_sessions proving no consumer other than those items 2 and 3 name; tests/gcp/test_evaluate_ew_strikes.py is split, not deleted: its 28 scorer functions (49 collected cases at L142-477 and L597-604, each calling evaluate_range, main, scoring_session or _compute_verdict, including test_intraday_on_a_closed_day_has_no_session and test_an_early_close_session_ends_at_one_pm) are removed with the code they test, and its seven fetch_market_data vendor-contract functions (22 collected cases at L513-594, with the helpers _Resp, _month and _daily and the fetch_market_data import at L31; #1181, #1188, #1202) move verbatim to a new tests/gcp/test_fetch_market_data_vendor_answers.py, whose collected node ids equal the 22 recorded at d806bfd1 and all pass; the PR description shows, as executed on its base and its head, the repository's collected totals, where head minus base equals minus 49 (the 71 cases of the old file leave, the 22 vendor cases arrive in the new file) plus the collected count of the new tests/gcp/test_nyse_sessions_shim.py, with no other file's count changed; a new tests/gcp/test_nyse_sessions_shim.py, labelled new, tests the kept wrapper itself: the library schedule with UTC open/close for a holiday week (2026-11-26 absent, 2026-11-27 closes 18:00Z) and a DST date (2027-03-15 opens 13:30Z), ImportError when pandas_market_calendars is unimportable (no weekday fallback), and the module surface (no scoring_session, Session, evaluate_range, main, _compute_verdict, _UPDATE_SQL, _CLEAR_SQL; L196-205 byte-identical to main)"
   - "07-MODEL-REGISTRY.md L47 shows MODEL-EWV-001 Status Retired and Rec REMOVE (the declared Rec vocabulary at L11 is KEEP / RETEST / RESTRUCTURE / PAUSE / REMOVE, enforced by tests/meta/test_model_registry_consistency.py::test_rec_cells_use_the_declared_vocabulary) with the retirement date; no history row or blockquote is deleted; docs/product/generated/model-registry.json is regenerated and export_model_registry.py --check exits 0; docs/models/MODEL-EWV-001.md carries a retirement header and its Tests section cites tests/gcp/test_nyse_sessions_shim.py and tests/gcp/test_av_options_collector_entry.py, each of which exists and mentions the module stem as tests/meta/test_model_registry_consistency.py L548-561 requires of a cited file; that suite passes"
-  - "tests/meta/test_timezone_boundaries.py passes on a baseline regenerated with --write-baseline, from which the two scoring_session entries at tests/fixtures/timezone_boundary_baseline.json:97-101 have left, with no new violation; tests/lib/test_av_account_allowance.py CONSUMERS no longer lists the module and the test passes; docs/product/06-DATA-ARCHITECTURE.md is not changed by this PR, because check_product_scope (scripts/gate/spec_gate.py L4176-4227) admits under docs/product/ only the FEAT's own catalog and traceability records, the model registry and its generated files, and the renderer-owned inventory blocks; the PR description names the follow-up docs-only PR P-J (branch docs/ew-retirement-product-docs, RETIREMENT-DESIGN.md section 6.1), which drops the module from the earnings_calendar producer cell at line 55 after this PR and the other phases it documents have merged; docs/models/MODEL-EWV-001.md's retirement header states the executed collection at d806bfd1 (71 cases over 35 functions), the 49 removed and the 22 moved"
+  - "tests/meta/test_timezone_boundaries.py passes on a baseline regenerated with --write-baseline, from which the two scoring_session entries at tests/fixtures/timezone_boundary_baseline.json:91-95 on main 028acf38 (L97-101 at d806bfd1) have left, with no new violation; tests/lib/test_av_account_allowance.py CONSUMERS no longer lists the module and the test passes; docs/product/06-DATA-ARCHITECTURE.md is not changed by this PR, because check_product_scope (scripts/gate/spec_gate.py L4176-4227) admits under docs/product/ only the FEAT's own catalog and traceability records, the model registry and its generated files, and the renderer-owned inventory blocks; the PR description names the follow-up docs-only PR P-J (branch docs/ew-retirement-product-docs, RETIREMENT-DESIGN.md section 6.1), which drops the module from the earnings_calendar producer cell at line 55 after this PR and the other phases it documents have merged; docs/models/MODEL-EWV-001.md's retirement header states the executed collection at d806bfd1 (71 cases over 35 functions), the 49 removed and the 22 moved"
   - "The PR opens only after the FEAT-PLAYBOOK-001 retire-ew-brief PR is on main (the brief imports scoring_session until then) and after RUNTIME-QUALIFICATION-PLAN.md section 2 (evaluate-ew-strikes job and scheduler deleted) is complete, both recorded in the PR description"
   - "02-FEATURE-CATALOG FEAT-DATA-001 record shows Status and Last reviewed, and 12-PR-ISSUE-TRACEABILITY lists this PR"
   - "Source identity (SHARED-07): on the implementation PR head, the existing bounded producer and verifier (`scripts/maintenance/doc_source_snapshot.py produce`, then `verify` with the fixed ceilings, run from the committed HEAD) prove committed source and SITE body identity bound to this approved spec at the actual merge base, where its blob equals the one on current main; the plan binds this spec; the only SITE change is the FEAT-DATA-001 / SHARED-07 row of the Implementation-source notes table, updated with the prefix source_identity_sha256=<current source hash> and nonempty implementation and test prose that describes this PR's module strip, its moved and new tests and the MODEL-EWV-001 retirement, keeping the row's earlier own content; every other SITE byte is unchanged; the sidecar is produced from the final committed SITE body and committed, replacing the sidecar record the merge of main carries; the matched main and branch `scripts/maintenance/docs_audit.py` runs report no finding that main does not; `tests/scripts/test_doc_source_snapshot.py` and `tests/scripts/test_docs_audit.py` pass unchanged; the registry `docs/DOC_REGISTRY.md` blob, mode and type equal main's; required current-head checks pass before merge under the repository's existing review rules, which this spec does not extend."
@@ -19,7 +19,7 @@ supersedes: null
 
 # Strip gcp/fetchers/evaluate_ew_strikes.py to the nyse_sessions calendar shim; retire MODEL-EWV-001
 
-P-I in RETIREMENT-DESIGN.md rev 3.9 sections 4, 4.1 (site 24 and the two UPDATE writers), 6 and 8 (residual 3 resolved); test surface per ACCEPTANCE-PLAN.md section 1 and TEST-INVENTORY.md section 1 (rev 3.6). Owned by FEAT-DATA-001 because 02-FEATURE-CATALOG.md:523 puts gcp/fetchers/ under its Code field; the registry row 07-MODEL-REGISTRY.md:47 binds MODEL-EWV-001 to this code path and to no capability, and the product-delivery skill lets the spec that changes a model carry its registry rows (.claude/skills/product-delivery/SKILL.md:85). The job, scheduler and dispatcher are the FEAT-DEPLOY-001 spec 2026-10-31-feat-deploy-001-retire-ew-evaluator.md (P-C). The nyse_sessions wrapper and its consumers are preserved byte-for-byte until the approved shared-calendar spec's own gates migrate them; PR #1546 is not a prerequisite.
+P-I in RETIREMENT-DESIGN.md rev 3.9 sections 4, 4.1 (site 24 and the two UPDATE writers), 6 and 8 (residual 3 resolved); test surface per ACCEPTANCE-PLAN.md section 1 and TEST-INVENTORY.md section 1 (rev 3.6). Owned by FEAT-DATA-001 because 02-FEATURE-CATALOG.md:528 puts gcp/fetchers/ under its Code field; the registry row 07-MODEL-REGISTRY.md:47 binds MODEL-EWV-001 to this code path and to no capability, and the product-delivery skill lets the spec that changes a model carry its registry rows (.claude/skills/product-delivery/SKILL.md:85). The job, scheduler and dispatcher are the FEAT-DEPLOY-001 spec 2026-10-31-feat-deploy-001-retire-ew-evaluator.md (P-C). The nyse_sessions wrapper and its consumers are preserved byte-for-byte until the approved shared-calendar spec's own gates migrate them; PR #1546 is not a prerequisite.
 
 ## Changes from the local rev 3.9 draft (read first)
 
@@ -41,6 +41,16 @@ main b0f88b5e on 2026-11-02, this text adds only:
   identity and close-out", "Separation of evidence" and "Status".
 
 Nothing else changed.
+
+Amended on 2026-11-11 against main 028acf38, after #1546 merged (3ab668a9): only the sentences that
+describe main's code were brought up to date, and the intent is unchanged (the shim keeps the calendar
+behaviour as main has it). In the intro paragraph the catalog anchor reads `:528`. Item 1 describes the
+kept wrapper as main now holds it, a wrapper over `lib.eastern_time.session_schedule`, at L196-205.
+Item 2 adds the consumer main gained since d806bfd1, `lib/earnings_reactions.py`. Item 3 gives main's
+line numbers beside the d806bfd1 ones, lets the grep show the consumers items 2 and 3 name, and reads
+L196-205. Item 5 gives the baseline entries' lines on main beside the d806bfd1 ones. The rev 3.9 sha256
+above is that of the text before this amendment. The section "Anchors on current main" gains a
+2026-11-11 paragraph and "Sequencing with #1546" a closing paragraph.
 
 ## Anchors on current main
 
@@ -71,6 +81,22 @@ spec (P-D) is not on main and no open pull request carries it, so `premarket_bri
 `scoring_session`; the evaluator job and scheduler are still to be deleted under
 RUNTIME-QUALIFICATION-PLAN.md section 2 after #1658 (P-C). Item 6 holds the implementation until both are
 recorded.
+
+Re-read on main 028acf38 on 2026-11-11. #1546 merged as 3ab668a9 and changed
+`gcp/fetchers/evaluate_ew_strikes.py` only in its two hunks: the import line L67 now reads
+`from lib.eastern_time import ET, ET_NAME, session_schedule` and `nyse_sessions` (L196-205) returns
+`session_schedule(start, end)`. `Session` is still L185-193; `scoring_session` is L207-232 and its call
+in `evaluate_range` L376. `tests/gcp/test_evaluate_ew_strikes.py` and `tests/lib/test_av_account_allowance.py`
+are still byte-identical to d806bfd1, so the 71/49/22 counts stand. `gcp/premarket_brief.py` imports
+`nyse_sessions, scoring_session` at L745 and calls `scoring_session` at L769;
+`_av_realtime_collector.py` imports and calls `nyse_sessions` at L568 and L577; `lib/earnings_reactions.py`
+`earnings_session_schedule` (L961-964) is a consumer of `nyse_sessions` that d806bfd1 did not have; the two
+baseline entries are `tests/fixtures/timezone_boundary_baseline.json:93-94` (inside L91-95);
+the FEAT-DATA-001 Code field is `02-FEATURE-CATALOG.md:528` and now also lists `lib/eastern_time.py`.
+The L11, L47, L55, L548-561, SITE L125 and L1303, `SKILL.md:85`, `check_product_scope` and three spec
+anchors read as above. The FEAT-PLAYBOOK-001 retire-ew-brief spec
+(`2026-11-09-feat-playbook-001-retire-ew-brief.md`, approved) is now on main, but its implementation is
+not: `premarket_brief.py` still consumes `scoring_session`, so item 6 still holds the implementation.
 
 ## Choice of Chain element: SHARED-07
 
@@ -112,7 +138,7 @@ and the model-registry export, and rebinds its own SITE row.
 
 ## Sequencing with #1546
 
-Item 1 keeps `nyse_sessions` byte-identical to main's L196-206 and item 3's new shim test checks the
+Item 1 keeps `nyse_sessions` byte-identical to main's L196-205 (L196-206 before #1546 merged) and item 3's new shim test checks the
 library schedule, a DST date, ImportError without `pandas_market_calendars` and the module surface.
 #1546 (draft, head 5b926526, merge base 11135c4d) changes the wrapper's body, to
 `return session_schedule(start, end)` (the wrapper is L196-204 on its head), and the module's
@@ -139,6 +165,13 @@ wrapper as it is, its import hunk is reapplied by #1546 to the stripped module's
 merging second, adds the same cache reset to the shim test; the implementation's author tells #1546's
 owner so before the implementation is pushed. Whichever merges second merges main and regenerates the
 timezone baseline. Either way the blocked-library case does not pass or fail on cache state.
+
+#1546 merged first (3ab668a9, on main 028acf38), so the first branch above applies: the kept wrapper
+and its import line are #1546's as main holds them, and the shim test calls
+`lib.eastern_time._reset_session_cache()` before the blocked-library case. Executed on 2026-11-11 against
+the merge of main 028acf38, with `pandas_market_calendars` 5.3.0, the same probe gives the table's
+results: sessions 11-23, 11-24, 11-25 and 11-27 with 11-27 closing 18:00Z, 2027-03-15 opening 13:30Z,
+and ModuleNotFoundError with the library blocked after the cache reset.
 
 ## Source identity and close-out
 
