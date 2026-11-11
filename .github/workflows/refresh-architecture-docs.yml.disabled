@@ -1,3 +1,9 @@
+# RETIRED 2026-11-10 (FEAT-CICD-001): the monthly architecture doc refresh.
+# Why and what replaced it: docs/superpowers/specs/2026-11-10-feat-cicd-001-retire-arch-refresh.md
+# GitHub Actions runs only *.yml files, so this one no longer runs. The body
+# below is kept unchanged for archaeology. The docs are now regenerated on
+# demand, see README "Maintenance".
+
 name: Monthly architecture doc refresh
 
 # The ONLY place a dry run is recorded anywhere a reader can see it. The REST
