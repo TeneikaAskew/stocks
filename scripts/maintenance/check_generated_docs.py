@@ -764,8 +764,8 @@ def gate_diff_budget(stats: list[dict], allow_rewrite: tuple[str, ...] = ()) -> 
     """Refuse a run that rewrote a document instead of updating it.
 
     `allow_rewrite` names documents a HUMAN is deliberately reconstructing.
-    The refresh workflow never passes it, so the monthly bot can never exempt
-    itself; it exists for a one-off rebuild done under review.
+    Nothing scheduled passes it, so no automated run can exempt itself; it
+    exists for a one-off rebuild done under review.
     """
     out = []
     for st in stats:
@@ -1186,7 +1186,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--report", help="write the added/removed accounting here as markdown")
     ap.add_argument("--allow-rewrite", action="append", default=[], metavar="DOC",
                     help="a document a human is deliberately reconstructing; exempt it from the "
-                         "churn ceiling. The refresh workflow never passes this.")
+                         "churn ceiling. Nothing scheduled passes this.")
     a = ap.parse_args(argv)
     root = pathlib.Path(a.root)
     previous_dir = pathlib.Path(a.previous_dir) if a.previous_dir else None

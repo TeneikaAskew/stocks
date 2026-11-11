@@ -5,6 +5,7 @@ asserts the gate now turns it into a finding.
 """
 from __future__ import annotations
 
+import ast
 import datetime
 import json
 import pathlib
@@ -877,9 +878,10 @@ def test_the_committed_asof_labels_match_their_own_snapshot():
     text = (gate.REPO / gate.ARCH).read_text()
     day = re.search(r"read on \*\*(\d{4}-\d{2}-\d{2})\*\*", text).group(1)
     assert gate.gate_stale_asof(gate.REPO, {"read_at": f"{day}T04:35:16Z"}) == []
-    # Three labels: the header note, §3's table column, and the snapshot date
-    # in the closing line.
-    assert len(gate.gate_stale_asof(gate.REPO, {"read_at": "1999-01-01T00:00:00Z"})) == 3
+    # Four labels: the header note, §3's table column, and the snapshot date
+    # in the closing line, plus README's closing line, which names the same
+    # snapshot date now that nothing re-renders it on a schedule.
+    assert len(gate.gate_stale_asof(gate.REPO, {"read_at": "1999-01-01T00:00:00Z"})) == 4
 
 
 def test_no_snapshot_means_no_asof_finding(tmp_path):
@@ -2035,3 +2037,56 @@ def test_the_cli_runs_clean_on_the_repository_docs():
     r = subprocess.run([sys.executable, "-m", "scripts.maintenance.check_generated_docs",
                         "--snapshot", str(SNAPSHOT)], cwd=REPO, capture_output=True, text=True)
     assert r.returncode == 0, r.stdout[-2000:]
+
+
+# ── no maintenance doc claims a scheduled refresh ──────────────────────────
+CLAIM = re.compile(r"refresh-architecture-docs|rerun-transient-doc-refresh|monthly (architecture |documentation |doc )?(doc )?refresh"
+                   r"|(re)?generated monthly|auto-refreshed monthly|on the 1st of (each|every) month|1st of month 06:00", re.I)
+RETIRE_WORD = re.compile(r"\bretire(?:d|ment)?\b", re.I)
+CLAIM_DOCS = ("README.md", "SETUP.md", ".github/workflows/README.md", "docs/DOC_REGISTRY.md", "docs/INVESTMENT_MODELS_SUMMARY.md",
+              "docs/product/05-INFRASTRUCTURE.md", "docs/product/09-SECURITY-AUTH.md", "docs/product/infrastructure/05-a-ARCHITECTURE.md",
+              "docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md", "docs/product/infrastructure/05-e-API.md",
+              "docs/product/infrastructure/manual/README.md")
+RETIRED_PATH = re.compile(r"\.github/workflows/(?:refresh-architecture-docs|rerun-transient-doc-refresh)\.yml(?!\.disabled)"
+                          r"|\.github/prompts/(?:architecture|cost-analysis|data-dependencies)\.md"
+                          r"|\.github/scripts/is_transient_gemini_failure\.sh|scripts/maintenance/render_doc_prompts\.py")
+STEPS = ("python -m scripts.maintenance.doc_inventory --snapshot tests/fixtures/live_gcp_snapshot_2026-09-07.json --insert "
+         "docs/product/infrastructure/05-a-ARCHITECTURE.md docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md "
+         "docs/product/infrastructure/05-e-API.md",
+         "python -m pytest tests/scripts/test_check_generated_docs.py tests/scripts/test_refresh_architecture_drawio.py -k committed",
+         "python -m scripts.refresh_calibration_table")
+
+
+@pytest.mark.parametrize("claim", CLAIM_DOCS + ("README specifics", "manual README title", "doc_inventory.py"))
+def test_no_maintenance_doc_claims_a_scheduled_refresh(claim):
+    if claim in CLAIM_DOCS:
+        bad = [l for l in (REPO / claim).read_text(encoding="utf-8").splitlines() if CLAIM.search(l) and not RETIRE_WORD.search(l)]
+        assert bad == [], bad
+    elif claim == "README specifics":
+        body = (REPO / "README.md").read_text(encoding="utf-8")
+        assert not re.search(r"(?m)^#+\s*Removed since last refresh\s*$", body)
+        assert "on each refresh" not in body and "on the 1st" not in body
+        row = next(l for l in body.splitlines() if l.startswith("| [05-d-COST_ANALYSIS.md]"))
+        assert "monthly" not in row.lower(), row
+    elif claim == "manual README title":
+        title = (REPO / "docs/product/infrastructure/manual/README.md").read_text(encoding="utf-8").splitlines()[0]
+        assert "auto-refreshed" not in title.lower(), title
+    else:
+        src = (REPO / "scripts/maintenance/doc_inventory.py").read_text(encoding="utf-8")
+        node = next(n for n in ast.parse(src).body if isinstance(n, ast.Assign)
+                    and getattr(n.targets[0], "id", "") == "OWNED_BADGE")
+        outside = src.splitlines()[:node.lineno - 1] + src.splitlines()[node.end_lineno:]
+        assert not [l for l in outside if "refresh-architecture-docs" in l]
+        assert not re.search(r"(?i)refresh workflow", src)
+
+
+@pytest.mark.parametrize("doc", [d for d in CLAIM_DOCS if "/manual/" not in d])
+def test_no_living_doc_cites_a_retired_file(doc):
+    assert not RETIRED_PATH.findall((REPO / doc).read_text(encoding="utf-8"))
+
+
+def test_the_readme_maintenance_section_is_the_on_demand_procedure():
+    section = (REPO / "README.md").read_text(encoding="utf-8").split("\n## Maintenance\n", 1)[1].split("\n## ", 1)[0]
+    assert RETIRE_WORD.search(section) and re.search(r"\boptional\b", section, re.I)
+    assert re.findall(r"`(python3? -m [^`]+)`", section) == list(STEPS)
+    assert "live_gcp_snapshot_" not in section.replace(STEPS[0], "")

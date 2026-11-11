@@ -3,7 +3,7 @@
 
 Why this exists
 ---------------
-The monthly architecture-doc refresh (`.github/workflows/refresh-architecture-docs.yml`)
+The retired monthly architecture-doc refresh
 asked an LLM to count Cloud Run Jobs, schedulers, tables and API routes by
 reading `gcp/deploy.sh`, `gcp/schema.sql` and `platform/api` itself. The
 2026-09-02 regeneration named 4 of the 67 jobs `deploy.sh` declares, and the
@@ -409,7 +409,7 @@ def deploy_targets(root: pathlib.Path = REPO) -> list[str]:
 def schema_tables(root: pathlib.Path = REPO) -> dict[str, list[dict[str, Any]]]:
     """Tables, materialized views and views `gcp/schema.sql` creates.
 
-    The table regex is byte-for-byte the one the refresh workflow's gate uses
+    The table regex is byte-for-byte the one the retired generated-docs gate used
     (`grep -oE '^CREATE TABLE( IF NOT EXISTS)? [a-zA-Z0-9_]+'`), so the two
     can never disagree on the count.
     """
@@ -3683,7 +3683,7 @@ def db_tables_snapshot() -> dict[str, dict[str, Any]]:
     """Live relations with row estimates and sizes, via gcp.database.get_engine().
 
     Needs the Cloud SQL env (CLOUD_SQL_CONNECTION_NAME, DB_USER, DB_PASS, DB_NAME),
-    which the refresh workflow already injects for the calibration step. From a
+    which CI already injects for the calibration step. From a
     sandbox without port 5432, run the same SQL through scripts/db_query_cr.sh
     and pass the CSV with --db-tables instead.
     """
@@ -4273,7 +4273,7 @@ def insert_readme_badges(doc_path: pathlib.Path, repo: dict[str, Any],
         raise ValueError(
             f"{doc_path}: no badge block found to render. Expected at least one of "
             f"the badges this renderer owns (docs_verified, cloud_run_jobs, "
-            f"schedulers, schema_relations, the refresh workflow badge).")
+            f"schedulers, schema_relations, the retired workflow badge).")
     lo, hi = owned[0][0], owned[-1][1]
     foreign = [ln for ln in text[lo:hi].split("\n")
                if ln.strip() and not OWNED_BADGE.fullmatch(ln)]
@@ -4387,9 +4387,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--snapshot", help="use a saved live snapshot instead of gcloud")
     ap.add_argument("--day", metavar="YYYY-MM-DD",
                     help="the run date stamped on README's badges and closing line. "
-                         "Defaults to today in UTC. The refresh workflow pins one "
-                         "date at job start and passes it here so the renderer and "
-                         "the verifier cannot disagree across a midnight boundary.")
+                         "Defaults to today in UTC. A caller running the renderer and "
+                         "the verifier together pins one date and passes it here so "
+                         "they cannot disagree across a midnight boundary.")
     ap.add_argument("--write-snapshot", help="write the live snapshot to this path")
     ap.add_argument("--db-tables", help="CSV of relname,n_live_tup,size (from scripts/db_query_cr.sh) to merge as live db_tables")
     ap.add_argument("--db-live", action="store_true", help="read live table stats via gcp.database (needs Cloud SQL env)")

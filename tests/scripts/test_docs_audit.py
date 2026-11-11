@@ -1130,7 +1130,7 @@ def test_ordinary_pull_request_lineage_is_still_ignored():
     assert m.check_closed_issues("d.md", line, states) == []
 
 
-# ── owning-job delivery ─────────────────────────────────────────────────────
+# ── subprocess helper ──────────────────────────────────────────────────────
 
 
 def test_run_returns_empty_for_a_tolerated_non_zero_exit():
@@ -2405,7 +2405,7 @@ def test_a_directory_target_still_resolves(tmp_path, monkeypatch):
     assert m.check_dead_links("d.md", "see [x](lib/)\n", {"d.md", "lib/a.py"}) == []
 
 
-# ── the owning job, and what its success does not prove ────────────────────
+# ── stamping ───────────────────────────────────────────────────────────────
 
 
 def test_a_scan_only_stamp_records_no_baseline_of_its_own():
@@ -3016,7 +3016,7 @@ def test_a_url_mask_stops_before_trailing_sentence_punctuation():
 
 def test_verify_without_stamp_is_rejected_before_any_side_effect(audit_repo, tmp_path):
     """The check ran after the issue-state reads, the snapshot write and the
-    owning-job API calls, so an invalid invocation could fail with an unrelated
+    later API calls, so an invalid invocation could fail with an unrelated
     GitHub authentication error -- and write the snapshot first."""
     out = tmp_path / "written.json"
     with pytest.raises(m.AuditError, match="requires --stamp"):
