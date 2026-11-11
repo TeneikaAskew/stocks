@@ -745,6 +745,8 @@ Live registry continuation: [#1599](https://github.com/TeneikaAskew/stocks/pull/
 
 ### FEAT-CATALYST-001 — Earnings / catalysts (19 open)
 
+- EW-only retirement implementation: [#1758](https://github.com/TeneikaAskew/stocks/pull/1758), fresh plan bound after approved own-scope spec [#1703](https://github.com/TeneikaAskew/stocks/pull/1703). Local source/tests and bounded identity are verified; current-head external review/CI and separately authorized release remain pending. Original consolidated51 obligations are unchanged and unclaimed; #1681 remains untouched.
+
 | Issue | Sev | Title |
 |---|---|---|
 | [#1223](https://github.com/TeneikaAskew/stocks/issues/1223) | P2 | [P2][Catalysts] Benzinga is named as a source with no configured API key |

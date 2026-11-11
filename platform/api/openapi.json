@@ -12318,7 +12318,7 @@
     },
     "/api/earnings/upcoming": {
       "get": {
-        "description": "Next N days of earnings reporters, decorated with full history.\n\nReads earnings_upcoming_with_history (refreshed daily 7:30am ET).\nEach row carries: archetype, confidence_label, BOTH recommendation\nmodes (long-only + IC), lean stats, and last_3_events JSONB.",
+        "description": "Next N days of earnings reporters, decorated with full history.\n\nReads earnings_upcoming_with_history (refreshed daily 7:30am ET).\nEach row carries archetype, lean stats and last_3_events JSONB; score,\nquintile, confidence and both recommendation modes are null (EW retired).",
         "operationId": "upcoming_api_earnings_upcoming_get",
         "parameters": [
           {

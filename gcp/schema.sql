@@ -4885,12 +4885,12 @@ CREATE TABLE IF NOT EXISTS earnings_upcoming_with_history (
     implied_move_pct           DOUBLE PRECISION,        -- expected_move / prev_close * 100
     options_volume             BIGINT,
     open_interest              BIGINT,
-    -- Playability + archetype (computed at refresh time)
+    -- Playability (NULL since the EW retirement) + archetype (refresh time)
     playability_score          DOUBLE PRECISION,
     quintile                   TEXT,                    -- Q1..Q5
     archetype                  TEXT,
     confidence_label           TEXT,
-    -- BOTH recommendation modes (user asked for both until they decide)
+    -- Both recommendation modes: NULL since the EW retirement (no input)
     recommended_structure_long_only  TEXT,
     recommended_structure_ic_mode    TEXT,
     -- Historical context from earnings_ticker_lean
