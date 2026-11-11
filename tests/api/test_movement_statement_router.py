@@ -478,6 +478,22 @@ def test_level_map_refuses_a_frame_missing_the_prior_session(monkeypatch):
         assert dashboard_router._build_movement_level_map("SPY", analysis_date=monday) is None
 
 
+def test_level_map_publishes_after_an_nyse_holiday(monkeypatch):
+    """FEAT-DATA-001 (2026-11-11 spec): the shared freshness rule counts NYSE
+    sessions, so the Tuesday after Memorial Day (2026-05-26) reading Friday
+    2026-05-22 gets a ladder, while a frame that also lacks that Friday is
+    still refused. On origin/main both were refused (calendar gap 4)."""
+    import datetime as _dt  # noqa: PLC0415
+
+    tuesday = _dt.date(2026, 5, 26)
+    ends_friday = _synthetic_daily(end=_dt.date(2026, 5, 22))
+    ends_thursday = _synthetic_daily(end=_dt.date(2026, 5, 21))
+    with patch("lib.data_loader.DataLoader.load_daily", return_value=ends_friday):
+        assert dashboard_router._build_movement_level_map("SPY", analysis_date=tuesday) is not None
+    with patch("lib.data_loader.DataLoader.load_daily", return_value=ends_thursday):
+        assert dashboard_router._build_movement_level_map("SPY", analysis_date=tuesday) is None
+
+
 def test_level_map_defaults_analysis_date_to_today_in_eastern(monkeypatch):
     """The default is today's date in America/New_York, not UTC, so an
     evening request does not roll the ladder forward a session (Rule 3.9)."""

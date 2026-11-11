@@ -3,7 +3,7 @@ feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-11-feat-cicd-001-cpu-deadline-test-margin-r2.md
 branch: fix/feat-cicd-001-cpu-deadline-margin
 pr: 1814
-status: ready
+status: done
 ---
 
 # CPU-deadline refusal test margin and the stale SHARED-01 pin sentence: implementation plan
