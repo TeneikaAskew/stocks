@@ -56,9 +56,9 @@ REPLACEMENTS: list[tuple[str, str]] = [
     ("Browser → trading-platform Cloud Run Service", "Browser → solyra-api-prod Cloud Run Service"),
     ("FastAPI + React", "FastAPI API"),
     ("GitHub Actions\n20 workflows: backups, audits, db-query,\nsheet downloads, platform deploy + promote",
-     "GitHub Actions (5 workflows) + Cloud Build (3 triggers)\nCI, manual staging deploy, REST bridge, failure\nhandler, docs-vs-live check, monthly doc refresh;\nAPI + schema deploys"),
+     "GitHub Actions (5 workflows) + Cloud Build (3 triggers)\nCI, manual staging deploy, REST bridge, failure\nhandler, docs-vs-live check;\nAPI + schema deploys"),
     ("GitHub Actions\n20 workflows: backups, audits, db-query,\nsheet downloads, deploys, failure-handler",
-     "GitHub Actions (5 workflows) + Cloud Build (3 triggers)\nCI, manual staging deploy, REST bridge, failure\nhandler, docs-vs-live check, monthly doc refresh;\nAPI + schema deploys"),
+     "GitHub Actions (5 workflows) + Cloud Build (3 triggers)\nCI, manual staging deploy, REST bridge, failure\nhandler, docs-vs-live check;\nAPI + schema deploys"),
     ("fetch-catalyst-calendar\nBenzinga catalysts", "fetch-av-options-realtime\nAV realtime options chain\nevery 5 min in RTH → etf_options_snapshots"),
     ("fetch-av-options-backfill\none-shot historical options\n(SPY/IWM/QQQ/SPX from 2016)", "fetch-av-options-backfill\nnightly 21:00 ET + monthly\nAV HISTORICAL_OPTIONS → etf_options_snapshots"),
     ("fetch-av-earnings-options-backfill ★\nEW options chains historical\n(on-demand)", "earnings-options-backfill\nEW-window options chains\n(on-demand)"),
@@ -71,8 +71,7 @@ REPLACEMENTS: list[tuple[str, str]] = [
     ("deploy-trading-apps.yml\nchart-viewer → GitHub Pages\n(options-heatseeker retired #255)", "Cloud Build: deploy-solyra-api-prod\nmanual: promote the digest\nstaging serves → solyra-api-prod"),
     ("deploy-trading-apps.yml\nchart-viewer → GitHub Pages\n(options-heatseeker archived 2026-05-04)", "Cloud Build: deploy-solyra-api-prod\nmanual: promote the digest\nstaging serves → solyra-api-prod"),
     ("Audit / type-check / test workflows\nsecurity-review, audit-review,\nvalidate-data, pre-deploy-check", "Cloud Build: apply-schema-on-change\npush touching gcp/schema.sql\n→ apply-schema-migrations job"),
-    ("refresh-architecture-docs.yml (monthly Gemini regen)", "refresh-architecture-docs.yml (monthly: live snapshot → rendered blocks → gated prose update)"),
-    ("⑩ GitHub Actions — 14 active workflows: backups, audits, sandbox bridges, deploys", "⑩ GitHub Actions (5 workflows) and Cloud Build (3 triggers) — CI, deploys, bridges, doc refresh"),
+    ("⑩ GitHub Actions — 14 active workflows: backups, audits, sandbox bridges, deploys", "⑩ GitHub Actions (5 workflows) and Cloud Build (3 triggers) — CI, deploys, bridges, docs-vs-live check"),
     ("⑦ Cloud Run Services (always-on)", "⑦ Cloud Run Services (4)"),
     ("7:15 ET — earnings-calendar refreshes today's reporters", "19:00 ET prior evening — daily-earnings-refresh-calendar / -history / -reactions"),
     ("4️⃣  8:20 ET — premarket-refresh polls AV intraday → gap_pct, pre_high/low/vwap\n5️⃣  8:30 ET — premarket-brief reads everything → Discord (multi-embed)",
@@ -261,9 +260,9 @@ def refresh_main(root: ET.Element, live: dict) -> None:
     paused = [n for n, x in live["schedulers"].items() if x.get("state") != "ENABLED"]
     paused_note = f"; {len(paused)} paused: {', '.join(paused)}" if paused else "; none paused"
     wf = live.get("_workflows")
-    gha_label = (f"⑩ GitHub Actions ({len(wf)} workflows) and Cloud Build ({len(live.get('cloudbuild_triggers', []))} triggers) — CI, deploys, bridges, docs-vs-live check, doc refresh"
+    gha_label = (f"⑩ GitHub Actions ({len(wf)} workflows) and Cloud Build ({len(live.get('cloudbuild_triggers', []))} triggers) — CI, deploys, bridges, docs-vs-live check"
                  if wf is not None else
-                 f"⑩ GitHub Actions and Cloud Build ({len(live.get('cloudbuild_triggers', []))} triggers) — CI, deploys, bridges, docs-vs-live check, doc refresh")
+                 f"⑩ GitHub Actions and Cloud Build ({len(live.get('cloudbuild_triggers', []))} triggers) — CI, deploys, bridges, docs-vs-live check")
     if GHA_GROUP_ID in by_id:
         by_id[GHA_GROUP_ID].set("value", gha_label)
     # min-instances is a WINDOW here: discord-warm-open/-close move
@@ -359,7 +358,7 @@ ICON_COUNT_TEMPLATES = [
     ("44 tables · ~33 user-facing", "{relations} relations"),
     ("44 tables", "{relations} relations"),
     ("19 secrets", "{secrets} secrets"),
-    ("19 workflows: backups · audits · deploy", "6 workflows: CI · deploys · bridges · docs check · doc refresh"),
+    ("19 workflows: backups · audits · deploy", "6 workflows: CI · deploys · bridges · docs check"),
 ]
 ICON_STALE = ("42 Cloud Run Jobs", "~50 cron", "~50 Scheduler", "44 tables", "44-table", "19 secrets", "19 workflows",
               "trading-platform-staging", "React dashboard")
