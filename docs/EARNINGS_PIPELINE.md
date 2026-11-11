@@ -10,6 +10,8 @@ purchased ceiling or an account-wide remaining allowance. Shared consumption,
 outstanding reservations and current key/market-entitlement activation need
 separate evidence; do not raise every process to 600 RPM.
 
+> **Earnings Whispers (EW) retired 2026-10-31.** `fetch-earnings-calendar` no longer contacts it (`--source` is `all`/`uw`/`av`/`yh`). Its historical `earnings_calendar` rows (`data_source = 'earnings_whispers'`) are retained, never deleted or relabelled, and the FEAT-CATALYST-001 readers exclude them with `lib.earnings_reactions.EARNINGS_NOT_RETIRED_SQL`. `earnings_upcoming_with_history` writes `playability_score`, `quintile`, `confidence_label` and both recommended structures as NULL, because their only input was EW's `score`. EW counts below are dated observations from before the retirement.
+
 This doc traces every step from "an earnings event is announced" to "a trader sees it in the Discord brief," names the cron that fires each step, and lists the assumptions each step makes about its upstream inputs. Use it together with [`DATA_PIPELINE.md`](product/infrastructure/05-g-DATA_PIPELINE.md) (per-table semantics) and [`docs/CLAUDE_CODE_ON_WEB.md`](CLAUDE_CODE_ON_WEB.md) (sandbox patterns).
 
 ---
@@ -43,7 +45,7 @@ All scheduled jobs run via Cloud Scheduler against Cloud Run Jobs in `us-east1`.
 | Mon–Fri 09:45 / 10:00 | 13:45 / 14:00 | `orb-15m-alert` / `orb-30m-alert` | `orb_snapshots` |
 | Mon–Fri 08–17 hourly (`:00` / `:05`) | 12–21 | `news-sentiment-*`, `news-topics-*` | News / sentiment streams |
 | Mon–Fri 16:15 | 20:15 | `top-movers-daily` | `top_movers_daily` |
-| **Mon–Fri 19:00** | **23:00** | **`daily-earnings-refresh-calendar`** | `earnings_calendar` (AV + EW + Yahoo + UW; ±7d window from today) |
+| **Mon–Fri 19:00** | **23:00** | **`daily-earnings-refresh-calendar`** | `earnings_calendar` (AV + Yahoo + UW; ±7d window from today; EW retired 2026-10-31, history retained) |
 | Mon–Fri 19:15 | 23:15 | `daily-earnings-refresh-history` | `earnings_history` |
 | Mon–Fri 19:30 | 23:30 | `daily-earnings-refresh-reactions` | `earnings_reactions` |
 | **Mon–Fri 23:00** | **03:00 next-day** | **`fetch-market-data-daily`** | `market_data_daily` (OHLCV + 30+ indicators for SPY/IWM/QQQ/SPX + watchlist + earnings union) |
@@ -142,7 +144,7 @@ ET            1. earnings_calendar WHERE earnings_date = today
 ```
                     ┌───────────────────────────┐
                     │ fetch-earnings-calendar   │  Mon–Fri 19:00 ET
-                    │ (AV + EW + Yahoo + UW)    │
+                    │ (AV + Yahoo + UW)         │
                     └───────────┬───────────────┘
                                 │
                        earnings_calendar
@@ -189,7 +191,7 @@ The pipeline used to silently drop tickers via numeric caps that didn't track th
 
 `is_s_p_500` is populated **only by Unusual Whales** (493 of 14,000+ rows in `earnings_calendar`). Even within UW, 229 of 493 rows leave the flag NULL — including JPM, UNH, and others that are obviously S&P 500 members. MCK has no UW row at all.
 
-`has_options=true` is set by **Earnings Whispers (682 rows)** and **Unusual Whales (157 rows)**. AV and Yahoo never set it. This effectively means "EW or UW confirmed this is options-tradable around earnings" — the right cut for an earnings-options pipeline.
+`has_options=true` is set by **Earnings Whispers (682 rows)** and **Unusual Whales (157 rows)**. AV and Yahoo never set it. This effectively means "EW or UW confirmed this is options-tradable around earnings" — the right cut for an earnings-options pipeline. (Counts as of 2026-05-04; since EW's retirement on 2026-10-31 only UW sets the flag on new rows, and EW's historical rows are retained.)
 
 ### The funnel (live numbers, 2026-05-04)
 
@@ -275,7 +277,7 @@ gcloud run jobs execute backfill-ticker \
 
 - **The 23:00 ET window is contested.** Three jobs fire at the same minute (`fetch-market-data`, `compute-earnings-reactions`, `evaluate-ew-strikes`). They share Cloud SQL but talk to different tables. If any of them needs more time, stagger by 5 min — Cloud Scheduler precision is per-minute.
 - **AV rate limiting is the binding constraint.** The May 4 sizing assumed 150 RPM before the May 22 plan upgrade. Separate 150-RPM process throttles do not enforce an account-wide budget. Admit requests through the existing shared guard and measure whole-cycle capacity before changing universe size or pacing; the purchased 600-RPM ceiling is not unused headroom.
-- **`has_options=true` filter depends on EW + UW running their fetches first.** If EW upload fails one day, the daily filter loses the ~454 EW-confirmed names. Mitigation: watchlist union (existing) + 7-day-window (we'll see EW data on the next run).
+- **`has_options=true` filter depends on UW running its fetch first.** EW, the other writer of the flag, was retired on 2026-10-31 and writes no new rows (its historical rows are retained). Mitigation for a missed UW run: watchlist union (existing) + 7-day-window (the next run fills it).
 - **Smoke test for any ticker change:** trigger `backfill-ticker` Cloud Run Job with `BACKFILL_TICKER=<TICKER>,BACKFILL_HISTORY_DAYS=400`, then dispatch `db-query.yml` with:
   ```sql
   SELECT COUNT(*) AS days, COUNT(atr_14) AS with_atr14, COUNT(rsi_14) AS with_rsi14

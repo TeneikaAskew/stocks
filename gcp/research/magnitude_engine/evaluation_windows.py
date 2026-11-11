@@ -10,12 +10,13 @@ Every timezone conversion here goes through lib/eastern_time.py (CLAUDE.md
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 
 from gcp.research.magnitude_engine.mag_config import DEFAULT_CUTOFFS
-from lib.eastern_time import ET as EASTERN, utc_to_eastern_naive
+from lib.eastern_time import (
+    ET as EASTERN, previous_session, session_schedule, utc_to_eastern_naive)
 
 CRITERIA_VERSION = "magnitude-evaluation-v1"
 FINAL_TEST_VERSION = "magnitude-final-v1"
@@ -110,23 +111,11 @@ def window_cutoffs(window: EvaluationWindow,
 def last_expected_session(window: EvaluationWindow) -> date:
     """The last NYSE session strictly before `window.end`.
 
-    Honors exchange holidays through pandas_market_calendars, the calendar
-    lib/strat_levels already relies on. Without it the last weekday stands
-    in, which fails CLOSED: it can refuse a window whose last weekday was a
-    holiday, never accept one whose last session is missing.
+    Honors exchange holidays through the shared NYSE calendar
+    (lib/eastern_time, FEAT-DATA-001). A missing calendar raises: a weekday
+    stand-in could accept a window whose last real session is missing.
     """
-    end = pd.Timestamp(window.end)
-    try:
-        import pandas_market_calendars as mcal
-    except ImportError:
-        return (end - pd.offsets.BDay(1)).date()
-    days = mcal.get_calendar("NYSE").valid_days(
-        start_date=(end - pd.Timedelta(days=14)).strftime("%Y-%m-%d"),
-        end_date=(end - pd.Timedelta(days=1)).strftime("%Y-%m-%d"))
-    if len(days) == 0:
-        raise RuntimeError(f"NYSE calendar returned no session in the two "
-                           f"weeks before {window.end}")
-    return days[-1].date()
+    return previous_session(window.end)
 
 
 def assert_window_covered(window: EvaluationWindow, session_labels) -> None:
@@ -152,19 +141,13 @@ def assert_window_covered(window: EvaluationWindow, session_labels) -> None:
 def expected_session_bars(window: EvaluationWindow, tf_minutes: int) -> dict[date, int]:
     """Every NYSE session in the window with the regular-hours bar count a
     `tf_minutes` table must hold for it: (close - open) / tf_minutes, so an
-    early close expects fewer. Requires pandas_market_calendars; without it
-    the window cannot be verified and this refuses rather than guessing.
+    early close or a delayed open expects fewer. Reads the shared NYSE
+    schedule (lib/eastern_time); a missing calendar raises rather than
+    letting the window go unverified.
     """
-    try:
-        import pandas_market_calendars as mcal
-    except ImportError as exc:
-        raise RuntimeError("pandas_market_calendars is required to verify the "
-                           "final window's sessions") from exc
     if tf_minutes < 1:
         raise ValueError(f"tf_minutes must be positive, got {tf_minutes}")
-    sched = mcal.get_calendar("NYSE").schedule(
-        start_date=window.start.isoformat(),
-        end_date=(pd.Timestamp(window.end) - pd.Timedelta(days=1)).strftime("%Y-%m-%d"))
+    sched = session_schedule(window.start, window.end - timedelta(days=1))
     expected: dict[date, int] = {}
     for day, row in sched.iterrows():
         minutes = (row["market_close"] - row["market_open"]).total_seconds() / 60

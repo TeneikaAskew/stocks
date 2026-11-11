@@ -167,14 +167,30 @@ def download_csv(blob_name: str) -> pd.DataFrame:
     return pd.read_csv(io.BytesIO(data))
 
 
-def download_parquet(blob_name: str, columns: Optional[list[str]] = None) -> pd.DataFrame:
+def download_parquet(blob_name: str, columns: Optional[list[str]] = None,
+                     optional_columns: Optional[list[str]] = None) -> pd.DataFrame:
     """Download a Parquet blob from GCS as a DataFrame. Raises on failure.
 
     Pass `columns=[...]` to project — pyarrow only deserializes those columns,
     cutting CPU/memory on large parquets (e.g. signals files have ~30 cols of
-    which the API uses ~10).
+    which the API uses ~10). `optional_columns` adds only fields actually
+    present in the already downloaded schema; absent required columns still
+    fail. Callers omitting it retain the ordinary pandas path.
     """
     data = _download_bytes(blob_name)
+    if columns is not None and optional_columns is not None:
+        # Inspect the already downloaded footer; decode only requested columns.
+        # Required columns still fail if absent. Optional legacy-schema fields
+        # are never fabricated, and malformed bytes raise without another read.
+        import pyarrow.parquet as pq
+        parquet = pq.ParquetFile(io.BytesIO(data))
+        available = set(parquet.schema_arrow.names)
+        selected = list(columns)
+        selected.extend(c for c in optional_columns if c in available and c not in selected)
+        missing = set(columns) - available
+        if missing:
+            raise ValueError('Required parquet columns missing: ' + ', '.join(sorted(missing)))
+        return parquet.read(columns=selected).to_pandas()
     return pd.read_parquet(io.BytesIO(data), columns=columns)
 
 

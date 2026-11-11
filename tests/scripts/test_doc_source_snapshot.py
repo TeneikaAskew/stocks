@@ -25,8 +25,35 @@ RECORD = "docs/review-evidence/site-source-snapshot.json"
 SPEC = "docs/superpowers/specs/2026-10-13-feat-cicd-001-source-review-verifier.md"
 PLAN = "docs/superpowers/plans/2026-10-13-feat-cicd-001-source-review-verifier.md"
 BRANCH = "feature/feat-cicd-001-source-review-verifier"
+# The 2026-10-13 protocol spec as approved on main (blob 2ed20f9d, last changed by 182d444e, #1462).
+# Fixtures carry these historical approved bytes, not the live file, so the later status-only flip of that
+# spec to superseded (2026-11-02 twelve-MiB spec, Retirement) leaves every binding control meaningful.
+APPROVED_SPEC_FIXTURE = ROOT / "tests/fixtures/source_review_verifier_spec_approved_2ed20f9d.txt"
+APPROVED_SPEC_BLOB = "2ed20f9dd829a8d7b6b03d69bc0746863a423d2e"
+
+
+def approved_spec_bytes() -> bytes:
+    raw = APPROVED_SPEC_FIXTURE.read_bytes()
+    assert hashlib.sha1(b"blob %d\0" % len(raw) + raw).hexdigest() == APPROVED_SPEC_BLOB
+    return raw
 DAY = datetime.date.today().isoformat()
 SITE_SCOPES = "platform/api, platform/deploy.sh, platform/Dockerfile, gcp, lib, scripts, tests"
+
+
+def _module_int(name: str) -> int:
+    import ast
+    for node in ast.parse((ROOT / MODULE).read_text(encoding="utf-8")).body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name) and node.targets[0].id == name
+                and isinstance(node.value, ast.Constant) and type(node.value.value) is int):
+            return node.value.value
+    raise AssertionError(f"{MODULE} has no integer constant {name}")
+
+
+# The combined verifier input ceiling and the separate per-file registry limit
+# are different numbers; each control below names the one it exercises.
+MAX_BYTES = _module_int("MAX_BYTES")
+MAX_FILE_BYTES = _module_int("MAX_FILE_BYTES")
 
 
 DESCENDANT_SUPERVISOR = r'''
@@ -101,7 +128,7 @@ class Repo:
         self.write("platform/api/source_input.py", b"INPUT = 'namespace API source'\n")
         self.write("platform/deploy.sh", b"#!/bin/sh\nexit 0\n")
         self.write("platform/Dockerfile", b"FROM scratch\n")
-        self.write(SPEC, (ROOT / SPEC).read_bytes())
+        self.write(SPEC, approved_spec_bytes())
         self.write("docs/product/02-FEATURE-CATALOG.md", "# Catalog\n\n| ID | Area |\n|---|---|\n| FEAT-CICD-001 | CI |\n\n### FEAT-CICD-001\n\n| Field | Value |\n|---|---|\n| Status | Source identity tests |\n| Last reviewed | " + DAY + " |\n")
         self.write("docs/product/01-PRODUCT-REQUIREMENTS.md", "# Requirements\n\n**REQ-GOV-001:** Conversations resolve.\n\n**REQ-REVIEW-001:** Authentic CODE review.\n")
         self.write("docs/product/12-PR-ISSUE-TRACEABILITY.md", "# Traceability\n\n### FEAT-CICD-001\n\n**PR lineage:** #1\n")
@@ -262,14 +289,22 @@ def test_actual_failed_production_preserves_absent_or_valid_output(existing, lim
 
 
 NOTE_SPEC = "docs/superpowers/specs/2026-10-13-feat-cicd-001-test-source-notes.md"
+# Since 5f16c96e (#1690) trusted main holds the approved 2026-11-02 FEAT-CICD-001 spec,
+# which supersedes the 2026-10-13 protocol spec and retains its acceptance items. A
+# DOC-only close-out record binds the current approved protocol spec; the historical
+# initial-bootstrap route keeps binding the 2026-10-13 spec.
+SUCCESSOR_SPEC = "docs/superpowers/specs/2026-11-02-feat-cicd-001-verifier-twelve-mib.md"
 
 
-def installed_repo(path, object_format="sha1", declaration="[SHARED-01]", unicode_path=False, unrelated_finding=False):
+def installed_repo(path, object_format="sha1", declaration="[SHARED-01]", unicode_path=False, unrelated_finding=False,
+                   successor=None):
     repo = Repo(path, object_format)
     repo.git("checkout", "-q", "main")
     repo.write(MODULE, (ROOT / MODULE).read_bytes())
-    spec = (ROOT / SPEC).read_text().replace("status: approved", "site_source_notes: " + declaration + "\nstatus: approved")
+    spec = approved_spec_bytes().decode("utf-8").replace("status: approved", "site_source_notes: " + declaration + "\nstatus: approved")
     repo.write(NOTE_SPEC, spec)
+    if successor is not False:
+        repo.write(SUCCESSOR_SPEC, (ROOT / SUCCESSOR_SPEC).read_bytes() if successor is None else successor)
     if unicode_path:
         repo.write("scripts/café.py", "LOCAL = 'literal UTF-8'\n")
     if unrelated_finding:
@@ -701,7 +736,7 @@ def test_actual_premature_record_retirement_keeps_original_drift(tmp_path):
 def test_actual_oversized_trusted_policy_inputs_refuse_before_content_read(input_path, tmp_path):
     repo = Repo(tmp_path / "repo")
     repo.git("checkout", "-q", "main")
-    repo.write(input_path, (repo.path / input_path).read_bytes() + b"\n<!-- " + b"x" * 8388608 + b" -->\n")
+    repo.write(input_path, (repo.path / input_path).read_bytes() + b"\n<!-- " + b"x" * MAX_BYTES + b" -->\n")
     repo.base = repo.commit("docs: real oversized trusted policy fixture")
     repo.git("update-ref", "refs/remotes/origin/main", repo.base)
     repo.git("checkout", "-q", BRANCH)
@@ -713,20 +748,20 @@ def test_actual_oversized_trusted_policy_inputs_refuse_before_content_read(input
     assert result.returncode != 0
     verdict = json.loads(result.stdout)
     assert "remaining input-byte" in verdict["reason"]
-    assert verdict["counted_bytes"] < 8388608
+    assert verdict["counted_bytes"] < MAX_BYTES
     assert not (repo.path / RECORD).exists()
 
 
 def test_actual_oversized_selected_plan_and_record_refuse(tmp_path):
     repo = bound_note_repo(tmp_path / "repo")
     old = (repo.path / RECORD).read_bytes()
-    repo.write(PLAN, (repo.path / PLAN).read_bytes() + b"\n<!-- " + b"x" * 8388608 + b" -->\n")
+    repo.write(PLAN, (repo.path / PLAN).read_bytes() + b"\n<!-- " + b"x" * MAX_BYTES + b" -->\n")
     repo.commit("docs: actual oversized selected committed plan")
     refused = repo.cli("produce")
     assert refused.returncode != 0
     assert "remaining input-byte" in json.loads(refused.stdout)["reason"]
     assert (repo.path / RECORD).read_bytes() == old
-    repo.write(RECORD, old + b" " * 8388608)
+    repo.write(RECORD, old + b" " * MAX_BYTES)
     repo.commit("docs: actual oversized committed record")
     refused = repo.cli("verify")
     assert refused.returncode != 0
@@ -869,7 +904,7 @@ def test_actual_git_object_batch_failure_preserves_absent_or_valid_record(existi
 
 
 def test_actual_policy_batch_oversize_refuses_before_materialization(tmp_path):
-    repo = policy_batch_repo(tmp_path / "repo", "# Oversized candidate\n" + "x" * 8388608)
+    repo = policy_batch_repo(tmp_path / "repo", "# Oversized candidate\n" + "x" * MAX_BYTES)
     real_git = shutil.which("git")
     wrappers = tmp_path / "wrappers"
     wrappers.mkdir()
@@ -1004,7 +1039,7 @@ def test_actual_fallback_parser_cpu_deadline_preserves_absent_or_valid_record(ex
     assert verdict["reason"] == "whole verification CPU deadline exceeded"
     assert verdict["source_identity_sha256"] is not None
     assert verdict["counted_bytes"] >= len(body.encode("utf-8"))
-    assert verdict["counted_bytes"] <= 8388608
+    assert verdict["counted_bytes"] <= MAX_BYTES
     # A lower-only two-second cap avoids relying on host throughput to make
     # this bounded complete parser input exceed the default five-second cap.
     # The alarm interrupts CPU work at two seconds; this measures only the
@@ -1559,3 +1594,273 @@ def test_actual_policy_minimum_accepts_true_broader_platform_ancestor(tmp_path):
     repo.git('merge', '-q', 'main')
     repo.produce_committed()
     assert repo.cli('verify').returncode == 0
+
+
+def test_terminal_source_drift_does_not_read_historical_body_for_presence(tmp_path, monkeypatch):
+    repo = Repo(tmp_path / "repo")
+    oracle, _ = normalization_oracle()
+    protocol = sys.modules[type(oracle).__module__]
+    snapshot = protocol.Snapshot(repo.path)
+    reads = []
+    original = snapshot.git.blob
+
+    def observed(ref, path, **kwargs):
+        reads.append((ref, path))
+        return original(ref, path, **kwargs)
+
+    monkeypatch.setattr(snapshot.git, "blob", observed)
+    # The introduced watched verifier creates genuine source drift. Historical
+    # SITE presence must use metadata, while the current complete body is read.
+    assert snapshot.terminal("origin/main", "HEAD") is False
+    historical = repo.git("rev-parse", repo.base + "^").stdout.strip()
+    assert (historical, SITE) not in reads
+    assert sum(path == SITE for _, path in reads) == 1
+
+
+def test_terminal_presence_optimization_keeps_oversized_current_body_refusal(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    repo.write(SITE, "x" * (MAX_BYTES + 1))
+    repo.commit("docs: oversized current SITE remains refused")
+    result = repo.cli("verify")
+    assert result.returncode != 0
+    assert "input-byte" in json.loads(result.stdout)["reason"]
+
+
+@pytest.mark.parametrize("object_format", ["sha1", "sha256"])
+def test_terminal_missing_historical_site_blob_refuses_despite_valid_newer_record(object_format, tmp_path):
+    repo = bound_note_repo(tmp_path / "repo", object_format=object_format)
+    assert repo.cli("verify").returncode == 0
+    import re
+    historical = re.search(r"Against:\*\* `([0-9a-f]+)`", (repo.path / SITE).read_text()).group(1)
+    oid = repo.git("rev-parse", historical + ":" + SITE).stdout.strip()
+    (repo.path / ".git/objects" / oid[:2] / oid[2:]).unlink()
+    refused = repo.cli("verify")
+    assert refused.returncode != 0
+    assert "missing or unsupported scoped object" in json.loads(refused.stdout)["reason"]
+
+
+def padded_bootstrap_repo(path, registry_padding: int, message_padding: int):
+    """Initial-bootstrap repo with a padded trunk registry and commit message.
+
+    Both are real inputs the verifier reads and charges: the registry is cheap
+    to process and charged three times (measured), the branch commit message
+    once through the history it reads, so together they reach any exact total
+    without approaching the five-second deadline."""
+    repo = Repo(path)
+    repo.git("checkout", "-q", "main")
+    repo.write(REGISTRY, (repo.path / REGISTRY).read_bytes()
+               + b"\n<!-- " + b"x" * registry_padding + b" -->\n")
+    repo.base = repo.commit("docs: padded trunk registry")
+    repo.git("update-ref", "refs/remotes/origin/main", repo.base)
+    repo.git("checkout", "-q", BRANCH)
+    repo.git("reset", "--hard", repo.base)
+    repo.write(MODULE, (ROOT / MODULE).read_bytes())
+    repo.write(PLAN, (ROOT / PLAN).read_text().replace("pr: 1470", "pr: 7"))
+    repo.commit("feat: exact bootstrap against padded policy" + "x" * message_padding)
+    produced = repo.cli("produce")
+    assert produced.returncode == 0, produced.stdout + produced.stderr
+    repo.commit("docs: bind actual committed source identity")
+    return repo
+
+
+def verify_total(repo) -> dict:
+    result = repo.cli("verify")
+    verdict = json.loads(result.stdout)
+    verdict["returncode"] = result.returncode
+    return verdict
+
+
+def test_actual_verify_input_of_exactly_max_bytes_is_admitted_and_one_more_refused(tmp_path):
+    # Real totals, measured and then padded to the ceiling exactly. Nothing is
+    # mocked: the CLI reads and charges every byte it reports. The ceiling is
+    # pinned to the approved value first: every padding below is derived from
+    # the module's own constant, so without the pin a lowered ceiling passes.
+    assert MAX_BYTES == 12582912
+    unpadded = verify_total(padded_bootstrap_repo(tmp_path / "unpadded", 0, 0))
+    assert unpadded["status"] == "identity-matched"
+    near = (MAX_BYTES - unpadded["counted_bytes"]) // 3 - 4096
+    measured = verify_total(padded_bootstrap_repo(tmp_path / "near", near, 0))
+    assert measured["status"] == "identity-matched"
+    gap = MAX_BYTES - measured["counted_bytes"]
+    assert 0 < gap < 3 * 8192
+    registry_padding, message_padding = near + gap // 3, gap % 3
+
+    admitted = verify_total(padded_bootstrap_repo(tmp_path / "at-limit", registry_padding, message_padding))
+    assert admitted["returncode"] == 0, admitted
+    assert admitted["status"] == "identity-matched"
+    assert admitted["counted_bytes"] == MAX_BYTES
+
+    refused = verify_total(padded_bootstrap_repo(tmp_path / "over", registry_padding, message_padding + 1))
+    assert refused["returncode"] != 0
+    assert refused["status"] == "unverified"
+    assert refused["reason"] == "object exceeds remaining input-byte allowance"
+    assert refused["counted_bytes"] <= MAX_BYTES
+
+
+
+def test_docs_audit_in_process_verify_admits_input_between_eight_and_twelve_mib(tmp_path):
+    # docs_audit verifies SITE in process with Snapshot()/Budget() defaults, not
+    # through the CLI, so the CLI boundary above does not cover it (CAP-QUAL1 R2
+    # F1). The bulk is the branch commit message, charged once by the history
+    # read in both paths; a registry padding would be charged more often by the
+    # audit than by the CLI. The message goes through a file: one argv string is
+    # limited far below eight MiB.
+    def message_bootstrap_repo(path, padding):
+        repo = Repo(path)
+        repo.git("checkout", "-q", BRANCH)
+        repo.git("reset", "--hard", repo.base)
+        repo.write(MODULE, (ROOT / MODULE).read_bytes())
+        repo.write(PLAN, (ROOT / PLAN).read_text().replace("pr: 1470", "pr: 7"))
+        message = tmp_path / (path.name + ".msg")
+        message.write_text("feat: exact bootstrap with a long subject" + "x" * padding + "\n")
+        repo.git("add", "-A")
+        repo.git("commit", "-q", "-F", str(message))
+        produced = repo.cli("produce")
+        assert produced.returncode == 0, produced.stdout + produced.stderr
+        repo.commit("docs: bind actual committed source identity")
+        return repo
+
+    unpadded = verify_total(message_bootstrap_repo(tmp_path / "unpadded", 0))
+    assert unpadded["status"] == "identity-matched"
+    repo = message_bootstrap_repo(tmp_path / "padded", 10 * 1024 * 1024 - unpadded["counted_bytes"])
+    cli = verify_total(repo)
+    assert cli["status"] == "identity-matched", cli
+    assert MAX_FILE_BYTES < cli["counted_bytes"] < MAX_BYTES
+    report = json.loads(repo.audit().stdout)
+    identity = report["source_identities"][SITE]
+    assert identity["status"] == "identity-matched", identity
+    assert MAX_FILE_BYTES < identity["counted_bytes"] < MAX_BYTES
+
+@pytest.mark.parametrize("action", ["produce", "verify"])
+def test_actual_cli_cannot_raise_input_byte_ceiling_above_max_bytes(action, tmp_path):
+    repo = bound_note_repo(tmp_path / "repo")
+    old = (repo.path / RECORD).read_bytes()
+    raised = repo.cli(action, "--max-input-bytes", str(MAX_BYTES + 1))
+    assert raised.returncode != 0
+    assert json.loads(raised.stdout)["reason"] == "fixed admission ceilings cannot be raised"
+    assert (repo.path / RECORD).read_bytes() == old
+    at_ceiling = repo.cli("verify", "--max-input-bytes", str(MAX_BYTES))
+    assert at_ceiling.returncode == 0, at_ceiling.stdout + at_ceiling.stderr
+
+
+def test_registry_per_file_limit_stays_eight_mib_under_larger_combined_ceiling(tmp_path):
+    # The per-file registry limit is not the combined input ceiling: a registry
+    # one byte over eight MiB is refused even though it fits under MAX_BYTES.
+    assert MAX_FILE_BYTES == 8388608
+    assert MAX_FILE_BYTES < MAX_BYTES
+    message = "registry exceeds the fixed eight-MiB policy-input allowance"
+    for size, refused in ((MAX_FILE_BYTES, False), (MAX_FILE_BYTES + 1, True)):
+        repo = Repo(tmp_path / f"repo-{size}")
+        text = (repo.path / REGISTRY).read_bytes()
+        filler = b"\n<!-- " + b"x" * (size - len(text) - len(b"\n<!-- ") - len(b" -->\n")) + b" -->\n"
+        repo.write(REGISTRY, text + filler)
+        assert (repo.path / REGISTRY).stat().st_size == size
+        repo.commit("docs: registry at the per-file boundary")
+        result = repo.audit()
+        if refused:
+            assert result.returncode == 2, result.stdout + result.stderr
+            assert message in result.stderr
+        else:
+            assert message not in result.stderr, result.stderr
+
+
+def test_fixtures_carry_historical_approved_protocol_spec_bytes():
+    # Fixtures use the bytes approved on main, never the live file. The only later
+    # change the live file may carry is its status-only retirement flip.
+    pinned = approved_spec_bytes()
+    assert b"\nstatus: approved\n" in pinned
+    live = (ROOT / SPEC).read_bytes()
+    assert live in (pinned, pinned.replace(b"\nstatus: approved\n", b"\nstatus: superseded\n", 1))
+
+
+def test_retired_protocol_spec_bytes_still_fail_the_unchanged_binding(tmp_path):
+    # Pinning the fixtures does not weaken the binding: the same spec carrying the
+    # retirement flip in baseline, POLICY and SOURCE is refused, as before.
+    repo = Repo(tmp_path / "repo")
+    repo.git("checkout", "-q", "main")
+    retired = approved_spec_bytes().replace(b"\nstatus: approved\n", b"\nstatus: superseded\n", 1)
+    assert retired != approved_spec_bytes()
+    repo.write(SPEC, retired)
+    repo.base = repo.commit("docs: retire the protocol spec in trusted policy")
+    repo.git("update-ref", "refs/remotes/origin/main", repo.base)
+    repo.git("checkout", "-q", BRANCH)
+    repo.git("reset", "--hard", repo.base)
+    repo.write(MODULE, (ROOT / MODULE).read_bytes())
+    repo.write(PLAN, (ROOT / PLAN).read_text().replace("pr: 1470", "pr: 7"))
+    repo.commit("feat: introduce exact bootstrap against retired policy")
+    refused = repo.cli("produce")
+    assert refused.returncode != 0
+    assert json.loads(refused.stdout)["reason"] == "approved immutable FEAT/spec binding failed"
+    assert not (repo.path / RECORD).exists()
+
+
+def closeout_repo(path, successor=None, object_format="sha1"):
+    repo = installed_repo(path, object_format, successor=successor)
+    repo.git("checkout", "-q", "-b", "docs/source-closeout")
+    repo.write(SITE, (repo.path / SITE).read_text() + "\nGenuine local main body close-out evidence.\n")
+    repo.commit("docs: publish body while historical marker stays fixed")
+    return repo
+
+
+@pytest.mark.parametrize("object_format", ["sha1", "sha256"])
+def test_actual_doc_closeout_binds_current_protocol_spec_after_supersession(object_format, tmp_path):
+    repo = closeout_repo(tmp_path / "repo", object_format=object_format)
+    value = repo.produce_committed()
+    assert value["eligible_route"] == "trunk-closeout-pending"
+    record = json.loads((repo.path / RECORD).read_text())
+    assert record["eligibility"]["kind"] == "trunk-closeout-pending"
+    assert record["eligibility"]["feat_id"] == "FEAT-CICD-001"
+    assert record["eligibility"]["spec_path"] == SUCCESSOR_SPEC
+    assert record["eligibility"]["spec_blob_oid"] == repo.git("rev-parse", "HEAD:" + SUCCESSOR_SPEC).stdout.strip()
+    verified = repo.cli("verify")
+    assert verified.returncode == 0, verified.stdout + verified.stderr
+    assert "trunk documentation close-out pending" in json.loads(verified.stdout)["context"]
+
+
+def _successor_text():
+    return (ROOT / SUCCESSOR_SPEC).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("case", ["missing", "wrong-feat", "not-approved", "superseded", "changed-in-source"])
+def test_actual_doc_closeout_binding_negatives_retain_refusal(case, tmp_path):
+    text_value = _successor_text()
+    successor = {
+        "missing": False,
+        "wrong-feat": text_value.replace("feat_id: FEAT-CICD-001", "feat_id: FEAT-DATA-001", 1),
+        "not-approved": text_value.replace("\nstatus: approved\n", "\nstatus: draft\n", 1),
+    }.get(case)
+    repo = closeout_repo(tmp_path / "repo", successor=successor)
+    if case == "superseded":
+        repo.git("checkout", "-q", "main")
+        repo.write("docs/superpowers/specs/2026-11-03-feat-cicd-001-later-protocol.md",
+                   "---\nstatus: approved\nfeat_id: FEAT-CICD-001\nsupersedes: " + SUCCESSOR_SPEC + "\n---\n")
+        later = repo.commit("docs: a later approved spec supersedes the successor")
+        repo.git("update-ref", "refs/remotes/origin/main", later)
+        repo.git("checkout", "-q", "docs/source-closeout")
+        repo.git("merge", "-q", "--no-edit", "main")
+    if case == "changed-in-source":
+        repo.write(SUCCESSOR_SPEC, _successor_text() + "\nBranch-only edit to the bound spec.\n")
+        repo.commit("docs: alter the bound spec on the branch")
+    reasons = {
+        "missing": "approved spec is unavailable or changed in baseline/POLICY/SOURCE",
+        "wrong-feat": "approved immutable FEAT/spec binding failed",
+        "not-approved": "approved immutable FEAT/spec binding failed",
+        "superseded": "bound approved spec has been superseded in trusted POLICY",
+        # Editing the bound spec on the branch is not a DOC-only close-out: route
+        # selection refuses it before the spec binding is read.
+        "changed-in-source": "ordinary production requires its actual named feature branch/source",
+    }
+    refused = repo.cli("produce")
+    assert refused.returncode != 0, refused.stdout
+    verdict = json.loads(refused.stdout)
+    assert verdict["status"] == "unverified"
+    assert verdict["reason"] == reasons[case]
+    assert not (repo.path / RECORD).exists()
+
+
+def test_actual_initial_bootstrap_still_binds_historical_protocol_spec(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    value = repo.produce_committed()
+    assert value["eligible_route"] == "initial-bootstrap"
+    record = json.loads((repo.path / RECORD).read_text())
+    assert record["eligibility"]["spec_path"] == SPEC

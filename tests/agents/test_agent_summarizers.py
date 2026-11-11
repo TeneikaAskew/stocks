@@ -23,7 +23,12 @@ def patch_query(monkeypatch):
     def set_result(needle: str, df: pd.DataFrame) -> None:
         store[needle] = df
 
+    from tests.lib.level_params_fixtures import ParamsDb
+    params_db = ParamsDb()   # the seeded policy, no ticker rows
+
     def fake_query(sql: str, params=None):
+        if "level_param_policy" in sql:
+            return params_db.query(sql, params)
         for needle, df in store.items():
             if needle in sql:
                 return df
@@ -446,6 +451,10 @@ def test_build_context_bundle_catches_exceptions(monkeypatch):
         raise RuntimeError("DB down")
 
     monkeypatch.setattr(summarizers, "_query", bad_query)
+    # The level parameter tables read (strict reader) succeeds here; when it
+    # fails the whole run fails (test_build_context_bundle_raises_on_level_params_unavailable).
+    from tests.lib.level_params_fixtures import ParamsDb
+    monkeypatch.setattr(summarizers, "_query_strict", ParamsDb().query)
     bundle = summarizers.build_context_bundle("SPY")
     # Every section should have failed gracefully.
     # `signals` was removed from the bundle on 2026-05-11 to break the
@@ -1013,6 +1022,7 @@ def test_build_context_bundle_forwards_inclusive_today_to_backtest(monkeypatch):
     monkeypatch.setattr(summarizers, "summarize_backtest_metrics", fake_backtest)
     monkeypatch.setattr(summarizers, "_query", lambda sql, params=None: pd.DataFrame())
     for name in ("summarize_market_context", "summarize_strat_status",
+                 "summarize_session_levels",
                  "summarize_options_flow", "summarize_gamma_levels",
                  "summarize_catalysts", "summarize_news_sentiment"):
         monkeypatch.setattr(summarizers, name,
@@ -1313,3 +1323,76 @@ def test_market_context_live_unchanged_when_no_placeholder_exists(monkeypatch):
 
     assert out["close"] == 764.29
     assert out["premarket"]["pre_high"] == 758.0
+
+
+def test_foundation_status_adapter_preserves_clock_completion_and_qualification(monkeypatch):
+    """FEAT-STRAT-001 done_when 4: the actual compute_strat_status ->
+    summarize_strat_status -> StratSnapshot path keeps the clock, completed
+    vs developing state, source/basis qualification and unavailable reasons.
+    External I/O is refused; only the daily source is injected."""
+    import socket
+    import pandas as pd
+    from lib.data_loader import DataLoader
+    from lib.agents.orchestrator import _build_strat_snapshot
+    from lib.eastern_time import session_schedule
+    import gcp.database as database
+
+    def refuse(*_a, **_k):
+        raise AssertionError('external I/O attempted in isolated acceptance')
+    monkeypatch.setattr(socket.socket, 'connect', refuse)
+    monkeypatch.setattr(database, 'is_cloud_sql_configured', lambda: False)
+
+    def daily(invalid=False):
+        sessions = session_schedule('2024-11-04', '2024-12-06').index
+        frame = pd.DataFrame({'Low': 99.0, 'High': 101.0}, index=sessions)
+        frame.loc['2024-11-18':'2024-11-22', ['Low', 'High']] = (99.0, 102.0)  # 2U week
+        frame.loc['2024-11-25':'2024-11-29', ['Low', 'High']] = (99.5, 101.5)  # inside week
+        frame['Open'] = frame['Close'] = (frame['Low'] + frame['High']) / 2
+        frame['Volume'] = 10.0
+        if invalid:
+            frame.loc['2024-11-29', 'High'] = 90.0
+        frame.attrs = {'source_resolution': '1d', 'session_policy': 'NYSE_regular',
+                       'timestamp_semantics': 'session_label',
+                       'price_adjustment': 'raw_unadjusted',
+                       'source_acquisition_status': 'captured_fixture'}
+        return frame[['Open', 'High', 'Low', 'Close', 'Volume']]
+
+    def snapshot(frame, clock):
+        monkeypatch.setattr(DataLoader, 'load_daily', lambda *a, **k: frame.copy())
+        section = summarizers.summarize_strat_status('TEST', as_of=clock)
+        return section, _build_strat_snapshot(section)
+
+    before_clock = '2024-11-29T12:59:00-05:00'   # week still developing
+    close_clock = '2024-11-29T13:00:00-05:00'    # actual early-close completion
+    for clock, state in ((before_clock, 'developing'), (close_clock, 'confirmed')):
+        section, snap = snapshot(daily(), clock)
+        assert section['available'] is True and snap.available is True
+        assert snap.observation_ts == pd.Timestamp(clock).isoformat()
+        assert snap.confirmed_setups['observation_ts'] == snap.observation_ts
+        assert snap.price_adjustment == 'raw_unadjusted'
+        assert snap.source_acquisition_status == 'captured_fixture'
+        weekly = snap.confirmed_setups['timeframes']['1w']
+        coverage = snap.coverage['1w']
+        if state == 'developing':
+            # Only the prior, already-closed week can be judged; the inside
+            # week is developing and never confirms before its close.
+            assert weekly['period_end'] == '2024-11-22T16:00:00-05:00'
+            assert weekly['developing']['state'] == 'developing'
+            assert weekly['developing']['period_end'] == close_clock
+            assert weekly['developing']['confirmed'] is False
+            assert coverage['partial'] is True and coverage['completed'] is False
+        else:
+            assert weekly['state'] == 'confirmed'
+            assert weekly['period_end'] == close_clock
+            assert '1w' in snap.confirmed_setups['confirmed']
+        # Intraday frames were not supplied: explicit, not silently empty.
+        assert snap.confirmed_setups['timeframes']['5m']['reasons'] == ['source_not_supplied']
+        assert snap.model_dump()['observation_ts'] == snap.observation_ts
+
+    section, snap = snapshot(daily(invalid=True), close_clock)
+    assert section['available'] is False and section['reason'] == 'invalid_ohlc'
+    assert snap.available is False and snap.reason == 'invalid_ohlc'
+    assert snap.last_candle == 'X' and snap.ftfc_score is None and snap.ftfc_direction is None
+    assert snap.observation_ts == pd.Timestamp(close_clock).isoformat()
+    assert snap.bar_validity['valid'] is False
+    assert snap.confirmed_setups['timeframes']['1w']['state'] != 'confirmed'

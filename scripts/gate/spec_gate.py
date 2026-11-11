@@ -1265,7 +1265,7 @@ DEFERRAL = re.compile(
     r"|partial(?:ly)?|in progress|WIP|not fully|future (?:version|release)|tracked separately|later (?:in a|on))\b", re.I)
 # Changing these is changing a workload; the PR body must then carry the rule 0 capacity numbers.
 WORKLOAD_PREFIXES = ("gcp/", ".github/workflows/")
-CAPACITY_LABELS = ("Volume", "Velocity", "Wall-clock", "30")
+CAPACITY_LABELS = ("Volume", "Velocity", "Wall-clock", "Cost")
 REQUIRED_SPEC_KEYS = ("feat_id", "req_ids", "done_when", "status")
 REQUIRED_PLAN_KEYS = ("feat_id", "spec", "branch", "status")
 SPEC_STATUSES = ("draft", "approved", "superseded")
@@ -1443,6 +1443,38 @@ def frontmatter(text: str | None) -> dict:
     return fm
 
 
+def status_entry(raw: bytes | None) -> tuple[str, int, int] | None:
+    """FEAT-CICD-001 retirement: the file's text and the span of the one physical line holding the frontmatter
+    `status` entry (opening `---` line, closing line starting `---`, a key line not indented, key `status` before
+    the first colon), or None. This matches `frontmatter` except in one shape: here a second line starting `---`
+    closes an empty frontmatter, where `frontmatter`'s regex reads on to the next such line, so the file gets None
+    and a flip of it is refused (IMPL-CICD3 R3 P3-2). None too when the bytes are not UTF-8, when
+    `status` is keyed on more than one line, or when the entry's line holds a separator `str.splitlines` splits
+    on (form feed, U+2028, ...): `frontmatter` would read a second logical line, so a key could hide inside it."""
+    try:
+        text = raw.decode("utf-8")
+    except (AttributeError, UnicodeDecodeError):
+        return None
+    spans, pos = [], 0
+    for m in re.finditer(r"\r\n|\r|\n", text):   # `Tree.read` folds CRLF and a lone CR to LF
+        spans.append((pos, m.start()))
+        pos = m.end()
+    spans.append((pos, len(text)))
+    if text[spans[0][0]:spans[0][1]] != "---":
+        return None
+    found = []
+    for a, b in spans[1:]:
+        line = text[a:b]
+        if line.startswith("---"):
+            break
+        if any(not part.startswith((" ", "\t")) and part.split(":", 1)[0].strip() == "status" and ":" in part
+               for part in line.splitlines()):
+            found.append((a, b, line.splitlines() == [line]))
+    else:
+        return None
+    return (text, found[0][0], found[0][1]) if len(found) == 1 and found[0][2] else None
+
+
 def requirement_definitions(text: str) -> set[str]:
     """The REQ-IDs a requirements registry defines as rendered: not in a fence, an indented
     block or inline code (solyra#72 r4121100680: `` `**REQ-X-001:**` `` is an example, not
@@ -1503,9 +1535,12 @@ def validate_spec(fm: dict, name: str, catalog: set[str], req_defs: set[str] | N
     return errs
 
 
-def check_supersedes(fm: dict, name: str, base: "Tree") -> list[str]:
+def check_supersedes(fm: dict, name: str, base: "Tree", *, allow_superseded_target: bool = False) -> list[str]:
     """`supersedes` is null or a spec on the base for the same FEAT (stocks#1205 r4121777354:
-    a typo there leaves the old spec live and the lineage dangling)."""
+    a typo there leaves the old spec live and the lineage dangling). `allow_superseded_target` is
+    True only for the exact approved-to-superseded status flip of a spec whose own pointer the
+    base already holds (FEAT-CICD-001 supersedes-chain retirement, step 3): the target it names
+    was retired before it and stays named, so that one case passes the round-eight check."""
     target = fm.get("supersedes")
     if target is None:
         return []
@@ -1516,9 +1551,42 @@ def check_supersedes(fm: dict, name: str, base: "Tree") -> list[str]:
                 "name the spec it replaces or leave it null"]
     if frontmatter(old).get("feat_id") != fm.get("feat_id"):
         return [f"{name}: supersedes {target}, a spec for {frontmatter(old).get('feat_id')}, not {fm.get('feat_id')}"]
-    if frontmatter(old).get("status") == "superseded":
+    if frontmatter(old).get("status") == "superseded" and not allow_superseded_target:
         return [f"{name}: supersedes {target}, which is already superseded; name the spec that replaced it (round eight)"]
     return []
+
+
+def check_chain(fm: dict, name: str, ch: "Change") -> list[str]:
+    """Walk the changed spec's whole `supersedes` lineage (FEAT-CICD-001 supersedes-chain retirement,
+    step 4): every edge is canonical, unvisited, present and for the same FEAT. A path this change
+    touches is read at its proposed value (None: the change deletes it, which the walk refuses and
+    never reads from the base); every other path is read at the current base. Target status is not
+    examined here, so the legitimate flip passes. One read per distinct node, so the walk is bounded
+    by the number of distinct spec paths on the head and base."""
+    look = lambda path: ch.tree.read(path) if path in ch.changed else ch.base.read(path)
+    errs: list[str] = []
+    visited = [name]
+    node = fm.get("supersedes")
+    while node is not None:
+        if (not isinstance(node, str) or "\x00" in node or node != posixpath.normpath(node)
+                or not node.startswith(SPECS + "/")):
+            # (a NUL byte can be no git path: `git show` would raise ValueError, a traceback and no verdict)
+            errs.append(f"{name}: supersedes chain reaches {node!r}, which is not written as {SPECS}/<file>.md")
+            break
+        if node in visited:
+            errs.append(f"{name}: supersedes chain revisits {node} (cycle)")
+            break
+        node_text = look(node)
+        if node_text is None:
+            errs.append(f"{name}: supersedes chain breaks at {node}, which "
+                        f"{'this change deletes' if node in ch.changed else 'is not a spec on the base'}")
+            break
+        if (that := frontmatter(node_text).get("feat_id")) != fm.get("feat_id"):
+            errs.append(f"{name}: supersedes chain reaches {node}, a spec for {that}, not {fm.get('feat_id')}")
+            break
+        visited.append(node)
+        node = frontmatter(node_text).get("supersedes")
+    return errs
 
 
 def plan_stays_bound(name: str, fm: dict, base_fm: dict, branch: str) -> list[str]:
@@ -1839,20 +1907,54 @@ def check_changed_specs(ch: Change) -> list[str]:
             errs.append(f"{path}: a new spec is draft or approved; superseded is what an approved spec becomes")   # (round seven)
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}-[a-z0-9]+(-[a-z0-9]+)*\.md", path.rsplit("/", 1)[-1]):
             errs.append(f"{path}: a spec is named YYYY-MM-DD-<kebab-slug>.md")   # (round seven: the skill's shape, enforced)
-        errs += validate_spec(frontmatter(text), path, catalog, req_defs,
-                              site_text=ch.base.read(SITE_TRACEABILITY) if "site_source_notes" in frontmatter(text) else None) + check_supersedes(frontmatter(text), path, ch.base)
+        # FEAT-CICD-001 supersedes-chain retirement: the one exemption from the round-eight check is
+        # the status-only flip of an approved spec whose own pointer the base already holds, with an
+        # approved same-FEAT replacement naming it on the head (the same edit the in-place rule below
+        # admits). Beside the spec's `strip` equality, the flip is judged on the file's bytes: every byte
+        # outside the one physical line holding the frontmatter `status` entry is unchanged, in place, and
+        # that line hides no second logical line (`status_entry`). `Tree.read` folds CRLF and a lone CR, so a
+        # relabel that rewrote the line endings would otherwise read as status-only (B6); the strip lambda
+        # blanks every line beginning `status:`, so a body line rewritten or moved would ride the flip; and
+        # `frontmatter` splits on form feed and U+2028, so a key could hide on the status line (IMPL-CICD2
+        # R1 F2). A quoted or spaced value on that line is the parser's business, read as today. The
+        # redundant-retirement refusal (step 5, fail-closed; approach 5 rejects admitting it as a no-op) applies
+        # when the base holds the spec superseded, the head's text equals the base's as the gate reads it (so a
+        # copy that differs only in line endings or file mode is equal: IMPL-CICD6 R2 F1), and the change carries
+        # the retirement: the merge base (`ch.before`) does not hold the spec superseded (absent there, or in
+        # another status, draft, approved or none). Its message promises no merge result, because whether a merge
+        # of main takes the spec out of the change depends on the histories: a line-ending copy, a mode change the
+        # branch made or a rename collision can stay in it (IMPL-CICD6 R1 F1), while a mode change only main made
+        # leaves with the merge (IMPL-CICD7 R1 F1); it names the way out. A change to a spec the merge base already
+        # holds superseded carries no retirement and is judged as on main (step 6): a mode-only or line-ending-only
+        # edit of it, including one main also made, gets main's verdict, so it passes unless another check, such
+        # as round eight on its own pointer, refuses it. In commit mode `ch.before` is the base, so the domain is
+        # never entered.
+        base_text = ch.base.read(path)
+        fm, base_fm = frontmatter(text), frontmatter(base_text)
+        strip = lambda t: re.sub(r"^status:.*$", "", t, flags=re.M)
+        before_text = ch.before.read(path)
+        if (base_text is not None and base_fm.get("status") == "superseded" and text == base_text
+                and (before_text is None or frontmatter(before_text).get("status") != "superseded")):
+            errs.append(f"{path}: already superseded on the current base; merge main, resolve any remaining differences, and rerun the gate")
+        flip = (base_text is not None and base_fm.get("status") == "approved" and fm.get("status") == "superseded"
+                and base_fm.get("supersedes") == fm.get("supersedes") and strip(text) == strip(base_text)
+                and (eb := status_entry(ch.base.raw(path))) is not None and (eh := status_entry(ch.tree.raw(path))) is not None
+                and eb[0][:eb[1]] == eh[0][:eh[1]] and eb[0][eb[2]:] == eh[0][eh[2]:]
+                and any((nfm := frontmatter(ch.tree.read(s))).get("supersedes") == path and nfm.get("status") == "approved"
+                        and nfm.get("feat_id") == fm.get("feat_id") for s in ch.tree.list(SPECS) if s != path))
+        errs += validate_spec(fm, path, catalog, req_defs,
+                              site_text=ch.base.read(SITE_TRACEABILITY) if "site_source_notes" in fm else None) \
+            + check_supersedes(fm, path, ch.base, allow_superseded_target=flip) + check_chain(fm, path, ch)
         # solyra#72 r4119957736: a canvas the spec names exists in the registry the head
         # carries, so the implementation's handoff is not the first place a typo shows
         modes = canvas_modes(ch.tree.read(CANVASES))
         for url in frontmatter(text).get("canvases") or []:
             if isinstance(url, str) and url not in modes:
                 errs.append(f"{path}: lists canvas {url}, which is not in {CANVASES}; register it or fix the URL")
-        base_text = ch.base.read(path)
         frozen = frozen_since_main(ch, path, text, base_text)
         if base_text is not None and frontmatter(base_text).get("status") == "approved" and frozen and text != base_text:
             # The one edit an approved spec takes is its status moving to superseded when the
             # spec that replaces it lands; anything else is a new contract nobody approved.
-            strip = lambda t: re.sub(r"^status:.*$", "", t, flags=re.M)
             if not (frontmatter(text).get("status") == "superseded" and strip(text) == strip(base_text)):
                 errs.append(f"{path}: an approved spec does not change in place; write a new spec that names it in "
                             "`supersedes` and get that one approved, then mark this one superseded")

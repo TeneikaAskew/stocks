@@ -17,7 +17,7 @@ consistent with the live signal-time resolver:
   - Tier A when row exists, ≤180 days old, percentiles non-NULL/non-NaN
   - Tier B otherwise (Tier-B values from lib/strategies/config.py)
 
-Auto-invoked monthly by .github/workflows/refresh-architecture-docs.yml.
+Not scheduled: run by hand when the doc table is stale (needs Cloud SQL access).
 Manual run any time:
 
     python -m scripts.refresh_calibration_table             # writes the doc
@@ -144,9 +144,8 @@ def _build_markdown(rows: list[dict]) -> str:
 
     out.extend([
         "",
-        "_Auto-refreshed monthly by `.github/workflows/refresh-architecture-docs.yml` "
-        "via `scripts/refresh_calibration_table.py`. Manual refresh: "
-        "`python -m scripts.refresh_calibration_table`._",
+        "_Manual refresh: `python -m scripts.refresh_calibration_table` "
+        "(needs Cloud SQL access; not scheduled)._",
     ])
     return "\n".join(out) + "\n"
 
