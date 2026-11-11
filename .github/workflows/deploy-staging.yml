@@ -9,7 +9,7 @@ name: Deploy staging
 # GET /api/admin/data-sources, /api/me/profile) 404'd in the app, and there
 # was no way to redeploy without an operator holding local gcloud auth. This
 # workflow reuses the Workload Identity Federation auth that
-# refresh-architecture-docs.yml already proves out, so a redeploy is a
+# refresh-architecture-docs.yml.disabled (since retired) proved out, so a redeploy is a
 # workflow_dispatch away.
 #
 # Manual-only by design: a deploy costs a Cloud Build run and swaps the
@@ -23,7 +23,7 @@ name: Deploy staging
 # guard below is the fail-loud UX rail, NOT the boundary — a write-capable
 # actor could dispatch a branch whose copy of this file drops the guard. The
 # enforced boundary is the WIF provider's attribute condition, which must
-# include assertion.ref=='refs/heads/main' (SETUP.md §4a documents the
+# include assertion.ref=='refs/heads/main' (SETUP.md §3a documents the
 # condition and the update-oidc roll-forward command; it is part of the same
 # one-time operator step as the role grants below).
 #
@@ -41,9 +41,10 @@ name: Deploy staging
 #
 # Config sources — deliberately NO new GitHub secrets:
 #   * DB_USER / DB_PASS / DB_NAME / CLOUD_SQL_CONNECTION_NAME — the same
-#     GitHub secrets refresh-architecture-docs.yml already uses. The schema
+#     GitHub secrets refresh-architecture-docs.yml.disabled used. The schema
 #     step connects from the runner via the Cloud SQL Python Connector, the
-#     exact path scripts.refresh_calibration_table already takes in CI.
+#     path scripts.refresh_calibration_table takes when a person runs it
+#     with the same variables set.
 #   * Firebase web config + access policy (FIREBASE_API_KEY / AUTH_DOMAIN /
 #     APP_ID / PROJECT_ID, AUTH_OPEN_SIGNUP, AUTH_ALLOWED_EMAILS,
 #     ADMIN_EMAIL) — read off the LIVE service before deploying, because
@@ -58,7 +59,7 @@ name: Deploy staging
 #   GCP_WIF_PROVIDER, GCP_WIF_SA_EMAIL, DB_USER, DB_PASS, DB_NAME,
 #   CLOUD_SQL_CONNECTION_NAME, PR_WORKFLOW_TOKEN (failure handler)
 #
-# Roles the WIF service account needs BEYOND the doc-refresh set (one-time,
+# Roles the WIF service account needs BEYOND SETUP.md section 2's (one-time,
 # granted by an operator with project IAM admin — not the CI SA):
 # Every entry below was proven necessary by a real failed run on 2026-09-04
 # (runs #1-#13 each failed one layer deeper; #14 was the first to deploy end
@@ -234,7 +235,7 @@ jobs:
 
       # ── 1. Schema roll-forward (opt-in, see workflow header) ──────────────
       # Same connector path as the refresh_calibration_table step in
-      # refresh-architecture-docs.yml, but NOT best-effort: deploying on top
+      # refresh-architecture-docs.yml.disabled (retired), but NOT best-effort: deploying on top
       # of a failed schema apply would serve new code against missing
       # tables, so a schema failure fails the whole run (Rule 3.7 — no
       # fabricated success). python -m gcp.apply_schema exits non-zero when

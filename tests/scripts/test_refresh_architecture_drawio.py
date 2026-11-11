@@ -184,6 +184,22 @@ def test_every_live_service_must_be_drawn(main_root, live):
     assert any("brand-new-svc" in p for p in problems), problems
 
 
+RETIRED_LABELS = ("refresh-architecture-docs", "doc refresh")
+
+
+def test_no_label_names_the_retired_refresh(live):
+    main = {c.get("id"): c.get("value") or "" for c in ET.parse(dw.MAIN).getroot().iter("mxCell")}
+    icons = {c.get("id"): c.get("value") or "" for c in ET.parse(dw.ICONS).getroot().iter("mxCell")}
+    texts = [main["ext_gh"], main["gha_group"], main["gha_other"], icons["g_cicd"]]
+    texts += [new for _, new in dw.REPLACEMENTS] + [tpl for _, tpl in dw.ICON_COUNT_TEMPLATES]
+    for snapshot in (live, {k: v for k, v in live.items() if k != "_workflows"}):   # both gha_label forms
+        root = ET.parse(dw.MAIN).getroot()
+        dw.refresh_main(root, snapshot)
+        texts.append(_cell(root, dw.GHA_GROUP_ID).get("value"))
+    for text in texts:
+        assert not any(r in text.lower() for r in RETIRED_LABELS), text
+
+
 @pytest.mark.parametrize("tables", [None, {}], ids=["missing", "empty"])
 def test_main_refuses_a_snapshot_without_db_tables(tmp_path, monkeypatch, tables):
     """A snapshot taken without table statistics (the sandbox default) used
