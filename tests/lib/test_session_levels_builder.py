@@ -16,10 +16,19 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from lib.strat_levels import build_session_levels, find_parent_bar
+from lib.strat_levels import build_session_levels as _build_session_levels
+from lib.strat_levels import find_parent_bar
 from tests.lib import strat_2026_11_06 as fx
+from tests.lib.level_params_fixtures import fixture_params
 
 SESSION = fx.SESSION
+
+
+def build_session_levels(ticker, session, df, atr, premarket=None, **kw):
+    """The builder with the ATR named as ATR(14) and the ticker's parameters
+    at the #1753 values (these tests pin the session-date rules)."""
+    return _build_session_levels(ticker, session, df, {"atr_14": atr}, premarket,
+                                 fixture_params(ticker, session), **kw)
 
 
 def _avgo_frame_before_its_row_exists() -> pd.DataFrame:
@@ -123,7 +132,8 @@ def test_a_prior_2u_bar_through_the_planners_production_path(monkeypatch):
         def load_daily(self, *a, **k):
             return df.copy()
 
-    out = summarizers.summarize_session_levels("TST", as_of=session, loader=_L())
+    out = summarizers.summarize_session_levels(
+        "TST", as_of=session, loader=_L(), level_params=fixture_params("TST", session))
     names = {lv["name"]: lv["price"] for lv in out["level_basis"]["levels"]}
     assert names["PDH"] == 106.0 and names["PDL"] == 101.0
     assert names["parent_bar_high"] == 106.0

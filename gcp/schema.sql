@@ -1757,8 +1757,8 @@ ALTER TABLE market_data_daily
 
 -- FEAT-STRAT-001: premarket snapshot provenance. level_basis records when the
 -- premarket bars were fetched and how many prints the snapshot filter dropped
--- (stale prior-close prints, and isolated spikes more than 0.5 x ATR(14)
--- beyond the neighbouring bar bodies), so a level can be traced to its data. Written by
+-- (stale prior-close prints, and isolated spikes beyond the neighbouring bar
+-- bodies by more than the ticker's calibrated threshold), so a level can be traced to its data. Written by
 -- gcp/fetchers/fetch_premarket_refresh.py and gcp/fetchers/fetch_market_data.py
 -- from lib.indicators.calculate_premarket_context. All NULLABLE; NULL means
 -- not recorded (rows written before this block). Writers and readers detect
@@ -1767,6 +1767,28 @@ ALTER TABLE market_data_daily
     ADD COLUMN IF NOT EXISTS pre_fetched_at             TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS pre_excluded_stale_prints  INTEGER,
     ADD COLUMN IF NOT EXISTS pre_excluded_spikes        INTEGER;
+
+-- FEAT-STRAT-001 (per-ticker level parameters, Design 8): whether the
+-- snapshot's prints were filtered with the ticker's calibrated thresholds
+-- (pm_stale_print_atr, pm_spike_atr). pre_filter_status is 'ok' when both
+-- were in force and the ATR was usable, else the parameter status that
+-- stopped it (insufficient_history, params_unavailable, ...) or
+-- atr_unavailable; the excluded counts are NULL then. pre_filter_params
+-- records each threshold's value, status and effective_from, the
+-- atr_basis and the ATR used. The level builder refuses a snapshot whose
+-- status is not 'ok' (premarket_unfiltered). Nullable; idempotent.
+ALTER TABLE market_data_daily
+    ADD COLUMN IF NOT EXISTS pre_filter_status  VARCHAR(40),
+    ADD COLUMN IF NOT EXISTS pre_filter_params  JSONB;
+
+-- FEAT-STRAT-001 (per-ticker level parameters, Design 4): ATR(5) stored
+-- beside atr_14 by the same nightly fetch-market-data path
+-- (lib.config IndicatorConfig.atr_extra_periods, gcp.database
+-- DAILY_INDICATOR_TO_SQL_COLUMN). backfill-daily-indicators heals it in its
+-- short warmup class; its Sunday full sweep fills history. Nullable;
+-- idempotent.
+ALTER TABLE market_data_daily
+    ADD COLUMN IF NOT EXISTS atr_5 DOUBLE PRECISION;
 
 
 -- ============================================================================
@@ -2096,6 +2118,108 @@ ALTER TABLE premarket_analysis
     ADD COLUMN IF NOT EXISTS level_basis JSONB;
 ALTER TABLE premarket_analysis_history
     ADD COLUMN IF NOT EXISTS level_basis JSONB;
+
+
+-- ============================================================================
+-- FEAT-STRAT-001 (per-ticker level parameters, 2026-11-08): every distance
+-- the level and plan code used to hold as a literal is a per-ticker value
+-- calibrated from the ticker's own bars (lib.level_calibration, written by
+-- gcp/calibrate_level_params.py) and read once per run by
+-- lib.strat_levels.load_level_params.
+--
+-- level_param_policy: one row per (param_key, effective_from). The statistic
+-- (statistic_q), lookback and minimum sample of each parameter, versioned
+-- like the values, so the owner changes intent with a row. Two keys are not
+-- parameters: atr_basis (extra.column names the ATR column every parameter is
+-- measured in and every consumer multiplies by) and calibration_universe
+-- (extra.sources lists where the calibrated tickers come from).
+--
+-- ticker_level_params: one row per (ticker, param_key, atr_basis,
+-- effective_from). value is NULL exactly when status is not ok. atr_basis is
+-- part of the key, so calibrating in a new basis adds versions beside the
+-- old ones and replaces none. No ticker values are seeded: the first rows
+-- come from the history-mode calibration run.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS level_param_policy (
+    param_key          VARCHAR(48)      NOT NULL,
+    method_id          VARCHAR(48)      NOT NULL,
+    statistic_q        DOUBLE PRECISION,
+    lookback_sessions  INTEGER,
+    min_sample         INTEGER,
+    extra              JSONB,
+    effective_from     DATE             NOT NULL,
+    note               TEXT,
+    created_at         TIMESTAMPTZ      DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (param_key, effective_from)
+);
+
+CREATE TABLE IF NOT EXISTS ticker_level_params (
+    ticker                 VARCHAR(10)      NOT NULL,
+    param_key              VARCHAR(48)      NOT NULL,
+    value                  DOUBLE PRECISION,
+    status                 VARCHAR(32)      NOT NULL
+        CHECK (status IN ('ok', 'insufficient_history', 'input_unavailable', 'no_positive_target')),
+    atr_basis              VARCHAR(16)      NOT NULL,
+    method_id              VARCHAR(48),
+    policy_effective_from  DATE,
+    sample_n               INTEGER,
+    input_from             DATE,
+    input_to               DATE,
+    effective_from         DATE             NOT NULL,
+    run_id                 UUID,
+    source                 VARCHAR(16)
+        CHECK (source IN ('nightly', 'history', 'on_demand')),
+    calibrated_at          TIMESTAMPTZ,
+    CHECK ((status = 'ok') = (value IS NOT NULL)),
+    PRIMARY KEY (ticker, param_key, atr_basis, effective_from)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ticker_level_params_in_force
+    ON ticker_level_params (ticker, atr_basis, effective_from DESC);
+
+-- The Design 2 policy rows, effective 2015-01-02 (the first session the
+-- history-mode run calibrates). Idempotent: re-applying schema.sql leaves a
+-- later policy version, or an edited row, untouched (PRIMARY KEY conflict ->
+-- DO NOTHING). statistic_q is the quantile of the stated distribution, or
+-- for a target the share of filled breaks that reached it; NULL where the
+-- method names a fixed statistic (an entry edge at the trigger).
+INSERT INTO level_param_policy (
+    param_key, method_id, statistic_q, lookback_sessions, min_sample, extra, effective_from, note
+) VALUES
+    ('atr_basis', 'policy', NULL, NULL, NULL, '{"column": "atr_14"}', '2015-01-02',
+     'ATR column every parameter is measured in and every consumer multiplies by'),
+    ('calibration_universe', 'policy', NULL, NULL, NULL,
+     '{"sources": ["market_config_tickers", "insight_default_tickers", "watchlist", "on_demand"]}', '2015-01-02',
+     'lib.level_calibration.load_calibration_universe'),
+    ('trigger_window_long_atr', 'daily_excursion_quantile', 0.99, 750, 250, '{"side": "long"}', '2015-01-02',
+     '(high - prior close) / ATR'),
+    ('trigger_window_short_atr', 'daily_excursion_quantile', 0.99, 750, 250, '{"side": "short"}', '2015-01-02',
+     '(prior close - low) / ATR'),
+    ('pm_spike_atr', 'premarket_wick_excess_quantile', 0.999, 60, 40, '{"min_bars_per_session": 60}', '2015-01-02',
+     'premarket wick beyond its own and its two neighbours'' bodies each side / ATR'),
+    ('pm_stale_print_atr', 'premarket_bar_spread_quantile', 0.95, 60, 40, '{"min_bars_per_session": 60}', '2015-01-02',
+     'clean premarket max(high - midpoint, midpoint - low) / ATR'),
+    ('level_cluster_atr', 'rth_interval_change_quantile', 0.50, 60, 40, '{"interval_minutes": 15}', '2015-01-02',
+     'absolute 15-minute RTH close-to-close change / ATR'),
+    ('entry_buffer_aggressive_lo_atr', 'at_trigger', NULL, 750, 150, '{"persona": "aggressive", "edge": "lo", "follow_through_minutes": 15}', '2015-01-02', NULL),
+    ('entry_buffer_aggressive_hi_atr', 'follow_through_quantile', 0.75, 750, 150, '{"persona": "aggressive", "edge": "hi", "follow_through_minutes": 15}', '2015-01-02', NULL),
+    ('entry_buffer_neutral_lo_atr', 'at_trigger', NULL, 750, 150, '{"persona": "neutral", "edge": "lo", "follow_through_minutes": 15}', '2015-01-02', NULL),
+    ('entry_buffer_neutral_hi_atr', 'follow_through_quantile', 0.50, 750, 150, '{"persona": "neutral", "edge": "hi", "follow_through_minutes": 15}', '2015-01-02', NULL),
+    ('entry_buffer_conservative_lo_atr', 'follow_through_quantile', 0.20, 750, 150, '{"persona": "conservative", "edge": "lo", "follow_through_minutes": 15}', '2015-01-02', NULL),
+    ('entry_buffer_conservative_hi_atr', 'follow_through_quantile', 0.65, 750, 150, '{"persona": "conservative", "edge": "hi", "follow_through_minutes": 15}', '2015-01-02', NULL),
+    ('stop_aggressive_atr', 'filled_held_mae_quantile', 0.90, 750, 150, '{"persona": "aggressive"}', '2015-01-02', NULL),
+    ('stop_neutral_atr', 'filled_held_mae_quantile', 0.75, 750, 150, '{"persona": "neutral"}', '2015-01-02', NULL),
+    ('stop_conservative_atr', 'filled_held_mae_quantile', 0.60, 750, 150, '{"persona": "conservative"}', '2015-01-02', NULL),
+    ('min_stop_atr', 'filled_held_mae_quantile', 0.50, 750, 150, '{"persona": "neutral"}', '2015-01-02', NULL),
+    ('target_aggressive_1_r', 'filled_reach_share', 0.40, 750, 150, '{"persona": "aggressive", "k": 1}', '2015-01-02', NULL),
+    ('target_aggressive_2_r', 'filled_reach_share', 0.25, 750, 150, '{"persona": "aggressive", "k": 2}', '2015-01-02', NULL),
+    ('target_aggressive_3_r', 'filled_reach_share', 0.15, 750, 150, '{"persona": "aggressive", "k": 3}', '2015-01-02', NULL),
+    ('target_neutral_1_r', 'filled_reach_share', 0.60, 750, 150, '{"persona": "neutral", "k": 1}', '2015-01-02', NULL),
+    ('target_neutral_2_r', 'filled_reach_share', 0.45, 750, 150, '{"persona": "neutral", "k": 2}', '2015-01-02', NULL),
+    ('target_neutral_3_r', 'filled_reach_share', 0.30, 750, 150, '{"persona": "neutral", "k": 3}', '2015-01-02', NULL),
+    ('target_conservative_1_r', 'filled_reach_share', 0.65, 750, 150, '{"persona": "conservative", "k": 1}', '2015-01-02', NULL),
+    ('target_conservative_2_r', 'filled_reach_share', 0.50, 750, 150, '{"persona": "conservative", "k": 2}', '2015-01-02', NULL)
+ON CONFLICT (param_key, effective_from) DO NOTHING;
 
 
 -- FEAT-STRAT-001 (2026-11-05): FTFC in Rob Smith's sense, price above
@@ -4885,12 +5009,12 @@ CREATE TABLE IF NOT EXISTS earnings_upcoming_with_history (
     implied_move_pct           DOUBLE PRECISION,        -- expected_move / prev_close * 100
     options_volume             BIGINT,
     open_interest              BIGINT,
-    -- Playability + archetype (computed at refresh time)
+    -- Playability (NULL since the EW retirement) + archetype (refresh time)
     playability_score          DOUBLE PRECISION,
     quintile                   TEXT,                    -- Q1..Q5
     archetype                  TEXT,
     confidence_label           TEXT,
-    -- BOTH recommendation modes (user asked for both until they decide)
+    -- Both recommendation modes: NULL since the EW retirement (no input)
     recommended_structure_long_only  TEXT,
     recommended_structure_ic_mode    TEXT,
     -- Historical context from earnings_ticker_lean

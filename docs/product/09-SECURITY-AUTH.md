@@ -299,7 +299,8 @@ image build (run #13); with it, run #14 completed end to end and revision
 things changed on the same identity since the paragraph above was written:
 
 1. **Six project-level viewer roles** were granted by the operator for the
-   rebuilt `refresh-architecture-docs.yml`, whose first step now reads the
+   rebuilt `refresh-architecture-docs.yml` (its retirement decided on
+   2026-11-10), whose first step read the
    live inventory (jobs, executions, services, schedulers, Cloud Build
    triggers, domain mappings, Cloud SQL, Pub/Sub, sinks, Cloud Tasks,
    service accounts, image tags) instead of letting the model guess:
@@ -319,6 +320,14 @@ things changed on the same identity since the paragraph above was written:
    packages were deleted** (`gcp/deploy.sh retire-legacy-images`, #1007)
    after prod was promoted to `gcr.io/…/solyra-api`; `gcloud container
    images list` returns only `solyra-api`.
+
+**Update 2026-11-10.** On 2026-11-10 the owner decided to retire the doc
+refresh; of the roles in this section, the five original doc-refresh roles
+(`cloudasset.viewer`, `iam.securityReviewer`, `bigquery.dataViewer`,
+`bigquery.jobUser`, `aiplatform.user`) then serve no remaining workflow (read
+from the workflow sources, not checked live), `cloudscheduler.viewer` and
+`cloudtasks.viewer` stay needed by `scripts/verify_docs_against_live.py`, and
+any revocation is the owner's step.
 
 Cleanup-policy state as read live the same day: both repos carry
 `keep-tagged`, `keep-10-most-recent` and a delete-untagged-older-than-14d

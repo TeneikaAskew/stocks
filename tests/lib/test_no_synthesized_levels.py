@@ -20,13 +20,14 @@ import pytest
 
 from lib.agents.schema import EntryZone, InsightReport, PersonaPlan, StratSnapshot
 from lib.agents.trade_planner import (
-    _ENTRY_BUFFER,
-    _STOP_ATR_MULT,
-    _TARGET_R_MULTIPLES,
     PlanContext,
+    _persona_target_keys,
     compute_persona_plans,
 )
-from lib.strat_levels import SessionLevels, format_levels_for_brief, price_cents
+from lib.strat_levels import (
+    MIN_STOP_KEY, SessionLevels, entry_buffer_key, format_levels_for_brief, price_cents,
+    stop_key,
+)
 from tests.lib import strat_2026_11_06 as fx
 from tests.lib.session_levels_helpers import basis, session
 
@@ -52,7 +53,9 @@ def test_orb_only_plans_publish_no_numbers(direction):
         assert p.targets == []
         assert p.risk_metrics is None
         assert p.position_size_pct == 0.0
-        assert not re.search(r"\d+\.\d{2}", p.rationale), p.rationale
+        # The ticker's own window multiple ("2.61 x ATR(14)") is copy, not a price.
+        text = re.sub(r"\d+(\.\d+)? x ATR", "", p.rationale)
+        assert not re.search(r"\d+\.\d{2}", text), p.rationale
 
 
 def test_a_context_with_no_levels_is_orb_only_no_levels():
@@ -102,7 +105,8 @@ def test_discord_push_renders_a_null_plan(monkeypatch):
     embed = push.format_report_embed(row)
     text = json.dumps(embed)
     assert "None" not in text and "null" not in text
-    assert "No unbroken call level within 3x ATR and 8% of price" in text
+    from lib.strat_levels import orb_only_text
+    assert json.dumps(orb_only_text("next_level_outside_window", "long", sl.long.window))[1:-1] in text
     assert not re.search(r"Entry|Stop:", text.split("ORB-only")[1].split('"')[0])
 
 
@@ -139,9 +143,10 @@ def test_risk_reviewer_input_takes_a_null_plan():
 
 # ── every published price is a level or a plan offset from one ──────────
 
-def _expected_plan(persona, trigger, atr, direction, stop_anchor):
+def _expected_plan(params, persona, trigger, atr, direction, stop_anchor):
     sign = 1.0 if direction == "long" else -1.0
-    lo_m, hi_m = _ENTRY_BUFFER[persona]
+    lo_m = params.value(entry_buffer_key(persona, "lo"))
+    hi_m = params.value(entry_buffer_key(persona, "hi"))
     lo, hi = sorted((trigger + sign * lo_m * atr, trigger + sign * hi_m * atr))
     mid = (lo + hi) / 2
     return lo, hi, mid
@@ -154,20 +159,22 @@ def test_every_plan_price_is_a_level_or_an_offset(monkeypatch, ticker, direction
     side = ctx.levels.side(direction)
     trigger = side.trigger["price"]
     assert price_cents(trigger) in ctx.levels.published_prices()
-    atr = ctx.safe_atr()
+    atr = ctx.plan_atr()
+    params = ctx.params
     sign = 1.0 if direction == "long" else -1.0
     for p in plans:
-        lo, hi, mid = _expected_plan(p.persona, trigger, atr, direction, side.stop)
+        lo, hi, mid = _expected_plan(params, p.persona, trigger, atr, direction, side.stop)
         assert p.entry_zone.low == pytest.approx(lo, abs=0.01)
         assert p.entry_zone.high == pytest.approx(hi, abs=0.01)
-        atr_stop = mid - sign * _STOP_ATR_MULT[p.persona] * atr
-        floor_stop = mid - sign * 0.5 * atr
+        atr_stop = mid - sign * params.value(stop_key(p.persona)) * atr
+        floor_stop = mid - sign * params.value(MIN_STOP_KEY) * atr
         allowed = {round(atr_stop, 2), round(floor_stop, 2)}
         if side.stop is not None:
             allowed.add(round(side.stop["price"], 2))
         assert p.stop in allowed or p.persona == "conservative"
         risk = abs(mid - p.stop)
-        for t, r in zip(p.targets, _TARGET_R_MULTIPLES[p.persona]):
+        r_multiples = [params.value(k) for k in _persona_target_keys(params, p.persona)]
+        for t, r in zip(p.targets, r_multiples):
             assert t == pytest.approx(mid + sign * r * risk, abs=0.02)
 
 

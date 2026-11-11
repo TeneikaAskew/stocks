@@ -23,11 +23,19 @@ from lib.strat_levels import (
     format_levels_for_brief,
     orb_only_text,
 )
+from tests.lib.level_params_fixtures import fixture_params
 from tests.lib.session_levels_helpers import basis
 
 REPO = Path(__file__).resolve().parents[2]
+# Per-ticker parameters (2026-11-08) add one reason per non-ok status of the
+# side's trigger-window parameter.
+PARAM_REASONS = {"params_insufficient_history": "insufficient_history",
+                 "params_input_unavailable": "input_unavailable",
+                 "params_unavailable": "params_unavailable",
+                 "params_basis_mismatch": "params_basis_mismatch"}
 REASONS = ("all_broken_by_premarket", "next_level_outside_window", "no_levels",
-           "atr_unavailable", "stale_daily")
+           "atr_unavailable", "stale_daily", *PARAM_REASONS)
+_WINDOWS = ("trigger_window_long_atr", "trigger_window_short_atr")
 
 
 def _session_for(reason: str) -> SessionLevels:
@@ -43,6 +51,10 @@ def _session_for(reason: str) -> SessionLevels:
         b = basis({}, prior_close=100.0, atr=1.0)
     elif reason == "atr_unavailable":
         b = basis({"PWH": 101.0, "PWL": 99.0}, prior_close=100.0, atr=None)
+    elif reason in PARAM_REASONS:
+        status = PARAM_REASONS[reason]
+        lp = fixture_params("TST", sample_n=100, statuses={k: status for k in _WINDOWS})
+        b = basis({"PWH": 101.0, "PWL": 99.0}, prior_close=100.0, atr=1.0, params=lp)
     else:
         b = dict(basis({"PWH": 101.0}, prior_close=100.0, atr=1.0), status="stale_daily")
     sl = SessionLevels.from_basis(b)
@@ -55,25 +67,38 @@ def test_the_table_holds_every_reason():
     for reason in REASONS:
         assert reason in ORB_ONLY_SCHEMA_DESCRIPTION
         for side, word in (("long", "call"), ("short", "put")):
-            text = orb_only_text(reason, side)
-            assert text == ORB_ONLY_COPY[reason].format(side=word)
+            sl = _session_for(reason)
+            text = orb_only_text(reason, side, sl.side(side).window)
+            assert word in text
             assert "15-min opening range" in text
+            assert "{" not in text
 
 
 @pytest.mark.parametrize("reason", REASONS)
 def test_brief_banner(reason):
-    text = format_levels_for_brief(_session_for(reason).to_level_map(), "neutral")
-    assert f"CALLS: {orb_only_text(reason, 'long')}" in text
-    assert f"PUTS: {orb_only_text(reason, 'short')}" in text
+    sl = _session_for(reason)
+    text = format_levels_for_brief(sl.to_level_map(), "neutral")
+    assert f"CALLS: {orb_only_text(reason, 'long', sl.long.window)}" in text
+    assert f"PUTS: {orb_only_text(reason, 'short', sl.short.window)}" in text
 
 
 @pytest.mark.parametrize("reason", REASONS)
 @pytest.mark.parametrize("direction", ["long", "short"])
 def test_planner_rationale(reason, direction):
+    sl = _session_for(reason)
     ctx = PlanContext(direction=direction, conviction="medium", close=100.0, atr=1.0,
-                      levels=_session_for(reason), ftfc_score=0.0)
+                      levels=sl, ftfc_score=0.0)
     for plan in compute_persona_plans(ctx):
-        assert plan.rationale == "ORB-only: " + orb_only_text(reason, direction)
+        assert plan.rationale == "ORB-only: " + orb_only_text(reason, direction,
+                                                              sl.side(direction).window)
+
+
+@pytest.mark.parametrize("direction", ["long", "short"])
+def test_insufficient_history_copy_names_the_parameter_and_its_sample(direction):
+    sl = _session_for("params_insufficient_history")
+    key = "trigger_window_long_atr" if direction == "long" else "trigger_window_short_atr"
+    text = orb_only_text("params_insufficient_history", direction, sl.side(direction).window)
+    assert key in text and "has 100" in text and "needs 250" in text
 
 
 @pytest.mark.parametrize("reason", REASONS)
@@ -83,8 +108,10 @@ def test_discord_push(reason, direction):
     report = {"direction": direction,
               "level_basis": _session_for(reason).to_basis()}
     got = push._fmt_targets_field(None, None, [], regime="orb_only",
-                                  reason=push._orb_only_reason(report), direction=direction)
-    assert got.endswith(orb_only_text(reason, direction))
+                                  reason=push._orb_only_reason(report), direction=direction,
+                                  window=push._orb_only_window(report))
+    sl = _session_for(reason)
+    assert got.endswith(orb_only_text(reason, direction, sl.side(direction).window))
 
 
 def test_schema_descriptions():
