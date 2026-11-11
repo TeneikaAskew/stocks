@@ -686,9 +686,9 @@ def _earnings_tickers_in_window(
 
     Filtering:
       - ``require_options=True`` (default): only return tickers with at
-        least one source row marking ``has_options=true``. EW and UW
-        populate this flag; AV and Yahoo never do, so this is effectively
-        "EW or UW listed it as options-tradable" — the right cut for an
+        least one retained source row marking ``has_options=true``. UW
+        populates this flag; AV and Yahoo never do. Retired EW rows are
+        excluded before aggregation — preserving the options cut for an
         earnings-options pipeline. In a typical 7d window this collapses
         a ~3,500-ticker universe to ~500.
       - ``require_options=False``: legacy behaviour, returns all reporters
@@ -726,8 +726,8 @@ def _earnings_tickers_in_window(
     # only filled on UW rows, while many UW rows ALSO have stock_volume.
     # An optionable name with high options volume is the canonical
     # "tradeable earnings ticker" — exactly what we want the daily
-    # fetcher to backfill. NULLS LAST on every signal so AV-only /
-    # EW-only rows sink without disappearing entirely.
+    # fetcher to backfill. NULLS LAST orders retained rows with missing
+    # liquidity signals last; retired EW rows are excluded before grouping.
     sql = f"""
         SELECT ticker,
                BOOL_OR(COALESCE(has_options, false))   AS optionable,
@@ -1164,10 +1164,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--require-options', action='store_true',
                         default=os.environ.get('REQUIRE_OPTIONS', 'true').lower() != 'false',
                         help=('Filter the earnings union to tickers with '
-                              '`has_options=true` from EW or UW. Default: '
+                              '`has_options=true` from a retained source. Default: '
                               'true. AV/Yahoo never set this flag, so the '
-                              'filter effectively means "EW or UW confirmed '
-                              'this is options-tradable around earnings" — '
+                              'filter uses retained UW confirmation that '
+                              'this is options-tradable around earnings — '
                               'the right cut for an earnings-options pipeline. '
                               'Set REQUIRE_OPTIONS=false to disable.'))
     parser.add_argument('--backfill', action='store_true',

@@ -111,3 +111,5 @@ reader is not deleted. No prose outside the generated blocks changes.
 Current-head CODE/CI and deployed-job qualification remain separate. Spec merge,
 source identity and local tests do not certify deployed removal or data recovery.
 No schema/data/secret/calendar/evaluator changes or production action occur here.
+
+First implementation review covered87409f21..ac48d9b0, noP0/P1/runtime findings. TwoP3description/receipt corrections: market fetcher docstring/comment/CLIhelp now describe retained-source eligibility; market_eligible fixture size is2844bytes with its twoNULLstock-volume controls. No SQL changes in this correction. Exact full-file reversal proof above describes pre-correction source d949df4d; subsequent differences are only these descriptions. Prior review accounting is retained; no extra local judgment review is dispatched.
