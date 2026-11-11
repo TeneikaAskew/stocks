@@ -105,3 +105,8 @@ A cost of $29.10 for Artifact Registry storage is unusually high for a project o
 ---
 
 Generated 2026-09-02 by .github/workflows/refresh-architecture-docs.yml
+
+**Status, 2026-11-10.** This analysis was generated on 2026-09-02 from the BigQuery
+billing export, whose data for this project ends that day: the project moved to a
+billing account with no export (`docs/audits/COST_AUDIT_2026-09-06.md` §1), and
+#1409 tracks the missing export. It is a dated record and is not maintained.
