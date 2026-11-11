@@ -3,22 +3,23 @@ feat_id: FEAT-STRAT-001
 req_ids: [REQ-PLAYBOOK-001, REQ-DATA-001, REQ-DATA-002, REQ-DATA-003, REQ-REL-001]
 issues: []
 canvases: []
-site_source_notes: [DASHBOARD-01, DASHBOARD-21, INSIGHTS-07, INSIGHTS-08]
+site_source_notes: [DASHBOARD-01]
 done_when:
-  - "ATR rungs: tests/lib/test_strat_levels.py passes a TestAtrRungs class on the exits spec's Design 8 fixture (reference 250.00, premarket high 252.10 and low 248.20, prior close 247.00, PDH 253.00, PMH 275.00, PQH 280.00, PYH 285.00, PDL 247.50, PML 225.00, PQL 220.00, PYL 215.00, both windows 2.6, ATR(14) 14.00, target_min_spacing_atr 0.25, exit_legs 3) with atr_rung_anchors [PDH, PDL, PMK_H, PMK_L], atr_rung_step_atr 0.5, atr_rung_max_atr 2.0 and atr_rung_stretch_atr 1.5: before thinning there are 32 rungs (each anchor plus and minus 0.5, 1, 1.5 and 2 x 14.00, PDH-2ATR at 225.00 being PML's alias); after thinning SessionLevels.atr_rungs is exactly 259.10 PMK_H+0.5ATR, 266.10 PMK_H+1ATR, 241.20 PMK_L-0.5ATR and 234.20 PMK_L-1ATR, and atr_rungs_dropped holds the other 27 with the reason neighbor or structural; build_session_levels gives calls trigger 252.10 (PMK_H), stop 248.20 (PMK_L), gate_targets 253.00, 275.00, 280.00, plan targets 259.10 (PMK_H+0.5ATR), 266.10 (PMK_H+1ATR), 275.00 (PMH) and skipped [253.00]; puts trigger 248.20 (PMK_L), stop 252.10 (PMK_H), gate_targets 247.50, 247.00, 225.00, plan targets 241.20 (PMK_L-0.5ATR), 234.20 (PMK_L-1ATR), 225.00 (PML, alias PDH-2ATR, stretch) and skipped [247.50, 247.00]; 273.10 (PMK_H+1.5ATR) is dropped because it is 1.90 from 275.00 (PMH) although it is 7.00 from 266.10; a rung whose distance in cents from its open-side neighbor or from a structural candidate equals target_min_spacing_atr x ATR in cents (price_cents half-up) is kept and one cent less is dropped; a rung whose distance in cents from its own anchor equals atr_rung_stretch_atr x ATR in cents is stretch and one cent less is not; two rungs on one cent take the name of the anchor listed first in atr_rung_anchors and the other is its alias; with no premarket snapshot the rungs come from PDH and PDL only and level_basis records PMK_H and PMK_L as anchor_unavailable; an ATR rung is never a trigger, a stop, a gate target or a NEXT LEVELS ladder entry; any of the four rung parameters not ok while target_min_spacing_atr is ok gives no ATR rungs, atr_rung_status equal to that status and plan targets equal to the exits spec's structural ones (calls 275.00, 280.00, 285.00); target_min_spacing_atr not ok gives no ATR rungs, atr_rung_status equal to that status and, as the exits spec's Design 1 sets, a side that keeps its trigger and stop, publishes no plan target and carries target_status equal to that status (the brief's 'Targets unavailable ({target_status}): no exit plan for this side.' line); these cases fail on the implementation PR's base, which has no ATR rungs"
+  - "ATR rungs: tests/lib/test_strat_levels.py passes a TestAtrRungs class on the exits spec's Design 8 fixture (reference 250.00, premarket high 252.10 and low 248.20, prior close 247.00, PDH 253.00, PMH 275.00, PQH 280.00, PYH 285.00, PDL 247.50, PML 225.00, PQL 220.00, PYL 215.00, both windows 2.6, ATR(14) 14.00, target_min_spacing_atr 0.25, exit_legs 3) with atr_rung_anchors [PDH, PDL, PMK_H, PMK_L], atr_rung_step_atr 0.5, atr_rung_max_atr 2.0 and atr_rung_stretch_atr 1.5: before thinning there are 32 rungs (each anchor plus and minus 0.5, 1, 1.5 and 2 x 14.00); after thinning SessionLevels.atr_rungs is exactly 259.10 PMK_H+0.5ATR, 266.10 PMK_H+1ATR, 241.20 PMK_L-0.5ATR and 234.20 PMK_L-1ATR, and atr_rungs_dropped holds the other 28 with the reason neighbor or structural (225.00 PDH-2ATR, on PML's cent, is dropped as structural and recorded as PML's alias); 273.10 (PMK_H+1.5ATR) is dropped because it is 1.90 from 275.00 (PMH) although it is 7.00 from 266.10; a rung whose distance in cents from its open-side neighbor or from a structural candidate equals target_min_spacing_atr x ATR in cents (price_cents half-up) is kept and one cent less is dropped; a rung whose distance in cents from its own anchor equals atr_rung_stretch_atr x ATR in cents is stretch and one cent less is not; two rungs on one cent take the name of the anchor listed first in atr_rung_anchors and the other is its alias; with no premarket snapshot the rungs come from PDH and PDL only and level_basis records PMK_H and PMK_L as anchor_unavailable; any of the four rung parameters or target_min_spacing_atr not ok gives no ATR rungs and atr_rung_status equal to that status; these cases fail on the implementation PR's base, which has no ATR rungs"
+  - "Display only: on the Design 8 fixture, on the same fixture with ATR(14) 24.00 and windows 1.6, with each rung parameter not ok, with target_min_spacing_atr not ok and with no premarket snapshot, build_session_levels on the head and on the base give identical triggers, stops, gate_targets, plan targets, skipped lists, target_status and reasons for both sides (Design 8: calls trigger 252.10, stop 248.20, gate_targets 253.00, 275.00, 280.00, plan targets 275.00, 280.00, 285.00, skipped [253.00]; puts trigger 248.20, stop 252.10, gate_targets 247.50, 247.00, 225.00, plan targets 225.00, 220.00, 215.00, skipped [247.50, 247.00]); _candidate_rungs and _pick_side never receive an ATR rung (asserted by a test that builds a session whose only level past the trigger would be a rung and gets the base's targets); the premarket_analysis columns the brief writes, including {calls,puts}_t1_price to _t3_price and the exits spec's plan target columns, are byte-identical on head and base for the same inputs"
   - "No numbers and no names: tests/lib/test_level_params_structure.py passes unchanged (no new literal or module constant on the build_session_levels walk) and test_the_walk_reaches_the_rules_it_must_cover also asserts that the rung builder and the thinning walk are reached from build_session_levels; tests/lib/test_level_params_copy.py asserts that no string literal in lib/strat_levels.py contains '0.5 x ATR', '1.5 x ATR' or '2 x ATR' and that the anchor names are read only from the atr_rung_anchors policy row (no tuple or list of anchor names in lib/strat_levels.py); the step, the largest multiple, the stretch mark and the thinning distance are read only from LevelParams, and the multiples are i x step for whole i, compared in cents"
   - "Policy and calibration: gcp/schema.sql seeds level_param_policy rows atr_rung_anchors (method_id policy, extra {\"anchors\": [\"PDH\", \"PDL\", \"PMK_H\", \"PMK_L\"]}), atr_rung_step_atr (policy_seed, extra {\"seed\": 0.5}), atr_rung_max_atr (policy_seed, extra {\"seed\": 2.0}) and atr_rung_stretch_atr (policy_seed, extra {\"seed\": 1.5}), each effective 2015-01-02 with ON CONFLICT DO NOTHING; load_level_params reads atr_rung_anchors like atr_basis and raises LevelParamsUnavailable when the row is missing, empty or names a level that is not a trigger candidate; lib.level_calibration.calibrate and HistoryCalibrator write one ticker_level_params row per ticker for each policy_seed key at the seed in force, status ok, method_id policy_seed, as the exits spec's policy_seed method does; tests: a calibration of a fixture ticker returns the three numeric keys at their seeds, a later policy row with atr_rung_max_atr seed 3.0 effective D gives 3.0 from D and 2.0 before it and adds the 2.5 and 3 rungs from D, a later atr_rung_anchors row listing [PDC] effective D builds prior-close rungs from D with no code change, and a policy with no atr_rung_anchors row raises LevelParamsUnavailable naming the key; they fail on the base"
-  - "Brief copy: format_levels_for_brief renders the Design 8 fixture to exactly the text in Design 5 (a golden-string test in tests/lib/test_strat_levels.py): a plan target that is an ATR rung is named {anchor}+{k}ATR or {anchor}-{k}ATR, a structural target that aliases a rung is named '(PML, also PDH-2ATR, stretch)', a stretch rung ends ', stretch'; the skipped line names skipped rungs the same way; the NEXT LEVELS Calls and Puts lines are byte-identical to the base's; a new last NEXT LEVELS line lists every kept rung above the reference as 'up' and below as 'down' with its anchor and multiple and ' stretch' where marked; atr_rung_status not ok renders 'ATR levels unavailable ({atr_rung_status}).' as that line; the orb_only copy and a side with no trigger are unchanged; the tests fail on the base"
-  - "Unchanged, each pinned by an existing or added test that passes on the base and on the implementation head: the trigger and stop picks, gate_targets and the {calls,puts}_t1_price to _t3_price columns, the NEXT LEVELS ladder (SessionLevels.to_level_map call_levels and put_levels), the strat_levels rows persist_level_map writes (no ATR rung is a StratLevel in SessionLevels.levels), PMG zones, the signal monitor's fire decisions and put re-anchor in every level_gate_mode and put_reanchor_mode (the exits spec's end-to-end test still passes), the movement statement's rungs and its _reach_rate_sql and _fetch_tracked_levels pairing, persona plans (lib/agents/trade_planner.py) and the CALL/PUT pick"
-  - "level_basis and replay: level_basis records atr_rungs (price, anchor, multiple, sign, stretch, aliases), atr_rungs_dropped (price, anchor, multiple, reason), atr_rung_status, the anchor list and the four parameters (value, status, method_id, effective_from) and LEVEL_RULE_VERSION one past the exits spec's feat-strat-001.v3; SessionLevels.from_basis on a basis of this version rebuilds the same rungs, plan targets and skipped list after the ticker_level_params or policy rows change; with_premarket rebuilds the PMK_H and PMK_L rungs from the newer snapshot; from_basis on a stored v3 or v2 basis rebuilds that version's targets with no ATR rungs; published_prices includes the kept rungs' cents; the tests fail on the base"
-  - "Experiment through the production paths, before any production change: the implementation PR body shows, for SPY, QQQ and IWM over every session from 2025-03-03 to 2026-11-10 replayed through gcp/premarket_brief.py (BRIEF_AS_OF) with history-mode parameters, three builds: the base, the head with the seeded anchors (PDH, PDL, PMK_H, PMK_L) and, for reference, the head with an atr_rung_anchors row of [PDC] (prior close); on 1-minute RTH bars, where a level is reached when a bar trades through it and held when five consecutive 1-minute closes stay beyond it after the first touch, per window (2026-05-01 to 2026-11-10 and 2025-03-03 to 2026-04-30): (a) on ticker-days whose 09:30 open is at or beyond a side's trigger, the share whose first and second printed levels past the open in that direction (targets, NEXT LEVELS and on the head the ATR line), each at least target_min_spacing_atr x ATR past the open or the level before it, are reached and held, the share with no printed level past the open, and each head build minus the base and the seeded anchors minus the prior-close build, with the 90% day-resampled range (seed 7, 2,000 draws); (b) the same as (a) on every session, both directions from the open, split by gap bucket and with or against the gap; (c) per side, the largest empty stretch between printed levels inside the side's window, median, 90th percentile and share at least 1 x ATR, and the number of printed levels within 3 x ATR; (d) plan T1, T2 and T3 reach and held shares from plan_t1_hit_ts to plan_t3_hit_ts; (e) total plan_r on each build with the same range, for the owner; if (a) seeded anchors minus base has a first-level reach range that is not above zero in either window, or (e) seeded anchors minus base has a range wholly below zero in either window, the PR stays draft and the owner decides"
-  - "Source identity (DASHBOARD-01, DASHBOARD-21, INSIGHTS-07, INSIGHTS-08): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-STRAT-001, DASHBOARD-01 / DASHBOARD-21 / INSIGHTS-07 / INSIGHTS-08) note rows carry that source_identity_sha256 with implementation and test prose for this PR"
+  - "Brief copy: format_levels_for_brief renders the Design 8 fixture to exactly the exits spec's Design 8 text with one line added, the last NEXT LEVELS line in Design 5 here (a golden-string test in tests/lib/test_strat_levels.py); every other line, including the CALLS and PUTS blocks, their target and skipped lines and the NEXT LEVELS Calls and Puts lines, is byte-identical to the base's; the added line lists every kept rung inside the side's window above the reference as 'up' and below as 'down', nearest first, each as price ({anchor}{sign}{k}) with ' stretch' where marked and ', also {alias}' where two rungs share a cent; atr_rung_status not ok renders 'ATR levels unavailable ({atr_rung_status}).' as that line; the orb_only copy and a side with no trigger are unchanged; the tests fail on the base"
+  - "Unchanged, each pinned by an existing or added test that passes on the base and on the implementation head: the trigger and stop picks, gate_targets, the exits spec's plan targets, skipped list and target_status, the {calls,puts}_t1_price to _t3_price and plan target columns, the resolver's plan columns and plan_r, the NEXT LEVELS ladder (SessionLevels.to_level_map call_levels and put_levels), the strat_levels rows persist_level_map writes (no ATR rung is a StratLevel in SessionLevels.levels), PMG zones, LEVEL_RULE_VERSION, the signal monitor's fire decisions and put re-anchor in every level_gate_mode and put_reanchor_mode (the exits spec's end-to-end test still passes), the movement statement's rungs, reach rates and _reach_rate_sql and _fetch_tracked_levels pairing, the insight report's plan and key levels, persona plans (lib/agents/trade_planner.py) and the CALL/PUT pick"
+  - "level_basis and replay: level_basis gains optional keys atr_rungs (price, anchor, multiple, sign, stretch, aliases), atr_rungs_dropped (price, anchor, multiple, reason), atr_rung_status, the anchor list and the four parameters (value, status, method_id, effective_from); SessionLevels.from_basis on a basis with those keys rebuilds the same rungs after the ticker_level_params or policy rows change, and on a stored basis without them rebuilds no rungs and the same targets as before; with_premarket rebuilds the PMK_H and PMK_L rungs from the newer snapshot; published_prices includes the kept rungs' cents; the tests fail on the base"
+  - "Experiment through the production paths, before any production change: the implementation PR body shows, for SPY, QQQ and IWM over every session from 2025-03-03 to 2026-11-10 replayed through gcp/premarket_brief.py (BRIEF_AS_OF) with history-mode parameters, three builds: the base, the head with the seeded anchors (PDH, PDL, PMK_H, PMK_L) and, for reference, the head with an atr_rung_anchors row of [PDC] (prior close); on 1-minute RTH bars, where a level is reached when a bar trades through it and held when five consecutive 1-minute closes stay beyond it after the first touch, per window (2026-05-01 to 2026-11-10 and 2025-03-03 to 2026-04-30): (a) on ticker-days whose 09:30 open is at or beyond a side's trigger, the share whose first and second printed levels past the open in that direction (targets, NEXT LEVELS and on the head the ATR line), each at least target_min_spacing_atr x ATR past the open or the level before it, are reached and held, the share with no printed level past the open, and each head build minus the base and the seeded anchors minus the prior-close build, with the 90% day-resampled range (seed 7, 2,000 draws); (b) the same as (a) on every session, both directions from the open, split by gap bucket and with or against the gap; (c) per side, the largest empty stretch between printed levels inside the side's window, median, 90th percentile and share at least 1 x ATR, and the number of printed levels within 3 x ATR; (d) plan T1, T2 and T3 prices and their reach and held shares from plan_t1_hit_ts to plan_t3_hit_ts are equal on every build for every ticker-day; (e) total plan_r is equal on every build; any difference in (d) or (e) fails the PR, and if (a) seeded anchors minus base has a first-level reach range that is not above zero in either window, the PR stays draft and the owner decides"
+  - "Source identity (DASHBOARD-01): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-STRAT-001, DASHBOARD-01) note row carries that source_identity_sha256 with implementation and test prose for this PR"
   - "The FEAT-STRAT-001 catalog record and the PR traceability entry are updated; python3 scripts/gate/spec_gate.py --pr origin/main passes; the four policy rows and the history-mode run for the three seeded keys are applied to production only after the owner's yes and recorded separately"
 status: approved
 supersedes: null
 ---
 
-# The premarket brief adds ATR levels above and below the prior day's and the premarket's high and low
+# The premarket brief shows ATR levels above and below the prior day's and the premarket's high and low
 
 ## Authority
 
@@ -31,8 +32,8 @@ asked for ATR levels to be incorporated into the brief, "prior/previous +/- ... 
 profit.
 
 The anchors (prior day high and low, premarket high and low), the 0.5 step, the 2 x ATR reach, the
-1.5 x ATR stretch mark and the thinning rule are this delivery lane's proposal from the 2026-11-11 level
-and anchor studies, not owner rulings. This spec is written by a FEAT-STRAT-001 delivery lane and is not
+1.5 x ATR stretch mark, the thinning rule and keeping the rungs out of the trade plan are this delivery
+lane's proposal from the 2026-11-11 level, anchor and exits studies, not owner rulings. This spec is written by a FEAT-STRAT-001 delivery lane and is not
 self-approved: it takes effect only when the owner merges the spec-only PR that adds it, and that merge
 is the approval its `status` records. No implementation is written before that merge.
 
@@ -54,14 +55,14 @@ does not build it. That session traded through and held every prior-low-minus-k 
 
 ## Evidence
 
-Two read-only studies in the research lab, not in the repo, on SPY, QQQ and IWM:
+Three read-only studies in the research lab, not in the repo, on SPY, QQQ and IWM:
 `/mnt/project-files/stocks-scorecard/research/fable_lab/triggers_levels/level_reach/` (`tables.md`) and
 its `anchors/` folder (`README.md`, `anchor_summary.csv`; `anchors.py` sha256 3463d004,
 `summary.py` 4f5b888a; rerun `python -I -B anchors.py && python -I -B summary.py`). Windows: recent
 2025-03-03 to 2026-11-10, split into primary from 2026-05-01 and holdout before it, and long 2016-03-01 to
 2025-02-28. Reached means a 1-minute bar traded through the level; held means five consecutive 1-minute
-closes stayed beyond it after the first touch. Ranges are 90%, 2,000 whole-day resamples, seed 7. Both
-studies use the lab's structural set, which is wider than the brief's candidates (it adds 12-hour,
+closes stayed beyond it after the first touch. Ranges are 90%, 2,000 whole-day resamples, seed 7. The
+level and anchor studies use the lab's structural set, which is wider than the brief's candidates (it adds 12-hour,
 2-day and period-open levels), and ATR steps out to 3 x ATR, so the production replay in done_when is the
 test that counts.
 
@@ -105,16 +106,24 @@ shares are lower than the level study's):
 - With these four anchors there are about 25 to 30 levels within 3 x ATR of the open in a direction,
   against 9 to 14 for prior close or structural only, which is why this spec thins the rungs (Design 3).
 
+Exits replay (whether ATR levels should be plan targets): `/mnt/project-files/stocks-scorecard/research/
+fable_lab/triggers_levels/gap_open/atr4/` (`README.md`, `atr4.csv`). With the exits spec's plan and only
+its targets changed to include ATR rungs from the four anchors, T1 was reached more often (long 24% to
+35%, recent 25% to 39%) but each reach paid less, and the plan earned no more R: long -14.0 R (-64.1 to
++34.4) over 4,316 trades, holdout +5.0 R (-6.5 to +15.4), recent -7.8 R (-20.4 to +1.8), and using them on
+gap days only gave -13.1, +1.4 and -5.1 R. So the rungs are shown as a map of where price can travel and
+hold, and are never plan targets.
+
 ## Non-goals
 
-- The trigger and the stop. ATR rungs never trigger and never stop. The lane's test of entering at the
-  next level after the open had passed the trigger did worse than today's rule in all three windows, so
-  entries stay as the exits spec set them.
+- The trade plan. ATR rungs are never a trigger, a stop, a gate target or a plan target, and never enter
+  the skipped list or plan R (Evidence: as targets they earned no more R). The exits spec's plan is
+  unchanged.
 - What the signal monitor gates on (`gate_targets`, the `{calls,puts}_t1_price` to `_t3_price` columns)
   and the `strat_levels` rows it reads: unchanged.
 - RSI- or gap-conditioned ladders, and printing reach odds beside a level. Each is a follow-up that needs
   its own test.
-- The movement statement's rungs and the persona plans.
+- The movement statement, the insight report's levels and the persona plans.
 
 ## Approaches considered
 
@@ -127,9 +136,12 @@ shares are lower than the level study's):
    -2.0 pp on every session). Rejected.
 4. Every anchor at every k with no thinning. The level study's version reached the next level 89 to 91%
    of the time only because levels were 0.04 x ATR apart. Rejected: unreadable.
-5. Chosen: ATR from PDH, PDL, the premarket high and the premarket low, every 0.5 x ATR out to 2 x ATR,
+5. ATR rungs as plan targets (this spec's second draft). T1 was reached more often, but the plan earned
+   no more R in any window and less in the long and recent ones (Evidence). Rejected.
+6. Chosen: ATR from PDH, PDL, the premarket high and the premarket low, every 0.5 x ATR out to 2 x ATR,
    both signs, thinned so no rung sits within the exits spec's spacing of its open-side neighbor or of a
-   structural level, with stretch marked from 1.5 x ATR. The anchor list and every value are data.
+   structural level, with stretch marked from 1.5 x ATR, printed as a map line in NEXT LEVELS. The anchor
+   list and every value are data.
 
 ## Design
 
@@ -159,50 +171,40 @@ builds, for each anchor in the list that the session has, for whole i = 1, 2, ..
 (compared in cents), a rung at anchor + i x step x ATR named `{anchor}+{k}ATR` and one at
 anchor - i x step x ATR named `{anchor}-{k}ATR`, k = i x step written by `multiple_text`. Each rung records
 its anchor, multiple, sign and `stretch` (distance from its anchor in cents at least stretch x ATR in
-cents). An anchor the session lacks (no premarket snapshot, so no `PMK_H`) gives no rungs and is recorded
-as `anchor_unavailable`. Rungs are stored in a new `SessionLevels.atr_rungs`, never in
-`SessionLevels.levels`, so `persist_level_map`, the `strat_levels` table, PMG zones and every reader of
-`levels` are unchanged. When any of the four rung keys or `target_min_spacing_atr` is not ok there are no
-rungs and `atr_rung_status` records the first status that is not ok; there is no fallback (CLAUDE.md 3.7).
-What happens to the plan then follows the exits spec: when only a rung key is not ok, the spacing walk
-still picks plan targets from the structural candidates as the exits spec does; when
-`target_min_spacing_atr` is not ok, the side keeps its trigger and stop, publishes no plan target and
-carries that status as its `target_status` (the exits spec's Design 1), and this spec adds nothing to it.
+cents). Two rungs on one cent take the name of the anchor listed first and the other is recorded as its
+alias. An anchor the session lacks (no premarket snapshot, so no `PMK_H`) gives no rungs and is recorded
+as `anchor_unavailable`. When any of the four rung keys or `target_min_spacing_atr` is not ok there are
+no rungs and `atr_rung_status` records the first status that is not ok; there is no fallback
+(CLAUDE.md 3.7).
 
-### 3. Thinning, so the ladder stays readable
+Rungs are stored in a new `SessionLevels.atr_rungs`, never in `SessionLevels.levels` and never passed to
+`_candidate_rungs` or `_pick_side`. So the trigger, the stop, `gate_targets`, the exits spec's plan
+targets, skipped list and `target_status`, `persist_level_map`, the `strat_levels` table, PMG zones and
+every reader of `levels` are exactly as on the base.
+
+### 3. Thinning, so the line stays readable
 
 Before thinning, four anchors give up to 32 rungs. On each side of the reference, walk the side's
-candidates (structural and ATR, merged by cent with structural names first and then the anchor list's
-order) outward from the reference:
+structural candidates (as `_candidate_rungs` lists them) and its rungs together, in price order outward
+from the reference:
 
 - A structural candidate is always kept.
-- An ATR rung is kept only when it is at least `target_min_spacing_atr` x ATR in cents from the last kept
-  candidate toward the reference (the reference itself when there is none), its open-side neighbor, and
-  at least that far from every structural candidate. Otherwise it is dropped with the reason `neighbor`
-  or `structural`. Structural levels always win.
+- A rung is kept only when it is at least `target_min_spacing_atr` x ATR in cents from the last kept
+  price toward the reference (the reference itself when there is none), its open-side neighbor, and at
+  least that far from every structural candidate. Otherwise it is dropped with the reason `neighbor` or
+  `structural`; a rung on a structural candidate's own cent is dropped as `structural` and recorded as
+  that level's alias. Structural levels always win.
 
-Dropped rungs are recorded in level_basis (`atr_rungs_dropped`) and are not shown or used.
+Dropped rungs are recorded in level_basis (`atr_rungs_dropped`) and are not shown.
 
-### 4. Where the kept rungs enter
+### 4. level_basis
 
-- `_candidate_rungs` adds the kept rungs after every structural candidate in priority, so at one cent a
-  structural level wins and the rung becomes its alias. A rung lies on the side its price is on relative
-  to the reference, so after a gap the rungs between the prior range and the reference sit on the
-  gap-fill side.
-- The side, broken and window rules apply to rungs exactly as to any candidate (`_pick_side`).
-- The trigger is the first unbroken in-window structural candidate, as on the base. The stop is the
-  first in-window structural candidate on the other side, as on the base. `gate_targets` are the first
-  three structural candidates past the trigger, as the exits spec defines them, and the NEXT LEVELS
-  ladder is the trigger and the next structural candidate, as on the base.
-- The exits spec's spacing walk (its Design 1) picks plan targets from every candidate past the trigger,
-  structural and kept ATR rungs, in price order, with the same spacing and leg count. So on a side whose
-  structural levels run out, the plan still has targets.
-
-`LEVEL_RULE_VERSION` moves one past the exits spec's `feat-strat-001.v3`. level_basis records the kept
-and dropped rungs, `atr_rung_status`, the anchor list and the four parameters. `SessionLevels.from_basis`
-rebuilds a basis of this version with its recorded rungs and a v3 or v2 basis with that version's rule,
-so stored briefs and their replays do not change. `published_prices` includes the kept rungs' cents. The
-resolver needs no change: its plan columns already read the plan targets from level_basis.
+level_basis gains optional keys: the kept and dropped rungs, `atr_rung_status`, the anchor list and the
+four parameters with value, status, method_id and effective_from. `LEVEL_RULE_VERSION` does not change,
+because no trigger, stop or target changes: `SessionLevels.from_basis` rebuilds the recorded rungs when
+the keys are present and no rungs when they are absent, so stored briefs, their replays and the movement
+statement's reach-rate population are unchanged. `published_prices` includes the kept rungs' cents,
+because the brief prints them.
 
 ### 5. What the brief will look like
 
@@ -211,55 +213,24 @@ The exits spec's Design 8 ticker: reference 250.00, premarket high 252.10 and lo
 Before thinning the 32 rungs are PDH 253.00 +/- 7.00, 14.00, 21.00, 28.00 (260.00 to 281.00 and 246.00 to
 225.00), PDL 247.50 +/- (254.50 to 275.50 and 240.50 to 219.50), PMK_H 252.10 +/- (259.10 to 280.10 and
 245.10 to 224.10) and PMK_L 248.20 +/- (255.20 to 276.20 and 241.20 to 220.20). Thinning keeps 259.10,
-266.10, 241.20 and 234.20: for example 254.50 is 1.50 from 253.00 (PDH), 260.00 is 0.90 from 259.10, and
-273.10 is 7.00 from 266.10 but 1.90 from 275.00 (PMH). 225.00 (PDH-2ATR) is PML's own cent, so it is
-PML's alias.
+266.10, 241.20 and 234.20: for example 254.50 is 1.50 from 253.00 (PDH), 260.00 is 0.90 from 259.10,
+273.10 is 7.00 from 266.10 but 1.90 from 275.00 (PMH), and 225.00 (PDH-2ATR) is PML's own cent.
 
-Exits spec (base):
-
-```
-  CALLS above 252.10 (PMK_H), new entries 09:30 to 10:00 ET
-    No entry if the open is at or above 252.10.
-    Stop: 248.20 (PMK_L)
-    T1: 275.00 (PMH), sell 1/3
-    T2: 280.00 (PQH), sell 1/3
-    T3: 285.00 (PYH), sell the last 1/3, or hold to the close or the stop
-    Skipped, closer than 0.25 x ATR(14) = 3.50: 253.00 (PDH)
-    Room to trigger: 0.84%
-```
-
-After:
-
-```
-  CALLS above 252.10 (PMK_H), new entries 09:30 to 10:00 ET
-    No entry if the open is at or above 252.10.
-    Stop: 248.20 (PMK_L)
-    T1: 259.10 (PMK_H+0.5ATR), sell 1/3
-    T2: 266.10 (PMK_H+1ATR), sell 1/3
-    T3: 275.00 (PMH), sell the last 1/3, or hold to the close or the stop
-    Skipped, closer than 0.25 x ATR(14) = 3.50: 253.00 (PDH)
-    Room to trigger: 0.84%
-
-  PUTS below 248.20 (PMK_L), new entries 09:30 to 10:00 ET
-    No entry if the open is at or below 248.20.
-    Stop: 252.10 (PMK_H)
-    T1: 241.20 (PMK_L-0.5ATR), sell 1/3
-    T2: 234.20 (PMK_L-1ATR), sell 1/3
-    T3: 225.00 (PML, also PDH-2ATR, stretch), sell the last 1/3, or hold to the close or the stop
-    Skipped, closer than 0.25 x ATR(14) = 3.50: 247.50 (PDL), 247.00 (PDC)
-    Room to trigger: 0.72%
-```
-
-The NEXT LEVELS Calls and Puts lines are unchanged, and a last line is added:
+The CALLS and PUTS blocks are exactly the exits spec's Design 8 "After" text (calls T1 275.00 PMH,
+T2 280.00 PQH, T3 285.00 PYH, skipped 253.00 PDH; puts T1 225.00 PML, T2 220.00 PQL, T3 215.00 PYL,
+skipped 247.50 PDL and 247.00 PDC). The NEXT LEVELS Calls and Puts lines are unchanged, and a last line
+is added:
 
 ```
     ATR levels, ATR(14) 14.00: up 259.10 (PMK_H+0.5), 266.10 (PMK_H+1); down 241.20 (PMK_L-0.5), 234.20 (PMK_L-1)
 ```
 
+When the rungs are unavailable the line reads, for example, `ATR levels unavailable (params_unavailable).`
+
 ## Dependencies
 
-- `docs/superpowers/specs/2026-11-11-feat-strat-001-brief-exits-in-thirds.md` (#1812): its spacing walk,
-  `target_min_spacing_atr`, plan target columns, `policy_seed` calibration method and rule v3. This spec's
+- `docs/superpowers/specs/2026-11-11-feat-strat-001-brief-exits-in-thirds.md` (#1812): its
+  `target_min_spacing_atr`, `policy_seed` calibration method and Design 8 brief text. This spec's
   implementation opens after that spec's implementation is on main and builds on it; it does not
   re-specify those rules.
 - #1784 (per-ticker parameters), on main.
@@ -268,42 +239,35 @@ The NEXT LEVELS Calls and Puts lines are unchanged, and a last line is added:
 
 1. Reach out to 2 x ATR (seed) or 3? The studies ran to 3; past 2 x ATR levels were reached on 1% of
    sessions or fewer. Each is one policy row to change.
-2. Should ATR rungs later be allowed to trigger? Not in this spec (Non-goals).
+2. Should ATR rungs ever trigger or become targets? Not in this spec: as targets they earned no more R.
 
 ## Expected effect
 
-Every brief with an ATR shows the kept ATR levels from the prior day's high and low and the premarket's
-high and low, above and below each, labelled with their anchor and multiple and marked stretch from
-1.5 x ATR, with no two shown levels closer than the ticker's spacing. Plan targets change on ticker-days
-where a kept rung is nearer than the next spaced structural level or the structural levels run out;
-done_when counts them. Triggers, stops, the NEXT LEVELS ladder, signal-monitor fires and the movement
-statement's rungs do not change. The insight report's plan levels read the new targets through
-level_basis.
+Every brief with an ATR shows one more NEXT LEVELS line: the kept ATR levels from the prior day's high and
+low and the premarket's high and low, above and below each, labelled with their anchor and multiple and
+marked stretch from 1.5 x ATR, with no two shown levels closer than the ticker's spacing. Nothing else in
+the brief, the plan, the resolver, the signal monitor, the movement statement or the insight report
+changes.
 
 ## Capacity and cost
 
 - **Volume:** four more policy rows; three more `ticker_level_params` rows per calibrated ticker per
   effective date (the history run writes about 2,980 per ticker per key); up to 32 rungs, kept and
-  dropped, per session in level_basis. No new column: the exits spec's plan target columns hold the
-  targets.
+  dropped, per session in level_basis. No new column.
 - **Velocity:** no new query; the rows ride the one `load_level_params` query per run.
 - **Wall-clock:** a walk over a few dozen prices per side per session.
 - **Cost:** $0; no new job, schedule or resource.
 
 ## Source identity and close-out
 
-`lib/`, `gcp/` and `tests/` are inside SITE's watched scope. DASHBOARD-01 (the brief), DASHBOARD-21 (the
-movement statement, whose reach-rate population restarts at the new rule version while its rungs stay),
-INSIGHTS-07 and INSIGHTS-08 (the report's plan and key levels from level_basis) show or read the changed
-levels. Only the `(FEAT-STRAT-001, <component>)` rows of the Implementation-source notes table for those
-four may describe this implementation, as backend source and local tests only. Every other SITE byte
-stays unchanged.
+`lib/`, `gcp/` and `tests/` are inside SITE's watched scope. DASHBOARD-01 (the brief) shows the new line.
+Only the `(FEAT-STRAT-001, DASHBOARD-01)` row of the Implementation-source notes table may describe this
+implementation, as backend source and local tests only. Every other SITE byte stays unchanged.
 
 After the merge, separately and never as a pre-merge box: apply the policy rows, run the history mode for
 the three seeded keys, verify main's source and body identity in a fresh clone, complete the DOC main and
-staging close-out with real evidence (a live brief showing the ATR line and labelled targets), retire
-the sidecar as the product-delivery skill prescribes, and set the plan to `status: done` on a `docs/`
-branch.
+staging close-out with real evidence (a live brief showing the ATR line), retire the sidecar as the
+product-delivery skill prescribes, and set the plan to `status: done` on a `docs/` branch.
 
 ## Risks
 
@@ -312,8 +276,7 @@ branch.
   measures it on the brief, against the base and against the prior-close build.
 - **Premarket anchors move.** The premarket high and low change with each snapshot until 09:30, so their
   rungs do too; the brief prints the snapshot it was built from, as it already does for the trigger.
-- **Nearer plan targets.** Rungs can pull T1 closer than the exits spec's targets; done_when (d) and (e)
-  show the change in reach and plan R before anything ships.
-- **Reach-rate history restarts** for the movement statement under the new rule version.
+- **More to read.** The line adds up to a handful of prices per side; thinning keeps them at least the
+  ticker's spacing apart.
 - **Order of delivery.** This spec waits on the exits spec's implementation; if that changes before it
   lands, this spec is revised, not stretched.
