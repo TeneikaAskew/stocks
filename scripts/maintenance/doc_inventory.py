@@ -26,7 +26,7 @@ Usage
 -----
     python -m scripts.maintenance.doc_inventory --json                 # repo only
     python -m scripts.maintenance.doc_inventory --live --json          # repo + live + reconcile
-    python -m scripts.maintenance.doc_inventory --live --write-snapshot refresh-inputs/live.json
+    python -m scripts.maintenance.doc_inventory --live --write-snapshot live.json
     python -m scripts.maintenance.doc_inventory --snapshot live.json --markdown jobs
     python -m scripts.maintenance.doc_inventory --markdown tables
 
@@ -3683,8 +3683,8 @@ def db_tables_snapshot() -> dict[str, dict[str, Any]]:
     """Live relations with row estimates and sizes, via gcp.database.get_engine().
 
     Needs the Cloud SQL env (CLOUD_SQL_CONNECTION_NAME, DB_USER, DB_PASS, DB_NAME),
-    which CI already injects for the calibration step. From a
-    sandbox without port 5432, run the same SQL through scripts/db_query_cr.sh
+    which the calibration renderer reads when a person runs it with them set.
+    From a sandbox without port 5432, run the same SQL through scripts/db_query_cr.sh
     and pass the CSV with --db-tables instead.
     """
     from sqlalchemy import text  # local import: optional dependency
@@ -4398,8 +4398,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--insert", nargs="*", help="rewrite marker blocks in these docs")
     ap.add_argument("--restore", nargs="*", help="rewrite only the marker blocks that differ from a fresh render, and name each one")
     ap.add_argument("--readme-badges", metavar="README",
-                    help="rewrite README's badge block from the inventory (date, counts, "
-                         "workflow badge). The badges are inventory in a picture; run 32's "
+                    help="rewrite README's badge block from the inventory (date, counts). "
+                         "The badges are inventory in a picture; run 32's "
                          "model rewrote them and invented a workflow filename.")
     args = ap.parse_args(argv)
 

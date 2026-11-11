@@ -62,12 +62,13 @@ COST = f"{INFRA}/05-d-COST_ANALYSIS.md"
 API = f"{INFRA}/05-e-API.md"
 
 README = "README.md"
-# Every document these gates judge. The cost report is not one: it is a
-# hand-maintained document, so no gate here reads it.
+# Every document these gates judge. The cost report is not one: it is a dated
+# record nobody maintains, so no gate here reads it.
 DOCS = (ARCH, DEPS, README)
-# ...of which these two are written by a model. README is not: its closing date
-# is rendered from the inventory and its prose is hand-written, so a model edit
-# to it is a stray write rather than the point of the run. (Run 32.)
+# ...of which these two carry rendered marker blocks around hand-maintained
+# prose (the prose has been hand-maintained since #1009). README is not one of
+# them: its closing date is rendered from the inventory and its prose is
+# hand-written. (Run 32.)
 MODEL_DOCS = (ARCH, DEPS)
 MARKER_DOCS = (ARCH, DEPS, API)
 # Every block each document must carry. A balanced-pairs check alone lets a

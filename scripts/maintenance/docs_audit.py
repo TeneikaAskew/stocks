@@ -6780,7 +6780,7 @@ def region_text(body: str, name: str) -> str | None:
 
 
 def check_best_effort_artifacts(today: str, artifacts: list[dict] | None = None) -> list[dict]:
-    """Freshness for the documents whose refresh step cannot fail the run.
+    """Freshness for the generated documents that nothing re-renders on a schedule.
 
     Needs no network, so it runs even under `--issues-snapshot`: the question
     is what the artifact says about itself, not what GitHub says about the job.
@@ -6838,8 +6838,8 @@ def check_best_effort_artifacts(today: str, artifacts: list[dict] | None = None)
             findings.append({"check": "class-a", "doc": art["doc"], "severity": "P2",
                              "detail": f"`{art['region']}` is dated {newest}, {age}d old and past "
                                        f"the {art['max_age_days']}d the renderer itself calls "
-                                       f"stale, so {art['refresher']} has not re-rendered it -- "
-                                       "it is refreshed by hand, so run it again"})
+                                       f"stale; re-run `{art['refresher']}`, and if the date "
+                                       "does not move, `ticker_calibration` has no newer row"})
     return findings
 
 

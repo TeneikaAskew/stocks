@@ -8320,4 +8320,7 @@ def test_the_calibration_staleness_finding_names_the_manual_command(audit_repo):
     assert [(f["check"], f["severity"]) for f in found[181]] == [("class-a", "P2")]
     detail = found[181][0]["detail"]
     assert "python -m scripts.refresh_calibration_table" in detail
+    # Re-rendering does not move the date: it is the latest calibration_date in
+    # the database, so the operator is told what to check when it does not move.
+    assert "ticker_calibration" in detail and "run it again" not in detail
     assert "workflow" not in detail.lower() and ".yml" not in detail and "refresh PR" not in detail

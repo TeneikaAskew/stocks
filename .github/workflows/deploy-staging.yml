@@ -43,7 +43,8 @@ name: Deploy staging
 #   * DB_USER / DB_PASS / DB_NAME / CLOUD_SQL_CONNECTION_NAME — the same
 #     GitHub secrets refresh-architecture-docs.yml.disabled used. The schema
 #     step connects from the runner via the Cloud SQL Python Connector, the
-#     exact path scripts.refresh_calibration_table already takes in CI.
+#     path scripts.refresh_calibration_table takes when a person runs it
+#     with the same variables set.
 #   * Firebase web config + access policy (FIREBASE_API_KEY / AUTH_DOMAIN /
 #     APP_ID / PROJECT_ID, AUTH_OPEN_SIGNUP, AUTH_ALLOWED_EMAILS,
 #     ADMIN_EMAIL) — read off the LIVE service before deploying, because
