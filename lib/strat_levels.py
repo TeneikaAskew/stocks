@@ -14,6 +14,7 @@ Dependencies:
   - lib/indicators.py (calculate_historical_levels for Prev_* columns)
 """
 
+from lib import eastern_time
 from lib.eastern_time import ET_NAME, session_count
 import pandas as pd
 import numpy as np
@@ -1973,28 +1974,24 @@ def daily_data_freshness(
     against it are withheld on the same days (Codex P2 on #1030, round 6).
 
     Returns (is_stale, gap_days, status). gap_days is the calendar-day gap;
-    None input maps to -1 / 'unknown'. Fresh when the gap is <= 1 day, or on
-    the two weekend bridges where Friday's bar IS the market's most recent
-    close: a Monday session reading Friday (gap 3) and a Sunday weekly brief
-    reading Friday (gap 2). Anything else, including a Monday reading
-    Thursday (gap 4) and a Tuesday after a Monday holiday (gap 4), is
-    'STALE_DAILY_DATA': the deliberate bias is toward over-flagging on
-    holiday weeks, because under-flagging republished a frozen 2026-04-27 bar
-    four mornings running (Track B audit G.P0.4). Pure; no calendar library,
-    so it behaves identically in the API image, which does not ship
-    pandas-market-calendars.
+    None input maps to -1 / 'unknown'. Fresh when the gap is <= 1 day, or when
+    the last bar is on or after the last NYSE session strictly before
+    `analysis_date` (lib.eastern_time.previous_session): the market's most
+    recent close. That covers the weekend bridges (a Monday or a Sunday weekly
+    brief reading Friday) and every session after an NYSE holiday (the Tuesday
+    after Memorial Day reading Friday, the Friday after Thanksgiving reading
+    Wednesday). A frame missing a session, such as a Monday reading Thursday,
+    is 'STALE_DAILY_DATA' (under-flagging republished a frozen 2026-04-27 bar
+    four mornings running, Track B audit G.P0.4). The calendar is read only
+    when the gap is two days or more, and a calendar failure raises (Rule 3.7)
+    instead of answering fresh or stale (FEAT-DATA-001, 2026-11-11 spec).
     """
     if last_bar_date is None:
         return False, -1, 'unknown'
     gap = (analysis_date - last_bar_date).days
     if gap <= 1:
         return False, gap, 'fresh'
-    weekday = analysis_date.weekday()
-    weekend_exempt = (
-        (weekday == 0 and gap == 3)     # Monday → Friday
-        or (weekday == 6 and gap == 2)  # Sunday weekly brief → Friday
-    )
-    if weekend_exempt:
+    if last_bar_date >= eastern_time.previous_session(analysis_date):
         return False, gap, 'fresh'
     return True, gap, 'STALE_DAILY_DATA'
 

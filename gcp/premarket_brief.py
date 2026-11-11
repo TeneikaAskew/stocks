@@ -1182,7 +1182,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         if is_stale:
             logger.warning(
                 "[brief:%s] STALE_DAILY_DATA — last bar %s, analysis_date %s, "
-                "gap=%d session(s); skipping per-ticker analysis to avoid "
+                "gap=%d calendar day(s); skipping per-ticker analysis to avoid "
                 "republishing stale signals. See Track B audit G.P0.4.",
                 ticker, last_bar_date_obj, analysis_date, gap_days,
             )
@@ -1876,23 +1876,25 @@ def _resolve_data_freshness(
       * ``gap_days``     — calendar-day gap between ``last_bar_date``
                            and ``analysis_date``. None-input maps to
                            sentinel ``-1`` (status='unknown').
-      * ``is_stale``     — True if the gap > 1 calendar day AND the
-                           weekend-exemption doesn't apply. The
-                           weekend exemption: a Monday brief that
-                           reads Friday's bar (gap=3) is fresh, NOT
-                           stale. Implemented as
-                           ``analysis_date.weekday() == 0 and gap == 3``.
-                           Tuesday-after-holiday-Monday with gap=4
-                           still flags as stale; that's a deliberate
-                           bias toward false-positives on holiday
-                           weeks (overflagging is recoverable; under-
-                           flagging is the audit's failure mode).
+      * ``is_stale``     — True when the gap is over one calendar
+                           day AND the last bar is older than the last
+                           NYSE session before ``analysis_date``
+                           (``lib.eastern_time.previous_session``). So a
+                           Monday reading Friday, a Sunday weekly brief
+                           reading Friday and every session after an
+                           NYSE holiday (the Tuesday after Memorial Day
+                           reading Friday, the Friday after Thanksgiving
+                           reading Wednesday) are fresh, while a frame
+                           missing a session is stale. Until the
+                           2026-11-11 FEAT-DATA-001 spec this counted
+                           calendar days and skipped every post-holiday
+                           session.
       * ``status``       — string written to
                            ``premarket_analysis.data_freshness_status``:
                              'fresh' | 'STALE_DAILY_DATA' | 'unknown'.
 
-    Pure function for unit-testability — does not touch globals or
-    DataFrames. The caller (``generate_premarket_brief``) handles
+    Reads only the process-wide NYSE session cache (and only for a gap
+    of two days or more); a calendar failure raises. The caller (``generate_premarket_brief``) handles
     resolving ``last_bar_date`` from ``df.iloc[-1].name`` and
     propagating the verdict into the per-ticker dict.
     """

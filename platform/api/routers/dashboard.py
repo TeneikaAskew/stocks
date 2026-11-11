@@ -488,7 +488,8 @@ def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = 
         # close (Codex P2 on #1030, rounds 5 and 6). The rule is the premarket
         # brief's own (lib.strat_levels.daily_data_freshness): the playbook row
         # this ladder is matched against is withheld on exactly the days this
-        # refuses, weekend bridges exempt, holiday Tuesdays deliberately not.
+        # refuses: a last bar older than the previous NYSE session, so weekend
+        # bridges and post-holiday sessions are fresh (FEAT-DATA-001).
         last_bar = pd.Timestamp(ts_col.loc[df.index[-1]]).normalize().date()
         is_stale, gap_days, status = daily_data_freshness(last_bar, session)
         if is_stale:
