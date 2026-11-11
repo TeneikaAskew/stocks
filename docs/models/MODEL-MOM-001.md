@@ -1,6 +1,6 @@
 # MODEL-MOM-001 — Momentum strategy
 
-**Last reviewed:** unknown · **Last scanned:** 2026-10-20 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-11-03 · **Owner:** TBD
 
 **Code:** `lib/strategies/momentum.py` (260 lines), thresholds in
 `lib/strategies/config.py` ·

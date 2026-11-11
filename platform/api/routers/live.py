@@ -5,17 +5,32 @@ GET /api/live/history/{ticker} - Alpha Vantage TIME_SERIES_INTRADAY 1min (last 1
 GET /api/live/avg-volume/{ticker} - 20-day average daily volume (for RVOL denominator)
 GET /api/live/status - market open/closed status based on Eastern Time
 """
+import asyncio
+import copy
+import hashlib
+import re
+import threading
+import time as monotonic_time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
+from cachetools import TTLCache
+from lib.single_flight import SingleFlight
+from lib.opening_window import MAX_BYTES, MAX_COMPARISON_AGE, OpeningUnavailable, parse_acquisition, session_for
+from api.threadsafe_cache import ThreadSafeCache
+
 import logging
 import math
 import os
 import sys
-from datetime import datetime, time, date
+from datetime import datetime, time
 from pathlib import Path
 from typing import Optional
 
 import httpx
 import pandas as pd
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
+from api import auth
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
@@ -31,7 +46,7 @@ except Exception:
     _CLOUD_SQL = False
     query_to_dataframe = None  # type: ignore[assignment]
 
-from lib.eastern_time import ET
+from lib.eastern_time import ET, eastern_now, is_session, next_session, session_close
 
 # Canonical indicator implementations — single source of truth.
 from lib.indicators import (
@@ -101,80 +116,63 @@ AV_BASE = "https://www.alphavantage.co/query"
 
 ET_TZ = ET
 
-# Regular market hours in Eastern Time
+# Regular market hours in Eastern Time. MARKET_CLOSE is the close of a full
+# session; a half day closes earlier, so the status functions below read each
+# day's real close from the shared NYSE calendar (session_close) instead.
 MARKET_OPEN = time(9, 30, 0)
 MARKET_CLOSE = time(16, 0, 0)
-
-# US market holidays (add more as needed)
-MARKET_HOLIDAYS_2026 = {
-    date(2026, 1, 1),   # New Year's Day
-    date(2026, 1, 19),  # MLK Day
-    date(2026, 2, 16),  # Presidents' Day
-    date(2026, 4, 3),   # Good Friday
-    date(2026, 5, 25),  # Memorial Day
-    date(2026, 7, 3),   # Independence Day (observed)
-    date(2026, 9, 7),   # Labor Day
-    date(2026, 11, 26), # Thanksgiving
-    date(2026, 11, 27), # Black Friday (early close, treated as closed)
-    date(2026, 12, 25), # Christmas
-}
+PRE_MARKET_OPEN = time(4, 0, 0)
+AFTER_HOURS_CLOSE = time(20, 0, 0)
 
 
 def _is_market_open(now_et: datetime) -> tuple[bool, str]:
-    """Return (is_open, session) for the given Eastern Time datetime."""
+    """Return (is_open, session) for the given Eastern Time datetime.
+
+    Holidays and half days come from the shared NYSE calendar
+    (``lib.eastern_time``, FEAT-DATA-001), any year: a day that is not a
+    session is ``"closed"`` all day, and the regular session ends at that
+    day's real close (13:00 ET on a half day), when after-hours begins. A
+    calendar failure raises; there is no weekday-only fallback (CLAUDE.md 3.7).
+    """
     today = now_et.date()
+    if not is_session(today):
+        return False, "closed"
+
     current_time = now_et.time()
+    close = session_close(today).astimezone(ET_TZ).time()
 
-    # Weekends
-    if today.weekday() >= 5:
-        return False, "closed"
-
-    # Holidays
-    if today in MARKET_HOLIDAYS_2026:
-        return False, "closed"
-
-    # Regular session
-    if MARKET_OPEN <= current_time < MARKET_CLOSE:
+    if MARKET_OPEN <= current_time < close:
         return True, "regular"
-
-    # Pre-market: 4:00 AM - 9:30 AM ET
-    if time(4, 0, 0) <= current_time < MARKET_OPEN:
+    if PRE_MARKET_OPEN <= current_time < MARKET_OPEN:
         return False, "pre-market"
-
-    # After-hours: 4:00 PM - 8:00 PM ET
-    if MARKET_CLOSE <= current_time < time(20, 0, 0):
+    if close <= current_time < AFTER_HOURS_CLOSE:
         return False, "after-hours"
-
     return False, "closed"
 
 
 def _next_open_et(now_et: datetime) -> str | None:
-    """Return the next market open as ISO string, or None if market is currently open."""
+    """Return the next market open as a naive ET ``YYYY-MM-DD HH:MM:SS``
+    string, or None when the market is open now.
+
+    Today at 09:30 when today is a session and it is not yet 09:30, otherwise
+    the next NYSE session at 09:30.
+    """
     is_open, _ = _is_market_open(now_et)
     if is_open:
         return None
 
-    # Walk forward day by day until we find a trading day
-    check = now_et.date()
-    # If today after close, start from tomorrow
-    if now_et.time() >= MARKET_CLOSE and check.weekday() < 5:
-        import datetime as dt
-        check = check + dt.timedelta(days=1)
-
-    import datetime as dt
-    for _ in range(10):
-        if check.weekday() < 5 and check not in MARKET_HOLIDAYS_2026:
-            next_open = datetime.combine(check, MARKET_OPEN)
-            return next_open.strftime("%Y-%m-%d %H:%M:%S")
-        check = check + dt.timedelta(days=1)
-
-    return None
+    today = now_et.date()
+    if is_session(today) and now_et.time() < MARKET_OPEN:
+        day = today
+    else:
+        day = next_session(today)
+    return datetime.combine(day, MARKET_OPEN).strftime("%Y-%m-%d %H:%M:%S")
 
 
 @router.get("/api/live/status", response_model=LiveStatusResponse, response_model_exclude_unset=True)
 def get_market_status():
     """Return current market open/closed status based on Eastern Time."""
-    now_et = datetime.now(ET_TZ)
+    now_et = eastern_now()
     is_open, session = _is_market_open(now_et)
     next_open = _next_open_et(now_et)
 
@@ -312,15 +310,155 @@ async def get_live_quote(ticker: str):
     }
 
 
+# Opt-in full acquisitions are bounded separately; compact callers are unchanged.
+_OPENING_CACHE = ThreadSafeCache(TTLCache(maxsize=8, ttl=60))
+_OPENING_FLIGHT = SingleFlight()
+_OPENING_SLOTS = threading.BoundedSemaphore(2)
+# Admission before submit bounds both executor work and retained payloads to two.
+_OPENING_PARSERS = ThreadPoolExecutor(max_workers=2, thread_name_prefix="opening-parser")
+_OPENING_RATE_LOCK = threading.Lock()
+_OPENING_ATTEMPTS = deque()
+
+def _opening_dispatch_allowed(principal):
+    clock = monotonic_time.monotonic()
+    # Store fixed-size principal keys only in the existing <=8 attempt records;
+    # rejected identities cannot grow a second map or evict spent allowance.
+    principal_key = hashlib.sha256(principal.encode("utf-8")).digest()
+    with _OPENING_RATE_LOCK:
+        while _OPENING_ATTEMPTS and clock - _OPENING_ATTEMPTS[0][0] >= 60:
+            _OPENING_ATTEMPTS.popleft()
+        if len(_OPENING_ATTEMPTS) >= 8 or sum(key == principal_key for _, key in _OPENING_ATTEMPTS) >= 4:
+            return False
+        _OPENING_ATTEMPTS.append((clock, principal_key)) # every dispatch, including failures
+        return True
+
+def _opening_absent(ticker, reason, now):
+    return {"ticker": ticker, "interval": "1min", "count": 0,
+            "market_session": "unavailable", "market_open": False, "bars": [],
+            "opening": {"status": "unavailable", "reason": reason, "ticker": ticker,
+                        "fetched_at": now.isoformat()}}
+
+def _opening_cached(key, now):
+    value = _OPENING_CACHE.get(key)
+    if value is None:
+        return None
+    age = (now - datetime.fromisoformat(value["opening"]["comparison_as_of"])).total_seconds()
+    if not 0 <= age <= MAX_COMPARISON_AGE:
+        return None
+    result = copy.deepcopy(value)
+    result["opening"]["comparison_age_seconds"] = age
+    return result
+
+async def _get_opening_history(ticker, now, *, principal):
+    if not isinstance(principal, str) or not principal:
+        raise HTTPException(status_code=401, detail="Verified ORB identity is required")
+    if not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,9}", ticker):
+        raise HTTPException(status_code=422, detail="Invalid ticker")
+    # Calendar CPU work is bounded to a single date and uses an eight-day cache.
+    try:
+        session = await run_in_threadpool(session_for, now)
+    except OpeningUnavailable as exc:
+        return _opening_absent(ticker, str(exc), now)
+    if session is None:
+        return _opening_absent(ticker, "no_session", now)
+    if now < session["open"] + timedelta(minutes=30):
+        return _opening_absent(ticker, "opening_in_progress", now)
+    key = (ticker, session["label"], 30, "as_traded_requested", "v1")
+    cached = _opening_cached(key, now)
+    if cached is not None:
+        return cached
+    claim = _OPENING_FLIGHT.claim(str(key))
+    mine = claim.__enter__()
+    owns_slot = False
+    transferred = False
+    # Capture the concrete owners: a worker completion may run after the caller
+    # or its event loop has gone away. No loop callback owns resource release.
+    slots = _OPENING_SLOTS
+    completion_lock = threading.Lock()
+    completion = {"worker": False, "request": False, "released": False}
+    def finish(owner):
+        # Both owners must finish: normal requests publish cache first; expired
+        # requests return immediately but cannot release a still-running worker.
+        with completion_lock:
+            completion[owner] = True
+            release = completion["worker"] and completion["request"] and not completion["released"]
+            if release:
+                completion["released"] = True
+        if release:
+            try:
+                claim.__exit__(None, None, None)
+            finally:
+                slots.release()
+    try:
+        if not mine:
+            return _opening_absent(ticker, "acquisition_in_progress", now)
+        cached = _opening_cached(key, now)
+        if cached is not None:
+            return cached
+        owns_slot = slots.acquire(blocking=False)
+        if not owns_slot:
+            return _opening_absent(ticker, "capacity_unavailable", now)
+        if not _opening_dispatch_allowed(principal):
+            return _opening_absent(ticker, "request_budget_unavailable", now)
+        params = {"function": "TIME_SERIES_INTRADAY", "symbol": ticker,
+                  "interval": "1min", "outputsize": "full", "adjusted": "false",
+                  "entitlement": "realtime", "apikey": AV_API_KEY}
+        async with asyncio.timeout(15):
+            async with httpx.AsyncClient(timeout=15.0, headers={"Accept-Encoding": "identity"}) as client:
+                async with client.stream("GET", AV_BASE, params=params) as response:
+                    response.raise_for_status()
+                    if response.headers.get("content-encoding", "identity").lower() != "identity":
+                        raise OpeningUnavailable("unsupported_content_encoding")
+                    body = bytearray()
+                    async for chunk in response.aiter_bytes(chunk_size=65536):
+                        if len(body) + len(chunk) > MAX_BYTES:
+                            raise OpeningUnavailable("body_limit")
+                        body.extend(chunk)
+            worker = _OPENING_PARSERS.submit(parse_acquisition, body, ticker, now, session)
+            transferred = True
+            worker.add_done_callback(lambda _future: finish("worker"))
+            parser = asyncio.wrap_future(worker)
+            # Observe late exceptions without caching late results or creating
+            # cleanup tasks. The concurrent future owns the claim until done,
+            # including request cancellation and event-loop shutdown.
+            parser.add_done_callback(lambda f: None if f.cancelled() else f.exception())
+            result = await asyncio.shield(parser)
+        _OPENING_CACHE[key] = result
+        return result
+    except OpeningUnavailable as exc:
+        return _opening_absent(ticker, str(exc), now)
+    except (TimeoutError, httpx.TimeoutException):
+        return _opening_absent(ticker, "acquisition_timeout", now)
+    except httpx.HTTPError:
+        return _opening_absent(ticker, "source_http_error", now)
+    finally:
+        if transferred:
+            finish("request")
+        else:
+            claim.__exit__(None, None, None)
+            if owns_slot:
+                slots.release()
+
 @router.get("/api/live/history/{ticker}", response_model=LiveHistoryResponse, response_model_exclude_unset=True)
-async def get_live_history(ticker: str):
+async def get_live_history(ticker: str, include_opening: bool = False, request: Request = None):
     """Fetch last 100 1-min bars from Alpha Vantage TIME_SERIES_INTRADAY."""
     ticker_upper = ticker.upper()
+    principal = None
+    if include_opening:
+        # Only Firebase middleware supplies an application-verified identity.
+        # Open/IAP modes do not verify a principal here; never trust their
+        # caller-supplied identity headers or create an anonymous quota bucket.
+        if auth.AUTH_MODE == "firebase" and request is not None:
+            principal = getattr(request.state, "user_email", None)
+        if not isinstance(principal, str) or not principal:
+            raise HTTPException(status_code=401, detail="Verified ORB identity is required")
 
     if not AV_API_KEY:
         raise HTTPException(status_code=503, detail="Alpha Vantage API key not configured")
 
     now_et = datetime.now(ET_TZ)
+    if include_opening:
+        return await _get_opening_history(ticker_upper, now_et, principal=principal)
     is_open, session = _is_market_open(now_et)
 
     params = {

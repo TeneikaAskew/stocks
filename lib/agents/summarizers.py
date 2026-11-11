@@ -33,6 +33,9 @@ from typing import Any, Optional, TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from lib.eastern_time import ET_NAME
+from lib.strat_levels import PREMARKET_UNFILTERED_NOTE, LevelParamsUnavailable
+
 from .embeddings import format_vector_literal
 from .schema import JournalRef
 
@@ -252,15 +255,26 @@ def summarize_market_context(
     # Replay pins that row by date, live takes the newest — which is the
     # placeholder when one exists and otherwise the same row we just
     # read, making the overlay a no-op.
-    pm_df = _query(
-        "SELECT pre_high, pre_low, pre_vwap, pre_volume, gap_pct, "
-        "       pre_range_atr "
-        "FROM market_data_daily "
-        "WHERE ticker = :ticker "
-        + ("AND date = :as_of " if as_of else "")
-        + "ORDER BY date DESC LIMIT 1",
-        params,
-    )
+    # pre_filter_status (FEAT-STRAT-001 per-ticker params) says whether the
+    # snapshot's prints were filtered with the ticker's calibrated
+    # thresholds. `_query` returns empty on any error, including a table
+    # without the column, so an empty answer is asked again without it and
+    # the snapshot is then labelled unfiltered (its status is unknown).
+    def _overlay(cols):
+        return _query(
+            f"SELECT {cols} "
+            "FROM market_data_daily "
+            "WHERE ticker = :ticker "
+            + ("AND date = :as_of " if as_of else "")
+            + "ORDER BY date DESC LIMIT 1",
+            params,
+        )
+
+    pm_cols = "pre_high, pre_low, pre_vwap, pre_volume, gap_pct, pre_range_atr"
+    pm_df = _overlay(pm_cols + ", pre_filter_status")
+    if pm_df.empty:
+        pm_df = _overlay(pm_cols)
+    pre_filter_status = None
     if not pm_df.empty:
         pm_row = pm_df.iloc[0]
         row = row.copy()
@@ -270,6 +284,8 @@ def summarize_market_context(
         ):
             if col in pm_row.index:
                 row[col] = pm_row[col]
+        status = pm_row.get("pre_filter_status") if "pre_filter_status" in pm_row.index else None
+        pre_filter_status = status if isinstance(status, str) else None
 
     close = _scalar(row, "close", digits=2)
     ema_20 = _scalar(row, "ema_20", digits=2)
@@ -341,7 +357,14 @@ def summarize_market_context(
                 else "normal" if pre_range_atr > 0.2
                 else "tight"
             )
+        # A snapshot whose prints were not filtered with the ticker's own
+        # thresholds is labelled so: its pre_high and pre_low may carry the
+        # bad prints the filter drops, and the level builder refuses it.
+        filtered = pre_filter_status == "ok"
         premarket_block = {
+            "filtered": filtered,
+            "pre_filter_status": pre_filter_status,
+            **({} if filtered else {"note": PREMARKET_UNFILTERED_NOTE}),
             "pre_high": pre_high,
             "pre_low": pre_low,
             "pre_vwap": _scalar(row, "pre_vwap", digits=2),
@@ -382,6 +405,42 @@ def summarize_market_context(
 # ---------------------------------------------------------------------------
 
 
+_STRAT_CLOCK_KEYS = ("rule_version", "observation_ts", "data_as_of", "session",
+                     "clock_policy", "aggregation_policy", "price_adjustment",
+                     "source_acquired_at", "source_acquisition_status")
+_COVERAGE_KEYS = ("period_start", "period_end", "completed", "partial",
+                  "coverage_complete", "available", "source_cutoff", "reasons")
+
+
+def _strat_foundation(status: dict) -> dict:
+    """Compact clock, completion, qualification and confirmation facts.
+
+    Carried on both the available and unavailable paths so consumers can
+    tell a confirmed closed-candle setup from a developing or unknown one.
+    """
+    from lib.strat import finite_snapshot
+
+    out = {key: status.get(key) for key in _STRAT_CLOCK_KEYS if status.get(key) is not None}
+    coverage = status.get("coverage") or {}
+    if coverage:
+        out["coverage"] = {tf: {key: record.get(key) for key in _COVERAGE_KEYS}
+                           for tf, record in coverage.items()}
+    if status.get("bar_validity"):
+        out["bar_validity"] = status["bar_validity"]
+    confirmed = status.get("confirmed_setups") or {}
+    if confirmed:
+        out["confirmed_setups"] = {
+            "rule_version": confirmed.get("rule_version"),
+            "observation_ts": confirmed.get("observation_ts"),
+            "confirmed": list(confirmed.get("confirmed") or []),
+            "timeframes": {
+                tf: {key: result.get(key) for key in
+                     ("state", "candle", "combo", "setup", "period_end", "reasons", "developing")}
+                for tf, result in (confirmed.get("timeframes") or {}).items()},
+        }
+    return finite_snapshot(out)
+
+
 def summarize_strat_status(
     ticker: str, as_of: Optional[date_type] = None,
     inclusive_today: bool = True,
@@ -393,11 +452,8 @@ def summarize_strat_status(
     triplet that gets posted to Discord. No more reading stale NULL
     columns from market_data_daily.
 
-    Also surfaces the multi-timeframe level map (PDH/PDL/PWH/PWL/PMH/PML/
-    PQH/PQL/PYH/PYL) and the mother-bar walk-back ``effective_pdh`` /
-    ``effective_pdl`` for inside-of-inside compressions. The deterministic
-    trade planner uses these to walk the level hierarchy on gap days
-    instead of always anchoring entry at PDH/PDL.
+    Levels are not part of this section: summarize_session_levels carries
+    the session's SessionLevels (FEAT-STRAT-001).
 
     ``inclusive_today`` forwards to compute_strat_status — see its
     docstring. Default True for backwards-compat; the insight pipeline
@@ -407,8 +463,14 @@ def summarize_strat_status(
 
     status = compute_strat_status(ticker, as_of=as_of,
                                   inclusive_today=inclusive_today)
-    if not status.get("available"):
-        return _unavailable(status.get("reason") or f"strat unavailable for {ticker}")
+    foundation = _strat_foundation(status)
+    if not status.get("available") or status.get("last_candle") in (None, "X"):
+        # FEAT-STRAT-001: unavailable stays unavailable with its clock and
+        # reasons; never an inside bar or a neutral score.
+        reason = (status.get("reason") if not status.get("available")
+                  else "unavailable_classification")
+        return {**_unavailable(reason or f"strat unavailable for {ticker}"),
+                "last_candle": "X", **foundation}
 
     # StratSnapshot in schema.py rounds scores to 2 dp.
     score = status.get("ftfc_score")
@@ -427,129 +489,159 @@ def summarize_strat_status(
         "ftfc_direction": status.get("ftfc_direction") or "mixed",
         "trigger_high": round(float(th), 2) if th is not None else None,
         "trigger_low": round(float(tl), 2) if tl is not None else None,
+        **foundation,
     }
 
-    # Multi-timeframe level map. Built from the same daily history
-    # `compute_strat_status` already trimmed to the as_of cutoff (so
-    # historical replays don't see future bars). Computed best-effort —
-    # if the level builder errors on this ticker the strat dict still
-    # returns; the planner falls back to single-level PDH/PDL behaviour.
-    try:
-        from lib.data_loader import DataLoader
-        from lib.strat_levels import compute_previous_levels
-        loader = DataLoader()
-        df = loader.load_daily(ticker)
-        if df is not None and not df.empty:
-            # Apply the same as_of cutoff lib.strat.compute_strat_status
-            # uses, with the same tz normalization to avoid the leak
-            # patched in PR #135.
-            if as_of is not None:
-                import pandas as _pd
-                cutoff = _pd.Timestamp(as_of)
-                if cutoff.tz is not None:
-                    cutoff = cutoff.tz_convert('UTC').tz_localize(None)
-                if isinstance(df.index, _pd.DatetimeIndex) and df.index.tz is not None:
-                    df = df.copy()
-                    df.index = df.index.tz_localize(None)
-                # Match the cutoff semantic used inside compute_strat_status:
-                #   inclusive_today=True  → df.index <= cutoff (backtest contract)
-                #   inclusive_today=False → df.index < midnight-of-cutoff-date
-                #                          (premarket contract — exclude entire as_of date)
-                if inclusive_today:
-                    df = df[df.index <= cutoff]
-                else:
-                    df = df[df.index < cutoff.normalize()]
-            # PR #400 fix applied to this code path: pass analysis_date so
-            # compute_previous_levels uses period-filter semantics ("the
-            # period BEFORE the period containing analysis_date") instead
-            # of the legacy iloc[-2] fallback that assumes df's last row
-            # is today's in-progress bar. Without this, the bundle showed
-            # 5/4's H/L as PDH/PDL on a 2026-05-06 replay because the df
-            # had already been pre-filtered to exclude 5/6 — iloc[-2]
-            # then picked 5/4 instead of 5/5. PR #400 fixed this for the
-            # brief + playbook_resolver; this code path was missed.
-            analysis_date_for_levels = None
-            if as_of is not None:
-                import pandas as _pd
-                _ts = _pd.Timestamp(as_of)
-                if _ts.tz is not None:
-                    _ts = _ts.tz_convert('UTC').tz_localize(None)
-                analysis_date_for_levels = _ts.date()
-            level_map = compute_previous_levels(
-                df, analysis_date=analysis_date_for_levels
-            )
-            level_dict: dict[str, float] = {}
-            for name in ("PDH", "PDL", "PWH", "PWL", "PMH", "PML",
-                         "PQH", "PQL", "PYH", "PYL"):
-                lv = level_map.get(name)
-                if lv is not None:
-                    level_dict[name] = round(float(lv.price), 2)
-
-            # Mother-bar walk-back for inside-of-inside compressions.
-            # When the prior bar is a strat '1' (inside bar), price has
-            # been compressing within an outer "mother bar" — the real
-            # PDH/PDL trigger is the OUTER mother bar's H/L, not the
-            # inside bar's. Walk back through consecutive '1' bars to
-            # find the bar that contained them.
-            try:
-                from lib.strat import StratClassifier
-                clf = StratClassifier()
-                ohlc = df[['Open', 'High', 'Low', 'Close']]
-                labels = clf.classify_series(ohlc)
-                eff_pdh, eff_pdl = _walk_back_to_mother_bar(df, labels)
-                if eff_pdh is not None:
-                    level_dict["effective_PDH"] = round(float(eff_pdh), 2)
-                if eff_pdl is not None:
-                    level_dict["effective_PDL"] = round(float(eff_pdl), 2)
-            except Exception:
-                # Walk-back failed — planner will fall back to PDH/PDL
-                pass
-
-            if level_dict:
-                out["levels"] = level_dict
-    except Exception:
-        # Level map best-effort — never block the strat block from returning
-        pass
-
+    # Levels are not built here: the session's levels come from
+    # summarize_session_levels (lib.strat_levels.build_session_levels or the
+    # session's live level_basis), FEAT-STRAT-001.
     return out
 
 
-def _walk_back_to_mother_bar(df, labels) -> tuple[Optional[float], Optional[float]]:
-    """Walk back through consecutive inside bars to find the mother bar.
+def _session_date_for(as_of: Optional[date_type]) -> date_type:
+    """The session a run plans for: the as_of date on a replay, the ET date
+    of execution on a live run (FEAT-STRAT-001 done_when 3)."""
+    if as_of is not None:
+        import pandas as _pd
+        ts = _pd.Timestamp(as_of)
+        if ts.tz is not None:
+            ts = ts.tz_convert(ET_NAME)
+        return ts.date()
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+    return _dt.now(ZoneInfo(ET_NAME)).date()
 
-    Returns the H/L of the most recent bar BEFORE today whose range
-    contains every subsequent inside bar up through yesterday. Falls
-    back to yesterday's H/L when yesterday was a directional bar
-    (2U/2D/3) rather than a '1'.
 
-    Used by ``summarize_strat_status`` to populate ``effective_PDH`` /
-    ``effective_PDL`` so the trade planner uses the structural trigger
-    (the outer mother bar) on inside-of-inside compressions instead of
-    yesterday's tighter inside-bar range.
-    """
-    if len(df) < 2 or len(labels) < 2:
-        return None, None
-    # iloc[-1] is "today" (the as_of cutoff bar) — we don't trigger on
-    # it. iloc[-2] is yesterday — the canonical PDH source. Walk back
-    # only when yesterday is a '1' (inside) bar.
-    i = -2
-    if str(labels.iloc[i]) != '1':
-        try:
-            return float(df.iloc[i]['High']), float(df.iloc[i]['Low'])
-        except (KeyError, ValueError, TypeError):
-            return None, None
-    # Walk further back through consecutive '1' bars
-    LOOKBACK = 10  # cap so we don't walk to the start of history
-    while i - 1 >= -min(LOOKBACK, len(df)) and str(labels.iloc[i - 1]) == '1':
-        i -= 1
-    # Mother bar = the bar BEFORE the inside-bar chain started
-    mother_idx = i - 1
-    if mother_idx < -len(df):
-        return None, None
+def _session_premarket(ticker: str, session_date: date_type) -> Optional[dict]:
+    """The session's own premarket snapshot from market_data_daily (the row
+    dated session_date, written by fetch-premarket-refresh at 08:20 ET), with
+    its fetch time and excluded-print counts when the table has those
+    columns, or None. Never the newest row: a prior day's pre_* is not this
+    session's."""
+    from lib.strat_levels import read_session_premarket
+    return read_session_premarket(_query, ticker, session_date)
+
+
+def _live_level_basis(ticker: str, session_date: date_type) -> Optional[dict]:
+    """The session's level_basis from its LIVE premarket_analysis row, or
+    None (no row, a replay row only, or the column not applied yet)."""
+    from lib.strat_levels import read_live_level_basis
+    return read_live_level_basis(_query, ticker, session_date)
+
+
+def _has_no_level_param_rows(level_params) -> bool:
+    """True when the loader found no ticker_level_params row for the
+    ticker in any basis: every key is params_unavailable (a stored row never
+    carries that status)."""
+    from lib.strat_levels import PARAMS_UNAVAILABLE
+
+    params = list(level_params.params.values())
+    return bool(params) and all(p.status == PARAMS_UNAVAILABLE for p in params)
+
+
+def _calibrate_on_demand(ticker: str, session_date: date_type, level_params):
+    """Calibrate `ticker` on demand and read its parameters again; on
+    failure log and return `level_params` (params_unavailable)."""
+    from lib.level_calibration import calibrate_ticker
+    from lib.strat_levels import load_level_params
+
     try:
-        return float(df.iloc[mother_idx]['High']), float(df.iloc[mother_idx]['Low'])
-    except (KeyError, ValueError, TypeError):
-        return None, None
+        res = calibrate_ticker(ticker, session_date, query=_query_strict)
+    except Exception as exc:  # noqa: BLE001 — the explicit unavailable state stands
+        logger.warning("session_levels: on-demand calibration of %s for %s failed: %s",
+                       ticker, session_date, exc)
+        return level_params
+    if res.failed:
+        logger.warning("session_levels: on-demand calibration of %s for %s failed (run %s)",
+                       ticker, session_date, res.run_id)
+        return level_params
+    logger.info("session_levels: calibrated %s on demand for %s (%d rows, run %s)",
+                ticker, session_date, res.rows_written, res.run_id)
+    return load_level_params(_query_strict, [ticker], session_date)[ticker.upper()]
+
+
+def summarize_session_levels(
+    ticker: str, as_of: Optional[date_type] = None, *, loader=None,
+    level_params=None,
+) -> dict:
+    """The session's levels for the planner (FEAT-STRAT-001 Design 4).
+
+    Reads the session's live level_basis written by the 08:30 ET brief and
+    applies the planner's own newer premarket snapshot; only when no live
+    row exists does it build with lib.strat_levels.build_session_levels.
+    Returns {available, source, session_date, premarket_status, level_basis}.
+
+    The ticker's level parameters in force on the session are read once
+    (lib.strat_levels.load_level_params, strict reader) unless the caller
+    passes them. A stored level_basis rebuilds with the parameters it
+    recorded; the table rows are used only to build, or for a basis written
+    before parameters were recorded. LevelParamsUnavailable propagates: the
+    insight run fails with reason level_params_unavailable.
+
+    A ticker with no ticker_level_params row at all (every key
+    params_unavailable) is calibrated on demand first
+    (lib.level_calibration.calibrate_ticker, source on_demand, Design 3)
+    and its parameters read again; a ticker without enough bars then
+    carries insufficient_history. If the on-demand run fails, the ticker
+    keeps params_unavailable and the failure is logged.
+    """
+    from lib.strat_levels import (
+        SessionLevels, atr_inputs_from_frame, build_session_levels, load_level_params,
+    )
+
+    session_date = _session_date_for(as_of)
+    if level_params is None:
+        level_params = load_level_params(_query_strict, [ticker], session_date)[ticker.upper()]
+        if _has_no_level_param_rows(level_params):
+            level_params = _calibrate_on_demand(ticker, session_date, level_params)
+    premarket = _session_premarket(ticker, session_date)
+    basis = _live_level_basis(ticker, session_date)
+    if basis is not None:
+        sl = SessionLevels.from_basis(basis, params=level_params)
+        if premarket is not None:
+            sl = sl.with_premarket(premarket)
+        source = "level_basis"
+    else:
+        if loader is None:
+            from lib.data_loader import DataLoader
+            loader = DataLoader()
+        df = loader.load_daily(ticker, on_stale="warn")
+        sl = build_session_levels(ticker, session_date, df,
+                                  atr_inputs_from_frame(df, session_date), premarket,
+                                  level_params)
+        source = "builder"
+    out = {
+        "available": sl.status == "ok",
+        "source": source,
+        "session_date": session_date.isoformat(),
+        "premarket_status": sl.premarket_status,
+        "level_basis": sl.to_basis(),
+    }
+    if sl.status != "ok":
+        out["reason"] = sl.status
+    return out
+
+
+def _prior_session_atr(df, session_date: date_type) -> Optional[float]:
+    """ATR(14) of the last completed bar before session_date, or None."""
+    import pandas as _pd
+    if df is None or len(df) == 0:
+        return None
+    col = next((c for c in ("ATR14", "atr_14") if c in df.columns), None)
+    if col is None:
+        return None
+    frame = df
+    idx = frame.index
+    if isinstance(idx, _pd.DatetimeIndex):
+        naive = idx.tz_localize(None) if idx.tz is not None else idx  # tz-ok: daily session-date labels, wall date kept
+        frame = frame[naive.normalize() < _pd.Timestamp(session_date)]
+    close_col = "Close" if "Close" in frame.columns else ("close" if "close" in frame.columns else None)
+    if close_col is not None:
+        frame = frame[frame[close_col].notna()]
+    if frame.empty:
+        return None
+    v = _pd.to_numeric(frame[col].iloc[-1], errors="coerce")
+    return float(v) if v == v and v > 0 else None
 
 
 # ---------------------------------------------------------------------------
@@ -1958,6 +2050,7 @@ def build_context_bundle(
     sections = {
         "market": lambda: summarize_market_context(ticker, as_of, inclusive_today=inclusive_today),
         "strat": lambda: summarize_strat_status(ticker, as_of, inclusive_today=inclusive_today),
+        "session_levels": lambda: summarize_session_levels(ticker, as_of),
         "options": lambda: summarize_options_flow(ticker, as_of, inclusive_today=inclusive_today),
         "gamma": lambda: summarize_gamma_levels(ticker, as_of, inclusive_today=inclusive_today),
         # NOTE: `signals` (signal_alerts history) is deliberately NOT in
@@ -1994,6 +2087,11 @@ def build_context_bundle(
                 reason = result.get("reason")
                 if isinstance(reason, str) and reason:
                     failed_reasons[name] = reason
+        except LevelParamsUnavailable:
+            # INTERNAL (CLAUDE.md 3.7): the parameter tables cannot be read.
+            # Not a degraded section: the run fails with reason
+            # level_params_unavailable.
+            raise
         except Exception as e:
             logger.exception("summarizer %s failed", name)
             bundle[name] = {"available": False, "reason": f"exception: {e}"}

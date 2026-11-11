@@ -29,8 +29,10 @@ class IndicatorConfig:
     ema_periods: List[int] = field(default_factory=lambda: [9, 20, 50])
     sma_periods: List[int] = field(default_factory=lambda: [5, 10, 20, 50, 200])
     atr_period: int = 14
-    # Additional ATR windows. Schema declares `atr_20`; same reasoning.
-    atr_extra_periods: List[int] = field(default_factory=lambda: [20])
+    # Additional ATR windows. Schema declares `atr_5` and `atr_20`; same
+    # reasoning. ATR(5) is stored beside ATR(14) for the per-ticker level
+    # parameters' ATR basis (FEAT-STRAT-001, owner ruling 2026-11-07).
+    atr_extra_periods: List[int] = field(default_factory=lambda: [5, 20])
     # Annualised historical-volatility windows. Each entry N produces a
     # `volatility_{N}d` series (std of pct_change × sqrt(252)).
     volatility_periods: List[int] = field(default_factory=lambda: [5, 20])
@@ -431,6 +433,37 @@ class StratConfig:
         '4h':  0.15, '12h': 0.15,
         '1d':  0.30, '1w':  0.10,
     })
+    # FTFC in Rob Smith's sense: price above (green) or below (red) the
+    # current period's open on every timeframe (lib.strat rule
+    # price-open-v1). Display and storage only; the gates use the weighted
+    # vote above ("TF bias"). Premarket (the 08:30 ET brief) excludes 1d
+    # because today's daily period has no observed open before 09:30;
+    # in-session consumers include it. Period timeframes only.
+    continuity_timeframes_premarket: list = field(
+        default_factory=lambda: ['1q', '1mo', '1w'])
+    continuity_timeframes_session: list = field(
+        default_factory=lambda: ['1q', '1mo', '1w', '1d'])
+
+
+CONTINUITY_PERIOD_TIMEFRAMES = ('1d', '1w', '1mo', '1q', '1y')
+
+
+def validate_continuity_timeframes(name: str, raw) -> list:
+    """A non-empty, duplicate-free list of period timeframe keys, or ValueError.
+
+    Price-open continuity is built from daily sessions, so only period
+    frames are meaningful; an unknown key would make every brief show
+    FTFC unavailable without saying the configuration was wrong.
+    """
+    if not isinstance(raw, (list, tuple)) or not raw:
+        raise ValueError(f"strat.{name} must be a non-empty list of timeframes, got {raw!r}")
+    items = list(raw)
+    unknown = [tf for tf in items if tf not in CONTINUITY_PERIOD_TIMEFRAMES]
+    if unknown:
+        raise ValueError(f"strat.{name}={raw!r}: {unknown} not in {list(CONTINUITY_PERIOD_TIMEFRAMES)}")
+    if len(set(items)) != len(items):
+        raise ValueError(f"strat.{name}={raw!r} repeats a timeframe")
+    return items
 
 
 # ---------------------------------------------------------------------------
@@ -639,6 +672,11 @@ class AppConfig:
         # Strat
         if not (0.0 <= self.strat.ftfc_threshold <= 1.0):
             errors.append(f"strat.ftfc_threshold={self.strat.ftfc_threshold}, expected [0, 1]")
+        for name in ('continuity_timeframes_premarket', 'continuity_timeframes_session'):
+            try:
+                validate_continuity_timeframes(name, getattr(self.strat, name))
+            except ValueError as exc:
+                errors.append(str(exc))
 
         # Proximity multipliers — clamp to [0.1, 2.0]; outside this
         # range strongly suggests a config error (e.g. signed or %-vs-decimal).
@@ -964,6 +1002,9 @@ def load_config(config_path: str = 'alert_config.json', ticker: str = None) -> A
             app.strat.allowed_directions = dirs
         app.strat.timeframes = strat_data.get('timeframes', app.strat.timeframes)
         app.strat.ftfc_weights = strat_data.get('ftfc_weights', app.strat.ftfc_weights)
+        for name in ('continuity_timeframes_premarket', 'continuity_timeframes_session'):
+            if name in strat_data:
+                setattr(app.strat, name, validate_continuity_timeframes(name, strat_data[name]))
 
     # --- Proximity multipliers (Phase 1.5) ---
     pm_data = data.get('proximity_multipliers', {})

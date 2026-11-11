@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 """
-Fetch upcoming earnings calendar from Unusual Whales + Earnings Whispers.
+Fetch upcoming earnings calendar from AlphaVantage + Unusual Whales + Yahoo.
 
 Sources:
-  1. Unusual Whales — free upcoming earnings calendar (dates, tickers, EPS)
-  2. Earnings Whispers — options strategy picks across 9 strategies
-     (requires EW_USER / EW_PASS credentials)
+  1. AlphaVantage — EARNINGS_CALENDAR, the date-of-truth reference
+  2. Unusual Whales — free upcoming earnings calendar (dates, tickers, EPS,
+     liquidity)
+  3. Yahoo Finance — independent date cross-check via yfinance
 
-The Earnings Whispers flow mirrors the Google Apps Script in
-google-apps-script/src/04_Code.js: login with cookie/CSRF, then
-GET each /api/get* endpoint with the session cookies.
+The Earnings Whispers source was retired on 2026-10-31: this job no longer
+contacts it. Its historical earnings_calendar rows (data_source
+'earnings_whispers') are retained, and readers exclude them with
+lib.earnings_reactions.EARNINGS_NOT_RETIRED_SQL.
 
 Usage:
     python scripts/fetch_earnings_calendar.py
     python scripts/fetch_earnings_calendar.py --days 30
     python scripts/fetch_earnings_calendar.py --source all
-    python scripts/fetch_earnings_calendar.py --source ew   # Earnings Whispers only
+    python scripts/fetch_earnings_calendar.py --source av   # AlphaVantage only
 """
 
 import argparse
@@ -23,7 +25,6 @@ import json
 import logging
 import math
 import os
-import re
 import sys
 import time
 from datetime import datetime, timedelta, date
@@ -34,26 +35,6 @@ import pandas as pd
 import requests
 
 logger = logging.getLogger(__name__)
-
-# ── Earnings Whispers constants ──────────────────────────────────────────────
-
-EW_BASE = 'https://www.earningswhispers.com'
-EW_LOGIN_URL = f'{EW_BASE}/login'
-EW_REFERRER = f'{EW_BASE}/optiontrades'
-
-EW_STRATEGY_ENDPOINTS = {
-    'Long Calls':    '/api/getlongcalls',
-    'Long Puts':     '/api/getlongput',
-    'Short Puts':    '/api/getshortput',
-    'Bull Spreads':  '/api/getbullcallspread',
-    'Strangles':     '/api/getshortstrangle',
-    'Covered Calls': '/api/getcoveredcall',
-    'Straddles':     '/api/getstraddle',
-    'Short Calls':   '/api/getshortcalls',
-    'Bear Spreads':  '/api/getbearputspread',
-}
-
-EW_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 
 # ── Shared normalization ────────────────────────────────────────────────────
@@ -122,8 +103,9 @@ def _attach_av_date(df: pd.DataFrame, av_dates: dict) -> int:
     source-reported earnings_date.
 
     Adds an `av_earnings_date` column populated only for tickers that also
-    appear in the AV fetch. EW/UW keep their own dates for traceability —
-    consumers can compare the two and flag discrepancies downstream.
+    appear in the AV fetch. UW and Yahoo rows keep their own dates for
+    traceability — consumers can compare the two and flag discrepancies
+    downstream.
 
     Returns the number of rows that got an AV date attached.
     """
@@ -150,7 +132,7 @@ def fetch_alphavantage_earnings(horizon: str = '3month') -> pd.DataFrame:
     """Fetch AlphaVantage EARNINGS_CALENDAR (CSV) as the date-of-truth source.
 
     AV pulls from SEC filings so its reportDate is authoritative. We use this
-    to override EW and UW dates when they disagree. Returns a DataFrame with
+    as a comparison date alongside UW and Yahoo dates. Returns a DataFrame with
     the common earnings_calendar schema.
     """
     api_key = os.environ.get('AV_API_KEY') or os.environ.get('ALPHA_VANTAGE_API_KEY', '')
@@ -349,20 +331,29 @@ def _load_existing_options_from_db(date_keys: set) -> dict:
         return {}
     if not is_cloud_sql_configured():
         return {}
+    from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
 
     dates = sorted({d for _, d in date_keys})
-    sql = """
+    # Retired-source rows are excluded so a stored Earnings Whispers row (the
+    # keyed upsert never deletes it) cannot win the MAX and be hydrated onto
+    # the current AV/UW rows.
+    sql = f"""
         SELECT ticker, earnings_date,
                MAX(options_volume) AS options_volume,
                MAX(open_interest)  AS open_interest
         FROM earnings_calendar
         WHERE earnings_date = ANY(:dates)
           AND (options_volume IS NOT NULL OR open_interest IS NOT NULL)
+          AND {EARNINGS_NOT_RETIRED_SQL}
         GROUP BY ticker, earnings_date
     """
     try:
         df = query_to_dataframe(sql, {'dates': dates})
     except Exception as e:
+        # AUDIT-2026-05-13: silent fallback — a DB error here returns {} and
+        # reads as "no stored options"; only tickers whose rows still need
+        # options values are then eligible for an AV fetch.
+        # Behaviour unchanged by the source retirement.
         logger.warning("DB load for AV-options skip-check failed: %s", e)
         return {}
     if df.empty:
@@ -437,7 +428,7 @@ def enrich_with_av_options(df: pd.DataFrame, snapshot_date: str,
         # Overwrite every row's options_volume/open_interest with the
         # canonical (DB-stored, AV-chain-sum) value for that (ticker,
         # date). This replaces UW's per-strategy contract counts and
-        # EW's NULL placeholders with the chain-wide aggregate so every
+        # any NULL placeholder with the chain-wide aggregate so every
         # row in the DB carries the same per-(ticker, date) value.
         def _hydrate(row, key, idx):
             v = db_existing.get((row['ticker'], _to_date(row[date_col])))
@@ -510,7 +501,7 @@ def enrich_with_av_options(df: pd.DataFrame, snapshot_date: str,
         time.sleep(delay_s)
 
     # 4) Broadcast AV chain sum onto every row for the ticker —
-    #    overwrites UW per-strategy contract counts and EW NULLs.
+    #    overwrites UW per-strategy contract counts and NULLs.
     #    Only AV "error:..." responses (None, None) are left as-is so a
     #    transient rate-limit doesn't blow away an existing value.
     def _fill(row, key, idx):
@@ -527,247 +518,6 @@ def enrich_with_av_options(df: pd.DataFrame, snapshot_date: str,
                 counters['has_options'], counters['no_options'],
                 counters['error'], non_av_uw)
     return df
-
-
-# ── Earnings Whispers auth + fetch ───────────────────────────────────────────
-
-def _ew_extract_csrf(html: str) -> str:
-    """Extract CSRF token from the login page HTML (mirrors GAS EW_extractCsrf)."""
-    patterns = [
-        r'<meta\s+name=["\']?csrf-token["\']?\s+content=["\']?([^"\'\s>]+)',
-        r'<input[^>]+name=["\']?_token["\']?[^>]+value=["\']?([^"\'\s>]+)',
-        r'<input[^>]+name=["\']?__RequestVerificationToken["\']?[^>]+value=["\']?([^"\'\s>]+)',
-        r'name=["\']?_token["\']?[^>]+value=["\']?([^"\'\s>]+)',
-    ]
-    for pat in patterns:
-        m = re.search(pat, html, re.IGNORECASE)
-        if m:
-            return m.group(1)
-    return ''
-
-
-def ew_login(user: str, password: str) -> requests.Session:
-    """Authenticate to Earnings Whispers and return a requests.Session.
-
-    Mirrors the 3-step flow in google-apps-script/src/04_Code.js EW_login():
-      1. GET /login → collect cookies + CSRF token
-      2. POST /login with Email/Password → collect session cookies
-      3. Follow redirect if present → collect final cookies
-    """
-    session = requests.Session()
-    session.headers.update({'User-Agent': EW_USER_AGENT})
-
-    # Step 1: GET login page
-    r1 = session.get(EW_LOGIN_URL, allow_redirects=False, timeout=15)
-    if r1.status_code >= 400:
-        raise RuntimeError(f"EW login page returned HTTP {r1.status_code}")
-    csrf = _ew_extract_csrf(r1.text)
-    logger.info("EW login step 1: status=%d, csrf=%s", r1.status_code,
-                'found' if csrf else 'none')
-
-    # Step 2: POST credentials
-    payload = {'Email': user, 'Password': password}
-    if csrf:
-        payload['__RequestVerificationToken'] = csrf
-
-    r2 = session.post(
-        EW_LOGIN_URL,
-        data=payload,
-        allow_redirects=False,
-        timeout=15,
-        headers={
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Origin': EW_BASE,
-            'Referer': EW_LOGIN_URL,
-        },
-    )
-    logger.info("EW login step 2: status=%d", r2.status_code)
-
-    # 500 is common — EW sometimes returns 500 but the antiforgery cookie
-    # is still valid enough for the API endpoints to work.  Only fail hard
-    # on explicit auth-failure redirects.
-
-    # Step 3: follow redirect if 3xx
-    if 300 <= r2.status_code < 400:
-        loc = r2.headers.get('Location', '')
-        if loc and ('doh' in loc or 'error' in loc or 'failed' in loc):
-            raise RuntimeError(f"EW login failed, redirect to {loc}")
-        if loc:
-            redir_url = loc if loc.startswith('http') else f'{EW_BASE}{loc}'
-            r3 = session.get(redir_url, timeout=15)
-            logger.info("EW login step 3: redirect to %s, status=%d",
-                        redir_url, r3.status_code)
-
-    # Validate: check for auth-ish cookies
-    cookie_names = [c.name for c in session.cookies]
-    has_auth = any(
-        kw in name.lower()
-        for name in cookie_names
-        for kw in ('auth', 'session', 'login', 'token')
-    )
-    if not has_auth and len(cookie_names) < 2:
-        logger.warning("EW login may have failed — no auth cookies found: %s",
-                        cookie_names)
-
-    logger.info("EW login complete, %d cookies", len(cookie_names))
-    return session
-
-
-def ew_fetch_strategy(session: requests.Session, path: str) -> list[dict]:
-    """Fetch one strategy endpoint and return list of row dicts.
-
-    Mirrors GAS EW_fetchJson + EW_jsonToRows.  Returns [] on any error
-    or empty response so the caller can continue with other strategies.
-    """
-    url = f'{EW_BASE}{path}'
-    try:
-        r = session.get(url, timeout=20, headers={
-            'Accept': 'application/json, text/javascript, */*; q=0.01',
-            'X-Requested-With': 'XMLHttpRequest',
-            'Referer': EW_REFERRER,
-        })
-    except requests.RequestException as e:
-        logger.warning("EW %s request failed: %s", path, e)
-        return []
-
-    if r.status_code >= 400:
-        logger.warning("EW %s returned HTTP %d", path, r.status_code)
-        return []
-
-    text = (r.text or '').strip()
-    if not text:
-        logger.info("EW %s returned empty body", path)
-        return []
-
-    if text.startswith('<!DOCTYPE') or text.startswith('<html'):
-        logger.warning("EW %s returned HTML (auth issue or no data)", path)
-        return []
-
-    try:
-        data = r.json()
-    except ValueError:
-        logger.warning("EW %s JSON parse error, body starts: %s",
-                        path, text[:120])
-        return []
-
-    # Endpoint returned valid JSON but it could be null, empty, or unexpected
-    if data is None:
-        return []
-
-    # Normalize — same logic as GAS EW_jsonToRows
-    if isinstance(data, list):
-        return [row for row in data if isinstance(row, dict)]
-    if isinstance(data, dict):
-        if 'data' in data and isinstance(data['data'], list):
-            return [row for row in data['data'] if isinstance(row, dict)]
-        if 'rows' in data and 'headers' in data:
-            headers = data['headers']
-            return [dict(zip(headers, row)) for row in data['rows']
-                    if isinstance(row, (list, tuple))]
-        return [data]
-    return []
-
-
-def fetch_earnings_whispers(user: str = None, password: str = None) -> pd.DataFrame:
-    """Fetch all 9 EW strategy endpoints and return a unified DataFrame.
-
-    Each row represents one options trade recommendation with earnings context.
-    """
-    user = user or os.environ.get('EW_USER', '')
-    password = password or os.environ.get('EW_PASS', '')
-
-    if not user or not password:
-        logger.info("EW_USER/EW_PASS not set — skipping Earnings Whispers")
-        return pd.DataFrame()
-
-    try:
-        session = ew_login(user, password)
-    except Exception as e:
-        logger.error("EW login failed: %s", e)
-        return pd.DataFrame()
-
-    all_rows = []
-    for strategy_name, path in EW_STRATEGY_ENDPOINTS.items():
-        try:
-            rows = ew_fetch_strategy(session, path)
-            logger.info("EW %s: %d rows", strategy_name, len(rows))
-            for row in rows:
-                row['_strategy'] = strategy_name
-            all_rows.extend(rows)
-        except Exception as e:
-            logger.warning("EW %s failed: %s", strategy_name, e)
-        # Small delay between endpoints (mirrors GAS Utilities.sleep(300))
-        import time as _time
-        _time.sleep(0.3)
-
-    if not all_rows:
-        logger.warning("EW returned 0 total rows across all strategies")
-        return pd.DataFrame()
-
-    # Normalize to earnings calendar format
-    records = []
-    for row in all_rows:
-        if not isinstance(row, dict):
-            continue
-
-        # Extract earnings date — EW uses multiple field names across strategies
-        earnings_date = (
-            row.get('earningsDate') or row.get('nextEPSDate')
-            or row.get('date') or ''
-        )
-        # Some endpoints return empty string or None
-        if not earnings_date or str(earnings_date).strip() in ('', 'None', 'null'):
-            continue
-
-        # Parse date — handle YYYY-MM-DD, datetime strings, timestamps
-        try:
-            ed_str = str(earnings_date).strip()
-            if 'T' in ed_str or ' ' in ed_str:
-                ed = pd.to_datetime(ed_str, errors='coerce')
-                if pd.isna(ed):
-                    continue
-                ed = ed.date()
-            else:
-                ed = datetime.strptime(ed_str[:10], '%Y-%m-%d').date()
-        except (ValueError, TypeError, IndexError):
-            continue
-
-        ticker = row.get('ticker') or row.get('symbol') or ''
-        ticker = str(ticker).upper().strip()
-        if not ticker or len(ticker) > 10:
-            continue
-
-        records.append({
-            'date': ed.strftime('%Y-%m-%d'),
-            'ticker': ticker,
-            'company_name': str(row.get('company', '') or ''),
-            'time': normalize_earnings_time(
-                row.get('earningsTime') or row.get('releaseTime')
-            ),
-            'eps_estimate': None,
-            'market_cap': None,
-            'sector': '',
-            'has_options': True,
-            'expected_move': _safe_num(row.get('avgEPSMove')),
-            'source': 'EarningsWhispers',
-            'strategy': row.get('_strategy', ''),
-            'strike': _safe_num(row.get('strike')),
-            'expiration': str(row.get('expiration') or row.get('expDate') or ''),
-            'premium': _safe_num(row.get('premium') or row.get('lastTrade')),
-            'score': _safe_num(row.get('score')),
-            'fetched_at': datetime.now().isoformat(),
-        })
-
-    if not records:
-        logger.warning("EW: no parseable records from %d raw rows", len(all_rows))
-        return pd.DataFrame()
-
-    result = pd.DataFrame(records)
-    result = result.drop_duplicates(subset=['ticker', 'date', 'strategy'], keep='last')
-    result = result.sort_values('date').reset_index(drop=True)
-    logger.info("EW total: %d records across %d unique tickers",
-                 len(result), result['ticker'].nunique())
-    return result
 
 
 # ── Yahoo Finance (independent date source via yfinance) ────────────────────
@@ -1122,7 +872,6 @@ def persist_to_cloud_sql(df: pd.DataFrame) -> int:
     # Normalize data_source values
     source_map = {
         'UnusualWhales': 'unusual_whales',
-        'EarningsWhispers': 'earnings_whispers',
         'AlphaVantage': 'alphavantage',
         'Yahoo': 'yahoo',
     }
@@ -1204,7 +953,7 @@ def persist_to_cloud_sql(df: pd.DataFrame) -> int:
 
 
 class EarningsCalendarFetcher:
-    """Fetch and manage earnings calendar data from Unusual Whales + Earnings Whispers.
+    """Fetch and manage earnings calendar data from Unusual Whales.
 
     Cloud SQL (`earnings_calendar` table, written via persist_to_cloud_sql) is
     the canonical store. The legacy `data/earnings/earnings_calendar.json`
@@ -1407,7 +1156,7 @@ def main():
     )
 
     parser = argparse.ArgumentParser(
-        description="Fetch upcoming earnings calendar from AlphaVantage + Unusual Whales + Earnings Whispers"
+        description="Fetch upcoming earnings calendar from AlphaVantage + Unusual Whales + Yahoo"
     )
     parser.add_argument(
         "--days",
@@ -1427,9 +1176,9 @@ def main():
     )
     parser.add_argument(
         "--source",
-        choices=["all", "uw", "ew", "av", "yh"],
+        choices=["all", "uw", "av", "yh"],
         default="all",
-        help="Data source: all (default), uw (Unusual Whales), ew (Earnings Whispers), av (AlphaVantage — date truth), yh (Yahoo — independent date cross-check via yfinance)",
+        help="Data source: all (default), uw (Unusual Whales), av (AlphaVantage — date truth), yh (Yahoo — independent date cross-check via yfinance)",
     )
     parser.add_argument(
         "--av-horizon",
@@ -1483,7 +1232,7 @@ def main():
             # AV rows: their av_earnings_date equals their own earnings_date
             av_df['av_earnings_date'] = av_df['date']
             frames.append(av_df)
-            # Build lookup for attaching AV dates to EW/UW rows
+            # Build lookup for attaching AV dates to UW/Yahoo rows
             for _, row in av_df.iterrows():
                 av_dates[row['ticker']] = (row['date'], row['time'])
             print(f"AV date-truth lookup built: {len(av_dates)} tickers")
@@ -1495,14 +1244,6 @@ def main():
             attached = _attach_av_date(uw_df, av_dates)
             print(f"UW: tagged {attached} rows with av_earnings_date (dates preserved)")
             frames.append(uw_df)
-
-    # ── Earnings Whispers ──
-    if args.source in ("all", "ew"):
-        ew_df = fetch_earnings_whispers()
-        if not ew_df.empty:
-            attached = _attach_av_date(ew_df, av_dates)
-            print(f"EW: tagged {attached} rows with av_earnings_date (dates preserved)")
-            frames.append(ew_df)
 
     # ── Yahoo Finance (independent date cross-check) ──
     # Bulk-only fetch via Calendars.get_earnings_calendar. Yesterday +
@@ -1568,10 +1309,10 @@ def main():
                 all_rows_df, snapshot_date, av_key, scope=scope,
             )
 
-    # Deduplicate for JSON cache: prefer EW (carries strategy) > AV > UW > Yahoo.
-    # The JSON file is a human-readable summary — one row per (ticker, date)
+    # Deduplicate for the printed summary: prefer AV > UW > Yahoo.
+    # The summary is human-readable — one row per (ticker, date)
     # is the right shape there. Cloud SQL gets the full multi-source view.
-    source_priority = {'EarningsWhispers': 0, 'AlphaVantage': 1, 'UnusualWhales': 2, 'Yahoo': 3}
+    source_priority = {'AlphaVantage': 1, 'UnusualWhales': 2, 'Yahoo': 3}
     earnings_df = all_rows_df.copy()
     earnings_df['_priority'] = earnings_df['source'].map(source_priority).fillna(99)
     earnings_df = earnings_df.sort_values('_priority')
