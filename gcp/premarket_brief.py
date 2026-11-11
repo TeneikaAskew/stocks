@@ -1876,7 +1876,7 @@ def _resolve_data_freshness(
       * ``gap_days``     — calendar-day gap between ``last_bar_date``
                            and ``analysis_date``. None-input maps to
                            sentinel ``-1`` (status='unknown').
-      * ``is_stale``     — True when the gap is over one calendar
+      * ``is_stale``    : True when the gap is over one calendar
                            day AND the last bar is older than the last
                            NYSE session before ``analysis_date``
                            (``lib.eastern_time.previous_session``). So a

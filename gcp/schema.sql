@@ -1804,10 +1804,10 @@ ALTER TABLE premarket_analysis
 --
 --   data_freshness_status (varchar(20))
 --     Stamp written by the W6 staleness detector. Values:
---       'fresh'             — last bar is on or after the previous
+--       'fresh'            : last bar is on or after the previous
 --                             NYSE session before analysis_date
 --                             (weekends and NYSE holidays skipped).
---       'STALE_DAILY_DATA'  — last bar older than that session (a
+--       'STALE_DAILY_DATA' : last bar older than that session (a
 --                             session is missing). The W6 writer sets per-ticker
 --                             status='STALE_DAILY_DATA' on data['status']
 --                             so persist_to_cloud_sql skips the canonical
