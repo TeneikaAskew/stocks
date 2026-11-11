@@ -1536,7 +1536,7 @@ def test_a_quote_under_a_section_heading_is_not_the_header_note(tmp_path, live):
 
 
 def test_the_provenance_citations_carry_file_line_links(tmp_path):
-    """Every claim about code in the architecture document carries a
+    """The architecture document's rule is that a claim about code carries a
     `file:line` markdown link. The creation-path inventory was once written
     with bare code spans, a document breaking its own rule. `gate_links` cannot
     see the omission because it only validates links that exist.
