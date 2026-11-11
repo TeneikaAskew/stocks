@@ -3,7 +3,7 @@ feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-01-feat-cicd-001-retirement-source-notes.md
 branch: feature/feat-cicd-001-supersedes-chain-retirement
 pr: 1656
-status: ready
+status: done
 ---
 
 # Supersedes chain retirement implementation plan
