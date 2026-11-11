@@ -223,3 +223,58 @@ Every row below is an individual node; unchanged means test body/assertions unch
 `tests/gcp/test_strat_snapshot_parity.py::_brief` and `tests/api/test_brief_level_break_response.py::_run_brief_and_persist`: remove only obsolete `_ew_recap_or_unavailable` monkeypatch. Preserve all collected caller nodes and assertions; the accompanying caller-node receipt lists exact parametrized IDs. No finite-values code is changed.
 
 Proposed dispositions: 24 existing nodes require explicit retirement/fixture adaptation; 187 remain unchanged. Add the eight acceptance groups in the P-D spec in addition to mapped replacements, with duplicates consolidated only by an explicit node-to-item map. Counts alone are never acceptance.
+
+
+## November 11 caller-scope successor proposal qualification
+
+Current-main base: `3991c628ff2a614ce5f74a1aa9ca1843d1faca80`. The shared-level caller inventory is now **45 collected nodes**, superseding the historical 43-node count for current qualification only. Base and isolated preparation collect exactly the same list below. The preparation applies the preserved P-D source diff and removes only the obsolete recap monkeypatch in `tests/lib/strat_2026_11_06.py::run_brief` (main line 152). This is uncommitted proposal qualification, not admitted or published implementation. No assertion, fixture setup, parametrization, skip or xfail changes. The two previously admitted caller files likewise lose only their obsolete stub; incoming #1784 setup remains intact.
+
+The three current-main caller suites pass **45 tests in 22.75s**. Before the additional stub is removed from the preparation, `tests/gcp/test_premarket_provenance.py::test_brief_level_basis_carries_provenance` fails with `AttributeError` at line 152, because `_ew_recap_or_unavailable` has been removed. Final preparation results are recorded in the proposal PR; no historical receipt proves a new source head.
+
+| Base collected node | Preparation disposition |
+|---|---|
+| `tests/lib/test_brief_planner_parity.py::test_brief_and_planner_pick_the_same_levels[IWM]` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/lib/test_brief_planner_parity.py::test_brief_and_planner_pick_the_same_levels[QQQ]` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/lib/test_brief_planner_parity.py::test_brief_and_planner_pick_the_same_levels[SPY]` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/lib/test_brief_planner_parity.py::test_origin_main_level_code_reproduces_the_stored_picks[IWM]` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/lib/test_brief_planner_parity.py::test_origin_main_level_code_reproduces_the_stored_picks[QQQ]` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/lib/test_brief_planner_parity.py::test_origin_main_level_code_reproduces_the_stored_picks[SPY]` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_level_basis.py::test_brief_basis_is_plain_json_with_what_the_spec_lists` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_level_basis.py::test_persist_writes_level_basis_to_both_tables` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_level_basis.py::test_writers_drop_the_column_when_it_is_absent` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_level_basis.py::test_upsert_binds_level_basis_as_jsonb_when_present` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_level_basis.py::test_planner_for_a_brief_ticker_loads_no_daily_bars` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_level_basis.py::test_rewriting_daily_bars_after_the_brief_changes_no_planner_level` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_level_basis.py::test_planner_applies_a_newer_premarket_snapshot` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_level_basis.py::test_a_declining_low_replaces_the_short_candidate` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_level_basis.py::test_read_live_level_basis_ignores_a_replay_row` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_level_basis.py::test_each_live_reader_ignores_a_replay_row[planner]` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_level_basis.py::test_each_live_reader_ignores_a_replay_row[signal_monitor]` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_level_basis.py::test_each_live_reader_ignores_a_replay_row[movement_statement]` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_level_basis.py::test_each_reader_builds_when_the_column_is_absent[planner]` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_level_basis.py::test_each_reader_builds_when_the_column_is_absent[signal_monitor]` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_level_basis.py::test_each_reader_builds_when_the_column_is_absent[movement_statement]` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_level_basis.py::test_resolver_reads_live_basis_ignores_replay_and_builds_without_the_column` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_level_basis.py::test_read_session_premarket_raises_on_a_failed_query` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_level_basis.py::test_read_session_premarket_retries_without_provenance_on_a_missing_column` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_level_basis.py::test_read_live_level_basis_raises_on_a_failed_query_and_none_on_a_missing_column` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_premarket_provenance.py::test_daily_frame_snapshot_carries_provenance_into_level_basis` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_premarket_provenance.py::test_naive_fetch_time_is_read_as_utc` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_premarket_provenance.py::test_level_basis_round_trip_keeps_provenance` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_premarket_provenance.py::test_brief_level_basis_carries_provenance` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_premarket_provenance.py::test_planner_reads_provenance_from_market_data_daily` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_premarket_provenance.py::test_refresh_writer_records_fetch_time_and_counts` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_premarket_provenance.py::test_nightly_writer_records_fetch_time_and_counts` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_premarket_provenance.py::test_refresh_upsert_writes_provenance_when_the_columns_exist` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_premarket_provenance.py::test_refresh_upsert_leaves_the_columns_out_when_absent[columns0]` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_premarket_provenance.py::test_refresh_upsert_leaves_the_columns_out_when_absent[columns1]` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_premarket_provenance.py::test_refresh_upsert_leaves_the_columns_out_when_absent[None]` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_premarket_provenance.py::test_refresh_upsert_leaves_the_columns_out_when_absent[columns3]` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_premarket_provenance.py::test_nightly_row_to_a_table_without_the_columns_drops_them` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_premarket_provenance.py::test_frame_without_the_columns_builds_with_null_provenance` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_premarket_provenance.py::test_read_session_premarket_falls_back_without_the_columns` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_premarket_provenance.py::test_read_session_premarket_falls_back_when_the_query_swallows_errors` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_premarket_provenance.py::test_resolver_builds_from_a_table_without_the_columns` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_premarket_provenance.py::test_data_loader_retries_without_the_columns` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_premarket_provenance.py::test_data_loader_transient_error_does_not_mark_the_columns_missing` | Same node and unchanged assertion body; obsolete helper stub only. |
+| `tests/gcp/test_premarket_provenance.py::test_data_loader_reads_the_columns_when_present` | Same node and unchanged assertion body; obsolete helper stub only. |
