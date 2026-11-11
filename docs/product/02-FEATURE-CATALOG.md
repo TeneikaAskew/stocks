@@ -186,7 +186,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production needs remediation; historical-score contract implementation under review in #1620, not deployed; the premarket brief scores RSI against the ticker's ticker_calibration band (the signal monitor's resolver, point in time), implementation under review, not deployed |
+| Status | Production needs remediation; historical-score contract implementation under review in #1620, not deployed; EW reader retirement source and local tests in Draft [#1801](https://github.com/TeneikaAskew/stocks/pull/1801) under the approved 2026-10-31 spec; external current-head review, hosted checks and rollout pending; the premarket brief scores RSI against the ticker's ticker_calibration band (the signal monitor's resolver, point in time), implementation under review, not deployed |
 | Priority | P0 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
@@ -281,11 +281,11 @@ Current-session ORB runtime draft: [#1642](https://github.com/TeneikaAskew/stock
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Experimental |
+| Status | Experimental; EW reader retirement source and local tests in Draft [#1800](https://github.com/TeneikaAskew/stocks/pull/1800) under the approved 2026-10-31 spec; external current-head review, hosted checks and rollout pending |
 | Priority | P2 |
 | Target phase | Phase 4 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-10 |
+| Last reviewed | 2026-11-11 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/insights` |
 | Backend | `/api/insights` (13) |

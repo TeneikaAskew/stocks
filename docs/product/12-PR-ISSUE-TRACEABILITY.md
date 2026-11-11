@@ -413,6 +413,8 @@ Allowance correction lineage: [#1587](https://github.com/TeneikaAskew/stocks/pul
 
 ### FEAT-SIGNAL-001 — Signals / execution (25 open)
 
+**PR lineage:** [#1801](https://github.com/TeneikaAskew/stocks/pull/1801) implements the approved 2026-10-31 FEAT-SIGNAL-001 retirement-reader spec with the shared SQL predicate and actual-reader adversarial tests. Source/local-test and committed identity evidence only; hosted current-head review/checks and deployed verification remain separate and pending. No legacy stored rows are rewritten and no broader issue is closed.
+
 **PR lineage:** [#1620](https://github.com/TeneikaAskew/stocks/pull/1620) implements the approved [#1619](https://github.com/TeneikaAskew/stocks/pull/1619) contract using existing JSONB, native producer-derived controls and typed SQL/parquet responses. This is source/local-test evidence pending normal review and deployment, not alert publication, original point-in-time certification or financial-performance proof. It does not close the broader issues below or rewrite legacy scores. · [#1808](https://github.com/TeneikaAskew/stocks/pull/1808) *remediation: the premarket brief scores RSI against the ticker's calibrated band, spec [#1798](https://github.com/TeneikaAskew/stocks/pull/1798), revision 2 [#1810](https://github.com/TeneikaAskew/stocks/pull/1810)*
 
 | Issue | Sev | Title |
@@ -487,6 +489,8 @@ Live registry continuation: [#1599](https://github.com/TeneikaAskew/stocks/pull/
 **PR lineage:** [#318](https://github.com/TeneikaAskew/stocks/pull/318) *remediation* · [#424](https://github.com/TeneikaAskew/stocks/pull/424) *evolution* · [#623](https://github.com/TeneikaAskew/stocks/pull/623) *origin* · [#674](https://github.com/TeneikaAskew/stocks/pull/674) *remediation* · [#677](https://github.com/TeneikaAskew/stocks/pull/677) *evolution* · [#1360](https://github.com/TeneikaAskew/stocks/pull/1360) *remediation*
 
 ### FEAT-INSIGHT-001 — AI insights (31 open)
+
+**PR lineage:** [#1800](https://github.com/TeneikaAskew/stocks/pull/1800) implements the approved 2026-10-31 FEAT-INSIGHT-001 retirement-reader spec with the shared SQL predicate and actual-reader adversarial tests. Source/local-test and committed identity evidence only; hosted current-head review/checks and deployed verification remain separate and pending. No legacy stored rows are rewritten and no broader issue is closed.
 
 | Issue | Sev | Title |
 |---|---|---|
