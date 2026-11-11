@@ -2,7 +2,7 @@
 feat_id: FEAT-SIGNAL-001
 spec: docs/superpowers/specs/2026-11-11-feat-signal-001-honest-outcome-scoring.md
 branch: fix/feat-signal-001-honest-outcome-scoring
-pr: null
+pr: 1833
 status: ready
 ---
 
@@ -66,8 +66,8 @@ Files: `scripts/analysis/honest_scoring_experiment.py`.
 
 ## Task 6: Docs, source identity, publication
 Spec: done_when[6], done_when[7], Source identity and close-out.
-- [ ] Re-render the inventory blocks with `scripts/maintenance/doc_inventory.py` after the `gcp/schema.sql` line shifts.
-- [ ] Update the FEAT-SIGNAL-001 catalog record and PR lineage.
-- [ ] Commit; read the producer's source identity; update the `(FEAT-SIGNAL-001, CHARTS-06)` note row; commit; produce and commit the sidecar from committed HEAD; verify with the fixed ceilings.
-- [ ] Run `docs_audit.py` on branch and origin/main (no new findings) and `spec_gate.py --pr origin/main` with the PR title and body.
-- [ ] Run the full local suite; open one Draft PR; record its number here.
+- [x] Re-render the inventory blocks with `scripts/maintenance/doc_inventory.py` after the `gcp/schema.sql` line shifts.
+- [x] Update the FEAT-SIGNAL-001 catalog record and PR lineage.
+- [x] Commit; read the producer's source identity; update the `(FEAT-SIGNAL-001, CHARTS-06)` note row; commit; produce and commit the sidecar from committed HEAD; verify with the fixed ceilings.
+- [x] Run `docs_audit.py` on branch and origin/main (no new findings) and `spec_gate.py --pr origin/main` with the PR title and body.
+- [x] Run the full local suite (9281 passed, 72 skipped, 1 xfailed); open one Draft PR (#1833); record its number here.
