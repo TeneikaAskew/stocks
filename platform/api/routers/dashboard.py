@@ -18,6 +18,7 @@ from api.schemas import (
 )
 from lib.eastern_time import is_session, market_today, session_count
 from lib.infra_errors import is_backend_outage, is_infrastructure_error
+from lib.strat_levels import LevelParamsUnavailable
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -434,18 +435,29 @@ def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = 
         import pandas as pd  # noqa: PLC0415
         from lib.data_loader import DataLoader  # noqa: PLC0415
         from lib.strat_levels import (  # noqa: PLC0415
-            SessionLevels, build_session_levels, daily_data_freshness,
+            SessionLevels, atr_inputs_from_frame, basis_records_params,
+            build_session_levels, daily_data_freshness, load_level_params,
             premarket_snapshot_from_daily, read_live_level_basis,
         )
+
+        def _params():
+            # The ticker's level parameters in force on the session, through
+            # the strict reader: unreadable tables raise LevelParamsUnavailable,
+            # re-raised below (an INTERNAL failure, not a data gap).
+            from gcp.database import query_to_dataframe_strict  # noqa: PLC0415
+            return load_level_params(query_to_dataframe_strict, [ticker], session)[ticker.upper()]
 
         # One level source (FEAT-STRAT-001): the session's LIVE level_basis
         # written by the brief, so the ladder is the brief's own side lists
         # and the stored trigger is rung one. Only without one is it built.
+        # A basis that recorded its parameters rebuilds with them and never
+        # reads the parameter tables.
         session = analysis_date or _movement_analysis_date()
         if _query_fn is not None:
             basis = read_live_level_basis(_query_fn, ticker, session)
             if basis is not None:
-                stored = SessionLevels.from_basis(basis)
+                stored = SessionLevels.from_basis(
+                    basis, params=None if basis_records_params(basis) else _params())
                 return stored.to_level_map() if stored.status == "ok" else None
 
         loader = DataLoader()
@@ -503,14 +515,16 @@ def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = 
             return None
         if not pd.notna(float(df[close_col].iloc[-1])):
             return None
-        # DataLoader renames atr_14 → ATR14 (lib/data_loader.py) and the brief
-        # reads ATR14. Missing ATR gives no rung (reason atr_unavailable).
-        atr_col = next((c for c in ("ATR14", "atr_14") if c in df.columns), None)
-        atr_for_filter = None
-        if atr_col is not None and pd.notna(df[atr_col].iloc[-1]):
-            atr_for_filter = float(df[atr_col].iloc[-1]) or None
-        built = build_session_levels(ticker, session, df, atr_for_filter, session_premarket)
+        # The last completed session's ATR columns, as the brief reads them;
+        # the policy's basis picks one. Missing gives no rung (reason
+        # atr_unavailable).
+        built = build_session_levels(ticker, session, df, atr_inputs_from_frame(df, session),
+                                     session_premarket, _params())
         return built.to_level_map() if built.status == "ok" else None
+    except LevelParamsUnavailable:
+        # The parameter tables cannot be read: INTERNAL (CLAUDE.md 3.7), not
+        # a data gap folded into the UNAVAILABLE envelope.
+        raise
     except Exception as exc:  # data gap → None → levels UNAVAILABLE (Rule 3.7)
         # A backend OUTAGE is not a data gap. It propagates to the route
         # guard, which answers 503 for it; swallowed here it became a None

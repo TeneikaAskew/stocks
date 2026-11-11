@@ -129,6 +129,10 @@ def _run_brief_and_persist(monkeypatch, bars: pd.DataFrame, analysis_date: date,
                        'BRIEF_TICKERS': TICKER}.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(pb, '_resolve_analysis_date', lambda: analysis_date)
+    # The level parameters (per-ticker parameters, 2026-11-08): every key at
+    # the #1753 values, through load_level_params's own SQL.
+    from tests.lib.level_params_fixtures import legacy_db
+    monkeypatch.setattr(pb, '_level_params_query', legacy_db(TICKER).query)
     monkeypatch.setattr(DataLoader, 'load_daily', lambda *a, **k: bars.copy())
     monkeypatch.setattr(pb, 'load_earnings_for_brief', lambda *a, **k: {'earnings': []})
     monkeypatch.setattr(pb, '_ew_recap_or_unavailable', lambda *a, **k: {})

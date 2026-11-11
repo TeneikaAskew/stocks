@@ -673,13 +673,22 @@ def _daily_df(atr_values):
 
 
 def _capture_atr(monitor, ticker, daily):
-    """Run refresh_level_map against a stubbed loader and return the ATR it kept."""
+    """Run refresh_level_map against a stubbed loader and return the ATR(14)
+    it handed the builder (the policy's day-one basis)."""
+    from tests.lib.level_params_fixtures import legacy_db
     loader = MagicMock()
     loader.load_daily.return_value = daily
+    seen = {}
+
+    def spy(ticker, session_date, df, atr, premarket, params, **k):
+        seen['atr'] = atr
+        return _session({'PDL': 99.6})
+
+    monitor._level_params_query = legacy_db(ticker).query
     with patch('lib.data_loader.DataLoader', return_value=loader), \
-         patch('gcp.signal_monitor.build_session_levels', return_value=_session({'PDL': 99.6})):
+         patch('gcp.signal_monitor.build_session_levels', side_effect=spy):
         monitor.refresh_level_map(ticker)
-    return monitor.level_map_atr.get(ticker)
+    return seen['atr']['atr_14'] if seen else None
 
 
 def test_atr_comes_from_the_latest_daily_row_only():

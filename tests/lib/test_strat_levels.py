@@ -11,15 +11,22 @@ from lib.strat_levels import (
     compute_gap_levels,
     detect_level_clusters,
     detect_pmg_temporal,
-    compute_room_to_run,
     compute_risk_reward,
-    build_level_map,
     build_session_levels,
     format_levels_for_brief,
     StratLevel,
     LevelMap,
-    MIN_ROOM_PCT,
 )
+from lib.strat_levels import build_level_map as _build_level_map
+from tests.lib.level_params_fixtures import fixture_params
+
+
+def build_level_map(ticker, df, price, *args, atr=None, **kw):
+    """The deprecated shim with the ticker's LevelParams (every key at the
+    #1753 values) and the ATR named as ATR(14), the policy's day-one basis."""
+    return _build_level_map(ticker, df, price, *args,
+                            atr={'atr_14': atr} if atr is not None else {},
+                            params=fixture_params(ticker), **kw)
 
 
 def _daily_df(n=60):
@@ -503,7 +510,7 @@ class TestDetectLevelClusters:
             StratLevel('PWL', 262.30, 'week', 'low', '2D', False, ''),
             StratLevel('PMH', 270.00, 'month', 'high', '2U', False, ''),
         ]
-        zones = detect_level_clusters(levels, tolerance_pct=0.15)
+        zones = detect_level_clusters(levels, tolerance_atr=0.15, atr=2.62)
         assert len(zones) == 1
         assert 'PDL' in zones[0]['level_names']
         assert 'PWL' in zones[0]['level_names']
@@ -513,7 +520,7 @@ class TestDetectLevelClusters:
             StratLevel('PDH', 265.00, 'day', 'high', '2U', False, ''),
             StratLevel('PWH', 270.00, 'week', 'high', '2U', False, ''),
         ]
-        zones = detect_level_clusters(levels, tolerance_pct=0.15)
+        zones = detect_level_clusters(levels, tolerance_atr=0.15, atr=2.62)
         assert len(zones) == 0
 
     def test_strength_scoring(self):
@@ -522,13 +529,13 @@ class TestDetectLevelClusters:
             StratLevel('PWL', 262.30, 'week', 'low', '2D', False, ''),
             StratLevel('GAP_L', 262.10, 'day', 'gap_low', 'gap_up', False, ''),
         ]
-        zones = detect_level_clusters(levels, tolerance_pct=0.15)
+        zones = detect_level_clusters(levels, tolerance_atr=0.15, atr=2.62)
         assert len(zones) == 1
         # count=3, unique TFs=2 (day, week) → 3 + 0.5 = 3.5
         assert zones[0]['strength'] == 3.5
 
     def test_empty(self):
-        assert detect_level_clusters([], tolerance_pct=0.15) == []
+        assert detect_level_clusters([], tolerance_atr=0.15, atr=2.62) == []
 
 
 # ─── detect_pmg_temporal ──────────────────────────────────────────────────
@@ -561,45 +568,6 @@ class TestDetectPMGTemporal:
         })
         results = detect_pmg_temporal(df, n_consecutive=3)
         assert len(results) == 0
-
-
-# ─── compute_room_to_run ─────────────────────────────────────────────────
-
-
-class TestRoomToRun:
-    def test_call_direction(self):
-        levels = [
-            StratLevel('PDH', 265.00, 'day', 'high', '2U', False, ''),
-            StratLevel('PWH', 268.00, 'week', 'high', '2U', False, ''),
-        ]
-        result = compute_room_to_run(263.00, levels, 'CALL')
-        assert result['next_level'].name == 'PDH'
-        assert result['distance_pct'] > 0
-        assert result['has_room'] is True
-
-    def test_put_direction(self):
-        levels = [
-            StratLevel('PDL', 260.00, 'day', 'low', '2D', False, ''),
-            StratLevel('PWL', 257.00, 'week', 'low', '2D', False, ''),
-        ]
-        result = compute_room_to_run(263.00, levels, 'PUT')
-        assert result['next_level'].name == 'PDL'
-        assert result['has_room'] is True
-
-    def test_insufficient_room(self):
-        levels = [
-            StratLevel('PDH', 263.05, 'day', 'high', '2U', False, ''),
-        ]
-        result = compute_room_to_run(263.00, levels, 'CALL')
-        # 0.05/263 = 0.019% < MIN_ROOM_PCT
-        assert result['has_room'] is False
-
-    def test_no_levels_in_direction(self):
-        levels = [
-            StratLevel('PDH', 265.00, 'day', 'high', '2U', False, ''),
-        ]
-        result = compute_room_to_run(266.00, levels, 'CALL')
-        assert result['next_level'] is None
 
 
 # ─── compute_risk_reward ─────────────────────────────────────────────────
@@ -793,8 +761,8 @@ class TestFormatLevelsForBrief:
         from lib.strat_levels import orb_only_text
         lm = self._lm(atr=None)
         text = format_levels_for_brief(lm, 'bullish', regime='orb_only')
-        assert '  CALLS: ' + orb_only_text('atr_unavailable', 'long') in text
-        assert '  PUTS: ' + orb_only_text('atr_unavailable', 'short') in text
+        assert '  CALLS: ' + orb_only_text('atr_unavailable', 'long', lm.window_long) in text
+        assert '  PUTS: ' + orb_only_text('atr_unavailable', 'short', lm.window_short) in text
         assert 'CALLS above' not in text
         assert 'PUTS below' not in text
 
