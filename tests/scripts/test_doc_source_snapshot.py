@@ -1031,8 +1031,8 @@ def complex_body_repo(path, line_count, existing=False):
 
 @pytest.mark.parametrize("existing", [False, True])
 def test_actual_fallback_parser_cpu_deadline_preserves_absent_or_valid_record(existing, tmp_path):
-    repo, body, old = complex_body_repo(tmp_path / "repo", 40000, existing)
-    refused = repo.cli("produce", "--max-seconds", "2")
+    repo, body, old = complex_body_repo(tmp_path / "repo", 80000, existing)
+    refused = repo.cli("produce", "--max-seconds", "0.75")
     verdict = json.loads(refused.stdout)
     assert refused.returncode != 0, refused.stdout + refused.stderr
     assert verdict["status"] == "unverified"
@@ -1040,11 +1040,12 @@ def test_actual_fallback_parser_cpu_deadline_preserves_absent_or_valid_record(ex
     assert verdict["source_identity_sha256"] is not None
     assert verdict["counted_bytes"] >= len(body.encode("utf-8"))
     assert verdict["counted_bytes"] <= MAX_BYTES
-    # A lower-only two-second cap avoids relying on host throughput to make
-    # this bounded complete parser input exceed the default five-second cap.
-    # The alarm interrupts CPU work at two seconds; this measures only the
-    # ensuing handler restoration and refusal serialization, not a larger cap.
-    assert verdict["elapsed_seconds"] < 2.1
+    # The cap must fall after the source identity is computed and before the
+    # bounded work can finish on a fast host. In the sandbox the identity is
+    # set by 0.2 s at 80,000 lines, while the fastest runner seen finished
+    # 40,000 lines in 1.91 s (#1796). A 0.75 s cap sits between the two; this
+    # measures only the handler restoration and refusal serialization.
+    assert verdict["elapsed_seconds"] < 0.85
     if old is None:
         assert not (repo.path / RECORD).exists()
     else:
