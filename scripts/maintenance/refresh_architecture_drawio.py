@@ -599,9 +599,9 @@ def main(argv: list[str] | None = None) -> int:
     # A snapshot taken without table statistics (doc_inventory --live alone,
     # the default from a sandbox that cannot reach Cloud SQL) used to print
     # "0 relations" on both diagrams and pass check(): a silent fallback
-    # (CLAUDE.md Rule 3.7). refresh-architecture-docs.yml refuses such a
-    # snapshot before calling this script; a manual run gets the same refusal
-    # here, before either diagram is parsed.
+    # (CLAUDE.md Rule 3.7). The monthly refresh workflow, retired 2026-11-10,
+    # refused such a snapshot before calling this script; this script now
+    # refuses it itself, before either diagram is parsed.
     if not live.get("db_tables"):
         print(f"::error::{a.snapshot} has no db_tables; rebuild it with --db-tables "
               "(DB_TABLES_SQL through scripts/db_query_cr.sh). Neither diagram was written.")
