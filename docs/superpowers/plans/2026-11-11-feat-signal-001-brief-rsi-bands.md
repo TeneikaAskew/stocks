@@ -2,7 +2,7 @@
 feat_id: FEAT-SIGNAL-001
 spec: docs/superpowers/specs/2026-11-11-feat-signal-001-brief-rsi-bands.md
 branch: fix/feat-signal-001-brief-rsi-bands
-pr: null
+pr: 1808
 status: ready
 ---
 
