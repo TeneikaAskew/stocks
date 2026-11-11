@@ -532,11 +532,13 @@ def _live_level_basis(ticker: str, session_date: date_type) -> Optional[dict]:
 
 def _has_no_level_param_rows(level_params) -> bool:
     """True when the loader found no ticker_level_params row for the
-    ticker in any basis: every key is params_unavailable (a stored row never
-    carries that status)."""
-    from lib.strat_levels import PARAMS_UNAVAILABLE
+    ticker in any basis: every per-ticker key is params_unavailable (a stored
+    row never carries that status). The policy-wide keys (exit_legs,
+    entry_cutoff_et) come from level_param_policy, not from a ticker row,
+    so they do not count."""
+    from lib.strat_levels import PARAMS_UNAVAILABLE, POLICY_WIDE_KEYS
 
-    params = list(level_params.params.values())
+    params = [p for k, p in level_params.params.items() if k not in POLICY_WIDE_KEYS]
     return bool(params) and all(p.status == PARAMS_UNAVAILABLE for p in params)
 
 
