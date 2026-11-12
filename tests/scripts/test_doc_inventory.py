@@ -2418,3 +2418,9 @@ def test_twelve_retries_2_jobs_render_the_last_word_and_pass_the_check(tmp_path)
     root, repo = render_tree(tmp_path, retry_fixture() + probes)
     assert "`2` for twelve**" in (root / ARCH_DOC).read_text()
     assert cgd.gate_derived_numbers(root, repo, _live()) == []
+
+
+def test_a_list_count_followed_by_a_decimal_point_is_not_owned():
+    repo = {"jobs": [{"max_retries": k} for k in ("0", "1", "2")]}
+    text = "`--max-retries 0` for 1 of the 3 declared jobs, `1` for 1 and `2` for 9.5"
+    assert inv.render_retry_split(text, repo) == text
