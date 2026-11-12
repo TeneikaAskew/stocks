@@ -329,3 +329,95 @@ def test_a_small_playbook_stays_one_message():
                          'inline': False}]}
     assert pb._split_playbook_embed(embed) == [embed]
     assert pb._split_playbook_embed({**embed, 'fields': []}) == []
+
+
+def _long_playbook():
+    """A v3 Design 8 playbook over 1,024 characters: weekly and close
+    levels inside the spacing (a long skipped list) and three PMG zones,
+    the size Codex reproduced on #1832."""
+    from lib.strat_levels import format_levels_for_brief
+    from tests.lib.session_levels_helpers import D8_LEVELS, d8_session
+
+    levels = {**D8_LEVELS, 'PWH': 253.40, 'PWL': 247.30, 'PWC': 246.50,
+              'PMC': 246.10, 'PQC': 245.70, 'PYC': 245.30}
+    lm = d8_session(levels).to_level_map()
+    lm.pmg_zones = [
+        {'center_price': 253.20, 'level_names': ['PDH', 'PWH'], 'strength': 2},
+        {'center_price': 247.20, 'level_names': ['PDL', 'PWL', 'PDC'], 'strength': 3},
+        {'center_price': 245.90, 'level_names': ['PMC', 'PQC', 'PYC', 'PWC'], 'strength': 4},
+    ]
+    text = format_levels_for_brief(lm, 'neutral')
+    assert len(text) > 1100 and 'sell the last 1/3' in text
+    return text
+
+
+def _field_text(fields, ticker):
+    """The ticker's playbook text rebuilt from its code-block fields."""
+    parts = [f['value'] for f in fields
+             if f['name'] in (f'{ticker} Playbook', f'{ticker} Playbook (continued)')]
+    for v in parts:
+        assert v.startswith('```\n') and v.endswith('\n```')
+    return '\n'.join(v[4:-4] for v in parts)
+
+
+def test_a_playbook_over_the_field_limit_is_split_not_cut():
+    """Every field is within Discord's 1,024 characters with the code
+    fences counted, the ticker's text survives whole and in order, and its
+    "Why this trigger" field follows its last playbook field (Codex P2 on
+    #1832: a 1,024-character cut plus the fences made a 1,032-character
+    field, which Discord rejects with the whole message)."""
+    import gcp.premarket_brief as pb
+    text = _long_playbook()
+    brief = {'recommended_orb_window': '5m',
+             'tickers': {'SPY': {'playbook': text, 'llm_playbook': 'w' * 200},
+                         'QQQ': {'playbook': 'short', 'llm_playbook': 'q'}}}
+    fields = pb._build_playbook_embed(brief)['fields']
+    assert all(len(f['value']) <= pb.MAX_FIELD_VALUE for f in fields)
+    assert _field_text(fields, 'SPY') == text
+    names = [f['name'] for f in fields]
+    assert names[:2] == ['SPY Playbook', 'SPY Playbook (continued)']
+    assert names[names.index('\U0001F9E0 SPY — Why this trigger') - 1].startswith('SPY Playbook')
+    assert names[-2:] == ['QQQ Playbook', '\U0001F9E0 QQQ — Why this trigger']
+
+
+def test_a_line_longer_than_a_field_is_split_inside_it():
+    import gcp.premarket_brief as pb
+    text = 'a' * 2500 + '\nend'
+    fields = pb._playbook_code_fields('SPY', text)
+    assert len(fields) == 3
+    assert all(len(f['value']) <= pb.MAX_FIELD_VALUE for f in fields)
+    assert [len(f['value']) - 8 for f in fields] == [1016, 1016, 468 + 1 + 3]
+    assert fields[-1]['value'].endswith('a\nend\n```')
+    assert _field_text(fields, 'SPY').replace('\n', '') == 'a' * 2500 + 'end'
+
+
+def test_six_long_playbooks_route_within_every_discord_limit(monkeypatch):
+    """Six oversized playbooks with an explanation each: every routed
+    message is within the embed budget and 25 fields, every field within
+    1,024 characters, and every ticker's full text and explanation arrive,
+    in order."""
+    import gcp.premarket_brief as pb
+    monkeypatch.setattr(pb, '_build_overview_embed',
+                        lambda b: _mock_embed('Premarket Overview'))
+    monkeypatch.setattr(pb, '_build_ticker_fields',
+                        lambda b: [{'name': 'SPY', 'value': '~', 'inline': True}])
+    monkeypatch.setattr(pb, '_build_calendar_embed',
+                        lambda evts, mode='daily': _mock_embed('Economic Calendar'))
+    text = _long_playbook()
+    brief = {**_six_ticker_brief(),
+             'tickers': {t: {'playbook': text, 'llm_playbook': 'w' * 200} for t in SIX}}
+    routed = pb.format_discord_messages_routed(brief)
+    fields = []
+    for _kind, msg in routed:
+        assert sum(len(json.dumps(e)) for e in msg['embeds']) <= pb.MAX_EMBED_CHARS
+        for e in msg['embeds']:
+            assert len(e.get('fields') or []) <= pb.MAX_EMBED_FIELDS
+            for f in e.get('fields') or []:
+                assert len(f['value']) <= pb.MAX_FIELD_VALUE
+    for m in _playbook_payloads(routed):
+        for e in m['embeds']:
+            fields.extend(e['fields'])
+    for t in SIX:
+        assert _field_text(fields, t) == text
+    whys = [f['name'] for f in fields if f['name'].startswith('\U0001F9E0')]
+    assert whys == [f'\U0001F9E0 {t} — Why this trigger' for t in SIX]

@@ -377,12 +377,12 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`platform/api/routers/backtest.py`](../../../platform/api/routers/backtest.py) — line [875](../../../platform/api/routers/backtest.py#L875)
 
 ### `premarket_analysis`
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3504](../../../gcp/premarket_brief.py#L3504), [3531](../../../gcp/premarket_brief.py#L3531)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3551](../../../gcp/premarket_brief.py#L3551), [3578](../../../gcp/premarket_brief.py#L3578)
 - [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [850](../../../gcp/premarket_playbook_resolver.py#L850)
 - [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [575](../../../gcp/signal_monitor.py#L575)
 
 ### `premarket_analysis_history`
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3467](../../../gcp/premarket_brief.py#L3467)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3514](../../../gcp/premarket_brief.py#L3514)
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [123](../../../scripts/backfill_history_tables.py#L123)
 
 ### `ranker_runs`
@@ -783,7 +783,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `premarket_analysis`
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [345](../../../gcp/discord_interactions/main.py#L345)
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3523](../../../gcp/premarket_brief.py#L3523), [3568](../../../gcp/premarket_brief.py#L3568)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3570](../../../gcp/premarket_brief.py#L3570), [3615](../../../gcp/premarket_brief.py#L3615)
 - [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [656](../../../gcp/premarket_playbook_resolver.py#L656), [888](../../../gcp/premarket_playbook_resolver.py#L888), [997](../../../gcp/premarket_playbook_resolver.py#L997)
 - [`lib/movement_statement.py`](../../../lib/movement_statement.py) — line [346](../../../lib/movement_statement.py#L346), [421](../../../lib/movement_statement.py#L421)
 - [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [2535](../../../lib/strat_levels.py#L2535)

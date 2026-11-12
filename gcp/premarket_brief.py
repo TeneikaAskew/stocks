@@ -3052,6 +3052,45 @@ def _build_calendar_embed(events: dict, mode: str = 'daily') -> dict:
     return embed
 
 
+_CODE_FENCE_OPEN = '```\n'
+_CODE_FENCE_CLOSE = '\n```'
+_CONTINUED = ' (continued)'
+
+
+def _playbook_code_fields(ticker: str, text: str) -> list[dict]:
+    """One ticker's playbook as code-block fields, each within Discord's
+    MAX_FIELD_VALUE with the fences counted (Codex P2 on #1832: a 1,024
+    character cut plus the eight fence characters made a field Discord
+    rejects, and with it the whole message). The text is split at line
+    breaks, a line longer than a field is split inside it, and nothing is
+    cut. The first field is "{ticker} Playbook", later ones add
+    " (continued)", in order."""
+    budget = MAX_FIELD_VALUE - len(_CODE_FENCE_OPEN) - len(_CODE_FENCE_CLOSE)
+    pieces: list[str] = []
+    for line in str(text).split('\n'):
+        while len(line) > budget:
+            pieces.append(line[:budget])
+            line = line[budget:]
+        pieces.append(line)
+    chunks: list[str] = []
+    current: Optional[str] = None
+    for piece in pieces:
+        if current is None:
+            current = piece
+        elif len(current) + 1 + len(piece) <= budget:
+            current += '\n' + piece
+        else:
+            chunks.append(current)
+            current = piece
+    if current is not None:
+        chunks.append(current)
+    return [{
+        'name': f'{ticker} Playbook' + (_CONTINUED if i else ''),
+        'value': f'{_CODE_FENCE_OPEN}{chunk}{_CODE_FENCE_CLOSE}',
+        'inline': False,
+    } for i, chunk in enumerate(chunks)]
+
+
 def _build_playbook_embed(brief: dict) -> dict:
     """Embed: per-ticker Strat playbook with trigger, stop, T1/T2 + R:R.
 
@@ -3079,14 +3118,7 @@ def _build_playbook_embed(brief: dict) -> dict:
     for ticker, d in brief.get('tickers', {}).items():
         if not d.get('playbook'):
             continue
-        value = d['playbook']
-        if len(value) > MAX_FIELD_VALUE:
-            value = value[:MAX_FIELD_VALUE - 3] + '...'
-        fields.append({
-            'name': f'{ticker} Playbook',
-            'value': f'```\n{value}\n```',
-            'inline': False,
-        })
+        fields.extend(_playbook_code_fields(ticker, d['playbook']))
 
         # 🧠 Per-ticker playbook explanation — explains why this trigger /
         # what the trader should watch. Sits directly under the playbook
@@ -3124,23 +3156,38 @@ def _split_playbook_embed(embed: dict) -> list[dict]:
     fields = embed.get('fields') or []
     groups: list[list[dict]] = []
     for f in fields:
-        if groups and str(f.get('name', '')).startswith(_WHY_PREFIX):
+        name = str(f.get('name', ''))
+        if groups and (name.startswith(_WHY_PREFIX) or name.endswith(_CONTINUED)):
             groups[-1].append(f)
         else:
             groups.append([f])
     title = embed.get('title') or ''
+
+    def _fits(e: dict) -> bool:
+        return (len(json.dumps(e)) <= MAX_EMBED_CHARS
+                and len(e['fields']) <= MAX_EMBED_FIELDS)
+
+    def _next(fields_: list) -> dict:
+        return {**embed, 'title': f'{title}{_CONTINUED}', 'description': '',
+                'fields': list(fields_)}
+
+    # A ticker whose fields cannot share one embed even alone is packed
+    # field by field, still in order, rather than dropped for size.
+    units: list[list[dict]] = []
+    for group in groups:
+        if _fits(_next(group)):
+            units.append(group)
+        else:
+            units.extend([f] for f in group)
     chunks: list[dict] = []
     current = {**embed, 'fields': []}
-    for group in groups:
-        trial = {**current, 'fields': current['fields'] + group}
-        fits = (len(json.dumps(trial)) <= MAX_EMBED_CHARS
-                and len(trial['fields']) <= MAX_EMBED_FIELDS)
-        if fits or not current['fields']:
+    for unit in units:
+        trial = {**current, 'fields': current['fields'] + unit}
+        if _fits(trial) or not current['fields']:
             current = trial
             continue
         chunks.append(current)
-        current = {**embed, 'title': f'{title} (continued)', 'description': '',
-                   'fields': list(group)}
+        current = _next(unit)
     if current['fields']:
         chunks.append(current)
     return chunks
