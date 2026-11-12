@@ -2285,7 +2285,23 @@ def test_the_retry_fixtures_rebuild_their_blob_ids_without_the_object_database()
 
 def test_the_retry_word_table_is_check_generated_docs_word_numbers():
     from scripts.maintenance.check_generated_docs import WORD_NUMBERS
-    assert set(inv._RETRY_WORD.split("|")) == set(WORD_NUMBERS) and all(k == k.lower() for k in WORD_NUMBERS)
+    assert dict(zip(inv._RETRY_WORDS, range(13))) == WORD_NUMBERS and all(k == k.lower() for k in WORD_NUMBERS)
+    words = inv.RETRY_SPLIT["list"].pattern.rsplit("|", 13)[1:]
+    assert [w.split(")")[0] for w in words] == list(inv._RETRY_WORDS)
+
+
+def test_the_script_path_invocation_still_renders(tmp_path):
+    """`python3 scripts/maintenance/doc_inventory.py` loads the module with no `scripts` package importable, as an
+    approved spec's command does; the word form must not need one."""
+    import subprocess
+    import sys
+    code = ("import importlib.util, sys\n"
+            f"spec = importlib.util.spec_from_file_location('doc_inventory', {str(REPO / 'scripts/maintenance/doc_inventory.py')!r})\n"
+            "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+            "assert 'scripts' not in sys.modules\n"
+            "print(m._retry_count('one', 2), m._retry_count('twelve', 13))\n")
+    r = subprocess.run([sys.executable, "-I", "-B", "-c", code], capture_output=True, text=True, cwd=tmp_path)
+    assert (r.returncode, r.stdout.strip()) == (0, "two 13"), r.stderr[-800:]
 
 
 def test_the_committed_05a_renders_byte_identically_with_the_retry_split(tmp_path):
@@ -2394,3 +2410,11 @@ def test_the_split_is_rendered_only_in_05a_at_its_exact_path(tmp_path, doc):
     after = path.read_text()
     assert [m.group(0) for p in inv.RETRY_SPLIT.values() for m in p.finditer(after)] == \
         [m.group(0) for p in inv.RETRY_SPLIT.values() for m in p.finditer(before)]
+
+
+def test_twelve_retries_2_jobs_render_the_last_word_and_pass_the_check(tmp_path):
+    from scripts.maintenance import check_generated_docs as cgd
+    probes = "".join(RETRY_PROBE.format(n=i, flag=" --max-retries 2") for i in range(11)).encode()
+    root, repo = render_tree(tmp_path, retry_fixture() + probes)
+    assert "`2` for twelve**" in (root / ARCH_DOC).read_text()
+    assert cgd.gate_derived_numbers(root, repo, _live()) == []

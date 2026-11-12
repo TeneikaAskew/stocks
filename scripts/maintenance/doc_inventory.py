@@ -4168,7 +4168,6 @@ RELATION_TOTAL = re.compile(
 # so the unchanged check, which reads them, still reports it.
 # (FEAT-CICD-001, docs/superpowers/specs/2026-10-31-feat-cicd-001-retry-split-substitution.md.)
 RETRY_SPLIT_DOC = "docs/product/infrastructure/05-a-ARCHITECTURE.md"
-_RETRY_WORD = r"zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve"
 RETRY_SPLIT = {
     # §11: "`--max-retries 0` is the norm (43 of the 68 declared jobs)"
     "norm": re.compile(r"(`--max-retries )(\d)(` is the norm \()(\d+)( of the )(\d+)( declared jobs\))", re.ASCII),
@@ -4176,19 +4175,25 @@ RETRY_SPLIT = {
     "jobs": re.compile(r"(\bthe )(\d+)( `--max-retries )(\d)(` jobs\b)", re.ASCII),
     # §6: "`--max-retries 0` for 43 of the 68 declared jobs, `1` for 24 and `2` for one"
     "list": re.compile(r"(`--max-retries )(\d)(` for )(\d+)( of the )(\d+)( declared jobs, `)(\d)(` for )(\d+)"
-                       r"( and `)(\d)(` for )(\d+|" + _RETRY_WORD + r")\b", re.ASCII),
+                       r"( and `)(\d)(` for )(\d+|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b", re.ASCII),
 }
+
+
+# check_generated_docs.WORD_NUMBERS, the table its retry check reads spelled-out
+# counts with. Copied, not imported: check_generated_docs imports this module,
+# and the script-path invocation (`python3 scripts/maintenance/doc_inventory.py`)
+# has no `scripts` package to import it from. A test pins the two equal.
+_RETRY_WORDS = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+                "eleven", "twelve")
 
 
 def _retry_count(token: str, n: int) -> str:
     """n in the form of the token it replaces: a WORD_NUMBERS word stays a word up to twelve, the table's limit."""
-    from scripts.maintenance.check_generated_docs import WORD_NUMBERS
     if token.isdigit():
         return str(n)
-    if token not in WORD_NUMBERS:
+    if token not in _RETRY_WORDS:
         raise ValueError(f"retry split: {token!r} is neither digits nor a lowercase WORD_NUMBERS word")
-    words = {v: k for k, v in WORD_NUMBERS.items()}
-    return words.get(n, str(n))
+    return _RETRY_WORDS[n] if 0 <= n < len(_RETRY_WORDS) else str(n)
 
 
 def render_retry_split(text: str, repo: dict[str, Any]) -> str:

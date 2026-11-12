@@ -13,7 +13,7 @@ status: ready
 
 **Goal:** `scripts/maintenance/doc_inventory.py` renders 05-a's declared job retry split (§6's list and §11's two
 shapes) from the same declared-job parse `check_generated_docs.gate_derived_numbers` counts, so a change to a declared
-retry (the news retry change, stocks#1671; the EW evaluator retirement, stocks#1834) passes both the PR-mode render
+retry (the news retry change, stocks#1671; the EW evaluator retirement, first cut as stocks#1658 and re-cut from main as stocks#1834) passes both the PR-mode render
 check and `tests/scripts/test_check_generated_docs.py`.
 
 **Spec:** `docs/superpowers/specs/2026-10-31-feat-cicd-001-retry-split-substitution.md` (approved; admitted on main by #1756).

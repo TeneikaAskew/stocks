@@ -295,6 +295,14 @@ def test_truncated_transcript_is_a_finding(tmp_path):
     assert gate.gate_transcripts(t) == []
 
 
+def _off_by_one(token: str) -> str:
+    """token's count plus one, in token's form: a WORD_NUMBERS word while the table has one, digits beyond it,
+    as the renderer writes a count above twelve."""
+    if token.isdigit():
+        return str(int(token) + 1)
+    return {v: k for k, v in gate.WORD_NUMBERS.items()}.get(gate.WORD_NUMBERS[token] + 1, str(gate.WORD_NUMBERS[token] + 1))
+
+
 # The §6 list as 05-a states it, read by these tests' own pattern rather than by the renderer's.
 SECTION_6_LIST = re.compile(r"`--max-retries 0` for (?P<n0>\d+) of the (?P<total>\d+) declared jobs, "
                             r"`1` for (?P<n1>\d+) and `2` for (?P<c>\d+|[a-z]+)")
@@ -392,9 +400,9 @@ def test_a_spelled_out_retry_count_is_validated(live, repo, tmp_path):
     # Derived from the §6 list as the document states it: main's "one" becomes "two", as this test always injected.
     text = a.read_text()
     m = SECTION_6_LIST.search(text)
-    assert m and m.group("c") in gate.WORD_NUMBERS, "the §6 list does not end in a spelled-out count"
-    c = gate.WORD_NUMBERS[m.group("c")] + 1
-    word = {v: k for k, v in gate.WORD_NUMBERS.items()}[c]
+    assert m, "the §6 retry list is not in 05-a"
+    word = _off_by_one(m.group("c"))
+    c = gate.WORD_NUMBERS.get(word, word)
     a.write_text(text.replace(m.group(0), m.group(0)[:m.start("c") - m.start()] + word, 1))
     findings = gate.gate_derived_numbers(root, repo, live)
     assert any(f"claims {c} jobs at --max-retries 2" in f for f in findings), findings
@@ -2221,10 +2229,6 @@ def test_an_escaped_pipe_is_content_not_a_column():
 
 # ── each owned retry count is read by the unchanged check (FEAT-CICD-001 retry-split spec, done_when[1]) ────────
 
-def _off_by_one(token: str) -> str:
-    if token.isdigit():
-        return str(int(token) + 1)
-    return {v: k for k, v in gate.WORD_NUMBERS.items()}[gate.WORD_NUMBERS[token] + 1]
 
 
 # (shape, group of the owned per-flag count, the flag that count is for, as a group of the same match)
@@ -2261,3 +2265,9 @@ def test_a_non_owned_retry_phrasing_is_still_checked(live, repo, tmp_path):
     a.write_text(text + f"\n{n0 + 1} jobs use `--max-retries 0` in this sentence.\n")
     findings = gate.gate_derived_numbers(root, repo, live)
     assert any(f"claims {n0 + 1} jobs at --max-retries 0" in f for f in findings), findings
+
+
+def test_the_derived_wrong_count_keeps_working_past_the_word_table():
+    """A consumer whose retries-2 count reaches twelve renders "`2` for twelve"; the derived wrong count is then 13,
+    written in digits as the renderer writes a count above twelve, and the check reads digits too."""
+    assert [_off_by_one(t) for t in ("one", "eleven", "twelve", "12", "43")] == ["two", "twelve", "13", "13", "44"]
