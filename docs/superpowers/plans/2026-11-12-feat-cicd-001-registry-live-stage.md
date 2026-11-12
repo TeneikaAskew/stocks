@@ -3,7 +3,7 @@ feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-02-feat-cicd-001-registry-ten-minute-envelope.md
 branch: fix/feat-cicd-001-registry-live-stage
 pr: 1838
-status: ready
+status: done
 ---
 
 # Registry ten-minute envelope: live stage implementation plan
