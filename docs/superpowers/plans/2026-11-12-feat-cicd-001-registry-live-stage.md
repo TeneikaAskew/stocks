@@ -14,7 +14,7 @@ status: ready
 
 **Spec:** `docs/superpowers/specs/2026-11-02-feat-cicd-001-registry-ten-minute-envelope.md` (approved parent, #1683), § Sequence step 3 and § Decision. The pin stage's primary (`2026-11-02-feat-cicd-001-registry-ten-minute-pin.md`, #1693) is delivered and not bound here.
 
-**Why now.** From 2026-11-11 14:41Z to 2026-11-12 12:36Z, twelve registry jobs on pull-request runs ended cancelled after about six minutes (started-to-completed 6m00s to 6m18s, read from GitHub's job records): jobs 130591843070, 130645895725, 130650549940, 130652693026, 130654775451, 130738783712, 130796811112, 130868819366, 130946242736, 130986977991, 131013150515 and 131183486446. This stage is the approved remedy; it claims no speedup.
+**Why now.** From 2026-11-11 14:41Z to 2026-11-12 12:36Z, twelve registry jobs on pull-request runs ended cancelled after about six minutes (started-to-completed 6m01s to 6m15s, read from GitHub's job records): jobs 130591843070, 130645895725, 130650549940, 130652693026, 130654775451, 130738783712, 130796811112, 130868819366, 130946242736, 130986977991, 131013150515 and 131183486446. This stage is the approved remedy; it claims no speedup.
 
 **Base:** main 75493a47. One branch, one PR, one author.
 
