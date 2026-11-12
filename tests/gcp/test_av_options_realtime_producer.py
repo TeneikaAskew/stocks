@@ -920,3 +920,482 @@ def test_actual_requests_bad_status_fails_with_fixed_safe_reason(monkeypatch):
     assert str(error.value) == 'http_error'
     assert observed == [response]
     assert response.raw.closed
+
+
+# ──────────────────────────────────────────────────────────────────────
+# FEAT-OPTION-001 source budget (spec 2026-10-31, revision 6, rules 1-10)
+#
+# _SourceSim drives the original scheduled entry on a fake source clock.
+# Its timer stands in for the transport's SIGALRM: the transport arms it
+# through signal.setitimer, and when fake work crosses the armed instant
+# the installed handler runs exactly as the real signal would. Defaults:
+# connect 0.2 s, body 0.8 s, persistence 0.5 s, pace 0.4 s. No provider,
+# SQL or GCP call is made.
+# ──────────────────────────────────────────────────────────────────────
+
+class _SourceSim:
+    START = 1000.0
+
+    def __init__(self, monkeypatch, *, tickers='SPY IWM QQQ', connect=0.2,
+                 body=0.8, persistence=0.5, pace=0.4, empty=()):
+        import signal
+        import sys
+        from types import SimpleNamespace
+        from gcp.fetchers import _av_realtime_collector as mod
+        self.mod = mod
+        self.transport = mod._cli_transport
+        self.true = self.START      # what a real monotonic clock would read
+        self.offset = 0.0           # a scripted clock step (group d only)
+        self.alarm = None
+        self.connect = connect
+        self.body = body if isinstance(body, dict) else {}
+        self.default_body = body if not isinstance(body, dict) else 0.8
+        self.persistence = persistence if isinstance(persistence, dict) else {}
+        self.default_persistence = persistence if not isinstance(persistence, dict) else 0.5
+        self.empty = set(empty)
+        self.requests = []          # (ticker, true start)
+        self.call_ends = []         # (ticker, true end) per decoded_json
+        self.writes = []            # (ticker, rows)
+        self.write_hook = None
+        self.budgets = []
+        self.normalize_hook = None
+
+        monkeypatch.setattr(self.transport, '_source_clock', lambda: self.true + self.offset)
+        monkeypatch.setattr(signal, 'setitimer', self._setitimer)
+        monkeypatch.setattr(self.transport.time, 'sleep', self.advance)
+        monkeypatch.setattr(mod, '_av_cfg', SimpleNamespace(delay_between_calls=pace))
+        monkeypatch.setattr(mod, '_regular_session_due', lambda stamp: True)
+        monkeypatch.setattr(mod, 'is_cloud_sql_configured', lambda: True)
+        monkeypatch.setenv('AV_API_KEY', 'offline-key')
+        monkeypatch.setattr(sys, 'argv', ['collector', '--tickers', tickers])
+        monkeypatch.setattr(mod.requests, 'get', self._get)
+        monkeypatch.setattr(mod, 'upsert_dataframe', self._upsert)
+        real_decoded = self.transport.decoded_json
+
+        def decoded(params, deadline, observed):
+            try:
+                return real_decoded(params, deadline, observed)
+            finally:
+                self.call_ends.append((params['symbol'], self.true))
+        monkeypatch.setattr(self.transport, 'decoded_json', decoded)
+        real_normalize = mod._normalize_av_response
+
+        def normalize(*args, **kwargs):
+            result = real_normalize(*args, **kwargs)
+            if self.normalize_hook is not None:
+                self.normalize_hook(self)
+            return result
+        monkeypatch.setattr(mod, '_normalize_av_response', normalize)
+        budget_type = getattr(mod, '_SourceBudget', None)
+        if budget_type is not None:
+            original_init = budget_type.__init__
+
+            def init(budget):
+                original_init(budget)
+                self.budgets.append(budget)
+            monkeypatch.setattr(budget_type, '__init__', init)
+
+    def _setitimer(self, which, seconds, interval=0.0):
+        self.alarm = self.true + seconds if seconds > 0 else None
+        return (0.0, 0.0)
+
+    def advance(self, seconds):
+        import signal
+        target = self.true + seconds
+        if self.alarm is not None and target >= self.alarm:
+            self.true, self.alarm = self.alarm, None
+            signal.getsignal(signal.SIGALRM)(signal.SIGALRM, None)
+        self.true = target
+
+    def rel(self, value):
+        return value - self.START
+
+    def _get(self, *args, **kwargs):
+        ticker = kwargs['params']['symbol']
+        self.requests.append((ticker, self.true))
+        self.advance(self.connect)
+        sim = self
+        body = self.body.get(ticker, self.default_body)
+        payload = _empty_payload() if ticker in self.empty else _good_payload()
+
+        class Body(_FakeResponse):
+            charged = False
+
+            @property
+            def raw(self):
+                raw = super().raw
+                original = raw.read
+
+                def read(*a, **k):
+                    if not Body.charged:
+                        Body.charged = True
+                        sim.advance(body)
+                    return original(*a, **k)
+                raw.read = read
+                return raw
+        return Body(payload)
+
+    def _upsert(self, df, *args):
+        ticker = df['ticker'].iloc[0]
+        self.writes.append((ticker, len(df)))
+        if self.write_hook is not None:
+            result = self.write_hook(self, ticker, df)
+            if result is not None:
+                return result
+        self.advance(self.persistence.get(ticker, self.default_persistence))
+        return len(df)
+
+    def run(self):
+        try:
+            self.mod.main()
+        except SystemExit as exit_:
+            return exit_.code
+        return 0
+
+    def requested(self):
+        return [ticker for ticker, _ in self.requests]
+
+    def written(self):
+        return [ticker for ticker, _ in self.writes]
+
+
+@pytest.mark.parametrize('slow', [13.0, 20.0])
+@pytest.mark.parametrize('position', ['SPY', 'IWM', 'QQQ'], ids=['first', 'middle', 'final'])
+def test_persistence_time_excluded_from_shared_source_budget(monkeypatch, caplog, position, slow):
+    """#1646: slow persistence on any ticker no longer refuses a later ticker."""
+    sim = _SourceSim(monkeypatch, persistence={position: slow})
+    caplog.set_level(logging.INFO)
+    assert sim.run() == 0
+    assert sim.requested() == ['SPY', 'IWM', 'QQQ']
+    assert sim.written() == ['SPY', 'IWM', 'QQQ']
+    assert '3 acknowledged contracts written, 0 errors' in caplog.text
+    assert 'source_deadline' not in caplog.text and 'UNAVAILABLE' not in caplog.text
+
+
+def test_source_budget_is_cumulative_never_reset_or_revived(monkeypatch, caplog):
+    from gcp.fetchers import _av_realtime_collector as mod
+    # Provider time accumulates across ticker boundaries with no reset:
+    # 6 s bodies and no persistence time leave QQQ interrupted mid-body.
+    sim = _SourceSim(monkeypatch, body=6.0, persistence=0.0)
+    deadlines = []
+    sim.write_hook = lambda s, ticker, df: deadlines.append(s.budgets[0].deadline()) and None
+    caplog.set_level(logging.INFO)
+    assert sim.run() == 1
+    assert sim.requested() == ['SPY', 'IWM', 'QQQ'] and sim.written() == ['SPY', 'IWM']
+    assert deadlines == [pytest.approx(sim.START + 15.0)] * 2
+    assert '"ticker":"QQQ"' in caplog.text and 'source_deadline' in caplog.text
+
+    # A budget already exhausted when persistence begins stays exhausted:
+    # uninterrupted CPU work runs past the deadline before the pause.
+    caplog.clear()
+    sim = _SourceSim(monkeypatch, body={'SPY': 14.5}, persistence={'SPY': 30.0})
+    sim.normalize_hook = lambda s: s.advance(1.0) if len(s.requests) == 1 else None
+    seen = []
+    sim.write_hook = lambda s, ticker, df: seen.append(s.budgets[0].exhausted) and None
+    assert sim.run() == 1
+    assert sim.requested() == ['SPY'] and sim.written() == ['SPY']
+    assert seen == [True] and sim.budgets[0].exhausted
+    assert '1 acknowledged contracts written, 2 errors' in caplog.text
+    assert caplog.text.count('realtime UNAVAILABLE') == 2
+
+    # Persistence credit never restores more than the remainder held at the
+    # trusted pause reading, including where q + r rounds upward.
+    readings = iter([0.0, 10.25])
+    monkeypatch.setattr(mod._SourceBudget, '_clock', staticmethod(lambda point: next(readings)))
+    budget = mod._SourceBudget()
+    budget.pause()
+    held = budget._held
+    assert held == 4.75
+    for q in (10.25, 123.456789, 987654.321, 2.0 ** 40 + 0.1, 1e15 + 0.3):
+        readings = iter([q])
+        monkeypatch.setattr(mod._SourceBudget, '_clock', staticmethod(lambda point: next(readings)))
+        budget._paused, budget._held = True, held
+        budget.resume()
+        assert not budget.exhausted
+        assert 0 < budget.deadline() - q <= held
+    # Later source work raises SourceDeadline with zero further requests.
+    budget._exhausted = True
+    with pytest.raises(mod._cli_transport.SourceDeadline):
+        budget.checkpoint()
+    assert math.isnan(budget.deadline())
+
+
+_BAD_READINGS = {
+    'raises': 'raise',
+    'nan': float('nan'),
+    'inf': float('inf'),
+    'string': '1000.0',
+    'bool': True,
+    'backward': 'backward',
+}
+
+
+def _faulty_clock(monkeypatch, at, count, value):
+    """Return value instead of the true reading at the count-th covered `at`."""
+    from gcp.fetchers import _av_realtime_collector as mod
+    original = mod._SourceBudget._clock
+    seen = {}
+
+    def clock(point):
+        reading = original(point)
+        seen[point] = seen.get(point, 0) + 1
+        if point == at and seen[point] == count:
+            if value == 'raise':
+                raise RuntimeError('clock unavailable')
+            if value == 'backward':
+                return reading - 5.0
+            return value
+        return reading
+    monkeypatch.setattr(mod._SourceBudget, '_clock', staticmethod(clock))
+
+
+@pytest.mark.parametrize('fault', [k for k in _BAD_READINGS if k != 'backward'] + ['non-advancing'])
+def test_untrusted_clock_readings_fail_later_source_closed_creation(monkeypatch, caplog, fault):
+    """Group (a): an untrusted creation reading exits before any request or write."""
+    sim = _SourceSim(monkeypatch)
+    if fault == 'non-advancing':
+        sim.true = 1.7e308  # c0 + 15 == c0
+    else:
+        _faulty_clock(monkeypatch, 'create', 1, _BAD_READINGS[fault])
+    caplog.set_level(logging.INFO)
+    assert sim.run() == 1
+    assert sim.requests == [] and sim.writes == []
+    assert 'source deadline unavailable' in caplog.text
+
+
+@pytest.mark.parametrize('fault', list(_BAD_READINGS))
+@pytest.mark.parametrize('where', ['first-ticker', 'later-ticker', 'empty-retry'])
+def test_untrusted_clock_readings_fail_later_source_closed_before_fetch(monkeypatch, caplog, fault, where):
+    """Group (b): a faulty source-admission checkpoint refuses before dispatch."""
+    empty = ('IWM',) if where == 'empty-retry' else ()
+    sim = _SourceSim(monkeypatch, empty=empty)
+    # admit #1 is SPY's request, #2 IWM's pace, #3 IWM's first retry pace.
+    count = {'first-ticker': 1, 'later-ticker': 2, 'empty-retry': 3}[where]
+    _faulty_clock(monkeypatch, 'admit', count, _BAD_READINGS[fault])
+    caplog.set_level(logging.INFO)
+    assert sim.run() == 1
+    expected = {'first-ticker': [], 'later-ticker': ['SPY'], 'empty-retry': ['SPY', 'IWM']}[where]
+    assert sim.requested() == expected   # nothing refetched or replayed
+    assert sim.written() == ([] if where == 'first-ticker' else ['SPY'])
+    assert sim.budgets[0].exhausted
+    failed = {'first-ticker': 3, 'later-ticker': 2, 'empty-retry': 2}[where]
+    assert caplog.text.count('realtime UNAVAILABLE') == failed
+    assert ' failed' not in caplog.text.replace('Failed (', '')
+
+
+_AFTER_FETCH_FAULTS = (
+    [(at, fault) for at in ('post_call', 'pause', 'resume') for fault in _BAD_READINGS]
+    + [('resume', 'absorbing'), ('resume', 'clamped'),
+       ('pairing', 'double-pause'), ('pairing', 'resume-without-pause')])
+
+
+@pytest.mark.parametrize('at, fault', _AFTER_FETCH_FAULTS)
+@pytest.mark.parametrize('outcome', ['ack', 'short-ack', 'uncertain'])
+def test_untrusted_clock_readings_fail_later_source_closed_after_fetch(monkeypatch, caplog, fault, at, outcome):
+    """Group (c): exhaustion after a fetch keeps the current write and outcome."""
+    sim = _SourceSim(monkeypatch)
+    if fault == 'absorbing':
+        _faulty_clock(monkeypatch, 'resume', 1, 2.0 ** 60)   # q + r rounds to q
+    elif fault == 'clamped':
+        _faulty_clock(monkeypatch, 'resume', 1, 2.0 ** 56)   # q + r rounds past r
+    elif fault not in ('double-pause', 'resume-without-pause'):
+        _faulty_clock(monkeypatch, at, 1, _BAD_READINGS[fault])
+
+    def write(s, ticker, df):
+        if ticker == 'SPY':
+            if fault == 'double-pause':
+                s.budgets[0].pause()
+            if fault == 'resume-without-pause':
+                s.budgets[0].resume()   # the collector's own resume now has no pause
+            s.advance(0.5)
+            if outcome == 'short-ack':
+                return len(df) + 1
+            if outcome == 'uncertain':
+                raise RuntimeError('connection reset after a committed chunk')
+        return None
+    sim.write_hook = write
+    caplog.set_level(logging.INFO)
+    assert sim.run() == 1
+    assert sim.requested() == ['SPY'] and sim.written() == ['SPY']   # one write, no refetch
+    assert sim.budgets[0].exhausted
+    if outcome == 'ack':
+        assert 'upserted 1 acknowledged rows' in caplog.text
+        assert "'IWM: unavailable', 'QQQ: unavailable'" in caplog.text
+    elif outcome == 'short-ack':
+        assert "'SPY: unavailable', 'IWM: unavailable', 'QQQ: unavailable'" in caplog.text
+    else:
+        assert 'write outcome uncertain' in caplog.text
+        assert "'SPY: failed', 'IWM: unavailable', 'QQQ: unavailable'" in caplog.text
+
+
+def test_untrusted_clock_readings_fail_later_source_closed_admitted_residual(monkeypatch, caplog):
+    """Group (d): admitted backward steps are bounded or shown, not detected."""
+    from gcp.fetchers import _av_realtime_collector as mod
+    # Step after the post-call checkpoint: SPY normalization takes 2 s of true
+    # time and the clock steps back 1.5 s, so the pause reads p with L <= p.
+    sim = _SourceSim(monkeypatch)
+    marks = {}
+
+    def step_after_checkpoint(s):
+        if len(s.requests) == 1:
+            marks['checkpoint'] = s.true
+            s.advance(2.0)
+            s.offset = -1.5
+
+    def held_at_pause(s, ticker, df):
+        if ticker == 'SPY':
+            marks['held'] = s.budgets[0]._held
+            marks['true_pause'] = s.true
+        return None
+    sim.normalize_hook = step_after_checkpoint
+    sim.write_hook = held_at_pause
+    caplog.set_level(logging.INFO)
+    assert sim.run() == 0
+    true_remaining = (sim.START + 15.0) - marks['true_pause']
+    overstated = marks['held'] - true_remaining
+    since_checkpoint = marks['true_pause'] - marks['checkpoint']
+    assert overstated == pytest.approx(1.5)
+    assert 0 < overstated <= since_checkpoint      # the rule 5 bound
+    assert sim.requested() == sim.written() == ['SPY', 'IWM', 'QQQ']
+    assert not sim.budgets[0].exhausted
+
+    # Step during IWM's provider call that lands at or above its admission
+    # reading: the post-call checkpoint admits it; the pause overstates the
+    # remainder by up to the pace before the call plus its provider time.
+    caplog.clear()
+    sim = _SourceSim(monkeypatch)
+    marks = {}
+    original = mod._SourceBudget._clock
+
+    def clock(point):
+        reading = original(point)
+        if point == 'admit':
+            marks.setdefault('admits', []).append(reading)
+        return reading
+    monkeypatch.setattr(mod._SourceBudget, '_clock', staticmethod(clock))
+
+    def step_during_call(s):
+        if len(s.requests) == 2:
+            s.offset = -1.3   # true call end minus 1.3 s >= IWM's admission reading
+    real_get = sim._get
+
+    def get(*args, **kwargs):
+        response = real_get(*args, **kwargs)
+        step_during_call(sim)
+        return response
+    monkeypatch.setattr(mod.requests, 'get', get)
+
+    def held_at_iwm_pause(s, ticker, df):
+        if ticker == 'IWM':
+            marks['held'] = s.budgets[0]._held
+            marks['true_pause'] = s.true
+            marks['deadline'] = s.budgets[0]._deadline   # set before the step
+        return None
+    sim.write_hook = held_at_iwm_pause
+    assert sim.run() == 0
+    iwm_admission = marks['admits'][1]
+    assert sim.call_ends[1][1] + sim.offset >= iwm_admission   # admitted, not detected
+    true_remaining = marks['deadline'] - marks['true_pause']
+    overstated = marks['held'] - true_remaining
+    pace_and_provider = 0.4 + 0.2 + 0.8
+    assert overstated == pytest.approx(1.3)
+    assert overstated > 0                      # outside the rule 5 bound (0 s here)
+    assert overstated <= pace_and_provider + 1e-9
+    assert sim.requested() == sim.written() == ['SPY', 'IWM', 'QQQ']
+    assert not sim.budgets[0].exhausted
+
+
+def test_untrusted_clock_budget_arithmetic_is_terminal(monkeypatch):
+    """Non-finite budget arithmetic exhausts; no later reading revives it."""
+    from gcp.fetchers import _av_realtime_collector as mod
+    readings = iter([0.0, 1.0, 2.0, 3.0, 4.0])
+    monkeypatch.setattr(mod._SourceBudget, '_clock', staticmethod(lambda point: next(readings)))
+    budget = mod._SourceBudget()
+    budget.pause()
+    budget._held = math.inf
+    budget.resume()
+    assert budget.exhausted
+    with pytest.raises(mod._cli_transport.SourceDeadline):
+        budget.checkpoint()
+    budget.pause()
+    budget.resume()
+    assert budget.exhausted and math.isnan(budget.deadline())
+
+
+@pytest.mark.parametrize('failure', ['raises', 'short-ack'])
+def test_persistence_exception_and_short_ack_keep_outcome_and_resume_budget(monkeypatch, caplog, failure):
+    sim = _SourceSim(monkeypatch, persistence={'SPY': 9.0})
+    held = {}
+    committed = []
+
+    def write(s, ticker, df):
+        if ticker == 'SPY':
+            held['r'] = s.budgets[0]._held
+            committed.append('chunk-1')
+            s.advance(9.0)
+            if failure == 'raises':
+                raise RuntimeError('connection reset after chunk 1 committed')
+            return len(df) - 1 if len(df) > 1 else 0
+        if ticker == 'IWM':
+            held['iwm_deadline_left'] = s.budgets[0].deadline() - (s.true + s.offset)
+        return None
+    sim.write_hook = write
+    original_checkpoint = sim.mod._SourceBudget.checkpoint
+    after = []
+
+    def checkpoint(budget):
+        deadline = original_checkpoint(budget)
+        after.append(deadline - budget._last)
+        return deadline
+    monkeypatch.setattr(sim.mod._SourceBudget, 'checkpoint', checkpoint)
+    caplog.set_level(logging.INFO)
+    assert sim.run() == 1
+    assert sim.requested() == ['SPY', 'IWM', 'QQQ'] and sim.written() == ['SPY', 'IWM', 'QQQ']
+    # IWM's admission sees exactly the remainder held before SPY's write.
+    assert after[1] == pytest.approx(held['r'])
+    if failure == 'raises':
+        assert 'write outcome uncertain; partial chunks may have committed' in caplog.text
+        assert "Failed (1): ['SPY: failed']" in caplog.text
+    else:
+        assert "Failed (1): ['SPY: unavailable']" in caplog.text
+    assert 'source_deadline' not in caplog.text
+
+
+def test_provider_budget_exhaustion_and_retry_pacing_consume_source_budget(monkeypatch, caplog):
+    # Provider time alone past 15 s refuses or interrupts the later ticker.
+    sim = _SourceSim(monkeypatch, body=7.5, persistence=0.0)
+    caplog.set_level(logging.INFO)
+    assert sim.run() == 1
+    assert sim.written() == ['SPY'] and 'IWM' in sim.requested()
+    assert 'QQQ' not in sim.written()
+
+    # S7: connect 0.2 s, SPY body 14 s, persistence 0.5 s excluded.
+    caplog.clear()
+    sim = _SourceSim(monkeypatch, body={'SPY': 14.0, 'IWM': 14.0, 'QQQ': 14.0})
+    assert sim.run() == 1
+    assert sim.requested() == ['SPY', 'IWM'] and sim.written() == ['SPY']
+    (_, iwm_start), (_, iwm_end) = sim.requests[1], sim.call_ends[1]
+    assert sim.rel(iwm_start) == pytest.approx(15.1)
+    assert iwm_end - iwm_start == pytest.approx(0.36)
+    events = [e for e in _attempt_events(caplog) if e['ticker'] == 'IWM']
+    assert [e['error_class'] for e in events] == ['source_deadline']
+    assert "Failed (2): ['IWM: unavailable', 'QQQ: unavailable']" in caplog.text
+
+    # Retry refusal: IWM body 6.3 s with a literal-empty list on every attempt.
+    caplog.clear()
+    sim = _SourceSim(monkeypatch, body={'IWM': 6.3}, empty=('IWM',))
+    paces = []
+    real_pace = sim.transport.pace
+
+    def pace(deadline, delay):
+        paces.append((sim.rel(sim.true), sim.rel(deadline)))
+        return real_pace(deadline, delay)
+    monkeypatch.setattr(sim.transport, 'pace', pace)
+    assert sim.run() == 1
+    assert sim.requested() == ['SPY', 'IWM', 'IWM'] and sim.written() == ['SPY']
+    assert sim.rel(sim.call_ends[2][1]) == pytest.approx(15.3)   # attempt 2 ends
+    # IWM admission, retry 1, refused retry 2, refused QQQ admission.
+    assert [round(at, 6) for at, _ in paces] == [1.5, 8.4, 15.3, 15.3]
+    assert all(dl == pytest.approx(15.5) for _, dl in paces)
+    assert 'source pacing unavailable' not in caplog.text   # fixed reason never logged
+    assert "Failed (2): ['IWM: unavailable', 'QQQ: unavailable']" in caplog.text

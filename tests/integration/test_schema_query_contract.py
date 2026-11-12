@@ -305,3 +305,34 @@ def test_signal_quality_heal_and_coverage_queries_real_schema(clean_db, seed):
     unscored = find_unscored_rows(clean_db, heal_start, end)
     assert times(unscored) == expect("bootstrap_unscored", "fri_unscored", "mon_in_window")
     assert {"ticker", "entry_time", "strategy"} <= set(unscored.columns)
+
+
+def test_brief_writes_ftfc_continuity_to_both_premarket_tables(clean_db, run_sql, monkeypatch):
+    """FEAT-STRAT-001: the brief's row builder writes tf_continuity and the
+    tf_continuity_frames JSONB to premarket_analysis and its history table
+    through the production writers, against the applied gcp/schema.sql."""
+    from gcp import premarket_brief
+
+    monkeypatch.delenv("BRIEF_AS_OF", raising=False)
+    frames = {"1q": {"relation": "red", "open": 742.51, "observed_price": 691.95,
+                     "price_provenance": "latest_completed_close", "price_session": "2026-11-04",
+                     "rule_version": "price-open-v1", "reasons": []}}
+    brief = {"analysis_date": date(2026, 11, 5), "tickers": {"QQQ": {
+        "price": 691.95, "ftfc_score": 0.5, "ftfc_direction": "bullish",
+        "ftfc_labels": {"1d": "2U"}, "tf_continuity": "bearish",
+        "tf_continuity_frames": frames}}}
+    assert premarket_brief.persist_to_cloud_sql(brief, allow_update=True) == 1
+    import json
+    for table, order in (("premarket_analysis", "analysis_ts"),
+                         ("premarket_analysis_history", "written_at")):
+        df = run_sql(f"SELECT ftfc_score, ftfc_direction, tf_continuity, "
+                     f"jsonb_typeof(tf_continuity_frames) AS kind, tf_continuity_frames::text AS frames "
+                     f"FROM {table} WHERE ticker = 'QQQ' AND analysis_date = '2026-11-05' "
+                     f"ORDER BY {order} DESC LIMIT 1")
+        assert len(df) == 1, table
+        row = df.iloc[0]
+        assert row["ftfc_score"] == 0.5 and row["ftfc_direction"] == "bullish"
+        assert row["tf_continuity"] == "bearish"
+        # A JSON object, queryable as tf_continuity_frames->'1q'->>'relation'.
+        assert row["kind"] == "object", table
+        assert json.loads(row["frames"]) == frames

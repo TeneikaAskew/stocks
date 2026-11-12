@@ -19,7 +19,7 @@ name: Update vendored Superpowers skills
 # Secrets:
 #   - PR_WORKFLOW_TOKEN   opens the PR. The default GITHUB_TOKEN cannot when
 #                         "Allow GitHub Actions to create and approve pull
-#                         requests" is off; see refresh-architecture-docs.yml.
+#                         requests" is off; see refresh-architecture-docs.yml.disabled (retired).
 
 on:
   schedule:
@@ -155,7 +155,7 @@ jobs:
           )
 
           # REST rather than `gh pr create`, which goes through GraphQL and
-          # needs read:org; see refresh-architecture-docs.yml (Run 35).
+          # needs read:org; see refresh-architecture-docs.yml.disabled (Run 35).
           gh api -X POST "repos/${GITHUB_REPOSITORY}/pulls" \
             -f base="$BASE" -f head="$BRANCH" \
             -f title="chore(claude): update Superpowers skills from ${FROM} to ${VERSION}" \

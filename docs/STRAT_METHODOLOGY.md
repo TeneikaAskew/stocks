@@ -1,6 +1,6 @@
 # The Strat — Complete Pattern Definitions
 
-**Last reviewed:** unknown · **Last scanned:** 2026-10-20 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-11-03 · **Owner:** TBD
 
 **Source of truth** for all Strat logic in this codebase.
 When code and this doc diverge, **this doc wins**.
@@ -268,11 +268,51 @@ Example: MSFT "below 517.55 triggers the 11D 22 REV to the downside" — the 11-
 
 ---
 
-## 16. Full Timeframe Continuity (FTFC)
+## 16. Full Timeframe Continuity (FTFC) and TF bias
 
-All timeframes aligned in the same directional bias.
+Two different measures carry timeframe names in this codebase. Keep them apart.
 
-### Weights
+| Measure | What it is | Code | Stored as | Used by |
+|---|---|---|---|---|
+| **FTFC** (Rob Smith) | Price above (green) or below (red) the **current period's open** on every required timeframe | `lib/strat.py:calculate_timeframe_continuity` (rule `price-open-v1`) | `premarket_analysis.tf_continuity`, `tf_continuity_frames` (and the `_history` table) | Display and storage only. No gate reads it. |
+| **TF bias** | Weighted vote of the **last candle type** on each timeframe | `lib/strat.py:StratClassifier.calculate_ftfc` | `ftfc_score`, `ftfc_direction`, `ftfc_labels` (names kept for compatibility) | The gates: brief `signal_status`, `lib/strategies/brief_bias.py`, signal monitor `get_strat_bonus`, agents, backtests |
+
+The two disagree on real data. On the 2026-11-05 08:30 ET brief, QQQ's latest close 691.95 was below the quarter, month and week opens (FTFC bearish: Q red, M red, W red), while TF bias read +0.5 bullish because the daily candle was 2U and the monthly weight is zero.
+
+### FTFC: price versus current period open
+
+For each required timeframe, compare one observed price with that timeframe's current period open:
+
+| Price vs current open | Relation |
+|---|---|
+| above | `green` |
+| below | `red` |
+| equal | `at_open` |
+| missing frame, open or price | `unavailable` (with reasons) |
+
+| All required frames | State |
+|---|---|
+| every one green | `bullish` |
+| every one red | `bearish` |
+| any other mix of known relations (including `at_open`) | `mixed` |
+| any frame unavailable | `unavailable`, never a guess |
+
+Required frames are configuration (`lib/config.py` `StratConfig`):
+
+| Context | Key | Default |
+|---|---|---|
+| Premarket (the 08:30 ET brief, before the 09:30 open) | `continuity_timeframes_premarket` | `['1q', '1mo', '1w']` |
+| In session (anything after the 09:30 open) | `continuity_timeframes_session` | `['1q', '1mo', '1w', '1d']` |
+
+Daily is excluded premarket because today's daily period has no observed open yet. The brief compares its own `price` (the latest completed daily close, provenance `latest_completed_close`) with each open, built by `compute_strat_status` from the same daily source, observation clock and `observed_v2` aggregation as the rest of the Strat status. A price whose session closed after the observation clock is refused (`observed_price_after_clock`). The brief's Strat box shows it as `FTFC: bearish (Q red, M red, W red)`.
+
+On the first session of a week, month or quarter, that period opens at 09:30, after the 08:30 ET brief, so it has no open to compare with (about 23% of sessions in the replay). Its frame is `unavailable` with the leading reason `period_opens_after_clock`, and the state stays `unavailable`: one missing frame means no claim of agreement. The frames that can be judged keep their relation in `tf_continuity_frames` and on the line, for example `FTFC: unavailable (Q red, M opens today, W opens today)` on Monday 2026-11-02. A frame unavailable for any other reason shows its first reason, for example `D: missing_period_open`. No consumer reads `continuity_timeframes_session` yet.
+
+### TF bias: weighted candle vote
+
+All timeframes voting in the same direction by their last candle type. This is what `ftfc_score` holds and what the gates use today. It is displayed as "TF bias" (for example `TF bias: +0.5 (bullish)`).
+
+#### Weights
 
 | Timeframe | Key | Weight |
 |---|---|---|
@@ -285,7 +325,9 @@ All timeframes aligned in the same directional bias.
 | 5-Minute | `5m` | 0.05 |
 | **Total** | | **1.00** |
 
-### Per-timeframe contribution
+A timeframe with no weight (the brief's `1mo`) is classified and shown in `ftfc_labels` but contributes zero to the numerator and the denominator.
+
+#### Per-timeframe contribution
 
 | Last bar type | Contribution |
 |---|---|
@@ -293,9 +335,9 @@ All timeframes aligned in the same directional bias.
 | 2D | -weight |
 | 1 or 3 | 0 (neutral) |
 
-### Score
+#### Score
 
-`FTFC score = sum(weighted contributions)` — range [-1.0, +1.0]
+`TF bias score (ftfc_score) = sum(weighted contributions) / sum(weights of classified frames)` — range [-1.0, +1.0]
 
 | Score | Direction |
 |---|---|
@@ -361,13 +403,15 @@ Values reflect the calibrated weights shipped in `lib/strat.py` after deploy tun
 
 Source: `lib/strat.py` `COMBO_BONUS_CALL` (and the derived `COMBO_BONUS_PUT`).
 
-### FTFC bonus
+### FTFC bonus (reads TF bias)
+
+The bonus reads the weighted candle vote (`ftfc_score`, displayed as TF bias), not price-open FTFC (Section 16).
 
 | Condition | Bonus |
 |---|---|
-| FTFC score aligned with direction (≥ threshold) | +1.0 |
-| FTFC score contradicts direction (≤ -threshold) | -1.0 |
-| FTFC within threshold | 0.0 |
+| TF bias score aligned with direction (≥ threshold) | +1.0 |
+| TF bias score contradicts direction (≤ -threshold) | -1.0 |
+| TF bias within threshold | 0.0 |
 
 ### ORB alignment bonus
 
@@ -389,8 +433,9 @@ Source: `lib/strat.py` `COMBO_BONUS_CALL` (and the derived `COMBO_BONUS_PUT`).
 | Candle classification | `strat_candle` |
 | Combo pattern | `strat_combo` |
 | Setup forming | `strat_setup` |
-| FTFC score | `ftfc_score` |
-| FTFC direction | `ftfc_direction` |
+| TF bias score (weighted candle vote) | `ftfc_score` |
+| TF bias direction | `ftfc_direction` |
+| FTFC state (price vs current open) | `tf_continuity` |
 
 ### Combo label format
 `<pattern>_<direction>_<kind>`
@@ -439,6 +484,8 @@ Source: `lib/strat.py` `COMBO_BONUS_CALL` (and the derived `COMBO_BONUS_PUT`).
 | `premarket_analysis` | `strat_setup` | `BOOLEAN` | Setup flag |
 | `premarket_analysis` | `ftfc_score` | `DOUBLE PRECISION` | FTFC score |
 | `premarket_analysis` | `ftfc_direction` | `VARCHAR(10)` | Direction |
+| `premarket_analysis` | `tf_continuity` | `VARCHAR(12)` | FTFC (price vs current open): `bullish` / `bearish` / `mixed` / `unavailable` |
+| `premarket_analysis` | `tf_continuity_frames` | `JSONB` | Per timeframe: relation, open, observed price, provenance, reasons |
 | `signal_alerts` | `strat_combo` | `VARCHAR(30)` | Combo at signal time |
 | `strat_levels` | *(new table)* | | Per-level classification, see plan |
 

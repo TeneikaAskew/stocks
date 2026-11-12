@@ -6,7 +6,7 @@ GET /api/movement-statement       - PHASE 3 feature-flagged movement read
 import os
 import sys
 import logging
-from datetime import datetime, date as _date_cls, timedelta
+from datetime import datetime, date as _date_cls
 from pathlib import Path
 
 from typing import Optional
@@ -16,7 +16,9 @@ from api.schemas import (
     DashboardBriefResponse,
     MovementStatementResponse,
 )
+from lib.eastern_time import is_session, market_today, session_count
 from lib.infra_errors import is_backend_outage, is_infrastructure_error
+from lib.strat_levels import LevelParamsUnavailable
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -35,14 +37,13 @@ try:
 except Exception:
     pass
 
-# Reuse the same holiday calendar / market-open logic as the live router so
-# both endpoints agree on what "stale" and "open" mean.
+# Reuse the live router's market-open logic so both endpoints agree on what
+# "open" means; both read the shared NYSE calendar (lib.eastern_time).
 try:
     from platform.api.routers.live import (  # type: ignore[import-not-found]
         _is_market_open,
         get_live_quote,
         ET_TZ,
-        MARKET_HOLIDAYS_2026,
     )
 except Exception:  # pragma: no cover - import path differs when launched as `api.main`
     try:
@@ -50,33 +51,30 @@ except Exception:  # pragma: no cover - import path differs when launched as `ap
             _is_market_open,
             get_live_quote,
             ET_TZ,
-            MARKET_HOLIDAYS_2026,
         )
     except Exception:
         _is_market_open = None  # type: ignore[assignment]
         get_live_quote = None  # type: ignore[assignment]
         ET_TZ = None  # type: ignore[assignment]
-        MARKET_HOLIDAYS_2026 = set()  # type: ignore[assignment]
 
 
 def _trading_days_between(start: _date_cls, end: _date_cls) -> int:
-    """Count trading days strictly between `start` and `end` (both exclusive).
+    """Count NYSE sessions strictly between `start` and `end` (both exclusive).
 
-    Returns 0 when end <= start. Skips Sat/Sun and US market holidays. Used
+    Returns 0 when end <= start. Sessions come from the shared NYSE calendar
+    (lib.eastern_time), so weekends and every year's holidays are skipped. Used
     for staleness, so on Monday morning with Thursday's close as the most
     recent row this returns 1 (only Friday's bar is missing), not 4 calendar
     days. The end day is excluded because today's bar doesn't exist yet at
     market open.
+
+    The ``end <= start`` guard comes first: ``session_count`` counts
+    ``(start, end]``, so on a same-day session the subtraction alone gives -1.
+    A calendar failure raises; there is no weekday-only fallback.
     """
     if end <= start:
         return 0
-    count = 0
-    cur = start + timedelta(days=1)
-    while cur < end:
-        if cur.weekday() < 5 and cur not in MARKET_HOLIDAYS_2026:
-            count += 1
-        cur += timedelta(days=1)
-    return count
+    return session_count(start, end) - (1 if is_session(end) else 0)
 
 
 @router.get("/api/dashboard/brief/{ticker}", response_model=DashboardBriefResponse, response_model_exclude_unset=True)
@@ -174,10 +172,16 @@ async def dashboard_brief(
                     row_d = row_date
                 else:
                     row_d = datetime.strptime(str(row_date), "%Y-%m-%d").date()
-                ref_today = datetime.strptime(date, "%Y-%m-%d").date() if date else datetime.now().date()
-                stale_days = _trading_days_between(row_d, ref_today)
+                # The Eastern market date: the container clock is UTC, which
+                # is already tomorrow from 20:00 ET (CLAUDE.md 3.9).
+                ref_today = datetime.strptime(date, "%Y-%m-%d").date() if date else market_today()
+                # The session count may build or extend the calendar cache
+                # (seconds of CPU for a far-future ?date=): off the loop.
+                stale_days = await run_in_threadpool(_trading_days_between, row_d, ref_today)
             except Exception:
-                stale_days = 0
+                # Unknown, not fresh: 0 would read as up to date (CLAUDE.md 3.7).
+                logger.exception("stale_days for %s could not be computed; reporting null", ticker)
+                stale_days = None
             daily = {
                 "date": str(row.get("date", "")),
                 "stale_days": stale_days,
@@ -411,19 +415,14 @@ def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = 
     """Best-effort LevelMap for the movement statement, or None.
 
     `analysis_date` (default: today in America/New_York) is passed through to
-    build_level_map so compute_previous_levels anchors PDH/PDL to the session
-    BEFORE it. Without it that function assumes df's LAST row is today's
-    in-progress bar and reads iloc[-2]; this helper drops the NULL-close
-    premarket placeholder, so the last retained row is already yesterday's
-    complete bar and iloc[-2] is the day before — a ladder one session stale,
-    which the premarket playbook (built with analysis_date) never matched
-    (Codex P1 on #1030).
+    build_session_levels, which anchors PDH/PDL to the session BEFORE it by
+    period filter, so the ladder is never one session stale (Codex P1 on #1030).
 
     The assembler degrades the levels block to an explicit UNAVAILABLE
     envelope when level_map is None (Rule 3.7 — never a fabricated ladder),
     so this helper is allowed to return None on any data gap. It builds the
-    SAME LevelMap the premarket brief builds (lib.strat_levels.build_level_map
-    over the daily bars + computed historical levels) so the levels-to-go
+    SAME LevelMap the premarket brief builds (lib.strat_levels.build_session_levels
+    over the daily bars) so the levels-to-go
     ladder matches the rest of the platform — no duplicated math.
 
     Returns None (→ levels UNAVAILABLE) rather than raising, because a
@@ -435,20 +434,44 @@ def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = 
     try:
         import pandas as pd  # noqa: PLC0415
         from lib.data_loader import DataLoader  # noqa: PLC0415
-        from lib.indicators import calculate_historical_levels  # noqa: PLC0415
-        from lib.strat_levels import build_level_map, daily_data_freshness  # noqa: PLC0415
+        from lib.strat_levels import (  # noqa: PLC0415
+            SessionLevels, atr_inputs_from_frame, basis_records_params,
+            build_session_levels, daily_data_freshness, load_level_params,
+            premarket_snapshot_from_daily, read_live_level_basis,
+        )
+
+        def _params():
+            # The ticker's level parameters in force on the session, through
+            # the strict reader: unreadable tables raise LevelParamsUnavailable,
+            # re-raised below (an INTERNAL failure, not a data gap).
+            from gcp.database import query_to_dataframe_strict  # noqa: PLC0415
+            return load_level_params(query_to_dataframe_strict, [ticker], session)[ticker.upper()]
+
+        # One level source (FEAT-STRAT-001): the session's LIVE level_basis
+        # written by the brief, so the ladder is the brief's own side lists
+        # and the stored trigger is rung one. Only without one is it built.
+        # A basis that recorded its parameters rebuilds with them and never
+        # reads the parameter tables.
+        session = analysis_date or _movement_analysis_date()
+        if _query_fn is not None:
+            basis = read_live_level_basis(_query_fn, ticker, session)
+            if basis is not None:
+                stored = SessionLevels.from_basis(
+                    basis, params=None if basis_records_params(basis) else _params())
+                return stored.to_level_map() if stored.status == "ok" else None
 
         loader = DataLoader()
         df = loader.load_daily(ticker, on_stale="warn")
         if df is None or df.empty or len(df) < 2:
             return None
+        session_premarket = premarket_snapshot_from_daily(df, session)
         close_col = "Close" if "Close" in df.columns else "Last"
         if close_col not in df.columns:
             return None
         # Rule 3.7 — never anchor levels to a NaN/NULL close. market_data_daily
         # can carry a same-day PREMARKET PLACEHOLDER row (close NULL/NaN) that
         # DataLoader.load_daily keeps; float(NaN) does NOT raise, so an
-        # unfiltered df[close_col].iloc[-1] would push NaN into build_level_map →
+        # unfiltered df[close_col].iloc[-1] would push NaN into the level builder →
         # level_map.current_price = NaN → Starlette rejects NaN at JSON render →
         # 500 on an otherwise-valid request. Filter to rows whose OHLC quad is
         # fully real (non-null, non-NaN) and anchor to the LAST VALID close. If no
@@ -464,7 +487,6 @@ def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = 
         # a level crossed during the session flips between the call and put
         # ladders relative to the playbook's sides, losing its slot (Codex P2
         # on #1030, round 4).
-        session = analysis_date or _movement_analysis_date()
         ts_col = pd.to_datetime(df["Time"] if "Time" in df.columns else pd.Series(df.index, index=df.index))
         if getattr(ts_col.dt, "tz", None) is not None:
             ts_col = ts_col.dt.tz_localize(None)
@@ -478,7 +500,8 @@ def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = 
         # close (Codex P2 on #1030, rounds 5 and 6). The rule is the premarket
         # brief's own (lib.strat_levels.daily_data_freshness): the playbook row
         # this ladder is matched against is withheld on exactly the days this
-        # refuses, weekend bridges exempt, holiday Tuesdays deliberately not.
+        # refuses: a last bar older than the previous NYSE session, so weekend
+        # bridges and post-holiday sessions are fresh (FEAT-DATA-001).
         last_bar = pd.Timestamp(ts_col.loc[df.index[-1]]).normalize().date()
         is_stale, gap_days, status = daily_data_freshness(last_bar, session)
         if is_stale:
@@ -490,32 +513,18 @@ def _build_movement_level_map(ticker: str, analysis_date: Optional[_date_cls] = 
             return None
         if df.empty or len(df) < 2:
             return None
-        ts = df["Time"] if "Time" in df.columns else pd.Series(df.index)
-        levels_df = calculate_historical_levels(
-            ts, df["High"], df["Low"], df["Open"], df[close_col],
-        )
-        for col in levels_df.columns:
-            df[col] = levels_df[col].values
-        current_price = float(df[close_col].iloc[-1])
-        # Defensive second guard: if the last valid close is somehow still not a
-        # finite number, refuse to build levels rather than ship NaN downstream.
-        if not pd.notna(current_price):
+        if not pd.notna(float(df[close_col].iloc[-1])):
             return None
-        # DataLoader renames atr_14 → ATR14 (lib/data_loader.py) and the brief
-        # reads ATR14; checking only the lowercase name left this path on the
-        # percent-only staleness filter, showing lines >3 ATR away that the
-        # playbook it is matched against had excluded (Codex P2 on #1030).
-        atr_col = next((c for c in ("ATR14", "atr_14") if c in df.columns), None)
-        atr_for_filter = None
-        if atr_col is not None and pd.notna(df[atr_col].iloc[-1]):
-            atr_for_filter = float(df[atr_col].iloc[-1]) or None
-        return build_level_map(
-            ticker=ticker,
-            daily_df=df,
-            current_price=current_price,
-            atr=atr_for_filter,
-            analysis_date=session,
-        )
+        # The last completed session's ATR columns, as the brief reads them;
+        # the policy's basis picks one. Missing gives no rung (reason
+        # atr_unavailable).
+        built = build_session_levels(ticker, session, df, atr_inputs_from_frame(df, session),
+                                     session_premarket, _params())
+        return built.to_level_map() if built.status == "ok" else None
+    except LevelParamsUnavailable:
+        # The parameter tables cannot be read: INTERNAL (CLAUDE.md 3.7), not
+        # a data gap folded into the UNAVAILABLE envelope.
+        raise
     except Exception as exc:  # data gap → None → levels UNAVAILABLE (Rule 3.7)
         # A backend OUTAGE is not a data gap. It propagates to the route
         # guard, which answers 503 for it; swallowed here it became a None
