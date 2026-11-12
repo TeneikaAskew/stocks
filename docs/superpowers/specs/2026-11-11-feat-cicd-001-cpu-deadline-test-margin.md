@@ -12,7 +12,7 @@ done_when:
   - "Matched audits: python3 scripts/maintenance/docs_audit.py --no-owning-job-check --json with one issues capture on the PR head and on main reports no finding on the head that main does not."
   - "Suites: on the PR head, python3 -m pytest tests/scripts/test_doc_source_snapshot.py and python3 -m pytest tests/meta pass, and python3 scripts/gate/spec_gate.py --pr origin/main reports spec gate ok in ready mode."
   - "Records: the FEAT-CICD-001 record in docs/product/02-FEATURE-CATALOG.md shows a current Status and Last reviewed, and docs/product/12-PR-ISSUE-TRACEABILITY.md lists the PR under FEAT-CICD-001; no other capability's row or record changes."
-status: approved
+status: superseded
 supersedes: null
 ---
 

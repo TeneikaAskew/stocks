@@ -356,3 +356,70 @@ def test_get_catalyst_context_imminent_earnings_beats_pre_economic():
     assert ctx["next_catalyst_min"] == 10
     assert ctx["next_catalyst_type"] == "earnings_pre"
     assert ctx["proximity_bucket"] == "imminent"
+
+
+@pytest.mark.parametrize('historical', [False, True])
+def test_nearest_earnings_retire_ew_real_reader(monkeypatch, historical):
+    """Same-day and historical controls execute the reader's SQL over shared rows."""
+    import json
+    from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
+    from tests.fixtures import earnings_calendar_sources as source
+
+    ts = datetime(2026, 6, 8, 10, tzinfo=ET) if historical else \
+        datetime(2026, 11, 11, 10, tzinfo=ET)
+    today = ts.date()
+    rows = [
+        source.av('MIX', today, earnings_time='premarket'),
+        source.ew_only('MIX', today, earnings_time='postmarket'),
+        source.ew_raw_alias('MIX', today, earnings_time='postmarket'),
+        *source.alias_control_rows('SRC', today),
+        source.av('AV', today), source.uw('UW', today),
+        source.yahoo('YAHOO', today), source.ew_only('EWONLY', today),
+        *source.legacy_dates(),
+    ]
+    main_sql = """
+        SELECT earnings_date, earnings_time
+          FROM earnings_calendar
+         WHERE ticker = :ticker
+           AND earnings_date BETWEEN (CAST(:ts AS timestamp) - INTERVAL '1 day')::date
+                                AND (CAST(:ts AS timestamp) + INTERVAL '1 day')::date
+         ORDER BY earnings_date
+         LIMIT 5
+    """
+    conn = source.make_db(rows)
+    use_main = False
+
+    def query(sql, params):
+        stripped = sql.replace('AND ' + EARNINGS_NOT_RETIRED_SQL, '')
+        assert ' '.join(stripped.split()) == ' '.join(main_sql.split())
+        selected = main_sql if use_main else sql
+        # Translate only PostgreSQL timestamp arithmetic at the query boundary;
+        # SQLite still executes the WHERE, ordering and LIMIT unchanged.
+        for sign in ['-', '+']:
+            selected = selected.replace(
+                f"(CAST(:ts AS timestamp) {sign} INTERVAL '1 day')::date",
+                f"date(:ts, '{sign}1 day')",
+            )
+        return source.run_earnings_sql(conn, selected, params)
+
+    monkeypatch.setattr(cp, '_query_or_empty', query)
+    try:
+        tickers = {row['ticker'] for row in rows}
+        use_main = True
+        baseline = {ticker: cp._nearest_earnings(ticker, ts) for ticker in tickers}
+        assert baseline['MIX'] == (390, 'earnings_post', 120, 'earnings_pre')
+        assert all(baseline[ticker] == (None, None, 120, 'earnings_pre')
+                   for ticker in ['SRC2', 'SRC3', 'EWONLY'])
+        if historical:
+            assert baseline['LGCY'] == (None, None, 120, 'earnings_pre')
+        use_main = False
+        actual = {ticker: cp._nearest_earnings(ticker, ts) for ticker in tickers}
+        assert actual['MIX'] == (None, None, 120, 'earnings_pre')
+        empty = (None, None, None, None)
+        assert all(actual[ticker] == empty for ticker in ['SRC2', 'SRC3', 'EWONLY', 'LGCY'])
+        assert {ticker for ticker, result in actual.items() if result != empty} == {
+            'MIX', 'SRC0', 'SRC1', 'SRC4', 'SRC5', 'SRC6', 'SRC7', 'AV', 'UW', 'YAHOO'}
+        for ticker in ['SRC0', 'SRC1', 'SRC4', 'SRC5', 'SRC6', 'SRC7', 'AV', 'UW', 'YAHOO']:
+            assert json.dumps(actual[ticker]).encode() == json.dumps(baseline[ticker]).encode()
+    finally:
+        conn.close()
