@@ -23,9 +23,14 @@ from lib.eastern_time import ET, ET_NAME
 
 from lib.data_loader import DataLoader
 from lib.indicators import add_brief_indicators
-from lib.strat import StratClassifier, compute_strat_status
-from lib.strat_levels import build_level_map, format_levels_for_brief, levels_to_named_dict
+from lib.strat import (CONTINUITY_DISPLAY_ORDER, StratClassifier, compute_strat_status,
+                       timeframe_continuity_record)
+from lib.strat_levels import (
+    LevelParamsUnavailable, build_session_levels,
+    format_levels_for_brief, load_level_params, premarket_snapshot_from_daily,
+)
 from lib.signals import check_call_conditions, check_put_conditions
+from lib.strategies.calibration import resolve_rsi_bands
 from lib.config import load_config
 
 # Configure logging for the Cloud Run Job. Without this, `logger.info()`
@@ -233,8 +238,11 @@ def _load_gamma_freshness(ticker: str, as_of: date) -> dict:
                 "snapshot_date": None, "days_behind": None}
 
 
-def _delete_null_close_rows(ticker: str) -> int:
-    """Delete market_data_daily rows for `ticker` that have NULL close.
+def _delete_null_close_rows(ticker: str, before) -> int:
+    """Delete market_data_daily rows for `ticker` dated before `before` that
+    have NULL close. The session's own row (dated `before`, written by
+    fetch-premarket-refresh with pre_* only until the nightly close lands)
+    is never touched: the brief reads its premarket snapshot from it.
 
     Some upstream fetchers (mystery 06:44 EDT script on 2026-04-30
     inserted 43 NULL placeholder rows — see
@@ -255,8 +263,8 @@ def _delete_null_close_rows(ticker: str) -> int:
     try:
         deleted = execute_sql(
             "DELETE FROM market_data_daily "
-            "WHERE ticker = :t AND close IS NULL",
-            {'t': ticker.upper()},
+            "WHERE ticker = :t AND close IS NULL AND date < :d",
+            {'t': ticker.upper(), 'd': str(before)},
         )
         # execute_sql returns the driver rowcount as of commit 1b6b2067 —
         # use the real count instead of a hardcoded "did the cleanup
@@ -1002,6 +1010,17 @@ def _resolve_analysis_date() -> date:
     return parsed
 
 
+def _strat_observation_clock(analysis_date: date) -> Optional[pd.Timestamp]:
+    """The Strat observation clock for this run: None (now) live, and the
+    brief's own 08:30 ET premarket clock on ``analysis_date`` for a BRIEF_AS_OF
+    replay, so a replay's weekly and monthly periods, FTFC and recorded
+    observation time describe that morning rather than the day it is rerun
+    (Codex on #1714)."""
+    if _as_of_override() is None:
+        return None
+    return pd.Timestamp(analysis_date.isoformat() + ' 08:30', tz=ET_NAME)
+
+
 def _resolve_brief_tickers(default_tickers: list[str]) -> list[str]:
     """Resolve the ticker list the brief runs against.
 
@@ -1041,6 +1060,13 @@ def _resolve_brief_tickers(default_tickers: list[str]) -> list[str]:
     return default_tickers
 
 
+def _level_params_query(sql: str, params: dict):
+    """The strict reader load_level_params runs on: a failed query or a
+    missing table raises (CLAUDE.md 3.7), never an empty frame."""
+    from gcp import database  # noqa: PLC0415
+    return database.query_to_dataframe_strict(sql, params)
+
+
 def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
     """Generate pre-market brief for all tickers.
 
@@ -1059,6 +1085,12 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
     building_threshold = cfg.signal.premarket_building_threshold
 
     analysis_date = _resolve_analysis_date()
+
+    # The per-ticker level parameters in force on the session, read once for
+    # every ticker of the run (FEAT-STRAT-001). A missing table or a failed
+    # query raises LevelParamsUnavailable here, before any ticker is built,
+    # so the brief exits non-zero without writing a row.
+    level_params = load_level_params(_level_params_query, tickers, analysis_date)
 
     loader = DataLoader(data_dir=data_dir)
     strat = StratClassifier(strat_config=cfg.strat)
@@ -1110,7 +1142,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             )
             # Opportunistic cleanup so future runs don't re-encounter
             # these rows. Fire-and-forget — failure here is non-fatal.
-            _delete_null_close_rows(ticker)
+            _delete_null_close_rows(ticker, analysis_date)
         if df.empty or len(df) < 2:
             brief['tickers'][ticker] = {'status': 'NO DATA (all rows null)'}
             continue
@@ -1165,7 +1197,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         if is_stale:
             logger.warning(
                 "[brief:%s] STALE_DAILY_DATA — last bar %s, analysis_date %s, "
-                "gap=%d session(s); skipping per-ticker analysis to avoid "
+                "gap=%d calendar day(s); skipping per-ticker analysis to avoid "
                 "republishing stale signals. See Track B audit G.P0.4.",
                 ticker, last_bar_date_obj, analysis_date, gap_days,
             )
@@ -1198,6 +1230,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         bb_upper = _safe_float(latest.get('BB_Upper'))
         bb_lower = _safe_float(latest.get('BB_Lower'))
         atr14 = _safe_float(latest.get('ATR14'))
+        atr5 = _safe_float(latest.get('ATR5'))
         macd = _safe_float(latest.get('MACD'))
         macd_sig = _safe_float(latest.get('MACD_Signal'))
         stoch_k = _safe_float(latest.get('StochRSI_K'))
@@ -1211,9 +1244,21 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         # same helper the LLM analyst calls (lib/agents/summarizers.py),
         # so the brief and the AI report agree on candle / combo / FTFC.
         # PR #101 renamed timeframe keys to match RESAMPLE_RULES (1d/1w/1mo).
+        # The weighted candle vote (ftfc_score, displayed as "TF bias") is
+        # what the signal gate reads. FTFC proper, price versus each current
+        # period's open, uses the brief's own price (curr_close, the latest
+        # completed daily close) over the premarket frames: display and
+        # storage only, never a gate input.
+        strat_clock = _strat_observation_clock(analysis_date)
         strat_status = compute_strat_status(
             ticker, df=df, timeframes=['1d', '1w', '1mo'], strat_config=cfg.strat,
+            as_of=strat_clock, inclusive_today=strat_clock is None,
+            observed_price=curr_close, observed_price_session=last_bar_date_obj,
+            price_provenance='latest_completed_close',
+            continuity_timeframes=cfg.strat.continuity_timeframes_premarket,
         )
+        tf_continuity, tf_continuity_frames = timeframe_continuity_record(
+            strat_status.get('timeframe_continuity'))
         if strat_status.get('available'):
             daily_strat = strat_status['last_candle']
             daily_combo = strat_status.get('in_force_combo')
@@ -1222,16 +1267,31 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             ftfc_dir = strat_status.get('ftfc_direction', 'mixed')
             ftfc_labels = strat_status.get('ftfc_labels', {}) or {}
         else:
-            daily_strat = '1'
+            # FEAT-STRAT-001: unavailable stays unavailable ('X', no score,
+            # no direction), never an inside bar with a neutral score.
+            # The signal gate below reads a None direction as mixed.
+            daily_strat = 'X'
             daily_combo = None
             daily_setup = False
-            ftfc_score = 0.0
-            ftfc_dir = 'mixed'
+            ftfc_score = None
+            ftfc_dir = None
             ftfc_labels = {}
 
         # ── Signal conditions ───────────────────────────────────────────
-        call_score, _ = check_call_conditions(latest)
-        put_score, _ = check_put_conditions(latest)
+        # RSI bands are the ticker's own: the ticker_calibration row in force
+        # on analysis_date, through the resolver the signal monitor uses
+        # (Tier A), else its Tier-B constants (FEAT-SIGNAL-001, 2026-11-11
+        # spec). Replays read the row in force on the replayed session.
+        rsi_bands = resolve_rsi_bands(ticker, as_of=analysis_date)
+        rsi_band_tier = (rsi_bands['call_tier'] if rsi_bands['call_tier'] == rsi_bands['put_tier']
+                         else f"{rsi_bands['call_tier']}/{rsi_bands['put_tier']}")
+        logger.info(
+            "[brief:%s] RSI bands call=%s put=%s tier=%s calibration_date=%s",
+            ticker, rsi_bands['call'], rsi_bands['put'], rsi_band_tier,
+            rsi_bands['calibration_date'],
+        )
+        call_score, _ = check_call_conditions(latest, rsi_range=rsi_bands['call'])
+        put_score, _ = check_put_conditions(latest, rsi_range=rsi_bands['put'])
         signal_status = _resolve_signal_status(
             call_score=call_score,
             put_score=put_score,
@@ -1268,6 +1328,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             'bb_upper': bb_upper,
             'bb_lower': bb_lower,
             'atr14': atr14,
+            'atr5': atr5,
             'above_sma200': above_sma200,
             'vol_regime': _vol_regime(vol_20d),
             'volatility_20d': vol_20d,
@@ -1275,12 +1336,22 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             'consecutive_up': consec_up,
             'consecutive_down': consec_down,
             'signal_status': signal_status,
+            'rsi_call_band': rsi_bands['call'],
+            'rsi_put_band': rsi_bands['put'],
+            'rsi_band_tier': rsi_band_tier,
+            'rsi_band_calibration_date': rsi_bands['calibration_date'],
             'strat_candle': daily_strat,
             'strat_combo': daily_combo,
             'strat_setup': bool(daily_setup),
-            'ftfc_score': float(ftfc_score),
+            'strat_available': bool(strat_status.get('available')),
+            'strat_reason': None if strat_status.get('available') else strat_status.get('reason'),
+            'strat_observation_ts': strat_status.get('observation_ts'),
+            'ftfc_score': float(ftfc_score) if ftfc_score is not None else None,
             'ftfc_direction': ftfc_dir,
             'ftfc_labels': {k: v for k, v in ftfc_labels.items()},
+            # FTFC proper (price-open-v1): display and storage only.
+            'tf_continuity': tf_continuity,
+            'tf_continuity_frames': tf_continuity_frames,
             # Track B audit G.P0.5 — record which OHLCV bar the
             # analysis used so freshness audits don't need joins.
             # `data_as_of_anchored` is normalized to 16:00 ET on the
@@ -1394,6 +1465,11 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             print(f"[brief:{ticker}] load_daily → {len(df)} rows", file=sys.stderr, flush=True)
             if df.empty:
                 continue
+            # The session's OWN premarket snapshot (the row dated
+            # analysis_date, written by fetch-premarket-refresh at 08:20 ET),
+            # read before the frame is cut to prior sessions. The prior
+            # day's pre_* is never this session's (FEAT-STRAT-001).
+            session_premarket = premarket_snapshot_from_daily(df, analysis_date)
             # Same as_of cutoff applied above for the strat block — keep
             # the level map honest on historical replays so PDH/PDL/PWH
             # / etc. don't silently leak future bars (e.g. ARM 4/20
@@ -1406,143 +1482,38 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
                     print(f"[brief:{ticker}] insufficient bars before {analysis_date}",
                           file=sys.stderr, flush=True)
                     continue
-            close_col = 'Close' if 'Close' in df.columns else 'Last'
-            from lib.indicators import calculate_historical_levels
-            ts = df['Time'] if 'Time' in df.columns else pd.Series(df.index)
-            levels_df = calculate_historical_levels(
-                ts, df['High'], df['Low'], df['Open'], df[close_col],
+            # The last completed session's ATR(14) and ATR(5), as the brief
+            # computed them above; the policy's atr_basis picks the one every
+            # distance is measured in. Missing ATR gives no trigger on either
+            # side (reason atr_unavailable).
+            atrs = {'atr_14': d.get('atr14'), 'atr_5': d.get('atr5')}
+            session_levels = build_session_levels(
+                ticker, analysis_date, df, atrs, session_premarket,
+                level_params[ticker.upper()],
+                daily_strat_class=str(d.get('strat_candle') or ''),
             )
-            for col in levels_df.columns:
-                df[col] = levels_df[col].values
-            # Pass atr_14 from the latest daily row so build_level_map
-            # can apply the ATR + % staleness filter (drops year-old
-            # crash lows like ASTX 2026-04-28 PYL=15.03 from PUT
-            # trigger selection). When atr_14 is missing/NaN the filter
-            # falls back to the percent-only axis.
-            atr_for_filter = float(d.get('atr14') or 0.0) or None
-            print(f"[brief:{ticker}] calling build_level_map "
-                  f"(current_price={d.get('price')}, atr={atr_for_filter})",
-                  file=sys.stderr, flush=True)
-            level_map = build_level_map(
-                ticker=ticker, daily_df=df, current_price=d['price'],
-                atr=atr_for_filter,
-                analysis_date=analysis_date,
-            )
-            # 2026-05-10 — append intraday premarket levels (PMK_H / PMK_L)
-            # so they get persisted alongside the structural ones. Pre-fix
-            # the trade_planner had to synthesize a trigger above pre_high
-            # via ATR projection (5/6 QQQ: $695.52 = pre_high+0.20×ATR),
-            # which on tight days like 5/6 was never reached during RTH.
-            # With PMK_H persisted, the planner can use pre_high directly
-            # as a candidate trigger AND signal_monitor sees PMK_H/L as
-            # triggerable crossings live during the session.
-            try:
-                from lib.strat_levels import compute_premarket_levels
-                latest_for_pmk = df.iloc[-1] if len(df) else None
-                _pmk_h = float(latest_for_pmk.get('pre_high')) if (
-                    latest_for_pmk is not None
-                    and pd.notna(latest_for_pmk.get('pre_high'))
-                ) else None
-                _pmk_l = float(latest_for_pmk.get('pre_low')) if (
-                    latest_for_pmk is not None
-                    and pd.notna(latest_for_pmk.get('pre_low'))
-                ) else None
-                pmk_levels = compute_premarket_levels(_pmk_h, _pmk_l)
-                if pmk_levels:
-                    level_map.levels.extend(pmk_levels.values())
-                    print(f"[brief:{ticker}] appended {len(pmk_levels)} PMK levels "
-                          f"(PMK_H={_pmk_h}, PMK_L={_pmk_l})",
-                          file=sys.stderr, flush=True)
-            except Exception as exc:
-                print(f"[brief:{ticker}] PMK levels skipped: {type(exc).__name__}: {exc}",
-                      file=sys.stderr, flush=True)
-            print(f"[brief:{ticker}] build_level_map → {len(level_map.levels)} levels"
-                  f" (calls_trigger={'yes' if level_map.calls_trigger else 'NO (filtered)'}, "
-                  f"puts_trigger={'yes' if level_map.puts_trigger else 'NO (filtered)'})",
+            atr_for_filter = session_levels.atr
+            level_map = session_levels.to_level_map()
+            d['level_basis'] = session_levels.to_basis()
+            d['premarket_status'] = session_levels.premarket_status
+            print(f"[brief:{ticker}] build_session_levels → {len(level_map.levels)} levels"
+                  f" (calls={level_map.calls_trigger and level_map.calls_trigger['trigger_name']}"
+                  f" reason={level_map.reason_long}, puts="
+                  f"{level_map.puts_trigger and level_map.puts_trigger['trigger_name']}"
+                  f" reason={level_map.reason_short}, premarket={session_levels.premarket_status})",
                   file=sys.stderr, flush=True)
 
-            # Compute the gap regime so the playbook can flag orb_only /
-            # extended setups instead of publishing a stale level-break
-            # plan. Same algorithm the 9:15 AM insight pipeline uses
-            # (lib.agents.trade_planner.select_trigger_and_regime).
-            #
-            # We evaluate BOTH directions (long AND short) — previously
-            # only the bias direction was checked, which meant a
-            # bullish-bias ticker's bias-denial PUT setup never got
-            # filtered. The bias direction is treated as the "primary"
-            # regime that drives the playbook formatter; the
-            # opposite-side regime is logged and used downstream for
-            # per-side banners (so a denied PUT on a bullish ticker can
-            # still be flagged as 'extended' / 'orb_only').
-            regime_long = regime_short = 'normal'
-            regime_compute_error = None
-            try:
-                from lib.agents.trade_planner import (
-                    PlanContext, select_trigger_and_regime,
-                )
-                level_dict = levels_to_named_dict(level_map)
-                ftfc_dir = (d.get('ftfc_direction') or '').lower()
-                latest_row = df.iloc[-1]
-                pre_high_v = latest_row.get('pre_high')
-                pre_low_v = latest_row.get('pre_low')
-                pre_vwap_v = latest_row.get('pre_vwap')
-                gap_pct_v = latest_row.get('gap_pct')
-
-                def _ctx(direction: str) -> PlanContext:
-                    return PlanContext(
-                        direction=direction,
-                        conviction='medium',
-                        close=float(d['price']),
-                        atr=float(d.get('atr14') or 0.0),
-                        trigger_high=level_dict.get('PDH'),
-                        trigger_low=level_dict.get('PDL'),
-                        pwh=level_dict.get('PWH'), pwl=level_dict.get('PWL'),
-                        pmh=level_dict.get('PMH'), pml=level_dict.get('PML'),
-                        pqh=level_dict.get('PQH'), pql=level_dict.get('PQL'),
-                        pyh=level_dict.get('PYH'), pyl=level_dict.get('PYL'),
-                        effective_pdh=level_dict.get('PDH'),
-                        effective_pdl=level_dict.get('PDL'),
-                        pre_high=float(pre_high_v) if pd.notna(pre_high_v) else None,
-                        pre_low=float(pre_low_v) if pd.notna(pre_low_v) else None,
-                        pre_vwap=float(pre_vwap_v) if pd.notna(pre_vwap_v) else None,
-                        gap_pct=float(gap_pct_v) if pd.notna(gap_pct_v) else None,
-                    )
-
-                # `select_trigger_and_regime` returns a 5-tuple as of
-                # the synthetic-trigger refactor in
-                # `lib/agents/trade_planner.py` —
-                # `(regime, trigger, stop_anchor, distance_atr, is_synthetic)`.
-                # The brief only consumes the regime here; the rest
-                # use `*_` so future renames or extensions to the
-                # planner's return shape don't ripple back. Pre-fix
-                # this unpacked 4 elements, which produced the
-                # `regime classifier failed: ValueError: too many
-                # values to unpack (expected 4)` warning observed
-                # surfacing via the `regime_compute_error` defensive
-                # path during the 2026-05-09 brief replays.
-                regime_long, *_ = select_trigger_and_regime(_ctx('long'), 'long')
-                regime_short, *_ = select_trigger_and_regime(_ctx('short'), 'short')
-                # Bias direction = primary regime for legacy callers.
-                regime = regime_short if 'bear' in ftfc_dir else regime_long
-                d['regime'] = regime
-                d['regime_long'] = regime_long
-                d['regime_short'] = regime_short
-                print(f"[brief:{ticker}] regime_long={regime_long} "
-                      f"regime_short={regime_short} primary={regime}",
-                      file=sys.stderr, flush=True)
-            except Exception as exc:
-                # Regime compute is best-effort. Fall back to 'normal'
-                # so the playbook still renders. Surface the error in
-                # the brief so silent failures don't mask real bugs.
-                regime = 'normal'
-                regime_compute_error = f"{type(exc).__name__}: {exc}"
-                print(f"[brief:{ticker}] regime compute failed: "
-                      f"{regime_compute_error}",
-                      file=sys.stderr, flush=True)
-                d['regime'] = 'normal'
-                d['regime_long'] = 'normal'
-                d['regime_short'] = 'normal'
-                d['regime_compute_error'] = regime_compute_error
+            # Per-side regime comes from the same SessionLevels; there is no
+            # second level walk.
+            ftfc_dir = (d.get('ftfc_direction') or '').lower()
+            regime_long = level_map.regime_long
+            regime_short = level_map.regime_short
+            regime = regime_short if 'bear' in ftfc_dir else regime_long
+            d['regime'] = regime
+            d['regime_long'] = regime_long
+            d['regime_short'] = regime_short
+            d['reason_long'] = level_map.reason_long
+            d['reason_short'] = level_map.reason_short
 
             d['playbook'] = format_levels_for_brief(
                 level_map=level_map, bias=d.get('ftfc_direction', 'mixed'),
@@ -1758,6 +1729,46 @@ def _fmt_combo(combo: str) -> str:
     return ' '.join(out)
 
 
+_CONTINUITY_SHORT = {'1y': 'Y', '1q': 'Q', '1mo': 'M', '1w': 'W', '1d': 'D'}
+_CONTINUITY_WORDS = {'green': 'green', 'red': 'red', 'at_open': 'at open'}
+
+
+def _fmt_tf_continuity(state: Optional[str], frames: Optional[dict]) -> str:
+    """The Strat box's FTFC line: price versus each current period open.
+
+    ``FTFC: bearish (Q red, M red, W red)`` when every frame is known. When
+    any frame is unavailable the state stays ``unavailable`` (no claim of
+    agreement) but the frames that can be judged still show:
+    ``FTFC: unavailable (Q red, M opens today, W opens today)`` on the first
+    session of a month and week, ``W: missing_period_open`` for any other
+    reason. ``FTFC: unavailable (not recorded)`` for a row written before
+    the columns existed. Frames render year, quarter, month, week, day.
+    """
+    # A migrated row with no backfill holds SQL NULL, which pandas may return as NaN.
+    if not isinstance(state, str) or not state:
+        return 'FTFC: unavailable (not recorded)'
+    frames = frames if isinstance(frames, dict) else {}
+    order = [tf for tf in CONTINUITY_DISPLAY_ORDER if tf in frames]
+    order += [tf for tf in frames if tf not in order]
+    short = {tf: _CONTINUITY_SHORT.get(tf, _fmt_timeframe(tf)) for tf in order}
+    parts = [_fmt_continuity_frame(short[tf], frames[tf] or {}) for tf in order]
+    return f'FTFC: {state}' + (f' ({", ".join(parts)})' if parts else '')
+
+
+def _fmt_continuity_frame(label: str, frame: dict) -> str:
+    """One frame of the FTFC line: its color, when it opens, or why not."""
+    relation = frame.get('relation')
+    if relation in _CONTINUITY_WORDS:
+        return f'{label} {_CONTINUITY_WORDS[relation]}'
+    reasons = frame.get('reasons') or ['unavailable']
+    if reasons[0] == 'period_opens_after_clock' and frame.get('period_start'):
+        opens = pd.Timestamp(frame['period_start']).tz_convert('America/New_York').date()
+        observed = frame.get('observation_ts')
+        today = observed and pd.Timestamp(observed).tz_convert('America/New_York').date() == opens
+        return f'{label} opens ' + ('today' if today else opens.isoformat())
+    return f'{label}: {reasons[0]}'
+
+
 def _fmt_timeframe(tf: str) -> str:
     """Render a timeframe key in canonical uppercase short form.
 
@@ -1901,23 +1912,25 @@ def _resolve_data_freshness(
       * ``gap_days``     — calendar-day gap between ``last_bar_date``
                            and ``analysis_date``. None-input maps to
                            sentinel ``-1`` (status='unknown').
-      * ``is_stale``     — True if the gap > 1 calendar day AND the
-                           weekend-exemption doesn't apply. The
-                           weekend exemption: a Monday brief that
-                           reads Friday's bar (gap=3) is fresh, NOT
-                           stale. Implemented as
-                           ``analysis_date.weekday() == 0 and gap == 3``.
-                           Tuesday-after-holiday-Monday with gap=4
-                           still flags as stale; that's a deliberate
-                           bias toward false-positives on holiday
-                           weeks (overflagging is recoverable; under-
-                           flagging is the audit's failure mode).
+      * ``is_stale``    : True when the gap is over one calendar
+                           day AND the last bar is older than the last
+                           NYSE session before ``analysis_date``
+                           (``lib.eastern_time.previous_session``). So a
+                           Monday reading Friday, a Sunday weekly brief
+                           reading Friday and every session after an
+                           NYSE holiday (the Tuesday after Memorial Day
+                           reading Friday, the Friday after Thanksgiving
+                           reading Wednesday) are fresh, while a frame
+                           missing a session is stale. Until the
+                           2026-11-11 FEAT-DATA-001 spec this counted
+                           calendar days and skipped every post-holiday
+                           session.
       * ``status``       — string written to
                            ``premarket_analysis.data_freshness_status``:
                              'fresh' | 'STALE_DAILY_DATA' | 'unknown'.
 
-    Pure function for unit-testability — does not touch globals or
-    DataFrames. The caller (``generate_premarket_brief``) handles
+    Reads only the process-wide NYSE session cache (and only for a gap
+    of two days or more); a calendar failure raises. The caller (``generate_premarket_brief``) handles
     resolving ``last_bar_date`` from ``df.iloc[-1].name`` and
     propagating the verdict into the per-ticker dict.
     """
@@ -2137,7 +2150,7 @@ def _build_overview_embed(brief: dict) -> dict:
             f'{sma_pos}{rvol_str}{vol_str}'
         )
 
-    # FTFC summary line
+    # TF bias summary line (the weighted candle vote, keys ftfc_*)
     ftfc_parts = []
     for ticker, d in brief.get('tickers', {}).items():
         if d.get('status') == 'NO DATA':
@@ -2149,7 +2162,7 @@ def _build_overview_embed(brief: dict) -> dict:
         ftfc_parts.append(f'{ticker}: {d["ftfc_direction"]} ({d["ftfc_score"]:+.1f})')
     if ftfc_parts:
         lines.append('')
-        lines.append('**FTFC:** ' + ' | '.join(ftfc_parts))
+        lines.append('**TF bias:** ' + ' | '.join(ftfc_parts))
 
     # \ud83d\udcca Data freshness summary (Track B audit G.P0.5). Single
     # description-suffix line so phone-only readers see the
@@ -2299,18 +2312,29 @@ def _build_ticker_fields(brief: dict) -> list:
         # previous `Daily: 2U | Combo: ...` mash-up) — the long
         # title-cased combo names overflowed visually when piped onto
         # the Daily line on mobile.
-        strat_lines = [f'Daily: {d["strat_candle"]}']
+        if d.get('strat_available') is False or d.get('strat_candle') == 'X':
+            reason = d.get('strat_reason')
+            strat_lines = ['Daily: unavailable' + (f' ({reason})' if reason else '')]
+        else:
+            strat_lines = [f'Daily: {d["strat_candle"]}']
         if d['strat_combo'] != 'none':
             strat_lines.append(f'Combo: {_fmt_combo(d["strat_combo"])}')
-        strat_lines.append(
-            f'FTFC: {d["ftfc_score"]:+.1f} ({d["ftfc_direction"]})'
-        )
+        # "TF bias" is the weighted candle vote stored as ftfc_score (what
+        # the gates read); "FTFC" is price versus each current period open.
+        if d.get('ftfc_score') is None:
+            strat_lines.append('TF bias: unavailable')
+        else:
+            strat_lines.append(
+                f'TF bias: {d["ftfc_score"]:+.1f} ({d["ftfc_direction"]})'
+            )
         tf_parts = ' '.join(
             f'{_fmt_timeframe(k)}:{v}'
             for k, v in d.get('ftfc_labels', {}).items()
         )
         if tf_parts:
             strat_lines.append(tf_parts)
+        strat_lines.append(_fmt_tf_continuity(
+            d.get('tf_continuity'), d.get('tf_continuity_frames')))
         if d['strat_setup']:
             strat_lines.append('**SETUP FORMING**')
 
@@ -3288,6 +3312,13 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
             'ftfc_score': data.get('ftfc_score'),
             'ftfc_direction': data.get('ftfc_direction'),
             'ftfc_labels': json.dumps(data.get('ftfc_labels', {})),
+            # FTFC proper (price-open-v1), display and storage only. Both
+            # tables carry the columns once gcp/schema.sql is applied; until
+            # then upsert_dataframe and bulk_insert_dataframe drop them.
+            # The dict goes in as is: the reflected JSONB type serializes it
+            # to a JSON object (json.dumps first would store a JSON string).
+            'tf_continuity': data.get('tf_continuity'),
+            'tf_continuity_frames': data.get('tf_continuity_frames'),
             'prev_day_high': data.get('prev_day_high'),
             'prev_day_low': data.get('prev_day_low'),
             # New enriched fields (silently dropped if columns don't exist yet)
@@ -3344,6 +3375,11 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
             'llm_orb_explanation': brief.get('llm_orb_explanation'),
             'llm_analysis': data.get('llm_analysis'),
             'llm_playbook': data.get('llm_playbook'),
+            # FEAT-STRAT-001: the SessionLevels snapshot (levels, ATR(14),
+            # the last daily bar date, the session premarket snapshot and
+            # the picks). Dropped by upsert_dataframe and
+            # bulk_insert_dataframe until gcp/schema.sql adds the column.
+            'level_basis': data.get('level_basis'),
         })
 
     if not rows:
@@ -3491,6 +3527,14 @@ def fetch_premarket_analysis_row(ticker: str, analysis_date) -> Optional[dict]:
             row['ftfc_labels'] = json.loads(row['ftfc_labels'])
         except (json.JSONDecodeError, TypeError):
             row['ftfc_labels'] = {}
+    if isinstance(row.get('tf_continuity_frames'), str):
+        try:
+            row['tf_continuity_frames'] = json.loads(row['tf_continuity_frames'])
+        except (json.JSONDecodeError, TypeError):
+            # Unreadable frames: the Strat box shows FTFC unavailable.
+            logger.warning("tf_continuity_frames for %s on %s is not JSON", ticker, analysis_date)
+            row['tf_continuity'] = 'unavailable'
+            row['tf_continuity_frames'] = None
     return row
 
 
@@ -3650,7 +3694,13 @@ def main(argv: Optional[list[str]] = None):
 
     print(f"Generating pre-market brief... (allow_update={allow_update}, "
           f"run_kind={run_kind}, triggered_by={triggered_by})")
-    brief = generate_premarket_brief(cfg=cfg, data_dir=data_dir)
+    try:
+        brief = generate_premarket_brief(cfg=cfg, data_dir=data_dir)
+    except LevelParamsUnavailable as exc:
+        # INTERNAL failure (CLAUDE.md 3.7): no premarket_analysis row is
+        # written for any ticker; the job goes red.
+        logger.error("premarket brief aborted: %s (%s)", exc.reason, exc)
+        sys.exit(1)
     print(json.dumps(brief, indent=2, default=str))
 
     # Persist to Cloud SQL — always writes history; current-table

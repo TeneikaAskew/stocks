@@ -726,6 +726,115 @@ class TestResolveDataFreshness:
         assert status == 'unknown'
 
 
+from tests.gcp.test_strat_snapshot_parity import no_network  # noqa: E402,F401  (fixture)
+
+
+class TestBriefRsiBands:
+    """FEAT-SIGNAL-001 (2026-11-11 spec): the brief scores RSI against the
+    ticker's ticker_calibration band in force on the analysis date (the
+    resolver the signal monitor uses), Tier B when there is none. On
+    origin/main it always used the hard-coded (25, 50) / (50, 75)."""
+
+    TIER_A = {"calibration_date": date(2026, 10, 1), "rsi_p10": 35.0, "rsi_p25": 43.0,
+              "rsi_p50": 50.5, "rsi_p75": 57.0, "rsi_p90": 65.0, "drift_flagged": False}
+
+    def _run(self, monkeypatch, row, rsi=30.0):
+        from lib import signals as real
+        from lib.strategies import calibration
+        from tests.gcp.test_strat_snapshot_parity import _brief, _daily
+        pb, cfg = _brief(monkeypatch, _daily())
+        seen = {'as_of': [], 'call': [], 'put': []}
+
+        def latest(ticker, as_of=None):
+            seen['as_of'].append((ticker, as_of))
+            return row
+        monkeypatch.setattr(calibration, '_latest_calibration', latest)
+        monkeypatch.setattr(pb, 'add_brief_indicators', lambda df, **k: df.assign(
+            RSI14=rsi, Consecutive_Up=0, Consecutive_Down=3, Price_vs_VWAP=-1.0, StochRSI_K=50.0))
+
+        def call_spy(r, **k):
+            out = real.check_call_conditions(r, **k)
+            seen['call'].append((k.get('rsi_range'), out))
+            return out
+
+        def put_spy(r, **k):
+            out = real.check_put_conditions(r, **k)
+            seen['put'].append((k.get('rsi_range'), out))
+            return out
+        monkeypatch.setattr(pb, 'check_call_conditions', call_spy)
+        monkeypatch.setattr(pb, 'check_put_conditions', put_spy)
+        out = pb.generate_premarket_brief(cfg=cfg)['tickers']['IWM']
+        return out, seen, real
+
+    def test_tier_a_band_is_resolved_as_of_the_analysis_date(self, monkeypatch, no_network):
+        out, seen, _ = self._run(monkeypatch, self.TIER_A)
+        assert seen['as_of'] == [('IWM', date(2026, 10, 9))]
+        assert [b for b, _ in seen['call']] == [(35.0, 50.5)]
+        assert [b for b, _ in seen['put']] == [(50.5, 65.0)]
+        assert out['rsi_call_band'] == (35.0, 50.5) and out['rsi_put_band'] == (50.5, 65.0)
+        assert out['rsi_band_tier'] == 'A'
+        assert out['rsi_band_calibration_date'] == date(2026, 10, 1)
+        # RSI 30 sits inside the hard-coded (25, 50) but below Tier A's 35.
+        (score, conds) = seen['call'][0][1]
+        assert 'rsi_oversold_zone' not in conds and score == 2
+
+    def test_no_calibration_row_scores_as_before(self, monkeypatch, no_network):
+        out, seen, real = self._run(monkeypatch, None)
+        assert [b for b, _ in seen['call']] == [(25.0, 50.0)]
+        assert [b for b, _ in seen['put']] == [(50.0, 75.0)]
+        assert out['rsi_band_tier'] == 'B' and out['rsi_band_calibration_date'] is None
+        (score, conds) = seen['call'][0][1]
+        assert 'rsi_oversold_zone' in conds and score == 3
+
+    def test_the_brief_never_scores_with_default_bands(self):
+        import ast
+        import pathlib
+        src = pathlib.Path(__file__).resolve().parents[2] / 'gcp' / 'premarket_brief.py'
+        calls = [n for n in ast.walk(ast.parse(src.read_text()))
+                 if isinstance(n, ast.Call) and getattr(n.func, 'id', None)
+                 in ('check_call_conditions', 'check_put_conditions')]
+        assert len(calls) == 2
+        assert all(any(k.arg == 'rsi_range' for k in c.keywords) for c in calls)
+
+
+class TestBriefAfterHoliday:
+    """FEAT-DATA-001 (2026-11-11 spec): the brief on Friday 2026-11-27, the
+    session after Thanksgiving, reads Wednesday 2026-11-25. It must score the
+    ticker, not skip it as STALE_DAILY_DATA (it skipped 2026-05-26, 06-22,
+    07-06 and 09-08 that way). A frame missing Wednesday is still stale."""
+
+    @staticmethod
+    def _bars(last_day):
+        import pandas as pd
+        idx = pd.bdate_range(end=pd.Timestamp(last_day), periods=60)
+        idx = idx[idx != pd.Timestamp('2026-11-26')]   # Thanksgiving, no bar
+        base = [100.0 + 0.3 * i for i in range(len(idx))]
+        return pd.DataFrame({'Open': base, 'High': [b + 1 for b in base],
+                             'Low': [b - 1 for b in base], 'Close': [b + 0.2 for b in base],
+                             'Volume': 1000.0}, index=idx)
+
+    def _run(self, monkeypatch, last_day):
+        from tests.gcp.test_strat_snapshot_parity import _brief
+        pb, cfg = _brief(monkeypatch, self._bars(last_day))
+        monkeypatch.setenv('BRIEF_AS_OF', '2026-11-27')
+        # 2026-11-27 is after the day this test was written; pin the
+        # analysis date instead of the replay guard's wall clock.
+        monkeypatch.setattr(pb, '_resolve_analysis_date', lambda: date(2026, 11, 27))
+        return pb.generate_premarket_brief(cfg=cfg)['tickers']['IWM']
+
+    def test_friday_after_thanksgiving_is_scored(self, monkeypatch, no_network):
+        out = self._run(monkeypatch, '2026-11-25')
+        assert out.get('status') != 'STALE_DAILY_DATA'
+        assert out['data_freshness_status'] == 'fresh'
+        assert out['freshness_gap_days'] == 2
+        assert out['signal_status'].startswith(('CALL', 'PUT', 'No signal'))
+
+    def test_missing_wednesday_is_still_stale(self, monkeypatch, no_network):
+        out = self._run(monkeypatch, '2026-11-24')
+        assert out['status'] == 'STALE_DAILY_DATA'
+        assert out['freshness_gap_days'] == 3
+
+
 class TestDataAsOfAnchor:
     """W11 — `data_as_of` should be anchored to 16:00 ET (US/Eastern
     market close) on the bar's date, regardless of how the daily
@@ -2890,7 +2999,27 @@ class TestDeleteNullCloseRows:
         monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: True)
         monkeypatch.setattr(database, "execute_sql", lambda sql, params=None: 3)
 
-        assert _delete_null_close_rows("SPY") == 3
+        assert _delete_null_close_rows("SPY", "2026-11-06") == 3
+
+    def test_never_deletes_the_sessions_own_premarket_row(self, monkeypatch):
+        """The session's row carries pre_* with a NULL close until the
+        nightly job; the cleanup is bounded to dates before the session
+        (Codex review on #1753: an older NULL-close row made the brief
+        delete the session's premarket row and publish premarket_unavailable)."""
+        from gcp import database
+        from gcp.premarket_brief import _delete_null_close_rows
+
+        seen = {}
+
+        def _exec(sql, params=None):
+            seen["sql"], seen["params"] = sql, params
+            return 1
+
+        monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: True)
+        monkeypatch.setattr(database, "execute_sql", _exec)
+        _delete_null_close_rows("QQQ", "2026-11-06")
+        assert "date < :d" in seen["sql"]
+        assert seen["params"] == {"t": "QQQ", "d": "2026-11-06"}
 
     def test_returns_zero_when_no_rows_matched(self, monkeypatch):
         from gcp import database
@@ -2899,7 +3028,7 @@ class TestDeleteNullCloseRows:
         monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: True)
         monkeypatch.setattr(database, "execute_sql", lambda sql, params=None: 0)
 
-        assert _delete_null_close_rows("SPY") == 0
+        assert _delete_null_close_rows("SPY", "2026-11-06") == 0
 
     def test_returns_zero_when_cloud_sql_not_configured(self, monkeypatch):
         from gcp import database
@@ -2907,7 +3036,7 @@ class TestDeleteNullCloseRows:
 
         monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: False)
 
-        assert _delete_null_close_rows("SPY") == 0
+        assert _delete_null_close_rows("SPY", "2026-11-06") == 0
 
     def test_returns_zero_and_swallows_on_execute_error(self, monkeypatch):
         from gcp import database
@@ -2920,7 +3049,7 @@ class TestDeleteNullCloseRows:
 
         monkeypatch.setattr(database, "execute_sql", _boom)
 
-        assert _delete_null_close_rows("SPY") == 0
+        assert _delete_null_close_rows("SPY", "2026-11-06") == 0
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -3158,3 +3287,294 @@ def test_a_null_metric_read_back_as_nan_renders_as_absent(mock_cloud_sql):
     data['ew_recap'] = recap
     desc = _build_earnings_embed(data)['description']
     assert 'EW LC $30 HIT +18.7%' in desc and 'in ' not in desc.split('SNX')[1].split('\n')[0]
+
+
+class TestStratReplayClock:
+    """A BRIEF_AS_OF replay judges Strat at that morning's premarket clock,
+    not at the day it is rerun (Codex on #1714)."""
+
+    def test_live_run_keeps_the_now_clock(self, monkeypatch):
+        from gcp import premarket_brief as pb
+        monkeypatch.delenv('BRIEF_AS_OF', raising=False)
+        assert pb._strat_observation_clock(date(2026, 4, 8)) is None
+
+    def test_replay_uses_the_premarket_clock_of_the_replay_date(self, monkeypatch):
+        import pandas as pd
+        from gcp import premarket_brief as pb
+        monkeypatch.setenv('BRIEF_AS_OF', '2026-04-08')
+        assert pb._strat_observation_clock(date(2026, 4, 8)) == pd.Timestamp(
+            '2026-04-08 08:30', tz='America/New_York')
+
+    def test_replay_ftfc_matches_that_morning_on_the_captured_iwm_history(self, monkeypatch):
+        import pandas as pd
+        from gcp import premarket_brief as pb
+        from lib.strat import compute_strat_status
+        from scripts.research.strat_foundation_diagnostic import load_fixture
+        monkeypatch.setenv('BRIEF_AS_OF', '2026-04-08')
+        df, _ = load_fixture()
+        df = df.loc[df.index < pd.Timestamp('2026-04-08')]   # the brief's own cutoff
+        clock = pb._strat_observation_clock(date(2026, 4, 8))
+        out = compute_strat_status('IWM', df=df, timeframes=['1d', '1w', '1mo'],
+                                   as_of=clock, inclusive_today=clock is None)
+        assert out['observation_ts'] == '2026-04-08T08:30:00-04:00'
+        assert out['ftfc_labels'] == {'1d': '3', '1w': '2U', '1mo': '1'}
+        assert out['ftfc_score'] == 0.25
+
+
+# ── FEAT-STRAT-001: TF bias label and FTFC (price vs current open) ──────
+
+
+def _frame(relation, open_, price=100.0, reasons=None):
+    return {'relation': relation, 'open': open_, 'observed_price': price,
+            'price_provenance': 'latest_completed_close', 'price_session': '2026-11-04',
+            'rule_version': 'price-open-v1', 'reasons': reasons or []}
+
+
+class TestTfBiasAndFtfcRender:
+    """The weighted vote reads TF bias; FTFC is price versus each current open."""
+
+    def _strat(self, **data):
+        from gcp.premarket_brief import _build_ticker_fields
+        base = TestTickerFieldsLayout()._ticker_data(strat_combo='none', **data)
+        fields = _build_ticker_fields({'tickers': {'QQQ': base}})
+        return next(f['value'] for f in fields if f['name'] == 'QQQ Strat').split('\n')
+
+    def test_tf_bias_labels_and_ftfc_lines_in_order(self):
+        lines = self._strat(
+            ftfc_score=0.5, ftfc_direction='bullish',
+            ftfc_labels={'1d': '2U', '1w': '2D', '1mo': '2D'},
+            tf_continuity='bearish',
+            tf_continuity_frames={'1q': _frame('red', 742.51), '1mo': _frame('red', 695.315),
+                                  '1w': _frame('red', 695.315)})
+        assert lines == ['Daily: 2U', 'TF bias: +0.5 (bullish)', '1D:2U 1W:2D 1M:2D',
+                         'FTFC: bearish (Q red, M red, W red)']
+
+    def test_mixed_and_at_open(self):
+        lines = self._strat(tf_continuity='mixed', tf_continuity_frames={
+            '1q': _frame('green', 90.0), '1mo': _frame('red', 110.0), '1w': _frame('at_open', 100.0)})
+        assert lines[-1] == 'FTFC: mixed (Q green, M red, W at open)'
+
+    def test_frames_render_quarter_month_week_day_whatever_the_stored_order(self):
+        # JSONB returns keys shortest first: the render order must not depend on it.
+        lines = self._strat(tf_continuity='bullish', tf_continuity_frames={
+            '1d': _frame('green', 1), '1q': _frame('green', 1), '1w': _frame('green', 1),
+            '1mo': _frame('green', 1)})
+        assert lines[-1] == 'FTFC: bullish (Q green, M green, W green, D green)'
+
+    def test_unavailable_names_the_frame_and_reason(self):
+        lines = self._strat(tf_continuity='unavailable', tf_continuity_frames={
+            '1q': _frame('green', 90.0), '1mo': _frame('green', 95.0), '1w': _frame('green', 96.0),
+            '1d': _frame('unavailable', None, reasons=['missing_period_open', 'no_observations'])})
+        assert lines[-1] == 'FTFC: unavailable (Q green, M green, W green, D: missing_period_open)'
+
+    def test_unavailable_keeps_judged_frames_and_says_which_open_today(self):
+        opens = dict(period_start='2026-11-02T09:30:00-05:00', observation_ts='2026-11-02T08:30:00-05:00')
+        not_open = ['period_opens_after_clock', 'missing_period_open', 'no_observations']
+        lines = self._strat(tf_continuity='unavailable', tf_continuity_frames={
+            '1q': _frame('red', 742.51),
+            '1mo': {**_frame('unavailable', None, reasons=not_open), **opens},
+            '1w': {**_frame('unavailable', None, reasons=not_open), **opens}})
+        assert lines[-1] == 'FTFC: unavailable (Q red, M opens today, W opens today)'
+
+    def test_a_period_opening_on_a_later_day_names_its_date(self):
+        lines = self._strat(tf_continuity='unavailable', tf_continuity_frames={
+            '1w': {**_frame('unavailable', None, reasons=['period_opens_after_clock']),
+                   'period_start': '2026-11-02T09:30:00-05:00',
+                   'observation_ts': '2026-11-01T20:00:00-05:00'}})
+        assert lines[-1] == 'FTFC: unavailable (W opens 2026-11-02)'
+
+    def test_row_written_before_the_columns_says_not_recorded(self):
+        assert self._strat()[-1] == 'FTFC: unavailable (not recorded)'
+
+    @pytest.mark.parametrize('null', [None, float('nan')])
+    def test_cached_replay_of_a_migrated_null_row_says_not_recorded(self, monkeypatch, null):
+        # After ADD COLUMN with no backfill, old rows carry both keys as SQL NULL;
+        # pandas can hand the NULL back as None or NaN. /replay must still render.
+        import gcp.database as database
+        from gcp.premarket_brief import _build_ticker_fields, fetch_premarket_analysis_row
+        stored = TestTickerFieldsLayout()._ticker_data(strat_combo='none')
+        stored.update(ticker='QQQ', tf_continuity=null, tf_continuity_frames=null)
+        monkeypatch.setattr(database, 'is_cloud_sql_configured', lambda: True)
+        monkeypatch.setattr(database, 'query_to_dataframe', lambda sql, params=None: pd.DataFrame([stored]))
+        row = fetch_premarket_analysis_row('QQQ', '2026-10-20')
+        fields = _build_ticker_fields({'tickers': {'QQQ': row}})
+        strat = next(f['value'] for f in fields if f['name'] == 'QQQ Strat').split('\n')
+        assert strat[-1] == 'FTFC: unavailable (not recorded)'
+
+    def test_frames_that_are_not_an_object_render_as_no_frames(self):
+        assert self._strat(tf_continuity='mixed', tf_continuity_frames=float('nan'))[-1] == 'FTFC: mixed'
+
+    @pytest.mark.parametrize('null', [None, float('nan')])
+    def test_explanation_inputs_read_a_null_row_as_unavailable(self, null):
+        from gcp.brief_explanations import _ftfc_state
+        assert _ftfc_state({'tf_continuity': null, 'tf_continuity_frames': null}) == 'unavailable'
+        assert _ftfc_state({'tf_continuity': 'mixed', 'tf_continuity_frames': null}) == 'mixed'
+
+    def test_unavailable_tf_bias_is_labelled_tf_bias(self):
+        lines = self._strat(ftfc_score=None, ftfc_direction=None, ftfc_labels={})
+        assert 'TF bias: unavailable' in lines
+        assert not any(line.startswith('FTFC: +') or line.startswith('FTFC: -') for line in lines)
+
+    def test_overview_summary_line_reads_tf_bias(self):
+        from gcp.premarket_brief import _build_overview_embed
+        embed = _build_overview_embed({'date': 'Thu Nov 05, 2026', 'tickers': {
+            'QQQ': {'price': 691.95, 'change_pct': 1.0, 'rsi': 50, 'ftfc_direction': 'bullish',
+                    'ftfc_score': 0.5, 'vol_regime': 'Normal'}}})
+        assert '**TF bias:** QQQ: bullish (+0.5)' in embed['description']
+        assert '**FTFC:**' not in embed['description']
+
+
+class TestFtfcPersistence:
+    """tf_continuity and tf_continuity_frames reach both tables, and the
+    writers still succeed against tables that do not have them yet."""
+
+    _FRAMES = {'1q': _frame('red', 742.51, 691.95), '1mo': _frame('red', 695.315, 691.95),
+               '1w': _frame('red', 695.315, 691.95)}
+
+    def _brief(self):
+        return {'analysis_date': date(2026, 11, 5), 'tickers': {'QQQ': {
+            'price': 691.95, 'status': 'OK', 'ftfc_score': 0.5, 'ftfc_direction': 'bullish',
+            'ftfc_labels': {'1d': '2U', '1w': '2D', '1mo': '2D'},
+            'tf_continuity': 'bearish', 'tf_continuity_frames': self._FRAMES}}}
+
+    def test_row_builder_writes_both_columns_to_history_and_canonical(self, monkeypatch):
+        import gcp.database as db
+        from gcp import premarket_brief as pb
+        written = {}
+        monkeypatch.delenv('BRIEF_AS_OF', raising=False)
+        monkeypatch.setattr(db, 'is_cloud_sql_configured', lambda: True)
+        monkeypatch.setattr(db, 'row_exists', lambda table, where: False)
+        monkeypatch.setattr(db, 'bulk_insert_dataframe',
+                            lambda df, table: written.setdefault(table, df.to_dict('records')) and len(df))
+        monkeypatch.setattr(db, 'upsert_dataframe',
+                            lambda df, table, keys: written.setdefault(table, df.to_dict('records')) and len(df))
+        assert pb.persist_to_cloud_sql(self._brief(), allow_update=False) == 1
+        for table in ('premarket_analysis_history', 'premarket_analysis'):
+            row = written[table][0]
+            assert row['tf_continuity'] == 'bearish'
+            assert row['tf_continuity_frames'] == self._FRAMES   # a dict, for JSONB
+            assert row['ftfc_score'] == 0.5 and row['ftfc_direction'] == 'bullish'
+
+    def test_missing_state_stays_null(self, monkeypatch):
+        import gcp.database as db
+        from gcp import premarket_brief as pb
+        written = []
+        monkeypatch.delenv('BRIEF_AS_OF', raising=False)
+        monkeypatch.setattr(db, 'is_cloud_sql_configured', lambda: True)
+        monkeypatch.setattr(db, 'row_exists', lambda table, where: False)
+        monkeypatch.setattr(db, 'bulk_insert_dataframe',
+                            lambda df, table: written.extend(df.to_dict('records')) or len(df))
+        monkeypatch.setattr(db, 'upsert_dataframe', lambda df, table, keys: len(df))
+        brief = {'analysis_date': date(2026, 11, 5), 'tickers': {'QQQ': {
+            'status': 'STALE_DAILY_DATA', 'data_as_of': None}}}
+        pb.persist_to_cloud_sql(brief, allow_update=False)
+        assert written[0]['tf_continuity'] is None and written[0]['tf_continuity_frames'] is None
+
+    @staticmethod
+    def _legacy_tables(engine):
+        """Both tables as they stand in production before the migration."""
+        import sqlalchemy as sa
+        meta = sa.MetaData()
+        for name in ('premarket_analysis', 'premarket_analysis_history'):
+            sa.Table(name, meta, sa.Column('id', sa.Integer, primary_key=True),
+                     sa.Column('analysis_date', sa.Date), sa.Column('ticker', sa.String(10)),
+                     sa.Column('price', sa.Float), sa.Column('ftfc_score', sa.Float),
+                     sa.Column('ftfc_direction', sa.String(10)), sa.Column('ftfc_labels', sa.Text),
+                     sa.Column('run_kind', sa.String(20)),
+                     sa.UniqueConstraint('analysis_date', 'ticker') if name == 'premarket_analysis'
+                     else sa.UniqueConstraint('id'))
+        meta.create_all(engine)
+        return meta
+
+    def test_writers_drop_the_new_keys_on_tables_without_the_columns(self, monkeypatch):
+        """bulk_insert_dataframe runs for real on a reflected table that lacks
+        the columns; upsert_dataframe's statement is compiled for Postgres
+        from the same reflected table and carries only existing columns."""
+        import json
+        import pandas as pd
+        import sqlalchemy as sa
+        from sqlalchemy.dialects import postgresql
+        import gcp.database as db
+        engine = sa.create_engine('sqlite://')
+        self._legacy_tables(engine)
+        row = {'analysis_date': date(2026, 11, 5), 'ticker': 'QQQ', 'price': 691.95,
+               'ftfc_score': 0.5, 'ftfc_direction': 'bullish', 'ftfc_labels': '{}',
+               'run_kind': 'live', 'tf_continuity': 'bearish',
+               'tf_continuity_frames': self._FRAMES}
+        monkeypatch.setattr(db, 'get_engine', lambda: engine)
+        assert db.bulk_insert_dataframe(pd.DataFrame([row]), 'premarket_analysis_history') == 1
+        with engine.connect() as conn:
+            stored = conn.execute(sa.text('SELECT ticker, price, ftfc_score FROM '
+                                          'premarket_analysis_history')).fetchall()
+        assert stored == [('QQQ', 691.95, 0.5)]
+
+        statements = []
+
+        class _Conn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def execute(self, stmt):
+                statements.append(stmt)
+
+        class _Engine:
+            def begin(self):
+                return _Conn()
+
+        reflected = sa.MetaData()
+        reflected.reflect(bind=engine, only=['premarket_analysis'])
+        monkeypatch.setattr(db, 'get_engine', lambda: _Engine())
+        monkeypatch.setitem(db._REFLECTED_TABLES, 'premarket_analysis',
+                            reflected.tables['premarket_analysis'])
+        assert db.upsert_dataframe(pd.DataFrame([row]), 'premarket_analysis',
+                                   ['analysis_date', 'ticker']) == 1
+        sql = str(statements[0].compile(dialect=postgresql.dialect()))
+        assert 'ON CONFLICT (analysis_date, ticker) DO UPDATE' in sql
+        assert 'ftfc_score' in sql and 'tf_continuity' not in sql
+
+
+class TestExplanationInputsReadTfBias:
+    """The LLM inputs name the weighted vote TF bias and carry the FTFC state;
+    a missing score is unavailable, never 0 (CLAUDE.md 3.7)."""
+
+    def _capture(self, monkeypatch):
+        from gcp import brief_explanations as be
+        seen = []
+
+        async def fake_call(system, user):
+            seen.append((system, user))
+            return 'ok'
+        monkeypatch.setattr(be, '_call', fake_call)
+        return be, seen
+
+    def _qqq(self, **over):
+        d = {'price': 691.95, 'rsi': 50, 'ftfc_score': 0.5, 'ftfc_direction': 'bullish',
+             'tf_continuity': 'bearish', 'playbook': 'CALLS above PDH',
+             'tf_continuity_frames': {'1q': _frame('red', 742.51), '1mo': _frame('red', 695.315),
+                                      '1w': _frame('red', 695.315)}}
+        d.update(over)
+        return d
+
+    def test_overview_ticker_and_playbook_inputs(self, monkeypatch):
+        import asyncio
+        be, seen = self._capture(monkeypatch)
+        asyncio.run(be.explain_overview_setup({'QQQ': self._qqq()}))
+        asyncio.run(be.explain_ticker('QQQ', self._qqq()))
+        asyncio.run(be.explain_playbook('QQQ', self._qqq(), '5m'))
+        overview, ticker, playbook = (user for _, user in seen)
+        assert 'QQQ: TF bias +0.5 (bullish); FTFC bearish (1q red, 1mo red, 1w red)' in overview
+        assert 'TF bias +0.5 (bullish) | FTFC bearish (1q red, 1mo red, 1w red)' in ticker
+        assert 'TF bias: +0.5 (bullish)\nFTFC: bearish (1q red, 1mo red, 1w red)' in playbook
+        assert 'FTFC=' not in overview and 'FTFC +0.5' not in ticker
+        assert "only when the FTFC state is bullish or bearish" in seen[0][0]
+
+    def test_missing_score_and_state_read_unavailable(self, monkeypatch):
+        import asyncio
+        be, seen = self._capture(monkeypatch)
+        d = self._qqq(ftfc_score=None, ftfc_direction=None, tf_continuity=None,
+                      tf_continuity_frames=None)
+        asyncio.run(be.explain_ticker('QQQ', d))
+        assert 'TF bias unavailable | FTFC unavailable' in seen[0][1]
