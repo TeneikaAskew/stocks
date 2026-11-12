@@ -255,6 +255,9 @@ def test_no_published_price_comes_from_a_non_ok_parameter(key):
             for r in ([side.trigger, side.stop] + side.targets):
                 if r:
                     out.add((side.side, "level", r["name"], round(r["price"], 4)))
+        # ATR levels spec: the kept ATR rungs the brief prints.
+        for r in levels.atr_rungs:
+            out.add(("atr", "rung", r["name"], round(r["price"], 4)))
         for direction in ("long", "short"):
             ctx = PlanContext(direction=direction, conviction="medium", close=100.0, atr=2.0,
                               levels=levels, ftfc_score=1.0)

@@ -63,6 +63,48 @@ def test_no_exit_plan_value_in_any_string_literal(rel):
     assert hits == []
 
 
+# ATR levels spec: the step, the largest multiple and the stretch mark are
+# composed from LevelParams at run time, and the anchor names are read only
+# from the atr_rung_anchors policy row.
+ATR_RUNG_FORBIDDEN = ("0.5 x ATR", "1.5 x ATR", "2 x ATR")
+
+
+def test_no_atr_rung_multiple_in_any_string_literal():
+    hits = [(ln, f, s[:80]) for ln, s in _strings("lib/strat_levels.py")
+            for f in ATR_RUNG_FORBIDDEN if f in s]
+    assert hits == []
+
+
+def test_no_anchor_list_in_the_level_code():
+    """No tuple or list literal in lib/strat_levels.py holds the seeded
+    anchor names (or any two of them with a premarket extreme), and no
+    string literal spells a rung name: the anchors come from the policy
+    row, so a row of [PDC] builds prior-close rungs with no code change."""
+    from tests.lib.level_params_fixtures import seeded_policy
+    seeded = seeded_policy()["atr_rung_anchors"]["extra"]["anchors"]
+    assert seeded == ["PDH", "PDL", "PMK_H", "PMK_L"]
+    tree = ast.parse((ROOT / "lib/strat_levels.py").read_text())
+    hits = []
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.Tuple, ast.List)):
+            names = {e.value for e in n.elts
+                     if isinstance(e, ast.Constant) and isinstance(e.value, str)}
+            premarket = names & {"PMK_H", "PMK_L"}
+            if set(seeded) <= names or (premarket and len(names & set(seeded)) >= 2):
+                hits.append((n.lineno, sorted(names)))
+    assert hits == []
+    rung_name = re.compile(r"^(PD[HLC]|PMK_[HL])[+-]\d")
+    assert [(ln, s) for ln, s in _strings("lib/strat_levels.py") if rung_name.search(s)] == []
+
+
+def test_the_atr_rungs_read_their_anchors_from_the_policy_row():
+    """With the anchors row changed, the rungs hang from the new list."""
+    from tests.lib.session_levels_helpers import d8_session
+    sl = d8_session(anchors=["PDC"])
+    assert {r["anchor"] for r in sl.atr_rungs + sl.atr_rungs_dropped} == {"PDC"}
+    assert [a["name"] for a in sl.atr_rung_anchors] == ["PDC"]
+
+
 # A number compared against an ATR distance ("< 1.0 typically warns",
 # ">= 3 ATR"): a fixed ATR threshold stated as copy.
 ATR_THRESHOLD = re.compile(r"[<>≤≥]=?\s*\d+(\.\d+)?")

@@ -613,3 +613,36 @@ def test_a_policy_without_a_seeded_key_cannot_calibrate(key):
         lc.calibrate("TST", _daily([101.0] * 30), None, p, "2026-11-06")
     with pytest.raises(LevelParamsUnavailable, match=key):
         lc.HistoryCalibrator("TST", _daily([101.0] * 30), None, "2026-11-06").calibrate(p, "2026-11-06")
+
+
+# ── ATR levels spec (2026-11-11): the three policy_seed rung keys ──────
+
+ATR_RUNG_SEEDS = {"atr_rung_step_atr": 0.5, "atr_rung_max_atr": 2.0, "atr_rung_stretch_atr": 1.5}
+
+
+def test_atr_rung_keys_are_calibrated_at_their_seeds():
+    """calibrate and HistoryCalibrator return each ATR rung key at the
+    seed of the policy in force, status ok, method policy_seed, and
+    to_rows writes one row per key with the run's run_id."""
+    daily = _daily([101.0] * 30)
+    out = lc.calibrate("TST", daily, None, policy(), "2026-11-06")
+    hist = lc.HistoryCalibrator("TST", daily, None, "2026-11-06").calibrate(policy(), "2026-11-06")
+    rows = {r["param_key"]: r for r in lc.to_rows("tst", out, policy(), date(2026, 11, 6),
+                                                  "run-9", "history", "ts")}
+    for key, seed in ATR_RUNG_SEEDS.items():
+        assert (out[key].status, out[key].value, out[key].method_id) == ("ok", seed, "policy_seed")
+        assert hist[key] == out[key]
+        r = rows[key]
+        assert (r["value"], r["status"], r["method_id"], r["run_id"]) == (seed, "ok", "policy_seed", "run-9")
+    assert "atr_rung_anchors" not in out and "atr_rung_anchors" not in rows
+
+
+@pytest.mark.parametrize("key", sorted(ATR_RUNG_SEEDS))
+def test_a_policy_without_an_atr_rung_seed_cannot_calibrate(key):
+    from lib.strat_levels import LevelParamsUnavailable
+    p = policy()
+    del p[key]
+    with pytest.raises(LevelParamsUnavailable, match=key):
+        lc.calibrate("TST", _daily([101.0] * 30), None, p, "2026-11-06")
+    with pytest.raises(LevelParamsUnavailable, match=key):
+        lc.HistoryCalibrator("TST", _daily([101.0] * 30), None, "2026-11-06").calibrate(p, "2026-11-06")

@@ -88,6 +88,11 @@ class LevelMap:
     window_short: Optional[dict] = None
     # 'ok', or why there are no PMG zones (the cluster tolerance's status).
     pmg_status: str = 'ok'
+    # The NEXT LEVELS ATR line (ATR levels spec): {'status', 'atr',
+    # 'atr_basis', 'up', 'down'} with the kept ATR rungs inside each side's
+    # window, nearest first; None for a session built without ATR rungs (a
+    # stored level_basis written before them), which prints no line.
+    atr_levels: Optional[dict] = None
 
 
 # ─── Per-leg intraday state (resolver-parity) ─────────────────────────────
@@ -988,8 +993,20 @@ GAP_FILL_FLAG_KEY = 'gap_fill_flag_atr'
 EXIT_LEGS_KEY = 'exit_legs'
 ENTRY_CUTOFF_KEY = 'entry_cutoff_et'
 POLICY_SEED_METHOD = 'policy_seed'
-POLICY_SEEDED_KEYS = (TARGET_SPACING_KEY, GAP_FILL_FLAG_KEY)
-POLICY_WIDE_KEYS = (EXIT_LEGS_KEY, ENTRY_CUTOFF_KEY)
+# FEAT-STRAT-001 ATR levels (2026-11-11 spec). Display only: the rungs are
+# never a trigger, stop or target. The anchor list is policy-wide like
+# atr_basis (it names levels, in name priority); the step between rungs, the
+# farthest rung and the stretch mark are per-ticker policy_seed keys. The
+# thinning distance is the exits spec's target_min_spacing_atr.
+ATR_RUNG_ANCHORS_KEY = 'atr_rung_anchors'
+ATR_RUNG_STEP_KEY = 'atr_rung_step_atr'
+ATR_RUNG_MAX_KEY = 'atr_rung_max_atr'
+ATR_RUNG_STRETCH_KEY = 'atr_rung_stretch_atr'
+ATR_RUNG_KEYS = (ATR_RUNG_ANCHORS_KEY, ATR_RUNG_STEP_KEY, ATR_RUNG_MAX_KEY,
+                 ATR_RUNG_STRETCH_KEY)
+POLICY_SEEDED_KEYS = (TARGET_SPACING_KEY, GAP_FILL_FLAG_KEY, ATR_RUNG_STEP_KEY,
+                      ATR_RUNG_MAX_KEY, ATR_RUNG_STRETCH_KEY)
+POLICY_WIDE_KEYS = (EXIT_LEGS_KEY, ENTRY_CUTOFF_KEY, ATR_RUNG_ANCHORS_KEY)
 
 
 def target_key(persona: str, k: int) -> str:
@@ -1182,6 +1199,12 @@ class LevelParams:
                 return p
         return None
 
+    def atr_rung_anchors(self) -> Optional[tuple]:
+        """The ATR rung anchor names of the atr_rung_anchors row in force
+        (recorded in its extra), or None when that row is not usable."""
+        p = self.param(ATR_RUNG_ANCHORS_KEY)
+        return atr_rung_anchor_names(p.extra) if p.ok else None
+
     def to_basis(self) -> dict:
         return {
             'atr_basis': self.atr_basis,
@@ -1280,6 +1303,37 @@ def policy_time_minutes(text) -> Optional[int]:
     return h * 60 + mi
 
 
+def atr_rung_anchor_names(extra) -> Optional[tuple]:
+    """The anchor names of an atr_rung_anchors policy extra
+    ({"anchors": [...]}), in name priority, or None when the list is
+    missing, empty, names a level that is not a trigger candidate
+    (_CANDIDATE_ORDER) or names one level twice."""
+    names = (extra or {}).get('anchors') if isinstance(extra, dict) else None
+    if not isinstance(names, list) or not names:
+        return None
+    if not all(isinstance(n, str) and n in _CANDIDATE_PRIORITY for n in names):
+        return None
+    if len(set(names)) != len(names):
+        return None
+    return tuple(names)
+
+
+def policy_atr_rung_anchors(policy: Dict[str, dict]) -> tuple:
+    """The atr_rung_anchors row in force, read like atr_basis: a policy
+    without a usable row cannot build levels (CLAUDE.md 3.7)."""
+    row = policy.get(ATR_RUNG_ANCHORS_KEY)
+    if row is None:
+        raise LevelParamsUnavailable(
+            f"level_param_policy has no {ATR_RUNG_ANCHORS_KEY} row in force")
+    names = atr_rung_anchor_names(row.get('extra'))
+    if names is None:
+        raise LevelParamsUnavailable(
+            f"level_param_policy {ATR_RUNG_ANCHORS_KEY} (effective {row.get('effective_from')}) "
+            f"holds {(row.get('extra') or {}).get('anchors')!r}; expected a non-empty list of "
+            f"distinct trigger candidate names ({', '.join(_CANDIDATE_ORDER)})")
+    return names
+
+
 def policy_wide_param(key: str, pol: dict, ticker: str, atr_basis: str) -> LevelParam:
     """A policy-wide key (exit_legs, entry_cutoff_et) as a LevelParam for
     one ticker: the policy row in force is the value, the same for every
@@ -1294,6 +1348,10 @@ def policy_wide_param(key: str, pol: dict, ticker: str, atr_basis: str) -> Level
     elif key == ENTRY_CUTOFF_KEY:
         mins = policy_time_minutes(extra.get('time_et'))
         value = float(mins) if mins is not None else None
+    elif key == ATR_RUNG_ANCHORS_KEY:
+        # The value is the number of anchors; the names are the extra.
+        names = atr_rung_anchor_names(extra)
+        value = float(len(names)) if names else None
     return LevelParam(
         key=key, status=PARAM_OK if value is not None else 'input_unavailable',
         value=value, ticker=ticker, effective_from=pol.get('effective_from'),
@@ -1345,6 +1403,7 @@ def load_level_params(query_fn, tickers, session_date) -> Dict[str, LevelParams]
         raise LevelParamsUnavailable(
             f"level_param_policy holds no row in force on {session.isoformat()}")
     basis = policy_atr_basis(policy)
+    policy_atr_rung_anchors(policy)
     policy_version = max(p['effective_from'] or '' for p in policy.values()) or None
     keys = sorted(k for k in policy if k not in NON_PARAMETER_KEYS)
     by_ticker: Dict[str, Dict[str, list]] = {t: {} for t in names}
@@ -1658,6 +1717,18 @@ class SessionLevels:
     strat_class: str = ''
     long: SideLevels = field(default_factory=lambda: SideLevels('long'))
     short: SideLevels = field(default_factory=lambda: SideLevels('short'))
+    # ATR levels (2026-11-11 spec), display only: never in `levels`, never a
+    # candidate, trigger, stop or target. `atr_rungs` are the kept rungs,
+    # `atr_rungs_dropped` the ones thinning removed (with the reason),
+    # `atr_rung_anchors` each anchor with its price or anchor_unavailable,
+    # `atr_rung_status` ok or why there are none. `atr_rung_rule` is False
+    # for a session rebuilt from a level_basis written before ATR rungs,
+    # which rebuilds none.
+    atr_rung_rule: bool = True
+    atr_rungs: list = field(default_factory=list)
+    atr_rungs_dropped: list = field(default_factory=list)
+    atr_rung_anchors: list = field(default_factory=list)
+    atr_rung_status: Optional[str] = None
 
     def side(self, direction: str) -> SideLevels:
         return self.long if direction in ('long', 'calls', 'call') else self.short
@@ -1718,12 +1789,36 @@ class SessionLevels:
             window_long=self.long.window,
             window_short=self.short.window,
             pmg_status=self.pmg_status,
+            atr_levels=self._atr_levels_line(),
         )
 
+    def _atr_levels_line(self) -> Optional[dict]:
+        """The kept ATR rungs inside each side's window for the NEXT
+        LEVELS line: up (above the reference, the long window) and down
+        (below it, the short window), nearest first."""
+        if self.atr_rung_status is None:
+            return None
+        out = {'status': self.atr_rung_status, 'atr': self.atr,
+               'atr_basis': self.atr_basis, 'up': [], 'down': []}
+        if self.atr_rung_status != PARAM_OK or self.reference is None:
+            return out
+        ref_c = price_cents(self.reference)
+        for side, key, above in ((self.long, 'up', True), (self.short, 'down', False)):
+            window = (side.window or {}).get('value') \
+                if (side.window or {}).get('status') == PARAM_OK else None
+            rungs = [r for r in self.atr_rungs
+                     if (r['cents'] >= ref_c if above else r['cents'] < ref_c)
+                     and _within_staleness_window(r['price'], self.reference, self.atr, window)]
+            out[key] = [_atr_rung_record(r) for r in
+                        sorted(rungs, key=lambda r: abs(r['cents'] - ref_c))]
+        return out
+
     def published_prices(self) -> set:
-        """Cents of every level the builder knows; any published price must
-        be one of these or an offset from one."""
-        return {price_cents(lv.price) for lv in self.levels}
+        """Cents of every level the builder knows, and of every kept ATR
+        rung the brief prints; any published price must be one of these or
+        an offset from one."""
+        return ({price_cents(lv.price) for lv in self.levels}
+                | {r['cents'] for r in self.atr_rungs})
 
     def to_basis(self) -> dict:
         """The level_basis JSON written with a brief row and carried on an
@@ -1759,6 +1854,29 @@ class SessionLevels:
             'pmg_zones': list(self.pmg_zones),
             'long': self.long.to_dict(),
             'short': self.short.to_dict(),
+            **(self._atr_rung_basis() if self.atr_rung_rule else {}),
+        }
+
+    def _atr_rung_basis(self) -> dict:
+        """The optional ATR rung keys of level_basis: the kept and dropped
+        rungs, the status, the anchors and the four parameters as used."""
+        def _param(key):
+            p = self.params.param(key) if self.params is not None else None
+            if p is None:
+                return {'value': None, 'status': PARAMS_UNAVAILABLE,
+                        'method_id': None, 'effective_from': None}
+            value = p.value
+            if key == ATR_RUNG_ANCHORS_KEY:
+                names = atr_rung_anchor_names(p.extra) if p.ok else None
+                value = list(names) if names else None
+            return {'value': value, 'status': p.status, 'method_id': p.method_id,
+                    'effective_from': p.effective_from}
+        return {
+            'atr_rungs': [_atr_rung_record(r) for r in self.atr_rungs],
+            'atr_rungs_dropped': [_atr_rung_record(r) for r in self.atr_rungs_dropped],
+            'atr_rung_status': self.atr_rung_status,
+            'atr_rung_anchors': [dict(a) for a in self.atr_rung_anchors],
+            'atr_rung_params': {k: _param(k) for k in ATR_RUNG_KEYS},
         }
 
     @classmethod
@@ -1816,6 +1934,11 @@ class SessionLevels:
                 period_label=d.get('period_label', ''),
             ) for d in (basis.get('levels') or [])],
             pmg_zones=list(basis.get('pmg_zones') or []),
+            # A basis written before ATR rungs (no ATR rung keys, and no
+            # ATR rung parameter among the parameters it recorded) rebuilds
+            # none, so a stored brief, its replay and its copy are unchanged.
+            atr_rung_rule=('atr_rung_status' in basis or (
+                recorded is not None and any(k in recorded.params for k in ATR_RUNG_KEYS))),
         )
         if recorded is None:
             # A pre-parameter basis stored zones from the old percentage
@@ -2258,7 +2381,7 @@ def _assemble(base: SessionLevels, *, premarket: Optional[dict], premarket_statu
         atr_5=base.atr_5, atr_basis=base.atr_basis, params=base.params,
         pmg_status=base.pmg_status,
         prior_close=base.prior_close, strat_class=base.strat_class,
-        pmg_zones=list(base.pmg_zones),
+        pmg_zones=list(base.pmg_zones), atr_rung_rule=base.atr_rung_rule,
     )
     structural = [lv for lv in base.levels
                   if lv.name not in (PREMARKET_HIGH, PREMARKET_LOW)]
@@ -2293,6 +2416,8 @@ def _assemble(base: SessionLevels, *, premarket: Optional[dict], premarket_statu
     out.cleared_above = max(ref, pre_high) if pre_high is not None else ref
     out.cleared_below = min(ref, pre_low) if pre_low is not None else ref
     candidates = _candidate_rungs(out.levels)
+    if out.atr_rung_rule:
+        _place_atr_rungs(out, candidates, ref)
     if not premarket:
         # Spec revision 2: with no premarket snapshot nothing has traded
         # yet, so a candidate on the reference's own cent (PDC itself when
@@ -2325,6 +2450,143 @@ def _candidate_rungs(levels: List[StratLevel]) -> list:
             'period': lv.period_label, 'aliases': [],
         }
     return sorted(by_cent.values(), key=lambda d: d['cents'])
+
+
+# ─── ATR levels (FEAT-STRAT-001, 2026-11-11 spec), display only ──────────
+
+ATR_RUNG_SUFFIX = 'ATR'
+ATR_RUNG_ANCHOR_UNAVAILABLE = 'anchor_unavailable'
+ATR_RUNG_STEP_UNUSABLE = 'input_unavailable'
+ATR_RUNG_DROP_NEIGHBOR = 'neighbor'
+ATR_RUNG_DROP_STRUCTURAL = 'structural'
+
+
+def _atr_rung_ladder(levels: List[StratLevel], params: LevelParams, atr: float,
+                     anchors: tuple) -> Tuple[list, list, list]:
+    """Every rung before thinning (Design 2): for each anchor the session
+    has, in the order of atr_rung_anchors, a rung at anchor +/- i x step x
+    ATR for whole i while i x step <= max (multiples compared in cents),
+    named {anchor}{sign}{k}ATR with k = i x step. A rung whose distance from
+    its anchor in cents is at least stretch x ATR in cents is stretch.
+
+    Returns (rungs, distinct, anchor records): `rungs` every rung as built;
+    `distinct` one per cent, the anchor listed first keeping the name and
+    the others recorded as its aliases; an anchor the session lacks is
+    recorded anchor_unavailable and builds none."""
+    step = params.value(ATR_RUNG_STEP_KEY)
+    max_c = price_cents(params.value(ATR_RUNG_MAX_KEY))
+    stretch_c = price_cents(params.value(ATR_RUNG_STRETCH_KEY) * atr)
+    by_name = {}
+    for lv in levels:
+        by_name.setdefault(lv.name, lv)
+    records, rungs = [], []
+    for name in anchors:
+        lv = by_name.get(name)
+        if lv is None or not _finite_positive(lv.price):
+            records.append({'name': name, 'price': None, 'status': ATR_RUNG_ANCHOR_UNAVAILABLE})
+            continue
+        anchor_c = price_cents(lv.price)
+        records.append({'name': name, 'price': anchor_c / 100.0, 'status': PARAM_OK})
+        i = 1
+        while price_cents(i * step) <= max_c:
+            k = multiple_text(i * step)
+            off = price_cents(i * step * atr)
+            for sign, direction in (('+', 1), ('-', -1)):
+                cents = anchor_c + direction * off
+                label = f"{name}{sign}{k}"
+                rungs.append({'name': label + ATR_RUNG_SUFFIX, 'label': label,
+                              'price': cents / 100.0, 'cents': cents, 'anchor': name,
+                              'multiple': float(k), 'sign': sign,
+                              'stretch': off >= stretch_c, 'aliases': []})
+            i += 1
+    distinct: Dict[int, dict] = {}
+    for r in rungs:
+        if r['cents'] in distinct:
+            distinct[r['cents']]['aliases'].append(r['name'])
+            continue
+        distinct[r['cents']] = {**r, 'aliases': []}
+    return rungs, sorted(distinct.values(), key=lambda r: r['cents']), records
+
+
+def _thin_atr_rungs(rungs: list, structural: list, ref: float,
+                    spacing_c: int) -> Tuple[list, list]:
+    """Design 3: on each side of the reference walk the structural
+    candidates and the rungs together, outward from the reference. A
+    structural candidate is always kept. A rung is kept only when it is at
+    least the spacing (in cents) from the last kept price toward the
+    reference (the reference itself when there is none) and from every
+    structural candidate; otherwise it is dropped with the reason
+    structural (a rung on a structural candidate's own cent is recorded as
+    that level's alias) or neighbor. Returns (kept, dropped)."""
+    ref_c = price_cents(ref)
+    struct_names = {c['cents']: c['name'] for c in structural}
+    kept, dropped = [], []
+    for above in (True, False):
+        def _on_side(cents, above=above):
+            return cents >= ref_c if above else cents < ref_c
+        walk = sorted(
+            [(abs(c - ref_c), 0, c, None) for c in struct_names if _on_side(c)]
+            + [(abs(r['cents'] - ref_c), 1, r['cents'], r) for r in rungs if _on_side(r['cents'])],
+            key=lambda t: (t[0], t[1]))
+        last = ref_c
+        for _dist, _kind, cents, r in walk:
+            if r is None:
+                last = cents
+                continue
+            near = min(struct_names, key=lambda c: abs(c - cents), default=None)
+            if near is not None and cents == near:
+                dropped.append({**r, 'reason': ATR_RUNG_DROP_STRUCTURAL,
+                                'alias_of': struct_names[near]})
+            elif near is not None and abs(cents - near) < spacing_c:
+                dropped.append({**r, 'reason': ATR_RUNG_DROP_STRUCTURAL,
+                                'near': struct_names[near]})
+            elif abs(cents - last) < spacing_c:
+                dropped.append({**r, 'reason': ATR_RUNG_DROP_NEIGHBOR,
+                                'near_price': last / 100.0})
+            else:
+                kept.append(r)
+                last = cents
+    return (sorted(kept, key=lambda r: r['cents']),
+            sorted(dropped, key=lambda r: r['cents']))
+
+
+def _place_atr_rungs(out: 'SessionLevels', candidates: list, ref: float) -> None:
+    """Build, thin and record the session's ATR rungs on `out` (never in
+    out.levels, never passed to _candidate_rungs or _pick_side). Any of the
+    four rung parameters or target_min_spacing_atr not ok gives no rungs
+    and records its status; there is no fallback (CLAUDE.md 3.7)."""
+    out.atr_rungs, out.atr_rungs_dropped, out.atr_rung_anchors = [], [], []
+    params = out.params
+    if params is None:
+        out.atr_rung_status = PARAMS_UNAVAILABLE
+        return
+    missing = params.first_not_ok(ATR_RUNG_KEYS + (TARGET_SPACING_KEY,))
+    if missing is not None:
+        out.atr_rung_status = missing.status
+        return
+    anchors = params.atr_rung_anchors()
+    if anchors is None:
+        out.atr_rung_status = ATR_RUNG_STEP_UNUSABLE
+        return
+    if out.atr is None:
+        out.atr_rung_status = 'atr_unavailable'
+        return
+    if price_cents(params.value(ATR_RUNG_STEP_KEY) * out.atr) <= 0:
+        # A step that rounds to no distance builds no ladder.
+        out.atr_rung_status = ATR_RUNG_STEP_UNUSABLE
+        return
+    _all, distinct, out.atr_rung_anchors = _atr_rung_ladder(out.levels, params, out.atr, anchors)
+    spacing_c = price_cents(params.value(TARGET_SPACING_KEY) * out.atr)
+    out.atr_rungs, out.atr_rungs_dropped = _thin_atr_rungs(distinct, candidates, ref, spacing_c)
+    out.atr_rung_status = PARAM_OK
+
+
+def _atr_rung_record(r: dict) -> dict:
+    """A rung as level_basis records it (price, anchor, multiple, sign,
+    stretch, aliases; a dropped rung also its reason)."""
+    keep = ('name', 'label', 'price', 'cents', 'anchor', 'multiple', 'sign', 'stretch',
+            'aliases', 'reason', 'alias_of', 'near', 'near_price')
+    return {k: (list(r[k]) if k == 'aliases' else r[k]) for k in keep if k in r}
 
 
 def _rung(c: dict, ref: float) -> dict:
@@ -2848,7 +3110,8 @@ def _format_next_levels(level_map: LevelMap) -> list:
     """
     calls = level_map.call_levels or []
     puts = level_map.put_levels or []
-    if not calls and not puts:
+    atr_line = _format_atr_levels(getattr(level_map, 'atr_levels', None))
+    if not calls and not puts and atr_line is None:
         return []
 
     def _fmt(lv):
@@ -2861,7 +3124,37 @@ def _format_next_levels(level_map: LevelMap) -> list:
         out.append('    Calls (up):  ' + ', '.join(_fmt(lv) for lv in calls))
     if puts:
         out.append('    Puts (down): ' + ', '.join(_fmt(lv) for lv in puts))
+    if atr_line is not None:
+        out.append(atr_line)
     return out
+
+
+def _format_atr_levels(atr_levels: Optional[dict]) -> Optional[str]:
+    """The last NEXT LEVELS line (ATR levels spec, Design 5): the kept ATR
+    rungs inside each side's window, up above the reference and down below
+    it, nearest first, each as price ({anchor}{sign}{k}), with ' stretch'
+    where marked and ', also {alias}' where two rungs share a cent. None for
+    a session built without ATR rungs (no line)."""
+    if not atr_levels:
+        return None
+    status = atr_levels.get('status')
+    if status != PARAM_OK:
+        return f"    ATR levels unavailable ({status})."
+
+    def _rung_text(r):
+        text = r['label']
+        if r.get('stretch'):
+            text += ' stretch'
+        for alias in r.get('aliases') or []:
+            text += f", also {alias.removesuffix(ATR_RUNG_SUFFIX)}"
+        return f"{r['price']:.2f} ({text})"
+
+    def _list(rungs):
+        return ', '.join(_rung_text(r) for r in rungs) if rungs else 'none'
+
+    return (f"    ATR levels, ATR({atr_length(atr_levels.get('atr_basis'))}) "
+            f"{atr_levels['atr']:.2f}: up {_list(atr_levels.get('up'))}; "
+            f"down {_list(atr_levels.get('down'))}")
 
 
 # ---------------------------------------------------------------------------

@@ -561,3 +561,39 @@ def test_a_later_seed_applies_from_its_effective_date(monkeypatch):
     assert set(flag["value"]) == {0.5} and len(flag) == len(SESSIONS)
     assert db.pdb.load(["SPY"], date(2026, 11, 4))["SPY"].value("target_min_spacing_atr") == 0.25
     assert db.pdb.load(["SPY"], date(2026, 11, 6))["SPY"].value("target_min_spacing_atr") == 0.30
+
+
+# ── ATR levels spec (2026-11-11): the rung keys ─────────────────────────
+
+
+def test_a_later_atr_rung_max_seed_applies_from_its_effective_date(monkeypatch):
+    """The history run writes the three ATR rung keys per ticker and
+    session at the seed in force: an atr_rung_max_atr row with seed 3.0
+    effective 2026-11-05 gives 3.0 from that session and 2.0 before it,
+    and from it the Design 8 fixture gains the 2.5 and 3 rungs."""
+    from lib.strat_levels import SessionLevels
+    from tests.lib.session_levels_helpers import D8_LEVELS, D8_PREMARKET, basis
+
+    db = FakeDb()
+    db.pdb.set_policy("atr_rung_max_atr", effective_from=date(2026, 11, 5),
+                      extra='{"seed": 3.0}', method_id="policy_seed")
+    assert _main(monkeypatch, db, "--history", *HIST) == 0
+    rows = db.rows("param_key, value, status, method_id, effective_from, run_id")
+    reach = rows[rows["param_key"] == "atr_rung_max_atr"]
+    assert dict(zip(reach["effective_from"], reach["value"])) == {
+        "2026-11-03": 2.0, "2026-11-04": 2.0, "2026-11-05": 3.0, "2026-11-06": 3.0}
+    assert set(reach["status"]) == {"ok"} and set(reach["method_id"]) == {"policy_seed"}
+    for key, seed in (("atr_rung_step_atr", 0.5), ("atr_rung_stretch_atr", 1.5)):
+        r = rows[rows["param_key"] == key]
+        assert set(r["value"]) == {seed} and len(r) == len(SESSIONS)
+
+    def multiples(day):
+        lp = db.pdb.load(["SPY"], day)["SPY"]
+        b = basis(D8_LEVELS, prior_close=247.00, atr=14.0, premarket=D8_PREMARKET,
+                  session_date=day, ticker="SPY", params=lp)
+        sl = SessionLevels.from_basis(b)
+        assert sl.atr_rung_status == "ok"
+        return sorted({r["multiple"] for r in sl.atr_rungs + sl.atr_rungs_dropped})
+
+    assert multiples(date(2026, 11, 4)) == [0.5, 1.0, 1.5, 2.0]
+    assert multiples(date(2026, 11, 5)) == [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]

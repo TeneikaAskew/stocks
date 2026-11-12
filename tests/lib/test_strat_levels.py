@@ -1208,3 +1208,317 @@ class TestExitPlanCopy:
                      premarket={'pre_high': 240.0, 'pre_low': 216.0, 'pre_vwap': 219.0})
         text = format_levels_for_brief(sl.to_level_map(), 'bullish')
         assert '  CALLS: ' + orb_only_text('all_broken_by_premarket', 'long') + '\n' in text
+
+
+# ─── ATR levels spec (2026-11-11), display only ────────────────────────
+
+D8_RUNG_PARAMS = ('atr_rung_anchors', 'atr_rung_step_atr', 'atr_rung_max_atr',
+                  'atr_rung_stretch_atr')
+
+
+def _rung_view(rungs):
+    return [(round(r['price'], 2), r['label']) for r in rungs]
+
+
+class TestAtrRungs:
+    """ATR levels spec, done_when 'ATR rungs', on the exits spec's Design 8
+    fixture with the seeded anchors [PDH, PDL, PMK_H, PMK_L], step 0.5, max
+    2.0 and stretch 1.5."""
+
+    def test_32_rungs_before_thinning(self):
+        from lib.strat_levels import _atr_rung_ladder
+        sl = d8_session()
+        rungs, distinct, anchors = _atr_rung_ladder(sl.levels, sl.params, sl.atr,
+                                                     sl.params.atr_rung_anchors())
+        assert len(rungs) == len(distinct) == 32
+        want = set()
+        for name, price in (('PDH', 253.00), ('PDL', 247.50), ('PMK_H', 252.10), ('PMK_L', 248.20)):
+            for k, mult in (('0.5', 0.5), ('1', 1.0), ('1.5', 1.5), ('2', 2.0)):
+                want.add((round(price + mult * 14.0, 2), f'{name}+{k}'))
+                want.add((round(price - mult * 14.0, 2), f'{name}-{k}'))
+        assert set(_rung_view(rungs)) == want
+        assert [a['name'] for a in anchors] == ['PDH', 'PDL', 'PMK_H', 'PMK_L']
+        assert {a['status'] for a in anchors} == {'ok'}
+
+    def test_design_8_keeps_four_rungs(self):
+        sl = d8_session()
+        assert sl.atr_rung_status == 'ok'
+        assert _rung_view(sl.atr_rungs) == [(234.20, 'PMK_L-1'), (241.20, 'PMK_L-0.5'),
+                                            (259.10, 'PMK_H+0.5'), (266.10, 'PMK_H+1')]
+        assert [r['name'] for r in sl.atr_rungs] == ['PMK_L-1ATR', 'PMK_L-0.5ATR',
+                                                     'PMK_H+0.5ATR', 'PMK_H+1ATR']
+        assert len(sl.atr_rungs_dropped) == 28
+        assert {r['reason'] for r in sl.atr_rungs_dropped} == {'neighbor', 'structural'}
+        pdh_m2 = next(r for r in sl.atr_rungs_dropped if r['price'] == 225.00)
+        assert (pdh_m2['name'], pdh_m2['reason'], pdh_m2['alias_of']) == ('PDH-2ATR', 'structural', 'PML')
+
+    def test_a_rung_far_from_its_neighbor_but_near_a_structural_level_is_dropped(self):
+        """273.10 (PMK_H+1.5) is 7.00 from 266.10 but 1.90 from 275.00 (PMH)."""
+        sl = d8_session()
+        r = next(r for r in sl.atr_rungs_dropped if r['label'] == 'PMK_H+1.5')
+        assert r['price'] == 273.10 and r['reason'] == 'structural' and r['near'] == 'PMH'
+
+    @pytest.mark.parametrize('pdh, kept', [(255.60, True), (255.61, False)])
+    def test_spacing_equal_to_a_structural_level_in_cents_is_kept(self, pdh, kept):
+        """259.10 against a structural PDH: 3.50 away (0.25 x 14.00 = 350
+        cents) is kept, 3.49 away is dropped as structural."""
+        sl = d8_session({**D8_LEVELS, 'PDH': pdh}, anchors=['PDL', 'PMK_H', 'PMK_L'])
+        assert (259.10 in [r['price'] for r in sl.atr_rungs]) is kept
+        if not kept:
+            r = next(r for r in sl.atr_rungs_dropped if r['price'] == 259.10)
+            assert r['reason'] == 'structural' and r['near'] == 'PDH'
+
+    @pytest.mark.parametrize('pdh, kept', [(255.60, True), (255.59, False)])
+    def test_spacing_equal_to_the_open_side_neighbor_in_cents_is_kept(self, pdh, kept):
+        """Anchors [PMK_H, PDH], one step of 0.5: 259.10 (PMK_H+0.5) is kept
+        and PDH+0.5 is the next rung out, clear of every structural level.
+        PDH 255.60 puts it 350 cents (0.25 x 14.00) past 259.10: kept; PDH
+        255.59 puts it 349 cents past: dropped as neighbor."""
+        sl = d8_session({'PDH': pdh, 'PDL': 247.50, 'PMH': 300.00}, anchors=['PMK_H', 'PDH'],
+                        atr_rung_max_atr=0.5)
+        assert 259.10 in [r['price'] for r in sl.atr_rungs]
+        rung = [r for r in sl.atr_rungs + sl.atr_rungs_dropped if r['label'] == 'PDH+0.5']
+        assert len(rung) == 1 and rung[0]['price'] == round(pdh + 7.0, 2)
+        assert (rung[0] in sl.atr_rungs) is kept
+        if not kept:
+            assert rung[0]['reason'] == 'neighbor' and rung[0]['near_price'] == 259.10
+
+    @pytest.mark.parametrize('stretch, marked', [(1.5, True), (21.01 / 14.0, False)])
+    def test_stretch_from_the_stretch_mark_in_cents(self, stretch, marked):
+        """PMK_H+1.5 is 21.00 from its anchor: stretch when the mark is
+        1.5 x 14.00 = 2100 cents, not when it is one cent more."""
+        from lib.strat_levels import _atr_rung_ladder
+        sl = d8_session(atr_rung_stretch_atr=stretch)
+        rungs, _d, _a = _atr_rung_ladder(sl.levels, sl.params, sl.atr, sl.params.atr_rung_anchors())
+        by_label = {r['label']: r for r in rungs}
+        assert by_label['PMK_H+1.5']['stretch'] is marked
+        assert by_label['PMK_H+2']['stretch'] is True
+        assert by_label['PMK_H+1']['stretch'] is False
+
+    def test_two_rungs_on_one_cent_take_the_first_anchor_name(self):
+        """PDL 246.00 = PDH 253.00 - 7.00: PDL-1 (232.00) and PDH-1.5
+        (232.00) share a cent, and so do PDL+0.5 and PDH (253.00 = 246+7,
+        a structural cent). The anchor listed first (PDH) keeps the name."""
+        from lib.strat_levels import _atr_rung_ladder
+        sl = d8_session({**D8_LEVELS, 'PDL': 246.00})
+        _all, distinct, _a = _atr_rung_ladder(sl.levels, sl.params, sl.atr,
+                                              sl.params.atr_rung_anchors())
+        at = {r['cents']: r for r in distinct}
+        assert at[23200]['name'] == 'PDH-1.5ATR' and at[23200]['aliases'] == ['PDL-1ATR']
+        flipped = d8_session({**D8_LEVELS, 'PDL': 246.00}, anchors=['PDL', 'PDH', 'PMK_H', 'PMK_L'])
+        _all, distinct, _a = _atr_rung_ladder(flipped.levels, flipped.params, flipped.atr,
+                                              flipped.params.atr_rung_anchors())
+        at = {r['cents']: r for r in distinct}
+        assert at[23200]['name'] == 'PDL-1ATR' and at[23200]['aliases'] == ['PDH-1.5ATR']
+
+    def test_no_premarket_snapshot_builds_from_pdh_and_pdl(self):
+        from lib.strat_levels import SessionLevels
+        from tests.lib.session_levels_helpers import basis, d8_params
+        sl = SessionLevels.from_basis(basis(D8_LEVELS, prior_close=247.00, atr=14.0,
+                                            premarket=None, params=d8_params()))
+        assert sl.atr_rung_status == 'ok'
+        assert {r['anchor'] for r in sl.atr_rungs + sl.atr_rungs_dropped} == {'PDH', 'PDL'}
+        assert len(sl.atr_rungs) + len(sl.atr_rungs_dropped) == 16
+        assert [(a['name'], a['status']) for a in sl.atr_rung_anchors] == [
+            ('PDH', 'ok'), ('PDL', 'ok'), ('PMK_H', 'anchor_unavailable'),
+            ('PMK_L', 'anchor_unavailable')]
+        basis_out = sl.to_basis()
+        assert [a['status'] for a in basis_out['atr_rung_anchors']][2:] == ['anchor_unavailable'] * 2
+
+    @pytest.mark.parametrize('key', D8_RUNG_PARAMS + ('target_min_spacing_atr',))
+    @pytest.mark.parametrize('status', ['insufficient_history', 'params_unavailable'])
+    def test_a_parameter_not_ok_gives_no_rungs(self, key, status):
+        sl = d8_session(statuses={key: status})
+        assert sl.atr_rungs == [] and sl.atr_rungs_dropped == []
+        assert sl.atr_rung_status == status
+
+
+class TestAtrRungsDisplayOnly:
+    """ATR levels spec, done_when 'Display only' and 'Unchanged': the plan
+    decisions, the NEXT LEVELS ladders and the brief's structured columns
+    are the base's for every case (tests/lib/atr_levels_display_only.py,
+    golden written on the base)."""
+
+    def test_every_case_matches_the_base(self):
+        import json
+        from pathlib import Path
+        from tests.lib.atr_levels_display_only import projections
+        golden = json.loads((Path(__file__).resolve().parents[1] / 'fixtures'
+                             / 'atr_levels_display_only_base.json').read_text())
+        head = projections()
+        assert sorted(head) == sorted(golden)
+        for name in golden:
+            assert head[name] == golden[name], name
+
+    def test_the_brief_writes_the_base_columns(self, monkeypatch):
+        """gcp.premarket_brief on the committed 2026-11-06 fixture (SPY, QQQ,
+        IWM, the production brief path offline): every premarket_analysis
+        column the brief writes is the base's, including calls/puts t1..t3
+        and plan_t1..plan_t3, except two. The playbook is the base's text
+        with exactly one line added, the last NEXT LEVELS line. level_basis
+        is the base's with the ATR rung keys and the four rung parameters
+        added and nothing else changed."""
+        import json
+        from pathlib import Path
+        from tests.lib.atr_levels_display_only import BRIEF_TICKERS, brief_entries
+        golden = json.loads((Path(__file__).resolve().parents[1] / 'fixtures'
+                             / 'atr_levels_brief_base.json').read_text())
+        head = brief_entries(monkeypatch)
+        assert sorted(head) == sorted(golden) == sorted(BRIEF_TICKERS)
+        rung_keys = {'atr_rungs', 'atr_rungs_dropped', 'atr_rung_status', 'atr_rung_anchors',
+                     'atr_rung_params'}
+        for t in BRIEF_TICKERS:
+            h, b = dict(head[t]), dict(golden[t])
+            hp, bp = h.pop('playbook').split('\n'), b.pop('playbook').split('\n')
+            added = [i for i, ln in enumerate(hp) if ln.startswith('    ATR levels')]
+            assert len(added) == 1 and hp[:added[0]] + hp[added[0] + 1:] == bp, t
+            assert hp[added[0] - 1].startswith('    Puts (down): '), t
+            hb, bb = h.pop('level_basis'), b.pop('level_basis')
+            assert set(hb) - set(bb) == rung_keys and not set(bb) - set(hb), t
+            assert hb['atr_rung_status'] == 'ok' and hb['atr_rungs'], t
+            hparams = dict(hb['params'])
+            for k in D8_RUNG_PARAMS:
+                hparams.pop(k)
+            assert hparams == bb['params'], t
+            assert {k: v for k, v in hb.items() if k not in rung_keys | {'params'}} == {
+                k: v for k, v in bb.items() if k != 'params'}, t
+            assert h == b, t
+            for side in ('calls', 'puts'):
+                for k in (1, 2, 3):
+                    assert f'{side}_t{k}_price' in h and f'{side}_plan_t{k}_price' in h
+
+    def test_design_8_plan(self):
+        sl = d8_session()
+        assert (sl.long.trigger['price'], sl.long.stop['price']) == (252.10, 248.20)
+        assert _prices(sl.long.gate_targets) == [253.00, 275.00, 280.00]
+        assert _prices(sl.long.targets) == [275.00, 280.00, 285.00]
+        assert _prices(sl.long.skipped) == [253.00]
+        assert (sl.short.trigger['price'], sl.short.stop['price']) == (248.20, 252.10)
+        assert _prices(sl.short.gate_targets) == [247.50, 247.00, 225.00]
+        assert _prices(sl.short.targets) == [225.00, 220.00, 215.00]
+        assert _prices(sl.short.skipped) == [247.50, 247.00]
+
+    def test_no_rung_reaches_the_candidates_or_the_side_pick(self, monkeypatch):
+        """A session whose only level past the trigger would be a rung
+        (259.10, PMK_H+0.5) gets the base's targets: none past the trigger.
+        _candidate_rungs and _pick_side are spied: no ATR rung name or
+        price reaches either."""
+        import lib.strat_levels as m
+        seen = []
+        real_cands, real_pick = m._candidate_rungs, m._pick_side
+
+        def cands(levels):
+            seen.extend(lv.name for lv in levels)
+            return real_cands(levels)
+
+        def pick(side, candidates, *a, **kw):
+            seen.extend(c['name'] for c in candidates)
+            return real_pick(side, candidates, *a, **kw)
+
+        monkeypatch.setattr(m, '_candidate_rungs', cands)
+        monkeypatch.setattr(m, '_pick_side', pick)
+        sl = d8_session({'PDL': 247.50, 'PML': 225.00})
+        assert sl.atr_rung_status == 'ok'
+        assert 259.10 in [r['price'] for r in sl.atr_rungs]
+        assert sl.long.trigger['price'] == 252.10
+        assert sl.long.gate_targets == [] and sl.long.targets == [] and sl.long.skipped == []
+        assert seen and not any(n.endswith('ATR') for n in seen)
+        assert not any(lv.name.endswith('ATR') for lv in sl.levels)
+
+    def test_the_rule_version_and_persisted_levels_are_unchanged(self):
+        from lib.strat_levels import LEVEL_RULE_VERSION
+        sl = d8_session()
+        assert LEVEL_RULE_VERSION == sl.rule_version == 'feat-strat-001.v3'
+        lm = sl.to_level_map()
+        assert sorted(lv.name for lv in lm.levels) == sorted(list(D8_LEVELS) + ['PMK_H', 'PMK_L'])
+        assert [(r['price'], r['name']) for r in lm.call_levels] == [(252.10, 'PMK_H'), (253.00, 'PDH')]
+        assert [(r['price'], r['name']) for r in lm.put_levels] == [(248.20, 'PMK_L'), (247.50, 'PDL')]
+
+
+D8_NEXT_LEVELS = """  NEXT LEVELS:
+    Calls (up):  252.10 PMK_H (intraday) +0.84%, 253.00 PDH (day) +1.20%
+    Puts (down): 248.20 PMK_L (intraday) -0.72%, 247.50 PDL (day) -1.00%"""
+D8_ATR_LINE = ("    ATR levels, ATR(14) 14.00: up 259.10 (PMK_H+0.5), 266.10 (PMK_H+1); "
+               "down 241.20 (PMK_L-0.5), 234.20 (PMK_L-1)")
+
+
+class TestAtrLevelsCopy:
+    """ATR levels spec, done_when 'Brief copy' (Design 5)."""
+
+    def test_design_8_golden_text(self):
+        text = format_levels_for_brief(d8_session().to_level_map(), 'neutral')
+        assert text == (D8_CALLS + "\n\n" + D8_PUTS + "\n\n" + D8_NEXT_LEVELS + "\n" + D8_ATR_LINE)
+
+    def test_every_other_line_is_the_base_text(self):
+        """Removing the one ATR line leaves the exits spec's Design 8 text
+        and the base's NEXT LEVELS lines, byte for byte."""
+        text = format_levels_for_brief(d8_session().to_level_map(), 'neutral')
+        lines = text.split('\n')
+        assert lines[-1] == D8_ATR_LINE and lines.count(D8_ATR_LINE) == 1
+        assert '\n'.join(lines[:-1]) == D8_CALLS + "\n\n" + D8_PUTS + "\n\n" + D8_NEXT_LEVELS
+
+    def test_stretch_and_alias_labels(self):
+        """Windows 3.0 and stretch 0.5: every kept rung is stretch; with PDL
+        on 246.00 the PDH-1.5 rung (232.00) also carries PDL-1."""
+        from lib.strat_levels import _format_atr_levels
+        sl = d8_session({**D8_LEVELS, 'PDL': 246.00}, window=3.0, atr_rung_stretch_atr=0.5)
+        line = _format_atr_levels(sl.to_level_map().atr_levels)
+        assert line.startswith("    ATR levels, ATR(14) 14.00: up ")
+        assert "(PMK_H+0.5 stretch)" in line
+        alias = [r for r in sl.atr_rungs + sl.atr_rungs_dropped if r['aliases']]
+        assert alias
+        kept_alias = [r for r in sl.atr_rungs if r['aliases']]
+        for r in kept_alias:
+            assert f", also {r['aliases'][0].removesuffix('ATR')}" in line
+
+    def test_a_kept_rung_with_an_alias_prints_it(self):
+        from lib.strat_levels import _format_atr_levels
+        lm = {'status': 'ok', 'atr': 14.0, 'atr_basis': 'atr_14',
+              'up': [{'label': 'PDH+1', 'price': 267.0, 'stretch': True, 'aliases': ['PDL+1.5ATR']}],
+              'down': []}
+        assert _format_atr_levels(lm) == (
+            "    ATR levels, ATR(14) 14.00: up 267.00 (PDH+1 stretch, also PDL+1.5); down none")
+
+    def test_rungs_outside_the_window_are_not_printed(self):
+        """Windows 0.7 x 14 = 9.80 from 250.00: 259.10 and 241.20 are
+        inside, 266.10 and 234.20 are not."""
+        sl = d8_session(window=0.7)
+        line = format_levels_for_brief(sl.to_level_map(), 'neutral').split('\n')[-1]
+        assert line == ("    ATR levels, ATR(14) 14.00: up 259.10 (PMK_H+0.5); "
+                        "down 241.20 (PMK_L-0.5)")
+
+    @pytest.mark.parametrize('key', D8_RUNG_PARAMS + ('target_min_spacing_atr',))
+    def test_unavailable_line(self, key):
+        text = format_levels_for_brief(
+            d8_session(statuses={key: 'params_unavailable'}).to_level_map(), 'neutral')
+        assert text.split('\n')[-1] == "    ATR levels unavailable (params_unavailable)."
+        assert "ATR levels, ATR(" not in text
+
+    def test_orb_only_and_no_trigger_sides_are_unchanged(self):
+        from lib.strat_levels import orb_only_text
+        from tests.lib.session_levels_helpers import session
+        sl = session({'PDH': 220.0, 'PWH': 225.0, 'PMH': 228.0, 'PDL': 215.0},
+                     prior_close=218.0, atr=2.0,
+                     premarket={'pre_high': 240.0, 'pre_low': 216.0, 'pre_vwap': 219.0})
+        text = format_levels_for_brief(sl.to_level_map(), 'bullish')
+        assert '  CALLS: ' + orb_only_text('all_broken_by_premarket', 'long') + '\n' in text
+        lines = text.split('\n')
+        calls = [ln for ln in lines if ln.startswith('  CALLS')]
+        assert calls == ['  CALLS: ' + orb_only_text('all_broken_by_premarket', 'long')]
+        assert lines[-1].startswith('    ATR levels')
+
+    def test_a_basis_without_rungs_prints_no_line(self):
+        """A stored level_basis written before ATR rungs rebuilds none and
+        renders the base's text."""
+        import json
+        from lib.strat_levels import SessionLevels
+        stored = json.loads(json.dumps(d8_session().to_basis()))
+        for k in ('atr_rungs', 'atr_rungs_dropped', 'atr_rung_status', 'atr_rung_anchors',
+                  'atr_rung_params'):
+            stored.pop(k)
+        for k in D8_RUNG_PARAMS:
+            stored['params'].pop(k)
+        old = SessionLevels.from_basis(stored)
+        assert old.atr_rungs == [] and old.atr_rung_status is None
+        text = format_levels_for_brief(old.to_level_map(), 'neutral')
+        assert text == D8_CALLS + "\n\n" + D8_PUTS + "\n\n" + D8_NEXT_LEVELS
