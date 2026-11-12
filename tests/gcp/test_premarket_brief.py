@@ -3106,9 +3106,13 @@ def test_recap_query_is_never_attempted(monkeypatch, real_brief_sql):
 
 
 def _busy_day(n=150):
-    """Supported source rows with a long non-EW sector exercise the output bound."""
-    return _earnings_brief([_row_out(f'W{i:03d}', 'premarket', 2,
+    """Uncapped supported-source watchlist exceeds the description bound."""
+    data = _earnings_brief([_row_out(f'W{i:03d}', 'premarket', 2,
         expected_move=12345.67, eps_actual=1.2, eps_surprise_pct=20., gap_pct=4.) for i in range(n)])
+    data['watchlist'] = [_row_out(f'FLOW{i:03d}', 'premarket', 2,
+        expected_move=12345.67, options_volume=30000, open_interest=60000,
+        market_cap=1000000000) for i in range(n)]
+    return data
 
 
 def test_busy_supported_day_has_no_recap_and_is_bounded():
@@ -3119,7 +3123,7 @@ def test_busy_supported_day_has_no_recap_and_is_bounded():
     if False:
         data['ew_recap']['unavailable'] = 'RuntimeError'
     desc = _build_earnings_embed(data)['description']
-    assert desc == plain and len(desc) <= 4090
+    assert desc == plain and len(desc) == 4090
     assert '**W000**' in desc
     assert 'EW picks' not in desc and 'RuntimeError' not in desc
 
@@ -3132,7 +3136,7 @@ def test_retired_recap_reservation_is_absent():
     if False:
         data['ew_recap']['unavailable'] = 'RuntimeError'
     desc = _build_earnings_embed(data)['description']
-    assert desc == plain and len(desc) <= 4090
+    assert desc == plain and len(desc) == 4090
     assert '**W000**' in desc
     assert 'EW picks' not in desc and 'RuntimeError' not in desc
 
@@ -3145,7 +3149,7 @@ def test_busy_supported_day_has_no_ew_warning():
     if True:
         data['ew_recap']['unavailable'] = 'RuntimeError'
     desc = _build_earnings_embed(data)['description']
-    assert desc == plain and len(desc) <= 4090
+    assert desc == plain and len(desc) == 4090
     assert '**W000**' in desc
     assert 'EW picks' not in desc and 'RuntimeError' not in desc
 
