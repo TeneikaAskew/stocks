@@ -1,0 +1,56 @@
+# Throwaway experiment for FEAT-CICD-001 Part A (spec 2026-11-12, done_when item 3, hosted half).
+# Lives only on this branch; never merged. Runs the unchanged gate suite serially and with
+# pytest-xdist at 4 workers on hosted ubuntu runners, plus mutated-gate controls.
+name: xdist-experiment
+on:
+  push:
+    branches: [experiment/feat-cicd-001-xdist-hosted]
+permissions:
+  contents: read
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [serial, n4]
+        case: [clean1, clean2, clean3, doneitems, invokes, deferral]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install
+        run: |
+          python3 -m pip install --quiet pytest pyyaml pytest-xdist==3.8.0
+          python3 -c "import pytest,xdist,sys;print(sys.version.split()[0],'pytest',pytest.__version__,'xdist',xdist.__version__)"
+          nproc
+      - name: Mutate gate (controls only)
+        if: ${{ !startsWith(matrix.case, 'clean') }}
+        run: |
+          python3 - "${{ matrix.case }}" <<'PY'
+          import sys
+          muts = {
+            "doneitems": ("    return [norm(str(i)) for i in items] if isinstance(items, list) else []", "    return []"),
+            "invokes": ("        return set(tail.split()) <= PYTEST_ARGS", "        return True"),
+            "deferral": ("|partial(?:ly)?|in progress|WIP|not fully|", "|partial(?:ly)?|in progress|not fully|"),
+          }
+          a, b = muts[sys.argv[1]]
+          p = "scripts/gate/spec_gate.py"; s = open(p).read()
+          assert s.count(a) == 1, a
+          open(p, "w").write(s.replace(a, b))
+          PY
+          git diff --stat
+      - name: Gate suite
+        run: |
+          args=""
+          if [ "${{ matrix.mode }}" = "n4" ]; then args="-n 4"; fi
+          start=$(date +%s.%N)
+          set +e
+          python3 -m pytest tests/scripts/test_spec_gate.py -q -p no:cacheprovider --noconftest $args --junitxml=out.xml
+          rc=$?
+          end=$(date +%s.%N)
+          echo "RESULT mode=${{ matrix.mode }} case=${{ matrix.case }} rc=$rc wall=$(python3 -c "print(round($end-$start,1))")"
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: junit-${{ matrix.mode }}-${{ matrix.case }}
+          path: out.xml
