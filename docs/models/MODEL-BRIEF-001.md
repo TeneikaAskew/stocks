@@ -101,7 +101,7 @@ evidence that brief-aligned signals outperform brief-opposed ones.
 **The actionable threshold is recorded; its rationale is not.** The `(N/5)` in the
 brief's `signal_status` is the five-factor mean-reversion score from
 `lib.signals.check_call_conditions` / `check_put_conditions` (`gcp/premarket_brief.py:28`,
-`:1277-1278`), and `_resolve_signal_status` (`:1828`) turns it into text with two
+`:1277-1278`), and `_resolve_signal_status` (`:1845`) turns it into text with two
 thresholds read at `:1080-1081`:
 
 | Threshold | Default | Source | Status text | `classify` reads it as |
