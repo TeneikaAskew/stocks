@@ -4228,7 +4228,8 @@ def render_retry_split(text: str, repo: dict[str, Any]) -> str:
         flags = (m.group(2), m.group(8), m.group(12))
         if len(set(flags)) != 3 or set(counts) != set(flags):
             raise ValueError(f"retry split: the declared retry values {sorted(counts, key=str)} are not exactly the "
-                             f"three the list names {list(flags)}; change the list in reviewed prose")
+                             f"three the list names {list(flags)}; if a job's retries are written in a form the parser misreads, "
+                             "write them as `--max-retries N`, otherwise change the list in reviewed prose")
         ns = [counts[f] for f in flags]
         if sum(ns) != total:
             raise ValueError(f"retry split: the list's counts {ns} do not sum to the {total} declared jobs")
