@@ -519,7 +519,7 @@ EW-only retirement: [#1758](https://github.com/TeneikaAskew/stocks/pull/1758), f
 | Priority | P0 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-11 |
+| Last reviewed | 2026-11-12 |
 | Evidence status | EW reader retirement is scoped to eleven actual-query boundaries and hermetic controls; current-head review/CI and deployed-job evidence remain separate.  Logger source bd8c5310/build20c56463/image ef54b4b6 deployed Ready to three jobs with projected config preserved; next scheduled outcomes unobserved. Allowance runtime/test bytes unchanged from reviewed258fb789,224 tests preserved; prior CODE/SEC/CI clean, combined source proof and owner-approved CODE7 remain required. No complete data-platform, persistence or provider-root-cause certification. |
 | UI surface | — |
 | Backend | fetcher jobs |
