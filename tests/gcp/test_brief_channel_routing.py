@@ -19,6 +19,7 @@ Pins:
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -253,3 +254,78 @@ def test_no_discord_branch_does_not_NameError(monkeypatch, capsys, tmp_path):
     out = capsys.readouterr().out
     assert 'channel=main' in out
     assert 'channel=earnings' in out
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Exits in thirds spec: the longer plan copy never drops a ticker's playbook
+# ────────────────────────────────────────────────────────────────────────────
+
+SIX = ('SPY', 'QQQ', 'IWM', 'DIA', 'TSLA', 'NVDA')
+
+
+def _six_ticker_brief():
+    from lib.strat_levels import format_levels_for_brief
+    from tests.lib.session_levels_helpers import d8_session
+
+    text = format_levels_for_brief(d8_session().to_level_map(), 'neutral')
+    assert 'sell 1/3' in text
+    why = 'w' * 200
+    return {
+        'overview': {}, 'earnings': {'mode': 'daily', 'earnings': []},
+        'events': {'today': [{'name': 'CPI'}]},
+        'recommended_orb_window': '5m', 'recommended_orb_reason': 'r' * 120,
+        'tickers': {t: {'playbook': text, 'llm_playbook': why} for t in SIX},
+    }
+
+
+def _playbook_payloads(routed):
+    return [msg for kind, msg in routed
+            if kind == 'main' and any('Playbook' in (e.get('title') or '')
+                                      for e in msg['embeds'])]
+
+
+def test_six_tickers_with_the_exit_plan_keep_every_playbook(monkeypatch):
+    """Six Design 8 playbooks with a 200-character "Why this trigger"
+    each outgrow one 6,000-character message (Codex P2 on #1832): the
+    routed output splits the playbook into budgeted messages, every
+    ticker's playbook and its explanation arrive once and together, in
+    order, and no message is over the budget."""
+    import gcp.premarket_brief as pb
+    monkeypatch.setattr(pb, '_build_overview_embed',
+                        lambda b: _mock_embed('Premarket Overview'))
+    monkeypatch.setattr(pb, '_build_ticker_fields',
+                        lambda b: [{'name': 'SPY', 'value': '~', 'inline': True}])
+    monkeypatch.setattr(pb, '_build_calendar_embed',
+                        lambda evts, mode='daily': _mock_embed('Economic Calendar'))
+    brief = _six_ticker_brief()
+    whole = pb._build_playbook_embed(brief)
+    assert len(json.dumps(whole)) > pb.MAX_EMBED_CHARS
+
+    routed = pb.format_discord_messages_routed(brief)
+    for _kind, msg in routed:
+        assert sum(len(json.dumps(e)) for e in msg['embeds']) <= pb.MAX_EMBED_CHARS
+    payloads = _playbook_payloads(routed)
+    assert len(payloads) >= 2
+    names = [f['name'] for m in payloads for e in m['embeds'] for f in e['fields']]
+    expected = [n for t in SIX for n in (f'{t} Playbook', f'\U0001F9E0 {t} — Why this trigger')]
+    assert names == expected
+    fields = [f for m in payloads for e in m['embeds'] for f in e['fields']]
+    for f in fields[::2]:
+        assert 'sell the last 1/3' in f['value']
+    first = payloads[0]['embeds'][0]
+    assert first['title'] == 'Strat Playbook — 5m ORB' and first['description']
+    for m in payloads[1:]:
+        assert m['embeds'][0]['title'] == 'Strat Playbook — 5m ORB (continued)'
+    # The other messages are unchanged: analytics first, calendar last.
+    assert routed[0][1]['embeds'][0]['title'] == 'Premarket Overview'
+    assert 'Calendar' in routed[-1][1]['embeds'][0]['title']
+
+
+def test_a_small_playbook_stays_one_message():
+    import gcp.premarket_brief as pb
+    embed = {'title': 'Strat Playbook — 5m ORB', 'description': 'd', 'color': 0,
+             'fields': [{'name': 'SPY Playbook', 'value': 'x', 'inline': False},
+                        {'name': '\U0001F9E0 SPY — Why this trigger', 'value': 'y',
+                         'inline': False}]}
+    assert pb._split_playbook_embed(embed) == [embed]
+    assert pb._split_playbook_embed({**embed, 'fields': []}) == []

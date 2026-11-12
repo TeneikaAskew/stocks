@@ -929,6 +929,26 @@ class TestPlanInputs:
         assert calls.target_status == 'params_unavailable' and not calls.plan_available
         assert calls.trigger_price == pytest.approx(252.10)
 
+    def test_an_entry_cutoff_not_ok_publishes_no_plan_and_scores_none(self):
+        """The brief prints no plan when the cutoff is not ok, and the
+        resolver scores none: targets_unavailable, never an all-close trade
+        with no cutoff (Codex P1 on #1832)."""
+        import gcp.premarket_playbook_resolver as mod
+        from tests.lib.session_levels_helpers import d8_basis
+
+        basis = d8_basis(statuses={'entry_cutoff_et': 'input_unavailable'})
+        calls = mod.plan_inputs('calls', {}, basis, policy_fn=lambda: pytest.fail('no policy read'))
+        assert calls.target_status == 'input_unavailable' and not calls.plan_available
+        assert calls.targets == () and calls.cutoff_minutes is None
+        assert calls.trigger_price == pytest.approx(252.10)
+        assert calls.stop_price == pytest.approx(248.20)
+        quiet = [_bar(_ts(m), 251.50, 251.90, 251.40, 251.80) for m in range(0, 29)]
+        bars = _bars(quiet + [_bar(_ts(29), 251.80, 252.40, 251.70, 252.30),
+                              _bar(_ts(389), 254.00, 254.20, 253.90, 254.10)])
+        out = resolve_plan('call', calls, bars)
+        assert out.r is None and out.exit is None and out.r_status == 'targets_unavailable'
+        assert (out.t1_hit_ts, out.t2_hit_ts, out.t3_hit_ts) == (None, None, None)
+
     def test_a_v2_basis_falls_back_to_the_structured_columns_and_the_policy(self):
         import gcp.premarket_playbook_resolver as mod
         from lib.strat_levels import LEVEL_RULE_V2

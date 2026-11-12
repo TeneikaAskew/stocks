@@ -377,12 +377,12 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`platform/api/routers/backtest.py`](../../../platform/api/routers/backtest.py) — line [875](../../../platform/api/routers/backtest.py#L875)
 
 ### `premarket_analysis`
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3463](../../../gcp/premarket_brief.py#L3463), [3490](../../../gcp/premarket_brief.py#L3490)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3504](../../../gcp/premarket_brief.py#L3504), [3531](../../../gcp/premarket_brief.py#L3531)
 - [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [850](../../../gcp/premarket_playbook_resolver.py#L850)
 - [`gcp/signal_monitor.py`](../../../gcp/signal_monitor.py) — line [575](../../../gcp/signal_monitor.py#L575)
 
 ### `premarket_analysis_history`
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3426](../../../gcp/premarket_brief.py#L3426)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3467](../../../gcp/premarket_brief.py#L3467)
 - [`scripts/backfill_history_tables.py`](../../../scripts/backfill_history_tables.py) — line [123](../../../scripts/backfill_history_tables.py#L123)
 
 ### `ranker_runs`
@@ -412,7 +412,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - _no writer found in gcp/, lib/, scripts/, platform/api_
 
 ### `strat_levels`
-- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [3039](../../../lib/strat_levels.py#L3039)
+- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [3042](../../../lib/strat_levels.py#L3042)
 
 ### `ticker_calibration`
 - [`scripts/calibrate_thresholds.py`](../../../scripts/calibrate_thresholds.py) — line [497](../../../scripts/calibrate_thresholds.py#L497)
@@ -783,10 +783,10 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 
 ### `premarket_analysis`
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [345](../../../gcp/discord_interactions/main.py#L345)
-- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3482](../../../gcp/premarket_brief.py#L3482), [3527](../../../gcp/premarket_brief.py#L3527)
+- [`gcp/premarket_brief.py`](../../../gcp/premarket_brief.py) — line [3523](../../../gcp/premarket_brief.py#L3523), [3568](../../../gcp/premarket_brief.py#L3568)
 - [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [656](../../../gcp/premarket_playbook_resolver.py#L656), [888](../../../gcp/premarket_playbook_resolver.py#L888), [997](../../../gcp/premarket_playbook_resolver.py#L997)
 - [`lib/movement_statement.py`](../../../lib/movement_statement.py) — line [346](../../../lib/movement_statement.py#L346), [421](../../../lib/movement_statement.py#L421)
-- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [2534](../../../lib/strat_levels.py#L2534)
+- [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [2535](../../../lib/strat_levels.py#L2535)
 - [`lib/strategies/brief_bias.py`](../../../lib/strategies/brief_bias.py) — line [83](../../../lib/strategies/brief_bias.py#L83)
 - [`platform/api/routers/dashboard.py`](../../../platform/api/routers/dashboard.py) — line [107](../../../platform/api/routers/dashboard.py#L107), [116](../../../platform/api/routers/dashboard.py#L116)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [647](../../../scripts/audit_data_freshness.py#L647), [648](../../../scripts/audit_data_freshness.py#L648), [807](../../../scripts/audit_data_freshness.py#L807)

@@ -1074,6 +1074,23 @@ class TestTargetSpacing:
         sl = d8_session(statuses={'exit_legs': 'input_unavailable'})
         assert sl.long.targets == [] and sl.long.target_status == 'input_unavailable'
 
+    @pytest.mark.parametrize('status', ['input_unavailable', 'params_unavailable'])
+    def test_an_entry_cutoff_not_ok_publishes_no_target(self, status):
+        """No plan without the entry rule it is scored on (Codex P1 on
+        #1832): the side keeps its trigger, stop and gate targets and
+        records the cutoff's status, as for spacing and legs."""
+        sl = d8_session(statuses={'entry_cutoff_et': status})
+        for side in (sl.long, sl.short):
+            assert side.trigger is not None and side.stop is not None
+            assert side.targets == [] and side.skipped == []
+            assert side.target_status == status
+            assert side.plan['entry_cutoff_et'] is None
+            assert side.plan['entry_cutoff_status'] == status
+        assert _prices(sl.long.gate_targets) == [253.00, 275.00, 280.00]
+        from lib.strat_levels import SessionLevels
+        again = SessionLevels.from_basis(sl.to_basis())
+        assert again.long.targets == [] and again.long.target_status == status
+
     def test_the_legs_bound_the_targets(self):
         sl = d8_session(spacing=0.05, exit_legs=2)
         assert _prices(sl.long.targets) == [253.00, 275.00]
@@ -1136,6 +1153,20 @@ class TestExitPlanCopy:
         assert "    Targets unavailable (insufficient_history): no exit plan for this side." in text
         assert "No target at least" not in text and "    T1:" not in text
         assert "Skipped" not in text
+
+    def test_entry_cutoff_unavailable(self):
+        """An entry cutoff that is not ok prints no entry window and no
+        exit plan, and says so (Codex P1 on #1832)."""
+        text = self._text(statuses={'entry_cutoff_et': 'input_unavailable'})
+        assert ("  CALLS above 252.10 (PMK_H), entry window unavailable (input_unavailable)\n"
+                in text)
+        assert ("  PUTS below 248.20 (PMK_L), entry window unavailable (input_unavailable)\n"
+                in text)
+        assert "new entries" not in text
+        assert text.count(
+            "    Targets unavailable (input_unavailable): no exit plan for this side.") == 2
+        assert "No target at least" not in text and "    T1:" not in text
+        assert "Skipped" not in text and "sell 1/" not in text
 
     @pytest.mark.parametrize('flag, label', [
         (0.2, "    T2: 247.00 (PDC, gap fill: gap 0.21 x ATR), sell 1/3\n"),

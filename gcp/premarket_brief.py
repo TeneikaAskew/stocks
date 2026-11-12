@@ -3107,15 +3107,56 @@ def _build_playbook_embed(brief: dict) -> dict:
     }
 
 
+# Discord's cap on fields in one embed.
+MAX_EMBED_FIELDS = 25
+_WHY_PREFIX = '\U0001F9E0 '
+
+
+def _split_playbook_embed(embed: dict) -> list[dict]:
+    """The playbook embed as one or more embeds, each within the
+    per-message budget (MAX_EMBED_CHARS, measured as the routed check
+    measures it) and MAX_EMBED_FIELDS, so no ticker's plan is dropped for
+    size (Codex P2 on #1832: six tickers with the exits spec's plan and a
+    "Why this trigger" each outgrew one message). A ticker's playbook field
+    and its "Why this trigger" field stay together, in order. The first
+    embed keeps the title and description; each later one is titled as a
+    continuation."""
+    fields = embed.get('fields') or []
+    groups: list[list[dict]] = []
+    for f in fields:
+        if groups and str(f.get('name', '')).startswith(_WHY_PREFIX):
+            groups[-1].append(f)
+        else:
+            groups.append([f])
+    title = embed.get('title') or ''
+    chunks: list[dict] = []
+    current = {**embed, 'fields': []}
+    for group in groups:
+        trial = {**current, 'fields': current['fields'] + group}
+        fits = (len(json.dumps(trial)) <= MAX_EMBED_CHARS
+                and len(trial['fields']) <= MAX_EMBED_FIELDS)
+        if fits or not current['fields']:
+            current = trial
+            continue
+        chunks.append(current)
+        current = {**embed, 'title': f'{title} (continued)', 'description': '',
+                   'fields': list(group)}
+    if current['fields']:
+        chunks.append(current)
+    return chunks
+
+
 def format_discord_messages_routed(brief: dict) -> list[tuple[str, dict]]:
     """Format brief as a list of (channel_kind, payload) tuples.
 
-    Returns 1-4 messages, each tagged with the webhook channel it
+    Returns one message or more, each tagged with the webhook channel it
     should post to:
 
-      ('main', overview + ticker_analysis + playbook)   — analytics
-      ('earnings', earnings)                            — company earnings
-      ('main', economic calendar)                       — macro events
+      ('main', overview + ticker_analysis)   — analytics
+      ('main', playbook), one or more        — the Strat playbook, split
+                                               by _split_playbook_embed
+      ('earnings', earnings)                 — company earnings
+      ('main', economic calendar)            — macro events
 
     The caller maps `channel_kind` to a webhook URL. If the earnings
     webhook isn't configured, the caller falls back to the main
@@ -3146,9 +3187,9 @@ def format_discord_messages_routed(brief: dict) -> list[tuple[str, dict]]:
     # dropped on most runs because overview+ticker already filled the
     # 6000-char per-message cap. Same split-for-budget pattern the
     # macro calendar already uses below.) ────────────────────────────
-    playbook_msg = []
-    if playbook.get('fields'):
-        playbook_msg.append(playbook)
+    # The playbook itself is split into as many messages as its fields
+    # need, each with its own budget, so no ticker's plan is dropped.
+    playbook_msgs = [[chunk] for chunk in _split_playbook_embed(playbook)]
 
     # ── Earnings channel — company earnings ─────────────────────────
     earnings_msg = []
@@ -3163,7 +3204,7 @@ def format_discord_messages_routed(brief: dict) -> list[tuple[str, dict]]:
 
     output: list[tuple[str, dict]] = []
     for kind, embeds in [('main', analytics_msg),
-                         ('main', playbook_msg),
+                         *(('main', m) for m in playbook_msgs),
                          ('earnings', earnings_msg),
                          ('main', calendar_msg)]:
         # Per-message truncation

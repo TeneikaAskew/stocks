@@ -2448,9 +2448,10 @@ def _plan_targets(out: SideLevels, rungs: list, ref: float, atr: float,
     trigger in order, keeping a candidate only when it is at least the
     ticker's spacing (target_min_spacing_atr x ATR, to the cent, equal kept)
     past the trigger or the target before it, until exit_legs targets are
-    kept. A spacing or leg parameter that is not ok publishes no target and
-    records its status: there is no unspaced fallback (CLAUDE.md 3.7)."""
-    missing = params.first_not_ok((TARGET_SPACING_KEY, EXIT_LEGS_KEY))
+    kept. A spacing, leg or entry cutoff parameter that is not ok publishes
+    no target and records its status: there is no unspaced fallback, and no
+    plan without the entry rule it is scored on (CLAUDE.md 3.7)."""
+    missing = params.first_not_ok((TARGET_SPACING_KEY, EXIT_LEGS_KEY, ENTRY_CUTOFF_KEY))
     cutoff = params.param(ENTRY_CUTOFF_KEY)
     flag = params.param(GAP_FILL_FLAG_KEY)
     out.plan = {
@@ -2785,6 +2786,8 @@ def _plan_block(line: str, side: str, trig: dict, plan: dict, room: Optional[flo
     cutoff = plan.get('entry_cutoff_et')
     if cutoff:
         line += f", new entries {_clock_text(REGULAR_SESSION_OPEN)} to {cutoff} ET"
+    elif plan.get('entry_cutoff_status') not in (None, PARAM_OK):
+        line += f", entry window unavailable ({plan['entry_cutoff_status']})"
     out = [line]
     price = trig['trigger_level']
     past = 'at or above' if side == 'long' else 'at or below'
