@@ -4164,17 +4164,19 @@ RELATION_TOTAL = re.compile(
 # answer for relation counts applies here too. Literal shapes only, applied to
 # one document at its exact repository path; the frozen copy under manual/
 # carries the same sentences with historical figures and must not move.
+# ASCII digits only: a shape written with other Unicode digits is not owned,
+# so the unchanged check, which reads them, still reports it.
 # (FEAT-CICD-001, docs/superpowers/specs/2026-10-31-feat-cicd-001-retry-split-substitution.md.)
 RETRY_SPLIT_DOC = "docs/product/infrastructure/05-a-ARCHITECTURE.md"
 _RETRY_WORD = r"zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve"
 RETRY_SPLIT = {
     # §11: "`--max-retries 0` is the norm (43 of the 68 declared jobs)"
-    "norm": re.compile(r"(`--max-retries )(\d)(` is the norm \()(\d+)( of the )(\d+)( declared jobs\))"),
+    "norm": re.compile(r"(`--max-retries )(\d)(` is the norm \()(\d+)( of the )(\d+)( declared jobs\))", re.ASCII),
     # §11: "the 24 `--max-retries 1` jobs"
-    "jobs": re.compile(r"(\bthe )(\d+)( `--max-retries )(\d)(` jobs\b)"),
+    "jobs": re.compile(r"(\bthe )(\d+)( `--max-retries )(\d)(` jobs\b)", re.ASCII),
     # §6: "`--max-retries 0` for 43 of the 68 declared jobs, `1` for 24 and `2` for one"
     "list": re.compile(r"(`--max-retries )(\d)(` for )(\d+)( of the )(\d+)( declared jobs, `)(\d)(` for )(\d+)"
-                       r"( and `)(\d)(` for )(\d+|" + _RETRY_WORD + r")\b"),
+                       r"( and `)(\d)(` for )(\d+|" + _RETRY_WORD + r")\b", re.ASCII),
 }
 
 
