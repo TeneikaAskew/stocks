@@ -228,7 +228,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 
 Current-session ORB runtime draft: [#1642](https://github.com/TeneikaAskew/stocks/pull/1642). The earlier137-test repair, formal renderer and source identity passed on the prior source. The current SEC fairness repair passes192 tests with1 existing Postgres-dependent skip; final source/document qualification remains root-owned. API-image calendar import, combined fleet allocation, hosted review/checks and deployed parity remain pending.
 
-EW brief retirement candidate: both retired source aliases are excluded before loader calculations and recap acquisition/presentation is removed, including replays. Current-main baseline passes 271 scoped tests; candidate passes 282 with all 54 caller nodes preserved. Numeric helpers, current RSI calibration, calendar freshness and historical data are unchanged. Source/local evidence only; review, hosted CI and deployment remain pending.
+EW brief retirement Draft [#1837](https://github.com/TeneikaAskew/stocks/pull/1837): both retired source aliases are excluded before loader calculations and recap acquisition/presentation is removed, including replays. Current-main baseline passes 271 scoped tests; candidate passes 282 with all 54 caller nodes preserved. Numeric helpers, current RSI calibration, calendar freshness and historical data are unchanged. Source/local evidence only; review, hosted CI and deployment remain pending.
 
 ### FEAT-STRAT-001
 
