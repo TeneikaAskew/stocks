@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-10-31-feat-cicd-001-retry-split-substitution.md
 branch: feature/feat-cicd-001-retry-split-render
-pr: null
+pr: 1835
 status: ready
 ---
 
