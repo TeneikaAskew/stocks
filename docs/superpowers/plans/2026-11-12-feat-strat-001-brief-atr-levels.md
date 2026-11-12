@@ -2,7 +2,7 @@
 feat_id: FEAT-STRAT-001
 spec: docs/superpowers/specs/2026-11-11-feat-strat-001-brief-atr-levels.md
 branch: fix/feat-strat-001-brief-atr-levels
-pr: null
+pr: 1845
 status: ready
 ---
 
