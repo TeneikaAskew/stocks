@@ -186,21 +186,21 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production needs remediation; historical-score contract implementation under review in #1620, not deployed; EW reader retirement source and local tests in Draft [#1801](https://github.com/TeneikaAskew/stocks/pull/1801) under the approved 2026-10-31 spec; external current-head review, hosted checks and rollout pending; the premarket brief scores RSI against the ticker's ticker_calibration band (the signal monitor's resolver, point in time), implementation under review, not deployed |
+| Status | Production needs remediation; historical-score contract implementation under review in #1620, not deployed; EW reader retirement source and local tests in Draft [#1801](https://github.com/TeneikaAskew/stocks/pull/1801) under the approved 2026-10-31 spec; external current-head review, hosted checks and rollout pending; the premarket brief scores RSI against the ticker's ticker_calibration band (the signal monitor's resolver, point in time), implementation under review, not deployed; honest outcome scoring (realized_return_pct under rule next-open-20m-1c-v1, `/similar` pct_profitable as the realized win share, resolver rule cross-fill-t1-v1) source and local tests in a Draft PR under the approved 2026-11-11 spec, schema apply and rollout pending |
 | Priority | P0 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-11 |
+| Last reviewed | 2026-11-12 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/signals`, `/live` |
 | Backend | `/api/signals` |
 | Data | `signal_alerts`, `historical_signals`, `exit_config_overrides` |
 | Models | MODEL-MOM-001, MODEL-MR-001, MODEL-AGREE-001, MODEL-EXIT-001 |
-| Code | `lib/signals.py`, `lib/strategies/`, `gcp/signal_monitor.py`, `platform/api/routers/signals.py` |
-| Tests | `signals.spec.ts`, `tests/*/test_signal*.py` |
+| Code | `lib/signals.py`, `lib/strategies/`, `gcp/signal_monitor.py`, `platform/api/routers/signals.py`, `lib/trading_analysis.py`, `gcp/premarket_playbook_resolver.py`, `scripts/analysis/honest_scoring_experiment.py` |
+| Tests | `signals.spec.ts`, `tests/*/test_signal*.py`, `tests/lib/test_trading_analysis_realized_outcome.py`, `tests/lib/test_trading_analysis_feature_ranking.py`, `tests/gcp/test_premarket_playbook_resolver.py` |
 | Open issues | 25 — full list in [12](12-PR-ISSUE-TRACEABILITY.md#feat-signal-001--signals--execution-25-open) |
 | Blocking issues | [#815](https://github.com/TeneikaAskew/stocks/issues/815) [#816](https://github.com/TeneikaAskew/stocks/issues/816) [#928](https://github.com/TeneikaAskew/stocks/issues/928) [#1206](https://github.com/TeneikaAskew/stocks/issues/1206) [#915](https://github.com/TeneikaAskew/stocks/issues/915) [#1136](https://github.com/TeneikaAskew/stocks/issues/1136) |
-| Next action | Complete normal #1620 current-head review/checks and actual staging/frontend close-out; legacy records are not reconstructed or backfilled |
+| Next action | Complete normal #1620 current-head review/checks and actual staging/frontend close-out; legacy records are not reconstructed or backfilled. Honest outcome scoring: review the Draft PR, apply its schema columns to Cloud SQL, then confirm the next historical-signals-watchlist run writes realized_return_pct and the next premarket-playbook-resolver run writes 2026-11-11.v2 |
 
 ### FEAT-PLAYBOOK-001
 
