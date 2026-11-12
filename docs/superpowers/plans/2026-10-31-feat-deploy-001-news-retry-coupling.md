@@ -2,7 +2,7 @@
 feat_id: FEAT-DEPLOY-001
 spec: docs/superpowers/specs/2026-10-29-feat-deploy-001-news-retry-coupling.md
 branch: fix/feat-deploy-001-news-retry-coupling
-pr: null
+pr: 1671
 status: ready
 ---
 
