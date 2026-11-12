@@ -17,20 +17,20 @@ status: ready
 
 ## Global constraints
 
-- Gate changes: `invokes()` strips the first `-n 4` pair from the tail only for the suite contract command; `tool_offence()` refuses any statement word naming `pytest-xdist` (any case, `-`, `_` or `.` spelling, quoted or not) without exactly one `==` version and nothing else, so the pin holds in a pip line and in any other installer's (`uv pip`, `pipx`). Nothing else in the gate changes.
+- Gate changes: `invokes()` strips the first `-n 4` pair from the tail only for the suite contract command, and not where the pair follows `-p`; `tool_offence()` refuses any line whose words, read as the shell reads them (quotes and backslashes dropped, `\` continuations joined), name xdist other than as `pytest-xdist` (`-`, `_` or `.` joined, any case, optional extra) with exactly one `==` version, so the pin holds in a pip line, in any other installer's (`uv pip`, `pipx`) and in a file a line writes. Nothing else in the gate changes.
 - `.github/workflows/registry-check.yml`, `.github/workflows/spec-gate.yml`, `scripts/gate/pinned/registry-check.yml` and `scripts/gate/pinned/spec-gate.yml` stay byte-identical to main. The suite still runs serially in CI until the pin and live stages.
 - Every existing test, case and assertion stays. New tests sit at the end of `tests/scripts/test_spec_gate.py`, module-scope helpers only, real CLI and real Git.
 - No hook bypass, no history rewrite. The gate-file red-team pass runs on the frozen head before the one push.
 
 ## Task 1: gate policy
 Spec: § Design. Advances done_when 2.
-- [ ] `SUITE_COMMAND`, `SUITE_WORKERS` and `EXACT_PIN_PACKAGES` constants and the `exact_pin_missing()` helper; `invokes()` and `tool_offence()` changes as in Global constraints.
+- [ ] `SUITE_COMMAND` and `SUITE_WORKERS` constants and the `xdist_unpinned()` helper; `invokes()` and `tool_offence()` changes as in Global constraints.
 
 ## Task 2: acceptance and refusal tests with recorded mutations
 Spec: § Design, § Risks. Advances done_when 2.
 - [ ] `test_the_gate_suite_may_run_on_exactly_four_workers`: both gate workflows accept the suite with `-n 4`, alone and after an exactly pinned pytest-xdist install. Recorded failing on main's gate and passing on the head.
-- [ ] `test_no_other_worker_form_runs_the_gate_suite` (each form in turn: `-n 3`, `-n auto`, `-n4`, `--numprocesses 4`, `--dist load`, `-p xdist`, `--maxprocesses 4`, a second `-n 4`) and `test_four_workers_belong_to_the_gate_suite_alone`: each passing on the head and failing on a recorded one-line mutation that lets its form through.
-- [ ] `test_pytest_xdist_installs_only_at_an_exact_version` (each unpinned spelling, in both workflows, and through `uv pip` and `pipx`): passing on the head, failing on main's gate and on the recorded mutation that empties `EXACT_PIN_PACKAGES`, and on the one that accepts any text after the name.
+- [ ] `test_no_other_worker_form_runs_the_gate_suite` (each form in turn: `-n 3`, `-n auto`, `-n4`, `--numprocesses 4`, `--dist load`, `-p xdist`, `--maxprocesses 4`, a second `-n 4`, `-p -n 4`) and `test_four_workers_belong_to_the_gate_suite_alone`: each passing on the head and failing on a recorded one-line mutation that lets its form through.
+- [ ] `test_pytest_xdist_installs_only_at_an_exact_version` (each unpinned spelling, in both workflows, through `uv pip` and `pipx`, and as the shell spells it with quotes, backslashes or a continuation): passing on the head, failing on main's gate and on the recorded mutations that turn the rule off, accept any text after `==`, or read the words without the shell's quote removal.
 
 ## Task 3: the #1849 tests
 Spec: § Problem. Advances done_when 3.
