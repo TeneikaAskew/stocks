@@ -3,6 +3,7 @@ feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-12-feat-cicd-001-test-suite-audit-a-gate-policy.md
 branch: feature/feat-cicd-001-gate-four-workers
 status: ready
+pr: 1853
 ---
 
 # Test suite audit, Part A stage one: the gate accepts exactly the four-worker suite command
