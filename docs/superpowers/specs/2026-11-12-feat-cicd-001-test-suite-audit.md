@@ -23,7 +23,7 @@ done_when:
   - "Part I order independence, so Run Tests can later use workers: the module-level sys.modules stubs for lightgbm and sklearn in tests/gcp/test_magnitude_inference.py and tests/gcp/test_mag_persist_production_model.py are scoped to their own tests, tests/agents/test_cross_ticker_analog_universe.py::test_the_orchestrator_actually_populates_it reads its path from the repo root instead of the working directory, and the full Run Tests command passes with pytest-randomly or `-p random-order` style shuffling on three seeds (recorded), before any proposal to parallelize Run Tests."
   - "Product findings outside FEAT-CICD-001 are opened as GitHub issues for their owning capability and listed in the Part D PR body, not fixed here: the momentum core gate is dead code (MIN_CONDITIONS_MOMENTUM 5 with 3 confirmers), format_levels_for_brief's regime argument is ignored when the LevelMap carries regime_long and regime_short, gcp/build_intraday_flow.py has no job or schedule, gcp/research/direction_program/chart_baseline.py has no caller, the standing strict xfail tests/lib/test_premarket_print_filter.py::test_avgo_0805_high_is_not_an_extreme awaits the owner's AVGO decision, and tests/lib/test_av_account_allowance.py must drop gcp/fetchers/evaluate_ew_strikes.py when that file is deleted."
   - "Owner-only steps are recorded, not assumed: the stale 'Claude' workflow registration (claude.yml, absent from every branch) is disabled by the owner or left with a note; deploy-staging.yml, untested since 2026-09-04, is either dispatched once by the owner with its result recorded or noted as unproven; both outcomes are written in the Part G PR body."
-status: approved
+status: superseded
 supersedes: null
 ---
 
