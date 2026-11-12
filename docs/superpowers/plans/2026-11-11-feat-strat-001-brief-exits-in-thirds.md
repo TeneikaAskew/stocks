@@ -34,7 +34,7 @@ Spec: § Design 1, § Non-goals. Advances done_when[7], done_when[8].
 
 ## Task 5: The resolver scores the plan
 Spec: § Design 6, § Dependencies. Advances done_when[4].
-- [ ] Add the plan outcome columns and `RESOLVER_VERSION` change once the FEAT-SIGNAL-001 scorer implementation is on main
+- [x] Score the plan per side on top of rule cross-fill-t1-v1 (#1833): 18 nullable plan outcome columns, `resolve_plan` and `plan_inputs`, `RESOLVER_VERSION` 2026-11-12.v3 (`tests/gcp/test_premarket_playbook_resolver.py::TestPlanOutcome`, `::TestPlanInputs`, the two resolve_one plan tests and the schema test)
 
 ## Task 6: Experiment and evidence
 Spec: § Experiment, § Source identity and close-out. Advances done_when[6], done_when[9], done_when[10].
