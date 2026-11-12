@@ -4174,8 +4174,10 @@ RETRY_SPLIT = {
     # §11: "the 24 `--max-retries 1` jobs"
     "jobs": re.compile(r"(\bthe )(\d+)( `--max-retries )(\d)(` jobs\b)", re.ASCII),
     # §6: "`--max-retries 0` for 43 of the 68 declared jobs, `1` for 24 and `2` for one"
-    "list": re.compile(r"(`--max-retries )(\d)(` for )(\d+)( of the )(\d+)( declared jobs, `)(\d)(` for )(\d+)"
-                       r"( and `)(\d)(` for )(\d+|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?!\w|\.\d)", re.ASCII),
+    # Digits are ASCII but the closing lookahead is not: a count that runs on into any word character (a Unicode
+    # digit included) or a decimal point and digit is not owned, so the render never writes text the check rejects.
+    "list": re.compile(r"(`--max-retries )([0-9])(` for )([0-9]+)( of the )([0-9]+)( declared jobs, `)([0-9])(` for )([0-9]+)"
+                       r"( and `)([0-9])(` for )([0-9]+|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?!\w)(?!\.[0-9])"),
 }
 
 
