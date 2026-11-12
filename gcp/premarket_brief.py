@@ -30,6 +30,7 @@ from lib.strat_levels import (
     format_levels_for_brief, load_level_params, premarket_snapshot_from_daily,
 )
 from lib.signals import check_call_conditions, check_put_conditions
+from lib.strategies.calibration import resolve_rsi_bands
 from lib.config import load_config
 
 # Configure logging for the Cloud Run Job. Without this, `logger.info()`
@@ -1196,7 +1197,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
         if is_stale:
             logger.warning(
                 "[brief:%s] STALE_DAILY_DATA — last bar %s, analysis_date %s, "
-                "gap=%d session(s); skipping per-ticker analysis to avoid "
+                "gap=%d calendar day(s); skipping per-ticker analysis to avoid "
                 "republishing stale signals. See Track B audit G.P0.4.",
                 ticker, last_bar_date_obj, analysis_date, gap_days,
             )
@@ -1277,8 +1278,20 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             ftfc_labels = {}
 
         # ── Signal conditions ───────────────────────────────────────────
-        call_score, _ = check_call_conditions(latest)
-        put_score, _ = check_put_conditions(latest)
+        # RSI bands are the ticker's own: the ticker_calibration row in force
+        # on analysis_date, through the resolver the signal monitor uses
+        # (Tier A), else its Tier-B constants (FEAT-SIGNAL-001, 2026-11-11
+        # spec). Replays read the row in force on the replayed session.
+        rsi_bands = resolve_rsi_bands(ticker, as_of=analysis_date)
+        rsi_band_tier = (rsi_bands['call_tier'] if rsi_bands['call_tier'] == rsi_bands['put_tier']
+                         else f"{rsi_bands['call_tier']}/{rsi_bands['put_tier']}")
+        logger.info(
+            "[brief:%s] RSI bands call=%s put=%s tier=%s calibration_date=%s",
+            ticker, rsi_bands['call'], rsi_bands['put'], rsi_band_tier,
+            rsi_bands['calibration_date'],
+        )
+        call_score, _ = check_call_conditions(latest, rsi_range=rsi_bands['call'])
+        put_score, _ = check_put_conditions(latest, rsi_range=rsi_bands['put'])
         signal_status = _resolve_signal_status(
             call_score=call_score,
             put_score=put_score,
@@ -1323,6 +1336,10 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             'consecutive_up': consec_up,
             'consecutive_down': consec_down,
             'signal_status': signal_status,
+            'rsi_call_band': rsi_bands['call'],
+            'rsi_put_band': rsi_bands['put'],
+            'rsi_band_tier': rsi_band_tier,
+            'rsi_band_calibration_date': rsi_bands['calibration_date'],
             'strat_candle': daily_strat,
             'strat_combo': daily_combo,
             'strat_setup': bool(daily_setup),
@@ -1895,23 +1912,25 @@ def _resolve_data_freshness(
       * ``gap_days``     — calendar-day gap between ``last_bar_date``
                            and ``analysis_date``. None-input maps to
                            sentinel ``-1`` (status='unknown').
-      * ``is_stale``     — True if the gap > 1 calendar day AND the
-                           weekend-exemption doesn't apply. The
-                           weekend exemption: a Monday brief that
-                           reads Friday's bar (gap=3) is fresh, NOT
-                           stale. Implemented as
-                           ``analysis_date.weekday() == 0 and gap == 3``.
-                           Tuesday-after-holiday-Monday with gap=4
-                           still flags as stale; that's a deliberate
-                           bias toward false-positives on holiday
-                           weeks (overflagging is recoverable; under-
-                           flagging is the audit's failure mode).
+      * ``is_stale``    : True when the gap is over one calendar
+                           day AND the last bar is older than the last
+                           NYSE session before ``analysis_date``
+                           (``lib.eastern_time.previous_session``). So a
+                           Monday reading Friday, a Sunday weekly brief
+                           reading Friday and every session after an
+                           NYSE holiday (the Tuesday after Memorial Day
+                           reading Friday, the Friday after Thanksgiving
+                           reading Wednesday) are fresh, while a frame
+                           missing a session is stale. Until the
+                           2026-11-11 FEAT-DATA-001 spec this counted
+                           calendar days and skipped every post-holiday
+                           session.
       * ``status``       — string written to
                            ``premarket_analysis.data_freshness_status``:
                              'fresh' | 'STALE_DAILY_DATA' | 'unknown'.
 
-    Pure function for unit-testability — does not touch globals or
-    DataFrames. The caller (``generate_premarket_brief``) handles
+    Reads only the process-wide NYSE session cache (and only for a gap
+    of two days or more); a calendar failure raises. The caller (``generate_premarket_brief``) handles
     resolving ``last_bar_date`` from ``df.iloc[-1].name`` and
     propagating the verdict into the per-ticker dict.
     """

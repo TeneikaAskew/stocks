@@ -1089,7 +1089,7 @@ _build_secret_flag() {
 case "${1:-}" in
     setup|setup-notifier-secrets|setup-pg-dump-iam|migrate|build|build-research|\
     backfill|registry-cleanup|retire-legacy-images|pin-images|pin-floating|\
-    cloudbuild-triggers|p7b-classifier|schedulers|pg-dump|audit-infra-drift|notifier|\
+    cloudbuild-triggers|p7b-classifier|evaluate-ew-strikes|schedulers|pg-dump|audit-infra-drift|notifier|\
     help|"") _NEEDS_DEPLOY_CREDS=0 ;;
     *) _NEEDS_DEPLOY_CREDS=1 ;;
 esac
@@ -2850,33 +2850,6 @@ deploy_fetch_premarket_refresh() {
         --quiet
 }
 
-# EW strike verdict evaluator: runs at 23:00 ET (evaluate-ew-strikes-daily)
-# and scores each Earnings Whispers pick from the last 7 days whose scoring
-# session has closed (the next session for an after-close report, #1151)
-# against that session's intraday bars. Populates ew_strike_verdict +
-# ew_strike_move_pct + ew_minutes_to_hit + ew_minutes_in_zone +
-# ew_day_change_pct on earnings_calendar. The next weekday's premarket
-# brief recaps that session's verdicts (#1168). Idempotent: scored rows skip
-# unless --force is passed, which also clears a row it cannot re-score.
-deploy_evaluate_ew_strikes() {
-    echo "Deploying evaluate-ew-strikes job..."
-    gcloud run jobs create evaluate-ew-strikes \
-        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
-        --memory 512Mi --cpu 1 --max-retries 1 \
-        --task-timeout 3600 \
-        --service-account "${SA_EMAIL}" \
-        --command "python,-m,gcp.fetchers.evaluate_ew_strikes" \
-        ${DB_SECRET_FLAG} \
-        --set-env-vars "${ENV_STRING}" \
-        --quiet 2>/dev/null || \
-    gcloud run jobs update evaluate-ew-strikes \
-        --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" --task-timeout 3600 \
-        --command "python,-m,gcp.fetchers.evaluate_ew_strikes" \
-        ${DB_SECRET_FLAG} \
-        --set-env-vars "${ENV_STRING}" \
-        --quiet
-}
-
 # News sentiment is split into two Cloud Run jobs sharing the same image:
 # `fetch-news-sentiment` queries by ticker (always-on watchlist), while
 # `fetch-news-sentiment-topics` queries by AV catalyst topic to capture
@@ -3244,7 +3217,6 @@ deploy_fetchers() {
     deploy_fetch_earnings_history
     deploy_compute_earnings_reactions
     deploy_fetch_premarket_refresh
-    deploy_evaluate_ew_strikes
     deploy_fetch_sec_filings
     deploy_fetch_insider_transactions
     deploy_fetch_top_movers
@@ -4867,12 +4839,11 @@ deploy_schedulers() {
     # market_data_daily; the 11pm fetcher fills in regular-session OHLC.
     _schedule "premarket-refresh-daily"  "20 8 * * 1-5"  "fetch-premarket-refresh"
 
-    # EW strike verdict evaluator — 11:00 PM ET. Earlier 5pm slot was
-    # tried and produced unreliable bars (AV intraday hadn't fully
-    # settled — borderline KEPT/ASSIGNED verdicts flipped on re-runs).
-    # 11pm gives the full session 7 hours to settle and aligns with
-    # fetch-market-data-daily so AV is already warmed up.
-    _schedule "evaluate-ew-strikes-daily" "0 23 * * 1-5"  "evaluate-ew-strikes"
+    # evaluate-ew-strikes-daily (23:00 ET) retired 2026-10-31 with the
+    # EarningsWhispers source: the job is no longer deployed, so the entry
+    # is deleted here (NOT_FOUND is the normal case once it is gone) and
+    # a failure to delete counts like any other scheduler failure.
+    _unschedule "evaluate-ew-strikes-daily" || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))
 
     # Phase 0.6 — per-ticker threshold calibration. Quarterly cadence
     # (1st of Jan / Apr / Jul / Oct at 02:00 ET). ATR / RVOL / RSI
@@ -5431,7 +5402,7 @@ case "${1:-help}" in
     setup-pg-dump-iam) _PIN_AFTER=0; setup_pg_dump_iam ;;
     fred-rates) _run build_image deploy_fetch_fred_rates ;;
     earnings-calendar) _run build_image deploy_fetch_earnings_calendar ;;
-    evaluate-ew-strikes) _run build_image deploy_evaluate_ew_strikes ;;
+    evaluate-ew-strikes) echo "RETIRED — EarningsWhispers was retired 2026-10-31; evaluate-ew-strikes is no longer deployed (see docs/superpowers/specs/2026-11-01-feat-deploy-001-retire-ew-evaluator-source-note.md)"; exit 1 ;;
     db-query) _run build_image deploy_db_query ;;
     freshness-watchdog) _run build_image deploy_freshness_watchdog ;;
     audit-infra-drift) _run build_image deploy_audit_infra_drift ;;
@@ -5562,8 +5533,6 @@ case "${1:-help}" in
         echo "  fred-rates Deploy fetch-fred-rates job (DGS3MO daily into daily_rates)"
         echo "  earnings-calendar"
         echo "             Deploy fetch-earnings-calendar job alone (AV + UW + Yahoo; EW retired 2026-10-31)."
-        echo "  evaluate-ew-strikes"
-        echo "             Deploy evaluate-ew-strikes job alone (EW strike verdicts, 23:00 ET)."
         echo "  gamma-levels"
         echo "             Deploy p2-build-gamma-levels job (research image; run"
         echo "             build-research first). Nightly writer of gamma_levels_eod."
