@@ -2489,8 +2489,12 @@ def _plan_targets(out: SideLevels, rungs: list, ref: float, atr: float,
     for c in targets:
         r = _rung(c, ref)
         is_pdc = c['name'] == 'PDC' or 'PDC' in c['aliases'] or c['cents'] == pdc_cents
-        if (is_pdc and flag.ok and gap_atr is not None
-                and gap_atr >= flag.value):
+        if is_pdc and not flag.ok:
+            # No silent fallback (CLAUDE.md 3.7, Codex P1 on #1832): a prior
+            # close target whose gap-fill flag cannot be read says so rather
+            # than printing as an ordinary PDC.
+            r['gap_fill_status'] = flag.status
+        elif (is_pdc and gap_atr is not None and gap_atr >= flag.value):
             r['gap_fill_atr'] = round(gap_atr, 2)
         out.targets.append(r)
     out.skipped = skipped
@@ -2522,7 +2526,9 @@ def _legacy_trigger_dict(s: SideLevels) -> Optional[dict]:
         out.update({
             'plan_targets': [{'price': x['price'], 'name': x['name'],
                               'timeframe': x['timeframe'],
-                              **({'gap_fill_atr': x['gap_fill_atr']} if 'gap_fill_atr' in x else {})}
+                              **({'gap_fill_atr': x['gap_fill_atr']} if 'gap_fill_atr' in x else {}),
+                              **({'gap_fill_status': x['gap_fill_status']}
+                                 if 'gap_fill_status' in x else {})}
                              for x in s.targets],
             'skipped': [{'price': x['price'], 'name': x['name']} for x in s.skipped],
             'target_status': s.target_status,
@@ -2812,6 +2818,8 @@ def _plan_block(line: str, side: str, trig: dict, plan: dict, room: Optional[flo
             name = _display_level_name(tg['name'])
             if tg.get('gap_fill_atr') is not None:
                 name += f", gap fill: gap {tg['gap_fill_atr']:.2f} x ATR"
+            elif tg.get('gap_fill_status'):
+                name += f", gap fill flag unavailable ({tg['gap_fill_status']})"
             text = f"    T{i}: {tg['price']:.2f} ({name}), "
             left = legs - len(targets)
             if i < len(targets):

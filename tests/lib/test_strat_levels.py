@@ -1178,6 +1178,23 @@ class TestExitPlanCopy:
         text = self._text(spacing=0.0, gap_fill_flag_atr=flag)
         assert label in text
 
+    @pytest.mark.parametrize('status', ['input_unavailable', 'params_unavailable'])
+    def test_an_unavailable_gap_fill_flag_is_said_not_dropped(self, status):
+        """Codex P1 on #1832: a gap-fill flag that is not ok labels the
+        prior-close target as unclassified instead of printing a plain
+        (PDC), so it reads differently from a gap below the threshold; the
+        rest of the plan is unchanged and the label survives from_basis."""
+        sl = d8_session(spacing=0.0, statuses={'gap_fill_flag_atr': status})
+        text = format_levels_for_brief(sl.to_level_map(), 'neutral')
+        assert (f"    T2: 247.00 (PDC, gap fill flag unavailable ({status})), sell 1/3\n"
+                in text)
+        assert "    T2: 247.00 (PDC), sell 1/3\n" not in text
+        assert sl.short.target_status == 'ok'
+        assert all('gap_fill_status' not in t for t in sl.long.targets)
+        from lib.strat_levels import SessionLevels
+        again = SessionLevels.from_basis(sl.to_basis())
+        assert format_levels_for_brief(again.to_level_map(), 'neutral') == text
+
     def test_the_cutoff_and_legs_come_from_the_policy(self):
         text = self._text(exit_legs=2, spacing=0.05)
         assert "    T1: 253.00 (PDH), sell 1/2\n" in text
