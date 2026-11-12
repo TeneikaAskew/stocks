@@ -6711,3 +6711,125 @@ def test_the_split_is_not_rendered_beyond_05a_or_its_three_shapes(retry_repo):
         with concurrent.futures.ThreadPoolExecutor(min(3, os.cpu_count() or 1)) as pool:
             results = dict(zip(places, pool.map(lambda w: seeded_retry_case(root, head_deploy, a, w), places)))
         assert results == {w: (0, True) for w in places}, results
+
+
+# FEAT-CICD-001 test suite audit, Part A gate-policy stage (#1847, #1849): the gate's own suite may run
+# on exactly four workers, and nothing else about pytest's workers widens.
+REGISTRY_WF = ("name: registry-check\non:\n  pull_request:\npermissions:\n  contents: read\njobs:\n  registry:\n"
+               "    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: |\n{LINES}")
+REGISTRY_CMDS = ('python3 -m py_compile "$gate"', 'python3 "$gate" --pr "$BASE_SHA" "$HEAD_SHA"', "{SUITE}",
+                 'python3 scripts/gate/export_model_registry.py --check --rev "$HEAD_SHA" --base "$BASE_SHA"')
+SERIAL_SUITE = "python3 -m pytest tests/scripts/test_spec_gate.py -q -p no:cacheprovider --noconftest"
+PINNED_XDIST = "python3 -m pip install --quiet pytest-xdist==3.8.0"
+
+
+def registry_workflow(suite: str, before: tuple[str, ...] = ()) -> str:
+    """registry-check with `before` lines ahead of its contract commands and `suite` as its suite line."""
+    lines = (*before, *(c.replace("{SUITE}", suite) for c in REGISTRY_CMDS))
+    return REGISTRY_WF.replace("{LINES}", "".join(f"          {c}\n" for c in lines))
+
+
+def test_the_gate_suite_may_run_on_exactly_four_workers(repo):
+    """#1847: four workers ran the same 185 node ids 55 to 65 percent faster on main 56d63397, with
+    every broken-gate control failing the same node ids. `invokes()` read `-n 4` as an argument outside
+    PYTEST_ARGS, so a workflow running the suite on four workers lost its required suite command.
+    The exact pair is accepted on the suite contract command, in both gate workflows, with or without
+    an exactly pinned pytest-xdist installed first."""
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    for wf, text in ((".github/workflows/spec-gate.yml", gate_workflow(c=SUITE_CMD + " -n 4")),
+                     (".github/workflows/spec-gate.yml", gate_workflow(c="python3 -m pytest tests/scripts/test_spec_gate.py -n 4 -q -p no:cacheprovider --noconftest")),
+                     (".github/workflows/spec-gate.yml", gate_workflow(c="|\n          " + PINNED_XDIST + "\n          " + SUITE_CMD + " -n 4")),
+                     (".github/workflows/registry-check.yml", registry_workflow(SERIAL_SUITE + " -n 4")),
+                     (".github/workflows/registry-check.yml", registry_workflow(SERIAL_SUITE + " -n 4", (PINNED_XDIST,)))):
+        r = pr(repo, "chore/gate-workflow", {wf: text}, **cap)
+        assert r.returncode == 0, (wf, text, r.stdout)
+
+
+WORKER_FORMS = {
+    "three workers": "-n 3",
+    "auto workers": "-n auto",
+    "joined -n4": "-n4",
+    "long --numprocesses": "--numprocesses 4",
+    "a --dist mode": "-n 4 --dist load",
+    "xdist named with -p": "-n 4 -p xdist",
+    "a --maxprocesses cap": "-n 4 --maxprocesses 4",
+    "a second -n 4": "-n 4 -n 4",
+}
+
+
+def test_no_other_worker_form_runs_the_gate_suite(repo):
+    """#1847: only the pair `-n 4`, once, passes. Each other count, spelling, alias, distribution mode or
+    plugin flag is refused in both gate workflows, as the suite line itself and as an extra line."""
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    for form, tail in WORKER_FORMS.items():
+        for wf, text in ((".github/workflows/spec-gate.yml", gate_workflow(c=SUITE_CMD + " " + tail)),
+                         (".github/workflows/registry-check.yml", registry_workflow(SERIAL_SUITE + " " + tail)),
+                         (".github/workflows/spec-gate.yml", gate_workflow(a="|\n          " + SUITE_CMD + " " + tail + "\n          " + VERDICT_CMD))):
+            r = pr(repo, "chore/gate-workflow", {wf: text}, **cap)
+            assert r.returncode == 1 and ("no longer executes" in r.stdout or "beyond what the gate needs" in r.stdout), (form, wf, r.stdout)
+
+
+def test_four_workers_belong_to_the_gate_suite_alone(repo):
+    """#1847: the pair is accepted on the gate's own suite only; the exporter suite or any other pytest
+    line carrying it is still more than the gate's workflows need."""
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    for pre in ("python3 -m pytest tests/scripts/test_export_model_registry.py -q -n 4", "python3 -m pytest lib -n 4"):
+        r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
+        assert r.returncode == 1 and "beyond what the gate needs" in r.stdout, (pre, r.stdout)
+
+
+UNPINNED_XDIST = {
+    "bare": "pytest-xdist",
+    "underscore spelling": "pytest_xdist",
+    "mixed case": "PyTest-XDist",
+    "with an extra": "pytest-xdist[psutil]",
+    "a wildcard version": "pytest-xdist==3.*",
+    "beside a pinned package": "pyyaml==6.0.2 pytest-xdist",
+    "a second unpinned copy": "pytest-xdist==3.8.0 pytest-xdist",
+    "a lower bound": "'pytest-xdist>=3.8'",
+    "an exact pin with a second bound": "'pytest-xdist==3.8.0,<4'",
+}
+OTHER_INSTALLERS = ("uv pip install pytest-xdist", "pipx install pytest-xdist", "uv pip install 'pytest_xdist'")
+
+
+def test_pytest_xdist_installs_only_at_an_exact_version(repo):
+    """#1847: the workers that judge the gate are a reviewed release, so a gate workflow installs
+    pytest-xdist only with an exact `==` version; any other spelling of it is refused, whatever the
+    suite line carries (here the serial suite, so the refusal rests on the install alone) and
+    whichever installer names it."""
+    cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
+    for form, packages in UNPINNED_XDIST.items():
+        for wf, text in ((".github/workflows/spec-gate.yml", gate_workflow(c="|\n          python3 -m pip install --quiet " + packages + "\n          " + SUITE_CMD)),
+                         (".github/workflows/registry-check.yml", registry_workflow(SERIAL_SUITE, ("python3 -m pip install --quiet " + packages,)))):
+            r = pr(repo, "chore/gate-workflow", {wf: text}, **cap)
+            assert r.returncode == 1 and "beyond what the gate needs" in r.stdout, (form, wf, r.stdout)
+    for line in OTHER_INSTALLERS:
+        r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_workflow(c="|\n          " + line + "\n          " + SUITE_CMD)}, **cap)
+        assert r.returncode == 1 and "beyond what the gate needs" in r.stdout, (line, r.stdout)
+
+
+def test_a_spec_without_a_status_key_is_named_missing(repo):
+    """#1849: a spec with no `status` key was refused only because its missing value is outside the
+    three statuses, so dropping `status` from REQUIRED_SPEC_KEYS changed no test. The missing key is
+    named, on the base spec a change is measured against and on a spec a PR adds."""
+    unstated = front(**{"feat_id": "FEAT-MODEL-001", "req_ids": "[REQ-MODEL-001]", "done_when": DONE})
+    newer = "docs/superpowers/specs/2026-09-02-model-decisions-two.md"
+    r = pr(repo, "docs/spec-feat-model-001", {newer: unstated})
+    assert r.returncode == 1 and f"{newer}: missing frontmatter key 'status'" in r.stdout, r.stdout
+    on_base(repo, {SPEC: unstated})
+    r = pr(repo, BRANCH, CODE)
+    assert r.returncode == 1 and f"{SPEC}: missing frontmatter key 'status'" in r.stdout, r.stdout
+
+
+def test_a_spec_status_outside_the_three_is_refused(repo):
+    """#1849: only draft, approved and superseded are spec statuses; no test refused another value, so
+    a fourth status could join SPEC_STATUSES unseen. Each is refused on a spec a PR adds and on the
+    base spec a change is measured against."""
+    newer = "docs/superpowers/specs/2026-09-02-model-decisions-two.md"
+    for status in ("done", "ready", "proposed", "Approved", "approved."):
+        r = pr(repo, "docs/spec-feat-model-001", {newer: spec(status=status)})
+        assert r.returncode == 1 and f"{newer}: status must be draft | approved | superseded" in r.stdout, (status, r.stdout)
+    for status in ("done", "ready", "proposed", "Approved", "approved."):
+        on_base(repo, {SPEC: spec(status=status)})
+        r = pr(repo, BRANCH, CODE)
+        assert r.returncode == 1 and f"{SPEC}: status must be draft | approved | superseded" in r.stdout, (status, r.stdout)

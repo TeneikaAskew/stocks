@@ -777,10 +777,17 @@ def line_of(job: dict, command: str) -> int:
 # What may follow the suite command: nothing that keeps pytest from running the tests
 # (solyra#72 r4120633474: `--collect-only` starts with the marker and executes nothing).
 PYTEST_ARGS = {"-q", "-v", "-x", "-p", "no:cacheprovider", "--noconftest", "-rA", "-ra"}
+# The one worker form beside them: the gate's own suite may carry the pair `-n 4`, once, in that
+# order. Any other count, alias, distribution mode or command is a reviewed decision of its own
+# (FEAT-CICD-001 test suite audit, #1847: four workers ran the same 185 tests 55 to 65 percent faster).
+SUITE_COMMAND = "python3 -m pytest tests/scripts/test_spec_gate.py"
+SUITE_WORKERS = ["-n", "4"]
 DEFAULT_TYPES = {"opened", "synchronize", "reopened"}   # GitHub's default activity types for pull_request events
 
 
 PIP_FLAGS = frozenset(("--quiet", "-q", "--disable-pip-version-check", "--no-deps", "--no-index", "--user", "--upgrade", "-U", "--no-cache-dir"))
+# Installed only at an exact `==` version, so the workers that judge the gate are a reviewed release (#1847)
+EXACT_PIN_PACKAGES = frozenset(("pytest-xdist",))
 PYTEST_CONTRACTS = tuple(m for c in WORKFLOW_CONTRACTS.values() for m in c["run"] + tuple(x for ms in c.get("run_if_present", {}).values() for x in ms)
                          if "pytest" in m)
 
@@ -789,10 +796,13 @@ def tool_offence(runs: str) -> str | None:
     """The first executed line whose pip or pytest is more than the gate's workflows need (red-team
     round eight: a blocklist of pip flags missed `--index`, a URL, `git+`, `-r <url>`, `./`, `pip config`;
     a pytest write option overwrote a gate file). pip may only install named packages from the
-    default index; pytest may only be a contract command with its permitted tail."""
+    default index; pytest may only be a contract command with its permitted tail; and no statement,
+    whichever installer it runs, names pytest-xdist without an exact version (#1847)."""
     for line in runs.split("\n"):
         for stmt in re.split(r"\s*(?:;|&&|\|\||\|)\s*", line.strip()):
             stmt = re.sub(r"^((command|builtin|env|time|nice|nohup|sudo|timeout|exec)\s+(-\S+\s+|[A-Za-z_]\w*=\S*\s+)*)+", "", stmt)
+            if any(exact_pin_missing(w) for w in stmt.split()):
+                return line.strip()
             if m := re.match(r"^(?:python3?\s+-m\s+)?pip3?\s+(.*)$", stmt):
                 words = m.group(1).split()
                 if not words or words[0] != "install" or any(w not in PIP_FLAGS and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9,._-]*\])?(==[A-Za-z0-9.*+!-]+)?", w) for w in words[1:]):
@@ -802,14 +812,23 @@ def tool_offence(runs: str) -> str | None:
     return None
 
 
+def exact_pin_missing(word: str) -> bool:
+    """The word names a package of EXACT_PIN_PACKAGES (any case, `-`, `_` or `.` spelling, quoted or
+    not) without exactly one `==` version and nothing else: in a pip line or any other installer's."""
+    m = re.match(r"([A-Za-z0-9._-]+)(.*)$", word.strip("'\""))
+    return bool(m) and re.sub(r"[-_.]+", "-", m.group(1)).lower() in EXACT_PIN_PACKAGES and not re.fullmatch(r"(\[[A-Za-z0-9,._-]*\])?==[A-Za-z0-9.+!-]+", m.group(2))
+
+
 def invokes(statement: str, command: str) -> bool:
     """The statement invokes the contract command: it starts with it, and a pytest command
     carries only arguments that still run the tests."""
     if not statement.startswith(command):
         return False
     if command.startswith("python3 -m pytest"):
-        tail = re.sub(r"\s\d*[<>]&?\S*", "", statement[len(command):])   # redirections do not change what runs
-        return set(tail.split()) <= PYTEST_ARGS
+        words = re.sub(r"\s\d*[<>]&?\S*", "", statement[len(command):]).split()   # redirections do not change what runs
+        if command == SUITE_COMMAND and (at := next((i for i in range(len(words) - 1) if words[i:i + 2] == SUITE_WORKERS), None)) is not None:
+            del words[at:at + 2]   # the first `-n 4` only: a second one stays and is refused
+        return set(words) <= PYTEST_ARGS
     return True
 
 
