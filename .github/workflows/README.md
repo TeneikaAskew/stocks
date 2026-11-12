@@ -2,7 +2,7 @@
 
 **Last reviewed:** unknown · **Last scanned:** 2026-09-18 · **Owner:** TBD
 
-Scheduled data fetching and analysis moved from GitHub Actions to Cloud Run Jobs driven by 66 Cloud Scheduler entries (first read live 2026-10-19); see [ARCHITECTURE.md §6](../../docs/product/infrastructure/05-a-ARCHITECTURE.md#6-cloud-run-jobs) and [§8](../../docs/product/infrastructure/05-a-ARCHITECTURE.md#8-cloud-scheduler-timeline). What remains here is CI, two manual bridges, the shared failure handler, and a daily docs-vs-live check. [ARCHITECTURE.md §14](../../docs/product/infrastructure/05-a-ARCHITECTURE.md#14-ci-cloud-build-and-github-actions) carries the same inventory next to the Cloud Build triggers.
+Scheduled data fetching and analysis moved from GitHub Actions to Cloud Run Jobs driven by 65 Cloud Scheduler entries (read live 2026-11-12, after `evaluate-ew-strikes-daily` was deleted); see [ARCHITECTURE.md §6](../../docs/product/infrastructure/05-a-ARCHITECTURE.md#6-cloud-run-jobs) and [§8](../../docs/product/infrastructure/05-a-ARCHITECTURE.md#8-cloud-scheduler-timeline). What remains here is CI, two manual bridges, the shared failure handler, and a daily docs-vs-live check. [ARCHITECTURE.md §14](../../docs/product/infrastructure/05-a-ARCHITECTURE.md#14-ci-cloud-build-and-github-actions) carries the same inventory next to the Cloud Build triggers.
 
 ## Live workflows
 
