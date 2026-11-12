@@ -56,12 +56,17 @@ def _is_usable_number(v) -> bool:
 
 
 @lru_cache(maxsize=64)
-def _latest_calibration(ticker: str) -> Optional[dict]:
+def _latest_calibration(ticker: str, as_of: Optional[date] = None) -> Optional[dict]:
     """Fetch the most recent ticker_calibration row for `ticker`.
+
+    With `as_of` (the premarket brief, live or replayed), only rows dated on
+    or before `as_of` are read and staleness is measured from `as_of`, so a
+    replay uses the row that was in force on its session (REQ-DATA-002).
+    Without it (the signal monitor), the latest row and `date.today()`.
 
     Returns None when:
       * Cloud SQL is not configured (CI / unit tests)
-      * No row exists for the ticker
+      * No row exists for the ticker (on or before `as_of`)
       * The latest row is older than _STALE_DAYS
 
     Cached per-process via lru_cache. To force a refresh (e.g. after a
@@ -83,19 +88,24 @@ def _latest_calibration(ticker: str) -> Optional[dict]:
     # doesn't whipsaw production thresholds. The COALESCE handles the
     # pre-#250 deploy window where the column doesn't exist yet — those
     # rows behave as drift_flagged=FALSE (the original behavior).
+    params = {"ticker": ticker.upper()}
+    as_of_filter = ""
+    if as_of is not None:
+        as_of_filter = "\n           AND calibration_date <= :as_of"
+        params["as_of"] = as_of
     sql = text(
         """
         SELECT calibration_date, rsi_p10, rsi_p25, rsi_p50, rsi_p75, rsi_p90,
                lookback_days, n_bars_used,
                COALESCE(drift_flagged, FALSE) AS drift_flagged
           FROM ticker_calibration
-         WHERE ticker = :ticker
+         WHERE ticker = :ticker{as_of_filter}
          ORDER BY calibration_date DESC
          LIMIT 1
-        """
+        """.format(as_of_filter=as_of_filter)
     )
     try:
-        df = pd.read_sql(sql, get_engine(), params={"ticker": ticker.upper()})
+        df = pd.read_sql(sql, get_engine(), params=params)
     except Exception as e:
         # COALESCE on missing column → UndefinedColumn. Pre-#250 fallback:
         # query without the column so this resolver works on instances
@@ -108,19 +118,18 @@ def _latest_calibration(ticker: str) -> Optional[dict]:
             SELECT calibration_date, rsi_p10, rsi_p25, rsi_p50, rsi_p75, rsi_p90,
                    lookback_days, n_bars_used
               FROM ticker_calibration
-             WHERE ticker = :ticker
+             WHERE ticker = :ticker{as_of_filter}
              ORDER BY calibration_date DESC
              LIMIT 1
-            """
+            """.format(as_of_filter=as_of_filter)
         )
-        df = pd.read_sql(sql_legacy, get_engine(),
-                         params={"ticker": ticker.upper()})
+        df = pd.read_sql(sql_legacy, get_engine(), params=params)
     if df.empty:
         log.info("ticker_calibration: no row for %s — Tier-B fallback", ticker)
         return None
 
     row = df.iloc[0].to_dict()
-    age_days = (date.today() - row["calibration_date"]).days
+    age_days = ((as_of or date.today()) - row["calibration_date"]).days
     if age_days > _STALE_DAYS:
         log.warning(
             "ticker_calibration: stale for %s (%dd old) — Tier-B fallback",
@@ -138,9 +147,9 @@ def _latest_calibration(ticker: str) -> Optional[dict]:
     return row
 
 
-def get_put_rsi_range(ticker: str) -> Tuple[float, float]:
+def get_put_rsi_range(ticker: str, as_of: Optional[date] = None) -> Tuple[float, float]:
     """Resolve the PUT RSI range for `ticker`. Tier A → Tier B fallback."""
-    row = _latest_calibration(ticker)
+    row = _latest_calibration(ticker, as_of)
     if row and _is_usable_number(row.get("rsi_p50")) and _is_usable_number(row.get("rsi_p90")):
         rng = (float(row["rsi_p50"]), float(row["rsi_p90"]))
         log.debug(
@@ -151,9 +160,9 @@ def get_put_rsi_range(ticker: str) -> Tuple[float, float]:
     return PUT_RSI_RANGE
 
 
-def get_call_rsi_range(ticker: str) -> Tuple[float, float]:
+def get_call_rsi_range(ticker: str, as_of: Optional[date] = None) -> Tuple[float, float]:
     """Resolve the CALL RSI range for `ticker`. Tier A → Tier B fallback."""
-    row = _latest_calibration(ticker)
+    row = _latest_calibration(ticker, as_of)
     if row and _is_usable_number(row.get("rsi_p10")) and _is_usable_number(row.get("rsi_p50")):
         rng = (float(row["rsi_p10"]), float(row["rsi_p50"]))
         log.debug(
@@ -164,15 +173,37 @@ def get_call_rsi_range(ticker: str) -> Tuple[float, float]:
     return CALL_RSI_RANGE
 
 
-def get_resolution_tier(ticker: str, side: str) -> str:
+def get_resolution_tier(ticker: str, side: str, as_of: Optional[date] = None) -> str:
     """Return 'A' or 'B' indicating which tier resolved the range.
 
     Used by signal_monitor for audit-trail logging — every fire records
     where its threshold came from. `side` is 'PUT' or 'CALL'.
     """
-    row = _latest_calibration(ticker)
+    row = _latest_calibration(ticker, as_of)
     if not row:
         return "B"
     if side == "PUT":
         return "A" if (_is_usable_number(row.get("rsi_p50")) and _is_usable_number(row.get("rsi_p90"))) else "B"
     return "A" if (_is_usable_number(row.get("rsi_p10")) and _is_usable_number(row.get("rsi_p50"))) else "B"
+
+
+def resolve_rsi_bands(ticker: str, as_of: Optional[date] = None) -> dict:
+    """Both RSI bands for `ticker` from one calibration read, with their
+    provenance: ``call`` (p10, p50) and ``put`` (p50, p90) under Tier A, each
+    side falling back to its Tier-B constant on its own; ``call_tier`` and
+    ``put_tier`` ('A' or 'B'); ``calibration_date`` of the row used, or None
+    when neither side is Tier A. The premarket brief calls it with
+    ``as_of=analysis_date`` (FEAT-SIGNAL-001, 2026-11-11 spec).
+    """
+    row = _latest_calibration(ticker, as_of)
+    p10, p50, p90 = ((row.get("rsi_p10"), row.get("rsi_p50"), row.get("rsi_p90"))
+                     if row else (None, None, None))
+    call_a = _is_usable_number(p10) and _is_usable_number(p50)
+    put_a = _is_usable_number(p50) and _is_usable_number(p90)
+    return {
+        "call": (float(p10), float(p50)) if call_a else CALL_RSI_RANGE,
+        "put": (float(p50), float(p90)) if put_a else PUT_RSI_RANGE,
+        "call_tier": "A" if call_a else "B",
+        "put_tier": "A" if put_a else "B",
+        "calibration_date": row["calibration_date"] if (call_a or put_a) else None,
+    }

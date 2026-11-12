@@ -30,6 +30,7 @@ from lib.strat_levels import (
     format_levels_for_brief, load_level_params, premarket_snapshot_from_daily,
 )
 from lib.signals import check_call_conditions, check_put_conditions
+from lib.strategies.calibration import resolve_rsi_bands
 from lib.config import load_config
 
 # Configure logging for the Cloud Run Job. Without this, `logger.info()`
@@ -1277,8 +1278,20 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             ftfc_labels = {}
 
         # ── Signal conditions ───────────────────────────────────────────
-        call_score, _ = check_call_conditions(latest)
-        put_score, _ = check_put_conditions(latest)
+        # RSI bands are the ticker's own: the ticker_calibration row in force
+        # on analysis_date, through the resolver the signal monitor uses
+        # (Tier A), else its Tier-B constants (FEAT-SIGNAL-001, 2026-11-11
+        # spec). Replays read the row in force on the replayed session.
+        rsi_bands = resolve_rsi_bands(ticker, as_of=analysis_date)
+        rsi_band_tier = (rsi_bands['call_tier'] if rsi_bands['call_tier'] == rsi_bands['put_tier']
+                         else f"{rsi_bands['call_tier']}/{rsi_bands['put_tier']}")
+        logger.info(
+            "[brief:%s] RSI bands call=%s put=%s tier=%s calibration_date=%s",
+            ticker, rsi_bands['call'], rsi_bands['put'], rsi_band_tier,
+            rsi_bands['calibration_date'],
+        )
+        call_score, _ = check_call_conditions(latest, rsi_range=rsi_bands['call'])
+        put_score, _ = check_put_conditions(latest, rsi_range=rsi_bands['put'])
         signal_status = _resolve_signal_status(
             call_score=call_score,
             put_score=put_score,
@@ -1323,6 +1336,10 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             'consecutive_up': consec_up,
             'consecutive_down': consec_down,
             'signal_status': signal_status,
+            'rsi_call_band': rsi_bands['call'],
+            'rsi_put_band': rsi_bands['put'],
+            'rsi_band_tier': rsi_band_tier,
+            'rsi_band_calibration_date': rsi_bands['calibration_date'],
             'strat_candle': daily_strat,
             'strat_combo': daily_combo,
             'strat_setup': bool(daily_setup),

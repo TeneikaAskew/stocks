@@ -729,6 +729,74 @@ class TestResolveDataFreshness:
 from tests.gcp.test_strat_snapshot_parity import no_network  # noqa: E402,F401  (fixture)
 
 
+class TestBriefRsiBands:
+    """FEAT-SIGNAL-001 (2026-11-11 spec): the brief scores RSI against the
+    ticker's ticker_calibration band in force on the analysis date (the
+    resolver the signal monitor uses), Tier B when there is none. On
+    origin/main it always used the hard-coded (25, 50) / (50, 75)."""
+
+    TIER_A = {"calibration_date": date(2026, 10, 1), "rsi_p10": 35.0, "rsi_p25": 43.0,
+              "rsi_p50": 50.5, "rsi_p75": 57.0, "rsi_p90": 65.0, "drift_flagged": False}
+
+    def _run(self, monkeypatch, row, rsi=30.0):
+        from lib import signals as real
+        from lib.strategies import calibration
+        from tests.gcp.test_strat_snapshot_parity import _brief, _daily
+        pb, cfg = _brief(monkeypatch, _daily())
+        seen = {'as_of': [], 'call': [], 'put': []}
+
+        def latest(ticker, as_of=None):
+            seen['as_of'].append((ticker, as_of))
+            return row
+        monkeypatch.setattr(calibration, '_latest_calibration', latest)
+        monkeypatch.setattr(pb, 'add_brief_indicators', lambda df, **k: df.assign(
+            RSI14=rsi, Consecutive_Up=0, Consecutive_Down=3, Price_vs_VWAP=-1.0, StochRSI_K=50.0))
+
+        def call_spy(r, **k):
+            out = real.check_call_conditions(r, **k)
+            seen['call'].append((k.get('rsi_range'), out))
+            return out
+
+        def put_spy(r, **k):
+            out = real.check_put_conditions(r, **k)
+            seen['put'].append((k.get('rsi_range'), out))
+            return out
+        monkeypatch.setattr(pb, 'check_call_conditions', call_spy)
+        monkeypatch.setattr(pb, 'check_put_conditions', put_spy)
+        out = pb.generate_premarket_brief(cfg=cfg)['tickers']['IWM']
+        return out, seen, real
+
+    def test_tier_a_band_is_resolved_as_of_the_analysis_date(self, monkeypatch, no_network):
+        out, seen, _ = self._run(monkeypatch, self.TIER_A)
+        assert seen['as_of'] == [('IWM', date(2026, 10, 9))]
+        assert [b for b, _ in seen['call']] == [(35.0, 50.5)]
+        assert [b for b, _ in seen['put']] == [(50.5, 65.0)]
+        assert out['rsi_call_band'] == (35.0, 50.5) and out['rsi_put_band'] == (50.5, 65.0)
+        assert out['rsi_band_tier'] == 'A'
+        assert out['rsi_band_calibration_date'] == date(2026, 10, 1)
+        # RSI 30 sits inside the hard-coded (25, 50) but below Tier A's 35.
+        (score, conds) = seen['call'][0][1]
+        assert 'rsi_oversold_zone' not in conds and score == 2
+
+    def test_no_calibration_row_scores_as_before(self, monkeypatch, no_network):
+        out, seen, real = self._run(monkeypatch, None)
+        assert [b for b, _ in seen['call']] == [(25.0, 50.0)]
+        assert [b for b, _ in seen['put']] == [(50.0, 75.0)]
+        assert out['rsi_band_tier'] == 'B' and out['rsi_band_calibration_date'] is None
+        (score, conds) = seen['call'][0][1]
+        assert 'rsi_oversold_zone' in conds and score == 3
+
+    def test_the_brief_never_scores_with_default_bands(self):
+        import ast
+        import pathlib
+        src = pathlib.Path(__file__).resolve().parents[2] / 'gcp' / 'premarket_brief.py'
+        calls = [n for n in ast.walk(ast.parse(src.read_text()))
+                 if isinstance(n, ast.Call) and getattr(n.func, 'id', None)
+                 in ('check_call_conditions', 'check_put_conditions')]
+        assert len(calls) == 2
+        assert all(any(k.arg == 'rsi_range' for k in c.keywords) for c in calls)
+
+
 class TestBriefAfterHoliday:
     """FEAT-DATA-001 (2026-11-11 spec): the brief on Friday 2026-11-27, the
     session after Thanksgiving, reads Wednesday 2026-11-25. It must score the
