@@ -1926,7 +1926,7 @@ ALTER TABLE premarket_analysis
 
     -- ── RESOLVED outcomes — CALLS leg ────────────────────────────────
     ADD COLUMN IF NOT EXISTS calls_trigger_hit_ts  TIMESTAMPTZ,   -- first bar where high >= trigger
-    ADD COLUMN IF NOT EXISTS calls_t1_hit_ts       TIMESTAMPTZ,   -- after trigger, first bar where high >= t1
+    ADD COLUMN IF NOT EXISTS calls_t1_hit_ts       TIMESTAMPTZ,   -- first bar from the trigger bar on where high >= t1: a touch, not an exit (calls_exit_reason is the exit)
     ADD COLUMN IF NOT EXISTS calls_t2_hit_ts       TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS calls_t3_hit_ts       TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS calls_stop_hit_ts     TIMESTAMPTZ,   -- after trigger, first bar where low <= stop
@@ -1934,7 +1934,7 @@ ALTER TABLE premarket_analysis
     ADD COLUMN IF NOT EXISTS calls_time_to_t1_min  INTEGER,       -- minutes from trigger to T1
     ADD COLUMN IF NOT EXISTS calls_mae_pct         DOUBLE PRECISION, -- (trigger - min_low_after_trigger)/trigger * 100
     ADD COLUMN IF NOT EXISTS calls_mfe_pct         DOUBLE PRECISION, -- (max_high_after_trigger - trigger)/trigger * 100
-    ADD COLUMN IF NOT EXISTS calls_eod_pnl_pct     DOUBLE PRECISION, -- final realized pct (at first stop/target/EOD close)
+    ADD COLUMN IF NOT EXISTS calls_eod_pnl_pct     DOUBLE PRECISION, -- rule cross-fill-t1-v1 (outcome_resolver_version 2026-11-11.v2): (exit - calls_fill_price)/calls_fill_price * 100, all out at the first of stop or T1 (T1 from the bar after the fill), else last RTH close; NULL unless calls_entry_status = 'filled'
     ADD COLUMN IF NOT EXISTS calls_eod_pnl_dollar  DOUBLE PRECISION, -- pct/100 * notional ($10,000 default)
 
     -- ── RESOLVED outcomes — PUTS leg (mirror of CALLS) ───────────────
@@ -1949,6 +1949,24 @@ ALTER TABLE premarket_analysis
     ADD COLUMN IF NOT EXISTS puts_mfe_pct          DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_eod_pnl_pct      DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_eod_pnl_dollar   DOUBLE PRECISION,
+
+    -- ── Traded outcome, rule cross-fill-t1-v1 (FEAT-SIGNAL-001) ──────
+    -- entry_status: 'gap_through' (the first RTH bar opened at or beyond the
+    -- trigger: no entry), 'not_triggered', 'invalid_stop' (stop missing or
+    -- not beyond the fill on the losing side) or 'filled'. fill_price is the
+    -- trigger, or the open of a later bar that opened beyond it. exit_reason
+    -- is 'stop' (at the stop, or at a later bar's open beyond it; wins a tie),
+    -- 't1' (at the T1 price, only from the bar after the fill; targets at or
+    -- behind the fill are skipped) or 'close' (last RTH close). Fill, exit
+    -- and P&L are NULL unless entry_status = 'filled'. Rows resolved by
+    -- 2026-05-11.v1 booked the last target reached from the trigger price
+    -- and leave these NULL.
+    ADD COLUMN IF NOT EXISTS calls_entry_status    VARCHAR(16),
+    ADD COLUMN IF NOT EXISTS calls_fill_price      DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_exit_reason     VARCHAR(8),
+    ADD COLUMN IF NOT EXISTS puts_entry_status     VARCHAR(16),
+    ADD COLUMN IF NOT EXISTS puts_fill_price       DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_exit_reason      VARCHAR(8),
 
     -- ── Resolver metadata ────────────────────────────────────────────
     ADD COLUMN IF NOT EXISTS outcome_resolved_at   TIMESTAMPTZ,
@@ -2352,7 +2370,7 @@ CREATE TABLE IF NOT EXISTS historical_signals (
     signal_strength   SMALLINT,                     -- 3..5 (count of conditions met)
     conditions_met    VARCHAR(8),                   -- e.g. '4/5'
     duration_minutes  SMALLINT,                     -- bars from entry to MFE peak
-    return_pct        DOUBLE PRECISION,             -- 20-min MFE. PERCENTAGE POINTS (0.5 = +0.5%), as is every return below; signal_metrics stores fractions (#1154)
+    return_pct        DOUBLE PRECISION,             -- 20-min MFE: the best close of the next 20 rows, not a realized return (realized_return_pct is). PERCENTAGE POINTS (0.5 = +0.5%), as is every return below; signal_metrics stores fractions (#1154)
     best_return       DOUBLE PRECISION,
     best_window_min   SMALLINT,
     return_5min       DOUBLE PRECISION,
@@ -2388,6 +2406,18 @@ CREATE INDEX IF NOT EXISTS idx_historical_signals_strength
 
 CREATE INDEX IF NOT EXISTS idx_historical_signals_direction
     ON historical_signals (ticker, trade_type, entry_time DESC);
+
+-- FEAT-SIGNAL-001: the realized outcome of each signal under a fixed,
+-- pre-declared exit, beside the best-case return_pct. realized_rule names the
+-- rule: 'next-open-20m-1c-v1' = enter at the open of the bar after the signal
+-- bar, exit at the open 20 bars later, minus 1 cent, in percentage points of
+-- the entry open; only for a signal bar inside 09:30 to 15:34 ET whose entry
+-- and exit bars open before the same session's close. NULL when not
+-- scoreable and on rows written before these columns (no backfill).
+-- Nullable with no default: a metadata-only ALTER in PostgreSQL.
+ALTER TABLE historical_signals
+    ADD COLUMN IF NOT EXISTS realized_return_pct DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS realized_rule       VARCHAR(32);
 
 
 -- ─────────────────────────────────────────────────────────
