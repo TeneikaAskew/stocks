@@ -9051,6 +9051,7 @@
                 "type": "null"
               }
             ],
+            "description": "Average best close within 20 bars (a favourable excursion), percent",
             "title": "Avg Return 20Min"
           },
           "avg_return_5min": {
@@ -9062,6 +9063,7 @@
                 "type": "null"
               }
             ],
+            "description": "Average best close within 5 bars (a favourable excursion), percent",
             "title": "Avg Return 5Min"
           },
           "count": {
@@ -9123,6 +9125,18 @@
             ],
             "title": "P75 Mfe Pct"
           },
+          "pct_moved_in_favor": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Fraction 0..1 of matched rows whose best close within 20 bars was better than the signal close (return_pct > 0); not a win rate",
+            "title": "Pct Moved In Favor"
+          },
           "pct_profitable": {
             "anyOf": [
               {
@@ -9132,8 +9146,20 @@
                 "type": "null"
               }
             ],
-            "description": "Fraction 0..1, not a percent",
+            "description": "Realized win share, fraction 0..1, not a percent: realized_return_pct > 0 (rule next-open-20m-1c-v1) among matched rows with a realized value; null when none has one",
             "title": "Pct Profitable"
+          },
+          "realized_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Matched rows with a realized value, the pct_profitable denominator",
+            "title": "Realized Count"
           }
         },
         "required": [
