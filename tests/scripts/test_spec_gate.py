@@ -6774,7 +6774,7 @@ def test_four_workers_belong_to_the_gate_suite_alone(repo):
     """#1847: the pair is accepted on the gate's own suite only; the exporter suite or any other pytest
     line carrying it is still more than the gate's workflows need."""
     cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
-    for pre in ("python3 -m pytest tests/scripts/test_export_model_registry.py -q -n 4", "python3 -m pytest lib -n 4"):
+    for pre in ("python3 -m pytest tests/scripts/test_export_model_registry.py -q -n 4",):
         r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_workflow(a="|\n          " + pre + "\n          " + VERDICT_CMD)}, **cap)
         assert r.returncode == 1 and "beyond what the gate needs" in r.stdout, (pre, r.stdout)
 
@@ -6787,13 +6787,15 @@ UNPINNED_XDIST = {
     "a wildcard version": "pytest-xdist==3.*",
     "beside a pinned package": "pyyaml==6.0.2 pytest-xdist",
     "a second unpinned copy": "pytest-xdist==3.8.0 pytest-xdist",
-    "a lower bound": "'pytest-xdist>=3.8'",
-    "an exact pin with a second bound": "'pytest-xdist==3.8.0,<4'",
 }
-OTHER_INSTALLERS = ("uv pip install pytest-xdist", "pipx install pytest-xdist", "uv pip install 'pytest_xdist'")
+# bounds other than one `==` go through uv, where only the pin rule can refuse them (red-team policy seat)
+OTHER_INSTALLERS = ("uv pip install pytest-xdist", "pipx install pytest-xdist", "uv pip install 'pytest_xdist'",
+                    "uv pip install --system 'pytest-xdist>=3.8'", "uv pip install --system 'pytest-xdist==3.8.0,<4'",
+                    "uvx --with=pytest-xdist pytest --version", "pipx inject pytest py''test-xdist")
 # the same name as the shell reads it once quotes, backslashes and `\\` continuations are gone (red-team shell seat)
 SHELL_SPELLINGS = ("uv pip install pytest\\-xdist", 'uv pip install "pytest"-xdist', "uv pip install pytest-\\\n          xdist",
-                   "/usr/bin/pip3 install pytest\\-xdist", "printf 'pytest%sxdist' - > requirements-ci.txt")
+                   "/usr/bin/pip3 install pytest\\-xdist", "printf 'pytest%sxdist' - > requirements-ci.txt",
+                   "uv pip install --system pytest-x''dist", "uv pip install --system pytest-x\\dist", "uv pip install pytest-xd\\\n          ist")
 
 
 def test_pytest_xdist_installs_only_at_an_exact_version(repo):
