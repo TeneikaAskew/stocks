@@ -37,6 +37,8 @@ from typing import Optional
 
 import pandas as pd
 
+from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
+
 logger = logging.getLogger(__name__)
 
 
@@ -83,12 +85,13 @@ def _candidates_from_earnings(
     out: dict[str, CandidateTicker], days_ahead: int
 ) -> None:
     df = _query(
-        """
+        f"""
         SELECT DISTINCT ticker, MIN(earnings_date) AS next_date,
                MIN(earnings_time) AS earnings_time
         FROM earnings_calendar
         WHERE earnings_date BETWEEN CURRENT_DATE
           AND CURRENT_DATE + (:days || ' days')::interval
+          AND {EARNINGS_NOT_RETIRED_SQL}
         GROUP BY ticker
         """,
         {"days": days_ahead},

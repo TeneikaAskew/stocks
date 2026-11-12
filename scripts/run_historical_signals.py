@@ -58,6 +58,10 @@ SIGNAL_COLUMN_MAP = {
     'conditions_met': 'conditions_met',
     'duration_minutes': 'duration_minutes',
     'return_pct': 'return_pct',
+    # FEAT-SIGNAL-001: the realized outcome under the fixed exit rule beside
+    # the best-case return_pct (lib.trading_analysis.realized_outcome).
+    'realized_return_pct': 'realized_return_pct',
+    'realized_rule': 'realized_rule',
     'best_return': 'best_return',
     'best_window_minutes': 'best_window_min',
     'return_5min': 'return_5min',
