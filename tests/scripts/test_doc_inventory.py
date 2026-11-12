@@ -2424,3 +2424,7 @@ def test_a_list_count_followed_by_a_decimal_point_is_not_owned():
     repo = {"jobs": [{"max_retries": k} for k in ("0", "1", "2")]}
     text = "`--max-retries 0` for 1 of the 3 declared jobs, `1` for 1 and `2` for 9.5"
     assert inv.render_retry_split(text, repo) == text
+    repo2 = {"jobs": [{"max_retries": k} for k in ("0", "1", "2", "2")]}
+    for end, want in (("one.", "two."), ("1.", "2."), ("one.5", "one.5"), ("1e3", "1e3")):
+        text = f"`--max-retries 0` for 1 of the {3 if '5' in end or 'e' in end else 4} declared jobs, `1` for 1 and `2` for {end}"
+        assert inv.render_retry_split(text, repo2).endswith(f"`2` for {want}"), (end, want)

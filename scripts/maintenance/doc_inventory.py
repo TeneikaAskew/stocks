@@ -4175,7 +4175,7 @@ RETRY_SPLIT = {
     "jobs": re.compile(r"(\bthe )(\d+)( `--max-retries )(\d)(` jobs\b)", re.ASCII),
     # §6: "`--max-retries 0` for 43 of the 68 declared jobs, `1` for 24 and `2` for one"
     "list": re.compile(r"(`--max-retries )(\d)(` for )(\d+)( of the )(\d+)( declared jobs, `)(\d)(` for )(\d+)"
-                       r"( and `)(\d)(` for )(\d+|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?![.\w])", re.ASCII),
+                       r"( and `)(\d)(` for )(\d+|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?!\w|\.\d)", re.ASCII),
 }
 
 
