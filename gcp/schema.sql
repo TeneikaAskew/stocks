@@ -1968,6 +1968,41 @@ ALTER TABLE premarket_analysis
     ADD COLUMN IF NOT EXISTS puts_fill_price       DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS puts_exit_reason      VARCHAR(8),
 
+    -- The brief's exit plan in thirds, scored (FEAT-STRAT-001 exits spec,
+    -- Design 6; outcome_resolver_version 2026-11-12.v3). Read from the row's
+    -- level_basis (plan targets, stop, exit_legs, entry_cutoff_et); a v2
+    -- basis falls back to the structured t1..t3 columns with the legs and
+    -- cutoff of the policy in force on the session. plan_entry_status:
+    -- 'entered', 'opened_through' (the first RTH bar opened at or beyond the
+    -- trigger), 'late_cross' (first cross in a bar starting at or after the
+    -- cutoff), 'no_cross', 'no_trigger'. plan_fill_price/_ts: the trigger, or
+    -- the open of a later bar that opened beyond it (entered only). plan_r:
+    -- sum over legs of (1/legs) x (exit - fill) x sign / |fill - stop|,
+    -- gross; NULL unless plan_r_status = 'ok'. plan_r_status, the first that
+    -- applies: 'targets_unavailable' (no plan published), 'stop_unavailable'
+    -- (no stop beyond the fill), 'not_entered', 'ok'. plan_t1..t3_hit_ts:
+    -- touches of the plan targets by the walk of t1_hit_ts (not exits).
+    -- plan_exit: each leg's exit in order, e.g. 't1,t2,close'. A stop-less
+    -- leg keeps its exits (targets or close) with plan_r NULL.
+    ADD COLUMN IF NOT EXISTS calls_plan_entry_status VARCHAR(16),
+    ADD COLUMN IF NOT EXISTS calls_plan_fill_price  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_plan_fill_ts     TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS calls_plan_r           DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS calls_plan_r_status    VARCHAR(24),
+    ADD COLUMN IF NOT EXISTS calls_plan_t1_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS calls_plan_t2_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS calls_plan_t3_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS calls_plan_exit        TEXT,
+    ADD COLUMN IF NOT EXISTS puts_plan_entry_status VARCHAR(16),
+    ADD COLUMN IF NOT EXISTS puts_plan_fill_price  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_fill_ts     TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_plan_r           DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS puts_plan_r_status    VARCHAR(24),
+    ADD COLUMN IF NOT EXISTS puts_plan_t1_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_plan_t2_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_plan_t3_hit_ts   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS puts_plan_exit        TEXT,
+
     -- ── Resolver metadata ────────────────────────────────────────────
     ADD COLUMN IF NOT EXISTS outcome_resolved_at   TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS outcome_resolver_version VARCHAR(20);

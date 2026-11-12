@@ -669,8 +669,8 @@ def test_resolve_one_sets_and_binds_the_new_outcome_columns(monkeypatch):
     assert bound['puts_eod_pnl_pct'] is None
     assert bound['puts_eod_pnl_dollar'] is None
     assert bound['puts_trigger_hit_ts'] == pd.Timestamp(_ts(0))
-    assert mod.RESOLVER_VERSION == '2026-11-11.v2'
-    assert bound['outcome_resolver_version'] == '2026-11-11.v2'
+    assert mod.RESOLVER_VERSION == '2026-11-12.v3'
+    assert bound['outcome_resolver_version'] == '2026-11-12.v3'
     assert bound['d'] == '2026-05-06' and bound['t'] == 'SPY'
 
 
@@ -683,3 +683,380 @@ def test_schema_adds_the_traded_outcome_columns_nullable_without_default():
         for col, typ in (('entry_status', r'VARCHAR\(16\)'), ('fill_price', 'DOUBLE PRECISION'),
                          ('exit_reason', r'VARCHAR\(8\)')):
             assert re.search(rf'ADD COLUMN IF NOT EXISTS {side}_{col}\s+{typ}\s*,', sql), (side, col)
+
+
+# ─── Exits in thirds, Design 6: the resolver scores the brief's plan ────
+# docs/superpowers/specs/2026-11-11-feat-strat-001-brief-exits-in-thirds.md
+# T0 is 09:30 ET, so _ts(29) is the 09:59 bar, _ts(30) the 10:00 bar and
+# _ts(389) the 15:59 bar.
+
+from gcp.premarket_playbook_resolver import PlanInputs, resolve_plan  # noqa: E402
+
+CUTOFF_10_ET = 10 * 60
+
+
+def _plan(**kw) -> PlanInputs:
+    base = dict(trigger_price=100.0, stop_price=99.0, targets=(101.0, 102.0, 103.0),
+                legs=3, cutoff_minutes=CUTOFF_10_ET, target_status='ok')
+    base.update(kw)
+    return PlanInputs(**base)
+
+
+def _entered_at_0931(*later: dict) -> pd.DataFrame:
+    """Opens below the 100.00 trigger and crosses it in the 09:31 bar
+    (fill 100.00), then the given bars."""
+    return _bars([
+        _bar(_ts(0), 99.50, 99.80, 99.40, 99.70),
+        _bar(_ts(1), 99.70, 100.20, 99.60, 100.10),
+        *later,
+    ])
+
+
+class TestPlanOutcome:
+    def test_an_open_through_the_trigger_is_not_an_entry(self):
+        for open_ in (100.05, 100.00):
+            bars = _bars([
+                _bar(_ts(0), open_, 100.30, 99.90, 100.10),
+                _bar(_ts(5), 100.10, 100.20, 100.00, 100.05),
+                _bar(_ts(20), 100.05, 103.00, 100.00, 102.90),
+                _bar(_ts(389), 102.90, 103.00, 102.40, 102.50),
+            ])
+            out = resolve_plan('call', _plan(), bars)
+            assert out.entry_status == 'opened_through', open_
+            assert out.r is None and out.r_status == 'not_entered'
+            assert out.fill_price is None and out.exit is None
+
+    def test_a_gap_fill_past_t1_and_t2_holds_every_leg_to_the_close(self):
+        bars = _bars([
+            _bar(_ts(0), 99.50, 99.80, 99.40, 99.70),
+            _bar(_ts(10), 102.00, 103.20, 102.00, 102.60),   # 09:40, opens past the trigger
+            _bar(_ts(11), 102.60, 102.90, 102.10, 102.50),
+            _bar(_ts(200), 102.50, 102.80, 102.20, 102.40),
+            _bar(_ts(389), 102.40, 102.70, 102.30, 102.50),  # 15:59 close 102.50
+        ])
+        out = resolve_plan('call', _plan(), bars)
+        assert out.entry_status == 'entered'
+        assert out.fill_price == pytest.approx(102.00)
+        assert out.fill_ts == bars.iloc[1]['time']
+        # T1 and T2 sit at or behind the fill and T3 is touched only on the
+        # fill bar: no leg exits at a target.
+        assert out.exit == 'close,close,close'
+        assert out.r == pytest.approx(0.1667)
+        booked_t1_t2 = round(((101.0 - 102.0) + (102.0 - 102.0) + 0.5) / 3 / 3.0, 4)
+        assert out.r != pytest.approx(booked_t1_t2)
+
+    def test_a_bar_opening_beyond_t3_books_t3_not_the_open(self):
+        bars = _entered_at_0931(
+            _bar(_ts(2), 103.40, 103.60, 103.30, 103.50),
+            _bar(_ts(389), 103.50, 103.60, 103.40, 103.50),
+        )
+        out = resolve_plan('call', _plan(), bars)
+        assert out.fill_price == pytest.approx(100.00)
+        assert out.exit == 't1,t2,t3'
+        assert out.r == pytest.approx(2.0)          # 103.40 would give 2.1333
+
+    def test_the_cutoff_bar_is_late_and_the_bar_before_it_is_not(self):
+        quiet = [_bar(_ts(m), 99.50, 99.80, 99.40, 99.70) for m in range(0, 29)]
+        late = _bars(quiet + [_bar(_ts(29), 99.70, 99.90, 99.60, 99.80),
+                              _bar(_ts(30), 99.80, 100.40, 99.70, 100.30),
+                              _bar(_ts(389), 100.30, 100.50, 100.20, 100.40)])
+        out = resolve_plan('call', _plan(), late)
+        assert out.entry_status == 'late_cross' and out.r is None
+        assert out.r_status == 'not_entered' and out.fill_price is None
+        in_time = _bars(quiet + [_bar(_ts(29), 99.70, 100.40, 99.60, 100.30),
+                                 _bar(_ts(389), 100.30, 100.50, 100.20, 100.40)])
+        out = resolve_plan('call', _plan(), in_time)
+        assert out.entry_status == 'entered'
+        assert out.fill_price == pytest.approx(100.00)
+        assert out.fill_ts == in_time.iloc[29]['time']
+
+    def test_t1_t2_then_the_close(self):
+        bars = _entered_at_0931(
+            _bar(_ts(5), 100.40, 101.10, 100.30, 101.00),
+            _bar(_ts(9), 101.00, 102.20, 100.90, 102.10),
+            _bar(_ts(389), 102.30, 102.60, 102.20, 102.50),
+        )
+        out = resolve_plan('call', _plan(), bars)
+        assert out.exit == 't1,t2,close'
+        assert out.r == pytest.approx(1.8333)       # a third each of 1, 2 and 2.5 R
+        assert out.r_status == 'ok'
+
+    def test_t1_then_the_stop(self):
+        bars = _entered_at_0931(
+            _bar(_ts(5), 100.40, 101.10, 100.30, 101.00),
+            _bar(_ts(9), 100.00, 100.10, 98.90, 99.00),
+            _bar(_ts(389), 99.00, 99.20, 98.80, 99.10),
+        )
+        out = resolve_plan('call', _plan(), bars)
+        assert out.exit == 't1,stop,stop'
+        assert out.r == pytest.approx(-0.3333)
+
+    def test_a_bar_touching_the_stop_and_a_target_counts_the_stop_first(self):
+        bars = _entered_at_0931(
+            _bar(_ts(2), 100.10, 101.20, 98.90, 100.00),
+            _bar(_ts(389), 100.00, 100.20, 99.80, 100.00),
+        )
+        out = resolve_plan('call', _plan(), bars)
+        assert out.exit == 'stop,stop,stop'
+        assert out.r == pytest.approx(-1.0)
+
+    def test_a_later_bar_opening_below_the_stop_exits_at_that_open(self):
+        bars = _entered_at_0931(
+            _bar(_ts(2), 98.50, 98.70, 98.40, 98.60),
+            _bar(_ts(389), 98.60, 98.80, 98.50, 98.70),
+        )
+        out = resolve_plan('call', _plan(), bars)
+        assert out.exit == 'stop,stop,stop'
+        assert out.r == pytest.approx(-1.5)
+
+    def test_one_target_gives_a_third_at_t1_and_two_thirds_to_the_stop_or_close(self):
+        to_close = _entered_at_0931(
+            _bar(_ts(5), 100.40, 101.10, 100.30, 101.00),
+            _bar(_ts(389), 102.30, 102.60, 102.20, 102.50),
+        )
+        out = resolve_plan('call', _plan(targets=(101.0,)), to_close)
+        assert out.exit == 't1,close,close'
+        assert out.r == pytest.approx(2.0)          # (1 + 2.5 + 2.5) / 3
+        to_stop = _entered_at_0931(
+            _bar(_ts(5), 100.40, 101.10, 100.30, 101.00),
+            _bar(_ts(9), 100.00, 100.10, 98.90, 99.00),
+        )
+        out = resolve_plan('call', _plan(targets=(101.0,)), to_stop)
+        assert out.exit == 't1,stop,stop'
+        assert out.r == pytest.approx(-0.3333)
+
+    def test_a_put_side_mirrors_the_call(self):
+        bars = _bars([
+            _bar(_ts(0), 100.50, 100.60, 100.20, 100.30),
+            _bar(_ts(1), 100.30, 100.40, 99.90, 99.95),     # crosses 100.00 down
+            _bar(_ts(5), 99.60, 99.70, 98.90, 99.00),       # T1 99.00
+            _bar(_ts(389), 98.60, 98.70, 98.40, 98.50),
+        ])
+        out = resolve_plan('put', _plan(stop_price=101.0, targets=(99.0, 98.0, 97.0)), bars)
+        assert out.entry_status == 'entered' and out.fill_price == pytest.approx(100.0)
+        assert out.exit == 't1,close,close'
+        assert out.r == pytest.approx(round((1.0 + 1.5 + 1.5) / 3, 4))
+
+    def test_no_stop_keeps_the_exits_with_no_r_and_main_s_existing_columns(self):
+        # The state test_no_stop_when_no_fresh_opposite builds: a trigger and
+        # targets, stop None.
+        bars = _entered_at_0931(
+            _bar(_ts(5), 100.40, 101.10, 100.30, 101.00),
+            _bar(_ts(9), 101.00, 102.20, 100.90, 102.10),
+            _bar(_ts(389), 102.30, 102.60, 102.20, 102.50),
+        )
+        out = resolve_plan('call', _plan(stop_price=None), bars)
+        assert out.entry_status == 'entered'
+        assert out.r is None and out.r_status == 'stop_unavailable'
+        assert out.exit == 't1,t2,close'
+        leg = resolve_leg('call', trigger_price=100.0, stop_price=None,
+                          target_prices=[101.0, 102.0, 103.0], bars=bars)
+        assert leg.entry_status == 'invalid_stop'
+        assert leg.trigger_hit_ts == bars.iloc[1]['time']
+        assert leg.t1_hit_ts == bars.iloc[2]['time'] and leg.t2_hit_ts == bars.iloc[3]['time']
+        assert leg.t3_hit_ts is None and leg.stop_hit_ts is None
+        assert leg.mfe_pct == pytest.approx(2.6) and leg.mae_pct == pytest.approx(0.4)
+        assert leg.eod_pnl_pct is None and leg.eod_pnl_dollar is None
+
+    def test_targets_unavailable_is_not_scored_and_no_target_is_a_valid_plan(self):
+        quiet = [_bar(_ts(m), 99.50, 99.80, 99.40, 99.70) for m in range(0, 29)]
+        bars = _bars(quiet + [_bar(_ts(29), 99.70, 100.40, 99.60, 100.30),
+                              _bar(_ts(389), 102.30, 102.60, 102.20, 102.50)])
+        out = resolve_plan('call', _plan(targets=(), target_status='params_unavailable'), bars)
+        assert out.entry_status == 'entered' and out.fill_price == pytest.approx(100.0)
+        assert out.fill_ts == bars.iloc[29]['time']
+        assert out.r is None and out.exit is None and out.r_status == 'targets_unavailable'
+        assert (out.t1_hit_ts, out.t2_hit_ts, out.t3_hit_ts) == (None, None, None)
+        out = resolve_plan('call', _plan(targets=()), bars)
+        assert out.r == pytest.approx(2.5)
+        assert out.exit == 'close,close,close' and out.r_status == 'ok'
+
+    def test_plan_hit_timestamps_follow_the_plan_targets(self):
+        bars = _entered_at_0931(
+            _bar(_ts(5), 100.40, 101.00, 100.30, 100.90),
+            _bar(_ts(389), 100.90, 100.95, 100.60, 100.80),
+        )
+        out = resolve_plan('call', _plan(), bars)
+        assert out.t1_hit_ts == bars.iloc[2]['time']
+        assert out.t2_hit_ts is None and out.t3_hit_ts is None
+        leg = resolve_leg('call', trigger_price=100.0, stop_price=99.0,
+                          target_prices=[100.5, 101.0, 101.5], bars=bars)
+        assert leg.t1_hit_ts == bars.iloc[2]['time'] and leg.t2_hit_ts == bars.iloc[2]['time']
+        assert leg.t3_hit_ts is None
+
+    def test_the_existing_outcome_is_unchanged_by_the_plan(self):
+        # The cross-fill-t1-v1 columns for the same bars are computed by
+        # resolve_leg alone; the plan never feeds them.
+        bars = _entered_at_0931(
+            _bar(_ts(5), 100.40, 101.10, 100.30, 101.00),
+            _bar(_ts(389), 102.30, 102.60, 102.20, 102.50),
+        )
+        leg = resolve_leg('call', trigger_price=100.0, stop_price=99.0,
+                          target_prices=[101.0, 102.0, 103.0], bars=bars)
+        assert leg.entry_status == 'filled' and leg.exit_reason == 't1'
+        assert leg.eod_pnl_pct == pytest.approx(1.0)
+        assert leg.trigger_hit_ts == bars.iloc[1]['time'] and leg.t1_hit_ts == bars.iloc[2]['time']
+        assert leg.t2_hit_ts == bars.iloc[3]['time'] and leg.stop_hit_ts is None
+
+    def test_resolver_version_moves_past_the_scorer_spec(self):
+        import gcp.premarket_playbook_resolver as mod
+        assert mod.RESOLVER_VERSION != '2026-11-11.v2'
+        assert mod.RESOLVER_VERSION > '2026-11-11.v2'
+
+
+class TestPlanInputs:
+    def test_a_v3_basis_is_the_source(self):
+        import gcp.premarket_playbook_resolver as mod
+        from tests.lib.session_levels_helpers import d8_basis
+
+        basis = d8_basis()
+        calls = mod.plan_inputs('calls', {}, basis, policy_fn=lambda: pytest.fail('no policy read'))
+        assert calls.trigger_price == pytest.approx(252.10)
+        assert calls.stop_price == pytest.approx(248.20)
+        assert calls.targets == pytest.approx((275.00, 280.00, 285.00))
+        assert calls.legs == 3 and calls.cutoff_minutes == CUTOFF_10_ET
+        assert calls.target_status == 'ok' and calls.plan_available
+        puts = mod.plan_inputs('puts', {}, basis, policy_fn=lambda: pytest.fail('no policy read'))
+        assert puts.trigger_price == pytest.approx(248.20)
+        assert puts.targets == pytest.approx((225.00, 220.00, 215.00))
+
+    def test_a_spacing_not_ok_publishes_no_plan(self):
+        import gcp.premarket_playbook_resolver as mod
+        from tests.lib.session_levels_helpers import d8_basis
+
+        basis = d8_basis(statuses={'target_min_spacing_atr': 'params_unavailable'})
+        calls = mod.plan_inputs('calls', {}, basis, policy_fn=lambda: pytest.fail('no policy read'))
+        assert calls.target_status == 'params_unavailable' and not calls.plan_available
+        assert calls.trigger_price == pytest.approx(252.10)
+
+    def test_a_v2_basis_falls_back_to_the_structured_columns_and_the_policy(self):
+        import gcp.premarket_playbook_resolver as mod
+        from lib.strat_levels import LEVEL_RULE_V2
+        from tests.lib.level_params_fixtures import fixture_params
+        from tests.lib.session_levels_helpers import d8_basis
+
+        basis = {**d8_basis(), 'rule_version': LEVEL_RULE_V2}
+        row = {'calls_trigger_price': 252.10, 'calls_stop_price': 248.20,
+               'calls_t1_price': 253.00, 'calls_t2_price': 275.00, 'calls_t3_price': None}
+        calls = mod.plan_inputs('calls', row, basis, policy_fn=lambda: fixture_params('TST'))
+        assert calls.targets == pytest.approx((253.00, 275.00))
+        assert calls.legs == 3 and calls.cutoff_minutes == CUTOFF_10_ET
+        assert calls.plan_available
+
+    def test_a_row_without_level_basis_has_no_plan(self):
+        import gcp.premarket_playbook_resolver as mod
+
+        row = {'calls_trigger_price': 100.0, 'calls_stop_price': 99.0}
+        calls = mod.plan_inputs('calls', row, None, policy_fn=lambda: pytest.fail('no policy read'))
+        assert calls.target_status == 'targets_unavailable' and not calls.plan_available
+
+
+def _plan_set_and_bound(engine):
+    [(sql, bound)] = engine.conn.calls
+    set_list = sql.split(' SET ', 1)[1].split(' WHERE ', 1)[0]
+    return set_list, bound
+
+
+PLAN_FIELDS = ('entry_status', 'fill_price', 'fill_ts', 'r', 'r_status',
+               't1_hit_ts', 't2_hit_ts', 't3_hit_ts', 'exit')
+
+
+def test_resolve_one_binds_the_plan_columns_from_a_v3_basis(monkeypatch):
+    import json
+
+    import gcp.premarket_playbook_resolver as mod
+    from tests.lib.session_levels_helpers import d8_basis
+
+    row = pd.DataFrame([{
+        'calls_trigger_price': 252.10, 'calls_stop_price': 248.20,
+        'calls_t1_price': 253.00, 'calls_t2_price': 275.00, 'calls_t3_price': 280.00,
+        'puts_trigger_price': 248.20, 'puts_stop_price': 252.10,
+        'puts_t1_price': 247.50, 'puts_t2_price': 247.00, 'puts_t3_price': 225.00,
+        'level_basis': json.dumps(d8_basis()), 'outcome_resolved_at': None,
+    }])
+    bars = pd.DataFrame([
+        {'time': _ts(0), 'open': 251.00, 'high': 251.50, 'low': 250.80, 'close': 251.40},
+        {'time': _ts(1), 'open': 251.90, 'high': 252.50, 'low': 251.80, 'close': 252.40},
+        {'time': _ts(2), 'open': 260.00, 'high': 276.00, 'low': 259.00, 'close': 270.00},
+        {'time': _ts(389), 'open': 270.00, 'high': 271.00, 'low': 269.00, 'close': 270.00},
+    ])
+    reads = iter([row, bars])
+    monkeypatch.setattr(mod.pd, 'read_sql', lambda *a, **k: next(reads))
+    engine = _RecordingEngine()
+
+    updates, reason = mod.resolve_one(_date(2026, 5, 6), 'tst', engine)
+
+    assert reason == 'resolved'
+    set_list, bound = _plan_set_and_bound(engine)
+    for side in ('calls', 'puts'):
+        for f in PLAN_FIELDS:
+            assert f'{side}_plan_{f} = :{side}_plan_{f}' in set_list
+            assert f'{side}_plan_{f}' in bound
+    assert bound['calls_plan_entry_status'] == 'entered'
+    assert bound['calls_plan_fill_price'] == pytest.approx(252.10)
+    assert bound['calls_plan_fill_ts'] == pd.Timestamp(_ts(1))
+    assert bound['calls_plan_exit'] == 't1,close,close'
+    assert bound['calls_plan_r'] == pytest.approx(round((22.9 + 2 * 17.9) / 3 / 3.9, 4))
+    assert bound['calls_plan_r_status'] == 'ok'
+    assert bound['calls_plan_t1_hit_ts'] == pd.Timestamp(_ts(2))
+    assert bound['calls_plan_t2_hit_ts'] is None and bound['calls_plan_t3_hit_ts'] is None
+    # The existing columns keep the gating targets and rule cross-fill-t1-v1.
+    assert bound['calls_t1_hit_ts'] == pd.Timestamp(_ts(2))
+    assert bound['calls_exit_reason'] == 't1'
+    assert bound['puts_plan_entry_status'] == 'no_cross'
+    assert bound['puts_plan_r'] is None and bound['puts_plan_r_status'] == 'not_entered'
+    assert bound['outcome_resolver_version'] == mod.RESOLVER_VERSION != '2026-11-11.v2'
+
+
+def test_resolve_one_binds_a_targets_unavailable_leg_and_a_stop_unavailable_leg(monkeypatch):
+    import gcp.premarket_playbook_resolver as mod
+
+    row = pd.DataFrame([{
+        'calls_trigger_price': 100.0, 'calls_stop_price': None,
+        'calls_t1_price': 101.0, 'calls_t2_price': 102.0, 'calls_t3_price': 103.0,
+        'puts_trigger_price': 99.6, 'puts_stop_price': 100.5,
+        'puts_t1_price': 99.0, 'puts_t2_price': 98.0, 'puts_t3_price': None,
+        'level_basis': None, 'outcome_resolved_at': None,
+    }])
+    bars = pd.DataFrame([
+        {'time': _ts(0), 'open': 99.90, 'high': 100.00, 'low': 99.70, 'close': 99.95},
+        {'time': _ts(1), 'open': 99.95, 'high': 101.20, 'low': 99.50, 'close': 101.00},
+        {'time': _ts(389), 'open': 102.40, 'high': 102.60, 'low': 102.30, 'close': 102.50},
+    ])
+    plans = {
+        'calls': _plan(stop_price=None),
+        'puts': _plan(trigger_price=99.6, stop_price=100.5, targets=(),
+                      target_status='params_unavailable'),
+    }
+    monkeypatch.setattr(mod, 'plan_inputs', lambda side, *a, **k: plans[side])
+    reads = iter([row, bars])
+    monkeypatch.setattr(mod.pd, 'read_sql', lambda *a, **k: next(reads))
+    engine = _RecordingEngine()
+
+    mod.resolve_one(_date(2026, 5, 6), 'spy', engine)
+
+    _, bound = _plan_set_and_bound(engine)
+    assert bound['calls_plan_r_status'] == 'stop_unavailable'
+    assert bound['calls_plan_r'] is None
+    assert bound['calls_plan_exit'] == 't1,t2,close'
+    assert bound['calls_entry_status'] == 'invalid_stop' and bound['calls_eod_pnl_pct'] is None
+    assert bound['puts_plan_r_status'] == 'targets_unavailable'
+    assert bound['puts_plan_entry_status'] == 'entered'
+    assert bound['puts_plan_fill_price'] == pytest.approx(99.6)
+    assert bound['puts_plan_r'] is None and bound['puts_plan_exit'] is None
+    for k in (1, 2, 3):
+        assert bound[f'puts_plan_t{k}_hit_ts'] is None
+
+
+def test_schema_adds_the_plan_columns_nullable_without_default():
+    import re
+    from pathlib import Path
+
+    sql = (Path(__file__).resolve().parents[2] / 'gcp' / 'schema.sql').read_text()
+    for side in ('calls', 'puts'):
+        for col, typ in (('entry_status', r'VARCHAR\(16\)'), ('fill_price', 'DOUBLE PRECISION'),
+                         ('fill_ts', 'TIMESTAMPTZ'), ('r', 'DOUBLE PRECISION'),
+                         ('r_status', r'VARCHAR\(24\)'), ('t1_hit_ts', 'TIMESTAMPTZ'),
+                         ('t2_hit_ts', 'TIMESTAMPTZ'), ('t3_hit_ts', 'TIMESTAMPTZ'),
+                         ('exit', 'TEXT')):
+            assert re.search(rf'ADD COLUMN IF NOT EXISTS {side}_plan_{col}\s+{typ}\s*,', sql), (side, col)
