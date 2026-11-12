@@ -6754,6 +6754,7 @@ WORKER_FORMS = {
     "xdist named with -p": "-n 4 -p xdist",
     "a --maxprocesses cap": "-n 4 --maxprocesses 4",
     "a second -n 4": "-n 4 -n 4",
+    "the pair as the argument of -p": "-p -n 4",
 }
 
 
@@ -6790,20 +6791,23 @@ UNPINNED_XDIST = {
     "an exact pin with a second bound": "'pytest-xdist==3.8.0,<4'",
 }
 OTHER_INSTALLERS = ("uv pip install pytest-xdist", "pipx install pytest-xdist", "uv pip install 'pytest_xdist'")
+# the same name as the shell reads it once quotes, backslashes and `\\` continuations are gone (red-team shell seat)
+SHELL_SPELLINGS = ("uv pip install pytest\\-xdist", 'uv pip install "pytest"-xdist', "uv pip install pytest-\\\n          xdist",
+                   "/usr/bin/pip3 install pytest\\-xdist", "printf 'pytest%sxdist' - > requirements-ci.txt")
 
 
 def test_pytest_xdist_installs_only_at_an_exact_version(repo):
     """#1847: the workers that judge the gate are a reviewed release, so a gate workflow installs
     pytest-xdist only with an exact `==` version; any other spelling of it is refused, whatever the
-    suite line carries (here the serial suite, so the refusal rests on the install alone) and
-    whichever installer names it."""
+    suite line carries (here the serial suite, so the refusal rests on the install alone),
+    whichever installer names it and however the shell spells it."""
     cap = {"PR_BODY": "## Capacity\nn/a: x\n"}
     for form, packages in UNPINNED_XDIST.items():
         for wf, text in ((".github/workflows/spec-gate.yml", gate_workflow(c="|\n          python3 -m pip install --quiet " + packages + "\n          " + SUITE_CMD)),
                          (".github/workflows/registry-check.yml", registry_workflow(SERIAL_SUITE, ("python3 -m pip install --quiet " + packages,)))):
             r = pr(repo, "chore/gate-workflow", {wf: text}, **cap)
             assert r.returncode == 1 and "beyond what the gate needs" in r.stdout, (form, wf, r.stdout)
-    for line in OTHER_INSTALLERS:
+    for line in (*OTHER_INSTALLERS, *SHELL_SPELLINGS):
         r = pr(repo, "chore/gate-workflow", {".github/workflows/spec-gate.yml": gate_workflow(c="|\n          " + line + "\n          " + SUITE_CMD)}, **cap)
         assert r.returncode == 1 and "beyond what the gate needs" in r.stdout, (line, r.stdout)
 
