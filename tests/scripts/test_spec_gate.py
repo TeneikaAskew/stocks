@@ -6531,3 +6531,160 @@ def test_redundant_retirement_of_a_spec_draft_or_legacy_at_fork_refused(tmp_path
         on_base(repo, {P_SPEC: at_fork})
         r = divergent_pr(repo, RETIRE_BRANCH, {P_SPEC: flip}, {**N0_MAIN, P_SPEC: flip})
         assert r.returncode == 1 and refusals(r) == [f"{P_SPEC}: {REDUNDANT}"], (name, r.stdout)
+
+
+# ── the declared retry split is a renderer-owned substitution (FEAT-CICD-001 retry-split spec, done_when[2]) ────
+# A fixture tree whose deploy.sh declares five jobs at retries 0, 0, 1, 1 and 2, whose 05-a states the split in the
+# three owned shapes (§6's list, §11's two) and other retry text that is not owned, and whose 05-i and 05-k carry a
+# retry mention each. The head moves one job from retries 1 to 0; its 05-a is the trusted render of base prose.
+
+ARCH_DOC = GENERATED[0]
+DEPS_DOC = GENERATED[1]
+GUIDE_DOC, NOTIFIER_DOC = f"{INFRA}/05-i-GCP_IMPLEMENTATION_GUIDE.md", f"{INFRA}/05-k-FAILURE_NOTIFIER_DEPLOYMENT.md"
+RETRY_JOB = 'deploy_retry_probe_{i}() {{\n    gcloud run jobs create retry-probe-{i} \\\n        --command python3 \\\n        --max-retries {k} \\\n        --args gcp/probe.py\n}}\n'
+
+
+def retry_deploy(*retries: int) -> str:
+    return "#!/bin/bash\n" + "".join(RETRY_JOB.format(i=i, k=k) for i, k in enumerate(retries))
+
+
+RETRY_SECTION_6 = ("5 are declared by a `deploy_*` function; 4 run live, so 1 declared job is not deployed. "
+                   "Retry policy is **`--max-retries 0` for 2 of the 5 declared jobs, `1` for 2 and `2` for one** "
+                   "(each row below says which).")
+RETRY_SECTION_11 = ("1. **Per-job retries**: `--max-retries 0` is the norm (2 of the 5 declared jobs); the 2 "
+                    "`--max-retries 1` jobs are idempotent fetchers worth one retry.")
+RETRY_MONITOR = "`retry-probe-0` (09:25, `--max-retries 0`, 8 h timeout) polls every 60 s."
+
+
+def retry_skeleton(extra: str = "") -> str:
+    return edit(skeleton(ARCH_DOC), "Prose after jobs.",
+                f"Prose after jobs.\n\n{RETRY_SECTION_6}\n\n{RETRY_MONITOR}\n\n{RETRY_SECTION_11}{extra}")
+
+
+@pytest.fixture(scope="session")
+def retry_template(inventory_template, tmp_path_factory):
+    """inventory_template with the retry fixture on its base, and the computed head: deploy.sh moving retry-probe-2
+    from retries 1 to 0 and 05-a rendered over the base prose by this checkout's renderer."""
+    if inventory_template is None:
+        return None
+    template, _ = inventory_template
+    root = tmp_path_factory.mktemp("retry") / "repo"
+    shutil.copytree(template, root, symlinks=True)
+    on_base(root, {"gcp/deploy.sh": retry_deploy(0, 0, 1, 1, 2), ARCH_DOC: retry_skeleton(),
+                   GUIDE_DOC: "# Guide\n\nYahoo Finance rate limits. Job has `max-retries 2`.\n",
+                   NOTIFIER_DOC: "# Notifier\n\n    --memory 256Mi --cpu 1 --max-retries 0 \\\n"}, then=render)
+    _git(root, "checkout", "-q", "-b", "computed", "base")
+    head_deploy = retry_deploy(0, 0, 0, 1, 2)
+    write(root, "gcp/deploy.sh", head_deploy)
+    render(root, (ARCH_DOC,))
+    head_arch = (root / ARCH_DOC).read_text(encoding="utf-8")
+    _git(root, "checkout", "-q", "-f", "main")
+    _git(root, "branch", "-q", "-D", "computed")
+    return root, head_deploy, head_arch
+
+
+@pytest.fixture
+def retry_repo(retry_template, tmp_path):
+    if retry_template is None:
+        return None
+    template, head_deploy, head_arch = retry_template
+    root = tmp_path / "repo"
+    shutil.copytree(template, root, symlinks=True)
+    return root, head_deploy, head_arch
+
+
+def test_the_retry_fixture_renders_the_computed_split(retry_repo):
+    if RENDERER_HERE:
+        _root, _deploy, head_arch = retry_repo
+        assert "`--max-retries 0` for 3 of the 5 declared jobs, `1` for 1 and `2` for one" in head_arch
+        assert "`--max-retries 0` is the norm (3 of the 5 declared jobs); the 1 `--max-retries 1` jobs" in head_arch
+        assert "5 are declared by a `deploy_*` function; 4 run live" in head_arch and RETRY_MONITOR in head_arch
+
+
+def test_a_head_carrying_only_the_computed_retry_split_is_accepted(retry_repo):
+    """The control every refusal below differs from in one condition."""
+    if RENDERER_HERE:
+        root, head_deploy, head_arch = retry_repo
+        r = pr(root, BRANCH, {**CODE, "gcp/deploy.sh": head_deploy, ARCH_DOC: head_arch}, **DOCS_OK)
+        assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_the_render_check_refuses_every_retry_change_it_does_not_own(retry_repo):
+    if RENDERER_HERE:
+        root, head_deploy, a = retry_repo
+        owned = "outside its inventory blocks"
+        not_here = "changes in this feature change"
+        cases = {
+            # a hand-typed wrong count in each owned shape
+            "§6 retries-0 count": (edit(a, "for 3 of the 5", "for 4 of the 5"), ARCH_DOC, owned),
+            "§6 retries-1 count": (edit(a, "`1` for 1 and", "`1` for 2 and"), ARCH_DOC, owned),
+            "§6 retries-2 count": (edit(a, "`2` for one**", "`2` for two**"), ARCH_DOC, owned),
+            "§6 total": (edit(a, "for 3 of the 5 declared", "for 3 of the 6 declared"), ARCH_DOC, owned),
+            "§11 norm count": (edit(a, "the norm (3 of", "the norm (4 of"), ARCH_DOC, owned),
+            "§11 norm total": (edit(a, "(3 of the 5 declared jobs);", "(3 of the 6 declared jobs);"), ARCH_DOC, owned),
+            "§11 jobs count": (edit(a, "the 1 `--max-retries 1` jobs", "the 2 `--max-retries 1` jobs"), ARCH_DOC, owned),
+            # neighbouring prose on either owned line
+            "§6 neighbouring words": (edit(a, "(each row below says which)", "(each row says which)"), ARCH_DOC, owned),
+            "§6 declared total": (edit(a, "5 are declared by", "4 are declared by"), ARCH_DOC, owned),
+            "§6 live figures": (edit(a, "4 run live, so 1 declared", "5 run live, so 0 declared"), ARCH_DOC, owned),
+            "§11 neighbouring words": (edit(a, "idempotent fetchers worth", "fetchers worth"), ARCH_DOC, owned),
+            # a non-owned phrasing, a flag digit, and other retry mentions
+            "a non-owned phrasing": (edit(a, RETRY_MONITOR, RETRY_MONITOR + " 3 jobs use `--max-retries 0`."), ARCH_DOC, owned),
+            "a flag digit in §6": (edit(a, "`2` for one**", "`3` for one**"), ARCH_DOC, owned),
+            "a flag digit in §11": (edit(a, "the 1 `--max-retries 1` jobs", "the 1 `--max-retries 2` jobs"), ARCH_DOC, owned),
+            "the signal-monitor sentence": (edit(a, "(09:25, `--max-retries 0`", "(09:25, `--max-retries 1`"), ARCH_DOC, owned),
+            # a head that deletes an owned shape its merge-base carries
+            "§6 list deleted": (edit(a, "Retry policy is **`--max-retries 0` for 3 of the 5 declared jobs, `1` for 1 and `2` for one** ", ""), ARCH_DOC, owned),
+            "§11 norm deleted": (edit(a, "`--max-retries 0` is the norm (3 of the 5 declared jobs); ", ""), ARCH_DOC, owned),
+            "§11 jobs deleted": (edit(a, "the 1 `--max-retries 1` jobs are", "they are"), ARCH_DOC, owned),
+        }
+        outcomes = {k: pr(root, BRANCH, {**CODE, "gcp/deploy.sh": head_deploy, ARCH_DOC: text}, **DOCS_OK)
+                    for k, (text, _doc, _f) in cases.items()}
+        # 05-i and 05-k carry retry mentions the renderer never touches
+        outcomes["05-i retry mention"] = pr(root, BRANCH, {**CODE, "gcp/deploy.sh": head_deploy, ARCH_DOC: a,
+                                                           GUIDE_DOC: "# Guide\n\nYahoo Finance rate limits. Job has `max-retries 1`.\n"}, **DOCS_OK)
+        outcomes["05-k retry mention"] = pr(root, BRANCH, {**CODE, "gcp/deploy.sh": head_deploy, ARCH_DOC: a,
+                                                           NOTIFIER_DOC: "# Notifier\n\n    --memory 256Mi --cpu 1 --max-retries 1 \\\n"}, **DOCS_OK)
+        # an owned shape added to 05-c or 05-e, whose merge-base prose carries none
+        for label, doc in (("an owned shape in 05-c", DEPS_DOC), ("an owned shape in 05-e", API_DOC)):
+            _git(root, "checkout", "-q", "-f", "main")
+            seeded = edit((root / doc).read_text(encoding="utf-8"), "Prose before the blocks.",
+                          f"Prose before the blocks.\n\n{SEEDED_COMPUTED}")
+            outcomes[label] = pr(root, BRANCH, {**CODE, "gcp/deploy.sh": head_deploy, ARCH_DOC: a, doc: seeded}, **DOCS_OK)
+        fragments = {**{k: f for k, (_t, _d, f) in cases.items()}, "05-i retry mention": not_here, "05-k retry mention": not_here,
+                     "an owned shape in 05-c": owned, "an owned shape in 05-e": owned}
+        missed = {k: r.stdout[-400:] for k, r in outcomes.items() if not refused(r, fragments[k])}
+        assert missed == {}, missed
+
+
+SEEDED_STALE = "Retry policy is **`--max-retries 0` for 2 of the 5 declared jobs, `1` for 2 and `2` for one**; " \
+               "`--max-retries 0` is the norm (2 of the 5 declared jobs); the 2 `--max-retries 1` jobs retry."
+SEEDED_COMPUTED = "Retry policy is **`--max-retries 0` for 3 of the 5 declared jobs, `1` for 1 and `2` for one**; " \
+                  "`--max-retries 0` is the norm (3 of the 5 declared jobs); the 1 `--max-retries 1` jobs retry."
+
+
+def test_the_split_is_not_rendered_beyond_05a_or_its_three_shapes(retry_repo):
+    """The merge-base document already carries the stale phrasing and the head the computed numbers: a renderer
+    applied beyond 05-a's exact path or to a fourth shape would accept it. The control keeps the stale phrasing."""
+    if RENDERER_HERE:
+        root, head_deploy, a = retry_repo
+        results = {}
+        for where in ("05-c", "05-e", "a fourth 05-a phrasing"):
+            if where == "a fourth 05-a phrasing":
+                doc, stale, computed = ARCH_DOC, "the 2 jobs at `--max-retries 1` stay two.", "the 1 jobs at `--max-retries 1` stay one."
+            else:
+                doc, stale, computed = (DEPS_DOC if where == "05-c" else API_DOC), SEEDED_STALE, SEEDED_COMPUTED
+            _git(root, "checkout", "-q", "-f", "main")
+            original = (root / doc).read_text(encoding="utf-8")
+            on_base(root, {doc: edit((root / doc).read_text(encoding="utf-8"), "Prose before the blocks.",
+                                     f"Prose before the blocks.\n\n{stale}")})
+            if doc == ARCH_DOC:
+                kept = {ARCH_DOC: edit(a, "Prose before the blocks.", f"Prose before the blocks.\n\n{stale}")}
+            else:
+                kept = {ARCH_DOC: a, doc: (root / doc).read_text(encoding="utf-8")}
+            moved = {**kept, doc: edit(kept[doc], stale, computed)}
+            control = pr(root, BRANCH, {**CODE, "gcp/deploy.sh": head_deploy, **kept}, **DOCS_OK)
+            attempt = pr(root, BRANCH, {**CODE, "gcp/deploy.sh": head_deploy, **moved}, **DOCS_OK)
+            results[where] = (control.returncode, refused(attempt, "outside its inventory blocks"))
+            on_base(root, {doc: original})
+        assert results == {w: (0, True) for w in results}, results

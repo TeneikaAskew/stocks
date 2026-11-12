@@ -1,0 +1,91 @@
+{
+ "base": "tests/fixtures/retry_split/deploy.sh (gcp/deploy.sh blob 6eed94cae9db97edd33c57b9c6748069e62bdc69)",
+ "source": "commit 9b076797",
+ "blob": "a8da927f379a130546e5fd15085f958e1d91b924",
+ "edits": [
+  {
+   "line": 1092,
+   "old": [
+    "    cloudbuild-triggers|p7b-classifier|schedulers|pg-dump|audit-infra-drift|notifier|\\\n"
+   ],
+   "new": [
+    "    cloudbuild-triggers|p7b-classifier|evaluate-ew-strikes|schedulers|pg-dump|audit-infra-drift|notifier|\\\n"
+   ]
+  },
+  {
+   "line": 2847,
+   "old": [
+    "# EW strike verdict evaluator: runs at 23:00 ET (evaluate-ew-strikes-daily)\n",
+    "# and scores each Earnings Whispers pick from the last 7 days whose scoring\n",
+    "# session has closed (the next session for an after-close report, #1151)\n",
+    "# against that session's intraday bars. Populates ew_strike_verdict +\n",
+    "# ew_strike_move_pct + ew_minutes_to_hit + ew_minutes_in_zone +\n",
+    "# ew_day_change_pct on earnings_calendar. The next weekday's premarket\n",
+    "# brief recaps that session's verdicts (#1168). Idempotent: scored rows skip\n",
+    "# unless --force is passed, which also clears a row it cannot re-score.\n",
+    "deploy_evaluate_ew_strikes() {\n",
+    "    echo \"Deploying evaluate-ew-strikes job...\"\n",
+    "    gcloud run jobs create evaluate-ew-strikes \\\n",
+    "        --image \"${IMAGE_REF:?build_image has not run in this invocation}\" --region \"${REGION}\" \\\n",
+    "        --memory 512Mi --cpu 1 --max-retries 1 \\\n",
+    "        --task-timeout 3600 \\\n",
+    "        --service-account \"${SA_EMAIL}\" \\\n",
+    "        --command \"python,-m,gcp.fetchers.evaluate_ew_strikes\" \\\n",
+    "        ${DB_SECRET_FLAG} \\\n",
+    "        --set-env-vars \"${ENV_STRING}\" \\\n",
+    "        --quiet 2>/dev/null || \\\n",
+    "    gcloud run jobs update evaluate-ew-strikes \\\n",
+    "        --image \"${IMAGE_REF:?build_image has not run in this invocation}\" --region \"${REGION}\" --task-timeout 3600 \\\n",
+    "        --command \"python,-m,gcp.fetchers.evaluate_ew_strikes\" \\\n",
+    "        ${DB_SECRET_FLAG} \\\n",
+    "        --set-env-vars \"${ENV_STRING}\" \\\n",
+    "        --quiet\n",
+    "}\n",
+    "\n"
+   ],
+   "new": []
+  },
+  {
+   "line": 3242,
+   "old": [
+    "    deploy_evaluate_ew_strikes\n"
+   ],
+   "new": []
+  },
+  {
+   "line": 4865,
+   "old": [
+    "    # EW strike verdict evaluator — 11:00 PM ET. Earlier 5pm slot was\n",
+    "    # tried and produced unreliable bars (AV intraday hadn't fully\n",
+    "    # settled — borderline KEPT/ASSIGNED verdicts flipped on re-runs).\n",
+    "    # 11pm gives the full session 7 hours to settle and aligns with\n",
+    "    # fetch-market-data-daily so AV is already warmed up.\n",
+    "    _schedule \"evaluate-ew-strikes-daily\" \"0 23 * * 1-5\"  \"evaluate-ew-strikes\"\n"
+   ],
+   "new": [
+    "    # evaluate-ew-strikes-daily (23:00 ET) retired 2026-10-31 with the\n",
+    "    # EarningsWhispers source: the job is no longer deployed, so the entry\n",
+    "    # is deleted here (NOT_FOUND is the normal case once it is gone) and\n",
+    "    # a failure to delete counts like any other scheduler failure.\n",
+    "    _unschedule \"evaluate-ew-strikes-daily\" || SCHEDULER_FAILURES=$((SCHEDULER_FAILURES + 1))\n"
+   ]
+  },
+  {
+   "line": 5427,
+   "old": [
+    "    evaluate-ew-strikes) _run build_image deploy_evaluate_ew_strikes ;;\n"
+   ],
+   "new": [
+    "    evaluate-ew-strikes) echo \"RETIRED — EarningsWhispers was retired 2026-10-31; evaluate-ew-strikes is no longer deployed (see docs/superpowers/specs/2026-10-31-feat-deploy-001-retire-ew-evaluator.md)\"; exit 1 ;;\n"
+   ]
+  },
+  {
+   "line": 5556,
+   "old": [
+    "        echo \"  evaluate-ew-strikes\"\n",
+    "        echo \"             Deploy evaluate-ew-strikes job alone (EW strike verdicts, 23:00 ET).\"\n"
+   ],
+   "new": []
+  }
+ ]
+}
