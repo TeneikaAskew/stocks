@@ -2204,3 +2204,234 @@ deploy_research_job() {
     jobs = {j["name"]: j for j in inv.deploy_jobs(tmp_path)}
     assert jobs["main-job"]["image"] == "main", jobs["main-job"]["image"]
     assert jobs["research-job"]["image"] == "research", jobs["research-job"]["image"]
+
+
+# ── the declared retry split is rendered, not typed (FEAT-CICD-001 retry-split spec, done_when[0], [2]) ──────────
+
+import collections  # noqa: E402
+import functools  # noqa: E402
+import hashlib  # noqa: E402
+import re  # noqa: E402
+
+RETRY_FIXTURES = REPO / "tests/fixtures/retry_split"
+ARCH_DOC = "docs/product/infrastructure/05-a-ARCHITECTURE.md"
+RETRY_DOCS = (ARCH_DOC, "docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md",
+              "docs/product/infrastructure/05-e-API.md")
+RETRY_PROBE = '''
+deploy_retry_probe_{n}() {{
+    gcloud run jobs create retry-probe-{n} \\
+        --image "${{IMAGE_REF:?build_image has not run in this invocation}}" --region "${{REGION}}" \\
+        --memory 512Mi --cpu 1{flag} \\
+        --command "python,-m,gcp.fetchers.retry_probe_{n}" \\
+        --quiet
+}}
+'''
+
+
+def _git_blob_id(data: bytes) -> str:
+    """The git blob id of data, computed here: the fixtures never read the object database."""
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def retry_fixture(*edit_sets: str) -> bytes:
+    """The committed base deploy.sh with the named line-edit sets applied, bottom up, each edit checked in place."""
+    lines = (RETRY_FIXTURES / "deploy.sh").read_bytes().decode("utf-8").splitlines(keepends=True)
+    edits = [e for name in edit_sets for e in json.loads((RETRY_FIXTURES / f"{name}.json").read_text())["edits"]]
+    for e in sorted(edits, key=lambda e: -e["line"]):
+        at = e["line"] - 1
+        assert lines[at:at + len(e["old"])] == e["old"], (e["line"], edit_sets)
+        lines[at:at + len(e["old"])] = e["new"]
+    return "".join(lines).encode("utf-8")
+
+
+@functools.lru_cache(maxsize=1)
+def _committed_repo():
+    return inv.repo_inventory(REPO)
+
+
+def _live():
+    return json.loads(FIXTURE.read_text())
+
+
+def render_tree(tmp_path: pathlib.Path, deploy: bytes, edit=None, counts: bool = True):
+    """A tree holding the three committed documents and `deploy` as gcp/deploy.sh; 05-a optionally edited, then
+    rendered by insert_blocks with the committed inventory and the tree's own declared jobs. Returns (root, repo)."""
+    root = tmp_path / "tree"
+    for d in RETRY_DOCS + ("docs/product/infrastructure/manual/05-a-ARCHITECTURE.md",):
+        (root / d).parent.mkdir(parents=True, exist_ok=True)
+        (root / d).write_bytes((REPO / d).read_bytes())
+    (root / "gcp").mkdir(parents=True, exist_ok=True)
+    (root / "gcp/deploy.sh").write_bytes(deploy)
+    if edit:
+        a = root / ARCH_DOC
+        a.write_text(edit(a.read_text()))
+    repo = dict(_committed_repo())
+    repo["jobs"] = inv.deploy_jobs(root)
+    inv.insert_blocks(root / ARCH_DOC, repo, _live(), root=root, counts=counts)
+    return root, repo
+
+
+def split_claims(text: str) -> dict[str, tuple]:
+    """The numbers each owned shape states, as written."""
+    out = {}
+    for name, pat in inv.RETRY_SPLIT.items():
+        found = pat.findall(text)
+        assert len(found) <= 1, (name, found)
+        if found:
+            out[name] = found[0]
+    return out
+
+
+def test_the_retry_fixtures_rebuild_their_blob_ids_without_the_object_database():
+    assert _git_blob_id((RETRY_FIXTURES / "deploy.sh").read_bytes()) == "6eed94cae9db97edd33c57b9c6748069e62bdc69"
+    assert _git_blob_id(retry_fixture("news")) == "1ad7255a1317fbdbc3c6e40c2542e224cd0dc095"
+    assert _git_blob_id(retry_fixture("ew")) == "a8da927f379a130546e5fd15085f958e1d91b924"
+    assert _git_blob_id(retry_fixture("news", "ew")) == "cb3efd25d87f6209972117c4f61410b70fe0b129"
+
+
+def test_the_retry_word_table_is_check_generated_docs_word_numbers():
+    from scripts.maintenance.check_generated_docs import WORD_NUMBERS
+    assert dict(zip(inv._RETRY_WORDS, range(13))) == WORD_NUMBERS and all(k == k.lower() for k in WORD_NUMBERS)
+    words = inv.RETRY_SPLIT["list"].pattern.rsplit("|", 13)[1:]
+    assert [w.split(")")[0] for w in words] == list(inv._RETRY_WORDS)
+
+
+def test_the_script_path_invocation_still_renders(tmp_path):
+    """`python3 scripts/maintenance/doc_inventory.py` loads the module with no `scripts` package importable, as an
+    approved spec's command does; the word form must not need one."""
+    import subprocess
+    import sys
+    code = ("import importlib.util, sys\n"
+            f"spec = importlib.util.spec_from_file_location('doc_inventory', {str(REPO / 'scripts/maintenance/doc_inventory.py')!r})\n"
+            "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+            "assert 'scripts' not in sys.modules\n"
+            "print(m._retry_count('one', 2), m._retry_count('twelve', 13))\n")
+    r = subprocess.run([sys.executable, "-I", "-B", "-c", code], capture_output=True, text=True, cwd=tmp_path)
+    assert (r.returncode, r.stdout.strip()) == (0, "two 13"), r.stderr[-800:]
+
+
+def test_the_committed_05a_renders_byte_identically_with_the_retry_split(tmp_path):
+    root, repo = render_tree(tmp_path, (REPO / "gcp/deploy.sh").read_bytes())
+    text = (root / ARCH_DOC).read_text()
+    assert text == (REPO / ARCH_DOC).read_text()
+    counts = collections.Counter(j["max_retries"] for j in repo["jobs"])
+    total = str(len(repo["jobs"]))
+    words = {v: k for k, v in __import__("scripts.maintenance.check_generated_docs", fromlist=["x"]).WORD_NUMBERS.items()}
+    claims = split_claims(text)
+    assert set(claims) == {"norm", "jobs", "list"}, claims
+    l = claims["list"]
+    assert (l[3], l[5], l[9], l[13]) == (str(counts[l[1]]), total, str(counts[l[7]]), words.get(counts[l[11]], str(counts[l[11]])))
+    assert (claims["norm"][3], claims["norm"][5]) == (str(counts[claims["norm"][1]]), total)
+    assert claims["jobs"][1] == str(counts[claims["jobs"][3]])
+
+
+@pytest.mark.parametrize("edit_sets, want", [
+    ((), ("68", "43", "24", "one")),
+    (("news",), ("68", "46", "21", "one")),
+    (("ew",), ("67", "43", "23", "one")),
+    (("news", "ew"), ("67", "46", "20", "one")),
+])
+def test_each_fixture_renders_its_split_in_both_sections(tmp_path, edit_sets, want):
+    from scripts.maintenance import check_generated_docs as cgd
+    root, repo = render_tree(tmp_path, retry_fixture(*edit_sets))
+    text = (root / ARCH_DOC).read_text()
+    total, n0, n1, c = want
+    assert f"`--max-retries 0` for {n0} of the {total} declared jobs, `1` for {n1} and `2` for {c}" in text
+    assert f"`--max-retries 0` is the norm ({n0} of the {total} declared jobs); the {n1} `--max-retries 1` jobs" in text
+    assert cgd.gate_derived_numbers(root, repo, _live()) == []
+
+
+def test_one_more_retries_0_job_increments_the_count_and_the_total(tmp_path):
+    root, _ = render_tree(tmp_path, retry_fixture() + RETRY_PROBE.format(n=1, flag=" --max-retries 0").encode())
+    text = (root / ARCH_DOC).read_text()
+    assert "`--max-retries 0` for 44 of the 69 declared jobs, `1` for 24 and `2` for one" in text
+    assert "`--max-retries 0` is the norm (44 of the 69 declared jobs); the 24 `--max-retries 1` jobs" in text
+
+
+def test_two_retries_2_jobs_render_as_a_word(tmp_path):
+    root, _ = render_tree(tmp_path, retry_fixture() + RETRY_PROBE.format(n=1, flag=" --max-retries 2").encode())
+    assert "`1` for 24 and `2` for two**" in (root / ARCH_DOC).read_text()
+
+
+def test_a_count_above_twelve_written_as_a_word_renders_as_digits(tmp_path):
+    probes = "".join(RETRY_PROBE.format(n=i, flag=" --max-retries 2") for i in range(12)).encode()
+    root, _ = render_tree(tmp_path, retry_fixture() + probes)
+    assert "`2` for 13**" in (root / ARCH_DOC).read_text()
+
+
+@pytest.mark.parametrize("flag", ["", " --max-retries 5"], ids=["default 3", "retries 5"])
+def test_a_retry_value_the_list_does_not_name_raises(tmp_path, flag):
+    with pytest.raises(ValueError, match="not exactly the three the list names"):
+        render_tree(tmp_path, retry_fixture() + RETRY_PROBE.format(n=1, flag=flag).encode())
+
+
+@pytest.mark.parametrize("shape", ["list", "norm", "jobs"])
+def test_a_second_copy_of_an_owned_shape_raises(tmp_path, shape):
+    def twice(text):
+        m = inv.RETRY_SPLIT[shape].search(text)
+        return text + "\n" + m.group(0) + "\n"
+    with pytest.raises(ValueError, match=f"the {shape} shape appears 2 times"):
+        render_tree(tmp_path, retry_fixture(), edit=twice)
+
+
+def test_a_shape_absent_from_the_input_stays_absent(tmp_path):
+    def drop_norm(text):
+        m = inv.RETRY_SPLIT["norm"].search(text)
+        return text.replace(m.group(0), "`--max-retries 0` is usual", 1)
+    root, _ = render_tree(tmp_path, retry_fixture("ew"), edit=drop_norm)
+    claims = split_claims((root / ARCH_DOC).read_text())
+    assert set(claims) == {"list", "jobs"} and claims["jobs"][1] == "23", claims
+
+
+@pytest.mark.parametrize("shape, stale", [
+    ("list", "`--max-retries 0` for 41 of the 67 declared jobs, `1` for 25 and `2` for two"),
+    ("norm", "`--max-retries 0` is the norm (41 of the 67 declared jobs)"),
+    ("jobs", "the 25 `--max-retries 1` jobs"),
+])
+def test_restore_blocks_leaves_a_hand_edited_split_unchanged(tmp_path, shape, stale):
+    def hand(text):
+        m = inv.RETRY_SPLIT[shape].search(text)
+        return text.replace(m.group(0), stale, 1)
+    root, repo = render_tree(tmp_path, retry_fixture(), edit=hand, counts=False)
+    assert stale in (root / ARCH_DOC).read_text()
+    inv.restore_blocks(root / ARCH_DOC, repo, _live(), root=root)
+    assert stale in (root / ARCH_DOC).read_text()
+
+
+STALE_SHAPES = ("Retry policy is **`--max-retries 0` for 41 of the 67 declared jobs, `1` for 25 and `2` for one**. "
+                "`--max-retries 0` is the norm (41 of the 67 declared jobs); the 25 `--max-retries 1` jobs retry.\n")
+
+
+@pytest.mark.parametrize("doc", ["docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md",
+                                 "docs/product/infrastructure/05-e-API.md",
+                                 "docs/product/infrastructure/manual/05-a-ARCHITECTURE.md"])
+def test_the_split_is_rendered_only_in_05a_at_its_exact_path(tmp_path, doc):
+    root, repo = render_tree(tmp_path, retry_fixture("ew"))
+    path = root / doc
+    if "manual/" not in doc:
+        path.write_text(path.read_text() + "\n" + STALE_SHAPES)
+    before = path.read_text()
+    assert len(split_claims(before)) == 3
+    inv.insert_blocks(path, repo, _live(), root=root, counts=True)
+    after = path.read_text()
+    assert [m.group(0) for p in inv.RETRY_SPLIT.values() for m in p.finditer(after)] == \
+        [m.group(0) for p in inv.RETRY_SPLIT.values() for m in p.finditer(before)]
+
+
+def test_twelve_retries_2_jobs_render_the_last_word_and_pass_the_check(tmp_path):
+    from scripts.maintenance import check_generated_docs as cgd
+    probes = "".join(RETRY_PROBE.format(n=i, flag=" --max-retries 2") for i in range(11)).encode()
+    root, repo = render_tree(tmp_path, retry_fixture() + probes)
+    assert "`2` for twelve**" in (root / ARCH_DOC).read_text()
+    assert cgd.gate_derived_numbers(root, repo, _live()) == []
+
+
+def test_a_list_count_followed_by_a_decimal_point_is_not_owned():
+    repo = {"jobs": [{"max_retries": k} for k in ("0", "1", "2")]}
+    text = "`--max-retries 0` for 1 of the 3 declared jobs, `1` for 1 and `2` for 9.5"
+    assert inv.render_retry_split(text, repo) == text
+    repo2 = {"jobs": [{"max_retries": k} for k in ("0", "1", "2", "2")]}
+    for end, want in (("one.", "two."), ("1.", "2."), ("one.5", "one.5"), ("1e3", "1e3"), ("1\u0663", "1\u0663"),
+                      ("\u0661", "\u0661"), ("one_", "one_")):
+        text = f"`--max-retries 0` for 1 of the {3 if '5' in end or 'e' in end else 4} declared jobs, `1` for 1 and `2` for {end}"
+        assert inv.render_retry_split(text, repo2).endswith(f"`2` for {want}"), (end, want)

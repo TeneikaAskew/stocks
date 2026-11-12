@@ -4156,6 +4156,94 @@ RELATION_TOTAL = re.compile(
     r"(declares (?:\*\*)?)(\d+)((?: relations\*\*)? )(?=\(\d+ tables?, \d+ materialized views?, \d+ views?\))")
 
 
+# The declared job retry split, in the three shapes 05-a states it (§6's list
+# and §11's two). check_generated_docs.gate_derived_numbers derives every
+# per-flag count from gcp/deploy.sh and requires the prose to match, and the
+# REQ-GOV-004 render gate refuses a hand-typed number outside the blocks, so a
+# branch that changes a declared retry could satisfy neither: the predecessor
+# answer for relation counts applies here too. Literal shapes only, applied to
+# one document at its exact repository path; the frozen copy under manual/
+# carries the same sentences with historical figures and must not move.
+# ASCII digits only: a shape written with other Unicode digits is not owned,
+# so the unchanged check, which reads them, still reports it.
+# (FEAT-CICD-001, docs/superpowers/specs/2026-10-31-feat-cicd-001-retry-split-substitution.md.)
+RETRY_SPLIT_DOC = "docs/product/infrastructure/05-a-ARCHITECTURE.md"
+RETRY_SPLIT = {
+    # §11: "`--max-retries 0` is the norm (43 of the 68 declared jobs)"
+    "norm": re.compile(r"(`--max-retries )(\d)(` is the norm \()(\d+)( of the )(\d+)( declared jobs\))", re.ASCII),
+    # §11: "the 24 `--max-retries 1` jobs"
+    "jobs": re.compile(r"(\bthe )(\d+)( `--max-retries )(\d)(` jobs\b)", re.ASCII),
+    # §6: "`--max-retries 0` for 43 of the 68 declared jobs, `1` for 24 and `2` for one"
+    # Digits are ASCII but the closing lookahead is not: a count that runs on into any word character (a Unicode
+    # digit included) or a decimal point and digit is not owned, so the render never writes text the check rejects.
+    "list": re.compile(r"(`--max-retries )([0-9])(` for )([0-9]+)( of the )([0-9]+)( declared jobs, `)([0-9])(` for )([0-9]+)"
+                       r"( and `)([0-9])(` for )([0-9]+|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?!\w)(?!\.[0-9])"),
+}
+
+
+# check_generated_docs.WORD_NUMBERS, the table its retry check reads spelled-out
+# counts with. Copied, not imported: check_generated_docs imports this module,
+# and the script-path invocation (`python3 scripts/maintenance/doc_inventory.py`)
+# has no `scripts` package to import it from. A test pins the two equal.
+_RETRY_WORDS = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+                "eleven", "twelve")
+
+
+def _retry_count(token: str, n: int) -> str:
+    """n in the form of the token it replaces: a WORD_NUMBERS word stays a word up to twelve, the table's limit."""
+    if token.isdigit():
+        return str(n)
+    if token not in _RETRY_WORDS:
+        raise ValueError(f"retry split: {token!r} is neither digits nor a lowercase WORD_NUMBERS word")
+    return _RETRY_WORDS[n] if 0 <= n < len(_RETRY_WORDS) else str(n)
+
+
+def render_retry_split(text: str, repo: dict[str, Any]) -> str:
+    """text with every owned retry-split count rendered from the declared jobs.
+
+    The counts are the parse gate_derived_numbers reads (Counter of each job's
+    max_retries, the Cloud Run default 3 included) and the total is the number
+    of declared jobs. A shape is rendered only where text carries it; none is
+    added or removed. Raises instead of rendering when a shape appears more
+    than once, or when the §6 list cannot state the split truthfully: the
+    declared retry values are not exactly the three it names, or its counts
+    would not sum to the declared total. That list changes only in reviewed
+    prose.
+    """
+    import collections
+    counts = collections.Counter(j.get("max_retries") for j in repo["jobs"])
+    total = len(repo["jobs"])
+    for name, pat in RETRY_SPLIT.items():
+        found = len(pat.findall(text))
+        if found > 1:
+            raise ValueError(f"retry split: the {name} shape appears {found} times; it is rendered only where it "
+                             "appears once")
+
+    def norm(m: re.Match) -> str:
+        return (m.group(1) + m.group(2) + m.group(3) + str(counts.get(m.group(2), 0)) + m.group(5) + str(total)
+                + m.group(7))
+
+    def jobs(m: re.Match) -> str:
+        return m.group(1) + str(counts.get(m.group(4), 0)) + m.group(3) + m.group(4) + m.group(5)
+
+    def split(m: re.Match) -> str:
+        flags = (m.group(2), m.group(8), m.group(12))
+        if len(set(flags)) != 3 or set(counts) != set(flags):
+            raise ValueError(f"retry split: the declared retry values {sorted(counts, key=str)} are not exactly the "
+                             f"three the list names {list(flags)}; if a job's retries are written in a form the parser misreads, "
+                             "write them as `--max-retries N`, otherwise change the list in reviewed prose")
+        ns = [counts[f] for f in flags]
+        if sum(ns) != total:
+            raise ValueError(f"retry split: the list's counts {ns} do not sum to the {total} declared jobs")
+        return (m.group(1) + m.group(2) + m.group(3) + str(ns[0]) + m.group(5) + str(total) + m.group(7)
+                + m.group(8) + m.group(9) + str(ns[1]) + m.group(11) + m.group(12) + m.group(13)
+                + _retry_count(m.group(14), ns[2]))
+
+    text = RETRY_SPLIT["list"].sub(split, text)
+    text = RETRY_SPLIT["norm"].sub(norm, text)
+    return RETRY_SPLIT["jobs"].sub(jobs, text)
+
+
 # The three "as of" labels a human wrote into the prose, every one of which has
 # to track the snapshot the run was taken from. Deliberately literal: a looser
 # pattern would sweep up the historical dates beside them -- 05-a carries 33
@@ -4355,6 +4443,13 @@ def insert_blocks(doc_path: pathlib.Path, repo: dict[str, Any], live: dict[str, 
                        f"{m_} materialized view{'' if m_ == 1 else 's'}, "
                        f"{v} view{'' if v == 1 else 's'})", new)
         new = RELATION_TOTAL.sub(lambda m: f"{m.group(1)}{t + m_ + v}{m.group(3)}", new)
+        # The declared retry split, on 05-a only, by its exact repository path.
+        try:
+            rel = doc_path.resolve().relative_to(root.resolve()).as_posix()
+        except ValueError:
+            rel = None
+        if rel == RETRY_SPLIT_DOC:
+            new = render_retry_split(new, repo)
     # The as-of labels are inventory too, for exactly the same reason. Run 31
     # updated the header note and the closing line and left §3's table column
     # at the previous snapshot's date, failing the run on one stale label --
