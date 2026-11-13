@@ -777,6 +777,11 @@ def line_of(job: dict, command: str) -> int:
 # What may follow the suite command: nothing that keeps pytest from running the tests
 # (solyra#72 r4120633474: `--collect-only` starts with the marker and executes nothing).
 PYTEST_ARGS = {"-q", "-v", "-x", "-p", "no:cacheprovider", "--noconftest", "-rA", "-ra"}
+# The one worker form beside them: the gate's own suite may carry the pair `-n 4`, once, in that
+# order. Any other count, alias, distribution mode or command is a reviewed decision of its own
+# (FEAT-CICD-001 test suite audit, #1847: four workers ran the same 185 tests 55 to 65 percent faster).
+SUITE_COMMAND = "python3 -m pytest tests/scripts/test_spec_gate.py"
+SUITE_WORKERS = ["-n", "4"]
 DEFAULT_TYPES = {"opened", "synchronize", "reopened"}   # GitHub's default activity types for pull_request events
 
 
@@ -789,7 +794,11 @@ def tool_offence(runs: str) -> str | None:
     """The first executed line whose pip or pytest is more than the gate's workflows need (red-team
     round eight: a blocklist of pip flags missed `--index`, a URL, `git+`, `-r <url>`, `./`, `pip config`;
     a pytest write option overwrote a gate file). pip may only install named packages from the
-    default index; pytest may only be a contract command with its permitted tail."""
+    default index; pytest may only be a contract command with its permitted tail; and no line,
+    whichever installer it runs, names xdist other than as pytest-xdist at one exact version (#1847)."""
+    for line in re.sub(r"\\\n", "", runs).split("\n"):
+        if xdist_unpinned(line):
+            return line.strip()
     for line in runs.split("\n"):
         for stmt in re.split(r"\s*(?:;|&&|\|\||\|)\s*", line.strip()):
             stmt = re.sub(r"^((command|builtin|env|time|nice|nohup|sudo|timeout|exec)\s+(-\S+\s+|[A-Za-z_]\w*=\S*\s+)*)+", "", stmt)
@@ -802,14 +811,25 @@ def tool_offence(runs: str) -> str | None:
     return None
 
 
+def xdist_unpinned(line: str) -> bool:
+    """The line, read after the shell joins `\\` continuations and drops quotes and backslashes, has a
+    word naming xdist (any case, any spelling, in any command, a file name or an argument) that is not
+    exactly `pytest-xdist`, `-` `_` or `.` joined, with an optional extra and one `==` version (#1847)."""
+    words = re.split(r"[\s;&|<>()`]+", re.sub(r"[\\'\"]", "", line))
+    return any("xdist" in w.lower() and not re.fullmatch(r"pytest[-_.]+xdist(\[[A-Za-z0-9,._-]*\])?==[A-Za-z0-9.+!-]+", w, re.I) for w in words)
+
+
 def invokes(statement: str, command: str) -> bool:
     """The statement invokes the contract command: it starts with it, and a pytest command
     carries only arguments that still run the tests."""
     if not statement.startswith(command):
         return False
     if command.startswith("python3 -m pytest"):
-        tail = re.sub(r"\s\d*[<>]&?\S*", "", statement[len(command):])   # redirections do not change what runs
-        return set(tail.split()) <= PYTEST_ARGS
+        # redirections do not change what runs; words split where bash splits them, on spaces and tabs
+        words = [w for w in re.split(r"[ \t]+", re.sub(r"\s\d*[<>]&?\S*", "", statement[len(command):])) if w]
+        if command == SUITE_COMMAND and (at := next((i for i in range(len(words) - 1) if words[i:i + 2] == SUITE_WORKERS and words[i - 1:i] != ["-p"]), None)) is not None:
+            del words[at:at + 2]   # the first `-n 4` only: a second one stays and is refused
+        return set(words) <= PYTEST_ARGS
     return True
 
 
