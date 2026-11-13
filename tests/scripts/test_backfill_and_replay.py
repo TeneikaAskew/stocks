@@ -1,4 +1,4 @@
-"""scripts/backfill_and_replay.py must not re-implement the daily fetcher.
+"""scripts/backfill_and_replay.py replays from the tables and fetches nothing.
 
 Audit 2026-08-27 R7 (#824): the script carried its own AV fetch, its own
 market_data_daily writer (data_source='alphavantage', a value production
@@ -7,10 +7,13 @@ _DAILY_IND_TO_SQL". Diffed statically on 2026-09-07 the map disagreed with
 gcp.database.DAILY_INDICATOR_TO_SQL_COLUMN on 14 keys each way (MA5 vs
 SMA5, RSI vs RSI14, consecutive_up vs Consecutive_Up, the seven columns
 promoted 2026-05-31 never written), and 1686 stored rows (AMD, CARS, MCK,
-NVDA) came from it. One code path for daily backfill: the production
-per-ticker job gcp/backfill_ticker.py, which the Discord /replay command
-already dispatches. The script now dispatches that job and keeps only
-the insight replay and the comparison report.
+NVDA) came from it. That private pipeline stays gone.
+
+FEAT-REPLAY-001 (2026-11-13): the script no longer dispatches the
+per-ticker backfill job either. A replay reads bars only from the tables,
+so the script probes market_data_intraday and market_data_daily for every
+date first and refuses, naming the ticker, the dates and the tables, when
+one lacks them. It keeps the insight replay and the comparison report.
 """
 from __future__ import annotations
 
@@ -58,65 +61,6 @@ def test_no_private_indicator_map_or_indicator_engine_call():
         "the script must not write market_data_* itself"
 
 
-def test_backfill_dispatches_the_production_job():
-    assert "trigger_backfill_ticker" in _defined_functions()
-    assert re.search(r"'run',\s*'jobs',\s*'execute'", SRC), "jobs are executed via gcloud"
-    assert re.search(r"_execute_job\(\s*'backfill-ticker'", SRC), \
-        "daily backfill must go through the backfill-ticker Cloud Run job"
-    # BACKFILL_DATES is one env value; commas would split --update-env-vars,
-    # and gcp.backfill_ticker._parse_dates accepts ';'.
-    assert re.search(r"'BACKFILL_DATES':\s*';'\.join", SRC)
-
-
-def test_main_calls_the_job_not_a_local_pipeline():
-    main = next(n for n in ast.walk(TREE)
-                if isinstance(n, ast.FunctionDef) and n.name == "main")
-    calls = {n.func.id for n in ast.walk(main)
-             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
-    assert "trigger_backfill_ticker" in calls
-    assert not calls & {"write_daily_history", "compute_daily_indicators_for_ticker"}
-
-
-def test_backfill_opts_out_of_the_shared_watchlist():
-    """Codex on #1022: backfill-ticker's add_to_watchlist() would put an
-    ad-hoc historical-test ticker into the shared default watchlist (or
-    reactivate a removed one); the script must pass the opt-out."""
-    assert re.search(r"'BACKFILL_ADD_TO_WATCHLIST':\s*'false'", SRC)
-
-
-def test_backfill_runs_one_execution_per_month(monkeypatch):
-    """Codex on #1022: backfill-ticker fetches a full 1-min month per
-    touched month inside a 600 s task timeout, so a --dates list spanning
-    months must be split across executions."""
-    import importlib
-    from datetime import date as _d
-    mod = importlib.import_module("scripts.backfill_and_replay")
-    seen: list = []
-    monkeypatch.setattr(mod, "_execute_job", lambda job, env, wait=True: seen.append((job, env)) or True)
-    dates = [_d(2026, 4, 24), _d(2026, 3, 31), _d(2026, 4, 2), _d(2026, 1, 15)]
-    assert mod.trigger_backfill_ticker("AMD", dates, include_news=False,
-                                       history_days=800, news_window_days=7)
-    assert [e["BACKFILL_DATES"] for _, e in seen] == [
-        "2026-01-15", "2026-03-31", "2026-04-02;2026-04-24"]
-    assert all(j == "backfill-ticker" for j, _ in seen)
-
-
-def test_backfill_stops_at_the_first_failed_month(monkeypatch):
-    import importlib
-    from datetime import date as _d
-    mod = importlib.import_module("scripts.backfill_and_replay")
-    calls: list = []
-
-    def _fake(job, env, wait=True):
-        calls.append(env["BACKFILL_DATES"])
-        return len(calls) < 2   # second month fails
-
-    monkeypatch.setattr(mod, "_execute_job", _fake)
-    ok = mod.trigger_backfill_ticker("AMD", [_d(2026, 1, 5), _d(2026, 2, 5), _d(2026, 3, 5)],
-                                     include_news=False, history_days=800, news_window_days=7)
-    assert ok is False and calls == ["2026-01-05", "2026-02-05"]
-
-
 def test_replay_and_push_steps_report_the_job_result(monkeypatch):
     """Internal review of #1022 (fallback guard): _execute_job returns
     True/False so the caller can decide whether the next step still makes
@@ -132,13 +76,46 @@ def test_replay_and_push_steps_report_the_job_result(monkeypatch):
     assert mod.trigger_discord_push("AMD", "2026-04-24") is True
 
 
+class _Conn:
+    """A psycopg2-shaped stub connection. ``answer(sql, params)`` returns
+    the row a probe fetches, or None for no row."""
+
+    def __init__(self, answer):
+        self.answer = answer
+        self.queries: list = []
+        self.closed = False
+        self._row = None
+
+    def cursor(self, *_args, **_kwargs):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self.queries.append((sql, params))
+        self._row = self.answer(sql, params)
+
+    def fetchone(self):
+        return self._row
+
+    def close(self):
+        self.closed = True
+
+
 def _run_main(monkeypatch, mod, fake_execute, argv):
     import sys
 
     import pytest
     monkeypatch.setattr(mod, "_execute_job", fake_execute)
-    monkeypatch.setattr(mod, "db_connect",
-                        lambda: pytest.fail("the comparison report must not run on a failed replay"))
+    # main opens the connection first, for the probes: every probe finds a row.
+    monkeypatch.setattr(mod, "db_connect", lambda: _Conn(lambda sql, params: (1,)))
+    monkeypatch.setattr(
+        mod, "report_comparison",
+        lambda *_a: pytest.fail("the comparison report must not run on a failed replay"))
     monkeypatch.setattr(sys, "argv", ["backfill_and_replay.py", *argv])
     with pytest.raises(SystemExit) as exc:
         mod.main()
@@ -155,7 +132,7 @@ def test_main_stops_at_the_first_failed_insight_replay(monkeypatch):
         return job != "insight-pipeline"
 
     code = _run_main(monkeypatch, mod, _fake,
-                     ["--ticker", "amd", "--dates", "2026-04-24,2026-04-27", "--skip-backfill"])
+                     ["--ticker", "amd", "--dates", "2026-04-24,2026-04-27"])
     assert "insight-pipeline" in str(code) and "AMD" in str(code)
     assert [j for j, _ in calls] == ["insight-pipeline"]
 
@@ -170,7 +147,7 @@ def test_main_stops_at_a_failed_discord_push(monkeypatch):
         return job != "insight-discord-push"
 
     code = _run_main(monkeypatch, mod, _fake,
-                     ["--ticker", "amd", "--dates", "2026-04-24,2026-04-27", "--skip-backfill"])
+                     ["--ticker", "amd", "--dates", "2026-04-24,2026-04-27"])
     assert "insight-discord-push" in str(code)
     assert calls == ["insight-pipeline", "insight-discord-push"]
 
@@ -211,3 +188,99 @@ def test_insight_as_of_is_converted_with_the_named_eastern_zone():
     assert summer == datetime(2026, 7, 15, 13, 15, tzinfo=timezone.utc)
     assert winter == datetime(2026, 1, 15, 14, 15, tzinfo=timezone.utc)
     assert mod.insight_as_of_utc(date(2026, 1, 15), "20:00").hour == 1
+
+
+# -- the script refuses dates the tables lack (FEAT-REPLAY-001) -----------------
+
+
+def _main_exit(monkeypatch, answer, argv):
+    """Run main() on a stub connection. Returns (exit code, connection, jobs)."""
+    import importlib
+    import sys
+    mod = importlib.import_module("scripts.backfill_and_replay")
+    conn, jobs = _Conn(answer), []
+    monkeypatch.setattr(mod, "db_connect", lambda: conn)
+    monkeypatch.setattr(mod, "_execute_job",
+                        lambda job, env, wait=True: jobs.append(job) or True)
+    monkeypatch.setattr(mod, "report_comparison",
+                        lambda *_a: pytest.fail("no report for a refused replay"))
+    monkeypatch.setattr(sys, "argv", ["backfill_and_replay.py", *argv])
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
+    return exc.value.code, conn, jobs
+
+
+def test_main_refuses_dates_the_tables_do_not_hold(monkeypatch):
+    from datetime import timezone
+    argv = ["--ticker", "amd", "--dates", "2026-04-24,2026-04-27"]
+
+    # A: the table holds 1-min bars on 2026-04-24 only. The probe for the
+    # 24th looks at the 7 days before it and finds nothing; the probe for
+    # the 27th finds the 24th's bar.
+    bar = datetime(2026, 4, 24, 14, 30, tzinfo=timezone.utc)
+
+    def bars_on_the_24th_only(sql, params):
+        if "market_data_intraday" in sql:
+            _ticker, lo, hi = params
+            return (1,) if lo <= bar < hi else None
+        return (1,)
+
+    code, conn, jobs = _main_exit(monkeypatch, bars_on_the_24th_only, argv)
+    assert code not in (0, None)
+    text = str(code)
+    assert "AMD" in text and "2026-04-24" in text and "market_data_intraday" in text
+    assert "2026-04-27" not in text
+    assert jobs == []
+    assert conn.closed
+    windows = [params[1:] for sql, params in conn.queries if "market_data_intraday" in sql]
+    assert windows == [
+        (datetime(2026, 4, 17, tzinfo=timezone.utc), datetime(2026, 4, 24, tzinfo=timezone.utc)),
+        (datetime(2026, 4, 20, tzinfo=timezone.utc), datetime(2026, 4, 27, tzinfo=timezone.utc)),
+    ]
+    assert all(params[0] == "AMD" for _sql, params in conn.queries)
+
+    # B: the daily table's first AMD row is dated 2026-04-24, so there is a
+    # daily bar before the 27th and none before the 24th.
+    def daily_starts_on_the_24th(sql, params):
+        if "market_data_daily" in sql:
+            _ticker, d = params
+            return (1,) if d > date(2026, 4, 24) else None
+        return (1,)
+
+    code, conn, jobs = _main_exit(monkeypatch, daily_starts_on_the_24th, argv)
+    assert code not in (0, None)
+    text = str(code)
+    assert "AMD" in text and "2026-04-24" in text and "market_data_daily" in text
+    assert "2026-04-27" not in text
+    assert jobs == []
+    assert conn.closed
+
+
+def test_no_backfill_step_remains(monkeypatch, capsys):
+    import importlib
+    import sys
+    assert not {"trigger_backfill_ticker", "_month_groups"} & _defined_functions()
+    assert "DAILY_HISTORY_DAYS" not in SRC
+    mod = importlib.import_module("scripts.backfill_and_replay")
+    monkeypatch.setattr(mod, "db_connect",
+                        lambda: pytest.fail("argparse must reject the flag before any connection"))
+    for flag in (["--skip-backfill"], ["--history-days", "800"],
+                 ["--include-news"], ["--news-window-days", "7"]):
+        monkeypatch.setattr(sys, "argv", [
+            "backfill_and_replay.py", "--ticker", "AMD", "--dates", "2026-04-24", *flag])
+        with pytest.raises(SystemExit) as exc:
+            mod.main()
+        assert exc.value.code == 2, flag
+        assert "unrecognized arguments" in capsys.readouterr().err, flag
+
+
+def test_missing_replay_dates_probes_each_distinct_date_once_in_order():
+    import importlib
+    mod = importlib.import_module("scripts.backfill_and_replay")
+    conn = _Conn(lambda sql, params: None)
+    d24, d27 = date(2026, 4, 24), date(2026, 4, 27)
+    assert mod.missing_replay_dates(conn, "AMD", [d27, d24, d24]) == [
+        (d24, "market_data_intraday"), (d27, "market_data_intraday")]
+    # one 1-min probe per distinct date; a miss there skips the daily probe
+    assert len(conn.queries) == 2
+    assert all("market_data_intraday" in sql for sql, _params in conn.queries)
