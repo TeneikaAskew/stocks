@@ -315,7 +315,7 @@ def test_a_card_split_over_lines_is_refused():
 @pytest.mark.parametrize("damage", ["truncated", "not_base64", "not_gzip"])
 def test_a_damaged_asset_is_refused_with_exit_2(tmp_path, damage):
     html = bundle_html()
-    m = re.search(r'<script type="__bundler/manifest">\n(.*?)\n</script>', html, re.S)
+    m = re.search(r'<script type="__bundler/manifest">\n(.*?)\n</script>', html, re.DOTALL)
     manifest = json.loads(m.group(1))
     entry = manifest["22222222-2222-2222-2222-222222222222"]
     raw = base64.b64decode(entry["data"])
