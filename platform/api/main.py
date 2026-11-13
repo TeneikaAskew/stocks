@@ -12,7 +12,6 @@ from collections import OrderedDict
 from contextlib import asynccontextmanager
 from typing import Optional
 
-import httpx
 import pandas as pd
 from cachetools import TTLCache
 from api.threadsafe_cache import MISS, ThreadSafeCache
@@ -84,12 +83,6 @@ def _cloud_sql_flags() -> tuple[bool, bool]:
 
 
 _CLOUD_SQL, _CLOUD_SQL_UNCONFIGURED = _cloud_sql_flags()
-
-# The swallowing helper, still read by the reference route (its last user).
-try:
-    from gcp.database import query_to_dataframe
-except Exception:
-    pass
 
 
 @asynccontextmanager
@@ -242,53 +235,10 @@ app.include_router(profile.router, prefix="")
 
 data_loader = DataLoader()
 
-# ── AlphaVantage helper for reference levels ─────────────────────────────────
-AV_API_KEY = os.environ.get("AV_API_KEY") or os.environ.get("ALPHA_VANTAGE_API_KEY", "")
-AV_BASE = "https://www.alphavantage.co/query"
-# Cloud SQL data older than this is considered stale and we prefer AV
+# ── Reference levels ─────────────────────────────────────────────────────────
+# A request under 30 days old whose newest stored daily row is more than this
+# many calendar days before it reports the gap in `stale_days`.
 MAX_CLOUD_SQL_STALENESS_DAYS = 3
-
-
-def _fetch_av_daily_reference(ticker: str, before_date: str) -> Optional[dict]:
-    """Fetch most recent daily OHLC from AlphaVantage strictly before before_date.
-
-    Args:
-        ticker: symbol (e.g. 'IWM')
-        before_date: YYYY-MM-DD string; returns the trading day immediately before this
-
-    Returns: {"date": "YYYYMMDD", "open": ..., "high": ..., "low": ..., "close": ...} or None
-    """
-    if not AV_API_KEY:
-        return None
-    try:
-        with httpx.Client(timeout=8.0) as client:
-            r = client.get(AV_BASE, params={
-                "function": "TIME_SERIES_DAILY",
-                "symbol": ticker,
-                "outputsize": "compact",  # last 100 days is plenty
-                "apikey": AV_API_KEY,
-            })
-            if r.status_code != 200:
-                return None
-            data = r.json()
-            series = data.get("Time Series (Daily)", {})
-            if not series:
-                return None
-            # Find most recent date strictly before before_date
-            dates_sorted = sorted(series.keys(), reverse=True)
-            for d in dates_sorted:
-                if d < before_date:
-                    bar = series[d]
-                    return {
-                        "date": d.replace("-", ""),
-                        "open": float(bar["1. open"]),
-                        "high": float(bar["2. high"]),
-                        "low": float(bar["3. low"]),
-                        "close": float(bar["4. close"]),
-                    }
-    except Exception as e:
-        logger.warning("AV daily reference fetch failed: %s", e)
-    return None
 
 # ── App-level API routes ─────────────────────────────────────────────────────
 
@@ -1082,126 +1032,138 @@ def get_market_data(
     }
 
 
-def _fetch_week_range(ticker_upper: str, before_date: str) -> Optional[dict]:
-    """Fetch the last 5 trading days BEFORE `before_date` and return the
-    overall high/low/start/end across that window. Prefers Cloud SQL
-    `market_data_daily`. Returns None on failure.
+def _parse_reference_date(date: str) -> str:
+    """The path date of a reference request as YYYY-MM-DD.
 
-    `before_date` format: "YYYY-MM-DD" (exclusive upper bound).
+    Accepts YYYYMMDD and the dashed YYYY-MM-DD, ASCII digits only, that form
+    a calendar date. Raises ValueError, whose message is the route's 404
+    text, for anything else: a half-dashed form, a month, month 13.
     """
-    if not _CLOUD_SQL:
+    m = (re.fullmatch(r"([0-9]{4})([0-9]{2})([0-9]{2})", date)
+         or re.fullmatch(r"([0-9]{4})-([0-9]{2})-([0-9]{2})", date))
+    if m:
+        try:
+            return datetime(int(m[1]), int(m[2]), int(m[3])).strftime("%Y-%m-%d")
+        except ValueError:
+            pass  # digits, but not a calendar date: the same answer as no match
+    raise ValueError(f"Invalid date {date}: expected YYYYMMDD or YYYY-MM-DD.")
+
+
+def _daily_reference_query(sql: str, params: Optional[dict] = None) -> "pd.DataFrame":
+    """Run the reference-levels query, RAISING on failure.
+
+    Same reason as `_dates_query` and `_bars_query`: with the swallowing
+    helper an outage reads as "no daily bar" and answers 404.
+    """
+    from gcp.database import query_to_dataframe_strict
+    return query_to_dataframe_strict(sql, params)
+
+
+def _week_from_daily_rows(df: pd.DataFrame) -> Optional[dict]:
+    """The `week` block from the daily rows before the requested date (at
+    most five): overall high and low, mean close and RSI, first and last
+    date. None under two rows.
+    """
+    if df.empty or len(df) < 2:
         return None
-    try:
-        df = query_to_dataframe(
-            """
-            SELECT date, high, low, close, rsi_14
-            FROM market_data_daily
-            WHERE ticker = :ticker AND date < :dt
-            ORDER BY date DESC LIMIT 5
-            """,
-            {"ticker": ticker_upper, "dt": before_date},
-        )
-        if df.empty or len(df) < 2:
-            return None
-        # Ensure ascending order for start/end date labels
-        df = df.sort_values("date")
-        start_raw = df["date"].iloc[0]
-        end_raw = df["date"].iloc[-1]
-        start_str = start_raw.strftime("%Y-%m-%d") if hasattr(start_raw, "strftime") else str(start_raw)
-        end_str = end_raw.strftime("%Y-%m-%d") if hasattr(end_raw, "strftime") else str(end_raw)
-        rsi_series = df["rsi_14"].dropna() if "rsi_14" in df.columns else None
-        return {
-            "high": float(df["high"].max()),
-            "low": float(df["low"].min()),
-            "avg_close": float(df["close"].mean()),
-            "avg_rsi_14": float(rsi_series.mean()) if rsi_series is not None and not rsi_series.empty else None,
-            "start_date": start_str,
-            "end_date": end_str,
-            "sessions": int(len(df)),
-        }
-    except Exception as e:
-        logger.warning("Week range query failed for %s: %s", ticker_upper, e)
-        return None
+    # Ensure ascending order for start/end date labels
+    df = df.sort_values("date")
+    start_raw = df["date"].iloc[0]
+    end_raw = df["date"].iloc[-1]
+    start_str = start_raw.strftime("%Y-%m-%d") if hasattr(start_raw, "strftime") else str(start_raw)
+    end_str = end_raw.strftime("%Y-%m-%d") if hasattr(end_raw, "strftime") else str(end_raw)
+    rsi_series = df["rsi_14"].dropna() if "rsi_14" in df.columns else None
+    return {
+        "high": float(df["high"].max()),
+        "low": float(df["low"].min()),
+        "avg_close": float(df["close"].mean()),
+        "avg_rsi_14": float(rsi_series.mean()) if rsi_series is not None and not rsi_series.empty else None,
+        "start_date": start_str,
+        "end_date": end_str,
+        "sessions": int(len(df)),
+    }
 
 
 @app.get("/api/market/reference/{ticker}/{date}", response_model=ReferenceResponse, response_model_exclude_unset=True)
 def get_reference_levels(ticker: str, date: str):
     """Get previous day OHLC reference levels for support/resistance.
 
-    Strategy:
-      1. AlphaVantage TIME_SERIES_DAILY when requested date is within the last ~30 days
-         (AV is always real-time; avoids stale Cloud SQL issues)
-      2. Cloud SQL market_data_daily for historical requests (fast, has indicators)
-      3. Local parquet fallback (minute bars aggregated)
+    date format: YYYYMMDD (e.g., 20260220) or YYYY-MM-DD.
 
-    Returns the OHLC of the trading day immediately before the requested date,
-    plus a `week` block containing the high/low across the previous 5 trading days.
+    One read: the five newest `market_data_daily` rows dated before the
+    requested date. The newest is the reference day; `week` is the high/low
+    across those rows (null under two rows). `source` is always `cloud_sql`.
+    `stale_days` is the calendar days from the reference day to the requested
+    date when the request is under 30 days old and that gap is over 3, else 0.
+
+    404 when the table holds no daily bar before the date (`No daily bar for
+    ...`) or the date is malformed (`Invalid date ...`). 503 when the database
+    cannot be read (`Could not read ...`). No vendor is called.
     """
     ticker_upper = ticker.upper()
-    ticker_lower = ticker.lower()
-    date_str = f"{date[:4]}-{date[4:6]}-{date[6:8]}" if len(date) == 8 else date
-
-    # Determine if request is "recent" (within last 30 days) — prefer AV for freshness
     try:
-        requested_dt = datetime.strptime(date_str, "%Y-%m-%d").date()
-        days_ago = (datetime.now().date() - requested_dt).days
-        is_recent = days_ago < 30
-    except ValueError:
-        is_recent = False
+        date_str = _parse_reference_date(date)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    unreadable = (f"Could not read reference levels for {ticker_upper} before {date}: "
+                  "the database is unavailable.")
 
-    # ── AlphaVantage primary for recent dates ────────────────────────────────
-    if is_recent:
-        av_result = _fetch_av_daily_reference(ticker_upper, date_str)
-        if av_result:
-            # Week range always comes from Cloud SQL (AV daily doesn't give us
-            # a tidy 5-row window with one call). Best-effort — None if CSQL down.
-            week = _fetch_week_range(ticker_upper, date_str)
-            return {
-                "ticker": ticker_upper,
-                "source": "alphavantage",
-                "week": week,
-                **av_result,
-            }
-        logger.info("AV reference unavailable for %s, falling back to Cloud SQL", ticker_upper)
-
-    # ── Cloud SQL for historical (or AV fallback) ────────────────────────────
     if _CLOUD_SQL:
         try:
-            df = query_to_dataframe(
+            df = _daily_reference_query(
                 """
-                SELECT date, open, high, low, close
+                SELECT date, open, high, low, close, rsi_14
                 FROM market_data_daily
                 WHERE ticker = :ticker AND date < :dt
-                ORDER BY date DESC LIMIT 1
+                ORDER BY date DESC LIMIT 5
                 """,
                 {"ticker": ticker_upper, "dt": date_str},
             )
-            if not df.empty:
-                row = df.iloc[0]
-                ref_date = row["date"]
-                ref_date_str = ref_date.strftime("%Y-%m-%d") if hasattr(ref_date, "strftime") else str(ref_date)
-                # Check if Cloud SQL data is stale relative to the request
-                try:
-                    ref_dt = datetime.strptime(ref_date_str, "%Y-%m-%d").date()
-                    staleness_days = (requested_dt - ref_dt).days if is_recent else 0
-                except Exception:
-                    staleness_days = 0
+        except Exception as exc:
+            # 503 for an outage; a defect is re-raised and stays a 500.
+            unavailable(unreadable, exc)
+        if df.empty:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No daily bar for {ticker_upper} before {date} in market_data_daily.")
 
-                return {
-                    "ticker": ticker_upper,
-                    "source": "cloud_sql",
-                    "stale_days": staleness_days if staleness_days > MAX_CLOUD_SQL_STALENESS_DAYS else 0,
-                    "date": ref_date_str.replace("-", ""),
-                    "open": float(row["open"]),
-                    "high": float(row["high"]),
-                    "low": float(row["low"]),
-                    "close": float(row["close"]),
-                    "week": _fetch_week_range(ticker_upper, date_str),
-                }
-        except Exception as e:
-            logger.warning("Cloud SQL reference query failed: %s", e)
+        row = df.iloc[0]
+        ref_date = row["date"]
+        ref_date_str = ref_date.strftime("%Y-%m-%d") if hasattr(ref_date, "strftime") else str(ref_date)
+        # Stale only for a "recent" request (under 30 days old): how far the
+        # newest stored row is behind it.
+        requested_dt = datetime.strptime(date_str, "%Y-%m-%d").date()
+        is_recent = (datetime.now().date() - requested_dt).days < 30
+        ref_dt = datetime.strptime(ref_date_str, "%Y-%m-%d").date()
+        staleness_days = (requested_dt - ref_dt).days if is_recent else 0
+        return {
+            "ticker": ticker_upper,
+            "source": "cloud_sql",
+            "stale_days": staleness_days if staleness_days > MAX_CLOUD_SQL_STALENESS_DAYS else 0,
+            "date": ref_date_str.replace("-", ""),
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"]),
+            "week": _week_from_daily_rows(df),
+        }
 
-    # ── GCS fallback ─────────────────────────────────────────────────────────
+    if _CLOUD_SQL_UNCONFIGURED:
+        return _reference_from_gcs_local_dev(ticker, date)
+
+    # Neither flag: gcp.database failed to import. Not local dev; no read.
+    raise HTTPException(status_code=503, detail=unreadable)
+
+
+def _reference_from_gcs_local_dev(ticker: str, date: str) -> dict:
+    """Local development only (Cloud SQL not configured): the previous day in
+    the bucket's minute-file listing, its regular-session OHLC, no `week`.
+
+    Called only under `if _CLOUD_SQL_UNCONFIGURED:`; a test holds that
+    (tests/meta/test_production_writers.py).
+    """
+    ticker_upper = ticker.upper()
+    ticker_lower = ticker.lower()
     from api import gcs_reader
     all_dates: list[str] = []
     try:
@@ -1215,6 +1177,9 @@ def get_reference_levels(ticker: str, date: str):
             if len(date_part) == 8 and date_part.isdigit():
                 all_dates.append(date_part)
     except Exception as e:
+        # AUDIT-2026-05-13: silent fallback — a bucket error in local dev is
+        # logged and read as "no dates", so it answers 404 below. Moved here
+        # unchanged with the local-dev read.
         logger.warning("GCS minute list failed for %s: %s", ticker_upper, e)
     all_dates.sort()
 
@@ -1266,7 +1231,7 @@ def get_reference_levels(ticker: str, date: str):
         "high": float(df['high'].max()),
         "low": float(df['low'].min()),
         "close": float(df['close'].iloc[-1]),
-        "week": _fetch_week_range(ticker_upper, date_str),
+        "week": None,
     }
 
 
@@ -1285,8 +1250,8 @@ def _coverage_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
     """Run a coverage SQL query, raising on failure.
 
     Uses ``query_to_dataframe_strict`` (the RAISING helper), NOT the
-    swallowing ``query_to_dataframe`` used elsewhere in this file for
-    endpoints that have a legitimate GCS fallback. The coverage endpoint has
+    swallowing ``query_to_dataframe``, which returns an empty frame on any
+    error. No endpoint in this file reads through it. The coverage endpoint has
     no fallback data source — a real DB error must surface as 5xx, never as
     a silently-empty "no coverage for any symbol" result (CLAUDE.md Rule 3.7).
     """

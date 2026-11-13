@@ -373,9 +373,9 @@ class ReferenceResponse(ApiModel):
     high: float
     low: float
     close: float
-    # Absent on the GCS branch; present on AlphaVantage and Cloud SQL.
+    # Always "cloud_sql" from the table; absent on the local-dev bucket branch.
     source: Optional[str] = None
-    # Present on the Cloud SQL branch only.
+    # Present from the table only; absent on the local-dev bucket branch.
     stale_days: Optional[int] = None
     week: Optional[WeekRange] = None
 

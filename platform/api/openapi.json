@@ -14196,7 +14196,7 @@
     },
     "/api/market/reference/{ticker}/{date}": {
       "get": {
-        "description": "Get previous day OHLC reference levels for support/resistance.\n\nStrategy:\n  1. AlphaVantage TIME_SERIES_DAILY when requested date is within the last ~30 days\n     (AV is always real-time; avoids stale Cloud SQL issues)\n  2. Cloud SQL market_data_daily for historical requests (fast, has indicators)\n  3. Local parquet fallback (minute bars aggregated)\n\nReturns the OHLC of the trading day immediately before the requested date,\nplus a `week` block containing the high/low across the previous 5 trading days.",
+        "description": "Get previous day OHLC reference levels for support/resistance.\n\ndate format: YYYYMMDD (e.g., 20260220) or YYYY-MM-DD.\n\nOne read: the five newest `market_data_daily` rows dated before the\nrequested date. The newest is the reference day; `week` is the high/low\nacross those rows (null under two rows). `source` is always `cloud_sql`.\n`stale_days` is the calendar days from the reference day to the requested\ndate when the request is under 30 days old and that gap is over 3, else 0.\n\n404 when the table holds no daily bar before the date (`No daily bar for\n...`) or the date is malformed (`Invalid date ...`). 503 when the database\ncannot be read (`Could not read ...`). No vendor is called.",
         "operationId": "get_reference_levels_api_market_reference__ticker___date__get",
         "parameters": [
           {

@@ -405,7 +405,10 @@ REQUESTS: list[Req] = [
     # a 404. The date is sent compact because this route takes YYYYMMDD: the
     # dashed form is a 404 `Invalid date` before any read.
     Req("GET", f"/api/market/data/{T}/{D.replace('-', '')}", 503),
-    Req("GET", f"/api/market/reference/{T}/{D}", 404),
+    # 503 for the same reason: one market_data_daily query through the
+    # raising helper, no AlphaVantage call and no bucket listing after it.
+    # This route accepts the dashed date.
+    Req("GET", f"/api/market/reference/{T}/{D}", 503),
     Req("GET", f"/api/market/coverage?symbols={T}", 503),
     Req("GET", "/api/market/sectors", 503),
     Req("GET", "/api/market/most-active", 503),
@@ -671,13 +674,10 @@ def client(tmp_path_factory):
         # `fetch_with_retry`. The key is read into a module-level constant at
         # import time, so clearing the environment is not enough on an already
         # imported module -- blank the constants where they are looked up.
-        # `api.main` binds its own copy and `_fetch_av_daily_reference` opens
-        # an httpx connection with it; its failures are swallowed before the
-        # expected 404, so the sweep stayed green while making an external
-        # request and the pinned status varied with whether a key was
-        # configured (Codex, PR #999). Four modules, not three.
-        for mod_name, attr in (("api.main", "AV_API_KEY"),
-                               ("api.routers.live", "AV_API_KEY"),
+        # `api.main` used to bind its own copy for `_fetch_av_daily_reference`
+        # (Codex, PR #999); the reference route no longer calls AlphaVantage
+        # (FEAT-REPLAY-001), so that constant is gone. Three modules.
+        for mod_name, attr in (("api.routers.live", "AV_API_KEY"),
                                ("api.routers.grid", "_AV_API_KEY"),
                                ("api.routers.options", "_AV_API_KEY")):
             mod = sys.modules.get(mod_name)
