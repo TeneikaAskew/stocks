@@ -1,6 +1,6 @@
 # MODEL-EWV-001 — Earnings Whispers strike verdicts
 
-**Last reviewed:** 2026-11-13 · **Last scanned:** 2026-11-03 · **Owner:** TBD
+**Last reviewed:** unknown · **Last scanned:** 2026-11-03 · **Owner:** TBD
 
 **Code:** `gcp/fetchers/evaluate_ew_strikes.py` ·
 **Writes:** none; historical `earnings_calendar.ew_*` columns retained ·
