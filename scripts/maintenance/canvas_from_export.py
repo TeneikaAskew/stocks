@@ -135,7 +135,9 @@ def _block(js: str, opener: str, closer: str) -> tuple[int, int]:
 # the export
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_export(data: dict[str, Any]) -> dict[str, Any]:
+def load_export(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise CanvasError("export is not a JSON object")
     if data.get("schema") != SCHEMA:
         raise CanvasError(f"export schema is {data.get('schema')!r}, expected {SCHEMA!r}")
     for key in ("jobs", "schedulers", "services", "tables", "sources", "drift"):
@@ -434,21 +436,26 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--run-label", help="e.g. 'run 43354574977', added to the provenance comment")
     ap.add_argument("--check", action="store_true", help="exit 1 when the page would change; write nothing")
     a = ap.parse_args(argv)
+    if not a.check and not a.output:
+        ap.error("--output is required unless --check")
 
-    with open(a.export, encoding="utf-8") as f:
-        export = load_export(json.load(f))
-    with open(a.canvas, encoding="utf-8") as f:
-        html = f.read()
-    bundle = Bundle.parse(html)
-    res = update(bundle.js, export, a.run_label)
+    try:
+        with open(a.export, encoding="utf-8") as f:
+            export = load_export(json.load(f))
+        with open(a.canvas, encoding="utf-8") as f:
+            html = f.read()
+        bundle = Bundle.parse(html)
+        res = update(bundle.js, export, a.run_label)
+    except (CanvasError, OSError, ValueError) as exc:
+        # Exit 2, not 1: under --check, 1 means "the page would change".
+        sys.stderr.write(f"canvas_from_export: refused: {exc}\n")
+        return 2
     tm = _TEMPLATE_RE.search(html)
     tpl = json.loads(tm.group(2)) if tm else ""
     text = report(res, export, tpl)
     if a.check:
         sys.stdout.write(text)
         return 1 if res.changed else 0
-    if not a.output:
-        ap.error("--output is required unless --check")
     with open(a.output, "w", encoding="utf-8") as f:
         f.write(bundle.render(res.js) if res.js != bundle.js else html)
     if a.report:

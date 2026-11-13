@@ -231,3 +231,21 @@ def test_cli_writes_page_and_report_and_check_mode(tmp_path):
     assert "svc-new" in text and "zz_unnamed" in text
     again = run("--canvas", str(out), "--check")
     assert again.returncode == 0, again.stdout
+
+
+def test_cli_refusal_exits_2_and_writes_nothing(tmp_path):
+    page, exp, out = tmp_path / "page.html", tmp_path / "export.json", tmp_path / "out.html"
+    page.write_text("<html>no data asset</html>", encoding="utf-8")
+    exp.write_text(json.dumps(export()), encoding="utf-8")
+    run = lambda *a: subprocess.run([sys.executable, "-m", "scripts.maintenance.canvas_from_export",
+                                     "--export", str(exp), *a], capture_output=True, text=True, check=False)
+    for args in (("--canvas", str(page), "--output", str(out)),
+                 ("--canvas", str(page), "--check"),
+                 ("--canvas", str(tmp_path / "missing.html"), "--check")):
+        res = run(*args)
+        assert res.returncode == 2, (args, res.stdout, res.stderr)
+        assert "refused" in res.stderr
+    exp.write_text("[]", encoding="utf-8")
+    page.write_text(bundle_html(), encoding="utf-8")
+    assert run("--canvas", str(page), "--output", str(out)).returncode == 2
+    assert not out.exists()
