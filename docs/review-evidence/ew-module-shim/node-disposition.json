@@ -174,5 +174,53 @@
     ]
   },
   "vendor_functions_helpers_verbatim": true,
-  "dynamic_id_reason": "Two unchanged AV transport tests use gzip.compress without a fixed mtime; source file bytes and per-function counts match. Raw collected inventories retained in implementation evidence."
+  "dynamic_id_reason": "Two unchanged AV transport tests use gzip.compress without a fixed mtime; source file bytes and per-function counts match. Raw collected inventories retained in implementation evidence.",
+  "current_main_requalification": {
+    "base": "12633c83b2a97ff7cf879b60c56eb3857ae89104",
+    "qualified_candidate": "660df8c2",
+    "base_count": 9643,
+    "head_count": 9599,
+    "file_count_deltas": {
+      "tests/gcp/test_evaluate_ew_strikes.py": [
+        71,
+        0
+      ],
+      "tests/gcp/test_fetch_market_data_vendor_answers.py": [
+        0,
+        22
+      ],
+      "tests/gcp/test_nyse_sessions_shim.py": [
+        0,
+        5
+      ]
+    },
+    "all_other_node_counts_unchanged": true,
+    "raw_inventory_sha256": {
+      "base": "dfc8caedb39fc658780d467b9c3fc60f7e3caee9df28c7732472275c62fc0741",
+      "head": "ba4cf6b9fd63e122627460cc6d7224f9eecc02145fa88de8caf09f56427262a8"
+    },
+    "unchanged_gzip_fixture_dynamic_ids": {
+      "base": [
+        {
+          "function": "tests/gcp/test_av_realtime_transport_cli.py::test_encoded_and_decoded_caps",
+          "node_sha256": "20ca1a0733039bab334b26f00cbbf3b90c929b65e15cef10cb35d0f910baa3b1"
+        },
+        {
+          "function": "tests/gcp/test_av_realtime_transport_cli.py::test_json_or_encoding_errors_never_include_content",
+          "node_sha256": "efffaad4cb156d8f2c9a5df4aac79f4488f4c8487aa546d6cb396df5b0dcbdcc"
+        }
+      ],
+      "head": [
+        {
+          "function": "tests/gcp/test_av_realtime_transport_cli.py::test_encoded_and_decoded_caps",
+          "node_sha256": "743c17c26ede8a3a16883bb28ee8c9ff33b8f47293c180392cb0516a11e6d206"
+        },
+        {
+          "function": "tests/gcp/test_av_realtime_transport_cli.py::test_json_or_encoding_errors_never_include_content",
+          "node_sha256": "f8d942e4ba561bbae5556247fc0ea053727409a48268af08485dddbe7691a833"
+        }
+      ]
+    },
+    "new_main_tests": "All 14 test_intraday_as_traded cases retained unchanged; actual vendor and API suite rerun: 152 passed, one pre-existing collector integration-only skip."
+  }
 }

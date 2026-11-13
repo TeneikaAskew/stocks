@@ -53,3 +53,9 @@ Source preparation is committed and locally tested: 111 focused cases passed wit
 Source identity d53ea207338e80a7f0973df6ca8ef0cd76b6a10a2265951dc7ee195df41dff66 verifies within the fixed ceilings. The model's original unknown provenance marker remains until post-squash verification; the stamp tool refused the branch SHA and wrote nothing.
 
 Publication prerequisite: the actual PR gate refuses the registry-wide Last reviewed header on this feature branch, while the model tests require that header to cover the new dated retirement row. The one-line documentation branch docs/ew-model-registry-review-date carries that prerequisite through normal review; no scope or gate changes are made. The implementation waits for it to land, then reconciles main and regenerates proof. No implementation review event has been spent.
+
+## Current-main reconciliation — November 13, 17:42 UTC onward
+
+Main 12633c83 includes #1874 as-traded requests and #1875 approved ingestion spec. Incoming runtime/tests and the foreign LIVE-03 SITE row are preserved byte-for-byte; only own status/note prose was combined. Fresh vendor/calendar-consumer/as-traded/API tests: 152 passed, one existing collector integration-only skip. Full repository collection including archive: 9643 base / 9599 candidate, exactly minus49 plus5; every other file count is unchanged. Generated-document CLI: 1 passed in52.01s. Matched audits: 312/312, no new findings. Bounded source identity 261c0e4e6e44d07893f2f0d9bc569bbd1adf50c70a7f8993f8b67c254fa2bbc8 passes.
+
+#1869's current-head full CI passed (parent independently retrieved 9422 passed,77 skipped,1 xfailed in2084.83s), reviews completed and receipts are present. Normal merge attempts returned HTTP502 and a merge-already-in-progress response; fresh reads still show open. Its outcome is not called merged. No P-I publication or review occurs before the actual prerequisite lands.
