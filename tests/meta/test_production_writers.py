@@ -19,8 +19,13 @@ Repo-level invariant, so it lives in tests/meta/ (two levels below root).
 """
 from __future__ import annotations
 
+import ast
+import functools
 import re
+import warnings
 from pathlib import Path
+
+import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 SCAN_ROOTS = ("gcp", "lib", "scripts", "platform")
@@ -352,3 +357,650 @@ def test_every_insight_reports_upsert_carries_run_kind_through_the_conflict():
                              src, re.S | re.I):
             assert "run_kind = EXCLUDED.run_kind" in m.group(1), (
                 f"{rel}: a conflict clause replaces the report but not its provenance")
+
+
+# ── a replay reads bars from the table or says it cannot (FEAT-REPLAY-001) ──
+#
+# Owner's rule, 2026-11-13: every replay reads 1-minute bars only from
+# market_data_intraday. No replay fetches bars from AlphaVantage or anywhere
+# else, and none starts the job that does. Nothing listed the replay entry
+# points, so no test would have noticed one that starts fetching. This
+# section lists them (REPLAY_PATH) and reads their source with `ast`.
+#
+# What it does not see: a fetch reached through another file by a name it
+# cannot resolve, a helper in another file that calls a holder without
+# holding the request itself, a request built without a dict literal, the
+# parquet and daily-bar fallbacks inside DataLoader for the jobs that read
+# through it, a replay CLI whose only date flags are --start and --end, and
+# a job started by hand.
+
+REPLAY_ROOTS = ("gcp", "lib", "scripts", "platform/api")
+_REPLAY_SKIP_DIRS = {"_archive", "archive", "node_modules", "__pycache__"}
+DISCORD_MODULE = "gcp/discord_interactions/main.py"
+
+# file -> the functions a replay enters it through; ("*",) is the whole file.
+REPLAY_PATH: dict[str, tuple[str, ...]] = {
+    DISCORD_MODULE: (
+        "handle_replay", "handle_replay_signals", "handle_validate", "handle_backtest"),
+    "platform/api/main.py": ("get_market_data", "get_reference_levels", "_load_date_data"),
+    "platform/api/routers/backtest.py": ("replay_trades", "mine_and_validate"),
+    "platform/api/routers/insights.py": ("refresh_insight_report",),
+    # What the replay harness drives. The live poll (fetch_latest_bar) is outside.
+    "gcp/signal_monitor.py": (
+        "update_window", "calculate_indicators", "evaluate_ticker",
+        "_evaluate_strategies_for_bar", "fire_alert", "refresh_level_map"),
+    "scripts/backfill_and_replay.py": ("*",),
+    "scripts/replay_signal_monitor.py": ("*",),
+    "gcp/signal_replay.py": ("*",),
+    "gcp/validate_brief_job.py": ("*",),
+    "scripts/validation/validate_brief_accuracy.py": ("*",),
+    "gcp/backtest_job.py": ("*",),
+    "scripts/run_backtest.py": ("*",),
+    "gcp/premarket_brief.py": ("*",),
+    "gcp/insight_pipeline_job.py": ("*",),
+    "gcp/insight_discord_push.py": ("*",),
+    "gcp/earnings_reactions_brief.py": ("*",),
+    "gcp/indicator_correlation_job.py": ("*",),
+    "gcp/regime_combo_job.py": ("*",),
+    "gcp/research/strat_engine/strat_pred_serve.py": ("*",),
+    "scripts/analysis/per_ticker_calibration.py": ("*",),
+    "scripts/analysis/phase6_playbook.py": ("*",),
+    "scripts/calibrate_thresholds.py": ("*",),
+    "lib/exec_backtest/cli.py": ("*",),
+    "gcp/premarket_playbook_resolver.py": ("*",),
+}
+
+# (file, function) -> why a DataLoader use inside it is allowed for now.
+REPLAY_EXEMPT: dict[tuple[str, str], str] = {
+    ("platform/api/routers/backtest.py", "_style_history_bar_loader"): (
+        "the walk-forward history read of mine-and-validate goes through "
+        "lib.data_loader.DataLoader until the second spec (FEAT-DATA-001, the "
+        "strict bar loader) changes the loader; that spec deletes this entry"),
+}
+
+# The jobs the Discord module may start, each with its registered module.
+DISCORD_JOBS: dict[str, str] = {
+    "premarket-brief": "gcp/premarket_brief.py",
+    "insight-pipeline": "gcp/insight_pipeline_job.py",
+    "insight-discord-push": "gcp/insight_discord_push.py",
+    "signal-replay": "gcp/signal_replay.py",
+    "validate-brief": "gcp/validate_brief_job.py",
+    "backtest": "gcp/backtest_job.py",
+}
+
+LOCAL_DEV_FUNCS = ("_bars_from_gcs_local_dev", "_reference_from_gcs_local_dev")
+BAR_LOADERS = ("_load_date_data", "_replay_bar_loader", "_style_history_bar_loader")
+REPLAY_FLAG = re.compile(
+    r"REPLAY|AS_OF|--as-of|--replay|BACKTEST_|VALIDATE_(?:TICKER|DATE)|PLAYBOOK_RESOLVE_DATE")
+
+_FUNC = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+@functools.lru_cache(maxsize=None)
+def _replay_sources() -> dict[str, str]:
+    """Repo-relative path -> text of every .py under the four roots."""
+    out: dict[str, str] = {}
+    for root in REPLAY_ROOTS:
+        for p in sorted((REPO / root).rglob("*.py")):
+            if _REPLAY_SKIP_DIRS.isdisjoint(p.relative_to(REPO).parts):
+                out[_rel(p)] = p.read_text(encoding="utf-8", errors="ignore")
+    return out
+
+
+@functools.lru_cache(maxsize=None)
+def _replay_tree(src: str) -> ast.Module:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        return ast.parse(src)
+
+
+def _functions_by_name(tree: ast.AST) -> dict[str, list[ast.AST]]:
+    """Every function in the file by name: nested functions and methods too."""
+    out: dict[str, list[ast.AST]] = {}
+    for n in ast.walk(tree):
+        if isinstance(n, _FUNC):
+            out.setdefault(n.name, []).append(n)
+    return out
+
+
+def _defined_functions(src: str) -> set[str]:
+    return set(_functions_by_name(_replay_tree(src)))
+
+
+def _outermost_function(tree: ast.AST) -> dict[int, str]:
+    """id(node) -> name of its outermost enclosing function, or '<module>'.
+    A nested function counts as the function it sits in."""
+    owner: dict[int, str] = {}
+
+    def visit(node: ast.AST, outer: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            scope = child.name if outer == "<module>" and isinstance(child, _FUNC) else outer
+            owner[id(child)] = scope
+            visit(child, scope)
+
+    visit(tree, "<module>")
+    return owner
+
+
+def _lexically_inside(tree: ast.AST, names) -> set[int]:
+    """ids of every node inside a function with one of these names."""
+    inside: set[int] = set()
+    for n in ast.walk(tree):
+        if isinstance(n, _FUNC) and n.name in names:
+            inside.update(id(x) for x in ast.walk(n))
+    return inside
+
+
+def _docstring_nodes(tree: ast.AST) -> set[int]:
+    """A docstring is the first statement of a module, class or function."""
+    ids: set[int] = set()
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.Module, ast.ClassDef, *_FUNC)) and n.body:
+            first = n.body[0]
+            if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
+                    and isinstance(first.value.value, str)):
+                ids.add(id(first.value))
+    return ids
+
+
+def _vendor_requests(node: ast.AST) -> list[ast.AST]:
+    """The AlphaVantage bar requests in a node: a dict whose "function" value
+    starts with TIME_SERIES_, or a string that holds function=TIME_SERIES_."""
+    found: list[ast.AST] = []
+    for n in ast.walk(node):
+        if isinstance(n, ast.Dict):
+            for k, v in zip(n.keys, n.values):
+                if (isinstance(k, ast.Constant) and k.value == "function"
+                        and isinstance(v, ast.Constant) and isinstance(v.value, str)
+                        and v.value.startswith("TIME_SERIES_")):
+                    found.append(v)
+        elif (isinstance(n, ast.Constant) and isinstance(n.value, str)
+              and "function=TIME_SERIES_" in n.value):
+            found.append(n)
+    return found
+
+
+def vendor_holders(sources: dict[str, str]) -> set[str]:
+    """The name of every function whose own body holds a vendor request.
+    Only those names. A function that only calls a holder is not added:
+    inside a registered file the in-file reach already follows it, and
+    matched by name across files it would flag every `run` and `main`."""
+    names: set[str] = set()
+    for src in sources.values():
+        try:
+            tree = _replay_tree(src)
+        except SyntaxError:
+            continue
+        for name, nodes in _functions_by_name(tree).items():
+            if any(_vendor_requests(nd) for nd in nodes):
+                names.add(name)
+    return names
+
+
+def _call_name(call: ast.Call) -> str | None:
+    f = call.func
+    if isinstance(f, ast.Name):
+        return f.id
+    if isinstance(f, ast.Attribute):
+        return f.attr
+    return None
+
+
+def _reached(tree: ast.AST, entries: tuple[str, ...]) -> set[str]:
+    """Names of the functions of this file reachable from the entries: a
+    function is reached when its name appears, as a name or as an attribute,
+    inside a reached function."""
+    funcs = _functions_by_name(tree)
+    seen: set[str] = set()
+    todo = [e for e in entries if e in funcs]
+    while todo:
+        name = todo.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        for nd in funcs[name]:
+            for n in ast.walk(nd):
+                ref = n.id if isinstance(n, ast.Name) else n.attr if isinstance(n, ast.Attribute) else None
+                if ref in funcs and ref not in seen:
+                    todo.append(ref)
+    return seen
+
+
+def replay_reach_offenders(rel: str, src: str, entries: tuple[str, ...],
+                           holders: set[str], exempt: dict) -> list[str]:
+    """What the replay path of one file must not hold, as
+    '{rel}:{line} in {function}: {reason}', each line and reason once."""
+    tree = _replay_tree(src)
+    funcs = _functions_by_name(tree)
+    owner = _outermost_function(tree)
+    docstrings = _docstring_nodes(tree)
+    in_local_dev = _lexically_inside(tree, LOCAL_DEV_FUNCS)
+    in_exempt = _lexically_inside(tree, {fn for (f, fn) in exempt if f == rel})
+    under_api = rel.startswith("platform/api/")
+
+    found: dict[tuple[int, str], str] = {}
+
+    def flag(node: ast.AST, reason: str) -> None:
+        found.setdefault((node.lineno, reason), owner.get(id(node), "<module>"))
+
+    if tuple(entries) == ("*",):
+        scopes = [tree]
+    else:
+        scopes = [nd for name in sorted(_reached(tree, entries)) for nd in funcs[name]]
+
+    for scope in scopes:
+        for node in _vendor_requests(scope):
+            flag(node, "holds an AlphaVantage TIME_SERIES request")
+        for n in ast.walk(scope):
+            if isinstance(n, ast.Call) and _call_name(n) in holders:
+                flag(n, f"calls {_call_name(n)}, a function that holds an AlphaVantage TIME_SERIES request")
+            if (isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
+                    and n.value.id == "gcs_reader" and id(n) not in in_local_dev):
+                flag(n, f"reads the bucket through gcs_reader.{n.attr} outside the local-dev functions")
+            if (isinstance(n, ast.Constant) and isinstance(n.value, str)
+                    and "backfill-ticker" in n.value and id(n) not in docstrings):
+                flag(n, "names the backfill-ticker job in a string")
+            if under_api and id(n) not in in_exempt and (
+                    (isinstance(n, ast.Name) and n.id in ("DataLoader", "data_loader"))
+                    or (isinstance(n, ast.Attribute) and n.attr == "DataLoader")):
+                flag(n, "uses DataLoader outside REPLAY_EXEMPT")
+
+    out = [f"{rel}:{line} in {fn}: {reason}" for (line, reason), fn in sorted(found.items())]
+    out += [f"{rel}:0 in {e}: the registered entry function is not defined in the file"
+            for e in entries if e != "*" and e not in funcs]
+    return out
+
+
+def local_dev_offenders(rel: str, src: str) -> list[str]:
+    """Every call of a local-dev bucket function must sit in the body, not
+    the else, of an `if` or `elif` whose test is exactly the name
+    _CLOUD_SQL_UNCONFIGURED. `not _CLOUD_SQL` is also true after a failed
+    import of gcp.database on a deployed revision, which is not local dev."""
+    tree = _replay_tree(src)
+    owner = _outermost_function(tree)
+    guarded: set[int] = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.If) and isinstance(n.test, ast.Name) and n.test.id == "_CLOUD_SQL_UNCONFIGURED":
+            for stmt in n.body:
+                guarded.update(id(x) for x in ast.walk(stmt))
+    out = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call) and _call_name(n) in LOCAL_DEV_FUNCS and id(n) not in guarded:
+            out.add((n.lineno, f"{rel}:{n.lineno} in {owner.get(id(n), '<module>')}: "
+                               f"{_call_name(n)} is called outside 'if _CLOUD_SQL_UNCONFIGURED:'"))
+    return [text for _line, text in sorted(out)]
+
+
+def _replay_flag_hits(tree: ast.AST) -> list[tuple[int, str]]:
+    """(line, value) of each env var name read through os.environ.get,
+    os.getenv or os.environ[...], and each add_argument string, that
+    matches REPLAY_FLAG."""
+    hits: list[tuple[int, str]] = []
+    for n in ast.walk(tree):
+        candidates: list[ast.AST] = []
+        if isinstance(n, ast.Call):
+            called = ast.unparse(n.func)
+            if called.endswith("environ.get") or called.endswith("getenv"):
+                candidates = list(n.args[:1])
+            elif isinstance(n.func, ast.Attribute) and n.func.attr == "add_argument":
+                candidates = list(n.args)
+        elif isinstance(n, ast.Subscript) and ast.unparse(n.value).endswith("environ"):
+            candidates = [n.slice]
+        for a in candidates:
+            if isinstance(a, ast.Constant) and isinstance(a.value, str) and REPLAY_FLAG.search(a.value):
+                hits.append((a.lineno, a.value))
+    return sorted(hits)
+
+
+def replay_flag_files(sources: dict[str, str]) -> dict[str, list[tuple[int, str]]]:
+    out: dict[str, list[tuple[int, str]]] = {}
+    for rel, src in sources.items():
+        try:
+            hits = _replay_flag_hits(_replay_tree(src))
+        except SyntaxError:
+            continue
+        if hits:
+            out[rel] = hits
+    return out
+
+
+def registration_offenders(sources: dict[str, str], replay_path: dict, discord_jobs: dict) -> list[str]:
+    """Replay entry points that nobody registered."""
+    out: set[str] = set()
+
+    # 1. who dispatches a job from Discord, and which job
+    if DISCORD_MODULE not in sources:
+        out.add(f"{DISCORD_MODULE}: the Discord module is not among the sources")
+    else:
+        tree = _replay_tree(sources[DISCORD_MODULE])
+        owner = _outermost_function(tree)
+        handlers = set(replay_path.get(DISCORD_MODULE, ()))
+        for n in ast.walk(tree):
+            if not (isinstance(n, ast.Call) and _call_name(n) == "execute_cloud_run_job"):
+                continue
+            where = f"{DISCORD_MODULE}:{n.lineno} in {owner.get(id(n), '<module>')}"
+            if owner.get(id(n), "<module>") not in handlers:
+                out.add(f"{where}: dispatches a job and is not a registered entry of REPLAY_PATH")
+            job = n.args[0] if n.args else None
+            if not (isinstance(job, ast.Constant) and isinstance(job.value, str)):
+                out.add(f"{where}: the job name is not a string literal")
+            elif job.value not in discord_jobs:
+                out.add(f"{where}: the job {job.value!r} is not in DISCORD_JOBS")
+    for job, module in discord_jobs.items():
+        if module not in replay_path:
+            out.add(f"DISCORD_JOBS[{job!r}]: {module} is not in REPLAY_PATH")
+
+    # 2. a replay-shaped env var or flag in a file REPLAY_PATH does not list
+    for rel, hits in replay_flag_files(sources).items():
+        if rel not in replay_path:
+            names = sorted({value for _line, value in hits})
+            out.add(f"{rel}:{hits[0][0]}: reads or declares {names} and is not in REPLAY_PATH")
+
+    # 3. under platform/api, who calls a bar loader or starts an as-of insight run
+    for rel, src in sources.items():
+        if not rel.startswith("platform/api/"):
+            continue
+        try:
+            tree = _replay_tree(src)
+        except SyntaxError:
+            continue
+        owner = _outermost_function(tree)
+        reached = _reached(tree, replay_path[rel]) if rel in replay_path else set()
+        for n in ast.walk(tree):
+            if not isinstance(n, ast.Call):
+                continue
+            name = _call_name(n)
+            if name in BAR_LOADERS:
+                what = name
+            elif name == "enqueue_insight_task" and any(k.arg == "as_of_iso" for k in n.keywords):
+                what = "enqueue_insight_task(as_of_iso=...)"
+            else:
+                continue
+            fn = owner.get(id(n), "<module>")
+            if fn not in reached:
+                out.add(f"{rel}:{n.lineno} in {fn}: calls {what} and is not reachable "
+                        f"from a registered entry of REPLAY_PATH")
+    return sorted(out)
+
+
+# The guard's own tests. Each row below is a small source text checked as
+# the named file, so the rules are pinned on rewrites and not only on
+# today's tree: "flag" means at least one offender, "clean" means none.
+
+_DISCORD_OK = '''
+def execute_cloud_run_job(name, env): return True
+def handle_replay(t, d):
+    execute_cloud_run_job("premarket-brief", {})
+    execute_cloud_run_job("insight-pipeline", {})
+    execute_cloud_run_job("insight-discord-push", {})
+def handle_replay_signals(): execute_cloud_run_job("signal-replay", {})
+def handle_validate(): execute_cloud_run_job("validate-brief", {})
+def handle_backtest(): execute_cloud_run_job("backtest", {})
+'''
+_DISCORD_NESTED = '''
+def execute_cloud_run_job(name, env): return True
+def handle_replay(t, d):
+    def _go():
+        execute_cloud_run_job("premarket-brief", {})
+    _go()
+def handle_replay_signals(): execute_cloud_run_job("signal-replay", {})
+def handle_validate(): execute_cloud_run_job("validate-brief", {})
+def handle_backtest(): execute_cloud_run_job("backtest", {})
+'''
+_API_MAIN = "platform/api/main.py"
+_API_BACKTEST = "platform/api/routers/backtest.py"
+_API_INSIGHTS = "platform/api/routers/insights.py"
+_API_ENTRIES_OK = '''
+def get_market_data(t, d): return _load_date_data(t, d)
+def get_reference_levels(t, d): return 1
+def _load_date_data(t, d): return 1
+'''
+_STYLE_ONLY = '''
+def mine_and_validate(b): return _style_history_bar_loader("SPY")
+def _style_history_bar_loader(t):
+    from lib.data_loader import DataLoader
+    return DataLoader().load_best_available(t, "a", "b")
+'''
+
+
+def _reg(extra=None, discord=_DISCORD_OK):
+    sources = {"gcp/discord_interactions/main.py": discord, **(extra or {})}
+    return registration_offenders(sources, REPLAY_PATH, DISCORD_JOBS)
+
+
+def _reach(rel, src, entries, holders=frozenset({"fetch_month"}), exempt=None):
+    return replay_reach_offenders(
+        rel, src, entries, set(holders), REPLAY_EXEMPT if exempt is None else exempt)
+
+
+def _new_job(line):
+    return lambda: _reg({"gcp/new_job.py": f"import os, argparse\np = argparse.ArgumentParser()\n{line}\n"})
+
+
+def _stray_loader(loader):
+    return lambda: _reg({_API_MAIN: _API_ENTRIES_OK + f"def export_csv(t, d): return {loader}(t, d)\n"})
+
+
+# (name, how to get the offenders, flag expected, text an offender must hold)
+_REPLAY_REWRITES = [
+    # registration: who may dispatch a job from Discord, and which job
+    ("discord: four handlers, six jobs", lambda: _reg(), False, None),
+    ("discord: a fifth handler dispatches",
+     lambda: _reg(discord=_DISCORD_OK + 'def handle_earnings(): execute_cloud_run_job("backtest", {})\n'),
+     True, "handle_earnings"),
+    ("discord: an unregistered job name",
+     lambda: _reg(discord=_DISCORD_OK.replace('"validate-brief"', '"backfill-ticker"')),
+     True, "backfill-ticker"),
+    ("discord: a job name in a variable",
+     lambda: _reg(discord=_DISCORD_OK.replace('execute_cloud_run_job("backtest", {})',
+                                              'execute_cloud_run_job(JOB, {})')),
+     True, None),
+    ("discord: a dispatch at module level",
+     lambda: _reg(discord=_DISCORD_OK + 'execute_cloud_run_job("backtest", {})\n'),
+     True, "<module>"),
+    ("discord: a dispatch from a nested function of a handler",
+     lambda: _reg(discord=_DISCORD_NESTED), False, None),
+    # registration: a replay-shaped env var or flag in a file nobody listed
+    ("new file: env MY_REPLAY_DAY", _new_job('x = os.environ.get("MY_REPLAY_DAY")'), True, "gcp/new_job.py"),
+    ("new file: env NEWJOB_AS_OF", _new_job('x = os.getenv("NEWJOB_AS_OF")'), True, "gcp/new_job.py"),
+    ("new file: flag --as-of", _new_job('p.add_argument("--as-of")'), True, "gcp/new_job.py"),
+    ("new file: flag --replay-date", _new_job('p.add_argument("--replay-date")'), True, "gcp/new_job.py"),
+    ("new file: env BACKTEST_WINDOW", _new_job('x = os.environ["BACKTEST_WINDOW"]'), True, "gcp/new_job.py"),
+    ("new file: env VALIDATE_TICKER", _new_job('x = os.environ.get("VALIDATE_TICKER")'), True, "gcp/new_job.py"),
+    ("new file: env VALIDATE_DATE", _new_job('x = os.environ.get("VALIDATE_DATE")'), True, "gcp/new_job.py"),
+    ("new file: env PLAYBOOK_RESOLVE_DATE",
+     _new_job('x = os.environ.get("PLAYBOOK_RESOLVE_DATE")'), True, "gcp/new_job.py"),
+    ("new file: env DB_USER", _new_job('x = os.environ.get("DB_USER")'), False, None),
+    # registration: who may call a bar loader under platform/api
+    ("api: an unreached function calls _load_date_data", _stray_loader("_load_date_data"), True, "export_csv"),
+    ("api: an unreached function calls _replay_bar_loader",
+     _stray_loader("_replay_bar_loader"), True, "export_csv"),
+    ("api: an unreached function calls _style_history_bar_loader",
+     _stray_loader("_style_history_bar_loader"), True, "export_csv"),
+    ("api: a bar loader called at module level",
+     lambda: _reg({_API_MAIN: _API_ENTRIES_OK + 'WARM = _load_date_data("spy", "20260220")\n'}),
+     True, "<module>"),
+    ("api: a bar loader called from a nested function of an entry",
+     lambda: _reg({_API_MAIN: '''
+def get_market_data(t, d):
+    def _inner():
+        return _load_date_data(t, d)
+    return _inner()
+def get_reference_levels(t, d): return 1
+def _load_date_data(t, d): return 1
+'''}), False, None),
+    ("api: the local-dev reference helper calls _load_date_data",
+     lambda: _reg({_API_MAIN: '''
+def get_market_data(t, d): return _load_date_data(t, d)
+def get_reference_levels(t, d):
+    if _CLOUD_SQL_UNCONFIGURED:
+        return _reference_from_gcs_local_dev(t, d)
+def _reference_from_gcs_local_dev(t, d): return _load_date_data(t, d)
+def _load_date_data(t, d): return 1
+'''}), False, None),
+    ("api: a second function passes as_of_iso",
+     lambda: _reg({_API_INSIGHTS: '''
+def refresh_insight_report(t, as_of=None): enqueue_insight_task(1, t, as_of_iso=as_of)
+def bulk_refresh(ts, as_of): return [enqueue_insight_task(1, t, as_of_iso=as_of) for t in ts]
+'''}), True, "bulk_refresh"),
+    ("api: a second function enqueues without as_of_iso",
+     lambda: _reg({_API_INSIGHTS: '''
+def refresh_insight_report(t, as_of=None): enqueue_insight_task(1, t, as_of_iso=as_of)
+def nightly(ts): return [enqueue_insight_task(1, t) for t in ts]
+'''}), False, None),
+    # reach: a vendor request, or a call of a function that holds one
+    ("reach: a TIME_SERIES_DAILY dict in a helper an entry calls",
+     lambda: _reach(_API_MAIN, '''
+def get_reference_levels(t, d): return _latest(t)
+def _latest(t): return client.get(URL, params={"function": "TIME_SERIES_DAILY", "symbol": t})
+''', ("get_reference_levels",)), True, "_latest"),
+    ("reach: function=TIME_SERIES_ in a URL string",
+     lambda: _reach(_API_MAIN, '''
+def get_reference_levels(t, d): return get(f"https://x/query?function=TIME_SERIES_DAILY&symbol={t}")
+''', ("get_reference_levels",)), True, None),
+    ("reach: a call of a holder defined in another file",
+     lambda: _reach("gcp/discord_interactions/main.py", '''
+def handle_replay(t, d):
+    from gcp.fetchers import fetch_alphavantage_intraday as f
+    return f.fetch_month(t, d)
+''', ("handle_replay",)), True, "fetch_month"),
+    ("reach: a TIME_SERIES_INTRADAY dict no entry reaches",
+     lambda: _reach(_API_MAIN, '''
+def get_reference_levels(t, d): return 1
+def live_quote(t): return client.get(URL, params={"function": "TIME_SERIES_INTRADAY"})
+''', ("get_reference_levels",)), False, None),
+    # reach: the bucket
+    ("reach: gcs_reader in _load_date_data",
+     lambda: _reach(_API_MAIN, '''
+def _load_date_data(t, d):
+    if gcs_reader.blob_exists(d):
+        return 1
+''', ("_load_date_data",)), True, "gcs_reader.blob_exists"),
+    ("reach: gcs_reader inside a local-dev function",
+     lambda: _reach(_API_MAIN, '''
+def _load_date_data(t, d):
+    if _CLOUD_SQL_UNCONFIGURED:
+        return _bars_from_gcs_local_dev(t, d)
+def _bars_from_gcs_local_dev(t, d):
+    from api import gcs_reader
+    return gcs_reader.download_parquet(d)
+''', ("_load_date_data",)), False, None),
+    # reach: DataLoader under platform/api
+    ("reach: DataLoader in a second reached function",
+     lambda: _reach(_API_BACKTEST, '''
+def mine_and_validate(b): return _style_history_bar_loader("SPY"), _other("SPY")
+def _style_history_bar_loader(t):
+    from lib.data_loader import DataLoader
+    return DataLoader().load_best_available(t, "a", "b")
+def _other(t):
+    from lib.data_loader import DataLoader
+    return DataLoader().load_daily(t)
+''', ("mine_and_validate",)), True, "_other"),
+    ("reach: the module-level data_loader",
+     lambda: _reach(_API_MAIN, '''
+def get_market_data(t, d): return data_loader.load_intraday(t)
+''', ("get_market_data",)), True, "get_market_data"),
+    ("reach: only the exempt function holds DataLoader",
+     lambda: _reach(_API_BACKTEST, _STYLE_ONLY, ("mine_and_validate",)), False, None),
+    ("reach: the exempt function with the exemption emptied",
+     lambda: _reach(_API_BACKTEST, _STYLE_ONLY, ("mine_and_validate",), exempt={}),
+     True, "_style_history_bar_loader"),
+    ("reach: DataLoader outside platform/api",
+     lambda: _reach("gcp/backtest_job.py", '''
+from lib.data_loader import DataLoader
+def main(): return DataLoader().load_best_available("SPY", "a", "b")
+''', ("*",)), False, None),
+    # reach: the backfill job by name
+    ("reach: the backfill job dispatched by the script",
+     lambda: _reach("scripts/backfill_and_replay.py", '''
+def main(): _execute_job('backfill-ticker', {})
+''', ("*",)), True, "backfill-ticker"),
+    ("reach: backfill-ticker in a log line",
+     lambda: _reach("gcp/discord_interactions/main.py", '''
+def handle_replay(t, d): logger.info("run backfill-ticker by hand for %s", t)
+''', ("handle_replay",)), True, "backfill-ticker"),
+    ("reach: backfill-ticker only in docstrings and a comment",
+     lambda: _reach("scripts/backfill_and_replay.py", '''"""This script no longer runs backfill-ticker."""
+def main():
+    """Does not start backfill-ticker."""
+    # backfill-ticker is gone
+    return 0
+''', ("*",)), False, None),
+    ("reach: an entry the file does not define",
+     lambda: _reach(_API_MAIN, "def other(): pass\n", ("get_market_data",)), True, "get_market_data"),
+    # local dev: the bucket only behind the unconfigured flag
+    ("local dev: under 'if not _CLOUD_SQL'",
+     lambda: local_dev_offenders(_API_MAIN, '''
+def _load_date_data(t, d):
+    if not _CLOUD_SQL:
+        return _bars_from_gcs_local_dev(t, d)
+'''), True, "_bars_from_gcs_local_dev"),
+    ("local dev: under no branch",
+     lambda: local_dev_offenders(_API_MAIN, '''
+def get_reference_levels(t, d):
+    return _reference_from_gcs_local_dev(t, d)
+'''), True, "_reference_from_gcs_local_dev"),
+    ("local dev: in the else of the flag",
+     lambda: local_dev_offenders(_API_MAIN, '''
+def _load_date_data(t, d):
+    if _CLOUD_SQL_UNCONFIGURED:
+        pass
+    else:
+        return _bars_from_gcs_local_dev(t, d)
+'''), True, None),
+    ("local dev: under a compound test",
+     lambda: local_dev_offenders(_API_MAIN, '''
+def _load_date_data(t, d):
+    if _CLOUD_SQL_UNCONFIGURED or FORCE:
+        return _bars_from_gcs_local_dev(t, d)
+'''), True, None),
+    ("local dev: under if and elif of the flag",
+     lambda: local_dev_offenders(_API_MAIN, '''
+def _load_date_data(t, d):
+    if _CLOUD_SQL:
+        return 1
+    elif _CLOUD_SQL_UNCONFIGURED:
+        return _bars_from_gcs_local_dev(t, d)
+def get_reference_levels(t, d):
+    if _CLOUD_SQL_UNCONFIGURED:
+        return _reference_from_gcs_local_dev(t, d)
+'''), False, None),
+]
+
+
+@pytest.mark.parametrize(
+    "offenders_of, flagged, names", [r[1:] for r in _REPLAY_REWRITES],
+    ids=[r[0] for r in _REPLAY_REWRITES])
+def test_the_replay_guard_catches_the_obvious_rewrites(offenders_of, flagged, names):
+    """A guard that the guarded code's most obvious rewrite walks past is
+    not a guard. What it cannot see is listed in the spec (Design 8): a
+    fetch reached through another file by a name it cannot resolve, and a
+    request built without a dict literal or the URL text."""
+    offenders = offenders_of()
+    assert bool(offenders) is flagged, offenders
+    if names is not None:
+        assert any(names in o for o in offenders), offenders
+
+
+def test_every_replay_entry_point_is_registered():
+    """Nothing listed the replay entry points, so nothing would notice one
+    that starts fetching. A new Discord dispatcher, a new job name, a new
+    replay-shaped env var or flag, or a new caller of a bar loader fails
+    here until it is added to REPLAY_PATH, where the reach test reads it."""
+    sources = _replay_sources()
+    assert registration_offenders(sources, REPLAY_PATH, DISCORD_JOBS) == []
+
+    for rel, entries in REPLAY_PATH.items():
+        assert rel in sources, f"{rel} is registered and is not a file under the scanned roots"
+        defined = _defined_functions(sources[rel])
+        missing = [e for e in entries if e != "*" and e not in defined]
+        assert missing == [], f"{rel} does not define {missing}"
+
+    # an empty walk must not pass
+    flag_files = replay_flag_files(sources)
+    assert len(flag_files) >= 16, flag_files
+    assert len(vendor_holders(sources)) >= 15, sorted(vendor_holders(sources))
+    assert set(DISCORD_JOBS) == {
+        "premarket-brief", "insight-pipeline", "insight-discord-push",
+        "signal-replay", "validate-brief", "backtest",
+    }
