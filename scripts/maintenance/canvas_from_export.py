@@ -148,7 +148,11 @@ def load_export(data: Any) -> dict[str, Any]:
     for key in ("jobs", "schedulers", "services", "tables", "sources", "drift"):
         if key not in data:
             raise CanvasError(f"export has no {key!r}")
-    if not (data["sources"] or {}).get("commit"):
+    for key in ("jobs", "schedulers", "services", "tables"):
+        rows = data[key]
+        if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+            raise CanvasError(f"export {key!r} is not a list of objects")
+    if not isinstance(data["sources"], dict) or not data["sources"].get("commit"):
         raise CanvasError("export has no sources.commit")
     return data
 
@@ -377,6 +381,8 @@ def update(js: str, export: dict[str, Any], run_label: str | None = None,
         if line.lstrip().startswith("J(") and not (line.startswith("    J(") and line.rstrip().endswith("),")):
             raise CanvasError(f"job card not on one line, which this tool cannot edit safely: {line.strip()[:80]!r}")
         m = _J_LINE_RE.match(line)
+        if line.lstrip().startswith("J(") and not m:
+            raise CanvasError(f"job card this tool cannot read: {line.strip()[:80]!r}")
         if m:
             cards[m.group(1)] = m.group(2)
             if m.group(1) not in jobs:
@@ -387,7 +393,7 @@ def update(js: str, export: dict[str, Any], run_label: str | None = None,
 
     # A job the page already names, in its data script outside JOBS or in its
     # layout template, is described somewhere and gets no stub.
-    missing = [n for n in jobs if n not in cards and f"'{n}'" not in named_before
+    missing = [n for n in jobs if n not in cards and not _names(named_before, n)
                and not _names(template_text, n)]
     cards_added = []
     if missing:

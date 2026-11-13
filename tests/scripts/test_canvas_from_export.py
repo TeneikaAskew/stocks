@@ -355,3 +355,32 @@ def test_a_job_named_only_in_the_layout_gets_no_stub(tmp_path):
                          capture_output=True, text=True, check=False)
     assert res.returncode == 0, res.stderr
     assert "J('fetch-new'" not in cfe.Bundle.parse(out.read_text(encoding="utf-8")).js
+
+
+# Codex round 3 on #1860 ─────────────────────────────────────────────────────
+
+def test_a_card_the_parser_cannot_read_is_refused():
+    js = ROOT_JS.replace("J('fetch-old',", 'J("fetch-old",')
+    assert 'J("fetch-old",' in js
+    with pytest.raises(cfe.CanvasError, match="cannot read"):
+        cfe.update(js, export())
+
+
+@pytest.mark.parametrize("key", ["jobs", "schedulers", "services", "tables"])
+def test_an_export_collection_that_is_not_a_list_is_refused(key):
+    data = export()
+    data[key] = {}
+    with pytest.raises(cfe.CanvasError, match="not a list"):
+        cfe.update(ROOT_JS, data)
+    data[key] = ["not an object"]
+    with pytest.raises(cfe.CanvasError, match="not a list"):
+        cfe.update(ROOT_JS, data)
+
+
+def test_a_job_named_inside_page_text_gets_no_stub():
+    js = ROOT_JS.replace("summary: 'fetch-old feeds old_table.'",
+                         "summary: 'fetch-old feeds old_table; fetch-new gathers data daily.'")
+    assert "fetch-new gathers" in js
+    assert cfe.update(js, export()).cards_added == []
+    js = js.replace("fetch-new gathers", "fetch-newer gathers")
+    assert cfe.update(js, export()).cards_added == ["fetch-new"]
