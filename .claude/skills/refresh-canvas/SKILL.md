@@ -64,9 +64,10 @@ the JSON that feeds it, which board file and JS constant hold the data, and whic
 
 ## Canvases fed by an architecture export
 
-A canvas whose entry names `source_export: architecture` is fed by
+A canvas whose entry names `source_export: architecture` (the backend architecture diagram) is fed by
 `scripts/maintenance/architecture_export.py` (FEAT-CICD-001), not by a JSON committed to main. Nothing
-is committed for it, so step 1 is different; steps 2 to 7 are unchanged.
+is committed for it, so step 1 is different, and `scripts/maintenance/canvas_from_export.py` does
+steps 2, 3 and 6 for it; steps 4, 5 and 7 are unchanged.
 
 1. **Get the export**, either way:
    - Download artifact `architecture-export` from the latest successful run of the "Architecture
@@ -81,11 +82,30 @@ is committed for it, so step 1 is different; steps 2 to 7 are unchanged.
    ancestor of main (`git merge-base --is-ancestor <commit> origin/main`); otherwise refuse: "Canvases
    track main. This export was built from another commit." Report how many commits main has moved since
    (`git rev-list --count <commit>..origin/main`) and `sources.live.read_at` (or "repo only").
-3. Continue at step 2 of the skill. In the diff header, name the export's commit and its live read
-   time in place of the registry blob and review date. `counts.live.tables` and `counts.live.routes`
-   are always null: the export reads no database and no deployed route list, so report them as "not
-   read", never as zero. A job whose `reads` is null runs a module that is not in this checkout, so its
-   tables are unknown: show its table edges as unknown, never as none.
+3. **Read the canvas.** Artifact tool, action `read`, with the canvas `url`; save the page it
+   returns as `page.html`.
+4. **Compute the diff with the script** (on the same clone of main):
+   `python3 -m scripts.maintenance.canvas_from_export --export export.json --canvas page.html
+   --output page.new.html --report report.md --run-label "<run id, or 'local'>"`.
+   It changes only what the export owns: the trigger list (rebuilt from the declared schedulers, in
+   the page's order, new ones appended), the provenance comment above it, and which jobs have cards
+   (cards for jobs no longer declared are removed; a declared job the page never names gets a stub
+   card marked "not yet described"). It never rewrites notes, schedule text, details or layout, and
+   every other byte of the page stays the same. It refuses a page or export it cannot read; if it
+   does, stop and report why. `--check` instead of `--output` exits 1 when the page would change.
+5. **Show `report.md` as the diff** (step 4 of the skill). Its first part lists what the script
+   applied; its second lists what needs a person: schedule text that disagrees with its triggers,
+   remaining mentions of removed jobs, and services and tables the page never names. In the header,
+   name the export's commit and its live read time in place of the registry blob and review date.
+   `counts.live.tables` and `counts.live.routes` are always null: the export reads no database and no
+   deployed route list, so report them as "not read", never as zero. A job whose `reads` is null runs
+   a module that is not in this checkout, so its tables are unknown: say so, never "none". If the
+   report shows no applied change (a new provenance comment counts as one) and nothing to check, say
+   so and stop.
+6. **Wait for the user**, as in step 5 of the skill. On approval, publish `page.new.html` with the
+   Artifact tool (action `publish`, `url` = the canvas url). Make prose changes from the report's
+   second part only where the user names them, by hand, in the saved page, then publish again.
+7. **Report** as in step 7 of the skill.
 
 ## Guardrails
 
