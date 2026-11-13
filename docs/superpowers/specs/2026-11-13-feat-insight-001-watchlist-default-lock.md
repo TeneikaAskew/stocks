@@ -13,7 +13,7 @@ done_when:
   - "gcp/backfill_ticker.py defaults BACKFILL_ADD_TO_WATCHLIST to false, so a Discord /replay backfill no longer re-activates a removed default row, and tests/gcp/test_backfill_ticker.py proves a backfill run leaves watchlists untouched unless the variable is set to true explicitly"
   - "After the owner's cut of the 13 unflagged rows and before this PR is marked ready, a read-only run of scripts/db_query_cr.sh with SELECT ticker FROM watchlists WHERE user_id = 'default' AND removed_at IS NULL ORDER BY ticker returns exactly IWM, QQQ, SPY, and the PR body pastes that output with its execution id"
   - "The FEAT-INSIGHT-001 catalog record and the PR traceability entry are updated, the branch run of python3 scripts/maintenance/docs_audit.py reports nothing new over origin/main, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
-status: draft
+status: approved
 supersedes: null
 ---
 
