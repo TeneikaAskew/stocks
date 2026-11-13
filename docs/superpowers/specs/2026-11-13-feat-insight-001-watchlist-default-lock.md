@@ -219,7 +219,13 @@ the `trg_watchlists_membership` trigger appends a `remove` row to the append-onl
 |---|---|---|---|
 | stocks Cloud SQL | `watchlists`, rows with `user_id = 'default'` | Discord `/watchlist`, `backfill-ticker` via `/replay`, operator SQL, schema seed | every job in the inventory; `GET /api/insights/watchlist`; `GET /api/insights/watchlist/default` |
 | stocks Cloud SQL | `watchlist_history` | the membership trigger only | insight analog universe (`resolve_membership_at`) |
-| solyra Supabase project `hajmcfkqmtgidstpggrh` | `user_watchlists` (solyra spec) | the `user-watchlist` edge function on behalf of the signed-in user | the same function for the solyra UI; never a stocks job |
+| solyra Supabase project `hajmcfkqmtgidstpggrh` | `watched_tickers` (solyra spec: one row per ticker, shared by every user who watches it, with the small per-ticker snapshot) | the `user-watchlist` edge function, once per ticker | the same function; a stocks job only if open question 5 says so |
+| solyra Supabase project `hajmcfkqmtgidstpggrh` | `user_watchlists` (solyra spec: membership only, foreign key to `watched_tickers`) | the `user-watchlist` edge function on behalf of the signed-in user | the same function for the solyra UI; never a stocks job |
+
+No data is stored per user on either side. Stocks keeps every data table keyed by ticker, never by
+user (for example `ticker_info`, one row per ticker, `lib/ticker_info.py:66-70` upserts
+`ON CONFLICT (ticker)`), and solyra's membership rows point at one shared ticker row, so ten users
+watching one ticker share one copy of its data (the owner's rule of 2026-11-13).
 
 Ordering: this spec's implementation merges first and regenerates `platform/api/openapi.json`;
 solyra then runs `npm run contract:sync`, stops calling the two write routes, consumes
@@ -252,3 +258,8 @@ and nothing is written anywhere.
    410 permanently as the documented lock?
 4. This spec sits under FEAT-INSIGHT-001 because the endpoints and the open issues live there. Do
    you want a FEAT-WATCHLIST-001 catalog row instead, added on its own docs branch first?
+5. Should a stocks job fetch data once per distinct ticker on any user's list, reading solyra's
+   `watched_tickers` (one row per ticker, no owners), so a ticker ten users watch is fetched once and
+   per-user rows still never reach a job? If yes, that is its own spec: which data (daily bars and
+   `ticker_info` only, or also news, SEC and insider), the schedule, the ceiling on tickers and the
+   cost. The brief, insight and signal surfaces would keep reading only `'default'`.
