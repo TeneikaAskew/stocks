@@ -1,20 +1,21 @@
 ---
 feat_id: FEAT-DATA-001
 req_ids: [REQ-CAP-001, REQ-CAP-002, REQ-CAP-003, REQ-PERF-002, REQ-OBS-001, REQ-FRESH-001, REQ-SECRET-001, REQ-DATA-001, REQ-TENANCY-001, REQ-DEPLOY-001]
-issues: [1261]
+issues: [1261, 1872]
 canvases: []
 done_when:
   - "tests/gcp/test_fetch_watched_tickers.py passes: the watched set is read through an injected HTTP client from WATCHED_TICKERS_URL with Authorization Bearer WATCHED_TICKERS_READ_SECRET; a non-200 reply, a body without a tickers list, or an unset URL or secret makes zero Alpha Vantage calls, records a job_runs row with status failed and exits non-zero; an empty list exits 0 with zero Alpha Vantage calls; tickers already in fetch_market_data.TICKERS are skipped; with WATCHED_TICKERS_MAX=50 and 60 tickers the first 50 in the reply's order are processed and the note records overflow=10; a per-ticker Alpha Vantage failure is counted in items_failed while the other tickers proceed; the exit code is non-zero only when the set read fails or every ticker failed"
-  - "The same test file proves the per-ticker sequence with mocks only at the Alpha Vantage and Cloud SQL boundaries and the real decision functions in between: fetch_market_data._run_backfill(kept, stored_coverage=True) pairs each explicit ticker with its stored bar_count and max_date read through gcp.database.query_to_dataframe_strict, so a ticker whose rows are current costs zero daily-series calls, a ticker a few sessions behind costs one compact call and a ticker with no rows costs one full call, each decided by the real fetch_market_data._pick_backfill_outputsize and not by a mock of it; _run_backfill called without stored_coverage keeps today's behaviour for --backfill --tickers; compute_and_upsert_daily_indicators runs for the session date after the bars for every ticker; lib.ticker_info.get_ticker_info is called with max_age_days=30 so an OVERVIEW call happens at most once per ticker per 30 days; and gcp.database.record_job_run is called exactly once with job_name fetch-watched-tickers, items_total, items_processed, items_failed and rows_written"
-  - "The job verifies every watched ticker itself and does not call fetch_market_data._verify_post_fetch_rows (which returns without checking when none of SPY, IWM or QQQ is in the list and counts rows, not tickers): after the indicator step it reads, through gcp.database.query_to_dataframe_strict, each kept ticker's session-date row with its close and atr_14 and its total bar count, and counts a ticker as failed when the row is missing or its close is null (no bars) or when atr_14 is null while the ticker holds at least 15 daily bars (indicators not written), reporting a ticker with fewer than 15 bars as too_short in the note rather than failed; the test writes the session's bars for three tickers, makes the indicator history read fail for one and the vendor return nothing for another, and asserts items_failed=2 with both names in the note; a failed strict read fails the run"
+  - "The same test file proves the per-ticker sequence with mocks only at the Alpha Vantage and Cloud SQL boundaries and the real decision functions in between: the job reads each kept ticker's stored coverage (bar_count, max_date and bootstrapped, true when any of its rows carries data_source av_watched_backfill) through gcp.database.query_to_dataframe_strict, decides with its own fetch_watched_tickers._pick_watched_outputsize (full when bar_count is 0; None when max_date is the session date; for a bootstrapped ticker the real fetch_market_data._pick_backfill_outputsize stale rule called with the count lifted to the 1,500-bar depth threshold, compact within 90 days and full beyond; for a ticker another writer already holds the real _pick_backfill_outputsize as the earnings chain applies it), stamps data_source av_watched_backfill only on a ticker that had no bars or is already bootstrapped and writes a ticker another writer holds with today's av_daily_backfill, then calls fetch_market_data._run_backfill(group, outputsize=..., data_source=...) once per non-empty (outputsize, data_source) group, so a current ticker costs zero daily-series calls, a bootstrapped ticker a few sessions behind costs one compact call, a ticker with no rows costs one full call stamped av_watched_backfill, a bootstrapped ticker with 300 bars and the session's max_date costs zero calls, the same ticker two sessions behind costs one compact call, and an existing orphan with 300 bars from another writer that is one session behind costs one full call written with av_daily_backfill so its rows keep a non-watched source; _run_backfill called without outputsize or data_source keeps today's behaviour for --backfill --tickers and the earnings chain; compute_and_upsert_daily_indicators runs for the session date only for the kept tickers whose session-date bar exists after the pulls (read through the strict reader), so a bootstrapped ticker whose daily fetch returned nothing gets no indicator call, no session-date row and a bars failure, with a regression test for exactly that case; lib.ticker_info.get_ticker_info is called with max_age_days=30 so an OVERVIEW call happens at most once per ticker per 30 days; and gcp.database.record_job_run is called exactly once with job_name fetch-watched-tickers, items_total, items_processed, items_failed and rows_written"
+  - "The job verifies every watched ticker itself and does not call fetch_market_data._verify_post_fetch_rows (which returns without checking when none of SPY, IWM or QQQ is in the list and counts rows, not tickers): after the indicator step it reads, through gcp.database.query_to_dataframe_strict, each kept ticker's session-date row with its close and atr_14 and its total bar count, and counts a ticker as failed when the row is missing or its close is null (no bars) or when atr_14 is null while the ticker holds at least 15 daily bars (indicators not written), reporting a ticker with fewer than 15 bars as too_short in the note rather than failed; it also reads, through the same strict reader, SELECT ticker, updated_at FROM ticker_info WHERE ticker = ANY(:kept) and counts a ticker as failed with reason ticker_info when its row is missing or updated_at is older than 30 days, since lib.ticker_info._upsert_to_cloud_sql swallows a failed write and get_ticker_info still returns the overview; the test writes the session's bars for four tickers, makes the indicator history read fail for one, the vendor return nothing for another and gcp.database.execute_sql raise for a third ticker's ticker_info upsert, and asserts items_failed=3 with the three names and their reasons in the note; a failed strict read fails the run"
   - "The job resolves the session before anything else: it runs only when lib.eastern_time.is_session(today in Eastern time) is true, and otherwise writes a job_runs row with status ok and note non_session and exits 0 with zero vendor calls and zero writes; the test runs the job on Thursday 2026-11-26 (Thanksgiving) and on a Saturday and asserts no Alpha Vantage call, no upsert and no indicator row dated that day"
+  - "fetch_market_data._backfill_targets under BACKFILL_ALL_HISTORY=true counts a ticker into the market_data_daily arm of its union only when it holds at least one real bar from another writer, through HAVING bool_or(close IS NOT NULL AND data_source IS DISTINCT FROM 'av_watched_backfill'), so a ticker whose bars all carry av_watched_backfill stays out even when it also holds an indicator-only row (null close, null data_source), while a ticker with a bar from any other writer, a ticker with null-sourced bars and every earnings_history ticker stay in; tests/gcp/test_fetch_market_data_backfill_targets.py covers a watched-only ticker, a watched-only ticker plus an indicator-only row, a mixed-source ticker, a null-sourced ticker and an earnings_history ticker, and a regression in the same file runs the job's bars step over an existing orphan (300 bars from another writer, no earnings_history row, one session behind) and shows it is still a target afterwards because the job wrote that pull with av_daily_backfill, so the earnings chain's nightly refresh never grows with the watched set and never loses a ticker it already had"
   - "A source scan in tests/gcp/test_fetch_watched_tickers.py asserts gcp/fetchers/fetch_watched_tickers.py contains no query of watchlists or watchlist_history, no user_id, owner or email identifier, and reads only the tickers list from the solyra reply, so no per-user row can reach this job; tests/gcp/test_watchlist_readers_default_owner.py from the watchlist lock spec stays green"
   - "gcp/deploy.sh gains deploy_fetch_watched_tickers (image, --memory 512Mi, --cpu 1, --max-retries 0, --task-timeout 2400, --command python,-m,gcp.fetchers.fetch_watched_tickers, the secret WATCHED_TICKERS_READ_SECRET through --set-secrets beside the existing DB_SECRET_FLAG, and WATCHED_TICKERS_URL, WATCHED_TICKERS_MAX=50 and AV_BACKFILL_SLEEP_SECS=1.0 through --set-env-vars) and the scheduler watched-tickers-nightly on 45 23 * * 1-5 America/New_York targeting fetch-watched-tickers; tests/gcp/test_deploy_reachability.py passes with the new scheduler resolving to the new job, and the PR body carries the Volume, Velocity, Wall-clock and cost numbers of section Capacity"
   - "The secret WATCHED_TICKERS_READ_SECRET exists in Secret Manager and as the solyra watched-tickers function's secret with the same value, created by the owner and recorded on the PR by name only; one manual gcloud run jobs execute fetch-watched-tickers --wait against the deployed solyra function succeeds, and the PR pastes its job_runs row"
   - "After the first scheduled run, a read-only scripts/db_query_cr.sh run of SELECT job_name, status, items_total, items_processed, items_failed, rows_written, note FROM job_runs WHERE job_name = 'fetch-watched-tickers' ORDER BY started_at DESC LIMIT 1 shows status ok, and SELECT ticker, MAX(date) FROM market_data_daily WHERE ticker = ANY(the watched set) GROUP BY ticker shows that session's date for every processed ticker; both outputs are pasted on the PR with their execution ids"
   - "scripts/audit_data_freshness.py gains a heartbeat check for fetch-watched-tickers: a finding when job_runs holds no status ok row for that job dated within the last two sessions (lib.eastern_time), and an informational row when the latest row's note carries overflow or its items_failed is above zero; tests/audits/test_audit_freshness_job_observability.py covers an absent heartbeat, an overdue one, a healthy one and an overflow note"
   - "The FEAT-DATA-001 catalog record and the PR traceability entry are updated, the branch run of python3 scripts/maintenance/docs_audit.py reports nothing new over origin/main, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -34,8 +35,9 @@ default list locked to Discord and the CLI) and
 `docs/superpowers/specs/2026-11-13-feat-insight-001-user-watchlist.md` in TeneikaAskew/solyra (the
 per-user list in solyra's Supabase project with one shared `watched_tickers` row per ticker). The
 lock spec's decision 5 said "no job fetches data for a user's own tickers for now"; this spec is
-that change. Not self-approved: `status` moves to `approved` only when the owner merges this spec
-PR. No code before that.
+that change. The draft merged through #1870 after two Codex review rounds; this revision folds in
+the three findings of the second round (#1872) and carries `status: approved`, which the owner
+records by merging it. No code before that merge.
 
 ## Problem
 
@@ -56,11 +58,17 @@ What exists to reuse, read at origin/main 61bbd17:
   on write, `BACKFILL_LOOKBACK_DAYS`) for a ticker with no rows, `compact` for one that is behind,
   and nothing for one that is current (`_pick_backfill_outputsize`, `:869`); writes
   `data_source = 'av_daily_backfill'` through `upsert_dataframe`, idempotent on `(ticker, date)`;
-  paces calls with `AV_BACKFILL_SLEEP_SECS` (default 13 s, `:784`). One gap for this job: called
+  paces calls with `AV_BACKFILL_SLEEP_SECS` (default 13 s, `:784`). Two gaps for this job: called
   with an explicit list it pairs every ticker with `(0, None)` (`:990`), so the smart switch always
-  answers `full`; only its default targets carry stored coverage (`_backfill_targets`, `:787`,
-  whose `mdd` subquery reads `COUNT(*)` and `MAX(date)` per ticker). Section Steps adds the
-  coverage-aware path.
+  answers `full`; and the switch itself answers `full` for any ticker under 1,500 bars whatever its
+  `max_date` (`BACKFILL_DEPTH_THRESHOLD_BARS`, `:780`, the final `return 'full'` at `:903`), which
+  for a ticker listed less than about six years ago is a full rewrite every night. Only its default
+  targets carry stored coverage (`_backfill_targets`, `:787`, whose `mdd` subquery reads `COUNT(*)`
+  and `MAX(date)` per ticker). Section Steps has the job plan its own pulls.
+- `fetch_market_data.py:814-833` `_backfill_targets` under `BACKFILL_ALL_HISTORY=true`: unions every
+  ticker in `market_data_daily` into its targets; `fetch-earnings-history` runs with that flag
+  (`gcp/deploy.sh:2982`) and chains `_run_backfill()` with no explicit targets every night
+  (`gcp/fetchers/fetch_earnings_history.py:559`). Section Leaving the set bounds it.
 - `fetch_market_data.py:332` `compute_and_upsert_daily_indicators(ticker, fetch_date, level_params)`:
   reads the last 250 daily bars and upserts the day's indicators (ATR, SMA200, RSI and the rest).
 - `fetch_market_data.py:1091-1136` `_verify_post_fetch_rows(fetch_date, tickers)`: confirms that at
@@ -72,7 +80,10 @@ What exists to reuse, read at origin/main 61bbd17:
 - `lib/eastern_time.py:501` `is_session(day)`: the NYSE session calendar (REQ-DATA-004), used to skip
   weekday holidays.
 - `lib/ticker_info.py:306` `get_ticker_info(ticker, max_age_days=30)`: one row per ticker in
-  `ticker_info` from Alpha Vantage OVERVIEW, refetched only when older than 30 days.
+  `ticker_info` from Alpha Vantage OVERVIEW, refetched only when older than 30 days. Its Cloud SQL
+  write, `_upsert_to_cloud_sql` (`:60-94`), catches every exception and logs a warning, and
+  `get_ticker_info` still returns the overview from its local cache (`:357-373`), so a caller cannot
+  tell a durable row from a failed write. Section Steps verifies the table instead.
 - `gcp/database.py:1091` `record_job_run(...)`: the `job_runs` heartbeat the freshness watchdog reads.
 - `gcp/deploy.sh:4101` `_schedule NAME CRON JOB` and the `deploy_fetch_*` pattern with
   `${DB_SECRET_FLAG}` for secrets (REQ-SECRET-001).
@@ -84,10 +95,11 @@ What exists to reuse, read at origin/main 61bbd17:
 - No minute bars, options, news, SEC filings, insider transactions or earnings for watched tickers.
   Daily bars with indicators and the `ticker_info` row are the whole scope.
 - No per-user data in stocks. The job receives tickers only; it never sees who watches them.
-- One additive change to `_run_backfill`: a `stored_coverage: bool = False` keyword that pairs explicit
-  tickers with their stored `(bar_count, max_date)`; `--backfill --tickers` keeps today's behaviour. No
-  change to `compute_and_upsert_daily_indicators`, `_pick_backfill_outputsize` or `get_ticker_info`;
-  `_verify_post_fetch_rows` is not used by this job. The 10-year cap and the smart switch stay as they are.
+- Two additive keywords on `_run_backfill`, `outputsize` and `data_source`, both defaulting to today's
+  values, and one `HAVING` clause on the `market_data_daily` arm of `_backfill_targets`' all-history
+  union (section Leaving the set). No change to `compute_and_upsert_daily_indicators`,
+  `_pick_backfill_outputsize` or `get_ticker_info`; `_verify_post_fetch_rows` is not used by this job.
+  The 10-year cap and the smart switch stay as they are for every other caller.
 - No change to the default list's own nightly fetch (`fetch-market-data-daily`, 23:00 ET).
 - No UI. What the web shows for a ticker before and after the first fetch is the solyra spec's.
 - No feedback channel from stocks to solyra about a symbol Alpha Vantage does not serve. The
@@ -140,17 +152,39 @@ rotation the way `supabase/functions/_shared/cron-auth.ts` does), `WATCHED_TICKE
    reply's order and record `overflow=<n>` in the run note when any are dropped; the log line is at
    ERROR so the operator sees that users are watching more than the ceiling. The freshness watchdog
    reads the note from `job_runs`.
-3. **Daily bars.** `_run_backfill(kept, stored_coverage=True)`. The new keyword makes the explicit
-   list behave like the default targets: before planning, the job reads
-   `SELECT ticker, COUNT(*) AS bar_count, MAX(date) AS max_date FROM market_data_daily WHERE ticker = ANY(:kept) GROUP BY ticker`
-   through `query_to_dataframe_strict` (a ticker absent from the result has `(0, None)`), and hands
-   `(ticker, bar_count, max_date)` to the existing `_pick_backfill_outputsize`: `None` for a current
-   ticker (zero calls), `compact` for one that is behind, `full` for one with no rows. Without the
-   keyword the function keeps today's `(0, None)` pairing, so `--backfill --tickers` is unchanged.
-   Rows are upserted on `(ticker, date)`, so a re-run converges (REQ-CAP-002).
-4. **Indicators.** For each kept ticker, `compute_and_upsert_daily_indicators(ticker, fetch_date,
-   level_params=read_level_params_for_run(kept, fetch_date)[ticker])`, the same call the default
-   list gets. It reads 250 bars and writes the day's indicator columns.
+3. **Daily bars.** The job plans, `_run_backfill` executes. Before any vendor call the job reads
+   `SELECT ticker, COUNT(*) AS bar_count, MAX(date) AS max_date, bool_or(data_source = 'av_watched_backfill') AS bootstrapped FROM market_data_daily WHERE ticker = ANY(:kept) GROUP BY ticker`
+   through `query_to_dataframe_strict` (a ticker absent from the result has `(0, None, false)`) and
+   decides per ticker with its own `_pick_watched_outputsize(bar_count, max_date, bootstrapped, today)`:
+   `full` when `bar_count = 0` (new to stocks); `None` when `max_date` is the session date (current,
+   zero calls, whatever the depth); for a `bootstrapped` ticker the existing stale rule, by calling
+   the real `_pick_backfill_outputsize` with the count lifted to `BACKFILL_DEPTH_THRESHOLD_BARS`
+   (1,500 bars): `compact` within 90 days, `full` beyond, never the nightly depth bootstrap the
+   unchanged switch alone would answer for a young ticker (`:901-903`); for a ticker another writer
+   already holds (an `earnings_history` name, or an orphan with bars and no `earnings_history` row),
+   the real `_pick_backfill_outputsize` as the earnings chain applies it. The stamp follows ownership:
+   `data_source = 'av_watched_backfill'` only when `bar_count = 0` or `bootstrapped`, so a ticker new
+   to stocks is the job's from its first pull on; a ticker another writer already holds is written
+   with today's `av_daily_backfill`, because `upsert_dataframe` overwrites `data_source` on conflict
+   (`gcp/database.py:417-480`, `update_cols` defaults to every non-key column) and a full pull would
+   otherwise re-stamp every existing row and drop the ticker out of the earnings chain's union
+   (section Leaving the set) the moment a user watched it. The job then calls
+   `_run_backfill(group, outputsize=..., data_source=...)` once per non-empty `(outputsize,
+   data_source)` group, at most four calls. The two new keywords: `outputsize` makes
+   every explicit ticker pull at that size instead of the `(0, None)` planning at `:990-991`, and
+   `data_source` replaces the constant at `:1041`; both default to today's values, so
+   `--backfill --tickers` and the earnings chain are unchanged. Rows are upserted on `(ticker, date)`,
+   so a re-run converges (REQ-CAP-002).
+4. **Indicators.** Only for the kept tickers whose session-date bar exists after step 3: the job
+   reads `SELECT ticker FROM market_data_daily WHERE date = :fetch_date AND ticker = ANY(:kept) AND close IS NOT NULL`
+   through `query_to_dataframe_strict` and calls `compute_and_upsert_daily_indicators(ticker, fetch_date,
+   level_params=read_level_params_for_run(kept, fetch_date)[ticker])`, the same call the default list
+   gets, for those only. The guard matters: the helper reads the last 250 bars up to `fetch_date` and
+   upserts a row keyed `(ticker, fetch_date)` with the indicator columns (`:380-381`, `:544`), so for a
+   ticker whose fetch returned nothing it would insert a session-date row with no close and no
+   `data_source`, a fabricated partial bar that would also count as another writer's row in the
+   all-history union (section Leaving the set). A ticker without its session bar skips this step and
+   is a bars failure in step 6.
 5. **Ticker info.** `get_ticker_info(ticker, max_age_days=30)`: an OVERVIEW call only when the row
    is missing or older than 30 days, so ten users watching one ticker cost one call a month.
 6. **Verify, per ticker.** Not `_verify_post_fetch_rows` (it returns without checking when none of
@@ -161,8 +195,13 @@ rotation the way `supabase/functions/_shared/cron-auth.ts` does), `WATCHED_TICKE
    vendor reply with no data, `:1033-1035`); a null `atr_14` with `bar_count >= 15` is an indicators
    failure (`compute_and_upsert_daily_indicators` returns on a failed history read with a warning,
    `:355-358`, so bar presence alone would miss it); `bar_count < 15` is reported as `too_short` in
-   the note, not failed, because the indicator needs that many sessions. Each failure is counted in
-   `items_failed` with the ticker named in the note. A failed strict read fails the run.
+   the note, not failed, because the indicator needs that many sessions. The job also reads
+   `SELECT ticker, updated_at FROM ticker_info WHERE ticker = ANY(:kept)` the same way and counts a
+   ticker failed with reason `ticker_info` when its row is missing or `updated_at` is older than 30
+   days: `_upsert_to_cloud_sql` catches a failed write and logs a warning (`lib/ticker_info.py:93-94`)
+   and `get_ticker_info` still returns the overview (`:357-373`), so only the table can say whether
+   the row is durable. Each failure is counted in `items_failed` with the ticker and its reason in
+   the note. A failed strict read fails the run.
 7. **Record.** `record_job_run('fetch-watched-tickers', started_at, status, items_total=len(kept),
    items_processed, items_failed, rows_written, note)` once, at the end, whatever the outcome. Exit
    non-zero when the set read failed or when every ticker failed; otherwise exit 0 with
@@ -172,6 +211,35 @@ rotation the way `supabase/functions/_shared/cron-auth.ts` does), `WATCHED_TICKE
 Per-ticker progress is logged as `ticker=%s step=%s processed=%d/%d` (CLAUDE.md Rule 0, observable
 progress).
 
+### Leaving the set
+
+A ticker that drops out of the watched set is absent from the next night's `kept`: its bars,
+indicators and `ticker_info` row stay, nothing refreshes them, and no other job picks it up. The
+last clause is false today: `_backfill_targets` under `BACKFILL_ALL_HISTORY=true` unions every
+ticker in `market_data_daily` (`fetch_market_data.py:814-833`), `fetch-earnings-history` runs with
+that flag (`gcp/deploy.sh:2982`) and chains `_run_backfill()` with no explicit targets
+(`fetch_earnings_history.py:559`), so every ticker this job ever wrote would join that nightly
+refresh for good, one compact call a night once stale, outside this job's ceiling and growing with
+watched churn. The `market_data_daily` arm of that union therefore becomes
+`SELECT ticker FROM market_data_daily GROUP BY ticker HAVING bool_or(close IS NOT NULL AND data_source IS DISTINCT FROM 'av_watched_backfill')`:
+a ticker counts only when it holds at least one real bar (a close) from another writer. A ticker
+whose bars all came from this job stays out, even when it also holds an indicator-only row (null
+close, null `data_source`, which `compute_and_upsert_daily_indicators` writes when it runs without
+the session's bar; step 4 guards against that too, and the clause holds if some other path writes
+one); a ticker with a bar from any other writer, or with null-sourced bars (`data_source` is
+nullable, which is why `IS DISTINCT FROM` and not `<>`), stays in; the `earnings_history` arm is
+untouched. This is the one change outside the job's own module besides the two `_run_backfill`
+keywords.
+
+The clause only holds because the stamp follows ownership (Steps item 3). `upsert_dataframe`
+overwrites `data_source` on conflict (`gcp/database.py:417-480`), so if the job stamped every pull
+`av_watched_backfill`, a full pull over a ticker another writer already holds, the orphans
+`tests/gcp/test_backfill_targets_orphans.py` keeps in the union included, would re-stamp all of its
+rows and the clause would drop a ticker the chain had been refreshing; once unwatched, its data
+would stop moving. The job therefore stamps only a ticker that had no bars before its first pull or
+already carries the stamp, and writes any other ticker with today's `av_daily_backfill`, so a
+ticker's eligibility for the earnings chain is exactly what it was before anyone watched it.
+
 ### Capacity (CLAUDE.md Rule 0, REQ-CAP-001 to 003)
 
 Ceiling: 50 watched tickers beyond the default list per run.
@@ -179,11 +247,13 @@ Ceiling: 50 watched tickers beyond the default list per run.
 - **Volume.** First run worst case: 50 tickers x about 2,520 daily rows (10 years) x about 200 bytes
   = about 25 MB written once. Steady state: at most 50 bar rows and 50 indicator upserts a day (about
   20 KB), plus at most 50 `ticker_info` rows per 30 days.
-- **Velocity.** Per run: 1 HTTPS GET for the set, 1 coverage query and 1 verification query, each
-  over the kept tickers at once. Per ticker: at most 1 Alpha Vantage daily-series call (0 when
-  current), 1 bars upsert, 1 history query of 250 rows, 1 indicator upsert, at most 1 OVERVIEW call
-  per 30 days and 1 `ticker_info` upsert. Worst case about 100 Alpha Vantage calls (first run) and
-  about 200 Cloud SQL round trips.
+- **Velocity.** Per run: 1 HTTPS GET for the set, 1 coverage query and 2 verification queries (bars
+  with indicators, `ticker_info`), each over the kept tickers at once. Per ticker: at most 1 Alpha
+  Vantage daily-series call (0 when current), 1 bars upsert, 1 history query of 250 rows, 1
+  indicator upsert, at most 1 OVERVIEW call per 30 days and 1 `ticker_info` upsert. Worst case about
+  100 Alpha Vantage calls (first run) and about 200 Cloud SQL round trips. The job's own outputsize
+  decision is what keeps a young ticker at zero calls on a current night; the unchanged switch would
+  have cost a full pull per sub-1,500-bar ticker every night, which these numbers never counted.
 - **Wall-clock.** Alpha Vantage at 1 call a second: about 50 s of bars plus 50 s of OVERVIEW on the
   first run. Cloud SQL through pg8000 and the connector at 0.5 to 2 s a round trip: about 200 round
   trips, 100 to 400 s. Worst case about 8 minutes on the first run; a steady night 2 to 4 minutes.
@@ -212,18 +282,23 @@ above zero, so one unserved symbol is visible without paging anyone nightly. Rec
 ### Tests
 
 `tests/gcp/test_fetch_watched_tickers.py` with mocks at the HTTP, Alpha Vantage and Cloud SQL
-boundaries only, so `_pick_backfill_outputsize`, the session check and the per-ticker verification
-run for real; one test per done_when clause, plus the source scan and the holiday case.
+boundaries only, so `_pick_watched_outputsize` (and the real `_pick_backfill_outputsize` it calls for
+the stale rule), the session check and the per-ticker verification run for real; one test per
+done_when clause, plus the source scan, the holiday case, the three sub-threshold coverage cases and
+the failed-fetch-after-bootstrap regression (no indicator call, no session-date row, one bars failure)
+and the orphan-preservation regression (an existing orphan pulled by the job is still a target of the
+all-history union afterwards).
 `tests/gcp/test_deploy_reachability.py` already asserts every scheduler target is a job some `deploy_*`
 function creates; the new pair is covered by it. The watchdog heartbeat check is covered in
-`tests/audits/test_audit_freshness_job_observability.py`.
+`tests/audits/test_audit_freshness_job_observability.py`, and the all-history union's new `HAVING`
+clause in `tests/gcp/test_fetch_market_data_backfill_targets.py`.
 
 ## Cross-repo contract
 
 | Side | What | Who writes | Who reads |
 |---|---|---|---|
 | solyra Supabase `hajmcfkqmtgidstpggrh` | `watched_tickers` (one row per ticker) and the `watched-tickers` function: `GET`, `Authorization: Bearer <WATCHED_TICKERS_READ_SECRET>`, reply `{as_of, count, truncated, tickers}` of distinct active tickers in first-watched order, capped at 200, no owner fields | the `user-watchlist` function on a user's add | this job, nightly |
-| stocks Cloud SQL | `market_data_daily` rows and indicators, `ticker_info` rows, `job_runs` heartbeat | this job (and the default list's fetchers for their own tickers) | Briefing, Charts, the ranker and the solyra coverage snapshot, as today |
+| stocks Cloud SQL | `market_data_daily` rows (`data_source = 'av_watched_backfill'`) and indicators, `ticker_info` rows, `job_runs` heartbeat | this job (and the default list's fetchers for their own tickers) | Briefing, Charts, the ranker and the solyra coverage snapshot, as today |
 | stocks Cloud SQL | `watchlists` | unchanged | unchanged; this job never reads it |
 
 Ordering: the solyra `watched-tickers` function and its secret are deployed first (solyra spec
@@ -247,6 +322,16 @@ done_when item 5 succeeds, so a job with nothing to read is never scheduled.
   without an `ok` row; without it the watched data would go stale in silence.
 - The secret is rotated in one store but not the other. The function accepts the previous value
   during rotation; done_when item 5 proves the pair works before scheduling.
+- A ticker leaves the watched set: its rows stay, nothing refreshes them, and the all-history union
+  excludes it (section Leaving the set), so the earnings chain's universe does not grow with churn.
+- A user watches a ticker the earnings chain already refreshes: the job writes it with the chain's
+  own source, so nothing about its eligibility changes, and when unwatched the chain keeps refreshing
+  it as before.
+- A bootstrapped ticker's fetch returns nothing one night: no indicator call, no session-date row,
+  a counted bars failure; and because the union counts only real bars from another writer, an
+  indicator-only row could not smuggle the ticker into the earnings chain either.
+- A ticker listed less than six years ago: one bootstrap pull, then the stale rule; never a nightly
+  full pull. A `ticker_info` write that fails is counted, not hidden behind the returned overview.
 
 ## Decisions (owner, 2026-11-13)
 
@@ -254,6 +339,9 @@ done_when item 5 succeeds, so a job with nothing to read is never scheduled.
 2. Daily bars with indicators and `ticker_info` only; nothing else per watched ticker.
 3. The brief, insight and signal surfaces keep reading only the default list.
 4. Ceiling 50 tickers a run, nightly on weekdays, `--max-retries 0`.
+5. After #1870's second Codex round (#1872): the job plans its own pulls, verifies `ticker_info`
+   durability, and bounds the earnings chain's all-history union, as sections Steps and Leaving the
+   set say.
 
 No question remains open on the stocks side. The solyra side adds the `watched-tickers` function
 and its secret to its spec (#330).
