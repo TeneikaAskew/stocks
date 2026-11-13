@@ -723,9 +723,21 @@ class SimilarStats(ApiModel):
     median_mfe_pct: Optional[float] = None
     p25_mfe_pct: Optional[float] = None
     p75_mfe_pct: Optional[float] = None
-    avg_return_5min: Optional[float] = None
-    avg_return_20min: Optional[float] = None
-    pct_profitable: Optional[float] = Field(default=None, description="Fraction 0..1, not a percent")
+    avg_return_5min: Optional[float] = Field(
+        default=None, description="Average best close within 5 bars (a favourable excursion), percent")
+    avg_return_20min: Optional[float] = Field(
+        default=None, description="Average best close within 20 bars (a favourable excursion), percent")
+    pct_profitable: Optional[float] = Field(
+        default=None,
+        description=("Realized win share, fraction 0..1, not a percent: realized_return_pct > 0 "
+                     "(rule next-open-20m-1c-v1) among matched rows with a realized value; null "
+                     "when none has one"))
+    realized_count: Optional[int] = Field(
+        default=None, description="Matched rows with a realized value, the pct_profitable denominator")
+    pct_moved_in_favor: Optional[float] = Field(
+        default=None,
+        description=("Fraction 0..1 of matched rows whose best close within 20 bars was better "
+                     "than the signal close (return_pct > 0); not a win rate"))
     earliest: Optional[str] = None
     latest: Optional[str] = None
 

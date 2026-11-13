@@ -500,7 +500,7 @@ def get_signals(
 # Powers the Charts page "Similar Setups" card. Given the conditions of a
 # specific bar (or the latest live bar), find historical signals where the
 # strategy fired with a similar score + RSI band + direction, and surface
-# stats: count, median MFE, win rate, recent matches.
+# stats: count, median MFE, realized win rate, recent matches.
 #
 # Cloud SQL only — the parquet path doesn't have indexes for this kind of
 # bucket query, so when CLOUD_SQL_CONNECTION_NAME is unset this returns
@@ -552,6 +552,11 @@ def get_similar_signals(
     }
 
     # Aggregated stats — one query, server-side percentiles.
+    # FEAT-SIGNAL-001: return_pct is the best close of the next 20 rows (an
+    # excursion), so its positive share is served as pct_moved_in_favor.
+    # pct_profitable is the realized win share: realized_return_pct > 0 among
+    # matched rows that have a realized value (rule next-open-20m-1c-v1),
+    # NULL when none has one, never 0.
     stats_df = _query_or_503(
         f"""
         SELECT
@@ -562,7 +567,10 @@ def get_similar_signals(
           PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY return_pct) AS p75_mfe_pct,
           AVG(return_5min)                                      AS avg_return_5min,
           AVG(return_20min)                                     AS avg_return_20min,
-          SUM(CASE WHEN return_pct > 0 THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0) AS pct_profitable,
+          SUM(CASE WHEN realized_return_pct > 0 THEN 1 ELSE 0 END) * 1.0
+            / NULLIF(COUNT(realized_return_pct), 0)            AS pct_profitable,
+          COUNT(realized_return_pct)                            AS realized_count,
+          SUM(CASE WHEN return_pct > 0 THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0) AS pct_moved_in_favor,
           MIN(entry_time)                                       AS earliest,
           MAX(entry_time)                                       AS latest
         FROM historical_signals
@@ -592,6 +600,8 @@ def get_similar_signals(
         "avg_return_5min": _f(s["avg_return_5min"]),
         "avg_return_20min": _f(s["avg_return_20min"]),
         "pct_profitable": _f(s["pct_profitable"]),
+        "realized_count": int(s["realized_count"]),
+        "pct_moved_in_favor": _f(s["pct_moved_in_favor"]),
         "earliest": str(s["earliest"]) if pd.notnull(s["earliest"]) else None,
         "latest": str(s["latest"]) if pd.notnull(s["latest"]) else None,
     }
