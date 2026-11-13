@@ -15,8 +15,8 @@ supersedes: null
 # market_data_intraday stores as-traded prices
 
 ## Problem
-`market_data_intraday` holds two price bases, and the nightly refetch keeps
-making more of the second one.
+`market_data_intraday` holds 1-min bars at many price bases, and the nightly
+refetch keeps adding new ones.
 
 - AlphaVantage's TIME_SERIES_INTRADAY returns split- and dividend-adjusted
   prices unless the request says `adjusted=false`. The adjustment is
@@ -40,7 +40,8 @@ making more of the second one.
   0.99753, the September 2026 dividend). `av-intraday-nightly` refetches
   the previous month with `--force` every night, so a month is rewritten
   at a new basis whenever an ex-dividend date falls inside that window.
-- The daily table's open, high, low and close are as-traded
+- The daily table's open, high, low and close are as-traded (SPY 2025-05-15
+  open 585.56 and close 590.46, equal to the as-traded 1-min bars)
   (TIME_SERIES_DAILY_ADJUSTED, with `adjusted_close` in its own column), and
   live quotes, strikes and trade plans are as-traded (`platform/api/routers/live.py`
   and `gcp/fetchers/evaluate_ew_strikes.py` already ask for `adjusted=false`,
