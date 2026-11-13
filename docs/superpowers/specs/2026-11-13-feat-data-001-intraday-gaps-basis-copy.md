@@ -102,7 +102,7 @@ Where a number below has no execution id beside it, it was reported by the analy
 - No ticker other than SPY, QQQ and IWM is scanned or checked.
 - No change to a request, to the watchlist, or to which tickers or months any job fetches.
 - No new writer of `market_data_intraday`. The draft spec `2026-11-13-feat-data-001-two-bar-writers.md` holds the writers to `gcp/fetchers/fetch_alphavantage_intraday.py` and `gcp/fetchers/fetch_market_data.py`. Nothing here adds a third. The functions added to the first of those files only read (Other specs this one meets).
-- No change to `stored_intraday_to_eastern` or to any reader that uses it (the Charts API, `_held_session_dates`, `verify_month`, `load_intraday_bars`, the level calibration). Design F adds functions beside it.
+- No change to `stored_intraday_to_eastern` or to any reader that uses it (the Charts API, `_held_session_dates`, `verify_month`, `load_intraday_bars`, the level calibration). Design F adds functions beside it. File B changes three of those readers, the ones its runbook's recompute runs (its Design H): the strat feature loader, `load_intraday_bars` and the level calibration's reader. This file's implementation changes none.
 - No change to `gcp/deploy.sh`, to a schedule, or to any job's memory, timeout or retries. That file belongs to FEAT-DEPLOY-001 and the gate refuses it here.
 - No change to `platform/api`. The two routes that serve the freshness report carry the new rows as they carry every other row.
 - No change to the daily table or to `adjusted_close`. The basis check reads `data_source` and does not rewrite it.
@@ -284,7 +284,7 @@ A session scan beside the checks the freshness watchdog runs (`scripts/audit_dat
 - **Which rule it enforces** (decision 3): none, anywhere, other than an explicit `false`. The written rule was narrower: CLAUDE.md 3.7 and `.github/workflows/README.md:38` forbid it on a fetch or validation step, and CLAUDE.md's workflow item 3 allows it on non-critical steps. A test cannot tell a fetch step from a non-critical one. A workflow that needs the key later changes this test in the same PR, with the reason.
 - The PR rewords the README line to: ``- No `continue-on-error` on any step or job, other than an explicit `false` (CLAUDE.md Rule 3.7; `tests/meta/test_workflows_no_continue_on_error.py`).`` CLAUDE.md is reworded in a separate step (Close-out, step 5), because the gate gives that file to FEAT-CICD-001.
 
-### F. Reading a session stored before 2026-09-28 (used by B and C, and by file B's export)
+### F. Reading a session stored before 2026-09-28 (used by B and C, and by file B's export and recompute readers)
 
 The table holds two timestamp conventions, true UTC and legacy Eastern clock labelled UTC (CLAUDE.md 3.9). Which rows each rule covers:
 
@@ -315,7 +315,7 @@ So a count taken through the resolver can call a thin session whole, or a presen
   - `eastern_label`: proven rows as true instants; every other row read as an Eastern clock time stamped UTC.
   - `both`: proven rows, plus the minutes the other rows cover under both readings.
   - Each count is classed MISSING (0), THIN (under 90% of expected) or OK. `status` is that class when the three agree and UNDETERMINED when they do not. `exact` is true when no unproven row counts under either reading.
-- `place_stored_rows(ts, volume, inserted_at)`, for the basis check and file B's export, which need each row's instant and not only a count. A proven row is read at its stored instant. Any other row is placed by `stored_intraday_to_eastern`, run over all the window's rows so the rule sees each date entire, which is where every reader sees it. When two rows land on one minute, a proven row is kept over an unproven one, then the resolver's own order applies.
+- `place_stored_rows(ts, volume, inserted_at)`, for the basis check, file B's export and file B's three recompute readers (its Design H), which need each row's instant and not only a count. A proven row is read at its stored instant. Any other row is placed by `stored_intraday_to_eastern`, run over all the window's rows so the rule sees each date entire, which is where every reader sees it. When two rows land on one minute, a proven row is kept over an unproven one, then the resolver's own order applies.
 - `intraday_month_window(year, month)` (Design B).
 
 **What it gives**, from a hermetic run of a prototype on 2026-11-13 (rows not proven unless stated; counts are true UTC / Eastern label / both):
@@ -356,7 +356,7 @@ So a count taken through the resolver can call a thin session whole, or a presen
 - They are keyed by `(ticker, ts)` like the tables `replace_month` clears, and are not among them (`DERIVED_TS_TABLES`, `gcp/fetchers/fetch_alphavantage_intraday.py:472-476`). A replace that moves keys would leave their rows at keys no feature row has.
 - The six tables join `DERIVED_TS_TABLES`. A replaced month's level rows are then deleted in the replace's transaction and listed in its `REBUILD` lines, as the feature rows are. All six exist in production (`tests/fixtures/live_gcp_snapshot_2026-11-09.json`), and the replace skips a table that does not.
 - `tests/gcp/test_intraday_replace_months.py` checks the tables handed over as a superset (`:805`) and stays as it is (351 passed on `main`, run 2026-11-13).
-- This file changes the list and nothing else. No replace runs from it. Their rebuild and its check are in file B's runbook (its step 7).
+- This file changes the list and nothing else. No replace runs from it. Their rebuild and its check are in file B's runbook (its step 7), which runs on readers that place rows by proof (file B, Design H).
 
 ### What bad input gets
 
@@ -382,7 +382,7 @@ An outage and a defect do not get the same answer. `lib.infra_errors.is_infrastr
 
 ### Other specs this one meets
 
-- **File B** (`2026-11-13-feat-data-001-intraday-bucket-copy.md`) uses from this file: `intraday_month_window`, `place_stored_rows` and `session_minute_readings` in `lib/eastern_time.py`; `session_basis_verdicts` and `TRUE_DAILY_SOURCES` in `gcp/fetchers/fetch_alphavantage_intraday.py`; and, in its runbook only, `--intraday-gap-since`, `--verify-basis` and the six tables in `DERIVED_TS_TABLES`. Its plan opens after this file's implementation is on `main`.
+- **File B** (`2026-11-13-feat-data-001-intraday-bucket-copy.md`) uses from this file: `intraday_month_window`, `place_stored_rows` (in its export, and in the three recompute readers of its Design H) and `session_minute_readings` in `lib/eastern_time.py`; `session_basis_verdicts` and `TRUE_DAILY_SOURCES` in `gcp/fetchers/fetch_alphavantage_intraday.py`; and, in its runbook only, `--intraday-gap-since`, `--verify-basis` and the six tables in `DERIVED_TS_TABLES`. Its plan opens after this file's implementation is on `main`.
 - **The draft strict-bar-loader spec** (`2026-11-13-feat-data-001-strict-bar-loader.md`) names this spec as the place where a session missing inside a backtest window is surfaced. That is `--intraday-gap-since`: run from the window's first date, it prints one `SESSION-GAP` line per failing session, with the ticker and the date, up to the last settled session; the lines dated inside the window are the window's holes. The scheduled alarm covers the last five settled sessions the same way.
   - It does this for SPY, QQQ and IWM only. A backtest of another ticker gets no such list from this spec.
 - **The draft two-bar-writers spec** (`2026-11-13-feat-data-001-two-bar-writers.md`). Its guard scans for writes and deletes of `market_data_intraday`.
