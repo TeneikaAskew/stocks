@@ -328,6 +328,19 @@ def stored_intraday_to_eastern(ts, volume):
     return out_idx, keep.to_numpy()
 
 
+def replay_probe_window(d: date) -> tuple[datetime, datetime]:
+    """``[d - 7 days 00:00 UTC, d 00:00 UTC)``: where a replay of *d* looks
+    for 1-min coverage in ``market_data_intraday``.
+
+    The bounds are raw UTC on purpose. The table holds two timestamp
+    conventions (CLAUDE.md 3.9), and ``d 00:00 UTC`` is before any bar of *d*
+    and after the regular session of the day before in both. Seven days span
+    any weekend plus holidays. Only the calendar date of *d* is read.
+    """
+    hi = datetime(d.year, d.month, d.day, tzinfo=UTC)
+    return hi - timedelta(days=7), hi
+
+
 # -- market dates and session windows ----------------------------------------
 
 
