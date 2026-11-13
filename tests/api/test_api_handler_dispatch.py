@@ -210,6 +210,7 @@ BLOCKING_CALLS = {
     "execute_returning_scalar", "get_engine",
     "_journal_query", "_journal_exec", "_journal_insert_returning_id",
     "_seed_query", "_coverage_query", "_dates_query", "_query_fn",
+    "_bars_query",
     # blocking HTTP and filesystem
     "urlopen", "read_text", "write_text", "read_bytes", "write_bytes",
     "sleep",

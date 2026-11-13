@@ -400,7 +400,11 @@ REQUESTS: list[Req] = [
     # the GCS staging parquets with a 200, which had degraded the answer with
     # nothing visible to the user or the operator.
     Req("GET", f"/api/market/dates/{T}", 503),
-    Req("GET", f"/api/market/data/{T}/{D}", 404),
+    # 503 since FEAT-REPLAY-001: the bar loader reads the table through the
+    # raising helper and has no bucket fall-through, so an outage is no longer
+    # a 404. The date is sent compact because this route takes YYYYMMDD: the
+    # dashed form is a 404 `Invalid date` before any read.
+    Req("GET", f"/api/market/data/{T}/{D.replace('-', '')}", 503),
     Req("GET", f"/api/market/reference/{T}/{D}", 404),
     Req("GET", f"/api/market/coverage?symbols={T}", 503),
     Req("GET", "/api/market/sectors", 503),

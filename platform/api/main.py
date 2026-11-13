@@ -4,6 +4,7 @@ Thin wrapper around existing lib/ modules
 """
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -39,6 +40,7 @@ from lib.data_loader import DataLoader
 from lib.single_flight import SingleFlight
 from lib.eastern_time import ET, is_session, market_today, stored_intraday_to_eastern
 from api.routers import live, options, playbook, backtest, signals, insights, journal, dashboard, catalysts, admin, analytics, config as config_router, health, glossary, grid, magnitude, earnings, waitlist, preferences, profile
+from api.http_errors import unavailable
 from api.auth import (
     AUTH_MODE,
     auth_middleware,
@@ -83,7 +85,7 @@ def _cloud_sql_flags() -> tuple[bool, bool]:
 
 _CLOUD_SQL, _CLOUD_SQL_UNCONFIGURED = _cloud_sql_flags()
 
-# The swallowing helper, still read by the bar loader and the reference route.
+# The swallowing helper, still read by the reference route (its last user).
 try:
     from gcp.database import query_to_dataframe
 except Exception:
@@ -968,14 +970,28 @@ def get_market_data(
     """
     ticker_upper = ticker.upper()
     ticker_lower = ticker.lower()
+    not_in_table = f"No 1-min bars for {ticker_upper} on {date} in market_data_intraday."
+
+    # Parse before any read: a malformed date is an answer, not a query.
+    try:
+        _parse_bar_date(date)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
     try:
         df = _load_date_data(ticker_lower, date)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except Exception as exc:
+        # 503 for an outage; a defect is re-raised and stays a 500. The 503
+        # the loader raises itself (neither startup flag set) is not an outage
+        # to the classifier, so it passes through unchanged.
+        unavailable(
+            f"Could not read 1-min bars for {ticker_upper} on {date}: "
+            "the database is unavailable.", exc)
 
     if df is None or df.empty:
-        raise HTTPException(status_code=404, detail=f"No data for {ticker_upper} on {date}")
+        raise HTTPException(status_code=404, detail=not_in_table)
 
     # Normalize column names
     col_map = {}
@@ -1021,7 +1037,7 @@ def get_market_data(
         df = df[df.index.date == target.date()]
 
     if df.empty:
-        raise HTTPException(status_code=404, detail=f"No data for {ticker_upper} on {date}")
+        raise HTTPException(status_code=404, detail=not_in_table)
 
     # Aggregate timeframe if > 1 minute
     if timeframe > 1:
@@ -1642,85 +1658,125 @@ def market_most_active():
 _intraday_index_to_eastern = stored_intraday_to_eastern
 
 
-def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
-    """Load intraday data for a specific date or month.
+def _parse_bar_date(date: str) -> tuple[str, datetime]:
+    """The path date of a bar request: ("day", that day) for YYYYMMDD,
+    ("month", its first day) for YYYYMM.
 
-    Priority: Cloud SQL → local parquet files.
-    Returns a DataFrame with OHLCV columns and a DatetimeIndex.
+    Raises ValueError, whose message is the route's 404 text, for anything
+    else: digits that form no calendar date (20260230), a month outside 01 to
+    12, the dashed form, and non-ASCII digits, which ``str.isdigit`` and
+    ``\\d`` would both accept.
+    """
+    try:
+        if re.fullmatch(r"[0-9]{8}", date):
+            return "day", datetime(int(date[:4]), int(date[4:6]), int(date[6:8]))
+        if re.fullmatch(r"[0-9]{6}", date):
+            return "month", datetime(int(date[:4]), int(date[4:6]), 1)
+    except ValueError:
+        pass  # digits, but not a calendar date: the same answer as no match
+    raise ValueError(f"Invalid date {date}: expected YYYYMMDD or YYYYMM.")
+
+
+def _bars_query(sql: str, params: Optional[dict] = None) -> "pd.DataFrame":
+    """Run a 1-min bars query, RAISING on failure.
+
+    The bar routes promise a 503 when the database cannot be read. Like
+    `_dates_query`, that is only keepable with the raising helper: the
+    swallowing sibling returns an empty frame, and an outage would read as
+    "the table has no bars".
+    """
+    from gcp.database import query_to_dataframe_strict
+    return query_to_dataframe_strict(sql, params)
+
+
+def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
+    """1-min bars for one Eastern day (YYYYMMDD) or month (YYYYMM).
+
+    Bars come from `market_data_intraday` and nowhere else when Cloud SQL is
+    configured: there is no bucket fall-through, on zero rows or on an error.
+    Returns a DataFrame with OHLCV columns and a naive-Eastern DatetimeIndex.
+
+    Raises FileNotFoundError when the date is malformed or the table holds no
+    bar for it (its message is the 404 text), lets a query error propagate,
+    and raises a 503 when Cloud SQL is neither configured nor known to be
+    unconfigured (a failed import of gcp.database). Only when Cloud SQL is
+    not configured (local development) is the bucket read.
     """
     ticker_upper = ticker_lower.upper()
+    try:
+        kind, first = _parse_bar_date(date)
+    except ValueError as e:
+        # One exception type for the direct callers (replay trades, style mining).
+        raise FileNotFoundError(str(e))
 
-    # ── Cloud SQL primary ────────────────────────────────────────────────────
     if _CLOUD_SQL:
-        try:
-            if len(date) == 8:
-                # Specific date: YYYYMMDD
-                date_str = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
-                # [D 00:00Z, D+1 02:00Z) holds session D in both stored
-                # conventions (Eastern labels at raw D 04:00-20:00; true UTC
-                # at D 08:00Z .. D+1 01:00Z, the winter 20:00 ET bar). Cut to
-                # Eastern date D below.
-                d0 = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                df = query_to_dataframe(
-                    """
-                    SELECT ts, open, high, low, close, volume
-                    FROM market_data_intraday
-                    WHERE ticker = :ticker AND interval = '1min'
-                      AND ts >= :start AND ts < :end
-                    ORDER BY ts
-                    """,
-                    {"ticker": ticker_upper, "start": d0,
-                     "end": d0 + timedelta(days=1, hours=2)},
-                )
-            elif len(date) == 6:
-                # Month: YYYYMM
-                year, month = int(date[:4]), int(date[4:6])
-                start = f"{year}-{month:02d}-01"
-                if month == 12:
-                    end = f"{year + 1}-01-01"
-                else:
-                    end = f"{year}-{month + 1:02d}-01"
-                df = query_to_dataframe(
-                    """
-                    SELECT ts, open, high, low, close, volume
-                    FROM market_data_intraday
-                    WHERE ticker = :ticker AND interval = '1min'
-                      AND ts >= :start AND ts < :end
-                    ORDER BY ts
-                    """,
-                    # [M-01 02:00Z, M+1-01 02:00Z): month M in both conventions and
-                    # no neighbour's 20:00 ET spill, the framing of the migration's
-                    # month_replace_window (Codex P2 on #1185).
-                    {"ticker": ticker_upper,
-                     "start": datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                              + timedelta(hours=2),
-                     "end": datetime.strptime(end, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                            + timedelta(hours=2)},
-                )
+        first = first.replace(tzinfo=timezone.utc)
+        if kind == "day":
+            # [D 00:00Z, D+1 02:00Z) holds session D in both stored
+            # conventions (Eastern labels at raw D 04:00-20:00; true UTC
+            # at D 08:00Z .. D+1 01:00Z, the winter 20:00 ET bar). Cut to
+            # Eastern date D below.
+            start, end = first, first + timedelta(days=1, hours=2)
+        else:
+            # [M-01 02:00Z, M+1-01 02:00Z): month M in both conventions and
+            # no neighbour's 20:00 ET spill, the framing of the migration's
+            # month_replace_window (Codex P2 on #1185).
+            if first.month == 12:
+                following = first.replace(year=first.year + 1, month=1)
             else:
-                df = pd.DataFrame()
+                following = first.replace(month=first.month + 1)
+            start, end = first + timedelta(hours=2), following + timedelta(hours=2)
+        df = _bars_query(
+            """
+            SELECT ts, open, high, low, close, volume
+            FROM market_data_intraday
+            WHERE ticker = :ticker AND interval = '1min'
+              AND ts >= :start AND ts < :end
+            ORDER BY ts
+            """,
+            {"ticker": ticker_upper, "start": start, "end": end},
+        )
+        if not df.empty:
+            idx, keep = _intraday_index_to_eastern(df["ts"], df["volume"])
+            df = df[keep]
+            df.index = idx[keep]
+            # Cut to the requested Eastern date/month. The window also holds
+            # the previous session's evening spill (true UTC, raw 00:00-01:00Z),
+            # which converts to D-1; direct callers (replay trades, style
+            # mining) take this frame as is (Codex P2 on #1185).
+            if kind == "day":
+                df = df[df.index.date == first.date()]
+            else:
+                df = df[(df.index.year == first.year) & (df.index.month == first.month)]
+            df = df.drop(columns=["ts"])
+        if df.empty:
+            raise FileNotFoundError(
+                f"No 1-min bars for {ticker_upper} on {date} in market_data_intraday.")
+        return df
 
-            if not df.empty:
-                idx, keep = _intraday_index_to_eastern(df["ts"], df["volume"])
-                df = df[keep]
-                df.index = idx[keep]
-                # Cut to the requested Eastern date/month. The window also holds
-                # the previous session's evening spill (true UTC, raw 00:00-01:00Z),
-                # which converts to D-1; direct callers (replay trades, style
-                # mining) take this frame as is (Codex P2 on #1185).
-                if len(date) == 8:
-                    want = datetime.strptime(date, "%Y%m%d").date()
-                    df = df[df.index.date == want]
-                elif len(date) == 6:
-                    df = df[(df.index.year == int(date[:4])) & (df.index.month == int(date[4:6]))]
-                return df.drop(columns=["ts"])
-        except Exception as e:
-            logger.warning("Cloud SQL intraday load failed for %s/%s: %s", ticker_upper, date, e)
+    if _CLOUD_SQL_UNCONFIGURED:
+        return _bars_from_gcs_local_dev(ticker_lower, date)
 
-    # ── GCS fallback ─────────────────────────────────────────────────────────
+    raise HTTPException(
+        status_code=503,
+        detail=f"Could not read 1-min bars for {ticker_upper} on {date}: "
+               "the database is unavailable.")
+
+
+def _bars_from_gcs_local_dev(ticker_lower: str, date: str) -> pd.DataFrame:
+    """Local development only (Cloud SQL not configured): the bucket's minute
+    parquet for a day, else the month parquet.
+
+    Called only under `if _CLOUD_SQL_UNCONFIGURED:`; a test holds that
+    (tests/meta/test_production_writers.py). The yearly file of daily bars is
+    not read: it drew one daily bar as a 1-min candle.
+    """
     from api import gcs_reader
 
     def _try_gcs_download(blob_path_rel: str) -> pd.DataFrame | None:
+        # AUDIT-2026-05-13: silent fallback — a bucket error in local dev is
+        # logged and read as "no file", so it answers 404 below. Moved here
+        # unchanged with the local-dev read.
         try:
             if gcs_reader.blob_exists(blob_path_rel):
                 return gcs_reader.download_parquet(gcs_reader.BASE_PREFIX + blob_path_rel)
@@ -1733,17 +1789,13 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
         if df is not None and not df.empty:
             return df
 
-    month = date[:6] if len(date) >= 6 else date
+    month = date[:6]
     df = _try_gcs_download(f"data/{ticker_lower}/intraday/{ticker_lower}_av_1min_{month}.parquet")
     if df is not None and not df.empty:
         return df
 
-    year = date[:4]
-    df = _try_gcs_download(f"data/{ticker_lower}/{ticker_lower}_{year}.parquet")
-    if df is not None and not df.empty:
-        return df
-
-    raise FileNotFoundError(f"No data found in Cloud SQL or GCS for {ticker_lower} date={date}")
+    raise FileNotFoundError(
+        f"No 1-min parquet for {ticker_lower.upper()} on {date} in the bucket (local dev).")
 
 
 def _aggregate_timeframe(df: pd.DataFrame, minutes: int) -> pd.DataFrame:
