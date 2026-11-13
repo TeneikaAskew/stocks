@@ -384,3 +384,22 @@ def test_a_job_named_inside_page_text_gets_no_stub():
     assert cfe.update(js, export()).cards_added == []
     js = js.replace("fetch-new gathers", "fetch-newer gathers")
     assert cfe.update(js, export()).cards_added == ["fetch-new"]
+
+
+# Codex round 4 on #1860 ─────────────────────────────────────────────────────
+
+def test_a_job_named_in_another_cards_note_gets_no_stub():
+    assert "Fetches A." in ROOT_JS
+    js = ROOT_JS.replace("Fetches A.", "Fetches A; fetch-new gathers data daily.")
+    assert cfe.update(js, export()).cards_added == []
+
+
+def test_a_layout_only_change_counts_as_a_change():
+    first = cfe.update(ROOT_JS, export())
+    assert not cfe.update(first.js, export()).changed
+    spaced = first.js.replace("const CRONS = [\n", "const CRONS = [\n\n", 1)
+    assert spaced != first.js
+    res = cfe.update(spaced, export())
+    assert res.js != spaced and res.changed and res.layout_only_change
+    assert "Applied: layout only" in cfe.report(res, export())
+    assert not cfe.update(res.js, export()).changed

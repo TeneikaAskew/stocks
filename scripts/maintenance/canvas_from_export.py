@@ -308,15 +308,29 @@ class Result:
     tables_not_named: list[str]
     stamp: str
     stamp_old: str | None = None
+    js_before: str | None = None
+
+    @property
+    def layout_only_change(self) -> bool:
+        """The script changes although no trigger, card or stamp does
+        (for example a blank line dropped from the trigger list)."""
+        return (self.js_before is not None and self.js != self.js_before
+                and not self._listed_change)
 
     @property
     def stamp_changed(self) -> bool:
         return self.stamp_old != self.stamp
 
     @property
-    def changed(self) -> bool:
+    def _listed_change(self) -> bool:
         return bool(self.crons_added or self.crons_removed or self.crons_changed
                     or self.cards_removed or self.cards_added) or self.stamp_changed
+
+    @property
+    def changed(self) -> bool:
+        if self.js_before is not None:
+            return self.js != self.js_before
+        return self._listed_change
 
 
 def _names(text: str, name: str) -> bool:
@@ -329,10 +343,10 @@ def update(js: str, export: dict[str, Any], run_label: str | None = None,
     jobs = {j["name"]: j for j in _declared(export["jobs"])}
     scheds = {s["name"]: s for s in _declared(export["schedulers"])}
 
-    # Which jobs the page already names outside JOBS, read before any rewrite,
-    # so a trigger this run adds never counts as a description of its job.
-    j_body0, j_end0 = _block(js, _JOBS_OPEN, "\n};")
-    named_before = js[:j_body0] + js[j_end0:]
+    # The page as it was, read before any rewrite, so a trigger this run adds
+    # never counts as a description of its job. A job with no card of its own
+    # can only appear here as a mention (another card's note, a details panel).
+    js_before = js
 
     # CRONS ───────────────────────────────────────────────────────────────
     c_body, c_end = _block(js, _CRONS_OPEN, "];")
@@ -393,7 +407,7 @@ def update(js: str, export: dict[str, Any], run_label: str | None = None,
 
     # A job the page already names, in its data script outside JOBS or in its
     # layout template, is described somewhere and gets no stub.
-    missing = [n for n in jobs if n not in cards and not _names(named_before, n)
+    missing = [n for n in jobs if n not in cards and not _names(js_before, n)
                and not _names(template_text, n)]
     cards_added = []
     if missing:
@@ -430,7 +444,7 @@ def update(js: str, export: dict[str, Any], run_label: str | None = None,
     res = Result(js=js, crons_added=added, crons_removed=removed, crons_changed=changed,
                  cards_removed=cards_removed, cards_added=cards_added, labels_to_check=labels,
                  stale_mentions=stale, services_not_named=services, tables_not_named=tables,
-                 stamp=stamp, stamp_old=stamp_old)
+                 stamp=stamp, stamp_old=stamp_old, js_before=js_before)
     return res
 
 
@@ -454,6 +468,9 @@ def report(res: Result, export: dict[str, Any], template_text: str = "") -> str:
     section("Applied: triggers changed", [f"- `{n}`: `{a}` → `{b}`" for n, a, b in res.crons_changed])
     section("Applied: job cards removed (no longer declared)", [f"- `{n}`" for n in res.cards_removed])
     section("Applied: stub job cards added (describe them)", [f"- `{n}`" for n in res.cards_added])
+    if res.layout_only_change:
+        section("Applied: layout only", [("- the script was re-laid out (for example blank lines in the "
+                                          "trigger list dropped); no trigger, card or stamp changed")])
     section("Check: card schedule text vs triggers",
             [f"- `{n}`: says “{s}”; triggers {', '.join(f'`{c}`' for c in cr)}" for n, s, cr in res.labels_to_check])
     stale = list(res.stale_mentions)
