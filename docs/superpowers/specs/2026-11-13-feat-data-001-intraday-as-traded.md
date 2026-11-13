@@ -3,6 +3,7 @@ feat_id: FEAT-DATA-001
 req_ids: [REQ-DATA-001, REQ-DATA-003]
 issues: [1190]
 canvases: []
+site_source_notes: [LIVE-03]
 done_when:
   - "tests/gcp/test_intraday_as_traded.py passes: the AlphaVantage TIME_SERIES_INTRADAY request built by fetch_alphavantage_intraday.fetch_month, by fetch_market_data.fetch_minute_bars and by fetch_market_data.fetch_minute_data each called without an adjusted argument, and by backfill_ticker.av_intraday_month carries adjusted=false, and fetch_minute_bars called with adjusted=True raises ValueError"
   - "tests/gcp/test_intraday_as_traded.py::test_every_intraday_request_in_the_repo_asks_for_as_traded passes: every dict literal in a Python file under gcp/, scripts/ and platform/ that holds the constant TIME_SERIES_INTRADAY carries adjusted as the string literal false, found by AST with no exemption list, and the guard's own cases show it rejects a missing key, the literal true and an expression"
@@ -78,6 +79,7 @@ All eight requests, at `main` 6e04eb53. "Request" is the line that names the end
   - What the guard does not see: a request built without a dict literal (keyword arguments to `dict()`, a key assigned later, a URL string), and files outside those three directories. All eight requests are dict literals today and none exists elsewhere, so it holds for the code as it is.
 - `tests/api/test_live_opening_window.py::test_opt_in_contract` asserted that the compact request carries no `adjusted` key. It now asserts `'false'`.
 - Every ticker: the fix is in the request, so whatever ticker a job fetches is fetched as traded.
+- Site traceability: the change reaches the site through `GET /api/live/history/{ticker}` (chain element LIVE-03). The implementation PR adds the `(FEAT-DATA-001, LIVE-03)` row to the implementation-source notes of `docs/product/03-SITE-TRACEABILITY.md` and regenerates `docs/review-evidence/site-source-snapshot.json`, as every PR that changes watched backend source does.
 
 ### Capacity
 
