@@ -9,7 +9,7 @@ done_when:
   - "tests/api/test_live_opening_window.py passes with test_opt_in_contract changed to require adjusted=false on the compact /api/live/history request (it asserted the key was absent)"
   - "make test passes on the PR head with tests/gcp/test_evaluate_ew_strikes.py, tests/gcp/test_intraday_replace_months.py and tests/gcp/test_intraday_writers_utc.py unchanged"
   - "02-FEATURE-CATALOG FEAT-DATA-001 record shows Status and Last reviewed for this PR, and 12-PR-ISSUE-TRACEABILITY lists it"
-status: draft
+status: approved
 supersedes: null
 ---
 
