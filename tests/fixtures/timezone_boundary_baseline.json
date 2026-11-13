@@ -88,12 +88,6 @@
    "_resolve_scope::_dt.now()"
   ]
  },
- "gcp/fetchers/evaluate_ew_strikes.py": {
-  "tz-localize-none": [
-   "scoring_session::row['market_close'].tz_convert(ET_NAME).tz_localize(None)",
-   "scoring_session::row['market_open'].tz_convert(ET_NAME).tz_localize(None)"
-  ]
- },
  "gcp/fetchers/fetch_alphavantage_intraday.py": {
   "host-today": [
    "_file_data_quality_issue::datetime.utcnow()",

@@ -1,0 +1,12 @@
+{
+  "base": "6e04eb5311522e214d874d1ee373de3c714e5c19",
+  "preserved_paths": {
+    "gcp/fetchers/_av_realtime_collector.py": "800189622af8346adcfddf07f117752cb31b1ba6b21acfcc93b7fba6f63ac97a",
+    "lib/earnings_reactions.py": "66045b7a6a168548cc25fe6cd79d02fd77c83f98b3b77f31457bf7c0f2d9f5e8",
+    "lib/eastern_time.py": "753726fb380eb32acdb988af2a9dd89dc5603e2963dfbbad998654f8f3dfe8a3",
+    "tests/gcp/test_av_options_collector_entry.py": "9d21beeaa9103d4ab34c934469074d15eeca9f083a427fe695b4a247f1100430",
+    "gcp/schema.sql": "56133cf7e2471099d1c492cc2c8bc9f073140380f190e341c08297359414980d",
+    "gcp/deploy.sh": "fb9c3b9f3fcb6780d195878ed4cfdca6bcc5c0c7450ece71141ec755cb81809c"
+  },
+  "wrapper_sha256": "001c7420752330e435e15b51cb4d7a7e2f9702515ad2e1cf34a482e52f3339a9"
+}

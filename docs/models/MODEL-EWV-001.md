@@ -1,12 +1,12 @@
 # MODEL-EWV-001 — Earnings Whispers strike verdicts
 
-**Last reviewed:** unknown · **Last scanned:** 2026-11-03 · **Owner:** TBD
+**Last reviewed:** 2026-11-13 · **Last scanned:** 2026-11-03 · **Owner:** TBD
 
 **Code:** `gcp/fetchers/evaluate_ew_strikes.py` ·
-**Writes:** `earnings_calendar.ew_*` columns ·
-**Job:** `evaluate-ew-strikes` (`0 23 * * 1-5`, after the close) ·
+**Writes:** none; historical `earnings_calendar.ew_*` columns retained ·
+**Job:** retired `evaluate-ew-strikes`; no scorer entry point remains ·
 **Registry:** [07-MODEL-REGISTRY](../product/07-MODEL-REGISTRY.md) ·
-**Status:** Production but needs remediation · **Rec:** KEEP
+**Status:** Retired (2026-11-13) · **Rec:** REMOVE
 **Doc health:** CURRENT · **Last verified:** 2026-09-26
 
 > Registered 2026-09-18 by the round-10 sweep. It was invisible to the sweep's own first pass
@@ -16,7 +16,22 @@
 > a job whose output a person reads every morning. The regex was fixed in the same change
 > (`scripts/audit_scheduler_coverage.py`).
 
-## What it decides
+## Retirement — 2026-11-13
+
+The scorer is removed; `nyse_sessions` remains byte-identical for the AV collector
+and earnings-session schedule consumers. No historical row, verdict column or
+calendar behavior is removed. The coordinator separately recorded evaluator job
+and scheduler deletion; this source change does not claim a new deployment.
+The historical behavior, incidents and measurements below are retained as audit
+history, not descriptions of active scoring.
+
+Executed collection at d806bfd1 recorded 71 cases over 35 functions: 49 scorer
+cases are retired and 22 vendor cases are moved verbatim. Fresh implementation
+base 6e04eb53 independently collects the same 71 cases. Five new shim cases
+replace no vendor or consumer assertion. Repository collection changes from
+9,629 to 9,585 cases, exactly minus 49 plus 5; other files retain their counts.
+
+## What it decided (historical)
 
 For each Earnings Whispers strike pick (`earnings_calendar` rows with
 `data_source = 'earnings_whispers'` and a non-null `strike`), a **verdict on how the pick
@@ -199,7 +214,7 @@ states it (`:16-18`) without arguing it, and it matches how each position is act
 **present**, not 09:30. On a session with missing early bars the figure is understated by the
 gap.
 
-## Entry points
+## Historical entry points
 
 | Symbol | Role |
 |---|---|
@@ -211,7 +226,22 @@ gap.
 
 ## Tests
 
-`tests/gcp/test_evaluate_ew_strikes.py`: **62 tests** covering several areas.
+`tests/gcp/test_nyse_sessions_shim.py` contains five new tests for the retained
+module: Thanksgiving absence, early close, DST open, missing-library error,
+removed scorer exports and byte-identical wrapper source.
+`tests/gcp/test_av_options_collector_entry.py` remains unchanged and exercises
+the live caller's existing `ew.nyse_sessions` patch boundary.
+
+The seven vendor functions and their helpers moved verbatim to the dedicated
+vendor-answer suite, with all 22 parametrized cases retained. The separate
+node-disposition receipt records every old/new node and the 49 retired scorer
+cases. Finite-values repair obligations and historical results remain separate.
+
+### Historical evaluator test evidence
+
+The former evaluator test module was earlier described as **62 tests** covering
+several areas. That historical count predates the executed 71-case inventory
+above; the following incident evidence is preserved.
 - **Sessions.** The scoring session for every timing, including the Friday, Thanksgiving and
   Memorial Day cases, and the 13:00 early close.
 - **Verdicts.** The first tests of `_compute_verdict`.

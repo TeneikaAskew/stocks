@@ -1,0 +1,178 @@
+{
+  "base": "6e04eb5311522e214d874d1ee373de3c714e5c19",
+  "base_count": 9629,
+  "head_count": 9585,
+  "retired_scorer_nodes": [
+    "tests/gcp/test_evaluate_ew_strikes.py::test_a_lone_empty_call_is_decided_by_the_canary[False-1]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_a_lone_empty_call_is_decided_by_the_canary[True-0]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_a_missing_api_key_fails_loudly",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_a_null_timing_read_back_as_nan_is_counted_not_a_crash",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_a_rate_limited_night_with_a_working_vendor_is_retried_not_failed",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_a_session_that_has_not_closed_is_left_for_a_later_run",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_a_share_class_is_requested_in_the_vendors_dashed_form",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_a_timing_the_writer_does_not_emit_has_no_session[None]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_a_timing_the_writer_does_not_emit_has_no_session[]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_a_timing_the_writer_does_not_emit_has_no_session[amc]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_a_timing_the_writer_does_not_emit_has_no_session[nan]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_a_timing_the_writer_does_not_emit_has_no_session[unknown]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_an_after_close_reporter_is_scored_on_the_next_session",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_an_early_close_session_ends_at_one_pm",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_an_unsupported_strategy_gets_no_verdict",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_bars_outside_the_session_do_not_count",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_compute_verdict[Covered Calls-105.0-100.0-KEPT]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_compute_verdict[Covered Calls-99.0-100.0-ASSIGNED]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_compute_verdict[Long Calls-105.0-106.0-HIT]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_compute_verdict[Long Calls-110.0-106.0-MISS]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_dry_run_writes_nothing",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_each_vendor_answer_is_counted_by_what_it_says[info_message-rate_limited-fetch_failed]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_each_vendor_answer_is_counted_by_what_it_says[invalid_api_call-unsupported_symbol-no_bars]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_each_vendor_answer_is_counted_by_what_it_says[no_bars_on_date-None-no_bars]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_each_vendor_answer_is_counted_by_what_it_says[no_timeseries-transport_error-fetch_failed]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_each_vendor_answer_is_counted_by_what_it_says[rate_limit-rate_limited-fetch_failed]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_each_vendor_answer_is_counted_by_what_it_says[request_error-transport_error-fetch_failed]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_every_call_and_the_canary_empty_is_an_outage[invalid_api_call]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_every_call_and_the_canary_empty_is_an_outage[rate_limit]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_every_call_and_the_canary_empty_is_an_outage[request_error]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_force_clears_a_refused_symbol_once_the_vendor_has_answered",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_force_clears_a_row_it_cannot_rescore",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_force_clears_nothing_on_refusals_until_the_vendor_has_answered",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_force_keeps_a_verdict_the_vendor_gave_no_answer_for",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_intraday_on_a_closed_day_has_no_session",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_n_rows_over_k_sessions_fetch_k_times",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_no_canary_call_when_any_call_returned_bars",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_scoring_session_by_timing[earnings_date0-postmarket-want0]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_scoring_session_by_timing[earnings_date1-postmarket-want1]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_scoring_session_by_timing[earnings_date2-postmarket-want2]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_scoring_session_by_timing[earnings_date3-premarket-want3]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_scoring_session_by_timing[earnings_date4-premarket-want4]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_scoring_session_by_timing[earnings_date5-intraday-want5]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_scoring_session_by_timing[earnings_date6-PostMarket-want6]",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_the_evaluator_fetches_as_traded_bars",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_the_force_clears_land_in_one_transaction_after_the_updates",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_the_wp7kf_night_is_not_an_outage",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_two_picks_on_one_ticker_are_one_call",
+    "tests/gcp/test_evaluate_ew_strikes.py::test_writes_are_one_transaction_per_session_date"
+  ],
+  "moved_vendor_nodes": [
+    [
+      "tests/gcp/test_fetch_market_data_vendor_answers.py::test_a_reply_that_is_not_a_json_object_is_the_vendors_shape[5]",
+      "tests/gcp/test_evaluate_ew_strikes.py::test_a_reply_that_is_not_a_json_object_is_the_vendors_shape[5]"
+    ],
+    [
+      "tests/gcp/test_fetch_market_data_vendor_answers.py::test_a_reply_that_is_not_a_json_object_is_the_vendors_shape[Invalid API call]",
+      "tests/gcp/test_evaluate_ew_strikes.py::test_a_reply_that_is_not_a_json_object_is_the_vendors_shape[Invalid API call]"
+    ],
+    [
+      "tests/gcp/test_fetch_market_data_vendor_answers.py::test_a_reply_that_is_not_a_json_object_is_the_vendors_shape[None]",
+      "tests/gcp/test_evaluate_ew_strikes.py::test_a_reply_that_is_not_a_json_object_is_the_vendors_shape[None]"
+    ],
+    [
+      "tests/gcp/test_fetch_market_data_vendor_answers.py::test_a_reply_that_is_not_a_json_object_is_the_vendors_shape[payload0]",
+      "tests/gcp/test_evaluate_ew_strikes.py::test_a_reply_that_is_not_a_json_object_is_the_vendors_shape[payload0]"
+    ],
+    [
+      "tests/gcp/test_fetch_market_data_vendor_answers.py::test_a_reply_that_is_not_a_json_object_is_the_vendors_shape[payload4]",
+      "tests/gcp/test_evaluate_ew_strikes.py::test_a_reply_that_is_not_a_json_object_is_the_vendors_shape[payload4]"
+    ],
+    [
+      "tests/gcp/test_fetch_market_data_vendor_answers.py::test_a_reply_that_is_not_a_json_object_is_the_vendors_shape[payload5]",
+      "tests/gcp/test_evaluate_ew_strikes.py::test_a_reply_that_is_not_a_json_object_is_the_vendors_shape[payload5]"
+    ],
+    [
+      "tests/gcp/test_fetch_market_data_vendor_answers.py::test_a_transport_failure_is_named",
+      "tests/gcp/test_evaluate_ew_strikes.py::test_a_transport_failure_is_named"
+    ],
+    [
+      "tests/gcp/test_fetch_market_data_vendor_answers.py::test_av_listed_symbol[BF.B-BF-B]",
+      "tests/gcp/test_evaluate_ew_strikes.py::test_av_listed_symbol[BF.B-BF-B]"
+    ],
+    [
+      "tests/gcp/test_fetch_market_data_vendor_answers.py::test_av_listed_symbol[MOG.A-MOG-A]",
+      "tests/gcp/test_evaluate_ew_strikes.py::test_av_listed_symbol[MOG.A-MOG-A]"
+    ],
+    [
+      "tests/gcp/test_fetch_market_data_vendor_answers.py::test_av_listed_symbol[SPY-SPY]",
+      "tests/gcp/test_evaluate_ew_strikes.py::test_av_listed_symbol[SPY-SPY]"
+    ],
+    [
+      "tests/gcp/test_fetch_market_data_vendor_answers.py::test_bars_on_the_date_come_back_ok",
+      "tests/gcp/test_evaluate_ew_strikes.py::test_bars_on_the_date_come_back_ok"
+    ],
+    [
+      "tests/gcp/test_fetch_market_data_vendor_answers.py::test_every_price_call_sends_the_listed_share_class[daily]",
+      "tests/gcp/test_evaluate_ew_strikes.py::test_every_price_call_sends_the_listed_share_class[daily]"
+    ],
+    [
+      "tests/gcp/test_fetch_market_data_vendor_answers.py::test_every_price_call_sends_the_listed_share_class[daily_series]",
+      "tests/gcp/test_evaluate_ew_strikes.py::test_every_price_call_sends_the_listed_share_class[daily_series]"
+    ],
+    [
+      "tests/gcp/test_fetch_market_data_vendor_answers.py::test_every_price_call_sends_the_listed_share_class[minute]",
+      "tests/gcp/test_evaluate_ew_strikes.py::test_every_price_call_sends_the_listed_share_class[minute]"
+    ],
+    [
+      "tests/gcp/test_fetch_market_data_vendor_answers.py::test_fetch_minute_bars_names_the_vendors_answer[payload0-invalid_api_call]",
+      "tests/gcp/test_evaluate_ew_strikes.py::test_fetch_minute_bars_names_the_vendors_answer[payload0-invalid_api_call]"
+    ],
+    [
+      "tests/gcp/test_fetch_market_data_vendor_answers.py::test_fetch_minute_bars_names_the_vendors_answer[payload1-rate_limit]",
+      "tests/gcp/test_evaluate_ew_strikes.py::test_fetch_minute_bars_names_the_vendors_answer[payload1-rate_limit]"
+    ],
+    [
+      "tests/gcp/test_fetch_market_data_vendor_answers.py::test_fetch_minute_bars_names_the_vendors_answer[payload2-info_message]",
+      "tests/gcp/test_evaluate_ew_strikes.py::test_fetch_minute_bars_names_the_vendors_answer[payload2-info_message]"
+    ],
+    [
+      "tests/gcp/test_fetch_market_data_vendor_answers.py::test_fetch_minute_bars_names_the_vendors_answer[payload3-no_timeseries]",
+      "tests/gcp/test_evaluate_ew_strikes.py::test_fetch_minute_bars_names_the_vendors_answer[payload3-no_timeseries]"
+    ],
+    [
+      "tests/gcp/test_fetch_market_data_vendor_answers.py::test_fetch_minute_bars_names_the_vendors_answer[payload4-no_timeseries]",
+      "tests/gcp/test_evaluate_ew_strikes.py::test_fetch_minute_bars_names_the_vendors_answer[payload4-no_timeseries]"
+    ],
+    [
+      "tests/gcp/test_fetch_market_data_vendor_answers.py::test_fetch_minute_bars_names_the_vendors_answer[payload5-no_bars_on_date]",
+      "tests/gcp/test_evaluate_ew_strikes.py::test_fetch_minute_bars_names_the_vendors_answer[payload5-no_bars_on_date]"
+    ],
+    [
+      "tests/gcp/test_fetch_market_data_vendor_answers.py::test_fetch_minute_data_keeps_its_contract[payload0-3]",
+      "tests/gcp/test_evaluate_ew_strikes.py::test_fetch_minute_data_keeps_its_contract[payload0-3]"
+    ],
+    [
+      "tests/gcp/test_fetch_market_data_vendor_answers.py::test_fetch_minute_data_keeps_its_contract[payload1-0]",
+      "tests/gcp/test_evaluate_ew_strikes.py::test_fetch_minute_data_keeps_its_contract[payload1-0]"
+    ]
+  ],
+  "new_shim_nodes": [
+    "tests/gcp/test_nyse_sessions_shim.py::test_calendar_import_error_has_no_weekday_fallback",
+    "tests/gcp/test_nyse_sessions_shim.py::test_dst_open_is_utc_correct",
+    "tests/gcp/test_nyse_sessions_shim.py::test_holiday_week_and_early_close",
+    "tests/gcp/test_nyse_sessions_shim.py::test_scorer_surface_is_removed",
+    "tests/gcp/test_nyse_sessions_shim.py::test_wrapper_source_is_unchanged"
+  ],
+  "all_other_node_counts_unchanged": true,
+  "unchanged_gzip_fixture_dynamic_ids": {
+    "base": [
+      {
+        "function": "tests/gcp/test_av_realtime_transport_cli.py::test_encoded_and_decoded_caps",
+        "node_sha256": "ab8998d9b82baba070997342298f9b7a348726e648253a4c6f0b5c5ba89d2825"
+      },
+      {
+        "function": "tests/gcp/test_av_realtime_transport_cli.py::test_json_or_encoding_errors_never_include_content",
+        "node_sha256": "05e1d79acfb0e6d087453f0354890257f6111704b8bfd7af709020acc38e0bf8"
+      }
+    ],
+    "head": [
+      {
+        "function": "tests/gcp/test_av_realtime_transport_cli.py::test_encoded_and_decoded_caps",
+        "node_sha256": "d31c3afc869ea70677f0df7ea2ae3a5812078a1cde062627b185ac9548dd8815"
+      },
+      {
+        "function": "tests/gcp/test_av_realtime_transport_cli.py::test_json_or_encoding_errors_never_include_content",
+        "node_sha256": "84d9740600381193cbde6624bf2154e6937b72ab4f099e35ffb8e5394ccb9790"
+      }
+    ]
+  },
+  "vendor_functions_helpers_verbatim": true,
+  "dynamic_id_reason": "Two unchanged AV transport tests use gzip.compress without a fixed mtime; source file bytes and per-function counts match. Raw collected inventories retained in implementation evidence."
+}
