@@ -32,7 +32,7 @@ Options:
   -q SQL               inline SQL (multi-statement separated by ;)
   -f SQL_FILE          path to .sql file (sent as ONE statement, supports DO blocks)
   --commit             persist writes (default: rollback)
-  --timeout SECS       per-statement statement_timeout (default 120)
+  --timeout SECS       per-statement statement_timeout (default 120, max ${MAX_TIMEOUT_S})
   --wait-timeout SECS  give up waiting for the execution (default: timeout + 180)
   --quiet              suppress progress logs; the summary still prints
 EOF
@@ -43,6 +43,23 @@ SQL=""
 SQL_FILE=""
 COMMIT="false"
 TIMEOUT_S="120"
+
+# The job's --task-timeout, from gcp/deploy.sh deploy_db_query. Cloud Run SIGKILLs
+# the task at this many seconds and the clock starts at container start, so a
+# statement_timeout at or beyond it can never fire. Measured on execution
+# db-query-cb2fs (2026-11-13): the container logged "dispatching" at 12:27:50.503Z
+# and Cloud Run logged "Terminating task because it has reached the maximum timeout
+# of 600 seconds" at 12:37:50.348Z, 599.8s later.
+# tests/scripts/test_db_query_cr_timeout_fit.py fails if deploy.sh and this disagree.
+TASK_TIMEOUT_S="600"
+# Everything else inside the task's budget: connector setup before the first
+# statement, and writing the artifacts to GCS after the last one. Measured on four
+# successful executions on 2026-11-13 (2wm4f, bfb29, 52v8m, nsdzw): dispatch to the
+# "done:" line 7.4-9.2s for two statements, and "done:" to container exit 1.3-1.6s.
+# 60s is about six times the largest of those, so a statement granted the remaining
+# budget still leaves room for a large result upload.
+OVERHEAD_S="60"
+MAX_TIMEOUT_S=$(( TASK_TIMEOUT_S - OVERHEAD_S ))
 WAIT_MAX_S=""      # defaults to TIMEOUT_S + 180 once args are parsed
 QUIET="false"
 
@@ -58,6 +75,30 @@ while [[ $# -gt 0 ]]; do
         *) echo "unknown arg: $1" >&2; usage ;;
     esac
 done
+
+# A statement_timeout the task timeout never lets Postgres reach is not a longer
+# budget, it is a guaranteed hard kill: Cloud Run SIGKILLs the task, run_query
+# uploads nothing, and the operator waits the full task timeout to learn nothing.
+# The 57014 (statement_timeout) result the job reports as a user error is
+# unreachable above this bound. Refuse here, before anything is dispatched.
+#
+# This bounds ONE statement. statement_timeout applies per statement, so a
+# multi-statement batch can still exceed the task budget in total; that case is
+# reported by Cloud Run as it happens, not predicted here.
+if ! [[ "$TIMEOUT_S" =~ ^[0-9]+$ ]] || (( TIMEOUT_S == 0 )); then
+    echo "error: --timeout takes a positive whole number of seconds, got '${TIMEOUT_S}'" >&2
+    exit 2
+fi
+if (( TIMEOUT_S > MAX_TIMEOUT_S )); then
+    echo "error: --timeout ${TIMEOUT_S}s does not fit the db-query job's ${TASK_TIMEOUT_S}s task timeout." >&2
+    echo "       Cloud Run kills the task at ${TASK_TIMEOUT_S}s, so a statement_timeout above" >&2
+    echo "       ${MAX_TIMEOUT_S}s never fires and the run returns no results at all." >&2
+    echo "       Either lower --timeout to at most ${MAX_TIMEOUT_S}, or raise --task-timeout for" >&2
+    echo "       the db-query job in gcp/deploy.sh (deploy_db_query) and redeploy it first." >&2
+    echo "       A query that needs longer than ${MAX_TIMEOUT_S}s usually wants a narrower scan" >&2
+    echo "       (CLAUDE.md 3.8) rather than a longer clock." >&2
+    exit 2
+fi
 
 # Container start + query + result upload all happen inside the wait window,
 # so give the statement timeout meaningful headroom rather than racing it.
