@@ -2,7 +2,7 @@
 feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-13-feat-cicd-001-canvas-from-export.md
 branch: feature/feat-cicd-001-canvas-from-export
-pr: null
+pr: 1860
 status: ready
 ---
 
@@ -28,6 +28,6 @@ Spec: § Design 4. Advances done_when[9].
 
 ## Task 4: records and gate
 Spec: § Close-out and done_when. Advances done_when[10] and [11].
-- [ ] FEAT-CICD-001 Status and Last reviewed in 02-FEATURE-CATALOG; this PR in 12-PR-ISSUE-TRACEABILITY
+- [x] FEAT-CICD-001 Status and Last reviewed in 02-FEATURE-CATALOG; this PR in 12-PR-ISSUE-TRACEABILITY
 - [ ] SHARED-01 implementation-source note in 03-SITE-TRACEABILITY at the current source hash; produce and verify `docs/review-evidence/site-source-snapshot.json`
 - [ ] `python3 scripts/gate/spec_gate.py --pr origin/main HEAD`; docs audit on the branch against origin/main
