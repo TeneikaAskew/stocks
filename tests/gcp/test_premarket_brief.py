@@ -3123,7 +3123,9 @@ def test_busy_supported_day_has_no_recap_and_is_bounded():
     if False:
         data['ew_recap']['unavailable'] = 'RuntimeError'
     desc = _build_earnings_embed(data)['description']
-    assert desc == plain and len(desc) == 4090
+    assert desc == plain and len(desc) <= 4090
+    assert desc.endswith('_... truncated_')
+    assert all(line.count('**') % 2 == 0 for line in desc.splitlines())
     assert '**W000**' in desc
     assert 'EW picks' not in desc and 'RuntimeError' not in desc
 
@@ -3136,7 +3138,9 @@ def test_retired_recap_reservation_is_absent():
     if False:
         data['ew_recap']['unavailable'] = 'RuntimeError'
     desc = _build_earnings_embed(data)['description']
-    assert desc == plain and len(desc) == 4090
+    assert desc == plain and len(desc) <= 4090
+    assert desc.endswith('_... truncated_')
+    assert all(line.count('**') % 2 == 0 for line in desc.splitlines())
     assert '**W000**' in desc
     assert 'EW picks' not in desc and 'RuntimeError' not in desc
 
@@ -3149,7 +3153,9 @@ def test_busy_supported_day_has_no_ew_warning():
     if True:
         data['ew_recap']['unavailable'] = 'RuntimeError'
     desc = _build_earnings_embed(data)['description']
-    assert desc == plain and len(desc) == 4090
+    assert desc == plain and len(desc) <= 4090
+    assert desc.endswith('_... truncated_')
+    assert all(line.count('**') % 2 == 0 for line in desc.splitlines())
     assert '**W000**' in desc
     assert 'EW picks' not in desc and 'RuntimeError' not in desc
 
@@ -3718,3 +3724,55 @@ def test_non_ew_embed_golden_after_retirement(monkeypatch):
     assert pb._build_earnings_embed(data) == expected['daily']
     assert pb._build_earnings_embed(dict(data, mode='weekly')) == expected['weekly']
     assert pb._build_earnings_embed({'earnings': []}) == expected['empty']
+
+
+@pytest.mark.parametrize('section,ticker,label', [
+    ('watchlist', 'WATCH', 'High-Flow Watchlist'),
+    ('low_conviction', 'LOW', 'Also reporting'),
+    ('yesterday_amc_reactions', 'PRIOR', 'Reactions to Last Night'),
+])
+def test_non_ew_section_survives_empty_track_a(section, ticker, label):
+    from gcp.premarket_brief import _build_earnings_embed
+    data = _earnings_brief([])
+    data[section] = [_row_out(ticker, 'premarket', 2, expected_move=5.67)]
+    desc = _build_earnings_embed(data)['description']
+    assert label in desc and ticker in desc
+    assert 'No earnings scheduled' not in desc
+    assert 'Whispers' not in desc and 'EW picks' not in desc
+
+
+def test_actual_track_b_only_loader_still_renders(real_brief_sql, monkeypatch):
+    from gcp.premarket_brief import load_earnings_for_brief, _build_earnings_embed
+    from lib import earnings_reactions as er
+    monkeypatch.setenv('BRIEF_INCLUDE_UNCONFIRMED', '0')
+    monkeypatch.setenv('BRIEF_MIN_REACTION_QUARTERS', '12')
+    def enrich(rows):
+        for row in rows:
+            row.update(playability_n_q=5, playability_score=10.)
+    monkeypatch.setattr(er, 'enrich_with_playability', enrich)
+    real_brief_sql([_row('TRACK_B', source, open_interest=60000)
+                    for source in ('alphavantage', 'unusual_whales')])
+    data = load_earnings_for_brief(date(2026, 4, 27))
+    assert data['earnings'] == []
+    assert [row['ticker'] for row in data['watchlist']] == ['TRACK_B']
+    desc = _build_earnings_embed(data)['description']
+    assert '**TRACK_B**' in desc and 'High-Flow Watchlist' in desc
+
+
+def test_long_non_ew_output_keeps_complete_financial_rows():
+    from gcp.premarket_brief import _build_earnings_embed
+    data = _earnings_brief([_row_out(f'A{i:03d}', 'premarket', 2,
+                                   expected_move=5.67) for i in range(25)])
+    data['watchlist'] = [_row_out(f'B{i:03d}', 'premarket', 2,
+        expected_move=5.67, options_volume=30000, open_interest=60000,
+        market_cap=1000000000) for i in range(100)]
+    data['yesterday_amc_reactions'] = [_row_out(f'P{i:03d}', 'postmarket', 2,
+        expected_move=5.67, gap_pct=-3.7) for i in range(5)]
+    desc = _build_earnings_embed(data)['description']
+    assert len(desc) <= 4090 and desc.endswith('_... truncated_')
+    for line in desc.splitlines():
+        if line.startswith('**B'):
+            assert line.endswith('1.0B mcap')
+            assert 'EM $5.67' in line
+        assert line.count('**') % 2 == 0
+    assert 'Whispers' not in desc and 'EW picks' not in desc

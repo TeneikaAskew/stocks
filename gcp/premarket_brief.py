@@ -2331,7 +2331,10 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
 
     mode = earnings_data.get('mode', 'daily')
     rows = earnings_data.get('earnings', [])
-    if not rows:
+    has_daily_sections = mode != 'weekly' and any(
+        earnings_data.get(key) for key in
+        ('watchlist', 'low_conviction', 'yesterday_amc_reactions'))
+    if not rows and not has_daily_sections:
         return {
             'title': 'Earnings (Today)' if mode == 'daily' else 'Earnings (Week Ahead)',
             'description': 'No earnings scheduled',
@@ -2702,9 +2705,16 @@ def _build_earnings_embed(earnings_data: dict) -> dict:
 
         description = '\n'.join(sections).strip()
 
+    if len(description) > 4090:
+        # Never turn a financial value into a different one by cutting a row.
+        notice = '\n_... truncated_'
+        head = description[:4090 - len(notice) + 1]
+        kept = head.rsplit('\n', 1)[0] if '\n' in head else ''
+        description = kept.rstrip() + notice
+
     return {
         'title': title,
-        'description': description[:4090],
+        'description': description,
         'color': 0xf39c12,
     }
 
