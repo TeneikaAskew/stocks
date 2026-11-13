@@ -2,6 +2,7 @@
 feat_id: FEAT-DEPLOY-001
 spec: docs/superpowers/specs/2026-11-13-feat-deploy-001-db-query-timeout-fit.md
 branch: fix/feat-deploy-001-db-query-timeout-fit
+pr: 1886
 status: ready
 ---
 

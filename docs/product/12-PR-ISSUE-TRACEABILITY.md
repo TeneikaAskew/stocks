@@ -295,7 +295,7 @@ As of 2026-10-08, regenerated from the live issue lists (stocks 227 open and sol
 
 ### FEAT-DEPLOY-001 — Infrastructure / deploy (15 open)
 
-**PR lineage:** EW calendar binding source retirement [#1789](https://github.com/TeneikaAskew/stocks/pull/1789), bound to the approved November 9 own-scope spec and [fresh plan](../superpowers/plans/2026-11-10-feat-deploy-001-ew-calendar-bindings-own-scope.md). Preserves #1659 lineage and all original 34 obligations unclaimed; original items 28/31 need a separate owner-approved AV successor after merge. Source qualification is separate from unfinished main/staging close-out and coordinated release after P-A.
+**PR lineage:** db-query dispatcher refuses a statement timeout the job's task timeout cannot reach [#1886](https://github.com/TeneikaAskew/stocks/pull/1886) (spec [#1862](https://github.com/TeneikaAskew/stocks/pull/1862), fixes [#1861](https://github.com/TeneikaAskew/stocks/issues/1861)); EW calendar binding source retirement [#1789](https://github.com/TeneikaAskew/stocks/pull/1789), bound to the approved November 9 own-scope spec and [fresh plan](../superpowers/plans/2026-11-10-feat-deploy-001-ew-calendar-bindings-own-scope.md). Preserves #1659 lineage and all original 34 obligations unclaimed; original items 28/31 need a separate owner-approved AV successor after merge. Source qualification is separate from unfinished main/staging close-out and coordinated release after P-A.
 
 | Issue | Sev | Title |
 |---|---|---|
