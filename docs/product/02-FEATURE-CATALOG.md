@@ -213,7 +213,7 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Priority | P0 |
 | Target phase | Phase 3 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-11 |
+| Last reviewed | 2026-11-13 |
 | Evidence status | Existing production needs remediation; current-session ORB consumer candidate passes 137 guarded affected backend/OpenAPI tests after the first local review repair batch (timestamp identity, cold-calendar admission, bounded-response worker ownership and overflow isolation). The authorized SEC Low/P3 principal-fairness repair adds four verified-email attempts within the unchanged global eight and passes192 affected tests with1 existing Postgres-dependent skip. PLAYBOOK-05 source proof and generated inventory require final refresh for this repair; external review, hosted checks, API image/fleet qualification and deployed parity remain pending. |
 | UI surface | `/playbook` |
 | Backend | `/api/playbook` |
@@ -227,6 +227,8 @@ capabilities — including the P0 model and operations rows — resolved to no c
 
 
 Current-session ORB runtime draft: [#1642](https://github.com/TeneikaAskew/stocks/pull/1642). The earlier137-test repair, formal renderer and source identity passed on the prior source. The current SEC fairness repair passes192 tests with1 existing Postgres-dependent skip; final source/document qualification remains root-owned. API-image calendar import, combined fleet allocation, hosted review/checks and deployed parity remain pending.
+
+EW brief retirement Draft [#1837](https://github.com/TeneikaAskew/stocks/pull/1837): both retired source aliases are excluded before loader calculations and recap acquisition/presentation is removed, including replays. Current-main baseline passes 271 scoped tests; candidate passes 282 with all 54 caller nodes preserved. Numeric helpers, current RSI calibration, calendar freshness and historical data are unchanged. Source/local evidence only; review, hosted CI and deployment remain pending.
 
 ### FEAT-STRAT-001
 
