@@ -310,3 +310,29 @@ def test_a_card_split_over_lines_is_refused():
     js = ROOT_JS.replace("J('fetch-old', 'Weekdays 23:00 ET',", "J('fetch-old', 'Weekdays 23:00 ET',\n     ")
     with pytest.raises(cfe.CanvasError, match="not on one line"):
         cfe.update(js, export())
+
+
+@pytest.mark.parametrize("damage", ["truncated", "not_base64", "not_gzip"])
+def test_a_damaged_asset_is_refused_with_exit_2(tmp_path, damage):
+    html = bundle_html()
+    m = re.search(r'<script type="__bundler/manifest">\n(.*?)\n</script>', html, re.S)
+    manifest = json.loads(m.group(1))
+    entry = manifest["22222222-2222-2222-2222-222222222222"]
+    raw = base64.b64decode(entry["data"])
+    if damage == "truncated":
+        entry["data"] = base64.b64encode(raw[:-8]).decode()
+    elif damage == "not_base64":
+        entry["data"] = "!!!not base64!!!"
+    else:
+        entry["data"] = base64.b64encode(b"plain bytes, not gzip").decode()
+    page, exp, out = tmp_path / "page.html", tmp_path / "export.json", tmp_path / "out.html"
+    page.write_text(html[:m.start(1)] + json.dumps(manifest, separators=(",", ":")) + html[m.end(1):],
+                    encoding="utf-8")
+    exp.write_text(json.dumps(export()), encoding="utf-8")
+    for args in (("--output", str(out)), ("--check",)):
+        res = subprocess.run([sys.executable, "-m", "scripts.maintenance.canvas_from_export",
+                              "--export", str(exp), "--canvas", str(page), *args],
+                             capture_output=True, text=True, check=False)
+        assert res.returncode == 2, (damage, args, res.stderr)
+        assert "refused" in res.stderr and "Traceback" not in res.stderr
+    assert not out.exists()

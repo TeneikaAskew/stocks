@@ -42,6 +42,7 @@ import gzip
 import json
 import re
 import sys
+import zlib
 from typing import Any
 
 SCHEMA = "architecture-export/1"
@@ -104,10 +105,14 @@ class Bundle:
 
 
 def _decode(entry: dict[str, Any]) -> str:
-    raw = base64.b64decode(entry["data"])
-    if entry.get("compressed"):
-        raw = gzip.decompress(raw)
-    return raw.decode("utf-8")
+    try:
+        raw = base64.b64decode(entry["data"])
+        if entry.get("compressed"):
+            raw = gzip.decompress(raw)
+        return raw.decode("utf-8")
+    except (EOFError, OSError, ValueError, zlib.error, KeyError, TypeError) as exc:
+        raise CanvasError(f"page asset could not be decoded ({type(exc).__name__}); "
+                          "is the page complete?") from exc
 
 
 # ─────────────────────────────────────────────────────────────────────────────
