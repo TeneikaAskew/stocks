@@ -174,26 +174,52 @@ def cron_line(s: dict[str, Any]) -> str:
     return "  C(" + ", ".join(parts) + "),"
 
 
-def _cron_times(cron: str) -> tuple[set[str], set[str]]:
-    """(exact, possible) HH:MM times of a 5-field cron.
+def _cron_field(field: str, lo: int, hi: int) -> tuple[set[int], bool] | None:
+    """Values of one cron field and whether it is a plain list of numbers.
 
-    exact: times a label must show (plain minute, plain hour list).
-    possible: every time the trigger can fire at, ranges expanded, so a label
-    time outside it is wrong. Step and wildcard fields give no times.
+    Handles `*`, `a-b`, `*/n`, `a-b/n`, `a/n` and comma lists. None when the
+    field has any other form, so the caller can treat the times as unknown.
+    """
+    values: set[int] = set()
+    plain = True
+    for part in field.split(","):
+        m = re.fullmatch(r"(\*|\d+(?:-\d+)?)(?:/(\d+))?", part)
+        if not m:
+            return None
+        rng, step = m.group(1), m.group(2)
+        if rng == "*":
+            a, b = lo, hi
+        elif "-" in rng:
+            a, b = map(int, rng.split("-"))
+        else:
+            a = int(rng)
+            b = hi if step else a
+        n = int(step) if step else 1
+        if n < 1 or a < lo or b > hi or a > b:
+            return None
+        if rng == "*" or "-" in rng or step:
+            plain = False
+        values |= set(range(a, b + 1, n))
+    return values, plain
+
+
+def _cron_times(cron: str) -> tuple[set[str], set[str]] | None:
+    """(exact, possible) HH:MM times of a 5-field cron, or None if unknown.
+
+    possible: every time the trigger can fire at, with wildcards, ranges and
+    steps expanded, so a label time outside it is wrong.
+    exact: times a label must show; only when minute and hour are plain
+    numbers (a range or step has no single time a label must name).
     """
     fields = cron.split()
-    if len(fields) != 5 or not fields[0].isdigit():
-        return set(), set()
-    minute = int(fields[0])
-    exact, possible = set(), set()
-    for part in fields[1].split(","):
-        if part.isdigit():
-            t = f"{int(part):02d}:{minute:02d}"
-            exact.add(t)
-            possible.add(t)
-        elif re.fullmatch(r"\d+-\d+", part):
-            lo, hi = map(int, part.split("-"))
-            possible |= {f"{h:02d}:{minute:02d}" for h in range(lo, hi + 1)}
+    if len(fields) != 5:
+        return None
+    minutes = _cron_field(fields[0], 0, 59)
+    hours = _cron_field(fields[1], 0, 23)
+    if minutes is None or hours is None:
+        return None
+    possible = {f"{h:02d}:{m:02d}" for h in hours[0] for m in minutes[0]}
+    exact = possible if (minutes[1] and hours[1]) else set()
     return exact, possible
 
 
@@ -218,9 +244,11 @@ def label_disagrees(label: str, crons: list[str]) -> bool:
         return False
     exact, possible = set(), set()
     for c in crons:
-        e, p = _cron_times(c)
-        exact |= e
-        possible |= p
+        times = _cron_times(c)
+        if times is None:
+            return False  # a form this check cannot expand: unknown, not wrong
+        exact |= times[0]
+        possible |= times[1]
     return bool(shown - possible) or bool(exact - shown)
 
 
@@ -270,13 +298,16 @@ class Result:
     services_not_named: list[str]
     tables_not_named: list[str]
     stamp: str
+    stamp_old: str | None = None
+
+    @property
+    def stamp_changed(self) -> bool:
+        return self.stamp_old != self.stamp
 
     @property
     def changed(self) -> bool:
         return bool(self.crons_added or self.crons_removed or self.crons_changed
-                    or self.cards_removed or self.cards_added) or self._stamp_changed
-
-    _stamp_changed: bool = False
+                    or self.cards_removed or self.cards_added) or self.stamp_changed
 
 
 def update(js: str, export: dict[str, Any], run_label: str | None = None) -> Result:
@@ -284,12 +315,19 @@ def update(js: str, export: dict[str, Any], run_label: str | None = None) -> Res
     jobs = {j["name"]: j for j in _declared(export["jobs"])}
     scheds = {s["name"]: s for s in _declared(export["schedulers"])}
 
+    # Which jobs the page already names outside JOBS, read before any rewrite,
+    # so a trigger this run adds never counts as a description of its job.
+    j_body0, j_end0 = _block(js, _JOBS_OPEN, "\n};")
+    named_before = js[:j_body0] + js[j_end0:]
+
     # CRONS ───────────────────────────────────────────────────────────────
     c_body, c_end = _block(js, _CRONS_OPEN, "];")
     old_lines = js[c_body:c_end].splitlines()
     old_order: list[str] = []
     old_text: dict[str, str] = {}
     for line in old_lines:
+        if not line.strip():
+            continue
         m = _C_LINE_RE.match(line)
         if not m:
             raise CanvasError(f"unexpected line in CRONS: {line[:80]!r}")
@@ -305,7 +343,7 @@ def update(js: str, export: dict[str, Any], run_label: str | None = None) -> Res
     added = [n for n in scheds if n not in old_text]
     new_lines += [cron_line(scheds[n]) for n in added]
     removed = [n for n in old_order if n not in scheds]
-    js = js[:c_body] + "\n".join(new_lines) + "\n" + js[c_end:]
+    js = js[:c_body] + "".join(line + "\n" for line in new_lines) + js[c_end:]
 
     # stamp ───────────────────────────────────────────────────────────────
     commit = export["sources"]["commit"]
@@ -313,14 +351,12 @@ def update(js: str, export: dict[str, Any], run_label: str | None = None) -> Res
              f"main {commit[:8]}, from the architecture export"
              + (f" ({run_label})" if run_label else "") + ".")
     sm = _STAMP_RE.search(js)
-    stamp_changed = False
+    stamp_old = sm.group(0) if sm else None
     if sm:
-        stamp_changed = sm.group(0) != stamp
         js = js[:sm.start()] + stamp + js[sm.end():]
     else:
         c_at = js.find(_CRONS_OPEN)
         js = js[:c_at] + stamp + "\n" + js[c_at:]
-        stamp_changed = True
 
     # JOBS ────────────────────────────────────────────────────────────────
     j_body, j_end = _block(js, _JOBS_OPEN, "\n};")
@@ -328,6 +364,8 @@ def update(js: str, export: dict[str, Any], run_label: str | None = None) -> Res
     cards: dict[str, str] = {}
     kept_lines, cards_removed = [], []
     for line in block.split("\n"):
+        if line.lstrip().startswith("J(") and not (line.startswith("    J(") and line.rstrip().endswith("),")):
+            raise CanvasError(f"job card not on one line, which this tool cannot edit safely: {line.strip()[:80]!r}")
         m = _J_LINE_RE.match(line)
         if m:
             cards[m.group(1)] = m.group(2)
@@ -337,8 +375,7 @@ def update(js: str, export: dict[str, Any], run_label: str | None = None) -> Res
         kept_lines.append(line)
     block = "\n".join(kept_lines)
 
-    rest = js[:j_body] + js[j_end:]  # text outside JOBS: DETAILS, LINEAGE, ...
-    missing = [n for n in jobs if n not in cards and f"'{n}'" not in rest]
+    missing = [n for n in jobs if n not in cards and f"'{n}'" not in named_before]
     cards_added = []
     if missing:
         cats = {m.group(1): m.end() for m in _CATEGORY_RE.finditer(block)}
@@ -374,8 +411,7 @@ def update(js: str, export: dict[str, Any], run_label: str | None = None) -> Res
     res = Result(js=js, crons_added=added, crons_removed=removed, crons_changed=changed,
                  cards_removed=cards_removed, cards_added=cards_added, labels_to_check=labels,
                  stale_mentions=stale, services_not_named=services, tables_not_named=tables,
-                 stamp=stamp)
-    res._stamp_changed = stamp_changed
+                 stamp=stamp, stamp_old=stamp_old)
     return res
 
 
@@ -392,6 +428,8 @@ def report(res: Result, export: dict[str, Any], template_text: str = "") -> str:
         out.extend(items if items else ["- none"])
         out.append("")
 
+    section("Applied: provenance comment",
+            [f"- `{res.stamp_old or '(none)'}` → `{res.stamp}`"] if res.stamp_changed else [])
     section("Applied: triggers added", [f"- `{n}`" for n in res.crons_added])
     section("Applied: triggers removed", [f"- `{n}`" for n in res.crons_removed])
     section("Applied: triggers changed", [f"- `{n}`: `{a}` → `{b}`" for n, a, b in res.crons_changed])
@@ -442,7 +480,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with open(a.export, encoding="utf-8") as f:
             export = load_export(json.load(f))
-        with open(a.canvas, encoding="utf-8") as f:
+        with open(a.canvas, encoding="utf-8", newline="") as f:
             html = f.read()
         bundle = Bundle.parse(html)
         res = update(bundle.js, export, a.run_label)
@@ -456,7 +494,7 @@ def main(argv: list[str] | None = None) -> int:
     if a.check:
         sys.stdout.write(text)
         return 1 if res.changed else 0
-    with open(a.output, "w", encoding="utf-8") as f:
+    with open(a.output, "w", encoding="utf-8", newline="") as f:
         f.write(bundle.render(res.js) if res.js != bundle.js else html)
     if a.report:
         with open(a.report, "w", encoding="utf-8") as f:

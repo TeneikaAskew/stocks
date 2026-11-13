@@ -100,7 +100,8 @@ steps 2, 3 and 6 for it; steps 4, 5 and 7 are unchanged.
    `counts.live.tables` and `counts.live.routes` are always null: the export reads no database and no
    deployed route list, so report them as "not read", never as zero. A job whose `reads` is null runs
    a module that is not in this checkout, so its tables are unknown: say so, never "none". If the
-   report shows no applied change and nothing to check, say so and stop.
+   report shows no applied change (a new provenance comment counts as one) and nothing to check, say
+   so and stop.
 6. **Wait for the user**, as in step 5 of the skill. On approval, publish `page.new.html` with the
    Artifact tool (action `publish`, `url` = the canvas url). Make prose changes from the report's
    second part only where the user names them, by hand, in the saved page, then publish again.

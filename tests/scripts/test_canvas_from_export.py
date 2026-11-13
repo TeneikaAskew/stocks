@@ -249,3 +249,64 @@ def test_cli_refusal_exits_2_and_writes_nothing(tmp_path):
     page.write_text(bundle_html(), encoding="utf-8")
     assert run("--canvas", str(page), "--output", str(out)).returncode == 2
     assert not out.exists()
+
+
+# Codex round 1 on #1860 ─────────────────────────────────────────────────────
+
+def test_a_provenance_only_change_is_reported_as_applied():
+    first = cfe.update(ROOT_JS, export(), run_label="run 1")
+    second = cfe.update(first.js, export(), run_label="run 2")
+    assert second.changed and second.stamp_changed
+    assert not (second.crons_added or second.crons_changed or second.cards_added)
+    text = cfe.report(second, export())
+    assert "### Applied: provenance comment\n- `" in text and "(run 2)" in text.split("### Applied: provenance comment")[1]
+    assert "### Applied: provenance comment\n- none" in cfe.report(cfe.update(first.js, export(), "run 1"), export())
+
+
+@pytest.mark.parametrize("label,crons_,bad", [
+    ("Hourly 08:00–17:00 ET weekdays", ["0 * * * 1-5"], False),
+    ("Every 5 min 09:30–15:55 ET", ["*/5 9-15 * * 1-5"], False),
+    ("Every 5 min 09:32 ET", ["*/5 9-15 * * 1-5"], True),
+    ("Weekdays 07:00 ET", ["0 7 * * 1-5", "0 L * * *"], False),  # unknown form: never "wrong"
+])
+def test_wildcard_and_stepped_crons_are_expanded(label, crons_, bad):
+    assert cfe.label_disagrees(label, crons_) is bad
+
+
+def test_a_new_scheduled_job_gets_a_stub_even_though_its_trigger_is_added():
+    data = export()
+    data["jobs"].append(job("fetch-brand-new", "fetcher", [("fetch-brand-new-daily", "0 6 * * 1-5")]))
+    data["schedulers"].append(sched("fetch-brand-new-daily", "0 6 * * 1-5", "fetch-brand-new"))
+    res = cfe.update(ROOT_JS, data)
+    assert "fetch-brand-new-daily" in res.crons_added
+    assert "fetch-brand-new" in res.cards_added
+    assert "J('fetch-brand-new', 'Scheduled" in res.js
+    assert cfe.update(res.js, data).cards_added == []
+
+
+def test_crlf_page_keeps_its_line_endings(tmp_path):
+    page, exp, out = tmp_path / "page.html", tmp_path / "export.json", tmp_path / "out.html"
+    html = bundle_html().replace("\n", "\r\n")
+    page.write_bytes(html.encode("utf-8"))
+    exp.write_text(json.dumps(export()), encoding="utf-8")
+    res = subprocess.run([sys.executable, "-m", "scripts.maintenance.canvas_from_export", "--export", str(exp),
+                          "--canvas", str(page), "--output", str(out), "--report", str(tmp_path / "r.md")],
+                         capture_output=True, text=True, check=False)
+    assert res.returncode == 0, res.stderr
+    strip = lambda b: re.sub(rb'(<script type="__bundler/manifest">).*?(</script>)', rb"\1\2", b, flags=re.DOTALL)
+    assert strip(out.read_bytes()) == strip(page.read_bytes())
+    assert out.read_bytes().count(b"\r\n") == html.count("\r\n")
+
+
+def test_an_empty_trigger_list_stays_readable():
+    data = export(schedulers=[])
+    first = cfe.update(ROOT_JS, data)
+    assert "const CRONS = [\n];" in first.js
+    second = cfe.update(first.js, data)
+    assert second.js == first.js and not second.changed
+
+
+def test_a_card_split_over_lines_is_refused():
+    js = ROOT_JS.replace("J('fetch-old', 'Weekdays 23:00 ET',", "J('fetch-old', 'Weekdays 23:00 ET',\n     ")
+    with pytest.raises(cfe.CanvasError, match="not on one line"):
+        cfe.update(js, export())
