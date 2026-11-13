@@ -3,6 +3,7 @@ feat_id: FEAT-CICD-001
 spec: docs/superpowers/specs/2026-11-13-feat-cicd-001-test-suite-audit-a-xdist-guards-r2.md
 branch: feature/feat-cicd-001-gate-xdist-guards
 status: ready
+pr: 1858
 ---
 
 # Test suite audit, Part A prerequisite: what pytest-xdist and pytest config read from the checkout is process
