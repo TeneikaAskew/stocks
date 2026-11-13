@@ -347,7 +347,7 @@ class SignalMonitor:
             'symbol': symbol,
             'interval': '1min',
             'outputsize': 'compact',  # last 100 data points
-            'adjusted': 'true',
+            'adjusted': 'false',  # as traded, like every 1-min request
             # signal_monitor checks live triggers — must use realtime
             # entitlement, otherwise AV returns historical-only.
             'entitlement': 'realtime',
