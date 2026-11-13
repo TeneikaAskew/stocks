@@ -403,3 +403,19 @@ def test_a_layout_only_change_counts_as_a_change():
     assert res.js != spaced and res.changed and res.layout_only_change
     assert "Applied: layout only" in cfe.report(res, export())
     assert not cfe.update(res.js, export()).changed
+
+
+# Codex round 5 on #1860 ─────────────────────────────────────────────────────
+
+def test_a_mention_only_in_a_removed_card_still_gets_a_stub_on_the_first_run():
+    line = next(x for x in ROOT_JS.splitlines() if x.startswith("    J('fetch-old',"))
+    js = ROOT_JS.replace(line, line.replace("'fetch-old', '", "'fetch-old', 'fetch-new feeds this; ", 1))
+    assert js != ROOT_JS
+    first = cfe.update(js, export())
+    assert "fetch-old" in first.cards_removed and first.cards_added == ["fetch-new"]
+    assert not cfe.update(first.js, export()).changed
+
+
+def test_a_table_named_in_the_layout_is_not_listed_as_unnamed():
+    assert cfe.update(ROOT_JS, export()).tables_not_named == ["zz_unnamed"]
+    assert cfe.update(ROOT_JS, export(), template_text="<div>zz_unnamed</div>").tables_not_named == []

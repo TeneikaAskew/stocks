@@ -343,9 +343,6 @@ def update(js: str, export: dict[str, Any], run_label: str | None = None,
     jobs = {j["name"]: j for j in _declared(export["jobs"])}
     scheds = {s["name"]: s for s in _declared(export["schedulers"])}
 
-    # The page as it was, read before any rewrite, so a trigger this run adds
-    # never counts as a description of its job. A job with no card of its own
-    # can only appear here as a mention (another card's note, a details panel).
     js_before = js
 
     # CRONS ───────────────────────────────────────────────────────────────
@@ -390,7 +387,7 @@ def update(js: str, export: dict[str, Any], run_label: str | None = None,
     j_body, j_end = _block(js, _JOBS_OPEN, "\n};")
     block = js[j_body:j_end]
     cards: dict[str, str] = {}
-    kept_lines, cards_removed = [], []
+    kept_lines, cards_removed, removed_card_lines = [], [], []
     for line in block.split("\n"):
         if line.lstrip().startswith("J(") and not (line.startswith("    J(") and line.rstrip().endswith("),")):
             raise CanvasError(f"job card not on one line, which this tool cannot edit safely: {line.strip()[:80]!r}")
@@ -401,13 +398,23 @@ def update(js: str, export: dict[str, Any], run_label: str | None = None,
             cards[m.group(1)] = m.group(2)
             if m.group(1) not in jobs:
                 cards_removed.append(m.group(1))
+                removed_card_lines.append(line)
                 continue
         kept_lines.append(line)
     block = "\n".join(kept_lines)
 
-    # A job the page already names, in its data script outside JOBS or in its
-    # layout template, is described somewhere and gets no stub.
-    missing = [n for n in jobs if n not in cards and not _names(js_before, n)
+    # A job the page already names in text that survives this run (another
+    # card's note, a details panel, the layout template) is described somewhere
+    # and gets no stub. Read from the original script, so a trigger this run
+    # adds never counts, and without the triggers and cards this run removes,
+    # so the first run is complete and a second is a no-op.
+    c_body0, c_end0 = _block(js_before, _CRONS_OPEN, "];")
+    surviving = (js_before[:c_body0]
+                 + "".join(old_text[n] + "\n" for n in old_order if n in scheds)
+                 + js_before[c_end0:])
+    for line in removed_card_lines:
+        surviving = surviving.replace(line, "", 1)
+    missing = [n for n in jobs if n not in cards and not _names(surviving, n)
                and not _names(template_text, n)]
     cards_added = []
     if missing:
@@ -439,7 +446,7 @@ def update(js: str, export: dict[str, Any], run_label: str | None = None,
             stale.append((name, n))
     services = [s["name"] for s in _declared(export["services"]) if s["name"] not in js]
     tables = [t["name"] for t in export["tables"] if t.get("kind") == "table" and t.get("declared", True)
-              and t["name"] not in js]
+              and t["name"] not in js and not _names(template_text, t["name"])]
 
     res = Result(js=js, crons_added=added, crons_removed=removed, crons_changed=changed,
                  cards_removed=cards_removed, cards_added=cards_added, labels_to_check=labels,
