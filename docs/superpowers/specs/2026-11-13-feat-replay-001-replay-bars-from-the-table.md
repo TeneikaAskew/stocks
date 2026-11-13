@@ -23,7 +23,7 @@ done_when:
   - "EXPLAIN (ANALYZE, BUFFERS) of the two probe queries, run read-only through scripts/db_query_cr.sh for SPY with the latest session as D and for a ticker with no rows, is pasted on the PR with the execution ids: each plan is an index scan that reads at most 10 rows; a plan that reads more blocks the merge"
   - "make test passes on the PR head; the generated inventory blocks are re-rendered with scripts/maintenance/doc_inventory.py and tests/scripts/test_check_generated_docs.py passes"
   - "02-FEATURE-CATALOG FEAT-REPLAY-001 record shows Status and Last reviewed for this PR, 12-PR-ISSUE-TRACEABILITY lists it, the nine (FEAT-REPLAY-001, component) rows of Design 10 are in the implementation-source notes of 03-SITE-TRACEABILITY.md with docs/review-evidence/site-source-snapshot.json regenerated, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
-status: draft
+status: approved
 supersedes: null
 ---
 
