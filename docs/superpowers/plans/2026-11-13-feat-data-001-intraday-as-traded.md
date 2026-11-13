@@ -2,7 +2,7 @@
 feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-11-13-feat-data-001-intraday-as-traded.md
 branch: fix/feat-data-001-intraday-as-traded
-pr: null
+pr: 1874
 status: ready
 ---
 
