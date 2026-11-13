@@ -856,6 +856,31 @@ class TestMarketDataAPI:
         r = client.get("/api/market/data/IWM/20260220?timeframe=1")
         assert r.status_code == 404
 
+    # -- a replay reads bars from the table or says it cannot (FEAT-REPLAY-001) --
+
+    def test_cloud_sql_flags_tell_unconfigured_from_a_failed_import(
+            self, client, monkeypatch, caplog):
+        """`not _CLOUD_SQL` used to mean two things: Cloud SQL is not
+        configured (local dev, where the bucket may be read), and the import
+        of gcp.database failed on a deployed revision (where it must not).
+        The second flag is True only for the first."""
+        import api.main as main_module
+        from gcp import database
+
+        monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: True)
+        assert main_module._cloud_sql_flags() == (True, False)
+
+        monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: False)
+        assert main_module._cloud_sql_flags() == (False, True)
+
+        # a None entry makes `from gcp.database import ...` raise ImportError
+        monkeypatch.setitem(sys.modules, "gcp.database", None)
+        with caplog.at_level("ERROR", logger=main_module.logger.name):
+            assert main_module._cloud_sql_flags() == (False, False)
+        errors = [rec for rec in caplog.records
+                  if rec.name == main_module.logger.name and rec.levelname == "ERROR"]
+        assert errors and errors[-1].exc_info, "the failed import must be logged with its traceback"
+
 
 # ── Dashboard Brief API ─────────────────────────────────────────────────────
 

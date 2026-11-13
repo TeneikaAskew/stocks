@@ -60,10 +60,32 @@ from api.schemas import (
 logger = logging.getLogger(__name__)
 
 # ── Cloud SQL availability ───────────────────────────────────────────────────
-_CLOUD_SQL = False
+def _cloud_sql_flags() -> tuple[bool, bool]:
+    """(configured, unconfigured) for this process.
+
+    Two flags, because "not configured" used to mean two different things.
+    `unconfigured` is True only when gcp.database imported and said Cloud SQL
+    is not configured: local development, where the bar routes may read the
+    bucket. A failed import leaves BOTH False: a deployed revision with a
+    broken import is not local development, and its bar routes answer 503
+    instead of serving the bucket with a 200.
+    """
+    try:
+        from gcp.database import is_cloud_sql_configured
+        configured = bool(is_cloud_sql_configured())
+    except Exception:
+        logger.exception(
+            "gcp.database could not be imported or asked; Cloud SQL reads as "
+            "neither configured nor unconfigured")
+        return False, False
+    return configured, not configured
+
+
+_CLOUD_SQL, _CLOUD_SQL_UNCONFIGURED = _cloud_sql_flags()
+
+# The swallowing helper, still read by the bar loader and the reference route.
 try:
-    from gcp.database import is_cloud_sql_configured, query_to_dataframe
-    _CLOUD_SQL = is_cloud_sql_configured()
+    from gcp.database import query_to_dataframe
 except Exception:
     pass
 
