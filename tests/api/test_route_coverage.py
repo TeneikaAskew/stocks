@@ -271,7 +271,10 @@ REQUESTS: list[Req] = [
     Req("POST", "/api/backtest/replay-trades", 422,
         json={"ticker": T, "trades": []},
         note="the handler's own check for trade_ids/session_id"),
-    Req("POST", "/api/style/mine-and-validate", 200, json={"ticker": T}),
+    Req("POST", "/api/style/mine-and-validate", 503, json={"ticker": T},
+        note="was 200 'need >= 10 closed trades, have 0': the journal read "
+             "went through the swallowing helper, so an outage read as an "
+             "empty journal (FEAT-REPLAY-001)"),
 
     # ── signals ─────────────────────────────────────────────────────────────
     Req("GET", f"/api/signals/{T}", 503,

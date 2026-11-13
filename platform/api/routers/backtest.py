@@ -79,6 +79,7 @@ from lib.config import load_config  # noqa: E402
 # use elsewhere (platform/api/routers/journal.py). Imported rather than
 # duplicated so the two routers can never drift on what "owner" means.
 from .journal import _journal_owner  # noqa: E402
+from api.http_errors import unavailable  # noqa: E402
 from api.schemas import (
     BacktestAllResponse,
     BacktestEquityResponse,
@@ -88,11 +89,10 @@ from api.schemas import (
 )
 
 try:
-    from gcp.database import is_cloud_sql_configured, query_to_dataframe, execute_sql
+    from gcp.database import is_cloud_sql_configured, execute_sql
     _HAS_CLOUD_SQL: bool = is_cloud_sql_configured()
 except Exception:
     _HAS_CLOUD_SQL = False
-    query_to_dataframe = None  # type: ignore[assignment]
     execute_sql = None  # type: ignore[assignment]
 
 log = logging.getLogger(__name__)
@@ -464,8 +464,9 @@ def _list_all_backtests_uncached(ticker_upper: str):
 # benchmarks them against BacktestEngine.simulate_exit (Task 3.1). Capacity
 # (CLAUDE.md Rule 0): per-request pandas over <= trades x 390 bars; one SELECT
 # for the matched journal rows + one SELECT per distinct entry date for bars
-# (via main.py's _load_date_data — Cloud SQL primary, GCS fallback); no DB
-# writes. All scoring math lives in lib.backtest.replay_labeled_trades.
+# (via main.py's _load_date_data — market_data_intraday only, no bucket
+# fall-through); no DB writes. All scoring math lives in
+# lib.backtest.replay_labeled_trades.
 
 
 class ReplayTradesRequest(BaseModel):
@@ -475,8 +476,9 @@ class ReplayTradesRequest(BaseModel):
 
 
 def _replay_bar_loader(ticker_lower: str, date: str) -> pd.DataFrame:
-    """Indirection over main.py's `_load_date_data` (Cloud SQL primary, GCS
-    fallback — the same loader /api/market/data uses) so tests can
+    """Indirection over main.py's `_load_date_data` (the same loader
+    /api/market/data uses: 1-min bars from market_data_intraday, a raised
+    error on a failed read, no bucket fall-through) so tests can
     monkeypatch bar loading without touching the network. Deferred import
     avoids a circular import: main.py imports this router at app startup."""
     from api.main import _load_date_data
@@ -484,10 +486,12 @@ def _replay_bar_loader(ticker_lower: str, date: str) -> pd.DataFrame:
 
 
 def _replay_journal_query(sql: str, params: Optional[dict] = None) -> pd.DataFrame:
-    """Indirection over the Cloud SQL query helper, mirroring journal.py's
-    `_journal_query` pattern (forwards to the module-global name at CALL
-    time so tests can monkeypatch this wrapper directly)."""
-    return query_to_dataframe(sql, params)
+    """Indirection over the RAISING Cloud SQL query helper (tests can
+    monkeypatch this wrapper directly). Strict, because the swallowing
+    sibling returns an empty frame on any error and an outage then read as
+    "no matching trades found" or "have 0 closed trades"."""
+    from gcp.database import query_to_dataframe_strict
+    return query_to_dataframe_strict(sql, params)
 
 
 def _normalize_bars_for_replay(df: pd.DataFrame) -> pd.DataFrame:
@@ -513,10 +517,11 @@ def _normalize_bars_for_replay(df: pd.DataFrame) -> pd.DataFrame:
 def replay_trades(body: ReplayTradesRequest, request: Request):
     """Score the signed-in user's labeled journal trades against actual bars
     and benchmark them against the system (Task 3.2). 422 if neither
-    `trade_ids` nor `session_id` is given; 404 if nothing matches; strict
-    fail-loud (uncaught exception -> 500) on any Cloud SQL error loading the
-    journal rows or the bars — never a silent empty/zero-filled result
-    (CLAUDE.md Rule 3.7)."""
+    `trade_ids` nor `session_id` is given; 404 if nothing matches. A failed
+    read of the journal rows or of the bars is never a silent
+    empty/zero-filled result (CLAUDE.md Rule 3.7): a database outage is a
+    503 (`Could not read ...`) and a defect is a 500. A date the table holds
+    no bars for is not a failure: its trades come back `unavailable`."""
     if not body.trade_ids and not body.session_id:
         raise HTTPException(status_code=422, detail="trade_ids or session_id is required")
 
@@ -536,18 +541,23 @@ def replay_trades(body: ReplayTradesRequest, request: Request):
         params["session_id"] = body.session_id
     where_clause = " OR ".join(conditions)
 
-    df = _replay_journal_query(
-        f"""
-        SELECT id::text, direction,
-               entry_ts AT TIME ZONE 'UTC' AS entry_ts,
-               exit_ts  AT TIME ZONE 'UTC' AS exit_ts,
-               entry_price, exit_price
-        FROM journal_entries
-        WHERE ticker = :ticker AND user_email = :user_email AND ({where_clause})
-        ORDER BY entry_ts
-        """,
-        params,
-    )
+    try:
+        df = _replay_journal_query(
+            f"""
+            SELECT id::text, direction,
+                   entry_ts AT TIME ZONE 'UTC' AS entry_ts,
+                   exit_ts  AT TIME ZONE 'UTC' AS exit_ts,
+                   entry_price, exit_price
+            FROM journal_entries
+            WHERE ticker = :ticker AND user_email = :user_email AND ({where_clause})
+            ORDER BY entry_ts
+            """,
+            params,
+        )
+    except Exception as exc:
+        # 503 for an outage; a defect is re-raised and stays a 500.
+        unavailable(
+            f"Could not read journal trades for {ticker_upper}: the database is unavailable.", exc)
 
     if df.empty:
         raise HTTPException(status_code=404, detail="no matching trades found")
@@ -573,7 +583,7 @@ def replay_trades(body: ReplayTradesRequest, request: Request):
     # (FileNotFoundError from _load_date_data) is NOT a DB failure — it's
     # left out of bars_by_date so replay_labeled_trades marks that date's
     # trades "unavailable" / "no bars for date" (never zero-filled). Any
-    # OTHER exception (real Cloud SQL/GCS failure) propagates — fail loud.
+    # OTHER exception fails loud: 503 for an outage, 500 for a defect.
     ticker_lower = ticker_upper.lower()
     distinct_dates = sorted({
         pd.to_datetime(t["entry_ts"]).strftime("%Y-%m-%d")
@@ -587,6 +597,9 @@ def replay_trades(body: ReplayTradesRequest, request: Request):
         except FileNotFoundError:
             log.info("replay-trades: no bars for %s on %s", ticker_upper, date_key)
             continue
+        except Exception as exc:
+            unavailable(
+                f"Could not read 1-min bars for {ticker_upper}: the database is unavailable.", exc)
         if raw_df is None or raw_df.empty:
             continue
         bars_by_date[date_key] = _normalize_bars_for_replay(raw_df)
@@ -696,8 +709,9 @@ def mine_and_validate(body: MineAndValidateRequest, request: Request):
     every "not enough signal yet" case — too few closed trades, or mining
     produced no profile for either direction — since these are expected,
     recoverable states for a user early in their journal history, not
-    errors. A genuine Cloud SQL failure still propagates as a 5xx (Rule
-    3.7 — INTERNAL failures fail loud, never a fabricated empty result).
+    errors. A failed read of the journal rows or of the per-trade bars is
+    not one of them (Rule 3.7): a database outage is a 503 (`Could not
+    read ...`) and a defect is a 500, never a fabricated empty result.
     """
     if not _HAS_CLOUD_SQL:
         raise HTTPException(status_code=503, detail="journal database not configured")
@@ -708,19 +722,24 @@ def mine_and_validate(body: MineAndValidateRequest, request: Request):
     # Chart/manual only (spec: "closed chart/manual journal trades") —
     # replay-trainer sessions are simulated practice, not the user's actual
     # trading style, so they're excluded from the mining input.
-    df = _replay_journal_query(
-        """
-        SELECT id::text, direction, status, source,
-               entry_ts AT TIME ZONE 'UTC' AS entry_ts,
-               exit_ts  AT TIME ZONE 'UTC' AS exit_ts,
-               entry_price, exit_price
-        FROM journal_entries
-        WHERE ticker = :ticker AND user_email = :user_email
-          AND source IN ('manual', 'chart')
-        ORDER BY entry_ts
-        """,
-        {"ticker": ticker_upper, "user_email": owner},
-    )
+    try:
+        df = _replay_journal_query(
+            """
+            SELECT id::text, direction, status, source,
+                   entry_ts AT TIME ZONE 'UTC' AS entry_ts,
+                   exit_ts  AT TIME ZONE 'UTC' AS exit_ts,
+                   entry_price, exit_price
+            FROM journal_entries
+            WHERE ticker = :ticker AND user_email = :user_email
+              AND source IN ('manual', 'chart')
+            ORDER BY entry_ts
+            """,
+            {"ticker": ticker_upper, "user_email": owner},
+        )
+    except Exception as exc:
+        # 503 for an outage; a defect is re-raised and stays a 500.
+        unavailable(
+            f"Could not read journal trades for {ticker_upper}: the database is unavailable.", exc)
 
     records: list[dict] = [] if df.empty else df.to_dict(orient="records")
     for rec in records:
@@ -752,6 +771,9 @@ def mine_and_validate(body: MineAndValidateRequest, request: Request):
         except FileNotFoundError:
             log.info("mine-and-validate: no bars for %s on %s", ticker_upper, date_key)
             continue
+        except Exception as exc:
+            unavailable(
+                f"Could not read 1-min bars for {ticker_upper}: the database is unavailable.", exc)
         if raw_df is None or raw_df.empty:
             continue
         bars_by_date[date_key] = _normalize_bars_for_replay(raw_df)

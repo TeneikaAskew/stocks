@@ -11725,7 +11725,7 @@
     },
     "/api/backtest/replay-trades": {
       "post": {
-        "description": "Score the signed-in user's labeled journal trades against actual bars\nand benchmark them against the system (Task 3.2). 422 if neither\n`trade_ids` nor `session_id` is given; 404 if nothing matches; strict\nfail-loud (uncaught exception -> 500) on any Cloud SQL error loading the\njournal rows or the bars — never a silent empty/zero-filled result\n(CLAUDE.md Rule 3.7).",
+        "description": "Score the signed-in user's labeled journal trades against actual bars\nand benchmark them against the system (Task 3.2). 422 if neither\n`trade_ids` nor `session_id` is given; 404 if nothing matches. A failed\nread of the journal rows or of the bars is never a silent\nempty/zero-filled result (CLAUDE.md Rule 3.7): a database outage is a\n503 (`Could not read ...`) and a defect is a 500. A date the table holds\nno bars for is not a failure: its trades come back `unavailable`.",
         "operationId": "replay_trades_api_backtest_replay_trades_post",
         "requestBody": {
           "content": {
@@ -15477,7 +15477,7 @@
     },
     "/api/style/mine-and-validate": {
       "post": {
-        "description": "Mine the caller's closed journal trades into a condition profile,\nwalk-forward validate the top one, and stage the result (Task 4.3).\n\n200 `{\"status\": \"unavailable\", \"reason\": ...}` (never a 4xx/5xx) for\nevery \"not enough signal yet\" case — too few closed trades, or mining\nproduced no profile for either direction — since these are expected,\nrecoverable states for a user early in their journal history, not\nerrors. A genuine Cloud SQL failure still propagates as a 5xx (Rule\n3.7 — INTERNAL failures fail loud, never a fabricated empty result).",
+        "description": "Mine the caller's closed journal trades into a condition profile,\nwalk-forward validate the top one, and stage the result (Task 4.3).\n\n200 `{\"status\": \"unavailable\", \"reason\": ...}` (never a 4xx/5xx) for\nevery \"not enough signal yet\" case — too few closed trades, or mining\nproduced no profile for either direction — since these are expected,\nrecoverable states for a user early in their journal history, not\nerrors. A failed read of the journal rows or of the per-trade bars is\nnot one of them (Rule 3.7): a database outage is a 503 (`Could not\nread ...`) and a defect is a 500, never a fabricated empty result.",
         "operationId": "mine_and_validate_api_style_mine_and_validate_post",
         "requestBody": {
           "content": {
