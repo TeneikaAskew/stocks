@@ -5,7 +5,7 @@ issues: [1215, 1261, 1329]
 canvases: []
 done_when:
   - "tests/api/test_watchlist_default_lock.py passes and fails on origin/main: POST /api/insights/watchlist/add and DELETE /api/insights/watchlist/{ticker} answer 410 with a detail that names Discord /watchlist as the only writer, for a signed-in firebase caller and for an open-mode caller alike, and the test proves the watchlists table is unchanged by both calls (no INSERT, no UPDATE reaches the connection)"
-  - "GET /api/insights/watchlist/default answers 200 with WatchlistDefaultResponse (as_of, owner 'default', rows of ticker, in_brief, in_insight, signals, source, added_at, in added_at order) read through the strict query function, answers 503 with an explicit detail when Cloud SQL fails instead of an empty list, and is identical for an open-mode caller and a signed-in caller; tests/api/test_watchlist_default_lock.py covers the 200, the 503 and the identity"
+  - "GET /api/insights/watchlist/default answers 200 with WatchlistDefaultResponse (as_of, owner 'default', rows of ticker, in_brief, in_insight, signals, source, added_at, in added_at order) read through gcp.database.query_to_dataframe_strict, answers 503 with an explicit detail when Cloud SQL fails instead of an empty list, and is identical for an open-mode caller and a signed-in caller; tests/api/test_watchlist_default_lock.py covers the 200, the identity, and the 503 by making gcp.database.get_engine raise beneath the reader, never by replacing the reader with a mock, so an implementation that called the swallowing query_to_dataframe would fail the test"
   - "GET /api/insights/watchlist ranks owner 'default' for every caller: _watchlist_owner is deleted and rank_tickers receives user_id='default'; extras=NVDA still injects a per-call ticker; tests/api/test_watchlist_default_lock.py and tests/agents/test_ranker_candidates.py cover both"
   - "tests/gcp/test_watchlist_readers_default_owner.py passes: it scans every production reader in the inventory of this spec (section Readers) and asserts none passes a user_id other than 'default' to load_watchlist, resolve_membership_at or the strict WATCHLIST_SQL, and that the only production modules with an INSERT or UPDATE on watchlists are gcp/discord_interactions/main.py, gcp/backfill_ticker.py, gcp/fetchers/_watchlist.py and gcp/schema.sql"
   - "gcp/fetchers/fetch_market_data.py _backfill_targets filters the watchlists branch with user_id = 'default' AND removed_at IS NULL, and a test in tests/gcp/test_fetch_market_data_backfill_targets.py shows a removed ticker and a non-default owner's ticker are not backfill targets"
@@ -50,9 +50,12 @@ Read in the code at origin/main 61bbd17 and in production on 2026-11-13 (read-on
    Three active rows carry every surface flag, SPY, QQQ and IWM (`in_brief`, `in_insight`,
    `signals` all true, source `seed`, added 2026-04-27). The other 13 active rows carry no flag:
    AVGO (seed), ASTX, NVDA and MCK (source `discord-replay`) and 9 peers added 2026-04-30 with
-   source `avgo-peer` (AMD, ANET, ARM, CSCO, MRVL, MU, QCOM, TSM, TXN). `watchlist_history` holds
-   only its 20 seed rows (18 add, 2 remove); no trigger-written row exists yet. No email-owned row
-   exists, so nothing is lost by moving per-user lists out of this table.
+   source `avgo-peer` (AMD, ANET, ARM, CSCO, MRVL, MU, QCOM, TSM, TXN). `watchlist_history` held
+   only its 20 seed rows (18 add, 2 remove) at that read. No email-owned row exists, so nothing is
+   lost by moving per-user lists out of this table. Later the same day, at 15:18Z, the owner
+   soft-removed the 13 unflagged rows (owner's report of 2026-11-13; the done_when verification
+   query re-reads the table before the implementation PR is marked ready), so the default list is
+   SPY, QQQ and IWM, with the three surface flags on each.
 3. **Nothing enforces the rule the owner wants.** In `open` mode (local development, and any
    deployment whose `AUTH_MODE` resolves to open) `_watchlist_owner` returns `'default'`, so a web
    add or remove edits the universe every job reads. In firebase mode it cannot, but only because the
@@ -123,10 +126,12 @@ from who is calling.
 
 ### Default list content
 
-The default list is exactly SPY, QQQ and IWM (owner's decision 1, 2026-11-13). Production holds 13
+The default list is exactly SPY, QQQ and IWM (owner's decision 1, 2026-11-13). Production held 13
 more active rows with no surface flag (AVGO, AMD, ANET, ARM, CSCO, MRVL, MU, QCOM, TSM, TXN, ASTX,
-NVDA, MCK). They are removed by the owner, not by code, either with 13 Discord `/watchlist remove`
-commands or with one operator statement through `scripts/db_query_cr.sh ... --commit`:
+NVDA, MCK) until the owner soft-removed them at 15:18Z on 2026-11-13. The cut is the owner's, not
+code's; the equivalent of what was run, kept here as the record and for a future re-cut, is 13
+Discord `/watchlist remove` commands or one operator statement through
+`scripts/db_query_cr.sh ... --commit`:
 
 ```
 UPDATE watchlists
@@ -135,8 +140,8 @@ UPDATE watchlists
    AND ticker NOT IN ('SPY', 'QQQ', 'IWM');
 ```
 
-The membership trigger records 13 `remove` rows in `watchlist_history`, so the cut is auditable
-and reversible with `/watchlist add`. What the cut changes, by reader (section Readers): the news,
+The membership trigger records a `remove` row per ticker in `watchlist_history`, so the cut is
+auditable and reversible with `/watchlist add`. What the cut changes, by reader (section Readers): the news,
 SEC, insider and premarket-refresh fetchers, the one-minute `av-intraday-nightly` pull, the
 market-data daily fetch, `historical-signals-watchlist` and the ranker stop covering the 13 at their
 next run; their existing bars, news and history rows stay; the earnings-history chain keeps
@@ -165,9 +170,12 @@ rows: list[WatchlistDefaultRow]
 ```
 
 `WatchlistDefaultRow`: `ticker: str`, `in_brief: bool`, `in_insight: bool`, `signals: bool`,
-`source: Optional[str]`, `added_at: str`. Query, through the strict function
-`gcp.database.query_to_dataframe` (the one `gcp/calibrate_level_params.py:96-100` uses for the same
-reason, a failed read must not become an empty list):
+`source: Optional[str]`, `added_at: str`. Query, through `gcp.database.query_to_dataframe_strict`
+(`gcp/database.py:244`), the reader `gcp/calibrate_level_params.py:290` and `:433` use for the same
+reason: a failed read must raise, not become an empty list. `gcp.database.query_to_dataframe`
+(`:218-241`) catches every exception and returns an empty DataFrame, so it is not used here, and the
+503 test injects the failure beneath the reader (a `get_engine` that raises) rather than mocking the
+reader, so an implementation that picked the swallowing function cannot pass:
 
 ```
 SELECT ticker, in_brief, in_insight, signals, source, added_at
@@ -178,8 +186,8 @@ SELECT ticker, in_brief, in_insight, signals, source, added_at
 
 A database error answers 503 with the exception text in `detail` (REQ-DATA-001, EXTERNAL failure
 surfaced, never an empty list). The endpoint is gated like the rest of `/api/insights` (REQ-AUTH-001);
-it is not added to `_OPEN_API_PREFIXES`. Capacity: one indexed read (`idx_watchlists_active`) of 16
-rows per call, no new job, no new scheduler.
+it is not added to `_OPEN_API_PREFIXES`. Capacity: one indexed read (`idx_watchlists_active`) of 3
+rows per call after the cut, no new job, no new scheduler.
 
 ### Ranked list
 
@@ -282,8 +290,9 @@ and nothing is written anywhere.
 
 ## Decisions (owner, 2026-11-13)
 
-1. The default list is exactly SPY, QQQ and IWM. The 13 unflagged rows are cut by the owner with
-   the statement in section Default list content; a done_when item verifies the result.
+1. The default list is exactly SPY, QQQ and IWM. The owner cut the 13 unflagged rows at 15:18Z on
+   2026-11-13; section Default list content keeps the statement as the record, and a done_when item
+   re-verifies the table before the implementation PR is marked ready.
 2. `/replay` no longer re-adds a removed default row: `BACKFILL_ADD_TO_WATCHLIST` defaults to false.
 3. The two web write routes are blocked now (410) and deleted in a later small spec once solyra
    stops calling them.
