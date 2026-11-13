@@ -239,7 +239,7 @@ Current-session ORB runtime draft: [#1642](https://github.com/TeneikaAskew/stock
 | Priority | P0 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-12 |
+| Last reviewed | 2026-11-13 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/charts`, `/live` |
 | Backend | via `lib/` |
