@@ -591,11 +591,11 @@ def plan_inputs(side: str, row, basis: Optional[dict], policy_fn) -> PlanInputs:
     recorded, so the table rows are never read); a v2 basis, which has no
     plan, falls back to the row's structured trigger, stop and t1..t3
     columns with the leg count and cutoff `policy_fn()` returns (the policy
-    in force on the session, a LevelParams). A row with no level_basis has
-    no plan."""
+    in force on the session, a LevelParams). A row with no level_basis, or
+    a basis of any other version (v1, or none recorded), has no plan."""
     from lib.strat_levels import (  # local import to keep top-level light
-        ENTRY_CUTOFF_KEY, EXIT_LEGS_KEY, LEVEL_RULE_VERSION, SessionLevels,
-        policy_time_minutes,
+        ENTRY_CUTOFF_KEY, EXIT_LEGS_KEY, LEVEL_RULE_V2, LEVEL_RULE_VERSION,
+        SessionLevels, policy_time_minutes,
     )
 
     def _f(v):
@@ -619,6 +619,11 @@ def plan_inputs(side: str, row, basis: Optional[dict], policy_fn) -> PlanInputs:
             # A side with a trigger and no plan has no leg count, so it is
             # targets_unavailable; a side with no trigger is not entered.
             target_status=s.target_status)
+    if basis.get('rule_version') != LEVEL_RULE_V2:
+        # Design 6 rebuilds a plan from the structured columns for v2 only.
+        return PlanInputs(trigger_price=_f(row.get(f'{side}_trigger_price')),
+                          stop_price=_f(row.get(f'{side}_stop_price')),
+                          target_status=PLAN_TARGETS_UNAVAILABLE)
     params = policy_fn()
     legs, cutoff = params.param(EXIT_LEGS_KEY), params.param(ENTRY_CUTOFF_KEY)
     ok = legs.ok and cutoff.ok
