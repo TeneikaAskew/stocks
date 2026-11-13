@@ -125,11 +125,7 @@ def fetch_month(
         'symbol': symbol,
         'interval': '1min',
         'month': month_str,
-        'outputsize': 'full',
-        # As traded. AV adjusts for dividends as of the call unless told not
-        # to, so a refetch after an ex-dividend date rewrote stored bars below
-        # the price they traded at (FEAT-DATA-001, intraday as-traded spec).
-        'adjusted': 'false',
+        'outputsize': 'full', 'adjusted': 'false',  # as traded: AV adjusts as of the call unless told not to
         'entitlement': 'realtime',
         'extended_hours': 'true',
         'datatype': 'json',
