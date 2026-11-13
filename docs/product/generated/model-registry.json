@@ -2272,7 +2272,7 @@
    "type": "Heuristic"
   }
  },
- "registry_last_reviewed": "2026-09-26",
+ "registry_last_reviewed": "2026-11-13",
  "schedulers": [
   {
    "cron_america_new_york": "`35 23 * * 1-5`",
@@ -2615,7 +2615,7 @@
  ],
  "sources": {
   "docs/EXPERIMENT_REGISTRY.md": "9752340744b8580d57910eadb6df84c536081b42",
-  "docs/product/07-MODEL-REGISTRY.md": "d23feea4dd4a29495ffd930fe61e4bba8abea59e",
+  "docs/product/07-MODEL-REGISTRY.md": "9337343b93874e83cc436b5d6e5175beeb2c1201",
   "scripts/gate/export_model_registry.py": "74e5fdc5bb2e7bf11894b3de2601c4dc8428122d"
  },
  "tables": [
