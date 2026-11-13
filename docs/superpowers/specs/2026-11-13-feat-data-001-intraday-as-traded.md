@@ -8,6 +8,7 @@ done_when:
   - "tests/gcp/test_intraday_as_traded.py::test_every_intraday_writer_requests_as_traded passes: every TIME_SERIES_INTRADAY request under gcp/ that feeds market_data_intraday sets adjusted to false, found by AST, so a new writer without it fails"
   - "tests/audits/test_audit_intraday_session_gaps.py passes: for every tracked ticker a session in the scan window with zero regular-hours 1-min bars is reported MISSING, one under 90% of that ticker's own trailing 20-session median is reported THIN, either makes --strict exit 1, a ticker whose normal session is sparse is not flagged, a half day is judged against its own length, and the scan issues one bounded query per ticker"
   - "tests/gcp/test_intraday_verify_basis.py passes: --verify-basis exits 1 and prints one BASIS-FAIL line per ticker-month in which two or more consecutive sessions have a 1-min regular-hours high and low off the daily table's by more than 3 bp, exits 0 when none is, and reports a session with no daily row as UNMEASURED rather than passing it"
+  - "tests/gcp/test_export_intraday_bars.py passes: after a nightly fetch the current and the previous Eastern month of SPY, QQQ and IWM are written to intraday-bars/v1/1min/<TICKER>/<YYYY-MM>.parquet (zstd; columns ts, open, high, low, close, volume, data_source; ts UTC ascending) with one query per ticker-month, an existing file is overwritten, manifest.json records each month's rows, first and last ts, sha256, exported_at and basis factor range, a failed upload raises, --export-bars-from writes every month from the one given, and read_bars returns exactly the rows exported"
   - "tests/meta/test_workflows_no_continue_on_error.py passes: no step or job in .github/workflows sets continue-on-error to true"
   - "make test passes on the PR head with tests/gcp/test_evaluate_ew_strikes.py, tests/gcp/test_intraday_replace_months.py, tests/gcp/test_intraday_writers_utc.py and tests/audits/test_audit_data_freshness.py unchanged"
   - "The PR body gives EXPLAIN (ANALYZE, BUFFERS) from production for the gap-scan query and the basis query (rows read, execution time), and the table of rows per ticker and month that the refill and the as-traded rewrite would write"
@@ -16,7 +17,7 @@ status: draft
 supersedes: null
 ---
 
-# market_data_intraday: as-traded prices, and no silent gaps
+# market_data_intraday: as-traded prices, no silent gaps, and a durable copy
 
 ## Problem
 
@@ -61,6 +62,11 @@ Two defects in the 1-min bars, found on 2026-11-13. Both were silent.
 - Readers compare these bars with as-traded numbers: the brief's levels come from the daily table, and live quotes and strikes are as traded (`platform/api/routers/live.py` and `evaluate_ew_strikes.py` already ask for `adjusted=false`, #1151).
 - A refill of the missing sessions on today's code would write November and December 2025 about 1.07% low for SPY and overwrite the as-traded rows of 2025-11-03 to 11-14.
 
+### 3. An analysis has to re-export the bars every time
+
+- A session that cannot reach Cloud SQL (Claude Code on the web: port 443 only) reads bars through the `db-query` job, 50,000 rows a statement. On 2026-11-13 the export of the signal tickers' bars took about 55 minutes of job runs, and the copy lives only in that session's container.
+- The bucket's old `raw/<ticker>/intraday/` parquets stop at 2026-05 and are deleted after 730 days by a lifecycle rule.
+
 ## Non-goals
 
 - No production write in this change. The refill, the as-traded rewrite and the recomputes are separate runs that wait for the owner's yes on their exact scope (Close-out below).
@@ -68,6 +74,7 @@ Two defects in the 1-min bars, found on 2026-11-13. Both were silent.
 - No change to which months the nightly fetches.
 - The live trigger check in `signal_monitor.fetch_latest_bar` keeps its request: it reads today's last 100 bars, which no dividend has adjusted yet, and stores none.
 - The unexplained factors (NVDA, MU, ASTX, AMD) are listed by the new check, not diagnosed here.
+- The bucket copy is for analysis sessions. No job and no API path reads it, and it is never a fallback for Cloud SQL (CLAUDE.md 3.7.1). It holds SPY, QQQ and IWM only.
 
 ## Approaches considered
 
@@ -112,18 +119,42 @@ Extend the gap scan the freshness watchdog already runs (`scripts/audit_data_fre
 - `.github/workflows/fetch-alphavantage-intraday-monthly.yml` no longer exists on `main`, and no workflow on `main` sets `continue-on-error: true` (checked at 61bbd17e). `.github/workflows/README.md` states the rule.
 - Nothing enforces it. `tests/meta/test_workflows_no_continue_on_error.py` reads every file under `.github/workflows` and fails on a step or job that sets it to true. It changes no workflow.
 
+### E. Durable copy of the bars in the bucket
+
+A nightly write of the SPY, QQQ and IWM 1-min bars from Cloud SQL to GCS, so an analysis session downloads files instead of re-exporting.
+
+- **Where**: `gs://adept-mountain-474619-d4-trading-data/intraday-bars/v1/1min/<TICKER>/<YYYY-MM>.parquet`, one file per ticker per Eastern month, plus `intraday-bars/v1/1min/<TICKER>/manifest.json`. The `intraday-bars/` prefix has no lifecycle rule (the bucket's two rules delete `sql-dumps/` after 30 days and `raw/` after 730).
+- **Format**: Parquet, zstd. Columns `ts` (timestamp, UTC, the bar's true instant as `gcp.historical_signals.load_intraday_bars` returns it, so the two stored timestamp conventions are already resolved), `open`, `high`, `low`, `close` (float64), `volume` (int64), `data_source` (string). One row per bar, ascending `ts`.
+- **Manifest**: per month `rows`, `first_ts`, `last_ts`, `sha256`, `exported_at`, and `factor_min` and `factor_max` from the basis check (1.0 means as traded). A month that is still on an adjusted basis says so; a reader never has to assume.
+- **Nightly**: at the end of `av-intraday-nightly` (`fetch_alphavantage_intraday --symbol=ALL`), after its writes. It rewrites the current month and the previous month, because those are the two months that run refetches. A file is replaced whole. A failed query or upload raises, so the job fails and the notifier files it; the bars are already in Cloud SQL by then.
+- **One-time history**: `--export-bars-from YYYY-MM` writes every month from the one given and fetches nothing (`gcloud run jobs execute fetch-alphavantage-intraday --args="--export-bars-from=2015-01"`). It is run once after the refill, and the rewritten months are exported again after the as-traded rewrite.
+- **Module**: `gcp/fetchers/export_intraday_bars.py`: `export_month`, `export_window`, `read_bars`. No change to `gcp/deploy.sh`: the scheduler's arguments stay `--symbol=ALL --force`, and the export is on for that run unless `INTRADAY_BARS_EXPORT=off`.
+- **How a session reads it**:
+  ```bash
+  env -u CLOUDSDK_AUTH_ACCESS_TOKEN gcloud storage cp -r \
+    gs://adept-mountain-474619-d4-trading-data/intraday-bars/v1/1min/SPY ./bars/
+  ```
+  ```python
+  from gcp.fetchers.export_intraday_bars import read_bars
+  bars = read_bars("./bars", "SPY", "2025-01", "2026-11")   # checks each file against the manifest's sha256
+  ```
+  `read_bars` raises if a requested month has no file or its hash differs, and returns the manifest's factor range beside the frame. It needs `pandas` and `pyarrow` only.
+
 ### Capacity
 
 - Writers: no change. The same AlphaVantage calls, rows and writes per run.
 - Gap alarm, scheduled: one query per tracked ticker, about 5 sessions of bars read each.
 - Gap alarm on demand, and the basis check: bounded by the date or the list the caller gives; about 1.2 s per ticker for 23 months, measured above.
+- Durable copy, nightly: 3 tickers x 2 months = 6 queries of about 20,000 rows on the primary key, 6 uploads of about 0.6 MB (the size of the old monthly parquets) and 3 manifests; under 30 seconds added to a job with a 3,600-second task timeout.
+- Durable copy, one time: IWM and QQQ from 2015-01 and SPY from 2022-02, about 340 ticker-months, 340 queries and uploads, about 200 MB; a single execution inside the same timeout. One query and one upload per month, so a crash leaves the months already written.
+- Storage: about 0.2 GB at standard rates, under one cent a month.
 - No new job and no new schedule.
 
 ## Close-out (after the merge, each step on the owner's yes)
 
 These need the deployed fix and production writes, so they are not pre-merge boxes. Each has the check that proves it.
 
-1. **Deploy** the fetchers image and the freshness watchdog.
+1. **Deploy** the fetchers image and the freshness watchdog. The nightly bucket write starts with this deploy, so the owner's yes to the deploy is the yes to those writes.
 2. **Refill the missing sessions** with the plain fetch (`--start-date`, `--end-date`, `--force`), which upserts.
    - SPY and QQQ 2025-11 and 2025-12, IWM 2025-11. Rows per ticker and month are in the PR body.
    - Check: `audit_data_freshness.py --intraday-gap-since 2025-01-01` reports zero MISSING sessions for SPY, QQQ and IWM.
@@ -140,6 +171,10 @@ These need the deployed fix and production writes, so they are not pre-merge box
    - Levels and ATR: prior-day, week, month, quarter and year levels and ATR(14) and ATR(5) are computed from the daily table, which is already as traded, so they do not change. Premarket high and low (PMK_H, PMK_L) come from the premarket fields above. `ticker_level_params` premarket-filter thresholds are calibrated from 1-min premarket bars (`gcp/calibrate_level_params.py`) and are recalibrated after the rewrite.
    - Check: each of the replace's RECOMPUTE lines is answered with the command run or the issue that tracks the missing path.
 
+5. **Write the history to the bucket** once, after step 2: `--export-bars-from=2015-01`.
+   - Until step 3 runs, the adjusted months are exported as they are, and each manifest entry carries its factor. After step 3 the rewritten months are exported again.
+   - Check: every ticker-month the table holds for SPY, QQQ and IWM has a file whose row count and `sha256` match its manifest entry, and after step 3 every `factor_min` and `factor_max` is 1.0.
+
 The thin months (SPY 2025-04 to 06, QQQ 2025-01) are adjusted, so they are in step 3's list and are refetched whole there.
 
 ## Risks
@@ -147,4 +182,5 @@ The thin months (SPY 2025-04 to 06, QQQ 2025-01) are adjusted, so they are in st
 - A reader that relied on adjusted intraday prices. None found: readers compare intraday bars with live, daily and strike prices. Covered by the unchanged suites.
 - Until step 3 runs, the table keeps its mixed months. The nightly re-bases the previous month as it refetches it, so new mixing stops on the first night after the deploy.
 - The alarm fires on tickers with real one-off outages. That is its job; the report names the session so it can be refetched or acknowledged.
+- A session reads a stale bucket copy. The manifest's `last_ts` and `exported_at` say how fresh each month is, and a failed nightly write fails the job.
 - A threshold relative to the ticker's own median cannot see a ticker that has always been thin. The basis check and the first full scan at close-out are what catch stored history.
