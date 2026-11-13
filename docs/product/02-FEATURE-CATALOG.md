@@ -517,11 +517,11 @@ EW-only retirement: [#1758](https://github.com/TeneikaAskew/stocks/pull/1758), f
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production but needs remediation — logger #1607 image rollout verified; allowance #1606 source integrated, release gated; one NYSE session calendar in `lib/eastern_time.py` replaces the 2026-only holiday sets and the ad hoc library wrappers ([#1546](https://github.com/TeneikaAskew/stocks/pull/1546)); the premarket brief's daily-data freshness check counts NYSE sessions, so sessions after an NYSE holiday are no longer skipped as STALE_DAILY_DATA (implementation under review, not deployed) |
+| Status | Production but needs remediation — logger #1607 image rollout verified; allowance #1606 source integrated, release gated; one NYSE session calendar in `lib/eastern_time.py` replaces the 2026-only holiday sets and the ad hoc library wrappers ([#1546](https://github.com/TeneikaAskew/stocks/pull/1546)); the premarket brief's daily-data freshness check counts NYSE sessions, so sessions after an NYSE holiday are no longer skipped as STALE_DAILY_DATA (implementation under review, not deployed); every AlphaVantage 1-min request asks for as-traded prices (`adjusted=false`) with a guard test over `gcp/`, `scripts/` and `platform/` ([#1874](https://github.com/TeneikaAskew/stocks/pull/1874); implementation under review, not deployed; months already stored on an adjusted basis are not rewritten by it) |
 | Priority | P0 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-11 |
+| Last reviewed | 2026-11-13 |
 | Evidence status | Logger source bd8c5310/build20c56463/image ef54b4b6 deployed Ready to three jobs with projected config preserved; next scheduled outcomes unobserved. Allowance runtime/test bytes unchanged from reviewed258fb789,224 tests preserved; prior CODE/SEC/CI clean, combined source proof and owner-approved CODE7 remain required. No complete data-platform, persistence or provider-root-cause certification. |
 | UI surface | — |
 | Backend | fetcher jobs |
