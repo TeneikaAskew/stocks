@@ -10,7 +10,7 @@ done_when:
   - "New tests in tests/scripts/test_spec_gate.py check every name and path above, a real gate run refusing a feature PR of another capability that adds one, and controls elsewhere that stay accepted; each is recorded failing on main and passing on the head, and failing on a recorded one-line gate mutation for each import name dropped, each config name dropped, each folder dropped, the config rule removed, and the rule widened to any folder or to a suffix match."
   - "Every existing test, case and assertion in tests/scripts/test_spec_gate.py stays and passes; the suite passes serially and with `-n 4` (in a clean environment of exactly pytest, pyyaml and pytest-xdist==3.8.0) on the exact head with the same node ids; .github/workflows/registry-check.yml, .github/workflows/spec-gate.yml, scripts/gate/pinned/registry-check.yml and scripts/gate/pinned/spec-gate.yml stay byte-identical to MAIN; beyond the gate and its suite the PR changes only its own plan and the delivery records (FEAT-CICD-001 catalog and traceability entries, SHARED-01 note row and its sidecar)."
   - "Own delivery records, ordinary SHARED-01 source proof, full-default main and proposed docs audits with no new finding, the gate-file red-team pass on the frozen head, current-head review as CLAUDE.md section 2.5 counts it, every required check and zero unresolved threads are complete; no criterion of the test suite audit spec is claimed by this PR."
-status: approved
+status: superseded
 supersedes: null
 ---
 
