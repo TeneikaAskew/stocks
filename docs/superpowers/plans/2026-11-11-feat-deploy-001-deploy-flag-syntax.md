@@ -3,7 +3,7 @@ feat_id: FEAT-DEPLOY-001
 spec: docs/superpowers/specs/2026-11-11-feat-deploy-001-deploy-flag-syntax-revised.md
 branch: fix/feat-deploy-001-deploy-flag-syntax
 pr: 1813
-status: ready
+status: done
 ---
 
 # Make the deploy script's gcloud calls parse, and stop the fetchers deploy writing data: implementation plan
