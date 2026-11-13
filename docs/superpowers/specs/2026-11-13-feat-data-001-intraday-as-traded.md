@@ -26,15 +26,20 @@ making more of the second one.
   parameter, `fetch_market_data.fetch_minute_bars` defaults it to true, and
   `backfill_ticker.av_intraday_month` sets it to true. All three upsert
   into `market_data_intraday`.
-- The 2026-02-23 bulk load stored as-traded prices. SPY 2025-11-14 15:59 ET
-  is 671.95 in the table, and AV gives 671.95 with `adjusted=false` and
-  664.7891 with `adjusted=true` today (measured 2026-11-13). The same holds
-  for QQQ (608.82 stored, 608.82 raw, 606.0005 adjusted).
-- Rows written since then are adjusted as of their write. SPY 2026-08-31
-  15:59 ET is 765.053 in the table, and AV's as-traded close is 766.95
-  (ratio 0.99753, the September dividend). `av-intraday-nightly` refetches
+- So every stored bar sits at the basis of its last fetch. Measured on
+  2026-11-13 against AV's `adjusted=false` series, bar by bar, same volumes:
+  SPY 2025-04 and 2025-05 are stored at 0.99430 of the traded price (the
+  June and September 2025 dividends), SPY 2025-06 steps from 0.99430 to
+  0.99725 at the June ex-dividend date, QQQ 2025-01 is at 0.99629, and
+  SPY, QQQ and IWM 2025-11 are at exactly 1.00000. Those months were
+  fetched in mid-November 2025, between the September and December
+  ex-dividend dates (2025-11 ends at 11-14 in all three tickers), and
+  bulk-loaded into Cloud SQL on 2026-02-23.
+- Rows written by the nightly carry the basis of their last refetch. SPY
+  2026-08-31 15:59 ET is 765.053 in the table and 766.95 as traded (ratio
+  0.99753, the September 2026 dividend). `av-intraday-nightly` refetches
   the previous month with `--force` every night, so a month is rewritten
-  at the adjusted basis whenever an ex-dividend date falls inside that window.
+  at a new basis whenever an ex-dividend date falls inside that window.
 - The daily table's open, high, low and close are as-traded
   (TIME_SERIES_DAILY_ADJUSTED, with `adjusted_close` in its own column), and
   live quotes, strikes and trade plans are as-traded (`platform/api/routers/live.py`
@@ -47,10 +52,12 @@ making more of the second one.
   rows of 2025-11-03..11-14 with adjusted ones.
 
 ## Non-goals
-- No data is written. Re-basing months already stored adjusted, and
-  backfilling the missing sessions, are separate production runs that
-  wait for the owner's yes on their exact scope (the PR body carries the
-  measured plan).
+- No data is written. Re-basing months already stored at an adjusted
+  basis, and backfilling the missing sessions, are separate production
+  runs that wait for the owner's yes on their exact scope (the PR body
+  carries the measured plan).
+- The live trigger check in `signal_monitor` keeps its request: it reads
+  only today's bars, which no dividend has adjusted yet, and stores none.
 - No change to the daily table, to `adjusted_close`, or to how any reader
   uses intraday prices.
 - No change to which months the nightly fetches, or to the
@@ -58,8 +65,8 @@ making more of the second one.
 
 ## Approaches considered
 1. As-traded everywhere (chosen): every writer requests `adjusted=false`.
-   It matches the daily OHLC, live quotes, strikes and the bulk of the
-   history, and a refetch can never move a stored bar again.
+   It matches the daily OHLC, live quotes and strikes, and a refetch can
+   never move a stored bar again.
 2. Adjusted everywhere: every bar would have to be rewritten after every
    ex-dividend date, for every ticker, forever, and stored bars would no
    longer compare with live or daily prices.
@@ -81,6 +88,9 @@ making more of the second one.
   holding `'function': 'TIME_SERIES_INTRADAY'`. Each one must carry an
   `adjusted` key whose value is the literal `'false'`, or an expression
   on a parameter whose default is False (the `fetch_minute_bars` form).
+  Two requests that never feed the table are listed with their reason:
+  `signal_monitor.fetch_latest_bar` (today's last 100 bars for the live
+  trigger check, not stored) and `fetch_cross_asset` (VIX, its own table).
 - Capacity: no change. The same AV calls, rows and writes per run; one
   extra query-string parameter.
 
