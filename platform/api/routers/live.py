@@ -466,6 +466,7 @@ async def get_live_history(ticker: str, include_opening: bool = False, request: 
         "symbol": ticker_upper,
         "interval": "1min",
         "outputsize": "compact",
+        "adjusted": "false",  # as traded, like every 1-min request
         "apikey": AV_API_KEY,
     }
 
