@@ -315,7 +315,12 @@ class Result:
                     or self.cards_removed or self.cards_added) or self.stamp_changed
 
 
-def update(js: str, export: dict[str, Any], run_label: str | None = None) -> Result:
+def _names(text: str, name: str) -> bool:
+    return re.search(r"(?<![\w-])" + re.escape(name) + r"(?![\w-])", text) is not None
+
+
+def update(js: str, export: dict[str, Any], run_label: str | None = None,
+           template_text: str = "") -> Result:
     export = load_export(export)
     jobs = {j["name"]: j for j in _declared(export["jobs"])}
     scheds = {s["name"]: s for s in _declared(export["schedulers"])}
@@ -380,7 +385,10 @@ def update(js: str, export: dict[str, Any], run_label: str | None = None) -> Res
         kept_lines.append(line)
     block = "\n".join(kept_lines)
 
-    missing = [n for n in jobs if n not in cards and f"'{n}'" not in named_before]
+    # A job the page already names, in its data script outside JOBS or in its
+    # layout template, is described somewhere and gets no stub.
+    missing = [n for n in jobs if n not in cards and f"'{n}'" not in named_before
+               and not _names(template_text, n)]
     cards_added = []
     if missing:
         cats = {m.group(1): m.end() for m in _CATEGORY_RE.finditer(block)}
@@ -488,13 +496,15 @@ def main(argv: list[str] | None = None) -> int:
         with open(a.canvas, encoding="utf-8", newline="") as f:
             html = f.read()
         bundle = Bundle.parse(html)
-        res = update(bundle.js, export, a.run_label)
+        tm = _TEMPLATE_RE.search(html)
+        tpl = json.loads(tm.group(2)) if tm else ""
+        if not isinstance(tpl, str):
+            raise CanvasError("page template is not a JSON string")
+        res = update(bundle.js, export, a.run_label, tpl)
     except (CanvasError, OSError, ValueError) as exc:
         # Exit 2, not 1: under --check, 1 means "the page would change".
         sys.stderr.write(f"canvas_from_export: refused: {exc}\n")
         return 2
-    tm = _TEMPLATE_RE.search(html)
-    tpl = json.loads(tm.group(2)) if tm else ""
     text = report(res, export, tpl)
     if a.check:
         sys.stdout.write(text)

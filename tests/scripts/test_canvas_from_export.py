@@ -336,3 +336,22 @@ def test_a_damaged_asset_is_refused_with_exit_2(tmp_path, damage):
         assert res.returncode == 2, (damage, args, res.stderr)
         assert "refused" in res.stderr and "Traceback" not in res.stderr
     assert not out.exists()
+
+
+# Codex round 2 on #1860 ─────────────────────────────────────────────────────
+
+def test_a_job_named_only_in_the_layout_gets_no_stub(tmp_path):
+    data = export()
+    assert "fetch-new" in cfe.update(ROOT_JS, data).cards_added
+    assert cfe.update(ROOT_JS, data, template_text="<div>fetch-new</div>").cards_added == []
+    assert cfe.update(ROOT_JS, data, template_text="<div>fetch-newer</div>").cards_added == ["fetch-new"]
+    html = bundle_html().replace("<div>svc-n", "<div>fetch-new svc-n")
+    assert "fetch-new svc-n" in html
+    page, exp, out = tmp_path / "page.html", tmp_path / "export.json", tmp_path / "out.html"
+    page.write_text(html, encoding="utf-8")
+    exp.write_text(json.dumps(data), encoding="utf-8")
+    res = subprocess.run([sys.executable, "-m", "scripts.maintenance.canvas_from_export", "--export", str(exp),
+                          "--canvas", str(page), "--output", str(out), "--report", str(tmp_path / "r.md")],
+                         capture_output=True, text=True, check=False)
+    assert res.returncode == 0, res.stderr
+    assert "J('fetch-new'" not in cfe.Bundle.parse(out.read_text(encoding="utf-8")).js
