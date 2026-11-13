@@ -41,33 +41,29 @@ half the picks.
 
 ## Where the verdict goes
 
-**The weekday premarket brief recaps the last session's verdicts** (#1168).
-`gcp/premarket_brief.py`'s `load_ew_recap` (`:724`) finds the last NYSE session before the brief's
-date, reads the picks dated from the session before it through that one in one query, and keeps
-those that `scoring_session` scores on it, the rule this job uses. The brief attaches it on
-weekdays (`:1407`), so Monday's brief recaps Friday's session, and renders each scored pick with
-`_ew_verdict_str` (`:2456`) in its own section (`:2940`), counting the unscored ones. A failed load
-logs the error with its stack and puts an "unavailable" line in the embed
-(`_ew_recap_or_unavailable`, `:774`). Nothing else in the repository reads these columns; no
-router serves them.
+**The premarket brief no longer consumes or renders EW picks or verdicts.** The
+FEAT-PLAYBOOK-001 retirement excludes both retired source aliases before its two
+loader calculations and removes recap acquisition, including historical replays.
+Compatibility strategy/strike/premium/score fields remain empty. Historical
+calendar verdicts and this evaluator's audit evidence remain intact; this source
+change makes no deployment claim.
 
-Before #1168 the brief read the verdict from **today's** rows, which this job scores at 23:00 ET,
-so the live 08:30 brief never showed one. Only a `BRIEF_AS_OF` replay of day D could, and it
-showed D's own verdict, computed from D's session, in D's morning brief: a look-ahead. Today's rows
-no longer carry the `ew_*` columns (`load_earnings_for_brief`, `:300`), and the Whispers section
-shows today's pick without a verdict. Earlier revisions of this document and #1151 said the
-verdicts were "already rendered to a person"; before #1168 they were not.
+Historical context: #1168 introduced a weekday recap of the last NYSE session,
+using the evaluator's scoring-session rule. Before that fix, today's verdict
+could leak into a historical morning replay even though the live 08:30 brief
+preceded scoring at 23:00 ET. Earlier revisions and #1151 incorrectly described
+those verdicts as already rendered to a person. #1168 subsequently covered
+Monday/Friday session selection, after-close picks, empty days, visible load
+failures and NULL minute metrics. Those receipts describe the old consumer;
+retirement does not undo the evaluator's historical session-correctness work.
 
-The brief's own suite pins this (#1168):
-- Monday's brief recaps Friday's session, in one query.
-- A Thursday after-close pick is recapped Monday, not Friday.
-- Today's rows never carry a verdict, and one on a row for today is not rendered.
-- The recap renders its verdicts, and does so on a day without earnings.
-- A failed recap is logged and named in the embed.
-- A NULL metric that pandas reads back as NaN renders as absent. Production's SNX (KEPT,
-  2026-09-24) has a NULL `ew_minutes_to_hit`, and `_ew_verdict_str` calls `int()` on the minutes.
-
-All 8 failed against the code before #1168.
+Current brief tests in `tests/gcp/test_premarket_brief.py` separately prove actual
+SQL exclusion (`test_retired_sources_excluded_by_real_brief_sql` and
+`test_retired_sources_excluded_by_real_prior_amc_sql`), no caller acquisition
+(`test_brief_pipeline_never_acquires_ew_recap`) and ignored legacy payloads
+(`test_legacy_ew_payload_cannot_render`, `test_legacy_nan_recap_metrics_are_ignored`).
+The exact base/head node mapping preserves independent non-EW assertions. Ignoring
+retired NaN metrics is source retirement evidence, not finite-value repair proof.
 
 ## The scoring session (#1151, closed 2026-09-26)
 

@@ -6,6 +6,7 @@ asserts the gate now turns it into a finding.
 from __future__ import annotations
 
 import ast
+import collections
 import datetime
 import itertools
 import json
@@ -294,6 +295,19 @@ def test_truncated_transcript_is_a_finding(tmp_path):
     assert gate.gate_transcripts(t) == []
 
 
+def _off_by_one(token: str) -> str:
+    """token's count plus one, in token's form: a WORD_NUMBERS word while the table has one, digits beyond it,
+    as the renderer writes a count above twelve."""
+    if token.isdigit():
+        return str(int(token) + 1)
+    return {v: k for k, v in gate.WORD_NUMBERS.items()}.get(gate.WORD_NUMBERS[token] + 1, str(gate.WORD_NUMBERS[token] + 1))
+
+
+# The §6 list as 05-a states it, read by these tests' own pattern rather than by the renderer's.
+SECTION_6_LIST = re.compile(r"`--max-retries 0` for (?P<n0>\d+) of the (?P<total>\d+) declared jobs, "
+                            r"`1` for (?P<n1>\d+) and `2` for (?P<c>\d+|[a-z]+)")
+
+
 def test_the_retry_split_must_match_deploy_sh(live, repo, tmp_path):
     """Three rounds each corrected ONE instance of this number and left
     another standing, because the corrections were made by reading rather than
@@ -305,11 +319,15 @@ def test_the_retry_split_must_match_deploy_sh(live, repo, tmp_path):
         _copy(REPO / d, root / d)
     assert gate.gate_derived_numbers(root, repo, live) == []
     a = root / gate.ARCH
-    a.write_text(a.read_text().replace(
-        "`--max-retries 0` for 43 of the 68 declared jobs, `1` for 24",
-        "`--max-retries 0` for 56 jobs and `1` for 27"))
+    # The split is rendered (doc_inventory.RETRY_SPLIT), so the wrong counts are derived from the §6 list as the
+    # document states it, not typed: main's 43/24 become 56/27, as this test always injected.
+    text = a.read_text()
+    m = SECTION_6_LIST.search(text)
+    assert m, "the §6 retry list is not in 05-a"
+    n0, n1 = int(m.group("n0")), int(m.group("n1"))
+    a.write_text(text.replace(m.group(0), f"`--max-retries 0` for {n0 + 13} jobs and `1` for {n1 + 3}", 1))
     findings = gate.gate_derived_numbers(root, repo, live)
-    assert any("claims 56 jobs at --max-retries 0" in f for f in findings), findings
+    assert any(f"claims {n0 + 13} jobs at --max-retries 0" in f for f in findings), findings
 
 
 def test_the_runtime_relation_count_must_match_the_snapshot(live, repo, tmp_path):
@@ -379,9 +397,15 @@ def test_a_spelled_out_retry_count_is_validated(live, repo, tmp_path):
     for d in DOCS:
         _copy(REPO / d, root / d)
     a = root / gate.ARCH
-    a.write_text(a.read_text().replace("`2` for one", "`2` for two"))
+    # Derived from the §6 list as the document states it: main's "one" becomes "two", as this test always injected.
+    text = a.read_text()
+    m = SECTION_6_LIST.search(text)
+    assert m, "the §6 retry list is not in 05-a"
+    word = _off_by_one(m.group("c"))
+    c = gate.WORD_NUMBERS.get(word, word)
+    a.write_text(text.replace(m.group(0), m.group(0)[:m.start("c") - m.start()] + word, 1))
     findings = gate.gate_derived_numbers(root, repo, live)
-    assert any("claims 2 jobs at --max-retries 2" in f for f in findings), findings
+    assert any(f"claims {c} jobs at --max-retries 2" in f for f in findings), findings
 
 
 def test_a_fixed_min_instances_for_a_windowed_service_is_a_finding(repo, tmp_path):
@@ -2201,3 +2225,49 @@ def test_an_escaped_pipe_is_content_not_a_column():
     r"""`\|` inside a cell is a literal pipe; splitting on it invented a
     column and changed the row's width."""
     assert gate._table_cells(r"| a \| b | 222.71 |") == ["a | b", "222.71"]
+
+
+# ── each owned retry count is read by the unchanged check (FEAT-CICD-001 retry-split spec, done_when[1]) ────────
+
+
+
+# (shape, group of the owned per-flag count, the flag that count is for, as a group of the same match)
+OWNED_COUNTS = [("list", 4, 2), ("list", 10, 8), ("list", 14, 12), ("norm", 4, 2), ("jobs", 2, 4)]
+
+
+@pytest.mark.parametrize("shape, count_group, flag_group", OWNED_COUNTS,
+                         ids=["list n0", "list n1", "list c", "norm n", "jobs n"])
+def test_each_owned_retry_count_off_by_one_is_reported(live, repo, tmp_path, shape, count_group, flag_group):
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    assert gate.gate_derived_numbers(root, repo, live) == []
+    a = root / gate.ARCH
+    text = a.read_text()
+    m = inv.RETRY_SPLIT[shape].search(text)
+    assert m, shape
+    token = m.group(count_group)
+    wrong = _off_by_one(token)
+    s, e = m.span(count_group)
+    a.write_text(text[:s] + wrong + text[e:])
+    want = gate.WORD_NUMBERS.get(wrong, wrong)
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any(f"claims {want} jobs at --max-retries {m.group(flag_group)}" in f for f in findings), findings
+
+
+def test_a_non_owned_retry_phrasing_is_still_checked(live, repo, tmp_path):
+    root = tmp_path
+    for d in DOCS:
+        _copy(REPO / d, root / d)
+    a = root / gate.ARCH
+    text = a.read_text()
+    n0 = collections.Counter(j.get("max_retries") for j in repo["jobs"])["0"]
+    a.write_text(text + f"\n{n0 + 1} jobs use `--max-retries 0` in this sentence.\n")
+    findings = gate.gate_derived_numbers(root, repo, live)
+    assert any(f"claims {n0 + 1} jobs at --max-retries 0" in f for f in findings), findings
+
+
+def test_the_derived_wrong_count_keeps_working_past_the_word_table():
+    """A consumer whose retries-2 count reaches twelve renders "`2` for twelve"; the derived wrong count is then 13,
+    written in digits as the renderer writes a count above twelve, and the check reads digits too."""
+    assert [_off_by_one(t) for t in ("one", "eleven", "twelve", "12", "43")] == ["two", "twelve", "13", "13", "44"]
