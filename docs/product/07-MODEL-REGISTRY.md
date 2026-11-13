@@ -1,6 +1,6 @@
 # Model and Algorithm Registry
 
-**Last reviewed:** 2026-09-26 · **Owner:** TBD
+**Last reviewed:** 2026-11-13 · **Owner:** TBD
 
 Covers deterministic rules, heuristics, statistical systems, trained estimators and LLM
 nodes — a model is anything that produces a decision, not only a fitted estimator.
@@ -367,7 +367,6 @@ declared-versus-live reconciliation.
 | `earnings-reactions-brief-daily` | `35 8 * * 1-5` | `earnings-reactions-brief` | MODEL-EARN-002 — `classify_context` (`gcp/earnings_reactions_brief.py:474`). Output is a Discord embed; there is no table behind it |
 | `phase6-playbook-daily` | `30 4 * * 1-5` | `phase6-playbook` | MODEL-PLAY-001 — per-ticker entry cards, `"IF ALL CONFIRMED -> {direction} ENTRY"` (`scripts/analysis/phase6_playbook.py:305`), upserted to `playbook_cards` and served by `/api/playbook`. **Registered 2026-09-18**; it was the deliberate exclusion quoted above |
 | `earnings-long-watchlist-sunday` | `45 19 * * 0` | `earnings-long-watchlist` | MODEL-WATCH-001 — ranks upcoming reporters by prior long-side wins, `HAVING COUNT(DISTINCT (structure, event_date)) >= :min_wins` (`gcp/earnings_long_watchlist.py:169`), Discord embed |
-| `evaluate-ew-strikes-daily` | `0 23 * * 1-5` | `evaluate-ew-strikes` | MODEL-EWV-001 — HIT / MISS / KEPT / ASSIGNED verdicts on Earnings Whispers strike picks (`gcp/fetchers/evaluate_ew_strikes.py:101-180`), recapped by the next weekday's premarket brief (`gcp/premarket_brief.py:718`, #1168) |
 | `weekend-review-weekly` | `0 9 * * 6` | `weekend-review` | MODEL-WEEK-001 — realized win rate per score bucket, labelled with `get_signal_strength_label` (`gcp/weekend_review.py:72`), the same ladder `gcp/signal_monitor.py:1343` labels live fires with. Discord |
 | `signal-quality-report-nightly` | `30 1 * * 2-6` | `signal-quality-report` | MODEL-QUAL-001 — classifies every historical fire at seven horizons into `signal_metrics` (`scripts/signal_quality_report.py:92-115`). Fires half an hour after its writer, `historical-signals-watchlist-daily`, and heals any row from the last 35 days still unscored (#1166) |
 | `signal-quality-alarm-daily` | `0 2 * * 2-6` | `signal-quality-alarm` | MODEL-QUAL-001 regression alarm — trailing-7d vs prior-7d clean rate, fires below `-3.0` pp on `>= 50` rows per window (`gcp/signal_quality_alarm.py:120-122`); plus a report-only score-discrimination check over 14 days of live exits |

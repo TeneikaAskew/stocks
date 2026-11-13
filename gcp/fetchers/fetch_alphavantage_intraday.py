@@ -125,7 +125,7 @@ def fetch_month(
         'symbol': symbol,
         'interval': '1min',
         'month': month_str,
-        'outputsize': 'full',
+        'outputsize': 'full', 'adjusted': 'false',  # as traded: AV adjusts as of the call unless told not to
         'entitlement': 'realtime',
         'extended_hours': 'true',
         'datatype': 'json',
