@@ -963,6 +963,20 @@ class TestPlanInputs:
         assert calls.legs == 3 and calls.cutoff_minutes == CUTOFF_10_ET
         assert calls.plan_available
 
+    @pytest.mark.parametrize('rule_version', ['feat-strat-001.v1', None])
+    def test_a_basis_other_than_v2_or_v3_has_no_plan(self, rule_version):
+        import gcp.premarket_playbook_resolver as mod
+        from tests.lib.session_levels_helpers import d8_basis
+
+        basis = {k: v for k, v in d8_basis().items() if k != 'rule_version'}
+        if rule_version is not None:
+            basis['rule_version'] = rule_version
+        row = {'calls_trigger_price': 252.10, 'calls_stop_price': 248.20,
+               'calls_t1_price': 253.00, 'calls_t2_price': 275.00, 'calls_t3_price': None}
+        calls = mod.plan_inputs('calls', row, basis, policy_fn=lambda: pytest.fail('no policy read'))
+        assert calls.target_status == 'targets_unavailable' and not calls.plan_available
+        assert calls.targets == () and calls.legs is None
+
     def test_a_row_without_level_basis_has_no_plan(self):
         import gcp.premarket_playbook_resolver as mod
 

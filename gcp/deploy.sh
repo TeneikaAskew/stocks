@@ -2673,18 +2673,21 @@ deploy_audit_walkforward() {
 
     local non_secret_env
     non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
-    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
-    non_secret_env="${non_secret_env},DB_NAME=trading"
-    non_secret_env="${non_secret_env},PROJECT_ID=${PROJECT_ID}"
-    non_secret_env="${non_secret_env},AUDIT_SCRIPT_MODULE=scripts.analysis.per_factor_walkforward"
-    non_secret_env="${non_secret_env},AUDIT_SCRIPT_ARGS=--folds 4"
-    non_secret_env="${non_secret_env},AUDIT_WINDOW_DAYS=30"
-    non_secret_env="${non_secret_env},AUDIT_ALLOWED_EXIT_CODES=0,3"
-    non_secret_env="${non_secret_env},AUDIT_COMMENT_TITLE=🔁 Weekly walk-forward audit"
+    non_secret_env="${non_secret_env}@DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env}@DB_NAME=trading"
+    non_secret_env="${non_secret_env}@PROJECT_ID=${PROJECT_ID}"
+    # The module is its own assignment so scripts/maintenance/doc_inventory.py,
+    # which reads env chains split on commas, still finds this job's workload.
+    local module_env="AUDIT_SCRIPT_MODULE=scripts.analysis.per_factor_walkforward"
+    non_secret_env="${non_secret_env}@${module_env}"
+    non_secret_env="${non_secret_env}@AUDIT_SCRIPT_ARGS=--folds 4"
+    non_secret_env="${non_secret_env}@AUDIT_WINDOW_DAYS=30"
+    non_secret_env="${non_secret_env}@AUDIT_ALLOWED_EXIT_CODES=0,3"
+    non_secret_env="${non_secret_env}@AUDIT_COMMENT_TITLE=🔁 Weekly walk-forward audit"
     # Tracking issue lives in the env; an empty value disables the
     # GitHub comment without breaking the run. Override per-execution
     # if needed via --update-env-vars=AUDIT_TRACKING_ISSUE=NNN.
-    non_secret_env="${non_secret_env},AUDIT_TRACKING_ISSUE="
+    non_secret_env="${non_secret_env}@AUDIT_TRACKING_ISSUE="
 
     local common_flags=(
         --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
@@ -2693,7 +2696,7 @@ deploy_audit_walkforward() {
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.audit_job_runner"
         --set-secrets "DB_PASS=db-trading-pass:latest"
-        --set-env-vars "${non_secret_env}"
+        --set-env-vars "^@^${non_secret_env}"
         --quiet
     )
 
@@ -2711,18 +2714,21 @@ deploy_audit_brief_bias() {
 
     local non_secret_env
     non_secret_env="CLOUD_SQL_CONNECTION_NAME=$(_secret cloud-sql-connection-name)"
-    non_secret_env="${non_secret_env},DB_USER=$(_secret db-trading-user)"
-    non_secret_env="${non_secret_env},DB_NAME=trading"
-    non_secret_env="${non_secret_env},PROJECT_ID=${PROJECT_ID}"
-    non_secret_env="${non_secret_env},AUDIT_SCRIPT_MODULE=scripts.analysis.verify_brief_bias"
+    non_secret_env="${non_secret_env}@DB_USER=$(_secret db-trading-user)"
+    non_secret_env="${non_secret_env}@DB_NAME=trading"
+    non_secret_env="${non_secret_env}@PROJECT_ID=${PROJECT_ID}"
+    # The module is its own assignment so scripts/maintenance/doc_inventory.py,
+    # which reads env chains split on commas, still finds this job's workload.
+    local module_env="AUDIT_SCRIPT_MODULE=scripts.analysis.verify_brief_bias"
+    non_secret_env="${non_secret_env}@${module_env}"
     # Pass --since via AUDIT_SCRIPT_ARGS (defaults to 2026-05-12 per the
     # script's docstring). The wrapper's auto-window logic only fires
     # when --since / --start aren't already in args.
-    non_secret_env="${non_secret_env},AUDIT_SCRIPT_ARGS=--since 2026-05-12 --tickers SPY,IWM,QQQ"
-    non_secret_env="${non_secret_env},AUDIT_WINDOW_DAYS=0"   # disable auto-window
-    non_secret_env="${non_secret_env},AUDIT_ALLOWED_EXIT_CODES=0"
-    non_secret_env="${non_secret_env},AUDIT_COMMENT_TITLE=🔍 Weekly brief bias verification"
-    non_secret_env="${non_secret_env},AUDIT_TRACKING_ISSUE="
+    non_secret_env="${non_secret_env}@AUDIT_SCRIPT_ARGS=--since 2026-05-12 --tickers SPY,IWM,QQQ"
+    non_secret_env="${non_secret_env}@AUDIT_WINDOW_DAYS=0"   # disable auto-window
+    non_secret_env="${non_secret_env}@AUDIT_ALLOWED_EXIT_CODES=0"
+    non_secret_env="${non_secret_env}@AUDIT_COMMENT_TITLE=🔍 Weekly brief bias verification"
+    non_secret_env="${non_secret_env}@AUDIT_TRACKING_ISSUE="
 
     local common_flags=(
         --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}"
@@ -2731,7 +2737,7 @@ deploy_audit_brief_bias() {
         --service-account "${SA_EMAIL}"
         --command "python,-m,gcp.audit_job_runner"
         --set-secrets "DB_PASS=db-trading-pass:latest"
-        --set-env-vars "${non_secret_env}"
+        --set-env-vars "^@^${non_secret_env}"
         --quiet
     )
 
@@ -3132,7 +3138,6 @@ deploy_fetch_news_sentiment() {
         --args "" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${ENV_STRING}" \
-        --remove-env-vars "NEWS_TICKERS" \
         --quiet
 }
 
@@ -3537,14 +3542,14 @@ deploy_compute_spx_greeks_backfill() {
         --memory 2Gi --cpu 1 --max-retries 0 --task-timeout 43200 \
         --service-account "${SA_EMAIL}" \
         --command "python,-m,scripts.maintenance.compute_spx_greeks" \
-        --args "--ticker,SPX" \
+        --args="--ticker,SPX" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${ENV_STRING}" \
         --quiet 2>/dev/null || \
     gcloud run jobs update compute-spx-greeks-backfill \
         --image "${IMAGE_REF:?build_image has not run in this invocation}" --region "${REGION}" \
         --command "python,-m,scripts.maintenance.compute_spx_greeks" \
-        --args "--ticker,SPX" \
+        --args="--ticker,SPX" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${ENV_STRING}" \
         --quiet
@@ -5385,7 +5390,8 @@ case "${1:-help}" in
     magnitude-inference-only) deploy_magnitude_inference ;;   # research image; build separately (build-research)
     p7b-classifier) echo "DEPRECATED — use ./deploy.sh strat-engine"; exit 1 ;;
     weekend) _run build_image deploy_weekend ;;
-    fetchers) _run build_image deploy_fetchers backfill_watchlist ;;
+    fetchers) _run build_image deploy_fetchers
+        echo "Watchlist data backfill is separate: ./gcp/deploy.sh backfill (writes to Cloud SQL)." ;;
     insights) _run build_image setup_insight_tasks_queue deploy_insight_pipeline deploy_insight_discord_push deploy_historical_signals_watchlist deploy_auto_refresh_top_n ;;
     historical-signals) _run build_image deploy_historical_signals_watchlist ;;
     market-data) _run build_image deploy_fetch_market_data deploy_fetch_premarket_refresh ;;
@@ -5507,14 +5513,14 @@ case "${1:-help}" in
         echo "             pattern). Scheduled weekdays 8:35 AM ET."
         echo "  monitor    Deploy real-time signal monitor service"
         echo "  weekend    Deploy weekend review job"
-        echo "  fetchers   Deploy all data-fetching Cloud Run jobs"
+        echo "  fetchers   Deploy all data-fetching Cloud Run jobs (deploy only; no data backfill)"
         echo "  insights   Deploy AI insight pipeline job + Cloud Tasks queue"
         echo "  historical-signals  Deploy only the nightly historical-signals-watchlist job"
         echo "  market-data         Deploy only fetch-market-data and fetch-premarket-refresh"
         echo "  schedulers Create/update all Cloud Scheduler triggers"
         echo "  backfill   Idempotently backfill data for every watchlist ticker."
-        echo "             Pass --tickers AVGO,NVDA to override. Runs automatically"
-        echo "             after \`fetchers\` and \`all\`."
+        echo "             Pass --tickers AVGO,NVDA to override. Writes to Cloud SQL."
+        echo "             Runs automatically after \`all\` only; run it on its own after \`fetchers\`."
         echo "  apply-schema Build, then move + run apply-schema-migrations through a tagged, serialized Cloud Build"
         echo "             (idempotent — every statement is IF NOT EXISTS / OR REPLACE)"
         echo "  pg-dump    Deploy cloud-sql-weekly-export Cloud Run Job (full Postgres"
