@@ -6,7 +6,7 @@ Spec: docs/superpowers/specs/2026-10-29-feat-deploy-001-news-retry-coupling.md
 The typed-news producer (FEAT-DATA-001) exits nonzero on source or
 persistence uncertainty after it has persisted successful siblings. A Cloud
 Run whole-job retry would replay the entire job, siblings included. At the
-pinned baseline (main b483989e, deploy.sh blob 6eed94ca) every NEWS create
+pinned baseline (main 53bc13ff, deploy.sh blob 45cb4f9b) every NEWS create
 passes `--max-retries 1` and every update omits the flag, and an update that
 omits a flag leaves the job's existing value in place.
 
@@ -24,7 +24,7 @@ creates, three updates, two env-only updates). All thirteen must address
 exactly the three allowed jobs and carry max-retries 0, and every other
 argument must equal the same call executed from the pinned baseline bodies.
 Those bodies are embedded verbatim below because CI checks out a single
-commit and cannot read b483989e; `test_embedded_baseline_matches_pinned_commit`
+commit and cannot read 53bc13ff; `test_embedded_baseline_matches_pinned_commit`
 re-derives them from git wherever the commit object is present. The baseline
 bodies run through the same retry controls, which must reject them.
 """
@@ -52,10 +52,10 @@ JOB_OF = {
 }
 ALLOWED_JOBS = frozenset(JOB_OF.values())
 
-BASELINE_COMMIT = "b483989ea26edc6b44a4cbf17f9c7aa2e4b07285"
-BASELINE_DEPLOY_BLOB = "6eed94cae9db97edd33c57b9c6748069e62bdc69"
-BASELINE_LINES = (3140, 3227)  # 1-based, inclusive, in BASELINE_DEPLOY_BLOB
-BASELINE_SHA256 = "9c2df4287007bb2802acd83016a8f46e2f54242946f9db8e8f9d3930b30d22d0"
+BASELINE_COMMIT = "53bc13ff1ea96c46cc09e30d535409ad0ad4633f"
+BASELINE_DEPLOY_BLOB = "45cb4f9bc8a346c083c29dcfe656fbce15670434"
+BASELINE_LINES = (3119, 3205)  # 1-based, inclusive, in BASELINE_DEPLOY_BLOB
+BASELINE_SHA256 = "f13677b529ef238589af2a8e4238df3c508a2f3e598704331395ceb652737baf"
 BASELINE_FUNCTIONS = r'''deploy_fetch_news_sentiment() {
     echo "Deploying fetch-news-sentiment (ticker mode) job..."
     # AV_API_KEY ships via DB_SECRET_FLAG (--set-secrets) per G.P0.9.
@@ -78,7 +78,6 @@ BASELINE_FUNCTIONS = r'''deploy_fetch_news_sentiment() {
         --args "" \
         ${DB_SECRET_FLAG} \
         --set-env-vars "${ENV_STRING}" \
-        --remove-env-vars "NEWS_TICKERS" \
         --quiet
 }
 

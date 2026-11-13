@@ -38,7 +38,8 @@ behavioral test executes the actual bodies with a shell-local gcloud stub.
 - A create-only fix leaves existing jobs retrying; an update-only fix leaves new
   jobs unsafe. Both branches and both env-only updates are covered.
 - Only the three named jobs are addressed, and every other argument equals the
-  pinned baseline b483989e call for call.
+  pinned baseline call for call: main 53bc13ff since the 2026-11-13 base sync,
+  b483989e before it.
 - The embedded baseline is byte-pinned and re-derived from git where available.
 
 ## Task 1: Behavioral retry tests, RED on the baseline
@@ -51,6 +52,10 @@ Files: tests/gcp/test_news_retry_coupling.py.
   all-create-success (5 calls) and all-existing (8 calls).
 - [x] Embed the pinned baseline bodies (b483989e lines 3140-3227) with a sha256 pin
   and a git re-derivation check; the retry controls must reject the baseline.
+  Re-pinned on the 2026-11-13 base sync, as the spec's adaptation clause allows, to
+  main 53bc13ff lines 3119-3205: main's #1813 removed `--remove-env-vars NEWS_TICKERS`
+  from the fetch-news-sentiment update, so b483989e no longer describes main. The
+  assertions are unchanged; unpatched main fails the same three retry controls.
 - [x] Run `pytest tests/gcp/test_news_retry_coupling.py` on unpatched source
   (expect the three retry controls to FAIL, the shape/baseline checks to pass).
 
