@@ -923,7 +923,7 @@ def summarize_gamma_levels(
         "gamma_balance": round(summary.gamma_balance, 2) if summary.gamma_balance else None,
         "gamma_flip": round(summary.gamma_flip, 2) if summary.gamma_flip else None,
         "regime": summary.regime,
-        "total_gex": round(summary.total_gex, 0),
+        "total_gex": round(summary.total_gex, 0) if summary.total_gex is not None else None,
         "kings": [_level_brief(lv) for lv in summary.kings[:3]],
         "gates": [_level_brief(lv) for lv in summary.gates[:5]],
         "gamma_balance_levels": [_level_brief(lv) for lv in summary.gamma_balance_levels],
