@@ -18,7 +18,7 @@ done_when:
   - "python scripts/export_openapi.py --check passes and platform/api/openapi.json is not in the PR's diff"
   - "make test passes on the PR head; the generated inventory blocks are re-rendered with scripts/maintenance/doc_inventory.py and tests/scripts/test_check_generated_docs.py passes"
   - "02-FEATURE-CATALOG FEAT-DATA-001 record shows Status and Last reviewed for this PR, 12-PR-ISSUE-TRACEABILITY lists it, the eleven (FEAT-DATA-001, component) rows of Design 10 are in the implementation-source notes of 03-SITE-TRACEABILITY.md with docs/review-evidence/site-source-snapshot.json regenerated, the branch run of python3 scripts/maintenance/docs_audit.py reports nothing that origin/main does not, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
-status: draft
+status: approved
 supersedes: null
 ---
 

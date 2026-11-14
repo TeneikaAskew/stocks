@@ -5038,6 +5038,163 @@
         "title": "MeResponse",
         "type": "object"
       },
+      "MeWatchlistAddRequest": {
+        "additionalProperties": true,
+        "properties": {
+          "source": {
+            "enum": [
+              "ui",
+              "combobox-auto-add"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticker",
+          "source"
+        ],
+        "title": "MeWatchlistAddRequest",
+        "type": "object"
+      },
+      "MeWatchlistRemoveResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "owner_email": {
+            "title": "Owner Email",
+            "type": "string"
+          },
+          "removed": {
+            "const": true,
+            "title": "Removed",
+            "type": "boolean"
+          },
+          "tickers": {
+            "items": {
+              "$ref": "#/components/schemas/MeWatchlistRow"
+            },
+            "title": "Tickers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "owner_email",
+          "as_of",
+          "tickers",
+          "removed"
+        ],
+        "title": "MeWatchlistRemoveResponse",
+        "type": "object"
+      },
+      "MeWatchlistResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "owner_email": {
+            "title": "Owner Email",
+            "type": "string"
+          },
+          "tickers": {
+            "items": {
+              "$ref": "#/components/schemas/MeWatchlistRow"
+            },
+            "title": "Tickers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "owner_email",
+          "as_of",
+          "tickers"
+        ],
+        "title": "MeWatchlistResponse",
+        "type": "object"
+      },
+      "MeWatchlistRow": {
+        "additionalProperties": true,
+        "properties": {
+          "added_at": {
+            "title": "Added At",
+            "type": "string"
+          },
+          "asset_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Type"
+          },
+          "exchange": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exchange"
+          },
+          "last_daily_bar": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Daily Bar"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticker",
+          "added_at"
+        ],
+        "title": "MeWatchlistRow",
+        "type": "object"
+      },
       "MineAndValidateRequest": {
         "properties": {
           "ticker": {
@@ -14548,6 +14705,102 @@
           }
         },
         "summary": "Put Profile"
+      }
+    },
+    "/api/me/watchlist": {
+      "get": {
+        "description": "List the caller's active watchlist (401 without a signed-in identity,\n503 on a Cloud SQL outage; a defect stays a 500).",
+        "operationId": "get_me_watchlist_api_me_watchlist_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeWatchlistResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Me Watchlist"
+      },
+      "post": {
+        "description": "Add a ticker to the caller's watchlist and answer the updated list.\n\nOne transaction: the per-owner advisory lock first (adds for one owner\nserialize, so the cap cannot be raced), then the count (409 at the cap),\nthe shared ticker row, and the membership upsert. A re-add clears\nremoved_at and never rewrites added_at. 401 without an identity, 422 for a\nbad ticker, 503 on a Cloud SQL outage; a defect stays a 500.\n\nThe write is committed before the list is read back, so a 503 from that\nread does not undo it. A client should refresh with GET rather than retry\nthe write (a retried add at the cap would answer 409 for a ticker already\non the list).",
+        "operationId": "add_me_watchlist_api_me_watchlist_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MeWatchlistAddRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeWatchlistResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Me Watchlist"
+      }
+    },
+    "/api/me/watchlist/{ticker}": {
+      "delete": {
+        "description": "Soft-remove a ticker from the caller's watchlist and answer the list.\n\n404 when the caller has no active row for it, 422 for a bad ticker, 401\nwithout an identity, 503 on a Cloud SQL outage; a defect stays a 500.\n\nThe write is committed before the list is read back, so a 503 from that\nread does not undo it. A client should refresh with GET rather than retry\nthe write (a retried remove would answer 404 for a ticker already removed).",
+        "operationId": "remove_me_watchlist_api_me_watchlist__ticker__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ticker",
+            "required": true,
+            "schema": {
+              "title": "Ticker",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeWatchlistRemoveResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Me Watchlist"
       }
     },
     "/api/movement-statement": {

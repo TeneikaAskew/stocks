@@ -35,5 +35,5 @@ Other workflows that once lived here (earnings options analytics, economic-event
 
 - Keep `workflow_dispatch:` and drop `schedule:` when the workload runs in Cloud Run (CLAUDE.md "Workflow retirement / Cloud-Run-migration convention"); rename to `.yml.disabled` only for a full retirement.
 - Add the `handle-failure` job with `actions: read`, `issues: write`, `pull-requests: write` and unique `issue_labels`.
-- No `continue-on-error: true` on a fetch or validation step (CLAUDE.md Rule 3.7).
+- No `continue-on-error` on any step or job, other than an explicit `false` (CLAUDE.md Rule 3.7; `tests/meta/test_workflows_no_continue_on_error.py`).
 - `workflow_dispatch` only registers once the file is on `main`; a dispatch before that returns 404.
