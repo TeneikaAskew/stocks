@@ -535,6 +535,17 @@ def test_gamma_levels_extracts_kings_and_regime(patch_query):
     assert out["chain_size"] == 4
 
 
+def test_gamma_levels_calls_only_chain_is_unavailable_not_zero(patch_query):
+    chain = _eod_chain_fixture(date(2026, 5, 12))
+    patch_query("market_session = 'EOD'", chain[chain["option_type"] == "calls"])
+    out = summarizers.summarize_gamma_levels("XYZ", as_of=date(2026, 5, 13))
+    assert out["available"] is True
+    assert out["total_gex"] is None and out["regime"] == "unknown"
+    assert out["gamma_balance"] is None and out["gamma_flip"] is None
+    assert out["kings"] == [] and out["gates"] == []
+    assert any("no put contracts" in w for w in out["warnings"])
+
+
 def test_pinning_a_live_run_to_today_silently_swaps_the_intraday_chain(
     monkeypatch,
 ):

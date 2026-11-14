@@ -563,6 +563,32 @@ def _featurize_tf(df_1m: pd.DataFrame, tf_label: str, tf_arg: Optional[str]) -> 
 # ──────────────────── Context joining ────────────────────
 
 
+def prior_snapshot_context(levels: pd.DataFrame, bar_dates: pd.Series) -> pd.DataFrame:
+    """Per bar date, the `levels` row of the latest snapshot_date STRICTLY before it.
+
+    `levels` is indexed by snapshot_date (one row per date). The result has the
+    index of `bar_dates` and `levels`' columns; NaN everywhere when no earlier
+    snapshot exists. A marker row (date present, columns NaN) is selected like
+    any other row, so the lookup never reaches past it.
+    """
+    if levels.empty:
+        return pd.DataFrame(np.nan, index=bar_dates.index, columns=levels.columns)
+    right = levels.copy()
+    right.index = pd.to_datetime(right.index).astype("datetime64[ns]")
+    right.index.name = "_snapshot_key"
+    right = right.sort_index().reset_index()
+    left = pd.DataFrame({"_bar_key": pd.to_datetime(bar_dates).astype("datetime64[ns]").to_numpy()},
+                        index=bar_dates.index)
+    left["_pos"] = np.arange(len(left))
+    merged = pd.merge_asof(left.sort_values("_bar_key"), right,
+                           left_on="_bar_key", right_on="_snapshot_key",
+                           direction="backward", allow_exact_matches=False)
+    merged = merged.sort_values("_pos")
+    res = merged[list(levels.columns)].copy()
+    res.index = bar_dates.index
+    return res
+
+
 def _add_context(out: pd.DataFrame, ticker: str, vix_df: pd.DataFrame,
                  gamma_df: pd.DataFrame, vex_df: pd.DataFrame,
                  gex_terciles: tuple, vex_terciles: tuple) -> pd.DataFrame:
@@ -571,25 +597,10 @@ def _add_context(out: pd.DataFrame, ticker: str, vix_df: pd.DataFrame,
     Levels are joined on the PRIOR business day (no leak — matches production's
     _latest_gamma_for_ticker_pure semantics).
     """
-    # PRIOR-day join: shift gamma_df / vex_df forward by 1 trading day relative
-    # to each row. Simpler: build a lookup of (date -> prior_trading_date_levels)
-    # by sorting and shifting.
-    gamma_sorted = gamma_df.sort_index()
-    vex_sorted = vex_df.sort_index() if not vex_df.empty else pd.DataFrame()
-    # Build a "prior-business-day's levels" map. For each date d in gamma_sorted.index,
-    # the LATER d uses d's levels (so we shift by 1).
-    prior_gamma = gamma_sorted.shift(1).reset_index().rename(
-        columns={"snapshot_date": "prior_date"})
-    prior_gamma["effective_date"] = gamma_sorted.index
-    prior_gamma = prior_gamma.dropna(subset=["effective_date"]).set_index("effective_date")
-    # Same for VEX
-    if not vex_sorted.empty:
-        prior_vex = vex_sorted.shift(1).reset_index().rename(
-            columns={"snapshot_date": "prior_vex_date"})
-        prior_vex["effective_date"] = vex_sorted.index
-        prior_vex = prior_vex.dropna(subset=["effective_date"]).set_index("effective_date")
-    else:
-        prior_vex = pd.DataFrame()
+    # Gamma / VEX context: the latest snapshot STRICTLY before each bar date
+    # (no leak; matches production's _latest_gamma_for_ticker_pure semantics).
+    prior_gamma = prior_snapshot_context(gamma_df, out["bar_date"])
+    prior_vex = prior_snapshot_context(vex_df, out["bar_date"]) if not vex_df.empty else pd.DataFrame()
 
     bd = out["bar_date"]
     # NO-LEAK FIX 2026-05-25: use PRIOR trading day's VIX close. The previous
@@ -604,23 +615,23 @@ def _add_context(out: pd.DataFrame, ticker: str, vix_df: pd.DataFrame,
                                  labels=["LOW", "MID", "HIGH"]).astype(object)
 
     # Gamma context — join via prior-date lookup
-    out["total_gex"] = bd.map(prior_gamma["total_gex"].to_dict())
-    out["gamma_balance_price"] = bd.map(prior_gamma["gamma_balance_price"].to_dict())
-    out["gamma_flip"] = bd.map(prior_gamma["gamma_flip"].to_dict())
+    out["total_gex"] = prior_gamma["total_gex"]
+    out["gamma_balance_price"] = prior_gamma["gamma_balance_price"]
+    out["gamma_flip"] = prior_gamma["gamma_flip"]
     # Distance from current close to the true BS gamma flip (signed %, the
     # directly tradable quantity — mirrors distance_to_king/gate_pct). NaN
     # propagates where gamma_flip is missing (§3.7 — no fabricated 0).
-    out["dist_to_gamma_flip_pct"] = (out["close"] - bd.map(prior_gamma["gamma_flip"].to_dict())) \
+    out["dist_to_gamma_flip_pct"] = (out["close"] - prior_gamma["gamma_flip"]) \
         / out["close"] * 100
-    out["gamma_regime"] = bd.map(prior_gamma["regime"].to_dict()).fillna("unknown")
-    out["distance_to_king_pct"] = (out["close"] - bd.map(prior_gamma["min_king_strike"].to_dict())) \
+    out["gamma_regime"] = prior_gamma["regime"].fillna("unknown")
+    out["distance_to_king_pct"] = (out["close"] - prior_gamma["min_king_strike"]) \
         / out["close"] * 100
-    out["distance_to_gate_pct"] = (out["close"] - bd.map(prior_gamma["min_gate_strike"].to_dict())) \
+    out["distance_to_gate_pct"] = (out["close"] - prior_gamma["min_gate_strike"]) \
         / out["close"] * 100
 
     # VEX context
     if not prior_vex.empty:
-        out["total_vex"] = bd.map(prior_vex["total_vex"].to_dict())
+        out["total_vex"] = prior_vex["total_vex"]
     else:
         out["total_vex"] = np.nan
 

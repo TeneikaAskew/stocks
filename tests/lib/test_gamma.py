@@ -759,6 +759,30 @@ class TestBuildGridSummary:
         assert summary.strikes == []
         assert summary.regime == "unknown"
 
+    def test_calls_only_grid_is_unavailable(self):
+        opts = [o for o in self._build_chain() if o["type"] == "call"]
+        g = gamma.build_grid_summary("XYZ", "2026-05-23", opts, window_pct=15.0)
+        assert (g.regime, g.total_gex, g.total_vex, g.gamma_balance, g.gamma_flip) == ("unknown", None, None, None, None)
+        assert g.cells == [] and g.expirations == [] and g.strikes == []
+        assert g.spot.method == "delta"
+        assert gamma.partial_chain_warning("calls_only") in g.warnings
+        assert g.reason == "puts_missing"
+
+    def test_puts_only_grid_is_unavailable(self):
+        opts = [o for o in self._build_chain() if o["type"] == "put"]
+        g = gamma.build_grid_summary("XYZ", "2026-05-23", opts, window_pct=15.0)
+        assert g.total_gex is None and g.total_vex is None and g.cells == []
+        assert g.reason == "calls_missing"
+
+    def test_both_sided_grid_numerics_unchanged(self):
+        g = gamma.build_grid_summary("XYZ", "2026-05-23", self._build_chain(), window_pct=15.0)
+        assert len(g.cells) == 5 and g.total_gex == sum(c.gex for c in g.cells) and g.total_vex == sum(c.vex for c in g.cells)
+        assert g.reason is None
+
+    def test_grid_no_spot_returns_null_totals(self):
+        g = gamma.build_grid_summary("XYZ", "2026-05-23", [], window_pct=15.0)
+        assert g.spot.method == "none" and g.total_gex is None and g.total_vex is None
+
 
 # ── True Black-Scholes-recurved gamma flip ──────────────────────────────────
 
@@ -1092,16 +1116,16 @@ def test_build_summary_all_gamma_missing_is_unavailable_not_zero():
     regime='unknown' with a loud warning — NOT a quiet total_gex=0.0
     summary that downstream reads as a flat-gamma day."""
     from lib.gamma import build_summary
-    rows = [_chain_row(s, gamma=None) for s in (98, 99, 100, 101, 102)]
+    rows = [_chain_row(s, typ=("call" if i % 2 == 0 else "put"), gamma=None) for i, s in enumerate((98, 99, 100, 101, 102))]
     s = build_summary("SPY", "2026-08-25", rows)
     assert s.regime == "unknown"
-    assert s.total_gex == 0.0
+    assert s.total_gex is None
     assert any("ALL" in w and "unavailable" in w for w in s.warnings), s.warnings
 
 
 def test_build_summary_partial_missing_warns_degraded():
     from lib.gamma import build_summary
-    rows = [_chain_row(s) for s in range(90, 110)]
+    rows = [_chain_row(s) for s in range(90, 109)] + [_chain_row(109, typ="put")]
     rows += [_chain_row(s, gamma=None) for s in (110, 111)]  # 2/22 ≈ 9% missing
     s = build_summary("SPY", "2026-08-25", rows)
     assert any("degraded" in w for w in s.warnings), s.warnings
@@ -1111,9 +1135,11 @@ def test_build_summary_partial_missing_warns_degraded():
 
 def test_build_summary_full_coverage_no_greeks_warning():
     from lib.gamma import build_summary
-    rows = [_chain_row(s) for s in range(90, 110)]
+    rows = [_chain_row(s) for s in range(90, 109)] + [_chain_row(109, typ="put")]
     s = build_summary("SPY", "2026-08-25", rows)
     assert not any("gamma missing" in w for w in s.warnings), s.warnings
+    # Reached the coverage gate and aggregation (not an early partial return).
+    assert s.regime in ("positive_gamma", "negative_gamma")
 
 
 def test_greeks_coverage_counts_nan_as_missing():
@@ -1128,10 +1154,10 @@ def test_greeks_coverage_counts_nan_as_missing():
 
 def test_build_summary_nan_outage_is_unavailable_and_not_nan():
     from lib.gamma import build_summary
-    rows = [_chain_row(s, gamma=float("nan")) for s in (98, 99, 100, 101)]
+    rows = [_chain_row(s, typ=("call" if i % 2 == 0 else "put"), gamma=float("nan")) for i, s in enumerate((98, 99, 100, 101))]
     s = build_summary("SPY", "2026-08-25", rows)
     assert s.regime == "unknown"
-    assert s.total_gex == 0.0 and s.total_gex == s.total_gex  # not NaN
+    assert s.total_gex is None  # unavailable, not 0.0 and not NaN
 
 
 def test_build_summary_outage_preserves_spot():
@@ -1139,10 +1165,45 @@ def test_build_summary_outage_preserves_spot():
     independently available spot (override or parity/delta from the
     chain) — only the gamma-derived fields go unavailable."""
     from lib.gamma import build_summary
-    rows = [_chain_row(s, gamma=None) for s in (98, 99, 100, 101, 102)]
+    rows = [_chain_row(s, typ=("call" if i % 2 == 0 else "put"), gamma=None) for i, s in enumerate((98, 99, 100, 101, 102))]
+    assert {r["type"] for r in rows} == {"call", "put"}
     s = build_summary("SPY", "2026-08-25", rows, spot_override=101.5)
     assert s.regime == "unknown"
     assert s.spot.price == 101.5 and s.spot.method == "override"
     # And without an override, the delta/parity estimate still resolves.
     s2 = build_summary("SPY", "2026-08-25", rows)
     assert s2.spot.price > 0, s2.spot
+
+
+class TestPartialChainIsUnavailable:
+    def test_calls_only_chain_is_unavailable_with_spot_from_delta(self):
+        rows = [_chain_row(s, typ="call", delta=d) for s, d in ((98, 0.7), (100, 0.5), (102, 0.3))]
+        s = gamma.build_summary("SPY", "2026-06-01", rows)
+        assert (s.regime, s.total_gex, s.gamma_balance, s.gamma_flip) == ("unknown", None, None, None)
+        assert s.levels == [] and s.kings == [] and s.gates == []
+        assert s.spot.method == "delta" and s.spot.price == 100.0
+        assert gamma.partial_chain_warning("calls_only") in s.warnings
+        assert s.reason == "puts_missing"
+
+    def test_puts_only_chain_is_unavailable_with_median_spot(self):
+        rows = [_chain_row(s, typ="put") for s in (98, 100, 102)]
+        s = gamma.build_summary("SPY", "2026-06-01", rows)
+        assert s.total_gex is None and s.regime == "unknown"
+        assert s.spot.method == "median_strike"
+        assert gamma.partial_chain_warning("puts_only") in s.warnings
+        assert s.reason == "calls_missing"
+
+    def test_both_sided_no_crossing_keeps_its_own_warning_not_the_partial_one(self):
+        opts = [{"type": "put", "strike": 95, "open_interest": 500, "gamma": 0.05, "expiration": "2025-01-01"},
+                {"type": "call", "strike": 105, "open_interest": 2000, "gamma": 0.05, "expiration": "2025-01-01"}]
+        s = gamma.build_summary("XYZ", "2025-01-01", opts, spot_override=100)
+        assert s.regime == "positive_gamma" and s.total_gex > 0
+        assert s.reason is None
+        assert not any("no put contracts" in w or "no call contracts" in w for w in s.warnings)
+
+    def test_chain_sides_and_reasons(self):
+        assert gamma.chain_sides([]) == "empty"
+        assert gamma.chain_sides([{"type": "call"}]) == "calls_only"
+        assert gamma.chain_sides([{"type": "put"}]) == "puts_only"
+        assert gamma.chain_sides([{"type": "call"}, {"type": "put"}]) == "both"
+        assert [gamma.partial_chain_reason(s) for s in ("both", "calls_only", "puts_only", "empty")] == [None, "puts_missing", "calls_missing", "empty_chain"]

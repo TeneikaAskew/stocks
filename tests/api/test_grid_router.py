@@ -188,6 +188,7 @@ class TestGridLive:
         assert data["data_source"] == "unavailable"
         assert data["cells"] == []
         assert data["spot"] is None
+        assert data["total_gex"] is None and data["total_vex"] is None
         assert "warnings" in data
 
     def test_invalid_ticker_returns_400(self, client, monkeypatch):
@@ -332,6 +333,7 @@ class TestNodesLive:
         assert d["gates"] == []
         assert d["opex_nodes"] == []
         assert d["hedge_nodes"] == []
+        assert d["total_gex"] is None and d["total_vex"] is None
 
 
 class TestNodesHistorical:

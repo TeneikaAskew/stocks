@@ -55,6 +55,14 @@ log = logging.getLogger(__name__)
 # ── Constants (mirror options-heatseeker config) ───────────────────────────
 SPOT_MULTIPLIER = 100             # one option contract represents 100 shares
 GEX_MULTIPLIER = 0.01             # express GEX as notional $ per 1% spot move
+
+# Which option sides a chain carries. A one-sided chain cannot support a
+# net-gamma total: the missing side contributes nothing, so the sum reads as
+# a real one-sided number instead of "unavailable".
+SIDES_BOTH = "both"
+SIDES_CALLS_ONLY = "calls_only"
+SIDES_PUTS_ONLY = "puts_only"
+SIDES_EMPTY = "empty"
 VEX_MULTIPLIER = 0.01
 ATM_TOLERANCE = 0.02              # ±2% band for implied-move vega average
 
@@ -114,13 +122,16 @@ class GammaSummary:
     # is the real regime divider; `regime` (sign(total_gex)) is its sign at spot.
     gamma_flip: float | None
     regime: str               # "positive_gamma" | "negative_gamma" | "unknown"
-    total_gex: float
+    total_gex: float | None   # None = unavailable (outage / one-sided chain), not zero
     levels: list[Level]
     kings: list[Level]
     gates: list[Level]
     gamma_balance_levels: list[Level]
     window_pct: float
     warnings: list[str] = field(default_factory=list)
+    # Machine-readable partial-chain reason (puts_missing | calls_missing |
+    # empty_chain); None on every both-sided summary.
+    reason: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -185,13 +196,16 @@ class GammaGridSummary:
     gamma_balance: float | None   # gamma-median balance price (not a true flip)
     gamma_flip: float | None      # true BS-recurved zero-gamma level
     regime: str               # "positive_gamma" | "negative_gamma" | "unknown"
-    total_gex: float
-    total_vex: float
+    total_gex: float | None
+    total_vex: float | None
     cells: list[GammaGridCell]
     expirations: list[str]    # ISO dates, ascending — column headers
     strikes: list[float]      # ascending — row headers
     window_pct: float
     warnings: list[str] = field(default_factory=list)
+    # Machine-readable partial-chain reason (puts_missing | calls_missing |
+    # empty_chain); None on every both-sided summary.
+    reason: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -227,6 +241,44 @@ def greeks_coverage(options: Sequence[dict]) -> tuple[float, int, int]:
     if n_total == 0:
         return 1.0, 0, 0
     return 1.0 - (n_missing / n_total), n_missing, n_total
+
+
+def chain_sides(options: Sequence[dict]) -> str:
+    """Which sides the chain carries: one of the ``SIDES_*`` constants.
+
+    Only records whose ``type`` is ``"call"`` or ``"put"`` count; any other
+    ``type`` is neither side.
+    """
+    has_call = has_put = False
+    for o in options:
+        t = o.get("type")
+        if t == "call":
+            has_call = True
+        elif t == "put":
+            has_put = True
+    if has_call and has_put:
+        return SIDES_BOTH
+    if has_call:
+        return SIDES_CALLS_ONLY
+    if has_put:
+        return SIDES_PUTS_ONLY
+    return SIDES_EMPTY
+
+
+def partial_chain_reason(sides: str) -> str | None:
+    """Machine-readable reason a chain is unusable, or None for a full chain."""
+    return {
+        SIDES_CALLS_ONLY: "puts_missing",
+        SIDES_PUTS_ONLY: "calls_missing",
+        SIDES_EMPTY: "empty_chain",
+    }.get(sides)
+
+
+def partial_chain_warning(sides: str) -> str:
+    """Warning text for a calls-only or puts-only chain."""
+    missing = "put" if sides == SIDES_CALLS_ONLY else "call"
+    return (f"Chain has no {missing} contracts: GEX, VEX, gamma balance and "
+            "gamma flip are unavailable for this snapshot, not zero.")
 
 
 def aggregate_by_strike(options: Sequence[dict]) -> list[dict]:
@@ -1041,10 +1093,23 @@ def build_summary(
         elif spot.method == "none":
             warnings.append("Could not estimate spot from this chain.")
 
+    # A one-sided chain is unavailable, not a one-sided total. Empty is not
+    # partial: it falls through to the no-spot return below.
+    sides = chain_sides(chain)
+    if sides in (SIDES_CALLS_ONLY, SIDES_PUTS_ONLY):
+        return GammaSummary(
+            ticker=ticker.upper(), snapshot_date=snapshot_date, spot=spot,
+            gamma_balance=None, gamma_flip=None, regime="unknown",
+            total_gex=None, levels=[], kings=[], gates=[],
+            gamma_balance_levels=[], window_pct=window_pct,
+            warnings=warnings + [partial_chain_warning(sides)],
+            reason=partial_chain_reason(sides),
+        )
+
     if spot.price <= 0:
         return GammaSummary(
             ticker=ticker.upper(), snapshot_date=snapshot_date, spot=spot,
-            gamma_balance=None, gamma_flip=None, regime="unknown", total_gex=0.0,
+            gamma_balance=None, gamma_flip=None, regime="unknown", total_gex=None,
             levels=[], kings=[], gates=[], gamma_balance_levels=[],
             window_pct=window_pct, warnings=warnings,
         )
@@ -1063,7 +1128,7 @@ def build_summary(
         return GammaSummary(
             ticker=ticker.upper(), snapshot_date=snapshot_date, spot=spot,
             gamma_balance=None, gamma_flip=None, regime="unknown",
-            total_gex=0.0, levels=[], kings=[], gates=[],
+            total_gex=None, levels=[], kings=[], gates=[],
             gamma_balance_levels=[], window_pct=window_pct,
             warnings=warnings,
         )
@@ -1225,6 +1290,29 @@ def build_grid_summary(
         elif spot.method == "none":
             warnings.append("Could not estimate spot from this chain.")
 
+    # A one-sided chain is unavailable, not a one-sided total. Empty is not
+    # partial: it falls through to the no-spot return below.
+    sides = chain_sides(chain)
+    if sides in (SIDES_CALLS_ONLY, SIDES_PUTS_ONLY):
+        return GammaGridSummary(
+            ticker=ticker.upper(),
+            snapshot_date=snapshot_date,
+            snapshot_ts=snapshot_ts,
+            data_source=data_source,
+            spot=spot,
+            gamma_balance=None,
+            gamma_flip=None,
+            regime="unknown",
+            total_gex=None,
+            total_vex=None,
+            cells=[],
+            expirations=[],
+            strikes=[],
+            window_pct=window_pct,
+            warnings=warnings + [partial_chain_warning(sides)],
+            reason=partial_chain_reason(sides),
+        )
+
     if spot.price <= 0:
         return GammaGridSummary(
             ticker=ticker.upper(),
@@ -1235,8 +1323,8 @@ def build_grid_summary(
             gamma_balance=None,
             gamma_flip=None,
             regime="unknown",
-            total_gex=0.0,
-            total_vex=0.0,
+            total_gex=None,
+            total_vex=None,
             cells=[],
             expirations=[],
             strikes=[],

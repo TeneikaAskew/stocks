@@ -84,7 +84,7 @@ def render(summary: gamma.GammaSummary, snap_name: str) -> None:
         print(f"  GATES:  {', '.join(f'{l.strike:.2f}' for l in summary.gates)}")
     if summary.gamma_balance_levels:
         print(f"  GAMMA_BALANCE:  {', '.join(f'{l.strike:.2f}' for l in summary.gamma_balance_levels)}")
-    print(f"  TOTAL GEX: {fmt_gex(summary.total_gex)}")
+    print(f"  TOTAL GEX: {fmt_gex(summary.total_gex) if summary.total_gex is not None else 'unavailable'}")
     if summary.warnings:
         print()
         for w in summary.warnings:

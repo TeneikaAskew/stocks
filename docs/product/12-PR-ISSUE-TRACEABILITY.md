@@ -357,6 +357,8 @@ EW fetcher reader implementation follows the admitted #1685 contract on a fresh 
 
 **PR lineage:** [#1649](https://github.com/TeneikaAskew/stocks/pull/1649) and [#1677](https://github.com/TeneikaAskew/stocks/pull/1677) drafted, and [#1744](https://github.com/TeneikaAskew/stocks/pull/1744) merged (revision 6), the approved [specification](../superpowers/specs/2026-10-31-feat-option-001-source-budget-excludes-persistence.md) that supersedes the 2026-10-29 collector declaration: one cumulative 15 second source budget with persistence elapsed time excluded. [#1743](https://github.com/TeneikaAskew/stocks/pull/1743) (pending) implements it for issue #1646 (every scheduled fire failing since 2026-10-30). Source and test evidence is not job deployment or historical repair.
 
+**PR lineage:** [#1916](https://github.com/TeneikaAskew/stocks/pull/1916) (draft) implements the approved [partial-chain unavailable specification](../superpowers/specs/2026-11-05-feat-option-001-partial-chain-unavailable-api.md), the first half of the gamma-chain repair pair merged in #1913: one-sided chains read as unavailable through lib.gamma, the chain/live-chain (`metadata.sides_present`, `chain_state`), Greeks (null metrics with a reason), levels, grid and nodes routes, with strict-prior gamma-context selection in the feature builders. Source and hermetic/real-SQL tests only; API rollout and the solyra contract re-sync pending.
+
 | Issue | Sev | Title |
 |---|---|---|
 | [#812](https://github.com/TeneikaAskew/stocks/issues/812) | CRITICAL | [audit] T1 — compute_gamma_flip_bs fabricates gamma flips out of float underflow |
