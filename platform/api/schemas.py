@@ -868,6 +868,7 @@ class OptionsChainMetadata(ApiModel):
     source: str
     data_source: str
     row_count: int
+    sides_present: Literal["both", "calls_only", "puts_only"]
 
 
 class OptionsChainResponse(ApiModel):
@@ -876,6 +877,8 @@ class OptionsChainResponse(ApiModel):
     options: list[OptionContract]
     snapshot_timestamp: str
     metadata: OptionsChainMetadata
+    chain_state: Literal["available", "unavailable"]
+    reason: Optional[str] = None
     cached: bool
 
 
@@ -901,12 +904,12 @@ class GexByStrike(ApiModel):
 
 
 class OptionsMetrics(ApiModel):
-    total_gex: float
-    total_vex: float
+    total_gex: Optional[float]
+    total_vex: Optional[float]
     zero_gamma: Optional[float] = None
     max_pain: Optional[float] = None
     implied_move: Optional[float] = None
-    put_call_ratio: float
+    put_call_ratio: Optional[float]
 
 
 class StrikeNode(ApiModel):
@@ -939,6 +942,7 @@ class GreeksResponse(ApiModel):
     metrics: OptionsMetrics
     nodes: NodeResult
     config: GreeksConfig
+    reason: Optional[str] = None
 
 
 class SpotEstimate(ApiModel):
@@ -986,7 +990,7 @@ class GammaLevelsResponse(ApiModel):
     gamma_balance: Optional[float] = None
     gamma_flip: Optional[float] = None
     regime: str
-    total_gex: float
+    total_gex: Optional[float]
     levels: list[GammaLevel]
     kings: list[GammaLevel]
     gates: list[GammaLevel]
@@ -1034,8 +1038,8 @@ class GammaGridResponse(ApiModel):
     gamma_balance: Optional[float] = None
     gamma_flip: Optional[float] = None
     regime: str
-    total_gex: float
-    total_vex: float
+    total_gex: Optional[float]
+    total_vex: Optional[float]
     cells: list[GammaGridCell]
     expirations: list[str]
     strikes: list[float]
@@ -1073,8 +1077,8 @@ class GammaNodesResponse(ApiModel):
     gamma_balance: Optional[float] = None
     gamma_flip: Optional[float] = None
     regime: str
-    total_gex: float
-    total_vex: float
+    total_gex: Optional[float]
+    total_vex: Optional[float]
     king: Optional[NodeLevel] = None
     gates: list[NodeLevel]
     midpoints: list[NodeLevel]
