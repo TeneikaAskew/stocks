@@ -22,9 +22,12 @@ through the code under test.
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 import pandas as pd
 import pytest
 
+import gcp.historical_signals as hs
 from gcp.research.strat_engine import strat_data_builder as sdb
 
 DAY = "2025-05-05"
@@ -161,3 +164,75 @@ def test_strat_builder_empty_read_returns_as_before(monkeypatch, columns):
     assert out.empty
     assert list(out.columns) == ["open", "high", "low", "close", "volume"]
     assert out.index.name == "ts"
+
+
+# -- the signals loader: historical_signals.load_intraday_bars ------------------
+
+HS_NAMES = {"ts": "Time", "open": "Open", "high": "High", "low": "Low",
+            "close": "Last", "volume": "Volume"}
+HS_COLUMNS = ["Time", "Open", "High", "Low", "Last", "Volume"]
+
+
+def _stub_signals_read(monkeypatch, rows: pd.DataFrame) -> list:
+    """Answer the read with *rows* under the names the SELECT gives; returns
+    the list the SQL texts land in."""
+    seen: list = []
+
+    def read_sql(sql, engine, params=None):
+        seen.append(str(sql))
+        return rows.rename(columns=HS_NAMES).copy()
+
+    monkeypatch.setattr(hs, "get_engine", lambda: object())
+    monkeypatch.setattr(hs.pd, "read_sql", read_sql)
+    return seen
+
+
+def test_historical_signals_load_intraday_bars(monkeypatch):
+    seen = _stub_signals_read(monkeypatch, thin_monday(PROVEN))
+
+    bars = hs.load_intraday_bars("SPY", datetime(2025, 5, 5), datetime(2025, 5, 6, 8))
+
+    want = expected_minutes("04:00", "13:29")
+    assert len(bars) == 570
+    assert bars["Time"].iloc[0] == pd.Timestamp(f"{DAY} 08:00", tz="UTC")
+    assert bars["Time"].iloc[-1] == pd.Timestamp(f"{DAY} 17:29", tz="UTC")
+    assert list(bars.columns) == HS_COLUMNS
+    regular = bars["Time"] >= pd.Timestamp(f"{DAY} 13:30", tz="UTC")       # 09:30 ET
+    assert regular.sum() == 240
+    assert not (bars["Time"] > pd.Timestamp(f"{DAY} 17:29", tz="UTC")).any()
+    assert_bars(bars["Time"], bars, want, columns=HS_COLUMNS[1:])
+    assert str(bars["Time"].dtype) == "datetime64[ns, UTC]"
+    assert list(bars.index) == list(range(570))
+    assert len(seen) == 1 and "inserted_at" in seen[0]
+
+
+def test_historical_signals_load_intraday_bars_unproven_twin(monkeypatch):
+    # What main returns today: every bar four hours from its own minute.
+    _stub_signals_read(monkeypatch, thin_monday(UNPROVEN))
+
+    bars = hs.load_intraday_bars("SPY", datetime(2025, 5, 5), datetime(2025, 5, 6, 8))
+
+    assert list(bars.columns) == HS_COLUMNS
+    assert len(bars) == 570
+    assert bars["Time"].iloc[0] == pd.Timestamp(f"{DAY} 12:00", tz="UTC")
+    assert bars["Time"].iloc[-1] == pd.Timestamp(f"{DAY} 21:29", tz="UTC")
+    assert str(bars["Time"].dtype) == "datetime64[ns, UTC]"
+
+
+def test_historical_signals_load_intraday_bars_needs_inserted_at(monkeypatch):
+    _stub_signals_read(monkeypatch, thin_monday(PROVEN).drop(columns="inserted_at"))
+    with pytest.raises(KeyError, match="inserted_at"):
+        hs.load_intraday_bars("SPY", datetime(2025, 5, 5), datetime(2025, 5, 6, 8))
+
+
+@pytest.mark.parametrize("columns", [
+    HS_COLUMNS, HS_COLUMNS + ["inserted_at"]])
+def test_historical_signals_empty_read_returns_as_before(monkeypatch, columns):
+    monkeypatch.setattr(hs, "get_engine", lambda: object())
+    monkeypatch.setattr(hs.pd, "read_sql", lambda *a, **k: pd.DataFrame(columns=columns))
+
+    bars = hs.load_intraday_bars("SPY", datetime(2025, 5, 5), datetime(2025, 5, 6, 8))
+
+    assert bars.empty
+    assert "inserted_at" not in bars.columns
+    assert list(bars.columns) == HS_COLUMNS
