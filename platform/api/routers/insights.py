@@ -34,6 +34,7 @@ from pydantic import BaseModel
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from gcp.database import query_to_dataframe_strict  # noqa: E402
 from gcp.insight_tasks import EnqueueOutcome, enqueue_insight_task  # noqa: E402
 from lib.agents.model_routing import connect, load_routes_snapshot  # noqa: E402
 from lib.agents.orchestrator import run_insight_pipeline  # noqa: E402
@@ -46,6 +47,8 @@ from lib.infra_errors import is_infrastructure_error  # noqa: E402
 from api.schemas import (
     InsightHistoryResponse,
     TickerSearchResponse,
+    WatchlistDefaultResponse,
+    WatchlistDefaultRow,
     WatchlistRemoveResponse,
     WatchlistResponse,
 )
@@ -754,6 +757,53 @@ def get_watchlist(
         extras=extras_list,
         user_id=_watchlist_owner(request),
     )
+
+
+# The default watchlist, the one every stocks job reads (FEAT-INSIGHT-001
+# stage A, spec section "New read-only endpoint"). The owner is the literal
+# 'default' in the SQL text, not a parameter derived from the caller, so the
+# rule holds in every auth mode. Indexed by idx_watchlists_active.
+WATCHLIST_DEFAULT_SQL = (
+    "SELECT ticker, in_brief, in_insight, signals, source, added_at "
+    "FROM watchlists WHERE user_id = 'default' AND removed_at IS NULL "
+    "ORDER BY added_at, ticker"
+)
+
+
+@router.get("/api/insights/watchlist/default", response_model=WatchlistDefaultResponse)
+def get_default_watchlist(request: Request) -> WatchlistDefaultResponse:
+    """Return the active default watchlist with its surface flags, read-only.
+
+    Identical for an open-mode caller and a signed-in caller: the web reads
+    the default list, it cannot change it (Discord and the CLI can). Reads
+    through ``query_to_dataframe_strict`` so a Cloud SQL failure is a 503
+    with the exception text, never an empty list; zero rows is a 200 with
+    ``rows: []`` (an empty default list is a true state).
+    """
+    as_of = datetime.now(timezone.utc).isoformat()
+    try:
+        df = query_to_dataframe_strict(WATCHLIST_DEFAULT_SQL)
+    except Exception as exc:
+        logger.exception("default watchlist read failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail=f"watchlist read from Cloud SQL failed: {exc}",
+        )
+    # to_dict(orient="records") boxes numpy scalars as Python bool/str and
+    # keeps the TIMESTAMPTZ column as pandas Timestamps, whose isoformat() is
+    # the ISO instant the response model declares.
+    rows = [
+        WatchlistDefaultRow(
+            ticker=str(rec["ticker"]),
+            in_brief=rec["in_brief"],
+            in_insight=rec["in_insight"],
+            signals=rec["signals"],
+            source=rec["source"],
+            added_at=rec["added_at"].isoformat(),
+        )
+        for rec in df.to_dict(orient="records")
+    ]
+    return WatchlistDefaultResponse(as_of=as_of, owner="default", rows=rows)
 
 
 # ---------------------------------------------------------------------------
