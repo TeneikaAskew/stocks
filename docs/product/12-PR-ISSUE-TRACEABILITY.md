@@ -756,6 +756,8 @@ Current-session ORB specification lineage: Stocks #1638 and Solyra #305. Backend
 
 - EW-only retirement implementation: [#1758](https://github.com/TeneikaAskew/stocks/pull/1758), fresh plan bound after approved own-scope spec [#1703](https://github.com/TeneikaAskew/stocks/pull/1703). Local source/tests and bounded identity are verified; current-head external review/CI and separately authorized release remain pending. Original consolidated51 obligations are unchanged and unclaimed; #1681 remains untouched.
 
+Draft source-clock contract: [2026-10-30 additive temporal projection and FF timezone specification](../superpowers/specs/2026-10-30-feat-catalyst-001-source-clocks.md), status draft; specification PR [#1645](https://github.com/TeneikaAskew/stocks/pull/1645), no runtime implementation published. Touches #1303 for clock meaning and requested/returned/unknown coverage only, without closing it or claiming new provider history. Existing approved specs, issue counts, finite-EPS delivery and deployed-state claims remain unchanged. Local evidence lineage: source d4478433, proposal spike15deb336; parent owns written approval, hosted review and publication.
+
 | Issue | Sev | Title |
 |---|---|---|
 | [#1223](https://github.com/TeneikaAskew/stocks/issues/1223) | P2 | [P2][Catalysts] Benzinga is named as a source with no configured API key |
