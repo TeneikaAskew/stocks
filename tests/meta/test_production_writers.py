@@ -1504,3 +1504,292 @@ def test_sanctioned_intraday_writers_still_write():
         assert (REPO / rel).exists(), rel
         assert intraday_write_sites((REPO / rel).read_text(errors="ignore")), (
             f"{rel} is a sanctioned writer of market_data_intraday and holds no write of it")
+
+
+# ── what may start the two writers ─────────────────────────────────────────
+#
+# Two writer modules is half the rule. The other half is the list of what
+# runs them, read from the code on 2026-11-13 (the spec's Design 4 table):
+# three schedulers and three jobs in gcp/deploy.sh, the Admin refresh of
+# market_data_daily, and scripts/backfill_watchlist_data.py. None is a
+# replay, and no replay starts one. A new entry point is added here by the
+# spec that adds it.
+#
+# What these checks do not see: a writer function reached without an import
+# they can read (a module name built from parts, getattr, a module object
+# passed as a value), a job run by hand or from the console, a scheduler
+# made outside gcp/deploy.sh, and shell or workflow files other than
+# gcp/deploy.sh.
+
+INTRADAY_WRITER_MODULES = {
+    "gcp/fetchers/fetch_alphavantage_intraday.py": "gcp.fetchers.fetch_alphavantage_intraday",
+    "gcp/fetchers/fetch_market_data.py": "gcp.fetchers.fetch_market_data",
+}
+INTRADAY_WRITER_JOBS = ("fetch-market-data", "fetch-alphavantage-intraday", "intraday-bulk-backfill")
+
+# (b) the one file that runs a writer module as a subprocess: the last five
+#     weekdays of a watchlist ticker, by an operator.
+INTRADAY_WRITER_MODULE_STARTERS = {"scripts/backfill_watchlist_data.py"}
+# (c) the files that hold a writer job's name in a string. Only the first
+#     dispatches (the Admin refresh of market_data_daily); the other two
+#     print the name as a label.
+INTRADAY_WRITER_JOB_NAME_FILES = {
+    "platform/api/routers/admin.py",
+    "scripts/audit_data_freshness.py",
+    "scripts/maintenance/refresh_architecture_drawio.py",
+}
+# (d) gcp/deploy.sh: the functions whose job command runs a writer module,
+#     and the schedulers that target their jobs.
+INTRADAY_WRITER_DEPLOY_FUNCTIONS = {
+    "deploy_fetch_market_data", "deploy_fetch_alphavantage", "deploy_intraday_bulk_backfill"}
+INTRADAY_WRITER_SCHEDULERS = {"fetch-market-data-daily", "av-intraday-monthly", "av-intraday-nightly"}
+
+def intraday_writer_closure(src: str) -> set[str]:
+    """The top-level functions of a file that reach a write of the table:
+    those that hold a site of the scan at any depth, plus those that call one
+    of them by bare name, repeated until nothing is added."""
+    tree = _replay_tree(src)
+    lines = [line for line, _what in intraday_write_sites(src)]
+    top = {n.name: n for n in tree.body if isinstance(n, _FUNC)}
+    closure = {name for name, n in top.items()
+               if any(n.lineno <= line <= n.end_lineno for line in lines)}
+    grew = True
+    while grew:
+        grew = False
+        for name, n in top.items():
+            if name in closure:
+                continue
+            if any(isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id in closure
+                   for c in ast.walk(n)):
+                closure.add(name)
+                grew = True
+    return closure
+
+
+@functools.lru_cache(maxsize=None)
+def _intraday_writer_closures_cached() -> tuple:
+    return tuple(
+        (module, frozenset(intraday_writer_closure((REPO / rel).read_text(errors="ignore"))))
+        for rel, module in sorted(INTRADAY_WRITER_MODULES.items()))
+
+
+def _intraday_writer_closures() -> dict[str, set[str]]:
+    """Dotted module name -> its writer closure, read from the two files."""
+    return {module: set(names) for module, names in _intraday_writer_closures_cached()}
+
+
+def _dotted_name(node: ast.AST) -> str | None:
+    """`a.b.c` for a chain of names and attributes, else None."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    return ".".join([node.id] + parts[::-1])
+
+
+def _imported_module(rel: str, node: ast.ImportFrom) -> str:
+    """The dotted module a `from ... import` names, a relative one resolved
+    against the package of the file `rel`."""
+    if not node.level:
+        return node.module or ""
+    package = rel.split("/")[:-1]
+    base = package[:len(package) - (node.level - 1)]
+    return ".".join(base + ([node.module] if node.module else []))
+
+
+def writer_import_offenders(rel: str, src: str, closures: dict[str, set[str]]) -> list[str]:
+    """Check (a) on one file: each place it imports a closure name from its
+    module (`from module import name`, or `*`), or names one through the
+    module (`alias.name`, `gcp.fetchers.module.name`), as '{line}: {what}'.
+    `closures` is keyed by dotted module name. An import anywhere in the
+    file binds its name for the whole file."""
+    tree = _replay_tree(src)
+    found: set[tuple[int, str]] = set()
+    bound: dict[str, str] = {}   # a name this file binds -> the dotted path it stands for
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ImportFrom):
+            module = _imported_module(rel, n)
+            for a in n.names:
+                if module in closures and a.name == "*":
+                    found.add((n.lineno, f"imports * from {module}"))
+                elif module in closures and a.name in closures[module]:
+                    found.add((n.lineno, f"imports {a.name} from {module}"))
+                elif a.name != "*":
+                    bound[a.asname or a.name] = f"{module}.{a.name}"
+        elif isinstance(n, ast.Import):
+            for a in n.names:
+                if a.asname:
+                    bound[a.asname] = a.name
+                else:
+                    head = a.name.split(".")[0]
+                    bound[head] = head
+    targets = {f"{module}.{name}": (module, name)
+               for module, names in closures.items() for name in names}
+    for n in ast.walk(tree):
+        dotted = _dotted_name(n) if isinstance(n, ast.Attribute) else None
+        if dotted is None:
+            continue
+        head, _, rest = dotted.partition(".")
+        if head in bound and f"{bound[head]}.{rest}" in targets:
+            module, name = targets[f"{bound[head]}.{rest}"]
+            found.add((n.lineno, f"names {name} of {module} as {dotted}"))
+    return [f"{line}: {what}" for line, what in sorted(found)]
+
+
+_WRITER_MODULE_NAMES = tuple(sorted(
+    set(INTRADAY_WRITER_MODULES) | set(INTRADAY_WRITER_MODULES.values())))
+_WRITER_JOB_NAME = re.compile(
+    r"(?<![\w-])(?:" + "|".join(re.escape(j) for j in INTRADAY_WRITER_JOBS) + r")(?![\w-])")
+
+
+def writer_module_strings(src: str) -> list[int]:
+    """Check (b): the lines of the strings outside docstrings that hold a
+    writer module's dotted name or its path."""
+    return sorted(node.lineno for node, text in _code_strings(_replay_tree(src))
+                  if any(name in text for name in _WRITER_MODULE_NAMES))
+
+
+def writer_job_strings(src: str) -> list[int]:
+    """Check (c): the lines of the strings outside docstrings that hold a
+    writer job's name as a whole name. fetch-market-data-daily is a
+    scheduler, not the job."""
+    return sorted(node.lineno for node, text in _code_strings(_replay_tree(src))
+                  if _WRITER_JOB_NAME.search(text))
+
+
+_SHELL_FUNCTION = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{")
+_JOB_CREATED = re.compile(r"gcloud\s+run\s+jobs\s+create\s+([A-Za-z0-9_-]+)")
+_SHELL_QUOTED = re.compile(r'"([^"]*)"' + r"|'([^']*)'")
+
+
+def deploy_writer_entry_points(text: str) -> tuple[set[str], set[str], set[str]]:
+    """Check (d) on the text of gcp/deploy.sh, comment lines dropped:
+
+    - the shell functions (`name() {` at column 0, up to the next one) whose
+      body holds a writer module's dotted name,
+    - the job names those functions pass to `gcloud run jobs create`,
+    - the first quoted argument (the scheduler's name) of every command
+      whose first word starts with `_schedule` and that has a writer job as
+      a quoted argument. A command continued with a backslash is one line.
+    """
+    lines = [l for l in text.splitlines() if not l.lstrip().startswith("#")]
+    modules = tuple(INTRADAY_WRITER_MODULES.values())
+
+    functions: set[str] = set()
+    jobs: set[str] = set()
+    name, body = None, []
+
+    def close() -> None:
+        joined = "\n".join(body)
+        if name is not None and any(m in joined for m in modules):
+            functions.add(name)
+            jobs.update(_JOB_CREATED.findall(joined))
+
+    for line in lines:
+        start = _SHELL_FUNCTION.match(line)
+        if start:
+            close()
+            name, body = start.group(1), []
+        else:
+            body.append(line)
+    close()
+
+    schedulers: set[str] = set()
+    for command in re.sub(r"\\\n", " ", "\n".join(lines)).splitlines():
+        words = command.split()
+        if not (words and words[0].startswith("_schedule")):
+            continue
+        quoted = [a or b for a, b in _SHELL_QUOTED.findall(command)]
+        if quoted and any(q in INTRADAY_WRITER_JOBS for q in quoted):
+            schedulers.add(quoted[0])
+    return functions, jobs, schedulers
+
+
+_ENTRY_MUST_REJECT = [
+    "from gcp.fetchers.fetch_market_data import write_intraday_to_sql",
+    'from gcp.fetchers import fetch_alphavantage_intraday as fai\ndef f():\n    return fai.replace_month("SPY", 2026, 10, "k", True)',
+    "import gcp.fetchers.fetch_market_data\ndef f():\n    gcp.fetchers.fetch_market_data.main()",
+    "from gcp.fetchers.fetch_market_data import process_ticker",
+    "from gcp.fetchers.fetch_alphavantage_intraday import *",
+    'subprocess.run([sys.executable, "-m", "gcp.fetchers.fetch_market_data", "--tickers", t])',
+    'subprocess.run(["python", "gcp/fetchers/fetch_alphavantage_intraday.py", "--symbol", t])',
+    'execute_cloud_run_job("fetch-market-data", {})',
+    'url = f"https://run.googleapis.com/v2/projects/{p}/locations/{r}/jobs/intraday-bulk-backfill:run"',
+]
+_ENTRY_MUST_ACCEPT = [
+    "from gcp.fetchers.fetch_market_data import _run_backfill, fetch_minute_data",
+    'from gcp.fetchers import fetch_market_data as fmd\nTICKERS = fmd.TICKERS\nrows = fmd.fetch_minute_data("SPY", "2026-11-13", "k")',
+    'names = ["fetch-market-data-daily", "av-intraday-nightly", "av-intraday-monthly"]',
+    '"""Runs after gcp.fetchers.fetch_market_data and the fetch-market-data job."""\nx = 1',
+]
+
+
+def _entry_point_offenders(rel: str, src: str, closures: dict[str, set[str]]) -> list[str]:
+    """Checks (a), (b) and (c) on one source text, as the file `rel`."""
+    return (
+        [f"(a) {o}" for o in writer_import_offenders(rel, src, closures)]
+        + [f"(b) {line}: names a writer module in a string" for line in writer_module_strings(src)]
+        + [f"(c) {line}: names a writer job in a string" for line in writer_job_strings(src)]
+    )
+
+
+def test_only_named_entry_points_reach_the_intraday_writers():
+    """A guard on a new path: it passes on the tree it was written for, and
+    the snippets below show each check can fail. It fails when a file starts
+    importing a function that reaches a bar write, running a writer module,
+    or naming a writer job, and when gcp/deploy.sh gains a job or a scheduler
+    for one, until that entry point is listed above."""
+    closures = _intraday_writer_closures()
+    assert set(closures) == set(INTRADAY_WRITER_MODULES.values())
+    for module, names in closures.items():
+        # computed, not listed by hand; the floor keeps an empty walk from passing
+        assert "main" in names and len(names) >= 3, (module, sorted(names))
+
+    importers, module_files, job_files = {}, {}, {}
+    for p in _py_files(SCAN_ROOTS):
+        rel, src = _rel(p), p.read_text(errors="ignore")
+        # a writer module is not an offender against its own functions
+        others = {m: names for m, names in closures.items() if m != INTRADAY_WRITER_MODULES.get(rel)}
+        hits = writer_import_offenders(rel, src, others)
+        if hits:
+            importers[rel] = hits
+        if rel in INTRADAY_WRITER_MODULES:
+            continue
+        if writer_module_strings(src):
+            module_files[rel] = writer_module_strings(src)
+        if writer_job_strings(src):
+            job_files[rel] = writer_job_strings(src)
+
+    # (a)
+    assert importers == {}, (
+        "a function that reaches a write of market_data_intraday is imported, or "
+        f"named through its module, outside the module: {importers}")
+    # (b) and (c): equality both ways, so a listed file that stopped naming one fails too
+    assert set(module_files) == INTRADAY_WRITER_MODULE_STARTERS, module_files
+    assert set(job_files) == INTRADAY_WRITER_JOB_NAME_FILES, job_files
+    # (d)
+    assert deploy_writer_entry_points((REPO / "gcp/deploy.sh").read_text()) == (
+        INTRADAY_WRITER_DEPLOY_FUNCTIONS, set(INTRADAY_WRITER_JOBS), INTRADAY_WRITER_SCHEDULERS)
+
+    assert len(_ENTRY_MUST_REJECT) == 9
+    assert len(_ENTRY_MUST_ACCEPT) == 4
+    passed = [s for s in _ENTRY_MUST_REJECT if not _entry_point_offenders("gcp/new_job.py", s, closures)]
+    assert passed == [], passed
+    refused = {s: _entry_point_offenders("gcp/new_job.py", s, closures) for s in _ENTRY_MUST_ACCEPT}
+    assert {s: o for s, o in refused.items() if o} == {}
+
+
+def test_the_entry_point_checks_read_relative_imports_and_importlib():
+    """A relative import inside gcp/fetchers/ names the writer module as
+    surely as its dotted name does; the same text under scripts/ names
+    scripts/fetch_market_data.py, another module. A module reached through
+    importlib has no import statement at all, so its name in the string is
+    what gives it away."""
+    closures = _intraday_writer_closures()
+    relative = "from .fetch_market_data import process_ticker"
+    assert writer_import_offenders("gcp/fetchers/new_fetcher.py", relative, closures)
+    assert writer_import_offenders("scripts/new_script.py", relative, closures) == []
+    assert writer_module_strings(
+        'import importlib\nimportlib.import_module("gcp.fetchers.fetch_market_data").main()') == [2]
