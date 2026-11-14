@@ -186,11 +186,11 @@ capabilities — including the P0 model and operations rows — resolved to no c
 | Field | Value |
 |---|---|
 | Owner | TBD |
-| Status | Production needs remediation; historical-score contract implementation under review in #1620, not deployed; EW reader retirement source and local tests in Draft [#1801](https://github.com/TeneikaAskew/stocks/pull/1801) under the approved 2026-10-31 spec; external current-head review, hosted checks and rollout pending; the premarket brief scores RSI against the ticker's ticker_calibration band (the signal monitor's resolver, point in time), implementation under review, not deployed; honest outcome scoring (realized_return_pct under rule next-open-20m-1c-v1, `/similar` pct_profitable as the realized win share, resolver rule cross-fill-t1-v1) source and local tests in a Draft PR under the approved 2026-11-11 spec, schema apply and rollout pending |
+| Status | Production needs remediation; historical-score contract implementation under review in #1620, not deployed; EW reader retirement source and local tests in Draft [#1801](https://github.com/TeneikaAskew/stocks/pull/1801) under the approved 2026-10-31 spec; external current-head review, hosted checks and rollout pending; the premarket brief scores RSI against the ticker's ticker_calibration band (the signal monitor's resolver, point in time), implementation under review, not deployed; honest outcome scoring (realized_return_pct under rule next-open-20m-1c-v1, `/similar` pct_profitable as the realized win share, resolver rule cross-fill-t1-v1) source and local tests in a Draft PR under the approved 2026-11-11 spec, schema apply and rollout pending; direction-gate decision record in #1823 (spec #1790), not deployed |
 | Priority | P0 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-12 |
+| Last reviewed | 2026-11-14 |
 | Evidence status | VERIFIED — CODE (implementation); evaluation evidence per [07](07-MODEL-REGISTRY.md) |
 | UI surface | `/signals`, `/live` |
 | Backend | `/api/signals` |
