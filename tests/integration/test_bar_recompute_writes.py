@@ -1252,3 +1252,149 @@ def test_revert_restores_the_eleven_columns(recompute_db, monkeypatch, tmp_path)
     assert table[("QQQ", "2026-09-29")]["status"] == "changed_underneath"
     assert table[("SPY", "2026-10-06")]["status"] == "reverted"
     assert len(br.ledger_of_run("premarket-run-A", br.TARGET_PREMARKET)) == 8
+
+
+# ── statement budgets (CLAUDE.md Rule 0) ──────────────────────────────
+#
+# One statement a table a group, whatever the number of rows. Every statement
+# the engine sends between the start of main() and its return is recorded and
+# split in two:
+#
+# - the tool's own statements: the schema check, the ledger read, the
+#   selection, the reads and the writes. These are what the budget counts.
+# - catalog probes. gcp.database.query_to_dataframe_strict reads through
+#   pandas.read_sql, which first asks the catalog whether the SQL text is the
+#   name of a table (has_table), so each strict read is two statements on the
+#   wire. The probe is not the tools' statement and is the same for every
+#   strict read in the repository, but it is a round trip, so each test pins
+#   its count too: exactly one a read, and nothing else unaccounted.
+#
+# Run with -s to see the counts and the seconds.
+
+import time as clock  # noqa: E402
+
+
+def count_statements(engine, run) -> tuple[int, list, list, float]:
+    """Run *run* and return its result, the tool's own statements, the
+    catalog probes pandas sent before each read, and the seconds it took."""
+    seen = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        seen.append((statement, executemany))
+
+    sqlalchemy.event.listen(engine, "before_cursor_execute", record)
+    started = clock.monotonic()
+    try:
+        result = run()
+    finally:
+        sqlalchemy.event.remove(engine, "before_cursor_execute", record)
+    seconds = clock.monotonic() - started
+    probes = [pair for pair in seen if "pg_catalog.pg_class" in pair[0]]
+    own = [pair for pair in seen if "pg_catalog.pg_class" not in pair[0]]
+    return result, own, probes, seconds
+
+
+BUDGET_SESSIONS = [date(2026, 10, d) for d in (5, 6, 7, 8, 9, 12, 13, 14, 15)]
+
+
+def test_exits_statement_budget(recompute_db, monkeypatch, tmp_path):
+    engine = recompute_db
+    groups = [(ticker, day) for day in BUDGET_SESSIONS for ticker in ("SPY", "QQQ", "IWM")]
+    assert len(groups) == 27
+    total = 0
+    for i, (ticker, day) in enumerate(groups):
+        seed_bars(engine, ticker, day, 100.0)
+        alerts = 34 if i < 9 else 33
+        total += alerts
+        # Alerts a minute apart from 10:00:00.5 Eastern, each stored with a
+        # whole-minute exit the bars do not give.
+        first = eastern_bounds_utc(day, time(10), time(10))[0] + timedelta(milliseconds=500)
+        seeded = {"ticker": ticker, "first": first, "n": alerts - 1, "day": day}
+        execute(engine, """
+            INSERT INTO signal_alerts (ticker, alert_ts, alert_date, direction, price_at_signal,
+                                       target_price, time_stop_minutes, exit_ts, exit_reason,
+                                       exit_price, exit_return_pct, is_open, run_kind)
+            SELECT :ticker, CAST(:first AS TIMESTAMPTZ) + g * INTERVAL '1 minute', :day, 'CALL',
+                   100.0, 110.0, 30,
+                   date_trunc('minute', CAST(:first AS TIMESTAMPTZ)) + (g + 45) * INTERVAL '1 minute',
+                   'time_stop', 1.0, -99.0, FALSE, 'live'
+              FROM generate_series(0, :n) AS g
+        """, seeded)
+        execute(engine, """
+            INSERT INTO trades (ticker, direction, entry_time, entry_price, exit_time,
+                                exit_price, exit_reason, return_pct, trade_date, run_kind)
+            SELECT :ticker, 'CALL', CAST(:first AS TIMESTAMPTZ) + g * INTERVAL '1 minute', 100.0,
+                   date_trunc('minute', CAST(:first AS TIMESTAMPTZ)) + (g + 45) * INTERVAL '1 minute',
+                   1.0, 'time_stop', -99.0, :day, 'live'
+              FROM generate_series(0, :n) AS g
+        """, seeded)
+    assert total == 900
+
+    code, seen, probes, seconds = count_statements(engine, lambda: run_resolver(
+        monkeypatch, tmp_path, "exits-budget", "--re-resolve",
+        "--from", "2026-10-05", "--to", "2026-10-15", "--commit"))
+
+    print(f"\nexits budget: {len(seen)} statements of the tool, {len(probes)} catalog probes "
+          f"({len(seen) + len(probes)} on the wire), {seconds:.2f} s, 900 alerts, 27 groups")
+    assert code == 0
+    assert marker_count(engine, "signal_alerts", "exit_recompute_run", "exits-budget") == 900
+    assert marker_count(engine, "trades", "exit_recompute_run", "exits-budget") == 900
+    assert len(br.ledger_of_run("exits-budget", br.TARGET_EXITS)) == 900
+    assert not any(many for _statement, many in seen)
+    assert len(seen) < 120
+    # 1 schema check, 1 ledger read, 1 selection, 27 day reads, 3 a written group.
+    assert len(seen) == 1 + 1 + 1 + 27 + 3 * 27 == 111
+    updates = [s for s, _many in seen if s.lstrip().startswith("UPDATE")]
+    assert len(updates) == 54  # one a table a group
+    assert len(probes) == 1 + 1 + 1 + 27  # one a strict read
+
+
+def test_premarket_statement_budget(recompute_db, monkeypatch, tmp_path):
+    engine = recompute_db
+    for ticker in ("SPY", "QQQ", "IWM"):
+        seed_daily(engine, ticker, date(2025, 5, 1), date(2026, 10, 30))
+    # 150 sessions over 8 months: the first 19 weekdays of March to August and
+    # the first 18 of September and October, for each of the three tickers.
+    execute(engine, """
+        UPDATE market_data_daily AS d
+           SET pre_high = 100.25, pre_low = 99.75, pre_vwap = 100.01, pre_volume = 300000,
+               gap_pct = 0.9
+          FROM (SELECT ticker, date, extract(month FROM date) AS month_no,
+                       row_number() OVER (PARTITION BY ticker, extract(month FROM date)
+                                          ORDER BY date) AS n
+                  FROM market_data_daily
+                 WHERE date >= '2026-03-01' AND date <= '2026-10-30') AS s
+         WHERE d.ticker = s.ticker AND d.date = s.date
+           AND s.n <= CASE WHEN s.month_no >= 9 THEN 18 ELSE 19 END
+    """)
+    assert len(daily_rows(engine, "pre_high IS NOT NULL")) == 450
+    # Every selected session's premarket bars, one statement a ticker.
+    for ticker in ("SPY", "QQQ", "IWM"):
+        execute(engine, """
+            INSERT INTO market_data_intraday (ticker, interval, ts, open, high, low, close, volume)
+            SELECT :ticker, '1min',
+                   ((CAST(s.date AS TIMESTAMP) + INTERVAL '4 hours') AT TIME ZONE 'America/New_York')
+                       + m * INTERVAL '1 minute',
+                   100.0, 100.5, 99.5, 100.0, 1000
+              FROM market_data_daily AS s CROSS JOIN generate_series(0, 329) AS m
+             WHERE s.ticker = :ticker AND s.pre_high IS NOT NULL
+        """, {"ticker": ticker})
+
+    code, seen, probes, seconds = count_statements(engine, lambda: run_fetcher(
+        monkeypatch, tmp_path, "premarket-budget", "--recompute-premarket",
+        "--from", "2026-03-01", "--to", "2026-10-30", "--commit"))
+
+    print(f"\npremarket budget: {len(seen)} statements of the tool, {len(probes)} catalog "
+          f"probes ({len(seen) + len(probes)} on the wire), {seconds:.2f} s, 450 rows, "
+          "24 groups")
+    assert code == 0
+    assert marker_count(engine, "market_data_daily", "pre_recompute_run", "premarket-budget") == 450
+    assert len(br.ledger_of_run("premarket-budget", br.TARGET_PREMARKET)) == 450
+    assert not any(many for _statement, many in seen)
+    assert len(seen) < 240
+    # 1 schema check, 1 ledger read, 1 selection, 3 daily reads, 24 month
+    # reads, 150 parameter reads (one a distinct session date), 2 a written group.
+    assert len(seen) == 1 + 1 + 1 + 3 + 24 + 150 + 2 * 24 == 228
+    updates = [s for s, _many in seen if s.lstrip().startswith("UPDATE")]
+    assert len(updates) == 24  # one a group
+    assert len(probes) == 1 + 1 + 1 + 3 + 24 + 150  # one a strict read
