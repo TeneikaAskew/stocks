@@ -49,7 +49,7 @@ def execute(monkeypatch, site, rows, *, remove_predicate=False, limit=50):
     module = importlib.import_module('gcp.fetchers.' + MODULES[site])
     conn = make_db(rows)
     conn.execute('ALTER TABLE earnings_calendar ADD COLUMN is_s_p_500')
-    conn.execute('CREATE TABLE watchlists (ticker, in_brief, in_insight)')
+    conn.execute('CREATE TABLE watchlists (user_id, ticker, in_brief, in_insight, removed_at)')
     conn.execute('CREATE TABLE earnings_history (ticker)')
     conn.executemany('INSERT INTO earnings_history VALUES (?)', [(r['ticker'],) for r in rows])
     seen = []
