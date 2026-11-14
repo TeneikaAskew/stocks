@@ -18,9 +18,10 @@ so no live job execution happens.
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 from nacl.signing import SigningKey
@@ -331,6 +332,10 @@ def test_replay_dispatches_brief_and_insight_jobs():
 
     with patch("gcp.discord_interactions.main.execute_cloud_run_job",
                side_effect=fake_execute), \
+         patch("gcp.discord_interactions.main.replay_bars_in_table",
+               return_value=True), \
+         patch("gcp.discord_interactions.main.replay_daily_in_table",
+               return_value=True), \
          patch("gcp.discord_interactions.main.edit_deferred_reply"):
         msg = handle_replay("AMD", "2026-04-24",
                             "1234567890", "test-token")
@@ -367,7 +372,9 @@ def test_replay_refresh_path_forces_brief_to_post_to_discord():
 
     with patch("gcp.discord_interactions.main.execute_cloud_run_job",
                side_effect=lambda n, e: calls.append((n, e)) or True), \
-         patch("gcp.discord_interactions.main.ticker_has_daily_data",
+         patch("gcp.discord_interactions.main.replay_bars_in_table",
+               return_value=True), \
+         patch("gcp.discord_interactions.main.replay_daily_in_table",
                return_value=True), \
          patch("gcp.discord_interactions.main.edit_deferred_reply"):
         handle_replay("AMD", "2026-04-24", "appid", "tok", refresh=True)
@@ -385,7 +392,7 @@ def test_replay_invalid_date_returns_error_string():
     assert msg.startswith("❌")
 
 
-# ── as_of clamp + auto-backfill ──────────────────────────────────────────
+# ── as_of clamp ──────────────────────────────────────────────────────────
 
 
 def test_replay_today_clamps_insight_as_of_below_now():
@@ -399,7 +406,9 @@ def test_replay_today_clamps_insight_as_of_below_now():
     calls = []
     with patch("gcp.discord_interactions.main.execute_cloud_run_job",
                side_effect=lambda n, e: calls.append((n, e)) or True), \
-         patch("gcp.discord_interactions.main.ticker_has_daily_data",
+         patch("gcp.discord_interactions.main.replay_bars_in_table",
+               return_value=True), \
+         patch("gcp.discord_interactions.main.replay_daily_in_table",
                return_value=True), \
          patch("gcp.discord_interactions.main.edit_deferred_reply"):
         handle_replay("IWM", "today", "appid", "tok")
@@ -418,82 +427,14 @@ def test_replay_past_date_uses_canonical_915_et_anchor():
     calls = []
     with patch("gcp.discord_interactions.main.execute_cloud_run_job",
                side_effect=lambda n, e: calls.append((n, e)) or True), \
-         patch("gcp.discord_interactions.main.ticker_has_daily_data",
+         patch("gcp.discord_interactions.main.replay_bars_in_table",
+               return_value=True), \
+         patch("gcp.discord_interactions.main.replay_daily_in_table",
                return_value=True), \
          patch("gcp.discord_interactions.main.edit_deferred_reply"):
         handle_replay("IWM", "2026-04-23", "appid", "tok")
     insight_env = next(env for name, env in calls if name == "insight-pipeline")
     assert insight_env["INSIGHT_AS_OF"] == "2026-04-23T13:15:00Z"
-
-
-def test_replay_skips_backfill_when_ticker_has_data():
-    """Ticker already in market_data_daily → no backfill job dispatched."""
-    from gcp.discord_interactions.main import handle_replay
-    calls = []
-    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
-               side_effect=lambda n, e: calls.append((n, e)) or True), \
-         patch("gcp.discord_interactions.main.execute_cloud_run_job_blocking") as blocking, \
-         patch("gcp.discord_interactions.main.ticker_has_daily_data",
-               return_value=True), \
-         patch("gcp.discord_interactions.main.edit_deferred_reply"):
-        msg = handle_replay("IWM", "2026-04-23", "appid", "tok")
-    job_names = [c[0] for c in calls]
-    assert "premarket-brief" in job_names
-    assert "insight-pipeline" in job_names
-    blocking.assert_not_called()
-    assert "Backfill" not in msg
-
-
-def test_replay_dispatches_backfill_when_ticker_missing():
-    """Missing ticker → backfill-ticker FIRST (blocking), then brief + insight."""
-    from gcp.discord_interactions.main import handle_replay
-    fire_and_forget: list = []
-    blocking_calls: list = []
-
-    def fake_blocking(name, env, timeout_sec=540):
-        blocking_calls.append((name, env))
-        return True
-
-    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
-               side_effect=lambda n, e: fire_and_forget.append((n, e)) or True), \
-         patch("gcp.discord_interactions.main.execute_cloud_run_job_blocking",
-               side_effect=fake_blocking), \
-         patch("gcp.discord_interactions.main.ticker_has_daily_data",
-               return_value=False), \
-         patch("gcp.discord_interactions.main.edit_deferred_reply"):
-        msg = handle_replay("AMD", "2026-04-24", "appid", "tok")
-
-    assert len(blocking_calls) == 1
-    bf_name, bf_env = blocking_calls[0]
-    assert bf_name == "backfill-ticker"
-    assert bf_env["BACKFILL_TICKER"] == "AMD"
-    assert bf_env["BACKFILL_DATES"] == "2026-04-24"
-    assert bf_env["BACKFILL_INCLUDE_NEWS"] == "true"
-
-    async_names = [c[0] for c in fire_and_forget]
-    assert "premarket-brief" in async_names
-    assert "insight-pipeline" in async_names
-
-    assert "Backfill complete" in msg
-    assert "Replay queued" in msg
-
-
-def test_replay_returns_error_when_backfill_fails():
-    """If backfill-ticker fails, abort BEFORE brief + insight dispatch
-    so we don't post empty embeds against an empty database."""
-    from gcp.discord_interactions.main import handle_replay
-    fire_and_forget: list = []
-    with patch("gcp.discord_interactions.main.execute_cloud_run_job",
-               side_effect=lambda n, e: fire_and_forget.append((n, e)) or True), \
-         patch("gcp.discord_interactions.main.execute_cloud_run_job_blocking",
-               return_value=False), \
-         patch("gcp.discord_interactions.main.ticker_has_daily_data",
-               return_value=False), \
-         patch("gcp.discord_interactions.main.edit_deferred_reply"):
-        msg = handle_replay("UNKNOWN", "2026-04-23", "appid", "tok")
-    assert msg.startswith("❌")
-    assert "Backfill failed" in msg
-    assert fire_and_forget == []
 
 
 def test_replay_missing_args_ephemeral_error(client, keypair):
@@ -879,6 +820,10 @@ def test_replay_cache_hit_dispatches_render_existing_jobs():
     with patch("gcp.discord_interactions.main.execute_cloud_run_job",
                side_effect=fake_execute), \
          patch("gcp.discord_interactions.main.edit_deferred_reply"), \
+         patch("gcp.discord_interactions.main.replay_bars_in_table",
+               return_value=True), \
+         patch("gcp.discord_interactions.main.replay_daily_in_table",
+               return_value=True), \
          patch("gcp.discord_interactions.main._brief_row_exists",
                return_value=True), \
          patch("gcp.discord_interactions.main._insight_row_exists",
@@ -921,7 +866,9 @@ def test_replay_refresh_dispatches_with_update_env():
     with patch("gcp.discord_interactions.main.execute_cloud_run_job",
                side_effect=fake_execute), \
          patch("gcp.discord_interactions.main.edit_deferred_reply"), \
-         patch("gcp.discord_interactions.main.ticker_has_daily_data",
+         patch("gcp.discord_interactions.main.replay_bars_in_table",
+               return_value=True), \
+         patch("gcp.discord_interactions.main.replay_daily_in_table",
                return_value=True):
         msg = handle_replay("IWM", "2026-04-15",
                             "appid", "tok", refresh=True, user_id="user_1")
@@ -954,7 +901,9 @@ def test_replay_cache_miss_falls_back_to_dispatch():
     with patch("gcp.discord_interactions.main.execute_cloud_run_job",
                side_effect=fake_execute), \
          patch("gcp.discord_interactions.main.edit_deferred_reply"), \
-         patch("gcp.discord_interactions.main.ticker_has_daily_data",
+         patch("gcp.discord_interactions.main.replay_bars_in_table",
+               return_value=True), \
+         patch("gcp.discord_interactions.main.replay_daily_in_table",
                return_value=True), \
          patch("gcp.discord_interactions.main._brief_row_exists",
                return_value=True), \
@@ -1023,3 +972,186 @@ def test_replay_signals_includes_ticker_filter():
                               "appid", "tok")
     _, env = calls[0]
     assert env["SIGNAL_REPLAY_TICKERS"] == "SPY,QQQ"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# /replay reads the two tables or says it cannot (FEAT-REPLAY-001)
+# ─────────────────────────────────────────────────────────────────────
+
+_MAIN = "gcp.discord_interactions.main"
+_FOUND = pd.DataFrame({"?column?": [1]})
+_NOT_FOUND = pd.DataFrame()
+_R1 = ("No replay for AMD on 2026-04-24: market_data_intraday has no 1-min bars "
+       "for AMD in the 7 days before 2026-04-24. "
+       "Nothing was fetched and no job was started.")
+_R2 = ("No replay for AMD on 2026-04-24: market_data_daily has no daily bar "
+       "for AMD before 2026-04-24. Nothing was fetched and no job was started.")
+
+
+def _r3(table):
+    return (f"Could not read {table} for AMD: the database did not answer. "
+            "No job was started. Try again in a minute.")
+
+
+def _run_replay(answers, date_arg="2026-04-24", refresh=False, configured=True,
+                brief_row=False, insight_row=False):
+    """Run handle_replay("AMD", ...) with the database, the stored-row
+    probes and the job dispatcher stubbed.
+
+    `answers` maps a table name to the frame its probe returns, or to the
+    exception it raises. Returns (msg, events, dispatched): `events` is every
+    query as (table, sql, params, timeout_s) plus ("brief_row",) when
+    _brief_row_exists ran, in order; `dispatched` is every (job, env).
+    The module imports gcp.database inside its functions, so the stubs go
+    on gcp.database itself."""
+    from gcp.discord_interactions.main import handle_replay
+    events, dispatched = [], []
+
+    def strict(sql, params=None, timeout_s=None):
+        table = ("market_data_intraday" if "market_data_intraday" in sql
+                 else "market_data_daily")
+        events.append((table, sql, params, timeout_s))
+        answer = answers[table]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    def brief_exists(*_args):
+        events.append(("brief_row",))
+        return brief_row
+
+    with patch("gcp.database.query_to_dataframe_strict", side_effect=strict), \
+         patch("gcp.database.is_cloud_sql_configured", return_value=configured), \
+         patch(f"{_MAIN}._brief_row_exists", side_effect=brief_exists), \
+         patch(f"{_MAIN}._insight_row_exists", return_value=insight_row), \
+         patch(f"{_MAIN}._log_cache_hit"), \
+         patch(f"{_MAIN}.edit_deferred_reply"), \
+         patch(f"{_MAIN}.execute_cloud_run_job",
+               side_effect=lambda n, e: dispatched.append((n, e)) or True):
+        msg = handle_replay("AMD", date_arg, "appid", "tok", refresh=refresh)
+    return msg, events, dispatched
+
+
+@pytest.mark.parametrize("refresh", [False, True])
+def test_replay_says_the_table_has_no_bars_and_starts_nothing(refresh):
+    msg, events, dispatched = _run_replay(
+        {"market_data_intraday": _NOT_FOUND, "market_data_daily": _FOUND},
+        refresh=refresh)
+    assert msg == _R1
+    assert dispatched == []
+    # one query: no daily probe, and it ran before _brief_row_exists would
+    assert [e[0] for e in events] == ["market_data_intraday"]
+    _table, sql, params, timeout_s = events[0]
+    assert "market_data_intraday" in sql
+    assert "interval = '1min'" in sql
+    assert "LIMIT 1" in sql
+    assert params == {"t": "AMD",
+                      "lo": datetime(2026, 4, 17, tzinfo=timezone.utc),
+                      "hi": datetime(2026, 4, 24, tzinfo=timezone.utc)}
+    assert timeout_s == 10
+
+
+@pytest.mark.parametrize("refresh", [False, True])
+def test_replay_says_the_daily_table_has_no_bar_and_starts_nothing(refresh):
+    msg, events, dispatched = _run_replay(
+        {"market_data_intraday": _FOUND, "market_data_daily": _NOT_FOUND},
+        refresh=refresh)
+    assert msg == _R2
+    assert dispatched == []
+    assert [e[0] for e in events] == ["market_data_intraday", "market_data_daily"]
+    _table, sql, params, timeout_s = events[1]
+    assert "market_data_daily" in sql
+    assert "date < :d" in sql
+    assert "LIMIT 1" in sql
+    assert params == {"t": "AMD", "d": date(2026, 4, 24)}
+    assert timeout_s == 10
+
+
+def test_replay_reports_a_database_error_and_starts_nothing():
+    from sqlalchemy.exc import OperationalError
+    boom = OperationalError("SELECT 1", {}, Exception("connection refused by 10.1.2.3"))
+    cases = [
+        # the 1-min probe raises
+        ({"market_data_intraday": boom, "market_data_daily": _FOUND}, True,
+         "market_data_intraday", ["market_data_intraday"]),
+        # the daily probe raises after a found 1-min row
+        ({"market_data_intraday": _FOUND, "market_data_daily": boom}, True,
+         "market_data_daily", ["market_data_intraday", "market_data_daily"]),
+        # Cloud SQL is not configured: nothing can be read at all
+        ({"market_data_intraday": _FOUND, "market_data_daily": _FOUND}, False,
+         "market_data_intraday", []),
+    ]
+    for answers, configured, table, queried in cases:
+        msg, events, dispatched = _run_replay(answers, configured=configured)
+        assert msg == _r3(table)
+        assert "connection refused" not in msg and "SELECT" not in msg
+        assert dispatched == []
+        assert [e[0] for e in events] == queried
+
+
+@pytest.mark.parametrize("date_arg", ["2026-04-24", "2026-04-26", "today"])
+def test_replay_with_bars_runs_each_probe_once_then_dispatches(date_arg):
+    """A weekday, a Sunday (a valid weekly brief with no bars of its own)
+    and today (whose bars only land at 21:00 ET) all pass the gate: the
+    probe window is the 7 days before the date, never the date itself."""
+    from gcp.discord_interactions.main import parse_date_arg
+    d = parse_date_arg(date_arg)
+    hi = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+    both = {"market_data_intraday": _FOUND, "market_data_daily": _FOUND}
+
+    started = datetime.now(timezone.utc)
+    msg, events, dispatched = _run_replay(both, date_arg=date_arg)
+    finished = datetime.now(timezone.utc)
+    assert [e[0] for e in events] == ["market_data_intraday", "market_data_daily", "brief_row"]
+    assert events[0][2] == {"t": "AMD", "lo": hi - timedelta(days=7), "hi": hi}
+    assert events[1][2] == {"t": "AMD", "d": d}
+    assert [name for name, _env in dispatched] == ["premarket-brief", "insight-pipeline"]
+    assert dispatched[0][1] == {
+        "BRIEF_AS_OF": d.isoformat(), "BRIEF_TICKERS": "AMD", "BRIEF_UPDATE": "true",
+        "BRIEF_POST_TO_DISCORD": "true", "BRIEF_TRIGGERED_BY": "discord:replay"}
+    insight_env = dict(dispatched[1][1])
+    as_of = datetime.strptime(
+        insight_env.pop("INSIGHT_AS_OF"), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    assert insight_env == {
+        "INSIGHT_TICKERS": "AMD", "INSIGHT_UPDATE": "true",
+        "INSIGHT_TRIGGERED_BY": "discord:replay"}
+    # The canonical 09:15 ET slot (13:15 UTC) of the date, or, when that is
+    # still ahead (today before 13:15 UTC), one minute before now.
+    canonical = datetime(d.year, d.month, d.day, 13, 15, tzinfo=timezone.utc)
+    if canonical <= started:
+        assert as_of == canonical
+    else:
+        clamped = (started - timedelta(minutes=1, seconds=1) <= as_of
+                   <= finished - timedelta(minutes=1))
+        assert clamped or as_of == canonical, as_of
+    assert "backfill" not in msg.lower()
+
+    # both stored rows present and refresh False: the two render-existing jobs
+    msg, events, dispatched = _run_replay(
+        both, date_arg=date_arg, brief_row=True, insight_row=True)
+    assert [e[0] for e in events] == ["market_data_intraday", "market_data_daily", "brief_row"]
+    assert [name for name, _env in dispatched] == ["premarket-brief", "insight-discord-push"]
+    assert dispatched[0][1] == {
+        "BRIEF_POST_EXISTING_TICKER": "AMD", "BRIEF_POST_EXISTING_DATE": d.isoformat(),
+        "BRIEF_TRIGGERED_BY": "discord:replay"}
+    assert dispatched[1][1] == {
+        "INSIGHT_PUSH_ONE_TICKER": "AMD", "INSIGHT_PUSH_ONE_DATE": d.isoformat()}
+    assert "backfill" not in msg.lower()
+
+
+def test_replay_probes_bind_the_normalised_ticker():
+    from gcp.discord_interactions.main import handle_replay
+    bound = []
+
+    def strict(sql, params=None, timeout_s=None):
+        bound.append(params["t"])
+        return _NOT_FOUND
+
+    with patch("gcp.database.query_to_dataframe_strict", side_effect=strict), \
+         patch("gcp.database.is_cloud_sql_configured", return_value=True), \
+         patch(f"{_MAIN}.edit_deferred_reply"), \
+         patch(f"{_MAIN}.execute_cloud_run_job") as dispatch:
+        msg = handle_replay(" amd ", "2026-04-24", "appid", "tok")
+    assert bound == ["AMD"]
+    assert msg.startswith("No replay for AMD on 2026-04-24: ")
+    dispatch.assert_not_called()
