@@ -37,18 +37,10 @@
    "_load_intraday_spots::pd.to_datetime(df['ts'], utc=True)"
   ]
  },
- "gcp/build_options_daily_greeks.py": {
-  "host-today": [
-   "main::date.today()",
-   "main::date.today()"
-  ]
- },
  "gcp/build_realtime_gex.py": {
   "host-today": [
    "compute_realtime_frame::pd.Timestamp.utcnow()",
-   "compute_realtime_frame::pd.Timestamp.utcnow()",
-   "main::date.today()",
-   "main::date.today()"
+   "compute_realtime_frame::pd.Timestamp.utcnow()"
   ],
   "utc-parse": [
    "_load_intraday_spots::pd.to_datetime(df['ts'], utc=True)",
@@ -69,12 +61,6 @@
    "_tickers_with_gaps::fstr#b950f2df4227"
   ]
  },
- "gcp/fetchers/build_options_daily_features.py": {
-  "host-today": [
-   "main::date.today()",
-   "main::date.today()"
-  ]
- },
  "gcp/fetchers/evaluate_ew_strikes.py": {
   "tz-localize-none": [
    "scoring_session::row['market_close'].tz_convert(ET_NAME).tz_localize(None)",
@@ -84,15 +70,6 @@
  "gcp/fetchers/fetch_alphavantage_intraday.py": {
   "host-today": [
    "_file_data_quality_issue::datetime.utcnow()",
-   "main::date.today()"
-  ]
- },
- "gcp/fetchers/fetch_av_historical_options.py": {
-  "host-today": [
-   "_resolve_start_from_latest::date.today()",
-   "_resolve_start_from_latest::date.today()",
-   "main::date.today()",
-   "main::date.today()",
    "main::date.today()"
   ]
  },

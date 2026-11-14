@@ -37,12 +37,14 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import date, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from lib.eastern_time import market_today  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -188,10 +190,10 @@ def main():
     args = p.parse_args()
 
     tickers = (args.ticker,) if args.ticker else TICKERS
-    until = date.today().isoformat()
+    until = market_today().isoformat()
     since = (BACKFILL_SINCE if args.backfill
              else max(BACKFILL_SINCE,
-                      (date.today() - timedelta(days=args.days)).isoformat()))
+                      (market_today() - timedelta(days=args.days)).isoformat()))
     resume = bool(args.backfill) and not args.restart
 
     engine = get_engine()
