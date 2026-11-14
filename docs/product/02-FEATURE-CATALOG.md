@@ -521,7 +521,7 @@ EW-only retirement: [#1758](https://github.com/TeneikaAskew/stocks/pull/1758), f
 | Priority | P0 |
 | Target phase | Phase 1 — see [13](13-ROADMAP.md) |
 | Target release | TBD |
-| Last reviewed | 2026-11-13 |
+| Last reviewed | 2026-11-14 |
 | Evidence status | Logger source bd8c5310/build20c56463/image ef54b4b6 deployed Ready to three jobs with projected config preserved; next scheduled outcomes unobserved. Allowance runtime/test bytes unchanged from reviewed258fb789,224 tests preserved; prior CODE/SEC/CI clean, combined source proof and owner-approved CODE7 remain required. Typed-news consumer preparation preserves producer source on MAIN 63d1dbf7 with 92 mocked tests passing and 10 deselected; baseline entry controls had 8 failures and 2 passes. Runtime review admission, publication and retry0-coupled activation remain separate prerequisites. No complete data-platform, persistence or provider-root-cause certification. |
 | UI surface | — |
 | Backend | fetcher jobs |
