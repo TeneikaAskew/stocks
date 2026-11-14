@@ -232,7 +232,6 @@ def stubbed_run(monkeypatch):
     })
     watch = MagicMock()
     with patch.object(mod, "av_daily_full", return_value=daily), \
-         patch.object(mod, "av_intraday_month", return_value=pd.DataFrame()), \
          patch.object(mod, "compute_indicators_for_full_range", return_value=0), \
          patch.object(mod, "compute_indicators_for_dates"), \
          patch.object(mod, "add_to_watchlist", watch), \
@@ -269,6 +268,92 @@ def test_watchlist_add_opt_in_is_case_insensitive(stubbed_run, monkeypatch, valu
     monkeypatch.setenv("BACKFILL_ADD_TO_WATCHLIST", value)
     assert mod.run() == 0
     assert watch.call_count == (1 if opted_in else 0), (value, watch.call_args_list)
+
+
+# ── The job fetches and writes no 1-minute bars (FEAT-DATA-001) ──────────
+#
+# Owner's rule, 2026-11-13: 1-minute bars reach market_data_intraday only
+# through the two fetcher modules. This job used to pull a whole month of
+# them from AlphaVantage per month touched and upsert about 20,000 rows; it
+# now reads the bars the table already holds for its premarket step and
+# says so once per run.
+
+NO_BAR_FETCH_LINE = (
+    "1-min bars are not fetched by this job; premarket context reads market_data_intraday")
+
+
+def test_run_fetches_and_writes_no_one_minute_bars(monkeypatch, caplog):
+    """run() sends the daily request (and the news request when asked) and
+    nothing else, and upserts market_data_daily and nothing else. The vendor
+    is answered for TIME_SERIES_INTRADAY too, so code that still asked for
+    bars would run to its end and fail here on what it sent and wrote, not
+    on a vendor error."""
+    import logging
+
+    import gcp.backfill_ticker as mod
+
+    monkeypatch.setenv("BACKFILL_TICKER", "amd")
+    monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "k")
+    monkeypatch.setenv("BACKFILL_DATES", "2026-04-24")
+    monkeypatch.setenv("BACKFILL_ADD_TO_WATCHLIST", "false")
+
+    def daily_bar(close):
+        return {"1. open": "100.0", "2. high": "101.0", "3. low": "99.0",
+                "4. close": str(close), "5. adjusted close": str(close),
+                "6. volume": "1000"}
+
+    answers = {
+        "TIME_SERIES_DAILY_ADJUSTED": {"Time Series (Daily)": {
+            "2026-04-23": daily_bar(100.5), "2026-04-24": daily_bar(100.7)}},
+        "NEWS_SENTIMENT": {"feed": []},
+        "TIME_SERIES_INTRADAY": {"Time Series (1min)": {"2026-04-24 09:30:00": {
+            "1. open": "100.0", "2. high": "100.1", "3. low": "99.9",
+            "4. close": "100.05", "5. volume": "500"}}},
+    }
+
+    def refuse_watchlist(ticker):
+        raise AssertionError(f"add_to_watchlist({ticker!r}) called with the variable set to false")
+
+    for include_news, expected in (
+            ("false", ["TIME_SERIES_DAILY_ADJUSTED"]),
+            ("true", ["TIME_SERIES_DAILY_ADJUSTED", "NEWS_SENTIMENT"])):
+        monkeypatch.setenv("BACKFILL_INCLUDE_NEWS", include_news)
+        caplog.clear()
+        seen: list[str] = []
+        written: list[tuple] = []
+
+        def fake_get(url, params=None, **kw):
+            seen.append(params["function"])
+            response = MagicMock()
+            response.json.return_value = answers[params["function"]]
+            return response
+
+        full_range, per_date = MagicMock(return_value=0), MagicMock()
+        with patch.object(mod.requests, "get", side_effect=fake_get), \
+             patch("gcp.database.upsert_dataframe",
+                   side_effect=lambda frame, table, *a, **k: written.append((table, frame))), \
+             patch.object(mod, "add_to_watchlist", refuse_watchlist), \
+             patch.object(mod, "compute_indicators_for_full_range", full_range), \
+             patch.object(mod, "compute_indicators_for_dates", per_date), \
+             caplog.at_level(logging.INFO, logger="backfill-ticker"):
+            assert mod.run() == 0
+
+        tables = [table for table, _frame in written]
+        assert seen == expected, (include_news, seen, tables)
+        assert "TIME_SERIES_INTRADAY" not in seen
+        assert tables == ["market_data_daily"], (include_news, tables)
+        daily = written[0][1]
+        assert list(daily["date"]) == [date(2026, 4, 23), date(2026, 4, 24)]
+        assert list(daily["ticker"]) == ["AMD", "AMD"]
+        assert list(daily["data_source"]) == ["alphavantage", "alphavantage"]
+        said = [r for r in caplog.records
+                if r.levelno == logging.INFO and r.getMessage() == NO_BAR_FETCH_LINE]
+        assert len(said) == 1, [r.getMessage() for r in caplog.records]
+        full_range.assert_called_once_with("AMD")
+        # the date and its prior weekday
+        per_date.assert_called_once_with("AMD", [date(2026, 4, 23), date(2026, 4, 24)])
+
+    assert not hasattr(mod, "av_intraday_month")
 
 
 def test_a_non_string_vendor_timestamp_is_dropped_not_raised(caplog):
@@ -387,10 +472,19 @@ def _backfill_premarket_row(monkeypatch, target_high: float, target_low: float) 
                           "close": c, "volume": [1000] * 30})
 
     def fake_query(sql, params=None):
-        return daily_desc.copy() if "market_data_daily" in sql else ibars.copy()
+        # The daily read only: the bar read is strict (FEAT-DATA-001).
+        assert "market_data_daily" in sql, f"not the daily read: {sql}"
+        return daily_desc.copy()
+
+    def fake_strict(sql, params=None, timeout_s=None):
+        assert "market_data_intraday" in sql, f"not the premarket bar read: {sql}"
+        return ibars.copy()
 
     written = []
     monkeypatch.setattr(db, "query_to_dataframe", fake_query)
+    # Set before install_level_params, which passes every strict query but
+    # its own to the reader already in place.
+    monkeypatch.setattr(db, "query_to_dataframe_strict", fake_strict)
     monkeypatch.setattr(db, "upsert_dataframe", lambda frame, *a, **k: written.append(frame))
     # SPY's print thresholds in force on fd (per-ticker parameters,
     # 2026-11-08), here at the #1753 values.
@@ -432,3 +526,229 @@ def test_backfill_premarket_passes_the_prior_session_inputs(monkeypatch):
     assert seen["prev_open"] == pytest.approx(100.58)
     assert seen["atr"] == pytest.approx(1.0, abs=0.05)
     assert seen["stale_print_atr"] == 0.1 and seen["spike_atr"] == 0.5
+
+
+# ── The premarket bar read is strict (FEAT-DATA-001) ─────────────────────
+#
+# The read went through gcp.database.query_to_dataframe, which answers an
+# outage with an empty frame, inside a try whose except only logged. So
+# "the table holds no premarket bars for this date" and "the database is
+# down" both wrote the day's row without premarket fields and said nothing
+# about the table. Now the read is gcp.database.query_to_dataframe_strict
+# outside that try: zero rows is a logged fact, a failed read ends the run.
+
+D4, D5, D6 = date(2026, 11, 4), date(2026, 11, 5), date(2026, 11, 6)
+
+
+def _premarket_reads(monkeypatch, bar_answer):
+    """Stub every read and write of compute_indicators_for_dates.
+
+    ``bar_answer(day, bars)`` answers the premarket bar read of ``day`` with a
+    frame, or raises; ``bars(day)`` is 30 one-minute bars from 08:00 Eastern
+    of that day. Returns a namespace with
+
+      written              (table, frame) of every upsert, in call order
+      bar_reads            the bar reads asked of the strict reader, by date
+      swallowed_bar_reads  the same reads asked of the swallowing reader
+    """
+    import types
+
+    import pandas as pd
+    import gcp.database as db
+    from tests.lib.level_params_fixtures import install_level_params
+
+    days = pd.bdate_range(end=pd.Timestamp(D6), periods=60)
+    daily_asc = pd.DataFrame([
+        {"date": d.date(), "Open": 100.0 + 0.01 * i, "High": 100.0 + 0.01 * i + 0.5,
+         "Low": 100.0 + 0.01 * i - 0.5, "Close": 100.0 + 0.01 * i, "Volume": 1_000_000}
+        for i, d in enumerate(days)
+    ])
+
+    def bars(day):
+        start = pd.Timestamp(f"{day.isoformat()} 08:00", tz="America/New_York").tz_convert("UTC")
+        return pd.DataFrame({
+            "ts": [start + pd.Timedelta(minutes=m) for m in range(30)],
+            "open": [100.6] * 30, "high": [100.65] * 30, "low": [100.55] * 30,
+            "close": [100.62] * 30, "volume": [1000] * 30,
+        })
+
+    out = types.SimpleNamespace(written=[], bar_reads=[], swallowed_bar_reads=[])
+
+    def bar_read(recorded, params):
+        day = pd.Timestamp(params["start"]).tz_convert("America/New_York").date()
+        recorded.append(day)
+        return bar_answer(day, bars)
+
+    def swallowing(sql, params=None):
+        if "market_data_intraday" in sql:
+            return bar_read(out.swallowed_bar_reads, params)
+        assert "market_data_daily" in sql, f"not a read this job makes: {sql}"
+        upto = date.fromisoformat(params["fd"])
+        kept = daily_asc[daily_asc["date"] <= upto]
+        return kept.iloc[::-1].reset_index(drop=True)
+
+    def strict(sql, params=None, timeout_s=None):
+        assert "market_data_intraday" in sql, f"not the premarket bar read: {sql}"
+        return bar_read(out.bar_reads, params)
+
+    monkeypatch.setattr(db, "query_to_dataframe", swallowing)
+    monkeypatch.setattr(db, "query_to_dataframe_strict", strict)
+    install_level_params(monkeypatch, ["SPY", "AMD"])
+    monkeypatch.setattr(
+        db, "upsert_dataframe", lambda frame, table, *a, **k: out.written.append((table, frame)))
+    return out
+
+
+def _job_warnings(caplog):
+    import logging
+    return [r.getMessage() for r in caplog.records
+            if r.name == "backfill-ticker" and r.levelno == logging.WARNING]
+
+
+def test_premarket_absent_bars_says_so(monkeypatch, caplog):
+    """Zero premarket rows is a fact about the table, and the log now says
+    it: the row is written without premarket fields, as before, and one
+    warning names the table, the ticker and the date."""
+    import logging
+
+    from gcp import backfill_ticker as mod
+
+    reads = _premarket_reads(monkeypatch, lambda day, bars: __import__("pandas").DataFrame())
+    with caplog.at_level(logging.INFO, logger="backfill-ticker"):
+        mod.compute_indicators_for_dates("SPY", [D6])
+
+    assert [table for table, _frame in reads.written] == ["market_data_daily"]
+    frame = reads.written[0][1]
+    assert len(frame) == 1 and frame["date"].iloc[0] == D6
+    assert [c for c in frame.columns if c.startswith("pre_")] == []
+    assert "gap_pct" not in frame.columns
+    assert [m for m in _job_warnings(caplog) if "market_data_intraday" in m] == [
+        "no 1-min bars in market_data_intraday for SPY premarket 2026-11-06; pre_* not written"]
+    assert reads.bar_reads == [D6]
+    assert reads.swallowed_bar_reads == []
+
+
+def test_premarket_read_failure_fails_the_run(monkeypatch):
+    """A failed bar read ends the run with the exception as raised, outage
+    or defect alike: neither is turned into "no bars". The rows of the dates
+    before it stay, the failing date and the later dates get no row, no read
+    is made for a later date, and under run() the watchlist row is not
+    written."""
+    import pandas as pd
+
+    from gcp import backfill_ticker as mod
+    from lib.infra_errors import is_infrastructure_error
+
+    outage, defect = ConnectionError("connection refused"), KeyError("close")
+    assert is_infrastructure_error(outage) is True
+    assert is_infrastructure_error(defect) is False
+
+    for exc in (outage, defect):
+        def fail_on_d5(day, bars, exc=exc):
+            if day == D5:
+                raise exc
+            return bars(day)
+
+        reads = _premarket_reads(monkeypatch, fail_on_d5)
+        with pytest.raises(type(exc)) as excinfo:
+            mod.compute_indicators_for_dates("SPY", [D4, D5, D6])
+        assert excinfo.value is exc
+        assert [table for table, _frame in reads.written] == ["market_data_daily"]
+        kept = reads.written[0][1]
+        assert list(kept["date"]) == [D4]
+        assert {"pre_high", "pre_low", "pre_vwap", "pre_volume"} <= set(kept.columns)
+        assert reads.bar_reads == [D4, D5]
+        assert reads.swallowed_bar_reads == []
+
+        # The same failure under run(): 2026-11-05 and 2026-11-06 make the
+        # target dates 2026-11-04 to 2026-11-06.
+        monkeypatch.setenv("BACKFILL_TICKER", "amd")
+        monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "k")
+        monkeypatch.setenv("BACKFILL_DATES", "2026-11-05,2026-11-06")
+        monkeypatch.setenv("BACKFILL_INCLUDE_NEWS", "false")
+        monkeypatch.setenv("BACKFILL_ADD_TO_WATCHLIST", "true")
+        daily = pd.DataFrame({
+            "date": [D5, D6], "open": [1.0, 1.0], "high": [1.0, 1.0], "low": [1.0, 1.0],
+            "close": [1.0, 1.0], "adjusted_close": [1.0, 1.0], "volume": [1, 1],
+        })
+        watch = MagicMock()
+        reads = _premarket_reads(monkeypatch, fail_on_d5)
+        with patch.object(mod, "av_daily_full", return_value=daily), \
+             patch.object(mod, "compute_indicators_for_full_range", return_value=0), \
+             patch.object(mod, "add_to_watchlist", watch), \
+             pytest.raises(type(exc)) as excinfo:
+            mod.run()
+        assert excinfo.value is exc
+        assert watch.call_count == 0
+        assert len(reads.written[0][1]) == 2, "step 1's daily rows come first"
+        after_step_one = reads.written[1:]
+        assert [table for table, _frame in after_step_one] == ["market_data_daily"]
+        assert list(after_step_one[0][1]["date"]) == [D4]
+        assert reads.bar_reads == [D4, D5]
+
+
+def test_premarket_compute_defect_is_still_a_warning(monkeypatch, caplog):
+    """Only the READ became strict. A defect in the premarket computation is
+    still caught where it was and logged, and the row is still written
+    without premarket fields: this pins that the except did not widen or
+    narrow with the change."""
+    import logging
+
+    import lib.indicators as ind
+    from gcp import backfill_ticker as mod
+
+    def broken(*args, **kwargs):
+        raise KeyError("close")
+
+    monkeypatch.setattr(ind, "calculate_premarket_context", broken)
+    reads = _premarket_reads(monkeypatch, lambda day, bars: bars(day))
+    with caplog.at_level(logging.INFO, logger="backfill-ticker"):
+        mod.compute_indicators_for_dates("SPY", [D6])
+
+    assert [table for table, _frame in reads.written] == ["market_data_daily"]
+    frame = reads.written[0][1]
+    assert list(frame["date"]) == [D6]
+    assert [c for c in frame.columns if c.startswith("pre_")] == []
+    warnings_ = _job_warnings(caplog)
+    assert len(warnings_) == 1, warnings_
+    assert warnings_[0].startswith("pre-market compute failed"), warnings_
+
+
+def test_premarket_absent_bars_warns_once_per_date_in_upper_case(monkeypatch, caplog):
+    """Several dates with no bars and a lower-case ticker: one line per
+    date, each naming the ticker in upper case, and every date's row is
+    still upserted."""
+    import logging
+
+    import pandas as pd
+
+    from gcp import backfill_ticker as mod
+
+    reads = _premarket_reads(monkeypatch, lambda day, bars: pd.DataFrame())
+    with caplog.at_level(logging.INFO, logger="backfill-ticker"):
+        mod.compute_indicators_for_dates("spy", [D5, D6])
+
+    assert [list(frame["date"]) for _table, frame in reads.written] == [[D5], [D6]]
+    assert [m for m in _job_warnings(caplog) if "market_data_intraday" in m] == [
+        "no 1-min bars in market_data_intraday for SPY premarket 2026-11-05; pre_* not written",
+        "no 1-min bars in market_data_intraday for SPY premarket 2026-11-06; pre_* not written",
+    ]
+
+
+def test_bars_that_all_fail_the_print_filter_log_no_absent_warning(monkeypatch, caplog):
+    """The table did hold bars; every one of them failed the print filter
+    (bar_count 0). The row is written without premarket fields and the
+    "no 1-min bars" line is NOT logged, because it would be false."""
+    import logging
+
+    import lib.indicators as ind
+    from gcp import backfill_ticker as mod
+
+    monkeypatch.setattr(ind, "calculate_premarket_context", lambda *a, **k: {"bar_count": 0})
+    reads = _premarket_reads(monkeypatch, lambda day, bars: bars(day))
+    with caplog.at_level(logging.INFO, logger="backfill-ticker"):
+        mod.compute_indicators_for_dates("SPY", [D6])
+
+    assert [list(frame["date"]) for _table, frame in reads.written] == [[D6]]
+    assert [c for c in reads.written[0][1].columns if c.startswith("pre_")] == []
+    assert [r.getMessage() for r in caplog.records if "no 1-min bars" in r.getMessage()] == []

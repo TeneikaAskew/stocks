@@ -1,8 +1,8 @@
 """
 Backfill historical data for a single ticker — Cloud Run Job.
 
-Triggered by the Discord `/replay` command when the requested ticker has
-no daily history in `market_data_daily`. The job:
+Run by hand by an operator, one execution per ticker. Nothing in the repo
+dispatches it. The job:
 
   1. Calls AV TIME_SERIES_DAILY_ADJUSTED (outputsize=full) and writes
      the most recent ``BACKFILL_HISTORY_DAYS`` rows (default 800 ≈ 12
@@ -10,15 +10,15 @@ no daily history in `market_data_daily`. The job:
      into market_data_daily — enough for compute_earnings_reactions
      to populate all 12 historical quarters, plus ATR/SMA200/weekly
      timeframe computation.
-  2. Calls AV TIME_SERIES_INTRADAY for every month touched by
-     BACKFILL_DATES + the prior trading day so pre-market context can
-     be computed using the prior-close reference.
-  3. Optionally calls AV NEWS_SENTIMENT for the
+  2. Optionally calls AV NEWS_SENTIMENT for the
      ``[first_date - news_window, last_date + 1d]`` window.
-  4. Computes pre-market context (pre_high / pre_low / pre_vwap /
+  3. Computes pre-market context (pre_high / pre_low / pre_vwap /
      pre_volume / gap_pct / pre_range_atr) for each requested date
-     plus its prior trading day.
-  5. Optionally (BACKFILL_ADD_TO_WATCHLIST=true) adds the ticker to the
+     plus its prior trading day, from the 1-min bars
+     ``market_data_intraday`` already holds for that date. A date with
+     none gets no ``pre_*`` fields and a warning. This job fetches and
+     writes no 1-min bars: only the two fetchers under gcp/fetchers/ do.
+  4. Optionally (BACKFILL_ADD_TO_WATCHLIST=true) adds the ticker to the
      `watchlists` Cloud SQL table (idempotent ON CONFLICT). Off by default,
      so a replay never re-activates a removed default row.
 
@@ -31,18 +31,15 @@ Environment:
   BACKFILL_DATES           comma- or semicolon-separated dates
                            that need pre-market context computed.
                            If unset, defaults to the last 7 weekdays.
-  BACKFILL_HISTORY_DAYS    daily-history depth (default 250)
+  BACKFILL_HISTORY_DAYS    daily-history depth (default 800)
   BACKFILL_INCLUDE_NEWS    "true" / "false" (default "true")
   BACKFILL_NEWS_WINDOW     news lookback in days (default 7)
   BACKFILL_ADD_TO_WATCHLIST "true" / "false" (default "false"): add the
                            ticker to the shared `default` watchlist, or
                            re-activate its removed row. Off by default so
-                           a Discord /replay on a ticker with no daily
-                           data cannot undo a removal from the default
-                           list (FEAT-INSIGHT-001); an operator sets
-                           "true" on one execution to add its ticker.
-                           scripts/backfill_and_replay.py passes "false"
-                           explicitly for its historical-test tickers.
+                           a backfill cannot undo a removal from the
+                           default list (FEAT-INSIGHT-001); an operator
+                           sets "true" on one execution to add its ticker.
   ALPHA_VANTAGE_API_KEY    AV key (mounted from Secret Manager)
   CLOUD_SQL_CONNECTION_NAME / DB_USER / DB_PASS / DB_NAME
                            Cloud SQL Connector creds
@@ -65,7 +62,7 @@ import requests
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from lib.eastern_time import eastern_bounds_utc, eastern_index_to_utc  # noqa: E402
+from lib.eastern_time import eastern_bounds_utc  # noqa: E402
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s - %(message)s")
@@ -86,8 +83,8 @@ def _env(name: str, default: Optional[str] = None) -> Optional[str]:
 def _parse_dates(raw: Optional[str]) -> list[date]:
     """Parse BACKFILL_DATES — accepts comma, semicolon, or whitespace."""
     if not raw:
-        # Default: the last 7 weekdays — enough to backfill any recent
-        # /replay request without the user having to spell out dates.
+        # Default: the last 7 weekdays, so a recent backfill needs no
+        # dates spelled out.
         out: list[date] = []
         d = date.today()
         while len(out) < 7:
@@ -131,36 +128,6 @@ def av_daily_full(ticker: str, api_key: str) -> pd.DataFrame:
         })
     df = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
     log.info("  → %d daily rows (%s … %s)", len(df), df["date"].iloc[0], df["date"].iloc[-1])
-    return df
-
-
-def av_intraday_month(ticker: str, year_month: str, api_key: str) -> pd.DataFrame:
-    """Pull a full month of 1-min bars (extended hours included)."""
-    log.info("AV intraday-month %s %s", ticker, year_month)
-    r = requests.get(AV_BASE, params={
-        "function": "TIME_SERIES_INTRADAY", "symbol": ticker,
-        "interval": "1min", "month": year_month,
-        "outputsize": "full", "adjusted": "false",  # as traded, like every 1-min request
-        "extended_hours": "true", "entitlement": "realtime",
-        "datatype": "json", "apikey": api_key,
-    }, timeout=120)
-    r.raise_for_status()
-    data = r.json()
-    if any(k in data for k in ("Error Message", "Information", "Note")):
-        msg = data.get("Error Message") or data.get("Information") or data.get("Note")
-        raise RuntimeError(f"AV intraday {ticker} {year_month}: {msg}")
-    ts = data.get("Time Series (1min)") or {}
-    if not ts:
-        log.warning("  AV intraday: empty for %s %s", ticker, year_month)
-        return pd.DataFrame()
-    df = pd.DataFrame.from_dict(ts, orient="index")
-    df.columns = ["Open", "High", "Low", "Close", "Volume"]
-    for c in ("Open", "High", "Low", "Close"):
-        df[c] = pd.to_numeric(df[c])
-    df["Volume"] = pd.to_numeric(df["Volume"]).astype("int64")
-    df.index = pd.to_datetime(df.index)
-    df = df.sort_index()
-    log.info("  → %d intraday bars", len(df))
     return df
 
 
@@ -313,14 +280,15 @@ def add_to_watchlist(ticker: str) -> None:
 
     Schema (per gcp/schema.sql):
       * Composite PK is (user_id, ticker), with user_id defaulting to
-        'default'. The Discord-driven /replay flow always uses 'default'.
+        'default'. This job always writes the 'default' list.
       * `added_at TIMESTAMPTZ` defaults to NOW() — we don't pass it.
       * `removed_at IS NULL` encodes "active". Any existing soft-removed
         row gets reactivated by clearing removed_at.
 
-    `source='discord-replay'` tags rows added via this auto-backfill
-    path so a later audit can tell self-served replay tickers apart
-    from manually-curated watchlist entries.
+    `source='discord-replay'` is the tag this job writes. The name is
+    from when Discord `/replay` started the job; nothing in the repo
+    starts it now. It still tells a row this job added apart from a
+    manually-curated watchlist entry.
     """
     from gcp.database import get_engine
     import sqlalchemy
@@ -345,7 +313,7 @@ def add_to_watchlist(ticker: str) -> None:
 # sync. The local copy this file used to carry was wrong on several
 # entries (e.g. "RSI" instead of "RSI14", "MA5" instead of "SMA5") so
 # RSI/MA columns silently went unpopulated for any ticker that came
-# in via /replay rather than the daily fetch.
+# in through this job rather than the daily fetch.
 from gcp.database import DAILY_INDICATOR_TO_SQL_COLUMN as _IND_MAP
 _INT_COLS = {"consecutive_up", "consecutive_down"}
 
@@ -371,6 +339,8 @@ def compute_indicators_for_full_range(ticker: str) -> int:
     from gcp.database import query_to_dataframe, upsert_dataframe
     from lib.indicators import add_all_indicators
 
+    # AUDIT-2026-05-13: silent fallback — query_to_dataframe returns an empty
+    # frame on an outage, which reads here as "insufficient daily history"
     df = query_to_dataframe(
         'SELECT date, open AS "Open", high AS "High", low AS "Low", '
         'close AS "Close", volume AS "Volume" '
@@ -425,10 +395,16 @@ def compute_indicators_for_full_range(ticker: str) -> int:
 
 
 def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
-    """For each target_date, recompute multi-day indicators + pre-market
-    context from the data we just loaded. Mirrors gcp.fetchers.
-    fetch_market_data.compute_and_upsert_daily_indicators so the
-    backfilled rows look identical to a live-fetched row."""
+    """For each target_date, recompute the multi-day indicators and strat
+    fields from the daily rows ``market_data_daily`` holds up to that
+    date, and the pre-market context from the 1-min bars
+    ``market_data_intraday`` already holds for it, then upsert the
+    date's row. This job loads no 1-min bars: a date with none gets no
+    ``pre_*`` fields and a warning. Raises whatever the bar read raises;
+    the rows of the dates before it stay written and no later date is
+    read. Mirrors gcp.fetchers.fetch_market_data.
+    compute_and_upsert_daily_indicators so the backfilled rows look
+    identical to a live-fetched row."""
     from gcp.database import query_to_dataframe, query_to_dataframe_strict, upsert_dataframe
     from lib.indicators import add_all_indicators, calculate_premarket_context
     from lib.strat import StratClassifier
@@ -439,6 +415,8 @@ def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
     clf = StratClassifier(rule_version="legacy-pattern-v1")
 
     for fd in sorted(target_dates):
+        # AUDIT-2026-05-13: silent fallback — query_to_dataframe returns an empty
+        # frame on an outage, which reads here as "insufficient daily history"
         df = query_to_dataframe(
             'SELECT date, open AS "Open", high AS "High", low AS "Low", '
             'close AS "Close", volume AS "Volume" '
@@ -495,17 +473,23 @@ def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
         except Exception as exc:
             log.warning("strat compute failed for %s @ %s: %s", ticker, fd, exc)
 
-        # Pre-market context from intraday bars
+        # Pre-market context from the 1-min bars the table already holds.
+        # The read is strict and sits outside the try below: an outage or a
+        # defect in it ends the run as raised (CLAUDE.md 3.7), and zero rows
+        # is then a fact about the table, which the log states.
+        pm_start, pm_end = eastern_bounds_utc(fd, dt_time(4, 0), dt_time(9, 30))
+        ibars = query_to_dataframe_strict(
+            "SELECT ts, open, high, low, close, volume "
+            "FROM market_data_intraday "
+            "WHERE ticker = :ticker AND interval = '1min' "
+            "  AND ts >= :start AND ts < :end "
+            "ORDER BY ts",
+            {"ticker": ticker.upper(), "start": pm_start, "end": pm_end},
+        )
+        if ibars.empty:
+            log.warning("no 1-min bars in market_data_intraday for %s premarket %s; "
+                        "pre_* not written", ticker.upper(), fd.isoformat())
         try:
-            pm_start, pm_end = eastern_bounds_utc(fd, dt_time(4, 0), dt_time(9, 30))
-            ibars = query_to_dataframe(
-                "SELECT ts, open, high, low, close, volume "
-                "FROM market_data_intraday "
-                "WHERE ticker = :ticker AND interval = '1min' "
-                "  AND ts >= :start AND ts < :end "
-                "ORDER BY ts",
-                {"ticker": ticker.upper(), "start": pm_start, "end": pm_end},
-            )
             if not ibars.empty:
                 # The prior session's close, open and ATR columns, as the
                 # nightly writer (fetch_market_data.compute_and_upsert_daily_indicators)
@@ -569,28 +553,33 @@ def compute_indicators_for_dates(ticker: str, target_dates: list[date]) -> None:
 # Entrypoint
 # ──────────────────────────────────────────────────────────────────────
 def run() -> int:
-    """Backfill one ticker end-to-end. Five-step sequence:
+    """Backfill one ticker end-to-end. Four-step sequence:
 
       1. AV TIME_SERIES_DAILY_ADJUSTED full → ``market_data_daily``
          (last ``BACKFILL_HISTORY_DAYS`` rows; floor 800 ≈ 12 quarters
          of earnings reactions + ATR-14 warm-up + D±10 buffer).
-      2. AV TIME_SERIES_INTRADAY 1-min → ``market_data_intraday``, one
-         API call per (year-month) touched by ``BACKFILL_DATES`` and
-         its prior trading day.
-      3. (optional, ``BACKFILL_INCLUDE_NEWS=true``) AV NEWS_SENTIMENT
+      2. (optional, ``BACKFILL_INCLUDE_NEWS=true``) AV NEWS_SENTIMENT
          → ``news_sentiment`` for the [first_date − N, last_date + 1d]
          window where N = ``BACKFILL_NEWS_WINDOW`` days.
-      4a. Multi-day indicators over the full backfilled daily range
+      3a. Multi-day indicators over the full backfilled daily range
           (without this, indicators stay NULL outside BACKFILL_DATES).
-      4b. Per-date strat + pre-market context for each
-          ``BACKFILL_DATES`` entry and its prior trading day.
-      5. Add ticker to ``watchlists`` so downstream surfaces pick it up.
+      3b. Per-date strat + pre-market context for each
+          ``BACKFILL_DATES`` entry and its prior trading day. The
+          pre-market bars are the 1-min bars ``market_data_intraday``
+          already holds; this job fetches and writes none.
+      4. (optional, ``BACKFILL_ADD_TO_WATCHLIST=true``; off by default)
+         Add ticker to ``watchlists`` so downstream surfaces pick it up.
 
     Reads env: ``BACKFILL_TICKER`` (required), ``ALPHA_VANTAGE_API_KEY``
     (required), ``BACKFILL_HISTORY_DAYS`` (default 800),
     ``BACKFILL_INCLUDE_NEWS`` (default true), ``BACKFILL_NEWS_WINDOW``
-    (default 7), ``BACKFILL_DATES`` (comma-sep YYYY-MM-DD list).
-    Returns 0 on success, 1 if required env is missing.
+    (default 7), ``BACKFILL_DATES`` (comma-sep YYYY-MM-DD list; default
+    the last 7 weekdays), ``BACKFILL_ADD_TO_WATCHLIST`` (default false).
+    Returns 0 on success, 1 if required env is missing. Raises instead
+    of returning, so the execution ends non-zero, when the vendor
+    refuses the daily request or the premarket bar read of step 3b
+    fails; what was written before the failure stays, and step 4 is not
+    reached.
     """
     ticker = (_env("BACKFILL_TICKER") or "").upper()
     if not ticker:
@@ -611,10 +600,10 @@ def run() -> int:
     history_days = int(_env("BACKFILL_HISTORY_DAYS", "800"))
     include_news = (_env("BACKFILL_INCLUDE_NEWS", "true") or "true").lower() == "true"
     news_window = int(_env("BACKFILL_NEWS_WINDOW", "7"))
-    # Off by default (FEAT-INSIGHT-001 stage A, owner's decision 2): a Discord
-    # /replay on a ticker with no daily data must not re-add, or re-activate,
-    # a row the owner removed from the default list. An operator opts in with
-    # "true" (any case) on one execution; the comparison is `.lower() == "true"`.
+    # Off by default (FEAT-INSIGHT-001 stage A, owner's decision 2): a backfill
+    # must not re-add, or re-activate, a row the owner removed from the default
+    # list. An operator opts in with "true" (any case) on one execution; the
+    # comparison is `.lower() == "true"`.
     add_watchlist = (_env("BACKFILL_ADD_TO_WATCHLIST", "false") or "false").lower() == "true"
     dates = _parse_dates(_env("BACKFILL_DATES"))
 
@@ -637,32 +626,13 @@ def run() -> int:
                      "market_data_daily", ["ticker", "date"])
     log.info("✓ wrote %d daily rows for %s", len(daily_rows), ticker)
 
-    # 2. Intraday for every month touched by any requested date + its prior
-    months: set[str] = set()
-    for d in dates:
-        months.add(d.strftime("%Y-%m"))
-        prior = d - timedelta(days=4)  # crosses weekend
-        months.add(prior.strftime("%Y-%m"))
-    for m in sorted(months):
-        intraday = av_intraday_month(ticker, m, api_key)
-        if not intraday.empty:
-            # Naive Eastern vendor stamps -> UTC instants (CLAUDE.md 3.9).
-            intraday.index = eastern_index_to_utc(intraday.index)
-            ir_rows = [{
-                "ticker": ticker, "interval": "1min",
-                "ts": ts.to_pydatetime(),
-                "open": float(r["Open"]), "high": float(r["High"]),
-                "low": float(r["Low"]), "close": float(r["Close"]),
-                "volume": int(r["Volume"]),
-                "data_source": "alphavantage",
-            } for ts, r in intraday.iterrows()]
-            upsert_dataframe(pd.DataFrame(ir_rows),
-                             "market_data_intraday",
-                             ["ticker", "interval", "ts"])
-            log.info("✓ wrote %d intraday bars for %s month=%s",
-                     len(ir_rows), ticker, m)
+    # 1-min bars are not this job's: only the two fetchers under
+    # gcp/fetchers/ write market_data_intraday (FEAT-DATA-001). Step 3b
+    # reads what the table already holds.
+    log.info("1-min bars are not fetched by this job; "
+             "premarket context reads market_data_intraday")
 
-    # 3. News (optional)
+    # 2. News (optional)
     if include_news and dates:
         first = min(dates) - timedelta(days=news_window)
         last = max(dates) + timedelta(days=1)
@@ -674,15 +644,15 @@ def run() -> int:
                              ["ticker", "published_ts", "url"])
             log.info("✓ wrote %d news rows", len(rows))
 
-    # 4a. Multi-day indicators for the FULL backfilled range. Without
+    # 3a. Multi-day indicators for the FULL backfilled range. Without
     #     this only the BACKFILL_DATES rows below get indicators, and
     #     downstream queries (ATR around historical earnings, RSI on
     #     a 6-month chart, etc.) hit NULLs even though OHLC is loaded.
     compute_indicators_for_full_range(ticker)
 
-    # 4b. Strat fields + pre-market context for each target date and
+    # 3b. Strat fields + pre-market context for each target date and
     #     its prior trading day (needs intraday bars per date — that's
-    #     why this stays per-date, while 4a is a single full pass).
+    #     why this stays per-date, while 3a is a single full pass).
     target = set(dates)
     for d in dates:
         prior = d - timedelta(days=1)
@@ -691,9 +661,10 @@ def run() -> int:
         target.add(prior)
     compute_indicators_for_dates(ticker, sorted(target))
 
-    # 5. Watchlist — opt-out for research backfills (Codex on #1022): the
-    #    upsert also clears removed_at on a deliberately removed ticker,
-    #    and every active row is consumed by the generic fetchers.
+    # 4. Watchlist — opt-in, off by default (Codex on #1022, then
+    #    FEAT-INSIGHT-001): the upsert also clears removed_at on a
+    #    deliberately removed ticker, and every active row is consumed by
+    #    the generic fetchers.
     if add_watchlist:
         add_to_watchlist(ticker)
     else:
