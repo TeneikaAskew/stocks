@@ -115,6 +115,11 @@ def add_me_watchlist(body: MeWatchlistAddRequest, request: Request) -> MeWatchli
     the shared ticker row, and the membership upsert. A re-add clears
     removed_at and never rewrites added_at. 401 without an identity, 422 for a
     bad ticker, 503 on a Cloud SQL outage; a defect stays a 500.
+
+    The write is committed before the list is read back, so a 503 from that
+    read does not undo it. A client should refresh with GET rather than retry
+    the write (a retried add at the cap would answer 409 for a ticker already
+    on the list).
     """
     identity = _require_identity(request)
     ticker = _normalize_ticker(body.ticker)
@@ -149,6 +154,10 @@ def remove_me_watchlist(ticker: str, request: Request) -> MeWatchlistRemoveRespo
 
     404 when the caller has no active row for it, 422 for a bad ticker, 401
     without an identity, 503 on a Cloud SQL outage; a defect stays a 500.
+
+    The write is committed before the list is read back, so a 503 from that
+    read does not undo it. A client should refresh with GET rather than retry
+    the write (a retried remove would answer 404 for a ticker already removed).
     """
     identity = _require_identity(request)
     ticker = _normalize_ticker(ticker)
