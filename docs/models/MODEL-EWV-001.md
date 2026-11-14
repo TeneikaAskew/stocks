@@ -223,7 +223,7 @@ states it (`:16-18`) without arguing it, and it matches how each position is act
 **present**, not 09:30. On a session with missing early bars the figure is understated by the
 gap.
 
-## Entry points
+## Historical entry points
 
 | Symbol | Role |
 |---|---|
@@ -235,7 +235,22 @@ gap.
 
 ## Tests
 
-`tests/gcp/test_evaluate_ew_strikes.py`: **62 tests** covering several areas.
+`tests/gcp/test_nyse_sessions_shim.py` contains five new tests for the retained
+module: Thanksgiving absence, early close, DST open, missing-library error,
+removed scorer exports and byte-identical wrapper source.
+`tests/gcp/test_av_options_collector_entry.py` remains unchanged and exercises
+the live caller's existing `ew.nyse_sessions` patch boundary.
+
+The seven vendor functions and their helpers moved verbatim to the dedicated
+vendor-answer suite, with all 22 parametrized cases retained. The separate
+node-disposition receipt records every old/new node and the 49 retired scorer
+cases. Finite-values repair obligations and historical results remain separate.
+
+### Historical evaluator test evidence
+
+The former evaluator test module was earlier described as **62 tests** covering
+several areas. That historical count predates the executed 71-case inventory
+above; the following incident evidence is preserved.
 - **Sessions.** The scoring session for every timing, including the Friday, Thanksgiving and
   Memorial Day cases, and the 13:00 early close.
 - **Verdicts.** The first tests of `_compute_verdict`.

@@ -222,5 +222,17 @@
       ]
     },
     "new_main_tests": "All 14 test_intraday_as_traded cases retained unchanged; actual vendor and API suite rerun: 152 passed, one pre-existing collector integration-only skip."
+  },
+  "current_qualification": {
+    "base": "fdb005dff1f844259f26fa3790e92911c12f4f99",
+    "base_count": 9646,
+    "head_count": 9602,
+    "per_file_delta": {
+      "tests/gcp/test_nyse_sessions_shim.py": 5,
+      "tests/gcp/test_evaluate_ew_strikes.py": -71,
+      "tests/gcp/test_fetch_market_data_vendor_answers.py": 22
+    },
+    "base_inventory_sha256": "1e3619a7fa34897ddff0331e25716f45d3333f395d383ef556ab305757bbf754",
+    "head_inventory_sha256": "33fb61026d0ad9e4d0eaa7d6feb6d63c17feecde01212750190685ce0cceb595"
   }
 }

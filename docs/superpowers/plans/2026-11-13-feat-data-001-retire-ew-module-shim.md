@@ -59,3 +59,20 @@ Publication prerequisite: the actual PR gate refuses the registry-wide Last revi
 Main 12633c83 includes #1874 as-traded requests and #1875 approved ingestion spec. Incoming runtime/tests and the foreign LIVE-03 SITE row are preserved byte-for-byte; only own status/note prose was combined. Fresh vendor/calendar-consumer/as-traded/API tests: 152 passed, one existing collector integration-only skip. Full repository collection including archive: 9643 base / 9599 candidate, exactly minus49 plus5; every other file count is unchanged. Generated-document CLI: 1 passed in52.01s. Matched audits: 312/312, no new findings. Bounded source identity 261c0e4e6e44d07893f2f0d9bc569bbd1adf50c70a7f8993f8b67c254fa2bbc8 passes.
 
 #1869's current-head full CI passed (parent independently retrieved 9422 passed,77 skipped,1 xfailed in2084.83s), reviews completed and receipts are present. Normal merge attempts returned HTTP502 and a merge-already-in-progress response; fresh reads still show open. Its outcome is not called merged. No P-I publication or review occurs before the actual prerequisite lands.
+
+
+## November 14 prerequisite and current-base qualification
+
+#1869 is verified merged at00:28:59UTC asafd476b6; its earlier uncertain writes
+are historical, settled evidence. Current base fdb005df preserves subsequent
+policy/pinned-workflow and specification changes. The four documentation/proof
+conflicts retain incoming operational retirement receipts and add this source strip;
+no runtime merge conflict occurred. The model test-pointer conflict was corrected
+following two deterministic test failures; no implementation review has been spent.
+
+Fresh full collection9646base/9602head: minus71 old evaluator nodes, plus22 moved
+vendor nodes and5new shim nodes; every other file count unchanged. Protected
+calendar consumers, shared library, collector tests, schema and deployment scripts
+are byte-identical to current main. Original receipts remain historical; fresh
+matched audits/source identity, governance tests and external review are recorded
+separately. #1824 and Yahoo safety worktrees remain untouched.
