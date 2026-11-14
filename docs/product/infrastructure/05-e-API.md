@@ -97,14 +97,14 @@ Every router mounts at the root (`prefix=""`) and carries its own `/api/...` pat
 | `POST` | `/api/insights/report/{ticker}/refresh` | [`platform/api/routers/insights.py:899`](../../../platform/api/routers/insights.py#L899) | Enqueue a fresh pipeline run for the ticker. |
 | `GET` | `/api/insights/reports/{report_id}` | [`platform/api/routers/insights.py:861`](../../../platform/api/routers/insights.py#L861) | Return a single insight report by row id. |
 | `GET` | `/api/insights/runs/{run_id}` | [`platform/api/routers/insights.py:971`](../../../platform/api/routers/insights.py#L971) | Poll the status of a refresh run. |
-| `GET` | `/api/insights/ticker/search` | [`platform/api/routers/insights.py:551`](../../../platform/api/routers/insights.py#L551) | Search for tickers by keyword (company name, symbol, etc). |
-| `GET` | `/api/insights/ticker/{ticker}/info` | [`platform/api/routers/insights.py:566`](../../../platform/api/routers/insights.py#L566) | Return cached ticker details (AV OVERVIEW), fetching if needed. |
-| `GET` | `/api/insights/ticker/{ticker}/peers` | [`platform/api/routers/insights.py:597`](../../../platform/api/routers/insights.py#L597) | Return peer tickers from FinViz (cached). |
-| `GET` | `/api/insights/ticker/{ticker}/quote` | [`platform/api/routers/insights.py:586`](../../../platform/api/routers/insights.py#L586) | Return latest price/volume from AV GLOBAL_QUOTE. |
-| `GET` | `/api/insights/watchlist` | [`platform/api/routers/insights.py:716`](../../../platform/api/routers/insights.py#L716) | Return today's ranked candidate tickers with score breakdowns. |
-| `POST` | `/api/insights/watchlist/add` | [`platform/api/routers/insights.py:606`](../../../platform/api/routers/insights.py#L606) | Add a ticker to the watchlist and return its info + quote. |
-| `GET` | `/api/insights/watchlist/default` | [`platform/api/routers/insights.py:781`](../../../platform/api/routers/insights.py#L781) | Return the active default watchlist with its surface flags, read-only. |
-| `DELETE` | `/api/insights/watchlist/{ticker}` | [`platform/api/routers/insights.py:683`](../../../platform/api/routers/insights.py#L683) | Soft-delete a ticker from the watchlist (sets removed_at=NOW()). |
+| `GET` | `/api/insights/ticker/search` | [`platform/api/routers/insights.py:552`](../../../platform/api/routers/insights.py#L552) | Search for tickers by keyword (company name, symbol, etc). |
+| `GET` | `/api/insights/ticker/{ticker}/info` | [`platform/api/routers/insights.py:567`](../../../platform/api/routers/insights.py#L567) | Return cached ticker details (AV OVERVIEW), fetching if needed. |
+| `GET` | `/api/insights/ticker/{ticker}/peers` | [`platform/api/routers/insights.py:598`](../../../platform/api/routers/insights.py#L598) | Return peer tickers from FinViz (cached). |
+| `GET` | `/api/insights/ticker/{ticker}/quote` | [`platform/api/routers/insights.py:587`](../../../platform/api/routers/insights.py#L587) | Return latest price/volume from AV GLOBAL_QUOTE. |
+| `GET` | `/api/insights/watchlist` | [`platform/api/routers/insights.py:717`](../../../platform/api/routers/insights.py#L717) | Return today's ranked candidate tickers with score breakdowns. |
+| `POST` | `/api/insights/watchlist/add` | [`platform/api/routers/insights.py:607`](../../../platform/api/routers/insights.py#L607) | Add a ticker to the watchlist and return its info + quote. |
+| `GET` | `/api/insights/watchlist/default` | [`platform/api/routers/insights.py:782`](../../../platform/api/routers/insights.py#L782) | Return the active default watchlist with its surface flags, read-only. |
+| `DELETE` | `/api/insights/watchlist/{ticker}` | [`platform/api/routers/insights.py:684`](../../../platform/api/routers/insights.py#L684) | Soft-delete a ticker from the watchlist (sets removed_at=NOW()). |
 | `GET` | `/api/journal/examples/{ticker}` | [`platform/api/routers/journal.py:925`](../../../platform/api/routers/journal.py#L925) | Read-only teaching "Examples" — the UNION of the admin's own journal |
 | `POST` | `/api/journal/export/{ticker}` | [`platform/api/routers/journal.py:1376`](../../../platform/api/routers/journal.py#L1376) | Write journal trades to {ticker}_trade_tracker.csv in data/signals/. |
 | `POST` | `/api/journal/import/commit` | [`platform/api/routers/journal.py:1521`](../../../platform/api/routers/journal.py#L1521) | Insert the caller-selected `PairedTrade`s from a preview. |
