@@ -130,6 +130,7 @@ def test_default_watchlist_returns_rows_in_added_at_order(client):
         # An ISO instant, never a pandas Timestamp repr: fromisoformat parses it back to the
         # instant that was stored.
         assert dt.datetime.fromisoformat(row["added_at"]) == EXPECTED_ADDED_AT[row["ticker"]]
+        assert "T" in row["added_at"]   # the ISO separator, never str(Timestamp)'s space
         assert row["in_brief"] is True and row["in_insight"] is True and row["signals"] is True
     assert [row["source"] for row in body["rows"]] == ["seed", "seed", None]
     as_of = dt.datetime.fromisoformat(body["as_of"])

@@ -332,6 +332,26 @@ def test_no_reader_passes_a_non_default_user_id():
         "strict_watchlist no longer binds WATCHLIST_OWNER")
 
 
+def test_inventory_is_complete():
+    """A reader added anywhere under the scanned trees is inventoried, or this fails: every
+    production .py file that calls load_watchlist or resolve_membership_at, or that queries FROM
+    watchlists, must be a READERS entry (the helper module itself excepted). Without this the scan
+    would only ever look at the files it already knows about (stage A review, 2026-11-14)."""
+    found: set[str] = set()
+    for path in _production_files(".py"):
+        rel = path.relative_to(REPO).as_posix()
+        if rel == "gcp/fetchers/_watchlist.py":
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if HELPER_CALL.search(text) or OWN_QUERY.search(_joined_source(text)):
+            found.add(rel)
+    scanned = {rel for rel, tags in READERS.items() if set(tags) & {LOAD, RESOLVE, OWN_SQL}}
+    assert found == scanned, (
+        f"readers not inventoried: {sorted(found - scanned)}; "
+        f"inventoried without a scan match: {sorted(scanned - found)}"
+    )
+
+
 def test_own_sql_readers_keep_their_recorded_text():
     for rel, pins in OWN_SQL_PINS.items():
         source = _joined_source(_read(rel))

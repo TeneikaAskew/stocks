@@ -18,8 +18,9 @@ no daily history in `market_data_daily`. The job:
   4. Computes pre-market context (pre_high / pre_low / pre_vwap /
      pre_volume / gap_pct / pre_range_atr) for each requested date
      plus its prior trading day.
-  5. Adds the ticker to the `watchlists` Cloud SQL table so subsequent
-     `/replay` invocations skip the backfill (idempotent ON CONFLICT).
+  5. Optionally (BACKFILL_ADD_TO_WATCHLIST=true) adds the ticker to the
+     `watchlists` Cloud SQL table (idempotent ON CONFLICT). Off by default,
+     so a replay never re-activates a removed default row.
 
 Everything runs through ``gcp.database.upsert_dataframe`` — the same
 Cloud SQL Connector path the rest of the platform uses, so this works
