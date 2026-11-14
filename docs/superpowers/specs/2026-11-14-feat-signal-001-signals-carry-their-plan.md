@@ -4,6 +4,7 @@ req_ids: [REQ-SIGNAL-001, REQ-PLAYBOOK-001, REQ-DATA-001, REQ-DATA-002, REQ-DATA
 issues: [815]
 canvases:
   - https://claude.ai/artifact/Fg4VQHB6dFGWF9iXSJUDtg
+site_source_notes: [DASHBOARD-05, JOURNAL-06]
 done_when:
   - "tests/lib/test_signal_plan.py::TestBuild passes on the shared fixture (one session of 1-minute bars, a daily frame, a LevelParams set): lib.signal_plan.build_signal_plan returns, for a call and for a put, the entry reference and its rule, the stop price with its rule and level name, T1 to T3 each with price, rule, level name and timeframe, the leg count and risk_ref; every non-null plan price equals the price of a level the builder listed or a bar extreme named by its rule; a side with no level that passes the stop window gives stop NULL and plan_status stop_unavailable; a side with no spaced target gives T1 to T3 NULL and plan_status targets_unavailable; parameters not ok give plan_status params_unavailable; no case returns a number in place of a missing level"
   - "tests/lib/test_signal_plan.py::TestNoLookAhead passes: the plan for signal bar i built from bars[0..i] equals the plan built from the whole session, and changing every bar after i (prices and volume) leaves the plan unchanged, for 20 signal bars of the fixture; the daily frame handed to the builder holds no row dated on or after the session"
@@ -18,9 +19,11 @@ done_when:
   - "tests/gcp/test_signal_monitor_persist.py::TestSignalPlanPersist passes: a fire persists the plan columns from the session levels already in memory with no new query; a fire whose session levels are unavailable still persists the alert, with plan_status levels_unavailable and every plan price NULL; target_price, time_stop_minutes and the active position dict equal origin/main's for the same fire"
   - "tests/gcp/test_signal_monitor_eod_resolver.py::TestPlanOutcome passes: the resolver writes plan_fill_price, plan_r, plan_r_t1, plan_r_status, plan_exit, the three hit timestamps and plan_score_rule for an alert that carries a plan, writes plan_r_status with NULL plan_r for one that does not, and exit_ts, exit_reason, exit_price and exit_return_pct equal origin/main's for the same fixtures"
   - "tests/api/test_signal_plan_not_served.py passes: GET /api/signals/{ticker} and GET /api/signals/{ticker}/similar, over rows that hold plan columns, return exactly the keys they return on origin/main, and platform/api/openapi.json is unchanged (git diff origin/main -- platform/api/openapi.json is empty); tests/gcp/test_signal_monitor.py::TestEmbedUnchanged asserts the Discord embed description of a fixture fire is byte-equal to origin/main's"
+  - "tests/gcp/test_signal_plan_level_source.py::test_plan_levels_come_from_the_brief_basis passes: for one fixture session with a stored live level_basis, the plan written by each of the three writers takes the level name and price of its stop, of T1 to T3 and of brief_trigger from SessionLevels.from_basis of that stored basis; plan.levels.source is level_basis and holds the basis rule_version and built_at; a level added to the daily frame that the stored basis does not hold never appears in the plan; brief_trigger holds the name and price of the brief's trigger for the signal's side and its role, one of stop, t1, t2, t3 or none, matched by name and cent, or not_published when the brief gave that side no trigger; for a session with no stored basis the source is built and brief_trigger is NULL"
+  - "Source identity (DASHBOARD-05, JOURNAL-06): on the implementation PR head, scripts/maintenance/doc_source_snapshot.py produce and then verify, with the fixed ceilings and run from the committed HEAD, prove committed source and SITE body identity bound to this approved spec at the actual merge base, and the (FEAT-SIGNAL-001, DASHBOARD-05) and (FEAT-SIGNAL-001, JOURNAL-06) note rows carry that source_identity_sha256"
   - "docs/product/07-MODEL-REGISTRY.md row MODEL-EXIT-001 names lib/signal_plan.py and the plan columns, python3 scripts/gate/export_model_registry.py is run and its JSON committed, the FEAT-SIGNAL-001 catalog record (Status, Last reviewed) and the PR traceability entry are updated, the branch run of python3 scripts/maintenance/docs_audit.py reports nothing new over origin/main, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
   - "The PR body carries the Capacity section of this spec with the attach run's measured numbers from a --dry-run on one ticker (signals, read queries, seconds per stage), next to the estimates"
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -28,20 +31,26 @@ supersedes: null
 
 ## Authority and status
 
-Draft, written 2026-11-14 for the owner's review. Nothing here is approved and no code is written under
-it. The section-by-section approval conversation of the product-delivery skill is replaced, for this
-draft, by the numbered list in "Decisions for the owner".
+Approved by the owner (T) on 2026-11-14 with: "Im fine with signal plan." That takes recommendations
+1 to 7 of the draft as written; they are recorded below as decisions. No code is written under this spec
+before it is on main.
 
-The owner's request (T, 2026-11-14), verbatim: "A signal should carry its full plan at the moment it is
-created: entry, stop, T1 to T3, and the rule that produced each. That is what #1832 does for the brief
-plan. The momentum signals and live alerts should get the same treatment, so that every signal can be
-scored in R against its own stop". Also: "What is a signal if it doesn't have a target entry, tp targets
-and stop loss", and "its good that price reaches the target".
+The request it answers (T, 2026-11-14), verbatim: "A signal should carry its full plan at the moment it
+is created: entry, stop, T1 to T3, and the rule that produced each. That is what #1832 does for the
+brief plan. The momentum signals and live alerts should get the same treatment, so that every signal can
+be scored in R against its own stop". Also: "What is a signal if it doesn't have a target entry, tp
+targets and stop loss", and "its good that price reaches the target".
+
+With the approval the owner asked: "Signals carying their own plan means what? Should it create
+everything in same fashion that brings the briefs and insights together?" The answer is yes, and it is
+a requirement of this design, stated in Design 6: a signal's plan, the session's brief plan and the
+insight read for the same ticker and session come from the same level set and the same builder, so they
+cannot disagree about where a level is. Design 6 says what is already shared, the one place the insight
+pipeline differs today, and what this spec adds.
 
 Every statement below about code or data is marked "read" (read in the source, not executed) or "run"
 (a query or command was executed; the execution name is in "Queries run"). Code references are to
-origin/main at 572a6362 unless they name the #1832 branch, which is
-origin/fix/feat-strat-001-brief-exits-in-thirds at 69e181f5.
+origin/main at ad0ba50f, which holds #1832.
 
 ## Capability
 
@@ -58,21 +67,22 @@ its existing tests. That is one spec under FEAT-SIGNAL-001, the way #1832 (FEAT-
 `gcp/signal_monitor.py` as a consumer. The work is split in two by what a user can see, not by
 capability: see "Size and split".
 
-## Decisions for the owner
+## Decisions (owner, 2026-11-14)
 
-Answer by number. Each has a recommendation and the evidence for it.
+All seven were decided as recommended. Each item gives the decision in one line, then the evidence it
+rests on.
 
-1. **The stop rule.** Options: (a) the signal bar's opposite side, (b) a multiple of ATR, (c) the
-   nearest level on the other side of the entry, which is the brief's stop today
-   (`lib/strat_levels.py:2351-2352`, read).
-   **Recommended: (c) as the signal's stop, with (a) and (b) also recorded on every signal.**
+1. **The stop rule.** **Decided: the signal's stop is the nearest level on the other side of the entry,
+   the brief's stop rule (`lib/strat_levels.py:2437-2438`, read); the signal bar's opposite side and an
+   ATR multiple are also recorded on every signal.** The three options were (a) the signal bar's
+   opposite side, (b) a multiple of ATR, (c) the level.
    - (a) gives an R that cannot be read. The exit evaluation scored its check days against the signal
      bar's opposite side and says: "R is in `final_tables/check_days.csv` but is not usable on these
      days: the stop is one 1-minute bar wide, so results read as tens or hundreds of R"
      (`signal-eval/report.md`, section 5 and section 7, "Noise").
    - (b) has no calibrated multiple for a 1-minute signal. The per-ticker `stop_*_atr` keys were
      calibrated for the planner's entry zones on daily ATR (`persona_stop_price`,
-     `lib/strat_levels.py:992-1017`, read). Whether they suit a momentum signal is not checked.
+     `lib/strat_levels.py:1003-1028`, read). Whether they suit a momentum signal is not checked.
    - (c) is a named level, is the same kind of R the brief's plan is scored in, and is what "the same
      treatment" as #1832 means. Its cost: when no level passes the stop window the signal has no stop
      (pinned for the brief by `tests/lib/test_strat_levels_playbook.py::test_no_stop_when_no_fresh_opposite`),
@@ -81,16 +91,16 @@ Answer by number. Each has a recommendation and the evidence for it.
    - Recording all three costs two numbers per row and lets the first clean run report, per rule, the
      share of signals with a stop and the size of 1 R in percent of price, so the choice can be changed
      with a version bump and no second pass over history.
-2. **The target rule.** Options: next levels as in #1832, ATR multiples, or both with one primary.
-   **Recommended: next levels only, spaced by the ticker's `target_min_spacing_atr` as #1832 does.**
+2. **The target rule.** **Decided: targets are the next levels only, spaced by the ticker's
+   `target_min_spacing_atr` as #1832 does; no ATR targets are stored.**
    Each target then has a level and a rule behind it, which is what was asked. ATR targets are not
    stored: in table D no ATR target exit passes the gate on any ticker, with a fixed or a trailing ATR
    stop (best fixed-stop exit, % per session, before and after 2026-05-01: SPY +0.051 and -0.002, QQQ
    +0.124 and +0.055, IWM +0.107 and -0.108), and the best multiple differs by ticker, so there is no
    multiple to store. An ATR target can still be evaluated later from the bars without a stored one.
-3. **The exit plan to score.** Options: thirds at T1 to T3, all out at T1, T1 then a trail.
-   **Recommended: score thirds as `plan_r` (the #1832 shape) and all out at T1 beside it as
-   `plan_r_t1`; no trail.** The evidence points two ways, so both are stored:
+3. **The exit plan to score.** **Decided: thirds at T1 to T3 are scored as `plan_r` (the #1832 shape)
+   and all out at T1 beside it as `plan_r_t1`; no trail.** The evidence points two ways, so both are
+   stored:
    - Levels are reached far more often than they hold: before May 2026, pooled over the three tickers,
      "T1 is reached on 54% to 66% of triggers but price holds five 1-minute closes beyond it on 10% to
      16%. T2 is reached on 25% to 38% and held on 4% to 9%; T3 on 12% to 21% and held on 3% to 4%"
@@ -106,23 +116,22 @@ Answer by number. Each has a recommendation and the evidence for it.
      is SPY -0.009 and -0.008, QQQ +0.018 and +0.002, IWM +0.039 and -0.078; no row passes the gate
      (table D, all sessions, % per session, 293 sessions before and 137 after). A trail adds a
      parameter and shows nothing, so it is not stored.
-4. **A signal with no valid stop or no target.** **Recommended: store it, never drop it and never fill
-   the gap.** The missing price is NULL, `plan_status` names the first missing piece
+4. **A signal with no valid stop or no target.** **Decided: it is stored, never dropped, and the gap
+   is never filled.** The missing price is NULL, `plan_status` names the first missing piece
    (`stop_unavailable`, `targets_unavailable`, `params_unavailable`, `levels_unavailable`,
    `atr_unavailable`, `outside_session`, `bar_mismatch`), and `plan_r` is NULL with a
-   `plan_r_status`. Rule 3.7: a level that does not exist is never replaced by a computed one. The live monitor already persists every
-   fire whatever the Discord gate decides (`gcp/signal_monitor.py:1653-1674`, read).
-5. **What live alerts post to Discord.** **Recommended: no change in this spec; the row carries the plan
+   `plan_r_status`. Rule 3.7: a level that does not exist is never replaced by a computed one. The
+   live monitor already persists every fire whatever the Discord gate decides
+   (`gcp/signal_monitor.py:1655-1676`, read).
+5. **What live alerts post to Discord.** **Decided: no change in this spec; the row carries the plan
    from the first fire, and the embed changes in the second spec.** The monitor still exits on its
-   percent target, time stop and RSI (`gcp/signal_monitor.py:2150-2162`, read) and has no stop per
+   percent target, time stop and RSI (`gcp/signal_monitor.py:2152-2164`, read) and has no stop per
    trade by a recorded decision (`lib/config.py:309-338`, read; issue #815). An embed that shows a
    stop and T1 to T3 would describe a trade the monitor does not manage, and thirds at level targets
-   show no edge in table D. If the owner wants it now: two lines, "Recorded plan (not the monitor's
-   exit): stop X (level), T1 to T3", which moves one task and its test into this spec.
-6. **History.** Options: regenerate all stored signals with plans, plans only from a date, or forward
-   only. **Recommended: attach plans to the stored signals of SPY, QQQ and IWM from 2025-03-03 by
-   update, with no delete and no regeneration; live alerts get plans from the deploy on and are not
-   backfilled.**
+   show no edge in table D.
+6. **History.** **Decided: plans are attached to the stored signals of SPY, QQQ and IWM from
+   2025-03-03 by update, with no delete and no regeneration; live alerts get plans from the deploy on
+   and are not backfilled.**
    - A plan is a function of the signal's bar, its direction and the session's levels. The signals
      themselves do not change, so nothing needs regenerating a second time once the runbook's
      regeneration of `historical_signals` on the clean bars has run. Before that it must not run: most
@@ -140,11 +149,12 @@ Answer by number. Each has a recommendation and the evidence for it.
      before 2026-11-12** (run, db-query-8ptk7: `ticker_level_params` holds 23 `on_demand` rows per
      ticker, all effective 2026-11-12; SPY has 19 of 23 ok). Until the history-mode calibration of
      FEAT-STRAT-001 is written for the window, every stored signal before 2026-11-12 would get
-     `params_unavailable`. So this decision is also: how far back that calibration is written. The
-     local evaluation used its own local calibration.
+     `params_unavailable`. So the attach waits until that calibration is written for the window, which
+     is FEAT-STRAT-001's step and needs the owner's yes of its own. The local evaluation used its own
+     local calibration.
    - Stored live alerts (3,146 live rows, run, db-query-t4nsl) keep NULL plans. A replay with
      `REPLAY_DATE` writes `run_kind='replay'` rows with plans for any date whose parameters exist.
-7. **Where the split falls.** **Recommended: two specs.** This one builds, stores and scores the plan
+7. **Where the split falls.** **Decided: two specs.** This one builds, stores and scores the plan
    and changes nothing a user sees. The second shows it: Discord embed, `/api/signals` fields, the
    OpenAPI snapshot, solyra types, fixtures and Playwright evidence. See "Size and split".
 
@@ -157,17 +167,17 @@ What is true today:
 
 - **`historical_signals`** holds ticker, entry_time, trade_type, entry_price, signal_strength,
   indicators at entry and best-case returns at fixed windows of 5 to 60 minutes
-  (`gcp/schema.sql:2339-2372`, read), plus `realized_return_pct` under one fixed 20-minute exit
-  (`:2392-2394`, read). No stop and no target: the three signal tables hold no column named like stop,
+  (`gcp/schema.sql:2400-2433`, read), plus `realized_return_pct` under one fixed 20-minute exit
+  (`:2453-2455`, read). No stop and no target: the three signal tables hold no column named like stop,
   plan, t1 or target except `signal_alerts.target_price` and `time_stop_minutes` (run, db-query-t4nsl).
   One correction to the request's wording: the schema comment says signal_strength is 3 to 5, but the
   generator on main needs 5 or more of 7 conditions (`lib/trading_analysis.py:995`, `:1069`, read) and
   the rows stored since 2026-10-01 hold 5, 6 and 7 only (run, db-query-8rb9b).
 - **`signal_alerts`** holds direction, scores, price_at_signal, one `target_price`, `time_stop_minutes`
-  and the exit columns (`gcp/schema.sql:1085-1118`, `:3870-3875`, read). The target is the signal price
-  moved by a per-ticker percent, and the time stop is in minutes (`gcp/signal_monitor.py:1548-1554`,
+  and the exit columns (`gcp/schema.sql:1085-1118`, `:3931-3936`, read). The target is the signal price
+  moved by a per-ticker percent, and the time stop is in minutes (`gcp/signal_monitor.py:1550-1556`,
   read). There is no stop price. Exits are target, time stop, RSI or a fixed horizon in the monitor
-  (`:2117-2167`, read) and the same rules in the end-of-day resolver, which closes what is left at the
+  (`:2119-2169`, read) and the same rules in the end-of-day resolver, which closes what is left at the
   last bar (`gcp/signal_monitor_eod_resolver.py:241-286`, `:342-378`, read). Of 3,146 live alerts, 2,674
   ended on the time stop, 445 on the target, 20 on RSI and 7 at the close (run, db-query-8rb9b).
 - **The replay does not go through `fire_alert`.** It swaps in a capture function and has its own
@@ -206,12 +216,20 @@ They are session files, not in the repo.
 - No new kind of level. Targets and stops come from the levels the builder already lists; ORB levels
   are not added.
 - No change to `scripts/run_historical_signals.py --force`.
+- The insight pipeline is not changed. It reads the brief's stored `level_basis` and the same builder
+  but applies its own newer premarket snapshot, so its premarket levels, reference and picks can differ
+  from the brief's (Design 6). Making the two use one snapshot is not done here: the one level source
+  spec chose that step on purpose (the planner runs later than the 08:30 brief), the code is
+  FEAT-INSIGHT-001's and FEAT-STRAT-001's, and the approved late slot already moves the brief's own
+  basis to the 09:20 snapshot. Each side stores the basis it read, so the difference is a query.
+- No new column for agreement between a signal and the brief or the insight. The columns exist
+  (Design 6); the insight ones are filled by open PR #1823, not here.
 
 ## Approaches considered
 
 1. **Reuse #1832's builder as is.** Not possible. `_pick_side` takes the first unbroken rung past the
-   reference as the trigger and plans targets from that rung (`lib/strat_levels.py:2356-2443` on the
-   #1832 branch, `_plan_targets` at `:2445`, read). A signal enters at the market on the next bar, so
+   reference as the trigger and plans targets from that rung (`lib/strat_levels.py:2356-2443`,
+   `_plan_targets` at `:2445`, read). A signal enters at the market on the next bar, so
    its T1 would be skipped. `_plan_targets` also publishes no target unless `entry_cutoff_et` is ok,
    and a signal has no cutoff.
 2. **A separate plan builder for signals.** Rejected: two sets of level rules, the drift the one level
@@ -235,6 +253,7 @@ One record per signal, built from bars at or before the signal bar:
 | T1 to T3 | the next levels past the cleared mark in the signal's direction, each at least `target_min_spacing_atr` x ATR past the entry or the target before it, up to `exit_legs` of them, each with level name and timeframe | `next-level-spaced-v1` |
 | Legs | `exit_legs` from the policy (3), each 1/legs of the position | policy row |
 | R unit | `risk_ref` = abs(reference minus stop) at creation; R at scoring is abs(fill minus stop) | stated in the record |
+| Brief link | `brief_trigger`: the name and price of the brief's trigger for the signal's side, and whether it is this plan's stop, T1, T2, T3 or none of them (Design 6) | matched by level name and cent |
 
 The cleared mark is the further of two prices: the builder's own mark for the session (its reference
 and the accepted premarket extreme) and the regular-session high (for a call) or low (for a put) through
@@ -257,7 +276,7 @@ status, method and effective date, and the builder's version (REQ-DATA-003).
   `lib/strat_levels.py` (session levels) is the home of bar-anchored entries and leg scoring; the plan
   may fold it into `lib/strat_levels.py` if review prefers.
 - `score_signal_plan(plan, bars_after_signal) -> PlanOutcome`. The leg walk now inside `resolve_plan`
-  (`gcp/premarket_playbook_resolver.py:473-585` on the #1832 branch, read) moves here and
+  (`gcp/premarket_playbook_resolver.py:473-585`, read) moves here and
   `resolve_plan` calls it, so the brief and the signals are scored by one walk. One stated difference:
   a signal fills at the entry bar's open, so that bar counts for targets as well as for the stop; the
   brief's call keeps its own value of that argument.
@@ -269,14 +288,14 @@ The three writers call `build_signal_plan` and nothing else:
   The same step serves `--attach-plans` (decision 6).
 - **Live.** A method `SignalMonitor._signal_plan(ticker, sig, latest)` reads
   `self.session_levels[ticker]` and `self.session_extremes[ticker]`, both already in memory
-  (`gcp/signal_monitor.py:987`, `:422-466`, read), is called in `fire_alert`, and its result is passed
+  (`gcp/signal_monitor.py:989`, `:422-466`, read), is called in `fire_alert`, and its result is passed
   to `_persist_signal_alert`.
 - **Replay.** The capture function calls the same `_signal_plan`, `FireRecord` carries the plan, and
   the replay's insert writes the plan columns.
 
 History resolves a session's levels in the monitor's order: the stored live `level_basis` for the
 session when there is one, else `build_session_levels` on the daily frame before the session, the
-session's premarket snapshot and the parameters in force (`gcp/signal_monitor.py:976-982`, read).
+session's premarket snapshot and the parameters in force (`gcp/signal_monitor.py:978-984`, read).
 
 ### 3. Where it is stored
 
@@ -328,19 +347,76 @@ rewrites plan and outcome columns.
   with their premarket fields, parameters in force over the range, `level_basis` rows over the range)
   and one multi-row UPDATE per 1,000 signals, committed per chunk, with a progress line per chunk.
   The range read of parameters is a new one-query function beside `load_level_params`
-  (`lib/strat_levels.py:1256`, read), which reads one session per call.
+  (`lib/strat_levels.py:1304`, read), which reads one session per call.
+
+### 6. One level set for the brief, the insight read and the signal
+
+The owner's question, "Should it create everything in same fashion that brings the briefs and insights
+together?": yes. A signal's plan is not a third opinion about the levels. It is built from the session's
+level set by the builder the brief and the insight already use, and it says so on the row.
+
+**Already shared today** (read, on main at ad0ba50f):
+
+- One builder. `build_session_levels` (`lib/strat_levels.py:2147`) makes the levels, side lists,
+  triggers, stops and targets for every consumer.
+- One stored set per session. The brief writes its `SessionLevels` as `level_basis` on its
+  `premarket_analysis` row (`gcp/premarket_brief.py:1379`, `:3241`; column at `gcp/schema.sql:2186`).
+- The monitor reads that stored basis for the session and rebuilds from it, and builds with the same
+  builder only when no live row exists (`gcp/signal_monitor.py:853`, `:978-984`).
+- The insight pipeline reads the same stored basis through the same reader
+  (`lib/agents/summarizers.py:601-603`, `read_live_level_basis` at `lib/strat_levels.py:2560`), builds
+  with the same builder when there is none (`:612-614`), plans from it
+  (`lib/agents/trade_planner.py:616-622`) and stores the basis it used in its report
+  (`lib/agents/orchestrator.py:589-593`, `:674`).
+
+**One difference in the insight pipeline.** After reading the brief's basis it applies its own newer
+premarket snapshot (`lib/agents/summarizers.py:604-605`). `with_premarket` "replaces the premarket high
+and low candidates and the reference, keeps every structural level, and recomputes broken status and
+picks" (`lib/strat_levels.py:1669-1681`). So the brief and the insight cannot disagree about a prior
+day, week, month, quarter or year level or the parent bar, but they can hold different premarket highs
+and lows, and so a different trigger, when the insight runs on a later snapshot. The insight's stop is
+also a different rule on the same levels: an ATR distance from its entry zone with the builder's stop as
+one anchor (`lib/agents/trade_planner.py:118-135`, `:279`). This spec does not change either (Non-goals).
+The signal's plan follows the monitor: the stored basis as written, with no snapshot of its own.
+
+**What `signal_alerts` already records about agreement** (columns read in `gcp/schema.sql`, fill rates
+run, db-query-9zsrl, 3,146 live alerts):
+
+| Columns | Where the monitor fills them | Filled today |
+|---|---|---|
+| `brief_bias`, `brief_alignment`, `brief_setup_count` (`gcp/schema.sql:3975-3977`) | `_resolve_brief_alignment` and `_resolve_brief_bias` (`gcp/signal_monitor.py:1931`, `:2097`), written at `:1763-1765` | 2,395, 511 and 2,395 rows; alignment is aligned 269, opposed 209, invalidated 33 |
+| `level_state`, `opp_level_state` (`:4066`, `:4068`) | `_resolve_level_state` (`:2074`), written at `:1775-1776` | `level_state` on 635 rows |
+| `insight_direction`, `insight_conviction`, `insight_regime`, `gate_action`, `gate_reason`, `thesis_invalidated` (`:4036-4041`) | nowhere on main. The gate reads the insight and decides (`gcp/signal_monitor.py:1401-1423`) but `_persist_signal_alert` (`:1697`) writes none of the six | 0 rows for each of the first five (run). Open PR #1823 fills them |
+
+So a live alert already says whether it agrees with the brief's bias and, once #1823 is on main, what the
+insight said. What no row says is which levels the signal's own stop and targets are.
+
+**What this spec adds:**
+
+- The plan names the level behind its stop and behind each of T1 to T3 by the builder's level names, the
+  names the brief stores in `calls_trigger_name`, `calls_stop_name` and their put twins
+  (`gcp/schema.sql:1885-1892`) and in `level_basis`.
+- `plan.levels` records where the level set came from: `level_basis` with its rule version and build
+  time, or `built` when the session has no stored basis. When a stored basis exists every writer builds
+  the plan from it, history included, so a signal and the brief of the same session cannot place a
+  level differently, and a level the brief does not hold cannot appear in a plan.
+- `plan.brief_trigger` records the brief's trigger for the signal's side (name and price) and its role
+  in this plan: `stop`, `t1`, `t2`, `t3` or `none`; `not_published` when the brief gave that side no
+  trigger; NULL when there is no stored basis.
+
+`tests/gcp/test_signal_plan_level_source.py::test_plan_levels_come_from_the_brief_basis` holds all three.
 
 ## Order against work in progress
 
-Two conditions come first:
+Checked again on 2026-11-14 after the approval (GitHub and the refs, read):
 
 1. **Clean bars.** No stored signal is given a plan or scored before the month replace and rebuilds
    planned for 2026-11-14 and 11-15 are done and verified, and `historical_signals` has been
    regenerated on those bars by the runbook (REQ-VALID-001). Code and tests may land before; the
    attach run and any scored figure may not.
-2. **#1832 on main.** This spec reuses its spacing, legs, `gate_targets` split and leg walk. Its
-   implementation branch is cut only from a main that holds #1832 (open, not a draft, head 69e181f5,
-   read from GitHub on 2026-11-14).
+2. **#1832 on main: met.** #1832 merged on 2026-11-14 at 20:04:55Z as ad0ba50f (the approval message
+   still called it open; GitHub and origin/main show it merged). Its spacing, legs, `gate_targets`
+   split and leg walk are what this spec reuses, and every reference above is to that commit.
 
 Files this spec would touch: `lib/signal_plan.py` (new), `lib/strat_levels.py`,
 `gcp/premarket_playbook_resolver.py`, `gcp/schema.sql`, `gcp/historical_signals.py`,
@@ -350,34 +426,42 @@ the FEAT-SIGNAL-001 catalog and traceability entries.
 
 | Open work | Files it changes outside docs and tests | Overlap with this spec | Order that avoids a conflict |
 |---|---|---|---|
-| `fix/feat-data-001-deployed-dates-exchange-clock`, PR #1948 (10fd2c2b) | 39 files, among them `gcp/signal_monitor.py` (lines 36 and 381), `lib/trading_analysis.py:618`, `lib/strategies/exit_config_overrides.py`, `gcp/trade_logger.py` | `gcp/signal_monitor.py`, different hunks (this spec changes `fire_alert` and `_persist_signal_alert`, lines 1448 to 1870). Nothing else: this spec does not change `lib/trading_analysis.py` | #1948 merges first; this branch is cut after |
-| `feature/feat-data-001-recompute-after-bar-rewrite` (local branch, e2ba7f7b, 15 commits, not on origin) | `gcp/bar_recompute.py`, `gcp/fetchers/fetch_alphavantage_intraday.py`, `gcp/fetchers/fetch_market_data.py`, `gcp/gcs_utils.py`, `gcp/schema.sql`, `gcp/signal_monitor_eod_resolver.py` | **Two files.** `gcp/schema.sql`: both append at the end of the file. `gcp/signal_monitor_eod_resolver.py`: it rewrites the walk this spec adds the plan outcome to | The recompute merges first. This spec's resolver task is written against its walk (which ends at the session close) |
-| `feature/feat-playbook-001-brief-late-slot` (no commits yet) | by its spec, only `gcp/premarket_brief.py` and `gcp/fetchers/fetch_premarket_refresh.py` | none in files. In data: it rewrites the day's `level_basis` at 09:20, which the monitor reads; the plan records the level source it used | none needed |
-| The replace-tool fix | `gcp/fetchers/fetch_alphavantage_intraday.py` | none | none needed |
-| PR #1832 (69e181f5) | `lib/strat_levels.py`, `gcp/premarket_playbook_resolver.py`, `gcp/schema.sql`, `gcp/signal_monitor.py`, `gcp/premarket_brief.py`, `lib/level_calibration.py`, `lib/agents/summarizers.py` | four files, by design | #1832 merges first (condition 2) |
-| PR #1823, FEAT-SIGNAL-001 gate decision record (not in the list given, found while checking) | `gcp/signal_monitor.py` (lines 1400 to 1460, 1694, 1800) | the same function, `_persist_signal_alert` | #1823 merges first, or this branch rebases on it before review |
+| `fix/feat-data-001-deployed-dates-exchange-clock`, PR #1948 (open, head now a9ea1809, about to merge) | 39 files, among them `gcp/signal_monitor.py` (lines 36 and 381, unchanged on the new head), `lib/trading_analysis.py`, `lib/strategies/exit_config_overrides.py`, `gcp/trade_logger.py` | `gcp/signal_monitor.py`, different hunks (this spec changes `fire_alert` and `_persist_signal_alert`, lines 1450 to 1872). Nothing else: this spec does not change `lib/trading_analysis.py` | #1948 merges first; this branch is cut after |
+| `feature/feat-data-001-recompute-after-bar-rewrite` (local branch, e2ba7f7b, 15 commits ahead of main and 3 behind, still not on origin) | `gcp/bar_recompute.py`, `gcp/fetchers/fetch_alphavantage_intraday.py`, `gcp/fetchers/fetch_market_data.py`, `gcp/gcs_utils.py`, `gcp/schema.sql`, `gcp/signal_monitor_eod_resolver.py` | **Two files.** `gcp/schema.sql`: both append at the end of the file. `gcp/signal_monitor_eod_resolver.py`: it rewrites the walk this spec adds the plan outcome to | The recompute merges first. This spec's resolver task is written against its walk (which ends at the session close) |
+| `feature/feat-playbook-001-brief-late-slot` (local, one commit so far: its plan document) | by its spec, only `gcp/premarket_brief.py` and `gcp/fetchers/fetch_premarket_refresh.py` | none in files. In data: it rewrites the day's `level_basis` at 09:20, which the monitor reads; the plan records the level source it used | none needed |
+| The replace-tool fix: spec PR #1949 (open, about to merge, one document) and the code that follows it | the PR changes no code; the fix is in `gcp/fetchers/fetch_alphavantage_intraday.py` | none | none needed |
+| PR #1832 (merged, ad0ba50f) | `lib/strat_levels.py`, `gcp/premarket_playbook_resolver.py`, `gcp/schema.sql`, `gcp/signal_monitor.py`, `gcp/premarket_brief.py`, `lib/level_calibration.py`, `lib/agents/summarizers.py` | four files, by design | done: it is on main |
+| PR #1823, FEAT-SIGNAL-001 gate decision record (open, head 15044ddf; not in the list given) | `gcp/signal_monitor.py`: the gate block and the row in `_persist_signal_alert` | the same function, and it fills the six insight and gate columns Design 6 names | #1823 merges first, or this branch rebases on it before review |
 
 So the answer to "none of them is touched" is no for two of the four named: #1948 shares one file in
-different hunks, and the recompute branch shares two files. Cutting this branch after both are on main
-avoids every conflict.
+different hunks, and the recompute branch shares two files. Cutting this branch after #1948, the
+recompute and #1823 are on main avoids every conflict. With #1832 merged, nothing else holds the code
+back; the attach run still waits on condition 1 and on the level parameters (decision 6).
 
 ## Size and split
 
-About 23 tasks in all, so two specs.
+About 24 tasks in all, so two specs (decision 7).
 
-- **This spec, about 15 tasks: carry and score.** The entry-anchored call path; `build_signal_plan`;
+- **This spec, about 16 tasks: carry and score.** The entry-anchored call path; `build_signal_plan`;
   the look-ahead tests; `score_signal_plan` and the brief resolver on it; the range parameter read;
   the columns; the generator step; `--attach-plans`; the monitor; the replay; the parity and
-  single-source tests; the resolver outcome; the unchanged-surface tests; the registry row and product
-  records; the dry-run measurement.
+  single-source tests; the brief link and the level-source test (Design 6, the one task the owner's
+  question added); the resolver outcome; the unchanged-surface tests; the registry row, product
+  records and source identity; the dry-run measurement.
 - **Second spec, about 8 tasks: show.** The Discord embed, plan and R fields on
   `/api/signals/{ticker}` and `/similar` with an API test of the changed response and the regenerated
   OpenAPI snapshot, solyra's types, fixtures, hermetic Playwright evidence and the cloud spec, and R in
   the weekly quality report. It starts after the first scored month exists, so what is shown has been
   measured.
 
-The line: nothing a user can see changes in this spec, and `tests/api/test_signal_plan_not_served.py`
-holds that at the API. If decision 5 is answered "now", the embed task and its test move here.
+Sixteen is one over the skill's line of about 15. If the plan comes out longer, the cut is the history
+attach: the range parameter read, `--attach-plans` and the dry-run measurement (three tasks, three
+`done_when` items) move to a spec of their own, leaving about 13 here. It costs no time, because the
+attach cannot run before the clean bars and the level parameters exist. It removes `done_when` items
+from an approved spec, so it needs the owner's yes and a spec that supersedes this one.
+
+The line between the two specs: nothing a user can see changes in this one, and
+`tests/api/test_signal_plan_not_served.py` holds that at the API.
 
 ## Capacity and cost
 
@@ -398,11 +482,11 @@ Estimates are marked; nothing below was measured for this design except where a 
   per execution; a retry or a rerun converges because the update is keyed and idempotent.
 - Cost: under 0.01 USD a ticker at about 5 minutes of 1 vCPU and 2 GiB (estimate).
 
-**Regenerating history is not part of this design.** If the owner chooses it in decision 6 instead:
-the measured local rate is about 44,000 signals in about 590 s per ticker for 430 sessions; the full
-stored history is 2,984 sessions a ticker (`clean-set/STATUS.md`, 18:39Z), about 7 times that, so about
-68 minutes a ticker for generation alone (estimate, local speed), over the 1,800 s task timeout, and
-it deletes 1,557,534 stored rows of the three tickers first (run, db-query-t4nsl).
+**Regenerating history is not part of this design** (decision 6). For the record, the measured local
+rate is about 44,000 signals in about 590 s per ticker for 430 sessions; the full stored history is
+2,984 sessions a ticker (`clean-set/STATUS.md`, 18:39Z), about 7 times that, so about 68 minutes a
+ticker for generation alone (estimate, local speed), over the 1,800 s task timeout, and it deletes
+1,557,534 stored rows of the three tickers first (run, db-query-t4nsl).
 
 **Nightly generator:** up to 25 tickers; 3 more reads a run; a few hundred plans; seconds (estimate).
 No new scheduled job, so no new monthly cost line. **Monitor:** about 23 fires a day (3,146 live
@@ -427,6 +511,17 @@ After the merge, recorded on the PR, each with its execution name:
    stop rule the share of signals with a stop, the size of 1 R in percent of price, and mean `plan_r`
    and `plan_r_t1` before and after 2026-05-01. No figure with costs.
 6. Canvas refresh pending for the models diagram, run from chat after the merge.
+
+Source identity. `lib/`, `gcp/`, `scripts/` and `tests/` are inside SITE's watched scope. DASHBOARD-05
+(the live signals table) reads `historical_signals` from the generator this changes, and JOURNAL-06 (the
+trade table) reads `signal_alerts` from the monitor this changes. Only the
+`(FEAT-SIGNAL-001, DASHBOARD-05)` and `(FEAT-SIGNAL-001, JOURNAL-06)` rows of the Implementation-source
+notes table may describe this implementation, as backend source and local tests only; nothing either
+element shows changes. Every other SITE byte stays unchanged. The declaration is made here because an
+implementation PR cannot add it (open PR #1823 is red on the spec gate for that reason). After the
+merge, separately and never as a pre-merge box: main's source and body identity verified in a fresh
+clone, the DOC main and staging close-out with the evidence of steps 1 to 5, the sidecar retired as the
+product-delivery skill prescribes, and the plan set to `status: done` on a `docs/` branch.
 
 ## Risks
 
@@ -454,7 +549,9 @@ After the merge, recorded on the PR, each with its execution name:
 - The speed of `build_signal_plan` and `score_signal_plan`, the bar read for the window, and Cloud Run
   speed against the local machine: not checked.
 - That history-mode calibration is point in time and how long it takes for the window: not checked.
-- The replace-tool fix's own diff: not checked; only the file named in the request.
+- The replace-tool fix's own diff: not checked; only the file named in the request and that spec PR
+  #1949 changes one document.
+- That #1823's head still applies to today's main: not checked; its diff was read against its own base.
 - Whether #1832's research figures hold on as-traded bars: not checked (the evaluation says the same).
 - The bars' agreement with the vendor: not checked here; this spec waits for that verification.
 
@@ -467,3 +564,4 @@ Read-only, no `--commit`, 2026-11-14:
 - `db-query-8ptk7`: `ticker_level_params` coverage for SPY, QQQ and IWM; `level_basis` coverage of
   `premarket_analysis`; `signal_metrics` counts; `level_param_policy` keys (25, none of #1832's yet).
 - `db-query-8rb9b`: stored signal strengths since 2026-10-01; live exit reasons.
+- `db-query-9zsrl`: how many live alerts hold each brief, level-state, insight and gate column.
