@@ -1061,29 +1061,105 @@ def _iwm_stored(v: pd.DataFrame, copies: bool = True) -> pd.DataFrame:
 IWM_DAY = date(2026, 4, 10)
 
 
-def _replace(stored: pd.DataFrame, vendor: pd.DataFrame, sym: str, y: int, m: int,
-             commit: bool, swap=None):
-    """replace_month over written-out rows. *stored* is the table (any range);
-    the snapshot and the re-read under the lock see its rows of the month's
-    window. Returns (result, the swap mock). The default swap runs verify()
-    as the real one does and reports every unspared window row deleted."""
-    start, end = fai.month_replace_window(y, m)
-    stored = stored.sort_values("ts").reset_index(drop=True)
-    window = stored[(stored["ts"] >= start) & (stored["ts"] < end)].reset_index(drop=True)
+class _World:
+    """The table and the vendor, as replace_month sees them, held in memory.
 
-    def default_swap(df, table, key, ts_col, w_start, w_end, **kw):
+    ``rows[symbol][key]`` is ``(open, high, low, close, volume, inserted_at)``.
+    The swap does what replace_rows_in_window does, in its order: verify()
+    first, then delete the range's unspared keys and write the frame with a
+    new inserted_at. ``events`` records every read, fetch and swap in order.
+    """
+
+    def __init__(self):
+        self.rows: dict = {}
+        self.vendor: dict = {}
+        self.events: list = []
+        self.during_fetch = None       # called as f(world) while the vendor answers
+        self.after_swap: dict = {}     # {swap number: f(world)}, after that swap commits
+        self.fail_swap: dict = {}      # {swap number: exception raised in place of it}
+        self.fail_keys = None          # exception raised by the key read
+        self.swap = MagicMock(side_effect=self._swap)
+
+    def store(self, sym: str, frame: pd.DataFrame, inserted_at: str = "2026-04-13") -> "_World":
+        table = self.rows.setdefault(sym, {})
+        for r in frame.itertuples(index=False):
+            table[r.ts] = (r.open, r.high, r.low, r.close, r.volume, inserted_at)
+        return self
+
+    def serve(self, sym: str, y: int, m: int, frame: pd.DataFrame) -> "_World":
+        self.vendor[(sym, y, m)] = frame
+        return self
+
+    def _range(self, sym, start, end) -> list:
+        return sorted((k, v) for k, v in self.rows.get(sym, {}).items() if start <= k < end)
+
+    def frame(self, sym, start, end) -> pd.DataFrame:
+        items = self._range(sym, start, end)
+        out = pd.DataFrame([v[:5] for _, v in items], columns=FIELDS)
+        out.insert(0, "ts", pd.DatetimeIndex([k for k, _ in items], tz="UTC"))
+        return out
+
+    def _snapshot(self, sym, start, end):
+        self.events.append(("rows", start, end))
+        return self.frame(sym, start, end)
+
+    def _keys(self, sym, start, end):
+        self.events.append(("keys", start, end))
+        if self.fail_keys is not None:
+            raise self.fail_keys
+        return [k for k, _ in self._range(sym, start, end)]
+
+    def _digest(self, sym, start, end, conn=None):
+        self.events.append(("digest", start, end, conn is not None))
+        return repr(self._range(sym, start, end))
+
+    def _fetch(self, sym, y, m, api_key):
+        self.events.append(("fetch",))
+        if self.during_fetch is not None:
+            self.during_fetch(self)
+        return self.vendor[(sym, y, m)].copy(), fai.FETCH_OK
+
+    def _swap(self, df, table, key, ts_col, start, end, **kw):
+        n = self.swap.call_count
+        self.events.append(("swap", n))
+        if n in self.fail_swap:
+            raise self.fail_swap[n]
         if kw.get("verify"):
             kw["verify"](object())
-        held_back = set(kw.get("spare_ts") or ())
-        in_range = stored[(stored["ts"] >= w_start) & (stored["ts"] < w_end)]
-        return int((~in_range["ts"].isin(held_back)).sum()), len(df)
+        stored = self.rows[key["ticker"]]
+        spare = set(kw.get("spare_ts") or ())
+        assert not spare & set(df[ts_col]), "the real swap refuses a frame at a spared key"
+        gone = [k for k in stored if start <= k < end and k not in spare]
+        for k in gone:
+            del stored[k]
+        for r in df.itertuples(index=False):
+            stored[r.ts] = (r.open, r.high, r.low, r.close, r.volume, "this run")
+        if n in self.after_swap:
+            self.after_swap[n](self)
+        return len(gone), len(df)
 
-    with patch.object(fai, "_stored_window_rows", return_value=window.copy()), \
-         patch.object(fai, "_held_session_dates",
-                      side_effect=lambda *a, **k: fai._placed_session_counts(window)), \
-         patch.object(fai, "fetch_month", return_value=(vendor.copy(), fai.FETCH_OK)), \
-         patch.object(fai, "replace_rows_in_window", side_effect=swap or default_swap) as rep:
-        return fai.replace_month(sym, y, m, "k", commit=commit), rep
+    def running(self):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        for name, fake in (
+                ("_stored_window_rows", self._snapshot),
+                ("_held_session_dates",
+                 lambda sym, a, b, conn=None: fai._placed_session_counts(self.frame(sym, a, b))),
+                ("_stored_keys", self._keys),
+                ("_held_digest", self._digest),
+                ("fetch_month", self._fetch)):
+            stack.enter_context(patch.object(fai, name, side_effect=fake))
+        stack.enter_context(patch.object(fai, "replace_rows_in_window", self.swap))
+        return stack
+
+
+def _replace(stored: pd.DataFrame, vendor: pd.DataFrame, sym: str, y: int, m: int,
+             commit: bool, world: _World | None = None):
+    """replace_month over written-out rows: *stored* is the table (any range),
+    *vendor* the month the vendor returns. Returns (result, the swap mock)."""
+    world = (world or _World()).store(sym, stored).serve(sym, y, m, vendor)
+    with world.running():
+        return fai.replace_month(sym, y, m, "k", commit=commit), world.swap
 
 
 # -- Design 2: the snapshot is one strict read of the window's rows ----------
@@ -1457,3 +1533,208 @@ def test_a_winter_label_row_the_refetch_lacks_is_spared_not_deleted():
     frame = swap.call_args.args[0]
     assert len(frame) == 901 and not frame["ts"].isin(strip).any()
     assert r["deleted"] == 901          # the 60 are not among the rows deleted
+
+
+# -- Design 2 and 5: a month writes its own late bars ------------------------
+
+FEB_END = datetime(2018, 3, 1, 2, 0, tzinfo=UTC)             # February's window end
+MARCH_MIDNIGHT = datetime(2018, 3, 1, 5, 0, tzinfo=UTC)      # 2018-03-01 00:00 Eastern (EST)
+OTHER_STRIP_KEYS = [pd.Timestamp("2018-03-01 03:00", tz="UTC"), pd.Timestamp("2018-03-01 04:10", tz="UTC")]
+
+
+def _february() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(stored, February's vendor month): the last session, 04:00-20:00, with
+    its late bars of 21:04, 22:10 and 23:37 at their true keys past the window
+    end; and two more rows in that strip which the vendor does not return."""
+    feb = _bars("2018-02-28", list(range(240, 1201)) + [21 * 60 + 4, 22 * 60 + 10, 23 * 60 + 37], "SPY")
+    others = _true_rows(_bars("2018-02-28", [22 * 60, 23 * 60 + 10], "SPY"))
+    assert list(others["ts"]) == OTHER_STRIP_KEYS
+    return pd.concat([_true_rows(feb), others]).reset_index(drop=True), feb
+
+
+def test_split_tail_refuses_a_row_past_the_next_eastern_midnight():
+    frame = _rows(pd.DatetimeIndex(["2018-03-01 01:59", "2018-03-01 02:00", "2018-03-01 04:59"], tz="UTC"))
+    main, tail = fai.split_tail(frame, FEB_END, MARCH_MIDNIGHT)
+    assert list(main["ts"]) == [pd.Timestamp("2018-03-01 01:59", tz="UTC")]
+    assert list(tail["ts"]) == [pd.Timestamp("2018-03-01 02:00", tz="UTC"),
+                                pd.Timestamp("2018-03-01 04:59", tz="UTC")]
+    at_midnight = _rows(pd.DatetimeIndex(["2018-03-01 01:59", "2018-03-01 05:00"], tz="UTC"))
+    with pytest.raises(ValueError, match="not a bar of"):
+        fai.split_tail(at_midnight, FEB_END, MARCH_MIDNIGHT)
+
+
+def test_a_months_own_late_bars_past_the_window_are_written():
+    """done_when[1]. On main the dry run of February passes and the committed
+    run raises ValueError: 3 row(s) fall outside the window."""
+    stored, feb = _february()
+    world = _World()
+    r, swap = _replace(stored, feb, "SPY", 2018, 2, commit=True, world=world)
+    assert r["status"] == fai.REPLACE_OK
+    assert r["tail"] == 3
+    assert (r["deleted"], r["inserted"]) == (961 + 3, 961 + 3)
+    assert swap.call_count == 2
+
+    first, second = swap.call_args_list
+    assert first.args[4:6] == fai.month_replace_window(2018, 2)
+    assert len(first.args[0]) == 961 and list(first.kwargs["spare_ts"]) == []
+    frame, table, key, ts_col, start, end = second.args
+    assert (table, key, ts_col) == ("market_data_intraday", {"ticker": "SPY", "interval": "1min"}, "ts")
+    assert start == FEB_END and end == datetime(2018, 3, 1, 4, 38, tzinfo=UTC)
+    assert list(frame["ts"]) == FEB_LATE
+    assert list(second.kwargs["spare_ts"]) == OTHER_STRIP_KEYS
+    assert second.kwargs["clear_tables"] == fai.DERIVED_TS_TABLES
+    assert second.kwargs["max_delete_ratio"] == fai.REPLACE_MAX_DELETE_RATIO
+    assert callable(second.kwargs["verify"])
+
+    # Both baselines are taken before the vendor is asked; the strip's digest
+    # is taken again under the second swap's lock.
+    feb_window = fai.month_replace_window(2018, 2)
+    assert world.events == [
+        ("rows", *feb_window),
+        ("digest", *feb_window, False), ("digest", FEB_END, MARCH_MIDNIGHT, False),
+        ("fetch",),
+        ("keys", FEB_END, end),
+        ("swap", 1), ("digest", *feb_window, True),
+        ("swap", 2), ("digest", FEB_END, MARCH_MIDNIGHT, True),
+    ]
+    held = world.rows["SPY"]
+    assert [held[k][5] for k in FEB_LATE] == ["this run"] * 3
+    assert [held[k][5] for k in OTHER_STRIP_KEYS] == ["2026-04-13"] * 2
+    assert len(held) == 961 + 3 + 2
+
+
+def test_a_dry_run_reports_the_tail_and_reads_nothing_more():
+    stored, feb = _february()
+    world = _World()
+    r, swap = _replace(stored, feb, "SPY", 2018, 2, commit=False, world=world)
+    assert r["status"] == fai.REPLACE_DRY
+    assert (r["tail"], r["inserted"]) == (3, 964)
+    swap.assert_not_called()
+    assert world.events == [("rows", *fai.month_replace_window(2018, 2)), ("fetch",)]
+
+
+def test_a_committed_month_without_late_bars_makes_one_swap_and_no_key_read():
+    stored, feb = _february()
+    world = _World()
+    in_session = feb[feb["ts"].dt.hour * 60 + feb["ts"].dt.minute <= 1200]
+    r, swap = _replace(stored, in_session, "SPY", 2018, 2, commit=True, world=world)
+    assert r["status"] == fai.REPLACE_OK and r["tail"] == 0
+    assert swap.call_count == 1
+    assert [e[0] for e in world.events] == ["rows", "digest", "digest", "fetch", "swap", "digest"]
+    # Late bars the vendor no longer returns stay as they are.
+    assert [world.rows["SPY"][k][5] for k in FEB_LATE] == ["2026-04-13"] * 3
+
+
+def test_a_refetched_row_past_the_next_eastern_midnight_is_never_written():
+    """A row the vendor stamps in the next month is not of a held session and
+    reaches neither swap, as today. Were a session of the next month held, the
+    month would be refused before any swap: no bar of that session can lie
+    inside this month's window, so the refetch holds none of it there. The
+    ValueError of split_tail (the case above) stands behind both."""
+    stored, feb = _february()
+    with_next = pd.concat([feb, _bars("2018-03-01", [30], "SPY")])
+    past = pd.Timestamp("2018-03-01 05:30", tz="UTC")           # 00:30 Eastern on March 1
+
+    r, swap = _replace(stored, with_next, "SPY", 2018, 2, commit=True)
+    assert r["status"] == fai.REPLACE_OK and r["tail"] == 3
+    assert swap.call_count == 2
+    assert all(past not in set(call.args[0]["ts"]) for call in swap.call_args_list)
+
+    real = fai.classify_stored_rows
+
+    def holding_march_too(*a, **k):
+        c = real(*a, **k)
+        return c._replace(held={**c.held, date(2018, 3, 1): 1})
+
+    world = _World()
+    with patch.object(fai, "classify_stored_rows", side_effect=holding_march_too):
+        r, swap = _replace(stored, with_next, "SPY", 2018, 2, commit=True, world=world)
+    assert r["status"] == fai.REPLACE_INCOMPLETE
+    assert r["missing"] == ["2018-03-01 (0/1)"]
+    swap.assert_not_called()
+
+
+def _run_world(tmp_path, monkeypatch, world: _World, items: list, commit: bool) -> int:
+    lst = tmp_path / "l.csv"
+    lst.write_text("".join(f"{sym},{y}-{m:02d}\n" for sym, y, m in items))
+    monkeypatch.setattr(fai, "get_api_keys", lambda: ["k"])
+    monkeypatch.setattr(fai, "_av_cfg", SimpleNamespace(delay_between_calls=0))
+    with world.running():
+        return fai.run_replace_months(str(lst), commit, None)
+
+
+NEWER = (1.0, 2.0, 0.5, 1.5, 4242, "the nightly writer")
+
+
+@pytest.mark.parametrize("when", ["while the vendor answers", "after the main swap"])
+def test_a_tail_key_rewritten_during_the_run_is_not_overwritten(tmp_path, monkeypatch, caplog, when):
+    """done_when[4]. Another writer upserts new values at a key the tail also
+    holds: no key is added or removed, so only the strip's digest sees it. The
+    second swap rolls back and the newer row stays."""
+    import logging
+    caplog.set_level(logging.INFO)
+    stored, feb = _february()
+    world = _World().store("SPY", stored).serve("SPY", 2018, 2, feb)
+    keys_before = sorted(world.rows["SPY"])
+
+    def rewrite(w):
+        w.rows["SPY"][FEB_LATE[0]] = NEWER
+    if when == "while the vendor answers":
+        world.during_fetch = rewrite
+    else:
+        world.after_swap[1] = rewrite
+
+    assert _run_world(tmp_path, monkeypatch, world, [("SPY", 2018, 2)], commit=True) == 1
+    assert "SPY 2018-02 status=tail_not_written" in caplog.text
+    assert "RETRY SPY,2018-02" in caplog.text
+    held = world.rows["SPY"]
+    assert held[FEB_LATE[0]] == NEWER                       # the newer values are kept
+    assert sorted(held) == keys_before                      # no key added or removed
+    assert [held[k][5] for k in FEB_LATE[1:]] == ["2026-04-13"] * 2   # the tail swap wrote nothing
+    assert world.swap.call_count == 2
+    start, end = fai.month_replace_window(2018, 2)
+    assert {v[5] for k, v in held.items() if k < end} == {"this run"}   # the main swap committed
+
+    # A second run, with nothing changing under it, converges.
+    caplog.clear()
+    world.during_fetch, world.after_swap = None, {}
+    assert _run_world(tmp_path, monkeypatch, world, [("SPY", 2018, 2)], commit=True) == 0
+    assert "SPY 2018-02 status=replaced" in caplog.text and "RETRY" not in caplog.text
+    assert [world.rows["SPY"][k][5] for k in FEB_LATE] == ["this run"] * 3
+    assert world.rows["SPY"][FEB_LATE[0]][:5] != NEWER[:5]
+
+
+def test_with_the_strip_unchanged_the_month_is_replaced_and_its_tail_written(tmp_path, monkeypatch, caplog):
+    import logging
+    caplog.set_level(logging.INFO)
+    stored, feb = _february()
+    world = _World().store("SPY", stored).serve("SPY", 2018, 2, feb)
+    assert _run_world(tmp_path, monkeypatch, world, [("SPY", 2018, 2)], commit=True) == 0
+    assert "SPY 2018-02 status=replaced" in caplog.text and "RETRY" not in caplog.text
+    tail = {r.ts: r for r in _true_rows(feb).itertuples(index=False) if r.ts in FEB_LATE}
+    for k in FEB_LATE:
+        assert world.rows["SPY"][k] == (*tail[k][1:], "this run")
+
+
+def test_a_failed_tail_swap_reports_tail_not_written():
+    """The main swap has committed, so the month cannot read as untouched or
+    as replaced: the status says the late bars are as they were."""
+    stored, feb = _february()
+    world = _World()
+    world.fail_swap[2] = RuntimeError("db down")
+    r, swap = _replace(stored, feb, "SPY", 2018, 2, commit=True, world=world)
+    assert r["status"] == fai.REPLACE_TAIL_NOT_WRITTEN == "tail_not_written"
+    assert "db down" in r["detail"]
+    assert (r["deleted"], r["inserted"], r["tail"]) == (961, 961, 3)
+    assert [world.rows["SPY"][k][5] for k in FEB_LATE] == ["2026-04-13"] * 3
+
+
+def test_a_failed_strip_read_raises_before_any_swap():
+    """Design 8: a database error on any read is raised. The key read comes
+    before the main swap, so nothing has been written when it fails."""
+    stored, feb = _february()
+    world = _World()
+    world.fail_keys = RuntimeError("db down")
+    with pytest.raises(RuntimeError, match="db down"):
+        _replace(stored, feb, "SPY", 2018, 2, commit=True, world=world)
+    world.swap.assert_not_called()

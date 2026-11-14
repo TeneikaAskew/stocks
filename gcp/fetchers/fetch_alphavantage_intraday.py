@@ -452,6 +452,10 @@ REPLACE_DRY = 'dry_run'
 REPLACE_INCOMPLETE = 'incomplete_refetch'   # vendor returned fewer sessions than we hold
 REPLACE_NOTHING_HELD = 'nothing_held'       # window holds no session; never delete blind
 REPLACE_CHANGED = 'changed_during_replace'  # a writer changed the month mid-replace; rolled back
+# The month's window was replaced and committed; its late bars past the window
+# end were not written (their strip changed, or the second swap failed) and are
+# as they were before the run. A second run converges.
+REPLACE_TAIL_NOT_WRITTEN = 'tail_not_written'
 
 
 class _HeldChanged(Exception):
@@ -661,6 +665,38 @@ def classify_stored_rows(stored: pd.DataFrame, refetch: pd.DataFrame,
     )
 
 
+def _stored_keys(symbol: str, start: datetime, end: datetime) -> list:
+    """Every stored key of ``[start, end)``, ascending, as aware-UTC
+    timestamps. Strict: a DB error is raised, never read as "no keys"."""
+    df = query_to_dataframe_strict(
+        "SELECT ts FROM market_data_intraday "
+        "WHERE ticker = :t AND interval = '1min' AND ts >= :s AND ts < :e ORDER BY ts",
+        {'t': symbol, 's': start, 'e': end}, timeout_s=120)
+    inst = pd.DatetimeIndex(pd.to_datetime(df['ts']))
+    if inst.tz is None:
+        inst = inst.tz_localize('UTC')   # pg8000 TIMESTAMPTZ read in a UTC session
+    return list(inst.tz_convert('UTC'))
+
+
+def split_tail(frame: pd.DataFrame, end: datetime,
+               next_midnight) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split a month's refetched rows at its window end: ``(main, tail)``.
+
+    The tail is the month's own late bars: rows of a held session whose key is
+    at or after the window end (a bar at or after 22:00 Eastern on the last
+    day, 21:00 in winter). A row at or after *next_midnight*, the next month's
+    Eastern midnight, is not a bar of this month and is refused.
+    """
+    ts = pd.DatetimeIndex(frame['ts'])
+    beyond = int((ts >= pd.Timestamp(next_midnight)).sum())
+    if beyond:
+        raise ValueError(
+            f"replace_month: {beyond} refetched row(s) at or after {next_midnight} are "
+            "not a bar of the month; refusing to write them")
+    past_end = np.asarray(ts >= pd.Timestamp(end))
+    return frame[~past_end], frame[past_end]
+
+
 def _held_digest(symbol: str, start: datetime, end: datetime, conn=None) -> str:
     """md5 of every stored row in the window, in ts order, computed
     server-side so only 32 characters cross the wire. Times are rendered as
@@ -696,14 +732,27 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
     table did not have. Nothing is deleted unless the refetch succeeded AND
     contains every held session; a shortfall is reported and the month is left
     untouched.
+
+    What is held is decided from the refetch (classify_stored_rows). Two kinds
+    of stored row are not bars this refetch must return: the previous month's
+    late bars, which lie in this window and are spared by the swap, and
+    Eastern-label copies of bars the refetch does return. Both sides of the
+    guard are counted over the window only. The month's own late bars past the
+    window end go in by a second swap that deletes only the keys the refetch
+    returns and rolls back if their strip changed since the snapshot; when it
+    does not go through, the status is ``tail_not_written``.
     """
     start, end = month_replace_window(year, month)
+    # The tail strip: where this month's late bars past the window end are
+    # stored, up to the next month's Eastern midnight.
+    strip_end = _eastern_midnight_utc(*((year + 1, 1) if month == 12 else (year, month + 1)))
     out = {'symbol': symbol, 'month': f"{year}-{month:02d}", 'deleted': 0,
            'inserted': 0, 'held_sessions': None, 'missing_sessions': 0,
            # What the window holds that is not counted as held. None until the
            # refetch is in: they are decided from it (classify_stored_rows).
            'rows': None, 'uncounted': None, 'label_dropped': None,
-           'label_copies': None, 'by_utc_hour': None, 'carry_in': None}
+           'label_copies': None, 'by_utc_hour': None, 'carry_in': None,
+           'tail': None}
     # Snapshot BEFORE the refetch: a writer that commits while the request is
     # in flight then differs from this snapshot, and the locked re-check in
     # verify() below refuses the month. Snapshotting after the fetch let such
@@ -723,6 +772,10 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
     # Content, not just counts: a same-count upsert must also refuse the month.
     # Only a committed run deletes, so only it needs the baseline.
     digest = _held_digest(symbol, start, end) if commit else None
+    # The same for the tail strip, also before the refetch: the baseline of
+    # the second swap's re-check. A key-only check there would let this run's
+    # refetch overwrite a row another writer rewrote in the meantime.
+    tail_digest = _held_digest(symbol, end, strip_end) if commit else None
     df, reason = fetch_month(symbol, year, month, api_key)
     if df is None or df.empty or reason != FETCH_OK:
         out['status'] = reason if reason != FETCH_OK else FETCH_NO_TIMESERIES
@@ -777,10 +830,22 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
     if df.empty:
         out['status'] = REPLACE_NOTHING_HELD
         return out
+    # The month's own late bars lie past the window end and cannot go through
+    # the window's swap. They are written by a second, small swap below.
+    df, tail = split_tail(df, end, strip_end)
+    out['tail'] = len(tail)
     if not commit:
         out['status'] = REPLACE_DRY
-        out['inserted'] = len(df)
+        out['inserted'] = len(df) + len(tail)
         return out
+    tail_end = tail_spare = None
+    if len(tail):
+        # Read before the first write, so a failed read leaves nothing half
+        # done. Every stored key of the range that the tail does not hold is
+        # spared: the second swap deletes only keys the refetch returns.
+        tail_end = (pd.DatetimeIndex(tail['ts']).max() + pd.Timedelta(minutes=1)).to_pydatetime()
+        tail_keys = set(pd.DatetimeIndex(tail['ts']))
+        tail_spare = [k for k in _stored_keys(symbol, end, tail_end) if k not in tail_keys]
     def verify(conn) -> None:
         # Under the row locks: the month must still hold exactly what it held
         # before the refetch, in sessions, bar counts and row content. A writer
@@ -808,6 +873,36 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
         return out
     out.update(status=REPLACE_OK, deleted=deleted, inserted=inserted,
                derived_cleared={k: v for k, v in cleared.items() if v})
+    if not len(tail):
+        return out
+
+    def verify_tail(conn) -> None:
+        # Under the row locks: the strip must hold exactly what it held before
+        # the refetch, in keys, values and inserted_at.
+        if _held_digest(symbol, end, strip_end, conn=conn) != tail_digest:
+            raise _HeldChanged("the tail strip changed since the snapshot")
+
+    tail_cleared: dict = {}
+    try:
+        t_deleted, t_inserted = replace_rows_in_window(
+            tail, 'market_data_intraday', {'ticker': symbol, 'interval': '1min'},
+            'ts', end, tail_end, chunksize=5000,
+            max_delete_ratio=REPLACE_MAX_DELETE_RATIO, verify=verify_tail,
+            clear_tables=DERIVED_TS_TABLES, cleared=tail_cleared,
+            spare_ts=tail_spare)
+    except Exception as e:
+        # The window's swap has committed, so this month is neither untouched
+        # nor done. Whatever stopped the second swap, the status says the late
+        # bars are as they were, the run prints RETRY and exits non-zero, and a
+        # second run converges (the window's swap is idempotent).
+        log.error("  %s %s tail not written (%d late bars past the window end): %s",
+                  symbol, out['month'], len(tail), e)
+        out.update(status=REPLACE_TAIL_NOT_WRITTEN, detail=str(e))
+        return out
+    for table, n in tail_cleared.items():
+        if n:
+            out['derived_cleared'][table] = out['derived_cleared'].get(table, 0) + n
+    out.update(deleted=deleted + t_deleted, inserted=inserted + t_inserted)
     return out
 
 
