@@ -5478,3 +5478,37 @@ BEGIN
         END IF;
     END LOOP;
 END $$;
+
+-- Bar recompute ledger and markers (FEAT-DATA-001)
+-- Spec: docs/superpowers/specs/2026-11-14-feat-data-001-recompute-after-bar-rewrite.md
+-- (Design 2, "The ledger"). The two recompute tools, --re-resolve on the
+-- end-of-day resolver and --recompute-premarket on the daily fetcher, write
+-- one ledger row for each row they overwrite, in the same transaction as the
+-- overwrite: the old values, the new values, whether they differ, and the
+-- bars, code version and configuration the new values rest on. --revert-run
+-- reads these rows to write the old values back.
+--
+-- A marker column holds the run id of the committed run that last wrote the
+-- row's recomputed columns. NULL means the values are as first written: no
+-- recompute has confirmed or replaced them.
+--
+-- action is VARCHAR(16), not the spec's VARCHAR(8): 'recompute' is nine
+-- characters.
+CREATE TABLE IF NOT EXISTS bar_recompute_ledger (
+    id           BIGSERIAL   PRIMARY KEY,
+    run_id       TEXT        NOT NULL,
+    target       VARCHAR(32) NOT NULL,  -- 'signal-alert-exits' | 'daily-premarket'
+    action       VARCHAR(16) NOT NULL,  -- 'recompute' | 'revert'
+    ticker       VARCHAR(10) NOT NULL,
+    session_date DATE        NOT NULL,
+    row_key      TEXT        NOT NULL,  -- alert_ts in UTC to the microsecond | the date
+    old_values   JSONB       NOT NULL,
+    new_values   JSONB       NOT NULL,
+    changed      BOOLEAN     NOT NULL,
+    basis        JSONB       NOT NULL,
+    written_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (run_id, target, ticker, row_key)
+);
+ALTER TABLE signal_alerts     ADD COLUMN IF NOT EXISTS exit_recompute_run TEXT;
+ALTER TABLE trades            ADD COLUMN IF NOT EXISTS exit_recompute_run TEXT;
+ALTER TABLE market_data_daily ADD COLUMN IF NOT EXISTS pre_recompute_run  TEXT;
