@@ -950,7 +950,7 @@ Every production module under `gcp/`, `lib/` and `platform/api/` — walked recu
 | [`gcp/fetchers/fetch_insider_transactions.py`](../../../gcp/fetchers/fetch_insider_transactions.py) | Cloud Run Job: Fetch insider transactions from AV INSIDER_TRANSACTIONS → Cloud SQL. | `fetch-insider-transactions` |
 | [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) | Cloud Run Job: Fetch daily market data and write to Cloud SQL. | `fetch-market-data` |
 | [`gcp/fetchers/fetch_news_sentiment.py`](../../../gcp/fetchers/fetch_news_sentiment.py) | Fetch news sentiment data from AlphaVantage NEWS_SENTIMENT endpoint. | `fetch-news-sentiment`, `fetch-news-sentiment-earnings`, `fetch-news-sentiment-topics` |
-| [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) | Pre-market refresh fetcher — runs at 8:20 AM ET (premarket-refresh-daily), before the 8:30 brief. | `fetch-premarket-refresh` |
+| [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) | Pre-market refresh fetcher — runs at 8:20 AM ET (premarket-refresh-daily), before the 8:30 brief, and at 9:20 AM ET before the late brief on | `fetch-premarket-refresh` |
 | [`gcp/fetchers/fetch_rss_news.py`](../../../gcp/fetchers/fetch_rss_news.py) | Fetch news from RSS feeds + FinViz, score with FinBERT + Gemini Flash. | — |
 | [`gcp/fetchers/fetch_sec_filings.py`](../../../gcp/fetchers/fetch_sec_filings.py) | Cloud Run Job: Poll SEC EDGAR for recent filings (8-K, 10-Q, 10-K) → Cloud SQL. | `fetch-sec-filings` |
 | [`gcp/fetchers/fetch_top_movers.py`](../../../gcp/fetchers/fetch_top_movers.py) | Cloud Run Job: Fetch AV TOP_GAINERS_LOSERS daily snapshot → Cloud SQL. | `fetch-top-movers` |
