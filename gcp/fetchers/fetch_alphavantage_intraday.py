@@ -17,7 +17,7 @@ import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 
 import pandas as pd
 import requests
@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from lib.eastern_time import (
     eastern_index_to_utc,
     intraday_month_window,
+    market_today,
     place_stored_rows,
     session_minute_readings,
     session_schedule,
@@ -1120,6 +1121,32 @@ def run_verify_basis(path: str, now_utc: Optional[datetime] = None) -> int:
     return 3 if unproven else 0
 
 
+# -- Bucket files of the bars (FEAT-DATA-001, Design E) ------------------------
+
+
+def _run_bars_export(tickers: Sequence[str], months: Sequence[tuple[int, int]]) -> bool:
+    """Write *months* of *tickers* to the bucket; True only when every month
+    was written.
+
+    The bars are already in Cloud SQL when this runs, so a failed export does
+    not undo the fetch, but it is never reported as success: the failure is
+    logged with its traceback, as an outage or as a defect
+    (lib.infra_errors), False is returned, and main() exits 1.
+    """
+    from gcp.fetchers import export_intraday_bars  # noqa: PLC0415
+    from lib.infra_errors import is_infrastructure_error  # noqa: PLC0415
+
+    try:
+        done = export_intraday_bars.export_window(tickers, months)
+    except Exception as exc:
+        kind = "outage" if is_infrastructure_error(exc) else "defect"
+        log.error("bars export failed (%s): %s", kind, exc, exc_info=True)
+        return False
+    log.info("bars export: %d months, %d rows, %.1f s",
+             done["months"], done["rows"], done["seconds"])
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description='Fetch AV intraday → Cloud SQL')
     parser.add_argument('--symbol', default='ALL',
@@ -1269,8 +1296,33 @@ def main():
         except Exception as e:
             log.error("Failed to file data-quality issue (dead tickers "
                       "already logged above): %s", e)
+
+    # The nightly run also writes the bars of SPY, QQQ and IWM to the bucket,
+    # after its fetch: the current Eastern month and the one before it. The
+    # trigger is the nightly's own argument shape (--symbol=ALL --force, no
+    # dates, no symbols file, one task), so the monthly run, a dated run and
+    # the striped bulk backfill never export. It runs when a ticker failed
+    # too; the exit is 1 if either failed. The months come from the exchange's
+    # date: at 21:00 ET the container's date is already the next day.
+    export_failed = False
+    if (args.symbol == 'ALL' and not args.symbols_file and args.force
+            and not args.start_date and not args.end_date and task_cnt == 1):
+        if os.environ.get('INTRADAY_BARS_EXPORT', '').strip().lower() == 'off':
+            log.info("bars export skipped: INTRADAY_BARS_EXPORT is off")
+        elif not is_cloud_sql_configured():
+            log.info("bars export skipped: the database is not configured")
+        else:
+            from gcp.fetchers.export_intraday_bars import (  # noqa: PLC0415
+                EXPORT_TICKERS,
+                nightly_months,
+            )
+            export_failed = not _run_bars_export(
+                EXPORT_TICKERS, nightly_months(market_today()))
+
     if systemic_errors:
         log.error("Systemic failures: %s", systemic_errors)
+        sys.exit(1)
+    if export_failed:
         sys.exit(1)
 
     log.info("Done.")

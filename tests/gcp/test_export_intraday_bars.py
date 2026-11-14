@@ -32,6 +32,7 @@ import pytest
 from gcp.fetchers import export_intraday_bars as xb
 from gcp.fetchers import fetch_alphavantage_intraday as fai
 from lib.eastern_time import (
+    ET,
     eastern_index_to_utc,
     intraday_month_window,
     place_stored_rows,
@@ -1230,3 +1231,177 @@ def test_nothing_in_the_tree_reads_the_copy():
     fetch = uses.pop(FETCH_MODULE, set())
     assert fetch <= {"imports-module"}, fetch         # it writes; it never reads back
     assert uses == {}
+
+
+# -- Task 6: the nightly run exports after its fetch ----------------------------
+
+
+def _refuse_queries(monkeypatch):
+    """Any strict read fails the test: the path under test must ask nothing."""
+    import gcp.database as database
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("a query was issued")
+
+    monkeypatch.setattr(database, "query_to_dataframe_strict", refuse)
+    monkeypatch.setattr(fai, "query_to_dataframe_strict", refuse)
+
+
+def nightly(monkeypatch, argv, *, configured=True, export=None, process=None, env=None,
+            real_export=False):
+    """Run fai.main() as the job would, with the fetch stubbed: returns
+    (exit code, the export_window calls as (tickers, months) pairs)."""
+    calls: list = []
+
+    def recorder(tickers, months, **kwargs):
+        assert kwargs == {}                   # the bucket and the clock are the defaults
+        calls.append((tickers, months))
+        if isinstance(export, BaseException):
+            raise export
+        return export or {"months": 6, "rows": 123456, "seconds": 4.2}
+
+    fetched: list = []
+
+    def fake_process(symbol, start, end, keys, force):
+        fetched.append(symbol)
+        return process(symbol) if process is not None else fai.OUTCOME_OK
+
+    monkeypatch.setattr(fai, "get_api_keys", lambda: ["k"])
+    monkeypatch.setattr(fai, "resolve_all_symbols", lambda: ["SPY", "QQQ", "IWM"])
+    monkeypatch.setattr(fai, "process_symbol", fake_process)
+    monkeypatch.setattr(fai, "is_cloud_sql_configured", lambda: configured)
+    monkeypatch.setattr(fai, "market_today", lambda: date(2026, 10, 31))
+    if not real_export:
+        monkeypatch.setattr(xb, "export_window", recorder)
+    for name in ("CLOUD_RUN_TASK_COUNT", "CLOUD_RUN_TASK_INDEX", "INTRADAY_BARS_EXPORT"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in (env or {}).items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(sys, "argv", ["fetch_alphavantage_intraday", *argv])
+    try:
+        fai.main()
+        code = 0
+    except SystemExit as stop:
+        code = stop.code
+    nightly.fetched = fetched
+    return code, calls
+
+
+NIGHTLY_ARGS = ["--symbol=ALL", "--force"]
+
+
+def _messages(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records]
+
+
+def test_the_nightly_arguments_export_two_eastern_months(monkeypatch):
+    code, calls = nightly(monkeypatch, NIGHTLY_ARGS)
+    assert code == 0
+    assert len(calls) == 1
+    tickers, months = calls[0]
+    assert tickers == ("SPY", "QQQ", "IWM")
+    assert months == [(2026, 9), (2026, 10)]
+    assert nightly.fetched == ["SPY", "QQQ", "IWM"]
+
+    # The clock the spec names: 21:00 ET on 2026-10-31 is already 2026-11-01
+    # in a UTC container, whose date would give the wrong two months.
+    at = datetime(2026, 11, 1, 1, tzinfo=timezone.utc)
+    assert at.astimezone(ET).date() == date(2026, 10, 31)
+    assert xb.nightly_months(at.date()) == [(2026, 10), (2026, 11)]
+
+
+@pytest.mark.parametrize("argv,env", [
+    (["--symbol=ALL"], None),
+    (["--symbol=ALL", "--force", "--start-date", "2026-10-01"], None),
+    (["--symbol=ALL", "--force", "--end-date", "2026-10-31"], None),
+    (["--symbols-file", "<file>", "--force"], None),
+    (["--symbol", "SPY", "--force"], None),
+    (["--force"], {"CLOUD_RUN_TASK_COUNT": "4"}),
+    (NIGHTLY_ARGS, {"CLOUD_RUN_TASK_COUNT": "4"}),
+])
+def test_other_argument_shapes_export_nothing(monkeypatch, tmp_path, caplog, argv, env):
+    symbols = tmp_path / "symbols.txt"
+    symbols.write_text("SPY\n")
+    argv = [str(symbols) if a == "<file>" else a for a in argv]
+    with caplog.at_level(logging.INFO):
+        code, calls = nightly(monkeypatch, argv, env=env)
+    assert calls == []
+    assert code == 0
+    assert nightly.fetched                         # the fetch itself ran
+    assert not [m for m in _messages(caplog) if m.startswith("bars export")]
+
+
+@pytest.mark.parametrize("value", ["off", "OFF", "Off"])
+def test_the_variable_turns_it_off(monkeypatch, caplog, value):
+    with caplog.at_level(logging.INFO):
+        code, calls = nightly(monkeypatch, NIGHTLY_ARGS, env={"INTRADAY_BARS_EXPORT": value})
+    assert calls == [] and code == 0
+    assert len([m for m in _messages(caplog) if "INTRADAY_BARS_EXPORT" in m]) == 1
+
+
+def test_any_other_value_of_the_variable_exports(monkeypatch):
+    _, calls = nightly(monkeypatch, NIGHTLY_ARGS, env={"INTRADAY_BARS_EXPORT": "on"})
+    assert len(calls) == 1
+
+
+def test_database_not_configured_exports_nothing_and_asks_nothing(monkeypatch, caplog):
+    _refuse_queries(monkeypatch)
+    with caplog.at_level(logging.INFO):
+        code, calls = nightly(monkeypatch, NIGHTLY_ARGS, configured=False)
+    assert calls == [] and code == 0
+    said = [m for m in _messages(caplog) if m.startswith("bars export skipped")]
+    assert len(said) == 1 and "not configured" in said[0]
+
+
+def test_gcs_bucket_unset_is_a_failed_export(monkeypatch, caplog):
+    _refuse_queries(monkeypatch)
+    monkeypatch.delenv("GCS_BUCKET", raising=False)
+    with caplog.at_level(logging.INFO):
+        code, _ = nightly(monkeypatch, NIGHTLY_ARGS, real_export=True)
+    assert code == 1
+    failed = [m for m in _messages(caplog) if m.startswith("bars export failed")]
+    assert len(failed) == 1
+    assert failed[0].startswith("bars export failed (defect)")
+    assert "GCS_BUCKET" in failed[0]
+
+
+def test_success_logs_one_line(monkeypatch, caplog):
+    with caplog.at_level(logging.INFO):
+        nightly(monkeypatch, NIGHTLY_ARGS)
+    lines = [m for m in _messages(caplog) if m.startswith("bars export:")]
+    assert lines == ["bars export: 6 months, 123456 rows, 4.2 s"]
+
+
+@pytest.mark.parametrize("failure,kind", [
+    (ConnectionError("connection refused"), "outage"),
+    (KeyError("high"), "defect"),
+])
+def test_a_failed_export_logs_its_kind_after_the_fetch_summary_and_exits_1(
+        monkeypatch, caplog, failure, kind):
+    with caplog.at_level(logging.INFO):
+        code, calls = nightly(monkeypatch, NIGHTLY_ARGS, export=failure)
+    assert code == 1 and len(calls) == 1
+    messages = _messages(caplog)
+    failed = [i for i, m in enumerate(messages) if m.startswith("bars export failed")]
+    summary = [i for i, m in enumerate(messages) if m.startswith("Run summary:")]
+    assert len(failed) == 1 and len(summary) == 1
+    assert messages[failed[0]].startswith(f"bars export failed ({kind})")
+    assert failed[0] > summary[0]
+    assert not [m for m in messages if m.startswith("bars export:")]
+    # The traceback is in the log: a defect is not reduced to its message.
+    record = [r for r in caplog.records if r.getMessage().startswith("bars export failed")][0]
+    assert record.exc_info is not None and record.exc_info[1] is failure
+    assert record.levelno == logging.ERROR
+
+
+def test_the_export_runs_when_a_ticker_failed(monkeypatch, caplog):
+    def process(symbol):
+        if symbol == "QQQ":
+            raise RuntimeError("write failed")
+        return fai.OUTCOME_OK
+
+    with caplog.at_level(logging.INFO):
+        code, calls = nightly(monkeypatch, NIGHTLY_ARGS, process=process)
+    assert len(calls) == 1
+    assert code == 1
+    assert [m for m in _messages(caplog) if m.startswith("bars export:")]
