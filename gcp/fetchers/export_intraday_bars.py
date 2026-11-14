@@ -1,0 +1,238 @@
+"""A durable bucket file of the SPY, QQQ and IWM 1-min bars, one Parquet
+object per ticker-month with a manifest beside it (FEAT-DATA-001, Design E).
+
+    gs://<GCS_BUCKET>/intraday-bars/v1/1min/<TICKER>/<YYYY-MM>.parquet
+    gs://<GCS_BUCKET>/intraday-bars/v1/1min/<TICKER>/manifest.json
+
+This module only READS market_data_intraday and market_data_daily. It is for
+an analysis session that cannot reach Cloud SQL: the session downloads a
+ticker's folder and calls ``read_bars``.
+
+The bucket files are never a source for the tree (CLAUDE.md 3.7.1). No job,
+replay, backtest or route reads them, and nothing falls back to them when the
+database fails: Cloud SQL is the system of record. tests/gcp/
+test_export_intraday_bars.py holds that line.
+
+Top-level imports are the standard library and pandas, so ``read_bars`` runs
+where the database layer and the time helpers cannot be imported. Everything
+else is imported inside the function that needs it.
+"""
+from __future__ import annotations
+
+import hashlib
+import logging
+import os
+from datetime import datetime
+from typing import Optional
+
+import pandas as pd
+
+log = logging.getLogger(__name__)
+
+PREFIX = "intraday-bars/v1/1min"
+EXPORT_TICKERS = ("SPY", "QQQ", "IWM")
+COLUMNS = ("ts", "open", "high", "low", "close", "volume", "data_source")
+
+# One strict read per ticker-month, bounded by the month window. The interval
+# is in the text, not a bound value.
+BARS_SQL = """
+    SELECT ts, open, high, low, close, volume, data_source, inserted_at
+      FROM market_data_intraday
+     WHERE ticker = :t AND interval = '1min' AND ts >= :start AND ts < :end
+     ORDER BY ts
+"""
+# One strict read per ticker for the run's months: the basis check's query.
+DAILY_SQL = """
+    SELECT date, high, low, data_source
+      FROM market_data_daily
+     WHERE ticker = :t AND date >= :first AND date <= :last
+"""
+_QUERY_TIMEOUT_S = 120
+
+
+def object_name(ticker: str, year: int, month: int) -> str:
+    """The object a ticker-month's file is stored under."""
+    return f"{PREFIX}/{ticker}/{year:04d}-{month:02d}.parquet"
+
+
+def manifest_name(ticker: str) -> str:
+    """The object a ticker's manifest is stored under."""
+    return f"{PREFIX}/{ticker}/manifest.json"
+
+
+class GenerationMismatch(Exception):
+    """A write named the generation it expected and the object has another."""
+
+
+class GcsBucket:
+    """The bucket, reduced to the two calls the export makes.
+
+    ``read`` tells an absent object from a failed read: absent is ``None``,
+    and every other failure raises. A helper that turned a failed read into
+    "absent" would make the next write start a fresh manifest over a real one,
+    so the two are never the same value (CLAUDE.md 3.7.1).
+    """
+
+    def __init__(self, bucket: str):
+        from google.cloud import storage  # noqa: PLC0415
+
+        self.name = bucket
+        self._bucket = storage.Client().bucket(bucket)
+
+    def read(self, name: str) -> Optional[tuple[bytes, int]]:
+        """The object's bytes and its generation, or None when it is absent."""
+        from google.api_core.exceptions import NotFound  # noqa: PLC0415
+
+        blob = self._bucket.blob(name)
+        try:
+            data = blob.download_as_bytes()
+        except NotFound:
+            return None
+        return data, self._generation(blob, name)
+
+    def write(self, name: str, data: bytes,
+              if_generation_match: Optional[int] = None) -> int:
+        """Store *data* whole and return the new generation.
+
+        With *if_generation_match* the write happens only while the object is
+        at that generation (0: only while it does not exist); otherwise
+        ``GenerationMismatch`` is raised and nothing is stored.
+        """
+        from google.api_core.exceptions import PreconditionFailed  # noqa: PLC0415
+
+        blob = self._bucket.blob(name)
+        try:
+            blob.upload_from_string(data, if_generation_match=if_generation_match)
+        except PreconditionFailed as exc:
+            raise GenerationMismatch(
+                f"{name}: the write expected generation {if_generation_match}") from exc
+        return self._generation(blob, name)
+
+    @staticmethod
+    def _generation(blob, name: str) -> int:
+        if blob.generation is None:
+            # The next manifest write would carry no precondition: refuse.
+            raise RuntimeError(f"{name}: the bucket reported no generation")
+        return int(blob.generation)
+
+
+def bucket_from_env() -> GcsBucket:
+    """The bucket named by ``GCS_BUCKET`` (a leading ``gs://`` is dropped).
+
+    Unset or empty raises: the export does not guess a bucket.
+    """
+    value = os.environ.get("GCS_BUCKET", "").strip()
+    if value.startswith("gs://"):
+        value = value[len("gs://"):]
+    if not value:
+        raise RuntimeError(
+            "GCS_BUCKET is not set: the bar export has no bucket to write to")
+    return GcsBucket(value)
+
+
+def _month_table(kept: pd.DataFrame):
+    """The kept rows as an Arrow table with the file's explicit schema.
+
+    A NULL in the table stays null in the file: nothing is filled in.
+    """
+    import pyarrow as pa  # noqa: PLC0415
+
+    def prices(name: str):
+        values = pd.to_numeric(kept[name], errors="raise").astype("float64")
+        return pa.array(values, type=pa.float64(), from_pandas=True)
+
+    volume = pd.to_numeric(kept["volume"], errors="raise").astype("Int64")
+    schema = pa.schema([
+        ("ts", pa.timestamp("us", tz="UTC")),
+        ("open", pa.float64()),
+        ("high", pa.float64()),
+        ("low", pa.float64()),
+        ("close", pa.float64()),
+        ("volume", pa.int64()),
+        ("data_source", pa.string()),
+    ])
+    return pa.Table.from_arrays([
+        pa.array(pd.DatetimeIndex(kept["ts"]), type=pa.timestamp("us", tz="UTC")),
+        prices("open"), prices("high"), prices("low"), prices("close"),
+        pa.array(volume, type=pa.int64(), from_pandas=True),
+        pa.array(kept["data_source"], type=pa.string(), from_pandas=True),
+    ], schema=schema)
+
+
+def build_month(rows: pd.DataFrame, daily: pd.DataFrame, ticker: str, year: int,
+                month: int, now_utc: datetime) -> tuple[Optional[bytes], dict]:
+    """The month's Parquet bytes (None when *rows* is empty) and its manifest
+    entry. Pure: nothing is read or written here.
+
+    *rows* is what ``BARS_SQL`` returned for the month window, whole: each
+    row's instant is the one ``lib.eastern_time.place_stored_rows`` gives it,
+    which must see each date entire. A proven row is written at its stored
+    instant; a row that is not proven is written where the resolver puts it
+    and counted in ``inferred_rows``. When two stored rows land on one minute
+    one is written and the other is counted in ``dropped_rows``.
+
+    Limit, by construction (Design F): a whole session stored under both
+    conventions with flat volume can be written on the wrong minutes. Nothing
+    in the file marks those rows; ``inferred_rows`` above 0 is the only flag.
+    """
+    import pyarrow as pa  # noqa: PLC0415
+    import pyarrow.parquet as pq  # noqa: PLC0415
+
+    from lib.eastern_time import place_stored_rows  # noqa: PLC0415
+
+    entry: dict = {
+        "file": None,
+        "rows": 0,
+        "stored_rows": int(len(rows)),
+        "dropped_rows": 0,
+        "inferred_rows": 0,
+        "first_ts": None,
+        "last_ts": None,
+        "sha256": None,
+        "exported_at": now_utc.isoformat(),
+    }
+    if rows.empty:
+        return None, entry
+
+    instants, keep, proven = place_stored_rows(
+        rows["ts"], rows["volume"], rows["inserted_at"])
+    kept = rows.loc[keep, list(COLUMNS[1:])].reset_index(drop=True)
+    kept.insert(0, "ts", instants[keep])
+    kept = kept.sort_values("ts", kind="stable").reset_index(drop=True)
+
+    sink = pa.BufferOutputStream()
+    pq.write_table(_month_table(kept), sink, compression="zstd")
+    data = sink.getvalue().to_pybytes()
+
+    entry.update({
+        "file": object_name(ticker, year, month),
+        "rows": int(len(kept)),
+        "dropped_rows": int(len(rows) - len(kept)),
+        "inferred_rows": int((keep & ~proven).sum()),
+        "first_ts": kept["ts"].iloc[0].isoformat(),
+        "last_ts": kept["ts"].iloc[-1].isoformat(),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    })
+    return data, entry
+
+
+def export_month(bucket, ticker: str, year: int, month: int, daily: pd.DataFrame,
+                 now_utc: datetime) -> dict:
+    """Read one ticker-month, upload its file whole, return its manifest entry.
+
+    One strict read over the month window; a failed read or upload raises.
+    The manifest is not touched here: the caller writes the entry only after
+    this returns, so a failure leaves the manifest as it was for the month.
+    A month with no row uploads nothing.
+    """
+    from gcp.database import query_to_dataframe_strict  # noqa: PLC0415
+    from lib.eastern_time import intraday_month_window  # noqa: PLC0415
+
+    start, end = intraday_month_window(year, month)
+    rows = query_to_dataframe_strict(
+        BARS_SQL, {"t": ticker, "start": start, "end": end}, timeout_s=_QUERY_TIMEOUT_S)
+    data, entry = build_month(rows, daily, ticker, year, month, now_utc)
+    del rows
+    if data is not None:
+        bucket.write(object_name(ticker, year, month), data)
+    return entry
