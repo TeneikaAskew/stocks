@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import numbers
 from dataclasses import dataclass
+from datetime import date
 from typing import Callable, Iterable, Mapping, Sequence
 
 import pandas as pd
+
+from lib.eastern_time import is_session
 
 JOB_NAME = 'fetch-watched-tickers'
 WATCHED_DATA_SOURCE = 'av_watched_backfill'
@@ -109,3 +112,8 @@ def dedup(tickers: list[str], exclude: Iterable[str]) -> list[str]:
         seen.add(t)
         out.append(t)
     return out
+
+
+def resolve_session(today: date) -> date | None:
+    """``today`` when NYSE trades that day, else ``None`` (weekend or holiday)."""
+    return today if is_session(today) else None

@@ -83,6 +83,7 @@ def test_run_backfill_returns_zero_when_no_ticker_returns_data(av_stub):
 # Task 3: config, the set read with its exact overflow, the second-guard dedup
 # ---------------------------------------------------------------------------
 import re
+from datetime import date
 from pathlib import Path
 
 from gcp.fetchers import fetch_watched_tickers as fwt
@@ -178,3 +179,15 @@ def test_set_sql_source_scan():
     assert not re.search(r'owner|uid|email', sql, re.I)
     assert sql.index('<> ALL(:exclude)') < sql.index('LIMIT')
     assert not re.search(r'\bwatchlists\b', _MODULE_SRC.read_text())
+
+
+def test_resolve_session_holiday_is_none():
+    assert fwt.resolve_session(date(2026, 11, 26)) is None  # Thanksgiving
+
+
+def test_resolve_session_weekend_is_none():
+    assert fwt.resolve_session(date(2026, 11, 14)) is None  # Saturday
+
+
+def test_resolve_session_trading_day_returns_date():
+    assert fwt.resolve_session(date(2026, 11, 13)) == date(2026, 11, 13)  # Friday
