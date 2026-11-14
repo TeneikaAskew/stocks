@@ -1793,3 +1793,130 @@ def test_the_entry_point_checks_read_relative_imports_and_importlib():
     assert writer_import_offenders("scripts/new_script.py", relative, closures) == []
     assert writer_module_strings(
         'import importlib\nimportlib.import_module("gcp.fetchers.fetch_market_data").main()') == [2]
+
+
+# ── the one deleter the scan cannot see, and the job nothing starts ───────
+#
+# scripts/archive_yahoo_data.py holds the table's name in a config dict of
+# four tables and builds its SQL from the dict, so no statement in it names
+# the table and intraday_write_sites reads past it. It is run by hand only
+# (--confirm). It copies the rows whose data_source is NULL or a Yahoo name
+# to an archive table and, with --delete, deletes them from the table; it
+# creates no row there. Neither writer module stamps such a row.
+#
+# What this does not see: a table name passed in from another file, a
+# partition name built in an f-string field, and a reflected sa.Table.
+
+VARIABLE_TABLE_WRITERS = {
+    "gcp/database.py",                 # the write helpers; the name is the key of the UTC check
+    "scripts/archive_yahoo_data.py",   # the Yahoo archive: copy, then delete with --delete
+}
+
+
+_VERB_BEFORE_A_FIELD = re.compile(
+    r"\b(?:INSERT\s+INTO|MERGE\s+INTO|DELETE\s+FROM|UPDATE|TRUNCATE(?:\s+TABLE)?|COPY)\s*$", re.I)
+_INTRADAY_TABLE_NAMES = frozenset(
+    [INTRADAY_TABLE] + [INTRADAY_TABLE + suffix for suffix in INTRADAY_PARTITION_SUFFIXES])
+
+
+def holds_variable_table_write(src: str) -> bool:
+    """True when a source text holds both an f-string that puts a write verb
+    directly before a field (`f"DELETE FROM {table} ..."`) and, as a whole
+    string constant outside docstrings, the name of the 1-minute bar table or
+    of one of its partitions: the two halves of a write the scan cannot
+    read."""
+    tree = _replay_tree(src)
+    docstrings = _docstring_nodes(tree)
+    verb_then_field = any(
+        isinstance(part, ast.Constant) and isinstance(part.value, str)
+        and isinstance(following, ast.FormattedValue)
+        and _VERB_BEFORE_A_FIELD.search(part.value)
+        for n in ast.walk(tree) if isinstance(n, ast.JoinedStr)
+        for part, following in zip(n.values, n.values[1:])
+    )
+    names_the_table = any(
+        isinstance(n, ast.Constant) and isinstance(n.value, str)
+        and n.value in _INTRADAY_TABLE_NAMES and id(n) not in docstrings
+        for n in ast.walk(tree)
+    )
+    return verb_then_field and names_the_table
+
+
+def backfill_dispatch_lines(src: str) -> list[int]:
+    """The lines of the string constants outside docstrings that contain the
+    backfill-ticker job's name. The literal parts of an f-string are string
+    constants, so a URL built around the name is read; a comment is not in
+    the tree."""
+    tree = _replay_tree(src)
+    docstrings = _docstring_nodes(tree)
+    return sorted(
+        n.lineno for n in ast.walk(tree)
+        if isinstance(n, ast.Constant) and isinstance(n.value, str)
+        and BACKFILL_JOB in n.value and id(n) not in docstrings)
+
+
+def test_the_yahoo_archive_is_the_one_named_deleter():
+    """Passes on the tree it was written for: it pins a deleter the writer
+    scan cannot see, so a second file of the same shape, or a change to what
+    this one selects, is a decision somebody made."""
+    found = {_rel(p) for p in _py_files(SCAN_ROOTS)
+             if holds_variable_table_write(p.read_text(errors="ignore"))}
+    assert found == VARIABLE_TABLE_WRITERS, sorted(found ^ VARIABLE_TABLE_WRITERS)
+
+    import scripts.archive_yahoo_data as a
+
+    assert set(a.TABLES) == {
+        "earnings_options_snapshots", "etf_options_snapshots",
+        "market_data_daily", "market_data_intraday"}
+    # what it selects: rows no current writer stamps
+    assert sorted(re.findall(r"'([^']*)'", a.YAHOO_PREDICATE)) == ["yahoo", "yahooquery", "yfinance"]
+
+    class _Result:
+        rowcount = 0
+
+    class _Recorder:
+        def __init__(self):
+            self.statements: list[str] = []
+
+        def execute(self, stmt, *args, **kwargs):
+            self.statements.append(str(stmt))
+            return _Result()
+
+        def commit(self):
+            return None
+
+    conn = _Recorder()
+    a.delete_chunk(conn, "market_data_intraday", a.TABLES["market_data_intraday"], 500_000)
+    assert len(conn.statements) == 1, conn.statements
+    statement = " ".join(conn.statements[0].split())
+    assert statement.startswith("DELETE FROM market_data_intraday WHERE"), statement
+    assert a.YAHOO_PREDICATE in statement, statement
+
+
+def test_no_code_dispatches_backfill_ticker():
+    """The job is run by hand. It no longer brings 1-minute bars, so a
+    caller that started it to make a ticker replayable would get daily rows
+    and no premarket snapshot, and say nothing. Before FEAT-REPLAY-001 this
+    failed at gcp/discord_interactions/main.py and
+    scripts/backfill_and_replay.py. A spec that adds a dispatcher lists it
+    here."""
+    own = "gcp/backfill_ticker.py"
+    offenders = {}
+    for p in _py_files(SCAN_ROOTS):
+        lines = backfill_dispatch_lines(p.read_text(errors="ignore"))
+        if lines and _rel(p) != own:
+            offenders[_rel(p)] = lines
+    assert offenders == {}, f"the backfill-ticker job is named in a string, as file: [lines]: {offenders}"
+    # an empty walk must not pass: the job's own logger name is such a string
+    assert backfill_dispatch_lines((REPO / own).read_text(errors="ignore"))
+
+
+def test_the_dispatch_scan_reads_f_strings_and_skips_docstrings():
+    assert backfill_dispatch_lines("def main(): _execute_job('backfill-ticker', {})\n")
+    assert backfill_dispatch_lines('url = f"jobs/backfill-ticker:run?project={p}"\n')
+    assert backfill_dispatch_lines(
+        '"""This script no longer runs backfill-ticker."""\n'
+        "def main():\n"
+        '    """Does not start backfill-ticker."""\n'
+        "    # backfill-ticker is run by hand\n"
+        "    return 0\n") == []
