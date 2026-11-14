@@ -2,7 +2,7 @@
 feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-11-14-feat-data-001-watched-ticker-ingest-v3.md
 branch: feature/feat-data-001-watched-ticker-ingest-v3
-pr: null
+pr: 1927
 status: ready
 ---
 
