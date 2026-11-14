@@ -293,6 +293,9 @@ REQUESTS: list[Req] = [
     Req("POST", "/api/insights/watchlist/add", 503, json={"ticker": T}),
     Req("DELETE", f"/api/insights/watchlist/{T}", 503),
     Req("GET", "/api/insights/watchlist", 200),
+    # Reads through the strict query helper: no backend is a 503 with the
+    # exception text, never an empty 200 (FEAT-INSIGHT-001 stage A).
+    Req("GET", "/api/insights/watchlist/default", 503),
     Req("GET", f"/api/insights/report/{T}", 503, note="was a bare 500"),
     Req("GET", f"/api/insights/report/{T}/history", 503, note="was a bare 500"),
     Req("GET", f"/api/insights/reports/{UUID0}", 503, note="was a bare 500"),

@@ -2070,9 +2070,12 @@ class TestInsightsWatchlistAPI:
         client.get("/api/insights/watchlist")
         assert called_with["user_id"] == "default"
 
-    def test_watchlist_threads_signed_in_user(self, client, monkeypatch):
-        """Authenticated request → ranker watchlist is scoped to the
-        signed-in user's email, never the global "default" list."""
+    def test_watchlist_ranks_default_for_signed_in_user(self, client, monkeypatch):
+        """A signed-in caller is ranked as the default owner too: the ranked
+        list is the default watchlist for every caller (FEAT-INSIGHT-001
+        stage A), and a caller's own tickers arrive as ``extras``. Until
+        2026-11-13 this test asserted the caller's email, which ranked a
+        per-user row set no job ever read (#1215)."""
         from api.routers import insights as insights_module
 
         called_with = {}
@@ -2086,7 +2089,7 @@ class TestInsightsWatchlistAPI:
             insights_module, "current_user_email", lambda req: "alice@example.com"
         )
         client.get("/api/insights/watchlist")
-        assert called_with["user_id"] == "alice@example.com"
+        assert called_with["user_id"] == "default"
 
 
 # ── Personal watchlist mutations (per-user add / remove) ────────────────────

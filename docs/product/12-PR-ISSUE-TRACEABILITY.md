@@ -492,7 +492,7 @@ Live registry continuation: [#1599](https://github.com/TeneikaAskew/stocks/pull/
 
 ### FEAT-INSIGHT-001 — AI insights (31 open)
 
-**PR lineage:** [#1800](https://github.com/TeneikaAskew/stocks/pull/1800) implements the approved 2026-10-31 FEAT-INSIGHT-001 retirement-reader spec with the shared SQL predicate and actual-reader adversarial tests. Source/local-test and committed identity evidence only; hosted current-head review/checks and deployed verification remain separate and pending. No legacy stored rows are rewritten and no broader issue is closed.
+**PR lineage:** [#1800](https://github.com/TeneikaAskew/stocks/pull/1800) implements the approved 2026-10-31 FEAT-INSIGHT-001 retirement-reader spec with the shared SQL predicate and actual-reader adversarial tests. Source/local-test and committed identity evidence only; hosted current-head review/checks and deployed verification remain separate and pending. No legacy stored rows are rewritten and no broader issue is closed. · [#1910](https://github.com/TeneikaAskew/stocks/pull/1910) *stage A lock* implements the approved 2026-11-14 stage A r2 spec of the default watchlist lock (the read-only default endpoint, the ranked route and every stocks reader pinned to owner 'default', the backfill target and replay fixes, the INSIGHTS-04 implementation-source note and source snapshot), replacing [#1892](https://github.com/TeneikaAskew/stocks/pull/1892), closed unmerged. Source, local-test and committed identity evidence only; hosted current-head review and deployed verification pending.
 
 | Issue | Sev | Title |
 |---|---|---|
