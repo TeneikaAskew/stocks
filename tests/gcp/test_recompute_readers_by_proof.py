@@ -74,6 +74,22 @@ def expected_minutes(first: str, last: str) -> pd.DataFrame:
     return _bars(first, last)
 
 
+def label_reading() -> pd.DataFrame:
+    """The 570 stored rows as the resolver places them when nothing proves
+    them, which is what ``main`` returns: the stored clock (08:00 to 17:29)
+    read as an Eastern label, so each bar sits four hours after its own
+    minute and keeps its own values. ``ts`` is that misplaced instant (12:00
+    to 21:29 UTC). Written from the minute alone."""
+    rows = _bars("04:00", "13:29")
+    rows["ts"] = rows["ts"] + EDT
+    return rows
+
+
+def assert_whole_frame(got: pd.DataFrame, want: pd.DataFrame) -> None:
+    """Every value, the row order, the columns, the index and the dtypes."""
+    pd.testing.assert_frame_equal(got, want, check_exact=True, check_freq=False)
+
+
 def assert_bars(instants, got: pd.DataFrame, want: pd.DataFrame, columns=VALUES) -> None:
     """*got*'s rows sit on *want*'s instants and hold *want*'s values."""
     assert len(got) == len(want)
@@ -143,6 +159,13 @@ def test_strat_builder_load_1m_bars_unproven_twin(monkeypatch):
     assert out["open"].iloc[0] == 1330.0                               # the bar of 05:30 ET
     assert list(out.columns) == ["open", "high", "low", "close", "volume"]
     assert str(out.index.dtype) == "datetime64[ns, UTC]"
+    # The whole frame: the label reading cut to 09:30-15:59 ET, which are the
+    # bars of 05:30 to 11:59 ET, in order, each with its own values.
+    want = label_reading()
+    want = want[(want["ts"] >= pd.Timestamp(f"{DAY} 13:30", tz="UTC"))
+                & (want["ts"] <= pd.Timestamp(f"{DAY} 19:59", tz="UTC"))]
+    assert list(want["open"].iloc[[0, -1]]) == [1330.0, 1719.0]
+    assert_whole_frame(out, want.set_index("ts"))
 
 
 def test_strat_builder_load_1m_bars_needs_inserted_at(monkeypatch):
@@ -219,6 +242,8 @@ def test_historical_signals_load_intraday_bars_unproven_twin(monkeypatch):
     assert bars["Time"].iloc[0] == pd.Timestamp(f"{DAY} 12:00", tz="UTC")
     assert bars["Time"].iloc[-1] == pd.Timestamp(f"{DAY} 21:29", tz="UTC")
     assert str(bars["Time"].dtype) == "datetime64[ns, UTC]"
+    # The whole frame: every stored row, in order, on its misplaced instant.
+    assert_whole_frame(bars, label_reading().rename(columns=HS_NAMES))
 
 
 def test_historical_signals_load_intraday_bars_needs_inserted_at(monkeypatch):
@@ -286,6 +311,11 @@ def test_calibration_read_minutes_unproven_twin():
     assert out["timestamp"].iloc[-1] == pd.Timestamp(f"{DAY} 17:29")
     assert list(out.columns) == MINUTE_COLUMNS
     assert str(out["timestamp"].dtype) == "datetime64[ns]"
+    # The whole frame: every stored row, in order, its stored clock read as
+    # naive Eastern (08:00 to 17:29).
+    want = label_reading()
+    want.insert(0, "timestamp", pd.date_range(f"{DAY} 08:00", f"{DAY} 17:29", freq="min"))
+    assert_whole_frame(out, want.drop(columns="ts"))
 
 
 def test_calibration_read_minutes_needs_inserted_at():
