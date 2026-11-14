@@ -19,7 +19,7 @@ from datetime import datetime, date, timedelta
 from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from lib.eastern_time import ET, ET_NAME
+from lib.eastern_time import ET, ET_NAME, market_today
 from lib.earnings_reactions import earnings_not_retired_sql
 
 from lib.data_loader import DataLoader
@@ -884,15 +884,15 @@ def _resolve_analysis_date() -> date:
     """Resolve the brief's analysis date.
 
     Honours `BRIEF_AS_OF=YYYY-MM-DD` for historical replay (Discord
-    /replay command, ad-hoc backfills) — falls back to today otherwise.
-    Future-dated cutoffs are rejected so a typo doesn't silently
-    produce a blank brief.
+    /replay command, ad-hoc backfills); otherwise the exchange's date
+    (`market_today`), never the container's UTC date. Cutoffs after the
+    exchange's date are rejected so a typo cannot give a blank brief.
     """
     raw = _as_of_override()
     if raw is None:
-        return date.today()
+        return market_today()
     parsed = date.fromisoformat(raw)
-    if parsed > date.today():
+    if parsed > market_today():
         raise ValueError(f"BRIEF_AS_OF {raw!r} is in the future")
     return parsed
 
@@ -3023,9 +3023,9 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
 
     # Honour the brief's resolved analysis_date (BRIEF_AS_OF) so
     # historical replays write to the correct date row, not today's.
-    # Falls back to today when the brief was generated without an
-    # explicit override.
-    analysis_date = brief.get('analysis_date') or date.today()
+    # Falls back to the exchange's date when the brief carries none
+    # (the container's UTC date is already tomorrow in the evening).
+    analysis_date = brief.get('analysis_date') or market_today()
     rows = []
     # Tickers whose per-ticker playbook block raised. They still go to
     # premarket_analysis_history (audit trail records the failure), but
