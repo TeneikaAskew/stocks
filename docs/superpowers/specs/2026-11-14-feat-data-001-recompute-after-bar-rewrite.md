@@ -15,7 +15,7 @@ done_when:
   - "make test passes on the PR head with tests/meta/test_production_writers.py, tests/meta/test_timezone_boundaries.py, tests/fixtures/timezone_boundary_baseline.json, tests/gcp/test_intraday_writers_utc.py and tests/gcp/test_premarket_playbook_resolver.py unmodified, and gcp/deploy.sh, gcp/signal_monitor.py, gcp/backfill_ticker.py, gcp/fetchers/fetch_premarket_refresh.py, lib/eastern_time.py, lib/data_loader.py, platform/api and CLAUDE.md not in the PR's diff; python scripts/export_openapi.py --check passes"
   - "The PR body gives, read-only through scripts/db_query_cr.sh with each execution id: EXPLAIN (ANALYZE, BUFFERS) of the exits' day read for QQQ 2026-05-01, of the premarket bars read for SPY over one month's sessions, and of find_resolved_alerts for the three tickers from 2026-05-01, each written with literals where the code binds parameters and each showing rows read on its scan node; the count of candidates per ticker for both tools on that day; and the count of candidate alerts with a NULL price_at_signal, target_price or direction. It also gives, measured locally against the integration Postgres, the seconds and the statement count of a committed --re-resolve over 900 synthetic alerts on 27 (ticker, date) groups and of a committed --recompute-premarket over 450 synthetic rows in 24 (ticker, month) groups, the first under 120 statements and the second under 240 (on main neither tool exists; measured for this spec on 2026-11-14: 835 candidate alerts on 27 groups, 447 candidate daily rows, the day read 2.7 ms for 1,200 rows, a four-session premarket read 19.7 ms for 1,316 rows with 329 rows a loop, db-query-zzvwq)"
   - "02-FEATURE-CATALOG FEAT-DATA-001 record shows Status and Last reviewed for this PR, 12-PR-ISSUE-TRACEABILITY lists it, the implementation-source notes of 03-SITE-TRACEABILITY.md hold a (FEAT-DATA-001, component) row for each of the nine declared components that begins with the current source hash (a row an earlier change left is extended: the new hash and this change's prose first, then 'Earlier:' and the earlier prose unchanged), docs/review-evidence/site-source-snapshot.json is regenerated and scripts/maintenance/doc_source_snapshot.py verify accepts it, the generated inventory blocks are re-rendered with scripts/maintenance/doc_inventory.py and tests/scripts/test_check_generated_docs.py passes, the branch run of python3 scripts/maintenance/docs_audit.py reports nothing that origin/main does not, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
-status: draft
+status: approved
 supersedes: null
 ---
 
@@ -47,6 +47,8 @@ The catalog rows this work was checked against (`docs/product/02-FEATURE-CATALOG
 - No canvas is listed: the change adds no job and no route.
 
 ## Decisions for the owner
+
+**Decided 2026-11-14:** the owner took the recommended option on all twelve ("Take your recommendations"). The text below already states each as recommended, so no section changes.
 
 Each is written into the text below as recommended. Striking one changes only the sections named.
 
