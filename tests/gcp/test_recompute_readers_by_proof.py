@@ -22,12 +22,14 @@ through the code under test.
 """
 from __future__ import annotations
 
-from datetime import datetime
+import logging
+from datetime import date, datetime
 
 import pandas as pd
 import pytest
 
 import gcp.historical_signals as hs
+from gcp import calibrate_level_params as job
 from gcp.research.strat_engine import strat_data_builder as sdb
 
 DAY = "2025-05-05"
@@ -236,3 +238,81 @@ def test_historical_signals_empty_read_returns_as_before(monkeypatch, columns):
     assert bars.empty
     assert "inserted_at" not in bars.columns
     assert list(bars.columns) == HS_COLUMNS
+
+
+# -- the calibration read: calibrate_level_params.read_minutes ------------------
+
+MINUTE_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]
+
+
+def _minutes_query(rows: pd.DataFrame):
+    def query(sql, params=None):
+        assert sql == job.MINUTES_SQL
+        assert set(params) == {"ticker", "start", "end"}
+        return rows.copy()
+
+    return query
+
+
+def test_calibration_read_minutes():
+    out = job.read_minutes(_minutes_query(thin_monday(PROVEN)), "SPY",
+                           date(2025, 5, 5), date(2025, 5, 6))
+
+    want = expected_minutes("04:00", "13:29")
+    assert len(out) == 570
+    assert out["timestamp"].iloc[0] == pd.Timestamp(f"{DAY} 04:00")
+    assert out["timestamp"].iloc[-1] == pd.Timestamp(f"{DAY} 13:29")
+    assert (out["timestamp"] >= pd.Timestamp(f"{DAY} 09:30")).sum() == 240
+    # Each bar on its own Eastern minute, with its own values.
+    assert_bars((out["timestamp"] + EDT).dt.tz_localize("UTC"), out, want)
+    assert list(out.columns) == MINUTE_COLUMNS
+    assert out["timestamp"].dt.tz is None                     # naive Eastern, as before
+    assert str(out["timestamp"].dtype) == "datetime64[ns]"
+    assert "inserted_at" in job.MINUTES_SQL
+    assert "interval = '1min'" in job.MINUTES_SQL
+    assert job.MINUTES_SQL == (
+        "SELECT ts, open, high, low, close, volume, inserted_at FROM market_data_intraday "
+        "WHERE ticker = :ticker AND interval = '1min' AND ts >= :start AND ts < :end "
+        "ORDER BY ts")
+
+
+def test_calibration_read_minutes_unproven_twin():
+    # What main returns today: every bar four hours from its own minute.
+    out = job.read_minutes(_minutes_query(thin_monday(UNPROVEN)), "SPY",
+                           date(2025, 5, 5), date(2025, 5, 6))
+
+    assert len(out) == 570
+    assert out["timestamp"].iloc[0] == pd.Timestamp(f"{DAY} 08:00")
+    assert out["timestamp"].iloc[-1] == pd.Timestamp(f"{DAY} 17:29")
+    assert list(out.columns) == MINUTE_COLUMNS
+    assert str(out["timestamp"].dtype) == "datetime64[ns]"
+
+
+def test_calibration_read_minutes_needs_inserted_at():
+    query = _minutes_query(thin_monday(PROVEN).drop(columns="inserted_at"))
+    with pytest.raises(KeyError, match="inserted_at"):
+        job.read_minutes(query, "SPY", date(2025, 5, 5), date(2025, 5, 6))
+
+
+def test_a_run_whose_bars_lack_inserted_at_fails_the_ticker(caplog):
+    # Review Focus: inside the job a missing column is a failed ticker, never
+    # thresholds calibrated from bars placed by the resolver alone.
+    from tests.gcp.test_calibrate_level_params import EFF, FakeDb, _run
+
+    db = FakeDb()
+    db.minutes["SPY"] = db.minutes["SPY"].drop(columns="inserted_at")
+    with caplog.at_level(logging.ERROR):
+        res = _run(db, tickers=["SPY"], dates=(EFF,))
+
+    assert res.failed == ["SPY"]
+    assert res.succeeded == []
+    assert res.rows_written == 0
+    assert res.exit_code == 1
+    assert db.batches == []
+    assert db.rows().empty
+    assert any("SPY failed" in r.getMessage() and "inserted_at" in r.getMessage()
+               for r in caplog.records)
+
+    # The same ticker with the column calibrates.
+    ok = _run(FakeDb(), tickers=["SPY"], dates=(EFF,))
+    assert ok.failed == [] and ok.rows_written > 0
