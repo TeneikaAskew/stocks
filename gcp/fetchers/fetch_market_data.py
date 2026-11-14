@@ -844,7 +844,8 @@ def _backfill_targets() -> list:
                    AND COALESCE(stock_volume,   0) >= 500000
               UNION
                 SELECT ticker FROM watchlists
-                 WHERE COALESCE(in_brief, false) OR COALESCE(in_insight, false)
+                 WHERE user_id = 'default' AND removed_at IS NULL
+                   AND (COALESCE(in_brief, false) OR COALESCE(in_insight, false))
             ),
             eh_eligible AS (
                 SELECT DISTINCT eh.ticker FROM earnings_history eh
