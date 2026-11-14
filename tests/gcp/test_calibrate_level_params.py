@@ -68,7 +68,8 @@ def _minutes(ticker):
         ts = et.append(pm).tz_localize("America/New_York").tz_convert("UTC")
         px = np.concatenate([rth, np.full(150, r.Open)])
         frames.append(pd.DataFrame({"ts": ts, "open": px, "high": px + 0.02, "low": px - 0.02,
-                                    "close": px, "volume": 100}))
+                                    "close": px, "volume": 100,
+                                    "inserted_at": pd.Timestamp("2026-02-23 03:00", tz="UTC")}))
     return pd.concat(frames, ignore_index=True)
 
 
