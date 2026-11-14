@@ -2,8 +2,8 @@
 feat_id: FEAT-INSIGHT-001
 spec: docs/superpowers/specs/2026-11-14-feat-insight-001-user-watchlist-api.md
 branch: feature/feat-insight-001-user-watchlist-api
-pr: null
-status: ready
+pr: 1915
+status: done
 ---
 
 # Per-user watchlist API in Cloud SQL, implementation plan

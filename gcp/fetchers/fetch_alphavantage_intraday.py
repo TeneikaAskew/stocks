@@ -15,7 +15,7 @@ import logging
 import os
 import sys
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -23,7 +23,16 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from lib.eastern_time import eastern_index_to_utc, stored_intraday_to_eastern, utc_to_eastern_naive
+from lib.eastern_time import (
+    eastern_index_to_utc,
+    intraday_month_window,
+    place_stored_rows,
+    session_minute_readings,
+    session_schedule,
+    stored_intraday_to_eastern,
+    utc_now,
+    utc_to_eastern_naive,
+)
 
 from gcp.database import (
     bulk_insert_dataframe,
@@ -427,24 +436,12 @@ def _file_data_quality_issue(dead_tickers: list) -> None:
 # that: a row at the wrong key stays there. --replace-months refetches each
 # listed (ticker, month) from AV and swaps the whole month in one transaction.
 
-# Every row month M can hold, in either convention, lies in
-#   [M-01 02:00Z, (M+1)-01 02:00Z)
-#   * Eastern-labelled rows: raw labels 04:00-20:00 on each day of M.
-#   * True-UTC rows: 04:00 ET on the 1st (08:00Z EDT / 09:00Z EST) through
-#     the 20:00 ET bar on the last day (00:00Z EDT / 01:00Z EST on the next 1st).
-#     AV stores a bar AT 20:00 ET; the window must include it (code review C1).
-# and no neighbouring month's rows do: M-1's true-UTC rows end at 01:00Z on
-# the 1st of M; M+1's labelled rows start at 04:00Z on its 1st. Any boundary
-# in (01:00Z, 04:00Z] works; 02:00Z leaves an hour either side.
-# tests/gcp/test_intraday_replace_months.py checks this across DST changes.
-_WINDOW_HOUR_UTC = 2
+# The month window and why its boundary is 02:00Z: lib.eastern_time.intraday_month_window.
 
 
 def month_replace_window(year: int, month: int) -> tuple[datetime, datetime]:
     """UTC ``[start, end)`` holding every row of (year, month) in either convention."""
-    start = datetime(year, month, 1, _WINDOW_HOUR_UTC, tzinfo=timezone.utc)
-    ny, nm = (year + 1, 1) if month == 12 else (year, month + 1)
-    return start, datetime(ny, nm, 1, _WINDOW_HOUR_UTC, tzinfo=timezone.utc)
+    return intraday_month_window(year, month)
 
 
 REPLACE_OK = 'replaced'
@@ -469,10 +466,18 @@ REPLACE_MAX_DELETE_RATIO = 3.0
 # rebuilds (Codex P1 on #1185). Each builder recomputes a range:
 #   build-intraday-flow --backfill, build-intraday-gex --backfill,
 #   build-realtime-gex, strat_data_builder --rebuild.
+# The six levels tables are one step further down: computed from the feature
+# tables, not from the bars (strat_enrich_levels.backfill_one reads
+# strat_features_{tf}), and keyed by (ticker, ts) like them. Left out, a
+# replaced month's level rows would sit at keys no feature row has. That
+# module rebuilds them, after the feature tables are rebuilt.
 DERIVED_TS_TABLES = (
     "intraday_flow_15m", "intraday_gex_15m", "realtime_gex_15m",
     "strat_features_1m", "strat_features_5m", "strat_features_15m",
     "strat_features_30m", "strat_features_60m", "strat_features_4h",
+    "strat_features_levels_1m", "strat_features_levels_5m",
+    "strat_features_levels_15m", "strat_features_levels_30m",
+    "strat_features_levels_60m", "strat_features_levels_4h",
 )
 
 # Result tables computed FROM the bars that the migration does NOT touch:
@@ -842,6 +847,279 @@ def run_verify_months(path: str, limit: Optional[int]) -> int:
     return 0
 
 
+# -- Basis check (FEAT-DATA-001, Design C) ------------------------------------
+#
+# Until 2026-11-13 the 1-min requests returned split- and dividend-adjusted
+# prices, adjusted as of the call, so every stored bar sits at the basis of its
+# last fetch. A session's basis is read off the daily table: its regular-hours
+# high and low against the daily high and low, which are as traded. Read-only.
+
+# market_data_daily.data_source values whose high and low came from the daily
+# endpoint (TIME_SERIES_DAILY_ADJUSTED's "2. high" / "3. low", as traded). A
+# row stamped alphavantage_1min was built from the session's own 1-min bars, so
+# those bars read 1.0 against it whatever basis they are on; a row with any
+# other stamp, or none, has an origin the row cannot tell. Neither is ever a
+# measure. A new daily writer is measured only once its stamp is added here.
+TRUE_DAILY_SOURCES = ("alphavantage_daily", "av_daily_backfill", "av_watched_backfill")
+_DAILY_FROM_INTRADAY = "alphavantage_1min"
+
+# The as-traded band, in units of 0.00001 of the ratio: 0.99970 to 1.00030.
+_BASIS_UNIT = 100_000
+_BASIS_LOW, _BASIS_HIGH = 99_970, 100_030
+
+
+def session_basis_verdicts(rows: pd.DataFrame, daily: pd.DataFrame,
+                           schedule: pd.DataFrame) -> list[dict]:
+    """One record per session of *schedule*, in its order: is the session's
+    stored 1-min data as traded?
+
+    *rows* is a month window of market_data_intraday (``ts``, ``high``,
+    ``low``, ``volume``, ``inserted_at``); *daily* is market_data_daily for the
+    ticker (``date``, ``high``, ``low``, ``data_source``); *schedule* is the
+    frame lib.eastern_time.session_schedule returns. Nothing is read here.
+
+    Each record has ``session``, ``status`` and ``exact`` (the session's
+    reading, lib.eastern_time.session_minute_readings), ``verdict``,
+    ``reason``, ``f_high``, ``f_low`` and ``factor``.
+
+    ``verdict``:
+      INCOMPLETE  the session is not OK (missing, thin, or its count depends
+                  on the timestamp convention): never measured, so thinness
+                  cannot read as a basis.
+      UNMEASURED  no measurable daily row or no regular-hours high and low;
+                  ``reason`` is the first that applies of ``no_daily_row``,
+                  ``daily_from_intraday``, ``daily_source_unknown``,
+                  ``daily_not_positive``, ``no_rth_high_low``.
+      AS-TRADED   f_high and f_low both from 0.99970 to 1.00030, and every row
+                  the reading counts is proven a true instant.
+      INFERRED    the same ratios, resting on a row that is not proven: never
+                  a pass.
+      ADJUSTED    both ratios below 0.99970, or both above 1.00030.
+      ODD         anything else. Missing minutes can only lower the high and
+                  raise the low, moving the ratios apart; an adjustment moves
+                  both the same way.
+
+    ``f_high`` is the highest regular-hours 1-min high over the daily high and
+    ``f_low`` the lowest low over the daily low, each rounded to 5 decimals;
+    ``factor`` is their mean, rounded to 5 decimals. All three are None unless
+    the session was measured.
+    """
+    readings = session_minute_readings(rows["ts"], rows["inserted_at"], schedule)
+
+    daily_by_date: dict = {}
+    for day, high, low, source in zip(
+            daily["date"], daily["high"], daily["low"], daily["data_source"]):
+        # A DATE column comes back as Timestamps (datetime subclasses); a bare
+        # date never equals one, so normalise before keying.
+        key = day.date() if isinstance(day, datetime) else day
+        if key in daily_by_date:
+            raise ValueError(f"market_data_daily frame holds {key} twice")
+        daily_by_date[key] = (high, low, source)
+
+    placed = None
+    out = []
+    for reading, opened, closed in zip(
+            readings, schedule["market_open"], schedule["market_close"]):
+        record = {"session": reading.session, "status": reading.status,
+                  "exact": reading.exact, "verdict": "INCOMPLETE", "reason": None,
+                  "f_high": None, "f_low": None, "factor": None}
+        out.append(record)
+        if reading.status != "OK":
+            continue
+
+        record["verdict"] = "UNMEASURED"
+        if reading.session not in daily_by_date:
+            record["reason"] = "no_daily_row"
+            continue
+        day_high, day_low, source = daily_by_date[reading.session]
+        if source == _DAILY_FROM_INTRADAY:
+            record["reason"] = "daily_from_intraday"
+            continue
+        if source not in TRUE_DAILY_SOURCES:
+            record["reason"] = "daily_source_unknown"
+            continue
+        if pd.isna(day_high) or pd.isna(day_low) or day_high <= 0 or day_low <= 0:
+            record["reason"] = "daily_not_positive"
+            continue
+
+        if placed is None:
+            # Once, over the whole window: the resolver must see each date entire.
+            placed = place_stored_rows(rows["ts"], rows["volume"], rows["inserted_at"])
+        instants, keep, _proven = placed
+        rth = keep & ((instants >= opened) & (instants < closed))
+        highs = pd.to_numeric(rows["high"][rth], errors="raise").dropna()
+        lows = pd.to_numeric(rows["low"][rth], errors="raise").dropna()
+        if highs.empty or lows.empty:
+            record["reason"] = "no_rth_high_low"
+            continue
+
+        high_units = round(float(highs.max()) / float(day_high) * _BASIS_UNIT)
+        low_units = round(float(lows.min()) / float(day_low) * _BASIS_UNIT)
+        record["reason"] = None
+        record["f_high"] = high_units / _BASIS_UNIT
+        record["f_low"] = low_units / _BASIS_UNIT
+        record["factor"] = round((record["f_high"] + record["f_low"]) / 2, 5)
+        high_in = _BASIS_LOW <= high_units <= _BASIS_HIGH
+        low_in = _BASIS_LOW <= low_units <= _BASIS_HIGH
+        if high_in and low_in:
+            record["verdict"] = "AS-TRADED" if reading.exact else "INFERRED"
+        elif (high_units < _BASIS_LOW and low_units < _BASIS_LOW) or (
+                high_units > _BASIS_HIGH and low_units > _BASIS_HIGH):
+            record["verdict"] = "ADJUSTED"
+        else:
+            record["verdict"] = "ODD"
+    return out
+
+
+# The basis check covers the three tickers the session scan covers.
+BASIS_TICKERS = ("SPY", "QQQ", "IWM")
+
+_BASIS_BARS_SQL = """
+    SELECT ts, high, low, volume, inserted_at
+      FROM market_data_intraday
+     WHERE ticker = :t AND interval = '1min' AND ts >= :start AND ts < :end
+"""
+_BASIS_DAILY_SQL = """
+    SELECT date, high, low, data_source
+      FROM market_data_daily
+     WHERE ticker = :t AND date >= :first AND date <= :last
+"""
+_UNMEASURED_REASONS = ("no_daily_row", "daily_from_intraday", "daily_source_unknown",
+                       "daily_not_positive", "no_rth_high_low")
+
+
+def _month_last_day(year: int, month: int) -> date:
+    first_of_next = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+    return first_of_next - timedelta(days=1)
+
+
+def run_verify_basis(path: str, now_utc: Optional[datetime] = None) -> int:
+    """Say which listed ticker-months hold 1-min sessions that are not as traded.
+
+    Read-only, no vendor call. One bars read per listed ticker-month (the
+    month window) and one market_data_daily read per ticker over the span of
+    its listed months; both strict, so a failed read ends the run with a
+    traceback and no summary line. One month's bars are in memory at a time.
+    Not striped across Cloud Run tasks and not limited: the list is at most 3
+    tickers by 143 months.
+
+    A month's sessions are the calendar's sessions of that month whose close
+    has passed at *now_utc* (aware UTC; default: now). Lines, printed (not
+    logged), one per ticker-month and kind that counts at least one session:
+
+      BASIS-FAIL T YYYY-MM sessions=N first..last factor=MIN..MAX inferred=N
+      EMPTY T YYYY-MM                       (a listed month with no rows)
+      UNMEASURED T YYYY-MM sessions=N first..last <reason>=N ...
+      INCOMPLETE T YYYY-MM sessions=N first..last inexact=N
+      INFERRED T YYYY-MM sessions=N first..last
+      ODD T YYYY-MM-DD high=F low=F exact=yes|no   (one per session)
+      verify-basis summary: ...             (last; a run without it crashed)
+
+    Returns the exit code:
+      1  a BASIS-FAIL or EMPTY line was printed; or the list has no lines or
+         names a ticker other than SPY, QQQ and IWM (before any query);
+      3  none of that, and a line rests on a row that is not proven a true
+         instant: an INFERRED line, an INCOMPLETE line with inexact above 0,
+         or an ODD line with exact=no;
+      0  otherwise: every measured session is AS-TRADED from proven rows, and
+         every session that was not measured is exact and listed. It does not
+         say every session was measured; the lines and the summary do.
+    """
+    items = list(dict.fromkeys(_read_replace_list(path)))
+    if not items:
+        # A truncated or failed list upload must fail, not pass having
+        # checked nothing.
+        log.error("verify-basis: %s lists no ticker-months; nothing was checked.", path)
+        return 1
+    others = sorted({sym for sym, _, _ in items if sym not in BASIS_TICKERS})
+    if others:
+        log.error("verify-basis: %s names %s; only %s are checked. Nothing was read.",
+                  path, ", ".join(others), ", ".join(BASIS_TICKERS))
+        return 1
+    now = utc_now() if now_utc is None else now_utc
+
+    span: dict = {}
+    for sym, y, m in items:
+        first, last = span.get(sym, ((y, m), (y, m)))
+        span[sym] = (min(first, (y, m)), max(last, (y, m)))
+
+    daily_frames: dict = {}
+    totals = {"AS-TRADED": 0, "INFERRED": 0, "ADJUSTED": 0, "ODD": 0,
+              "UNMEASURED": 0, "INCOMPLETE": 0}
+    empty_months = 0
+    failed = False       # a BASIS-FAIL or EMPTY line
+    unproven = False     # a line that rests on a row that is not proven
+
+    for sym, y, m in items:
+        label = f"{sym} {y}-{m:02d}"
+        if sym not in daily_frames:
+            (fy, fm), (ly, lm) = span[sym]
+            daily_frames[sym] = query_to_dataframe_strict(
+                _BASIS_DAILY_SQL,
+                {"t": sym, "first": date(fy, fm, 1), "last": _month_last_day(ly, lm)},
+                timeout_s=120)
+        start, end = intraday_month_window(y, m)
+        rows = query_to_dataframe_strict(
+            _BASIS_BARS_SQL, {"t": sym, "start": start, "end": end}, timeout_s=120)
+        if rows.empty:
+            # Data that went missing after the list was made.
+            print(f"EMPTY {label}")
+            empty_months += 1
+            failed = True
+            continue
+
+        schedule = session_schedule(date(y, m, 1), _month_last_day(y, m))
+        # A session still trading (or not yet open) is not read at all: it is
+        # neither incomplete nor counted.
+        schedule = schedule[schedule["market_close"] <= now]
+        records = session_basis_verdicts(rows, daily_frames[sym], schedule)
+        del rows
+        by_verdict: dict = {}
+        for r in records:
+            by_verdict.setdefault(r["verdict"], []).append(r)
+            totals[r["verdict"]] += 1
+
+        def span_of(group: list) -> str:
+            return f"{group[0]['session'].isoformat()}..{group[-1]['session'].isoformat()}"
+
+        adjusted = by_verdict.get("ADJUSTED", [])
+        if adjusted:
+            factors = [r["factor"] for r in adjusted]
+            print(f"BASIS-FAIL {label} sessions={len(adjusted)} {span_of(adjusted)} "
+                  f"factor={min(factors):.5f}..{max(factors):.5f} "
+                  f"inferred={sum(1 for r in adjusted if not r['exact'])}")
+            failed = True
+        unmeasured = by_verdict.get("UNMEASURED", [])
+        if unmeasured:
+            reasons = " ".join(
+                f"{name}={sum(1 for r in unmeasured if r['reason'] == name)}"
+                for name in _UNMEASURED_REASONS)
+            print(f"UNMEASURED {label} sessions={len(unmeasured)} "
+                  f"{span_of(unmeasured)} {reasons}")
+        incomplete = by_verdict.get("INCOMPLETE", [])
+        if incomplete:
+            inexact = sum(1 for r in incomplete if not r["exact"])
+            print(f"INCOMPLETE {label} sessions={len(incomplete)} "
+                  f"{span_of(incomplete)} inexact={inexact}")
+            unproven = unproven or inexact > 0
+        inferred = by_verdict.get("INFERRED", [])
+        if inferred:
+            print(f"INFERRED {label} sessions={len(inferred)} {span_of(inferred)}")
+            unproven = True
+        for r in by_verdict.get("ODD", []):
+            print(f"ODD {sym} {r['session'].isoformat()} high={r['f_high']:.5f} "
+                  f"low={r['f_low']:.5f} exact={'yes' if r['exact'] else 'no'}")
+            unproven = unproven or not r["exact"]
+
+    print(f"verify-basis summary: months={len(items)} as_traded={totals['AS-TRADED']} "
+          f"inferred={totals['INFERRED']} adjusted={totals['ADJUSTED']} "
+          f"odd={totals['ODD']} unmeasured={totals['UNMEASURED']} "
+          f"incomplete={totals['INCOMPLETE']} empty={empty_months}")
+    if failed:
+        return 1
+    return 3 if unproven else 0
+
+
 def main():
     parser = argparse.ArgumentParser(description='Fetch AV intraday → Cloud SQL')
     parser.add_argument('--symbol', default='ALL',
@@ -874,14 +1152,28 @@ def main():
     parser.add_argument('--verify-months', default=None, metavar='PATH',
                         help='Read-only: check each TICKER,YYYY-MM holds only true-UTC '
                              'rows. Exits 1 listing VERIFY-FAIL lines otherwise.')
+    parser.add_argument('--verify-basis', default=None, metavar='PATH',
+                        help='Read-only, no vendor call: for each TICKER,YYYY-MM line '
+                             '(SPY, QQQ and IWM only) say which sessions are not stored '
+                             'as traded. A local file or a gs:// object, e.g. '
+                             '--verify-basis=gs://adept-mountain-474619-d4-trading-data/'
+                             'intraday-lists/<name>.csv. Exits 1 on a BASIS-FAIL or EMPTY '
+                             'line, 3 when a line rests on a row that is not proven a '
+                             'true instant, else 0.')
     args = parser.parse_args()
 
-    if args.replace_months and args.verify_months:
-        parser.error('--replace-months and --verify-months are separate runs')
+    list_modes = [flag for flag, value in (
+        ('--replace-months', args.replace_months),
+        ('--verify-months', args.verify_months),
+        ('--verify-basis', args.verify_basis)) if value]
+    if len(list_modes) > 1:
+        parser.error(f"{' and '.join(list_modes)} are separate runs")
     if args.replace_months:
         sys.exit(run_replace_months(args.replace_months, args.commit, args.limit))
     if args.verify_months:
         sys.exit(run_verify_months(args.verify_months, args.limit))
+    if args.verify_basis:
+        sys.exit(run_verify_basis(args.verify_basis))
 
     # Default date range: previous month → today
     today = date.today()
