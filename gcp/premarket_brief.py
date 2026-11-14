@@ -3072,6 +3072,7 @@ LATE_SLOT_START = time(9, 20)             # a usable snapshot is stamped at or a
 LATE_SLOT_WAIT_DEADLINE = time(9, 27)     # the wait for the refresh ends here
 LATE_SLOT_WRITE_CUTOFF = time(9, 29, 30)  # no canonical statement is sent at or after this
 LATE_SLOT_POLL_SECONDS = 5
+LATE_SLOT_READ_TIMEOUT_S = 5              # statement timeout of one stamp read
 
 
 class LateSlotClock(NamedTuple):
@@ -3109,6 +3110,149 @@ def _eastern_now() -> datetime:
     one replacement of eastern_now freezes a whole run."""
     from lib import eastern_time  # noqa: PLC0415
     return eastern_time.eastern_now()
+
+
+class LateSlotWait(NamedTuple):
+    """What the wait on the refresh found."""
+    ready: bool
+    stamps: dict      # ticker -> aware UTC datetime, or None (no row, no stamp, no read succeeded)
+    reasons: dict     # ticker -> reason, only for a ticker that did not pass
+    polls: int        # stamp reads attempted
+    waited_s: float   # by the injected clock, first check to return
+
+
+def _sleep(seconds: float) -> None:
+    """time.sleep under a module name, so a test replaces the wait's sleep."""
+    import time as _time  # noqa: PLC0415
+    _time.sleep(seconds)
+
+
+def _late_slot_binds(session_date: date, tickers: list[str]) -> tuple[str, dict]:
+    """The `:t0, :t1, ...` placeholder list and the bind values of a keyed
+    read for the brief tickers: no ticker text reaches the SQL."""
+    params: dict = {'session_date': session_date}
+    names = []
+    for i, ticker in enumerate(tickers):
+        params[f't{i}'] = ticker
+        names.append(f':t{i}')
+    return ', '.join(names), params
+
+
+def _null_to_none(value):
+    """NULL as pandas hands it back (None, NaN, NaT) is None; anything
+    else is itself. A missing value is never read as a number."""
+    if value is None or isinstance(value, (dict, list, str)):
+        return value
+    try:
+        return None if pd.isna(value) else value
+    except (TypeError, ValueError):
+        return value
+
+
+def _read_late_slot_stamps(session_date: date, tickers: list[str]) -> dict[str, dict]:
+    """The refresh's stamp and filter status on the session's own
+    market_data_daily row, per brief ticker: {ticker: {'pre_fetched_at',
+    'pre_filter_status'}}. A ticker with no row is absent. One keyed
+    statement with a statement timeout; a failed read raises
+    (query_to_dataframe_strict), it is never read as "no row"."""
+    from gcp import database  # noqa: PLC0415
+    placeholders, params = _late_slot_binds(session_date, tickers)
+    df = database.query_to_dataframe_strict(
+        "SELECT ticker, pre_fetched_at, pre_filter_status "
+        "FROM market_data_daily "
+        f"WHERE date = :session_date AND ticker IN ({placeholders})",
+        params, timeout_s=LATE_SLOT_READ_TIMEOUT_S)
+    out: dict[str, dict] = {}
+    for record in df.to_dict('records'):
+        stamp = _null_to_none(record.get('pre_fetched_at'))
+        if isinstance(stamp, pd.Timestamp):
+            stamp = stamp.to_pydatetime()
+        if stamp is not None and stamp.tzinfo is not None:
+            stamp = as_utc_instant(stamp)
+        out[str(record['ticker'])] = {
+            'pre_fetched_at': stamp,
+            'pre_filter_status': _null_to_none(record.get('pre_filter_status')),
+        }
+    return out
+
+
+def _late_slot_stamp_reason(row: Optional[dict], clock: LateSlotClock) -> Optional[str]:
+    """Why a ticker's refresh row is not a usable 09:20 snapshot, or None
+    when it is. First that applies: no row; no stamp; a stamp with no zone
+    (never localized by guess); a stamp before the slot's start; a filter
+    status other than ok (the level builder refuses that snapshot)."""
+    if row is None:
+        return 'no row'
+    stamp = row.get('pre_fetched_at')
+    if stamp is None:
+        return 'no stamp'
+    if stamp.tzinfo is None or stamp.utcoffset() is None:
+        return 'stamp has no zone'
+    if stamp < clock.start:
+        return f"stamp {as_eastern_time(stamp):%H:%M:%S}"
+    status = row.get('pre_filter_status')
+    if status != 'ok':
+        return f"status {'none' if status is None else status}"
+    return None
+
+
+def _wait_for_late_snapshot(session_date: date, tickers: list[str], clock: LateSlotClock, *,
+                            now: Optional[Callable[[], datetime]] = None,
+                            sleep: Optional[Callable[[float], None]] = None,
+                            read: Optional[Callable] = None) -> LateSlotWait:
+    """Poll the refresh's stamps every LATE_SLOT_POLL_SECONDS until every
+    brief ticker has a usable 09:20 snapshot, or the wait deadline.
+
+    The clock is checked before every read: at or after the deadline the
+    wait returns not ready without reading. A read that raises is logged at
+    WARNING and counted, and the next poll still runs. Not ready carries one
+    reason per ticker that did not pass, from the last read that succeeded;
+    `read failed: <type>` when none did; `no read before the deadline` when
+    none was attempted. The run never rebuilds from the early snapshot
+    (CLAUDE.md 3.7): not ready is a refusal the caller reports."""
+    now = now or _eastern_now
+    sleep = sleep or _sleep
+    read = read or _read_late_slot_stamps
+    started = now()
+    polls = 0
+    last_rows: Optional[dict] = None
+    last_error: Optional[BaseException] = None
+
+    def _result(ready: bool, reasons: dict) -> LateSlotWait:
+        rows = last_rows or {}
+        stamps = {t: (rows.get(t) or {}).get('pre_fetched_at') for t in tickers}
+        return LateSlotWait(ready, stamps, reasons, polls,
+                            (now() - started).total_seconds())
+
+    while as_utc_instant(now()) < clock.wait_deadline:
+        polls += 1
+        try:
+            rows = read(session_date, tickers)
+        except Exception as exc:  # noqa: BLE001 -- reported as a refusal, never as a pass
+            logger.warning("late slot stamp read failed: %s: %s", type(exc).__name__, exc)
+            last_error = exc
+        else:
+            last_rows = rows
+            reasons = {}
+            for ticker in tickers:
+                reason = _late_slot_stamp_reason(rows.get(ticker), clock)
+                if reason is not None:
+                    reasons[ticker] = reason
+            if not reasons:
+                return _result(True, {})
+        sleep(LATE_SLOT_POLL_SECONDS)
+
+    if last_rows is not None:
+        reasons = {}
+        for ticker in tickers:
+            reason = _late_slot_stamp_reason(last_rows.get(ticker), clock)
+            if reason is not None:
+                reasons[ticker] = reason
+    elif last_error is not None:
+        reasons = {t: f"read failed: {type(last_error).__name__}" for t in tickers}
+    else:
+        reasons = {t: 'no read before the deadline' for t in tickers}
+    return _result(False, reasons)
 
 
 # ── Cloud SQL Persistence ───────────────────────────────────────────────────

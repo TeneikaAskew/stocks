@@ -444,3 +444,167 @@ class TestLateSlotPrecedence:
         env = {'BRIEF_AS_OF': SESSION, 'BRIEF_UPDATE': 'true'}
         assert harness.run('2026-11-13 09:21:30', late=True, env=env) == 2
         assert (harness.queries, harness.writes, harness.sent, harness.generated) == (0, [], [], 0)
+
+
+# ── The stamp read and the wait ─────────────────────────────────────────────
+
+D = date(2026, 11, 13)
+CLOCK = pb._late_slot_clock(D)
+T = list(TICKERS)
+
+
+def _utc(eastern_text: str) -> datetime:
+    """An America/New_York wall time of the session date as a UTC instant."""
+    from lib.eastern_time import as_utc_instant
+    return as_utc_instant(datetime.fromisoformat(f'{D} {eastern_text}').replace(tzinfo=ET))
+
+
+EARLY = {'pre_fetched_at': _utc('08:20:57'), 'pre_filter_status': 'ok'}
+LATE = {'pre_fetched_at': _utc('09:20:40'), 'pre_filter_status': 'ok'}
+
+
+def _all(row):
+    return {t: dict(row) for t in T}
+
+
+class _ticking:
+    """A clock that only moves when it is slept on."""
+
+    def __init__(self, start: str):
+        self.t = datetime.fromisoformat(f'{D} {start}').replace(tzinfo=ET)
+        self.slept: list = []
+
+    def now(self) -> datetime:
+        return self.t
+
+    def sleep(self, seconds) -> None:
+        self.slept.append(seconds)
+        self.t = self.t + timedelta(seconds=seconds)
+
+
+def _wait(tick, read):
+    return pb._wait_for_late_snapshot(D, T, CLOCK, now=tick.now, sleep=tick.sleep, read=read)
+
+
+class TestLateSlotWait:
+    def test_ready_on_the_third_read(self):
+        tick, reads = _ticking('09:20:05'), iter([_all(EARLY), _all(EARLY), _all(LATE)])
+        out = _wait(tick, lambda d, t: next(reads))
+        assert (out.ready, out.polls, tick.slept, out.reasons, out.waited_s) == (True, 3, [5, 5], {}, 10)
+        assert set(out.stamps.values()) == {LATE['pre_fetched_at']}
+        assert sorted(out.stamps) == T
+
+    def test_the_early_stamp_never_passes_and_no_read_follows_the_deadline(self):
+        from lib.eastern_time import as_utc_instant
+        tick, calls = _ticking('09:26:50'), []
+        out = _wait(tick, lambda d, t: calls.append(tick.now()) or _all(EARLY))
+        assert not out.ready and out.polls == 2 and len(calls) == 2
+        assert all(as_utc_instant(c) < CLOCK.wait_deadline for c in calls)
+        assert out.reasons == {t: 'stamp 08:20:57' for t in T}
+        assert out.stamps == {t: EARLY['pre_fetched_at'] for t in T}
+
+    @pytest.mark.parametrize('row,reason', [
+        ({'pre_fetched_at': LATE['pre_fetched_at'], 'pre_filter_status': 'level_params_unavailable'},
+         'status level_params_unavailable'),
+        ({'pre_fetched_at': LATE['pre_fetched_at'], 'pre_filter_status': None}, 'status none'),
+        ({'pre_fetched_at': None, 'pre_filter_status': 'ok'}, 'no stamp'),
+        (None, 'no row')])
+    def test_one_ticker_that_does_not_pass(self, row, reason):
+        rows = _all(LATE)
+        if row is None:
+            del rows['QQQ']
+        else:
+            rows['QQQ'] = row
+        out = _wait(_ticking('09:26:58'), lambda d, t: rows)
+        assert not out.ready and out.reasons == {'QQQ': reason}
+
+    @pytest.mark.parametrize('stamp,passes', [('09:19:59.999999', False), ('09:20:00', True)])
+    def test_the_boundary(self, stamp, passes):
+        rows = _all({'pre_fetched_at': _utc(stamp), 'pre_filter_status': 'ok'})
+        out = _wait(_ticking('09:26:58'), lambda d, t: rows)
+        assert out.ready is passes and out.polls == 1
+
+    def test_a_read_that_raises_is_logged_and_polled_again(self, caplog):
+        reads = iter([ConnectionError('down'), _all(LATE)])
+
+        def read(d, t):
+            item = next(reads)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        with caplog.at_level(logging.WARNING, logger='gcp.premarket_brief'):
+            out = _wait(_ticking('09:20:05'), read)
+        assert out.ready and out.polls == 2
+        assert any(r.levelno == logging.WARNING
+                   and 'late slot stamp read failed: ConnectionError: down' in r.getMessage()
+                   for r in caplog.records)
+
+    def test_no_read_succeeds(self):
+        out = _wait(_ticking('09:26:50'), raise_(ConnectionError('down')))
+        assert not out.ready and out.polls == 2
+        assert out.reasons == {t: 'read failed: ConnectionError' for t in T}
+        assert out.stamps == {t: None for t in T}
+
+    def test_reasons_come_from_the_last_read_that_succeeded(self):
+        reads = iter([_all(EARLY), ConnectionError('down')])
+
+        def read(d, t):
+            item = next(reads)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        out = _wait(_ticking('09:26:50'), read)
+        assert not out.ready and out.polls == 2
+        assert out.reasons == {t: 'stamp 08:20:57' for t in T}
+
+    def test_a_stamp_without_a_zone_does_not_pass(self):
+        naive = datetime(2026, 11, 13, 14, 20, 40)        # what a zone-less driver would hand back
+        out = _wait(_ticking('09:26:58'),
+                    lambda d, t: _all({'pre_fetched_at': naive, 'pre_filter_status': 'ok'}))
+        assert not out.ready
+        assert out.reasons == {t: 'stamp has no zone' for t in T}
+
+    def test_a_start_after_the_deadline_reads_nothing(self):
+        out = _wait(_ticking('09:28:00'), _refuse)
+        assert (out.ready, out.polls) == (False, 0)
+        assert out.reasons == {t: 'no read before the deadline' for t in T}
+        assert out.stamps == {t: None for t in T}
+
+    def test_the_defaults_are_the_module_clock_sleep_and_read(self, monkeypatch):
+        import lib.eastern_time as eastern_time
+        tick = _ticking('09:26:50')
+        monkeypatch.setattr(eastern_time, 'eastern_now', tick.now)
+        monkeypatch.setattr(pb, '_sleep', tick.sleep)
+        monkeypatch.setattr(pb, '_read_late_slot_stamps', lambda d, t: _all(EARLY))
+        out = pb._wait_for_late_snapshot(D, T, CLOCK)
+        assert (out.ready, out.polls, tick.slept) == (False, 2, [5, 5])
+
+    def test_the_read_is_one_keyed_statement(self, monkeypatch):
+        import gcp.database as database
+        seen = []
+
+        def strict(sql, params=None, timeout_s=None):
+            seen.append((sql, dict(params or {}), timeout_s))
+            return pd.DataFrame({
+                'ticker': ['IWM', 'SPY'],
+                'pre_fetched_at': pd.to_datetime([LATE['pre_fetched_at'], None], utc=True),
+                'pre_filter_status': ['ok', None]})
+
+        monkeypatch.setattr(database, 'query_to_dataframe_strict', strict)
+        out = pb._read_late_slot_stamps(D, T)
+        ((sql, params, timeout_s),) = seen
+        assert 'FROM market_data_daily' in sql and 'date = :session_date' in sql
+        assert not any(t in sql for t in T) and timeout_s == 5 == pb.LATE_SLOT_READ_TIMEOUT_S
+        assert params['session_date'] == D
+        assert {v for k, v in params.items() if k != 'session_date'} == set(T)
+        assert set(out) == {'IWM', 'SPY'}          # QQQ has no row, so it is absent
+        assert out['IWM'] == {'pre_fetched_at': LATE['pre_fetched_at'], 'pre_filter_status': 'ok'}
+        assert out['SPY'] == {'pre_fetched_at': None, 'pre_filter_status': None}
+
+    def test_a_failed_stamp_read_raises_from_the_reader(self, monkeypatch):
+        import gcp.database as database
+        monkeypatch.setattr(database, 'query_to_dataframe_strict', raise_(ConnectionError('down')))
+        with pytest.raises(ConnectionError):
+            pb._read_late_slot_stamps(D, T)
