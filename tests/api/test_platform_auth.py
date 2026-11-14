@@ -570,3 +570,94 @@ class TestValidatedAuthMode:
     def test_refuses_empty_mode(self):
         with pytest.raises(RuntimeError, match="AUTH_MODE"):
             auth_mod._validated_auth_mode("")
+
+
+# current_user_identity: the uid with the verified email
+
+def _identity_app(monkeypatch, mode: str):
+    """An app whose route reports current_user_identity, with the shared token
+    decode stubbed (not _verify_bearer_email, so the real wrappers run)."""
+    import api.auth as a
+    monkeypatch.setattr(a, "AUTH_MODE", mode)
+
+    def fake_decode(request):
+        authz = request.headers.get("authorization") or ""
+        if not authz.lower().startswith("bearer "):
+            return None
+        tok = authz.split(" ", 1)[1]
+        if tok == "bad":
+            raise ValueError("invalid token")
+        if tok == "good":
+            return {"uid": "u1", "email": "Alice@Example.com", "email_verified": True}
+        if tok == "unverified":
+            return {"uid": "u1", "email": "a@b.c", "email_verified": False}
+        if tok == "nouid":
+            return {"email": "a@b.c", "email_verified": True}
+        return None
+
+    monkeypatch.setattr(a, "_decode_bearer", fake_decode)
+
+    app = FastAPI()
+
+    @app.get("/who")
+    def _who(request: Request):
+        ident = a.current_user_identity(request)
+        return {"ident": None if ident is None else [ident.uid, ident.email],
+                "email": a.current_user_email(request)}
+
+    return TestClient(app), a
+
+
+def test_identity_firebase_returns_uid_and_lowercased_email(monkeypatch):
+    c, a = _identity_app(monkeypatch, "firebase")
+    body = c.get("/who", headers={"authorization": "Bearer good"}).json()
+    assert body["ident"] == ["u1", "alice@example.com"]
+    assert a.UserIdentity("u1", "alice@example.com") == a.UserIdentity(uid="u1", email="alice@example.com")
+
+
+def test_identity_none_for_invalid_token(monkeypatch):
+    c, _ = _identity_app(monkeypatch, "firebase")
+    assert c.get("/who", headers={"authorization": "Bearer bad"}).json()["ident"] is None
+
+
+def test_identity_none_for_unverified_email(monkeypatch):
+    c, _ = _identity_app(monkeypatch, "firebase")
+    assert c.get("/who", headers={"authorization": "Bearer unverified"}).json()["ident"] is None
+
+
+def test_identity_none_without_uid(monkeypatch):
+    c, _ = _identity_app(monkeypatch, "firebase")
+    assert c.get("/who", headers={"authorization": "Bearer nouid"}).json()["ident"] is None
+
+
+def test_identity_none_without_header(monkeypatch):
+    c, _ = _identity_app(monkeypatch, "firebase")
+    assert c.get("/who").json()["ident"] is None
+
+
+def test_identity_none_in_open_mode(monkeypatch):
+    c, _ = _identity_app(monkeypatch, "open")
+    assert c.get("/who", headers={"authorization": "Bearer good"}).json()["ident"] is None
+
+
+def test_identity_none_in_iap_mode(monkeypatch):
+    c, _ = _identity_app(monkeypatch, "iap")
+    r = c.get("/who", headers={"x-goog-authenticated-user-email": "accounts.google.com:me@x.com"})
+    assert r.json()["ident"] is None
+
+
+def test_current_user_email_unchanged(monkeypatch):
+    c, a = _identity_app(monkeypatch, "firebase")
+    assert c.get("/who", headers={"authorization": "Bearer good"}).json()["email"] == "alice@example.com"
+    assert c.get("/who", headers={"authorization": "Bearer bad"}).json()["email"] is None
+    assert c.get("/who", headers={"authorization": "Bearer unverified"}).json()["email"] is None
+    assert c.get("/who").json()["email"] is None
+    # _verify_bearer_email keeps its raise behaviour through the shared decode.
+    from starlette.requests import Request as R
+    def req(tok):
+        return R({"type": "http", "headers": [(b"authorization", f"Bearer {tok}".encode())]})
+    with pytest.raises(ValueError):
+        a._verify_bearer_email(req("bad"))
+    with pytest.raises(a.UnverifiedEmailError):
+        a._verify_bearer_email(req("unverified"))
+    assert a._verify_bearer_email(req("good")) == "alice@example.com"

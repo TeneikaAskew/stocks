@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
 from fastapi import Request, Response
@@ -111,8 +112,8 @@ def _ensure_firebase() -> None:
         _firebase_ready = True
 
 
-def _verify_bearer_email(request: Request) -> Optional[str]:
-    """Return the verified email from the Firebase ID token, or None if absent.
+def _decode_bearer(request: Request) -> Optional[dict]:
+    """Return the decoded Firebase ID token claims, or None without a bearer.
 
     Raises on an invalid/expired token (caller turns that into a 401).
     """
@@ -133,9 +134,45 @@ def _verify_bearer_email(request: Request) -> Optional[str]:
     # 401 for anyone whose clock isn't perfectly synced. Firebase permits up
     # to 60s of skew; using the max is harmless on 1-hour tokens and is the
     # documented, production-grade way to handle real-world clock drift.
-    decoded = fb_auth.verify_id_token(token, clock_skew_seconds=60)
+    return fb_auth.verify_id_token(token, clock_skew_seconds=60)
+
+
+def _verify_bearer_email(request: Request) -> Optional[str]:
+    """Return the verified email from the Firebase ID token, or None if absent.
+
+    Raises on an invalid/expired token (caller turns that into a 401).
+    """
+    decoded = _decode_bearer(request)
+    if decoded is None:
+        return None
     email = (decoded.get("email") or "").strip().lower()
     return _verified_email_or_none(email, decoded)
+
+
+@dataclass(frozen=True)
+class UserIdentity:
+    """A signed-in account: the Firebase uid and its verified email."""
+    uid: str
+    email: str
+
+
+def _verify_bearer_identity(request: Request) -> Optional[UserIdentity]:
+    """Return the uid and verified email from the bearer token, or None.
+
+    None without a bearer, or when the token carries no uid or no email.
+    Raises on an invalid token or an unverified email.
+    """
+    decoded = _decode_bearer(request)
+    if decoded is None:
+        return None
+    uid = decoded.get("uid")
+    if not uid:
+        return None
+    email = (decoded.get("email") or "").strip().lower()
+    verified = _verified_email_or_none(email, decoded)
+    if verified is None:
+        return None
+    return UserIdentity(uid=str(uid), email=verified)
 
 
 def _iap_email(request: Request) -> Optional[str]:
@@ -161,6 +198,20 @@ def current_user_email(request: Request) -> Optional[str]:
     if AUTH_MODE == "firebase":
         try:
             return _verify_bearer_email(request)
+        except Exception:
+            return None
+    return None
+
+
+def current_user_identity(request: Request) -> Optional[UserIdentity]:
+    """The signed-in account (uid and verified email), or None.
+
+    firebase mode only: resolved from the bearer token. open and iap modes
+    carry no Firebase uid, so they have no identity.
+    """
+    if AUTH_MODE == "firebase":
+        try:
+            return _verify_bearer_identity(request)
         except Exception:
             return None
     return None
