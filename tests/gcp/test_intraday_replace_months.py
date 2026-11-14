@@ -879,3 +879,89 @@ def test_the_recompute_advice_never_names_a_destructive_or_no_op_command():
     assert "NO PATH YET" in premarket and "backfill_daily_indicators" not in premarket
     hs = adv["historical_signals / signal_metrics"]
     assert "FULL regeneration" in hs and "earliest" in hs
+
+
+# ── FEAT-DATA-001, replace-months: label copies and late vendor bars ─────────
+#
+# Spec: docs/superpowers/specs/2026-11-14-feat-data-001-replace-held-session-window.md
+
+
+def _swap_engine(deleted: int):
+    """_engine_with, with a lock count that equals the DELETE's row count (the
+    swap rolls back when they differ) and every executed statement recorded."""
+    engine, conn, tbl = _engine_with(rowcount=deleted)
+    calls = []
+
+    def execute(stmt, *a, **k):
+        q = " ".join(str(stmt).split())
+        calls.append((q, a[0] if a else None))
+        r = MagicMock()
+        r.scalar_one.return_value = deleted
+        r.scalar.return_value = "exists"
+        r.rowcount = deleted if q.startswith("DELETE FROM market_data_intraday") else 1
+        return r
+    conn.execute.side_effect = execute
+    return engine, tbl, calls
+
+
+def test_the_swap_spares_the_listed_keys():
+    """Design 4: the lock statement and the DELETE leave the spared keys alone,
+    the derived-table clears keep the whole window, and the delete-ratio check
+    counts the rows deleted, not the rows of the window."""
+    import gcp.database as db
+    start, end = fai.month_replace_window(2018, 3)
+    spare = [pd.Timestamp("2018-03-01 02:04", tz="UTC"), pd.Timestamp("2018-03-01 03:10", tz="UTC")]
+    df = _rows(pd.DatetimeIndex(["2018-03-01 14:30", "2018-03-01 14:31"], tz="UTC"))
+    key = {"ticker": "SPY", "interval": "1min"}
+
+    def swap(deleted, frame=df, spare_ts=spare):
+        engine, tbl, calls = _swap_engine(deleted)
+        with patch.object(db, "get_engine", return_value=engine), \
+             patch.dict(db._REFLECTED_TABLES, {"market_data_intraday": tbl}):
+            out = db.replace_rows_in_window(
+                frame, "market_data_intraday", key, "ts", start, end,
+                max_delete_ratio=3.0, verify=lambda c: None,
+                clear_tables=("intraday_flow_15m",), spare_ts=spare_ts)
+        return out, calls
+
+    out, calls = swap(deleted=6)
+    # 6 deleted for 2 inserted is exactly the ratio. Counting the 2 spared rows
+    # as deleted would make it 8 and roll the swap back.
+    assert out == (6, 2)
+    lock = [(q, p) for q, p in calls if "FOR UPDATE" in q]
+    delete = [(q, p) for q, p in calls if q.startswith("DELETE FROM market_data_intraday")]
+    assert len(lock) == 1 and len(delete) == 1
+    for q, p in lock + delete:
+        assert "AND ts NOT IN" in q, q
+        assert list(p["w_spare"]) == spare
+    derived = [(q, p) for q, p in calls if q.startswith("DELETE FROM intraday_flow_15m")]
+    assert [q for q, _ in derived] == ["DELETE FROM intraday_flow_15m WHERE ticker = :k_ticker "
+                                       "AND ts >= :w_start AND ts < :w_end"]
+    assert "w_spare" not in derived[0][1]
+
+    with pytest.raises(ValueError, match="rolled back"):
+        swap(deleted=7)
+
+    # Refused before the transaction opens: nothing may reach the database.
+    with patch.object(db, "get_engine", side_effect=AssertionError("no DB call expected")):
+        with pytest.raises(ValueError, match="spared"):
+            db.replace_rows_in_window(
+                _rows(pd.DatetimeIndex(["2018-03-01 02:04", "2018-03-01 14:30"], tz="UTC")),
+                "market_data_intraday", key, "ts", start, end, spare_ts=spare)
+        with pytest.raises(ValueError, match="outside"):
+            db.replace_rows_in_window(df, "market_data_intraday", key, "ts", start, end,
+                                      spare_ts=[pd.Timestamp("2018-04-01 02:00", tz="UTC")])
+        with pytest.raises(ValueError, match="tz-aware"):
+            db.replace_rows_in_window(df, "market_data_intraday", key, "ts", start, end,
+                                      spare_ts=[pd.Timestamp("2018-03-01 02:04")])
+
+    # With nothing to spare the two statements are the ones of before.
+    out, calls = swap(deleted=6, spare_ts=())
+    assert out == (6, 2)
+    lock_q, lock_p = next((q, p) for q, p in calls if "FOR UPDATE" in q)
+    del_q, del_p = next((q, p) for q, p in calls if q.startswith("DELETE FROM market_data_intraday"))
+    assert lock_q == ("SELECT count(*) FROM (SELECT 1 FROM market_data_intraday WHERE ticker = :k_ticker "
+                      "AND interval = :k_interval AND ts >= :w_start AND ts < :w_end FOR UPDATE) locked")
+    assert del_q == ("DELETE FROM market_data_intraday WHERE ticker = :k_ticker "
+                     "AND interval = :k_interval AND ts >= :w_start AND ts < :w_end")
+    assert "w_spare" not in lock_p and "w_spare" not in del_p
