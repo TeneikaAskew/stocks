@@ -1398,3 +1398,54 @@ def test_premarket_statement_budget(recompute_db, monkeypatch, tmp_path):
     updates = [s for s, _many in seen if s.lstrip().startswith("UPDATE")]
     assert len(updates) == 24  # one a group
     assert len(probes) == 1 + 1 + 1 + 3 + 24 + 150  # one a strict read
+
+
+def test_the_premarket_bar_read_scans_one_index_range_a_window(recompute_db):
+    """EXPLAIN of the statement the tool sends, on Postgres: the windows are
+    the outer side of a nested loop and the bars are an index scan run once a
+    window, so the rows read are the rows returned. The table also holds a
+    year of other bars the read must not visit."""
+    from gcp.fetchers import fetch_market_data as fmd
+
+    engine = recompute_db
+    sessions = [d for d in (date(2026, 10, 1) + timedelta(days=n) for n in range(30))
+                if d.weekday() < 5]
+    assert len(sessions) == 22
+    for day in sessions:
+        seed_premarket_bars(engine, "SPY", day)
+    execute(engine, """
+        INSERT INTO market_data_intraday (ticker, interval, ts, open, high, low, close, volume)
+        SELECT 'SPY', '1min', g, 1.0, 1.0, 1.0, 1.0, 1
+          FROM generate_series(CAST('2025-06-02T14:00:00+00:00' AS TIMESTAMPTZ),
+                               CAST('2026-06-01T14:00:00+00:00' AS TIMESTAMPTZ),
+                               INTERVAL '2 minutes') AS g
+    """)
+    execute(engine, "ANALYZE market_data_intraday")
+
+    bind = {"t": "SPY"}
+    for i, day in enumerate(sessions):
+        bind[f"s{i}"], bind[f"e{i}"] = eastern_bounds_utc(day, time(4), time(9, 30))
+    with engine.connect() as conn:
+        plan = conn.execute(sqlalchemy.text(
+            "EXPLAIN (ANALYZE, FORMAT JSON) " + fmd.premarket_bars_sql(len(sessions))),
+            bind).scalar_one()
+    if isinstance(plan, str):
+        plan = json.loads(plan)
+
+    def nodes(node):
+        yield node
+        for child in node.get("Plans", []):
+            yield from nodes(child)
+
+    every = list(nodes(plan[0]["Plan"]))
+    returned = plan[0]["Plan"]["Actual Rows"]
+    assert returned == 22 * 330
+    scans = [n for n in every if n.get("Relation Name", "").startswith("market_data_intraday")]
+    assert len(scans) == 1
+    scan = scans[0]
+    assert scan["Node Type"] in ("Index Scan", "Index Only Scan")
+    assert scan["Actual Loops"] == 22            # a loop a window
+    assert scan["Actual Rows"] == 330            # the rows of one window, each loop
+    assert scan.get("Rows Removed by Filter", 0) == 0
+    assert not any("Rows Removed by Join Filter" in n and n["Rows Removed by Join Filter"]
+                   for n in every)

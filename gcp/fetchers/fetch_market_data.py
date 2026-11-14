@@ -1345,15 +1345,28 @@ DAILY_FRAME_ROWS = 250
 
 
 def premarket_bars_sql(sessions: int) -> str:
-    """One (ticker, month) of premarket bars: one window a selected session,
-    joined to the bars, so the index is read only where a window is."""
+    """One (ticker, month) of premarket bars: one window a selected session.
+
+    Each window's bounds are compared to ``ts`` inside a lateral subquery that
+    ``OFFSET 0`` keeps the planner from flattening, so the bars are read as
+    one index range a window and the rows read are the rows returned,
+    whatever the planner estimates. A plain join of the windows to the bars
+    does not guarantee that: with a month's 22 sessions listed, production
+    read the whole SPY partition through its primary key and filtered it
+    against the windows, 2,536,918 rows for 7,251 returned in 19.9 s
+    (db-query-xzdx7, 2026-11-14). This form read 330 rows a loop over 22
+    loops in 8.6 ms (db-query-lndtv).
+    """
     windows = ", ".join(f"(:s{i}, :e{i})" for i in range(sessions))
     return (
         "SELECT b.ts, b.open, b.high, b.low, b.close, b.volume, b.inserted_at\n"
         f"  FROM (VALUES {windows}) AS w(start_ts, end_ts)\n"
-        "  JOIN market_data_intraday b\n"
-        "    ON b.ticker = :t AND b.interval = '1min'\n"
-        "   AND b.ts >= w.start_ts::timestamptz AND b.ts < w.end_ts::timestamptz\n"
+        " CROSS JOIN LATERAL (\n"
+        "       SELECT m.ts, m.open, m.high, m.low, m.close, m.volume, m.inserted_at\n"
+        "         FROM market_data_intraday m\n"
+        "        WHERE m.ticker = :t AND m.interval = '1min'\n"
+        "          AND m.ts >= w.start_ts::timestamptz AND m.ts < w.end_ts::timestamptz\n"
+        "       OFFSET 0) AS b\n"
         " ORDER BY b.ts"
     )
 

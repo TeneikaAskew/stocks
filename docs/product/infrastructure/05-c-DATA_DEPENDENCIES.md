@@ -735,7 +735,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [299](../../../gcp/discord_interactions/main.py#L299)
 - [`gcp/fetchers/export_intraday_bars.py`](../../../gcp/fetchers/export_intraday_bars.py) — line [45](../../../gcp/fetchers/export_intraday_bars.py#L45)
 - [`gcp/fetchers/fetch_alphavantage_intraday.py`](../../../gcp/fetchers/fetch_alphavantage_intraday.py) — line [231](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L231), [534](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L534), [567](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L567), [790](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L790), [985](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L985)
-- [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [576](../../../gcp/fetchers/fetch_market_data.py#L576), [1354](../../../gcp/fetchers/fetch_market_data.py#L1354)
+- [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [576](../../../gcp/fetchers/fetch_market_data.py#L576), [1366](../../../gcp/fetchers/fetch_market_data.py#L1366)
 - [`gcp/historical_signals.py`](../../../gcp/historical_signals.py) — line [325](../../../gcp/historical_signals.py#L325)
 - [`gcp/premarket_playbook_resolver.py`](../../../gcp/premarket_playbook_resolver.py) — line [472](../../../gcp/premarket_playbook_resolver.py#L472)
 - [`gcp/research/strat_engine/breakout_meta_walk_forward.py`](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py) — line [340](../../../gcp/research/strat_engine/breakout_meta_walk_forward.py#L340)

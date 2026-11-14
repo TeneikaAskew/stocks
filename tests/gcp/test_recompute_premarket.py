@@ -311,7 +311,7 @@ def premarket_reader(selected: list[dict] | None = None, bars: dict | None = Non
         return every[inside].sort_values("ts").reset_index(drop=True) if inside.any() else empty
 
     return Reader([("information_schema.columns", schema_ready),
-                   ("JOIN market_data_intraday", bar_read),
+                   ("FROM market_data_intraday", bar_read),
                    ('AS "Open"', daily),
                    ("pre_recompute_run", selection)])
 
@@ -502,12 +502,12 @@ def test_reads_are_one_a_ticker_and_one_a_month(premarket_run):
         assert p["hi"] == OCT_6
         assert (SEP_24 - p["lo"]).days == 400
 
-    bar_reads = reader.of("JOIN market_data_intraday")
+    bar_reads = reader.of("FROM market_data_intraday")
     assert sorted((p["t"], p["s0"].date().isoformat()[:7]) for _s, p in bar_reads) == [
         ("QQQ", "2026-09"), ("QQQ", "2026-10"), ("SPY", "2026-09"), ("SPY", "2026-10")]
     for sql, p in bar_reads:
         text = _collapse(sql)
-        assert "b.interval = '1min'" in text
+        assert "m.interval = '1min'" in text
         assert "b.inserted_at" in text
         assert text.count("(:s") == 1  # one window a selected session
         day = OCT_6 if p["s0"].month == 10 else SEP_24
@@ -529,7 +529,7 @@ def test_two_sessions_of_a_month_are_one_read_with_two_windows(premarket_run, tm
     code, reader = premarket_run("--recompute-premarket", "--from", "2026-10-06",
                                  "--to", "2026-10-07", "--tickers", "SPY", reader=reader)
     assert code == 0
-    (sql, params), = reader.of("JOIN market_data_intraday")
+    (sql, params), = reader.of("FROM market_data_intraday")
     assert _collapse(sql).count("(:s") == 2
     assert {"s0", "e0", "s1", "e1", "t"} == set(params)
     table, _summary = premarket_report(tmp_path)
@@ -651,8 +651,8 @@ def test_read_failures_propagate(premarket_run):
         ("pre_recompute_run", KeyError("close")),
         ('AS "Open"', ConnectionError("connection refused")),
         ('AS "Open"', KeyError("close")),
-        ("JOIN market_data_intraday", ConnectionError("connection refused")),
-        ("JOIN market_data_intraday", KeyError("close")),
+        ("FROM market_data_intraday", ConnectionError("connection refused")),
+        ("FROM market_data_intraday", KeyError("close")),
     ):
         reader = premarket_reader()
 
@@ -749,3 +749,22 @@ def test_revert_of_an_unknown_run_is_exit_one(premarket_run, monkeypatch, tmp_pa
     assert len(errors) == 1
     assert "exits-run-A" in errors[0] and "daily-premarket" in errors[0]
     assert not (tmp_path / "bar-recompute").exists()
+
+
+def test_the_bar_read_is_one_index_range_a_window():
+    """Each window's bounds are compared to ts inside a lateral subquery the
+    planner cannot flatten (OFFSET 0), so the read is one index range a
+    window whatever the planner estimates. A plain join to the windows read
+    the whole SPY partition on production once a month's sessions were
+    listed: 2,536,918 rows for 7,251 returned (db-query-xzdx7, 2026-11-14)."""
+    text = _collapse(fmd.premarket_bars_sql(3))
+    assert text.count("(:s") == 3
+    assert "(VALUES (:s0, :e0), (:s1, :e1), (:s2, :e2)) AS w(start_ts, end_ts)" in text
+    assert "CROSS JOIN LATERAL (" in text
+    assert "FROM market_data_intraday m" in text
+    assert ("WHERE m.ticker = :t AND m.interval = '1min' "
+            "AND m.ts >= w.start_ts::timestamptz AND m.ts < w.end_ts::timestamptz "
+            "OFFSET 0) AS b") in text
+    assert text.startswith(
+        "SELECT b.ts, b.open, b.high, b.low, b.close, b.volume, b.inserted_at FROM (VALUES")
+    assert text.endswith("ORDER BY b.ts")
