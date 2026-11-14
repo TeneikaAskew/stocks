@@ -3,7 +3,7 @@ feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-11-14-feat-data-001-watched-ticker-ingest-v3.md
 branch: feature/feat-data-001-watched-ticker-ingest-v3
 pr: 1927
-status: ready
+status: done
 ---
 
 # Watched-ticker ingest job implementation plan (v3: the deploy wiring ships under FEAT-DEPLOY-001)
