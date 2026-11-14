@@ -1,8 +1,10 @@
 """Watched-ticker ingest job (fetch-watched-tickers), v2.
 
-This module holds the job's config, the read of the watched set from Cloud
-SQL with its exact overflow, and the second-guard dedup. Later steps add the
-session check, coverage, indicators and verification.
+Run as ``python -m gcp.fetchers.fetch_watched_tickers``. ``main`` parses the
+config and calls ``run``, which resolves the session, reads the watched set
+from Cloud SQL with its exact overflow, dedups it, pulls daily bars planned
+from stored coverage, computes indicators where the session bar exists,
+refreshes ticker info, verifies every ticker and records one ``job_runs`` row.
 
 CLAUDE.md Rule 3.7: a failed set read raises ``SetReadError``; it is never
 an empty set. An empty frame from a read that ran is a legitimate zero.
@@ -11,6 +13,8 @@ from __future__ import annotations
 
 import logging
 import numbers
+import os
+import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Callable, Iterable, Mapping, Sequence
@@ -22,7 +26,8 @@ from gcp.fetchers.fetch_market_data import (
     BACKFILL_DEPTH_THRESHOLD_BARS,
     _pick_backfill_outputsize,
 )
-from lib.eastern_time import is_session
+from gcp.database import query_to_dataframe_strict, record_job_run
+from lib.eastern_time import is_session, market_today
 
 log = logging.getLogger(__name__)
 
@@ -237,17 +242,24 @@ def tickers_with_session_bar(kept: list[str], fetch_date: date,
 def compute_indicators(tickers: list[str], fetch_date: date) -> None:
     """Indicators for the tickers that have the session bar, in order. Level
     parameters are read once for the batch; a read failure raises."""
-    with_bar = tickers_with_session_bar(tickers, fetch_date)
-    skipped = [t for t in tickers if t not in set(with_bar)]
+    upsert_indicators(tickers, tickers_with_session_bar(tickers, fetch_date), fetch_date)
+
+
+def upsert_indicators(tickers: list[str], with_bar: list[str], fetch_date: date) -> None:
+    """Indicators for ``with_bar`` (the ``tickers`` holding the session bar),
+    in order; ``run`` reads ``with_bar`` itself so each step names its phase."""
+    have = set(with_bar)
+    skipped = [t for t in tickers if t not in have]
     if skipped:
         log.info("no session bar for %s on %s, indicators skipped", skipped, fetch_date)
     if not with_bar:
         return
     date_str = fetch_date.isoformat()
     params = fetch_market_data.read_level_params_for_run(with_bar, date_str)
-    for t in with_bar:
+    for i, t in enumerate(with_bar, 1):
         fetch_market_data.compute_and_upsert_daily_indicators(
             t, date_str, level_params=params.get(t.upper()))
+        log.info("ticker=%s step=%s processed=%d/%d", t, 'indicators', i, len(with_bar))
 
 
 def refresh_ticker_info(tickers: list[str]) -> None:
@@ -255,11 +267,12 @@ def refresh_ticker_info(tickers: list[str]) -> None:
     failure is logged and does not stop the rest; the run's verification counts
     a missing or stale row per ticker."""
     from lib.ticker_info import get_ticker_info
-    for t in tickers:
+    for i, t in enumerate(tickers, 1):
         try:
             get_ticker_info(t, max_age_days=30)
         except Exception as e:  # logged per ticker, verified afterwards
             log.error("ticker_info refresh failed for %s: %s", t, e)
+        log.info("ticker=%s step=%s processed=%d/%d", t, 'ticker_info', i, len(tickers))
 
 
 # Per-ticker verification. The bars read pairs the session row with the
@@ -324,3 +337,149 @@ def verify_tickers(kept: list[str], fetch_date: date, now: datetime,
         if updated is None or updated < cutoff:
             failed[t] = 'ticker_info'
     return Verdict(failed, too_short)
+
+
+# ── the run ─────────────────────────────────────────────────────────────
+
+
+def _record(started: datetime, status: str, **fields) -> None:
+    """The run's one job_runs row. record_job_run swallows its own failure and
+    returns False; that is logged at ERROR and never changes the exit code."""
+    if not record_job_run(JOB_NAME, started, status, **fields):
+        log.error("job_runs write failed: job=%s status=%s note=%s",
+                  JOB_NAME, status, fields.get('note'))
+
+
+class _PhaseError(Exception):
+    def __init__(self, phase: str, exc: BaseException):
+        super().__init__(f'{phase}: {exc}')
+        self.phase = phase
+
+
+def _phase(name: str, fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except Exception as e:
+        raise _PhaseError(name, e) from e
+
+
+def _note(*parts: str | None) -> str | None:
+    kept = [p for p in parts if p]
+    return '; '.join(kept) if kept else None
+
+
+def run(cfg: Config, *, today: date, now: datetime,
+        query: Query = query_to_dataframe_strict) -> int:
+    """One run of the job; returns the exit code and records exactly one
+    ``job_runs`` row.
+
+    0: success (a non-session day, an empty set, or a run where some but not
+    every kept ticker failed verification). 1: every kept ticker failed. 2: the
+    set read failed, or any later phase raised (``session``, ``coverage``,
+    ``backfill``, ``session_bars``, ``indicators``, ``ticker_info``,
+    ``verify``): that is logged at ERROR and recorded as ``'error'`` with the
+    phase in the note. Examples of a phase failure: ``_run_backfill``'s
+    RuntimeError for a missing Alpha Vantage key or an unconfigured Cloud SQL,
+    ``LevelParamsUnavailable``, a failed strict read.
+
+    A per-ticker Alpha Vantage failure is not a phase failure: ``_run_backfill``
+    logs it and moves on, and the ticker, having no session bar, is counted by
+    ``verify_tickers`` as a ``bars`` failure in ``items_failed`` while the run
+    stays ``'success'`` unless every kept ticker failed.
+    """
+    started = now
+    try:
+        fetch_date = _phase('session', resolve_session, today)
+    except _PhaseError as e:
+        log.exception("fetch-watched-tickers failed in phase %s", e.phase)
+        _record(started, 'error', items_total=0, note=str(e))
+        return 2
+    if fetch_date is None:
+        log.info("%s is not a session; nothing to do", today)
+        _record(started, 'success', items_total=0, note='non_session')
+        return 0
+
+    if cfg.max_tickers == 0:
+        log.info("WATCHED_TICKERS_MAX=0; nothing to do")
+        _record(started, 'success', items_total=0, note='max=0')
+        return 0
+
+    try:
+        ws = read_watched_set(query, fetch_market_data.TICKERS, cfg.max_tickers)
+    except SetReadError as e:
+        log.exception("set_read failed")
+        _record(started, 'error', items_total=0, note=f'set_read: {e}')
+        return 2
+
+    overflow = f'overflow={ws.overflow}' if ws.overflow > 0 else None
+    if overflow:
+        log.error("%d watched tickers above the ceiling of %d: %s",
+                  ws.overflow, cfg.max_tickers, overflow)
+    kept = dedup(ws.tickers, fetch_market_data.TICKERS)
+    if not kept:
+        _record(started, 'success', items_total=0, note=overflow or 'empty_set')
+        return 0
+
+    n = len(kept)
+    try:
+        coverages = _phase('coverage', read_coverage, kept, query=query)
+        plan = _phase('coverage', plan_pulls, coverages, fetch_date)
+        planned = {t for group in plan.values() for t in group}
+        done = 0
+        for t in kept:
+            if t not in planned:
+                done += 1
+                log.info("ticker=%s step=%s processed=%d/%d", t, 'bars_current', done, n)
+        rows_written = 0
+        for (size, source), group in plan.items():
+            rows_written += _phase('backfill', fetch_market_data._run_backfill,
+                                   group, outputsize=size, data_source=source)
+            for t in group:
+                done += 1
+                log.info("ticker=%s step=%s processed=%d/%d", t, 'bars', done, n)
+        with_bar = _phase('session_bars', tickers_with_session_bar,
+                          kept, fetch_date, query=query)
+        _phase('indicators', upsert_indicators, kept, with_bar, fetch_date)
+        _phase('ticker_info', refresh_ticker_info, kept)
+        verdict = _phase('verify', verify_tickers, kept, fetch_date, now, query=query)
+    except _PhaseError as e:
+        log.exception("fetch-watched-tickers failed in phase %s", e.phase)
+        _record(started, 'error', items_total=n, note=str(e))
+        return 2
+
+    failed = verdict.failed
+    for i, t in enumerate(kept, 1):
+        log.info("ticker=%s step=%s processed=%d/%d", t, 'verify', i, n)
+        if t in failed:
+            log.warning("ticker=%s failed verification: %s", t, failed[t])
+    all_failed = len(failed) == n
+    note = _note(
+        overflow,
+        f"too_short=[{','.join(verdict.too_short)}]" if verdict.too_short else None,
+        'failed=' + ','.join(f'{t}:{r}' for t, r in failed.items()) if failed else None,
+    )
+    _record(started, 'error' if all_failed else 'success',
+            items_total=n, items_processed=n - len(failed),
+            items_failed=len(failed), rows_written=rows_written, note=note)
+    log.info("fetch-watched-tickers done: kept=%d failed=%d rows_written=%d",
+             n, len(failed), rows_written)
+    return 1 if all_failed else 0
+
+
+def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+    started = datetime.now(timezone.utc)
+    try:
+        cfg = Config.from_env(os.environ)
+    except ValueError as e:
+        log.error("config: %s", e)
+        _record(started, 'error', items_total=0, note=f'config: {e}')
+        return 2
+    return run(cfg, today=market_today(), now=started)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

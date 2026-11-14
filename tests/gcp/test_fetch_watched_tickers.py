@@ -433,3 +433,386 @@ def test_verify_never_calls_post_fetch_rows_check(monkeypatch):
     monkeypatch.setattr(fwt.fetch_market_data, '_verify_post_fetch_rows', boom)
     q = _verify_query([('A', 1.0, 1.0, 300)], [('A', pd.Timestamp(_NOW))])
     assert fwt.verify_tickers(['A'], _FETCH, _NOW, query=q).failed == {}
+
+
+# ---------------------------------------------------------------------------
+# Task 8: run() and main(), end to end with mocks only at the Alpha Vantage
+# (requests.get) and Cloud SQL (the strict query seam, upsert_dataframe,
+# query_to_dataframe, execute_sql) boundaries.
+# ---------------------------------------------------------------------------
+import logging
+
+_SESSION = date(2026, 11, 13)          # Friday, a session
+_RUN_NOW = datetime(2026, 11, 14, 4, 45, tzinfo=timezone.utc)   # 23:45 ET
+
+
+class _FakeDB:
+    """In-memory market_data_daily + ticker_info behind the job's SQL texts."""
+
+    def __init__(self, set_frame=None, set_exc=None):
+        self.set_frame = set_frame
+        self.set_exc = set_exc
+        self.bars: dict[str, dict[date, dict]] = {}
+        self.info: dict[str, datetime] = {}
+        self.calls: list[str] = []
+        self.params: list[dict] = []
+        self.history_fail: set[str] = set()
+
+    # the strict reader seam: query(sql, params, timeout_s=...)
+    def __call__(self, sql, params=None, timeout_s=None):
+        self.calls.append(sql)
+        self.params.append(params)
+        if sql == fwt.WATCHED_SET_SQL:
+            if self.set_exc:
+                raise self.set_exc
+            return self.set_frame
+        kept = list(params.get('kept', []))
+        if sql == fwt.COVERAGE_SQL:
+            rows = []
+            for t in kept:
+                rs = self.bars.get(t)
+                if rs:
+                    rows.append((t, len(rs), max(rs),
+                                 any(r.get('data_source') == WATCHED for r in rs.values())))
+            return pd.DataFrame(rows, columns=['ticker', 'bar_count', 'max_date', 'bootstrapped'])
+        if sql == fwt.SESSION_BAR_SQL:
+            d = params['fetch_date']
+            return pd.DataFrame({'ticker': [t for t in kept
+                                            if self._close(t, d) is not None]})
+        if sql == fwt.VERIFY_BARS_SQL:
+            d = params['fetch_date']
+            rows = [(t, self._close(t, d), self.bars[t][d].get('atr_14'), len(self.bars[t]))
+                    for t in kept if d in self.bars.get(t, {})]
+            return pd.DataFrame(rows, columns=['ticker', 'close', 'atr_14', 'bar_count'])
+        if sql == fwt.VERIFY_INFO_SQL:
+            rows = [(t, pd.Timestamp(self.info[t])) for t in kept if t in self.info]
+            return pd.DataFrame(rows, columns=['ticker', 'updated_at'])
+        raise AssertionError(f'unexpected strict query: {sql}')
+
+    def _close(self, t, d):
+        r = self.bars.get(t, {}).get(d)
+        if r is None or r.get('close') is None or pd.isna(r.get('close')):
+            return None
+        return r['close']
+
+    def seed(self, ticker, n, end=_SESSION, source='av_daily_backfill'):
+        for d in pd.bdate_range(end=end, periods=n).date:
+            self.bars.setdefault(ticker, {})[d] = {
+                'open': 1.0, 'high': 1.0, 'low': 1.0, 'close': 1.0,
+                'volume': 100, 'data_source': source}
+
+    # upsert_dataframe(df, table, keys): merge on (ticker, date)
+    def upsert(self, df, table, keys):
+        assert table == 'market_data_daily' and keys == ['ticker', 'date']
+        for rec in df.to_dict('records'):
+            t, d = rec.pop('ticker'), pd.Timestamp(rec.pop('date')).date()
+            self.bars.setdefault(t, {}).setdefault(d, {}).update(rec)
+
+    # compute_and_upsert_daily_indicators' history read (query_to_dataframe)
+    def history(self, sql, params=None):
+        if 'FROM market_data_daily' not in sql:
+            return pd.DataFrame()   # intraday reads: none in this fake
+        t = params['ticker']
+        if t in self.history_fail:
+            return pd.DataFrame()   # what the non-strict reader returns on a failed read
+        cut = pd.Timestamp(params['fetch_date']).date()
+        rows = sorted(((d, r) for d, r in self.bars.get(t, {}).items()
+                       if d <= cut and r.get('close') is not None), reverse=True)[:250]
+        return pd.DataFrame([{'date': d, 'Open': r['open'], 'High': r['high'],
+                              'Low': r['low'], 'Close': r['close'], 'Volume': r['volume']}
+                             for d, r in rows])
+
+
+def _av_json(n, end=_SESSION):
+    ts = {}
+    for i, d in enumerate(pd.bdate_range(end=end, periods=n).date):
+        px = 10.0 + i * 0.1
+        ts[d.isoformat()] = {'1. open': str(px), '2. high': str(px + 0.5),
+                             '3. low': str(px - 0.5), '4. close': str(px + 0.1),
+                             '6. volume': '1000'}
+    return {'Time Series (Daily)': ts}
+
+
+@pytest.fixture
+def job(monkeypatch):
+    """The job wired to a fake Cloud SQL and a fake Alpha Vantage HTTP layer.
+
+    rec.av_calls: (ticker, outputsize) for every _av_get_full_daily_series call;
+    rec.av_raise / rec.av_empty: tickers whose HTTP call raises / returns no series;
+    rec.av_bars: bars per pull (default 30); rec.runs: record_job_run calls;
+    rec.indicator_calls: tickers compute_and_upsert_daily_indicators ran for;
+    rec.info_fail: tickers whose ticker_info execute_sql raises.
+    """
+    db = _FakeDB()
+    rec = SimpleNamespace(db=db, av_calls=[], av_raise=set(), av_empty=set(),
+                          av_bars=30, runs=[], record_result=True,
+                          indicator_calls=[], info_fail=set(), upserts=0)
+
+    real_av = fmd._av_get_full_daily_series
+
+    def av_spy(ticker, api_key, outputsize):
+        rec.av_calls.append((ticker, outputsize))
+        return real_av(ticker, api_key, outputsize)
+
+    def fake_get(url, params=None, timeout=None):
+        sym = params['symbol']
+        if sym in rec.av_raise:
+            raise ConnectionError(f'AV down for {sym}')
+        body = {} if sym in rec.av_empty else _av_json(rec.av_bars)
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: body)
+
+    def upsert(df, table, keys):
+        rec.upserts += 1
+        db.upsert(df, table, keys)
+
+    real_ind = fmd.compute_and_upsert_daily_indicators
+
+    def ind_spy(t, d, *, level_params=None):
+        rec.indicator_calls.append((t, d))
+        return real_ind(t, d, level_params=level_params)
+
+    def execute_sql(sql, params=None):
+        assert 'INSERT INTO ticker_info' in sql
+        t = params['ticker']
+        if t in rec.info_fail:
+            raise RuntimeError('ticker_info write failed')
+        db.info[t] = _RUN_NOW
+        return 1
+
+    def record(job_name, started_at, status, **kw):
+        rec.runs.append(dict(job_name=job_name, started_at=started_at, status=status, **kw))
+        return rec.record_result
+
+    monkeypatch.setenv('ALPHA_VANTAGE_API_KEY', 'fake-key')
+    monkeypatch.setenv('AV_BACKFILL_SLEEP_SECS', '0')
+    monkeypatch.setattr(fmd, 'is_cloud_sql_configured', lambda: True)
+    monkeypatch.setattr(fmd, '_av_get_full_daily_series', av_spy)
+    monkeypatch.setattr(fmd.requests, 'get', fake_get)
+    monkeypatch.setattr('gcp.database.upsert_dataframe', upsert)
+    monkeypatch.setattr('gcp.database.query_to_dataframe', db.history)
+    monkeypatch.setattr('gcp.database.execute_sql', execute_sql)
+    monkeypatch.setattr(fmd, 'compute_and_upsert_daily_indicators', ind_spy)
+    monkeypatch.setattr(fmd, 'read_level_params_for_run', lambda tickers, d: {})
+    import lib.ticker_info as ti
+    monkeypatch.setattr(ti, '_cloud_sql_available', lambda: True)
+    monkeypatch.setattr(ti, '_read_from_cloud_sql', lambda t: None)
+    monkeypatch.setattr(ti, '_load_local_cache', dict)
+    monkeypatch.setattr(ti, '_merge_into_local_cache', lambda *a, **k: None)
+    monkeypatch.setattr(ti, 'fetch_ticker_overview', lambda t: {'Symbol': t, 'Name': t})
+    monkeypatch.setattr(fwt, 'record_job_run', record)
+    return rec
+
+
+def _run(rec, tickers, eligible_total=None, *, max_tickers=50, today=_SESSION):
+    rec.db.set_frame = _set_frame(tickers, len(tickers) if eligible_total is None
+                                  else eligible_total)
+    return fwt.run(fwt.Config(max_tickers=max_tickers), today=today, now=_RUN_NOW,
+                   query=rec.db)
+
+
+def _only_run(rec):
+    assert len(rec.runs) == 1, rec.runs
+    r = rec.runs[0]
+    assert r['job_name'] == 'fetch-watched-tickers'
+    assert r['started_at'] == _RUN_NOW
+    return r
+
+
+def test_run_set_read_failure_records_error_and_makes_no_vendor_call(job):
+    job.db.set_exc = RuntimeError('db down')
+    rc = fwt.run(fwt.Config(), today=_SESSION, now=_RUN_NOW, query=job.db)
+    assert rc == 2
+    r = _only_run(job)
+    assert r['status'] == 'error' and r['note'].startswith('set_read:')
+    assert job.av_calls == [] and job.upserts == 0
+    assert job.db.calls == [fwt.WATCHED_SET_SQL]
+
+
+def test_run_empty_set_is_success_with_zero_items(job):
+    rc = _run(job, [])
+    assert rc == 0
+    r = _only_run(job)
+    assert r['status'] == 'success' and r['items_total'] == 0
+    assert job.av_calls == [] and job.upserts == 0
+    assert job.db.calls == [fwt.WATCHED_SET_SQL]   # no ANY(:kept) read on []
+
+
+def test_run_max_zero_keeps_nothing(job):
+    rc = _run(job, [], max_tickers=0)
+    assert rc == 0
+    r = _only_run(job)
+    assert r['status'] == 'success' and r['items_total'] == 0 and r['note'] == 'max=0'
+    assert job.av_calls == [] and job.upserts == 0
+
+
+def test_run_fifty_of_sixty_records_overflow_and_processes_fifty(job, caplog):
+    names = [f'W{i:02d}' for i in range(50)]
+    with caplog.at_level(logging.INFO):
+        rc = _run(job, names, eligible_total=60)
+    assert rc == 0
+    r = _only_run(job)
+    assert r['status'] == 'success'
+    assert r['items_total'] == 50 and r['items_processed'] == 50 and r['items_failed'] == 0
+    assert r['note'].startswith('overflow=10')
+    assert [t for t, _ in job.av_calls] == names
+    assert all(size == 'full' for _, size in job.av_calls)
+    assert r['rows_written'] == 50 * 30
+    assert any(rr.levelno == logging.ERROR and 'overflow=10' in rr.getMessage()
+               for rr in caplog.records)
+    assert 'ticker=W00 step=bars processed=1/50' in caplog.text
+    assert 'ticker=W49 step=verify processed=50/50' in caplog.text
+
+
+def test_run_one_vendor_failure_is_counted_and_others_proceed(job):
+    job.av_raise = {'BBB'}
+    rc = _run(job, ['AAA', 'BBB', 'CCC'])
+    assert rc == 0
+    r = _only_run(job)
+    assert r['status'] == 'success'
+    assert (r['items_total'], r['items_processed'], r['items_failed']) == (3, 2, 1)
+    assert r['note'] == 'failed=BBB:bars'
+    assert [t for t, _ in job.av_calls] == ['AAA', 'BBB', 'CCC']
+    assert [t for t, _ in job.indicator_calls] == ['AAA', 'CCC']
+
+
+def test_run_every_ticker_failing_is_error_and_exit_one(job):
+    job.av_raise = {'AAA', 'BBB'}
+    rc = _run(job, ['AAA', 'BBB'])
+    assert rc == 1
+    r = _only_run(job)
+    assert r['status'] == 'error'
+    assert (r['items_total'], r['items_processed'], r['items_failed']) == (2, 0, 2)
+    assert r['note'] == 'failed=AAA:bars,BBB:bars'
+    assert job.indicator_calls == []
+
+
+def test_run_two_groups_sum_rows_written(job, monkeypatch):
+    job.db.seed('BOOT', 300, end=date(2026, 11, 10), source=WATCHED)  # compact
+    calls = []
+
+    def fake_backfill(tickers, *, outputsize, data_source):
+        calls.append((list(tickers), outputsize, data_source))
+        return {'full': 12, 'compact': 3}[outputsize]
+
+    monkeypatch.setattr(fmd, '_run_backfill', fake_backfill)
+    _run(job, ['NEW', 'BOOT'])
+    r = _only_run(job)
+    assert sorted(calls) == sorted([(['NEW'], 'full', WATCHED), (['BOOT'], 'compact', WATCHED)])
+    assert r['rows_written'] == 15
+
+
+@pytest.mark.parametrize('day', [date(2026, 11, 26), date(2026, 11, 14)])  # Thanksgiving, Saturday
+def test_run_non_session_records_success_and_touches_nothing(job, day):
+    rc = _run(job, ['AAA'], today=day)
+    assert rc == 0
+    r = _only_run(job)
+    assert r['status'] == 'success' and r['items_total'] == 0 and r['note'] == 'non_session'
+    assert job.db.calls == []              # no set query
+    assert job.av_calls == [] and job.upserts == 0 and job.indicator_calls == []
+
+
+def test_run_mixed_set_verification_end_to_end(job):
+    """done_when[2]: four tickers get session bars; the indicator history read
+    fails for one, the vendor returns nothing for another and execute_sql
+    raises for a third's ticker_info upsert."""
+    job.db.history_fail = {'NOIND'}
+    job.av_empty = {'NOBARS'}
+    job.info_fail = {'NOINFO'}
+    rc = _run(job, ['GOOD', 'NOIND', 'NOBARS', 'NOINFO'])
+    assert rc == 0
+    r = _only_run(job)
+    assert r['status'] == 'success'
+    assert (r['items_total'], r['items_processed'], r['items_failed']) == (4, 1, 3)
+    assert r['note'] == 'failed=NOIND:indicators,NOBARS:bars,NOINFO:ticker_info'
+    # the ticker whose fetch returned nothing gets no indicator call and no session row
+    assert 'NOBARS' not in [t for t, _ in job.indicator_calls]
+    assert _SESSION not in job.db.bars.get('NOBARS', {})
+    assert job.db.bars['GOOD'][_SESSION]['atr_14'] is not None
+
+
+def test_run_too_short_is_noted_not_failed(job):
+    job.av_bars = 10
+    rc = _run(job, ['NEW'])
+    assert rc == 0
+    r = _only_run(job)
+    assert r['status'] == 'success' and r['items_failed'] == 0
+    assert r['note'] == 'too_short=[NEW]'
+
+
+@pytest.mark.parametrize('phase,target', [
+    ('coverage', 'read_coverage'),
+    ('backfill', None),
+    ('session_bars', 'tickers_with_session_bar'),
+    ('indicators', 'read_level_params_for_run'),
+    ('ticker_info', 'refresh_ticker_info'),
+    ('verify', 'verify_tickers'),
+])
+def test_run_failure_after_the_set_read_records_the_phase(job, monkeypatch, caplog, phase, target):
+    def boom(*a, **k):
+        raise RuntimeError(f'{phase} broke')
+
+    if phase == 'backfill':
+        monkeypatch.delenv('ALPHA_VANTAGE_API_KEY')   # _run_backfill raises RuntimeError
+    elif target == 'read_level_params_for_run':
+        monkeypatch.setattr(fmd, target, boom)
+    else:
+        monkeypatch.setattr(fwt, target, boom)
+    with caplog.at_level(logging.ERROR):
+        rc = _run(job, ['AAA', 'BBB'])
+    assert rc == 2
+    r = _only_run(job)
+    assert r['status'] == 'error' and r['items_total'] == 2
+    assert r['note'].startswith(f'{phase}: ')
+    assert any(rr.levelno == logging.ERROR for rr in caplog.records)
+
+
+def test_run_record_failure_logs_error_and_keeps_exit_code(job, caplog):
+    job.record_result = False
+    with caplog.at_level(logging.ERROR):
+        assert _run(job, []) == 0
+    assert any(rr.levelno == logging.ERROR and 'job_runs write failed' in rr.getMessage()
+               for rr in caplog.records)
+    job.runs.clear()
+    job.av_raise = {'AAA'}
+    with caplog.at_level(logging.ERROR):
+        assert _run(job, ['AAA']) == 1
+
+
+def test_run_dedup_second_guard_drops_static_ticker(job):
+    rc = _run(job, ['SPY', 'aaa', 'AAA'], eligible_total=3)
+    assert rc == 0
+    r = _only_run(job)
+    assert r['items_total'] == 1
+    assert [t for t, _ in job.av_calls] == ['AAA']
+
+
+def test_run_set_read_uses_static_exclusion_and_ceiling(job):
+    _run(job, ['AAA'], max_tickers=7)
+    assert job.db.calls[0] == fwt.WATCHED_SET_SQL
+    assert job.db.params[0] == {'limit': 7, 'exclude': list(fmd.TICKERS)}
+    assert job.db.calls.count(fwt.WATCHED_SET_SQL) == 1
+
+
+def test_main_non_integer_ceiling_records_config_error(monkeypatch):
+    runs, av = [], []
+    monkeypatch.setenv('WATCHED_TICKERS_MAX', 'x')
+    monkeypatch.setattr(fwt, 'record_job_run',
+                        lambda *a, **k: runs.append((a, k)) or True)
+    monkeypatch.setattr(fmd, '_av_get_full_daily_series',
+                        lambda *a, **k: av.append(a) or pd.DataFrame())
+    assert fwt.main() == 2
+    assert len(runs) == 1
+    (job_name, _started, status), kw = runs[0]
+    assert job_name == 'fetch-watched-tickers' and status == 'error'
+    assert kw['items_total'] == 0 and kw['note'].startswith('config:')
+    assert av == []
+
+
+def test_main_runs_with_market_today_and_started(monkeypatch):
+    seen = []
+    monkeypatch.delenv('WATCHED_TICKERS_MAX', raising=False)
+    monkeypatch.setattr(fwt, 'market_today', lambda: _SESSION)
+    monkeypatch.setattr(fwt, 'run', lambda cfg, *, today, now: seen.append((cfg, today, now)) or 0)
+    assert fwt.main() == 0
+    cfg, today, now = seen[0]
+    assert cfg == fwt.Config(50) and today == _SESSION and now.tzinfo is not None
