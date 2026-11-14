@@ -15,11 +15,11 @@ import logging
 import requests
 import pandas as pd
 from pathlib import Path
-from datetime import datetime, date, timedelta
-from typing import Optional
+from datetime import datetime, date, time, timedelta
+from typing import Callable, NamedTuple, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from lib.eastern_time import ET, ET_NAME, market_today
+from lib.eastern_time import ET, ET_NAME, as_eastern_time, as_utc_instant, eastern_bounds_utc, is_session, market_today
 from lib.earnings_reactions import earnings_not_retired_sql
 
 from lib.data_loader import DataLoader
@@ -3059,6 +3059,58 @@ def format_discord_message(brief: dict) -> dict:
     return {'embeds': embeds}
 
 
+# ── The late slot (BRIEF_RUN_SLOT=late) ─────────────────────────────────────
+#
+# FEAT-PLAYBOOK-001 (docs/superpowers/specs/2026-11-14-feat-playbook-001-brief-late-slot.md).
+# A second run of this job at 09:20 America/New_York waits for the premarket
+# refresh, rebuilds the day's levels from that snapshot and replaces the
+# session's canonical rows before the write cutoff. Every clock read goes
+# through lib.eastern_time (CLAUDE.md 3.9).
+
+RUN_SLOTS = ('early', 'late')
+LATE_SLOT_START = time(9, 20)             # a usable snapshot is stamped at or after this
+LATE_SLOT_WAIT_DEADLINE = time(9, 27)     # the wait for the refresh ends here
+LATE_SLOT_WRITE_CUTOFF = time(9, 29, 30)  # no canonical statement is sent at or after this
+LATE_SLOT_POLL_SECONDS = 5
+
+
+class LateSlotClock(NamedTuple):
+    """The slot's three instants on the session date, in UTC."""
+    start: datetime
+    wait_deadline: datetime
+    write_cutoff: datetime
+
+
+def _resolve_run_slot() -> str:
+    """The run slot named by BRIEF_RUN_SLOT: unset, blank or 'early' is
+    'early', 'late' is 'late'. The value is stripped and compared exactly;
+    anything else raises ValueError naming it, so a typo never runs as the
+    early slot."""
+    raw = (os.environ.get('BRIEF_RUN_SLOT') or '').strip()
+    if raw in ('', 'early'):
+        return 'early'
+    if raw == 'late':
+        return 'late'
+    raise ValueError(f"BRIEF_RUN_SLOT must be one of {RUN_SLOTS}; got {raw!r}")
+
+
+def _late_slot_clock(session_date: date) -> LateSlotClock:
+    """09:20:00, 09:27:00 and 09:29:30 America/New_York on `session_date`
+    as UTC instants (14:20Z in winter, 13:20Z in summer)."""
+    start, wait_deadline = eastern_bounds_utc(session_date, LATE_SLOT_START,
+                                              LATE_SLOT_WAIT_DEADLINE)
+    _, write_cutoff = eastern_bounds_utc(session_date, LATE_SLOT_START,
+                                         LATE_SLOT_WRITE_CUTOFF)
+    return LateSlotClock(start, wait_deadline, write_cutoff)
+
+
+def _eastern_now() -> datetime:
+    """The exchange's clock, looked up on lib.eastern_time at call time so
+    one replacement of eastern_now freezes a whole run."""
+    from lib import eastern_time  # noqa: PLC0415
+    return eastern_time.eastern_now()
+
+
 # ── Cloud SQL Persistence ───────────────────────────────────────────────────
 
 def _resolve_run_kind_and_update(allow_update_arg: bool) -> tuple[bool, str]:
@@ -3503,6 +3555,13 @@ def main(argv: Optional[list[str]] = None):
             sys.exit(2)
         ok = render_existing_brief_to_discord(ticker, analysis_date)
         sys.exit(0 if ok else 1)
+
+    # The run slot, before any read (FEAT-PLAYBOOK-001, the late slot).
+    try:
+        run_slot = _resolve_run_slot()
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(2)
 
     allow_update, run_kind = _resolve_run_kind_and_update(args.update)
     triggered_by = (
