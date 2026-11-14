@@ -2,7 +2,7 @@
 feat_id: FEAT-DATA-001
 spec: docs/superpowers/specs/2026-11-13-feat-data-001-intraday-bucket-copy.md
 branch: feature/feat-data-001-intraday-bucket-copy
-pr: null
+pr: 1943
 status: ready
 ---
 
