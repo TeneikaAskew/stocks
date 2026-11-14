@@ -338,3 +338,98 @@ def test_refresh_ticker_info_logs_and_continues(monkeypatch, caplog):
         fwt.refresh_ticker_info(['AAA', 'BBB', 'CCC'])
     assert seen == [('AAA', 30), ('BBB', 30), ('CCC', 30)]
     assert 'BBB' in caplog.text and 'av down' in caplog.text
+
+
+# --- Task 7: per-ticker verification ---------------------------------------
+
+from datetime import datetime, timedelta, timezone
+
+_NOW = datetime(2026, 11, 14, 12, 0, tzinfo=timezone.utc)
+_FETCH = date(2026, 11, 13)
+
+
+def _verify_query(bars_rows, info_rows, exc_on=None):
+    """A query seam answering the bars read and the info read by SQL text."""
+    calls = []
+
+    def q(sql, params=None, timeout_s=None):
+        calls.append((sql, params, timeout_s))
+        if exc_on == sql:
+            raise RuntimeError('db down')
+        if sql == fwt.VERIFY_BARS_SQL:
+            return pd.DataFrame(bars_rows, columns=['ticker', 'close', 'atr_14', 'bar_count'])
+        if sql == fwt.VERIFY_INFO_SQL:
+            return pd.DataFrame(info_rows, columns=['ticker', 'updated_at'])
+        raise AssertionError(sql)
+
+    q.calls = calls
+    return q
+
+
+def test_verify_four_tickers_one_reason_each():
+    fresh = pd.Timestamp(_NOW - timedelta(days=1))
+    stale = pd.Timestamp(_NOW - timedelta(days=31))
+    q = _verify_query(
+        [('NOBAR', None, None, 300),      # null close -> bars
+         ('NOATR', 10.0, None, 300),      # null atr, deep -> indicators
+         ('STALE', 10.0, 1.0, 300),       # stale info
+         ('GOOD', 10.0, 1.0, 300)],
+        [('NOATR', fresh), ('STALE', stale), ('GOOD', fresh), ('NOBAR', stale)])
+    v = fwt.verify_tickers(['NOBAR', 'NOATR', 'STALE', 'GOOD', 'MISSING'],
+                           _FETCH, _NOW, query=q)
+    assert v.failed == {'NOBAR': 'bars', 'NOATR': 'indicators',
+                        'STALE': 'ticker_info', 'MISSING': 'bars'}
+    assert v.too_short == []
+    assert [c[0] for c in q.calls] == [fwt.VERIFY_BARS_SQL, fwt.VERIFY_INFO_SQL]
+    assert q.calls[0][1] == {'fetch_date': _FETCH,
+                             'kept': ['NOBAR', 'NOATR', 'STALE', 'GOOD', 'MISSING']}
+    assert q.calls[0][2] == fwt._SET_QUERY_TIMEOUT_S
+
+
+def test_verify_too_short_is_not_a_failure():
+    fresh = pd.Timestamp(_NOW)
+    q = _verify_query([('NEW', 5.0, None, 10)], [('NEW', fresh)])
+    v = fwt.verify_tickers(['NEW'], _FETCH, _NOW, query=q)
+    assert v.failed == {} and v.too_short == ['NEW']
+
+
+def test_verify_too_short_with_missing_info_still_fails_info():
+    q = _verify_query([('NEW', 5.0, None, 10)], [])
+    v = fwt.verify_tickers(['NEW'], _FETCH, _NOW, query=q)
+    assert v.failed == {'NEW': 'ticker_info'} and v.too_short == ['NEW']
+
+
+@pytest.mark.parametrize('stamp', [
+    pd.Timestamp('2026-11-13 12:00:00'),                      # naive, treated as UTC
+    pd.Timestamp('2026-11-13 07:00:00', tz='America/New_York'),  # aware, other zone
+])
+def test_verify_updated_at_naive_or_aware_does_not_raise(stamp):
+    q = _verify_query([('A', 1.0, 1.0, 300)], [('A', stamp)])
+    assert fwt.verify_tickers(['A'], _FETCH, _NOW, query=q).failed == {}
+
+
+def test_verify_naive_stale_updated_at_is_stale():
+    q = _verify_query([('A', 1.0, 1.0, 300)], [('A', pd.Timestamp('2026-10-01 00:00:00'))])
+    assert fwt.verify_tickers(['A'], _FETCH, _NOW, query=q).failed == {'A': 'ticker_info'}
+
+
+def test_verify_null_updated_at_is_ticker_info_failure():
+    q = _verify_query([('A', 1.0, 1.0, 300)], [('A', pd.NaT)])
+    assert fwt.verify_tickers(['A'], _FETCH, _NOW, query=q).failed == {'A': 'ticker_info'}
+
+
+@pytest.mark.parametrize('which', ['bars', 'info'])
+def test_verify_failed_read_propagates(which):
+    sql = fwt.VERIFY_BARS_SQL if which == 'bars' else fwt.VERIFY_INFO_SQL
+    q = _verify_query([], [], exc_on=sql)
+    with pytest.raises(RuntimeError):
+        fwt.verify_tickers(['A'], _FETCH, _NOW, query=q)
+
+
+def test_verify_never_calls_post_fetch_rows_check(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError('_verify_post_fetch_rows must not be called')
+
+    monkeypatch.setattr(fwt.fetch_market_data, '_verify_post_fetch_rows', boom)
+    q = _verify_query([('A', 1.0, 1.0, 300)], [('A', pd.Timestamp(_NOW))])
+    assert fwt.verify_tickers(['A'], _FETCH, _NOW, query=q).failed == {}

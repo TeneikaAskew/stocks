@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import numbers
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from typing import Callable, Iterable, Mapping, Sequence
 
 import pandas as pd
@@ -260,3 +260,67 @@ def refresh_ticker_info(tickers: list[str]) -> None:
             get_ticker_info(t, max_age_days=30)
         except Exception as e:  # logged per ticker, verified afterwards
             log.error("ticker_info refresh failed for %s: %s", t, e)
+
+
+# Per-ticker verification. The bars read pairs the session row with the
+# ticker's stored bar count; the info read returns when each ticker_info row
+# was last refreshed.
+VERIFY_BARS_SQL = (
+    "SELECT m.ticker, m.close, m.atr_14, c.bar_count FROM market_data_daily m "
+    "JOIN (SELECT ticker, COUNT(*) AS bar_count FROM market_data_daily "
+    "WHERE ticker = ANY(:kept) GROUP BY ticker) c USING (ticker) "
+    "WHERE m.date = :fetch_date AND m.ticker = ANY(:kept)"
+)
+VERIFY_INFO_SQL = "SELECT ticker, updated_at FROM ticker_info WHERE ticker = ANY(:kept)"
+# Fewer bars than this cannot yield an ATR(14), so a null atr_14 is expected.
+INDICATOR_MIN_BARS = 15
+TICKER_INFO_MAX_AGE = timedelta(days=30)
+
+
+@dataclass(frozen=True)
+class Verdict:
+    failed: dict[str, str]   # ticker -> 'bars' | 'indicators' | 'ticker_info'
+    too_short: list[str]     # too few bars for indicators; not a failure
+
+
+def _as_utc(v) -> datetime | None:
+    """A frame's updated_at as a tz-aware UTC datetime (naive means UTC), or None."""
+    if v is None or pd.isna(v):
+        return None
+    ts = pd.Timestamp(v)
+    ts = ts.tz_localize('UTC') if ts.tzinfo is None else ts.tz_convert('UTC')
+    return ts.to_pydatetime()
+
+
+def verify_tickers(kept: list[str], fetch_date: date, now: datetime,
+                   query: Query | None = None) -> Verdict:
+    """Per-ticker check of the session bar, indicators and ticker info.
+
+    One reason per ticker, in the order bars, indicators, ticker_info. Both
+    reads are strict: a failure raises (Rule 3.7). ``now`` is tz-aware UTC.
+    """
+    if query is None:
+        from gcp.database import query_to_dataframe_strict as query
+    params = {'fetch_date': fetch_date, 'kept': list(kept)}
+    bars = query(VERIFY_BARS_SQL, params, timeout_s=_SET_QUERY_TIMEOUT_S)
+    info = query(VERIFY_INFO_SQL, {'kept': list(kept)}, timeout_s=_SET_QUERY_TIMEOUT_S)
+    bar_rows = {r['ticker']: r for _, r in bars.iterrows()}
+    info_at = {r['ticker']: _as_utc(r['updated_at']) for _, r in info.iterrows()}
+    cutoff = now - TICKER_INFO_MAX_AGE
+    failed: dict[str, str] = {}
+    too_short: list[str] = []
+    for t in kept:
+        row = bar_rows.get(t)
+        if row is None or pd.isna(row['close']):
+            failed[t] = 'bars'
+            continue
+        short = int(row['bar_count']) < INDICATOR_MIN_BARS
+        if short:
+            too_short.append(t)
+        elif pd.isna(row['atr_14']):
+            failed[t] = 'indicators'
+            continue
+        updated = info_at.get(t)
+        if updated is None or updated < cutoff:
+            failed[t] = 'ticker_info'
+    return Verdict(failed, too_short)
