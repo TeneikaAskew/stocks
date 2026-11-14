@@ -90,9 +90,26 @@ def _vendor_month(days: list[str]) -> pd.DataFrame:
     })
 
 
+def _held_rows(counts: dict) -> pd.DataFrame:
+    """Stored rows that place as *counts* ({Eastern date: bars}): per date that
+    many true-UTC rows from 04:00 Eastern, with the opening spike a real day
+    has. Prices are 2.0, so no row is a copy of a _vendor_month bar (1.0)."""
+    frames = []
+    for d, n in counts.items():
+        wall = pd.date_range(f"{d} 04:00", periods=n, freq="1min")
+        minute = wall.hour * 60 + wall.minute
+        frames.append(pd.DataFrame({
+            "ts": wall.tz_localize("America/New_York").tz_convert("UTC"),
+            "open": 2.0, "high": 2.0, "low": 2.0, "close": 2.0,
+            "volume": [5000 if 570 <= m < 600 else 100 for m in minute]}))
+    if not frames:
+        return pd.DataFrame(columns=["ts", "open", "high", "low", "close", "volume"])
+    return pd.concat(frames).reset_index(drop=True)
+
+
 def test_failed_fetch_deletes_nothing():
     with patch.object(fai, "fetch_month", return_value=(None, fai.FETCH_RATE_LIMIT)), \
-         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 24): 1}), \
+         patch.object(fai, "_stored_window_rows", return_value=_held_rows({date(2026, 9, 24): 1})), \
          patch.object(fai, "replace_rows_in_window") as rep:
         r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
     assert r["status"] == fai.FETCH_RATE_LIMIT
@@ -103,8 +120,8 @@ def test_refetch_missing_a_held_session_deletes_nothing():
     """We hold 09-01 and 09-02; AV returned only 09-01. Leave the month alone."""
     with patch.object(fai, "fetch_month",
                       return_value=(_vendor_month(["2026-09-01"]), fai.FETCH_OK)), \
-         patch.object(fai, "_held_session_dates",
-                      return_value={date(2026, 9, 1): 900, date(2026, 9, 2): 900}), \
+         patch.object(fai, "_stored_window_rows",
+                      return_value=_held_rows({date(2026, 9, 1): 900, date(2026, 9, 2): 900})), \
          patch.object(fai, "replace_rows_in_window") as rep:
         r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
     assert r["status"] == fai.REPLACE_INCOMPLETE
@@ -118,7 +135,7 @@ def test_only_held_sessions_are_reinserted():
     with patch.object(fai, "fetch_month",
                       return_value=(_vendor_month(["2026-09-01", "2026-09-02", "2026-09-24"]),
                                     fai.FETCH_OK)), \
-         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 24): 1}), \
+         patch.object(fai, "_stored_window_rows", return_value=_held_rows({date(2026, 9, 24): 1})), \
          patch.object(fai, "replace_rows_in_window", return_value=(12, 1)) as rep:
         r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
     assert r["status"] == fai.REPLACE_OK
@@ -129,7 +146,7 @@ def test_only_held_sessions_are_reinserted():
 def test_dry_run_never_writes():
     with patch.object(fai, "fetch_month",
                       return_value=(_vendor_month(["2026-09-01"]), fai.FETCH_OK)), \
-         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 1): 1}), \
+         patch.object(fai, "_stored_window_rows", return_value=_held_rows({date(2026, 9, 1): 1})), \
          patch.object(fai, "replace_rows_in_window") as rep:
         r = fai.replace_month("SPY", 2026, 9, "k", commit=False)
     assert r["status"] == fai.REPLACE_DRY
@@ -139,8 +156,8 @@ def test_dry_run_never_writes():
 def test_commit_swaps_utc_rows_over_the_month_window():
     with patch.object(fai, "fetch_month",
                       return_value=(_vendor_month(["2026-09-01", "2026-09-24"]), fai.FETCH_OK)), \
-         patch.object(fai, "_held_session_dates",
-                      return_value={date(2026, 9, 1): 1, date(2026, 9, 24): 1}), \
+         patch.object(fai, "_stored_window_rows",
+                      return_value=_held_rows({date(2026, 9, 1): 1, date(2026, 9, 24): 1})), \
          patch.object(fai, "replace_rows_in_window", return_value=(900, 2)) as rep:
         r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
     assert r["status"] == fai.REPLACE_OK and r["deleted"] == 900
@@ -333,7 +350,7 @@ def test_a_partial_refetch_touching_every_day_is_refused():
         "ticker": "SPY", "interval": "1min", "data_source": "alphavantage",
     })
     with patch.object(fai, "fetch_month", return_value=(half, fai.FETCH_OK)), \
-         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 24): 961}), \
+         patch.object(fai, "_stored_window_rows", return_value=_held_rows({date(2026, 9, 24): 961})), \
          patch.object(fai, "replace_rows_in_window") as rep:
         r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
     assert r["status"] == fai.REPLACE_INCOMPLETE
@@ -348,7 +365,7 @@ def test_a_session_a_couple_of_bars_short_is_within_tolerance():
         "ticker": "SPY", "interval": "1min", "data_source": "alphavantage",
     })
     with patch.object(fai, "fetch_month", return_value=(full, fai.FETCH_OK)), \
-         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 24): 961}), \
+         patch.object(fai, "_stored_window_rows", return_value=_held_rows({date(2026, 9, 24): 961})), \
          patch.object(fai, "replace_rows_in_window", return_value=(961, 959)):
         r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
     assert r["status"] == fai.REPLACE_OK
@@ -362,7 +379,7 @@ def test_a_month_holding_no_session_is_never_deleted():
     replace, which deleted the whole window and inserted nothing."""
     with patch.object(fai, "fetch_month",
                       return_value=(_vendor_month(["2026-09-01"]), fai.FETCH_OK)), \
-         patch.object(fai, "_held_session_dates", return_value={}), \
+         patch.object(fai, "_stored_window_rows", return_value=_held_rows({})), \
          patch.object(fai, "replace_rows_in_window") as rep:
         r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
     assert r["status"] == fai.REPLACE_NOTHING_HELD
@@ -438,8 +455,8 @@ def test_a_sparse_held_session_with_no_refetched_bars_is_refused(held_bars):
     refetch with zero bars for that day pass, deleting it for good."""
     with patch.object(fai, "fetch_month",
                       return_value=(_vendor_month(["2026-09-01"]), fai.FETCH_OK)), \
-         patch.object(fai, "_held_session_dates",
-                      return_value={date(2026, 9, 1): 1, date(2026, 9, 2): held_bars}), \
+         patch.object(fai, "_stored_window_rows",
+                      return_value=_held_rows({date(2026, 9, 1): 1, date(2026, 9, 2): held_bars})), \
          patch.object(fai, "replace_rows_in_window") as rep:
         r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
     assert r["status"] == fai.REPLACE_INCOMPLETE
@@ -462,6 +479,8 @@ def test_a_session_added_after_the_precheck_rolls_the_month_back():
 
     with patch.object(fai, "fetch_month",
                       return_value=(_vendor_month(["2026-09-24"]), fai.FETCH_OK)), \
+         patch.object(fai, "_stored_window_rows",
+                      side_effect=lambda *a, **k: _held_rows(next(snapshots))), \
          patch.object(fai, "_held_session_dates", side_effect=lambda *a, **k: next(snapshots)), \
          patch.object(fai, "replace_rows_in_window", side_effect=fake_replace):
         r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
@@ -521,7 +540,7 @@ def test_the_shortfall_tolerance_scales_with_the_session(held_n, fetched_n, ok):
         "ticker": "SPY", "interval": "1min", "data_source": "alphavantage",
     })
     with patch.object(fai, "fetch_month", return_value=(bars, fai.FETCH_OK)), \
-         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 24): held_n}), \
+         patch.object(fai, "_stored_window_rows", return_value=_held_rows({date(2026, 9, 24): held_n})), \
          patch.object(fai, "replace_rows_in_window", return_value=(held_n, fetched_n)) as rep:
         r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
     assert (r["status"] == fai.REPLACE_OK) is ok
@@ -533,8 +552,9 @@ def test_the_shortfall_tolerance_scales_with_the_session(held_n, fetched_n, ok):
 
 def test_the_held_snapshot_is_taken_before_the_refetch():
     order = []
-    with patch.object(fai, "_held_session_dates",
-                      side_effect=lambda *a, **k: order.append("SNAPSHOT") or {date(2026, 9, 24): 1}), \
+    with patch.object(fai, "_stored_window_rows",
+                      side_effect=lambda *a, **k: order.append("SNAPSHOT")
+                      or _held_rows({date(2026, 9, 24): 1})), \
          patch.object(fai, "fetch_month",
                       side_effect=lambda *a, **k: order.append("FETCH")
                       or (_vendor_month(["2026-09-24"]), fai.FETCH_OK)):
@@ -562,6 +582,8 @@ def test_bars_written_while_the_refetch_is_in_flight_roll_the_month_back():
         return 961, len(df)
 
     with patch.object(fai, "fetch_month", side_effect=fetch), \
+         patch.object(fai, "_stored_window_rows",
+                      side_effect=lambda *a, **k: _held_rows({date(2026, 9, 24): table["bars"]})), \
          patch.object(fai, "_held_session_dates",
                       side_effect=lambda *a, **k: {date(2026, 9, 24): table["bars"]}), \
          patch.object(fai, "replace_rows_in_window", side_effect=fake_replace):
@@ -570,7 +592,7 @@ def test_bars_written_while_the_refetch_is_in_flight_roll_the_month_back():
 
 
 def test_a_month_holding_nothing_spends_no_vendor_call():
-    with patch.object(fai, "_held_session_dates", return_value={}), \
+    with patch.object(fai, "_stored_window_rows", return_value=_held_rows({})), \
          patch.object(fai, "fetch_month") as fetch:
         r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
     assert r["status"] == fai.REPLACE_NOTHING_HELD
@@ -602,6 +624,7 @@ def test_a_same_count_upsert_during_the_refetch_rolls_the_month_back():
         return 961, len(df)
 
     with patch.object(fai, "fetch_month", side_effect=fetch), \
+         patch.object(fai, "_stored_window_rows", return_value=_held_rows({date(2026, 9, 24): 961})), \
          patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 24): 961}), \
          patch.object(fai, "_held_digest", side_effect=lambda *a, **k: table["digest"]), \
          patch.object(fai, "replace_rows_in_window", side_effect=fake_replace):
@@ -612,6 +635,7 @@ def test_a_same_count_upsert_during_the_refetch_rolls_the_month_back():
 
 def test_an_unchanged_month_still_replaces_under_the_digest_check():
     with patch.object(fai, "fetch_month", return_value=(_full_session(), fai.FETCH_OK)), \
+         patch.object(fai, "_stored_window_rows", return_value=_held_rows({date(2026, 9, 24): 961})), \
          patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 24): 961}), \
          patch.object(fai, "replace_rows_in_window",
                       side_effect=lambda df, *a, **kw: (kw["verify"](object()), (961, len(df)))[1]):
@@ -621,7 +645,7 @@ def test_an_unchanged_month_still_replaces_under_the_digest_check():
 
 def test_a_dry_run_takes_no_digest():
     with patch.object(fai, "fetch_month", return_value=(_full_session(), fai.FETCH_OK)), \
-         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 24): 961}), \
+         patch.object(fai, "_stored_window_rows", return_value=_held_rows({date(2026, 9, 24): 961})), \
          patch.object(fai, "_held_digest") as dig:
         r = fai.replace_month("SPY", 2026, 9, "k", commit=False)
     assert r["status"] == fai.REPLACE_DRY
@@ -748,7 +772,7 @@ def test_replace_month_reports_a_window_change_as_changed():
         raise db.WindowChanged("a writer added rows")
     with patch.object(fai, "fetch_month",
                       return_value=(_vendor_month(["2026-09-24"]), fai.FETCH_OK)), \
-         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 24): 1}), \
+         patch.object(fai, "_stored_window_rows", return_value=_held_rows({date(2026, 9, 24): 1})), \
          patch.object(fai, "replace_rows_in_window", side_effect=fake_replace):
         r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
     assert r["status"] == fai.REPLACE_CHANGED
@@ -798,7 +822,7 @@ def test_replace_month_clears_every_ts_keyed_derived_table():
         kw["cleared"].update({"strat_features_1m": 390})
         return 961, len(df)
     with patch.object(fai, "fetch_month", return_value=(_vendor_month(["2026-09-24"]), fai.FETCH_OK)), \
-         patch.object(fai, "_held_session_dates", return_value={date(2026, 9, 24): 1}), \
+         patch.object(fai, "_stored_window_rows", return_value=_held_rows({date(2026, 9, 24): 1})), \
          patch.object(fai, "replace_rows_in_window", side_effect=fake_replace):
         r = fai.replace_month("SPY", 2026, 9, "k", commit=True)
     assert r["status"] == fai.REPLACE_OK
@@ -965,3 +989,52 @@ def test_the_swap_spares_the_listed_keys():
     assert del_q == ("DELETE FROM market_data_intraday WHERE ticker = :k_ticker "
                      "AND interval = :k_interval AND ts >= :w_start AND ts < :w_end")
     assert "w_spare" not in lock_p and "w_spare" not in del_p
+
+
+# -- Design 2: the snapshot is one strict read of the window's rows ----------
+
+
+def test_the_snapshot_reads_the_five_fields_once_and_strictly():
+    """One read before the refetch, with the fields the label-copy test needs.
+    A database error is raised: it never reads as "nothing held", and no vendor
+    call is spent after it."""
+    reads = []
+
+    def read(sql, params, **kw):
+        reads.append((" ".join(sql.split()), params, kw))
+        return _held_rows({date(2026, 9, 24): 1})
+
+    with patch.object(fai, "query_to_dataframe_strict", side_effect=read), \
+         patch.object(fai, "fetch_month",
+                      return_value=(_vendor_month(["2026-09-24"]), fai.FETCH_OK)):
+        r = fai.replace_month("SPY", 2026, 9, "k", commit=False)
+    assert r["status"] == fai.REPLACE_DRY
+    assert len(reads) == 1
+    sql, params, kw = reads[0]
+    assert sql.startswith("SELECT ts, open, high, low, close, volume FROM market_data_intraday")
+    start, end = fai.month_replace_window(2026, 9)
+    assert params == {"t": "SPY", "s": start, "e": end}
+    assert kw == {"timeout_s": 120}
+
+    with patch.object(fai, "query_to_dataframe_strict", side_effect=RuntimeError("db down")), \
+         patch.object(fai, "fetch_month") as fetch, \
+         pytest.raises(RuntimeError, match="db down"):
+        fai.replace_month("SPY", 2026, 9, "k", commit=True)
+    fetch.assert_not_called()
+
+
+def test_held_session_dates_is_unchanged():
+    """_held_session_dates keeps its read (ts, volume) and its result."""
+    rows = pd.concat([_stored("2026-09-22", stored="utc"),
+                      _stored("2026-09-22", stored="et_label", start="04:00", end="07:59")])
+    rows = rows.drop_duplicates("ts", keep="first").sort_values("ts")
+    start, end = fai.month_replace_window(2026, 9)
+    reads = []
+
+    def read(sql, params, **kw):
+        reads.append(" ".join(sql.split()))
+        return rows.reset_index(drop=True)
+
+    with patch.object(fai, "query_to_dataframe_strict", side_effect=read):
+        assert fai._held_session_dates("SPY", start, end) == {date(2026, 9, 22): 961}
+    assert len(reads) == 1 and reads[0].startswith("SELECT ts, volume FROM market_data_intraday")

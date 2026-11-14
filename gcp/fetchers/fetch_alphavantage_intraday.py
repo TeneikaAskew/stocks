@@ -535,11 +535,30 @@ def _held_session_dates(symbol: str, start: datetime, end: datetime, conn=None) 
         import sqlalchemy
         res = conn.execute(sqlalchemy.text(sql), params)
         df = pd.DataFrame(res.fetchall(), columns=['ts', 'volume'])
-    if df.empty:
+    return _placed_session_counts(df)
+
+
+def _placed_session_counts(rows: pd.DataFrame) -> dict:
+    """{Eastern session date: distinct bars} for stored rows (``ts``,
+    ``volume``), placed by stored_intraday_to_eastern. Weekday sessions only."""
+    if rows.empty:
         return {}
-    idx, keep = stored_intraday_to_eastern(df['ts'], df['volume'])
+    idx, keep = stored_intraday_to_eastern(rows['ts'], rows['volume'])
     days = pd.Series(idx[keep].date).value_counts()
     return {d: int(n) for d, n in days.items() if d.weekday() < 5}
+
+
+def _stored_window_rows(symbol: str, start: datetime, end: datetime) -> pd.DataFrame:
+    """The window's stored rows with their five fields: replace_month's
+    snapshot. One read gives the placed counts (as _held_session_dates would)
+    and what classify_stored_rows compares with the refetch. Strict: a DB
+    error must never read as "nothing held"."""
+    return query_to_dataframe_strict(
+        """
+        SELECT ts, open, high, low, close, volume
+          FROM market_data_intraday
+         WHERE ticker = :t AND interval = '1min' AND ts >= :s AND ts < :e
+        """, {'t': symbol, 's': start, 'e': end}, timeout_s=120)
 
 
 def _held_digest(symbol: str, start: datetime, end: datetime, conn=None) -> str:
@@ -586,7 +605,11 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
     # verify() below refuses the month. Snapshotting after the fetch let such
     # bars into ``held`` but not into the refetch, where the shortfall
     # tolerance could pass them and the DELETE erase them (Codex P1 on #1185).
-    held = _held_session_dates(symbol, start, end)
+    stored = _stored_window_rows(symbol, start, end)
+    # The window's bars as _held_session_dates places them; verify() re-reads
+    # exactly this under the lock.
+    placed = _placed_session_counts(stored)
+    held = placed
     out['held_sessions'] = len(held)
     if not held:
         # Nothing to re-frame: deleting would only remove rows (code review
@@ -636,8 +659,8 @@ def replace_month(symbol: str, year: int, month: int, api_key: str,
         # that landed in between would otherwise lose its rows (or its newer
         # values) to the DELETE.
         now = _held_session_dates(symbol, start, end, conn=conn)
-        if now != held:
-            raise _HeldChanged(f"held sessions changed: {len(held)} -> {len(now)}")
+        if now != placed:
+            raise _HeldChanged(f"held sessions changed: {len(placed)} -> {len(now)}")
         if _held_digest(symbol, start, end, conn=conn) != digest:
             raise _HeldChanged("held rows changed (same bar counts, new content)")
 
