@@ -95,7 +95,7 @@ jobs:
           path: scripts/gate
       - name: Base suites against the proposed gate and exporter
         run: |
-          python3 -m pip install --quiet pytest pyyaml
+          python3 -m pip install --quiet pytest pyyaml pytest-xdist==3.8.0
           # --noconftest: the suites are hermetic; a repository conftest may import packages this job does not install
-          python3 -m pytest tests/scripts/test_spec_gate.py -q -p no:cacheprovider --noconftest
+          python3 -m pytest tests/scripts/test_spec_gate.py -q -p no:cacheprovider --noconftest -n 4
           python3 -m pytest tests/scripts/test_export_model_registry.py -q -p no:cacheprovider --noconftest
