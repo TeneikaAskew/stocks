@@ -724,7 +724,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/data_loader.py`](../../../lib/data_loader.py) — line [457](../../../lib/data_loader.py#L457)
 - [`lib/features/intraday_flow.py`](../../../lib/features/intraday_flow.py) — line [125](../../../lib/features/intraday_flow.py#L125)
 - [`lib/options_intraday.py`](../../../lib/options_intraday.py) — line [599](../../../lib/options_intraday.py#L599)
-- [`platform/api/main.py`](../../../platform/api/main.py) — line [625](../../../platform/api/main.py#L625), [761](../../../platform/api/main.py#L761), [1292](../../../platform/api/main.py#L1292), [1703](../../../platform/api/main.py#L1703)
+- [`platform/api/main.py`](../../../platform/api/main.py) — line [625](../../../platform/api/main.py#L625), [761](../../../platform/api/main.py#L761), [1292](../../../platform/api/main.py#L1292), [1720](../../../platform/api/main.py#L1720)
 - [`scripts/analysis/per_ticker_calibration.py`](../../../scripts/analysis/per_ticker_calibration.py) — line [208](../../../scripts/analysis/per_ticker_calibration.py#L208), [205](../../../scripts/analysis/per_ticker_calibration.py#L205)
 - [`scripts/audit_data_freshness.py`](../../../scripts/audit_data_freshness.py) — line [647](../../../scripts/audit_data_freshness.py#L647), [648](../../../scripts/audit_data_freshness.py#L648), [807](../../../scripts/audit_data_freshness.py#L807)
 - [`scripts/backfill_and_replay.py`](../../../scripts/backfill_and_replay.py) — line [133](../../../scripts/backfill_and_replay.py#L133)

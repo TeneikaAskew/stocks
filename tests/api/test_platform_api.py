@@ -955,6 +955,10 @@ class TestMarketDataAPI:
         "202613",        # a month request for month 13
         "2026-02-20",    # dashed: this route takes the compact form only
         "20260230",      # digits that are not a calendar date
+        # the last day and month a datetime holds: a calendar date, but the
+        # query window after it cannot be built (this was a 500)
+        "99991231",
+        "999912",
         # the eight full-width digits of 20260220: str.isdigit() accepts them
         "\uff12\uff10\uff12\uff16\uff10\uff12\uff12\uff10",
     ])

@@ -1629,22 +1629,54 @@ def market_most_active():
 _intraday_index_to_eastern = stored_intraday_to_eastern
 
 
+def _bar_window(kind: str, first: datetime) -> tuple[datetime, datetime]:
+    """The UTC query window `[start, end)` that holds a day or a month of
+    1-min bars in both stored timestamp conventions (CLAUDE.md 3.9).
+
+    `first` is the day, or the first day of the month, as `_parse_bar_date`
+    returns it. Raises ValueError or OverflowError for the last day and month
+    a datetime can hold, whose window would end in year 10000.
+    """
+    first = first.replace(tzinfo=timezone.utc)
+    if kind == "day":
+        # [D 00:00Z, D+1 02:00Z) holds session D in both stored
+        # conventions (Eastern labels at raw D 04:00-20:00; true UTC
+        # at D 08:00Z .. D+1 01:00Z, the winter 20:00 ET bar). The loader
+        # cuts to Eastern date D after the read.
+        return first, first + timedelta(days=1, hours=2)
+    # [M-01 02:00Z, M+1-01 02:00Z): month M in both conventions and
+    # no neighbour's 20:00 ET spill, the framing of the migration's
+    # month_replace_window (Codex P2 on #1185).
+    if first.month == 12:
+        following = first.replace(year=first.year + 1, month=1)
+    else:
+        following = first.replace(month=first.month + 1)
+    return first + timedelta(hours=2), following + timedelta(hours=2)
+
+
 def _parse_bar_date(date: str) -> tuple[str, datetime]:
     """The path date of a bar request: ("day", that day) for YYYYMMDD,
     ("month", its first day) for YYYYMM.
 
     Raises ValueError, whose message is the route's 404 text, for anything
     else: digits that form no calendar date (20260230), a month outside 01 to
-    12, the dashed form, and non-ASCII digits, which ``str.isdigit`` and
-    ``\\d`` would both accept.
+    12, the dashed form, non-ASCII digits, which ``str.isdigit`` and
+    ``\\d`` would both accept, and a date whose query window cannot be built
+    (99991231, 999912). So a date this function accepts never fails later
+    in the loader's arithmetic.
     """
     try:
         if re.fullmatch(r"[0-9]{8}", date):
-            return "day", datetime(int(date[:4]), int(date[4:6]), int(date[6:8]))
-        if re.fullmatch(r"[0-9]{6}", date):
-            return "month", datetime(int(date[:4]), int(date[4:6]), 1)
-    except ValueError:
-        pass  # digits, but not a calendar date: the same answer as no match
+            parsed = "day", datetime(int(date[:4]), int(date[4:6]), int(date[6:8]))
+        elif re.fullmatch(r"[0-9]{6}", date):
+            parsed = "month", datetime(int(date[:4]), int(date[4:6]), 1)
+        else:
+            parsed = None
+        if parsed is not None:
+            _bar_window(*parsed)
+            return parsed
+    except (ValueError, OverflowError):
+        pass  # digits, but no calendar date or no window: the same answer as no match
     raise ValueError(f"Invalid date {date}: expected YYYYMMDD or YYYYMM.")
 
 
@@ -1681,22 +1713,7 @@ def _load_date_data(ticker_lower: str, date: str) -> pd.DataFrame:
         raise FileNotFoundError(str(e))
 
     if _CLOUD_SQL:
-        first = first.replace(tzinfo=timezone.utc)
-        if kind == "day":
-            # [D 00:00Z, D+1 02:00Z) holds session D in both stored
-            # conventions (Eastern labels at raw D 04:00-20:00; true UTC
-            # at D 08:00Z .. D+1 01:00Z, the winter 20:00 ET bar). Cut to
-            # Eastern date D below.
-            start, end = first, first + timedelta(days=1, hours=2)
-        else:
-            # [M-01 02:00Z, M+1-01 02:00Z): month M in both conventions and
-            # no neighbour's 20:00 ET spill, the framing of the migration's
-            # month_replace_window (Codex P2 on #1185).
-            if first.month == 12:
-                following = first.replace(year=first.year + 1, month=1)
-            else:
-                following = first.replace(month=first.month + 1)
-            start, end = first + timedelta(hours=2), following + timedelta(hours=2)
+        start, end = _bar_window(kind, first)
         df = _bars_query(
             """
             SELECT ts, open, high, low, close, volume
