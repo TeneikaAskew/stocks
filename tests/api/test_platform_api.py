@@ -4,7 +4,7 @@ Platform API integration tests — verifies all endpoints used by the frontend.
 Tests cover:
 - Live-mode API contracts (Dashboard, LiveMarket, Charts, Signals pages)
 - Historical review-mode API contracts (end_date/end_time filtering)
-- Reference endpoint source routing (AlphaVantage vs Cloud SQL)
+- Reference endpoint: one market_data_daily query, no vendor call
 - Dashboard brief stale-data reporting
 - Non-review page endpoints (Backtest, Playbook, Reports, Journal)
 - Frontend route serving (SPA shell)
@@ -613,15 +613,110 @@ class TestJournalCRUD:
 
 # ── Market Data API ─────────────────────────────────────────────────────────
 
-# Hermetic: patches api.main._CLOUD_SQL=True and api.main.query_to_dataframe
-# so the /api/market/* endpoints exercise their real Cloud SQL code path
-# against synthetic intraday DataFrames — no real Cloud SQL backend.
+# Helpers for the bar and reference routes (FEAT-REPLAY-001). The routes read
+# the table through gcp.database.query_to_dataframe_strict and, only when
+# Cloud SQL is not configured, the bucket through api.gcs_reader. Each helper
+# puts a recorder in place of one of those, so a test can say exactly which
+# reads happened and that the others did not.
+
+_BAR_COLUMNS = ["ts", "open", "high", "low", "close", "volume"]
+
+
+def _flags(monkeypatch, configured, unconfigured):
+    """Set the two startup flags on api.main; returns the module."""
+    import api.main as main_module
+    monkeypatch.setattr(main_module, "_CLOUD_SQL", configured)
+    monkeypatch.setattr(main_module, "_CLOUD_SQL_UNCONFIGURED", unconfigured)
+    return main_module
+
+
+def _strict_recorder(monkeypatch, result):
+    """Put a fake in place of gcp.database.query_to_dataframe_strict that
+    records (sql, params) and returns a copy of `result`, or raises it when
+    it is an exception. Returns the list of recorded calls."""
+    from gcp import database
+    calls = []
+
+    def fake(sql, params=None, timeout_s=None):
+        calls.append((sql, params))
+        if isinstance(result, BaseException):
+            raise result
+        return result.copy()
+
+    monkeypatch.setattr(database, "query_to_dataframe_strict", fake)
+    return calls
+
+
+def _bucket_recorder(monkeypatch, blobs=None):
+    """Put a recorder in place of every public function of api.gcs_reader.
+    `blobs` maps a blob path (relative to BASE_PREFIX) to a frame; a path not
+    in it does not exist. Returns the list of (function, first argument)."""
+    import re as _re
+
+    from api import gcs_reader
+    blobs = blobs or {}
+    calls = []
+
+    def relative(name):
+        prefix = gcs_reader.BASE_PREFIX
+        return name[len(prefix):] if name.startswith(prefix) else name
+
+    def listing(prefix, pattern):
+        return sorted(gcs_reader.BASE_PREFIX + b for b in blobs
+                      if b.startswith(prefix) and _re.match(pattern, b.rsplit("/", 1)[-1]))
+
+    def not_stubbed(*_a, **_k):
+        raise AssertionError("a bucket read this test does not stub")
+
+    answers = {
+        "list_matching_blobs": listing,
+        "list_matching_blobs_strict": listing,
+        "blob_exists": lambda path: relative(path) in blobs,
+        "download_parquet": lambda name, *_a, **_k: blobs[relative(name)].copy(),
+        "download_csv": not_stubbed,
+        "download_text": not_stubbed,
+        "get_latest_csv": not_stubbed,
+        "get_latest_parquet": not_stubbed,
+    }
+
+    def recording(fn_name, answer):
+        def fake(*a, **k):
+            calls.append((fn_name, a[0] if a else None))
+            return answer(*a, **k)
+        return fake
+
+    for fn_name, answer in answers.items():
+        monkeypatch.setattr(gcs_reader, fn_name, recording(fn_name, answer))
+    return calls
+
+
+def _loud(client):
+    """A client that answers 500 for an unhandled exception instead of
+    re-raising it into the test."""
+    from starlette.testclient import TestClient
+    return TestClient(client.app, raise_server_exceptions=False)
+
+
+def _statement_timeout():
+    """What a statement timeout (SQLSTATE 57014) surfaces as: a query of
+    ours running too long, which lib.infra_errors does not class as an
+    outage."""
+    import pg8000.exceptions
+    import sqlalchemy.exc
+    return sqlalchemy.exc.OperationalError(
+        "SELECT 1", {}, pg8000.exceptions.DatabaseError({"C": "57014"}))
+
+
+# Hermetic: patches api.main._CLOUD_SQL=True and api.main._bars_query (or
+# gcp.database.query_to_dataframe_strict under it) so the /api/market/*
+# endpoints exercise their real Cloud SQL code path against synthetic
+# intraday DataFrames — no real Cloud SQL backend.
 class TestMarketDataAPI:
     """`/api/market/dates/{ticker}` and `/api/market/data/{ticker}/{date}` —
     both read `market_data_intraday` from Cloud SQL in `api.main`.
 
-    The endpoints bind `query_to_dataframe` and `_CLOUD_SQL` at module
-    import time, so tests patch them on the `api.main` module object.
+    The endpoints bind `_CLOUD_SQL` at module import time, so tests patch it
+    on the `api.main` module object.
     """
 
 
@@ -656,18 +751,14 @@ class TestMarketDataAPI:
             % list(tmp_path.glob("*.json")))
 
     def _patch_intraday(self, monkeypatch, df):
-        """Force Cloud SQL ON in api.main and install a fake
-        `query_to_dataframe` returning `df` for every call.
-
-        `_load_date_data` and `get_available_dates` both run the same
-        query_to_dataframe; a single canned df satisfies both because the
-        intraday-bars shape (`ts, open, high, low, close, volume`) is a
-        superset of the dates query (`DATE(ts)`). The dates endpoint is
-        tested separately with a date-shaped df below."""
+        """Force Cloud SQL ON in api.main and install a fake `_bars_query`
+        (the bar loader's raising query wrapper) returning `df` for every
+        call. The dates endpoint is tested separately with a date-shaped df
+        below."""
         import api.main as main_module
 
         monkeypatch.setattr(main_module, "_CLOUD_SQL", True)
-        monkeypatch.setattr(main_module, "query_to_dataframe", lambda *a, **k: df.copy())
+        monkeypatch.setattr(main_module, "_bars_query", lambda *a, **k: df.copy())
 
     def _intraday_day_df(self, date_str="2026-02-20", n_bars=120):
         """Build a synthetic 1-min intraday bar DataFrame matching the
@@ -843,18 +934,179 @@ class TestMarketDataAPI:
         r = client.get("/api/market/data/IWM/20260220?timeframe=1&end_time=invalid")
         assert r.status_code == 400
 
-    def test_market_data_404_when_no_rows(self, client, monkeypatch):
-        """An empty intraday df with no GCS fallback → 404 (no data for
-        that date). `_load_date_data` falls through to GCS when Cloud SQL
-        returns 0 rows, so `blob_exists` is stubbed False to keep the test
-        hermetic — the FileNotFoundError it raises becomes a 404."""
-        self._patch_intraday(monkeypatch, pd.DataFrame(
-            columns=["ts", "open", "high", "low", "close", "volume", "data_source"]
-        ))
-        from api import gcs_reader
-        monkeypatch.setattr(gcs_reader, "blob_exists", lambda *a, **k: False)
-        r = client.get("/api/market/data/IWM/20260220?timeframe=1")
+    # -- a replay reads bars from the table or says it cannot (FEAT-REPLAY-001) --
+
+    def test_market_data_404_names_the_table_and_never_reads_the_bucket(self, client, monkeypatch):
+        _flags(monkeypatch, True, False)
+        queries = _strict_recorder(monkeypatch, pd.DataFrame(columns=_BAR_COLUMNS))
+        bucket = _bucket_recorder(monkeypatch)
+
+        r = client.get("/api/market/data/IWM/20260220")
+
         assert r.status_code == 404
+        assert r.json() == {
+            "detail": "No 1-min bars for IWM on 20260220 in market_data_intraday."}
+        assert len(queries) == 1
+        assert bucket == []
+
+    @pytest.mark.parametrize("bad", [
+        "20261345",      # month 13
+        "abcdefgh",      # eight characters, no digit
+        "202613",        # a month request for month 13
+        "2026-02-20",    # dashed: this route takes the compact form only
+        "20260230",      # digits that are not a calendar date
+        # the last day and month a datetime holds: a calendar date, but the
+        # query window after it cannot be built (this was a 500)
+        "99991231",
+        "999912",
+        # the eight full-width digits of 20260220: str.isdigit() accepts them
+        "\uff12\uff10\uff12\uff16\uff10\uff12\uff12\uff10",
+    ])
+    def test_market_data_malformed_date_is_404_before_any_read(self, client, monkeypatch, bad):
+        _flags(monkeypatch, True, False)
+        queries = _strict_recorder(monkeypatch, pd.DataFrame(columns=_BAR_COLUMNS))
+        bucket = _bucket_recorder(monkeypatch)
+
+        r = client.get(f"/api/market/data/IWM/{bad}")
+
+        assert r.status_code == 404
+        assert r.json() == {"detail": f"Invalid date {bad}: expected YYYYMMDD or YYYYMM."}
+        assert queries == []
+        assert bucket == []
+
+    def test_market_data_database_failure_is_503_and_a_defect_is_500(self, client, monkeypatch):
+        _flags(monkeypatch, True, False)
+        bucket = _bucket_recorder(monkeypatch)
+
+        _strict_recorder(monkeypatch, ConnectionError("connection refused"))
+        r = client.get("/api/market/data/IWM/20260220")
+        assert r.status_code == 503
+        assert r.json() == {
+            "detail": "Could not read 1-min bars for IWM on 20260220: the database is unavailable."}
+        assert "connection refused" not in r.text
+
+        # A defect, and a query of ours running too long, are not outages.
+        for defect in (KeyError("close"), _statement_timeout()):
+            _strict_recorder(monkeypatch, defect)
+            r = _loud(client).get("/api/market/data/IWM/20260220")
+            assert r.status_code == 500, defect
+
+        assert bucket == []
+
+    def test_local_dev_reads_the_bucket_only_when_cloud_sql_is_unconfigured(self, client, monkeypatch):
+        day = self._intraday_day_df(n_bars=30).drop(columns=["data_source"])
+        # the bucket's minute file: a naive Eastern index
+        day = day.set_index(
+            day["ts"].dt.tz_convert("America/New_York").dt.tz_localize(None)).drop(columns=["ts"])
+        minute_file = {"data/iwm/minute/iwm_minute_20260220.parquet": day}
+
+        # Cloud SQL is not configured: local dev. The bucket answers.
+        _flags(monkeypatch, False, True)
+        queries = _strict_recorder(monkeypatch, AssertionError("no database read in local dev"))
+        bucket = _bucket_recorder(monkeypatch, minute_file)
+
+        r = client.get("/api/market/data/IWM/20260220")
+        assert r.status_code == 200
+        assert r.json()["count"] == 30
+
+        r = client.get("/api/market/data/IWM/20260219")
+        assert r.status_code == 404
+        assert r.json() == {
+            "detail": "No 1-min parquet for IWM on 20260219 in the bucket (local dev)."}
+
+        # the yearly file of daily bars is never probed, hit or miss
+        assert bucket, "the local-dev branch did not read the bucket at all"
+        assert not [call for call in bucket if "iwm_2026.parquet" in str(call[1])], bucket
+        assert queries == []
+
+        # The reference route in local dev: the previous day in the bucket's
+        # listing, its regular-session bars, no week and no source.
+        def regular_session(d):
+            index = pd.date_range(f"{d} 09:30", periods=60, freq="1min")
+            return pd.DataFrame({"open": 120.0, "high": 125.0, "low": 118.0,
+                                 "close": 120.5, "volume": 1000}, index=index)
+
+        _bucket_recorder(monkeypatch, {
+            "data/iwm/minute/iwm_minute_20200313.parquet": regular_session("2020-03-13"),
+            "data/iwm/minute/iwm_minute_20200316.parquet": regular_session("2020-03-16"),
+        })
+        r = client.get("/api/market/reference/IWM/20200316")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["date"] == "20200313"
+        assert body["week"] is None
+        assert "source" not in body
+        assert queries == []
+
+        # Neither flag: what a failed import of gcp.database leaves. Not local
+        # dev, so the same bucket is not read.
+        _flags(monkeypatch, False, False)
+        bucket = _bucket_recorder(monkeypatch, minute_file)
+
+        r = client.get("/api/market/data/IWM/20260220")
+        assert r.status_code == 503
+        assert r.json() == {
+            "detail": "Could not read 1-min bars for IWM on 20260220: the database is unavailable."}
+        r = client.get("/api/market/reference/IWM/20260220")
+        assert r.status_code == 503
+        assert r.json() == {
+            "detail": "Could not read reference levels for IWM before 20260220: "
+                      "the database is unavailable."}
+        assert bucket == []
+        assert queries == []
+
+    def test_market_data_month_request_binds_the_month_window_and_names_the_month(
+            self, client, monkeypatch):
+        from datetime import datetime, timezone
+        _flags(monkeypatch, True, False)
+        queries = _strict_recorder(monkeypatch, pd.DataFrame(columns=_BAR_COLUMNS))
+
+        r = client.get("/api/market/data/IWM/202612")
+
+        assert r.status_code == 404
+        assert r.json() == {
+            "detail": "No 1-min bars for IWM on 202612 in market_data_intraday."}
+        assert [params for _sql, params in queries] == [{
+            "ticker": "IWM",
+            "start": datetime(2026, 12, 1, 2, tzinfo=timezone.utc),
+            "end": datetime(2027, 1, 1, 2, tzinfo=timezone.utc),
+        }]
+
+    def test_market_data_end_time_before_the_first_bar_keeps_its_own_404_text(
+            self, client, monkeypatch):
+        """The day is in the table; no bar is at or before end_time. Solyra
+        tells the 404s apart by the start of `detail`, so this one must not
+        read as 'not in the table'."""
+        self._patch_intraday(monkeypatch, self._intraday_day_df(n_bars=30))
+
+        r = client.get("/api/market/data/IWM/20260220?end_time=04:00")
+
+        assert r.status_code == 404
+        assert r.json() == {
+            "detail": "No data for IWM on 20260220 at or before end_time=04:00"}
+
+    def test_cloud_sql_flags_tell_unconfigured_from_a_failed_import(
+            self, client, monkeypatch, caplog):
+        """`not _CLOUD_SQL` used to mean two things: Cloud SQL is not
+        configured (local dev, where the bucket may be read), and the import
+        of gcp.database failed on a deployed revision (where it must not).
+        The second flag is True only for the first."""
+        import api.main as main_module
+        from gcp import database
+
+        monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: True)
+        assert main_module._cloud_sql_flags() == (True, False)
+
+        monkeypatch.setattr(database, "is_cloud_sql_configured", lambda: False)
+        assert main_module._cloud_sql_flags() == (False, True)
+
+        # a None entry makes `from gcp.database import ...` raise ImportError
+        monkeypatch.setitem(sys.modules, "gcp.database", None)
+        with caplog.at_level("ERROR", logger=main_module.logger.name):
+            assert main_module._cloud_sql_flags() == (False, False)
+        errors = [rec for rec in caplog.records
+                  if rec.name == main_module.logger.name and rec.levelname == "ERROR"]
+        assert errors and errors[-1].exc_info, "the failed import must be logged with its traceback"
 
 
 # ── Dashboard Brief API ─────────────────────────────────────────────────────
@@ -966,60 +1218,34 @@ class TestDashboardBriefAPI:
 
 # ── Reference Levels API ────────────────────────────────────────────────────
 
-# Hermetic: patches api.main._fetch_av_daily_reference, api.main._CLOUD_SQL
-# and api.main.query_to_dataframe so /api/market/reference exercises both the
-# AlphaVantage-recent and Cloud-SQL-historical source-routing branches with
-# synthetic data — no real AV HTTP call, no Cloud SQL.
+# Hermetic: patches api.main._CLOUD_SQL and api.main._daily_reference_query
+# (or gcp.database.query_to_dataframe_strict under it) so
+# /api/market/reference runs its one market_data_daily query against
+# synthetic rows. There is no AlphaVantage call on this route any more.
 class TestReferenceAPI:
     """`GET /api/market/reference/{ticker}/{date}` — previous-day OHLC.
 
-    Source routing: AV for dates within ~30 days, Cloud SQL
-    `market_data_daily` for older dates. Tests mock each source.
+    One source: the newest `market_data_daily` row dated before the request,
+    with `week` built from the same LIMIT 5 rows.
     """
 
-    def test_reference_recent_uses_alphavantage(self, client, monkeypatch):
-        """Recent dates (< 30 days ago) prefer AlphaVantage."""
-        import api.main as main_module
-        from datetime import date, timedelta
-
-        # A date 2 days ago is "recent" → endpoint hits the AV branch.
-        recent = (date.today() - timedelta(days=2)).strftime("%Y%m%d")
-
-        monkeypatch.setattr(main_module, "_fetch_av_daily_reference", lambda t, d: {
-            "date": "20260512", "open": 204.0, "high": 206.5,
-            "low": 203.0, "close": 205.8,
-        })
-        # Week range goes through Cloud SQL — keep it OFF so week is None.
-        monkeypatch.setattr(main_module, "_CLOUD_SQL", False)
-
-        r = client.get(f"/api/market/reference/IWM/{recent}")
-        assert r.status_code == 200
-        data = r.json()
-        assert data["source"] == "alphavantage"
-        assert data["date"] == "20260512"
-        assert data["high"] == 206.5
-        assert data["low"] == 203.0
-        assert data["close"] == 205.8
-
     def test_reference_historical_uses_cloud_sql(self, client, monkeypatch):
-        """Old dates (> 30 days ago) use Cloud SQL `market_data_daily`."""
+        """The reference day comes from Cloud SQL `market_data_daily`."""
         import api.main as main_module
 
         monkeypatch.setattr(main_module, "_CLOUD_SQL", True)
-        # First query: prev-day row (ORDER BY date DESC LIMIT 1).
-        # Second query (_fetch_week_range): 5-row window — give it < 2 rows
-        # so it returns None and we don't have to model the week shape.
+        # One LIMIT 5 query answers both the reference day and `week`; one
+        # row is under the two `week` needs, so week is None here.
         prev_day = pd.DataFrame([{
             "date": pd.Timestamp("2020-03-13").date(),
             "open": 121.0, "high": 125.0, "low": 118.0, "close": 120.5,
+            "rsi_14": 41.0,
         }])
-        calls = {"n": 0}
 
         def fake_query(sql, params=None):
-            calls["n"] += 1
-            return prev_day.copy() if calls["n"] == 1 else pd.DataFrame()
+            return prev_day.copy()
 
-        monkeypatch.setattr(main_module, "query_to_dataframe", fake_query)
+        monkeypatch.setattr(main_module, "_daily_reference_query", fake_query)
 
         r = client.get("/api/market/reference/IWM/20200316")
         assert r.status_code == 200
@@ -1036,19 +1262,224 @@ class TestReferenceAPI:
         prev_day = pd.DataFrame([{
             "date": pd.Timestamp("2020-03-13").date(),
             "open": 121.0, "high": 125.0, "low": 118.0, "close": 120.5,
+            "rsi_14": 41.0,
         }])
-        calls = {"n": 0}
 
         def fake_query(sql, params=None):
-            calls["n"] += 1
-            return prev_day.copy() if calls["n"] == 1 else pd.DataFrame()
+            return prev_day.copy()
 
-        monkeypatch.setattr(main_module, "query_to_dataframe", fake_query)
+        monkeypatch.setattr(main_module, "_daily_reference_query", fake_query)
 
         r = client.get("/api/market/reference/IWM/20200316")
         assert r.status_code == 200
         data = r.json()
         assert data["date"] != "20200316", "Should return previous day, not same day"
+
+    # -- one table query, or an answer that says why not (FEAT-REPLAY-001) --
+
+    _DAILY_COLUMNS = ["date", "open", "high", "low", "close", "rsi_14"]
+
+    @staticmethod
+    def _daily_rows(newest, n=5):
+        """`n` daily rows ending at `newest`, newest first, as the LIMIT 5
+        query returns them."""
+        days = pd.bdate_range(end=pd.Timestamp(newest), periods=n)[::-1]
+        return pd.DataFrame({
+            "date": [d.date() for d in days],
+            "open": [121.0 + i for i in range(n)],
+            "high": [125.0 + i for i in range(n)],
+            "low": [118.0 - i for i in range(n)],
+            "close": [120.5 + i for i in range(n)],
+            "rsi_14": [40.0 + i for i in range(n)],
+        })
+
+    def test_reference_reads_one_query_and_calls_no_vendor(self, client, monkeypatch):
+        """(a) A recent date used to call AlphaVantage and then run two
+        queries. It is one query now, and its rows also give `week`."""
+        from datetime import date, timedelta
+
+        import httpx
+        main_module = _flags(monkeypatch, True, False)
+        vendor = []
+
+        def no_vendor(*a, **k):
+            vendor.append((a, k))
+            raise AssertionError("the reference route must not open an HTTP client")
+
+        monkeypatch.setattr(httpx, "Client", no_vendor)
+        requested = date.today() - timedelta(days=2)
+        rows = self._daily_rows(requested - timedelta(days=1))
+        queries = _strict_recorder(monkeypatch, rows)
+
+        r = client.get(f"/api/market/reference/IWM/{requested:%Y%m%d}")
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["source"] == "cloud_sql"
+        assert body["date"] == rows["date"][0].strftime("%Y%m%d")
+        assert body["week"] == {
+            "high": 129.0, "low": 114.0, "avg_close": 122.5, "avg_rsi_14": 42.0,
+            "start_date": rows["date"][4].isoformat(),
+            "end_date": rows["date"][0].isoformat(),
+            "sessions": 5,
+        }
+        assert len(queries) == 1
+        sql, params = queries[0]
+        assert "market_data_daily" in sql and "LIMIT 5" in sql
+        assert "close IS NOT NULL" in sql
+        assert params == {"ticker": "IWM", "dt": requested.isoformat()}
+        assert vendor == []
+        for gone in ("_fetch_av_daily_reference", "_fetch_week_range", "AV_API_KEY", "AV_BASE"):
+            assert not hasattr(main_module, gone), gone
+
+    def test_reference_404_names_the_daily_table(self, client, monkeypatch):
+        """(b)"""
+        _flags(monkeypatch, True, False)
+        _strict_recorder(monkeypatch, pd.DataFrame(columns=self._DAILY_COLUMNS))
+        bucket = _bucket_recorder(monkeypatch)
+
+        r = client.get("/api/market/reference/IWM/20200316")
+
+        assert r.status_code == 404
+        assert r.json() == {
+            "detail": "No daily bar for IWM before 20200316 in market_data_daily."}
+        assert bucket == []
+
+    def test_reference_database_failure_is_503_and_a_defect_is_500(self, client, monkeypatch):
+        """(c, d)"""
+        _flags(monkeypatch, True, False)
+
+        _strict_recorder(monkeypatch, ConnectionError("connection refused"))
+        r = client.get("/api/market/reference/IWM/20200316")
+        assert r.status_code == 503
+        assert r.json() == {
+            "detail": "Could not read reference levels for IWM before 20200316: "
+                      "the database is unavailable."}
+        assert "connection refused" not in r.text
+
+        _strict_recorder(monkeypatch, KeyError("close"))
+        assert _loud(client).get("/api/market/reference/IWM/20200316").status_code == 500
+
+    @pytest.mark.parametrize("bad", [
+        "20261345",     # month 13
+        "garbage",
+        "2026-13-45",   # dashed, month 13
+        "2026-0220",    # half dashed
+        "202602",       # a month: this route takes a day only
+    ])
+    def test_reference_malformed_date_is_404_before_any_read(self, client, monkeypatch, bad):
+        """(e)"""
+        _flags(monkeypatch, True, False)
+        queries = _strict_recorder(monkeypatch, self._daily_rows("2020-03-13"))
+        bucket = _bucket_recorder(monkeypatch)
+
+        r = client.get(f"/api/market/reference/IWM/{bad}")
+
+        assert r.status_code == 404
+        assert r.json() == {"detail": f"Invalid date {bad}: expected YYYYMMDD or YYYY-MM-DD."}
+        assert queries == []
+        assert bucket == []
+
+    @pytest.mark.parametrize("request_age, gap, expected", [
+        (0, 5, 5),    # a request for today, newest row 5 days back: flagged
+        (0, 3, 0),    # 3 days back is within MAX_CLOUD_SQL_STALENESS_DAYS
+        (40, 5, 0),   # a request 40 days old is never flagged
+    ])
+    def test_reference_stale_days_rule(self, client, monkeypatch, request_age, gap, expected):
+        """(f) The rule the rewrite keeps; it holds on main too."""
+        from datetime import datetime, timedelta
+        _flags(monkeypatch, True, False)
+        requested = datetime.now().date() - timedelta(days=request_age)
+        rows = self._daily_rows("2020-03-13", n=1)
+        rows["date"] = [requested - timedelta(days=gap)]
+        _strict_recorder(monkeypatch, rows)
+
+        r = client.get(f"/api/market/reference/IWM/{requested:%Y%m%d}")
+
+        assert r.status_code == 200
+        assert r.json()["stale_days"] == expected
+        assert r.json()["week"] is None
+
+    @staticmethod
+    def _daily_table(monkeypatch, rows):
+        """A real `market_data_daily` (in-memory SQLite) behind the strict
+        query helper, so the route's own SQL text runs and its WHERE clause
+        decides which rows come back. `rows` is (date, open, high, low,
+        close, rsi_14) per row; None is NULL."""
+        import sqlite3
+
+        from gcp import database
+        db = sqlite3.connect(":memory:", check_same_thread=False)
+        db.execute("CREATE TABLE market_data_daily (ticker TEXT, date TEXT, open REAL, "
+                   "high REAL, low REAL, close REAL, rsi_14 REAL)")
+        db.executemany("INSERT INTO market_data_daily VALUES ('IWM', ?, ?, ?, ?, ?, ?)", rows)
+        monkeypatch.setattr(
+            database, "query_to_dataframe_strict",
+            lambda sql, params=None, timeout_s=None: pd.read_sql_query(sql, db, params=params))
+
+    # The 08:20 ET premarket refresh inserts the day's market_data_daily row
+    # with only its pre_* columns (gcp/fetchers/fetch_premarket_refresh.py,
+    # _upsert_premarket_sql); open, high, low and close stay NULL until the
+    # 23:00 ET fetch fills them. A reference day with null prices is not a
+    # value (CLAUDE.md 3.7), so such a row is never the reference day.
+    _PREMARKET_ONLY = ("2020-03-16", None, None, None, None, None)
+
+    def test_reference_skips_a_daily_row_that_has_no_prices_yet(self, client, monkeypatch):
+        _flags(monkeypatch, True, False)
+        self._daily_table(monkeypatch, [
+            self._PREMARKET_ONLY,
+            ("2020-03-13", 121.0, 125.0, 118.0, 120.5, 40.0),
+            ("2020-03-12", 122.0, 126.0, 117.0, 121.5, 41.0),
+            ("2020-03-11", 123.0, 127.0, 116.0, 122.5, 42.0),
+            ("2020-03-10", 124.0, 128.0, 115.0, 123.5, 43.0),
+            ("2020-03-09", 125.0, 129.0, 114.0, 124.5, 44.0),
+        ])
+
+        r = client.get("/api/market/reference/IWM/20200317")
+
+        assert r.status_code == 200
+        body = r.json()
+        # the newest COMPLETE row, not the newest row
+        assert body["date"] == "20200313"
+        assert (body["open"], body["high"], body["low"], body["close"]) == (121.0, 125.0, 118.0, 120.5)
+        # and `week` is the five complete rows, without the premarket-only one
+        assert body["week"] == {
+            "high": 129.0, "low": 114.0, "avg_close": 122.5, "avg_rsi_14": 42.0,
+            "start_date": "2020-03-09", "end_date": "2020-03-13", "sessions": 5,
+        }
+
+    def test_reference_404_when_the_only_daily_row_has_no_prices(self, client, monkeypatch):
+        _flags(monkeypatch, True, False)
+        self._daily_table(monkeypatch, [self._PREMARKET_ONLY])
+
+        r = client.get("/api/market/reference/IWM/20200317")
+
+        assert r.status_code == 404
+        assert r.json() == {
+            "detail": "No daily bar for IWM before 20200317 in market_data_daily."}
+
+    @pytest.mark.parametrize("far", ["99991231", "9999-12-31"])
+    def test_reference_far_future_date_is_an_answer_not_a_500(self, client, monkeypatch, far):
+        """The bar route's window arithmetic overflowed on year 9999. This
+        route builds no window: the date is bound as it is."""
+        _flags(monkeypatch, True, False)
+        self._daily_table(monkeypatch, [("2020-03-13", 121.0, 125.0, 118.0, 120.5, 40.0)])
+
+        r = _loud(client).get(f"/api/market/reference/IWM/{far}")
+
+        assert r.status_code == 200
+        assert r.json()["date"] == "20200313"
+
+    def test_reference_accepts_the_dashed_date(self, client, monkeypatch):
+        """The handler has always passed YYYY-MM-DD through to the query."""
+        _flags(monkeypatch, True, False)
+        queries = _strict_recorder(monkeypatch, self._daily_rows("2020-03-13"))
+
+        r = client.get("/api/market/reference/IWM/2020-03-16")
+
+        assert r.status_code == 200
+        assert r.json()["date"] == "20200313"
+        assert queries[0][1] == {"ticker": "IWM", "dt": "2020-03-16"}
 
 
 # ── Backtest API ────────────────────────────────────────────────────────────
@@ -2153,21 +2584,18 @@ class TestReviewModeIntegration:
             lambda sql, params=None, timeout_s=None: playbook_rows.copy(),
         )
 
-        # ── Reference (Cloud SQL — older than 30d so AV branch skipped) ──
+        # ── Reference (Cloud SQL: one LIMIT 5 query, one row here) ──────
         prev_day = pd.DataFrame([{
             "date": pd.Timestamp("2025-05-30").date(),
             "open": 203.0, "high": 205.0, "low": 202.0, "close": 204.0,
+            "rsi_14": 55.0,
         }])
         monkeypatch.setattr(main_module, "_CLOUD_SQL", True)
 
-        main_calls = {"n": 0}
-
         def fake_main_query(sql, params=None):
-            main_calls["n"] += 1
-            # reference: prev-day row first, week-range second (give <2 rows)
-            return prev_day.copy() if main_calls["n"] % 2 == 1 else pd.DataFrame()
+            return prev_day.copy()
 
-        monkeypatch.setattr(main_module, "query_to_dataframe", fake_main_query)
+        monkeypatch.setattr(main_module, "_daily_reference_query", fake_main_query)
 
     def test_all_dashboard_endpoints_return_200(self, client, monkeypatch):
         """Every endpoint the DashboardPage calls in review mode should return 200."""
