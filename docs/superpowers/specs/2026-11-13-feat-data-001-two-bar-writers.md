@@ -17,7 +17,7 @@ done_when:
   - "tests/gcp/test_intraday_as_traded.py passes with test_backfill_ticker_month_fetch_requests_as_traded and the backfill_ticker import removed, the required file set of test_every_intraday_request_in_the_repo_asks_for_as_traded at six files (no gcp/backfill_ticker.py), len(sites) >= 7, and a new assertion that gcp/backfill_ticker.py is not among the files that hold a TIME_SERIES_INTRADAY request (on main the scan finds 8 requests in 7 files and that assertion fails at gcp/backfill_ticker.py:138); tests/gcp/test_intraday_writers_utc.py passes with test_backfill_ticker_writes_utc_instants removed and its other seven tests unmodified"
   - "make test passes on the PR head; the generated inventory blocks are re-rendered with scripts/maintenance/doc_inventory.py, the multiwriter block of docs/product/infrastructure/05-c-DATA_DEPENDENCIES.md lists market_data_intraday with 2 writers, gcp/fetchers/fetch_alphavantage_intraday.py and gcp/fetchers/fetch_market_data.py (4 on main), and tests/scripts/test_check_generated_docs.py passes"
   - "02-FEATURE-CATALOG FEAT-DATA-001 record shows Status and Last reviewed for this PR, 12-PR-ISSUE-TRACEABILITY lists it, the four (FEAT-DATA-001, component) rows of Design 7 are in the implementation-source notes of 03-SITE-TRACEABILITY.md with docs/review-evidence/site-source-snapshot.json regenerated, the branch run of python3 scripts/maintenance/docs_audit.py reports nothing that origin/main does not, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
-status: draft
+status: approved
 supersedes: null
 ---
 
