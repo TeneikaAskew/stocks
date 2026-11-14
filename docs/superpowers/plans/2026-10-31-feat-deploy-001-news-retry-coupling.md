@@ -68,6 +68,10 @@ Files: gcp/deploy.sh.
   `--max-retries 0` to each update's existing `--region` line, including the
   earnings and topics env-only updates.
 - [x] `bash -n gcp/deploy.sh`; run the focused test again (expect all PASS).
+- [x] 2026-11-13 base sync: main's #1813 pins the exact news argv in
+  tests/gcp/test_deploy_flag_syntax.py (`MERGE_BASE_CALLS`) with retries 1 on create and
+  none on update. Its three news entries now carry `--max-retries 0` on every call, as
+  the spec's adaptation clause allows; the pin stays exact and rejects unpatched main.
 - [ ] Run affected deploy/inventory/news suites and the full suite.
 - [ ] Commit: `fix(deploy): zero whole-job retries on the three news jobs`.
 
