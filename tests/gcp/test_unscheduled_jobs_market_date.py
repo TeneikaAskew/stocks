@@ -77,3 +77,23 @@ def test_correlation_and_regime_default_as_of(monkeypatch, module, variable, ins
 
     (args,) = calls
     assert args[3] == eastern  # run(tickers, horizons, lookback_days, as_of, ...)
+
+
+def test_the_audit_runner_starts_when_run_by_path(tmp_path):
+    """`python gcp/audit_job_runner.py` puts gcp/, not the repo root, on
+    sys.path. The runner reads market_today from lib, so it must find the repo
+    root itself, as it found everything it needed before this change."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    runner = Path(__file__).resolve().parents[2] / 'gcp' / 'audit_job_runner.py'
+    env = {k: v for k, v in os.environ.items()
+           if k not in ('PYTHONPATH', 'AUDIT_SCRIPT_MODULE')}
+    ran = subprocess.run([sys.executable, str(runner)], cwd=tmp_path, env=env,
+                         capture_output=True, text=True, timeout=120)
+    assert 'ModuleNotFoundError' not in ran.stderr, ran.stderr
+    # With no module named, the runner's own refusal is the outcome.
+    assert ran.returncode == 2, ran.stderr
+    assert 'AUDIT_SCRIPT_MODULE env var is required' in ran.stderr

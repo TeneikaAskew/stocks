@@ -46,7 +46,11 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from lib.eastern_time import market_today
+# Run by path (python gcp/audit_job_runner.py) the repo root is not on
+# sys.path; the deployed job runs it as a module, where this is a no-op.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from lib.eastern_time import market_today  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger(__name__)
