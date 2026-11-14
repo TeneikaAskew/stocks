@@ -33,13 +33,15 @@ Environment:
   BACKFILL_HISTORY_DAYS    daily-history depth (default 250)
   BACKFILL_INCLUDE_NEWS    "true" / "false" (default "true")
   BACKFILL_NEWS_WINDOW     news lookback in days (default 7)
-  BACKFILL_ADD_TO_WATCHLIST "true" / "false" (default "true"): add the
-                           ticker to the shared `default` watchlist (the
-                           Discord /replay contract). Historical-test
-                           backfills (scripts/backfill_and_replay.py)
-                           pass "false" so an ad-hoc ticker does not
-                           join, or get reactivated in, the production
-                           universe every fetcher iterates.
+  BACKFILL_ADD_TO_WATCHLIST "true" / "false" (default "false"): add the
+                           ticker to the shared `default` watchlist, or
+                           re-activate its removed row. Off by default so
+                           a Discord /replay on a ticker with no daily
+                           data cannot undo a removal from the default
+                           list (FEAT-INSIGHT-001); an operator sets
+                           "true" on one execution to add its ticker.
+                           scripts/backfill_and_replay.py passes "false"
+                           explicitly for its historical-test tickers.
   ALPHA_VANTAGE_API_KEY    AV key (mounted from Secret Manager)
   CLOUD_SQL_CONNECTION_NAME / DB_USER / DB_PASS / DB_NAME
                            Cloud SQL Connector creds
@@ -608,7 +610,11 @@ def run() -> int:
     history_days = int(_env("BACKFILL_HISTORY_DAYS", "800"))
     include_news = (_env("BACKFILL_INCLUDE_NEWS", "true") or "true").lower() == "true"
     news_window = int(_env("BACKFILL_NEWS_WINDOW", "7"))
-    add_watchlist = (_env("BACKFILL_ADD_TO_WATCHLIST", "true") or "true").lower() == "true"
+    # Off by default (FEAT-INSIGHT-001 stage A, owner's decision 2): a Discord
+    # /replay on a ticker with no daily data must not re-add, or re-activate,
+    # a row the owner removed from the default list. An operator opts in with
+    # "true" (any case) on one execution; the comparison is `.lower() == "true"`.
+    add_watchlist = (_env("BACKFILL_ADD_TO_WATCHLIST", "false") or "false").lower() == "true"
     dates = _parse_dates(_env("BACKFILL_DATES"))
 
     log.info("backfill ticker=%s dates=%s history=%dd news=%s",
