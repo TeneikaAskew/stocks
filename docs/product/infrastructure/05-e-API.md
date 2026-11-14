@@ -75,7 +75,7 @@ Every router mounts at the root (`prefix=""`) and carries its own `/api/...` pat
 | `GET` | `/api/catalysts/events` | [`platform/api/routers/catalysts.py:163`](../../../platform/api/routers/catalysts.py#L163) | Get catalyst events grouped by date. |
 | `GET` | `/api/catalysts/snapshot/{ticker}` | [`platform/api/routers/catalysts.py:652`](../../../platform/api/routers/catalysts.py#L652) | Unified point-in-time catalyst view for a ticker. |
 | `GET` | `/api/catalysts/ticker/{ticker}` | [`platform/api/routers/catalysts.py:614`](../../../platform/api/routers/catalysts.py#L614) | Get all catalyst events for a specific ticker. |
-| `GET` | `/api/catalysts/types` | [`platform/api/routers/catalysts.py:817`](../../../platform/api/routers/catalysts.py#L817) | Return available catalyst types and WSH upgrade info. |
+| `GET` | `/api/catalysts/types` | [`platform/api/routers/catalysts.py:821`](../../../platform/api/routers/catalysts.py#L821) | Return available catalyst types and WSH upgrade info. |
 | `GET` | `/api/config/firebase` | [`platform/api/routers/config.py:47`](../../../platform/api/routers/config.py#L47) | Public runtime auth config for the frontend bootstrap. |
 | `GET` | `/api/config/indicators` | [`platform/api/routers/config.py:77`](../../../platform/api/routers/config.py#L77) | Return indicator periods, signal thresholds, and zone labels. |
 | `GET` | `/api/config/market-hours` | [`platform/api/routers/config.py:145`](../../../platform/api/routers/config.py#L145) | Return US equity market session windows, holidays and early closes. |
