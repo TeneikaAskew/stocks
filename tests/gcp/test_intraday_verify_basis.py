@@ -416,15 +416,24 @@ def test_reader_errors_propagate(monkeypatch, tmp_path, capsys):
 
 @pytest.mark.parametrize("other", ["--verify-months", "--replace-months"])
 def test_verify_basis_with_another_list_mode_is_a_usage_error(monkeypatch, capsys, other):
-    calls: list = []
+    # Every runner is a stub that would exit 0, so the only thing that can
+    # make this exit 2 is main() refusing the two flags together.
+    ran: list = []
+    for runner in ("run_verify_basis", "run_verify_months", "run_replace_months"):
+        monkeypatch.setattr(
+            fai, runner, lambda *a, _name=runner, **k: ran.append(_name) or 0)
+    reads: list = []
     monkeypatch.setattr(fai, "query_to_dataframe_strict",
-                        lambda *a, **k: calls.append(a))
+                        lambda *a, **k: reads.append(a))
     monkeypatch.setattr(sys, "argv", ["fetch_alphavantage_intraday.py",
                                       "--verify-basis", "x", other, "y"])
     with pytest.raises(SystemExit) as exc:
         fai.main()
     assert exc.value.code == 2
-    assert calls == []
+    assert ran == [] and reads == []
+    error = capsys.readouterr().err
+    assert "--verify-basis" in error and other in error
+    assert "separate runs" in error
 
 
 def test_main_dispatches_verify_basis(monkeypatch):

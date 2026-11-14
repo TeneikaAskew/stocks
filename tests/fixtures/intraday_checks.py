@@ -123,7 +123,9 @@ def install_audit_readers(monkeypatch, mod, scan) -> list[dict]:
     (``scripts.audit_data_freshness`` in the suite, ``audit_data_freshness`` in
     the API), and the swallowing reader is patched on the one handed in.
 
-    The swallowing reader gets a healthy answer for each shape it is asked.
+    The swallowing reader gets a healthy answer for each shape it is asked,
+    except the day-presence scan of ``market_data_intraday``, which finds no
+    day: that scan was replaced for this table and must not run.
     The strict reader answers the session scan from *scan* (``scan(ticker)``,
     or raises *scan* when it is an exception), answers the column-nullity
     checks with a healthy count, and fails on any other SQL.
@@ -132,6 +134,11 @@ def install_audit_readers(monkeypatch, mod, scan) -> list[dict]:
 
     def swallowing(sql, params=None, **_kwargs):
         params = params or {}
+        if "GROUP BY" in sql and "FROM market_data_intraday" in sql:
+            # The day-presence gap scan no longer runs for this table. If it
+            # is asked anyway it finds no day, so a [gap] row appears and a
+            # test that asserts there is none has force.
+            return pd.DataFrame(columns=["ticker", "d", "c"])
         if "GROUP BY" in sql:
             first, last = params["start_bound"], params["end_bound"]
             first = first.date() if isinstance(first, datetime) else first

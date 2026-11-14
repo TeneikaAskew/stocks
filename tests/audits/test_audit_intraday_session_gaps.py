@@ -91,6 +91,9 @@ def test_scan_reads_five_settled_sessions_with_one_strict_query_per_ticker(monke
         assert call["timeout_s"] == 120
 
     assert not [r for r in report.rows if "[sessions]" in r.table]
+    # The stubbed day-presence reader holds no day for this table (see
+    # install_audit_readers), so the old gap scan, if it still ran here,
+    # would add a [gap] row for each ticker.
     assert not [r for r in report.rows if "market_data_intraday [gap]" in r.table]
     assert report.overall_status == "ok"
 
@@ -158,19 +161,48 @@ def test_a_defect_in_the_readings_is_not_a_calendar_failure(monkeypatch):
         _audit(monkeypatch, lambda t: rth_frame(whole))
 
 
-def test_a_calendar_error_from_the_schedule_is_the_one_calendar_row(monkeypatch):
-    def boom(*_a, **_k):
-        raise RuntimeError("boom")
+def _schedule_failing_for_the_scan(monkeypatch) -> list[tuple]:
+    """Make the session scan's own schedule read fail, and no other.
 
-    monkeypatch.setattr(mod, "session_schedule", boom)
-    report, _ = _audit(monkeypatch, lambda t: rth_frame(whole))
+    The audit reads ``session_schedule`` in two places: the scan asks for the
+    range from its oldest session to its newest, and ``_session_rth_fraction``
+    asks for one day at a time. A stub that raised for both would let the
+    second produce the calendar row with the scan removed. This one raises
+    only for a range, answers a single day for real, and returns the list its
+    calls are recorded in.
+    """
+    real = mod.session_schedule
+    asked: list[tuple] = []
+
+    def schedule(first, last):
+        asked.append((first, last))
+        if first != last:
+            raise RuntimeError("boom")
+        return real(first, last)
+
+    monkeypatch.setattr(mod, "session_schedule", schedule)
+    return asked
+
+
+def test_a_calendar_error_from_the_schedule_is_the_one_calendar_row(monkeypatch):
+    asked = _schedule_failing_for_the_scan(monkeypatch)
+    report, calls = _audit(monkeypatch, lambda t: rth_frame(whole))
+
+    # The scan asked the calendar for its five sessions, through _calendar ...
+    assert (date(2026, 11, 5), date(2026, 11, 11)) in asked
+    # ... and that failure, which no other check met, is the one calendar row.
     calendar_rows = [r for r in report.rows if r.table == "nyse_calendar"]
     assert len(calendar_rows) == 1
-    assert "boom" in calendar_rows[0].detail
+    assert calendar_rows[0].status == "unknown"
+    assert "RuntimeError: boom" in calendar_rows[0].detail
     assert _session_rows(report) == []
+    # It failed before any read of the bars.
+    assert not [c for c in calls if "inserted_at" in c["sql"]]
 
+    asked.clear()
     assert _main(monkeypatch, ["audit_data_freshness.py", "--strict"],
                  lambda t: rth_frame(whole)) == 2
+    assert (date(2026, 11, 5), date(2026, 11, 11)) in asked
 
 
 def test_strict_run_prints_the_thin_session(monkeypatch, capsys):
