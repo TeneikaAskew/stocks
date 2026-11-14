@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -19,11 +20,21 @@ from lib.eastern_time import (
     TRUE_UTC_INSERTED_FROM,
     SessionReading,
     intraday_month_window,
+    place_stored_rows,
     proven_true_utc,
     session_minute_readings,
     session_schedule,
+    stored_intraday_to_eastern,
+    utc_to_eastern_naive,
 )
-from tests.fixtures.intraday_checks import NEW, OLD, et_minutes, store
+from tests.fixtures.intraday_checks import (
+    NEW,
+    OLD,
+    et_minutes,
+    session_bars,
+    store,
+    stored,
+)
 
 
 def read(ts, day, inserted=OLD) -> SessionReading:
@@ -144,3 +155,114 @@ def test_intraday_month_window():
     assert intraday_month_window(2026, 3) == (
         datetime(2026, 3, 1, 2, tzinfo=timezone.utc),
         datetime(2026, 4, 1, 2, tzinfo=timezone.utc))
+
+
+# -- place_stored_rows ---------------------------------------------------------
+
+_OPEN = pd.Timestamp("2025-05-01 13:30", tz="UTC")
+_CLOSE = pd.Timestamp("2025-05-01 20:00", tz="UTC")
+
+
+def _place(rows: pd.DataFrame):
+    return place_stored_rows(rows["ts"], rows["volume"], rows["inserted_at"])
+
+
+def _rth(instants, keep):
+    return keep & np.asarray((instants >= _OPEN) & (instants < _CLOSE))
+
+
+def _with_row(rows: pd.DataFrame, ts: str, inserted) -> pd.DataFrame:
+    """*rows* plus one flat-volume row stored at *ts* (UTC), appended last."""
+    extra = pd.DataFrame({
+        "bar": [pd.NaT], "high": [595.0], "low": [595.0], "volume": [1000],
+        "ts": [pd.Timestamp(ts, tz="UTC")], "inserted_at": [inserted]})
+    return pd.concat([rows, extra], ignore_index=True)
+
+
+_PLACE_CASES = [
+    "proven-keeps-its-stored-instant",
+    "not-proven-follows-the-resolver",
+    "one-minute-neither-proven",
+    "one-minute-one-proven",
+    "spiked-true", "spiked-label", "spiked-both-true-shared", "spiked-both-label-shared",
+    "the-named-limit",
+]
+
+
+@pytest.mark.parametrize("case", _PLACE_CASES)
+def test_place_stored_rows(case):
+    labels_old = stored(session_bars(_MAY), "label", inserted=OLD)
+    sixteen_thirty = pd.Timestamp("2025-05-01 16:30", tz="UTC")
+    twenty_thirty = pd.Timestamp("2025-05-01 20:30", tz="UTC")
+
+    if case == "proven-keeps-its-stored-instant":
+        rows = stored(session_bars(_MAY), "label", inserted=NEW)
+        assert len(rows) == 961
+        wall, _ = stored_intraday_to_eastern(rows["ts"], rows["volume"])
+        # The resolver reads every one of these rows as a label ...
+        assert (wall == pd.DatetimeIndex(rows["bar"])).all()
+        instants, keep, proven = _place(rows)
+        # ... and a proven row is not moved by it.
+        assert instants.equals(pd.DatetimeIndex(rows["ts"]))
+        assert str(instants.tz) == "UTC"
+        assert keep.all() and proven.all()
+
+    elif case == "not-proven-follows-the-resolver":
+        wall, resolver_keep = stored_intraday_to_eastern(
+            labels_old["ts"], labels_old["volume"])
+        instants, keep, proven = _place(labels_old)
+        assert utc_to_eastern_naive(instants).equals(wall)
+        assert (keep == resolver_keep).all()
+        assert not proven.any()
+
+    elif case == "one-minute-neither-proven":
+        rows = _with_row(labels_old, "2025-05-01 20:30", OLD)
+        _, resolver_keep = stored_intraday_to_eastern(rows["ts"], rows["volume"])
+        instants, keep, proven = _place(rows)
+        label_row = int(np.flatnonzero(rows["ts"] == sixteen_thirty)[0])
+        added = len(rows) - 1
+        assert instants[label_row] == twenty_thirty
+        assert instants[added] == twenty_thirty
+        assert np.flatnonzero(~keep).tolist() == [added]
+        assert np.flatnonzero(~resolver_keep).tolist() == [added]
+
+    elif case == "one-minute-one-proven":
+        rows = _with_row(labels_old, "2025-05-01 20:30", NEW)
+        instants, keep, proven = _place(rows)
+        label_row = int(np.flatnonzero(rows["ts"] == sixteen_thirty)[0])
+        added = len(rows) - 1
+        assert instants[label_row] == twenty_thirty
+        assert instants[added] == twenty_thirty
+        assert proven[added] and not proven[label_row]
+        assert np.flatnonzero(~keep).tolist() == [label_row]
+
+    elif case.startswith("spiked-"):
+        how, shared = {
+            "spiked-true": ("true", "true"),
+            "spiked-label": ("label", "true"),
+            "spiked-both-true-shared": ("both", "true"),
+            "spiked-both-label-shared": ("both", "label"),
+        }[case]
+        rows = stored(session_bars(_MAY), how, shared=shared, inserted=OLD)
+        instants, keep, proven = _place(rows)
+        rth = _rth(instants, keep)
+        assert int(rth.sum()) == 390
+        assert utc_to_eastern_naive(instants[rth]).equals(
+            pd.DatetimeIndex(rows["bar"][rth]))
+        assert rows["high"][rth].max() == 600.0
+        assert rows["low"][rth].min() == 590.0
+
+    else:
+        # Design F's named limit: a whole session with flat volume, stored both
+        # ways with the label copy on the shared keys, and no row proven. The
+        # count is right and every regular-hours row is on the wrong minute.
+        rows = stored(session_bars(_MAY, spike=False), "both", shared="label",
+                      inserted=OLD)
+        instants, keep, proven = _place(rows)
+        rth = _rth(instants, keep)
+        assert int(rth.sum()) == 390
+        own = utc_to_eastern_naive(instants[rth]) == pd.DatetimeIndex(rows["bar"][rth])
+        assert not own.any()
+        assert not proven[rth].any()
+        assert 600.0 not in set(rows["high"][rth])
+        assert 590.0 not in set(rows["low"][rth])

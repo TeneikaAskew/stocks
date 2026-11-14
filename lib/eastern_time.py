@@ -474,6 +474,53 @@ def session_minute_readings(ts, inserted_at, schedule) -> list[SessionReading]:
     return readings
 
 
+def place_stored_rows(ts, volume, inserted_at):
+    """Each stored row's UTC instant, by proof before inference.
+
+    Returns ``(instants, keep, proven)``, one entry per input row, in input
+    order: ``instants`` an aware-UTC DatetimeIndex, ``keep`` and ``proven``
+    boolean arrays.
+
+    A proven row (:func:`proven_true_utc`) is read at its stored instant,
+    whatever the other rows of its date look like. Any other row is placed by
+    :func:`stored_intraday_to_eastern`, run once over all the rows handed in so
+    its rule sees each date entire. Hand in a whole window (a month), never one
+    session's slice of it.
+
+    When two rows land on one instant, one is kept: a proven row over one that
+    is not, and between two that are not proven the one the resolver keeps.
+
+    Limit, by construction: rows that are not proven sit where the resolver
+    puts them, and it can put a whole flat-volume session stored under both
+    conventions on the wrong minutes (FEAT-DATA-001, Design F). ``proven``
+    says which rows that cannot have happened to.
+    """
+    import numpy as np
+    import pandas as pd
+
+    inst = _stored_instants(ts, name="ts")
+    proven = proven_true_utc(inst, inserted_at)
+    wall, resolver_keep = stored_intraday_to_eastern(inst, volume)
+    # The resolver either converted a row or read its raw clock as a label; a
+    # row whose wall time is not the converted one was read as a label.
+    as_label = np.asarray(wall != utc_to_eastern_naive(inst))
+    moved = as_label & ~proven
+    placed_ns = inst.as_unit("ns").asi8.copy()
+    if moved.any():
+        # Only label-read rows go back through the zone: a converted row's
+        # wall time can be an ambiguous hour, and its instant is already known.
+        placed_ns[moved] = eastern_index_to_utc(wall[moved]).as_unit("ns").asi8
+    instants = pd.DatetimeIndex(placed_ns, tz="UTC")
+
+    pos = range(len(inst))
+    rank = pd.DataFrame(
+        {"t": placed_ns, "unproven": ~proven, "dropped": ~np.asarray(resolver_keep)},
+        index=pos)
+    keep = ~rank.sort_values(
+        ["t", "unproven", "dropped"], kind="stable").duplicated("t").reindex(pos)
+    return instants, keep.to_numpy(), proven
+
+
 # Every row month M can hold, in either convention, lies in
 #   [M-01 02:00Z, (M+1)-01 02:00Z)
 #   * Eastern-labelled rows: raw labels 04:00-20:00 on each day of M.

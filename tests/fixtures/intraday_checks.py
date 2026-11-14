@@ -43,3 +43,53 @@ def store(naive_et: pd.DatetimeIndex, how: str) -> pd.DatetimeIndex:
     if how == "both":
         return true.union(label)
     raise ValueError(f"unknown storage {how!r}")
+
+
+def session_bars(day: str, *, start: str = "04:00", end: str = "20:00",
+                 spike: bool = True, day_high: float = 600.0,
+                 day_low: float = 590.0, f_high: float = 1.0,
+                 f_low: float = 1.0) -> pd.DataFrame:
+    """One session's 1-min bars: ``bar`` (naive Eastern minute), ``high``,
+    ``low``, ``volume``.
+
+    Every bar sits at the midpoint of *day_high* and *day_low*, except the
+    10:17 bar, whose high is ``day_high * f_high``, and the 11:42 bar, whose
+    low is ``day_low * f_low``: the session's extremes are two known minutes,
+    so a reader that puts rows on the wrong minute loses them. Volume is 1000,
+    and 20000 from 09:30 to 09:59 when *spike*, as a stored session's open is.
+    """
+    bar = et_minutes(day, start, end)
+    mid = (day_high + day_low) / 2
+    frame = pd.DataFrame({"bar": bar, "high": mid, "low": mid, "volume": 1000})
+    clock = bar.strftime("%H:%M")
+    frame.loc[clock == "10:17", "high"] = day_high * f_high
+    frame.loc[clock == "11:42", "low"] = day_low * f_low
+    if spike:
+        frame.loc[(clock >= "09:30") & (clock <= "09:59"), "volume"] = 20000
+    return frame
+
+
+def stored(frame: pd.DataFrame, how: str = "true", *, shared: str = "true",
+           inserted=OLD) -> pd.DataFrame:
+    """*frame* (from :func:`session_bars`) as stored rows: adds ``ts`` and
+    ``inserted_at``.
+
+    For ``"both"`` the result holds one row per ``ts``, as the table does:
+    where the two conventions meet on a key, the *shared* copy's values are
+    kept (``"true"`` or ``"label"``).
+    """
+    if shared not in ("true", "label"):
+        raise ValueError(f"unknown shared copy {shared!r}")
+    if how in ("true", "label"):
+        out = frame.assign(ts=store(frame["bar"], how))
+    elif how == "both":
+        first, second = ("true", "label") if shared == "true" else ("label", "true")
+        out = pd.concat([frame.assign(ts=store(frame["bar"], first)),
+                         frame.assign(ts=store(frame["bar"], second))],
+                        ignore_index=True)
+        out = out.drop_duplicates("ts", keep="first")
+    else:
+        raise ValueError(f"unknown storage {how!r}")
+    out = out.sort_values("ts").reset_index(drop=True)
+    out["inserted_at"] = inserted
+    return out
