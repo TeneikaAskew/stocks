@@ -53,12 +53,8 @@
   ]
  },
  "gcp/fetchers/backfill_daily_indicators.py": {
-  "host-today": [
-   "_filter_recent_rows::_date.today()"
-  ],
   "sql-utc-date": [
-   "<module>::str#60fba3841c30",
-   "_tickers_with_gaps::fstr#b950f2df4227"
+   "<module>::str#60fba3841c30"
   ]
  },
  "gcp/fetchers/evaluate_ew_strikes.py": {
@@ -78,24 +74,6 @@
    "fetch_indicator::pd.to_datetime(df['ts'], utc=True)"
   ]
  },
- "gcp/fetchers/fetch_economic_events.py": {
-  "host-today": [
-   "fetch_fred_releases::date.today()"
-  ]
- },
- "gcp/fetchers/fetch_fred_rates.py": {
-  "host-today": [
-   "main::date.today()"
-  ]
- },
- "gcp/fetchers/fetch_insider_transactions.py": {
-  "host-today": [
-   "fetch_for_ticker::pd.Timestamp.utcnow()"
-  ],
-  "sql-utc-date": [
-   "_earnings_calendar_tickers::fstr#591204bc497c"
-  ]
- },
  "gcp/fetchers/fetch_market_data.py": {
   "sql-utc-date": [
    "_earnings_tickers_in_window::fstr#1fa2471ddfa5"
@@ -107,24 +85,6 @@
   ],
   "utc-parse": [
    "_last_published_ts::pd.to_datetime(val, utc=True)"
-  ]
- },
- "gcp/fetchers/fetch_premarket_refresh.py": {
-  "host-today": [
-   "main::date.today()"
-  ]
- },
- "gcp/fetchers/fetch_sec_filings.py": {
-  "host-today": [
-   "main::date.today()"
-  ],
-  "sql-utc-date": [
-   "_earnings_calendar_tickers::fstr#591204bc497c"
-  ]
- },
- "gcp/fetchers/fetch_top_movers.py": {
-  "host-today": [
-   "fetch_top_movers::date.today()"
   ]
  },
  "gcp/indicator_correlation_job.py": {
