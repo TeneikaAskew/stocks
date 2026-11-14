@@ -590,3 +590,65 @@ def test_load_watchlist_default_when_helper_raises_and_no_env(monkeypatch):
 
     wl = cand_mod._load_watchlist()
     assert wl == ["SPY", "IWM", "QQQ"]
+
+
+def test_earnings_candidates_retire_ew_at_query_layer(monkeypatch):
+    """The real ranker must filter before MIN, retaining every non-alias."""
+    import json
+    from dataclasses import asdict
+    from datetime import timedelta
+    from lib.agents.ranker import candidates
+    from lib.earnings_reactions import EARNINGS_NOT_RETIRED_SQL
+    from tests.fixtures import earnings_calendar_sources as source
+
+    today = date(2026, 11, 11)
+    rows = [
+        source.ew_only('MIX', today, earnings_time='postmarket'),
+        source.av('MIX', today + timedelta(days=1), earnings_time='premarket'),
+        *source.alias_control_rows('SRC', today),
+        source.av('AV', today), source.uw('UW', today),
+        source.yahoo('YAHOO', today),
+        source.ew_only('EWONLY', today),
+    ]
+    main_sql = """
+        SELECT DISTINCT ticker, MIN(earnings_date) AS next_date,
+               MIN(earnings_time) AS earnings_time
+        FROM earnings_calendar
+        WHERE earnings_date BETWEEN CURRENT_DATE
+          AND CURRENT_DATE + (:days || ' days')::interval
+        GROUP BY ticker
+    """
+    conn = source.make_db(rows)
+    use_main = False
+
+    def query(sql, params):
+        # Removing just the shared predicate must recover current main SQL.
+        stripped = sql.replace('AND ' + EARNINGS_NOT_RETIRED_SQL, '')
+        assert ' '.join(stripped.split()) == ' '.join(main_sql.split())
+        selected = main_sql if use_main else sql
+        selected = selected.replace(
+            "CURRENT_DATE + (:days || ' days')::interval",
+            "date(:__today, '+' || :days || ' days')",
+        )
+        return source.run_earnings_sql(conn, selected, params, today=today)
+
+    monkeypatch.setattr(candidates, '_query', query)
+    try:
+        use_main = True
+        baseline = {}
+        candidates._candidates_from_earnings(baseline, 7)
+        assert baseline['MIX'].metadata['earnings'] == [
+            {'date': '2026-11-11', 'timing': 'postmarket'}]
+        assert {'SRC2', 'SRC3', 'EWONLY'} <= baseline.keys()
+        use_main = False
+        actual = {}
+        candidates._candidates_from_earnings(actual, 7)
+        assert actual['MIX'].metadata['earnings'] == [
+            {'date': '2026-11-12', 'timing': 'premarket'}]
+        assert set(actual) == {'MIX', 'SRC0', 'SRC1', 'SRC4', 'SRC5',
+                               'SRC6', 'SRC7', 'AV', 'UW', 'YAHOO'}
+        for ticker in set(actual) - {'MIX'}:
+            assert json.dumps(asdict(actual[ticker]), sort_keys=True).encode() == \
+                json.dumps(asdict(baseline[ticker]), sort_keys=True).encode()
+    finally:
+        conn.close()
