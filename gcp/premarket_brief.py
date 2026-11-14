@@ -1422,24 +1422,7 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
             # "trigger hit at HH:MM, T1 hit at HH:MM, stop never touched,
             # EOD pnl +0.97%". Without them, brief-playbook-outcome analytics
             # would have to parse the LLM prose — fragile and brittle.
-            ct = level_map.calls_trigger or {}
-            pt = level_map.puts_trigger or {}
-            ct_targets = ct.get('targets', []) if ct else []
-            pt_targets = pt.get('targets', []) if pt else []
-            d['calls_trigger_price'] = ct.get('trigger_level') if ct else None
-            d['calls_trigger_name']  = ct.get('trigger_name')  if ct else None
-            d['calls_stop_price']    = ct.get('stop')          if ct else None
-            d['calls_stop_name']     = ct.get('stop_name')     if ct else None
-            d['calls_t1_price'] = ct_targets[0]['price'] if len(ct_targets) >= 1 else None
-            d['calls_t2_price'] = ct_targets[1]['price'] if len(ct_targets) >= 2 else None
-            d['calls_t3_price'] = ct_targets[2]['price'] if len(ct_targets) >= 3 else None
-            d['puts_trigger_price'] = pt.get('trigger_level') if pt else None
-            d['puts_trigger_name']  = pt.get('trigger_name')  if pt else None
-            d['puts_stop_price']    = pt.get('stop')          if pt else None
-            d['puts_stop_name']     = pt.get('stop_name')     if pt else None
-            d['puts_t1_price'] = pt_targets[0]['price'] if len(pt_targets) >= 1 else None
-            d['puts_t2_price'] = pt_targets[1]['price'] if len(pt_targets) >= 2 else None
-            d['puts_t3_price'] = pt_targets[2]['price'] if len(pt_targets) >= 3 else None
+            d.update(structured_playbook_columns(level_map))
 
             # Persist level map to Cloud SQL so the realtime signal_monitor
             # (which doesn't itself recompute) can query it for level-break
@@ -1562,6 +1545,26 @@ def generate_premarket_brief(cfg=None, data_dir: str = None) -> dict:
 
 
 # ── Discord Formatting (3 embeds) ───────────────────────────────────────────
+
+def structured_playbook_columns(level_map) -> dict:
+    """The premarket_analysis structured playbook columns for one ticker's
+    LevelMap: trigger, stop, the gating targets in t1..t3 (what the signal
+    monitor and the existing outcome read) and, from the exits in thirds
+    spec, the spaced plan targets the brief prints in plan_t1..plan_t3."""
+    d = {}
+    for side, trig in (('calls', level_map.calls_trigger or {}),
+                       ('puts', level_map.puts_trigger or {})):
+        d[f'{side}_trigger_price'] = trig.get('trigger_level')
+        d[f'{side}_trigger_name'] = trig.get('trigger_name')
+        d[f'{side}_stop_price'] = trig.get('stop')
+        d[f'{side}_stop_name'] = trig.get('stop_name')
+        for prefix, targets in (('t', trig.get('targets') or []),
+                                ('plan_t', trig.get('plan_targets') or [])):
+            for k in (1, 2, 3):
+                d[f'{side}_{prefix}{k}_price'] = (targets[k - 1]['price']
+                                                  if len(targets) >= k else None)
+    return d
+
 
 def _fmt_price(val):
     return f'${val:,.2f}' if val is not None else 'N/A'
@@ -2809,6 +2812,45 @@ def _build_calendar_embed(events: dict, mode: str = 'daily') -> dict:
     return embed
 
 
+_CODE_FENCE_OPEN = '```\n'
+_CODE_FENCE_CLOSE = '\n```'
+_CONTINUED = ' (continued)'
+
+
+def _playbook_code_fields(ticker: str, text: str) -> list[dict]:
+    """One ticker's playbook as code-block fields, each within Discord's
+    MAX_FIELD_VALUE with the fences counted (Codex P2 on #1832: a 1,024
+    character cut plus the eight fence characters made a field Discord
+    rejects, and with it the whole message). The text is split at line
+    breaks, a line longer than a field is split inside it, and nothing is
+    cut. The first field is "{ticker} Playbook", later ones add
+    " (continued)", in order."""
+    budget = MAX_FIELD_VALUE - len(_CODE_FENCE_OPEN) - len(_CODE_FENCE_CLOSE)
+    pieces: list[str] = []
+    for line in str(text).split('\n'):
+        while len(line) > budget:
+            pieces.append(line[:budget])
+            line = line[budget:]
+        pieces.append(line)
+    chunks: list[str] = []
+    current: Optional[str] = None
+    for piece in pieces:
+        if current is None:
+            current = piece
+        elif len(current) + 1 + len(piece) <= budget:
+            current += '\n' + piece
+        else:
+            chunks.append(current)
+            current = piece
+    if current is not None:
+        chunks.append(current)
+    return [{
+        'name': f'{ticker} Playbook' + (_CONTINUED if i else ''),
+        'value': f'{_CODE_FENCE_OPEN}{chunk}{_CODE_FENCE_CLOSE}',
+        'inline': False,
+    } for i, chunk in enumerate(chunks)]
+
+
 def _build_playbook_embed(brief: dict) -> dict:
     """Embed: per-ticker Strat playbook with trigger, stop, T1/T2 + R:R.
 
@@ -2836,14 +2878,7 @@ def _build_playbook_embed(brief: dict) -> dict:
     for ticker, d in brief.get('tickers', {}).items():
         if not d.get('playbook'):
             continue
-        value = d['playbook']
-        if len(value) > MAX_FIELD_VALUE:
-            value = value[:MAX_FIELD_VALUE - 3] + '...'
-        fields.append({
-            'name': f'{ticker} Playbook',
-            'value': f'```\n{value}\n```',
-            'inline': False,
-        })
+        fields.extend(_playbook_code_fields(ticker, d['playbook']))
 
         # 🧠 Per-ticker playbook explanation — explains why this trigger /
         # what the trader should watch. Sits directly under the playbook
@@ -2864,15 +2899,71 @@ def _build_playbook_embed(brief: dict) -> dict:
     }
 
 
+# Discord's cap on fields in one embed.
+MAX_EMBED_FIELDS = 25
+_WHY_PREFIX = '\U0001F9E0 '
+
+
+def _split_playbook_embed(embed: dict) -> list[dict]:
+    """The playbook embed as one or more embeds, each within the
+    per-message budget (MAX_EMBED_CHARS, measured as the routed check
+    measures it) and MAX_EMBED_FIELDS, so no ticker's plan is dropped for
+    size (Codex P2 on #1832: six tickers with the exits spec's plan and a
+    "Why this trigger" each outgrew one message). A ticker's playbook field
+    and its "Why this trigger" field stay together, in order. The first
+    embed keeps the title and description; each later one is titled as a
+    continuation."""
+    fields = embed.get('fields') or []
+    groups: list[list[dict]] = []
+    for f in fields:
+        name = str(f.get('name', ''))
+        if groups and (name.startswith(_WHY_PREFIX) or name.endswith(_CONTINUED)):
+            groups[-1].append(f)
+        else:
+            groups.append([f])
+    title = embed.get('title') or ''
+
+    def _fits(e: dict) -> bool:
+        return (len(json.dumps(e)) <= MAX_EMBED_CHARS
+                and len(e['fields']) <= MAX_EMBED_FIELDS)
+
+    def _next(fields_: list) -> dict:
+        return {**embed, 'title': f'{title}{_CONTINUED}', 'description': '',
+                'fields': list(fields_)}
+
+    # A ticker whose fields cannot share one embed even alone is packed
+    # field by field, still in order, rather than dropped for size.
+    units: list[list[dict]] = []
+    for group in groups:
+        if _fits(_next(group)):
+            units.append(group)
+        else:
+            units.extend([f] for f in group)
+    chunks: list[dict] = []
+    current = {**embed, 'fields': []}
+    for unit in units:
+        trial = {**current, 'fields': current['fields'] + unit}
+        if _fits(trial) or not current['fields']:
+            current = trial
+            continue
+        chunks.append(current)
+        current = _next(unit)
+    if current['fields']:
+        chunks.append(current)
+    return chunks
+
+
 def format_discord_messages_routed(brief: dict) -> list[tuple[str, dict]]:
     """Format brief as a list of (channel_kind, payload) tuples.
 
-    Returns 1-4 messages, each tagged with the webhook channel it
+    Returns one message or more, each tagged with the webhook channel it
     should post to:
 
-      ('main', overview + ticker_analysis + playbook)   — analytics
-      ('earnings', earnings)                            — company earnings
-      ('main', economic calendar)                       — macro events
+      ('main', overview + ticker_analysis)   — analytics
+      ('main', playbook), one or more        — the Strat playbook, split
+                                               by _split_playbook_embed
+      ('earnings', earnings)                 — company earnings
+      ('main', economic calendar)            — macro events
 
     The caller maps `channel_kind` to a webhook URL. If the earnings
     webhook isn't configured, the caller falls back to the main
@@ -2903,9 +2994,9 @@ def format_discord_messages_routed(brief: dict) -> list[tuple[str, dict]]:
     # dropped on most runs because overview+ticker already filled the
     # 6000-char per-message cap. Same split-for-budget pattern the
     # macro calendar already uses below.) ────────────────────────────
-    playbook_msg = []
-    if playbook.get('fields'):
-        playbook_msg.append(playbook)
+    # The playbook itself is split into as many messages as its fields
+    # need, each with its own budget, so no ticker's plan is dropped.
+    playbook_msgs = [[chunk] for chunk in _split_playbook_embed(playbook)]
 
     # ── Earnings channel — company earnings ─────────────────────────
     earnings_msg = []
@@ -2920,7 +3011,7 @@ def format_discord_messages_routed(brief: dict) -> list[tuple[str, dict]]:
 
     output: list[tuple[str, dict]] = []
     for kind, embeds in [('main', analytics_msg),
-                         ('main', playbook_msg),
+                         *(('main', m) for m in playbook_msgs),
                          ('earnings', earnings_msg),
                          ('main', calendar_msg)]:
         # Per-message truncation
@@ -3119,6 +3210,14 @@ def persist_to_cloud_sql(brief: dict, allow_update: bool = False,
             'puts_t1_price':       data.get('puts_t1_price'),
             'puts_t2_price':       data.get('puts_t2_price'),
             'puts_t3_price':       data.get('puts_t3_price'),
+            # Exits in thirds: the spaced plan targets (t1..t3 above stay the
+            # gating targets).
+            'calls_plan_t1_price': data.get('calls_plan_t1_price'),
+            'calls_plan_t2_price': data.get('calls_plan_t2_price'),
+            'calls_plan_t3_price': data.get('calls_plan_t3_price'),
+            'puts_plan_t1_price':  data.get('puts_plan_t1_price'),
+            'puts_plan_t2_price':  data.get('puts_plan_t2_price'),
+            'puts_plan_t3_price':  data.get('puts_plan_t3_price'),
             # Track B audit G.P2.11 — persist LLM-generated brief
             # commentary for audit trail. The four strings are
             # non-deterministic Gemini-Flash outputs (gcp/brief_explanations.py)

@@ -51,6 +51,18 @@ def test_no_fixed_distance_in_any_string_literal(rel):
     assert hits == []
 
 
+# Exits in thirds spec: the spacing, the gap-fill flag, the cutoff and the
+# leg share are composed from LevelParams and level_param_policy at run time.
+EXIT_FILES = ("lib/strat_levels.py", "gcp/premarket_playbook_resolver.py")
+EXIT_FORBIDDEN = ("0.25 x ATR", "0.5 x ATR", "10:00", "1/3")
+
+
+@pytest.mark.parametrize("rel", EXIT_FILES)
+def test_no_exit_plan_value_in_any_string_literal(rel):
+    hits = [(ln, f, s[:80]) for ln, s in _strings(rel) for f in EXIT_FORBIDDEN if f in s]
+    assert hits == []
+
+
 # A number compared against an ATR distance ("< 1.0 typically warns",
 # ">= 3 ATR"): a fixed ATR threshold stated as copy.
 ATR_THRESHOLD = re.compile(r"[<>≤≥]=?\s*\d+(\.\d+)?")

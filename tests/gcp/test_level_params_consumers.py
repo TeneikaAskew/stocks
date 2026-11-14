@@ -231,7 +231,13 @@ def test_level_basis_records_every_parameter_and_the_policy(monkeypatch):
     d = fx.daily("QQQ")
     assert b["atr_14"] == pytest.approx(fx.prior_atr("QQQ"))
     assert b["atr_5"] == pytest.approx(calculate_atr(d["High"], d["Low"], d["Close"], 5).iloc[-1])
-    assert set(b["params"]) == set(LEGACY_1753_VALUES)
+    # The exits spec's policy-wide keys are recorded beside the ticker rows,
+    # with the policy row they came from.
+    assert set(b["params"]) == set(LEGACY_1753_VALUES) | {"exit_legs", "entry_cutoff_et"}
+    assert (b["params"]["exit_legs"]["value"], b["params"]["exit_legs"]["status"]) == (3.0, "ok")
+    assert b["params"]["exit_legs"]["method_id"] == "policy"
+    assert b["params"]["exit_legs"]["effective_from"] == "2015-01-02"
+    assert b["params"]["entry_cutoff_et"]["extra"] == {"time_et": "10:00"}
     for key, value in LEGACY_1753_VALUES.items():
         p = b["params"][key]
         assert p["value"] == pytest.approx(value) and p["status"] == "ok"
