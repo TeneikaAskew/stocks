@@ -2,7 +2,7 @@
 feat_id: FEAT-INSIGHT-001
 spec: docs/superpowers/specs/2026-11-14-feat-insight-001-watchlist-write-routes-410-r2.md
 branch: feature/feat-insight-001-watchlist-write-routes-410-r2
-pr: null
+pr: 1937
 status: ready
 ---
 
