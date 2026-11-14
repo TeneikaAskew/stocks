@@ -237,7 +237,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`scripts/run_walk_forward.py`](../../../scripts/run_walk_forward.py) — line [144](../../../scripts/run_walk_forward.py#L144)
 
 ### `bar_recompute_ledger`
-- _no writer found in gcp/, lib/, scripts/, platform/api_
+- [`gcp/bar_recompute.py`](../../../gcp/bar_recompute.py) — line [719](../../../gcp/bar_recompute.py#L719)
 
 ### `daily_rates`
 - [`gcp/fetchers/fetch_fred_rates.py`](../../../gcp/fetchers/fetch_fred_rates.py) — line [120](../../../gcp/fetchers/fetch_fred_rates.py#L120)
@@ -515,7 +515,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/generate_backtest_report.py`](../../../scripts/generate_backtest_report.py) — line [214](../../../scripts/generate_backtest_report.py#L214), [221](../../../scripts/generate_backtest_report.py#L221), [224](../../../scripts/generate_backtest_report.py#L224)
 
 ### `bar_recompute_ledger`
-- _no readr found in gcp/, lib/, scripts/, platform/api_
+- [`gcp/bar_recompute.py`](../../../gcp/bar_recompute.py) — line [513](../../../gcp/bar_recompute.py#L513), [523](../../../gcp/bar_recompute.py#L523)
 
 ### `daily_rates`
 - [`lib/options_exec_backtest/runner.py`](../../../lib/options_exec_backtest/runner.py) — line [207](../../../lib/options_exec_backtest/runner.py#L207)
@@ -839,6 +839,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/backfill_watchlist_data.py`](../../../scripts/backfill_watchlist_data.py) — line [155](../../../scripts/backfill_watchlist_data.py#L155)
 
 ### `signal_alerts`
+- [`gcp/bar_recompute.py`](../../../gcp/bar_recompute.py) — line [514](../../../gcp/bar_recompute.py#L514)
 - [`gcp/indicator_correlation_job.py`](../../../gcp/indicator_correlation_job.py) — line [514](../../../gcp/indicator_correlation_job.py#L514)
 - [`gcp/signal_monitor_eod_resolver.py`](../../../gcp/signal_monitor_eod_resolver.py) — line [142](../../../gcp/signal_monitor_eod_resolver.py#L142)
 - [`gcp/signal_quality_alarm.py`](../../../gcp/signal_quality_alarm.py) — line [209](../../../gcp/signal_quality_alarm.py#L209)
@@ -984,7 +985,6 @@ Notes on the ones that matter operationally:
 | `archive_yahoo_market_data_daily` | 0 | 0 | no writer and no reader in code |
 | `archive_yahoo_market_data_intraday` | 0 | 0 | no writer and no reader in code |
 | `backtest_reports` | 1 | 0 | write-only (no reader in code) |
-| `bar_recompute_ledger` | 0 | 0 | no writer and no reader in code |
 | `indicator_correlation` | 1 | 0 | write-only (no reader in code) |
 | `level_param_policy` | 0 | 2 | read-only (no writer names it in code) |
 | `market_data_intraday_iwm` | 0 | 5 | partition of `market_data_intraday` — routed by Postgres; name built at runtime in `gcp/research/p2_outcomes_grid.py`, `scripts/analysis/per_ticker_calibration.py` |
@@ -1075,8 +1075,8 @@ If the job stops, the listed readers lose fresh data from the tables it writes. 
 | `premarket-playbook-resolver` | `gcp/premarket_playbook_resolver.py` | `premarket_analysis` | `gcp/discord_interactions/main.py`, `gcp/premarket_brief.py`, `lib/movement_statement.py`, `lib/strategies/brief_bias.py`, `platform/api/routers/dashboard.py`, `scripts/audit_data_freshness.py`, `scripts/backfill_history_tables.py`, `scripts/validation/validate_brief_accuracy.py` |
 | `refresh-earnings-views` | `gcp/refresh_earnings_views.py` | `earnings_event_outcomes`, `earnings_ticker_lean`, `earnings_upcoming_with_history` | `platform/api/routers/earnings.py` |
 | `regime-combo` | `gcp/regime_combo_job.py` | `regime_combo_results` | — |
-| `signal-monitor` | `gcp/signal_monitor.py` | `premarket_analysis`, `signal_alerts`, `trades` | `gcp/discord_interactions/main.py`, `gcp/indicator_correlation_job.py`, `gcp/premarket_brief.py`, `gcp/premarket_playbook_resolver.py`, `gcp/signal_monitor_eod_resolver.py`, `gcp/signal_quality_alarm.py`, `gcp/signal_replay.py`, `lib/agents/summarizers.py`, `lib/movement_statement.py`, `platform/api/routers/analytics.py`, `platform/api/routers/dashboard.py`, `platform/api/routers/journal.py` (+6) |
-| `signal-monitor-eod-resolver` | `gcp/signal_monitor_eod_resolver.py` | `signal_alerts`, `trades` | `gcp/indicator_correlation_job.py`, `gcp/signal_quality_alarm.py`, `gcp/signal_replay.py`, `gcp/trade_logger.py`, `lib/agents/summarizers.py`, `lib/strategies/insight_cache.py`, `platform/api/routers/analytics.py`, `platform/api/routers/journal.py`, `scripts/analysis/per_factor_walkforward.py`, `scripts/analysis/per_ticker_calibration.py`, `scripts/analysis/verify_brief_bias.py`, `scripts/audit_data_freshness.py` |
+| `signal-monitor` | `gcp/signal_monitor.py` | `premarket_analysis`, `signal_alerts`, `trades` | `gcp/bar_recompute.py`, `gcp/discord_interactions/main.py`, `gcp/indicator_correlation_job.py`, `gcp/premarket_brief.py`, `gcp/premarket_playbook_resolver.py`, `gcp/signal_monitor_eod_resolver.py`, `gcp/signal_quality_alarm.py`, `gcp/signal_replay.py`, `lib/agents/summarizers.py`, `lib/movement_statement.py`, `platform/api/routers/analytics.py`, `platform/api/routers/dashboard.py` (+7) |
+| `signal-monitor-eod-resolver` | `gcp/signal_monitor_eod_resolver.py` | `signal_alerts`, `trades` | `gcp/bar_recompute.py`, `gcp/indicator_correlation_job.py`, `gcp/signal_quality_alarm.py`, `gcp/signal_replay.py`, `gcp/trade_logger.py`, `lib/agents/summarizers.py`, `lib/strategies/insight_cache.py`, `platform/api/routers/analytics.py`, `platform/api/routers/journal.py`, `scripts/analysis/per_factor_walkforward.py`, `scripts/analysis/per_ticker_calibration.py`, `scripts/analysis/verify_brief_bias.py` (+1) |
 | `signal-quality-alarm` | `gcp/signal_quality_alarm.py` | — (Discord / GCS / no Cloud SQL write found) | — |
 | `signal-quality-report` | `scripts/signal_quality_report.py` | `signal_metrics` | `gcp/signal_quality_alarm.py`, `scripts/analyze_timeframe_heuristic.py`, `scripts/backfill_timeframe_tags.py` |
 | `signal-replay` | `gcp/signal_replay.py` | — (Discord / GCS / no Cloud SQL write found) | — |

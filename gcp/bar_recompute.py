@@ -410,3 +410,464 @@ def save_report(target: str, run_id: str, csv_text: str, summary: dict,
 def exit_code(rows) -> int:
     """1 when a row was refused or left, else 0."""
     return 1 if any(row.status in REFUSED_STATUSES for row in rows) else 0
+
+
+# ── the tables ────────────────────────────────────────────────────────
+
+_IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]*$")
+_SQL_TYPES = frozenset({
+    "varchar", "text", "timestamptz", "date", "double precision", "bigint", "integer", "jsonb"})
+
+#: pg8000 packs the parameter count of one statement into 16 bits.
+_MAX_STATEMENT_PARAMS = 60000
+
+
+@dataclass(frozen=True)
+class TableSpec:
+    """One table a recompute overwrites: its key, the columns it overwrites
+    (name to SQL type, the marker apart), the marker column, and a fixed
+    predicate every write carries. Identifiers and types are checked, because
+    they are put into statement text."""
+
+    table: str
+    alias: str
+    keys: dict
+    columns: dict
+    marker: str
+    fixed: str = ""
+
+    def __post_init__(self):
+        names = [self.table, self.alias, self.marker, *self.keys, *self.columns]
+        for name in names:
+            if not _IDENTIFIER.fullmatch(name):
+                raise ValueError(f"not an identifier: {name!r}")
+        for sqltype in [*self.keys.values(), *self.columns.values()]:
+            if sqltype not in _SQL_TYPES:
+                raise ValueError(f"not a SQL type this module binds: {sqltype!r}")
+
+
+ALERT_EXITS = TableSpec(
+    table="signal_alerts",
+    alias="a",
+    keys={"ticker": "varchar", "alert_ts": "timestamptz"},
+    columns={
+        "exit_ts": "timestamptz",
+        "exit_reason": "varchar",
+        "exit_price": "double precision",
+        "exit_return_pct": "double precision",
+    },
+    marker="exit_recompute_run",
+    fixed="a.run_kind = 'live' AND a.is_open IS FALSE",
+)
+
+TRADE_EXITS = TableSpec(
+    table="trades",
+    alias="t",
+    keys={"ticker": "varchar", "entry_time": "timestamptz"},
+    columns={
+        "exit_time": "timestamptz",
+        "exit_price": "double precision",
+        "exit_reason": "varchar",
+        "return_pct": "double precision",
+    },
+    marker="exit_recompute_run",
+    fixed="t.run_kind = 'live'",
+)
+
+DAILY_PREMARKET = TableSpec(
+    table="market_data_daily",
+    alias="d",
+    keys={"ticker": "varchar", "date": "date"},
+    columns={
+        "pre_high": "double precision",
+        "pre_low": "double precision",
+        "pre_vwap": "double precision",
+        "gap_pct": "double precision",
+        "pre_range_atr": "double precision",
+        "pre_volume": "bigint",
+        "pre_fetched_at": "timestamptz",
+        "pre_excluded_stale_prints": "integer",
+        "pre_excluded_spikes": "integer",
+        "pre_filter_status": "varchar",
+        "pre_filter_params": "jsonb",
+    },
+    marker="pre_recompute_run",
+)
+
+#: The ten value columns. ``pre_fetched_at`` says when the bars were read, not
+#: what a value is: it is overwritten with a write and never decides one.
+PREMARKET_COMPARED = tuple(c for c in DAILY_PREMARKET.columns if c != "pre_fetched_at")
+
+#: target -> (the table written first, the table that follows it or None).
+TARGET_TABLES = {
+    TARGET_EXITS: (ALERT_EXITS, TRADE_EXITS),
+    TARGET_PREMARKET: (DAILY_PREMARKET, None),
+}
+
+LEDGER_TABLE = "bar_recompute_ledger"
+
+_SCHEMA_SQL = """
+    SELECT table_name, column_name
+      FROM information_schema.columns
+     WHERE table_schema = current_schema()
+       AND (table_name = 'bar_recompute_ledger'
+            OR (table_name = 'signal_alerts' AND column_name = 'exit_recompute_run')
+            OR (table_name = 'trades' AND column_name = 'exit_recompute_run')
+            OR (table_name = 'market_data_daily' AND column_name = 'pre_recompute_run'))
+"""
+
+_LEDGER_SQL = """
+    SELECT run_id, ticker, session_date, row_key, action,
+           old_values::text AS old_values, new_values::text AS new_values,
+           changed, basis::text AS basis
+      FROM bar_recompute_ledger
+     WHERE run_id = :run_id AND target = :target
+     ORDER BY id
+"""
+
+
+@dataclass
+class TableWrite:
+    """One row of one table: its key, what the run read (every overwritten
+    column and the marker) and what it writes (every overwritten column)."""
+
+    spec: TableSpec
+    key: dict
+    old: dict
+    new: dict
+
+
+@dataclass
+class WriteUnit:
+    """One selected row to write: the primary row, and the row of the table
+    that follows it, written only when the primary was."""
+
+    ticker: str
+    session_date: date
+    row_key: str
+    primary: TableWrite
+    follower: TableWrite | None
+    changed: bool
+    basis: dict
+
+
+def schema_missing() -> list[str]:
+    """Which of the ledger table and the three marker columns the database
+    does not hold. One strict query; a failed read raises."""
+    from gcp.database import query_to_dataframe_strict  # noqa: PLC0415
+
+    frame = query_to_dataframe_strict(_SCHEMA_SQL)
+    found = set(zip(frame["table_name"], frame["column_name"]))
+    missing = []
+    if LEDGER_TABLE not in {table for table, _column in found}:
+        missing.append(LEDGER_TABLE)
+    for spec in (ALERT_EXITS, TRADE_EXITS, DAILY_PREMARKET):
+        if (spec.table, spec.marker) not in found:
+            missing.append(f"{spec.table}.{spec.marker}")
+    return missing
+
+
+def compare_and_set_sql(spec: TableSpec, n: int) -> str:
+    """The one statement that writes *n* rows of a table.
+
+    A row is written only while every overwritten column and the marker still
+    hold what the run read; the keys of the rows it wrote are returned. Every
+    reference to the values list is cast to its column's type: the list is
+    typed by its parameters, and a column of NULLs or of text is not the
+    column's type.
+    """
+    if n < 1:
+        raise ValueError("a statement needs at least one row")
+    a = spec.alias
+    names = (list(spec.keys) + [f"old_{c}" for c in spec.columns] + ["old_marker"]
+             + [f"new_{c}" for c in spec.columns])
+    if n * len(names) > _MAX_STATEMENT_PARAMS:
+        raise ValueError(
+            f"{n} rows of {spec.table} need {n * len(names)} parameters; "
+            f"one statement holds {_MAX_STATEMENT_PARAMS}")
+    tuples = ",\n               ".join(
+        "(" + ", ".join(f":r{i}_{name}" for name in names) + ")" for i in range(n))
+    assignments = ", ".join(
+        [f"{c} = v.new_{c}::{t}" for c, t in spec.columns.items()]
+        + [f"{spec.marker} = :run_id"])
+    conditions = (
+        [f"{a}.{k} = v.{k}::{t}" for k, t in spec.keys.items()]
+        + [f"{a}.{c} IS NOT DISTINCT FROM v.old_{c}::{t}" for c, t in spec.columns.items()]
+        + [f"{a}.{spec.marker} IS NOT DISTINCT FROM v.old_marker::text"])
+    if spec.fixed:
+        conditions.append(spec.fixed)
+    returning = ", ".join(f"{a}.{k}" for k in spec.keys)
+    return (
+        f"UPDATE {spec.table} AS {a}\n"
+        f"   SET {assignments}\n"
+        f"  FROM (VALUES {tuples}) AS v({', '.join(names)})\n"
+        f" WHERE " + "\n   AND ".join(conditions) + "\n"
+        f"RETURNING {returning}"
+    )
+
+
+def _key_identity(spec: TableSpec, key: dict) -> tuple:
+    """A key as it compares between what was bound and what came back."""
+    return tuple(db_value(key[name], sqltype) for name, sqltype in spec.keys.items())
+
+
+def _statement_params(writes: list[TableWrite], run_id: str) -> dict:
+    params: dict = {"run_id": run_id}
+    for i, write in enumerate(writes):
+        spec = write.spec
+        for name, sqltype in spec.keys.items():
+            params[f"r{i}_{name}"] = db_value(write.key[name], sqltype)
+        for name, sqltype in spec.columns.items():
+            params[f"r{i}_old_{name}"] = db_value(write.old[name], sqltype)
+            params[f"r{i}_new_{name}"] = db_value(write.new[name], sqltype)
+        params[f"r{i}_old_marker"] = db_value(write.old[spec.marker], "text")
+    return params
+
+
+def _compare_and_set(conn, writes: list[TableWrite], run_id: str) -> set:
+    """Run the statement for *writes* (one table) and return the identities of
+    the keys it wrote."""
+    import sqlalchemy  # noqa: PLC0415
+
+    spec = writes[0].spec
+    result = conn.execute(
+        sqlalchemy.text(compare_and_set_sql(spec, len(writes))),
+        _statement_params(writes, run_id))
+    returned = set()
+    for record in result.mappings():
+        returned.add(_key_identity(spec, {name: record[name] for name in spec.keys}))
+    return returned
+
+
+def _ledger_object(write: TableWrite, run_id: str | None) -> dict:
+    """A table's values as the ledger holds them: the run's old values with
+    the old marker when *run_id* is None, else its new values with the run's
+    id as the marker."""
+    spec = write.spec
+    if run_id is None:
+        values = {c: json_value(write.old[c]) for c in spec.columns}
+        values[spec.marker] = json_value(write.old[spec.marker])
+    else:
+        values = {c: json_value(write.new[c]) for c in spec.columns}
+        values[spec.marker] = run_id
+    return values
+
+
+_LEDGER_ROW = (
+    "(:run_id, :target, :action, :l{i}_ticker, :l{i}_session_date, :l{i}_row_key, "
+    "CAST(:l{i}_old AS JSONB), CAST(:l{i}_new AS JSONB), :l{i}_changed, "
+    "CAST(:l{i}_basis AS JSONB))")
+
+
+def write_group(engine, *, target: str, action: str, run_id: str,
+                units: list[WriteUnit]) -> dict[str, tuple[bool, bool | None]]:
+    """Write one group in one transaction and return, a ``row_key``, whether
+    its primary row was written and whether its follower was (``None`` when
+    the unit has no follower).
+
+    Three statements at most, one a table: the primaries; then the followers
+    of the primaries that statement returned, so a follower never moves
+    without its primary; then one ledger row a returned primary. A group whose
+    first statement returns nothing runs one statement, and an empty group
+    runs none. Any failure rolls the whole group back.
+    """
+    import sqlalchemy  # noqa: PLC0415
+
+    if not units:
+        return {}
+    _primary_spec, follower_spec = TARGET_TABLES[target]
+    outcome: dict[str, tuple[bool, bool | None]] = {}
+    with engine.begin() as conn:
+        wrote = _compare_and_set(conn, [u.primary for u in units], run_id)
+        written = [u for u in units if _key_identity(u.primary.spec, u.primary.key) in wrote]
+        followers = [u for u in written if u.follower is not None]
+        followed: set = set()
+        if followers:
+            followed = _compare_and_set(conn, [u.follower for u in followers], run_id)
+
+        for unit in units:
+            primary_written = unit in written
+            if unit.follower is None:
+                outcome[unit.row_key] = (primary_written, None)
+            else:
+                outcome[unit.row_key] = (
+                    primary_written,
+                    primary_written
+                    and _key_identity(unit.follower.spec, unit.follower.key) in followed)
+
+        if written:
+            params: dict = {"run_id": run_id, "target": target, "action": action}
+            for i, unit in enumerate(written):
+                old_values = {unit.primary.spec.table: _ledger_object(unit.primary, None)}
+                new_values = {unit.primary.spec.table: _ledger_object(unit.primary, run_id)}
+                if follower_spec is not None:
+                    kept = outcome[unit.row_key][1]
+                    old_values[follower_spec.table] = (
+                        _ledger_object(unit.follower, None) if kept else None)
+                    new_values[follower_spec.table] = (
+                        _ledger_object(unit.follower, run_id) if kept else None)
+                params.update({
+                    f"l{i}_ticker": unit.ticker,
+                    f"l{i}_session_date": db_value(unit.session_date, "date"),
+                    f"l{i}_row_key": unit.row_key,
+                    f"l{i}_old": json.dumps(old_values, sort_keys=True, allow_nan=False),
+                    f"l{i}_new": json.dumps(new_values, sort_keys=True, allow_nan=False),
+                    f"l{i}_changed": bool(unit.changed),
+                    f"l{i}_basis": json.dumps(unit.basis, sort_keys=True, allow_nan=False),
+                })
+            conn.execute(sqlalchemy.text(
+                "INSERT INTO bar_recompute_ledger (run_id, target, action, ticker, "
+                "session_date, row_key, old_values, new_values, changed, basis)\n"
+                "VALUES " + ",\n       ".join(
+                    _LEDGER_ROW.format(i=i) for i in range(len(written)))), params)
+    return outcome
+
+
+def ledger_of_run(run_id: str, target: str) -> list[dict]:
+    """The ledger rows of one run and target, in the order they were written.
+    One strict read; a failed read raises."""
+    from gcp.database import query_to_dataframe_strict  # noqa: PLC0415
+
+    frame = query_to_dataframe_strict(_LEDGER_SQL, {"run_id": run_id, "target": target})
+    held = []
+    for record in frame.to_dict("records"):
+        held.append({
+            "run_id": record["run_id"],
+            "ticker": record["ticker"],
+            "session_date": record["session_date"],
+            "row_key": record["row_key"],
+            "action": record["action"],
+            "old_values": json.loads(record["old_values"]),
+            "new_values": json.loads(record["new_values"]),
+            "changed": bool(record["changed"]),
+            "basis": json.loads(record["basis"]),
+        })
+    return held
+
+
+def _revert_write(spec: TableSpec, ticker: str, row_key: str,
+                  was_new: dict, was_old: dict) -> TableWrite:
+    key_names = list(spec.keys)
+    key = {key_names[0]: ticker, key_names[1]: row_key}
+    return TableWrite(
+        spec=spec, key=key,
+        old=dict(was_new),
+        new={c: was_old[c] for c in spec.columns})
+
+
+def revert_units(ledger_rows: list[dict], target: str) -> list[WriteUnit]:
+    """The writes that undo a run, one a ledger row.
+
+    The row must still hold what that run wrote (its ``new_values``, with the
+    run's id as the marker) and is given back what the run found (its
+    ``old_values``). A follower the run did not write is not reverted.
+    """
+    primary_spec, follower_spec = TARGET_TABLES[target]
+    units = []
+    for held in ledger_rows:
+        primary = _revert_write(
+            primary_spec, held["ticker"], held["row_key"],
+            held["new_values"][primary_spec.table], held["old_values"][primary_spec.table])
+        follower = None
+        if follower_spec is not None and held["new_values"].get(follower_spec.table) is not None:
+            follower = _revert_write(
+                follower_spec, held["ticker"], held["row_key"],
+                held["new_values"][follower_spec.table],
+                held["old_values"][follower_spec.table])
+        units.append(WriteUnit(
+            ticker=held["ticker"],
+            session_date=db_value(held["session_date"], "date"),
+            row_key=held["row_key"],
+            primary=primary, follower=follower, changed=bool(held["changed"]),
+            basis={"revert_of": held["run_id"], "code": code_version()}))
+    return units
+
+
+# ── a run, from its computed rows to its exit code ────────────────────
+
+
+def _status_counts(rows) -> dict:
+    by_group: dict = {}
+    totals: dict = {}
+    for row in rows:
+        day = _cell(row.session_date)
+        statuses = by_group.setdefault(row.ticker, {}).setdefault(day, {})
+        statuses[row.status] = statuses.get(row.status, 0) + 1
+        totals[row.status] = totals.get(row.status, 0) + 1
+    return {"counts": by_group, "totals": totals,
+            "written": sum(1 for row in rows if row.written)}
+
+
+def finish_run(*, target: str, run_id: str, commit: bool, action: str,
+               rows: list[ReportRow], groups: list[tuple[str, list[WriteUnit]]],
+               summary: dict, csv_columns: tuple[str, ...],
+               report_dir: str | None, summarize=None) -> int:
+    """Save the report, write the groups when *commit*, save the report again,
+    and return the exit code.
+
+    *rows* holds every selected row; *groups* the units to write, a group a
+    transaction. A unit and its report row share ``(ticker, row_key)``.
+    *summarize*, when given, maps the rows to more summary keys at each save.
+
+    A committed run first reads the ledger rows of its own run id: a Cloud Run
+    retry keeps the execution's name, so an earlier attempt may have written
+    some rows already. For those the report row is the ledger's (old values,
+    new values, changed, written) and the unit is dropped, so the report is
+    the account of every attempt and the first save of a retry cannot replace
+    the old values an earlier attempt recorded.
+
+    A dry run reads no ledger and opens no engine. A failed report raises
+    before any write. A failed group raises; the groups before it stay
+    committed.
+    """
+    primary_spec, _follower_spec = TARGET_TABLES[target]
+    if commit:
+        held = {(h["ticker"], h["row_key"]): h for h in ledger_of_run(run_id, target)}
+        if held:
+            for i, row in enumerate(rows):
+                entry = held.get((row.ticker, row.row_key))
+                if entry is None:
+                    continue
+                bars = entry["basis"].get("bars") or {}
+                rows[i] = ReportRow(
+                    ticker=row.ticker, session_date=row.session_date, row_key=row.row_key,
+                    old=entry["old_values"][primary_spec.table],
+                    new=entry["new_values"][primary_spec.table],
+                    changed=entry["changed"],
+                    status="reverted" if entry["action"] == "revert" else "recomputed",
+                    bars_rows=bars.get("rows"), bars_sha256=bars.get("sha256"),
+                    written=True)
+            groups = [
+                (label, [u for u in units if (u.ticker, u.row_key) not in held])
+                for label, units in groups]
+
+    def save() -> None:
+        full = dict(summary)
+        full.update(_status_counts(rows))
+        if summarize is not None:
+            full.update(summarize(rows))
+        save_report(target, run_id, rows_csv(rows, csv_columns), full, report_dir)
+
+    save()
+    if not commit:
+        return exit_code(rows)
+
+    from gcp.database import get_engine  # noqa: PLC0415
+
+    engine = get_engine()
+    by_key = {(row.ticker, row.row_key): row for row in rows}
+    for _label, units in groups:
+        if not units:
+            continue
+        outcome = write_group(engine, target=target, action=action, run_id=run_id, units=units)
+        for unit in units:
+            row = by_key[(unit.ticker, unit.row_key)]
+            primary_written, follower_written = outcome[unit.row_key]
+            if not primary_written:
+                row.status = "changed_underneath"
+                continue
+            row.written = True
+            if follower_written is False:
+                row.status = "trade_diverged"
+    save()
+    return exit_code(rows)

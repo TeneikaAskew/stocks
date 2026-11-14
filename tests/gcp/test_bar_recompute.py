@@ -347,3 +347,279 @@ def test_upload_text_returns_the_url(monkeypatch):
     monkeypatch.setattr(gcs_utils, "_storage_client", lambda: Client())
     assert gcs_utils.upload_text_to_gcs("b", "p/rows.csv", "a,b\n", "text/csv") == "gs://b/p/rows.csv"
     assert sent == {"bucket": "b", "path": "p/rows.csv", "text": "a,b\n", "content_type": "text/csv"}
+
+
+# ── the group write, the ledger, the revert ───────────────────────────
+
+
+def test_the_statement_casts_and_compares_every_column():
+    sql = " ".join(br.compare_and_set_sql(br.ALERT_EXITS, 2).split())
+    assert sql.startswith("UPDATE signal_alerts AS a")
+    assert "a.run_kind = 'live'" in sql
+    assert "a.is_open IS FALSE" in sql
+    for column in ("exit_ts", "exit_reason", "exit_price", "exit_return_pct"):
+        assert f"a.{column} IS NOT DISTINCT FROM v.old_{column}::" in sql
+        assert f"{column} = v.new_{column}::" in sql
+    assert "a.exit_recompute_run IS NOT DISTINCT FROM v.old_marker::text" in sql
+    assert "exit_recompute_run = :run_id" in sql
+    assert "a.ticker = v.ticker::varchar" in sql
+    assert "a.alert_ts = v.alert_ts::timestamptz" in sql
+    assert sql.count("(:r") == 2
+    assert ":r0_old_exit_ts" in sql and ":r1_new_exit_price" in sql
+    assert sql.endswith("RETURNING a.ticker, a.alert_ts")
+
+    trades = " ".join(br.compare_and_set_sql(br.TRADE_EXITS, 1).split())
+    assert trades.startswith("UPDATE trades AS t")
+    assert "t.run_kind = 'live'" in trades
+    assert trades.endswith("RETURNING t.ticker, t.entry_time")
+
+    daily = " ".join(br.compare_and_set_sql(br.DAILY_PREMARKET, 1).split())
+    assert "d.pre_filter_params IS NOT DISTINCT FROM v.old_pre_filter_params::jsonb" in daily
+    assert "d.pre_fetched_at IS NOT DISTINCT FROM v.old_pre_fetched_at::timestamptz" in daily
+    assert "d.date = v.date::date" in daily
+
+    with pytest.raises(ValueError):
+        br.TableSpec("x; DROP", "a", {"ticker": "varchar"}, {"c": "text"}, "m")
+    with pytest.raises(ValueError):
+        br.TableSpec("t", "a", {"ticker": "varchar"}, {"c": "text; DROP"}, "m")
+    with pytest.raises(ValueError):
+        br.compare_and_set_sql(br.ALERT_EXITS, 0)
+
+
+def test_the_compared_premarket_columns_leave_out_the_read_time():
+    assert "pre_fetched_at" in br.DAILY_PREMARKET.columns
+    assert "pre_fetched_at" not in br.PREMARKET_COMPARED
+    assert len(br.PREMARKET_COMPARED) == 10
+    assert set(br.PREMARKET_COMPARED) == set(br.DAILY_PREMARKET.columns) - {"pre_fetched_at"}
+
+
+def test_schema_missing_names_what_is_absent(monkeypatch):
+    import gcp.database as database
+
+    calls = []
+
+    def reader(sql, params=None, timeout_s=None):
+        calls.append((sql, params, timeout_s))
+        return pd.DataFrame({
+            "table_name": ["bar_recompute_ledger", "signal_alerts", "market_data_daily"],
+            "column_name": ["run_id", "exit_recompute_run", "pre_recompute_run"],
+        })
+
+    monkeypatch.setattr(database, "query_to_dataframe_strict", reader)
+    assert br.schema_missing() == ["trades.exit_recompute_run"]
+    assert len(calls) == 1
+    assert "information_schema.columns" in calls[0][0]
+    assert calls[0][2] is None
+
+    monkeypatch.setattr(database, "query_to_dataframe_strict",
+                        lambda *a, **k: pd.DataFrame({"table_name": [], "column_name": []}))
+    assert br.schema_missing() == [
+        "bar_recompute_ledger", "signal_alerts.exit_recompute_run",
+        "trades.exit_recompute_run", "market_data_daily.pre_recompute_run"]
+
+    failure = ConnectionError("connection refused")
+
+    def broken(*_a, **_k):
+        raise failure
+
+    monkeypatch.setattr(database, "query_to_dataframe_strict", broken)
+    with pytest.raises(ConnectionError) as caught:
+        br.schema_missing()
+    assert caught.value is failure
+
+
+def _daily_unit(day: str, old_high: float, new_high: float, marker=None) -> br.WriteUnit:
+    columns = dict.fromkeys(br.DAILY_PREMARKET.columns)
+    old = dict(columns, pre_high=old_high, pre_recompute_run=marker)
+    new = dict(columns, pre_high=new_high)
+    return br.WriteUnit(
+        ticker="SPY", session_date=date.fromisoformat(day), row_key=day,
+        primary=br.TableWrite(br.DAILY_PREMARKET, {"ticker": "SPY", "date": date.fromisoformat(day)},
+                              old, new),
+        follower=None, changed=True, basis={"bars": {"rows": 330, "sha256": "abc"}})
+
+
+def _fresh_row(day: str, status: str) -> br.ReportRow:
+    return br.ReportRow(
+        ticker="SPY", session_date=date.fromisoformat(day), row_key=day,
+        old={"pre_high": 101.0}, new={"pre_high": 101.0}, changed=False, status=status,
+        bars_rows=330, bars_sha256="abc")
+
+
+def test_report_rows_come_from_the_ledger_for_keys_it_holds(monkeypatch, tmp_path):
+    import gcp.database as database
+
+    order = []
+    ledger = [{
+        "run_id": "run-1", "ticker": "SPY", "session_date": date(2026, 10, 6),
+        "row_key": "2026-10-06", "action": "recompute", "changed": True,
+        "old_values": {"market_data_daily": {"pre_high": 99.0, "pre_recompute_run": None}},
+        "new_values": {"market_data_daily": {"pre_high": 101.0, "pre_recompute_run": "run-1"}},
+        "basis": {"bars": {"rows": 330, "sha256": "first-attempt"}},
+    }]
+
+    def ledger_of_run(run_id, target):
+        order.append(("ledger", run_id, target))
+        return ledger
+
+    saved = []
+    real_save = br.save_report
+
+    def save(target, run_id, csv_text, summary, report_dir):
+        order.append(("save",))
+        saved.append((csv_text, summary))
+        return real_save(target, run_id, csv_text, summary, report_dir)
+
+    written = []
+
+    def write_group(engine, *, target, action, run_id, units):
+        written.append([u.row_key for u in units])
+        return {u.row_key: (True, None) for u in units}
+
+    monkeypatch.setattr(br, "ledger_of_run", ledger_of_run)
+    monkeypatch.setattr(br, "save_report", save)
+    monkeypatch.setattr(br, "write_group", write_group)
+    monkeypatch.setattr(database, "get_engine", lambda: object())
+
+    rows = [_fresh_row("2026-10-06", "already_current"), _fresh_row("2026-10-07", "recomputed")]
+    rows[1].old, rows[1].new, rows[1].changed = {"pre_high": 50.0}, {"pre_high": 51.0}, True
+    groups = [("SPY 2026-10", [_daily_unit("2026-10-06", 101.0, 101.0, marker="run-1"),
+                               _daily_unit("2026-10-07", 50.0, 51.0)])]
+
+    code = br.finish_run(
+        target=br.TARGET_PREMARKET, run_id="run-1", commit=True, action="recompute",
+        rows=rows, groups=groups, summary={"run_id": "run-1"},
+        csv_columns=("pre_high",), report_dir=str(tmp_path))
+
+    assert code == 0
+    assert order[0] == ("ledger", "run-1", br.TARGET_PREMARKET)
+    assert order.count(("ledger", "run-1", br.TARGET_PREMARKET)) == 1
+    assert order[1] == ("save",)
+    assert written == [["2026-10-07"]]
+
+    for csv_text, _summary in saved:
+        parsed = {r["row_key"]: r for r in csv.DictReader(io.StringIO(csv_text))}
+        held = parsed["2026-10-06"]
+        assert held["old_pre_high"] == "99.0"
+        assert held["new_pre_high"] == "101.0"
+        assert held["written"] == "true"
+        assert held["changed"] == "true"
+        assert held["status"] == "recomputed"
+        assert held["bars_sha256"] == "first-attempt"
+    final = {r["row_key"]: r for r in csv.DictReader(io.StringIO(saved[-1][0]))}
+    assert final["2026-10-07"]["written"] == "true"
+    first = {r["row_key"]: r for r in csv.DictReader(io.StringIO(saved[0][0]))}
+    assert first["2026-10-07"]["written"] == "false"
+    assert saved[-1][1]["totals"] == {"recomputed": 2}
+    assert saved[-1][1]["written"] == 2
+
+    # A dry run reads no ledger and opens no engine.
+    def forbidden(*_a, **_k):
+        raise AssertionError("a dry run must not reach this")
+
+    monkeypatch.setattr(br, "ledger_of_run", forbidden)
+    monkeypatch.setattr(br, "write_group", forbidden)
+    monkeypatch.setattr(database, "get_engine", forbidden)
+    dry_rows = [_fresh_row("2026-10-07", "recomputed")]
+    assert br.finish_run(
+        target=br.TARGET_PREMARKET, run_id="run-2", commit=False, action="recompute",
+        rows=dry_rows, groups=[("SPY 2026-10", [_daily_unit("2026-10-07", 50.0, 51.0)])],
+        summary={"run_id": "run-2"}, csv_columns=("pre_high",), report_dir=str(tmp_path)) == 0
+    assert dry_rows[0].written is False
+
+
+def test_a_row_the_write_did_not_return_is_changed_underneath(monkeypatch, tmp_path):
+    import gcp.database as database
+
+    monkeypatch.setattr(br, "ledger_of_run", lambda run_id, target: [])
+    monkeypatch.setattr(database, "get_engine", lambda: object())
+    monkeypatch.setattr(
+        br, "write_group",
+        lambda engine, *, target, action, run_id, units: {
+            "2026-10-06": (False, None), "2026-10-07": (True, False), "2026-10-08": (True, True)})
+
+    rows = [_fresh_row(day, "recomputed") for day in ("2026-10-06", "2026-10-07", "2026-10-08")]
+    units = [_daily_unit(day, 1.0, 2.0) for day in ("2026-10-06", "2026-10-07", "2026-10-08")]
+    code = br.finish_run(
+        target=br.TARGET_PREMARKET, run_id="run-1", commit=True, action="recompute",
+        rows=rows, groups=[("g", units)], summary={}, csv_columns=("pre_high",),
+        report_dir=str(tmp_path))
+    assert code == 1
+    assert [(r.status, r.written) for r in rows] == [
+        ("changed_underneath", False), ("trade_diverged", True), ("recomputed", True)]
+
+
+def test_a_failed_report_stops_before_any_write(monkeypatch, tmp_path):
+    import gcp.database as database
+
+    failure = ConnectionError("bucket unreachable")
+
+    def fail(*_a, **_k):
+        raise failure
+
+    def forbidden(*_a, **_k):
+        raise AssertionError("no write after a failed report")
+
+    monkeypatch.setattr(br, "ledger_of_run", lambda run_id, target: [])
+    monkeypatch.setattr(br, "save_report", fail)
+    monkeypatch.setattr(br, "write_group", forbidden)
+    monkeypatch.setattr(database, "get_engine", lambda: object())
+    with pytest.raises(ConnectionError) as caught:
+        br.finish_run(
+            target=br.TARGET_PREMARKET, run_id="run-1", commit=True, action="recompute",
+            rows=[_fresh_row("2026-10-07", "recomputed")],
+            groups=[("g", [_daily_unit("2026-10-07", 50.0, 51.0)])],
+            summary={}, csv_columns=("pre_high",), report_dir=str(tmp_path))
+    assert caught.value is failure
+
+
+def test_revert_units_swap_old_and_new():
+    ledger = [{
+        "run_id": "run-A", "ticker": "SPY", "session_date": date(2026, 10, 6),
+        "row_key": "2026-10-06T19:50:00.250000+00:00", "action": "recompute", "changed": True,
+        "old_values": {
+            "signal_alerts": {"exit_ts": "2026-10-06T20:20:00.000000+00:00",
+                              "exit_reason": "time_stop", "exit_price": 100.0,
+                              "exit_return_pct": 0.0, "exit_recompute_run": None},
+            "trades": {"exit_time": "2026-10-06T20:20:00.000000+00:00", "exit_price": 100.0,
+                       "exit_reason": "time_stop", "return_pct": 0.0,
+                       "exit_recompute_run": None}},
+        "new_values": {
+            "signal_alerts": {"exit_ts": "2026-10-06T20:00:00.000000+00:00",
+                              "exit_reason": "eod_close", "exit_price": 100.02,
+                              "exit_return_pct": 0.02, "exit_recompute_run": "run-A"},
+            "trades": {"exit_time": "2026-10-06T20:00:00.000000+00:00", "exit_price": 100.02,
+                       "exit_reason": "eod_close", "return_pct": 0.02,
+                       "exit_recompute_run": "run-A"}},
+        "basis": {},
+    }, {
+        "run_id": "run-A", "ticker": "QQQ", "session_date": date(2026, 10, 6),
+        "row_key": "2026-10-06T14:00:07.500000+00:00", "action": "recompute", "changed": False,
+        "old_values": {"signal_alerts": {"exit_ts": "2026-10-06T14:31:00.000000+00:00",
+                                         "exit_reason": "time_stop", "exit_price": 1.0,
+                                         "exit_return_pct": 0.5, "exit_recompute_run": None},
+                       "trades": None},
+        "new_values": {"signal_alerts": {"exit_ts": "2026-10-06T14:31:00.000000+00:00",
+                                         "exit_reason": "time_stop", "exit_price": 1.0,
+                                         "exit_return_pct": 0.5, "exit_recompute_run": "run-A"},
+                       "trades": None},
+        "basis": {},
+    }]
+    first, second = br.revert_units(ledger, br.TARGET_EXITS)
+
+    assert first.primary.spec is br.ALERT_EXITS
+    assert first.primary.key == {"ticker": "SPY", "alert_ts": "2026-10-06T19:50:00.250000+00:00"}
+    assert first.primary.old == ledger[0]["new_values"]["signal_alerts"]
+    assert first.primary.old["exit_recompute_run"] == "run-A"
+    assert first.primary.new == {
+        "exit_ts": "2026-10-06T20:20:00.000000+00:00", "exit_reason": "time_stop",
+        "exit_price": 100.0, "exit_return_pct": 0.0}
+    assert first.follower.spec is br.TRADE_EXITS
+    assert first.follower.key == {"ticker": "SPY", "entry_time": "2026-10-06T19:50:00.250000+00:00"}
+    assert first.follower.old["exit_recompute_run"] == "run-A"
+    assert first.follower.new["exit_reason"] == "time_stop"
+    assert first.basis["revert_of"] == "run-A"
+    assert first.row_key == "2026-10-06T19:50:00.250000+00:00"
+
+    assert second.follower is None
+    assert second.changed is False
