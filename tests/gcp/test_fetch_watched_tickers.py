@@ -249,12 +249,14 @@ def _select_list(sql: str) -> str:
 
 def _privacy_scan(src: str, sql: str) -> list[str]:
     """Every way ``src`` (the module text) and ``sql`` (its set query) break
-    done_when item 6; an empty list means the module passes."""
+    done_when item 6; an empty list means the module passes. Identifier matches
+    ignore case because Postgres folds unquoted identifiers to lowercase, so
+    OWNER_UID reads the same column as owner_uid."""
     code = _strip_comments(src)
     out = [f'identifier {name!r} appears'
            for name in _FORBIDDEN_IDENTIFIERS
-           if re.search(rf'\b{name}\b', code)]
-    n = len(re.findall(r'\buser_watchlists\b', code))
+           if re.search(rf'\b{name}\b', code, re.I)]
+    n = len(re.findall(r'\buser_watchlists\b', code, re.I))
     if n != 1:
         out.append(f'user_watchlists appears {n} times outside comments, not once')
     exists = re.search(r'EXISTS \(SELECT 1 FROM user_watchlists u WHERE [^()]*\)', sql)
@@ -262,7 +264,7 @@ def _privacy_scan(src: str, sql: str) -> list[str]:
         out.append('the set SQL names user_watchlists outside its EXISTS predicate')
     if n == 1 and exists and exists.group(0) not in code:
         out.append('the one user_watchlists outside comments is not the set SQL predicate')
-    if len(re.findall(r'\bwatched_tickers\b', code)) != 1:
+    if len(re.findall(r'\bwatched_tickers\b', code, re.I)) != 1:
         out.append('watched_tickers is read outside the set SQL')
     items = [i.strip() for i in _select_list(sql).split(',')]
     for item in items:
@@ -270,6 +272,15 @@ def _privacy_scan(src: str, sql: str) -> list[str]:
             continue
         out.append(f'the set SQL selects {item!r} from watched_tickers')
     return out
+
+
+def test_source_scan_catches_case_folded_identifiers():
+    """Postgres folds unquoted identifiers, so an upper-case owner column or
+    table name reads the same data and must fail the scan too."""
+    src = _MODULE_SRC.read_text() + '\nOWNER_SQL = "SELECT OWNER_UID FROM USER_WATCHLISTS WHERE ticker = :t"\n'
+    out = _privacy_scan(src, fwt.WATCHED_SET_SQL)
+    assert any('owner_uid' in o for o in out), out
+    assert any('user_watchlists appears 2 times' in o for o in out), out
 
 
 def test_set_sql_source_scan():
