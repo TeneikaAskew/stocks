@@ -2623,12 +2623,26 @@
             "type": "string"
           },
           "total_gex": {
-            "title": "Total Gex",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Gex"
           },
           "total_vex": {
-            "title": "Total Vex",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Vex"
           },
           "warnings": {
             "items": {
@@ -2808,8 +2822,15 @@
             "type": "string"
           },
           "total_gex": {
-            "title": "Total Gex",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Gex"
           },
           "warnings": {
             "items": {
@@ -2949,12 +2970,26 @@
             "type": "string"
           },
           "total_gex": {
-            "title": "Total Gex",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Gex"
           },
           "total_vex": {
-            "title": "Total Vex",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Vex"
           },
           "warnings": {
             "items": {
@@ -3057,6 +3092,17 @@
           },
           "nodes": {
             "$ref": "#/components/schemas/NodeResult"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
           }
         },
         "required": [
@@ -6150,6 +6196,15 @@
             "title": "Row Count",
             "type": "integer"
           },
+          "sides_present": {
+            "enum": [
+              "both",
+              "calls_only",
+              "puts_only"
+            ],
+            "title": "Sides Present",
+            "type": "string"
+          },
           "source": {
             "title": "Source",
             "type": "string"
@@ -6158,7 +6213,8 @@
         "required": [
           "source",
           "data_source",
-          "row_count"
+          "row_count",
+          "sides_present"
         ],
         "title": "OptionsChainMetadata",
         "type": "object"
@@ -6169,6 +6225,14 @@
           "cached": {
             "title": "Cached",
             "type": "boolean"
+          },
+          "chain_state": {
+            "enum": [
+              "available",
+              "unavailable"
+            ],
+            "title": "Chain State",
+            "type": "string"
           },
           "date": {
             "title": "Date",
@@ -6183,6 +6247,17 @@
             },
             "title": "Options",
             "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
           },
           "snapshot_timestamp": {
             "title": "Snapshot Timestamp",
@@ -6199,6 +6274,7 @@
           "options",
           "snapshot_timestamp",
           "metadata",
+          "chain_state",
           "cached"
         ],
         "title": "OptionsChainResponse",
@@ -6273,16 +6349,37 @@
             "title": "Max Pain"
           },
           "put_call_ratio": {
-            "title": "Put Call Ratio",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Put Call Ratio"
           },
           "total_gex": {
-            "title": "Total Gex",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Gex"
           },
           "total_vex": {
-            "title": "Total Vex",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Vex"
           },
           "zero_gamma": {
             "anyOf": [
