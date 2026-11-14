@@ -1471,6 +1471,31 @@ class WatchlistRemoveResponse(ApiModel):
     watchlist: list[str]
 
 
+class MeWatchlistAddRequest(ApiModel):
+    ticker: str
+    source: Literal["ui", "combobox-auto-add"]
+
+
+class MeWatchlistRow(ApiModel):
+    ticker: str
+    added_at: str
+    source: Optional[str] = None
+    name: Optional[str] = None
+    exchange: Optional[str] = None
+    asset_type: Optional[str] = None
+    last_daily_bar: Optional[str] = None
+
+
+class MeWatchlistResponse(ApiModel):
+    owner_email: str
+    as_of: str
+    tickers: list[MeWatchlistRow]
+
+
+class MeWatchlistRemoveResponse(MeWatchlistResponse):
+    removed: Literal[True]
+
+
 class InsightHistoryRow(ApiModel):
     id: str
     as_of: Optional[str] = None
