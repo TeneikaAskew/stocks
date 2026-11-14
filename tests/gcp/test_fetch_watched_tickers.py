@@ -77,3 +77,104 @@ def test_run_backfill_returns_zero_when_no_ticker_returns_data(av_stub):
     av_stub.bars_by_ticker = {'AAA': 0, 'BBB': 0}
     assert fmd._run_backfill(['AAA', 'BBB']) == 0
     assert av_stub.frames == []
+
+
+# ---------------------------------------------------------------------------
+# Task 3: config, the set read with its exact overflow, the second-guard dedup
+# ---------------------------------------------------------------------------
+import re
+from pathlib import Path
+
+from gcp.fetchers import fetch_watched_tickers as fwt
+
+_MODULE_SRC = (Path(__file__).resolve().parents[2]
+               / 'gcp' / 'fetchers' / 'fetch_watched_tickers.py')
+
+
+def _set_frame(tickers, eligible_total):
+    return pd.DataFrame({'ticker': tickers,
+                         'eligible_total': [eligible_total] * len(tickers)})
+
+
+class _Query:
+    def __init__(self, frame=None, exc=None):
+        self.frame, self.exc, self.calls = frame, exc, []
+
+    def __call__(self, sql, params=None, timeout_s=None):
+        self.calls.append((sql, params, timeout_s))
+        if self.exc:
+            raise self.exc
+        return self.frame
+
+
+def test_config_default_and_env_override():
+    assert fwt.Config.from_env({}).max_tickers == 50
+    assert fwt.Config.from_env({'WATCHED_TICKERS_MAX': '7'}).max_tickers == 7
+
+
+def test_config_non_integer_raises():
+    with pytest.raises(ValueError):
+        fwt.Config.from_env({'WATCHED_TICKERS_MAX': 'x'})
+
+
+def test_set_read_passes_sql_params_and_timeout():
+    q = _Query(_set_frame(['AAA'], 1))
+    fwt.read_watched_set(q, fmd.TICKERS, 50)
+    assert q.calls == [(fwt.WATCHED_SET_SQL,
+                        {'limit': 50, 'exclude': list(fmd.TICKERS)},
+                        fwt._SET_QUERY_TIMEOUT_S)]
+
+
+def test_set_read_overflow_is_exact():
+    names = [f'T{i}' for i in range(50)]
+    ws = fwt.read_watched_set(_Query(_set_frame(names, 60)), fmd.TICKERS, 50)
+    assert ws.tickers == names
+    assert ws.eligible_total == 60
+    assert ws.overflow == 10
+    ws = fwt.read_watched_set(_Query(_set_frame(names, 51)), fmd.TICKERS, 50)
+    assert ws.overflow == 1
+
+
+def test_set_read_normalises_tickers():
+    ws = fwt.read_watched_set(_Query(_set_frame([' aapl '], 1)), [], 50)
+    assert ws.tickers == ['AAPL']
+
+
+def test_set_read_empty_frame_is_a_legitimate_zero():
+    ws = fwt.read_watched_set(
+        _Query(pd.DataFrame({'ticker': [], 'eligible_total': []})), [], 50)
+    assert ws.tickers == [] and ws.eligible_total == 0 and ws.overflow == 0
+
+
+def test_set_read_failure_is_set_read_error():
+    with pytest.raises(fwt.SetReadError):
+        fwt.read_watched_set(_Query(exc=RuntimeError('db down')), [], 50)
+
+
+@pytest.mark.parametrize('frame', [
+    pd.DataFrame({'ticker': [None], 'eligible_total': [1]}),
+    pd.DataFrame({'ticker': [float('nan')], 'eligible_total': [1]}),
+    pd.DataFrame({'ticker': [5], 'eligible_total': [1]}),
+    pd.DataFrame({'ticker': ['AAA']}),
+    pd.DataFrame({'ticker': ['AAA'], 'eligible_total': [None]}),
+    pd.DataFrame({'ticker': ['AAA'], 'eligible_total': ['many']}),
+    pd.DataFrame({'ticker': ['AAA'], 'eligible_total': [1.5]}),
+])
+def test_set_read_malformed_frame_is_set_read_error(frame):
+    with pytest.raises(fwt.SetReadError):
+        fwt.read_watched_set(_Query(frame), [], 50)
+
+
+def test_dedup_second_guard_order_preserving():
+    assert fwt.dedup(['aapl ', 'AAPL', 'SPY'], fmd.TICKERS) == ['AAPL']
+    assert fwt.dedup(['B', 'A', 'B'], []) == ['B', 'A']
+
+
+def test_set_sql_source_scan():
+    sql = fwt.WATCHED_SET_SQL
+    assert fwt.WATCHED_DATA_SOURCE == 'av_watched_backfill'
+    assert sql.count('user_watchlists') == 1
+    assert re.search(r'EXISTS \(SELECT 1 FROM user_watchlists[^)]*\)', sql)
+    assert not re.search(r'owner|uid|email', sql, re.I)
+    assert sql.index('<> ALL(:exclude)') < sql.index('LIMIT')
+    assert not re.search(r'\bwatchlists\b', _MODULE_SRC.read_text())
