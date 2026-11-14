@@ -135,7 +135,6 @@ def _run_brief_and_persist(monkeypatch, bars: pd.DataFrame, analysis_date: date,
     monkeypatch.setattr(pb, '_level_params_query', legacy_db(TICKER).query)
     monkeypatch.setattr(DataLoader, 'load_daily', lambda *a, **k: bars.copy())
     monkeypatch.setattr(pb, 'load_earnings_for_brief', lambda *a, **k: {'earnings': []})
-    monkeypatch.setattr(pb, '_ew_recap_or_unavailable', lambda *a, **k: {})
     monkeypatch.setattr(pb, 'load_economic_events', lambda *a, **k: {'today': []})
     monkeypatch.setattr(pb, '_load_gamma_freshness', lambda *a, **k: dict(
         data_source='unavailable', snapshot_ts=None, snapshot_date=None, days_behind=None))
