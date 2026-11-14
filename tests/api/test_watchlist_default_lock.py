@@ -172,13 +172,28 @@ def test_default_watchlist_is_identical_for_open_and_signed_in_callers(client, m
 
 def test_default_watchlist_503_when_cloud_sql_fails(client):
     """The failure is injected beneath the strict reader. The swallowing query_to_dataframe would
-    turn it into an empty DataFrame and a 200 with rows: [], which this test refuses."""
-    with patch("gcp.database.get_engine", side_effect=RuntimeError("db down")):
+    turn it into an empty DataFrame and a 200 with rows: [], which this test refuses. The fixture
+    is an infrastructure error (lib.infra_errors classifies ConnectionError), so the guard keeps
+    the 503; a RuntimeError would be a defect and answer 500 (see the next test)."""
+    with patch("gcp.database.get_engine", side_effect=ConnectionError("db down")):
         r = client.get("/api/insights/watchlist/default")
     assert r.status_code == 503, r.text
     detail = r.json()["detail"]
     assert "db down" in detail
     assert detail.startswith("watchlist read from Cloud SQL failed")
+
+
+def test_default_watchlist_defect_is_500_not_503(client):
+    """A defect beneath the reader (here a KeyError, which lib.infra_errors does not classify as an
+    outage) is not dressed as a retryable 503: api.http_errors.unavailable re-raises it and the app
+    answers 500. tests/meta/test_http_status_classification.py counts a bare `except: 503` as an
+    unclassified handler, which is what #1892's Run Tests check failed on."""
+    from starlette.testclient import TestClient
+    from api.main import app
+    with TestClient(app, raise_server_exceptions=False) as quiet:
+        with patch("gcp.database.get_engine", side_effect=KeyError("shape")):
+            r = quiet.get("/api/insights/watchlist/default")
+    assert r.status_code == 500, r.text
 
 
 def test_default_watchlist_empty_list_is_200(client):

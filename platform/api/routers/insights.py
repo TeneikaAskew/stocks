@@ -43,6 +43,7 @@ import lib.agents.vertex_adapter  # noqa: F401, E402 — registers adapter
 
 # Server-verified identity for per-user watchlist scoping (mirrors journal.py).
 from api.auth import current_user_email  # noqa: E402
+from api.http_errors import unavailable  # noqa: E402
 from lib.infra_errors import is_infrastructure_error  # noqa: E402
 from api.schemas import (
     InsightHistoryResponse,
@@ -784,8 +785,8 @@ def get_default_watchlist(request: Request) -> WatchlistDefaultResponse:
 
     Identical for an open-mode caller and a signed-in caller: the web reads
     the default list, it cannot change it (Discord and the CLI can). Reads
-    through ``query_to_dataframe_strict`` so a Cloud SQL failure is a 503
-    with the exception text, never an empty list; zero rows is a 200 with
+    through ``query_to_dataframe_strict`` so a Cloud SQL outage is a 503
+    with the exception text (a defect stays a 500), never an empty list; zero rows is a 200 with
     ``rows: []`` (an empty default list is a true state).
     """
     as_of = datetime.now(timezone.utc).isoformat()
@@ -793,10 +794,9 @@ def get_default_watchlist(request: Request) -> WatchlistDefaultResponse:
         df = query_to_dataframe_strict(WATCHLIST_DEFAULT_SQL)
     except Exception as exc:
         logger.exception("default watchlist read failed: %s", exc)
-        raise HTTPException(
-            status_code=503,
-            detail=f"watchlist read from Cloud SQL failed: {exc}",
-        )
+        # An outage is a retryable 503; a defect re-raises as the 500 it is
+        # (api.http_errors, tests/meta/test_http_status_classification.py).
+        unavailable(f"watchlist read from Cloud SQL failed: {exc}", exc)
     # to_dict(orient="records") boxes numpy scalars as Python bool/str and
     # keeps the TIMESTAMPTZ column as pandas Timestamps, whose isoformat() is
     # the ISO instant the response model declares.
