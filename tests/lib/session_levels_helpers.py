@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from lib.strat_levels import LEVEL_RULE_VERSION, LevelParams, SessionLevels, SideLevels
+from lib.strat_levels import ATR_RUNG_KEYS, LEVEL_RULE_VERSION, LevelParams, SessionLevels, SideLevels
 from tests.lib.level_params_fixtures import fixture_params
 
 _TF = {"D": "day", "W": "week", "M": "month", "Q": "quarter", "Y": "year"}
@@ -51,6 +51,10 @@ def basis(levels: dict, *, prior_close: float, atr, premarket: dict | None = Non
         "levels": [_level(n, p) for n, p in levels.items()],
         "pmg_zones": [],
     }
+    if any(k in lp.params for k in ATR_RUNG_KEYS):
+        # A brief built under the ATR rung rule records `atr_rung_status`,
+        # the marker SessionLevels.from_basis rebuilds rungs on.
+        out["atr_rung_status"] = None
     if reference is not None:
         out["reference"] = reference
         out["reference_source"] = "caller"
@@ -98,13 +102,21 @@ D8_LEVELS = {'PDH': 253.00, 'PMH': 275.00, 'PQH': 280.00, 'PYH': 285.00,
 D8_PREMARKET = {'pre_high': 252.10, 'pre_low': 248.20, 'pre_vwap': 250.00}
 
 
-def d8_params(*, window=2.6, spacing=0.25, statuses=None, **overrides):
+def d8_params(*, window=2.6, spacing=0.25, statuses=None, anchors=None, **overrides):
     """The Design 8 ticker's LevelParams: both windows `window`, the spacing
-    `spacing`, every other key ok; `statuses` marks keys not ok."""
-    return fixture_params('TST', overrides={'trigger_window_long_atr': window,
-                                            'trigger_window_short_atr': window,
-                                            'target_min_spacing_atr': spacing, **overrides},
-                          statuses=statuses)
+    `spacing`, every other key ok; `statuses` marks keys not ok. `anchors`
+    replaces the atr_rung_anchors policy row's list (ATR levels spec), as a
+    later policy row would."""
+    lp = fixture_params('TST', overrides={'trigger_window_long_atr': window,
+                                          'trigger_window_short_atr': window,
+                                          'target_min_spacing_atr': spacing, **overrides},
+                        statuses=statuses)
+    if anchors is not None:
+        from dataclasses import replace
+        p = lp.params['atr_rung_anchors']
+        lp.params['atr_rung_anchors'] = replace(p, value=float(len(anchors)),
+                                                extra={'anchors': list(anchors)})
+    return lp
 
 
 def d8_basis(levels=None, *, atr=14.0, params=None, **kw) -> dict:

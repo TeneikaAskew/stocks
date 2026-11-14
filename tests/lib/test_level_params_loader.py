@@ -8,6 +8,7 @@ tables nor the function exist.
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -16,7 +17,7 @@ from lib.strat_levels import (
     PARAMS_BASIS_MISMATCH, PARAMS_UNAVAILABLE, LevelParamsUnavailable,
     LevelParamUnavailable, load_level_params,
 )
-from tests.lib.level_params_fixtures import LEGACY_1753_VALUES, ParamsDb, seeded_policy
+from tests.lib.level_params_fixtures import LEGACY_1753_VALUES, ParamsDb, legacy_db, seeded_policy
 
 DESIGN_2_KEYS = set(LEGACY_1753_VALUES)
 D = date(2026, 11, 9)
@@ -26,7 +27,7 @@ def test_schema_seeds_the_design_2_policy_and_no_ticker_values():
     db = ParamsDb()
     policy = seeded_policy()
     assert set(policy) == DESIGN_2_KEYS | {"atr_basis", "calibration_universe",
-                                           "exit_legs", "entry_cutoff_et"}
+                                           "exit_legs", "entry_cutoff_et", "atr_rung_anchors"}
     assert policy["atr_basis"]["extra"] == {"column": "atr_14"}
     assert {p["effective_from"] for p in policy.values()} == {"2015-01-02"}
     assert policy["trigger_window_long_atr"]["statistic_q"] == 0.99
@@ -36,8 +37,9 @@ def test_schema_seeds_the_design_2_policy_and_no_ticker_values():
     assert policy["stop_aggressive_atr"]["statistic_q"] == 0.90
     assert policy["target_conservative_2_r"]["statistic_q"] == 0.50
     assert db.query("SELECT COUNT(*) AS n FROM ticker_level_params")["n"].iloc[0] == 0
-    # The 23 Design 2 keys plus the exits spec's two policy_seed keys.
-    assert len(DESIGN_2_KEYS) == 25
+    # The 23 Design 2 keys, the exits spec's two policy_seed keys and the
+    # ATR levels spec's three.
+    assert len(DESIGN_2_KEYS) == 28
 
 
 def test_two_versions_a_session_between_them_reads_the_earlier():
@@ -206,3 +208,73 @@ def test_a_row_naming_an_absent_policy_version_raises():
     db.conn.commit()
     with pytest.raises(LevelParamsUnavailable, match="policy version"):
         db.load(["SPY"], date(2026, 11, 6))
+
+
+# ── ATR levels spec (2026-11-11): the policy rows ──────────────────────
+
+
+def test_schema_seeds_the_atr_rung_policy_rows():
+    policy = seeded_policy()
+    assert policy["atr_rung_anchors"]["method_id"] == "policy"
+    assert policy["atr_rung_anchors"]["extra"] == {"anchors": ["PDH", "PDL", "PMK_H", "PMK_L"]}
+    for key, seed in (("atr_rung_step_atr", 0.5), ("atr_rung_max_atr", 2.0),
+                      ("atr_rung_stretch_atr", 1.5)):
+        assert policy[key]["method_id"] == "policy_seed"
+        assert policy[key]["extra"] == {"seed": seed}
+    for key in ("atr_rung_anchors", "atr_rung_step_atr", "atr_rung_max_atr",
+                "atr_rung_stretch_atr"):
+        assert policy[key]["effective_from"] == "2015-01-02"
+    schema = (Path(__file__).resolve().parents[2] / "gcp" / "schema.sql").read_text()
+    block = schema[schema.index("('atr_rung_anchors'"):]
+    assert block.index("ON CONFLICT (param_key, effective_from) DO NOTHING") < block.index(";")
+
+
+def test_load_reads_the_anchor_list_like_atr_basis():
+    db = legacy_db(["SPY"], effective_from=date(2026, 11, 3))
+    lp = db.load(["SPY"], D)["SPY"]
+    assert lp.atr_rung_anchors() == ("PDH", "PDL", "PMK_H", "PMK_L")
+    p = lp.param("atr_rung_anchors")
+    assert (p.status, p.method_id, p.effective_from) == ("ok", "policy", "2015-01-02")
+
+
+def test_a_policy_with_no_anchor_row_raises_naming_the_key():
+    db = legacy_db(["SPY"], effective_from=date(2026, 11, 3))
+    db.conn.execute("DELETE FROM level_param_policy WHERE param_key = 'atr_rung_anchors'")
+    db.conn.commit()
+    with pytest.raises(LevelParamsUnavailable, match="atr_rung_anchors"):
+        db.load(["SPY"], D)
+
+
+@pytest.mark.parametrize("extra", ['{"anchors": []}', '{}', '{"anchors": ["PDH", "OPEN"]}',
+                                   '{"anchors": ["PDH", "PDH"]}', '{"anchors": "PDH"}'])
+def test_an_empty_or_unknown_anchor_list_raises(extra):
+    """A later row that is empty, names a level that is not a trigger
+    candidate (OPEN), or names one twice cannot be read."""
+    db = legacy_db(["SPY"], effective_from=date(2026, 11, 3))
+    db.set_policy("atr_rung_anchors", effective_from=date(2026, 11, 5), extra=extra)
+    assert db.load(["SPY"], date(2026, 11, 4))["SPY"].atr_rung_anchors() == (
+        "PDH", "PDL", "PMK_H", "PMK_L")
+    with pytest.raises(LevelParamsUnavailable, match="atr_rung_anchors"):
+        db.load(["SPY"], D)
+
+
+def test_a_later_anchor_row_of_the_prior_close_builds_prior_close_rungs():
+    """An atr_rung_anchors row listing [PDC] effective D builds the rungs
+    from the prior close from D, with no code change."""
+    from tests.lib.session_levels_helpers import D8_LEVELS, D8_PREMARKET, basis
+    from lib.strat_levels import SessionLevels
+    db = legacy_db(["TST"], effective_from=date(2026, 11, 3))
+    db.set_policy("atr_rung_anchors", effective_from=D, extra='{"anchors": ["PDC"]}')
+
+    def rungs(day):
+        lp = db.load(["TST"], day)["TST"]
+        sl = SessionLevels.from_basis(basis(D8_LEVELS, prior_close=247.00, atr=14.0,
+                                            premarket=D8_PREMARKET, session_date=day, params=lp))
+        return {r["anchor"] for r in sl.atr_rungs + sl.atr_rungs_dropped}, sl
+
+    before, _ = rungs(date(2026, 11, 6))
+    after, sl = rungs(D)
+    assert before == {"PDH", "PDL", "PMK_H", "PMK_L"}
+    assert after == {"PDC"}
+    assert sorted(r["price"] for r in sl.atr_rungs + sl.atr_rungs_dropped) == [
+        219.0, 226.0, 233.0, 240.0, 254.0, 261.0, 268.0, 275.0]
