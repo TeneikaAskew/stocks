@@ -328,7 +328,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - _no writer found in gcp/, lib/, scripts/, platform/api_
 
 ### `market_data_daily`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [417](../../../gcp/backfill_ticker.py#L417), [563](../../../gcp/backfill_ticker.py#L563), [636](../../../gcp/backfill_ticker.py#L636)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [418](../../../gcp/backfill_ticker.py#L418), [564](../../../gcp/backfill_ticker.py#L564), [637](../../../gcp/backfill_ticker.py#L637)
 - [`gcp/fetchers/backfill_daily_indicators.py`](../../../gcp/fetchers/backfill_daily_indicators.py) — line [415](../../../gcp/fetchers/backfill_daily_indicators.py#L415)
 - [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [546](../../../gcp/fetchers/fetch_market_data.py#L546), [621](../../../gcp/fetchers/fetch_market_data.py#L621), [670](../../../gcp/fetchers/fetch_market_data.py#L670), [1051](../../../gcp/fetchers/fetch_market_data.py#L1051)
 - [`gcp/fetchers/fetch_premarket_refresh.py`](../../../gcp/fetchers/fetch_premarket_refresh.py) — line [354](../../../gcp/fetchers/fetch_premarket_refresh.py#L354)
@@ -338,7 +338,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`scripts/deep_backfill_ticker.py`](../../../scripts/deep_backfill_ticker.py) — line [102](../../../scripts/deep_backfill_ticker.py#L102)
 
 ### `market_data_intraday`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [659](../../../gcp/backfill_ticker.py#L659)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [660](../../../gcp/backfill_ticker.py#L660)
 - [`gcp/fetchers/fetch_alphavantage_intraday.py`](../../../gcp/fetchers/fetch_alphavantage_intraday.py) — line [319](../../../gcp/fetchers/fetch_alphavantage_intraday.py#L319)
 - [`gcp/fetchers/fetch_market_data.py`](../../../gcp/fetchers/fetch_market_data.py) — line [573](../../../gcp/fetchers/fetch_market_data.py#L573)
 - [`gcp/migrate_to_gcp.py`](../../../gcp/migrate_to_gcp.py) — line [249](../../../gcp/migrate_to_gcp.py#L249), [252](../../../gcp/migrate_to_gcp.py#L252)
@@ -362,7 +362,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - [`lib/agents/model_routing.py`](../../../lib/agents/model_routing.py) — line [193](../../../lib/agents/model_routing.py#L193)
 
 ### `news_sentiment`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [672](../../../gcp/backfill_ticker.py#L672)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [673](../../../gcp/backfill_ticker.py#L673)
 - [`gcp/fetchers/fetch_news_sentiment.py`](../../../gcp/fetchers/fetch_news_sentiment.py) — line [375](../../../gcp/fetchers/fetch_news_sentiment.py#L375)
 - [`gcp/fetchers/fetch_rss_news.py`](../../../gcp/fetchers/fetch_rss_news.py) — line [710](../../../gcp/fetchers/fetch_rss_news.py#L710)
 - [`scripts/backfill_news_sentiment.py`](../../../scripts/backfill_news_sentiment.py) — line [101](../../../scripts/backfill_news_sentiment.py#L101)
@@ -463,7 +463,7 @@ A "write" is `upsert_dataframe` / `bulk_copy_upsert` / `bulk_insert_dataframe`, 
 - _no writer found in gcp/, lib/, scripts/, platform/api_
 
 ### `watchlists`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [330](../../../gcp/backfill_ticker.py#L330), [334](../../../gcp/backfill_ticker.py#L334)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [331](../../../gcp/backfill_ticker.py#L331), [335](../../../gcp/backfill_ticker.py#L335)
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [655](../../../gcp/discord_interactions/main.py#L655), [691](../../../gcp/discord_interactions/main.py#L691)
 - [`gcp/fetchers/_watchlist.py`](../../../gcp/fetchers/_watchlist.py) — line [539](../../../gcp/fetchers/_watchlist.py#L539), [543](../../../gcp/fetchers/_watchlist.py#L543), [544](../../../gcp/fetchers/_watchlist.py#L544), [576](../../../gcp/fetchers/_watchlist.py#L576)
 <!-- inventory:writes:end -->
@@ -674,7 +674,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`lib/strat_levels.py`](../../../lib/strat_levels.py) — line [1206](../../../lib/strat_levels.py#L1206)
 
 ### `market_data_daily`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [376](../../../gcp/backfill_ticker.py#L376), [444](../../../gcp/backfill_ticker.py#L444)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [377](../../../gcp/backfill_ticker.py#L377), [445](../../../gcp/backfill_ticker.py#L445)
 - [`gcp/build_intraday_gex.py`](../../../gcp/build_intraday_gex.py) — line [80](../../../gcp/build_intraday_gex.py#L80)
 - [`gcp/calibrate_level_params.py`](../../../gcp/calibrate_level_params.py) — line [79](../../../gcp/calibrate_level_params.py#L79)
 - [`gcp/discord_interactions/main.py`](../../../gcp/discord_interactions/main.py) — line [332](../../../gcp/discord_interactions/main.py#L332)
@@ -710,7 +710,7 @@ A "read" is `SELECT`, `FROM`, `JOIN`, `query_to_dataframe`, `read_sql` or `row_e
 - [`scripts/strat_backtest.py`](../../../scripts/strat_backtest.py) — line [37](../../../scripts/strat_backtest.py#L37)
 
 ### `market_data_intraday`
-- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [502](../../../gcp/backfill_ticker.py#L502)
+- [`gcp/backfill_ticker.py`](../../../gcp/backfill_ticker.py) — line [503](../../../gcp/backfill_ticker.py#L503)
 - [`gcp/build_intraday_gex.py`](../../../gcp/build_intraday_gex.py) — line [107](../../../gcp/build_intraday_gex.py#L107)
 - [`gcp/build_realtime_gex.py`](../../../gcp/build_realtime_gex.py) — line [99](../../../gcp/build_realtime_gex.py#L99)
 - [`gcp/calibrate_level_params.py`](../../../gcp/calibrate_level_params.py) — line [84](../../../gcp/calibrate_level_params.py#L84)
