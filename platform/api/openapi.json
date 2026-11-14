@@ -10363,6 +10363,81 @@
         "title": "WatchlistAddResponse",
         "type": "object"
       },
+      "WatchlistDefaultResponse": {
+        "additionalProperties": true,
+        "description": "GET /api/insights/watchlist/default (FEAT-INSIGHT-001 stage A).\n\nRead-only: the owner is the literal 'default' for every caller, and the\nrows are ordered by added_at, then ticker. An empty default list is a\n200 with ``rows: []``; a failed Cloud SQL read is a 503, never an empty\nlist (CLAUDE.md 3.7).",
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "owner": {
+            "const": "default",
+            "title": "Owner",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/WatchlistDefaultRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "as_of",
+          "owner",
+          "rows"
+        ],
+        "title": "WatchlistDefaultResponse",
+        "type": "object"
+      },
+      "WatchlistDefaultRow": {
+        "additionalProperties": true,
+        "description": "One active row of the default watchlist with its surface flags.\n\n``added_at`` is the ISO instant of the TIMESTAMPTZ column, never a pandas\nTimestamp repr (solyra types it as a string). ``source`` is nullable in\ngcp/schema.sql; the three flags are NOT NULL there.",
+        "properties": {
+          "added_at": {
+            "title": "Added At",
+            "type": "string"
+          },
+          "in_brief": {
+            "title": "In Brief",
+            "type": "boolean"
+          },
+          "in_insight": {
+            "title": "In Insight",
+            "type": "boolean"
+          },
+          "signals": {
+            "title": "Signals",
+            "type": "boolean"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "ticker": {
+            "title": "Ticker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticker",
+          "in_brief",
+          "in_insight",
+          "signals",
+          "added_at"
+        ],
+        "title": "WatchlistDefaultRow",
+        "type": "object"
+      },
       "WatchlistRemoveResponse": {
         "additionalProperties": true,
         "properties": {
@@ -13221,6 +13296,25 @@
           }
         },
         "summary": "Add To Watchlist"
+      }
+    },
+    "/api/insights/watchlist/default": {
+      "get": {
+        "description": "Return the active default watchlist with its surface flags, read-only.\n\nIdentical for an open-mode caller and a signed-in caller: the web reads\nthe default list, it cannot change it (Discord and the CLI can). Reads\nthrough ``query_to_dataframe_strict`` so a Cloud SQL outage is a 503\nwith the exception text (a defect stays a 500), never an empty list; zero rows is a 200 with\n``rows: []`` (an empty default list is a true state).",
+        "operationId": "get_default_watchlist_api_insights_watchlist_default_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchlistDefaultResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Default Watchlist"
       }
     },
     "/api/insights/watchlist/{ticker}": {
