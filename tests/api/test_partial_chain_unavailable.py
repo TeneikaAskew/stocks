@@ -168,6 +168,12 @@ class TestGreeksRoute:
         data = chain_client.post("/api/options/greeks", json={"spot_price": 0.0, "options": _baseline_option_records()}).json()
         assert data["reason"] == "spot_unavailable" and data["metrics"]["total_gex"] is None and data["metrics"]["put_call_ratio"] is None
 
+    def test_one_sided_chain_with_non_positive_spot_reports_the_side_reason(self, chain_client):
+        recs = [o for o in _baseline_option_records() if o["type"] == "call"]
+        data = chain_client.post("/api/options/greeks", json={"spot_price": 0.0, "options": recs}).json()
+        assert data["reason"] == "puts_missing"
+        assert data["metrics"]["total_gex"] is None and data["metrics"]["put_call_ratio"] is None
+
 
 class TestLevelsRoute:
     def test_both_sided_byte_identical(self, chain_client, chain_clock, monkeypatch):
@@ -220,4 +226,10 @@ class TestNodesRoutes:
     def test_unavailable_nodes_totals_are_null(self, grid_client, monkeypatch):
         _install_query_router(monkeypatch)
         data = grid_client.get("/api/options/RANDOM/nodes").json()
+        assert data["total_gex"] is None and data["total_vex"] is None
+
+    def test_unavailable_dated_nodes_totals_are_null(self, grid_client, monkeypatch):
+        _install_query_router(monkeypatch)
+        data = grid_client.get("/api/options/RANDOM/2026-06-01/nodes").json()
+        assert data["data_source"] == "unavailable"
         assert data["total_gex"] is None and data["total_vex"] is None
