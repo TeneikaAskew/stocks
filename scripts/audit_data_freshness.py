@@ -11,6 +11,15 @@ Usage:
     python scripts/audit_data_freshness.py --json           # JSON output
     python scripts/audit_data_freshness.py --strict         # Exit 1 if any table is stale (for CI),
                                                             # 2 if the NYSE calendar failed
+    python scripts/audit_data_freshness.py --intraday-gap-since 2015-01-01 --intraday-gap-tickers SPY
+                                                            # List the 1-min sessions of SPY that are missing,
+                                                            # thin or undetermined since a date; runs this scan
+                                                            # alone and exits 0 once its summary line is printed
+    python scripts/audit_data_freshness.py --intraday-gap-since 2015-01-01 --strict
+                                                            # The same as a gate (SPY, QQQ and IWM): exit 1 if
+                                                            # any session or ticker was listed
+    In the job: gcloud run jobs execute freshness-watchdog --region us-east1 \
+        --args="--intraday-gap-since=2015-01-01,--intraday-gap-tickers=SPY" --wait
 
 Required env vars: CLOUD_SQL_CONNECTION_NAME, DB_USER, DB_PASS, DB_NAME
 """
@@ -33,12 +42,16 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 from lib.eastern_time import (
     ET,
+    SessionReading,
     as_utc_instant,
+    intraday_month_window,
     is_session,
     latest_session_on_or_before,
     localize_assuming_eastern,
     previous_session,
+    proven_true_utc,
     session_close,
+    session_minute_readings,
     session_schedule,
 )
 
@@ -130,7 +143,13 @@ CHECKS: list[dict] = [
         "tickers": ("IWM", "SPY", "QQQ"),
         "where": "interval = '1min'",
         "min_rows_per_day": 350,    # ~full RTH session at 1-min
-        "gap_scan_days": 5,
+        # The session scan (_query_intraday_session_gaps) replaces the
+        # day-presence gap scan for this table. Every hole that scan could
+        # flag (no row on the UTC date) is MISSING here, so keeping both would
+        # report one hole twice; and it read this table by DATE(ts) through
+        # the swallowing reader, where 30 bars made a day present and a failed
+        # read made every day absent.
+        "session_gap_days": 5,
         # av-intraday-nightly cron `0 21 * * 2-6` ET — fires Tue-Sat at
         # 21 ET, picking up the PREVIOUS day's bars (Tue 21 ET writes
         # Mon's bars; Sat 21 ET writes Fri's). So intraday data lags by
@@ -852,6 +871,93 @@ def _query_gap_scan(check: dict, now_utc: datetime) -> list[FreshnessRow]:
     return rows
 
 
+# ── 1-min session scan (FEAT-DATA-001) ───────────────────────────────────────
+#
+# market_data_intraday lost 31 whole sessions and kept dozens of thin ones for
+# a year without a single stale row: the gap scan above asks only whether a
+# day holds any row. This scan counts each settled session's regular-hours
+# minutes against the session's own length from the calendar.
+#
+# It fails loud. Its read goes through query_to_dataframe_strict with no
+# `try`, so a database error ends the audit (a failed watchdog run; 503 or 500
+# on the routes that serve this report) instead of reading as five missing
+# sessions. It does NOT follow _query_column_nullity, which turns a failed
+# read into an `unknown` row: `--strict` exits 0 on unknown, so a scan that
+# could not read would pass.
+
+#: The Cloud Run job that writes the bars the session scan reads.
+_SESSION_GAP_WRITER_JOB = "fetch-alphavantage-intraday"
+
+_SESSION_GAP_SQL = """
+    SELECT ts, inserted_at
+      FROM market_data_intraday
+     WHERE ticker = :t AND interval = '1min' AND ts >= :start AND ts < :end
+"""
+
+
+def _session_gap_row(check: dict, ticker: str, reading: SessionReading) -> FreshnessRow:
+    """The stale row for one session that is MISSING, THIN or UNDETERMINED."""
+    lowest = min(reading.true_utc, reading.eastern_label, reading.both)
+    if reading.status == "MISSING":
+        detail = f"MISSING: 0 of {reading.expected} regular-hours minutes"
+    elif reading.status == "THIN":
+        detail = f"THIN: {lowest} of {reading.expected} regular-hours minutes"
+    elif reading.status == "UNDETERMINED":
+        detail = (f"UNDETERMINED: {reading.true_utc} as true UTC, "
+                  f"{reading.eastern_label} as Eastern labels, "
+                  f"{reading.both} as both, of {reading.expected}")
+    else:
+        raise ValueError(f"no session-gap row for status {reading.status!r}")
+    return FreshnessRow(
+        table=f"{check['name']} [sessions]",
+        ticker=ticker,
+        last_row_at=None,
+        expected_latest=reading.session.isoformat(),
+        lag_hours=None,
+        expected_max_hours=check["expected_lag_hours"],
+        status="stale",
+        row_count_recent=lowest,
+        writer_job=_SESSION_GAP_WRITER_JOB,
+        detail=detail,
+    )
+
+
+def _query_intraday_session_gaps(check: dict, now_utc: datetime) -> list[FreshnessRow]:
+    """One stale row per ticker and settled session whose regular-hours 1-min
+    bars are missing or thin. Returns failing sessions only.
+
+    One strict query per ticker over the last ``session_gap_days`` settled
+    sessions; the minutes are counted by lib.eastern_time.session_minute_readings.
+    Only the schedule read goes through _calendar: wrapping the readings too
+    would report a defect in them as a calendar failure.
+    """
+    from gcp.database import query_to_dataframe_strict
+
+    days = _recent_trading_days(
+        now_utc, check["session_gap_days"],
+        settle_hour_et=check.get("settle_hour_et", 16),
+        settle_lag_days=check.get("settle_lag_days", 0),
+    )
+    newest, oldest = days[0], days[-1]
+    schedule = _calendar(session_schedule, oldest, newest)
+    # 02:00 UTC is lib.eastern_time.intraday_month_window's boundary hour: a
+    # session's rows lie between 02:00 UTC on its date and 02:00 UTC on the
+    # next, whichever convention they were stored in.
+    after_newest = newest + timedelta(days=1)
+    start = datetime(oldest.year, oldest.month, oldest.day, 2, tzinfo=UTC)
+    end = datetime(after_newest.year, after_newest.month, after_newest.day, 2, tzinfo=UTC)
+
+    rows: list[FreshnessRow] = []
+    for ticker in check["tickers"]:
+        df = query_to_dataframe_strict(
+            _SESSION_GAP_SQL, {"t": ticker, "start": start, "end": end},
+            timeout_s=_CHECK_QUERY_TIMEOUT_S)
+        for reading in session_minute_readings(df["ts"], df["inserted_at"], schedule):
+            if reading.status != "OK":
+                rows.append(_session_gap_row(check, ticker, reading))
+    return rows
+
+
 # ── Column-nullity checks ──────────────────────────────────────────────────────
 #
 # Freshness alone can't see "rows ARE being written but the column we
@@ -1485,6 +1591,11 @@ def _session_dependent_checks(report: FreshnessReport, now: datetime) -> None:
         # Gap scan: only reports failing (ticker, day) combinations
         report.rows.extend(_query_gap_scan(check, now))
 
+        # Session scan: only reports failing (ticker, session) combinations
+        if check.get("session_gap_days"):
+            report.rows.extend(_timed(
+                "intraday_session_gaps", _query_intraday_session_gaps, check, now))
+
 
 def _session_dependent_late_checks(report: FreshnessReport, now: datetime) -> None:
     """Column nullity and enrichment coverage; raise CalendarUnavailable."""
@@ -1560,6 +1671,126 @@ def format_terminal(report: FreshnessReport) -> str:
     return "\n".join(lines)
 
 
+# ── On-demand session scan (--intraday-gap-since) ────────────────────────────
+
+_FIRST_ROW_SQL = """
+    SELECT min(ts) AS first_ts
+      FROM market_data_intraday
+     WHERE ticker = :t AND interval = '1min'
+"""
+
+
+def _session_gap_check() -> dict:
+    """The CHECKS entry the session scan runs for."""
+    return next(c for c in CHECKS if c.get("session_gap_days"))
+
+
+def _months_from(first: date, last: date):
+    """(year, month) pairs from *first*'s month to *last*'s, ascending."""
+    year, month = first.year, first.month
+    while (year, month) <= (last.year, last.month):
+        yield year, month
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+
+
+def run_intraday_gap_since(
+    since: date,
+    tickers: tuple[str, ...],
+    strict: bool,
+    now_utc: Optional[datetime] = None,
+) -> int:
+    """List every 1-min session from *since* to the last settled session that
+    is MISSING, THIN or UNDETERMINED, for each of *tickers*. Returns the exit
+    code.
+
+    This is the scheduled session scan over history, run alone: audit_all()
+    is not called. Per ticker one first-row probe, then one read per month
+    window, one month in memory at a time (Rule 0: 143 months of a ticker's
+    history must not be one frame). Sessions before the ticker's first stored
+    row are history that was never stored, not gaps.
+
+    Printed, not logged, so the lines do not depend on the logging level:
+      SESSION-GAP TICKER YYYY-MM-DD STATUS true_utc=N eastern_label=N both=N expected=N exact=yes|no
+      MONTH TICKER,YYYY-MM rows=N unproven_rows=N      (a month window that holds a row)
+      NO-ROWS TICKER                                   (a ticker with no stored row)
+      intraday-gap-since summary: ...                  (last; a run without it crashed)
+
+    Exit 0 once the summary is printed, or 1 with *strict* when a SESSION-GAP
+    or NO-ROWS line was printed. Exit 2, with no summary, when *since* is
+    after the last settled session or the NYSE calendar failed: a run that
+    scanned nothing must not exit 0. A reader error is not caught.
+    """
+    import time as _time
+
+    import pandas as pd
+
+    from gcp.database import query_to_dataframe_strict
+
+    t0 = _time.monotonic()
+    now = now_utc or datetime.now(UTC).replace(tzinfo=None)  # tz-ok: naive UTC, the frame most_recent_trading_day takes
+    check = _session_gap_check()
+    summary: list[str] = []
+    listed = False
+    try:
+        last = most_recent_trading_day(
+            now, settle_hour_et=check.get("settle_hour_et", 16),
+            settle_lag_days=check.get("settle_lag_days", 0))
+        if since > last:
+            print(f"--intraday-gap-since {since.isoformat()} is after the last "
+                  f"settled session, {last.isoformat()}; nothing to scan.",
+                  file=sys.stderr)
+            return 2
+
+        for ticker in tickers:
+            probe = query_to_dataframe_strict(
+                _FIRST_ROW_SQL, {"t": ticker}, timeout_s=_CHECK_QUERY_TIMEOUT_S)
+            first_ts = probe["first_ts"].iloc[0]
+            counts = {"OK": 0, "MISSING": 0, "THIN": 0, "UNDETERMINED": 0}
+            if pd.isna(first_ts):
+                print(f"NO-ROWS {ticker}")
+                listed = True
+                summary.append(f"{ticker} first=none sessions=0 ok=0 missing=0 "
+                               "thin=0 undetermined=0")
+                continue
+            first_day = as_utc_instant(first_ts).date()
+            start = max(since, first_day)
+            for year, month in _months_from(start, last):
+                window_start, window_end = intraday_month_window(year, month)
+                df = query_to_dataframe_strict(
+                    _SESSION_GAP_SQL,
+                    {"t": ticker, "start": window_start, "end": window_end},
+                    timeout_s=_CHECK_QUERY_TIMEOUT_S)
+                if len(df):
+                    unproven = int((~proven_true_utc(df["ts"], df["inserted_at"])).sum())
+                    print(f"MONTH {ticker},{year}-{month:02d} rows={len(df)} "
+                          f"unproven_rows={unproven}")
+                next_month = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+                lo = max(start, date(year, month, 1))
+                hi = min(last, next_month - timedelta(days=1))
+                schedule = _calendar(session_schedule, lo, hi)
+                for r in session_minute_readings(df["ts"], df["inserted_at"], schedule):
+                    counts[r.status] += 1
+                    if r.status != "OK":
+                        listed = True
+                        print(f"SESSION-GAP {ticker} {r.session.isoformat()} {r.status} "
+                              f"true_utc={r.true_utc} eastern_label={r.eastern_label} "
+                              f"both={r.both} expected={r.expected} "
+                              f"exact={'yes' if r.exact else 'no'}")
+                del df
+            summary.append(
+                f"{ticker} first={first_day.isoformat()} sessions={sum(counts.values())} "
+                f"ok={counts['OK']} missing={counts['MISSING']} thin={counts['THIN']} "
+                f"undetermined={counts['UNDETERMINED']}")
+    except CalendarUnavailable as exc:
+        print(f"NYSE calendar unavailable; the session scan did not finish: {exc}",
+              file=sys.stderr)
+        return 2
+
+    print("intraday-gap-since summary: " + "; ".join(summary)
+          + f"; seconds={_time.monotonic() - t0:.1f}")
+    return 1 if strict and listed else 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Audit Cloud SQL data freshness across the platform."
@@ -1567,7 +1798,37 @@ def main():
     parser.add_argument("--json", action="store_true", help="Output JSON instead of a pretty table")
     parser.add_argument("--strict", action="store_true",
                         help="Exit 1 if any table is stale, 2 if the NYSE calendar failed (for CI)")
+    parser.add_argument("--intraday-gap-since", default=None, metavar="YYYY-MM-DD",
+                        help="Run only the 1-min session scan, from this date to the last "
+                             "settled session: lists each session of SPY, QQQ and IWM that "
+                             "is missing, thin or undetermined. Exit 0 once the summary line "
+                             "is printed; with --strict, 1 if anything was listed.")
+    parser.add_argument("--intraday-gap-tickers", default=None, metavar="T1,T2",
+                        help="With --intraday-gap-since: only these of SPY, QQQ and IWM.")
     args = parser.parse_args()
+
+    gap_since: Optional[date] = None
+    gap_tickers: tuple[str, ...] = ()
+    if args.intraday_gap_tickers is not None and args.intraday_gap_since is None:
+        parser.error("--intraday-gap-tickers needs --intraday-gap-since")
+    if args.intraday_gap_since is not None:
+        if args.json:
+            parser.error("--intraday-gap-since prints lines, not JSON; drop --json")
+        try:
+            gap_since = date.fromisoformat(args.intraday_gap_since)
+        except ValueError:
+            parser.error(f"--intraday-gap-since: not a YYYY-MM-DD date: "
+                         f"{args.intraday_gap_since!r}")
+        allowed = tuple(_session_gap_check()["tickers"])
+        if args.intraday_gap_tickers is None:
+            gap_tickers = allowed
+        else:
+            named = [t.strip().upper() for t in args.intraday_gap_tickers.split(",")]
+            for t in named:
+                if t not in allowed:
+                    parser.error(f"--intraday-gap-tickers: {t!r} is not one of "
+                                 f"{', '.join(allowed)}")
+            gap_tickers = tuple(dict.fromkeys(named))
 
     logging.basicConfig(level=logging.WARNING, format="%(message)s")
     # Silence Cloud SQL query failures — we handle them gracefully and re-report
@@ -1581,6 +1842,9 @@ def main():
         else:
             print(msg, file=sys.stderr)
         sys.exit(2)
+
+    if gap_since is not None:
+        sys.exit(run_intraday_gap_since(gap_since, gap_tickers, args.strict))
 
     report = audit_all()
 

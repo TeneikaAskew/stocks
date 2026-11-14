@@ -195,6 +195,15 @@ def utc_to_eastern_naive(values):
 # than the first session after the writer deploy.
 TRUE_UTC_FROM = date(2026, 9, 28)
 
+# The insert time from which a row is a true instant whatever its date: the
+# midnight that opens TRUE_UTC_FROM. Every writer has converted since then, and
+# inserted_at defaults to NOW() on insert and is not touched by an upsert, so a
+# row inserted from here on was written by a converting writer. A row a later
+# run rewrote in place keeps its old insert time and stays unproven, which errs
+# on the safe side.
+TRUE_UTC_INSERTED_FROM = datetime(
+    TRUE_UTC_FROM.year, TRUE_UTC_FROM.month, TRUE_UTC_FROM.day, tzinfo=UTC)
+
 
 def stored_intraday_to_eastern(ts, volume):
     """Naive-Eastern index for market_data_intraday rows, safe across the
@@ -339,6 +348,211 @@ def replay_probe_window(d: date) -> tuple[datetime, datetime]:
     """
     hi = datetime(d.year, d.month, d.day, tzinfo=UTC)
     return hi - timedelta(days=7), hi
+
+
+# The functions below read stored rows WITHOUT trusting the inference above. A
+# row counts as a true instant only when it is proven one, by its date or by
+# its insert time; where a count depends on the convention of rows that are not
+# proven, the answer says so instead of picking one (FEAT-DATA-001, Design F).
+
+_MINUTE_NS = 60 * 1_000_000_000
+
+
+def _stored_instants(values, *, name: str, allow_missing: bool = False):
+    """Stored TIMESTAMPTZ values as an aware-UTC DatetimeIndex.
+
+    Read as stored_intraday_to_eastern reads ``ts``: a naive value is UTC.
+    A missing value is refused unless *allow_missing*: ``ts`` is a key column,
+    and a row with no instant cannot be placed in any minute.
+    """
+    import pandas as pd
+
+    inst = pd.DatetimeIndex(pd.to_datetime(values))
+    if inst.tz is None:
+        inst = inst.tz_localize("UTC")  # tz-ok: pg8000 TIMESTAMPTZ in a UTC session
+    inst = inst.tz_convert("UTC")
+    if not allow_missing and inst.hasnans:
+        raise ValueError(f"{name} holds a missing timestamp")
+    return inst
+
+
+def proven_true_utc(ts, inserted_at):
+    """One bool per row: is the row PROVEN to be a true UTC instant?
+
+    Proven means its UTC date is TRUE_UTC_FROM or later, or its ``inserted_at``
+    is TRUE_UTC_INSERTED_FROM or later. Nothing about the shape of the row's
+    date enters: this is a fact about when the row was written, not an
+    inference. A missing ``inserted_at`` is not proof. Naive values are UTC.
+    """
+    import numpy as np
+    import pandas as pd
+
+    inst = _stored_instants(ts, name="ts")
+    inserted = _stored_instants(inserted_at, name="inserted_at", allow_missing=True)
+    if len(inserted) != len(inst):
+        raise ValueError(
+            f"ts has {len(inst)} rows and inserted_at has {len(inserted)}")
+    cutoff = pd.Timestamp(TRUE_UTC_INSERTED_FROM)
+    # NaT compares False, so a row with no insert time is never proven by it.
+    return np.asarray(inst >= cutoff) | np.asarray(inserted >= cutoff)
+
+
+class SessionReading(NamedTuple):
+    """One session's regular-hours minutes, counted three ways.
+
+    ``true_utc``: every row read as a true instant. ``eastern_label``: proven
+    rows as true instants, every other row as an Eastern clock time stamped
+    UTC. ``both``: proven rows, plus the minutes the other rows cover under
+    both readings. ``exact`` is True when no unproven row counts under either
+    reading, so the three counts are one fact and not three readings.
+    ``status`` is OK, THIN or MISSING when the three counts fall in the same
+    class and UNDETERMINED otherwise.
+    """
+
+    session: date
+    expected: int
+    true_utc: int
+    eastern_label: int
+    both: int
+    exact: bool
+    status: str
+
+
+def _minute_class(count: int, expected: int) -> str:
+    """MISSING at 0, THIN under 90% of *expected* (whole numbers), else OK."""
+    if count == 0:
+        return "MISSING"
+    return "THIN" if 10 * count < 9 * expected else "OK"
+
+
+def session_minute_readings(ts, inserted_at, schedule) -> list[SessionReading]:
+    """Count each session's distinct regular-hours minutes among stored rows.
+
+    *schedule* is the frame :func:`session_schedule` returns (index the session
+    date, ``market_open`` and ``market_close`` aware). One reading per row of
+    it, in its order. This function reads no calendar: the caller fetches the
+    schedule, so a calendar failure and a defect here stay different errors.
+
+    Regular hours run from the session's open to before its close, as the
+    schedule gives them, so a half day expects 210 minutes and not 390. A
+    minute is a whole-minute offset from the open; two rows inside one minute
+    count once.
+    """
+    import numpy as np
+    import pandas as pd
+
+    inst = _stored_instants(ts, name="ts")
+    proven = proven_true_utc(inst, inserted_at)
+    unproven = ~proven
+    inst_ns = inst.as_unit("ns").asi8
+    # The same stored clock read as a naive wall time, for the label reading.
+    raw_ns = inst.tz_localize(None).as_unit("ns").asi8  # tz-ok: the raw clock label
+
+    readings = []
+    for day, opened, closed in zip(
+            schedule.index, schedule["market_open"], schedule["market_close"]):
+        bounds = pd.DatetimeIndex([opened, closed]).tz_convert("UTC").as_unit("ns")
+        open_ns, close_ns = (int(v) for v in bounds.asi8)
+        expected = (close_ns - open_ns) // _MINUTE_NS
+        if expected <= 0:
+            raise ValueError(f"session {day} closes at or before its open")
+        # Naive against naive: no wall time is localized, so a row stored in a
+        # clock-change hour cannot raise.
+        wall_open_ns, wall_close_ns = (
+            int(v) for v in utc_to_eastern_naive(bounds).as_unit("ns").asi8)
+
+        true_off = (inst_ns - open_ns) // _MINUTE_NS
+        in_true = (inst_ns >= open_ns) & (inst_ns < close_ns)
+        label_off = (raw_ns - wall_open_ns) // _MINUTE_NS
+        in_label = (raw_ns >= wall_open_ns) & (raw_ns < wall_close_ns) & (label_off < expected)
+
+        p = np.unique(true_off[in_true & proven])
+        ut = np.unique(true_off[in_true & unproven])
+        ul = np.unique(label_off[in_label & unproven])
+        counts = (
+            len(np.union1d(p, ut)),
+            len(np.union1d(p, ul)),
+            len(np.union1d(p, np.intersect1d(ut, ul))),
+        )
+        classes = {_minute_class(n, int(expected)) for n in counts}
+        readings.append(SessionReading(
+            session=pd.Timestamp(day).date(),
+            expected=int(expected),
+            true_utc=counts[0],
+            eastern_label=counts[1],
+            both=counts[2],
+            exact=len(ut) == 0 and len(ul) == 0,
+            status=classes.pop() if len(classes) == 1 else "UNDETERMINED",
+        ))
+    return readings
+
+
+def place_stored_rows(ts, volume, inserted_at):
+    """Each stored row's UTC instant, by proof before inference.
+
+    Returns ``(instants, keep, proven)``, one entry per input row, in input
+    order: ``instants`` an aware-UTC DatetimeIndex, ``keep`` and ``proven``
+    boolean arrays.
+
+    A proven row (:func:`proven_true_utc`) is read at its stored instant,
+    whatever the other rows of its date look like. Any other row is placed by
+    :func:`stored_intraday_to_eastern`, run once over all the rows handed in so
+    its rule sees each date entire. Hand in a whole window (a month), never one
+    session's slice of it.
+
+    When two rows land on one instant, one is kept: a proven row over one that
+    is not, and between two that are not proven the one the resolver keeps.
+
+    Limit, by construction: rows that are not proven sit where the resolver
+    puts them, and it can put a whole flat-volume session stored under both
+    conventions on the wrong minutes (FEAT-DATA-001, Design F). ``proven``
+    says which rows that cannot have happened to.
+    """
+    import numpy as np
+    import pandas as pd
+
+    inst = _stored_instants(ts, name="ts")
+    proven = proven_true_utc(inst, inserted_at)
+    wall, resolver_keep = stored_intraday_to_eastern(inst, volume)
+    # The resolver either converted a row or read its raw clock as a label; a
+    # row whose wall time is not the converted one was read as a label.
+    as_label = np.asarray(wall != utc_to_eastern_naive(inst))
+    moved = as_label & ~proven
+    placed_ns = inst.as_unit("ns").asi8.copy()
+    if moved.any():
+        # Only label-read rows go back through the zone: a converted row's
+        # wall time can be an ambiguous hour, and its instant is already known.
+        placed_ns[moved] = eastern_index_to_utc(wall[moved]).as_unit("ns").asi8
+    instants = pd.DatetimeIndex(placed_ns, tz="UTC")
+
+    pos = range(len(inst))
+    rank = pd.DataFrame(
+        {"t": placed_ns, "unproven": ~proven, "dropped": ~np.asarray(resolver_keep)},
+        index=pos)
+    keep = ~rank.sort_values(
+        ["t", "unproven", "dropped"], kind="stable").duplicated("t").reindex(pos)
+    return instants, keep.to_numpy(), proven
+
+
+# Every row month M can hold, in either convention, lies in
+#   [M-01 02:00Z, (M+1)-01 02:00Z)
+#   * Eastern-labelled rows: raw labels 04:00-20:00 on each day of M.
+#   * True-UTC rows: 04:00 ET on the 1st (08:00Z EDT / 09:00Z EST) through
+#     the 20:00 ET bar on the last day (00:00Z EDT / 01:00Z EST on the next 1st).
+#     AV stores a bar AT 20:00 ET; the window must include it (code review C1).
+# and no neighbouring month's rows do: M-1's true-UTC rows end at 01:00Z on
+# the 1st of M; M+1's labelled rows start at 04:00Z on its 1st. Any boundary
+# in (01:00Z, 04:00Z] works; 02:00Z leaves an hour either side.
+# tests/gcp/test_intraday_replace_months.py checks this across DST changes.
+_INTRADAY_WINDOW_HOUR_UTC = 2
+
+
+def intraday_month_window(year: int, month: int) -> tuple[datetime, datetime]:
+    """UTC ``[start, end)`` holding every stored row of (year, month) in either
+    convention: ``[M-01 02:00Z, (M+1)-01 02:00Z)``."""
+    start = datetime(year, month, 1, _INTRADAY_WINDOW_HOUR_UTC, tzinfo=UTC)
+    ny, nm = (year + 1, 1) if month == 12 else (year, month + 1)
+    return start, datetime(ny, nm, 1, _INTRADAY_WINDOW_HOUR_UTC, tzinfo=UTC)
 
 
 # -- market dates and session windows ----------------------------------------
