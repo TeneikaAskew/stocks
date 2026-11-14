@@ -232,7 +232,6 @@ def stubbed_run(monkeypatch):
     })
     watch = MagicMock()
     with patch.object(mod, "av_daily_full", return_value=daily), \
-         patch.object(mod, "av_intraday_month", return_value=pd.DataFrame()), \
          patch.object(mod, "compute_indicators_for_full_range", return_value=0), \
          patch.object(mod, "compute_indicators_for_dates"), \
          patch.object(mod, "add_to_watchlist", watch), \
@@ -269,6 +268,92 @@ def test_watchlist_add_opt_in_is_case_insensitive(stubbed_run, monkeypatch, valu
     monkeypatch.setenv("BACKFILL_ADD_TO_WATCHLIST", value)
     assert mod.run() == 0
     assert watch.call_count == (1 if opted_in else 0), (value, watch.call_args_list)
+
+
+# ── The job fetches and writes no 1-minute bars (FEAT-DATA-001) ──────────
+#
+# Owner's rule, 2026-11-13: 1-minute bars reach market_data_intraday only
+# through the two fetcher modules. This job used to pull a whole month of
+# them from AlphaVantage per month touched and upsert about 20,000 rows; it
+# now reads the bars the table already holds for its premarket step and
+# says so once per run.
+
+NO_BAR_FETCH_LINE = (
+    "1-min bars are not fetched by this job; premarket context reads market_data_intraday")
+
+
+def test_run_fetches_and_writes_no_one_minute_bars(monkeypatch, caplog):
+    """run() sends the daily request (and the news request when asked) and
+    nothing else, and upserts market_data_daily and nothing else. The vendor
+    is answered for TIME_SERIES_INTRADAY too, so code that still asked for
+    bars would run to its end and fail here on what it sent and wrote, not
+    on a vendor error."""
+    import logging
+
+    import gcp.backfill_ticker as mod
+
+    monkeypatch.setenv("BACKFILL_TICKER", "amd")
+    monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "k")
+    monkeypatch.setenv("BACKFILL_DATES", "2026-04-24")
+    monkeypatch.setenv("BACKFILL_ADD_TO_WATCHLIST", "false")
+
+    def daily_bar(close):
+        return {"1. open": "100.0", "2. high": "101.0", "3. low": "99.0",
+                "4. close": str(close), "5. adjusted close": str(close),
+                "6. volume": "1000"}
+
+    answers = {
+        "TIME_SERIES_DAILY_ADJUSTED": {"Time Series (Daily)": {
+            "2026-04-23": daily_bar(100.5), "2026-04-24": daily_bar(100.7)}},
+        "NEWS_SENTIMENT": {"feed": []},
+        "TIME_SERIES_INTRADAY": {"Time Series (1min)": {"2026-04-24 09:30:00": {
+            "1. open": "100.0", "2. high": "100.1", "3. low": "99.9",
+            "4. close": "100.05", "5. volume": "500"}}},
+    }
+
+    def refuse_watchlist(ticker):
+        raise AssertionError(f"add_to_watchlist({ticker!r}) called with the variable set to false")
+
+    for include_news, expected in (
+            ("false", ["TIME_SERIES_DAILY_ADJUSTED"]),
+            ("true", ["TIME_SERIES_DAILY_ADJUSTED", "NEWS_SENTIMENT"])):
+        monkeypatch.setenv("BACKFILL_INCLUDE_NEWS", include_news)
+        caplog.clear()
+        seen: list[str] = []
+        written: list[tuple] = []
+
+        def fake_get(url, params=None, **kw):
+            seen.append(params["function"])
+            response = MagicMock()
+            response.json.return_value = answers[params["function"]]
+            return response
+
+        full_range, per_date = MagicMock(return_value=0), MagicMock()
+        with patch.object(mod.requests, "get", side_effect=fake_get), \
+             patch("gcp.database.upsert_dataframe",
+                   side_effect=lambda frame, table, *a, **k: written.append((table, frame))), \
+             patch.object(mod, "add_to_watchlist", refuse_watchlist), \
+             patch.object(mod, "compute_indicators_for_full_range", full_range), \
+             patch.object(mod, "compute_indicators_for_dates", per_date), \
+             caplog.at_level(logging.INFO, logger="backfill-ticker"):
+            assert mod.run() == 0
+
+        tables = [table for table, _frame in written]
+        assert seen == expected, (include_news, seen, tables)
+        assert "TIME_SERIES_INTRADAY" not in seen
+        assert tables == ["market_data_daily"], (include_news, tables)
+        daily = written[0][1]
+        assert list(daily["date"]) == [date(2026, 4, 23), date(2026, 4, 24)]
+        assert list(daily["ticker"]) == ["AMD", "AMD"]
+        assert list(daily["data_source"]) == ["alphavantage", "alphavantage"]
+        said = [r for r in caplog.records
+                if r.levelno == logging.INFO and r.getMessage() == NO_BAR_FETCH_LINE]
+        assert len(said) == 1, [r.getMessage() for r in caplog.records]
+        full_range.assert_called_once_with("AMD")
+        # the date and its prior weekday
+        per_date.assert_called_once_with("AMD", [date(2026, 4, 23), date(2026, 4, 24)])
+
+    assert not hasattr(mod, "av_intraday_month")
 
 
 def test_a_non_string_vendor_timestamp_is_dropped_not_raised(caplog):
