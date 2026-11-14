@@ -712,6 +712,10 @@ def get_catalyst_snapshot(
             logger.warning("snapshot section failed: %s", exc)
             return []
 
+    # cutoff and window_start are Eastern dates and published_ts is an
+    # instant, so the window is [start 00:00 Eastern, cutoff + 1 day 00:00
+    # Eastern). Casting the dates to timestamptz reads them as UTC midnight
+    # and drops the cutoff day's evening articles (CLAUDE.md 3.9).
     news = _safe(lambda: _df_to_records(query_to_dataframe(
         """
         SELECT published_ts, title, url, source,
@@ -719,8 +723,8 @@ def get_catalyst_snapshot(
                topics
         FROM news_sentiment
         WHERE ticker = :tk
-          AND published_ts <= CAST(:cutoff AS timestamptz) + INTERVAL '23 hours 59 minutes'
-          AND published_ts >= CAST(:start AS timestamptz)
+          AND published_ts < ((CAST(:cutoff AS date) + 1)::timestamp AT TIME ZONE 'America/New_York')
+          AND published_ts >= (CAST(:start AS date)::timestamp AT TIME ZONE 'America/New_York')
         ORDER BY published_ts DESC
         LIMIT 50
         """,

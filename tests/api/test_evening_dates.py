@@ -128,6 +128,34 @@ def test_catalyst_snapshot_cutoff(monkeypatch, catalyst_client, instant, eastern
     assert {p["cutoff"] for p in bound} == {"2026-11-01"}
 
 
+
+def test_catalyst_snapshot_news_window_is_the_eastern_day(monkeypatch, catalyst_client):
+    """The cutoff is an Eastern date, so the news window must end at the
+    Eastern midnight after it. Ending it at 23:59 UTC of that date dropped
+    every article published after 19:00 EST (20:00 EDT) on the cutoff day,
+    which is the evening the request is made in."""
+    freeze_market_clock(monkeypatch, EVENING, catalysts, stdlib=True)
+    news_sql = []
+
+    def recording_query(sql, params=None):
+        if "FROM news_sentiment" in sql:
+            news_sql.append(" ".join(sql.split()))
+        return pd.DataFrame()
+
+    monkeypatch.setattr(database, "query_to_dataframe", recording_query)
+    response = catalyst_client.get("/api/catalysts/asof/SPY")
+
+    assert response.status_code == 200, response.text
+    assert len(news_sql) == 1
+    sql = news_sql[0]
+    assert ("published_ts < ((CAST(:cutoff AS date) + 1)::timestamp "
+            "AT TIME ZONE 'America/New_York')") in sql
+    assert ("published_ts >= (CAST(:start AS date)::timestamp "
+            "AT TIME ZONE 'America/New_York')") in sql
+    assert "23 hours 59 minutes" not in sql
+    assert "AS timestamptz" not in sql
+
+
 # ── options grid ────────────────────────────────────────────────────────────
 
 
