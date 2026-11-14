@@ -45,7 +45,6 @@ import pandas as pd
 import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from lib.eastern_time import eastern_index_to_utc
 
 from lib.logging_config import setup_logging
 setup_logging()
@@ -93,26 +92,10 @@ def upload_raw_parquets(data_dir: Path, bucket: str, dry_run: bool):
 
 # ── Column normalization ───────────────────────────────────────────────────────
 
-COLUMN_MAP = {
-    'Last': 'close', 'last': 'close', 'Adj Close': 'close', 'adj_close': 'close',
-    'Close': 'close', 'Open': 'open', 'High': 'high', 'Low': 'low',
-    'Volume': 'volume', 'open': 'open', 'high': 'high', 'low': 'low',
-    'volume': 'volume',
-}
-
 # add_all_indicators() column name → market_data_daily SQL column name.
 # Single source of truth lives in gcp/database.py. Imported here so the
 # one-shot migrator and the live fetcher can never drift on rename.
 from gcp.database import DAILY_INDICATOR_TO_SQL_COLUMN as _DAILY_IND_TO_SQL
-
-
-def _normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
-    """Rename columns to lowercase SQL-friendly names."""
-    df = df.copy()
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(-1)
-    df = df.rename(columns={k: v for k, v in COLUMN_MAP.items() if k in df.columns})
-    return df
 
 
 # ── Market data daily indicators backfill ─────────────────────────────────────
@@ -190,76 +173,6 @@ def backfill_daily_indicators(data_dir: Path, dry_run: bool):
             log.info("  [DRY RUN] would upsert %d rows for %s", len(out_df), ticker)
 
     log.info("Daily indicators backfill complete.")
-
-
-# ── Market data intraday ──────────────────────────────────────────────────────
-
-def migrate_market_data_intraday(data_dir: Path, dry_run: bool):
-    """Load combined 1-min Parquet files into ``market_data_intraday``.
-
-    Source: ``data/<ticker>/intraday/<ticker>_av_1min_combined.parquet``
-    Target: Cloud SQL ``market_data_intraday``
-    Strategy: full-table-per-ticker replace — DELETEs every prior row for
-    the (ticker, interval='1min') key before bulk_insert. Safe because the
-    combined Parquet is itself the source of truth for AV historical
-    intraday; idempotent re-runs converge to the same row set.
-    Timestamps in the Parquet may be tz-naive ET or already-UTC; both are
-    normalized to UTC tz-aware here.
-    """
-    from gcp.database import bulk_insert_dataframe, execute_sql
-
-    log.info("Migrating market_data_intraday (1-min combined files)...")
-
-    for ticker_lower in TICKERS:
-        combined = data_dir / ticker_lower / 'intraday' / f'{ticker_lower}_av_1min_combined.parquet'
-        if not combined.exists():
-            log.info("  %s: no combined parquet, skipping", ticker_lower.upper())
-            continue
-
-        log.info("  Loading %s...", combined)
-        try:
-            df = pd.read_parquet(combined)
-            df = _normalize_ohlcv(df)
-
-            # Normalize timestamp
-            # The combined parquet carries naive Eastern AV stamps. An aware
-            # index is already an instant and is only converted. There is no
-            # string-column fallback: pd.to_datetime(..., utc=True) on naive
-            # Eastern text would stamp wall time as UTC (CLAUDE.md 3.9).
-            if not isinstance(df.index, pd.DatetimeIndex):
-                raise ValueError(f"{combined}: expected a DatetimeIndex of bar stamps")
-            if df.index.tz is None:
-                df['ts'] = eastern_index_to_utc(df.index)
-            else:
-                df['ts'] = df.index.tz_convert('UTC')
-
-            df['ticker'] = ticker_lower.upper()
-            df['interval'] = '1min'
-            df['data_source'] = 'alphavantage'
-
-            keep = ['ticker', 'interval', 'ts', 'open', 'high', 'low', 'close', 'volume', 'data_source']
-            df = df[[c for c in keep if c in df.columns]]
-            df = df.drop_duplicates(subset=['ticker', 'interval', 'ts'])
-
-            log.info("  %s: %d rows", ticker_lower.upper(), len(df))
-
-            if not dry_run:
-                # Truncate existing rows for this ticker/interval before bulk insert
-                execute_sql(
-                    "DELETE FROM market_data_intraday WHERE ticker = :t AND interval = :i",
-                    {'t': ticker_lower.upper(), 'i': '1min'}
-                )
-                bulk_insert_dataframe(df, 'market_data_intraday', chunksize=5000)
-                log.info("  ✓ %s intraday loaded", ticker_lower.upper())
-            else:
-                log.info("  [DRY RUN] would load %d rows for %s", len(df), ticker_lower.upper())
-
-        # AUDIT-2026-05-13: silent fallback — a per-ticker failure (including the
-        # ValueError eastern_index_to_utc raises on a bad or ambiguous stamp, and a
-        # failed insert after the DELETE above, which is not atomic) is logged and
-        # the migration carries on reporting success. One-shot manual CLI only.
-        except Exception as e:
-            log.warning("  ✗ %s: %s", ticker_lower.upper(), e)
 
 
 # ── AV historical options ─────────────────────────────────────────────────────
@@ -770,7 +683,6 @@ TABLE_FUNCS = {
     'gcs_raw':                    upload_raw_parquets,
     'market_data_daily_av':       migrate_market_data_daily_av,    # AV 20yr OHLCV backfill
     'daily_indicators':           backfill_daily_indicators,        # compute indicators on existing rows
-    'market_data_intraday':       migrate_market_data_intraday,
     'etf_options_snapshots':      migrate_etf_options,              # Yahoo intraday snapshots
     'av_options':                 migrate_av_options,               # AV EOD historical options (data_source='alphavantage')
     'earnings_options_snapshots': migrate_earnings_options,
@@ -816,7 +728,6 @@ def main():
             upload_raw_parquets(data_dir, bucket, dry)
 
         if not args.skip_sql:
-            migrate_market_data_intraday(data_dir, dry)
             migrate_etf_options(data_dir, dry)
             migrate_earnings_options(data_dir, dry)
             migrate_trades(data_dir, dry)
