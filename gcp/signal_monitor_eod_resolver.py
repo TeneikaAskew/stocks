@@ -63,7 +63,7 @@ from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from lib.eastern_time import ET, eastern_index_to_utc, session_close
+from lib.eastern_time import ET, eastern_index_to_utc, market_today, session_close
 
 import pandas as pd
 import requests
@@ -166,6 +166,40 @@ class EODResolver:
         df = query_to_dataframe(sql, params)
         logger.info("Found %d unresolved alerts (since=%s)", len(df), since or "all")
         return df
+
+    # ── 1b. Find closed alerts the resolver itself resolved ───────────
+
+    # The alerts a bounded re-resolve may rewrite (--re-resolve). An exit this
+    # job wrote sits on a whole minute: a bar's minute or the session close.
+    # The live monitor's exit watcher stamps the clock, with microseconds, and
+    # its exits are observations that the bars do not replace. The live trade
+    # of each alert is read in the same query, so the stored exit of the trade
+    # is known before anything is written.
+    RESOLVED_ALERTS_SQL = """
+        SELECT a.ticker, a.alert_ts, a.alert_date, a.direction, a.price_at_signal, a.target_price,
+               a.time_stop_minutes, a.exit_ts, a.exit_reason, a.exit_price, a.exit_return_pct,
+               a.exit_recompute_run,
+               t.entry_time IS NOT NULL AS trade_found, t.exit_time AS trade_exit_time,
+               t.exit_price AS trade_exit_price, t.exit_reason AS trade_exit_reason,
+               t.return_pct AS trade_return_pct, t.exit_recompute_run AS trade_exit_recompute_run
+          FROM signal_alerts a
+          LEFT JOIN trades t
+            ON t.ticker = a.ticker AND t.entry_time = a.alert_ts AND t.run_kind = 'live'
+         WHERE a.run_kind = 'live' AND a.is_open IS FALSE AND a.exit_ts IS NOT NULL
+           AND a.exit_ts = date_trunc('minute', a.exit_ts)
+           AND a.ticker = ANY(:tickers) AND a.alert_date >= :first AND a.alert_date <= :last
+         ORDER BY a.alert_date, a.ticker, a.alert_ts
+    """
+
+    def find_resolved_alerts(self, tickers: list[str], first, last) -> pd.DataFrame:
+        """The closed live alerts of *tickers* in ``[first, last]`` whose exit
+        this job wrote, each with its live trade's stored exit.
+
+        One strict query: an outage raises and is never "nothing to do".
+        """
+        from gcp.database import query_to_dataframe_strict
+        return query_to_dataframe_strict(
+            self.RESOLVED_ALERTS_SQL, {"tickers": tickers, "first": first, "last": last})
 
     # ── 2. Replay exit logic per-bar ──────────────────────────────────
 
@@ -544,6 +578,19 @@ class EODResolver:
         except Exception as e:
             logger.warning("EOD digest Discord post failed: %s", e)
 
+    # ── 4b. Bounded re-resolve (--re-resolve) ─────────────────────────
+
+    def re_resolve(self, tickers: list[str], first, last, *, commit: bool,
+                   run_id: str, report_dir: Optional[str]) -> int:
+        """Re-resolve the resolver-written exits of *tickers* in
+        ``[first, last]`` and return the exit code."""
+        alerts = self.find_resolved_alerts(tickers, first, last)
+        logger.info("re-resolve %s..%s tickers=%s candidates=%d commit=%s run_id=%s",
+                    first, last, " ".join(tickers), len(alerts), commit, run_id)
+        if alerts.empty:
+            return 0
+        raise NotImplementedError("the day read of the re-resolve is not written yet")
+
     # ── 5. Orchestration ──────────────────────────────────────────────
 
     def run(self, since: Optional[str] = None) -> dict:
@@ -621,6 +668,62 @@ class EODResolver:
         }
 
 
+def _recompute_main(args) -> int:
+    """--re-resolve and --revert-run. Returns 2, with the reason on one line,
+    for anything refused before a query or a write."""
+    from gcp import bar_recompute
+
+    try:
+        if not (args.re_resolve or args.revert_run):
+            raise bar_recompute.Refusal(
+                "--from, --to, --tickers, --commit and --report-dir belong to "
+                "--re-resolve or --revert-run")
+        if args.re_resolve and (args.since or args.backfill or args.revert_run):
+            raise bar_recompute.Refusal(
+                "--re-resolve does not combine with --since, --backfill or --revert-run")
+        if args.revert_run and (args.first or args.last or args.tickers
+                                or args.since or args.backfill):
+            raise bar_recompute.Refusal(
+                "--revert-run takes a run id and no --from, --to, --tickers, "
+                "--since or --backfill")
+        window = None
+        if args.re_resolve:
+            window = bar_recompute.parse_window(
+                args.tickers, args.first, args.last, market_today())
+        resolver = EODResolver()
+        if args.re_resolve:
+            # Every stored exit reason is one only `target_stop` produces.
+            # Re-resolving under another mode would change outcomes for a
+            # reason that is not the bars.
+            for direction in ('call_exit_mode', 'put_exit_mode'):
+                mode = getattr(resolver.exit_cfg, direction, 'target_stop')
+                if mode != 'target_stop':
+                    raise bar_recompute.Refusal(
+                        f"exit.{direction} is {mode!r}; stored exits are re-resolved "
+                        "only under 'target_stop'")
+        bar_recompute.require_report_destination(args.report_dir)
+    except bar_recompute.Refusal as refusal:
+        logger.error("refused: %s", refusal)
+        return 2
+
+    # The first query. The selection reads the marker columns, so a database
+    # without them is refused in a dry run too.
+    missing = bar_recompute.schema_missing()
+    if missing:
+        logger.error(
+            "refused: the database does not hold %s; apply gcp/schema.sql first",
+            ", ".join(missing))
+        return 2
+
+    run_id = bar_recompute.run_id()
+    if args.revert_run:
+        raise NotImplementedError("--revert-run is not written yet")
+    tickers, first, last = window
+    return resolver.re_resolve(
+        tickers, first, last, commit=args.commit, run_id=run_id,
+        report_dir=args.report_dir)
+
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -637,7 +740,44 @@ def main() -> int:
         '--backfill', action='store_true',
         help='Informational flag for one-shot backfill runs (same query as default)',
     )
+    parser.add_argument(
+        '--re-resolve', action='store_true',
+        help='Re-resolve closed alerts whose exit this job wrote, from stored bars '
+             'proven true UTC, for SPY, QQQ and IWM in [--from, --to]. A dry run '
+             'that writes a report unless --commit is given.',
+    )
+    parser.add_argument(
+        '--from', dest='first', metavar='YYYY-MM-DD',
+        help='First alert date of --re-resolve',
+    )
+    parser.add_argument(
+        '--to', dest='last', metavar='YYYY-MM-DD',
+        help="Last alert date of --re-resolve; before today's Eastern date",
+    )
+    parser.add_argument(
+        '--tickers', metavar='"SPY QQQ"',
+        help='One space-separated value for --re-resolve (default: SPY QQQ IWM, '
+             'which is also every ticker allowed)',
+    )
+    parser.add_argument(
+        '--commit', action='store_true',
+        help='With --re-resolve or --revert-run: write. Without it nothing is written '
+             'to the database.',
+    )
+    parser.add_argument(
+        '--revert-run', metavar='RUN_ID',
+        help='Write back the exits a committed --re-resolve run replaced, from its '
+             'ledger rows. A dry run unless --commit is given.',
+    )
+    parser.add_argument(
+        '--report-dir', metavar='PATH',
+        help='Write rows.csv and summary.json under PATH instead of the bucket',
+    )
     args = parser.parse_args()
+
+    if (args.re_resolve or args.revert_run or args.first or args.last
+            or args.tickers or args.commit or args.report_dir):
+        return _recompute_main(args)
 
     if args.backfill and not args.since:
         # Backfill = "resolve everything currently unresolved". Equivalent
