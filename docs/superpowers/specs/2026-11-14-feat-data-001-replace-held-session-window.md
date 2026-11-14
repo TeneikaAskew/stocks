@@ -3,6 +3,7 @@ feat_id: FEAT-DATA-001
 req_ids: [REQ-CAP-001, REQ-CAP-002, REQ-DATA-001]
 issues: [1190]
 canvases: []
+site_source_notes: [CHARTS-01, DASHBOARD-04, JOURNAL-01, LIVE-08]
 done_when:
   - "tests/gcp/test_intraday_replace_months.py::test_label_copies_at_true_keys_do_not_make_a_refetch_short passes: one session whose refetch holds 842 bars is stored as those 842 true-UTC rows, plus 206 Eastern-labelled rows at UTC 04:00 to 07:59, plus 34 Eastern-labelled copies of refetched bars at UTC 08:00 to 10:59 on keys no refetched bar uses; replace_month returns dry_run without --commit and replaced with it, the frame handed to the swap holds the 842 bars, and the result reports label_copies=34 and label_dropped=206 (on main the same rows return incomplete_refetch with missing ['<day> (842/876)']); ::test_label_region_rows_alone_never_made_a_refetch_short holds the same session without the 34 copies and returns dry_run before and after the change"
   - "tests/gcp/test_intraday_replace_months.py::test_previous_months_late_bars_are_spared_and_not_asked_of_this_month passes: with bars of 2018-02-28 at 21:04, 22:10 and 23:37 Eastern stored at their true keys, replace_month for 2018-03 returns replaced, reports carry_in=3, and calls the swap with those three keys in spare_ts and none of them in the frame (on main: incomplete_refetch, missing ['2018-02-28 (0/2)']); ::test_a_months_own_late_bars_past_the_window_are_written passes: replace_month for 2018-02 with a refetch that holds those three bars returns replaced, reports tail=3, and makes a second swap over [2018-03-01 02:00Z, 2018-03-01 04:38Z) whose frame is the three bars and whose spare_ts holds every other key stored in that range (on main a committed run raises ValueError '3 row(s) fall outside'); a refetched row at or after the next month's Eastern midnight is still refused"
@@ -13,7 +14,7 @@ done_when:
   - "tests/gcp/test_intraday_replace_months.py::test_a_month_over_the_uncounted_bound_is_refused passes: REPLACE_MAX_UNCOUNTED_SHARE equals 0.25; a month whose uncounted rows are 26% of its stored rows returns uncounted_over_bound with and without --commit, nothing is handed to the swap, run_replace_months prints its RETRY line and exits 1; the same month at 25% is replaced"
   - "tests/gcp/test_intraday_replace_months.py::test_the_swap_spares_the_listed_keys passes on the mocked engine the file already uses (the lock statement and the DELETE both exclude the keys of spare_ts, a frame that holds a spared key is refused before the transaction opens, and the delete-ratio check counts the rows deleted), and tests/integration/test_intraday_replace_spare.py passes in the integration-tests CI job on real Postgres: a window of ten rows swapped with two keys in spare_ts leaves those two rows equal in every column, inserted_at included, deletes the other eight and inserts the frame"
   - "make test passes on the PR head; lib/eastern_time.py, platform/api, gcp/deploy.sh and the files under gcp/queries/ are not in the PR's diff; month_replace_window, REPLACE_SHORT_TOLERANCE and REPLACE_MAX_DELETE_RATIO are unchanged; the existing cases of tests/gcp/test_intraday_replace_months.py keep every assertion they make and change only where they stub the stored-row read, with each changed line listed in the PR body"
-  - "02-FEATURE-CATALOG FEAT-DATA-001 record shows Status and Last reviewed for this PR, 12-PR-ISSUE-TRACEABILITY lists it, the branch run of python3 scripts/maintenance/docs_audit.py reports nothing that origin/main does not, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
+  - "02-FEATURE-CATALOG FEAT-DATA-001 record shows Status and Last reviewed for this PR, 12-PR-ISSUE-TRACEABILITY lists it, the implementation-source notes of 03-SITE-TRACEABILITY.md hold a (FEAT-DATA-001, component) row for each of the four declared components that begins with the current source hash (a row an earlier change left is extended: the new hash and this change's prose first, then 'Earlier:' and the earlier prose unchanged), docs/review-evidence/site-source-snapshot.json is regenerated and scripts/maintenance/doc_source_snapshot.py verify accepts it, the generated inventory blocks are re-rendered with scripts/maintenance/doc_inventory.py and tests/scripts/test_check_generated_docs.py passes, the branch run of python3 scripts/maintenance/docs_audit.py reports nothing that origin/main does not, and python3 scripts/gate/spec_gate.py --pr origin/main passes"
 status: approved
 supersedes: null
 ---
@@ -39,6 +40,8 @@ supersedes: null
 | 3. Every run prints per month what it would remove, by UTC hour, and a committed run refuses a month over a stated share | Adopted, for the rows that are not counted (Design 6). Bound 25% |
 | 4. A committed replace is not retried blindly | Adopted (Design 7, Close-out step 3) |
 | 5. Out of scope: the rebuild of the 15 `DERIVED_TS_TABLES`, the recompute tools, other tickers in the runbook | Adopted (Non-goals) |
+
+- Amended on 2026-11-14, after the implementation was written and before its pull request, by the delivery session under the same delegation: the `site_source_notes` declaration and section 11, the last condition of Design 3, the `n/a` and `tail_not_written` listing rules of Design 6, and the tail digest read in Capacity. No decision above and no `done_when` test changes; the records item now names the four site notes.
 
 ## Capability
 
@@ -124,7 +127,8 @@ supersedes: null
 - Rows are placed once over the whole window by `stored_intraday_to_eastern`, as today, and one row is kept per Eastern minute.
 - A kept row counts toward its session unless one of two things holds:
   - it is a carry-in;
-  - the resolver read it as a true instant, the refetch holds no bar at its key, and it is a label copy.
+  - the resolver read it as a true instant, the refetch holds no bar at its key, it is a label copy, and it is the only stored row on its Eastern minute.
+- The last condition, added on 2026-11-14 while the change was built: a copy that took its Eastern minute from another stored row took it from the Eastern-label row of the bar that belongs on that minute, which the vendor returned when the labels were written and does not return now. That label row is then the only stored copy of a real bar, so its minute stays counted, as it is on `main`. Without the condition, a session labelled with bars from 04:00 whose refetch starts at 04:30 is replaced with thirty real bars deleted and 6% of the window uncounted; `main` refuses it (931/961), and so does this design. The measured IWM shape has no such row: its 34 copies sit on minutes the vendor never had a bar for, so no number in this spec changes.
 - Every row the resolver reads as an Eastern label counts as today. So a month held only under the label has today's floor (Problem 3), and the answer to "is the true-reading count complete" is never needed.
 - The guard's formula is unchanged: a session is missing when the refetch holds fewer bars for it than `held - int(held * REPLACE_SHORT_TOLERANCE)`. A missing session leaves the month untouched.
 - Both sides are counted over the window and nothing else. `held` comes from the window's stored rows, so the refetch's count for a session takes only the refetched bars whose UTC key is inside the window. The tail (Design 5) is counted on neither side: its stored rows lie outside the snapshot, and its swap deletes only keys the refetch returns. Counting it for the refetch alone would let a returned late bar stand in for a window bar the refetch lacks. With bars of 2018-02-28 stored at 09:30, 20:59 and 21:04 Eastern and a refetch holding only the last two, February's window holds two and the refetch one inside it, so the month is `incomplete_refetch`; counted with the tail it read two against two and the main swap deleted 09:30.
@@ -157,6 +161,8 @@ supersedes: null
   - Measured maximum with IWM's label copies added, from stored rows and not from a refetch: IWM 2026-08, 3,753 + 1,313 = 5,066 of 22,503, 22.51%.
   - A session with a bar on every minute, stored in both conventions, gives 240 of 1,201, 19.98%, and 300 of 1,261, 23.79%, in winter.
   - 25% of 22,503 is 5,625, so IWM 2026-08 has 559 rows of room. The deployed dry run prints the real shares before anything is written (Close-out step 2).
+- A figure that was not worked out prints `n/a`, never 0: a month refused before it was classified prints `UNCOUNTED` with `n/a` in every field but `rows`.
+- A month whose window swap committed and whose tail swap did not (`tail_not_written`, Design 5) is listed as `REPLACED`, since its window was rewritten, and as `RETRY`, since its late bars were not.
 - `REPLACE_MAX_DELETE_RATIO` stays as the backstop it is.
 - The constant is set from these three tickers. A ticker stored in both conventions with no bars before 08:00 Eastern can exceed it; such a month is refused, which is the safe side, and the constant is re-derived before the tool is run for it.
 
@@ -196,10 +202,23 @@ supersedes: null
 
 - Stored rows in the 423 windows: 6,877,010 (SPY 2,506,181, QQQ 2,340,937, IWM 2,029,892; db-query-hhw6t).
 - The one timed month cleared rows in one derived table. Months from 2016 on also hold rows in the feature and level tables, and a month's 15 derived DELETEs over those were not timed. The first months of Close-out step 4 give that number before the lists are cut.
-- This change adds no round trip to a dry run. To a committed run it adds one key read and one transaction for each month with a tail: 23 of 423 as measured.
+- This change adds no round trip to a dry run. To a committed run it adds, for every month, one digest read of the tail strip taken before the refetch (Design 2), and for each month with a tail one more digest read under the lock and one transaction: 23 of 423 as measured.
 - The classification is in memory: one dictionary of at most about 21,000 refetched bars per month.
 - No per-row statement. Each month commits by itself, so a failed run keeps the months already done, and the status line per month is the progress log.
 - Cost, at about $0.000018 a vCPU-second and $0.000002 a GiB-second (list prices, not re-read), 1 vCPU and 2Gi: a dry pass of one ticker is under one cent, and a committed execution that ran to the whole timeout would be about 8 cents. Nothing is scheduled.
+
+### 11. Site traceability
+
+`site_source_notes` is declared by the rule the sibling specs use (`2026-11-14-feat-data-001-recompute-after-bar-rewrite.md`, section 10): one element per changed job per page, the first Chain row of that page in `docs/product/03-SITE-TRACEABILITY.md` whose Data cell names the job.
+
+| Changed job | Dashboard | Live | Charts | Signals | AI Insights | Playbook | Journal | Admin |
+|---|---|---|---|---|---|---|---|---|
+| `fetch-alphavantage-intraday` (`--replace-months`, Design 2 to 6) | DASHBOARD-04 (`:334`) | LIVE-08 (`:430`) | CHARTS-01 (`:506`) | not named | not named | not named | JOURNAL-01 (`:1041`) | not named |
+
+- Four elements, each read on 2026-11-14 at `origin/main` 0132ef81 to name the job in its Data cell.
+- `gcp/database.py` gains `spare_ts` on `replace_rows_in_window`; its only caller with spared keys is the replace, so it adds no element.
+- Each note says what the source now does: the replace counts held and fetched over the window only, does not count an Eastern-label copy the refetch replaces, spares the previous month's late bars and writes a month's own late bars in a second swap, and prints one `UNCOUNTED` line per month. None claims a change on a page: no route and no response shape changes. What a user can see change is data, when a committed run writes; Close-out's read-only checks are its evidence.
+- This section was added after approval, in a `docs/` change of its own, because the implementation PR cannot add the declaration (product-delivery skill). Approved under the same delegation as the rest of the file.
 
 ## Close-out
 
