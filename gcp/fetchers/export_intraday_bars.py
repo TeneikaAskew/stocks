@@ -57,6 +57,9 @@ _QUERY_TIMEOUT_S = 120
 MANIFEST_VERSION = 1
 # Writes of one manifest after the first attempt, each on a fresh read.
 MANIFEST_RETRIES = 5
+# Times one month is exported whole (rows read, file uploaded, entry written)
+# before a run gives up on it because another run keeps writing the same month.
+MONTH_ATTEMPTS = 3
 
 
 def object_name(ticker: str, year: int, month: int) -> str:
@@ -73,8 +76,15 @@ class GenerationMismatch(Exception):
     """A write named the generation it expected and the object has another."""
 
 
+class MonthChanged(Exception):
+    """Another run wrote this month between this run's read and its manifest
+    write: the object is no longer the upload this run made, or the month's
+    manifest entry is no longer the one this run read. The entry in hand must
+    not be written; the month is exported again from the table."""
+
+
 class GcsBucket:
-    """The bucket, reduced to the two calls the export makes.
+    """The bucket, reduced to the three calls the export makes.
 
     ``read`` tells an absent object from a failed read: absent is ``None``,
     and every other failure raises. A helper that turned a failed read into
@@ -99,9 +109,18 @@ class GcsBucket:
             return None
         return data, self._generation(blob, name)
 
+    def generation(self, name: str) -> Optional[int]:
+        """The object's current generation (a metadata read, no download), or
+        None when it is absent. Any other failure raises."""
+        blob = self._bucket.get_blob(name)
+        if blob is None:
+            return None
+        return self._generation(blob, name)
+
     def write(self, name: str, data: bytes,
               if_generation_match: Optional[int] = None) -> int:
-        """Store *data* whole and return the new generation.
+        """Store *data* whole and return the new generation, the one the
+        upload's own response reports.
 
         With *if_generation_match* the write happens only while the object is
         at that generation (0: only while it does not exist); otherwise
@@ -310,15 +329,10 @@ def build_month(rows: pd.DataFrame, daily: pd.DataFrame, ticker: str, year: int,
     return data, entry
 
 
-def export_month(bucket, ticker: str, year: int, month: int, daily: pd.DataFrame,
-                 now_utc: datetime) -> dict:
-    """Read one ticker-month, upload its file whole, return its manifest entry.
-
-    One strict read over the month window; a failed read or upload raises.
-    The manifest is not touched here: the caller writes the entry only after
-    this returns, so a failure leaves the manifest as it was for the month.
-    A month with no row uploads nothing.
-    """
+def _upload_month(bucket, ticker: str, year: int, month: int, daily: pd.DataFrame,
+                  now_utc: datetime) -> tuple[dict, Optional[int]]:
+    """export_month, and the generation its upload returned (None when the
+    month has no row and nothing was uploaded)."""
     from gcp.database import query_to_dataframe_strict  # noqa: PLC0415
     from lib.eastern_time import intraday_month_window  # noqa: PLC0415
 
@@ -327,9 +341,22 @@ def export_month(bucket, ticker: str, year: int, month: int, daily: pd.DataFrame
         BARS_SQL, {"t": ticker, "start": start, "end": end}, timeout_s=_QUERY_TIMEOUT_S)
     data, entry = build_month(rows, daily, ticker, year, month, now_utc)
     del rows
-    if data is not None:
-        bucket.write(object_name(ticker, year, month), data)
-    return entry
+    if data is None:
+        return entry, None
+    return entry, bucket.write(object_name(ticker, year, month), data)
+
+
+def export_month(bucket, ticker: str, year: int, month: int, daily: pd.DataFrame,
+                 now_utc: datetime) -> dict:
+    """Read one ticker-month, upload its file whole, return its manifest entry.
+
+    One strict read over the month window; a failed read or upload raises.
+    The manifest is not touched here: the caller writes the entry only after
+    this returns, so a failure leaves the manifest as it was for the month.
+    A month with no row uploads nothing. *now_utc* is the time of the read:
+    it becomes the entry's ``exported_at``.
+    """
+    return _upload_month(bucket, ticker, year, month, daily, now_utc)[0]
 
 
 # -- the manifest ---------------------------------------------------------------
@@ -378,18 +405,41 @@ def read_manifest(bucket, ticker: str) -> tuple[dict, int]:
 
 
 def write_month_entry(bucket, ticker: str, month_key: str, entry: dict, doc: dict,
-                      generation: int) -> tuple[dict, int]:
+                      generation: int, *, before: Optional[dict],
+                      file_generation: Optional[int]) -> tuple[dict, int]:
     """Put one month's entry into the manifest and store it; return the
     document and generation now stored.
 
+    *doc* and *generation* are the manifest as this run read it before it
+    read the month's rows; *before* is the month's entry in that document
+    (None when it had none), and *file_generation* the generation this run's
+    upload of the month's file returned (None when the month has no row).
+
+    The entry is written only while both hold:
+
+    * the month's object is still at *file_generation*, so the entry's sha256
+      describes the bytes in the bucket and not another run's upload;
+    * the month's manifest entry is still *before*, so no other run exported
+      the month since this run read the rows.
+
+    Otherwise ``MonthChanged`` is raised and nothing is written: the caller
+    exports the month again from the table.
+
     The write names the generation *doc* was read at (0: the object must not
-    exist yet). When another run wrote in between, the manifest is read
-    again, this month's entry is put into that fresh document and the write is
-    retried, at most MANIFEST_RETRIES times; then GenerationMismatch is let
-    out. An entry another run wrote for another month is never lost.
+    exist yet). When another run wrote the manifest in between for ANOTHER
+    month, it is read again, this month's entry is put into that fresh
+    document and the write is retried, at most MANIFEST_RETRIES times; then
+    GenerationMismatch is let out. An entry another run wrote for another
+    month is never lost.
     """
     name = manifest_name(ticker)
     for attempt in range(MANIFEST_RETRIES + 1):
+        if file_generation is not None:
+            current = bucket.generation(entry["file"])
+            if current != file_generation:
+                raise MonthChanged(
+                    f"{entry['file']} is at generation {current}, this run uploaded "
+                    f"{file_generation}")
         doc["months"][month_key] = entry
         try:
             return doc, bucket.write(name, _manifest_bytes(doc),
@@ -398,6 +448,8 @@ def write_month_entry(bucket, ticker: str, month_key: str, entry: dict, doc: dic
             if attempt == MANIFEST_RETRIES:
                 raise
         doc, generation = read_manifest(bucket, ticker)
+        if doc["months"].get(month_key) != before:
+            raise MonthChanged(f"{name}: the entry for {month_key} changed")
     raise AssertionError("unreachable")  # pragma: no cover
 
 
@@ -428,14 +480,30 @@ def export_window(tickers: Sequence[str], months: Sequence[tuple[int, int]], *,
     ``{"months", "rows", "seconds"}``.
 
     Per ticker: one daily read over the span of *months*, one manifest read,
-    then per month, in order: the bars read, the file's upload, the manifest
-    write with that month's entry, one progress line. The manifest is written
-    after each month's file, each write naming the generation the one before
-    it returned, so a failed upload leaves every earlier month's file and
-    entry matching, and a rerun converges.
+    then per month, in order: the bars read, the file's upload, one check of
+    the uploaded object's generation, the manifest write with that month's
+    entry, one progress line. The manifest is written after each month's file,
+    each write naming the generation the one before it returned, so a failed
+    upload leaves every earlier month's file and entry matching, and a rerun
+    converges.
 
-    Nothing is caught: a failed read, upload or manifest write ends the run
-    with its own exception, and the manifest is untouched for the month it
+    Two runs on one month. The file's upload carries no precondition, so
+    another run can write the same month in between. A month's entry is
+    therefore written only while the object is still this run's upload and
+    the month's entry is still the one read before the rows
+    (:func:`write_month_entry`). When either fails the month is exported
+    again whole: the manifest and the rows are read again, the file uploaded
+    and the entry written. After MONTH_ATTEMPTS exports of one month that
+    another run kept overtaking, GenerationMismatch is raised.
+
+    ``exported_at`` of a month is the time its rows were read, taken just
+    before the read, so a month that was exported again carries the later
+    time. *now_utc* fixes that time for every month (tests, measurements);
+    by default it is the clock at each read. The same instant decides which
+    sessions of the month have closed.
+
+    Nothing else is caught: a failed read, upload or manifest write ends the
+    run with its own exception, and the manifest is untouched for the month it
     failed on. One ticker-month's rows are in memory at a time.
     """
     from gcp.database import query_to_dataframe_strict  # noqa: PLC0415
@@ -445,8 +513,6 @@ def export_window(tickers: Sequence[str], months: Sequence[tuple[int, int]], *,
     tickers, months = list(tickers), [tuple(m) for m in months]
     if bucket is None:
         bucket = bucket_from_env()
-    if now_utc is None:
-        now_utc = utc_now()
 
     total = len(tickers) * len(months)
     done = rows_written = 0
@@ -462,10 +528,29 @@ def export_window(tickers: Sequence[str], months: Sequence[tuple[int, int]], *,
             timeout_s=_QUERY_TIMEOUT_S)
         doc, generation = read_manifest(bucket, ticker)
         for year, month in months:
-            entry = export_month(bucket, ticker, year, month, daily, now_utc)
             month_key = f"{year:04d}-{month:02d}"
-            doc, generation = write_month_entry(
-                bucket, ticker, month_key, entry, doc, generation)
+            for attempt in range(1, MONTH_ATTEMPTS + 1):
+                # The month's entry as read before its rows are read.
+                before = doc["months"].get(month_key)
+                read_at = utc_now() if now_utc is None else now_utc
+                entry, file_generation = _upload_month(
+                    bucket, ticker, year, month, daily, read_at)
+                try:
+                    doc, generation = write_month_entry(
+                        bucket, ticker, month_key, entry, doc, generation,
+                        before=before, file_generation=file_generation)
+                    break
+                except MonthChanged as changed:
+                    if attempt == MONTH_ATTEMPTS:
+                        raise GenerationMismatch(
+                            f"{ticker} {month_key}: another run wrote this month during "
+                            f"each of {MONTH_ATTEMPTS} exports of it; its file and its "
+                            f"manifest entry may not match ({changed})") from changed
+                    log.warning(
+                        "bars redo: %s %s was written by another run in between (%s); "
+                        "exporting it again (%d/%d)",
+                        ticker, month_key, changed, attempt + 1, MONTH_ATTEMPTS)
+                    doc, generation = read_manifest(bucket, ticker)
             done += 1
             rows_written += entry["rows"]
             log.info(

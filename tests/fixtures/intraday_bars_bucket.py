@@ -18,13 +18,14 @@ from gcp.fetchers.export_intraday_bars import GenerationMismatch
 
 
 class MemoryBucket:
-    """``read`` and ``write`` as the export module's bucket protocol has them.
+    """``read``, ``write`` and ``generation`` as the export module's bucket
+    protocol has them.
 
-    ``reads`` and ``writes`` hold the object names in call order, a write that
-    failed included; ``preconditions`` holds ``(name, if_generation_match)``
-    for each write call. ``objects`` maps a name to its bytes and
-    ``generations`` to its current generation, which counts that object's
-    writes from 1.
+    ``reads``, ``writes`` and ``checks`` hold the object names in call order
+    (a write that failed included; ``checks`` are the ``generation`` calls);
+    ``preconditions`` holds ``(name, if_generation_match)`` for each write
+    call. ``objects`` maps a name to its bytes and ``generations`` to its
+    current generation, which counts that object's writes from 1.
 
     Two hooks, both unset by default:
 
@@ -39,6 +40,7 @@ class MemoryBucket:
         self.generations: dict[str, int] = {}
         self.reads: list[str] = []
         self.writes: list[str] = []
+        self.checks: list[str] = []
         self.preconditions: list[tuple[str, Optional[int]]] = []
         self.fail_write: Optional[Callable[[str], Optional[Exception]]] = None
         self.before_write: Optional[Callable[[str], None]] = None
@@ -55,6 +57,11 @@ class MemoryBucket:
         if name not in self.objects:
             return None
         return self.objects[name], self.generations[name]
+
+    def generation(self, name: str) -> Optional[int]:
+        """The object's current generation, or None when it is absent."""
+        self.checks.append(name)
+        return self.generations.get(name)
 
     def write(self, name: str, data: bytes,
               if_generation_match: Optional[int] = None) -> int:
